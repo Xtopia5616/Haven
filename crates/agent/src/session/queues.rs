@@ -84,10 +84,12 @@ impl SessionSupervisor {
         }
     }
 
-    pub async fn add_action_completion(&self, session_id: &str, text: &str) {
-        if let Some(actor) = self.actor_for(session_id).await {
-            actor.add_action_completion(text.to_string()).await;
-        }
+    pub async fn add_action_completion(&self, session_id: &str, text: &str) -> anyhow::Result<()> {
+        let actor = self
+            .actor_for(session_id)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("session '{}' not found", session_id))?;
+        actor.add_action_completion(text.to_string()).await
     }
 
     pub async fn drain_action_completions(&self, session_id: &str) -> Vec<String> {

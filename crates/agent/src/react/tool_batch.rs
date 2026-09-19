@@ -311,15 +311,28 @@ impl CompletedTool {
 /// batch representation. Both the normal batch and the post-confirm resume
 /// path use this helper so observation truncation and tool-owned signals
 /// cannot drift between the two paths.
-pub(super) async fn execute_tool_action(
-    executor: Arc<SessionSupervisor>,
-    session_id: String,
-    action: Action,
-    step_num: u32,
-    action_index: u32,
-    step_id: String,
-    receipt: Option<haven_tools::ConfirmationReceipt>,
-) -> CompletedTool {
+pub(super) struct ToolActionRequest {
+    pub executor: Arc<SessionSupervisor>,
+    pub catalog: Arc<haven_tools::ToolCatalogSnapshot>,
+    pub session_id: String,
+    pub action: Action,
+    pub step_num: u32,
+    pub action_index: u32,
+    pub step_id: String,
+    pub receipt: Option<haven_tools::ConfirmationReceipt>,
+}
+
+pub(super) async fn execute_tool_action(request: ToolActionRequest) -> CompletedTool {
+    let ToolActionRequest {
+        executor,
+        catalog,
+        session_id,
+        action,
+        step_num,
+        action_index,
+        step_id,
+        receipt,
+    } = request;
     let tool_name = action.tool_name.clone();
     let tool_input = action.tool_input.clone();
     tracing::debug!(
@@ -472,13 +485,13 @@ pub(super) async fn execute_tool_action(
         }
     };
 
-    let idempotency = executor
-        .tool_idempotency(&session_id, &tool_name, &action.tool_input)
-        .await;
-    let operation_scope = executor
-        .tool_operation_scope(&session_id, &tool_name, &action.tool_input)
-        .await;
-    let renderer = executor.tool_renderer(&session_id, &tool_name).await;
+    let policy = catalog.operation_policy(&tool_name, &action.tool_input);
+    let idempotency = policy.idempotency;
+    let operation_scope = policy.scope;
+    let renderer = catalog
+        .manifest(&tool_name)
+        .map(|manifest| manifest.presentation.renderer)
+        .unwrap_or_else(|| tool_name.split('.').next().unwrap_or("generic").into());
     let result_envelope = result_envelope
         .take()
         .unwrap_or_else(|| {

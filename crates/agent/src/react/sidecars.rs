@@ -351,6 +351,10 @@ impl Default for ToolDefCache {
 pub(super) struct TokenEstimate {
     msgs_len: usize,
     tokens: u32,
+    /// Identity of the in-memory canonical projection represented by `tokens`.
+    /// Revision alone is insufficient because resume/rollback rebuilds start
+    /// at revision zero for a new state object.
+    generation: u64,
     /// Revision of the in-memory canonical projection represented by
     /// `tokens`. The owner increments this whenever the projection changes;
     /// no full JSON fingerprint is needed on the hot path.
@@ -385,6 +389,7 @@ impl TokenEstimateCache {
         &self,
         session_id: &str,
         canonical: &[CanonicalMessage],
+        generation: u64,
         revision: u64,
     ) -> u32 {
         // Snapshot the prior entry under the lock; run tiktoken outside so
@@ -395,6 +400,7 @@ impl TokenEstimateCache {
             state.entries.get(session_id).cloned()
         };
         if let Some(entry) = &prior
+            && entry.generation == generation
             && entry.revision == revision
             && entry.msgs_len == canonical.len()
         {
@@ -426,6 +432,7 @@ impl TokenEstimateCache {
             TokenEstimate {
                 msgs_len: new_msgs_len,
                 tokens: new_tokens,
+                generation,
                 revision,
             },
         );
@@ -443,12 +450,14 @@ impl TokenEstimateCache {
         session_id: &str,
         message: &CanonicalMessage,
         canonical_len: usize,
+        generation: u64,
         revision: u64,
     ) {
         let can_append = {
             let state = self.cache.lock().unwrap();
             state.entries.get(session_id).is_some_and(|entry| {
-                entry.revision.saturating_add(1) == revision
+                entry.generation == generation
+                    && entry.revision.saturating_add(1) == revision
                     && entry.msgs_len.saturating_add(1) == canonical_len
             })
         };
@@ -464,7 +473,8 @@ impl TokenEstimateCache {
         let Some(entry) = state.entries.get_mut(session_id) else {
             return;
         };
-        if entry.revision.saturating_add(1) != revision
+        if entry.generation != generation
+            || entry.revision.saturating_add(1) != revision
             || entry.msgs_len.saturating_add(1) != canonical_len
         {
             return;
@@ -609,11 +619,11 @@ mod tests {
     fn token_estimate_cache_is_bounded_and_evicts_least_recently_used() {
         let cache = TokenEstimateCache::new();
         for index in 0..TokenEstimateCache::CAPACITY {
-            cache.estimate(&format!("ses-{index}"), &[], 0);
+            cache.estimate(&format!("ses-{index}"), &[], 1, 0);
         }
-        cache.estimate("ses-0", &[], 0);
+        cache.estimate("ses-0", &[], 1, 0);
 
-        cache.estimate("ses-overflow", &[], 0);
+        cache.estimate("ses-overflow", &[], 1, 0);
 
         let state = cache.cache.lock().unwrap();
         assert_eq!(state.entries.len(), TokenEstimateCache::CAPACITY);
@@ -641,7 +651,7 @@ mod tests {
         let cache = TokenEstimateCache::new();
         let mut messages = vec![CanonicalMessage::user_text("short")];
         assert_eq!(
-            cache.estimate("ses-a", &messages, 0),
+            cache.estimate("ses-a", &messages, 1, 0),
             estimate_message_tokens(&messages)
         );
 
@@ -649,7 +659,7 @@ mod tests {
             "a substantially longer replacement message with different content",
         );
         assert_eq!(
-            cache.estimate("ses-a", &messages, 1),
+            cache.estimate("ses-a", &messages, 1, 1),
             estimate_message_tokens(&messages)
         );
     }
@@ -658,11 +668,11 @@ mod tests {
     fn token_estimate_cache_reuses_valid_prefix_for_appends() {
         let cache = TokenEstimateCache::new();
         let mut messages = vec![CanonicalMessage::user_text("first")];
-        let first = cache.estimate("ses-a", &messages, 0);
+        let first = cache.estimate("ses-a", &messages, 1, 0);
 
         messages.push(CanonicalMessage::user_text("second"));
-        cache.append_message("ses-a", &messages[1], messages.len(), 1);
-        let appended = cache.estimate("ses-a", &messages, 1);
+        cache.append_message("ses-a", &messages[1], messages.len(), 1, 1);
+        let appended = cache.estimate("ses-a", &messages, 1, 1);
 
         assert_eq!(first, estimate_message_tokens(&messages[..1]));
         assert_eq!(appended, estimate_message_tokens(&messages));
@@ -672,17 +682,33 @@ mod tests {
     fn token_estimate_cache_rebuilds_after_non_append_revision() {
         let cache = TokenEstimateCache::new();
         let messages = vec![CanonicalMessage::user_text("first")];
-        let first = cache.estimate("ses-a", &messages, 0);
+        let first = cache.estimate("ses-a", &messages, 1, 0);
 
         let replacement = vec![CanonicalMessage::user_text(
             "a replacement with a different token cost",
         )];
-        cache.append_message("ses-a", &replacement[0], replacement.len(), 1);
+        cache.append_message("ses-a", &replacement[0], replacement.len(), 1, 1);
         assert_eq!(
-            cache.estimate("ses-a", &replacement, 1),
+            cache.estimate("ses-a", &replacement, 1, 1),
             estimate_message_tokens(&replacement),
             "a mismatched append notification must not reuse stale tokens"
         );
         assert_ne!(first, estimate_message_tokens(&replacement));
+    }
+
+    #[test]
+    fn token_estimate_cache_does_not_reuse_revision_zero_across_state_generations() {
+        let cache = TokenEstimateCache::new();
+        let first = vec![CanonicalMessage::user_text("short")];
+        let second = vec![CanonicalMessage::user_text(
+            "a substantially longer replacement with a different token cost",
+        )];
+
+        let first_tokens = cache.estimate("ses-a", &first, 10, 0);
+        let second_tokens = cache.estimate("ses-a", &second, 11, 0);
+
+        assert_eq!(first_tokens, estimate_message_tokens(&first));
+        assert_eq!(second_tokens, estimate_message_tokens(&second));
+        assert_ne!(first_tokens, second_tokens);
     }
 }

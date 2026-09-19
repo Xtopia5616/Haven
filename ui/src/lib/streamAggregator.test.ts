@@ -58,12 +58,14 @@ describe('createStreamEventAggregator', () => {
 			getActiveSessionId: () => 'ses-stream-test',
 			onActiveStream: vi.fn(),
 		});
-		aggregator.chunkHandler(false, 'reasoning')(
-			chunk({ messageId: 'step-reasoning-test', delta: 'reason', seq: 1 }),
-		);
-		aggregator.chunkHandler(true, undefined)(
-			chunk({ messageId: 'step-thought-test-2', delta: 'thought', seq: 1 }),
-		);
+		aggregator.chunkHandler(
+			false,
+			'reasoning',
+		)(chunk({ messageId: 'step-reasoning-test', delta: 'reason', seq: 1 }));
+		aggregator.chunkHandler(
+			true,
+			undefined,
+		)(chunk({ messageId: 'step-thought-test-2', delta: 'thought', seq: 1 }));
 
 		expect(frame).not.toBeNull();
 		aggregator.flushChunksNow();
@@ -95,6 +97,25 @@ describe('createStreamEventAggregator', () => {
 			['step-thought-a', 'A1'],
 			['step-reasoning-b', 'B1'],
 			['step-thought-a', 'A2'],
+		]);
+	});
+
+	it('dispatches one reducer action for a frame while retaining chunk order', () => {
+		const dispatch = vi.fn();
+		const aggregator = createStreamEventAggregator({
+			getActiveSessionId: () => 'ses-stream-test',
+			onActiveStream: vi.fn(),
+			dispatch,
+		});
+		aggregator.chunkHandler(true, undefined)(chunk({ delta: 'a', seq: 1 }));
+		aggregator.chunkHandler(true, undefined)(chunk({ delta: 'b', seq: 2 }));
+
+		aggregator.flushChunksNow();
+
+		expect(dispatch).toHaveBeenCalledTimes(1);
+		expect(dispatch.mock.calls[0][0]).toMatchObject({ type: 'agent/chunks' });
+		expect(dispatch.mock.calls[0][0].chunks.map((item: any) => item.payload.delta)).toEqual([
+			'ab',
 		]);
 	});
 });

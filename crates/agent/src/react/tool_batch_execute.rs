@@ -8,8 +8,8 @@
 use super::hooks::{BeforeToolAction, ToolCallIdentity};
 use super::snapshot_io::PauseTurnInput;
 use super::tool_batch::{
-    CompletedTool, MAX_CONCURRENT_TOOL_CALLS, MAX_RUNTIME_TOOL_CALLS_PER_BATCH, ToolBatchGate,
-    ToolBatchOutcome, ToolBatchResults, ToolBatchState, execute_tool_action,
+    CompletedTool, MAX_CONCURRENT_TOOL_CALLS, MAX_RUNTIME_TOOL_CALLS_PER_BATCH, ToolActionRequest,
+    ToolBatchGate, ToolBatchOutcome, ToolBatchResults, ToolBatchState, execute_tool_action,
 };
 use super::tool_batch_plan::ToolBatchPlan;
 use super::tool_batch_policy::ToolRetryBudget;
@@ -76,6 +76,16 @@ struct ToolBatchExecution {
     cancelled: bool,
 }
 
+struct AdmittedToolExecutionRequest<'a> {
+    session_id: &'a str,
+    step_num: u32,
+    plan: &'a ToolBatchPlan,
+    catalog: Arc<haven_tools::ToolCatalogSnapshot>,
+    runnable: Vec<AdmittedTool>,
+    results: ToolBatchResults,
+    cancel_res: &'a tokio_util::sync::CancellationToken,
+}
+
 impl ReActEngine {
     /// Perform all pre-execution decisions against one immutable plan. Failed
     /// admission is normalized into the same observation type as a tool
@@ -85,6 +95,7 @@ impl ReActEngine {
         session_id: &str,
         step_num: u32,
         gate_ctx: &StepCtx,
+        catalog: &haven_tools::ToolCatalogSnapshot,
         plan: &ToolBatchPlan,
         validation_failures: &[ToolInputValidationFailure],
     ) -> ToolBatchAdmission {
@@ -121,6 +132,7 @@ impl ReActEngine {
                 .before_tool(
                     self,
                     gate_ctx,
+                    catalog,
                     ToolCallIdentity {
                         step_id: &planned.step_id,
                         action_index: planned.action_index,
@@ -132,14 +144,9 @@ impl ReActEngine {
                 .await
             {
                 BeforeToolAction::Proceed { receipt } => {
-                    let concurrency = self
-                        .executor
-                        .tool_concurrency(
-                            session_id,
-                            &planned.action.tool_name,
-                            &planned.action.tool_input,
-                        )
-                        .await;
+                    let concurrency = catalog
+                        .operation_policy(&planned.action.tool_name, &planned.action.tool_input)
+                        .concurrency;
                     admission.runnable.push(AdmittedTool {
                         plan_index,
                         receipt,
@@ -274,13 +281,17 @@ impl ReActEngine {
     /// normal result before returning to the shared ordered projector.
     async fn execute_admitted_tools(
         &self,
-        session_id: &str,
-        step_num: u32,
-        plan: &ToolBatchPlan,
-        runnable: Vec<AdmittedTool>,
-        mut results: ToolBatchResults,
-        cancel_res: &tokio_util::sync::CancellationToken,
+        request: AdmittedToolExecutionRequest<'_>,
     ) -> ToolBatchExecution {
+        let AdmittedToolExecutionRequest {
+            session_id,
+            step_num,
+            plan,
+            catalog,
+            runnable,
+            mut results,
+            cancel_res,
+        } = request;
         let gate = Arc::new(ToolBatchGate {
             all: Arc::new(RwLock::new(())),
             resources: AsyncMutex::new(HashMap::new()),
@@ -300,20 +311,22 @@ impl ReActEngine {
                 let step_id = planned.step_id.clone();
                 let session_id = session_id.to_string();
                 let executor = self.executor.clone();
+                let catalog = catalog.clone();
                 let gate = gate.clone();
                 let started = started.clone();
                 async move {
                     let _permit = gate.acquire(&admitted.concurrency).await;
                     started[admitted.plan_index].store(true, Ordering::Release);
-                    let result = execute_tool_action(
+                    let result = execute_tool_action(ToolActionRequest {
                         executor,
+                        catalog,
                         session_id,
                         action,
                         step_num,
                         action_index,
                         step_id,
-                        admitted.receipt,
-                    )
+                        receipt: admitted.receipt,
+                    })
                     .await;
                     (admitted.plan_index, result)
                 }
@@ -414,10 +427,16 @@ impl ReActEngine {
         // from it; validation only reports tool-schema failures against the
         // plan's action indexes and never mints a parallel identity map.
         let plan = ToolBatchPlan::from_actions(actions);
+        let catalog = Arc::new(
+            self.executor
+                .get_tools()
+                .tool_catalog_snapshot(session_id)
+                .await,
+        );
         let validation_failures = if plan.is_empty() {
             Vec::new()
         } else {
-            self.validate_tool_inputs(session_id, actions).await
+            self.validate_tool_inputs_from_catalog(catalog.as_ref(), actions)
         };
         if !validation_failures.is_empty() {
             tracing::warn!(
@@ -482,18 +501,41 @@ impl ReActEngine {
             run_id,
             emitter: emitter.clone(),
         };
-        let admission = self
-            .admit_tool_batch(session_id, step_num, &gate_ctx, &plan, &validation_failures)
-            .await;
+        let admission = {
+            let _timer =
+                self.metrics
+                    .start(MetricsPhase::ToolAdmission, session_id, run_id, step_num);
+            self.admit_tool_batch(
+                session_id,
+                step_num,
+                &gate_ctx,
+                catalog.as_ref(),
+                &plan,
+                &validation_failures,
+            )
+            .await
+        };
         let ToolBatchAdmission {
             runnable,
             need_confirm,
             results,
             ..
         } = admission;
-        let execution = self
-            .execute_admitted_tools(session_id, step_num, &plan, runnable, results, cancel_res)
-            .await;
+        let execution = {
+            let _timer =
+                self.metrics
+                    .start(MetricsPhase::ToolExecution, session_id, run_id, step_num);
+            self.execute_admitted_tools(AdmittedToolExecutionRequest {
+                session_id,
+                step_num,
+                plan: &plan,
+                catalog: catalog.clone(),
+                runnable,
+                results,
+                cancel_res,
+            })
+            .await
+        };
 
         // Futures finish nondeterministically, but canonical tool messages are
         // an ordered protocol: each observation follows the corresponding
@@ -501,6 +543,9 @@ impl ReActEngine {
         // size-one and parallel batches.
         let mut batch_state = ToolBatchState::default();
         if execution.cancelled || need_confirm.is_empty() {
+            let _timer =
+                self.metrics
+                    .start(MetricsPhase::OrderedCommit, session_id, run_id, step_num);
             batch_state
                 .commit_ordered_results(self, &gate_ctx, execution.results, state)
                 .await?;
@@ -703,6 +748,12 @@ impl ReActEngine {
             })
             .unwrap_or(0);
         let plan = ToolBatchPlan::from_confirm_requests(&pending);
+        let catalog = Arc::new(
+            self.executor
+                .get_tools()
+                .tool_catalog_snapshot(session_id)
+                .await,
+        );
         let proj_ctx = StepCtx {
             session_id: session_id.to_string(),
             step_num,
@@ -712,7 +763,8 @@ impl ReActEngine {
         let mut runnable = Vec::new();
         let mut results = ToolBatchResults::new(plan.len());
         let actions: Vec<Action> = plan.iter().map(|planned| planned.action.clone()).collect();
-        let validation_failures = self.validate_tool_inputs(session_id, &actions).await;
+        let validation_failures =
+            self.validate_tool_inputs_from_catalog(catalog.as_ref(), &actions);
 
         for (plan_index, (planned, pending_request)) in plan.iter().zip(pending.iter()).enumerate()
         {
@@ -748,14 +800,9 @@ impl ReActEngine {
                 continue;
             };
             if decision {
-                let concurrency = self
-                    .executor
-                    .tool_concurrency(
-                        session_id,
-                        &planned.action.tool_name,
-                        &planned.action.tool_input,
-                    )
-                    .await;
+                let concurrency = catalog
+                    .operation_policy(&planned.action.tool_name, &planned.action.tool_input)
+                    .concurrency;
                 runnable.push(AdmittedTool {
                     plan_index,
                     // Only calls that actually crossed the confirmation
@@ -799,7 +846,15 @@ impl ReActEngine {
 
         let cancel = self.executor.cancellation_token(session_id).await;
         let execution = self
-            .execute_admitted_tools(session_id, step_num, &plan, runnable, results, &cancel)
+            .execute_admitted_tools(AdmittedToolExecutionRequest {
+                session_id,
+                step_num,
+                plan: &plan,
+                catalog,
+                runnable,
+                results,
+                cancel_res: &cancel,
+            })
             .await;
         let mut batch_state = ToolBatchState::default();
         batch_state

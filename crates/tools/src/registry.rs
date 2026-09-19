@@ -1,4 +1,5 @@
-use crate::tool_contract::{ToolBox, ToolDef};
+use crate::tool_contract::{OperationPolicy, ToolBox, ToolDef};
+use haven_common::tools::ToolManifest;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -270,6 +271,15 @@ impl SessionCatalog {
             .cloned()
     }
 
+    pub async fn list(&self, session_id: &str) -> Vec<ToolBox> {
+        self.registrations
+            .read()
+            .await
+            .get(session_id)
+            .map(|tools| tools.values().cloned().collect())
+            .unwrap_or_default()
+    }
+
     pub async fn list_defs(&self, session_id: &str) -> Vec<ToolDef> {
         let mut defs: Vec<_> = self
             .registrations
@@ -309,6 +319,84 @@ impl SessionCatalog {
             .saturating_add(session_count)
             .saturating_add(net_new)
             > max.max(1)
+    }
+}
+
+/// Immutable tool lookup and metadata view for one ReAct turn.
+///
+/// The runtime still validates again at the execution boundary, but batch
+/// admission must not repeatedly walk the async registry for the same turn.
+/// Holding the `ToolBox` values keeps the implementation alive for the whole
+/// batch while all policy/manifest reads remain synchronous and derived from
+/// the same catalog generation.
+#[derive(Clone)]
+pub struct ToolCatalogSnapshot {
+    version: (u64, u64),
+    tools: Arc<HashMap<String, SnapshotTool>>,
+}
+
+struct SnapshotTool {
+    tool: ToolBox,
+    manifest: ToolManifest,
+}
+
+impl ToolCatalogSnapshot {
+    pub(crate) fn new(version: (u64, u64), tools: HashMap<String, ToolBox>) -> Self {
+        let tools = tools
+            .into_iter()
+            .map(|(name, tool)| {
+                let manifest = tool.tool_manifest();
+                (name, SnapshotTool { tool, manifest })
+            })
+            .collect();
+        Self {
+            version,
+            tools: Arc::new(tools),
+        }
+    }
+
+    pub fn version(&self) -> (u64, u64) {
+        self.version
+    }
+
+    pub fn len(&self) -> usize {
+        self.tools.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.tools.is_empty()
+    }
+
+    pub fn get(&self, name: &str) -> Option<&ToolBox> {
+        self.tools.get(name).map(|entry| &entry.tool)
+    }
+
+    pub fn validate_input(
+        &self,
+        name: &str,
+        input: &serde_json::Value,
+    ) -> Option<anyhow::Result<()>> {
+        self.get(name).map(|tool| tool.validate_input(input))
+    }
+
+    pub fn operation_policy(&self, name: &str, input: &serde_json::Value) -> OperationPolicy {
+        self.get(name)
+            .map(|tool| tool.operation_policy(input))
+            .unwrap_or_else(|| OperationPolicy {
+                risk_level: haven_common::types::RiskLevel::Safe,
+                capability: haven_common::types::permission_key(name, input).into(),
+                confirmation: crate::ConfirmationRequirement::None,
+                idempotency: crate::OperationIdempotency::Unknown,
+                scope: crate::ToolOperationScope::Session,
+                concurrency: crate::ToolConcurrency::Exclusive,
+                effect: crate::OperationEffect::ExternalEffect,
+                data_sensitivity: crate::DataSensitivity::None,
+                network_access: crate::NetworkAccess::None,
+            })
+    }
+
+    pub fn manifest(&self, name: &str) -> Option<ToolManifest> {
+        self.tools.get(name).map(|entry| entry.manifest.clone())
     }
 }
 

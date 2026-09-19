@@ -3,6 +3,7 @@
 	import logger from '$lib/logger.ts';
 	import { reportError } from '$lib/errorHandling.ts';
 	import { buildResumeMessages } from '$lib/resumeMessages.ts';
+	import { createSessionRefreshScheduler } from '$lib/sessionRefresh.ts';
 	import { appSessionReducer, resumeInteractions } from '$lib/sessionReducer.ts';
 	import {
 		formatMessageTime,
@@ -108,11 +109,10 @@
 	let unlistenTitleUpdate = null;
 	/** @type {Array<{ dispose: () => void }>} */
 	let unlistenLifecycle = [];
-	/** @type {ReturnType<typeof setTimeout> | null} */
-	let reloadTimer = null;
+	const sessionsRefresh = createSessionRefreshScheduler(() => loadSessionsNow());
 
 	onMount(async () => {
-		await loadSessions();
+		await sessionsRefresh.refresh();
 		unlistenTitleUpdate = await registerSessionListener(
 			'session:title-updated',
 			(event) => {
@@ -124,8 +124,7 @@
 			{ tag: 'memory' },
 		);
 		const scheduleReload = () => {
-			if (reloadTimer) clearTimeout(reloadTimer);
-			reloadTimer = setTimeout(loadSessions, 300);
+			sessionsRefresh.schedule();
 		};
 		unlistenLifecycle = await Promise.all([
 			registerSessionListener('session:created', scheduleReload, { tag: 'memory' }),
@@ -136,7 +135,7 @@
 	});
 	onDestroy(() => {
 		if (searchTimer) clearTimeout(searchTimer);
-		if (reloadTimer) clearTimeout(reloadTimer);
+		sessionsRefresh.dispose();
 		unlistenTitleUpdate?.dispose();
 		unlistenLifecycle.forEach((registration) => registration.dispose());
 		unlistenLifecycle = [];
@@ -181,7 +180,7 @@
 	function requestDelete(session) {
 		deleteTarget = session;
 	}
-	async function loadSessions() {
+	async function loadSessionsNow() {
 		const sequence = ++loadSessionsSeq;
 		loading = true;
 		try {
@@ -228,17 +227,20 @@
 	}
 	function handleSearchInput() {
 		if (searchTimer) clearTimeout(searchTimer);
-		searchTimer = setTimeout(loadSessions, 300);
+		searchTimer = setTimeout(() => {
+			searchTimer = null;
+			void sessionsRefresh.refresh();
+		}, 300);
 	}
 	function handleFilterChange() {
-		loadSessions();
+		void sessionsRefresh.refresh();
 	}
 	function clearHistoryFilters() {
 		searchQuery = '';
 		statusFilter = '';
 		startDate = '';
 		endDate = '';
-		loadSessions();
+		void sessionsRefresh.refresh();
 	}
 	/** @param {string} value */
 	function handleStatusFilterChange(value) {

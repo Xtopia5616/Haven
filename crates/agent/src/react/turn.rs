@@ -82,13 +82,22 @@ impl ReActEngine {
         } = input;
         let session_id = &ctx.session_id;
         let step_num = ctx.step_num;
+        self.metrics.increment(MetricsCounter::TurnStarts);
 
         // Context is collected once at the turn boundary and projected by the
         // single transcript writer. Hooks may compact or refresh the context,
         // but they never own queue reads or persistence.
-        self.inject_turn_start_context(&ctx, state)
-            .instrument(tracing::info_span!("inject", session_id, step_num))
-            .await?;
+        {
+            let _timer = self.metrics.start(
+                MetricsPhase::ContextInject,
+                session_id,
+                ctx.run_id,
+                step_num,
+            );
+            self.inject_turn_start_context(&ctx, state)
+                .instrument(tracing::info_span!("inject", session_id, step_num))
+                .await?;
+        }
 
         let before_step = self
             .hooks
@@ -99,12 +108,28 @@ impl ReActEngine {
         // Build one immutable provider projection. Durable canonical state is
         // never used as a scratch buffer by retries or provider repairs.
         let retry_nudge = state.take_retry_nudge();
-        let cached_message_tokens = self.estimate_canonical_tokens(session_id, state);
-        let request_context = RequestContext::from_state_with_estimate(
-            state,
-            retry_nudge.as_ref(),
-            Some(cached_message_tokens),
-        );
+        let cached_message_tokens = {
+            let _timer = self.metrics.start(
+                MetricsPhase::TokenEstimate,
+                session_id,
+                ctx.run_id,
+                step_num,
+            );
+            self.estimate_canonical_tokens(session_id, state)
+        };
+        let request_context = {
+            let _timer = self.metrics.start(
+                MetricsPhase::RequestContext,
+                session_id,
+                ctx.run_id,
+                step_num,
+            );
+            RequestContext::from_state_with_estimate(
+                state,
+                retry_nudge.as_ref(),
+                Some(cached_message_tokens),
+            )
+        };
         if request_context.repairs() > 0 {
             tracing::warn!(
                 session_id,
@@ -151,23 +176,28 @@ impl ReActEngine {
             &partial_thought,
             &partial_reasoning,
         );
-        let response = match stream
-            .run(state, &request_context, retry_nudge.as_ref())
-            .instrument(tracing::info_span!("llm", session_id, step_num))
-            .await
-        {
-            StepCallOutcome::Response(response) => *response,
-            StepCallOutcome::Cancelled => {
-                return Ok(TurnOutcome::Done(
-                    self.exit_cancelled(session_id, state, step_num).await,
-                ));
-            }
-            StepCallOutcome::Fatal(message) => {
-                // `StreamSession` has already persisted the provider error
-                // and any partial scratch output. Keep this as a soft exit so
-                // the outer loop does not overwrite that recovery checkpoint
-                // with a generic turn-error snapshot.
-                return Ok(TurnOutcome::Done(LoopExit::Error(message)));
+        let response = {
+            let _timer =
+                self.metrics
+                    .start(MetricsPhase::LlmStream, session_id, ctx.run_id, step_num);
+            match stream
+                .run(state, &request_context, retry_nudge.as_ref())
+                .instrument(tracing::info_span!("llm", session_id, step_num))
+                .await
+            {
+                StepCallOutcome::Response(response) => *response,
+                StepCallOutcome::Cancelled => {
+                    return Ok(TurnOutcome::Done(
+                        self.exit_cancelled(session_id, state, step_num).await,
+                    ));
+                }
+                StepCallOutcome::Fatal(message) => {
+                    // `StreamSession` has already persisted the provider error
+                    // and any partial scratch output. Keep this as a soft exit so
+                    // the outer loop does not overwrite that recovery checkpoint
+                    // with a generic turn-error snapshot.
+                    return Ok(TurnOutcome::Done(LoopExit::Error(message)));
+                }
             }
         };
 

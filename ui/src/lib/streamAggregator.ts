@@ -2,7 +2,7 @@ import logger from './logger.ts';
 import { accumulateStreamChunk, finalizeStreamBlocks, type StreamMessage } from './streaming.ts';
 import type { AgentChunkPayload } from './contracts/agent.ts';
 import { pruneSeq, seqLastSeen, updateSessionMessages } from './sessionMessages.ts';
-import type { SessionAction } from './sessionReducer.ts';
+import type { AgentChunkBatchItem, SessionAction } from './sessionReducer.ts';
 
 export interface PendingChunk {
 	tid: string;
@@ -150,21 +150,19 @@ export function createStreamEventAggregator({
 		}
 		for (const [, chunks] of bySession) {
 			if (dispatch) {
-				for (const chunk of chunks) {
-					dispatch({
-						type: 'agent/chunk',
-						kind: chunk.msgType === undefined ? 'thought' : 'reasoning',
-						...(chunk.msgType !== undefined ? { msgType: chunk.msgType } : {}),
-						payload: {
-							sessionId: chunk.tid,
-							delta: chunk.delta,
-							stepNumber: chunk.stepNumber,
-							runId: chunk.runId,
-							messageId: chunk.sid,
-							seq: chunk.seq ?? 0,
-						},
-					});
-				}
+				const frame: AgentChunkBatchItem[] = chunks.map((chunk) => ({
+					kind: chunk.msgType === undefined ? 'thought' : 'reasoning',
+					...(chunk.msgType !== undefined ? { msgType: chunk.msgType } : {}),
+					payload: {
+						sessionId: chunk.tid,
+						delta: chunk.delta,
+						stepNumber: chunk.stepNumber,
+						runId: chunk.runId,
+						messageId: chunk.sid,
+						seq: chunk.seq ?? 0,
+					},
+				}));
+				dispatch({ type: 'agent/chunks', chunks: frame });
 				continue;
 			}
 			updateSessionMessages(chunks[0].tid, (messages) => {

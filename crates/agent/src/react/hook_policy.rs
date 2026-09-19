@@ -126,6 +126,7 @@ impl LoopHooks for DefaultHooks {
         &self,
         engine: &ReActEngine,
         ctx: &StepCtx,
+        catalog: &haven_tools::ToolCatalogSnapshot,
         identity: ToolCallIdentity<'_>,
         tool_name: &str,
         input: &Value,
@@ -155,7 +156,7 @@ impl LoopHooks for DefaultHooks {
 
         match engine
             .executor
-            .check_tool_gate(&ctx.session_id, tool_name, input)
+            .check_tool_gate_with_catalog(&ctx.session_id, tool_name, input, catalog)
             .await
         {
             AuthorizationDecision::AutoApproved => BeforeToolAction::Proceed { receipt: None },

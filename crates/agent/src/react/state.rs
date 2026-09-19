@@ -5,10 +5,17 @@
 //! the type boundary: Run, Turn and ToolBatch all receive the same state
 //! object instead of independently borrowing three collections.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::types::{BranchPoint, TranscriptRecord};
 use haven_common::types::CanonicalMessage;
+
+// A revision starts at zero for every freshly rebuilt state.  The generation
+// distinguishes two different in-memory projections for the same session
+// (most importantly rollback/resume) so a per-session sidecar can never
+// mistake a new canonical vector for the old revision zero.
+static NEXT_CANONICAL_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 /// A retry hint that belongs to the next provider request only.
 ///
@@ -30,10 +37,17 @@ pub(crate) struct ReActState {
     pub(crate) events: Vec<TranscriptRecord>,
     pub(crate) canonical: Vec<CanonicalMessage>,
     pub(crate) branch_points: HashMap<u32, BranchPoint>,
+    /// Stable ids of already projected user injections.  This index is built
+    /// once when the durable state is loaded and updated on append, so an
+    /// inbox redelivery does not rescan the complete event vector.
+    applied_inject_message_ids: HashSet<String>,
     /// Monotonic revision for the in-memory canonical projection.  The
     /// token-estimate sidecar uses this instead of serializing the whole
     /// transcript just to prove that its cached value is still current.
     canonical_revision: u64,
+    /// Identity of this in-memory canonical projection.  This is deliberately
+    /// not persisted: a rebuilt state must cold-start its process-local cache.
+    canonical_generation: u64,
     retry_nudge: Option<RetryNudge>,
 }
 
@@ -44,16 +58,31 @@ impl ReActState {
         branch_points: HashMap<u32, BranchPoint>,
     ) -> Self {
         Self {
+            applied_inject_message_ids: events
+                .iter()
+                .filter_map(|event| match event {
+                    TranscriptRecord::UserInject {
+                        message_id: Some(message_id),
+                        ..
+                    } => Some(message_id.clone()),
+                    _ => None,
+                })
+                .collect(),
             events,
             canonical,
             branch_points,
             canonical_revision: 0,
+            canonical_generation: NEXT_CANONICAL_GENERATION.fetch_add(1, Ordering::Relaxed),
             retry_nudge: None,
         }
     }
 
     pub(crate) fn canonical_revision(&self) -> u64 {
         self.canonical_revision
+    }
+
+    pub(crate) fn canonical_generation(&self) -> u64 {
+        self.canonical_generation
     }
 
     /// Mark a non-append canonical edit (for example a MEMORY fence refresh).
@@ -76,6 +105,21 @@ impl ReActState {
         self.retry_nudge.take()
     }
 
+    pub(crate) fn has_applied_inject(&self, message_id: &str) -> bool {
+        self.applied_inject_message_ids.contains(message_id)
+    }
+
+    pub(crate) fn push_event(&mut self, record: TranscriptRecord) {
+        if let TranscriptRecord::UserInject {
+            message_id: Some(message_id),
+            ..
+        } = &record
+        {
+            self.applied_inject_message_ids.insert(message_id.clone());
+        }
+        self.events.push(record);
+    }
+
     /// Replace the transcript root after compaction.
     ///
     /// Compaction changes both projections at once, so branch points into the
@@ -88,6 +132,17 @@ impl ReActState {
         compacted: Vec<CanonicalMessage>,
     ) {
         self.events = vec![record];
+        self.applied_inject_message_ids = self
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                TranscriptRecord::UserInject {
+                    message_id: Some(message_id),
+                    ..
+                } => Some(message_id.clone()),
+                _ => None,
+            })
+            .collect();
         self.canonical = compacted;
         self.branch_points.clear();
         self.mark_canonical_changed();
@@ -165,5 +220,23 @@ mod tests {
         assert_eq!(nudge.tool_call_id, "call-1");
         assert_eq!(nudge.text, "retry safely");
         assert!(state.take_retry_nudge().is_none());
+    }
+
+    #[test]
+    fn rebuilt_state_gets_a_new_generation_even_when_revision_restarts_at_zero() {
+        let first = ReActState::new(
+            Vec::new(),
+            vec![CanonicalMessage::user_text("first")],
+            HashMap::new(),
+        );
+        let second = ReActState::new(
+            Vec::new(),
+            vec![CanonicalMessage::user_text("second")],
+            HashMap::new(),
+        );
+
+        assert_eq!(first.canonical_revision(), 0);
+        assert_eq!(second.canonical_revision(), 0);
+        assert_ne!(first.canonical_generation(), second.canonical_generation());
     }
 }

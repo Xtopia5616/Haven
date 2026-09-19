@@ -79,6 +79,19 @@ logger.error('+layout', 'get_settings error', e);
 | `debug` | 每步细节（ReAct 循环、流式 chunk） | thought/action/observation 摘要 |
 | `trace` | 预留，底层数据包级 | — |
 
+### 1.3.1 ReAct 性能基线观测
+
+`haven-agent::react::metrics` 提供进程内、固定内存占用的基线观测器。它用原子计数器和固定延迟桶记录
+context inject、token estimate、request context、首 token、LLM stream、tool admission/execution、
+ordered commit、event append、projection 与 snapshot；同时记录 turn、stream/chunk、chunk drop 和
+checkpoint pending 计数。延迟快照可计算 p50/p95，更新不等待消费者、不写入数据库，也不包含用户内容、密钥或完整工具输出。
+
+观测日志只使用 `session_id`、`run_id`、`step_number`、阶段名和毫秒耗时。生命周期路径若没有 provider run id，
+`run_id=0` 表示非 run-owned checkpoint；这类路径仍保留准确的 session/step 关联。
+
+本阶段的 `event_append`、`projection` 与 `snapshot` 是数据库边界的 wall-clock 指标，包含 blocking 调度与
+SQLite 等待，但不伪装成 SQLite 内部 lock wait；队列长度与 UI frame 计数留待拥有对应队列/渲染生命周期的后续批次。
+
 **格式约定**：
 
 - 事件消息优先 `模块::方法: 描述`（与 `TauriEmitter::trace_event` 一致）。

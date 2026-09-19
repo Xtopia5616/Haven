@@ -18,6 +18,26 @@ use tokio_util::sync::CancellationToken;
 
 const ACTOR_MAILBOX_CAPACITY: usize = 128;
 
+/// Hard limits for process-local context queues.  The ingress path persists a
+/// user message before it calls these queues, so rejecting an item is an
+/// explicit back-pressure result rather than a silent drop.  The same limits
+/// apply to answers because an ask reply is still a user-owned follow-up.
+pub(crate) const CONTEXT_QUEUE_MAX_ITEMS: usize = 64;
+pub(crate) const CONTEXT_QUEUE_MAX_CHARS: usize = 64 * 1024;
+pub(crate) const CONTEXT_ITEM_MAX_CHARS: usize = 8 * 1024;
+pub(crate) const CONTEXT_ITEM_MAX_ATTACHMENTS: usize = 8;
+pub(crate) const CONTEXT_ITEM_MAX_ATTACHMENT_BYTES: usize = 8 * 1024 * 1024;
+pub(crate) const CONTEXT_QUEUE_MAX_ATTACHMENT_BYTES: usize = 32 * 1024 * 1024;
+
+/// A single model turn receives a bounded slice.  Items left in the actor
+/// queue are deliberately retained for a later turn.
+pub(crate) const CONTEXT_BATCH_MAX_ITEMS: usize = 16;
+pub(crate) const CONTEXT_BATCH_MAX_CHARS: usize = 16 * 1024;
+pub(crate) const CONTEXT_BATCH_MAX_ATTACHMENT_BYTES: usize = 8 * 1024 * 1024;
+
+const SESSION_INBOX_MAX_ITEMS: usize = 256;
+const SESSION_INBOX_ITEM_MAX_CHARS: usize = 16 * 1024;
+
 #[derive(Debug)]
 pub(crate) struct StatusTransition {
     pub changed: bool,
@@ -100,6 +120,7 @@ pub(crate) enum ActorCommand {
     MarkQueuesAsAnswer,
     AddActionCompletion {
         text: String,
+        reply: oneshot::Sender<anyhow::Result<()>>,
     },
     DrainActionCompletions {
         reply: oneshot::Sender<Vec<String>>,
@@ -349,8 +370,12 @@ impl SessionActorHandle {
         let _ = self.send(ActorCommand::MarkQueuesAsAnswer).await;
     }
 
-    pub(crate) async fn add_action_completion(&self, text: String) {
-        let _ = self.send(ActorCommand::AddActionCompletion { text }).await;
+    pub(crate) async fn add_action_completion(&self, text: String) -> anyhow::Result<()> {
+        let (reply, rx) = oneshot::channel();
+        self.send(ActorCommand::AddActionCompletion { text, reply })
+            .await?;
+        rx.await
+            .map_err(|_| anyhow::anyhow!("session actor '{}' dropped action result", self.id))?
     }
 
     pub(crate) async fn drain_action_completions(&self) -> Vec<String> {
@@ -545,9 +570,14 @@ impl SessionActorHandle {
 struct ActorState {
     info: SessionInfo,
     action_completions: Vec<String>,
+    action_completion_chars: usize,
     interactions: Vec<InteractionRequest>,
     follow_up_queue: Vec<FollowUp>,
+    follow_up_chars: usize,
+    follow_up_attachment_bytes: usize,
     steering_queue: Vec<FollowUp>,
+    steering_chars: usize,
+    steering_attachment_bytes: usize,
     has_children: bool,
     running: bool,
     inbox: VecDeque<Envelope>,
@@ -571,9 +601,14 @@ pub(crate) fn spawn(db: Arc<Database>, info: SessionInfo) -> SessionActorHandle 
         let mut state = ActorState {
             info,
             action_completions: Vec::new(),
+            action_completion_chars: 0,
             interactions: Vec::new(),
             follow_up_queue: Vec::new(),
+            follow_up_chars: 0,
+            follow_up_attachment_bytes: 0,
             steering_queue: Vec::new(),
+            steering_chars: 0,
+            steering_attachment_bytes: 0,
             has_children: false,
             running: false,
             inbox: VecDeque::new(),
@@ -635,6 +670,8 @@ pub(crate) fn spawn(db: Arc<Database>, info: SessionInfo) -> SessionActorHandle 
                     let _ = reply.send(result);
                 }
                 ActorCommand::DrainFollowUps { reply } => {
+                    state.follow_up_chars = 0;
+                    state.follow_up_attachment_bytes = 0;
                     let _ = reply.send(std::mem::take(&mut state.follow_up_queue));
                 }
                 ActorCommand::QueueSteering {
@@ -647,21 +684,45 @@ pub(crate) fn spawn(db: Arc<Database>, info: SessionInfo) -> SessionActorHandle 
                     let _ = reply.send(result);
                 }
                 ActorCommand::DrainSteering { reply } => {
+                    state.steering_chars = 0;
+                    state.steering_attachment_bytes = 0;
                     let _ = reply.send(std::mem::take(&mut state.steering_queue));
                 }
                 ActorCommand::DrainContext { reply } => {
-                    let steering = std::mem::take(&mut state.steering_queue);
-                    let follow_ups = if steering.is_empty() {
-                        std::mem::take(&mut state.follow_up_queue)
+                    let mut budget = ContextBatchBudget::default();
+                    let had_steering = !state.steering_queue.is_empty();
+                    let steering = take_follow_ups(
+                        &mut state.steering_queue,
+                        &mut state.steering_chars,
+                        &mut state.steering_attachment_bytes,
+                        &mut budget,
+                    );
+                    // Steering retains its existing priority: while any
+                    // steering was queued at the boundary, follow-ups stay
+                    // deferred until the next drain even if this batch had
+                    // enough budget to consume the entire steering queue.
+                    let follow_ups = if !had_steering {
+                        take_follow_ups(
+                            &mut state.follow_up_queue,
+                            &mut state.follow_up_chars,
+                            &mut state.follow_up_attachment_bytes,
+                            &mut budget,
+                        )
                     } else {
                         Vec::new()
                     };
-                    let action_results = std::mem::take(&mut state.action_completions);
+                    let action_results = take_action_results(
+                        &mut state.action_completions,
+                        &mut state.action_completion_chars,
+                        &mut budget,
+                    );
                     let _ = reply.send((steering, follow_ups, action_results));
                 }
                 ActorCommand::HasPendingContext { reply } => {
                     let _ = reply.send(
-                        !state.follow_up_queue.is_empty() || !state.steering_queue.is_empty(),
+                        !state.follow_up_queue.is_empty()
+                            || !state.steering_queue.is_empty()
+                            || !state.action_completions.is_empty(),
                     );
                 }
                 ActorCommand::MarkQueuesAsAnswer => {
@@ -672,10 +733,16 @@ pub(crate) fn spawn(db: Arc<Database>, info: SessionInfo) -> SessionActorHandle 
                         item.is_answer = true;
                     }
                 }
-                ActorCommand::AddActionCompletion { text } => {
-                    state.action_completions.push(text);
+                ActorCommand::AddActionCompletion { text, reply } => {
+                    let result = queue_action_completion(
+                        &mut state.action_completions,
+                        &mut state.action_completion_chars,
+                        text,
+                    );
+                    let _ = reply.send(result);
                 }
                 ActorCommand::DrainActionCompletions { reply } => {
+                    state.action_completion_chars = 0;
                     let _ = reply.send(std::mem::take(&mut state.action_completions));
                 }
                 ActorCommand::RequestInteraction { request, reply } => {
@@ -729,14 +796,29 @@ pub(crate) fn spawn(db: Arc<Database>, info: SessionInfo) -> SessionActorHandle 
                 }
                 ActorCommand::ClearRuntime => {
                     state.action_completions.clear();
+                    state.action_completion_chars = 0;
                     state.follow_up_queue.clear();
+                    state.follow_up_chars = 0;
+                    state.follow_up_attachment_bytes = 0;
                     state.steering_queue.clear();
+                    state.steering_chars = 0;
+                    state.steering_attachment_bytes = 0;
                     state.interactions.clear();
                     state.has_children = false;
                 }
                 ActorCommand::DeliverMessage { envelope, reply } => {
                     let result = if message_known(&state, &envelope.id) {
                         Ok(())
+                    } else if state.inbox.len() >= SESSION_INBOX_MAX_ITEMS {
+                        Err(anyhow::anyhow!(
+                            "session inbox is full ({} items); message was retained by the sender and must be retried",
+                            SESSION_INBOX_MAX_ITEMS
+                        ))
+                    } else if envelope.text.chars().count() > SESSION_INBOX_ITEM_MAX_CHARS {
+                        Err(anyhow::anyhow!(
+                            "session inbox message exceeds {} characters; message was retained by the sender and must be retried",
+                            SESSION_INBOX_ITEM_MAX_CHARS
+                        ))
                     } else {
                         state.inbox.push_back(*envelope);
                         Ok(())
@@ -934,6 +1016,7 @@ fn queue_follow_up(
     is_answer: bool,
     message_id: Option<String>,
 ) -> anyhow::Result<()> {
+    validate_context_item(&text, &attachments)?;
     if let Some(mid) = message_id.as_deref()
         && state
             .follow_up_queue
@@ -942,11 +1025,23 @@ fn queue_follow_up(
     {
         return Ok(());
     }
+    let chars = text.chars().count();
+    let attachment_bytes = attachment_bytes(&attachments);
+    ensure_queue_capacity(
+        state.follow_up_queue.len(),
+        state.follow_up_chars,
+        state.follow_up_attachment_bytes,
+        chars,
+        attachment_bytes,
+        "follow-up",
+    )?;
     state.follow_up_queue.push(if is_answer {
         FollowUp::answer_with_message_id(&text, attachments, message_id)
     } else {
         FollowUp::new_with_message_id(&text, attachments, message_id)
     });
+    state.follow_up_chars += chars;
+    state.follow_up_attachment_bytes += attachment_bytes;
     Ok(())
 }
 
@@ -956,6 +1051,7 @@ fn queue_steering(
     attachments: Vec<MessageAttachment>,
     message_id: Option<String>,
 ) -> anyhow::Result<()> {
+    validate_context_item(&text, &attachments)?;
     if let Some(mid) = message_id.as_deref()
         && state
             .steering_queue
@@ -964,10 +1060,169 @@ fn queue_steering(
     {
         return Ok(());
     }
+    let chars = text.chars().count();
+    let attachment_bytes = attachment_bytes(&attachments);
+    ensure_queue_capacity(
+        state.steering_queue.len(),
+        state.steering_chars,
+        state.steering_attachment_bytes,
+        chars,
+        attachment_bytes,
+        "steering",
+    )?;
     state
         .steering_queue
         .push(FollowUp::with_message_id(&text, attachments, message_id));
+    state.steering_chars += chars;
+    state.steering_attachment_bytes += attachment_bytes;
     Ok(())
+}
+
+fn queue_action_completion(
+    queue: &mut Vec<String>,
+    queue_chars: &mut usize,
+    text: String,
+) -> anyhow::Result<()> {
+    validate_context_item(&text, &[])?;
+    let chars = text.chars().count();
+    ensure_queue_capacity(queue.len(), *queue_chars, 0, chars, 0, "action result")?;
+    queue.push(text);
+    *queue_chars += chars;
+    Ok(())
+}
+
+fn attachment_bytes(attachments: &[MessageAttachment]) -> usize {
+    attachments
+        .iter()
+        .map(|attachment| attachment.data.len())
+        .sum()
+}
+
+fn validate_context_item(text: &str, attachments: &[MessageAttachment]) -> anyhow::Result<()> {
+    let chars = text.chars().count();
+    if chars > CONTEXT_ITEM_MAX_CHARS {
+        anyhow::bail!(
+            "context item exceeds {} characters; input was retained by durable ingress and must be retried",
+            CONTEXT_ITEM_MAX_CHARS
+        );
+    }
+    if attachments.len() > CONTEXT_ITEM_MAX_ATTACHMENTS {
+        anyhow::bail!(
+            "context item exceeds {} attachments; input was retained by durable ingress and must be retried",
+            CONTEXT_ITEM_MAX_ATTACHMENTS
+        );
+    }
+    if let Some(index) = attachments
+        .iter()
+        .position(|attachment| attachment.data.len() > CONTEXT_ITEM_MAX_ATTACHMENT_BYTES)
+    {
+        anyhow::bail!(
+            "context attachment {} exceeds {} bytes; input was retained by durable ingress and must be retried",
+            index,
+            CONTEXT_ITEM_MAX_ATTACHMENT_BYTES
+        );
+    }
+    let bytes = attachment_bytes(attachments);
+    if bytes > CONTEXT_QUEUE_MAX_ATTACHMENT_BYTES {
+        anyhow::bail!(
+            "context item attachments exceed {} bytes; input was retained by durable ingress and must be retried",
+            CONTEXT_QUEUE_MAX_ATTACHMENT_BYTES
+        );
+    }
+    Ok(())
+}
+
+fn ensure_queue_capacity(
+    item_count: usize,
+    chars: usize,
+    attachment_bytes: usize,
+    new_chars: usize,
+    new_attachment_bytes: usize,
+    kind: &str,
+) -> anyhow::Result<()> {
+    if item_count >= CONTEXT_QUEUE_MAX_ITEMS {
+        anyhow::bail!(
+            "{kind} queue is full ({} items); input was retained by durable ingress and is deferred",
+            CONTEXT_QUEUE_MAX_ITEMS
+        );
+    }
+    if chars.saturating_add(new_chars) > CONTEXT_QUEUE_MAX_CHARS {
+        anyhow::bail!(
+            "{kind} queue exceeds {} characters; input was retained by durable ingress and is deferred",
+            CONTEXT_QUEUE_MAX_CHARS
+        );
+    }
+    if attachment_bytes.saturating_add(new_attachment_bytes) > CONTEXT_QUEUE_MAX_ATTACHMENT_BYTES {
+        anyhow::bail!(
+            "{kind} queue exceeds {} attachment bytes; input was retained by durable ingress and is deferred",
+            CONTEXT_QUEUE_MAX_ATTACHMENT_BYTES
+        );
+    }
+    Ok(())
+}
+
+#[derive(Default)]
+struct ContextBatchBudget {
+    items: usize,
+    chars: usize,
+    attachment_bytes: usize,
+}
+
+fn fits_budget(budget: &ContextBatchBudget, chars: usize, attachment_bytes: usize) -> bool {
+    budget.items < CONTEXT_BATCH_MAX_ITEMS
+        && budget.chars.saturating_add(chars) <= CONTEXT_BATCH_MAX_CHARS
+        && budget.attachment_bytes.saturating_add(attachment_bytes)
+            <= CONTEXT_BATCH_MAX_ATTACHMENT_BYTES
+}
+
+fn take_follow_ups(
+    queue: &mut Vec<FollowUp>,
+    queue_chars: &mut usize,
+    queue_attachment_bytes: &mut usize,
+    budget: &mut ContextBatchBudget,
+) -> Vec<FollowUp> {
+    let mut taken = Vec::new();
+    let mut count = 0;
+    while count < queue.len() {
+        let item = &queue[count];
+        let chars = item.text.chars().count();
+        let attachments = attachment_bytes(&item.attachments);
+        if !fits_budget(budget, chars, attachments) {
+            break;
+        }
+        budget.items += 1;
+        budget.chars += chars;
+        budget.attachment_bytes += attachments;
+        count += 1;
+    }
+    if count > 0 {
+        taken.extend(queue.drain(..count));
+        *queue_chars =
+            queue_chars.saturating_sub(taken.iter().map(|item| item.text.chars().count()).sum());
+        *queue_attachment_bytes = queue_attachment_bytes.saturating_sub(
+            taken
+                .iter()
+                .map(|item| attachment_bytes(&item.attachments))
+                .sum(),
+        );
+    }
+    taken
+}
+
+fn take_action_results(
+    queue: &mut Vec<String>,
+    queue_chars: &mut usize,
+    budget: &mut ContextBatchBudget,
+) -> Vec<String> {
+    let mut count = 0;
+    while count < queue.len() && fits_budget(budget, queue[count].chars().count(), 0) {
+        budget.items += 1;
+        budget.chars += queue[count].chars().count();
+        count += 1;
+    }
+    let taken: Vec<_> = queue.drain(..count).collect();
+    *queue_chars = queue_chars.saturating_sub(taken.iter().map(|item| item.chars().count()).sum());
+    taken
 }
 
 fn resolve_interaction(
@@ -999,4 +1254,85 @@ fn resolve_interaction(
         request: resolved,
         wake_session,
     })
+}
+
+#[cfg(test)]
+mod queue_tests {
+    use super::*;
+
+    #[test]
+    fn oversized_items_are_rejected_without_truncation() {
+        let mut state = ActorState {
+            info: SessionInfo {
+                id: "ses-queue".into(),
+                input: "queue".into(),
+                summary: "queue".into(),
+                title: None,
+                status: SessionStatus::Pending,
+                steps: Vec::new(),
+                created_at: String::new(),
+                updated_at: String::new(),
+            },
+            action_completions: Vec::new(),
+            action_completion_chars: 0,
+            interactions: Vec::new(),
+            follow_up_queue: Vec::new(),
+            follow_up_chars: 0,
+            follow_up_attachment_bytes: 0,
+            steering_queue: Vec::new(),
+            steering_chars: 0,
+            steering_attachment_bytes: 0,
+            has_children: false,
+            running: false,
+            inbox: VecDeque::new(),
+            processing: Vec::new(),
+            archive: Vec::new(),
+        };
+        let error = queue_follow_up(
+            &mut state,
+            "x".repeat(CONTEXT_ITEM_MAX_CHARS + 1),
+            Vec::new(),
+            false,
+            None,
+        )
+        .expect_err("oversized input must apply back-pressure");
+        assert!(error.to_string().contains("retained"));
+        assert!(state.follow_up_queue.is_empty());
+    }
+
+    #[test]
+    fn bounded_drain_retains_tail_and_preserves_steering_priority() {
+        let mut steering = (0..=CONTEXT_BATCH_MAX_ITEMS)
+            .map(|index| FollowUp::new(format!("steer-{index}"), Vec::new()))
+            .collect::<Vec<_>>();
+        let mut follow_ups = vec![FollowUp::new("follow-up", Vec::new())];
+        let mut steering_chars = steering.iter().map(|item| item.text.len()).sum();
+        let mut follow_up_chars = follow_ups.iter().map(|item| item.text.len()).sum();
+        let mut steering_attachment_bytes = 0;
+        let mut follow_up_attachment_bytes = 0;
+        let mut budget = ContextBatchBudget::default();
+
+        let taken = take_follow_ups(
+            &mut steering,
+            &mut steering_chars,
+            &mut steering_attachment_bytes,
+            &mut budget,
+        );
+        assert_eq!(taken.len(), CONTEXT_BATCH_MAX_ITEMS);
+        assert_eq!(steering.len(), 1, "the tail is explicitly deferred");
+        assert!(follow_ups.len() == 1, "follow-ups remain behind steering");
+        assert!(steering_chars > 0);
+
+        let follow_taken = if steering.is_empty() {
+            take_follow_ups(
+                &mut follow_ups,
+                &mut follow_up_chars,
+                &mut follow_up_attachment_bytes,
+                &mut budget,
+            )
+        } else {
+            Vec::new()
+        };
+        assert!(follow_taken.is_empty());
+    }
 }

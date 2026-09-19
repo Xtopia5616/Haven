@@ -220,6 +220,7 @@ mod tool_runner;
 pub(crate) use dispatcher::DirectRunLease;
 pub(crate) use tool_runner::ActionStepPersistenceError;
 
+pub(crate) use actor::{CONTEXT_BATCH_MAX_CHARS, CONTEXT_BATCH_MAX_ITEMS};
 pub(crate) use queues::ReactContextBatch;
 pub use run_engine::RunEngine;
 
@@ -1885,14 +1886,47 @@ mod tests {
 
         assert!(exec.drain_action_completions(&session.id).await.is_empty());
 
-        exec.add_action_completion(&session.id, "action-1 done")
+        let _ = exec
+            .add_action_completion(&session.id, "action-1 done")
             .await;
-        exec.add_action_completion(&session.id, "action-2 failed")
+        let _ = exec
+            .add_action_completion(&session.id, "action-2 failed")
             .await;
 
         let drained = exec.drain_action_completions(&session.id).await;
         assert_eq!(drained, vec!["action-1 done", "action-2 failed"]);
         assert!(exec.drain_action_completions(&session.id).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn concurrent_steering_ingress_is_bounded_and_never_truncated() {
+        let db = temp_db();
+        let tools = Arc::new(ToolsManager::new());
+        let exec = Arc::new(SessionExecutor::new(db, tools, 3));
+        let session = exec.create_session("concurrent steering").await.unwrap();
+        let mut tasks = tokio::task::JoinSet::new();
+        for index in 0..(crate::session::actor::CONTEXT_QUEUE_MAX_ITEMS + 16) {
+            let exec = exec.clone();
+            let session_id = session.id.clone();
+            tasks.spawn(async move {
+                exec.add_steering(&session_id, &format!("steering-{index}"))
+                    .await
+            });
+        }
+        let mut accepted = 0;
+        let mut rejected = 0;
+        while let Some(result) = tasks.join_next().await {
+            match result.unwrap() {
+                Ok(()) => accepted += 1,
+                Err(error) => {
+                    assert!(error.to_string().contains("deferred"));
+                    rejected += 1;
+                }
+            }
+        }
+        assert_eq!(accepted, crate::session::actor::CONTEXT_QUEUE_MAX_ITEMS);
+        assert_eq!(rejected, 16);
+        assert_eq!(exec.get_steering(&session.id).await.len(), accepted);
     }
 
     #[tokio::test]
@@ -1904,7 +1938,8 @@ mod tests {
 
         exec.add_follow_up(&session.id, "follow-up").await.unwrap();
         exec.add_steering(&session.id, "steering").await.unwrap();
-        exec.add_action_completion(&session.id, "action result")
+        let _ = exec
+            .add_action_completion(&session.id, "action result")
             .await;
 
         let batch = exec.drain_react_context(&session.id).await;
@@ -1981,7 +2016,7 @@ mod tests {
         exec.update_session_status(&session.id, SessionStatus::Paused)
             .await
             .unwrap();
-        exec.add_action_completion(&session.id, "stranded").await;
+        let _ = exec.add_action_completion(&session.id, "stranded").await;
         let rx = exec.subscribe_status(&session.id).await;
         let _ = rx; // a subscriber must not keep the session alive after removal
 

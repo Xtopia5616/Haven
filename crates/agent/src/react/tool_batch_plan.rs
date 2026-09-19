@@ -20,6 +20,8 @@ pub(super) struct PlannedTool {
 }
 
 /// Stable, ordered view of the non-final calls in one model response.
+/// `action_index` remains the zero-based position in the provider's original
+/// array, even when a final-answer entry is filtered from execution.
 #[derive(Debug, Clone)]
 pub(super) struct ToolBatchPlan {
     tools: Vec<PlannedTool>,
@@ -29,8 +31,8 @@ impl ToolBatchPlan {
     pub(super) fn from_actions(actions: &[Action]) -> Self {
         let tools = actions
             .iter()
-            .filter(|action| !action.is_final)
             .enumerate()
+            .filter(|(_, action)| !action.is_final)
             .map(|(action_index, action)| PlannedTool {
                 action: action.clone(),
                 step_id: haven_common::types::new_id("step"),
@@ -127,7 +129,7 @@ mod tests {
     }
 
     #[test]
-    fn plan_filters_final_answer_and_assigns_protocol_order() {
+    fn plan_filters_final_answer_and_preserves_provider_array_position() {
         let plan = ToolBatchPlan::from_actions(&[
             action("read", false),
             action("final_answer", true),
@@ -136,9 +138,12 @@ mod tests {
 
         assert_eq!(plan.len(), 2);
         assert_eq!(plan.get(0).unwrap().action_index, 0);
-        assert_eq!(plan.get(1).unwrap().action_index, 1);
+        assert_eq!(plan.get(1).unwrap().action_index, 2);
         assert_ne!(plan.get(0).unwrap().step_id, plan.get(1).unwrap().step_id);
         assert_eq!(plan.canonical_calls()[1].name, "write");
+        let cards = plan.action_cards(false);
+        assert_eq!(cards[1].action_index, 2);
+        assert_eq!(cards[1].tool_call_id.as_deref(), Some("call-write"));
     }
 
     #[test]

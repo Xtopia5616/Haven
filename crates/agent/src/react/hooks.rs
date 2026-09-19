@@ -113,6 +113,7 @@ pub(crate) trait LoopHooks: Send + Sync {
         &self,
         _engine: &ReActEngine,
         _ctx: &StepCtx,
+        _catalog: &haven_tools::ToolCatalogSnapshot,
         _identity: ToolCallIdentity<'_>,
         _tool_name: &str,
         _input: &Value,

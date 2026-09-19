@@ -90,6 +90,12 @@ export interface SessionOptimisticMessage {
 	status: 'pending' | 'accepted' | 'rejected';
 }
 
+export interface AgentChunkBatchItem {
+	kind: 'thought' | 'reasoning';
+	msgType?: string;
+	payload: AgentChunkPayload;
+}
+
 /**
  * One serializable state tree for the conversation. The optional runtime
  * fields keep old list-only reducer fixtures source-compatible; the exported
@@ -177,6 +183,7 @@ export type SessionAction =
 			msgType?: string;
 			payload: AgentChunkPayload;
 	  }
+	| { type: 'agent/chunks'; chunks: AgentChunkBatchItem[] }
 	| {
 			type: 'agent/thought';
 			payload: {
@@ -311,25 +318,6 @@ function acceptEventSequence(
 	};
 }
 
-function acceptChunkSequence(
-	state: SessionReducerState,
-	payload: AgentChunkPayload,
-): SessionReducerState | null {
-	const replay = replayOf(state);
-	const previous = replay.chunkSeqByMessage[payload.messageId];
-	if (previous != null && payload.seq <= previous) return null;
-	return {
-		...state,
-		replay: {
-			...replay,
-			chunkSeqByMessage: {
-				...replay.chunkSeqByMessage,
-				[payload.messageId]: Math.max(previous ?? -1, payload.seq),
-			},
-		},
-	};
-}
-
 function clearReplayForSession(
 	state: SessionReducerState,
 	sessionId: string,
@@ -349,6 +337,97 @@ function clearReplayForSession(
 	return {
 		...state,
 		replay: { ...replay, eventSeqBySession, blockIdsBySession, chunkSeqByMessage },
+	};
+}
+
+/**
+ * Apply one frame of stream deltas with one state/message-list copy per
+ * session. The single-chunk action remains the public compatibility shape;
+ * the frame action avoids copying the complete message array for every token
+ * while retaining the same sequence, block registration and arrival-order
+ * semantics.
+ */
+function applyAgentChunks(
+	state: SessionReducerState,
+	chunks: readonly AgentChunkBatchItem[],
+): SessionReducerState {
+	if (chunks.length === 0) return state;
+	const bySession = new Map<string, AgentChunkBatchItem[]>();
+	for (const chunk of chunks) {
+		const sessionId = chunk.payload.sessionId;
+		if (!sessionId) continue;
+		let sessionChunks = bySession.get(sessionId);
+		if (!sessionChunks) bySession.set(sessionId, (sessionChunks = []));
+		sessionChunks.push(chunk);
+	}
+	if (bySession.size === 0) return state;
+
+	const replay = replayOf(state);
+	const chunkSeqByMessage = { ...replay.chunkSeqByMessage };
+	const blockIdsBySession = { ...replay.blockIdsBySession };
+	const messages = { ...(state.messages || {}) };
+	let replayChanged = false;
+	let messagesChanged = false;
+
+	for (const [sessionId, sessionChunks] of bySession) {
+		let nextMessages = messagesOf(state, sessionId);
+		const sessionBlocks = { ...(blockIdsBySession[sessionId] || {}) };
+		let sessionChanged = false;
+		for (const chunk of sessionChunks) {
+			const payload = chunk.payload;
+			const previous = chunkSeqByMessage[payload.messageId];
+			if (previous != null && payload.seq <= previous) continue;
+			chunkSeqByMessage[payload.messageId] = Math.max(previous ?? -1, payload.seq);
+			replayChanged = true;
+
+			const key = streamBlockKey(payload.stepNumber, payload.runId);
+			const entry = sessionBlocks[key] || {};
+			const field = chunk.kind === 'thought' ? 'thoughtId' : 'reasoningId';
+			const ids =
+				entry[field] === payload.messageId
+					? entry
+					: { ...entry, [field]: payload.messageId };
+			if (ids !== entry) {
+				sessionBlocks[key] = ids;
+				blockIdsBySession[sessionId] = sessionBlocks;
+				replayChanged = true;
+			}
+
+			if (chunk.kind === 'thought' && ids.reasoningId) {
+				const finalized = finalizeStreamBlocks(nextMessages, ids.reasoningId, null);
+				if (finalized !== nextMessages) {
+					nextMessages = finalized;
+					sessionChanged = true;
+				}
+			}
+			const next = accumulateStreamChunk(nextMessages, {
+				messageId: payload.messageId,
+				delta: payload.delta,
+				msgType: chunk.msgType,
+				stepNumber: payload.stepNumber,
+				runId: payload.runId,
+				time: new Date().toLocaleTimeString(),
+			});
+			if (next !== nextMessages) {
+				nextMessages = next;
+				sessionChanged = true;
+			}
+		}
+		if (sessionChanged) {
+			messages[sessionId] = nextMessages;
+			messagesChanged = true;
+		}
+	}
+
+	if (!replayChanged && !messagesChanged) return state;
+	return {
+		...state,
+		...(messagesChanged ? { messages } : {}),
+		...(replayChanged
+			? {
+					replay: { ...replay, chunkSeqByMessage, blockIdsBySession },
+				}
+			: {}),
 	};
 }
 
@@ -854,36 +933,11 @@ export function reduceSession(
 		}
 
 		case 'agent/chunk': {
-			const accepted = acceptChunkSequence(state, action.payload);
-			if (!accepted) return state;
-			const registered = registerBlock(
-				accepted,
-				action.payload.sessionId,
-				action.payload.stepNumber,
-				action.payload.runId,
-				action.kind,
-				action.payload.messageId,
-			);
-			return withMessages(registered, action.payload.sessionId, (messages) => {
-				const ids = blockIdsOf(
-					registered,
-					action.payload.sessionId,
-					action.payload.stepNumber,
-					action.payload.runId,
-				);
-				const base =
-					action.kind === 'thought' && ids.reasoningId
-						? finalizeStreamBlocks(messages, ids.reasoningId, null)
-						: messages;
-				return accumulateStreamChunk(base, {
-					messageId: action.payload.messageId,
-					delta: action.payload.delta,
-					msgType: action.msgType,
-					stepNumber: action.payload.stepNumber,
-					runId: action.payload.runId,
-					time: new Date().toLocaleTimeString(),
-				});
-			});
+			return applyAgentChunks(state, [action]);
+		}
+
+		case 'agent/chunks': {
+			return applyAgentChunks(state, action.chunks);
 		}
 
 		case 'agent/thought': {

@@ -345,6 +345,9 @@ impl ReActEngine {
         run_id: u64,
         step_number: u32,
     ) -> anyhow::Result<i64> {
+        let _timer = self
+            .metrics
+            .start(MetricsPhase::EventAppend, session_id, run_id, step_number);
         let payload = serde_json::to_string(record)?;
         let store = self.event_store.clone();
         let session_id = session_id.to_string();
@@ -739,6 +742,12 @@ impl ReActEngine {
         error_partial_message_ids: Option<&[String]>,
         clear_confirm_interactions: bool,
     ) -> bool {
+        // Some lifecycle callers do not carry a provider run id (for example
+        // a pause checkpoint). The step/session fields remain exact; run_id=0
+        // explicitly denotes that non-run-owned checkpoint path.
+        let _timer = self
+            .metrics
+            .start(MetricsPhase::Snapshot, session_id, 0, step_number);
         let mut interactions = self.executor.interaction_requests(session_id).await;
         if clear_confirm_interactions {
             interactions

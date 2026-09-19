@@ -1,7 +1,9 @@
 use anyhow::Context;
 use haven_memory::Database;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+
+const KNOWN_EMPTY_MAX_SESSIONS: usize = 1024;
 
 /// Single coordination point for a session's checkpointed stream text
 /// (`partial_messages` scratch table).
@@ -44,6 +46,11 @@ pub struct PartialStore {
     /// write entirely (the time throttle alone would otherwise rewrite the
     /// same row every interval while a slow model streams nothing new).
     last_written: std::sync::Mutex<HashMap<String, String>>,
+    /// Sessions for which this store has already observed an empty partial
+    /// row.  A real message can then skip the DELETE round trip until a
+    /// checkpoint marks the session active again.  Unknown sessions still do
+    /// one defensive delete after process start so stale rows are cleaned.
+    known_empty: std::sync::Mutex<HashSet<String>>,
 }
 
 impl PartialStore {
@@ -53,6 +60,7 @@ impl PartialStore {
             locks: tokio::sync::Mutex::new(HashMap::new()),
             generation: std::sync::Mutex::new(HashMap::new()),
             last_written: std::sync::Mutex::new(HashMap::new()),
+            known_empty: std::sync::Mutex::new(HashSet::new()),
         }
     }
 
@@ -134,6 +142,7 @@ impl PartialStore {
             .lock()
             .unwrap()
             .insert(session_id.to_string(), content.to_string());
+        self.known_empty.lock().unwrap().remove(session_id);
         Ok(())
     }
 
@@ -145,6 +154,7 @@ impl PartialStore {
         let _guard = self.session_lock(session_id).await;
         self.bump_generation(session_id);
         self.last_written.lock().unwrap().remove(session_id);
+        self.known_empty.lock().unwrap().remove(session_id);
         // The session is ending: drop its lock entry so the map does not grow
         // unboundedly across a long-running process. The generation bump above
         // already invalidates any in-flight checkpoint; a future checkpoint
@@ -152,8 +162,11 @@ impl PartialStore {
         self.locks.lock().await.remove(session_id);
         let db = self.db.clone();
         let tid = session_id.to_string();
-        db.run_blocking(move |db| db.promote_partial_message(&tid))
-            .await
+        let promoted = db
+            .run_blocking(move |db| db.promote_partial_message(&tid))
+            .await?;
+        self.mark_known_empty(session_id);
+        Ok(promoted)
     }
 
     /// Drop the checkpointed text (superseded by real messages, retry/
@@ -163,6 +176,10 @@ impl PartialStore {
         let _guard = self.session_lock(session_id).await;
         self.bump_generation(session_id);
         self.last_written.lock().unwrap().remove(session_id);
+        if self.known_empty.lock().unwrap().contains(session_id) {
+            self.locks.lock().await.remove(session_id);
+            return;
+        }
         self.locks.lock().await.remove(session_id);
         let db = self.db.clone();
         let tid = session_id.to_string();
@@ -172,7 +189,20 @@ impl PartialStore {
             .await
         {
             tracing::warn!("delete_partial_message failed for session {}: {}", tid, e);
+        } else {
+            self.mark_known_empty(session_id);
         }
+    }
+
+    fn mark_known_empty(&self, session_id: &str) {
+        let mut known_empty = self.known_empty.lock().unwrap();
+        if known_empty.len() >= KNOWN_EMPTY_MAX_SESSIONS
+            && !known_empty.contains(session_id)
+            && let Some(evicted) = known_empty.iter().next().cloned()
+        {
+            known_empty.remove(&evicted);
+        }
+        known_empty.insert(session_id.to_string());
     }
 
     fn bump_generation(&self, session_id: &str) -> u64 {

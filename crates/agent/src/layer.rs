@@ -460,7 +460,19 @@ impl AgentLayer {
                     {
                         msg.push_str(&format!("\nFull log: {log_path}"));
                     }
-                    agent.executor.add_action_completion(&tid, &msg).await;
+                    if let Err(error) = agent.executor.add_action_completion(&tid, &msg).await {
+                        // The bounded queue deliberately applies back-pressure.
+                        // The action row remains durable, so a later action
+                        // refresh can retry delivery; never turn a rejected
+                        // completion into a silent context loss.
+                        tracing::warn!(
+                            session_id = %tid,
+                            action_id = %comp.action_id,
+                            error = %error,
+                            "deferring background action result because the context queue is full"
+                        );
+                        continue;
+                    }
                     let state = agent.executor.get_session_state(&tid).await;
                     // Awaiting-answer/confirm pauses must not be auto-woken by
                     // background-action completions (the model is blocked on the

@@ -7,7 +7,7 @@
 //! [`ReActEngine::apply_transcript`]. Turn-end orchestration lives in
 //! [`super::turn_end`] so this module remains the context projection adapter.
 
-use super::context::{PendingContext, PendingContextBatch};
+use super::context::PendingContextBatch;
 use super::*;
 
 impl ReActEngine {
@@ -66,28 +66,25 @@ impl ReActEngine {
                 )
                 .await?;
         }
-        let mut applied_message_ids: std::collections::HashSet<String> = state
-            .events
-            .iter()
-            .filter_map(|event| match event {
-                TranscriptRecord::UserInject {
-                    message_id: Some(message_id),
-                    ..
-                } => Some(message_id.clone()),
-                _ => None,
-            })
-            .collect();
-        let mut injected = false;
+        let mut pending_events = Vec::with_capacity(items.len());
+        let mut pending_message_ids = std::collections::HashSet::new();
         for item in items {
-            let already_applied = item
-                .message_id
-                .as_ref()
-                .is_some_and(|message_id| !applied_message_ids.insert(message_id.clone()));
+            let already_applied = item.message_id.as_deref().is_some_and(|message_id| {
+                state.has_applied_inject(message_id)
+                    || !pending_message_ids.insert(message_id.to_string())
+            });
             if !already_applied {
-                self.apply_pending_context(ctx, state, item).await?;
-                injected = true;
+                pending_events.push(TranscriptEvent::UserInject {
+                    source: item.source,
+                    text: item.text,
+                    attachments: item.attachments,
+                    message_id: item.message_id,
+                });
             }
         }
+        let injected = !pending_events.is_empty();
+        self.apply_transcript_batch(ctx, pending_events, state)
+            .await?;
 
         if let Some(claim) = inbox_claim {
             if self
@@ -104,26 +101,6 @@ impl ReActEngine {
         }
 
         Ok(injected)
-    }
-
-    async fn apply_pending_context(
-        &self,
-        ctx: &StepCtx,
-        state: &mut ReActState,
-        context: PendingContext,
-    ) -> anyhow::Result<()> {
-        self.apply_transcript(
-            ctx,
-            TranscriptEvent::UserInject {
-                source: context.source,
-                text: context.text,
-                attachments: context.attachments,
-                message_id: context.message_id,
-            },
-            state,
-        )
-        .await?;
-        Ok(())
     }
 }
 
@@ -205,6 +182,7 @@ mod cross_session_format_tests {
 
 #[cfg(test)]
 mod pending_context_tests {
+    use super::super::context::PendingContext;
     use super::*;
     use async_trait::async_trait;
     use haven_common::types::InjectSource;

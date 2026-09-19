@@ -172,3 +172,5 @@
 - [0173：ReAct、工具与网络请求的失败恢复边界](0173-react-tool-network-recovery-boundary.md)
 - [0174：Action 刷新一致性与 scheduled delivery claim](0174-action-refresh-and-scheduled-delivery-claims.md)
 - [0175：恢复持久化使用 append-only 两阶段标记](0175-recovery-persistence-two-phase-marker.md)
+- [0176：Transcript 事件与投影批量持久化](0176-transcript-batch-persistence.md)
+- [0177：ReAct 上下文队列容量与批量注入边界](0177-react-context-queue-bounds.md)

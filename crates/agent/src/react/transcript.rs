@@ -26,10 +26,59 @@ use super::*;
 use crate::types::{Action, TranscriptRecord, canonical_for_snapshot_with_media_inputs};
 use haven_common::types::InjectSource;
 use haven_common::types::{CanonicalToolCall, MessageAttachment};
+use haven_memory::{
+    SessionEventInput, TranscriptActionStepProjection, TranscriptBatch, TranscriptBatchResult,
+    TranscriptMessageProjection, TranscriptThoughtStepProjection,
+};
 use haven_tools::{
     OperationIdempotency, ToolExecutionOutcome, ToolOperationScope, ToolResultEnvelope,
 };
 use serde_json::Value;
+
+/// The live transcript persistence boundary.  One writer builds the durable
+/// event and its projection rows, then delegates one bounded SQLite
+/// transaction to `SessionEventStore`.  Callers update ReAct memory and emit
+/// authoritative UI events only after this future succeeds.
+#[derive(Clone)]
+pub(super) struct TranscriptBatchWriter {
+    db: Arc<Database>,
+    store: SessionEventStore,
+}
+
+impl TranscriptBatchWriter {
+    pub(super) fn new(db: Arc<Database>, store: SessionEventStore) -> Self {
+        Self { db, store }
+    }
+
+    pub(super) async fn write(
+        &self,
+        session_id: &str,
+        batch: TranscriptBatch,
+    ) -> anyhow::Result<TranscriptBatchResult> {
+        if batch.events.is_empty() {
+            anyhow::ensure!(
+                batch.messages.is_empty()
+                    && batch.thought_steps.is_empty()
+                    && batch.action_steps.is_empty(),
+                "empty transcript batch cannot contain projections"
+            );
+            return Ok(TranscriptBatchResult::default());
+        }
+        let db = self.db.clone();
+        let store = self.store.clone();
+        let session_id = session_id.to_string();
+        db.run_blocking(move |db| {
+            // Synthetic engine tests do not create a session row.  Production
+            // ingress always does, and keeping this guard preserves their
+            // side-effect-free behavior.
+            if db.get_session(&session_id)?.is_none() {
+                return Ok(TranscriptBatchResult::default());
+            }
+            store.append_transcript_batch(&session_id, &batch)
+        })
+        .await
+    }
+}
 
 /// Pending Action card (+ step row) emitted from [`TranscriptEvent::ToolCall`].
 #[derive(Debug, Clone)]
@@ -194,7 +243,155 @@ impl TranscriptEvent {
     }
 }
 
+fn normalize_transcript_event(event: TranscriptEvent) -> TranscriptEvent {
+    match event {
+        TranscriptEvent::UserInject {
+            source: InjectSource::ActionResult,
+            text,
+            attachments,
+            message_id: None,
+        } => TranscriptEvent::UserInject {
+            source: InjectSource::ActionResult,
+            text,
+            attachments,
+            message_id: Some(haven_common::types::new_id("msg")),
+        },
+        event => event,
+    }
+}
+
+fn media_record_for_inject(
+    step_number: u32,
+    attachments: &[MessageAttachment],
+    strategy: haven_common::media::MediaInputStrategy,
+) -> Option<TranscriptRecord> {
+    let media_inputs = attachments
+        .iter()
+        .map(haven_common::media::message_attachment_to_media_input)
+        .collect::<Vec<_>>();
+    let media_plan = crate::react::media_plan_for_inputs(&media_inputs, strategy);
+    if media_plan.is_empty() && media_plan.notices.is_empty() {
+        return None;
+    }
+    Some(TranscriptRecord::MediaPlan {
+        step_number,
+        strategy,
+        media_inputs: media_inputs
+            .iter()
+            .map(haven_common::media::MediaInput::for_snapshot)
+            .collect(),
+        projections: media_plan.projections,
+        notices: media_plan.notices,
+    })
+}
+
 impl ReActEngine {
+    async fn build_transcript_batch(
+        &self,
+        ctx: &StepCtx,
+        event: &TranscriptEvent,
+        record: &TranscriptRecord,
+    ) -> anyhow::Result<TranscriptBatch> {
+        let mut batch = TranscriptBatch {
+            events: vec![SessionEventInput::transcript(
+                serde_json::to_string(record)?,
+                ctx.run_id,
+                ctx.step_num,
+            )],
+            ..TranscriptBatch::default()
+        };
+        match event {
+            TranscriptEvent::Thought { text, message_id } => {
+                if !text.trim().is_empty() {
+                    batch.messages.push(TranscriptMessageProjection {
+                        id: message_id.clone(),
+                        role: "assistant".into(),
+                        content: text.trim().into(),
+                        message_type: Some("text".into()),
+                        tool_call_id: None,
+                    });
+                }
+            }
+            TranscriptEvent::Reasoning { text, message_id } => {
+                if !text.trim().is_empty() {
+                    batch.messages.push(TranscriptMessageProjection {
+                        id: message_id.clone(),
+                        role: "assistant".into(),
+                        content: text.trim().into(),
+                        message_type: Some("reasoning".into()),
+                        tool_call_id: None,
+                    });
+                }
+            }
+            TranscriptEvent::ToolCall {
+                text,
+                action_cards,
+                persist_text_id,
+                ..
+            } => {
+                if let Some(message_id) = persist_text_id
+                    && !text.trim().is_empty()
+                {
+                    batch.messages.push(TranscriptMessageProjection {
+                        id: message_id.clone(),
+                        role: "assistant".into(),
+                        content: text.trim().into(),
+                        message_type: Some("text".into()),
+                        tool_call_id: None,
+                    });
+                }
+                for card in action_cards {
+                    let (is_high_risk, silent) = self
+                        .executor
+                        .action_step_metadata(&ctx.session_id, &card.tool_name, &card.tool_input)
+                        .await;
+                    batch.action_steps.push(TranscriptActionStepProjection {
+                        id: card.step_id.clone(),
+                        step_number: ctx.step_num as i32,
+                        action_index: card.action_index as i32,
+                        tool_name: card.tool_name.clone(),
+                        tool_input: card.tool_input.to_string(),
+                        tool_call_id: card.tool_call_id.clone(),
+                        is_high_risk,
+                        silent,
+                    });
+                }
+            }
+            TranscriptEvent::ToolResult {
+                history_observation,
+                observation_card,
+                ..
+            } => {
+                if let Some(card) = observation_card
+                    && card.tool_name == "ask"
+                    && !history_observation.trim().is_empty()
+                {
+                    batch.messages.push(TranscriptMessageProjection {
+                        id: card.step_id.clone(),
+                        role: "assistant".into(),
+                        content: history_observation.trim().into(),
+                        message_type: Some("text".into()),
+                        tool_call_id: None,
+                    });
+                }
+            }
+            TranscriptEvent::UserInject {
+                source, message_id, ..
+            } => {
+                if *source != InjectSource::ActionResult {
+                    batch.thought_steps.push(TranscriptThoughtStepProjection {
+                        id: message_id
+                            .clone()
+                            .unwrap_or_else(|| haven_common::types::new_id("step")),
+                        step_number: ctx.step_num as i32,
+                    });
+                }
+            }
+            TranscriptEvent::CompactSummary { .. } => {}
+        }
+        Ok(batch)
+    }
+
     /// Project → emit → append record → project into canonical cache.
     ///
     /// All durable assistant/thought/ask/reasoning chat rows for the ReAct
@@ -206,43 +403,118 @@ impl ReActEngine {
         event: TranscriptEvent,
         state: &mut ReActState,
     ) -> anyhow::Result<()> {
-        // Action-result context has no user message row, but it still needs a
-        // durable identity so live supplement cards can be de-duplicated on a
-        // reconnect. Store the generated id in the event record itself.
-        let event = match event {
-            TranscriptEvent::UserInject {
-                source: InjectSource::ActionResult,
-                text,
-                attachments,
-                message_id: None,
-            } => TranscriptEvent::UserInject {
-                source: InjectSource::ActionResult,
-                text,
-                attachments,
-                message_id: Some(haven_common::types::new_id("msg")),
-            },
-            event => event,
-        };
+        let event = normalize_transcript_event(event);
         let record = event.to_record(ctx.step_num);
-        // Persist the event before mutating the in-memory projection. A
-        // snapshot checkpoint may lag, but a committed event is replayable
-        // after a crash and therefore cannot be lost with the RAM state.
-        self.append_transcript_record(&ctx.session_id, &record, ctx.run_id, ctx.step_num)
-            .await?;
+        // Persist the event and its materialized rows before mutating the
+        // in-memory projection. A snapshot checkpoint may lag, but a
+        // committed event is replayable after a crash and cannot be lost with
+        // the RAM state.
+        let write_result = {
+            let _timer = self.metrics.start(
+                MetricsPhase::EventAppend,
+                &ctx.session_id,
+                ctx.run_id,
+                ctx.step_num,
+            );
+            TranscriptBatchWriter::new(self.db.clone(), self.event_store.clone())
+                .write(
+                    &ctx.session_id,
+                    self.build_transcript_batch(ctx, &event, &record).await?,
+                )
+                .await?
+        };
+        if let Some(created_at) = write_result.message_created_at.last() {
+            self.note_last_msg_at(&ctx.session_id, Some(created_at.clone()));
+        }
+        self.apply_transcript_projection(ctx, event, record, state, None)
+            .await
+    }
+
+    /// Batch context injections in one event/projection transaction. The
+    /// resulting durable event order is the same as applying each item in
+    /// order; media-plan records stay directly after their owning injection.
+    pub(super) async fn apply_transcript_batch(
+        &self,
+        ctx: &StepCtx,
+        events: Vec<TranscriptEvent>,
+        state: &mut ReActState,
+    ) -> anyhow::Result<()> {
+        if events.is_empty() {
+            return Ok(());
+        }
+        let events = events
+            .into_iter()
+            .map(normalize_transcript_event)
+            .collect::<Vec<_>>();
+        let mut batch = TranscriptBatch::default();
+        let mut projected = Vec::with_capacity(events.len());
+        for event in events {
+            let record = event.to_record(ctx.step_num);
+            let mut media_record = None;
+            if let TranscriptEvent::UserInject { attachments, .. } = &event {
+                media_record =
+                    media_record_for_inject(ctx.step_num, attachments, self.media_strategy());
+            }
+            batch.events.push(SessionEventInput::transcript(
+                serde_json::to_string(&record)?,
+                ctx.run_id,
+                ctx.step_num,
+            ));
+            if let Some(media_record) = &media_record {
+                batch.events.push(SessionEventInput::transcript(
+                    serde_json::to_string(media_record)?,
+                    ctx.run_id,
+                    ctx.step_num,
+                ));
+            }
+            if let TranscriptEvent::UserInject {
+                source, message_id, ..
+            } = &event
+                && *source != InjectSource::ActionResult
+            {
+                batch.thought_steps.push(TranscriptThoughtStepProjection {
+                    id: message_id
+                        .clone()
+                        .unwrap_or_else(|| haven_common::types::new_id("step")),
+                    step_number: ctx.step_num as i32,
+                });
+            }
+            projected.push((event, record, media_record));
+        }
+        {
+            let _timer = self.metrics.start(
+                MetricsPhase::EventAppend,
+                &ctx.session_id,
+                ctx.run_id,
+                ctx.step_num,
+            );
+            TranscriptBatchWriter::new(self.db.clone(), self.event_store.clone())
+                .write(&ctx.session_id, batch)
+                .await?;
+        }
+        for (event, record, media_record) in projected {
+            self.apply_transcript_projection(ctx, event, record, state, media_record)
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn apply_transcript_projection(
+        &self,
+        ctx: &StepCtx,
+        event: TranscriptEvent,
+        record: TranscriptRecord,
+        state: &mut ReActState,
+        persisted_media_record: Option<TranscriptRecord>,
+    ) -> anyhow::Result<()> {
+        let _timer = self.metrics.start(
+            MetricsPhase::Projection,
+            &ctx.session_id,
+            ctx.run_id,
+            ctx.step_num,
+        );
         match event {
             TranscriptEvent::Thought { text, message_id } => {
-                let trimmed = text.trim();
-                if !trimmed.is_empty() {
-                    self.project_chat_message(
-                        &ctx.session_id,
-                        "assistant",
-                        trimmed,
-                        Some("text"),
-                        None,
-                        Some(&message_id),
-                    )
-                    .await?;
-                }
                 EventDispatcher::emit_thought_from(
                     &ctx.emitter,
                     &ctx.session_id,
@@ -253,22 +525,10 @@ impl ReActEngine {
                     &self.db,
                 )
                 .await?;
-                state.events.push(record);
+                state.push_event(record);
             }
-            TranscriptEvent::Reasoning { text, message_id } => {
-                let trimmed = text.trim();
-                if !trimmed.is_empty() {
-                    self.project_chat_message(
-                        &ctx.session_id,
-                        "assistant",
-                        trimmed,
-                        Some("reasoning"),
-                        None,
-                        Some(&message_id),
-                    )
-                    .await?;
-                }
-                state.events.push(record);
+            TranscriptEvent::Reasoning { .. } => {
+                state.push_event(record);
             }
             TranscriptEvent::ToolCall {
                 text,
@@ -277,34 +537,9 @@ impl ReActEngine {
                 web_search_calls,
                 thinking_blocks,
                 action_cards,
-                persist_text_id,
+                persist_text_id: _,
             } => {
-                if let Some(ref mid) = persist_text_id {
-                    let trimmed = text.trim();
-                    if !trimmed.is_empty() {
-                        self.project_chat_message(
-                            &ctx.session_id,
-                            "assistant",
-                            trimmed,
-                            Some("text"),
-                            None,
-                            Some(mid),
-                        )
-                        .await?;
-                    }
-                }
                 for card in &action_cards {
-                    self.executor
-                        .begin_action_step_with_identity(
-                            &ctx.session_id,
-                            &card.tool_name,
-                            &card.tool_input,
-                            ctx.step_num,
-                            card.action_index,
-                            card.tool_call_id.as_deref(),
-                            &card.step_id,
-                        )
-                        .await?;
                     ctx.emitter
                         .emit(crate::event::AgentEvent::Action {
                             session_id: ctx.session_id.clone(),
@@ -319,7 +554,7 @@ impl ReActEngine {
                         })
                         .await;
                 }
-                state.events.push(record);
+                state.push_event(record);
                 state.canonical.push(CanonicalMessage::assistant(
                     vec![ContentPart::text(text)],
                     if tool_calls.is_empty() {
@@ -348,15 +583,8 @@ impl ReActEngine {
                     if card.tool_name == "ask" {
                         let q = history_observation.trim();
                         if !q.is_empty() {
-                            self.project_chat_message(
-                                &ctx.session_id,
-                                "assistant",
-                                q,
-                                Some("text"),
-                                None,
-                                Some(&card.step_id),
-                            )
-                            .await?;
+                            // The ask message row was committed with the
+                            // tool-result event above.
                         }
                     }
                     ctx.emitter
@@ -379,7 +607,7 @@ impl ReActEngine {
                         })
                         .await;
                 }
-                state.events.push(record);
+                state.push_event(record);
                 let is_final = action.is_final || action.tool_name == "final_answer";
                 if !is_final {
                     state.canonical.push(CanonicalMessage::tool(
@@ -399,22 +627,6 @@ impl ReActEngine {
                 // transcript event was already committed above; if this
                 // materialized projection fails, resume repairs it from the
                 // durable event rather than losing the transcript.
-                if source != InjectSource::ActionResult {
-                    let step_id = message_id
-                        .clone()
-                        .unwrap_or_else(|| haven_common::types::new_id("step"));
-                    self.db
-                        .run_blocking({
-                            let session_id = ctx.session_id.clone();
-                            let step_id = step_id.clone();
-                            let step_num = ctx.step_num;
-                            move |db| {
-                                db.create_thought_step(&session_id, step_num as i32, &step_id)?;
-                                Ok::<(), anyhow::Error>(())
-                            }
-                        })
-                        .await?;
-                }
                 // Notify the UI only after the durable projection succeeded.
                 // Always notify the UI so auto-wake from a background action is
                 // visible in-chat (not only a toast). ActionResult still skips
@@ -433,43 +645,42 @@ impl ReActEngine {
                         inject_source: Some(source),
                     })
                     .await;
-                state.events.push(record);
+                state.push_event(record);
                 let strategy = self.media_strategy();
-                let media_inputs = attachments
-                    .iter()
-                    .map(haven_common::media::message_attachment_to_media_input)
-                    .collect::<Vec<_>>();
-                let media_plan = crate::react::media_plan_for_inputs(&media_inputs, strategy);
-                if !media_plan.is_empty() || !media_plan.notices.is_empty() {
-                    let media_record = TranscriptRecord::MediaPlan {
-                        step_number: ctx.step_num,
-                        strategy,
-                        media_inputs: media_inputs
-                            .iter()
-                            .map(haven_common::media::MediaInput::for_snapshot)
-                            .collect(),
-                        projections: media_plan.projections.clone(),
-                        notices: media_plan.notices.clone(),
-                    };
-                    self.append_transcript_record(
-                        &ctx.session_id,
-                        &media_record,
-                        ctx.run_id,
-                        ctx.step_num,
-                    )
-                    .await?;
-                    state.events.push(media_record);
-                    ctx.emitter
-                        .emit(crate::event::AgentEvent::MediaPlan {
-                            session_id: ctx.session_id.clone(),
-                            step_number: ctx.step_num,
-                            run_id: ctx.run_id,
-                            role: "ingress".into(),
-                            strategy,
-                            projections: media_plan.projections,
-                            notices: media_plan.notices,
-                        })
-                        .await;
+                let media_was_persisted = persisted_media_record.is_some();
+                let media_record = match persisted_media_record {
+                    Some(record) => Some(record),
+                    None => media_record_for_inject(ctx.step_num, &attachments, strategy),
+                };
+                if let Some(media_record) = media_record {
+                    if !media_was_persisted {
+                        self.append_transcript_record(
+                            &ctx.session_id,
+                            &media_record,
+                            ctx.run_id,
+                            ctx.step_num,
+                        )
+                        .await?;
+                    }
+                    if let TranscriptRecord::MediaPlan {
+                        projections,
+                        notices,
+                        ..
+                    } = &media_record
+                    {
+                        ctx.emitter
+                            .emit(crate::event::AgentEvent::MediaPlan {
+                                session_id: ctx.session_id.clone(),
+                                step_number: ctx.step_num,
+                                run_id: ctx.run_id,
+                                role: "ingress".into(),
+                                strategy,
+                                projections: projections.clone(),
+                                notices: notices.clone(),
+                            })
+                            .await;
+                    }
+                    state.push_event(media_record);
                 }
                 let mut content = vec![ContentPart::text(text)];
                 for attachment in &attachments {
@@ -974,6 +1185,8 @@ mod tests {
         let (_, rounds) = project_transcript(&state.events);
         assert_eq!(rounds.len(), 1);
         assert_eq!(rounds[0].tools[0].observation.as_deref(), Some("ok"));
+        assert_eq!(rounds[0].tools[0].action_index, 0);
+        assert_eq!(rounds[0].tools[0].step_id, step_id);
         let ev = ui_events.lock().unwrap();
         assert!(
             ev.iter().any(|e| matches!(

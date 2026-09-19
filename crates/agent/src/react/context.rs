@@ -7,7 +7,9 @@
 use std::sync::Arc;
 
 use crate::react::sidecars::MessagingPoller;
-use crate::session::{ReactContextBatch, SessionSupervisor};
+use crate::session::{
+    CONTEXT_BATCH_MAX_CHARS, CONTEXT_BATCH_MAX_ITEMS, ReactContextBatch, SessionSupervisor,
+};
 use haven_common::types::{InjectSource, MessageAttachment};
 use haven_memory::Database;
 use haven_tools::MessageClaim;
@@ -18,6 +20,13 @@ use haven_tools::inbox::{Envelope, MessageType};
 /// this cadence only catches missed notifications (e.g. another process
 /// wrote to the mailbox).
 const MESSAGING_POLL_EVERY_STEPS: u32 = 3;
+
+/// One turn claims only a bounded FIFO prefix.  The remainder stays in the
+/// durable processing file and is acknowledged by a later claim; it is never
+/// silently discarded just because a burst exceeded one model turn.
+const MESSAGING_INJECT_MAX_ITEMS: usize = CONTEXT_BATCH_MAX_ITEMS;
+const MESSAGING_INJECT_MAX_CHARS: usize = CONTEXT_BATCH_MAX_CHARS;
+const MESSAGING_INJECT_MAX_ITEM_CHARS: usize = 2 * 1024;
 
 /// Per-message text cap when injecting cross-session messages into the model
 /// context (defensive: a full message is at most 16 KiB, but a burst must not
@@ -39,12 +48,15 @@ pub(super) struct PendingContext {
 #[derive(Debug)]
 pub(super) struct InboxClaim {
     claim: MessageClaim,
+    ack_ids: Vec<String>,
 }
 
 impl InboxClaim {
     pub(super) async fn complete(self) -> bool {
-        let claim = self.claim;
-        let result = tokio::task::spawn_blocking(move || claim.complete().map(|_| ())).await;
+        let InboxClaim { claim, ack_ids } = self;
+        let result =
+            tokio::task::spawn_blocking(move || claim.complete_selected(&ack_ids).map(|_| ()))
+                .await;
 
         match result {
             Ok(Ok(())) => true,
@@ -284,23 +296,76 @@ impl ContextSource {
                     return PendingContextBatch::default();
                 }
             };
-        let messages = claim.envelopes().to_vec();
+        let messages = claim.envelopes();
         if messages.is_empty() {
             return PendingContextBatch::default();
         }
 
+        let mut selected = Vec::new();
+        let mut selected_chars: usize = 0;
+        for envelope in messages {
+            if envelope.text.chars().count() > MESSAGING_INJECT_CHARS {
+                tracing::warn!(
+                    session_id,
+                    message_id = %envelope.id,
+                    "deferring inbox envelope instead of truncating user-controlled text"
+                );
+                break;
+            }
+            let text = format_cross_session_inject(envelope);
+            let chars = text.chars().count();
+            if chars > MESSAGING_INJECT_MAX_ITEM_CHARS {
+                tracing::warn!(
+                    session_id,
+                    message_id = %envelope.id,
+                    "deferring inbox envelope because its rendered context item exceeds the hard limit"
+                );
+                break;
+            }
+            if selected.len() >= MESSAGING_INJECT_MAX_ITEMS
+                || selected_chars.saturating_add(chars) > MESSAGING_INJECT_MAX_CHARS
+            {
+                break;
+            }
+            selected_chars += chars;
+            selected.push((envelope.id.clone(), text));
+        }
+
+        if selected.is_empty() {
+            // Keep the claim alive until a future explicit repair/inspection
+            // path can report the offending envelope. No ack is possible here.
+            tracing::warn!(
+                session_id,
+                "inbox claim retained because no envelope fits the context batch budget"
+            );
+            return PendingContextBatch {
+                items: Vec::new(),
+                clears_ask: false,
+                inbox_claim: Some(InboxClaim {
+                    claim,
+                    ack_ids: Vec::new(),
+                }),
+            };
+        }
+
         PendingContextBatch {
-            items: messages
+            items: selected
                 .iter()
-                .map(|envelope| PendingContext {
+                .map(|(envelope_id, text)| PendingContext {
                     source: InjectSource::CrossSession,
-                    text: format_cross_session_inject(envelope),
+                    text: text.clone(),
                     attachments: Vec::new(),
-                    message_id: Some(envelope.id.clone()),
+                    message_id: Some(envelope_id.clone()),
                 })
                 .collect(),
             clears_ask: false,
-            inbox_claim: Some(InboxClaim { claim }),
+            inbox_claim: Some(InboxClaim {
+                ack_ids: selected
+                    .iter()
+                    .map(|(envelope_id, _)| envelope_id.clone())
+                    .collect(),
+                claim,
+            }),
         }
     }
 
@@ -480,11 +545,74 @@ mod assembly_tests {
             "a claim must survive until transcript projection is durable"
         );
 
-        let claim = InboxClaim { claim: claimed };
+        let claim = InboxClaim {
+            ack_ids: vec![envelope.id.clone()],
+            claim: claimed,
+        };
         assert!(claim.complete().await);
         assert!(
             service.claim("ses-b").unwrap().is_empty(),
             "acknowledged envelopes must not be delivered again"
         );
+    }
+
+    #[tokio::test]
+    async fn inbox_claim_acknowledges_only_the_projected_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        let bus = InboxBus::new(dir.path());
+        let service = MessagingService::new(Arc::new(bus.clone()));
+        bus.register("ses-a", &[]).unwrap();
+        bus.register("ses-b", &[]).unwrap();
+        let first = Envelope::new("ses-a", "ses-b", "first");
+        let second = Envelope::new("ses-a", "ses-b", "second");
+        bus.deliver("ses-b", &first).unwrap();
+        bus.deliver("ses-b", &second).unwrap();
+
+        let claim = service.claim("ses-b").unwrap();
+        let first_id = claim.envelopes()[0].id.clone();
+        let second_id = claim.envelopes()[1].id.clone();
+        let claim = InboxClaim {
+            claim,
+            ack_ids: vec![first_id.clone()],
+        };
+        assert!(claim.complete().await);
+
+        let retry = service.claim("ses-b").unwrap();
+        assert_eq!(
+            retry
+                .envelopes()
+                .iter()
+                .map(|env| env.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![second_id.as_str()]
+        );
+        retry.complete().unwrap();
+        assert!(service.claim("ses-b").unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn snapshot_failure_leaves_inbox_claim_for_redelivery() {
+        let dir = tempfile::tempdir().unwrap();
+        let bus = InboxBus::new(dir.path());
+        let service = MessagingService::new(Arc::new(bus.clone()));
+        bus.register("ses-a", &[]).unwrap();
+        bus.register("ses-b", &[]).unwrap();
+        let envelope = Envelope::new("ses-a", "ses-b", "retry me");
+        bus.deliver("ses-b", &envelope).unwrap();
+
+        let claim = service.claim("ses-b").unwrap();
+        let claim = InboxClaim {
+            claim,
+            ack_ids: vec![envelope.id.clone()],
+        };
+        let snapshot_durable = false;
+        if snapshot_durable {
+            assert!(claim.complete().await);
+        } else {
+            drop(claim);
+        }
+
+        let retry = service.claim("ses-b").unwrap();
+        assert_eq!(retry.envelopes()[0].id, envelope.id);
     }
 }

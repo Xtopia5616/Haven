@@ -190,4 +190,64 @@ describe('SessionReducer', () => {
 		expect(replayedAction).toBe(actionState);
 		expect(actionState.messages?.['ses-replay']).toHaveLength(2);
 	});
+
+	it('applies one frame of chunks with one reducer notification and preserves order', () => {
+		const reducer = new SessionReducer();
+		const listener = vi.fn();
+		const dispose = reducer.subscribe(listener);
+
+		reducer.dispatch({
+			type: 'agent/chunks',
+			chunks: [
+				{
+					kind: 'reasoning',
+					msgType: 'reasoning',
+					payload: {
+						sessionId: 'ses-frame',
+						delta: '先',
+						stepNumber: 1,
+						runId: 1,
+						messageId: 'step-reasoning',
+						seq: 1,
+					},
+				},
+				{
+					kind: 'thought',
+					payload: {
+						sessionId: 'ses-frame',
+						delta: '后',
+						stepNumber: 1,
+						runId: 1,
+						messageId: 'step-thought',
+						seq: 1,
+					},
+				},
+			],
+		});
+		dispose();
+
+		expect(listener).toHaveBeenCalledTimes(2); // initial subscription + one frame
+		expect(reducer.getMessages('ses-frame').map((message) => message.content)).toEqual([
+			'先',
+			'后',
+		]);
+		expect(
+			reduceSession(reducer.getState(), {
+				type: 'agent/chunks',
+				chunks: [
+					{
+						kind: 'thought',
+						payload: {
+							sessionId: 'ses-frame',
+							delta: '重复',
+							stepNumber: 1,
+							runId: 1,
+							messageId: 'step-thought',
+							seq: 1,
+						},
+					},
+				],
+			}),
+		).toBe(reducer.getState());
+	});
 });

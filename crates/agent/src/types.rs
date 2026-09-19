@@ -724,6 +724,10 @@ mod tests {
         let (canonical, rounds) = project_transcript(&events);
         assert_eq!(rounds.len(), 1, "parallel tools must share one round");
         assert_eq!(rounds[0].tools.len(), 2);
+        assert_eq!(rounds[0].tools[0].action_index, 0);
+        assert_eq!(rounds[0].tools[0].step_id, "step-a");
+        assert_eq!(rounds[0].tools[1].action_index, 1);
+        assert_eq!(rounds[0].tools[1].step_id, "step-b");
         assert_eq!(canonical.len(), 3); // assistant + 2 tool
     }
 

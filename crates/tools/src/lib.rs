@@ -126,7 +126,9 @@ pub use output::{
     sanitize_shell_output, summarize_error,
 };
 pub(crate) use process::{read_stream_capped, take_tail_if_changed};
-pub use registry::{DeferredToolCatalog, RegistryProbe, SessionCatalog, ToolRegistry};
+pub use registry::{
+    DeferredToolCatalog, RegistryProbe, SessionCatalog, ToolCatalogSnapshot, ToolRegistry,
+};
 pub use security::{
     AuthorizationDecision, AuthorizationEngine, AuthorizationRequest, ConfirmationReceipt,
     LOCAL_TOOL_SECURITY_MATRIX, LocalToolSecurityCase, is_safe_local_path,
@@ -563,6 +565,39 @@ impl ToolsManager {
             .session_catalog
             .catalog_version_for_session(session_id)
             .await
+    }
+
+    /// Capture the complete lookup surface used by one ReAct tool batch.
+    ///
+    /// Global and session-overlay registries are copied into one name index;
+    /// later admission metadata reads are synchronous map lookups rather than
+    /// one async catalog walk per call. A bounded version check avoids
+    /// publishing a mixed view when a loader updates the session while the
+    /// snapshot is being assembled. The final attempt is deliberately used
+    /// under sustained catalog churn: this is a performance snapshot, while
+    /// the execution boundary remains responsible for a final runtime check.
+    pub async fn tool_catalog_snapshot(&self, session_id: &str) -> ToolCatalogSnapshot {
+        let mut snapshot = None;
+        for _ in 0..2 {
+            let before = self.catalog_version_for_session(session_id).await;
+            let global = self.core.registry.list().await;
+            let session = self.core.session_catalog.list(session_id).await;
+            let after = self.catalog_version_for_session(session_id).await;
+
+            let mut tools = HashMap::with_capacity(global.len() + session.len());
+            for tool in global {
+                tools.insert(tool.name(), tool);
+            }
+            for tool in session {
+                tools.insert(tool.name(), tool);
+            }
+            snapshot = Some((after, tools));
+            if before == after {
+                break;
+            }
+        }
+        let (version, tools) = snapshot.expect("tool catalog snapshot attempt must produce a view");
+        ToolCatalogSnapshot::new(version, tools)
     }
 
     /// Replace the shared LlmRouter and rebuild the catalog so tools (e.g.
@@ -1695,6 +1730,28 @@ impl ToolsManager {
         AuthorizationRequest::new(session_id, tool_name, authorization_input, policy)
     }
 
+    /// Build an authorization request from the immutable turn catalog. The
+    /// authorization engine itself remains live and authoritative; only tool
+    /// lookup and invocation policy derivation are served by the snapshot.
+    pub fn get_authorization_request_from_snapshot(
+        &self,
+        catalog: &ToolCatalogSnapshot,
+        session_id: Option<&str>,
+        tool_name: &str,
+        input: &Value,
+    ) -> AuthorizationRequest {
+        let authorization_input = catalog
+            .get(tool_name)
+            .map(|tool| tool.authorization_input(input))
+            .unwrap_or_else(|| input.clone());
+        AuthorizationRequest::new(
+            session_id,
+            tool_name,
+            authorization_input,
+            catalog.operation_policy(tool_name, input),
+        )
+    }
+
     /// Return the canonical policy input used by a tool, including fixed
     /// operation-view discriminators. This keeps authorization, validation,
     /// execution and history attached to one operation identity.
@@ -1708,61 +1765,6 @@ impl ToolsManager {
             .await
             .map(|tool| tool.authorization_input(input))
             .unwrap_or_else(|| input.clone())
-    }
-
-    /// Return the tool's batch scheduling contract. Keeping this lookup in
-    /// `ToolsManager` lets the agent scheduler consume declarations without
-    /// reaching into the registry or duplicating tool identity rules.
-    pub async fn get_concurrency(
-        &self,
-        session_id: Option<&str>,
-        tool_name: &str,
-        input: &Value,
-    ) -> ToolConcurrency {
-        self.get_tool_for_session(session_id, tool_name)
-            .await
-            .map(|tool| tool.operation_policy(input).concurrency)
-            .unwrap_or(ToolConcurrency::Exclusive)
-    }
-
-    /// Return the replay policy for one concrete tool invocation.  The agent
-    /// uses this after execution to decide whether a failed result may safely
-    /// be nudged back to the model for an automatic retry.
-    pub async fn get_idempotency(
-        &self,
-        session_id: Option<&str>,
-        tool_name: &str,
-        input: &Value,
-    ) -> OperationIdempotency {
-        self.get_tool_for_session(session_id, tool_name)
-            .await
-            .map(|tool| tool.operation_policy(input).idempotency)
-            .unwrap_or(OperationIdempotency::Unknown)
-    }
-
-    /// Return the durable scope for one concrete tool invocation.
-    pub async fn get_operation_scope(
-        &self,
-        session_id: Option<&str>,
-        tool_name: &str,
-        input: &Value,
-    ) -> ToolOperationScope {
-        self.get_tool_for_session(session_id, tool_name)
-            .await
-            .map(|tool| tool.operation_policy(input).scope)
-            .unwrap_or(ToolOperationScope::Session)
-    }
-
-    /// Result rendering is catalog metadata, not a payload-shape heuristic.
-    /// Unknown/legacy tools fall back to their stable root renderer.
-    pub async fn get_tool_manifest(
-        &self,
-        session_id: Option<&str>,
-        tool_name: &str,
-    ) -> Option<ToolManifest> {
-        self.get_tool_for_session(session_id, tool_name)
-            .await
-            .map(|tool| tool.tool_manifest())
     }
 
     /// Apply the configured per-tool/global observation cap to the stable
@@ -2054,6 +2056,31 @@ mod tests {
         assert_eq!(
             capabilities.web_search,
             "unavailable (no provider builtin search; no MCP search server)"
+        );
+    }
+
+    #[tokio::test]
+    async fn tool_catalog_snapshot_captures_lookup_policy_and_manifest() {
+        let mgr = ToolsManager::new();
+        mgr.rebuild_catalog().await;
+
+        let snapshot = mgr.tool_catalog_snapshot("ses-snapshot").await;
+        let tool = snapshot
+            .get("ask")
+            .expect("core tool must be present in the session snapshot");
+        assert_eq!(tool.name(), "ask");
+        assert!(!snapshot.is_empty());
+
+        let input = json!({"question": "continue?"});
+        let policy = snapshot.operation_policy("ask", &input);
+        assert_eq!(policy.scope, ToolOperationScope::Session);
+        assert_eq!(
+            snapshot
+                .manifest("ask")
+                .expect("snapshot must retain renderer metadata")
+                .identity
+                .stable_name,
+            "ask"
         );
     }
 

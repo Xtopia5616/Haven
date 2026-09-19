@@ -30,6 +30,14 @@ pub(crate) struct RequestContext {
     /// beside the immutable request view avoids fingerprinting the cloned
     /// request again during stream setup.
     message_tokens: u32,
+    /// Cached once at the request boundary so role selection and media
+    /// projection do not rescan the full canonical list.
+    media_requirements: MediaRequirements,
+    /// Number of raw media parts in the provider-visible request.  This is
+    /// distinct from the number of durable inputs: a malformed/missing
+    /// durable mapping must still take the validation path and never be
+    /// treated as a text-only request.
+    media_part_count: usize,
     repairs: usize,
 }
 
@@ -79,10 +87,14 @@ impl RequestContext {
         let instruction_tokens = estimate_message_tokens(std::slice::from_ref(&instruction));
         messages.push(instruction);
         media_inputs.push(vec![None]);
+        let media_requirements = canonical_media_requirements(&messages);
+        let media_part_count = media_part_count(&messages);
         Self {
             messages: Arc::new(messages),
             media_inputs: Arc::new(media_inputs),
             message_tokens: self.message_tokens.saturating_add(instruction_tokens),
+            media_requirements,
+            media_part_count,
             repairs: self.repairs,
         }
     }
@@ -98,6 +110,16 @@ impl RequestContext {
     ) -> (Self, MediaPlan) {
         let mut planned_inputs = Vec::new();
         let mut media_positions = Vec::new();
+        if self.media_part_count == 0 {
+            return (
+                self.clone(),
+                MediaPlan {
+                    strategy,
+                    projections: Vec::new(),
+                    notices: Vec::new(),
+                },
+            );
+        }
         for (message_index, message) in self.messages.iter().enumerate() {
             for (part_index, _part) in message.content.iter().enumerate() {
                 let Some(input) = self
@@ -167,11 +189,15 @@ impl RequestContext {
             message.content = content;
         }
         let repairs = crate::sanitize_canonical(&mut messages);
+        let media_requirements = canonical_media_requirements(&messages);
+        let media_part_count = media_part_count(&messages);
         (
             Self {
                 message_tokens: estimate_message_tokens(&messages),
                 messages: Arc::new(messages),
                 media_inputs: Arc::clone(&self.media_inputs),
+                media_requirements,
+                media_part_count,
                 repairs,
             },
             plan,
@@ -187,7 +213,7 @@ impl RequestContext {
     }
 
     pub(super) fn media_requirements(&self) -> MediaRequirements {
-        canonical_media_requirements(self.messages.as_slice())
+        self.media_requirements
     }
 
     /// Check whether every raw image/audio part can remain raw for a role.
@@ -197,6 +223,9 @@ impl RequestContext {
     /// becoming a placeholder on the specialized endpoint.
     pub(super) fn raw_media_fits_profile(&self, capabilities: &CapabilityProfile) -> bool {
         let mut inputs = Vec::new();
+        if self.media_part_count == 0 {
+            return true;
+        }
         for (message_index, message) in self.messages.iter().enumerate() {
             for (part_index, part) in message.content.iter().enumerate() {
                 if !matches!(
@@ -255,6 +284,8 @@ impl RequestContext {
             } else {
                 estimate_message_tokens(&messages)
             },
+            media_requirements: canonical_media_requirements(&messages),
+            media_part_count: media_part_count(&messages),
             messages: Arc::new(messages),
             media_inputs: Arc::new(media_inputs),
             repairs,
@@ -270,6 +301,22 @@ fn media_inputs_for_state(
     state: &ReActState,
     messages: &[CanonicalMessage],
 ) -> Vec<Vec<Option<MediaInput>>> {
+    // Text/tool-only requests have no durable media association to rebuild.
+    // Avoid replaying the entire event log on the dominant prompt path.
+    if !messages.iter().any(|message| {
+        message.content.iter().any(|part| {
+            matches!(
+                part,
+                ContentPart::Image { .. } | ContentPart::Audio { .. } | ContentPart::Video { .. }
+            )
+        })
+    }) {
+        return messages
+            .iter()
+            .map(|message| vec![None; message.content.len()])
+            .collect();
+    }
+
     let mut compact_inputs: Option<Vec<MediaInput>> = None;
     let mut compacted_messages: Option<Vec<CanonicalMessage>> = None;
     let mut event_inputs: Vec<Vec<MediaInput>> = Vec::new();
@@ -359,6 +406,19 @@ fn media_inputs_for_state(
                 .collect()
         })
         .collect()
+}
+
+fn media_part_count(messages: &[CanonicalMessage]) -> usize {
+    messages
+        .iter()
+        .flat_map(|message| &message.content)
+        .filter(|part| {
+            matches!(
+                part,
+                ContentPart::Image { .. } | ContentPart::Audio { .. } | ContentPart::Video { .. }
+            )
+        })
+        .count()
 }
 
 fn snapshot_media_inputs_for_message(
@@ -505,6 +565,30 @@ mod tests {
             context.messages()[0].content.len(),
             durable[0].content.len()
         );
+    }
+
+    #[test]
+    fn text_only_request_skips_durable_media_replay_and_capability_planning() {
+        let context = RequestContext::from_state(
+            &ReActState::new(
+                vec![TranscriptRecord::UserInject {
+                    step_number: 1,
+                    source: haven_common::types::InjectSource::FollowUp,
+                    text: "stale media metadata that is not in this projection".into(),
+                    media_inputs: vec![image_input("aGVsbG8=")],
+                    message_id: None,
+                }],
+                vec![CanonicalMessage::user_text("text only")],
+                HashMap::new(),
+            ),
+            None,
+        );
+        let (planned, plan) =
+            context.with_capabilities(&CapabilityProfile::default(), MediaInputStrategy::Auto);
+
+        assert!(plan.is_empty());
+        assert!(Arc::ptr_eq(&context.messages, &planned.messages));
+        assert!(context.raw_media_fits_profile(&CapabilityProfile::default()));
     }
 
     #[test]

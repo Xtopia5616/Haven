@@ -25,6 +25,7 @@ mod hooks;
 mod identity;
 mod inject;
 mod r#loop;
+mod metrics;
 mod request_context;
 mod response_cycle;
 mod retries;
@@ -46,6 +47,7 @@ use hooks::{LoopHooksHandle, default_hooks};
 use identity::IdentityMap;
 pub(crate) use r#loop::RunInput;
 pub use r#loop::{LoopExit, PauseReason};
+use metrics::{Counter as MetricsCounter, Phase as MetricsPhase, ReActMetrics};
 pub(crate) use request_context::RequestContext;
 use sidecars::{
     ContextWindowCache, CumulativeUsage, LastMsgAtCache, SnapshotBufs, TokenEstimateCache,
@@ -350,6 +352,9 @@ pub struct ReActEngine {
     /// Live per-run budget mirrored into snapshots (R4). Cleared when the
     /// run exits so a later pause/resume cannot leak a stale budget.
     run_budgets: Mutex<HashMap<String, crate::types::RunBudget>>,
+    /// Fixed-size, in-process ReAct baseline metrics. Updates are atomic and
+    /// deliberately separate from the durable session/event projection.
+    metrics: Arc<ReActMetrics>,
 }
 
 /// Per-step context shared by the ReAct-loop helpers (context injection,
@@ -408,7 +413,15 @@ impl ReActEngine {
             hooks: default_hooks(),
             inference: None,
             run_budgets: Mutex::new(HashMap::new()),
+            metrics: Arc::new(ReActMetrics::new()),
         }
+    }
+
+    /// Return a point-in-time diagnostic snapshot for local diagnostics and
+    /// tests. The snapshot is read-only and is not persisted.
+    #[allow(dead_code)]
+    pub(crate) fn metrics_snapshot(&self) -> metrics::MetricsSnapshot {
+        self.metrics.snapshot()
     }
 
     /// Record the live run budget so mid-run / pause snapshots include it (R4).
@@ -603,30 +616,36 @@ impl ReActEngine {
     /// can all change the meaning of a side-effecting call if replaced with a
     /// guessed value. The caller turns each failure into a normal failed tool
     /// observation so the model receives an actionable, structured error.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) async fn validate_tool_inputs(
         &self,
         session_id: &str,
         actions: &[Action],
     ) -> Vec<ToolInputValidationFailure> {
+        let catalog = self
+            .executor
+            .get_tools()
+            .tool_catalog_snapshot(session_id)
+            .await;
+        self.validate_tool_inputs_from_catalog(&catalog, actions)
+    }
+
+    pub(crate) fn validate_tool_inputs_from_catalog(
+        &self,
+        catalog: &haven_tools::ToolCatalogSnapshot,
+        actions: &[Action],
+    ) -> Vec<ToolInputValidationFailure> {
         let mut failures = Vec::new();
-        let mut action_index = 0u32;
-        for action in actions.iter() {
+        for (action_index, action) in actions.iter().enumerate() {
             if action.is_final {
                 continue;
             }
-            let current_action_index = action_index;
-            action_index += 1;
-            let Some(tool) = self
-                .executor
-                .get_tools()
-                .get_tool_for_session(Some(session_id), &action.tool_name)
-                .await
-            else {
+            let Some(result) = catalog.validate_input(&action.tool_name, &action.tool_input) else {
                 continue;
             };
-            if let Err(error) = tool.validate_input(&action.tool_input) {
+            if let Err(error) = result {
                 failures.push(ToolInputValidationFailure {
-                    action_index: current_action_index,
+                    action_index: action_index as u32,
                     tool_name: action.tool_name.clone(),
                     details: vec![error.to_string()],
                 });
@@ -1167,8 +1186,12 @@ impl ReActEngine {
     /// rebuild. This avoids serializing the whole history merely to validate a
     /// cache hit.
     pub(super) fn estimate_canonical_tokens(&self, session_id: &str, state: &ReActState) -> u32 {
-        self.token_estimates
-            .estimate(session_id, &state.canonical, state.canonical_revision())
+        self.token_estimates.estimate(
+            session_id,
+            &state.canonical,
+            state.canonical_generation(),
+            state.canonical_revision(),
+        )
     }
 
     /// Keep the token sidecar synchronized with the one canonical append
@@ -1181,6 +1204,7 @@ impl ReActEngine {
                 session_id,
                 message,
                 state.canonical.len(),
+                state.canonical_generation(),
                 state.canonical_revision(),
             );
         }

@@ -9,11 +9,87 @@ use super::*;
 use crate::types::media_inputs_from_events;
 use haven_llm::{EndpointRole, LlmResponse, LlmRouter, StreamAttemptHooks, ToolDefinition};
 
-struct CheckpointInflightGuard(Arc<std::sync::atomic::AtomicBool>);
+struct CheckpointRequest {
+    session_id: String,
+    generation: u64,
+    content: String,
+}
 
-impl Drop for CheckpointInflightGuard {
-    fn drop(&mut self) {
-        self.0.store(false, std::sync::atomic::Ordering::Release);
+/// A single bounded, latest-wins checkpoint writer for one stream.
+///
+/// Streaming callbacks are synchronous, so they cannot await a database
+/// write. Keeping the pending request in a one-slot mailbox gives the stream
+/// a bounded hand-off while ensuring that a slow write does not make flush
+/// await a chain of independent checkpoint tasks. Every request still carries
+/// the generation captured before it was published; `PartialStore` performs
+/// the authoritative stale-generation check while holding the session lock.
+#[derive(Clone)]
+struct CheckpointWriter {
+    pending: Arc<std::sync::Mutex<Option<CheckpointRequest>>>,
+    closed: Arc<std::sync::atomic::AtomicBool>,
+    notify: Arc<tokio::sync::Notify>,
+    task: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<anyhow::Result<()>>>>>,
+    metrics: Arc<ReActMetrics>,
+}
+
+impl CheckpointWriter {
+    fn new(store: Arc<crate::partial::PartialStore>, metrics: Arc<ReActMetrics>) -> Self {
+        let pending = Arc::new(std::sync::Mutex::new(None));
+        let closed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let notify = Arc::new(tokio::sync::Notify::new());
+        let pending_task: Arc<std::sync::Mutex<Option<CheckpointRequest>>> = pending.clone();
+        let closed_task = closed.clone();
+        let notify_task = notify.clone();
+        let metrics_task = metrics.clone();
+        let task = tokio::spawn(async move {
+            loop {
+                let request = pending_task.lock().unwrap().take();
+                if let Some(request) = request {
+                    metrics_task.decrement(MetricsCounter::CheckpointPending);
+                    store
+                        .checkpoint(&request.session_id, request.generation, &request.content)
+                        .await?;
+                    continue;
+                }
+                if closed_task.load(std::sync::atomic::Ordering::Acquire) {
+                    return Ok(());
+                }
+                notify_task.notified().await;
+            }
+        });
+        Self {
+            pending,
+            closed,
+            notify,
+            task: Arc::new(tokio::sync::Mutex::new(Some(task))),
+            metrics,
+        }
+    }
+
+    fn submit(&self, request: CheckpointRequest) {
+        // A later snapshot contains all earlier text, so replacing the one
+        // pending request is safe and prevents an unbounded stream backlog.
+        let was_empty = {
+            let mut pending = self.pending.lock().unwrap();
+            let was_empty = pending.is_none();
+            *pending = Some(request);
+            was_empty
+        };
+        if was_empty {
+            self.metrics.increment(MetricsCounter::CheckpointPending);
+        }
+        self.notify.notify_one();
+    }
+
+    async fn finish(&self) -> anyhow::Result<()> {
+        self.closed
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.notify.notify_one();
+        let task = self.task.lock().await.take();
+        match task.expect("checkpoint writer task must be present").await {
+            Ok(result) => result,
+            Err(error) => Err(anyhow::anyhow!("stream checkpoint task failed: {error}")),
+        }
     }
 }
 
@@ -155,7 +231,7 @@ struct StreamForwarder {
     chunk_tx: crate::event::ChunkSender,
     ws_tx: tokio::sync::mpsc::UnboundedSender<AgentEvent>,
     consumer: crate::event::ConsumerHandle,
-    checkpoint_tasks: Arc<std::sync::Mutex<Vec<tokio::task::JoinHandle<anyhow::Result<()>>>>>,
+    checkpoint_writer: CheckpointWriter,
     ws_session: tokio::task::JoinHandle<()>,
     watchdog: tokio::task::JoinHandle<()>,
 }
@@ -163,6 +239,7 @@ struct StreamForwarder {
 impl StreamForwarder {
     #[allow(clippy::too_many_arguments)] // consolidated stream setup; params are read-only
     pub(super) fn new(
+        metrics: Arc<ReActMetrics>,
         ctx: &StepCtx,
         max_batch_bytes: usize,
         stall_warn_delay_ms: u64,
@@ -188,21 +265,20 @@ impl StreamForwarder {
         let pt = partial_thought.clone();
         let pr = partial_reasoning.clone();
         let checkpoint_session = ctx.session_id.clone();
-        let checkpoint_inflight = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let checkpoint_state = Arc::new(std::sync::Mutex::new((
             std::time::Instant::now() - checkpoint_interval,
             0usize,
         )));
-        let checkpoint_tasks = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let checkpoint_writer = CheckpointWriter::new(partial_store.clone(), metrics.clone());
         // Crash/stop recovery: the accumulated thought text is checkpointed
         // into the `partial_messages` scratch table while streaming so a
         // crash, user stop, or app exit does not lose the whole reply. The
         // first chunk checkpoints immediately; afterwards at most every
-        // `checkpoint_interval` or every `checkpoint_min_chars` new chars,
-        // and never while a write is in flight. All writes go through the
-        // executor's `PartialStore`, which serializes them against
-        // promote/discard and drops writes that land after the session was
-        // ended/rolled back.
+        // `checkpoint_interval` or every `checkpoint_min_chars` new chars.
+        // The writer keeps one pending latest snapshot while a write is in
+        // flight. All writes go through the executor's `PartialStore`, which
+        // serializes them against promote/discard and drops writes that land
+        // after the session was ended/rolled back.
         let (ws_tx, mut ws_rx) = tokio::sync::mpsc::unbounded_channel();
         let ws_tx_c = ws_tx.clone();
         let em_ws = ctx.emitter.clone();
@@ -250,13 +326,25 @@ impl StreamForwarder {
             reset_pending_c.store(true, std::sync::atomic::Ordering::Release);
         };
         let checkpoint_state_c = checkpoint_state.clone();
-        let checkpoint_tasks_c = checkpoint_tasks.clone();
+        let checkpoint_writer_c = checkpoint_writer.clone();
         let reset_pending_c = reset_pending.clone();
         let attempt_generation_c = attempt_generation;
         let reset_session_id_c = session_id_c.clone();
         let reset_thought_mid_c = thought_mid.clone();
         let reset_reasoning_mid_c = reasoning_mid.clone();
+        let first_content_seen = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let first_content_seen_c = first_content_seen.clone();
+        let stream_started = std::time::Instant::now();
+        let metrics_c = metrics.clone();
         let on_chunk = move |c: &haven_llm::StreamChunk| {
+            metrics_c.increment(MetricsCounter::StreamChunks);
+            if (c.text.as_ref().is_some_and(|text| !text.is_empty())
+                || c.reasoning.as_ref().is_some_and(|text| !text.is_empty()))
+                && !first_content_seen_c.swap(true, std::sync::atomic::Ordering::AcqRel)
+            {
+                metrics_c.increment(MetricsCounter::FirstTokens);
+                metrics_c.observe(MetricsPhase::FirstToken, stream_started.elapsed());
+            }
             let stream_ready = if reset_pending_c.load(std::sync::atomic::Ordering::Acquire) {
                 let marker = crate::event::ChunkItem::Reset {
                     session_id: reset_session_id_c.clone(),
@@ -287,16 +375,7 @@ impl StreamForwarder {
                     let mut checkpoint = checkpoint_state_c.lock().unwrap();
                     let due = now.duration_since(checkpoint.0) >= checkpoint_interval
                         || len.saturating_sub(checkpoint.1) >= checkpoint_min_chars;
-                    if due
-                        && checkpoint_inflight
-                            .compare_exchange(
-                                false,
-                                true,
-                                std::sync::atomic::Ordering::AcqRel,
-                                std::sync::atomic::Ordering::Acquire,
-                            )
-                            .is_ok()
-                    {
+                    if due {
                         checkpoint.0 = now;
                         checkpoint.1 = len;
                         Some(guard.clone())
@@ -314,6 +393,7 @@ impl StreamForwarder {
                         reasoning: false,
                     })
                 {
+                    metrics_c.increment(MetricsCounter::ChunkDrops);
                     tracing::warn!("thought chunk channel full, dropping: {}", e);
                 }
                 if let Some(snapshot) = checkpoint_snapshot {
@@ -321,14 +401,11 @@ impl StreamForwarder {
                     // promote/discard bumps it while the write is queued, the
                     // PartialStore drops the stale snapshot.
                     let gen_id = attempt_generation_c.load(std::sync::atomic::Ordering::Acquire);
-                    let store = partial_store.clone();
-                    let tid = checkpoint_session.clone();
-                    let flag = checkpoint_inflight.clone();
-                    let task = tokio::spawn(async move {
-                        let _inflight = CheckpointInflightGuard(flag);
-                        store.checkpoint(&tid, gen_id, &snapshot).await
+                    checkpoint_writer_c.submit(CheckpointRequest {
+                        session_id: checkpoint_session.clone(),
+                        generation: gen_id,
+                        content: snapshot,
                     });
-                    checkpoint_tasks_c.lock().unwrap().push(task);
                 }
                 last_chunk_c.store(now_millis(), std::sync::atomic::Ordering::Relaxed);
             }
@@ -344,6 +421,7 @@ impl StreamForwarder {
                         reasoning: true,
                     })
                 {
+                    metrics_c.increment(MetricsCounter::ChunkDrops);
                     tracing::warn!("reasoning chunk channel full, dropping: {}", e);
                 }
                 last_chunk_c.store(now_millis(), std::sync::atomic::Ordering::Relaxed);
@@ -399,7 +477,7 @@ impl StreamForwarder {
                 chunk_tx,
                 ws_tx,
                 consumer: consumer_handle,
-                checkpoint_tasks,
+                checkpoint_writer,
                 ws_session,
                 watchdog,
             },
@@ -433,30 +511,14 @@ impl StreamForwarder {
             });
         }
         // The stream consumer has stopped before this point, so no callback
-        // can enqueue another checkpoint. Wait for every scratch write before
-        // the caller projects the final assistant message; otherwise a late
-        // checkpoint timestamp could make end-session promotion duplicate a
-        // response that was already persisted as a real message.
-        let checkpoint_tasks = {
-            let mut tasks = self.checkpoint_tasks.lock().unwrap();
-            std::mem::take(&mut *tasks)
-        };
-        for task in checkpoint_tasks {
-            match task.await {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => {
-                    tracing::error!(error = %error, "stream checkpoint task failed");
-                    join_error.get_or_insert_with(|| {
-                        anyhow::anyhow!("stream checkpoint task failed: {error}")
-                    });
-                }
-                Err(error) => {
-                    tracing::error!(error = %error, "stream checkpoint task panicked");
-                    join_error.get_or_insert_with(|| {
-                        anyhow::anyhow!("stream checkpoint task failed: {error}")
-                    });
-                }
-            }
+        // can enqueue another checkpoint. Close the one-slot writer barrier
+        // and wait for its current/latest snapshot before the caller projects
+        // the final assistant message; otherwise a late checkpoint timestamp
+        // could make end-session promotion duplicate a response already
+        // persisted as a real message.
+        if let Err(error) = self.checkpoint_writer.finish().await {
+            tracing::error!(error = %error, "stream checkpoint task failed");
+            join_error.get_or_insert(error);
         }
         join_error.map_or(Ok(()), Err)
     }
@@ -503,6 +565,7 @@ impl ReActEngine {
             self.ensure_msg_id(&ctx.session_id, ctx.step_num, ctx.run_id, "reasoning");
         let limits = self.limits();
         let (forwarder, on_chunk, on_attempt_start) = StreamForwarder::new(
+            self.metrics.clone(),
             ctx,
             limits.event_chunk_batch_max_bytes,
             limits.stream_stall_warn_delay_ms,
@@ -868,16 +931,31 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn checkpoint_inflight_guard_clears_after_task_panic() {
-        let inflight = Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let task_inflight = inflight.clone();
-        let task = tokio::spawn(async move {
-            let _guard = CheckpointInflightGuard(task_inflight);
-            panic!("simulated checkpoint panic");
+    async fn checkpoint_writer_keeps_latest_pending_snapshot() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::open(&dir.path().join("test.db")).unwrap());
+        let session = db.create_session("input", "").unwrap();
+        let store = Arc::new(crate::partial::PartialStore::new(db.clone()));
+        let generation = store.generation(&session.id);
+        let writer = CheckpointWriter::new(store, Arc::new(ReActMetrics::new()));
+        writer.submit(CheckpointRequest {
+            session_id: session.id.clone(),
+            generation,
+            content: "first".to_string(),
         });
+        writer.submit(CheckpointRequest {
+            session_id: session.id.clone(),
+            generation,
+            content: "latest".to_string(),
+        });
+        writer.finish().await.unwrap();
 
-        assert!(task.await.is_err());
-        assert!(!inflight.load(std::sync::atomic::Ordering::Acquire));
+        let session_id = session.id;
+        let partial = db
+            .run_blocking(move |db| Ok(db.get_partial_message(&session_id)))
+            .await
+            .unwrap();
+        assert_eq!(partial.map(|row| row.0).as_deref(), Some("latest"));
     }
     use async_trait::async_trait;
     use futures_util::stream;

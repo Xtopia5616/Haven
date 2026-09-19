@@ -8,6 +8,7 @@
 
 use crate::Database;
 use chrono::{SecondsFormat, Utc};
+use rusqlite::OptionalExtension;
 use std::sync::Arc;
 
 pub const TRANSCRIPT_EVENT_TYPE: &str = "transcript";
@@ -18,6 +19,11 @@ pub const TIMELINE_ROLLBACK_EVENT_TYPE: &str = "timeline_rollback";
 /// even when the snapshot cache is stale or unreadable.
 pub const RECOVERY_PERSISTENCE_EVENT_TYPE: &str = "recovery_persistence";
 pub const CURRENT_EVENT_VERSION: i64 = 1;
+/// Hard ceiling for one live transcript transaction. ReAct context/tool
+/// batches are smaller; this protects the persistence boundary if a future
+/// caller constructs a batch without going through those planners.
+pub const MAX_TRANSCRIPT_BATCH_EVENTS: usize = 128;
+pub const MAX_TRANSCRIPT_BATCH_PROJECTION_ROWS: usize = 256;
 
 pub type StoredBranchPoint = (SessionEvent, usize, u32, Option<String>);
 
@@ -39,6 +45,55 @@ pub struct SessionEventInput {
     pub payload: String,
     pub run_id: Option<u64>,
     pub step_number: Option<u32>,
+}
+
+/// Projection rows written together with a live transcript batch.
+///
+/// These types intentionally contain only the columns needed by the ReAct
+/// transcript boundary.  The memory crate does not depend on Agent types, and
+/// the batch writer therefore remains a stable persistence contract rather
+/// than a second transcript model.
+#[derive(Debug, Clone, Default)]
+pub struct TranscriptBatch {
+    pub events: Vec<SessionEventInput>,
+    pub messages: Vec<TranscriptMessageProjection>,
+    pub thought_steps: Vec<TranscriptThoughtStepProjection>,
+    pub action_steps: Vec<TranscriptActionStepProjection>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TranscriptMessageProjection {
+    pub id: String,
+    pub role: String,
+    pub content: String,
+    pub message_type: Option<String>,
+    pub tool_call_id: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TranscriptThoughtStepProjection {
+    pub id: String,
+    pub step_number: i32,
+}
+
+#[derive(Debug, Clone)]
+pub struct TranscriptActionStepProjection {
+    pub id: String,
+    pub step_number: i32,
+    pub action_index: i32,
+    pub tool_name: String,
+    pub tool_input: String,
+    pub tool_call_id: Option<String>,
+    pub is_high_risk: bool,
+    pub silent: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct TranscriptBatchResult {
+    pub events: Vec<SessionEvent>,
+    /// Created-at values for message rows, in insertion order.  Agent uses
+    /// the last value to advance its in-memory `last_msg_at` sidecar.
+    pub message_created_at: Vec<String>,
 }
 
 /// Stage results carried by a recovery-persistence control event. Keeping the
@@ -159,6 +214,67 @@ impl SessionEventStore {
                     let _ = self.live_tx.send(event.clone());
                 }
                 Ok(stored)
+            }
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(error)
+            }
+        }
+    }
+
+    /// Append transcript events and their materialized rows in one SQLite
+    /// transaction.  The durable event rows are inserted first; projection
+    /// failure rolls the whole batch back.  Live broadcasts happen only after
+    /// COMMIT, so subscribers never observe an event that was rolled back.
+    pub fn append_transcript_batch(
+        &self,
+        session_id: &str,
+        batch: &TranscriptBatch,
+    ) -> anyhow::Result<TranscriptBatchResult> {
+        Self::validate_inputs(&batch.events)?;
+        anyhow::ensure!(
+            batch.events.len() <= MAX_TRANSCRIPT_BATCH_EVENTS,
+            "transcript batch exceeds {} events",
+            MAX_TRANSCRIPT_BATCH_EVENTS
+        );
+        anyhow::ensure!(
+            batch.messages.len() + batch.thought_steps.len() + batch.action_steps.len()
+                <= MAX_TRANSCRIPT_BATCH_PROJECTION_ROWS,
+            "transcript batch exceeds {} projection rows",
+            MAX_TRANSCRIPT_BATCH_PROJECTION_ROWS
+        );
+        if batch.events.is_empty() {
+            anyhow::ensure!(
+                batch.messages.is_empty()
+                    && batch.thought_steps.is_empty()
+                    && batch.action_steps.is_empty(),
+                "transcript projection batch must have an event"
+            );
+            return Ok(TranscriptBatchResult::default());
+        }
+
+        let conn = self.db.conn();
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| -> anyhow::Result<TranscriptBatchResult> {
+            let events = Self::append_batch_in_transaction(&conn, session_id, &batch.events)?;
+            let message_created_at = self
+                .db
+                .write_transcript_projections(&conn, session_id, batch)?;
+            Ok(TranscriptBatchResult {
+                events,
+                message_created_at,
+            })
+        })();
+        match result {
+            Ok(result) => {
+                conn.execute_batch("COMMIT")?;
+                if !result.message_created_at.is_empty() {
+                    self.db.cache_invalidate_messages(session_id);
+                }
+                for event in &result.events {
+                    let _ = self.live_tx.send(event.clone());
+                }
+                Ok(result)
             }
             Err(error) => {
                 let _ = conn.execute_batch("ROLLBACK");
@@ -544,6 +660,122 @@ impl SessionEventStore {
     }
 }
 
+impl Database {
+    fn write_transcript_projections(
+        &self,
+        conn: &rusqlite::Connection,
+        session_id: &str,
+        batch: &TranscriptBatch,
+    ) -> anyhow::Result<Vec<String>> {
+        let mut message_created_at = Vec::with_capacity(batch.messages.len());
+        let mut last_created_at = conn
+            .query_row(
+                "SELECT created_at FROM messages
+                 WHERE session_id = ?1 ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                rusqlite::params![session_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+
+        for message in &batch.messages {
+            let now = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
+            let created_at = match last_created_at.as_deref() {
+                Some(last) if last >= now.as_str() => bump_message_millis(last),
+                _ => now,
+            };
+            conn.execute(
+                "INSERT INTO message_ingress_cursors (session_id, last_ingress_seq)
+                 VALUES (?1, 1)
+                 ON CONFLICT(session_id) DO UPDATE SET
+                    last_ingress_seq = message_ingress_cursors.last_ingress_seq + 1",
+                rusqlite::params![session_id],
+            )?;
+            let ingress_seq: i64 = conn.query_row(
+                "SELECT last_ingress_seq FROM message_ingress_cursors WHERE session_id = ?1",
+                rusqlite::params![session_id],
+                |row| row.get(0),
+            )?;
+            conn.execute(
+                "INSERT INTO messages
+                    (id, session_id, role, content, message_type, created_at,
+                     tool_call_id, attachments, voice, ingress_seq, media_inputs)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, 0, ?8, NULL)",
+                rusqlite::params![
+                    message.id,
+                    session_id,
+                    message.role,
+                    message.content,
+                    message.message_type,
+                    created_at,
+                    message.tool_call_id,
+                    ingress_seq,
+                ],
+            )?;
+            last_created_at = Some(created_at.clone());
+            message_created_at.push(created_at);
+        }
+
+        for step in &batch.thought_steps {
+            let created_at = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
+            conn.execute(
+                "INSERT INTO session_steps
+                    (id, session_id, step_number, tool_name, input, thought,
+                     status, is_high_risk, created_at)
+                 VALUES (?1, ?2, ?3, 'thought', ?1, NULL, 'completed', 0, ?4)",
+                rusqlite::params![step.id, session_id, step.step_number, created_at],
+            )?;
+            bump_step_sequence(conn, session_id)?;
+        }
+
+        for step in &batch.action_steps {
+            let created_at = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
+            let changed = conn.execute(
+                "INSERT OR IGNORE INTO session_steps
+                    (id, session_id, step_number, action_index, tool_name, input,
+                     action_tool, action_input, tool_call_id, status, is_high_risk,
+                     created_at, silent, confirmed)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?5, ?6, ?7, 'pending', ?8, ?9, ?10, NULL)",
+                rusqlite::params![
+                    step.id,
+                    session_id,
+                    step.step_number,
+                    step.action_index,
+                    step.tool_name,
+                    step.tool_input,
+                    step.tool_call_id,
+                    step.is_high_risk as i32,
+                    created_at,
+                    step.silent as i32,
+                ],
+            )?;
+            if changed > 0 {
+                bump_step_sequence(conn, session_id)?;
+            }
+        }
+
+        Ok(message_created_at)
+    }
+}
+
+fn bump_step_sequence(conn: &rusqlite::Connection, session_id: &str) -> anyhow::Result<()> {
+    conn.execute(
+        "INSERT INTO session_step_cursors (session_id, last_step_seq)
+         VALUES (?1, 1)
+         ON CONFLICT(session_id) DO UPDATE SET
+            last_step_seq = session_step_cursors.last_step_seq + 1",
+        rusqlite::params![session_id],
+    )?;
+    Ok(())
+}
+
+fn bump_message_millis(last: &str) -> String {
+    match chrono::DateTime::parse_from_rfc3339(last) {
+        Ok(timestamp) => (timestamp + chrono::Duration::milliseconds(1))
+            .to_rfc3339_opts(SecondsFormat::Millis, true),
+        Err(_) => Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -623,6 +855,85 @@ mod tests {
             .unwrap();
         let published = receiver.try_recv().unwrap();
         assert_eq!(published, written);
+    }
+
+    #[test]
+    fn transcript_batch_commits_events_and_projections_together() {
+        let (db, store, session_id) = store();
+        let mut receiver = store.subscribe();
+        let message_id = "step-batch-thought".to_string();
+        let action_id = "step-batch-action".to_string();
+        let result = store
+            .append_transcript_batch(
+                &session_id,
+                &TranscriptBatch {
+                    events: vec![SessionEventInput::transcript(
+                        r#"{"type":"thought","message_id":"step-batch-thought"}"#,
+                        2,
+                        3,
+                    )],
+                    messages: vec![TranscriptMessageProjection {
+                        id: message_id.clone(),
+                        role: "assistant".into(),
+                        content: "thinking".into(),
+                        message_type: Some("text".into()),
+                        tool_call_id: None,
+                    }],
+                    thought_steps: vec![TranscriptThoughtStepProjection {
+                        id: message_id.clone(),
+                        step_number: 3,
+                    }],
+                    action_steps: vec![TranscriptActionStepProjection {
+                        id: action_id.clone(),
+                        step_number: 3,
+                        action_index: 0,
+                        tool_name: "echo".into(),
+                        tool_input: "{}".into(),
+                        tool_call_id: Some("call-batch".into()),
+                        is_high_risk: false,
+                        silent: false,
+                    }],
+                },
+            )
+            .unwrap();
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(receiver.try_recv().unwrap(), result.events[0]);
+        assert_eq!(store.read_all(&session_id).unwrap().len(), 1);
+        let messages = db.get_session_messages(&session_id).unwrap();
+        assert_eq!(
+            messages.iter().filter(|row| row.id == message_id).count(),
+            1
+        );
+        let steps = db.get_session_steps(&session_id).unwrap();
+        assert!(steps.iter().any(|step| step.id == action_id));
+    }
+
+    #[test]
+    fn transcript_batch_rolls_back_event_when_projection_fails() {
+        let (db, store, session_id) = store();
+        let error = store
+            .append_transcript_batch(
+                &session_id,
+                &TranscriptBatch {
+                    events: vec![SessionEventInput::transcript(
+                        r#"{"type":"rollback"}"#,
+                        1,
+                        1,
+                    )],
+                    messages: vec![TranscriptMessageProjection {
+                        id: "not-a-valid-role-row".into(),
+                        role: "invalid".into(),
+                        content: "must fail".into(),
+                        message_type: None,
+                        tool_call_id: None,
+                    }],
+                    ..TranscriptBatch::default()
+                },
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("CHECK") || error.to_string().contains("constraint"));
+        assert!(store.read_all(&session_id).unwrap().is_empty());
+        assert!(db.get_session_messages(&session_id).unwrap().is_empty());
     }
 
     #[test]

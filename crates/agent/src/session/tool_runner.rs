@@ -93,6 +93,25 @@ impl ActionStepContext {
 }
 
 impl SessionSupervisor {
+    /// Resolve the durable action-row metadata without touching SQLite.  The
+    /// transcript writer uses this to include all pending action rows in the
+    /// same transaction as the assistant tool-call event.
+    pub async fn action_step_metadata(
+        &self,
+        session_id: &str,
+        tool_name: &str,
+        input: &Value,
+    ) -> (bool, bool) {
+        let risk_level = self
+            .tools
+            .get_risk_level(Some(session_id), tool_name, input)
+            .await;
+        (
+            risk_level != RiskLevel::Safe,
+            is_silent_action(tool_name, input),
+        )
+    }
+
     async fn action_step_context(&self, request: ActionStepRequest<'_>) -> ActionStepContext {
         let risk_level = self
             .tools
@@ -308,47 +327,6 @@ impl SessionSupervisor {
                 );
                 anyhow::anyhow!("failed to mark tool intent running {step_id_for_log}: {e}")
             })
-    }
-
-    pub async fn tool_concurrency(
-        &self,
-        session_id: &str,
-        tool_name: &str,
-        input: &Value,
-    ) -> haven_tools::ToolConcurrency {
-        self.tools
-            .get_concurrency(Some(session_id), tool_name, input)
-            .await
-    }
-
-    pub async fn tool_idempotency(
-        &self,
-        session_id: &str,
-        tool_name: &str,
-        input: &Value,
-    ) -> haven_tools::OperationIdempotency {
-        self.tools
-            .get_idempotency(Some(session_id), tool_name, input)
-            .await
-    }
-
-    pub async fn tool_operation_scope(
-        &self,
-        session_id: &str,
-        tool_name: &str,
-        input: &Value,
-    ) -> haven_tools::ToolOperationScope {
-        self.tools
-            .get_operation_scope(Some(session_id), tool_name, input)
-            .await
-    }
-
-    pub async fn tool_renderer(&self, session_id: &str, tool_name: &str) -> String {
-        self.tools
-            .get_tool_manifest(Some(session_id), tool_name)
-            .await
-            .map(|manifest| manifest.presentation.renderer)
-            .unwrap_or_else(|| tool_name.split('.').next().unwrap_or("generic").into())
     }
 
     pub async fn observation_text(&self, tool_name: &str, result: &ToolResult) -> String {
@@ -999,18 +977,22 @@ impl SessionSupervisor {
         self.emit_event(SessionEvent::ScheduledConfirmOutcome { title, body });
     }
 
-    /// Safety-gateway pre-check used by `LoopHooks::before_tool` (Phase 5 / E3).
-    /// Does not block — `RequiresConfirmation` means the batch should pause.
-    pub async fn check_tool_gate(
+    /// Check authorization using the turn's immutable catalog snapshot. The
+    /// authorization engine remains live so grants, denies and policy
+    /// revisions are never cached across the safety boundary.
+    pub async fn check_tool_gate_with_catalog(
         &self,
         session_id: &str,
         tool_name: &str,
         input: &Value,
+        catalog: &haven_tools::ToolCatalogSnapshot,
     ) -> haven_tools::AuthorizationDecision {
-        let authorization_request = self
-            .tools
-            .get_authorization_request(Some(session_id), tool_name, input)
-            .await;
+        let authorization_request = self.tools.get_authorization_request_from_snapshot(
+            catalog,
+            Some(session_id),
+            tool_name,
+            input,
+        );
         self.tools
             .authorization()
             .authorize(&authorization_request)
