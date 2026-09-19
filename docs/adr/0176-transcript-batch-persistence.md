@@ -16,8 +16,13 @@
 - 新增 `TranscriptBatchWriter`，通过 `SessionEventStore::append_transcript_batch`
   在一个有界事务中按“事件 → messages/session_steps 投影”写入。ToolCall 的
   pending action rows、thought anchor、thought/reasoning/ask 消息都可以随其事件
-  一起提交；ToolResult 的执行完成状态仍由工具执行边界负责，保留取消和
-  `unknown` outcome 语义。
+  一起提交；同一 ToolBatch 的 ToolResult 现在也先按 assistant call 顺序聚合，
+  再以一次 transcript 事务提交。ToolResult 的执行完成状态仍由工具执行边界
+  负责，保留取消和 `unknown` outcome 语义。
+- Tool-owned LLM usage 先在 Agent 层归一化为写入 DTO，再由
+  `persist_llm_call_batch_and_refresh_session_usage` 在一次事务中插入全部明细并
+  重建聚合行；UI usage 事件仍在提交后按原顺序逐条发出。这样 64 个工具调用不会
+  因明细行或 transcript 行分别产生 64 次事务。
 - 事务提交后才发送 SessionEventStore live broadcast；Agent 随后才发 Action、
   Observation、Thought、Supplement 等权威 UI 事件并更新内存 canonical。事务失败
   不得修改 canonical，也不得产生 live UI 事件；事件 authority 可在 resume 时修复
@@ -44,6 +49,7 @@ SQLite lock 等待。把 snapshot 也塞进同一事务会要求在 DB 事务内
 
 - Memory 单测覆盖批次 event/live broadcast、message/step 投影以及投影失败时的
   整体 rollback。
+- Agent/Memory 单测覆盖多个 ToolResult 的顺序投影与多条 tool usage 的批量写入。
 - Agent transcript、resume/rollback 与 PartialStore 测试覆盖 canonical 顺序、
   stable identity、投影恢复和无 partial discard fast path。
 - 回滚代码与本 ADR 即可恢复逐条写入；不需要数据库 schema reset，因为事件和投影

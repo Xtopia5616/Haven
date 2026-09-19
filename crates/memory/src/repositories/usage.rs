@@ -142,6 +142,29 @@ pub struct LlmCallUsage {
     pub created_at: String,
 }
 
+/// Values required to append one usage detail row.  The session id is passed
+/// separately so a batch cannot accidentally mix sessions in one transaction.
+#[derive(Debug, Clone)]
+pub struct LlmCallUsageInput {
+    pub step_number: Option<i32>,
+    pub role: String,
+    pub call_kind: String,
+    pub model: Option<String>,
+    pub prompt_tokens: u32,
+    pub completion_tokens: u32,
+    pub total_tokens: u32,
+    pub cached_tokens: u32,
+    pub cache_creation_tokens: u32,
+    pub cache_miss_tokens: u32,
+    pub cache_accounting: String,
+    pub cache_diagnostics: Option<String>,
+    pub cost_usd: f64,
+    pub has_cost: bool,
+    pub duration_ms: Option<u64>,
+    pub context_tokens: u32,
+    pub context_window: Option<u32>,
+}
+
 impl LlmCallUsage {
     pub fn coalesce_total(&mut self) {
         self.total_tokens = coalesced_total(
@@ -476,6 +499,92 @@ impl Database {
         }
     }
 
+    /// Append multiple call-detail rows and rebuild the session aggregate once
+    /// in one SQLite transaction.  Tool batches use this boundary so usage
+    /// persistence scales with the batch rather than with its call count.
+    pub fn persist_llm_call_batch_and_refresh_session_usage(
+        &self,
+        session_id: &str,
+        inputs: &[LlmCallUsageInput],
+    ) -> anyhow::Result<Vec<LlmCallUsage>> {
+        if inputs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let stamped = inputs
+            .iter()
+            .map(|_| (haven_common::types::new_id("usage"), now_rfc3339_millis()))
+            .collect::<Vec<_>>();
+        let conn = self.conn();
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| -> anyhow::Result<Vec<LlmCallUsage>> {
+            for (input, (id, created_at)) in inputs.iter().zip(&stamped) {
+                Self::insert_llm_call_usage_conn(
+                    &conn,
+                    id,
+                    session_id,
+                    input.step_number,
+                    &input.role,
+                    &input.call_kind,
+                    input.model.as_deref(),
+                    input.prompt_tokens,
+                    input.completion_tokens,
+                    input.total_tokens,
+                    input.cached_tokens,
+                    input.cache_creation_tokens,
+                    input.cache_miss_tokens,
+                    &input.cache_accounting,
+                    input.cache_diagnostics.as_deref(),
+                    input.context_tokens,
+                    input.context_window,
+                    input.cost_usd,
+                    input.has_cost,
+                    input.duration_ms,
+                    created_at,
+                )?;
+            }
+            Self::rebuild_session_usage_from_calls_conn(&conn, session_id)?;
+            Ok(inputs
+                .iter()
+                .zip(&stamped)
+                .map(|(input, (id, created_at))| LlmCallUsage {
+                    id: id.clone(),
+                    session_id: session_id.into(),
+                    step_number: input.step_number,
+                    role: input.role.clone(),
+                    call_kind: input.call_kind.clone(),
+                    model: input.model.clone(),
+                    prompt_tokens: input.prompt_tokens,
+                    completion_tokens: input.completion_tokens,
+                    total_tokens: input.total_tokens,
+                    cached_tokens: input.cached_tokens,
+                    cache_creation_tokens: input.cache_creation_tokens,
+                    cache_miss_tokens: input.cache_miss_tokens,
+                    cache_accounting: input.cache_accounting.clone(),
+                    cache_diagnostics: input
+                        .cache_diagnostics
+                        .as_deref()
+                        .and_then(|value| serde_json::from_str(value).ok()),
+                    context_tokens: input.context_tokens,
+                    context_window: input.context_window,
+                    cost_usd: input.cost_usd,
+                    has_cost: input.has_cost,
+                    duration_ms: input.duration_ms,
+                    created_at: created_at.clone(),
+                })
+                .collect())
+        })();
+        match result {
+            Ok(records) => {
+                conn.execute_batch("COMMIT")?;
+                Ok(records)
+            }
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(error)
+            }
+        }
+    }
+
     /// Recompute `session_usage` as the SUM of remaining `llm_usage` rows
     /// (zeros when none remain). Called after rollback/truncate so discarded
     /// steps do not leave inflated totals, and resume does not fall back to
@@ -702,6 +811,7 @@ impl Database {
 
 #[cfg(test)]
 mod tests {
+    use crate::LlmCallUsageInput;
     use crate::db::Database;
 
     fn test_db() -> Database {
@@ -736,6 +846,62 @@ mod tests {
         assert_eq!(u.cache_creation_tokens, 5);
         assert_eq!(u.cost_usd, 0.25);
         assert!(u.has_cost);
+    }
+
+    #[test]
+    fn persist_usage_batch_writes_rows_and_rebuilds_aggregate() {
+        let db = test_db();
+        let session = db.create_session("hello", "").unwrap();
+        let records = db
+            .persist_llm_call_batch_and_refresh_session_usage(
+                &session.id,
+                &[
+                    LlmCallUsageInput {
+                        step_number: Some(3),
+                        role: "default_model".into(),
+                        call_kind: "tool".into(),
+                        model: Some("model-a".into()),
+                        prompt_tokens: 10,
+                        completion_tokens: 2,
+                        total_tokens: 12,
+                        cached_tokens: 0,
+                        cache_creation_tokens: 0,
+                        cache_miss_tokens: 10,
+                        cache_accounting: "inclusive".into(),
+                        cache_diagnostics: None,
+                        cost_usd: 0.1,
+                        has_cost: true,
+                        duration_ms: Some(4),
+                        context_tokens: 10,
+                        context_window: None,
+                    },
+                    LlmCallUsageInput {
+                        step_number: Some(3),
+                        role: "default_model".into(),
+                        call_kind: "media".into(),
+                        model: Some("model-b".into()),
+                        prompt_tokens: 20,
+                        completion_tokens: 3,
+                        total_tokens: 23,
+                        cached_tokens: 0,
+                        cache_creation_tokens: 0,
+                        cache_miss_tokens: 20,
+                        cache_accounting: "inclusive".into(),
+                        cache_diagnostics: None,
+                        cost_usd: 0.2,
+                        has_cost: true,
+                        duration_ms: Some(5),
+                        context_tokens: 20,
+                        context_window: None,
+                    },
+                ],
+            )
+            .unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(db.get_session_llm_usage(&session.id).unwrap().len(), 2);
+        let totals = db.get_session_usage(&session.id).unwrap().unwrap();
+        assert_eq!(totals.prompt_tokens, 0);
+        assert_eq!(totals.total_tokens, 0);
     }
 
     #[test]

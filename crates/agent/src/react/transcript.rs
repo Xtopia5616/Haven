@@ -286,6 +286,35 @@ fn media_record_for_inject(
 }
 
 impl ReActEngine {
+    async fn build_transcript_item(
+        &self,
+        ctx: &StepCtx,
+        event: TranscriptEvent,
+    ) -> anyhow::Result<(
+        TranscriptEvent,
+        TranscriptRecord,
+        Option<TranscriptRecord>,
+        TranscriptBatch,
+    )> {
+        let event = normalize_transcript_event(event);
+        let record = event.to_record(ctx.step_num);
+        let mut batch = self.build_transcript_batch(ctx, &event, &record).await?;
+        let media_record = match &event {
+            TranscriptEvent::UserInject { attachments, .. } => {
+                media_record_for_inject(ctx.step_num, attachments, self.media_strategy())
+            }
+            _ => None,
+        };
+        if let Some(media_record) = &media_record {
+            batch.events.push(SessionEventInput::transcript(
+                serde_json::to_string(media_record)?,
+                ctx.run_id,
+                ctx.step_num,
+            ));
+        }
+        Ok((event, record, media_record, batch))
+    }
+
     async fn build_transcript_batch(
         &self,
         ctx: &StepCtx,
@@ -403,8 +432,7 @@ impl ReActEngine {
         event: TranscriptEvent,
         state: &mut ReActState,
     ) -> anyhow::Result<()> {
-        let event = normalize_transcript_event(event);
-        let record = event.to_record(ctx.step_num);
+        let (event, record, media_record, batch) = self.build_transcript_item(ctx, event).await?;
         // Persist the event and its materialized rows before mutating the
         // in-memory projection. A snapshot checkpoint may lag, but a
         // committed event is replayable after a crash and cannot be lost with
@@ -417,16 +445,13 @@ impl ReActEngine {
                 ctx.step_num,
             );
             TranscriptBatchWriter::new(self.db.clone(), self.event_store.clone())
-                .write(
-                    &ctx.session_id,
-                    self.build_transcript_batch(ctx, &event, &record).await?,
-                )
+                .write(&ctx.session_id, batch)
                 .await?
         };
         if let Some(created_at) = write_result.message_created_at.last() {
             self.note_last_msg_at(&ctx.session_id, Some(created_at.clone()));
         }
-        self.apply_transcript_projection(ctx, event, record, state, None)
+        self.apply_transcript_projection(ctx, event, record, state, media_record)
             .await
     }
 
@@ -442,46 +467,18 @@ impl ReActEngine {
         if events.is_empty() {
             return Ok(());
         }
-        let events = events
-            .into_iter()
-            .map(normalize_transcript_event)
-            .collect::<Vec<_>>();
         let mut batch = TranscriptBatch::default();
         let mut projected = Vec::with_capacity(events.len());
         for event in events {
-            let record = event.to_record(ctx.step_num);
-            let mut media_record = None;
-            if let TranscriptEvent::UserInject { attachments, .. } = &event {
-                media_record =
-                    media_record_for_inject(ctx.step_num, attachments, self.media_strategy());
-            }
-            batch.events.push(SessionEventInput::transcript(
-                serde_json::to_string(&record)?,
-                ctx.run_id,
-                ctx.step_num,
-            ));
-            if let Some(media_record) = &media_record {
-                batch.events.push(SessionEventInput::transcript(
-                    serde_json::to_string(media_record)?,
-                    ctx.run_id,
-                    ctx.step_num,
-                ));
-            }
-            if let TranscriptEvent::UserInject {
-                source, message_id, ..
-            } = &event
-                && *source != InjectSource::ActionResult
-            {
-                batch.thought_steps.push(TranscriptThoughtStepProjection {
-                    id: message_id
-                        .clone()
-                        .unwrap_or_else(|| haven_common::types::new_id("step")),
-                    step_number: ctx.step_num as i32,
-                });
-            }
+            let (event, record, media_record, item_batch) =
+                self.build_transcript_item(ctx, event).await?;
+            batch.events.extend(item_batch.events);
+            batch.messages.extend(item_batch.messages);
+            batch.thought_steps.extend(item_batch.thought_steps);
+            batch.action_steps.extend(item_batch.action_steps);
             projected.push((event, record, media_record));
         }
-        {
+        let write_result = {
             let _timer = self.metrics.start(
                 MetricsPhase::EventAppend,
                 &ctx.session_id,
@@ -490,7 +487,10 @@ impl ReActEngine {
             );
             TranscriptBatchWriter::new(self.db.clone(), self.event_store.clone())
                 .write(&ctx.session_id, batch)
-                .await?;
+                .await?
+        };
+        if let Some(created_at) = write_result.message_created_at.last() {
+            self.note_last_msg_at(&ctx.session_id, Some(created_at.clone()));
         }
         for (event, record, media_record) in projected {
             self.apply_transcript_projection(ctx, event, record, state, media_record)
@@ -1223,29 +1223,36 @@ mod tests {
             )
             .await
             .unwrap();
-        for (id, name) in [("c1", "a"), ("c2", "b")] {
+        let events = [("c1", "a"), ("c2", "b")]
+            .into_iter()
+            .map(|(id, name)| TranscriptEvent::ToolResult {
+                canonical_observation: format!("r{name}"),
+                history_observation: format!("r{name}"),
+                tool_call_id: Some(id.into()),
+                action: Action {
+                    tool_name: name.into(),
+                    tool_input: serde_json::json!({}),
+                    is_final: false,
+                    tool_call_id: Some(id.into()),
+                },
+                action_index: if id == "c1" { 0 } else { 1 },
+                step_id: format!("step-{id}"),
+                observation_card: None,
+            })
+            .collect();
+        engine
+            .apply_transcript_batch(&ctx, events, &mut state)
+            .await
+            .unwrap();
+        assert_eq!(
             engine
-                .apply_transcript(
-                    &ctx,
-                    TranscriptEvent::ToolResult {
-                        canonical_observation: format!("r{name}"),
-                        history_observation: format!("r{name}"),
-                        tool_call_id: Some(id.into()),
-                        action: Action {
-                            tool_name: name.into(),
-                            tool_input: serde_json::json!({}),
-                            is_final: false,
-                            tool_call_id: Some(id.into()),
-                        },
-                        action_index: if id == "c1" { 0 } else { 1 },
-                        step_id: format!("step-{id}"),
-                        observation_card: None,
-                    },
-                    &mut state,
-                )
-                .await
-                .unwrap();
-        }
+                .event_store
+                .read_active_transcript(&session.id)
+                .unwrap()
+                .len(),
+            3,
+            "thought plus two tool results must share one ordered batch"
+        );
         let (_, rounds) = project_transcript(&state.events);
         assert_eq!(rounds.len(), 1);
         assert_eq!(rounds[0].tools.len(), 2);

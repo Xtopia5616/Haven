@@ -20,3 +20,4 @@ pub use repositories::session_events::{
     TRANSCRIPT_EVENT_TYPE, TranscriptActionStepProjection, TranscriptBatch, TranscriptBatchResult,
     TranscriptMessageProjection, TranscriptThoughtStepProjection,
 };
+pub use repositories::usage::LlmCallUsageInput;

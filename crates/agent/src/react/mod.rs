@@ -936,13 +936,18 @@ impl ReActEngine {
         usages: &[haven_tools::ToolLlmUsage],
         emitter: &Arc<dyn AgentEventEmitter>,
     ) {
+        struct PendingToolUsage {
+            input: haven_memory::LlmCallUsageInput,
+            payload: UsagePayload,
+        }
+
+        let mut pending = Vec::with_capacity(usages.len());
         for tool_usage in usages {
-            let usage = haven_llm::LlmCallUsage {
-                role: tool_usage.role,
-                usage: tool_usage.usage.clone(),
-                model: tool_usage.model.clone(),
-                duration_ms: tool_usage.duration_ms,
-            };
+            let usage = tool_usage.usage.clone().normalize();
+            if usage.prompt_tokens == 0 && usage.completion_tokens == 0 && usage.total_tokens == 0 {
+                continue;
+            }
+            let role = tool_usage.role;
             let call_kind = match tool_usage.call_kind {
                 "media" => "media",
                 "tool" => "tool",
@@ -954,14 +959,99 @@ impl ReActEngine {
                     "tool"
                 }
             };
-            self.record_usage_at_step(
+            let step_cost = self.router().compute_cost(role, &usage).await;
+            let model = tool_usage
+                .model
+                .clone()
+                .or_else(|| usage.model_name.clone());
+            let cache_accounting = usage.cache_accounting.as_str().to_string();
+            let cache_diagnostics = usage
+                .cache_diagnostics
+                .as_ref()
+                .and_then(|value| serde_json::to_string(value).ok());
+            let payload = UsagePayload {
+                session_id: session_id.to_string(),
+                prompt_tokens: usage.prompt_tokens,
+                completion_tokens: usage.completion_tokens,
+                total_tokens: usage.total_tokens,
+                cached_tokens: usage.cached_tokens,
+                cache_creation_tokens: usage.cache_creation_tokens,
+                cache_miss_tokens: usage.cache_miss_tokens(),
+                context_tokens: usage.context_tokens(),
+                cache_exclusive: usage.cache_exclusive_of_prompt(),
+                cache_accounting: cache_accounting.clone(),
+                cost_usd: step_cost,
+                model: model.clone(),
+                cumulative_prompt_tokens: 0,
+                cumulative_completion_tokens: 0,
+                cumulative_total_tokens: 0,
+                cumulative_cached_tokens: 0,
+                cumulative_cache_creation_tokens: 0,
+                cumulative_cache_miss_tokens: 0,
+                cache_diagnostics: usage.cache_diagnostics.clone(),
+                cumulative_cost_usd: None,
+                context_window: None,
+                step_number: Some(step_number as u32),
+                duration_ms: tool_usage.duration_ms,
+                role: Some(role.as_str().to_string()),
+                call_kind: call_kind.to_string(),
+                has_cost: step_cost.is_some(),
+            };
+            pending.push(PendingToolUsage {
+                input: haven_memory::LlmCallUsageInput {
+                    step_number: Some(step_number),
+                    role: role.as_str().to_string(),
+                    call_kind: call_kind.to_string(),
+                    model,
+                    prompt_tokens: usage.prompt_tokens,
+                    completion_tokens: usage.completion_tokens,
+                    total_tokens: usage.total_tokens,
+                    cached_tokens: usage.cached_tokens,
+                    cache_creation_tokens: usage.cache_creation_tokens,
+                    cache_miss_tokens: usage.cache_miss_tokens(),
+                    cache_accounting,
+                    cache_diagnostics,
+                    cost_usd: step_cost.unwrap_or(0.0),
+                    has_cost: step_cost.is_some(),
+                    duration_ms: tool_usage.duration_ms,
+                    context_tokens: usage.context_tokens(),
+                    context_window: None,
+                },
+                payload,
+            });
+        }
+
+        if pending.is_empty() {
+            return;
+        }
+
+        let inputs = pending
+            .iter()
+            .map(|item| item.input.clone())
+            .collect::<Vec<_>>();
+        let db = self.db.clone();
+        let session_id_for_persist = session_id.to_string();
+        let persist = tokio::task::spawn_blocking(move || {
+            db.persist_llm_call_batch_and_refresh_session_usage(&session_id_for_persist, &inputs)
+        });
+        match persist.await {
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => tracing::warn!(
+                "ReAct: failed to persist tool usage batch for session {} step {}: {}",
                 session_id,
-                Some(step_number),
-                std::slice::from_ref(&usage),
-                call_kind,
-                Some(emitter),
-            )
-            .await;
+                step_number,
+                error
+            ),
+            Err(error) => tracing::warn!(
+                "ReAct: tool usage batch persistence task failed for session {} step {}: {}",
+                session_id,
+                step_number,
+                error
+            ),
+        }
+
+        for item in pending {
+            EventDispatcher::emit_usage_from(emitter, item.payload).await;
         }
     }
 

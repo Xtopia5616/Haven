@@ -52,19 +52,38 @@ impl ToolBatchState {
         results: ToolBatchResults,
         state: &mut ReActState,
     ) -> anyhow::Result<()> {
+        let mut transcript_events = Vec::with_capacity(results.slots.len());
+        let mut tool_usages = Vec::new();
         for result in results.into_ordered() {
-            self.commit_tool_result(engine, ctx, result, state).await?;
+            let event = self
+                .prepare_tool_result(ctx, result, &mut tool_usages)
+                .await?;
+            transcript_events.push(event);
         }
+        // Tool-owned model calls are diagnostics, but they are still part of
+        // this ordered batch. Persist all of them in one DB transaction before
+        // projecting the observations so a large tool batch does not multiply
+        // SQLite lock waits by the number of calls.
+        engine
+            .record_tool_usage(
+                &ctx.session_id,
+                ctx.step_num as i32,
+                &tool_usages,
+                &ctx.emitter,
+            )
+            .await;
+        engine
+            .apply_transcript_batch(ctx, transcript_events, state)
+            .await?;
         Ok(())
     }
 
-    pub(super) async fn commit_tool_result(
+    async fn prepare_tool_result(
         &mut self,
-        engine: &ReActEngine,
         ctx: &StepCtx,
         result: CompletedTool,
-        state: &mut ReActState,
-    ) -> anyhow::Result<()> {
+        tool_usages: &mut Vec<ToolLlmUsage>,
+    ) -> anyhow::Result<TranscriptEvent> {
         let CompletedTool {
             action,
             tool_name,
@@ -85,15 +104,7 @@ impl ToolBatchState {
             step_id,
             action_index,
         } = result;
-
-        engine
-            .record_tool_usage(
-                &ctx.session_id,
-                ctx.step_num as i32,
-                &llm_usage,
-                &ctx.emitter,
-            )
-            .await;
+        tool_usages.extend(llm_usage);
 
         if is_error
             && matches!(
@@ -154,34 +165,27 @@ impl ToolBatchState {
         } else {
             step_result.clone()
         };
-        engine
-            .apply_transcript(
-                ctx,
-                TranscriptEvent::ToolResult {
-                    canonical_observation: step_result,
-                    history_observation: display_observation,
-                    tool_call_id: tool_call_id.clone(),
-                    action,
-                    action_index,
-                    step_id: step_id.clone(),
-                    observation_card: Some(Box::new(ObservationCard {
-                        tool_name,
-                        tool_call_id,
-                        step_id,
-                        action_index,
-                        silent,
-                        ask_options,
-                        outcome,
-                        idempotency,
-                        operation_scope,
-                        renderer,
-                        result_envelope,
-                    })),
-                },
-                state,
-            )
-            .await?;
-        Ok(())
+        Ok(TranscriptEvent::ToolResult {
+            canonical_observation: step_result,
+            history_observation: display_observation,
+            tool_call_id: tool_call_id.clone(),
+            action,
+            action_index,
+            step_id: step_id.clone(),
+            observation_card: Some(Box::new(ObservationCard {
+                tool_name,
+                tool_call_id,
+                step_id,
+                action_index,
+                silent,
+                ask_options,
+                outcome,
+                idempotency,
+                operation_scope,
+                renderer,
+                result_envelope,
+            })),
+        })
     }
 }
 
