@@ -465,6 +465,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 
 | 日期 | 内容 |
 |---|---|
+| 2026-09-19 | §2.2 LLM：将 OpenAI Chat、Responses、Anthropic 与 Gemini provider adapter 按 wire、request、response、stream、mapping、features 与 provider-local golden fixtures 拆分；保持外部 wire、共享 transport/framing 与 LlmClient 边界不变（ADR 0169） |
 | 2026-09-15 | §2.5 Security / Tools / Agent / App：由 `AuthorizationEngine` 统一承载 typed `AuthorizationRequest`、`AuthorizationDecision` 与 `CapabilityScope`；scheduled、MCP、skill、Tauri/UI confirmation 共用同一请求与 receipt 校验路径（ADR 0163） |
 | 2026-09-15 | §2.6 App：引入 `ApplicationRuntime` 统一服务句柄、后台任务 owner、根取消 token、退出 shutdown/teardown；输入、session、action、MCP 和 bootstrap worker 按依赖顺序停止，pending scheduled action 保留恢复语义（ADR 0161） |
 | 2026-09-15 | §2.6 UI：以 typed `SessionReducer` 统一 live event、resume、rollback/reconnect replay、Interaction、usage 与 optimistic 状态；旧消息/用量 store 降为兼容投影（ADR 0160） |

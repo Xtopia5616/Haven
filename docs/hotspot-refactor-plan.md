@@ -4,7 +4,7 @@
 >
 > 本文是执行计划，不授权新增功能或顺手清理无关代码。每个目标应独立完成、独立验证、独立提交。
 >
-> 状态（2026-09-14）：机械拆分阶段 A–F 已完成；阶段 G 与第 2.3–2.5 节战略性重构仍是后续路线。本文件中的规模数字以本日期审计为准，历史完成记录保留原始日期。
+> 状态（2026-09-19）：机械拆分阶段 A–F 已完成；provider adapter 的内部模块化切片已完成；阶段 G 与第 2.3–2.5 节战略性重构仍是后续路线。本文件中的规模数字以本日期审计为准，历史完成记录保留原始日期。
 
 ## 1. 执行前必须阅读
 
@@ -328,13 +328,18 @@ pending row 继续保留，等待下一次启动恢复。配置热替换和更�
 
 当前 [`crates/llm/src/adapters`](../crates/llm/src/adapters) 的方向是正确的，但 `openai.rs`、`openai_responses.rs`、`anthropic.rs` 等文件同时包含 wire DTO、请求构造、响应解析、流式事件、usage 转换、错误分类和大量协议测试，导致修改一个协议细节时很难判断影响范围。
 
-不推翻 provider adapter，但建议逐步改成以下内部结构：
+不推翻 provider adapter；本轮已按以下内部结构完成第一阶段模块化：
 
 - `wire.rs` / `request.rs`：只负责 provider 请求 DTO 和序列化；
 - `response.rs` / `stream.rs`：只负责响应、SSE/JSONL 事件和 EOF flush；
 - `mapping.rs`：把 provider payload 转成统一 `LlmResponse`、tool call、usage 和 finish reason；
 - `features.rs`：集中声明 thinking、web search、cache、vision、audio 等能力及厂商差异；
 - `tests/fixtures`：用脱敏的 golden request/response/stream fixture 做协议回归。
+
+2026-09-19 已完成 OpenAI Chat、OpenAI Responses、Anthropic 和 Gemini 四个
+主要 adapter 的上述拆分；`tests.rs` 保留既有回归矩阵，`tests/fixtures` 增加
+request/response/stream golden 样例。共享 transport、framing、embedding、web
+search 与 provider feature policy 仍由已有 `adapters/*.rs` 模块统一拥有。
 
 同时执行以下收敛：
 
@@ -772,7 +777,7 @@ provider discovery 与 provider CRUD（两者共享同一模型缓存和引用�
 ## 4. 暂时不要做的事情
 
 - 不把 `haven-agent`、`haven-tools`、`haven-llm` 直接拆成多个 crate。
-- 不因为 `openai.rs`、`openai_responses.rs`、`anthropic.rs` 各约 2.5k 行就立即拆 provider crate；每个文件约一半是协议测试，先考虑把测试按 provider 移到独立测试模块。
+- 不因为 provider adapter 的模块目录继续扩大就立即拆 provider crate；本轮已将测试按 provider 移到独立 `tests.rs` 与 `tests/fixtures`，后续只在跨 crate 依赖或能力边界确实需要时另立任务。
 - 不拆 `memory/src/repositories/facts.rs` 的生产 facade；当前总计约 1,963 行，图谱写入、查询和维护已经分别位于其他模块。
 - 机械拆分阶段不修改已完成的 ReAct X12 事件写路径、消息/步骤投影、rollback 双时钟或数据库 schema；`session_events` cutover 已按 ADR 0159 落地，后续阶段只在同一 event envelope 上迁移 usage/action/UI reducer。
 - 机械拆分阶段不借机修改 provider wire payload、工具重试、安全确认、IPC event shape 或 UI 交互；provider adapter、AuthorizationEngine、Tauri bridge、ConfigService 和 ToolOperation 的概念级调整必须在各自任务中单独验收。

@@ -87,6 +87,7 @@
 - 2026-08-30：P2 LLM 适配器 embedding 边界收口：OpenAI-compatible embedding 的 URL、请求体、响应排序/校验与 usage 转换集中到 `adapters/embedding.rs`，保持 provider wire 契约不变（ADR 0026）。
 - 2026-08-30：P2 LLM 适配器 web search 边界收口：内置搜索 call 规范化、citation 结果和按 id 去重集中到 `adapters/web_search.rs`，保持 Agent/UI 结果契约不变（ADR 0027）。
 - 2026-08-30：P2 LLM 适配器 provider feature 边界收口：vendor 检测、thinking/reasoning 映射、echo 判定与长度限制集中到 `adapters/provider_features.rs`，保持 Chat/Responses wire 契约不变（ADR 0028）。
+- 2026-09-19：P2 LLM provider adapter 内部结构收口：OpenAI Chat、Responses、Anthropic 与 Gemini 按 wire、request、response、stream、mapping、features 拆分，provider-local request/response/stream golden fixtures 独立登记；保持外部 wire、共享 transport/framing 和 LlmClient 契约不变（ADR 0169）。
 - 2026-08-30：P2 Agent 事实抽取边界收口：事实抽取 DTO、字段 coercion、标签/谓词规范化、prompt 清洗与 JSON array 提取集中到 `fact_extraction.rs`，保持抽取与持久化语义不变（ADR 0029）。
 - 2026-08-30：P2 UI 会话消息状态边界收口：会话消息 map、草稿/会话迁移、rollback 截断与流式 sequence 去重集中到 `ui/src/lib/sessionMessages.ts`（ADR 0030）。
 - 2026-08-30：P2 UI 会话用量状态边界收口：token usage、LLM 调用明细、恢复/清理与用量格式化集中到 `ui/src/lib/sessionUsage.ts`（ADR 0031）。

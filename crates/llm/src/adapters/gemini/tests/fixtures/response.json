@@ -1,0 +1,1 @@
+{"candidates":[{"content":{"parts":[{"text":"Hello"}]},"finishReason":"STOP"}],"modelVersion":"gemini-test","usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}
