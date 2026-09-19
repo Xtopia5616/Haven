@@ -44,9 +44,25 @@ impl AgentLayer {
         // steering/supplement fallback paths below rely on it being on disk.
         // If the session turns out to be terminal, the persisted row is removed
         // again below so history never shows a ghost user message.
+        //
+        // For an existing session, keep the lifecycle gate for the whole
+        // ingress decision. Delete/clear may quiesce an actor concurrently,
+        // but must not remove its durable row between this insert and the
+        // mailbox enqueue; otherwise a successful UI send can become a ghost
+        // message or be routed to an orphan actor.
+        let lifecycle = if let Some(session_id) = active_session_id.as_deref() {
+            let lifecycle = self.executor.lifecycle_guard().await;
+            self.executor.ensure_lifecycle_open()?;
+            if self.executor.is_session_closing(session_id) {
+                anyhow::bail!("session is closing; retry after deletion");
+            }
+            Some(lifecycle)
+        } else {
+            None
+        };
         let mut persisted_msg = if let Some(session_id) = active_session_id.as_ref() {
             let msg = match self
-                .persist_message_parts(
+                .persist_message_parts_locked(
                     session_id,
                     "user",
                     transcript,
@@ -148,10 +164,11 @@ impl AgentLayer {
                     // Session may be stale/deleted — fall back to creating a new session
                     if self
                         .executor
-                        .ensure_session_loaded(session_id)
+                        .ensure_session_loaded_locked(session_id)
                         .await
                         .is_err()
                     {
+                        drop(lifecycle);
                         let (session, first_msg_id) = self
                             .create_session_with_first_message(transcript, attachments, voice)
                             .await?;
@@ -210,6 +227,7 @@ impl AgentLayer {
                             .await;
                         // Do not keep the reloaded terminal session in the working
                         // set — it was ended and should not be dispatchable.
+                        drop(lifecycle);
                         self.executor.remove_session(session_id).await?;
                         return Ok(ProcessResult::supplemented(None));
                     } else {

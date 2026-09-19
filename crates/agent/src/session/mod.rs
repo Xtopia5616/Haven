@@ -8,8 +8,8 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex as StdMutex};
 use tokio::sync::{Mutex, broadcast, watch};
 use tokio_util::sync::CancellationToken;
 
@@ -30,6 +30,40 @@ pub type RunHandler =
     Arc<dyn Fn(String) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>> + Send + Sync>;
 
 type DirectRunWaiters = HashMap<String, Vec<(usize, CancellationToken)>>;
+
+/// Process-local history-purge admission block with cancellation-safe cleanup.
+/// The block is held while runs quiesce and durable rows are removed; dropping
+/// it always wakes the dispatcher so a cancelled cleanup cannot strand the
+/// whole supervisor in fail-closed mode forever.
+pub(crate) struct LifecycleBlockGuard {
+    blocked: Arc<std::sync::atomic::AtomicBool>,
+    dispatch_tx: watch::Sender<u64>,
+}
+
+impl Drop for LifecycleBlockGuard {
+    fn drop(&mut self) {
+        self.blocked
+            .store(false, std::sync::atomic::Ordering::Release);
+        self.dispatch_tx.send_modify(|counter| *counter += 1);
+    }
+}
+
+/// Process-local close marker with cancellation-safe cleanup. A destructive
+/// lifecycle operation must block new admissions while it quiesces a session,
+/// but a cancelled caller must not leave that session permanently closed.
+pub(crate) struct SessionClosingGuard {
+    sessions: Arc<StdMutex<HashSet<String>>>,
+    session_id: String,
+}
+
+impl Drop for SessionClosingGuard {
+    fn drop(&mut self) {
+        self.sessions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&self.session_id);
+    }
+}
 
 /// Absolute fail-closed ceiling for an unanswered **scheduled** confirmation
 /// (R2). The interactive UI countdown (120s) starts when the dialog is
@@ -196,11 +230,11 @@ pub struct SessionSupervisor {
     /// Set only while the destructive history-clear operation is quiescing.
     /// New session creation/loading and dispatch admission fail closed until
     /// the durable purge has completed.
-    lifecycle_blocked: std::sync::atomic::AtomicBool,
+    lifecycle_blocked: Arc<std::sync::atomic::AtomicBool>,
     /// Session-scoped closing markers close the gap between quiescing one
     /// session and taking the registry gate. Direct resumes and dispatch
     /// claims must not start after a delete has linearized its close request.
-    closing_sessions: Arc<Mutex<HashSet<String>>>,
+    closing_sessions: Arc<StdMutex<HashSet<String>>>,
     /// Direct resumes waiting for a run slot can be cancelled by delete/clear
     /// instead of waiting for an unrelated session to release capacity.
     direct_run_waiters: Arc<Mutex<DirectRunWaiters>>,
@@ -261,8 +295,8 @@ impl SessionSupervisor {
             actors: Arc::new(Mutex::new(HashMap::new())),
             admission: Arc::new(dispatcher::RunAdmission::new(max_concurrent.max(1))),
             lifecycle_gate: Arc::new(Mutex::new(())),
-            lifecycle_blocked: std::sync::atomic::AtomicBool::new(false),
-            closing_sessions: Arc::new(Mutex::new(HashSet::new())),
+            lifecycle_blocked: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            closing_sessions: Arc::new(StdMutex::new(HashSet::new())),
             direct_run_waiters: Arc::new(Mutex::new(HashMap::new())),
             direct_waiter_id: AtomicUsize::new(0),
             dispatcher_started: std::sync::atomic::AtomicBool::new(false),
@@ -290,8 +324,11 @@ impl SessionSupervisor {
         self.lifecycle_gate.clone().lock_owned().await
     }
 
-    pub(crate) async fn is_session_closing(&self, session_id: &str) -> bool {
-        self.closing_sessions.lock().await.contains(session_id)
+    pub(crate) fn is_session_closing(&self, session_id: &str) -> bool {
+        self.closing_sessions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .contains(session_id)
     }
 
     pub(crate) async fn register_direct_waiter(
@@ -341,7 +378,11 @@ impl SessionSupervisor {
         handle
     }
 
-    pub(crate) async fn remove_actor(&self, session_id: &str) -> Option<actor::SessionActorHandle> {
+    /// Remove an actor when the caller already owns [`lifecycle_guard`].
+    pub(crate) async fn remove_actor_locked(
+        &self,
+        session_id: &str,
+    ) -> Option<actor::SessionActorHandle> {
         self.actors.lock().await.remove(session_id)
     }
 
@@ -874,6 +915,91 @@ mod tests {
             .unwrap();
         assert!(result.is_none());
         drop(held);
+    }
+
+    #[tokio::test]
+    async fn closing_marker_is_released_when_delete_task_is_cancelled() {
+        let exec = make_executor(1);
+        let session = exec.create_session("cancelled delete").await.unwrap();
+        let exec_for_delete = exec.clone();
+        let session_id = session.id.clone();
+        let delete = tokio::spawn(async move {
+            let _closing = exec_for_delete
+                .begin_session_closing(&session_id)
+                .await
+                .unwrap();
+            std::future::pending::<()>().await;
+        });
+
+        for _ in 0..100 {
+            if exec.is_session_closing(&session.id) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(exec.is_session_closing(&session.id));
+        delete.abort();
+        let _ = delete.await;
+        assert!(!exec.is_session_closing(&session.id));
+    }
+
+    #[tokio::test]
+    async fn duplicate_closing_admission_is_rejected() {
+        let exec = make_executor(1);
+        let session = exec.create_session("duplicate close").await.unwrap();
+        let first = exec.begin_session_closing(&session.id).await.unwrap();
+        let second = exec.begin_session_closing(&session.id).await;
+        assert!(second.is_err());
+        drop(first);
+        assert!(!exec.is_session_closing(&session.id));
+    }
+
+    #[tokio::test]
+    async fn lifecycle_block_is_released_when_cleanup_task_is_cancelled() {
+        let exec = make_executor(1);
+        let exec_for_cleanup = exec.clone();
+        let cleanup = tokio::spawn(async move {
+            let _block = exec_for_cleanup.begin_lifecycle_block().unwrap();
+            std::future::pending::<()>().await;
+        });
+
+        for _ in 0..100 {
+            if exec.ensure_lifecycle_open().is_err() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(exec.ensure_lifecycle_open().is_err());
+        cleanup.abort();
+        let _ = cleanup.await;
+        assert!(exec.ensure_lifecycle_open().is_ok());
+    }
+
+    #[tokio::test]
+    async fn terminal_actor_removal_waits_for_lifecycle_gate() {
+        let exec = make_executor(1);
+        let session = exec.create_session("gated terminal removal").await.unwrap();
+        let lifecycle = exec.lifecycle_guard().await;
+        let exec_for_transition = exec.clone();
+        let session_id = session.id.clone();
+        let transition = tokio::spawn(async move {
+            exec_for_transition
+                .update_session_status(&session_id, SessionStatus::Completed)
+                .await
+                .unwrap();
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        assert!(
+            exec.actor_for(&session.id).await.is_some(),
+            "terminal cleanup must not remove an actor outside the lifecycle gate"
+        );
+        drop(lifecycle);
+        tokio::time::timeout(std::time::Duration::from_secs(1), transition)
+            .await
+            .expect("terminal status transition should finish")
+            .unwrap();
+        assert!(exec.actor_for(&session.id).await.is_none());
     }
 
     /// A session terminated by end_session between the old find/mark window must

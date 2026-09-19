@@ -147,7 +147,34 @@ impl AgentLayer {
     /// Persist a message into the session's message stream (conversation history).
     /// Returns the persisted message so callers can roll it back precisely
     /// (e.g. when the session turns out to be terminal right after).
+    #[cfg(test)]
     pub(crate) async fn persist_message_parts(
+        &self,
+        session_id: &str,
+        role: &str,
+        content: &str,
+        message_type: Option<&str>,
+        attachments: &[haven_common::types::MessageAttachment],
+        voice: bool,
+    ) -> anyhow::Result<haven_memory::repositories::messages::Message> {
+        let _lifecycle = self.executor.lifecycle_guard().await;
+        self.persist_message_parts_locked(
+            session_id,
+            role,
+            content,
+            message_type,
+            attachments,
+            voice,
+        )
+        .await
+    }
+
+    /// Persist a message while the caller already owns the supervisor
+    /// lifecycle gate. Ingress uses this to make the durable user-message
+    /// insert and actor routing one close/delete-safe operation; session
+    /// creation also uses it before exposing a new Pending actor.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn persist_message_parts_locked(
         &self,
         session_id: &str,
         role: &str,
@@ -907,7 +934,7 @@ impl AgentLayer {
         // the dispatcher can pick the session up; if persisting fails, remove
         // the session row again so no input-less session ever gets dispatched.
         let first_msg = match self
-            .persist_message_parts(
+            .persist_message_parts_locked(
                 &record.id,
                 "user",
                 input,

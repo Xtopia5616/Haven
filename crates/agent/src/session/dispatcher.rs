@@ -238,15 +238,17 @@ impl SessionSupervisor {
     }
 
     pub(crate) async fn try_claim_pending(&self) -> Option<String> {
-        if self
-            .lifecycle_blocked
-            .load(std::sync::atomic::Ordering::Acquire)
-        {
-            return None;
-        }
         loop {
+            // Claiming is a lifecycle admission, not just a queue operation.
+            // Keep the registry gate across the pop + closing check + actor
+            // claim so delete/clear cannot finish quiescing and remove the
+            // actor between the check and the run bit transition.
+            let _lifecycle = self.lifecycle_guard().await;
+            if self.ensure_lifecycle_open().is_err() {
+                return None;
+            }
             let session_id = self.pending_queue.lock().await.pop_front()?;
-            if self.is_session_closing(&session_id).await {
+            if self.is_session_closing(&session_id) {
                 continue;
             }
             let Some(actor) = self.actor_for(&session_id).await else {
@@ -274,7 +276,8 @@ impl SessionSupervisor {
         if run.terminal {
             self.dequeue_pending(session_id).await;
             self.cleanup_session_maps(session_id).await;
-            self.remove_actor(session_id).await;
+            let _lifecycle = self.lifecycle_guard().await;
+            self.remove_actor_locked(session_id).await;
         } else if run.pending {
             self.enqueue_pending(session_id).await;
             self.wake_dispatcher();
@@ -341,7 +344,7 @@ impl SessionSupervisor {
             // always wake a direct resume that is blocked on capacity.
             let _lifecycle = self.lifecycle_guard().await;
             if self.ensure_lifecycle_open().is_err()
-                || self.is_session_closing(session_id).await
+                || self.is_session_closing(session_id)
                 || self.actor_for(session_id).await.is_none()
                 || actor.is_running().await
             {
@@ -361,7 +364,7 @@ impl SessionSupervisor {
         // deleted.
         let _lifecycle = self.lifecycle_guard().await;
         if self.ensure_lifecycle_open().is_err()
-            || self.is_session_closing(session_id).await
+            || self.is_session_closing(session_id)
             || self.actor_for(session_id).await.is_none()
             || actor.is_running().await
         {

@@ -34,8 +34,15 @@ Cleanup also used to continue after a run-exit timeout. That allowed a late
   supervisor lifecycle gate. Creation, loading, deletion, and history purge
   use the same gate; deletion first records a session-scoped closing marker so
   direct runs and dispatcher claims cannot reopen the session between quiesce
-  and mutation. Direct runs re-check actor membership under the gate after
-  waiting for admission, and delete/clear cancels direct admission waiters.
+  and mutation. Dispatcher claims and actor removal also hold the gate, so the
+  closing check, run-bit transition, and registry mutation are one admission
+  boundary. Direct runs re-check actor membership under the gate after waiting
+  for admission, delete/clear cancels direct admission waiters, and the
+  closing marker is cancellation-safe.
+- Existing-session user ingress holds the same gate across the durable message
+  insert and actor mailbox routing. This is a short lifecycle window, not a
+  run lock: independent sessions still consume run admission concurrently, but
+  deletion cannot leave a persisted ghost message or an orphan actor route.
 - Make destructive cleanup two-phase: first block new lifecycle/dispatch
   admissions and cancel/dequeue/join every current run, then mutate the actor
   registry and durable rows. A run-exit timeout is an error and aborts the
@@ -78,9 +85,10 @@ authority; no IPC or database migration is introduced.
 
 Regression coverage exercises admission resize after active permits, duplicate
 dispatcher protection, actor/row deletion together, run-exit timeout
-propagation, cancelling a direct resume waiting for capacity, same-session
-FIFO, independent-session parallel submission, and draft-lane ordering. Run
-the workspace Rust tests and the UI check/test gates before release.
+propagation, cancelling a direct resume waiting for capacity, cancellation-safe
+close markers, gated terminal actor removal, same-session FIFO,
+independent-session parallel submission, and draft-lane ordering. Run the
+workspace Rust tests and the UI check/test gates before release.
 
 Rollback is a source revert. If a release exposes a new lifecycle failure,
 stop dispatch and reset the affected test-version session state according to
