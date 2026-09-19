@@ -1842,6 +1842,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn illegal_terminal_transition_is_rejected_without_mutating_session() {
+        let exec = make_executor(1);
+        let session = exec.create_session("illegal transition").await.unwrap();
+        exec.update_session_status(&session.id, SessionStatus::Error)
+            .await
+            .unwrap();
+
+        let error = exec
+            .update_session_status(&session.id, SessionStatus::Completed)
+            .await
+            .expect_err("Error -> Completed must not be reported as success");
+        assert!(error.to_string().contains("illegal session transition"));
+        assert_eq!(
+            exec.get_session_status(&session.id).await,
+            Some(SessionStatus::Error)
+        );
+    }
+
+    #[tokio::test]
     async fn unknown_status_string_maps_to_error() {
         assert_eq!(
             SessionStatus::from_status_str("bogus"),

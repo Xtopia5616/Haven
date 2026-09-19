@@ -90,27 +90,80 @@ impl Database {
         Ok(out)
     }
 
-    /// Complete a scheduled action. Terminal rows remain durable history and
-    /// are no longer re-armed on the next startup.
-    pub fn complete_scheduled_action(&self, id: &str, finished_at: &str) -> anyhow::Result<()> {
+    /// Claim a scheduled action's trigger. Terminal rows remain durable history
+    /// and are no longer re-armed on the next startup.
+    pub fn start_scheduled_action(&self, id: &str, started_at: &str) -> anyhow::Result<bool> {
         let conn = self.conn();
-        conn.execute(
-            "UPDATE actions SET status = 'completed', started_at = COALESCE(started_at, due_at), finished_at = ?2
+        let changed = conn.execute(
+            "UPDATE actions SET status = 'running', started_at = ?2
              WHERE id = ?1 AND kind = 'scheduled' AND status = 'waiting'",
-            rusqlite::params![id, finished_at],
+            rusqlite::params![id, started_at],
         )?;
-        Ok(())
+        Ok(changed > 0)
     }
 
-    /// Cancel a waiting scheduled action while retaining its terminal history.
-    pub fn cancel_scheduled_action(&self, id: &str, finished_at: &str) -> anyhow::Result<()> {
+    /// Put a scheduled action back into its durable waiting state when its
+    /// trigger could not be delivered to a live consumer.
+    pub fn requeue_scheduled_action(&self, id: &str) -> anyhow::Result<bool> {
         let conn = self.conn();
-        conn.execute(
-            "UPDATE actions SET status = 'cancelled', started_at = COALESCE(started_at, due_at), finished_at = ?2
-             WHERE id = ?1 AND kind = 'scheduled' AND status = 'waiting'",
+        let changed = conn.execute(
+            "UPDATE actions SET status = 'waiting', started_at = NULL, finished_at = NULL
+             WHERE id = ?1 AND kind = 'scheduled' AND status = 'running'",
+            rusqlite::params![id],
+        )?;
+        Ok(changed > 0)
+    }
+
+    /// Finish a scheduled action after the actual trigger work has completed.
+    /// The caller supplies the single timestamp used by both persistence and
+    /// the in-memory/UI event projection.
+    pub fn finish_scheduled_action(
+        &self,
+        id: &str,
+        status: ActionStatus,
+        error_reason: Option<&str>,
+        finished_at: &str,
+    ) -> anyhow::Result<bool> {
+        if !matches!(
+            status,
+            ActionStatus::Completed | ActionStatus::Failed | ActionStatus::Cancelled
+        ) {
+            anyhow::bail!("scheduled action terminal status must be terminal");
+        }
+        let conn = self.conn();
+        let changed = conn.execute(
+            "UPDATE actions SET status = ?2, started_at = COALESCE(started_at, due_at),
+                 error_reason = ?3, finished_at = ?4
+             WHERE id = ?1 AND kind = 'scheduled' AND status = 'running'",
+            rusqlite::params![id, status.as_str(), error_reason, finished_at],
+        )?;
+        Ok(changed > 0)
+    }
+
+    /// Compatibility helper for repository callers that complete a scheduled
+    /// row directly. The row must already be `running`; new runtime paths use
+    /// [`Database::finish_scheduled_action`] so the terminal status records
+    /// the actual trigger outcome.
+    pub fn complete_scheduled_action(&self, id: &str, finished_at: &str) -> anyhow::Result<bool> {
+        let conn = self.conn();
+        let changed = conn.execute(
+            "UPDATE actions SET status = 'completed', started_at = COALESCE(started_at, due_at), finished_at = ?2
+             WHERE id = ?1 AND kind = 'scheduled' AND status = 'running'",
             rusqlite::params![id, finished_at],
         )?;
-        Ok(())
+        Ok(changed > 0)
+    }
+
+    /// Cancel a waiting or currently-running scheduled action while retaining
+    /// its terminal history.
+    pub fn cancel_scheduled_action(&self, id: &str, finished_at: &str) -> anyhow::Result<bool> {
+        let conn = self.conn();
+        let changed = conn.execute(
+            "UPDATE actions SET status = 'cancelled', started_at = COALESCE(started_at, due_at), finished_at = ?2
+             WHERE id = ?1 AND kind = 'scheduled' AND status IN ('waiting', 'running')",
+            rusqlite::params![id, finished_at],
+        )?;
+        Ok(changed > 0)
     }
 }
 
@@ -266,10 +319,10 @@ impl Database {
     }
 
     /// Remove a persisted action (background or scheduled) by id.
-    pub fn delete_action(&self, id: &str) -> anyhow::Result<()> {
+    pub fn delete_action(&self, id: &str) -> anyhow::Result<bool> {
         let conn = self.conn();
-        conn.execute("DELETE FROM actions WHERE id = ?1", rusqlite::params![id])?;
-        Ok(())
+        let changed = conn.execute("DELETE FROM actions WHERE id = ?1", rusqlite::params![id])?;
+        Ok(changed > 0)
     }
 
     /// Mark background-action rows left `running` by a previous process as
@@ -281,7 +334,7 @@ impl Database {
             "UPDATE actions
              SET status = 'failed', error_reason = 'App restarted while the action was running',
                  finished_at = datetime('now')
-             WHERE kind = 'background' AND status = 'running'",
+             WHERE kind IN ('background', 'scheduled') AND status = 'running'",
             [],
         )?;
         Ok(n)
@@ -370,6 +423,8 @@ mod tests {
             None,
         )
         .unwrap();
+        db.start_scheduled_action("action-1", "2026-08-04T02:00:00Z")
+            .unwrap();
         db.complete_scheduled_action("action-1", "2026-08-04T02:00:01Z")
             .unwrap();
         assert!(db.list_pending_scheduled_actions().unwrap().is_empty());
@@ -476,6 +531,8 @@ mod tests {
             None,
         )
         .unwrap();
+        db.start_scheduled_action("action-1", "2026-08-04T02:00:00Z")
+            .unwrap();
         db.complete_scheduled_action("action-1", "2026-08-04T02:00:01Z")
             .unwrap();
         db.save_action("action-2", None, "echo", "2026-08-09T10:00:00Z")
@@ -498,6 +555,20 @@ mod tests {
             .unwrap();
         db.save_action("action-2", None, "ping", "2026-08-09T10:01:00Z")
             .unwrap();
+        db.save_scheduled_action(
+            "action-3",
+            "2026-08-09T10:02:00Z",
+            "Scheduled",
+            "resume",
+            "tool",
+            None,
+            Some("notify"),
+            None,
+            None,
+        )
+        .unwrap();
+        db.start_scheduled_action("action-3", "2026-08-09T10:02:00Z")
+            .unwrap();
         db.finish_action(
             "action-1",
             ActionStatus::Completed,
@@ -511,7 +582,7 @@ mod tests {
         .unwrap();
 
         let n = db.mark_interrupted_actions().unwrap();
-        assert_eq!(n, 1);
+        assert_eq!(n, 2);
         let backgrounds = db.list_actions(Some("background")).unwrap();
         let running_left = backgrounds
             .iter()
@@ -521,6 +592,15 @@ mod tests {
         let j2 = backgrounds.iter().find(|a| a.id == "action-2").unwrap();
         assert_eq!(j2.status, ActionStatus::Failed);
         assert!(j2.error_reason.as_deref().unwrap().contains("restarted"));
+        let scheduled = db.get_action("action-3").unwrap().unwrap();
+        assert_eq!(scheduled.status, ActionStatus::Failed);
+        assert!(
+            scheduled
+                .error_reason
+                .as_deref()
+                .unwrap()
+                .contains("restarted")
+        );
         // Second run is a no-op.
         assert_eq!(db.mark_interrupted_actions().unwrap(), 0);
     }
@@ -530,7 +610,8 @@ mod tests {
         let db = test_db();
         db.save_action("action-1", None, "echo", "2026-08-09T10:00:00Z")
             .unwrap();
-        db.delete_action("action-1").unwrap();
+        assert!(db.delete_action("action-1").unwrap());
+        assert!(!db.delete_action("action-1").unwrap());
         assert!(db.list_actions(Some("background")).unwrap().is_empty());
     }
 }

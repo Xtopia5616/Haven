@@ -723,6 +723,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn runtime_shutdown_preserves_session_owned_scheduled_actions() {
+        let dir = tempdir().unwrap();
+        let loader = ConfigLoader::load_from(&dir.path().join("config.toml")).unwrap();
+        let state = AppState::new(&dir.path().join("test.db"), vec![], loader)
+            .await
+            .unwrap();
+        let session = state
+            .runtime
+            .executor
+            .create_session("scheduled owner")
+            .await
+            .unwrap();
+        let action_id = state
+            .runtime
+            .tools
+            .action_service()
+            .set(
+                haven_tools::builtin::scheduled_action::ScheduledActionSpec {
+                    due_at: None,
+                    delay_secs: Some(3600),
+                    watch_action_id: None,
+                    title: "Keep after exit".into(),
+                    body: "restore me".into(),
+                    mode: haven_tools::builtin::scheduled_action::ScheduleMode::Continue,
+                    session_id: Some(session.id.clone()),
+                    tool_name: None,
+                    tool_args: None,
+                    prompt: Some("continue later".into()),
+                },
+            )
+            .await
+            .unwrap();
+
+        state.runtime.shutdown().await;
+
+        let pending = state.runtime.db.list_pending_scheduled_actions().unwrap();
+        assert!(pending.iter().any(|row| row.id == action_id));
+        assert_eq!(
+            pending
+                .iter()
+                .find(|row| row.id == action_id)
+                .map(|row| row.status.as_str()),
+            Some("waiting")
+        );
+    }
+
+    #[tokio::test]
     async fn new_uses_existing_config() {
         let dir = tempdir().unwrap();
         let cfg_path = dir.path().join("config.toml");

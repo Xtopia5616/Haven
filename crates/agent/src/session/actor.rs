@@ -20,6 +20,7 @@ const ACTOR_MAILBOX_CAPACITY: usize = 128;
 
 #[derive(Debug)]
 pub(crate) struct StatusTransition {
+    pub changed: bool,
     pub pending: bool,
     pub terminal: bool,
 }
@@ -877,8 +878,9 @@ async fn transition(
     let old = state.info.status;
     if old == next {
         return Ok(StatusTransition {
+            changed: false,
             pending: next == SessionStatus::Pending,
-            terminal: next.is_terminal(),
+            terminal: false,
         });
     }
     if !old.can_transition_to(next) {
@@ -888,10 +890,11 @@ async fn transition(
             to = next.as_str(),
             "rejected illegal session transition"
         );
-        return Ok(StatusTransition {
-            pending: false,
-            terminal: false,
-        });
+        anyhow::bail!(
+            "illegal session transition {} -> {}",
+            old.as_str(),
+            next.as_str()
+        );
     }
     if persist {
         super::SessionSupervisor::persist_status(db, &state.info.id, next).await?;
@@ -900,6 +903,7 @@ async fn transition(
     state.info.updated_at = chrono::Utc::now().to_rfc3339();
     let _ = status.send(next);
     Ok(StatusTransition {
+        changed: true,
         pending: next == SessionStatus::Pending,
         terminal: next.is_terminal(),
     })

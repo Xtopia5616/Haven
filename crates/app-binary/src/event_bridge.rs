@@ -65,10 +65,6 @@ pub(crate) fn project_action_event(
             ACTION_CREATED_EVENT,
             ActionEvent::scheduled_from_value(payload, false),
         ),
-        (ActionKind::Scheduled, "action:updated") => (
-            ACTION_UPDATED_EVENT,
-            ActionEvent::scheduled_from_value(payload, true),
-        ),
         (ActionKind::Scheduled, "action:finished") => (
             ACTION_FINISHED_EVENT,
             ActionEvent::scheduled_from_value(payload, false),

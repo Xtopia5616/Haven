@@ -109,6 +109,7 @@ pub(crate) async fn persist_session_message(
 /// Recovery-only message insert. It deliberately leaves the in-flight scratch
 /// partial untouched until branch point, message projection, and recovery
 /// snapshot have all succeeded; the caller owns the final discard decision.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn persist_session_message_preserving_partial(
     executor: &crate::session::SessionSupervisor,
     session_id: &str,

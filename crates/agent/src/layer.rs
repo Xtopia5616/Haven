@@ -407,7 +407,7 @@ impl AgentLayer {
                     // Skip cancellations: a cancelled action was killed
                     // intentionally (end_session/rollback), so notifying would
                     // risk resurrecting an ended session.
-                    if comp.status == "cancelled" {
+                    if comp.status == haven_common::ActionStatus::Cancelled {
                         continue;
                     }
                     let Some(tid) = comp.session_id else {
@@ -433,7 +433,7 @@ impl AgentLayer {
                     // see the real error, not a multi-KB progress dump. The
                     // injected context is capped either way: the model needs
                     // the reason, not the full transcript.
-                    let reason = if comp.status == "failed" {
+                    let reason = if comp.status == haven_common::ActionStatus::Failed {
                         comp.status_json
                             .get("error_reason")
                             .and_then(|v| v.as_str())
@@ -446,7 +446,7 @@ impl AgentLayer {
                     let mut msg = format!(
                         "[Background action result]\naction_id: {}\nstatus: {}\n\n{}",
                         comp.action_id,
-                        comp.status,
+                        comp.status.as_str(),
                         truncate_notification(&reason, agent.limits().action_result_context_chars)
                     );
                     // Failed actions write the full output to a log file; point
@@ -512,10 +512,21 @@ impl AgentLayer {
                     }
                     // Active push so the user never has to poll for status:
                     // a toast (in-app + Windows) announces the transition.
-                    let (title, status_label) = match comp.status.as_str() {
-                        "completed" => ("后台任务已完成".to_string(), "已完成".to_string()),
-                        "cancelled" => ("后台任务已取消".to_string(), "已取消".to_string()),
-                        _ => ("后台任务失败".to_string(), "失败".to_string()),
+                    let (title, status_label) = match comp.status {
+                        haven_common::ActionStatus::Completed => {
+                            ("后台任务已完成".to_string(), "已完成".to_string())
+                        }
+                        haven_common::ActionStatus::Cancelled => {
+                            ("后台任务已取消".to_string(), "已取消".to_string())
+                        }
+                        haven_common::ActionStatus::Failed => {
+                            ("后台任务失败".to_string(), "失败".to_string())
+                        }
+                        haven_common::ActionStatus::Waiting
+                        | haven_common::ActionStatus::Running => {
+                            tracing::warn!(action_id = %comp.action_id, "received non-terminal background action completion");
+                            continue;
+                        }
                     };
                     let summary =
                         truncate_notification(&reason, agent.limits().notification_summary_chars);
@@ -541,13 +552,14 @@ impl AgentLayer {
         //   without a session id is an error (no fallback).
         let agent = self.clone();
         let tools = self.executor.get_tools();
+        let action_service = tools.action_service().clone();
         if let Some(mut rx) = tools.action_service().take_action_receiver() {
             let cancellation = cancellation.clone();
             tokio::spawn(async move {
                 loop {
                     let Some(event) = (tokio::select! {
                         _ = cancellation.cancelled() => return,
-                        event = rx.recv() => event,
+                        event = rx.recv_scheduled_with_recovery(action_service.as_ref()) => event,
                     }) else {
                         return;
                     };
@@ -562,7 +574,8 @@ impl AgentLayer {
                         session_id = %fired.session_id.as_deref().unwrap_or("-")
                     );
                     let _fire_guard = fire_span.enter();
-                    match fired.mode {
+                    let mut deferred = false;
+                    let outcome: Result<(), String> = match fired.mode {
                         ScheduleMode::Tool => {
                             if let Some(session_id) = fired.session_id.as_deref()
                                 && !agent.executor.session_is_live(session_id).await
@@ -574,78 +587,76 @@ impl AgentLayer {
                                         "定时任务未执行：关联会话已结束或不存在。",
                                     )
                                     .await;
-                                continue;
-                            }
-                            let Some(tool_name) = fired.tool_name else {
-                                agent
-                                    .events
-                                    .emit_notification(
-                                        &fired.title,
-                                        "定时任务未执行：缺少要调用的工具。",
-                                    )
-                                    .await;
-                                continue;
-                            };
-                            let args = fired.tool_args.unwrap_or(Value::Null);
-                            // R2: never block the sequential fired consumer.
-                            // Pre-check the gate; RequiresConfirmation → queue
-                            // pending + emit UI, then continue draining.
-                            let tools = agent.executor.get_tools();
-                            let authorization_request = tools
-                                .get_authorization_request(
-                                    fired.session_id.as_deref(),
-                                    &tool_name,
-                                    &args,
-                                )
-                                .await;
-                            let gate = tools
-                                .authorization()
-                                .authorize(&authorization_request)
-                                .await;
-                            match gate {
-                                haven_tools::AuthorizationDecision::Blocked { reason } => {
-                                    agent
-                                        .events
-                                        .emit_notification(
-                                            &fired.title,
-                                            &format!(
-                                                    "定时任务未执行：工具“{tool_name}”被安全策略拦截（{reason}）。"
-                                            ),
-                                        )
-                                        .await;
-                                }
-                                haven_tools::AuthorizationDecision::RequiresConfirmation {
-                                    receipt,
-                                    ..
-                                } => {
-                                    if agent
-                                        .executor
-                                        .request_scheduled_confirm(
-                                            fired.session_id.as_deref(),
-                                            &tool_name,
-                                            args,
-                                            receipt,
-                                            &fired.title,
-                                        )
-                                        .await
-                                        .is_none()
-                                    {
+                                Err("关联会话已结束或不存在".into())
+                            } else {
+                                let tool_name = match fired.tool_name {
+                                    Some(tool_name) => tool_name,
+                                    None => {
                                         agent
                                             .events
                                             .emit_notification(
                                                 &fired.title,
-                                                &format!(
-                                                    "定时任务未执行：工具“{tool_name}”的确认被拒绝或已超时。"
-                                                ),
+                                                "定时任务未执行：缺少要调用的工具。",
                                             )
                                             .await;
+                                        if let Err(error) = action_service
+                                            .fail_scheduled(&fired.action_id, "缺少要调用的工具")
+                                            .await
+                                        {
+                                            tracing::warn!(action_id = %fired.action_id, "failed to persist scheduled action failure: {error}");
+                                        }
+                                        continue;
                                     }
-                                }
-                                haven_tools::AuthorizationDecision::AutoApproved => {
-                                    // Do NOT pass Some(true): that would fail-open
-                                    // if the inner gate tightens between checks
-                                    // (TOCTOU). None re-checks and fail-closes.
-                                    let outcome = agent
+                                };
+                                let args = fired.tool_args.unwrap_or(Value::Null);
+                                let tools = agent.executor.get_tools();
+                                let authorization_request = tools
+                                    .get_authorization_request(
+                                        fired.session_id.as_deref(),
+                                        &tool_name,
+                                        &args,
+                                    )
+                                    .await;
+                                match tools
+                                    .authorization()
+                                    .authorize(&authorization_request)
+                                    .await
+                                {
+                                    haven_tools::AuthorizationDecision::Blocked { reason } => {
+                                        agent.events.emit_notification(
+                                            &fired.title,
+                                            &format!("定时任务未执行：工具“{tool_name}”被安全策略拦截（{reason}）。"),
+                                        ).await;
+                                        Err(reason)
+                                    }
+                                    haven_tools::AuthorizationDecision::RequiresConfirmation {
+                                        receipt,
+                                        ..
+                                    } => {
+                                        let queued = agent
+                                            .executor
+                                            .request_scheduled_confirm(
+                                                &fired.action_id,
+                                                fired.session_id.as_deref(),
+                                                &tool_name,
+                                                args,
+                                                receipt,
+                                                &fired.title,
+                                            )
+                                            .await
+                                            .is_some();
+                                        if queued {
+                                            deferred = true;
+                                            Ok(())
+                                        } else {
+                                            agent.events.emit_notification(
+                                                &fired.title,
+                                                &format!("定时任务未执行：工具“{tool_name}”的确认被拒绝或已超时。"),
+                                            ).await;
+                                            Err("确认通道不可用或确认被拒绝".into())
+                                        }
+                                    }
+                                    haven_tools::AuthorizationDecision::AutoApproved => match agent
                                         .executor
                                         .execute_gated(
                                             fired.session_id.as_deref(),
@@ -655,80 +666,81 @@ impl AgentLayer {
                                             None,
                                             None,
                                         )
-                                        .await;
-                                    match outcome {
+                                        .await
+                                    {
                                         Ok(g) if g.confirmed == Some(false) => {
-                                            agent
-                                                .events
-                                                .emit_notification(
+                                            agent.events.emit_notification(
                                                     &fired.title,
-                                                    &format!(
-                                                        "定时任务未执行：工具“{tool_name}”的确认被拒绝或已超时。"
-                                                    ),
-                                                )
-                                                .await;
+                                                    &format!("定时任务未执行：工具“{tool_name}”的确认被拒绝或已超时。"),
+                                                ).await;
+                                            Err("确认被拒绝或已超时".into())
                                         }
                                         Ok(g) => {
                                             let summary = truncate_notification(
                                                 &g.result.summary_text(),
                                                 agent.limits().notification_summary_chars,
                                             );
-                                            agent
-                                                .events
-                                                .emit_notification(
+                                            agent.events.emit_notification(
                                                     &fired.title,
-                                                    &format!(
-                                                        "定时任务调用工具“{tool_name}”的结果：\n{summary}"
-                                                    ),
-                                                )
-                                                .await;
+                                                    &format!("定时任务调用工具“{tool_name}”的结果：\n{summary}"),
+                                                ).await;
+                                            Ok(())
                                         }
-                                        Err(e) => {
-                                            agent
-                                                .events
-                                                .emit_notification(
+                                        Err(error) => {
+                                            let reason = error.to_string();
+                                            agent.events.emit_notification(
                                                     &fired.title,
-                                                    &format!(
-                                                        "定时任务调用工具“{tool_name}”失败：{e}"
-                                                    ),
-                                                )
-                                                .await;
+                                                    &format!("定时任务调用工具“{tool_name}”失败：{reason}"),
+                                                ).await;
+                                            Err(reason)
                                         }
-                                    }
+                                    },
                                 }
                             }
                         }
                         ScheduleMode::Continue => {
-                            let Some(message) = fired
+                            let message = match fired
                                 .prompt
                                 .as_deref()
                                 .map(str::trim)
                                 .filter(|prompt| !prompt.is_empty())
-                            else {
-                                agent
-                                    .events
-                                    .emit_notification(
-                                        &fired.title,
-                                        "定时任务未执行：继续会话缺少 prompt。",
-                                    )
-                                    .await;
-                                continue;
+                            {
+                                Some(message) => message,
+                                None => {
+                                    agent
+                                        .events
+                                        .emit_notification(
+                                            &fired.title,
+                                            "定时任务未执行：继续会话缺少 prompt。",
+                                        )
+                                        .await;
+                                    if let Err(error) = action_service
+                                        .fail_scheduled(&fired.action_id, "继续会话缺少 prompt")
+                                        .await
+                                    {
+                                        tracing::warn!(action_id = %fired.action_id, "failed to persist scheduled action failure: {error}");
+                                    }
+                                    continue;
+                                }
                             };
-                            // A continue-mode action requires the session it
-                            // continues; without one it cannot run (there is
-                            // no fallback to a brand-new session).
-                            let Some(session_id) = fired.session_id.clone() else {
-                                agent
-                                    .events
-                                    .emit_notification(
-                                        &fired.title,
-                                        &format!(
-                                            "定时任务 '{title}' 无法继续：未关联会话。",
-                                            title = fired.title
-                                        ),
-                                    )
-                                    .await;
-                                continue;
+                            let session_id = match fired.session_id.clone() {
+                                Some(session_id) => session_id,
+                                None => {
+                                    agent
+                                        .events
+                                        .emit_notification(
+                                            &fired.title,
+                                            "定时任务无法继续：未关联会话。",
+                                        )
+                                        .await;
+                                    if let Err(error) = action_service
+                                        .fail_scheduled(&fired.action_id, "未关联会话")
+                                        .await
+                                    {
+                                        tracing::warn!(action_id = %fired.action_id, "failed to persist scheduled action failure: {error}");
+                                    }
+                                    continue;
+                                }
                             };
                             if !agent.executor.session_is_live(&session_id).await {
                                 agent
@@ -738,34 +750,66 @@ impl AgentLayer {
                                         "定时任务无法继续：关联会话已结束或不存在。",
                                     )
                                     .await;
-                                continue;
+                                Err("关联会话已结束或不存在".into())
+                            } else {
+                                match agent
+                                    .process_input_with_attachments(
+                                        message,
+                                        Some(session_id),
+                                        &[],
+                                        false,
+                                    )
+                                    .await
+                                {
+                                    Ok(result) => {
+                                        tracing::info!(
+                                            "scheduled action {} resumed session: {:?}",
+                                            fired.action_id,
+                                            result
+                                        );
+                                        agent
+                                            .events
+                                            .emit_notification(&fired.title, &fired.body)
+                                            .await;
+                                        Ok(())
+                                    }
+                                    Err(error) => {
+                                        let reason = error.to_string();
+                                        tracing::warn!(
+                                            "scheduled action {} failed to resume session: {}",
+                                            fired.action_id,
+                                            reason
+                                        );
+                                        agent
+                                            .events
+                                            .emit_notification(
+                                                &fired.title,
+                                                &format!("定时任务继续会话失败：{reason}"),
+                                            )
+                                            .await;
+                                        Err(reason)
+                                    }
+                                }
                             }
-                            match agent
-                                .process_input_with_attachments(
-                                    message,
-                                    Some(session_id),
-                                    &[],
-                                    false,
+                        }
+                    };
+                    if !deferred {
+                        let result = if outcome.is_ok() {
+                            action_service.complete_scheduled(&fired.action_id).await
+                        } else {
+                            action_service
+                                .fail_scheduled(
+                                    &fired.action_id,
+                                    outcome
+                                        .as_ref()
+                                        .err()
+                                        .map(String::as_str)
+                                        .unwrap_or("scheduled action failed"),
                                 )
                                 .await
-                            {
-                                Ok(result) => tracing::info!(
-                                    "scheduled action {} resumed session: {:?}",
-                                    fired.action_id,
-                                    result
-                                ),
-                                Err(e) => tracing::warn!(
-                                    "scheduled action {} failed to resume session: {}",
-                                    fired.action_id,
-                                    e
-                                ),
-                            }
-                            // Also surface the notification so the user sees
-                            // the scheduled action while the session continues.
-                            agent
-                                .events
-                                .emit_notification(&fired.title, &fired.body)
-                                .await;
+                        };
+                        if let Err(error) = result {
+                            tracing::warn!(action_id = %fired.action_id, "failed to persist scheduled action terminal state: {error}");
                         }
                     }
                 }

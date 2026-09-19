@@ -807,6 +807,7 @@ impl SessionSupervisor {
     /// skips. Returns `None` when no confirm channel is wired (fail closed).
     pub async fn request_scheduled_confirm(
         self: &Arc<Self>,
+        action_id: &str,
         session_id: Option<&str>,
         tool_name: &str,
         tool_args: Value,
@@ -815,6 +816,7 @@ impl SessionSupervisor {
     ) -> Option<haven_common::types::ConfirmId> {
         let step_id = receipt.confirmation_id.clone();
         let request = crate::interaction::InteractionRequest::scheduled_confirm(
+            action_id.to_string(),
             session_id.unwrap_or("action"),
             tool_name.to_string(),
             tool_args,
@@ -921,13 +923,15 @@ impl SessionSupervisor {
         request: crate::interaction::InteractionRequest,
         confirmed: bool,
     ) {
-        let (session_id, tool_name, tool_args, receipt, title) = match request.details {
+        let (action_id, session_id, tool_name, tool_args, receipt, title) = match request.details {
             crate::interaction::InteractionDetails::ScheduledConfirm {
+                action_id,
                 tool_name,
                 tool_input,
                 receipt,
                 title,
             } => (
+                action_id,
                 (request.session_id != "action").then(|| request.session_id.clone()),
                 tool_name,
                 tool_input,
@@ -936,6 +940,7 @@ impl SessionSupervisor {
             ),
             _ => return,
         };
+        let action_service = self.tools.action_service();
         if confirmed
             && let Some(session_id) = session_id.as_deref()
             && !self.session_is_live(session_id).await
@@ -947,6 +952,9 @@ impl SessionSupervisor {
                     tool_name
                 ),
             });
+            let _ = action_service
+                .fail_scheduled(&action_id, "关联会话已结束或不存在")
+                .await;
             return;
         }
         if !confirmed {
@@ -957,6 +965,9 @@ impl SessionSupervisor {
                      confirmation was declined or timed out."
                 ),
             });
+            let _ = action_service
+                .fail_scheduled(&action_id, "确认被拒绝或已超时")
+                .await;
             return;
         }
         let outcome = self
@@ -972,6 +983,7 @@ impl SessionSupervisor {
         let summary_chars = self
             .notification_summary_chars
             .load(std::sync::atomic::Ordering::Relaxed);
+        let succeeded = outcome.is_ok();
         let body = match outcome {
             Ok(g) => {
                 let summary = crate::truncate_notification(&g.result.summary_text(), summary_chars);
@@ -979,6 +991,11 @@ impl SessionSupervisor {
             }
             Err(e) => format!("schedule tool '{tool_name}' failed: {e}"),
         };
+        if succeeded {
+            let _ = action_service.complete_scheduled(&action_id).await;
+        } else {
+            let _ = action_service.fail_scheduled(&action_id, &body).await;
+        }
         self.emit_event(SessionEvent::ScheduledConfirmOutcome { title, body });
     }
 

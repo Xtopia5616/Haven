@@ -270,14 +270,30 @@ impl SessionSupervisor {
     pub async fn clear_all_sessions(&self) -> anyhow::Result<()> {
         let _block = self.begin_lifecycle_block()?;
         async {
-            self.quiesce_all_sessions().await?;
+            self.quiesce_all_sessions(false).await?;
             let _lifecycle = self.lifecycle_guard().await;
             self.clear_all_sessions_locked().await
         }
         .await
     }
 
-    async fn quiesce_all_sessions(&self) -> anyhow::Result<()> {
+    /// Clear the in-memory session actors during normal application shutdown.
+    ///
+    /// A session-owned scheduled action is durable work, not a child process of
+    /// the actor.  It must remain `waiting` so ActionService can restore it on
+    /// the next startup.  Explicit session deletion/end still uses the regular
+    /// quiesce path and cancels all owned actions.
+    pub async fn clear_all_sessions_for_shutdown(&self) -> anyhow::Result<()> {
+        let _block = self.begin_lifecycle_block()?;
+        async {
+            self.quiesce_all_sessions(true).await?;
+            let _lifecycle = self.lifecycle_guard().await;
+            self.clear_all_sessions_locked().await
+        }
+        .await
+    }
+
+    async fn quiesce_all_sessions(&self, preserve_scheduled: bool) -> anyhow::Result<()> {
         let actors = self
             .actors
             .lock()
@@ -288,7 +304,11 @@ impl SessionSupervisor {
         for actor in &actors {
             self.cancel_direct_waiters(&actor.id).await;
             actor.cancel().cancel();
-            self.cancel_session_actions(&actor.id).await;
+            if preserve_scheduled {
+                self.cancel_session_background_actions(&actor.id).await;
+            } else {
+                self.cancel_session_actions(&actor.id).await;
+            }
             self.dequeue_pending(&actor.id).await;
         }
         for actor in &actors {
@@ -339,7 +359,7 @@ impl SessionSupervisor {
     pub async fn clear_sessions_and_delete(&self) -> anyhow::Result<usize> {
         let _block = self.begin_lifecycle_block()?;
         async {
-            self.quiesce_all_sessions().await?;
+            self.quiesce_all_sessions(false).await?;
             let _lifecycle = self.lifecycle_guard().await;
             self.clear_all_sessions_locked().await?;
             self.db.clone().run_blocking(|db| db.clear_sessions()).await
@@ -405,7 +425,7 @@ impl SessionSupervisor {
         &self,
         session_id: &str,
         status: SessionStatus,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<bool> {
         self.update_session_status_inner(session_id, status, true)
             .await
     }
@@ -413,7 +433,7 @@ impl SessionSupervisor {
         &self,
         session_id: &str,
         status: SessionStatus,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<bool> {
         self.update_session_status_inner(session_id, status, false)
             .await
     }
@@ -423,14 +443,17 @@ impl SessionSupervisor {
         session_id: &str,
         status: SessionStatus,
         persist: bool,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<bool> {
         let Some(actor) = self.actor_for(session_id).await else {
-            return Ok(());
+            return Ok(false);
         };
         let transition = actor.transition(status, persist).await?;
         if transition.pending {
             self.enqueue_pending(session_id).await;
             self.wake_dispatcher();
+        }
+        if !transition.changed {
+            return Ok(false);
         }
         if transition.terminal {
             self.cancel_direct_waiters(session_id).await;
@@ -445,7 +468,7 @@ impl SessionSupervisor {
                 self.remove_actor_locked(session_id).await;
             }
         }
-        Ok(())
+        Ok(true)
     }
 
     pub async fn cleanup_session_maps(&self, session_id: &str) {
@@ -547,6 +570,13 @@ impl SessionSupervisor {
         self.tools
             .action_service()
             .cancel_owned_by_session(session_id)
+            .await;
+    }
+
+    pub async fn cancel_session_background_actions(&self, session_id: &str) {
+        self.tools
+            .action_service()
+            .cancel_owned_background_by_session(session_id)
             .await;
     }
 

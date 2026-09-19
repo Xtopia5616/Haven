@@ -32,16 +32,16 @@ use haven_memory::Database;
 pub struct BackgroundActionCompletion {
     pub action_id: String,
     pub session_id: Option<String>,
-    /// Terminal status string: "completed", "failed", or "cancelled".
-    pub status: String,
+    /// Canonical terminal lifecycle status.
+    pub status: ActionStatus,
     /// The action's status JSON (same shape `status()` returns for terminal
     /// states), carrying the output/error payload.
     pub status_json: Value,
 }
 
-/// A scheduled action that reached its fire transition.  The agent consumes
-/// this through the same bus as process completions, so timer delivery cannot
-/// bypass the action state machine.
+/// A scheduled action that reached its durable `Waiting -> Running` trigger
+/// transition. The agent must acknowledge the actual work with
+/// [`ActionService::complete_scheduled`] or [`ActionService::fail_scheduled`].
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct ScheduledActionFired {
     pub action_id: String,
@@ -73,6 +73,28 @@ impl ActionCompletionReceiver {
                 Ok(event) => return Some(event),
                 Err(broadcast::error::RecvError::Lagged(skipped)) => {
                     tracing::warn!(skipped, "action completion receiver lagged")
+                }
+                Err(broadcast::error::RecvError::Closed) => return None,
+            }
+        }
+    }
+
+    /// Receive a scheduled trigger with recovery for broadcast lag. The
+    /// scheduled action remains in an in-memory unacknowledged set until the
+    /// actual work is acknowledged, so a lagged receiver can replay it rather
+    /// than silently losing the trigger.
+    pub async fn recv_scheduled_with_recovery(
+        &mut self,
+        service: &ActionService,
+    ) -> Option<ActionCompletion> {
+        loop {
+            match self.rx.recv().await {
+                Ok(event) => return Some(event),
+                Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                    tracing::warn!(skipped, "action completion receiver lagged");
+                    if let Some(fired) = service.pending_scheduled_fire().await {
+                        return Some(ActionCompletion::Scheduled(fired));
+                    }
                 }
                 Err(broadcast::error::RecvError::Closed) => return None,
             }
@@ -240,6 +262,10 @@ pub struct ActionService {
     /// One bus for process completions and timer fires. Consumers may filter
     /// their subscription by variant, but no action kind owns a second bus.
     completion_tx: broadcast::Sender<ActionCompletion>,
+    /// Scheduled triggers remain here until the agent acknowledges the actual
+    /// work. This is the recovery source when the transient broadcast receiver
+    /// falls behind.
+    pending_scheduled_fires: RwLock<HashMap<String, ScheduledActionFired>>,
     /// Max concurrent *running* actions (from `context_limits.background_max_actions`).
     max_actions: RwLock<usize>,
     /// Live-output tail cap (chars) for `action:output` preview events (from
@@ -281,6 +307,7 @@ impl ActionService {
             actions: RwLock::new(HashMap::new()),
             spawn_gate: tokio::sync::Mutex::new(()),
             completion_tx: tx,
+            pending_scheduled_fires: RwLock::new(HashMap::new()),
             max_actions: RwLock::new(64),
             job_tail_max_chars: RwLock::new(2000),
             job_output_emit_interval: RwLock::new(Duration::from_millis(1500)),
@@ -299,6 +326,15 @@ impl ActionService {
         Some(ActionCompletionReceiver {
             rx: self.completion_tx.subscribe(),
         })
+    }
+
+    async fn pending_scheduled_fire(&self) -> Option<ScheduledActionFired> {
+        self.pending_scheduled_fires
+            .read()
+            .await
+            .values()
+            .next()
+            .cloned()
     }
 
     /// Install the UI event sink (called once by the desktop shell).
@@ -329,6 +365,24 @@ impl ActionService {
         *self.db.write().await = db;
     }
 
+    async fn rollback_background_registration(&self, action_id: &str) {
+        self.actions.write().await.remove(action_id);
+        if let Some(db) = self.db.read().await.clone() {
+            let id = action_id.to_string();
+            match db.run_blocking(move |db| db.delete_action(&id)).await {
+                Ok(true) => {}
+                Ok(false) => tracing::debug!(
+                    action_id,
+                    "background action row was already absent during rollback"
+                ),
+                Err(error) => tracing::warn!(
+                    action_id,
+                    "failed to remove background action row during rollback: {error}"
+                ),
+            }
+        }
+    }
+
     /// Stop action workers owned by the application.
     ///
     /// Running background processes are cancelled and become terminal so the
@@ -355,8 +409,13 @@ impl ActionService {
             actions
                 .iter()
                 .filter(|(_, entry)| {
-                    entry.kind == ActionKind::Background
-                        && matches!(entry.state, ActionState::Running { .. })
+                    matches!(
+                        (entry.kind, &entry.state),
+                        (
+                            ActionKind::Background | ActionKind::Scheduled,
+                            ActionState::Running { .. }
+                        )
+                    )
                 })
                 .map(|(id, _)| id.clone())
                 .collect::<Vec<_>>()
@@ -469,9 +528,9 @@ impl ActionService {
             return;
         }
         let status = match &state {
-            ActionState::Completed { .. } => "completed",
-            ActionState::Failed { .. } => "failed",
-            ActionState::Cancelled { .. } => "cancelled",
+            ActionState::Completed { .. } => ActionStatus::Completed,
+            ActionState::Failed { .. } => ActionStatus::Failed,
+            ActionState::Cancelled { .. } => ActionStatus::Cancelled,
             ActionState::Running { .. } | ActionState::Waiting { .. } => return,
         };
         self.persist_terminal(action_id, &state).await;
@@ -482,7 +541,7 @@ impl ActionService {
                 .send(ActionCompletion::Background(BackgroundActionCompletion {
                     action_id: action_id.to_string(),
                     session_id,
-                    status: status.to_string(),
+                    status,
                     status_json,
                 }))
         {
@@ -504,9 +563,9 @@ impl ActionService {
         for (id, entry) in actions.iter() {
             if entry.kind != ActionKind::Background {
                 if let Some(schedule) = &entry.scheduled
-                    && entry.state.is_waiting()
+                    && entry.state.status().is_live()
                 {
-                    rows.push(scheduled_status_json(id, schedule, None));
+                    rows.push(scheduled_status_json(id, schedule, &entry.state, None));
                 }
                 continue;
             }
@@ -535,10 +594,15 @@ impl ActionService {
         for (id, entry) in actions.iter() {
             if entry.kind != ActionKind::Background {
                 if let Some(schedule) = &entry.scheduled
-                    && entry.state.is_waiting()
+                    && entry.state.status().is_live()
                     && schedule.session_id.as_deref() == Some(session_id)
                 {
-                    rows.push(scheduled_status_json(id, schedule, Some(session_id)));
+                    rows.push(scheduled_status_json(
+                        id,
+                        schedule,
+                        &entry.state,
+                        Some(session_id),
+                    ));
                 }
                 continue;
             }
@@ -676,7 +740,7 @@ impl ActionService {
         let containment = match haven_common::process_containment::ProcessContainment::new() {
             Ok(containment) => containment,
             Err(error) => {
-                self.actions.write().await.remove(&id);
+                self.rollback_background_registration(&id).await;
                 return Err(error.into());
             }
         };
@@ -688,25 +752,19 @@ impl ActionService {
             Err(e) => {
                 // Spawn failed: remove the entry so the action is not left
                 // dangling as "running".
-                self.actions.write().await.remove(&id);
-                if let Some(db) = self.db.read().await.clone() {
-                    let action_id = id.clone();
-                    if let Err(error) = db
-                        .run_blocking(move |db| db.delete_action(&action_id))
-                        .await
-                    {
-                        tracing::warn!(action_id = %id, "failed to remove action row after spawn failure: {error}");
-                    }
-                }
+                self.rollback_background_registration(&id).await;
                 return Err(e.into());
             }
         };
-        let pid = child
-            .id()
-            .ok_or_else(|| anyhow::anyhow!("background shell child did not expose a process id"))?;
+        let Some(pid) = child.id() else {
+            self.rollback_background_registration(&id).await;
+            return Err(anyhow::anyhow!(
+                "background shell child did not expose a process id"
+            ));
+        };
         if let Err(error) = containment.attach(pid) {
             let _ = child.kill().await;
-            self.actions.write().await.remove(&id);
+            self.rollback_background_registration(&id).await;
             return Err(anyhow::anyhow!(
                 "failed to attach background shell to process containment: {}",
                 haven_common::error::sanitize_error_text(&error.to_string())
@@ -846,7 +904,7 @@ impl ActionService {
                     if !entry.state.is_waiting() {
                         json!({"action_id": action_id, "status": entry.state.status().as_str()})
                     } else {
-                        scheduled_status_json(action_id, schedule, None)
+                        scheduled_status_json(action_id, schedule, &entry.state, None)
                     }
                 })
                 .unwrap_or_else(|| json!({"action_id": action_id, "status": "not_found"}));
@@ -865,10 +923,11 @@ impl ActionService {
             let Some(schedule) = entry.scheduled.as_ref() else {
                 return json!({"action_id": action_id, "status": "not_found"});
             };
-            if schedule.session_id.as_deref() != Some(session_id) || !entry.state.is_waiting() {
+            if schedule.session_id.as_deref() != Some(session_id) || !entry.state.status().is_live()
+            {
                 return json!({"action_id": action_id, "status": "not_found"});
             }
-            return scheduled_status_json(action_id, schedule, Some(session_id));
+            return scheduled_status_json(action_id, schedule, &entry.state, Some(session_id));
         }
         if entry.session_id.as_deref() != Some(session_id) {
             return json!({"action_id": action_id, "status": "not_found"});
@@ -968,21 +1027,8 @@ impl ActionService {
             return false;
         };
         if entry.kind == ActionKind::Scheduled {
-            let Some(schedule) = entry.scheduled.as_mut() else {
-                return false;
-            };
-            if entry.state.is_terminal() || !entry.state.can_transition_to(ActionStatus::Cancelled)
-            {
-                return false;
-            }
-            let due_at = schedule.due_at.clone();
-            entry.state = ActionState::Cancelled {
-                started_at: due_at,
-                finished_at: chrono::Utc::now().to_rfc3339(),
-            };
             drop(actions);
-            self.finish_scheduled_cancel(action_id).await;
-            return true;
+            return self.cancel_scheduled(action_id, None).await;
         }
         if !matches!(entry.state, ActionState::Running { .. }) {
             return false;
@@ -1000,23 +1046,8 @@ impl ActionService {
             return false;
         };
         if entry.kind == ActionKind::Scheduled {
-            let Some(schedule) = entry.scheduled.as_mut() else {
-                return false;
-            };
-            if entry.state.is_terminal()
-                || !entry.state.can_transition_to(ActionStatus::Cancelled)
-                || schedule.session_id.as_deref() != Some(session_id)
-            {
-                return false;
-            }
-            let due_at = schedule.due_at.clone();
-            entry.state = ActionState::Cancelled {
-                started_at: due_at,
-                finished_at: chrono::Utc::now().to_rfc3339(),
-            };
             drop(actions);
-            self.finish_scheduled_cancel(action_id).await;
-            return true;
+            return self.cancel_scheduled(action_id, Some(session_id)).await;
         }
         if entry.session_id.as_deref() != Some(session_id)
             || !matches!(entry.state, ActionState::Running { .. })
@@ -1029,13 +1060,114 @@ impl ActionService {
         true
     }
 
-    /// Cancel and drop every action owned by `session_id`. Called when a session
-    /// ends, is removed, or is rolled back.
+    /// Cancel only when the caller's kind discriminator matches the owned
+    /// action. The app IPC layer must not be able to cancel a scheduled row by
+    /// presenting it as a background action (or vice versa).
+    pub async fn cancel_for_kind(&self, action_id: &str, kind: &str) -> bool {
+        let expected = match kind {
+            "background" | "scheduled" => kind,
+            _ => return false,
+        };
+        let matches = self
+            .actions
+            .read()
+            .await
+            .get(action_id)
+            .is_some_and(|entry| {
+                matches!(
+                    (expected, entry.kind),
+                    ("background", ActionKind::Background) | ("scheduled", ActionKind::Scheduled)
+                )
+            });
+        matches && self.cancel(action_id).await
+    }
+
+    /// Delete terminal action history through the same owner that controls
+    /// live action state. Waiting/running rows, kind mismatches and absent rows
+    /// are all rejected and return `false`.
+    pub async fn delete(&self, action_id: &str, kind: &str) -> anyhow::Result<bool> {
+        let expected = match kind {
+            "background" => ActionKind::Background,
+            "scheduled" => ActionKind::Scheduled,
+            _ => return Ok(false),
+        };
+        let _mutation = self.spawn_gate.lock().await;
+        let memory_terminal = {
+            let actions = self.actions.read().await;
+            match actions.get(action_id) {
+                Some(entry) if entry.kind == expected => entry.state.is_terminal(),
+                Some(_) => return Ok(false),
+                None => false,
+            }
+        };
+        if !memory_terminal {
+            if let Some(db) = self.db.read().await.clone() {
+                let id = action_id.to_string();
+                let row = db.run_blocking(move |db| db.get_action(&id)).await?;
+                let Some(row) = row else {
+                    return Ok(false);
+                };
+                if row.kind != kind || !row.status.is_terminal() {
+                    return Ok(false);
+                }
+                let id = action_id.to_string();
+                if !db.run_blocking(move |db| db.delete_action(&id)).await? {
+                    return Ok(false);
+                }
+            } else {
+                return Ok(false);
+            }
+        } else if let Some(db) = self.db.read().await.clone() {
+            let id = action_id.to_string();
+            if let Some(row) = db
+                .run_blocking({
+                    let id = id.clone();
+                    move |db| db.get_action(&id)
+                })
+                .await?
+            {
+                if row.kind != kind || !row.status.is_terminal() {
+                    return Ok(false);
+                }
+                if !db.run_blocking(move |db| db.delete_action(&id)).await? {
+                    return Ok(false);
+                }
+            }
+        }
+        self.actions.write().await.remove(action_id);
+        Ok(true)
+    }
+
+    /// Delete terminal history when the IPC surface does not need to expose a
+    /// kind discriminator. The actual persisted/runtime kind is resolved first
+    /// and then passed through the guarded kind-aware delete path.
+    pub async fn delete_terminal(&self, action_id: &str) -> anyhow::Result<bool> {
+        let memory_kind = {
+            let actions = self.actions.read().await;
+            actions.get(action_id).map(|entry| match entry.kind {
+                ActionKind::Background => "background",
+                ActionKind::Scheduled => "scheduled",
+            })
+        };
+        if let Some(kind) = memory_kind {
+            return self.delete(action_id, kind).await;
+        }
+        let Some(db) = self.db.read().await.clone() else {
+            return Ok(false);
+        };
+        let id = action_id.to_string();
+        let Some(row) = db.run_blocking(move |db| db.get_action(&id)).await? else {
+            return Ok(false);
+        };
+        self.delete(action_id, &row.kind).await
+    }
+
+    /// Cancel and drop every background action owned by `session_id`.
     ///
     /// Running actions are killed, marked cancelled, persisted, and surfaced to
     /// the UI via `action:finished` before leaving the board — otherwise the
     /// titlebar panel keeps a ghost "running" row that cannot be stopped.
-    pub async fn cancel_owned_by_session(&self, session_id: &str) {
+    pub async fn cancel_owned_background_by_session(&self, session_id: &str) {
         let ids: Vec<String> = {
             let actions = self.actions.read().await;
             actions
@@ -1073,6 +1205,13 @@ impl ActionService {
                 self.emit("action:finished", status_json);
             }
         }
+    }
+
+    /// Cancel all action kinds owned by `session_id`. This is used by explicit
+    /// session end/deletion; application shutdown uses the background-only
+    /// variant so durable scheduled work remains waiting.
+    pub async fn cancel_owned_by_session(&self, session_id: &str) {
+        self.cancel_owned_background_by_session(session_id).await;
         self.cancel_owned_scheduled_by_session(session_id).await;
     }
 
@@ -1170,8 +1309,9 @@ impl ActionService {
 impl ActionService {
     /// Schedule a timer or an action dependency in the same state map as
     /// background processes. `Waiting` is the explicit pre-fire state; fire
-    /// is one idempotent transition that publishes the continuation payload
-    /// and updates durable history.
+    /// is one idempotent transition that publishes the work item. The consumer
+    /// owns the terminal acknowledgement so tool/session failures remain
+    /// durable as `failed`.
     pub async fn set(
         self: &Arc<Self>,
         spec: crate::builtin::scheduled_action::ScheduledActionSpec,
@@ -1401,12 +1541,12 @@ impl ActionService {
             .filter_map(|(id, entry)| {
                 let schedule = entry.scheduled.as_ref()?;
                 if entry.kind != ActionKind::Scheduled
-                    || !entry.state.is_waiting()
+                    || !entry.state.status().is_live()
                     || owner.is_some_and(|value| schedule.session_id.as_deref() != Some(value))
                 {
                     return None;
                 }
-                Some(scheduled_status_json(id, schedule, owner))
+                Some(scheduled_status_json(id, schedule, &entry.state, owner))
             })
             .collect();
         rows.sort_by(|left, right| right["due_at"].as_str().cmp(&left["due_at"].as_str()));
@@ -1415,44 +1555,92 @@ impl ActionService {
 
     async fn fire_scheduled(self: &Arc<Self>, id: &str) {
         let _mutation = self.spawn_gate.lock().await;
-        let (entry, payload) = {
+        let started_at = chrono::Utc::now().to_rfc3339();
+        let schedule = {
+            let actions = self.actions.read().await;
+            let Some(action) = actions.get(id) else {
+                return;
+            };
+            if !matches!(action.state, ActionState::Waiting { .. }) {
+                return;
+            }
+            let Some(schedule) = action.scheduled.as_ref() else {
+                return;
+            };
+            schedule.clone()
+        };
+        if schedule.watch_action_id.is_none()
+            && let Some(db) = self.db.read().await.clone()
+        {
+            let action_id = id.to_string();
+            let started_at_for_db = started_at.clone();
+            match db
+                .run_blocking(move |db| db.start_scheduled_action(&action_id, &started_at_for_db))
+                .await
+            {
+                Ok(true) => {}
+                Ok(false) => {
+                    tracing::warn!(action_id = %id, "scheduled action was no longer waiting in durable storage");
+                    return;
+                }
+                Err(error) => {
+                    tracing::warn!(action_id = %id, "failed to persist scheduled action trigger: {error}");
+                    return;
+                }
+            }
+        }
+        let payload = ScheduledActionFired {
+            action_id: id.to_string(),
+            title: schedule.title.clone(),
+            body: schedule.body.clone(),
+            mode: schedule.mode,
+            session_id: schedule.session_id.clone(),
+            tool_name: schedule.tool_name.clone(),
+            tool_args: schedule.tool_args.clone(),
+            prompt: schedule.prompt.clone(),
+        };
+        {
             let mut actions = self.actions.write().await;
             let Some(action) = actions.get_mut(id) else {
                 return;
             };
-            if action.state.is_terminal()
-                || !action.state.can_transition_to(ActionStatus::Completed)
-            {
+            if !matches!(action.state, ActionState::Waiting { .. }) {
                 return;
             }
-            let Some(schedule) = action.scheduled.as_mut() else {
-                return;
-            };
-            action.state = ActionState::Completed {
-                output: String::new(),
-                exit_code: None,
-                truncated: false,
-                log_path: None,
-                started_at: schedule.due_at.clone(),
-                finished_at: chrono::Utc::now().to_rfc3339(),
-            };
-            let payload = ScheduledActionFired {
-                action_id: id.to_string(),
-                title: schedule.title.clone(),
-                body: schedule.body.clone(),
-                mode: schedule.mode,
-                session_id: schedule.session_id.clone(),
-                tool_name: schedule.tool_name.clone(),
-                tool_args: schedule.tool_args.clone(),
-                prompt: schedule.prompt.clone(),
-            };
-            (schedule.clone(), payload)
-        };
-        let _ = self
+            action.state = ActionState::Running { started_at };
+        }
+        self.pending_scheduled_fires
+            .write()
+            .await
+            .insert(id.to_string(), payload.clone());
+        if self
             .completion_tx
-            .send(ActionCompletion::Scheduled(payload));
-        self.emit_scheduled_finished(id, &entry);
-        self.persist_scheduled_completed(id).await;
+            .send(ActionCompletion::Scheduled(payload))
+            .is_err()
+        {
+            // No consumer exists. Roll the durable and in-memory claim back to
+            // `waiting`; the next startup can safely retry the overdue row.
+            self.pending_scheduled_fires.write().await.remove(id);
+            if let Some(db) = self.db.read().await.clone()
+                && schedule.watch_action_id.is_none()
+            {
+                let action_id = id.to_string();
+                if let Err(error) = db
+                    .run_blocking(move |db| db.requeue_scheduled_action(&action_id))
+                    .await
+                {
+                    tracing::warn!(action_id = %id, "failed to requeue undelivered scheduled action: {error}");
+                    return;
+                }
+            }
+            if let Some(action) = self.actions.write().await.get_mut(id)
+                && matches!(action.state, ActionState::Running { .. })
+            {
+                action.state = ActionState::Waiting {
+                    due_at: schedule.due_at.clone(),
+                };
+            }
+        }
     }
 
     async fn watch_action_timer(self: &Arc<Self>, id: String, watched_id: String) {
@@ -1463,115 +1651,178 @@ impl ActionService {
                 continue;
             }
             let prompt = action_finished_prompt(&watched_id, &status);
-            let _mutation = self.spawn_gate.lock().await;
-            let (entry, payload) = {
+            {
                 let mut actions = self.actions.write().await;
                 let Some(action) = actions.get_mut(&id) else {
                     return;
                 };
-                if action.state.is_terminal()
-                    || !action.state.can_transition_to(ActionStatus::Completed)
-                {
+                if !matches!(action.state, ActionState::Waiting { .. }) {
                     return;
                 }
                 let Some(schedule) = action.scheduled.as_mut() else {
                     return;
                 };
                 schedule.prompt = Some(prompt);
-                action.state = ActionState::Completed {
-                    output: String::new(),
-                    exit_code: None,
-                    truncated: false,
-                    log_path: None,
-                    started_at: schedule.due_at.clone(),
-                    finished_at: chrono::Utc::now().to_rfc3339(),
-                };
-                let payload = ScheduledActionFired {
-                    action_id: id.clone(),
-                    title: schedule.title.clone(),
-                    body: schedule.body.clone(),
-                    mode: schedule.mode,
-                    session_id: schedule.session_id.clone(),
-                    tool_name: None,
-                    tool_args: None,
-                    prompt: schedule.prompt.clone(),
-                };
-                (schedule.clone(), payload)
-            };
-            let _ = self
-                .completion_tx
-                .send(ActionCompletion::Scheduled(payload));
-            self.emit_scheduled_finished(&id, &entry);
-            self.persist_scheduled_completed(&id).await;
+            }
+            self.fire_scheduled(&id).await;
             return;
         }
     }
 
-    async fn persist_scheduled_completed(&self, id: &str) {
-        if let Some(db) = self.db.read().await.clone() {
-            let id = id.to_string();
-            let id_for_db = id.clone();
-            let finished_at = chrono::Utc::now().to_rfc3339();
-            if let Err(error) = db
-                .run_blocking(move |db| db.complete_scheduled_action(&id_for_db, &finished_at))
-                .await
-            {
-                tracing::warn!(action_id = %id, "failed to persist scheduled action completion: {error}");
-            }
-        }
+    pub async fn complete_scheduled(&self, id: &str) -> anyhow::Result<bool> {
+        self.finish_scheduled(id, ActionStatus::Completed, None)
+            .await
     }
 
-    fn emit_scheduled_finished(&self, id: &str, entry: &ScheduledActionEntry) {
-        self.emit(
-            "action:finished",
-            json!({
-                "id": id,
-                "action_id": id,
-                "kind": "scheduled",
-                "status": "completed",
-                "title": entry.title,
-                "body": entry.body,
-                "mode": entry.mode.as_str(),
-                "session_id": entry.session_id,
-                "due_at": entry.due_at,
-            }),
-        );
+    pub async fn fail_scheduled(&self, id: &str, reason: &str) -> anyhow::Result<bool> {
+        self.finish_scheduled(id, ActionStatus::Failed, Some(reason))
+            .await
     }
 
-    async fn finish_scheduled_cancel(&self, id: &str) {
-        self.emit(
-            "action:finished",
-            json!({"id": id, "action_id": id, "kind": "scheduled", "status": "cancelled"}),
-        );
-        if let Some(db) = self.db.read().await.clone() {
-            let id = id.to_string();
-            let id_for_db = id.clone();
-            if let Err(error) = db
+    async fn finish_scheduled(
+        &self,
+        id: &str,
+        status: ActionStatus,
+        error_reason: Option<&str>,
+    ) -> anyhow::Result<bool> {
+        let _mutation = self.spawn_gate.lock().await;
+        let (schedule, started_at) = {
+            let actions = self.actions.read().await;
+            let Some(action) = actions.get(id) else {
+                return Ok(false);
+            };
+            let ActionState::Running { started_at } = &action.state else {
+                return Ok(false);
+            };
+            let Some(schedule) = action.scheduled.as_ref() else {
+                return Ok(false);
+            };
+            (schedule.clone(), started_at.clone())
+        };
+        let finished_at = chrono::Utc::now().to_rfc3339();
+        if schedule.watch_action_id.is_none()
+            && let Some(db) = self.db.read().await.clone()
+        {
+            let action_id = id.to_string();
+            let reason = error_reason.map(str::to_owned);
+            let finished_at_for_db = finished_at.clone();
+            let changed = db
                 .run_blocking(move |db| {
-                    db.cancel_scheduled_action(&id_for_db, &chrono::Utc::now().to_rfc3339())
+                    db.finish_scheduled_action(
+                        &action_id,
+                        status,
+                        reason.as_deref(),
+                        &finished_at_for_db,
+                    )
                 })
-                .await
-            {
-                tracing::warn!(action_id = %id, "failed to persist scheduled action cancellation: {error}");
+                .await?;
+            if !changed {
+                return Ok(false);
             }
         }
+        let state = match status {
+            ActionStatus::Completed => ActionState::Completed {
+                output: String::new(),
+                exit_code: None,
+                truncated: false,
+                log_path: None,
+                started_at,
+                finished_at,
+            },
+            ActionStatus::Failed => ActionState::Failed {
+                error: error_reason.unwrap_or_default().to_string(),
+                error_reason: error_reason.unwrap_or_default().to_string(),
+                log_path: None,
+                exit_code: None,
+                started_at,
+                finished_at,
+            },
+            _ => return Ok(false),
+        };
+        let mut actions = self.actions.write().await;
+        let Some(action) = actions.get_mut(id) else {
+            return Ok(false);
+        };
+        if !matches!(action.state, ActionState::Running { .. }) {
+            return Ok(false);
+        }
+        action.state = state.clone();
+        self.pending_scheduled_fires.write().await.remove(id);
+        drop(actions);
+        self.emit_scheduled_finished(id, &schedule, &state);
+        Ok(true)
+    }
+
+    fn emit_scheduled_finished(&self, id: &str, entry: &ScheduledActionEntry, state: &ActionState) {
+        self.emit("action:finished", scheduled_finished_json(id, entry, state));
+    }
+
+    async fn cancel_scheduled(&self, id: &str, owner: Option<&str>) -> bool {
+        let _mutation = self.spawn_gate.lock().await;
+        let (schedule, started_at) = {
+            let actions = self.actions.read().await;
+            let Some(action) = actions.get(id) else {
+                return false;
+            };
+            if action.kind != ActionKind::Scheduled
+                || !action.state.status().is_live()
+                || owner.is_some_and(|value| action.session_id.as_deref() != Some(value))
+            {
+                return false;
+            }
+            let Some(schedule) = action.scheduled.as_ref() else {
+                return false;
+            };
+            let started_at = match &action.state {
+                ActionState::Waiting { .. } => schedule.due_at.clone(),
+                ActionState::Running { started_at } => started_at.clone(),
+                _ => return false,
+            };
+            (schedule.clone(), started_at)
+        };
+        let finished_at = chrono::Utc::now().to_rfc3339();
+        if schedule.watch_action_id.is_none()
+            && let Some(db) = self.db.read().await.clone()
+        {
+            let action_id = id.to_string();
+            let finished_at_for_db = finished_at.clone();
+            match db
+                .run_blocking(move |db| db.cancel_scheduled_action(&action_id, &finished_at_for_db))
+                .await
+            {
+                Ok(true) => {}
+                Ok(false) | Err(_) => return false,
+            }
+        }
+        let state = ActionState::Cancelled {
+            started_at,
+            finished_at,
+        };
+        let mut actions = self.actions.write().await;
+        let Some(action) = actions.get_mut(id) else {
+            return false;
+        };
+        if !action.state.status().is_live() {
+            return false;
+        }
+        action.state = state.clone();
+        self.pending_scheduled_fires.write().await.remove(id);
+        drop(actions);
+        self.emit_scheduled_finished(id, &schedule, &state);
+        true
     }
 
     async fn cancel_owned_scheduled_by_session(&self, session_id: &str) {
         let ids: Vec<_> = {
-            let mut actions = self.actions.write().await;
+            let actions = self.actions.read().await;
             actions
-                .iter_mut()
+                .iter()
                 .filter_map(|(id, entry)| {
-                    let schedule = entry.scheduled.as_mut()?;
+                    let schedule = entry.scheduled.as_ref()?;
                     if entry.kind == ActionKind::Scheduled
-                        && entry.state.is_waiting()
+                        && entry.state.status().is_live()
                         && schedule.session_id.as_deref() == Some(session_id)
                     {
-                        entry.state = ActionState::Cancelled {
-                            started_at: schedule.due_at.clone(),
-                            finished_at: chrono::Utc::now().to_rfc3339(),
-                        };
                         Some(id.clone())
                     } else {
                         None
@@ -1580,7 +1831,7 @@ impl ActionService {
                 .collect()
         };
         for id in ids {
-            self.finish_scheduled_cancel(&id).await;
+            let _ = self.cancel_scheduled(&id, Some(session_id)).await;
         }
     }
 
@@ -1708,12 +1959,17 @@ impl ActionService {
     }
 }
 
-fn scheduled_status_json(id: &str, entry: &ScheduledActionEntry, _owner: Option<&str>) -> Value {
-    json!({
+fn scheduled_status_json(
+    id: &str,
+    entry: &ScheduledActionEntry,
+    state: &ActionState,
+    _owner: Option<&str>,
+) -> Value {
+    let mut value = json!({
         "id": id,
         "action_id": id,
         "kind": "scheduled",
-        "status": "waiting",
+        "status": state.status().as_str(),
         "title": entry.title,
         "body": entry.body,
         "mode": entry.mode.as_str(),
@@ -1723,7 +1979,49 @@ fn scheduled_status_json(id: &str, entry: &ScheduledActionEntry, _owner: Option<
         "prompt": entry.prompt,
         "watch_action_id": entry.watch_action_id,
         "due_at": entry.due_at,
-    })
+    });
+    if let ActionState::Running { started_at } = state {
+        value["started_at"] = json!(started_at);
+    }
+    value
+}
+
+fn scheduled_finished_json(id: &str, entry: &ScheduledActionEntry, state: &ActionState) -> Value {
+    let mut value = json!({
+        "id": id,
+        "action_id": id,
+        "kind": "scheduled",
+        "status": state.status().as_str(),
+        "title": entry.title,
+        "body": entry.body,
+        "mode": entry.mode.as_str(),
+        "session_id": entry.session_id,
+        "due_at": entry.due_at,
+    });
+    match state {
+        ActionState::Completed {
+            started_at,
+            finished_at,
+            ..
+        }
+        | ActionState::Cancelled {
+            started_at,
+            finished_at,
+        }
+        | ActionState::Failed {
+            started_at,
+            finished_at,
+            ..
+        } => {
+            value["started_at"] = json!(started_at);
+            value["finished_at"] = json!(finished_at);
+        }
+        _ => {}
+    }
+    if let ActionState::Failed { error_reason, .. } = state {
+        value["error_reason"] = json!(error_reason);
+    }
+    value
 }
 
 fn action_finished_prompt(action_id: &str, status: &Value) -> String {

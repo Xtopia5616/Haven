@@ -57,7 +57,7 @@ async fn test_completion_notified_on_finish() {
         .await
         .expect("completion received");
     assert_eq!(comp.action_id, id);
-    assert_eq!(comp.status, "completed");
+    assert_eq!(comp.status, haven_common::ActionStatus::Completed);
     assert_eq!(comp.session_id.as_deref(), Some("ses-A"));
     assert!(
         comp.status_json["output"]
@@ -165,7 +165,7 @@ async fn test_completion_refired_after_late_attach() {
         .await
         .expect("refired completion received");
     assert_eq!(comp.session_id.as_deref(), Some("ses-B"));
-    assert_eq!(comp.status, "completed");
+    assert_eq!(comp.status, haven_common::ActionStatus::Completed);
 }
 
 #[tokio::test]
@@ -660,7 +660,239 @@ async fn test_unified_completion_bus_emits_scheduled_transition() {
         ActionCompletion::Scheduled(fired) => assert_eq!(fired.action_id, id),
         ActionCompletion::Background(_) => panic!("scheduled fire used the background variant"),
     }
+    assert_eq!(service.status(&id).await["status"], "running");
+    service.complete_scheduled(&id).await.unwrap();
     assert_eq!(service.status(&id).await["status"], "completed");
+}
+
+#[tokio::test]
+async fn test_scheduled_fire_without_receiver_is_requeued_durably() {
+    let (db, _dir) = {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db = Arc::new(haven_memory::Database::open(&dir.path().join("test.db")).unwrap());
+        (db, dir)
+    };
+    let service = Arc::new(ActionService::new());
+    service.set_db(Some(db.clone())).await;
+    let id = service
+        .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+            due_at: None,
+            delay_secs: Some(1),
+            watch_action_id: None,
+            title: "No receiver".into(),
+            body: "keep waiting".into(),
+            mode: crate::builtin::scheduled_action::ScheduleMode::Continue,
+            session_id: None,
+            tool_name: None,
+            tool_args: None,
+            prompt: Some("keep waiting".into()),
+        })
+        .await
+        .unwrap();
+
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    assert_eq!(service.status(&id).await["status"], "waiting");
+    let pending = db.list_pending_scheduled_actions().unwrap();
+    assert_eq!(pending.iter().filter(|row| row.id == id).count(), 1);
+    assert_eq!(
+        pending.iter().find(|row| row.id == id).unwrap().status,
+        haven_common::ActionStatus::Waiting
+    );
+}
+
+#[tokio::test]
+async fn test_scheduled_fire_recovers_after_completion_bus_lag() {
+    let service = Arc::new(ActionService::new());
+    let mut rx = service.take_action_receiver().expect("receiver available");
+    let id = service
+        .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+            due_at: None,
+            delay_secs: Some(1),
+            watch_action_id: None,
+            title: "Lag recovery".into(),
+            body: "replay me".into(),
+            mode: crate::builtin::scheduled_action::ScheduleMode::Tool,
+            session_id: None,
+            tool_name: Some("notify".into()),
+            tool_args: None,
+            prompt: None,
+        })
+        .await
+        .unwrap();
+
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    for index in 0..=256 {
+        let _ =
+            service
+                .completion_tx
+                .send(ActionCompletion::Background(BackgroundActionCompletion {
+                    action_id: format!("act-noise-{index}"),
+                    session_id: None,
+                    status: haven_common::ActionStatus::Completed,
+                    status_json: serde_json::json!({"status": "completed"}),
+                }));
+    }
+
+    let event = tokio::time::timeout(
+        Duration::from_secs(2),
+        rx.recv_scheduled_with_recovery(service.as_ref()),
+    )
+    .await
+    .expect("lagged scheduled trigger must be recovered")
+    .expect("completion bus open");
+    match event {
+        ActionCompletion::Scheduled(fired) => assert_eq!(fired.action_id, id),
+        ActionCompletion::Background(_) => panic!("lag recovery returned a background event"),
+    }
+    assert_eq!(service.status(&id).await["status"], "running");
+    service.complete_scheduled(&id).await.unwrap();
+    assert_eq!(service.status(&id).await["status"], "completed");
+}
+
+#[tokio::test]
+async fn test_scheduled_terminal_event_reuses_persisted_timestamps() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let db = Arc::new(haven_memory::Database::open(&dir.path().join("test.db")).unwrap());
+    let service = Arc::new(ActionService::new());
+    service.set_db(Some(db.clone())).await;
+    let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink_events = events.clone();
+    service.set_event_sink(Arc::new(move |name, payload| {
+        sink_events.lock().unwrap().push((name, payload));
+    }));
+    let mut rx = service.take_action_receiver().expect("receiver available");
+    let id = service
+        .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+            due_at: None,
+            delay_secs: Some(1),
+            watch_action_id: None,
+            title: "Timestamp".into(),
+            body: "same clock".into(),
+            mode: crate::builtin::scheduled_action::ScheduleMode::Tool,
+            session_id: None,
+            tool_name: Some("notify".into()),
+            tool_args: None,
+            prompt: None,
+        })
+        .await
+        .unwrap();
+    let fired = tokio::time::timeout(Duration::from_secs(3), rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(fired, ActionCompletion::Scheduled(_)));
+    service.complete_scheduled(&id).await.unwrap();
+
+    let event = events
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|(name, payload)| name == "action:finished" && payload["id"] == id)
+        .map(|(_, payload)| payload.clone())
+        .expect("scheduled completion event");
+    let row = db.get_action(&id).unwrap().expect("scheduled history row");
+    assert_eq!(event["started_at"].as_str(), row.started_at.as_deref());
+    assert_eq!(event["finished_at"].as_str(), row.finished_at.as_deref());
+
+    let cancel_id = service
+        .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+            due_at: None,
+            delay_secs: Some(3600),
+            watch_action_id: None,
+            title: "Cancel timestamp".into(),
+            body: "same clock".into(),
+            mode: crate::builtin::scheduled_action::ScheduleMode::Tool,
+            session_id: None,
+            tool_name: Some("notify".into()),
+            tool_args: None,
+            prompt: None,
+        })
+        .await
+        .unwrap();
+    assert!(service.cancel(&cancel_id).await);
+    let cancel_event = events
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|(name, payload)| name == "action:finished" && payload["id"] == cancel_id)
+        .map(|(_, payload)| payload.clone())
+        .expect("scheduled cancellation event");
+    let cancel_row = db
+        .get_action(&cancel_id)
+        .unwrap()
+        .expect("cancelled scheduled history row");
+    assert_eq!(
+        cancel_event["started_at"].as_str(),
+        cancel_row.started_at.as_deref()
+    );
+    assert_eq!(
+        cancel_event["finished_at"].as_str(),
+        cancel_row.finished_at.as_deref()
+    );
+}
+
+#[tokio::test]
+async fn test_action_kind_and_terminal_delete_guards() {
+    let service = Arc::new(ActionService::new());
+    let id = service
+        .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+            due_at: None,
+            delay_secs: Some(3600),
+            watch_action_id: None,
+            title: "Delete guard".into(),
+            body: "pending".into(),
+            mode: crate::builtin::scheduled_action::ScheduleMode::Tool,
+            session_id: None,
+            tool_name: Some("notify".into()),
+            tool_args: None,
+            prompt: None,
+        })
+        .await
+        .unwrap();
+
+    assert!(!service.cancel_for_kind(&id, "background").await);
+    assert!(!service.cancel_for_kind(&id, "invalid").await);
+    assert!(!service.delete(&id, "scheduled").await.unwrap());
+    assert!(service.cancel_for_kind(&id, "scheduled").await);
+    assert!(service.delete_terminal(&id).await.unwrap());
+    assert_eq!(service.status(&id).await["status"], "not_found");
+}
+
+#[tokio::test]
+async fn test_background_registration_rollback_removes_durable_row() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let db = Arc::new(haven_memory::Database::open(&dir.path().join("test.db")).unwrap());
+    let service = Arc::new(ActionService::new());
+    service.set_db(Some(db.clone())).await;
+    let id = haven_common::types::new_id("act");
+    db.save_action(
+        &id,
+        Some("ses-rollback"),
+        "echo rollback",
+        "2026-09-19T00:00:00Z",
+    )
+    .unwrap();
+    service.actions.write().await.insert(
+        id.clone(),
+        ActionEntry {
+            kind: ActionKind::Background,
+            session_id: Some("ses-rollback".into()),
+            state: ActionState::Running {
+                started_at: "2026-09-19T00:00:00Z".into(),
+            },
+            kill: None,
+            tail: None,
+            command: "echo rollback".into(),
+            shell: "cmd".into(),
+            scheduled: None,
+        },
+    );
+
+    service.rollback_background_registration(&id).await;
+
+    assert!(db.get_action(&id).unwrap().is_none());
+    assert_eq!(service.status(&id).await["status"], "not_found");
 }
 
 #[tokio::test]

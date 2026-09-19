@@ -133,13 +133,14 @@ pub(crate) async fn set_status_and_emit(
     status: SessionStatus,
 ) -> anyhow::Result<()> {
     tracing::debug!("session {} status -> {}", session_id, status.as_str());
-    executor.update_session_status(session_id, status).await?;
-    emitter
-        .emit(crate::event::AgentEvent::SessionUpdated {
-            session_id: session_id.into(),
-            status,
-        })
-        .await;
+    if executor.update_session_status(session_id, status).await? {
+        emitter
+            .emit(crate::event::AgentEvent::SessionUpdated {
+                session_id: session_id.into(),
+                status,
+            })
+            .await;
+    }
     Ok(())
 }
 

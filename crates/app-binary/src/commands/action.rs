@@ -77,8 +77,11 @@ pub async fn cancel_action(
     action_id: String,
     kind: ActionKind,
 ) -> Result<bool, String> {
-    let _ = kind;
-    let cancelled = state.tools.action_service().cancel(&action_id).await;
+    let cancelled = state
+        .tools
+        .action_service()
+        .cancel_for_kind(&action_id, kind.as_str())
+        .await;
     if !cancelled {
         tracing::warn!("cancel_action: not found or not cancellable: {}", action_id);
     }
@@ -172,8 +175,9 @@ pub async fn delete_action(
     action_id: String,
 ) -> Result<bool, String> {
     state
-        .db
-        .delete_action(&action_id)
-        .map(|_| true)
+        .tools
+        .action_service()
+        .delete_terminal(&action_id)
+        .await
         .map_err(|e| log_err("delete_action", e))
 }

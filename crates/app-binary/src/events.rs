@@ -137,11 +137,14 @@ impl ActionEvent {
         Ok(Self {
             id: required_string(payload, "id")?,
             kind: ActionKind::Scheduled,
-            status: optional_action_status(payload, "status")?
-                .or_else(|| cancelled.then_some(ActionStatus::Cancelled)),
+            status: if cancelled {
+                Some(ActionStatus::Cancelled)
+            } else {
+                optional_action_status(payload, "status")?
+            },
             session_id: optional_string(payload, "session_id")?,
-            started_at: None,
-            finished_at: None,
+            started_at: optional_string(payload, "started_at")?,
+            finished_at: optional_string(payload, "finished_at")?,
             due_at: optional_string(payload, "due_at")?,
             title: optional_string(payload, "title")?,
             body: optional_string(payload, "body")?,

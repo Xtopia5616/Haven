@@ -412,12 +412,12 @@ impl StreamForwarder {
         drop(self.chunk_tx);
         drop(self.ws_tx);
         let mut join_error = None;
-        if let Some(handle) = self.consumer {
-            if let Err(error) = handle.await {
-                join_error = Some(anyhow::anyhow!(
-                    "stream chunk consumer task failed: {error}"
-                ));
-            }
+        if let Some(handle) = self.consumer
+            && let Err(error) = handle.await
+        {
+            join_error = Some(anyhow::anyhow!(
+                "stream chunk consumer task failed: {error}"
+            ));
         }
         if let Err(error) = self.ws_session.await {
             join_error.get_or_insert_with(|| {

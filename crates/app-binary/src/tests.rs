@@ -437,22 +437,23 @@ fn payload_preserves_session_lifecycle_and_error_wire_shapes() {
 
 #[test]
 fn action_projection_maps_scheduled_cancellation_to_the_public_contract() {
-    let (channel, action) = project_action_event(
-        ActionKind::Scheduled,
-        "action:updated",
-        &json!({
-            "id": "act-1",
-            "tool_name": "notify",
-            "tool_args": {"secret": "hidden"},
-        }),
-    )
-    .expect("known action event");
-
-    assert_eq!(channel, ACTION_UPDATED_EVENT);
-    assert_eq!(
-        serde_json::to_value(action.expect("valid action payload")).unwrap(),
-        json!({"id": "act-1", "kind": "scheduled", "status": "cancelled"})
+    assert!(
+        project_action_event(
+            ActionKind::Scheduled,
+            "action:updated",
+            &json!({
+                "id": "act-1",
+                "tool_name": "notify",
+                "tool_args": {"secret": "hidden"},
+            }),
+        )
+        .is_none()
     );
+
+    let event =
+        ActionEvent::scheduled_from_value(&json!({"id": "act-1", "status": "waiting"}), true)
+            .expect("valid cancellation payload");
+    assert_eq!(event.status, Some(haven_common::ActionStatus::Cancelled));
 }
 
 #[test]

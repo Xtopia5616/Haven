@@ -837,6 +837,7 @@ mod tests {
             prompt.contains("completed"),
             "prompt must carry the status: {prompt}"
         );
+        center.complete_scheduled(&id).await.unwrap();
         // Not persisted (in-memory only).
         assert!(center.list().await.is_empty());
     }
@@ -1231,12 +1232,22 @@ mod tests {
     #[tokio::test]
     async fn test_restore_pending_rearms_and_fires_overdue() {
         let (db, _dir) = test_db();
-        let center = Arc::new(ActionService::new());
-        center.set_db(Some(db.clone())).await;
-        let mut rx = center.take_action_receiver().expect("receiver available");
-
         // A future scheduled_action (5s out) and an overdue one (already past).
-        let future_id = center.set(tool_spec(5, "Future", "later")).await.unwrap();
+        // Insert directly so only the restored service owns the future timer;
+        // two service instances must still durably claim it at most once.
+        let future_id = haven_common::types::new_id("act");
+        db.save_scheduled_action(
+            &future_id,
+            &(chrono::Utc::now() + chrono::Duration::seconds(5)).to_rfc3339(),
+            "Future",
+            "later",
+            "tool",
+            None,
+            Some("notify"),
+            None,
+            None,
+        )
+        .unwrap();
         let overdue_id = haven_common::types::new_id("act");
         db.save_scheduled_action(
             &overdue_id,
@@ -1267,12 +1278,14 @@ mod tests {
         assert_eq!(fired.mode, ScheduleMode::Continue);
         assert_eq!(fired.session_id.as_deref(), Some("ses-1"));
         assert_eq!(fired.prompt.as_deref(), Some("keep going"));
+        restored.complete_scheduled(&overdue_id).await.unwrap();
 
         // Future scheduled_action re-armed and fires after its remaining delay.
-        let fired = tokio::time::timeout(Duration::from_secs(10), recv_scheduled(&mut rx))
+        let fired = tokio::time::timeout(Duration::from_secs(10), recv_scheduled(&mut rx2))
             .await
             .expect("timed out waiting for future fire");
         assert_eq!(fired.action_id, future_id);
+        restored.complete_scheduled(&future_id).await.unwrap();
 
         // Both are terminal in the DB; pending list is empty.
         assert!(db.list_pending_scheduled_actions().unwrap().is_empty());
@@ -1375,17 +1388,25 @@ mod tests {
             assert!(set_evt.1["due_at"].as_str().is_some());
         }
 
-        // Fire -> action:finished event.
+        // Fire -> running state; completion is acknowledged by the consumer.
         let fired = tokio::time::timeout(Duration::from_secs(5), recv_scheduled(&mut rx))
             .await
             .expect("timed out waiting for fire");
         assert_eq!(fired.action_id, id);
         {
             let evs = events.lock().unwrap();
+            assert!(
+                !evs.iter()
+                    .any(|(n, payload)| n == "action:finished" && payload["id"] == id)
+            );
+        }
+        center.complete_scheduled(&id).await.unwrap();
+        {
+            let evs = events.lock().unwrap();
             let fired_evt = evs
                 .iter()
-                .find(|(n, _)| n == "action:finished")
-                .expect("action:finished emitted");
+                .find(|(n, payload)| n == "action:finished" && payload["id"] == id)
+                .expect("action:finished emitted after completion acknowledgement");
             assert_eq!(fired_evt.1["id"], id);
             assert_eq!(fired_evt.1["mode"], "tool");
         }

@@ -154,13 +154,11 @@ impl ActionStatus {
         }
         matches!(
             (self, next),
-            (
-                Self::Waiting,
-                Self::Running | Self::Cancelled | Self::Completed | Self::Failed
-            ) | (
-                Self::Running,
-                Self::Completed | Self::Failed | Self::Cancelled
-            )
+            (Self::Waiting, Self::Running | Self::Cancelled)
+                | (
+                    Self::Running,
+                    Self::Completed | Self::Failed | Self::Cancelled
+                )
         )
     }
 }
@@ -192,6 +190,9 @@ mod tests {
     #[test]
     fn action_transition_table_has_no_terminal_resurrection() {
         assert!(ActionStatus::Waiting.can_transition_to(ActionStatus::Running));
+        assert!(ActionStatus::Waiting.can_transition_to(ActionStatus::Cancelled));
+        assert!(!ActionStatus::Waiting.can_transition_to(ActionStatus::Completed));
+        assert!(!ActionStatus::Waiting.can_transition_to(ActionStatus::Failed));
         assert!(ActionStatus::Running.can_transition_to(ActionStatus::Failed));
         assert!(!ActionStatus::Completed.can_transition_to(ActionStatus::Waiting));
     }

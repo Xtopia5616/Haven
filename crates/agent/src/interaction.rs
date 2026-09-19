@@ -36,6 +36,7 @@ pub enum InteractionDetails {
         receipt: Option<haven_tools::ConfirmationReceipt>,
     },
     ScheduledConfirm {
+        action_id: String,
         tool_name: String,
         tool_input: Value,
         receipt: haven_tools::ConfirmationReceipt,
@@ -170,6 +171,7 @@ impl InteractionRequest {
     }
 
     pub fn scheduled_confirm(
+        action_id: String,
         session_id: &str,
         tool_name: String,
         tool_input: Value,
@@ -183,6 +185,7 @@ impl InteractionRequest {
             status: InteractionStatus::Pending,
             prompt: title.clone(),
             details: InteractionDetails::ScheduledConfirm {
+                action_id,
                 tool_name,
                 tool_input,
                 receipt,
