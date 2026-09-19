@@ -219,12 +219,17 @@ pub(crate) async fn send_request(
     }
     let status = resp.status();
     // §2.3: extract Retry-After header before consuming body
-    let retry_after = resp
-        .headers()
+    let retry_after = retry_after_from_headers(resp.headers());
+    let txt = read_error_body(resp).await?;
+    Err(http_status_to_error(status, &txt, retry_after))
+}
+
+fn retry_after_from_headers(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+    headers
         .get(reqwest::header::RETRY_AFTER)
         .and_then(|v| v.to_str().ok())
         .and_then(|s| {
-            // Try seconds first, then HTTP-date
+            // Try seconds first, then HTTP-date.
             s.parse::<u64>()
                 .ok()
                 .map(Duration::from_secs)
@@ -239,9 +244,7 @@ pub(crate) async fn send_request(
                         })
                 })
                 .map(|wait| wait.min(MAX_RETRY_AFTER))
-        });
-    let txt = read_error_body(resp).await?;
-    Err(http_status_to_error(status, &txt, retry_after))
+        })
 }
 
 /// Error pages are untrusted input. Do not let a provider turn one failed
@@ -281,10 +284,13 @@ pub(crate) async fn health_check_request(
         .map_err(LlmError::from)?;
     if resp.status().is_success() {
         Ok(())
-    } else if resp.status().as_u16() == 401 || resp.status().as_u16() == 403 {
-        Err(LlmError::Auth(format!("status {}", resp.status())))
     } else {
-        Err(LlmError::ServerError(format!("status {}", resp.status())))
+        let status = resp.status();
+        let retry_after = retry_after_from_headers(resp.headers());
+        // Health checks use the same status policy as normal requests. In
+        // particular, 408 is a timeout, 409 is a non-retryable request
+        // conflict, and 425/429 retain their transient retry semantics.
+        Err(http_status_to_error(status, "", retry_after))
     }
 }
 
@@ -335,5 +341,45 @@ mod tests {
         assert!(
             matches!(error, LlmError::InvalidResponse(message) if message.contains("5 byte limit"))
         );
+    }
+
+    #[tokio::test]
+    async fn health_check_uses_shared_http_status_policy() {
+        for (status, expected) in [
+            (408, "timeout"),
+            (409, "request"),
+            (425, "server"),
+            (429, "rate"),
+        ] {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0_u8; 1024];
+                let _ = stream.read(&mut request).await;
+                let response = format!(
+                    "HTTP/1.1 {status} Test\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            });
+            let result = health_check_request(
+                &reqwest::Client::builder().no_proxy().build().unwrap(),
+                &format!("http://{address}/health"),
+                HeaderMap::new(),
+                1,
+            )
+            .await
+            .expect_err("non-success health checks must fail");
+            server.await.unwrap();
+
+            let class = match result {
+                LlmError::Timeout(_) => "timeout",
+                LlmError::RequestFailed(_) => "request",
+                LlmError::ServerError(_) => "server",
+                LlmError::RateLimit { .. } => "rate",
+                other => panic!("unexpected health-check error: {other:?}"),
+            };
+            assert_eq!(class, expected, "HTTP status {status}");
+        }
     }
 }

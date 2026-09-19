@@ -166,6 +166,155 @@ async fn run_session_contains_custom_extension_panic() {
 }
 
 #[tokio::test]
+async fn run_session_contains_real_mcp_and_skill_adapter_panics() {
+    let tools = Arc::new(ToolsManager::new());
+    tools
+        .authorization()
+        .set_permission_mode(haven_common::types::PermissionMode::Autonomous)
+        .await;
+    tools
+        .authorization()
+        .set_boundaries(
+            haven_common::types::SandboxMode::FullAccess,
+            Vec::new(),
+            haven_common::types::NetworkPolicy::Open,
+        )
+        .await;
+    let mcp_client = Arc::new(haven_tools::McpClient::new(
+        &haven_common::McpServerConfig {
+            name: "panic-server".into(),
+            ..Default::default()
+        },
+        2 * 1024 * 1024,
+        2 * 1024 * 1024,
+    ));
+    let mcp_adapter = haven_tools::McpToolAdapter::new_panicking_for_test(
+        mcp_client,
+        "panic-server",
+        haven_tools::McpToolInfo {
+            name: "panic_tool".into(),
+            description: "panics for adapter-boundary testing".into(),
+            input_schema: serde_json::json!({"type": "object"}),
+        },
+    );
+    tools
+        .registry()
+        .register(Arc::new(mcp_adapter) as ToolBox)
+        .await
+        .unwrap();
+
+    let skill = Arc::new(haven_tools::Skill::from_manifest_unchecked(
+        haven_tools::SkillManifest {
+            name: "panic-skill".into(),
+            description: "panics for adapter-boundary testing".into(),
+            version: None,
+            language: haven_tools::Language::Python,
+            instructions: String::new(),
+        },
+        std::path::PathBuf::from("."),
+        true,
+    ));
+    let skill_config = haven_common::config::SkillsExecConfig::default();
+    let skill_runner = haven_tools::SkillRunner::new(
+        haven_tools::VenvManager::new(skill_config.venv_root.clone()),
+        skill_config,
+    );
+    let skill_adapter = haven_tools::SkillToolAdapter::new_panicking_for_test(skill, skill_runner);
+    tools
+        .registry()
+        .register(Arc::new(skill_adapter) as ToolBox)
+        .await
+        .unwrap();
+
+    let mcp_name = "mcp__panic-server__panic_tool";
+    let skill_name = "skill__panic-skill";
+    for (tool_name, input) in [
+        (mcp_name, serde_json::json!({})),
+        (skill_name, serde_json::json!({"params": {}})),
+    ] {
+        let policy = tools.get_operation_policy(None, tool_name, &input).await;
+        tools
+            .authorization()
+            .grant(
+                None,
+                policy.capability.to_string(),
+                haven_common::types::PermissionEffect::Allow,
+                haven_common::types::PermissionScope::Always,
+            )
+            .await;
+    }
+    let mock = Arc::new(ScriptedMock::new(vec![
+        ScriptedResponse::Chunk(StreamChunk {
+            text: Some("Running adapter checks.".into()),
+            tool_calls: vec![
+                CanonicalToolCall {
+                    id: "mcp-panic".into(),
+                    name: mcp_name.into(),
+                    arguments: serde_json::json!({}),
+                },
+                CanonicalToolCall {
+                    id: "skill-panic".into(),
+                    name: skill_name.into(),
+                    arguments: serde_json::json!({"params": {}}),
+                },
+            ],
+            finish_reason: Some(FinishReason::ToolCalls),
+            usage: None,
+            model: None,
+            reasoning: None,
+            web_search: None,
+            web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
+        }),
+        ScriptedResponse::Chunk(StreamChunk {
+            text: Some("Recovered after adapter failures.".into()),
+            tool_calls: vec![CanonicalToolCall {
+                id: "final".into(),
+                name: "final_answer".into(),
+                arguments: serde_json::json!({}),
+            }],
+            finish_reason: Some(FinishReason::Stop),
+            usage: None,
+            model: None,
+            reasoning: None,
+            web_search: None,
+            web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
+        }),
+    ]));
+    let (agent, executor) = make_test_agent_with(mock, tools);
+    let collector = Arc::new(EventCollector::new());
+    agent.set_emitter(collector.clone());
+    let session = executor
+        .create_session("real adapter panic boundary")
+        .await
+        .unwrap();
+
+    let history = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        agent.run_session_from_id(&session.id),
+    )
+    .await
+    .expect("real adapter panic session must not hang")
+    .unwrap();
+    assert!(!history.is_empty(), "the session must recover and continue");
+    assert!(collector.has_action(mcp_name));
+    assert!(collector.has_action(skill_name));
+    let events = collector.events.lock().unwrap();
+    let panic_observations = events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event,
+                AgentEvent::Observation { observation, .. }
+                    if observation.contains("panicked during execution")
+            )
+        })
+        .count();
+    assert_eq!(panic_observations, 2);
+}
+
+#[tokio::test]
 async fn run_session_cancelled_mid_batch_surfaces_interrupted_tools() {
     // A tool batch cancelled mid-flight must NOT silently drop the
     // in-flight calls: each one is repaired with an "Interrupted"

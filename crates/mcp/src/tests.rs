@@ -322,6 +322,81 @@ async fn mcp_rate_limit_wait_honors_session_cancellation() {
     assert!(result.to_string().contains("cancelled"));
 }
 
+#[tokio::test]
+async fn mcp_call_tool_honors_cancellation_while_waiting_for_inner_lock() {
+    let client = Arc::new(McpClient::new(
+        &McpServerConfig {
+            name: "locked".into(),
+            command: "echo".into(),
+            ..Default::default()
+        },
+        2 * 1024 * 1024,
+        2 * 1024 * 1024,
+    ));
+    let _inner_guard = client.inner.lock().await;
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let task_client = client.clone();
+    let task_cancel = cancel.clone();
+    let task = tokio::spawn(async move {
+        task_client
+            .call_tool("blocked", json!({}), task_cancel)
+            .await
+    });
+
+    tokio::task::yield_now().await;
+    cancel.cancel();
+    let result = tokio::time::timeout(Duration::from_millis(200), task)
+        .await
+        .expect("inner-lock wait must be cancellable")
+        .unwrap()
+        .expect_err("cancelled call must not reach the disconnected transport");
+    assert!(result.to_string().contains("cancelled"));
+}
+
+#[tokio::test]
+async fn mcp_monitor_cancels_during_reconnect_backoff() {
+    let client = Arc::new(McpClient::new(
+        &McpServerConfig {
+            name: "monitor-backoff".into(),
+            transport: haven_common::McpTransportType::Http,
+            url: "http://127.0.0.1:9/mcp".into(),
+            ..Default::default()
+        },
+        2 * 1024 * 1024,
+        2 * 1024 * 1024,
+    ));
+    client
+        .set_network_policy(haven_common::types::NetworkPolicy::Open)
+        .await;
+    let (status_tx, mut status_rx) = tokio::sync::broadcast::channel(8);
+    let monitor = client.clone().spawn_monitor_task(
+        Duration::from_millis(1),
+        Duration::from_secs(5),
+        Duration::from_secs(5),
+        3,
+        status_tx,
+    );
+
+    let event = tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if let Ok(event) = status_rx.recv().await
+                && matches!(event.status, McpClientStatus::Offline { .. })
+            {
+                break event;
+            }
+        }
+    })
+    .await
+    .expect("monitor must enter reconnect backoff after losing the connection");
+    assert!(matches!(event.status, McpClientStatus::Offline { .. }));
+
+    client.cancel_token().await.cancel();
+    tokio::time::timeout(Duration::from_millis(200), monitor)
+        .await
+        .expect("monitor cancellation must interrupt backoff")
+        .expect("monitor task must exit cleanly");
+}
+
 #[test]
 fn extract_mcp_content_plain_text() {
     let content = json!([

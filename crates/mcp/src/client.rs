@@ -36,6 +36,10 @@ pub struct McpClient {
     pub(crate) last_seen_at: Arc<Mutex<Option<i64>>>,
     pub(crate) reconnect_retries: Arc<Mutex<u32>>,
     pub(crate) cancel_token: Arc<Mutex<CancellationToken>>,
+    /// Lifetime cancellation for the notification listener. Unlike the
+    /// transport token, it survives reconnects so the listener can reuse the
+    /// receiver after a new connection is installed.
+    pub(crate) notification_cancel: CancellationToken,
     pub(crate) rate_limiter: Arc<Mutex<RateLimiter>>,
     pub(crate) notification_rx: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<Value>>>>,
     pub(crate) tools_list_changed: Arc<ToolsListChangedSignal>,
@@ -209,6 +213,7 @@ impl McpClient {
             last_seen_at: Arc::new(Mutex::new(None)),
             reconnect_retries: Arc::new(Mutex::new(0)),
             cancel_token: Arc::new(Mutex::new(CancellationToken::new())),
+            notification_cancel: CancellationToken::new(),
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new(10.0))),
             notification_rx: Arc::new(Mutex::new(None)),
             tools_list_changed: Arc::new(ToolsListChangedSignal::new()),
@@ -587,9 +592,16 @@ impl McpClient {
     }
 
     pub async fn shutdown(&self) -> anyhow::Result<()> {
+        self.shutdown_inner(true).await
+    }
+
+    async fn shutdown_inner(&self, stop_notification_listener: bool) -> anyhow::Result<()> {
         // Cancel the client's own token first so any in-flight `call_tool`
         // (which selects on this token) aborts and releases the `inner` lock.
         self.cancel_token.lock().await.cancel();
+        if stop_notification_listener {
+            self.notification_cancel.cancel();
+        }
 
         let mut guard = self.inner.lock().await;
         if let Some(McpClientInner::Stdio(s)) = guard.as_mut() {
@@ -650,13 +662,16 @@ impl McpClient {
         self: Arc<McpClient>,
         on_tool_list_changed: impl Fn(&str) + Send + Sync + 'static,
     ) {
+        let notification_cancel = self.notification_cancel.clone();
         tokio::spawn(async move {
             enum Notification {
                 ListChanged,
                 Message(Option<Value>),
+                ClientCancelled,
             }
 
             loop {
+                let client_cancel = self.cancel_token.lock().await.clone();
                 let notification = {
                     let mut rx_guard = self.notification_rx.lock().await;
                     match rx_guard.as_mut() {
@@ -664,6 +679,8 @@ impl McpClient {
                             let signal = self.tools_list_changed.clone();
                             tokio::select! {
                                 biased;
+                                _ = notification_cancel.cancelled() => return,
+                                _ = client_cancel.cancelled() => Notification::ClientCancelled,
                                 _ = signal.notified() => Notification::ListChanged,
                                 message = rx.recv() => Notification::Message(message),
                             }
@@ -671,6 +688,9 @@ impl McpClient {
                         None => {
                             let signal = self.tools_list_changed.clone();
                             tokio::select! {
+                                biased;
+                                _ = notification_cancel.cancelled() => return,
+                                _ = client_cancel.cancelled() => Notification::ClientCancelled,
                                 _ = signal.notified() => Notification::ListChanged,
                                 _ = tokio::time::sleep(Duration::from_secs(1)) => continue,
                             }
@@ -679,6 +699,21 @@ impl McpClient {
                 };
 
                 match notification {
+                    Notification::ClientCancelled => {
+                        // A transport token is cancelled during automatic
+                        // reconnect too. Keep the listener alive for that
+                        // transition, but exit for a real client shutdown or
+                        // an externally cancelled disconnected client.
+                        let reconnecting =
+                            matches!(&*self.status.lock().await, McpClientStatus::Connecting);
+                        if !reconnecting {
+                            return;
+                        }
+                        tokio::select! {
+                            _ = notification_cancel.cancelled() => return,
+                            _ = tokio::time::sleep(Duration::from_millis(50)) => {}
+                        }
+                    }
                     Notification::ListChanged => {
                         if !self.tools_list_changed.take() {
                             continue;
@@ -704,7 +739,10 @@ impl McpClient {
                     }
                     Notification::Message(None) => {
                         // Channel closed (reconnect case)
-                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        tokio::select! {
+                            _ = notification_cancel.cancelled() => return,
+                            _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+                        }
                     }
                 }
             }
@@ -747,7 +785,16 @@ impl McpClient {
         // request can be interrupted when shutdown_all/reconnect cancels it.
         // Without this, call_tool would hold `inner` lock for up to 30s
         // (REQUEST_TIMEOUT_SECS), blocking shutdown/reconnect entirely.
-        let mut guard = self.inner.lock().await;
+        let mut guard = tokio::select! {
+            biased;
+            _ = client_cancel.cancelled() => {
+                anyhow::bail!("MCP call '{}' cancelled (client shutting down)", tool_name);
+            }
+            _ = cancel.cancelled() => {
+                anyhow::bail!("MCP call '{}' cancelled (session cancellation)", tool_name);
+            }
+            guard = self.inner.lock() => guard,
+        };
         let inner = guard
             .as_mut()
             .ok_or_else(|| anyhow::anyhow!("MCP client '{}' is not connected", self.name))?;
@@ -826,7 +873,7 @@ impl McpClient {
         *self.reconnect_retries.lock().await = 0;
         *self.status.lock().await = McpClientStatus::Connecting;
 
-        if let Err(e) = self.shutdown().await {
+        if let Err(e) = self.shutdown_inner(false).await {
             tracing::warn!("MCP reconnect: shutdown of previous session failed: {}", e);
         }
         self.connect().await?;
@@ -854,6 +901,23 @@ impl McpClient {
         max_retries: u32,
         status_tx: tokio::sync::broadcast::Sender<McpStatusChangeEvent>,
     ) {
+        let _handle = self.spawn_monitor_task(
+            health_interval,
+            initial_backoff,
+            max_backoff,
+            max_retries,
+            status_tx,
+        );
+    }
+
+    pub(crate) fn spawn_monitor_task(
+        self: Arc<McpClient>,
+        health_interval: Duration,
+        initial_backoff: Duration,
+        max_backoff: Duration,
+        max_retries: u32,
+        status_tx: tokio::sync::broadcast::Sender<McpStatusChangeEvent>,
+    ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             loop {
                 let cancel = self.cancel_token.lock().await.clone();
@@ -909,7 +973,7 @@ impl McpClient {
                             status: McpClientStatus::Connecting,
                         });
 
-                        let shutdown_ok = self.shutdown().await;
+                        let shutdown_ok = self.shutdown_inner(false).await;
                         if let Err(e) = &shutdown_ok {
                             tracing::warn!("reconnect shutdown cleanup: {e}");
                         }
@@ -957,6 +1021,6 @@ impl McpClient {
                     *self.last_seen_at.lock().await = Some(chrono::Utc::now().timestamp());
                 }
             }
-        });
+        })
     }
 }

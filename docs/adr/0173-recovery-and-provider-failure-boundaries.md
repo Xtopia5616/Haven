@@ -18,12 +18,17 @@
   对 chunked body 在消费过程中执行同一上限；MCP stdio 行和 notification queue
   也采用有限容量。`tools/list_changed` 不进入可丢弃的普通通知队列，而由单独的
   coalesced invalidation signal 驱动缓存刷新。
+- MCP HTTP 请求把响应头等待与有限 body/notify drain 视为两个独立 deadline；
+  长连接 SSE 仍由其专用生命周期控制。通知 listener 同时受 client 生命周期取消
+  和稳定的 listener shutdown token 保护，连接重试不会遗失 listener，明确 shutdown
+  后也不会留下轮询任务。
 - failover 仅用于明确的 transport/server/rate-limit 类失败；认证、配置、能力、
   普通 4xx 和用户输入语义错误不再盲目广播到所有候选。`Retry-After` 支持
   HTTP-date，并受本地上限约束。
 - HTTP 408 映射为可重试的 `Timeout`，409 保留为不可 failover 的
   `RequestFailed`，425 映射为可重试的 transient `ServerError`；`InvalidResponse`
-  与 `Unknown` 明确不触发 provider failover。
+  与 `Unknown` 明确不触发 provider failover；health-check 复用同一 HTTP 状态
+  分类，不再把非 401/403 状态统一伪装成 `ServerError`。
 - MCP monitor backoff、rate-limit pacing、stdio request/notify 写入和读取均观察
   cancellation/timeout。流式 flush 必须等待 watchdog，且 checkpoint 数据库失败
   通过 `PartialStore` 传播到 flush 结果。
@@ -41,3 +46,5 @@
 - `cargo check --locked -p haven-agent`
 - `cargo check --locked -p haven-mcp`
 - `cargo clippy --workspace --locked -- -D warnings`
+- `cargo test --workspace --locked`
+- `cd ui && corepack pnpm run check && corepack pnpm run test:run && corepack pnpm run build`

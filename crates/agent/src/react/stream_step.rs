@@ -1042,6 +1042,7 @@ mod tests {
             Arc::new(ToolsManager::new()),
             1,
         ));
+        let session = db.create_session("role probe", "role probe").unwrap();
         let default_client = Arc::new(ProbeClient::new(vec![
             ProbeResponse::Chunk(chunk("I will finish", FinishReason::Length)),
             ProbeResponse::Chunk(chunk("Finished.", FinishReason::Stop)),
@@ -1065,7 +1066,7 @@ mod tests {
         );
         let emitter: Arc<dyn AgentEventEmitter> = Arc::new(NoopEmitter);
         let ctx = StepCtx {
-            session_id: "ses-role-probe".into(),
+            session_id: session.id,
             step_num: 2,
             run_id: 1,
             emitter,

@@ -67,6 +67,8 @@ pub struct McpToolAdapter {
     client: Arc<McpClient>,
     info: McpToolInfo,
     server_name: String,
+    #[cfg(debug_assertions)]
+    panic_on_execute: bool,
 }
 
 impl McpToolAdapter {
@@ -75,7 +77,24 @@ impl McpToolAdapter {
             client,
             info,
             server_name: server_name.into(),
+            #[cfg(debug_assertions)]
+            panic_on_execute: false,
         }
+    }
+
+    /// Construct a real MCP adapter that panics when executed. This is only
+    /// available in debug builds so the agent integration suite can exercise
+    /// the extension panic boundary without adding a production behavior.
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn new_panicking_for_test(
+        client: Arc<McpClient>,
+        server_name: &str,
+        info: McpToolInfo,
+    ) -> Self {
+        let mut adapter = Self::new(client, server_name, info);
+        adapter.panic_on_execute = true;
+        adapter
     }
 
     /// Canonical qualified tool name (`mcp::<server>::<tool>`) after LLM name
@@ -165,6 +184,10 @@ impl Tool for McpToolAdapter {
     }
 
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
+        #[cfg(debug_assertions)]
+        if self.panic_on_execute {
+            panic!("simulated MCP adapter panic");
+        }
         let out = self
             .client
             .call_tool(&self.info.name, input, cancel)
@@ -195,11 +218,28 @@ impl Tool for McpToolAdapter {
 pub struct SkillToolAdapter {
     skill: Arc<Skill>,
     runner: SkillRunner,
+    #[cfg(debug_assertions)]
+    panic_on_execute: bool,
 }
 
 impl SkillToolAdapter {
     pub fn new(skill: Arc<Skill>, runner: SkillRunner) -> Self {
-        Self { skill, runner }
+        Self {
+            skill,
+            runner,
+            #[cfg(debug_assertions)]
+            panic_on_execute: false,
+        }
+    }
+
+    /// Construct a real Skill adapter that panics when executed. This is only
+    /// available in debug builds for the agent's extension-boundary tests.
+    #[cfg(debug_assertions)]
+    #[doc(hidden)]
+    pub fn new_panicking_for_test(skill: Arc<Skill>, runner: SkillRunner) -> Self {
+        let mut adapter = Self::new(skill, runner);
+        adapter.panic_on_execute = true;
+        adapter
     }
 
     /// Canonical qualified tool name (`skill::<name>`) after LLM name
@@ -257,6 +297,10 @@ impl Tool for SkillToolAdapter {
     }
 
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
+        #[cfg(debug_assertions)]
+        if self.panic_on_execute {
+            panic!("simulated Skill adapter panic");
+        }
         let params = input.get("params").ok_or_else(|| {
             anyhow::Error::new(StructuredToolError::new(
                 "skill parameters are required",

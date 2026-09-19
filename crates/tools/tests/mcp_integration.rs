@@ -1,6 +1,7 @@
 use haven_common::{McpServerConfig, McpTransportType};
 use haven_mcp::McpClient;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -124,6 +125,103 @@ async fn serve_connection(mut stream: TcpStream) {
     );
     let _ = stream.write_all(headers.as_bytes()).await;
     let _ = stream.write_all(&body).await;
+}
+
+async fn read_http_request(stream: &mut TcpStream) -> Option<(String, serde_json::Value)> {
+    const HEADER_END: &[u8] = b"\r\n\r\n";
+    let mut bytes = Vec::new();
+    let header_end = loop {
+        if let Some(end) = bytes
+            .windows(HEADER_END.len())
+            .position(|window| window == HEADER_END)
+        {
+            break end + HEADER_END.len();
+        }
+        let mut chunk = [0_u8; 1024];
+        let read = stream.read(&mut chunk).await.ok()?;
+        if read == 0 {
+            return None;
+        }
+        bytes.extend_from_slice(&chunk[..read]);
+    };
+    let header = String::from_utf8_lossy(&bytes[..header_end]);
+    let method = header.split_whitespace().next()?.to_string();
+    let content_length = header
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("content-length")
+                .then_some(value.trim())
+        })
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or_default();
+    while bytes.len() < header_end + content_length {
+        let mut chunk = [0_u8; 1024];
+        let read = stream.read(&mut chunk).await.ok()?;
+        if read == 0 {
+            return None;
+        }
+        bytes.extend_from_slice(&chunk[..read]);
+    }
+    let body = if content_length == 0 {
+        serde_json::Value::Null
+    } else {
+        serde_json::from_slice(&bytes[header_end..header_end + content_length]).ok()?
+    };
+    Some((method, body))
+}
+
+async fn serve_notification_connection(mut stream: TcpStream, updated: Arc<AtomicBool>) {
+    let Some((method, request)) = read_http_request(&mut stream).await else {
+        return;
+    };
+    if method == "GET" {
+        if stream
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: keep-alive\r\n\r\n",
+            )
+            .await
+            .is_err()
+        {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        updated.store(true, Ordering::Release);
+        let notification = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/tools/list_changed"
+        });
+        let event = format!("data: {}\n\n", notification);
+        let _ = stream.write_all(event.as_bytes()).await;
+        std::future::pending::<()>().await;
+    } else if request.get("id").is_none() {
+        let _ = stream
+            .write_all(b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+            .await;
+    } else {
+        let id = request["id"].clone();
+        let tools = if updated.load(Ordering::Acquire) {
+            serde_json::json!([
+                {"name": "new_tool", "description": "new", "inputSchema": {"type": "object"}}
+            ])
+        } else {
+            serde_json::json!([
+                {"name": "old_tool", "description": "old", "inputSchema": {"type": "object"}}
+            ])
+        };
+        let response = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": {"tools": tools}
+        });
+        let body = serde_json::to_vec(&response).unwrap();
+        let headers = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\nMcp-Session-Id: notification-session\r\n\r\n",
+            body.len()
+        );
+        let _ = stream.write_all(headers.as_bytes()).await;
+        let _ = stream.write_all(&body).await;
+    }
 }
 
 fn tool_call_response(id: serde_json::Value, request: &serde_json::Value) -> serde_json::Value {
@@ -270,4 +368,59 @@ async fn liveness_detects_server_shutdown() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     client.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn tools_list_changed_refreshes_cache_end_to_end() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+    let updated = Arc::new(AtomicBool::new(false));
+    let server_updated = updated.clone();
+    let server = tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            tokio::spawn(serve_notification_connection(
+                stream,
+                server_updated.clone(),
+            ));
+        }
+    });
+
+    let client = Arc::new(McpClient::new(
+        &McpServerConfig {
+            name: "notification-http".into(),
+            transport: McpTransportType::Http,
+            url,
+            ..Default::default()
+        },
+        2 * 1024 * 1024,
+        2 * 1024 * 1024,
+    ));
+    client
+        .set_network_policy(haven_common::types::NetworkPolicy::Open)
+        .await;
+    let callback_count = Arc::new(AtomicUsize::new(0));
+    let callback_count_clone = callback_count.clone();
+    client.clone().start_notification_listener(move |_| {
+        callback_count_clone.fetch_add(1, Ordering::Relaxed);
+    });
+    client.connect().await.unwrap();
+    assert_eq!(client.tools_cache().await[0].name, "old_tool");
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        let tools = client.tools_cache().await;
+        if tools.iter().any(|tool| tool.name == "new_tool") {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "tools/list_changed must refresh the live tools cache"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(callback_count.load(Ordering::Relaxed), 1);
+
+    client.shutdown().await.unwrap();
+    server.abort();
+    let _ = server.await;
 }

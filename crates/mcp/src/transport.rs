@@ -126,12 +126,29 @@ async fn write_stdio_line(
     method: &str,
     cancel: &CancellationToken,
 ) -> anyhow::Result<()> {
+    write_stdio_line_with_timeout(
+        stdin,
+        line,
+        method,
+        cancel,
+        Duration::from_secs(REQUEST_TIMEOUT_SECS),
+    )
+    .await
+}
+
+async fn write_stdio_line_with_timeout<W: tokio::io::AsyncWrite + Unpin>(
+    stdin: &mut W,
+    line: &str,
+    method: &str,
+    cancel: &CancellationToken,
+    timeout: Duration,
+) -> anyhow::Result<()> {
     tokio::select! {
         _ = cancel.cancelled() => {
             anyhow::bail!("MCP stdio write '{}' cancelled", method)
         }
         result = tokio::time::timeout(
-            Duration::from_secs(REQUEST_TIMEOUT_SECS),
+            timeout,
             async {
                 stdin.write_all(line.as_bytes()).await?;
                 stdin.flush().await?;
@@ -551,6 +568,34 @@ async fn read_bytes_bounded(
     limit: usize,
     cancel: &CancellationToken,
 ) -> anyhow::Result<Vec<u8>> {
+    read_bytes_bounded_with_timeout(
+        resp,
+        limit,
+        cancel,
+        Duration::from_secs(REQUEST_TIMEOUT_SECS),
+    )
+    .await
+}
+
+/// Read a finite HTTP response body with both a byte cap and an independent
+/// body deadline. `RequestBuilder::send()` only covers the header phase here;
+/// a peer can otherwise keep the connection open forever after returning 200.
+async fn read_bytes_bounded_with_timeout(
+    resp: reqwest::Response,
+    limit: usize,
+    cancel: &CancellationToken,
+    timeout: Duration,
+) -> anyhow::Result<Vec<u8>> {
+    tokio::time::timeout(timeout, read_bytes_bounded_inner(resp, limit, cancel))
+        .await
+        .map_err(|_| anyhow::anyhow!("MCP response body read timed out"))?
+}
+
+async fn read_bytes_bounded_inner(
+    resp: reqwest::Response,
+    limit: usize,
+    cancel: &CancellationToken,
+) -> anyhow::Result<Vec<u8>> {
     if cancel.is_cancelled() {
         anyhow::bail!("MCP response body read cancelled");
     }
@@ -681,6 +726,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn body_read_has_an_independent_deadline_after_headers() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request).await;
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1\r\nConnection: close\r\n\r\n")
+                .await
+                .unwrap();
+            std::future::pending::<()>().await;
+        });
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let response = client
+            .get(format!("http://{address}/"))
+            .send()
+            .await
+            .unwrap();
+
+        let error = read_bytes_bounded_with_timeout(
+            response,
+            8,
+            &CancellationToken::new(),
+            Duration::from_millis(25),
+        )
+        .await
+        .expect_err("body reads must not wait forever after headers");
+        assert!(error.to_string().contains("body read timed out"));
+        server.abort();
+        let _ = server.await;
+    }
+
+    #[tokio::test]
     async fn stdio_write_honors_cancellation_before_writing() {
         let mut command = if cfg!(windows) {
             let mut command = Command::new("cmd");
@@ -713,6 +792,50 @@ mod tests {
         drop(stdin);
         let _ = child.kill().await;
         let _ = child.wait().await;
+    }
+
+    #[tokio::test]
+    async fn stdio_write_honors_its_deadline() {
+        struct PendingWriter;
+
+        impl tokio::io::AsyncWrite for PendingWriter {
+            fn poll_write(
+                self: std::pin::Pin<&mut Self>,
+                _cx: &mut std::task::Context<'_>,
+                _buf: &[u8],
+            ) -> std::task::Poll<std::io::Result<usize>> {
+                let _ = self;
+                std::task::Poll::Pending
+            }
+
+            fn poll_flush(
+                self: std::pin::Pin<&mut Self>,
+                _cx: &mut std::task::Context<'_>,
+            ) -> std::task::Poll<std::io::Result<()>> {
+                let _ = self;
+                std::task::Poll::Ready(Ok(()))
+            }
+
+            fn poll_shutdown(
+                self: std::pin::Pin<&mut Self>,
+                _cx: &mut std::task::Context<'_>,
+            ) -> std::task::Poll<std::io::Result<()>> {
+                let _ = self;
+                std::task::Poll::Ready(Ok(()))
+            }
+        }
+
+        let mut writer = PendingWriter;
+        let error = write_stdio_line_with_timeout(
+            &mut writer,
+            "{}\n",
+            "notifications/test",
+            &CancellationToken::new(),
+            Duration::from_millis(25),
+        )
+        .await
+        .expect_err("stdio writes must have an independent deadline");
+        assert!(error.to_string().contains("timed out"));
     }
 
     #[test]
