@@ -10,7 +10,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use tokio::sync::{Mutex, Semaphore, broadcast, watch};
+use tokio::sync::{Mutex, broadcast, watch};
 use tokio_util::sync::CancellationToken;
 
 /// Last-resort ceiling for [`SessionSupervisor::await_run_finished`]. The
@@ -182,11 +182,22 @@ pub struct SessionSupervisor {
     /// The sole cross-session registry. A session's mutable runtime state is
     /// owned by its actor and is never protected by a shared per-session lock.
     actors: Arc<Mutex<HashMap<String, actor::SessionActorHandle>>>,
-    semaphore: Arc<Semaphore>,
-    /// Current configured session concurrency ceiling. Kept separate from the
-    /// semaphore's live permit count so `set_max_concurrent` can compute the
-    /// delta when the user changes the setting at runtime.
-    max_concurrent: std::sync::atomic::AtomicUsize,
+    /// Admission gate for session runs. Unlike a dynamically resized Tokio
+    /// semaphore, the gate tracks active runs explicitly, so lowering and
+    /// raising the limit while work is in flight cannot leak permits.
+    admission: Arc<dispatcher::RunAdmission>,
+    /// Serializes registry changes with the durable session mutations that
+    /// accompany them. This closes load-vs-delete and create-vs-clear windows
+    /// where a stale actor could otherwise be installed after its DB row was
+    /// removed.
+    lifecycle_gate: Arc<Mutex<()>>,
+    /// Set only while the destructive history-clear operation is quiescing.
+    /// New session creation/loading and dispatch admission fail closed until
+    /// the durable purge has completed.
+    lifecycle_blocked: std::sync::atomic::AtomicBool,
+    /// The supervisor owns exactly one dispatcher. Duplicate starts would
+    /// create competing lifecycle consumers and make recovery nondeterministic.
+    dispatcher_started: std::sync::atomic::AtomicBool,
     /// FIFO dispatch queue: session ids in the order they became `Pending`
     /// (insertion order ≈ creation order for fresh sessions). The dispatcher
     /// claims from the front, so queued sessions run in submission order instead
@@ -224,7 +235,7 @@ mod queues;
 mod run_engine;
 mod status;
 mod tool_runner;
-pub(crate) use actor::SessionActorHandle;
+pub(crate) use dispatcher::DirectRunLease;
 pub(crate) use tool_runner::ActionStepPersistenceError;
 
 pub(crate) use queues::ReactContextBatch;
@@ -238,8 +249,10 @@ impl SessionSupervisor {
             db,
             tools,
             actors: Arc::new(Mutex::new(HashMap::new())),
-            semaphore: Arc::new(Semaphore::new(max_concurrent.max(1))),
-            max_concurrent: std::sync::atomic::AtomicUsize::new(max_concurrent.max(1)),
+            admission: Arc::new(dispatcher::RunAdmission::new(max_concurrent.max(1))),
+            lifecycle_gate: Arc::new(Mutex::new(())),
+            lifecycle_blocked: std::sync::atomic::AtomicBool::new(false),
+            dispatcher_started: std::sync::atomic::AtomicBool::new(false),
             pending_queue: Arc::new(Mutex::new(VecDeque::new())),
             dispatch_tx: watch::channel(0).0,
             scheduled_confirms: Arc::new(Mutex::new(Vec::new())),
@@ -255,6 +268,13 @@ impl SessionSupervisor {
 
     pub(crate) async fn actor_for(&self, session_id: &str) -> Option<actor::SessionActorHandle> {
         self.actors.lock().await.get(session_id).cloned()
+    }
+
+    /// Hold the lifecycle gate across a multi-step registry/DB operation.
+    /// Callers holding this guard must use the corresponding `_locked` helper
+    /// to avoid trying to acquire the same mutex recursively.
+    pub(crate) async fn lifecycle_guard(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        self.lifecycle_gate.clone().lock_owned().await
     }
 
     async fn install_actor(&self, info: SessionInfo) -> actor::SessionActorHandle {
@@ -531,7 +551,7 @@ mod tests {
         let exec_wait = exec.clone();
         let sid = session.id.clone();
         let wait_task = tokio::spawn(async move {
-            exec_wait.await_run_finished(&sid).await;
+            let _ = exec_wait.await_run_finished(&sid).await;
         });
 
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -557,7 +577,7 @@ mod tests {
         let exec = make_executor(1);
         let session = exec.create_session("idle").await.unwrap();
         // Do not start a dispatcher — session stays Pending, no run_exit gate.
-        tokio::time::timeout(
+        let _ = tokio::time::timeout(
             std::time::Duration::from_millis(200),
             exec.await_run_finished(&session.id),
         )
@@ -689,23 +709,21 @@ mod tests {
         assert!(exec.try_claim_pending().await.is_none());
     }
 
-    /// `set_max_concurrent` must reclaim permits on lowering (not return them
-    /// to the semaphore — that would be a no-op) and must not overshoot on a
-    /// later raise. The effective ceiling is measured by how many concurrent
-    /// dispatcher acquisitions succeed without blocking.
+    /// `set_max_concurrent` must change the effective active-run ceiling
+    /// exactly, even when resized while no work is running.
     #[tokio::test]
     async fn set_max_concurrent_reclaims_and_does_not_overshoot() {
         let exec = make_executor(4);
         exec.set_max_concurrent(1);
         // Idle pool: exactly one permit may be acquired without waiting.
-        let first = exec.semaphore.clone().try_acquire_owned();
+        let first = exec.admission.try_acquire();
         assert!(
-            first.is_ok(),
+            first.is_some(),
             "one permit must be available after lowering to 1"
         );
-        let second = exec.semaphore.clone().try_acquire_owned();
+        let second = exec.admission.try_acquire();
         assert!(
-            second.is_err(),
+            second.is_none(),
             "lowering must reclaim unused permits (no-op reclaim would leave 3 free)"
         );
         drop(first.unwrap());
@@ -713,9 +731,9 @@ mod tests {
         exec.set_max_concurrent(3);
         let mut held = Vec::new();
         for _ in 0..3 {
-            match exec.semaphore.clone().try_acquire_owned() {
-                Ok(p) => held.push(p),
-                Err(_) => break,
+            match exec.admission.try_acquire() {
+                Some(p) => held.push(p),
+                None => break,
             }
         }
         assert_eq!(
@@ -724,10 +742,42 @@ mod tests {
             "raise after lower must yield exactly 3 permits"
         );
         assert!(
-            exec.semaphore.clone().try_acquire_owned().is_err(),
+            exec.admission.try_acquire().is_none(),
             "no extra permits may leak from the lower→raise cycle"
         );
         drop(held);
+    }
+
+    /// Resizing while every old slot is occupied must not leave the old
+    /// capacity cached in returned permits. Once the four old runs finish, a
+    /// limit of one still admits exactly one new run.
+    #[tokio::test]
+    async fn admission_resize_while_running_has_no_stale_capacity() {
+        let admission = Arc::new(dispatcher::RunAdmission::new(4));
+        let mut held = Vec::new();
+        for _ in 0..4 {
+            held.push(admission.try_acquire().expect("initial slot available"));
+        }
+        assert!(admission.try_acquire().is_none());
+
+        admission.set_limit(1);
+        drop(held);
+
+        let one = admission.try_acquire();
+        assert!(one.is_some());
+        assert!(admission.try_acquire().is_none());
+        drop(one);
+    }
+
+    #[tokio::test]
+    async fn delete_session_removes_durable_row_and_actor_together() {
+        let exec = make_executor(1);
+        let session = exec.create_session("delete atomically").await.unwrap();
+
+        exec.delete_session(&session.id).await.unwrap();
+
+        assert!(exec.actor_for(&session.id).await.is_none());
+        assert!(exec.db.get_session(&session.id).unwrap().is_none());
     }
 
     /// A session terminated by end_session between the old find/mark window must
@@ -1756,7 +1806,7 @@ mod tests {
         let rx = exec.subscribe_status(&session.id).await;
         let _ = rx; // a subscriber must not keep the session alive after removal
 
-        exec.remove_session(&session.id).await;
+        exec.remove_session(&session.id).await.unwrap();
         assert_eq!(exec.get_session_state(&session.id).await, None);
         assert!(exec.drain_action_completions(&session.id).await.is_empty());
     }

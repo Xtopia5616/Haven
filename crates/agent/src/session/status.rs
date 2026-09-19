@@ -12,6 +12,8 @@ impl SessionSupervisor {
         input: &str,
         summary: &str,
     ) -> anyhow::Result<SessionInfo> {
+        let _lifecycle = self.lifecycle_guard().await;
+        self.ensure_lifecycle_open()?;
         let record = self.db.create_session(input, input)?;
         let mut info = SessionInfo::from_db_record(&record);
         info.summary = summary.to_string();
@@ -62,7 +64,7 @@ impl SessionSupervisor {
                 // The UI command must not report success while a cancelled
                 // tool/turn can still publish output or release the run slot.
                 cancel.cancel();
-                self.await_run_finished(session_id).await;
+                self.await_run_finished(session_id).await?;
                 self.update_session_status(session_id, SessionStatus::Paused)
                     .await?;
                 Ok(self.get_session_state(session_id).await == Some(SessionStatus::Paused))
@@ -96,7 +98,7 @@ impl SessionSupervisor {
         // Keep terminal cleanup behind the run-exit fence. Otherwise the
         // frontend can clear the session while the old handler is still alive,
         // and a late tool result can race with the next session.
-        self.await_run_finished(session_id).await;
+        self.await_run_finished(session_id).await?;
         if let Err(error) = self.partials.promote(session_id).await {
             tracing::warn!(session_id = %session_id, error = %error, "failed to promote session partial");
         }
@@ -192,11 +194,26 @@ impl SessionSupervisor {
         }
     }
 
-    pub async fn remove_session(&self, session_id: &str) {
+    pub async fn remove_session(&self, session_id: &str) -> anyhow::Result<()> {
+        self.quiesce_session(session_id).await?;
+        let _lifecycle = self.lifecycle_guard().await;
+        self.remove_session_locked(session_id).await
+    }
+
+    /// Cancel and join a run without holding the registry gate. A live ReAct
+    /// handler may need that gate to finish a child-session operation.
+    async fn quiesce_session(&self, session_id: &str) -> anyhow::Result<()> {
         if let Some(actor) = self.actor_for(session_id).await {
             actor.cancel().cancel();
             self.cancel_session_actions(session_id).await;
-            self.await_run_finished(session_id).await;
+            self.dequeue_pending(session_id).await;
+            self.await_run_finished(session_id).await?;
+        }
+        Ok(())
+    }
+
+    async fn remove_session_locked(&self, session_id: &str) -> anyhow::Result<()> {
+        if let Some(actor) = self.actor_for(session_id).await {
             actor.clear_runtime().await;
         }
         self.dequeue_pending(session_id).await;
@@ -210,6 +227,7 @@ impl SessionSupervisor {
             .await
             .retain(|request| request.session_id != session_id);
         self.remove_actor(session_id).await;
+        Ok(())
     }
 
     pub async fn update_session_title(&self, session_id: &str, title: &str) {
@@ -242,7 +260,19 @@ impl SessionSupervisor {
         sessions
     }
 
-    pub async fn clear_all_sessions(&self) {
+    pub async fn clear_all_sessions(&self) -> anyhow::Result<()> {
+        self.begin_lifecycle_block()?;
+        let result = async {
+            self.quiesce_all_sessions().await?;
+            let _lifecycle = self.lifecycle_guard().await;
+            self.clear_all_sessions_locked().await
+        }
+        .await;
+        self.end_lifecycle_block();
+        result
+    }
+
+    async fn quiesce_all_sessions(&self) -> anyhow::Result<()> {
         let actors = self
             .actors
             .lock()
@@ -253,15 +283,87 @@ impl SessionSupervisor {
         for actor in &actors {
             actor.cancel().cancel();
             self.cancel_session_actions(&actor.id).await;
+            self.dequeue_pending(&actor.id).await;
         }
         for actor in &actors {
-            self.await_run_finished(&actor.id).await;
+            self.await_run_finished(&actor.id).await?;
+        }
+        Ok(())
+    }
+
+    async fn clear_all_sessions_locked(&self) -> anyhow::Result<()> {
+        let actors = self
+            .actors
+            .lock()
+            .await
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for actor in &actors {
             actor.clear_runtime().await;
         }
         self.tools.authorization().clear_all_trust().await;
         self.actors.lock().await.clear();
         self.pending_queue.lock().await.clear();
         self.scheduled_confirms.lock().await.clear();
+        Ok(())
+    }
+
+    /// Remove one session from both the actor registry and durable storage
+    /// under one lifecycle gate. This is the only deletion entry point for
+    /// app commands; it prevents ensure/load from reinstalling a stale actor
+    /// between the in-memory quiesce and the SQL delete.
+    pub async fn delete_session(&self, session_id: &str) -> anyhow::Result<()> {
+        self.quiesce_session(session_id).await?;
+        let _lifecycle = self.lifecycle_guard().await;
+        self.remove_session_locked(session_id).await?;
+        let db = self.db.clone();
+        let session_id = session_id.to_string();
+        db.run_blocking(move |db| db.delete_session(&session_id))
+            .await
+    }
+
+    /// Quiesce the working set and clear durable history while holding the
+    /// same gate used by session creation/loading/deletion.
+    pub async fn clear_sessions_and_delete(&self) -> anyhow::Result<usize> {
+        self.begin_lifecycle_block()?;
+        let result = async {
+            self.quiesce_all_sessions().await?;
+            let _lifecycle = self.lifecycle_guard().await;
+            self.clear_all_sessions_locked().await?;
+            self.db.clone().run_blocking(|db| db.clear_sessions()).await
+        }
+        .await;
+        self.end_lifecycle_block();
+        result
+    }
+
+    pub(crate) fn ensure_lifecycle_open(&self) -> anyhow::Result<()> {
+        if self
+            .lifecycle_blocked
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            anyhow::bail!("session lifecycle is quiescing; retry after history cleanup")
+        }
+        Ok(())
+    }
+
+    fn begin_lifecycle_block(&self) -> anyhow::Result<()> {
+        self.lifecycle_blocked
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .map(|_| ())
+            .map_err(|_| anyhow::anyhow!("session lifecycle cleanup is already in progress"))
+    }
+
+    fn end_lifecycle_block(&self) {
+        self.lifecycle_blocked
+            .store(false, std::sync::atomic::Ordering::Release);
+        self.wake_dispatcher();
     }
 
     pub async fn subscribe_status(&self, session_id: &str) -> watch::Receiver<SessionStatus> {
@@ -356,6 +458,15 @@ impl SessionSupervisor {
     }
 
     pub async fn ensure_session_loaded(&self, session_id: &str) -> anyhow::Result<()> {
+        let _lifecycle = self.lifecycle_guard().await;
+        self.ensure_session_loaded_locked(session_id).await
+    }
+
+    pub(crate) async fn ensure_session_loaded_locked(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<()> {
+        self.ensure_lifecycle_open()?;
         if self.actor_for(session_id).await.is_some() {
             return Ok(());
         }
@@ -369,6 +480,8 @@ impl SessionSupervisor {
     }
 
     pub async fn load_pending_sessions(&self) -> anyhow::Result<usize> {
+        let _lifecycle = self.lifecycle_guard().await;
+        self.ensure_lifecycle_open()?;
         let pending = self
             .db
             .search_sessions_filtered(None, Some("pending"), None, None, -1, 0)?;

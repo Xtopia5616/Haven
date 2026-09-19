@@ -146,7 +146,9 @@ impl ApplicationRuntime {
         if let Err(error) = self.pipeline.shutdown().await {
             tracing::warn!(error = %error, "input pipeline shutdown failed");
         }
-        self.executor.clear_all_sessions().await;
+        if let Err(error) = self.executor.clear_all_sessions().await {
+            tracing::warn!(error = %error, "session shutdown did not quiesce every run");
+        }
         self.tools.action_service().shutdown().await;
         self.tools.mcp_manager().shutdown_all().await;
 

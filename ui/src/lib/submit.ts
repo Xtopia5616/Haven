@@ -52,15 +52,17 @@ function isMidTurnSubmit(sessionId: string, reducer?: SessionReducer): boolean {
 }
 
 /**
- * In-flight submission lock. The backend no longer deduplicates repeated
- * user inputs by content (the canonical is an append-only transcript), so
- * rapid duplicate submissions — double-clicking "继续", quick-reply spam —
- * must be prevented here: an identical duplicate joins the in-flight
- * submission instead of stacking a second user message.
+ * Per-session submission coordinator. The backend no longer deduplicates
+ * repeated user inputs by content (the canonical is an append-only
+ * transcript), so rapid duplicate submissions — double-clicking "继续",
+ * quick-reply spam — must be prevented here: an identical duplicate joins
+ * the in-flight submission instead of stacking a second user message.
  *
- * A DIFFERENT submission that arrives while one is in flight (a voice
- * transcript racing a typed send, two distinct quick messages) is QUEUED and
- * delivered in order after the current one settles — never silently dropped.
+ * A DIFFERENT submission for the same session that arrives while one is in
+ * flight (a voice transcript racing a typed send, two distinct quick
+ * messages) is QUEUED and delivered in order after the current one settles.
+ * Independent sessions have independent lanes and may be submitted in
+ * parallel — never silently dropped or globally serialized.
  * Each queued item snapshots the active session (+ fresh-start intent) at
  * enqueue time so a mid-flight session switch cannot retarget it.
  */
@@ -89,8 +91,54 @@ interface PendingSubmission {
 	reject: (reason: any) => void;
 }
 
-let inflight: InflightSubmission | null = null;
-let pendingQueue: PendingSubmission[] = [];
+type SubmissionLaneKey = string | symbol;
+
+interface SubmissionLane {
+	key: SubmissionLaneKey;
+	inflight: InflightSubmission | null;
+	pendingQueue: PendingSubmission[];
+	/** Session id announced by a draft request before its promise settles. */
+	adoptionTarget: string | null;
+}
+
+// A draft lane is intentionally shared: two sends made before the first
+// session exists must append to the session created by the first send rather
+// than creating two sessions. Persisted session ids use the `ses-` namespace,
+// but a symbol keeps this invariant independent of id formatting.
+const DRAFT_LANE_KEY = Symbol('draft-submission-lane');
+const submissionLanes = new Map<SubmissionLaneKey, SubmissionLane>();
+
+function laneFor(payload: SubmitPayload): SubmissionLane {
+	if (payload.pinnedSessionId != null) {
+		const draftLane = submissionLanes.get(DRAFT_LANE_KEY);
+		// A draft request publishes its created id before its outer promise
+		// settles. Only sends for that exact new session wait behind the draft
+		// migration; an unrelated existing session remains fully independent.
+		if (
+			draftLane?.inflight &&
+			draftLane.adoptionTarget === payload.pinnedSessionId
+		) {
+			return draftLane;
+		}
+	}
+	const key = payload.pinnedSessionId ?? DRAFT_LANE_KEY;
+	let lane = submissionLanes.get(key);
+	if (!lane) {
+		lane = { key, inflight: null, pendingQueue: [], adoptionTarget: null };
+		submissionLanes.set(key, lane);
+	}
+	return lane;
+}
+
+function maybeReleaseLane(lane: SubmissionLane) {
+	if (
+		lane.inflight == null &&
+		lane.pendingQueue.length === 0 &&
+		submissionLanes.get(lane.key) === lane
+	) {
+		submissionLanes.delete(lane.key);
+	}
+}
 
 function hasAttachmentsOf(payload: SubmitOptions): boolean {
 	return (
@@ -99,12 +147,20 @@ function hasAttachmentsOf(payload: SubmitOptions): boolean {
 	);
 }
 
-function startSubmission(payload: SubmitPayload) {
-	const promise = doSubmit(payload).finally(() => {
-		inflight = null;
-		drainQueue();
-	});
-	inflight = {
+function startSubmission(lane: SubmissionLane, payload: SubmitPayload) {
+	const promise = doSubmit(payload)
+		.then((result) => {
+			if (lane.key === DRAFT_LANE_KEY && payload.pinnedSessionId == null) {
+				lane.adoptionTarget = processResultSessionId(result);
+			}
+			return result;
+		})
+		.finally(() => {
+			lane.inflight = null;
+			drainQueue(lane);
+			maybeReleaseLane(lane);
+		});
+	lane.inflight = {
 		text: payload.text,
 		voice: !!payload.voice,
 		recordingSessionId: payload.recordingSessionId,
@@ -116,27 +172,41 @@ function startSubmission(payload: SubmitPayload) {
 	return promise;
 }
 
-function drainQueue() {
-	const next = pendingQueue.shift();
+function drainQueue(lane: SubmissionLane) {
+	if (lane.inflight) return;
+	const next = lane.pendingQueue.shift();
 	if (!next) return;
 	// Draft/fresh-start submissions pin `null` at enqueue. If a prior submit
 	// just created/activated a session (and cleared the fresh-start intent),
-	// adopt it so typed+voice (or two draft sends) append to the same
-	// conversation instead of spawning a second one.
+	// move the whole remaining draft queue to that session so newly submitted
+	// messages cannot overtake it on a newly created session lane.
 	if (next.payload.pinnedSessionId == null) {
 		const active = next.payload.reducer
 			? next.payload.reducer.getState().activeSessionId
 			: get(activeSessionIdStore);
 		const intentStillFresh = get(newSessionIntentStore);
 		if (active && !intentStillFresh) {
-			next.payload = {
-				...next.payload,
-				pinnedSessionId: active,
-				freshStartAtEnqueue: false,
-			};
+			const draftQueue = [next, ...lane.pendingQueue];
+			lane.pendingQueue = [];
+			const targetLanes = new Set<SubmissionLane>();
+			for (const pending of draftQueue) {
+				if (pending.payload.pinnedSessionId == null) {
+					pending.payload = {
+						...pending.payload,
+						pinnedSessionId: active,
+						freshStartAtEnqueue: false,
+					};
+				}
+				const targetLane = laneFor(pending.payload);
+				targetLane.pendingQueue.push(pending);
+				targetLanes.add(targetLane);
+			}
+			maybeReleaseLane(lane);
+			for (const targetLane of targetLanes) drainQueue(targetLane);
+			return;
 		}
 	}
-	startSubmission(next.payload).then(next.resolve, next.reject);
+	startSubmission(lane, next.payload).then(next.resolve, next.reject);
 }
 
 /**
@@ -185,29 +255,35 @@ export async function submitTranscript(
 		freshStartAtEnqueue: get(newSessionIntentStore),
 		reducer,
 	};
-	if (inflight) {
+	const lane = laneFor(payload);
+	if (lane.inflight) {
 		// Identical duplicate (double-click 继续 / quick-reply spam): join the
 		// in-flight submission so a second user message never stacks. Session
-		// pin + fresh-start must match — same text after a switch is NOT a
-		// duplicate and must be queued for the new target.
+		// lane + fresh-start must match — the same text in another session is
+		// independent and may run concurrently.
 		const duplicate =
-			inflight.text === text &&
-			inflight.voice === !!voice &&
-			inflight.recordingSessionId === payload.recordingSessionId &&
-			!inflight.hasAttachments &&
+			lane.inflight.text === text &&
+			lane.inflight.voice === !!voice &&
+			lane.inflight.recordingSessionId === payload.recordingSessionId &&
+			!lane.inflight.hasAttachments &&
 			!hasAttachmentsOf(payload) &&
-			inflight.pinnedSessionId === payload.pinnedSessionId &&
-			inflight.freshStartAtEnqueue === payload.freshStartAtEnqueue;
-		if (duplicate) return inflight.promise;
-		// A different submission: queue it instead of dropping it — the
+			lane.inflight.pinnedSessionId === payload.pinnedSessionId &&
+			lane.inflight.freshStartAtEnqueue === payload.freshStartAtEnqueue;
+		if (duplicate) return lane.inflight.promise;
+		// A different submission for this session: queue it instead of dropping
+		// it — the
 		// optimistic bubble is added when it actually dispatches. Session
 		// targeting was snapshotted above so a later switch cannot retarget it.
 		return new Promise<any>((resolve, reject) => {
-			pendingQueue.push({ payload, resolve, reject });
+			lane.pendingQueue.push({ payload, resolve, reject });
 		});
 	}
-	startSubmission(payload);
-	return inflight!.promise;
+	if (lane.pendingQueue.length > 0) {
+		return new Promise<any>((resolve, reject) => {
+			lane.pendingQueue.push({ payload, resolve, reject });
+		});
+	}
+	return startSubmission(lane, payload);
 }
 
 async function doSubmit({

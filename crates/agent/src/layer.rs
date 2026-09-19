@@ -897,6 +897,11 @@ impl AgentLayer {
         message_type: &str,
         dispatch: bool,
     ) -> anyhow::Result<(crate::session::SessionInfo, String)> {
+        // Keep creation, first-message persistence, and actor registration in
+        // one lifecycle window. A concurrent history clear must observe either
+        // the complete new session or none of it.
+        let _lifecycle = self.executor.lifecycle_guard().await;
+        self.executor.ensure_lifecycle_open()?;
         let record = self.db.create_session(input, input)?;
         // The first user turn (and its attachments) must be on disk BEFORE
         // the dispatcher can pick the session up; if persisting fails, remove
@@ -918,7 +923,9 @@ impl AgentLayer {
                 return Err(e);
             }
         };
-        self.executor.ensure_session_loaded(&record.id).await?;
+        self.executor
+            .ensure_session_loaded_locked(&record.id)
+            .await?;
         // Human conversations get a title as soon as their first input is
         // durable. Peer kickoff sessions use their explicit title/fallback
         // path below and must not spend a small-model call here.
@@ -1177,8 +1184,7 @@ impl AgentLayer {
                     session_id = %session.id,
                     "spawn_peer_session: inbox register failed: {e}"
                 );
-                let _ = self.db.delete_session(&session.id);
-                self.executor.remove_session(&session.id).await;
+                let _ = self.executor.delete_session(&session.id).await;
                 return Err(e);
             }
             Err(e) => {
@@ -1186,8 +1192,7 @@ impl AgentLayer {
                     session_id = %session.id,
                     "spawn_peer_session: inbox register join failed: {e}"
                 );
-                let _ = self.db.delete_session(&session.id);
-                self.executor.remove_session(&session.id).await;
+                let _ = self.executor.delete_session(&session.id).await;
                 return Err(anyhow::anyhow!("inbox register join failed: {e}"));
             }
         }

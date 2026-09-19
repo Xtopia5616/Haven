@@ -332,13 +332,13 @@ pub async fn delete_session(
     app: tauri::AppHandle,
     session_id: String,
 ) -> Result<(), String> {
-    // Quiesce and remove the in-memory session first. This cancels the loop,
-    // waits for its run gate, and prevents the dispatcher from starting a
-    // queued copy while the durable cascade runs.
-    state.executor.remove_session(&session_id).await;
+    // Quiesce the actor and delete its durable row under one supervisor-owned
+    // lifecycle gate. This prevents a concurrent resume/load from reinstalling
+    // a stale actor between the in-memory removal and SQL delete.
     state
-        .db
+        .executor
         .delete_session(&session_id)
+        .await
         .map_err(|e| log_err("delete_session", e))?;
     // The session is gone, so no `session:updated` terminal transition will ever
     // fire for it; a dedicated `session:deleted` lets listeners (busy-session
@@ -359,13 +359,12 @@ pub async fn clear_history(
     state: State<'_, Arc<AppState>>,
     app: tauri::AppHandle,
 ) -> Result<u64, String> {
-    // Stop all in-memory work before deleting the durable rows. Otherwise a
-    // handler that was already executing could outlive the history purge and
-    // publish stale tool/message writes after the command returns.
-    state.executor.clear_all_sessions().await;
+    // Stop all in-memory work and delete durable rows under one lifecycle
+    // gate; no concurrent create/load can cross the purge boundary.
     let count = state
-        .db
-        .clear_sessions()
+        .executor
+        .clear_sessions_and_delete()
+        .await
         .map(|n| n as u64)
         .map_err(|e| log_err("clear_history", e))?;
     // `session_id: null` signals "every session was removed" so listeners clear

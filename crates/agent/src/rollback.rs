@@ -45,10 +45,10 @@ impl AgentLayer {
                 // exit_cancelled cannot overwrite the restored snapshot.
                 let cancel = self.executor.cancellation_token(session_id).await;
                 cancel.cancel();
-                self.executor.await_run_finished(session_id).await;
+                self.executor.await_run_finished(session_id).await?;
             }
             crate::lifecycle::LifecycleDecision::AwaitThenAllow => {
-                self.executor.await_run_finished(session_id).await;
+                self.executor.await_run_finished(session_id).await?;
             }
             crate::lifecycle::LifecycleDecision::Deny => {
                 return Err(anyhow::anyhow!(
@@ -396,7 +396,7 @@ impl AgentLayer {
         match decide(window, LifecycleOp::ErroredContinue, state.as_ref()) {
             crate::lifecycle::LifecycleDecision::AwaitThenAllow
             | crate::lifecycle::LifecycleDecision::CancelThenAllow => {
-                self.executor.await_run_finished(session_id).await;
+                self.executor.await_run_finished(session_id).await?;
             }
             crate::lifecycle::LifecycleDecision::Deny => {
                 return Err(anyhow::anyhow!(

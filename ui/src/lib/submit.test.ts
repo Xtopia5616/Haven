@@ -320,13 +320,15 @@ describe('submitTranscript', () => {
 		const first = submitTranscript('继续', { voice: false });
 		activeSessionIdStore.set('session-b');
 		const second = submitTranscript('继续', { voice: false });
-		expect(invokeMock).toHaveBeenCalledTimes(1);
-		resolveFirst!({});
-		await Promise.all([first, second]);
+		// Different session lanes are independent; switching sessions must not
+		// make B wait for an unrelated in-flight request in A.
 		expect(invokeMock).toHaveBeenCalledTimes(2);
 		expect(/** @type {any[]} */ (invokeMock.mock.calls)[1][1].activeSessionId).toBe(
 			'session-b',
 		);
+		resolveFirst!({});
+		await Promise.all([first, second]);
+		expect(invokeMock).toHaveBeenCalledTimes(2);
 	});
 
 	it('adopts the newly created session for a queued draft follow-up', async () => {
@@ -403,6 +405,49 @@ describe('submitTranscript', () => {
 		expect(results[1]).toEqual({});
 		const list = /** @type {any[]} */ (get(sessionMessagesStore)['session-a']);
 		expect(list.map((x) => x.content)).toEqual(['第一条', '第二条']);
+	});
+
+	it('does not let a newly created session overtake queued draft sends', async () => {
+		let resolveFirst!: (v: unknown) => void;
+		let resolveSecond!: (v: unknown) => void;
+		invokeMock
+			.mockReturnValueOnce(
+				new Promise((resolve) => {
+					resolveFirst = resolve;
+				}),
+			)
+			.mockReturnValueOnce(
+				new Promise((resolve) => {
+					resolveSecond = resolve;
+				}),
+			)
+			.mockResolvedValueOnce({});
+		activeSessionIdStore.set(null);
+
+		const first = submitTranscript('创建会话', { voice: false });
+		const second = submitTranscript('排队消息', { voice: false });
+		resolveFirst!({
+			SessionCreated: { session_id: 'session-new', message_id: 'msg-created' },
+		});
+		// The queued message owns the new session lane now. A third send to the
+		// active session must queue behind it instead of overtaking it.
+		await vi.waitFor(() => expect(get(activeSessionIdStore)).toBe('session-new'));
+		const third = submitTranscript('不能超车', { voice: false });
+		expect(invokeMock).toHaveBeenCalledTimes(2);
+
+		await vi.waitFor(() => expect(invokeMock).toHaveBeenCalledTimes(2));
+		expect(/** @type {any[]} */ (invokeMock.mock.calls)[1][1].activeSessionId).toBe(
+			'session-new',
+		);
+		resolveSecond!({});
+		await vi.waitFor(() => expect(invokeMock).toHaveBeenCalledTimes(3));
+		await Promise.all([first, second, third]);
+		expect(invokeMock).toHaveBeenCalledTimes(3);
+		expect(/** @type {any[]} */ (invokeMock.mock.calls)[2][1].activeSessionId).toBe(
+			'session-new',
+		);
+		const list = /** @type {any[]} */ (get(sessionMessagesStore)['session-new']);
+		expect(list.map((x) => x.content)).toEqual(['创建会话', '排队消息', '不能超车']);
 	});
 
 	it('keeps the enqueue-time session for a queued submission after a switch', async () => {

@@ -9,6 +9,9 @@ use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
 use haven_memory::recall::MemoryRetriever;
 use haven_tools::ToolsManager;
 
+#[cfg(test)]
+use haven_memory::Database;
+
 use crate::compactor::estimate_tokens;
 use crate::memory_service::{MemoryService, PromptMemoryCandidates};
 use crate::prompt_context::PromptContextProvider;

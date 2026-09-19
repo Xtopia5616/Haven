@@ -167,3 +167,4 @@
 - [0163：AuthorizationEngine 统一 typed 授权模型](0163-typed-authorization-engine.md)
 - [0164：模型体验 P2 清单收口](0164-model-experience-p2-polish.md)
 - [0170：Capability / RequestPolicy 模型路由](0170-capability-request-policy-routing.md)
+- [0171：并发会话调度与生命周期闸门](0171-concurrent-session-lifecycle-admission.md)

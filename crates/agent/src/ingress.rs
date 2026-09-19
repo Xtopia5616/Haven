@@ -210,7 +210,7 @@ impl AgentLayer {
                             .await;
                         // Do not keep the reloaded terminal session in the working
                         // set — it was ended and should not be dispatchable.
-                        self.executor.remove_session(session_id).await;
+                        self.executor.remove_session(session_id).await?;
                         return Ok(ProcessResult::supplemented(None));
                     } else {
                         if is_answer {

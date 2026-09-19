@@ -1,7 +1,120 @@
 //! FIFO dispatcher and run-lifecycle coordination.
 
 use super::*;
+use std::sync::Mutex as StdMutex;
+use tokio::sync::Notify;
 use tracing::Instrument;
+
+/// Explicit run admission state. A Tokio semaphore cannot safely represent a
+/// limit that is lowered while all permits are held: permits returned by old
+/// runs can make the later limit larger than configured. Tracking active runs
+/// directly makes resize semantics exact.
+pub(super) struct RunAdmission {
+    state: StdMutex<AdmissionState>,
+    notify: Notify,
+}
+
+struct AdmissionState {
+    limit: usize,
+    active: usize,
+}
+
+pub(super) struct RunPermit {
+    admission: Arc<RunAdmission>,
+}
+
+impl RunAdmission {
+    pub(super) fn new(limit: usize) -> Self {
+        Self {
+            state: StdMutex::new(AdmissionState {
+                limit: limit.max(1),
+                active: 0,
+            }),
+            notify: Notify::new(),
+        }
+    }
+
+    pub(super) async fn acquire(
+        self: &Arc<Self>,
+        cancellation: &CancellationToken,
+    ) -> Option<RunPermit> {
+        loop {
+            // Register before checking the state so a release/resize cannot
+            // notify between the check and awaiting the notification.
+            let notified = self.notify.notified();
+            if cancellation.is_cancelled() {
+                return None;
+            }
+            if self.try_take() {
+                return Some(RunPermit {
+                    admission: self.clone(),
+                });
+            }
+            tokio::select! {
+                _ = cancellation.cancelled() => return None,
+                _ = notified => {}
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn try_acquire(self: &Arc<Self>) -> Option<RunPermit> {
+        self.try_take().then(|| RunPermit {
+            admission: self.clone(),
+        })
+    }
+
+    fn try_take(&self) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.active >= state.limit {
+            return false;
+        }
+        state.active += 1;
+        true
+    }
+
+    pub(super) fn set_limit(&self, limit: usize) {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .limit = limit.max(1);
+        self.notify.notify_waiters();
+    }
+
+    pub(super) fn limit(&self) -> usize {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .limit
+    }
+
+    fn release(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.active = state.active.saturating_sub(1);
+        drop(state);
+        self.notify.notify_one();
+    }
+}
+
+impl Drop for RunPermit {
+    fn drop(&mut self) {
+        self.admission.release();
+    }
+}
+
+/// A direct (non-dispatcher) run owns an admission permit for its lifetime.
+/// Dispatcher-owned runs never create this value because their actor is
+/// already marked running.
+pub(crate) struct DirectRunLease {
+    pub(crate) actor: actor::SessionActorHandle,
+    _permit: RunPermit,
+}
 
 impl SessionSupervisor {
     pub(super) fn wake_dispatcher(&self) {
@@ -27,23 +140,7 @@ impl SessionSupervisor {
     }
 
     pub fn set_max_concurrent(&self, new_max: usize) {
-        let new_max = new_max.max(1);
-        let current = self.max_concurrent.load(Ordering::Relaxed);
-        if current == new_max {
-            return;
-        }
-        if new_max > current {
-            self.semaphore.add_permits(new_max - current);
-        } else {
-            for _ in 0..current - new_max {
-                if let Ok(permit) = self.semaphore.clone().try_acquire_owned() {
-                    permit.forget();
-                } else {
-                    break;
-                }
-            }
-        }
-        self.max_concurrent.store(new_max, Ordering::Relaxed);
+        self.admission.set_limit(new_max);
     }
 
     pub fn start_dispatcher(self: Arc<Self>, handler: RunHandler) {
@@ -76,6 +173,13 @@ impl SessionSupervisor {
         recover_pending: bool,
         cancellation: CancellationToken,
     ) {
+        if self
+            .dispatcher_started
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
+        {
+            tracing::warn!("session dispatcher start ignored: already running");
+            return;
+        }
         tokio::spawn(async move {
             if recover_pending {
                 match self.load_pending_sessions().await {
@@ -89,16 +193,9 @@ impl SessionSupervisor {
             }
             let mut wake_rx = self.subscribe_dispatch();
             loop {
-                let permit = tokio::select! {
-                    _ = cancellation.cancelled() => return,
-                    result = self.semaphore.clone().acquire_owned() => match result {
-                        Ok(permit) => permit,
-                        Err(_) => return,
-                    }
-                };
-                if cancellation.is_cancelled() {
+                let Some(permit) = self.admission.acquire(&cancellation).await else {
                     return;
-                }
+                };
                 let Some(session_id) = self.try_claim_pending().await else {
                     drop(permit);
                     tokio::select! {
@@ -141,6 +238,12 @@ impl SessionSupervisor {
     }
 
     pub(crate) async fn try_claim_pending(&self) -> Option<String> {
+        if self
+            .lifecycle_blocked
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return None;
+        }
         loop {
             let session_id = self.pending_queue.lock().await.pop_front()?;
             let Some(actor) = self.actor_for(&session_id).await else {
@@ -193,7 +296,7 @@ impl SessionSupervisor {
     }
 
     pub fn max_concurrent(&self) -> usize {
-        self.max_concurrent.load(Ordering::Relaxed)
+        self.admission.limit()
     }
 
     pub async fn running_actions_list(&self) -> Vec<String> {
@@ -220,13 +323,35 @@ impl SessionSupervisor {
         }
     }
 
-    pub(crate) async fn begin_direct_run(
-        &self,
-        session_id: &str,
-    ) -> Option<actor::SessionActorHandle> {
-        match self.actor_for(session_id).await {
-            Some(actor) if actor.begin_direct_run().await => Some(actor),
-            _ => None,
+    pub(crate) async fn begin_direct_run(&self, session_id: &str) -> Option<DirectRunLease> {
+        let actor = self.actor_for(session_id).await?;
+        // A dispatcher-owned run already holds admission and the actor run
+        // bit. Direct callers must not acquire a second permit or gate it.
+        if actor.is_running().await {
+            return None;
+        }
+        let permit = self.admission.acquire(&CancellationToken::new()).await?;
+        // The actor may have been quiesced and removed while waiting for a
+        // permit. Re-check the registry under the same lifecycle gate used by
+        // deletion/loading before changing the actor's run bit; otherwise a
+        // direct resume could start an orphaned actor after its DB row was
+        // deleted.
+        let _lifecycle = self.lifecycle_guard().await;
+        if self.ensure_lifecycle_open().is_err()
+            || self.actor_for(session_id).await.is_none()
+            || actor.is_running().await
+        {
+            drop(permit);
+            return None;
+        }
+        if actor.begin_direct_run().await {
+            Some(DirectRunLease {
+                actor,
+                _permit: permit,
+            })
+        } else {
+            drop(permit);
+            None
         }
     }
 
@@ -242,12 +367,12 @@ impl SessionSupervisor {
         }
     }
 
-    pub async fn await_run_finished(&self, session_id: &str) {
+    pub async fn await_run_finished(&self, session_id: &str) -> anyhow::Result<()> {
         let Some(actor) = self.actor_for(session_id).await else {
-            return;
+            return Ok(());
         };
         let mut state = actor.run_state();
-        let _ = tokio::time::timeout(RUN_EXIT_WAIT_TIMEOUT, async {
+        tokio::time::timeout(RUN_EXIT_WAIT_TIMEOUT, async {
             loop {
                 // The actor is the source of truth. The watch channel is only
                 // the wake-up edge; checking the actor after every wake also
@@ -267,7 +392,14 @@ impl SessionSupervisor {
                 }
             }
         })
-        .await;
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "session '{}' did not exit within {:?}; lifecycle mutation aborted",
+                session_id,
+                RUN_EXIT_WAIT_TIMEOUT
+            )
+        })
     }
 
     pub async fn cancellation_token(&self, session_id: &str) -> CancellationToken {

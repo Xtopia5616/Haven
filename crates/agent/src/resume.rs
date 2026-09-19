@@ -121,18 +121,18 @@ impl AgentLayer {
         // restore. When the dispatcher already claimed, this is a no-op and
         // `unmark_running` owns the slot. Released via `DirectRunGuard` on every
         // exit path (including `?` / early return).
-        let direct_actor = self.executor.begin_direct_run(session_id).await;
+        let direct_lease = self.executor.begin_direct_run(session_id).await;
         struct DirectRunGuard {
             executor: std::sync::Arc<crate::session::SessionSupervisor>,
-            actor: Option<crate::session::SessionActorHandle>,
+            lease: Option<crate::session::DirectRunLease>,
             session_id: String,
         }
         impl Drop for DirectRunGuard {
             fn drop(&mut self) {
-                let Some(actor) = self.actor.take() else {
+                let Some(lease) = self.lease.take() else {
                     return;
                 };
-                actor.release_run_now();
+                lease.actor.release_run_now();
                 let exec = self.executor.clone();
                 let sid = self.session_id.clone();
                 tokio::spawn(async move {
@@ -142,7 +142,7 @@ impl AgentLayer {
         }
         let _direct_guard = DirectRunGuard {
             executor: self.executor.clone(),
-            actor: direct_actor,
+            lease: direct_lease,
             session_id: session_id.to_string(),
         };
 
