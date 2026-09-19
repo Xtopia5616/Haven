@@ -135,6 +135,15 @@ fn rate_limiter_refills_over_time() {
     assert!(limiter.acquire());
 }
 
+#[test]
+fn rate_limiter_fractional_rate_still_allows_a_call() {
+    let mut limiter = RateLimiter::new(0.5);
+    assert!(limiter.acquire());
+    assert!(!limiter.acquire());
+    limiter.last_refill = Instant::now() - Duration::from_secs(2);
+    assert!(limiter.acquire());
+}
+
 #[tokio::test]
 async fn mcp_client_new_initial_state() {
     let client = McpClient::new(
@@ -280,6 +289,37 @@ async fn mcp_stdio_requires_open_network_policy() {
         client.status().await,
         McpClientStatus::Offline { .. }
     ));
+}
+
+#[tokio::test]
+async fn mcp_rate_limit_wait_honors_session_cancellation() {
+    let client = McpClient::new(
+        &McpServerConfig {
+            name: "rate-limited".into(),
+            command: "echo".into(),
+            ..Default::default()
+        },
+        2 * 1024 * 1024,
+        2 * 1024 * 1024,
+    );
+    client.set_rate_limit(0.001).await;
+    client.rate_limiter.lock().await.tokens = 0.0;
+
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let cancel_task = cancel.clone();
+    let task = tokio::spawn(async move {
+        client
+            .call_tool("never-reached", json!({}), cancel_task)
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    cancel.cancel();
+    let result = tokio::time::timeout(Duration::from_millis(200), task)
+        .await
+        .expect("rate limiter wait must be cancellable")
+        .unwrap()
+        .expect_err("cancelled call must not reach the disconnected transport");
+    assert!(result.to_string().contains("cancelled"));
 }
 
 #[test]

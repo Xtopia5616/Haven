@@ -4,15 +4,47 @@ use futures_util::StreamExt;
 use haven_common::process_containment::ProcessContainment;
 use serde_json::Value;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout};
+use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 const MAX_STDIO_LINE_BYTES: usize = 1024 * 1024;
 const MAX_JSON_BODY_BYTES: usize = 4 * 1024 * 1024;
 const MAX_NOTIFY_BODY_BYTES: usize = 64 * 1024;
 pub(crate) const NOTIFICATION_QUEUE_CAPACITY: usize = 256;
+
+/// Coalesced signal for `tools/list_changed`. The notification itself carries
+/// no useful payload, so retaining one pending bit avoids losing an invalidation
+/// when the bounded advisory notification queue is full.
+pub(crate) struct ToolsListChangedSignal {
+    pending: AtomicBool,
+    notify: Notify,
+}
+
+impl ToolsListChangedSignal {
+    pub(crate) fn new() -> Self {
+        Self {
+            pending: AtomicBool::new(false),
+            notify: Notify::new(),
+        }
+    }
+
+    pub(crate) fn request(&self) {
+        self.pending.store(true, Ordering::Release);
+        self.notify.notify_one();
+    }
+
+    pub(crate) fn take(&self) -> bool {
+        self.pending.swap(false, Ordering::AcqRel)
+    }
+
+    pub(crate) async fn notified(&self) {
+        self.notify.notified().await;
+    }
+}
 
 /// stdio transport: a spawned child process speaking JSON-RPC over its stdin
 /// and stdout pipes.
@@ -22,6 +54,8 @@ pub(crate) struct StdioInner {
     pub(crate) stdin: ChildStdin,
     pub(crate) stdout: BufReader<ChildStdout>,
     pub(crate) notification_tx: tokio::sync::mpsc::Sender<Value>,
+    pub(crate) tools_list_changed: Arc<ToolsListChangedSignal>,
+    pub(crate) cancel: CancellationToken,
 }
 
 impl StdioInner {
@@ -35,11 +69,15 @@ impl StdioInner {
         let mut line = serde_json::to_string(&req)?;
         line.push('\n');
 
-        self.stdin.write_all(line.as_bytes()).await?;
-        self.stdin.flush().await?;
+        write_stdio_line(&mut self.stdin, &line, method, &self.cancel).await?;
 
         let timeout = tokio::time::Duration::from_secs(REQUEST_TIMEOUT_SECS);
-        let result = tokio::time::timeout(timeout, async {
+        let cancel = self.cancel.clone();
+        let result = tokio::select! {
+            _ = cancel.cancelled() => {
+                anyhow::bail!("MCP stdio request '{}' cancelled", method)
+            }
+            result = tokio::time::timeout(timeout, async {
             loop {
                 let buf = read_line_bounded(&mut self.stdout).await?;
                 let buf = String::from_utf8_lossy(&buf).trim().to_string();
@@ -54,12 +92,17 @@ impl StdioInner {
                 }
                 // Route non-matching responses to notification handler (refine §4.6)
                 if parsed.get("id").is_none() {
-                    enqueue_notification(&self.notification_tx, parsed)?;
+                    enqueue_notification(
+                        &self.notification_tx,
+                        &self.tools_list_changed,
+                        parsed,
+                    )?;
                 }
             }
-        });
+        }) => result
+        };
 
-        match result.await {
+        match result {
             Ok(r) => r,
             Err(_) => anyhow::bail!("MCP request '{}' timed out", method),
         }
@@ -73,9 +116,32 @@ impl StdioInner {
         let notification = jsonrpc_notification(method, params);
         let mut line = serde_json::to_string(&notification)?;
         line.push('\n');
-        self.stdin.write_all(line.as_bytes()).await?;
-        self.stdin.flush().await?;
-        Ok(())
+        write_stdio_line(&mut self.stdin, &line, method, &self.cancel).await
+    }
+}
+
+async fn write_stdio_line(
+    stdin: &mut ChildStdin,
+    line: &str,
+    method: &str,
+    cancel: &CancellationToken,
+) -> anyhow::Result<()> {
+    tokio::select! {
+        _ = cancel.cancelled() => {
+            anyhow::bail!("MCP stdio write '{}' cancelled", method)
+        }
+        result = tokio::time::timeout(
+            Duration::from_secs(REQUEST_TIMEOUT_SECS),
+            async {
+                stdin.write_all(line.as_bytes()).await?;
+                stdin.flush().await?;
+                Ok::<(), std::io::Error>(())
+            },
+        ) => {
+            result
+                .map_err(|_| anyhow::anyhow!("MCP stdio write '{}' timed out", method))??;
+            Ok(())
+        }
     }
 }
 
@@ -100,6 +166,7 @@ pub(crate) struct HttpInner {
     pub(crate) notification_tx: tokio::sync::mpsc::Sender<Value>,
     /// Single buffered (incomplete) SSE line/event cap (from context limits).
     pub(crate) max_sse_buffer: usize,
+    pub(crate) tools_list_changed: Arc<ToolsListChangedSignal>,
 }
 
 impl HttpInner {
@@ -160,6 +227,7 @@ impl HttpInner {
                 &self.notification_tx,
                 self.max_sse_buffer,
                 &self.shared.cancel,
+                &self.tools_list_changed,
             )
             .await
         } else {
@@ -288,6 +356,7 @@ async fn read_sse_response(
     tx: &tokio::sync::mpsc::Sender<Value>,
     max_sse_buffer: usize,
     cancel: &CancellationToken,
+    tools_list_changed: &ToolsListChangedSignal,
 ) -> anyhow::Result<Value> {
     let mut stream = resp.bytes_stream();
     let mut parser = SseParser::new(max_sse_buffer);
@@ -307,7 +376,7 @@ async fn read_sse_response(
                     if cancel.is_cancelled() {
                         anyhow::bail!("MCP HTTP request cancelled");
                     }
-                    enqueue_notification(tx, ev)?;
+                    enqueue_notification(tx, tools_list_changed, ev)?;
                 }
             }
             Some(Err(e)) => return Err(e.into()),
@@ -328,6 +397,7 @@ async fn listen_sse(
     tx: &tokio::sync::mpsc::Sender<Value>,
     cancel: &CancellationToken,
     max_sse_buffer: usize,
+    tools_list_changed: &ToolsListChangedSignal,
 ) -> anyhow::Result<()> {
     let builder = shared
         .http
@@ -356,7 +426,7 @@ async fn listen_sse(
                             if cancel.is_cancelled() {
                                 return Ok(());
                             }
-                            enqueue_notification(tx, ev)?;
+                            enqueue_notification(tx, tools_list_changed, ev)?;
                         }
                     }
                     Some(Err(e)) => return Err(e.into()),
@@ -375,6 +445,7 @@ pub(crate) fn spawn_sse_listener(
     shared: Arc<HttpShared>,
     notification_tx: tokio::sync::mpsc::Sender<Value>,
     max_sse_buffer: usize,
+    tools_list_changed: Arc<ToolsListChangedSignal>,
 ) {
     tokio::spawn(async move {
         let mut backoff = Duration::from_secs(2);
@@ -382,7 +453,15 @@ pub(crate) fn spawn_sse_listener(
             if cancel.is_cancelled() {
                 break;
             }
-            match listen_sse(&shared, &notification_tx, &cancel, max_sse_buffer).await {
+            match listen_sse(
+                &shared,
+                &notification_tx,
+                &cancel,
+                max_sse_buffer,
+                &tools_list_changed,
+            )
+            .await
+            {
                 Ok(()) => {}
                 Err(e) => {
                     tracing::debug!(
@@ -444,8 +523,17 @@ async fn read_line_bounded(reader: &mut BufReader<ChildStdout>) -> std::io::Resu
 /// Keep notification delivery finite without allowing a burst of unsolicited
 /// events to stall the response that the caller is waiting for. Notifications
 /// are advisory; dropping the newest event is preferable to deadlocking the
-/// transport or growing memory without a bound.
-fn enqueue_notification(tx: &tokio::sync::mpsc::Sender<Value>, value: Value) -> anyhow::Result<()> {
+/// transport or growing memory without a bound. `tools/list_changed` is the
+/// exception: it is coalesced into a separate signal before this queue.
+fn enqueue_notification(
+    tx: &tokio::sync::mpsc::Sender<Value>,
+    tools_list_changed: &ToolsListChangedSignal,
+    value: Value,
+) -> anyhow::Result<()> {
+    if value.get("method").and_then(Value::as_str) == Some("notifications/tools/list_changed") {
+        tools_list_changed.request();
+        return Ok(());
+    }
     match tx.try_send(value) {
         Ok(()) => Ok(()),
         Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
@@ -463,6 +551,9 @@ async fn read_bytes_bounded(
     limit: usize,
     cancel: &CancellationToken,
 ) -> anyhow::Result<Vec<u8>> {
+    if cancel.is_cancelled() {
+        anyhow::bail!("MCP response body read cancelled");
+    }
     if resp
         .content_length()
         .is_some_and(|length| length > limit as u64)
@@ -471,10 +562,17 @@ async fn read_bytes_bounded(
     }
     let mut body = Vec::with_capacity(resp.content_length().unwrap_or(0) as usize);
     let mut stream = resp.bytes_stream();
-    while let Some(chunk) = tokio::select! {
-        _ = cancel.cancelled() => anyhow::bail!("MCP response body read cancelled"),
-        chunk = stream.next() => chunk,
-    } {
+    loop {
+        if cancel.is_cancelled() {
+            anyhow::bail!("MCP response body read cancelled");
+        }
+        let chunk = tokio::select! {
+            _ = cancel.cancelled() => anyhow::bail!("MCP response body read cancelled"),
+            chunk = stream.next() => chunk,
+        };
+        let Some(chunk) = chunk else {
+            break;
+        };
         let chunk = chunk?;
         if chunk.len() > limit.saturating_sub(body.len()) {
             anyhow::bail!("MCP response body exceeds the {} byte limit", limit);
@@ -515,4 +613,129 @@ pub(crate) async fn http_is_alive(shared: &Arc<HttpShared>) -> bool {
         tokio::time::timeout(Duration::from_secs(5), req.send()).await,
         Ok(Ok(_))
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::Stdio;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+    use tokio::process::Command;
+
+    async fn response_from_server(response: &'static str) -> reqwest::Response {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request).await;
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let result = client
+            .get(format!("http://{address}/"))
+            .send()
+            .await
+            .unwrap();
+        let _ = task.await;
+        result
+    }
+
+    #[tokio::test]
+    async fn body_limit_rejects_content_length_before_reading() {
+        let response = response_from_server(
+            "HTTP/1.1 200 OK\r\nContent-Length: 9\r\nConnection: close\r\n\r\n123456789",
+        )
+        .await;
+        let error = read_bytes_bounded(response, 8, &CancellationToken::new())
+            .await
+            .expect_err("declared body over the limit must fail before allocation");
+        assert!(error.to_string().contains("8 byte limit"));
+    }
+
+    #[tokio::test]
+    async fn body_limit_rejects_chunked_body_while_consuming() {
+        let response = response_from_server(
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5\r\nhello\r\n5\r\nworld\r\n0\r\n\r\n",
+        )
+        .await;
+        let error = read_bytes_bounded(response, 8, &CancellationToken::new())
+            .await
+            .expect_err("chunked body over the limit must fail while reading");
+        assert!(error.to_string().contains("8 byte limit"));
+    }
+
+    #[tokio::test]
+    async fn body_read_honors_cancellation() {
+        let response = response_from_server(
+            "HTTP/1.1 200 OK\r\nContent-Length: 1\r\nConnection: close\r\n\r\nx",
+        )
+        .await;
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let error = read_bytes_bounded(response, 8, &cancel)
+            .await
+            .expect_err("cancelled body reads must stop");
+        assert!(error.to_string().contains("cancelled"));
+    }
+
+    #[tokio::test]
+    async fn stdio_write_honors_cancellation_before_writing() {
+        let mut command = if cfg!(windows) {
+            let mut command = Command::new("cmd");
+            command.args(["/c", "more"]);
+            command
+        } else {
+            let mut command = Command::new("sh");
+            command.args(["-c", "cat >/dev/null"]);
+            command
+        };
+        let mut child = command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut stdin = child.stdin.take().unwrap();
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        let error = write_stdio_line(
+            &mut stdin,
+            "{\"jsonrpc\":\"2.0\"}\n",
+            "notifications/test",
+            &cancel,
+        )
+        .await
+        .expect_err("cancelled stdio writes must stop before touching the pipe");
+        assert!(error.to_string().contains("cancelled"));
+        drop(stdin);
+        let _ = child.kill().await;
+        let _ = child.wait().await;
+    }
+
+    #[test]
+    fn list_changed_is_coalesced_when_notification_queue_is_full() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        tx.try_send(serde_json::json!({"method": "notifications/progress"}))
+            .unwrap();
+        let signal = ToolsListChangedSignal::new();
+
+        enqueue_notification(
+            &tx,
+            &signal,
+            serde_json::json!({"method": "notifications/tools/list_changed"}),
+        )
+        .unwrap();
+
+        assert!(
+            signal.take(),
+            "list invalidation must survive queue pressure"
+        );
+        assert!(
+            rx.try_recv().is_ok(),
+            "ordinary notification remains queued"
+        );
+    }
 }

@@ -233,6 +233,18 @@ pub(crate) fn http_status_to_error(
     match status.as_u16() {
         401 | 403 => LlmError::Auth(format!("{}: {}", status, err_body)),
         429 => LlmError::RateLimit { retry_after },
+        // The provider did not complete the request in time. Treat this like
+        // a transport timeout so the bounded retry/failover policy can move
+        // to another candidate when one exists.
+        408 => LlmError::Timeout(format!("{}: {}", status, err_body)),
+        // A conflict is request-specific (for example an invalid replay or
+        // provider-side state conflict), not evidence that another provider
+        // should receive the same request.
+        409 => LlmError::RequestFailed(format!("{}: {}", status, err_body)),
+        // HTTP 425 explicitly asks the client to retry later. Reuse the
+        // existing transient server class so router failover and retry remain
+        // consistent without inventing a new public error variant.
+        425 => LlmError::ServerError(format!("{}: {}", status, err_body)),
         400 => {
             if lower_body.contains("context_length")
                 || lower_body.contains("maximum context")
@@ -461,6 +473,27 @@ mod tests {
         let e = http_status_to_error(reqwest::StatusCode::FORBIDDEN, "forbidden", None);
         assert!(matches!(e, LlmError::Auth(_)));
         assert!(e.to_string().contains("403"));
+    }
+
+    #[test]
+    fn http_status_transient_and_conflict_policy_is_explicit() {
+        let timeout = http_status_to_error(
+            reqwest::StatusCode::REQUEST_TIMEOUT,
+            "provider request timed out",
+            None,
+        );
+        assert!(matches!(timeout, LlmError::Timeout(_)));
+        assert!(timeout.is_retryable());
+
+        let conflict =
+            http_status_to_error(reqwest::StatusCode::CONFLICT, "duplicate request", None);
+        assert!(matches!(conflict, LlmError::RequestFailed(_)));
+        assert!(!conflict.is_retryable());
+
+        let too_early =
+            http_status_to_error(reqwest::StatusCode::TOO_EARLY, "retry after warmup", None);
+        assert!(matches!(too_early, LlmError::ServerError(_)));
+        assert!(too_early.is_retryable());
     }
 
     #[test]

@@ -1,3 +1,4 @@
+use anyhow::Context;
 use haven_memory::Database;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -96,13 +97,18 @@ impl PartialStore {
     /// captured before the write was spawned; if a promote/discard or attempt
     /// replacement has happened since, the write is dropped as stale. Skips
     /// writes whose content is unchanged since the last checkpoint.
-    pub async fn checkpoint(&self, session_id: &str, gen_id: u64, content: &str) {
+    pub async fn checkpoint(
+        &self,
+        session_id: &str,
+        gen_id: u64,
+        content: &str,
+    ) -> anyhow::Result<()> {
         if content.trim().is_empty() {
-            return;
+            return Ok(());
         }
         let _guard = self.session_lock(session_id).await;
         if gen_id != self.generation(session_id) {
-            return;
+            return Ok(());
         }
         if self
             .last_written
@@ -111,7 +117,7 @@ impl PartialStore {
             .get(session_id)
             .is_some_and(|prev| prev == content)
         {
-            return;
+            return Ok(());
         }
         let db = self.db.clone();
         let tid = session_id.to_string();
@@ -120,17 +126,15 @@ impl PartialStore {
             .run_blocking(move |db| db.upsert_partial_message(&tid, &snapshot))
             .await
         {
-            tracing::warn!(
-                "PartialStore: failed to checkpoint stream text for session {}: {}",
-                session_id,
-                e
-            );
-            return;
+            return Err(e).with_context(|| {
+                format!("failed to checkpoint stream text for session {session_id}")
+            });
         }
         self.last_written
             .lock()
             .unwrap()
             .insert(session_id.to_string(), content.to_string());
+        Ok(())
     }
 
     /// Promote the checkpointed text into a real assistant message (session
@@ -196,8 +200,14 @@ mod tests {
     async fn checkpoint_promote_cycle() {
         let (store, _db, _dir, session_id) = test_store();
         let gen_id = store.generation(&session_id);
-        store.checkpoint(&session_id, gen_id, "streamed text").await;
-        store.checkpoint(&session_id, gen_id, "streamed text").await; // unchanged → skipped
+        store
+            .checkpoint(&session_id, gen_id, "streamed text")
+            .await
+            .unwrap();
+        store
+            .checkpoint(&session_id, gen_id, "streamed text")
+            .await
+            .unwrap(); // unchanged → skipped
         assert!(store.promote(&session_id).await.unwrap());
         assert!(!store.promote(&session_id).await.unwrap());
     }
@@ -206,11 +216,17 @@ mod tests {
     async fn stale_checkpoint_after_discard_is_dropped() {
         let (store, db, _dir, session_id) = test_store();
         let gen_id = store.generation(&session_id);
-        store.checkpoint(&session_id, gen_id, "first draft").await;
+        store
+            .checkpoint(&session_id, gen_id, "first draft")
+            .await
+            .unwrap();
         // A promote/discard bumps the generation; a checkpoint spawned before
         // it must not re-create the row.
         store.discard(&session_id).await;
-        store.checkpoint(&session_id, gen_id, "first draft").await;
+        store
+            .checkpoint(&session_id, gen_id, "first draft")
+            .await
+            .unwrap();
         let tid = session_id.clone();
         let row = db
             .run_blocking(move |db| Ok(db.get_partial_message(&tid)))
@@ -225,16 +241,19 @@ mod tests {
         let old_generation = store.generation(&session_id);
         store
             .checkpoint(&session_id, old_generation, "old attempt")
-            .await;
+            .await
+            .unwrap();
 
         let new_generation = store.begin_attempt(&session_id);
         assert_ne!(new_generation, old_generation);
         store
             .checkpoint(&session_id, old_generation, "late old attempt")
-            .await;
+            .await
+            .unwrap();
         store
             .checkpoint(&session_id, new_generation, "new attempt")
-            .await;
+            .await
+            .unwrap();
 
         let tid = session_id;
         let row = db
@@ -249,11 +268,17 @@ mod tests {
     async fn promote_then_stale_checkpoint_does_not_duplicate() {
         let (store, db, _dir, session_id) = test_store();
         let gen_id = store.generation(&session_id);
-        store.checkpoint(&session_id, gen_id, "partial reply").await;
+        store
+            .checkpoint(&session_id, gen_id, "partial reply")
+            .await
+            .unwrap();
         assert!(store.promote(&session_id).await.unwrap());
         // The in-flight checkpoint (same generation as before promote) lands
         // afterwards and must be dropped.
-        store.checkpoint(&session_id, gen_id, "partial reply").await;
+        store
+            .checkpoint(&session_id, gen_id, "partial reply")
+            .await
+            .unwrap();
         let tid = session_id.clone();
         let msgs = db
             .run_blocking(move |db| db.get_session_messages(&tid))
@@ -269,5 +294,29 @@ mod tests {
             row.is_none(),
             "stale checkpoint must not leave an orphan row"
         );
+    }
+
+    #[tokio::test]
+    async fn checkpoint_database_failure_is_returned_to_flush() {
+        let (store, db, _dir, session_id) = test_store();
+        let trigger = format!("checkpoint_failure_{}", uuid::Uuid::new_v4().simple());
+        db.conn()
+            .execute_batch(&format!(
+                "CREATE TRIGGER {trigger}
+                 BEFORE INSERT ON partial_messages
+                 BEGIN SELECT RAISE(ABORT, 'injected checkpoint failure'); END;"
+            ))
+            .unwrap();
+
+        let error = store
+            .checkpoint(&session_id, store.generation(&session_id), "will fail")
+            .await
+            .expect_err("database failure must not be swallowed");
+        assert!(
+            error
+                .to_string()
+                .contains("failed to checkpoint stream text")
+        );
+        assert!(format!("{error:#}").contains("injected checkpoint failure"));
     }
 }

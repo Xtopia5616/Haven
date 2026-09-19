@@ -3,8 +3,8 @@ use crate::protocol::{
     PROTOCOL_VERSION, extract_mcp_content,
 };
 use crate::transport::{
-    HttpInner, HttpShared, McpClientInner, NOTIFICATION_QUEUE_CAPACITY, StdioInner, http_is_alive,
-    spawn_sse_listener,
+    HttpInner, HttpShared, McpClientInner, NOTIFICATION_QUEUE_CAPACITY, StdioInner,
+    ToolsListChangedSignal, http_is_alive, spawn_sse_listener,
 };
 use haven_common::{McpTransportType, types::NetworkPolicy};
 use serde_json::Value;
@@ -38,6 +38,7 @@ pub struct McpClient {
     pub(crate) cancel_token: Arc<Mutex<CancellationToken>>,
     pub(crate) rate_limiter: Arc<Mutex<RateLimiter>>,
     pub(crate) notification_rx: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<Value>>>>,
+    pub(crate) tools_list_changed: Arc<ToolsListChangedSignal>,
     /// Binary content (image/audio/resource blob) kept in observations (base64
     /// chars) before being replaced by an `oversized` marker.
     pub(crate) max_binary_payload: usize,
@@ -58,11 +59,13 @@ pub(crate) struct RateLimiter {
 
 impl RateLimiter {
     pub(crate) fn new(calls_per_second: f64) -> Self {
+        let refill_rate = calls_per_second.max(0.001);
+        let capacity = calls_per_second.max(1.0);
         Self {
-            tokens: calls_per_second,
+            tokens: capacity,
             last_refill: Instant::now(),
-            capacity: calls_per_second,
-            refill_rate: calls_per_second,
+            capacity,
+            refill_rate,
         }
     }
 
@@ -76,6 +79,22 @@ impl RateLimiter {
             true
         } else {
             false
+        }
+    }
+
+    pub(crate) fn wait_duration(&mut self) -> Duration {
+        let now = Instant::now();
+        let elapsed = now.duration_since(self.last_refill).as_secs_f64();
+        self.tokens = (self.tokens + elapsed * self.refill_rate).min(self.capacity);
+        self.last_refill = now;
+        if self.tokens >= 1.0 {
+            Duration::ZERO
+        } else if self.refill_rate > 0.0 {
+            Duration::from_secs_f64((1.0 - self.tokens) / self.refill_rate)
+        } else {
+            // A zero configured rate remains cancellable instead of causing a
+            // division by zero or a busy retry loop.
+            Duration::from_secs(60)
         }
     }
 }
@@ -192,6 +211,7 @@ impl McpClient {
             cancel_token: Arc::new(Mutex::new(CancellationToken::new())),
             rate_limiter: Arc::new(Mutex::new(RateLimiter::new(10.0))),
             notification_rx: Arc::new(Mutex::new(None)),
+            tools_list_changed: Arc::new(ToolsListChangedSignal::new()),
             max_binary_payload,
             max_sse_buffer,
             network_policy: Arc::new(RwLock::new(NetworkPolicy::Restricted)),
@@ -364,6 +384,8 @@ impl McpClient {
             stdin,
             stdout: BufReader::new(stdout),
             notification_tx,
+            tools_list_changed: self.tools_list_changed.clone(),
+            cancel: self.cancel_token.lock().await.clone(),
         })
     }
 
@@ -403,6 +425,7 @@ impl McpClient {
             shared: shared.clone(),
             notification_tx,
             max_sse_buffer: self.max_sse_buffer,
+            tools_list_changed: self.tools_list_changed.clone(),
         };
         Ok((shared, inner))
     }
@@ -524,6 +547,7 @@ impl McpClient {
                 shared,
                 notification_tx,
                 self.max_sse_buffer,
+                self.tools_list_changed.clone(),
             );
         }
 
@@ -617,8 +641,8 @@ impl McpClient {
     /// Set calls-per-second rate limit for this client (refine §4.5).
     pub async fn set_rate_limit(&self, calls_per_second: f64) {
         let mut rl = self.rate_limiter.lock().await;
-        rl.capacity = calls_per_second;
-        rl.refill_rate = calls_per_second;
+        rl.capacity = calls_per_second.max(1.0);
+        rl.refill_rate = calls_per_second.max(0.001);
     }
 
     /// Register a callback for `notifications/tools/list_changed` (refine §4.6).
@@ -627,40 +651,58 @@ impl McpClient {
         on_tool_list_changed: impl Fn(&str) + Send + Sync + 'static,
     ) {
         tokio::spawn(async move {
+            enum Notification {
+                ListChanged,
+                Message(Option<Value>),
+            }
+
             loop {
                 let notification = {
                     let mut rx_guard = self.notification_rx.lock().await;
                     match rx_guard.as_mut() {
-                        Some(rx) => rx.recv().await,
+                        Some(rx) => {
+                            let signal = self.tools_list_changed.clone();
+                            tokio::select! {
+                                biased;
+                                _ = signal.notified() => Notification::ListChanged,
+                                message = rx.recv() => Notification::Message(message),
+                            }
+                        }
                         None => {
-                            tokio::time::sleep(Duration::from_secs(1)).await;
-                            continue;
+                            let signal = self.tools_list_changed.clone();
+                            tokio::select! {
+                                _ = signal.notified() => Notification::ListChanged,
+                                _ = tokio::time::sleep(Duration::from_secs(1)) => continue,
+                            }
                         }
                     }
                 };
 
                 match notification {
-                    Some(msg) => {
-                        let method = msg["method"].as_str();
-                        if method == Some("notifications/tools/list_changed") {
-                            on_tool_list_changed(&self.name);
-                            // Refresh tools cache
-                            match self.list_tools().await {
-                                Ok(tools) => *self.tools_cache.lock().await = Some(tools),
-                                Err(error) => {
-                                    *self.tools_cache.lock().await = None;
-                                    tracing::error!(
-                                        "MCP server '{}' tools/list refresh failed; cache cleared: {}",
-                                        self.name,
-                                        haven_common::error::sanitize_error_text(
-                                            &error.to_string()
-                                        )
-                                    );
-                                }
+                    Notification::ListChanged => {
+                        if !self.tools_list_changed.take() {
+                            continue;
+                        }
+                        on_tool_list_changed(&self.name);
+                        match self.list_tools().await {
+                            Ok(tools) => *self.tools_cache.lock().await = Some(tools),
+                            Err(error) => {
+                                *self.tools_cache.lock().await = None;
+                                tracing::error!(
+                                    "MCP server '{}' tools/list refresh failed; cache cleared: {}",
+                                    self.name,
+                                    haven_common::error::sanitize_error_text(&error.to_string())
+                                );
                             }
                         }
                     }
-                    None => {
+                    Notification::Message(Some(msg)) => {
+                        let method = msg["method"].as_str();
+                        if method == Some("notifications/tools/list_changed") {
+                            self.tools_list_changed.request();
+                        }
+                    }
+                    Notification::Message(None) => {
                         // Channel closed (reconnect case)
                         tokio::time::sleep(Duration::from_secs(1)).await;
                     }
@@ -675,13 +717,29 @@ impl McpClient {
         input: Value,
         cancel: CancellationToken,
     ) -> anyhow::Result<McpCallOutput> {
-        // Rate limiting (refine §4.5)
-        {
-            let mut rl = self.rate_limiter.lock().await;
-            if !rl.acquire() {
-                let wait = Duration::from_secs_f64(1.0 / rl.refill_rate);
-                drop(rl);
-                tokio::time::sleep(wait).await;
+        // Rate limiting (refine §4.5). The pacing wait is part of the same
+        // cancellation chain as the network request.
+        let client_cancel = self.cancel_token.lock().await.clone();
+        loop {
+            let wait = {
+                let mut rl = self.rate_limiter.lock().await;
+                if rl.acquire() {
+                    Duration::ZERO
+                } else {
+                    rl.wait_duration()
+                }
+            };
+            if wait.is_zero() {
+                break;
+            }
+            tokio::select! {
+                _ = client_cancel.cancelled() => {
+                    anyhow::bail!("MCP call '{}' cancelled (client shutting down)", tool_name);
+                }
+                _ = cancel.cancelled() => {
+                    anyhow::bail!("MCP call '{}' cancelled (session cancellation)", tool_name);
+                }
+                _ = tokio::time::sleep(wait) => {}
             }
         }
 
@@ -689,8 +747,6 @@ impl McpClient {
         // request can be interrupted when shutdown_all/reconnect cancels it.
         // Without this, call_tool would hold `inner` lock for up to 30s
         // (REQUEST_TIMEOUT_SECS), blocking shutdown/reconnect entirely.
-        let client_cancel = self.cancel_token.lock().await.clone();
-
         let mut guard = self.inner.lock().await;
         let inner = guard
             .as_mut()
@@ -837,7 +893,11 @@ impl McpClient {
                             return;
                         }
 
-                        tokio::time::sleep(backoff).await;
+                        let cancel = self.cancel_token.lock().await.clone();
+                        tokio::select! {
+                            _ = cancel.cancelled() => return,
+                            _ = tokio::time::sleep(backoff) => {}
+                        }
 
                         if self.cancel_token.lock().await.is_cancelled() {
                             return;

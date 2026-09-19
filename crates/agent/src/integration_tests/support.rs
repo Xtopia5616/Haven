@@ -598,6 +598,39 @@ impl Tool for EchoTool {
     }
 }
 
+/// Extension-boundary tool used by the ReAct integration test to verify that
+/// a custom implementation panic becomes a structured failed observation.
+pub(super) struct PanicTool {
+    pub(super) tool_name: String,
+}
+
+#[async_trait]
+impl Tool for PanicTool {
+    fn name(&self) -> String {
+        self.tool_name.clone()
+    }
+
+    fn description(&self) -> String {
+        "panics for extension-boundary testing".into()
+    }
+
+    fn risk_level(&self, _: &serde_json::Value) -> RiskLevel {
+        RiskLevel::Safe
+    }
+
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({"type": "object"})
+    }
+
+    async fn execute(
+        &self,
+        _: serde_json::Value,
+        _: CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
+        panic!("simulated extension panic")
+    }
+}
+
 pub(super) struct TimingState {
     pub(super) intervals: std::sync::Mutex<Vec<(Instant, Instant)>>,
     pub(super) started: std::sync::atomic::AtomicUsize,

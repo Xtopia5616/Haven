@@ -155,7 +155,7 @@ struct StreamForwarder {
     chunk_tx: crate::event::ChunkSender,
     ws_tx: tokio::sync::mpsc::UnboundedSender<AgentEvent>,
     consumer: crate::event::ConsumerHandle,
-    checkpoint_tasks: Arc<std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>>,
+    checkpoint_tasks: Arc<std::sync::Mutex<Vec<tokio::task::JoinHandle<anyhow::Result<()>>>>>,
     ws_session: tokio::task::JoinHandle<()>,
     watchdog: tokio::task::JoinHandle<()>,
 }
@@ -326,7 +326,7 @@ impl StreamForwarder {
                     let flag = checkpoint_inflight.clone();
                     let task = tokio::spawn(async move {
                         let _inflight = CheckpointInflightGuard(flag);
-                        store.checkpoint(&tid, gen_id, &snapshot).await;
+                        store.checkpoint(&tid, gen_id, &snapshot).await
                     });
                     checkpoint_tasks_c.lock().unwrap().push(task);
                 }
@@ -413,9 +413,13 @@ impl StreamForwarder {
     /// call has returned so no straggler events survive the step.
     pub(super) async fn flush(self) -> anyhow::Result<()> {
         self.watchdog.abort();
+        let mut join_error = match self.watchdog.await {
+            Ok(()) => None,
+            Err(error) if error.is_cancelled() => None,
+            Err(error) => Some(anyhow::anyhow!("stream watchdog task failed: {error}")),
+        };
         drop(self.chunk_tx);
         drop(self.ws_tx);
-        let mut join_error = None;
         if let Some(handle) = self.consumer
             && let Err(error) = handle.await
         {
@@ -438,11 +442,20 @@ impl StreamForwarder {
             std::mem::take(&mut *tasks)
         };
         for task in checkpoint_tasks {
-            if let Err(error) = task.await {
-                tracing::error!(error = %error, "stream checkpoint task failed");
-                join_error.get_or_insert_with(|| {
-                    anyhow::anyhow!("stream checkpoint task failed: {error}")
-                });
+            match task.await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    tracing::error!(error = %error, "stream checkpoint task failed");
+                    join_error.get_or_insert_with(|| {
+                        anyhow::anyhow!("stream checkpoint task failed: {error}")
+                    });
+                }
+                Err(error) => {
+                    tracing::error!(error = %error, "stream checkpoint task panicked");
+                    join_error.get_or_insert_with(|| {
+                        anyhow::anyhow!("stream checkpoint task failed: {error}")
+                    });
+                }
             }
         }
         join_error.map_or(Ok(()), Err)

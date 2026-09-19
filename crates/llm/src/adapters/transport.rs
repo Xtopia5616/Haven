@@ -287,3 +287,53 @@ pub(crate) async fn health_check_request(
         Err(LlmError::ServerError(format!("status {}", resp.status())))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    async fn response_from_server(response: &'static str) -> reqwest::Response {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request).await;
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+
+        let response = reqwest::Client::new()
+            .get(format!("http://{address}/body"))
+            .send()
+            .await
+            .unwrap();
+        server.await.unwrap();
+        response
+    }
+
+    #[tokio::test]
+    async fn read_bytes_bounded_rejects_content_length_before_allocating() {
+        let response =
+            response_from_server("HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello").await;
+
+        let error = read_bytes_bounded(response, 4).await.unwrap_err();
+        assert!(
+            matches!(error, LlmError::InvalidResponse(message) if message.contains("4 byte limit"))
+        );
+    }
+
+    #[tokio::test]
+    async fn read_bytes_bounded_rejects_chunked_body_after_limit() {
+        let response = response_from_server(
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n3\r\ndef\r\n0\r\n\r\n",
+        )
+        .await;
+
+        let error = read_bytes_bounded(response, 5).await.unwrap_err();
+        assert!(
+            matches!(error, LlmError::InvalidResponse(message) if message.contains("5 byte limit"))
+        );
+    }
+}

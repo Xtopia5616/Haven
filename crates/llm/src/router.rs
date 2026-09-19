@@ -2134,11 +2134,26 @@ mod tests {
         assert!(LlmRouter::should_failover(&LlmError::Network(
             "down".into()
         )));
+        assert!(LlmRouter::should_failover(&LlmError::Timeout(
+            "408: timeout".into()
+        )));
+        assert!(LlmRouter::should_failover(&LlmError::ServerError(
+            "425: too early".into()
+        )));
+        assert!(!LlmRouter::should_failover(&LlmError::RequestFailed(
+            "409: conflict".into()
+        )));
         assert!(!LlmRouter::should_failover(
             &LlmError::ContextLengthExceeded
         ));
         assert!(!LlmRouter::should_failover(&LlmError::ContentFilter));
         assert!(!LlmRouter::should_failover(&LlmError::Cancelled));
+        assert!(!LlmRouter::should_failover(&LlmError::InvalidResponse(
+            "malformed provider body".into()
+        )));
+        assert!(!LlmRouter::should_failover(&LlmError::Unknown(
+            "unclassified provider failure".into()
+        )));
     }
 
     #[tokio::test]

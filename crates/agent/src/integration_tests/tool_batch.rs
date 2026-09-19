@@ -83,6 +83,89 @@ async fn run_session_parallel_tool_execution() {
 }
 
 #[tokio::test]
+async fn run_session_contains_custom_extension_panic() {
+    let names = ["custom_panic"];
+    let tools = Arc::new(ToolsManager::new());
+    for name in names {
+        tools
+            .registry()
+            .register(Arc::new(PanicTool {
+                tool_name: name.into(),
+            }) as ToolBox)
+            .await
+            .unwrap();
+    }
+
+    let calls = names
+        .iter()
+        .enumerate()
+        .map(|(index, name)| CanonicalToolCall {
+            id: format!("panic-{index}"),
+            name: (*name).into(),
+            arguments: serde_json::json!({}),
+        })
+        .collect();
+    let mock = Arc::new(ScriptedMock::new(vec![
+        ScriptedResponse::Chunk(StreamChunk {
+            text: Some("Running extension checks.".into()),
+            tool_calls: calls,
+            finish_reason: Some(FinishReason::ToolCalls),
+            usage: None,
+            model: None,
+            reasoning: None,
+            web_search: None,
+            web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
+        }),
+        ScriptedResponse::Chunk(StreamChunk {
+            text: Some("Recovered after extension failures.".into()),
+            tool_calls: vec![CanonicalToolCall {
+                id: "final".into(),
+                name: "final_answer".into(),
+                arguments: serde_json::json!({}),
+            }],
+            finish_reason: Some(FinishReason::Stop),
+            usage: None,
+            model: None,
+            reasoning: None,
+            web_search: None,
+            web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
+        }),
+    ]));
+    let (agent, executor) = make_test_agent_with(mock, tools);
+    let collector = Arc::new(EventCollector::new());
+    agent.set_emitter(collector.clone());
+    let session = executor
+        .create_session("extension panic boundary")
+        .await
+        .unwrap();
+
+    let history = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        agent.run_session_from_id(&session.id),
+    )
+    .await
+    .expect("extension panic session must not hang")
+    .unwrap();
+    assert!(!history.is_empty(), "the session must recover and continue");
+    assert!(collector.has_action("custom_panic"));
+    assert!(collector.has_observation("custom_panic"));
+    let events = collector.events.lock().unwrap();
+    let panic_observations = events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event,
+                AgentEvent::Observation { observation, .. }
+                    if observation.contains("panicked during execution")
+            )
+        })
+        .count();
+    assert_eq!(panic_observations, 1);
+}
+
+#[tokio::test]
 async fn run_session_cancelled_mid_batch_surfaces_interrupted_tools() {
     // A tool batch cancelled mid-flight must NOT silently drop the
     // in-flight calls: each one is repaired with an "Interrupted"
