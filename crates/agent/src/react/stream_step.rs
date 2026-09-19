@@ -103,6 +103,20 @@ impl<'a> StreamSession<'a> {
     pub(super) fn role(&self) -> EndpointRole {
         self.role
     }
+
+    /// Promote the current stream scratch into the explicit recovery-only
+    /// partial path. Response-policy retries can fail after the first provider
+    /// response but before a durable transcript event exists.
+    pub(super) async fn persist_partial_on_error(&self, state: &mut ReActState) {
+        self.engine
+            .persist_partial_on_error(
+                self.ctx,
+                state,
+                self.partial_thought,
+                self.partial_reasoning,
+            )
+            .await;
+    }
 }
 
 /// A provider stream that delivers no chunk for this long is announced to the

@@ -46,7 +46,10 @@ impl RequestPolicy {
                 max_secs: config.retry_max_secs,
                 jitter: config.retry_jitter,
             },
-            total_timeout_secs: config.max_total_duration_secs,
+            // A hand-edited zero would make every request time out before the
+            // adapter gets a chance to run. Keep the persisted config forgiving
+            // while retaining a finite deadline for every logical request.
+            total_timeout_secs: config.max_total_duration_secs.max(1),
         }
     }
 }
@@ -120,6 +123,16 @@ mod tests {
                 total_timeout_secs: 77,
             }
         );
+    }
+
+    #[test]
+    fn primary_clamps_zero_total_timeout_to_one_second() {
+        let config = RouterConfig {
+            max_total_duration_secs: 0,
+            ..RouterConfig::default()
+        };
+
+        assert_eq!(RequestPolicy::primary(&config).total_timeout_secs, 1);
     }
 
     #[tokio::test]

@@ -59,7 +59,7 @@ impl ReActEngine {
     pub(super) async fn resolve_response_cycle(
         &self,
         ctx: &StepCtx,
-        state: &ReActState,
+        state: &mut ReActState,
         stream: &mut StreamSession<'_>,
         request_context: &RequestContext,
         mut response: LlmResponse,
@@ -157,9 +157,9 @@ impl ReActEngine {
                                 error = %error,
                                 "empty-response retry failed"
                             );
-                            return ResponseCycleOutcome::RetryableError(format!(
-                                "empty-response retry failed: {error}"
-                            ));
+                            let message = format!("empty-response retry failed: {error}");
+                            stream.persist_partial_on_error(state).await;
+                            return ResponseCycleOutcome::RetryableError(message);
                         }
                     }
                 }
@@ -197,9 +197,10 @@ impl ReActEngine {
                                     },
                                 ));
                             } else {
-                                return ResponseCycleOutcome::RetryableError(
-                                    "cut-off retry returned no usable response".into(),
-                                );
+                                let message =
+                                    "cut-off retry returned no usable response".to_string();
+                                stream.persist_partial_on_error(state).await;
+                                return ResponseCycleOutcome::RetryableError(message);
                             }
                         }
                         Err(haven_llm::LlmError::Cancelled) => {
@@ -215,9 +216,9 @@ impl ReActEngine {
                                 error = %error,
                                 "cut-off retry failed"
                             );
-                            return ResponseCycleOutcome::RetryableError(format!(
-                                "cut-off retry failed: {error}"
-                            ));
+                            let message = format!("cut-off retry failed: {error}");
+                            stream.persist_partial_on_error(state).await;
+                            return ResponseCycleOutcome::RetryableError(message);
                         }
                     }
                 }

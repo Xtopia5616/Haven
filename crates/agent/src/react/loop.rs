@@ -169,7 +169,7 @@ impl ReActEngine {
                 RunBoundary::Exit(exit) => return Ok(exit),
             }
 
-            let outcome = self
+            let outcome = match self
                 .run_turn(TurnInput {
                     ctx: StepCtx {
                         session_id: session_id.to_string(),
@@ -187,7 +187,31 @@ impl ReActEngine {
                     cut_off_retries: &mut cut_off_retries,
                 })
                 .instrument(tracing::info_span!("turn", session_id, step_num))
-                .await?;
+                .await
+            {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    // Errors outside the provider stream (context injection,
+                    // transcript projection, persistence, or tool admission)
+                    // used to unwind directly to the dispatcher. Force a
+                    // clean checkpoint here so Continue can resume from the
+                    // last durable event instead of relying on a throttled
+                    // snapshot that may be stale.
+                    if !self
+                        .save_snapshot_with_branches(session_id, state, step_num)
+                        .await
+                    {
+                        tracing::error!(
+                            session_id,
+                            step = step_num,
+                            error = %error,
+                            "failed to checkpoint ReAct turn error"
+                        );
+                    }
+                    self.mark_session_error(session_id).await;
+                    return Err(error);
+                }
+            };
             match outcome {
                 TurnOutcome::Continue => {}
                 TurnOutcome::Done(exit) => return Ok(exit),

@@ -13,11 +13,13 @@ use super::tool_batch_policy::{
 use super::*;
 use crate::session::ActionStepPersistenceError;
 use crate::types::Action;
+use futures_util::FutureExt;
 #[cfg(test)]
 use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
 use haven_tools::{
-    OperationIdempotency, ToolConcurrency, ToolErrorClass, ToolExecutionOutcome, ToolLlmUsage,
-    ToolOperationScope, ToolResultEnvelope, ToolRetryability, is_silent_action,
+    OperationIdempotency, StructuredToolError, ToolConcurrency, ToolErrorClass, ToolErrorMetadata,
+    ToolExecutionOutcome, ToolLlmUsage, ToolOperationScope, ToolResultEnvelope, ToolRetryability,
+    is_silent_action,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -339,32 +341,49 @@ pub(super) async fn execute_tool_action(
             .unwrap_or(0)
     );
 
-    let result = if let Some(receipt) = receipt {
-        executor
-            .execute_step_preconfirmed_with_identity(
-                &session_id,
-                &tool_name,
-                tool_input,
-                step_num,
-                action_index,
-                action.tool_call_id.as_deref(),
-                &step_id,
-                receipt,
-            )
-            .await
-    } else {
-        executor
-            .execute_step_with_identity(
-                &session_id,
-                &tool_name,
-                tool_input,
-                step_num,
-                action_index,
-                action.tool_call_id.as_deref(),
-                &step_id,
-            )
-            .await
-    };
+    // A custom/MCP/skill implementation is an extension boundary. Convert a
+    // panic there into the same structured failed observation as any other
+    // tool error so one bad tool cannot tear down the whole ReAct task and
+    // strand sibling calls without ordered results.
+    let result = std::panic::AssertUnwindSafe(async {
+        if let Some(receipt) = receipt {
+            executor
+                .execute_step_preconfirmed_with_identity(
+                    &session_id,
+                    &tool_name,
+                    tool_input,
+                    step_num,
+                    action_index,
+                    action.tool_call_id.as_deref(),
+                    &step_id,
+                    receipt,
+                )
+                .await
+        } else {
+            executor
+                .execute_step_with_identity(
+                    &session_id,
+                    &tool_name,
+                    tool_input,
+                    step_num,
+                    action_index,
+                    action.tool_call_id.as_deref(),
+                    &step_id,
+                )
+                .await
+        }
+    })
+    .catch_unwind()
+    .await
+    .unwrap_or_else(|_| {
+        Err(anyhow::Error::new(StructuredToolError::new(
+            format!(
+                "tool '{}' panicked during execution; outcome is unknown",
+                tool_name
+            ),
+            ToolErrorMetadata::unknown_outcome(),
+        )))
+    });
 
     let (
         step_result,

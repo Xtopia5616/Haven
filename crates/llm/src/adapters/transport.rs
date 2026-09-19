@@ -6,11 +6,14 @@
 
 use std::time::Duration;
 
+use futures_util::StreamExt;
 use haven_common::config::ModelEndpoint;
 use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
 
 use crate::client::http_status_to_error;
 use crate::types::LlmError;
+
+const MAX_ERROR_BODY_BYTES: usize = 64 * 1024;
 
 /// Build the reqwest client with proxy support (§2.5) and connection-pool
 /// tuning (§5.5). Identical for every adapter.
@@ -176,8 +179,29 @@ pub(crate) async fn send_request(
                 })
                 .map(Duration::from_secs)
         });
-    let txt = resp.text().await.map_err(LlmError::from)?;
+    let txt = read_error_body(resp).await?;
     Err(http_status_to_error(status, &txt, retry_after))
+}
+
+/// Error pages are untrusted input. Do not let a provider turn one failed
+/// request into an unbounded allocation; the status mapper only needs a short
+/// diagnostic prefix to classify the failure.
+async fn read_error_body(resp: reqwest::Response) -> Result<String, LlmError> {
+    let mut body = Vec::with_capacity(MAX_ERROR_BODY_BYTES.min(8 * 1024));
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(LlmError::from)?;
+        let remaining = MAX_ERROR_BODY_BYTES.saturating_sub(body.len());
+        if remaining == 0 {
+            break;
+        }
+        body.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+    }
+    let mut text = String::from_utf8_lossy(&body).into_owned();
+    if body.len() >= MAX_ERROR_BODY_BYTES {
+        text.push_str(" [error body truncated]");
+    }
+    Ok(text)
 }
 
 /// Shared health check: GET the models URL and classify the status.

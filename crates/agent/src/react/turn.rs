@@ -162,7 +162,13 @@ impl ReActEngine {
                     self.exit_cancelled(session_id, state, step_num).await,
                 ));
             }
-            StepCallOutcome::Fatal(message) => return Err(anyhow::anyhow!(message)),
+            StepCallOutcome::Fatal(message) => {
+                // `StreamSession` has already persisted the provider error
+                // and any partial scratch output. Keep this as a soft exit so
+                // the outer loop does not overwrite that recovery checkpoint
+                // with a generic turn-error snapshot.
+                return Ok(TurnOutcome::Done(LoopExit::Error(message)));
+            }
         };
 
         // Cancellation wins over a late provider response. This prevents a
@@ -220,7 +226,11 @@ impl ReActEngine {
                 self.executor
                     .update_session_status(session_id, SessionStatus::Error)
                     .await?;
-                return Err(anyhow::anyhow!(message));
+                // The response-policy failure already persisted the clean
+                // pre-response checkpoint. Keep it as a soft loop exit so the
+                // dispatcher does not run a second generic failure path and
+                // accidentally overwrite the recovery marker.
+                return Ok(TurnOutcome::Done(LoopExit::Error(message)));
             }
         };
 
