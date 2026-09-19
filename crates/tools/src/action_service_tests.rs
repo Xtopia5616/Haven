@@ -633,6 +633,11 @@ async fn test_unified_service_owns_scheduled_state_and_cancel() {
 #[tokio::test]
 async fn test_unified_completion_bus_emits_scheduled_transition() {
     let service = Arc::new(ActionService::new());
+    let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink_events = events.clone();
+    service.set_event_sink(Arc::new(move |name, payload| {
+        sink_events.lock().unwrap().push((name, payload));
+    }));
     let mut rx = service
         .take_action_receiver()
         .expect("unified receiver available");
@@ -661,6 +666,14 @@ async fn test_unified_completion_bus_emits_scheduled_transition() {
         ActionCompletion::Background(_) => panic!("scheduled fire used the background variant"),
     }
     assert_eq!(service.status(&id).await["status"], "running");
+    let updated = events
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|(name, payload)| name == "action:updated" && payload["id"] == id)
+        .map(|(_, payload)| payload.clone())
+        .expect("scheduled running update event");
+    assert_eq!(updated["status"], "running");
     service.complete_scheduled(&id).await.unwrap();
     assert_eq!(service.status(&id).await["status"], "completed");
 }
@@ -690,7 +703,7 @@ async fn test_scheduled_fire_without_receiver_is_requeued_durably() {
         .await
         .unwrap();
 
-    tokio::time::sleep(Duration::from_secs(2)).await;
+    tokio::time::sleep(Duration::from_millis(1200)).await;
 
     assert_eq!(service.status(&id).await["status"], "waiting");
     let pending = db.list_pending_scheduled_actions().unwrap();
@@ -699,6 +712,18 @@ async fn test_scheduled_fire_without_receiver_is_requeued_durably() {
         pending.iter().find(|row| row.id == id).unwrap().status,
         haven_common::ActionStatus::Waiting
     );
+
+    // The first timer had no consumer. A receiver attached later must still
+    // get a fire from the re-armed worker in this same process.
+    let mut rx = service
+        .take_action_receiver()
+        .expect("unified receiver available");
+    let fired = tokio::time::timeout(Duration::from_secs(3), rx.recv())
+        .await
+        .expect("re-armed scheduled timer did not fire")
+        .expect("completion bus open");
+    assert!(matches!(fired, ActionCompletion::Scheduled(ref value) if value.action_id == id));
+    service.complete_scheduled(&id).await.unwrap();
 }
 
 #[tokio::test]
@@ -823,9 +848,10 @@ async fn test_scheduled_terminal_event_reuses_persisted_timestamps() {
         .unwrap()
         .expect("cancelled scheduled history row");
     assert_eq!(
-        cancel_event["started_at"].as_str(),
+        cancel_event.get("started_at").and_then(Value::as_str),
         cancel_row.started_at.as_deref()
     );
+    assert!(cancel_row.started_at.is_none());
     assert_eq!(
         cancel_event["finished_at"].as_str(),
         cancel_row.finished_at.as_deref()

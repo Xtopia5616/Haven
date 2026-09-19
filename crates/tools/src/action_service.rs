@@ -25,6 +25,9 @@ use crate::process::{kill_process_tree, read_stream_capped, take_tail_if_changed
 use crate::shell_runtime::{build_shell_command, collect_byte_cap, write_output_log};
 use haven_memory::Database;
 
+const ACTION_DB_RETRY_ATTEMPTS: usize = 3;
+const ACTION_DB_RETRY_DELAY: Duration = Duration::from_millis(50);
+
 /// A background action that has reached a terminal state, surfaced to a consumer
 /// (the agent layer) so the owning session can be auto-notified of the result
 /// instead of the model having to poll `status`.
@@ -366,20 +369,96 @@ impl ActionService {
     }
 
     async fn rollback_background_registration(&self, action_id: &str) {
-        self.actions.write().await.remove(action_id);
-        if let Some(db) = self.db.read().await.clone() {
+        let Some(db) = self.db.read().await.clone() else {
+            self.actions.write().await.remove(action_id);
+            return;
+        };
+
+        let mut delete_error = None;
+        let mut deleted = false;
+        for attempt in 0..ACTION_DB_RETRY_ATTEMPTS {
             let id = action_id.to_string();
             match db.run_blocking(move |db| db.delete_action(&id)).await {
-                Ok(true) => {}
-                Ok(false) => tracing::debug!(
-                    action_id,
-                    "background action row was already absent during rollback"
-                ),
-                Err(error) => tracing::warn!(
-                    action_id,
-                    "failed to remove background action row during rollback: {error}"
-                ),
+                Ok(true) | Ok(false) => {
+                    deleted = true;
+                    break;
+                }
+                Err(error) => {
+                    delete_error = Some(error);
+                    if attempt + 1 < ACTION_DB_RETRY_ATTEMPTS {
+                        tokio::time::sleep(ACTION_DB_RETRY_DELAY).await;
+                    }
+                }
             }
+        }
+
+        if deleted {
+            self.actions.write().await.remove(action_id);
+            return;
+        }
+
+        // The process/containment admission failed, so leaving the durable row
+        // as `running` would create a restart-only ghost. Preserve a terminal
+        // failure as a last-resort compensation; restore_after_restart can then
+        // safely treat the row as history even if the delete path is unavailable.
+        let finished_at = chrono::Utc::now().to_rfc3339();
+        let id = action_id.to_string();
+        let reason = "background action failed before its process was admitted";
+        let mut fallback_error = None;
+        for attempt in 0..ACTION_DB_RETRY_ATTEMPTS {
+            let id = id.clone();
+            let finished_at_for_db = finished_at.clone();
+            match db
+                .run_blocking(move |db| {
+                    db.finish_action(
+                        &id,
+                        ActionStatus::Failed,
+                        None,
+                        Some(reason),
+                        Some(reason),
+                        None,
+                        None,
+                        &finished_at_for_db,
+                    )
+                })
+                .await
+            {
+                Ok(()) => {
+                    fallback_error = None;
+                    break;
+                }
+                Err(error) => {
+                    fallback_error = Some(error);
+                    if attempt + 1 < ACTION_DB_RETRY_ATTEMPTS {
+                        tokio::time::sleep(ACTION_DB_RETRY_DELAY).await;
+                    }
+                }
+            }
+        }
+        if let Some(error) = fallback_error {
+            tracing::warn!(
+                action_id,
+                delete_error = ?delete_error,
+                fallback_error = %error,
+                "failed to compensate background action registration rollback"
+            );
+        }
+
+        let mut actions = self.actions.write().await;
+        if let Some(entry) = actions.get_mut(action_id) {
+            entry.kill = None;
+            entry.tail = None;
+            entry.state = ActionState::Failed {
+                error: reason.to_string(),
+                error_reason: reason.to_string(),
+                log_path: None,
+                exit_code: None,
+                started_at: match &entry.state {
+                    ActionState::Running { started_at } => started_at.clone(),
+                    _ => finished_at.clone(),
+                },
+                finished_at,
+            };
         }
     }
 
@@ -1599,6 +1678,7 @@ impl ActionService {
             tool_args: schedule.tool_args.clone(),
             prompt: schedule.prompt.clone(),
         };
+        let started_at_for_event = started_at.clone();
         {
             let mut actions = self.actions.write().await;
             let Some(action) = actions.get_mut(id) else {
@@ -1609,29 +1689,70 @@ impl ActionService {
             }
             action.state = ActionState::Running { started_at };
         }
+        self.emit(
+            "action:updated",
+            scheduled_status_json(
+                id,
+                &schedule,
+                &ActionState::Running {
+                    started_at: started_at_for_event,
+                },
+                None,
+            ),
+        );
         self.pending_scheduled_fires
             .write()
             .await
             .insert(id.to_string(), payload.clone());
         if self
             .completion_tx
-            .send(ActionCompletion::Scheduled(payload))
+            .send(ActionCompletion::Scheduled(payload.clone()))
             .is_err()
         {
             // No consumer exists. Roll the durable and in-memory claim back to
-            // `waiting`; the next startup can safely retry the overdue row.
+            // `waiting` and put the timer worker back. If the durable rollback
+            // itself fails, retain the fire in the recovery map so a receiver
+            // can still acknowledge it later instead of silently losing work.
             self.pending_scheduled_fires.write().await.remove(id);
+            let mut requeued = true;
             if let Some(db) = self.db.read().await.clone()
                 && schedule.watch_action_id.is_none()
             {
-                let action_id = id.to_string();
-                if let Err(error) = db
-                    .run_blocking(move |db| db.requeue_scheduled_action(&action_id))
-                    .await
-                {
-                    tracing::warn!(action_id = %id, "failed to requeue undelivered scheduled action: {error}");
-                    return;
+                let mut last_error = None;
+                for attempt in 0..ACTION_DB_RETRY_ATTEMPTS {
+                    let action_id = id.to_string();
+                    match db
+                        .run_blocking(move |db| db.requeue_scheduled_action(&action_id))
+                        .await
+                    {
+                        Ok(true) => {
+                            last_error = None;
+                            break;
+                        }
+                        Ok(false) => {
+                            requeued = false;
+                            tracing::warn!(action_id = %id, "undelivered scheduled action was not running in durable storage");
+                            break;
+                        }
+                        Err(error) => {
+                            last_error = Some(error);
+                            if attempt + 1 < ACTION_DB_RETRY_ATTEMPTS {
+                                tokio::time::sleep(ACTION_DB_RETRY_DELAY).await;
+                            }
+                        }
+                    }
                 }
+                if let Some(error) = last_error {
+                    requeued = false;
+                    tracing::warn!(action_id = %id, "failed to requeue undelivered scheduled action: {error}");
+                }
+            }
+            if !requeued {
+                self.pending_scheduled_fires
+                    .write()
+                    .await
+                    .insert(id.to_string(), payload);
+                return;
             }
             if let Some(action) = self.actions.write().await.get_mut(id)
                 && matches!(action.state, ActionState::Running { .. })
@@ -1640,6 +1761,18 @@ impl ActionService {
                     due_at: schedule.due_at.clone(),
                 };
             }
+            self.emit(
+                "action:updated",
+                scheduled_status_json(
+                    id,
+                    &schedule,
+                    &ActionState::Waiting {
+                        due_at: schedule.due_at.clone(),
+                    },
+                    None,
+                ),
+            );
+            self.arm_scheduled_worker(id.to_string(), &schedule);
         }
     }
 
@@ -1669,6 +1802,43 @@ impl ActionService {
         }
     }
 
+    /// Start the worker for a scheduled action that was returned to `Waiting`.
+    /// This is intentionally shared by normal admission/recovery paths and the
+    /// no-consumer compensation path: a timer task that has already fired is
+    /// not reusable after `fire_scheduled` returns.
+    fn arm_scheduled_worker(self: &Arc<Self>, id: String, schedule: &ScheduledActionEntry) {
+        let service = Arc::clone(self);
+        let shutdown_token = self.shutdown_token.clone();
+        if let Some(watched_id) = schedule.watch_action_id.clone() {
+            tokio::spawn(async move {
+                tokio::select! {
+                    _ = shutdown_token.cancelled() => {}
+                    _ = service.watch_action_timer(id, watched_id) => {}
+                }
+            });
+            return;
+        }
+
+        let remaining = match chrono::DateTime::parse_from_rfc3339(&schedule.due_at) {
+            Ok(due) => (due.with_timezone(&chrono::Utc) - chrono::Utc::now()).num_seconds(),
+            Err(error) => {
+                tracing::warn!(action_id = %id, "cannot re-arm scheduled action with invalid due_at: {error}");
+                return;
+            }
+        };
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = shutdown_token.cancelled() => {}
+                _ = async {
+                    // An undelivered overdue fire is retried with a small
+                    // floor to avoid a tight broadcast-failure loop.
+                    tokio::time::sleep(Duration::from_secs(remaining.max(1) as u64)).await;
+                    service.fire_scheduled(&id).await;
+                } => {}
+            }
+        });
+    }
+
     pub async fn complete_scheduled(&self, id: &str) -> anyhow::Result<bool> {
         self.finish_scheduled(id, ActionStatus::Completed, None)
             .await
@@ -1677,6 +1847,35 @@ impl ActionService {
     pub async fn fail_scheduled(&self, id: &str, reason: &str) -> anyhow::Result<bool> {
         self.finish_scheduled(id, ActionStatus::Failed, Some(reason))
             .await
+    }
+
+    async fn fail_scheduled_in_memory(
+        &self,
+        id: &str,
+        schedule: &ScheduledActionEntry,
+        started_at: &str,
+        reason: &str,
+    ) -> bool {
+        let state = ActionState::Failed {
+            error: reason.to_string(),
+            error_reason: reason.to_string(),
+            log_path: None,
+            exit_code: None,
+            started_at: started_at.to_string(),
+            finished_at: chrono::Utc::now().to_rfc3339(),
+        };
+        let mut actions = self.actions.write().await;
+        let Some(action) = actions.get_mut(id) else {
+            return false;
+        };
+        if !matches!(action.state, ActionState::Running { .. }) {
+            return false;
+        }
+        action.state = state.clone();
+        self.pending_scheduled_fires.write().await.remove(id);
+        drop(actions);
+        self.emit_scheduled_finished(id, schedule, &state);
+        true
     }
 
     async fn finish_scheduled(
@@ -1703,20 +1902,48 @@ impl ActionService {
         if schedule.watch_action_id.is_none()
             && let Some(db) = self.db.read().await.clone()
         {
-            let action_id = id.to_string();
-            let reason = error_reason.map(str::to_owned);
-            let finished_at_for_db = finished_at.clone();
-            let changed = db
-                .run_blocking(move |db| {
-                    db.finish_scheduled_action(
-                        &action_id,
-                        status,
-                        reason.as_deref(),
-                        &finished_at_for_db,
-                    )
-                })
-                .await?;
-            if !changed {
+            let mut changed = None;
+            let mut last_error = None;
+            for attempt in 0..ACTION_DB_RETRY_ATTEMPTS {
+                let action_id = id.to_string();
+                let reason = error_reason.map(str::to_owned);
+                let finished_at_for_db = finished_at.clone();
+                match db
+                    .run_blocking(move |db| {
+                        db.finish_scheduled_action(
+                            &action_id,
+                            status,
+                            reason.as_deref(),
+                            &finished_at_for_db,
+                        )
+                    })
+                    .await
+                {
+                    Ok(value) => {
+                        changed = Some(value);
+                        break;
+                    }
+                    Err(error) => {
+                        last_error = Some(error);
+                        if attempt + 1 < ACTION_DB_RETRY_ATTEMPTS {
+                            tokio::time::sleep(ACTION_DB_RETRY_DELAY).await;
+                        }
+                    }
+                }
+            }
+            if let Some(error) = last_error {
+                let recovery_reason =
+                    "定时任务已执行，但终态持久化失败；已标记为失败，重启后不会重复执行";
+                self.fail_scheduled_in_memory(id, &schedule, &started_at, recovery_reason)
+                    .await;
+                return Err(anyhow::anyhow!(
+                    "failed to persist scheduled action terminal state: {error}"
+                ));
+            }
+            if !changed.unwrap_or(false) {
+                let recovery_reason = "定时任务终态未被持久化；已标记为失败，重启后不会重复执行";
+                self.fail_scheduled_in_memory(id, &schedule, &started_at, recovery_reason)
+                    .await;
                 return Ok(false);
             }
         }
@@ -1774,7 +2001,10 @@ impl ActionService {
                 return false;
             };
             let started_at = match &action.state {
-                ActionState::Waiting { .. } => schedule.due_at.clone(),
+                // A waiting schedule has not started. Keep this empty in the
+                // in-memory terminal projection; the durable repository leaves
+                // `started_at` NULL for the same reason.
+                ActionState::Waiting { .. } => String::new(),
                 ActionState::Running { started_at } => started_at.clone(),
                 _ => return false,
             };
@@ -1921,6 +2151,7 @@ impl ActionService {
                 prompt: row.prompt,
                 watch_action_id: None,
             };
+            let timer_entry = entry.clone();
             let id = row.id;
             self.actions.write().await.insert(
                 id.clone(),
@@ -1942,17 +2173,7 @@ impl ActionService {
                 self.fire_scheduled(&id).await;
                 overdue += 1;
             } else {
-                let service = Arc::clone(self);
-                let shutdown_token = self.shutdown_token.clone();
-                tokio::spawn(async move {
-                    tokio::select! {
-                        _ = shutdown_token.cancelled() => {}
-                        _ = async {
-                            tokio::time::sleep(Duration::from_secs(remaining as u64)).await;
-                            service.fire_scheduled(&id).await;
-                        } => {}
-                    }
-                });
+                self.arm_scheduled_worker(id.clone(), &timer_entry);
             }
         }
         overdue
@@ -2013,7 +2234,9 @@ fn scheduled_finished_json(id: &str, entry: &ScheduledActionEntry, state: &Actio
             finished_at,
             ..
         } => {
-            value["started_at"] = json!(started_at);
+            if !started_at.is_empty() {
+                value["started_at"] = json!(started_at);
+            }
             value["finished_at"] = json!(finished_at);
         }
         _ => {}

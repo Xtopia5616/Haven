@@ -159,7 +159,7 @@ impl Database {
     pub fn cancel_scheduled_action(&self, id: &str, finished_at: &str) -> anyhow::Result<bool> {
         let conn = self.conn();
         let changed = conn.execute(
-            "UPDATE actions SET status = 'cancelled', started_at = COALESCE(started_at, due_at), finished_at = ?2
+            "UPDATE actions SET status = 'cancelled', finished_at = ?2
              WHERE id = ?1 AND kind = 'scheduled' AND status IN ('waiting', 'running')",
             rusqlite::params![id, finished_at],
         )?;

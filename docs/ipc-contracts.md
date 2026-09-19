@@ -124,7 +124,7 @@ Tauri 接收前端参数时采用其自动 camelCase → Rust snake_case 映射�
 
 | 命令 | 请求 | 响应 | 说明 |
 |---|---|---|---|
-| `list_actions` | 无 | `ActionEvent[]` | 运行中后台任务、待触发定时任务和尚在内存板上的终态任务。 |
+| `list_actions` | 无 | `ActionEvent[]` | 运行中后台任务、等待中或运行中的定时任务和尚在内存板上的终态任务。 |
 | `cancel_action` | `{ action_id, kind }` | `bool` | `kind` 仅为 `background` 或 `scheduled`；未知值由 Tauri 反序列化拒绝。 |
 | `list_action_history` | `{ kind?, limit? }` | `ActionEvent[]` | 持久化终态历史；定时任务返回已触发或已取消记录，`limit` 最大为 200。 |
 | `delete_action` | `{ action_id }` | `bool` | 删除一条已持久化的任务历史。 |
@@ -144,9 +144,9 @@ exit_code?, preview? }`。`status` 只能是 `waiting`、`running`、`completed`
 | 事件 | Rust DTO（wire） | 生产者 | 消费者 | 顺序、幂等与敏感字段 |
 |---|---|---|---|---|
 | `action:created` | `ActionEvent` | 后台任务创建 / 定时任务建立 | 根布局 `actionStore` | 在任务对用户可见前发送；按 `id` 覆盖合并，重复安全。 |
-| `action:updated` | `ActionEvent` | 后台任务关联会话 | 根布局 `actionStore` | 只更新后台任务关联字段；取消不走此事件。 |
+| `action:updated` | `ActionEvent` | 后台任务关联会话 / 定时任务触发或回退 | 根布局 `actionStore` | 按 `id` 合并；定时任务用它表达 `waiting ↔ running` 的 live 状态，重复安全。 |
 | `action:output` | `ActionEvent` | 后台任务输出尾部变化 | 根布局 `actionStore` | 仅后台任务；可丢失、可重复，按 `id` 最后写入。输出已受后端尾部上限约束。 |
-| `action:finished` | `ActionEvent` | 后台任务终态 / 定时任务触发或取消 | 根布局与聊天页 | 终态后不再期待同一任务的 `output`；后台按 `id` 合并，定时任务从待触发列表移除。 |
+| `action:finished` | `ActionEvent` | 后台任务终态 / 定时任务完成、失败或取消 | 根布局与聊天页 | 终态后不再期待同一任务的 `output`；后台按 `id` 合并，定时任务从 live 列表移除。事件丢失时由 `list_actions` reconciliation 修复。 |
 
 前端内部字段为 `sessionId`、`startedAt`、`errorReason` 等 camelCase；页面不得读取
 `action_id` 或其它工具内部 JSON 字段。

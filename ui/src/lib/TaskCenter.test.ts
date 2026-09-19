@@ -58,6 +58,27 @@ describe('TaskCenter', () => {
 		expect(screen.getAllByText('待执行').length).toBeGreaterThan(0);
 	});
 
+	it('shows triggered scheduled tasks as running and keeps them cancellable', async () => {
+		const onCancel = vi.fn();
+		render(TaskCenter, {
+			...commonProps,
+			pendingScheduledActions: [
+				{
+					id: 'act-running-scheduled',
+					kind: 'scheduled',
+					status: 'running',
+					body: '已触发',
+					startedAt: '2026-09-03T10:00:00Z',
+				},
+			],
+			onCancel,
+		});
+
+		expect(screen.getAllByText('执行中').length).toBeGreaterThan(0);
+		await fireEvent.click(screen.getByRole('button', { name: '取消此定时任务' }));
+		expect(onCancel).toHaveBeenCalledWith('act-running-scheduled', 'scheduled');
+	});
+
 	it('uses shared count chips for the filtered total and lifecycle groups', () => {
 		render(TaskCenter, {
 			...commonProps,

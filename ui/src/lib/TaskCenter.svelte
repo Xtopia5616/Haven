@@ -41,7 +41,7 @@
 			kind: 'scheduled',
 			title: taskTitle(action),
 			subtitle: scheduleModeLabel(action.mode),
-			status: 'waiting',
+			status: action.status || 'waiting',
 			sessionId: action.sessionId,
 			value: action,
 		})),
@@ -66,7 +66,7 @@
 			{
 				id: 'actions',
 				label: '进行中与待执行',
-				description: '可取消的后台执行，以及尚未触发的定时任务。',
+				description: '可取消的后台执行，以及等待中或已触发的定时任务。',
 				rows: filteredRows,
 			},
 		].filter((group) => group.rows.length > 0);
@@ -81,13 +81,32 @@
 
 	/** @param {any} row */
 	function rowStatus(row) {
-		if (row.kind === 'scheduled') return row.status === 'waiting' ? '待执行' : '已执行';
+		if (row.kind === 'scheduled') {
+			switch (row.status) {
+				case 'running':
+					return '执行中';
+				case 'completed':
+					return '已完成';
+				case 'failed':
+					return '失败';
+				case 'cancelled':
+					return '已取消';
+				default:
+					return '待执行';
+			}
+		}
 		return actionStatusLabel(row.status);
 	}
 
 	/** @param {any} row */
 	function rowTone(row) {
-		if (row.kind === 'scheduled') return row.status === 'waiting' ? 'scheduled' : 'success';
+		if (row.kind === 'scheduled') {
+			if (row.status === 'waiting') return 'scheduled';
+			if (row.status === 'running') return 'running';
+			if (row.status === 'failed') return 'error';
+			if (row.status === 'completed') return 'success';
+			return 'neutral';
+		}
 		if (row.status === 'failed') return 'error';
 		if (row.status === 'completed') return 'success';
 		return row.status === 'running' ? 'running' : 'neutral';
@@ -108,6 +127,7 @@
 			}
 		}
 		if (row.kind === 'scheduled') {
+			if (row.status === 'running') return `已触发 · ${scheduleModeLabel(value.mode)}`;
 			return `将在${rowTiming(row)}执行 · ${scheduleModeLabel(value.mode)}`;
 		}
 		return '正在执行后台任务';
@@ -122,6 +142,7 @@
 	/** @param {any} row */
 	function rowTiming(row) {
 		if (row.kind === 'background') return actionDuration(row.value) || '耗时未知';
+		if (row.status === 'running') return actionDuration(row.value) || '执行中';
 		return scheduledActionCountdown(row.value?.dueAt) || '时间未设置';
 	}
 
@@ -260,7 +281,7 @@
 												label="停止后台任务"
 												onclick={() => onCancel?.(row.id, 'background')}
 											/>
-						{:else if row.kind === 'scheduled' && row.status === 'waiting'}
+		{:else if row.kind === 'scheduled' && (row.status === 'waiting' || row.status === 'running')}
 											<MaterialButton
 												variant="outlined"
 												label="取消此定时任务"
@@ -356,7 +377,7 @@
 							onclick={() => onCancel?.(selectedRow.id, 'background')}
 						/>
 					{/if}
-					{#if selectedRow.kind === 'scheduled'}
+					{#if selectedRow.kind === 'scheduled' && (selectedRow.status === 'waiting' || selectedRow.status === 'running')}
 						<MaterialButton
 							variant="danger"
 							label="取消定时任务"

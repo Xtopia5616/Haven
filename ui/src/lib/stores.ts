@@ -211,8 +211,8 @@ export function clearMediaPlans(sessionId: string) {
  *     finishedAt?, dueAt?, preview?, output?, error?, title?, body?, ... }
  * The action contract supplies a uniform id for both task kinds.
  * Kept in sync by the `action:created` / `action:updated` / `action:output` /
- * `action:finished` events (registered in +layout.svelte, hydrated via
- * `refreshActions`).
+ * `action:finished` events (registered in +layout.svelte, hydrated and
+ * periodically reconciled via `refreshActions`).
  */
 type ActionEntry = ActionPayload;
 export const actionStore = writable<Record<string, ActionEntry>>({});

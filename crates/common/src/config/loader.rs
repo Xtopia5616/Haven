@@ -880,6 +880,14 @@ mod tests {
                 ..Default::default()
             },
         );
+        llm.set_role(
+            EndpointRole::SmallModel,
+            RoleConfig {
+                provider: "openai".into(),
+                model: "gpt-4o-mini".into(),
+                ..Default::default()
+            },
+        );
         let filled = llm.materialize(None, Some(5000));
         // An endpoint without an override inherits the global cap.
         assert_eq!(
@@ -956,8 +964,11 @@ mod tests {
                 .model,
             "new-model"
         );
+        // Named model assignments are independent of request policies; a
+        // complete assignment remains available even when it is not currently
+        // selected by a policy.
         assert!(
-            !loader
+            loader
                 .config()
                 .llm
                 .models

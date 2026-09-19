@@ -495,8 +495,13 @@
 	let countdownTick = $state(0);
 	$effect(() => {
 		if (!taskCenterVisible) return;
+		void refreshActions();
 		const t = setInterval(() => (countdownTick += 1), 1000);
-		return () => clearInterval(t);
+		const reconciliation = setInterval(() => void refreshActions(), 5000);
+		return () => {
+			clearInterval(t);
+			clearInterval(reconciliation);
+		};
 	});
 
 	/** @param {any} action */
@@ -887,12 +892,7 @@
 						upsertAction(event.payload);
 					},
 					'action:updated': (event) => {
-						const p = event.payload;
-						if (p.kind === 'background') {
-							upsertAction(p);
-						} else {
-							removeAction(p.id);
-						}
+						upsertAction(event.payload);
 					},
 					'action:output': (event) => {
 						upsertAction(event.payload);

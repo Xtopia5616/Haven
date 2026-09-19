@@ -436,18 +436,21 @@ fn payload_preserves_session_lifecycle_and_error_wire_shapes() {
 }
 
 #[test]
-fn action_projection_maps_scheduled_cancellation_to_the_public_contract() {
-    assert!(
-        project_action_event(
-            ActionKind::Scheduled,
-            "action:updated",
-            &json!({
-                "id": "act-1",
-                "tool_name": "notify",
-                "tool_args": {"secret": "hidden"},
-            }),
-        )
-        .is_none()
+fn action_projection_maps_scheduled_progress_to_the_public_contract() {
+    let (_, result) = project_action_event(
+        ActionKind::Scheduled,
+        "action:updated",
+        &json!({
+            "id": "act-1",
+            "status": "running",
+            "tool_name": "notify",
+            "tool_args": {"secret": "hidden"},
+        }),
+    )
+    .expect("scheduled progress event is supported");
+    assert_eq!(
+        result.unwrap().status,
+        Some(haven_common::ActionStatus::Running)
     );
 
     let event =
