@@ -28,6 +28,8 @@ inbox claim。
 5. inbox claim 只确认已经投影且 snapshot durable 的选中 envelope id。超出本轮 item/
    字符预算的尾部留在 processing 文件，snapshot 失败则整个 claim 留待 at-least-once
    重投；不使用截断来掩盖超限输入。
+6. session actor 的 inbox archive 使用有界 FIFO 保留最近的审计尾部；active/archive
+   message-id 集合负责 O(1) 去重，淘汰 archive 头部时同步释放对应的 dedupe id。
 
 ## 替代方案
 
@@ -41,7 +43,7 @@ inbox claim。
 这是跨 `haven-agent`/`haven-tools` 的运行时契约变更，无数据库 schema 迁移；durable
 inbox processing 文件和 append-only `session_events` 仍可按原语义恢复。覆盖队列 item/
 字符/附件边界、steering 优先级、高并发入队、FIFO 尾部延后、批次 event 顺序、选中
-id ack、snapshot 失败重投与 at-least-once claim。
+id ack、bounded archive/dedupe、snapshot 失败重投与 at-least-once claim。
 
 ## 回滚
 

@@ -37,6 +37,7 @@ pub(crate) const CONTEXT_BATCH_MAX_ATTACHMENT_BYTES: usize = 8 * 1024 * 1024;
 
 const SESSION_INBOX_MAX_ITEMS: usize = 256;
 const SESSION_INBOX_ITEM_MAX_CHARS: usize = 16 * 1024;
+const SESSION_INBOX_ARCHIVE_MAX_ITEMS: usize = 1_024;
 
 #[derive(Debug)]
 pub(crate) struct StatusTransition {
@@ -612,7 +613,9 @@ struct ActorState {
     running: bool,
     inbox: VecDeque<Envelope>,
     processing: Vec<Envelope>,
-    archive: Vec<Envelope>,
+    archive: VecDeque<Envelope>,
+    active_message_ids: HashSet<String>,
+    archive_message_ids: HashSet<String>,
 }
 
 pub(crate) fn spawn(db: Arc<Database>, info: SessionInfo) -> SessionActorHandle {
@@ -643,7 +646,9 @@ pub(crate) fn spawn(db: Arc<Database>, info: SessionInfo) -> SessionActorHandle 
             running: false,
             inbox: VecDeque::new(),
             processing: Vec::new(),
-            archive: Vec::new(),
+            archive: VecDeque::new(),
+            active_message_ids: HashSet::new(),
+            archive_message_ids: HashSet::new(),
         };
         while let Some(command) = rx.recv().await {
             match command {
@@ -857,6 +862,7 @@ pub(crate) fn spawn(db: Arc<Database>, info: SessionInfo) -> SessionActorHandle 
                             SESSION_INBOX_ITEM_MAX_CHARS
                         ))
                     } else {
+                        state.active_message_ids.insert(envelope.id.clone());
                         state.inbox.push_back(*envelope);
                         Ok(())
                     };
@@ -869,6 +875,9 @@ pub(crate) fn spawn(db: Arc<Database>, info: SessionInfo) -> SessionActorHandle 
                     state
                         .processing
                         .retain(|envelope| !ids.iter().any(|id| id == &envelope.id));
+                    for id in ids {
+                        state.active_message_ids.remove(&id);
+                    }
                     let _ = reply.send(());
                 }
                 ActorCommand::LastReceived { reply } => {
@@ -883,7 +892,7 @@ pub(crate) fn spawn(db: Arc<Database>, info: SessionInfo) -> SessionActorHandle 
                                 .max_by_key(|env| &env.created_at)
                                 .cloned()
                         })
-                        .or_else(|| state.archive.last().cloned());
+                        .or_else(|| state.archive.back().cloned());
                     let _ = reply.send(result);
                 }
                 ActorCommand::FindMessage { id, reply } => {
@@ -905,12 +914,14 @@ pub(crate) fn spawn(db: Arc<Database>, info: SessionInfo) -> SessionActorHandle 
                     let mut rest = VecDeque::new();
                     while let Some(envelope) = state.inbox.pop_front() {
                         if is_matching_reply(&envelope, &in_reply_to, &expected_from) {
+                            let message_id = envelope.id.clone();
                             if haven_tools::is_expired(&envelope) {
-                                archive_once(&mut state.archive, envelope);
+                                archive_once(&mut state, envelope);
                             } else {
-                                archive_once(&mut state.archive, envelope.clone());
+                                archive_once(&mut state, envelope.clone());
                                 matching.push(envelope);
                             }
+                            state.active_message_ids.remove(&message_id);
                         } else {
                             rest.push_back(envelope);
                         }
@@ -930,14 +941,18 @@ pub(crate) fn spawn(db: Arc<Database>, info: SessionInfo) -> SessionActorHandle 
 }
 
 fn message_known(state: &ActorState, id: &str) -> bool {
-    state.inbox.iter().any(|env| env.id == id)
-        || state.processing.iter().any(|env| env.id == id)
-        || state.archive.iter().any(|env| env.id == id)
+    state.active_message_ids.contains(id) || state.archive_message_ids.contains(id)
 }
 
-fn archive_once(archive: &mut Vec<Envelope>, envelope: Envelope) {
-    if !archive.iter().any(|existing| existing.id == envelope.id) {
-        archive.push(envelope);
+fn archive_once(state: &mut ActorState, envelope: Envelope) {
+    if !state.archive_message_ids.insert(envelope.id.clone()) {
+        return;
+    }
+    state.archive.push_back(envelope);
+    while state.archive.len() > SESSION_INBOX_ARCHIVE_MAX_ITEMS {
+        if let Some(evicted) = state.archive.pop_front() {
+            state.archive_message_ids.remove(&evicted.id);
+        }
     }
 }
 
@@ -952,7 +967,7 @@ fn claim_messages(state: &mut ActorState) -> Vec<Envelope> {
         if !seen.insert(envelope.id.clone()) {
             continue;
         }
-        archive_once(&mut state.archive, envelope.clone());
+        archive_once(state, envelope.clone());
         if haven_tools::is_expired(&envelope) {
             continue;
         }
@@ -1297,9 +1312,8 @@ fn resolve_interaction(
 mod queue_tests {
     use super::*;
 
-    #[test]
-    fn oversized_items_are_rejected_without_truncation() {
-        let mut state = ActorState {
+    fn empty_state() -> ActorState {
+        ActorState {
             info: SessionInfo {
                 id: "ses-queue".into(),
                 input: "queue".into(),
@@ -1323,8 +1337,15 @@ mod queue_tests {
             running: false,
             inbox: VecDeque::new(),
             processing: Vec::new(),
-            archive: Vec::new(),
-        };
+            archive: VecDeque::new(),
+            active_message_ids: HashSet::new(),
+            archive_message_ids: HashSet::new(),
+        }
+    }
+
+    #[test]
+    fn oversized_items_are_rejected_without_truncation() {
+        let mut state = empty_state();
         let error = queue_follow_up(
             &mut state,
             "x".repeat(CONTEXT_ITEM_MAX_CHARS + 1),
@@ -1335,6 +1356,26 @@ mod queue_tests {
         .expect_err("oversized input must apply back-pressure");
         assert!(error.to_string().contains("retained"));
         assert!(state.follow_up_queue.is_empty());
+    }
+
+    #[test]
+    fn inbox_archive_is_bounded_and_message_dedupe_is_indexed() {
+        let mut state = empty_state();
+        for index in 0..(SESSION_INBOX_ARCHIVE_MAX_ITEMS + 8) {
+            let mut envelope = Envelope::new("sender", "receiver", "message");
+            envelope.id = format!("msg-{index}");
+            archive_once(&mut state, envelope);
+        }
+
+        assert_eq!(state.archive.len(), SESSION_INBOX_ARCHIVE_MAX_ITEMS);
+        assert!(!message_known(&state, "msg-0"));
+        assert!(!message_known(&state, "msg-7"));
+        assert!(message_known(&state, "msg-8"));
+        assert!(message_known(
+            &state,
+            &format!("msg-{}", SESSION_INBOX_ARCHIVE_MAX_ITEMS + 7)
+        ));
+        assert_eq!(state.archive_message_ids.len(), state.archive.len());
     }
 
     #[test]
