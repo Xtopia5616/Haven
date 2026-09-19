@@ -9,6 +9,8 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+use serde::Serialize;
+
 /// Upper bounds, in milliseconds, for the latency histogram buckets.
 const LATENCY_BUCKETS_MS: [u64; 16] = [
     1,
@@ -29,8 +31,9 @@ const LATENCY_BUCKETS_MS: [u64; 16] = [
     u64::MAX,
 ];
 
-const PHASE_COUNT: usize = 11;
+const PHASE_COUNT: usize = 12;
 const COUNTER_COUNT: usize = 5;
+const GAUGE_COUNT: usize = 1;
 
 /// ReAct boundaries whose latency is useful for the first performance baseline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,6 +49,7 @@ pub(crate) enum Phase {
     EventAppend,
     Projection,
     Snapshot,
+    SqliteLockWait,
 }
 
 impl Phase {
@@ -62,6 +66,7 @@ impl Phase {
             Self::EventAppend => 8,
             Self::Projection => 9,
             Self::Snapshot => 10,
+            Self::SqliteLockWait => 11,
         }
     }
 
@@ -78,6 +83,7 @@ impl Phase {
             Self::EventAppend => "event_append",
             Self::Projection => "projection",
             Self::Snapshot => "snapshot",
+            Self::SqliteLockWait => "sqlite_lock_wait",
         }
     }
 }
@@ -132,12 +138,12 @@ impl Default for PhaseMetric {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct PhaseSnapshot {
-    pub(crate) count: u64,
-    pub(crate) total_ms: u64,
-    pub(crate) p50_ms: u64,
-    pub(crate) p95_ms: u64,
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct PhaseSnapshot {
+    pub count: u64,
+    pub total_ms: u64,
+    pub p50_ms: u64,
+    pub p95_ms: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -162,13 +168,18 @@ impl Counter {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct CounterSnapshot {
-    pub(crate) turn_starts: u64,
-    pub(crate) first_tokens: u64,
-    pub(crate) stream_chunks: u64,
-    pub(crate) chunk_drops: u64,
-    pub(crate) checkpoint_pending: u64,
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct CounterSnapshot {
+    pub turn_starts: u64,
+    pub first_tokens: u64,
+    pub stream_chunks: u64,
+    pub chunk_drops: u64,
+    pub checkpoint_pending: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct GaugeSnapshot {
+    pub context_queue_items: u64,
 }
 
 /// Shared metrics for one [`ReActEngine`]. It has no locks and a fixed memory
@@ -178,6 +189,7 @@ pub(crate) struct CounterSnapshot {
 pub(crate) struct ReActMetrics {
     phases: [PhaseMetric; PHASE_COUNT],
     counters: [AtomicU64; COUNTER_COUNT],
+    gauges: [AtomicU64; GAUGE_COUNT],
 }
 
 impl ReActMetrics {
@@ -185,6 +197,7 @@ impl ReActMetrics {
         Self {
             phases: std::array::from_fn(|_| PhaseMetric::new()),
             counters: std::array::from_fn(|_| AtomicU64::new(0)),
+            gauges: std::array::from_fn(|_| AtomicU64::new(0)),
         }
     }
 
@@ -217,6 +230,10 @@ impl ReActMetrics {
         self.counters[counter.index()].fetch_sub(1, Ordering::Relaxed);
     }
 
+    pub(crate) fn set_context_queue_items(&self, items: usize) {
+        self.gauges[0].store(items as u64, Ordering::Relaxed);
+    }
+
     #[allow(dead_code)]
     pub(crate) fn snapshot(&self) -> MetricsSnapshot {
         let phases = std::array::from_fn(|index| self.phases[index].snapshot());
@@ -230,6 +247,9 @@ impl ReActMetrics {
                 checkpoint_pending: self.counters[Counter::CheckpointPending.index()]
                     .load(Ordering::Relaxed),
             },
+            gauges: GaugeSnapshot {
+                context_queue_items: self.gauges[0].load(Ordering::Relaxed),
+            },
         }
     }
 }
@@ -240,11 +260,11 @@ impl Default for ReActMetrics {
     }
 }
 
-#[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct MetricsSnapshot {
-    pub(crate) phases: [PhaseSnapshot; PHASE_COUNT],
-    pub(crate) counters: CounterSnapshot,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct MetricsSnapshot {
+    pub phases: [PhaseSnapshot; PHASE_COUNT],
+    pub counters: CounterSnapshot,
+    pub gauges: GaugeSnapshot,
 }
 
 impl MetricsSnapshot {
@@ -309,6 +329,8 @@ mod tests {
         metrics.phases[Phase::LlmStream.index()].record(Duration::from_millis(1_200));
         metrics.increment(Counter::StreamChunks);
         metrics.increment(Counter::ChunkDrops);
+        metrics.observe(Phase::SqliteLockWait, Duration::from_millis(7));
+        metrics.set_context_queue_items(12);
 
         let snapshot = metrics.snapshot();
         let stream = snapshot.phase(Phase::LlmStream);
@@ -318,6 +340,10 @@ mod tests {
         assert_eq!(stream.p95_ms, 2_500);
         assert_eq!(snapshot.counters.stream_chunks, 1);
         assert_eq!(snapshot.counters.chunk_drops, 1);
+        assert_eq!(snapshot.phase(Phase::SqliteLockWait).count, 1);
+        assert_eq!(snapshot.gauges.context_queue_items, 12);
+        let exported = serde_json::to_value(snapshot).expect("metrics snapshot is exportable");
+        assert_eq!(exported["gauges"]["context_queue_items"], 12);
     }
 
     #[test]

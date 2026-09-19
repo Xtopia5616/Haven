@@ -10,6 +10,7 @@ use crate::Database;
 use chrono::{SecondsFormat, Utc};
 use rusqlite::OptionalExtension;
 use std::sync::Arc;
+use std::time::Instant;
 
 pub const TRANSCRIPT_EVENT_TYPE: &str = "transcript";
 pub const BRANCH_POINT_EVENT_TYPE: &str = "branch_point";
@@ -94,6 +95,9 @@ pub struct TranscriptBatchResult {
     /// Created-at values for message rows, in insertion order.  Agent uses
     /// the last value to advance its in-memory `last_msg_at` sidecar.
     pub message_created_at: Vec<String>,
+    /// Time spent entering the immediate SQLite transaction, including any
+    /// writer-lock wait before the event/projection batch could begin.
+    pub lock_wait_ms: u64,
 }
 
 /// Stage results carried by a recovery-persistence control event. Keeping the
@@ -254,7 +258,9 @@ impl SessionEventStore {
         }
 
         let conn = self.db.conn();
+        let lock_wait_started = Instant::now();
         conn.execute_batch("BEGIN IMMEDIATE")?;
+        let lock_wait_ms = lock_wait_started.elapsed().as_millis() as u64;
         let result = (|| -> anyhow::Result<TranscriptBatchResult> {
             let events = Self::append_batch_in_transaction(&conn, session_id, &batch.events)?;
             let message_created_at = self
@@ -263,6 +269,7 @@ impl SessionEventStore {
             Ok(TranscriptBatchResult {
                 events,
                 message_created_at,
+                lock_wait_ms,
             })
         })();
         match result {
@@ -897,6 +904,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(result.events.len(), 1);
+        assert!(result.lock_wait_ms < 1_000);
         assert_eq!(receiver.try_recv().unwrap(), result.events[0]);
         assert_eq!(store.read_all(&session_id).unwrap().len(), 1);
         let messages = db.get_session_messages(&session_id).unwrap();
@@ -934,6 +942,36 @@ mod tests {
         assert!(error.to_string().contains("CHECK") || error.to_string().contains("constraint"));
         assert!(store.read_all(&session_id).unwrap().is_empty());
         assert!(db.get_session_messages(&session_id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn transcript_batch_handles_a_64_event_burst_in_order() {
+        let (_db, store, session_id) = store();
+        let batch = TranscriptBatch {
+            events: (0..64)
+                .map(|index| {
+                    SessionEventInput::transcript(
+                        format!(r#"{{"type":"burst","index":{index}}}"#),
+                        9,
+                        index,
+                    )
+                })
+                .collect(),
+            ..TranscriptBatch::default()
+        };
+
+        let result = store
+            .append_transcript_batch(&session_id, &batch)
+            .expect("bounded transcript bursts should commit");
+        assert_eq!(result.events.len(), 64);
+        assert_eq!(
+            result
+                .events
+                .iter()
+                .map(|event| event.sequence)
+                .collect::<Vec<_>>(),
+            (1..=64).collect::<Vec<_>>()
+        );
     }
 
     #[test]

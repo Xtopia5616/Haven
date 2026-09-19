@@ -6,6 +6,7 @@
 
 use std::sync::Arc;
 
+use crate::react::metrics::ReActMetrics;
 use crate::react::sidecars::MessagingPoller;
 use crate::session::{
     CONTEXT_BATCH_MAX_CHARS, CONTEXT_BATCH_MAX_ITEMS, ReactContextBatch, SessionSupervisor,
@@ -108,14 +109,20 @@ pub(super) struct ContextSource {
     executor: Arc<SessionSupervisor>,
     db: Arc<Database>,
     messaging: MessagingPoller,
+    metrics: Arc<ReActMetrics>,
 }
 
 impl ContextSource {
-    pub(super) fn new(executor: Arc<SessionSupervisor>, db: Arc<Database>) -> Self {
+    pub(super) fn new(
+        executor: Arc<SessionSupervisor>,
+        db: Arc<Database>,
+        metrics: Arc<ReActMetrics>,
+    ) -> Self {
         Self {
             executor: executor.clone(),
             db,
             messaging: MessagingPoller::with_service(executor.messaging_service()),
+            metrics,
         }
     }
 
@@ -139,6 +146,9 @@ impl ContextSource {
     /// inputs that arrived during sampling without polling the inbox a second
     /// time in the same turn.
     pub(super) async fn drain_local_context(&self, session_id: &str) -> PendingContextBatch {
+        let queue_stats = self.executor.context_queue_stats(session_id).await;
+        self.metrics
+            .set_context_queue_items(queue_stats.total_items());
         let ReactContextBatch {
             steering,
             follow_ups,

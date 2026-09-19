@@ -51,6 +51,7 @@ describe('createStreamEventAggregator', () => {
 		aggregator.flushChunksNow();
 		expect(get(sessionMessagesStore)['ses-stream-test']).toHaveLength(1);
 		expect(get(sessionMessagesStore)['ses-stream-test'][0].content).toBe('hello');
+		expect(aggregator.metricsSnapshot()).toEqual({ frames: 1, chunks: 1, drops: 0 });
 	});
 
 	it('finalizes reasoning before applying the thought chunk for the same step', () => {
@@ -117,5 +118,6 @@ describe('createStreamEventAggregator', () => {
 		expect(dispatch.mock.calls[0][0].chunks.map((item: any) => item.payload.delta)).toEqual([
 			'ab',
 		]);
+		expect(aggregator.metricsSnapshot()).toEqual({ frames: 1, chunks: 2, drops: 0 });
 	});
 });

@@ -449,6 +449,10 @@ impl ReActEngine {
                 .write(&ctx.session_id, batch)
                 .await?
         };
+        self.metrics.observe(
+            MetricsPhase::SqliteLockWait,
+            std::time::Duration::from_millis(write_result.lock_wait_ms),
+        );
         if let Some(created_at) = write_result.message_created_at.last() {
             self.note_last_msg_at(&ctx.session_id, Some(created_at.clone()));
         }
@@ -490,6 +494,10 @@ impl ReActEngine {
                 .write(&ctx.session_id, batch)
                 .await?
         };
+        self.metrics.observe(
+            MetricsPhase::SqliteLockWait,
+            std::time::Duration::from_millis(write_result.lock_wait_ms),
+        );
         if let Some(created_at) = write_result.message_created_at.last() {
             self.note_last_msg_at(&ctx.session_id, Some(created_at.clone()));
         }

@@ -60,6 +60,13 @@ export interface StreamEventAggregator {
 	blockIdsOf: (sessionId: string, stepNumber: number, runId: number) => StepBlockIds;
 	clearStepBlockIds: (sessionId: string | null) => void;
 	flushChunksNow: () => void;
+	metricsSnapshot: () => StreamMetricsSnapshot;
+}
+
+export interface StreamMetricsSnapshot {
+	frames: number;
+	chunks: number;
+	drops: number;
 }
 
 /**
@@ -86,6 +93,8 @@ export function createStreamEventAggregator({
 	let chunkFlushRaf = 0;
 	const pendingChunkMax = 2000;
 	let pendingChunkDrops = 0;
+	let frameCount = 0;
+	let acceptedChunkCount = 0;
 	const stepBlockIds = new Map<string, Map<string, StepBlockIds>>();
 
 	function blockKey(stepNumber: number, runId: number) {
@@ -149,6 +158,7 @@ export function createStreamEventAggregator({
 			list.push(chunk);
 		}
 		for (const [, chunks] of bySession) {
+			frameCount++;
 			if (dispatch) {
 				const frame: AgentChunkBatchItem[] = chunks.map((chunk) => ({
 					kind: chunk.msgType === undefined ? 'thought' : 'reasoning',
@@ -229,6 +239,7 @@ export function createStreamEventAggregator({
 				time: new Date().toLocaleTimeString(),
 				finalizeReasoning: isThought,
 			});
+			acceptedChunkCount++;
 			if (pendingChunks.length > pendingChunkMax) {
 				pendingChunks.shift();
 				pendingChunkDrops++;
@@ -245,5 +256,15 @@ export function createStreamEventAggregator({
 		};
 	}
 
-	return { chunkHandler, blockIdsOf, clearStepBlockIds, flushChunksNow };
+	return {
+		chunkHandler,
+		blockIdsOf,
+		clearStepBlockIds,
+		flushChunksNow,
+		metricsSnapshot: () => ({
+			frames: frameCount,
+			chunks: acceptedChunkCount,
+			drops: pendingChunkDrops,
+		}),
+	};
 }

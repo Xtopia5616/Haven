@@ -37,7 +37,7 @@ pub use memory_worker::MemoryWorker;
 pub use prompt::SystemPromptBuilder;
 pub use prompt_context::PromptContextProvider;
 pub use prompt_renderer::{MemorySections, PromptRenderer};
-pub use react::{LoopExit, PauseReason, ReActEngine};
+pub use react::{LoopExit, MetricsSnapshot, PauseReason, ReActEngine};
 pub use session::{
     ConfirmResolution, RunEngine, RunHandler, SessionEvent, SessionInfo, SessionStatus,
     SessionSupervisor, StepInfo, ToolExecution,

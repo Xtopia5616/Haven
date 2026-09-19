@@ -105,6 +105,13 @@ impl AgentLayer {
         self.react_engine.event_store.subscribe()
     }
 
+    /// Export a bounded, content-free snapshot for local diagnostics and
+    /// acceptance checks. The counters are process-local and are not durable
+    /// session data.
+    pub fn react_metrics_snapshot(&self) -> crate::react::MetricsSnapshot {
+        self.react_engine.metrics_snapshot()
+    }
+
     /// Subscribe to the durable session timeline with a race-free initial
     /// replay. The returned replay and live receiver are the same source used
     /// by resume and rollback; consumers must deduplicate overlapping sequence

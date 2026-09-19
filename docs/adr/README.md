@@ -174,3 +174,4 @@
 - [0175：恢复持久化使用 append-only 两阶段标记](0175-recovery-persistence-two-phase-marker.md)
 - [0176：Transcript 事件与投影批量持久化](0176-transcript-batch-persistence.md)
 - [0177：ReAct 上下文队列容量与批量注入边界](0177-react-context-queue-bounds.md)
+- [0178：ReAct 可观测性与会话刷新合并](0178-react-observability-and-refresh-coalescing.md)

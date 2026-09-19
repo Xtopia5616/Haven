@@ -1,5 +1,6 @@
 //! Session context queues and the single interaction registry.
 
+use super::actor::ContextQueueStats;
 use super::*;
 
 /// Context selected for the next model request.
@@ -117,6 +118,13 @@ impl SessionSupervisor {
         match self.actor_for(session_id).await {
             Some(actor) => actor.has_pending_context().await,
             None => false,
+        }
+    }
+
+    pub(crate) async fn context_queue_stats(&self, session_id: &str) -> ContextQueueStats {
+        match self.actor_for(session_id).await {
+            Some(actor) => actor.context_queue_stats().await,
+            None => ContextQueueStats::default(),
         }
     }
 

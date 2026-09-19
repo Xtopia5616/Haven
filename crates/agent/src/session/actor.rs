@@ -56,6 +56,21 @@ pub(crate) struct RunFinished {
     pub terminal: bool,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct ContextQueueStats {
+    pub steering_items: usize,
+    pub follow_up_items: usize,
+    pub action_result_items: usize,
+}
+
+impl ContextQueueStats {
+    pub(crate) fn total_items(self) -> usize {
+        self.steering_items
+            .saturating_add(self.follow_up_items)
+            .saturating_add(self.action_result_items)
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct ConfirmDecision {
     pub request: InteractionRequest,
@@ -116,6 +131,9 @@ pub(crate) enum ActorCommand {
     },
     HasPendingContext {
         reply: oneshot::Sender<bool>,
+    },
+    ContextQueueStats {
+        reply: oneshot::Sender<ContextQueueStats>,
     },
     MarkQueuesAsAnswer,
     AddActionCompletion {
@@ -364,6 +382,18 @@ impl SessionActorHandle {
             return false;
         }
         rx.await.unwrap_or(false)
+    }
+
+    pub(crate) async fn context_queue_stats(&self) -> ContextQueueStats {
+        let (reply, rx) = oneshot::channel();
+        if self
+            .send(ActorCommand::ContextQueueStats { reply })
+            .await
+            .is_err()
+        {
+            return ContextQueueStats::default();
+        }
+        rx.await.unwrap_or_default()
     }
 
     pub(crate) async fn mark_queues_as_answer(&self) {
@@ -724,6 +754,13 @@ pub(crate) fn spawn(db: Arc<Database>, info: SessionInfo) -> SessionActorHandle 
                             || !state.steering_queue.is_empty()
                             || !state.action_completions.is_empty(),
                     );
+                }
+                ActorCommand::ContextQueueStats { reply } => {
+                    let _ = reply.send(ContextQueueStats {
+                        steering_items: state.steering_queue.len(),
+                        follow_up_items: state.follow_up_queue.len(),
+                        action_result_items: state.action_completions.len(),
+                    });
                 }
                 ActorCommand::MarkQueuesAsAnswer => {
                     for item in &mut state.follow_up_queue {

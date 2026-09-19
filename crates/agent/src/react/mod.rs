@@ -47,6 +47,7 @@ use hooks::{LoopHooksHandle, default_hooks};
 use identity::IdentityMap;
 pub(crate) use r#loop::RunInput;
 pub use r#loop::{LoopExit, PauseReason};
+pub use metrics::MetricsSnapshot;
 use metrics::{Counter as MetricsCounter, Phase as MetricsPhase, ReActMetrics};
 pub(crate) use request_context::RequestContext;
 use sidecars::{
@@ -389,7 +390,8 @@ impl ReActEngine {
         max_steps: u32,
         context_limits: ContextLimitsConfig,
     ) -> Self {
-        let context_source = ContextSource::new(executor.clone(), db.clone());
+        let metrics = Arc::new(ReActMetrics::new());
+        let context_source = ContextSource::new(executor.clone(), db.clone(), metrics.clone());
         let event_store = SessionEventStore::new(db.clone());
         Self {
             router: Arc::new(RwLock::new(router)),
@@ -413,7 +415,7 @@ impl ReActEngine {
             hooks: default_hooks(),
             inference: None,
             run_budgets: Mutex::new(HashMap::new()),
-            metrics: Arc::new(ReActMetrics::new()),
+            metrics,
         }
     }
 
