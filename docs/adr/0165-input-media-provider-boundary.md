@@ -29,6 +29,9 @@
    的执行结果语义，不伪装成 capability unavailable。
 5. 录音的采集错误在 `RecordingResult::capture_error` 中返回；它不会进入 provider fallback，
    也不会伪造成转写结果。
+6. `media.record` 在登记 WAV 后保留采集错误和资产引用，但不会调用 STT；此时返回执行失败
+   (`capture_failed`)，与无 STT 的成功结构化结果 (`transcribe_unavailable`) 区分。专用 STT 的
+   timeout 使用 `[media.stt]` 配置，连续的专用 STT 与 LLM fallback 共享一个有界的工具预算。
 
 ## 替代方案
 
@@ -43,7 +46,8 @@
 - UI 语音事件形状不变；应用只把 capture error 或媒体转写结果映射到既有事件。
 - 无数据库 schema、快照或配置迁移；这是运行时 crate/API 边界的破坏性清理。
 - 验证：input、tools、app-binary 定向 check/test，以及 workspace fmt/check/test/clippy；重点
-  覆盖无 STT 仍可 advertise `record`、无 provider 的稳定 capability result、空转写和采集静音。
+  覆盖无 STT 仍可 advertise `record`、无 provider 的稳定 capability result、空转写、采集静音
+  不进入 fallback，以及专用 STT timeout/fallback 结果保持执行失败语义。
 
 ## 回滚
 

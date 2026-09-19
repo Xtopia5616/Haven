@@ -786,13 +786,12 @@ impl ToolsManager {
         }
         let media_config = self.runtime.media_config.read().await.clone();
         let limits = self.core.context_limits.read().await;
-        let timeout_secs = limits.file_summary_timeout_secs;
         let max_output_chars = limits.max_observation_chars;
         drop(limits);
         builtin::media::MediaTranscriber::new(
             router,
             stt_client,
-            timeout_secs,
+            media_config.stt.timeout_secs,
             media_config.stt.min_confidence,
             max_output_chars,
         )

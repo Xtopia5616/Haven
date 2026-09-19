@@ -106,6 +106,13 @@ pub(crate) struct MediaTranscriber {
     max_output_chars: usize,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum DedicatedOutcome {
+    Empty,
+    Failed,
+    TimedOut,
+}
+
 impl MediaTranscriber {
     pub(crate) fn new(
         router: Option<Arc<LlmRouter>>,
@@ -117,7 +124,7 @@ impl MediaTranscriber {
         Self {
             router,
             stt_client,
-            timeout_secs,
+            timeout_secs: timeout_secs.max(1),
             min_confidence,
             max_output_chars: max_output_chars.max(1),
         }
@@ -130,6 +137,11 @@ impl MediaTranscriber {
 
     pub(crate) fn with_min_confidence(mut self, min_confidence: f32) -> Self {
         self.min_confidence = min_confidence;
+        self
+    }
+
+    pub(crate) fn with_timeout_secs(mut self, timeout_secs: u64) -> Self {
+        self.timeout_secs = timeout_secs.max(1);
         self
     }
 
@@ -152,6 +164,7 @@ impl MediaTranscriber {
             return MediaTranscriptionResult::cancelled("transcription cancelled");
         }
 
+        let mut dedicated_outcome = None;
         if let Some(client) = self.stt_client.clone() {
             let dedicated = tokio::select! {
                 _ = cancel.cancelled() => {
@@ -169,23 +182,24 @@ impl MediaTranscriber {
                 {
                     return self.success(result.text, Vec::new());
                 }
-                Ok(Ok(result)) if result.text.trim().is_empty() && self.router.is_none() => {
-                    return MediaTranscriptionResult::empty();
+                Ok(Ok(result)) if result.text.trim().is_empty() => {
+                    dedicated_outcome = Some(DedicatedOutcome::Empty);
                 }
-                Ok(Ok(_)) | Ok(Err(_)) | Err(_) => {}
+                Ok(Ok(_)) | Ok(Err(_)) => {
+                    dedicated_outcome = Some(DedicatedOutcome::Failed);
+                }
+                Err(_) => {
+                    dedicated_outcome = Some(DedicatedOutcome::TimedOut);
+                }
             }
         }
 
         let Some(router) = self.router.clone() else {
-            return MediaTranscriptionResult::failed(
-                "STT provider returned no acceptable result and no LLM fallback is configured",
-            );
+            return self.result_without_fallback(dedicated_outcome);
         };
         let role = router.stt_role().await;
         let Some(role) = role else {
-            return MediaTranscriptionResult::unavailable(
-                "No speech-to-text provider is configured.",
-            );
+            return self.result_without_fallback(dedicated_outcome);
         };
         let started = std::time::Instant::now();
         let result = tokio::select! {
@@ -204,7 +218,7 @@ impl MediaTranscriber {
             }
             Err(_) => {
                 return MediaTranscriptionResult::timed_out(format!(
-                    "transcription timed out after {}s",
+                    "LLM STT fallback timed out after {}s",
                     self.timeout_secs
                 ));
             }
@@ -223,6 +237,25 @@ impl MediaTranscriber {
             MediaTranscriptionResult::empty()
         } else {
             self.success(result.text, usage)
+        }
+    }
+
+    fn result_without_fallback(
+        &self,
+        dedicated_outcome: Option<DedicatedOutcome>,
+    ) -> MediaTranscriptionResult {
+        match dedicated_outcome {
+            Some(DedicatedOutcome::Empty) => MediaTranscriptionResult::empty(),
+            Some(DedicatedOutcome::TimedOut) => MediaTranscriptionResult::timed_out(format!(
+                "dedicated STT provider timed out after {}s",
+                self.timeout_secs
+            )),
+            Some(DedicatedOutcome::Failed) => MediaTranscriptionResult::failed(
+                "STT provider returned no acceptable result and no LLM fallback is configured",
+            ),
+            None => {
+                MediaTranscriptionResult::unavailable("No speech-to-text provider is configured.")
+            }
         }
     }
 
@@ -298,7 +331,7 @@ impl MediaTool {
         self.transcribe(asset, cancel).await
     }
 
-    fn failed_media_result(
+    pub(crate) fn failed_media_result(
         &self,
         operation: MediaOperation,
         asset: &ManagedAsset,

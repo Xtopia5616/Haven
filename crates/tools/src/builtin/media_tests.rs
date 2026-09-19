@@ -393,6 +393,38 @@ async fn shared_transcriber_keeps_empty_provider_result_non_successful() {
 }
 
 #[test]
+fn recording_capture_failure_keeps_asset_navigation_and_execution_error() {
+    let root = TempDir::new().unwrap();
+    let (registry, asset_id) = registered_asset(root.path(), "recording.wav", "audio/wav");
+    let asset = registry.resolve(&asset_id).unwrap();
+    let tool = MediaTool::new(None, registry, 1024, 10, 2_000);
+
+    let result = tool.capture_error_result(&asset, 321, "麦克风没有检测到声音");
+    assert!(!result.success);
+    assert_eq!(result.output["operation"], "record");
+    assert_eq!(result.output["reason_code"], "capture_failed");
+    assert_eq!(result.output["capture_error"], true);
+    assert_eq!(result.output["asset_id"], asset_id);
+    assert_eq!(result.output["media"]["asset_id"], asset_id);
+    assert_eq!(result.output["duration_ms"], 321);
+    assert_eq!(result.error.as_deref(), Some("麦克风没有检测到声音"));
+}
+
+#[test]
+fn stt_timeout_budget_covers_dedicated_and_fallback_attempts() {
+    let tool = MediaTool::new(None, ManagedAssetRegistry::default(), 1024, 10, 2_000)
+        .with_stt_timeout_secs(20);
+    assert_eq!(
+        tool.timeout_secs_for(&json!({"operation": "transcribe"})),
+        45
+    );
+    assert_eq!(
+        tool.timeout_secs_for(&json!({"operation": "record", "duration": 3.0})),
+        48
+    );
+}
+
+#[test]
 fn recording_capability_only_requires_capture_pipeline() {
     let runtime = Arc::new(crate::builtin::media_audio::AudioRuntime::with_tts(
         Some(Arc::new(haven_input::InputPipeline::new())),

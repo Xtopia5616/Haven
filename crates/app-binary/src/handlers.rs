@@ -30,7 +30,7 @@ impl desktop::ShellHandler for HavenShellHandler {
             self.shell_arc.stop_recording().await;
             crate::commands::emit_recording_error(
                 &self.app_h,
-                format!("录音启动失败，请检查麦克风/STT 配置: {e}"),
+                format!("录音启动失败，请检查麦克风配置: {e}"),
             );
             return;
         }

@@ -254,6 +254,7 @@ pub async fn register_builtin_tools(
             media_config.ocr.min_confidence,
             media_config.stt.min_confidence,
         )
+        .with_stt_timeout_secs(media_config.stt.timeout_secs)
         .with_capabilities(capabilities)
         .with_audio_runtime(audio_runtime),
     );

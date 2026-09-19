@@ -38,7 +38,13 @@
 	{#if representation}<div class="tool-card-meta">表示：{representation}</div>{/if}
 	{#if availableRepresentations.length}<div class="tool-card-meta">可用表示：{availableRepresentations.join('、')}</div>{/if}
 	{#if recommendedNext}<div class="tool-card-meta">建议下一步：{recommendedNext}</div>{/if}
-	{#if data.transcript}<pre class="media-text">{data.transcript}</pre>{/if}
+	{#if data.available === false}
+		<p class="tool-card-empty">{data.reason || '录音能力当前不可用'}</p>
+	{:else if data.error || data.capture_error}
+		<p class="tool-card-empty">{data.error || data.reason || '录音采集失败'}</p>
+	{:else if data.transcript}
+		<pre class="media-text">{data.transcript}</pre>
+	{/if}
 {:else if data.operation === 'play'}
 	<div class="media-action"><span class="media-badge">{operationLabel}</span>{#if data.played}<span>已发送到扬声器</span>{/if}</div>
 {:else if data.operation === 'speak'}

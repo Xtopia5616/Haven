@@ -930,6 +930,41 @@ describe('ToolResultCard window', () => {
 	});
 });
 
+describe('ToolResultCard media recording', () => {
+	it('shows capability-unavailable recording results', async () => {
+		const { container } = render(ToolResultCard, {
+			toolName: 'media',
+			content: JSON.stringify({
+				operation: 'record',
+				available: false,
+				capability: 'record',
+				reason_code: 'record_unavailable',
+				reason: '麦克风采集未配置',
+			}),
+		});
+		await expandToolCard(container);
+		expect(screen.getByText('麦克风采集未配置')).toBeTruthy();
+	});
+
+	it('shows capture errors while retaining the recorded asset', async () => {
+		const assetId = 'asset-0123456789abcdef0123456789abcdef';
+		const { container } = render(ToolResultCard, {
+			toolName: 'media',
+			content: JSON.stringify({
+				success: false,
+				operation: 'record',
+				asset_id: assetId,
+				capture_error: true,
+				error: '麦克风没有检测到声音',
+				media: { asset_id: assetId, representation: 'managed_file_ref' },
+			}),
+		});
+		await expandToolCard(container);
+		expect(screen.getByText(assetId)).toBeTruthy();
+		expect(screen.getByText('麦克风没有检测到声音')).toBeTruthy();
+	});
+});
+
 describe('ToolResultCard files', () => {
 	it('renders managed binary media through the canonical media card', async () => {
 		const { container } = render(ToolResultCard, {

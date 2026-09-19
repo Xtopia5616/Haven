@@ -212,6 +212,7 @@ pub struct MediaTool {
     capabilities: MediaCapabilities,
     pub(crate) audio_runtime: Arc<AudioRuntime>,
     ocr_min_confidence: f32,
+    stt_timeout_secs: u64,
     managed_assets: ManagedAssetRegistry,
     max_bytes: u64,
     timeout_secs: u64,
@@ -245,6 +246,7 @@ impl MediaTool {
             },
             audio_runtime: Arc::new(AudioRuntime::with_tts(None, None)),
             ocr_min_confidence: 0.0,
+            stt_timeout_secs: timeout_secs.max(1),
             managed_assets,
             max_bytes,
             timeout_secs,
@@ -312,6 +314,17 @@ impl MediaTool {
                 .as_ref()
                 .clone()
                 .with_min_confidence(stt_min_confidence),
+        );
+        self
+    }
+
+    pub(crate) fn with_stt_timeout_secs(mut self, timeout_secs: u64) -> Self {
+        self.stt_timeout_secs = timeout_secs.max(1);
+        self.transcriber = Arc::new(
+            self.transcriber
+                .as_ref()
+                .clone()
+                .with_timeout_secs(self.stt_timeout_secs),
         );
         self
     }
@@ -447,13 +460,19 @@ impl Tool for MediaTool {
     }
 
     fn timeout_secs_for(&self, input: &Value) -> u64 {
+        let stt_budget = self
+            .stt_timeout_secs
+            .saturating_mul(2)
+            .saturating_add(5)
+            .max(30);
+        if input["operation"].as_str() == Some("transcribe") {
+            return stt_budget;
+        }
         if input["operation"].as_str() == Some("record") {
             let duration = input["duration"].as_f64().unwrap_or(10.0).clamp(1.0, 60.0);
             return self
-                .timeout_secs
-                .max(duration.ceil() as u64 + 30)
-                .saturating_add(5)
-                .max(30);
+                .default_timeout_secs()
+                .max(duration.ceil() as u64 + stt_budget);
         }
         self.default_timeout_secs()
     }

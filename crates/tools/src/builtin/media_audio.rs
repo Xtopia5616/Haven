@@ -49,6 +49,7 @@ pub(crate) struct AudioRuntime {
 pub(crate) struct RecordedAudio {
     pub asset: ManagedAsset,
     pub duration_ms: u64,
+    pub capture_error: Option<String>,
 }
 
 /// Blocking speaker boundary used by the `speak` operation.
@@ -181,6 +182,7 @@ impl AudioRuntime {
         Ok(RecordedAudio {
             asset,
             duration_ms: result.duration_ms,
+            capture_error: result.capture_error,
         })
     }
 
@@ -509,6 +511,20 @@ mod tests {
 }
 
 impl MediaTool {
+    pub(crate) fn capture_error_result(
+        &self,
+        asset: &ManagedAsset,
+        duration_ms: u64,
+        error: impl Into<String>,
+    ) -> ToolResult {
+        let mut result = self.failed_media_result(MediaOperation::Record, asset, error);
+        result.output["operation"] = json!("record");
+        result.output["duration_ms"] = json!(duration_ms);
+        result.output["reason_code"] = json!("capture_failed");
+        result.output["capture_error"] = json!(true);
+        result
+    }
+
     pub(super) async fn run_audio(
         &self,
         params: MediaParams,
@@ -535,6 +551,13 @@ impl MediaTool {
                     .audio_runtime
                     .record_asset(&params, cancel.clone())
                     .await?;
+                if let Some(error) = recorded.capture_error {
+                    return Ok(self.capture_error_result(
+                        &recorded.asset,
+                        recorded.duration_ms,
+                        error,
+                    ));
+                }
                 let mut result = self.transcribe_asset(recorded.asset, cancel).await?;
                 result.output["operation"] = json!("record");
                 result.output["duration_ms"] = json!(recorded.duration_ms);
