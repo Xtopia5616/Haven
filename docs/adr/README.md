@@ -170,3 +170,4 @@
 - [0171：并发会话调度与生命周期闸门](0171-concurrent-session-lifecycle-admission.md)
 - [0172：会话与任务生命周期状态契约统一](0172-session-action-lifecycle-state-contract.md)
 - [0173：ReAct、工具与网络请求的失败恢复边界](0173-react-tool-network-recovery-boundary.md)
+- [0174：Action 刷新一致性与 scheduled delivery claim](0174-action-refresh-and-scheduled-delivery-claims.md)

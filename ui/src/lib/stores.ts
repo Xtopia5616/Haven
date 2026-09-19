@@ -224,6 +224,9 @@ const ACTION_STORE_MAX = 64;
 // slow older list_actions response from overwriting lifecycle events or the
 // result of a newer refresh.
 let actionRefreshRequest = 0;
+// Lifecycle events may arrive while list_actions is in flight. A refresh may
+// replace the board only when no event has changed it since that request began.
+let actionStateVersion = 0;
 
 /** Live board rows that must never be evicted to make room for history. */
 function isLiveActionRow(entry: ActionEntry) {
@@ -249,6 +252,7 @@ function trimActionStore(entries: Record<string, ActionEntry>) {
 export function upsertAction(payload: ActionPayload) {
 	const key = payload.id;
 	if (!key) return;
+	actionStateVersion++;
 	actionStore.update((m) => {
 		const prev = m[key];
 		const next: ActionEntry = {
@@ -264,6 +268,7 @@ export function upsertAction(payload: ActionPayload) {
 /** Drop an action removed from the live board by a terminal lifecycle event. */
 export function removeAction(id: string) {
 	if (!id) return;
+	actionStateVersion++;
 	actionStore.update((m) => {
 		if (!(id in m)) return m;
 		const next = { ...m };
@@ -274,10 +279,12 @@ export function removeAction(id: string) {
 
 export async function refreshActions() {
 	const requestId = ++actionRefreshRequest;
+	const stateVersion = actionStateVersion;
 	try {
 		const rows = await invoke('list_actions');
 		if (!Array.isArray(rows)) return;
 		if (requestId !== actionRefreshRequest) return;
+		if (stateVersion !== actionStateVersion) return;
 		// Replace the registry: entries missing from the board were removed
 		// server-side (a session ending cancels its actions without terminal
 		// events, completed/cancelled scheduled actions leave the pending list), so they must

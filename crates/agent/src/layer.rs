@@ -397,7 +397,7 @@ impl AgentLayer {
                 loop {
                     let Some(event) = (tokio::select! {
                         _ = cancellation.cancelled() => return,
-                        event = rx.recv() => event,
+                        event = rx.recv_background() => event,
                     }) else {
                         return;
                     };

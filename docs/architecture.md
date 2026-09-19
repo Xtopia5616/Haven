@@ -293,7 +293,8 @@ Temp（全局约束）。
 shell 进程、定时器和 action dependency 共享一个 action map、一个生命周期 sink 和一个
 completion bus。统一状态为 `waiting → running → completed | failed | cancelled`；定时任务的
 `kind` 只表示任务类型，不再作为状态值。model-facing `actions.*` 和 app action board 都
-直接读取规范化 task row。
+直接读取规范化 task row。scheduled fire 的恢复 map 是共享 claim/lease 的唯一领取入口，
+后台 completion consumer 不领取 scheduled fire，避免未来多个 receiver 重复执行。
 `InteractionRequest`（`haven-agent/src/interaction.rs`）
 是 ask、confirm 和 scheduled confirm 的共同生命周期投影，快照通过 `interactions` 保存当前
 请求；旧快照不做运行时兼容读取，新的交互状态以 `Pending → Resolved | Expired | Cancelled`
@@ -468,6 +469,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 
 | 日期 | 内容 |
 |---|---|
+| 2026-09-19 | §2.5 Agent / §2.6 UI：Action board 刷新加入状态版本校验；损坏 waiting scheduled row 增加可取消的指数退避隔离重试；scheduled fire 改为服务级 claim/lease，阻止多 receiver 重复执行（ADR 0174） |
 | 2026-09-19 | §2.3 Memory / §2.5 Agent / Tools / App / UI：将 session 与 action 状态下沉为 Common typed lifecycle；删除 `actions.fired` 与 `scheduled` 状态，统一定时任务取消/触发终态和 IPC 投影（ADR 0172） |
 | 2026-09-19 | §2.2 Common / LLM / App / UI：将固定 five-slot 模型配置和 STT/vision 布尔开关改为命名模型、`Capability` 与 `RequestPolicy` 路由；旧 `llm.roles` 在加载时一次性转换，provider adapter wire 契约保持不变（ADR 0170） |
 | 2026-09-19 | §2.5 Agent / §2.6 UI：以精确 active-run admission、单 dispatcher、生命周期闸门和 quiesce-then-mutate 收口并发会话；UI 提交改为按 session 分 lane，草稿 lane 保持串行接管（ADR 0171） |

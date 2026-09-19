@@ -126,6 +126,22 @@ describe('upsertAction', () => {
 		vi.mocked(invoke).mockResolvedValue(undefined);
 	});
 
+	it('does not let a refresh overwrite a lifecycle event received in flight', async () => {
+		let resolveRefresh!: (value: unknown) => void;
+		const refreshResponse = new Promise((resolve) => {
+			resolveRefresh = resolve;
+		});
+		vi.mocked(invoke).mockReset().mockReturnValueOnce(refreshResponse);
+
+		const refresh = refreshActions();
+		upsertAction({ id: 'act-race', kind: 'scheduled', status: 'running' });
+		resolveRefresh([{ id: 'act-race', kind: 'scheduled', status: 'waiting' }]);
+		await refresh;
+
+		expect(get(actionStore)['act-race']?.status).toBe('running');
+		vi.mocked(invoke).mockResolvedValue(undefined);
+	});
+
 	it('finalizeBackgroundActionMessages clears actionId and writes terminal content', () => {
 		appSessionReducer.dispatch({ type: 'sessions/cleared' });
 		appSessionReducer.dispatch({

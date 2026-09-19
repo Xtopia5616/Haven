@@ -16,7 +16,7 @@ async fn wait_terminal(actions: &ActionService, id: &str, timeout_secs: u64) -> 
 }
 async fn recv_background(rx: &mut ActionCompletionReceiver) -> BackgroundActionCompletion {
     loop {
-        match rx.recv().await {
+        match rx.recv_background().await {
             Some(ActionCompletion::Background(completion)) => return completion,
             Some(ActionCompletion::Scheduled(_)) => continue,
             None => panic!("action completion channel closed"),
@@ -1036,6 +1036,98 @@ async fn test_scheduled_recovery_is_available_to_late_receivers_and_deduplicated
         .await
         .is_err()
     );
+}
+
+#[tokio::test]
+async fn test_scheduled_fire_claim_is_shared_across_receivers() {
+    let service = Arc::new(ActionService::new());
+    let mut first_rx = service.take_action_receiver().unwrap();
+    let mut second_rx = service.take_action_receiver().unwrap();
+    let fired = ScheduledActionFired {
+        action_id: "act-shared-claim".into(),
+        title: "Shared claim".into(),
+        body: "once".into(),
+        mode: crate::builtin::scheduled_action::ScheduleMode::Tool,
+        session_id: None,
+        tool_name: Some("notify".into()),
+        tool_args: None,
+        prompt: None,
+    };
+    service
+        .pending_scheduled_fires
+        .write()
+        .await
+        .insert(fired.action_id.clone(), fired.clone());
+    service
+        .completion_tx
+        .send(ActionCompletion::Scheduled(fired))
+        .unwrap();
+
+    let first = tokio::time::timeout(Duration::from_millis(100), first_rx.recv())
+        .await
+        .expect("first receiver must claim the fire")
+        .unwrap();
+    assert!(matches!(first, ActionCompletion::Scheduled(_)));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), second_rx.recv())
+            .await
+            .is_err(),
+        "a second receiver must not execute the claimed fire"
+    );
+}
+
+#[tokio::test]
+async fn test_corrupt_row_quarantine_retries_after_transient_db_failure() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let db = Arc::new(haven_memory::Database::open(&dir.path().join("test.db")).unwrap());
+    db.save_scheduled_action(
+        "act-quarantine-retry",
+        "2026-09-19T00:00:00Z",
+        "Corrupt",
+        "retry quarantine",
+        "invalid-mode",
+        None,
+        Some("notify"),
+        None,
+        None,
+    )
+    .unwrap();
+    db.conn()
+        .execute_batch(
+            "CREATE TRIGGER block_quarantine_failure
+             BEFORE UPDATE OF status ON actions
+             WHEN OLD.status = 'waiting' AND NEW.status = 'failed'
+             BEGIN SELECT RAISE(ABORT, 'injected quarantine failure'); END;",
+        )
+        .unwrap();
+
+    let service = Arc::new(ActionService::new());
+    service.set_db(Some(db.clone())).await;
+    assert_eq!(service.restore_pending().await, 0);
+    assert_eq!(
+        db.get_action("act-quarantine-retry")
+            .unwrap()
+            .unwrap()
+            .status,
+        haven_common::ActionStatus::Waiting
+    );
+
+    db.conn()
+        .execute_batch("DROP TRIGGER block_quarantine_failure")
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(4);
+    loop {
+        let row = db.get_action("act-quarantine-retry").unwrap().unwrap();
+        if row.status == haven_common::ActionStatus::Failed {
+            assert!(db.list_pending_scheduled_actions().unwrap().is_empty());
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "quarantine retry did not converge"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }
 
 #[tokio::test]

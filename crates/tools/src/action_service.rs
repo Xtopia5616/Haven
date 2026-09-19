@@ -3,7 +3,7 @@ use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::{RwLock, broadcast, oneshot};
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
@@ -27,6 +27,7 @@ use haven_memory::Database;
 
 const ACTION_DB_RETRY_ATTEMPTS: usize = 3;
 const ACTION_DB_RETRY_DELAY: Duration = Duration::from_millis(50);
+const SCHEDULED_FIRE_LEASE: Duration = Duration::from_secs(15 * 60);
 
 /// A background action that has reached a terminal state, surfaced to a consumer
 /// (the agent layer) so the owning session can be auto-notified of the result
@@ -67,10 +68,45 @@ pub enum ActionCompletion {
 /// Receiver for the unified action completion stream.
 pub struct ActionCompletionReceiver {
     rx: broadcast::Receiver<ActionCompletion>,
-    /// Scheduled fires returned from the recovery map are also potentially
-    /// present in the broadcast buffer. Keep the action ids already delivered
-    /// to this receiver so lag recovery cannot execute one fire twice.
-    seen_scheduled_ids: HashSet<String>,
+    /// Scheduled fire claim/lease ownership is deliberately shared by all
+    /// receivers: local de-duplication cannot prevent two scheduled consumers
+    /// from executing the same fire.
+    pending_scheduled_fires: Arc<RwLock<HashMap<String, ScheduledActionFired>>>,
+    scheduled_fire_claims: Arc<RwLock<HashMap<String, ScheduledFireClaim>>>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ScheduledFireClaim {
+    expires_at: Instant,
+}
+
+async fn claim_scheduled_fire(
+    pending_scheduled_fires: &RwLock<HashMap<String, ScheduledActionFired>>,
+    scheduled_fire_claims: &RwLock<HashMap<String, ScheduledFireClaim>>,
+    action_id: &str,
+) -> Option<ScheduledActionFired> {
+    // Claim and lookup use the same lock order everywhere. This makes the
+    // claim check atomic from the perspective of concurrent receivers while
+    // allowing an abandoned consumer to be recovered after the lease expires.
+    let mut claims = scheduled_fire_claims.write().await;
+    let now = Instant::now();
+    if let Some(claim) = claims.get(action_id)
+        && claim.expires_at > now
+    {
+        return None;
+    }
+    let fired = pending_scheduled_fires
+        .read()
+        .await
+        .get(action_id)
+        .cloned()?;
+    claims.insert(
+        action_id.to_string(),
+        ScheduledFireClaim {
+            expires_at: now + SCHEDULED_FIRE_LEASE,
+        },
+    );
+    Some(fired)
 }
 
 impl ActionCompletionReceiver {
@@ -78,11 +114,35 @@ impl ActionCompletionReceiver {
         loop {
             match self.rx.recv().await {
                 Ok(ActionCompletion::Scheduled(fired)) => {
-                    if self.seen_scheduled_ids.insert(fired.action_id.clone()) {
+                    if let Some(fired) = claim_scheduled_fire(
+                        &self.pending_scheduled_fires,
+                        &self.scheduled_fire_claims,
+                        &fired.action_id,
+                    )
+                    .await
+                    {
                         return Some(ActionCompletion::Scheduled(fired));
                     }
                 }
                 Ok(event) => return Some(event),
+                Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                    tracing::warn!(skipped, "action completion receiver lagged")
+                }
+                Err(broadcast::error::RecvError::Closed) => return None,
+            }
+        }
+    }
+
+    /// Receive background completions without claiming scheduled fires. The
+    /// agent's background consumer uses this so a second receiver cannot steal
+    /// a scheduled trigger before the dedicated scheduled consumer sees it.
+    pub async fn recv_background(&mut self) -> Option<ActionCompletion> {
+        loop {
+            match self.rx.recv().await {
+                Ok(ActionCompletion::Background(completion)) => {
+                    return Some(ActionCompletion::Background(completion));
+                }
+                Ok(ActionCompletion::Scheduled(_)) => {}
                 Err(broadcast::error::RecvError::Lagged(skipped)) => {
                     tracing::warn!(skipped, "action completion receiver lagged")
                 }
@@ -103,16 +163,18 @@ impl ActionCompletionReceiver {
             // A fire can have been retained after a send with no consumer. A
             // receiver created later must drain that recovery source before
             // waiting on the transient broadcast channel.
-            if let Some(fired) = service
-                .pending_scheduled_fire(&self.seen_scheduled_ids)
-                .await
-            {
-                self.seen_scheduled_ids.insert(fired.action_id.clone());
+            if let Some(fired) = service.pending_scheduled_fire().await {
                 return Some(ActionCompletion::Scheduled(fired));
             }
             match self.rx.recv().await {
                 Ok(ActionCompletion::Scheduled(fired)) => {
-                    if self.seen_scheduled_ids.insert(fired.action_id.clone()) {
+                    if let Some(fired) = claim_scheduled_fire(
+                        &self.pending_scheduled_fires,
+                        &self.scheduled_fire_claims,
+                        &fired.action_id,
+                    )
+                    .await
+                    {
                         return Some(ActionCompletion::Scheduled(fired));
                     }
                 }
@@ -291,11 +353,17 @@ pub struct ActionService {
     /// Scheduled triggers remain here until the agent acknowledges the actual
     /// work. This is the recovery source when the transient broadcast receiver
     /// falls behind.
-    pending_scheduled_fires: RwLock<HashMap<String, ScheduledActionFired>>,
+    pending_scheduled_fires: Arc<RwLock<HashMap<String, ScheduledActionFired>>>,
+    /// Service-wide scheduled-fire claims. A receiver owns a fire until it
+    /// acknowledges it or its lease expires, so multiple receivers cannot
+    /// execute the same trigger concurrently.
+    scheduled_fire_claims: Arc<RwLock<HashMap<String, ScheduledFireClaim>>>,
     /// At most one retry worker is allowed for each scheduled action whose
     /// terminal DB write failed. The worker is cancelled with the service and
     /// stops once the durable transition succeeds.
     terminal_persistence_retries: RwLock<HashSet<String>>,
+    /// At most one quarantine retry task is allowed per malformed action row.
+    quarantine_persistence_retries: RwLock<HashSet<String>>,
     /// Max concurrent *running* actions (from `context_limits.background_max_actions`).
     max_actions: RwLock<usize>,
     /// Live-output tail cap (chars) for `action:output` preview events (from
@@ -337,8 +405,10 @@ impl ActionService {
             actions: RwLock::new(HashMap::new()),
             spawn_gate: tokio::sync::Mutex::new(()),
             completion_tx: tx,
-            pending_scheduled_fires: RwLock::new(HashMap::new()),
+            pending_scheduled_fires: Arc::new(RwLock::new(HashMap::new())),
+            scheduled_fire_claims: Arc::new(RwLock::new(HashMap::new())),
             terminal_persistence_retries: RwLock::new(HashSet::new()),
+            quarantine_persistence_retries: RwLock::new(HashSet::new()),
             max_actions: RwLock::new(64),
             job_tail_max_chars: RwLock::new(2000),
             job_output_emit_interval: RwLock::new(Duration::from_millis(1500)),
@@ -356,20 +426,31 @@ impl ActionService {
     pub fn take_action_receiver(&self) -> Option<ActionCompletionReceiver> {
         Some(ActionCompletionReceiver {
             rx: self.completion_tx.subscribe(),
-            seen_scheduled_ids: HashSet::new(),
+            pending_scheduled_fires: Arc::clone(&self.pending_scheduled_fires),
+            scheduled_fire_claims: Arc::clone(&self.scheduled_fire_claims),
         })
     }
 
-    async fn pending_scheduled_fire(
-        &self,
-        seen_scheduled_ids: &HashSet<String>,
-    ) -> Option<ScheduledActionFired> {
-        self.pending_scheduled_fires
+    async fn pending_scheduled_fire(&self) -> Option<ScheduledActionFired> {
+        let ids = self
+            .pending_scheduled_fires
             .read()
             .await
-            .values()
-            .find(|fired| !seen_scheduled_ids.contains(&fired.action_id))
+            .keys()
             .cloned()
+            .collect::<Vec<_>>();
+        for action_id in ids {
+            if let Some(fired) = claim_scheduled_fire(
+                &self.pending_scheduled_fires,
+                &self.scheduled_fire_claims,
+                &action_id,
+            )
+            .await
+            {
+                return Some(fired);
+            }
+        }
+        None
     }
 
     /// Install the UI event sink (called once by the desktop shell).
@@ -400,26 +481,31 @@ impl ActionService {
         *self.db.write().await = db;
     }
 
-    /// Move a malformed persisted waiting row to terminal history. Restore must
-    /// never leave a row that the pending query returns but the runtime cannot
-    /// parse, because that creates an invisible action that cannot be cancelled.
-    async fn quarantine_invalid_scheduled_row(&self, id: &str, reason: &str) {
+    /// Try to move a malformed persisted waiting row to terminal history.
+    /// Returns `Ok(false)` when another path already removed it from the
+    /// waiting set. Restore must never leave a row that the pending query
+    /// returns but the runtime cannot parse.
+    async fn try_quarantine_invalid_scheduled_row(
+        &self,
+        id: &str,
+        reason: &str,
+        finished_at: &str,
+    ) -> anyhow::Result<bool> {
         let Some(db) = self.db.read().await.clone() else {
-            return;
+            return Ok(true);
         };
-        let finished_at = chrono::Utc::now().to_rfc3339();
         let mut last_error = None;
         for attempt in 0..ACTION_DB_RETRY_ATTEMPTS {
             let action_id = id.to_string();
             let reason = reason.to_string();
-            let finished_at_for_db = finished_at.clone();
+            let finished_at_for_db = finished_at.to_string();
             match db
                 .run_blocking(move |db| {
                     db.fail_waiting_scheduled_action(&action_id, &reason, &finished_at_for_db)
                 })
                 .await
             {
-                Ok(_) => return,
+                Ok(changed) => return Ok(changed),
                 Err(error) => {
                     last_error = Some(error);
                     if attempt + 1 < ACTION_DB_RETRY_ATTEMPTS {
@@ -428,12 +514,73 @@ impl ActionService {
                 }
             }
         }
-        if let Some(error) = last_error {
-            tracing::warn!(
-                action_id = %id,
-                "failed to quarantine malformed scheduled action: {error}"
-            );
+        Err(last_error
+            .unwrap_or_else(|| anyhow::anyhow!("malformed scheduled action quarantine failed")))
+    }
+
+    /// Move a malformed row out of the pending set. If the short inline retry
+    /// budget is exhausted, retain a single per-row background retry with
+    /// exponential backoff. This prevents a transient DB outage from turning
+    /// a durable `waiting` row into a permanently invisible action.
+    async fn quarantine_invalid_scheduled_row(self: &Arc<Self>, id: &str, reason: &str) {
+        let finished_at = chrono::Utc::now().to_rfc3339();
+        match self
+            .try_quarantine_invalid_scheduled_row(id, reason, &finished_at)
+            .await
+        {
+            Ok(_) => return,
+            Err(error) => {
+                tracing::warn!(
+                    action_id = %id,
+                    "failed to quarantine malformed scheduled action; scheduling retry: {error}"
+                );
+            }
         }
+
+        if !self
+            .quarantine_persistence_retries
+            .write()
+            .await
+            .insert(id.to_string())
+        {
+            return;
+        }
+        let service = Arc::clone(self);
+        let action_id = id.to_string();
+        let reason = reason.to_string();
+        tokio::spawn(async move {
+            let mut delay = Duration::from_secs(1);
+            loop {
+                tokio::select! {
+                    _ = service.shutdown_token.cancelled() => break,
+                    _ = tokio::time::sleep(delay) => {}
+                }
+                match service
+                    .try_quarantine_invalid_scheduled_row(&action_id, &reason, &finished_at)
+                    .await
+                {
+                    Ok(_) => break,
+                    Err(error) => {
+                        tracing::warn!(
+                            action_id = %action_id,
+                            "malformed scheduled action quarantine retry failed: {error}"
+                        );
+                        delay = (delay * 2).min(Duration::from_secs(30));
+                    }
+                }
+            }
+            service
+                .quarantine_persistence_retries
+                .write()
+                .await
+                .remove(&action_id);
+        });
+    }
+
+    async fn clear_scheduled_fire_claim(&self, id: &str) {
+        // Keep the same claim -> pending lock order as claim_scheduled_fire.
+        self.scheduled_fire_claims.write().await.remove(id);
+        self.pending_scheduled_fires.write().await.remove(id);
     }
 
     async fn rollback_background_registration(&self, action_id: &str) {
@@ -1790,7 +1937,7 @@ impl ActionService {
             // `waiting` and put the timer worker back. If the durable rollback
             // itself fails, retain the fire in the recovery map so a receiver
             // can still acknowledge it later instead of silently losing work.
-            self.pending_scheduled_fires.write().await.remove(id);
+            self.clear_scheduled_fire_claim(id).await;
             let mut requeued = true;
             if let Some(db) = self.db.read().await.clone()
                 && schedule.watch_action_id.is_none()
@@ -1940,7 +2087,7 @@ impl ActionService {
             return false;
         }
         action.state = state.clone();
-        self.pending_scheduled_fires.write().await.remove(id);
+        self.clear_scheduled_fire_claim(id).await;
         drop(actions);
         self.emit_scheduled_finished(id, schedule, &state);
         true
@@ -2210,7 +2357,7 @@ impl ActionService {
             return false;
         }
         action.state = state.clone();
-        self.pending_scheduled_fires.write().await.remove(id);
+        self.clear_scheduled_fire_claim(id).await;
         drop(actions);
         self.emit_scheduled_finished(id, &schedule, &state);
         true
