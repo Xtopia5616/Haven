@@ -796,46 +796,39 @@ mod tests {
 
     #[tokio::test]
     async fn stdio_write_honors_its_deadline() {
-        struct PendingWriter;
-
-        impl tokio::io::AsyncWrite for PendingWriter {
-            fn poll_write(
-                self: std::pin::Pin<&mut Self>,
-                _cx: &mut std::task::Context<'_>,
-                _buf: &[u8],
-            ) -> std::task::Poll<std::io::Result<usize>> {
-                let _ = self;
-                std::task::Poll::Pending
-            }
-
-            fn poll_flush(
-                self: std::pin::Pin<&mut Self>,
-                _cx: &mut std::task::Context<'_>,
-            ) -> std::task::Poll<std::io::Result<()>> {
-                let _ = self;
-                std::task::Poll::Ready(Ok(()))
-            }
-
-            fn poll_shutdown(
-                self: std::pin::Pin<&mut Self>,
-                _cx: &mut std::task::Context<'_>,
-            ) -> std::task::Poll<std::io::Result<()>> {
-                let _ = self;
-                std::task::Poll::Ready(Ok(()))
-            }
-        }
-
-        let mut writer = PendingWriter;
+        let mut command = if cfg!(windows) {
+            let mut command = Command::new("cmd");
+            command.args(["/c", "ping -n 6 127.0.0.1 > nul"]);
+            command
+        } else {
+            let mut command = Command::new("sh");
+            command.args(["-c", "sleep 5"]);
+            command
+        };
+        let mut child = command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut writer = child.stdin.take().unwrap();
+        // A real child that never reads stdin lets the OS pipe fill, so this
+        // exercises the actual ChildStdin write path rather than a synthetic
+        // pending future.
+        let line = "x".repeat(8 * 1024 * 1024);
         let error = write_stdio_line_with_timeout(
             &mut writer,
-            "{}\n",
+            &line,
             "notifications/test",
             &CancellationToken::new(),
-            Duration::from_millis(25),
+            Duration::from_millis(100),
         )
         .await
         .expect_err("stdio writes must have an independent deadline");
         assert!(error.to_string().contains("timed out"));
+        drop(writer);
+        let _ = child.kill().await;
+        let _ = child.wait().await;
     }
 
     #[test]
