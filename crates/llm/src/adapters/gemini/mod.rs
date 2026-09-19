@@ -8,9 +8,9 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use crate::adapters::{
-    LineMode, WebSearchMode, build_client, build_headers, empty_chunk, health_check_request,
-    normalize_web_search_call_item, resolve_web_search_mode, send_request, spawn_line_reader,
-    stream_header_timeout,
+    LineMode, MAX_JSON_RESPONSE_BYTES, WebSearchMode, build_client, build_headers, empty_chunk,
+    health_check_request, normalize_web_search_call_item, read_text_bounded,
+    resolve_web_search_mode, send_request, spawn_line_reader, stream_header_timeout,
 };
 use crate::client::LlmClient;
 use haven_common::CapabilityProfile;
@@ -95,7 +95,13 @@ impl GeminiAdapter {
         );
         let cache_diagnostics = body.cache_diagnostics.clone();
         let url = self.generate_url();
-        tracing::debug!("POST {} (model: {})", url, body.contents.len());
+        tracing::debug!(
+            endpoint = %crate::client::endpoint_log_location(&url),
+            model = %self.endpoint.model_name,
+            request_kind = "chat",
+            "POST provider endpoint ({} content items)",
+            body.contents.len()
+        );
         tracing::debug!(
             "POST {} request body: {} chars",
             url,
@@ -110,11 +116,8 @@ impl GeminiAdapter {
         req = req.timeout(Duration::from_secs(self.endpoint.timeout_secs));
         let resp = send_request(req, None).await?;
 
-        let txt = resp
-            .text()
-            .await
-            .map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
-        tracing::trace!("POST {} response body: {} chars", url, txt.len());
+        let txt = read_text_bounded(resp, MAX_JSON_RESPONSE_BYTES).await?;
+        tracing::trace!("provider response body: {} chars", txt.len());
         let raw: Value =
             serde_json::from_str(&txt).map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
         let web_search_calls = Self::web_search_calls_from_grounding(&raw);
@@ -222,7 +225,12 @@ impl LlmClient for GeminiAdapter {
             .collect();
         let body = json!({ "requests": requests });
         let url = self.embed_url();
-        tracing::debug!("POST {} (embed model: {})", url, self.endpoint.model_name);
+        tracing::debug!(
+            endpoint = %crate::client::endpoint_log_location(&url),
+            model = %self.endpoint.model_name,
+            request_kind = "embedding",
+            "POST provider endpoint"
+        );
         let mut req = self
             .client
             .post(&url)
@@ -230,10 +238,7 @@ impl LlmClient for GeminiAdapter {
             .json(&body);
         req = req.timeout(Duration::from_secs(self.endpoint.timeout_secs));
         let resp = send_request(req, None).await?;
-        let txt = resp
-            .text()
-            .await
-            .map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
+        let txt = read_text_bounded(resp, MAX_JSON_RESPONSE_BYTES).await?;
         parse_gemini_embed_response(&txt, input.len(), &self.endpoint.model_name)
     }
 
@@ -254,7 +259,12 @@ impl LlmClient for GeminiAdapter {
             }]
         });
         let url = self.generate_url();
-        tracing::debug!("POST {} (stt model: {})", url, self.endpoint.model_name);
+        tracing::debug!(
+            endpoint = %crate::client::endpoint_log_location(&url),
+            model = %self.endpoint.model_name,
+            request_kind = "transcription",
+            "POST provider endpoint"
+        );
         let mut req = self
             .client
             .post(&url)
@@ -262,10 +272,7 @@ impl LlmClient for GeminiAdapter {
             .json(&body);
         req = req.timeout(Duration::from_secs(self.endpoint.timeout_secs));
         let resp = send_request(req, None).await?;
-        let txt = resp
-            .text()
-            .await
-            .map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
+        let txt = read_text_bounded(resp, MAX_JSON_RESPONSE_BYTES).await?;
         let json: Value =
             serde_json::from_str(&txt).map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
         let text = json["candidates"][0]["content"]["parts"]

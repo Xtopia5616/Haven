@@ -33,7 +33,9 @@ pub(crate) use provider_features::{
 };
 pub(crate) use stream::{LineMode, empty_chunk, spawn_line_reader};
 pub(crate) use transport::{
-    build_client, build_headers, health_check_request, send_request, stream_header_timeout,
+    MAX_AUDIO_RESPONSE_BYTES, MAX_JSON_RESPONSE_BYTES, MAX_OCR_RESPONSE_BYTES, build_client,
+    build_headers, health_check_request, read_bytes_bounded, read_json_bounded, read_text_bounded,
+    send_request, stream_header_timeout,
 };
 pub use web_search::web_search_result_of;
 pub(crate) use web_search::{normalize_web_search_call_item, upsert_web_search_call};

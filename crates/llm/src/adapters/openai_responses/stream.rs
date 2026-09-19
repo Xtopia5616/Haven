@@ -25,18 +25,13 @@ impl OpenAiResponsesAdapter {
         );
         let url = self.responses_url();
         tracing::debug!(
-            "chat_stream_inner: url={} model={} api_key={}",
-            url,
-            self.endpoint.model_name,
-            if self.endpoint.api_key.is_empty() {
-                "EMPTY"
-            } else {
-                "SET"
-            },
+            endpoint = %crate::client::endpoint_log_location(&url),
+            model = %self.endpoint.model_name,
+            request_kind = "chat_stream",
+            "POST provider endpoint"
         );
         tracing::trace!(
-            "chat_stream_inner: POST {} request body: {} chars",
-            url,
+            "provider request body: {} chars",
             serde_json::to_string(&body).map(|s| s.len()).unwrap_or(0)
         );
 

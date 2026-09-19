@@ -11,11 +11,11 @@ use std::time::Duration;
 use sha2::{Digest, Sha256};
 
 use crate::adapters::{
-    LineMode, WebSearchMode, build_client, build_headers, empty_chunk, health_check_request,
-    is_deepseek, normalize_web_search_call_item, reasoning_tail,
-    reasoning_text_from_thinking_blocks, requires_reasoning_echo, resolve_web_search_mode,
-    responses_output_config, responses_reasoning_config, send_request, spawn_line_reader,
-    stream_header_timeout, upsert_web_search_call, web_search_result_of,
+    LineMode, MAX_JSON_RESPONSE_BYTES, WebSearchMode, build_client, build_headers, empty_chunk,
+    health_check_request, is_deepseek, normalize_web_search_call_item, read_text_bounded,
+    reasoning_tail, reasoning_text_from_thinking_blocks, requires_reasoning_echo,
+    resolve_web_search_mode, responses_output_config, responses_reasoning_config, send_request,
+    spawn_line_reader, stream_header_timeout, upsert_web_search_call, web_search_result_of,
 };
 use crate::client::LlmClient;
 use haven_common::CapabilityProfile;

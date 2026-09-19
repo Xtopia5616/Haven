@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use crate::types::{Embedding, LlmError, Usage};
 
-use super::transport::send_request;
+use super::transport::{MAX_JSON_RESPONSE_BYTES, read_text_bounded, send_request};
 
 #[derive(Debug, Serialize)]
 struct OpenAiEmbedRequest {
@@ -118,19 +118,21 @@ pub(crate) async fn openai_compatible_embed(
         model: model.to_string(),
         input,
     };
-    tracing::debug!("POST {url} (model: {model})");
     tracing::debug!(
-        "POST {url} request body: {} chars",
+        endpoint = %crate::client::endpoint_log_location(url),
+        model = %model,
+        request_kind = "embedding",
+        "POST provider endpoint"
+    );
+    tracing::debug!(
+        "POST provider request body: {} chars",
         serde_json::to_string(&body).map(|s| s.len()).unwrap_or(0)
     );
     let mut req = client.post(url).headers(headers).json(&body);
     req = req.timeout(Duration::from_secs(timeout_secs));
     let resp = send_request(req, None).await?;
-    let txt = resp
-        .text()
-        .await
-        .map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
-    tracing::trace!("POST {url} response body: {} chars", txt.len());
+    let txt = read_text_bounded(resp, MAX_JSON_RESPONSE_BYTES).await?;
+    tracing::trace!("provider response body: {} chars", txt.len());
     parse_openai_embed_response(&txt, requested, model)
 }
 

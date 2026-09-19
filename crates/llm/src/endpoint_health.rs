@@ -1,8 +1,7 @@
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use haven_common::config::EndpointRole;
-
-pub(crate) const ENDPOINT_COUNT: usize = 5;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum CircuitState {
@@ -128,16 +127,18 @@ impl EndpointHealth {
     }
 }
 
-pub(crate) type EndpointHealthSlots = [EndpointHealth; ENDPOINT_COUNT];
+/// Health is keyed by the configured routed-model identity, not by the
+/// legacy request role. A primary and its fallback may share a semaphore but
+/// must never share circuit-breaker state.
+pub(crate) type EndpointHealthMap = HashMap<String, EndpointHealth>;
 
-pub(crate) fn new_endpoint_health_slots() -> EndpointHealthSlots {
-    [
-        EndpointHealth::new(),
-        EndpointHealth::new(),
-        EndpointHealth::new(),
-        EndpointHealth::new(),
-        EndpointHealth::new(),
-    ]
+pub(crate) fn new_endpoint_health_map(
+    model_ids: impl IntoIterator<Item = String>,
+) -> EndpointHealthMap {
+    model_ids
+        .into_iter()
+        .map(|id| (id, EndpointHealth::new()))
+        .collect()
 }
 
 pub(crate) fn health_index(role: &EndpointRole) -> usize {

@@ -23,6 +23,26 @@ pub(crate) struct DurableEventState {
     pub(crate) latest_sequence: i64,
 }
 
+/// Outcome of the recovery-only persistence repair after a failed provider
+/// turn.  The scratch partial is safe to discard only when every durable
+/// representation needed by Continue has been committed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum RecoveryPersistenceResult {
+    Persisted,
+    Failed {
+        branch_point: bool,
+        partial_messages: bool,
+        recovery_snapshot: bool,
+        projection: bool,
+    },
+}
+
+impl RecoveryPersistenceResult {
+    fn should_discard(&self) -> bool {
+        matches!(self, Self::Persisted)
+    }
+}
+
 /// Mid-run DB snapshot throttle policy (Phase 7 / F3).
 ///
 /// Tracks the last step at which each session wrote a snapshot so
@@ -381,26 +401,21 @@ impl ReActEngine {
         message_type: Option<&str>,
         tool_call_id: Option<&str>,
         message_id: Option<&str>,
-    ) {
-        if let Err(error) = self
-            .project_chat_message(
-                session_id,
-                role,
-                content,
-                message_type,
-                tool_call_id,
-                message_id,
-            )
-            .await
-        {
-            tracing::error!(
-                session_id,
-                role,
-                message_type = ?message_type,
-                error = %error,
-                "failed to persist recovery-only session message"
-            );
-        }
+    ) -> anyhow::Result<()> {
+        let msg = crate::persist_session_message_preserving_partial(
+            &self.executor,
+            session_id,
+            role,
+            content,
+            message_type,
+            &[],
+            false,
+            message_id,
+            tool_call_id,
+        )
+        .await?;
+        self.note_last_msg_at(session_id, Some(msg.created_at));
+        Ok(())
     }
 
     /// Persist a compaction summary into episodic long-term memory
@@ -808,7 +823,7 @@ impl ReActEngine {
         state: &mut ReActState,
         partial_thought: &std::sync::Arc<std::sync::Mutex<String>>,
         partial_reasoning: &std::sync::Arc<std::sync::Mutex<String>>,
-    ) {
+    ) -> RecoveryPersistenceResult {
         // Save a branch point BEFORE persisting the partial output, so
         // last_msg_at captures the timestamp of the last message BEFORE the
         // partial. This lets continue_session / rollback_session precisely delete
@@ -818,40 +833,65 @@ impl ReActEngine {
         // FORCED write: continue_session / rollback_session locate this branch
         // point in the DB snapshot; a throttled (stale) row would silently
         // skip their message truncation.
-        self.save_branch_point(&ctx.session_id, state, ctx.step_num, true)
+        let branch_point = self
+            .save_branch_point(&ctx.session_id, state, ctx.step_num, true)
             .await;
 
         let thought_text = partial_thought.lock().unwrap().clone();
         let reasoning_text = partial_reasoning.lock().unwrap().clone();
         let mut error_partial_message_ids = Vec::with_capacity(2);
+        let mut partial_messages = true;
+        let mut projection = true;
         if !reasoning_text.trim().is_empty() {
             let message_id =
                 self.block_msg_id(&ctx.session_id, ctx.step_num, ctx.run_id, "reasoning");
-            self.persist_session_message(
-                &ctx.session_id,
-                "assistant",
-                reasoning_text.trim(),
-                Some("reasoning"),
-                None,
-                Some(&message_id),
-            )
-            .await;
-            error_partial_message_ids.push(message_id);
+            if let Err(error) = self
+                .persist_session_message(
+                    &ctx.session_id,
+                    "assistant",
+                    reasoning_text.trim(),
+                    Some("reasoning"),
+                    None,
+                    Some(&message_id),
+                )
+                .await
+            {
+                partial_messages = false;
+                tracing::error!(
+                    session_id = %ctx.session_id,
+                    step = ctx.step_num,
+                    error = %error,
+                    "failed to persist recovery reasoning partial; retaining scratch partial"
+                );
+            } else {
+                error_partial_message_ids.push(message_id);
+            }
         }
         if !thought_text.trim().is_empty() {
             let text = thought_text.trim();
             let message_id =
                 self.block_msg_id(&ctx.session_id, ctx.step_num, ctx.run_id, "thought");
-            self.persist_session_message(
-                &ctx.session_id,
-                "assistant",
-                text,
-                Some("text"),
-                None,
-                Some(&message_id),
-            )
-            .await;
-            error_partial_message_ids.push(message_id.clone());
+            if let Err(error) = self
+                .persist_session_message(
+                    &ctx.session_id,
+                    "assistant",
+                    text,
+                    Some("text"),
+                    None,
+                    Some(&message_id),
+                )
+                .await
+            {
+                partial_messages = false;
+                tracing::error!(
+                    session_id = %ctx.session_id,
+                    step = ctx.step_num,
+                    error = %error,
+                    "failed to persist recovery thought partial; retaining scratch partial"
+                );
+            } else {
+                error_partial_message_ids.push(message_id.clone());
+            }
             if let Err(error) = EventDispatcher::emit_thought_from(
                 &ctx.emitter,
                 &ctx.session_id,
@@ -863,6 +903,7 @@ impl ReActEngine {
             )
             .await
             {
+                projection = false;
                 tracing::error!(
                     session_id = %ctx.session_id,
                     step = ctx.step_num,
@@ -875,20 +916,41 @@ impl ReActEngine {
         // recovery-only rows. Mark this follow-up write even when no visible
         // text arrived: only this marker authorizes Continue to replace the
         // failed step, never an ordinary periodic pre-crash snapshot.
-        self.save_snapshot_with_error_partials(
-            &ctx.session_id,
-            state,
-            ctx.step_num,
-            Some(&error_partial_message_ids),
-            false,
-        )
-        .await;
+        let recovery_snapshot = self
+            .save_snapshot_with_error_partials(
+                &ctx.session_id,
+                state,
+                ctx.step_num,
+                Some(&error_partial_message_ids),
+                false,
+            )
+            .await;
         // The stream text now lives in the message stream (persisted above),
         // so any checkpointed partial row for this session is obsolete — and an
         // in-flight checkpoint write must not re-create it. Discard goes
         // through the PartialStore, whose generation bump invalidates stale
         // writes.
-        self.executor.partials.discard(&ctx.session_id).await;
+        let result = if branch_point && partial_messages && recovery_snapshot && projection {
+            RecoveryPersistenceResult::Persisted
+        } else {
+            RecoveryPersistenceResult::Failed {
+                branch_point,
+                partial_messages,
+                recovery_snapshot,
+                projection,
+            }
+        };
+        if result.should_discard() {
+            self.executor.partials.discard(&ctx.session_id).await;
+        } else {
+            tracing::error!(
+                session_id = %ctx.session_id,
+                step = ctx.step_num,
+                ?result,
+                "recovery persistence failed; retaining scratch partial for retry"
+            );
+        }
+        result
     }
 
     /// Save a branch point at the current step before tool execution (§2).
@@ -906,7 +968,7 @@ impl ReActEngine {
         state: &mut ReActState,
         step_number: u32,
         force: bool,
-    ) {
+    ) -> bool {
         // Mid-run (`force=false`): prefer the in-process cache filled by
         // persist paths so throttled steps skip SQLite. Force paths
         // (pause/error/cancel) always re-read so the snapshot cutoff matches
@@ -937,7 +999,7 @@ impl ReActEngine {
         let store = self.event_store.clone();
         let sid = session_id.to_string();
         let event_cursor = state.events.len();
-        if let Err(error) = self
+        let branch_ok = if let Err(error) = self
             .db
             .run_blocking(move |db| {
                 if db.get_session(&sid)?.is_none() {
@@ -960,7 +1022,10 @@ impl ReActEngine {
                 error = %error,
                 "failed to append durable branch point"
             );
-        }
+            false
+        } else {
+            true
+        };
         // The throttle marker guard is confined to this block so it is always
         // dropped before the write's await.
         let due = {
@@ -968,15 +1033,33 @@ impl ReActEngine {
             store.on_step_boundary(session_id, step_number, force)
         };
         if due {
-            self.save_snapshot_with_branches(session_id, state, step_number)
-                .await;
+            branch_ok
+                && self
+                    .save_snapshot_with_branches(session_id, state, step_number)
+                    .await
+        } else {
+            branch_ok
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::SnapshotStore;
+    use super::{RecoveryPersistenceResult, SnapshotStore};
+
+    #[test]
+    fn recovery_discards_scratch_only_after_every_projection_succeeds() {
+        assert!(RecoveryPersistenceResult::Persisted.should_discard());
+        assert!(
+            !RecoveryPersistenceResult::Failed {
+                branch_point: false,
+                partial_messages: true,
+                recovery_snapshot: true,
+                projection: true,
+            }
+            .should_discard()
+        );
+    }
 
     #[test]
     fn should_write_first_step_always() {

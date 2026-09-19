@@ -9,11 +9,66 @@ use std::time::Duration;
 use futures_util::StreamExt;
 use haven_common::config::ModelEndpoint;
 use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
+use serde::de::DeserializeOwned;
 
 use crate::client::http_status_to_error;
 use crate::types::LlmError;
 
 const MAX_ERROR_BODY_BYTES: usize = 64 * 1024;
+pub(crate) const MAX_JSON_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+pub(crate) const MAX_OCR_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
+pub(crate) const MAX_AUDIO_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
+const MAX_RETRY_AFTER: Duration = Duration::from_secs(30 * 60);
+
+fn body_limit_error(limit: usize) -> LlmError {
+    LlmError::InvalidResponse(format!("response body exceeds the {} byte limit", limit))
+}
+
+/// Read a successful response body with an explicit byte bound. The bound is
+/// enforced before allocation when Content-Length is present and again while
+/// consuming chunked/streamed responses.
+pub(crate) async fn read_bytes_bounded(
+    resp: reqwest::Response,
+    limit: usize,
+) -> Result<Vec<u8>, LlmError> {
+    if resp
+        .content_length()
+        .is_some_and(|length| length > limit as u64)
+    {
+        return Err(body_limit_error(limit));
+    }
+    let mut body = Vec::with_capacity(
+        resp.content_length()
+            .map(|length| length as usize)
+            .unwrap_or(0)
+            .min(limit),
+    );
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(LlmError::from)?;
+        if chunk.len() > limit.saturating_sub(body.len()) {
+            return Err(body_limit_error(limit));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
+pub(crate) async fn read_text_bounded(
+    resp: reqwest::Response,
+    limit: usize,
+) -> Result<String, LlmError> {
+    let body = read_bytes_bounded(resp, limit).await?;
+    Ok(String::from_utf8_lossy(&body).into_owned())
+}
+
+pub(crate) async fn read_json_bounded<T: DeserializeOwned>(
+    resp: reqwest::Response,
+    limit: usize,
+) -> Result<T, LlmError> {
+    let body = read_bytes_bounded(resp, limit).await?;
+    serde_json::from_slice(&body).map_err(|error| LlmError::InvalidResponse(error.to_string()))
+}
 
 /// Build the reqwest client with proxy support (§2.5) and connection-pool
 /// tuning (§5.5). Identical for every adapter.
@@ -172,12 +227,18 @@ pub(crate) async fn send_request(
             // Try seconds first, then HTTP-date
             s.parse::<u64>()
                 .ok()
-                .or_else(|| {
-                    // HTTP-date: not commonly used; log and fall back to None
-                    tracing::warn!("Retry-After as HTTP-date not yet supported: {}", s);
-                    None
-                })
                 .map(Duration::from_secs)
+                .or_else(|| {
+                    chrono::DateTime::parse_from_rfc2822(s)
+                        .ok()
+                        .and_then(|date| {
+                            date.with_timezone(&chrono::Utc)
+                                .signed_duration_since(chrono::Utc::now())
+                                .to_std()
+                                .ok()
+                        })
+                })
+                .map(|wait| wait.min(MAX_RETRY_AFTER))
         });
     let txt = read_error_body(resp).await?;
     Err(http_status_to_error(status, &txt, retry_after))

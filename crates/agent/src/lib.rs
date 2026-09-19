@@ -91,7 +91,66 @@ pub(crate) async fn persist_session_message(
     // Optional `tool_call_id` for the row; `None` for ordinary messages.
     tool_call_id: Option<&str>,
 ) -> anyhow::Result<Message> {
-    executor.partials.discard(session_id).await;
+    persist_session_message_inner(
+        executor,
+        session_id,
+        role,
+        content,
+        message_type,
+        attachments,
+        voice,
+        message_id,
+        tool_call_id,
+        true,
+    )
+    .await
+}
+
+/// Recovery-only message insert. It deliberately leaves the in-flight scratch
+/// partial untouched until branch point, message projection, and recovery
+/// snapshot have all succeeded; the caller owns the final discard decision.
+pub(crate) async fn persist_session_message_preserving_partial(
+    executor: &crate::session::SessionSupervisor,
+    session_id: &str,
+    role: &str,
+    content: &str,
+    message_type: Option<&str>,
+    attachments: &[MessageAttachment],
+    voice: bool,
+    message_id: Option<&str>,
+    tool_call_id: Option<&str>,
+) -> anyhow::Result<Message> {
+    persist_session_message_inner(
+        executor,
+        session_id,
+        role,
+        content,
+        message_type,
+        attachments,
+        voice,
+        message_id,
+        tool_call_id,
+        false,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn persist_session_message_inner(
+    executor: &crate::session::SessionSupervisor,
+    session_id: &str,
+    role: &str,
+    content: &str,
+    message_type: Option<&str>,
+    attachments: &[MessageAttachment],
+    voice: bool,
+    message_id: Option<&str>,
+    tool_call_id: Option<&str>,
+    discard_partial: bool,
+) -> anyhow::Result<Message> {
+    if discard_partial {
+        executor.partials.discard(session_id).await;
+    }
     let db = executor.db().clone();
     let session_id = session_id.to_string();
     let role = role.to_string();

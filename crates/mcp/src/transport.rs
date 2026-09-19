@@ -9,6 +9,11 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout};
 use tokio_util::sync::CancellationToken;
 
+const MAX_STDIO_LINE_BYTES: usize = 1024 * 1024;
+const MAX_JSON_BODY_BYTES: usize = 4 * 1024 * 1024;
+const MAX_NOTIFY_BODY_BYTES: usize = 64 * 1024;
+pub(crate) const NOTIFICATION_QUEUE_CAPACITY: usize = 256;
+
 /// stdio transport: a spawned child process speaking JSON-RPC over its stdin
 /// and stdout pipes.
 pub(crate) struct StdioInner {
@@ -16,7 +21,7 @@ pub(crate) struct StdioInner {
     pub(crate) _containment: ProcessContainment,
     pub(crate) stdin: ChildStdin,
     pub(crate) stdout: BufReader<ChildStdout>,
-    pub(crate) notification_tx: tokio::sync::mpsc::UnboundedSender<Value>,
+    pub(crate) notification_tx: tokio::sync::mpsc::Sender<Value>,
 }
 
 impl StdioInner {
@@ -36,9 +41,8 @@ impl StdioInner {
         let timeout = tokio::time::Duration::from_secs(REQUEST_TIMEOUT_SECS);
         let result = tokio::time::timeout(timeout, async {
             loop {
-                let mut buf = String::new();
-                self.stdout.read_line(&mut buf).await?;
-                let buf = buf.trim().to_string();
+                let buf = read_line_bounded(&mut self.stdout).await?;
+                let buf = String::from_utf8_lossy(&buf).trim().to_string();
                 if buf.is_empty() {
                     anyhow::bail!("MCP server stdout closed (process died)");
                 }
@@ -50,7 +54,7 @@ impl StdioInner {
                 }
                 // Route non-matching responses to notification handler (refine §4.6)
                 if parsed.get("id").is_none() {
-                    let _ = self.notification_tx.send(parsed);
+                    enqueue_notification(&self.notification_tx, parsed)?;
                 }
             }
         });
@@ -93,7 +97,7 @@ pub(crate) struct HttpShared {
 /// with a GET request.
 pub(crate) struct HttpInner {
     pub(crate) shared: Arc<HttpShared>,
-    pub(crate) notification_tx: tokio::sync::mpsc::UnboundedSender<Value>,
+    pub(crate) notification_tx: tokio::sync::mpsc::Sender<Value>,
     /// Single buffered (incomplete) SSE line/event cap (from context limits).
     pub(crate) max_sse_buffer: usize,
 }
@@ -125,12 +129,7 @@ impl HttpInner {
         };
         let status = resp.status();
         if !status.is_success() {
-            let body = resp.text().await.map_err(|e| {
-                anyhow::anyhow!(
-                    "MCP HTTP error response read failed: {}",
-                    haven_common::error::sanitize_error_text(&e.to_string())
-                )
-            })?;
+            let body = read_text_bounded(resp, MAX_JSON_BODY_BYTES, &self.shared.cancel).await?;
             anyhow::bail!(
                 "MCP HTTP error (status {}): {}",
                 status.as_u16(),
@@ -155,9 +154,16 @@ impl HttpInner {
             .unwrap_or(false);
 
         if is_sse {
-            read_sse_response(resp, id, &self.notification_tx, self.max_sse_buffer).await
+            read_sse_response(
+                resp,
+                id,
+                &self.notification_tx,
+                self.max_sse_buffer,
+                &self.shared.cancel,
+            )
+            .await
         } else {
-            let value: Value = resp.json().await?;
+            let value = read_json_bounded(resp, MAX_JSON_BODY_BYTES, &self.shared.cancel).await?;
             unpack_jsonrpc(value)
         }
     }
@@ -186,12 +192,7 @@ impl HttpInner {
         };
         let status = resp.status();
         if !status.is_success() {
-            let body = resp.text().await.map_err(|e| {
-                anyhow::anyhow!(
-                    "MCP HTTP notify error response read failed: {}",
-                    haven_common::error::sanitize_error_text(&e.to_string())
-                )
-            })?;
+            let body = read_text_bounded(resp, MAX_JSON_BODY_BYTES, &self.shared.cancel).await?;
             anyhow::bail!(
                 "MCP HTTP notify error (status {}): {}",
                 status.as_u16(),
@@ -201,12 +202,7 @@ impl HttpInner {
         // Drain the body to release the connection for reuse. A failed drain
         // is still a transport failure: otherwise a broken connection is
         // reported as a successful notification and can poison the pool.
-        resp.bytes().await.map_err(|e| {
-            anyhow::anyhow!(
-                "MCP HTTP notify response read failed: {}",
-                haven_common::error::sanitize_error_text(&e.to_string())
-            )
-        })?;
+        read_bytes_bounded(resp, MAX_NOTIFY_BODY_BYTES, &self.shared.cancel).await?;
         Ok(())
     }
 }
@@ -289,25 +285,29 @@ pub(crate) async fn apply_http_session_headers(
 async fn read_sse_response(
     resp: reqwest::Response,
     id: u64,
-    tx: &tokio::sync::mpsc::UnboundedSender<Value>,
+    tx: &tokio::sync::mpsc::Sender<Value>,
     max_sse_buffer: usize,
+    cancel: &CancellationToken,
 ) -> anyhow::Result<Value> {
     let mut stream = resp.bytes_stream();
     let mut parser = SseParser::new(max_sse_buffer);
     let deadline = tokio::time::Instant::now() + Duration::from_secs(REQUEST_TIMEOUT_SECS);
     loop {
-        let chunk = tokio::time::timeout_at(deadline, stream.next())
-            .await
-            .map_err(|_| anyhow::anyhow!("MCP HTTP: timed out waiting for SSE response"))?;
+        let chunk = tokio::select! {
+            _ = cancel.cancelled() => anyhow::bail!("MCP HTTP request cancelled"),
+            result = tokio::time::timeout_at(deadline, stream.next()) => result
+                .map_err(|_| anyhow::anyhow!("MCP HTTP: timed out waiting for SSE response"))?,
+        };
         match chunk {
             Some(Ok(bytes)) => {
                 for ev in parser.feed(&bytes) {
                     if ev.get("id").and_then(|v| v.as_u64()) == Some(id) {
                         return unpack_jsonrpc(ev);
                     }
-                    if tx.send(ev).is_err() {
-                        anyhow::bail!("MCP HTTP notification channel closed");
+                    if cancel.is_cancelled() {
+                        anyhow::bail!("MCP HTTP request cancelled");
                     }
+                    enqueue_notification(tx, ev)?;
                 }
             }
             Some(Err(e)) => return Err(e.into()),
@@ -325,7 +325,7 @@ async fn read_sse_response(
 /// token fires; the caller retries with backoff.
 async fn listen_sse(
     shared: &Arc<HttpShared>,
-    tx: &tokio::sync::mpsc::UnboundedSender<Value>,
+    tx: &tokio::sync::mpsc::Sender<Value>,
     cancel: &CancellationToken,
     max_sse_buffer: usize,
 ) -> anyhow::Result<()> {
@@ -334,7 +334,12 @@ async fn listen_sse(
         .get(&shared.url)
         .header("Accept", "text/event-stream");
     let req = apply_http_session_headers(builder, shared).await;
-    let resp = req.send().await?;
+    let resp = tokio::select! {
+        _ = cancel.cancelled() => return Ok(()),
+        result = tokio::time::timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS), req.send()) => {
+            result.map_err(|_| anyhow::anyhow!("MCP SSE connection timed out"))??
+        }
+    };
     let status = resp.status();
     if !status.is_success() {
         anyhow::bail!("SSE stream open failed (status {})", status.as_u16());
@@ -348,11 +353,10 @@ async fn listen_sse(
                 match chunk {
                     Some(Ok(bytes)) => {
                         for ev in parser.feed(&bytes) {
-                            if tx.send(ev).is_err() {
-                                return Err(anyhow::anyhow!(
-                                    "MCP HTTP notification channel closed"
-                                ));
+                            if cancel.is_cancelled() {
+                                return Ok(());
                             }
+                            enqueue_notification(tx, ev)?;
                         }
                     }
                     Some(Err(e)) => return Err(e.into()),
@@ -369,11 +373,11 @@ pub(crate) fn spawn_sse_listener(
     name: String,
     cancel: CancellationToken,
     shared: Arc<HttpShared>,
-    notification_tx: tokio::sync::mpsc::UnboundedSender<Value>,
+    notification_tx: tokio::sync::mpsc::Sender<Value>,
     max_sse_buffer: usize,
 ) {
     tokio::spawn(async move {
-        let shared = Arc::new(shared);
+        let mut backoff = Duration::from_secs(2);
         loop {
             if cancel.is_cancelled() {
                 break;
@@ -391,12 +395,111 @@ pub(crate) fn spawn_sse_listener(
             if cancel.is_cancelled() {
                 break;
             }
+            let jitter_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| u64::from(duration.subsec_millis() % 500))
+                .unwrap_or(0);
+            let delay = backoff.saturating_add(Duration::from_millis(jitter_ms));
+            backoff = backoff.saturating_mul(2).min(Duration::from_secs(30));
             tokio::select! {
                 _ = cancel.cancelled() => break,
-                _ = tokio::time::sleep(Duration::from_secs(2)) => {}
+                _ = tokio::time::sleep(delay) => {}
             }
         }
     });
+}
+
+/// Read one JSON-RPC line without allowing a peer to force an unbounded
+/// allocation. The reader consumes the input in chunks so an oversized line
+/// is rejected before it can grow past the configured cap.
+async fn read_line_bounded(reader: &mut BufReader<ChildStdout>) -> std::io::Result<Vec<u8>> {
+    let mut line = Vec::new();
+    loop {
+        let available = reader.fill_buf().await?;
+        if available.is_empty() {
+            if line.is_empty() {
+                return Ok(line);
+            }
+            return Ok(line);
+        }
+        let take = available
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map(|index| index + 1)
+            .unwrap_or(available.len());
+        if line.len().saturating_add(take) > MAX_STDIO_LINE_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "MCP stdio JSON-RPC line exceeds the maximum length",
+            ));
+        }
+        line.extend_from_slice(&available[..take]);
+        reader.consume(take);
+        if line.last() == Some(&b'\n') {
+            return Ok(line);
+        }
+    }
+}
+
+/// Keep notification delivery finite without allowing a burst of unsolicited
+/// events to stall the response that the caller is waiting for. Notifications
+/// are advisory; dropping the newest event is preferable to deadlocking the
+/// transport or growing memory without a bound.
+fn enqueue_notification(tx: &tokio::sync::mpsc::Sender<Value>, value: Value) -> anyhow::Result<()> {
+    match tx.try_send(value) {
+        Ok(()) => Ok(()),
+        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+            tracing::warn!("MCP notification queue is full; dropping notification");
+            Ok(())
+        }
+        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+            anyhow::bail!("MCP notification channel closed")
+        }
+    }
+}
+
+async fn read_bytes_bounded(
+    resp: reqwest::Response,
+    limit: usize,
+    cancel: &CancellationToken,
+) -> anyhow::Result<Vec<u8>> {
+    if resp
+        .content_length()
+        .is_some_and(|length| length > limit as u64)
+    {
+        anyhow::bail!("MCP response body exceeds the {} byte limit", limit);
+    }
+    let mut body = Vec::with_capacity(resp.content_length().unwrap_or(0) as usize);
+    let mut stream = resp.bytes_stream();
+    while let Some(chunk) = tokio::select! {
+        _ = cancel.cancelled() => anyhow::bail!("MCP response body read cancelled"),
+        chunk = stream.next() => chunk,
+    } {
+        let chunk = chunk?;
+        if chunk.len() > limit.saturating_sub(body.len()) {
+            anyhow::bail!("MCP response body exceeds the {} byte limit", limit);
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
+async fn read_text_bounded(
+    resp: reqwest::Response,
+    limit: usize,
+    cancel: &CancellationToken,
+) -> anyhow::Result<String> {
+    Ok(String::from_utf8_lossy(&read_bytes_bounded(resp, limit, cancel).await?).into_owned())
+}
+
+async fn read_json_bounded(
+    resp: reqwest::Response,
+    limit: usize,
+    cancel: &CancellationToken,
+) -> anyhow::Result<Value> {
+    Ok(serde_json::from_slice(
+        &read_bytes_bounded(resp, limit, cancel).await?,
+    )?)
 }
 
 /// Liveness probe for the HTTP transport: any HTTP response (even an error

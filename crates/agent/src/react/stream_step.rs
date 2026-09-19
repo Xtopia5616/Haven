@@ -407,14 +407,23 @@ impl StreamForwarder {
     /// Drain every buffered chunk to the frontend (batchers flush on
     /// channel close) and stop the watchdog. Must run once the router
     /// call has returned so no straggler events survive the step.
-    pub(super) async fn flush(self) {
+    pub(super) async fn flush(self) -> anyhow::Result<()> {
         self.watchdog.abort();
         drop(self.chunk_tx);
         drop(self.ws_tx);
+        let mut join_error = None;
         if let Some(handle) = self.consumer {
-            let _ = handle.await;
+            if let Err(error) = handle.await {
+                join_error = Some(anyhow::anyhow!(
+                    "stream chunk consumer task failed: {error}"
+                ));
+            }
         }
-        let _ = self.ws_session.await;
+        if let Err(error) = self.ws_session.await {
+            join_error.get_or_insert_with(|| {
+                anyhow::anyhow!("stream websocket forwarder task failed: {error}")
+            });
+        }
         // The stream consumer has stopped before this point, so no callback
         // can enqueue another checkpoint. Wait for every scratch write before
         // the caller projects the final assistant message; otherwise a late
@@ -427,8 +436,12 @@ impl StreamForwarder {
         for task in checkpoint_tasks {
             if let Err(error) = task.await {
                 tracing::error!(error = %error, "stream checkpoint task failed");
+                join_error.get_or_insert_with(|| {
+                    anyhow::anyhow!("stream checkpoint task failed: {error}")
+                });
             }
         }
+        join_error.map_or(Ok(()), Err)
     }
 }
 
@@ -510,7 +523,15 @@ impl ReActEngine {
             )
             .await;
         let duration_ms = started.elapsed().as_millis() as u64;
-        forwarder.flush().await;
+        if let Err(error) = forwarder.flush().await {
+            tracing::error!(
+                session_id = %ctx.session_id,
+                step = ctx.step_num,
+                error = %error,
+                "stream forwarding task failed while draining provider output"
+            );
+            return Err(haven_llm::LlmError::Unknown(error.to_string()));
+        }
         match result {
             Ok(resp) => {
                 tracing::debug!(

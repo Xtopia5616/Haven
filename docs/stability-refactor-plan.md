@@ -23,6 +23,8 @@
 
 ## 分期
 
+| 2026-09-19 | §2.2 LLM / §2.4 Agent / MCP：恢复持久化失败保留 scratch partial；模型熔断按 routed model 隔离；成功响应、MCP stdio/SSE 与 notification queue 增加边界和取消控制；provider failover 收窄为结构化 transport 类失败（ADR 0173） |
+
 ### P0：恢复工程基线（已完成：2026-08-26）
 
 - 日志初始化改为可恢复失败，禁止目录冲突导致启动或测试 panic；测试不得读写真实用户数据目录。

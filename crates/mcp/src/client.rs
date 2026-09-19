@@ -3,7 +3,8 @@ use crate::protocol::{
     PROTOCOL_VERSION, extract_mcp_content,
 };
 use crate::transport::{
-    HttpInner, HttpShared, McpClientInner, StdioInner, http_is_alive, spawn_sse_listener,
+    HttpInner, HttpShared, McpClientInner, NOTIFICATION_QUEUE_CAPACITY, StdioInner, http_is_alive,
+    spawn_sse_listener,
 };
 use haven_common::{McpTransportType, types::NetworkPolicy};
 use serde_json::Value;
@@ -36,7 +37,7 @@ pub struct McpClient {
     pub(crate) reconnect_retries: Arc<Mutex<u32>>,
     pub(crate) cancel_token: Arc<Mutex<CancellationToken>>,
     pub(crate) rate_limiter: Arc<Mutex<RateLimiter>>,
-    pub(crate) notification_rx: Arc<Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<Value>>>>,
+    pub(crate) notification_rx: Arc<Mutex<Option<tokio::sync::mpsc::Receiver<Value>>>>,
     /// Binary content (image/audio/resource blob) kept in observations (base64
     /// chars) before being replaced by an `oversized` marker.
     pub(crate) max_binary_payload: usize,
@@ -298,7 +299,7 @@ impl McpClient {
 
     async fn spawn_stdio(
         &self,
-        notification_tx: tokio::sync::mpsc::UnboundedSender<Value>,
+        notification_tx: tokio::sync::mpsc::Sender<Value>,
     ) -> anyhow::Result<StdioInner> {
         // MCP servers are user-configured external programs: their command and
         // args may legitimately use relative paths, so they spawn from the
@@ -368,7 +369,7 @@ impl McpClient {
 
     async fn spawn_http(
         &self,
-        notification_tx: tokio::sync::mpsc::UnboundedSender<Value>,
+        notification_tx: tokio::sync::mpsc::Sender<Value>,
     ) -> anyhow::Result<(Arc<HttpShared>, HttpInner)> {
         if self.url.trim().is_empty() {
             anyhow::bail!(
@@ -443,7 +444,7 @@ impl McpClient {
     }
 
     async fn connect_inner(&self) -> anyhow::Result<()> {
-        let (notification_tx, new_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (notification_tx, new_rx) = tokio::sync::mpsc::channel(NOTIFICATION_QUEUE_CAPACITY);
         *self.notification_rx.lock().await = Some(new_rx);
 
         // Refresh the cancel token: `shutdown()` (called before every

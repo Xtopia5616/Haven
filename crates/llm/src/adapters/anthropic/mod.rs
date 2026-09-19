@@ -8,9 +8,9 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use crate::adapters::{
-    LineMode, WebSearchMode, build_client, build_headers, empty_chunk, health_check_request,
-    normalize_web_search_call_item, resolve_web_search_mode, send_request, spawn_line_reader,
-    stream_header_timeout,
+    LineMode, MAX_JSON_RESPONSE_BYTES, WebSearchMode, build_client, build_headers, empty_chunk,
+    health_check_request, normalize_web_search_call_item, read_text_bounded,
+    resolve_web_search_mode, send_request, spawn_line_reader, stream_header_timeout,
 };
 use crate::client::LlmClient;
 use haven_common::CapabilityProfile;
@@ -100,7 +100,12 @@ impl AnthropicAdapter {
             max_tokens.unwrap_or(self.endpoint.max_tokens),
         );
         let url = self.messages_url();
-        tracing::debug!("POST {} (model: {})", url, body.model);
+        tracing::debug!(
+            endpoint = %crate::client::endpoint_log_location(&url),
+            model = %body.model,
+            request_kind = "chat",
+            "POST provider endpoint"
+        );
         tracing::debug!(
             "POST {} request body: {} chars",
             url,
@@ -115,11 +120,8 @@ impl AnthropicAdapter {
         req = req.timeout(Duration::from_secs(self.endpoint.timeout_secs));
         let resp = send_request(req, None).await?;
 
-        let txt = resp
-            .text()
-            .await
-            .map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
-        tracing::trace!("POST {} response body: {} chars", url, txt.len());
+        let txt = read_text_bounded(resp, MAX_JSON_RESPONSE_BYTES).await?;
+        tracing::trace!("provider response body: {} chars", txt.len());
         let json: AnthropicResponse =
             serde_json::from_str(&txt).map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
         let model = json.model.clone();

@@ -46,6 +46,23 @@ pub fn endpoint_host(raw: &str) -> String {
         .unwrap_or_else(|| "[invalid endpoint]".to_string())
 }
 
+/// Return a log-safe endpoint identity. Query parameters are deliberately
+/// discarded because providers such as Gemini may carry API keys there.
+pub fn endpoint_log_location(raw: &str) -> String {
+    match url::Url::parse(raw) {
+        Ok(url) => format!(
+            "{}{}",
+            endpoint_host(raw),
+            if url.path().is_empty() {
+                "/"
+            } else {
+                url.path()
+            }
+        ),
+        Err(_) => "[invalid endpoint]".to_string(),
+    }
+}
+
 /// Unified interface implemented by every provider adapter. Adapters convert
 /// the provider's native wire protocol to/from the provider-neutral
 /// `CanonicalMessage` / `LlmResponse` / `StreamChunk` types (see `adapters/`).
@@ -212,20 +229,21 @@ pub(crate) fn http_status_to_error(
     retry_after: Option<Duration>,
 ) -> LlmError {
     let err_body = extract_error_body(body);
+    let lower_body = err_body.to_ascii_lowercase();
     match status.as_u16() {
         401 | 403 => LlmError::Auth(format!("{}: {}", status, err_body)),
         429 => LlmError::RateLimit { retry_after },
         400 => {
-            if err_body.contains("context_length")
-                || err_body.contains("maximum context")
-                || err_body.contains("context length")
+            if lower_body.contains("context_length")
+                || lower_body.contains("maximum context")
+                || lower_body.contains("context length")
             {
                 LlmError::ContextLengthExceeded
-            } else if err_body.contains("content_filter") {
+            } else if lower_body.contains("content_filter") {
                 LlmError::ContentFilter
-            } else if err_body.contains("billing")
-                || err_body.contains("insufficient_quota")
-                || err_body.contains("quota")
+            } else if lower_body.contains("billing")
+                || lower_body.contains("insufficient_quota")
+                || lower_body.contains("quota")
             {
                 LlmError::Billing(err_body)
             } else {
@@ -367,6 +385,15 @@ mod tests {
     }
 
     #[test]
+    fn endpoint_log_location_drops_query_parameters() {
+        assert_eq!(
+            endpoint_log_location("https://generativelanguage.googleapis.com/v1beta?key=secret"),
+            "generativelanguage.googleapis.com/v1beta"
+        );
+        assert_eq!(endpoint_log_location("not a url"), "[invalid endpoint]");
+    }
+
+    #[test]
     fn http_status_maps_correctly() {
         let r = http_status_to_error(reqwest::StatusCode::TOO_MANY_REQUESTS, "rate limited", None);
         assert!(matches!(r, LlmError::RateLimit { .. }));
@@ -381,7 +408,11 @@ mod tests {
         );
         assert!(matches!(r, LlmError::ContextLengthExceeded));
 
-        let r = http_status_to_error(reqwest::StatusCode::BAD_REQUEST, "content_filter", None);
+        let r = http_status_to_error(
+            reqwest::StatusCode::BAD_REQUEST,
+            "Content_Filter: blocked",
+            None,
+        );
         assert!(matches!(r, LlmError::ContentFilter));
 
         let r = http_status_to_error(

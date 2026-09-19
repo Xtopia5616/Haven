@@ -11,10 +11,11 @@ use std::time::Duration;
 use sha2::{Digest, Sha256};
 
 use crate::adapters::{
-    LineMode, WebSearchMode, build_client, build_headers, chat_thinking_extras,
-    health_check_request, is_deepseek, normalize_web_search_call_item, reasoning_tail,
-    reasoning_text_from_thinking_blocks, requires_reasoning_echo, resolve_web_search_mode,
-    send_request, spawn_line_reader, stream_header_timeout, xai_search_mode,
+    LineMode, MAX_JSON_RESPONSE_BYTES, WebSearchMode, build_client, build_headers,
+    chat_thinking_extras, health_check_request, is_deepseek, normalize_web_search_call_item,
+    read_text_bounded, reasoning_tail, reasoning_text_from_thinking_blocks,
+    requires_reasoning_echo, resolve_web_search_mode, send_request, spawn_line_reader,
+    stream_header_timeout, xai_search_mode,
 };
 use crate::client::LlmClient;
 use haven_common::CapabilityProfile;
@@ -206,7 +207,12 @@ impl LlmClient for OpenAiAdapter {
             "{}/audio/transcriptions",
             self.endpoint.base_url.trim_end_matches('/')
         );
-        tracing::debug!("POST {} (model: {})", url, self.endpoint.model_name);
+        tracing::debug!(
+            endpoint = %crate::client::endpoint_log_location(&url),
+            model = %self.endpoint.model_name,
+            request_kind = "transcription",
+            "POST provider endpoint"
+        );
         let mut req = self
             .client
             .post(&url)
@@ -214,10 +220,7 @@ impl LlmClient for OpenAiAdapter {
             .multipart(form);
         req = req.timeout(Duration::from_secs(self.endpoint.timeout_secs));
         let resp = send_request(req, None).await?;
-        let txt = resp
-            .text()
-            .await
-            .map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
+        let txt = read_text_bounded(resp, MAX_JSON_RESPONSE_BYTES).await?;
         let json: serde_json::Value =
             serde_json::from_str(&txt).map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
         let text = json["text"]

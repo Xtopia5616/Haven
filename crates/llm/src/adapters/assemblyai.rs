@@ -10,7 +10,7 @@ use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
 use std::pin::Pin;
 use std::time::Duration;
 
-use crate::adapters::{build_client, send_request};
+use crate::adapters::{MAX_JSON_RESPONSE_BYTES, build_client, read_text_bounded, send_request};
 use crate::client::LlmClient;
 use crate::types::{LlmError, LlmResponse, StreamChunk, SttResult};
 use haven_common::config::ModelEndpoint;
@@ -91,10 +91,7 @@ impl LlmClient for AssemblyAiAdapter {
             .body(wav_data.to_vec());
         upload_req = upload_req.timeout(Duration::from_secs(self.endpoint.timeout_secs));
         let upload_resp = send_request(upload_req, None).await?;
-        let upload_body = upload_resp
-            .text()
-            .await
-            .map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
+        let upload_body = read_text_bounded(upload_resp, MAX_JSON_RESPONSE_BYTES).await?;
         let upload_json: serde_json::Value = serde_json::from_str(&upload_body)
             .map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
         let audio_url = upload_json["upload_url"].as_str().ok_or_else(|| {
@@ -113,10 +110,7 @@ impl LlmClient for AssemblyAiAdapter {
             .json(&create_json);
         create_req = create_req.timeout(Duration::from_secs(self.endpoint.timeout_secs));
         let create_resp = send_request(create_req, None).await?;
-        let create_body = create_resp
-            .text()
-            .await
-            .map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
+        let create_body = read_text_bounded(create_resp, MAX_JSON_RESPONSE_BYTES).await?;
         let create: serde_json::Value = serde_json::from_str(&create_body)
             .map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
         let job_id = create["id"].as_str().ok_or_else(|| {
@@ -136,10 +130,7 @@ impl LlmClient for AssemblyAiAdapter {
             let mut poll_req = self.client.get(&job_url).headers(self.auth()?);
             poll_req = poll_req.timeout(Duration::from_secs(self.endpoint.timeout_secs));
             let poll_resp = send_request(poll_req, None).await?;
-            let poll_body = poll_resp
-                .text()
-                .await
-                .map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
+            let poll_body = read_text_bounded(poll_resp, MAX_JSON_RESPONSE_BYTES).await?;
             let job: serde_json::Value = serde_json::from_str(&poll_body)
                 .map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
             match job["status"].as_str().unwrap_or("") {

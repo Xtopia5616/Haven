@@ -311,10 +311,9 @@ impl ModelRegistry {
             });
         }
 
-        let json: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|e| crate::LlmError::InvalidResponse(e.to_string()))?;
+        let json: serde_json::Value =
+            crate::adapters::read_json_bounded(resp, crate::adapters::MAX_JSON_RESPONSE_BYTES)
+                .await?;
 
         let models = parse_models_payload(&json);
         self.discovered = models;

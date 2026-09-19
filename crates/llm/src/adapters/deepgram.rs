@@ -10,7 +10,7 @@ use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue};
 use std::pin::Pin;
 use std::time::Duration;
 
-use crate::adapters::{build_client, send_request};
+use crate::adapters::{MAX_JSON_RESPONSE_BYTES, build_client, read_text_bounded, send_request};
 use crate::client::LlmClient;
 use crate::types::{LlmError, LlmResponse, StreamChunk, SttResult};
 use haven_common::config::ModelEndpoint;
@@ -113,7 +113,12 @@ impl LlmClient for DeepgramAdapter {
         };
         let model = Self::encode_query_component(self.model());
         let url = format!("{base}/v1/listen?model={model}&smart_format=true");
-        tracing::debug!("POST {url}");
+        tracing::debug!(
+            endpoint = %crate::client::endpoint_log_location(&url),
+            model = %self.model(),
+            request_kind = "transcription",
+            "POST provider endpoint"
+        );
         let mut req = self
             .client
             .post(&url)
@@ -122,10 +127,7 @@ impl LlmClient for DeepgramAdapter {
             .body(wav_data.to_vec());
         req = req.timeout(Duration::from_secs(self.endpoint.timeout_secs));
         let resp = send_request(req, None).await?;
-        let txt = resp
-            .text()
-            .await
-            .map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
+        let txt = read_text_bounded(resp, MAX_JSON_RESPONSE_BYTES).await?;
         let json: serde_json::Value =
             serde_json::from_str(&txt).map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
         let alternative = &json["results"]["channels"][0]["alternatives"][0];

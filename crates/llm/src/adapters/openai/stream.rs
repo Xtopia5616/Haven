@@ -28,20 +28,15 @@ impl OpenAiAdapter {
             self.endpoint.base_url.trim_end_matches('/')
         );
         tracing::debug!(
-            "chat_stream_inner: url={} model={} api_key={} timeout_secs={} timeout_streaming={:?}",
-            url,
-            self.endpoint.model_name,
-            if self.endpoint.api_key.is_empty() {
-                "EMPTY"
-            } else {
-                "SET"
-            },
-            self.endpoint.timeout_secs,
-            self.endpoint.timeout_streaming_secs
+            endpoint = %crate::client::endpoint_log_location(&url),
+            model = %self.endpoint.model_name,
+            request_kind = "chat_stream",
+            timeout_secs = self.endpoint.timeout_secs,
+            timeout_streaming = ?self.endpoint.timeout_streaming_secs,
+            "POST provider endpoint"
         );
         tracing::trace!(
-            "chat_stream_inner: POST {} request body: {} chars",
-            url,
+            "provider request body: {} chars",
             serde_json::to_string(&body).map(|s| s.len()).unwrap_or(0)
         );
         let resp = self

@@ -24,6 +24,8 @@ use serde_json::Value;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use crate::adapters::{MAX_OCR_RESPONSE_BYTES, read_text_bounded};
+
 /// Outcome of an OCR call: recognized text plus an optional confidence
 /// (0.0-1.0) reported by the provider. `None` confidence means the provider
 /// does not report confidence; the caller's confidence gate treats that as
@@ -261,12 +263,9 @@ impl BaiduOcrClient {
                 )
             })?;
         let status = resp.status();
-        let body = resp.text().await.map_err(|e| {
-            anyhow::anyhow!(
-                "Baidu token response read failed: {}",
-                haven_common::error::sanitize_error_text(&e.to_string())
-            )
-        })?;
+        let body = read_text_bounded(resp, MAX_OCR_RESPONSE_BYTES)
+            .await
+            .map_err(|e| anyhow::anyhow!("Baidu token response read failed: {e}"))?;
         if !status.is_success() {
             return Err(media_error_body("Baidu token", status, &body));
         }
@@ -315,12 +314,9 @@ impl OcrClient for BaiduOcrClient {
                 )
             })?;
         let status = resp.status();
-        let body = resp.text().await.map_err(|e| {
-            anyhow::anyhow!(
-                "Baidu OCR response read failed: {}",
-                haven_common::error::sanitize_error_text(&e.to_string())
-            )
-        })?;
+        let body = read_text_bounded(resp, MAX_OCR_RESPONSE_BYTES)
+            .await
+            .map_err(|e| anyhow::anyhow!("Baidu OCR response read failed: {e}"))?;
         if !status.is_success() {
             return Err(media_error_body("Baidu OCR", status, &body));
         }
@@ -375,12 +371,9 @@ impl OcrClient for AzureOcrClient {
                 )
             })?;
         let status = resp.status();
-        let body = resp.text().await.map_err(|e| {
-            anyhow::anyhow!(
-                "Azure OCR response read failed: {}",
-                haven_common::error::sanitize_error_text(&e.to_string())
-            )
-        })?;
+        let body = read_text_bounded(resp, MAX_OCR_RESPONSE_BYTES)
+            .await
+            .map_err(|e| anyhow::anyhow!("Azure OCR response read failed: {e}"))?;
         if !status.is_success() {
             return Err(media_error_body("Azure OCR", status, &body));
         }
@@ -524,12 +517,9 @@ impl OcrClient for TencentOcrClient {
                 )
             })?;
         let status = resp.status();
-        let body = resp.text().await.map_err(|e| {
-            anyhow::anyhow!(
-                "Tencent OCR response read failed: {}",
-                haven_common::error::sanitize_error_text(&e.to_string())
-            )
-        })?;
+        let body = read_text_bounded(resp, MAX_OCR_RESPONSE_BYTES)
+            .await
+            .map_err(|e| anyhow::anyhow!("Tencent OCR response read failed: {e}"))?;
         if !status.is_success() {
             return Err(media_error_body("Tencent OCR", status, &body));
         }

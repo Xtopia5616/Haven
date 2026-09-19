@@ -253,7 +253,12 @@ impl OpenAiResponsesAdapter {
             max_output_tokens.unwrap_or(self.endpoint.max_tokens),
         );
         let url = self.responses_url();
-        tracing::debug!("POST {} (model: {})", url, body.model);
+        tracing::debug!(
+            endpoint = %crate::client::endpoint_log_location(&url),
+            model = %body.model,
+            request_kind = "chat",
+            "POST provider endpoint"
+        );
         tracing::debug!(
             "POST {} request body: {} chars",
             url,
@@ -261,11 +266,8 @@ impl OpenAiResponsesAdapter {
         );
         let resp = self.send_request(&url, &mut body, stream).await?;
 
-        let txt = resp
-            .text()
-            .await
-            .map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
-        tracing::trace!("POST {} response body: {} chars", url, txt.len());
+        let txt = read_text_bounded(resp, MAX_JSON_RESPONSE_BYTES).await?;
+        tracing::trace!("provider response body: {} chars", txt.len());
         let json: ResponsesResponse =
             serde_json::from_str(&txt).map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
         let model = json.model.clone();

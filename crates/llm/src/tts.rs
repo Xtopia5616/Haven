@@ -16,6 +16,10 @@ use async_trait::async_trait;
 use haven_common::config::{ProviderConfig, TtsConfig, provider_config_wire_style};
 use std::time::Duration;
 
+use crate::adapters::{
+    MAX_AUDIO_RESPONSE_BYTES, MAX_JSON_RESPONSE_BYTES, read_bytes_bounded, read_text_bounded,
+};
+
 /// Trait for text-to-speech synthesis. Implementations receive plain text
 /// and return encoded audio bytes (typically MP3).
 #[async_trait]
@@ -186,21 +190,14 @@ impl OpenAiTtsClient {
             })?;
         let status = resp.status();
         if !status.is_success() {
-            let body = resp.text().await.map_err(|e| {
-                anyhow::anyhow!(
-                    "OpenAI TTS error response read failed: {}",
-                    haven_common::error::sanitize_error_text(&e.to_string())
-                )
-            })?;
+            let body = read_text_bounded(resp, MAX_JSON_RESPONSE_BYTES)
+                .await
+                .map_err(|e| anyhow::anyhow!("OpenAI TTS error response read failed: {e}"))?;
             return Err(media_body_error("OpenAI TTS", status, &body));
         }
-        let bytes = resp.bytes().await.map_err(|e| {
-            anyhow::anyhow!(
-                "OpenAI TTS response read failed: {}",
-                haven_common::error::sanitize_error_text(&e.to_string())
-            )
-        })?;
-        Ok(bytes.to_vec())
+        read_bytes_bounded(resp, MAX_AUDIO_RESPONSE_BYTES)
+            .await
+            .map_err(|e| anyhow::anyhow!("OpenAI TTS response read failed: {e}"))
     }
 }
 
@@ -273,21 +270,14 @@ impl ElevenLabsTtsClient {
             })?;
         let status = resp.status();
         if !status.is_success() {
-            let body = resp.text().await.map_err(|e| {
-                anyhow::anyhow!(
-                    "ElevenLabs TTS error response read failed: {}",
-                    haven_common::error::sanitize_error_text(&e.to_string())
-                )
-            })?;
+            let body = read_text_bounded(resp, MAX_JSON_RESPONSE_BYTES)
+                .await
+                .map_err(|e| anyhow::anyhow!("ElevenLabs TTS error response read failed: {e}"))?;
             return Err(media_body_error("ElevenLabs TTS", status, &body));
         }
-        let bytes = resp.bytes().await.map_err(|e| {
-            anyhow::anyhow!(
-                "ElevenLabs TTS response read failed: {}",
-                haven_common::error::sanitize_error_text(&e.to_string())
-            )
-        })?;
-        Ok(bytes.to_vec())
+        read_bytes_bounded(resp, MAX_AUDIO_RESPONSE_BYTES)
+            .await
+            .map_err(|e| anyhow::anyhow!("ElevenLabs TTS response read failed: {e}"))
     }
 }
 
