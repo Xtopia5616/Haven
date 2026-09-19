@@ -17,6 +17,7 @@
 	import { createChatUsageEventHandlers } from '$lib/chatUsageEventHandlers.ts';
 	import { createChatModelSync } from '$lib/chatModelSync.ts';
 	import { createStreamEventAggregator } from '$lib/streamAggregator.ts';
+	import { createSessionRefreshScheduler } from '$lib/sessionRefresh.ts';
 	import {
 		appSessionReducer,
 		sessionStateStore,
@@ -1121,10 +1122,10 @@
 							} else {
 								// A title event can win the race with the initial session
 								// list load. The persisted title will be picked up here.
-								void loadSessions();
+								scheduleLoadSessions();
 							}
 						},
-						loadSessions,
+						scheduleLoadSessions,
 					}),
 				),
 				...appEventListeners({
@@ -1224,6 +1225,7 @@
 		// merges the store with the DB copy).
 		flushChunksNow();
 		eventRegistrations?.dispose();
+		loadSessionsRefresh.dispose();
 		stopJumpToBottom();
 		if (browser) {
 			window.removeEventListener('click', handleWindowClick);
@@ -1234,8 +1236,9 @@
 	// order its decision after the session list without duplicating the
 	// stale-pointer cleanup. Never rejects (errors are handled in loadSessions).
 	let loadSessionsSettled = Promise.resolve();
+	const loadSessionsRefresh = createSessionRefreshScheduler(() => loadSessionsNow());
 
-	async function loadSessions() {
+	async function loadSessionsNow() {
 		const seq = ++loadSessionsSeq;
 		const run = (async () => {
 			const result = await invoke('get_sessions');
@@ -1272,6 +1275,21 @@
 		});
 		loadSessionsSettled = run;
 		return run;
+	}
+
+	/**
+	 * Refresh immediately for explicit user actions and initial hydration. The
+	 * lifecycle event handlers use scheduleLoadSessions so a burst of status
+	 * events produces at most one trailing get_sessions call.
+	 */
+	async function loadSessions() {
+		const run = loadSessionsRefresh.refresh();
+		loadSessionsSettled = run;
+		return run;
+	}
+
+	function scheduleLoadSessions() {
+		loadSessionsRefresh.schedule();
 	}
 
 	// Auto-restore the last conversation from a previous run so reopening

@@ -23,7 +23,7 @@ function handlers(options: {
 		clearStepBlockIds: vi.fn(),
 		flushChunksNow: options.flushChunksNow ?? vi.fn(),
 		updateSessionTitle: vi.fn(),
-		loadSessions: vi.fn(),
+		scheduleLoadSessions: vi.fn(),
 	});
 }
 

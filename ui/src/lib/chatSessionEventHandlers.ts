@@ -22,7 +22,8 @@ interface ChatSessionEventContext {
 	/** Flush the RAF-batched stream before lifecycle cleanup changes its state. */
 	flushChunksNow: () => void;
 	updateSessionTitle: (sessionId: string, title: string) => void;
-	loadSessions: () => void;
+	/** Coalesced lifecycle refresh; explicit page actions use immediate refresh. */
+	scheduleLoadSessions: () => void;
 }
 
 type LifecycleEvent = TauriEvent<SessionLifecyclePayload>;
@@ -48,7 +49,7 @@ export function createChatSessionEventHandlers({
 	clearStepBlockIds,
 	flushChunksNow,
 	updateSessionTitle,
-	loadSessions,
+	scheduleLoadSessions,
 }: ChatSessionEventContext): {
 	'session:created': (event: LifecycleEvent) => void;
 	'session:updated': (event: LifecycleEvent) => void;
@@ -86,7 +87,7 @@ export function createChatSessionEventHandlers({
 					title: event.payload.title,
 				});
 			}
-			loadSessions();
+			scheduleLoadSessions();
 		},
 		'session:updated': (event) => {
 			const data = event.payload;
@@ -120,7 +121,7 @@ export function createChatSessionEventHandlers({
 				}
 				clearStepBlockIds(data.sessionId);
 			}
-			loadSessions();
+			scheduleLoadSessions();
 		},
 		'session:completed': (event) => {
 			const sessionId = event.payload.sessionId;
@@ -136,7 +137,7 @@ export function createChatSessionEventHandlers({
 			}
 			evictTerminalSessionMemory(sessionId);
 			clearStepBlockIds(sessionId);
-			loadSessions();
+			scheduleLoadSessions();
 		},
 		'session:error': (event) => {
 			const { sessionId, error } = event.payload;
@@ -148,7 +149,7 @@ export function createChatSessionEventHandlers({
 			}
 			evictTerminalSessionMemory(sessionId);
 			clearStepBlockIds(sessionId);
-			loadSessions();
+			scheduleLoadSessions();
 		},
 		'session:title-updated': (event) => {
 			const { sessionId, title } = event.payload;
@@ -156,7 +157,7 @@ export function createChatSessionEventHandlers({
 		},
 		'session:deleted': (event) => {
 			dispatchSession({ type: 'session/deleted', sessionId: event.payload.sessionId });
-			loadSessions();
+			scheduleLoadSessions();
 		},
 	};
 }
