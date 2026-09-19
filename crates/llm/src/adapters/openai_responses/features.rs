@@ -50,7 +50,7 @@ impl OpenAiResponsesAdapter {
         // Hash the exact provider tool projection, not the canonical
         // ToolDefinition. In particular, sanitized schemas must not select a
         // different cache shard from the wire request they produce.
-        let tool_value = serde_json::to_value(Self::convert_tools(tools.to_vec())).ok()?;
+        let tool_value = serde_json::to_value(Self::convert_tools(tools)).ok()?;
         hasher.update(crate::types::stable_json_bytes(&tool_value));
         // Built-in web search changes the Responses tool surface and
         // tool-choice semantics, so it must select a distinct cache shard.

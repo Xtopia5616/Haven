@@ -45,18 +45,20 @@ impl OpenAiResponsesAdapter {
 
     pub(super) fn build_request_body_with_mode_and_max_tokens(
         &self,
-        messages: Vec<CanonicalMessage>,
-        tools: Vec<ToolDefinition>,
+        messages: impl AsRef<[CanonicalMessage]>,
+        tools: impl AsRef<[ToolDefinition]>,
         stream: bool,
         web_search_mode: WebSearchMode,
         max_output_tokens: u32,
     ) -> ResponsesRequest {
+        let messages = messages.as_ref();
+        let tools = tools.as_ref();
         // DeepSeek's official Responses contract ignores `prompt_cache_key`;
         // do not advertise an optional OpenAI extension to that endpoint.
         let prompt_cache_key = (!is_deepseek(&self.endpoint))
-            .then(|| self.prompt_cache_key(&messages, &tools, web_search_mode))
+            .then(|| self.prompt_cache_key(messages, tools, web_search_mode))
             .flatten();
-        let cache_diagnostics = Self::cache_diagnostics(&messages, prompt_cache_key.is_some());
+        let cache_diagnostics = Self::cache_diagnostics(messages, prompt_cache_key.is_some());
         let max_reasoning_echo_chars = self
             .endpoint
             .reasoning_echo_max_chars

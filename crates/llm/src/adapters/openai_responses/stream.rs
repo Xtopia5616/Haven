@@ -16,6 +16,16 @@ impl OpenAiResponsesAdapter {
         tools: Vec<ToolDefinition>,
         max_output_tokens: Option<u32>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
+        self.chat_stream_inner_with_max_tokens_shared(&messages, &tools, max_output_tokens)
+            .await
+    }
+
+    pub(super) async fn chat_stream_inner_with_max_tokens_shared(
+        &self,
+        messages: &[CanonicalMessage],
+        tools: &[ToolDefinition],
+        max_output_tokens: Option<u32>,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
         let mut body = self.build_request_body_with_mode_and_max_tokens(
             messages,
             tools,

@@ -54,13 +54,15 @@ impl AnthropicAdapter {
 
     pub(super) fn build_request_body_with_mode_and_max_tokens(
         &self,
-        messages: Vec<CanonicalMessage>,
-        tools: Vec<ToolDefinition>,
+        messages: impl AsRef<[CanonicalMessage]>,
+        tools: impl AsRef<[ToolDefinition]>,
         stream: bool,
         web_search_mode: WebSearchMode,
         max_tokens: u32,
     ) -> AnthropicRequest {
-        let cache_diagnostics = Self::cache_diagnostics(&messages);
+        let messages = messages.as_ref();
+        let tools = tools.as_ref();
+        let cache_diagnostics = Self::cache_diagnostics(messages);
         let (messages, system) = Self::convert_messages(messages);
         let mut tools_json = Self::convert_tools(tools);
         let had_client_tools = !tools_json.is_empty();

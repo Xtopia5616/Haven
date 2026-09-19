@@ -64,8 +64,9 @@ impl GeminiAdapter {
     }
 
     pub(super) fn convert_contents(
-        msgs: Vec<CanonicalMessage>,
+        msgs: impl AsRef<[CanonicalMessage]>,
     ) -> (Vec<GeminiContent>, Option<Value>) {
+        let msgs = msgs.as_ref();
         let mut system_parts: Vec<String> = Vec::new();
         let mut out: Vec<GeminiContent> = Vec::new();
         // Gemini's `functionResponse.name` must match the `functionCall.name`
@@ -83,7 +84,7 @@ impl GeminiAdapter {
         // Consecutive tool results buffered until the next non-tool message
         // (or end of input), then flushed in declaration order.
         let mut pending_tool_results: Vec<(String, String)> = Vec::new();
-        for mut m in msgs {
+        for m in msgs {
             match m.role {
                 CanonicalRole::System => {
                     for p in &m.content {
@@ -96,7 +97,7 @@ impl GeminiAdapter {
                     let is_tool_result =
                         matches!(m.role, CanonicalRole::Tool) || m.tool_call_id.is_some();
                     if is_tool_result {
-                        let call_id = m.tool_call_id.unwrap_or_default();
+                        let call_id = m.tool_call_id.clone().unwrap_or_default();
                         let text = Self::text_content(&m.content);
                         pending_tool_results.push((call_id, text));
                     } else {
@@ -107,8 +108,19 @@ impl GeminiAdapter {
                             &call_id_to_name,
                         );
                         if m.role == CanonicalRole::User {
-                            m.content =
-                                crate::adapters::apply_wire_inject_prefix(m.source, m.content);
+                            let content = crate::adapters::apply_wire_inject_prefix(
+                                m.source,
+                                m.content.clone(),
+                            );
+                            let parts = Self::content_to_parts(&content);
+                            if parts.is_empty() {
+                                continue;
+                            }
+                            out.push(GeminiContent {
+                                role: "user".into(),
+                                parts,
+                            });
+                            continue;
                         }
                         let parts = Self::content_to_parts(&m.content);
                         if parts.is_empty() {
@@ -305,15 +317,16 @@ impl GeminiAdapter {
             .collect()
     }
 
-    pub(super) fn convert_tools(tools: Vec<ToolDefinition>) -> Vec<GeminiTool> {
+    pub(super) fn convert_tools(tools: impl AsRef<[ToolDefinition]>) -> Vec<GeminiTool> {
         tools
-            .into_iter()
+            .as_ref()
+            .iter()
             .map(|t| GeminiTool::Functions {
                 function_declarations: vec![GeminiFunctionDeclaration {
-                    name: t.function.name,
-                    description: t.function.description,
+                    name: t.function.name.clone(),
+                    description: t.function.description.clone(),
                     parameters: crate::types::project_tool_parameters_for_gemini(
-                        t.function.parameters,
+                        t.function.parameters.clone(),
                     ),
                 }],
             })

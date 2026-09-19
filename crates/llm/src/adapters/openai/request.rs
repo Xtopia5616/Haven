@@ -42,9 +42,32 @@ impl OpenAiAdapter {
         web_search_mode: WebSearchMode,
         max_tokens: u32,
     ) -> OpenAiRequest {
+        self.build_request_body_with_mode_and_max_tokens_shared(
+            &messages,
+            &tools,
+            stream,
+            web_search_mode,
+            max_tokens,
+        )
+    }
+
+    pub(super) fn build_request_body_with_mode_and_max_tokens_shared(
+        &self,
+        messages: &[CanonicalMessage],
+        tools: &[ToolDefinition],
+        stream: bool,
+        web_search_mode: WebSearchMode,
+        max_tokens: u32,
+    ) -> OpenAiRequest {
         let has_tools = !tools.is_empty();
-        let prompt_cache_key = self.prompt_cache_key(&messages, &tools);
-        let (messages, system_split) = Self::split_system_memory(messages);
+        let prompt_cache_key = self.prompt_cache_key(messages, tools);
+        let (wire_messages, system_split) = Self::convert_messages_with_system_split(
+            messages,
+            self.requires_reasoning_echo(),
+            self.endpoint
+                .reasoning_echo_max_chars
+                .unwrap_or(Self::MAX_REASONING_ECHO_CHARS),
+        );
         let cache_diagnostics =
             CacheDiagnostics::for_request(prompt_cache_key.is_some(), system_split);
         let (thinking, reasoning_effort) = chat_thinking_extras(&self.endpoint);
@@ -70,20 +93,14 @@ impl OpenAiAdapter {
         };
         OpenAiRequest {
             model: self.endpoint.model_name.clone(),
-            messages: Self::convert_messages(
-                messages,
-                self.requires_reasoning_echo(),
-                self.endpoint
-                    .reasoning_echo_max_chars
-                    .unwrap_or(Self::MAX_REASONING_ECHO_CHARS),
-            ),
+            messages: wire_messages,
             max_tokens: Some(max_tokens),
             // Reasoning / thinking modes reject or ignore non-default
             // temperature. Omit whenever effort or vendor thinking is pinned.
             temperature: (!omit_temperature).then_some(self.endpoint.temperature),
             stream,
             tools: if has_tools {
-                Some(Self::convert_tools(tools))
+                Some(Self::convert_tools_ref(tools))
             } else {
                 None
             },

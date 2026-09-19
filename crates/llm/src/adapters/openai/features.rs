@@ -56,7 +56,7 @@ impl OpenAiAdapter {
         // Hash the exact provider tool projection, not the canonical
         // ToolDefinition. This keeps the routing key aligned with the wire
         // schema after recursive JSON canonicalization.
-        let tool_value = serde_json::to_value(Self::convert_tools(tools.to_vec())).ok()?;
+        let tool_value = serde_json::to_value(Self::convert_tools_ref(tools)).ok()?;
         hasher.update(crate::types::stable_json_bytes(&tool_value));
 
         let digest = hasher.finalize();

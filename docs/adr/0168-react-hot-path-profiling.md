@@ -31,11 +31,11 @@ Profiling the ReAct turn preparation path found three avoidable costs:
   and only clones for an actual fallback/rewrite. Retry instructions calculate
   the incremental cost of their new message.
 - The provider stream retry loop materializes one immutable message/tool
-  snapshot and passes `Arc` handles to every attempt. The compatibility
-  default on `LlmClient` may still copy into an adapter's legacy owned
-  argument, but the retry coordinator itself never rebuilds the canonical
-  message/tool vectors; native adapters can consume the shared boundary
-  directly.
+  snapshot and passes `Arc` handles to every attempt. The four production
+  streaming adapters consume the shared boundary as borrowed slices while
+  constructing their wire request, so retries do not rebuild the canonical
+  message/tool vectors. The compatibility default on `LlmClient` remains
+  available for third-party/test adapters that still expose owned arguments.
 - ReAct state maintains a compact index of media-bearing transcript events.
   Request-context media identity recovery walks that index and updates it on
   append/compaction, so long text/tool histories do not force a full event-log

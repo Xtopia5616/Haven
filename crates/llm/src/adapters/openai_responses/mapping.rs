@@ -41,7 +41,7 @@ impl OpenAiResponsesAdapter {
     }
 
     pub(super) fn convert_input(
-        msgs: Vec<CanonicalMessage>,
+        msgs: impl AsRef<[CanonicalMessage]>,
         max_reasoning_echo_chars: usize,
         requires_reasoning_echo: bool,
     ) -> (Vec<Value>, Option<String>) {
@@ -54,11 +54,12 @@ impl OpenAiResponsesAdapter {
     }
 
     pub(super) fn convert_input_with_memory_split(
-        msgs: Vec<CanonicalMessage>,
+        msgs: impl AsRef<[CanonicalMessage]>,
         max_reasoning_echo_chars: usize,
         requires_reasoning_echo: bool,
         split_memory: bool,
     ) -> (Vec<Value>, Option<String>) {
+        let msgs = msgs.as_ref();
         let mut instructions: Vec<String> = Vec::new();
         let mut session_context: Vec<String> = Vec::new();
         let mut volatile_system: Vec<String> = Vec::new();
@@ -89,7 +90,7 @@ impl OpenAiResponsesAdapter {
                 }
                 CanonicalRole::User => {
                     let content = Self::content_to_parts(
-                        &crate::adapters::apply_wire_inject_prefix(m.source, m.content),
+                        &crate::adapters::apply_wire_inject_prefix(m.source, m.content.clone()),
                     );
                     if !content.is_empty() {
                         items.push(json!({"role": "user", "content": content}));
@@ -187,7 +188,7 @@ impl OpenAiResponsesAdapter {
                     for ws in &m.web_search_calls {
                         items.push(normalize_web_search_call_item(ws.clone()));
                     }
-                    if let Some(calls) = m.tool_calls {
+                    if let Some(calls) = m.tool_calls.as_ref() {
                         for tc in calls {
                             items.push(json!({
                                 "type": "function_call",
@@ -201,7 +202,7 @@ impl OpenAiResponsesAdapter {
                 CanonicalRole::Tool => {
                     items.push(json!({
                         "type": "function_call_output",
-                        "call_id": m.tool_call_id.unwrap_or_default(),
+                        "call_id": m.tool_call_id.clone().unwrap_or_default(),
                         "output": Self::text_content(&m.content)
                     }));
                 }
@@ -261,21 +262,22 @@ impl OpenAiResponsesAdapter {
         true
     }
 
-    pub(super) fn convert_tools(tools: Vec<ToolDefinition>) -> Vec<Value> {
+    pub(super) fn convert_tools(tools: impl AsRef<[ToolDefinition]>) -> Vec<Value> {
         tools
-            .into_iter()
+            .as_ref()
+            .iter()
             .map(|t| {
                 // Defense in depth: `ToolDefinition::from` already sanitizes,
                 // but direct constructors / cache hits may still carry Null.
                 let parameters = crate::types::canonicalize_json(
                     crate::types::project_tool_parameters_for_object_root(
-                        crate::types::sanitize_tool_parameters(t.function.parameters),
+                        crate::types::sanitize_tool_parameters(t.function.parameters.clone()),
                     ),
                 );
                 serde_json::to_value(ResponsesTool {
-                    tool_type: t.tool_type,
-                    name: Some(t.function.name),
-                    description: Some(t.function.description),
+                    tool_type: t.tool_type.clone(),
+                    name: Some(t.function.name.clone()),
+                    description: Some(t.function.description.clone()),
                     parameters: Some(parameters),
                     strict: Some(false),
                 })

@@ -193,11 +193,12 @@ impl AnthropicAdapter {
     }
 
     pub(super) fn convert_messages(
-        msgs: Vec<CanonicalMessage>,
+        msgs: impl AsRef<[CanonicalMessage]>,
     ) -> (Vec<AnthropicMessage>, Option<String>) {
+        let msgs = msgs.as_ref();
         let mut system_parts: Vec<String> = Vec::new();
         let mut out: Vec<AnthropicMessage> = Vec::new();
-        for mut m in msgs {
+        for m in msgs {
             match m.role {
                 CanonicalRole::System => {
                     for p in &m.content {
@@ -212,13 +213,14 @@ impl AnthropicAdapter {
                             role: "user".into(),
                             content: json!([{
                                 "type": "tool_result",
-                                "tool_use_id": m.tool_call_id.unwrap_or_default(),
+                                "tool_use_id": m.tool_call_id.clone().unwrap_or_default(),
                                 "content": Self::text_content(&m.content)
                             }]),
                         });
                     } else {
-                        m.content = crate::adapters::apply_wire_inject_prefix(m.source, m.content);
-                        let blocks = Self::content_to_blocks(&m.content);
+                        let content =
+                            crate::adapters::apply_wire_inject_prefix(m.source, m.content.clone());
+                        let blocks = Self::content_to_blocks(&content);
                         if blocks.is_empty() {
                             continue;
                         }
@@ -237,8 +239,8 @@ impl AnthropicAdapter {
                     // original position so the echo restores the exact
                     // interleaved order instead of front-loading the thinking
                     // blocks (position does not affect signature validation).
-                    let calls = m.tool_calls;
-                    let mut captured = m.thinking_blocks;
+                    let calls = m.tool_calls.clone();
+                    let mut captured = m.thinking_blocks.clone();
                     let layout = Self::split_layout(&mut captured);
                     captured.retain(|block| {
                         matches!(
@@ -275,7 +277,7 @@ impl AnthropicAdapter {
                         role: "user".into(),
                         content: json!([{
                             "type": "tool_result",
-                            "tool_use_id": m.tool_call_id.unwrap_or_default(),
+                            "tool_use_id": m.tool_call_id.clone().unwrap_or_default(),
                             "content": Self::text_content(&m.content)
                         }]),
                     });
@@ -290,15 +292,16 @@ impl AnthropicAdapter {
         (out, system)
     }
 
-    pub(super) fn convert_tools(tools: Vec<ToolDefinition>) -> Vec<Value> {
+    pub(super) fn convert_tools(tools: impl AsRef<[ToolDefinition]>) -> Vec<Value> {
         tools
-            .into_iter()
+            .as_ref()
+            .iter()
             .map(|t| {
                 // Defense in depth: the local ToolDefinition constructor
                 // sanitizes schemas, but cached/direct definitions can still
                 // contain a null or non-object root.
                 let parameters = crate::types::canonicalize_json(
-                    crate::types::sanitize_tool_parameters(t.function.parameters),
+                    crate::types::sanitize_tool_parameters(t.function.parameters.clone()),
                 );
                 json!({
                     "name": t.function.name,

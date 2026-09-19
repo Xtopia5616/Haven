@@ -5,6 +5,7 @@ use reqwest::header::HeaderMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::adapters::{
@@ -203,6 +204,20 @@ impl LlmClient for GeminiAdapter {
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
         self.chat_stream_inner_with_max_tokens(messages, tools, max_output_tokens)
             .await
+    }
+
+    async fn chat_stream_with_tools_output_cap_shared(
+        &self,
+        messages: Arc<[CanonicalMessage]>,
+        tools: Arc<[ToolDefinition]>,
+        max_output_tokens: Option<u32>,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
+        self.chat_stream_inner_with_max_tokens_shared(
+            messages.as_ref(),
+            tools.as_ref(),
+            max_output_tokens,
+        )
+        .await
     }
 
     async fn embed(&self, input: Vec<String>) -> Result<Embedding, LlmError> {

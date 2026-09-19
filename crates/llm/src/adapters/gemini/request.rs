@@ -78,11 +78,13 @@ impl GeminiAdapter {
 
     pub(super) fn build_request_body_with_mode_and_max_tokens(
         &self,
-        messages: Vec<CanonicalMessage>,
-        tools: Vec<ToolDefinition>,
+        messages: impl AsRef<[CanonicalMessage]>,
+        tools: impl AsRef<[ToolDefinition]>,
         web_search_mode: WebSearchMode,
         max_output_tokens: u32,
     ) -> GeminiRequest {
+        let messages = messages.as_ref();
+        let tools = tools.as_ref();
         let system_split = messages.iter().any(|message| {
             message.role == CanonicalRole::System
                 && message.content.iter().any(|part| {
