@@ -1,5 +1,7 @@
 # ADR 0155：统一 ActionService 状态机
 
+> 状态词汇、定时任务终态持久化与 v22 重置边界已由 [ADR 0172](0172-session-action-lifecycle-state-contract.md) 进一步收口；本记录关于单一 `ActionService` owner 的决定仍然有效。
+
 ## 状态
 
 已接受（2026-09-14）

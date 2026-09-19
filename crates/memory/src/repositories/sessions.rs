@@ -1,5 +1,6 @@
 use crate::db::Database;
 use chrono::{Local, NaiveDate, TimeZone, Utc};
+use haven_common::SessionStatus;
 use rusqlite::OptionalExtension;
 
 /// WHERE clause shared by every session search query (list, count, paginated).
@@ -10,11 +11,12 @@ const SEARCH_WHERE: &str = "WHERE input_text LIKE ?1 OR transcript LIKE ?1 OR ti
 
 /// Map a row produced by a history-list query (8 columns, no react_state).
 fn map_session_list_row(row: &rusqlite::Row) -> rusqlite::Result<Session> {
+    let status = row.get::<_, String>(3)?;
     Ok(Session {
         id: row.get(0)?,
         input_text: row.get(1)?,
         title: row.get(2)?,
-        status: row.get(3)?,
+        status: SessionStatus::from_status_str(&status),
         created_at: row.get(4)?,
         updated_at: row.get(5)?,
         transcript: row.get(6)?,
@@ -52,7 +54,7 @@ pub struct Session {
     pub id: String,
     pub input_text: String,
     pub title: Option<String>,
-    pub status: String,
+    pub status: SessionStatus,
     pub created_at: String,
     pub updated_at: String,
     pub transcript: String,
@@ -89,7 +91,7 @@ impl Database {
             id,
             input_text: input_text.into(),
             title: None,
-            status: "pending".into(),
+            status: SessionStatus::Pending,
             created_at: now.clone(),
             updated_at: now,
             transcript: transcript.into(),
@@ -114,12 +116,12 @@ impl Database {
         }
     }
 
-    pub fn update_session_status(&self, id: &str, status: &str) -> anyhow::Result<()> {
+    pub fn update_session_status(&self, id: &str, status: SessionStatus) -> anyhow::Result<()> {
         let now = Utc::now().to_rfc3339();
         let conn = self.conn();
         conn.execute(
             "UPDATE sessions SET status = ?1, updated_at = ?2 WHERE id = ?3",
-            rusqlite::params![status, now, id],
+            rusqlite::params![status.as_str(), now, id],
         )?;
         self.cache_invalidate_sessions();
         Ok(())
@@ -316,7 +318,7 @@ impl Database {
                 .query_map([], |r| r.get::<_, String>(0))?
                 .collect::<Result<_, _>>()?
         };
-        let count = self.set_running_status("error", &now, None)?;
+        let count = self.set_running_status(SessionStatus::Error, &now, None)?;
         for id in ids {
             if let Err(e) = self.promote_partial_message(&id) {
                 tracing::warn!(
@@ -335,7 +337,7 @@ impl Database {
     /// left `running` by a crash (no graceful exit).
     pub fn pause_running_sessions(&self) -> anyhow::Result<usize> {
         let now = Utc::now().to_rfc3339();
-        let count = self.set_running_status("paused", &now, None)?;
+        let count = self.set_running_status(SessionStatus::Paused, &now, None)?;
         Ok(count)
     }
 
@@ -346,7 +348,7 @@ impl Database {
     /// invalidation keeps the callers from drifting apart.
     fn set_running_status(
         &self,
-        status: &str,
+        status: SessionStatus,
         now: &str,
         cutoff: Option<&str>,
     ) -> anyhow::Result<usize> {
@@ -355,12 +357,12 @@ impl Database {
             Some(threshold) => conn.execute(
                 "UPDATE sessions SET status = ?1, updated_at = ?2
                  WHERE status = 'running' AND updated_at < ?3",
-                rusqlite::params![status, now, threshold],
+                rusqlite::params![status.as_str(), now, threshold],
             )?,
             None => conn.execute(
                 "UPDATE sessions SET status = ?1, updated_at = ?2
                  WHERE status = 'running'",
-                rusqlite::params![status, now],
+                rusqlite::params![status.as_str(), now],
             )?,
         };
         if count > 0 {
@@ -718,6 +720,7 @@ fn decompress_react_state(blob: &[u8]) -> anyhow::Result<String> {
 mod tests {
     use crate::Database;
     use chrono::{Local, Utc};
+    use haven_common::SessionStatus;
 
     fn create_db() -> Database {
         Database::open_in_memory().unwrap()
@@ -730,7 +733,7 @@ mod tests {
         assert!(!session.id.is_empty());
         assert_eq!(session.input_text, "input text");
         assert_eq!(session.title, None);
-        assert_eq!(session.status, "pending");
+        assert_eq!(session.status, SessionStatus::Pending);
         assert!(!session.created_at.is_empty());
         assert!(!session.updated_at.is_empty());
         assert_eq!(session.transcript, "transcript");
@@ -779,9 +782,10 @@ mod tests {
     fn test_update_session_status() {
         let db = create_db();
         let session = db.create_session("input", "").unwrap();
-        db.update_session_status(&session.id, "running").unwrap();
+        db.update_session_status(&session.id, SessionStatus::Running)
+            .unwrap();
         let updated = db.get_session(&session.id).unwrap().unwrap();
-        assert_eq!(updated.status, "running");
+        assert_eq!(updated.status, SessionStatus::Running);
     }
 
     #[test]
@@ -960,32 +964,35 @@ mod tests {
     fn test_finalize_orphaned_running_sessions() {
         let db = create_db();
         let running = db.create_session("running", "").unwrap();
-        db.update_session_status(&running.id, "running").unwrap();
+        db.update_session_status(&running.id, SessionStatus::Running)
+            .unwrap();
         let paused = db.create_session("paused", "").unwrap();
-        db.update_session_status(&paused.id, "paused").unwrap();
+        db.update_session_status(&paused.id, SessionStatus::Paused)
+            .unwrap();
         let pending = db.create_session("pending", "").unwrap();
         let done = db.create_session("done", "").unwrap();
-        db.update_session_status(&done.id, "completed").unwrap();
+        db.update_session_status(&done.id, SessionStatus::Completed)
+            .unwrap();
 
         let count = db.finalize_orphaned_running_sessions().unwrap();
         assert_eq!(count, 1);
 
         assert_eq!(
             db.get_session(&running.id).unwrap().unwrap().status,
-            "error"
+            SessionStatus::Error
         );
         // paused/pending are left alone —they are legitimate waiting work.
         assert_eq!(
             db.get_session(&paused.id).unwrap().unwrap().status,
-            "paused"
+            SessionStatus::Paused
         );
         assert_eq!(
             db.get_session(&pending.id).unwrap().unwrap().status,
-            "pending"
+            SessionStatus::Pending
         );
         assert_eq!(
             db.get_session(&done.id).unwrap().unwrap().status,
-            "completed"
+            SessionStatus::Completed
         );
     }
 
@@ -1058,13 +1065,14 @@ mod tests {
         let db = create_db();
         let t1 = db.create_session("a", "").unwrap();
         db.create_session("b", "").unwrap();
-        db.update_session_status(&t1.id, "completed").unwrap();
+        db.update_session_status(&t1.id, SessionStatus::Completed)
+            .unwrap();
 
         let results = db
             .search_sessions_filtered(None, Some("completed"), None, None, 50, 0)
             .unwrap();
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].status, "completed");
+        assert_eq!(results[0].status, SessionStatus::Completed);
     }
 
     #[test]
@@ -1089,7 +1097,8 @@ mod tests {
         let db = create_db();
         let t1 = db.create_session("rust compiler bug", "").unwrap();
         db.create_session("python script", "").unwrap();
-        db.update_session_status(&t1.id, "completed").unwrap();
+        db.update_session_status(&t1.id, SessionStatus::Completed)
+            .unwrap();
 
         let results = db
             .search_sessions_filtered(Some("rust"), Some("completed"), None, None, 50, 0)

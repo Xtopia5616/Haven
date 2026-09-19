@@ -1,6 +1,7 @@
 use crate::app_state::AppState;
 use crate::commands::log_err;
 use crate::events::{ActionEvent, ActionKind};
+use haven_common::ActionStatus;
 use std::sync::Arc;
 use tauri::State;
 
@@ -48,7 +49,7 @@ pub async fn list_actions(state: State<'_, Arc<AppState>>) -> Result<Vec<ActionE
         rows.push(ActionEvent {
             id: a.id,
             kind: ActionKind::Background,
-            status: a.status,
+            status: Some(a.status),
             session_id: a.session_id,
             started_at: a.started_at,
             finished_at: a.finished_at,
@@ -84,7 +85,7 @@ pub async fn cancel_action(
     Ok(cancelled)
 }
 
-/// Fired-scheduled-action history (and terminal action history past the in-memory TTL)
+/// Completed-scheduled-action history (and terminal action history past the in-memory TTL)
 /// from the persisted action table, newest first, for the action panel's
 /// history tab. Rows carry `kind` plus the full stored payload; scheduled-action rows
 /// are limited to `limit` entries (default 50) so the panel cannot grow
@@ -101,12 +102,12 @@ pub async fn list_action_history(
         .list_actions(kind.map(ActionKind::as_str))
         .map_err(|e| log_err("list_action_history", e))?;
     let mut out = Vec::new();
-    // Pending scheduled actions are already exposed by `list_actions`; history
-    // must contain only fired scheduled rows. Keep this filter at the app
-    // boundary because the memory repository intentionally returns all rows.
+    // Waiting scheduled actions are already exposed by `list_actions`; history
+    // contains only terminal rows. Keep this filter at the app boundary so
+    // the repository can remain a neutral persistence query.
     for a in rows
         .into_iter()
-        .filter(|row| is_history_row(&row.kind, row.fired))
+        .filter(|row| is_history_row(row.status))
         .take(limit)
     {
         let kind = match a.kind.as_str() {
@@ -122,7 +123,7 @@ pub async fn list_action_history(
         out.push(ActionEvent {
             id: a.id,
             kind,
-            status: a.status,
+            status: Some(a.status),
             session_id: a.session_id,
             started_at: a.started_at,
             finished_at: a.finished_at,
@@ -141,28 +142,29 @@ pub async fn list_action_history(
     Ok(out)
 }
 
-fn is_history_row(kind: &str, fired: bool) -> bool {
-    kind != ActionKind::Scheduled.as_str() || fired
+fn is_history_row(status: ActionStatus) -> bool {
+    status.is_terminal()
 }
 
 #[cfg(test)]
 mod tests {
     use super::is_history_row;
+    use haven_common::ActionStatus;
 
     #[test]
     fn pending_scheduled_rows_are_not_history() {
-        assert!(!is_history_row("scheduled", false));
-        assert!(is_history_row("scheduled", true));
+        assert!(!is_history_row(ActionStatus::Waiting));
+        assert!(is_history_row(ActionStatus::Completed));
     }
 
     #[test]
-    fn background_rows_are_history_regardless_of_fired_flag() {
-        assert!(is_history_row("background", false));
-        assert!(is_history_row("background", true));
+    fn background_rows_are_history_by_terminal_status() {
+        assert!(is_history_row(ActionStatus::Failed));
+        assert!(is_history_row(ActionStatus::Cancelled));
     }
 }
 
-/// Remove a persisted action row (fired scheduled_action or terminal action history)
+/// Remove a persisted action row (terminal scheduled action or terminal action history)
 /// by id. Returns false when no row matched.
 #[tauri::command]
 pub async fn delete_action(

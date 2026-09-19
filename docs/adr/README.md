@@ -168,3 +168,4 @@
 - [0164：模型体验 P2 清单收口](0164-model-experience-p2-polish.md)
 - [0170：Capability / RequestPolicy 模型路由](0170-capability-request-policy-routing.md)
 - [0171：并发会话调度与生命周期闸门](0171-concurrent-session-lifecycle-admission.md)
+- [0172：会话与任务生命周期状态契约统一](0172-session-action-lifecycle-state-contract.md)

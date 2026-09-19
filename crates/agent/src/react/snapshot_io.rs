@@ -112,13 +112,12 @@ pub(crate) async fn set_status_and_emit(
     session_id: &str,
     status: SessionStatus,
 ) -> anyhow::Result<()> {
-    let status_str = status.as_str().to_string();
-    tracing::debug!("session {} status -> {}", session_id, status_str);
+    tracing::debug!("session {} status -> {}", session_id, status.as_str());
     executor.update_session_status(session_id, status).await?;
     emitter
         .emit(crate::event::AgentEvent::SessionUpdated {
             session_id: session_id.into(),
-            status: status_str,
+            status,
         })
         .await;
     Ok(())

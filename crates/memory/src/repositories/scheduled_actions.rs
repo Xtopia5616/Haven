@@ -1,4 +1,5 @@
 use crate::db::Database;
+use haven_common::ActionStatus;
 
 /// A persisted scheduled-action row. Scheduled actions survive app restarts:
 /// `due_at` is stored in RFC3339, and the app re-arms pending ones on startup
@@ -18,7 +19,7 @@ pub struct ScheduledActionRow {
     pub tool_name: Option<String>,
     pub tool_args: Option<String>,
     pub prompt: Option<String>,
-    pub fired: bool,
+    pub status: ActionStatus,
     pub created_at: String,
 }
 
@@ -41,8 +42,8 @@ impl Database {
     ) -> anyhow::Result<()> {
         let conn = self.conn();
         conn.execute(
-            "INSERT INTO actions (id, kind, due_at, title, body, mode, session_id, tool_name, tool_args, prompt, fired, created_at)
-             VALUES (?1, 'scheduled', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, datetime('now'))",
+            "INSERT INTO actions (id, kind, due_at, title, body, mode, session_id, tool_name, tool_args, prompt, status, created_at)
+             VALUES (?1, 'scheduled', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'waiting', datetime('now'))",
             rusqlite::params![
                 id,
                 due_at,
@@ -58,14 +59,14 @@ impl Database {
         Ok(())
     }
 
-    /// All scheduled actions that have not fired yet, ordered by due time ascending.
+    /// All scheduled actions that are still waiting, ordered by due time ascending.
     /// Background-action rows (`kind = 'background'`) are excluded: they carry no
     /// due time and are listed via [`Database::list_actions`].
     pub fn list_pending_scheduled_actions(&self) -> anyhow::Result<Vec<ScheduledActionRow>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, due_at, title, body, mode, session_id, tool_name, tool_args, prompt, fired, created_at
-             FROM actions WHERE kind = 'scheduled' AND fired = 0 ORDER BY due_at ASC",
+            "SELECT id, due_at, title, body, mode, session_id, tool_name, tool_args, prompt, status, created_at
+             FROM actions WHERE kind = 'scheduled' AND status = 'waiting' ORDER BY due_at ASC",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(ScheduledActionRow {
@@ -78,7 +79,7 @@ impl Database {
                 tool_name: row.get(6)?,
                 tool_args: row.get(7)?,
                 prompt: row.get(8)?,
-                fired: row.get::<_, i32>(9)? != 0,
+                status: ActionStatus::from_status_str(&row.get::<_, String>(9)?),
                 created_at: row.get(10)?,
             })
         })?;
@@ -89,21 +90,26 @@ impl Database {
         Ok(out)
     }
 
-    /// Mark a scheduled action as fired (it stays in the table as history but is
-    /// no longer re-armed on the next startup).
-    pub fn mark_scheduled_action_fired(&self, id: &str) -> anyhow::Result<()> {
+    /// Complete a scheduled action. Terminal rows remain durable history and
+    /// are no longer re-armed on the next startup.
+    pub fn complete_scheduled_action(&self, id: &str, finished_at: &str) -> anyhow::Result<()> {
         let conn = self.conn();
         conn.execute(
-            "UPDATE actions SET fired = 1 WHERE id = ?1",
-            rusqlite::params![id],
+            "UPDATE actions SET status = 'completed', started_at = COALESCE(started_at, due_at), finished_at = ?2
+             WHERE id = ?1 AND kind = 'scheduled' AND status = 'waiting'",
+            rusqlite::params![id, finished_at],
         )?;
         Ok(())
     }
 
-    /// Remove a scheduled action entirely (cancelled before it fired).
-    pub fn delete_scheduled_action(&self, id: &str) -> anyhow::Result<()> {
+    /// Cancel a waiting scheduled action while retaining its terminal history.
+    pub fn cancel_scheduled_action(&self, id: &str, finished_at: &str) -> anyhow::Result<()> {
         let conn = self.conn();
-        conn.execute("DELETE FROM actions WHERE id = ?1", rusqlite::params![id])?;
+        conn.execute(
+            "UPDATE actions SET status = 'cancelled', started_at = COALESCE(started_at, due_at), finished_at = ?2
+             WHERE id = ?1 AND kind = 'scheduled' AND status = 'waiting'",
+            rusqlite::params![id, finished_at],
+        )?;
         Ok(())
     }
 }
@@ -112,8 +118,7 @@ impl Database {
 /// Scheduled-action rows carry `kind: "scheduled"` (due_at/mode/tool_name/
 /// tool_args/prompt); background-action rows carry `kind: "background"` with the
 /// action lifecycle fields (status/command/output/error/error_reason/log_path/
-/// exit_code/started_at/finished_at). `fired` is only meaningful for scheduled
-/// actions.
+/// exit_code/started_at/finished_at). `status` is authoritative for both kinds.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ActionRow {
     pub id: String,
@@ -126,8 +131,7 @@ pub struct ActionRow {
     pub tool_name: Option<String>,
     pub tool_args: Option<String>,
     pub prompt: Option<String>,
-    pub fired: bool,
-    pub status: Option<String>,
+    pub status: ActionStatus,
     pub command: Option<String>,
     pub output: Option<String>,
     pub error: Option<String>,
@@ -139,7 +143,7 @@ pub struct ActionRow {
     pub created_at: String,
 }
 
-const ACTION_COLUMNS: &str = "id, kind, due_at, title, body, mode, session_id, tool_name, tool_args, prompt, fired, status, command, output, error, error_reason, log_path, exit_code, started_at, finished_at, created_at";
+const ACTION_COLUMNS: &str = "id, kind, due_at, title, body, mode, session_id, tool_name, tool_args, prompt, status, command, output, error, error_reason, log_path, exit_code, started_at, finished_at, created_at";
 
 fn row_to_action(row: &rusqlite::Row<'_>) -> rusqlite::Result<ActionRow> {
     Ok(ActionRow {
@@ -153,17 +157,16 @@ fn row_to_action(row: &rusqlite::Row<'_>) -> rusqlite::Result<ActionRow> {
         tool_name: row.get(7)?,
         tool_args: row.get(8)?,
         prompt: row.get(9)?,
-        fired: row.get::<_, i32>(10)? != 0,
-        status: row.get(11)?,
-        command: row.get(12)?,
-        output: row.get(13)?,
-        error: row.get(14)?,
-        error_reason: row.get(15)?,
-        log_path: row.get(16)?,
-        exit_code: row.get(17)?,
-        started_at: row.get(18)?,
-        finished_at: row.get(19)?,
-        created_at: row.get(20)?,
+        status: ActionStatus::from_status_str(&row.get::<_, String>(10)?),
+        command: row.get(11)?,
+        output: row.get(12)?,
+        error: row.get(13)?,
+        error_reason: row.get(14)?,
+        log_path: row.get(15)?,
+        exit_code: row.get(16)?,
+        started_at: row.get(17)?,
+        finished_at: row.get(18)?,
+        created_at: row.get(19)?,
     })
 }
 
@@ -206,7 +209,7 @@ impl Database {
     pub fn finish_action(
         &self,
         id: &str,
-        status: &str,
+        status: ActionStatus,
         output: Option<&str>,
         error: Option<&str>,
         error_reason: Option<&str>,
@@ -222,7 +225,7 @@ impl Database {
              WHERE id = ?1 AND kind = 'background'",
             rusqlite::params![
                 id,
-                status,
+                status.as_str(),
                 output,
                 error,
                 error_reason,
@@ -235,8 +238,8 @@ impl Database {
     }
 
     /// All persisted actions, optionally filtered by kind (`"background"` /
-    /// `"scheduled"`), newest first. Scheduled-action rows include fired history;
-    /// background-action rows include terminal history past the in-memory TTL.
+    /// `"scheduled"`), newest first. Waiting rows are returned for board
+    /// hydration; terminal rows remain available as history.
     pub fn list_actions(&self, kind: Option<&str>) -> anyhow::Result<Vec<ActionRow>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(&format!(
@@ -288,6 +291,7 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use crate::db::Database;
+    use haven_common::ActionStatus;
 
     fn test_db() -> Database {
         Database::open_in_memory().expect("create in-memory db")
@@ -348,11 +352,11 @@ mod tests {
         assert_eq!(pending[2].mode, "tool");
         assert_eq!(pending[2].tool_name.as_deref(), Some("files"));
         assert!(pending[2].tool_args.as_deref().unwrap().contains("read"));
-        assert!(!pending[0].fired);
+        assert_eq!(pending[0].status, ActionStatus::Waiting);
     }
 
     #[test]
-    fn fired_scheduled_actions_are_hidden_from_pending() {
+    fn completed_scheduled_actions_are_hidden_from_pending() {
         let db = test_db();
         db.save_scheduled_action(
             "action-1",
@@ -366,12 +370,13 @@ mod tests {
             None,
         )
         .unwrap();
-        db.mark_scheduled_action_fired("action-1").unwrap();
+        db.complete_scheduled_action("action-1", "2026-08-04T02:00:01Z")
+            .unwrap();
         assert!(db.list_pending_scheduled_actions().unwrap().is_empty());
     }
 
     #[test]
-    fn delete_removes_row() {
+    fn cancelled_scheduled_actions_are_hidden_from_pending() {
         let db = test_db();
         db.save_scheduled_action(
             "action-1",
@@ -385,7 +390,8 @@ mod tests {
             None,
         )
         .unwrap();
-        db.delete_scheduled_action("action-1").unwrap();
+        db.cancel_scheduled_action("action-1", "2026-08-04T02:00:01Z")
+            .unwrap();
         assert!(db.list_pending_scheduled_actions().unwrap().is_empty());
     }
 
@@ -408,7 +414,7 @@ mod tests {
         db.update_action_session("action-2", "ses-9").unwrap();
         db.finish_action(
             "action-1",
-            "completed",
+            ActionStatus::Completed,
             Some("hello"),
             None,
             None,
@@ -419,7 +425,7 @@ mod tests {
         .unwrap();
         db.finish_action(
             "action-2",
-            "failed",
+            ActionStatus::Failed,
             None,
             Some("connection refused"),
             Some("connection refused"),
@@ -436,14 +442,14 @@ mod tests {
         assert!(db.list_actions(Some("scheduled")).unwrap().is_empty());
 
         let finished = backgrounds.iter().find(|a| a.id == "action-1").unwrap();
-        assert_eq!(finished.status.as_deref(), Some("completed"));
+        assert_eq!(finished.status, ActionStatus::Completed);
         assert_eq!(finished.output.as_deref(), Some("hello"));
         assert_eq!(finished.exit_code, Some(0));
         assert_eq!(finished.session_id.as_deref(), Some("ses-9"));
         assert!(finished.finished_at.is_some());
 
         let failed = backgrounds.iter().find(|a| a.id == "action-2").unwrap();
-        assert_eq!(failed.status.as_deref(), Some("failed"));
+        assert_eq!(failed.status, ActionStatus::Failed);
         assert_eq!(failed.session_id.as_deref(), Some("ses-9"));
         assert_eq!(
             failed.log_path.as_deref(),
@@ -456,7 +462,7 @@ mod tests {
     }
 
     #[test]
-    fn scheduled_rows_keep_kind_and_fired_history() {
+    fn scheduled_rows_keep_kind_and_terminal_history() {
         let db = test_db();
         db.save_scheduled_action(
             "action-1",
@@ -470,17 +476,18 @@ mod tests {
             None,
         )
         .unwrap();
-        db.mark_scheduled_action_fired("action-1").unwrap();
+        db.complete_scheduled_action("action-1", "2026-08-04T02:00:01Z")
+            .unwrap();
         db.save_action("action-2", None, "echo", "2026-08-09T10:00:00Z")
             .unwrap();
 
-        // Pending list excludes both the fired scheduled action and the action.
+        // Pending list excludes both the completed scheduled action and the action.
         assert!(db.list_pending_scheduled_actions().unwrap().is_empty());
-        // Action listing still surfaces the fired scheduled action as history.
+        // Action listing still surfaces the completed scheduled action as history.
         let scheduled = db.list_actions(Some("scheduled")).unwrap();
         assert_eq!(scheduled.len(), 1);
         assert_eq!(scheduled[0].id, "action-1");
-        assert!(scheduled[0].fired);
+        assert_eq!(scheduled[0].status, ActionStatus::Completed);
         assert_eq!(scheduled[0].kind, "scheduled");
     }
 
@@ -493,7 +500,7 @@ mod tests {
             .unwrap();
         db.finish_action(
             "action-1",
-            "completed",
+            ActionStatus::Completed,
             Some("ok"),
             None,
             None,
@@ -508,11 +515,11 @@ mod tests {
         let backgrounds = db.list_actions(Some("background")).unwrap();
         let running_left = backgrounds
             .iter()
-            .filter(|a| a.status.as_deref() == Some("running"))
+            .filter(|a| a.status == ActionStatus::Running)
             .count();
         assert_eq!(running_left, 0);
         let j2 = backgrounds.iter().find(|a| a.id == "action-2").unwrap();
-        assert_eq!(j2.status.as_deref(), Some("failed"));
+        assert_eq!(j2.status, ActionStatus::Failed);
         assert!(j2.error_reason.as_deref().unwrap().contains("restarted"));
         // Second run is a no-op.
         assert_eq!(db.mark_interrupted_actions().unwrap(), 0);

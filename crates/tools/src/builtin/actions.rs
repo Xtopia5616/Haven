@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use haven_common::ActionStatus;
 use haven_common::types::RiskLevel;
 use serde_json::Value;
 use std::sync::Arc;
@@ -38,7 +39,7 @@ pub struct ActionsParams {
     pub operation: Option<ActionsOperation>,
     /// Optional filter when listing: only actions in this state.
     #[serde(default)]
-    pub status: Option<String>,
+    pub status: Option<ActionStatus>,
 }
 
 impl ActionsTool {
@@ -95,8 +96,8 @@ impl ActionsTool {
 
         let filter = params.status;
         let mut rows = self.actions.list_for_session(&session_id).await;
-        if let Some(f) = filter.as_deref() {
-            rows.retain(|r| r["status"].as_str() == Some(f));
+        if let Some(f) = filter {
+            rows.retain(|r| r["status"].as_str() == Some(f.as_str()));
         }
         let all_running = !rows.is_empty()
             && rows
@@ -163,7 +164,7 @@ impl Tool for ActionsTool {
                 },
                 "status": {
                     "type": "string",
-                    "enum": ["scheduled", "running", "completed", "failed", "cancelled"],
+                    "enum": ["waiting", "running", "completed", "failed", "cancelled"],
                     "description": "Optional filter when listing: only tasks in this state"
                 }
             },
@@ -187,7 +188,7 @@ impl Tool for ActionsTool {
                     "type": "object",
                     "additionalProperties": false,
                     "properties": {
-                        "status": { "type": "string", "enum": ["scheduled", "running", "completed", "failed", "cancelled"] }
+                        "status": { "type": "string", "enum": ["waiting", "running", "completed", "failed", "cancelled"] }
                     }
                 }
             ]

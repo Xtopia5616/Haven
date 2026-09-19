@@ -229,7 +229,9 @@ impl AgentLayer {
     /// follow-up, while the cancellation token stops an in-flight provider call.
     pub async fn interrupt_session(&self, session_id: &str) -> anyhow::Result<()> {
         if self.executor.interrupt_session(session_id).await? {
-            self.events.emit_session_updated(session_id, "paused").await;
+            self.events
+                .emit_session_updated(session_id, SessionStatus::Paused)
+                .await;
         }
         Ok(())
     }
@@ -1064,7 +1066,7 @@ impl AgentLayer {
             .run_blocking(move |db| db.get_session(&session_id_owned))
             .await?
             .ok_or_else(|| anyhow::anyhow!("session '{}' not found", session_id))?;
-        let status = SessionStatus::from_status_str(&record.status);
+        let status = record.status;
         Ok(haven_tools::AgentControlResult {
             session_id: record.id,
             status: status.as_str().into(),

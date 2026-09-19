@@ -338,7 +338,7 @@ impl ScheduledActionTool {
                         serde_json::json!({ "operation": "cancel", "cancelled": id }),
                     ))
                 } else {
-                    anyhow::bail!("schedule action '{}' not found or already fired", id)
+                    anyhow::bail!("schedule action '{}' not found or no longer waiting", id)
                 }
             }
         }
@@ -1213,7 +1213,7 @@ mod tests {
         assert_eq!(fired.title, "Test");
         assert_eq!(fired.body, "fire now");
 
-        // Fired scheduled_actions are reaped by the next set (cap stays clean).
+        // Terminal scheduled actions are reaped by the next set (cap stays clean).
         center
             .set(tool_spec(3600, "Next", "still pending"))
             .await
@@ -1274,7 +1274,7 @@ mod tests {
             .expect("timed out waiting for future fire");
         assert_eq!(fired.action_id, future_id);
 
-        // Both are marked fired in the DB; pending list is empty.
+        // Both are terminal in the DB; pending list is empty.
         assert!(db.list_pending_scheduled_actions().unwrap().is_empty());
     }
 
@@ -1390,7 +1390,7 @@ mod tests {
             assert_eq!(fired_evt.1["mode"], "tool");
         }
 
-        // cancel -> action:updated event.
+        // cancel -> action:finished event.
         let id2 = center
             .set(tool_spec(3600, "Keep", "pending"))
             .await
@@ -1400,9 +1400,10 @@ mod tests {
             let evs = events.lock().unwrap();
             let cancel_evt = evs
                 .iter()
-                .find(|(n, _)| n == "action:updated")
-                .expect("action:updated emitted");
+                .find(|(n, payload)| n == "action:finished" && payload["id"] == id2)
+                .expect("action:finished emitted");
             assert_eq!(cancel_evt.1["id"], id2);
+            assert_eq!(cancel_evt.1["status"], "cancelled");
         }
     }
 }

@@ -26,15 +26,14 @@ impl SessionSupervisor {
     pub(super) async fn persist_status(
         db: &Arc<Database>,
         session_id: &str,
-        status: &str,
+        status: SessionStatus,
     ) -> anyhow::Result<()> {
         let mut last_error = None;
         for attempt in 0..3 {
             let db = db.clone();
             let session_id = session_id.to_string();
-            let status = status.to_string();
             match db
-                .run_blocking(move |db| db.update_session_status(&session_id, &status))
+                .run_blocking(move |db| db.update_session_status(&session_id, status))
                 .await
             {
                 Ok(()) => return Ok(()),
@@ -91,7 +90,7 @@ impl SessionSupervisor {
     ) -> anyhow::Result<SessionStatus> {
         let Some(actor) = self.actor_for(session_id).await else {
             self.cancel_direct_waiters(session_id).await;
-            Self::persist_status(&self.db, session_id, SessionStatus::Completed.as_str()).await?;
+            Self::persist_status(&self.db, session_id, SessionStatus::Completed).await?;
             self.finish_ended_session(session_id, cascade).await;
             return Ok(SessionStatus::Completed);
         };
@@ -428,7 +427,7 @@ impl SessionSupervisor {
         let Some(actor) = self.actor_for(session_id).await else {
             return Ok(());
         };
-        let transition = actor.transition(status.clone(), persist).await?;
+        let transition = actor.transition(status, persist).await?;
         if transition.pending {
             self.enqueue_pending(session_id).await;
             self.wake_dispatcher();
@@ -447,27 +446,6 @@ impl SessionSupervisor {
             }
         }
         Ok(())
-    }
-
-    pub(crate) fn can_transition(from: &SessionStatus, to: &SessionStatus) -> bool {
-        use SessionStatus::*;
-        matches!(
-            (from, to),
-            (Pending, Running)
-                | (Pending, Paused)
-                | (Pending, Completed)
-                | (Pending, Error)
-                | (Running, Paused)
-                | (Running, Pending)
-                | (Running, Completed)
-                | (Running, Error)
-                | (Paused, Pending)
-                | (Paused, Completed)
-                | (Paused, Error)
-                | (Completed, Paused)
-                | (Error, Paused)
-                | (Error, Pending)
-        )
     }
 
     pub async fn cleanup_session_maps(&self, session_id: &str) {

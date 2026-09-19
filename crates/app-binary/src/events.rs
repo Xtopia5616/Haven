@@ -1,3 +1,4 @@
+use haven_common::{ActionStatus, SessionStatus};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -81,7 +82,7 @@ pub struct ActionEvent {
     pub id: String,
     pub kind: ActionKind,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub status: Option<String>,
+    pub status: Option<ActionStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -115,7 +116,7 @@ impl ActionEvent {
         Ok(Self {
             id: required_string(payload, "action_id")?,
             kind: ActionKind::Background,
-            status: optional_string(payload, "status")?,
+            status: optional_action_status(payload, "status")?,
             session_id: optional_string(payload, "session_id")?,
             started_at: optional_string(payload, "started_at")?,
             finished_at: optional_string(payload, "finished_at")?,
@@ -136,7 +137,8 @@ impl ActionEvent {
         Ok(Self {
             id: required_string(payload, "id")?,
             kind: ActionKind::Scheduled,
-            status: cancelled.then(|| "cancelled".to_string()),
+            status: optional_action_status(payload, "status")?
+                .or_else(|| cancelled.then_some(ActionStatus::Cancelled)),
             session_id: optional_string(payload, "session_id")?,
             started_at: None,
             finished_at: None,
@@ -183,6 +185,17 @@ fn optional_string(payload: &Value, field: &str) -> Result<Option<String>, Strin
     }
 }
 
+fn optional_action_status(payload: &Value, field: &str) -> Result<Option<ActionStatus>, String> {
+    match payload.get(field) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) => Ok(Some(ActionStatus::from_status_str(value))),
+        Some(value) => Err(format!(
+            "action payload field '{field}' must be a string or null, got {}",
+            value_type(value)
+        )),
+    }
+}
+
 fn optional_i32(payload: &Value, field: &str) -> Result<Option<i32>, String> {
     match payload.get(field) {
         None | Some(Value::Null) => Ok(None),
@@ -217,7 +230,7 @@ fn value_type(value: &Value) -> &'static str {
 #[derive(Clone, Serialize)]
 pub(crate) struct SessionLifecycleEvent {
     pub session_id: String,
-    pub status: String,
+    pub status: SessionStatus,
     /// A newly-created session may not have a generated title yet.
     pub title: Option<String>,
 }
@@ -558,7 +571,7 @@ mod tests {
     fn session_lifecycle_event_has_the_stable_wire_shape() {
         let event = SessionLifecycleEvent {
             session_id: "ses-1".into(),
-            status: "paused".into(),
+            status: SessionStatus::Paused,
             title: Some("Plan migration".into()),
         };
         assert_eq!(
@@ -610,6 +623,7 @@ mod tests {
         let event = ActionEvent::scheduled_from_value(
             &serde_json::json!({
                 "id": "act-2",
+                "status": "waiting",
                 "title": "Reminder",
                 "body": "Take a break",
                 "mode": "tool",
@@ -624,6 +638,7 @@ mod tests {
 
         assert_eq!(wire["id"], "act-2");
         assert_eq!(wire["kind"], "scheduled");
+        assert_eq!(wire["status"], "waiting");
         assert!(wire.get("tool_name").is_none());
         assert!(wire.get("tool_args").is_none());
         assert!(wire.get("prompt").is_none());

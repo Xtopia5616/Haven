@@ -112,7 +112,7 @@ Tauri 接收前端参数时采用其自动 camelCase → Rust snake_case 映射�
 | 事件 | Rust DTO（wire） | 生产者 | 消费者 | 顺序、幂等与敏感字段 |
 |---|---|---|---|---|
 | `session:created` | `SessionLifecycleEvent { session_id, status, title }` | Agent 创建会话 | 聊天页、根布局、记忆视图 | 在该会话首个流式事件前；按 `session_id` 幂等合并。`title` 可为 `null`，不得发送原始输入或摘要。 |
-| `session:updated` | `SessionLifecycleEvent` | Agent 状态变迁；完成/错误的副发 | 聊天页、根布局、记忆视图 | 状态顺序通常为 pending → running → paused/completed/error；消费方按最后状态归并，允许重复。只含展示标题。 |
+| `session:updated` | `SessionLifecycleEvent` | Agent 状态变迁；完成/错误的副发 | 聊天页、根布局、记忆视图 | `status` 只能是 `pending`、`running`、`paused`、`completed`、`error`；消费方按最后状态归并，允许重复。只含展示标题。 |
 | `session:completed` | `SessionLifecycleEvent` | Agent 完成 / 用户结束 | 聊天页、根布局、记忆视图 | 终态，随后无同 run 的流式事件；会同时副发 `session:updated`，消费者必须幂等。 |
 | `session:error` | `SessionErrorEvent { session_id, error }` | Agent 执行失败 | 聊天页、根布局、记忆视图 | 终态并副发 `session:updated(error)`；`error` 是面向用户的已净化错误，不得带密钥、完整命令输出或原始 provider 响应。 |
 | `session:title-updated` | `SessionTitleUpdatedEvent { session_id, title }` | Agent 自动标题 / `update_session_title` | 聊天页、记忆视图 | 可在任意非删除状态后出现；按 `session_id` 覆盖标题，重复安全。 |
@@ -126,12 +126,13 @@ Tauri 接收前端参数时采用其自动 camelCase → Rust snake_case 映射�
 |---|---|---|---|
 | `list_actions` | 无 | `ActionEvent[]` | 运行中后台任务、待触发定时任务和尚在内存板上的终态任务。 |
 | `cancel_action` | `{ action_id, kind }` | `bool` | `kind` 仅为 `background` 或 `scheduled`；未知值由 Tauri 反序列化拒绝。 |
-| `list_action_history` | `{ kind?, limit? }` | `ActionEvent[]` | 持久化历史；定时任务仅返回已触发记录，`limit` 最大为 200。 |
+| `list_action_history` | `{ kind?, limit? }` | `ActionEvent[]` | 持久化终态历史；定时任务返回已触发或已取消记录，`limit` 最大为 200。 |
 | `delete_action` | `{ action_id }` | `bool` | 删除一条已持久化的任务历史。 |
 
 `ActionEvent` 是任务面板的唯一公开记录：`{ id, kind, status?, session_id?, started_at?,
 finished_at?, due_at?, title?, body?, mode?, command?, output?, error?, error_reason?,
-exit_code?, preview? }`。它不包含动态 `tool_args`、续接 `prompt`、`tool_name` 或本地
+exit_code?, preview? }`。`status` 只能是 `waiting`、`running`、`completed`、`failed`、
+`cancelled`；`kind` 才区分 `background` 与 `scheduled`。它不包含动态 `tool_args`、续接 `prompt`、`tool_name` 或本地
 `log_path`；这些是执行内部字段，不能作为跨端契约或泄漏到 UI。
 
 ## 任务事件（v1）
@@ -143,9 +144,9 @@ exit_code?, preview? }`。它不包含动态 `tool_args`、续接 `prompt`、`to
 | 事件 | Rust DTO（wire） | 生产者 | 消费者 | 顺序、幂等与敏感字段 |
 |---|---|---|---|---|
 | `action:created` | `ActionEvent` | 后台任务创建 / 定时任务建立 | 根布局 `actionStore` | 在任务对用户可见前发送；按 `id` 覆盖合并，重复安全。 |
-| `action:updated` | `ActionEvent` | 后台任务关联会话 / 定时任务取消 | 根布局 `actionStore` | 后台任务只更新关联字段；定时任务 `status = cancelled`，消费者移除待触发条目。 |
+| `action:updated` | `ActionEvent` | 后台任务关联会话 | 根布局 `actionStore` | 只更新后台任务关联字段；取消不走此事件。 |
 | `action:output` | `ActionEvent` | 后台任务输出尾部变化 | 根布局 `actionStore` | 仅后台任务；可丢失、可重复，按 `id` 最后写入。输出已受后端尾部上限约束。 |
-| `action:finished` | `ActionEvent` | 后台任务终态 / 定时任务触发 | 根布局与聊天页 | 终态后不再期待同一任务的 `output`；后台按 `id` 合并，定时任务从待触发列表移除。 |
+| `action:finished` | `ActionEvent` | 后台任务终态 / 定时任务触发或取消 | 根布局与聊天页 | 终态后不再期待同一任务的 `output`；后台按 `id` 合并，定时任务从待触发列表移除。 |
 
 前端内部字段为 `sessionId`、`startedAt`、`errorReason` 等 camelCase；页面不得读取
 `action_id` 或其它工具内部 JSON 字段。

@@ -1,4 +1,5 @@
 use crate::interaction::InteractionRequest;
+pub use haven_common::lifecycle::SessionStatus;
 use haven_common::types::MessageAttachment;
 use haven_common::types::RiskLevel;
 use haven_memory::Database;
@@ -73,69 +74,6 @@ impl Drop for SessionClosingGuard {
 pub(crate) const SCHEDULED_CONFIRM_ABSOLUTE_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(30 * 60);
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum SessionStatus {
-    Pending,
-    Running,
-    Paused,
-    Completed,
-    Error,
-}
-
-impl SessionStatus {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            SessionStatus::Pending => "pending",
-            SessionStatus::Running => "running",
-            SessionStatus::Paused => "paused",
-            SessionStatus::Completed => "completed",
-            SessionStatus::Error => "error",
-        }
-    }
-
-    pub fn from_status_str(s: &str) -> Self {
-        match s {
-            "pending" => SessionStatus::Pending,
-            "running" => SessionStatus::Running,
-            "paused" => SessionStatus::Paused,
-            "completed" => SessionStatus::Completed,
-            "error" => SessionStatus::Error,
-            // Unknown/corrupt DB statuses must not silently map to Pending:
-            // that would auto-resurrect the session on the next dispatcher
-            // reload. Error is the safe interpretation (visible, inert).
-            other => {
-                tracing::warn!(
-                    "unknown session status string {:?}; mapping to Error",
-                    other
-                );
-                SessionStatus::Error
-            }
-        }
-    }
-
-    /// The interaction registry carries the reason for a pause.
-    pub fn is_paused(&self) -> bool {
-        matches!(self, SessionStatus::Paused)
-    }
-
-    pub fn is_terminal(&self) -> bool {
-        matches!(self, SessionStatus::Completed | SessionStatus::Error)
-    }
-}
-
-impl serde::Serialize for SessionStatus {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(self.as_str())
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for SessionStatus {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let s = String::deserialize(deserializer)?;
-        Ok(Self::from_status_str(&s))
-    }
-}
-
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SessionInfo {
     pub id: String,
@@ -164,7 +102,7 @@ impl SessionInfo {
             input: record.input_text.clone(),
             summary: record.transcript.clone(),
             title: record.title.clone(),
-            status: SessionStatus::from_status_str(&record.status),
+            status: record.status,
             steps: Vec::new(),
             created_at: record.created_at.clone(),
             updated_at: record.updated_at.clone(),
@@ -550,20 +488,20 @@ mod tests {
 
         // Wait for the dispatcher to claim the session, run the panicking
         // handler, and mark it Error in the DB (pending → running → error).
-        let mut db_status = String::new();
+        let mut db_status = SessionStatus::Pending;
         for _ in 0..100 {
             db_status = exec
                 .db
                 .get_session(&session.id)
                 .unwrap()
                 .map(|t| t.status)
-                .unwrap_or_default();
-            if db_status == "error" {
+                .unwrap_or(SessionStatus::Error);
+            if db_status == SessionStatus::Error {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
-        assert_eq!(db_status, "error");
+        assert_eq!(db_status, SessionStatus::Error);
         // Terminal status removed the session from the working set and released
         // the running slot; the session is absent, not "error" in memory.
         //
@@ -754,8 +692,8 @@ mod tests {
             .get_session(&session.id)
             .unwrap()
             .map(|t| t.status)
-            .unwrap_or_default();
-        assert_eq!(db_status, "running");
+            .unwrap_or(SessionStatus::Error);
+        assert_eq!(db_status, SessionStatus::Running);
 
         // No second claim while the first handler holds the slot.
         assert!(exec.try_claim_pending().await.is_none());
@@ -1593,7 +1531,7 @@ mod tests {
                 .get_session(&session.id)
                 .unwrap()
                 .map(|record| record.status),
-            Some("pending".into())
+            Some(SessionStatus::Pending)
         );
 
         assert_eq!(exec2.load_pending_sessions().await.unwrap(), 1);

@@ -2,6 +2,7 @@ pub mod config;
 pub mod encoding;
 pub mod error;
 pub mod hooks;
+pub mod lifecycle;
 pub mod media;
 pub mod media_detection;
 pub mod process_containment;
@@ -37,6 +38,7 @@ pub use tools::{
     ToolPresentation, ToolPrompt, ToolRetrySafety, ToolSource,
 };
 
+pub use lifecycle::{ActionStatus, SessionStatus};
 pub use types::{
     CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart, FollowUp, InjectSource,
     MessageAttachment, PEER_KICKOFF_PREFIX,

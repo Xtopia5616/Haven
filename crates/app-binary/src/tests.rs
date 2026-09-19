@@ -88,7 +88,7 @@ fn channel_maps_every_variant_to_expected_channel() {
         (
             AgentEvent::SessionUpdated {
                 session_id: "t".into(),
-                status: "paused".into(),
+                status: haven_common::SessionStatus::Paused,
             },
             "session:updated",
         ),
@@ -417,7 +417,7 @@ fn payload_preserves_session_lifecycle_and_error_wire_shapes() {
 
     let updated = AgentEvent::SessionUpdated {
         session_id: "t".into(),
-        status: "paused".into(),
+        status: haven_common::SessionStatus::Paused,
     };
     let payload = TauriEmitter::payload(&updated, None);
     assert_eq!(

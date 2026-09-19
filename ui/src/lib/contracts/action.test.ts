@@ -33,4 +33,10 @@ describe('action IPC contract', () => {
 			kind: 'scheduled',
 		});
 	});
+
+	it('fails closed for unknown task statuses', () => {
+		expect(
+			mapActionPayload({ id: 'act-3', kind: 'background', status: 'unexpected' }),
+		).toMatchObject({ id: 'act-3', status: 'failed' });
+	});
 });

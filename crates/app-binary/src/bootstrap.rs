@@ -502,7 +502,7 @@ pub(crate) fn run() {
                                                 SESSION_UPDATED_EVENT,
                                                 SessionLifecycleEvent {
                                                     session_id,
-                                                    status: "error".into(),
+                                                    status: haven_common::SessionStatus::Error,
                                                     title: Some(String::new()),
                                                 },
                                             )

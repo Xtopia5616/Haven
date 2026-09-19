@@ -1,3 +1,4 @@
+use haven_common::ActionStatus;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -81,8 +82,8 @@ impl ActionCompletionReceiver {
 
 /// Optional sink for action lifecycle events surfaced to the UI. The
 /// sink is called with `(event, payload)` where event is one of:
-/// - `action:created`  — a action was spawned
-///   `{ action_id, status: "running", kind: "background", started_at }`
+/// - `action:created`  — an action was admitted
+///   `{ action_id, status: "running"|"waiting", kind, started_at|due_at }`
 /// - `action:updated`  — the action was bound to a session `{ action_id, session_id }`
 /// - `action:output`   — live output preview while the action runs
 ///   `{ action_id, status: "running", output }` (bounded tail, emitted periodically)
@@ -145,15 +146,29 @@ pub(crate) struct ScheduledActionEntry {
     pub(crate) tool_args: Option<Value>,
     pub(crate) prompt: Option<String>,
     pub(crate) watch_action_id: Option<String>,
-    pub(crate) fired: bool,
 }
 
 impl ActionState {
+    fn status(&self) -> ActionStatus {
+        match self {
+            Self::Waiting { .. } => ActionStatus::Waiting,
+            Self::Running { .. } => ActionStatus::Running,
+            Self::Completed { .. } => ActionStatus::Completed,
+            Self::Failed { .. } => ActionStatus::Failed,
+            Self::Cancelled { .. } => ActionStatus::Cancelled,
+        }
+    }
+
+    fn is_waiting(&self) -> bool {
+        matches!(self, Self::Waiting { .. })
+    }
+
+    fn can_transition_to(&self, next: ActionStatus) -> bool {
+        self.status().can_transition_to(next)
+    }
+
     fn is_terminal(&self) -> bool {
-        !matches!(
-            self,
-            ActionState::Running { .. } | ActionState::Waiting { .. }
-        )
+        self.status().is_terminal()
     }
 }
 
@@ -377,7 +392,7 @@ impl ActionService {
         let Some(db) = self.db.read().await.clone() else {
             return;
         };
-        let (status, output, error, error_reason, log_path, exit_code, finished_at) = match state {
+        let (output, error, error_reason, log_path, exit_code, finished_at) = match state {
             ActionState::Completed {
                 output,
                 exit_code,
@@ -385,7 +400,6 @@ impl ActionService {
                 finished_at,
                 ..
             } => (
-                "completed",
                 Some(output.as_str()),
                 None,
                 None,
@@ -401,7 +415,6 @@ impl ActionService {
                 finished_at,
                 ..
             } => (
-                "failed",
                 None,
                 Some(error.as_str()),
                 Some(error_reason.as_str()),
@@ -409,19 +422,13 @@ impl ActionService {
                 *exit_code,
                 finished_at.as_str(),
             ),
-            ActionState::Cancelled { finished_at, .. } => (
-                "cancelled",
-                None,
-                None,
-                None,
-                None,
-                None,
-                finished_at.as_str(),
-            ),
+            ActionState::Cancelled { finished_at, .. } => {
+                (None, None, None, None, None, finished_at.as_str())
+            }
             ActionState::Running { .. } | ActionState::Waiting { .. } => return,
         };
         let action_id = action_id.to_string();
-        let status = status.to_string();
+        let status = state.status();
         let output = output.map(str::to_string);
         let error = error.map(str::to_string);
         let error_reason = error_reason.map(str::to_string);
@@ -432,7 +439,7 @@ impl ActionService {
             .run_blocking(move |db| {
                 db.finish_action(
                     &action_id_for_db,
-                    &status,
+                    status,
                     output.as_deref(),
                     error.as_deref(),
                     error_reason.as_deref(),
@@ -497,7 +504,7 @@ impl ActionService {
         for (id, entry) in actions.iter() {
             if entry.kind != ActionKind::Background {
                 if let Some(schedule) = &entry.scheduled
-                    && !schedule.fired
+                    && entry.state.is_waiting()
                 {
                     rows.push(scheduled_status_json(id, schedule, None));
                 }
@@ -528,7 +535,7 @@ impl ActionService {
         for (id, entry) in actions.iter() {
             if entry.kind != ActionKind::Background {
                 if let Some(schedule) = &entry.scheduled
-                    && !schedule.fired
+                    && entry.state.is_waiting()
                     && schedule.session_id.as_deref() == Some(session_id)
                 {
                     rows.push(scheduled_status_json(id, schedule, Some(session_id)));
@@ -836,12 +843,8 @@ impl ActionService {
                 .scheduled
                 .as_ref()
                 .map(|schedule| {
-                    if schedule.fired {
-                        let status = match &entry.state {
-                            ActionState::Cancelled { .. } => "cancelled",
-                            _ => "completed",
-                        };
-                        json!({"action_id": action_id, "status": status})
+                    if !entry.state.is_waiting() {
+                        json!({"action_id": action_id, "status": entry.state.status().as_str()})
                     } else {
                         scheduled_status_json(action_id, schedule, None)
                     }
@@ -862,7 +865,7 @@ impl ActionService {
             let Some(schedule) = entry.scheduled.as_ref() else {
                 return json!({"action_id": action_id, "status": "not_found"});
             };
-            if schedule.session_id.as_deref() != Some(session_id) || schedule.fired {
+            if schedule.session_id.as_deref() != Some(session_id) || !entry.state.is_waiting() {
                 return json!({"action_id": action_id, "status": "not_found"});
             }
             return scheduled_status_json(action_id, schedule, Some(session_id));
@@ -968,10 +971,10 @@ impl ActionService {
             let Some(schedule) = entry.scheduled.as_mut() else {
                 return false;
             };
-            if schedule.fired {
+            if entry.state.is_terminal() || !entry.state.can_transition_to(ActionStatus::Cancelled)
+            {
                 return false;
             }
-            schedule.fired = true;
             let due_at = schedule.due_at.clone();
             entry.state = ActionState::Cancelled {
                 started_at: due_at,
@@ -1000,10 +1003,12 @@ impl ActionService {
             let Some(schedule) = entry.scheduled.as_mut() else {
                 return false;
             };
-            if schedule.fired || schedule.session_id.as_deref() != Some(session_id) {
+            if entry.state.is_terminal()
+                || !entry.state.can_transition_to(ActionStatus::Cancelled)
+                || schedule.session_id.as_deref() != Some(session_id)
+            {
                 return false;
             }
-            schedule.fired = true;
             let due_at = schedule.due_at.clone();
             entry.state = ActionState::Cancelled {
                 started_at: due_at,
@@ -1058,7 +1063,8 @@ impl ActionService {
                     .await;
             } else if entry.state.is_terminal() {
                 // UI-only: the board is dropping a row whose agent completion
-                // already fired (or never needed one). Re-sending completion_tx
+                // already reached a terminal state (or never needed one).
+                // Re-sending completion_tx
                 // would risk duplicate inject on an ending session.
                 let mut status_json = render_status_json(&id, &entry.state);
                 if let Some(tid) = &entry.session_id {
@@ -1087,6 +1093,14 @@ impl ActionService {
             let Some(entry) = actions.get_mut(id) else {
                 return;
             };
+            let next = if success {
+                ActionStatus::Completed
+            } else {
+                ActionStatus::Failed
+            };
+            if entry.state.is_terminal() || !entry.state.can_transition_to(next) {
+                return;
+            }
             entry.kill = None;
             entry.tail = None;
             let finished_at = chrono::Utc::now().to_rfc3339();
@@ -1137,6 +1151,10 @@ impl ActionService {
             let Some(entry) = actions.get_mut(id) else {
                 return;
             };
+            if entry.state.is_terminal() || !entry.state.can_transition_to(ActionStatus::Cancelled)
+            {
+                return;
+            }
             entry.kill = None;
             entry.tail = None;
             entry.state = ActionState::Cancelled {
@@ -1151,7 +1169,7 @@ impl ActionService {
 
 impl ActionService {
     /// Schedule a timer or an action dependency in the same state map as
-    /// background processes. `Pending` is represented by `fired = false`; fire
+    /// background processes. `Waiting` is the explicit pre-fire state; fire
     /// is one idempotent transition that publishes the continuation payload
     /// and updates durable history.
     pub async fn set(
@@ -1251,19 +1269,14 @@ impl ActionService {
         }
         let max_pending = *self.max_scheduled_actions.read().await;
         let mut actions = self.actions.write().await;
-        // Fired schedules are already durable history and must not consume
+        // Terminal schedules are already durable history and must not consume
         // the in-memory pending budget. Reap them at the next admission just
         // like terminal process entries are reaped by the process worker.
-        actions.retain(|_, entry| {
-            !(entry.kind == ActionKind::Scheduled
-                && entry.scheduled.as_ref().is_some_and(|item| item.fired))
-        });
+        actions
+            .retain(|_, entry| !(entry.kind == ActionKind::Scheduled && !entry.state.is_waiting()));
         let pending = actions
             .values()
-            .filter(|entry| {
-                entry.kind == ActionKind::Scheduled
-                    && entry.scheduled.as_ref().is_some_and(|item| !item.fired)
-            })
+            .filter(|entry| entry.kind == ActionKind::Scheduled && entry.state.is_waiting())
             .count();
         drop(actions);
         if pending >= max_pending {
@@ -1314,7 +1327,6 @@ impl ActionService {
             tool_args: tool_args.clone(),
             prompt: prompt.clone(),
             watch_action_id: watch_action_id.clone(),
-            fired: false,
         };
         self.actions.write().await.insert(
             id.clone(),
@@ -1339,7 +1351,7 @@ impl ActionService {
                 "id": id,
                 "action_id": id,
                 "kind": "scheduled",
-                "status": "scheduled",
+                "status": "waiting",
                 "title": title,
                 "body": body,
                 "mode": mode.as_str(),
@@ -1389,7 +1401,7 @@ impl ActionService {
             .filter_map(|(id, entry)| {
                 let schedule = entry.scheduled.as_ref()?;
                 if entry.kind != ActionKind::Scheduled
-                    || schedule.fired
+                    || !entry.state.is_waiting()
                     || owner.is_some_and(|value| schedule.session_id.as_deref() != Some(value))
                 {
                     return None;
@@ -1408,13 +1420,14 @@ impl ActionService {
             let Some(action) = actions.get_mut(id) else {
                 return;
             };
+            if action.state.is_terminal()
+                || !action.state.can_transition_to(ActionStatus::Completed)
+            {
+                return;
+            }
             let Some(schedule) = action.scheduled.as_mut() else {
                 return;
             };
-            if schedule.fired {
-                return;
-            }
-            schedule.fired = true;
             action.state = ActionState::Completed {
                 output: String::new(),
                 exit_code: None,
@@ -1439,7 +1452,7 @@ impl ActionService {
             .completion_tx
             .send(ActionCompletion::Scheduled(payload));
         self.emit_scheduled_finished(id, &entry);
-        self.persist_scheduled_fired(id).await;
+        self.persist_scheduled_completed(id).await;
     }
 
     async fn watch_action_timer(self: &Arc<Self>, id: String, watched_id: String) {
@@ -1456,13 +1469,14 @@ impl ActionService {
                 let Some(action) = actions.get_mut(&id) else {
                     return;
                 };
+                if action.state.is_terminal()
+                    || !action.state.can_transition_to(ActionStatus::Completed)
+                {
+                    return;
+                }
                 let Some(schedule) = action.scheduled.as_mut() else {
                     return;
                 };
-                if schedule.fired {
-                    return;
-                }
-                schedule.fired = true;
                 schedule.prompt = Some(prompt);
                 action.state = ActionState::Completed {
                     output: String::new(),
@@ -1488,19 +1502,21 @@ impl ActionService {
                 .completion_tx
                 .send(ActionCompletion::Scheduled(payload));
             self.emit_scheduled_finished(&id, &entry);
+            self.persist_scheduled_completed(&id).await;
             return;
         }
     }
 
-    async fn persist_scheduled_fired(&self, id: &str) {
+    async fn persist_scheduled_completed(&self, id: &str) {
         if let Some(db) = self.db.read().await.clone() {
             let id = id.to_string();
             let id_for_db = id.clone();
+            let finished_at = chrono::Utc::now().to_rfc3339();
             if let Err(error) = db
-                .run_blocking(move |db| db.mark_scheduled_action_fired(&id_for_db))
+                .run_blocking(move |db| db.complete_scheduled_action(&id_for_db, &finished_at))
                 .await
             {
-                tracing::warn!(action_id = %id, "failed to persist scheduled action fired state: {error}");
+                tracing::warn!(action_id = %id, "failed to persist scheduled action completion: {error}");
             }
         }
     }
@@ -1524,14 +1540,16 @@ impl ActionService {
 
     async fn finish_scheduled_cancel(&self, id: &str) {
         self.emit(
-            "action:updated",
+            "action:finished",
             json!({"id": id, "action_id": id, "kind": "scheduled", "status": "cancelled"}),
         );
         if let Some(db) = self.db.read().await.clone() {
             let id = id.to_string();
             let id_for_db = id.clone();
             if let Err(error) = db
-                .run_blocking(move |db| db.delete_scheduled_action(&id_for_db))
+                .run_blocking(move |db| {
+                    db.cancel_scheduled_action(&id_for_db, &chrono::Utc::now().to_rfc3339())
+                })
                 .await
             {
                 tracing::warn!(action_id = %id, "failed to persist scheduled action cancellation: {error}");
@@ -1547,10 +1565,9 @@ impl ActionService {
                 .filter_map(|(id, entry)| {
                     let schedule = entry.scheduled.as_mut()?;
                     if entry.kind == ActionKind::Scheduled
-                        && !schedule.fired
+                        && entry.state.is_waiting()
                         && schedule.session_id.as_deref() == Some(session_id)
                     {
-                        schedule.fired = true;
                         entry.state = ActionState::Cancelled {
                             started_at: schedule.due_at.clone(),
                             finished_at: chrono::Utc::now().to_rfc3339(),
@@ -1652,7 +1669,6 @@ impl ActionService {
                 tool_args,
                 prompt: row.prompt,
                 watch_action_id: None,
-                fired: false,
             };
             let id = row.id;
             self.actions.write().await.insert(
@@ -1697,7 +1713,7 @@ fn scheduled_status_json(id: &str, entry: &ScheduledActionEntry, _owner: Option<
         "id": id,
         "action_id": id,
         "kind": "scheduled",
-        "status": "scheduled",
+        "status": "waiting",
         "title": entry.title,
         "body": entry.body,
         "mode": entry.mode.as_str(),
@@ -1821,7 +1837,7 @@ fn render_status_json(action_id: &str, state: &ActionState) -> Value {
             "finished_at": finished_at,
         }),
         ActionState::Waiting { due_at } => {
-            json!({ "action_id": action_id, "status": "scheduled", "due_at": due_at })
+            json!({ "action_id": action_id, "status": "waiting", "due_at": due_at })
         }
         ActionState::Running { .. } => {
             json!({ "action_id": action_id, "status": "running" })

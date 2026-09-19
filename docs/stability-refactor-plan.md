@@ -90,6 +90,7 @@
 - 2026-09-19：P2 LLM provider adapter 内部结构收口：OpenAI Chat、Responses、Anthropic 与 Gemini 按 wire、request、response、stream、mapping、features 拆分，provider-local request/response/stream golden fixtures 独立登记；保持外部 wire、共享 transport/framing 和 LlmClient 契约不变（ADR 0169）。
 - 2026-09-19：P1 Common / LLM / App / UI 模型路由收口：删除持久化 five-slot 模型字段与 STT/vision 布尔开关，改用命名模型、`Capability` 与有序 `RequestPolicy`；旧 `llm.roles` 在加载时转换，`ApiKeyStatus` 改为按 model id 返回，保留 `EndpointRole` 作为迁移期边界（ADR 0170）。
 - 2026-09-19：P1 Agent / UI 并发会话边界收口：以精确 active-run admission、单 dispatcher、生命周期闸门和 quiesce-then-mutate 修复运行槽位、删除/清空与 actor 注册竞态；UI 提交改为按 session 分 lane，草稿 lane 保持串行接管并补齐 FIFO/并行回归测试（ADR 0171）。
+- 2026-09-19：P1 Common / Memory / Agent / Tools / App / UI 任务与会话生命周期收口：状态枚举下沉到 Common；session 与 action 的持久化、运行时、事件和前端契约改为单一 typed 状态源；删除定时任务 `scheduled`/`fired` 双重状态，取消与触发统一保留终态历史（ADR 0172）。
 - 2026-08-30：P2 Agent 事实抽取边界收口：事实抽取 DTO、字段 coercion、标签/谓词规范化、prompt 清洗与 JSON array 提取集中到 `fact_extraction.rs`，保持抽取与持久化语义不变（ADR 0029）。
 - 2026-08-30：P2 UI 会话消息状态边界收口：会话消息 map、草稿/会话迁移、rollback 截断与流式 sequence 去重集中到 `ui/src/lib/sessionMessages.ts`（ADR 0030）。
 - 2026-08-30：P2 UI 会话用量状态边界收口：token usage、LLM 调用明细、恢复/清理与用量格式化集中到 `ui/src/lib/sessionUsage.ts`（ADR 0031）。

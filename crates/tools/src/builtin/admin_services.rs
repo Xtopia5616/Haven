@@ -189,7 +189,9 @@ impl AdminServices {
             match db.list_sessions(50, 0) {
                 Ok(sessions) => {
                     for session in &sessions {
-                        *counts.entry(session.status.clone()).or_default() += 1;
+                        *counts
+                            .entry(session.status.as_str().to_string())
+                            .or_default() += 1;
                     }
                 }
                 Err(error) => {
@@ -279,7 +281,7 @@ impl AdminServices {
         let sessions = db.list_sessions(limit.unwrap_or(10).clamp(1, 50), 0)?;
         let rows: Vec<Value> = sessions
             .into_iter()
-            .filter(|session| session.status == "error")
+            .filter(|session| session.status == haven_common::SessionStatus::Error)
             .map(|session| {
                 serde_json::json!({
                     "id": session.id,

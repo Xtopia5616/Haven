@@ -3,6 +3,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use crate::session::SessionInfo;
 use async_trait::async_trait;
+use haven_common::SessionStatus;
 use haven_memory::Database;
 use haven_tools::ToolResultEnvelope;
 use serde::{Deserialize, Serialize};
@@ -168,7 +169,7 @@ pub enum AgentEvent {
     },
     SessionUpdated {
         session_id: String,
-        status: String,
+        status: SessionStatus,
     },
     Compaction {
         session_id: String,
@@ -790,18 +791,18 @@ impl EventDispatcher {
         }
     }
 
-    pub async fn emit_session_updated(&self, session_id: &str, status: &str) {
+    pub async fn emit_session_updated(&self, session_id: &str, status: SessionStatus) {
         tracing::debug!(
             "emit_session_updated event: session={} status={}",
             session_id,
-            status
+            status.as_str()
         );
         let emitter = lock_or_recover(&self.emitter, "event_emitter").clone();
         if let Some(emitter) = emitter {
             emitter
                 .emit(AgentEvent::SessionUpdated {
                     session_id: session_id.into(),
-                    status: status.into(),
+                    status,
                 })
                 .await;
         }
@@ -1292,7 +1293,7 @@ mod tests {
             buffered
                 .emit(AgentEvent::SessionUpdated {
                     session_id: format!("ses-{i}"),
-                    status: "running".into(),
+                    status: SessionStatus::Running,
                 })
                 .await;
         }

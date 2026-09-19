@@ -14,7 +14,9 @@ export const SESSION_STATUSES = [
 	'paused',
 	'completed',
 	'error',
-];
+] as const;
+
+export type SessionStatus = (typeof SESSION_STATUSES)[number];
 
 const COLOR_MAP: Record<string, string> = {
 	pending: '#666',

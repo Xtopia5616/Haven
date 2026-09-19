@@ -242,19 +242,19 @@ impl TauriEmitter {
             }),
             AgentEvent::SessionCreated(session) => serialize(SessionLifecycleEvent {
                 session_id: session.id.clone(),
-                status: session.status.as_str().to_string(),
+                status: session.status,
                 title: session.title.clone(),
             }),
             AgentEvent::SessionCompleted { session_id, title } => {
                 serialize(SessionLifecycleEvent {
                     session_id: session_id.clone(),
-                    status: "completed".into(),
+                    status: haven_common::SessionStatus::Completed,
                     title: Some(title.clone()),
                 })
             }
             AgentEvent::SessionUpdated { session_id, status } => serialize(SessionLifecycleEvent {
                 session_id: session_id.clone(),
-                status: status.clone(),
+                status: *status,
                 title: Some(String::new()),
             }),
             AgentEvent::SessionError { session_id, error } => serialize(SessionErrorEvent {
@@ -510,10 +510,10 @@ impl TauriEmitter {
             AgentEvent::SessionUpdated { session_id, status } => {
                 tracing::info!(
                     session_id = %session_id,
-                    status = %status,
+                    status = status.as_str(),
                     "TauriEmitter::on_session_updated"
                 );
-                if status == "paused" {
+                if *status == haven_common::SessionStatus::Paused {
                     tracing::warn!(
                         session_id = %session_id,
                         "TauriEmitter emitting session:updated with paused status"
@@ -556,7 +556,7 @@ impl TauriEmitter {
             AgentEvent::SessionCompleted { session_id, title } => {
                 serde_json::to_value(SessionLifecycleEvent {
                     session_id: session_id.clone(),
-                    status: "completed".into(),
+                    status: haven_common::SessionStatus::Completed,
                     title: Some(title.clone()),
                 })
                 .unwrap_or_else(|error| {
@@ -570,7 +570,7 @@ impl TauriEmitter {
             AgentEvent::SessionError { session_id, .. } => {
                 serde_json::to_value(SessionLifecycleEvent {
                     session_id: session_id.clone(),
-                    status: "error".into(),
+                    status: haven_common::SessionStatus::Error,
                     title: Some(self.notifications.session_display_title(session_id)),
                 })
                 .unwrap_or_else(|error| {

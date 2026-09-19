@@ -112,7 +112,7 @@ impl AgentLayer {
         }
         if self.executor.get_session_state(session_id).await == Some(SessionStatus::Running) {
             self.events
-                .emit_session_updated(session_id, "running")
+                .emit_session_updated(session_id, SessionStatus::Running)
                 .await;
         }
 

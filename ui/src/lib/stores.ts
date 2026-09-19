@@ -222,8 +222,7 @@ const ACTION_STORE_MAX = 64;
 
 /** Live board rows that must never be evicted to make room for history. */
 function isLiveActionRow(entry: ActionEntry) {
-	if (entry.kind === 'scheduled') return true;
-	return entry.status === 'running';
+	return entry.status === 'waiting' || entry.status === 'running';
 }
 
 function trimActionStore(entries: Record<string, ActionEntry>) {
@@ -257,7 +256,7 @@ export function upsertAction(payload: ActionPayload) {
 	});
 }
 
-/** Drop a action (fired or cancelled scheduled action, action removed server-side). */
+/** Drop an action removed from the live board by a terminal lifecycle event. */
 export function removeAction(id: string) {
 	if (!id) return;
 	actionStore.update((m) => {
@@ -274,7 +273,7 @@ export async function refreshActions() {
 		if (!Array.isArray(rows)) return;
 		// Replace the registry: entries missing from the board were removed
 		// server-side (a session ending cancels its actions without terminal
-		// events, fired scheduled actions leave the pending list), so they must
+		// events, completed/cancelled scheduled actions leave the pending list), so they must
 		// not linger as stale rows.
 		actionStore.update((m) => {
 			const next: Record<string, ActionEntry> = {};

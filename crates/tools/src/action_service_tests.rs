@@ -123,7 +123,7 @@ async fn test_action_result_persisted_to_db() {
         let rows = db.list_actions(Some("background")).unwrap();
         if let Some(row) = rows
             .iter()
-            .find(|r| r.id == id && r.status.as_deref() == Some("completed"))
+            .find(|r| r.id == id && r.status == haven_common::ActionStatus::Completed)
         {
             break row.clone();
         }
@@ -134,7 +134,7 @@ async fn test_action_result_persisted_to_db() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
     assert_eq!(row.kind, "background");
-    assert_eq!(row.status.as_deref(), Some("completed"));
+    assert_eq!(row.status, haven_common::ActionStatus::Completed);
     assert_eq!(row.session_id.as_deref(), Some("ses-DB"));
     assert!(row.output.as_deref().unwrap().contains("live-line"));
     assert_eq!(row.exit_code, Some(0));
@@ -618,10 +618,10 @@ async fn test_unified_service_owns_scheduled_state_and_cancel() {
     assert_eq!(board.len(), 1);
     assert_eq!(board[0]["action_id"], id);
     assert_eq!(board[0]["kind"], "scheduled");
-    assert_eq!(board[0]["status"], "scheduled");
+    assert_eq!(board[0]["status"], "waiting");
     assert_eq!(
         service.status_for_session(&id, "ses-unified").await["status"],
-        "scheduled"
+        "waiting"
     );
 
     assert!(!service.cancel_for_session(&id, "ses-other").await);
@@ -688,7 +688,7 @@ async fn test_shutdown_stops_scheduled_timers_and_rejects_new_work() {
     service.shutdown().await;
     service.shutdown().await;
 
-    assert_eq!(service.status(&id).await["status"], "scheduled");
+    assert_eq!(service.status(&id).await["status"], "waiting");
     assert!(
         tokio::time::timeout(Duration::from_millis(1200), rx.recv())
             .await

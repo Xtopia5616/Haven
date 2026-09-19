@@ -1303,7 +1303,7 @@ async fn continue_session_resumes_errored_session() {
     // Simulate an errored session with a saved snapshot.
     agent
         .db
-        .update_session_status(&session.id, "error")
+        .update_session_status(&session.id, SessionStatus::Error)
         .unwrap();
     executor
         .update_session_status(&session.id, SessionStatus::Error)
@@ -1372,7 +1372,7 @@ async fn continue_session_preserves_history_without_an_error_partial_marker() {
         .unwrap();
     agent
         .db
-        .update_session_status(&session.id, "error")
+        .update_session_status(&session.id, SessionStatus::Error)
         .unwrap();
     executor
         .update_session_status(&session.id, SessionStatus::Error)

@@ -15,6 +15,7 @@ export const TASK_KIND_LABELS: Record<TaskKind, string> = {
 };
 
 const ACTION_STATUS_LABELS: Record<string, string> = {
+	waiting: '待执行',
 	running: '运行中',
 	completed: '已完成',
 	failed: '失败',

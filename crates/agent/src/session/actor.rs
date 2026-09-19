@@ -556,7 +556,7 @@ struct ActorState {
 
 pub(crate) fn spawn(db: Arc<Database>, info: SessionInfo) -> SessionActorHandle {
     let (tx, mut rx) = mpsc::channel(ACTOR_MAILBOX_CAPACITY);
-    let (status, _) = watch::channel(info.status.clone());
+    let (status, _) = watch::channel(info.status);
     let (run_state, _) = watch::channel(false);
     let cancel = CancellationToken::new();
     let handle = SessionActorHandle {
@@ -874,14 +874,14 @@ async fn transition(
     next: SessionStatus,
     persist: bool,
 ) -> anyhow::Result<StatusTransition> {
-    let old = state.info.status.clone();
+    let old = state.info.status;
     if old == next {
         return Ok(StatusTransition {
             pending: next == SessionStatus::Pending,
             terminal: next.is_terminal(),
         });
     }
-    if !super::SessionSupervisor::can_transition(&old, &next) {
+    if !old.can_transition_to(next) {
         tracing::warn!(
             session_id = %state.info.id,
             from = old.as_str(),
@@ -894,11 +894,11 @@ async fn transition(
         });
     }
     if persist {
-        super::SessionSupervisor::persist_status(db, &state.info.id, next.as_str()).await?;
+        super::SessionSupervisor::persist_status(db, &state.info.id, next).await?;
     }
-    state.info.status = next.clone();
+    state.info.status = next;
     state.info.updated_at = chrono::Utc::now().to_rfc3339();
-    let _ = status.send(next.clone());
+    let _ = status.send(next);
     Ok(StatusTransition {
         pending: next == SessionStatus::Pending,
         terminal: next.is_terminal(),
@@ -914,8 +914,7 @@ async fn claim_run(
     if state.info.status != SessionStatus::Pending || state.running {
         return Ok(RunClaim { accepted: false });
     }
-    super::SessionSupervisor::persist_status(db, &state.info.id, SessionStatus::Running.as_str())
-        .await?;
+    super::SessionSupervisor::persist_status(db, &state.info.id, SessionStatus::Running).await?;
     state.info.status = SessionStatus::Running;
     state.info.updated_at = chrono::Utc::now().to_rfc3339();
     state.running = true;

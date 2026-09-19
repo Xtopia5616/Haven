@@ -291,7 +291,9 @@ Temp（全局约束）。
 
 `ActionService`（`haven-tools/src/action_service.rs`）是后台与定时任务的唯一运行时状态机；
 shell 进程、定时器和 action dependency 共享一个 action map、一个生命周期 sink 和一个
-completion bus。model-facing `actions.*` 和 app action board 都直接读取规范化 task row。
+completion bus。统一状态为 `waiting → running → completed | failed | cancelled`；定时任务的
+`kind` 只表示任务类型，不再作为状态值。model-facing `actions.*` 和 app action board 都
+直接读取规范化 task row。
 `InteractionRequest`（`haven-agent/src/interaction.rs`）
 是 ask、confirm 和 scheduled confirm 的共同生命周期投影，快照通过 `interactions` 保存当前
 请求；旧快照不做运行时兼容读取，新的交互状态以 `Pending → Resolved | Expired | Cancelled`
@@ -466,6 +468,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 
 | 日期 | 内容 |
 |---|---|
+| 2026-09-19 | §2.3 Memory / §2.5 Agent / Tools / App / UI：将 session 与 action 状态下沉为 Common typed lifecycle；删除 `actions.fired` 与 `scheduled` 状态，统一定时任务取消/触发终态和 IPC 投影（ADR 0172） |
 | 2026-09-19 | §2.2 Common / LLM / App / UI：将固定 five-slot 模型配置和 STT/vision 布尔开关改为命名模型、`Capability` 与 `RequestPolicy` 路由；旧 `llm.roles` 在加载时一次性转换，provider adapter wire 契约保持不变（ADR 0170） |
 | 2026-09-19 | §2.5 Agent / §2.6 UI：以精确 active-run admission、单 dispatcher、生命周期闸门和 quiesce-then-mutate 收口并发会话；UI 提交改为按 session 分 lane，草稿 lane 保持串行接管（ADR 0171） |
 | 2026-09-19 | §2.2 LLM：将 OpenAI Chat、Responses、Anthropic 与 Gemini provider adapter 按 wire、request、response、stream、mapping、features 与 provider-local golden fixtures 拆分；保持外部 wire、共享 transport/framing 与 LlmClient 边界不变（ADR 0169） |

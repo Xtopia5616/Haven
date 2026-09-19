@@ -41,7 +41,7 @@
 			kind: 'scheduled',
 			title: taskTitle(action),
 			subtitle: scheduleModeLabel(action.mode),
-			status: 'scheduled',
+			status: 'waiting',
 			sessionId: action.sessionId,
 			value: action,
 		})),
@@ -81,13 +81,13 @@
 
 	/** @param {any} row */
 	function rowStatus(row) {
-		if (row.kind === 'scheduled') return row.status === 'scheduled' ? '待执行' : '已执行';
+		if (row.kind === 'scheduled') return row.status === 'waiting' ? '待执行' : '已执行';
 		return actionStatusLabel(row.status);
 	}
 
 	/** @param {any} row */
 	function rowTone(row) {
-		if (row.kind === 'scheduled') return row.status === 'scheduled' ? 'scheduled' : 'success';
+		if (row.kind === 'scheduled') return row.status === 'waiting' ? 'scheduled' : 'success';
 		if (row.status === 'failed') return 'error';
 		if (row.status === 'completed') return 'success';
 		return row.status === 'running' ? 'running' : 'neutral';
@@ -260,7 +260,7 @@
 												label="停止后台任务"
 												onclick={() => onCancel?.(row.id, 'background')}
 											/>
-										{:else if row.kind === 'scheduled' && row.status === 'scheduled'}
+						{:else if row.kind === 'scheduled' && row.status === 'waiting'}
 											<MaterialButton
 												variant="outlined"
 												label="取消此定时任务"

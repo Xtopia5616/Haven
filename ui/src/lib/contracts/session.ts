@@ -5,6 +5,8 @@
  * allowed conversion point; Svelte routes receive camelCase fields only.
  */
 
+import { SESSION_STATUSES, type SessionStatus } from '../sessionStatus.ts';
+
 export const SESSION_EVENT_NAMES = [
 	'session:created',
 	'session:updated',
@@ -18,7 +20,7 @@ export type SessionEventName = (typeof SESSION_EVENT_NAMES)[number];
 
 export interface SessionLifecyclePayload {
 	sessionId: string;
-	status: string;
+	status: SessionStatus;
 	title: string | null;
 }
 
@@ -94,7 +96,7 @@ export function mapSessionEvent<K extends SessionEventName>(
 				...event,
 				payload: {
 					sessionId: (payload as SessionLifecycleWirePayload).session_id,
-					status: (payload as SessionLifecycleWirePayload).status,
+					status: mapSessionStatus((payload as SessionLifecycleWirePayload).status),
 					title: (payload as SessionLifecycleWirePayload).title,
 				},
 			} as TauriEvent<SessionEventPayloadMap[K]>;
@@ -120,4 +122,10 @@ export function mapSessionEvent<K extends SessionEventName>(
 				payload: { sessionId: (payload as SessionDeletedWirePayload).session_id },
 			} as TauriEvent<SessionEventPayloadMap[K]>;
 	}
+}
+
+function mapSessionStatus(value: unknown): SessionStatus {
+	return (SESSION_STATUSES as readonly string[]).includes(value as string)
+		? (value as SessionStatus)
+		: 'error';
 }

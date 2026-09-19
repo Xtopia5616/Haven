@@ -26,4 +26,14 @@ describe('mapSessionEvent', () => {
 
 		expect(event.payload).toEqual({ sessionId: null });
 	});
+
+	it('fails closed for unknown lifecycle statuses', () => {
+		const event = mapSessionEvent({
+			event: 'session:updated',
+			id: 9,
+			payload: { session_id: 'ses-1', status: 'unknown', title: '' },
+		});
+
+		expect((event.payload as { status: string }).status).toBe('error');
+	});
 });

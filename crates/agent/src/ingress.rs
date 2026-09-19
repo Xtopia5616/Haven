@@ -220,8 +220,7 @@ impl AgentLayer {
                         // Notify the frontend so it can drop the stale
                         // activeActionId and reset the model indicator instead of
                         // showing an orphaned bubble with no response.
-                        let fresh_status =
-                            fresh_state.as_ref().map(|s| s.as_str()).unwrap_or("error");
+                        let fresh_status = fresh_state.unwrap_or(SessionStatus::Error);
                         self.events
                             .emit_session_updated(session_id, fresh_status)
                             .await;

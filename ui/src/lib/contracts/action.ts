@@ -13,11 +13,20 @@ export const ACTION_EVENT_NAMES = [
 
 export type ActionEventName = (typeof ACTION_EVENT_NAMES)[number];
 export type ActionKind = 'background' | 'scheduled';
+export type ActionStatus = 'waiting' | 'running' | 'completed' | 'failed' | 'cancelled';
+
+const ACTION_STATUSES: readonly ActionStatus[] = [
+	'waiting',
+	'running',
+	'completed',
+	'failed',
+	'cancelled',
+];
 
 export interface ActionPayload {
 	id: string;
 	kind: ActionKind;
-	status?: string;
+	status?: ActionStatus;
 	sessionId?: string;
 	startedAt?: string;
 	finishedAt?: string;
@@ -58,12 +67,18 @@ export interface TauriEvent<T> {
 	payload: T;
 }
 
+function mapActionStatus(value: unknown): ActionStatus | undefined {
+	if (typeof value !== 'string') return undefined;
+	if ((ACTION_STATUSES as readonly string[]).includes(value)) return value as ActionStatus;
+	return 'failed';
+}
+
 /** Convert a command result or event payload from the Rust wire shape. */
 export function mapActionPayload(payload: ActionWirePayload): ActionPayload {
 	return {
 		id: payload.id,
 		kind: payload.kind,
-		...(payload.status !== undefined ? { status: payload.status } : {}),
+		...(payload.status !== undefined ? { status: mapActionStatus(payload.status) } : {}),
 		...(payload.session_id !== undefined ? { sessionId: payload.session_id } : {}),
 		...(payload.started_at !== undefined ? { startedAt: payload.started_at } : {}),
 		...(payload.finished_at !== undefined ? { finishedAt: payload.finished_at } : {}),
