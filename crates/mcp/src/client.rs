@@ -658,10 +658,13 @@ impl McpClient {
     }
 
     /// Register a callback for `notifications/tools/list_changed` (refine §4.6).
+    ///
+    /// The returned task handle can be awaited after cancellation when the
+    /// caller needs an explicit listener shutdown barrier.
     pub fn start_notification_listener(
         self: Arc<McpClient>,
         on_tool_list_changed: impl Fn(&str) + Send + Sync + 'static,
-    ) {
+    ) -> tokio::task::JoinHandle<()> {
         let notification_cancel = self.notification_cancel.clone();
         tokio::spawn(async move {
             enum Notification {
@@ -746,7 +749,7 @@ impl McpClient {
                     }
                 }
             }
-        });
+        })
     }
 
     pub async fn call_tool(

@@ -654,10 +654,13 @@ pub(crate) async fn http_is_alive(shared: &Arc<HttpShared>) -> bool {
         .get(&shared.url)
         .header("Accept", "text/event-stream");
     let req = apply_http_session_headers(builder, shared).await;
-    matches!(
-        tokio::time::timeout(Duration::from_secs(5), req.send()).await,
-        Ok(Ok(_))
-    )
+    tokio::select! {
+        biased;
+        _ = shared.cancel.cancelled() => false,
+        result = tokio::time::timeout(Duration::from_secs(5), req.send()) => {
+            matches!(result, Ok(Ok(_)))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -755,6 +758,46 @@ mod tests {
         .await
         .expect_err("body reads must not wait forever after headers");
         assert!(error.to_string().contains("body read timed out"));
+        server.abort();
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn http_liveness_probe_honors_transport_cancellation() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (accepted_tx, accepted_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (_stream, _) = listener.accept().await.unwrap();
+            let _ = accepted_tx.send(());
+            std::future::pending::<()>().await;
+        });
+
+        let cancel = CancellationToken::new();
+        let shared = Arc::new(HttpShared {
+            http: reqwest::Client::builder().no_proxy().build().unwrap(),
+            url: format!("http://{address}/"),
+            headers: Vec::new(),
+            session_id: Arc::new(tokio::sync::Mutex::new(String::new())),
+            cancel: cancel.clone(),
+        });
+        let probe = tokio::spawn({
+            let shared = shared.clone();
+            async move { http_is_alive(&shared).await }
+        });
+
+        tokio::time::timeout(Duration::from_secs(1), accepted_rx)
+            .await
+            .expect("liveness probe must reach the test server")
+            .expect("test server must accept the probe");
+        cancel.cancel();
+
+        let alive = tokio::time::timeout(Duration::from_millis(200), probe)
+            .await
+            .expect("cancelling a liveness probe must not wait for its 5-second timeout")
+            .expect("liveness probe task must finish cleanly");
+        assert!(!alive);
+
         server.abort();
         let _ = server.await;
     }

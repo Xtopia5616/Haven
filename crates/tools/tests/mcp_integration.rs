@@ -400,7 +400,7 @@ async fn tools_list_changed_refreshes_cache_end_to_end() {
         .await;
     let callback_count = Arc::new(AtomicUsize::new(0));
     let callback_count_clone = callback_count.clone();
-    client.clone().start_notification_listener(move |_| {
+    let notification_listener = client.clone().start_notification_listener(move |_| {
         callback_count_clone.fetch_add(1, Ordering::Relaxed);
     });
     client.connect().await.unwrap();
@@ -421,6 +421,10 @@ async fn tools_list_changed_refreshes_cache_end_to_end() {
     assert_eq!(callback_count.load(Ordering::Relaxed), 1);
 
     client.shutdown().await.unwrap();
+    tokio::time::timeout(Duration::from_millis(200), notification_listener)
+        .await
+        .expect("notification listener must stop after shutdown")
+        .expect("notification listener task must exit cleanly");
     server.abort();
     let _ = server.await;
 }

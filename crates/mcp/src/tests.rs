@@ -323,6 +323,27 @@ async fn mcp_rate_limit_wait_honors_session_cancellation() {
 }
 
 #[tokio::test]
+async fn notification_listener_handle_can_be_awaited_after_shutdown() {
+    let client = Arc::new(McpClient::new(
+        &McpServerConfig {
+            name: "notification-listener".into(),
+            command: "echo".into(),
+            ..Default::default()
+        },
+        2 * 1024 * 1024,
+        2 * 1024 * 1024,
+    ));
+    let listener = client.clone().start_notification_listener(|_| {});
+
+    client.shutdown().await.unwrap();
+
+    tokio::time::timeout(Duration::from_millis(200), listener)
+        .await
+        .expect("notification listener must stop after shutdown")
+        .expect("notification listener task must exit cleanly");
+}
+
+#[tokio::test]
 async fn mcp_call_tool_honors_cancellation_while_waiting_for_inner_lock() {
     let client = Arc::new(McpClient::new(
         &McpServerConfig {

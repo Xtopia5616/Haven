@@ -92,12 +92,12 @@ impl McpManager {
     /// Startup and progressive `load_mcp` connections must invalidate the same
     /// catalog clock; otherwise a paged capability discovery can keep using a
     /// cursor created before the server changed its tools.
-    fn start_catalog_listener(&self, client: Arc<McpClient>) {
+    fn start_catalog_listener(&self, client: Arc<McpClient>) -> tokio::task::JoinHandle<()> {
         let catalog_version = self.catalog_version.clone();
         client.start_notification_listener(move |server_name: &str| {
             tracing::info!("MCP server '{}' pushed tools/list_changed", server_name);
             catalog_version.fetch_add(1, Ordering::Relaxed);
-        });
+        })
     }
 
     /// Replace the unified context limits (binary payload / SSE buffer caps)
@@ -267,7 +267,7 @@ impl McpManager {
                 .await
                 .insert(name.clone(), client.clone());
 
-            self.start_catalog_listener(client.clone());
+            let _notification_listener = self.start_catalog_listener(client.clone());
 
             // Set authoritative client status AND broadcast before the connect
             // task so ToolsView's list_mcp_tools snapshot shows Connecting
@@ -357,7 +357,7 @@ impl McpManager {
         ));
         client.set_network_policy(self.network_policy().await).await;
 
-        self.start_catalog_listener(client.clone());
+        let _notification_listener = self.start_catalog_listener(client.clone());
 
         client
             .connect()
