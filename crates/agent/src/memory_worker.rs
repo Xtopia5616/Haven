@@ -158,18 +158,59 @@ impl MemoryWorker {
         if session_id.is_empty() {
             return;
         }
-        if let Err(error) = self.db.enqueue_fact_extraction(session_id, bypass_throttle) {
-            // Keep the in-memory path available even if the durable marker
-            // cannot be written; the current process can still make progress
-            // and the failure remains observable.
-            tracing::warn!(
-                "fact extraction durable enqueue failed for session {}: {}",
-                session_id,
-                error
-            );
+        let session_id = session_id.to_string();
+        let async_engine = self.clone();
+        let async_session_id = session_id.clone();
+        let enqueue_durable = move || {
+            let db = async_engine.db.clone();
+            let session_id = async_session_id.clone();
+            let engine = async_engine.clone();
+            let session_id_for_db = session_id.clone();
+            async move {
+                let result = db
+                    .run_blocking(move |db| {
+                        db.enqueue_fact_extraction(&session_id_for_db, bypass_throttle)
+                    })
+                    .await;
+                if let Err(error) = result {
+                    // Keep the in-memory path available even if the durable
+                    // marker cannot be written; the current process can still
+                    // make progress and the failure remains observable.
+                    tracing::warn!(
+                        "fact extraction durable enqueue failed for session {}: {}",
+                        session_id,
+                        error
+                    );
+                }
+                engine.enqueue_memory(session_id, bypass_throttle);
+            }
+        };
+
+        if tokio::runtime::Handle::try_current().is_ok() {
+            // ReAct invokes this callback from an async turn. SQLite must not
+            // run on that executor thread; durable enqueue completes before
+            // the job enters the in-memory outbox, preserving the old
+            // durable-before-drain ordering without blocking the callback.
+            tokio::spawn(enqueue_durable());
+        } else {
+            // Construction-only/unit-test callers may have no runtime. Keep
+            // the synchronous fallback for that API boundary; production
+            // ReAct callbacks always take the async branch above.
+            let db = self.db.clone();
+            if let Err(error) = db.enqueue_fact_extraction(&session_id, bypass_throttle) {
+                tracing::warn!(
+                    "fact extraction durable enqueue failed for session {}: {}",
+                    session_id,
+                    error
+                );
+            }
+            self.enqueue_memory(session_id, bypass_throttle);
         }
+    }
+
+    fn enqueue_memory(self: &Arc<Self>, session_id: String, bypass_throttle: bool) {
         if let Ok(mut pending) = self.outbox.lock() {
-            let entry = pending.entry(session_id.to_string()).or_insert(false);
+            let entry = pending.entry(session_id).or_insert(false);
             *entry = *entry || bypass_throttle;
         }
         self.ensure_outbox_worker();
@@ -2090,5 +2131,35 @@ mod tests {
         let durable = db.pending_fact_extractions().unwrap();
         assert!(durable.contains(&(first.id, true)));
         assert!(durable.contains(&(second.id, false)));
+    }
+
+    #[tokio::test]
+    async fn enqueue_infer_offloads_durable_marker_before_memory_drain() {
+        let db = temp_db();
+        let session = db.create_session("async", "").unwrap();
+        let engine = Arc::new(make_engine(db.clone()));
+        // Keep this test focused on enqueue ordering; a real outbox worker
+        // would immediately consume and clear the marker after success.
+        engine.outbox_worker_started.store(true, Ordering::Release);
+
+        engine.enqueue_infer(&session.id, true);
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                let db_for_check = db.clone();
+                let pending = db_for_check
+                    .run_blocking(|db| db.pending_fact_extractions())
+                    .await
+                    .unwrap();
+                if pending.contains(&(session.id.clone(), true)) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("durable enqueue should complete without blocking the caller");
+
+        assert_eq!(engine.outbox.lock().unwrap().get(&session.id), Some(&true));
     }
 }
