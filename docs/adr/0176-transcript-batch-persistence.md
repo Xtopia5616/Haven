@@ -37,6 +37,9 @@
 - PartialStore 为已知无 active partial 的 session 保留有界进程内集合；首次未知
   session 仍执行一次防御性 DELETE，后续 discard 走 fast path。checkpoint、promote
   或失败的 DELETE 会清除/保留相应状态，不改变跨进程 stale partial 的清理语义。
+  promote/discard 必须持有同一个 session lock 直到 `run_blocking` 数据库操作完成；
+  只有在没有等待者时才回收空闲 lock entry，避免回收窗口创建第二把锁并并发
+  checkpoint。
 
 ## 替代方案与影响
 

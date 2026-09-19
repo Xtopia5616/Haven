@@ -1,4 +1,3 @@
-use anyhow::Context;
 use haven_memory::Database;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -53,6 +52,14 @@ pub struct PartialStore {
     known_empty: std::sync::Mutex<HashSet<String>>,
 }
 
+/// Owns the async mutex guard and one stable reference to the map entry. The
+/// stable reference lets the store remove an idle entry without confusing a
+/// replacement lock with the lock that serialized this operation.
+struct SessionLockGuard {
+    lock: Arc<tokio::sync::Mutex<()>>,
+    _guard: tokio::sync::OwnedMutexGuard<()>,
+}
+
 impl PartialStore {
     pub fn new(db: Arc<Database>) -> Self {
         Self {
@@ -66,14 +73,32 @@ impl PartialStore {
 
     /// Acquire the per-session serialization lock for `session_id`. This serializes
     /// only against other operations on the SAME session.
-    async fn session_lock(&self, session_id: &str) -> tokio::sync::OwnedMutexGuard<()> {
+    async fn session_lock(&self, session_id: &str) -> SessionLockGuard {
         let lock = {
             let mut map = self.locks.lock().await;
             map.entry(session_id.to_string())
                 .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
                 .clone()
         };
-        lock.lock_owned().await
+        let guard = lock.clone().lock_owned().await;
+        SessionLockGuard {
+            lock,
+            _guard: guard,
+        }
+    }
+
+    /// Remove an idle lock entry only while its operation still owns the
+    /// mutex. A waiter that already captured the entry keeps the map entry
+    /// alive; otherwise removing it here is safe because the database work is
+    /// already complete and the current guard has not been released yet.
+    async fn release_session_lock(&self, session_id: &str, guard: &SessionLockGuard) {
+        let mut map = self.locks.lock().await;
+        let can_remove = map.get(session_id).is_some_and(|entry| {
+            Arc::ptr_eq(entry, &guard.lock) && Arc::strong_count(&guard.lock) == 3
+        });
+        if can_remove {
+            map.remove(session_id);
+        }
     }
 
     /// Current generation of a session's partial stream. Callers capture this
@@ -114,8 +139,9 @@ impl PartialStore {
         if content.trim().is_empty() {
             return Ok(());
         }
-        let _guard = self.session_lock(session_id).await;
+        let guard = self.session_lock(session_id).await;
         if gen_id != self.generation(session_id) {
+            self.release_session_lock(session_id, &guard).await;
             return Ok(());
         }
         if self
@@ -125,25 +151,29 @@ impl PartialStore {
             .get(session_id)
             .is_some_and(|prev| prev == content)
         {
+            self.release_session_lock(session_id, &guard).await;
             return Ok(());
         }
         let db = self.db.clone();
         let tid = session_id.to_string();
         let snapshot = content.to_string();
-        if let Err(e) = db
+        let result = db
             .run_blocking(move |db| db.upsert_partial_message(&tid, &snapshot))
             .await
-        {
-            return Err(e).with_context(|| {
-                format!("failed to checkpoint stream text for session {session_id}")
+            .map_err(|e| {
+                e.context(format!(
+                    "failed to checkpoint stream text for session {session_id}"
+                ))
             });
+        if result.is_ok() {
+            self.last_written
+                .lock()
+                .unwrap()
+                .insert(session_id.to_string(), content.to_string());
+            self.known_empty.lock().unwrap().remove(session_id);
         }
-        self.last_written
-            .lock()
-            .unwrap()
-            .insert(session_id.to_string(), content.to_string());
-        self.known_empty.lock().unwrap().remove(session_id);
-        Ok(())
+        self.release_session_lock(session_id, &guard).await;
+        result
     }
 
     /// Promote the checkpointed text into a real assistant message (session
@@ -151,47 +181,45 @@ impl PartialStore {
     /// it cannot re-create the row afterwards. Returns `true` when a message
     /// was inserted.
     pub async fn promote(&self, session_id: &str) -> anyhow::Result<bool> {
-        let _guard = self.session_lock(session_id).await;
+        let guard = self.session_lock(session_id).await;
         self.bump_generation(session_id);
         self.last_written.lock().unwrap().remove(session_id);
         self.known_empty.lock().unwrap().remove(session_id);
-        // The session is ending: drop its lock entry so the map does not grow
-        // unboundedly across a long-running process. The generation bump above
-        // already invalidates any in-flight checkpoint; a future checkpoint
-        // re-creates a fresh lock on its next write.
-        self.locks.lock().await.remove(session_id);
         let db = self.db.clone();
         let tid = session_id.to_string();
-        let promoted = db
+        let result = db
             .run_blocking(move |db| db.promote_partial_message(&tid))
-            .await?;
-        self.mark_known_empty(session_id);
-        Ok(promoted)
+            .await;
+        if result.is_ok() {
+            self.mark_known_empty(session_id);
+        }
+        self.release_session_lock(session_id, &guard).await;
+        result
     }
 
     /// Drop the checkpointed text (superseded by real messages, retry/
     /// rollback re-stream, or a failed step whose buffers were persisted by
     /// the error path). Invalidates in-flight checkpoints.
     pub async fn discard(&self, session_id: &str) {
-        let _guard = self.session_lock(session_id).await;
+        let guard = self.session_lock(session_id).await;
         self.bump_generation(session_id);
         self.last_written.lock().unwrap().remove(session_id);
         if self.known_empty.lock().unwrap().contains(session_id) {
-            self.locks.lock().await.remove(session_id);
+            self.release_session_lock(session_id, &guard).await;
             return;
         }
-        self.locks.lock().await.remove(session_id);
         let db = self.db.clone();
         let tid = session_id.to_string();
         let tid_for_db = tid.clone();
-        if let Err(e) = db
+        let result = db
             .run_blocking(move |db| db.delete_partial_message(&tid_for_db))
-            .await
-        {
+            .await;
+        if let Err(e) = result {
             tracing::warn!("delete_partial_message failed for session {}: {}", tid, e);
         } else {
             self.mark_known_empty(session_id);
         }
+        self.release_session_lock(session_id, &guard).await;
     }
 
     fn mark_known_empty(&self, session_id: &str) {
@@ -348,5 +376,37 @@ mod tests {
                 .contains("failed to checkpoint stream text")
         );
         assert!(format!("{error:#}").contains("injected checkpoint failure"));
+    }
+
+    #[tokio::test]
+    async fn session_lock_entry_survives_waiter_until_current_operation_releases() {
+        let (store, _db, _dir, session_id) = test_store();
+        let store = Arc::new(store);
+        let first = store.session_lock(&session_id).await;
+        let waiting_store = store.clone();
+        let waiting_session = session_id.clone();
+        let waiter = tokio::spawn(async move {
+            let guard = waiting_store.session_lock(&waiting_session).await;
+            waiting_store
+                .release_session_lock(&waiting_session, &guard)
+                .await;
+        });
+
+        for _ in 0..32 {
+            if Arc::strong_count(&first.lock) > 3 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            Arc::strong_count(&first.lock) > 3,
+            "waiter must capture the existing lock before cleanup"
+        );
+
+        store.release_session_lock(&session_id, &first).await;
+        assert!(store.locks.lock().await.contains_key(&session_id));
+        drop(first);
+        waiter.await.unwrap();
+        assert!(!store.locks.lock().await.contains_key(&session_id));
     }
 }
