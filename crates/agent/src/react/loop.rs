@@ -68,6 +68,10 @@ impl TurnDeadline {
             .saturating_duration_since(tokio::time::Instant::now())
     }
 
+    pub(super) fn is_expired(self) -> bool {
+        self.remaining().is_zero()
+    }
+
     pub(super) fn ensure_remaining(self, phase: &str) -> anyhow::Result<()> {
         anyhow::ensure!(
             !self.remaining().is_zero(),
@@ -172,13 +176,32 @@ impl ReActEngine {
                 .iter()
                 .all(|request| request.decision().is_some())
         {
+            let parent_cancel = self.executor.cancellation_token(session_id).await;
+            if parent_cancel.is_cancelled() {
+                return Ok(self.exit_cancelled(session_id, state, start_step).await);
+            }
             let deadline = TurnDeadline::from_now(self.limits().turn_deadline_secs);
-            let confirm_outcome = tokio::time::timeout(
+            let confirm_cancel = parent_cancel.child_token();
+            let deadline_cancel = confirm_cancel.clone();
+            let deadline_task = tokio::spawn(async move {
+                tokio::time::sleep_until(deadline_cancel_at(deadline)).await;
+                deadline_cancel.cancel();
+            });
+            state.turn_cancel = Some(confirm_cancel.clone());
+            let confirm_result = tokio::time::timeout(
                 deadline.remaining(),
-                self.finish_confirm_batch(session_id, state, &emitter, run_id),
+                self.finish_confirm_batch(session_id, state, &emitter, run_id, &confirm_cancel),
             )
-            .await
-            .map_err(|_| anyhow::anyhow!("turn deadline exceeded during confirmation batch"))??;
+            .await;
+            if confirm_result.is_err() {
+                confirm_cancel.cancel();
+            }
+            deadline_task.abort();
+            state.turn_cancel = None;
+            let confirm_outcome = confirm_result.map_err(|_| {
+                anyhow::anyhow!("turn deadline exceeded during confirmation batch")
+            })??;
+            deadline.ensure_remaining("confirmation batch")?;
             match confirm_outcome {
                 ToolBatchOutcome::Continue => {}
                 ToolBatchOutcome::Done(exit) => return Ok(exit),
@@ -190,8 +213,8 @@ impl ReActEngine {
         let mut last_step = start_step.saturating_sub(1);
         for step_num in budget.start_step..=budget.effective_max {
             last_step = step_num;
-            let cancel = self.executor.cancellation_token(session_id).await;
-            if cancel.is_cancelled() {
+            let parent_cancel = self.executor.cancellation_token(session_id).await;
+            if parent_cancel.is_cancelled() {
                 return Ok(self.exit_cancelled(session_id, state, step_num).await);
             }
 
@@ -205,6 +228,13 @@ impl ReActEngine {
 
             let deadline = TurnDeadline::from_now(self.limits().turn_deadline_secs);
             let remaining = deadline.remaining();
+            let turn_cancel = parent_cancel.child_token();
+            let deadline_cancel = turn_cancel.clone();
+            let deadline_task = tokio::spawn(async move {
+                tokio::time::sleep_until(deadline_cancel_at(deadline)).await;
+                deadline_cancel.cancel();
+            });
+            state.turn_cancel = Some(turn_cancel.clone());
             let turn_future = self
                 .run_turn(TurnInput {
                     ctx: StepCtx {
@@ -214,7 +244,7 @@ impl ReActEngine {
                         emitter: emitter.clone(),
                     },
                     state,
-                    cancel,
+                    cancel: turn_cancel.clone(),
                     deadline,
                     // The turn receives the policy result, not the budget
                     // representation. This keeps tool execution independent
@@ -224,8 +254,16 @@ impl ReActEngine {
                     cut_off_retries: &mut cut_off_retries,
                 })
                 .instrument(tracing::info_span!("turn", session_id, step_num));
-            let outcome = match tokio::time::timeout(remaining, turn_future).await {
-                Ok(Ok(outcome)) => outcome,
+            let turn_result = tokio::time::timeout(remaining, turn_future).await;
+            if turn_result.is_err() {
+                turn_cancel.cancel();
+            }
+            deadline_task.abort();
+            let outcome = match turn_result {
+                Ok(Ok(outcome)) => {
+                    state.turn_cancel = None;
+                    outcome
+                }
                 Ok(Err(error)) => {
                     if !self
                         .save_snapshot_with_branches(session_id, state, step_num)
@@ -238,6 +276,7 @@ impl ReActEngine {
                             "failed to checkpoint ReAct turn error"
                         );
                     }
+                    state.turn_cancel = None;
                     self.mark_session_error(session_id).await;
                     return Err(error);
                 }
@@ -257,6 +296,7 @@ impl ReActEngine {
                             "failed to checkpoint turn-deadline error"
                         );
                     }
+                    state.turn_cancel = None;
                     self.mark_session_error(session_id).await;
                     return Err(error);
                 }
@@ -307,6 +347,10 @@ impl ReActEngine {
             _ => RunBoundary::Run,
         }
     }
+}
+
+fn deadline_cancel_at(deadline: TurnDeadline) -> tokio::time::Instant {
+    deadline.at
 }
 
 enum RunBoundary {

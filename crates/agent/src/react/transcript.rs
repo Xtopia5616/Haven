@@ -54,6 +54,7 @@ impl TranscriptBatchWriter {
         &self,
         session_id: &str,
         batch: TranscriptBatch,
+        cancel: Option<tokio_util::sync::CancellationToken>,
     ) -> anyhow::Result<TranscriptBatchResult> {
         if batch.events.is_empty() {
             anyhow::ensure!(
@@ -67,7 +68,7 @@ impl TranscriptBatchWriter {
         let db = self.db.clone();
         let store = self.store.clone();
         let session_id = session_id.to_string();
-        db.run_blocking(move |db| {
+        let write = move |db: &Database| {
             // Synthetic engine tests do not create a session row.  Production
             // ingress always does, and keeping this guard preserves their
             // side-effect-free behavior.
@@ -75,8 +76,11 @@ impl TranscriptBatchWriter {
                 return Ok(TranscriptBatchResult::default());
             }
             store.append_transcript_batch(&session_id, &batch)
-        })
-        .await
+        };
+        match cancel {
+            Some(cancel) => db.run_blocking_cancellable(cancel, write).await,
+            None => db.run_blocking(write).await,
+        }
     }
 }
 
@@ -441,7 +445,7 @@ impl ReActEngine {
                 ctx.step_num,
             );
             TranscriptBatchWriter::new(self.db.clone(), self.event_store.clone())
-                .write(&ctx.session_id, batch)
+                .write(&ctx.session_id, batch, state.turn_cancel.clone())
                 .await?
         };
         self.metrics.observe(
@@ -491,7 +495,7 @@ impl ReActEngine {
                 ctx.step_num,
             );
             TranscriptBatchWriter::new(self.db.clone(), self.event_store.clone())
-                .write(&ctx.session_id, batch)
+                .write(&ctx.session_id, batch, state.turn_cancel.clone())
                 .await?
         };
         self.metrics.observe(

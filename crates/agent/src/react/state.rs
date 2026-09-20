@@ -7,6 +7,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
+use tokio_util::sync::CancellationToken;
 
 use crate::types::{BranchPoint, TranscriptRecord};
 use haven_common::types::CanonicalMessage;
@@ -53,6 +54,10 @@ pub(crate) struct ReActState {
     /// not persisted: a rebuilt state must cold-start its process-local cache.
     canonical_generation: u64,
     retry_nudge: Option<RetryNudge>,
+    /// The cancellation token for the currently executing turn. This is
+    /// process-local and lets synchronous persistence share the same deadline
+    /// as provider/tool execution without putting a token in the snapshot.
+    pub(crate) turn_cancel: Option<CancellationToken>,
 }
 
 impl ReActState {
@@ -93,6 +98,7 @@ impl ReActState {
             canonical_revision: 0,
             canonical_generation: NEXT_CANONICAL_GENERATION.fetch_add(1, Ordering::Relaxed),
             retry_nudge: None,
+            turn_cancel: None,
         }
     }
 

@@ -455,11 +455,13 @@ impl SessionSupervisor {
             step_id,
             None,
             None,
+            None,
         )
         .await
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(dead_code)]
     pub(crate) async fn execute_step_with_identity_and_metadata(
         &self,
         session_id: &str,
@@ -481,6 +483,38 @@ impl SessionSupervisor {
             step_id,
             None,
             Some(metadata),
+            None,
+        )
+        .await
+    }
+
+    /// Metadata-preserving variant used by a ReAct turn. The caller supplies
+    /// the turn-scoped cancellation token so a deadline can stop a tool even
+    /// though the session itself remains live for recovery.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn execute_step_with_identity_and_metadata_and_cancel(
+        &self,
+        session_id: &str,
+        tool_name: &str,
+        input: Value,
+        step_num: u32,
+        action_index: u32,
+        tool_call_id: Option<&str>,
+        step_id: &str,
+        metadata: ActionStepMetadata,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
+        self.execute_step_inner(
+            session_id,
+            tool_name,
+            input,
+            step_num,
+            action_index,
+            tool_call_id,
+            step_id,
+            None,
+            Some(metadata),
+            Some(cancel),
         )
         .await
     }
@@ -525,11 +559,13 @@ impl SessionSupervisor {
             step_id,
             Some(receipt),
             None,
+            None,
         )
         .await
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(dead_code)]
     pub(crate) async fn execute_step_preconfirmed_with_identity_and_metadata(
         &self,
         session_id: &str,
@@ -552,6 +588,36 @@ impl SessionSupervisor {
             step_id,
             Some(receipt),
             Some(metadata),
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn execute_step_preconfirmed_with_identity_and_metadata_and_cancel(
+        &self,
+        session_id: &str,
+        tool_name: &str,
+        input: Value,
+        step_num: u32,
+        action_index: u32,
+        tool_call_id: Option<&str>,
+        step_id: &str,
+        receipt: haven_tools::ConfirmationReceipt,
+        metadata: ActionStepMetadata,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
+        self.execute_step_inner(
+            session_id,
+            tool_name,
+            input,
+            step_num,
+            action_index,
+            tool_call_id,
+            step_id,
+            Some(receipt),
+            Some(metadata),
+            Some(cancel),
         )
         .await
     }
@@ -568,6 +634,7 @@ impl SessionSupervisor {
         step_id: &str,
         receipt: Option<haven_tools::ConfirmationReceipt>,
         action_step_metadata: Option<ActionStepMetadata>,
+        cancel_override: Option<tokio_util::sync::CancellationToken>,
     ) -> anyhow::Result<ToolResult> {
         let tool_call_id = tool_call_id.map(str::to_string);
         tracing::debug!(
@@ -641,7 +708,10 @@ impl SessionSupervisor {
             }
         }
 
-        let cancel = self.cancellation_token(session_id).await;
+        let cancel = match cancel_override {
+            Some(cancel) => cancel,
+            None => self.cancellation_token(session_id).await,
+        };
         let action_step_request = ActionStepRequest {
             session_id,
             tool_name,

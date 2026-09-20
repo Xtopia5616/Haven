@@ -339,6 +339,7 @@ pub(super) struct ToolActionRequest {
     pub action_index: u32,
     pub step_id: String,
     pub receipt: Option<haven_tools::ConfirmationReceipt>,
+    pub cancel: tokio_util::sync::CancellationToken,
 }
 
 pub(super) async fn execute_tool_action(request: ToolActionRequest) -> CompletedTool {
@@ -351,6 +352,7 @@ pub(super) async fn execute_tool_action(request: ToolActionRequest) -> Completed
         action_index,
         step_id,
         receipt,
+        cancel,
     } = request;
     let tool_name = action.tool_name.clone();
     let tool_input = action.tool_input.clone();
@@ -381,7 +383,7 @@ pub(super) async fn execute_tool_action(request: ToolActionRequest) -> Completed
     let result = std::panic::AssertUnwindSafe(async {
         if let Some(receipt) = receipt {
             executor
-                .execute_step_preconfirmed_with_identity_and_metadata(
+                .execute_step_preconfirmed_with_identity_and_metadata_and_cancel(
                     &session_id,
                     &tool_name,
                     tool_input,
@@ -391,11 +393,12 @@ pub(super) async fn execute_tool_action(request: ToolActionRequest) -> Completed
                     &step_id,
                     receipt,
                     action_step_metadata,
+                    cancel,
                 )
                 .await
         } else {
             executor
-                .execute_step_with_identity_and_metadata(
+                .execute_step_with_identity_and_metadata_and_cancel(
                     &session_id,
                     &tool_name,
                     tool_input,
@@ -404,6 +407,7 @@ pub(super) async fn execute_tool_action(request: ToolActionRequest) -> Completed
                     action.tool_call_id.as_deref(),
                     &step_id,
                     action_step_metadata,
+                    cancel,
                 )
                 .await
         }

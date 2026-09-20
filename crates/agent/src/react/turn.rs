@@ -204,6 +204,11 @@ impl ReActEngine {
             {
                 StepCallOutcome::Response(response) => *response,
                 StepCallOutcome::Cancelled => {
+                    if deadline.is_expired() {
+                        return Err(anyhow::anyhow!(
+                            "turn deadline exceeded during provider request"
+                        ));
+                    }
                     return Ok(TurnOutcome::Done(
                         self.exit_cancelled(session_id, state, step_num).await,
                     ));
@@ -266,6 +271,11 @@ impl ReActEngine {
         {
             ResponseCycleOutcome::Accepted(accepted) => *accepted,
             ResponseCycleOutcome::Cancelled => {
+                if deadline.is_expired() {
+                    return Err(anyhow::anyhow!(
+                        "turn deadline exceeded during response retry"
+                    ));
+                }
                 return Ok(TurnOutcome::Done(
                     self.exit_cancelled(session_id, state, step_num).await,
                 ));
@@ -419,7 +429,7 @@ impl ReActEngine {
                 });
         }
 
-        match self
+        let tool_outcome = self
             .execute_tool_batch(
                 session_id,
                 state,
@@ -435,8 +445,9 @@ impl ReActEngine {
                 tool_retry_budget,
             )
             .instrument(tracing::info_span!("tools", session_id, step_num))
-            .await?
-        {
+            .await?;
+        deadline.ensure_remaining("tool batch")?;
+        match tool_outcome {
             ToolBatchOutcome::Continue => Ok(TurnOutcome::Continue),
             ToolBatchOutcome::Done(exit) => Ok(TurnOutcome::Done(exit)),
         }

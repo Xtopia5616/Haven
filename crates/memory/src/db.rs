@@ -1,11 +1,53 @@
 use crate::cache::{CacheGeneration, QueryCacheStore};
-use rusqlite::Connection;
+use rusqlite::{Connection, InterruptHandle};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ops::Deref;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
+use tokio_util::sync::CancellationToken;
+
+thread_local! {
+    /// Interrupt handles for SQLite connections checked out by the current
+    /// cancellable blocking operation. SQLite exposes interruption at the
+    /// connection boundary, so the registry is scoped to the blocking worker
+    /// rather than stored on `Database` globally.
+    static ACTIVE_DB_INTERRUPTS: RefCell<Option<Arc<Mutex<Vec<InterruptHandle>>>>>
+        = const { RefCell::new(None) };
+}
+
+fn register_interrupt_handle(conn: &Connection) {
+    ACTIVE_DB_INTERRUPTS.with(|active| {
+        let Some(active) = active.borrow().as_ref().cloned() else {
+            return;
+        };
+        // SQLite's default busy handler sleeps in native code. Keep that
+        // sleep bounded for cancellable work so a cancellation can be
+        // observed even on builds where sqlite3_interrupt does not wake a
+        // busy-handler sleep immediately.
+        let _ = conn.busy_timeout(Duration::from_millis(100));
+        if let Ok(mut handles) = active.lock() {
+            handles.push(conn.get_interrupt_handle());
+        }
+    });
+}
+
+fn unregister_interrupt_handle() {
+    ACTIVE_DB_INTERRUPTS.with(|active| {
+        if let Some(active) = active.borrow().as_ref().cloned()
+            && let Ok(mut handles) = active.lock()
+        {
+            // DB repository methods check out one connection at a time on a
+            // blocking worker, so the registry behaves as a small stack.
+            // Removing the handle on drop prevents a later cancellation from
+            // interrupting a connection that has already been returned to
+            // the pool and reused by another operation.
+            handles.pop();
+        }
+    });
+}
 
 /// Pooled SQLite connections for a file-backed database (WAL mode: one
 /// writer + many readers can proceed concurrently). Sized comfortably above
@@ -70,6 +112,7 @@ impl ConnectionPool {
         loop {
             if let Some(conn) = st.idle.pop() {
                 st.active += 1;
+                register_interrupt_handle(&conn);
                 return Ok(PooledConnection {
                     pool: self,
                     conn: Some(conn),
@@ -90,6 +133,7 @@ impl ConnectionPool {
                         return Err(e);
                     }
                 };
+                register_interrupt_handle(&conn);
                 return Ok(PooledConnection {
                     pool: self,
                     conn: Some(conn),
@@ -134,6 +178,7 @@ impl Deref for PooledConnection<'_> {
 impl Drop for PooledConnection<'_> {
     fn drop(&mut self) {
         if let Some(conn) = self.conn.take() {
+            unregister_interrupt_handle();
             // Defensive rollback: a caller whose transaction failed midway
             // (e.g. `clear_sessions` propagates errors without ROLLBACK) would
             // otherwise re-pool a connection with a write transaction still
@@ -141,6 +186,7 @@ impl Drop for PooledConnection<'_> {
             // transaction and the held write lock would block the other
             // pooled connections. Fails silently when no transaction is open.
             let _ = conn.execute_batch("ROLLBACK");
+            let _ = conn.busy_timeout(Duration::from_secs(30));
             match self.pool.state.lock() {
                 Ok(mut st) => {
                     st.idle.push(conn);
@@ -290,6 +336,53 @@ impl Database {
     {
         let db = self.clone();
         tokio::task::spawn_blocking(move || f(&db)).await?
+    }
+
+    /// Run a blocking SQLite closure with cooperative cancellation that also
+    /// interrupts SQLite calls already blocked on a checked-out connection.
+    ///
+    /// Dropping a future cannot stop `spawn_blocking`; registering the
+    /// connection interrupt handles closes that gap for busy reads/writes.
+    /// The bounded join keeps a broken pool/extension from holding the async
+    /// caller forever. In that exceptional case the worker remains detached,
+    /// but the caller receives an explicit failure instead of a false success.
+    pub async fn run_blocking_cancellable<T, F>(
+        self: &Arc<Self>,
+        cancel: CancellationToken,
+        f: F,
+    ) -> anyhow::Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&Database) -> anyhow::Result<T> + Send + 'static,
+    {
+        let db = self.clone();
+        let interrupts = Arc::new(Mutex::new(Vec::<InterruptHandle>::new()));
+        let worker_interrupts = interrupts.clone();
+        let mut task = tokio::task::spawn_blocking(move || {
+            ACTIVE_DB_INTERRUPTS.with(|active| {
+                let previous = active.replace(Some(worker_interrupts));
+                let result = f(&db);
+                active.replace(previous);
+                result
+            })
+        });
+
+        tokio::select! {
+            result = &mut task => result?,
+            _ = cancel.cancelled() => {
+                if let Ok(handles) = interrupts.lock() {
+                    for handle in handles.iter() {
+                        handle.interrupt();
+                    }
+                }
+                match tokio::time::timeout(Duration::from_secs(2), &mut task).await {
+                    Ok(result) => result?,
+                    Err(_) => anyhow::bail!(
+                        "cancellable SQLite operation did not stop after cancellation"
+                    ),
+                }
+            }
+        }
     }
 
     pub fn cache_get_messages(
@@ -567,6 +660,56 @@ mod tests {
         let conn = db.conn();
         let count: i32 = conn.query_row("SELECT 1", [], |r| r.get(0)).unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[tokio::test]
+    async fn cancellable_blocking_write_interrupts_sqlite_lock_wait() {
+        let dir = std::env::temp_dir().join(format!("haven-db-cancel-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.db");
+        let db = Arc::new(Database::open(&path).unwrap());
+        let session = db.create_session("input", "").unwrap();
+
+        let holder_db = db.clone();
+        let (lock_ready_tx, lock_ready_rx) = std::sync::mpsc::channel();
+        let holder = std::thread::spawn(move || {
+            let conn = holder_db.conn();
+            conn.execute_batch("BEGIN IMMEDIATE").unwrap();
+            lock_ready_tx.send(()).unwrap();
+            std::thread::sleep(Duration::from_secs(5));
+        });
+        lock_ready_rx.recv().unwrap();
+
+        let (checkout_tx, checkout_rx) = tokio::sync::oneshot::channel();
+        let cancel = CancellationToken::new();
+        let cancel_task = {
+            let db = db.clone();
+            let session_id = session.id.clone();
+            let cancel = cancel.clone();
+            tokio::spawn(async move {
+                db.run_blocking_cancellable(cancel, move |db| {
+                    let conn = db.conn();
+                    let _ = checkout_tx.send(());
+                    conn.execute(
+                        "UPDATE sessions SET input_text = 'blocked' WHERE id = ?1",
+                        rusqlite::params![session_id],
+                    )?;
+                    Ok(())
+                })
+                .await
+            })
+        };
+        checkout_rx.await.unwrap();
+        cancel.cancel();
+
+        let result = tokio::time::timeout(Duration::from_secs(2), cancel_task)
+            .await
+            .expect("cancellable SQLite write must return promptly")
+            .unwrap();
+        assert!(result.is_err(), "interrupted write must not report success");
+
+        holder.join().unwrap();
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

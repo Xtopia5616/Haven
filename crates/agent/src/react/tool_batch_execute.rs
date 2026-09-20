@@ -314,6 +314,7 @@ impl ReActEngine {
                 .map(|_| AtomicBool::new(false))
                 .collect::<Vec<_>>(),
         );
+        let cancel = cancel_res.clone();
         let mut tool_futures = futures_util::stream::iter(runnable)
             .map(|admitted| {
                 let planned = plan
@@ -327,6 +328,7 @@ impl ReActEngine {
                 let catalog = catalog.clone();
                 let gate = gate.clone();
                 let started = started.clone();
+                let cancel = cancel.clone();
                 async move {
                     let _permit = gate.acquire(&admitted.concurrency).await;
                     started[admitted.plan_index].store(true, Ordering::Release);
@@ -339,6 +341,7 @@ impl ReActEngine {
                         action_index,
                         step_id,
                         receipt: admitted.receipt,
+                        cancel,
                     })
                     .await;
                     (admitted.plan_index, result)
@@ -750,6 +753,7 @@ impl ReActEngine {
         state: &mut ReActState,
         emitter: &Arc<dyn AgentEventEmitter>,
         run_id: u64,
+        cancel: &tokio_util::sync::CancellationToken,
     ) -> anyhow::Result<ToolBatchOutcome> {
         let pending = self
             .executor
@@ -884,7 +888,6 @@ impl ReActEngine {
             }
         }
 
-        let cancel = self.executor.cancellation_token(session_id).await;
         let execution = self
             .execute_admitted_tools(AdmittedToolExecutionRequest {
                 session_id,
@@ -893,7 +896,7 @@ impl ReActEngine {
                 catalog,
                 runnable,
                 results,
-                cancel_res: &cancel,
+                cancel_res: cancel,
             })
             .await;
         let mut batch_state = ToolBatchState::default();

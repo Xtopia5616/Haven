@@ -249,9 +249,11 @@ impl SessionSupervisor {
         let sid = session_id.to_string();
         self.db
             .run_blocking(move |db| {
-                let Some(json) = db.get_react_state(&sid)? else {
-                    return Ok(());
-                };
+                let json = db.get_react_state(&sid)?.ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "cannot persist interactions for session {sid}: react_state checkpoint is missing"
+                    )
+                })?;
                 let mut snapshot = crate::types::ReActSnapshot::from_json(&json)?;
                 snapshot.interactions = interactions;
                 db.save_react_state(&sid, &serde_json::to_string(&snapshot)?)?;
@@ -273,12 +275,32 @@ impl SessionSupervisor {
             .cloned()
             .collect::<Vec<_>>();
         for actor in actors {
+            let previous = actor
+                .interactions(None, false)
+                .await
+                .into_iter()
+                .find(|request| request.id == request_id);
             if let Some(decision) = actor
                 .resolve_interaction(request_id.to_string(), response.clone())
                 .await
             {
                 let request = decision.request.clone();
-                self.persist_interactions(&request.session_id).await?;
+                if let Err(error) = self.persist_interactions(&request.session_id).await {
+                    // The actor mutation is reversible, so a missing or
+                    // failed checkpoint cannot turn a failed resolve into a
+                    // silently consumed confirmation gate.
+                    if let Some(previous) = previous
+                        && let Err(restore_error) = actor.request_interaction(previous).await
+                    {
+                        tracing::error!(
+                            session_id = %request.session_id,
+                            request_id = %request.id,
+                            error = %restore_error,
+                            "failed to restore interaction after persistence failure"
+                        );
+                    }
+                    return Err(error);
+                }
                 if decision.wake_session {
                     self.update_session_status(&request.session_id, SessionStatus::Pending)
                         .await?;
