@@ -401,19 +401,25 @@ impl AgentLayer {
                     // status stays the single generic `Paused` state.
                     let _ = has_pending_ask;
                     if !confirm_requests.is_empty() {
-                        // Decisions already recorded but wake to Pending
-                        // never landed (crash between persist and status):
-                        // finish the confirm gate instead of restoring a
-                        // permanently stuck Paused with a pending interaction.
+                        // The dispatcher has already claimed this session as
+                        // Running before entering the resume handler. Do not
+                        // wake it back to Pending here: that would enqueue a
+                        // second run and violate the ReAct run-entry
+                        // invariant. Direct callers can still arrive from
+                        // Paused, so promote that state directly to Running.
                         if confirm_requests
                             .iter()
                             .all(|request| request.decision().is_some())
                             && let Err(e) = self
-                                .set_session_status(session_id, SessionStatus::Pending)
+                                .set_session_status_if(
+                                    session_id,
+                                    SessionStatus::Paused,
+                                    SessionStatus::Running,
+                                )
                                 .await
                         {
                             tracing::warn!(
-                                "failed to wake session {} after all-decided confirm on resume: {}",
+                                "failed to restore running session {} after all-decided confirm on resume: {}",
                                 session_id,
                                 e
                             );

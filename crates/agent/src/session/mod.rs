@@ -1909,6 +1909,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn conditional_wake_does_not_rewind_a_claimed_run() {
+        let exec = make_executor(1);
+        let session = exec.create_session("conditional wake").await.unwrap();
+        exec.update_session_status(&session.id, SessionStatus::Running)
+            .await
+            .unwrap();
+
+        // A stale pause observer must not turn an already claimed run back
+        // into Pending. This is the transition that used to trip the
+        // run_react_loop entry assertion after resume/action wake-up.
+        let changed = exec
+            .update_session_status_if(&session.id, SessionStatus::Paused, SessionStatus::Pending)
+            .await
+            .unwrap();
+
+        assert!(!changed);
+        assert_eq!(
+            exec.get_session_state(&session.id).await,
+            Some(SessionStatus::Running)
+        );
+    }
+
+    #[tokio::test]
     async fn same_status_pending_still_wakes_dispatcher() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());

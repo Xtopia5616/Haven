@@ -247,6 +247,24 @@ impl AgentLayer {
         }
     }
 
+    /// Apply a status transition only if the session is still in `expected`,
+    /// then emit the matching UI event when the transition succeeds.
+    pub(crate) async fn set_session_status_if(
+        &self,
+        session_id: &str,
+        expected: SessionStatus,
+        status: SessionStatus,
+    ) -> anyhow::Result<bool> {
+        let changed = self
+            .executor
+            .update_session_status_if(session_id, expected, status)
+            .await?;
+        if changed {
+            self.events.emit_session_updated(session_id, status).await;
+        }
+        Ok(changed)
+    }
+
     /// Interrupt the current model/tool run without closing the conversation.
     /// The paused session keeps its durable snapshot and can accept a later
     /// follow-up, while the cancellation token stops an in-flight provider call.
@@ -580,7 +598,13 @@ impl AgentLayer {
                         .await;
                     if state == Some(SessionStatus::Paused)
                         && !awaiting
-                        && let Err(e) = agent.set_session_status(&tid, SessionStatus::Pending).await
+                        && let Err(e) = agent
+                            .set_session_status_if(
+                                &tid,
+                                SessionStatus::Paused,
+                                SessionStatus::Pending,
+                            )
+                            .await
                     {
                         tracing::warn!("action-completion wake session {} failed: {}", tid, e);
                         continue;

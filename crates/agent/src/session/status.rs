@@ -427,28 +427,50 @@ impl SessionSupervisor {
         session_id: &str,
         status: SessionStatus,
     ) -> anyhow::Result<bool> {
-        self.update_session_status_inner(session_id, status, true)
+        self.update_session_status_inner(session_id, None, status, true)
             .await
     }
+
+    /// Update a status only when the actor is still in `expected`.
+    ///
+    /// The check and transition are serialized inside the session actor. This
+    /// is required for wake-up paths that first observe `Paused`: a dispatcher
+    /// may claim the session before the wake request reaches the actor, and a
+    /// stale unconditional `Running -> Pending` transition would make the
+    /// active ReAct loop violate its run-entry invariant.
+    pub async fn update_session_status_if(
+        &self,
+        session_id: &str,
+        expected: SessionStatus,
+        status: SessionStatus,
+    ) -> anyhow::Result<bool> {
+        self.update_session_status_inner(session_id, Some(expected), status, true)
+            .await
+    }
+
     pub async fn update_session_status_memory_only(
         &self,
         session_id: &str,
         status: SessionStatus,
     ) -> anyhow::Result<bool> {
-        self.update_session_status_inner(session_id, status, false)
+        self.update_session_status_inner(session_id, None, status, false)
             .await
     }
 
     async fn update_session_status_inner(
         &self,
         session_id: &str,
+        expected: Option<SessionStatus>,
         status: SessionStatus,
         persist: bool,
     ) -> anyhow::Result<bool> {
         let Some(actor) = self.actor_for(session_id).await else {
             return Ok(false);
         };
-        let transition = actor.transition(status, persist).await?;
+        let transition = match expected {
+            Some(expected) => actor.transition_if(expected, status, persist).await?,
+            None => actor.transition(status, persist).await?,
+        };
         if transition.pending {
             self.enqueue_pending(session_id).await;
             self.wake_dispatcher();

@@ -96,6 +96,7 @@ pub(crate) enum ActorCommand {
         title: String,
     },
     Transition {
+        expected: Option<SessionStatus>,
         status: SessionStatus,
         persist: bool,
         reply: oneshot::Sender<anyhow::Result<StatusTransition>>,
@@ -253,6 +254,25 @@ impl SessionActorHandle {
     ) -> anyhow::Result<StatusTransition> {
         let (reply, rx) = oneshot::channel();
         self.send(ActorCommand::Transition {
+            expected: None,
+            status,
+            persist,
+            reply,
+        })
+        .await?;
+        rx.await
+            .map_err(|_| anyhow::anyhow!("session actor '{}' dropped transition", self.id))?
+    }
+
+    pub(crate) async fn transition_if(
+        &self,
+        expected: SessionStatus,
+        status: SessionStatus,
+        persist: bool,
+    ) -> anyhow::Result<StatusTransition> {
+        let (reply, rx) = oneshot::channel();
+        self.send(ActorCommand::Transition {
+            expected: Some(expected),
             status,
             persist,
             reply,
@@ -677,11 +697,20 @@ pub(crate) fn spawn(db: Arc<Database>, info: SessionInfo) -> SessionActorHandle 
                     state.info.title = Some(title);
                 }
                 ActorCommand::Transition {
+                    expected,
                     status: next,
                     persist,
                     reply,
                 } => {
-                    let result = transition(&db, &mut state, &status, next, persist).await;
+                    let result = if expected.is_none_or(|expected| state.info.status == expected) {
+                        transition(&db, &mut state, &status, next, persist).await
+                    } else {
+                        Ok(StatusTransition {
+                            changed: false,
+                            pending: false,
+                            terminal: false,
+                        })
+                    };
                     let _ = reply.send(result);
                 }
                 ActorCommand::ClaimRun { reply } => {

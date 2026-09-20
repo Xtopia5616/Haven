@@ -275,8 +275,12 @@ impl AgentLayer {
                             .is_confirm_gated_with(session_id, fresh_state.as_ref())
                             .await;
                         if matches!(fresh_state, Some(s) if s.is_paused()) && !confirm_blocked {
-                            self.set_session_status(session_id, SessionStatus::Pending)
-                                .await?;
+                            self.set_session_status_if(
+                                session_id,
+                                SessionStatus::Paused,
+                                SessionStatus::Pending,
+                            )
+                            .await?;
                         }
                     }
                     return Ok(ProcessResult::supplemented(message_id));
@@ -286,8 +290,12 @@ impl AgentLayer {
                     .is_confirm_gated_with(session_id, state.as_ref())
                     .await;
                 if matches!(state.as_ref(), Some(s) if s.is_paused()) && !confirm_blocked {
-                    self.set_session_status(session_id, SessionStatus::Pending)
-                        .await?;
+                    self.set_session_status_if(
+                        session_id,
+                        SessionStatus::Paused,
+                        SessionStatus::Pending,
+                    )
+                    .await?;
                 }
             }
             Ok(ProcessResult::supplemented(

@@ -302,8 +302,12 @@ impl SessionSupervisor {
                     return Err(error);
                 }
                 if decision.wake_session {
-                    self.update_session_status(&request.session_id, SessionStatus::Pending)
-                        .await?;
+                    self.update_session_status_if(
+                        &request.session_id,
+                        SessionStatus::Paused,
+                        SessionStatus::Pending,
+                    )
+                    .await?;
                 }
                 return Ok(Some(request));
             }
