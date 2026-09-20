@@ -148,6 +148,14 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
         boundary: CommandBoundary::Mutate,
         security: "sanitized user-visible error mirrored into the backend log",
     },
+    // diagnostics
+    CommandContract {
+        name: "get_performance_metrics",
+        request: "-",
+        response: "MetricsSnapshot",
+        boundary: CommandBoundary::Read,
+        security: "bounded content-free local performance counters only",
+    },
     // mcp
     CommandContract {
         name: "list_mcp_tools",
@@ -593,7 +601,7 @@ mod tests {
     #[test]
     fn command_registry_is_unique_and_covers_the_current_handler_set() {
         assert_eq!(IPC_CONTRACT_VERSION, 1);
-        assert_eq!(COMMAND_CONTRACTS.len(), 70);
+        assert_eq!(COMMAND_CONTRACTS.len(), 71);
         let names: HashSet<_> = COMMAND_CONTRACTS
             .iter()
             .map(|contract| contract.name)

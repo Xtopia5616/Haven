@@ -11,7 +11,7 @@ use super::tool_batch_policy::{
     ToolFailureSignal, empty_inbox_output, is_agent_inbox_call, is_retryable_failure_outcome,
 };
 use super::*;
-use crate::session::ActionStepPersistenceError;
+use crate::session::{ActionStepMetadata, ActionStepPersistenceError};
 use crate::types::Action;
 use futures_util::FutureExt;
 #[cfg(test)]
@@ -30,6 +30,21 @@ use tokio::sync::{Mutex as AsyncMutex, OwnedRwLockReadGuard, OwnedRwLockWriteGua
 /// provider-facing tool-definition limit is not a runtime execution limit.
 pub(crate) const MAX_RUNTIME_TOOL_CALLS_PER_BATCH: usize = 64;
 pub(super) const MAX_CONCURRENT_TOOL_CALLS: usize = 8;
+
+/// Resolve the bookkeeping-only action metadata from the immutable catalog
+/// captured for this tool batch. Authorization remains a live decision; this
+/// helper is deliberately limited to fields persisted on `session_steps`.
+pub(super) fn action_step_metadata(
+    catalog: &haven_tools::ToolCatalogSnapshot,
+    tool_name: &str,
+    input: &serde_json::Value,
+) -> ActionStepMetadata {
+    let policy = catalog.operation_policy(tool_name, input);
+    ActionStepMetadata {
+        is_high_risk: policy.risk_level != haven_common::types::RiskLevel::Safe,
+        silent: is_silent_action(tool_name, input),
+    }
+}
 
 #[derive(Default)]
 pub(super) struct ToolBatchState {
@@ -339,6 +354,7 @@ pub(super) async fn execute_tool_action(request: ToolActionRequest) -> Completed
     } = request;
     let tool_name = action.tool_name.clone();
     let tool_input = action.tool_input.clone();
+    let action_step_metadata = action_step_metadata(catalog.as_ref(), &tool_name, &tool_input);
     tracing::debug!(
         "executing tool '{}' at step {} (input keys: {:?})",
         tool_name,
@@ -365,7 +381,7 @@ pub(super) async fn execute_tool_action(request: ToolActionRequest) -> Completed
     let result = std::panic::AssertUnwindSafe(async {
         if let Some(receipt) = receipt {
             executor
-                .execute_step_preconfirmed_with_identity(
+                .execute_step_preconfirmed_with_identity_and_metadata(
                     &session_id,
                     &tool_name,
                     tool_input,
@@ -374,11 +390,12 @@ pub(super) async fn execute_tool_action(request: ToolActionRequest) -> Completed
                     action.tool_call_id.as_deref(),
                     &step_id,
                     receipt,
+                    action_step_metadata,
                 )
                 .await
         } else {
             executor
-                .execute_step_with_identity(
+                .execute_step_with_identity_and_metadata(
                     &session_id,
                     &tool_name,
                     tool_input,
@@ -386,6 +403,7 @@ pub(super) async fn execute_tool_action(request: ToolActionRequest) -> Completed
                     action_index,
                     action.tool_call_id.as_deref(),
                     &step_id,
+                    action_step_metadata,
                 )
                 .await
         }

@@ -15,6 +15,9 @@ lifecycle 事件，重复调用 `get_sessions` 会放大 IPC 和数据库读取�
 - ReAct metrics 使用固定大小的原子计数器、直方图和 gauge；新增
   `sqlite_lock_wait` 阶段与 context queue depth。指标不记录 prompt、密钥或工具
   输出，且不阻塞主循环。
+- 通过只读 Tauri 命令 `get_performance_metrics` 导出同一个有界、无内容的
+  `MetricsSnapshot`，供本地验收直接读取；UI stream aggregator 继续独立暴露
+  frame/chunk/drop 快照，因为这些计数只存在渲染器进程。
 - Transcript batch 在 `BEGIN IMMEDIATE` 后记录 writer-lock 等待时长，提交成功后
   由 Agent 观察该样本；事件与投影的事务边界保持不变。
 - UI stream aggregator 暴露受限的 frame/chunk/drop 快照，用于测试和本地诊断，

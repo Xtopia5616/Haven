@@ -9,7 +9,8 @@ use super::hooks::{BeforeToolAction, ToolCallIdentity};
 use super::snapshot_io::PauseTurnInput;
 use super::tool_batch::{
     CompletedTool, MAX_CONCURRENT_TOOL_CALLS, MAX_RUNTIME_TOOL_CALLS_PER_BATCH, ToolActionRequest,
-    ToolBatchGate, ToolBatchOutcome, ToolBatchResults, ToolBatchState, execute_tool_action,
+    ToolBatchGate, ToolBatchOutcome, ToolBatchResults, ToolBatchState, action_step_metadata,
+    execute_tool_action,
 };
 use super::tool_batch_plan::ToolBatchPlan;
 use super::tool_batch_policy::ToolRetryBudget;
@@ -183,8 +184,14 @@ impl ReActEngine {
                     .expect("admission failure must reference a plan entry");
                 admission.results.set(
                     failure.plan_index,
-                    self.failed_admission_tool(session_id, step_num, planned, failure.error)
-                        .await,
+                    self.failed_admission_tool(
+                        session_id,
+                        step_num,
+                        planned,
+                        catalog,
+                        failure.error,
+                    )
+                    .await,
                 );
             }
         } else {
@@ -253,10 +260,11 @@ impl ReActEngine {
         session_id: &str,
         step_num: u32,
         planned: &super::tool_batch_plan::PlannedTool,
+        catalog: &haven_tools::ToolCatalogSnapshot,
         error: String,
     ) -> CompletedTool {
         self.executor
-            .finish_interrupted_step_with_identity(
+            .finish_interrupted_step_with_identity_and_metadata(
                 session_id,
                 &planned.action.tool_name,
                 &planned.action.tool_input,
@@ -265,6 +273,11 @@ impl ReActEngine {
                 planned.action.tool_call_id.as_deref(),
                 &planned.step_id,
                 &error,
+                action_step_metadata(
+                    catalog,
+                    &planned.action.tool_name,
+                    &planned.action.tool_input,
+                ),
             )
             .await;
         CompletedTool::from_observation(
@@ -338,7 +351,15 @@ impl ReActEngine {
                 biased;
                 _ = cancel_res.cancelled() => {
                     tracing::info!("ReAct loop cancelled during tool batch at step {}", step_num);
-                    self.repair_cancelled_results(session_id, step_num, plan, &started, &mut results).await;
+                    self.repair_cancelled_results(
+                        session_id,
+                        step_num,
+                        plan,
+                        catalog.as_ref(),
+                        &started,
+                        &mut results,
+                    )
+                    .await;
                     return ToolBatchExecution { results, cancelled: true };
                 }
                 item = tool_futures.next() => {
@@ -361,6 +382,7 @@ impl ReActEngine {
         session_id: &str,
         step_num: u32,
         plan: &ToolBatchPlan,
+        catalog: &haven_tools::ToolCatalogSnapshot,
         started: &[AtomicBool],
         results: &mut ToolBatchResults,
     ) {
@@ -376,7 +398,7 @@ impl ReActEngine {
                 ActionStepOutcome::Cancelled
             };
             self.executor
-                .finish_step_with_outcome(
+                .finish_step_with_outcome_and_metadata(
                     session_id,
                     &planned.action.tool_name,
                     &planned.action.tool_input,
@@ -386,6 +408,11 @@ impl ReActEngine {
                     &planned.step_id,
                     &interrupted_text,
                     outcome,
+                    action_step_metadata(
+                        catalog,
+                        &planned.action.tool_name,
+                        &planned.action.tool_input,
+                    ),
                 )
                 .await;
             results.set(
@@ -784,8 +811,14 @@ impl ReActEngine {
                 );
                 results.set(
                     plan_index,
-                    self.failed_admission_tool(session_id, step_num, planned, error)
-                        .await,
+                    self.failed_admission_tool(
+                        session_id,
+                        step_num,
+                        planned,
+                        catalog.as_ref(),
+                        error,
+                    )
+                    .await,
                 );
                 continue;
             }
@@ -795,8 +828,14 @@ impl ReActEngine {
             {
                 results.set(
                     plan_index,
-                    self.failed_admission_tool(session_id, step_num, planned, failure.render())
-                        .await,
+                    self.failed_admission_tool(
+                        session_id,
+                        step_num,
+                        planned,
+                        catalog.as_ref(),
+                        failure.render(),
+                    )
+                    .await,
                 );
                 continue;
             };
@@ -820,7 +859,7 @@ impl ReActEngine {
             } else {
                 let error = rejection_observation(&planned.action.tool_name);
                 self.executor
-                    .finish_step_with_outcome(
+                    .finish_step_with_outcome_and_metadata(
                         session_id,
                         &planned.action.tool_name,
                         &planned.action.tool_input,
@@ -830,6 +869,11 @@ impl ReActEngine {
                         &planned.step_id,
                         &error,
                         ActionStepOutcome::Cancelled,
+                        action_step_metadata(
+                            catalog.as_ref(),
+                            &planned.action.tool_name,
+                            &planned.action.tool_input,
+                        ),
                     )
                     .await;
                 results.set(

@@ -13,6 +13,15 @@ use haven_memory::repositories::session_steps::ActionStepOutcome;
 #[derive(Debug)]
 pub(crate) struct ActionStepPersistenceError(anyhow::Error);
 
+/// Metadata resolved from the ReAct turn's immutable tool catalog.
+/// Authorization and risk checks remain live; this only avoids reopening the
+/// catalog for action-step bookkeeping on every tool call.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ActionStepMetadata {
+    pub(crate) is_high_risk: bool,
+    pub(crate) silent: bool,
+}
+
 impl std::fmt::Display for ActionStepPersistenceError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -63,6 +72,14 @@ struct ActionStepContext {
 
 impl ActionStepContext {
     fn new(request: ActionStepRequest<'_>, risk_level: RiskLevel) -> Self {
+        let metadata = ActionStepMetadata {
+            is_high_risk: risk_level != RiskLevel::Safe,
+            silent: is_silent_action(request.tool_name, request.input),
+        };
+        Self::new_with_metadata(request, metadata)
+    }
+
+    fn new_with_metadata(request: ActionStepRequest<'_>, metadata: ActionStepMetadata) -> Self {
         Self {
             session_id: request.session_id.into(),
             step_number: request.step_num as i32,
@@ -70,8 +87,8 @@ impl ActionStepContext {
             tool_name: request.tool_name.into(),
             tool_input: request.input.to_string(),
             tool_call_id: request.tool_call_id.map(str::to_string),
-            is_high_risk: risk_level != RiskLevel::Safe,
-            silent: is_silent_action(request.tool_name, request.input),
+            is_high_risk: metadata.is_high_risk,
+            silent: metadata.silent,
             step_id: request.step_id.into(),
         }
     }
@@ -142,6 +159,13 @@ impl SessionSupervisor {
                 step_id,
             })
             .await;
+        self.persist_pending_action_step_context(context).await
+    }
+
+    async fn persist_pending_action_step_context(
+        &self,
+        context: ActionStepContext,
+    ) -> anyhow::Result<()> {
         let step_id_for_log = context.step_id.clone();
         self.db
             .run_blocking(move |db| context.ensure(db, None))
@@ -209,6 +233,49 @@ impl SessionSupervisor {
                 step_id,
             })
             .await;
+        self.finish_action_step_context(context, observation, outcome)
+            .await;
+    }
+
+    /// Finalize a batch action using metadata resolved from the batch's
+    /// immutable catalog snapshot. The execution safety decision is still
+    /// performed live by `execute_gated`.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn finish_step_with_outcome_and_metadata(
+        &self,
+        session_id: &str,
+        tool_name: &str,
+        input: &Value,
+        step_num: u32,
+        action_index: u32,
+        tool_call_id: Option<&str>,
+        step_id: &str,
+        observation: &str,
+        outcome: ActionStepOutcome,
+        metadata: ActionStepMetadata,
+    ) {
+        let context = ActionStepContext::new_with_metadata(
+            ActionStepRequest {
+                session_id,
+                tool_name,
+                input,
+                step_num,
+                action_index,
+                tool_call_id,
+                step_id,
+            },
+            metadata,
+        );
+        self.finish_action_step_context(context, observation, outcome)
+            .await;
+    }
+
+    async fn finish_action_step_context(
+        &self,
+        context: ActionStepContext,
+        observation: &str,
+        outcome: ActionStepOutcome,
+    ) {
         let step_id_for_log = context.step_id.clone();
         let observation = observation.to_string();
         if let Err(e) = self
@@ -253,6 +320,34 @@ impl SessionSupervisor {
         .await;
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn finish_interrupted_step_with_identity_and_metadata(
+        &self,
+        session_id: &str,
+        tool_name: &str,
+        input: &Value,
+        step_num: u32,
+        action_index: u32,
+        tool_call_id: Option<&str>,
+        step_id: &str,
+        observation: &str,
+        metadata: ActionStepMetadata,
+    ) {
+        self.finish_step_with_outcome_and_metadata(
+            session_id,
+            tool_name,
+            input,
+            step_num,
+            action_index,
+            tool_call_id,
+            step_id,
+            observation,
+            ActionStepOutcome::Failed,
+            metadata,
+        )
+        .await;
+    }
+
     /// Move the Action-emit pending row to running immediately before the
     /// tool is invoked. The ensure step keeps direct callers safe when no
     /// Action event created the row first.
@@ -292,6 +387,13 @@ impl SessionSupervisor {
                 step_id,
             })
             .await;
+        self.start_running_action_step_context(context).await
+    }
+
+    async fn start_running_action_step_context(
+        &self,
+        context: ActionStepContext,
+    ) -> anyhow::Result<()> {
         let step_id_for_log = context.step_id.clone();
         self.db
             .run_blocking(move |db| {
@@ -352,6 +454,33 @@ impl SessionSupervisor {
             tool_call_id,
             step_id,
             None,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn execute_step_with_identity_and_metadata(
+        &self,
+        session_id: &str,
+        tool_name: &str,
+        input: Value,
+        step_num: u32,
+        action_index: u32,
+        tool_call_id: Option<&str>,
+        step_id: &str,
+        metadata: ActionStepMetadata,
+    ) -> anyhow::Result<ToolResult> {
+        self.execute_step_inner(
+            session_id,
+            tool_name,
+            input,
+            step_num,
+            action_index,
+            tool_call_id,
+            step_id,
+            None,
+            Some(metadata),
         )
         .await
     }
@@ -395,6 +524,34 @@ impl SessionSupervisor {
             tool_call_id,
             step_id,
             Some(receipt),
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn execute_step_preconfirmed_with_identity_and_metadata(
+        &self,
+        session_id: &str,
+        tool_name: &str,
+        input: Value,
+        step_num: u32,
+        action_index: u32,
+        tool_call_id: Option<&str>,
+        step_id: &str,
+        receipt: haven_tools::ConfirmationReceipt,
+        metadata: ActionStepMetadata,
+    ) -> anyhow::Result<ToolResult> {
+        self.execute_step_inner(
+            session_id,
+            tool_name,
+            input,
+            step_num,
+            action_index,
+            tool_call_id,
+            step_id,
+            Some(receipt),
+            Some(metadata),
         )
         .await
     }
@@ -410,6 +567,7 @@ impl SessionSupervisor {
         tool_call_id: Option<&str>,
         step_id: &str,
         receipt: Option<haven_tools::ConfirmationReceipt>,
+        action_step_metadata: Option<ActionStepMetadata>,
     ) -> anyhow::Result<ToolResult> {
         let tool_call_id = tool_call_id.map(str::to_string);
         tracing::debug!(
@@ -453,32 +611,52 @@ impl SessionSupervisor {
                 }
             };
             if let Some(err) = refuse {
-                self.finish_interrupted_step_with_identity(
-                    session_id,
-                    tool_name,
-                    &input,
-                    step_num,
-                    action_index,
-                    tool_call_id.as_deref(),
-                    step_id,
-                    &err,
-                )
-                .await;
+                if let Some(metadata) = action_step_metadata {
+                    self.finish_interrupted_step_with_identity_and_metadata(
+                        session_id,
+                        tool_name,
+                        &input,
+                        step_num,
+                        action_index,
+                        tool_call_id.as_deref(),
+                        step_id,
+                        &err,
+                        metadata,
+                    )
+                    .await;
+                } else {
+                    self.finish_interrupted_step_with_identity(
+                        session_id,
+                        tool_name,
+                        &input,
+                        step_num,
+                        action_index,
+                        tool_call_id.as_deref(),
+                        step_id,
+                        &err,
+                    )
+                    .await;
+                }
                 return Err(anyhow::anyhow!(err));
             }
         }
 
         let cancel = self.cancellation_token(session_id).await;
-        self.start_action_step_with_identity(
+        let action_step_request = ActionStepRequest {
             session_id,
             tool_name,
-            &input,
+            input: &input,
             step_num,
             action_index,
-            tool_call_id.as_deref(),
+            tool_call_id: tool_call_id.as_deref(),
             step_id,
-        )
-        .await?;
+        };
+        let action_step_context = match action_step_metadata {
+            Some(metadata) => ActionStepContext::new_with_metadata(action_step_request, metadata),
+            None => self.action_step_context(action_step_request).await,
+        };
+        self.start_running_action_step_context(action_step_context)
+            .await?;
         let gated = match self
             .execute_gated(
                 Some(session_id),
@@ -494,22 +672,39 @@ impl SessionSupervisor {
             Err(e) => {
                 // Pending row was created at Action emit; record the failure
                 // so resume/resync does not rebuild an empty tool badge.
-                self.finish_step_with_outcome(
-                    session_id,
-                    tool_name,
-                    &input,
-                    step_num,
-                    action_index,
-                    tool_call_id.as_deref(),
-                    step_id,
-                    &e.to_string(),
-                    if cancel.is_cancelled() {
-                        ActionStepOutcome::Unknown
-                    } else {
-                        ActionStepOutcome::Failed
-                    },
-                )
-                .await;
+                let outcome = if cancel.is_cancelled() {
+                    ActionStepOutcome::Unknown
+                } else {
+                    ActionStepOutcome::Failed
+                };
+                if let Some(metadata) = action_step_metadata {
+                    self.finish_step_with_outcome_and_metadata(
+                        session_id,
+                        tool_name,
+                        &input,
+                        step_num,
+                        action_index,
+                        tool_call_id.as_deref(),
+                        step_id,
+                        &e.to_string(),
+                        outcome,
+                        metadata,
+                    )
+                    .await;
+                } else {
+                    self.finish_step_with_outcome(
+                        session_id,
+                        tool_name,
+                        &input,
+                        step_num,
+                        action_index,
+                        tool_call_id.as_deref(),
+                        step_id,
+                        &e.to_string(),
+                        outcome,
+                    )
+                    .await;
+                }
                 return Err(e);
             }
         };

@@ -1,6 +1,6 @@
 //! Tauri command handlers, split by domain:
 //! `recording` / `session` / `action` / `history` / `model` / `mcp` /
-//! `skills` / `memory` / `settings` / `log`.
+//! `skills` / `memory` / `settings` / `log` / `diagnostics`.
 //!
 //! Shared helpers (error conversion, router hot-swap, MCP connect, attachment
 //! validation) live here so every submodule stays thin. `lib.rs` references
@@ -10,6 +10,7 @@
 
 pub mod action;
 pub mod contracts;
+pub mod diagnostics;
 pub mod external;
 pub mod history;
 pub mod log;

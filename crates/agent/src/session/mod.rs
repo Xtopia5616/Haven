@@ -218,7 +218,7 @@ mod run_engine;
 mod status;
 mod tool_runner;
 pub(crate) use dispatcher::DirectRunLease;
-pub(crate) use tool_runner::ActionStepPersistenceError;
+pub(crate) use tool_runner::{ActionStepMetadata, ActionStepPersistenceError};
 
 pub(crate) use actor::{CONTEXT_BATCH_MAX_CHARS, CONTEXT_BATCH_MAX_ITEMS};
 pub(crate) use queues::ReactContextBatch;
