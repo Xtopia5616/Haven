@@ -756,26 +756,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn default_guidance_boundary_falls_back_to_legacy_vec_request() {
+    async fn default_guidance_boundary_is_fail_closed_for_legacy_adapters() {
         let probe = LegacyGuidanceProbe {
             messages: StdMutex::new(Vec::new()),
         };
-        let _stream = probe
+        let result = probe
             .chat_stream_with_tools_output_cap_shared_guidance(
                 Arc::from(vec![CanonicalMessage::user_text("hello")]),
                 Arc::from(Vec::<ToolDefinition>::new()),
                 "Please continue without code fences.".into(),
                 Some(128),
             )
-            .await
-            .unwrap();
+            .await;
 
+        let error = result
+            .err()
+            .expect("legacy guidance boundary must fail closed");
+        assert!(matches!(error, LlmError::UnsupportedCapability(_)));
         let requests = probe.messages.lock().unwrap();
-        assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0].len(), 2);
-        assert!(matches!(
-            &requests[0][1].content[0],
-            ContentPart::Text(text) if text == "Please continue without code fences."
-        ));
+        assert!(
+            requests.is_empty(),
+            "legacy Vec boundary must not be called"
+        );
     }
 }

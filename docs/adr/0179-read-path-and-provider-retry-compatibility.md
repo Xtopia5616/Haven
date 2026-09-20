@@ -7,17 +7,17 @@ Inbox 的历史/引用读取会经过 archive 整理入口。此前即使 archiv
 ## 决定
 
 - archive 只有在超出大小上限、加入新 envelope，或发现 archive 临时文件时才重写；读取路径继续持有同一 inbox 锁并先完成临时文件恢复。
-- 原有 `LlmClient` guidance 共享接口保留一个兼容默认实现：复制一次 immutable 请求快照，追加 user guidance，再调用既有的 `chat_stream_with_tools_output_cap`。原生 provider 仍可覆盖该接口以避免复制。
+- `LlmClient` guidance 共享接口默认 fail-closed；只有实现新共享边界的 provider 才参与 guidance retry。这样未升级的第三方 provider 不会在每次 retry 隐式复制 `Vec` 请求。
 - transcript 事件批量上限、snapshot 混合 transcript/branch 导入和 Settings 性能指标下载均由回归测试固定行为。
 
 ## 替代方案
 
 - 每次读取都重写 archive：实现简单，但会产生无意义的磁盘写放大。
-- 对未升级的 provider 直接 fail-closed：避免一次 `Vec` 分配，但 guidance retry 会按 adapter 是否升级而改变可用性。
+- 为未升级的 provider 复制 `Vec` 请求作为兼容回退：虽然保留 retry 可用性，但会绕过共享快照的分配约束，并让新旧 adapter 的性能语义不一致。
 
 ## 影响
 
-正常读取不再触发 archive 写入；恢复中的 `.tmp` 和超限旧 archive 仍会被整理。旧 provider 的 guidance retry 会有一次有界的 `Vec` 物化成本，原生实现不受影响。
+正常读取不再触发 archive 写入；恢复中的 `.tmp` 和超限旧 archive 仍会被整理。未升级 provider 会明确跳过 guidance retry，原生实现保持共享快照路径。
 
 ## 验证
 
