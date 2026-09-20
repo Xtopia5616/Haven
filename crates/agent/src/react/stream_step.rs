@@ -32,6 +32,170 @@ struct CheckpointWriter {
     metrics: Arc<ReActMetrics>,
 }
 
+const WEB_SEARCH_OVERFLOW_CAPACITY: usize = 1024;
+
+/// Synchronous provider callbacks use the bounded channel as a fast path. As
+/// soon as it fills, all later events go through one FIFO overflow pump; this
+/// prevents independent async sends from overtaking one another.
+#[derive(Clone)]
+struct WebSearchSender {
+    tx: tokio::sync::mpsc::Sender<AgentEvent>,
+    state: Arc<std::sync::Mutex<WebSearchQueueState>>,
+    notify: Arc<tokio::sync::Notify>,
+}
+
+struct WebSearchQueueState {
+    accepting: bool,
+    overflow_active: bool,
+    overflow: std::collections::VecDeque<AgentEvent>,
+}
+
+struct WebSearchPump {
+    sender: WebSearchSender,
+    task: tokio::task::JoinHandle<anyhow::Result<()>>,
+}
+
+impl WebSearchPump {
+    fn new(tx: tokio::sync::mpsc::Sender<AgentEvent>) -> Self {
+        let state = Arc::new(std::sync::Mutex::new(WebSearchQueueState {
+            accepting: true,
+            overflow_active: false,
+            overflow: std::collections::VecDeque::new(),
+        }));
+        let notify = Arc::new(tokio::sync::Notify::new());
+        let sender = WebSearchSender {
+            tx: tx.clone(),
+            state: state.clone(),
+            notify: notify.clone(),
+        };
+        let task = tokio::spawn(async move {
+            loop {
+                let event = {
+                    let mut state = state.lock().unwrap();
+                    state.overflow.pop_front()
+                };
+                if let Some(event) = event {
+                    // There is one and only one async sender for overflow, so
+                    // later producer callbacks cannot pass this event.
+                    if tx.send(event).await.is_err() {
+                        return Ok(());
+                    }
+                    let mut state = state.lock().unwrap();
+                    if state.overflow.is_empty() && state.accepting {
+                        state.overflow_active = false;
+                    }
+                    continue;
+                }
+
+                let accepting = state.lock().unwrap().accepting;
+                if !accepting {
+                    return Ok(());
+                }
+                notify.notified().await;
+            }
+        });
+        Self { sender, task }
+    }
+
+    fn sender(&self) -> WebSearchSender {
+        self.sender.clone()
+    }
+
+    async fn finish(self) -> anyhow::Result<()> {
+        {
+            let mut state = self.sender.state.lock().unwrap();
+            state.accepting = false;
+        }
+        self.sender.notify.notify_one();
+        match self.task.await {
+            Ok(result) => result,
+            Err(error) => Err(anyhow::anyhow!("web-search overflow pump failed: {error}")),
+        }
+    }
+}
+
+impl WebSearchSender {
+    fn try_send(&self, event: AgentEvent, metrics: &ReActMetrics) {
+        let mut state = self.state.lock().unwrap();
+        if !state.accepting {
+            metrics.increment(MetricsCounter::WebSearchDrops);
+            return;
+        }
+
+        // Once overflow starts, keep the fast path closed until the pump has
+        // drained the queue. Otherwise a later try_send could overtake an
+        // overflow event whose async send is waiting for channel capacity.
+        if state.overflow_active {
+            if !coalesce_web_search_event(&mut state.overflow, &event) {
+                if state.overflow.len() < WEB_SEARCH_OVERFLOW_CAPACITY {
+                    state.overflow.push_back(event);
+                } else {
+                    metrics.increment(MetricsCounter::WebSearchDrops);
+                    tracing::warn!(
+                        capacity = WEB_SEARCH_OVERFLOW_CAPACITY,
+                        "web-search overflow queue full; dropping event"
+                    );
+                }
+            }
+            self.notify.notify_one();
+            return;
+        }
+
+        match self.tx.try_send(event) {
+            Ok(()) => {}
+            Err(tokio::sync::mpsc::error::TrySendError::Full(event)) => {
+                state.overflow_active = true;
+                state.overflow.push_back(event);
+                self.notify.notify_one();
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                state.accepting = false;
+                metrics.increment(MetricsCounter::WebSearchDrops);
+                tracing::debug!("web-search event consumer closed");
+            }
+        }
+    }
+}
+
+fn coalesce_web_search_event(
+    pending: &mut std::collections::VecDeque<AgentEvent>,
+    event: &AgentEvent,
+) -> bool {
+    let AgentEvent::WebSearch {
+        session_id,
+        step_number,
+        run_id,
+        call_id,
+        action,
+        ..
+    } = event
+    else {
+        return false;
+    };
+    let Some(existing) = pending.iter_mut().find(|existing| {
+        let AgentEvent::WebSearch {
+            session_id: existing_session_id,
+            step_number: existing_step_number,
+            run_id: existing_run_id,
+            call_id: existing_call_id,
+            action: existing_action,
+            ..
+        } = existing
+        else {
+            return false;
+        };
+        existing_session_id == session_id
+            && existing_step_number == step_number
+            && existing_run_id == run_id
+            && existing_call_id == call_id
+            && existing_action == action
+    }) else {
+        return false;
+    };
+    *existing = (*event).clone();
+    true
+}
+
 impl CheckpointWriter {
     fn new(store: Arc<crate::partial::PartialStore>, metrics: Arc<ReActMetrics>) -> Self {
         let pending = Arc::new(std::sync::Mutex::new(None));
@@ -229,7 +393,7 @@ fn now_millis() -> u64 {
 /// queue, so interleaved provider output keeps its arrival order.
 struct StreamForwarder {
     chunk_tx: crate::event::ChunkSender,
-    ws_tx: tokio::sync::mpsc::Sender<AgentEvent>,
+    ws_pump: WebSearchPump,
     reset_pending: Arc<std::sync::atomic::AtomicBool>,
     reset_marker: crate::event::ChunkItem,
     consumer: crate::event::ConsumerHandle,
@@ -282,7 +446,8 @@ impl StreamForwarder {
         // serializes them against promote/discard and drops writes that land
         // after the session was ended/rolled back.
         let (ws_tx, mut ws_rx) = tokio::sync::mpsc::channel(256);
-        let ws_tx_c = ws_tx.clone();
+        let ws_pump = WebSearchPump::new(ws_tx);
+        let ws_tx_c = ws_pump.sender();
         let em_ws = ctx.emitter.clone();
         let ws_session = tokio::spawn(async move {
             while let Some(event) = ws_rx.recv().await {
@@ -438,23 +603,7 @@ impl StreamForwarder {
                     action: ws.action.clone(),
                     result: ws.result.clone(),
                 };
-                match ws_tx_c.try_send(event) {
-                    Ok(()) => {}
-                    Err(tokio::sync::mpsc::error::TrySendError::Full(event)) => {
-                        // Provider callbacks are synchronous. Preserve the
-                        // bounded fast path while handing a rare burst to an
-                        // async sender, so search lifecycle events are never
-                        // silently discarded.
-                        let tx = ws_tx_c.clone();
-                        tokio::spawn(async move {
-                            let _ = tx.send(event).await;
-                        });
-                    }
-                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                        metrics_c.increment(MetricsCounter::WebSearchDrops);
-                        tracing::debug!("web-search event consumer closed");
-                    }
-                }
+                ws_tx_c.try_send(event, &metrics_c);
                 last_chunk_c.store(now_millis(), std::sync::atomic::Ordering::Relaxed);
             }
         };
@@ -494,7 +643,6 @@ impl StreamForwarder {
         (
             Self {
                 chunk_tx,
-                ws_tx,
                 reset_pending,
                 reset_marker: crate::event::ChunkItem::Reset {
                     session_id: reset_marker_session,
@@ -505,6 +653,7 @@ impl StreamForwarder {
                 },
                 consumer: consumer_handle,
                 checkpoint_writer,
+                ws_pump,
                 ws_session,
                 watchdog,
             },
@@ -535,7 +684,9 @@ impl StreamForwarder {
             }
         }
         drop(self.chunk_tx);
-        drop(self.ws_tx);
+        if let Err(error) = self.ws_pump.finish().await {
+            join_error.get_or_insert(error);
+        }
         if let Some(handle) = self.consumer
             && let Err(error) = handle.await
         {
@@ -995,6 +1146,46 @@ mod tests {
             .unwrap();
         assert_eq!(partial.map(|row| row.0).as_deref(), Some("latest"));
     }
+
+    #[tokio::test]
+    async fn web_search_overflow_pump_preserves_order_when_channel_is_full() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(256);
+        let pump = WebSearchPump::new(tx);
+        let sender = pump.sender();
+        let metrics = ReActMetrics::new();
+
+        for index in 0..(256 + 257) {
+            sender.try_send(
+                AgentEvent::WebSearch {
+                    session_id: "ses-overflow".into(),
+                    phase: "searching".into(),
+                    step_number: 1,
+                    run_id: 1,
+                    call_id: Some(format!("call-{index}")),
+                    action: Some("search".into()),
+                    result: None,
+                },
+                &metrics,
+            );
+        }
+
+        let collector = tokio::spawn(async move {
+            let mut ids = Vec::new();
+            while let Some(AgentEvent::WebSearch { call_id, .. }) = rx.recv().await {
+                ids.push(call_id.expect("test event call id"));
+            }
+            ids
+        });
+        pump.finish().await.unwrap();
+        drop(sender);
+
+        let ids = collector.await.unwrap();
+        let expected = (0..(256 + 257))
+            .map(|index| format!("call-{index}"))
+            .collect::<Vec<_>>();
+        assert_eq!(ids, expected);
+    }
+
     use async_trait::async_trait;
     use futures_util::stream;
     use haven_common::config::RouterConfig;

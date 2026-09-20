@@ -7,6 +7,22 @@ use super::*;
 use crate::session::SessionEvent;
 use serde_json::Value;
 
+async fn action_completion_session_status(
+    agent: &AgentLayer,
+    session_id: &str,
+) -> Option<SessionStatus> {
+    if let Some(status) = agent.executor.get_session_status(session_id).await {
+        return Some(status);
+    }
+    let session_id = session_id.to_string();
+    agent
+        .db
+        .run_blocking(move |db| Ok(db.get_session(&session_id)?.map(|session| session.status)))
+        .await
+        .ok()
+        .flatten()
+}
+
 pub struct AgentLayer {
     pub(crate) db: Arc<Database>,
     pub(crate) executor: Arc<SessionSupervisor>,
@@ -398,13 +414,14 @@ impl AgentLayer {
         // is still buffered and delivered as context once the user resumes.
         let agent = self.clone();
         let tools = self.executor.get_tools();
+        let action_service = tools.action_service().clone();
         if let Some(mut rx) = tools.action_service().take_action_receiver() {
             let cancellation = cancellation.clone();
             tokio::spawn(async move {
                 loop {
                     let Some(event) = (tokio::select! {
                         _ = cancellation.cancelled() => return,
-                        event = rx.recv_background() => event,
+                        event = rx.recv_background_with_recovery(action_service.as_ref()) => event,
                     }) else {
                         return;
                     };
@@ -415,6 +432,9 @@ impl AgentLayer {
                     // intentionally (end_session/rollback), so notifying would
                     // risk resurrecting an ended session.
                     if comp.status == haven_common::ActionStatus::Cancelled {
+                        action_service
+                            .acknowledge_background_completion(&comp.action_result_id)
+                            .await;
                         continue;
                     }
                     let Some(tid) = comp.session_id else {
@@ -469,7 +489,7 @@ impl AgentLayer {
                     }
                     let result_message_id =
                         crate::react::action_result_message_id(&comp.action_result_id);
-                    let mut state = agent.executor.get_session_state(&tid).await;
+                    let mut state = action_completion_session_status(&agent, &tid).await;
                     // Delivery is retried with the same action_result_id.  A
                     // full actor mailbox must not turn a durable action row
                     // into a lost transcript context.  If the session becomes
@@ -494,6 +514,9 @@ impl AgentLayer {
                                     agent
                                         .react_engine
                                         .note_last_msg_at(&tid, Some(persisted.created_at));
+                                    action_service
+                                        .acknowledge_background_completion(&comp.action_result_id)
+                                        .await;
                                     break;
                                 }
                                 Err(error) => {
@@ -515,6 +538,9 @@ impl AgentLayer {
                                 action_id = %comp.action_id,
                                 "dropping action-result delivery for deleted session"
                             );
+                            action_service
+                                .acknowledge_background_completion(&comp.action_result_id)
+                                .await;
                             break;
                         } else {
                             match agent
@@ -542,7 +568,7 @@ impl AgentLayer {
                             _ = cancellation.cancelled() => return,
                             _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {}
                         }
-                        state = agent.executor.get_session_state(&tid).await;
+                        state = action_completion_session_status(&agent, &tid).await;
                     }
                     // Awaiting-answer/confirm pauses must not be auto-woken by
                     // background-action completions (the model is blocked on the

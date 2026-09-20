@@ -42,6 +42,7 @@ pub(super) struct PendingContext {
     pub(super) text: String,
     pub(super) attachments: Vec<MessageAttachment>,
     pub(super) message_id: Option<String>,
+    pub(super) action_result_id: Option<String>,
 }
 
 /// Convert the stable action identity into a valid message identity without
@@ -183,6 +184,7 @@ impl ContextSource {
                 text: steering_item.text,
                 attachments: steering_item.attachments,
                 message_id: steering_item.message_id,
+                action_result_id: None,
             });
         }
 
@@ -198,6 +200,7 @@ impl ContextSource {
                 text: follow_up.text,
                 attachments: follow_up.attachments,
                 message_id: follow_up.message_id,
+                action_result_id: None,
             });
         }
 
@@ -207,6 +210,7 @@ impl ContextSource {
                 text: action_result.text,
                 attachments: Vec::new(),
                 message_id: Some(action_result_message_id(&action_result.action_result_id)),
+                action_result_id: Some(action_result.action_result_id),
             });
         }
 
@@ -381,6 +385,7 @@ impl ContextSource {
                     text: text.clone(),
                     attachments: Vec::new(),
                     message_id: Some(envelope_id.clone()),
+                    action_result_id: None,
                 })
                 .collect(),
             clears_ask: false,
@@ -513,6 +518,7 @@ mod assembly_tests {
             text: text.to_string(),
             attachments: Vec::new(),
             message_id: message_id.map(str::to_string),
+            action_result_id: None,
         }
     }
 

@@ -177,6 +177,74 @@ async fn test_completion_skipped_for_running() {
     assert_eq!(actions.status("nope").await["status"], "not_found");
 }
 
+#[tokio::test]
+async fn test_background_completion_reconciles_after_broadcast_loss() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let db = Arc::new(Database::open(&dir.path().join("reconcile.db")).unwrap());
+    db.create_session("durable completion", "durable completion")
+        .unwrap();
+    db.save_action(
+        "act-reconcile",
+        Some("ses-reconcile"),
+        "echo durable",
+        "started",
+    )
+    .unwrap();
+    db.finish_action(
+        "act-reconcile",
+        haven_common::ActionStatus::Completed,
+        Some("durable output"),
+        None,
+        None,
+        None,
+        Some(0),
+        "finished",
+    )
+    .unwrap();
+
+    // No broadcast was sent to this service. The receiver must rebuild the
+    // completion from terminal action history and keep it pending until the
+    // transcript consumer acknowledges it.
+    let actions = Arc::new(ActionService::new());
+    actions.set_db(Some(db)).await;
+    let mut rx = actions.take_action_receiver().unwrap();
+    let completion = tokio::time::timeout(
+        Duration::from_secs(2),
+        rx.recv_background_with_recovery(actions.as_ref()),
+    )
+    .await
+    .expect("durable completion should be reconciled")
+    .expect("completion bus should remain open");
+    let ActionCompletion::Background(completion) = completion else {
+        panic!("expected background completion");
+    };
+    assert_eq!(completion.action_id, "act-reconcile");
+    assert_eq!(completion.session_id.as_deref(), Some("ses-reconcile"));
+    assert_eq!(completion.status_json["output"], "durable output");
+
+    // A claimed row is not delivered twice before the transcript boundary is
+    // durable. Once that boundary is acknowledged, recovery is quiescent.
+    assert!(
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            rx.recv_background_with_recovery(actions.as_ref())
+        )
+        .await
+        .is_err()
+    );
+    actions
+        .acknowledge_background_completion(&completion.action_result_id)
+        .await;
+    assert!(
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            rx.recv_background_with_recovery(actions.as_ref())
+        )
+        .await
+        .is_err()
+    );
+}
+
 #[cfg(windows)]
 #[tokio::test]
 async fn test_spawn_shell_completes_with_output() {

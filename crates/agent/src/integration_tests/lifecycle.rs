@@ -178,6 +178,152 @@ async fn persist_message_adds_to_db() {
 }
 
 #[tokio::test]
+async fn terminal_action_result_projection_is_idempotent() {
+    let (agent, executor) = make_test_agent();
+    let session = executor
+        .create_session("terminal action result")
+        .await
+        .unwrap();
+    executor
+        .update_session_status(&session.id, SessionStatus::Completed)
+        .await
+        .unwrap();
+
+    let action_result_id = "act-terminal-dedup";
+    let message_id = crate::react::action_result_message_id(action_result_id);
+    let content =
+        "[Background action result]\naction_id: act-terminal\nstatus: completed\n\nresult";
+    let first = crate::persist_session_message(
+        &agent.executor,
+        &session.id,
+        "user",
+        content,
+        Some("text"),
+        &[],
+        false,
+        Some(&message_id),
+        None,
+    )
+    .await
+    .unwrap();
+    let second = crate::persist_session_message(
+        &agent.executor,
+        &session.id,
+        "user",
+        content,
+        Some("text"),
+        &[],
+        false,
+        Some(&message_id),
+        None,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(first.id, message_id);
+    assert_eq!(second.id, message_id);
+    assert_eq!(
+        agent
+            .db
+            .get_session_messages(&session.id)
+            .unwrap()
+            .iter()
+            .filter(|message| message.id == message_id)
+            .count(),
+        1,
+        "terminal completion redelivery must reuse the existing history row"
+    );
+}
+
+#[tokio::test]
+async fn queued_action_result_is_reconciled_after_session_becomes_terminal() {
+    let (agent, executor) = make_test_agent();
+    let action_service = executor.get_tools().action_service().clone();
+    action_service.set_db(Some(agent.db.clone())).await;
+    let session = executor
+        .create_session("terminal action race")
+        .await
+        .unwrap();
+    executor
+        .update_session_status(&session.id, SessionStatus::Paused)
+        .await
+        .unwrap();
+
+    let action_id = "act-terminal-race";
+    agent
+        .db
+        .save_action(action_id, Some(&session.id), "echo race", "started")
+        .unwrap();
+    agent
+        .db
+        .finish_action(
+            action_id,
+            haven_common::ActionStatus::Completed,
+            Some("race output"),
+            None,
+            None,
+            None,
+            Some(0),
+            "finished",
+        )
+        .unwrap();
+
+    // Model the transient consumer's successful queue admission, followed by
+    // the session terminal cleanup that clears the actor queue before a turn
+    // can project it. The durable outbox must remain the recovery authority.
+    executor
+        .add_action_completion_with_id(
+            &session.id,
+            action_id.to_string(),
+            "[Background action result]\naction_id: act-terminal-race\nstatus: completed\n\nrace output",
+        )
+        .await
+        .unwrap();
+    executor
+        .update_session_status(&session.id, SessionStatus::Completed)
+        .await
+        .unwrap();
+
+    let cancellation = tokio_util::sync::CancellationToken::new();
+    agent
+        .clone()
+        .start_without_pending_recovery_with_cancellation(cancellation.clone());
+    let message_id = crate::react::action_result_message_id(action_id);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        let has_message = agent
+            .db
+            .get_session_messages(&session.id)
+            .unwrap()
+            .iter()
+            .any(|message| message.id == message_id);
+        if has_message {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "outbox result was not projected"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let pending: i64 = agent
+        .db
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM action_completion_outbox
+             WHERE action_id = ?1 AND delivered_at IS NULL",
+            [action_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        pending, 0,
+        "durable result must be acknowledged after projection"
+    );
+    cancellation.cancel();
+}
+
+#[tokio::test]
 async fn persist_message_with_attachments_roundtrips() {
     let (agent, _) = make_test_agent();
     let session = agent.db.create_session("input", "").unwrap();

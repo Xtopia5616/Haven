@@ -61,7 +61,9 @@ impl ReActEngine {
     ) -> anyhow::Result<bool> {
         let mut pending_events = Vec::with_capacity(items.len());
         let mut pending_message_ids = std::collections::HashSet::new();
+        let mut action_result_ids = Vec::new();
         for item in items {
+            let action_result_id = item.action_result_id.clone();
             let already_applied = item.message_id.as_deref().is_some_and(|message_id| {
                 let duplicate = state.has_applied_inject(message_id)
                     || !pending_message_ids.insert(message_id.to_string());
@@ -71,6 +73,11 @@ impl ReActEngine {
                 }
                 duplicate
             });
+            if let Some(action_result_id) = action_result_id {
+                // A duplicate is also safe to acknowledge: the stable message
+                // id proves the transcript already contains this result.
+                action_result_ids.push(action_result_id);
+            }
             if !already_applied {
                 pending_events.push(TranscriptEvent::UserInject {
                     source: item.source,
@@ -83,6 +90,17 @@ impl ReActEngine {
         let injected = !pending_events.is_empty();
         self.apply_transcript_batch(ctx, pending_events, state)
             .await?;
+
+        // Queue admission is deliberately not an acknowledgement: terminal
+        // cleanup can clear the actor queue immediately afterwards. The
+        // durable outbox is acknowledged only after the transcript event and
+        // message projection commit.
+        let action_service = self.executor.get_tools().action_service().clone();
+        for action_result_id in action_result_ids {
+            action_service
+                .acknowledge_background_completion(&action_result_id)
+                .await;
+        }
 
         // The answer is now durable and replayable.  Only then remove the ask
         // gate; if either transcript persistence or interaction persistence
@@ -254,12 +272,14 @@ mod pending_context_tests {
                     text: "replayed".to_string(),
                     attachments: Vec::new(),
                     message_id: Some(message_id.clone()),
+                    action_result_id: None,
                 },
                 PendingContext {
                     source: InjectSource::CrossSession,
                     text: "replayed again".to_string(),
                     attachments: Vec::new(),
                     message_id: Some(message_id),
+                    action_result_id: None,
                 },
             ],
             clears_ask: false,

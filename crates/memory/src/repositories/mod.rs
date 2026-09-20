@@ -1,3 +1,4 @@
+pub mod action_completion_outbox;
 pub mod episodes;
 pub(crate) mod fact_graph;
 pub(crate) mod fact_maintenance;

@@ -9,6 +9,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
 use crate::ActionLifecycle;
+use haven_memory::repositories::action_completion_outbox::ActionCompletionOutboxRow;
 
 fn lock_or_recover<'a, T>(lock: &'a Mutex<T>, name: &'static str) -> MutexGuard<'a, T> {
     lock.lock().unwrap_or_else(|poisoned| {
@@ -154,6 +155,48 @@ impl ActionCompletionReceiver {
         }
     }
 
+    /// Receive a background completion from either the transient broadcast or
+    /// the durable outbox. The outbox is checked after every broadcast lag and
+    /// on a bounded interval so a completion that was never published still
+    /// wakes the owning session. Delivery claims expire if the consumer dies.
+    pub async fn recv_background_with_recovery(
+        &mut self,
+        service: &ActionService,
+    ) -> Option<ActionCompletion> {
+        let mut reconcile = tokio::time::interval(ACTION_COMPLETION_RECONCILE_INTERVAL);
+        reconcile.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        // Reconcile once immediately at startup; subsequent checks are
+        // bounded by the interval while the transient channel remains the
+        // fast path for newly completed actions.
+        reconcile.tick().await;
+        loop {
+            if let Some(completion) = service.claim_pending_background_completion().await {
+                return Some(ActionCompletion::Background(completion));
+            }
+            match tokio::select! {
+                result = self.rx.recv() => result,
+                _ = reconcile.tick() => continue,
+            } {
+                Ok(ActionCompletion::Background(completion)) => {
+                    return Some(ActionCompletion::Background(completion));
+                }
+                Ok(ActionCompletion::Scheduled(_)) => {}
+                Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                    tracing::warn!(
+                        skipped,
+                        "action completion receiver lagged; reconciling durable outbox"
+                    );
+                }
+                Err(broadcast::error::RecvError::Closed) => {
+                    return service
+                        .claim_pending_background_completion()
+                        .await
+                        .map(ActionCompletion::Background);
+                }
+            }
+        }
+    }
+
     /// Receive a scheduled trigger with recovery for broadcast lag. The
     /// scheduled action remains in an in-memory unacknowledged set until the
     /// actual work is acknowledged, so a lagged receiver can replay it rather
@@ -190,6 +233,8 @@ impl ActionCompletionReceiver {
         }
     }
 }
+
+const ACTION_COMPLETION_RECONCILE_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Optional sink for action lifecycle events surfaced to the UI. The
 /// sink is called with `(event, payload)` where event is one of:
@@ -454,6 +499,51 @@ impl ActionService {
             }
         }
         None
+    }
+
+    async fn claim_pending_background_completion(&self) -> Option<BackgroundActionCompletion> {
+        let db = self.db.read().await.clone()?;
+        match db.run_blocking(|db| db.claim_action_completion()).await {
+            Ok(Some(ActionCompletionOutboxRow {
+                action_id,
+                action_result_id,
+                session_id,
+                status,
+                status_json,
+            })) => Some(BackgroundActionCompletion {
+                action_id,
+                action_result_id,
+                session_id,
+                status,
+                status_json,
+            }),
+            Ok(None) => None,
+            Err(error) => {
+                tracing::debug!("action completion outbox reconcile failed: {error}");
+                None
+            }
+        }
+    }
+
+    /// Acknowledge a completion after the agent's transcript/event projection
+    /// is durable. Queue admission alone is deliberately insufficient: a
+    /// session may become terminal and clear its actor queue immediately after
+    /// admission.
+    pub async fn acknowledge_background_completion(&self, action_result_id: &str) {
+        let Some(db) = self.db.read().await.clone() else {
+            return;
+        };
+        let action_result_id = action_result_id.to_string();
+        let action_result_id_for_log = action_result_id.clone();
+        if let Err(error) = db
+            .run_blocking(move |db| db.acknowledge_action_completion(&action_result_id))
+            .await
+        {
+            tracing::warn!(
+                action_result_id = %action_result_id_for_log,
+                "failed to acknowledge durable action completion: {error}"
+            );
+        }
     }
 
     /// Install the UI event sink (called once by the desktop shell).
@@ -744,7 +834,7 @@ impl ActionService {
     /// result survives the in-memory board's TTL and app restarts. No-op
     /// without a database. Must run outside the `actions` lock is not required
     /// (the DB is a separate lock); callers may hold either.
-    async fn persist_terminal(&self, action_id: &str, state: &ActionState) {
+    async fn persist_terminal(&self, action_id: &str, state: &ActionState, status_json: &Value) {
         let Some(db) = self.db.read().await.clone() else {
             return;
         };
@@ -791,18 +881,33 @@ impl ActionService {
         let log_path = log_path.map(str::to_string);
         let finished_at = finished_at.to_string();
         let action_id_for_db = action_id.clone();
+        let status_json = serde_json::to_string(status_json).unwrap_or_else(|_| "{}".into());
         if let Err(e) = db
             .run_blocking(move |db| {
-                db.finish_action(
-                    &action_id_for_db,
-                    status,
-                    output.as_deref(),
-                    error.as_deref(),
-                    error_reason.as_deref(),
-                    log_path.as_deref(),
-                    exit_code,
-                    &finished_at,
-                )
+                if matches!(status, ActionStatus::Completed | ActionStatus::Failed) {
+                    db.finish_action_with_completion(
+                        &action_id_for_db,
+                        status,
+                        output.as_deref(),
+                        error.as_deref(),
+                        error_reason.as_deref(),
+                        log_path.as_deref(),
+                        exit_code,
+                        &finished_at,
+                        &status_json,
+                    )
+                } else {
+                    db.finish_action(
+                        &action_id_for_db,
+                        status,
+                        output.as_deref(),
+                        error.as_deref(),
+                        error_reason.as_deref(),
+                        log_path.as_deref(),
+                        exit_code,
+                        &finished_at,
+                    )
+                }
             })
             .await
         {
@@ -830,8 +935,8 @@ impl ActionService {
             ActionState::Cancelled { .. } => ActionStatus::Cancelled,
             ActionState::Running { .. } | ActionState::Waiting { .. } => return,
         };
-        self.persist_terminal(action_id, &state).await;
         let status_json = render_status_json(action_id, &state);
+        self.persist_terminal(action_id, &state, &status_json).await;
         self.emit("action:finished", status_json.clone());
         if let Err(error) =
             self.completion_tx

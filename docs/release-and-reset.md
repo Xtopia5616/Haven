@@ -35,16 +35,18 @@ Provider 的 `api_style` 现在只接受 canonical wire protocol id；旧的 ven
 `fallback_retry_max_retries` 会被忽略，保存配置后不再写回。若需要清理旧配置残留，按下文
 完整重置数据根目录后重新配置模型。
 
-本次 Agent 版本将数据库 schema 收敛为 v22 当前契约：新增 `session_events` append-only
+本次 Agent 版本将数据库 schema 收敛为 v23 当前契约：新增 `session_events` append-only
 会话事件表（`sequence`、`event_type`、`event_version`、JSON payload、run/step identity）和
 checkpoint 的 `event_sequence` 高水位；消息新增 `media_inputs` canonical
 媒体表示列。旧数据库不再执行运行时 schema/data 迁移，也不会尝试拼接旧表、旧列或旧
 FTS/embedding 形状；`llm_usage.call_kind` 将 Agent 主循环和工具拥有的媒体推理调用分开，
 后者保留明细但不进入 `session_usage` 的 Agent 累计 token/费用/缓存率；其它工具内部 LLM 调用使用
-`call_kind=tool`，同样只保留明细。`user_version` 不是 v22 的数据库，
+`call_kind=tool`，同样只保留明细。`user_version` 不是 v23 的数据库，
 或没有版本戳但已经包含用户表，都会拒绝打开；必须删除 `haven.db`、`haven.db-wal` 和
 `haven.db-shm` 后重新创建。这样会同时清除会话、记忆、任务、快照和用量；若配置仍需保留，
-只删除这三个数据库文件即可，不必删除整个数据根目录。
+只删除这三个数据库文件即可，不必删除整个数据根目录。v23 还新增
+`action_completion_outbox`，用于在 broadcast 丢失、进程重启或会话终态清理竞态后
+reconcile 后台任务结果。
 
 本版本同时将 session 与 action 生命周期收敛为 typed 状态契约：session 只允许
 `pending`、`running`、`paused`、`completed`、`error`，后台/定时任务只允许

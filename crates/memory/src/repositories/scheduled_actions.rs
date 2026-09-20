@@ -265,11 +265,30 @@ impl Database {
     /// the tool manager's session binding).
     pub fn update_action_session(&self, id: &str, session_id: &str) -> anyhow::Result<()> {
         let conn = self.conn();
-        conn.execute(
-            "UPDATE actions SET session_id = ?2 WHERE id = ?1 AND kind = 'background'",
-            rusqlite::params![id, session_id],
-        )?;
-        Ok(())
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| {
+            conn.execute(
+                "UPDATE actions SET session_id = ?2 WHERE id = ?1 AND kind = 'background'",
+                rusqlite::params![id, session_id],
+            )?;
+            conn.execute(
+                "UPDATE action_completion_outbox
+                 SET session_id = ?2, claimed_until = NULL
+                 WHERE action_id = ?1 AND delivered_at IS NULL",
+                rusqlite::params![id, session_id],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })();
+        match result {
+            Ok(()) => {
+                conn.execute_batch("COMMIT")?;
+                Ok(())
+            }
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(error)
+            }
+        }
     }
 
     /// Finalize a background action with its terminal status and payload. The
@@ -305,6 +324,67 @@ impl Database {
             ],
         )?;
         Ok(())
+    }
+
+    /// Finalize a background action and enqueue its agent completion in one
+    /// SQLite transaction. The outbox row is intentionally not acknowledged
+    /// here; the agent acknowledges it only after transcript projection.
+    #[allow(clippy::too_many_arguments)]
+    pub fn finish_action_with_completion(
+        &self,
+        id: &str,
+        status: ActionStatus,
+        output: Option<&str>,
+        error: Option<&str>,
+        error_reason: Option<&str>,
+        log_path: Option<&str>,
+        exit_code: Option<i32>,
+        finished_at: &str,
+        status_json: &str,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            matches!(status, ActionStatus::Completed | ActionStatus::Failed),
+            "background completion outbox only accepts completed or failed actions"
+        );
+        let conn = self.conn();
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| {
+            conn.execute(
+                "UPDATE actions
+                 SET status = ?2, output = ?3, error = ?4, error_reason = ?5,
+                     log_path = ?6, exit_code = ?7, finished_at = ?8
+                 WHERE id = ?1 AND kind = 'background'",
+                rusqlite::params![
+                    id,
+                    status.as_str(),
+                    output,
+                    error,
+                    error_reason,
+                    log_path,
+                    exit_code,
+                    finished_at
+                ],
+            )?;
+            conn.execute(
+                "INSERT OR IGNORE INTO action_completion_outbox
+                     (action_id, action_result_id, session_id, status, status_json)
+                 SELECT id, id, session_id, ?2, ?3
+                 FROM actions
+                 WHERE id = ?1 AND kind = 'background'",
+                rusqlite::params![id, status.as_str(), status_json],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })();
+        match result {
+            Ok(()) => {
+                conn.execute_batch("COMMIT")?;
+                Ok(())
+            }
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(error)
+            }
+        }
     }
 
     /// All persisted actions, optionally filtered by kind (`"background"` /

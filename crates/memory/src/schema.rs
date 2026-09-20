@@ -8,7 +8,7 @@
 //! version stamp rejects both older and newer database contracts.
 
 /// Current database contract. Any schema change requires a fresh database.
-pub const SCHEMA_VERSION: i32 = 22;
+pub const SCHEMA_VERSION: i32 = 23;
 /// Current schema, created idempotently on every open.
 const SCHEMA_SQL: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS sessions (
@@ -160,6 +160,23 @@ const SCHEMA_SQL: &[&str] = &[
         finished_at TEXT,
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
     )",
+    // Durable delivery records for terminal background-action results. The
+    // action row is the result source; this table records whether the result
+    // crossed the agent transcript boundary so a transient broadcast loss or
+    // a session cleanup race can be reconciled after restart.
+    "CREATE TABLE IF NOT EXISTS action_completion_outbox (
+        action_id TEXT PRIMARY KEY REFERENCES actions(id) ON DELETE CASCADE,
+        action_result_id TEXT NOT NULL UNIQUE,
+        session_id TEXT,
+        status TEXT NOT NULL
+            CHECK(status IN ('completed','failed')),
+        status_json TEXT NOT NULL CHECK(json_valid(status_json)),
+        claimed_until TEXT,
+        delivered_at TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )",
+    "CREATE INDEX IF NOT EXISTS idx_action_completion_outbox_pending
+        ON action_completion_outbox(delivered_at, claimed_until, created_at)",
     "CREATE TABLE IF NOT EXISTS session_usage (
         session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
         prompt_tokens INTEGER NOT NULL DEFAULT 0,
@@ -578,6 +595,7 @@ mod tests {
 
         for table in [
             "actions",
+            "action_completion_outbox",
             "embedding_lsh",
             "kv_store",
             "llm_usage",
