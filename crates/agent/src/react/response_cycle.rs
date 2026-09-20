@@ -132,6 +132,7 @@ impl ReActEngine {
                                 stream.role(),
                                 &retry_response,
                                 duration_ms,
+                                cancel.clone(),
                             )
                             .await;
                             if response_candidate_has_payload(
@@ -185,6 +186,7 @@ impl ReActEngine {
                                 stream.role(),
                                 &retry_response,
                                 duration_ms,
+                                cancel.clone(),
                             )
                             .await;
                             if response_candidate_has_payload(

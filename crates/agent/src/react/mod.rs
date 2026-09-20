@@ -719,6 +719,7 @@ impl ReActEngine {
     /// lookup); `response` carries the token counts and model name;
     /// `step_number` is the ReAct step the call served and `duration_ms` its
     /// wall-clock duration, both recorded with the detail row.
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn record_usage_and_emit(
         &self,
         session_id: &str,
@@ -727,6 +728,7 @@ impl ReActEngine {
         step_number: i32,
         duration_ms: Option<u64>,
         emitter: &Arc<dyn AgentEventEmitter>,
+        cancel: Option<tokio_util::sync::CancellationToken>,
     ) {
         let usage = response.usage.clone().normalize();
         if usage.prompt_tokens == 0 && usage.completion_tokens == 0 && usage.total_tokens == 0 {
@@ -743,14 +745,19 @@ impl ReActEngine {
         let seed = if self.usage.needs_seed(session_id) {
             let db = self.db.clone();
             let session_id_for_seed = session_id.to_string();
-            db.run_blocking(move |db| {
+            let read_seed = move |db: &Database| -> anyhow::Result<CumulativeUsage> {
                 Ok(db
                     .get_session_usage(&session_id_for_seed)?
                     .map(CumulativeUsage::from)
                     .unwrap_or_default())
-            })
-            .await
-            .unwrap_or_default()
+            };
+            match cancel.clone() {
+                Some(cancel) => db
+                    .run_blocking_cancellable(cancel, read_seed)
+                    .await
+                    .unwrap_or_default(),
+                None => db.run_blocking(read_seed).await.unwrap_or_default(),
+            }
         } else {
             CumulativeUsage::default()
         };
@@ -813,7 +820,7 @@ impl ReActEngine {
             .and_then(|diagnostics| serde_json::to_string(diagnostics).ok());
         let persist_epoch = self.usage.epoch(session_id);
         let epochs = self.usage.epochs_handle();
-        let persist = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        let persist = move |db: &Database| -> anyhow::Result<()> {
             let epoch_now = || {
                 epochs
                     .lock()
@@ -852,17 +859,15 @@ impl ReActEngine {
                 let _ = db.rebuild_session_usage_from_calls(&session_id_for_persist);
             }
             Ok(())
-        });
-        match persist.await {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => tracing::warn!(
-                "ReAct: failed to persist usage for session {} step {}: {}",
-                session_id,
-                step_number,
-                e
-            ),
+        };
+        let persisted = match cancel {
+            Some(cancel) => db.run_blocking_cancellable(cancel, persist).await,
+            None => db.run_blocking(persist).await,
+        };
+        match persisted {
+            Ok(()) => {}
             Err(e) => tracing::warn!(
-                "ReAct: usage persistence task failed for session {} step {}: {}",
+                "ReAct: failed to persist usage for session {} step {}: {}",
                 session_id,
                 step_number,
                 e
@@ -913,6 +918,7 @@ impl ReActEngine {
         step_number: i32,
         usages: &[haven_tools::ToolLlmUsage],
         emitter: &Arc<dyn AgentEventEmitter>,
+        cancel: Option<tokio_util::sync::CancellationToken>,
     ) {
         struct PendingToolUsage {
             input: haven_memory::LlmCallUsageInput,
@@ -1009,19 +1015,17 @@ impl ReActEngine {
             .collect::<Vec<_>>();
         let db = self.db.clone();
         let session_id_for_persist = session_id.to_string();
-        let persist = tokio::task::spawn_blocking(move || {
+        let persist = move |db: &Database| {
             db.persist_llm_call_batch_and_refresh_session_usage(&session_id_for_persist, &inputs)
-        });
-        match persist.await {
-            Ok(Ok(_)) => {}
-            Ok(Err(error)) => tracing::warn!(
-                "ReAct: failed to persist tool usage batch for session {} step {}: {}",
-                session_id,
-                step_number,
-                error
-            ),
+        };
+        let persisted = match cancel {
+            Some(cancel) => db.run_blocking_cancellable(cancel, persist).await,
+            None => db.run_blocking(persist).await,
+        };
+        match persisted {
+            Ok(_) => {}
             Err(error) => tracing::warn!(
-                "ReAct: tool usage batch persistence task failed for session {} step {}: {}",
+                "ReAct: failed to persist tool usage batch for session {} step {}: {}",
                 session_id,
                 step_number,
                 error

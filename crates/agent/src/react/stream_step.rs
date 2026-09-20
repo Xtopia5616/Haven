@@ -823,6 +823,7 @@ impl ReActEngine {
         role: EndpointRole,
         response: &LlmResponse,
         duration_ms: u64,
+        cancel: tokio_util::sync::CancellationToken,
     ) {
         self.record_usage_and_emit(
             &ctx.session_id,
@@ -831,6 +832,7 @@ impl ReActEngine {
             ctx.step_num as i32,
             Some(duration_ms),
             &ctx.emitter,
+            Some(cancel),
         )
         .await;
     }
@@ -869,7 +871,8 @@ impl ReActEngine {
             .await
         {
             Ok((resp, duration_ms)) => {
-                self.record_step_usage(ctx, *role, &resp, duration_ms).await;
+                self.record_step_usage(ctx, *role, &resp, duration_ms, cancel.clone())
+                    .await;
                 StepCallOutcome::Response(Box::new(resp))
             }
             Err(haven_llm::LlmError::ContextLengthExceeded) => {
@@ -968,7 +971,7 @@ impl ReActEngine {
                                 &retry_context,
                                 true,
                                 tools,
-                                cancel,
+                                cancel.clone(),
                                 partial_thought,
                                 partial_reasoning,
                             )
@@ -980,6 +983,7 @@ impl ReActEngine {
                                     retry_role,
                                     &retry_resp,
                                     retry_duration_ms,
+                                    cancel.clone(),
                                 )
                                 .await;
                                 StepCallOutcome::Response(Box::new(retry_resp))

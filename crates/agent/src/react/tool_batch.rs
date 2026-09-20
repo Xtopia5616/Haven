@@ -85,6 +85,7 @@ impl ToolBatchState {
                 ctx.step_num as i32,
                 &tool_usages,
                 &ctx.emitter,
+                state.turn_cancel.clone(),
             )
             .await;
         engine
