@@ -474,6 +474,44 @@ mod tests {
         }
     }
 
+    struct LegacyGuidanceProbe {
+        messages: StdMutex<Vec<Vec<CanonicalMessage>>>,
+    }
+
+    #[async_trait]
+    impl LlmClient for LegacyGuidanceProbe {
+        async fn chat(&self, _messages: Vec<CanonicalMessage>) -> Result<LlmResponse, LlmError> {
+            Err(LlmError::Unknown("test client does not chat".into()))
+        }
+
+        async fn chat_stream(
+            &self,
+            _messages: Vec<CanonicalMessage>,
+        ) -> Result<
+            Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+            LlmError,
+        > {
+            Ok(Box::pin(futures_util::stream::empty()))
+        }
+
+        async fn chat_stream_with_tools_output_cap(
+            &self,
+            messages: Vec<CanonicalMessage>,
+            _tools: Vec<ToolDefinition>,
+            _max_output_tokens: Option<u32>,
+        ) -> Result<
+            Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+            LlmError,
+        > {
+            self.messages.lock().unwrap().push(messages);
+            Ok(Box::pin(futures_util::stream::empty()))
+        }
+
+        async fn health_check(&self) -> Result<(), LlmError> {
+            Ok(())
+        }
+    }
+
     #[async_trait]
     impl LlmClient for PendingStreamClient {
         async fn chat(&self, _messages: Vec<CanonicalMessage>) -> Result<LlmResponse, LlmError> {
@@ -715,5 +753,29 @@ mod tests {
                 "Please continue without code fences.".to_string()
             )]
         );
+    }
+
+    #[tokio::test]
+    async fn default_guidance_boundary_falls_back_to_legacy_vec_request() {
+        let probe = LegacyGuidanceProbe {
+            messages: StdMutex::new(Vec::new()),
+        };
+        let _stream = probe
+            .chat_stream_with_tools_output_cap_shared_guidance(
+                Arc::from(vec![CanonicalMessage::user_text("hello")]),
+                Arc::from(Vec::<ToolDefinition>::new()),
+                "Please continue without code fences.".into(),
+                Some(128),
+            )
+            .await
+            .unwrap();
+
+        let requests = probe.messages.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].len(), 2);
+        assert!(matches!(
+            &requests[0][1].content[0],
+            ContentPart::Text(text) if text == "Please continue without code fences."
+        ));
     }
 }

@@ -189,6 +189,9 @@ pub trait LlmClient: Send + Sync {
     /// guidance is kept as a separate owned value so the router does not copy
     /// the complete canonical message/tool graph just to append one user turn.
     /// Native adapters serialize the suffix directly after the shared base.
+    /// The compatibility default materializes the legacy `Vec` request once,
+    /// so adapters that predate this shared guidance boundary still receive
+    /// the retry instead of silently losing it.
     async fn chat_stream_with_tools_output_cap_shared_guidance(
         &self,
         messages: Arc<[CanonicalMessage]>,
@@ -196,10 +199,14 @@ pub trait LlmClient: Send + Sync {
         guidance: String,
         max_output_tokens: Option<u32>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
-        let _ = (messages, tools, guidance, max_output_tokens);
-        Err(LlmError::UnsupportedCapability(
-            "adapter does not implement the shared streaming guidance boundary".into(),
-        ))
+        let mut legacy_messages = messages.as_ref().to_vec();
+        legacy_messages.push(CanonicalMessage::user_text(guidance));
+        self.chat_stream_with_tools_output_cap(
+            legacy_messages,
+            tools.as_ref().to_vec(),
+            max_output_tokens,
+        )
+        .await
     }
 
     /// Embed a batch of texts into vectors via the provider's embeddings API.

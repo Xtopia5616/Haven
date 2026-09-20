@@ -22,6 +22,56 @@ fn managed_test_image() -> (haven_common::types::MessageAttachment, std::path::P
 }
 
 #[tokio::test]
+async fn snapshot_import_replays_transcript_and_branch_events_together() {
+    let (agent, executor) = make_test_agent();
+    let session = executor.create_session("mixed snapshot").await.unwrap();
+    let mut branch_points = HashMap::new();
+    branch_points.insert(
+        7,
+        BranchPoint {
+            event_cursor: 1,
+            step_number: 7,
+            last_msg_at: Some("2026-01-01T00:00:00.000Z".into()),
+        },
+    );
+    let snapshot = ReActSnapshot {
+        events: seed_events_from_canonical(vec![CanonicalMessage::user_text("cached")]),
+        step_number: 7,
+        branch_points,
+        last_ingress_seq: 0,
+        interactions: Vec::new(),
+        run_budget: None,
+        error_partial_message_ids: None,
+    };
+
+    agent
+        .react_engine
+        .seed_snapshot_events(&session.id, &snapshot, 3)
+        .await
+        .unwrap();
+    let durable = agent
+        .react_engine
+        .load_durable_event_state(&session.id)
+        .await
+        .unwrap()
+        .expect("snapshot import should create durable events");
+
+    assert_eq!(durable.events.len(), 1);
+    assert_eq!(durable.branch_points[&7].event_cursor, 1);
+    let all = agent
+        .react_engine
+        .event_store
+        .read_all(&session.id)
+        .unwrap();
+    assert_eq!(
+        all.iter()
+            .map(|event| event.event_type.as_str())
+            .collect::<Vec<_>>(),
+        vec!["transcript", "branch_point"]
+    );
+}
+
+#[tokio::test]
 async fn enabled_skills_are_global_and_resume_does_not_rebuild_skill_sessions() {
     // Create a skill on disk so SkillsEngine can discover it.
     let dir = std::env::temp_dir().join(format!("haven_restore_test_{}", uuid::Uuid::new_v4()));

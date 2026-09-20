@@ -1111,6 +1111,50 @@ mod tests {
     }
 
     #[test]
+    fn transcript_batch_accepts_128_events_and_rejects_129() {
+        let (_db, at_limit_store, session_id) = store();
+        let at_limit = TranscriptBatch {
+            events: (0..MAX_TRANSCRIPT_BATCH_EVENTS)
+                .map(|index| {
+                    SessionEventInput::transcript(
+                        format!(r#"{{"type":"boundary","index":{index}}}"#),
+                        1,
+                        index as u32,
+                    )
+                })
+                .collect(),
+            ..TranscriptBatch::default()
+        };
+        assert_eq!(
+            at_limit_store
+                .append_transcript_batch(&session_id, &at_limit)
+                .unwrap()
+                .events
+                .len(),
+            MAX_TRANSCRIPT_BATCH_EVENTS
+        );
+
+        let (_db, store, session_id) = store();
+        let over_limit = TranscriptBatch {
+            events: (0..=MAX_TRANSCRIPT_BATCH_EVENTS)
+                .map(|index| {
+                    SessionEventInput::transcript(
+                        format!(r#"{{"type":"boundary","index":{index}}}"#),
+                        1,
+                        index as u32,
+                    )
+                })
+                .collect(),
+            ..TranscriptBatch::default()
+        };
+        let error = store
+            .append_transcript_batch(&session_id, &over_limit)
+            .unwrap_err();
+        assert!(error.to_string().contains("128 events"));
+        assert!(store.read_all(&session_id).unwrap().is_empty());
+    }
+
+    #[test]
     fn subscribe_from_replays_and_keeps_the_live_receiver_open() {
         let (_db, store, session_id) = store();
         let first = store
@@ -1128,6 +1172,7 @@ mod tests {
     #[test]
     fn seed_is_one_way_and_does_not_publish_stale_cache_rows() {
         let (_db, store, session_id) = store();
+        assert!(store.seed_if_empty(&session_id, &[]).unwrap().is_empty());
         let first = store
             .seed_if_empty(
                 &session_id,

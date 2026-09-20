@@ -943,12 +943,18 @@ impl InboxBus {
     /// in the same locked mutation. This bounds both on-disk growth and every
     /// later archive read, including archives created by older builds.
     fn append_archive_unlocked(&self, name: &str, envelopes: &[Envelope]) -> anyhow::Result<()> {
-        self.recover_archive_tmp_unlocked(name)?;
-        if envelopes.is_empty() && !self.archive(name).exists() {
-            return Ok(());
-        }
+        // Read-only callers enter this helper too, so do not turn every
+        // history/find lookup into a remove/create/sync cycle. A temp file is
+        // itself a recovery signal; otherwise a rewrite is needed only when
+        // the archive is oversized or at least one envelope is genuinely new.
+        let had_tmp = self.recover_archive_tmp_unlocked(name)?;
+        let archive = self.archive(name);
+        let archive_over_limit = archive
+            .metadata()
+            .map(|metadata| metadata.len() > MAX_ARCHIVE_BYTES)
+            .unwrap_or(false);
 
-        let existing = read_tail(&self.archive(name), MAX_ARCHIVE_BYTES)?;
+        let existing = read_tail(&archive, MAX_ARCHIVE_BYTES)?;
         let mut lines: Vec<String> = existing
             .lines()
             .filter(|line| !line.trim().is_empty())
@@ -959,8 +965,10 @@ impl InboxBus {
             .filter_map(|line| serde_json::from_str::<Envelope>(line).ok())
             .map(|envelope| envelope.id)
             .collect();
+        let mut has_new_envelope = false;
         for envelope in envelopes {
             if ids.insert(envelope.id.clone()) {
+                has_new_envelope = true;
                 lines.push(serde_json::to_string(envelope)?);
             }
         }
@@ -985,7 +993,10 @@ impl InboxBus {
         }
         retained.reverse();
 
-        let archive = self.archive(name);
+        if !archive_over_limit && !had_tmp && !has_new_envelope {
+            return Ok(());
+        }
+
         let tmp = self.archive_tmp(name);
         let mut file = File::create(&tmp)?;
         for line in retained {
@@ -1006,18 +1017,18 @@ impl InboxBus {
     /// remove-then-rename. A temp file is promoted only when the destination
     /// is absent; if the old archive survived, it remains the safer source of
     /// truth and the abandoned temp is discarded.
-    fn recover_archive_tmp_unlocked(&self, name: &str) -> anyhow::Result<()> {
+    fn recover_archive_tmp_unlocked(&self, name: &str) -> anyhow::Result<bool> {
         let archive = self.archive(name);
         let tmp = self.archive_tmp(name);
         if !tmp.exists() {
-            return Ok(());
+            return Ok(false);
         }
         if archive.exists() {
             std::fs::remove_file(tmp)?;
         } else {
             std::fs::rename(tmp, archive)?;
         }
-        Ok(())
+        Ok(true)
     }
 
     /// Atomic registry update: write a temp file, then rename over
@@ -1520,6 +1531,66 @@ mod tests {
         assert_eq!(history[0].id, archived.id);
         assert!(!bus.archive_tmp("ses-b").exists());
         assert!(bus.archive("ses-b").exists());
+    }
+
+    #[test]
+    fn archive_tmp_is_discarded_when_the_old_archive_survived() {
+        let (_dir, bus) = test_bus();
+        bus.register("ses-b", &[]).unwrap();
+        let old = env_from("ses-a", "ses-b", "old archive");
+        let abandoned = env_from("ses-a", "ses-b", "abandoned replacement");
+        std::fs::write(
+            bus.archive("ses-b"),
+            format!("{}\n", serde_json::to_string(&old).unwrap()),
+        )
+        .unwrap();
+        std::fs::write(
+            bus.archive_tmp("ses-b"),
+            format!("{}\n", serde_json::to_string(&abandoned).unwrap()),
+        )
+        .unwrap();
+
+        let history = bus.history("ses-b", 10).unwrap();
+
+        assert_eq!(
+            history.iter().map(|env| &env.id).collect::<Vec<_>>(),
+            vec![&old.id]
+        );
+        assert!(!bus.archive_tmp("ses-b").exists());
+        assert_eq!(
+            std::fs::read_to_string(bus.archive("ses-b")).unwrap(),
+            format!("{}\n", serde_json::to_string(&old).unwrap())
+        );
+    }
+
+    #[test]
+    fn read_paths_do_not_rewrite_a_bounded_archive() {
+        let (_dir, bus) = test_bus();
+        bus.register("ses-b", &[]).unwrap();
+        let archived = env_from("ses-a", "ses-b", "stable archive");
+        write_mailbox(&bus, "ses-b", std::slice::from_ref(&archived));
+        std::fs::rename(bus.mailbox("ses-b"), bus.processing("ses-b")).unwrap();
+        claim_and_ack(&bus, "ses-b");
+        let before = std::fs::metadata(bus.archive("ses-b"))
+            .unwrap()
+            .modified()
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+
+        assert_eq!(bus.history("ses-b", 1).unwrap()[0].id, archived.id);
+        assert_eq!(
+            bus.find_message("ses-b", &archived.id).unwrap().unwrap().id,
+            archived.id
+        );
+
+        let after = std::fs::metadata(bus.archive("ses-b"))
+            .unwrap()
+            .modified()
+            .unwrap();
+        assert_eq!(
+            after, before,
+            "bounded read paths must not rewrite the archive"
+        );
     }
 
     #[test]
