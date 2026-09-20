@@ -959,11 +959,10 @@ mod tests {
         assert_eq!(store.read_all(&session_id).unwrap().len(), 4);
     }
 
-    /// Manual replay benchmark for the recovery boundary.  It is ignored in
-    /// the normal suite because the 100k case intentionally exercises SQLite
-    /// write volume; run it when changing event-log storage or compaction.
+    /// Replay benchmark for the recovery boundary. Keep full-log and
+    /// active-log reads on the same database so the numbers expose the
+    /// compaction boundary rather than setup or filesystem noise.
     #[test]
-    #[ignore]
     fn active_replay_boundary_benchmark_1k_10k_100k() {
         for count in [1_000usize, 10_000, 100_000] {
             let (_db, store, session_id) = store();
@@ -975,7 +974,11 @@ mod tests {
                     1,
                 ));
             }
-            store.append_batch(&session_id, &events).unwrap();
+            // Transcript batches are deliberately bounded for live writes;
+            // build the long history through the same bounded append path.
+            for chunk in events.chunks(MAX_TRANSCRIPT_BATCH_EVENTS) {
+                store.append_batch(&session_id, chunk).unwrap();
+            }
             store
                 .append_transcript(
                     &session_id,
@@ -987,14 +990,26 @@ mod tests {
             store
                 .append_transcript(&session_id, r#"{"type":"new"}"#, 1, 3)
                 .unwrap();
-            let started = Instant::now();
+            let full_started = Instant::now();
+            let full = store.read_all(&session_id).unwrap();
+            let full_elapsed_ms = full_started.elapsed().as_millis();
+            let active_started = Instant::now();
             let active = store.read_active(&session_id).unwrap();
+            let active_elapsed_ms = active_started.elapsed().as_millis();
             tracing::info!(
                 count,
-                elapsed_ms = started.elapsed().as_millis(),
+                full_elapsed_ms,
+                active_elapsed_ms,
+                speedup = if active_elapsed_ms == 0 {
+                    0.0
+                } else {
+                    full_elapsed_ms as f64 / active_elapsed_ms as f64
+                },
+                full = full.len(),
                 active = active.len(),
-                "active replay benchmark"
+                "replay benchmark baseline"
             );
+            assert_eq!(full.len(), count + 2);
             assert_eq!(active.len(), 2);
         }
     }

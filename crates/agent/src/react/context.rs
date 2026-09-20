@@ -509,8 +509,141 @@ mod format_tests {
 #[cfg(test)]
 mod assembly_tests {
     use super::*;
-    use haven_tools::MessagingService;
-    use haven_tools::inbox::InboxBus;
+    use haven_tools::inbox::{AgentInfo, Envelope, InboxBus, SendOutcome};
+    use haven_tools::{MessageClaim, MessageTransport, MessagingService};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tokio::sync::watch;
+
+    #[derive(Debug)]
+    struct AckFailingTransport {
+        inner: MessagingService,
+        claims: std::sync::Mutex<Vec<(String, MessageClaim)>>,
+        fail_next_ack: AtomicBool,
+    }
+
+    impl AckFailingTransport {
+        fn new(root: &std::path::Path) -> Self {
+            Self {
+                inner: MessagingService::new(Arc::new(InboxBus::new(root))),
+                claims: std::sync::Mutex::new(Vec::new()),
+                fail_next_ack: AtomicBool::new(false),
+            }
+        }
+    }
+
+    impl MessageTransport for AckFailingTransport {
+        fn subscribe(&self) -> watch::Receiver<u64> {
+            self.inner.subscribe()
+        }
+
+        fn register(&self, name: &str, capabilities: &[String]) -> anyhow::Result<()> {
+            self.inner.register(name, capabilities)
+        }
+
+        fn register_with_title(
+            &self,
+            name: &str,
+            capabilities: &[String],
+            title: Option<&str>,
+        ) -> anyhow::Result<()> {
+            self.inner.register_with_title(name, capabilities, title)
+        }
+
+        fn register_with_profile(
+            &self,
+            name: &str,
+            capabilities: &[String],
+            title: Option<&str>,
+            role: Option<&str>,
+            parent: Option<&str>,
+        ) -> anyhow::Result<()> {
+            self.inner
+                .register_with_profile(name, capabilities, title, role, parent)
+        }
+
+        fn unregister(&self, name: &str) -> anyhow::Result<()> {
+            self.inner.unregister(name)
+        }
+
+        fn mark_offline(&self, name: &str) -> anyhow::Result<()> {
+            self.inner.mark_offline(name)
+        }
+
+        fn list_agents(&self) -> anyhow::Result<Vec<AgentInfo>> {
+            self.inner.list_agents()
+        }
+
+        fn list_children(&self, parent: &str) -> anyhow::Result<Vec<AgentInfo>> {
+            self.inner.list_children(parent)
+        }
+
+        fn list_descendants(&self, parent: &str) -> anyhow::Result<Vec<String>> {
+            self.inner.list_descendants(parent)
+        }
+
+        fn deliver(&self, to: &str, envelope: &Envelope) -> anyhow::Result<SendOutcome> {
+            self.inner.deliver(to, envelope)
+        }
+
+        fn claim(&self, recipient: &str) -> anyhow::Result<Vec<Envelope>> {
+            let claim = self.inner.claim(recipient)?;
+            let envelopes = claim.envelopes().to_vec();
+            self.claims
+                .lock()
+                .unwrap()
+                .push((recipient.to_string(), claim));
+            Ok(envelopes)
+        }
+
+        fn try_claim(&self, recipient: &str) -> anyhow::Result<Option<Vec<Envelope>>> {
+            let Some(claim) = self.inner.try_claim(recipient)? else {
+                return Ok(None);
+            };
+            let envelopes = claim.envelopes().to_vec();
+            self.claims
+                .lock()
+                .unwrap()
+                .push((recipient.to_string(), claim));
+            Ok(Some(envelopes))
+        }
+
+        fn ack(&self, recipient: &str, ids: &[String]) -> anyhow::Result<()> {
+            if self.fail_next_ack.swap(false, Ordering::AcqRel) {
+                anyhow::bail!("injected inbox ack failure")
+            }
+            let index = self
+                .claims
+                .lock()
+                .unwrap()
+                .iter()
+                .position(|(claim_recipient, _)| claim_recipient == recipient)
+                .ok_or_else(|| anyhow::anyhow!("missing inner inbox claim"))?;
+            let (_, claim) = self.claims.lock().unwrap().remove(index);
+            claim.complete_selected(ids).map(|_| ())
+        }
+
+        fn last_received(&self, name: &str) -> anyhow::Result<Option<Envelope>> {
+            self.inner.last_received(name)
+        }
+
+        fn find_message(&self, name: &str, id: &str) -> anyhow::Result<Option<Envelope>> {
+            self.inner.find_message(name, id)
+        }
+
+        fn take_matching_replies(
+            &self,
+            name: &str,
+            in_reply_to: &str,
+            expected_from: &str,
+        ) -> anyhow::Result<Vec<Envelope>> {
+            self.inner
+                .take_matching_replies(name, in_reply_to, expected_from)
+        }
+
+        fn history(&self, name: &str, limit: usize) -> anyhow::Result<Vec<Envelope>> {
+            self.inner.history(name, limit)
+        }
+    }
 
     fn item(source: InjectSource, message_id: Option<&str>, text: &str) -> PendingContext {
         PendingContext {
@@ -654,5 +787,34 @@ mod assembly_tests {
 
         let retry = service.claim("ses-b").unwrap();
         assert_eq!(retry.envelopes()[0].id, envelope.id);
+    }
+
+    #[tokio::test]
+    async fn inbox_ack_failure_redelivers_the_claimed_envelope() {
+        let dir = tempfile::tempdir().unwrap();
+        let transport = Arc::new(AckFailingTransport::new(dir.path()));
+        let service = MessagingService::new(transport.clone());
+        service.register("ses-a", &[]).unwrap();
+        service.register("ses-b", &[]).unwrap();
+        let envelope = Envelope::new("ses-a", "ses-b", "ack retry");
+        service.deliver("ses-b", &envelope).unwrap();
+
+        let claimed = service.claim("ses-b").unwrap();
+        transport.fail_next_ack.store(true, Ordering::Release);
+        let claim = InboxClaim {
+            claim: claimed,
+            ack_ids: vec![envelope.id.clone()],
+        };
+        assert!(
+            !claim.complete().await,
+            "the injected ack failure must surface"
+        );
+
+        let retry = service.claim("ses-b").unwrap();
+        assert_eq!(retry.envelopes().len(), 1);
+        assert_eq!(retry.envelopes()[0].id, envelope.id);
+        assert_eq!(retry.envelopes()[0].delivery_attempt, 2);
+        retry.complete().unwrap();
+        assert!(service.claim("ses-b").unwrap().is_empty());
     }
 }

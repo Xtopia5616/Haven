@@ -217,9 +217,26 @@ pub(super) fn make_test_agent_with(
     client: Arc<dyn LlmClient>,
     tools: Arc<ToolsManager>,
 ) -> (Arc<AgentLayer>, Arc<SessionExecutor>) {
+    make_test_agent_with_limits(client, tools, ContextLimitsConfig::default())
+}
+
+pub(super) fn make_test_agent_with_limits(
+    client: Arc<dyn LlmClient>,
+    tools: Arc<ToolsManager>,
+    context_limits: ContextLimitsConfig,
+) -> (Arc<AgentLayer>, Arc<SessionExecutor>) {
     let mut p = std::env::temp_dir();
     p.push(format!("haven_agent_test_{}.db", uuid::Uuid::new_v4()));
     let db = Arc::new(Database::open(&p).unwrap());
+    make_test_agent_with_db(db, client, tools, context_limits)
+}
+
+pub(super) fn make_test_agent_with_db(
+    db: Arc<Database>,
+    client: Arc<dyn LlmClient>,
+    tools: Arc<ToolsManager>,
+    context_limits: ContextLimitsConfig,
+) -> (Arc<AgentLayer>, Arc<SessionExecutor>) {
     let executor = Arc::new(SessionExecutor::new(db.clone(), tools, 1));
     let router = Arc::new(LlmRouter::new_with_clients(
         client.clone(),
@@ -233,7 +250,7 @@ pub(super) fn make_test_agent_with(
         router,
         30,
         50,
-        ContextLimitsConfig::default(),
+        context_limits,
     ));
     (agent, executor)
 }
@@ -702,6 +719,48 @@ impl TimingState {
 pub(super) struct TimingTool {
     tool_name: String,
     state: Arc<TimingState>,
+}
+
+/// A tool whose work intentionally ignores its cancellation token by hiding a
+/// native sleep behind `spawn_blocking`. The ReAct deadline test uses it to
+/// prove that the turn stops without waiting for the detached native work.
+pub(super) struct BlockingTool {
+    pub(super) completed: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl BlockingTool {
+    pub(super) fn new(completed: Arc<std::sync::atomic::AtomicBool>) -> Self {
+        Self { completed }
+    }
+}
+
+#[async_trait]
+impl Tool for BlockingTool {
+    fn name(&self) -> String {
+        "blocking_tool".into()
+    }
+    fn description(&self) -> String {
+        "Non-cooperative blocking test tool".into()
+    }
+    fn risk_level(&self, _: &serde_json::Value) -> RiskLevel {
+        RiskLevel::Safe
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        serde_json::json!({"type": "object"})
+    }
+    async fn execute(
+        &self,
+        _: serde_json::Value,
+        _: CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
+        let completed = self.completed.clone();
+        tokio::task::spawn_blocking(move || {
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            completed.store(true, std::sync::atomic::Ordering::Release);
+        })
+        .await?;
+        Ok(ToolResult::ok(serde_json::json!({"ok": true})))
+    }
 }
 
 impl TimingTool {

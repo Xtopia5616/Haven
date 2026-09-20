@@ -1,6 +1,34 @@
 use super::support::*;
 use super::*;
 
+type StreamReset = (String, u32, u64, String, String);
+
+struct StreamResetCollector {
+    resets: std::sync::Mutex<Vec<StreamReset>>,
+}
+
+#[async_trait]
+impl AgentEventEmitter for StreamResetCollector {
+    async fn emit(&self, event: AgentEvent) {
+        if let AgentEvent::StreamReset {
+            session_id,
+            step_number,
+            run_id,
+            thought_message_id,
+            reasoning_message_id,
+        } = event
+        {
+            self.resets.lock().unwrap().push((
+                session_id,
+                step_number,
+                run_id,
+                thought_message_id,
+                reasoning_message_id,
+            ));
+        }
+    }
+}
+
 #[tokio::test]
 async fn run_session_emits_supplement_when_additional_context_queued() {
     let tools = Arc::new(ToolsManager::new());
@@ -37,6 +65,153 @@ async fn run_session_emits_supplement_when_additional_context_queued() {
         Some(SessionStatus::Paused),
         "session should be paused (not completed) when supplements were processed"
     );
+}
+
+#[tokio::test]
+async fn empty_retry_emits_stream_reset_before_replacement_output() {
+    let empty = StreamChunk {
+        text: None,
+        tool_calls: Vec::new(),
+        finish_reason: Some(FinishReason::Stop),
+        usage: None,
+        model: None,
+        reasoning: None,
+        web_search: None,
+        web_search_calls: Vec::new(),
+        thinking_blocks: Vec::new(),
+    };
+    let replacement = StreamChunk {
+        text: Some("Recovered after retry.".into()),
+        tool_calls: vec![CanonicalToolCall {
+            id: "final-after-empty".into(),
+            name: "final_answer".into(),
+            arguments: serde_json::json!({}),
+        }],
+        finish_reason: Some(FinishReason::Stop),
+        usage: None,
+        model: None,
+        reasoning: None,
+        web_search: None,
+        web_search_calls: Vec::new(),
+        thinking_blocks: Vec::new(),
+    };
+    let mock = Arc::new(ScriptedMock::new(vec![
+        ScriptedResponse::Chunk(empty),
+        ScriptedResponse::Chunk(replacement),
+    ]));
+    let limits = ContextLimitsConfig {
+        empty_response_max_retries: 1,
+        empty_response_retry_delay_ms: 0,
+        ..Default::default()
+    };
+    let (agent, executor) =
+        make_test_agent_with_limits(mock, Arc::new(ToolsManager::new()), limits);
+    let emitter = Arc::new(StreamResetCollector {
+        resets: std::sync::Mutex::new(Vec::new()),
+    });
+    agent.set_emitter(emitter.clone());
+    let session = executor
+        .create_session("retry empty response")
+        .await
+        .unwrap();
+
+    let history = agent.run_session_from_id(&session.id).await.unwrap();
+
+    assert!(!history.is_empty());
+    assert_eq!(
+        executor.get_session_state(&session.id).await,
+        Some(SessionStatus::Paused)
+    );
+    let resets = emitter.resets.lock().unwrap();
+    assert_eq!(
+        resets.len(),
+        1,
+        "the replacement attempt must reset the live stream once"
+    );
+    assert_eq!(resets[0].0, session.id);
+    assert_eq!(resets[0].1, 1);
+}
+
+#[tokio::test]
+async fn turn_deadline_cancels_provider_retry_before_second_attempt() {
+    let mock = Arc::new(ScriptedMock::new(vec![ScriptedResponse::Err(
+        LlmError::Timeout("transient provider timeout".into()),
+    )]));
+    let mut limits = ContextLimitsConfig::default();
+    limits.turn_deadline_secs = 1;
+    let (agent, executor) =
+        make_test_agent_with_limits(mock.clone(), Arc::new(ToolsManager::new()), limits);
+    agent.set_emitter(make_recording_emitter());
+    let session = executor
+        .create_session("retry within deadline")
+        .await
+        .unwrap();
+
+    let started = Instant::now();
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        agent.run_session_from_id(&session.id),
+    )
+    .await
+    .expect("provider retry must observe the turn cancellation")
+    .expect_err("the exhausted deadline should fail the run");
+
+    assert!(result.to_string().contains("deadline"), "{result:#}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(3));
+    assert_eq!(
+        mock.seen.lock().unwrap().len(),
+        1,
+        "the retry delay must not start a second provider request"
+    );
+}
+
+#[tokio::test]
+async fn turn_deadline_stops_after_non_cooperative_blocking_tool() {
+    let completed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let tools = Arc::new(ToolsManager::new());
+    tools
+        .registry()
+        .register(Arc::new(BlockingTool::new(completed.clone())) as ToolBox)
+        .await
+        .unwrap();
+    let mock = Arc::new(ScriptedMock::new(vec![ScriptedResponse::Chunk(
+        StreamChunk {
+            text: Some("Run the blocking operation.".into()),
+            tool_calls: vec![CanonicalToolCall {
+                id: "blocking-call".into(),
+                name: "blocking_tool".into(),
+                arguments: serde_json::json!({}),
+            }],
+            finish_reason: Some(FinishReason::ToolCalls),
+            usage: None,
+            model: None,
+            reasoning: None,
+            web_search: None,
+            web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
+        },
+    )]));
+    let mut limits = ContextLimitsConfig::default();
+    limits.turn_deadline_secs = 1;
+    let (agent, executor) = make_test_agent_with_limits(mock.clone(), tools, limits);
+    agent.set_emitter(make_recording_emitter());
+    let session = executor.create_session("stop the slow tool").await.unwrap();
+
+    let started = Instant::now();
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        agent.run_session_from_id(&session.id),
+    )
+    .await
+    .expect("deadline must stop the turn before native work finishes")
+    .expect_err("slow tool should make the turn fail at its deadline");
+
+    assert!(result.to_string().contains("deadline"), "{result:#}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    assert_eq!(mock.seen.lock().unwrap().len(), 1);
+    assert!(!completed.load(std::sync::atomic::Ordering::Acquire));
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    assert!(completed.load(std::sync::atomic::Ordering::Acquire));
 }
 
 #[tokio::test]
@@ -750,6 +925,78 @@ async fn run_session_ask_tool_pauses_and_surfaces_question() {
         .iter()
         .any(|m| m.role == "assistant" && m.content.contains("Which path should I take"));
     assert!(found, "question should be persisted as assistant message");
+}
+
+#[tokio::test]
+async fn ask_interaction_survives_executor_restart_from_durable_snapshot() {
+    let db = temp_db();
+    let tools = Arc::new(ToolsManager::new());
+    tools
+        .registry()
+        .register(Arc::new(haven_tools::builtin::ask::AskTool) as ToolBox)
+        .await
+        .unwrap();
+    let mock = Arc::new(ScriptedMock::new(vec![ScriptedResponse::Chunk(
+        StreamChunk {
+            text: Some("Need a decision.".into()),
+            tool_calls: vec![CanonicalToolCall {
+                id: "ask-restart".into(),
+                name: "ask".into(),
+                arguments: serde_json::json!({"question": "Which path?"}),
+            }],
+            finish_reason: Some(FinishReason::ToolCalls),
+            usage: None,
+            model: None,
+            reasoning: None,
+            web_search: None,
+            web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
+        },
+    )]));
+    let (agent, executor) =
+        make_test_agent_with_db(db.clone(), mock, tools, ContextLimitsConfig::default());
+    agent.set_emitter(make_recording_emitter());
+    let session = executor.create_session("restart me").await.unwrap();
+    agent.run_session_from_id(&session.id).await.unwrap();
+    let recovered_pending = executor
+        .pending_interactions(&session.id, crate::interaction::InteractionKind::Ask)
+        .await;
+    assert_eq!(recovered_pending.len(), 1);
+
+    executor.clear_all_sessions_for_shutdown().await.unwrap();
+
+    let restarted_tools = Arc::new(ToolsManager::new());
+    restarted_tools
+        .registry()
+        .register(Arc::new(haven_tools::builtin::ask::AskTool) as ToolBox)
+        .await
+        .unwrap();
+    let final_mock = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
+    let (restarted_agent, restarted_executor) = make_test_agent_with_db(
+        db,
+        final_mock,
+        restarted_tools,
+        ContextLimitsConfig::default(),
+    );
+    restarted_agent.set_emitter(make_recording_emitter());
+    restarted_executor
+        .ensure_session_loaded(&session.id)
+        .await
+        .unwrap();
+    restarted_agent
+        .run_session_from_id(&session.id)
+        .await
+        .unwrap();
+
+    let pending = restarted_executor
+        .pending_interactions(&session.id, crate::interaction::InteractionKind::Ask)
+        .await;
+    assert_eq!(
+        pending.len(),
+        1,
+        "Ask must be restored after a process restart"
+    );
+    assert_eq!(pending[0].prompt, "Which path?");
 }
 
 #[tokio::test]

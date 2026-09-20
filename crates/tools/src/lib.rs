@@ -2148,6 +2148,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn catalog_drift_reaches_the_live_execution_boundary() {
+        struct DriftTool(&'static str);
+
+        #[async_trait::async_trait]
+        impl Tool for DriftTool {
+            fn name(&self) -> String {
+                "drift_execution".into()
+            }
+            fn description(&self) -> String {
+                format!("catalog version {}", self.0)
+            }
+            fn risk_level(&self, _: &Value) -> RiskLevel {
+                RiskLevel::Safe
+            }
+            fn input_schema(&self) -> Value {
+                json!({"type": "object"})
+            }
+            async fn execute(&self, _: Value, _: CancellationToken) -> anyhow::Result<ToolResult> {
+                Ok(ToolResult::ok(json!({"implementation": self.0})))
+            }
+        }
+
+        let mgr = ToolsManager::new();
+        mgr.registry()
+            .register(Arc::new(DriftTool("prepared")))
+            .await
+            .unwrap();
+        let catalog = mgr.tool_catalog_snapshot("ses-drift-execution").await;
+        assert_eq!(
+            catalog.get("drift_execution").unwrap().description(),
+            "catalog version prepared"
+        );
+
+        // The prepared provider surface remains immutable, but execution must
+        // consult the current session overlay at the safety boundary.
+        mgr.register_for_session("ses-drift-execution", Arc::new(DriftTool("live")))
+            .await;
+        let result = mgr
+            .execute_tool(
+                Some("ses-drift-execution"),
+                "drift_execution",
+                json!({}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.output["implementation"], "live");
+        assert_eq!(
+            catalog.get("drift_execution").unwrap().description(),
+            "catalog version prepared",
+            "catalog drift must not mutate the already prepared turn view"
+        );
+    }
+
+    #[tokio::test]
     async fn execute_tool_does_not_inject_idempotency_key_into_strict_tool_args() {
         #[derive(serde::Deserialize)]
         #[serde(deny_unknown_fields)]

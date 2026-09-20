@@ -294,4 +294,79 @@ mod pending_context_tests {
         );
         assert_eq!(state.events.len(), 1);
     }
+
+    #[tokio::test]
+    async fn active_action_result_redelivery_is_projected_once() {
+        let path = std::env::temp_dir().join(format!(
+            "haven_active_action_result_dedup_{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let db = std::sync::Arc::new(haven_memory::Database::open(&path).unwrap());
+        let session = db.create_session("input", "input").unwrap();
+        let executor = std::sync::Arc::new(crate::session::SessionSupervisor::new(
+            db.clone(),
+            std::sync::Arc::new(haven_tools::ToolsManager::new()),
+            1,
+        ));
+        let engine = ReActEngine::new(
+            std::sync::Arc::new(haven_llm::LlmRouter::new(
+                haven_common::config::RouterConfig::default(),
+            )),
+            executor,
+            db.clone(),
+            4,
+            haven_common::config::ContextLimitsConfig::default(),
+        );
+        let ctx = StepCtx {
+            session_id: session.id.clone(),
+            step_num: 1,
+            run_id: 1,
+            emitter: std::sync::Arc::new(NoopEmitter),
+        };
+        let mut state = ReActState::new(Vec::new(), Vec::new(), HashMap::new());
+        let message_id = super::context::action_result_message_id("act-active-dedup");
+
+        let batch = || PendingContextBatch {
+            items: vec![PendingContext {
+                source: InjectSource::ActionResult,
+                text: "background result".into(),
+                attachments: Vec::new(),
+                message_id: Some(message_id.clone()),
+                action_result_id: Some("act-active-dedup".into()),
+            }],
+            clears_ask: false,
+            inbox_claim: None,
+        };
+
+        assert!(
+            engine
+                .apply_pending_context_batch(&ctx, &mut state, batch())
+                .await
+                .unwrap()
+        );
+        assert!(
+            !engine
+                .apply_pending_context_batch(&ctx, &mut state, batch())
+                .await
+                .unwrap()
+        );
+        assert_eq!(state.events.len(), 1);
+        assert_eq!(
+            engine
+                .event_store
+                .read_all(&session.id)
+                .unwrap()
+                .iter()
+                .filter(|event| event.payload.contains(&message_id))
+                .count(),
+            1,
+            "an active action-result redelivery must not duplicate its transcript event"
+        );
+        assert_eq!(
+            engine.metrics_snapshot().counters.action_result_duplicates,
+            1
+        );
+        drop(engine);
+        let _ = std::fs::remove_file(path);
+    }
 }

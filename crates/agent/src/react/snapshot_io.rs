@@ -1377,4 +1377,69 @@ mod tests {
         drop(engine);
         let _ = std::fs::remove_file(path);
     }
+
+    #[tokio::test]
+    async fn snapshot_fault_after_branch_append_preserves_durable_cutoff() {
+        let path = std::env::temp_dir().join(format!(
+            "haven_snapshot_before_crash_{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let db = Arc::new(Database::open(&path).unwrap());
+        let session = db.create_session("input", "input").unwrap();
+        db.conn()
+            .execute_batch(
+                "CREATE TRIGGER snapshot_fault
+                 BEFORE UPDATE OF react_state ON sessions
+                 BEGIN SELECT RAISE(ABORT, 'injected snapshot failure'); END;",
+            )
+            .unwrap();
+        let executor = Arc::new(SessionSupervisor::new(
+            db.clone(),
+            Arc::new(ToolsManager::new()),
+            1,
+        ));
+        let engine = ReActEngine::new(
+            Arc::new(LlmRouter::new(RouterConfig::default())),
+            executor,
+            db.clone(),
+            8,
+            ContextLimitsConfig::default(),
+        );
+        let mut state = ReActState::new(Vec::new(), Vec::new(), HashMap::new());
+
+        let error = engine
+            .save_branch_point(&session.id, &mut state, 3, true)
+            .await
+            .unwrap_err();
+
+        assert!(
+            error.to_string().contains("failed to durably checkpoint"),
+            "unexpected snapshot failure: {error}"
+        );
+        assert!(state.branch_points.contains_key(&3));
+        assert_eq!(
+            engine
+                .event_store
+                .read_active_branch_points(&session.id)
+                .unwrap()
+                .len(),
+            1,
+            "the branch cutoff must survive a crash before the cache snapshot"
+        );
+        assert!(
+            db.get_react_state(&session.id).unwrap().is_none(),
+            "the failed snapshot transaction must not publish a partial cache"
+        );
+        assert!(
+            !engine
+                .snapshot_store
+                .lock()
+                .unwrap()
+                .last_written
+                .contains_key(&session.id),
+            "a failed snapshot must not advance the write throttle"
+        );
+        drop(engine);
+        let _ = std::fs::remove_file(path);
+    }
 }

@@ -493,6 +493,13 @@ async fn process_input_marks_reply_as_answer_when_awaiting() {
         ))
         .await
         .unwrap();
+    agent
+        .db
+        .save_react_state(
+            &session.id,
+            &serde_json::to_string(&crate::types::ReActSnapshot::default()).unwrap(),
+        )
+        .unwrap();
 
     let result = agent
         .process_input("the answer", Some(session.id.clone()))

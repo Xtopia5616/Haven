@@ -177,3 +177,4 @@
 - [0178：ReAct 可观测性与会话刷新合并](0178-react-observability-and-refresh-coalescing.md)
 - [0179：读路径与 provider 重试兼容边界](0179-read-path-and-provider-retry-compatibility.md)
 - [0180：Action completion durable outbox 与流式 overflow pump](0180-action-completion-outbox-and-stream-overflow-pump.md)
+- [0181：ReAct turn deadline 与交互恢复边界](0181-react-turn-deadline-and-interaction-recovery.md)
