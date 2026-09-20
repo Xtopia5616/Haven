@@ -11,7 +11,6 @@
 	import { isBusyStatus, isErrorStatus, isPausedStatus } from '$lib/sessionStatus.ts';
 	import { processResultSessionId, submitTranscript } from '$lib/submit.ts';
 	import { createChatAgentEventHandlers } from '$lib/chatAgentEventHandlers.ts';
-	import { createChatInteractionEventHandlers } from '$lib/chatInteractionEventHandlers.ts';
 	import { createAskInteractionController } from '$lib/chatAskInteraction.ts';
 	import { createChatSessionEventHandlers } from '$lib/chatSessionEventHandlers.ts';
 	import { createChatUsageEventHandlers } from '$lib/chatUsageEventHandlers.ts';
@@ -67,7 +66,6 @@
 		isChatNearBottom,
 		shouldFollowChatScroll,
 	} from '$lib/chatScroll.ts';
-	import ConfirmationDialog from '$lib/ConfirmationDialog.svelte';
 	import RollbackDialog from '$lib/RollbackDialog.svelte';
 	import {
 		closeContextMenu as closeGlobalContextMenu,
@@ -131,41 +129,9 @@
 	const pendingAskInteractions = $derived(
 		pendingInteractions.filter((request) => request.kind === 'ask'),
 	);
-	const pendingConfirmInteractions = $derived(
-		pendingInteractions.filter(
-			(request) => request.kind === 'confirm' || request.kind === 'scheduled_confirm',
-		),
-	);
 	const askAwaiting = $derived(pendingAskInteractions.length > 0);
 	const askHasOptions = $derived(
 		pendingAskInteractions.some((request) => request.options.length > 0),
-	);
-	// The first pending confirmation is the modal projection. Keeping this
-	// derived from the reducer avoids a second local queue that can go stale when
-	// resume, rollback, or another window resolves the request.
-	const activeConfirmRequest = $derived(pendingConfirmInteractions[0] || null);
-	const activeConfirmSessionTitle = $derived(
-		activeConfirmRequest
-			? activeConfirmRequest.sessionId === 'ui'
-				? '当前操作'
-				: String(
-						sessions.find((session) => session.id === activeConfirmRequest.sessionId)
-							?.title || activeConfirmRequest.sessionId,
-					)
-			: '',
-	);
-	// UI-only confirmations do not carry a backend expiry. They still receive a
-	// bounded local decision window; agent confirmations use their real expiry.
-	const CONFIRM_TIMEOUT_MS = 120_000;
-	const activeConfirmDeadlineAt = $derived(
-		activeConfirmRequest
-			? (() => {
-					const parsed = activeConfirmRequest.expiresAt
-						? Date.parse(activeConfirmRequest.expiresAt)
-						: Number.NaN;
-					return Number.isFinite(parsed) ? parsed : Date.now() + CONFIRM_TIMEOUT_MS;
-				})()
-			: null,
 	);
 	let rollbackDialog = $state({
 		open: false,
@@ -1174,7 +1140,6 @@
 						dispatchSession,
 					}),
 				),
-				...appEventListeners(createChatInteractionEventHandlers({ dispatchSession })),
 				...agentEventListeners(createChatUsageEventHandlers({ dispatchSession })),
 			},
 			{ tag: '+page' },
@@ -1465,30 +1430,6 @@
 		submitMessage(text, images, files);
 	}
 
-	/** @param {{ stepId: string, approved: boolean, effect?: string, scope?: string }} payload */
-	async function handleConfirm({ stepId, approved, effect, scope }) {
-		// Resolve the shared request synchronously before awaiting IPC. The next
-		// queued request is then derived immediately from the reducer.
-		const resolvedStep = stepId;
-		dispatchSession({
-			type: 'session/interaction-resolved',
-			id: resolvedStep,
-			response: { approved, effect, scope },
-		});
-		if (!resolvedStep) return;
-		const resolvedEffect = effect || (approved ? 'allow' : 'deny');
-		const resolvedScope = scope || 'once';
-		try {
-			await invoke('resolve_confirmation', {
-				stepId: resolvedStep,
-				effect: resolvedEffect,
-				scope: resolvedScope,
-			});
-		} catch (e) {
-			reportError(e, { context: '+page', message: '确认失败', log: false });
-		}
-	}
-
 	/** @param {any} session */
 	function sessionStatusLabel(session) {
 		if (session.status === 'running') return '运行中';
@@ -1522,20 +1463,6 @@
 </script>
 
 <div class="chat-page" bind:this={chatPageEl}>
-	<ConfirmationDialog
-		stepId={activeConfirmRequest?.id || null}
-		toolName={activeConfirmRequest?.toolName || ''}
-		sessionId={activeConfirmRequest?.sessionId || ''}
-		sessionTitle={activeConfirmSessionTitle}
-		riskLevel={activeConfirmRequest?.riskLevel || 'medium'}
-		summary={activeConfirmRequest?.summary ||
-			activeConfirmRequest?.prompt ||
-			'此操作需要你的许可。'}
-		permissionKey={activeConfirmRequest?.permissionKey || activeConfirmRequest?.toolName || ''}
-		deadlineAt={activeConfirmDeadlineAt}
-		onConfirm={handleConfirm}
-	/>
-
 	<RollbackDialog
 		open={rollbackDialog.open}
 		stepNumber={rollbackDialog.stepNumber}

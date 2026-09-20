@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { get } from 'svelte/store';
 import type { InteractionRequest } from './contracts/app.ts';
 import type { TauriEvent } from './contracts/session.ts';
@@ -25,16 +25,18 @@ describe('createChatInteractionEventHandlers', () => {
 
 		hydrateInteractions({
 			session: { id: 'ses-1' },
-			interactions: [{
-				id: 'conf-1',
-				session_id: 'ses-1',
-				kind: 'confirm',
-				status: 'pending',
-				prompt: '需要许可',
-				options: [],
-				tool_name: 'system.info',
-				created_at: '2026-09-14T00:00:00Z',
-			}],
+			interactions: [
+				{
+					id: 'conf-1',
+					session_id: 'ses-1',
+					kind: 'confirm',
+					status: 'pending',
+					prompt: '需要许可',
+					options: [],
+					tool_name: 'system.info',
+					created_at: '2026-09-14T00:00:00Z',
+				},
+			],
 		});
 
 		expect(get(interactionStore)).toEqual({
@@ -70,4 +72,29 @@ describe('createChatInteractionEventHandlers', () => {
 			expect(get(interactionStore)[request.id]).toEqual(request);
 		},
 	);
+
+	it('routes requests through the reducer dispatcher when the shell owns the listener', () => {
+		const request: InteractionRequest = {
+			id: 'confirm-shell-1',
+			sessionId: 'ses-1',
+			kind: 'confirm',
+			status: 'pending',
+			prompt: '需要用户决定',
+			options: [],
+			createdAt: '2026-09-14T00:00:00Z',
+		};
+		const dispatchSession = vi.fn();
+		const event: TauriEvent<InteractionRequest> = {
+			event: 'interaction:requested',
+			id: 2,
+			payload: request,
+		};
+
+		createChatInteractionEventHandlers({ dispatchSession })['interaction:requested'](event);
+
+		expect(dispatchSession).toHaveBeenCalledWith({
+			type: 'session/interaction-upserted',
+			request,
+		});
+	});
 });

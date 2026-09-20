@@ -41,6 +41,7 @@
 	import { confirmLeaveSettingsIfNeeded } from '$lib/settingsGuard.ts';
 	import { actionStatusLabel } from '$lib/taskTerminology.ts';
 	import { setToolManifests } from '$lib/toolManifest.ts';
+	import { createChatInteractionEventHandlers } from '$lib/chatInteractionEventHandlers.ts';
 	import {
 		formatLlmConnectionFailure,
 		formatLlmConnectionRecovery,
@@ -54,6 +55,7 @@
 	} from '$lib/bootstrapStatus.ts';
 
 	import AppShell from '$lib/AppShell.svelte';
+	import ConfirmationDialog from '$lib/ConfirmationDialog.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import LoadingState from '$lib/LoadingState.svelte';
 	import WorkspaceSurface from '$lib/WorkspaceSurface.svelte';
@@ -491,6 +493,64 @@
 	// loadSessions().
 	const sessions = $derived(sessionState.sessions);
 
+	// Permission confirmations belong to the application shell, not the chat
+	// page. The chat page is kept mounted but hidden when another workspace is
+	// active, so rendering the dialog there made pending requests invisible.
+	const interactionDict = $derived(sessionState.interactions || {});
+	const pendingConfirmInteractions = $derived(
+		Object.values(interactionDict).filter(
+			(request) =>
+				request.status === 'pending' &&
+				(request.kind === 'confirm' || request.kind === 'scheduled_confirm'),
+		),
+	);
+	const activeConfirmRequest = $derived(pendingConfirmInteractions[0] || null);
+	const activeConfirmSessionTitle = $derived(
+		activeConfirmRequest
+			? activeConfirmRequest.sessionId === 'ui'
+				? '当前操作'
+				: String(
+						sessions.find((session) => session.id === activeConfirmRequest.sessionId)
+							?.title || activeConfirmRequest.sessionId,
+					)
+			: '',
+	);
+	const CONFIRM_TIMEOUT_MS = 120_000;
+	const activeConfirmDeadlineAt = $derived(
+		activeConfirmRequest
+			? (() => {
+					const parsed = activeConfirmRequest.expiresAt
+						? Date.parse(activeConfirmRequest.expiresAt)
+						: Number.NaN;
+					return Number.isFinite(parsed) ? parsed : Date.now() + CONFIRM_TIMEOUT_MS;
+				})()
+			: null,
+	);
+
+	/** @param {{ stepId: string, approved: boolean, effect?: string, scope?: string }} payload */
+	async function handleConfirm({ stepId, approved, effect, scope }) {
+		// Resolve the shared request synchronously before awaiting IPC. The next
+		// queued request is then derived immediately from the reducer.
+		const resolvedStep = stepId;
+		appSessionReducer.dispatch({
+			type: 'session/interaction-resolved',
+			id: resolvedStep,
+			response: { approved, effect, scope },
+		});
+		if (!resolvedStep) return;
+		const resolvedEffect = effect || (approved ? 'allow' : 'deny');
+		const resolvedScope = scope || 'once';
+		try {
+			await invoke('resolve_confirmation', {
+				stepId: resolvedStep,
+				effect: resolvedEffect,
+				scope: resolvedScope,
+			});
+		} catch (e) {
+			reportError(e, { context: '+layout', message: '确认失败', log: false });
+		}
+	}
+
 	// While the panel is open, re-render once a second so countdowns tick.
 	let countdownTick = $state(0);
 	$effect(() => {
@@ -609,6 +669,11 @@
 
 		const registrations = registerListeners(
 			{
+				...appEventListeners(
+					createChatInteractionEventHandlers({
+						dispatchSession: (action) => appSessionReducer.dispatch(action),
+					}),
+				),
 				...appEventListeners({
 					'app:bootstrap': (event) => {
 						const status = event?.payload?.status;
@@ -1124,5 +1189,20 @@
 				{/if}
 			</div>
 		{/each}
+		<ConfirmationDialog
+			stepId={activeConfirmRequest?.id || null}
+			toolName={activeConfirmRequest?.toolName || ''}
+			sessionId={activeConfirmRequest?.sessionId || ''}
+			sessionTitle={activeConfirmSessionTitle}
+			riskLevel={activeConfirmRequest?.riskLevel || 'medium'}
+			summary={activeConfirmRequest?.summary ||
+				activeConfirmRequest?.prompt ||
+				'此操作需要你的许可。'}
+			permissionKey={activeConfirmRequest?.permissionKey ||
+				activeConfirmRequest?.toolName ||
+				''}
+			deadlineAt={activeConfirmDeadlineAt}
+			onConfirm={handleConfirm}
+		/>
 	{/snippet}
 </AppShell>
