@@ -467,20 +467,83 @@ impl AgentLayer {
                     {
                         msg.push_str(&format!("\nFull log: {log_path}"));
                     }
-                    if let Err(error) = agent.executor.add_action_completion(&tid, &msg).await {
-                        // The bounded queue deliberately applies back-pressure.
-                        // The action row remains durable, so a later action
-                        // refresh can retry delivery; never turn a rejected
-                        // completion into a silent context loss.
-                        tracing::warn!(
-                            session_id = %tid,
-                            action_id = %comp.action_id,
-                            error = %error,
-                            "deferring background action result because the context queue is full"
-                        );
-                        continue;
+                    let result_message_id =
+                        crate::react::action_result_message_id(&comp.action_result_id);
+                    let mut state = agent.executor.get_session_state(&tid).await;
+                    // Delivery is retried with the same action_result_id.  A
+                    // full actor mailbox must not turn a durable action row
+                    // into a lost transcript context.  If the session becomes
+                    // terminal while waiting, switch to the idempotent direct
+                    // projection path.
+                    loop {
+                        if matches!(&state, Some(s) if s.is_terminal()) {
+                            match crate::persist_session_message(
+                                &agent.executor,
+                                &tid,
+                                "user",
+                                &msg,
+                                Some("text"),
+                                &[],
+                                false,
+                                Some(&result_message_id),
+                                None,
+                            )
+                            .await
+                            {
+                                Ok(persisted) => {
+                                    agent
+                                        .react_engine
+                                        .note_last_msg_at(&tid, Some(persisted.created_at));
+                                    break;
+                                }
+                                Err(error) => {
+                                    agent.react_engine.note_action_result_retry();
+                                    tracing::warn!(
+                                        session_id = %tid,
+                                        action_id = %comp.action_id,
+                                        error = %error,
+                                        "retrying terminal action-result projection"
+                                    );
+                                }
+                            }
+                        } else if state.is_none() {
+                            // The session row was deleted.  There is no valid
+                            // FK target to project into; the action record is
+                            // still durable for audit/recovery.
+                            tracing::warn!(
+                                session_id = %tid,
+                                action_id = %comp.action_id,
+                                "dropping action-result delivery for deleted session"
+                            );
+                            break;
+                        } else {
+                            match agent
+                                .executor
+                                .add_action_completion_with_id(
+                                    &tid,
+                                    comp.action_result_id.clone(),
+                                    &msg,
+                                )
+                                .await
+                            {
+                                Ok(()) => break,
+                                Err(error) => {
+                                    agent.react_engine.note_action_result_retry();
+                                    tracing::warn!(
+                                        session_id = %tid,
+                                        action_id = %comp.action_id,
+                                        error = %error,
+                                        "retrying background action result after queue rejection"
+                                    );
+                                }
+                            }
+                        }
+                        tokio::select! {
+                            _ = cancellation.cancelled() => return,
+                            _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {}
+                        }
+                        state = agent.executor.get_session_state(&tid).await;
                     }
-                    let state = agent.executor.get_session_state(&tid).await;
                     // Awaiting-answer/confirm pauses must not be auto-woken by
                     // background-action completions (the model is blocked on the
                     // user, not on action results). Dual-track gate covers status
@@ -501,34 +564,8 @@ impl AgentLayer {
                     // shows the background-action result. Live/paused sessions
                     // get the result via the next ReAct step; awaiting-answer
                     // sessions keep it buffered until the user replies.
-                    if matches!(&state, Some(s) if s.is_terminal()) || state.is_none() {
-                        match crate::persist_session_message(
-                            &agent.executor,
-                            &tid,
-                            "user",
-                            &msg,
-                            Some("text"),
-                            &[],
-                            false,
-                            None,
-                            None,
-                        )
-                        .await
-                        {
-                            Ok(persisted) => {
-                                agent
-                                    .react_engine
-                                    .note_last_msg_at(&tid, Some(persisted.created_at));
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    "action-completion persist for ended session {} failed: {}",
-                                    tid,
-                                    e
-                                );
-                            }
-                        }
-                    }
+                    // Terminal results were handled above; live sessions are
+                    // projected through the durable transcript path.
                     // Active push so the user never has to poll for status:
                     // a toast (in-app + Windows) announces the transition.
                     let (title, status_label) = match comp.status {

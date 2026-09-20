@@ -20,6 +20,7 @@ pub(super) struct TurnInput<'a> {
     pub(super) ctx: StepCtx,
     pub(super) state: &'a mut ReActState,
     pub(super) cancel: tokio_util::sync::CancellationToken,
+    pub(super) deadline: super::r#loop::TurnDeadline,
     /// Whether this turn may stage a tool-failure retry for another turn.
     /// Computed by the run driver from the absolute run end.
     pub(super) allow_tool_retry: bool,
@@ -76,12 +77,14 @@ impl ReActEngine {
             ctx,
             state,
             cancel,
+            deadline,
             allow_tool_retry,
             tool_retry_budget,
             cut_off_retries,
         } = input;
         let session_id = &ctx.session_id;
         let step_num = ctx.step_num;
+        deadline.ensure_remaining("turn start")?;
         self.metrics.increment(MetricsCounter::TurnStarts);
 
         // Context is collected once at the turn boundary and projected by the
@@ -97,6 +100,7 @@ impl ReActEngine {
             self.inject_turn_start_context(&ctx, state)
                 .instrument(tracing::info_span!("inject", session_id, step_num))
                 .await?;
+            deadline.ensure_remaining("context injection")?;
         }
 
         let before_step = self
@@ -104,6 +108,7 @@ impl ReActEngine {
             .before_step(self, &ctx, state, cancel.clone())
             .instrument(tracing::info_span!("before_step", session_id, step_num))
             .await?;
+        deadline.ensure_remaining("before-step hooks")?;
 
         // Build one immutable provider projection. Durable canonical state is
         // never used as a scratch buffer by retries or provider repairs.
@@ -139,9 +144,20 @@ impl ReActEngine {
             );
         }
 
+        let catalog = match before_step.tool_catalog {
+            Some(catalog) => catalog,
+            None => self.build_tool_catalog_for_session(session_id).await,
+        };
         let tools = match before_step.tool_definitions {
             Some(tools) => tools,
-            None => self.build_tool_definitions_for_session(session_id).await,
+            None => Arc::new(
+                catalog
+                    .provider_definitions()
+                    .iter()
+                    .cloned()
+                    .map(Into::into)
+                    .collect(),
+            ),
         };
         let router = self.router();
         let role = choose_agent_role(&router, &request_context).await;
@@ -176,6 +192,7 @@ impl ReActEngine {
             &partial_thought,
             &partial_reasoning,
         );
+        deadline.ensure_remaining("provider request")?;
         let response = {
             let _timer =
                 self.metrics
@@ -200,6 +217,7 @@ impl ReActEngine {
                 }
             }
         };
+        deadline.ensure_remaining("provider response")?;
 
         // Cancellation wins over a late provider response. This prevents a
         // rollback/end-session response from becoming a ghost transcript.
@@ -219,6 +237,7 @@ impl ReActEngine {
         // the accepted response below is the first response that may become
         // durable assistant state.
         let (thought, actions) = Self::parse_default_model_response(&response, step_num);
+        deadline.ensure_remaining("response parsing")?;
         let limits = self.limits();
         let pending_ask = !self
             .executor
@@ -410,6 +429,7 @@ impl ReActEngine {
                 &actions,
                 &thought,
                 &response,
+                catalog,
                 &cancel,
                 allow_tool_retry,
                 tool_retry_budget,

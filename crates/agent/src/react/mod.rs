@@ -42,6 +42,7 @@ mod turn;
 mod turn_end;
 
 use context::ContextSource;
+pub(crate) use context::action_result_message_id;
 pub(crate) use hooks::{InferCallback, MemoryPatchHandle, default_hooks_with_infer_and_patch};
 use hooks::{LoopHooksHandle, default_hooks};
 use identity::IdentityMap;
@@ -52,7 +53,7 @@ pub use metrics::{MetricsSnapshot, UiMetricsSnapshot};
 pub(crate) use request_context::RequestContext;
 use sidecars::{
     ContextWindowCache, CumulativeUsage, LastMsgAtCache, SnapshotBufs, TokenEstimateCache,
-    ToolDefCache, UsageTracker,
+    UsageTracker,
 };
 pub(crate) use state::{ReActState, RetryNudge};
 use transcript::{ObservationCard, TranscriptEvent};
@@ -331,8 +332,6 @@ pub struct ReActEngine {
     context_source: ContextSource,
     /// Per-session cumulative token usage.
     usage: UsageTracker,
-    /// Per-session tool-definition cache (catalog version keyed).
-    tool_defs: ToolDefCache,
     /// Newest message `created_at` per session (branch-point cutoff cache).
     last_msg_at: LastMsgAtCache,
     /// Per-session incremental token-estimate cache.
@@ -405,7 +404,6 @@ impl ReActEngine {
             run_counter: AtomicU64::new(0),
             context_source,
             usage: UsageTracker::new(),
-            tool_defs: ToolDefCache::new(),
             last_msg_at: LastMsgAtCache::new(),
             token_estimates: TokenEstimateCache::new(),
             snapshot_bufs: SnapshotBufs::new(),
@@ -424,6 +422,10 @@ impl ReActEngine {
     #[allow(dead_code)]
     pub(crate) fn metrics_snapshot(&self) -> metrics::MetricsSnapshot {
         self.metrics.snapshot()
+    }
+
+    pub(crate) fn note_action_result_retry(&self) {
+        self.metrics.increment(MetricsCounter::ActionResultRetries);
     }
 
     /// Record the live run budget so mid-run / pause snapshots include it (R4).
@@ -538,48 +540,19 @@ impl ReActEngine {
 
     /// Build the full tool-definition list for a session: global registry tools
     /// plus per-session MCP adapters registered via `load_mcp`.
-    /// Called each step so freshly loaded tools are immediately visible.
-    ///
-    /// G7 (X2 rethink) — **API `tools[]` is the schema authority.** The
-    /// system prompt only embeds a short layer-1 **capability index** (family
-    /// and root summaries), frozen for the **current run** (`TOOL_USAGE_NOTES`
-    /// declares this). The `tool_catalog` control-plane tool provides deeper
-    /// root/operation discovery and exact schemas on demand. Mid-run
-    /// `load_mcp` never rewrites the index; resume fully rebuilds the system
-    /// prompt (X2) so catalog drift is picked up between runs. After
-    /// `load_mcp`, new tool schemas appear here on the next step; they are
-    /// **not** spliced into the prompt index.
-    ///
-    /// The result is cached per session against both the global catalog
-    /// version and that session's registration-overlay version. This keeps a
-    /// registration in one session from invalidating definitions for every
-    /// other session while still rebuilding after global or local changes.
-    pub(super) async fn build_tool_definitions_for_session(
+    /// Capture the immutable catalog used by one model turn.  Provider
+    /// definitions are derived from this exact snapshot, so execution cannot
+    /// silently switch to a newer registry generation after the LLM request.
+    pub(super) async fn build_tool_catalog_for_session(
         &self,
         session_id: &str,
-    ) -> Arc<Vec<ToolDefinition>> {
-        let version = self
-            .executor
-            .get_tools()
-            .catalog_version_for_session(session_id)
-            .await;
-        if let Some(cached) = self.tool_defs.get_if_version(session_id, version) {
-            return cached;
-        }
-        // Structured defs from the manager; the LLM-boundary conversion is a
-        // pure `From<ToolDef>` so nothing here re-parses loose schema JSON.
-        let defs: Arc<Vec<ToolDefinition>> = Arc::new(
+    ) -> Arc<haven_tools::ToolCatalogSnapshot> {
+        Arc::new(
             self.executor
                 .get_tools()
-                .list_defs_for_session(session_id)
-                .await
-                .into_iter()
-                .map(Into::into)
-                .collect(),
-        );
-        self.tool_defs
-            .insert(session_id, version, Arc::clone(&defs));
-        defs
+                .tool_catalog_snapshot(session_id)
+                .await,
+        )
     }
 
     pub fn note_last_msg_at(&self, session_id: &str, created_at: Option<String>) {
@@ -1193,10 +1166,8 @@ impl ReActEngine {
         }
     }
 
-    /// Drop cumulative counters, the token-estimate cache, the snapshot
-    /// buffer, the snapshot-throttle marker and the tool-definition cache for
-    /// a finished session so all per-session maps stay bounded across long-running
-    /// sessions.
+    /// Drop cumulative counters and process-local checkpoint caches for a
+    /// finished session so all per-session maps stay bounded across long runs.
     pub fn reset_cumulative_usage(&self, session_id: &str) {
         self.usage.reset(session_id);
         self.reset_token_estimate(session_id);
@@ -1204,7 +1175,6 @@ impl ReActEngine {
             .lock()
             .unwrap()
             .clear_session(session_id);
-        self.tool_defs.remove(session_id);
         self.last_msg_at.remove(session_id);
         self.snapshot_bufs.remove(session_id);
         self.context_source.clear_session(session_id);

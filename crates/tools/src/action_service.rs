@@ -35,6 +35,9 @@ const SCHEDULED_FIRE_LEASE: Duration = Duration::from_secs(15 * 60);
 #[derive(Clone, Debug)]
 pub struct BackgroundActionCompletion {
     pub action_id: String,
+    /// Stable identity of the terminal result. It remains the same when the
+    /// broadcast is replayed or the owning session queue retries delivery.
+    pub action_result_id: String,
     pub session_id: Option<String>,
     /// Canonical terminal lifecycle status.
     pub status: ActionStatus,
@@ -834,6 +837,7 @@ impl ActionService {
             self.completion_tx
                 .send(ActionCompletion::Background(BackgroundActionCompletion {
                     action_id: action_id.to_string(),
+                    action_result_id: action_id.to_string(),
                     session_id,
                     status,
                     status_json,

@@ -160,6 +160,19 @@ impl AgentLayer {
                         .await
                         .is_ok()
                 };
+                if was_in_memory && is_answer {
+                    // The ingress user seed was durably inserted before the
+                    // queue operation. Clearing the gate here preserves the
+                    // existing immediate UI transition while the later
+                    // session-event projection still has a stable message id
+                    // for crash recovery.
+                    self.executor
+                        .clear_interactions_persisted(
+                            session_id,
+                            Some(crate::interaction::InteractionKind::Ask),
+                        )
+                        .await?;
+                }
                 if !was_in_memory {
                     // Session may be stale/deleted — fall back to creating a new session
                     if self
@@ -237,6 +250,12 @@ impl AgentLayer {
                                     transcript,
                                     attachments,
                                     message_id.clone(),
+                                )
+                                .await?;
+                            self.executor
+                                .clear_interactions_persisted(
+                                    session_id,
+                                    Some(crate::interaction::InteractionKind::Ask),
                                 )
                                 .await?;
                         } else {

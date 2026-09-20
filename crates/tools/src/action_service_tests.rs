@@ -805,6 +805,7 @@ async fn test_scheduled_fire_recovers_after_completion_bus_lag() {
                 .completion_tx
                 .send(ActionCompletion::Background(BackgroundActionCompletion {
                     action_id: format!("act-noise-{index}"),
+                    action_result_id: format!("act-noise-{index}"),
                     session_id: None,
                     status: haven_common::ActionStatus::Completed,
                     status_json: serde_json::json!({"status": "completed"}),

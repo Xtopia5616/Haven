@@ -243,18 +243,23 @@ impl Default for UsageTracker {
 /// Values are `Arc` so cache hits share one schema vec across steps. It is
 /// bounded because ended sessions are normally removed eagerly, but a burst
 /// of short-lived sessions must not grow this sidecar without limit.
+#[allow(dead_code)]
 type ToolDefCacheEntry = ((u64, u64), Arc<Vec<ToolDefinition>>);
+#[allow(dead_code)]
 type ToolDefCacheMap = HashMap<String, ToolDefCacheEntry>;
 
+#[allow(dead_code)]
 struct ToolDefCacheState {
     entries: ToolDefCacheMap,
     order: VecDeque<String>,
 }
 
+#[allow(dead_code)]
 pub(crate) struct ToolDefCache {
     cache: Mutex<ToolDefCacheState>,
 }
 
+#[allow(dead_code)]
 impl ToolDefCache {
     pub(crate) const CAPACITY: usize = 128;
 

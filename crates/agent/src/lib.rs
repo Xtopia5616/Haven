@@ -161,6 +161,22 @@ async fn persist_session_message_inner(
     let message_id = message_id.map(String::from);
     let tool_call_id = tool_call_id.map(String::from);
     db.run_blocking(move |db| {
+        if let Some(message_id) = message_id.as_deref()
+            && let Some(existing) = db.get_message_by_id(&session_id, message_id)?
+        {
+            if existing.role != role
+                || existing.content != content
+                || existing.message_type.as_deref() != message_type.as_deref()
+                || existing.tool_call_id.as_deref() != tool_call_id.as_deref()
+            {
+                anyhow::bail!(
+                    "message idempotency conflict for session {} message {}",
+                    session_id,
+                    message_id
+                );
+            }
+            return Ok(existing);
+        }
         db.add_message_full(
             &session_id,
             &role,

@@ -64,6 +64,15 @@ pub(crate) struct ContextQueueStats {
     pub action_result_items: usize,
 }
 
+/// A terminal background-action result waiting for transcript projection.
+/// `action_result_id` is stable across broadcast re-delivery and queue retries;
+/// it is never regenerated at the transcript boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ActionResult {
+    pub(crate) action_result_id: String,
+    pub(crate) text: String,
+}
+
 impl ContextQueueStats {
     pub(crate) fn total_items(self) -> usize {
         self.steering_items
@@ -128,7 +137,7 @@ pub(crate) enum ActorCommand {
         reply: oneshot::Sender<Vec<FollowUp>>,
     },
     DrainContext {
-        reply: oneshot::Sender<(Vec<FollowUp>, Vec<FollowUp>, Vec<String>)>,
+        reply: oneshot::Sender<(Vec<FollowUp>, Vec<FollowUp>, Vec<ActionResult>)>,
     },
     HasPendingContext {
         reply: oneshot::Sender<bool>,
@@ -138,11 +147,12 @@ pub(crate) enum ActorCommand {
     },
     MarkQueuesAsAnswer,
     AddActionCompletion {
+        action_result_id: String,
         text: String,
         reply: oneshot::Sender<anyhow::Result<()>>,
     },
     DrainActionCompletions {
-        reply: oneshot::Sender<Vec<String>>,
+        reply: oneshot::Sender<Vec<ActionResult>>,
     },
     RequestInteraction {
         request: Box<InteractionRequest>,
@@ -361,7 +371,7 @@ impl SessionActorHandle {
         rx.await.unwrap_or_default()
     }
 
-    pub(crate) async fn drain_context(&self) -> (Vec<FollowUp>, Vec<FollowUp>, Vec<String>) {
+    pub(crate) async fn drain_context(&self) -> (Vec<FollowUp>, Vec<FollowUp>, Vec<ActionResult>) {
         let (reply, rx) = oneshot::channel();
         if self
             .send(ActorCommand::DrainContext { reply })
@@ -401,15 +411,23 @@ impl SessionActorHandle {
         let _ = self.send(ActorCommand::MarkQueuesAsAnswer).await;
     }
 
-    pub(crate) async fn add_action_completion(&self, text: String) -> anyhow::Result<()> {
+    pub(crate) async fn add_action_completion(
+        &self,
+        action_result_id: String,
+        text: String,
+    ) -> anyhow::Result<()> {
         let (reply, rx) = oneshot::channel();
-        self.send(ActorCommand::AddActionCompletion { text, reply })
-            .await?;
+        self.send(ActorCommand::AddActionCompletion {
+            action_result_id,
+            text,
+            reply,
+        })
+        .await?;
         rx.await
             .map_err(|_| anyhow::anyhow!("session actor '{}' dropped action result", self.id))?
     }
 
-    pub(crate) async fn drain_action_completions(&self) -> Vec<String> {
+    pub(crate) async fn drain_action_completions(&self) -> Vec<ActionResult> {
         let (reply, rx) = oneshot::channel();
         if self
             .send(ActorCommand::DrainActionCompletions { reply })
@@ -600,7 +618,7 @@ impl SessionActorHandle {
 
 struct ActorState {
     info: SessionInfo,
-    action_completions: Vec<String>,
+    action_completions: Vec<ActionResult>,
     action_completion_chars: usize,
     interactions: Vec<InteractionRequest>,
     follow_up_queue: Vec<FollowUp>,
@@ -775,10 +793,15 @@ pub(crate) fn spawn(db: Arc<Database>, info: SessionInfo) -> SessionActorHandle 
                         item.is_answer = true;
                     }
                 }
-                ActorCommand::AddActionCompletion { text, reply } => {
+                ActorCommand::AddActionCompletion {
+                    action_result_id,
+                    text,
+                    reply,
+                } => {
                     let result = queue_action_completion(
                         &mut state.action_completions,
                         &mut state.action_completion_chars,
+                        action_result_id,
                         text,
                     );
                     let _ = reply.send(result);
@@ -1131,14 +1154,24 @@ fn queue_steering(
 }
 
 fn queue_action_completion(
-    queue: &mut Vec<String>,
+    queue: &mut Vec<ActionResult>,
     queue_chars: &mut usize,
+    action_result_id: String,
     text: String,
 ) -> anyhow::Result<()> {
     validate_context_item(&text, &[])?;
+    if queue
+        .iter()
+        .any(|item| item.action_result_id == action_result_id)
+    {
+        return Ok(());
+    }
     let chars = text.chars().count();
     ensure_queue_capacity(queue.len(), *queue_chars, 0, chars, 0, "action result")?;
-    queue.push(text);
+    queue.push(ActionResult {
+        action_result_id,
+        text,
+    });
     *queue_chars += chars;
     Ok(())
 }
@@ -1262,18 +1295,19 @@ fn take_follow_ups(
 }
 
 fn take_action_results(
-    queue: &mut Vec<String>,
+    queue: &mut Vec<ActionResult>,
     queue_chars: &mut usize,
     budget: &mut ContextBatchBudget,
-) -> Vec<String> {
+) -> Vec<ActionResult> {
     let mut count = 0;
-    while count < queue.len() && fits_budget(budget, queue[count].chars().count(), 0) {
+    while count < queue.len() && fits_budget(budget, queue[count].text.chars().count(), 0) {
         budget.items += 1;
-        budget.chars += queue[count].chars().count();
+        budget.chars += queue[count].text.chars().count();
         count += 1;
     }
     let taken: Vec<_> = queue.drain(..count).collect();
-    *queue_chars = queue_chars.saturating_sub(taken.iter().map(|item| item.chars().count()).sum());
+    *queue_chars =
+        queue_chars.saturating_sub(taken.iter().map(|item| item.text.chars().count()).sum());
     taken
 }
 

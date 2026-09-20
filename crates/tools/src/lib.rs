@@ -585,19 +585,31 @@ impl ToolsManager {
             let after = self.catalog_version_for_session(session_id).await;
 
             let mut tools = HashMap::with_capacity(global.len() + session.len());
+            let global_defs = global.iter().map(|tool| tool.tool_def()).collect();
+            let session_defs = session.iter().map(|tool| tool.tool_def()).collect();
             for tool in global {
                 tools.insert(tool.name(), tool);
             }
             for tool in session {
                 tools.insert(tool.name(), tool);
             }
-            snapshot = Some((after, tools));
+            let max = self
+                .core
+                .context_limits
+                .read()
+                .await
+                .max_tools_per_request
+                .max(1);
+            let provider_definitions =
+                select_tool_defs_for_budget(global_defs, session_defs, max).selected;
+            snapshot = Some((after, tools, provider_definitions));
             if before == after {
                 break;
             }
         }
-        let (version, tools) = snapshot.expect("tool catalog snapshot attempt must produce a view");
-        ToolCatalogSnapshot::new(version, tools)
+        let (version, tools, provider_definitions) =
+            snapshot.expect("tool catalog snapshot attempt must produce a view");
+        ToolCatalogSnapshot::new_with_definitions(version, tools, provider_definitions)
     }
 
     /// Replace the shared LlmRouter and rebuild the catalog so tools (e.g.
@@ -2082,6 +2094,57 @@ mod tests {
                 .stable_name,
             "ask"
         );
+    }
+
+    #[tokio::test]
+    async fn tool_catalog_snapshot_keeps_provider_surface_stable_after_drift() {
+        let mgr = ToolsManager::new();
+        mgr.rebuild_catalog().await;
+        let before = mgr.tool_catalog_snapshot("ses-drift").await;
+        assert!(
+            before
+                .provider_definitions()
+                .iter()
+                .all(|definition| definition.name != "drift_only")
+        );
+
+        struct DriftTool;
+        #[async_trait::async_trait]
+        impl Tool for DriftTool {
+            fn name(&self) -> String {
+                "drift_only".into()
+            }
+            fn description(&self) -> String {
+                "catalog drift probe".into()
+            }
+            fn risk_level(&self, _: &Value) -> RiskLevel {
+                RiskLevel::Safe
+            }
+            fn input_schema(&self) -> Value {
+                json!({"type": "object"})
+            }
+            async fn execute(&self, _: Value, _: CancellationToken) -> anyhow::Result<ToolResult> {
+                Ok(ToolResult::ok(json!({})))
+            }
+        }
+
+        mgr.register_for_session("ses-drift", Arc::new(DriftTool))
+            .await;
+        let after = mgr.tool_catalog_snapshot("ses-drift").await;
+        assert!(
+            after
+                .provider_definitions()
+                .iter()
+                .any(|definition| definition.name == "drift_only")
+        );
+        assert!(
+            before
+                .provider_definitions()
+                .iter()
+                .all(|definition| definition.name != "drift_only"),
+            "the prepared Turn snapshot must not change when the registry mutates"
+        );
+        assert_ne!(before.version(), after.version());
     }
 
     #[tokio::test]

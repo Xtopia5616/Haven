@@ -9,6 +9,7 @@
 
 use super::context::PendingContextBatch;
 use super::*;
+use haven_common::types::InjectSource;
 
 impl ReActEngine {
     /// Assemble and project every turn-start context source: steering
@@ -58,20 +59,17 @@ impl ReActEngine {
             inbox_claim,
         }: PendingContextBatch,
     ) -> anyhow::Result<bool> {
-        if clears_ask {
-            self.executor
-                .clear_interactions_persisted(
-                    &ctx.session_id,
-                    Some(crate::interaction::InteractionKind::Ask),
-                )
-                .await?;
-        }
         let mut pending_events = Vec::with_capacity(items.len());
         let mut pending_message_ids = std::collections::HashSet::new();
         for item in items {
             let already_applied = item.message_id.as_deref().is_some_and(|message_id| {
-                state.has_applied_inject(message_id)
-                    || !pending_message_ids.insert(message_id.to_string())
+                let duplicate = state.has_applied_inject(message_id)
+                    || !pending_message_ids.insert(message_id.to_string());
+                if duplicate && item.source == InjectSource::ActionResult {
+                    self.metrics
+                        .increment(MetricsCounter::ActionResultDuplicates);
+                }
+                duplicate
             });
             if !already_applied {
                 pending_events.push(TranscriptEvent::UserInject {
@@ -86,12 +84,27 @@ impl ReActEngine {
         self.apply_transcript_batch(ctx, pending_events, state)
             .await?;
 
+        // The answer is now durable and replayable.  Only then remove the ask
+        // gate; if either transcript persistence or interaction persistence
+        // fails, recovery still sees the question and the stable message id
+        // prevents a successful retry from double-projecting the answer.
+        if clears_ask {
+            self.executor
+                .clear_interactions_persisted(
+                    &ctx.session_id,
+                    Some(crate::interaction::InteractionKind::Ask),
+                )
+                .await?;
+        }
+
         if let Some(claim) = inbox_claim {
             if self
                 .save_snapshot_with_branches(&ctx.session_id, state, ctx.step_num)
                 .await
             {
-                let _ = claim.complete().await;
+                if !claim.complete().await {
+                    self.metrics.increment(MetricsCounter::InboxAckFailures);
+                }
             } else {
                 tracing::warn!(
                     "leaving cross-session inbox claim unacknowledged for {} because its snapshot was not durable",

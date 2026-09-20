@@ -32,7 +32,7 @@ const LATENCY_BUCKETS_MS: [u64; 16] = [
 ];
 
 const PHASE_COUNT: usize = 12;
-const COUNTER_COUNT: usize = 5;
+const COUNTER_COUNT: usize = 12;
 const GAUGE_COUNT: usize = 1;
 
 /// ReAct boundaries whose latency is useful for the first performance baseline.
@@ -153,6 +153,13 @@ pub(crate) enum Counter {
     StreamChunks,
     ChunkDrops,
     CheckpointPending,
+    BranchPointFailures,
+    SnapshotFailures,
+    ProjectionFailures,
+    InboxAckFailures,
+    ActionResultRetries,
+    ActionResultDuplicates,
+    WebSearchDrops,
 }
 
 impl Counter {
@@ -163,6 +170,13 @@ impl Counter {
             Self::StreamChunks => 2,
             Self::ChunkDrops => 3,
             Self::CheckpointPending => 4,
+            Self::BranchPointFailures => 5,
+            Self::SnapshotFailures => 6,
+            Self::ProjectionFailures => 7,
+            Self::InboxAckFailures => 8,
+            Self::ActionResultRetries => 9,
+            Self::ActionResultDuplicates => 10,
+            Self::WebSearchDrops => 11,
         }
     }
 }
@@ -175,6 +189,13 @@ pub struct CounterSnapshot {
     pub stream_chunks: u64,
     pub chunk_drops: u64,
     pub checkpoint_pending: u64,
+    pub branch_point_failures: u64,
+    pub snapshot_failures: u64,
+    pub projection_failures: u64,
+    pub inbox_ack_failures: u64,
+    pub action_result_retries: u64,
+    pub action_result_duplicates: u64,
+    pub web_search_drops: u64,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
@@ -255,6 +276,20 @@ impl ReActMetrics {
                 stream_chunks: self.counters[Counter::StreamChunks.index()].load(Ordering::Relaxed),
                 chunk_drops: self.counters[Counter::ChunkDrops.index()].load(Ordering::Relaxed),
                 checkpoint_pending: self.counters[Counter::CheckpointPending.index()]
+                    .load(Ordering::Relaxed),
+                branch_point_failures: self.counters[Counter::BranchPointFailures.index()]
+                    .load(Ordering::Relaxed),
+                snapshot_failures: self.counters[Counter::SnapshotFailures.index()]
+                    .load(Ordering::Relaxed),
+                projection_failures: self.counters[Counter::ProjectionFailures.index()]
+                    .load(Ordering::Relaxed),
+                inbox_ack_failures: self.counters[Counter::InboxAckFailures.index()]
+                    .load(Ordering::Relaxed),
+                action_result_retries: self.counters[Counter::ActionResultRetries.index()]
+                    .load(Ordering::Relaxed),
+                action_result_duplicates: self.counters[Counter::ActionResultDuplicates.index()]
+                    .load(Ordering::Relaxed),
+                web_search_drops: self.counters[Counter::WebSearchDrops.index()]
                     .load(Ordering::Relaxed),
             },
             gauges: GaugeSnapshot {

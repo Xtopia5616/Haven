@@ -1,6 +1,6 @@
 //! Session context queues and the single interaction registry.
 
-use super::actor::ContextQueueStats;
+use super::actor::{ActionResult, ContextQueueStats};
 use super::*;
 
 /// Context selected for the next model request.
@@ -8,7 +8,7 @@ use super::*;
 pub(crate) struct ReactContextBatch {
     pub(crate) steering: Vec<FollowUp>,
     pub(crate) follow_ups: Vec<FollowUp>,
-    pub(crate) action_results: Vec<String>,
+    pub(crate) action_results: Vec<ActionResult>,
 }
 
 impl SessionSupervisor {
@@ -44,9 +44,10 @@ impl SessionSupervisor {
             .actor_for(session_id)
             .await
             .ok_or_else(|| anyhow::anyhow!("session '{}' not found", session_id))?;
-        actor
-            .clear_interactions(Some(crate::interaction::InteractionKind::Ask))
-            .await;
+        // Keep the ask interaction pending until the answer has crossed the
+        // durable transcript boundary.  Clearing here used to make a full
+        // queue or a later SQLite error look like a successfully answered
+        // question.
         actor
             .queue_follow_up(text, attachments, true, message_id)
             .await
@@ -85,17 +86,39 @@ impl SessionSupervisor {
         }
     }
 
-    pub async fn add_action_completion(&self, session_id: &str, text: &str) -> anyhow::Result<()> {
+    pub async fn add_action_completion(
+        &self,
+        session_id: &str,
+        action_result_id: &str,
+        text: &str,
+    ) -> anyhow::Result<()> {
+        self.add_action_completion_with_id(session_id, action_result_id.to_string(), text)
+            .await
+    }
+
+    pub async fn add_action_completion_with_id(
+        &self,
+        session_id: &str,
+        action_result_id: String,
+        text: &str,
+    ) -> anyhow::Result<()> {
         let actor = self
             .actor_for(session_id)
             .await
             .ok_or_else(|| anyhow::anyhow!("session '{}' not found", session_id))?;
-        actor.add_action_completion(text.to_string()).await
+        actor
+            .add_action_completion(action_result_id, text.to_string())
+            .await
     }
 
     pub async fn drain_action_completions(&self, session_id: &str) -> Vec<String> {
         match self.actor_for(session_id).await {
-            Some(actor) => actor.drain_action_completions().await,
+            Some(actor) => actor
+                .drain_action_completions()
+                .await
+                .into_iter()
+                .map(|item| item.text)
+                .collect(),
             None => Vec::new(),
         }
     }
@@ -195,12 +218,34 @@ impl SessionSupervisor {
         session_id: &str,
         kind: Option<crate::interaction::InteractionKind>,
     ) -> anyhow::Result<()> {
-        self.clear_interactions(session_id, kind).await;
-        self.persist_interactions(session_id).await
+        let Some(actor) = self.actor_for(session_id).await else {
+            return Ok(());
+        };
+        let current = actor.interactions(None, false).await;
+        let retained = current
+            .into_iter()
+            .filter(|request| kind.is_none_or(|wanted| request.kind != wanted))
+            .collect();
+        // Persist the post-clear view before mutating the actor.  A snapshot
+        // failure therefore leaves the in-memory Ask gate intact and the
+        // answer can be retried without losing the question.
+        self.persist_interactions_snapshot(session_id, retained)
+            .await?;
+        actor.clear_interactions(kind).await;
+        Ok(())
     }
 
     pub(crate) async fn persist_interactions(&self, session_id: &str) -> anyhow::Result<()> {
         let interactions = self.interaction_requests(session_id).await;
+        self.persist_interactions_snapshot(session_id, interactions)
+            .await
+    }
+
+    async fn persist_interactions_snapshot(
+        &self,
+        session_id: &str,
+        interactions: Vec<crate::interaction::InteractionRequest>,
+    ) -> anyhow::Result<()> {
         let sid = session_id.to_string();
         self.db
             .run_blocking(move |db| {

@@ -80,6 +80,7 @@ impl SnapshotStore {
     }
 
     /// Step-boundary hook: return whether a write is due and, if so, record it.
+    #[cfg(test)]
     pub fn on_step_boundary(&mut self, session_id: &str, step: u32, force: bool) -> bool {
         let due = self.should_write(session_id, step, force);
         if due {
@@ -495,7 +496,8 @@ impl ReActEngine {
                 final_text.chars().count()
             );
             if let Some(step) = branch_point_step {
-                self.save_branch_point(session_id, state, step, false).await;
+                self.save_branch_point(session_id, state, step, false)
+                    .await?;
             }
             if !self
                 .save_snapshot_with_branches(session_id, state, snapshot_step)
@@ -742,6 +744,29 @@ impl ReActEngine {
         error_partial_message_ids: Option<&[String]>,
         clear_confirm_interactions: bool,
     ) -> bool {
+        let result = self
+            .write_snapshot_with_error_partials(
+                session_id,
+                state,
+                step_number,
+                error_partial_message_ids,
+                clear_confirm_interactions,
+            )
+            .await;
+        if !result {
+            self.metrics.increment(MetricsCounter::SnapshotFailures);
+        }
+        result
+    }
+
+    async fn write_snapshot_with_error_partials(
+        &self,
+        session_id: &str,
+        state: &ReActState,
+        step_number: u32,
+        error_partial_message_ids: Option<&[String]>,
+        clear_confirm_interactions: bool,
+    ) -> bool {
         // Some lifecycle callers do not carry a provider run id (for example
         // a pause checkpoint). The step/session fields remain exact; run_id=0
         // explicitly denotes that non-run-owned checkpoint path.
@@ -897,7 +922,8 @@ impl ReActEngine {
         // skip their message truncation.
         let branch_point = self
             .save_branch_point(&ctx.session_id, state, ctx.step_num, true)
-            .await;
+            .await
+            .is_ok();
 
         let thought_text = partial_thought.lock().unwrap().clone();
         let reasoning_text = partial_reasoning.lock().unwrap().clone();
@@ -1105,19 +1131,20 @@ impl ReActEngine {
     /// Save a branch point at the current step before tool execution (§2).
     ///
     /// The DB snapshot write is throttled via [`SnapshotStore`] on the happy
-    /// path (`force = false`): the in-memory branch-point map is always
-    /// current, and every pause/error/final path plus every cancellation exit
-    /// writes unconditionally. Error paths MUST pass `force = true` (e.g.
+    /// path (`force = false`): every pause/error/final path plus every
+    /// cancellation exit writes unconditionally. Error paths MUST pass
+    /// `force = true` (e.g.
     /// `persist_partial_on_error`): `continue_session` / `rollback_session`
     /// locate the failed step's branch point in the DB snapshot, and a stale
-    /// row would silently skip their message truncation.
+    /// row would silently skip their message truncation. The durable append
+    /// happens before the in-memory cache is updated; all failures propagate.
     pub(super) async fn save_branch_point(
         &self,
         session_id: &str,
         state: &mut ReActState,
         step_number: u32,
         force: bool,
-    ) -> bool {
+    ) -> anyhow::Result<()> {
         // Mid-run (`force=false`): prefer the in-process cache filled by
         // persist paths so throttled steps skip SQLite. Force paths
         // (pause/error/cancel) always re-read so the snapshot cutoff matches
@@ -1140,31 +1167,28 @@ impl ReActEngine {
                     error = %error,
                     "refusing to write branch point without a durable message cutoff"
                 );
-                return false;
+                return Err(error);
             }
         };
         let last_msg_at_for_event = last_msg_at.clone();
         // Phase 8 / F4: store only an index into the parent events vec — no
         // Arc copies of transcript state.
-        state.branch_points.insert(
+        let branch_point = BranchPoint {
+            event_cursor: state.events.len(),
             step_number,
-            BranchPoint {
-                event_cursor: state.events.len(),
-                step_number,
-                last_msg_at,
-            },
-        );
+            last_msg_at,
+        };
         // Branch metadata is part of the durable timeline as well. This lets
         // rollback recover its target without requiring the snapshot cache;
         // the cache still stores the same map for cheap hot-path access.
         let store = self.event_store.clone();
         let sid = session_id.to_string();
         let event_cursor = state.events.len();
-        let branch_ok = if let Err(error) = self
+        if let Err(error) = self
             .db
             .run_blocking(move |db| {
                 if db.get_session(&sid)?.is_none() {
-                    return Ok(());
+                    anyhow::bail!("session '{}' disappeared before branch-point append", sid);
                 }
                 store.append_branch_point(
                     &sid,
@@ -1183,30 +1207,53 @@ impl ReActEngine {
                 error = %error,
                 "failed to append durable branch point"
             );
-            false
-        } else {
-            true
-        };
+            self.metrics.increment(MetricsCounter::BranchPointFailures);
+            return Err(error);
+        }
+
+        // The in-memory index is a cache of the durable marker.  Publishing it
+        // only after the append succeeds keeps rollback fail-closed when SQLite
+        // is unavailable.
+        state.branch_points.insert(step_number, branch_point);
         // The throttle marker guard is confined to this block so it is always
         // dropped before the write's await.
         let due = {
-            let mut store = self.snapshot_store.lock().unwrap();
-            store.on_step_boundary(session_id, step_number, force)
+            let store = self.snapshot_store.lock().unwrap();
+            store.should_write(session_id, step_number, force)
         };
         if due {
-            branch_ok
-                && self
-                    .save_snapshot_with_branches(session_id, state, step_number)
-                    .await
+            if !self
+                .save_snapshot_with_branches(session_id, state, step_number)
+                .await
+            {
+                self.metrics.increment(MetricsCounter::SnapshotFailures);
+                anyhow::bail!(
+                    "failed to durably checkpoint branch point for session '{}' at step {}",
+                    session_id,
+                    step_number
+                );
+            }
+            self.snapshot_store
+                .lock()
+                .unwrap()
+                .record_write(session_id, step_number);
         } else {
-            branch_ok
+            // Nothing else to persist for this checkpoint.
         }
+        Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{RecoveryPersistenceResult, SnapshotStore};
+    use super::{ReActEngine, ReActState, RecoveryPersistenceResult, SnapshotStore};
+    use crate::session::SessionSupervisor;
+    use haven_common::config::{ContextLimitsConfig, RouterConfig};
+    use haven_llm::LlmRouter;
+    use haven_memory::Database;
+    use haven_tools::ToolsManager;
+    use std::collections::HashMap;
+    use std::sync::Arc;
 
     #[test]
     fn recovery_discards_scratch_only_after_every_projection_succeeds() {
@@ -1278,5 +1325,51 @@ mod tests {
         assert!(store.on_step_boundary("s", 1, false));
         assert!(!store.should_write("s", 2, false));
         assert!(store.should_write("s", 2, true));
+    }
+
+    #[tokio::test]
+    async fn branch_point_fault_does_not_publish_in_memory_cache() {
+        let path =
+            std::env::temp_dir().join(format!("haven_branch_fault_{}.db", uuid::Uuid::new_v4()));
+        let db = Arc::new(Database::open(&path).unwrap());
+        let session = db.create_session("input", "input").unwrap();
+        db.conn()
+            .execute_batch(
+                "CREATE TRIGGER branch_point_fault
+                 BEFORE INSERT ON session_events
+                 WHEN NEW.event_type = 'branch_point'
+                 BEGIN SELECT RAISE(ABORT, 'injected branch-point failure'); END;",
+            )
+            .unwrap();
+        let executor = Arc::new(SessionSupervisor::new(
+            db.clone(),
+            Arc::new(ToolsManager::new()),
+            1,
+        ));
+        let engine = ReActEngine::new(
+            Arc::new(LlmRouter::new(RouterConfig::default())),
+            executor,
+            db,
+            8,
+            ContextLimitsConfig::default(),
+        );
+        let mut state = ReActState::new(Vec::new(), Vec::new(), HashMap::new());
+
+        let error = engine
+            .save_branch_point(&session.id, &mut state, 3, true)
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("injected branch-point failure"));
+        assert!(state.branch_points.is_empty());
+        assert!(
+            engine
+                .event_store
+                .read_active_branch_points(&session.id)
+                .unwrap()
+                .is_empty()
+        );
+        drop(engine);
+        let _ = std::fs::remove_file(path);
     }
 }

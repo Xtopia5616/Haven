@@ -1394,6 +1394,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn persisted_interaction_clear_is_fail_closed_on_snapshot_error() {
+        let db = temp_db();
+        let tools = Arc::new(ToolsManager::new());
+        let exec = SessionExecutor::new(db.clone(), tools, 3);
+        let session = exec.create_session("test").await.unwrap();
+        exec.request_interaction(crate::interaction::InteractionRequest::ask(
+            &session.id,
+            "the answer",
+            Vec::new(),
+            vec!["step-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into()],
+        ))
+        .await
+        .unwrap();
+        db.save_react_state(
+            &session.id,
+            &serde_json::to_string(&crate::types::ReActSnapshot::default()).unwrap(),
+        )
+        .unwrap();
+        exec.persist_interactions(&session.id).await.unwrap();
+        db.conn()
+            .execute_batch(
+                "CREATE TRIGGER interaction_snapshot_fault
+                 BEFORE UPDATE OF react_state ON sessions
+                 BEGIN SELECT RAISE(ABORT, 'injected interaction snapshot failure'); END;",
+            )
+            .unwrap();
+
+        let error = exec
+            .clear_interactions_persisted(
+                &session.id,
+                Some(crate::interaction::InteractionKind::Ask),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("injected interaction snapshot failure")
+        );
+        assert!(
+            !exec
+                .pending_interactions(&session.id, crate::interaction::InteractionKind::Ask)
+                .await
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
     async fn add_and_get_follow_ups_with_attachments() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
@@ -1887,10 +1935,10 @@ mod tests {
         assert!(exec.drain_action_completions(&session.id).await.is_empty());
 
         let _ = exec
-            .add_action_completion(&session.id, "action-1 done")
+            .add_action_completion(&session.id, "act-1", "action-1 done")
             .await;
         let _ = exec
-            .add_action_completion(&session.id, "action-2 failed")
+            .add_action_completion(&session.id, "act-2", "action-2 failed")
             .await;
 
         let drained = exec.drain_action_completions(&session.id).await;
@@ -1939,7 +1987,7 @@ mod tests {
         exec.add_follow_up(&session.id, "follow-up").await.unwrap();
         exec.add_steering(&session.id, "steering").await.unwrap();
         let _ = exec
-            .add_action_completion(&session.id, "action result")
+            .add_action_completion(&session.id, "act-result", "action result")
             .await;
 
         let batch = exec.drain_react_context(&session.id).await;
@@ -1952,7 +2000,14 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["steering"]
         );
-        assert_eq!(batch.action_results, vec!["action result"]);
+        assert_eq!(
+            batch
+                .action_results
+                .iter()
+                .map(|item| item.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["action result"]
+        );
 
         let batch = exec.drain_react_context(&session.id).await;
         assert_eq!(
@@ -2016,7 +2071,9 @@ mod tests {
         exec.update_session_status(&session.id, SessionStatus::Paused)
             .await
             .unwrap();
-        let _ = exec.add_action_completion(&session.id, "stranded").await;
+        let _ = exec
+            .add_action_completion(&session.id, "act-stranded", "stranded")
+            .await;
         let rx = exec.subscribe_status(&session.id).await;
         let _ = rx; // a subscriber must not keep the session alive after removal
 

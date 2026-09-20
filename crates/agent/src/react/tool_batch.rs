@@ -603,9 +603,10 @@ impl ReActEngine {
         self.executor.mark_user_queues_as_answer(session_id).await;
         let has_answer = self.executor.has_pending_context(session_id).await;
         let status = if has_answer {
-            self.executor
-                .clear_interactions(session_id, Some(crate::interaction::InteractionKind::Ask))
-                .await;
+            // Keep the ask gate until the queued answer crosses the durable
+            // transcript boundary at the next turn. Ingress normally clears
+            // it after durable user-seed persistence; this path must not
+            // create a second in-memory-before-snapshot cleanup window.
             SessionStatus::Pending
         } else {
             self.executor.request_interaction(pending.clone()).await?;

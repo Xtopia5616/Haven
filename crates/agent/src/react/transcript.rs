@@ -248,20 +248,15 @@ impl TranscriptEvent {
     }
 }
 
-fn normalize_transcript_event(event: TranscriptEvent) -> TranscriptEvent {
+fn normalize_transcript_event(event: TranscriptEvent) -> anyhow::Result<TranscriptEvent> {
     match event {
         TranscriptEvent::UserInject {
             source: InjectSource::ActionResult,
-            text,
-            attachments,
+            text: _,
+            attachments: _,
             message_id: None,
-        } => TranscriptEvent::UserInject {
-            source: InjectSource::ActionResult,
-            text,
-            attachments,
-            message_id: Some(haven_common::types::new_id("msg")),
-        },
-        event => event,
+        } => anyhow::bail!("ActionResult transcript injection requires a stable message_id"),
+        event => Ok(event),
     }
 }
 
@@ -301,7 +296,7 @@ impl ReActEngine {
         Option<TranscriptRecord>,
         TranscriptBatch,
     )> {
-        let event = normalize_transcript_event(event);
+        let event = normalize_transcript_event(event)?;
         let record = event.to_record(ctx.step_num);
         let mut batch = self.build_transcript_batch(ctx, &event, &record).await?;
         let media_record = match &event {
@@ -456,8 +451,13 @@ impl ReActEngine {
         if let Some(created_at) = write_result.message_created_at.last() {
             self.note_last_msg_at(&ctx.session_id, Some(created_at.clone()));
         }
-        self.apply_transcript_projection(ctx, event, record, state, media_record)
-            .await
+        let result = self
+            .apply_transcript_projection(ctx, event, record, state, media_record)
+            .await;
+        if result.is_err() {
+            self.metrics.increment(MetricsCounter::ProjectionFailures);
+        }
+        result
     }
 
     /// Batch context injections in one event/projection transaction. The
@@ -502,8 +502,13 @@ impl ReActEngine {
             self.note_last_msg_at(&ctx.session_id, Some(created_at.clone()));
         }
         for (event, record, media_record) in projected {
-            self.apply_transcript_projection(ctx, event, record, state, media_record)
-                .await?;
+            let result = self
+                .apply_transcript_projection(ctx, event, record, state, media_record)
+                .await;
+            if result.is_err() {
+                self.metrics.increment(MetricsCounter::ProjectionFailures);
+            }
+            result?;
         }
         Ok(())
     }
@@ -836,7 +841,7 @@ mod tests {
                     source: InjectSource::ActionResult,
                     text: body.into(),
                     attachments: vec![],
-                    message_id: None,
+                    message_id: Some(crate::react::action_result_message_id("act-1")),
                 },
                 &mut state,
             )
@@ -874,7 +879,7 @@ mod tests {
                     source: InjectSource::ActionResult,
                     text: body.into(),
                     attachments: vec![],
-                    message_id: None,
+                    message_id: Some(crate::react::action_result_message_id("act-9")),
                 },
                 &mut state,
             )

@@ -333,6 +333,7 @@ impl SessionCatalog {
 pub struct ToolCatalogSnapshot {
     version: (u64, u64),
     tools: Arc<HashMap<String, SnapshotTool>>,
+    provider_definitions: Arc<Vec<ToolDef>>,
 }
 
 struct SnapshotTool {
@@ -341,7 +342,17 @@ struct SnapshotTool {
 }
 
 impl ToolCatalogSnapshot {
+    #[allow(dead_code)]
     pub(crate) fn new(version: (u64, u64), tools: HashMap<String, ToolBox>) -> Self {
+        let provider_definitions = tools.values().map(|tool| tool.tool_def()).collect();
+        Self::new_with_definitions(version, tools, provider_definitions)
+    }
+
+    pub(crate) fn new_with_definitions(
+        version: (u64, u64),
+        tools: HashMap<String, ToolBox>,
+        provider_definitions: Vec<ToolDef>,
+    ) -> Self {
         let tools = tools
             .into_iter()
             .map(|(name, tool)| {
@@ -352,6 +363,7 @@ impl ToolCatalogSnapshot {
         Self {
             version,
             tools: Arc::new(tools),
+            provider_definitions: Arc::new(provider_definitions),
         }
     }
 
@@ -365,6 +377,14 @@ impl ToolCatalogSnapshot {
 
     pub fn is_empty(&self) -> bool {
         self.tools.is_empty()
+    }
+
+    /// The provider-facing schema selected from the same immutable tool view
+    /// as validation and execution.  Keeping this on the snapshot prevents a
+    /// catalog mutation between the LLM request and the tool batch from
+    /// changing the advertised surface under the same turn.
+    pub fn provider_definitions(&self) -> &[ToolDef] {
+        self.provider_definitions.as_slice()
     }
 
     pub fn get(&self, name: &str) -> Option<&ToolBox> {

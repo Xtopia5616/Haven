@@ -155,6 +155,9 @@ pub struct ContextLimitsConfig {
     /// timeout fires.
     pub file_summary_timeout_secs: u64,
     // —— agent loop behavior caps (were hardcoded constants in the ReAct loop) ——
+    /// End-to-end wall-clock budget for one model/tool turn.  Provider retry,
+    /// compaction, tool waits, and durable writes all share this boundary.
+    pub turn_deadline_secs: u64,
     /// How many times a text-only response that looks cut off / mid-session is
     /// retried with a continuation nudge before it is accepted as a final
     /// answer. Bounded so a model that keeps refusing to call a tool cannot
@@ -278,6 +281,7 @@ impl Default for ContextLimitsConfig {
             max_known_facts: 40,
             sanitize_field_max_chars: 256,
             file_summary_timeout_secs: 120,
+            turn_deadline_secs: 300,
             cut_off_retries: 2,
             empty_response_max_retries: 3,
             empty_response_retry_delay_ms: 1500,

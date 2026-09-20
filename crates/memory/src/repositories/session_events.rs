@@ -565,8 +565,15 @@ impl SessionEventStore {
     /// cursor; the underlying append-only rows remain available for audit and
     /// future branch tooling.
     pub fn read_active(&self, session_id: &str) -> anyhow::Result<Vec<SessionEvent>> {
+        let started = Instant::now();
+        // A compact_summary is a durable active-root marker.  The audit log
+        // before it remains readable through read_all, but normal recovery
+        // only needs the root and its suffix.  Fall back to a full replay if
+        // an unusual late rollback targets before that root; correctness wins
+        // over the optimization for that branch.
+        let after_sequence = self.active_replay_boundary(session_id)?;
         let mut active = Vec::new();
-        for event in self.read_all(session_id)? {
+        for event in self.read_from(session_id, after_sequence)? {
             anyhow::ensure!(
                 event.event_version == CURRENT_EVENT_VERSION,
                 "unsupported session event version {} at sequence {}",
@@ -596,7 +603,49 @@ impl SessionEventStore {
                 active.push(event);
             }
         }
+        tracing::debug!(
+            session_id,
+            after_sequence,
+            active_events = active.len(),
+            scan_ms = started.elapsed().as_millis() as u64,
+            "active session event replay scanned durable suffix"
+        );
         Ok(active)
+    }
+
+    fn active_replay_boundary(&self, session_id: &str) -> anyhow::Result<i64> {
+        let conn = self.db.conn();
+        let root = conn.query_row(
+            "SELECT MAX(sequence) FROM session_events
+                 WHERE session_id = ?1 AND event_type = ?2
+                   AND json_extract(payload, '$.type') = 'compact_summary'",
+            rusqlite::params![session_id, TRANSCRIPT_EVENT_TYPE],
+            |row| row.get::<_, Option<i64>>(0),
+        )?;
+        let Some(root) = root else {
+            return Ok(0);
+        };
+
+        let mut statement = conn.prepare(
+            "SELECT payload FROM session_events
+             WHERE session_id = ?1 AND sequence > ?2 AND event_type = ?3
+             ORDER BY sequence ASC",
+        )?;
+        let rollback_payloads = statement.query_map(
+            rusqlite::params![session_id, root, TIMELINE_ROLLBACK_EVENT_TYPE],
+            |row| row.get::<_, String>(0),
+        )?;
+        for payload in rollback_payloads {
+            let payload = payload?;
+            let target = serde_json::from_str::<serde_json::Value>(&payload)?
+                .get("to_sequence")
+                .and_then(serde_json::Value::as_i64)
+                .ok_or_else(|| anyhow::anyhow!("rollback event has no to_sequence"))?;
+            if target < root {
+                return Ok(0);
+            }
+        }
+        Ok(root.saturating_sub(1))
     }
 
     pub fn read_active_transcript(&self, session_id: &str) -> anyhow::Result<Vec<SessionEvent>> {
@@ -880,6 +929,74 @@ mod tests {
         assert_eq!(active[0].sequence, 1);
         assert_eq!(active[1].payload, r#"{"type":"replacement"}"#);
         assert_eq!(store.read_all(&session_id).unwrap().len(), 4);
+    }
+
+    #[test]
+    fn compact_summary_is_a_durable_active_replay_boundary() {
+        let (_db, store, session_id) = store();
+        store
+            .append_transcript(&session_id, r#"{"type":"old","n":1}"#, 1, 1)
+            .unwrap();
+        store
+            .append_transcript(&session_id, r#"{"type":"old","n":2}"#, 1, 2)
+            .unwrap();
+        let root = store
+            .append_transcript(
+                &session_id,
+                r#"{"type":"compact_summary","summary":"root"}"#,
+                1,
+                3,
+            )
+            .unwrap();
+        store
+            .append_transcript(&session_id, r#"{"type":"new","n":4}"#, 1, 4)
+            .unwrap();
+
+        let active = store.read_active_transcript(&session_id).unwrap();
+        assert_eq!(active.len(), 2);
+        assert_eq!(active[0].sequence, root.sequence);
+        assert_eq!(active[1].payload, r#"{"type":"new","n":4}"#);
+        assert_eq!(store.read_all(&session_id).unwrap().len(), 4);
+    }
+
+    /// Manual replay benchmark for the recovery boundary.  It is ignored in
+    /// the normal suite because the 100k case intentionally exercises SQLite
+    /// write volume; run it when changing event-log storage or compaction.
+    #[test]
+    #[ignore]
+    fn active_replay_boundary_benchmark_1k_10k_100k() {
+        for count in [1_000usize, 10_000, 100_000] {
+            let (_db, store, session_id) = store();
+            let mut events = Vec::with_capacity(count);
+            for index in 0..count {
+                events.push(SessionEventInput::transcript(
+                    format!(r#"{{"type":"old","n":{index}}}"#),
+                    1,
+                    1,
+                ));
+            }
+            store.append_batch(&session_id, &events).unwrap();
+            store
+                .append_transcript(
+                    &session_id,
+                    r#"{"type":"compact_summary","summary":"root"}"#,
+                    1,
+                    2,
+                )
+                .unwrap();
+            store
+                .append_transcript(&session_id, r#"{"type":"new"}"#, 1, 3)
+                .unwrap();
+            let started = Instant::now();
+            let active = store.read_active(&session_id).unwrap();
+            tracing::info!(
+                count,
+                elapsed_ms = started.elapsed().as_millis(),
+                active = active.len(),
+                "active replay benchmark"
+            );
+            assert_eq!(active.len(), 2);
+        }
     }
 
     #[test]

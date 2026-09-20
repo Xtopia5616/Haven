@@ -269,6 +269,26 @@ impl Database {
         }
     }
 
+    /// Read one message by its durable id.  Action-result delivery uses this
+    /// as the idempotency check when a completion is retried after the
+    /// projection write succeeded but the acknowledgement was lost.
+    pub fn get_message_by_id(
+        &self,
+        session_id: &str,
+        message_id: &str,
+    ) -> anyhow::Result<Option<Message>> {
+        let conn = self.conn();
+        conn.query_row(
+            "SELECT id, session_id, role, content, message_type, created_at, tool_call_id,
+                    attachments, voice, ingress_seq, media_inputs
+             FROM messages WHERE session_id = ?1 AND id = ?2",
+            rusqlite::params![session_id, message_id],
+            map_message_row,
+        )
+        .optional()
+        .map_err(Into::into)
+    }
+
     pub fn get_session_messages(&self, session_id: &str) -> anyhow::Result<Vec<Message>> {
         if let Some(cached) = self.cache_get_messages(session_id) {
             return Ok(cached);

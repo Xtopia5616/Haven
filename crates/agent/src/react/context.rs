@@ -15,6 +15,7 @@ use haven_common::types::{InjectSource, MessageAttachment};
 use haven_memory::Database;
 use haven_tools::MessageClaim;
 use haven_tools::inbox::{Envelope, MessageType};
+use sha2::{Digest, Sha256};
 
 /// Fallback interval (in ReAct steps) for the automatic cross-session inbox
 /// check. Delivery notifications drive the check in-process (immediate), and
@@ -41,6 +42,20 @@ pub(super) struct PendingContext {
     pub(super) text: String,
     pub(super) attachments: Vec<MessageAttachment>,
     pub(super) message_id: Option<String>,
+}
+
+/// Convert the stable action identity into a valid message identity without
+/// minting a new id on every queue retry.  The mapping is deterministic for
+/// both normal `act-*` ids and test/provider ids that use another shape.
+pub(crate) fn action_result_message_id(action_result_id: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(action_result_id.as_bytes());
+    let digest = hasher.finalize();
+    let suffix = digest[..16]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("msg-{suffix}")
 }
 
 /// A cross-session inbox claim that stays live until its projected transcript
@@ -186,12 +201,12 @@ impl ContextSource {
             });
         }
 
-        for text in action_results {
+        for action_result in action_results {
             batch.items.push(PendingContext {
                 source: InjectSource::ActionResult,
-                text,
+                text: action_result.text,
                 attachments: Vec::new(),
-                message_id: None,
+                message_id: Some(action_result_message_id(&action_result.action_result_id)),
             });
         }
 
@@ -451,7 +466,7 @@ pub(crate) fn format_cross_session_inject(env: &Envelope) -> String {
 
 #[cfg(test)]
 mod format_tests {
-    use super::format_cross_session_inject;
+    use super::{action_result_message_id, format_cross_session_inject};
     use haven_tools::inbox::{Envelope, MessageType};
 
     #[test]
@@ -474,6 +489,15 @@ mod format_tests {
         let formatted = format_cross_session_inject(&env);
         assert!(!formatted.contains('\n'));
         assert!(!formatted.contains("(LOW TRUST)"));
+    }
+
+    #[test]
+    fn action_result_message_id_is_stable_and_well_formed() {
+        let first = action_result_message_id("act-result-1");
+        assert_eq!(first, action_result_message_id("act-result-1"));
+        assert!(first.starts_with("msg-"));
+        assert_eq!(first.len(), "msg-".len() + 32);
+        assert_ne!(first, action_result_message_id("act-result-2"));
     }
 }
 

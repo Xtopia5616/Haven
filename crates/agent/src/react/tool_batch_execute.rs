@@ -446,6 +446,7 @@ impl ReActEngine {
         actions: &[Action],
         thought: &Option<String>,
         response: &haven_llm::LlmResponse,
+        catalog: Arc<haven_tools::ToolCatalogSnapshot>,
         cancel_res: &tokio_util::sync::CancellationToken,
         allow_tool_retry: bool,
         tool_retry_budget: &mut ToolRetryBudget,
@@ -454,12 +455,6 @@ impl ReActEngine {
         // from it; validation only reports tool-schema failures against the
         // plan's action indexes and never mints a parallel identity map.
         let plan = ToolBatchPlan::from_actions(actions);
-        let catalog = Arc::new(
-            self.executor
-                .get_tools()
-                .tool_catalog_snapshot(session_id)
-                .await,
-        );
         let validation_failures = if plan.is_empty() {
             Vec::new()
         } else {
@@ -518,7 +513,7 @@ impl ReActEngine {
         }
 
         self.save_branch_point(session_id, state, step_num, false)
-            .await;
+            .await?;
 
         // Phase 5 / E3: pre-check every planned action before spawning.
         // Proceed tools run in parallel; blocked calls become immediate

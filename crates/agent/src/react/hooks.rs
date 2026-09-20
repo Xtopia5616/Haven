@@ -81,6 +81,7 @@ pub(crate) struct AfterLlmInput<'a> {
 #[derive(Default)]
 pub(crate) struct BeforeStepOutput {
     pub(crate) tool_definitions: Option<Arc<Vec<ToolDefinition>>>,
+    pub(crate) tool_catalog: Option<Arc<haven_tools::ToolCatalogSnapshot>>,
 }
 
 /// Extension seam for ReAct domain side effects. Production uses

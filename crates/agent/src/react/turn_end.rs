@@ -103,7 +103,7 @@ impl ReActEngine {
         // the turn-start assembly.
         if self.inject_turn_end_context(ctx, state).await? {
             self.save_branch_point(&ctx.session_id, state, ctx.step_num, false)
-                .await;
+                .await?;
             return Ok(TurnEndOutcome::Continue);
         }
 

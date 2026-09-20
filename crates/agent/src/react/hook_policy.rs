@@ -10,6 +10,7 @@
 use async_trait::async_trait;
 use haven_tools::AuthorizationDecision;
 use serde_json::Value;
+use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
@@ -83,9 +84,15 @@ impl LoopHooks for DefaultHooks {
         // Resolve the exact per-session tool projection before compaction so
         // schema tokens participate in the context decision. The turn reuses
         // the same cached Arc immediately afterwards.
-        let tool_defs = engine
-            .build_tool_definitions_for_session(&ctx.session_id)
-            .await;
+        let tool_catalog = engine.build_tool_catalog_for_session(&ctx.session_id).await;
+        let tool_defs: Arc<Vec<haven_llm::ToolDefinition>> = Arc::new(
+            tool_catalog
+                .provider_definitions()
+                .iter()
+                .cloned()
+                .map(Into::into)
+                .collect(),
+        );
         // Phase 7 / I2: compact is a nested phase under before_step. It is
         // deliberately after all context sources and prompt patches have
         // settled, so compaction and the following RequestContext snapshot
@@ -104,6 +111,7 @@ impl LoopHooks for DefaultHooks {
         }
         Ok(BeforeStepOutput {
             tool_definitions: Some(tool_defs),
+            tool_catalog: Some(tool_catalog),
         })
     }
 

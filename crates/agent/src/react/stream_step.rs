@@ -229,7 +229,9 @@ fn now_millis() -> u64 {
 /// queue, so interleaved provider output keeps its arrival order.
 struct StreamForwarder {
     chunk_tx: crate::event::ChunkSender,
-    ws_tx: tokio::sync::mpsc::UnboundedSender<AgentEvent>,
+    ws_tx: tokio::sync::mpsc::Sender<AgentEvent>,
+    reset_pending: Arc<std::sync::atomic::AtomicBool>,
+    reset_marker: crate::event::ChunkItem,
     consumer: crate::event::ConsumerHandle,
     checkpoint_writer: CheckpointWriter,
     ws_session: tokio::task::JoinHandle<()>,
@@ -279,7 +281,7 @@ impl StreamForwarder {
         // flight. All writes go through the executor's `PartialStore`, which
         // serializes them against promote/discard and drops writes that land
         // after the session was ended/rolled back.
-        let (ws_tx, mut ws_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (ws_tx, mut ws_rx) = tokio::sync::mpsc::channel(256);
         let ws_tx_c = ws_tx.clone();
         let em_ws = ctx.emitter.clone();
         let ws_session = tokio::spawn(async move {
@@ -320,9 +322,6 @@ impl StreamForwarder {
             // A replacement attempt is a fresh stall episode. Do not carry
             // the previous attempt's last-delta timestamp into its watchdog.
             reset_last_chunk.store(0, std::sync::atomic::Ordering::Release);
-            // Do not enqueue the marker here: a full bounded channel could
-            // drop it. The first new delta enqueues Reset before itself and
-            // retries until it succeeds, preserving the ordering guarantee.
             reset_pending_c.store(true, std::sync::atomic::Ordering::Release);
         };
         let checkpoint_state_c = checkpoint_state.clone();
@@ -332,6 +331,9 @@ impl StreamForwarder {
         let reset_session_id_c = session_id_c.clone();
         let reset_thought_mid_c = thought_mid.clone();
         let reset_reasoning_mid_c = reasoning_mid.clone();
+        let reset_marker_session = session_id_c.clone();
+        let reset_marker_thought = thought_mid.clone();
+        let reset_marker_reasoning = reasoning_mid.clone();
         let first_content_seen = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let first_content_seen_c = first_content_seen.clone();
         let stream_started = std::time::Instant::now();
@@ -427,7 +429,7 @@ impl StreamForwarder {
                 last_chunk_c.store(now_millis(), std::sync::atomic::Ordering::Relaxed);
             }
             if let Some(ws) = &c.web_search {
-                let _ = ws_tx_c.send(AgentEvent::WebSearch {
+                let event = AgentEvent::WebSearch {
                     session_id: session_id_c.to_string(),
                     phase: ws.phase.as_str().to_string(),
                     step_number: step_num,
@@ -435,7 +437,24 @@ impl StreamForwarder {
                     call_id: ws.call_id.clone(),
                     action: ws.action.clone(),
                     result: ws.result.clone(),
-                });
+                };
+                match ws_tx_c.try_send(event) {
+                    Ok(()) => {}
+                    Err(tokio::sync::mpsc::error::TrySendError::Full(event)) => {
+                        // Provider callbacks are synchronous. Preserve the
+                        // bounded fast path while handing a rare burst to an
+                        // async sender, so search lifecycle events are never
+                        // silently discarded.
+                        let tx = ws_tx_c.clone();
+                        tokio::spawn(async move {
+                            let _ = tx.send(event).await;
+                        });
+                    }
+                    Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                        metrics_c.increment(MetricsCounter::WebSearchDrops);
+                        tracing::debug!("web-search event consumer closed");
+                    }
+                }
                 last_chunk_c.store(now_millis(), std::sync::atomic::Ordering::Relaxed);
             }
         };
@@ -476,6 +495,14 @@ impl StreamForwarder {
             Self {
                 chunk_tx,
                 ws_tx,
+                reset_pending,
+                reset_marker: crate::event::ChunkItem::Reset {
+                    session_id: reset_marker_session,
+                    thought_message_id: reset_marker_thought,
+                    reasoning_message_id: reset_marker_reasoning,
+                    step_number: step_num,
+                    run_id,
+                },
                 consumer: consumer_handle,
                 checkpoint_writer,
                 ws_session,
@@ -496,6 +523,17 @@ impl StreamForwarder {
             Err(error) if error.is_cancelled() => None,
             Err(error) => Some(anyhow::anyhow!("stream watchdog task failed: {error}")),
         };
+        if self
+            .reset_pending
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+        {
+            // An empty replacement retry still needs to clear the previous
+            // bubble. The coalescing sender retains this control marker even
+            // when the bounded fast-path queue is full.
+            if let Err(error) = self.chunk_tx.try_send(self.reset_marker.clone()) {
+                tracing::debug!(error, "stream reset consumer closed before flush");
+            }
+        }
         drop(self.chunk_tx);
         drop(self.ws_tx);
         if let Some(handle) = self.consumer
@@ -1338,7 +1376,7 @@ impl ReActEngine {
             // Search round: no answer yet — keep the turn open and re-request
             // with the search context in the next input.
             self.save_branch_point(&ctx.session_id, state, ctx.step_num, false)
-                .await;
+                .await?;
             tracing::debug!(
                 "ReAct step {} session {} server-side search round ({} item(s)); continuing",
                 ctx.step_num,

@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::{Mutex, MutexGuard};
 
@@ -436,6 +437,7 @@ impl AgentEventEmitter for EventBus {
 /// order explicit and lets a retry insert a reset marker before its first
 /// delta. Both ids are `Arc<str>` so the producer's per-token hot loop shares
 /// allocations instead of cloning the session/message ids each time.
+#[derive(Clone)]
 pub(crate) enum ChunkItem {
     Delta {
         session_id: Arc<str>,
@@ -457,7 +459,123 @@ pub(crate) enum ChunkItem {
 fn is_stream_reset(event: &AgentEvent) -> bool {
     matches!(event, AgentEvent::StreamReset { .. })
 }
-pub(crate) type ChunkSender = tokio::sync::mpsc::Sender<ChunkItem>;
+struct ChunkMailbox {
+    pending: std::sync::Mutex<VecDeque<ChunkItem>>,
+    notify: tokio::sync::Notify,
+}
+
+impl ChunkMailbox {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            pending: std::sync::Mutex::new(VecDeque::new()),
+            notify: tokio::sync::Notify::new(),
+        })
+    }
+
+    fn push(&self, item: ChunkItem) {
+        let mut pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match item {
+            ChunkItem::Delta {
+                session_id,
+                message_id,
+                delta,
+                step_number,
+                run_id,
+                reasoning,
+            } => {
+                if let Some(ChunkItem::Delta { delta: queued, .. }) = pending
+                    .iter_mut()
+                    .rev()
+                    .take_while(|queued| !matches!(queued, ChunkItem::Reset { .. }))
+                    .find(|queued| {
+                        matches!(
+                            queued,
+                            ChunkItem::Delta {
+                                session_id: queued_session,
+                                message_id: queued_message,
+                                step_number: queued_step,
+                                run_id: queued_run,
+                                reasoning: queued_reasoning,
+                                ..
+                            } if queued_session == &session_id
+                                && queued_message == &message_id
+                                && *queued_step == step_number
+                                && *queued_run == run_id
+                                && *queued_reasoning == reasoning
+                        )
+                    })
+                {
+                    queued.push_str(&delta);
+                } else {
+                    pending.push_back(ChunkItem::Delta {
+                        session_id,
+                        message_id,
+                        delta,
+                        step_number,
+                        run_id,
+                        reasoning,
+                    });
+                }
+            }
+            reset @ ChunkItem::Reset { .. } => {
+                // Reset is a control boundary, never a droppable value. Keep
+                // every boundary in order: a delta after an earlier reset
+                // belongs to a different attempt and must not be coalesced
+                // across it.
+                pending.push_back(reset);
+            }
+        }
+        self.notify.notify_one();
+    }
+
+    async fn recv(&self, rx: &mut tokio::sync::mpsc::Receiver<ChunkItem>) -> Option<ChunkItem> {
+        loop {
+            if let Some(item) = self
+                .pending
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .pop_front()
+            {
+                return Some(item);
+            }
+            tokio::select! {
+                item = rx.recv() => return item,
+                _ = self.notify.notified() => {}
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct ChunkSender {
+    tx: tokio::sync::mpsc::Sender<ChunkItem>,
+    mailbox: Arc<ChunkMailbox>,
+}
+
+impl ChunkSender {
+    fn new(tx: tokio::sync::mpsc::Sender<ChunkItem>, mailbox: Arc<ChunkMailbox>) -> Self {
+        Self { tx, mailbox }
+    }
+
+    /// Send from the synchronous provider callback. A full bounded channel
+    /// coalesces deltas by stream key and preserves Reset markers in the
+    /// mailbox; only a closed consumer is reported as a drop.
+    pub(crate) fn try_send(&self, item: ChunkItem) -> Result<(), &'static str> {
+        if self.tx.is_closed() {
+            return Err("chunk consumer closed");
+        }
+        // Keep one ordered path for both the fast and saturated cases. A
+        // bounded channel plus a separate overflow queue cannot preserve
+        // ordering when the receiver observes the overflow queue first; the
+        // mailbox is the latest-value coalescer and the channel only supplies
+        // a cheap closed-consumer signal.
+        self.mailbox.push(item);
+        Ok(())
+    }
+}
 pub(crate) type ConsumerHandle = Option<tokio::task::JoinHandle<()>>;
 
 /// Per-chunk micro-batching parameters. Incoming per-token chunks are aggregated
@@ -521,13 +639,33 @@ async fn emit_stream_reset(
 /// `max_batch_bytes`). Reset markers are hard boundaries: pending deltas are
 /// flushed first, then the reset is emitted, so the frontend never observes a
 /// new attempt before the old attempt has drained.
+#[cfg(test)]
 async fn run_chunk_batcher(
-    mut rx: tokio::sync::mpsc::Receiver<ChunkItem>,
+    rx: tokio::sync::mpsc::Receiver<ChunkItem>,
     emitter: Arc<dyn AgentEventEmitter>,
     max_batch_bytes: usize,
 ) {
+    run_chunk_batcher_inner(rx, emitter, max_batch_bytes, None).await;
+}
+
+async fn recv_chunk(
+    rx: &mut tokio::sync::mpsc::Receiver<ChunkItem>,
+    mailbox: Option<&Arc<ChunkMailbox>>,
+) -> Option<ChunkItem> {
+    match mailbox {
+        Some(mailbox) => mailbox.recv(rx).await,
+        None => rx.recv().await,
+    }
+}
+
+async fn run_chunk_batcher_inner(
+    mut rx: tokio::sync::mpsc::Receiver<ChunkItem>,
+    emitter: Arc<dyn AgentEventEmitter>,
+    max_batch_bytes: usize,
+    mailbox: Option<Arc<ChunkMailbox>>,
+) {
     loop {
-        let first = match rx.recv().await {
+        let first = match recv_chunk(&mut rx, mailbox.as_ref()).await {
             Some(item) => item,
             None => return,
         };
@@ -581,7 +719,7 @@ async fn run_chunk_batcher(
         loop {
             tokio::select! {
                 biased;
-                val = rx.recv() => {
+                val = recv_chunk(&mut rx, mailbox.as_ref()) => {
                     match val {
                         Some(ChunkItem::Delta {
                             session_id: session_id_2,
@@ -754,20 +892,22 @@ impl EventDispatcher {
         max_batch_bytes: usize,
     ) -> (ChunkSender, ConsumerHandle) {
         let (chunk_tx, chunk_rx) = tokio::sync::mpsc::channel(1024);
-
+        let mailbox = ChunkMailbox::new();
+        let sender = ChunkSender::new(chunk_tx, mailbox.clone());
+        // The bounded channel remains the fast path; the mailbox only holds
+        // combined values while the emitter is busy.
         let em_clone = emitter.clone();
-        let thought_session = tokio::spawn(run_chunk_batcher(
+        let thought_session = tokio::spawn(run_chunk_batcher_inner(
             chunk_rx,
-            em_clone.clone(),
+            em_clone,
             max_batch_bytes,
+            Some(mailbox),
         ));
-        // Awaiting this handle guarantees all buffered chunks and reset
-        // markers have been flushed before the caller proceeds.
         let consumer_handle = Some(tokio::spawn(async move {
             let _ = thought_session.await;
         }));
 
-        (chunk_tx, consumer_handle)
+        (sender, consumer_handle)
     }
 
     pub async fn emit_session_created(&self, session: &SessionInfo) {
@@ -1191,6 +1331,47 @@ mod tests {
                 AgentEvent::StreamReset { .. },
                 AgentEvent::ThoughtChunk { delta: next, .. },
             ] if delta == "old" && next == "new"
+        ));
+    }
+
+    #[tokio::test]
+    async fn coalescing_sender_retains_reset_when_bounded_queue_is_full() {
+        let emitter = collector_emitter();
+        let (tx, rx) = tokio::sync::mpsc::channel::<ChunkItem>(1);
+        let mailbox = ChunkMailbox::new();
+        let sender = ChunkSender::new(tx, mailbox.clone());
+        sender
+            .try_send(delta("t-empty", "msg-empty", "old", 4, 10, false))
+            .unwrap();
+        sender
+            .try_send(ChunkItem::Reset {
+                session_id: Arc::from("t-empty"),
+                thought_message_id: Arc::from("msg-empty"),
+                reasoning_message_id: Arc::from("msg-r-empty"),
+                step_number: 4,
+                run_id: 10,
+            })
+            .unwrap();
+        drop(sender);
+
+        run_chunk_batcher_inner(
+            rx,
+            emitter.clone(),
+            DEFAULT_CHUNK_BATCH_MAX_BYTES,
+            Some(mailbox),
+        )
+        .await;
+        let events = emitter.events.lock().unwrap().clone();
+        assert!(
+            matches!(events.first(), Some(AgentEvent::ThoughtChunk { delta, .. }) if delta == "old")
+        );
+        assert!(matches!(
+            events.get(1),
+            Some(AgentEvent::StreamReset {
+                step_number: 4,
+                run_id: 10,
+                ..
+            })
         ));
     }
 

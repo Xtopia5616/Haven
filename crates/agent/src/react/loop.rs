@@ -13,6 +13,7 @@ use super::turn::{TurnInput, TurnOutcome};
 use super::*;
 use crate::types::RunBudget;
 use std::sync::Arc;
+use std::time::Duration;
 use tracing::Instrument;
 
 /// Why a ReAct run stopped at a cooperative boundary.
@@ -45,6 +46,35 @@ struct RunBudgetConfig {
     start_step: u32,
     max_steps: u32,
     effective_max: u32,
+}
+
+/// Absolute wall-clock boundary shared by every phase of one model turn.
+/// Callers use `remaining` when entering a wait and `ensure_remaining` after
+/// phase boundaries so a retry chain cannot quietly extend the turn forever.
+#[derive(Clone, Copy)]
+pub(super) struct TurnDeadline {
+    at: tokio::time::Instant,
+}
+
+impl TurnDeadline {
+    pub(super) fn from_now(seconds: u64) -> Self {
+        Self {
+            at: tokio::time::Instant::now() + Duration::from_secs(seconds.max(1)),
+        }
+    }
+
+    pub(super) fn remaining(self) -> Duration {
+        self.at
+            .saturating_duration_since(tokio::time::Instant::now())
+    }
+
+    pub(super) fn ensure_remaining(self, phase: &str) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            !self.remaining().is_zero(),
+            "turn deadline exceeded during {phase}"
+        );
+        Ok(())
+    }
 }
 
 /// Complete input for one run. Grouping the mutable transcript and run
@@ -142,10 +172,14 @@ impl ReActEngine {
                 .iter()
                 .all(|request| request.decision().is_some())
         {
-            match self
-                .finish_confirm_batch(session_id, state, &emitter, run_id)
-                .await?
-            {
+            let deadline = TurnDeadline::from_now(self.limits().turn_deadline_secs);
+            let confirm_outcome = tokio::time::timeout(
+                deadline.remaining(),
+                self.finish_confirm_batch(session_id, state, &emitter, run_id),
+            )
+            .await
+            .map_err(|_| anyhow::anyhow!("turn deadline exceeded during confirmation batch"))??;
+            match confirm_outcome {
                 ToolBatchOutcome::Continue => {}
                 ToolBatchOutcome::Done(exit) => return Ok(exit),
             }
@@ -169,7 +203,9 @@ impl ReActEngine {
                 RunBoundary::Exit(exit) => return Ok(exit),
             }
 
-            let outcome = match self
+            let deadline = TurnDeadline::from_now(self.limits().turn_deadline_secs);
+            let remaining = deadline.remaining();
+            let turn_future = self
                 .run_turn(TurnInput {
                     ctx: StepCtx {
                         session_id: session_id.to_string(),
@@ -179,6 +215,7 @@ impl ReActEngine {
                     },
                     state,
                     cancel,
+                    deadline,
                     // The turn receives the policy result, not the budget
                     // representation. This keeps tool execution independent
                     // from run accounting and fixes resumed-run boundaries.
@@ -186,17 +223,10 @@ impl ReActEngine {
                     tool_retry_budget: &mut tool_retry_budget,
                     cut_off_retries: &mut cut_off_retries,
                 })
-                .instrument(tracing::info_span!("turn", session_id, step_num))
-                .await
-            {
-                Ok(outcome) => outcome,
-                Err(error) => {
-                    // Errors outside the provider stream (context injection,
-                    // transcript projection, persistence, or tool admission)
-                    // used to unwind directly to the dispatcher. Force a
-                    // clean checkpoint here so Continue can resume from the
-                    // last durable event instead of relying on a throttled
-                    // snapshot that may be stale.
+                .instrument(tracing::info_span!("turn", session_id, step_num));
+            let outcome = match tokio::time::timeout(remaining, turn_future).await {
+                Ok(Ok(outcome)) => outcome,
+                Ok(Err(error)) => {
                     if !self
                         .save_snapshot_with_branches(session_id, state, step_num)
                         .await
@@ -206,6 +236,25 @@ impl ReActEngine {
                             step = step_num,
                             error = %error,
                             "failed to checkpoint ReAct turn error"
+                        );
+                    }
+                    self.mark_session_error(session_id).await;
+                    return Err(error);
+                }
+                Err(_) => {
+                    let error = anyhow::anyhow!(
+                        "turn deadline exceeded at session '{}' step {}",
+                        session_id,
+                        step_num
+                    );
+                    if !self
+                        .save_snapshot_with_branches(session_id, state, step_num)
+                        .await
+                    {
+                        tracing::error!(
+                            session_id,
+                            step = step_num,
+                            "failed to checkpoint turn-deadline error"
                         );
                     }
                     self.mark_session_error(session_id).await;
