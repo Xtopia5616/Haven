@@ -146,9 +146,9 @@ struct ActiveStreamHooks {
     on_attempt_start: Arc<StdMutex<AttemptCallback>>,
 }
 
-struct RetryStreamRequest<'a> {
-    messages: &'a [CanonicalMessage],
-    tools: &'a [ToolDefinition],
+struct RetryStreamRequest {
+    messages: Arc<[CanonicalMessage]>,
+    tools: Arc<[ToolDefinition]>,
     max_output_tokens: Option<u32>,
     cancel: CancellationToken,
     error: LlmError,
@@ -1412,7 +1412,7 @@ impl LlmRouter {
         &self,
         primary: &Arc<dyn LlmClient>,
         hooks: &ActiveStreamHooks,
-        request: RetryStreamRequest<'_>,
+        request: RetryStreamRequest,
     ) -> Result<LlmResponse, LlmError> {
         let RetryStreamRequest {
             messages,
@@ -1434,17 +1434,16 @@ impl LlmRouter {
         // time out instantly, disabling all model replies.
         let idle_dur =
             Duration::from_secs(self.config.read().await.stream_idle_timeout_secs.max(1));
-        let mut retry_msgs = messages.to_vec();
         // The guidance is appended AFTER the assistant's partial
         // turn. A trailing System message breaks OpenAI-compatible
         // providers (system must lead the request) and is merged
         // into the top-level system field by Anthropic/Gemini,
         // losing its position. A User message is legal anywhere.
-        retry_msgs.push(CanonicalMessage::user_text(inject));
-        streaming::aggregate_stream_cancellable(
+        streaming::aggregate_stream_cancellable_shared_with_guidance(
             primary.clone(),
-            retry_msgs,
-            tools.to_vec(),
+            messages,
+            tools,
+            Some(inject),
             hooks.on_chunk.clone(),
             cancel,
             &self.stream_rules,
@@ -1494,8 +1493,8 @@ impl LlmRouter {
         let idle_dur = Duration::from_secs(cfg.stream_idle_timeout_secs.max(1));
         drop(cfg);
         let stream_context = streaming::StreamContext {
-            messages,
-            tools,
+            messages: Arc::from(messages),
+            tools: Arc::from(tools),
             max_output_tokens,
         };
         let candidates = self.healthy_candidates(role.request_kind()).await;
@@ -1506,7 +1505,7 @@ impl LlmRouter {
             || async {
                 let mut last_error = None;
                 for (index, (model_id, candidate)) in candidates.iter().enumerate() {
-                    if let Err(error) = candidate.validate_content(messages) {
+                    if let Err(error) = candidate.validate_content(&stream_context.messages) {
                         if !Self::should_failover(&error) || index + 1 == candidates.len() {
                             last_error = Some(error);
                             break;
@@ -1526,7 +1525,7 @@ impl LlmRouter {
                     }
                     let attempt_result = streaming::aggregate_stream_with_retry_before_output(
                         candidate.clone(),
-                        stream_context,
+                        stream_context.clone(),
                         hooks.on_chunk.clone(),
                         cancel.clone(),
                         &self.stream_rules,
@@ -1542,8 +1541,8 @@ impl LlmRouter {
                                 candidate,
                                 &hooks,
                                 RetryStreamRequest {
-                                    messages,
-                                    tools,
+                                    messages: stream_context.messages.clone(),
+                                    tools: stream_context.tools.clone(),
                                     max_output_tokens,
                                     cancel: cancel.clone(),
                                     error,
@@ -1982,6 +1981,23 @@ mod tests {
             LlmError,
         > {
             self.chat_stream_with_tools(messages, tools).await
+        }
+        async fn chat_stream_with_tools_output_cap_shared(
+            &self,
+            _messages: Arc<[CanonicalMessage]>,
+            _tools: Arc<[ToolDefinition]>,
+            _max_output_tokens: Option<u32>,
+        ) -> Result<
+            Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+            LlmError,
+        > {
+            if self.fail_chat {
+                Err(LlmError::ServerError(
+                    "mock: chat_stream_with_tools failed".into(),
+                ))
+            } else {
+                Ok(Box::pin(stream::iter(self.chunks.clone())))
+            }
         }
         async fn health_check(&self) -> Result<(), LlmError> {
             Ok(())
@@ -2442,6 +2458,44 @@ mod tests {
             LlmError,
         > {
             self.chat_stream_with_tools(messages, tools).await
+        }
+        async fn chat_stream_with_tools_output_cap_shared(
+            &self,
+            _messages: Arc<[CanonicalMessage]>,
+            _tools: Arc<[ToolDefinition]>,
+            _max_output_tokens: Option<u32>,
+        ) -> Result<
+            Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+            LlmError,
+        > {
+            let first_delay = self.first_delay;
+            let gap_delay = self.gap_delay;
+            let mk = |text: &'static str| {
+                Ok(StreamChunk {
+                    text: Some(text.into()),
+                    tool_calls: Vec::new(),
+                    finish_reason: None,
+                    usage: None,
+                    model: None,
+                    reasoning: None,
+                    web_search: None,
+                    web_search_calls: Vec::new(),
+                    thinking_blocks: Vec::new(),
+                })
+            };
+            Ok(Box::pin(stream::unfold(0u8, move |i| async move {
+                match i {
+                    0 => {
+                        tokio::time::sleep(first_delay).await;
+                        Some((mk("hello"), 1))
+                    }
+                    1 => {
+                        tokio::time::sleep(gap_delay).await;
+                        Some((mk(" world"), 2))
+                    }
+                    _ => None,
+                }
+            })))
         }
         async fn health_check(&self) -> Result<(), LlmError> {
             Ok(())

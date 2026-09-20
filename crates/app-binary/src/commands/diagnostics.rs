@@ -1,6 +1,7 @@
 //! Read-only local performance diagnostics.
 
 use crate::app_state::AppState;
+use haven_agent::UiMetricsSnapshot;
 use std::sync::Arc;
 use tauri::State;
 
@@ -10,6 +11,9 @@ use tauri::State;
 #[tauri::command]
 pub fn get_performance_metrics(
     state: State<'_, Arc<AppState>>,
+    ui: Option<UiMetricsSnapshot>,
 ) -> Result<haven_agent::MetricsSnapshot, String> {
-    Ok(state.agent.react_metrics_snapshot())
+    let mut snapshot = state.agent.react_metrics_snapshot();
+    snapshot.ui = ui;
+    Ok(snapshot)
 }

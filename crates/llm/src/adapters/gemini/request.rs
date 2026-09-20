@@ -119,4 +119,10 @@ impl GeminiAdapter {
             cache_diagnostics: CacheDiagnostics::for_provider_cache(system_split),
         }
     }
+
+    pub(super) fn append_guidance_to_request(&self, body: &mut GeminiRequest, guidance: &str) {
+        let message = CanonicalMessage::user_text(guidance);
+        let (mut contents, _) = Self::convert_contents(std::slice::from_ref(&message));
+        body.contents.append(&mut contents);
+    }
 }

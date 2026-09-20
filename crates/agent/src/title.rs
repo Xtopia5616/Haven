@@ -93,6 +93,18 @@ mod tests {
             Ok(Box::pin(futures_util::stream::empty()))
         }
 
+        async fn chat_stream_with_tools_output_cap_shared(
+            &self,
+            _messages: std::sync::Arc<[CanonicalMessage]>,
+            _tools: std::sync::Arc<[haven_llm::types::ToolDefinition]>,
+            _max_output_tokens: Option<u32>,
+        ) -> Result<
+            Pin<Box<dyn Stream<Item = Result<haven_llm::types::StreamChunk, LlmError>> + Send>>,
+            LlmError,
+        > {
+            Ok(Box::pin(futures_util::stream::empty()))
+        }
+
         async fn health_check(&self) -> Result<(), LlmError> {
             Ok(())
         }

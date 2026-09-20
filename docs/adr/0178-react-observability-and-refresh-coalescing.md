@@ -18,6 +18,9 @@ lifecycle 事件，重复调用 `get_sessions` 会放大 IPC 和数据库读取�
 - 通过只读 Tauri 命令 `get_performance_metrics` 导出同一个有界、无内容的
   `MetricsSnapshot`，供本地验收直接读取；UI stream aggregator 继续独立暴露
   frame/chunk/drop 快照，因为这些计数只存在渲染器进程。
+- 聊天页注册 renderer metrics provider，设置页的性能指标导出按钮通过同一
+  `get_performance_metrics` 命令携带 renderer snapshot；`frames` 只统计真正
+  执行的 `requestAnimationFrame` callback，手动 flush 和销毁时 flush 不计入。
 - Transcript batch 在 `BEGIN IMMEDIATE` 后记录 writer-lock 等待时长，提交成功后
   由 Agent 观察该样本；事件与投影的事务边界保持不变。
 - UI stream aggregator 暴露受限的 frame/chunk/drop 快照，用于测试和本地诊断，

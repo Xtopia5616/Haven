@@ -26,6 +26,22 @@ impl OpenAiResponsesAdapter {
         tools: &[ToolDefinition],
         max_output_tokens: Option<u32>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
+        self.chat_stream_inner_with_max_tokens_shared_guidance(
+            messages,
+            tools,
+            None,
+            max_output_tokens,
+        )
+        .await
+    }
+
+    pub(super) async fn chat_stream_inner_with_max_tokens_shared_guidance(
+        &self,
+        messages: &[CanonicalMessage],
+        tools: &[ToolDefinition],
+        guidance: Option<&str>,
+        max_output_tokens: Option<u32>,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
         let mut body = self.build_request_body_with_mode_and_max_tokens(
             messages,
             tools,
@@ -33,6 +49,9 @@ impl OpenAiResponsesAdapter {
             self.web_search_mode,
             max_output_tokens.unwrap_or(self.endpoint.max_tokens),
         );
+        if let Some(guidance) = guidance {
+            self.append_guidance_to_request(&mut body, guidance);
+        }
         let url = self.responses_url();
         tracing::debug!(
             endpoint = %crate::client::endpoint_log_location(&url),

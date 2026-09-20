@@ -8,6 +8,7 @@ use async_trait::async_trait;
 use futures_util::Stream;
 use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderValue};
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::adapters::{MAX_JSON_RESPONSE_BYTES, build_client, read_text_bounded, send_request};
@@ -75,6 +76,17 @@ impl LlmClient for AssemblyAiAdapter {
     async fn chat_stream(
         &self,
         _messages: Vec<CanonicalMessage>,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
+        Err(LlmError::UnsupportedCapability(
+            "assemblyai is speech-to-text only".into(),
+        ))
+    }
+
+    async fn chat_stream_with_tools_output_cap_shared(
+        &self,
+        _messages: Arc<[CanonicalMessage]>,
+        _tools: Arc<[crate::types::ToolDefinition]>,
+        _max_output_tokens: Option<u32>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
         Err(LlmError::UnsupportedCapability(
             "assemblyai is speech-to-text only".into(),

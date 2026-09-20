@@ -168,25 +168,38 @@ pub trait LlmClient: Send + Sync {
     }
 
     /// Shared, read-only streaming request boundary used by provider retries.
-    /// The default keeps third-party/test adapters source-compatible; native
-    /// adapters may override it to serialize directly from the shared slices.
+    /// Native and custom streaming adapters should override this method and
+    /// consume the immutable snapshots directly. The compatibility default is
+    /// deliberately fail-closed instead of materializing `Vec`s per attempt;
+    /// an adapter that has not opted into the shared boundary cannot silently
+    /// reintroduce retry allocations.
     async fn chat_stream_with_tools_output_cap_shared(
         &self,
         messages: Arc<[CanonicalMessage]>,
         tools: Arc<[ToolDefinition]>,
         max_output_tokens: Option<u32>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
-        if tools.is_empty() {
-            self.chat_stream_output_cap(messages.as_ref().to_vec(), max_output_tokens)
-                .await
-        } else {
-            self.chat_stream_with_tools_output_cap(
-                messages.as_ref().to_vec(),
-                tools.as_ref().to_vec(),
-                max_output_tokens,
-            )
-            .await
-        }
+        let _ = (messages, tools, max_output_tokens);
+        Err(LlmError::UnsupportedCapability(
+            "adapter does not implement the shared streaming request boundary".into(),
+        ))
+    }
+
+    /// Shared streaming boundary for a stream-rule retry. The trailing
+    /// guidance is kept as a separate owned value so the router does not copy
+    /// the complete canonical message/tool graph just to append one user turn.
+    /// Native adapters serialize the suffix directly after the shared base.
+    async fn chat_stream_with_tools_output_cap_shared_guidance(
+        &self,
+        messages: Arc<[CanonicalMessage]>,
+        tools: Arc<[ToolDefinition]>,
+        guidance: String,
+        max_output_tokens: Option<u32>,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
+        let _ = (messages, tools, guidance, max_output_tokens);
+        Err(LlmError::UnsupportedCapability(
+            "adapter does not implement the shared streaming guidance boundary".into(),
+        ))
     }
 
     /// Embed a batch of texts into vectors via the provider's embeddings API.

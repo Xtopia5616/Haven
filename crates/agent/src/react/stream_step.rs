@@ -1053,6 +1053,23 @@ mod tests {
             self.chat_stream_with_tools(messages, tools).await
         }
 
+        async fn chat_stream_with_tools_output_cap_shared(
+            &self,
+            _messages: Arc<[CanonicalMessage]>,
+            _tools: Arc<[ToolDefinition]>,
+            _max_output_tokens: Option<u32>,
+        ) -> Result<
+            Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+            LlmError,
+        > {
+            self.stream_calls.fetch_add(1, Ordering::Relaxed);
+            match self.stream_responses.lock().unwrap().pop_front() {
+                Some(ProbeResponse::Error(error)) => Err(error),
+                Some(ProbeResponse::Chunk(chunk)) => Ok(Box::pin(stream::iter(vec![Ok(chunk)]))),
+                None => Err(LlmError::Unknown("probe responses exhausted".into())),
+            }
+        }
+
         async fn chat_stream_output_cap(
             &self,
             messages: Vec<CanonicalMessage>,

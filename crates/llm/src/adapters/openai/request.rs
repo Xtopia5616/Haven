@@ -137,6 +137,18 @@ impl OpenAiAdapter {
         }
     }
 
+    pub(super) fn append_guidance_to_request(&self, body: &mut OpenAiRequest, guidance: &str) {
+        let message = CanonicalMessage::user_text(guidance);
+        let (mut wire, _) = Self::convert_messages_with_system_split(
+            std::slice::from_ref(&message),
+            self.requires_reasoning_echo(),
+            self.endpoint
+                .reasoning_echo_max_chars
+                .unwrap_or(Self::MAX_REASONING_ECHO_CHARS),
+        );
+        body.messages.append(&mut wire);
+    }
+
     pub(super) async fn send_chat_request(
         &self,
         url: &str,

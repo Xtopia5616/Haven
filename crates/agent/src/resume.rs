@@ -274,7 +274,11 @@ impl AgentLayer {
                 // A current cache carries the exact next-step boundary. When
                 // it is missing, corrupt, or older than the event high-water
                 // mark, derive a safe boundary from the durable tail.
-                let checkpoint = self.db.get_react_checkpoint(session_id)?;
+                let db = self.db.clone();
+                let sid = session_id.to_string();
+                let checkpoint = db
+                    .run_blocking(move |db| db.get_react_checkpoint(&sid))
+                    .await?;
                 if !cache_is_valid
                     || checkpoint.as_ref().is_some_and(|checkpoint| {
                         checkpoint.event_sequence != durable.latest_sequence

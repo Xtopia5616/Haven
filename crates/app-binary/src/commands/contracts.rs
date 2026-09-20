@@ -151,10 +151,10 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
     // diagnostics
     CommandContract {
         name: "get_performance_metrics",
-        request: "-",
+        request: "UiMetricsSnapshot?",
         response: "MetricsSnapshot",
         boundary: CommandBoundary::Read,
-        security: "bounded content-free local performance counters only",
+        security: "bounded content-free backend counters plus renderer stream counters",
     },
     // mcp
     CommandContract {

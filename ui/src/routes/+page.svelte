@@ -17,6 +17,7 @@
 	import { createChatUsageEventHandlers } from '$lib/chatUsageEventHandlers.ts';
 	import { createChatModelSync } from '$lib/chatModelSync.ts';
 	import { createStreamEventAggregator } from '$lib/streamAggregator.ts';
+	import { registerPerformanceMetricsProvider } from '$lib/performanceMetrics.ts';
 	import { createSessionRefreshScheduler } from '$lib/sessionRefresh.ts';
 	import {
 		appSessionReducer,
@@ -938,7 +939,8 @@
 		getBlockIds: (sessionId, stepNumber, runId) =>
 			sessionReducer.getBlockIds(sessionId, stepNumber, runId),
 	});
-	const { chunkHandler, clearStepBlockIds, flushChunksNow } = streamEvents;
+	const { chunkHandler, clearStepBlockIds, flushChunksNow, metricsSnapshot } = streamEvents;
+	const unregisterPerformanceMetricsProvider = registerPerformanceMetricsProvider(metricsSnapshot);
 
 	// Model discovery and default-model settings synchronization live outside the
 	// route component; this page only supplies Svelte state setters.
@@ -1220,6 +1222,7 @@
 
 	onDestroy(() => {
 		dead = true;
+		unregisterPerformanceMetricsProvider();
 		// Flush any queued streaming chunks so the in-memory message store is
 		// complete before the listeners are disposed (a re-entry to this page
 		// merges the store with the DB copy).

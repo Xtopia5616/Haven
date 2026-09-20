@@ -136,6 +136,30 @@ impl OpenAiResponsesAdapter {
         }
     }
 
+    pub(super) fn append_guidance_to_request(&self, body: &mut ResponsesRequest, guidance: &str) {
+        let message = CanonicalMessage::user_text(guidance);
+        let (mut input, _) =
+            if self.developer_input_state.load(Ordering::Relaxed) == DEVELOPER_INPUT_UNSUPPORTED {
+                Self::convert_input_with_memory_split(
+                    std::slice::from_ref(&message),
+                    self.endpoint
+                        .reasoning_echo_max_chars
+                        .unwrap_or(Self::MAX_REASONING_ECHO_CHARS),
+                    self.requires_reasoning_echo(),
+                    false,
+                )
+            } else {
+                Self::convert_input(
+                    std::slice::from_ref(&message),
+                    self.endpoint
+                        .reasoning_echo_max_chars
+                        .unwrap_or(Self::MAX_REASONING_ECHO_CHARS),
+                    self.requires_reasoning_echo(),
+                )
+            };
+        body.input.append(&mut input);
+    }
+
     pub(super) async fn send_request(
         &self,
         url: &str,

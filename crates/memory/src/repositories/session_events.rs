@@ -44,7 +44,7 @@ pub struct SessionEvent {
     pub step_number: Option<u32>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct SessionEventInput {
     pub event_type: String,
     pub payload: String,
@@ -58,7 +58,7 @@ pub struct SessionEventInput {
 /// transcript boundary.  The memory crate does not depend on Agent types, and
 /// the batch writer therefore remains a stable persistence contract rather
 /// than a second transcript model.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct TranscriptBatch {
     pub events: Vec<SessionEventInput>,
     pub messages: Vec<TranscriptMessageProjection>,
@@ -66,7 +66,7 @@ pub struct TranscriptBatch {
     pub action_steps: Vec<TranscriptActionStepProjection>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct TranscriptMessageProjection {
     pub id: String,
     pub role: String,
@@ -75,13 +75,13 @@ pub struct TranscriptMessageProjection {
     pub tool_call_id: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct TranscriptThoughtStepProjection {
     pub id: String,
     pub step_number: i32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct TranscriptActionStepProjection {
     pub id: String,
     pub step_number: i32,
@@ -209,6 +209,7 @@ impl SessionEventStore {
         events: &[SessionEventInput],
     ) -> anyhow::Result<Vec<SessionEvent>> {
         Self::validate_inputs(events)?;
+        Self::validate_transcript_events(events)?;
         if events.is_empty() {
             return Ok(Vec::new());
         }
@@ -245,13 +246,14 @@ impl SessionEventStore {
             "transcript batch exceeds {} events",
             MAX_TRANSCRIPT_BATCH_EVENTS
         );
+        Self::validate_transcript_events(&batch.events)?;
         anyhow::ensure!(
             batch.messages.len() + batch.thought_steps.len() + batch.action_steps.len()
                 <= MAX_TRANSCRIPT_BATCH_PROJECTION_ROWS,
             "transcript batch exceeds {} projection rows",
             MAX_TRANSCRIPT_BATCH_PROJECTION_ROWS
         );
-        let payload_bytes = Self::payload_bytes(batch);
+        let payload_bytes = Self::payload_bytes(batch)?;
         anyhow::ensure!(
             payload_bytes <= MAX_TRANSCRIPT_BATCH_PAYLOAD_BYTES,
             "transcript batch exceeds {} payload bytes ({} bytes)",
@@ -315,39 +317,43 @@ impl SessionEventStore {
         Ok(())
     }
 
-    fn payload_bytes(batch: &TranscriptBatch) -> usize {
-        let mut bytes = 0usize;
-        let add = |bytes: &mut usize, value: &str| {
-            *bytes = bytes.saturating_add(value.len());
+    /// Keep the generic append paths subject to the same hard ceiling as the
+    /// projection-aware transcript writer. Control events remain on the
+    /// generic path, but a batch containing transcript records must not be a
+    /// back door around the transcript budget.
+    fn validate_transcript_events(events: &[SessionEventInput]) -> anyhow::Result<()> {
+        if !events
+            .iter()
+            .any(|event| event.event_type == TRANSCRIPT_EVENT_TYPE)
+        {
+            return Ok(());
+        }
+        anyhow::ensure!(
+            events.len() <= MAX_TRANSCRIPT_BATCH_EVENTS,
+            "transcript batch exceeds {} events",
+            MAX_TRANSCRIPT_BATCH_EVENTS
+        );
+        let batch = TranscriptBatch {
+            events: events.to_vec(),
+            ..TranscriptBatch::default()
         };
+        let payload_bytes = Self::payload_bytes(&batch)?;
+        anyhow::ensure!(
+            payload_bytes <= MAX_TRANSCRIPT_BATCH_PAYLOAD_BYTES,
+            "transcript batch exceeds {} payload bytes ({} bytes)",
+            MAX_TRANSCRIPT_BATCH_PAYLOAD_BYTES,
+            payload_bytes
+        );
+        Ok(())
+    }
 
-        for event in &batch.events {
-            add(&mut bytes, &event.event_type);
-            add(&mut bytes, &event.payload);
-        }
-        for message in &batch.messages {
-            add(&mut bytes, &message.id);
-            add(&mut bytes, &message.role);
-            add(&mut bytes, &message.content);
-            if let Some(value) = message.message_type.as_deref() {
-                add(&mut bytes, value);
-            }
-            if let Some(value) = message.tool_call_id.as_deref() {
-                add(&mut bytes, value);
-            }
-        }
-        for thought in &batch.thought_steps {
-            add(&mut bytes, &thought.id);
-        }
-        for action in &batch.action_steps {
-            add(&mut bytes, &action.id);
-            add(&mut bytes, &action.tool_name);
-            add(&mut bytes, &action.tool_input);
-            if let Some(value) = action.tool_call_id.as_deref() {
-                add(&mut bytes, value);
-            }
-        }
-        bytes
+    fn payload_bytes(batch: &TranscriptBatch) -> anyhow::Result<usize> {
+        // The guard is defined over the exact JSON batch representation rather
+        // than a hand-maintained sum of selected string fields. This accounts
+        // for object/array keys, separators, numeric/boolean fields and JSON
+        // escaping, which are all part of the variable-width persistence
+        // payload at this boundary.
+        Ok(serde_json::to_vec(batch)?.len())
     }
 
     fn append_batch_in_transaction(
@@ -674,6 +680,7 @@ impl SessionEventStore {
         events: &[SessionEventInput],
     ) -> anyhow::Result<Vec<SessionEvent>> {
         Self::validate_inputs(events)?;
+        Self::validate_transcript_events(events)?;
         if events.is_empty() {
             return Ok(Vec::new());
         }
@@ -988,6 +995,45 @@ mod tests {
         assert!(error.to_string().contains("CHECK") || error.to_string().contains("constraint"));
         assert!(store.read_all(&session_id).unwrap().is_empty());
         assert!(db.get_session_messages(&session_id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn transcript_batch_budget_includes_serialization_overhead() {
+        let (_db, store, session_id) = store();
+        let content = "x".repeat(MAX_TRANSCRIPT_BATCH_PAYLOAD_BYTES - 128);
+        let batch = TranscriptBatch {
+            events: vec![SessionEventInput::transcript(
+                format!(r#"{{"type":"overhead","content":"{content}"}}"#),
+                1,
+                1,
+            )],
+            ..TranscriptBatch::default()
+        };
+        let string_fields = batch.events[0].event_type.len() + batch.events[0].payload.len();
+        assert!(string_fields < MAX_TRANSCRIPT_BATCH_PAYLOAD_BYTES);
+        assert!(serde_json::to_vec(&batch).unwrap().len() > MAX_TRANSCRIPT_BATCH_PAYLOAD_BYTES);
+
+        let error = store
+            .append_transcript_batch(&session_id, &batch)
+            .unwrap_err();
+        assert!(error.to_string().contains("payload bytes"));
+        assert!(store.read_all(&session_id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn generic_transcript_append_cannot_bypass_batch_budget() {
+        let (_db, store, session_id) = store();
+        let oversized = "x".repeat(MAX_TRANSCRIPT_BATCH_PAYLOAD_BYTES);
+        let event = SessionEventInput::transcript(
+            format!(r#"{{"type":"oversized","content":"{oversized}"}}"#),
+            1,
+            1,
+        );
+
+        let error = store.append_batch(&session_id, &[event]).unwrap_err();
+
+        assert!(error.to_string().contains("payload bytes"));
+        assert!(store.read_all(&session_id).unwrap().is_empty());
     }
 
     #[test]

@@ -725,7 +725,7 @@ impl ContextCompactor {
 mod tests {
     use super::*;
     use haven_common::types::CanonicalRole;
-    use haven_llm::{LlmClient, LlmResponse, StreamChunk};
+    use haven_llm::{LlmClient, LlmResponse, StreamChunk, ToolDefinition};
     use std::pin::Pin;
 
     struct FailingSummaryClient;
@@ -741,6 +741,20 @@ mod tests {
         async fn chat_stream(
             &self,
             _messages: Vec<CanonicalMessage>,
+        ) -> Result<
+            Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+            LlmError,
+        > {
+            Err(LlmError::UnsupportedCapability(
+                "summary streaming disabled in test".into(),
+            ))
+        }
+
+        async fn chat_stream_with_tools_output_cap_shared(
+            &self,
+            _messages: std::sync::Arc<[CanonicalMessage]>,
+            _tools: std::sync::Arc<[ToolDefinition]>,
+            _max_output_tokens: Option<u32>,
         ) -> Result<
             Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
             LlmError,

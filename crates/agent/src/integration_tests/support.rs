@@ -72,6 +72,32 @@ impl LlmClient for FinalAnswerMock {
     > {
         self.chat_stream_with_tools(messages, tools).await
     }
+    async fn chat_stream_with_tools_output_cap_shared(
+        &self,
+        _messages: Arc<[CanonicalMessage]>,
+        _tools: Arc<[ToolDefinition]>,
+        _max_output_tokens: Option<u32>,
+    ) -> Result<
+        Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+        LlmError,
+    > {
+        let chunk = StreamChunk {
+            text: Some("Done.".into()),
+            tool_calls: vec![CanonicalToolCall {
+                id: "final".into(),
+                name: "final_answer".into(),
+                arguments: serde_json::json!({}),
+            }],
+            finish_reason: Some(FinishReason::Stop),
+            usage: None,
+            model: None,
+            reasoning: None,
+            web_search: None,
+            web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
+        };
+        Ok(Box::pin(stream::iter(vec![Ok(chunk)])))
+    }
     async fn chat_stream_output_cap(
         &self,
         messages: Vec<CanonicalMessage>,
@@ -337,7 +363,7 @@ pub(super) struct ScriptedMock {
     pub(super) chat_text: std::sync::Mutex<String>,
     /// Every message batch sent to `chat_stream_with_tools`, for
     /// assertions (e.g. that no dangling tool_call is sent).
-    pub(super) seen: std::sync::Mutex<Vec<Vec<CanonicalMessage>>>,
+    pub(super) seen: std::sync::Mutex<Vec<Arc<[CanonicalMessage]>>>,
 }
 
 pub(super) enum ScriptedResponse {
@@ -398,6 +424,33 @@ impl LlmClient for ScriptedMock {
         Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
         LlmError,
     > {
+        self.chat_stream_with_tools_output_cap_shared(
+            messages.into(),
+            Arc::<[ToolDefinition]>::from(Vec::new()),
+            None,
+        )
+        .await
+    }
+    async fn chat_stream_with_tools_output_cap(
+        &self,
+        messages: Vec<CanonicalMessage>,
+        tools: Vec<ToolDefinition>,
+        _max_output_tokens: Option<u32>,
+    ) -> Result<
+        Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+        LlmError,
+    > {
+        self.chat_stream_with_tools(messages, tools).await
+    }
+    async fn chat_stream_with_tools_output_cap_shared(
+        &self,
+        messages: Arc<[CanonicalMessage]>,
+        _tools: Arc<[ToolDefinition]>,
+        _max_output_tokens: Option<u32>,
+    ) -> Result<
+        Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+        LlmError,
+    > {
         self.seen.lock().unwrap().push(messages);
         let resp =
             self.stream_responses
@@ -420,17 +473,6 @@ impl LlmClient for ScriptedMock {
                 })))
             }
         }
-    }
-    async fn chat_stream_with_tools_output_cap(
-        &self,
-        messages: Vec<CanonicalMessage>,
-        tools: Vec<ToolDefinition>,
-        _max_output_tokens: Option<u32>,
-    ) -> Result<
-        Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
-        LlmError,
-    > {
-        self.chat_stream_with_tools(messages, tools).await
     }
     async fn chat_stream_output_cap(
         &self,
@@ -492,6 +534,18 @@ impl LlmClient for VisionUsageMock {
     async fn chat_stream(
         &self,
         _: Vec<CanonicalMessage>,
+    ) -> Result<
+        Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+        LlmError,
+    > {
+        Err(LlmError::Unknown("mock: stream not implemented".into()))
+    }
+
+    async fn chat_stream_with_tools_output_cap_shared(
+        &self,
+        _messages: Arc<[CanonicalMessage]>,
+        _tools: Arc<[ToolDefinition]>,
+        _max_output_tokens: Option<u32>,
     ) -> Result<
         Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
         LlmError,

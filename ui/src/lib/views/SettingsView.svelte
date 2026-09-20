@@ -10,6 +10,7 @@
 	import { reportError } from '$lib/errorHandling.ts';
 	import { registerSettingsLeaveGuard } from '$lib/settingsGuard.ts';
 	import { resolveSettingsSaveAction } from '$lib/settingsSaveAction.ts';
+	import { getPerformanceMetrics } from '$lib/performanceMetrics.ts';
 	import {
 		parseApiKeyStatus,
 		parseLogInfo,
@@ -161,6 +162,7 @@
 	let mcpServerNames = $state([]);
 	let settingsLoaded = $state(false);
 	let logView = $state({ open: false, path: '', content: '', loading: false });
+	let performanceMetricsLoading = $state(false);
 	let logPreEl = /** @type {HTMLPreElement | null} */ ($state(null));
 	let savedSnapshot = $state('');
 	let leaveDialogOpen = $state(false);
@@ -214,6 +216,29 @@
 			logView.content = data.content;
 		} catch (e) {
 			reportError(e, { context: 'SettingsView', message: '无法读取日志', log: false });
+		}
+	}
+
+	async function exportPerformanceSnapshot() {
+		performanceMetricsLoading = true;
+		try {
+			const snapshot = await getPerformanceMetrics();
+			const blob = new Blob([JSON.stringify(snapshot, null, 2)], {
+				type: 'application/json',
+			});
+			const url = URL.createObjectURL(blob);
+			const link = document.createElement('a');
+			link.href = url;
+			link.download = `haven-performance-metrics-${new Date().toISOString().replaceAll(':', '-')}.json`;
+			document.body.appendChild(link);
+			link.click();
+			link.remove();
+			URL.revokeObjectURL(url);
+			addNotification('性能指标已导出', 'success');
+		} catch (e) {
+			reportError(e, { context: 'SettingsView', message: '导出性能指标失败', log: false });
+		} finally {
+			performanceMetricsLoading = false;
 		}
 	}
 
@@ -910,6 +935,7 @@
 				{notification}
 				{log}
 				{logView}
+				{performanceMetricsLoading}
 				{autostartEnabled}
 				onHotkeyModeChange={setHotkeyMode}
 				onHotkeyBindingChange={setHotkeyBinding}
@@ -917,6 +943,7 @@
 				onAutostartChange={setAutostart}
 				onRunMaintenance={runMaintenance}
 				onOpenLogViewer={openLogViewer}
+				onExportPerformanceMetrics={exportPerformanceSnapshot}
 				onRevokePermission={revokePermission}
 				onResetPermissions={resetPermissions}
 			/>

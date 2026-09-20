@@ -159,6 +159,14 @@ impl UsageTracker {
         Arc::clone(&self.epochs)
     }
 
+    /// Whether the next usage record needs to seed its cumulative counters
+    /// from durable storage. Callers use this read-only fast path before
+    /// awaiting a blocking database lookup; the seed closure itself must stay
+    /// pure so the usage hot path cannot accidentally run SQLite inline.
+    pub(crate) fn needs_seed(&self, session_id: &str) -> bool {
+        !self.map.lock().unwrap().contains_key(session_id)
+    }
+
     /// Seed (if missing) then add one call's tokens/cost; returns running totals.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn record_with_seed<F>(

@@ -918,30 +918,40 @@ impl AgentLayer {
         events: Arc<EventDispatcher>,
         session_id: String,
     ) {
-        // Check if the session already has a title in the DB
-        if let Ok(Some(session)) = db.get_session(&session_id)
-            && session.title.is_some()
+        // Check the title and load the small user-only context in one blocking
+        // task. Both operations are synchronous SQLite reads and must not run
+        // on the async title-generation task.
+        let sid = session_id.clone();
+        let user_lines = match db
+            .run_blocking(move |db| {
+                let Some(session) = db.get_session(&sid)? else {
+                    return Ok(None);
+                };
+                if session.title.is_some() {
+                    return Ok(None);
+                }
+                let messages = db.get_session_messages_limit(&sid, 10)?;
+                Ok(Some(
+                    messages
+                        .into_iter()
+                        .filter(|message| message.role == "user")
+                        .map(|message| message.content)
+                        .collect::<Vec<_>>(),
+                ))
+            })
+            .await
         {
-            return;
-        }
-        // Build conversation context from user messages only. The agent's
-        // replies (assistant/tool) are excluded to keep the prompt small ??        // a title only needs to reflect what the user asked for.
-        let messages = match db.get_session_messages_limit(&session_id, 10) {
-            Ok(v) => v,
-            Err(e) => {
+            Ok(Some(lines)) => lines,
+            Ok(None) => return,
+            Err(error) => {
                 tracing::warn!(
-                    "title generation: get_session_messages_limit failed (session={}): {}",
+                    "title generation: failed to load context (session={}): {}",
                     session_id,
-                    e
+                    error
                 );
-                Vec::new()
+                return;
             }
         };
-        let user_lines: Vec<String> = messages
-            .iter()
-            .filter(|m| m.role == "user")
-            .map(|m| m.content.clone())
-            .collect();
         if user_lines.is_empty() {
             return;
         }
@@ -950,7 +960,12 @@ impl AgentLayer {
             None => return,
         };
         // Save to DB
-        if let Err(e) = db.update_session_title(&session_id, &title) {
+        let sid = session_id.clone();
+        let title_for_db = title.clone();
+        if let Err(e) = db
+            .run_blocking(move |db| db.update_session_title(&sid, &title_for_db))
+            .await
+        {
             tracing::warn!("failed to save generated title: {}", e);
             return;
         }
@@ -994,7 +1009,11 @@ impl AgentLayer {
         // the complete new session or none of it.
         let _lifecycle = self.executor.lifecycle_guard().await;
         self.executor.ensure_lifecycle_open()?;
-        let record = self.db.create_session(input, input)?;
+        let db = self.db.clone();
+        let input_for_db = input.to_string();
+        let record = db
+            .run_blocking(move |db| db.create_session(&input_for_db, &input_for_db))
+            .await?;
         // The first user turn (and its attachments) must be on disk BEFORE
         // the dispatcher can pick the session up; if persisting fails, remove
         // the session row again so no input-less session ever gets dispatched.
@@ -1011,7 +1030,11 @@ impl AgentLayer {
         {
             Ok(msg) => msg,
             Err(e) => {
-                let _ = self.db.delete_session(&record.id);
+                let db = self.db.clone();
+                let session_id = record.id.clone();
+                let _ = db
+                    .run_blocking(move |db| db.delete_session(&session_id))
+                    .await;
                 return Err(e);
             }
         };
@@ -1227,7 +1250,13 @@ impl AgentLayer {
             .create_session_with_first_message_typed(&brief, &[], false, "peer_kickoff", false)
             .await?;
         if let Some(title) = req.title.as_deref().filter(|t| !t.is_empty()) {
-            if let Err(e) = self.db.update_session_title(&session.id, title) {
+            let db = self.db.clone();
+            let session_id = session.id.clone();
+            let title_for_db = title.to_string();
+            if let Err(e) = db
+                .run_blocking(move |db| db.update_session_title(&session_id, &title_for_db))
+                .await
+            {
                 tracing::warn!(
                     session_id = %session.id,
                     "spawn_peer_session: failed to set title: {e}"
@@ -1241,7 +1270,13 @@ impl AgentLayer {
             // Notification-safe fallback so SessionCreated never surfaces the
             // full delegated brief via Windows toast (title||id only).
             let fallback = format!("peer:{}", &session.id[session.id.len().saturating_sub(8)..]);
-            if let Err(e) = self.db.update_session_title(&session.id, &fallback) {
+            let db = self.db.clone();
+            let session_id = session.id.clone();
+            let fallback_for_db = fallback.clone();
+            if let Err(e) = db
+                .run_blocking(move |db| db.update_session_title(&session_id, &fallback_for_db))
+                .await
+            {
                 tracing::warn!(
                     session_id = %session.id,
                     "spawn_peer_session: failed to set fallback title: {e}"

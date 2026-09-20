@@ -51,7 +51,7 @@ describe('createStreamEventAggregator', () => {
 		aggregator.flushChunksNow();
 		expect(get(sessionMessagesStore)['ses-stream-test']).toHaveLength(1);
 		expect(get(sessionMessagesStore)['ses-stream-test'][0].content).toBe('hello');
-		expect(aggregator.metricsSnapshot()).toEqual({ frames: 1, chunks: 1, drops: 0 });
+		expect(aggregator.metricsSnapshot()).toEqual({ frames: 0, chunks: 1, drops: 0 });
 	});
 
 	it('finalizes reasoning before applying the thought chunk for the same step', () => {
@@ -118,6 +118,30 @@ describe('createStreamEventAggregator', () => {
 		expect(dispatch.mock.calls[0][0].chunks.map((item: any) => item.payload.delta)).toEqual([
 			'ab',
 		]);
+		expect(aggregator.metricsSnapshot()).toEqual({ frames: 0, chunks: 2, drops: 0 });
+	});
+
+	it('counts one frame for a real multi-session animation-frame callback', () => {
+		const aggregator = createStreamEventAggregator({
+			getActiveSessionId: () => 'ses-stream-test',
+			onActiveStream: vi.fn(),
+		});
+		aggregator.chunkHandler(true, undefined)(chunk({ sessionId: 'ses-a', messageId: 'a' }));
+		aggregator.chunkHandler(true, undefined)(chunk({ sessionId: 'ses-b', messageId: 'b' }));
+
+		frame?.(0);
+
 		expect(aggregator.metricsSnapshot()).toEqual({ frames: 1, chunks: 2, drops: 0 });
+	});
+
+	it('does not count a cancelled RAF that was replaced by a manual flush', () => {
+		const aggregator = createStreamEventAggregator({
+			getActiveSessionId: () => 'ses-stream-test',
+			onActiveStream: vi.fn(),
+		});
+		aggregator.chunkHandler(true, undefined)(chunk());
+		aggregator.flushChunksNow();
+
+		expect(aggregator.metricsSnapshot().frames).toBe(0);
 	});
 });

@@ -182,6 +182,16 @@ pub struct GaugeSnapshot {
     pub context_queue_items: u64,
 }
 
+/// Renderer-side stream counters supplied when the frontend asks for the
+/// unified performance snapshot. They are kept separate from ReAct atomics
+/// because the renderer owns the animation-frame lifecycle.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize, Serialize)]
+pub struct UiMetricsSnapshot {
+    pub frames: u64,
+    pub chunks: u64,
+    pub drops: u64,
+}
+
 /// Shared metrics for one [`ReActEngine`]. It has no locks and a fixed memory
 /// footprint, so instrumentation cannot create an unbounded queue or block a
 /// turn on a metrics consumer.
@@ -250,6 +260,7 @@ impl ReActMetrics {
             gauges: GaugeSnapshot {
                 context_queue_items: self.gauges[0].load(Ordering::Relaxed),
             },
+            ui: None,
         }
     }
 }
@@ -265,6 +276,8 @@ pub struct MetricsSnapshot {
     pub phases: [PhaseSnapshot; PHASE_COUNT],
     pub counters: CounterSnapshot,
     pub gauges: GaugeSnapshot,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui: Option<UiMetricsSnapshot>,
 }
 
 impl MetricsSnapshot {

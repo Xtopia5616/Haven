@@ -133,4 +133,10 @@ impl AnthropicAdapter {
             cache_diagnostics,
         }
     }
+
+    pub(super) fn append_guidance_to_request(&self, body: &mut AnthropicRequest, guidance: &str) {
+        let message = CanonicalMessage::user_text(guidance);
+        let (mut wire, _) = Self::convert_messages(std::slice::from_ref(&message));
+        body.messages.append(&mut wire);
+    }
 }

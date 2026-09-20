@@ -140,7 +140,7 @@ export function createStreamEventAggregator({
 		stepBlockIds.delete(sessionId);
 	}
 
-	function flushPendingChunks() {
+	function flushPendingChunks(fromAnimationFrame = false) {
 		chunkFlushRaf = 0;
 		if (pendingChunks.length === 0) return;
 		const batch = pendingChunks.splice(0);
@@ -150,6 +150,10 @@ export function createStreamEventAggregator({
 		// That turns ordering into text corruption. Contiguous folding keeps the
 		// O(steps × list) batching benefit without inventing a new order.
 		const merged = foldContiguousChunks(batch);
+		// Only a real requestAnimationFrame callback is a renderer frame. Manual
+		// flushes are synchronization boundaries used before teardown or an
+		// authoritative event handler and must not inflate the RAF metric.
+		if (fromAnimationFrame) frameCount++;
 		// Group by session while preserving arrival order within each session.
 		const bySession = new Map<string, PendingChunk[]>();
 		for (const chunk of merged) {
@@ -158,7 +162,6 @@ export function createStreamEventAggregator({
 			list.push(chunk);
 		}
 		for (const [, chunks] of bySession) {
-			frameCount++;
 			if (dispatch) {
 				const frame: AgentChunkBatchItem[] = chunks.map((chunk) => ({
 					kind: chunk.msgType === undefined ? 'thought' : 'reasoning',
@@ -251,7 +254,7 @@ export function createStreamEventAggregator({
 				}
 			}
 			if (!chunkFlushRaf) {
-				chunkFlushRaf = requestAnimationFrame(flushPendingChunks);
+				chunkFlushRaf = requestAnimationFrame(() => flushPendingChunks(true));
 			}
 		};
 	}

@@ -1429,6 +1429,17 @@ mod tests {
         > {
             Err(LlmError::Unknown("mock: no stream".into()))
         }
+        async fn chat_stream_with_tools_output_cap_shared(
+            &self,
+            _messages: std::sync::Arc<[CanonicalMessage]>,
+            _tools: std::sync::Arc<[haven_llm::types::ToolDefinition]>,
+            _max_output_tokens: Option<u32>,
+        ) -> Result<
+            Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+            LlmError,
+        > {
+            Err(LlmError::Unknown("mock: no stream".into()))
+        }
         async fn health_check(&self) -> Result<(), LlmError> {
             Ok(())
         }

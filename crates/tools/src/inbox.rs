@@ -60,6 +60,10 @@ const LOCK_STALE_AFTER: Duration = Duration::from_secs(10);
 /// a message archived but not deleted from `.processing` must not be
 /// archived twice).
 const ARCHIVE_DEDUP_TAIL_BYTES: u64 = 64 * 1024;
+/// Hard byte budget for one agent's durable archive. The archive is an audit
+/// tail, not an unbounded event log; the newest complete JSONL records are
+/// retained when the budget is exceeded.
+pub const MAX_ARCHIVE_BYTES: u64 = 4 * 1024 * 1024;
 
 /// Default bus root: `<data_dir>/inbox` (`%APPDATA%/haven/inbox` on Windows).
 pub fn default_inbox_dir() -> PathBuf {
@@ -313,6 +317,10 @@ impl InboxBus {
 
     fn archive(&self, name: &str) -> PathBuf {
         self.root.join(format!("{name}.archive.jsonl"))
+    }
+
+    fn archive_tmp(&self, name: &str) -> PathBuf {
+        self.root.join(format!("{name}.archive.jsonl.tmp"))
     }
 
     fn processing(&self, name: &str) -> PathBuf {
@@ -622,6 +630,10 @@ impl InboxBus {
 
     fn claim_and_archive_unlocked(&self, name: &str) -> anyhow::Result<Vec<Envelope>> {
         self.ensure_dir()?;
+        // Recover an archive replacement left between Windows' remove and
+        // rename steps, and compact archives created by older versions before
+        // processing the current claim.
+        self.append_archive_unlocked(name, &[])?;
         self.recover_processing_tmp_unlocked(name)?;
         let pending = self.processing(name);
         let mailbox = self.mailbox(name);
@@ -672,7 +684,6 @@ impl InboxBus {
         // non-zero attempt and will be redelivered; archive presence is never
         // used as an acknowledgement.
         let archive_ids = self.read_archive_tail_ids(name)?;
-        let mut archived_ids = archive_ids.clone();
         // Remove expired/corrupt entries from the durable claim and de-dupe
         // repeated envelope ids before returning. Expired messages are still
         // archived below, matching the service expiry/archive contract, but
@@ -699,26 +710,7 @@ impl InboxBus {
 
         // Archive at claim time for auditability. The processing attempt is
         // already durable, so a crash during this append remains recoverable.
-        let mut archive: Option<File> = None;
-        for env in &envs {
-            if archived_ids.insert(env.id.clone()) {
-                if archive.is_none() {
-                    archive = Some(
-                        OpenOptions::new()
-                            .create(true)
-                            .append(true)
-                            .open(self.archive(name))?,
-                    );
-                }
-                let file = archive
-                    .as_mut()
-                    .ok_or_else(|| anyhow::anyhow!("inbox archive handle was not initialized"))?;
-                writeln!(file, "{}", serde_json::to_string(env)?)?;
-            }
-        }
-        if let Some(file) = archive.as_mut() {
-            file.flush()?;
-        }
+        self.append_archive_unlocked(name, &envs)?;
 
         Ok(active)
     }
@@ -733,6 +725,7 @@ impl InboxBus {
         }
         let _lock = LockGuard::acquire(&self.root)?;
         self.ensure_dir()?;
+        self.recover_archive_tmp_unlocked(name)?;
         self.recover_processing_tmp_unlocked(name)?;
         let pending = self.processing(name);
         let mailbox = self.mailbox(name);
@@ -758,6 +751,7 @@ impl InboxBus {
         validate_agent_name(name)?;
         let _lock = LockGuard::acquire(&self.root)?;
         self.ensure_dir()?;
+        self.append_archive_unlocked(name, &[])?;
         if let Some(env) = last_valid_line(&self.mailbox(name))? {
             return Ok(Some(env));
         }
@@ -766,17 +760,25 @@ impl InboxBus {
 
     /// Find one envelope by id in this agent's mailbox or archive. Used by
     /// the service to resolve the target of an `in_reply_to` reference.
-    /// The archive is scanned from the tail first (recent replies dominate),
-    /// falling back to a full scan when the id is old.
+    /// The archive is scanned only within its bounded durable tail; very old
+    /// records are intentionally outside the retention contract.
     pub fn find_message(&self, name: &str, id: &str) -> anyhow::Result<Option<Envelope>> {
         validate_agent_name(name)?;
         let _lock = LockGuard::acquire(&self.root)?;
         self.ensure_dir()?;
-        for path in [self.mailbox(name), self.archive(name)] {
-            let content = match std::fs::read_to_string(&path) {
-                Ok(c) => c,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(e) => return Err(e.into()),
+        self.append_archive_unlocked(name, &[])?;
+        for (path, max_bytes) in [
+            (self.mailbox(name), u64::MAX),
+            (self.archive(name), MAX_ARCHIVE_BYTES),
+        ] {
+            let content = if max_bytes == u64::MAX {
+                match std::fs::read_to_string(&path) {
+                    Ok(content) => content,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(error) => return Err(error.into()),
+                }
+            } else {
+                read_tail(&path, max_bytes)?
             };
             if let Some(env) =
                 content
@@ -811,6 +813,7 @@ impl InboxBus {
         validate_agent_name(expected_from)?;
         let _lock = LockGuard::acquire(&self.root)?;
         self.ensure_dir()?;
+        self.append_archive_unlocked(name, &[])?;
         let mailbox = self.mailbox(name);
         let content = match std::fs::read_to_string(&mailbox) {
             Ok(c) => c,
@@ -853,17 +856,8 @@ impl InboxBus {
 
         let to_archive: Vec<&Envelope> = matching.iter().chain(archived_only.iter()).collect();
         if !to_archive.is_empty() {
-            let archive_ids = self.read_archive_tail_ids(name)?;
-            let mut af = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(self.archive(name))?;
-            for env in to_archive {
-                if !archive_ids.contains(&env.id) {
-                    writeln!(af, "{}", serde_json::to_string(env)?)?;
-                }
-            }
-            af.flush()?;
+            let to_archive = to_archive.into_iter().cloned().collect::<Vec<_>>();
+            self.append_archive_unlocked(name, &to_archive)?;
         }
         Ok(matching)
     }
@@ -901,20 +895,29 @@ impl InboxBus {
         validate_agent_name(name)?;
         let _lock = LockGuard::acquire(&self.root)?;
         self.ensure_dir()?;
+        self.append_archive_unlocked(name, &[])?;
         let mut entries: Vec<Envelope> = Vec::new();
         // Archive (older) first, then the unread mailbox (newer), so the
         // reversal below yields strictly newest-first across both files.
-        for path in [self.archive(name), self.mailbox(name)] {
-            match std::fs::read_to_string(&path) {
-                Ok(content) => {
-                    for line in content.lines() {
-                        if let Ok(env) = serde_json::from_str::<Envelope>(line.trim()) {
-                            entries.push(env);
-                        }
+        for (path, max_bytes) in [
+            (self.archive(name), MAX_ARCHIVE_BYTES),
+            (self.mailbox(name), u64::MAX),
+        ] {
+            let content = if max_bytes == u64::MAX {
+                match std::fs::read_to_string(&path) {
+                    Ok(content) => content,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(error) => return Err(error.into()),
+                }
+            } else {
+                read_tail(&path, max_bytes)?
+            };
+            {
+                for line in content.lines() {
+                    if let Ok(env) = serde_json::from_str::<Envelope>(line.trim()) {
+                        entries.push(env);
                     }
                 }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error.into()),
             }
         }
         // Mailbox lines are newer than archive lines, so reverse order gives
@@ -934,6 +937,87 @@ impl InboxBus {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(HashMap::new()),
             Err(e) => Err(e.into()),
         }
+    }
+
+    /// Append envelopes to the archive and compact it to a newest-record tail
+    /// in the same locked mutation. This bounds both on-disk growth and every
+    /// later archive read, including archives created by older builds.
+    fn append_archive_unlocked(&self, name: &str, envelopes: &[Envelope]) -> anyhow::Result<()> {
+        self.recover_archive_tmp_unlocked(name)?;
+        if envelopes.is_empty() && !self.archive(name).exists() {
+            return Ok(());
+        }
+
+        let existing = read_tail(&self.archive(name), MAX_ARCHIVE_BYTES)?;
+        let mut lines: Vec<String> = existing
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(str::to_owned)
+            .collect();
+        let mut ids: HashSet<String> = lines
+            .iter()
+            .filter_map(|line| serde_json::from_str::<Envelope>(line).ok())
+            .map(|envelope| envelope.id)
+            .collect();
+        for envelope in envelopes {
+            if ids.insert(envelope.id.clone()) {
+                lines.push(serde_json::to_string(envelope)?);
+            }
+        }
+
+        let mut retained = Vec::new();
+        let mut bytes = 0u64;
+        for line in lines.into_iter().rev() {
+            let line_bytes = line.len() as u64 + 1;
+            if line_bytes > MAX_ARCHIVE_BYTES {
+                tracing::warn!(
+                    agent = name,
+                    bytes = line_bytes,
+                    "inbox archive record exceeds archive byte budget; dropping record from audit tail"
+                );
+                continue;
+            }
+            if bytes.saturating_add(line_bytes) > MAX_ARCHIVE_BYTES {
+                break;
+            }
+            bytes += line_bytes;
+            retained.push(line);
+        }
+        retained.reverse();
+
+        let archive = self.archive(name);
+        let tmp = self.archive_tmp(name);
+        let mut file = File::create(&tmp)?;
+        for line in retained {
+            writeln!(file, "{line}")?;
+        }
+        file.flush()?;
+        file.sync_all()?;
+        match std::fs::remove_file(&archive) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        std::fs::rename(tmp, archive)?;
+        Ok(())
+    }
+
+    /// Recover the archive replacement after an interrupted Windows
+    /// remove-then-rename. A temp file is promoted only when the destination
+    /// is absent; if the old archive survived, it remains the safer source of
+    /// truth and the abandoned temp is discarded.
+    fn recover_archive_tmp_unlocked(&self, name: &str) -> anyhow::Result<()> {
+        let archive = self.archive(name);
+        let tmp = self.archive_tmp(name);
+        if !tmp.exists() {
+            return Ok(());
+        }
+        if archive.exists() {
+            std::fs::remove_file(tmp)?;
+        } else {
+            std::fs::rename(tmp, archive)?;
+        }
+        Ok(())
     }
 
     /// Atomic registry update: write a temp file, then rename over
@@ -1068,8 +1152,19 @@ fn read_tail(path: &Path, max_bytes: u64) -> anyhow::Result<String> {
     let len = f.metadata()?.len();
     let start = len.saturating_sub(max_bytes);
     f.seek(SeekFrom::Start(start))?;
-    let mut s = String::new();
-    f.read_to_string(&mut s)?;
+    let mut bytes = Vec::new();
+    f.read_to_end(&mut bytes)?;
+    let mut s = String::from_utf8_lossy(&bytes).into_owned();
+    // The seek can land in the middle of a JSONL record (and, for UTF-8,
+    // the middle of a code point). Discard that partial first record so every
+    // caller sees only complete lines from the bounded tail.
+    if start > 0 {
+        if let Some(newline) = s.find('\n') {
+            s.drain(..=newline);
+        } else {
+            s.clear();
+        }
+    }
     Ok(s)
 }
 
@@ -1387,6 +1482,67 @@ mod tests {
             .unwrap();
         assert!(outcome.delivered);
         assert_eq!(claim_and_ack(&bus, "ses-b").len(), 1);
+    }
+
+    #[test]
+    fn archive_keeps_only_a_bounded_newest_tail() {
+        let (_dir, bus) = test_bus();
+        bus.register("ses-b", &[]).unwrap();
+        let messages = (0..500)
+            .map(|index| env_from("ses-a", "ses-b", &format!("{index}:{}", "x".repeat(10_000))))
+            .collect::<Vec<_>>();
+        write_mailbox(&bus, "ses-b", &messages);
+
+        let claimed = claim_and_ack(&bus, "ses-b");
+        assert_eq!(claimed.len(), messages.len());
+        assert!(
+            std::fs::metadata(bus.archive("ses-b")).unwrap().len() <= MAX_ARCHIVE_BYTES,
+            "archive must stay within its byte budget"
+        );
+        let history = bus.history("ses-b", 1).unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].id, messages.last().unwrap().id);
+    }
+
+    #[test]
+    fn archive_tmp_is_recovered_after_interrupted_windows_replacement() {
+        let (_dir, bus) = test_bus();
+        bus.register("ses-b", &[]).unwrap();
+        let archived = env_from("ses-a", "ses-b", "recovered archive");
+        std::fs::write(
+            bus.archive_tmp("ses-b"),
+            format!("{}\n", serde_json::to_string(&archived).unwrap()),
+        )
+        .unwrap();
+
+        let history = bus.history("ses-b", 1).unwrap();
+
+        assert_eq!(history[0].id, archived.id);
+        assert!(!bus.archive_tmp("ses-b").exists());
+        assert!(bus.archive("ses-b").exists());
+    }
+
+    #[test]
+    fn oversized_legacy_archive_is_compacted_on_read() {
+        let (_dir, bus) = test_bus();
+        bus.register("ses-b", &[]).unwrap();
+        let messages = (0..500)
+            .map(|index| env_from("ses-a", "ses-b", &format!("{index}:{}", "x".repeat(10_000))))
+            .collect::<Vec<_>>();
+        let mut archive = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(bus.archive("ses-b"))
+            .unwrap();
+        for message in &messages {
+            writeln!(archive, "{}", serde_json::to_string(message).unwrap()).unwrap();
+        }
+        assert!(std::fs::metadata(bus.archive("ses-b")).unwrap().len() > MAX_ARCHIVE_BYTES);
+
+        let history = bus.history("ses-b", 1).unwrap();
+
+        assert_eq!(history[0].id, messages.last().unwrap().id);
+        assert!(std::fs::metadata(bus.archive("ses-b")).unwrap().len() <= MAX_ARCHIVE_BYTES);
     }
 
     #[test]

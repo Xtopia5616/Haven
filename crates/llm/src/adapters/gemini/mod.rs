@@ -220,6 +220,22 @@ impl LlmClient for GeminiAdapter {
         .await
     }
 
+    async fn chat_stream_with_tools_output_cap_shared_guidance(
+        &self,
+        messages: Arc<[CanonicalMessage]>,
+        tools: Arc<[ToolDefinition]>,
+        guidance: String,
+        max_output_tokens: Option<u32>,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
+        self.chat_stream_inner_with_max_tokens_shared_guidance(
+            messages.as_ref(),
+            tools.as_ref(),
+            Some(&guidance),
+            max_output_tokens,
+        )
+        .await
+    }
+
     async fn embed(&self, input: Vec<String>) -> Result<Embedding, LlmError> {
         if input.is_empty() {
             return Ok(Embedding {

@@ -35,10 +35,10 @@ const IDLE_EXTRA_SECS_PER_1K_TOKENS: u64 = 2;
 pub(crate) const IDLE_SCALE_CAP_SECS: u64 = 90;
 
 /// Conversation data shared by repeated streaming attempts.
-#[derive(Clone, Copy)]
-pub(crate) struct StreamContext<'a> {
-    pub(crate) messages: &'a [CanonicalMessage],
-    pub(crate) tools: &'a [ToolDefinition],
+#[derive(Clone)]
+pub(crate) struct StreamContext {
+    pub(crate) messages: Arc<[CanonicalMessage]>,
+    pub(crate) tools: Arc<[ToolDefinition]>,
     pub(crate) max_output_tokens: Option<u32>,
 }
 
@@ -111,7 +111,7 @@ pub(crate) fn scale_stream_idle(base: Duration, messages: &[CanonicalMessage]) -
 
 pub(crate) async fn aggregate_stream_with_retry_before_output(
     client: Arc<dyn LlmClient>,
-    context: StreamContext<'_>,
+    context: StreamContext,
     on_chunk: Arc<StdMutex<impl FnMut(&StreamChunk) + Send + 'static>>,
     cancel: CancellationToken,
     stream_rules: &RwLock<Vec<StreamRule>>,
@@ -121,8 +121,8 @@ pub(crate) async fn aggregate_stream_with_retry_before_output(
     // Materialize the retry-invariant request once.  Each attempt below only
     // clones these Arcs; the canonical message/tool graph is not deep-cloned
     // by the retry loop.
-    let messages = Arc::<[CanonicalMessage]>::from(context.messages);
-    let tools = Arc::<[ToolDefinition]>::from(context.tools);
+    let messages = context.messages;
+    let tools = context.tools;
     for attempt in 0..=retry.max_retries {
         if cancel.is_cancelled() {
             return Err(LlmError::Cancelled);
@@ -178,6 +178,7 @@ pub(crate) async fn aggregate_stream_with_retry_before_output(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(crate) async fn aggregate_stream_cancellable(
     client: Arc<dyn LlmClient>,
     messages: Vec<CanonicalMessage>,
@@ -203,14 +204,43 @@ pub(crate) async fn aggregate_stream_cancellable(
 
 /// Aggregate a stream from a shared immutable request snapshot. Provider
 /// retries use this path so retry bookkeeping only clones Arc handles. The
-/// default `LlmClient` compatibility method may still materialize owned
-/// provider arguments; native adapters can override that boundary to serialize
-/// directly from the shared slices.
+/// `LlmClient` compatibility boundary is fail-closed; adapters must implement
+/// the shared method to participate in streaming retries.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn aggregate_stream_cancellable_shared(
     client: Arc<dyn LlmClient>,
     messages: Arc<[CanonicalMessage]>,
     tools: Arc<[ToolDefinition]>,
+    on_chunk: Arc<StdMutex<impl FnMut(&StreamChunk) + Send + 'static>>,
+    cancel: CancellationToken,
+    stream_rules: &RwLock<Vec<StreamRule>>,
+    idle_timeout: Duration,
+    max_output_tokens: Option<u32>,
+) -> Result<LlmResponse, LlmError> {
+    aggregate_stream_cancellable_shared_with_guidance(
+        client,
+        messages,
+        tools,
+        None,
+        on_chunk,
+        cancel,
+        stream_rules,
+        idle_timeout,
+        max_output_tokens,
+    )
+    .await
+}
+
+/// Aggregate a stream from a shared immutable request snapshot with an
+/// optional trailing guidance message. The guidance retry shares the original
+/// Arc-backed request and leaves suffix materialization to the provider
+/// adapter's wire conversion.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn aggregate_stream_cancellable_shared_with_guidance(
+    client: Arc<dyn LlmClient>,
+    messages: Arc<[CanonicalMessage]>,
+    tools: Arc<[ToolDefinition]>,
+    guidance: Option<String>,
     on_chunk: Arc<StdMutex<impl FnMut(&StreamChunk) + Send + 'static>>,
     cancel: CancellationToken,
     stream_rules: &RwLock<Vec<StreamRule>>,
@@ -229,9 +259,20 @@ pub(crate) async fn aggregate_stream_cancellable_shared(
     // button cannot stop a provider that accepted the connection but has not
     // returned headers yet, and the caller waits for the transport timeout.
     let stream_result = async {
-        client
-            .chat_stream_with_tools_output_cap_shared(messages, tools, max_output_tokens)
-            .await
+        if let Some(guidance) = guidance {
+            client
+                .chat_stream_with_tools_output_cap_shared_guidance(
+                    messages,
+                    tools,
+                    guidance,
+                    max_output_tokens,
+                )
+                .await
+        } else {
+            client
+                .chat_stream_with_tools_output_cap_shared(messages, tools, max_output_tokens)
+                .await
+        }
     };
     let mut stream = tokio::select! {
         biased;
@@ -419,6 +460,7 @@ mod tests {
         attempts: AtomicUsize,
         message_backing: StdMutex<Vec<usize>>,
         tool_backing: StdMutex<Vec<usize>>,
+        guidance_backing: StdMutex<Vec<(usize, usize, String)>>,
     }
 
     impl SharedRetryProbe {
@@ -427,6 +469,7 @@ mod tests {
                 attempts: AtomicUsize::new(0),
                 message_backing: StdMutex::new(Vec::new()),
                 tool_backing: StdMutex::new(Vec::new()),
+                guidance_backing: StdMutex::new(Vec::new()),
             }
         }
     }
@@ -462,6 +505,18 @@ mod tests {
             &self,
             _messages: Vec<CanonicalMessage>,
             _tools: Vec<ToolDefinition>,
+            _max_output_tokens: Option<u32>,
+        ) -> Result<
+            Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+            LlmError,
+        > {
+            std::future::pending().await
+        }
+
+        async fn chat_stream_with_tools_output_cap_shared(
+            &self,
+            _messages: Arc<[CanonicalMessage]>,
+            _tools: Arc<[ToolDefinition]>,
             _max_output_tokens: Option<u32>,
         ) -> Result<
             Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
@@ -523,6 +578,24 @@ mod tests {
             }
         }
 
+        async fn chat_stream_with_tools_output_cap_shared_guidance(
+            &self,
+            messages: Arc<[CanonicalMessage]>,
+            tools: Arc<[ToolDefinition]>,
+            guidance: String,
+            _max_output_tokens: Option<u32>,
+        ) -> Result<
+            Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+            LlmError,
+        > {
+            self.guidance_backing.lock().unwrap().push((
+                messages.as_ptr() as usize,
+                tools.as_ptr() as usize,
+                guidance,
+            ));
+            Ok(Box::pin(futures_util::stream::empty()))
+        }
+
         async fn health_check(&self) -> Result<(), LlmError> {
             Ok(())
         }
@@ -575,8 +648,8 @@ mod tests {
         let result = aggregate_stream_with_retry_before_output(
             client,
             StreamContext {
-                messages: &messages,
-                tools: &tools,
+                messages: Arc::from(messages),
+                tools: Arc::from(tools),
                 max_output_tokens: None,
             },
             Arc::new(StdMutex::new(|_chunk: &StreamChunk| {})),
@@ -601,5 +674,46 @@ mod tests {
         assert_eq!(tool_backing.len(), 2);
         assert_eq!(message_backing[0], message_backing[1]);
         assert_eq!(tool_backing[0], tool_backing[1]);
+    }
+
+    #[tokio::test]
+    async fn guidance_retry_reuses_shared_message_and_tool_snapshot() {
+        let probe = Arc::new(SharedRetryProbe::new());
+        let client: Arc<dyn LlmClient> = probe.clone();
+        let rules = RwLock::new(Vec::new());
+        let messages = Arc::<[CanonicalMessage]>::from(vec![CanonicalMessage::user_text("hello")]);
+        let tools = Arc::<[ToolDefinition]>::from(vec![ToolDefinition {
+            tool_type: "function".into(),
+            function: ToolFunction {
+                name: "probe".into(),
+                description: "probe".into(),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+        }]);
+        let message_ptr = messages.as_ptr() as usize;
+        let tool_ptr = tools.as_ptr() as usize;
+
+        let result = aggregate_stream_cancellable_shared_with_guidance(
+            client,
+            messages,
+            tools,
+            Some("Please continue without code fences.".into()),
+            Arc::new(StdMutex::new(|_chunk: &StreamChunk| {})),
+            CancellationToken::new(),
+            &rules,
+            Duration::from_secs(1),
+            None,
+        )
+        .await;
+
+        assert!(result.is_ok(), "guided retry should succeed: {result:?}");
+        assert_eq!(
+            *probe.guidance_backing.lock().unwrap(),
+            vec![(
+                message_ptr,
+                tool_ptr,
+                "Please continue without code fences.".to_string()
+            )]
+        );
     }
 }

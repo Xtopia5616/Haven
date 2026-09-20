@@ -33,6 +33,7 @@
 		notification,
 		log,
 		logView,
+		performanceMetricsLoading = false,
 		autostartEnabled,
 		onHotkeyModeChange = () => {},
 		onHotkeyBindingChange = () => {},
@@ -40,6 +41,7 @@
 		onAutostartChange = () => {},
 		onRunMaintenance = () => {},
 		onOpenLogViewer = () => {},
+		onExportPerformanceMetrics = async () => {},
 		onRevokePermission = async () => {},
 		onResetPermissions = async () => {},
 	} = $props();
@@ -471,12 +473,20 @@
 	<SettingsSection className="log-section">
 		<div class="llm-head">
 			<h2>日志</h2>
-			<MaterialButton
-				variant="outlined"
-				label="查看日志"
-				onclick={() => onOpenLogViewer()}
-				disabled={logView.loading}
-			/>
+			<div class="form-row">
+				<MaterialButton
+					variant="outlined"
+					label="查看日志"
+					onclick={() => onOpenLogViewer()}
+					disabled={logView.loading}
+				/>
+				<MaterialButton
+					variant="outlined"
+					label={performanceMetricsLoading ? '导出中…' : '导出性能指标'}
+					onclick={() => onExportPerformanceMetrics()}
+					disabled={performanceMetricsLoading}
+				/>
+			</div>
 		</div>
 		<div class="form-row switch-row">
 			<span class="switch-label">文件日志</span><MaterialSwitch

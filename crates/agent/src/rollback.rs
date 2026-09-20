@@ -72,10 +72,13 @@ impl AgentLayer {
         // Snapshot bytes are only a cache. Keep a read error around until the
         // event stream has been checked: a durable timeline can still provide
         // every rollback input when the cache is corrupt or unreadable.
-        let (state_json, state_json_error) = match self.db.get_react_state(session_id) {
-            Ok(state) => (state, None),
-            Err(error) => (None, Some(error)),
-        };
+        let db = self.db.clone();
+        let sid = session_id.to_string();
+        let (state_json, state_json_error) =
+            match db.run_blocking(move |db| db.get_react_state(&sid)).await {
+                Ok(state) => (state, None),
+                Err(error) => (None, Some(error)),
+            };
         let mut durable_state = self
             .react_engine
             .load_durable_event_state(session_id)
@@ -161,7 +164,11 @@ impl AgentLayer {
             // user message for user-rollback (pause=true), or the last user
             // message for agent-rollback too (delete the partial output after
             // it).
-            let cutoff_ts = self.db.last_user_message_ts(session_id)?;
+            let db = self.db.clone();
+            let sid = session_id.to_string();
+            let cutoff_ts = db
+                .run_blocking(move |db| db.last_user_message_ts(&sid))
+                .await?;
             BranchPoint {
                 event_cursor: snapshot.events.len(),
                 step_number: target_step,
@@ -206,7 +213,11 @@ impl AgentLayer {
         // Such a message was never added to the ReAct events, so rolling
         // back to it must discard ONLY that message — deleting from the
         // branch point's cutoff would wipe valid earlier history.
-        let session_msgs = self.db.get_session_messages(session_id)?;
+        let db = self.db.clone();
+        let sid = session_id.to_string();
+        let session_msgs = db
+            .run_blocking(move |db| db.get_session_messages(&sid))
+            .await?;
         // User-message rollback (pause=true) needs the EXACT clicked
         // message. The old fallbacks — matching by content when the id
         // missed, or guessing the newest user message — could delete the
@@ -219,7 +230,7 @@ impl AgentLayer {
                     session_id
                 )
             })?;
-            Some(session_msgs.iter().find(|m| m.id == id).ok_or_else(|| {
+            Some(session_msgs.iter().find(|m| m.id == id).cloned().ok_or_else(|| {
                 anyhow::anyhow!(
                     "rollback_session {}: target message '{}' not found in session messages",
                     session_id,
@@ -229,7 +240,7 @@ impl AgentLayer {
         } else {
             None
         };
-        let is_orphan_rollback = target_msg.is_some_and(|m| {
+        let is_orphan_rollback = target_msg.as_ref().is_some_and(|m| {
             m.role == "user"
                 && max_bp_ts
                     .as_deref()
@@ -245,19 +256,27 @@ impl AgentLayer {
                 // the "newest user message at/before the branch point" guess
                 // is gone.
                 let user_ts = target_msg
+                    .as_ref()
                     .expect("pause target resolved above")
                     .created_at
                     .clone();
                 // Rollback overwrites: remove the clicked user message and
                 // every projection row after it in one transaction, including
                 // the cumulative usage rebuild.
-                self.db.truncate_session_after(session_id, &user_ts, true)?;
+                let db = self.db.clone();
+                let sid = session_id.to_string();
+                db.run_blocking(move |db| db.truncate_session_after(&sid, &user_ts, true))
+                    .await?;
             } else {
                 // Strict `>` for both: the branch-point cutoff is the last
                 // message BEFORE the discarded step, so we keep the cutoff
                 // itself intact (truncate_session_after is non-inclusive).
                 // Also rebuilds session_usage from remaining llm_usage rows.
-                self.db.truncate_session_after(session_id, ts, false)?;
+                let db = self.db.clone();
+                let sid = session_id.to_string();
+                let cutoff = ts.clone();
+                db.run_blocking(move |db| db.truncate_session_after(&sid, &cutoff, false))
+                    .await?;
             }
         }
         // Clear after join + truncation so unwind persists cannot leave a
@@ -283,7 +302,7 @@ impl AgentLayer {
         // message id. Text is never used as an identity fallback.
         if pause
             && !is_orphan_rollback
-            && let Some(target) = target_msg
+            && let Some(target) = target_msg.as_ref()
             && !truncate_at_user_message(
                 &mut snapshot.events,
                 &mut snapshot.branch_points,
@@ -341,7 +360,10 @@ impl AgentLayer {
             .await?;
 
         let json = serde_json::to_string(&snapshot)?;
-        self.db.save_react_state(session_id, &json)?;
+        let db = self.db.clone();
+        let sid = session_id.to_string();
+        db.run_blocking(move |db| db.save_react_state(&sid, &json))
+            .await?;
 
         // Rebuild per-session tool registrations from the restored rounds so
         // that tools loaded after the rollback point are dropped, and tools
@@ -412,7 +434,9 @@ impl AgentLayer {
         // boundary for this error (after an app restart it can be several
         // completed steps old). Only an explicit failed-stream marker makes
         // this attempt's branch point safe to truncate.
-        match self.db.get_react_state(session_id) {
+        let db = self.db.clone();
+        let sid = session_id.to_string();
+        match db.run_blocking(move |db| db.get_react_state(&sid)).await {
             Ok(Some(state_json)) => match ReActSnapshot::from_json(&state_json) {
                 Ok(snapshot) => {
                     if let Some(error_partial_message_ids) = snapshot.error_partial_message_ids {
@@ -425,13 +449,23 @@ impl AgentLayer {
                             // save_branch_point in persist_partial_on_error,
                             // so this range belongs to the known failed
                             // attempt, including its step projection.
-                            self.db.truncate_session_after(session_id, cutoff, false)?;
+                            let db = self.db.clone();
+                            let sid = session_id.to_string();
+                            let cutoff = cutoff.to_string();
+                            db.run_blocking(move |db| {
+                                db.truncate_session_after(&sid, &cutoff, false)
+                            })
+                            .await?;
                         } else {
                             // A partially persisted error snapshot may lack a
                             // branch point. Its explicit recovery IDs are
                             // still safe.
-                            self.db
-                                .delete_messages_by_ids(session_id, &error_partial_message_ids)?;
+                            let db = self.db.clone();
+                            let sid = session_id.to_string();
+                            db.run_blocking(move |db| {
+                                db.delete_messages_by_ids(&sid, &error_partial_message_ids)
+                            })
+                            .await?;
                         }
                     }
                 }

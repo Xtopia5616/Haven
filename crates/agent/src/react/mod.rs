@@ -47,8 +47,8 @@ use hooks::{LoopHooksHandle, default_hooks};
 use identity::IdentityMap;
 pub(crate) use r#loop::RunInput;
 pub use r#loop::{LoopExit, PauseReason};
-pub use metrics::MetricsSnapshot;
 use metrics::{Counter as MetricsCounter, Phase as MetricsPhase, ReActMetrics};
+pub use metrics::{MetricsSnapshot, UiMetricsSnapshot};
 pub(crate) use request_context::RequestContext;
 use sidecars::{
     ContextWindowCache, CumulativeUsage, LastMsgAtCache, SnapshotBufs, TokenEstimateCache,
@@ -767,6 +767,20 @@ impl ReActEngine {
         // avoids cloning the full LlmConfig on every step.
         let context_window = Some(self.cached_context_window(role).await);
 
+        let seed = if self.usage.needs_seed(session_id) {
+            let db = self.db.clone();
+            let session_id_for_seed = session_id.to_string();
+            db.run_blocking(move |db| {
+                Ok(db
+                    .get_session_usage(&session_id_for_seed)?
+                    .map(CumulativeUsage::from)
+                    .unwrap_or_default())
+            })
+            .await
+            .unwrap_or_default()
+        } else {
+            CumulativeUsage::default()
+        };
         let totals = self.usage.record_with_seed(
             session_id,
             usage.prompt_tokens,
@@ -776,18 +790,7 @@ impl ReActEngine {
             usage.cache_creation_tokens,
             usage.cache_miss_tokens(),
             step_cost,
-            || {
-                // Seed from persisted counters when this session was resumed or
-                // reopened: the in-memory map is cleared on session completion
-                // (and lost on restart), but the DB row keeps the running
-                // totals so cumulative stats stay valid across sessions.
-                self.db
-                    .get_session_usage(session_id)
-                    .ok()
-                    .flatten()
-                    .map(CumulativeUsage::from)
-                    .unwrap_or_default()
-            },
+            || seed,
         );
         let cum_prompt = totals.prompt_tokens;
         let cum_completion = totals.completion_tokens;
@@ -1473,6 +1476,19 @@ mod tests {
             &self,
             _: Vec<CanonicalMessage>,
             _: Vec<ToolDefinition>,
+        ) -> Result<
+            Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+            LlmError,
+        > {
+            Err(LlmError::Unknown(
+                "mock: chat_stream_with_tools not implemented".into(),
+            ))
+        }
+        async fn chat_stream_with_tools_output_cap_shared(
+            &self,
+            _messages: Arc<[CanonicalMessage]>,
+            _tools: Arc<[ToolDefinition]>,
+            _max_output_tokens: Option<u32>,
         ) -> Result<
             Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
             LlmError,

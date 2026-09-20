@@ -91,6 +91,22 @@ impl LlmClient for UnavailableLlmClient {
         Err(self.error.clone())
     }
 
+    async fn chat_stream_with_tools_output_cap_shared(
+        &self,
+        _messages: std::sync::Arc<[haven_common::types::CanonicalMessage]>,
+        _tools: std::sync::Arc<[crate::types::ToolDefinition]>,
+        _max_output_tokens: Option<u32>,
+    ) -> Result<
+        std::pin::Pin<
+            Box<
+                dyn futures_util::Stream<Item = Result<crate::types::StreamChunk, LlmError>> + Send,
+            >,
+        >,
+        LlmError,
+    > {
+        Err(self.error.clone())
+    }
+
     async fn embed(&self, _input: Vec<String>) -> Result<crate::types::Embedding, LlmError> {
         Err(self.error.clone())
     }
