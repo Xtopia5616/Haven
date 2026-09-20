@@ -1442,6 +1442,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn interaction_persistence_fails_when_react_checkpoint_is_missing() {
+        let db = temp_db();
+        let tools = Arc::new(ToolsManager::new());
+        let exec = SessionExecutor::new(db, tools, 3);
+        let session = exec.create_session("test").await.unwrap();
+        exec.request_interaction(crate::interaction::InteractionRequest::ask(
+            &session.id,
+            "the answer",
+            Vec::new(),
+            vec!["step-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into()],
+        ))
+        .await
+        .unwrap();
+
+        let error = exec.persist_interactions(&session.id).await.unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("react_state checkpoint is missing")
+        );
+        assert_eq!(
+            exec.pending_interactions(&session.id, crate::interaction::InteractionKind::Ask)
+                .await
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
     async fn add_and_get_follow_ups_with_attachments() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
