@@ -178,3 +178,4 @@
 - [0179：读路径与 provider 重试兼容边界](0179-read-path-and-provider-retry-compatibility.md)
 - [0180：Action completion durable outbox 与流式 overflow pump](0180-action-completion-outbox-and-stream-overflow-pump.md)
 - [0181：ReAct turn deadline 与交互恢复边界](0181-react-turn-deadline-and-interaction-recovery.md)
+- [0182：文件搜索并行度上限](0182-bounded-file-search-parallelism.md)

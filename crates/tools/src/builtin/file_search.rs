@@ -13,6 +13,14 @@ use tokio_util::sync::CancellationToken;
 
 use crate::ToolResult;
 
+/// Keep a file search from consuming every logical CPU on the desktop.
+///
+/// `ignore::WalkBuilder::threads(0)` chooses a machine-dependent number of
+/// workers. That is a poor default for an interactive desktop assistant: a
+/// broad search can otherwise starve the Tauri/WebView, audio, and agent
+/// runtimes even though the search itself runs in a blocking task.
+const MAX_SEARCH_THREADS: usize = 2;
+
 /// Typed request passed from the files aggregate tool to the search engine.
 /// The JSON-shaped `Value` entry remains only at the model boundary.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -307,7 +315,7 @@ fn walk_builder(root: &Path, max_depth: usize, ignore_hidden: bool) -> ignore::W
         .git_ignore(true)
         .git_global(true)
         .git_exclude(true)
-        .threads(0); // 0 = auto (num cpus)
+        .threads(MAX_SEARCH_THREADS);
     builder
 }
 
@@ -856,6 +864,11 @@ mod tests {
         assert!(re2.is_match("test_abc.py"));
         assert!(!re2.is_match("test_ab.py"));
         assert!(!re2.is_match("test_abcd.py"));
+    }
+
+    #[test]
+    fn file_search_has_a_bounded_traversal_thread_budget() {
+        assert_eq!(MAX_SEARCH_THREADS, 2);
     }
 
     #[test]
