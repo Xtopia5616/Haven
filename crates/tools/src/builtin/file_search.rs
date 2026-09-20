@@ -20,6 +20,40 @@ use crate::ToolResult;
 /// broad search can otherwise starve the Tauri/WebView, audio, and agent
 /// runtimes even though the search itself runs in a blocking task.
 const MAX_SEARCH_THREADS: usize = 2;
+/// Bound work as well as result size. A no-match search must not walk an
+/// unbounded directory tree forever when the requested root is too broad.
+const MAX_SEARCH_ENTRIES: usize = 100_000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TruncationReason {
+    MaxResults,
+    MaxScannedEntries,
+}
+
+fn truncation_reason(result_limit_hit: bool, scan_limit_hit: bool) -> Option<TruncationReason> {
+    if result_limit_hit {
+        Some(TruncationReason::MaxResults)
+    } else if scan_limit_hit {
+        Some(TruncationReason::MaxScannedEntries)
+    } else {
+        None
+    }
+}
+
+fn reserve_scan_entry(
+    stop_flag: &AtomicBool,
+    scanned_entries: &AtomicUsize,
+    scan_limit_hit: &AtomicBool,
+) -> bool {
+    let index = scanned_entries.fetch_add(1, Ordering::Relaxed);
+    if index >= MAX_SEARCH_ENTRIES {
+        scan_limit_hit.store(true, Ordering::Relaxed);
+        stop_flag.store(true, Ordering::Relaxed);
+        false
+    } else {
+        true
+    }
+}
 
 /// Typed request passed from the files aggregate tool to the search engine.
 /// The JSON-shaped `Value` entry remains only at the model boundary.
@@ -185,8 +219,20 @@ impl FileSearchEngine {
             end_line,
         } = request;
         let root_path = std::path::PathBuf::from(&root);
-        if !root_path.exists() {
-            anyhow::bail!("root path '{}' does not exist", root);
+        let root_metadata = tokio::select! {
+            metadata = tokio::fs::metadata(&root_path) => match metadata {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    anyhow::bail!("root path '{}' does not exist", root)
+                }
+                Err(error) => {
+                    anyhow::bail!("cannot access root path '{}': {error}", root)
+                }
+            },
+            _ = cancel.cancelled() => anyhow::bail!("cancelled"),
+        };
+        if !root_metadata.is_file() && !root_metadata.is_dir() {
+            anyhow::bail!("root path '{}' is not a file or directory", root);
         }
 
         let search_permit = tokio::select! {
@@ -201,7 +247,7 @@ impl FileSearchEngine {
         let snippet_chars = self.snippet_chars;
         let max_window_bytes = self.max_window_bytes;
         let pattern_for_output = pattern_str.clone();
-        let (results, truncated) = tokio::task::spawn_blocking(move || {
+        let (results, truncation) = tokio::task::spawn_blocking(move || {
             search_files(SearchParams {
                 root: &root_path,
                 pattern: &pattern_str,
@@ -222,6 +268,7 @@ impl FileSearchEngine {
         if cancel.is_cancelled() {
             anyhow::bail!("cancelled");
         }
+        let truncated = truncation.is_some();
         let mut output = serde_json::json!({
             "results": results,
             "count": results.len(),
@@ -230,11 +277,16 @@ impl FileSearchEngine {
             "pattern": pattern_for_output,
             "has_more": truncated,
         });
-        if truncated {
+        if let Some(reason) = truncation {
             output["truncated"] = serde_json::Value::Bool(true);
-            output["hint"] = serde_json::Value::String(format!(
-                "Results hit the max_results cap ({max_results}). Narrow the pattern, add a line range (start_line/end_line), or raise max_results."
-            ));
+            output["hint"] = serde_json::Value::String(match reason {
+                TruncationReason::MaxResults => format!(
+                    "Results hit the max_results cap ({max_results}). Narrow the pattern, add a line range (start_line/end_line), or raise max_results."
+                ),
+                TruncationReason::MaxScannedEntries => format!(
+                    "Search stopped after scanning {MAX_SEARCH_ENTRIES} filesystem entries. Narrow the root, add a filename/content pattern, or reduce max_depth."
+                ),
+            });
         }
         Ok(if truncated {
             ToolResult::truncated(output)
@@ -275,7 +327,7 @@ struct ContentSearchParams<'a> {
     cancel: CancellationToken,
 }
 
-fn search_files(params: SearchParams<'_>) -> (Vec<Value>, bool) {
+fn search_files(params: SearchParams<'_>) -> (Vec<Value>, Option<TruncationReason>) {
     match params.mode {
         "content" => search_content_parallel(&ContentSearchParams {
             root: params.root,
@@ -340,8 +392,10 @@ fn search_filenames_parallel(
     max_results: usize,
     ignore_hidden: bool,
     cancel: CancellationToken,
-) -> (Vec<Value>, bool) {
+) -> (Vec<Value>, Option<TruncationReason>) {
     let found_flag = Arc::new(AtomicBool::new(false));
+    let scanned_entries = Arc::new(AtomicUsize::new(0));
+    let scan_limit_hit = Arc::new(AtomicBool::new(false));
     let result_count = Arc::new(AtomicUsize::new(0));
     let results = Arc::new(Mutex::new(Vec::new()));
     let re = regex::Regex::new(&glob_to_regex(pattern)).ok();
@@ -352,11 +406,16 @@ fn search_filenames_parallel(
         let re = re.clone();
         let glob = glob.clone();
         let found_flag = found_flag.clone();
+        let scanned_entries = scanned_entries.clone();
+        let scan_limit_hit = scan_limit_hit.clone();
         let result_count = result_count.clone();
         let results = results.clone();
         let cancel = cancel.clone();
         Box::new(move |entry| {
             if cancel.is_cancelled() || found_flag.load(Ordering::Relaxed) {
+                return ignore::WalkState::Quit;
+            }
+            if !reserve_scan_entry(&found_flag, &scanned_entries, &scan_limit_hit) {
                 return ignore::WalkState::Quit;
             }
             let entry = match entry {
@@ -384,7 +443,10 @@ fn search_filenames_parallel(
     });
     (
         finalize(results, max_results),
-        found_flag.load(Ordering::Relaxed),
+        truncation_reason(
+            result_count.load(Ordering::Relaxed) > max_results,
+            scan_limit_hit.load(Ordering::Relaxed),
+        ),
     )
 }
 
@@ -393,7 +455,7 @@ fn search_filenames_parallel(
 /// detection. With `start_line`/`end_line`, each file is searched only within
 /// that 1-based line range (windowed slice when the range is small, sink-side
 /// filtering otherwise). Returns results and whether the result cap was hit.
-fn search_content_parallel(p: &ContentSearchParams<'_>) -> (Vec<Value>, bool) {
+fn search_content_parallel(p: &ContentSearchParams<'_>) -> (Vec<Value>, Option<TruncationReason>) {
     let root = p.root;
     let pattern = p.pattern;
     let max_depth = p.max_depth;
@@ -429,6 +491,8 @@ fn search_content_parallel(p: &ContentSearchParams<'_>) -> (Vec<Value>, bool) {
     };
 
     let found_flag = Arc::new(AtomicBool::new(false));
+    let scanned_entries = Arc::new(AtomicUsize::new(0));
+    let scan_limit_hit = Arc::new(AtomicBool::new(false));
     let result_count = Arc::new(AtomicUsize::new(0));
     let results = Arc::new(Mutex::new(Vec::new()));
 
@@ -437,11 +501,16 @@ fn search_content_parallel(p: &ContentSearchParams<'_>) -> (Vec<Value>, bool) {
         let matcher = matcher.clone();
         let mut searcher = searcher.clone();
         let found_flag = found_flag.clone();
+        let scanned_entries = scanned_entries.clone();
+        let scan_limit_hit = scan_limit_hit.clone();
         let result_count = result_count.clone();
         let results = results.clone();
         let cancel = cancel.clone();
         Box::new(move |entry| {
             if cancel.is_cancelled() || found_flag.load(Ordering::Relaxed) {
+                return ignore::WalkState::Quit;
+            }
+            if !reserve_scan_entry(&found_flag, &scanned_entries, &scan_limit_hit) {
                 return ignore::WalkState::Quit;
             }
             let entry = match entry {
@@ -492,7 +561,10 @@ fn search_content_parallel(p: &ContentSearchParams<'_>) -> (Vec<Value>, bool) {
     });
     (
         finalize(results, max_results),
-        found_flag.load(Ordering::Relaxed),
+        truncation_reason(
+            result_count.load(Ordering::Relaxed) > max_results,
+            scan_limit_hit.load(Ordering::Relaxed),
+        ),
     )
 }
 
@@ -869,6 +941,20 @@ mod tests {
     #[test]
     fn file_search_has_a_bounded_traversal_thread_budget() {
         assert_eq!(MAX_SEARCH_THREADS, 2);
+    }
+
+    #[test]
+    fn scan_entry_budget_stops_after_the_configured_limit() {
+        let stop_flag = AtomicBool::new(false);
+        let scanned_entries = AtomicUsize::new(MAX_SEARCH_ENTRIES);
+        let scan_limit_hit = AtomicBool::new(false);
+        assert!(!reserve_scan_entry(
+            &stop_flag,
+            &scanned_entries,
+            &scan_limit_hit
+        ));
+        assert!(stop_flag.load(Ordering::Relaxed));
+        assert!(scan_limit_hit.load(Ordering::Relaxed));
     }
 
     #[test]

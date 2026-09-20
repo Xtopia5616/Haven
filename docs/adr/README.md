@@ -179,3 +179,4 @@
 - [0180：Action completion durable outbox 与流式 overflow pump](0180-action-completion-outbox-and-stream-overflow-pump.md)
 - [0181：ReAct turn deadline 与交互恢复边界](0181-react-turn-deadline-and-interaction-recovery.md)
 - [0182：文件搜索并行度上限](0182-bounded-file-search-parallelism.md)
+- [0183：文件搜索工作量上限与异步根路径检查](0183-bounded-file-search-work.md)
