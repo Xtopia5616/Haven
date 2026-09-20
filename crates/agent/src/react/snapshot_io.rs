@@ -779,15 +779,18 @@ impl ReActEngine {
                 .retain(|request| request.kind != crate::interaction::InteractionKind::Confirm);
         }
         let run_budget = self.current_run_budget(session_id);
-        let last_ingress_seq = match self
-            .db
-            .clone()
-            .run_blocking({
-                let session_id = session_id.to_string();
-                move |db| Ok(db.get_last_message_ingress_seq(&session_id))
-            })
-            .await
-        {
+        let last_ingress_seq_result = {
+            let db = self.db.clone();
+            let read_session_id = session_id.to_string();
+            let read = move |db: &Database| -> anyhow::Result<i64> {
+                Ok(db.get_last_message_ingress_seq(&read_session_id))
+            };
+            match state.turn_cancel.clone() {
+                Some(cancel) => db.run_blocking_cancellable(cancel, read).await,
+                None => db.run_blocking(read).await,
+            }
+        };
+        let last_ingress_seq = match last_ingress_seq_result {
             Ok(cursor) => cursor,
             Err(error) => {
                 tracing::warn!(
@@ -830,13 +833,15 @@ impl ReActEngine {
         let tid_owned = session_id.to_string();
         // Return ownership of the serialized bytes so the allocation is
         // handed back to the session's buffer for reuse on the next snapshot.
-        let back: String = match db
-            .run_blocking(move |db| {
-                db.save_react_state(&tid_owned, &json)?;
-                Ok::<String, anyhow::Error>(json)
-            })
-            .await
-        {
+        let write = move |db: &Database| {
+            db.save_react_state(&tid_owned, &json)?;
+            Ok::<String, anyhow::Error>(json)
+        };
+        let saved = match state.turn_cancel.clone() {
+            Some(cancel) => db.run_blocking_cancellable(cancel, write).await,
+            None => db.run_blocking(write).await,
+        };
+        let back: String = match saved {
             Ok(json) => json,
             Err(error) => {
                 tracing::warn!(
