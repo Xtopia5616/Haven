@@ -16,7 +16,7 @@ Ask/Confirm 的交互状态需要先进入 durable checkpoint 才能清除内存
 1. 交互快照写入在找不到 `react_state` checkpoint 时显式失败；调用方保持内存中的
    pending interaction，等待后续 durable checkpoint 成功后再清除。
 2. 每个 turn 从 session cancellation token 派生独立的 deadline token，并传给 provider、
-   工具批次以及 transcript/snapshot 的 blocking SQLite 写入。deadline 到期时先取消
+   工具批次以及 transcript/snapshot/usage 的 blocking SQLite 写入。deadline 到期时先取消
    派生 token，再由各边界将取消转换为 deadline error。
 3. `Database::run_blocking_cancellable` 在 blocking worker 中登记 SQLite
    `InterruptHandle`，并将 cancellable 连接的 busy wait 限制为短窗口；连接归还池时
