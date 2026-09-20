@@ -705,13 +705,13 @@ describe('ToolResultCard files', () => {
 		});
 		await expandToolCard(container);
 
-		expect(container.querySelectorAll('.search-row')).toHaveLength(100);
-		const moreButton = screen.getByRole('button', { name: '显示更多（剩余 150 条）' });
+		expect(container.querySelectorAll('.search-row')).toHaveLength(15);
+		const moreButton = screen.getByRole('button', { name: '显示更多（剩余 235 条）' });
 		expect(moreButton).toBeTruthy();
 
 		await fireEvent.click(moreButton);
-		expect(container.querySelectorAll('.search-row')).toHaveLength(200);
-		expect(screen.getByRole('button', { name: '显示更多（剩余 50 条）' })).toBeTruthy();
+		expect(container.querySelectorAll('.search-row')).toHaveLength(30);
+		expect(screen.getByRole('button', { name: '显示更多（剩余 220 条）' })).toBeTruthy();
 	});
 
 	it('renders the truncated hint when present', async () => {

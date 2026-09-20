@@ -4,7 +4,7 @@
 
 	let { data = {} } = $props();
 
-	const RESULT_PAGE_SIZE = 100;
+	const RESULT_PAGE_SIZE = 15;
 	let resultList = $derived(Array.isArray(data.results) ? data.results : []);
 	let resultCount = $derived(
 		typeof data.count === 'number' && Number.isFinite(data.count)
