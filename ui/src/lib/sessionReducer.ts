@@ -163,6 +163,8 @@ export type SessionAction =
 			sessionId: string;
 			messages: SessionMessage[];
 			interactions?: InteractionRequest[];
+			/** Pending live requests that must survive a possibly stale resume snapshot. */
+			preserveInteractionIds?: string[];
 			usage?: ResumeUsage | null;
 			llmUsage?: LlmUsage[];
 			preserveStreamingOnly?: boolean;
@@ -174,7 +176,12 @@ export type SessionAction =
 	| { type: 'session/stream-blocks-cleared'; sessionId: string }
 	| { type: 'session/background-result'; sessionId?: string; actionId: string; content: string }
 	| { type: 'session/interaction-upserted'; request: InteractionRequest }
-	| { type: 'session/interactions-hydrated'; sessionId: string; requests: InteractionRequest[] }
+	| {
+			type: 'session/interactions-hydrated';
+			sessionId: string;
+			requests: InteractionRequest[];
+			preserveInteractionIds?: string[];
+	  }
 	| { type: 'session/interactions-cleared'; sessionId: string; kind?: InteractionKind }
 	| { type: 'session/interaction-resolved'; id: string; response?: unknown }
 	| {
@@ -805,6 +812,7 @@ export function reduceSession(
 					type: 'session/interactions-hydrated',
 					sessionId: action.sessionId,
 					requests: action.interactions,
+					preserveInteractionIds: action.preserveInteractionIds,
 				});
 			}
 			if (action.usage) {
@@ -901,6 +909,20 @@ export function reduceSession(
 			for (const request of action.requests)
 				if (request.id && request.sessionId === action.sessionId)
 					interactions[request.id] = request;
+			// Resume is a snapshot read, not an event acknowledgement. Keep pending
+			// requests that are still live in the renderer when the snapshot omitted
+			// them (for example, an interaction event raced the SQLite checkpoint).
+			// An incoming row always wins, including a resolved/expired row.
+			const preserveIds = new Set(action.preserveInteractionIds || []);
+			for (const [id, request] of Object.entries(state.interactions || {})) {
+				if (
+					preserveIds.has(id) &&
+					request.sessionId === action.sessionId &&
+					request.status === 'pending' &&
+					!(id in interactions)
+				)
+					interactions[id] = request;
+			}
 			return { ...state, interactions };
 		}
 

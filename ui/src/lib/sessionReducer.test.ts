@@ -147,6 +147,38 @@ describe('SessionReducer', () => {
 		]);
 	});
 
+	it('does not drop a live confirmation when resume snapshot is behind the event', () => {
+		const pending = {
+			id: 'conf-live',
+			sessionId: 'ses-live',
+			kind: 'confirm' as const,
+			status: 'pending' as const,
+			prompt: '需要确认',
+			options: [],
+			createdAt: '2026-09-20T00:00:00Z',
+		};
+		const state = { ...initialSessionState, interactions: { [pending.id]: pending } };
+
+		const kept = reduceSession(state, {
+			type: 'session/messages/resume-loaded',
+			sessionId: pending.sessionId,
+			messages: [],
+			interactions: [],
+			preserveInteractionIds: [pending.id],
+		});
+
+		expect(kept.interactions?.[pending.id]).toEqual(pending);
+
+		const resolved = reduceSession(state, {
+			type: 'session/messages/resume-loaded',
+			sessionId: pending.sessionId,
+			messages: [],
+			interactions: [{ ...pending, status: 'resolved' }],
+			preserveInteractionIds: [pending.id],
+		});
+		expect(resolved.interactions?.[pending.id]?.status).toBe('resolved');
+	});
+
 	it('deduplicates replayed chunks and sequenced action events', () => {
 		const chunk = {
 			sessionId: 'ses-replay',

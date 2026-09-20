@@ -140,25 +140,33 @@
 	const askHasOptions = $derived(
 		pendingAskInteractions.some((request) => request.options.length > 0),
 	);
-	/** @type {string|null} */
-	let activeConfirmId = $state(null);
-	// Interactive countdown for the visible dialog. Starts when the dialog is
-	// shown (not when the request arrived) so queued confirms are not starved.
-	// Backend uses a longer absolute fail-closed ceiling for closed UI.
+	// The first pending confirmation is the modal projection. Keeping this
+	// derived from the reducer avoids a second local queue that can go stale when
+	// resume, rollback, or another window resolves the request.
+	const activeConfirmRequest = $derived(pendingConfirmInteractions[0] || null);
+	const activeConfirmSessionTitle = $derived(
+		activeConfirmRequest
+			? activeConfirmRequest.sessionId === 'ui'
+				? '当前操作'
+				: String(
+						sessions.find((session) => session.id === activeConfirmRequest.sessionId)
+							?.title || activeConfirmRequest.sessionId,
+					)
+			: '',
+	);
+	// UI-only confirmations do not carry a backend expiry. They still receive a
+	// bounded local decision window; agent confirmations use their real expiry.
 	const CONFIRM_TIMEOUT_MS = 120_000;
-	let confirmDialog =
-		/** @type {{ stepId: string | null, toolName: string, sessionId: string, sessionTitle: string, riskLevel: string, summary: string, permissionKey: string, deadlineAt: number | null }} */ (
-			$state({
-				stepId: null,
-				toolName: '',
-				sessionId: '',
-				sessionTitle: '',
-				riskLevel: 'medium',
-				summary: '',
-				permissionKey: '',
-				deadlineAt: null,
-			})
-		);
+	const activeConfirmDeadlineAt = $derived(
+		activeConfirmRequest
+			? (() => {
+					const parsed = activeConfirmRequest.expiresAt
+						? Date.parse(activeConfirmRequest.expiresAt)
+						: Number.NaN;
+					return Number.isFinite(parsed) ? parsed : Date.now() + CONFIRM_TIMEOUT_MS;
+				})()
+			: null,
+	);
 	let rollbackDialog = $state({
 		open: false,
 		stepNumber: null,
@@ -572,6 +580,13 @@
 	// Rebuild a session's in-memory message list from the authoritative DB
 	// state. Used after rollback (and by handleContinue) so the UI cannot
 	// diverge from what the backend actually kept/deleted.
+	/** @param {string} sessionId */
+	function pendingInteractionIdsForSession(sessionId) {
+		return Object.values(sessionReducer.getState().interactions || {})
+			.filter((request) => request.sessionId === sessionId && request.status === 'pending')
+			.map((request) => request.id);
+	}
+
 	/** @param {string | null} sessionId */
 	async function resyncSessionMessages(sessionId) {
 		if (!sessionId) return;
@@ -582,6 +597,7 @@
 				sessionId,
 				messages: buildResumeMessages(result),
 				interactions: resumeInteractions(result),
+				preserveInteractionIds: pendingInteractionIdsForSession(sessionId),
 				usage: result.usage,
 				llmUsage: result.llm_usage,
 				preserveStreamingOnly: true,
@@ -642,6 +658,7 @@
 				sessionId,
 				messages: buildResumeMessages(result),
 				interactions: resumeInteractions(result),
+				preserveInteractionIds: pendingInteractionIdsForSession(sessionId),
 				usage: result.usage,
 				llmUsage: result.llm_usage,
 			});
@@ -737,6 +754,7 @@
 					sessionId: tid,
 					messages: buildResumeMessages(result),
 					interactions: resumeInteractions(result),
+					preserveInteractionIds: pendingInteractionIdsForSession(tid),
 					usage: result.usage,
 					llmUsage: result.llm_usage,
 					preserveStreamingOnly: true,
@@ -940,7 +958,8 @@
 			sessionReducer.getBlockIds(sessionId, stepNumber, runId),
 	});
 	const { chunkHandler, clearStepBlockIds, flushChunksNow, metricsSnapshot } = streamEvents;
-	const unregisterPerformanceMetricsProvider = registerPerformanceMetricsProvider(metricsSnapshot);
+	const unregisterPerformanceMetricsProvider =
+		registerPerformanceMetricsProvider(metricsSnapshot);
 
 	// Model discovery and default-model settings synchronization live outside the
 	// route component; this page only supplies Svelte state setters.
@@ -1162,6 +1181,11 @@
 		);
 		eventRegistrations = registrations;
 		const readyP = registrations.ready;
+		// Tauri listener registration is asynchronous. Complete it before any
+		// restore/reopen call can trigger a confirmation, otherwise the event can
+		// be emitted into the small registration gap and the modal never appears.
+		await readyP;
+		if (dead) return;
 
 		// Load the current default model for the toolbar model switcher and
 		// populate the menu with models discovered from the default provider's
@@ -1202,7 +1226,7 @@
 		const restoreP = restoreLastConversation(initialResumeTarget);
 
 		try {
-			await Promise.all([sessionsP, restoreP, readyP]);
+			await Promise.all([sessionsP, restoreP]);
 		} finally {
 			initialLoading = false;
 		}
@@ -1351,6 +1375,7 @@
 			sessionId: last.session.id,
 			messages: buildResumeMessages(last),
 			interactions: resumeInteractions(last),
+			preserveInteractionIds: pendingInteractionIdsForSession(last.session.id),
 			usage: last.usage,
 			llmUsage: last.llm_usage,
 		});
@@ -1440,54 +1465,16 @@
 		submitMessage(text, images, files);
 	}
 
-	// Show the next pending confirm request. The request collection itself is
-	// ordered by the shared store; this local id is only modal presentation state.
-	function showNextConfirm() {
-		if (activeConfirmId || pendingConfirmInteractions.length === 0) return;
-		const next = pendingConfirmInteractions[0];
-		activeConfirmId = next.id;
-		confirmDialog = {
-			stepId: next.id,
-			toolName: next.toolName || '',
-			sessionId: next.sessionId,
-			sessionTitle: String(
-				sessions.find((session) => session.id === next.sessionId)?.title || next.sessionId,
-			),
-			riskLevel: next.riskLevel || 'medium',
-			summary: next.summary || next.prompt || '此操作需要你的许可。',
-			permissionKey: next.permissionKey || next.toolName || '',
-			// Fresh 120s window from show time; the backend remains the fail-closed
-			// authority when the renderer is closed.
-			deadlineAt: Date.now() + CONFIRM_TIMEOUT_MS,
-		};
-	}
-
-	$effect(() => {
-		pendingConfirmInteractions;
-		if (!activeConfirmId) showNextConfirm();
-	});
-
 	/** @param {{ stepId: string, approved: boolean, effect?: string, scope?: string }} payload */
 	async function handleConfirm({ stepId, approved, effect, scope }) {
-		// Resolve the shared request synchronously before awaiting IPC. This keeps
-		// a batched response from blocking the next request on the round trip.
+		// Resolve the shared request synchronously before awaiting IPC. The next
+		// queued request is then derived immediately from the reducer.
 		const resolvedStep = stepId;
 		dispatchSession({
 			type: 'session/interaction-resolved',
 			id: resolvedStep,
 			response: { approved, effect, scope },
 		});
-		activeConfirmId = null;
-		confirmDialog = {
-			stepId: null,
-			toolName: '',
-			sessionId: '',
-			sessionTitle: '',
-			riskLevel: 'medium',
-			summary: '',
-			permissionKey: '',
-			deadlineAt: null,
-		};
 		if (!resolvedStep) return;
 		const resolvedEffect = effect || (approved ? 'allow' : 'deny');
 		const resolvedScope = scope || 'once';
@@ -1536,14 +1523,16 @@
 
 <div class="chat-page" bind:this={chatPageEl}>
 	<ConfirmationDialog
-		stepId={confirmDialog.stepId}
-		toolName={confirmDialog.toolName}
-		sessionId={confirmDialog.sessionId}
-		sessionTitle={confirmDialog.sessionTitle}
-		riskLevel={confirmDialog.riskLevel}
-		summary={confirmDialog.summary}
-		permissionKey={confirmDialog.permissionKey}
-		deadlineAt={confirmDialog.deadlineAt}
+		stepId={activeConfirmRequest?.id || null}
+		toolName={activeConfirmRequest?.toolName || ''}
+		sessionId={activeConfirmRequest?.sessionId || ''}
+		sessionTitle={activeConfirmSessionTitle}
+		riskLevel={activeConfirmRequest?.riskLevel || 'medium'}
+		summary={activeConfirmRequest?.summary ||
+			activeConfirmRequest?.prompt ||
+			'此操作需要你的许可。'}
+		permissionKey={activeConfirmRequest?.permissionKey || activeConfirmRequest?.toolName || ''}
+		deadlineAt={activeConfirmDeadlineAt}
 		onConfirm={handleConfirm}
 	/>
 
