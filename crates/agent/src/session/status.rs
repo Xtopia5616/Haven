@@ -65,10 +65,10 @@ impl SessionSupervisor {
             SessionStatus::Running => {
                 self.cancel_direct_waiters(session_id).await;
                 let cancel = self.cancellation_token(session_id).await;
-                // The UI command must not report success while a cancelled
-                // tool/turn can still publish output or release the run slot.
+                // Cancellation is a control-plane request. Do not wait for a
+                // provider/tool to cooperate here: the UI must regain its
+                // controls even when the active tool is slow or stuck.
                 cancel.cancel();
-                self.await_run_finished(session_id).await?;
                 self.update_session_status(session_id, SessionStatus::Paused)
                     .await?;
                 Ok(self.get_session_state(session_id).await == Some(SessionStatus::Paused))
@@ -101,19 +101,16 @@ impl SessionSupervisor {
         self.cancel_direct_waiters(session_id).await;
         actor.cancel().cancel();
         self.cancel_session_actions(session_id).await;
-        // Keep terminal cleanup behind the run-exit fence. Otherwise the
-        // frontend can clear the session while the old handler is still alive,
-        // and a late tool result can race with the next session.
-        self.await_run_finished(session_id).await?;
-        if let Err(error) = self.partials.promote(session_id).await {
-            tracing::warn!(session_id = %session_id, error = %error, "failed to promote session partial");
-        }
+        // Marking the session terminal is immediate. If the run is still
+        // active, terminal cleanup and partial promotion are deferred to the
+        // dispatcher run-exit edge, which keeps late tool output isolated from
+        // the next session without blocking the user's control action.
         self.update_session_status(session_id, SessionStatus::Completed)
             .await?;
         Ok(SessionStatus::Completed)
     }
 
-    async fn finish_ended_session(&self, session_id: &str, cascade: bool) {
+    pub(super) async fn finish_ended_session(&self, session_id: &str, cascade: bool) {
         Self::unregister_from_inbox(session_id);
         self.tools.unregister_session(session_id).await;
         self.scheduled_confirms
@@ -462,14 +459,23 @@ impl SessionSupervisor {
         if transition.terminal {
             self.cancel_direct_waiters(session_id).await;
             self.dequeue_pending(session_id).await;
-            self.finish_ended_session(session_id, true).await;
-            // Completed sessions are explicitly ended and leave the working
-            // set. Error is retryable: keep an idle actor when the transition
-            // happens outside the dispatcher so `continue_session` can inspect
-            // and resume it without rebuilding a second runtime owner.
-            if status == SessionStatus::Completed && !actor.is_running().await {
-                let _lifecycle = self.lifecycle_guard().await;
-                self.remove_actor_locked(session_id).await;
+            // A terminal status can be requested while the run is still
+            // unwinding. Defer cleanup until `unmark_running` observes the
+            // actual run exit; this is what makes end/stop responsive without
+            // allowing the old run to race a newly opened session.
+            if !actor.is_running().await {
+                if let Err(error) = self.partials.promote(session_id).await {
+                    tracing::warn!(session_id, error = %error, "failed to promote session partial");
+                }
+                self.finish_ended_session(session_id, true).await;
+                // Completed sessions are explicitly ended and leave the
+                // working set. Error is retryable: keep an idle actor when the
+                // transition happens outside the dispatcher so
+                // `continue_session` can inspect and resume it.
+                if status == SessionStatus::Completed {
+                    let _lifecycle = self.lifecycle_guard().await;
+                    self.remove_actor_locked(session_id).await;
+                }
             }
         }
         Ok(true)

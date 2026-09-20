@@ -109,7 +109,6 @@ export interface SessionReducerState {
 	interactions?: Record<string, InteractionRequest>;
 	tokenStats?: Record<string, SessionTokenStats>;
 	llmUsage?: Record<string, LlmUsage[]>;
-	toolOutputPreview?: Record<string, string>;
 	replay?: SessionReplayState;
 	optimistic?: Record<string, SessionOptimisticMessage>;
 }
@@ -206,7 +205,6 @@ export type SessionAction =
 	| { type: 'agent/supplement'; payload: AgentSupplementPayload }
 	| { type: 'agent/action'; payload: AgentActionPayload }
 	| { type: 'agent/observation'; payload: AgentObservationPayload }
-	| { type: 'agent/tool-output'; sessionId: string; stepId: string; output: string }
 	| {
 			type: 'session/usage-restored';
 			sessionId: string;
@@ -229,7 +227,6 @@ export const initialSessionState: SessionReducerState = {
 	interactions: {},
 	tokenStats: {},
 	llmUsage: {},
-	toolOutputPreview: {},
 	replay: { eventSeqBySession: {}, chunkSeqByMessage: {}, blockIdsBySession: {} },
 	optimistic: {},
 };
@@ -592,7 +589,6 @@ export function reduceSession(
 				interactions: {},
 				tokenStats: {},
 				llmUsage: {},
-				toolOutputPreview: {},
 				replay: { eventSeqBySession: {}, chunkSeqByMessage: {}, blockIdsBySession: {} },
 				optimistic: {},
 			};
@@ -1118,20 +1114,8 @@ export function reduceSession(
 				next[index] = { ...next[index], ...message, streaming: false };
 				return next;
 			});
-			const previews = { ...(accepted.toolOutputPreview || {}) };
-			delete previews[payload.stepId];
-			return { ...updated, toolOutputPreview: previews };
+			return updated;
 		}
-
-		case 'agent/tool-output':
-			if (!action.stepId) return state;
-			return {
-				...state,
-				toolOutputPreview: {
-					...(state.toolOutputPreview || {}),
-					[action.stepId]: action.output,
-				},
-			};
 
 		case 'session/usage-restored':
 			if (!action.usage)

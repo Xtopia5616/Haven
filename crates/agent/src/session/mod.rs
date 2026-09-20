@@ -1145,7 +1145,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn end_session_waits_for_an_active_run_to_exit() {
+    async fn end_session_returns_before_a_stuck_run_exits() {
         let exec = make_executor(1);
         let session = exec.create_session("active end").await.unwrap();
         let started = Arc::new(AtomicUsize::new(0));
@@ -1207,19 +1207,27 @@ mod tests {
             1,
             "end_session should cancel the active run"
         );
-        assert!(
-            !end.is_finished(),
-            "end_session must wait for the active run"
-        );
-        assert_eq!(exited.load(Ordering::SeqCst), 0);
-
-        allow_exit.store(1, Ordering::SeqCst);
-        let result = tokio::time::timeout(std::time::Duration::from_secs(2), end)
+        let result = tokio::time::timeout(std::time::Duration::from_millis(500), end)
             .await
-            .expect("end_session should finish after the run exits")
+            .expect("end_session must return while the active run is unwinding")
             .expect("end task should join")
             .expect("end_session should succeed");
         assert_eq!(result, SessionStatus::Completed);
+        assert_eq!(exited.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            exec.get_session_status(&session.id).await,
+            Some(SessionStatus::Completed)
+        );
+        assert!(exec.is_run_in_flight(&session.id).await);
+
+        allow_exit.store(1, Ordering::SeqCst);
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while exec.actor_for(&session.id).await.is_some() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("terminal cleanup should finish after the run exits");
         assert_eq!(exited.load(Ordering::SeqCst), 1);
         assert_eq!(exec.get_session_state(&session.id).await, None);
     }
@@ -1247,7 +1255,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn interrupt_session_waits_for_an_active_run_to_exit() {
+    async fn interrupt_session_returns_before_a_stuck_run_exits() {
         let exec = make_executor(1);
         let session = exec.create_session("active interrupt").await.unwrap();
         let started = Arc::new(AtomicUsize::new(0));
@@ -1309,24 +1317,28 @@ mod tests {
             1,
             "interrupt_session should cancel the active run"
         );
-        assert!(
-            !interrupt.is_finished(),
-            "interrupt_session must wait for the active run"
-        );
-        assert_eq!(exited.load(Ordering::SeqCst), 0);
-
-        allow_exit.store(1, Ordering::SeqCst);
-        let paused = tokio::time::timeout(std::time::Duration::from_secs(2), interrupt)
+        let paused = tokio::time::timeout(std::time::Duration::from_millis(500), interrupt)
             .await
-            .expect("interrupt_session should finish after the run exits")
+            .expect("interrupt_session must return while the active run is unwinding")
             .expect("interrupt task should join")
             .expect("interrupt_session should succeed");
         assert!(paused);
-        assert_eq!(exited.load(Ordering::SeqCst), 1);
+        assert_eq!(exited.load(Ordering::SeqCst), 0);
         assert_eq!(
             exec.get_session_state(&session.id).await,
             Some(SessionStatus::Paused)
         );
+        assert!(exec.is_run_in_flight(&session.id).await);
+
+        allow_exit.store(1, Ordering::SeqCst);
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while exec.is_run_in_flight(&session.id).await {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("run slot should be released after the handler exits");
+        assert_eq!(exited.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]

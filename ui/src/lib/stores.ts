@@ -1,4 +1,4 @@
-import { get, writable } from 'svelte/store';
+import { get, writable, type Writable } from 'svelte/store';
 import { invoke } from './tauri.ts';
 import logger from '$lib/logger.ts';
 import { mapActionPayload, type ActionKind, type ActionPayload } from './contracts/action.ts';
@@ -149,10 +149,45 @@ export function getSessionErrorReason(sessionId: string): string {
  * Populated by `agent:tool_output`; cleared on `agent:observation`.
  * Kept out of the message list so ticks do not rewrite the transcript store.
  */
-export const toolOutputPreviewStore = writable<Record<string, string>>({});
+const toolOutputPreviewState = writable<Record<string, string>>({});
+const toolOutputPreviewSessions = new Map<string, string>();
+const toolOutputPreviewStores = new Map<string, Writable<string | undefined>>();
 
-export function setToolOutputPreview(stepId: string, output: string) {
+function keyedToolOutputPreviewStore(stepId: string): Writable<string | undefined> {
+	let store = toolOutputPreviewStores.get(stepId);
+	if (!store) {
+		store = writable<string | undefined>(undefined);
+		toolOutputPreviewStores.set(stepId, store);
+	}
+	return store;
+}
+
+/**
+ * Compatibility aggregate for tests and non-card consumers. Tool cards use
+ * `getToolOutputPreviewStore` so an output tick only invalidates its own card,
+ * not every historical tool card in the timeline.
+ */
+export const toolOutputPreviewStore: Writable<Record<string, string>> = {
+	subscribe: (...args) => toolOutputPreviewState.subscribe(...args),
+	set: (next) => {
+		for (const [stepId, store] of toolOutputPreviewStores) {
+			store.set(next[stepId]);
+		}
+		toolOutputPreviewState.set(next);
+	},
+	update: (updater) => {
+		toolOutputPreviewStore.set(updater(get(toolOutputPreviewState)));
+	},
+};
+
+export function getToolOutputPreviewStore(stepId: string): Writable<string | undefined> {
+	return keyedToolOutputPreviewStore(stepId);
+}
+
+export function setToolOutputPreview(stepId: string, output: string, sessionId?: string) {
 	if (!stepId) return;
+	if (sessionId) toolOutputPreviewSessions.set(stepId, sessionId);
+	keyedToolOutputPreviewStore(stepId).set(output);
 	toolOutputPreviewStore.update((m) => {
 		if (m[stepId] === output) return m;
 		return { ...m, [stepId]: output };
@@ -161,10 +196,29 @@ export function setToolOutputPreview(stepId: string, output: string) {
 
 export function clearToolOutputPreview(stepId: string) {
 	if (!stepId) return;
+	toolOutputPreviewSessions.delete(stepId);
+	toolOutputPreviewStores.get(stepId)?.set(undefined);
 	toolOutputPreviewStore.update((m) => {
 		if (!(stepId in m)) return m;
 		const next = { ...m };
 		delete next[stepId];
+		return next;
+	});
+}
+
+export function clearToolOutputPreviewsForSession(sessionId: string) {
+	if (!sessionId) return;
+	const stepIds = [...toolOutputPreviewSessions.entries()]
+		.filter(([, owner]) => owner === sessionId)
+		.map(([stepId]) => stepId);
+	if (!stepIds.length) return;
+	for (const stepId of stepIds) {
+		toolOutputPreviewSessions.delete(stepId);
+		toolOutputPreviewStores.get(stepId)?.set(undefined);
+	}
+	toolOutputPreviewStore.update((current) => {
+		const next = { ...current };
+		for (const stepId of stepIds) delete next[stepId];
 		return next;
 	});
 }

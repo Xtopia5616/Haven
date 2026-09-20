@@ -257,7 +257,7 @@ Parent session                    Child session(s)
 | 编排 | `haven-agent` `layer::spawn_peer_session` | 先落库 `peer_kickoff` 并 inbox 注册 parent，再 Pending 调度；返回 `queued`（相对 `session.max_concurrent`） |
 | 接线 | `haven-app-binary` `app_state` | 安装一个 typed `MessagingRuntime`，同时提供 SessionActor mailbox 与 peer 生命周期（tools 不依赖 agent） |
 | 运行时 | `react/context.rs` + `react/inject.rs` | `context` 负责每步 heartbeat、通知或每 3 步通过 `MessagingService::claim` poll inbox；每个 envelope 保留为独立上下文项，投影 durable 后由 `MessageClaim::complete` ack 并发 receipt；`inject` 经 `apply_transcript` 注入带消毒后的 `id`/`in_reply_to`/`subject`；`InjectSource::CrossSession` |
-| 生命周期 | `session/status.rs` | 终端态/`end_session` → BFS 子孙 system notice + 无嵌套 cascade 结束；`type=system` 仅运行时 |
+| 生命周期 | `session/status.rs` | `interrupt_session`/`end_session` 先取消并立即返回控制结果；若 run 仍在收尾，terminal cleanup、partial promote 与 actor 移除延迟到 dispatcher 的 run-exit 边界；终端态继续 BFS 子孙 system notice + 无嵌套 cascade 结束；`type=system` 仅运行时 |
 | 信任 / 记忆 | `inference.rs` | 跳过 `peer_kickoff` 与跨会话注入文本的 fact 抽取 |
 | UI | 对话页 tool card | `agent` 结构化卡片；自动同伴邮件以 `agent`/`inbox`/`auto` 卡片展示；kickoff 左侧「低信任委托」 |
 
@@ -469,6 +469,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 
 | 日期 | 内容 |
 |---|---|
+| 2026-09-20 | §2.5 Agent / §2.6 UI：工具实时预览移出 SessionReducer，避免输出 tick 重算整条时间线；运行中的停止/结束立即返回，终端清理延迟到 run-exit 边界，删除/清空仍保留 destructive cleanup fence（ADR 0184） |
 | 2026-09-19 | §2.5 Agent / §2.6 UI：Action board 刷新加入状态版本校验；损坏 waiting scheduled row 增加可取消的指数退避隔离重试；scheduled fire 改为服务级 claim/lease，阻止多 receiver 重复执行（ADR 0174） |
 | 2026-09-19 | §2.3 Memory / §2.5 Agent / Tools / App / UI：将 session 与 action 状态下沉为 Common typed lifecycle；删除 `actions.fired` 与 `scheduled` 状态，统一定时任务取消/触发终态和 IPC 投影（ADR 0172） |
 | 2026-09-19 | §2.2 Common / LLM / App / UI：将固定 five-slot 模型配置和 STT/vision 布尔开关改为命名模型、`Capability` 与 `RequestPolicy` 路由；旧 `llm.roles` 在加载时一次性转换，provider adapter wire 契约保持不变（ADR 0170） |

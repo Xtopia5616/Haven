@@ -1,4 +1,4 @@
-import { updateModelState } from './stores';
+import { clearToolOutputPreview, setToolOutputPreview, updateModelState } from './stores';
 import type { SessionAction } from './sessionReducer.ts';
 
 export interface ChatAgentEventContext {
@@ -58,17 +58,17 @@ export function createChatAgentEventHandlers({
 		'agent:tool_output': (event) => {
 			const data = event.payload;
 			if (!data?.stepId) return;
-			dispatchSession({
-				type: 'agent/tool-output',
-				sessionId: data.sessionId,
-				stepId: data.stepId,
-				output: data.output || '',
-			});
+			// Live tool output is a bounded, UI-only preview. Keep it out of the
+			// session reducer: updating the reducer here would rebuild the whole
+			// conversation projection on every shell-output tick and can starve
+			// button/collapsible input while a tool is running.
+			setToolOutputPreview(data.stepId, data.output || '', data.sessionId);
 		},
 		'agent:observation': (event) => {
 			const data = event.payload;
 			flushChunksNow();
 			updateModelState('streaming');
+			if (data?.stepId) clearToolOutputPreview(data.stepId);
 			dispatchSession({ type: 'agent/observation', payload: data });
 		},
 	};

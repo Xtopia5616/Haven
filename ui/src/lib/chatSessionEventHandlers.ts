@@ -7,6 +7,7 @@ import type {
 import type { TauriEvent } from './contracts/session.ts';
 import { isBusyStatus, isPausedStatus } from './sessionStatus.ts';
 import type { SessionAction } from './sessionReducer.ts';
+import { clearToolOutputPreviewsForSession } from './stores.ts';
 
 interface ChatSessionEventContext {
 	getActiveSessionId: () => string | null;
@@ -59,6 +60,7 @@ export function createChatSessionEventHandlers({
 	'session:deleted': (event: DeletedEvent) => void;
 } {
 	const finalizeLiveMessages = (sessionId: string) => {
+		clearToolOutputPreviewsForSession(sessionId);
 		// A lifecycle event can arrive while the last chunks are still queued for
 		// the next animation frame. Flush first, otherwise that frame can recreate
 		// a streaming bubble (and its blinking caret) after this cleanup.
@@ -115,6 +117,7 @@ export function createChatSessionEventHandlers({
 				finalizeLiveMessages(data.sessionId);
 			}
 			if (data.status === 'completed' || data.status === 'error') {
+				clearToolOutputPreviewsForSession(data.sessionId);
 				evictTerminalSessionMemory(data.sessionId);
 				if (getActiveSessionId() === data.sessionId) {
 					finalizeLiveMessages(data.sessionId);
@@ -156,6 +159,9 @@ export function createChatSessionEventHandlers({
 			updateSessionTitle(sessionId, title);
 		},
 		'session:deleted': (event) => {
+			if (event.payload.sessionId) {
+				clearToolOutputPreviewsForSession(event.payload.sessionId);
+			}
 			dispatchSession({ type: 'session/deleted', sessionId: event.payload.sessionId });
 			scheduleLoadSessions();
 		},

@@ -9,7 +9,7 @@
 	import { getToolResultRenderer } from '$lib/toolResultRenderers.ts';
 	import { parseToolResult } from '$lib/toolResultParsing.ts';
 	import { copyText } from '$lib/clipboard.ts';
-	import { actionStore, toolOutputPreviewStore } from '$lib/stores.ts';
+	import { actionStore, getToolOutputPreviewStore } from '$lib/stores.ts';
 	import { formatTokenCount } from '$lib/sessionUsage.ts';
 	import { estimateToolDataTokens } from '$lib/sessionUsagePresentation.ts';
 	import {
@@ -91,9 +91,10 @@
 	const TERMINAL_ACTION = new Set(['completed', 'failed', 'cancelled']);
 
 	// Foreground live tail (side-channel; not written into the message list).
+	let toolPreviewStore = $derived.by(() => getToolOutputPreviewStore(messageId));
 	let livePreview = $derived(
 		messageId
-			? /** @type {string|undefined} */ ($toolOutputPreviewStore[messageId])
+			? /** @type {string|undefined} */ ($toolPreviewStore)
 			: undefined,
 	);
 	// Background actions keep streaming via actionStore after the tool call

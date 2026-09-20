@@ -180,3 +180,4 @@
 - [0181：ReAct turn deadline 与交互恢复边界](0181-react-turn-deadline-and-interaction-recovery.md)
 - [0182：文件搜索并行度上限](0182-bounded-file-search-parallelism.md)
 - [0183：文件搜索工作量上限与异步根路径检查](0183-bounded-file-search-work.md)
+- [0184：运行中会话控制不阻塞界面](0184-responsive-session-cancellation.md)

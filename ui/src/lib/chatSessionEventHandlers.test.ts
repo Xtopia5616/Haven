@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
+import { get } from 'svelte/store';
 import { createChatSessionEventHandlers } from './chatSessionEventHandlers.ts';
 import { initialSessionState, SessionReducer } from './sessionReducer.ts';
+import { setToolOutputPreview, toolOutputPreviewStore } from './stores.ts';
 
 function handlers(options: {
 	fresh?: boolean;
@@ -50,12 +52,14 @@ describe('chat session lifecycle handlers', () => {
 			flushChunksNow,
 			reducer,
 		});
+		setToolOutputPreview('step-shell', 'partial', 'ses-paused');
 
 		eventHandlers['session:updated']({
 			payload: { sessionId: 'ses-paused', status, title: null },
 		} as never);
 
 		expect(flushChunksNow).toHaveBeenCalledOnce();
+		expect(get(toolOutputPreviewStore)).toEqual({});
 		expect(reducer.getMessages('ses-paused')).toEqual([
 			{ id: 'step-thought', role: 'assistant', content: '半截回复', streaming: false },
 			{

@@ -275,7 +275,11 @@ impl SessionSupervisor {
         };
         if run.terminal {
             self.dequeue_pending(session_id).await;
+            if let Err(error) = self.partials.promote(session_id).await {
+                tracing::warn!(session_id, error = %error, "failed to promote session partial");
+            }
             self.cleanup_session_maps(session_id).await;
+            self.finish_ended_session(session_id, true).await;
             let _lifecycle = self.lifecycle_guard().await;
             self.remove_actor_locked(session_id).await;
         } else if run.pending {

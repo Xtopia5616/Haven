@@ -54,7 +54,6 @@
 		NEW_ACTION_INTENT_KEY,
 		newSessionIntentStore,
 		interactionStore,
-		toolOutputPreviewStore,
 	} from '$lib/stores.ts';
 	import { sessionMessagesStore, DRAFT_KEY } from '$lib/sessionMessages.ts';
 	import { sessionTokenStatsStore, sessionLlmUsageStore } from '$lib/sessionUsage.ts';
@@ -113,7 +112,6 @@
 			if (next.interactions) interactionStore.set(next.interactions);
 			if (next.tokenStats) sessionTokenStatsStore.set(next.tokenStats);
 			if (next.llmUsage) sessionLlmUsageStore.set(next.llmUsage);
-			if (next.toolOutputPreview) toolOutputPreviewStore.set(next.toolOutputPreview);
 		}),
 	);
 
