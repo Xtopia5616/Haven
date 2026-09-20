@@ -281,16 +281,26 @@ pub(crate) async fn aggregate_stream_cancellable_shared_with_guidance(
     };
     tracing::debug!("aggregate_stream_cancellable start");
 
-    // Channel decouples the stream loop from callback execution.
-    // The consumer session (spawned below) calls on_chunk asynchronously;
-    // the stream loop only does O(1) try_send and never blocks.
+    // Channel decouples the steady-state stream loop from callback execution.
+    // The first bounded prefix below is intentionally delivered inline for
+    // TTFT; after that the consumer session calls on_chunk asynchronously and
+    // the stream loop only does O(1) try_send.
     let (chunk_tx, mut chunk_rx) = mpsc::channel::<StreamChunk>(128);
+    let callback_for_consumer = on_chunk.clone();
     let consumer = tokio::spawn(async move {
         while let Some(chunk) = chunk_rx.recv().await {
-            let mut guard = on_chunk.lock().unwrap();
+            let mut guard = callback_for_consumer.lock().unwrap();
             guard(&chunk);
         }
     });
+
+    // The first provider response often contains a small metadata prefix
+    // before its first visible token. Deliver a bounded prefix synchronously
+    // so the UI does not wait for a scheduler turn before the first text can
+    // reach the agent event queue. Once visible content has started, the
+    // callback remains decoupled from stream consumption as before.
+    const INLINE_PREFIX_CHUNK_LIMIT: u8 = 8;
+    let mut inline_prefix_chunks = INLINE_PREFIX_CHUNK_LIMIT;
 
     // The first chunk may lag far behind the request (providers run
     // server-side "thinking" before the first delta). A dead stream must
@@ -406,8 +416,25 @@ pub(crate) async fn aggregate_stream_cancellable_shared_with_guidance(
                                 }
                             }
 
-                            // Non-blocking: consumer session calls on_chunk asynchronously
-                            if let Err(e) = chunk_tx.try_send(chunk) {
+                            let has_visible_content = chunk
+                                .text
+                                .as_ref()
+                                .is_some_and(|text| !text.is_empty())
+                                || chunk
+                                    .reasoning
+                                    .as_ref()
+                                    .is_some_and(|text| !text.is_empty());
+                            if inline_prefix_chunks > 0 {
+                                // Preserve the provider's initial ordering,
+                                // including metadata-only chunks, while
+                                // avoiding an extra task hop for first text.
+                                inline_prefix_chunks -= 1;
+                                let mut callback = on_chunk.lock().unwrap();
+                                callback(&chunk);
+                                if has_visible_content {
+                                    inline_prefix_chunks = 0;
+                                }
+                            } else if let Err(e) = chunk_tx.try_send(chunk) {
                                 tracing::warn!(
                                     "chunk consumer channel full, dropping chunk: {}",
                                     e
