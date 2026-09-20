@@ -1,15 +1,31 @@
 <script>
 	import ExternalRef from '$lib/ExternalRef.svelte';
+	import MaterialButton from '$lib/MaterialButton.svelte';
 
 	let { data = {} } = $props();
+
+	const RESULT_PAGE_SIZE = 100;
+	let resultList = $derived(Array.isArray(data.results) ? data.results : []);
+	let resultCount = $derived(
+		typeof data.count === 'number' && Number.isFinite(data.count)
+			? Math.max(0, data.count)
+			: resultList.length,
+	);
+	let visibleLimit = $state(RESULT_PAGE_SIZE);
+	let visibleResults = $derived(resultList.slice(0, visibleLimit));
+	let remainingCount = $derived(Math.max(0, resultList.length - visibleResults.length));
+
+	function showMoreResults() {
+		visibleLimit += RESULT_PAGE_SIZE;
+	}
 </script>
 
 <div class="tool-card-count">
-	{data.count ?? data.results.length} 个结果 · {data.mode === 'content' ? '全文' : '文件名'}
+	{resultCount} 个结果 · {data.mode === 'content' ? '全文' : '文件名'}
 </div>
-{#if data.results.length > 0}
+{#if resultList.length > 0}
 	<div class="tool-card-list">
-		{#each data.results as result (result.path + (result.line ?? ''))}
+		{#each visibleResults as result (result.path + (result.line ?? ''))}
 			<div class="search-row">
 				<ExternalRef class="search-path" target={result.path} />
 				{#if result.line != null}
@@ -19,6 +35,14 @@
 			</div>
 		{/each}
 	</div>
+	{#if remainingCount > 0}
+		<MaterialButton
+			variant="text"
+			className="show-more-btn"
+			label={`显示更多（剩余 ${remainingCount} 条）`}
+			onclick={showMoreResults}
+		/>
+	{/if}
 {:else}
 	<p class="tool-card-empty">没有匹配的结果</p>
 {/if}
@@ -82,5 +106,18 @@
 		font-size: var(--md-sys-typescale-label-small-size);
 		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
+	}
+	:global(.md-btn.show-more-btn) {
+		width: 100%;
+		box-sizing: border-box;
+		margin-top: var(--md-sys-space-xs);
+		background: transparent;
+		border: 1px dashed var(--md-sys-color-outline-variant);
+		border-radius: var(--md-sys-shape-small);
+		color: var(--md-sys-color-primary);
+		min-height: var(--md-comp-button-small-height);
+	}
+	:global(.md-btn.show-more-btn:hover) {
+		background: color-mix(in srgb, var(--md-sys-color-primary) 8%, transparent);
 	}
 </style>

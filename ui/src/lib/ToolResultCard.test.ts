@@ -695,6 +695,25 @@ describe('ToolResultCard files', () => {
 		expect(screen.getByText('fn main() {}')).toBeTruthy();
 	});
 
+	it('renders file search results in bounded pages', async () => {
+		const results = Array.from({ length: 250 }, (_, index) => ({
+			path: `D:\\workspace\\match-${index}.rs`,
+		}));
+		const { container } = render(ToolResultCard, {
+			toolName: 'files',
+			content: searchJson(results),
+		});
+		await expandToolCard(container);
+
+		expect(container.querySelectorAll('.search-row')).toHaveLength(100);
+		const moreButton = screen.getByRole('button', { name: '显示更多（剩余 150 条）' });
+		expect(moreButton).toBeTruthy();
+
+		await fireEvent.click(moreButton);
+		expect(container.querySelectorAll('.search-row')).toHaveLength(200);
+		expect(screen.getByRole('button', { name: '显示更多（剩余 50 条）' })).toBeTruthy();
+	});
+
 	it('renders the truncated hint when present', async () => {
 		const { container } = render(ToolResultCard, {
 			toolName: 'files',
