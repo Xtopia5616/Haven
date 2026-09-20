@@ -91,6 +91,9 @@ export function createStreamEventAggregator({
 }): StreamEventAggregator {
 	const pendingChunks: PendingChunk[] = [];
 	let chunkFlushRaf = 0;
+	const firstChunkPainted = new Set<string>();
+	const firstChunkPaintedOrder: string[] = [];
+	const firstChunkPaintedMax = 512;
 	const pendingChunkMax = 2000;
 	let pendingChunkDrops = 0;
 	let frameCount = 0;
@@ -125,6 +128,15 @@ export function createStreamEventAggregator({
 
 	function clearStepBlockIds(sessionId: string | null) {
 		if (!sessionId) return;
+		const sessionPrefix = `${sessionId}:`;
+		for (const key of firstChunkPainted) {
+			if (key.startsWith(sessionPrefix)) firstChunkPainted.delete(key);
+		}
+		for (let index = firstChunkPaintedOrder.length - 1; index >= 0; index--) {
+			if (firstChunkPaintedOrder[index].startsWith(sessionPrefix)) {
+				firstChunkPaintedOrder.splice(index, 1);
+			}
+		}
 		if (dispatch) {
 			dispatch({ type: 'session/stream-blocks-cleared', sessionId });
 			return;
@@ -216,6 +228,17 @@ export function createStreamEventAggregator({
 		flushPendingChunks();
 	}
 
+	function flushFirstChunkNow() {
+		// A previous stream block may already have scheduled a renderer frame.
+		// Cancel it before the immediate first-paint flush; otherwise that stale
+		// callback can race the next RAF and steal the next delta from its frame.
+		if (chunkFlushRaf) {
+			cancelAnimationFrame(chunkFlushRaf);
+			chunkFlushRaf = 0;
+		}
+		flushPendingChunks();
+	}
+
 	function chunkHandler(isThought: boolean, msgType: string | undefined) {
 		return (event: StreamChunkEvent) => {
 			const data = event.payload;
@@ -252,6 +275,24 @@ export function createStreamEventAggregator({
 						`chunk queue overflow (${pendingChunkMax}), evicting oldest chunks`,
 					);
 				}
+			}
+			// Paint the first visible delta immediately. Later chunks still share
+			// one animation frame, keeping the steady-state render cost bounded
+			// without adding a frame of latency to the first byte.
+			const streamKey = `${sessionId}:${data.stepNumber}:${data.runId}`;
+			if (
+				delta &&
+				getActiveSessionId() === sessionId &&
+				!firstChunkPainted.has(streamKey)
+			) {
+				firstChunkPainted.add(streamKey);
+				firstChunkPaintedOrder.push(streamKey);
+				if (firstChunkPaintedOrder.length > firstChunkPaintedMax) {
+					const evicted = firstChunkPaintedOrder.shift();
+					if (evicted) firstChunkPainted.delete(evicted);
+				}
+				flushFirstChunkNow();
+				return;
 			}
 			if (!chunkFlushRaf) {
 				chunkFlushRaf = requestAnimationFrame(() => flushPendingChunks(true));

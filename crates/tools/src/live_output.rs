@@ -45,10 +45,11 @@ impl LiveOutputHub {
 
     pub async fn set_limits(&self, limits: &haven_common::config::ContextLimitsConfig) {
         *self.tail_max_chars.write().await = limits.background_job_tail_max_chars;
-        // Foreground cards use half the background interval (min 250ms) so
-        // the active tool feels live without flooding Tauri IPC.
-        let bg_ms = limits.background_job_output_emit_interval_ms.max(250);
-        *self.emit_interval.write().await = Duration::from_millis((bg_ms / 2).max(250));
+        // Foreground cards use a bounded, faster cadence than background
+        // actions. The setting remains the source of truth, but a large
+        // background interval must not make an active card look frozen.
+        let bg_ms = limits.background_job_output_emit_interval_ms.max(100);
+        *self.emit_interval.write().await = Duration::from_millis((bg_ms / 4).clamp(100, 250));
     }
 
     pub async fn tail_max_chars(&self) -> usize {
@@ -94,13 +95,13 @@ impl LiveOutputHub {
             // without changing length (same freeze as background actions).
             let mut last_output = String::new();
             loop {
-                tokio::time::sleep(emit_interval).await;
                 if !running.load(std::sync::atomic::Ordering::Relaxed) {
                     return;
                 }
                 if crate::take_tail_if_changed(&tail, &mut last_output) {
                     hub.emit_output(&session_id, &step_id, &last_output);
                 }
+                tokio::time::sleep(emit_interval).await;
             }
         });
     }
@@ -169,6 +170,36 @@ mod tests {
             before,
             "emitter must stop once running is cleared"
         );
+    }
+
+    #[tokio::test]
+    async fn spawn_tail_emitter_paints_prefilled_tail_without_interval_delay() {
+        let hub = Arc::new(LiveOutputHub::new());
+        let hits = Arc::new(AtomicUsize::new(0));
+        let hits2 = hits.clone();
+        hub.set_event_sink(Arc::new(move |event, payload| {
+            assert_eq!(event, "agent:tool_output");
+            assert_eq!(payload["output"], "already available");
+            hits2.fetch_add(1, Ordering::SeqCst);
+        }));
+        let tail = Arc::new(Mutex::new("already available".into()));
+        let running = Arc::new(AtomicBool::new(true));
+        hub.spawn_tail_emitter(
+            "ses-1".into(),
+            "step-immediate".into(),
+            tail,
+            running.clone(),
+            Duration::from_secs(1),
+        );
+
+        for _ in 0..20 {
+            if hits.load(Ordering::SeqCst) > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        running.store(false, Ordering::SeqCst);
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]

@@ -45,7 +45,8 @@ describe('createStreamEventAggregator', () => {
 
 		handler(chunk());
 		handler(chunk({ delta: 'duplicate', seq: 1 }));
-		expect(get(sessionMessagesStore)).toEqual({});
+		expect(get(sessionMessagesStore)['ses-stream-test']).toHaveLength(1);
+		expect(get(sessionMessagesStore)['ses-stream-test'][0].content).toBe('hello');
 		expect(onActiveStream).toHaveBeenCalledTimes(2);
 
 		aggregator.flushChunksNow();
@@ -113,10 +114,14 @@ describe('createStreamEventAggregator', () => {
 
 		aggregator.flushChunksNow();
 
-		expect(dispatch).toHaveBeenCalledTimes(1);
-		expect(dispatch.mock.calls[0][0]).toMatchObject({ type: 'agent/chunks' });
-		expect(dispatch.mock.calls[0][0].chunks.map((item: any) => item.payload.delta)).toEqual([
-			'ab',
+		expect(dispatch).toHaveBeenCalledTimes(2);
+		expect(dispatch.mock.calls.map((call) => call[0].type)).toEqual([
+			'agent/chunks',
+			'agent/chunks',
+		]);
+		expect(dispatch.mock.calls.map((call) => call[0].chunks[0].payload.delta)).toEqual([
+			'a',
+			'b',
 		]);
 		expect(aggregator.metricsSnapshot()).toEqual({ frames: 0, chunks: 2, drops: 0 });
 	});
@@ -143,5 +148,22 @@ describe('createStreamEventAggregator', () => {
 		aggregator.flushChunksNow();
 
 		expect(aggregator.metricsSnapshot().frames).toBe(0);
+	});
+
+	it('cancels a stale RAF before painting the active step first chunk', () => {
+		const aggregator = createStreamEventAggregator({
+			getActiveSessionId: () => 'ses-stream-test',
+			onActiveStream: vi.fn(),
+		});
+		aggregator.chunkHandler(true, undefined)(
+			chunk({ sessionId: 'ses-other', messageId: 'other', stepNumber: 1 }),
+		);
+		expect(frame).not.toBeNull();
+
+		aggregator.chunkHandler(true, undefined)(
+			chunk({ sessionId: 'ses-stream-test', messageId: 'active', stepNumber: 2 }),
+		);
+
+		expect(vi.mocked(cancelAnimationFrame)).toHaveBeenCalledWith(1);
 	});
 });
