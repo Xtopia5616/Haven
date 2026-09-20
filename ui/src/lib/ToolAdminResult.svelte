@@ -1,5 +1,6 @@
 <script>
 	import JsonView from '$lib/JsonView.svelte';
+	import ToolResultList from '$lib/ToolResultList.svelte';
 
 	let { data = {} } = $props();
 
@@ -11,37 +12,49 @@
 
 {#if Array.isArray(data.servers)}
 	<div class="tool-card-count">{data.servers.length} 个 MCP 服务</div>
-	<div class="admin-list">
-		{#each data.servers as server, index (server.name ?? index)}
-			<div class="admin-row">
-				<span class="admin-name">{server.name || '未命名服务'}</span>
-				<span class:admin-ok={server.connected} class="admin-state">{statusLabel(server.connected)}</span>
-				{#if server.tools != null}<span class="admin-meta">{server.tools} 个工具</span>{/if}
+	<ToolResultList items={data.servers}>
+		{#snippet children(visibleServers = /** @type {any[]} */ ([]))}
+			<div class="admin-list">
+				{#each visibleServers as server, index (server.name ?? index)}
+					<div class="admin-row">
+						<span class="admin-name">{server.name || '未命名服务'}</span>
+						<span class:admin-ok={server.connected} class="admin-state">{statusLabel(server.connected)}</span>
+						{#if server.tools != null}<span class="admin-meta">{server.tools} 个工具</span>{/if}
+					</div>
+				{/each}
 			</div>
-		{/each}
-	</div>
+		{/snippet}
+	</ToolResultList>
 {:else if Array.isArray(data.skills)}
 	<div class="tool-card-count">{data.skills.length} 个技能</div>
-	<div class="admin-list">
-		{#each data.skills as skill, index (skill.name ?? index)}
-			<div class="admin-row">
-				<span class="admin-name">{skill.name || '未命名技能'}</span>
-				<span class:admin-ok={skill.enabled} class="admin-state">{skill.enabled ? '已启用' : '已停用'}</span>
+	<ToolResultList items={data.skills}>
+		{#snippet children(visibleSkills = /** @type {any[]} */ ([]))}
+			<div class="admin-list">
+				{#each visibleSkills as skill, index (skill.name ?? index)}
+					<div class="admin-row">
+						<span class="admin-name">{skill.name || '未命名技能'}</span>
+						<span class:admin-ok={skill.enabled} class="admin-state">{skill.enabled ? '已启用' : '已停用'}</span>
+					</div>
+				{/each}
 			</div>
-		{/each}
-	</div>
+		{/snippet}
+	</ToolResultList>
 {:else if Array.isArray(data.sessions) || Array.isArray(data.errors)}
 	{@const rows = Array.isArray(data.sessions) ? data.sessions : data.errors}
 	<div class="tool-card-count">{rows.length} 条记录</div>
 	{#if rows.length === 0}<p class="tool-card-empty">没有记录</p>{/if}
-	<div class="admin-list">
-		{#each rows as row, index (row.id ?? index)}
-			<div class="admin-row">
-				<span class="admin-name">{row.title || row.id || '未命名会话'}</span>
-				{#if row.status}<span class="admin-state">{row.status}</span>{/if}
+	<ToolResultList items={rows}>
+		{#snippet children(visibleRows = /** @type {any[]} */ ([]))}
+			<div class="admin-list">
+				{#each visibleRows as row, index (row.id ?? index)}
+					<div class="admin-row">
+						<span class="admin-name">{row.title || row.id || '未命名会话'}</span>
+						{#if row.status}<span class="admin-state">{row.status}</span>{/if}
+					</div>
+				{/each}
 			</div>
-		{/each}
-	</div>
+		{/snippet}
+	</ToolResultList>
 {:else if data.level && data.saved}
 	<div class="admin-action"><span class="admin-badge">已保存</span><span>日志级别：{data.level}</span></div>
 {:else if data.name && data.enabled != null}

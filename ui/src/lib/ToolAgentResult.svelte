@@ -1,6 +1,7 @@
 <script>
 	import StatusBadge from '$lib/StatusBadge.svelte';
 	import ToolCardList from '$lib/ToolCardList.svelte';
+	import ToolResultList from '$lib/ToolResultList.svelte';
 	let { data = {} } = $props();
 </script>
 
@@ -10,15 +11,19 @@
 {:else if Array.isArray(data.agents)}
 	<div class="tool-card-count">{data.agents.length} 个同伴</div>
 	{#if data.agents.length > 0}
-		<ToolCardList>
-			{#each data.agents as agent (agent.name)}
-				<div class="action-row">
-					<span class="action-id">{agent.title || agent.name}</span>
-					{#if agent.role}<span class="scheduled-mode">{agent.role}</span>{/if}
-					{#if agent.status}<StatusBadge label={agent.status} tone={agent.status === 'online' ? 'success' : 'neutral'} />{/if}
-				</div>
-			{/each}
-		</ToolCardList>
+		<ToolResultList items={data.agents}>
+			{#snippet children(visibleAgents = /** @type {any[]} */ ([]))}
+				<ToolCardList>
+					{#each visibleAgents as agent (agent.name)}
+						<div class="action-row">
+							<span class="action-id">{agent.title || agent.name}</span>
+							{#if agent.role}<span class="scheduled-mode">{agent.role}</span>{/if}
+							{#if agent.status}<StatusBadge label={agent.status} tone={agent.status === 'online' ? 'success' : 'neutral'} />{/if}
+						</div>
+					{/each}
+				</ToolCardList>
+			{/snippet}
+		</ToolResultList>
 	{:else}
 		<p class="tool-card-empty">没有已注册同伴</p>
 	{/if}

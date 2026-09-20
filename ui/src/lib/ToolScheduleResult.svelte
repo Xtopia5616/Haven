@@ -1,5 +1,6 @@
 <script>
 	import { scheduleModeLabel, taskTitle } from '$lib/taskTerminology.ts';
+	import ToolResultList from '$lib/ToolResultList.svelte';
 
 	let { data = {} } = $props();
 	let operation = $derived(
@@ -17,15 +18,19 @@
 {:else if Array.isArray(data.scheduled_actions)}
 	<div class="tool-card-count">{data.scheduled_actions.length} 条定时任务</div>
 	{#if data.scheduled_actions.length > 0}
-		<div class="tool-card-list">
-			{#each data.scheduled_actions as action (action.id)}
-				<div class="scheduled-row">
-					<span class="scheduled-title">{taskTitle({ kind: 'scheduled', title: action.title, body: action.body })}</span>
-					<span class="scheduled-mode">{scheduleModeLabel(action.mode)}</span>
-					{#if action.fires_at}<span class="scheduled-time">{action.fires_at}</span>{/if}
+		<ToolResultList items={data.scheduled_actions}>
+			{#snippet children(visibleActions = /** @type {any[]} */ ([]))}
+				<div class="tool-card-list">
+					{#each visibleActions as action (action.id)}
+						<div class="scheduled-row">
+							<span class="scheduled-title">{taskTitle({ kind: 'scheduled', title: action.title, body: action.body })}</span>
+							<span class="scheduled-mode">{scheduleModeLabel(action.mode)}</span>
+							{#if action.fires_at}<span class="scheduled-time">{action.fires_at}</span>{/if}
+						</div>
+					{/each}
 				</div>
-			{/each}
-		</div>
+			{/snippet}
+		</ToolResultList>
 	{:else}
 		<p class="tool-card-empty">没有待触发的定时任务</p>
 	{/if}

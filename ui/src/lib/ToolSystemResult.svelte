@@ -3,6 +3,7 @@
 	import { formatError } from './formatError.ts';
 	import JsonView from '$lib/JsonView.svelte';
 	import MaterialIconButton from '$lib/MaterialIconButton.svelte';
+	import ToolResultList from '$lib/ToolResultList.svelte';
 	import ToolSearch from '$lib/ToolSearch.svelte';
 
 	let { data = {} } = $props();
@@ -146,17 +147,21 @@
 {/if}
 {#if Array.isArray(data.networks)}
 	<div class="tool-card-count">{data.count ?? data.networks.length} 个网络接口</div>
-	<div class="tool-card-list">
-		{#each data.networks as network (network.name)}
-			<div class="network-row">
-				<div class="network-main">
-					<span class="network-name">{network.name || '未命名接口'}</span>
-					<span class="network-state">{networkStateLabel(network.state)}</span>
-				</div>
-				{#if Array.isArray(network.ips) && network.ips.length > 0}<div class="network-ips">{network.ips.join(' · ')}</div>{/if}
+	<ToolResultList items={data.networks}>
+		{#snippet children(visibleNetworks = /** @type {any[]} */ ([]))}
+			<div class="tool-card-list">
+				{#each visibleNetworks as network (network.name)}
+					<div class="network-row">
+						<div class="network-main">
+							<span class="network-name">{network.name || '未命名接口'}</span>
+							<span class="network-state">{networkStateLabel(network.state)}</span>
+						</div>
+						{#if Array.isArray(network.ips) && network.ips.length > 0}<div class="network-ips">{network.ips.join(' · ')}</div>{/if}
+					</div>
+				{/each}
 			</div>
-		{/each}
-	</div>
+		{/snippet}
+	</ToolResultList>
 {/if}
 {#if data.network_summary}
 	<div class="tool-card-count">网络概况</div>
@@ -169,13 +174,21 @@
 {#if Array.isArray(data.values) || Array.isArray(data.subkeys)}
 	<div class="tool-card-count">注册表{data.path ? ` · ${data.path}` : ''}</div>
 	{#if Array.isArray(data.values) && data.values.length > 0}
-		<div class="tool-card-list">
-			{#each data.values as value (value)}<div class="env-row"><span class="env-name">{value}</span></div>{/each}
-		</div>
+		<ToolResultList items={data.values}>
+			{#snippet children(visibleValues = /** @type {any[]} */ ([]))}
+				<div class="tool-card-list">
+					{#each visibleValues as value (value)}<div class="env-row"><span class="env-name">{value}</span></div>{/each}
+				</div>
+			{/snippet}
+		</ToolResultList>
 	{:else if Array.isArray(data.subkeys) && data.subkeys.length > 0}
-		<div class="tool-card-list">
-			{#each data.subkeys as key (key)}<div class="env-row"><span class="env-name">{key}</span></div>{/each}
-		</div>
+		<ToolResultList items={data.subkeys}>
+			{#snippet children(visibleSubkeys = /** @type {any[]} */ ([]))}
+				<div class="tool-card-list">
+					{#each visibleSubkeys as key (key)}<div class="env-row"><span class="env-name">{key}</span></div>{/each}
+				</div>
+			{/snippet}
+		</ToolResultList>
 	{:else}
 		<p class="tool-card-empty">没有注册表值或子项</p>
 	{/if}
@@ -223,37 +236,45 @@
 	</div>
 {/if}
 {#if Array.isArray(data.disks)}
-	{#each data.disks as disk (disk.mount)}
-		<div class="meter-row">
-			<span class="meter-label">{disk.mount}</span>
-			<span class="meter-value"
-				>{fmtBytes(Number(disk.total_bytes) - Number(disk.available_bytes))} /
-				{fmtBytes(disk.total_bytes)}</span
-			>
-			<span class="meter-track"
-				><span
-					class="meter-fill"
-					style="width: {clampPct(
-						(1 - Number(disk.available_bytes) / Math.max(Number(disk.total_bytes), 1)) * 100,
-					)}%"
-				></span></span
-			>
-		</div>
-	{/each}
+	<ToolResultList items={data.disks}>
+		{#snippet children(visibleDisks = /** @type {any[]} */ ([]))}
+			{#each visibleDisks as disk (disk.mount)}
+				<div class="meter-row">
+					<span class="meter-label">{disk.mount}</span>
+					<span class="meter-value"
+						>{fmtBytes(Number(disk.total_bytes) - Number(disk.available_bytes))} /
+						{fmtBytes(disk.total_bytes)}</span
+					>
+					<span class="meter-track"
+						><span
+							class="meter-fill"
+							style="width: {clampPct(
+								(1 - Number(disk.available_bytes) / Math.max(Number(disk.total_bytes), 1)) * 100,
+							)}%"
+						></span></span
+					>
+				</div>
+			{/each}
+		{/snippet}
+	</ToolResultList>
 {/if}
 {#if data.os?.uptime_secs != null}
 	<div class="tool-card-meta">运行时长 {fmtUptime(data.os.uptime_secs)}</div>
 {/if}
 {#if Array.isArray(data.displays)}
 	<div class="tool-card-count">{data.displays.length} 个显示器</div>
-	<div class="tool-card-list">
-		{#each data.displays as display (display.name ?? display.left)}
-			<div class="window-row">
-				<span class="window-title">{display.name || 'Display'}{display.primary ? ' · 主屏' : ''}</span>
-				<span class="window-pid">{display.width}×{display.height}</span>
+	<ToolResultList items={data.displays}>
+		{#snippet children(visibleDisplays = /** @type {any[]} */ ([]))}
+			<div class="tool-card-list">
+				{#each visibleDisplays as display (display.name ?? display.left)}
+					<div class="window-row">
+						<span class="window-title">{display.name || 'Display'}{display.primary ? ' · 主屏' : ''}</span>
+						<span class="window-pid">{display.width}×{display.height}</span>
+					</div>
+				{/each}
 			</div>
-		{/each}
-	</div>
+		{/snippet}
+	</ToolResultList>
 {/if}
 {#if Array.isArray(data.variables)}
 	<div class="tool-card-count">
@@ -261,25 +282,29 @@
 	</div>
 	<ToolSearch value={envFilter} onInput={setEnvFilter} placeholder="筛选变量..." ariaLabel="筛选变量" />
 	{#if filteredEnv.length > 0}
-		<div class="tool-card-list">
-			{#each filteredEnv as variable (variable.name)}
-				<div class="env-row">
-					<span class="env-name" title={variable.name}>{variable.name}</span>
-					<span class="env-value" title={variable.value ?? ''}
-						>{variable.value != null ? variable.value : '仅名称（未读取）'}</span
-					>
-					{#if typeof variable.value === 'string' && variable.value}
-						<MaterialIconButton
-							icon="copy"
-							className="env-copy"
-							label="复制值"
-							title="复制值"
-							onclick={() => copyEnvValue(variable.value)}
-						/>
-					{/if}
+		<ToolResultList items={filteredEnv}>
+			{#snippet children(visibleEnv = /** @type {any[]} */ ([]))}
+				<div class="tool-card-list">
+					{#each visibleEnv as variable (variable.name)}
+						<div class="env-row">
+							<span class="env-name" title={variable.name}>{variable.name}</span>
+							<span class="env-value" title={variable.value ?? ''}
+								>{variable.value != null ? variable.value : '仅名称（未读取）'}</span
+							>
+							{#if typeof variable.value === 'string' && variable.value}
+								<MaterialIconButton
+									icon="copy"
+									className="env-copy"
+									label="复制值"
+									title="复制值"
+									onclick={() => copyEnvValue(variable.value)}
+								/>
+							{/if}
+						</div>
+					{/each}
 				</div>
-			{/each}
-		</div>
+			{/snippet}
+		</ToolResultList>
 	{:else}
 		<p class="tool-card-empty">没有匹配的变量</p>
 	{/if}

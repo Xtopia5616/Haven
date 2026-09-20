@@ -182,3 +182,5 @@
 - [0183：文件搜索工作量上限与异步根路径检查](0183-bounded-file-search-work.md)
 - [0184：运行中会话控制不阻塞界面](0184-responsive-session-cancellation.md)
 - [0185：文件搜索结果分批渲染](0185-bounded-file-search-result-rendering.md)
+- [0186：工具结果统一分批渲染](0186-unified-tool-result-pagination.md)
+- [0187：首字节直达与工具卡片增量进度](0187-streaming-first-paint-and-tool-card-progress.md)

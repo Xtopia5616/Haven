@@ -1,6 +1,7 @@
 <script>
 	import ExternalRef from '$lib/ExternalRef.svelte';
 	import JsonView from '$lib/JsonView.svelte';
+	import ToolResultList from '$lib/ToolResultList.svelte';
 
 	let { data = {}, rawText = '' } = $props();
 
@@ -105,15 +106,19 @@
 	{#if data.matches}<JsonView value={data.matches} defaultDepth={1} />{/if}
 {:else if Array.isArray(data.symbols)}
 	<div class="tool-card-meta">{operationLabel} · {data.count ?? data.symbols.length} 个符号</div>
-	<div class="tool-card-list">
-		{#each data.symbols as symbol (symbol.line)}
-			<div class="env-row">
-				<span class="file-line">L{symbol.line}</span>
-				<span class="env-name">{symbol.kind}</span>
-				<span>{symbol.name}</span>
+	<ToolResultList items={data.symbols}>
+		{#snippet children(visibleSymbols = /** @type {any[]} */ ([]))}
+			<div class="tool-card-list">
+				{#each visibleSymbols as symbol (symbol.line)}
+					<div class="env-row">
+						<span class="file-line">L{symbol.line}</span>
+						<span class="env-name">{symbol.kind}</span>
+						<span>{symbol.name}</span>
+					</div>
+				{/each}
 			</div>
-		{/each}
-	</div>
+		{/snippet}
+	</ToolResultList>
 {:else if data.operation && data.operation !== 'read' && !Array.isArray(data.entries)}
 	<div class="tool-card-meta">{operationLabel}</div>
 	<JsonView value={data} defaultDepth={1} />
@@ -122,11 +127,15 @@
 {:else if Array.isArray(data.entries)}
 	<div class="tool-card-count">{data.count ?? data.entries.length} 项</div>
 	{#if data.entries.length > 0}
-		<div class="tool-card-list">
-			{#each data.entries as entry (entry)}
-				<div class="env-row"><span class="env-name">{entry}</span></div>
-			{/each}
-		</div>
+		<ToolResultList items={data.entries}>
+			{#snippet children(visibleEntries = /** @type {any[]} */ ([]))}
+				<div class="tool-card-list">
+					{#each visibleEntries as entry (entry)}
+						<div class="env-row"><span class="env-name">{entry}</span></div>
+					{/each}
+				</div>
+			{/snippet}
+		</ToolResultList>
 	{:else}
 		<p class="tool-card-empty">（空目录）</p>
 	{/if}

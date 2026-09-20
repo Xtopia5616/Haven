@@ -3,6 +3,7 @@
 	import JsonView from '$lib/JsonView.svelte';
 	import StatusBadge from '$lib/StatusBadge.svelte';
 	import ToolCardList from '$lib/ToolCardList.svelte';
+	import ToolResultList from '$lib/ToolResultList.svelte';
 
 	let { data = {} } = $props();
 	let operation = $derived(
@@ -40,14 +41,18 @@
 {:else if Array.isArray(data.actions)}
 	<div class="tool-card-count">{data.actions.length} 个后台任务</div>
 	{#if data.actions.length > 0}
-		<ToolCardList>
-			{#each data.actions as action (action.action_id)}
-				<div class="action-row">
-					<span class="action-id">{action.action_id}</span>
-					<StatusBadge label={actionStatusLabel(action.status)} tone={statusTone(action.status)} />
-				</div>
-			{/each}
-		</ToolCardList>
+		<ToolResultList items={data.actions}>
+			{#snippet children(visibleActions = /** @type {any[]} */ ([]))}
+				<ToolCardList>
+					{#each visibleActions as action (action.action_id)}
+						<div class="action-row">
+							<span class="action-id">{action.action_id}</span>
+							<StatusBadge label={actionStatusLabel(action.status)} tone={statusTone(action.status)} />
+						</div>
+					{/each}
+				</ToolCardList>
+			{/snippet}
+		</ToolResultList>
 	{:else}
 		<p class="tool-card-empty">没有后台任务</p>
 	{/if}

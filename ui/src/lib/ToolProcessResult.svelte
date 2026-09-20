@@ -1,8 +1,8 @@
 <script>
 	import JsonView from '$lib/JsonView.svelte';
-	import MaterialButton from '$lib/MaterialButton.svelte';
 	import StatusBadge from '$lib/StatusBadge.svelte';
 	import ToolCardList from '$lib/ToolCardList.svelte';
+	import ToolResultList from '$lib/ToolResultList.svelte';
 	import ToolSearch from '$lib/ToolSearch.svelte';
 
 	let { data = {} } = $props();
@@ -30,8 +30,6 @@
 	}
 
 	let processFilter = $state('');
-	let processShowAll = $state(false);
-	const processVisibleLimit = 50;
 	let processList = $derived(/** @type {any[]} */ (Array.isArray(data.processes) ? data.processes : []));
 	let filteredProcesses = $derived(
 		processFilter
@@ -41,11 +39,6 @@
 						.includes(processFilter.toLowerCase()),
 				)
 			: processList,
-	);
-	let visibleProcesses = $derived(
-		processFilter || processShowAll
-			? filteredProcesses
-			: filteredProcesses.slice(0, processVisibleLimit),
 	);
 	let maxProcMem = $derived(
 		processList.reduce((max, process) => Math.max(max, Number(process.memory) || 0), 0),
@@ -91,49 +84,45 @@
 		placeholder="筛选进程..."
 		ariaLabel="筛选进程"
 	/>
-	<ToolCardList>
-		<table class="proc-table">
-			<thead>
-				<tr><th>进程</th><th>PID</th><th>CPU</th><th>内存</th><th>状态</th></tr>
-			</thead>
-			<tbody>
-				{#each visibleProcesses as process (process.pid)}
-					<tr>
-						<td class="proc-name" title={process.name}>{process.name}</td>
-						<td class="proc-num">{process.pid}</td>
-						<td class="proc-num proc-meter-cell">
-							<span class="proc-meter"
-								><span
-									class="proc-meter-fill"
-									style="width: {clampPct(process.cpu)}%"
-								></span></span
-							>{Number(process.cpu ?? 0).toFixed(1)}%
-						</td>
-						<td class="proc-num proc-meter-cell">
-							<span class="proc-meter"
-								><span
-									class="proc-meter-fill"
-									style="width: {memPct(process)}%"
-								></span></span
-							>{fmtBytes(process.memory)}
-						</td>
-						<td class="proc-status">
-							<StatusBadge label={procStatusLabel(process.status)} tone={procStatusTone(process.status)} />
-						</td>
-					</tr>
-				{/each}
-			</tbody>
-		</table>
-		{#if visibleProcesses.length === 0}<p class="tool-card-empty">没有匹配的进程</p>{/if}
-	</ToolCardList>
-	{#if !processFilter && processList.length > processVisibleLimit}
-		<MaterialButton
-			variant="text"
-			className="show-all-btn"
-			label={processShowAll ? '收起' : `显示全部 ${processList.length} 个进程`}
-			onclick={() => (processShowAll = !processShowAll)}
-		/>
-	{/if}
+	<ToolResultList items={filteredProcesses}>
+		{#snippet children(visibleProcesses = /** @type {any[]} */ ([]))}
+			<ToolCardList>
+				<table class="proc-table">
+					<thead>
+						<tr><th>进程</th><th>PID</th><th>CPU</th><th>内存</th><th>状态</th></tr>
+					</thead>
+					<tbody>
+						{#each visibleProcesses as process (process.pid)}
+							<tr>
+								<td class="proc-name" title={process.name}>{process.name}</td>
+								<td class="proc-num">{process.pid}</td>
+								<td class="proc-num proc-meter-cell">
+									<span class="proc-meter"
+										><span
+											class="proc-meter-fill"
+											style="width: {clampPct(process.cpu)}%"
+										></span></span
+									>{Number(process.cpu ?? 0).toFixed(1)}%
+								</td>
+								<td class="proc-num proc-meter-cell">
+									<span class="proc-meter"
+										><span
+											class="proc-meter-fill"
+											style="width: {memPct(process)}%"
+										></span></span
+									>{fmtBytes(process.memory)}
+								</td>
+								<td class="proc-status">
+									<StatusBadge label={procStatusLabel(process.status)} tone={procStatusTone(process.status)} />
+								</td>
+							</tr>
+						{/each}
+					</tbody>
+				</table>
+				{#if visibleProcesses.length === 0}<p class="tool-card-empty">没有匹配的进程</p>{/if}
+			</ToolCardList>
+		{/snippet}
+	</ToolResultList>
 {:else if data.operation === 'kill' && data.killed != null}
 	<div class="process-action-row">
 		<StatusBadge label="已终止" tone="success" />
@@ -212,19 +201,6 @@
 	}
 	.proc-status {
 		padding-right: var(--md-sys-space-2xs) !important;
-	}
-	:global(.md-btn.show-all-btn) {
-		width: 100%;
-		box-sizing: border-box;
-		margin-top: var(--md-sys-space-xs);
-		background: transparent;
-		border: 1px dashed var(--md-sys-color-outline-variant);
-		border-radius: var(--md-sys-shape-small);
-		color: var(--md-sys-color-primary);
-		min-height: var(--md-comp-button-small-height);
-	}
-	:global(.md-btn.show-all-btn:hover) {
-		background: color-mix(in srgb, var(--md-sys-color-primary) 8%, transparent);
 	}
 	.tool-card-empty {
 		margin: var(--md-sys-space-sm) 0;

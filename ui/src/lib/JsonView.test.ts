@@ -53,6 +53,21 @@ describe('JsonView', () => {
 		expect(container.querySelectorAll('.jv-children').length).toBeGreaterThan(0);
 	});
 
+	it('paginates expanded arrays in fifteen-item pages', async () => {
+		const { container } = render(JsonView, {
+			value: { items: Array.from({ length: 20 }, (_, index) => index) },
+			defaultDepth: 1,
+		});
+
+		await fireEvent.click(screen.getByText('[ 20 项 ]'));
+		const itemsView = screen.getByText('"items"').closest('.jv-view')!;
+		expect(itemsView.querySelectorAll('.jv-children > .jv-view')).toHaveLength(15);
+		expect(screen.getByRole('button', { name: '显示更多（剩余 5 条）' })).toBeTruthy();
+
+		await fireEvent.click(screen.getByRole('button', { name: '显示更多（剩余 5 条）' }));
+		expect(itemsView.querySelectorAll('.jv-children > .jv-view')).toHaveLength(20);
+	});
+
 	it('copies the raw JSON to the clipboard', async () => {
 		const writeText = vi.fn().mockResolvedValue(undefined);
 		Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });

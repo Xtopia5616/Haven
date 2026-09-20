@@ -869,7 +869,7 @@ describe('ToolResultCard process', () => {
 		expect(screen.queryByText('explorer.exe')).toBeNull();
 	});
 
-	it('collapses beyond 50 processes with a show-all toggle', async () => {
+	it('paginates processes in the shared fifteen-row pages', async () => {
 		const processes = Array.from({ length: 60 }, (_, i) => ({ pid: i + 1, name: `p${i}.exe` }));
 		const { container } = render(ToolResultCard, {
 			toolName: 'system',
@@ -877,11 +877,11 @@ describe('ToolResultCard process', () => {
 		});
 		await expandToolCard(container);
 		expect(screen.getByText('60 个进程')).toBeTruthy();
-		expect(screen.queryByText('p59.exe')).toBeNull();
-		await fireEvent.click(screen.getByText('显示全部 60 个进程'));
-		expect(screen.getByText('p59.exe')).toBeTruthy();
-		await fireEvent.click(screen.getByText('收起'));
-		expect(screen.queryByText('p59.exe')).toBeNull();
+		expect(screen.getByText('p14.exe')).toBeTruthy();
+		expect(screen.queryByText('p15.exe')).toBeNull();
+		await fireEvent.click(screen.getByRole('button', { name: '显示更多（剩余 45 条）' }));
+		expect(screen.getByText('p29.exe')).toBeTruthy();
+		expect(screen.queryByText('p30.exe')).toBeNull();
 	});
 });
 

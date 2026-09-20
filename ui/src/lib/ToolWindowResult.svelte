@@ -1,5 +1,6 @@
 <script>
 	import JsonView from '$lib/JsonView.svelte';
+	import ToolResultList from '$lib/ToolResultList.svelte';
 
 	let { data = {} } = $props();
 	let media = $derived(data.media ?? {});
@@ -10,14 +11,18 @@
 {#if Array.isArray(data.windows)}
 	<div class="tool-card-count">{data.count ?? data.windows.length} 个窗口</div>
 	{#if data.windows.length > 0}
-		<div class="tool-card-list">
-			{#each data.windows as window (window.hwnd ?? window.title)}
-				<div class="window-row">
-					<span class="window-title" title={window.title}>{window.title || '(无标题)'}</span>
-					{#if window.pid}<span class="window-pid">PID {window.pid}</span>{/if}
+		<ToolResultList items={data.windows}>
+			{#snippet children(visibleWindows = /** @type {any[]} */ ([]))}
+				<div class="tool-card-list">
+					{#each visibleWindows as window (window.hwnd ?? window.title)}
+						<div class="window-row">
+							<span class="window-title" title={window.title}>{window.title || '(无标题)'}</span>
+							{#if window.pid}<span class="window-pid">PID {window.pid}</span>{/if}
+						</div>
+					{/each}
 				</div>
-			{/each}
-		</div>
+			{/snippet}
+		</ToolResultList>
 	{:else}
 		<p class="tool-card-empty">没有可见窗口</p>
 	{/if}
@@ -52,14 +57,18 @@
 	{#if data.text}<div class="tool-card-meta">{data.text}</div>{/if}
 {:else if Array.isArray(data.elements)}
 	<div class="tool-card-count">{data.count ?? data.elements.length} 个界面元素</div>
-	<div class="tool-card-list">
-		{#each data.elements as element, index (element.name ?? index)}
-			<div class="window-row">
-				<span class="window-title" title={element.name}>{element.name || '(未命名元素)'}</span>
-				{#if element.control_type}<span class="window-pid">{element.control_type}</span>{/if}
+	<ToolResultList items={data.elements}>
+		{#snippet children(visibleElements = /** @type {any[]} */ ([]))}
+			<div class="tool-card-list">
+				{#each visibleElements as element, index (element.name ?? index)}
+					<div class="window-row">
+						<span class="window-title" title={element.name}>{element.name || '(未命名元素)'}</span>
+						{#if element.control_type}<span class="window-pid">{element.control_type}</span>{/if}
+					</div>
+				{/each}
 			</div>
-		{/each}
-	</div>
+		{/snippet}
+	</ToolResultList>
 {:else if data.operation}
 	<div class="tool-card-meta">窗口操作：{data.operation}</div>
 	<JsonView value={data} defaultDepth={1} />

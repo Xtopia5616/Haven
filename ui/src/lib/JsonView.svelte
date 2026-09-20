@@ -3,6 +3,7 @@
 	import { untrack } from 'svelte';
 	import JsonView from './JsonView.svelte';
 	import MaterialButton from './MaterialButton.svelte';
+	import ToolResultList from './ToolResultList.svelte';
 	import logger from './logger.ts';
 	import { formatError } from './formatError.ts';
 
@@ -128,13 +129,21 @@
 			{#if expanded && count > 0}
 				<div class="jv-children">
 					{#if isArray}
-						{#each value as item, i (i)}
-							<JsonView value={item} key={String(i)} indexed depth={depth + 1} {defaultDepth} copyable={false} />
-						{/each}
+						<ToolResultList items={value}>
+							{#snippet children(visibleItems = /** @type {any[]} */ ([]))}
+								{#each visibleItems as item, i (i)}
+									<JsonView value={item} key={String(i)} indexed depth={depth + 1} {defaultDepth} copyable={false} />
+								{/each}
+							{/snippet}
+						</ToolResultList>
 					{:else}
-						{#each Object.entries(value) as [k, v] (k)}
-							<JsonView value={v} key={k} depth={depth + 1} {defaultDepth} copyable={false} />
-						{/each}
+						<ToolResultList items={Object.entries(value)}>
+							{#snippet children(visibleEntries = /** @type {any[]} */ ([]))}
+								{#each visibleEntries as [k, v] (k)}
+									<JsonView value={v} key={k} depth={depth + 1} {defaultDepth} copyable={false} />
+								{/each}
+							{/snippet}
+						</ToolResultList>
 					{/if}
 				</div>
 				<div class="jv-row jv-close" aria-hidden="true">

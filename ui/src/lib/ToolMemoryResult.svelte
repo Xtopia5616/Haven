@@ -1,5 +1,6 @@
 <script>
 	import JsonView from '$lib/JsonView.svelte';
+	import ToolResultList from '$lib/ToolResultList.svelte';
 
 	let { data = {} } = $props();
 	let facts = $derived(Array.isArray(data.facts) ? data.facts : []);
@@ -15,39 +16,47 @@
 {#if Array.isArray(data.facts)}
 	<div class="tool-card-count">{facts.length} 条记忆事实</div>
 	{#if facts.length > 0}
-		<div class="memory-list">
-			{#each facts as fact, index (`${fact.id ?? `${fact.subject ?? ''}:${fact.predicate ?? ''}:${index}`}`)}
-				<div class="memory-row">
-					<div class="memory-triple">
-						<span class="memory-subject">{fact.subject || '用户'}</span>
-						<span class="memory-predicate">{fact.predicate || '事实'}</span>
-						<span class="memory-object" title={fact.object}>{fact.object || '—'}</span>
-					</div>
-					<div class="memory-meta">
-						{#if fact.confidence != null}<span>置信度 {scoreLabel(fact.confidence)}</span>{/if}
-						{#if Array.isArray(fact.tags) && fact.tags.length > 0}<span>{fact.tags.join(' · ')}</span>{/if}
-					</div>
-					{#if fact.source_snippet}<div class="memory-snippet">{fact.source_snippet}</div>{/if}
+		<ToolResultList items={facts}>
+			{#snippet children(visibleFacts = /** @type {any[]} */ ([]))}
+				<div class="memory-list">
+					{#each visibleFacts as fact, index (`${fact.id ?? `${fact.subject ?? ''}:${fact.predicate ?? ''}:${index}`}`)}
+						<div class="memory-row">
+							<div class="memory-triple">
+								<span class="memory-subject">{fact.subject || '用户'}</span>
+								<span class="memory-predicate">{fact.predicate || '事实'}</span>
+								<span class="memory-object" title={fact.object}>{fact.object || '—'}</span>
+							</div>
+							<div class="memory-meta">
+								{#if fact.confidence != null}<span>置信度 {scoreLabel(fact.confidence)}</span>{/if}
+								{#if Array.isArray(fact.tags) && fact.tags.length > 0}<span>{fact.tags.join(' · ')}</span>{/if}
+							</div>
+							{#if fact.source_snippet}<div class="memory-snippet">{fact.source_snippet}</div>{/if}
+						</div>
+					{/each}
 				</div>
-			{/each}
-		</div>
+			{/snippet}
+		</ToolResultList>
 	{:else}
 		<p class="tool-card-empty">没有找到记忆事实</p>
 	{/if}
 {:else if Array.isArray(data.hits)}
 	<div class="tool-card-count">{hits.length} 条召回结果{data.mode ? ` · ${data.mode}` : ''}</div>
 	{#if hits.length > 0}
-		<div class="memory-list">
-			{#each hits as hit, index (hit.entity_id ?? index)}
-				<div class="memory-row">
-					<div class="memory-hit-text">{hit.text || '—'}</div>
-					<div class="memory-meta">
-						{#if hit.score != null}<span>相关度 {scoreLabel(hit.score)}</span>{/if}
-						{#if hit.model}<span>{hit.model}</span>{/if}
-					</div>
+		<ToolResultList items={hits}>
+			{#snippet children(visibleHits = /** @type {any[]} */ ([]))}
+				<div class="memory-list">
+					{#each visibleHits as hit, index (hit.entity_id ?? index)}
+						<div class="memory-row">
+							<div class="memory-hit-text">{hit.text || '—'}</div>
+							<div class="memory-meta">
+								{#if hit.score != null}<span>相关度 {scoreLabel(hit.score)}</span>{/if}
+								{#if hit.model}<span>{hit.model}</span>{/if}
+							</div>
+						</div>
+					{/each}
 				</div>
-			{/each}
-		</div>
+			{/snippet}
+		</ToolResultList>
 	{:else}
 		<p class="tool-card-empty">没有找到相关记忆</p>
 	{/if}

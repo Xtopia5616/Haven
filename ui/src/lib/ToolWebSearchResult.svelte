@@ -1,5 +1,6 @@
 <script>
 	import ExternalRef from '$lib/ExternalRef.svelte';
+	import ToolResultList from '$lib/ToolResultList.svelte';
 
 	let { data = {} } = $props();
 </script>
@@ -10,19 +11,23 @@
 {/if}
 {#if Array.isArray(data.results)}
 	{#if data.results.length > 0}
-		<div class="tool-card-list">
-			{#each data.results as result (result.url + result.title)}
-				<div class="search-row">
-					<ExternalRef class="search-path" target={result.url} />
-					{#if result.title && result.title !== result.url}
-						<span class="search-snippet">{result.title}</span>
-					{/if}
+		<ToolResultList items={data.results}>
+			{#snippet children(visibleResults = /** @type {any[]} */ ([]))}
+				<div class="tool-card-list">
+					{#each visibleResults as result (result.url + result.title)}
+						<div class="search-row">
+							<ExternalRef class="search-path" target={result.url} />
+							{#if result.title && result.title !== result.url}
+								<span class="search-snippet">{result.title}</span>
+							{/if}
+						</div>
+						{#if result.snippet}
+							<div class="tool-card-meta">{result.snippet}</div>
+						{/if}
+					{/each}
 				</div>
-				{#if result.snippet}
-					<div class="tool-card-meta">{result.snippet}</div>
-				{/if}
-			{/each}
-		</div>
+			{/snippet}
+		</ToolResultList>
 	{:else}
 		<p class="tool-card-empty">（未返回结果）</p>
 	{/if}

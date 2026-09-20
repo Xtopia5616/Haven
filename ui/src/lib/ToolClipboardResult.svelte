@@ -1,4 +1,6 @@
 <script>
+	import ToolResultList from '$lib/ToolResultList.svelte';
+
 	let { data = {} } = $props();
 </script>
 
@@ -6,13 +8,17 @@
 	<p class="tool-card-empty">已写入剪贴板</p>
 {:else if Array.isArray(data.entries)}
 	{#if data.entries.length > 0}
-		<div class="tool-card-list">
-			{#each data.entries as entry, index (index)}
-				<div class="search-row">
-					<span class="search-snippet">{entry.content}</span>
+		<ToolResultList items={data.entries}>
+			{#snippet children(visibleEntries = /** @type {any[]} */ ([]))}
+				<div class="tool-card-list">
+					{#each visibleEntries as entry, index (index)}
+						<div class="search-row">
+							<span class="search-snippet">{entry.content}</span>
+						</div>
+					{/each}
 				</div>
-			{/each}
-		</div>
+			{/snippet}
+		</ToolResultList>
 		<div class="tool-card-meta">共 {data.total} 条历史</div>
 	{:else}
 		<p class="tool-card-empty">剪贴板历史为空</p>
