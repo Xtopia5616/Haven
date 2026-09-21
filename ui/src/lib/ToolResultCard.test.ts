@@ -23,26 +23,59 @@ describe('canRenderToolResult', () => {
 		expect(canRenderToolResult('system', JSON.stringify({ cpu: { usage_pct: 12 } }))).toBe(
 			true,
 		);
-		expect(canRenderToolResult('system', JSON.stringify({ scope: 'process', processes: [{ pid: 1 }] }))).toBe(
-			true,
-		);
-		expect(canRenderToolResult('system', JSON.stringify({ scope: 'window', windows: [{ title: 'x' }] }))).toBe(
-			true,
-		);
-		expect(canRenderToolResult('haven', JSON.stringify({ operation: 'actions_list', status: 'running' }))).toBe(true);
-		expect(canRenderToolResult('haven', JSON.stringify({ operation: 'schedule_list', scheduled_actions: [] }))).toBe(true);
-		expect(canRenderToolResult('haven', JSON.stringify({ operation: 'schedule_set', id: 'r1', mode: 'notify' }))).toBe(
-			true,
-		);
-		expect(canRenderToolResult('haven', JSON.stringify({ operation: 'schedule_cancel', cancelled: 'act-1' }))).toBe(true);
-		expect(canRenderToolResult('memory', JSON.stringify({ operation: 'search', facts: [] }))).toBe(true);
-		expect(canRenderToolResult('haven', JSON.stringify({ operation: 'tool_disable', name: 'files', enabled: true }))).toBe(true);
+		expect(
+			canRenderToolResult(
+				'system',
+				JSON.stringify({ scope: 'process', processes: [{ pid: 1 }] }),
+			),
+		).toBe(true);
+		expect(
+			canRenderToolResult(
+				'system',
+				JSON.stringify({ scope: 'window', windows: [{ title: 'x' }] }),
+			),
+		).toBe(true);
+		expect(
+			canRenderToolResult(
+				'haven',
+				JSON.stringify({ operation: 'actions_list', status: 'running' }),
+			),
+		).toBe(true);
+		expect(
+			canRenderToolResult(
+				'haven',
+				JSON.stringify({ operation: 'schedule_list', scheduled_actions: [] }),
+			),
+		).toBe(true);
+		expect(
+			canRenderToolResult(
+				'haven',
+				JSON.stringify({ operation: 'schedule_set', id: 'r1', mode: 'notify' }),
+			),
+		).toBe(true);
+		expect(
+			canRenderToolResult(
+				'haven',
+				JSON.stringify({ operation: 'schedule_cancel', cancelled: 'act-1' }),
+			),
+		).toBe(true);
+		expect(
+			canRenderToolResult('memory', JSON.stringify({ operation: 'search', facts: [] })),
+		).toBe(true);
+		expect(
+			canRenderToolResult(
+				'haven',
+				JSON.stringify({ operation: 'tool_disable', name: 'files', enabled: true }),
+			),
+		).toBe(true);
 		expect(canRenderToolResult('system', JSON.stringify({ variables: [] }))).toBe(true);
 		expect(canRenderToolResult('files', JSON.stringify({ written: true, path: 'x' }))).toBe(
 			true,
 		);
 		expect(canRenderToolResult('http', JSON.stringify({ status: 200 }))).toBe(true);
-		expect(canRenderToolResult('system', JSON.stringify({ scope: 'clipboard', content: 'hi' }))).toBe(true);
+		expect(
+			canRenderToolResult('system', JSON.stringify({ scope: 'clipboard', content: 'hi' })),
+		).toBe(true);
 		expect(canRenderToolResult('system', JSON.stringify({ battery_percent: 80 }))).toBe(true);
 		expect(
 			canRenderToolResult(
@@ -53,7 +86,11 @@ describe('canRenderToolResult', () => {
 		expect(
 			canRenderToolResult(
 				'haven',
-				JSON.stringify({ operation: 'actions_cancel', action_id: 'act-1', cancelled: true }),
+				JSON.stringify({
+					operation: 'actions_cancel',
+					action_id: 'act-1',
+					cancelled: true,
+				}),
 			),
 		).toBe(true);
 	});
@@ -67,10 +104,24 @@ describe('canRenderToolResult', () => {
 				JSON.stringify({ server_name: 'fs', status: 'loaded' }),
 			),
 		).toBe(true);
-		expect(canRenderToolResult('media', JSON.stringify({ operation: 'play', played: true }))).toBe(true);
-		expect(canRenderToolResult('media', JSON.stringify({ operation: 'volume_get', volume: 0.5 }))).toBe(true);
-		expect(canRenderToolResult('media', JSON.stringify({ operation: 'inspect', asset_id: 'asset-1', media: {} }))).toBe(true);
-		expect(canRenderToolResult('system', JSON.stringify({ scope: 'input', operation: 'click', clicked: [10, 20] }))).toBe(true);
+		expect(
+			canRenderToolResult('media', JSON.stringify({ operation: 'play', played: true })),
+		).toBe(true);
+		expect(
+			canRenderToolResult('media', JSON.stringify({ operation: 'volume_get', volume: 0.5 })),
+		).toBe(true);
+		expect(
+			canRenderToolResult(
+				'media',
+				JSON.stringify({ operation: 'inspect', asset_id: 'asset-1', media: {} }),
+			),
+		).toBe(true);
+		expect(
+			canRenderToolResult(
+				'system',
+				JSON.stringify({ scope: 'input', operation: 'click', clicked: [10, 20] }),
+			),
+		).toBe(true);
 		expect(canRenderToolResult('files', JSON.stringify({ nope: 1 }))).toBe(true);
 	});
 	it('accepts any non-empty text as a raw card', () => {
@@ -86,25 +137,43 @@ describe('canRenderToolResult', () => {
 			parseToolResult('system', JSON.stringify({ scope: 'info', networks: [] })),
 		).toMatchObject({ kind: 'custom' });
 		expect(
-			parseToolResult('system', JSON.stringify({ scope: 'process', operation: 'kill', killed: 42 })),
+			parseToolResult(
+				'system',
+				JSON.stringify({ scope: 'process', operation: 'kill', killed: 42 }),
+			),
 		).toMatchObject({ kind: 'custom' });
 		expect(
-			parseToolResult('system', JSON.stringify({ scope: 'window', operation: 'screenshot', asset_id: 'asset-1' })),
+			parseToolResult(
+				'system',
+				JSON.stringify({ scope: 'window', operation: 'screenshot', asset_id: 'asset-1' }),
+			),
 		).toMatchObject({ kind: 'custom' });
 		expect(
-			parseToolResult('media', JSON.stringify({ operation: 'describe', asset_id: 'asset-1', text: 'a screen' })),
+			parseToolResult(
+				'media',
+				JSON.stringify({ operation: 'describe', asset_id: 'asset-1', text: 'a screen' }),
+			),
 		).toMatchObject({ kind: 'custom' });
 		expect(
-			parseToolResult('haven', JSON.stringify({ operation: 'actions_cancel', action_id: 'act-1' })),
+			parseToolResult(
+				'haven',
+				JSON.stringify({ operation: 'actions_cancel', action_id: 'act-1' }),
+			),
 		).toMatchObject({ kind: 'custom' });
 		expect(
-			parseToolResult('system', JSON.stringify({ scope: 'window', available: false, note: 'Windows only' })),
+			parseToolResult(
+				'system',
+				JSON.stringify({ scope: 'window', available: false, note: 'Windows only' }),
+			),
 		).toMatchObject({ kind: 'custom' });
 		expect(
 			parseToolResult('memory', JSON.stringify({ operation: 'search', facts: [] })),
 		).toMatchObject({ kind: 'custom' });
 		expect(
-			parseToolResult('haven', JSON.stringify({ operation: 'tool_disable', name: 'files', enabled: true })),
+			parseToolResult(
+				'haven',
+				JSON.stringify({ operation: 'tool_disable', name: 'files', enabled: true }),
+			),
 		).toMatchObject({ kind: 'custom' });
 	});
 	it('routes independent operation views through their root renderer', () => {
@@ -114,11 +183,16 @@ describe('canRenderToolResult', () => {
 				JSON.stringify({ operation: 'read', path: 'a.rs', content: 'x' }),
 			),
 		).toMatchObject({ kind: 'custom' });
-		expect(parseToolResult('files.search', searchJson([{ path: 'a.rs', line: 2 }]))).toMatchObject({
+		expect(
+			parseToolResult('files.search', searchJson([{ path: 'a.rs', line: 2 }])),
+		).toMatchObject({
 			kind: 'custom',
 		});
 		expect(
-			parseToolResult('system.info', JSON.stringify({ scope: 'info', os: { name: 'Windows' } })),
+			parseToolResult(
+				'system.info',
+				JSON.stringify({ scope: 'info', os: { name: 'Windows' } }),
+			),
 		).toMatchObject({ kind: 'custom' });
 	});
 	it('rejects empty content', () => {
@@ -129,7 +203,9 @@ describe('canRenderToolResult', () => {
 
 describe('operation view UI contract', () => {
 	it('uses the backend renderer discriminator for operation results', () => {
-		expect(getToolResultRenderer('custom', 'files.search', { results: [] }, 'files.search')).toBeTruthy();
+		expect(
+			getToolResultRenderer('custom', 'files.search', { results: [] }, 'files.search'),
+		).toBeTruthy();
 	});
 });
 
@@ -313,6 +389,27 @@ describe('ToolResultCard ask', () => {
 });
 
 describe('ToolResultCard outcomes', () => {
+	it.each([
+		['completed', '执行成功'],
+		['succeeded', '执行成功'],
+		['failed', '调用失败'],
+	])('shows %s in the shared header status position', (outcome, label) => {
+		const { container } = render(ToolResultCard, {
+			type: 'tool',
+			toolName: 'messaging',
+			content: 'tool output',
+			outcome,
+		});
+
+		const headerState = container.querySelector('.tool-header-state');
+		expect(headerState).toBeTruthy();
+		expect(headerState?.textContent).toContain(label);
+		expect(headerState?.getAttribute('data-state')).toBe(
+			outcome === 'succeeded' ? 'completed' : outcome,
+		);
+		expect(container.querySelector('[data-detail="status"]')).toBeNull();
+	});
+
 	it('surfaces unknown side-effect state instead of implying a safe retry', () => {
 		render(ToolResultCard, {
 			type: 'tool',
@@ -323,11 +420,50 @@ describe('ToolResultCard outcomes', () => {
 		expect(screen.getByText('结果未知，可能已执行')).toBeTruthy();
 		expect(screen.getByTitle('该操作可能已经产生副作用，禁止自动重试')).toBeTruthy();
 	});
+
+	it('distinguishes an empty successful result from an empty failed call', async () => {
+		const successful = render(ToolResultCard, {
+			toolName: 'files',
+			content: '',
+			outcome: 'succeeded',
+		});
+		await expandToolCard(successful.container);
+		expect(
+			successful.container.querySelector('[data-detail="output"] .tool-card-empty')?.textContent,
+		).toBe('（无结果）');
+
+		successful.unmount();
+		const failed = render(ToolResultCard, {
+			toolName: 'files',
+			content: '',
+			outcome: 'failed',
+		});
+		await expandToolCard(failed.container);
+		expect(failed.container.querySelector('[data-detail="output"] .tool-card-empty')?.textContent).toBe(
+			'调用失败',
+		);
+		expect(failed.container.querySelector('.tool-card-empty--error')).toBeTruthy();
+	});
+
+	it('uses the result envelope when the outcome prop is absent', async () => {
+		const { container } = render(ToolResultCard, {
+			toolName: 'shell',
+			content: '',
+			result: { outcome: 'failed' },
+		});
+		await expandToolCard(container);
+		expect(container.querySelector('[data-detail="output"] .tool-card-empty')?.textContent).toBe(
+			'调用失败',
+		);
+	});
 });
 
 describe('ToolResultCard shell / notify / generic', () => {
 	it('renders plain shell output in a terminal card', async () => {
-		const { container } = render(ToolResultCard, { toolName: 'shell', content: 'Hello from cmd' });
+		const { container } = render(ToolResultCard, {
+			toolName: 'shell',
+			content: 'Hello from cmd',
+		});
 		await expandToolCard(container);
 		expect(screen.getByText('终端输出')).toBeTruthy();
 		expect(screen.getByText('Hello from cmd')).toBeTruthy();
@@ -357,7 +493,9 @@ describe('ToolResultCard shell / notify / generic', () => {
 			content: '',
 		});
 		await expandToolCard(container);
-		expect(container.querySelector('.tool-card-count')?.textContent).toContain('后台任务已完成');
+		expect(container.querySelector('.tool-card-count')?.textContent).toContain(
+			'后台任务已完成',
+		);
 		expect(screen.getByText('退出码 0')).toBeTruthy();
 		expect(screen.getByText('command output')).toBeTruthy();
 	});
@@ -536,7 +674,6 @@ describe('ToolResultCard empty in-progress', () => {
 		expect(container.querySelector('.tool-card')).toBeTruthy();
 		expect(screen.getByText('终端输出')).toBeTruthy();
 		expect(screen.getByText('执行中')).toBeTruthy();
-		expect(screen.getByText('执行状态')).toBeTruthy();
 		expect(screen.getByText('调用参数')).toBeTruthy();
 		expect(screen.getByText('输出结果')).toBeTruthy();
 		expect(screen.getByText('"command"')).toBeTruthy();
@@ -655,7 +792,11 @@ describe('ToolResultCard files', () => {
 	it('renders create_dir with the file-specific result UI', async () => {
 		const { container } = render(ToolResultCard, {
 			toolName: 'files',
-			content: JSON.stringify({ operation: 'create_dir', created: true, path: 'D:\\tmp\\reports' }),
+			content: JSON.stringify({
+				operation: 'create_dir',
+				created: true,
+				path: 'D:\\tmp\\reports',
+			}),
 		});
 		await expandToolCard(container);
 		expect(screen.getByText('已创建目录')).toBeTruthy();
@@ -663,7 +804,9 @@ describe('ToolResultCard files', () => {
 	});
 
 	it('does not route a removed file_search alias to the files renderer', () => {
-		expect(parseToolResult('file_search', searchJson([{ path: 'D:\\tmp\\match.rs' }]))).toMatchObject({
+		expect(
+			parseToolResult('file_search', searchJson([{ path: 'D:\\tmp\\match.rs' }])),
+		).toMatchObject({
 			kind: 'generic',
 		});
 	});
@@ -889,18 +1032,27 @@ describe('ToolResultCard actions', () => {
 	it('renders the action id with a completed badge', async () => {
 		const { container } = render(ToolResultCard, {
 			toolName: 'haven',
-			content: JSON.stringify({ operation: 'actions_list', action_id: 'act-1', status: 'completed', exit_code: 0 }),
+			content: JSON.stringify({
+				operation: 'actions_list',
+				action_id: 'act-1',
+				status: 'completed',
+				exit_code: 0,
+			}),
 		});
 		await expandToolCard(container);
 		expect(screen.getByText('act-1')).toBeTruthy();
 		expect(screen.getByText('已完成')).toBeTruthy();
-		 expect(screen.getByText('退出码 0')).toBeTruthy();
+		expect(screen.getByText('退出码 0')).toBeTruthy();
 	});
 
 	it('renders cancel results with an explicit action status', async () => {
 		const { container } = render(ToolResultCard, {
 			toolName: 'haven',
-			content: JSON.stringify({ operation: 'actions_cancel', action_id: 'act-2', cancelled: true }),
+			content: JSON.stringify({
+				operation: 'actions_cancel',
+				action_id: 'act-2',
+				cancelled: true,
+			}),
 		});
 		await expandToolCard(container);
 		expect(screen.getByText('已取消')).toBeTruthy();
@@ -1124,7 +1276,12 @@ describe('ToolResultCard admin capabilities', () => {
 	it('renders tool toggles as a compact status result', async () => {
 		const { container } = render(ToolResultCard, {
 			toolName: 'haven',
-			content: JSON.stringify({ operation: 'tool_disable', name: 'files', enabled: false, saved: true }),
+			content: JSON.stringify({
+				operation: 'tool_disable',
+				name: 'files',
+				enabled: false,
+				saved: true,
+			}),
 		});
 		await expandToolCard(container);
 		expect(screen.getByText('已停用')).toBeTruthy();
@@ -1177,7 +1334,12 @@ describe('ToolResultCard media audio operations and input', () => {
 	it('renders input results with the action and coordinates', async () => {
 		const { container } = render(ToolResultCard, {
 			toolName: 'system',
-			content: JSON.stringify({ scope: 'input', operation: 'click', clicked: [10, 20], button: 'left' }),
+			content: JSON.stringify({
+				scope: 'input',
+				operation: 'click',
+				clicked: [10, 20],
+				button: 'left',
+			}),
 		});
 		await expandToolCard(container);
 		expect(screen.getByText('已点击')).toBeTruthy();

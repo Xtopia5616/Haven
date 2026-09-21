@@ -46,13 +46,6 @@
 	let sourceBadge = $derived(toolSourceLabel(toolSource));
 	let displayName = $derived(toolDisplayName(toolName));
 	let hasToolArgs = $derived(toolArgs != null && toolArgs !== '');
-	const outcomeLabels = /** @type {Record<string, string>} */ ({
-		failed: '执行失败',
-		cancelled: '已取消',
-		timed_out: '执行超时',
-		unknown: '结果未知，可能已执行',
-	});
-	let outcomeLabel = $derived(outcomeLabels[outcome || ''] || '');
 	let resultHint = $derived(result?.verificationHint || result?.nextAction || '');
 
 	// Local multi-select for ask option chips. Click toggles; Enter in the
@@ -89,13 +82,22 @@
 	});
 
 	const TERMINAL_ACTION = new Set(['completed', 'failed', 'cancelled']);
+	const TOOL_STATE_ALIASES = /** @type {Record<string, string>} */ ({
+		succeeded: 'completed',
+	});
+	const TOOL_STATE_LABELS = /** @type {Record<string, string>} */ ({
+		running: '执行中',
+		completed: '执行成功',
+		failed: '调用失败',
+		cancelled: '已取消',
+		timed_out: '执行超时',
+		unknown: '结果未知，可能已执行',
+	});
 
 	// Foreground live tail (side-channel; not written into the message list).
 	let toolPreviewStore = $derived.by(() => getToolOutputPreviewStore(messageId));
 	let livePreview = $derived(
-		messageId
-			? /** @type {string|undefined} */ ($toolPreviewStore)
-			: undefined,
+		messageId ? /** @type {string|undefined} */ ($toolPreviewStore) : undefined,
 	);
 	// Background actions keep streaming via actionStore after the tool call
 	// itself returns `{ background: true, action_id }`. Parent clears actionId
@@ -105,6 +107,16 @@
 	);
 	let actionRunning = $derived(!!boundAction && boundAction.status === 'running');
 	let liveStreaming = $derived(streaming || actionRunning || !!livePreview);
+	let actionOutcome = $derived(
+		boundAction && TERMINAL_ACTION.has(boundAction.status) ? boundAction.status : null,
+	);
+	let effectiveOutcome = $derived(outcome || result?.outcome || actionOutcome || null);
+	let toolState = $derived.by(() => {
+		const rawState =
+			effectiveOutcome || (liveStreaming ? 'running' : 'completed');
+		return TOOL_STATE_ALIASES[rawState] || rawState;
+	});
+	let toolStateLabel = $derived(TOOL_STATE_LABELS[toolState] || toolState);
 	// Preview chunks are a display-only side channel. They may briefly be empty
 	// between output events, so they must not drive the disclosure lifecycle or
 	// a manual collapse can be reopened by the next chunk. The message/action
@@ -166,6 +178,19 @@
 	});
 	let kind = $derived(parsed?.kind ?? null);
 	let data = $derived(/** @type {any} */ (parsed?.data ?? {}));
+	let emptyOutputLabel = $derived.by(() => {
+		if (effectiveOutcome === 'failed') return '调用失败';
+		if (effectiveOutcome === 'cancelled') return '调用已取消';
+		if (effectiveOutcome === 'timed_out') return '调用超时';
+		if (effectiveOutcome === 'unknown') return '调用结果未知';
+		return kind === 'shell' ? '（无输出）' : '（无结果）';
+	});
+	// An empty failed observation has no renderer-specific error payload to
+	// show. Handle it before the body renderer so shell and custom tool cards
+	// use the same failure wording instead of looking like empty results.
+	let failedWithoutOutput = $derived(
+		effectiveOutcome === 'failed' && displayContent.trim().length === 0,
+	);
 	let toolIcon = $derived.by(() => {
 		if (toolSource === 'mcp') return 'network';
 		if (toolSource === 'skill') return 'sparkles';
@@ -198,16 +223,6 @@
 		return 'tools';
 	});
 	let BodyRenderer = $derived(getToolResultRenderer(kind, toolName, data, resultRenderer));
-	const toolStateLabels = /** @type {Record<string, string>} */ ({
-		running: '执行中',
-		completed: '完成',
-		failed: '失败',
-		cancelled: '已取消',
-		timed_out: '超时',
-		unknown: '未知',
-	});
-	let toolState = $derived(outcome || (liveStreaming ? 'running' : 'completed'));
-	let toolStateLabel = $derived(toolStateLabels[toolState] || toolState);
 	// The `raw` kind carries data: null for plain text and the parsed JSON
 	// value for arrays/primitives; `data` above would collapse the null to {},
 	// so resolve the body text here against the original `parsed` payload.
@@ -408,15 +423,16 @@
 				<span class="tool-source" data-source={toolSource}>{sourceBadge}</span>
 				{#if showFallbackIntent}<span class="tool-intent">{TOOL_INTENT_FALLBACK}</span>{/if}
 				<span class="tool-card-label" title={toolName}>{displayName}</span>
-				{#if outcomeLabel}
-					<span
-						class="tool-outcome"
-						data-outcome={outcome}
-						title={outcome === 'unknown'
-							? '该操作可能已经产生副作用，禁止自动重试'
-							: undefined}>{outcomeLabel}</span
-					>
-				{/if}
+				<span
+					class="tool-state tool-header-state"
+					data-state={toolState}
+					title={toolState === 'unknown'
+						? '该操作可能已经产生副作用，禁止自动重试'
+						: undefined}
+				>
+					<span class="tool-state-dot" aria-hidden="true"></span>
+					{toolStateLabel}
+				</span>
 				{#if toolDataUsage}
 					<span
 						class="usage-chip"
@@ -432,14 +448,6 @@
 			{/snippet}
 
 			<div class="tool-details">
-				<section class="tool-detail" data-detail="status">
-					<div class="tool-detail-label">执行状态</div>
-					<span class="tool-state" data-state={toolState}>
-						<span class="tool-state-dot" aria-hidden="true"></span>
-						{toolStateLabel}
-					</span>
-				</section>
-
 				{#if resultHint}
 					<section class="tool-detail" data-detail="result-meta">
 						<div class="tool-detail-label">后续提示</div>
@@ -465,7 +473,9 @@
 
 				<section class="tool-detail tool-detail--output" data-detail="output">
 					<div class="tool-detail-label">输出结果</div>
-					{#if BodyRenderer}
+					{#if failedWithoutOutput}
+						<p class="tool-card-empty tool-card-empty--error">{emptyOutputLabel}</p>
+					{:else if BodyRenderer}
 						<BodyRenderer
 							kind={kind ?? undefined}
 							{data}
@@ -477,7 +487,7 @@
 					{:else if liveStreaming}
 						<p class="tool-card-empty">等待输出…</p>
 					{:else}
-						<p class="tool-card-empty">（无输出）</p>
+						<p class="tool-card-empty">{emptyOutputLabel}</p>
 					{/if}
 					{#if data.hint}
 						<div class="tool-card-hint">{data.hint}</div>
@@ -876,6 +886,10 @@
 	.tool-state[data-state='waiting'] {
 		color: var(--md-sys-color-tertiary);
 	}
+	.tool-state[data-state='completed'],
+	.tool-state[data-state='succeeded'] {
+		color: var(--md-sys-color-success);
+	}
 	.tool-state[data-state='failed'],
 	.tool-state[data-state='cancelled'],
 	.tool-state[data-state='timed_out'],
@@ -909,13 +923,6 @@
 		color: var(--md-sys-color-on-surface-variant);
 		font-size: var(--md-sys-typescale-label-small-size);
 		font-weight: 600;
-		line-height: var(--md-sys-typescale-label-small-line-height);
-	}
-	.tool-outcome {
-		flex: none;
-		color: var(--md-sys-color-error);
-		font-size: var(--md-sys-typescale-label-small-size);
-		font-weight: 700;
 		line-height: var(--md-sys-typescale-label-small-line-height);
 	}
 	.tool-source {
@@ -956,15 +963,6 @@
 		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 	}
-	.tool-detail[data-detail='status'] {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: var(--md-sys-space-sm);
-	}
-	.tool-detail[data-detail='status'] .tool-detail-label {
-		margin-bottom: 0;
-	}
 	.tool-args {
 		min-width: 0;
 	}
@@ -973,6 +971,10 @@
 		font-size: var(--md-sys-typescale-label-medium-size);
 		line-height: var(--md-sys-typescale-label-medium-line-height);
 		color: var(--md-sys-color-on-surface-variant);
+	}
+	.tool-card-empty--error {
+		color: var(--md-sys-color-error);
+		font-weight: 600;
 	}
 	.usage-chip {
 		display: inline-block;
