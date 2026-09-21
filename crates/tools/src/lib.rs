@@ -2261,7 +2261,7 @@ mod tests {
         let mgr = ToolsManager::new();
         assert_eq!(
             mgr.core.context_limits.read().await.max_observation_chars,
-            32_000
+            16_000
         );
         let limits = ContextLimitsConfig {
             max_observation_chars: 5_000,

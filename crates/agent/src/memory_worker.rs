@@ -16,6 +16,7 @@ use haven_memory::repositories::facts::{
     is_sensitive_predicate, is_single_valued_predicate,
 };
 use tokio::sync::{Notify, Semaphore};
+use tokio_util::sync::CancellationToken;
 
 use crate::fact_extraction::{
     FactDraft, LlmFact, extract_json_array, normalize_predicate, sanitize_fact_field, sanitize_tags,
@@ -63,6 +64,14 @@ pub struct MemoryWorker {
     memory_dirty: Mutex<HashMap<String, Instant>>,
     /// Last successful mid-run MEMORY patch per session (throttle key).
     memory_patch_last: Mutex<HashMap<String, Instant>>,
+    /// At most one initial prompt-memory prefetch runs per session. The
+    /// cancellation token is also used by session cleanup so a provider call
+    /// started for a finished session does not outlive its owner indefinitely.
+    prompt_prefetches: Mutex<HashMap<String, CancellationToken>>,
+    /// Keep prompt prefetches from competing with the main model for an
+    /// unbounded number of provider permits when several sessions start at
+    /// once.
+    prompt_prefetch_slots: Arc<Semaphore>,
 }
 
 impl MemoryWorker {
@@ -113,7 +122,65 @@ impl MemoryWorker {
             outbox_worker_started: AtomicBool::new(false),
             memory_dirty: Mutex::new(HashMap::new()),
             memory_patch_last: Mutex::new(HashMap::new()),
+            prompt_prefetches: Mutex::new(HashMap::new()),
+            prompt_prefetch_slots: Arc::new(Semaphore::new(2)),
         }
+    }
+
+    /// Prefetch semantic prompt memory without delaying the first model turn.
+    ///
+    /// The result is placed in `MemoryService`'s bounded cache. Once it is
+    /// ready, the existing MEMORY-fence patch path consumes that cache on the
+    /// next turn. This is deliberately best-effort: a provider failure leaves
+    /// the first-turn prompt valid and the normal keyword fallback available
+    /// to a later refresh.
+    pub fn prefetch_prompt_memory(self: &Arc<Self>, session_id: &str, description: &str) {
+        if session_id.trim().is_empty()
+            || description.trim().is_empty()
+            || tokio::runtime::Handle::try_current().is_err()
+        {
+            return;
+        }
+        let session_id = session_id.to_string();
+        let description = description.to_string();
+        let cancellation = CancellationToken::new();
+        {
+            let mut prefetches = self.prompt_prefetches.lock().unwrap();
+            if prefetches.contains_key(&session_id) {
+                return;
+            }
+            prefetches.insert(session_id.clone(), cancellation.clone());
+        }
+        // A new run is about to install a fresh no-memory system prompt. Any
+        // stale dirty marker must not cause before_step to repeat an old query.
+        self.memory_dirty.lock().unwrap().remove(&session_id);
+
+        let worker = self.clone();
+        let memory = self.memory.clone();
+        let slots = self.prompt_prefetch_slots.clone();
+        tokio::spawn(async move {
+            let result = tokio::select! {
+                _ = cancellation.cancelled() => return,
+                permit = slots.acquire_owned() => {
+                    let Ok(_permit) = permit else { return };
+                    tokio::select! {
+                        _ = cancellation.cancelled() => return,
+                        result = memory.prompt_candidates(&description, Some(&session_id)) => result,
+                    }
+                }
+            };
+            worker.prompt_prefetches.lock().unwrap().remove(&session_id);
+            if cancellation.is_cancelled() {
+                return;
+            }
+            match result {
+                Ok(_) => worker.mark_memory_dirty(&session_id),
+                Err(error) => tracing::debug!(
+                    session_id = %session_id,
+                    "initial prompt memory prefetch failed: {error}"
+                ),
+            }
+        });
     }
 
     /// Mark that new facts were written for `session_id` so the next
@@ -1144,6 +1211,9 @@ impl MemoryWorker {
     pub fn clear_session(&self, session_id: &str) {
         self.memory_dirty.lock().unwrap().remove(session_id);
         self.memory_patch_last.lock().unwrap().remove(session_id);
+        if let Some(cancellation) = self.prompt_prefetches.lock().unwrap().remove(session_id) {
+            cancellation.cancel();
+        }
     }
 
     /// M3: enqueue light fact extraction from a compaction summary.
@@ -1997,6 +2067,18 @@ mod tests {
         assert!(engine.take_memory_dirty_throttled("ses-b"));
         engine.mark_memory_dirty("ses-b");
         assert!(!engine.take_memory_dirty_throttled("ses-b"));
+    }
+
+    #[tokio::test]
+    async fn prompt_prefetch_is_deduplicated_and_cancelled_on_cleanup() {
+        let worker = Arc::new(make_engine(temp_db()));
+
+        worker.prefetch_prompt_memory("ses-prefetch", "workspace task");
+        worker.prefetch_prompt_memory("ses-prefetch", "workspace task");
+        assert_eq!(worker.prompt_prefetches.lock().unwrap().len(), 1);
+
+        worker.clear_session("ses-prefetch");
+        assert!(worker.prompt_prefetches.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

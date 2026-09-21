@@ -186,3 +186,5 @@
 - [0187：首字节直达与工具卡片增量进度](0187-streaming-first-paint-and-tool-card-progress.md)
 - [0189：opaque 网络能力进入普通确认流程](0189-opaque-network-confirmation.md)
 - [0190：交互状态更新与输出快照原子合并](0190-atomic-react-state-interaction-updates.md)
+- [0191：首轮记忆预取与主模型负载预算](0191-first-turn-memory-prefetch-and-model-load-budgets.md)
+- [0192：删除 provider/model failover](0192-remove-provider-model-failover.md)

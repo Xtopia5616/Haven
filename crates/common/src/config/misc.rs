@@ -71,11 +71,10 @@ pub struct ContextLimitsConfig {
     pub default_context_window: u32,
     /// Per-response output cap floor (tokens) applied to every role endpoint
     /// when the router is built: the effective `max_tokens` sent to the
-    /// provider is `max(endpoint.max_tokens, max_response_tokens)`. A small
-    /// per-endpoint `max_tokens` (the legacy default was 8192) truncated long
-    /// outputs mid-stream (finish_reason `length`), so the global default is
-    /// deliberately very large — it only acts as a floor, letting users lower
-    /// it from the "限制" settings tab without editing every endpoint.
+    /// provider is `max(endpoint.max_tokens, max_response_tokens)`. The
+    /// default leaves room for a useful answer while avoiding an unnecessarily
+    /// large reasoning/output budget on the main model; users can raise it from
+    /// the "限制" settings tab when a workload needs longer generations.
     pub max_response_tokens: u32,
     /// Maximum characters of a tool observation fed back into the
     /// conversation. Also the default cap (in chars) builtin tools apply to
@@ -240,19 +239,17 @@ pub struct ContextLimitsConfig {
 impl Default for ContextLimitsConfig {
     fn default() -> Self {
         Self {
-            compaction_ratio: 0.75,
-            compaction_reserve_tokens: 4_096,
-            default_context_window: 128_000,
-            // Per-response output cap floor: deliberately large so long outputs
-            // are never truncated by a small per-endpoint `max_tokens` (the
-            // legacy default was 8192 and cut off long replies mid-stream).
-            // 128k covers the largest common provider output budgets; the
-            // router additionally clamps to the endpoint's resolved context
-            // window so the floor can never be rejected by the provider.
-            max_response_tokens: 128_000,
+            // Compact before the main model consumes most of its context, and
+            // reserve enough response headroom for a normal multi-step turn.
+            compaction_ratio: 0.65,
+            compaction_reserve_tokens: 8_192,
+            default_context_window: 64_000,
+            // Keep the default generation/reasoning budget bounded. Explicit
+            // per-model values above this floor remain untouched.
+            max_response_tokens: 32_000,
             // File/code observations need enough room for a useful window;
             // the loop still applies this as a hard upper bound.
-            max_observation_chars: 32_000,
+            max_observation_chars: 16_000,
             max_transcript_chars: 4_000,
             max_attachment_images: 4,
             max_attachment_files: 5,
@@ -286,7 +283,7 @@ impl Default for ContextLimitsConfig {
             empty_response_max_retries: 3,
             empty_response_retry_delay_ms: 1500,
             stream_stall_warn_delay_ms: 10_000,
-            reasoning_echo_max_chars: 3000,
+            reasoning_echo_max_chars: 1200,
             background_job_tail_max_chars: 2000,
             background_job_output_emit_interval_ms: 1500,
             terminal_job_ttl_secs: 600,
@@ -309,7 +306,7 @@ impl Default for ContextLimitsConfig {
             event_chunk_batch_max_bytes: 8 * 1024,
             input_ring_buffer_secs: 20,
             embedding_chunk_size: 10,
-            max_tools_per_request: 128,
+            max_tools_per_request: 64,
         }
     }
 }

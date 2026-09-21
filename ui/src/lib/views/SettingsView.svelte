@@ -54,11 +54,11 @@
 	let session = $state({ max_concurrent: 3, max_steps: 30 });
 	/** @type {Record<string, number>} */
 	let contextLimits = $state({
-		compaction_ratio: 0.75,
-		compaction_reserve_tokens: 4096,
-		default_context_window: 128000,
-		max_response_tokens: 1000000,
-		max_observation_chars: 32000,
+		compaction_ratio: 0.65,
+		compaction_reserve_tokens: 8192,
+		default_context_window: 64000,
+		max_response_tokens: 32000,
+		max_observation_chars: 16000,
 		max_transcript_chars: 4000,
 		max_attachment_images: 4,
 		max_attachment_files: 5,
@@ -89,7 +89,7 @@
 		empty_response_max_retries: 3,
 		empty_response_retry_delay_ms: 1500,
 		stream_stall_warn_delay_ms: 10000,
-		reasoning_echo_max_chars: 3000,
+		reasoning_echo_max_chars: 1200,
 		background_job_tail_max_chars: 2000,
 		background_job_output_emit_interval_ms: 1500,
 		terminal_job_ttl_secs: 600,
@@ -112,7 +112,7 @@
 		event_chunk_batch_max_bytes: 8 * 1024,
 		input_ring_buffer_secs: 20,
 		embedding_chunk_size: 64,
-		max_tools_per_request: 128,
+		max_tools_per_request: 64,
 	});
 	let memory = $state({ session_window_size: 50, history_retention_days: 90 });
 	let memoryMaintenance = $state({ running: false, lastCount: null });

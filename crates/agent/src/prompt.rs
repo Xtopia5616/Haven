@@ -543,6 +543,39 @@ impl SystemPromptBuilder {
         conversation_history: &[String],
         exclude_session_id: Option<&str>,
     ) -> String {
+        let memory = self
+            .build_memory_sections(session_description, exclude_session_id)
+            .await;
+        self.build_for_session_with_memory(session_description, conversation_history, memory)
+            .await
+    }
+
+    /// Build the first-turn prompt without waiting for semantic memory recall.
+    ///
+    /// The caller may prefetch memory concurrently and let the normal
+    /// before-step MEMORY fence patch add it before a later turn. Keeping this
+    /// path separate from [`Self::build_for_session`] preserves the full
+    /// rebuild semantics used by prompt callers and tests that need a complete
+    /// snapshot.
+    pub(crate) async fn build_for_session_without_memory(
+        &self,
+        session_description: &str,
+        conversation_history: &[String],
+    ) -> String {
+        self.build_for_session_with_memory(
+            session_description,
+            conversation_history,
+            MemorySections::default(),
+        )
+        .await
+    }
+
+    async fn build_for_session_with_memory(
+        &self,
+        session_description: &str,
+        conversation_history: &[String],
+        memory: MemorySections,
+    ) -> String {
         let sections = self.get_or_build_sections().await;
 
         let skills_section = sections.skills_section.clone();
@@ -556,10 +589,6 @@ impl SystemPromptBuilder {
             )
         };
 
-        // S3: facts + episodes via memory-only builder (same path as resume patch).
-        let memory = self
-            .build_memory_sections(session_description, exclude_session_id)
-            .await;
         let facts_section = Self::render_memory_block(&memory);
 
         // Preferences are facts (tag "preference") and flow through the memory

@@ -133,7 +133,8 @@ CI 以 `scripts/check-crate-dependencies.ps1` 对此表执行内部 crate 依赖
   `thinking.type`+`keep` 等）挂在对应 adapter + provider/base_url/model 检测上，
   复用聊天页「思考强度」，不另开线协议。
 - `router.rs`：`LlmRouter`，按 `RequestKind` 查找显式 request policy，再从
-  命名模型注册表中选择声明了所需 `Capability` 且凭据可用的 primary/fallback；
+  命名模型注册表中选择声明了所需 `Capability` 且凭据可用的唯一 primary；
+  同一模型内重试耗尽后直接返回错误，不跨 provider/model 切换缓存命名空间（ADR 0192）；
   `EndpointRole` 只作为迁移期的边界兼容 selector，不是持久化配置模型。
 - `request_pipeline.rs`：provider-neutral 的 `RequestPolicy`/`RetryPolicy`；
   为普通聊天、工具聊天、embedding 和流式端点尝试提供同一份重试预算快照与
@@ -411,7 +412,7 @@ sequence/block identity；live event、resume、rollback 同步和 reconnect rep
 | | `haven-input` | `haven-llm` |
 |---|---|---|
 | 角色 | **采集方**：录音 → VAD → PCM/WAV → `RecordingResult` | **provider 适配方**：`LlmClient::transcribe` + `build_stt_client` / `adapter_for` |
-| 编排方 | `haven-tools::builtin::media` 的 `MediaTranscriber` 统一专用 STT → LLM fallback | `LlmRouter::transcribe_audio` 只负责 provider-wire/native-to-chat fallback |
+| 编排方 | `haven-tools::builtin::media` 的 `MediaTranscriber` 统一专用 STT → LLM fallback | `LlmRouter::transcribe_audio` 只负责选定模型上的 provider-wire/native-to-chat capability fallback；不做 provider/model failover |
 
 用户语音入口和工具资产入口共享同一个 `MediaTranscriber` 策略，不再各自实现转写：应用通过
 `ToolsManager::transcribe_recording` 把采集到的 WAV 交给工具边界。云端 STT（Whisper / Groq /
@@ -471,6 +472,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 
 | 日期 | 内容 |
 |---|---|
+| 2026-09-21 | §2.3 Memory / §2.5 Agent / Common / UI：首轮 system prompt 不再等待 embedding，记忆改为有界后台预取并通过 MEMORY fence 补入；收紧默认上下文、输出、观察、工具与 reasoning 回显预算（ADR 0191） |
 | 2026-09-20 | §2.5 Agent / §2.6 UI：工具实时预览移出 SessionReducer，避免输出 tick 重算整条时间线；运行中的停止/结束立即返回，终端清理延迟到 run-exit 边界，删除/清空仍保留 destructive cleanup fence（ADR 0184） |
 | 2026-09-19 | §2.5 Agent / §2.6 UI：Action board 刷新加入状态版本校验；损坏 waiting scheduled row 增加可取消的指数退避隔离重试；scheduled fire 改为服务级 claim/lease，阻止多 receiver 重复执行（ADR 0174） |
 | 2026-09-19 | §2.3 Memory / §2.5 Agent / Tools / App / UI：将 session 与 action 状态下沉为 Common typed lifecycle；删除 `actions.fired` 与 `scheduled` 状态，统一定时任务取消/触发终态和 IPC 投影（ADR 0172） |

@@ -22,14 +22,14 @@
 					kTokens: true,
 					step: 1,
 					danger: true,
-					hint: '角色未填写 Context 且 Provider /models 未返回上下文长度时的回退窗口（单位 K = 1000 tokens，如 128 = 128K）。调高会增大每次请求的成本与溢出风险。',
+					hint: '角色未填写 Context 且 Provider /models 未返回上下文长度时的回退窗口（单位 K = 1000 tokens，如 64 = 64K）。调高会增大每次请求的成本与溢出风险。',
 				},
 				{
 					key: 'max_response_tokens',
 					label: '回复输出 token 下限',
 					unit: 'tokens',
 					danger: false,
-					hint: '每个模型端点的 max_tokens 会被抬到不低于此值（取两者较大）。默认极大，长回复不会被截断；需要限制输出长度时调低此项。',
+					hint: '每个模型端点的 max_tokens 会被抬到不低于此值（取两者较大）。默认 32000，兼顾长回复与 reasoning 成本；需要更长回复时再调高。',
 				},
 				{
 					key: 'compaction_ratio',
@@ -60,7 +60,7 @@
 					label: '单次请求工具数上限',
 					unit: 'count',
 					danger: true,
-					hint: '发给模型的 tools 数组最大长度。默认 128（提供方硬顶约 350）。内置工具优先保留；load_mcp 可按 tool_names 只加载子集，整服超限时返回工具目录供再选。',
+					hint: '发给模型的 tools 数组最大长度。默认 64（提供方硬顶约 350）。内置工具优先保留；load_mcp 可按 tool_names 只加载子集，整服超限时返回工具目录供再选。',
 				},
 				{
 					key: 'max_transcript_chars',

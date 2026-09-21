@@ -538,20 +538,6 @@ impl AgentLayer {
         Ok(())
     }
 
-    /// X2 / G7 (freeze-per-run): fully rebuild `canonical[0]` on resume
-    /// (tools/skills/MCP short index + MEMORY + session). Mid-run memory
-    /// refresh stays fence-only via hooks / M2.
-    async fn rebuild_canonical_system(
-        &self,
-        session_id: &str,
-        description: &str,
-        canonical: &mut [CanonicalMessage],
-    ) {
-        self.prompt_builder
-            .rebuild_canonical_system(session_id, description, canonical)
-            .await;
-    }
-
     async fn run_session_resumed(
         &self,
         session_id: &str,
@@ -565,10 +551,13 @@ impl AgentLayer {
         let start_step = snapshot.step_number;
         let branch_points = snapshot.branch_points;
 
-        // X2: full system rebuild on resume (tool index + MEMORY + session).
-        // Pause-path infer writes the DB; this rebuild makes facts and any
-        // newly discovered skills/MCP visible on the next run.
-        self.rebuild_canonical_system(session_id, description, &mut canonical)
+        // X2: rebuild the tool/runtime shell immediately on resume. Semantic
+        // memory is prefetched in the background so a slow embedding provider
+        // cannot delay the first resumed model request.
+        self.inference
+            .prefetch_prompt_memory(session_id, description);
+        self.prompt_builder
+            .rebuild_canonical_system_without_memory(description, &mut canonical)
             .await;
 
         // Phase 7 / D2 — post-checkpoint recovery (durability ≠ RAM queues):
@@ -761,10 +750,18 @@ impl AgentLayer {
             })
             .map(|m| format!("[{}] {}", m.role, m.content))
             .collect();
-        // S2: exclude this session from Past conversation excerpts.
+        // Semantic memory recall (including embedding) is a best-effort
+        // background prefetch. The first provider request must not wait for a
+        // remote embedding endpoint; a later before-step MEMORY patch consumes
+        // the bounded cached result when it is ready.
+        self.inference
+            .prefetch_prompt_memory(session_id, description);
+        // S2: exclude this session from Past conversation excerpts. The first
+        // prompt deliberately carries an empty MEMORY fence and is patched in
+        // place once the prefetch completes.
         let system_prompt = self
             .prompt_builder
-            .build_for_session(description, &history_lines, Some(session_id))
+            .build_for_session_without_memory(description, &history_lines)
             .await;
         tracing::debug!("run_session: system_prompt {} chars", system_prompt.len());
 
