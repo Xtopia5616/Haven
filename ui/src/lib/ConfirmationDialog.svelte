@@ -32,6 +32,7 @@
 	let showDenyMenu = $state(false);
 	let showAllowMenu = $state(false);
 	let pendingPersistentTarget = /** @type {string | null} */ ($state(null));
+	let submittedStepId = /** @type {string | null} */ ($state(null));
 	let dialogEl = /** @type {HTMLDivElement | null} */ ($state(null));
 
 	let normalizedRisk = $derived(String(riskLevel || 'medium').toLowerCase());
@@ -78,7 +79,10 @@
 
 	$effect(() => {
 		const sid = stepId;
-		if (!sid) return;
+		if (!sid) {
+			submittedStepId = null;
+			return;
+		}
 		showDenyMenu = false;
 		showAllowMenu = false;
 		pendingPersistentTarget = null;
@@ -89,6 +93,8 @@
 			remaining = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
 			if (remaining <= 0) {
 				if (id) clearInterval(id);
+				if (submittedStepId === sid) return;
+				submittedStepId = sid;
 				onConfirm?.({ stepId: sid, approved: false, effect: 'deny', scope: 'once' });
 			}
 		};
@@ -108,11 +114,14 @@
 		/** @type {string} */ scope,
 		/** @type {string} */ target = 'operation',
 	) {
+		const sid = stepId;
+		if (!sid || submittedStepId === sid) return;
+		submittedStepId = sid;
 		showDenyMenu = false;
 		showAllowMenu = false;
 		pendingPersistentTarget = null;
 		onConfirm?.({
-			stepId,
+			stepId: sid,
 			approved: effect === 'allow',
 			effect,
 			scope,

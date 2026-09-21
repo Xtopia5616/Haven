@@ -23,6 +23,7 @@
 	import { themeStore } from '$lib/themeStore.ts';
 	import { invoke, isTauri } from '$lib/tauri.ts';
 	import logger from '$lib/logger.ts';
+	import { formatError } from '$lib/formatError.ts';
 	import { installGlobalErrorHandlers, reportError } from '$lib/errorHandling.ts';
 	import {
 		actionEventListeners,
@@ -526,18 +527,20 @@
 				})()
 			: null,
 	);
+	const confirmationRequestsInFlight = new Set();
 
 	/** @param {{ stepId: string, approved: boolean, effect?: string, scope?: string, target?: string }} payload */
 	async function handleConfirm({ stepId, approved, effect, scope, target }) {
 		// Resolve the shared request synchronously before awaiting IPC. The next
 		// queued request is then derived immediately from the reducer.
 		const resolvedStep = stepId;
+		if (!resolvedStep || confirmationRequestsInFlight.has(resolvedStep)) return;
+		confirmationRequestsInFlight.add(resolvedStep);
 		appSessionReducer.dispatch({
 			type: 'session/interaction-resolved',
 			id: resolvedStep,
 			response: { approved, effect, scope },
 		});
-		if (!resolvedStep) return;
 		const resolvedEffect = effect || (approved ? 'allow' : 'deny');
 		const resolvedScope = scope || 'once';
 		const resolvedTarget = target || 'operation';
@@ -549,7 +552,13 @@
 				target: resolvedTarget,
 			});
 		} catch (e) {
-			reportError(e, { context: '+layout', message: '确认失败', log: false });
+			if (formatError(e) === 'Confirmation request is stale or already resolved') {
+				addNotification('确认请求已过期或已处理，操作未执行', 'warning', 4000);
+			} else {
+				reportError(e, { context: '+layout', message: '确认失败', log: false });
+			}
+		} finally {
+			confirmationRequestsInFlight.delete(resolvedStep);
 		}
 	}
 

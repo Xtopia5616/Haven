@@ -48,4 +48,28 @@ describe('ConfirmationDialog', () => {
 			target: 'operation',
 		});
 	});
+
+	it('submits an automatic denial only once when the dialog reaches its deadline', async () => {
+		vi.useFakeTimers();
+		try {
+			const onConfirm = vi.fn();
+			render(ConfirmationDialog as any, {
+				stepId: 'step-timeout',
+				toolName: 'files.write',
+				sessionId: 'ses-test',
+				summary: '写入文件',
+				permissionKey: 'files.write',
+				deadlineAt: Date.now() + 1000,
+				onConfirm,
+			});
+
+			await vi.advanceTimersByTimeAsync(1500);
+			expect(onConfirm).toHaveBeenCalledTimes(1);
+
+			await fireEvent.click(screen.getByRole('button', { name: '本次允许' }));
+			expect(onConfirm).toHaveBeenCalledTimes(1);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
 });
