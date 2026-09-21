@@ -56,4 +56,12 @@ describe('SettingsView diagnostics export', () => {
 
 		click.mockRestore();
 	});
+
+	it('keeps permission management on its own settings tab', async () => {
+		render(SettingsView);
+		await waitFor(() => expect(invoke).toHaveBeenCalledWith('get_api_key_status'));
+
+		await fireEvent.click(screen.getByRole('tab', { name: /权限/ }));
+		expect(screen.getByRole('heading', { name: '权限中心' })).toBeTruthy();
+	});
 });

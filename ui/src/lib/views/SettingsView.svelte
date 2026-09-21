@@ -19,6 +19,7 @@
 	} from '$lib/contracts/settings.ts';
 	import ModelSettings from './ModelSettings.svelte';
 	import SettingsGeneral from './SettingsGeneral.svelte';
+	import SettingsSecurity from './SettingsSecurity.svelte';
 	import SettingsLimits from './SettingsLimits.svelte';
 	import logger from '$lib/logger.ts';
 
@@ -156,7 +157,8 @@
 		{ id: 'general', label: '常规', hint: '快捷键、会话、记忆与外观' },
 		{ id: 'models', label: '模型', hint: 'Provider、能力与请求策略' },
 		{ id: 'media', label: '媒体', hint: '语音、图片、朗读与生成' },
-		{ id: 'limits', label: '限制', hint: '上下文、文件与安全边界' },
+		{ id: 'security', label: '权限', hint: '行为策略与安全边界' },
+		{ id: 'limits', label: '限制', hint: '上下文、文件与容量' },
 	];
 	/** @type {string[]} */
 	let mcpServerNames = $state([]);
@@ -187,7 +189,11 @@
 				)?.available;
 			} catch (e) {
 				shellAvailable[shell] = false;
-				logger.warn('SettingsView', `check_shell_available ${shell} failed`, formatError(e));
+				logger.warn(
+					'SettingsView',
+					`check_shell_available ${shell} failed`,
+					formatError(e),
+				);
 			}
 		}
 	}
@@ -407,6 +413,27 @@
 		}
 	}
 
+	/**
+	 * Permission rules have an immediate command lifecycle, while the rest of
+	 * the settings form is saved in one batch. Update only the permission part
+	 * of the baseline so unrelated unsaved edits remain dirty and discard does
+	 * not resurrect a rule that was already revoked on disk.
+	 * @param {any[]} permissions
+	 */
+	function patchSnapshotSecurityPermissions(permissions) {
+		if (!savedSnapshot) return;
+		try {
+			const snapshot = JSON.parse(savedSnapshot);
+			snapshot.security = {
+				...(snapshot.security || {}),
+				permissions: Array.isArray(permissions) ? permissions : [],
+			};
+			savedSnapshot = JSON.stringify(snapshot);
+		} catch (e) {
+			logger.warn('SettingsView', 'patch snapshot permissions failed', e);
+		}
+	}
+
 	/** @param {any} remote */
 	function applyRemoteDefaultModelFields(remote) {
 		if (!remote) return;
@@ -494,8 +521,7 @@
 			if (snapshot.context_limits)
 				contextLimits = { ...contextLimits, ...snapshot.context_limits };
 			if (snapshot.media?.audio) audio = { ...audio, ...snapshot.media.audio };
-			if (snapshot.media?.input_strategy)
-				mediaInputStrategy = snapshot.media.input_strategy;
+			if (snapshot.media?.input_strategy) mediaInputStrategy = snapshot.media.input_strategy;
 			if (snapshot.media?.stt)
 				stt = {
 					provider: snapshot.media.stt.provider || 'llm',
@@ -717,19 +743,24 @@
 			security.permissions = security.permissions.filter(
 				(/** @type {any} */ permission) => permission.key !== key,
 			);
+			patchSnapshotSecurityPermissions(security.permissions);
+			return true;
 		} catch (e) {
 			reportError(e, { context: 'SettingsView', message: '撤销权限失败', log: false });
+			return false;
 		}
 	}
 
 	async function resetPermissions() {
-		if (!window.confirm('清除所有权限规则？之后 Haven 会按默认策略重新询问。')) return;
 		try {
 			await invoke('reset_permissions');
 			security.permissions = [];
+			patchSnapshotSecurityPermissions([]);
 			addNotification('权限规则已清除', 'success');
+			return true;
 		} catch (e) {
 			reportError(e, { context: 'SettingsView', message: '清除权限规则失败', log: false });
+			return false;
 		}
 	}
 	/** @param {string} value */
@@ -915,59 +946,62 @@
 		className="settings-tabs"
 	/>
 	{#key settingsTab}
-	<div
-		id="settings-panel"
-		class="motion-surface-enter"
-		role="tabpanel"
-		aria-label={settingsTabs.find((tab) => tab.id === settingsTab)?.label || '设置'}
-	>
-		{#if settingsTab === 'general'}
-			<SettingsGeneral
-				{hotkeyMode}
-				{hotkeyBinding}
-				{llmConfig}
-				{session}
-				{defaultShell}
-				{shellAvailable}
-				{memory}
-				{memoryMaintenance}
-				{security}
-				{notification}
-				{log}
-				{logView}
-				{performanceMetricsLoading}
-				{autostartEnabled}
-				onHotkeyModeChange={setHotkeyMode}
-				onHotkeyBindingChange={setHotkeyBinding}
-				onDefaultShellChange={setDefaultShell}
-				onAutostartChange={setAutostart}
-				onRunMaintenance={runMaintenance}
-				onOpenLogViewer={openLogViewer}
-				onExportPerformanceMetrics={exportPerformanceSnapshot}
-				onRevokePermission={revokePermission}
-				onResetPermissions={resetPermissions}
-			/>
-		{:else if settingsTab === 'models' || settingsTab === 'media'}
-			{#if settingsLoaded}<ModelSettings
-					section={settingsTab}
+		<div
+			id="settings-panel"
+			class="motion-surface-enter"
+			role="tabpanel"
+			aria-label={settingsTabs.find((tab) => tab.id === settingsTab)?.label || '设置'}
+		>
+			{#if settingsTab === 'general'}
+				<SettingsGeneral
+					{hotkeyMode}
+					{hotkeyBinding}
 					{llmConfig}
-					{audio}
-					{stt}
-					{ocr}
-					{tts}
-					{imageGen}
-					mediaInputStrategy={mediaInputStrategy}
-					{contextLimits}
-					{keyConfigured}
-					{keyConfiguredProviders}
-					{mcpServerNames}
-					loaded={true}
-					onDiscoverySettled={reBaselineAfterDiscovery}
-				/>{:else}<p class="model-hint">正在加载模型与 API Key 状态…</p>{/if}
-		{:else}
-			<SettingsLimits {contextLimits} />
-		{/if}
-	</div>
+					{session}
+					{defaultShell}
+					{shellAvailable}
+					{memory}
+					{memoryMaintenance}
+					{notification}
+					{log}
+					{logView}
+					{performanceMetricsLoading}
+					{autostartEnabled}
+					onHotkeyModeChange={setHotkeyMode}
+					onHotkeyBindingChange={setHotkeyBinding}
+					onDefaultShellChange={setDefaultShell}
+					onAutostartChange={setAutostart}
+					onRunMaintenance={runMaintenance}
+					onOpenLogViewer={openLogViewer}
+					onExportPerformanceMetrics={exportPerformanceSnapshot}
+				/>
+			{:else if settingsTab === 'models' || settingsTab === 'media'}
+				{#if settingsLoaded}<ModelSettings
+						section={settingsTab}
+						{llmConfig}
+						{audio}
+						{stt}
+						{ocr}
+						{tts}
+						{imageGen}
+						{mediaInputStrategy}
+						{contextLimits}
+						{keyConfigured}
+						{keyConfiguredProviders}
+						{mcpServerNames}
+						loaded={true}
+						onDiscoverySettled={reBaselineAfterDiscovery}
+					/>{:else}<p class="model-hint">正在加载模型与 API Key 状态…</p>{/if}
+			{:else if settingsTab === 'security'}
+				<SettingsSecurity
+					{security}
+					onRevokePermission={revokePermission}
+					onResetPermissions={resetPermissions}
+				/>
+			{:else}
+				<SettingsLimits {contextLimits} />
+			{/if}
+		</div>
 	{/key}
 	{#if settingsDirty}
 		<div class="save-bar md-toolbar motion-surface-enter">

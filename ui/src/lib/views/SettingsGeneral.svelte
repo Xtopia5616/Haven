@@ -7,7 +7,6 @@
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
 	import SettingsField from '$lib/SettingsField.svelte';
 	import SettingsSection from '$lib/SettingsSection.svelte';
-	import SettingsSecurity from './SettingsSecurity.svelte';
 	import HotkeyInput from '$lib/HotkeyInput.svelte';
 	import {
 		inputElementValue,
@@ -30,7 +29,6 @@
 		shellAvailable,
 		memory,
 		memoryMaintenance,
-		security,
 		notification,
 		log,
 		logView,
@@ -43,8 +41,6 @@
 		onRunMaintenance = () => {},
 		onOpenLogViewer = () => {},
 		onExportPerformanceMetrics = async () => {},
-		onRevokePermission = async () => {},
-		onResetPermissions = async () => {},
 	} = $props();
 
 	const SHELL_BASE_OPTIONS = [
@@ -78,7 +74,6 @@
 		const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
 		return lum > 0.5 ? '#000000' : '#ffffff';
 	}
-
 </script>
 
 <div class="settings-general">
@@ -232,9 +227,9 @@
 							preset.hex,
 						)}; --_btn-state: ${contrastText(
 							preset.hex,
-						)}; border: 2px solid transparent; border-color: ${accent === key
-							? contrastText(preset.hex)
-							: 'transparent'}`}
+						)}; border: 2px solid transparent; border-color: ${
+							accent === key ? contrastText(preset.hex) : 'transparent'
+						}`}
 						role="radio"
 						ariaChecked={accent === key}
 						ariaLabel={`${preset.label} ${preset.hex}`}
@@ -276,12 +271,6 @@
 			</div>
 		</SettingsField>
 	</SettingsSection>
-
-	<SettingsSecurity
-		{security}
-		onRevokePermission={onRevokePermission}
-		onResetPermissions={onResetPermissions}
-	/>
 
 	<SettingsSection title="通知" className="notification-section">
 		<div class="notify-grid-header">
