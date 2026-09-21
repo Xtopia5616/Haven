@@ -1,5 +1,6 @@
 <script>
-	import MaterialIconButton from './MaterialIconButton.svelte';
+	import MaterialButton from './MaterialButton.svelte';
+	import Icon from './Icon.svelte';
 	import MenuItem from './MenuItem.svelte';
 
 	let {
@@ -20,15 +21,23 @@
 </script>
 
 <div class="model-switch">
-	<MaterialIconButton
-		size="toolbar"
+	<MaterialButton
+		variant="text"
 		className="model-switch-btn"
 		onclick={() => onToggleMenu()}
 		title={`切换默认模型${currentModelName ? `：${currentModelName}` : ''}`}
-		label="切换默认模型"
-		icon="cpu"
+		ariaLabel={`切换默认模型${currentModelName ? `：${currentModelName}` : ''}`}
+		ariaExpanded={modelMenuOpen}
+		ariaHaspopup="menu"
 	>
-	</MaterialIconButton>
+		{#snippet children()}
+			<Icon name="cpu" size={16} />
+			<span class="model-switch-label" title={currentModelName || '未选择模型'}
+				>{currentModelName || '未选择模型'}</span
+			>
+			<Icon name={modelMenuOpen ? 'chevronUp' : 'chevronDown'} size={14} />
+		{/snippet}
+	</MaterialButton>
 	{#if modelMenuOpen}
 		<div class="model-menu">
 			<div class="model-menu-title">切换默认模型</div>
@@ -96,6 +105,34 @@
 	.model-switch {
 		position: relative;
 		flex-shrink: 0;
+	}
+	:global(.md-btn.model-switch-btn) {
+		display: inline-flex;
+		align-items: center;
+		justify-content: flex-start;
+		gap: var(--md-sys-space-xs);
+		width: auto;
+		min-width: 0;
+		max-width: min(240px, 30vw);
+		height: var(--md-comp-toolbar-height);
+		padding: 0 var(--md-sys-space-sm);
+		border: 1px solid var(--md-sys-color-outline-variant);
+		border-radius: var(--md-sys-shape-medium);
+		background: var(--md-sys-color-surface-container-high);
+		color: var(--md-sys-color-on-surface-variant);
+	}
+	:global(.md-btn.model-switch-btn:hover) {
+		background: var(--md-sys-color-surface-container-highest);
+		border-color: var(--md-sys-color-outline);
+	}
+	.model-switch-label {
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		font-size: var(--md-sys-typescale-label-medium-size);
+		font-weight: 600;
+		line-height: var(--md-sys-typescale-label-medium-line-height);
 	}
 	.model-menu {
 		position: absolute;
@@ -191,5 +228,10 @@
 		border-color: var(--md-sys-color-primary);
 		background: var(--md-sys-color-primary);
 		color: var(--md-sys-color-on-primary);
+	}
+	@media (max-width: 640px) {
+		:global(.md-btn.model-switch-btn) {
+			max-width: min(170px, 34vw);
+		}
 	}
 </style>

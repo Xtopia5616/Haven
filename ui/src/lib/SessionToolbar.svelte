@@ -10,7 +10,6 @@
 		menuSessions = [],
 		sessionStatusLabel = /** @type {(session: any) => string} */ ((session) => session.status),
 		onToggleSessionMenu = () => {},
-		onNewSession = () => {},
 		onSwitchSession = () => {},
 		tokenStats = null,
 		tokenUsageDetails = null,
@@ -103,16 +102,6 @@
 						{/snippet}
 					</MenuItem>
 				{/each}
-				<div class="session-menu-divider"></div>
-				<MenuItem
-					className="session-menu-item session-menu-new"
-					onSelect={() => onNewSession()}
-				>
-					{#snippet children()}
-					<Icon name="plus" size={16} className="session-menu-new-icon" />
-					新建会话
-					{/snippet}
-				</MenuItem>
 			</div>
 		{/if}
 	</div>
@@ -464,17 +453,6 @@
 	:global(.session-menu-check) {
 		flex-shrink: 0;
 		color: var(--md-sys-color-primary);
-	}
-	.session-menu-divider {
-		height: 1px;
-		background: var(--md-sys-color-outline-variant);
-		margin: var(--md-sys-space-xs) 0;
-	}
-	:global(.menu-item.session-menu-new) {
-		justify-content: flex-start;
-		gap: var(--md-sys-space-sm);
-		color: var(--md-sys-color-primary);
-		font-weight: 600;
 	}
 	.token-stats-wrap {
 		position: relative;

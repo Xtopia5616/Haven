@@ -1563,7 +1563,6 @@
 					if (showSessionMenu) sessionMenuOpen = !sessionMenuOpen;
 					else newSession();
 				}}
-				onNewSession={newSession}
 				onSwitchSession={switchToSession}
 				{sessionStatusLabel}
 				{tokenStats}

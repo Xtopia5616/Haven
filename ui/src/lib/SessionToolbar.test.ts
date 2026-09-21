@@ -22,6 +22,7 @@ describe('SessionToolbar', () => {
 
 		await fireEvent.click(button);
 		expect(onToggleSessionMenu).toHaveBeenCalledTimes(1);
+		expect(screen.queryByText('新建会话')).toBeNull();
 	});
 
 	it('does not render duplicate new or end controls in the normal toolbar', () => {
