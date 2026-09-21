@@ -202,7 +202,7 @@
 		align-items: center;
 		gap: var(--md-sys-space-sm);
 		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
-		max-width: min(800px, 100%);
+		max-width: var(--md-sys-chat-surface-width);
 		margin: var(--md-sys-space-sm) auto 0;
 		width: 100%;
 		color: var(--md-sys-color-on-surface-variant);

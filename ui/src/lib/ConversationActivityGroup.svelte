@@ -132,8 +132,8 @@
 
 <style>
 	.activity-group {
-		width: var(--md-sys-chat-agent-max-width);
-		max-width: var(--md-sys-chat-agent-max-width);
+		width: var(--md-sys-chat-surface-width);
+		max-width: var(--md-sys-chat-surface-width);
 		margin-right: auto;
 		box-sizing: border-box;
 		padding: var(--md-sys-space-sm) var(--md-sys-space-md);

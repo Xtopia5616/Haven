@@ -504,8 +504,8 @@
 	}
 	.bubble.user {
 		margin-left: auto;
-		width: var(--md-sys-chat-agent-max-width);
-		max-width: var(--md-sys-chat-agent-max-width);
+		width: var(--md-sys-chat-surface-width);
+		max-width: var(--md-sys-chat-surface-width);
 		background: color-mix(
 			in srgb,
 			var(--md-sys-color-primary) 84%,
@@ -519,8 +519,8 @@
 	}
 	.bubble.assistant {
 		margin-right: auto;
-		width: var(--md-sys-chat-agent-max-width);
-		max-width: var(--md-sys-chat-agent-max-width);
+		width: var(--md-sys-chat-surface-width);
+		max-width: var(--md-sys-chat-surface-width);
 		background: color-mix(
 			in srgb,
 			var(--md-sys-color-primary-container) 18%,

@@ -46,8 +46,8 @@
 		display: flex;
 		align-items: flex-start;
 		gap: var(--md-sys-space-md);
-		width: var(--md-sys-chat-agent-max-width);
-		max-width: 100%;
+		width: var(--md-sys-chat-surface-width);
+		max-width: var(--md-sys-chat-surface-width);
 		box-sizing: border-box;
 		margin: var(--md-sys-space-sm) auto 0;
 		padding: var(--md-sys-space-md) var(--md-sys-space-lg);
