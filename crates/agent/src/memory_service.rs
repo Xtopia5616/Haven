@@ -226,6 +226,37 @@ impl MemoryService {
         Ok(candidates)
     }
 
+    /// Check whether a prompt-memory snapshot is already available without
+    /// issuing another embedding request. This is used by the background
+    /// prefetch path before it marks the MEMORY fence dirty.
+    pub(crate) async fn has_cached_prompt_candidates(
+        &self,
+        session_description: &str,
+        exclude_session_id: Option<&str>,
+    ) -> bool {
+        let query_text: String = session_description
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .chars()
+            .take(MAX_MEMORY_QUERY_CHARS)
+            .collect();
+        let embedding_model = self.current_embedding_model().await;
+        let key = PromptMemoryCacheKey {
+            query: query_text,
+            embedding_model,
+            memory_revision: self.memory_revision(),
+            exclude_session_id: exclude_session_id
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .map(str::to_string),
+        };
+        self.prompt_cache
+            .lock()
+            .map(|mut cache| cache.get(&key).is_some())
+            .unwrap_or(false)
+    }
+
     /// Execute a fully-scoped typed recall request.
     pub async fn recall(&self, query: MemoryQuery) -> anyhow::Result<MemoryRecall> {
         let vector_hits = match &self.embedding_index {

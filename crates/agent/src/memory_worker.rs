@@ -174,7 +174,18 @@ impl MemoryWorker {
                 return;
             }
             match result {
-                Ok(_) => worker.mark_memory_dirty(&session_id),
+                Ok(_) => {
+                    // Only schedule a prompt patch when recall populated the
+                    // cache. Embedding failures are intentionally not cached;
+                    // marking the fence dirty in that case would make the
+                    // first before_step retry the provider synchronously.
+                    if memory
+                        .has_cached_prompt_candidates(&description, Some(&session_id))
+                        .await
+                    {
+                        worker.mark_memory_dirty(&session_id);
+                    }
+                }
                 Err(error) => tracing::debug!(
                     session_id = %session_id,
                     "initial prompt memory prefetch failed: {error}"
