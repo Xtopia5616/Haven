@@ -384,23 +384,14 @@ fn migrate_legacy_model_routing(value: &mut toml::Value) {
     }
 
     let mut policies = Vec::new();
-    let mut add_policy = |request: &str, primary: &str, fallbacks: &[&str]| {
+    let mut add_policy = |request: &str, primary: &str| {
         let mut policy = toml::map::Map::new();
         policy.insert("request".into(), toml::Value::String(request.into()));
         policy.insert("primary".into(), toml::Value::String(primary.into()));
-        policy.insert(
-            "fallbacks".into(),
-            toml::Value::Array(
-                fallbacks
-                    .iter()
-                    .map(|id| toml::Value::String((*id).into()))
-                    .collect(),
-            ),
-        );
         policies.push(toml::Value::Table(policy));
     };
-    add_policy("chat", "default_model", &[]);
-    add_policy("fast_chat", "small_model", &["default_model"]);
+    add_policy("chat", "default_model");
+    add_policy("fast_chat", "small_model");
     add_policy(
         "vision",
         if vision_dedicated {
@@ -408,7 +399,6 @@ fn migrate_legacy_model_routing(value: &mut toml::Value) {
         } else {
             "default_model"
         },
-        &["default_model"],
     );
     add_policy(
         "audio_chat",
@@ -417,7 +407,6 @@ fn migrate_legacy_model_routing(value: &mut toml::Value) {
         } else {
             "default_model"
         },
-        &["default_model"],
     );
     add_policy(
         "transcription",
@@ -426,9 +415,8 @@ fn migrate_legacy_model_routing(value: &mut toml::Value) {
         } else {
             "default_model"
         },
-        &[],
     );
-    add_policy("embedding", "embedding_model", &[]);
+    add_policy("embedding", "embedding_model");
 
     llm.insert("models".into(), toml::Value::Array(models));
     llm.insert("request_policies".into(), toml::Value::Array(policies));
