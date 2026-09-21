@@ -13,7 +13,7 @@ Haven 的前端用一个附件列表提交图片、音频和普通文件，但�
 |---|---|---|
 | 浏览器附件 | `ui/src/lib/InputRouter.svelte`、`process_transcript` | 附件以 base64 进入 Tauri；前端限制不是安全边界 |
 | host 校验/落盘 | `crates/app-binary/src/commands/recording.rs` | 所有二进制附件写入 `uploads/<batch>`；工具层只通过受管 `asset_id` 消费 |
-| 消息持久化 | `crates/memory/src/repositories/messages.rs` | `media_inputs` 保存 canonical 表示；`messages.attachments` 只保留兼容元数据 |
+| 消息持久化 | `crates/memory/src/repositories/messages.rs` | `media_inputs` 保存 canonical 表示；`messages.ui_metadata` 只保留 UI/资产保留元数据 |
 | 媒体派生 | `crates/tools/src/builtin/media.rs` | `MediaTool` 统一承接 OCR/STT、fallback、超时、取消和结构化结果 |
 | ReAct 投影 | `crates/agent/src/react/mod.rs`、`types.rs`、`resume.rs` | 依据 `MediaPlan` 投影 `ContentPart`；计划事件保留 asset identity 和派生表示原因 |
 | provider 路由 | `crates/agent/src/react/turn.rs`、`crates/llm/src/router.rs`、`adapters/` | 根据已有 `ContentPart::Image/Audio` 选角色；没有统一的能力画像和降级理由 |
@@ -93,13 +93,13 @@ Haven 的前端用一个附件列表提交图片、音频和普通文件，但�
   `CompactSummary` 只保存受限的资产元数据、引用和表示 provenance，禁止保存
   大段 bytes。`CompactSummary` 的 media marker 同时保存 `asset_id` 和 MIME，
   使 compaction/resume 能继续导航到同一资产。
-- `messages.attachments` 继续读取旧 `MessageAttachment`，作为兼容投影；新
+- `messages.ui_metadata` 只保留 UI/资产保留元数据，读取后重建 `MessageAttachment` DTO；新
   写路径在迁移完成前只允许存小型 inline payload，普通文件存受管引用/元数据。
 - `session_steps` 不复制资产内容，只保存执行态和关联 id。
 - 受管文件有明确的数量、大小、TTL、取消清理和进程重启清理策略；任何需要
   新数据库表或 schema 版本的变更必须另立迁移/重置 ADR，遵守当前“不同版本
   直接重置、不做运行时迁移”的规则。
-- 历史消息可继续展示旧 base64/path；恢复时先读取 legacy attachment，再由
+- 历史消息可继续展示受管 path；恢复时先读取 UI 元数据，再由
   兼容适配器生成计划，不用内容比对去重。
 
 ### 6. 安全与 prompt-injection 边界

@@ -973,7 +973,7 @@ async fn persist_file_attachments_to_with_limit(
         // Keep the decoded transport data in the returned in-memory value so
         // the ReAct media projection can still reference the just-persisted
         // asset while the model-facing media tool performs OCR/STT.
-        // `messages.attachments` strips it at the DB boundary and snapshots
+        // `messages.ui_metadata` strips it at the DB boundary and snapshots
         // use `MediaInput::for_snapshot`, so this is not a second durable
         // authority.
         persisted.push(att);

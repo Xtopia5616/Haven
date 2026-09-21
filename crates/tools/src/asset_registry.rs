@@ -107,7 +107,7 @@ impl ManagedAssetRegistry {
 
     /// Register an asset and hold it for the lifetime of a session. The
     /// session lease closes the GC window between event persistence and the
-    /// materialized `messages.attachments` projection.
+    /// materialized `messages.ui_metadata` projection.
     pub fn register_under_root_for_session(
         &self,
         session_id: &str,

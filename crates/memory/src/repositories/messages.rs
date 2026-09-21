@@ -25,7 +25,7 @@ pub fn undelivered_recovery_since() -> String {
 }
 
 /// Map a `messages` row (11 columns: id, session_id, role, content, message_type,
-/// created_at, tool_call_id, attachments, voice, ingress_seq, media_inputs) into a `Message`. Shared by
+/// created_at, tool_call_id, ui_metadata, voice, ingress_seq, media_inputs) into a `Message`. Shared by
 /// every read query so column order cannot drift between them.
 fn map_message_row(row: &rusqlite::Row) -> rusqlite::Result<Message> {
     Ok(Message {
@@ -36,11 +36,68 @@ fn map_message_row(row: &rusqlite::Row) -> rusqlite::Result<Message> {
         message_type: row.get(4)?,
         created_at: row.get(5)?,
         tool_call_id: row.get(6)?,
-        attachments: Database::parse_attachments(row.get(7)?),
+        attachments: Database::parse_ui_metadata(row.get(7)?),
         voice: row.get::<_, i32>(8)? != 0,
         ingress_seq: row.get(9)?,
         media_inputs: Database::parse_media_inputs(row.get(10)?),
     })
+}
+
+/// The database keeps this small projection only for UI rendering and host
+/// asset retention. It intentionally excludes inline bytes and provider
+/// representations; those belong exclusively to `messages.media_inputs`.
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+struct MessageUiMetadata {
+    #[serde(default)]
+    attachment_previews: Vec<UiAttachmentMetadata>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct UiAttachmentMetadata {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    asset_id: Option<String>,
+    media_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    filename: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    size_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    expires_at: Option<String>,
+}
+
+impl From<&MessageAttachment> for UiAttachmentMetadata {
+    fn from(attachment: &MessageAttachment) -> Self {
+        Self {
+            asset_id: attachment.asset_id.clone(),
+            media_type: attachment.media_type.clone(),
+            filename: attachment.filename.clone(),
+            path: attachment.path.clone(),
+            sha256: attachment.sha256.clone(),
+            size_bytes: attachment.size_bytes,
+            expires_at: attachment.expires_at.clone(),
+        }
+    }
+}
+
+impl From<UiAttachmentMetadata> for MessageAttachment {
+    fn from(metadata: UiAttachmentMetadata) -> Self {
+        Self {
+            asset_id: metadata.asset_id,
+            media_type: metadata.media_type,
+            data: String::new(),
+            filename: metadata.filename,
+            path: metadata.path,
+            sha256: metadata.sha256,
+            size_bytes: metadata.size_bytes,
+            expires_at: metadata.expires_at,
+            representations: Vec::new(),
+            preferred_representation: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -53,8 +110,10 @@ pub struct Message {
     pub created_at: String,
     pub tool_call_id: Option<String>,
     pub attachments: Vec<MessageAttachment>,
-    /// Durable provider-neutral media representations. This is the canonical
-    /// persistence projection; `attachments` remains the UI/ingress projection.
+    /// Durable provider-neutral media representations. This is the only
+    /// persistence projection used for media planning and recovery. The
+    /// `attachments` field is an ingress/UI DTO and is reconstructed from the
+    /// message's UI metadata when a row is read.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub media_inputs: Vec<MediaInput>,
     /// True for user messages that came from voice transcription (mic style
@@ -160,7 +219,7 @@ impl Database {
                 |row| row.get(0),
             )?;
             conn.execute(
-                "INSERT INTO messages (id, session_id, role, content, message_type, created_at, tool_call_id, attachments, voice, ingress_seq, media_inputs)
+                "INSERT INTO messages (id, session_id, role, content, message_type, created_at, tool_call_id, ui_metadata, voice, ingress_seq, media_inputs)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 rusqlite::params![
                     id,
@@ -170,7 +229,7 @@ impl Database {
                     message_type,
                     created_at,
                     tool_call_id,
-                    Self::serialize_attachments(attachments),
+                    Self::serialize_ui_metadata(attachments),
                     voice,
                     ingress_seq,
                     Self::serialize_media_inputs(media_inputs),
@@ -216,33 +275,34 @@ impl Database {
         }
     }
 
-    fn serialize_attachments(attachments: &[MessageAttachment]) -> Option<String> {
+    fn serialize_ui_metadata(attachments: &[MessageAttachment]) -> Option<String> {
         if attachments.is_empty() {
             None
         } else {
-            let metadata: Vec<_> = attachments
-                .iter()
-                .map(|attachment| {
-                    let mut attachment = attachment.clone();
-                    // Never persist base64 in the UI projection. The
-                    // canonical media_inputs column carries metadata and a
-                    // trusted host path is rehydrated only for UI previews.
-                    attachment.data.clear();
-                    attachment
-                })
-                .collect();
+            let metadata = MessageUiMetadata {
+                attachment_previews: attachments.iter().map(UiAttachmentMetadata::from).collect(),
+            };
             serde_json::to_string(&metadata).ok()
         }
     }
 
-    fn parse_attachments(raw: Option<String>) -> Vec<MessageAttachment> {
+    fn parse_ui_metadata(raw: Option<String>) -> Vec<MessageAttachment> {
         let mut attachments: Vec<MessageAttachment> = match raw {
-            Some(s) if !s.is_empty() => serde_json::from_str(&s).unwrap_or_default(),
+            Some(s) if !s.is_empty() => serde_json::from_str::<MessageUiMetadata>(&s)
+                .map(|metadata| {
+                    metadata
+                        .attachment_previews
+                        .into_iter()
+                        .map(Into::into)
+                        .collect()
+                })
+                .unwrap_or_default(),
             _ => Vec::new(),
         };
-        // `messages.attachments` is a UI projection. Rehydrate
-        // a preview only from the two host-owned media roots; the durable
-        // provider-neutral representation remains `media_inputs`.
+        // `messages.ui_metadata` is deliberately limited to a UI/retention
+        // projection. Rehydrate a preview only from the two host-owned media
+        // roots; the durable provider-neutral representation remains
+        // `media_inputs`.
         for attachment in &mut attachments {
             if attachment.data.is_empty()
                 && let Some(path) = attachment.path.as_deref()
@@ -280,7 +340,7 @@ impl Database {
         let conn = self.conn();
         conn.query_row(
             "SELECT id, session_id, role, content, message_type, created_at, tool_call_id,
-                    attachments, voice, ingress_seq, media_inputs
+                    ui_metadata, voice, ingress_seq, media_inputs
              FROM messages WHERE session_id = ?1 AND id = ?2",
             rusqlite::params![session_id, message_id],
             map_message_row,
@@ -299,7 +359,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, session_id, role, content, message_type, created_at, tool_call_id,
-                    attachments, voice, ingress_seq, media_inputs
+                    ui_metadata, voice, ingress_seq, media_inputs
              FROM messages WHERE session_id = ?1 ORDER BY created_at ASC, rowid ASC",
         )?;
         let rows = stmt.query_map(rusqlite::params![session_id], map_message_row)?;
@@ -318,18 +378,17 @@ impl Database {
     pub fn list_managed_attachment_paths(&self) -> anyhow::Result<Vec<PathBuf>> {
         let conn = self.conn();
         let mut statement = conn.prepare(
-            "SELECT attachments FROM messages
-             WHERE attachments IS NOT NULL AND attachments != ''",
+            "SELECT ui_metadata FROM messages
+             WHERE ui_metadata IS NOT NULL AND ui_metadata != ''",
         )?;
         let mut rows = statement.query([])?;
         let mut paths = HashSet::new();
         while let Some(row) = rows.next()? {
             let raw: String = row.get(0)?;
-            let attachments: Vec<MessageAttachment> =
-                serde_json::from_str(&raw).map_err(|error| {
-                    anyhow::anyhow!("invalid persisted attachment metadata: {error}")
-                })?;
-            for attachment in attachments {
+            let metadata: MessageUiMetadata = serde_json::from_str(&raw).map_err(|error| {
+                anyhow::anyhow!("invalid persisted message UI metadata: {error}")
+            })?;
+            for attachment in metadata.attachment_previews {
                 if let Some(path) = attachment.path
                     && !path.trim().is_empty()
                 {
@@ -348,7 +407,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, session_id, role, content, message_type, created_at, tool_call_id,
-                    attachments, voice, ingress_seq, media_inputs
+                    ui_metadata, voice, ingress_seq, media_inputs
              FROM messages WHERE session_id = ?1 AND (message_type IS NULL OR message_type = 'text' OR message_type = 'peer_kickoff')
               ORDER BY created_at DESC, rowid DESC LIMIT ?2",
         )?;
@@ -372,7 +431,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, session_id, role, content, message_type, created_at, tool_call_id,
-                    attachments, voice, ingress_seq, media_inputs
+                    ui_metadata, voice, ingress_seq, media_inputs
              FROM messages WHERE session_id = ?1 AND ingress_seq > ?2
              ORDER BY ingress_seq ASC, rowid ASC",
         )?;
@@ -407,7 +466,7 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT m.id, m.session_id, m.role, m.content, m.message_type, m.created_at,
-                    m.tool_call_id, m.attachments, m.voice, m.ingress_seq, m.media_inputs
+                    m.tool_call_id, m.ui_metadata, m.voice, m.ingress_seq, m.media_inputs
              FROM messages m
              WHERE m.session_id = ?1
                AND m.role = 'user'
@@ -867,7 +926,7 @@ mod tests {
         .unwrap();
 
         let raw = db.conn().query_row(
-            "SELECT attachments, media_inputs FROM messages WHERE session_id = ?1",
+            "SELECT ui_metadata, media_inputs FROM messages WHERE session_id = ?1",
             rusqlite::params![tid],
             |row| {
                 Ok((
@@ -876,7 +935,10 @@ mod tests {
                 ))
             },
         )?;
-        assert!(!raw.0.unwrap_or_default().contains("aGVsbG8="));
+        let ui_metadata = raw.0.unwrap_or_default();
+        assert!(!ui_metadata.contains("aGVsbG8="));
+        assert!(!ui_metadata.contains("representations"));
+        assert!(!ui_metadata.contains("preferred_representation"));
         assert!(!raw.1.unwrap_or_default().contains("aGVsbG8="));
 
         let message = db.get_session_messages(&tid).unwrap().remove(0);

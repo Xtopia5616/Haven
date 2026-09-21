@@ -8,7 +8,7 @@
 //! version stamp rejects both older and newer database contracts.
 
 /// Current database contract. Any schema change requires a fresh database.
-pub const SCHEMA_VERSION: i32 = 23;
+pub const SCHEMA_VERSION: i32 = 24;
 /// Current schema, created idempotently on every open.
 const SCHEMA_SQL: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS sessions (
@@ -30,7 +30,10 @@ const SCHEMA_SQL: &[&str] = &[
         message_type TEXT CHECK(message_type IN ('text','thought','action','observation','reasoning','peer_kickoff')),
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         tool_call_id TEXT,
-        attachments TEXT,
+        -- UI-only metadata (host path/filename/preview identity). The
+        -- canonical media contract is messages.media_inputs; this column is
+        -- never a source for provider planning or transcript recovery.
+        ui_metadata TEXT,
         voice INTEGER NOT NULL DEFAULT 0,
         ingress_seq INTEGER NOT NULL DEFAULT 0,
         media_inputs TEXT
@@ -464,6 +467,7 @@ fn table_exists(conn: &rusqlite::Connection, table: &str) -> anyhow::Result<bool
 const REQUIRED_COLUMNS: &[(&str, &str)] = &[
     ("sessions", "transcript"),
     ("messages", "voice"),
+    ("messages", "ui_metadata"),
     ("react_checkpoints", "event_sequence"),
     ("messages", "media_inputs"),
     ("session_events", "payload"),
@@ -619,6 +623,16 @@ mod tests {
         let version = user_version(&conn).unwrap();
         assert_eq!(version, SCHEMA_VERSION);
         assert!(table_exists(&conn, "memory_fts").unwrap());
+
+        let columns = conn
+            .prepare("SELECT name FROM pragma_table_info('messages')")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(columns.iter().any(|column| column == "ui_metadata"));
+        assert!(!columns.iter().any(|column| column == "attachments"));
     }
 
     #[test]

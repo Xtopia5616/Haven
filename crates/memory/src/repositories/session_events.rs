@@ -807,7 +807,7 @@ impl Database {
             conn.execute(
                 "INSERT INTO messages
                     (id, session_id, role, content, message_type, created_at,
-                     tool_call_id, attachments, voice, ingress_seq, media_inputs)
+                     tool_call_id, ui_metadata, voice, ingress_seq, media_inputs)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, 0, ?8, NULL)",
                 rusqlite::params![
                     message.id,
