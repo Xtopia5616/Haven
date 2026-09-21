@@ -281,7 +281,14 @@ impl Tool for OperationViewTool {
     }
 
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
-        if let Err(error) = self.validate_input(&input) {
+        // ToolsManager validates the model-facing arguments, then injects
+        // trusted execution metadata such as `_session_id` before calling the
+        // view. Validate the public shape again without those private fields;
+        // the original input is retained for routing into the aggregate
+        // implementation, which consumes the trusted metadata.
+        let mut validation_input = input.clone();
+        crate::tool_contract::strip_private_tool_fields(&mut validation_input);
+        if let Err(error) = self.validate_input(&validation_input) {
             return Err(anyhow::Error::new(StructuredToolError::new(
                 error.to_string(),
                 ToolErrorMetadata::validation(),

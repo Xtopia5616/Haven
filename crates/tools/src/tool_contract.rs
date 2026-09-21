@@ -1785,6 +1785,21 @@ pub fn parse_tool_input<T: serde::de::DeserializeOwned>(
         .map_err(|e| anyhow::anyhow!("invalid '{}' input: {}", tool_name, e))
 }
 
+/// Remove execution-only metadata before validating a provider-facing schema.
+///
+/// The tools manager strips these fields before the first validation and then
+/// re-injects trusted values for the implementation boundary. Operation views
+/// validate once more inside `execute`, so they must apply the same boundary
+/// rule or strict `additionalProperties: false` schemas reject the trusted
+/// runtime metadata.
+pub(crate) fn strip_private_tool_fields(input: &mut Value) {
+    if let Some(object) = input.as_object_mut() {
+        object.remove("_session_id");
+        object.remove("_step_id");
+        object.remove("_idempotency_key");
+    }
+}
+
 pub type ToolBox = Arc<dyn Tool>;
 
 #[cfg(test)]

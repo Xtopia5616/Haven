@@ -1543,11 +1543,7 @@ impl ToolsManager {
         // LLM-facing input, then re-inject only caller-supplied values.
         // Declared via `Tool::requires_session_id` / `supports_live_output`.
         let mut exec_input = input;
-        if let Some(obj) = exec_input.as_object_mut() {
-            obj.remove("_session_id");
-            obj.remove("_step_id");
-            obj.remove("_idempotency_key");
-        }
+        tool_contract::strip_private_tool_fields(&mut exec_input);
         if let Err(error) = tool.validate_input(&exec_input) {
             return Ok(ToolResult::failed_with_class(
                 Value::Null,
@@ -2720,6 +2716,37 @@ mod tests {
             result.output["content"].as_str().unwrap(),
             "hello from manager"
         );
+    }
+
+    #[tokio::test]
+    async fn operation_view_accepts_trusted_private_session_metadata() {
+        let mgr = ToolsManager::new();
+        mgr.rebuild_catalog().await;
+
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("listed.txt");
+        tokio::fs::write(&file, "listed by manager").await.unwrap();
+        assert!(
+            mgr.load_builtin_for_session(
+                "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                Some(vec!["files.list".into()]),
+                None,
+            )
+            .await
+        );
+
+        let result = mgr
+            .execute_tool(
+                Some("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+                "files.list",
+                json!({"path": tmp.path().to_string_lossy()}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        assert!(result.success, "files.list failed: {:?}", result.error);
+        assert_eq!(result.output["count"], 1);
     }
 
     #[tokio::test]
