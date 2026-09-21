@@ -45,9 +45,7 @@
 			.map((segment) => segment.trim())
 			.filter(Boolean);
 		if (segments.length === 0) return [{ target: 'operation', key: '', label: '此操作' }];
-		const options = [
-			{ target: 'operation', key: segments.join('.'), label: '此操作' },
-		];
+		const options = [{ target: 'operation', key: segments.join('.'), label: '此操作' }];
 		if (segments.length > 2) {
 			options.push({
 				target: 'group',
@@ -67,14 +65,15 @@
 
 	let targetOptions = $derived(buildTargetOptions(permissionKey));
 	let pendingTargetLabel = $derived(
-		targetOptions.find((option) => option.target === pendingPersistentTarget)?.label || '此操作',
+		targetOptions.find((option) => option.target === pendingPersistentTarget)?.label ||
+			'此操作',
 	);
 	let persistentNeedsWarning = $derived(
 		pendingPersistentTarget !== null &&
-		(pendingPersistentTarget !== 'operation' ||
-			normalizedRisk === 'high' ||
-			normalizedRisk === 'critical' ||
-			String(toolName || '').startsWith('shell')),
+			(pendingPersistentTarget !== 'operation' ||
+				normalizedRisk === 'high' ||
+				normalizedRisk === 'critical' ||
+				String(toolName || '').startsWith('shell')),
 	);
 
 	$effect(() => {
@@ -263,7 +262,7 @@
 							variant="danger"
 							label="确认永久允许"
 							onclick={() =>
-									decide('allow', 'always', pendingPersistentTarget || 'operation')}
+								decide('allow', 'always', pendingPersistentTarget || 'operation')}
 						/>
 					</div>
 				{/if}
@@ -287,7 +286,8 @@
 									{#each targetOptions.slice(1) as option (option.target)}
 										<MenuItem
 											label={`本对话拒绝${option.label}`}
-											onSelect={() => decide('deny', 'session', option.target)}
+											onSelect={() =>
+												decide('deny', 'session', option.target)}
 										/>
 									{/each}
 									<MenuItem
@@ -335,19 +335,21 @@
 										{#each targetOptions.slice(1) as option (option.target)}
 											<MenuItem
 												label={`本对话允许${option.label}`}
-												onSelect={() => decide('allow', 'session', option.target)}
+												onSelect={() =>
+													decide('allow', 'session', option.target)}
 											/>
 										{/each}
 										<div class="menu-section-label">永久</div>
 										{#each targetOptions as option (option.target)}
 											<MenuItem
 												label={`永久允许${option.label}`}
-												onSelect={() => requestPersistentAllow(option.target)}
+												onSelect={() =>
+													requestPersistentAllow(option.target)}
 											/>
 										{/each}
 									</div>
 								{/if}
-								{/snippet}
+							{/snippet}
 						</MaterialSplitButton>
 					</div>
 				</div>
@@ -667,6 +669,7 @@
 		align-items: center;
 		justify-content: space-between;
 		gap: var(--md-sys-space-sm);
+		min-width: 0;
 	}
 
 	.allow-group {
@@ -674,11 +677,17 @@
 		align-items: center;
 		justify-content: flex-end;
 		gap: var(--md-sys-space-xs);
-		flex-wrap: wrap;
+		flex-wrap: nowrap;
+		min-width: 0;
 	}
 
 	:global(.md-btn.btn-once) {
 		color: var(--md-sys-color-on-surface-variant);
+	}
+
+	.allow-group :global(.md-btn) {
+		white-space: nowrap;
+		padding-inline: var(--md-sys-space-sm);
 	}
 
 	:global(.md-split-button.deny-split) {
@@ -754,13 +763,46 @@
 		}
 
 		.allow-group {
+			display: grid;
+			grid-template-columns: repeat(2, minmax(0, 1fr));
 			justify-content: stretch;
+			width: 100%;
 		}
 
-		.allow-group :global(.md-btn) {
+		.allow-group > :global(.md-btn),
+		.allow-group > :global(.md-split-button) {
+			width: 100%;
+			min-width: 0;
+		}
+
+		.allow-group > :global(.md-split-button) {
+			display: flex;
+		}
+
+		.allow-group > :global(.md-split-button) :global(.md-btn) {
 			flex: 1 1 auto;
 			min-width: 0;
 			padding-inline: var(--md-sys-space-sm);
+		}
+
+		.allow-group > :global(.md-split-button.allow-split) {
+			grid-column: 1 / -1;
+		}
+
+		.always-warning {
+			display: grid;
+			grid-template-columns: auto minmax(0, 1fr);
+		}
+
+		.always-warning > :global(.md-btn) {
+			grid-column: 1 / -1;
+			width: 100%;
+		}
+
+		.action-heading {
+			align-items: flex-start;
+			flex-direction: column;
+			gap: 2px;
 		}
 
 		:global(.md-split-button.deny-split) {
@@ -791,11 +833,15 @@
 		.risk-badge {
 			padding-inline: 8px;
 		}
+	}
 
-		.action-heading {
-			align-items: flex-start;
-			flex-direction: column;
-			gap: 2px;
+	@media (max-width: 360px) {
+		.allow-group {
+			grid-template-columns: 1fr;
+		}
+
+		.allow-group > :global(.md-split-button.allow-split) {
+			grid-column: auto;
 		}
 	}
 
