@@ -1,5 +1,5 @@
 <script>
-	import MaterialButton from './MaterialButton.svelte';
+	import MaterialIconButton from './MaterialIconButton.svelte';
 	import StatusDot from './StatusDot.svelte';
 	import { taskKindLabel } from '$lib/taskTerminology.ts';
 
@@ -37,6 +37,9 @@
 		if (llmConnected === 'ready') return '就绪';
 		return '检测中';
 	});
+
+	const taskCount = $derived(runningActionCount + pendingScheduledActions.length);
+	const hasTaskActivity = $derived(taskCount > 0 || awaitingBackgroundActive);
 
 	const statusColor = $derived.by(() => {
 		if (runtime === 'browser') return 'neutral';
@@ -78,35 +81,52 @@
 		if (pendingScheduledActions.length > 0) {
 			parts.push(`${pendingScheduledActions.length} 条${taskKindLabel('scheduled')}`);
 		}
-		return parts.length > 0 ? `任务：${parts.join('，')}` : '打开任务查看任务状态';
+		return parts.length > 0 ? `任务：${parts.join('，')}` : `当前状态：${statusLabel}`;
+	});
+
+	const taskTitle = $derived.by(() => {
+		const parts = [];
+		if (runningActionCount > 0) parts.push(`${runningActionCount} 个后台任务运行中`);
+		if (pendingScheduledActions.length > 0) {
+			parts.push(`${pendingScheduledActions.length} 条${taskKindLabel('scheduled')}`);
+		}
+		return parts.length > 0 ? `打开任务：${parts.join('，')}` : '打开任务查看详情';
 	});
 </script>
 
 <div class="status-switch">
-	<MaterialButton
-		variant="outlined"
-		className="status-chip"
-		onclick={() => onOpenTasks?.()}
-		title={statusTitle}
-		ariaLabel={`应用状态：${statusLabel}，打开任务`}
-	>
+	<div class="status-chip" role="status" aria-label={`应用状态：${statusLabel}`} title={statusTitle}>
 		<StatusDot
 			color={statusColor}
 			animate={statusAnimating}
 		/>
 		<span class:recording-text={overlay.isRecording} class="status-text">{statusLabel}</span>
-		{#if runningActionCount > 0 || pendingScheduledActions.length > 0}
-			<span class="status-badge">{runningActionCount + pendingScheduledActions.length}</span>
-		{/if}
-	</MaterialButton>
+	</div>
+	{#if hasTaskActivity}
+		<div class="task-action">
+			<MaterialIconButton
+				size="toolbar"
+				variant="ghost"
+				label="打开任务"
+				title={taskTitle}
+				icon="listTodo"
+				onclick={() => onOpenTasks?.()}
+			/>
+			{#if taskCount > 0}
+				<span class="status-badge" aria-hidden="true">{taskCount}</span>
+			{/if}
+		</div>
+	{/if}
 </div>
 
 <style>
 	.status-switch {
-		position: relative;
+		display: inline-flex;
+		align-items: center;
+		gap: var(--md-sys-space-xs);
 		-webkit-app-region: no-drag;
 	}
-	:global(.status-chip) {
+	.status-chip {
 		display: inline-flex;
 		align-items: center;
 		gap: var(--md-sys-space-sm);
@@ -120,15 +140,17 @@
 		font-size: var(--md-sys-typescale-label-medium-size);
 		font-weight: 600;
 		line-height: var(--md-sys-typescale-label-medium-line-height);
-		cursor: pointer;
 		font-family: inherit;
-		transition: background var(--md-sys-motion-duration-fast)
-			var(--md-sys-motion-easing-standard);
 	}
-	:global(.status-chip:hover) {
-		background: var(--md-sys-color-surface-container-highest);
+	.task-action {
+		position: relative;
+		display: inline-flex;
+		align-items: center;
 	}
 	.status-badge {
+		position: absolute;
+		top: -3px;
+		right: -3px;
 		min-width: 16px;
 		height: 16px;
 		padding: 0 var(--md-sys-space-xs);
@@ -140,6 +162,7 @@
 		line-height: 16px;
 		text-align: center;
 		font-variant-numeric: tabular-nums;
+		pointer-events: none;
 	}
 	.recording-text {
 		color: var(--md-sys-color-error);
