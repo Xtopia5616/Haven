@@ -61,7 +61,7 @@
 | `get_sessions` | `-` | `SessionListResponse` | read | 活跃会话投影 |
 | `end_session` | `SessionIdRequest` | `()` | mutate | 仅显式结束 |
 | `interrupt_session` | `SessionIdRequest` | `()` | mutate | 停止当前输出但保留会话，可继续 |
-| `resolve_confirmation` | `ResolveConfirmationRequest` | `()` | mutate | effect/scope 后端校验，deny 优先 |
+| `resolve_confirmation` | `ResolveConfirmationRequest` | `()` | mutate | effect/scope/target 后端校验，deny 优先 |
 | `update_session_title` | `UpdateSessionTitleRequest` | `()` | mutate | trim 后不得为空 |
 | `delete_session` | `SessionIdRequest` | `()` | mutate | 删除并释放运行态 |
 | `clear_history` | `-` | `u64` | mutate | 同时清除会话授权 |
@@ -99,7 +99,7 @@
 | `rollback_session` | `{ session_id, target_step, pause, target_message_id }` | `()` | 按事件游标与投影时钟回滚 |
 | `update_session_title` | `{ session_id, title }` | `()` | 保存并广播新标题 |
 | `delete_session` / `clear_history` | `{ session_id }` / 无 | `()` / 删除数量 | 删除后广播 `session:deleted` |
-| `resolve_confirmation` | `{ step_id, effect, scope }` | `()` | 仅确认流程使用；effect/scope 必填且由后端按 typed permission decision 校验 |
+| `resolve_confirmation` | `{ step_id, effect, scope, target }` | `()` | 仅确认流程使用；effect/scope/target 必填且由后端按 typed permission decision 校验，target 只能选择当前 capability 的操作、功能组或工具父级 |
 
 Tauri 接收前端参数时采用其自动 camelCase → Rust snake_case 映射；页面调用处使用 camelCase。
 

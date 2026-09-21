@@ -30,26 +30,59 @@
 	} = $props();
 	let remaining = $state(TIMEOUT_SECONDS);
 	let showDenyMenu = $state(false);
-	let confirmAlways = $state(false);
+	let showAllowMenu = $state(false);
+	let pendingPersistentTarget = /** @type {string | null} */ ($state(null));
 	let dialogEl = /** @type {HTMLDivElement | null} */ ($state(null));
 
 	let normalizedRisk = $derived(String(riskLevel || 'medium').toLowerCase());
 	let riskLabel = $derived(RISK_LABELS[normalizedRisk] || '中风险');
 	let timeoutPercent = $derived(Math.min(100, Math.max(0, (remaining / TIMEOUT_SECONDS) * 100)));
 
-	// Unbounded tools: Always allow covers every future invocation, not just
-	// the summary shown above.
-	const UNBOUNDED_ALWAYS = new Set(['shell']);
-	let alwaysWarn = $derived(
-		UNBOUNDED_ALWAYS.has(String(toolName || '').split(':')[0]) ||
-			String(toolName || '').startsWith('shell'),
+	/** @param {string} key */
+	function buildTargetOptions(key) {
+		const segments = String(key || '')
+			.split('.')
+			.map((segment) => segment.trim())
+			.filter(Boolean);
+		if (segments.length === 0) return [{ target: 'operation', key: '', label: '此操作' }];
+		const options = [
+			{ target: 'operation', key: segments.join('.'), label: '此操作' },
+		];
+		if (segments.length > 2) {
+			options.push({
+				target: 'group',
+				key: segments.slice(0, -1).join('.'),
+				label: `此功能组（${segments.slice(0, -1).join('.')}）`,
+			});
+		}
+		if (segments.length > 1) {
+			options.push({
+				target: 'tool',
+				key: segments[0],
+				label: `此工具（${segments[0]}）`,
+			});
+		}
+		return options;
+	}
+
+	let targetOptions = $derived(buildTargetOptions(permissionKey));
+	let pendingTargetLabel = $derived(
+		targetOptions.find((option) => option.target === pendingPersistentTarget)?.label || '此操作',
+	);
+	let persistentNeedsWarning = $derived(
+		pendingPersistentTarget !== null &&
+		(pendingPersistentTarget !== 'operation' ||
+			normalizedRisk === 'high' ||
+			normalizedRisk === 'critical' ||
+			String(toolName || '').startsWith('shell')),
 	);
 
 	$effect(() => {
 		const sid = stepId;
 		if (!sid) return;
 		showDenyMenu = false;
-		confirmAlways = false;
+		showAllowMenu = false;
+		pendingPersistentTarget = null;
 		let disposed = false;
 		const deadline = deadlineAt || Date.now() + TIMEOUT_SECONDS * 1000;
 		let id = /** @type {ReturnType<typeof setInterval> | undefined} */ (undefined);
@@ -71,36 +104,50 @@
 		};
 	});
 
-	function decide(/** @type {string} */ effect, /** @type {string} */ scope) {
+	function decide(
+		/** @type {string} */ effect,
+		/** @type {string} */ scope,
+		/** @type {string} */ target = 'operation',
+	) {
 		showDenyMenu = false;
+		showAllowMenu = false;
+		pendingPersistentTarget = null;
 		onConfirm?.({
 			stepId,
 			approved: effect === 'allow',
 			effect,
 			scope,
+			target,
 		});
 	}
 
-	function handleAlwaysAllow() {
-		if (alwaysWarn && !confirmAlways) {
-			confirmAlways = true;
+	/** @param {string} target */
+	function requestPersistentAllow(target) {
+		const needsWarning =
+			target !== 'operation' ||
+			normalizedRisk === 'high' ||
+			normalizedRisk === 'critical' ||
+			String(toolName || '').startsWith('shell');
+		if (needsWarning && pendingPersistentTarget !== target) {
+			pendingPersistentTarget = target;
+			showAllowMenu = false;
 			return;
 		}
-		decide('allow', 'always');
+		decide('allow', 'always', target);
 	}
 
 	/** @param {MouseEvent} event */
 	function handleOverlayClick(event) {
 		// Preserve the fail-closed behavior of the old modal: dismissing the
 		// backdrop is an explicit one-shot denial, never an approval.
-		if (event.target === event.currentTarget) decide('deny', 'once');
+		if (event.target === event.currentTarget) decide('deny', 'once', 'operation');
 	}
 
 	/** @param {KeyboardEvent} event */
 	function handleWindowKeydown(event) {
 		if (stepId && event.key === 'Escape') {
 			event.preventDefault();
-			decide('deny', 'once');
+			decide('deny', 'once', 'operation');
 		}
 	}
 </script>
@@ -198,15 +245,26 @@
 
 			<footer class="dialog-footer">
 				<div class="action-heading">
-					<span>选择允许范围</span>
-					<span class="action-hint">范围越大，后续询问越少</span>
+					<span>选择允许范围和期限</span>
+					<span class="action-hint">范围越大、期限越长，后续询问越少</span>
 				</div>
-				{#if confirmAlways}
+				{#if pendingPersistentTarget}
 					<div class="always-warning" role="alert">
 						<Icon name="alertTriangle" size={16} />
-						<span
-							>这会永久允许「{toolName}」的全部后续调用，不限本次参数。请再次点击确认。</span
-						>
+						<div class="warning-copy">
+							<span
+								>即将永久允许{pendingTargetLabel}。这会跨会话生效；关键操作仍可能继续要求确认。</span
+							>
+							{#if persistentNeedsWarning}
+								<small>请确认你确实希望扩大授权范围或减少高风险操作的询问。</small>
+							{/if}
+						</div>
+						<MaterialButton
+							variant="danger"
+							label="确认永久允许"
+							onclick={() =>
+									decide('allow', 'always', pendingPersistentTarget || 'operation')}
+						/>
 					</div>
 				{/if}
 				<div class="actions">
@@ -223,14 +281,27 @@
 							{#if showDenyMenu}
 								<div class="deny-menu" role="menu">
 									<MenuItem
-										label="本对话拒绝此工具"
-										onSelect={() => decide('deny', 'session')}
+										label="本对话拒绝此操作"
+										onSelect={() => decide('deny', 'session', 'operation')}
 									/>
+									{#each targetOptions.slice(1) as option (option.target)}
+										<MenuItem
+											label={`本对话拒绝${option.label}`}
+											onSelect={() => decide('deny', 'session', option.target)}
+										/>
+									{/each}
 									<MenuItem
-										label="始终拒绝"
+										label="始终拒绝此操作"
 										danger
-										onSelect={() => decide('deny', 'always')}
+										onSelect={() => decide('deny', 'always', 'operation')}
 									/>
+									{#each targetOptions.slice(1) as option (option.target)}
+										<MenuItem
+											label={`始终拒绝${option.label}`}
+											danger
+											onSelect={() => decide('deny', 'always', option.target)}
+										/>
+									{/each}
 								</div>
 							{/if}
 						{/snippet}
@@ -240,21 +311,44 @@
 							variant="text"
 							className="btn-once"
 							label="本次允许"
-							onclick={() => decide('allow', 'once')}
+							onclick={() => decide('allow', 'once', 'operation')}
 						/>
 						<MaterialButton
 							variant="tonal"
 							className="btn-session"
-							label="本对话允许"
-							onclick={() => decide('allow', 'session')}
+							label="本对话允许此操作"
+							onclick={() => decide('allow', 'session', 'operation')}
 						/>
-						<MaterialButton
-							variant={confirmAlways ? 'danger' : 'filled'}
-							className="btn-always"
-							label={confirmAlways ? '确认始终允许' : '始终允许'}
-							title={alwaysWarn ? '将永久允许该工具的全部调用，不限本次参数' : ''}
-							onclick={handleAlwaysAllow}
-						/>
+						<MaterialSplitButton
+							label="永久允许此操作"
+							variant="filled"
+							className="allow-split"
+							open={showAllowMenu}
+							onclick={() => requestPersistentAllow('operation')}
+							onToggle={() => (showAllowMenu = !showAllowMenu)}
+							ariaLabel="更多允许范围和期限"
+						>
+							{#snippet children()}
+								{#if showAllowMenu}
+									<div class="allow-menu" role="menu">
+										<div class="menu-section-label">本对话</div>
+										{#each targetOptions.slice(1) as option (option.target)}
+											<MenuItem
+												label={`本对话允许${option.label}`}
+												onSelect={() => decide('allow', 'session', option.target)}
+											/>
+										{/each}
+										<div class="menu-section-label">永久</div>
+										{#each targetOptions as option (option.target)}
+											<MenuItem
+												label={`永久允许${option.label}`}
+												onSelect={() => requestPersistentAllow(option.target)}
+											/>
+										{/each}
+									</div>
+								{/if}
+								{/snippet}
+						</MaterialSplitButton>
 					</div>
 				</div>
 			</footer>
@@ -557,6 +651,17 @@
 		margin-top: 1px;
 	}
 
+	.warning-copy {
+		display: grid;
+		gap: 2px;
+		flex: 1;
+	}
+
+	.warning-copy small {
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
+	}
+
 	.actions {
 		display: flex;
 		align-items: center;
@@ -598,6 +703,31 @@
 		border-radius: var(--md-sys-shape-medium);
 		background: var(--md-sys-color-surface-container-highest);
 		box-shadow: var(--md-sys-elevation-3);
+	}
+
+	:global(.md-split-button.allow-split) {
+		position: relative;
+		flex: 0 0 auto;
+	}
+
+	.allow-menu {
+		position: absolute;
+		right: 0;
+		bottom: calc(100% + var(--md-sys-space-sm));
+		z-index: 2;
+		min-width: 240px;
+		padding: var(--md-sys-space-xs);
+		border: 1px solid var(--md-sys-color-outline-variant);
+		border-radius: var(--md-sys-shape-medium);
+		background: var(--md-sys-color-surface-container-highest);
+		box-shadow: var(--md-sys-elevation-3);
+	}
+
+	.menu-section-label {
+		padding: var(--md-sys-space-xs) var(--md-sys-space-md) 2px;
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: var(--md-sys-typescale-label-small-size);
+		font-weight: 700;
 	}
 
 	@media (max-width: 620px) {

@@ -527,8 +527,8 @@
 			: null,
 	);
 
-	/** @param {{ stepId: string, approved: boolean, effect?: string, scope?: string }} payload */
-	async function handleConfirm({ stepId, approved, effect, scope }) {
+	/** @param {{ stepId: string, approved: boolean, effect?: string, scope?: string, target?: string }} payload */
+	async function handleConfirm({ stepId, approved, effect, scope, target }) {
 		// Resolve the shared request synchronously before awaiting IPC. The next
 		// queued request is then derived immediately from the reducer.
 		const resolvedStep = stepId;
@@ -540,11 +540,13 @@
 		if (!resolvedStep) return;
 		const resolvedEffect = effect || (approved ? 'allow' : 'deny');
 		const resolvedScope = scope || 'once';
+		const resolvedTarget = target || 'operation';
 		try {
 			await invoke('resolve_confirmation', {
 				stepId: resolvedStep,
 				effect: resolvedEffect,
 				scope: resolvedScope,
+				target: resolvedTarget,
 			});
 		} catch (e) {
 			reportError(e, { context: '+layout', message: '确认失败', log: false });

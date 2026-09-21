@@ -231,6 +231,42 @@ pub enum PermissionScope {
     Always,
 }
 
+/// Which part of a capability hierarchy a user decision applies to.
+///
+/// This is intentionally separate from [`PermissionScope`]: the latter is
+/// the lifetime of a decision, while this enum is its authorization target.
+/// Keeping the dimensions separate prevents a UI label such as “always allow”
+/// from hiding whether it applies to one operation or an entire tool family.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionTarget {
+    /// The exact capability that produced the confirmation.
+    Operation,
+    /// The nearest named parent capability (for example `system.power`).
+    Group,
+    /// The top-level tool family (for example `system`).
+    Tool,
+}
+
+impl PermissionTarget {
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "operation" => Ok(Self::Operation),
+            "group" => Ok(Self::Group),
+            "tool" => Ok(Self::Tool),
+            other => Err(format!("invalid permission target '{other}'")),
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Operation => "operation",
+            Self::Group => "group",
+            Self::Tool => "tool",
+        }
+    }
+}
+
 /// Typed identity of an authorization capability.
 ///
 /// A capability is hierarchical (`files.read`, `system.power.lock`) so a
@@ -288,6 +324,20 @@ impl CapabilityScope {
             .into_iter()
             .map(Self::new)
             .collect()
+    }
+
+    /// Resolve a user-selected target to a capability in this capability's
+    /// ancestry. Broader targets are only valid when the hierarchy actually
+    /// contains a broader parent; callers cannot invent arbitrary keys.
+    pub fn target(&self, target: PermissionTarget) -> Option<Self> {
+        match target {
+            PermissionTarget::Operation => Some(self.clone()),
+            PermissionTarget::Group => self.candidates().into_iter().nth(1),
+            PermissionTarget::Tool => {
+                let root = permission_tool_root(self.as_str());
+                (root != self.as_str()).then(|| Self::new(root))
+            }
+        }
     }
 }
 
@@ -1575,6 +1625,39 @@ mod tests {
         assert!(CapabilityScope::try_new(" files.read").is_err());
         assert!(CapabilityScope::try_new("files..read").is_err());
         assert!(CapabilityScope::try_new("").is_err());
+    }
+
+    #[test]
+    fn permission_targets_only_select_capability_ancestors() {
+        let capability = CapabilityScope::new("system.power.lock");
+        assert_eq!(
+            capability
+                .target(PermissionTarget::Operation)
+                .map(|value| value.as_str().to_string()),
+            Some("system.power.lock".to_string())
+        );
+        assert_eq!(
+            capability
+                .target(PermissionTarget::Group)
+                .map(|value| value.as_str().to_string()),
+            Some("system.power".to_string())
+        );
+        assert_eq!(
+            capability
+                .target(PermissionTarget::Tool)
+                .map(|value| value.as_str().to_string()),
+            Some("system".to_string())
+        );
+        assert!(
+            CapabilityScope::new("files.read")
+                .target(PermissionTarget::Group)
+                .is_some()
+        );
+        assert!(
+            CapabilityScope::new("files")
+                .target(PermissionTarget::Tool)
+                .is_none()
+        );
     }
 
     #[test]

@@ -157,6 +157,7 @@
 - 2026-09-12：测试版破坏性兼容清理：`Supplement`/`FollowUp` 统一为 FollowUp 队列 API；confirmation IPC 只接受 typed effect/scope；删除 ask sentinel/文本启发式、rollback 内容匹配、UI optimistic 内容反查和 provider→wire-style 隐式推导；旧数据按 reset/release 说明处理（ADR 0131）。
 - 2026-09-12：P1 Tools 聚合边界重构：`system` 聚合 process/clipboard/input/window 子 scope，`haven` 聚合管理面与 actions/schedule/preferences/checklist；聚合器逐 operation 转发 schema、风险、幂等、并发和 session 策略；旧根工具名与权限按 reset 边界删除（ADR 0135）。
 - 2026-09-21：权限策略契约收口：capability key 统一点号层级、disabled operation 按最终 capability 匹配、MCP/Skill 显式声明 opaque 网络边界，授权结果增加稳定 reason code，Settings 安全策略拆为独立视图（ADR 0187）。
+- 2026-09-21：确认授权拆分为独立的期限与目标范围；UI 支持操作、功能组、工具层级，后端只接受当前 capability 的合法父级（ADR 0188）。
 
 ## 完成标准
 

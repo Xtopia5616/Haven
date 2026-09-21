@@ -1076,6 +1076,69 @@ impl SessionSupervisor {
         Some(step_id)
     }
 
+    /// The app layer uses this read-only lookup to validate a requested grant
+    /// target before it wakes the gated operation. The renderer may choose a
+    /// target category, but it must be checked against the pending request's
+    /// actual capability first.
+    pub async fn pending_confirmation_capability(
+        &self,
+        step_id: &haven_common::types::ConfirmId,
+    ) -> Option<haven_common::types::CapabilityScope> {
+        if let Some(request) = self
+            .scheduled_confirms
+            .lock()
+            .await
+            .iter()
+            .find(|request| request.id == step_id.as_str())
+            && let crate::interaction::InteractionDetails::ScheduledConfirm { receipt, .. } =
+                &request.details
+        {
+            return Some(receipt.capability.clone());
+        }
+
+        let actors = self
+            .actors
+            .lock()
+            .await
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for actor in actors {
+            let Some(request) = actor
+                .interactions(None, false)
+                .await
+                .into_iter()
+                .find(|request| request.id == step_id.as_str())
+            else {
+                continue;
+            };
+            let crate::interaction::InteractionDetails::Confirm {
+                receipt,
+                tool_name,
+                tool_input,
+                ..
+            } = &request.details
+            else {
+                continue;
+            };
+            if let Some(receipt) = receipt {
+                return Some(receipt.capability.clone());
+            }
+            return Some(
+                self.tools
+                    .get_authorization_request(
+                        Some(request.session_id.as_str()),
+                        tool_name,
+                        tool_input,
+                    )
+                    .await
+                    .policy
+                    .capability,
+            );
+        }
+        None
+    }
+
     /// Resolve a pending safety-gateway confirmation and return enough context
     /// for the app layer to record a permission grant (tool + session).
     ///

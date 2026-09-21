@@ -91,8 +91,9 @@ pub async fn interrupt_session(
 
 /// Resolve a confirm dialog.
 ///
-/// Resolve a confirmation using the explicit effect/scope decision. The
-/// command deliberately has no boolean or trust-session compatibility bridge.
+/// Resolve a confirmation using explicit effect, lifetime, and target
+/// decisions. The command deliberately has no boolean or trust-session
+/// compatibility bridge.
 #[tauri::command]
 pub async fn resolve_confirmation(
     state: State<'_, Arc<AppState>>,
@@ -100,16 +101,32 @@ pub async fn resolve_confirmation(
     step_id: String,
     effect: String,
     scope: String,
+    target: String,
 ) -> Result<(), String> {
     let (perm_effect, perm_scope) = parse_permission_decision(&effect, &scope)?;
+    let perm_target = haven_common::types::PermissionTarget::parse(&target)?;
     let confirmed = matches!(perm_effect, haven_common::types::PermissionEffect::Allow);
+    let confirmation_id: haven_common::types::ConfirmId = step_id.clone().into();
+    if let Some(capability) = state
+        .executor
+        .pending_confirmation_capability(&confirmation_id)
+        .await
+    {
+        capability.target(perm_target).ok_or_else(|| {
+            format!(
+                "permission target '{}' is broader than capability '{}'",
+                perm_target.as_str(),
+                capability
+            )
+        })?;
+    }
     // Resolve the confirmation and capture tool/session context atomically
     // (under the executor's sessions lock). This avoids the previous race where
     // the resolution and a separate `list_sessions()` lookup could observe a
     // step that a concurrent `end_session`/rollback had already removed.
     let resolution = state
         .executor
-        .resolve_confirmation(&step_id.clone().into(), confirmed)
+        .resolve_confirmation(&confirmation_id, confirmed)
         .await
         .map_err(|e| log_err("resolve_confirmation", e))?;
 
@@ -118,7 +135,15 @@ pub async fn resolve_confirmation(
         let Some(pending) = pending else {
             return Err("Confirmation request is stale or already resolved".into());
         };
-        return resolve_ui_confirmation(&state, &app, pending, perm_effect, perm_scope).await;
+        return resolve_ui_confirmation(
+            &state,
+            &app,
+            pending,
+            perm_effect,
+            perm_scope,
+            perm_target,
+        )
+        .await;
     };
 
     // Once-scope (or no grant) — nothing to record beyond the one-shot resolve.
@@ -126,10 +151,9 @@ pub async fn resolve_confirmation(
         return Ok(());
     }
 
-    // Both effects stay on the exact operation key. The dialog's persistent
-    // deny action means “deny this operation”; a broader tool/server scope
-    // must be an explicit future policy operation, not an accidental side
-    // effect of rejecting one invocation.
+    // The renderer submits a target category, but the backend resolves it only
+    // against the confirmed capability's ancestry. A UI cannot invent a
+    // sibling or unrelated broad permission.
     let authorization_request = state
         .tools
         .get_authorization_request(
@@ -138,19 +162,29 @@ pub async fn resolve_confirmation(
             &resolution.tool_input,
         )
         .await;
-    let key = authorization_request.policy.capability.to_string();
+    let key = authorization_request
+        .policy
+        .capability
+        .target(perm_target)
+        .ok_or_else(|| {
+            format!(
+                "permission target '{}' is broader than capability '{}'",
+                perm_target.as_str(),
+                authorization_request.policy.capability
+            )
+        })?;
     // Persist Always before publishing it to the live authorization engine.
     // If the atomic config write fails, the process must not temporarily
     // behave as if a permanent grant exists when restart would forget it.
     if matches!(perm_scope, haven_common::types::PermissionScope::Always) {
-        persist_permanent_permission(&state, &key, perm_effect).await?;
+        persist_permanent_permission(&state, key.as_str(), perm_effect).await?;
     }
     state
         .tools
         .authorization()
         .grant(
             authorization_request.session_id.as_deref(),
-            &authorization_request.policy.capability,
+            &key,
             perm_effect,
             perm_scope,
         )
@@ -164,7 +198,20 @@ async fn resolve_ui_confirmation(
     pending: UiConfirmationPending,
     perm_effect: haven_common::types::PermissionEffect,
     perm_scope: haven_common::types::PermissionScope,
+    perm_target: haven_common::types::PermissionTarget,
 ) -> Result<(), String> {
+    let grant_key = pending
+        .authorization_request
+        .policy
+        .capability
+        .target(perm_target)
+        .ok_or_else(|| {
+            format!(
+                "permission target '{}' is broader than capability '{}'",
+                perm_target.as_str(),
+                pending.authorization_request.policy.capability
+            )
+        })?;
     tracing::debug!(
         tool = %pending.authorization_request.tool_name,
         risk = ?pending.receipt.effective_risk,
@@ -226,19 +273,14 @@ async fn resolve_ui_confirmation(
         return Ok(());
     }
     if matches!(perm_scope, haven_common::types::PermissionScope::Always) {
-        persist_permanent_permission(
-            state,
-            pending.authorization_request.policy.capability.as_str(),
-            perm_effect,
-        )
-        .await?;
+        persist_permanent_permission(state, grant_key.as_str(), perm_effect).await?;
     }
     state
         .tools
         .authorization()
         .grant(
             Some(&pending.session_id),
-            &pending.authorization_request.policy.capability,
+            &grant_key,
             perm_effect,
             perm_scope,
         )

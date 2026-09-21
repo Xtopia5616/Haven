@@ -369,7 +369,7 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
         request: "ResolveConfirmationRequest",
         response: "()",
         boundary: CommandBoundary::Mutate,
-        security: "effect/scope must match confirmation; deny wins",
+        security: "effect/scope/target must match confirmation; deny wins",
     },
     CommandContract {
         name: "update_session_title",
