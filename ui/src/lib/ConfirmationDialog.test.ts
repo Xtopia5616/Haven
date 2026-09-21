@@ -39,6 +39,13 @@ describe('ConfirmationDialog', () => {
 		expect(screen.getByRole('menuitem', { name: '永久允许此操作' })).toBeTruthy();
 		expect(moreAllowButton.getAttribute('aria-expanded')).toBe('true');
 
+		await fireEvent.click(screen.getByRole('button', { name: '更多拒绝选项' }));
+		expect(
+			Array.from(container.querySelectorAll('.deny-menu .menu-item')).every((item) =>
+				item.classList.contains('danger'),
+			),
+		).toBe(true);
+
 		await fireEvent.click(onceButton);
 		expect(onConfirm).toHaveBeenCalledWith({
 			stepId: 'step-test',

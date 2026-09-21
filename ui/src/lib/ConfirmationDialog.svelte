@@ -333,11 +333,13 @@
 								<div class="deny-menu" role="menu">
 									<MenuItem
 										label="本对话拒绝此操作"
+										danger
 										onSelect={() => decide('deny', 'session', 'operation')}
 									/>
 									{#each targetOptions.slice(1) as option (option.target)}
 										<MenuItem
 											label={`本对话拒绝${option.label}`}
+											danger
 											onSelect={() =>
 												decide('deny', 'session', option.target)}
 										/>
@@ -379,6 +381,7 @@
 	}
 
 	.dialog {
+		--confirmation-action-width: 100px;
 		width: min(560px, 100%);
 		max-height: min(720px, calc(100vh - 2 * var(--md-sys-space-xl)));
 		overflow: auto;
@@ -692,12 +695,19 @@
 		padding-inline: var(--md-sys-space-sm);
 	}
 
+	.allow-group :global(.md-btn.btn-once),
+	:global(.md-split-button.deny-split) {
+		width: var(--confirmation-action-width);
+	}
+
 	:global(.md-split-button.deny-split) {
 		position: relative;
 		flex: 0 0 auto;
 	}
 
 	:global(.md-split-button.deny-split .md-btn) {
+		min-width: 0;
+		flex: 1 1 auto;
 		--_btn-bg: var(--md-sys-color-error-container);
 		--_btn-fg: var(--md-sys-color-on-error-container);
 		--_btn-state: var(--md-sys-color-on-error-container);
@@ -710,10 +720,20 @@
 		z-index: 2;
 		min-width: 190px;
 		padding: var(--md-sys-space-xs);
-		border: 1px solid var(--md-sys-color-outline-variant);
+		border: 1px solid var(--md-sys-color-error);
 		border-radius: var(--md-sys-shape-medium);
-		background: var(--md-sys-color-surface-container-highest);
+		background: var(--md-sys-color-error-container);
+		color: var(--md-sys-color-on-error-container);
 		box-shadow: var(--md-sys-elevation-3);
+	}
+
+	.deny-menu :global(.menu-item) {
+		color: var(--md-sys-color-on-error-container);
+	}
+
+	.deny-menu :global(.menu-item:hover:not(:disabled)) {
+		background: var(--md-sys-color-error);
+		color: var(--md-sys-color-on-error);
 	}
 
 	.more-allow {
@@ -804,7 +824,8 @@
 		}
 
 		:global(.md-split-button.deny-split) {
-			align-self: flex-end;
+			align-self: stretch;
+			width: 100%;
 		}
 	}
 
