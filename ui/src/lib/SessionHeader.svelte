@@ -12,14 +12,10 @@
 	let { title = '新会话', hasSession = false, onNew, onEnd } = $props();
 </script>
 
-<header class="session-header">
-	<div class="session-header__identity">
-		<span class="session-header__eyebrow">
-			<span class="session-header__marker" aria-hidden="true"></span>
-			当前会话
-		</span>
-		<div class="session-header__title-row">
-			<h1>{title}</h1>
+	<header class="session-header">
+		<div class="session-header__identity">
+			<div class="session-header__title-row">
+				<h1>{title}</h1>
 		</div>
 	</div>
 	<div class="session-header__actions">
@@ -73,27 +69,7 @@
 	.session-header__identity {
 		min-width: 0;
 		display: flex;
-		flex-direction: column;
-		align-items: flex-start;
-		gap: var(--md-sys-space-xs);
-	}
-	.session-header__eyebrow {
-		display: inline-flex;
 		align-items: center;
-		gap: var(--md-sys-space-xs);
-		color: var(--md-sys-color-on-surface-variant);
-		font-size: var(--md-sys-typescale-label-small-size);
-		font-weight: 600;
-		line-height: var(--md-sys-typescale-label-small-line-height);
-		letter-spacing: var(--md-sys-typescale-label-letter-spacing);
-		white-space: nowrap;
-	}
-	.session-header__marker {
-		width: 6px;
-		height: 6px;
-		border-radius: var(--md-sys-shape-full);
-		background: var(--md-sys-color-primary);
-		box-shadow: 0 0 0 3px color-mix(in srgb, var(--md-sys-color-primary) 14%, transparent);
 	}
 	.session-header__title-row {
 		display: flex;
