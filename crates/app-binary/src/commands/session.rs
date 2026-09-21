@@ -71,7 +71,7 @@ pub async fn end_session(
     // session, so it is reported as completed (with notification), never error.
     state
         .agent
-        .emit_session_completed(&session_id, &title)
+        .emit_session_completed(&session_id, &title, "用户主动结束会话")
         .await;
     Ok(())
 }

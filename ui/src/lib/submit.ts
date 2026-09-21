@@ -114,10 +114,7 @@ function laneFor(payload: SubmitPayload): SubmissionLane {
 		// A draft request publishes its created id before its outer promise
 		// settles. Only sends for that exact new session wait behind the draft
 		// migration; an unrelated existing session remains fully independent.
-		if (
-			draftLane?.inflight &&
-			draftLane.adoptionTarget === payload.pinnedSessionId
-		) {
+		if (draftLane?.inflight && draftLane.adoptionTarget === payload.pinnedSessionId) {
 			return draftLane;
 		}
 	}
@@ -302,7 +299,10 @@ async function doSubmit({
 	// Images and files travel together as one attachment list; the backend
 	// splits inline media from ordinary files at the host boundary.
 	const attachments = [...(hasImages ? images : []), ...(hasFiles ? files : [])];
-	const activeId = pinnedSessionId;
+	// Ending a session leaves its terminal timeline visible. The fresh-start
+	// intent is the boundary that routes the next message to a draft instead of
+	// attempting to append to the completed session.
+	const activeId = freshStartAtEnqueue ? null : pinnedSessionId;
 	const sessionId = activeId || DRAFT_KEY;
 	// Fresh-start intent was snapshotted when this submission was accepted
 	// (enqueue or immediate start). If 新对话 is clicked while an older

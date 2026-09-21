@@ -244,18 +244,23 @@ impl TauriEmitter {
                 session_id: session.id.clone(),
                 status: session.status,
                 title: session.title.clone(),
+                reason: None,
             }),
-            AgentEvent::SessionCompleted { session_id, title } => {
-                serialize(SessionLifecycleEvent {
-                    session_id: session_id.clone(),
-                    status: haven_common::SessionStatus::Completed,
-                    title: Some(title.clone()),
-                })
-            }
+            AgentEvent::SessionCompleted {
+                session_id,
+                title,
+                reason,
+            } => serialize(SessionLifecycleEvent {
+                session_id: session_id.clone(),
+                status: haven_common::SessionStatus::Completed,
+                title: Some(title.clone()),
+                reason: Some(sanitize_error_text(reason)),
+            }),
             AgentEvent::SessionUpdated { session_id, status } => serialize(SessionLifecycleEvent {
                 session_id: session_id.clone(),
                 status: *status,
                 title: Some(String::new()),
+                reason: None,
             }),
             AgentEvent::SessionError { session_id, error } => serialize(SessionErrorEvent {
                 session_id: session_id.clone(),
@@ -500,10 +505,15 @@ impl TauriEmitter {
                     "TauriEmitter::on_session_created"
                 );
             }
-            AgentEvent::SessionCompleted { session_id, title } => {
+            AgentEvent::SessionCompleted {
+                session_id,
+                title,
+                reason,
+            } => {
                 tracing::info!(
                     session_id = %session_id,
                     title = %title,
+                    reason = %reason,
                     "TauriEmitter::on_session_completed"
                 );
             }
@@ -550,28 +560,32 @@ impl TauriEmitter {
     }
 
     /// `SessionCompleted` / `SessionError` 在 `session:updated` 上的副发。三条形状统一为
-    /// `{session_id, status, title}` —— `error` 字段只保留在 `session:error` 主通道。
+    /// `{session_id, status, title, reason}` —— `error` 字段只保留在 `session:error` 主通道。
     fn emit_secondary(&self, event: &AgentEvent) {
         let payload = match event {
-            AgentEvent::SessionCompleted { session_id, title } => {
-                serde_json::to_value(SessionLifecycleEvent {
-                    session_id: session_id.clone(),
-                    status: haven_common::SessionStatus::Completed,
-                    title: Some(title.clone()),
-                })
-                .unwrap_or_else(|error| {
-                    tracing::error!(
-                        error = %sanitize_error_text(&error.to_string()),
-                        "failed to serialize session lifecycle event"
-                    );
-                    serde_json::Value::Null
-                })
-            }
-            AgentEvent::SessionError { session_id, .. } => {
+            AgentEvent::SessionCompleted {
+                session_id,
+                title,
+                reason,
+            } => serde_json::to_value(SessionLifecycleEvent {
+                session_id: session_id.clone(),
+                status: haven_common::SessionStatus::Completed,
+                title: Some(title.clone()),
+                reason: Some(sanitize_error_text(reason)),
+            })
+            .unwrap_or_else(|error| {
+                tracing::error!(
+                    error = %sanitize_error_text(&error.to_string()),
+                    "failed to serialize session lifecycle event"
+                );
+                serde_json::Value::Null
+            }),
+            AgentEvent::SessionError { session_id, error } => {
                 serde_json::to_value(SessionLifecycleEvent {
                     session_id: session_id.clone(),
                     status: haven_common::SessionStatus::Error,
                     title: Some(self.notifications.session_display_title(session_id)),
+                    reason: Some(sanitize_error_text(error)),
                 })
                 .unwrap_or_else(|error| {
                     tracing::error!(

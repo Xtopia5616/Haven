@@ -6,13 +6,13 @@ describe('mapSessionEvent', () => {
 		const event = mapSessionEvent({
 			event: 'session:updated',
 			id: 7,
-			payload: { session_id: 'ses-1', status: 'paused', title: '' },
+			payload: { session_id: 'ses-1', status: 'paused', title: '', reason: null },
 		});
 
 		expect(event).toEqual({
 			event: 'session:updated',
 			id: 7,
-			payload: { sessionId: 'ses-1', status: 'paused', title: '' },
+			payload: { sessionId: 'ses-1', status: 'paused', title: '', reason: null },
 		});
 		expect(event.payload).not.toHaveProperty('session_id');
 	});
@@ -31,7 +31,7 @@ describe('mapSessionEvent', () => {
 		const event = mapSessionEvent({
 			event: 'session:updated',
 			id: 9,
-			payload: { session_id: 'ses-1', status: 'unknown', title: '' },
+			payload: { session_id: 'ses-1', status: 'unknown', title: '', reason: null },
 		});
 
 		expect((event.payload as { status: string }).status).toBe('error');

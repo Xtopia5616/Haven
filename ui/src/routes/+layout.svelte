@@ -810,8 +810,14 @@
 					'session:completed': (event) => {
 						const data = event.payload;
 						const title = data.title || data.sessionId;
+						const reason = data.reason?.trim();
 						if (notifyCfg?.session_completed?.in_app !== false) {
-							addNotification(`会话已完成: ${title}`, 'success');
+							addNotification(
+								reason
+									? `会话已完成: ${title}（${reason}）`
+									: `会话已完成: ${title}`,
+								'success',
+							);
 						}
 						updateModelState('ready');
 					},

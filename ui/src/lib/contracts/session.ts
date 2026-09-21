@@ -22,6 +22,7 @@ export interface SessionLifecyclePayload {
 	sessionId: string;
 	status: SessionStatus;
 	title: string | null;
+	reason: string | null;
 }
 
 export interface SessionErrorPayload {
@@ -52,6 +53,7 @@ interface SessionLifecycleWirePayload {
 	session_id: string;
 	status: string;
 	title: string | null;
+	reason?: string | null;
 }
 
 interface SessionErrorWirePayload {
@@ -98,6 +100,7 @@ export function mapSessionEvent<K extends SessionEventName>(
 					sessionId: (payload as SessionLifecycleWirePayload).session_id,
 					status: mapSessionStatus((payload as SessionLifecycleWirePayload).status),
 					title: (payload as SessionLifecycleWirePayload).title,
+					reason: (payload as SessionLifecycleWirePayload).reason ?? null,
 				},
 			} as TauriEvent<SessionEventPayloadMap[K]>;
 		case 'session:error':

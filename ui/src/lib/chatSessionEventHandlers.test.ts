@@ -55,7 +55,7 @@ describe('chat session lifecycle handlers', () => {
 		setToolOutputPreview('step-shell', 'partial', 'ses-paused');
 
 		eventHandlers['session:updated']({
-			payload: { sessionId: 'ses-paused', status, title: null },
+			payload: { sessionId: 'ses-paused', status, title: null, reason: null },
 		} as never);
 
 		expect(flushChunksNow).toHaveBeenCalledOnce();
@@ -81,7 +81,7 @@ describe('chat session lifecycle handlers', () => {
 		});
 
 		eventHandlers['session:created']({
-			payload: { sessionId: 'ses-fast', status: 'pending', title: null },
+			payload: { sessionId: 'ses-fast', status: 'pending', title: null, reason: null },
 		} as never);
 
 		expect(dispatchSession).toHaveBeenCalledWith({
@@ -99,7 +99,7 @@ describe('chat session lifecycle handlers', () => {
 		const eventHandlers = handlers({ fresh: true, adoptedDraft: false, dispatchSession });
 
 		eventHandlers['session:created']({
-			payload: { sessionId: 'ses-background', status: 'pending', title: null },
+			payload: { sessionId: 'ses-background', status: 'pending', title: null, reason: null },
 		} as never);
 
 		expect(dispatchSession).toHaveBeenCalledWith({
@@ -124,6 +124,30 @@ describe('chat session lifecycle handlers', () => {
 			type: 'session/error-shown',
 			sessionId: 'ses-error',
 			reason: '网络请求超时',
+		});
+	});
+
+	it('shows the reason for a normally completed active session', () => {
+		const reducer = new SessionReducer({
+			...initialSessionState,
+			sessions: [{ id: 'ses-done', status: 'running', title: '研究' }],
+			activeSessionId: 'ses-done',
+		});
+		const eventHandlers = handlers({ activeSessionId: 'ses-done', reducer });
+
+		eventHandlers['session:completed']({
+			payload: {
+				sessionId: 'ses-done',
+				status: 'completed',
+				title: '研究',
+				reason: '用户主动结束会话',
+			},
+		} as never);
+
+		expect(reducer.getState().termination).toEqual({
+			sessionId: 'ses-done',
+			status: 'completed',
+			reason: '用户主动结束会话',
 		});
 	});
 });

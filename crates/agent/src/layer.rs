@@ -410,7 +410,9 @@ impl AgentLayer {
                             inference.clear_session(&session_id);
                         }
                         SessionEvent::CascadeCompleted { session_id, title } => {
-                            events.emit_session_completed(&session_id, &title).await;
+                            events
+                                .emit_session_completed(&session_id, &title, "父会话已结束")
+                                .await;
                         }
                         SessionEvent::InteractionRequested { .. }
                         | SessionEvent::SessionError { .. } => {}
@@ -951,8 +953,10 @@ impl AgentLayer {
         });
     }
 
-    pub async fn emit_session_completed(&self, session_id: &str, title: &str) {
-        self.events.emit_session_completed(session_id, title).await;
+    pub async fn emit_session_completed(&self, session_id: &str, title: &str, reason: &str) {
+        self.events
+            .emit_session_completed(session_id, title, reason)
+            .await;
         // Drop cumulative token counters for the finished session.
         self.react_engine.reset_cumulative_usage(session_id);
     }
@@ -1178,8 +1182,12 @@ impl AgentLayer {
                 self.executor
                     .end_session(&request.target_session_id)
                     .await?;
-                self.emit_session_completed(&request.target_session_id, &title)
-                    .await;
+                self.emit_session_completed(
+                    &request.target_session_id,
+                    &title,
+                    "由上级会话请求结束",
+                )
+                .await;
                 Ok(haven_tools::AgentControlResult {
                     session_id: request.target_session_id,
                     status: SessionStatus::Completed.as_str().into(),

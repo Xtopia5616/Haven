@@ -236,6 +236,10 @@ pub(crate) struct SessionLifecycleEvent {
     pub status: SessionStatus,
     /// A newly-created session may not have a generated title yet.
     pub title: Option<String>,
+    /// Present for terminal lifecycle events so the UI can explain why the
+    /// conversation stopped. Non-terminal events leave it empty.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -576,6 +580,7 @@ mod tests {
             session_id: "ses-1".into(),
             status: SessionStatus::Paused,
             title: Some("Plan migration".into()),
+            reason: None,
         };
         assert_eq!(
             serde_json::to_value(event).unwrap(),

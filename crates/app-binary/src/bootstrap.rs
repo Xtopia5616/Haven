@@ -504,6 +504,7 @@ pub(crate) fn run() {
                                                     session_id,
                                                     status: haven_common::SessionStatus::Error,
                                                     title: Some(String::new()),
+                                                    reason: Some(sanitize_error_text(&reason)),
                                                 },
                                             )
                                         );

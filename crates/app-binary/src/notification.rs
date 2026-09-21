@@ -143,7 +143,9 @@ impl DesktopNotifications {
                 self.lock_session_statuses()
                     .insert(session_id.clone(), status.as_str().to_string());
             }
-            AgentEvent::SessionCompleted { session_id, title } => {
+            AgentEvent::SessionCompleted {
+                session_id, title, ..
+            } => {
                 self.lock_session_statuses()
                     .insert(session_id.clone(), "completed".into());
                 if !title.is_empty() {
@@ -185,11 +187,15 @@ impl DesktopNotifications {
             AgentEvent::SessionCompleted {
                 session_id: _,
                 title,
+                reason,
             } => {
                 if !self.windows_enabled(|n| n.session_completed.windows, true) {
                     return;
                 }
-                self.show_windows_toast("Haven", format!("会话已完成: {}", title));
+                self.show_windows_toast(
+                    "Haven",
+                    format!("会话已完成: {}（{}）", title, sanitize_error_text(reason)),
+                );
             }
             AgentEvent::SessionError {
                 session_id: _,

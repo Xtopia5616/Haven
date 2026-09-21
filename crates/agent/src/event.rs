@@ -79,6 +79,7 @@ pub enum AgentEvent {
     SessionCompleted {
         session_id: String,
         title: String,
+        reason: String,
     },
     SessionError {
         session_id: String,
@@ -919,13 +920,14 @@ impl EventDispatcher {
         }
     }
 
-    pub async fn emit_session_completed(&self, session_id: &str, title: &str) {
+    pub async fn emit_session_completed(&self, session_id: &str, title: &str, reason: &str) {
         let emitter = lock_or_recover(&self.emitter, "event_emitter").clone();
         if let Some(emitter) = emitter {
             emitter
                 .emit(AgentEvent::SessionCompleted {
                     session_id: session_id.into(),
                     title: title.into(),
+                    reason: reason.into(),
                 })
                 .await;
         }

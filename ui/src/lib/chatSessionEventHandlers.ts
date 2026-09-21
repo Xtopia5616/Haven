@@ -108,6 +108,14 @@ export function createChatSessionEventHandlers({
 				status: data.status,
 				title: data.title,
 			});
+			if ((data.status === 'completed' || data.status === 'error') && data.reason?.trim()) {
+				dispatchSession({
+					type: 'session/termination-shown',
+					sessionId: data.sessionId,
+					status: data.status,
+					reason: data.reason,
+				});
+			}
 			if (shouldForgetError) {
 				forgetSessionError(data.sessionId);
 			}
@@ -128,11 +136,18 @@ export function createChatSessionEventHandlers({
 		},
 		'session:completed': (event) => {
 			const sessionId = event.payload.sessionId;
+			const reason = event.payload.reason?.trim() || '会话已正常结束。';
 			dispatchSession({
 				type: 'session/status-updated',
 				sessionId,
-				status: event.payload.status,
+				status: 'completed',
 				title: event.payload.title,
+			});
+			dispatchSession({
+				type: 'session/termination-shown',
+				sessionId,
+				status: 'completed',
+				reason,
 			});
 			if (getActiveSessionId() === sessionId) {
 				clearAskAwaiting(sessionId);

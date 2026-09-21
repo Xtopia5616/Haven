@@ -661,7 +661,6 @@
 		const endedId = activeSessionId;
 		try {
 			await invoke('end_session', { sessionId: endedId });
-			dispatchSession({ type: 'session/memory-cleared', sessionId: endedId });
 		} catch (e) {
 			// The session is still alive server-side: keep the view attached to
 			// it so the user can retry. Clearing the pointer here would orphan a
@@ -670,8 +669,9 @@
 			reportError(e, { context: '+page', message: '结束会话失败', log: false });
 			return;
 		}
-		dispatchSession({ type: 'session/cleared' });
-		newSessionIntentStore.set(false);
+		// Keep the finished conversation selected so its terminal reason remains
+		// visible in the timeline. The fresh-start intent makes the next message
+		// create a new session; the user can also use the new-session button.
 	}
 
 	async function interruptOutput() {
@@ -795,6 +795,11 @@
 
 	const activeSessionError = $derived(
 		!!activeSessionId && sessionState.error?.sessionId === activeSessionId,
+	);
+	const activeSessionTermination = $derived(
+		!!activeSessionId && sessionState.termination?.sessionId === activeSessionId
+			? sessionState.termination
+			: null,
 	);
 	const sessionErrorId = $derived(sessionState.error?.sessionId || null);
 	const sessionErrorReason = $derived(sessionState.error?.reason || '');
@@ -1250,7 +1255,8 @@
 				if (
 					after.activeSessionId &&
 					!after.sessions.some((t) => t.id === after.activeSessionId) &&
-					!after.error
+					!after.error &&
+					!after.termination
 				) {
 					dispatchSession({ type: 'session/cleared' });
 				}
@@ -1481,7 +1487,7 @@
 
 	<SessionHeader
 		title={sessionHeaderTitle}
-		hasSession={!!activeSessionId}
+		hasSession={!!activeSessionId && !activeSessionTermination}
 		onNew={newSession}
 		onEnd={endSession}
 	/>
@@ -1506,6 +1512,8 @@
 				{awaitingBackgroundCount}
 				{activeSessionError}
 				{sessionErrorReason}
+				terminationStatus={activeSessionTermination?.status || null}
+				terminationReason={activeSessionTermination?.reason || ''}
 				{showContinueButton}
 				{continueDisabled}
 				continueBusy={continuePending}

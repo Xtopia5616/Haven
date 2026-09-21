@@ -73,6 +73,27 @@ describe('SessionReducer', () => {
 		).toBeNull();
 	});
 
+	it('preserves an active terminal reason when a live-session refresh omits it', () => {
+		const state = {
+			sessions: [session('ses-done', 'completed')],
+			activeSessionId: 'ses-done',
+			error: null,
+			termination: {
+				sessionId: 'ses-done' as const,
+				status: 'completed' as const,
+				reason: '用户主动结束会话',
+			},
+		};
+
+		const next = reduceSession(state, {
+			type: 'sessions/loaded',
+			sessions: [session('ses-other')],
+		});
+
+		expect(next.sessions).toContainEqual(session('ses-done', 'completed'));
+		expect(next.termination?.reason).toBe('用户主动结束会话');
+	});
+
 	it('notifies subscribers after every dispatch', () => {
 		const reducer = new SessionReducer();
 		const listener = vi.fn();

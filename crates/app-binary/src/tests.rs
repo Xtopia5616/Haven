@@ -82,6 +82,7 @@ fn channel_maps_every_variant_to_expected_channel() {
             AgentEvent::SessionCompleted {
                 session_id: "t".into(),
                 title: "x".into(),
+                reason: "用户主动结束会话".into(),
             },
             "session:completed",
         ),
@@ -408,11 +409,17 @@ fn payload_preserves_session_lifecycle_and_error_wire_shapes() {
     let completed = AgentEvent::SessionCompleted {
         session_id: "t".into(),
         title: "X".into(),
+        reason: "用户主动结束会话".into(),
     };
     let payload = TauriEmitter::payload(&completed, None);
     assert_eq!(
         payload,
-        json!({"session_id": "t", "status": "completed", "title": "X"})
+        json!({
+            "session_id": "t",
+            "status": "completed",
+            "title": "X",
+            "reason": "用户主动结束会话"
+        })
     );
 
     let updated = AgentEvent::SessionUpdated {

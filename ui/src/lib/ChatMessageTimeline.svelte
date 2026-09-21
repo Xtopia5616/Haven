@@ -3,7 +3,7 @@
 	import ChatBubble from '$lib/ChatBubble.svelte';
 	import Logo from '$lib/Logo.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
-	import SessionErrorBanner from '$lib/SessionErrorBanner.svelte';
+	import SessionTerminationBanner from '$lib/SessionTerminationBanner.svelte';
 	import { hasToolPreambleBefore } from '$lib/toolIntent.ts';
 	import ConversationActivityGroup from '$lib/ConversationActivityGroup.svelte';
 	import { groupConversationMessages } from '$lib/conversationTimeline.ts';
@@ -15,6 +15,8 @@
 		awaitingBackgroundCount = 0,
 		activeSessionError = false,
 		sessionErrorReason = '',
+		terminationStatus = null,
+		terminationReason = '',
 		showContinueButton = false,
 		continueDisabled = false,
 		continueBusy = false,
@@ -91,8 +93,11 @@
 			{/if}
 		{/each}
 	</div>
-	{#if activeSessionError}
-		<SessionErrorBanner reason={sessionErrorReason} />
+	{#if terminationStatus}
+		<SessionTerminationBanner
+			status={terminationStatus}
+			reason={terminationReason || sessionErrorReason}
+		/>
 	{/if}
 	{#if showContinueButton && !continueDisabled}
 		<div class="continue-action" in:fly={{ y: 6, duration: 240 }}>
@@ -111,11 +116,7 @@
 	{/if}
 {/if}
 
-{#if activeSessionError && messages.length === 0}
-	<SessionErrorBanner reason={sessionErrorReason} />
-{/if}
-
-{#if awaitingBackground && !activeSessionError}
+{#if awaitingBackground && !activeSessionError && !terminationStatus}
 	<div class="awaiting-bg-banner" in:fly={{ y: 8, duration: 300 }} role="status">
 		<span class="awaiting-bg-dot" aria-hidden="true"></span>
 		<span class="awaiting-bg-text">

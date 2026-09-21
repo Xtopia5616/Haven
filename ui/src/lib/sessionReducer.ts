@@ -43,6 +43,14 @@ export interface SessionError {
 	reason: string;
 }
 
+export type SessionTerminationStatus = 'completed' | 'error';
+
+export interface SessionTermination {
+	sessionId: string;
+	status: SessionTerminationStatus;
+	reason: string;
+}
+
 /** One renderer message, including the explicit dynamic tool extension points. */
 export type SessionMessage = StreamMessage & {
 	attachments?: Array<{ media_type: string; data: string; filename?: string }>;
@@ -105,6 +113,7 @@ export interface SessionReducerState {
 	sessions: SessionSummary[];
 	activeSessionId: string | null;
 	error: SessionError | null;
+	termination?: SessionTermination | null;
 	messages?: Record<string, SessionMessage[]>;
 	interactions?: Record<string, InteractionRequest>;
 	tokenStats?: Record<string, SessionTokenStats>;
@@ -143,6 +152,12 @@ export type SessionAction =
 	| { type: 'session/status-updated'; sessionId: string; status: string; title?: string | null }
 	| { type: 'session/error-shown'; sessionId: string; reason: string }
 	| { type: 'session/error-cleared'; sessionId?: string | null }
+	| {
+			type: 'session/termination-shown';
+			sessionId: string;
+			status: SessionTerminationStatus;
+			reason: string;
+	  }
 	| { type: 'session/retained-error'; session: SessionSummary }
 	| { type: 'session/title-updated'; sessionId: string; title: string }
 	| { type: 'session/messages/optimistic-added'; sessionId: string; message: SessionMessage }
@@ -223,6 +238,7 @@ export const initialSessionState: SessionReducerState = {
 	sessions: [],
 	activeSessionId: null,
 	error: null,
+	termination: null,
 	messages: {},
 	interactions: {},
 	tokenStats: {},
@@ -564,8 +580,24 @@ export function reduceSession(
 				state.error && state.error.sessionId === state.activeSessionId
 					? state.sessions.find((session) => session.id === state.activeSessionId)
 					: null;
+			const activeTermination =
+				state.termination && state.termination.sessionId === state.activeSessionId
+					? state.termination
+					: null;
 			if (activeError && !sessions.some((session) => session.id === activeError.id)) {
 				sessions.push({ ...activeError, status: 'error' });
+			}
+			if (
+				activeTermination &&
+				!sessions.some((session) => session.id === activeTermination.sessionId)
+			) {
+				const previous = state.sessions.find(
+					(session) => session.id === activeTermination.sessionId,
+				);
+				sessions.push({
+					...(previous || { id: activeTermination.sessionId }),
+					status: activeTermination.status,
+				});
 			}
 			if (action.autoSelect && !state.activeSessionId) {
 				const firstActive = sessions.find(
@@ -585,6 +617,7 @@ export function reduceSession(
 				sessions: [],
 				activeSessionId: null,
 				error: null,
+				termination: null,
 				messages: draft.length ? { [DRAFT_SESSION_ID]: draft } : {},
 				interactions: {},
 				tokenStats: {},
@@ -615,7 +648,13 @@ export function reduceSession(
 					];
 			return action.freshStart && !action.adoptedDraft
 				? { ...state, sessions }
-				: { ...state, sessions, activeSessionId: action.sessionId, error: null };
+				: {
+						...state,
+						sessions,
+						activeSessionId: action.sessionId,
+						error: null,
+						termination: null,
+					};
 		}
 
 		case 'session/selected':
@@ -624,10 +663,14 @@ export function reduceSession(
 				activeSessionId: action.sessionId,
 				error:
 					state.error && state.error.sessionId !== action.sessionId ? null : state.error,
+				termination:
+					state.termination && state.termination.sessionId !== action.sessionId
+						? null
+						: state.termination,
 			};
 
 		case 'session/cleared':
-			return { ...state, activeSessionId: null, error: null };
+			return { ...state, activeSessionId: null, error: null, termination: null };
 
 		case 'session/deleted': {
 			if (!action.sessionId) return reduceSession(state, { type: 'sessions/cleared' });
@@ -641,6 +684,10 @@ export function reduceSession(
 				activeSessionId:
 					cleared.activeSessionId === action.sessionId ? null : cleared.activeSessionId,
 				error: cleared.error?.sessionId === action.sessionId ? null : cleared.error,
+				termination:
+					cleared.termination?.sessionId === action.sessionId
+						? null
+						: cleared.termination,
 			};
 		}
 
@@ -654,9 +701,18 @@ export function reduceSession(
 						}
 					: session,
 			);
-			return state.error?.sessionId === action.sessionId && isBusyStatus(action.status)
-				? { ...state, sessions, error: null }
-				: { ...state, sessions };
+			const terminalStateChanged =
+				state.termination?.sessionId === action.sessionId &&
+				action.status !== 'completed' &&
+				action.status !== 'error';
+			return {
+				...state,
+				sessions,
+				...(state.error?.sessionId === action.sessionId && isBusyStatus(action.status)
+					? { error: null }
+					: {}),
+				...(terminalStateChanged ? { termination: null } : {}),
+			};
 		}
 
 		case 'session/error-shown': {
@@ -668,14 +724,52 @@ export function reduceSession(
 						...state,
 						sessions,
 						error: { sessionId: action.sessionId, reason: action.reason },
+						termination: {
+							sessionId: action.sessionId,
+							status: 'error',
+							reason: action.reason,
+						},
 					}
 				: { ...state, sessions };
 		}
 
 		case 'session/error-cleared':
 			return !action.sessionId || state.error?.sessionId === action.sessionId
-				? { ...state, error: null }
+				? {
+						...state,
+						error: null,
+						termination:
+							!action.sessionId || state.termination?.sessionId === action.sessionId
+								? null
+								: state.termination,
+					}
 				: state;
+
+		case 'session/termination-shown': {
+			const alreadyShown =
+				state.activeSessionId === action.sessionId &&
+				state.termination?.sessionId === action.sessionId &&
+				state.termination.status === action.status &&
+				state.termination.reason === action.reason;
+			if (alreadyShown) return state;
+			const sessions = state.sessions.map((session) =>
+				session.id === action.sessionId ? { ...session, status: action.status } : session,
+			);
+			if (state.activeSessionId !== action.sessionId) return { ...state, sessions };
+			return {
+				...state,
+				sessions,
+				termination: {
+					sessionId: action.sessionId,
+					status: action.status,
+					reason: action.reason,
+				},
+				error:
+					action.status === 'error'
+						? { sessionId: action.sessionId, reason: action.reason }
+						: null,
+			};
+		}
 
 		case 'session/retained-error': {
 			const sessions = state.sessions.some((session) => session.id === action.session.id)
