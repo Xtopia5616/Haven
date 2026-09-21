@@ -124,27 +124,30 @@ impl AnthropicAdapter {
 
     pub(super) fn system_with_cache_control(system: Option<String>) -> Option<Value> {
         let text = system.filter(|s| !s.is_empty())?;
-        if let Some((stable, session, memory)) = split_system_prompt_cache_sections(&text)
-            && !memory.is_empty()
-        {
-            let stable = format!("{stable}{session}");
-            if stable.is_empty() {
-                return Some(json!([{
-                    "type": "text",
-                    "text": memory,
-                }]));
-            }
-            return Some(json!([
-                {
+        if let Some((stable, session, memory)) = split_system_prompt_cache_sections(&text) {
+            let mut blocks = Vec::with_capacity(3);
+            if !stable.is_empty() {
+                blocks.push(json!({
                     "type": "text",
                     "text": stable,
                     "cache_control": {"type": "ephemeral"}
-                },
-                {
+                }));
+            }
+            if !session.is_empty() {
+                blocks.push(json!({
+                    "type": "text",
+                    "text": session
+                }));
+            }
+            if !memory.is_empty() {
+                blocks.push(json!({
                     "type": "text",
                     "text": memory
-                }
-            ]));
+                }));
+            }
+            if !blocks.is_empty() {
+                return Some(Value::Array(blocks));
+            }
         }
         Some(json!([{
             "type": "text",

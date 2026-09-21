@@ -57,30 +57,47 @@ impl OpenAiResponsesAdapter {
         msgs: impl AsRef<[CanonicalMessage]>,
         max_reasoning_echo_chars: usize,
         requires_reasoning_echo: bool,
-        split_memory: bool,
+        developer_input_supported: bool,
     ) -> (Vec<Value>, Option<String>) {
         let msgs = msgs.as_ref();
         let mut instructions: Vec<String> = Vec::new();
         let mut session_context: Vec<String> = Vec::new();
         let mut volatile_system: Vec<String> = Vec::new();
+        let mut fallback_session_context: Vec<String> = Vec::new();
+        let mut fallback_volatile_system: Vec<String> = Vec::new();
         let mut items: Vec<Value> = Vec::new();
         for m in msgs {
             match m.role {
                 CanonicalRole::System => {
                     for p in &m.content {
                         if let ContentPart::Text(t) = p {
-                            if split_memory
-                                && let Some((stable, session, memory)) =
-                                    split_system_prompt_cache_sections(t)
+                            if let Some((stable, session, memory)) =
+                                split_system_prompt_cache_sections(t)
                             {
                                 if !stable.is_empty() {
                                     instructions.push(stable.to_string());
                                 }
-                                if !session.is_empty() {
-                                    session_context.push(session.to_string());
-                                }
-                                if !memory.is_empty() {
-                                    volatile_system.push(memory.to_string());
+                                if developer_input_supported {
+                                    if !session.is_empty() {
+                                        session_context.push(session.to_string());
+                                    }
+                                    if !memory.is_empty() {
+                                        volatile_system.push(memory.to_string());
+                                    }
+                                } else {
+                                    // Some Responses-compatible gateways reject
+                                    // the `developer` input role. Keep the
+                                    // dynamic sections out of `instructions`
+                                    // so a MEMORY/session refresh cannot change
+                                    // the stable instructions prefix. A quoted
+                                    // user item is the lowest-common-denominator
+                                    // fallback accepted by those gateways.
+                                    if !session.is_empty() {
+                                        fallback_session_context.push(session.to_string());
+                                    }
+                                    if !memory.is_empty() {
+                                        fallback_volatile_system.push(memory.to_string());
+                                    }
                                 }
                             } else {
                                 instructions.push(t.clone());
@@ -208,7 +225,7 @@ impl OpenAiResponsesAdapter {
                 }
             }
         }
-        if !session_context.is_empty() {
+        if developer_input_supported && !session_context.is_empty() {
             // Session context is stable for a ReAct run, so keep it before the
             // transcript and preserve its developer-level priority.
             items.insert(
@@ -222,7 +239,7 @@ impl OpenAiResponsesAdapter {
                 }),
             );
         }
-        if !volatile_system.is_empty() {
+        if developer_input_supported && !volatile_system.is_empty() {
             // Refreshed MEMORY belongs after the reusable conversation prefix.
             // Responses accepts developer input items in the input sequence,
             // preserving system-level priority without moving instructions.
@@ -234,6 +251,27 @@ impl OpenAiResponsesAdapter {
                 }]
             }));
         }
+        if !developer_input_supported && !fallback_session_context.is_empty() {
+            items.insert(
+                0,
+                json!({
+                    "role": "user",
+                    "content": [{
+                        "type": "input_text",
+                        "text": fallback_session_context.join("\n\n")
+                    }]
+                }),
+            );
+        }
+        if !developer_input_supported && !fallback_volatile_system.is_empty() {
+            items.push(json!({
+                "role": "user",
+                "content": [{
+                    "type": "input_text",
+                    "text": fallback_volatile_system.join("\n\n")
+                }]
+            }));
+        }
         let instructions = if instructions.is_empty() {
             None
         } else {
@@ -242,24 +280,15 @@ impl OpenAiResponsesAdapter {
         (items, instructions)
     }
 
-    pub(super) fn merge_developer_memory_into_instructions(body: &mut ResponsesRequest) -> bool {
-        let mut developer_text = Vec::new();
-        body.input.retain(|item| {
-            if item.get("role").and_then(Value::as_str) != Some("developer") {
-                return true;
+    pub(super) fn downgrade_developer_input(body: &mut ResponsesRequest) -> bool {
+        let mut downgraded = false;
+        for item in &mut body.input {
+            if item.get("role").and_then(Value::as_str) == Some("developer") {
+                item["role"] = Value::String("user".into());
+                downgraded = true;
             }
-            if let Some(text) = item.pointer("/content/0/text").and_then(Value::as_str) {
-                developer_text.push(text.to_string());
-            }
-            false
-        });
-        if developer_text.is_empty() {
-            return false;
         }
-        body.instructions
-            .get_or_insert_with(String::new)
-            .push_str(&developer_text.join("\n\n"));
-        true
+        downgraded
     }
 
     pub(super) fn convert_tools(tools: impl AsRef<[ToolDefinition]>) -> Vec<Value> {

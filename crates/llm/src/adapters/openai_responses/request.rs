@@ -203,7 +203,7 @@ impl OpenAiResponsesAdapter {
                 }
                 Err(error)
                     if Self::developer_input_rejected(&error)
-                        && Self::merge_developer_memory_into_instructions(body) =>
+                        && Self::downgrade_developer_input(body) =>
                 {
                     self.developer_input_state
                         .store(DEVELOPER_INPUT_UNSUPPORTED, Ordering::Relaxed);

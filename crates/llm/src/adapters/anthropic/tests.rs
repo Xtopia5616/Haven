@@ -3,6 +3,7 @@ mod golden;
 
 use super::*;
 use crate::ToolFunction;
+use haven_common::prompts::{MEMORY_FENCE_START, SESSION_CONTEXT_FENCE_START};
 
 #[test]
 fn build_headers_uses_x_api_key_by_default() {
@@ -884,6 +885,29 @@ fn system_with_cache_control_splits_memory_fence() {
     assert_eq!(one.len(), 1);
     assert_eq!(one[0]["cache_control"], json!({"type": "ephemeral"}));
     assert!(AnthropicAdapter::system_with_cache_control(None).is_none());
+}
+
+#[test]
+fn system_with_cache_control_caches_only_stable_prompt_prefix() {
+    let full = format!(
+        "stable guidelines{SESSION_CONTEXT_FENCE_START}runtime snapshot{MEMORY_FENCE_START}volatile facts"
+    );
+    let blocks = AnthropicAdapter::system_with_cache_control(Some(full)).unwrap();
+    let arr = blocks.as_array().unwrap();
+
+    assert_eq!(arr.len(), 3);
+    assert_eq!(arr[0]["text"], "stable guidelines");
+    assert_eq!(arr[0]["cache_control"], json!({"type": "ephemeral"}));
+    assert_eq!(
+        arr[1]["text"],
+        format!("{SESSION_CONTEXT_FENCE_START}runtime snapshot")
+    );
+    assert!(arr[1].get("cache_control").is_none());
+    assert_eq!(
+        arr[2]["text"],
+        format!("{MEMORY_FENCE_START}volatile facts")
+    );
+    assert!(arr[2].get("cache_control").is_none());
 }
 
 #[test]
