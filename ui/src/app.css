@@ -890,7 +890,7 @@ select.md-select {
 	align-items: stretch;
 	width: 100%;
 	min-width: 0;
-	min-height: 168px;
+	min-height: 112px;
 	overflow: hidden;
 	border: 1px solid var(--md-sys-color-outline-variant);
 	border-radius: var(--md-sys-shape-large);
@@ -909,11 +909,11 @@ select.md-select {
 	flex: 1;
 	flex-direction: column;
 	align-items: stretch;
-	gap: var(--md-sys-space-sm);
+	gap: var(--md-sys-space-xs);
 	width: 100%;
 	min-width: 0;
 	min-height: 0;
-	padding: var(--md-sys-space-lg);
+	padding: var(--md-sys-space-md);
 	border: 0;
 	background: transparent;
 	color: inherit;
@@ -979,7 +979,7 @@ select.md-select {
 .workspace-item-card-footer {
 	justify-content: space-between;
 	gap: var(--md-sys-space-sm);
-	padding-top: var(--md-sys-space-sm);
+	padding-top: var(--md-sys-space-xs);
 	border-top: 1px solid var(--md-sys-color-outline-variant);
 	color: var(--md-sys-color-on-surface-variant);
 	font-size: var(--md-sys-typescale-label-small-size);
@@ -1004,7 +1004,7 @@ select.md-select {
 	display: flex;
 	justify-content: flex-end;
 	gap: var(--md-sys-space-sm);
-	padding: var(--md-sys-space-sm) var(--md-sys-space-lg);
+	padding: var(--md-sys-space-xs) var(--md-sys-space-md);
 	border-top: 1px solid var(--md-sys-color-outline-variant);
 	background: color-mix(
 		in srgb,
@@ -1049,7 +1049,7 @@ select.md-select {
 	justify-content: space-between;
 	flex-wrap: wrap;
 	gap: var(--md-sys-space-md);
-	margin-bottom: var(--md-sys-space-2xl);
+	margin-bottom: var(--md-sys-space-lg);
 }
 .page-heading-content {
 	min-width: 0;
@@ -1062,6 +1062,7 @@ select.md-select {
 	line-height: var(--md-sys-typescale-headline-large-line-height);
 }
 .page-heading p {
+	margin: var(--md-sys-space-xs) 0 0;
 	color: var(--md-sys-color-on-surface-variant);
 	font-size: var(--md-sys-typescale-body-small-size);
 	line-height: var(--md-sys-typescale-body-small-line-height);
@@ -1084,7 +1085,7 @@ select.md-select {
 	align-items: center;
 	min-width: 0;
 	gap: var(--md-comp-toolbar-gap);
-	padding: var(--md-sys-space-sm);
+	padding: var(--md-sys-space-xs) var(--md-sys-space-sm);
 	border: 1px solid var(--md-sys-color-outline-variant);
 	border-radius: var(--md-sys-shape-large);
 	background: var(--md-sys-color-surface-container-low);
@@ -1164,7 +1165,7 @@ select.md-select {
 	background: var(--md-sys-color-surface);
 }
 .md-tabs.workspace-secondary-tabs {
-	margin-bottom: var(--md-sys-space-xl);
+	margin-bottom: var(--md-sys-space-lg);
 }
 .md-tab {
 	position: relative;

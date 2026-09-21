@@ -28,7 +28,7 @@
 		justify-content: space-between;
 		gap: var(--md-sys-space-md);
 		min-width: 0;
-		margin-bottom: var(--md-sys-space-lg);
+		margin-bottom: var(--md-sys-space-md);
 	}
 	.workspace-section-header__content {
 		flex: 1 1 0;

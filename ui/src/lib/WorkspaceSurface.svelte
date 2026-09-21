@@ -30,7 +30,7 @@
 		width: 100%;
 		min-width: 0;
 		min-height: 100%;
-		padding: var(--md-sys-space-2xl);
+		padding: var(--md-sys-space-lg);
 		border: 1px solid var(--md-sys-color-outline-variant);
 		border-radius: var(--md-sys-shape-large);
 		background:

@@ -30,9 +30,9 @@
 		display: grid;
 		grid-template-columns: minmax(180px, 0.8fr) minmax(220px, 1.2fr);
 		align-items: center;
-		gap: var(--md-sys-space-lg);
+		gap: var(--md-sys-space-md);
 		min-height: var(--md-comp-list-item-one-line-height);
-		padding-block: var(--md-sys-space-sm);
+		padding-block: var(--md-sys-space-xs);
 		border-bottom: 1px solid var(--md-sys-color-outline-variant);
 	}
 

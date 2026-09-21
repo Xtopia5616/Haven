@@ -434,7 +434,7 @@
 	.task-groups {
 		display: flex;
 		flex-direction: column;
-		gap: var(--md-sys-space-xl);
+		gap: var(--md-sys-space-lg);
 	}
 	.task-group {
 		min-width: 0;
@@ -460,7 +460,7 @@
 	.task-list {
 		display: grid;
 		grid-template-columns: repeat(2, minmax(0, 1fr));
-		gap: var(--md-sys-space-md);
+		gap: var(--md-sys-space-sm);
 		min-width: 0;
 		max-height: min(620px, calc(100vh - 280px));
 		overflow-y: auto;

@@ -570,8 +570,8 @@
 		min-width: 0;
 	}
 	.resource-list {
-		display: flex;
-		flex-direction: column;
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr));
 		gap: var(--md-sys-space-sm);
 	}
 	.toolbar-actions {

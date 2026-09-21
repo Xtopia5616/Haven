@@ -21,9 +21,9 @@
 <style>
 	.workspace-metrics {
 		display: grid;
-		grid-template-columns: repeat(auto-fit, minmax(min(100%, 160px), 1fr));
+		grid-template-columns: repeat(auto-fit, minmax(min(100%, 140px), 1fr));
 		gap: var(--md-sys-space-sm);
-		margin-bottom: var(--md-sys-space-xl);
+		margin-bottom: var(--md-sys-space-lg);
 	}
 	.workspace-metric {
 		display: grid;
@@ -32,7 +32,7 @@
 		column-gap: var(--md-sys-space-sm);
 		row-gap: var(--md-sys-space-2xs);
 		min-width: 0;
-		padding: var(--md-sys-space-md) var(--md-sys-space-lg);
+		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
 		border: 1px solid var(--md-sys-color-outline-variant);
 		border-radius: var(--md-sys-shape-medium);
 		background: var(--md-sys-color-surface-container-low);

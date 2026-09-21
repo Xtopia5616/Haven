@@ -31,12 +31,12 @@
 		background: var(--md-sys-color-surface-container-low);
 		border: 1px solid var(--md-sys-color-outline-variant);
 		border-radius: var(--md-sys-shape-large);
-		padding: var(--md-sys-space-xl);
-		margin-bottom: var(--md-sys-space-xl);
+		padding: var(--md-sys-space-lg);
+		margin-bottom: var(--md-sys-space-lg);
 	}
 
 	.settings-section h2 {
-		margin: 0 0 var(--md-sys-space-lg);
+		margin: 0 0 var(--md-sys-space-md);
 		color: var(--md-sys-color-on-surface);
 		font-size: var(--md-sys-typescale-title-medium-size);
 		font-weight: 700;
@@ -45,11 +45,11 @@
 	}
 
 	.settings-section__header {
-		margin-bottom: var(--md-sys-space-lg);
+		margin-bottom: var(--md-sys-space-md);
 	}
 
 	.settings-section__description {
-		margin: 0 0 var(--md-sys-space-md);
+		margin: 0 0 var(--md-sys-space-sm);
 		color: var(--md-sys-color-on-surface-variant);
 		font-size: var(--md-sys-typescale-label-small-size);
 		line-height: var(--md-sys-typescale-label-small-line-height);
