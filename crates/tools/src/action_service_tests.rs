@@ -181,8 +181,7 @@ async fn test_completion_skipped_for_running() {
 async fn test_background_completion_reconciles_after_broadcast_loss() {
     let dir = tempfile::TempDir::new().unwrap();
     let db = Arc::new(Database::open(&dir.path().join("reconcile.db")).unwrap());
-    db.create_session("durable completion", "durable completion")
-        .unwrap();
+    db.create_session("durable completion").unwrap();
     db.save_action(
         "act-reconcile",
         Some("ses-reconcile"),

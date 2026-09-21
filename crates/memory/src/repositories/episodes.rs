@@ -56,7 +56,7 @@ mod tests {
     #[test]
     fn add_episode_persists_row() {
         let db = Database::open_in_memory().unwrap();
-        let session = db.create_session("t1", "").unwrap();
+        let session = db.create_session("t1").unwrap();
         let id = db.add_episode(&session.id, "a compaction summary").unwrap();
         assert!(id.starts_with("msg-"));
         let (content, session_id, kind): (String, String, String) = db
@@ -75,7 +75,7 @@ mod tests {
     #[test]
     fn add_episode_with_id_reuses_caller_id() {
         let db = Database::open_in_memory().unwrap();
-        let session = db.create_session("t1", "").unwrap();
+        let session = db.create_session("t1").unwrap();
         let id = haven_common::types::new_id("msg");
         db.add_episode_with_id(&session.id, "shared id summary", &id)
             .unwrap();
@@ -93,7 +93,7 @@ mod tests {
     #[test]
     fn add_episode_structured_stores_topics_entities() {
         let db = Database::open_in_memory().unwrap();
-        let session = db.create_session("t1", "").unwrap();
+        let session = db.create_session("t1").unwrap();
         let id = haven_common::types::new_id("msg");
         db.add_episode_structured(&session.id, "summary", &id, &["theme", "ui"], &["Alice"])
             .unwrap();

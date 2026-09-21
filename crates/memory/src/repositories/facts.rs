@@ -1524,7 +1524,7 @@ mod tests {
     #[test]
     fn test_cleanup_orphan_source_refs_keeps_transcript_and_item_ids() {
         let db = create_db();
-        let session = db.create_session("t", "").unwrap();
+        let session = db.create_session("t").unwrap();
         let episode_id = haven_common::types::new_id("msg");
         db.add_episode_with_id(&session.id, "User prefers dark theme", &episode_id)
             .unwrap();

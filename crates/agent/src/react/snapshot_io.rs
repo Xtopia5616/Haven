@@ -1352,7 +1352,7 @@ mod tests {
         let path =
             std::env::temp_dir().join(format!("haven_branch_fault_{}.db", uuid::Uuid::new_v4()));
         let db = Arc::new(Database::open(&path).unwrap());
-        let session = db.create_session("input", "input").unwrap();
+        let session = db.create_session("input").unwrap();
         db.conn()
             .execute_batch(
                 "CREATE TRIGGER branch_point_fault
@@ -1400,7 +1400,7 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         let db = Arc::new(Database::open(&path).unwrap());
-        let session = db.create_session("input", "input").unwrap();
+        let session = db.create_session("input").unwrap();
         db.conn()
             .execute_batch(
                 "CREATE TRIGGER snapshot_fault

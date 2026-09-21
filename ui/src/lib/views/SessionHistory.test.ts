@@ -32,7 +32,7 @@ describe('SessionHistory actions', () => {
 			id: 'ses-1',
 			status: 'completed',
 			created_at: '2026-09-06T03:00:00Z',
-			transcript: '整理研究资料',
+			input_text: '整理研究资料',
 		};
 		render(SessionHistory, {
 			...commonProps,

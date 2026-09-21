@@ -302,7 +302,7 @@ mod pending_context_tests {
             uuid::Uuid::new_v4()
         ));
         let db = std::sync::Arc::new(haven_memory::Database::open(&path).unwrap());
-        let session = db.create_session("input", "input").unwrap();
+        let session = db.create_session("input").unwrap();
         let executor = std::sync::Arc::new(crate::session::SessionSupervisor::new(
             db.clone(),
             std::sync::Arc::new(haven_tools::ToolsManager::new()),

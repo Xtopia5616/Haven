@@ -100,7 +100,7 @@ impl SessionInfo {
         Self {
             id: record.id.clone(),
             input: record.input_text.clone(),
-            summary: record.transcript.clone(),
+            summary: record.input_text.clone(),
             title: record.title.clone(),
             status: record.status,
             steps: Vec::new(),

@@ -1242,7 +1242,7 @@ mod tests {
         )
         .unwrap();
         // A past memory_item (episode_summary) mentioning the same topic.
-        let session = db.create_session("past", "").unwrap();
+        let session = db.create_session("past").unwrap();
         db.add_episode(&session.id, "I asked about the dark theme design last week")
             .unwrap();
 
@@ -1267,8 +1267,8 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         let db = Arc::new(Database::open(&dir).unwrap());
-        let current = db.create_session("current", "").unwrap();
-        let past = db.create_session("past", "").unwrap();
+        let current = db.create_session("current").unwrap();
+        let past = db.create_session("past").unwrap();
         db.add_episode(
             &current.id,
             "dark theme preference in the CURRENT session only",
@@ -1669,7 +1669,7 @@ mod tests {
             &["preference"],
         )
         .unwrap();
-        let session = db.create_session("rebuild", "").unwrap();
+        let session = db.create_session("rebuild").unwrap();
         let tools = Arc::new(ToolsManager::new());
         let builder = SystemPromptBuilder::new(tools, db);
 
@@ -1717,7 +1717,7 @@ mod tests {
             &["preference"],
         )
         .unwrap();
-        let past = db.create_session("past", "").unwrap();
+        let past = db.create_session("past").unwrap();
         db.add_episode(&past.id, "discussed dark theme last week")
             .unwrap();
         let tools = Arc::new(ToolsManager::new());

@@ -109,7 +109,7 @@ mod tests {
     #[test]
     fn upsert_get_take_cycle() {
         let db = test_db();
-        let session_id = db.create_session("input", "").unwrap().id;
+        let session_id = db.create_session("input").unwrap().id;
         assert!(db.get_partial_message(&session_id).is_none());
         db.upsert_partial_message(&session_id, "partial one")
             .unwrap();
@@ -127,7 +127,7 @@ mod tests {
     #[test]
     fn delete_partial_message_clears_row() {
         let db = test_db();
-        let session_id = db.create_session("input", "").unwrap().id;
+        let session_id = db.create_session("input").unwrap().id;
         db.upsert_partial_message(&session_id, "hello").unwrap();
         db.delete_partial_message(&session_id).unwrap();
         assert!(db.get_partial_message(&session_id).is_none());
@@ -136,7 +136,7 @@ mod tests {
     #[test]
     fn promote_partial_creates_real_message() {
         let db = test_db();
-        let session_id = db.create_session("input", "").unwrap().id;
+        let session_id = db.create_session("input").unwrap().id;
         db.upsert_partial_message(&session_id, "streamed reply")
             .unwrap();
         assert!(db.promote_partial_message(&session_id).unwrap());
@@ -151,7 +151,7 @@ mod tests {
     #[test]
     fn promote_partial_skips_empty_and_superseded() {
         let db = test_db();
-        let session_id = db.create_session("input", "").unwrap().id;
+        let session_id = db.create_session("input").unwrap().id;
         // Whitespace-only partial: nothing to promote.
         db.upsert_partial_message(&session_id, "   ").unwrap();
         assert!(!db.promote_partial_message(&session_id).unwrap());

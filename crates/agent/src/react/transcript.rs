@@ -802,7 +802,7 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         let db = Arc::new(Database::open(&dir).unwrap());
-        let session = db.create_session("t", "hi").unwrap();
+        let session = db.create_session("t").unwrap();
         let engine = test_engine(db);
         let ctx = step_ctx(&session.id);
         let mut state = ReActState::new(Vec::new(), Vec::new(), std::collections::HashMap::new());
@@ -836,7 +836,7 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         let db = Arc::new(Database::open(&dir).unwrap());
-        let session = db.create_session("t", "hi").unwrap();
+        let session = db.create_session("t").unwrap();
         let engine = test_engine(db);
         let ctx = step_ctx(&session.id);
         let mut state = ReActState::new(Vec::new(), Vec::new(), std::collections::HashMap::new());
@@ -870,7 +870,7 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         let db = Arc::new(Database::open(&dir).unwrap());
-        let session = db.create_session("t", "hi").unwrap();
+        let session = db.create_session("t").unwrap();
         let recorded = Arc::new(std::sync::Mutex::new(Vec::new()));
         let engine = test_engine(db.clone());
         let mut ctx = step_ctx(&session.id);
@@ -917,7 +917,7 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         let db = Arc::new(Database::open(&dir).unwrap());
-        let session = db.create_session("t", "hi").unwrap();
+        let session = db.create_session("t").unwrap();
         let mid = haven_common::types::new_id("step");
         let engine = test_engine(db.clone());
         let ctx = step_ctx(&session.id);
@@ -954,7 +954,7 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         let db = Arc::new(Database::open(&dir).unwrap());
-        let session = db.create_session("t", "hi").unwrap();
+        let session = db.create_session("t").unwrap();
         let mid = haven_common::types::new_id("msg");
         let engine = test_engine(db.clone());
         let ctx = step_ctx(&session.id);
@@ -995,7 +995,7 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         let db = Arc::new(Database::open(&dir).unwrap());
-        let session = db.create_session("t", "hi").unwrap();
+        let session = db.create_session("t").unwrap();
         let ui_events = Arc::new(std::sync::Mutex::new(Vec::new()));
         let engine = test_engine(db);
         let ctx = StepCtx {
@@ -1087,7 +1087,7 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         let db = Arc::new(Database::open(&dir).unwrap());
-        let session = db.create_session("t", "hi").unwrap();
+        let session = db.create_session("t").unwrap();
         let ui_events = Arc::new(std::sync::Mutex::new(Vec::new()));
         let engine = test_engine(db);
         let ctx = StepCtx {
@@ -1152,7 +1152,7 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         let db = Arc::new(Database::open(&dir).unwrap());
-        let session = db.create_session("t", "hi").unwrap();
+        let session = db.create_session("t").unwrap();
         let ui_events = Arc::new(std::sync::Mutex::new(Vec::new()));
         let engine = test_engine(db);
         let ctx = StepCtx {
@@ -1231,7 +1231,7 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         let db = Arc::new(Database::open(&dir).unwrap());
-        let session = db.create_session("t", "hi").unwrap();
+        let session = db.create_session("t").unwrap();
         let engine = test_engine(db);
         let ctx = step_ctx(&session.id);
         let mut state = ReActState::new(Vec::new(), Vec::new(), std::collections::HashMap::new());
@@ -1289,7 +1289,7 @@ mod tests {
             uuid::Uuid::new_v4()
         ));
         let db = Arc::new(Database::open(&dir).unwrap());
-        let session = db.create_session("t", "hi").unwrap();
+        let session = db.create_session("t").unwrap();
         let step_id = haven_common::types::new_id("step");
         let engine = test_engine(db.clone());
         let ctx = step_ctx(&session.id);

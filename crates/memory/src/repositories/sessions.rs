@@ -5,11 +5,11 @@ use rusqlite::OptionalExtension;
 
 /// WHERE clause shared by every session search query (list, count, paginated).
 /// Kept as one constant so search semantics cannot drift between queries.
-const SEARCH_WHERE: &str = "WHERE input_text LIKE ?1 OR transcript LIKE ?1 OR title LIKE ?1
+const SEARCH_WHERE: &str = "WHERE input_text LIKE ?1 OR title LIKE ?1
     OR EXISTS (SELECT 1 FROM messages
                WHERE messages.session_id = sessions.id AND messages.content LIKE ?1)";
 
-/// Map a row produced by a history-list query (8 columns, no react_state).
+/// Map a row produced by a history-list query (6 columns, no react_state).
 fn map_session_list_row(row: &rusqlite::Row) -> rusqlite::Result<Session> {
     let status = row.get::<_, String>(3)?;
     Ok(Session {
@@ -19,7 +19,6 @@ fn map_session_list_row(row: &rusqlite::Row) -> rusqlite::Result<Session> {
         status: SessionStatus::from_status_str(&status),
         created_at: row.get(4)?,
         updated_at: row.get(5)?,
-        transcript: row.get(6)?,
         react_state: None,
     })
 }
@@ -57,7 +56,6 @@ pub struct Session {
     pub status: SessionStatus,
     pub created_at: String,
     pub updated_at: String,
-    pub transcript: String,
     pub react_state: Option<String>,
 }
 
@@ -77,14 +75,14 @@ pub struct ReactCheckpoint {
 }
 
 impl Database {
-    pub fn create_session(&self, input_text: &str, transcript: &str) -> anyhow::Result<Session> {
+    pub fn create_session(&self, input_text: &str) -> anyhow::Result<Session> {
         let id = haven_common::types::new_id("ses");
         let now = Utc::now().to_rfc3339();
         let conn = self.conn();
         conn.execute(
-            "INSERT INTO sessions (id, input_text, status, created_at, updated_at, transcript)
-             VALUES (?1, ?2, 'pending', ?3, ?4, ?5)",
-            rusqlite::params![id, input_text, now, now, transcript],
+            "INSERT INTO sessions (id, input_text, status, created_at, updated_at)
+             VALUES (?1, ?2, 'pending', ?3, ?4)",
+            rusqlite::params![id, input_text, now, now],
         )?;
         self.cache_invalidate_sessions();
         Ok(Session {
@@ -94,7 +92,6 @@ impl Database {
             status: SessionStatus::Pending,
             created_at: now.clone(),
             updated_at: now,
-            transcript: transcript.into(),
             react_state: None,
         })
     }
@@ -106,7 +103,7 @@ impl Database {
         // last-conversation restore) never read it. The agent reads it via
         // `get_react_state`, which selects only that column.
         let mut stmt = conn.prepare(
-            "SELECT id, input_text, title, status, created_at, updated_at, transcript 
+            "SELECT id, input_text, title, status, created_at, updated_at
              FROM sessions WHERE id = ?1",
         )?;
         let mut rows = stmt.query(rusqlite::params![id])?;
@@ -148,7 +145,7 @@ impl Database {
         let cache_gen = (offset == 0 && limit == 50).then(|| self.cache_generation("_sessions"));
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, input_text, title, status, created_at, updated_at, transcript 
+            "SELECT id, input_text, title, status, created_at, updated_at
              FROM sessions ORDER BY created_at DESC LIMIT ?1 OFFSET ?2",
         )?;
         let rows = stmt.query_map(rusqlite::params![limit, offset], map_session_list_row)?;
@@ -166,7 +163,7 @@ impl Database {
         let pattern = format!("%{}%", query);
         let conn = self.conn();
         let mut stmt = conn.prepare(&format!(
-            "SELECT id, input_text, title, status, created_at, updated_at, transcript 
+            "SELECT id, input_text, title, status, created_at, updated_at
              FROM sessions {SEARCH_WHERE}
              ORDER BY created_at DESC LIMIT 50",
         ))?;
@@ -203,7 +200,7 @@ impl Database {
         let pattern = format!("%{}%", query);
         let conn = self.conn();
         let mut stmt = conn.prepare(&format!(
-            "SELECT id, input_text, title, status, created_at, updated_at, transcript 
+            "SELECT id, input_text, title, status, created_at, updated_at
              FROM sessions {SEARCH_WHERE}
              ORDER BY created_at DESC LIMIT ?2 OFFSET ?3",
         ))?;
@@ -455,12 +452,11 @@ impl Database {
         if let Some(q) = query {
             let p = format!("%{q}%");
             wheres.push(
-                "(input_text LIKE ? OR transcript LIKE ? OR title LIKE ?
+                "(input_text LIKE ? OR title LIKE ?
                   OR EXISTS (SELECT 1 FROM messages
                              WHERE messages.session_id = sessions.id AND messages.content LIKE ?))"
                     .into(),
             );
-            params.push(Box::new(p.clone()));
             params.push(Box::new(p.clone()));
             params.push(Box::new(p.clone()));
             params.push(Box::new(p));
@@ -498,7 +494,7 @@ impl Database {
         };
 
         let sql = format!(
-            "SELECT id, input_text, title, status, created_at, updated_at, transcript \
+            "SELECT id, input_text, title, status, created_at, updated_at \
              FROM sessions {where_clause} ORDER BY created_at DESC LIMIT ? OFFSET ?"
         );
 
@@ -804,29 +800,38 @@ mod tests {
     #[test]
     fn test_create_session() {
         let db = create_db();
-        let session = db.create_session("input text", "transcript").unwrap();
+        let session = db.create_session("input text").unwrap();
         assert!(!session.id.is_empty());
         assert_eq!(session.input_text, "input text");
         assert_eq!(session.title, None);
         assert_eq!(session.status, SessionStatus::Pending);
         assert!(!session.created_at.is_empty());
         assert!(!session.updated_at.is_empty());
-        assert_eq!(session.transcript, "transcript");
         assert!(session.react_state.is_none());
+
+        let has_transcript: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'transcript'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(has_transcript, 0);
     }
 
     #[test]
     fn test_create_session_without_session_works() {
         let db = create_db();
-        let session = db.create_session("input", "").unwrap();
+        let session = db.create_session("input").unwrap();
         assert!(!session.id.is_empty());
     }
 
     #[test]
     fn test_list_actions_returns_most_recent_first() {
         let db = create_db();
-        let first = db.create_session("first", "").unwrap();
-        let second = db.create_session("second", "").unwrap();
+        let first = db.create_session("first").unwrap();
+        let second = db.create_session("second").unwrap();
         let sessions = db.list_sessions(1, 0).unwrap();
         assert_eq!(sessions.len(), 1);
         // The most recent session must come first —the app start
@@ -838,7 +843,7 @@ mod tests {
     #[test]
     fn test_get_session_found() {
         let db = create_db();
-        let created = db.create_session("input", "").unwrap();
+        let created = db.create_session("input").unwrap();
         let found = db.get_session(&created.id).unwrap();
         assert!(found.is_some());
         let found = found.unwrap();
@@ -856,7 +861,7 @@ mod tests {
     #[test]
     fn test_update_session_status() {
         let db = create_db();
-        let session = db.create_session("input", "").unwrap();
+        let session = db.create_session("input").unwrap();
         db.update_session_status(&session.id, SessionStatus::Running)
             .unwrap();
         let updated = db.get_session(&session.id).unwrap().unwrap();
@@ -866,9 +871,9 @@ mod tests {
     #[test]
     fn test_list_actions_default() {
         let db = create_db();
-        db.create_session("a", "").unwrap();
-        db.create_session("b", "").unwrap();
-        db.create_session("c", "").unwrap();
+        db.create_session("a").unwrap();
+        db.create_session("b").unwrap();
+        db.create_session("c").unwrap();
 
         let sessions = db.list_sessions(50, 0).unwrap();
         assert_eq!(sessions.len(), 3);
@@ -878,7 +883,7 @@ mod tests {
     fn test_list_actions_limit_offset() {
         let db = create_db();
         for i in 0..5 {
-            db.create_session(&format!("ses-{}", i), "").unwrap();
+            db.create_session(&format!("ses-{}", i)).unwrap();
         }
         let sessions = db.list_sessions(2, 0).unwrap();
         assert_eq!(sessions.len(), 2);
@@ -893,11 +898,11 @@ mod tests {
     #[test]
     fn test_list_actions_caching() {
         let db = create_db();
-        db.create_session("a", "").unwrap();
+        db.create_session("a").unwrap();
         let first = db.list_sessions(50, 0).unwrap();
         assert_eq!(first.len(), 1);
 
-        db.create_session("b", "").unwrap();
+        db.create_session("b").unwrap();
         let second = db.list_sessions(50, 0).unwrap();
         assert_eq!(second.len(), 2);
     }
@@ -905,9 +910,9 @@ mod tests {
     #[test]
     fn test_search_sessions() {
         let db = create_db();
-        db.create_session("rust compiler", "").unwrap();
-        db.create_session("python script", "").unwrap();
-        db.create_session("rust debugging", "").unwrap();
+        db.create_session("rust compiler").unwrap();
+        db.create_session("python script").unwrap();
+        db.create_session("rust debugging").unwrap();
 
         let results = db.search_sessions("rust").unwrap();
         assert_eq!(results.len(), 2);
@@ -920,9 +925,10 @@ mod tests {
     }
 
     #[test]
-    fn test_search_actions_in_transcript() {
+    fn test_search_sessions_in_messages() {
         let db = create_db();
-        db.create_session("session", "transcript about rust")
+        let session = db.create_session("session").unwrap();
+        db.add_message(&session.id, "user", "message about rust", None, None)
             .unwrap();
         let results = db.search_sessions("rust").unwrap();
         assert_eq!(results.len(), 1);
@@ -932,8 +938,7 @@ mod tests {
     fn test_search_sessions_paginated() {
         let db = create_db();
         for i in 0..5 {
-            db.create_session(&format!("rust session {}", i), "")
-                .unwrap();
+            db.create_session(&format!("rust session {}", i)).unwrap();
         }
 
         let page1 = db.search_sessions_paginated("rust", 2, 0).unwrap();
@@ -953,16 +958,16 @@ mod tests {
     fn test_count_sessions() {
         let db = create_db();
         assert_eq!(db.count_sessions().unwrap(), 0);
-        db.create_session("a", "").unwrap();
-        db.create_session("b", "").unwrap();
+        db.create_session("a").unwrap();
+        db.create_session("b").unwrap();
         assert_eq!(db.count_sessions().unwrap(), 2);
     }
 
     #[test]
     fn test_count_sessions_search() {
         let db = create_db();
-        db.create_session("hello world", "").unwrap();
-        db.create_session("goodbye", "").unwrap();
+        db.create_session("hello world").unwrap();
+        db.create_session("goodbye").unwrap();
         assert_eq!(db.count_sessions_search("hello").unwrap(), 1);
         assert_eq!(db.count_sessions_search("good").unwrap(), 1);
         assert_eq!(db.count_sessions_search("xyz").unwrap(), 0);
@@ -971,7 +976,7 @@ mod tests {
     #[test]
     fn test_delete_session() {
         let db = create_db();
-        let session = db.create_session("input", "").unwrap();
+        let session = db.create_session("input").unwrap();
         db.delete_session(&session.id).unwrap();
         assert!(db.get_session(&session.id).unwrap().is_none());
         assert_eq!(db.count_sessions().unwrap(), 0);
@@ -988,9 +993,9 @@ mod tests {
     #[test]
     fn test_clear_sessions() {
         let db = create_db();
-        let first = db.create_session("a", "").unwrap();
-        db.create_session("b", "").unwrap();
-        db.create_session("c", "").unwrap();
+        let first = db.create_session("a").unwrap();
+        db.create_session("b").unwrap();
+        db.create_session("c").unwrap();
         db.set_kv(&format!("fact_extraction.{}", first.id), "msg-1")
             .unwrap();
         db.set_kv(
@@ -1038,14 +1043,14 @@ mod tests {
     #[test]
     fn test_finalize_orphaned_running_sessions() {
         let db = create_db();
-        let running = db.create_session("running", "").unwrap();
+        let running = db.create_session("running").unwrap();
         db.update_session_status(&running.id, SessionStatus::Running)
             .unwrap();
-        let paused = db.create_session("paused", "").unwrap();
+        let paused = db.create_session("paused").unwrap();
         db.update_session_status(&paused.id, SessionStatus::Paused)
             .unwrap();
-        let pending = db.create_session("pending", "").unwrap();
-        let done = db.create_session("done", "").unwrap();
+        let pending = db.create_session("pending").unwrap();
+        let done = db.create_session("done").unwrap();
         db.update_session_status(&done.id, SessionStatus::Completed)
             .unwrap();
 
@@ -1074,8 +1079,8 @@ mod tests {
     #[test]
     fn test_delete_old_sessions() {
         let db = create_db();
-        let first = db.create_session("a", "").unwrap();
-        db.create_session("b", "").unwrap();
+        let first = db.create_session("a").unwrap();
+        db.create_session("b").unwrap();
         db.set_kv(&format!("fact_extraction.{}", first.id), "msg-1")
             .unwrap();
         db.set_kv(
@@ -1116,7 +1121,7 @@ mod tests {
     #[test]
     fn test_delete_old_actions_keeps_recent() {
         let db = create_db();
-        db.create_session("a", "").unwrap();
+        db.create_session("a").unwrap();
 
         let count = db.delete_old_sessions(365).unwrap();
         assert_eq!(count, 0);
@@ -1126,8 +1131,8 @@ mod tests {
     #[test]
     fn test_search_sessions_filtered_query_only() {
         let db = create_db();
-        db.create_session("rust compile", "").unwrap();
-        db.create_session("python run", "").unwrap();
+        db.create_session("rust compile").unwrap();
+        db.create_session("python run").unwrap();
 
         let results = db
             .search_sessions_filtered(Some("rust"), None, None, None, 50, 0)
@@ -1138,8 +1143,8 @@ mod tests {
     #[test]
     fn test_search_sessions_filtered_status() {
         let db = create_db();
-        let t1 = db.create_session("a", "").unwrap();
-        db.create_session("b", "").unwrap();
+        let t1 = db.create_session("a").unwrap();
+        db.create_session("b").unwrap();
         db.update_session_status(&t1.id, SessionStatus::Completed)
             .unwrap();
 
@@ -1153,8 +1158,8 @@ mod tests {
     #[test]
     fn test_search_sessions_filtered_date_range() {
         let db = create_db();
-        db.create_session("a", "").unwrap();
-        db.create_session("b", "").unwrap();
+        db.create_session("a").unwrap();
+        db.create_session("b").unwrap();
 
         let results = db
             .search_sessions_filtered(None, None, Some("2000-01-01"), Some("2099-12-31"), 50, 0)
@@ -1170,8 +1175,8 @@ mod tests {
     #[test]
     fn test_search_sessions_filtered_combined() {
         let db = create_db();
-        let t1 = db.create_session("rust compiler bug", "").unwrap();
-        db.create_session("python script", "").unwrap();
+        let t1 = db.create_session("rust compiler bug").unwrap();
+        db.create_session("python script").unwrap();
         db.update_session_status(&t1.id, SessionStatus::Completed)
             .unwrap();
 
@@ -1185,8 +1190,8 @@ mod tests {
     #[test]
     fn test_search_sessions_filtered_no_filters() {
         let db = create_db();
-        db.create_session("a", "").unwrap();
-        db.create_session("b", "").unwrap();
+        db.create_session("a").unwrap();
+        db.create_session("b").unwrap();
 
         let results = db
             .search_sessions_filtered(None, None, None, None, 50, 0)
@@ -1197,7 +1202,7 @@ mod tests {
     #[test]
     fn test_search_sessions_filtered_empty_query_ignored() {
         let db = create_db();
-        db.create_session("a", "").unwrap();
+        db.create_session("a").unwrap();
 
         let results = db
             .search_sessions_filtered(Some(""), None, None, None, 50, 0)
@@ -1208,7 +1213,7 @@ mod tests {
     #[test]
     fn test_search_sessions_filtered_end_date_includes_end_day() {
         let db = create_db();
-        let session = db.create_session("a", "").unwrap();
+        let session = db.create_session("a").unwrap();
 
         // created_at is stored as UTC RFC3339; its local calendar date must
         // be included when filtering with that same date as the end bound.
@@ -1229,7 +1234,7 @@ mod tests {
     #[test]
     fn test_search_sessions_filtered_list_rows_have_no_react_state() {
         let db = create_db();
-        let session = db.create_session("a", "").unwrap();
+        let session = db.create_session("a").unwrap();
         db.save_react_state(&session.id, r#"{"v":1}"#).unwrap();
 
         let results = db
@@ -1245,8 +1250,8 @@ mod tests {
     #[test]
     fn test_search_sessions_filtered_no_filters_uses_cache() {
         let db = create_db();
-        db.create_session("a", "").unwrap();
-        db.create_session("b", "").unwrap();
+        db.create_session("a").unwrap();
+        db.create_session("b").unwrap();
 
         let first = db
             .search_sessions_filtered(None, None, None, None, 50, 0)
@@ -1260,7 +1265,7 @@ mod tests {
             .unwrap();
         assert_eq!(second.len(), 2);
 
-        db.create_session("c", "").unwrap();
+        db.create_session("c").unwrap();
         let third = db
             .search_sessions_filtered(None, None, None, None, 50, 0)
             .unwrap();
@@ -1270,7 +1275,7 @@ mod tests {
     #[test]
     fn test_get_session_excludes_react_state() {
         let db = create_db();
-        let session = db.create_session("a", "").unwrap();
+        let session = db.create_session("a").unwrap();
         db.save_react_state(&session.id, r#"{"v":1}"#).unwrap();
 
         let loaded = db.get_session(&session.id).unwrap().unwrap();
@@ -1285,7 +1290,7 @@ mod tests {
     #[test]
     fn test_save_and_get_react_state() {
         let db = create_db();
-        let session = db.create_session("input", "").unwrap();
+        let session = db.create_session("input").unwrap();
 
         let result = db.get_react_state(&session.id).unwrap();
         assert!(result.is_none());
@@ -1301,7 +1306,7 @@ mod tests {
     #[test]
     fn test_save_react_state_overwrites() {
         let db = create_db();
-        let session = db.create_session("input", "").unwrap();
+        let session = db.create_session("input").unwrap();
 
         db.save_react_state(&session.id, r#"{"v":1}"#).unwrap();
         db.save_react_state(&session.id, r#"{"v":2}"#).unwrap();
@@ -1313,7 +1318,7 @@ mod tests {
     #[test]
     fn test_update_react_state_interactions_preserves_latest_snapshot() {
         let db = create_db();
-        let session = db.create_session("input", "").unwrap();
+        let session = db.create_session("input").unwrap();
 
         db.save_react_state(
             &session.id,
@@ -1346,7 +1351,7 @@ mod tests {
     #[test]
     fn test_update_react_state_interactions_rejects_invalid_inputs() {
         let db = create_db();
-        let session = db.create_session("input", "").unwrap();
+        let session = db.create_session("input").unwrap();
         let error = db
             .update_react_state_interactions_json(&session.id, r#"{"id":"bad"}"#)
             .unwrap_err();
@@ -1366,7 +1371,7 @@ mod tests {
     #[test]
     fn test_react_checkpoint_tracks_revision_event_and_projection_cursors() {
         let db = create_db();
-        let session = db.create_session("input", "").unwrap();
+        let session = db.create_session("input").unwrap();
 
         db.save_react_state(&session.id, r#"{"events":[{},{}]}"#)
             .unwrap();
@@ -1401,7 +1406,7 @@ mod tests {
     #[test]
     fn test_react_checkpoint_uses_snapshot_cursor_not_event_tail_length() {
         let db = create_db();
-        let session = db.create_session("input", "").unwrap();
+        let session = db.create_session("input").unwrap();
 
         db.save_react_state(
             &session.id,
@@ -1419,7 +1424,7 @@ mod tests {
     #[test]
     fn test_react_state_roundtrip_compresses() {
         let db = create_db();
-        let session = db.create_session("input", "").unwrap();
+        let session = db.create_session("input").unwrap();
         let big = format!(
             r#"{{"canonical":[{}]}}"#,
             (0..500)
@@ -1450,7 +1455,7 @@ mod tests {
     #[test]
     fn test_react_state_legacy_uncompressed_requires_reset() {
         let db = create_db();
-        let session = db.create_session("input", "").unwrap();
+        let session = db.create_session("input").unwrap();
         // Simulate a row written by an older build (plain TEXT, no gzip magic).
         db.conn()
             .execute(
@@ -1465,7 +1470,7 @@ mod tests {
     #[test]
     fn test_react_state_non_gzip_blob_requires_reset() {
         let db = create_db();
-        let session = db.create_session("input", "").unwrap();
+        let session = db.create_session("input").unwrap();
         // A non-gzip BLOB is also outside the current snapshot contract.
         db.conn()
             .execute(

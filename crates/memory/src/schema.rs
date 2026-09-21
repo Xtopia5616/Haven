@@ -8,7 +8,7 @@
 //! version stamp rejects both older and newer database contracts.
 
 /// Current database contract. Any schema change requires a fresh database.
-pub const SCHEMA_VERSION: i32 = 24;
+pub const SCHEMA_VERSION: i32 = 25;
 /// Current schema, created idempotently on every open.
 const SCHEMA_SQL: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS sessions (
@@ -19,7 +19,6 @@ const SCHEMA_SQL: &[&str] = &[
             CHECK(status IN ('pending','running','paused','completed','error')),
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-        transcript TEXT NOT NULL DEFAULT '',
         react_state TEXT
     )",
     "CREATE TABLE IF NOT EXISTS messages (
@@ -469,7 +468,6 @@ fn table_exists(conn: &rusqlite::Connection, table: &str) -> anyhow::Result<bool
 }
 
 const REQUIRED_COLUMNS: &[(&str, &str)] = &[
-    ("sessions", "transcript"),
     ("messages", "voice"),
     ("messages", "ui_metadata"),
     ("react_checkpoints", "event_sequence"),

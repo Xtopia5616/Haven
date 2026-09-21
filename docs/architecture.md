@@ -577,4 +577,5 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 | 2026-09-10 | §2.5 Tools / §2.6 LLM：工具与 media gateway 统一走 `LlmRouter::analyze_image`；`files.read` 增加音频转写；删除 raw-byte multimodal helper（ADR 0122） |
 | 2026-09-10 | §2.5 Tools / §2.6 App：新增 asset_id-only `media` 工具；窗口截图改为受管生成媒体并返回可继续消费的 asset id；managed 图片/音频从 `files.read` 转交 canonical media 派生入口（ADR 0123） |
 | 2026-09-10 | §2.3 Memory / §2.4 Agent / §2.6 UI：媒体派生结果只保留一个 `media.content`，模型观察移除运行时元数据；工具拥有的媒体 LLM 调用以 `call_kind=media`、其它工具内部 LLM 调用以 `call_kind=tool` 单独持久化与展示，Agent 缓存率只统计 `call_kind=agent`（ADR 0124） |
+| 2026-09-22 | §2.3 Memory / §2.6 UI：删除只在创建时写入的 `sessions.transcript` 快照列；会话正文搜索改由 `messages` 投影，恢复继续使用 `session_events`，数据库升至 v25，按发布说明重置（ADR 0199） |
 | 2026-09-21 | §2.3 Memory：消息表将旧 `attachments` 兼容列改名为 `ui_metadata`；canonical 媒体、表示和恢复只使用 `media_inputs`，UI 元数据仅保留展示/资产保留字段；数据库升至 v24，按发布说明重置（ADR 0197） |

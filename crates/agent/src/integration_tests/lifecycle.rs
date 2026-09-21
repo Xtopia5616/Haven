@@ -18,17 +18,17 @@ fn agent_new_constructor_works() {
     let agent = AgentLayer::new(db, executor, router, 10, 20, ContextLimitsConfig::default());
     // Verify construction succeeded; no per-session indirection remains.
     assert!(agent.db.get_facts("user").unwrap().is_empty());
-    let session = agent.db.create_session("input", "transcript").unwrap();
+    let session = agent.db.create_session("input").unwrap();
     assert!(!session.id.is_empty());
 }
 
 #[test]
 fn agent_constructs_without_session_machinery() {
     let (agent, _) = make_test_agent();
-    let session = agent.db.create_session("input", "").unwrap();
+    let session = agent.db.create_session("input").unwrap();
     assert!(!session.id.is_empty());
     // Two sessions never share message keys ??each owns its own stream.
-    let other = agent.db.create_session("input2", "").unwrap();
+    let other = agent.db.create_session("input2").unwrap();
     assert_ne!(session.id, other.id);
 }
 
@@ -153,7 +153,7 @@ async fn build_system_prompt_excludes_sensitive_and_duplicate_facts() {
 #[tokio::test]
 async fn persist_message_adds_to_db() {
     let (agent, _) = make_test_agent();
-    let session = agent.db.create_session("input", "").unwrap();
+    let session = agent.db.create_session("input").unwrap();
     agent
         .persist_message_parts(
             &session.id,
@@ -326,7 +326,7 @@ async fn queued_action_result_is_reconciled_after_session_becomes_terminal() {
 #[tokio::test]
 async fn persist_message_with_attachments_roundtrips() {
     let (agent, _) = make_test_agent();
-    let session = agent.db.create_session("input", "").unwrap();
+    let session = agent.db.create_session("input").unwrap();
     let att = haven_common::types::MessageAttachment::new("image/png", "aGVsbG8=");
     agent
         .persist_message_parts(

@@ -41,7 +41,8 @@ Provider 的 `api_style` 现在只接受 canonical wire protocol id；旧的 ven
 `fallback_retry_max_retries` 会被忽略，保存配置后不再写回。若需要清理旧配置残留，按下文
 完整重置数据根目录后重新配置模型。
 
-本次 Agent 版本将数据库 schema 收敛为 v24 当前契约：新增 `session_events` append-only
+本次 Agent 版本将数据库 schema 收敛为 v25 当前契约：删除 `sessions.transcript` 快照列，
+会话正文只从 `session_events` 恢复并由 `messages` 物化；新增 `session_events` append-only
 会话事件表（`sequence`、`event_type`、`event_version`、JSON payload、run/step identity）和
 checkpoint 的 `event_cursor` / `event_sequence` 游标；ReAct snapshot 新写入只保留运行时
 检查点与最多 32 条 `event_tail`，不再保存完整事件流；消息新增 `media_inputs` canonical
@@ -49,7 +50,7 @@ checkpoint 的 `event_cursor` / `event_sequence` 游标；ReAct snapshot 新写�
 FTS/embedding 形状；消息表的旧 `attachments` 列已删除并由仅供 UI/资产保留使用的
 `ui_metadata` 取代，`media_inputs` 是唯一 canonical 媒体持久化来源；`llm_usage.call_kind` 将 Agent 主循环和工具拥有的媒体推理调用分开，
 后者保留明细但不进入 `session_usage` 的 Agent 累计 token/费用/缓存率；其它工具内部 LLM 调用使用
-`call_kind=tool`，同样只保留明细。`user_version` 不是 v24 的数据库，
+`call_kind=tool`，同样只保留明细。`user_version` 不是 v25 的数据库，
 或没有版本戳但已经包含用户表，都会拒绝打开；必须删除 `haven.db`、`haven.db-wal` 和
 `haven.db-shm` 后重新创建。这样会同时清除会话、记忆、任务、快照和用量；若配置仍需保留，
 只删除这三个数据库文件即可，不必删除整个数据根目录。当前契约还包含

@@ -1021,7 +1021,7 @@ mod tests {
     #[tokio::test]
     async fn test_recall_episodes_keyword() {
         let (tool, db, _dir) = test_tool();
-        let session = db.create_session("t", "").unwrap();
+        let session = db.create_session("t").unwrap();
         db.add_episode(&session.id, "User prefers a dark theme for the IDE")
             .unwrap();
         let result = tool

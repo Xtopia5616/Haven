@@ -709,7 +709,7 @@ mod tests {
     }
 
     fn test_session(db: &Database) -> String {
-        db.create_session("input", "transcript").unwrap().id
+        db.create_session("input").unwrap().id
     }
 
     #[test]

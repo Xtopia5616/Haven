@@ -249,7 +249,7 @@ mod tests {
     fn test_store() -> (PartialStore, Arc<Database>, tempfile::TempDir, String) {
         let dir = tempdir().unwrap();
         let db = Arc::new(Database::open(&dir.path().join("test.db")).unwrap());
-        let session = db.create_session("input", "").unwrap();
+        let session = db.create_session("input").unwrap();
         let session_id = session.id.clone();
         (PartialStore::new(db.clone()), db, dir, session_id)
     }

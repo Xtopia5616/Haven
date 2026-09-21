@@ -1258,7 +1258,7 @@ mod tests {
     }
 
     fn insert_episode_with_id(db: &Database, id: &str) {
-        let session = db.create_session("embedding-test", "").unwrap();
+        let session = db.create_session("embedding-test").unwrap();
         db.add_episode_with_id(&session.id, "test episode", id)
             .unwrap();
     }
@@ -1376,8 +1376,8 @@ mod tests {
     #[test]
     fn search_embeddings_filtered_excludes_session_episodes() {
         let db = db();
-        let current = db.create_session("cur", "").unwrap();
-        let other = db.create_session("oth", "").unwrap();
+        let current = db.create_session("cur").unwrap();
+        let other = db.create_session("oth").unwrap();
         let cur_ep = db.add_episode(&current.id, "current summary").unwrap();
         let oth_ep = db.add_episode(&other.id, "other summary").unwrap();
         db.save_embedding(entity_kind::EPISODE, &cur_ep, "m", &[1.0, 0.0], "current")
@@ -1525,7 +1525,7 @@ mod tests {
     #[test]
     fn missing_embedding_ids_episodes() {
         let db = db();
-        let session = db.create_session("t", "").unwrap();
+        let session = db.create_session("t").unwrap();
         let ep = db.add_episode(&session.id, "hello world").unwrap();
         let missing = db.missing_embedding_ids(entity_kind::EPISODE, "m").unwrap();
         assert_eq!(missing.len(), 1);
@@ -1539,7 +1539,7 @@ mod tests {
     #[test]
     fn missing_embedding_ids_episodes_respects_limit_and_prefers_summaries() {
         let db = db();
-        let session = db.create_session("t", "").unwrap();
+        let session = db.create_session("t").unwrap();
         let ep_a = db.add_episode(&session.id, "summary-a").unwrap();
         let ep_b = db.add_episode(&session.id, "summary-b").unwrap();
         let ep_c = db.add_episode(&session.id, "summary-c").unwrap();
@@ -1566,7 +1566,7 @@ mod tests {
     #[test]
     fn episode_text_resolves_message() {
         let db = db();
-        let session = db.create_session("t", "").unwrap();
+        let session = db.create_session("t").unwrap();
         let ep = db.add_episode(&session.id, "remember this").unwrap();
         assert_eq!(db.episode_text(&ep).unwrap(), Some("remember this".into()));
         assert_eq!(db.episode_text("nope").unwrap(), None);
@@ -1575,7 +1575,7 @@ mod tests {
     #[test]
     fn prune_removes_orphaned() {
         let db = db();
-        let session = db.create_session("t", "").unwrap();
+        let session = db.create_session("t").unwrap();
         let ep = db.add_episode(&session.id, "hello").unwrap();
         db.save_embedding(entity_kind::EPISODE, &ep, "m", &[1.0], "hello")
             .unwrap();
@@ -1646,7 +1646,7 @@ mod tests {
     #[test]
     fn search_episodes_by_keywords_ranks_matches() {
         let db = db();
-        let session = db.create_session("t", "").unwrap();
+        let session = db.create_session("t").unwrap();
         db.add_episode(&session.id, "I discussed the dark theme preference earlier")
             .unwrap();
         db.add_episode(&session.id, "unrelated note about groceries")
@@ -1661,7 +1661,7 @@ mod tests {
     #[test]
     fn search_episodes_by_keywords_empty_terms_returns_nothing() {
         let db = db();
-        let session = db.create_session("t", "").unwrap();
+        let session = db.create_session("t").unwrap();
         db.add_episode(&session.id, "hello world").unwrap();
         assert!(
             db.search_episodes_by_keywords(&[], 5, None)
@@ -1673,8 +1673,8 @@ mod tests {
     #[test]
     fn search_episodes_by_keywords_excludes_current_session() {
         let db = db();
-        let current = db.create_session("current", "").unwrap();
-        let past = db.create_session("past", "").unwrap();
+        let current = db.create_session("current").unwrap();
+        let past = db.create_session("past").unwrap();
         db.add_episode(&current.id, "I discussed the dark theme in this session")
             .unwrap();
         db.add_episode(&past.id, "I discussed the dark theme last week")
@@ -1690,7 +1690,7 @@ mod tests {
     #[test]
     fn episodes_include_compaction_summaries() {
         let db = db();
-        let session = db.create_session("t", "").unwrap();
+        let session = db.create_session("t").unwrap();
         let ep = db
             .add_episode(&session.id, "user prefers the dark theme everywhere")
             .unwrap();
@@ -1723,7 +1723,7 @@ mod tests {
     #[test]
     fn search_episodes_by_topics_via_fts() {
         let db = db();
-        let session = db.create_session("t", "").unwrap();
+        let session = db.create_session("t").unwrap();
         let id = haven_common::types::new_id("msg");
         db.add_episode_structured(
             &session.id,

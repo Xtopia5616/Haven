@@ -1109,7 +1109,7 @@ impl AgentLayer {
         let db = self.db.clone();
         let input_for_db = input.to_string();
         let record = db
-            .run_blocking(move |db| db.create_session(&input_for_db, &input_for_db))
+            .run_blocking(move |db| db.create_session(&input_for_db))
             .await?;
         // The first user turn (and its attachments) must be on disk BEFORE
         // the dispatcher can pick the session up; if persisting fails, remove

@@ -891,7 +891,7 @@ mod tests {
 
     fn store() -> (Arc<Database>, SessionEventStore, String) {
         let db = Arc::new(Database::open_in_memory().unwrap());
-        let session = db.create_session("input", "input").unwrap();
+        let session = db.create_session("input").unwrap();
         let store = SessionEventStore::new(db.clone());
         (db, store, session.id)
     }

@@ -193,8 +193,8 @@
 									/>
 								</div>
 							</div>
-							{#if session.transcript}<div class="session-message">
-									"{session.transcript}"
+							{#if session.input_text}<div class="session-message">
+									"{session.input_text}"
 								</div>{/if}
 							<div class="session-meta workspace-item-card-meta">
 								<span class="meta-date"
@@ -252,8 +252,8 @@
 									text={sessionStatusLabel(session.status)}
 								/>
 							</div>
-							{#if session.transcript}<div class="session-message">
-									"{session.transcript}"
+							{#if session.input_text}<div class="session-message">
+									"{session.input_text}"
 								</div>{/if}
 							<div class="session-footer workspace-item-card-footer">
 								<span class="meta-date"

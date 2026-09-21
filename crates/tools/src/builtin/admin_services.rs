@@ -295,7 +295,6 @@ impl AdminServices {
                     "title": session.title,
                     "input_chars": session.input_text.chars().count(),
                     "created_at": session.created_at,
-                    "transcript_chars": session.transcript.chars().count(),
                 })
             })
             .collect();

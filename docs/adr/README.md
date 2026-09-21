@@ -193,3 +193,4 @@
 - [0195：ReAct snapshot 仅保留 checkpoint 与有限事件尾部](0195-react-snapshot-checkpoint-tail.md)
 - [0197：消息媒体 canonical 与 UI 元数据列边界](0197-message-media-canonical-ui-metadata.md)
 - [0198：稳定核心工具面与统一 builtin 目录加载](0198-stable-core-tool-surface-and-unified-catalog-loader.md)
+- [0199：删除 sessions.transcript 快照列](0199-remove-session-transcript-snapshot.md)

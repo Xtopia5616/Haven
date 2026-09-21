@@ -2096,7 +2096,7 @@ mod tests {
     #[tokio::test]
     async fn infer_facts_advances_cursor_once() {
         let db = temp_db();
-        let session = db.create_session("t1", "").unwrap();
+        let session = db.create_session("t1").unwrap();
         let _m1 = db
             .add_message(&session.id, "user", "I like Rust.", Some("text"), None)
             .unwrap();
@@ -2123,7 +2123,7 @@ mod tests {
     #[tokio::test]
     async fn infer_facts_processes_only_new_messages() {
         let db = temp_db();
-        let session = db.create_session("t1", "").unwrap();
+        let session = db.create_session("t1").unwrap();
         let m1 = db
             .add_message(&session.id, "user", "first message", Some("text"), None)
             .unwrap();
@@ -2151,7 +2151,7 @@ mod tests {
         // must NOT advance the cursor — the pending messages are processed by
         // the next allowed run (the maintenance pass catches up regardless).
         let db = temp_db();
-        let session = db.create_session("t1", "").unwrap();
+        let session = db.create_session("t1").unwrap();
         let m1 = db
             .add_message(&session.id, "user", "I like Rust.", Some("text"), None)
             .unwrap();
@@ -2202,7 +2202,7 @@ mod tests {
         // failure is non-fatal, but the cursor stays behind so a later run can
         // retry instead of silently losing the message window.
         let db = temp_db();
-        let session = db.create_session("t1", "").unwrap();
+        let session = db.create_session("t1").unwrap();
         let _m1 = db
             .add_message(&session.id, "user", "I like Rust.", Some("text"), None)
             .unwrap();
@@ -2223,8 +2223,8 @@ mod tests {
     #[test]
     fn enqueue_infer_coalesces_bypass_flag() {
         let db = temp_db();
-        let first = db.create_session("a", "").unwrap();
-        let second = db.create_session("b", "").unwrap();
+        let first = db.create_session("a").unwrap();
+        let second = db.create_session("b").unwrap();
         let engine = Arc::new(make_engine(db.clone()));
         engine.enqueue_infer(&first.id, false);
         engine.enqueue_infer(&first.id, true);
@@ -2241,7 +2241,7 @@ mod tests {
     #[tokio::test]
     async fn enqueue_infer_offloads_durable_marker_before_memory_drain() {
         let db = temp_db();
-        let session = db.create_session("async", "").unwrap();
+        let session = db.create_session("async").unwrap();
         let engine = Arc::new(make_engine(db.clone()));
         // Keep this test focused on enqueue ordering; a real outbox worker
         // would immediately consume and clear the marker after success.

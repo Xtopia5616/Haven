@@ -153,7 +153,7 @@ mod tests {
     #[test]
     fn cleanup_orphan_extraction_cursors_removes_stale_keys() {
         let db = test_db();
-        let session = db.create_session("", "").unwrap();
+        let session = db.create_session("").unwrap();
         // Cursor + throttle stamp for an existing session: kept.
         db.set_kv(&format!("fact_extraction.{}", session.id), "msg-1")
             .unwrap();
@@ -197,7 +197,7 @@ mod tests {
     #[test]
     fn delete_session_removes_extraction_cursor() {
         let db = test_db();
-        let session = db.create_session("t-cursor", "").unwrap();
+        let session = db.create_session("t-cursor").unwrap();
         db.set_kv(&format!("fact_extraction.{}", session.id), "msg-1")
             .unwrap();
         db.set_kv(
@@ -235,7 +235,7 @@ mod tests {
     #[test]
     fn pending_extraction_jobs_coalesce_and_restore_live_sessions() {
         let db = test_db();
-        let session = db.create_session("t-pending", "").unwrap();
+        let session = db.create_session("t-pending").unwrap();
         db.enqueue_fact_extraction(&session.id, false).unwrap();
         db.enqueue_fact_extraction(&session.id, true).unwrap();
         assert_eq!(

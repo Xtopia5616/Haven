@@ -443,7 +443,7 @@ mod tests {
     }
 
     fn seed_session(db: &Database, session_id: &str) {
-        db.create_session("test", "test").unwrap();
+        db.create_session("test").unwrap();
         // Override the id to match test expectations
         let conn = db.conn();
         let _ = conn.execute(

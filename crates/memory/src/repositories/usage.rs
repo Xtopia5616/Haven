@@ -825,7 +825,7 @@ mod tests {
     #[test]
     fn persist_and_get_session_usage_roundtrip() {
         let db = test_db();
-        let session = db.create_session("hello", "").unwrap();
+        let session = db.create_session("hello").unwrap();
         assert!(db.get_session_usage(&session.id).unwrap().is_none());
         db.persist_llm_call_and_refresh_session_usage(
             &session.id,
@@ -855,7 +855,7 @@ mod tests {
     #[test]
     fn persist_usage_batch_writes_rows_and_rebuilds_aggregate() {
         let db = test_db();
-        let session = db.create_session("hello", "").unwrap();
+        let session = db.create_session("hello").unwrap();
         let records = db
             .persist_llm_call_batch_and_refresh_session_usage(
                 &session.id,
@@ -911,7 +911,7 @@ mod tests {
     #[test]
     fn persist_and_restore_context_snapshot() {
         let db = test_db();
-        let session = db.create_session("hello", "").unwrap();
+        let session = db.create_session("hello").unwrap();
         let rec = db
             .persist_llm_call_and_refresh_session_usage_with_cache_accounting_and_context(
                 &session.id,
@@ -947,7 +947,7 @@ mod tests {
     #[test]
     fn media_usage_is_retained_but_excluded_from_agent_session_totals() {
         let db = test_db();
-        let session = db.create_session("hello", "").unwrap();
+        let session = db.create_session("hello").unwrap();
         db.persist_llm_call_and_refresh_session_usage(
             &session.id,
             Some(1),
@@ -1000,7 +1000,7 @@ mod tests {
     #[test]
     fn session_usage_cascades_on_session_delete() {
         let db = test_db();
-        let session = db.create_session("hello", "").unwrap();
+        let session = db.create_session("hello").unwrap();
         db.persist_llm_call_and_refresh_session_usage(
             &session.id,
             Some(1),
@@ -1024,7 +1024,7 @@ mod tests {
     #[test]
     fn record_and_get_llm_call_usage() {
         let db = test_db();
-        let session = db.create_session("hello", "").unwrap();
+        let session = db.create_session("hello").unwrap();
         let rec = db
             .record_llm_call_usage(
                 &session.id,
@@ -1060,7 +1060,7 @@ mod tests {
     #[test]
     fn llm_call_usage_is_append_only_and_ordered() {
         let db = test_db();
-        let session = db.create_session("hello", "").unwrap();
+        let session = db.create_session("hello").unwrap();
         db.record_llm_call_usage(
             &session.id,
             Some(1),
@@ -1113,7 +1113,7 @@ mod tests {
     #[test]
     fn llm_call_usage_cascades_on_session_delete() {
         let db = test_db();
-        let session = db.create_session("hello", "").unwrap();
+        let session = db.create_session("hello").unwrap();
         db.record_llm_call_usage(
             &session.id,
             Some(1),
@@ -1136,7 +1136,7 @@ mod tests {
     #[test]
     fn persist_llm_call_refreshes_session_usage_from_sum() {
         let db = test_db();
-        let session = db.create_session("hello", "").unwrap();
+        let session = db.create_session("hello").unwrap();
         db.persist_llm_call_and_refresh_session_usage(
             &session.id,
             Some(1),
@@ -1180,7 +1180,7 @@ mod tests {
     #[test]
     fn persist_keeps_cache_accounting_per_call_for_mixed_providers() {
         let db = test_db();
-        let session = db.create_session("hello", "").unwrap();
+        let session = db.create_session("hello").unwrap();
         db.persist_llm_call_and_refresh_session_usage_with_cache_accounting(
             &session.id,
             Some(1),
@@ -1231,7 +1231,7 @@ mod tests {
     #[test]
     fn rebuild_session_usage_zeros_row_when_no_calls_remain() {
         let db = test_db();
-        let session = db.create_session("hello", "").unwrap();
+        let session = db.create_session("hello").unwrap();
         db.persist_llm_call_and_refresh_session_usage(
             &session.id,
             Some(1),
@@ -1270,7 +1270,7 @@ mod tests {
     #[test]
     fn persist_coalesces_omitted_total_into_session_usage() {
         let db = test_db();
-        let session = db.create_session("hello", "").unwrap();
+        let session = db.create_session("hello").unwrap();
         db.persist_llm_call_and_refresh_session_usage(
             &session.id,
             Some(1),
@@ -1297,7 +1297,7 @@ mod tests {
     #[test]
     fn persist_coalesces_exclusive_cache_into_omitted_total() {
         let db = test_db();
-        let session = db.create_session("hello", "").unwrap();
+        let session = db.create_session("hello").unwrap();
         db.persist_llm_call_and_refresh_session_usage_with_cache_accounting(
             &session.id,
             Some(1),
@@ -1325,7 +1325,7 @@ mod tests {
     #[test]
     fn persist_stamps_created_at_like_messages() {
         let db = test_db();
-        let session = db.create_session("hello", "").unwrap();
+        let session = db.create_session("hello").unwrap();
         let rec = db
             .persist_llm_call_and_refresh_session_usage(
                 &session.id,
@@ -1357,7 +1357,7 @@ mod tests {
     #[test]
     fn delete_llm_usage_by_id_removes_one_row() {
         let db = test_db();
-        let session = db.create_session("hello", "").unwrap();
+        let session = db.create_session("hello").unwrap();
         let a = db
             .record_llm_call_usage(
                 &session.id,

@@ -1473,7 +1473,7 @@ mod tests {
         let mut p = std::env::temp_dir();
         p.push(format!("haven_event_test_{}.db", uuid::Uuid::new_v4()));
         let db = Arc::new(Database::open(&p).unwrap());
-        let session = db.create_session("t", "").unwrap();
+        let session = db.create_session("t").unwrap();
         let bus_dyn: Arc<dyn AgentEventEmitter> = bus;
         EventDispatcher::emit_thought_from(&bus_dyn, &session.id, "hello", 1, 1, "msg-t-1", &db)
             .await

@@ -1133,7 +1133,7 @@ mod tests {
     async fn checkpoint_writer_keeps_latest_pending_snapshot() {
         let dir = tempfile::tempdir().unwrap();
         let db = Arc::new(Database::open(&dir.path().join("test.db")).unwrap());
-        let session = db.create_session("input", "").unwrap();
+        let session = db.create_session("input").unwrap();
         let store = Arc::new(crate::partial::PartialStore::new(db.clone()));
         let generation = store.generation(&session.id);
         let writer = CheckpointWriter::new(store, Arc::new(ReActMetrics::new()));
@@ -1376,7 +1376,7 @@ mod tests {
             Arc::new(ToolsManager::new()),
             1,
         ));
-        let session = db.create_session("role probe", "role probe").unwrap();
+        let session = db.create_session("role probe").unwrap();
         let default_client = Arc::new(ProbeClient::new(vec![
             ProbeResponse::Chunk(chunk("I will finish", FinishReason::Length)),
             ProbeResponse::Chunk(chunk("Finished.", FinishReason::Stop)),
@@ -1445,7 +1445,7 @@ mod tests {
         let db_path =
             std::env::temp_dir().join(format!("haven_recovery_fault_{}.db", uuid::Uuid::new_v4()));
         let db = Arc::new(Database::open(&db_path).unwrap());
-        let session = db.create_session("input", "input").unwrap();
+        let session = db.create_session("input").unwrap();
         let fault_trigger = format!("recovery_fault_{}", uuid::Uuid::new_v4().simple());
         db.conn()
             .execute_batch(&format!(

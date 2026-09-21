@@ -422,7 +422,7 @@ mod tests {
     fn pending_collection_uses_bounded_repository_backlogs() {
         let temp_dir = tempfile::tempdir().unwrap();
         let db = Arc::new(Database::open(&temp_dir.path().join("memory.db")).unwrap());
-        let session = db.create_session("embedding-test", "").unwrap();
+        let session = db.create_session("embedding-test").unwrap();
         for index in 0..(haven_memory::embeddings::FACT_EMBED_BACKLOG_LIMIT + 2) {
             db.insert_fact(
                 "user",
@@ -459,7 +459,7 @@ mod tests {
     fn pending_collection_excludes_legacy_sensitive_memory() {
         let temp_dir = tempfile::tempdir().unwrap();
         let db = Database::open(&temp_dir.path().join("memory.db")).unwrap();
-        let session = db.create_session("embedding-test", "").unwrap();
+        let session = db.create_session("embedding-test").unwrap();
         db.insert_fact("user", "likes", "Rust", "inferred", 0.8, &[])
             .unwrap();
         db.insert_fact("user", "api_key", "sk-secret", "inferred", 1.0, &[])

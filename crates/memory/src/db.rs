@@ -622,7 +622,6 @@ mod tests {
             status: haven_common::SessionStatus::Pending,
             created_at: "2026-01-01T00:00:00Z".into(),
             updated_at: "2026-01-01T00:00:00Z".into(),
-            transcript: "".into(),
             react_state: None,
         }
     }
@@ -668,7 +667,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("test.db");
         let db = Arc::new(Database::open(&path).unwrap());
-        let session = db.create_session("input", "").unwrap();
+        let session = db.create_session("input").unwrap();
 
         let holder_db = db.clone();
         let (lock_ready_tx, lock_ready_rx) = std::sync::mpsc::channel();

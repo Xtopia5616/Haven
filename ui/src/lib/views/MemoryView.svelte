@@ -1,5 +1,5 @@
 <script>
-	/** @typedef {{ id: string; title?: string; input_text?: string; transcript?: string; status: string; created_at: string; [key: string]: any }} MemorySession */
+	/** @typedef {{ id: string; title?: string; input_text?: string; status: string; created_at: string; [key: string]: any }} MemorySession */
 	import logger from '$lib/logger.ts';
 	import { reportError } from '$lib/errorHandling.ts';
 	import { buildResumeMessages } from '$lib/resumeMessages.ts';
