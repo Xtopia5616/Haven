@@ -38,4 +38,13 @@ describe('SettingsSecurity', () => {
 		await fireEvent.click(screen.getByRole('radio', { name: /自动 少打断/ }));
 		expect(security.permission_mode).toBe('autonomous');
 	});
+
+	it('offers confirmation as the network default', async () => {
+		const security = createSecurity();
+		render(SettingsSecurity, { security });
+
+		await fireEvent.click(screen.getByRole('button', { name: '网络策略' }));
+		await fireEvent.click(screen.getByRole('option', { name: '请求确认' }));
+		expect(security.network_policy).toBe('ask');
+	});
 });

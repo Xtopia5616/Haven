@@ -339,9 +339,10 @@ Clipboard 的文本、HTML、图片和文件列表都从 `clipboard` 根工具�
 操作 view 的 `OperationPolicy.permission_key` 是权威身份；契约另外声明 `effect`、`data_sensitivity`、
 `network_access` 和执行并发，不能由风险等级、并发属性或前端字段推断。`SecurityConfig` 另外保存
 `sandbox_mode`（`read_only` / `workspace_write` / `full_access`，可选 `writable_roots`）与
-`network_policy`（`deny` / `restricted` / `open`）；工作区可写模式拒绝无法约束的 opaque 子进程，
+`network_policy`（`deny` / `ask` / `restricted` / `open`，默认为 `ask`）；工作区可写模式拒绝无法约束的 opaque 子进程，
 Windows 子进程通过 Job Object 回收进程树；受限网络只允许经过 SSRF/DNS 校验并固定地址的 HTTP/MCP
-目的地，禁止跨源重定向。
+目的地，禁止跨源重定向。`ask` 与 `restricted` 共用可验证目的地边界，但默认将网络操作交给确认流程，
+不会因为默认配置而静默拒绝普通公网请求。
 
 确认 UI：拒绝 / 仅本次 / 本对话允许此操作 / 更多允许选项；更多选项按“本对话或永久”与“当前操作、功能组、工具”组合展示，永久授权和扩大范围需要二次确认。拒绝菜单同样支持操作、功能组、工具层级。后端只接受当前 capability 的合法父级，不能由 renderer 发明任意权限键。永久授权写入 `config.toml`，安全设置子视图可按工具查看、撤销或一键清除。确认收据绑定规范化输入 hash、权限 key、策略 revision、风险和过期时间，执行前再次验证；原始 shell、网络、文件和扩展参数不进入 renderer。普通全量设置保存不拥有权限规则，避免 stale form 清空授权。授权结果另带稳定 `AuthorizationReasonCode`，调用方不得解析错误文案。
 

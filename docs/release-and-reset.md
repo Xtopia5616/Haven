@@ -6,7 +6,7 @@ Haven 处于测试阶段。数据库 schema、`config.toml`、ReAct snapshot 与
 
 本版本将安全策略重构为互相独立的确认、文件沙箱和网络策略；`security.permission_mode` 有效值为
 `plan`、`default`、`auto_edit`、`autonomous`，另有 `sandbox_mode = "read_only" | "workspace_write" | "full_access"`、
-可选的绝对路径数组 `writable_roots` 和 `network_policy = "deny" | "restricted" | "open"`。旧的
+可选的绝对路径数组 `writable_roots` 和 `network_policy = "deny" | "ask" | "restricted" | "open"`（默认 `ask`）。旧的
 `balanced`、`careful`、`manual` 以及
 `confirmation_mode` / `min_risk_level` 组合不再自动解释，`[security]` 中的未知字段会使配置解析失败；
 原配置会被备份为 `config.toml.*.bak` 并以默认配置启动。请按下文完整重置或仅手工重建新的 `[security]` 段。

@@ -69,6 +69,11 @@
 			detail: '阻止所有需要联网的能力。',
 		},
 		{
+			value: 'ask',
+			label: '请求确认',
+			detail: '可验证的公网请求先询问；无法约束的 MCP、技能和命令子进程仍受沙箱限制。',
+		},
+		{
 			value: 'restricted',
 			label: '受限网络',
 			detail: '只允许 Haven 能验证目的地的公共网络请求。',
@@ -266,7 +271,7 @@
 				<SettingsField label="网络策略" id="security-network">
 					<MaterialSelect
 						id="security-network"
-						value={security.network_policy || 'restricted'}
+						value={security.network_policy || 'ask'}
 						options={NETWORK_POLICIES.map((policy) => ({
 							value: policy.value,
 							label: policy.label,

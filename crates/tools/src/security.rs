@@ -424,7 +424,7 @@ impl AuthorizationEngine {
                 permission_mode: PermissionMode::Default,
                 sandbox_mode: SandboxMode::WorkspaceWrite,
                 writable_roots: Vec::new(),
-                network_policy: NetworkPolicy::Restricted,
+                network_policy: NetworkPolicy::Ask,
                 policy_revision: 0,
                 permanent: HashMap::new(),
                 session_grants: HashMap::new(),
@@ -917,11 +917,11 @@ fn network_policy_block(
         (NetworkPolicy::Deny, _) => {
             Some(format!("network access is disabled for tool '{tool_name}'"))
         }
-        // A restricted policy only permits destinations that Haven can inspect
+        // Ask and Restricted only permit destinations that Haven can inspect
         // and validate. Opaque child processes/adapters cannot satisfy that
         // contract, even if they are currently configured as read-only.
-        (NetworkPolicy::Restricted, NetworkAccess::Opaque) => Some(format!(
-            "restricted network policy cannot authorize opaque network access from '{tool_name}'"
+        (NetworkPolicy::Ask | NetworkPolicy::Restricted, NetworkAccess::Opaque) => Some(format!(
+            "network policy cannot authorize opaque network access from '{tool_name}'"
         )),
         _ => {
             // WorkspaceWrite cannot safely constrain an arbitrary child
@@ -1493,6 +1493,33 @@ mod tests {
         assert!(matches!(
             authorize(&gateway, None, "http", &json!({}), &network_policy).await,
             ConfirmationResult::RequiresConfirmation { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn default_network_policy_requests_public_network_confirmation() {
+        let gateway = AuthorizationEngine::new();
+        let default_security = SecurityConfig::default();
+        assert_eq!(default_security.network_policy, NetworkPolicy::Ask);
+        gateway.apply_security(&default_security).await;
+
+        let public_policy = fixture_policy("http", &json!({}), RiskLevel::Medium);
+        assert!(matches!(
+            authorize(&gateway, None, "http", &json!({}), &public_policy).await,
+            ConfirmationResult::RequiresConfirmation { .. }
+        ));
+
+        let opaque_policy = fixture_policy("mcp::remote::search", &json!({}), RiskLevel::High);
+        assert!(matches!(
+            authorize(
+                &gateway,
+                None,
+                "mcp::remote::search",
+                &json!({}),
+                &opaque_policy,
+            )
+            .await,
+            ConfirmationResult::Blocked { .. }
         ));
     }
 

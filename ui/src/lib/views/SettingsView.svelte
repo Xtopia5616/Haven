@@ -120,7 +120,7 @@
 	let security = $state({
 		permission_mode: 'default',
 		sandbox_mode: 'workspace_write',
-		network_policy: 'restricted',
+		network_policy: 'ask',
 		writable_roots: [],
 		permissions: [],
 	});
@@ -641,7 +641,7 @@
 				security = {
 					permission_mode: settings.security?.permission_mode || 'default',
 					sandbox_mode: settings.security?.sandbox_mode || 'workspace_write',
-					network_policy: settings.security?.network_policy || 'restricted',
+					network_policy: settings.security?.network_policy || 'ask',
 					writable_roots: Array.isArray(settings.security?.writable_roots)
 						? settings.security.writable_roots
 						: [],

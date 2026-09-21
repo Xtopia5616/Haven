@@ -2,8 +2,10 @@ use haven_common::types::NetworkPolicy;
 use std::net::{IpAddr, SocketAddr};
 
 /// Validate and resolve an MCP HTTP endpoint before a client is created.
-/// Restricted mode pins the first validated public address in reqwest so a
-/// later DNS answer cannot silently redirect the connection to a private host.
+/// Ask and Restricted modes pin the first validated public address in reqwest
+/// so a later DNS answer cannot silently redirect the connection to a private
+/// host. Ask is the normal user-facing default; the authorization gateway is
+/// responsible for the confirmation prompt before an MCP tool call runs.
 pub(crate) async fn build_http_client(
     raw_url: &str,
     policy: NetworkPolicy,
@@ -19,11 +21,11 @@ pub(crate) async fn build_http_client(
     let addresses = match policy {
         NetworkPolicy::Deny => anyhow::bail!("MCP HTTP connection denied by network policy"),
         NetworkPolicy::Open => Vec::new(),
-        NetworkPolicy::Restricted => resolve_public_addresses(&url).await?,
+        NetworkPolicy::Ask | NetworkPolicy::Restricted => resolve_public_addresses(&url).await?,
     };
 
     let mut builder = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none());
-    if matches!(policy, NetworkPolicy::Restricted) {
+    if matches!(policy, NetworkPolicy::Ask | NetworkPolicy::Restricted) {
         // A system proxy can resolve the destination on Haven's behalf,
         // defeating the public-IP validation above.
         builder = builder.no_proxy();

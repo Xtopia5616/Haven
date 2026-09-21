@@ -219,7 +219,7 @@ impl McpClient {
             tools_list_changed: Arc::new(ToolsListChangedSignal::new()),
             max_binary_payload,
             max_sse_buffer,
-            network_policy: Arc::new(RwLock::new(NetworkPolicy::Restricted)),
+            network_policy: Arc::new(RwLock::new(NetworkPolicy::Ask)),
         }
     }
 

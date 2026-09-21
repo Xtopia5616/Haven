@@ -159,7 +159,7 @@ async fn mcp_client_new_initial_state() {
     assert!(client.enabled());
     assert_eq!(
         client.network_policy().await,
-        haven_common::types::NetworkPolicy::Restricted
+        haven_common::types::NetworkPolicy::Ask
     );
     let status = client.status().await;
     assert!(matches!(status, McpClientStatus::Disconnected));
@@ -200,7 +200,7 @@ async fn mcp_manager_new() {
     let mgr = McpManager::new();
     assert_eq!(
         mgr.network_policy().await,
-        haven_common::types::NetworkPolicy::Restricted
+        haven_common::types::NetworkPolicy::Ask
     );
     let clients = mgr.clients.lock().await;
     assert!(clients.is_empty());
@@ -277,13 +277,13 @@ async fn mcp_stdio_requires_open_network_policy() {
         2 * 1024 * 1024,
     );
     client
-        .set_network_policy(haven_common::types::NetworkPolicy::Restricted)
+        .set_network_policy(haven_common::types::NetworkPolicy::Ask)
         .await;
 
     let error = client
         .connect()
         .await
-        .expect_err("restricted stdio must be blocked");
+        .expect_err("ask-mode stdio must be blocked");
     assert!(error.to_string().contains("network policy"));
     assert!(matches!(
         client.status().await,

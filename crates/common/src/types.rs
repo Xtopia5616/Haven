@@ -202,10 +202,15 @@ pub enum SandboxMode {
 pub enum NetworkPolicy {
     /// No network-capable tool may run.
     Deny,
+    /// Allow inspectable public destinations, but keep network operations on
+    /// the normal confirmation path. This is the user-friendly default: a
+    /// request is not silently rejected, and an explicit permission grant can
+    /// still be used to avoid repeated prompts.
+    #[default]
+    Ask,
     /// Public destinations are allowed subject to each tool's SSRF and
     /// allowlist checks. Opaque child-process network access is blocked because
     /// Haven cannot validate its destination.
-    #[default]
     Restricted,
     /// Do not add a global network restriction. Tool-level checks still run.
     Open,
@@ -1502,6 +1507,15 @@ mod tests {
         assert!(serde_json::from_str::<PermissionMode>("\"always\"").is_err());
         let mode: PermissionMode = serde_json::from_str("\"default\"").unwrap();
         assert_eq!(mode, PermissionMode::Default);
+    }
+
+    #[test]
+    fn network_policy_defaults_to_confirmation() {
+        assert_eq!(NetworkPolicy::default(), NetworkPolicy::Ask);
+        assert_eq!(
+            serde_json::from_str::<NetworkPolicy>("\"ask\"").unwrap(),
+            NetworkPolicy::Ask
+        );
     }
 
     #[test]

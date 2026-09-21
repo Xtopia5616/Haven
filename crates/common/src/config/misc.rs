@@ -368,7 +368,7 @@ impl Default for SecurityConfig {
             permission_mode: PermissionMode::Default,
             sandbox_mode: SandboxMode::WorkspaceWrite,
             writable_roots: Vec::new(),
-            network_policy: NetworkPolicy::Restricted,
+            network_policy: NetworkPolicy::Ask,
             encrypt_sensitive: true,
             permissions: Vec::new(),
         }

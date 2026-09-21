@@ -763,6 +763,7 @@ mod tests {
             SecurityConfig::default().permission_mode,
             PermissionMode::Default
         );
+        assert_eq!(SecurityConfig::default().network_policy, NetworkPolicy::Ask);
     }
 
     #[test]
