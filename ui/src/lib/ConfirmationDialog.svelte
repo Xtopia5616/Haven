@@ -267,6 +267,49 @@
 					</div>
 				{/if}
 				<div class="actions">
+					<div class="allow-group">
+						<MaterialButton
+							variant="filled"
+							className="btn-once"
+							label="本次允许"
+							onclick={() => decide('allow', 'once', 'operation')}
+						/>
+						<MaterialButton
+							variant="tonal"
+							className="btn-session"
+							label="本对话允许此操作"
+							onclick={() => decide('allow', 'session', 'operation')}
+						/>
+						<div class="more-allow">
+							<MaterialButton
+								variant="text"
+								className="more-allow-trigger"
+								label="更多允许"
+								ariaExpanded={showAllowMenu}
+								ariaHaspopup="menu"
+								onclick={() => (showAllowMenu = !showAllowMenu)}
+							/>
+							{#if showAllowMenu}
+								<div class="allow-menu" role="menu">
+									<div class="menu-section-label">本对话</div>
+									{#each targetOptions.slice(1) as option (option.target)}
+										<MenuItem
+											label={`本对话允许${option.label}`}
+											onSelect={() =>
+												decide('allow', 'session', option.target)}
+										/>
+									{/each}
+									<div class="menu-section-label">永久</div>
+									{#each targetOptions as option (option.target)}
+										<MenuItem
+											label={`永久允许${option.label}`}
+											onSelect={() => requestPersistentAllow(option.target)}
+										/>
+									{/each}
+								</div>
+							{/if}
+						</div>
+					</div>
 					<MaterialSplitButton
 						label="拒绝"
 						variant="tonal"
@@ -306,52 +349,6 @@
 							{/if}
 						{/snippet}
 					</MaterialSplitButton>
-					<div class="allow-group">
-						<MaterialSplitButton
-							label="永久允许此操作"
-							variant="text"
-							className="allow-split"
-							open={showAllowMenu}
-							onclick={() => requestPersistentAllow('operation')}
-							onToggle={() => (showAllowMenu = !showAllowMenu)}
-							ariaLabel="更多允许范围和期限"
-						>
-							{#snippet children()}
-								{#if showAllowMenu}
-									<div class="allow-menu" role="menu">
-										<div class="menu-section-label">本对话</div>
-										{#each targetOptions.slice(1) as option (option.target)}
-											<MenuItem
-												label={`本对话允许${option.label}`}
-												onSelect={() =>
-													decide('allow', 'session', option.target)}
-											/>
-										{/each}
-										<div class="menu-section-label">永久</div>
-										{#each targetOptions as option (option.target)}
-											<MenuItem
-												label={`永久允许${option.label}`}
-												onSelect={() =>
-													requestPersistentAllow(option.target)}
-											/>
-										{/each}
-									</div>
-								{/if}
-							{/snippet}
-						</MaterialSplitButton>
-						<MaterialButton
-							variant="tonal"
-							className="btn-session"
-							label="本对话允许此操作"
-							onclick={() => decide('allow', 'session', 'operation')}
-						/>
-						<MaterialButton
-							variant="filled"
-							className="btn-once"
-							label="本次允许"
-							onclick={() => decide('allow', 'once', 'operation')}
-						/>
-					</div>
 				</div>
 			</footer>
 		</div>
@@ -675,7 +672,7 @@
 	.allow-group {
 		display: flex;
 		align-items: center;
-		justify-content: flex-end;
+		justify-content: flex-start;
 		gap: var(--md-sys-space-xs);
 		flex-wrap: nowrap;
 		min-width: 0;
@@ -700,7 +697,7 @@
 	.deny-menu {
 		position: absolute;
 		bottom: calc(100% + var(--md-sys-space-sm));
-		left: 0;
+		right: 0;
 		z-index: 2;
 		min-width: 190px;
 		padding: var(--md-sys-space-xs);
@@ -710,7 +707,7 @@
 		box-shadow: var(--md-sys-elevation-3);
 	}
 
-	:global(.md-split-button.allow-split) {
+	.more-allow {
 		position: relative;
 		flex: 0 0 auto;
 	}
@@ -755,7 +752,7 @@
 
 		.actions {
 			align-items: stretch;
-			flex-direction: column-reverse;
+			flex-direction: column;
 		}
 
 		.allow-group {
@@ -766,23 +763,19 @@
 		}
 
 		.allow-group > :global(.md-btn),
-		.allow-group > :global(.md-split-button) {
+		.allow-group > .more-allow {
 			width: 100%;
 			min-width: 0;
 		}
 
-		.allow-group > :global(.md-split-button) {
-			display: flex;
+		.allow-group > .more-allow {
+			grid-column: 1 / -1;
 		}
 
-		.allow-group > :global(.md-split-button) :global(.md-btn) {
-			flex: 1 1 auto;
+		.more-allow > :global(.md-btn) {
+			width: 100%;
 			min-width: 0;
 			padding-inline: var(--md-sys-space-sm);
-		}
-
-		.allow-group > :global(.md-split-button.allow-split) {
-			grid-column: 1 / -1;
 		}
 
 		.always-warning {
@@ -802,7 +795,7 @@
 		}
 
 		:global(.md-split-button.deny-split) {
-			align-self: flex-start;
+			align-self: flex-end;
 		}
 	}
 
@@ -836,7 +829,7 @@
 			grid-template-columns: 1fr;
 		}
 
-		.allow-group > :global(.md-split-button.allow-split) {
+		.allow-group > .more-allow {
 			grid-column: auto;
 		}
 	}
