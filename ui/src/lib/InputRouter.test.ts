@@ -57,8 +57,7 @@ describe('InputRouter context menu', () => {
 		const button = screen.getByRole('button', { name: '中断输出' });
 		expect(button.classList.contains('md-icon-btn')).toBe(true);
 		expect(button.getAttribute('data-size')).toBe('toolbar');
-		expect(button.getAttribute('data-variant')).toBe('danger-outline');
-		expect(button.classList.contains('input-action-button--interrupt')).toBe(true);
+		expect(button.getAttribute('data-variant')).toBe('danger');
 
 		fireEvent.click(button);
 		expect(onstop).toHaveBeenCalledTimes(1);

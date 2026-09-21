@@ -600,8 +600,7 @@
 			{@render toolbarRight?.()}
 			<MaterialIconButton
 				size="toolbar"
-				variant={stopMode ? 'danger-outline' : 'primary'}
-				className={`input-action-button${stopMode ? ' input-action-button--interrupt' : ''}`}
+				variant={stopMode ? 'danger' : 'primary'}
 				label={hasInput ? '发送' : stopMode ? '中断输出' : '发送'}
 				title={hasInput ? '发送' : stopMode ? '中断当前输出' : '发送'}
 				ariaBusy={interrupting}
@@ -810,40 +809,6 @@
 		padding-inline: 0;
 		padding-top: var(--md-sys-space-xs);
 		border-top: 1px solid var(--md-sys-color-outline-variant);
-	}
-	:global(.md-icon-btn.input-action-button--interrupt[data-variant='danger-outline']) {
-		background: color-mix(
-			in srgb,
-			var(--md-sys-color-error-container) 42%,
-			var(--md-sys-color-surface-container-high) 58%
-		);
-		border-color: color-mix(
-			in srgb,
-			var(--md-sys-color-error) 72%,
-			var(--md-sys-color-outline-variant) 28%
-		);
-		box-shadow: var(--md-sys-elevation-1);
-		color: var(--md-sys-color-error);
-		transition:
-			background-color var(--md-sys-motion-duration-short)
-				var(--md-sys-motion-easing-standard),
-			border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
-			box-shadow var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
-			transform var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard);
-	}
-	:global(.md-icon-btn.input-action-button--interrupt[data-variant='danger-outline']:hover) {
-		background: var(--md-sys-color-error-container);
-		border-color: var(--md-sys-color-error);
-		box-shadow: var(--md-sys-elevation-2);
-		color: var(--md-sys-color-on-error-container);
-	}
-	:global(.md-icon-btn.input-action-button--interrupt:active) {
-		transform: scale(0.94);
-	}
-	:global(
-		.md-icon-btn.input-action-button--interrupt[data-variant='danger-outline']:focus-visible
-	) {
-		box-shadow: var(--md-sys-focus-ring), var(--md-sys-elevation-1);
 	}
 	.toolbar-left {
 		flex: 0 0 auto;
