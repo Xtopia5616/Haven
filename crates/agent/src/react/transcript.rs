@@ -691,7 +691,10 @@ impl ReActEngine {
                                 session_id: ctx.session_id.clone(),
                                 step_number: ctx.step_num,
                                 run_id: ctx.run_id,
-                                role: "ingress".into(),
+                                // This ingress-side plan has no provider request
+                                // yet; keep the legacy field name but use the
+                                // session's default logical request kind.
+                                role: haven_common::config::RequestKind::Chat.as_str().into(),
                                 strategy,
                                 projections: projections.clone(),
                                 notices: notices.clone(),

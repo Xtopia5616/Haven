@@ -22,7 +22,8 @@ Haven 的内置工具数量持续增加。把每个 operation 的名称、描述
 3. **第三层（`tool_catalog`）**：用精确名称描述一个 operation（例如 `window.screenshot`），
    返回其描述、风险、指导、完整 `input_schema` 以及对应的加载提示。
 
-`tool_catalog` 是 Safe、要求 session context 的只读控制面工具：
+`tool_catalog` 是 Safe、要求 session context 的控制面工具；`list` 与 `describe` 只读，
+`load` 仅对 builtin operation/root 做当前 session 的原子激活：
 
 - `{"action":"list"}` 列出第一层 family；
 - `{"action":"list","level":"tools"}` 列出第二层 root；
@@ -30,6 +31,8 @@ Haven 的内置工具数量持续增加。把每个 operation 的名称、描述
 - `{"action":"describe","name":"window"}` 或 `list` 加 `root` 展开 root 的子项；
 - `{"action":"describe","name":"window.screenshot"}` 查询第三层精确详情；
 - `cursor`/`limit`/`next_cursor` 提供有界分页；发现动作不加载、不调用、不执行目标工具。
+- `{"action":"load","source":"builtin","operations":["window.screenshot"]}` 或
+  使用 `roots` 激活选中的 builtin；加载成功后下一轮才进入 `tools[]`。
 
 ### 统一目录模型与状态链路
 
@@ -50,7 +53,7 @@ catalog group、只读声明和风险覆盖与操作 identity 同处一份 contr
 `discovered → described → load_requested → loaded(session) → executable → executed`。
 
 `discovered` 只读 host catalog/Skill index/MCP tools cache；`described` 只返回紧凑字段，
-第三层 operation 才返回完整 schema；`load_requested` 由显式 loader action 产生；只有原子
+第三层 operation 才返回完整 schema；`load_requested` 由显式 `tool_catalog(action=load)` 或其它 loader action 产生；只有原子
 预算检查成功后才进入 `SessionCatalog`，下一轮才进入 `tools[]`。`execute` 只能从 global
 core registry 或该 session overlay 查找，deferred catalog 不是可调用注册表。加载失败、
 超预算、断线和权限拒绝均保持在失败状态，不隐式回退到执行或部分加载。
@@ -89,7 +92,7 @@ operation/root、Skill name），通过同一 loader 的幂等注册路径恢复
 Builtin/Skill/MCP 适配、分页 revision、缓存失效、权限拒绝与不可信元数据清洗。
 
 Builtin/Skill/MCP 的完整实现仍分别由 `DeferredToolCatalog`、Skill catalog 或 MCP cache
-提供。模型获得第三层详情后，必须使用 `load_builtin`、`load_skill` 或 `load_mcp` 激活能力；
+提供。模型获得第三层详情后，必须使用 `tool_catalog(action=load)`、`load_skill` 或 `load_mcp` 激活能力；
 只有当前 session 已激活的能力才进入 provider `tools[]`，该结构化 surface 仍是实际调用 schema
 的唯一权威来源。
 
@@ -125,7 +128,7 @@ renderer，只有旧消息缺少 renderer 时才使用 root/payload shape fallba
 ## 影响
 
 提示词更短且只承担方向导航；模型多一次或多次轻量 catalog 查询换取准确的 operation 选择。
-`tool_catalog` 不改变数据库 schema、实体 ID、权限 key 或工具执行权限。MCP 未连接时只能列出
+`tool_catalog` 的 builtin `load` 不改变数据库 schema、实体 ID、权限 key 或工具执行权限。MCP 未连接时只能列出
 已配置服务器摘要；连接并发现后的缓存工具才能提供 operation 级详情，激活仍须通过 `load_mcp`。
 
 实现边界说明：`crates/tools/src/builtin/tool_catalog.rs` 当前约 880 行，暂时将三层查询编排、

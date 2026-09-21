@@ -37,11 +37,13 @@ impl PromptContextProvider {
         &self,
         registry_version: u64,
         mcp_catalog_version: u64,
+        skills_catalog_version: u64,
     ) -> Option<crate::prompt::SchemaCache> {
         let cache = self.schema_cache.read().ok()?;
         let cache = cache.as_ref()?;
         (cache.registry_version == registry_version
-            && cache.mcp_catalog_version == mcp_catalog_version)
+            && cache.mcp_catalog_version == mcp_catalog_version
+            && cache.skills_catalog_version == skills_catalog_version)
             .then(|| cache.clone())
     }
 

@@ -209,7 +209,9 @@ pub(super) async fn choose_agent_request(
     }
 
     let default_request = RequestKind::Chat;
-    if request_context.raw_media_fits_profile(&router.capability_profile_for_request(default_request)) {
+    if request_context
+        .raw_media_fits_profile(&router.capability_profile_for_request(default_request))
+    {
         tracing::info!(
             preferred_request = preferred.as_str(),
             fallback_request = default_request.as_str(),
@@ -533,9 +535,7 @@ impl ReActEngine {
     /// by the top-right status indicator to show 就绪 / 已断开 / 未配置.
     pub async fn check_connection(&self) -> haven_llm::LlmConnectionReport {
         let router = self.router();
-        router
-            .connection_status(RequestKind::Chat)
-            .await
+        router.connection_status(RequestKind::Chat).await
     }
 
     pub(super) fn router(&self) -> Arc<LlmRouter> {
@@ -840,7 +840,7 @@ impl ReActEngine {
                 .persist_llm_call_and_refresh_session_usage_with_cache_accounting_and_context(
                     &session_id_for_persist,
                     Some(step_number),
-                    request.as_str(),
+                    request,
                     model_for_persist.as_deref(),
                     usage_prompt,
                     usage_completion,
@@ -904,7 +904,7 @@ impl ReActEngine {
                 context_window,
                 step_number: Some(step_number as u32),
                 duration_ms,
-                role: Some(request.as_str().to_string()),
+                request_kind: Some(request.as_str().to_string()),
                 call_kind: "agent".into(),
                 has_cost: call_has_cost,
             },
@@ -981,14 +981,14 @@ impl ReActEngine {
                 context_window: None,
                 step_number: Some(step_number as u32),
                 duration_ms: tool_usage.duration_ms,
-                role: Some(request.as_str().to_string()),
+                request_kind: Some(request.as_str().to_string()),
                 call_kind: call_kind.to_string(),
                 has_cost: step_cost.is_some(),
             };
             pending.push(PendingToolUsage {
                 input: haven_memory::LlmCallUsageInput {
                     step_number: Some(step_number),
-                    role: request.as_str().to_string(),
+                    request_kind: request,
                     call_kind: call_kind.to_string(),
                     model,
                     prompt_tokens: usage.prompt_tokens,
@@ -1100,7 +1100,7 @@ impl ReActEngine {
                 db.persist_llm_call_and_refresh_session_usage_with_kind_and_context(
                     &session_id_for_persist,
                     step_number,
-                    request.as_str(),
+                    request,
                     &call_kind_for_persist,
                     model_for_persist.as_deref(),
                     usage_prompt,
@@ -1165,7 +1165,7 @@ impl ReActEngine {
                     context_window: None,
                     step_number: step_number.and_then(|step| u32::try_from(step).ok()),
                     duration_ms,
-                    role: Some(request.as_str().to_string()),
+                    request_kind: Some(request.as_str().to_string()),
                     call_kind: call_kind.to_string(),
                     has_cost: call_has_cost,
                 },

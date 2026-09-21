@@ -51,7 +51,8 @@ impl GeminiAdapter {
         if let Some(guidance) = guidance {
             self.append_guidance_to_request(&mut body, guidance);
         }
-        let cache_diagnostics = body.cache_diagnostics.clone();
+        let uncached_body = body.clone();
+        self.prepare_cached_content(&mut body).await;
         let url = self.stream_generate_url();
         tracing::debug!(
             endpoint = %crate::client::endpoint_log_location(&url),
@@ -64,25 +65,10 @@ impl GeminiAdapter {
             serde_json::to_string(&body).map(|s| s.len()).unwrap_or(0)
         );
 
-        let mut req = self
-            .client
-            .post(&url)
-            .headers(self.build_headers()?)
-            .json(&body);
-        // For streaming, only apply an HTTP-level timeout when explicitly configured.
-        // When timeout_streaming_secs is None, `stream_header_timeout` bounds the
-        // response-header wait (a provider that accepts the connection but never
-        // responds would otherwise stall silently until the router-level
-        // max_total_duration_secs) while leaving the body stream to the router's
-        // per-chunk idle timeouts.
-        if let Some(timeout) = self.endpoint.timeout_streaming_secs {
-            req = req.timeout(Duration::from_secs(timeout));
-        }
-        let resp = send_request(
-            req,
-            stream_header_timeout(self.endpoint.timeout_streaming_secs),
-        )
-        .await?;
+        let resp = self
+            .send_generate_request(&url, &mut body, &uncached_body, true)
+            .await?;
+        let cache_diagnostics = body.cache_diagnostics.clone();
 
         use tokio::sync::mpsc;
 

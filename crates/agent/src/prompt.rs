@@ -35,6 +35,7 @@ pub struct SystemPromptBuilder {
 pub(crate) struct SchemaCache {
     pub(crate) registry_version: u64,
     pub(crate) mcp_catalog_version: u64,
+    pub(crate) skills_catalog_version: u64,
     pub(crate) built_in_section: String,
     pub(crate) skills_section: String,
     pub(crate) mcp_server_index_section: String,
@@ -961,10 +962,12 @@ impl SystemPromptBuilder {
         let tools = self.context_provider.tools();
         let version = tools.registry().version();
         let mcp_catalog_version = tools.mcp_catalog_version();
-        if let Some(cache) = self
-            .context_provider
-            .cached_schema(version, mcp_catalog_version)
-        {
+        let skills_catalog_version = tools.skills_engine().catalog_version();
+        if let Some(cache) = self.context_provider.cached_schema(
+            version,
+            mcp_catalog_version,
+            skills_catalog_version,
+        ) {
             return cache;
         }
 
@@ -982,7 +985,7 @@ impl SystemPromptBuilder {
             defs = tools.registry().list_defs().await;
         }
         let new_cache = self
-            .build_sections(version, mcp_catalog_version, defs)
+            .build_sections(version, mcp_catalog_version, skills_catalog_version, defs)
             .await;
         self.context_provider.replace_schema(new_cache.clone());
         new_cache
@@ -992,6 +995,7 @@ impl SystemPromptBuilder {
         &self,
         version: u64,
         mcp_catalog_version: u64,
+        skills_catalog_version: u64,
         defs: Vec<ToolDef>,
     ) -> SchemaCache {
         // Per-session mcp__ tools are never in the global registry, so they
@@ -1038,6 +1042,7 @@ impl SystemPromptBuilder {
         SchemaCache {
             registry_version: version,
             mcp_catalog_version,
+            skills_catalog_version,
             built_in_section: built_in,
             skills_section,
             mcp_server_index_section: mcp_server_index,
@@ -1728,6 +1733,84 @@ mod tests {
             full.contains(&block),
             "full build must embed the same MEMORY block; block={block}\nfull={full}"
         );
+    }
+
+    #[tokio::test]
+    async fn first_turn_prompt_skips_remote_memory_recall() {
+        let tools = Arc::new(ToolsManager::new());
+        let dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::open(&dir.path().join("prompt.db")).unwrap());
+        let builder = SystemPromptBuilder::new(tools, db);
+
+        let prompt = builder
+            .build_for_session_without_memory("search the workspace", &[])
+            .await;
+
+        assert!(prompt.contains("MEMORY: (none)"));
+        assert!(prompt.contains("Current session: search the workspace"));
+    }
+
+    #[tokio::test]
+    async fn prompt_schema_cache_refreshes_after_mcp_config_change_without_client() {
+        let tools = Arc::new(ToolsManager::new());
+        let db_dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::open(&db_dir.path().join("prompt.db")).unwrap());
+        let builder = SystemPromptBuilder::new(tools.clone(), db);
+
+        let before = builder
+            .build_for_session_without_memory("list capabilities", &[])
+            .await;
+        assert!(!before.contains("configured-without-client"));
+
+        tools
+            .upsert_mcp_server_config(haven_common::McpServerConfig {
+                name: "configured-without-client".into(),
+                enabled: true,
+                ..Default::default()
+            })
+            .await;
+
+        let after = builder
+            .build_for_session_without_memory("list capabilities", &[])
+            .await;
+        assert!(after.contains("configured-without-client"));
+    }
+
+    #[tokio::test]
+    async fn prompt_schema_cache_refreshes_after_skill_refresh() {
+        let tools = Arc::new(ToolsManager::new());
+        let skills_root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(skills_root.path().join("first-skill")).unwrap();
+        std::fs::write(
+            skills_root.path().join("first-skill").join("SKILL.md"),
+            "# Skill: first-skill\n\n## Metadata\n- description: first\n\n## Instructions\nrun first\n",
+        )
+        .unwrap();
+        tools
+            .skills_engine()
+            .set_config(Some(skills_root.path().to_path_buf()), None)
+            .await
+            .unwrap();
+
+        let db = Arc::new(Database::open(&skills_root.path().join("prompt.db")).unwrap());
+        let builder = SystemPromptBuilder::new(tools.clone(), db);
+        let before = builder
+            .build_for_session_without_memory("use skills", &[])
+            .await;
+        assert!(before.contains("first-skill"));
+
+        std::fs::create_dir_all(skills_root.path().join("second-skill")).unwrap();
+        std::fs::write(
+            skills_root.path().join("second-skill").join("SKILL.md"),
+            "# Skill: second-skill\n\n## Metadata\n- description: second\n\n## Instructions\nrun second\n",
+        )
+        .unwrap();
+        tools.skills_engine().refresh_from_disk().await.unwrap();
+
+        let after = builder
+            .build_for_session_without_memory("use skills", &[])
+            .await;
+        assert!(after.contains("second-skill"));
     }
 
     #[tokio::test]

@@ -84,6 +84,13 @@ impl McpManager {
         self.catalog_version.load(Ordering::Relaxed)
     }
 
+    /// Invalidate catalog consumers after a configured server changes without
+    /// a corresponding live client mutation (for example, an admin operation
+    /// that saves a disabled server or a failed connection).
+    pub fn invalidate_catalog(&self) {
+        self.bump_catalog_version();
+    }
+
     fn bump_catalog_version(&self) {
         self.catalog_version.fetch_add(1, Ordering::Relaxed);
     }

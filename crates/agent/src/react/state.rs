@@ -184,6 +184,10 @@ impl ReActState {
             .collect();
         self.canonical = compacted;
         self.branch_points.clear();
+        // Compaction creates a new canonical root.  Keep the generation
+        // separate from the revision so process-local caches cannot treat the
+        // post-compaction prefix as a continuation of the discarded one.
+        self.canonical_generation = NEXT_CANONICAL_GENERATION.fetch_add(1, Ordering::Relaxed);
         self.mark_canonical_changed();
     }
 }
@@ -277,5 +281,30 @@ mod tests {
         assert_eq!(first.canonical_revision(), 0);
         assert_eq!(second.canonical_revision(), 0);
         assert_ne!(first.canonical_generation(), second.canonical_generation());
+    }
+
+    #[test]
+    fn compaction_gets_a_new_canonical_generation() {
+        let mut state = ReActState::new(
+            Vec::new(),
+            vec![CanonicalMessage::user_text("before")],
+            HashMap::new(),
+        );
+        let generation_before = state.canonical_generation();
+        let revision_before = state.canonical_revision();
+        let record = TranscriptRecord::CompactSummary {
+            compacted: Vec::new(),
+            media_inputs: Vec::new(),
+            summary: "summary".into(),
+            tokens_before: 100,
+            tokens_after: 20,
+            episode_id: "msg-summary".into(),
+            degraded: false,
+        };
+
+        state.replace_with_compaction(record, vec![CanonicalMessage::user_text("after")]);
+
+        assert_ne!(state.canonical_generation(), generation_before);
+        assert_ne!(state.canonical_revision(), revision_before);
     }
 }

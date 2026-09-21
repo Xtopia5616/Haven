@@ -121,13 +121,13 @@ export function createChatModelSync(options: ModelSyncOptions) {
 		// resurrect when the user later switches to a supporting provider.
 		if (!webSearchSupported && webSearch !== 'off') {
 			setCurrentWebSearch('off');
-			invoke('set_web_search', { role: 'default_model', mode: 'off' }).catch((e) => {
+			invoke('set_web_search', { role: 'chat', mode: 'off' }).catch((e) => {
 				logger.warn('+page', 'clear unsupported web_search failed', e);
 			});
 		} else if (webSearchSupported && apiStyle === 'gemini' && webSearch === 'always') {
 			// Gemini Always ≡ Auto; normalize stored value.
 			setCurrentWebSearch('auto');
-			invoke('set_web_search', { role: 'default_model', mode: 'auto' }).catch((e) => {
+			invoke('set_web_search', { role: 'chat', mode: 'auto' }).catch((e) => {
 				logger.warn('+page', 'normalize gemini web_search always→auto failed', e);
 			});
 		}

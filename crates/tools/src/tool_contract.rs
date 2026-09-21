@@ -1258,7 +1258,6 @@ fn default_tool_label(name: &str) -> String {
     let label = match name {
         "ask" => "询问用户",
         "notify" => "发送通知",
-        "load_builtin" => "加载内置工具",
         "load_skill" => "加载 Skill",
         "load_mcp" => "加载 MCP",
         "tool_catalog" => "工具目录",

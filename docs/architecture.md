@@ -85,7 +85,7 @@ Builtin 的模型目录统一按点号 operation view 暴露：例如 `files.rea
 和内部执行边界；模型只接收对应的窄 schema。provider-facing surface 分层维护：提示词只常驻
 第一层 family/root 摘要（例如 `system`、`agent`、`haven`），`tool_catalog` 按需提供第二层
 root 和第三层 operation 的名称、描述与精确 schema；未选中的 builtin operation 保留在
-host-owned deferred catalog，由 `load_builtin` 按 operation/root 原子加载到当前 session；
+host-owned deferred catalog，由 `tool_catalog` 的 `action=load` 按 operation/root 原子加载到当前 session；
 启用 Skill 只进入紧凑索引，由 `load_skill` 按名称加载为 session-scoped 的 `skill__...`；
 MCP 服务器索引保持紧凑，仍由 `load_mcp` 按服务器加载并在 session catalog 中注册
 （ADR 0127、0131、0137、0145、0148）。
@@ -179,13 +179,15 @@ CI 以 `scripts/check-crate-dependencies.ps1` 对此表执行内部 crate 依赖
   `fact_graph.rs` 集中负责 `memory_edges` 写入与图谱不变量，`fact_query.rs`
   负责事实读取、搜索/排序，`fact_maintenance.rs` 负责事实清理、衰减与矛盾
   扫描，`facts.rs` 负责事实类型、谓词策略和稳定 `Database` 外观。消息的
-  `media_inputs` 是多模态 canonical 持久化投影；`attachments` 仅保留元数据兼容
-  投影，并由受信 host 根目录重建历史预览。
+  `media_inputs` 是多模态 canonical 持久化投影；消息返回对象中的 `attachments` 仅是
+  ingress/UI DTO。数据库的 `ui_metadata` 只保留 UI 展示与受管资产保留所需的元数据，
+  并由受信 host 根目录重建历史预览，不参与 provider 规划或 transcript 恢复。
 - `embeddings.rs`：向量编码、相似度/ANN 查询和 embedding 存储操作。
 
 schema 初始化不改变 X12：`session_events` 经 `SessionEventStore` 追加并按
 sequence replay，是会话恢复、rollback 和实时订阅的唯一事件权威；
-`messages` / `session_steps` 仍是投影，`ReActSnapshot.events` 降级为 checkpoint/cache。
+`messages` / `session_steps` 仍是投影，`ReActSnapshot` 只保存运行时 checkpoint、
+active transcript cursor 和最多 32 条诊断尾部缓存；完整 `events` 不再写入 snapshot。
 `UserInject` 事件只保存 `MediaInput` 元数据，reset 只替换持久化载体，不成为新的业务真源。
 
 **判定标准**：只负责 SQLite 生命周期与记忆数据持久化；Agent 编排、LLM
@@ -217,7 +219,7 @@ Agent（ADR 0022、0063、0169）。
 
 - `react/`：ReAct 循环（`loop` / `turn` / `response_cycle` / `stream_step` / `tool_batch` / `tool_batch_execute` / `tool_batch_policy` / `tool_batch_plan` / `context` / `inject` / `turn_end` / `snapshot_io` / `retries` / `hooks` / `hook_policy` / `transcript` / `state` / `request_context`），按 Run → Turn → ToolBatch 分层；`ReActState` 统一持有当前 run 的 events、canonical 和 branch points，所有边界共享同一运行态。`loop` 只负责 run 预算与生命周期，`turn` 负责阶段编排，`response_cycle` 负责一次采样后的空响应/截断重试，`tool_batch_plan` 固化 assistant 调用顺序和跨层身份，`tool_batch_execute` 负责批次准入、并发执行、取消与按序提交，`tool_batch_policy` 负责失败分类与重试提示，`tool_batch` 负责工具执行原语、确认生命周期与结果状态。`RequestContext` 从 durable canonical 生成不可变的 provider 请求视图，统一承载 sanitize、retry nudge 和一次性重试指令，不反写 transcript；`context` 只收集有边界的上下文项，`inject` 只经 `apply_transcript` 投影，`turn_end` 负责最终事件与暂停边界，`hooks` 只定义扩展契约，`hook_policy` 装配生产副作用策略。
 - 流式输出由 `stream_step` 产生，`event.rs` 用一个有序 chunk 队列归并 thought/reasoning；provider retry 通过 `agent:stream_reset` 标记新的输出代次，UI 只清理 live stream block，不修改 durable transcript。`streamAggregator` 只合并相邻且同身份的 chunk，保留交错输出顺序；最终 thought/reasoning 投影仍是丢 chunk 时的权威修复路径。
-- **X12 持久化契约**：`SessionEventStore` 是 `session_events` 的 append-only writer；`apply_transcript` 先提交 durable event，再维护 `messages`/`session_steps` 物化投影并发出同一语义的 live event。resume、rollback 和实时重放均从 event sequence 读取，snapshot 仅是定期 checkpoint/cache。多模态输入在 ingress 接受 `MessageAttachment`，但事件/数据库 canonical 投影使用 `MediaAsset → MediaRepresentation → MediaPlan`，事件与 snapshot 不保存 inline bytes；OCR/STT 成功追加派生表示且保留 raw asset。
+- **X12 持久化契约**：`SessionEventStore` 是 `session_events` 的 append-only writer；`apply_transcript` 先提交 durable event，再维护 `messages`/`session_steps` 物化投影并发出同一语义的 live event。resume、rollback 和实时重放均从 event sequence 读取，snapshot 仅保存运行时 checkpoint、transcript cursor 和有限尾部缓存。rollback 的 event cursor 用于 active transcript 投影，event sequence 用于 append-only timeline；`last_msg_at` 只用于截断物化消息投影，三者不得互相推导或作为 transcript 真源。多模态输入在 ingress 接受 `MessageAttachment`，但事件/数据库 canonical 投影使用 `MediaAsset → MediaRepresentation → MediaPlan`，事件与 snapshot 不保存 inline bytes；OCR/STT 成功追加派生表示且保留 raw asset。
 - **工具调用身份契约**：同一 assistant tool batch 内，`action_index` 是 provider 调用数组的零基稳定位置，`step_id` 是该调用的持久执行行/卡片身份，`tool_call_id` 是 provider 调用身份；`session_steps` 与 ReAct events 同步保存三者。确认恢复必须按完整身份关联，禁止按工具名、参数或 observation 文本猜测；缺失 snapshot 不再从步骤投影重建 ReAct transcript，旧数据按 reset 边界处理。
 - **工具参数验证契约**：执行前只验证，不用 schema default、首个 enum 或类型占位符改写输入；无效参数以包含 `action_index`、工具名和验证明细的失败 observation 返回给模型，避免改变副作用语义。
 - `session/`：`SessionSupervisor` 负责 FIFO、精确 active-run admission、生命周期闸门和 actor 生命周期；`SessionActor` 通过 mailbox 串行拥有单会话状态，`RunEngine` 承载一次 ReAct run；`dispatcher` / `queues` / `status` / `tool_runner` 只提供各层协作能力。
@@ -492,9 +494,10 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 | 2026-09-12 | §2.5 Tools / Agent：补充 model-facing schema 压缩、可恢复文件读取与 `files.outline`、能力过滤及显式 memory-empty 语义；保持聚合工具公共名称不变（ADR 0127） |
 | 2026-09-12 | §2.5 Tools / LLM / Agent / UI：完成 P1 operation view、搜索/outline 结构化模型视图、文档页游标、原生视频 ContentPart、session-scoped 偏好/清单和 memory 空结果诊断；按测试版 reset 边界删除 FollowUp/confirmation/ask/rollback/provider-style 内部兼容层（ADR 0131） |
 | 2026-09-13 | §2.5 Tools / Agent / UI / Security：模型与 UI 统一使用 `root.operation` 点号 view；files/system/haven/media 及其它 operation-based builtin 不再以聚合根注册，启用 Skill 直接注册，删除 `load_skill`（ADR 0137） |
-| 2026-09-14 | §2.5 Tools / Agent：将 provider-facing 工具定义改为核心常驻 + builtin/Skill/MCP 按 session 分层加载；新增 `load_builtin` / `load_skill`，保留 `load_mcp`，完整 schema 只进入当前 session（ADR 0145） |
+| 2026-09-14 | §2.5 Tools / Agent：将 provider-facing 工具定义改为核心常驻 + builtin/Skill/MCP 按 session 分层加载；新增 `load_skill`，保留 `load_mcp`，完整 schema 只进入当前 session（ADR 0145） |
 | 2026-09-14 | §2.5 Tools / Agent：提示词只保留 `system` / `agent` / `haven` 等第一层 family/root 摘要；新增 `tool_catalog` 提供分页的 family/root/operation 发现与精确 schema 查询（ADR 0148） |
 | 2026-09-14 | §2.5 Tools / UI / MCP：工具页按 `ToolManifest.identity` 实现 family/root/operation 三级树；复核并统一 MCP 渐进连接的目录版本监听，保证 `tools/list_changed` 使分页 cursor 失效（ADR 0148） |
+| 2026-09-21 | §2.5 Tools / Agent：稳定核心 provider surface 固定保留目录/加载、Skill/MCP loader 与少量高频读取工具；`tool_catalog` 的 `load` action 收口 builtin 发现与加载，删除独立 `load_builtin`（ADR 0198） |
 | 2026-09-13 | §2.6 UI：工具页将同一 operation root 收束为一张可展开卡片，保留每个 operation 的独立 Schema、风险和启用状态（ADR 0139） |
 | 2026-09-10 | §2.5 Tools：将 PDF/DOCX/XLSX/PPTX 的受限本地抽取收口到 `document.rs`，经受管 `files` read 返回有 provenance 的不可信派生表示（ADR 0114） |
 | 2026-09-14 | §2.6 UI：聊天页会话列表、选择和错误恢复通过 `SessionReducer` 单一迁移入口；事件适配层仅保留消息/流式清理与其它副作用，ModelSettings 补齐拆分前组件测试（ADR 0154） |
@@ -574,3 +577,4 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 | 2026-09-10 | §2.5 Tools / §2.6 LLM：工具与 media gateway 统一走 `LlmRouter::analyze_image`；`files.read` 增加音频转写；删除 raw-byte multimodal helper（ADR 0122） |
 | 2026-09-10 | §2.5 Tools / §2.6 App：新增 asset_id-only `media` 工具；窗口截图改为受管生成媒体并返回可继续消费的 asset id；managed 图片/音频从 `files.read` 转交 canonical media 派生入口（ADR 0123） |
 | 2026-09-10 | §2.3 Memory / §2.4 Agent / §2.6 UI：媒体派生结果只保留一个 `media.content`，模型观察移除运行时元数据；工具拥有的媒体 LLM 调用以 `call_kind=media`、其它工具内部 LLM 调用以 `call_kind=tool` 单独持久化与展示，Agent 缓存率只统计 `call_kind=agent`（ADR 0124） |
+| 2026-09-21 | §2.3 Memory：消息表将旧 `attachments` 兼容列改名为 `ui_metadata`；canonical 媒体、表示和恢复只使用 `media_inputs`，UI 元数据仅保留展示/资产保留字段；数据库升至 v24，按发布说明重置（ADR 0197） |

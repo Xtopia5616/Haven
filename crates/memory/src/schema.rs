@@ -45,7 +45,10 @@ const SCHEMA_SQL: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS react_checkpoints (
         session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
         revision INTEGER NOT NULL DEFAULT 0,
+        -- Active transcript record count represented by the checkpoint. This
+        -- is a bounded snapshot cursor, not a copy of the transcript.
         event_cursor INTEGER NOT NULL DEFAULT 0,
+        -- High-water mark across all session_events, including control rows.
         event_sequence INTEGER NOT NULL DEFAULT 0,
         message_ingress_seq INTEGER NOT NULL DEFAULT 0,
         step_seq INTEGER NOT NULL DEFAULT 0,
@@ -195,7 +198,8 @@ const SCHEMA_SQL: &[&str] = &[
         updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     )",
     // Per-LLM-call usage detail: one row per successful model response,
-    // carrying the call surface, endpoint role, model name, token counts,
+    // carrying the call surface, request kind (in the legacy role column),
+    // model name, token counts,
     // cost and wall-clock duration. `session_usage` keeps only Agent-level
     // cumulative counters; this table keeps the granular history behind them.
     "CREATE TABLE IF NOT EXISTS llm_usage (

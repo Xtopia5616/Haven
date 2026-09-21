@@ -157,7 +157,7 @@ RunEngine（纯 ReAct 状态机）
 
 ### B. P0：把 snapshot blob 权威改成数据库事件流，snapshot 降级为缓存
 
-当前 [`crates/agent/src/types.rs`](../crates/agent/src/types.rs) 已经把 `ReActSnapshot.events` 定为 transcript 权威，但它仍作为整块压缩 blob 存储并频繁重写；同时 `messages`、`session_steps`、`AgentEvent` 和前端 resume builder 又分别承担投影或实时状态。snapshot-less projector 已在 2026-09-13 删除；后续若引入事件表，应在新的事件 schema 中解决剩余投影边界。
+事件表迁移后，`ReActSnapshot.events` 仍作为进程内投影缓存存在，但不应再作为 snapshot blob 的完整副本写入；`messages`、`session_steps`、`AgentEvent` 和前端 resume builder 继续承担各自的物化投影或实时通知职责。snapshot-less projector 已在 2026-09-13 删除；事件表现已解决 transcript 的 durable authority，剩余工作是收窄 checkpoint 的缓存边界。
 
 更彻底的目标是新增版本化的 `session_events` append-only 存储：每个事件有 `session_id`、单调 `sequence`、事件类型、payload、时间和 run/step identity。`ReActSnapshot` 只保留为定期 checkpoint/cache，不再是唯一持久化真源。`messages`、`session_steps`、usage、action 和 UI live stream 都从同一批已提交事件投影；实时订阅按 sequence 重放，断线后从最后 sequence 继续。
 
@@ -168,10 +168,10 @@ RunEngine（纯 ReAct 状态机）
 rollback 保留 append-only 历史。后续可在同一事件 envelope 上继续迁移 usage、action
 和 Tauri/UI reducer；本次不保留第二套 snapshot-less transcript projector。
 
-这样可以直接消除或显著收窄：
+本次收窄直接消除或显著降低：
 
 - 整块 snapshot 每步重写和长会话的 O(n) 持久化成本；
-- rollback 依赖 `last_msg_at` 与 event cursor 的双时钟；
+- snapshot blob 与 durable event stream 的完整事件双写；
 - snapshot 缺失时另起一套 projector；
 - UI 的 live/resume 内容匹配、旧 sentinel 和 optimistic bubble 补丁；
 - `AgentEvent` 与 durable transcript 之间需要人工保持一致的映射。

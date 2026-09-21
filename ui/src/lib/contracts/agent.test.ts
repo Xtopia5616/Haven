@@ -63,7 +63,7 @@ describe('agent IPC contract', () => {
 				context_window: 128000,
 				step_number: 3,
 				duration_ms: 42,
-				role: 'default_model',
+				role: 'chat',
 				call_kind: 'agent',
 				has_cost: false,
 			},
@@ -105,7 +105,7 @@ describe('agent IPC contract', () => {
 				session_id: 'ses-1',
 				step_number: 4,
 				run_id: 8,
-				role: 'image_model',
+				role: 'vision',
 				strategy: 'auto',
 				projections: [{
 					asset_id: 'asset-1',
@@ -120,7 +120,7 @@ describe('agent IPC contract', () => {
 			sessionId: 'ses-1',
 			stepNumber: 4,
 			runId: 8,
-			role: 'image_model',
+			role: 'vision',
 			strategy: 'auto',
 			projections: [{
 				assetId: 'asset-1',

@@ -151,7 +151,7 @@ fn channel_maps_every_variant_to_expected_channel() {
                 session_id: "t".into(),
                 step_number: 1,
                 run_id: 1,
-                role: "image_model".into(),
+                role: "vision".into(),
                 strategy: haven_common::media::MediaInputStrategy::Auto,
                 projections: vec![],
                 notices: vec![haven_common::media::MediaPlanNotice {
@@ -227,7 +227,7 @@ fn channel_maps_every_variant_to_expected_channel() {
                 context_window: None,
                 step_number: Some(1),
                 duration_ms: Some(42),
-                role: Some("default".into()),
+                role: Some("chat".into()),
                 call_kind: "agent".into(),
                 has_cost: false,
             },
@@ -250,7 +250,7 @@ fn media_plan_payload_contains_strategy_projection_and_reason() {
         session_id: "ses-1".into(),
         step_number: 4,
         run_id: 8,
-        role: "audio_model".into(),
+        role: "audio_chat".into(),
         strategy: haven_common::media::MediaInputStrategy::Auto,
         projections: vec![haven_common::media::MediaProjection {
             asset_id: "asset-1".into(),

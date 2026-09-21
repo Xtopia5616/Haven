@@ -26,7 +26,7 @@
 use crate::AgentLayer;
 use crate::react::{ReActState, RunInput};
 use crate::resume_support::{
-    infer_resume_step, load_builtin_selection, load_mcp_tool_names, load_skill_names,
+    builtin_selection, infer_resume_step, load_mcp_tool_names, load_skill_names,
     merge_recovery_candidates, reconcile_dangling_tool_call,
 };
 
@@ -221,10 +221,10 @@ impl AgentLayer {
             .register_managed_assets_for_session(session_id, &all_attachments);
 
         // The event stream is authoritative. A snapshot is read only for
-        // branch/interactions/run metadata and as a one-time import source
-        // for sessions created before `session_events` existed. Import the
-        // complete cache (including branch points) before reading the durable
-        // state again so every later path follows one event-derived timeline.
+        // checkpoint metadata and as a one-time import source for sessions
+        // created before `session_events` existed. Import the legacy cache
+        // (including branch points) before reading durable state again so
+        // every later path follows one event-derived timeline.
         let mut durable_state = self
             .react_engine
             .load_durable_event_state(session_id)
@@ -251,7 +251,8 @@ impl AgentLayer {
             ));
         }
         let durable_event_sequence = durable_state.as_ref().map(|state| state.latest_sequence);
-        let react_state = match durable_state {
+        let durable_event_cursor = durable_state.as_ref().map(|state| state.events.len());
+        let snapshot = match durable_state {
             Some(durable) => {
                 let (mut snapshot, cache_is_valid) = match react_state {
                     Some(state_json) => match ReActSnapshot::from_json(&state_json) {
@@ -267,7 +268,9 @@ impl AgentLayer {
                     },
                     None => (ReActSnapshot::default(), false),
                 };
+                let active_event_cursor = durable.events.len();
                 snapshot.events = durable.events;
+                snapshot.event_cursor = active_event_cursor;
                 // Branch points are control events, not cache metadata. An
                 // empty durable map deliberately clears stale cache entries.
                 snapshot.branch_points = durable.branch_points;
@@ -287,163 +290,147 @@ impl AgentLayer {
                 {
                     snapshot.step_number = infer_resume_step(&snapshot.events);
                 }
-                Some(serde_json::to_string(&snapshot)?)
+                Some(snapshot)
             }
-            None => react_state,
+            None => match react_state {
+                Some(state_json) => Some(ReActSnapshot::from_json(&state_json)?),
+                None => None,
+            },
         };
 
-        match react_state {
-            Some(state_json) => match ReActSnapshot::from_json(&state_json) {
-                Ok(mut snapshot) => {
-                    tracing::info!(
-                        "restoring ReAct state for session {} ({} events)",
-                        session_id,
-                        snapshot.events.len()
-                    );
-                    // The snapshot and materialized projections are written at
-                    // different boundaries. If the process died after an
-                    // action step was persisted but before the next snapshot,
-                    // the restored event log can end at ToolCall while the DB
-                    // already knows the result. Reconcile that edge before
-                    // any dangling-call trim; replaying the call would mint a
-                    // new step id and could repeat an external side effect.
-                    let db = self.db.clone();
-                    let sid = session_id.to_string();
-                    let (durable_steps, checkpoint) = db
-                        .run_blocking(move |db| {
-                            Ok((
-                                db.get_session_steps(&sid)?,
-                                db.get_react_checkpoint(&sid)?,
-                            ))
-                        })
-                        .await
-                        .map_err(|error| {
-                            anyhow::anyhow!(
-                                "failed to load durable action steps for session {session_id}: {error}"
-                            )
-                        })?;
-                    if let Some(checkpoint) = checkpoint {
-                        if let Some(event_sequence) = durable_event_sequence {
-                            if checkpoint.event_sequence > event_sequence {
-                                return Err(anyhow::anyhow!(
-                                    "session '{}' event stream is behind checkpoint {} (current {})",
-                                    session_id,
-                                    checkpoint.event_sequence,
-                                    event_sequence
-                                ));
-                            }
-                            if checkpoint.event_sequence < event_sequence {
-                                tracing::debug!(
-                                    session_id,
-                                    cached_event_sequence = checkpoint.event_sequence,
-                                    durable_event_sequence = event_sequence,
-                                    "event stream is ahead of snapshot cache"
-                                );
-                            }
-                        }
-                        if checkpoint.event_cursor != snapshot.events.len() as i64 {
-                            tracing::warn!(
+        match snapshot {
+            Some(mut snapshot) => {
+                tracing::info!(
+                    "restoring ReAct state for session {} ({} events)",
+                    session_id,
+                    snapshot.events.len()
+                );
+                // The snapshot and materialized projections are written at
+                // different boundaries. If the process died after an
+                // action step was persisted but before the next snapshot,
+                // the restored event log can end at ToolCall while the DB
+                // already knows the result. Reconcile that edge before
+                // any dangling-call trim; replaying the call would mint a
+                // new step id and could repeat an external side effect.
+                let db = self.db.clone();
+                let sid = session_id.to_string();
+                let (durable_steps, checkpoint) = db
+                    .run_blocking(move |db| {
+                        Ok((db.get_session_steps(&sid)?, db.get_react_checkpoint(&sid)?))
+                    })
+                    .await
+                    .map_err(|error| {
+                        anyhow::anyhow!(
+                            "failed to load durable action steps for session {session_id}: {error}"
+                        )
+                    })?;
+                if let Some(checkpoint) = checkpoint {
+                    if let Some(event_sequence) = durable_event_sequence {
+                        if checkpoint.event_sequence > event_sequence {
+                            return Err(anyhow::anyhow!(
+                                "session '{}' event stream is behind checkpoint {} (current {})",
                                 session_id,
-                                snapshot_events = snapshot.events.len(),
-                                checkpoint_events = checkpoint.event_cursor,
-                                revision = checkpoint.revision,
-                                "snapshot event cursor differs from its durable checkpoint"
+                                checkpoint.event_sequence,
+                                event_sequence
+                            ));
+                        }
+                        if checkpoint.event_sequence < event_sequence {
+                            tracing::debug!(
+                                session_id,
+                                cached_event_sequence = checkpoint.event_sequence,
+                                durable_event_sequence = event_sequence,
+                                "event stream is ahead of snapshot cache"
                             );
                         }
                     }
-                    let event_count_before_repair = snapshot.events.len();
-                    if reconcile_dangling_tool_call(&mut snapshot.events, &durable_steps) {
-                        let repaired_events = snapshot.events[event_count_before_repair..].to_vec();
-                        self.react_engine
-                            .append_transcript_records(session_id, &repaired_events, run_id)
-                            .await?;
-                        for branch in snapshot.branch_points.values_mut() {
-                            branch.event_cursor = branch.event_cursor.min(snapshot.events.len());
-                        }
-                        let repaired_json = serde_json::to_string(&snapshot)?;
-                        let db = self.db.clone();
-                        let sid = session_id.to_string();
-                        db.run_blocking(move |db| db.save_react_state(&sid, &repaired_json))
+                    if durable_event_cursor
+                        .is_some_and(|cursor| checkpoint.event_cursor != cursor as i64)
+                    {
+                        tracing::warn!(
+                            session_id,
+                            durable_events = durable_event_cursor.unwrap_or_default(),
+                            checkpoint_events = checkpoint.event_cursor,
+                            revision = checkpoint.revision,
+                            "checkpoint event cursor differs from the durable transcript"
+                        );
+                    }
+                }
+                let event_count_before_repair = snapshot.events.len();
+                if reconcile_dangling_tool_call(&mut snapshot.events, &durable_steps) {
+                    let repaired_events = snapshot.events[event_count_before_repair..].to_vec();
+                    self.react_engine
+                        .append_transcript_records(session_id, &repaired_events, run_id)
+                        .await?;
+                    for branch in snapshot.branch_points.values_mut() {
+                        branch.event_cursor = branch.event_cursor.min(snapshot.events.len());
+                    }
+                    snapshot.event_cursor = snapshot.events.len();
+                    let repaired_json = serde_json::to_string(&snapshot)?;
+                    let db = self.db.clone();
+                    let sid = session_id.to_string();
+                    db.run_blocking(move |db| db.save_react_state(&sid, &repaired_json))
                             .await
                             .map_err(|error| {
                                 anyhow::anyhow!(
                                     "failed to persist reconciled snapshot for session {session_id}: {error}"
                                 )
                             })?;
+                    tracing::warn!(
+                        session_id,
+                        repaired_events = repaired_events.len(),
+                        "reconciled a dangling tool call from durable action steps before resuming"
+                    );
+                }
+                // Re-register per-session tools (skills/MCP) from projected
+                // rounds, since in-memory registrations are lost on restart.
+                let (_, rounds) = snapshot.project();
+                self.restore_per_session_tools(session_id, &rounds).await;
+                // Restore the single interaction registry before resuming.
+                // The actor replaces by request id, so this is idempotent
+                // when a same-process resume races a snapshot reload.
+                for request in snapshot.interactions.clone() {
+                    self.executor.request_interaction(request).await?;
+                }
+                let interactions = self.executor.interaction_requests(session_id).await;
+                let has_pending_ask = interactions.iter().any(|request| {
+                    request.kind == crate::interaction::InteractionKind::Ask
+                        && request.status == crate::interaction::InteractionStatus::Pending
+                });
+                let confirm_requests = interactions
+                    .iter()
+                    .filter(|request| request.kind == crate::interaction::InteractionKind::Confirm)
+                    .collect::<Vec<_>>();
+                // A pending interaction is the pause reason; session
+                // status stays the single generic `Paused` state.
+                let _ = has_pending_ask;
+                if !confirm_requests.is_empty() {
+                    // The dispatcher has already claimed this session as
+                    // Running before entering the resume handler. Do not
+                    // wake it back to Pending here: that would enqueue a
+                    // second run and violate the ReAct run-entry
+                    // invariant. Direct callers can still arrive from
+                    // Paused, so promote that state directly to Running.
+                    if confirm_requests
+                        .iter()
+                        .all(|request| request.decision().is_some())
+                        && let Err(e) = self
+                            .set_session_status_if(
+                                session_id,
+                                SessionStatus::Paused,
+                                SessionStatus::Running,
+                            )
+                            .await
+                    {
                         tracing::warn!(
+                            "failed to restore running session {} after all-decided confirm on resume: {}",
                             session_id,
-                            repaired_events = repaired_events.len(),
-                            "reconciled a dangling tool call from durable action steps before resuming"
+                            e
                         );
                     }
-                    // Re-register per-session tools (skills/MCP) from projected
-                    // rounds, since in-memory registrations are lost on restart.
-                    let (_, rounds) = snapshot.project();
-                    self.restore_per_session_tools(session_id, &rounds).await;
-                    // Restore the single interaction registry before resuming.
-                    // The actor replaces by request id, so this is idempotent
-                    // when a same-process resume races a snapshot reload.
-                    for request in snapshot.interactions.clone() {
-                        self.executor.request_interaction(request).await?;
-                    }
-                    let interactions = self.executor.interaction_requests(session_id).await;
-                    let has_pending_ask = interactions.iter().any(|request| {
-                        request.kind == crate::interaction::InteractionKind::Ask
-                            && request.status == crate::interaction::InteractionStatus::Pending
-                    });
-                    let confirm_requests = interactions
-                        .iter()
-                        .filter(|request| {
-                            request.kind == crate::interaction::InteractionKind::Confirm
-                        })
-                        .collect::<Vec<_>>();
-                    // A pending interaction is the pause reason; session
-                    // status stays the single generic `Paused` state.
-                    let _ = has_pending_ask;
-                    if !confirm_requests.is_empty() {
-                        // The dispatcher has already claimed this session as
-                        // Running before entering the resume handler. Do not
-                        // wake it back to Pending here: that would enqueue a
-                        // second run and violate the ReAct run-entry
-                        // invariant. Direct callers can still arrive from
-                        // Paused, so promote that state directly to Running.
-                        if confirm_requests
-                            .iter()
-                            .all(|request| request.decision().is_some())
-                            && let Err(e) = self
-                                .set_session_status_if(
-                                    session_id,
-                                    SessionStatus::Paused,
-                                    SessionStatus::Running,
-                                )
-                                .await
-                        {
-                            tracing::warn!(
-                                "failed to restore running session {} after all-decided confirm on resume: {}",
-                                session_id,
-                                e
-                            );
-                        }
-                    }
-                    self.run_session_resumed(session_id, snapshot, run_id, &description)
-                        .await
                 }
-                Err(e) => {
-                    // Phase 7 / B4: corrupt or schema-drifted react_state must
-                    // hard-fail so the user sees the loss instead of a forked
-                    // resume.
-                    tracing::error!(
-                        "react_state for session {} failed to parse ({}); refusing resume",
-                        session_id,
-                        e
-                    );
-                    Err(anyhow::anyhow!(
-                        "session '{}' snapshot is corrupt or incompatible ({}); cannot resume — start a new session or clear react_state",
-                        session_id,
-                        e
-                    ))
-                }
-            },
+                self.run_session_resumed(session_id, snapshot, run_id, &description)
+                    .await
+            }
             None => {
                 self.run_session(
                     &session.id,
@@ -698,13 +685,15 @@ impl AgentLayer {
                     tools
                         .register_mcp_for_session(session_id, name, tool_names.as_deref())
                         .await;
-                } else if tool.action.tool_name.as_str() == "load_builtin" {
-                    let (operations, roots) = load_builtin_selection(&tool.action.tool_input);
+                } else if tool.action.tool_name.as_str() == "tool_catalog"
+                    && tool.action.tool_input["action"].as_str() == Some("load")
+                {
+                    let (operations, roots) = builtin_selection(&tool.action.tool_input);
                     if operations.as_ref().is_some_and(|values| !values.is_empty())
                         || roots.as_ref().is_some_and(|values| !values.is_empty())
                     {
                         tools
-                            .load_builtin_for_session(session_id, operations, roots)
+                            .load_builtin_operations_for_session(session_id, operations, roots)
                             .await;
                     }
                 } else if tool.action.tool_name.as_str() == "load_skill" {

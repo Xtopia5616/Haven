@@ -1,5 +1,6 @@
 use crate::db::Database;
 use crate::repositories::messages::now_rfc3339_millis;
+use haven_common::config::RequestKind;
 use rusqlite::OptionalExtension;
 
 /// Per-session cumulative token/cost counters, persisted so a resumed or
@@ -148,7 +149,8 @@ pub struct LlmCallUsage {
 #[derive(Debug, Clone)]
 pub struct LlmCallUsageInput {
     pub step_number: Option<i32>,
-    pub role: String,
+    /// Request kind stored in the legacy `llm_usage.role` column.
+    pub request_kind: RequestKind,
     pub call_kind: String,
     pub model: Option<String>,
     pub prompt_tokens: u32,
@@ -188,7 +190,7 @@ impl Database {
         &self,
         session_id: &str,
         step_number: Option<i32>,
-        role: &str,
+        request_kind: RequestKind,
         model: Option<&str>,
         prompt_tokens: u32,
         completion_tokens: u32,
@@ -202,7 +204,7 @@ impl Database {
         self.record_llm_call_usage_with_cache_accounting(
             session_id,
             step_number,
-            role,
+            request_kind,
             model,
             prompt_tokens,
             completion_tokens,
@@ -224,7 +226,7 @@ impl Database {
         &self,
         session_id: &str,
         step_number: Option<i32>,
-        role: &str,
+        request_kind: RequestKind,
         model: Option<&str>,
         prompt_tokens: u32,
         completion_tokens: u32,
@@ -246,7 +248,7 @@ impl Database {
             &id,
             session_id,
             step_number,
-            role,
+            request_kind.as_str(),
             "agent",
             model,
             prompt_tokens,
@@ -268,7 +270,7 @@ impl Database {
             id,
             session_id: session_id.into(),
             step_number,
-            role: role.into(),
+            role: request_kind.as_str().into(),
             call_kind: "agent".into(),
             model: model.map(String::from),
             prompt_tokens,
@@ -300,7 +302,7 @@ impl Database {
         &self,
         session_id: &str,
         step_number: Option<i32>,
-        role: &str,
+        request_kind: RequestKind,
         model: Option<&str>,
         prompt_tokens: u32,
         completion_tokens: u32,
@@ -314,7 +316,7 @@ impl Database {
         self.persist_llm_call_and_refresh_session_usage_with_cache_accounting(
             session_id,
             step_number,
-            role,
+            request_kind,
             model,
             prompt_tokens,
             completion_tokens,
@@ -335,7 +337,7 @@ impl Database {
         &self,
         session_id: &str,
         step_number: Option<i32>,
-        role: &str,
+        request_kind: RequestKind,
         model: Option<&str>,
         prompt_tokens: u32,
         completion_tokens: u32,
@@ -352,7 +354,7 @@ impl Database {
         self.persist_llm_call_and_refresh_session_usage_with_cache_accounting_and_context(
             session_id,
             step_number,
-            role,
+            request_kind,
             model,
             prompt_tokens,
             completion_tokens,
@@ -375,7 +377,7 @@ impl Database {
         &self,
         session_id: &str,
         step_number: Option<i32>,
-        role: &str,
+        request_kind: RequestKind,
         model: Option<&str>,
         prompt_tokens: u32,
         completion_tokens: u32,
@@ -394,7 +396,7 @@ impl Database {
         self.persist_llm_call_and_refresh_session_usage_with_kind_and_context(
             session_id,
             step_number,
-            role,
+            request_kind,
             "agent",
             model,
             prompt_tokens,
@@ -418,7 +420,7 @@ impl Database {
         &self,
         session_id: &str,
         step_number: Option<i32>,
-        role: &str,
+        request_kind: RequestKind,
         call_kind: &str,
         model: Option<&str>,
         prompt_tokens: u32,
@@ -445,7 +447,7 @@ impl Database {
                 &id,
                 session_id,
                 step_number,
-                role,
+                request_kind.as_str(),
                 call_kind,
                 model,
                 prompt_tokens,
@@ -468,7 +470,7 @@ impl Database {
                 id: id.clone(),
                 session_id: session_id.into(),
                 step_number,
-                role: role.into(),
+                role: request_kind.as_str().into(),
                 call_kind: call_kind.into(),
                 model: model.map(String::from),
                 prompt_tokens,
@@ -524,7 +526,7 @@ impl Database {
                     id,
                     session_id,
                     input.step_number,
-                    &input.role,
+                    input.request_kind.as_str(),
                     &input.call_kind,
                     input.model.as_deref(),
                     input.prompt_tokens,
@@ -551,7 +553,7 @@ impl Database {
                     id: id.clone(),
                     session_id: session_id.into(),
                     step_number: input.step_number,
-                    role: input.role.clone(),
+                    role: input.request_kind.as_str().into(),
                     call_kind: input.call_kind.clone(),
                     model: input.model.clone(),
                     prompt_tokens: input.prompt_tokens,
@@ -620,7 +622,7 @@ impl Database {
         id: &str,
         session_id: &str,
         step_number: Option<i32>,
-        role: &str,
+        request_kind: &str,
         call_kind: &str,
         model: Option<&str>,
         prompt_tokens: u32,
@@ -656,7 +658,7 @@ impl Database {
                 id,
                 session_id,
                 step_number,
-                role,
+                request_kind,
                 call_kind,
                 model,
                 prompt_tokens,
@@ -814,6 +816,7 @@ impl Database {
 mod tests {
     use crate::LlmCallUsageInput;
     use crate::db::Database;
+    use haven_common::config::RequestKind;
 
     fn test_db() -> Database {
         Database::open_in_memory().expect("create in-memory db")
@@ -827,7 +830,7 @@ mod tests {
         db.persist_llm_call_and_refresh_session_usage(
             &session.id,
             Some(1),
-            "default_model",
+            RequestKind::Chat,
             None,
             100,
             50,
@@ -859,7 +862,7 @@ mod tests {
                 &[
                     LlmCallUsageInput {
                         step_number: Some(3),
-                        role: "default_model".into(),
+                        request_kind: RequestKind::Chat,
                         call_kind: "tool".into(),
                         model: Some("model-a".into()),
                         prompt_tokens: 10,
@@ -878,7 +881,7 @@ mod tests {
                     },
                     LlmCallUsageInput {
                         step_number: Some(3),
-                        role: "default_model".into(),
+                        request_kind: RequestKind::Chat,
                         call_kind: "media".into(),
                         model: Some("model-b".into()),
                         prompt_tokens: 20,
@@ -913,7 +916,7 @@ mod tests {
             .persist_llm_call_and_refresh_session_usage_with_cache_accounting_and_context(
                 &session.id,
                 Some(1),
-                "default_model",
+                RequestKind::Chat,
                 Some("model-a"),
                 900,
                 120,
@@ -948,7 +951,7 @@ mod tests {
         db.persist_llm_call_and_refresh_session_usage(
             &session.id,
             Some(1),
-            "default_model",
+            RequestKind::Chat,
             Some("agent-model"),
             100,
             20,
@@ -963,7 +966,7 @@ mod tests {
         db.persist_llm_call_and_refresh_session_usage_with_kind_and_context(
             &session.id,
             Some(1),
-            "image_model",
+            RequestKind::Vision,
             "media",
             Some("vision-model"),
             80,
@@ -1001,7 +1004,7 @@ mod tests {
         db.persist_llm_call_and_refresh_session_usage(
             &session.id,
             Some(1),
-            "default_model",
+            RequestKind::Chat,
             None,
             10,
             5,
@@ -1026,7 +1029,7 @@ mod tests {
             .record_llm_call_usage(
                 &session.id,
                 Some(1),
-                "default_model",
+                RequestKind::Chat,
                 Some("gpt-5"),
                 100,
                 50,
@@ -1051,7 +1054,7 @@ mod tests {
         assert_eq!(usage[0].cost_usd, 0.25);
         assert!(usage[0].has_cost);
         assert_eq!(usage[0].duration_ms, Some(1234));
-        assert_eq!(usage[0].role, "default_model");
+        assert_eq!(usage[0].role, RequestKind::Chat.as_str());
     }
 
     #[test]
@@ -1061,7 +1064,7 @@ mod tests {
         db.record_llm_call_usage(
             &session.id,
             Some(1),
-            "default_model",
+            RequestKind::Chat,
             None,
             10,
             5,
@@ -1076,7 +1079,7 @@ mod tests {
         db.record_llm_call_usage(
             &session.id,
             Some(2),
-            "default_model",
+            RequestKind::Chat,
             None,
             20,
             10,
@@ -1114,7 +1117,7 @@ mod tests {
         db.record_llm_call_usage(
             &session.id,
             Some(1),
-            "default_model",
+            RequestKind::Chat,
             None,
             10,
             5,
@@ -1137,7 +1140,7 @@ mod tests {
         db.persist_llm_call_and_refresh_session_usage(
             &session.id,
             Some(1),
-            "default_model",
+            RequestKind::Chat,
             Some("gpt-5"),
             100,
             50,
@@ -1152,7 +1155,7 @@ mod tests {
         db.persist_llm_call_and_refresh_session_usage(
             &session.id,
             Some(2),
-            "default_model",
+            RequestKind::Chat,
             Some("gpt-5"),
             20,
             10,
@@ -1181,7 +1184,7 @@ mod tests {
         db.persist_llm_call_and_refresh_session_usage_with_cache_accounting(
             &session.id,
             Some(1),
-            "default_model",
+            RequestKind::Chat,
             Some("gpt-test"),
             100,
             5,
@@ -1199,7 +1202,7 @@ mod tests {
         db.persist_llm_call_and_refresh_session_usage_with_cache_accounting(
             &session.id,
             Some(2),
-            "default_model",
+            RequestKind::Chat,
             Some("claude-test"),
             100,
             5,
@@ -1232,7 +1235,7 @@ mod tests {
         db.persist_llm_call_and_refresh_session_usage(
             &session.id,
             Some(1),
-            "default_model",
+            RequestKind::Chat,
             None,
             10,
             5,
@@ -1271,7 +1274,7 @@ mod tests {
         db.persist_llm_call_and_refresh_session_usage(
             &session.id,
             Some(1),
-            "default_model",
+            RequestKind::Chat,
             None,
             10,
             5,
@@ -1298,7 +1301,7 @@ mod tests {
         db.persist_llm_call_and_refresh_session_usage_with_cache_accounting(
             &session.id,
             Some(1),
-            "default_model",
+            RequestKind::Chat,
             None,
             100,
             20,
@@ -1327,7 +1330,7 @@ mod tests {
             .persist_llm_call_and_refresh_session_usage(
                 &session.id,
                 Some(1),
-                "default_model",
+                RequestKind::Chat,
                 None,
                 1,
                 1,
@@ -1359,7 +1362,7 @@ mod tests {
             .record_llm_call_usage(
                 &session.id,
                 Some(1),
-                "default_model",
+                RequestKind::Chat,
                 None,
                 10,
                 5,
@@ -1375,7 +1378,7 @@ mod tests {
             .record_llm_call_usage(
                 &session.id,
                 Some(2),
-                "default_model",
+                RequestKind::Chat,
                 None,
                 20,
                 10,

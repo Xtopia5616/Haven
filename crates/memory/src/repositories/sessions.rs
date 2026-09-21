@@ -528,11 +528,10 @@ impl Database {
 
     /// Save serialized ReAct state as a checkpoint/cache for pause/resume.
     ///
-    /// The snapshot is gzip-compressed before storage: every branch point
-    /// carries a full event projection, so a long session's snapshot can still
-    /// reach tens of MB of JSON. The durable transcript lives in
-    /// `session_events`; compression keeps this optional checkpoint compact
-    /// without making it the recovery authority.
+    /// The snapshot is gzip-compressed before storage. It contains runtime
+    /// checkpoint metadata, projection cursors and at most a bounded event
+    /// tail; the durable transcript lives in `session_events` and remains the
+    /// recovery authority.
     pub fn save_react_state(&self, session_id: &str, state_json: &str) -> anyhow::Result<()> {
         let now = Utc::now().to_rfc3339();
         let conn = self.conn();
@@ -694,11 +693,19 @@ fn save_react_state_in_transaction(
         .ok()
         .and_then(|value| {
             value
-                .get("events")
-                .and_then(|events| events.as_array())
-                .cloned()
+                .get("event_cursor")
+                .and_then(serde_json::Value::as_i64)
+                // Keep the fallback only for one-time inspection of old
+                // unbounded snapshots. Current serializers never emit the
+                // `events` field, so the checkpoint no longer grows with the
+                // event log.
+                .or_else(|| {
+                    value
+                        .get("events")
+                        .and_then(|events| events.as_array())
+                        .map(|events| events.len() as i64)
+                })
         })
-        .map(|events| events.len() as i64)
         .unwrap_or(0);
     let previous_revision: Option<i64> = conn
         .query_row(
@@ -1389,6 +1396,24 @@ mod tests {
         assert_eq!(second.step_seq, 1);
         assert!(second.message_ingress_seq > first.message_ingress_seq);
         assert!(second.step_seq > first.step_seq);
+    }
+
+    #[test]
+    fn test_react_checkpoint_uses_snapshot_cursor_not_event_tail_length() {
+        let db = create_db();
+        let session = db.create_session("input", "").unwrap();
+
+        db.save_react_state(
+            &session.id,
+            r#"{"event_cursor":99,"event_tail":[{}],"step_number":4}"#,
+        )
+        .unwrap();
+
+        let checkpoint = db
+            .get_react_checkpoint(&session.id)
+            .unwrap()
+            .expect("checkpoint after snapshot");
+        assert_eq!(checkpoint.event_cursor, 99);
     }
 
     #[test]

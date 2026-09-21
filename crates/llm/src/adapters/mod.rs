@@ -23,6 +23,7 @@ use crate::client::LlmClient;
 use crate::types::LlmError;
 use haven_common::config::ModelEndpoint;
 use haven_common::media::{CapabilityProfile, CapabilitySupport};
+use haven_common::prompts::COMPACTED_SUMMARY_PREFIX;
 use haven_common::types::{ContentPart, InjectSource};
 
 pub(crate) use embedding::{openai_compatible_embed, openai_embeddings_url};
@@ -53,6 +54,62 @@ pub(crate) fn chat_capability_profile(
         tools: CapabilitySupport::Supported,
         ..CapabilityProfile::default()
     }
+}
+
+/// Return a stable, non-sensitive marker for the latest compaction root in a
+/// canonical transcript.  Compaction deliberately preserves the early
+/// anchor, but inserts a summary before the recent suffix; that changes the
+/// provider prefix after the anchor.  OpenAI routing keys use this marker to
+/// start a fresh cache shard while remaining stable for subsequent turns.
+pub(crate) fn prompt_cache_compaction_marker(
+    messages: &[haven_common::types::CanonicalMessage],
+) -> Option<Vec<u8>> {
+    let summary = messages.iter().rev().find(|message| {
+        message.role == haven_common::types::CanonicalRole::Assistant
+            && message.content.iter().any(|part| {
+                matches!(part, ContentPart::Text(text) if text.starts_with(COMPACTED_SUMMARY_PREFIX))
+            })
+    })?;
+    let value = serde_json::to_value(summary).ok()?;
+    Some(crate::types::stable_json_bytes(&value))
+}
+
+/// Describe only the raw media surface of a provider-visible request.  Media
+/// bytes are intentionally excluded: a new image should extend the prompt,
+/// not force a new routing shard, while switching between raw media and a
+/// text fallback must not reuse an incompatible prefix.
+pub(crate) fn prompt_cache_media_marker(
+    messages: &[haven_common::types::CanonicalMessage],
+) -> Option<Vec<u8>> {
+    let mut surface = Vec::new();
+    for message in messages {
+        for part in &message.content {
+            let (kind, content_type, media_type) = match part {
+                ContentPart::Image {
+                    content_type,
+                    media_type,
+                    ..
+                } => ("image", content_type, media_type),
+                ContentPart::Audio {
+                    content_type,
+                    media_type,
+                    ..
+                } => ("audio", content_type, media_type),
+                ContentPart::Video {
+                    content_type,
+                    media_type,
+                    ..
+                } => ("video", content_type, media_type),
+                ContentPart::Text(_) => continue,
+            };
+            surface.push(serde_json::json!({
+                "kind": kind,
+                "content_type": content_type,
+                "media_type": media_type,
+            }));
+        }
+    }
+    (!surface.is_empty()).then(|| crate::types::stable_json_bytes(&serde_json::json!(surface)))
 }
 
 /// Adapter returned when endpoint construction fails. Keeping the failure in

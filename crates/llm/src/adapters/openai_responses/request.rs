@@ -173,12 +173,7 @@ impl OpenAiResponsesAdapter {
             match self.send_request_once(url, body, stream).await {
                 Ok(response) => {
                     if body.prompt_cache_key.is_some() {
-                        let _ = self.prompt_cache_key_state.compare_exchange(
-                            PROMPT_CACHE_KEY_UNKNOWN,
-                            PROMPT_CACHE_KEY_ENABLED,
-                            Ordering::Relaxed,
-                            Ordering::Relaxed,
-                        );
+                        self.remember_prompt_cache_key_success();
                     }
                     return Ok(response);
                 }
@@ -186,8 +181,7 @@ impl OpenAiResponsesAdapter {
                     if body.prompt_cache_key.is_some()
                         && Self::prompt_cache_key_rejected(&error) =>
                 {
-                    self.prompt_cache_key_state
-                        .store(PROMPT_CACHE_KEY_UNSUPPORTED, Ordering::Relaxed);
+                    self.remember_prompt_cache_key_rejection();
                     body.prompt_cache_key = None;
                     body.cache_diagnostics.key_requested = false;
                     body.cache_diagnostics.downgraded = true;

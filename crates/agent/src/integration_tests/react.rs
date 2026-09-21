@@ -258,6 +258,7 @@ async fn loop_pauses_on_pending_ask_instead_of_heuristic_final() {
     ];
     let snapshot = ReActSnapshot {
         events: seed_events_from_canonical(canonical),
+        event_cursor: 0,
         step_number: 1,
         branch_points: HashMap::new(),
         last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
@@ -1568,6 +1569,7 @@ async fn continue_session_resumes_errored_session() {
             source: None,
             id: None,
         }]),
+        event_cursor: 0,
         step_number: 1,
         branch_points: HashMap::new(),
         last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
@@ -1661,6 +1663,7 @@ async fn continue_session_preserves_history_without_an_error_partial_marker() {
     );
     let snapshot = ReActSnapshot {
         events: seed_events_from_canonical(vec![CanonicalMessage::user_text("opening")]),
+        event_cursor: 0,
         step_number: 1,
         branch_points,
         last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),

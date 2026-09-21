@@ -283,14 +283,14 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
         request: "SwitchModelRequest",
         response: "()",
         boundary: CommandBoundary::Mutate,
-        security: "role slot validated before config save",
+        security: "model id or RequestKind selector validated before config save",
     },
     CommandContract {
         name: "set_reasoning_effort",
         request: "SetReasoningEffortRequest",
         response: "()",
         boundary: CommandBoundary::Mutate,
-        security: "role slot validated before config save",
+        security: "model id or RequestKind selector validated before config save",
     },
     CommandContract {
         name: "set_web_search",

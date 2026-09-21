@@ -114,6 +114,7 @@ impl AgentLayer {
                     .and_then(|json| ReActSnapshot::from_json(json).ok())
                     .unwrap_or_default();
                 snapshot.events = durable.events;
+                snapshot.event_cursor = snapshot.events.len();
                 snapshot.branch_points = durable.branch_points;
                 snapshot
             }
@@ -178,6 +179,7 @@ impl AgentLayer {
 
         // Restore the append-only event log to the recorded cursor.
         snapshot.events.truncate(bp.event_cursor);
+        snapshot.event_cursor = snapshot.events.len();
         snapshot.step_number = bp.step_number;
 
         // If the branch point was saved right after a ToolCall event but
@@ -187,6 +189,7 @@ impl AgentLayer {
         // Trim the dangling ToolCall (and its Thought) so the loop
         // re-requests the tool call cleanly.
         crate::rollback_support::trim_dangling_tool_call(&mut snapshot.events);
+        snapshot.event_cursor = snapshot.events.len();
 
         // Newest branch-point cutoff (computed BEFORE pruning): used below to
         // detect a user message persisted after every branch point.

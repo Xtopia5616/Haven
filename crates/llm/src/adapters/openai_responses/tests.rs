@@ -1204,6 +1204,82 @@ fn prompt_cache_key_changes_when_tools_change_or_is_unsupported() {
 }
 
 #[test]
+fn prompt_cache_key_restarts_after_compaction_and_stays_stable_afterward() {
+    let client = OpenAiResponsesAdapter::new(ModelEndpoint::default());
+    let system = CanonicalMessage::system(vec![ContentPart::text("stable system")]);
+    let anchor = CanonicalMessage::user_text("session anchor");
+    let before = client
+        .build_request_body(vec![system.clone(), anchor.clone()], Vec::new(), false)
+        .prompt_cache_key;
+
+    let mut summary = CanonicalMessage::assistant(
+        vec![ContentPart::text(format!(
+            "{} summarized history",
+            haven_common::prompts::COMPACTED_SUMMARY_PREFIX
+        ))],
+        None,
+        None,
+        Vec::new(),
+        Vec::new(),
+    );
+    summary.id = Some("msg-compaction-1".into());
+    let after = client
+        .build_request_body(
+            vec![system.clone(), anchor.clone(), summary.clone()],
+            Vec::new(),
+            false,
+        )
+        .prompt_cache_key;
+    let after_next_turn = client
+        .build_request_body(vec![system, anchor, summary], Vec::new(), false)
+        .prompt_cache_key;
+
+    assert_ne!(before, after);
+    assert_eq!(after, after_next_turn);
+}
+
+#[test]
+fn prompt_cache_key_tracks_raw_media_surface_without_hashing_media_bytes() {
+    let client = OpenAiResponsesAdapter::new(ModelEndpoint::default());
+    let system = CanonicalMessage::system(vec![ContentPart::text("stable system")]);
+    let text_only = client
+        .build_request_body(
+            vec![system.clone(), CanonicalMessage::user_text("attachment")],
+            Vec::new(),
+            false,
+        )
+        .prompt_cache_key;
+    let image = CanonicalMessage {
+        role: CanonicalRole::User,
+        content: vec![ContentPart::Image {
+            content_type: "image_url".into(),
+            media_type: "image/png".into(),
+            data: "aGVsbG8=".into(),
+        }],
+        tool_calls: None,
+        tool_call_id: None,
+        reasoning: None,
+        web_search_calls: Vec::new(),
+        thinking_blocks: Vec::new(),
+        source: None,
+        id: None,
+    };
+    let raw_image = client
+        .build_request_body(vec![system.clone(), image.clone()], Vec::new(), false)
+        .prompt_cache_key;
+    let mut different_bytes = image;
+    if let ContentPart::Image { data, .. } = &mut different_bytes.content[0] {
+        *data = "d29ybGQ=".into();
+    }
+    let same_surface = client
+        .build_request_body(vec![system, different_bytes], Vec::new(), false)
+        .prompt_cache_key;
+
+    assert_ne!(text_only, raw_image);
+    assert_eq!(raw_image, same_surface);
+}
+
+#[test]
 fn prompt_cache_key_rejection_detection_is_specific() {
     assert!(OpenAiResponsesAdapter::prompt_cache_key_rejected(
         &LlmError::RequestFailed("400: Unknown parameter: prompt_cache_key".into())
@@ -1345,6 +1421,24 @@ async fn rejected_prompt_cache_key_retries_without_key_and_disables_it() {
     );
     server.await.unwrap();
     assert_eq!(*seen_keys.lock().unwrap(), vec![true, false]);
+}
+
+#[test]
+fn rejected_prompt_cache_key_is_reprobed_after_cooldown() {
+    let client = OpenAiResponsesAdapter::new(ModelEndpoint::default());
+    client
+        .prompt_cache_key_state
+        .store(PROMPT_CACHE_KEY_UNSUPPORTED, Ordering::Relaxed);
+    client.prompt_cache_key_retry_at.store(1, Ordering::Relaxed);
+
+    let key = client.prompt_cache_key(
+        &[CanonicalMessage::system(vec![ContentPart::text(
+            "stable system",
+        )])],
+        &[],
+        WebSearchMode::Off,
+    );
+    assert!(key.is_some());
 }
 
 #[tokio::test]

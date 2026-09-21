@@ -19,6 +19,7 @@ async fn rollback_with_snapshot_no_branch_point_uses_snapshot() {
     }];
     let snapshot = ReActSnapshot {
         events: seed_events_from_canonical(canonical.clone()),
+        event_cursor: 0,
         step_number: 1,
         branch_points: HashMap::new(),
         last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
@@ -120,6 +121,7 @@ async fn rollback_pause_true_removes_user_message_from_session() {
     );
     let snapshot = ReActSnapshot {
         events: seed_events_from_canonical(canonical),
+        event_cursor: 0,
         step_number: 1,
         branch_points,
         last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
@@ -217,6 +219,7 @@ async fn rollback_fallback_no_branch_point_pause_true_deletes_from_last_user_mes
     );
     let snapshot = ReActSnapshot {
         events: seed_events_from_canonical(canonical),
+        event_cursor: 0,
         step_number: 2,
         branch_points,
         last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
@@ -304,6 +307,7 @@ async fn rollback_errors_when_target_message_id_does_not_match() {
     );
     let snapshot = ReActSnapshot {
         events: seed_events_from_canonical(canonical),
+        event_cursor: 0,
         step_number: 2,
         branch_points,
         last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
@@ -492,6 +496,7 @@ async fn rollback_pause_uses_target_message_ts_not_latest_user() {
     );
     let snapshot = ReActSnapshot {
         events: seed_events_from_canonical(canonical),
+        event_cursor: 0,
         step_number: 1,
         branch_points,
         last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
@@ -618,6 +623,7 @@ async fn rollback_pause_matches_compacted_message_id() {
     );
     let snapshot = ReActSnapshot {
         events: seed_events_from_canonical(canonical),
+        event_cursor: 0,
         step_number: 2,
         branch_points,
         last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),

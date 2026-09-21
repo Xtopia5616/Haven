@@ -24,7 +24,7 @@ Haven 采用三层模型-facing capability surface：
    少量基础读取 operation。它们在 global `ToolRegistry` 中注册，每次请求都可以使用。
 2. **延迟 builtin / Skill 层**：完整实现和 schema 保留在 host-owned `DeferredToolCatalog`，
    但不进入 provider `tools[]`。模型先从第一层 family/root 索引和 `tool_catalog` 查询看到
-   operation，再调用 `load_builtin` 或 `load_skill`。loader 在当前 `SessionCatalog` 中以
+   operation，再调用 `tool_catalog` 的 `action=load` 或 `load_skill`。loader 在当前 `SessionCatalog` 中以
    原子批次注册选中的工具，并受 `max_tools_per_request` 限制。
 3. **MCP 层**：模型只看到服务器名、描述和工具数量/短名称索引；`load_mcp` 仍按服务器发现
    并把结果注册到当前 session。服务器加载结果只返回紧凑摘要，完整 MCP schema 在下一次请求
@@ -37,7 +37,7 @@ Haven 采用三层模型-facing capability surface：
 
 ## 交互与恢复契约
 
-- `load_builtin` 接受精确 `operations` 或 `roots`，去重后在预算内一次性加载；超预算返回可供
+- `tool_catalog` 的 `action=load` 接受精确 `operations` 或 `roots`，去重后在预算内一次性加载；超预算返回可供
   模型缩小选择的紧凑列表，不部分写入。
 - `load_skill` 接受 Skill 名称（兼容 `skill__name` 和展示名），按 session 加载对应 adapter；
   它不会把其它 Skill schema 带入当前请求。

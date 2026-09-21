@@ -7,6 +7,7 @@ use serde_json::{Value, json};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Mutex;
 
 use crate::adapters::{
     LineMode, MAX_JSON_RESPONSE_BYTES, WebSearchMode, build_client, build_headers, empty_chunk,
@@ -52,6 +53,23 @@ pub struct GeminiAdapter {
     endpoint: ModelEndpoint,
     client: reqwest::Client,
     web_search_mode: WebSearchMode,
+    cached_content: Mutex<GeminiCacheState>,
+}
+
+/// Gemini explicit caches are provider resources, not a local prompt key.
+/// Keep only one active fingerprint per adapter and a bounded negative result;
+/// this bounds local state while provider-side entries are bounded by their
+/// TTL and still allows a later capability change to recover.
+#[derive(Debug, Default)]
+pub(super) struct GeminiCacheState {
+    pub(super) entry: Option<GeminiCacheEntry>,
+    pub(super) unavailable: Option<(String, u64)>,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct GeminiCacheEntry {
+    pub(super) fingerprint: String,
+    pub(super) name: String,
 }
 
 impl GeminiAdapter {
@@ -62,6 +80,7 @@ impl GeminiAdapter {
             endpoint,
             client,
             web_search_mode,
+            cached_content: Mutex::new(GeminiCacheState::default()),
         })
     }
 
@@ -88,13 +107,14 @@ impl GeminiAdapter {
         tools: Vec<ToolDefinition>,
         max_output_tokens: Option<u32>,
     ) -> Result<LlmResponse, LlmError> {
-        let body = self.build_request_body_with_mode_and_max_tokens(
+        let mut body = self.build_request_body_with_mode_and_max_tokens(
             messages,
             tools,
             self.web_search_mode,
             max_output_tokens.unwrap_or(self.endpoint.max_tokens),
         );
-        let cache_diagnostics = body.cache_diagnostics.clone();
+        let uncached_body = body.clone();
+        self.prepare_cached_content(&mut body).await;
         let url = self.generate_url();
         tracing::debug!(
             endpoint = %crate::client::endpoint_log_location(&url),
@@ -108,14 +128,10 @@ impl GeminiAdapter {
             "POST provider request body: {} chars",
             serde_json::to_string(&body).map(|s| s.len()).unwrap_or(0)
         );
-        let mut req = self
-            .client
-            .post(&url)
-            .headers(self.build_headers()?)
-            .json(&body);
-        // §2.9: per-request timeout for non-streaming
-        req = req.timeout(Duration::from_secs(self.endpoint.timeout_secs));
-        let resp = send_request(req, None).await?;
+        let resp = self
+            .send_generate_request(&url, &mut body, &uncached_body, false)
+            .await?;
+        let cache_diagnostics = body.cache_diagnostics.clone();
 
         let txt = read_text_bounded(resp, MAX_JSON_RESPONSE_BYTES).await?;
         tracing::trace!("provider response body: {} chars", txt.len());

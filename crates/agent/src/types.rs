@@ -140,18 +140,31 @@ pub struct RunBudget {
     pub session_max_steps: Option<u32>,
 }
 
+/// Number of transcript records retained in a serialized snapshot cache.
+///
+/// The durable event stream is unbounded and lives in `session_events`. A
+/// small tail is useful for diagnostics and for importing the tiny number of
+/// pre-event-store snapshots that were written by tests, but it must never be
+/// mistaken for a resumable transcript.
+pub const SNAPSHOT_EVENT_TAIL_LIMIT: usize = 32;
+
 /// Serializable snapshot of the ReAct loop state for pause/resume.
 ///
-/// `events` is a hot cache of the durable session event stream. Canonical and
-/// [`ReActRound`]s are derived via [`project_transcript`] / [`Self::project`];
-/// resume must replace this cache from `SessionEventStore` before projecting.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
+/// `events` is process-local recovery scratch. It is intentionally omitted
+/// from serialization; the durable transcript is `session_events`. New
+/// snapshots carry only `event_cursor` and a bounded `event_tail` cache.
+/// Canonical and [`ReActRound`]s are derived via [`project_transcript`] /
+/// [`Self::project`]; resume replaces the scratch cache from `SessionEventStore`
+/// before projecting.
+#[derive(Debug, Clone, Default)]
 pub struct ReActSnapshot {
+    /// Active transcript loaded from `session_events`; never serialized.
     pub events: Vec<TranscriptRecord>,
+    /// Number of active transcript records represented by the durable event
+    /// stream when this checkpoint was written.
+    pub event_cursor: usize,
     pub step_number: u32,
     /// Rollback points keyed by step number for overwrite rollback (§2).
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub branch_points: HashMap<u32, BranchPoint>,
     /// Highest durable message ingress sequence included when this snapshot
     /// was written. Resume recovers rows strictly after this cursor.
@@ -160,15 +173,106 @@ pub struct ReActSnapshot {
     /// Continue may then use this step's branch point to replace the failed
     /// attempt. A normal periodic snapshot leaves this `None`, so an app or
     /// process interruption cannot truncate later completed history.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error_partial_message_ids: Option<Vec<String>>,
     /// Canonical lifecycle records for ask/confirm/scheduled-confirm waits.
     /// This is the only persisted interaction authority.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub interactions: Vec<crate::interaction::InteractionRequest>,
     /// Last run's effective step budget (R4). Absent before a run starts.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_budget: Option<RunBudget>,
+}
+
+fn slice_is_empty<T>(slice: &[T]) -> bool {
+    slice.is_empty()
+}
+
+#[derive(Serialize)]
+struct ReActSnapshotWire<'a> {
+    event_cursor: usize,
+    #[serde(skip_serializing_if = "slice_is_empty")]
+    event_tail: &'a [TranscriptRecord],
+    step_number: u32,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    branch_points: &'a HashMap<u32, BranchPoint>,
+    last_ingress_seq: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    error_partial_message_ids: Option<&'a [String]>,
+    #[serde(default, skip_serializing_if = "slice_is_empty")]
+    interactions: &'a [crate::interaction::InteractionRequest],
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    run_budget: Option<&'a RunBudget>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReActSnapshotWireOwned {
+    /// Accepted only to import snapshots written before the event-store
+    /// cutover. It is never emitted by the current serializer.
+    #[serde(default)]
+    events: Vec<TranscriptRecord>,
+    #[serde(default)]
+    event_tail: Vec<TranscriptRecord>,
+    #[serde(default)]
+    event_cursor: Option<usize>,
+    step_number: u32,
+    #[serde(default)]
+    branch_points: HashMap<u32, BranchPoint>,
+    #[serde(default)]
+    last_ingress_seq: i64,
+    #[serde(default)]
+    error_partial_message_ids: Option<Vec<String>>,
+    #[serde(default)]
+    interactions: Vec<crate::interaction::InteractionRequest>,
+    #[serde(default)]
+    run_budget: Option<RunBudget>,
+}
+
+impl Serialize for ReActSnapshot {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let event_cursor = self.event_cursor.max(self.events.len());
+        let tail_start = self.events.len().saturating_sub(SNAPSHOT_EVENT_TAIL_LIMIT);
+        ReActSnapshotWire {
+            event_cursor,
+            event_tail: &self.events[tail_start..],
+            step_number: self.step_number,
+            branch_points: &self.branch_points,
+            last_ingress_seq: self.last_ingress_seq,
+            error_partial_message_ids: self.error_partial_message_ids.as_deref(),
+            interactions: &self.interactions,
+            run_budget: self.run_budget.as_ref(),
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for ReActSnapshot {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = ReActSnapshotWireOwned::deserialize(deserializer)?;
+        // `events` is the pre-cutover shape; `event_tail` is the bounded
+        // current cache. Prefer the former only when importing that legacy
+        // shape, otherwise expose the tail through the same in-memory API.
+        let events = if wire.events.is_empty() {
+            wire.event_tail
+        } else {
+            wire.events
+        };
+        let event_cursor = wire.event_cursor.unwrap_or(events.len());
+        Ok(Self {
+            events,
+            event_cursor,
+            step_number: wire.step_number,
+            branch_points: wire.branch_points,
+            last_ingress_seq: wire.last_ingress_seq,
+            error_partial_message_ids: wire.error_partial_message_ids,
+            interactions: wire.interactions,
+            run_budget: wire.run_budget,
+        })
+    }
 }
 
 impl ReActSnapshot {
@@ -177,9 +281,11 @@ impl ReActSnapshot {
     }
     /// Parse the current snapshot-cache shape.
     ///
-    /// Snapshot upgrades are deliberately unsupported: a snapshot without
-    /// `events` still has a versioned shape and incompatible cache payloads
-    /// are rejected when no durable event stream is available.
+    /// The deserializer still accepts the old full-`events` shape so a session
+    /// with no `session_events` rows can be imported exactly once. Current
+    /// snapshots expose only a bounded tail through the same in-memory field;
+    /// callers must reject it as a recovery source when `event_cursor` is
+    /// larger than `events.len()`.
     pub fn from_json(json: &str) -> anyhow::Result<Self> {
         let snapshot: Self = serde_json::from_str(json)
             .map_err(|e| anyhow::anyhow!("corrupt or incompatible react_state: {e}"))?;
@@ -771,7 +877,9 @@ mod tests {
         );
         let json = serde_json::to_string(&snapshot).unwrap();
         assert!(json.contains("branch_points"));
-        assert!(json.contains("events"));
+        assert!(json.contains("event_cursor"));
+        assert!(json.contains("event_tail"));
+        assert!(!json.contains("\"events\""));
         assert!(!json.contains("\"canonical\""));
         assert!(!json.contains("\"history\""));
         let back = ReActSnapshot::from_json(&json).unwrap();
@@ -780,6 +888,40 @@ mod tests {
         assert_eq!(back.branch_points.get(&4).unwrap().event_cursor, 1);
         let (canonical, _) = back.project();
         assert_eq!(canonical.len(), 1);
+        assert_eq!(back.event_cursor, 1);
+    }
+
+    #[test]
+    fn snapshot_serialization_keeps_only_a_bounded_event_tail() {
+        let events = (0..(SNAPSHOT_EVENT_TAIL_LIMIT + 7))
+            .map(|index| TranscriptRecord::UserInject {
+                step_number: index as u32,
+                source: InjectSource::FollowUp,
+                text: format!("message-{index}"),
+                media_inputs: Vec::new(),
+                message_id: None,
+            })
+            .collect::<Vec<_>>();
+        let snapshot = ReActSnapshot {
+            event_cursor: events.len(),
+            events,
+            ..Default::default()
+        };
+
+        let json = serde_json::to_string(&snapshot).unwrap();
+        assert!(!json.contains("\"events\""));
+        assert!(json.contains(&format!(
+            "\"event_cursor\":{}",
+            SNAPSHOT_EVENT_TAIL_LIMIT + 7
+        )));
+
+        let restored = ReActSnapshot::from_json(&json).unwrap();
+        assert_eq!(restored.event_cursor, SNAPSHOT_EVENT_TAIL_LIMIT + 7);
+        assert_eq!(restored.events.len(), SNAPSHOT_EVENT_TAIL_LIMIT);
+        assert_eq!(
+            serde_json::to_string(&restored.events[0]).unwrap(),
+            serde_json::to_string(&snapshot.events[7]).unwrap()
+        );
     }
 
     #[test]

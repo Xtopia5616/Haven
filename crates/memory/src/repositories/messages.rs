@@ -702,6 +702,7 @@ fn read_host_media(path: &str) -> Option<Vec<u8>> {
 mod tests {
     use super::*;
     use crate::db::Database;
+    use haven_common::config::RequestKind;
 
     fn test_db() -> Database {
         Database::open_in_memory().expect("create in-memory db")
@@ -1148,7 +1149,7 @@ mod tests {
         db.persist_llm_call_and_refresh_session_usage(
             &tid,
             Some(1),
-            "default_model",
+            RequestKind::Chat,
             None,
             10,
             5,
@@ -1169,7 +1170,7 @@ mod tests {
         db.persist_llm_call_and_refresh_session_usage(
             &tid,
             Some(2),
-            "default_model",
+            RequestKind::Chat,
             None,
             20,
             10,

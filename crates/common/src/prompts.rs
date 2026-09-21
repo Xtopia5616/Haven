@@ -145,7 +145,7 @@ pub const TOOL_USAGE_NOTES: &str = "Tool usage notes:\n\
 - Capability discovery has three layers: layer 1 is the family summary in this prompt (`system`, `agent`, `haven`, plus optional `skills`/`mcp`); layer 2 is a root such as `window` or `files`; layer 3 is one exact operation such as `window.screenshot`.\n\
 - Use `tool_catalog` with `{\"action\":\"list\"}` for the top-level family list. Use `{\"action\":\"list\",\"level\":\"tools\"}` for root names, `{\"action\":\"describe\",\"name\":\"window\"}` or `{\"action\":\"list\",\"level\":\"operations\",\"root\":\"window\"}` for a root's child operations, and `{\"action\":\"describe\",\"name\":\"window.screenshot\"}` for one operation's description and schema. Follow `next_cursor` for paged lists.\n\
 - For the complete operation list, set `level` to `operations`; add `root` to scope it to one root.\n\
-- Discovery does not load or execute a capability. After layer-3 inspection, use `load_builtin` with the exact builtin operation, `load_skill` with the Skill name, or `load_mcp` with the server and selected raw tool names; the next turn receives the callable schema in `tools[]`.\n\
+- Discovery does not execute a capability. After layer-3 inspection, use `tool_catalog` with action=load and source=builtin for an exact operation (or roots for a whole root), `load_skill` with the Skill name, or `load_mcp` with the server and selected raw tool names; the next turn receives the callable schema in `tools[]`.\n\
 - Prefer `files.outline`/`files.search` to locate unfamiliar source, then `files.read` for exact text. Follow `next_offset` or `next_page.start_line`; do not repeat a truncated call.\n\
 - Use the exact dotted operation and fields in `tools[]`; never invent hidden arguments. Carry returned `asset_id` values into later media, screenshot, or attachment operations.\n\
 - `shell` is non-interactive; `http` fetches a known URL, not search. For desktop work, inspect the target first and re-check after acting.\n\
@@ -287,7 +287,7 @@ mod tests {
         assert!(out.contains("Available capability families"));
         assert!(out.contains("- read_file: read a file"));
         assert!(out.contains("Tool usage notes:"));
-        assert!(out.contains("load_builtin"));
+        assert!(out.contains("action=load") || out.contains("action\\\":\\\"load"));
         assert!(out.contains("tools[]"));
         assert!(!out.contains("Steps so far:"));
         assert!(out.ends_with("End of stable instructions.\n"));

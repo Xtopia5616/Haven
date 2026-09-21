@@ -1102,7 +1102,7 @@ impl EventDispatcher {
                 context_window: usage.context_window,
                 step_number: usage.step_number,
                 duration_ms: usage.duration_ms,
-                role: usage.role,
+                role: usage.request_kind,
                 call_kind: usage.call_kind,
                 has_cost: usage.has_cost,
             })
@@ -1138,7 +1138,9 @@ pub struct UsagePayload {
     pub context_window: Option<u32>,
     pub step_number: Option<u32>,
     pub duration_ms: Option<u64>,
-    pub role: Option<String>,
+    /// Request kind; the `AgentEvent::Usage.role` field preserves the legacy
+    /// wire name for the frontend contract.
+    pub request_kind: Option<String>,
     pub call_kind: String,
     pub has_cost: bool,
 }

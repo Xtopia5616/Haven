@@ -758,6 +758,99 @@ fn serialized_request_uses_gemini_rest_wire_names() {
 }
 
 #[test]
+fn cached_content_rejection_detection_is_specific() {
+    assert!(GeminiAdapter::cached_content_rejected(
+        &LlmError::RequestFailed("400 CachedContent can not be used with GenerateContent".into(),)
+    ));
+    assert!(!GeminiAdapter::cached_content_rejected(
+        &LlmError::RequestFailed("400 maximum context length exceeded".into(),)
+    ));
+}
+
+#[tokio::test]
+async fn explicit_cache_replaces_system_and_tools_and_reuses_resource() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 1024];
+        loop {
+            let n = socket.read(&mut chunk).await.unwrap();
+            if n == 0 {
+                break;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+            let Some(header_end) = buf.windows(4).position(|w| w == b"\r\n\r\n") else {
+                continue;
+            };
+            let headers = String::from_utf8_lossy(&buf[..header_end]).to_ascii_lowercase();
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    line.strip_prefix("content-length:")
+                        .and_then(|value| value.trim().parse::<usize>().ok())
+                })
+                .unwrap_or(0);
+            if buf.len() >= header_end + 4 + content_length {
+                break;
+            }
+        }
+        let header_end = buf.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+        let body = String::from_utf8_lossy(&buf[header_end + 4..]);
+        assert!(body.contains("systemInstruction"));
+        assert!(body.contains("ttl"));
+        let response = r#"{"name":"cachedContents/haven-test"}"#;
+        let wire = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",
+            response.len()
+        );
+        socket.write_all(wire.as_bytes()).await.unwrap();
+    });
+
+    let client = GeminiAdapter::new(ModelEndpoint {
+        base_url: format!("http://{addr}"),
+        api_key: "test-key".into(),
+        ..Default::default()
+    });
+    let messages = vec![CanonicalMessage::system(vec![ContentPart::text(format!(
+        "stable{SESSION_CONTEXT_FENCE_START}session"
+    ))])];
+    let tools = vec![ToolDefinition {
+        tool_type: "function".into(),
+        function: ToolFunction {
+            name: "inspect".into(),
+            description: "inspect state".into(),
+            parameters: json!({"type": "object"}),
+        },
+    }];
+    let mut body = client.build_request_body(messages.clone(), tools.clone(), false);
+    client.prepare_cached_content(&mut body).await;
+    assert_eq!(
+        body.cached_content.as_deref(),
+        Some("cachedContents/haven-test")
+    );
+    assert!(body.system_instruction.is_none());
+    assert!(body.tools.is_none());
+    assert_eq!(body.cache_diagnostics.mode, "explicit");
+    assert!(body.cache_diagnostics.system_split);
+    let wire = serde_json::to_value(&body).unwrap();
+    assert_eq!(wire["cachedContent"], "cachedContents/haven-test");
+    assert!(wire.get("systemInstruction").is_none());
+    assert!(wire.get("tools").is_none());
+
+    let mut reused = client.build_request_body(messages, tools, false);
+    client.prepare_cached_content(&mut reused).await;
+    assert_eq!(
+        reused.cached_content.as_deref(),
+        Some("cachedContents/haven-test")
+    );
+    server.await.unwrap();
+}
+
+#[test]
 fn generate_url_strips_models_prefix() {
     let client = GeminiAdapter::new(ModelEndpoint {
         model_name: "models/gemini-3.7-flash".into(),

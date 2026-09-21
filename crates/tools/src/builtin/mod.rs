@@ -10,7 +10,6 @@ pub mod file_search;
 pub mod files;
 pub mod http;
 pub mod input;
-pub mod load_builtin;
 pub mod load_mcp;
 pub mod load_skill;
 pub mod media;
@@ -74,7 +73,10 @@ pub(crate) async fn resolve_media_capabilities(
             .image
             .is_supported();
 
-    let transcribe_available = if router.is_request_configured(RequestKind::Transcription).await {
+    let transcribe_available = if router
+        .is_request_configured(RequestKind::Transcription)
+        .await
+    {
         let configured = router
             .is_request_configured(RequestKind::Transcription)
             .await;
@@ -224,22 +226,12 @@ pub async fn register_builtin_tools(
         media_audio::AudioRuntime::with_tts(audio_pipeline, tts_client)
             .with_managed_assets(managed_assets.clone()),
     );
-    let has_enabled_mcp = server_configs
-        .read()
-        .await
-        .values()
-        .any(|server| server.enabled);
     tools.push(Arc::new(ask::typed_adapter()));
-    tools.push(Arc::new(load_builtin::LoadBuiltinTool {
-        deferred_catalog: deferred_catalog.clone(),
-        registry: registry.clone(),
-        session_catalog: session_catalog.clone(),
-        max_tools_per_request: limits.max_tools_per_request.max(1),
-    }));
     tools.push(Arc::new(tool_catalog::ToolCatalogTool {
         deferred_catalog: deferred_catalog.clone(),
         registry: registry.clone(),
         session_catalog: session_catalog.clone(),
+        max_tools_per_request: limits.max_tools_per_request.max(1),
         mcp_manager: mcp_manager.clone(),
         server_configs: server_configs.clone(),
     }));
@@ -372,36 +364,34 @@ pub async fn register_builtin_tools(
     // Skills are executable adapters in the deferred catalog. They become
     // provider-visible only after the model explicitly loads one or more.
     let skill_runner = skill_runner.read().await.clone();
-    let mut has_enabled_skill = false;
     for skill in skills_engine
         .list_skills()
         .await
         .into_iter()
         .filter(|skill| skill.enabled())
     {
-        has_enabled_skill = true;
         tools.push(Arc::new(crate::SkillToolAdapter::new(
             Arc::new(skill),
             skill_runner.clone(),
         )));
     }
-    if has_enabled_skill {
-        tools.push(Arc::new(load_skill::LoadSkillTool {
-            deferred_catalog: deferred_catalog.clone(),
-            registry: registry.clone(),
-            session_catalog: session_catalog.clone(),
-            max_tools_per_request: max_tools,
-        }));
-    }
-    if has_enabled_mcp {
-        tools.push(Arc::new(load_mcp::LoadMcpTool {
-            mcp_manager: mcp_manager.clone(),
-            server_configs: server_configs.clone(),
-            registry: registry.clone(),
-            session_catalog,
-            max_tools_per_request: max_tools,
-        }));
-    }
+    // Keep the control-plane surface stable even when no optional Skill or
+    // MCP provider is configured. The loader returns a precise unavailable
+    // result; the model should not have to infer capability availability from
+    // a changing provider tool list.
+    tools.push(Arc::new(load_skill::LoadSkillTool {
+        deferred_catalog: deferred_catalog.clone(),
+        registry: registry.clone(),
+        session_catalog: session_catalog.clone(),
+        max_tools_per_request: max_tools,
+    }));
+    tools.push(Arc::new(load_mcp::LoadMcpTool {
+        mcp_manager: mcp_manager.clone(),
+        server_configs: server_configs.clone(),
+        registry: registry.clone(),
+        session_catalog,
+        max_tools_per_request: max_tools,
+    }));
     if let Some(ctx) = admin_context {
         // Facts memory needs the DB; it is registered only once the desktop
         // shell wires the app context (headless builds skip it).

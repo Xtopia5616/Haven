@@ -1,5 +1,5 @@
 use crate::registry::{DeferredToolCatalog, SessionCatalog};
-use crate::{McpToolAdapter, Tool, ToolRegistry, ToolResult};
+use crate::{McpToolAdapter, Tool, ToolBox, ToolRegistry, ToolResult};
 use haven_common::tools::{ToolCatalogGroup, ToolDef, ToolSource};
 use haven_common::types::RiskLevel;
 use haven_mcp::{McpManager, McpToolInfo};
@@ -12,14 +12,15 @@ use tokio_util::sync::CancellationToken;
 const DEFAULT_PAGE_SIZE: usize = 32;
 const MAX_PAGE_SIZE: usize = 64;
 
-/// Query the host-owned capability catalog without loading the returned tools
-/// into the current provider surface. The agent can use this to discover a
-/// complete list or inspect one exact capability, then call the appropriate
-/// loader when it is ready to use it.
+/// Query the host-owned capability catalog and activate selected built-in
+/// operation views for the current session. Discovery actions remain read-only;
+/// the explicit `load` action is the only path that changes the session
+/// provider surface.
 pub struct ToolCatalogTool {
     pub deferred_catalog: DeferredToolCatalog,
     pub registry: ToolRegistry,
     pub session_catalog: SessionCatalog,
+    pub max_tools_per_request: usize,
     pub mcp_manager: Arc<McpManager>,
     pub server_configs:
         Arc<RwLock<std::collections::HashMap<String, haven_common::McpServerConfig>>>,
@@ -46,6 +47,12 @@ pub struct ToolCatalogParams {
     /// catalog is rejected instead of silently skipping or duplicating items.
     #[serde(default)]
     pub revision: Option<String>,
+    /// Exact dotted built-in operation names to activate for this session.
+    #[serde(default)]
+    pub operations: Option<Vec<String>>,
+    /// Built-in roots to activate for this session.
+    #[serde(default)]
+    pub roots: Option<Vec<String>>,
     #[serde(default, rename = "_session_id")]
     pub session_id: Option<String>,
 }
@@ -180,13 +187,15 @@ impl ToolCatalogTool {
             .filter(|value| !value.is_empty())
             .ok_or_else(|| anyhow::anyhow!("session context required to query tool catalog"))?;
 
-        let revision = self.catalog_revision(&session_id).await;
-        if params.cursor.unwrap_or(0) > 0 && params.revision.as_deref() != Some(revision.as_str()) {
+        let initial_revision = self.catalog_revision(&session_id).await;
+        if params.cursor.unwrap_or(0) > 0
+            && params.revision.as_deref() != Some(initial_revision.as_str())
+        {
             return Ok(ToolResult::ok(serde_json::json!({
                 "status": "stale_cursor",
                 "action": params.action,
                 "source": source.as_str(),
-                "catalog_revision": revision,
+                "catalog_revision": initial_revision,
                 "restart_cursor": 0,
                 "hint": "The capability catalog changed; restart this list from cursor 0.",
             })));
@@ -217,9 +226,104 @@ impl ToolCatalogTool {
                     .ok_or_else(|| anyhow::anyhow!("name is required for action 'describe'"))?;
                 self.describe(&session_id, source, name).await
             }
-            other => anyhow::bail!("action must be one of list or describe; got '{other}'"),
+            "load" => {
+                if !matches!(source, CatalogSource::All | CatalogSource::Builtin) {
+                    anyhow::bail!("action 'load' only supports source 'builtin'");
+                }
+                self.load_builtin_operations(&session_id, params.operations, params.roots, cancel)
+                    .await
+            }
+            other => anyhow::bail!("action must be one of list, describe, or load; got '{other}'"),
         }?;
+        let revision = self.catalog_revision(&session_id).await;
         Self::add_revision(result, &revision)
+    }
+
+    async fn load_builtin_operations(
+        &self,
+        session_id: &str,
+        operations: Option<Vec<String>>,
+        roots: Option<Vec<String>>,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
+        if cancel.is_cancelled() {
+            return Ok(ToolResult::cancelled("cancelled"));
+        }
+        let operations = normalize_names(operations);
+        let roots = normalize_names(roots);
+        if operations.is_empty() && roots.is_empty() {
+            anyhow::bail!("provide at least one operation or root to load built-in tools");
+        }
+
+        let deferred = self.deferred_catalog.list().await;
+        let builtin: Vec<_> = deferred
+            .into_iter()
+            .filter(|tool| is_builtin(&tool.tool_def()))
+            .collect();
+        let requested: Vec<_> = builtin
+            .iter()
+            .filter(|tool| {
+                let name = tool.name();
+                let root = operation_root(&name);
+                (operations.is_empty() || operations.iter().any(|value| value == &name))
+                    || roots.iter().any(|value| value == root)
+            })
+            .cloned()
+            .collect();
+        let requested_names: HashSet<_> = requested.iter().map(|tool| tool.name()).collect();
+        let missing_operations: Vec<_> = operations
+            .iter()
+            .filter(|name| !requested_names.contains(*name))
+            .cloned()
+            .collect();
+        if requested.is_empty() {
+            anyhow::bail!(
+                "no matching enabled built-in operation; available deferred operations: {}",
+                builtin
+                    .iter()
+                    .map(|tool| tool.name())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+
+        let global_count = self.registry.list().await.len();
+        let max = self.max_tools_per_request.max(1);
+        match self
+            .session_catalog
+            .register_many_if_within_budget(session_id, global_count, max, requested.clone())
+            .await
+        {
+            Ok(loaded) => {
+                let mut output = serde_json::json!({
+                    "status": if loaded.is_empty() { "already_loaded" } else { "loaded" },
+                    "action": "load",
+                    "source": "builtin",
+                    "operations": loaded,
+                    "available_now": requested.iter().map(|tool| tool.name()).collect::<Vec<_>>(),
+                });
+                if !missing_operations.is_empty() {
+                    output["missing_operations"] = serde_json::json!(missing_operations);
+                }
+                Ok(ToolResult::ok(output))
+            }
+            Err(net_new) => {
+                let session_count = self.session_catalog.list_defs(session_id).await.len();
+                let remaining = max.saturating_sub(global_count.saturating_add(session_count));
+                Ok(ToolResult::ok(serde_json::json!({
+                    "status": "needs_selection",
+                    "action": "load",
+                    "source": "builtin",
+                    "reason": format!(
+                        "Loading these {} built-in operations would exceed the per-request limit of {}. Choose at most {} operation(s).",
+                        net_new, max, remaining
+                    ),
+                    "available_operations": compact_entries(&requested),
+                    "remaining_budget": remaining,
+                    "max_tools_per_request": max,
+                })))
+            }
+        }
     }
 
     async fn catalog_revision(&self, session_id: &str) -> String {
@@ -601,8 +705,8 @@ impl Tool for ToolCatalogTool {
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["list", "describe"],
-                    "description": "Use list for the catalog or describe for one exact capability"
+                    "enum": ["list", "describe", "load"],
+                    "description": "Use list for discovery, describe for one exact capability, or load to activate selected built-in operations"
                 },
                 "level": {
                     "type": "string",
@@ -649,11 +753,38 @@ impl Tool for ToolCatalogTool {
                     "type": "string",
                     "maxLength": 128,
                     "description": "Catalog revision returned with a prior page; required when following next_cursor"
+                },
+                "operations": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 64,
+                    "uniqueItems": true,
+                    "items": { "type": "string", "minLength": 1, "maxLength": 128 },
+                    "description": "Exact dotted built-in operation names to activate for this session"
+                },
+                "roots": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 32,
+                    "uniqueItems": true,
+                    "items": { "type": "string", "minLength": 1, "maxLength": 64 },
+                    "description": "Built-in roots to activate when the whole root is needed"
                 }
             },
             "oneOf": [
                 { "required": ["action"], "properties": { "action": { "const": "list" } } },
-                { "required": ["action", "name"], "properties": { "action": { "const": "describe" } } }
+                { "required": ["action", "name"], "properties": { "action": { "const": "describe" } } },
+                {
+                    "required": ["action"],
+                    "properties": {
+                        "action": { "const": "load" },
+                        "source": { "const": "builtin" }
+                    },
+                    "anyOf": [
+                        { "required": ["operations"] },
+                        { "required": ["roots"] }
+                    ]
+                }
             ]
         })
     }
@@ -687,6 +818,41 @@ fn source_for_def(def: &ToolDef) -> CatalogSource {
         ToolSource::Skill => CatalogSource::Skill,
         ToolSource::Mcp => CatalogSource::Mcp,
     }
+}
+
+fn normalize_names(values: Option<Vec<String>>) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut seen = HashSet::new();
+    for value in values.into_iter().flatten() {
+        let value = value.trim();
+        if !value.is_empty() && seen.insert(value.to_string()) {
+            names.push(value.to_string());
+        }
+    }
+    names
+}
+
+fn is_builtin(def: &ToolDef) -> bool {
+    def.manifest
+        .as_ref()
+        .map(|manifest| manifest.identity.source == ToolSource::Builtin)
+        .unwrap_or_else(|| !def.name.starts_with("skill__") && !def.name.starts_with("mcp__"))
+}
+
+fn operation_root(name: &str) -> &str {
+    name.split('.').next().unwrap_or(name)
+}
+
+fn compact_entries(tools: &[ToolBox]) -> Vec<Value> {
+    tools
+        .iter()
+        .map(|tool| {
+            serde_json::json!({
+                "name": tool.name(),
+                "description": compact_text(&tool.description(), 160),
+            })
+        })
+        .collect()
 }
 
 fn names_match(def: &ToolDef, requested: &str, source: CatalogSource) -> bool {
@@ -740,8 +906,12 @@ fn tool_detail(def: &ToolDef, source: CatalogSource, loaded: bool) -> Value {
                 object.insert(
                     "load".into(),
                     serde_json::json!({
-                        "tool": "load_builtin",
-                        "arguments": { "operations": [def.name] }
+                        "tool": "tool_catalog",
+                        "arguments": {
+                            "action": "load",
+                            "source": "builtin",
+                            "operations": [def.name]
+                        }
                     }),
                 );
             }
@@ -866,7 +1036,7 @@ fn root_detail(root: &CatalogItem) -> Value {
     });
     if root.source == CatalogSource::Builtin {
         detail["hint"] = serde_json::json!(
-            "Choose one exact operation from operations, call tool_catalog describe on it for its schema, then call load_builtin with operations containing that exact name."
+            "Choose one exact operation from operations, call tool_catalog describe on it for its schema, then call tool_catalog with action=load, source=builtin, and that operation name."
         );
     } else if root.source == CatalogSource::Mcp {
         detail["hint"] = serde_json::json!(
@@ -906,7 +1076,9 @@ mod tests {
         let detail = tool_detail(&def, CatalogSource::Builtin, false);
         assert_eq!(detail["name"], "notify");
         assert!(detail["input_schema"].is_object());
-        assert_eq!(detail["load"]["tool"], "load_builtin");
+        assert_eq!(detail["load"]["tool"], "tool_catalog");
+        assert_eq!(detail["load"]["arguments"]["action"], "load");
+        assert_eq!(detail["load"]["arguments"]["source"], "builtin");
     }
 
     #[test]

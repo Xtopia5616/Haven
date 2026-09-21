@@ -1,5 +1,6 @@
 use super::*;
 use haven_common::{CapabilityProfile, CapabilitySupport};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 impl OpenAiAdapter {
     pub(super) fn wire_capability_profile() -> CapabilityProfile {
@@ -20,9 +21,13 @@ impl OpenAiAdapter {
         &self,
         messages: &[CanonicalMessage],
         tools: &[ToolDefinition],
+        web_search_mode: WebSearchMode,
     ) -> Option<String> {
         if self.prompt_cache_key_state.load(Ordering::Relaxed) == PROMPT_CACHE_KEY_UNSUPPORTED {
-            return None;
+            let retry_at = self.prompt_cache_key_retry_at.load(Ordering::Relaxed);
+            if retry_at == 0 || current_epoch_seconds() < retry_at {
+                return None;
+            }
         }
 
         let system = messages
@@ -50,6 +55,12 @@ impl OpenAiAdapter {
             return None;
         }
 
+        // Keep capability changes (especially media representation support)
+        // from sharing a routing shard with an incompatible wire surface.
+        let capability_value = serde_json::to_value(Self::wire_capability_profile()).ok()?;
+        hasher.update(b"capabilities\0");
+        hasher.update(crate::types::stable_json_bytes(&capability_value));
+
         // Tool schemas are part of the provider cache key. Changing a loaded
         // MCP/Skill therefore gets a new routing key rather than contaminating
         // the old cache shard.
@@ -57,7 +68,29 @@ impl OpenAiAdapter {
         // ToolDefinition. This keeps the routing key aligned with the wire
         // schema after recursive JSON canonicalization.
         let tool_value = serde_json::to_value(Self::convert_tools_ref(tools)).ok()?;
+        hasher.update(b"tools\0");
         hasher.update(crate::types::stable_json_bytes(&tool_value));
+
+        // xAI's search_parameters and other OpenAI-compatible gateways may
+        // vary their runtime capability surface by this mode.  Keep the
+        // identity aligned with the request builder even when a gateway does
+        // not expose a server-side search tool.
+        hasher.update(b"web-search\0");
+        hasher.update([match web_search_mode {
+            WebSearchMode::Off => 0,
+            WebSearchMode::Auto => 1,
+            WebSearchMode::Always => 2,
+        }]);
+
+        if let Some(marker) = crate::adapters::prompt_cache_media_marker(messages) {
+            hasher.update(b"media\0");
+            hasher.update(marker);
+        }
+
+        if let Some(marker) = crate::adapters::prompt_cache_compaction_marker(messages) {
+            hasher.update(b"compaction\0");
+            hasher.update(marker);
+        }
 
         let digest = hasher.finalize();
         let fingerprint = digest[..16]
@@ -87,6 +120,28 @@ impl OpenAiAdapter {
             .iter()
             .any(|hint| message.contains(hint))
     }
+
+    pub(super) fn remember_prompt_cache_key_rejection(&self) {
+        self.prompt_cache_key_state
+            .store(PROMPT_CACHE_KEY_UNSUPPORTED, Ordering::Relaxed);
+        self.prompt_cache_key_retry_at.store(
+            current_epoch_seconds().saturating_add(PROMPT_CACHE_KEY_REPROBE_SECS),
+            Ordering::Relaxed,
+        );
+    }
+
+    pub(super) fn remember_prompt_cache_key_success(&self) {
+        self.prompt_cache_key_retry_at.store(0, Ordering::Relaxed);
+        self.prompt_cache_key_state
+            .store(PROMPT_CACHE_KEY_ENABLED, Ordering::Relaxed);
+    }
+}
+
+fn current_epoch_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 pub(crate) fn is_whisper_model(model: &str) -> bool {
     let n = model.to_ascii_lowercase();

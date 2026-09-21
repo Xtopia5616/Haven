@@ -53,20 +53,20 @@ fn tool_config_enabled(settings: &HashMap<String, ToolConfig>, name: &str) -> bo
 /// support clarification, narrow source inspection, and activation of deeper
 /// capability layers; all other enabled builtins and Skills are loaded into a
 /// session only when requested by the model.
+const CORE_MODEL_TOOLS: &[&str] = &[
+    "ask",
+    "notify",
+    "tool_catalog",
+    "load_skill",
+    "load_mcp",
+    "files.read",
+    "files.outline",
+    "files.search",
+    "system.info",
+];
+
 fn is_core_model_tool(name: &str) -> bool {
-    matches!(
-        name,
-        "ask"
-            | "notify"
-            | "load_builtin"
-            | "tool_catalog"
-            | "load_skill"
-            | "load_mcp"
-            | "files.read"
-            | "files.outline"
-            | "files.search"
-            | "system.info"
-    )
+    CORE_MODEL_TOOLS.contains(&name)
 }
 
 #[derive(Debug, Clone, Default)]
@@ -961,10 +961,10 @@ impl ToolsManager {
     /// Rebuild the tool catalog from the current builtin state.
     /// Called at startup and whenever MCP or Skills state changes.
     ///
-    /// MCP servers are progressively loaded: the `load_mcp` meta-tool is
-    /// advertised only when an enabled server exists and its adapters are
-    /// registered per-session. Enabled skills are ordinary global tools and
-    /// are rebuilt into the catalog from the live skills index.
+    /// MCP and Skill providers are progressively loaded: their stable loader
+    /// tools are always advertised, while adapters are registered per-session
+    /// only after an explicit load succeeds. Enabled Skills are rebuilt into
+    /// the deferred catalog from the live skills index.
     pub async fn rebuild_catalog(&self) {
         self.rebuild_catalog_scoped(CatalogRebuildScope::All).await;
     }
@@ -982,8 +982,8 @@ impl ToolsManager {
             .map(|tool| (tool.name(), tool))
             .collect();
 
-        // Register builtin tools, including capability-scoped progressive
-        // loaders when an enabled skill/MCP source is actually available.
+        // Register builtin tools, including stable control-plane loaders for
+        // optional Skill/MCP sources even when those sources are unavailable.
         let context = self.builtins.build_context(&self.core, &self.runtime).await;
         let settings = context.settings.clone();
         let admin_surfaces = builtin::register_builtin_tools(&mut all_tools, context).await;
@@ -1032,13 +1032,13 @@ impl ToolsManager {
 
     /// Rehydrate a saved built-in selection during resume without exposing the
     /// loader's private session field to transcript or provider input.
-    pub async fn load_builtin_for_session(
+    pub async fn load_builtin_operations_for_session(
         &self,
         session_id: &str,
         operations: Option<Vec<String>>,
         roots: Option<Vec<String>>,
     ) -> bool {
-        let loader = builtin::load_builtin::LoadBuiltinTool {
+        let catalog = builtin::tool_catalog::ToolCatalogTool {
             deferred_catalog: self.core.deferred_catalog.clone(),
             registry: self.core.registry.clone(),
             session_catalog: self.core.session_catalog.clone(),
@@ -1049,10 +1049,21 @@ impl ToolsManager {
                 .await
                 .max_tools_per_request
                 .max(1),
+            mcp_manager: Arc::new(self.builtins.mcp_manager.clone()),
+            server_configs: self.builtins.mcp_server_configs.clone(),
         };
-        match loader
+        match catalog
             .run(
-                builtin::load_builtin::LoadBuiltinParams {
+                builtin::tool_catalog::ToolCatalogParams {
+                    action: "load".into(),
+                    level: None,
+                    source: Some("builtin".into()),
+                    query: None,
+                    name: None,
+                    root: None,
+                    cursor: None,
+                    limit: None,
+                    revision: None,
                     operations,
                     roots,
                     session_id: Some(session_id.into()),
@@ -1321,12 +1332,14 @@ impl ToolsManager {
             .write()
             .await
             .insert(config.name.clone(), config);
+        self.builtins.mcp_manager.invalidate_catalog();
         self.core.session_catalog.bump_global_version();
     }
 
     /// Remove a single MCP server config from the in-memory map.
     pub async fn remove_mcp_server_config(&self, name: &str) {
         self.builtins.mcp_server_configs.write().await.remove(name);
+        self.builtins.mcp_manager.invalidate_catalog();
         self.core.session_catalog.bump_global_version();
     }
 
@@ -1481,6 +1494,15 @@ impl ToolControlPort for ToolControlHandle {
             .upgrade()
             .ok_or_else(|| anyhow::anyhow!("tool catalog is no longer available"))?;
         tools.set_tool_enabled(name, enabled).await;
+        Ok(())
+    }
+
+    async fn rebuild_catalog(&self) -> anyhow::Result<()> {
+        let tools = self
+            .0
+            .upgrade()
+            .ok_or_else(|| anyhow::anyhow!("tool catalog is no longer available"))?;
+        tools.rebuild_catalog().await;
         Ok(())
     }
 }
@@ -2459,7 +2481,30 @@ mod tests {
             haven_common::types::RiskLevel::High
         );
         assert!(mgr.get_tool("haven").await.is_none());
-        assert!(mgr.get_tool("load_skill").await.is_none());
+        assert!(mgr.get_tool("tool_catalog").await.is_some());
+        assert!(mgr.get_tool("load_skill").await.is_some());
+        assert!(mgr.get_tool("load_mcp").await.is_some());
+    }
+
+    #[tokio::test]
+    async fn stable_core_tools_are_registered_without_optional_providers() {
+        let mgr = ToolsManager::new();
+        mgr.rebuild_catalog().await;
+
+        for name in CORE_MODEL_TOOLS {
+            assert!(
+                mgr.registry().get(name).await.is_some(),
+                "stable core tool {name} must be provider-visible without optional providers"
+            );
+        }
+        assert!(
+            mgr.registry()
+                .list()
+                .await
+                .iter()
+                .all(|tool| is_core_model_tool(&tool.name())),
+            "default rebuild must keep deferred builtins out of the global provider registry"
+        );
     }
 
     #[tokio::test]
@@ -2610,13 +2655,17 @@ mod tests {
             .unwrap();
         assert_eq!(screenshot_detail.output["loaded"], false);
         assert!(screenshot_detail.output["input_schema"].is_object());
-        assert_eq!(screenshot_detail.output["load"]["tool"], "load_builtin");
+        assert_eq!(screenshot_detail.output["load"]["tool"], "tool_catalog");
 
         let loaded = mgr
             .execute_tool(
                 Some(session_id),
-                "load_builtin",
-                json!({"operations": ["window.screenshot"]}),
+                "tool_catalog",
+                json!({
+                    "action": "load",
+                    "source": "builtin",
+                    "operations": ["window.screenshot"]
+                }),
                 CancellationToken::new(),
             )
             .await
@@ -2736,7 +2785,7 @@ mod tests {
         let file = tmp.path().join("listed.txt");
         tokio::fs::write(&file, "listed by manager").await.unwrap();
         assert!(
-            mgr.load_builtin_for_session(
+            mgr.load_builtin_operations_for_session(
                 "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 Some(vec!["files.list".into()]),
                 None,
@@ -3317,12 +3366,16 @@ mod tests {
         let result = mgr
             .execute_tool(
                 Some("ses-lazy-builtin"),
-                "load_builtin",
-                serde_json::json!({"operations": ["shell"]}),
+                "tool_catalog",
+                serde_json::json!({
+                    "action": "load",
+                    "source": "builtin",
+                    "operations": ["shell"]
+                }),
                 CancellationToken::new(),
             )
             .await
-            .expect("load_builtin should be executable from the core surface");
+            .expect("tool_catalog load should be executable from the core surface");
         assert!(result.success, "loader failed: {:?}", result.error);
         assert_eq!(result.output["status"], "loaded");
         assert!(result.output.get("input_schema").is_none());

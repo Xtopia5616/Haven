@@ -93,7 +93,7 @@ pub(crate) fn load_mcp_tool_names(input: &Value) -> Option<Vec<String>> {
 
 /// Decode the saved built-in lazy-load request. Missing arrays remain `None`
 /// so a malformed historical action cannot widen a selection during resume.
-pub(crate) fn load_builtin_selection(input: &Value) -> (Option<Vec<String>>, Option<Vec<String>>) {
+pub(crate) fn builtin_selection(input: &Value) -> (Option<Vec<String>>, Option<Vec<String>>) {
     fn names(input: &Value, key: &str) -> Option<Vec<String>> {
         let array = input.get(key)?.as_array()?;
         let mut values = Vec::new();
@@ -297,14 +297,14 @@ mod tests {
     #[test]
     fn lazy_loader_selections_deduplicate_without_widening() {
         assert_eq!(
-            load_builtin_selection(&serde_json::json!({
+            builtin_selection(&serde_json::json!({
                 "operations": [" files.read ", "files.read", 7],
                 "roots": ["system", "system"]
             })),
             (Some(vec!["files.read".into()]), Some(vec!["system".into()]))
         );
         assert_eq!(
-            load_builtin_selection(&serde_json::json!({"operations": "files.read"})),
+            builtin_selection(&serde_json::json!({"operations": "files.read"})),
             (None, None)
         );
         assert_eq!(

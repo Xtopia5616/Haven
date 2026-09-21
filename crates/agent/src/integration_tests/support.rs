@@ -876,6 +876,7 @@ pub(super) fn seed_hello_snapshot(
     );
     let snapshot = ReActSnapshot {
         events: seed_events_from_canonical(canonical),
+        event_cursor: 0,
         step_number: 1,
         branch_points,
         last_ingress_seq: agent.db.get_last_message_ingress_seq(session_id),

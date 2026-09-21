@@ -134,7 +134,6 @@ pub const LOCAL_TOOL_SECURITY_MATRIX: &[LocalToolSecurityCase] = &[
     security_case!("media.mute_set", "media.mute_set", Medium),
     security_case!("http", "request", Medium),
     security_case!("notify", "notify", Safe),
-    security_case!("load_builtin", "load", Safe),
     security_case!("tool_catalog", "tool_catalog", Safe),
     security_case!("load_skill", "load", Safe),
     security_case!("agent.list", "agent.list", Safe),
@@ -2443,7 +2442,7 @@ mod tests {
                 "shell" => "execute".into(),
                 "http" => "request".into(),
                 "notify" => "notify".into(),
-                "load_builtin" | "load_skill" => "load".into(),
+                "load_skill" => "load".into(),
                 "tool_catalog" => "tool_catalog".into(),
                 "load_mcp" => "load".into(),
                 other => other.to_string(),
@@ -2456,7 +2455,7 @@ mod tests {
         }
         match case.tool_name {
             name if name.contains('.') => serde_json::json!({}),
-            "ask" | "shell" | "http" | "notify" | "load_builtin" | "load_skill" | "load_mcp" => {
+            "ask" | "shell" | "http" | "notify" | "load_skill" | "load_mcp" => {
                 serde_json::json!({})
             }
             "tool_catalog" => serde_json::json!({"action": "list"}),

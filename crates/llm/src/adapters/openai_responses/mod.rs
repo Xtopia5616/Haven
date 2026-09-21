@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::time::Duration;
 
 use sha2::{Digest, Sha256};
@@ -58,12 +58,14 @@ pub struct OpenAiResponsesAdapter {
     client: reqwest::Client,
     web_search_mode: WebSearchMode,
     prompt_cache_key_state: AtomicU8,
+    prompt_cache_key_retry_at: AtomicU64,
     developer_input_state: AtomicU8,
 }
 
 const PROMPT_CACHE_KEY_UNKNOWN: u8 = 0;
 const PROMPT_CACHE_KEY_ENABLED: u8 = 1;
 const PROMPT_CACHE_KEY_UNSUPPORTED: u8 = 2;
+const PROMPT_CACHE_KEY_REPROBE_SECS: u64 = 300;
 const DEVELOPER_INPUT_UNKNOWN: u8 = 0;
 const DEVELOPER_INPUT_UNSUPPORTED: u8 = 1;
 
@@ -76,6 +78,7 @@ impl OpenAiResponsesAdapter {
             client,
             web_search_mode,
             prompt_cache_key_state: AtomicU8::new(PROMPT_CACHE_KEY_UNKNOWN),
+            prompt_cache_key_retry_at: AtomicU64::new(0),
             developer_input_state: AtomicU8::new(DEVELOPER_INPUT_UNKNOWN),
         })
     }

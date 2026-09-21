@@ -6,7 +6,7 @@ use super::*;
 // Gemini generateContent request / response types
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub(super) struct GeminiPart {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) text: Option<String>,
@@ -22,13 +22,13 @@ pub(super) struct GeminiPart {
     pub(super) thought_signature: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub(super) struct GeminiContent {
     pub(super) role: String,
     pub(super) parts: Vec<GeminiPart>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub(super) struct GeminiFunctionDeclaration {
     pub(super) name: String,
     pub(super) description: String,
@@ -37,7 +37,7 @@ pub(super) struct GeminiFunctionDeclaration {
 
 /// Gemini tools are a heterogeneous list: function declarations and built-in
 /// tools such as `google_search` grounding share the same `tools[]` array.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(untagged)]
 pub(super) enum GeminiTool {
     Functions {
@@ -50,7 +50,7 @@ pub(super) enum GeminiTool {
     },
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub(super) struct GeminiGenerationConfig {
     pub(super) temperature: f32,
     #[serde(rename = "maxOutputTokens")]
@@ -63,17 +63,38 @@ pub(super) struct GeminiGenerationConfig {
     pub(super) stop_sequences: Option<Vec<String>>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub(super) struct GeminiRequest {
     pub(super) contents: Vec<GeminiContent>,
     #[serde(rename = "systemInstruction", skip_serializing_if = "Option::is_none")]
     pub(super) system_instruction: Option<Value>,
+    /// Explicit Gemini context-cache resource. When present, Gemini requires
+    /// the cached system instruction and tools to be omitted from this request.
+    #[serde(rename = "cachedContent", skip_serializing_if = "Option::is_none")]
+    pub(super) cached_content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) tools: Option<Vec<GeminiTool>>,
     #[serde(rename = "generationConfig", skip_serializing_if = "Option::is_none")]
     pub(super) generation_config: Option<GeminiGenerationConfig>,
     #[serde(skip)]
     pub(super) cache_diagnostics: CacheDiagnostics,
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct GeminiCachedContentResponse {
+    pub(super) name: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct GeminiCachedContentCreateRequest<'a> {
+    pub(super) model: String,
+    #[serde(rename = "systemInstruction")]
+    pub(super) system_instruction: &'a Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) tools: Option<&'a [GeminiTool]>,
+    pub(super) ttl: String,
+    #[serde(rename = "displayName")]
+    pub(super) display_name: String,
 }
 
 // Response types: `text` and `function_call` parts, plus usage metadata.

@@ -36,6 +36,7 @@ async fn snapshot_import_replays_transcript_and_branch_events_together() {
     );
     let snapshot = ReActSnapshot {
         events: seed_events_from_canonical(vec![CanonicalMessage::user_text("cached")]),
+        event_cursor: 0,
         step_number: 7,
         branch_points,
         last_ingress_seq: 0,
@@ -279,6 +280,7 @@ async fn resume_rejects_legacy_conversation_prefix_snapshot() {
     ];
     let snapshot = ReActSnapshot {
         events: seed_events_from_canonical(canonical),
+        event_cursor: 0,
         step_number: 1,
         branch_points: HashMap::new(),
         last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
@@ -326,6 +328,7 @@ async fn resume_dedups_supplement_inputs_against_prefixed_canonical() {
     ];
     let snapshot = ReActSnapshot {
         events: seed_events_from_canonical(canonical),
+        event_cursor: 0,
         step_number: 1,
         branch_points: HashMap::new(),
         last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
@@ -397,6 +400,7 @@ async fn resume_keeps_repeated_same_text_turns() {
     ];
     let snapshot = ReActSnapshot {
         events: seed_events_from_canonical(canonical),
+        event_cursor: 0,
         step_number: 1,
         branch_points: HashMap::new(),
         last_ingress_seq: ingress_cursor,
@@ -480,6 +484,7 @@ async fn resume_does_not_recover_messages_before_ingress_cursor() {
     ];
     let snapshot = ReActSnapshot {
         events: seed_events_from_canonical(canonical),
+        event_cursor: 0,
         step_number: 1,
         branch_points: HashMap::new(),
         last_ingress_seq: ingress_cursor,
@@ -575,6 +580,7 @@ async fn resume_skips_conversation_reseed_when_canonical_is_compacted() {
     ];
     let snapshot = ReActSnapshot {
         events: seed_events_from_canonical(canonical),
+        event_cursor: 0,
         step_number: 1,
         branch_points: HashMap::new(),
         last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
@@ -776,6 +782,7 @@ async fn run_session_from_id_trims_dangling_tool_call_before_resume() {
     };
     let snapshot = ReActSnapshot {
         events,
+        event_cursor: 0,
         step_number: 2,
         branch_points: HashMap::new(),
         last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),

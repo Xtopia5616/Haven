@@ -23,8 +23,10 @@ capability 入口会触发备份并以默认配置启动。当前模型入口统
 `actions.*`、`schedule.*`、`preferences.*`、`checklist.*` 和 `haven.*`；这些名称同时作为
 权限 key 与 UI renderer 的正式名称。聚合实现仍可供 native/Tauri 使用，但不再作为模型入口。
 启用 Skill 只出现在紧凑能力索引中，由模型调用 `load_skill` 按名称加载为当前 session 的
-`skill__...`；内置 operation 可由 `load_builtin` 按 operation/root 加载，MCP 继续使用
-`load_mcp` 按服务器加载。完整工具 schema 只在加载成功后的后续 provider 请求中出现。
+`skill__...`；内置 operation 由 `tool_catalog` 的 `action=load` 按 operation/root 加载，MCP
+继续使用 `load_mcp` 按服务器加载。完整工具 schema 只在加载成功后的后续 provider 请求中出现。
+旧 `load_builtin` action 不做快照兼容或配置迁移；检测到仍在进行的旧会话时，结束会话或按本节
+的数据重置边界重新开始。
 已删除的 `haven_session_diagnostics` 及其 operation 权限也不再迁移；升级时会触发同样的备份与配置重置。
 Provider 的 `api_style` 现在只接受 canonical wire protocol id；旧的 vendor/preset 值
 （例如 `deepseek-responses`）不会再作为 wire style 解释，检测到后同样备份并重置配置。
@@ -39,16 +41,18 @@ Provider 的 `api_style` 现在只接受 canonical wire protocol id；旧的 ven
 `fallback_retry_max_retries` 会被忽略，保存配置后不再写回。若需要清理旧配置残留，按下文
 完整重置数据根目录后重新配置模型。
 
-本次 Agent 版本将数据库 schema 收敛为 v23 当前契约：新增 `session_events` append-only
+本次 Agent 版本将数据库 schema 收敛为 v24 当前契约：新增 `session_events` append-only
 会话事件表（`sequence`、`event_type`、`event_version`、JSON payload、run/step identity）和
-checkpoint 的 `event_sequence` 高水位；消息新增 `media_inputs` canonical
+checkpoint 的 `event_cursor` / `event_sequence` 游标；ReAct snapshot 新写入只保留运行时
+检查点与最多 32 条 `event_tail`，不再保存完整事件流；消息新增 `media_inputs` canonical
 媒体表示列。旧数据库不再执行运行时 schema/data 迁移，也不会尝试拼接旧表、旧列或旧
-FTS/embedding 形状；`llm_usage.call_kind` 将 Agent 主循环和工具拥有的媒体推理调用分开，
+FTS/embedding 形状；消息表的旧 `attachments` 列已删除并由仅供 UI/资产保留使用的
+`ui_metadata` 取代，`media_inputs` 是唯一 canonical 媒体持久化来源；`llm_usage.call_kind` 将 Agent 主循环和工具拥有的媒体推理调用分开，
 后者保留明细但不进入 `session_usage` 的 Agent 累计 token/费用/缓存率；其它工具内部 LLM 调用使用
-`call_kind=tool`，同样只保留明细。`user_version` 不是 v23 的数据库，
+`call_kind=tool`，同样只保留明细。`user_version` 不是 v24 的数据库，
 或没有版本戳但已经包含用户表，都会拒绝打开；必须删除 `haven.db`、`haven.db-wal` 和
 `haven.db-shm` 后重新创建。这样会同时清除会话、记忆、任务、快照和用量；若配置仍需保留，
-只删除这三个数据库文件即可，不必删除整个数据根目录。v23 还新增
+只删除这三个数据库文件即可，不必删除整个数据根目录。当前契约还包含
 `action_completion_outbox`，用于在 broadcast 丢失、进程重启或会话终态清理竞态后
 reconcile 后台任务结果。
 

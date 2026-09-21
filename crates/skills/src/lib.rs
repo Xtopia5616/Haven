@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 use tokio::sync::RwLock;
 
@@ -410,6 +411,7 @@ struct Inner {
 #[derive(Clone)]
 pub struct SkillsEngine {
     inner: Arc<RwLock<Inner>>,
+    catalog_version: Arc<AtomicU64>,
 }
 
 impl Default for SkillsEngine {
@@ -427,7 +429,15 @@ impl SkillsEngine {
                 skills: HashMap::new(),
                 limits: haven_common::config::ContextLimitsConfig::default(),
             })),
+            catalog_version: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    /// Monotonic in-process version for the discovered/enabled Skill catalog.
+    /// Consumers use this to invalidate derived prompt and capability views
+    /// even when a caller has not rebuilt the broader tool registry yet.
+    pub fn catalog_version(&self) -> u64 {
+        self.catalog_version.load(Ordering::Relaxed)
     }
 
     /// Replace the unified context limits (SKILL.md size / parse caps).
@@ -473,6 +483,7 @@ impl SkillsEngine {
         for s in scanned {
             g.skills.insert(s.name().to_string(), s);
         }
+        self.catalog_version.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 
@@ -516,6 +527,7 @@ impl SkillsEngine {
             .skills
             .get_mut(name)
             .ok_or_else(|| anyhow::anyhow!("skill '{name}' not loaded"))?;
+        let changed = s.enabled != enabled;
         s.enabled = enabled;
 
         match enabled {
@@ -540,6 +552,9 @@ impl SkillsEngine {
                     }
                 }
             }
+        }
+        if changed {
+            self.catalog_version.fetch_add(1, Ordering::Relaxed);
         }
         Ok(())
     }
@@ -849,6 +864,8 @@ mod tests {
 
         let eng = SkillsEngine::new();
         eng.set_config(Some(dir.clone()), None).await.unwrap();
+        let after_initial_refresh = eng.catalog_version();
+        assert!(after_initial_refresh > 0);
 
         let list = eng.list().await;
         assert_eq!(list.len(), 1);
@@ -860,6 +877,7 @@ mod tests {
 
         // Disable → persisted as Some exhaustive list minus alpha
         eng.set_enabled("alpha", false).await.unwrap();
+        assert!(eng.catalog_version() > after_initial_refresh);
         let updated = eng.get("alpha").await.unwrap();
         assert!(!updated.enabled);
 

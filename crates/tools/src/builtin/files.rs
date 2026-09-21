@@ -514,11 +514,11 @@ use file_paths::{binary_result, looks_like_binary, sanitize_path, sha256_bytes};
 #[cfg(test)]
 use file_summary::{build_summary_messages, read_for_summary};
 #[cfg(test)]
+use haven_common::config::RequestKind;
+#[cfg(test)]
 use haven_common::types::RiskLevel;
 #[cfg(test)]
 use haven_common::types::{CanonicalMessage, ContentPart};
-#[cfg(test)]
-use haven_common::config::RequestKind;
 #[cfg(test)]
 use serde_json::Value;
 include!("files_tests.rs");

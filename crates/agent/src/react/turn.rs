@@ -161,11 +161,10 @@ impl ReActEngine {
         };
         let router = self.router();
         let request = choose_agent_request(&router, &request_context).await;
-        let (request_context, media_plan) = request_context
-            .with_capabilities(
-                &router.capability_profile_for_request(request),
-                self.media_strategy(),
-            );
+        let (request_context, media_plan) = request_context.with_capabilities(
+            &router.capability_profile_for_request(request),
+            self.media_strategy(),
+        );
         super::emit_media_plan(
             &ctx.emitter,
             session_id,

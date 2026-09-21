@@ -1,7 +1,7 @@
 //! Wire-protocol (`api_style`) capability helpers used by adapters.
 //!
 //! Canonical normalize / capability predicates live in
-//! [`haven_common::config`] so `materialize_endpoint` can clear sticky
+//! [`haven_common::config`] so model materialization can clear sticky
 //! `web_search` without depending on this crate. This module re-exports them
 //! and owns [`WebSearchMode`] resolution shared by every adapter.
 //!
@@ -58,7 +58,7 @@ fn web_search_mode_from_env() -> WebSearchMode {
 /// `web_search` config field wins, then `HAVEN_WEB_SEARCH`, then `off`.
 ///
 /// Callers should only inject tools when [`supports_builtin_web_search`] is
-/// true for the endpoint's style; `materialize_endpoint` already clears
+/// true for the endpoint's style; model materialization already clears
 /// sticky values for unsupported styles.
 pub fn resolve_web_search_mode(endpoint: &ModelEndpoint) -> WebSearchMode {
     match endpoint.web_search.as_deref() {

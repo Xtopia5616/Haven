@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::time::Duration;
 
 use sha2::{Digest, Sha256};
@@ -65,13 +65,17 @@ pub struct OpenAiAdapter {
     web_search_mode: WebSearchMode,
     /// Whether this endpoint accepts OpenAI's optional `prompt_cache_key`.
     /// A gateway rejection is remembered for this adapter so we only pay one
-    /// compatibility retry instead of failing every request.
+    /// compatibility retry instead of failing every request. The negative
+    /// result expires so a gateway that later enables the extension can be
+    /// rediscovered without rebuilding the adapter.
     prompt_cache_key_state: AtomicU8,
+    prompt_cache_key_retry_at: AtomicU64,
 }
 
 const PROMPT_CACHE_KEY_UNKNOWN: u8 = 0;
 const PROMPT_CACHE_KEY_ENABLED: u8 = 1;
 const PROMPT_CACHE_KEY_UNSUPPORTED: u8 = 2;
+const PROMPT_CACHE_KEY_REPROBE_SECS: u64 = 300;
 
 impl OpenAiAdapter {
     pub fn try_new(endpoint: ModelEndpoint) -> Result<Self, LlmError> {
@@ -90,6 +94,7 @@ impl OpenAiAdapter {
             style,
             web_search_mode,
             prompt_cache_key_state: AtomicU8::new(PROMPT_CACHE_KEY_UNKNOWN),
+            prompt_cache_key_retry_at: AtomicU64::new(0),
         })
     }
 

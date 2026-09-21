@@ -21,9 +21,10 @@ snapshot。
 - transcript 与 branch point 作为 durable events 写入；compaction 通过新的
   `compact_summary` transcript root 取代 active prefix；rollback 只追加
   `timeline_rollback { to_sequence }` marker，不删除历史行。
-- `ReActSnapshot.events` 降级为 checkpoint/cache。resume 优先重放事件流；只有
-  没有事件行的旧会话才从有效 snapshot 做一次性导入。事件流存在时损坏的 snapshot
-  不阻断恢复。
+- `ReActSnapshot` 降级为 checkpoint/cache：新写入只保存运行时元数据、active
+  transcript cursor 和最多 32 条 `event_tail`；完整 `events` 不再进入 snapshot。
+  resume 优先重放事件流；只有没有事件行的旧会话才从仍带完整 `events` 的旧
+  snapshot 做一次性导入。事件流存在时损坏的 snapshot 不阻断恢复。
 - `messages` / `session_steps` 继续是物化投影，ReAct 的 `apply_transcript` 先
   提交事件再更新热 projection；Tauri/UI 现有 `AgentEvent` bridge 保持不变，
   后续可在同一 envelope 上迁移更多 live projection。

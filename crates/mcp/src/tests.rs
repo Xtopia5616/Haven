@@ -238,6 +238,18 @@ async fn mcp_manager_add_client_invalidates_catalog_revision() {
 }
 
 #[tokio::test]
+async fn mcp_manager_config_only_invalidation_advances_catalog_revision() {
+    let mgr = McpManager::new();
+    let before = mgr.catalog_version();
+
+    // A disabled or failed-to-connect server still changes the model-facing
+    // configured-server index even though no live client is added.
+    mgr.invalidate_catalog();
+
+    assert!(mgr.catalog_version() > before);
+}
+
+#[tokio::test]
 async fn mcp_manager_network_deny_removes_clients_and_blocks_connections() {
     let mgr = McpManager::new();
     let client = Arc::new(McpClient::new(

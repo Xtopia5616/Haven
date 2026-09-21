@@ -30,6 +30,10 @@ pub trait MemoryRecallPort: Send + Sync {
 #[async_trait::async_trait]
 pub trait ToolControlPort: Send + Sync {
     async fn set_tool_enabled(&self, name: &str, enabled: bool) -> anyhow::Result<()>;
+
+    /// Rebuild the live builtin/deferred catalog after a Skill or other
+    /// capability mutation performed through an admin surface.
+    async fn rebuild_catalog(&self) -> anyhow::Result<()>;
 }
 
 /// Typed port for applying a persisted logging level to the host subscriber.

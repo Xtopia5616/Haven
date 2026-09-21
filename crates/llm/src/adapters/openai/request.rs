@@ -60,7 +60,7 @@ impl OpenAiAdapter {
         max_tokens: u32,
     ) -> OpenAiRequest {
         let has_tools = !tools.is_empty();
-        let prompt_cache_key = self.prompt_cache_key(messages, tools);
+        let prompt_cache_key = self.prompt_cache_key(messages, tools, web_search_mode);
         let (wire_messages, system_split) = Self::convert_messages_with_system_split(
             messages,
             self.requires_reasoning_echo(),
@@ -158,20 +158,14 @@ impl OpenAiAdapter {
         match self.send_chat_request_once(url, body, stream).await {
             Ok(response) => {
                 if body.prompt_cache_key.is_some() {
-                    let _ = self.prompt_cache_key_state.compare_exchange(
-                        PROMPT_CACHE_KEY_UNKNOWN,
-                        PROMPT_CACHE_KEY_ENABLED,
-                        Ordering::Relaxed,
-                        Ordering::Relaxed,
-                    );
+                    self.remember_prompt_cache_key_success();
                 }
                 Ok(response)
             }
             Err(error)
                 if body.prompt_cache_key.is_some() && Self::prompt_cache_key_rejected(&error) =>
             {
-                self.prompt_cache_key_state
-                    .store(PROMPT_CACHE_KEY_UNSUPPORTED, Ordering::Relaxed);
+                self.remember_prompt_cache_key_rejection();
                 body.prompt_cache_key = None;
                 body.cache_diagnostics.key_requested = false;
                 body.cache_diagnostics.downgraded = true;

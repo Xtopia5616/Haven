@@ -45,7 +45,7 @@ describe('createChatUsageEventHandlers', () => {
 					cumulativeCacheMissTokens: 0,
 					cumulativeCostUsd: null,
 					contextWindow: null,
-					role: 'default_model',
+					role: 'chat',
 					callKind,
 					hasCost: false,
 				},
@@ -70,7 +70,7 @@ describe('createChatUsageEventHandlers', () => {
 				sessionId: 'ses-media',
 				stepNumber: 4,
 				runId: 8,
-				role: 'audio_model',
+				role: 'audio_chat',
 				strategy: 'auto',
 				projections: [
 					{ assetId: 'asset-1', representation: 'transcript', mode: 'derived' },

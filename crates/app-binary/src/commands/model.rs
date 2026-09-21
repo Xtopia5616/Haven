@@ -2,8 +2,7 @@ use crate::app_state::AppState;
 use crate::commands::log_err;
 use crate::commands::rebuild_router;
 use haven_common::config::{
-    AppConfig, LlmConfig, ModelConfig, ProviderConfig, RequestKind,
-    provider_config_wire_style,
+    AppConfig, LlmConfig, ModelConfig, ProviderConfig, RequestKind, provider_config_wire_style,
 };
 use haven_llm::ModelInfo;
 use haven_llm::ModelRegistry;
@@ -12,20 +11,22 @@ use std::sync::Arc;
 use tauri::Manager;
 use tauri::State;
 
-/// Resolve a model id or request/legacy selector to a named model, or `None`
-/// for an unknown selector. Single source of truth for selectors accepted by
-/// the model commands (`switch_model`, `set_reasoning_effort`,
-/// `set_web_search`).
-fn model_id_for_selector(cfg: &LlmConfig, selector: &str) -> Option<String> {
-    if cfg.model(selector).is_some() {
-        return Some(selector.to_string());
+/// Resolve a model id or `RequestKind` string to a named model, or `None` for
+/// an unknown value. This is the single selector boundary for the model
+/// commands (`switch_model`, `set_reasoning_effort`, `set_web_search`).
+fn model_id_for_selector(cfg: &LlmConfig, model_id_or_request_kind: &str) -> Option<String> {
+    if cfg.model(model_id_or_request_kind).is_some() {
+        return Some(model_id_or_request_kind.to_string());
     }
-    let request = RequestKind::from_str(selector)?;
+    let request = RequestKind::from_str(model_id_or_request_kind)?;
     cfg.policy(request).map(|policy| policy.primary.clone())
 }
 
-fn model_slot<'a>(cfg: &'a mut LlmConfig, selector: &str) -> Option<&'a mut ModelConfig> {
-    let id = model_id_for_selector(cfg, selector)?;
+fn model_slot<'a>(
+    cfg: &'a mut LlmConfig,
+    model_id_or_request_kind: &str,
+) -> Option<&'a mut ModelConfig> {
+    let id = model_id_for_selector(cfg, model_id_or_request_kind)?;
     cfg.model_mut(&id)
 }
 
@@ -242,8 +243,10 @@ fn stt_auth_scheme(provider: &str) -> (String, String) {
 ///
 /// When `api_key` is empty (masked) and `provider` names a configured provider
 /// whose base URL matches `base_url`, the stored key is used — never sent to
-/// an arbitrary renderer-supplied host. `role = "stt"` resolves through the
-/// `media.stt` config instead (STT model discovery).
+/// an arbitrary renderer-supplied host. `role = "transcription"` resolves
+/// through the `media.stt` config instead (STT model discovery). The IPC key
+/// remains `role` for the existing UI, but its value is a model id or a
+/// [`RequestKind`] string.
 #[tauri::command]
 pub async fn discover_models(
     base_url: String,
@@ -263,7 +266,7 @@ pub async fn discover_models(
         .config;
 
     // STT-only providers (Deepgram / AssemblyAI) have no `/models` endpoint;
-    // return the static catalog so the role picker can still assign a model.
+    // return the static catalog so the model picker can still assign a model.
     // The selected STT value is always a name from `llm.providers`; unsaved
     // discovery can still use the requested URL host below.
     if let Some(name) = provider.as_deref().filter(|n| !n.is_empty())
@@ -276,53 +279,54 @@ pub async fn discover_models(
         return Ok(list);
     }
 
-    let key_and_auth = if role.as_deref() == Some("stt") {
-        // STT discovery: prefer an explicit key, otherwise use only the named
-        // `llm.providers` entry selected by the request or media settings.
-        let stt = &cfg.media.stt;
-        let requested = normalize_endpoint_url(&base_url);
-        if !api_key.is_empty() {
-            let scheme_name = provider
+    let key_and_auth =
+        if role.as_deref().and_then(RequestKind::from_str) == Some(RequestKind::Transcription) {
+            // STT discovery: prefer an explicit key, otherwise use only the named
+            // `llm.providers` entry selected by the request or media settings.
+            let stt = &cfg.media.stt;
+            let requested = normalize_endpoint_url(&base_url);
+            if !api_key.is_empty() {
+                let scheme_name = provider
+                    .as_deref()
+                    .filter(|n| !n.is_empty())
+                    .unwrap_or(stt.provider.as_str());
+                let backend = cfg
+                    .llm
+                    .provider(scheme_name)
+                    .map(|p| p.provider.as_str())
+                    .unwrap_or(scheme_name);
+                let (h, pfx) = stt_auth_scheme(backend);
+                let value = auth_value(&pfx, &api_key);
+                Some((api_key.clone(), (h, value)))
+            } else if let Some(name) = provider
                 .as_deref()
                 .filter(|n| !n.is_empty())
-                .unwrap_or(stt.provider.as_str());
-            let backend = cfg
-                .llm
-                .provider(scheme_name)
-                .map(|p| p.provider.as_str())
-                .unwrap_or(scheme_name);
-            let (h, pfx) = stt_auth_scheme(backend);
-            let value = auth_value(&pfx, &api_key);
-            Some((api_key.clone(), (h, value)))
-        } else if let Some(name) = provider
-            .as_deref()
-            .filter(|n| !n.is_empty())
-            .or(Some(stt.provider.as_str()))
-            .filter(|n| {
-                !matches!(
-                    *n,
-                    "none"
-                        | "llm"
-                        | "mcp"
-                        | "openai"
-                        | "groq"
-                        | "gemini"
-                        | "deepgram"
-                        | "assemblyai"
-                )
-            })
-            && let Some(p) = cfg.llm.provider(name)
-            && normalize_endpoint_url(&p.base_url) == requested
-        {
-            let (h, pfx) = stt_auth_scheme(&p.provider);
-            let value = auth_value(&pfx, &p.api_key);
-            Some((p.api_key.clone(), (h, value)))
+                .or(Some(stt.provider.as_str()))
+                .filter(|n| {
+                    !matches!(
+                        *n,
+                        "none"
+                            | "llm"
+                            | "mcp"
+                            | "openai"
+                            | "groq"
+                            | "gemini"
+                            | "deepgram"
+                            | "assemblyai"
+                    )
+                })
+                && let Some(p) = cfg.llm.provider(name)
+                && normalize_endpoint_url(&p.base_url) == requested
+            {
+                let (h, pfx) = stt_auth_scheme(&p.provider);
+                let value = auth_value(&pfx, &p.api_key);
+                Some((p.api_key.clone(), (h, value)))
+            } else {
+                None
+            }
         } else {
-            None
-        }
-    } else {
-        resolve_discovery_auth(&cfg, &base_url, &api_key, provider.as_deref())
-    };
+            resolve_discovery_auth(&cfg, &base_url, &api_key, provider.as_deref())
+        };
 
     let (key, (header, value)) = key_and_auth.ok_or_else(|| {
         "未找到可用的 API Key：请填写 API Key，或先保存 Provider 配置（其 Base URL 需与请求地址一致）"
@@ -433,14 +437,18 @@ pub async fn discover_all_models(
 async fn update_model_field(
     state: &AppState,
     ctx: &str,
-    role: &str,
+    model_id_or_request_kind: &str,
     mutate: impl FnOnce(&mut ModelConfig) -> Result<(), String>,
 ) -> Result<(), String> {
     state
         .config_service
         .edit(|config| {
-            let slot = model_slot(&mut config.llm, role)
-                .ok_or_else(|| anyhow::anyhow!("unknown or unconfigured model/request: {}", role))?;
+            let slot = model_slot(&mut config.llm, model_id_or_request_kind).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "unknown or unconfigured model/request: {}",
+                    model_id_or_request_kind
+                )
+            })?;
             mutate(slot).map_err(anyhow::Error::msg)
         })
         .map_err(|e| log_err(ctx, e))?;
@@ -495,7 +503,7 @@ pub async fn set_reasoning_effort(
 /// any other value (including empty) is rejected. Updates config.toml and
 /// hot-swaps the LlmRouter at runtime.
 ///
-/// Non-`off` modes are rejected when the role's provider wire style does not
+/// Non-`off` modes are rejected when the selected model/request's provider wire style does not
 /// support a built-in search tool (see `supports_builtin_web_search`).
 #[tauri::command]
 pub async fn set_web_search(
@@ -518,7 +526,7 @@ pub async fn set_web_search(
 
     // Capability gate: only `off` (or clear) is allowed on styles without a
     // provider built-in search tool. Resolve style from one immutable snapshot
-    // before `update_role_field` applies the typed mutation.
+    // before `update_model_field` applies the typed mutation.
     if !matches!(normalized.as_deref(), Some("off") | None) {
         let style = {
             let loader = state

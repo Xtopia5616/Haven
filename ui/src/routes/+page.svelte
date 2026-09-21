@@ -300,7 +300,7 @@
 		const label = webSearchOptionsAll.find((o) => o.value === value)?.label || '关闭';
 		skipNextDefaultModelRefresh = true;
 		try {
-			await invoke('set_web_search', { role: 'default_model', mode: value });
+			await invoke('set_web_search', { role: 'chat', mode: value });
 			currentWebSearch = value;
 			addNotification(`联网搜索: ${label}`, 'success', 2500);
 		} catch (e) {
@@ -314,7 +314,7 @@
 		modelMenuOpen = false;
 		skipNextDefaultModelRefresh = true;
 		try {
-			await invoke('switch_model', { role: 'default_model', modelId: m.id });
+			await invoke('switch_model', { role: 'chat', modelId: m.id });
 			currentModelId = m.id;
 			currentModelName = m.name || m.id;
 			addNotification(`已切换默认模型: ${currentModelName}`, 'success', 3000);
@@ -329,7 +329,7 @@
 		const label = effortOptions.find((o) => o.value === value)?.label || '默认';
 		skipNextDefaultModelRefresh = true;
 		try {
-			await invoke('set_reasoning_effort', { role: 'default_model', effort: value || null });
+			await invoke('set_reasoning_effort', { role: 'chat', effort: value || null });
 			currentEffort = value || '';
 			addNotification(`思考强度: ${label}`, 'success', 2500);
 		} catch (e) {
@@ -1109,7 +1109,7 @@
 						}
 					},
 					// Settings save / model switch rebuilds the router. Keep-alive
-					// leaves this page mounted, so re-pull the default_model role
+					// leaves this page mounted, so re-pull the chat request model
 					// instead of leaving the toolbar on a stale selection.
 					'llm:config_changed': () => {
 						if (skipNextDefaultModelRefresh) {
@@ -1146,7 +1146,7 @@
 		// never delays the conversation render.
 		invoke('get_settings')
 			.then((s) => {
-				// The default_model role references a provider + a model id on
+		// The chat request policy references a provider + a model id on
 				// that provider (the "model library" is the provider's fetched
 				// model list). Resolve both for the toolbar switcher.
 				applyDefaultModelFromSettings(s);

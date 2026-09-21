@@ -348,6 +348,7 @@ impl AdminServices {
             }
             return Err(error);
         }
+        self.rebuild_catalog().await?;
         Ok(serde_json::json!({
             "name": name,
             "enabled": enabled,
@@ -445,6 +446,7 @@ impl AdminServices {
             }
             return Err(error);
         }
+        self.rebuild_catalog().await?;
         Ok(serde_json::json!({
             "name": name,
             "created": true,
@@ -559,6 +561,7 @@ impl AdminServices {
             .write()
             .await
             .insert(config.name.clone(), config.clone());
+        self.mcp_manager.invalidate_catalog();
 
         let mut result = serde_json::json!({
             "name": config.name,
@@ -580,6 +583,7 @@ impl AdminServices {
         } else {
             result["connected"] = serde_json::json!(false);
         }
+        self.rebuild_catalog().await?;
         Ok(result)
     }
 
@@ -642,6 +646,8 @@ impl AdminServices {
             .apply_patch(ConfigPatch::McpServers(servers))?;
         self.mcp_manager.remove_client(name).await;
         self.server_configs.write().await.remove(name);
+        self.mcp_manager.invalidate_catalog();
+        self.rebuild_catalog().await?;
         Ok(serde_json::json!({"name": name, "removed": true, "connected": false}))
     }
 
@@ -653,6 +659,7 @@ impl AdminServices {
             map.insert(server.name.clone(), server.clone());
         }
         drop(map);
+        self.mcp_manager.invalidate_catalog();
         for name in self.mcp_manager.list_clients().await {
             self.mcp_manager.remove_client(&name).await;
         }
@@ -672,6 +679,7 @@ impl AdminServices {
                 })),
             }
         }
+        self.rebuild_catalog().await?;
         Ok(serde_json::json!({"reloaded": true, "connected": connected}))
     }
 
@@ -737,6 +745,8 @@ impl AdminServices {
             .write()
             .await
             .insert(name.clone(), new_config.clone());
+        self.mcp_manager.invalidate_catalog();
+        self.rebuild_catalog().await?;
         Ok(serde_json::json!({
             "name": name,
             "enabled": new_config.enabled,

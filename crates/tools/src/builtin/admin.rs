@@ -1336,7 +1336,7 @@ impl AdminSurfaces {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{StructuredToolError, Tool};
+    use crate::{StructuredToolError, Tool, ToolsManager};
     use haven_common::config::{ConfigLoader, ConfigService};
     use serde_json::json;
     use tempfile::TempDir;
@@ -1736,6 +1736,77 @@ mod tests {
             .unwrap();
         assert_eq!(added.output["name"], json!("demo"));
         assert_eq!(added.output["saved"], json!(true));
+    }
+
+    #[tokio::test]
+    async fn llm_capability_mutations_rebuild_catalog_and_advance_mcp_clock() {
+        let manager = Arc::new(ToolsManager::new());
+        let dir = TempDir::new().unwrap();
+        let skill_dir = dir.path().join("demo");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "# Skill: demo\n\n## Metadata\n- description: demo\n\n## Instructions\nrun demo\n",
+        )
+        .unwrap();
+        manager
+            .skills_engine()
+            .set_config(Some(dir.path().to_path_buf()), None)
+            .await
+            .unwrap();
+
+        let config_dir = TempDir::new().unwrap();
+        let loader = ConfigLoader::load_from(&config_dir.path().join("config.toml")).unwrap();
+        let config_service = Arc::new(ConfigService::new(loader));
+        let context = AdminContext {
+            config_service: Some(config_service),
+            db: None,
+            router: None,
+            log_path: None,
+            log_level: None,
+            tool_control: Some(manager.tool_control_port()),
+        };
+        let surfaces = AdminSurfaces::new(
+            context,
+            manager.skills_engine().clone(),
+            Arc::new(manager.mcp_manager().clone()),
+            manager.mcp_server_configs().clone(),
+            manager.registry().clone(),
+            256 * 1024,
+            512 * 1024,
+        );
+
+        let registry_before = manager.registry().version();
+        surfaces
+            .execute(
+                AdminRequest::Skills(SkillsOperationArgs::SkillEnable {
+                    name: "demo".into(),
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(manager.registry().version() > registry_before);
+
+        let mcp_before = manager.mcp_catalog_version();
+        surfaces
+            .execute(
+                AdminRequest::Mcp(McpOperationArgs::McpAdd {
+                    name: "disabled-server".into(),
+                    transport: McpTransportType::Stdio,
+                    command: Some("not-started".into()),
+                    url: None,
+                    args: Vec::new(),
+                    env: Vec::new(),
+                    cwd: None,
+                    enabled: false,
+                    auto_connect: false,
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(manager.mcp_catalog_version() > mcp_before);
     }
 
     #[test]

@@ -49,8 +49,8 @@
 | `check_llm_connection` | `-` | `LlmConnectionReport` | read | 返回状态与非敏感原因分类，不返回 endpoint 或 provider 响应 |
 | `discover_models` | `DiscoverModelsRequest` | `ModelInfo[]` | execute | endpoint 与已保存 key 主机匹配 |
 | `discover_all_models` | `-` | `Record<string, ModelInfo[]>` | execute | 只查询已配置 provider |
-| `switch_model` | `SwitchModelRequest` | `()` | mutate | role 先校验再保存 |
-| `set_reasoning_effort` | `SetReasoningEffortRequest` | `()` | mutate | role 先校验再保存 |
+| `switch_model` | `SwitchModelRequest` | `()` | mutate | `role` 接收模型 ID 或 `RequestKind`，先校验再保存 |
+| `set_reasoning_effort` | `SetReasoningEffortRequest` | `()` | mutate | `role` 接收模型 ID 或 `RequestKind`，先校验再保存 |
 | `set_web_search` | `SetWebSearchRequest` | `()` | mutate | provider capability 先校验 |
 | `get_recording_state` | `-` | `RecordingState` | read | 只返回采集状态 |
 | `start_recording` | `-` | `()` | execute | 采集生命周期由 input 管线控制 |
@@ -219,7 +219,7 @@ DTO 位于 `crates/app-binary/src/events.rs`；前端镜像分别位于
 | `agent:stream_stalled` | `AgentStreamStalledEvent` | 根布局、聊天页 | 状态提示可重复；不得携带 provider 原始响应。 |
 | `agent:thought_chunk` / `agent:reasoning_chunk` | `Agent*ChunkEvent` | 聊天页 | 通过 `seq` 排序，丢失 chunk 时由完整消息投影兜底。 |
 | `agent:stream_reset` | `AgentStreamResetEvent` | 聊天页 | 与 chunk 共用后端有序队列；先清空对应 live thought/reasoning，再接受新尝试；不回滚 durable transcript。 |
-| `agent:media_plan` | `AgentMediaPlanEvent { session_id, step_number, run_id, role, strategy, projections, notices }` | 聊天页媒体计划卡 | 按 `session_id + step_number + run_id + role` 归并；展示实际媒体表示和能力降级原因，不携带原始媒体 bytes。 |
+| `agent:media_plan` | `AgentMediaPlanEvent { session_id, step_number, run_id, role, strategy, projections, notices }` | 聊天页媒体计划卡 | `role` 保留旧字段名但承载 `RequestKind` 字符串；按 `session_id + step_number + run_id + role` 归并；展示实际媒体表示和能力降级原因，不携带原始媒体 bytes。 |
 | `agent:web_search` | `AgentWebSearchEvent` | 聊天页 | `result` 是 provider 动态扩展点；错误和结果按阶段更新。 |
 | `agent:supplement` | `AgentSupplementEvent` | 聊天页 | 按 run/step 顺序消费；只发送补充上下文，不发送快照内部对象。 |
 | `agent:compaction` | `AgentCompactionEvent { summary, tokens_before, tokens_after, degraded, episode_id? }` | 聊天页 | 按事件顺序消费；`degraded=true` 表示摘要请求未完成、使用了 `[older context omitted]`，UI 必须提示较早内容已省略；不发送快照内部对象。 |

@@ -160,7 +160,7 @@
 					baseUrl: base,
 					apiKey: key,
 					provider: name,
-					role: 'stt',
+					role: 'transcription',
 				})) || [];
 		} catch (e) {
 			sttModels = [];

@@ -33,7 +33,8 @@ impl CacheAccounting {
 /// persisted per call for diagnostics, never with the cache key or prompt.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct CacheDiagnostics {
-    /// `off`, `key`, `split`, or `implicit` describes the effective wire strategy.
+    /// `off`, `key`, `split`, `implicit`, or `explicit` describes the effective
+    /// wire strategy.
     #[serde(default)]
     pub mode: String,
     #[serde(default)]
@@ -71,7 +72,8 @@ impl CacheDiagnostics {
     }
 
     /// Use for providers with cache controls or automatic prefix caching but
-    /// without an explicit routing key (Anthropic and Gemini).
+    /// without an explicit routing key (for example Anthropic and the Gemini
+    /// fallback path).
     pub fn for_provider_cache(system_split: bool) -> Self {
         Self {
             mode: if system_split {

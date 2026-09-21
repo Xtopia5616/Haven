@@ -7,7 +7,7 @@
 use tracing::Instrument;
 
 use super::{PauseReason, StepCtx, *};
-use crate::types::{BranchPoint, ReActSnapshot, TranscriptRecord};
+use crate::types::{BranchPoint, ReActSnapshot, SNAPSHOT_EVENT_TAIL_LIMIT, TranscriptRecord};
 use haven_memory::{RecoveryPersistenceStatus, SessionEventInput};
 
 /// The durable event-derived session state used by resume and rollback.
@@ -97,23 +97,29 @@ impl SnapshotStore {
 
 /// Borrowed serialization view of a `ReActSnapshot`. Serializing this instead
 /// of building an owned `ReActSnapshot` skips the per-step deep copies of
-/// events/branch_points (which accumulate to O(n²) over a long session).
-/// Field names/shape match `ReActSnapshot` exactly. `events` is a checkpoint
-/// cache; the durable transcript is stored in `session_events`.
+/// branch points and the durable transcript. Only the checkpoint cursor and a
+/// bounded diagnostic tail are written; the complete transcript is stored in
+/// `session_events`.
 #[derive(serde::Serialize)]
 struct SnapshotView<'a> {
-    events: &'a [TranscriptRecord],
+    event_cursor: usize,
+    #[serde(skip_serializing_if = "slice_is_empty")]
+    event_tail: &'a [TranscriptRecord],
     step_number: u32,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     branch_points: &'a HashMap<u32, BranchPoint>,
     last_ingress_seq: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     error_partial_message_ids: Option<&'a [String]>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    interactions: Vec<crate::interaction::InteractionRequest>,
+    #[serde(default, skip_serializing_if = "slice_is_empty")]
+    interactions: &'a [crate::interaction::InteractionRequest],
     /// Per-run step budget for observability (R4); see `ReActSnapshot`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     run_budget: Option<&'a crate::types::RunBudget>,
+}
+
+fn slice_is_empty<T>(slice: &[T]) -> bool {
+    slice.is_empty()
 }
 
 /// Inputs for a pause checkpoint. Keeping this boundary named prevents the
@@ -304,6 +310,12 @@ impl ReActEngine {
         snapshot: &ReActSnapshot,
         run_id: u64,
     ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            snapshot.event_cursor <= snapshot.events.len(),
+            "react_state contains only a bounded event tail (cursor {}, cached {}); durable session_events are required",
+            snapshot.event_cursor,
+            snapshot.events.len()
+        );
         if snapshot.events.is_empty() && snapshot.branch_points.is_empty() {
             return Ok(());
         }
@@ -803,12 +815,14 @@ impl ReActEngine {
             }
         };
         let view = SnapshotView {
-            events: &state.events,
+            event_cursor: state.events.len(),
+            event_tail: &state.events
+                [state.events.len().saturating_sub(SNAPSHOT_EVENT_TAIL_LIMIT)..],
             step_number,
             branch_points: &state.branch_points,
             last_ingress_seq,
             error_partial_message_ids,
-            interactions,
+            interactions: &interactions,
             run_budget: run_budget.as_ref(),
         };
         // Serialize into the session's own buffer inside a scoped block so the
