@@ -180,9 +180,10 @@ pub enum PermissionMode {
 /// Technical file-system boundary applied by the authorization gateway.
 ///
 /// `WorkspaceWrite` is a policy boundary for path-bearing builtin tools. Opaque
-/// child processes are blocked there because Windows Job Objects contain the
-/// process tree but cannot enforce filesystem/network roots; `FullAccess` is
-/// the explicit escape hatch for such processes.
+/// child processes cannot be technically constrained by Windows Job Objects;
+/// they may run only through the explicit confirmation path of
+/// `NetworkPolicy::Ask` (or the `FullAccess` escape hatch), while `Deny` and
+/// `Restricted` remain hard boundaries for opaque network access.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SandboxMode {
@@ -202,10 +203,10 @@ pub enum SandboxMode {
 pub enum NetworkPolicy {
     /// No network-capable tool may run.
     Deny,
-    /// Allow inspectable public destinations, but keep network operations on
-    /// the normal confirmation path. This is the user-friendly default: a
-    /// request is not silently rejected, and an explicit permission grant can
-    /// still be used to avoid repeated prompts.
+    /// Keep network operations on the normal confirmation path, including
+    /// opaque adapter capabilities. Inspectable public destinations still
+    /// receive the tool-level SSRF/DNS checks; an explicit permission grant
+    /// can avoid repeated prompts after the first confirmation.
     #[default]
     Ask,
     /// Public destinations are allowed subject to each tool's SSRF and

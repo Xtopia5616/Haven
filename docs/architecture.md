@@ -339,7 +339,8 @@ Clipboard 的文本、HTML、图片和文件列表都从 `clipboard` 根工具�
 操作 view 的 `OperationPolicy.permission_key` 是权威身份；契约另外声明 `effect`、`data_sensitivity`、
 `network_access` 和执行并发，不能由风险等级、并发属性或前端字段推断。`SecurityConfig` 另外保存
 `sandbox_mode`（`read_only` / `workspace_write` / `full_access`，可选 `writable_roots`）与
-`network_policy`（`deny` / `ask` / `restricted` / `open`，默认为 `ask`）；工作区可写模式拒绝无法约束的 opaque 子进程，
+`network_policy`（`deny` / `ask` / `restricted` / `open`，默认为 `ask`）；`ask` 下无法约束的 opaque 子进程进入普通确认流程，
+`deny` / `restricted` 仍直接拒绝，`open + workspace_write` 仍拒绝无法约束的 opaque 子进程，
 Windows 子进程通过 Job Object 回收进程树；受限网络只允许经过 SSRF/DNS 校验并固定地址的 HTTP/MCP
 目的地，禁止跨源重定向。`ask` 与 `restricted` 共用可验证目的地边界，但默认将网络操作交给确认流程，
 不会因为默认配置而静默拒绝普通公网请求。

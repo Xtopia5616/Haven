@@ -917,11 +917,15 @@ fn network_policy_block(
         (NetworkPolicy::Deny, _) => {
             Some(format!("network access is disabled for tool '{tool_name}'"))
         }
-        // Ask and Restricted only permit destinations that Haven can inspect
-        // and validate. Opaque child processes/adapters cannot satisfy that
-        // contract, even if they are currently configured as read-only.
-        (NetworkPolicy::Ask | NetworkPolicy::Restricted, NetworkAccess::Opaque) => Some(format!(
-            "network policy cannot authorize opaque network access from '{tool_name}'"
+        // Ask is the explicit user-consent path for opaque adapters such as
+        // Skills and MCP tools. Their external/sensitive operation contract
+        // still forces a confirmation below; Ask must not turn that request
+        // into an unconditional policy denial.
+        (NetworkPolicy::Ask, NetworkAccess::Opaque) => None,
+        // Restricted is the technical network boundary: Haven must be able to
+        // inspect and validate the destination before an opaque adapter runs.
+        (NetworkPolicy::Restricted, NetworkAccess::Opaque) => Some(format!(
+            "restricted network policy cannot authorize opaque network access from '{tool_name}'"
         )),
         _ => {
             // WorkspaceWrite cannot safely constrain an arbitrary child
@@ -1519,7 +1523,13 @@ mod tests {
                 &opaque_policy,
             )
             .await,
-            ConfirmationResult::Blocked { .. }
+            ConfirmationResult::RequiresConfirmation { .. }
+        ));
+
+        let skill_policy = fixture_policy("skill__remote", &json!({}), RiskLevel::High);
+        assert!(matches!(
+            authorize(&gateway, None, "skill__remote", &json!({}), &skill_policy,).await,
+            ConfirmationResult::RequiresConfirmation { .. }
         ));
     }
 
@@ -1558,14 +1568,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn workspace_write_rejects_opaque_processes_until_full_access_is_explicit() {
+    async fn opaque_processes_follow_the_selected_network_boundary() {
         let gateway = ThresholdFixture::new(RiskLevel::Safe);
         gateway
-            .set_boundaries(
-                SandboxMode::WorkspaceWrite,
-                Vec::new(),
-                NetworkPolicy::Restricted,
-            )
+            .set_boundaries(SandboxMode::WorkspaceWrite, Vec::new(), NetworkPolicy::Open)
             .await;
         let policy = OperationPolicy::native(
             "shell",
@@ -1573,6 +1579,24 @@ mod tests {
             RiskLevel::High,
             NetworkAccess::Opaque,
         );
+        assert!(matches!(
+            authorize(&gateway, None, "shell", &json!({}), &policy).await,
+            ConfirmationResult::Blocked { .. }
+        ));
+        gateway
+            .set_boundaries(SandboxMode::WorkspaceWrite, Vec::new(), NetworkPolicy::Ask)
+            .await;
+        assert!(matches!(
+            authorize(&gateway, None, "shell", &json!({}), &policy).await,
+            ConfirmationResult::RequiresConfirmation { .. }
+        ));
+        gateway
+            .set_boundaries(
+                SandboxMode::WorkspaceWrite,
+                Vec::new(),
+                NetworkPolicy::Restricted,
+            )
+            .await;
         assert!(matches!(
             authorize(&gateway, None, "shell", &json!({}), &policy).await,
             ConfirmationResult::Blocked { .. }

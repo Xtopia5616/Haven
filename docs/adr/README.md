@@ -184,3 +184,4 @@
 - [0185：文件搜索结果分批渲染](0185-bounded-file-search-result-rendering.md)
 - [0186：工具结果统一分批渲染](0186-unified-tool-result-pagination.md)
 - [0187：首字节直达与工具卡片增量进度](0187-streaming-first-paint-and-tool-card-progress.md)
+- [0189：opaque 网络能力进入普通确认流程](0189-opaque-network-confirmation.md)
