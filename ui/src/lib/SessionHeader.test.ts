@@ -10,11 +10,12 @@ describe('SessionHeader', () => {
 		expect(document.querySelector('.session-header__status')).toBeNull();
 
 		const newButton = screen.getByRole('button', { name: '新建会话' });
-		const endButton = screen.getByRole('button', { name: '结束会话' });
+		const endButton = screen.getByRole('button', { name: '完成会话' });
 		for (const button of [newButton, endButton]) {
 			expect(button.classList.contains('md-icon-btn')).toBe(true);
 			expect(button.getAttribute('data-size')).toBe('toolbar');
 		}
+		expect(endButton.querySelector('[data-icon="check"]')).toBeTruthy();
 
 		await fireEvent.click(newButton);
 		expect(onNew).toHaveBeenCalledTimes(1);
@@ -22,10 +23,10 @@ describe('SessionHeader', () => {
 		expect(onEnd).toHaveBeenCalledTimes(1);
 	});
 
-	it('uses the success outline for ending an active conversation', () => {
+	it('uses the success outline for completing an active conversation', () => {
 		render(SessionHeader as any, { hasSession: true });
 
-		expect(screen.getByRole('button', { name: '结束会话' }).getAttribute('data-variant')).toBe(
+		expect(screen.getByRole('button', { name: '完成会话' }).getAttribute('data-variant')).toBe(
 			'success-outline',
 		);
 	});

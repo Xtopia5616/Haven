@@ -24,17 +24,21 @@ describe('InputRouter context menu', () => {
 			'primary',
 		);
 		expect(inputRouterSource).toContain("icon={recordingState.isRecording ? 'pause' : 'mic'}");
-		expect(screen.getByRole('textbox', { name: '消息输入框' }).getAttribute('placeholder')).toContain(
-			'录音',
-		);
+		expect(
+			screen.getByRole('textbox', { name: '消息输入框' }).getAttribute('placeholder'),
+		).toContain('录音');
 	});
 
 	it('keeps the recording shortcut in the active-session placeholder', () => {
-		render(InputRouter, { activeSessionId: 'ses-1', hotkeyBinding: 'Alt+Space', onsubmit: vi.fn() });
+		render(InputRouter, {
+			activeSessionId: 'ses-1',
+			hotkeyBinding: 'Alt+Space',
+			onsubmit: vi.fn(),
+		});
 
-		expect(screen.getByRole('textbox', { name: '消息输入框' }).getAttribute('placeholder')).toBe(
-			'追加指令，Enter 发送，Shift+Enter 换行；按 Alt+Space 录音',
-		);
+		expect(
+			screen.getByRole('textbox', { name: '消息输入框' }).getAttribute('placeholder'),
+		).toBe('追加指令，Enter 发送，Shift+Enter 换行；按 Alt+Space 录音');
 		expect(document.querySelector('.input-meta')).toBeNull();
 	});
 
@@ -53,7 +57,8 @@ describe('InputRouter context menu', () => {
 		const button = screen.getByRole('button', { name: '中断输出' });
 		expect(button.classList.contains('md-icon-btn')).toBe(true);
 		expect(button.getAttribute('data-size')).toBe('toolbar');
-		expect(button.getAttribute('data-variant')).toBe('danger');
+		expect(button.getAttribute('data-variant')).toBe('danger-outline');
+		expect(button.classList.contains('input-action-button--interrupt')).toBe(true);
 
 		fireEvent.click(button);
 		expect(onstop).toHaveBeenCalledTimes(1);

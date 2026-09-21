@@ -7,15 +7,15 @@
 	 * @prop {string} title — active session title
 	 * @prop {boolean} hasSession — whether a persisted session is active
 	 * @prop {() => void} onNew — create a fresh conversation
-	 * @prop {() => void} onEnd — close the active conversation
+	 * @prop {() => void} onEnd — complete the active conversation
 	 */
 	let { title = '新会话', hasSession = false, onNew, onEnd } = $props();
 </script>
 
-	<header class="session-header">
-		<div class="session-header__identity">
-			<div class="session-header__title-row">
-				<h1>{title}</h1>
+<header class="session-header">
+	<div class="session-header__identity">
+		<div class="session-header__title-row">
+			<h1>{title}</h1>
 		</div>
 	</div>
 	<div class="session-header__actions">
@@ -33,9 +33,9 @@
 				size="toolbar"
 				variant="success-outline"
 				className="session-header__end"
-				label="结束会话"
-				title="结束会话"
-				icon="close"
+				label="完成会话"
+				title="完成会话"
+				icon="check"
 				onclick={() => onEnd?.()}
 			/>
 		{/if}

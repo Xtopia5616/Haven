@@ -666,7 +666,7 @@
 			// it so the user can retry. Clearing the pointer here would orphan a
 			// session that keeps running (and streaming) with no visible target.
 			newSessionIntentStore.set(false);
-			reportError(e, { context: '+page', message: '结束会话失败', log: false });
+			reportError(e, { context: '+page', message: '完成会话失败', log: false });
 			return;
 		}
 		// Keep the finished conversation selected so its terminal reason remains
