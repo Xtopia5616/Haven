@@ -307,21 +307,9 @@
 						{/snippet}
 					</MaterialSplitButton>
 					<div class="allow-group">
-						<MaterialButton
-							variant="text"
-							className="btn-once"
-							label="本次允许"
-							onclick={() => decide('allow', 'once', 'operation')}
-						/>
-						<MaterialButton
-							variant="tonal"
-							className="btn-session"
-							label="本对话允许此操作"
-							onclick={() => decide('allow', 'session', 'operation')}
-						/>
 						<MaterialSplitButton
 							label="永久允许此操作"
-							variant="filled"
+							variant="text"
 							className="allow-split"
 							open={showAllowMenu}
 							onclick={() => requestPersistentAllow('operation')}
@@ -351,6 +339,18 @@
 								{/if}
 							{/snippet}
 						</MaterialSplitButton>
+						<MaterialButton
+							variant="tonal"
+							className="btn-session"
+							label="本对话允许此操作"
+							onclick={() => decide('allow', 'session', 'operation')}
+						/>
+						<MaterialButton
+							variant="filled"
+							className="btn-once"
+							label="本次允许"
+							onclick={() => decide('allow', 'once', 'operation')}
+						/>
 					</div>
 				</div>
 			</footer>
@@ -679,10 +679,6 @@
 		gap: var(--md-sys-space-xs);
 		flex-wrap: nowrap;
 		min-width: 0;
-	}
-
-	:global(.md-btn.btn-once) {
-		color: var(--md-sys-color-on-surface-variant);
 	}
 
 	.allow-group :global(.md-btn) {
