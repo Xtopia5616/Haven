@@ -70,4 +70,27 @@ describe('SessionHistory actions', () => {
 		expect(onEnterSelectMode).toHaveBeenCalledTimes(1);
 		expect(onOpenClearDialog).toHaveBeenCalledTimes(1);
 	});
+
+	it('keeps the native context menu available while renaming', () => {
+		const onContextMenu = vi.fn();
+		const session = {
+			id: 'ses-1',
+			status: 'completed',
+			created_at: '2026-09-06T03:00:00Z',
+		};
+		render(SessionHistory, {
+			...commonProps,
+			sessions: [session],
+			editingTitle: session.id,
+			renameValue: '研究会话',
+			onContextMenu,
+		});
+
+		const input = screen.getByRole('textbox', { name: '' });
+		const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+		input.dispatchEvent(event);
+
+		expect(event.defaultPrevented).toBe(false);
+		expect(onContextMenu).not.toHaveBeenCalled();
+	});
 });

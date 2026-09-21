@@ -69,6 +69,12 @@
 			onResume(session);
 		}
 	}
+	/** @param {MouseEvent} event @param {any} session */
+	function handleSessionContextMenu(event, session) {
+		const target = event.target instanceof Element ? event.target : null;
+		if (target?.closest('input, textarea, select, [contenteditable="true"]')) return;
+		onContextMenu(event, session);
+	}
 	const hasFilters = $derived(
 		Boolean(searchQuery.trim() || statusFilter || startDate || endDate),
 	);
@@ -207,7 +213,7 @@
 						tabindex="0"
 						onclick={() => onResume(session)}
 						onkeydown={(event) => handleSessionKeydown(event, session)}
-						oncontextmenu={(event) => onContextMenu(event, session)}
+						oncontextmenu={(event) => handleSessionContextMenu(event, session)}
 					>
 						<div class="session-item-main workspace-item-card-main">
 							<div class="session-title-row workspace-item-card-header">
