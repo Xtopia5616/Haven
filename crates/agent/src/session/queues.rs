@@ -246,18 +246,14 @@ impl SessionSupervisor {
         session_id: &str,
         interactions: Vec<crate::interaction::InteractionRequest>,
     ) -> anyhow::Result<()> {
+        let interactions = serde_json::to_string(&interactions)?;
         let sid = session_id.to_string();
         self.db
             .run_blocking(move |db| {
-                let json = db.get_react_state(&sid)?.ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "cannot persist interactions for session {sid}: react_state checkpoint is missing"
-                    )
-                })?;
-                let mut snapshot = crate::types::ReActSnapshot::from_json(&json)?;
-                snapshot.interactions = interactions;
-                db.save_react_state(&sid, &serde_json::to_string(&snapshot)?)?;
-                Ok(())
+                db.update_react_state_interactions_json(&sid, &interactions)
+                    .map_err(|error| {
+                        anyhow::anyhow!("cannot persist interactions for session {sid}: {error}")
+                    })
             })
             .await
     }

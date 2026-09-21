@@ -535,80 +535,65 @@ impl Database {
     /// without making it the recovery authority.
     pub fn save_react_state(&self, session_id: &str, state_json: &str) -> anyhow::Result<()> {
         let now = Utc::now().to_rfc3339();
-        let compressed = compress_react_state(state_json)?;
-        let event_cursor = serde_json::from_str::<serde_json::Value>(state_json)
-            .ok()
-            .and_then(|value| {
-                value
-                    .get("events")
-                    .and_then(|events| events.as_array())
-                    .cloned()
-            })
-            .map(|events| events.len() as i64)
-            .unwrap_or(0);
+        let conn = self.conn();
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = save_react_state_in_transaction(&conn, session_id, state_json, &now);
+        match result {
+            Ok(()) => conn.execute_batch("COMMIT")?,
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
+    /// Update only the checkpoint's interaction metadata while holding the
+    /// SQLite write transaction.  Reading a snapshot in the caller and then
+    /// writing the modified JSON back is unsafe: a concurrent stream snapshot
+    /// can commit in between and the stale interaction write would erase its
+    /// newer transcript/events.  This method reads the current blob after
+    /// acquiring `BEGIN IMMEDIATE`, changes one field, and refreshes the
+    /// checkpoint metadata from that same transaction.
+    pub fn update_react_state_interactions_json(
+        &self,
+        session_id: &str,
+        interactions_json: &str,
+    ) -> anyhow::Result<()> {
+        let interactions: serde_json::Value = serde_json::from_str(interactions_json)?;
+        if !interactions.is_array() {
+            anyhow::bail!("react_state interactions must be a JSON array");
+        }
         let conn = self.conn();
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<()> {
-            let previous_revision: Option<i64> = conn
-                .query_row(
-                    "SELECT COALESCE(revision, 0) + 1
-                 FROM react_checkpoints WHERE session_id = ?1",
-                    rusqlite::params![session_id],
-                    |row| row.get(0),
-                )
-                .optional()?;
-            let revision = previous_revision.unwrap_or(1);
-            let message_ingress_seq: i64 = conn
-                .query_row(
-                    "SELECT COALESCE(last_ingress_seq, 0)
-                     FROM message_ingress_cursors WHERE session_id = ?1",
-                    rusqlite::params![session_id],
-                    |row| row.get(0),
-                )
-                .optional()?
-                .unwrap_or(0);
-            let event_sequence: i64 = conn.query_row(
-                "SELECT COALESCE(MAX(sequence), 0)
-                     FROM session_events WHERE session_id = ?1",
+            let stored: rusqlite::types::Value = conn.query_row(
+                "SELECT react_state FROM sessions WHERE id = ?1",
                 rusqlite::params![session_id],
                 |row| row.get(0),
             )?;
-            let step_seq: i64 = conn
-                .query_row(
-                    "SELECT COALESCE(last_step_seq, 0)
-                     FROM session_step_cursors WHERE session_id = ?1",
-                    rusqlite::params![session_id],
-                    |row| row.get(0),
-                )
-                .optional()?
-                .unwrap_or(0);
-            conn.execute(
-                "UPDATE sessions SET react_state = ?1, updated_at = ?2 WHERE id = ?3",
-                rusqlite::params![compressed, now, session_id],
-            )?;
-            conn.execute(
-                "INSERT INTO react_checkpoints
-                    (session_id, revision, event_cursor, event_sequence,
-                     message_ingress_seq, step_seq, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-                 ON CONFLICT(session_id) DO UPDATE SET
-                    revision = excluded.revision,
-                    event_cursor = excluded.event_cursor,
-                    event_sequence = excluded.event_sequence,
-                    message_ingress_seq = excluded.message_ingress_seq,
-                    step_seq = excluded.step_seq,
-                    updated_at = excluded.updated_at",
-                rusqlite::params![
-                    session_id,
-                    revision,
-                    event_cursor,
-                    event_sequence,
-                    message_ingress_seq,
-                    step_seq,
-                    now
-                ],
-            )?;
-            Ok(())
+            let json = match stored {
+                rusqlite::types::Value::Blob(blob) => decompress_react_state(&blob)?,
+                rusqlite::types::Value::Text(_) => anyhow::bail!(
+                    "incompatible react_state: legacy uncompressed snapshot requires reset"
+                ),
+                rusqlite::types::Value::Null => {
+                    anyhow::bail!("react_state checkpoint is missing")
+                }
+                other => anyhow::bail!("invalid react_state storage type: {other:?}"),
+            };
+            let mut snapshot: serde_json::Value = serde_json::from_str(&json)?;
+            let object = snapshot
+                .as_object_mut()
+                .ok_or_else(|| anyhow::anyhow!("react_state snapshot must be a JSON object"))?;
+            object.insert("interactions".into(), interactions.clone());
+            let updated_json = serde_json::to_string(&snapshot)?;
+            save_react_state_in_transaction(
+                &conn,
+                session_id,
+                &updated_json,
+                &Utc::now().to_rfc3339(),
+            )
         })();
         match result {
             Ok(()) => conn.execute_batch("COMMIT")?,
@@ -692,6 +677,89 @@ impl Database {
             _ => Ok(None),
         }
     }
+}
+
+/// Write a checkpoint and its high-water metadata using the caller's active
+/// SQLite transaction.  Keeping this bookkeeping in one helper is important
+/// for partial snapshot updates: they must advance the same revision and
+/// cursors as ordinary snapshot writes without reconstructing stale metadata.
+fn save_react_state_in_transaction(
+    conn: &rusqlite::Connection,
+    session_id: &str,
+    state_json: &str,
+    now: &str,
+) -> anyhow::Result<()> {
+    let compressed = compress_react_state(state_json)?;
+    let event_cursor = serde_json::from_str::<serde_json::Value>(state_json)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("events")
+                .and_then(|events| events.as_array())
+                .cloned()
+        })
+        .map(|events| events.len() as i64)
+        .unwrap_or(0);
+    let previous_revision: Option<i64> = conn
+        .query_row(
+            "SELECT COALESCE(revision, 0) + 1
+             FROM react_checkpoints WHERE session_id = ?1",
+            rusqlite::params![session_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let revision = previous_revision.unwrap_or(1);
+    let message_ingress_seq: i64 = conn
+        .query_row(
+            "SELECT COALESCE(last_ingress_seq, 0)
+             FROM message_ingress_cursors WHERE session_id = ?1",
+            rusqlite::params![session_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .unwrap_or(0);
+    let event_sequence: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(sequence), 0)
+         FROM session_events WHERE session_id = ?1",
+        rusqlite::params![session_id],
+        |row| row.get(0),
+    )?;
+    let step_seq: i64 = conn
+        .query_row(
+            "SELECT COALESCE(last_step_seq, 0)
+             FROM session_step_cursors WHERE session_id = ?1",
+            rusqlite::params![session_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .unwrap_or(0);
+    conn.execute(
+        "UPDATE sessions SET react_state = ?1, updated_at = ?2 WHERE id = ?3",
+        rusqlite::params![compressed, now, session_id],
+    )?;
+    conn.execute(
+        "INSERT INTO react_checkpoints
+            (session_id, revision, event_cursor, event_sequence,
+             message_ingress_seq, step_seq, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         ON CONFLICT(session_id) DO UPDATE SET
+            revision = excluded.revision,
+            event_cursor = excluded.event_cursor,
+            event_sequence = excluded.event_sequence,
+            message_ingress_seq = excluded.message_ingress_seq,
+            step_seq = excluded.step_seq,
+            updated_at = excluded.updated_at",
+        rusqlite::params![
+            session_id,
+            revision,
+            event_cursor,
+            event_sequence,
+            message_ingress_seq,
+            step_seq,
+            now
+        ],
+    )?;
+    Ok(())
 }
 
 /// Gzip-compress a JSON snapshot.
@@ -1233,6 +1301,59 @@ mod tests {
 
         let loaded = db.get_react_state(&session.id).unwrap().unwrap();
         assert_eq!(loaded, r#"{"v":2}"#);
+    }
+
+    #[test]
+    fn test_update_react_state_interactions_preserves_latest_snapshot() {
+        let db = create_db();
+        let session = db.create_session("input", "").unwrap();
+
+        db.save_react_state(
+            &session.id,
+            r#"{"events":[{},{}],"interactions":[{"id":"old"}]}"#,
+        )
+        .unwrap();
+        // Simulate a newer streamed-output checkpoint landing before the
+        // interaction update. The update must merge into this latest blob,
+        // not write back the caller's older snapshot.
+        db.save_react_state(
+            &session.id,
+            r#"{"events":[{},{},{}],"interactions":[{"id":"old"}]}"#,
+        )
+        .unwrap();
+        db.update_react_state_interactions_json(&session.id, r#"[{"id":"new"}]"#)
+            .unwrap();
+
+        let loaded: serde_json::Value =
+            serde_json::from_str(&db.get_react_state(&session.id).unwrap().unwrap()).unwrap();
+        assert_eq!(loaded["events"].as_array().unwrap().len(), 3);
+        assert_eq!(loaded["interactions"][0]["id"], "new");
+        let checkpoint = db
+            .get_react_checkpoint(&session.id)
+            .unwrap()
+            .expect("checkpoint after interaction update");
+        assert_eq!(checkpoint.revision, 3);
+        assert_eq!(checkpoint.event_cursor, 3);
+    }
+
+    #[test]
+    fn test_update_react_state_interactions_rejects_invalid_inputs() {
+        let db = create_db();
+        let session = db.create_session("input", "").unwrap();
+        let error = db
+            .update_react_state_interactions_json(&session.id, r#"{"id":"bad"}"#)
+            .unwrap_err();
+        assert!(error.to_string().contains("JSON array"));
+
+        let error = db
+            .update_react_state_interactions_json(&session.id, "[]")
+            .unwrap_err();
+        assert!(error.to_string().contains("checkpoint is missing"));
+
+        db.save_react_state(&session.id, r#"{"events":[]}"#)
+            .unwrap();
+        db.update_react_state_interactions_json(&session.id, "[]")
+            .unwrap();
     }
 
     #[test]

@@ -185,3 +185,4 @@
 - [0186：工具结果统一分批渲染](0186-unified-tool-result-pagination.md)
 - [0187：首字节直达与工具卡片增量进度](0187-streaming-first-paint-and-tool-card-progress.md)
 - [0189：opaque 网络能力进入普通确认流程](0189-opaque-network-confirmation.md)
+- [0190：交互状态更新与输出快照原子合并](0190-atomic-react-state-interaction-updates.md)
