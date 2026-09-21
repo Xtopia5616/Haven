@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { get } from 'svelte/store';
 import type { AgentChunkPayload } from './contracts/agent.ts';
-import { sessionMessagesStore } from './sessionMessages.ts';
+import { SessionReducer } from './sessionReducer.ts';
 import {
 	createStreamEventAggregator,
 	foldContiguousChunks,
@@ -10,9 +9,10 @@ import {
 
 describe('createStreamEventAggregator', () => {
 	let frame: FrameRequestCallback | null = null;
+	let reducer: SessionReducer;
 
 	beforeEach(() => {
-		sessionMessagesStore.set({});
+		reducer = new SessionReducer();
 		frame = null;
 		vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
 			frame = callback;
@@ -20,6 +20,19 @@ describe('createStreamEventAggregator', () => {
 		});
 		vi.stubGlobal('cancelAnimationFrame', vi.fn());
 	});
+
+	function createAggregator(
+		dispatch: (action: import('./sessionReducer.ts').SessionAction) => void = (action) =>
+			reducer.dispatch(action),
+	) {
+		return createStreamEventAggregator({
+			getActiveSessionId: () => 'ses-stream-test',
+			onActiveStream: vi.fn(),
+			dispatch,
+			getBlockIds: (sessionId, stepNumber, runId) =>
+				reducer.getBlockIds(sessionId, stepNumber, runId),
+		});
+	}
 
 	function chunk(overrides: Partial<AgentChunkPayload> = {}): { payload: AgentChunkPayload } {
 		return {
@@ -35,31 +48,23 @@ describe('createStreamEventAggregator', () => {
 		};
 	}
 
-	it('deduplicates sequence replays before the frame flush', () => {
-		const onActiveStream = vi.fn();
-		const aggregator = createStreamEventAggregator({
-			getActiveSessionId: () => 'ses-stream-test',
-			onActiveStream,
-		});
+	it('leaves sequence replay handling to the reducer', () => {
+		const aggregator = createAggregator();
 		const handler = aggregator.chunkHandler(true, undefined);
 
 		handler(chunk());
 		handler(chunk({ delta: 'duplicate', seq: 1 }));
-		expect(get(sessionMessagesStore)['ses-stream-test']).toHaveLength(1);
-		expect(get(sessionMessagesStore)['ses-stream-test'][0].content).toBe('hello');
-		expect(onActiveStream).toHaveBeenCalledTimes(2);
+		expect(reducer.getMessages('ses-stream-test')).toHaveLength(1);
+		expect(reducer.getMessages('ses-stream-test')[0].content).toBe('hello');
 
 		aggregator.flushChunksNow();
-		expect(get(sessionMessagesStore)['ses-stream-test']).toHaveLength(1);
-		expect(get(sessionMessagesStore)['ses-stream-test'][0].content).toBe('hello');
-		expect(aggregator.metricsSnapshot()).toEqual({ frames: 0, chunks: 1, drops: 0 });
+		expect(reducer.getMessages('ses-stream-test')).toHaveLength(1);
+		expect(reducer.getMessages('ses-stream-test')[0].content).toBe('hello');
+		expect(aggregator.metricsSnapshot()).toEqual({ frames: 0, chunks: 2, drops: 0 });
 	});
 
-	it('finalizes reasoning before applying the thought chunk for the same step', () => {
-		const aggregator = createStreamEventAggregator({
-			getActiveSessionId: () => 'ses-stream-test',
-			onActiveStream: vi.fn(),
-		});
+	it('dispatches a thought frame after the reducer finalizes reasoning', () => {
+		const aggregator = createAggregator();
 		aggregator.chunkHandler(
 			false,
 			'reasoning',
@@ -69,9 +74,8 @@ describe('createStreamEventAggregator', () => {
 			undefined,
 		)(chunk({ messageId: 'step-thought-test-2', delta: 'thought', seq: 1 }));
 
-		expect(frame).not.toBeNull();
 		aggregator.flushChunksNow();
-		const messages = get(sessionMessagesStore)['ses-stream-test'];
+		const messages = reducer.getMessages('ses-stream-test');
 		expect(messages.map((message) => [message.content, message.streaming])).toEqual([
 			['reason', false],
 			['thought', true],
@@ -102,13 +106,9 @@ describe('createStreamEventAggregator', () => {
 		]);
 	});
 
-	it('dispatches one reducer action for a frame while retaining chunk order', () => {
+	it('dispatches one reducer action for each session frame while retaining chunk order', () => {
 		const dispatch = vi.fn();
-		const aggregator = createStreamEventAggregator({
-			getActiveSessionId: () => 'ses-stream-test',
-			onActiveStream: vi.fn(),
-			dispatch,
-		});
+		const aggregator = createAggregator(dispatch);
 		aggregator.chunkHandler(true, undefined)(chunk({ delta: 'a', seq: 1 }));
 		aggregator.chunkHandler(true, undefined)(chunk({ delta: 'b', seq: 2 }));
 
@@ -127,10 +127,7 @@ describe('createStreamEventAggregator', () => {
 	});
 
 	it('counts one frame for a real multi-session animation-frame callback', () => {
-		const aggregator = createStreamEventAggregator({
-			getActiveSessionId: () => 'ses-stream-test',
-			onActiveStream: vi.fn(),
-		});
+		const aggregator = createAggregator();
 		aggregator.chunkHandler(true, undefined)(chunk({ sessionId: 'ses-a', messageId: 'a' }));
 		aggregator.chunkHandler(true, undefined)(chunk({ sessionId: 'ses-b', messageId: 'b' }));
 
@@ -140,10 +137,7 @@ describe('createStreamEventAggregator', () => {
 	});
 
 	it('does not count a cancelled RAF that was replaced by a manual flush', () => {
-		const aggregator = createStreamEventAggregator({
-			getActiveSessionId: () => 'ses-stream-test',
-			onActiveStream: vi.fn(),
-		});
+		const aggregator = createAggregator();
 		aggregator.chunkHandler(true, undefined)(chunk());
 		aggregator.flushChunksNow();
 
@@ -151,18 +145,17 @@ describe('createStreamEventAggregator', () => {
 	});
 
 	it('cancels a stale RAF before painting the active step first chunk', () => {
-		const aggregator = createStreamEventAggregator({
-			getActiveSessionId: () => 'ses-stream-test',
-			onActiveStream: vi.fn(),
-		});
-		aggregator.chunkHandler(true, undefined)(
-			chunk({ sessionId: 'ses-other', messageId: 'other', stepNumber: 1 }),
-		);
+		const aggregator = createAggregator();
+		aggregator.chunkHandler(
+			true,
+			undefined,
+		)(chunk({ sessionId: 'ses-other', messageId: 'other', stepNumber: 1 }));
 		expect(frame).not.toBeNull();
 
-		aggregator.chunkHandler(true, undefined)(
-			chunk({ sessionId: 'ses-stream-test', messageId: 'active', stepNumber: 2 }),
-		);
+		aggregator.chunkHandler(
+			true,
+			undefined,
+		)(chunk({ sessionId: 'ses-stream-test', messageId: 'active', stepNumber: 2 }));
 
 		expect(vi.mocked(cancelAnimationFrame)).toHaveBeenCalledWith(1);
 	});

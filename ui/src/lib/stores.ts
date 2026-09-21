@@ -3,115 +3,8 @@ import { invoke } from './tauri.ts';
 import logger from '$lib/logger.ts';
 import { mapActionPayload, type ActionKind, type ActionPayload } from './contracts/action.ts';
 import type { AgentMediaPlanPayload } from './contracts/agent.ts';
-import type { InteractionKind, InteractionRequest, InteractionStatus } from './contracts/app.ts';
 import { formatMessageTime as formatMessageTimeValue } from './messageFormat.ts';
 import { appSessionReducer, backgroundActionResultContent } from './sessionReducer.ts';
-
-export const sessionStore = writable<any[]>([]);
-
-/**
- * The single renderer-side source of truth for ask, confirm, and scheduled
- * confirmation requests. Message bubbles and modal views are projections of
- * this store; they must not maintain separate pending queues.
- */
-export const interactionStore = writable<Record<string, InteractionRequest>>({});
-
-export function upsertInteraction(request: InteractionRequest) {
-	if (!request?.id || !request.sessionId) return;
-	interactionStore.update((current) => {
-		const previous = current[request.id];
-		if (previous && JSON.stringify(previous) === JSON.stringify(request)) return current;
-		return { ...current, [request.id]: request };
-	});
-}
-
-/** Replace one session's interaction projection from a renderer-safe resume DTO. */
-export function hydrateInteractions(result: any) {
-	const sessionId = result?.session?.id;
-	if (sessionId) clearSessionInteractions(sessionId);
-	for (const raw of result?.interactions || []) {
-		const request: InteractionRequest = {
-			id: raw.id,
-			sessionId: raw.sessionId ?? raw.session_id ?? '',
-			kind: raw.kind,
-			status: raw.status,
-			prompt: raw.prompt || '',
-			options: raw.options || [],
-			...(raw.toolName || raw.tool_name ? { toolName: raw.toolName ?? raw.tool_name } : {}),
-			...(raw.riskLevel || raw.risk_level
-				? { riskLevel: raw.riskLevel ?? raw.risk_level }
-				: {}),
-			...(raw.summary || raw.summary === '' ? { summary: raw.summary } : {}),
-			...(raw.permissionKey || raw.permission_key
-				? { permissionKey: raw.permissionKey ?? raw.permission_key }
-				: {}),
-			...(raw.invocationStepId || raw.invocation_step_id
-				? { invocationStepId: raw.invocationStepId ?? raw.invocation_step_id }
-				: {}),
-			...((raw.actionIndex ?? raw.action_index) != null
-				? { actionIndex: raw.actionIndex ?? raw.action_index }
-				: {}),
-			...(raw.toolCallId || raw.tool_call_id
-				? { toolCallId: raw.toolCallId ?? raw.tool_call_id }
-				: {}),
-			createdAt: raw.createdAt ?? raw.created_at ?? new Date().toISOString(),
-			...(raw.expiresAt || raw.expires_at
-				? { expiresAt: raw.expiresAt ?? raw.expires_at }
-				: {}),
-		};
-		upsertInteraction(request);
-	}
-}
-
-export function resolveInteraction(id: string, response: unknown = undefined) {
-	if (!id) return;
-	interactionStore.update((current) => {
-		const request = current[id];
-		if (!request || request.status !== 'pending') return current;
-		return {
-			...current,
-			[id]: {
-				...request,
-				status: 'resolved' as InteractionStatus,
-				...(response === undefined ? {} : { response }),
-			},
-		};
-	});
-}
-
-export function removeInteraction(id: string) {
-	if (!id) return;
-	interactionStore.update((current) => {
-		if (!(id in current)) return current;
-		const next = { ...current };
-		delete next[id];
-		return next;
-	});
-}
-
-export function clearSessionInteractions(sessionId: string, kind?: InteractionKind) {
-	if (!sessionId) return;
-	interactionStore.update((current) => {
-		const next = Object.fromEntries(
-			Object.entries(current).filter(
-				([, request]) => request.sessionId !== sessionId || (kind && request.kind !== kind),
-			),
-		);
-		return Object.keys(next).length === Object.keys(current).length ? current : next;
-	});
-}
-
-export function pendingInteractions(
-	sessionId?: string | null,
-	kind?: InteractionKind,
-): InteractionRequest[] {
-	return Object.values(get(interactionStore)).filter(
-		(request) =>
-			request.status === 'pending' &&
-			(!sessionId || request.sessionId === sessionId) &&
-			(!kind || request.kind === kind),
-	);
-}
 
 /**
  * User-visible error reasons for sessions that failed during this app run.
@@ -448,10 +341,6 @@ export function addNotification(
 // Resume target for navigating from history to chat with a session context.
 // Set by history page before navigating to /, consumed by +page.svelte on mount.
 export const resumeTargetStore = writable<any>(null);
-
-// Active session ID that persists across SvelteKit page navigations so the
-// send handler and voice recording can supplement the same session.
-export const activeSessionIdStore = writable<string | null>(null);
 
 // localStorage key recording an explicit "start a fresh conversation" intent
 // that survives app restarts (set by the new-session button, cleared when the

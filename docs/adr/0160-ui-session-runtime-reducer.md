@@ -35,8 +35,8 @@ UI 需要一个同样按稳定 ID 和 sequence 合并的运行态边界。
    边界，不能让断线重放重新追加已经消费的输出。
 5. optimistic 消息使用 add → accepted/rejected 生命周期。SessionCreated、draft
    adoption 和 persisted `message_id` 均按 ID 迁移/重命名；失败只删除同一个
-   optimistic ID。保留的 `sessionMessages.ts`、`sessionUsage.ts` 兼容 API 只服务
-   尚未迁移的测试/边界投影，生产聊天路径不再把它们作为会话状态源。
+   optimistic ID。迁移期保留的旧消息/用量 Store 已按 ADR 0196 删除，生产与测试
+   路径均只通过 reducer 读取和迁移会话运行态。
 
 ## 替代方案
 
@@ -50,7 +50,7 @@ usage/replay store。两种方案都会保留多个写入时钟，无法对 resu
   表；组件只读取 reducer 的投影。
 - `streamAggregator` 仍负责 RAF 排队和相邻 chunk 折叠，但提交的是 reducer action，
   不再直接写消息 store。
-- 旧 store 导出暂时保留为只读兼容投影/测试边界，不改变 Tauri wire、数据库 schema
+- 旧 store 导出与无 reducer 的兼容调用路径已删除；不改变 Tauri wire、数据库 schema
   或已有持久化数据。
 
 ## 验证

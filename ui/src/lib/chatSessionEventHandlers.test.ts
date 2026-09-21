@@ -8,15 +8,14 @@ function handlers(options: {
 	fresh?: boolean;
 	adoptedDraft?: boolean;
 	activeSessionId?: string | null;
-	reducer?: SessionReducer;
-	dispatchSession?: (action: import('./sessionReducer.ts').SessionAction) => void;
+	dispatchSession: (action: import('./sessionReducer.ts').SessionAction) => void;
 	flushChunksNow?: () => void;
 }) {
 	return createChatSessionEventHandlers({
 		getActiveSessionId: () => options.activeSessionId ?? null,
 		isFreshSessionIntent: () => options.fresh ?? false,
 		adoptDraftMessages: () => options.adoptedDraft ?? false,
-		dispatchSession: options.dispatchSession ?? ((action) => options.reducer?.dispatch(action)),
+		dispatchSession: options.dispatchSession,
 		getSessionErrorId: () => null,
 		rememberSessionError: vi.fn(),
 		forgetSessionError: vi.fn(),
@@ -50,7 +49,7 @@ describe('chat session lifecycle handlers', () => {
 		const eventHandlers = handlers({
 			activeSessionId: 'ses-paused',
 			flushChunksNow,
-			reducer,
+			dispatchSession: (action) => reducer.dispatch(action),
 		});
 		setToolOutputPreview('step-shell', 'partial', 'ses-paused');
 
@@ -133,7 +132,10 @@ describe('chat session lifecycle handlers', () => {
 			sessions: [{ id: 'ses-done', status: 'running', title: '研究' }],
 			activeSessionId: 'ses-done',
 		});
-		const eventHandlers = handlers({ activeSessionId: 'ses-done', reducer });
+		const eventHandlers = handlers({
+			activeSessionId: 'ses-done',
+			dispatchSession: (action) => reducer.dispatch(action),
+		});
 
 		eventHandlers['session:completed']({
 			payload: {
@@ -157,7 +159,10 @@ describe('chat session lifecycle handlers', () => {
 			sessions: [{ id: 'ses-paused', status: 'running', title: '研究' }],
 			activeSessionId: 'ses-paused',
 		});
-		const eventHandlers = handlers({ activeSessionId: 'ses-paused', reducer });
+		const eventHandlers = handlers({
+			activeSessionId: 'ses-paused',
+			dispatchSession: (action) => reducer.dispatch(action),
+		});
 
 		eventHandlers['session:updated']({
 			payload: {

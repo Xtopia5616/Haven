@@ -1,7 +1,5 @@
 import logger from './logger.ts';
-import { accumulateStreamChunk, finalizeStreamBlocks, type StreamMessage } from './streaming.ts';
 import type { AgentChunkPayload } from './contracts/agent.ts';
-import { pruneSeq, seqLastSeen, updateSessionMessages } from './sessionMessages.ts';
 import type { AgentChunkBatchItem, SessionAction } from './sessionReducer.ts';
 
 export interface PendingChunk {
@@ -85,9 +83,8 @@ export function createStreamEventAggregator({
 }: {
 	getActiveSessionId: () => string | null;
 	onActiveStream: () => void;
-	/** SessionReducer dispatch. Omitted only for legacy isolated tests. */
-	dispatch?: (action: SessionAction) => void;
-	getBlockIds?: (sessionId: string, stepNumber: number, runId: number) => StepBlockIds;
+	dispatch: (action: SessionAction) => void;
+	getBlockIds: (sessionId: string, stepNumber: number, runId: number) => StepBlockIds;
 }): StreamEventAggregator {
 	const pendingChunks: PendingChunk[] = [];
 	let chunkFlushRaf = 0;
@@ -98,32 +95,8 @@ export function createStreamEventAggregator({
 	let pendingChunkDrops = 0;
 	let frameCount = 0;
 	let acceptedChunkCount = 0;
-	const stepBlockIds = new Map<string, Map<string, StepBlockIds>>();
-
-	function blockKey(stepNumber: number, runId: number) {
-		return `${stepNumber}:${runId}`;
-	}
-
-	function registerBlockId(
-		tid: string,
-		stepNumber: number,
-		runId: number,
-		kind: 'thought' | 'reasoning',
-		messageId: string,
-	) {
-		if (!tid || !messageId) return;
-		let perSession = stepBlockIds.get(tid);
-		if (!perSession) stepBlockIds.set(tid, (perSession = new Map()));
-		const key = blockKey(stepNumber, runId);
-		const entry = perSession.get(key) || {};
-		if (kind === 'thought') entry.thoughtId = messageId;
-		else entry.reasoningId = messageId;
-		perSession.set(key, entry);
-	}
-
 	function blockIdsOf(sessionId: string, stepNumber: number, runId: number) {
-		if (getBlockIds) return getBlockIds(sessionId, stepNumber, runId);
-		return stepBlockIds.get(sessionId)?.get(blockKey(stepNumber, runId)) || {};
+		return getBlockIds(sessionId, stepNumber, runId);
 	}
 
 	function clearStepBlockIds(sessionId: string | null) {
@@ -137,19 +110,7 @@ export function createStreamEventAggregator({
 				firstChunkPaintedOrder.splice(index, 1);
 			}
 		}
-		if (dispatch) {
-			dispatch({ type: 'session/stream-blocks-cleared', sessionId });
-			return;
-		}
-		const perSession = stepBlockIds.get(sessionId);
-		if (perSession) {
-			// Legacy fallback keeps the old sequence map behavior for isolated tests.
-			for (const ids of perSession.values()) {
-				if (ids.thoughtId) pruneSeq(ids.thoughtId);
-				if (ids.reasoningId) pruneSeq(ids.reasoningId);
-			}
-		}
-		stepBlockIds.delete(sessionId);
+		dispatch({ type: 'session/stream-blocks-cleared', sessionId });
 	}
 
 	function flushPendingChunks(fromAnimationFrame = false) {
@@ -174,49 +135,19 @@ export function createStreamEventAggregator({
 			list.push(chunk);
 		}
 		for (const [, chunks] of bySession) {
-			if (dispatch) {
-				const frame: AgentChunkBatchItem[] = chunks.map((chunk) => ({
-					kind: chunk.msgType === undefined ? 'thought' : 'reasoning',
-					...(chunk.msgType !== undefined ? { msgType: chunk.msgType } : {}),
-					payload: {
-						sessionId: chunk.tid,
-						delta: chunk.delta,
-						stepNumber: chunk.stepNumber,
-						runId: chunk.runId,
-						messageId: chunk.sid,
-						seq: chunk.seq ?? 0,
-					},
-				}));
-				dispatch({ type: 'agent/chunks', chunks: frame });
-				continue;
-			}
-			updateSessionMessages(chunks[0].tid, (messages) => {
-				let next: StreamMessage[] = messages;
-				for (const chunk of chunks) {
-					if (chunk.finalizeReasoning) {
-						const { reasoningId } = blockIdsOf(
-							chunk.tid,
-							chunk.stepNumber,
-							chunk.runId,
-						);
-						if (reasoningId) {
-							next = finalizeStreamBlocks(next, reasoningId, null);
-							pruneSeq(reasoningId);
-						}
-					}
-					if (chunk.delta) {
-						next = accumulateStreamChunk(next, {
-							messageId: chunk.sid,
-							delta: chunk.delta,
-							msgType: chunk.msgType,
-							stepNumber: chunk.stepNumber,
-							runId: chunk.runId,
-							time: chunk.time,
-						});
-					}
-				}
-				return next;
-			});
+			const frame: AgentChunkBatchItem[] = chunks.map((chunk) => ({
+				kind: chunk.msgType === undefined ? 'thought' : 'reasoning',
+				...(chunk.msgType !== undefined ? { msgType: chunk.msgType } : {}),
+				payload: {
+					sessionId: chunk.tid,
+					delta: chunk.delta,
+					stepNumber: chunk.stepNumber,
+					runId: chunk.runId,
+					messageId: chunk.sid,
+					seq: chunk.seq ?? 0,
+				},
+			}));
+			dispatch({ type: 'agent/chunks', chunks: frame });
 		}
 	}
 
@@ -246,14 +177,6 @@ export function createStreamEventAggregator({
 			const messageId = data.messageId;
 			const delta = data.delta || '';
 			if (getActiveSessionId() === sessionId) onActiveStream();
-			if (!dispatch && seqLastSeen(messageId, data.seq, sessionId)) return;
-			registerBlockId(
-				sessionId,
-				data.stepNumber,
-				data.runId,
-				isThought ? 'thought' : 'reasoning',
-				messageId,
-			);
 			pendingChunks.push({
 				tid: sessionId,
 				sid: messageId,
@@ -280,11 +203,7 @@ export function createStreamEventAggregator({
 			// one animation frame, keeping the steady-state render cost bounded
 			// without adding a frame of latency to the first byte.
 			const streamKey = `${sessionId}:${data.stepNumber}:${data.runId}`;
-			if (
-				delta &&
-				getActiveSessionId() === sessionId &&
-				!firstChunkPainted.has(streamKey)
-			) {
+			if (delta && getActiveSessionId() === sessionId && !firstChunkPainted.has(streamKey)) {
 				firstChunkPainted.add(streamKey);
 				firstChunkPaintedOrder.push(streamKey);
 				if (firstChunkPaintedOrder.length > firstChunkPaintedMax) {

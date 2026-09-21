@@ -20,6 +20,7 @@
 	import { createSessionRefreshScheduler } from '$lib/sessionRefresh.ts';
 	import {
 		appSessionReducer,
+		DRAFT_SESSION_ID,
 		sessionStateStore,
 		resumeInteractions,
 	} from '$lib/sessionReducer.ts';
@@ -38,11 +39,9 @@
 		sessionEventListeners,
 	} from '$lib/events.ts';
 	import {
-		sessionStore,
 		activeConversationStatusStore,
 		addNotification,
 		resumeTargetStore,
-		activeSessionIdStore,
 		rememberSessionError,
 		forgetSessionError,
 		getSessionErrorReason,
@@ -53,10 +52,7 @@
 		mediaPlanStore,
 		NEW_ACTION_INTENT_KEY,
 		newSessionIntentStore,
-		interactionStore,
 	} from '$lib/stores.ts';
-	import { sessionMessagesStore, DRAFT_KEY } from '$lib/sessionMessages.ts';
-	import { sessionTokenStatsStore, sessionLlmUsageStore } from '$lib/sessionUsage.ts';
 	import { syncStore } from '$lib/syncStore.ts';
 	import { dragScroll } from '$lib/dragScroll.ts';
 	import {
@@ -101,19 +97,7 @@
 		sessionReducer.dispatch(action);
 	}
 
-	// Legacy stores are read-only projections for shell/components that have not
-	// yet migrated. They never feed state back into this reducer.
-	$effect(() =>
-		syncStore(sessionStateStore, (next) => {
-			sessionState = next;
-			sessionStore.set(next.sessions);
-			activeSessionIdStore.set(next.activeSessionId);
-			if (next.messages) sessionMessagesStore.set(next.messages);
-			if (next.interactions) interactionStore.set(next.interactions);
-			if (next.tokenStats) sessionTokenStatsStore.set(next.tokenStats);
-			if (next.llmUsage) sessionLlmUsageStore.set(next.llmUsage);
-		}),
-	);
+	$effect(() => syncStore(sessionStateStore, (next) => (sessionState = next)));
 
 	const sessions = $derived(sessionState.sessions);
 	const activeSessionId = $derived(sessionState.activeSessionId);
@@ -159,9 +143,8 @@
 	// in sync via `hotkey:rebind` so placeholders show the real value.
 	let hotkeyBinding = $state('Ctrl+Shift+Space');
 
-	// Active session token stats (the legacy store is updated as a read-only
-	// projection for tool-card components). Cleared when the active session
-	// changes; updated on every `agent:usage` event.
+	// Active session token stats from the reducer. Cleared when the active
+	// session changes; updated on every `agent:usage` event.
 	/**
 	 * @typedef {object} SessionTokenStats
 	 * @property {number} promptTokens
@@ -770,7 +753,7 @@
 	// Visible messages are a projection of the reducer. Interaction metadata is
 	// joined by the stable request/message id, never by text or position.
 	$effect(() => {
-		const list = sessionState.messages?.[activeSessionId || DRAFT_KEY] || [];
+		const list = sessionState.messages?.[activeSessionId || DRAFT_SESSION_ID] || [];
 		const interactions = sessionState.interactions || {};
 		messages = list.map((message) => {
 			if (message.type !== 'ask') return message;
@@ -1084,7 +1067,7 @@
 						getActiveSessionId: () => activeSessionId,
 						isFreshSessionIntent: () => get(newSessionIntentStore),
 						adoptDraftMessages: (sessionId) => {
-							const adopted = sessionReducer.getMessages(DRAFT_KEY).length > 0;
+							const adopted = sessionReducer.getMessages(DRAFT_SESSION_ID).length > 0;
 							dispatchSession({ type: 'session/messages/adopt-draft', sessionId });
 							return adopted;
 						},

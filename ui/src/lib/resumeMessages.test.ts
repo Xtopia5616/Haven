@@ -445,7 +445,7 @@ describe('buildResumeMessages', () => {
 
 	it('restores ask options without duplicating interaction state', () => {
 		// Resume rebuilds the card content/options. Pending state is hydrated
-		// separately into interactionStore from the safe interaction projection.
+		// separately from the safe interaction projection.
 		const items = buildResumeMessages({
 			session: { ...sampleSession, status: 'paused' },
 			messages: [

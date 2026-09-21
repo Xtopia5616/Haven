@@ -2,8 +2,6 @@ import { clearToolOutputPreview, setToolOutputPreview, updateModelState } from '
 import type { SessionAction } from './sessionReducer.ts';
 
 export interface ChatAgentEventContext {
-	/** Kept optional for callers that still provide the active-session probe. */
-	getActiveSessionId?: () => string | null;
 	chunkHandler: (...args: any[]) => any;
 	flushChunksNow: () => void;
 	dispatchSession: (action: SessionAction) => void;

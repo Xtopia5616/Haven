@@ -1,19 +1,22 @@
 import { get } from 'svelte/store';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createChatUsageEventHandlers } from './chatUsageEventHandlers.ts';
-import { sessionLlmUsageStore, sessionTokenStatsStore } from './sessionUsage.ts';
+import { SessionReducer } from './sessionReducer.ts';
 import { mediaPlanStore, notificationStore } from './stores.ts';
 
 describe('createChatUsageEventHandlers', () => {
+	let reducer: SessionReducer;
+
 	beforeEach(() => {
-		sessionLlmUsageStore.set({});
-		sessionTokenStatsStore.set({});
+		reducer = new SessionReducer();
 		mediaPlanStore.set({});
 		notificationStore.set([]);
 	});
 
 	it('keeps ingress media and other tool usage out of Agent totals', () => {
-		const handle = createChatUsageEventHandlers()['agent:usage'];
+		const handle = createChatUsageEventHandlers({
+			dispatchSession: (action) => reducer.dispatch(action),
+		})['agent:usage'];
 		for (const [id, callKind] of [
 			['media', 'media'],
 			['tool', 'tool'],
@@ -49,15 +52,17 @@ describe('createChatUsageEventHandlers', () => {
 			} as any);
 		}
 
-		expect(get(sessionTokenStatsStore)['ses-test']).toBeUndefined();
-		expect(get(sessionLlmUsageStore)['ses-test']).toEqual([
+		expect(reducer.getState().tokenStats?.['ses-test']).toBeUndefined();
+		expect(reducer.getState().llmUsage?.['ses-test']).toEqual([
 			expect.objectContaining({ call_kind: 'media', step_number: null }),
 			expect.objectContaining({ call_kind: 'tool', step_number: null }),
 		]);
 	});
 
 	it('keeps the selected representation and reason visible for downgraded media', () => {
-		const handle = createChatUsageEventHandlers()['agent:media_plan'];
+		const handle = createChatUsageEventHandlers({
+			dispatchSession: (action) => reducer.dispatch(action),
+		})['agent:media_plan'];
 		handle({
 			event: 'agent:media_plan',
 			id: 3,

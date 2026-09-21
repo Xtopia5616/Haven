@@ -1,6 +1,3 @@
-import { get } from 'svelte/store';
-import { sessionMessagesStore } from './sessionMessages.ts';
-import { clearSessionInteractions, pendingInteractions, resolveInteraction } from './stores.ts';
 import type { SessionReducer } from './sessionReducer.ts';
 
 interface AskMessage {
@@ -16,7 +13,7 @@ interface AskInteractionContext {
 	setAutoFollow: () => void;
 	setSelectionsReady: (ready: boolean) => void;
 	submitMessage: (text: string, images?: unknown, files?: unknown) => void;
-	reducer?: SessionReducer;
+	reducer: SessionReducer;
 }
 
 interface ResolveAskOptions {
@@ -43,19 +40,15 @@ export function createAskInteractionController({
 	>();
 
 	const messagesFor = (sessionId: string): AskMessage[] =>
-		(reducer
-			? reducer.getMessages(sessionId)
-			: get(sessionMessagesStore)[sessionId] || []) as AskMessage[];
+		reducer.getMessages(sessionId) as AskMessage[];
 
 	const pendingFor = (sessionId: string, kind: 'ask' | 'confirm' | 'scheduled_confirm') =>
-		reducer
-			? Object.values(reducer.getState().interactions || {}).filter(
-					(request) =>
-						request.sessionId === sessionId &&
-						request.kind === kind &&
-						request.status === 'pending',
-				)
-			: pendingInteractions(sessionId, kind);
+		Object.values(reducer.getState().interactions || {}).filter(
+			(request) =>
+				request.sessionId === sessionId &&
+				request.kind === kind &&
+				request.status === 'pending',
+		);
 
 	function computeAskSelectionsReady() {
 		const sessionId = getActiveSessionId();
@@ -77,9 +70,7 @@ export function createAskInteractionController({
 	}
 
 	function clearAskAwaiting(sessionId: string) {
-		if (reducer)
-			reducer.dispatch({ type: 'session/interactions-cleared', sessionId, kind: 'ask' });
-		else clearSessionInteractions(sessionId, 'ask');
+		reducer.dispatch({ type: 'session/interactions-cleared', sessionId, kind: 'ask' });
 		// A resume/end invalidates quick-reply answers for the pending batch.
 		resolvedAskIds.delete(sessionId);
 		resolvedAskResponses.delete(sessionId);
@@ -138,9 +129,7 @@ export function createAskInteractionController({
 		// A double-click must not compose and submit the same answer twice.
 		if (ids.has(msgId)) return;
 		const response = resolved.ignored ? { ignored: true } : { answer: resolved.answer || '' };
-		if (reducer)
-			reducer.dispatch({ type: 'session/interaction-resolved', id: msgId, response });
-		else resolveInteraction(msgId, response);
+		reducer.dispatch({ type: 'session/interaction-resolved', id: msgId, response });
 		ids.add(msgId);
 		resolvedAskIds.set(sessionId, ids);
 		const responses = resolvedAskResponses.get(sessionId) || new Map();

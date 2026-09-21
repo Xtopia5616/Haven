@@ -1,29 +1,18 @@
 import { get } from 'svelte/store';
 import { browser } from '$app/environment';
+import { DRAFT_SESSION_ID, type SessionReducer } from './sessionReducer.ts';
 import {
-	DRAFT_KEY,
-	addSessionMessage,
-	moveSessionMessages,
-	sessionMessagesStore,
-	updateSessionMessages,
-} from './sessionMessages.ts';
-import {
-	activeSessionIdStore,
 	modelStateStore,
 	newMessage,
 	newSessionIntentStore,
 	NEW_ACTION_INTENT_KEY,
 } from './stores.ts';
-import { sessionStore } from './stores.ts';
 import { isBusyStatus, isPausedStatus } from './sessionStatus.ts';
 import { invoke } from './tauri.ts';
-import type { SessionReducer } from './sessionReducer.ts';
 
 /** True when a send should be treated as mid-turn steering (keep agent UI above it). */
-function isMidTurnSubmit(sessionId: string, reducer?: SessionReducer): boolean {
-	const list = reducer
-		? reducer.getMessages(sessionId)
-		: get(sessionMessagesStore)[sessionId] || [];
+function isMidTurnSubmit(sessionId: string, reducer: SessionReducer): boolean {
+	const list = reducer.getMessages(sessionId);
 	if (list.some((m) => m.streaming || m.steering)) return true;
 	// Prior user still awaiting first agent bubble (race before modelState flips).
 	for (let i = list.length - 1; i >= 0; i--) {
@@ -32,12 +21,10 @@ function isMidTurnSubmit(sessionId: string, reducer?: SessionReducer): boolean {
 		if (m.role === 'user' && !m.received) return true;
 	}
 	// This session's own status — never borrow another session's busy chip.
-	const st = (reducer ? reducer.getState().sessions : get(sessionStore)).find(
-		(t) => t.id === sessionId,
-	)?.status;
+	const st = reducer.getState().sessions.find((t) => t.id === sessionId)?.status;
 	if (isBusyStatus(st) || isPausedStatus(st)) return true;
 	// Global modelState only applies to the active session.
-	if ((reducer ? reducer.getState().activeSessionId : get(activeSessionIdStore)) === sessionId) {
+	if (reducer.getState().activeSessionId === sessionId) {
 		const state = get(modelStateStore);
 		if (
 			state === 'streaming' ||
@@ -178,9 +165,7 @@ function drainQueue(lane: SubmissionLane) {
 	// move the whole remaining draft queue to that session so newly submitted
 	// messages cannot overtake it on a newly created session lane.
 	if (next.payload.pinnedSessionId == null) {
-		const active = next.payload.reducer
-			? next.payload.reducer.getState().activeSessionId
-			: get(activeSessionIdStore);
+		const active = next.payload.reducer.getState().activeSessionId;
 		const intentStillFresh = get(newSessionIntentStore);
 		if (active && !intentStillFresh) {
 			const draftQueue = [next, ...lane.pendingQueue];
@@ -234,13 +219,13 @@ interface SubmitOptions {
 	files?: Array<{ media_type: string; data: string; filename: string }> | null;
 	voice?: boolean;
 	recordingSessionId?: string;
-	/** Runtime reducer used by the chat route; omitted by legacy unit callers. */
-	reducer?: SessionReducer;
+	/** The application-wide session reducer. */
+	reducer: SessionReducer;
 }
 
 export async function submitTranscript(
 	text: string,
-	{ images = null, files = null, voice = false, recordingSessionId, reducer }: SubmitOptions = {},
+	{ images = null, files = null, voice = false, recordingSessionId, reducer }: SubmitOptions,
 ): Promise<any> {
 	const payload: SubmitPayload = {
 		text,
@@ -248,7 +233,7 @@ export async function submitTranscript(
 		files,
 		voice,
 		recordingSessionId,
-		pinnedSessionId: reducer ? reducer.getState().activeSessionId : get(activeSessionIdStore),
+		pinnedSessionId: reducer.getState().activeSessionId,
 		freshStartAtEnqueue: get(newSessionIntentStore),
 		reducer,
 	};
@@ -303,7 +288,7 @@ async function doSubmit({
 	// intent is the boundary that routes the next message to a draft instead of
 	// attempting to append to the completed session.
 	const activeId = freshStartAtEnqueue ? null : pinnedSessionId;
-	const sessionId = activeId || DRAFT_KEY;
+	const sessionId = activeId || DRAFT_SESSION_ID;
 	// Fresh-start intent was snapshotted when this submission was accepted
 	// (enqueue or immediate start). If 新对话 is clicked while an older
 	// request is in flight, that older snapshot stays false — resolving must
@@ -320,22 +305,7 @@ async function doSubmit({
 		}),
 		...(steering ? { steering: true } : {}),
 	};
-	if (reducer) {
-		reducer.dispatch({ type: 'session/messages/optimistic-added', sessionId, message: msg });
-	} else {
-		addSessionMessage(sessionId, msg);
-	}
-	// A reviewed conversation with no persisted messages yet (e.g. after
-	// rolling back the very first user message) is rebuilt with a
-	// display-only `placeholder-*` bubble carrying the session input text.
-	// The submitted message is the real start of the conversation: drop
-	// the stand-in so the original input is never shown twice.
-	if (!reducer) {
-		updateSessionMessages(sessionId, (list) => {
-			if (!list.some((m) => m.id.startsWith('placeholder-'))) return list;
-			return list.filter((m) => !m.id.startsWith('placeholder-'));
-		});
-	}
+	reducer.dispatch({ type: 'session/messages/optimistic-added', sessionId, message: msg });
 	try {
 		const request = {
 			transcript: text,
@@ -362,24 +332,19 @@ async function doSubmit({
 				newSessionIntentStore.set(false);
 				if (browser) localStorage.removeItem(NEW_ACTION_INTENT_KEY);
 			}
-			if (reducer) {
-				reducer.dispatch({
-					type: 'session/messages/accepted',
-					fromSessionId: sessionId,
-					toSessionId: createdId,
-					optimisticId: msg.id,
-					persistedId: dbMsgId,
-				});
-				reducer.dispatch({ type: 'session/selected', sessionId: createdId });
-			} else {
-				moveSessionMessages(sessionId, createdId);
-				activeSessionIdStore.set(createdId);
-			}
+			reducer.dispatch({
+				type: 'session/messages/accepted',
+				fromSessionId: sessionId,
+				toSessionId: createdId,
+				optimisticId: msg.id,
+				persistedId: dbMsgId,
+			});
+			reducer.dispatch({ type: 'session/selected', sessionId: createdId });
 			targetSessionId = createdId;
 		}
 		// Align the optimistic bubble with the persisted `msg-*` id so rollback
 		// / continue no longer need content+timestamp guessing.
-		if (reducer && (!createdId || createdId === sessionId)) {
+		if (!createdId || createdId === sessionId) {
 			reducer.dispatch({
 				type: 'session/messages/accepted',
 				fromSessionId: sessionId,
@@ -387,24 +352,10 @@ async function doSubmit({
 				optimisticId: msg.id,
 				persistedId: dbMsgId,
 			});
-		} else if (dbMsgId && dbMsgId !== msg.id) {
-			updateSessionMessages(targetSessionId, (list) => {
-				const idx = list.findIndex((x) => x.id === msg.id);
-				if (idx < 0) return list;
-				const next = list.slice();
-				// Keep steering so in-flight agent cards stay above this bubble
-				// until agent:supplement clears it at inject time.
-				next[idx] = { ...next[idx], id: dbMsgId };
-				return next;
-			});
 		}
 		return result;
 	} catch (e) {
-		if (reducer) {
-			reducer.dispatch({ type: 'session/messages/rejected', sessionId, messageId: msg.id });
-		} else {
-			updateSessionMessages(sessionId, (list) => list.filter((x) => x.id !== msg.id));
-		}
+		reducer.dispatch({ type: 'session/messages/rejected', sessionId, messageId: msg.id });
 		throw e;
 	}
 }

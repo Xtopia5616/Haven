@@ -5,12 +5,7 @@ import type {
 } from './contracts/agent.ts';
 import type { TauriEvent } from './contracts/session.ts';
 import { addNotification } from './stores.ts';
-import {
-	appendSessionLlmUsage,
-	coalesceTokenTotal,
-	formatTokenCount,
-	updateSessionTokenStats,
-} from './sessionUsage.ts';
+import { coalesceTokenTotal, formatTokenCount } from './sessionUsage.ts';
 import type { SessionAction, SessionTokenStats } from './sessionReducer.ts';
 import { rememberMediaPlan } from './stores.ts';
 import logger from '$lib/logger.ts';
@@ -26,12 +21,13 @@ type MediaPlanEvent = TauriEvent<AgentMediaPlanPayload>;
 
 /**
  * Build the usage-related Agent event handlers used by the chat route. Usage
- * state is reduced through SessionAction; the old usage helpers are retained
- * only for isolated legacy callers that omit the reducer dispatcher.
+ * state is reduced through SessionAction.
  */
 export function createChatUsageEventHandlers({
 	dispatchSession,
-}: { dispatchSession?: (action: SessionAction) => void } = {}): {
+}: {
+	dispatchSession: (action: SessionAction) => void;
+}): {
 	'agent:usage': (event: UsageEvent) => void;
 	'agent:compaction': (event: CompactionEvent) => void;
 	'agent:media_plan': (event: MediaPlanEvent) => void;
@@ -80,123 +76,42 @@ export function createChatUsageEventHandlers({
 				has_cost: !!d.hasCost,
 				duration_ms: d.durationMs ?? null,
 			};
-			if (dispatchSession) {
-				const stats: SessionTokenStats = {
-					promptTokens: prompt,
-					completionTokens: completion,
-					totalTokens: total,
-					cachedTokens: cached,
-					cacheCreationTokens: creation,
-					cacheMissTokens: miss,
-					cacheAccounting: d.cacheAccounting || 'unknown',
-					contextTokens: d.contextTokens || 0,
-					cacheExclusive: !!d.cacheExclusive,
-					cumulativePromptTokens: d.cumulativePromptTokens || 0,
-					cumulativeCompletionTokens: d.cumulativeCompletionTokens || 0,
-					cumulativeTotalTokens: coalesceTokenTotal(
-						d.cumulativePromptTokens || 0,
-						d.cumulativeCompletionTokens || 0,
-						d.cumulativeTotalTokens || 0,
-						d.cumulativeCachedTokens || 0,
-						d.cumulativeCacheCreationTokens || 0,
-					),
-					cumulativeCachedTokens: d.cumulativeCachedTokens || 0,
-					cumulativeCacheCreationTokens: d.cumulativeCacheCreationTokens || 0,
-					cumulativeCacheMissTokens: d.cumulativeCacheMissTokens || 0,
-					costUsd: d.costUsd ?? null,
-					cumulativeCostUsd: d.cumulativeCostUsd ?? null,
-					contextWindow: d.contextWindow ?? null,
-					model: d.model ?? null,
-				};
-				dispatchSession({
-					type: 'session/usage-live',
-					sessionId: d.sessionId,
-					...(callKind === 'agent' ? { stats } : {}),
-					...(d.stepNumber != null ? { call } : {}),
-				});
-				return;
-			}
-			if (callKind === 'media' || callKind === 'tool') {
-				appendSessionLlmUsage(d.sessionId, {
-					step_number: d.stepNumber ?? null,
-					call_kind: callKind,
-					role: d.role || undefined,
-					model: d.model ?? null,
-					prompt_tokens: prompt,
-					completion_tokens: completion,
-					total_tokens: total,
-					cached_tokens: cached,
-					cache_creation_tokens: creation,
-					cache_miss_tokens: miss,
-					cache_accounting: d.cacheAccounting || 'unknown',
-					cache_diagnostics: d.cacheDiagnostics || undefined,
-					context_tokens: d.contextTokens || 0,
-					context_window: d.contextWindow ?? null,
-					cost_usd: d.costUsd ?? null,
-					has_cost: !!d.hasCost,
-					duration_ms: d.durationMs ?? null,
-				});
-				return;
-			}
-			const cumPrompt = d.cumulativePromptTokens || 0;
-			const cumCompletion = d.cumulativeCompletionTokens || 0;
-			const cumCached = d.cumulativeCachedTokens || 0;
-			const cumCreation = d.cumulativeCacheCreationTokens || 0;
-			const cumMiss = d.cumulativeCacheMissTokens || 0;
-			updateSessionTokenStats(d.sessionId, {
-				promptTokens: prompt,
-				completionTokens: completion,
-				totalTokens: total,
-				cachedTokens: cached,
-				cacheCreationTokens: creation,
-				cacheMissTokens: miss,
-				cacheAccounting: d.cacheAccounting || 'unknown',
-				contextTokens: d.contextTokens || 0,
-				cacheExclusive: !!d.cacheExclusive,
-				cumulativePromptTokens: cumPrompt,
-				cumulativeCompletionTokens: cumCompletion,
-				cumulativeTotalTokens: coalesceTokenTotal(
-					cumPrompt,
-					cumCompletion,
-					d.cumulativeTotalTokens || 0,
-					cumCached,
-					cumCreation,
-				),
-				cumulativeCachedTokens: cumCached,
-				cumulativeCacheCreationTokens: cumCreation,
-				cumulativeCacheMissTokens: cumMiss,
-				costUsd: d.costUsd ?? null,
-				cumulativeCostUsd: d.cumulativeCostUsd ?? null,
-				contextWindow: d.contextWindow ?? null,
-				model: d.model ?? null,
-				// A real usage event supersedes any restored estimate.
-				// A live event means the conversation is active again: the widget
-				// switches back to the per-step context view.
-				restored: false,
+			const stats: SessionTokenStats | undefined =
+				callKind === 'agent'
+					? {
+							promptTokens: prompt,
+							completionTokens: completion,
+							totalTokens: total,
+							cachedTokens: cached,
+							cacheCreationTokens: creation,
+							cacheMissTokens: miss,
+							cacheAccounting: d.cacheAccounting || 'unknown',
+							contextTokens: d.contextTokens || 0,
+							cacheExclusive: !!d.cacheExclusive,
+							cumulativePromptTokens: d.cumulativePromptTokens || 0,
+							cumulativeCompletionTokens: d.cumulativeCompletionTokens || 0,
+							cumulativeTotalTokens: coalesceTokenTotal(
+								d.cumulativePromptTokens || 0,
+								d.cumulativeCompletionTokens || 0,
+								d.cumulativeTotalTokens || 0,
+								d.cumulativeCachedTokens || 0,
+								d.cumulativeCacheCreationTokens || 0,
+							),
+							cumulativeCachedTokens: d.cumulativeCachedTokens || 0,
+							cumulativeCacheCreationTokens: d.cumulativeCacheCreationTokens || 0,
+							cumulativeCacheMissTokens: d.cumulativeCacheMissTokens || 0,
+							costUsd: d.costUsd ?? null,
+							cumulativeCostUsd: d.cumulativeCostUsd ?? null,
+							contextWindow: d.contextWindow ?? null,
+							model: d.model ?? null,
+						}
+					: undefined;
+			dispatchSession({
+				type: 'session/usage-live',
+				sessionId: d.sessionId,
+				...(stats ? { stats } : {}),
+				...(callKind !== 'agent' || d.stepNumber != null ? { call } : {}),
 			});
-			// Also append the per-call detail so tool-card token chips update live
-			// — previously they only appeared after restore on resume/reopen.
-			if (d.stepNumber != null) {
-				appendSessionLlmUsage(d.sessionId, {
-					step_number: d.stepNumber,
-					call_kind: callKind,
-					role: d.role || undefined,
-					model: d.model ?? null,
-					prompt_tokens: prompt,
-					completion_tokens: completion,
-					total_tokens: total,
-					cached_tokens: cached,
-					cache_creation_tokens: creation,
-					cache_miss_tokens: miss,
-					cache_accounting: d.cacheAccounting || 'unknown',
-					cache_diagnostics: d.cacheDiagnostics || undefined,
-					context_tokens: d.contextTokens || 0,
-					context_window: d.contextWindow ?? null,
-					cost_usd: d.costUsd ?? null,
-					has_cost: !!d.hasCost,
-					duration_ms: d.durationMs ?? null,
-				});
-			}
 		},
 		'agent:compaction': (event) => {
 			const d = event.payload;
