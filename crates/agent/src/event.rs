@@ -120,6 +120,7 @@ pub enum AgentEvent {
         session_id: String,
         step_number: u32,
         run_id: u64,
+        /// RequestKind string; the field name remains `role` for UI compatibility.
         role: String,
         strategy: haven_common::media::MediaInputStrategy,
         projections: Vec<haven_common::media::MediaProjection>,

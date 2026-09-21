@@ -103,6 +103,7 @@ export interface AgentMediaPlanPayload {
 	sessionId: string;
 	stepNumber: number;
 	runId: number;
+	/** RequestKind string; the wire field remains `role` for UI compatibility. */
 	role: string;
 	strategy: string;
 	projections: Array<{
@@ -265,6 +266,7 @@ interface AgentMediaPlanWirePayload {
 	session_id: string;
 	step_number: number;
 	run_id: number;
+	/** RequestKind string; the wire field remains `role` for UI compatibility. */
 	role: string;
 	strategy: string;
 	projections: Array<{

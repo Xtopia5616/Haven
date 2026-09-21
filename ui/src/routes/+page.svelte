@@ -1146,7 +1146,7 @@
 		// never delays the conversation render.
 		invoke('get_settings')
 			.then((s) => {
-		// The chat request policy references a provider + a model id on
+				// The chat request policy references a provider + a model id on
 				// that provider (the "model library" is the provider's fetched
 				// model list). Resolve both for the toolbar switcher.
 				applyDefaultModelFromSettings(s);
