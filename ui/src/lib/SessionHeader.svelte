@@ -9,12 +9,7 @@
 	 * @prop {() => void} onNew — create a fresh conversation
 	 * @prop {() => void} onEnd — close the active conversation
 	 */
-	let {
-		title = '新会话',
-		hasSession = false,
-		onNew,
-		onEnd,
-	} = $props();
+	let { title = '新会话', hasSession = false, onNew, onEnd } = $props();
 </script>
 
 <header class="session-header">
@@ -40,7 +35,7 @@
 		{#if hasSession}
 			<MaterialIconButton
 				size="toolbar"
-				variant="danger-outline"
+				variant="success-outline"
 				className="session-header__end"
 				label="结束会话"
 				title="结束会话"

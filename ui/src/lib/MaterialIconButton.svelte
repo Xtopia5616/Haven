@@ -4,7 +4,7 @@
 	/**
 	 * Material Icon Button — reusable icon button with compact and toolbar sizes.
 	 * @prop {string} label — aria-label
-	 * @prop {'default'|'ghost'|'danger'|'danger-outline'|'primary'|'tonal'} variant
+	 * @prop {'default'|'ghost'|'danger'|'danger-outline'|'primary'|'success-outline'|'tonal'} variant
 	 * @prop {'default'|'toolbar'|'dense'} size — visual size used by the surrounding layout
 	 * @prop {string|undefined} icon — optional shared icon name
 	 * @prop {function} onclick
@@ -164,6 +164,16 @@
 		background: var(--md-sys-color-error-container);
 		border-color: var(--md-sys-color-error);
 		color: var(--md-sys-color-on-error-container);
+	}
+	.md-icon-btn[data-variant='success-outline'] {
+		background: transparent;
+		border-color: var(--md-sys-color-success);
+		color: var(--md-sys-color-success);
+	}
+	.md-icon-btn[data-variant='success-outline']:hover {
+		background: var(--md-sys-color-success-container);
+		border-color: var(--md-sys-color-success);
+		color: var(--md-sys-color-on-success-container);
 	}
 	.md-icon-btn:disabled {
 		opacity: 0.5;

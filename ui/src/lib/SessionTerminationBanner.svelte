@@ -52,12 +52,12 @@
 		margin: var(--md-sys-space-sm) auto 0;
 		padding: var(--md-sys-space-md) var(--md-sys-space-lg);
 		border: 1px solid
-			color-mix(in srgb, var(--md-sys-color-primary) 18%, var(--md-sys-color-outline-variant));
-		border-left: 3px solid var(--md-sys-color-primary);
+			color-mix(in srgb, var(--md-sys-color-success) 24%, var(--md-sys-color-outline-variant));
+		border-left: 3px solid var(--md-sys-color-success);
 		border-radius: var(--md-sys-shape-large);
 		background: color-mix(
 			in srgb,
-			var(--md-sys-color-primary-container) 18%,
+			var(--md-sys-color-success-container) 34%,
 			var(--md-sys-color-surface-container-low)
 		);
 		color: var(--md-sys-color-on-surface);
@@ -83,8 +83,8 @@
 		height: 32px;
 		flex: none;
 		border-radius: var(--md-sys-shape-full);
-		background: var(--md-sys-color-primary-container);
-		color: var(--md-sys-color-on-primary-container);
+		background: var(--md-sys-color-success-container);
+		color: var(--md-sys-color-on-success-container);
 	}
 	.session-termination-banner[data-status='error'] .session-termination-banner__icon {
 		background: var(--md-sys-color-error-container);

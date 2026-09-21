@@ -21,4 +21,12 @@ describe('SessionHeader', () => {
 		await fireEvent.click(endButton);
 		expect(onEnd).toHaveBeenCalledTimes(1);
 	});
+
+	it('uses the success outline for ending an active conversation', () => {
+		render(SessionHeader as any, { hasSession: true });
+
+		expect(screen.getByRole('button', { name: '结束会话' }).getAttribute('data-variant')).toBe(
+			'success-outline',
+		);
+	});
 });
