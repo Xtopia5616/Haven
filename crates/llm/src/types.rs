@@ -1,4 +1,4 @@
-use haven_common::config::EndpointRole;
+use haven_common::config::RequestKind;
 use haven_common::types::CanonicalToolCall;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -86,6 +86,18 @@ impl CacheDiagnostics {
         }
     }
 
+    /// Use when a provider resource explicitly owns the reusable prompt
+    /// prefix (Gemini `cachedContent`).
+    pub fn for_explicit_provider_cache(system_split: bool) -> Self {
+        Self {
+            mode: "explicit".into(),
+            key_requested: false,
+            system_split,
+            downgraded: false,
+            outcome: "unknown".into(),
+        }
+    }
+
     pub fn with_provider_usage(mut self, cached_tokens: u32) -> Self {
         if self.outcome != "disabled" {
             self.outcome = if cached_tokens > 0 {
@@ -132,7 +144,7 @@ pub struct Usage {
 /// session. It deliberately contains no prompt, media bytes, or cache key.
 #[derive(Debug, Clone)]
 pub struct LlmCallUsage {
-    pub role: EndpointRole,
+    pub request: RequestKind,
     pub usage: Usage,
     pub model: Option<String>,
     pub duration_ms: Option<u64>,

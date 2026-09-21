@@ -541,7 +541,7 @@ impl ToolResultEnvelope {
 #[derive(Debug, Clone)]
 pub struct ToolLlmUsage {
     pub call_kind: &'static str,
-    pub role: haven_common::config::EndpointRole,
+    pub request: haven_common::config::RequestKind,
     pub usage: haven_llm::Usage,
     pub model: Option<String>,
     pub duration_ms: Option<u64>,

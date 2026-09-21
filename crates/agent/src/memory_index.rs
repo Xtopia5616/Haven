@@ -8,9 +8,9 @@
 
 use std::sync::Arc;
 
-use haven_common::config::ModelEndpoint;
+use haven_common::config::{ModelEndpoint, RequestKind};
 use haven_llm::adapters::api_style_for;
-use haven_llm::{EndpointRole, LlmRouter};
+use haven_llm::LlmRouter;
 use haven_memory::Database;
 use haven_memory::embeddings::entity_kind;
 use haven_memory::recall::{MemoryHit, MemoryQuery, MemoryRetriever};
@@ -77,7 +77,7 @@ impl MemoryEmbeddingIndex {
     async fn configured_identity(&self) -> Option<EmbeddingIdentity> {
         if !self
             .router
-            .is_role_configured(EndpointRole::EmbeddingModel)
+            .is_request_configured(RequestKind::Embedding)
             .await
         {
             return None;
@@ -86,8 +86,10 @@ impl MemoryEmbeddingIndex {
             .router
             .config()
             .await
-            .endpoint(EndpointRole::EmbeddingModel)
-            .clone();
+            .route(RequestKind::Embedding)
+            .map(|model| &model.endpoint)
+            .cloned()
+            .unwrap_or_default();
         (!endpoint.model_name.trim().is_empty()).then_some(EmbeddingIdentity {
             storage_model: embedding_index_model(&endpoint),
             provider_model: endpoint.model_name,

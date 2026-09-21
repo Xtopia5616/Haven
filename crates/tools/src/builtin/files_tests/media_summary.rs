@@ -102,7 +102,7 @@ use super::*;
             client,
         ));
         router
-            .force_role_configured(EndpointRole::SmallModel, true)
+            .force_request_configured(RequestKind::FastChat, true)
             .await;
         let mut tool = FilesTool::default();
         tool.summarizer = Some(router);
@@ -118,6 +118,6 @@ use super::*;
         assert_eq!(result.output["summary"], "summary");
         assert_eq!(result.llm_usage.len(), 1);
         assert_eq!(result.llm_usage[0].call_kind, "tool");
-        assert_eq!(result.llm_usage[0].role, EndpointRole::SmallModel);
+        assert_eq!(result.llm_usage[0].request, RequestKind::FastChat);
         assert_eq!(result.llm_usage[0].usage.total_tokens, 18);
     }

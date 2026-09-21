@@ -1,6 +1,7 @@
 use haven_common::prompts::FILE_SUMMARY_SYSTEM_PROMPT;
+use haven_common::config::RequestKind;
 use haven_common::types::{CanonicalMessage, ContentPart};
-use haven_llm::{EndpointRole, LlmRouter};
+use haven_llm::LlmRouter;
 use std::sync::Arc;
 use tokio::io::BufReader;
 use tokio_util::sync::CancellationToken;
@@ -32,7 +33,7 @@ pub(super) async fn summarize(
             "reason": "No router installed. Read the file in parts with start_line/end_line instead.",
         })));
     };
-    if !client.is_role_configured(EndpointRole::SmallModel).await {
+    if !client.is_request_configured(RequestKind::FastChat).await {
         return Ok(ToolResult::ok(serde_json::json!({
             "summary_unavailable": true,
             "path": path,
@@ -75,7 +76,7 @@ pub(super) async fn summarize(
     let call = async {
         tokio::time::timeout(
             std::time::Duration::from_secs(summary_timeout_secs),
-            client.chat(EndpointRole::SmallModel, messages),
+            client.chat(RequestKind::FastChat, messages),
         )
         .await
     };
@@ -134,7 +135,7 @@ pub(super) async fn summarize(
     let mut tool_result = ToolResult::ok(result);
     tool_result.llm_usage.push(ToolLlmUsage {
         call_kind: "tool",
-        role: EndpointRole::SmallModel,
+        request: RequestKind::FastChat,
         usage: response.usage,
         model: response.model,
         duration_ms: Some(started.elapsed().as_millis() as u64),

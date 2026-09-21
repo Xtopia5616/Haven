@@ -160,15 +160,18 @@ impl ReActEngine {
             ),
         };
         let router = self.router();
-        let role = choose_agent_role(&router, &request_context).await;
+        let request = choose_agent_request(&router, &request_context).await;
         let (request_context, media_plan) = request_context
-            .with_capabilities(&router.capability_profile(role), self.media_strategy());
+            .with_capabilities(
+                &router.capability_profile_for_request(request),
+                self.media_strategy(),
+            );
         super::emit_media_plan(
             &ctx.emitter,
             session_id,
             step_num,
             ctx.run_id,
-            role,
+            request,
             media_plan,
         )
         .await;
@@ -186,7 +189,7 @@ impl ReActEngine {
             self,
             &ctx,
             router,
-            role,
+            request,
             tools.as_slice(),
             cancel.clone(),
             &partial_thought,

@@ -8,10 +8,10 @@ use super::{AdminContext, McpAddFields, McpUpdateFields};
 use crate::ToolRegistry;
 use anyhow::Result;
 use haven_common::config::{
-    AppConfig, ConfigLoader, ConfigPatch, LogConfig, LogLevel, McpServerConfig, Settings,
+    AppConfig, ConfigLoader, ConfigPatch, LogConfig, LogLevel, McpServerConfig, RequestKind,
+    Settings,
 };
 use haven_common::types::McpTransportType;
-use haven_llm::EndpointRole;
 use haven_mcp::McpClientStatus;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -77,6 +77,13 @@ impl AdminServices {
             .ok_or_else(|| anyhow::anyhow!("configuration administration is unavailable"))
     }
 
+    async fn rebuild_catalog(&self) -> Result<()> {
+        if let Some(tool_control) = &self.context.tool_control {
+            tool_control.rebuild_catalog().await?;
+        }
+        Ok(())
+    }
+
     pub(crate) async fn config_get(&self, path: Option<&str>) -> Result<Value> {
         let config = self.read_config()?;
         let Some(path) = path.filter(|path| !path.is_empty()) else {
@@ -137,12 +144,12 @@ impl AdminServices {
 
         if let Some(router) = &self.context.router {
             let mut health = serde_json::Map::new();
-            for role in EndpointRole::ALL {
-                let configured = router.is_role_configured(*role).await;
+            for request in RequestKind::ALL {
+                let configured = router.is_request_configured(*request).await;
                 let status = if !configured {
                     "not_configured".to_string()
                 } else {
-                    match router.health_check(*role).await {
+                    match router.health_check(*request).await {
                         Ok(()) => "ok".to_string(),
                         Err(error) => {
                             format!("error: {}", sanitize_diagnostic(&error.to_string()))
@@ -150,7 +157,7 @@ impl AdminServices {
                     }
                 };
                 health.insert(
-                    role.as_str().to_string(),
+                    request.as_str().to_string(),
                     serde_json::json!({"configured": configured, "status": status}),
                 );
             }

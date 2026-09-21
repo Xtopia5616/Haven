@@ -2,10 +2,9 @@ use crate::app_state::AppState;
 use crate::commands::log_err;
 use crate::commands::rebuild_router;
 use haven_common::config::{
-    AppConfig, LlmConfig, ModelConfig, ProviderConfig, RequestKind, RoleConfig,
+    AppConfig, LlmConfig, ModelConfig, ProviderConfig, RequestKind,
     provider_config_wire_style,
 };
-use haven_llm::EndpointRole;
 use haven_llm::ModelInfo;
 use haven_llm::ModelRegistry;
 use std::collections::BTreeMap;
@@ -21,12 +20,11 @@ fn model_id_for_selector(cfg: &LlmConfig, selector: &str) -> Option<String> {
     if cfg.model(selector).is_some() {
         return Some(selector.to_string());
     }
-    let request = RequestKind::from_str(selector)
-        .or_else(|| EndpointRole::from_str(selector).map(EndpointRole::request_kind))?;
+    let request = RequestKind::from_str(selector)?;
     cfg.policy(request).map(|policy| policy.primary.clone())
 }
 
-fn role_slot<'a>(cfg: &'a mut LlmConfig, selector: &str) -> Option<&'a mut ModelConfig> {
+fn model_slot<'a>(cfg: &'a mut LlmConfig, selector: &str) -> Option<&'a mut ModelConfig> {
     let id = model_id_for_selector(cfg, selector)?;
     cfg.model_mut(&id)
 }
@@ -432,17 +430,17 @@ pub async fn discover_all_models(
 /// Apply a mutation to a named model through the versioned config service and
 /// hot-swap the LlmRouter at runtime. The service serializes the mutation and
 /// persists the complete snapshot before the runtime rebuild begins.
-async fn update_role_field(
+async fn update_model_field(
     state: &AppState,
     ctx: &str,
     role: &str,
-    mutate: impl FnOnce(&mut RoleConfig) -> Result<(), String>,
+    mutate: impl FnOnce(&mut ModelConfig) -> Result<(), String>,
 ) -> Result<(), String> {
     state
         .config_service
         .edit(|config| {
-            let slot = role_slot(&mut config.llm, role)
-                .ok_or_else(|| anyhow::anyhow!("unknown or unconfigured role: {}", role))?;
+            let slot = model_slot(&mut config.llm, role)
+                .ok_or_else(|| anyhow::anyhow!("unknown or unconfigured model/request: {}", role))?;
             mutate(slot).map_err(anyhow::Error::msg)
         })
         .map_err(|e| log_err(ctx, e))?;
@@ -458,7 +456,7 @@ pub async fn switch_model(
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     let state = app.state::<Arc<AppState>>();
-    update_role_field(&state, "switch_model", &role, |slot| {
+    update_model_field(&state, "switch_model", &role, |slot| {
         slot.model = model_id;
         Ok(())
     })
@@ -483,7 +481,7 @@ pub async fn set_reasoning_effort(
         None => None,
     };
 
-    update_role_field(&state, "set_reasoning_effort", &role, |slot| {
+    update_model_field(&state, "set_reasoning_effort", &role, |slot| {
         slot.reasoning_effort = normalized;
         Ok(())
     })
@@ -547,7 +545,7 @@ pub async fn set_web_search(
         }
     }
 
-    update_role_field(&state, "set_web_search", &role, |slot| {
+    update_model_field(&state, "set_web_search", &role, |slot| {
         slot.web_search = normalized;
         Ok(())
     })

@@ -25,10 +25,10 @@ pub mod util;
 
 use chrono::{DateTime, Utc};
 use haven_common::config::{
-    ContextLimitsConfig, McpServerConfig, SecurityConfig, SkillsExecConfig, ToolConfig,
+    ContextLimitsConfig, McpServerConfig, RequestKind, SecurityConfig, SkillsExecConfig, ToolConfig,
 };
 use haven_common::types::{MessageAttachment, RiskLevel, ShellChoice};
-use haven_llm::{EndpointRole, LlmRouter};
+use haven_llm::LlmRouter;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -874,10 +874,19 @@ impl ToolsManager {
         let web_search = match router.as_ref() {
             Some(router) => {
                 let config = router.config().await;
-                let endpoint = config.endpoint(EndpointRole::DefaultModel);
+                let endpoint = config
+                    .route(RequestKind::Chat)
+                    .map(|model| &model.endpoint)
+                    .unwrap_or_else(|| {
+                        // No configured route means provider search is not
+                        // available; the default endpoint is never probed.
+                        static EMPTY: std::sync::OnceLock<haven_common::config::ModelEndpoint> =
+                            std::sync::OnceLock::new();
+                        EMPTY.get_or_init(Default::default)
+                    });
                 let style = haven_llm::adapters::api_style_for(endpoint);
                 let mode = haven_llm::adapters::resolve_web_search_mode(endpoint);
-                if config.is_configured(EndpointRole::DefaultModel)
+                if config.route(RequestKind::Chat).is_some()
                     && !matches!(mode, haven_llm::WebSearchMode::Off)
                     && haven_llm::supports_builtin_web_search(style)
                 {

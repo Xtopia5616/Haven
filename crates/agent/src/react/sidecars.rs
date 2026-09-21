@@ -11,8 +11,9 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::MutexGuard;
 
+use haven_common::config::RequestKind;
 use haven_common::types::CanonicalMessage;
-use haven_llm::{EndpointRole, ToolDefinition};
+use haven_llm::ToolDefinition;
 use haven_tools::MessagingService;
 use tokio::sync::watch;
 
@@ -544,9 +545,9 @@ impl Default for SnapshotBufs {
     }
 }
 
-/// Per-role context-window cache keyed by the router instance pointer.
+/// Per-request context-window cache keyed by the router instance pointer.
 pub(crate) struct ContextWindowCache {
-    cache: Mutex<(usize, HashMap<EndpointRole, u32>)>,
+    cache: Mutex<(usize, HashMap<RequestKind, u32>)>,
 }
 
 impl ContextWindowCache {
@@ -556,22 +557,22 @@ impl ContextWindowCache {
         }
     }
 
-    pub(super) fn get(&self, router_ptr: usize, role: EndpointRole) -> Option<u32> {
+    pub(super) fn get(&self, router_ptr: usize, request: RequestKind) -> Option<u32> {
         let cache = self.cache.lock().unwrap();
         if cache.0 == router_ptr {
-            cache.1.get(&role).copied()
+            cache.1.get(&request).copied()
         } else {
             None
         }
     }
 
-    pub(super) fn insert(&self, router_ptr: usize, role: EndpointRole, window: u32) {
+    pub(super) fn insert(&self, router_ptr: usize, request: RequestKind, window: u32) {
         let mut cache = self.cache.lock().unwrap();
         if cache.0 != router_ptr {
             cache.0 = router_ptr;
             cache.1.clear();
         }
-        cache.1.insert(role, window);
+        cache.1.insert(request, window);
     }
 
     /// Drop all cached windows (e.g. after `context_limits` hot-reload).

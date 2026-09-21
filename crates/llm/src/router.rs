@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::time::{Duration, Instant};
@@ -10,7 +10,7 @@ use crate::client::{LlmClient, endpoint_host};
 #[cfg(test)]
 use crate::endpoint_health::{CircuitBreaker, CircuitState};
 use crate::endpoint_health::{
-    EndpointHealth, EndpointHealthMap, health_index, new_endpoint_health_map,
+    EndpointHealth, EndpointHealthMap, new_endpoint_health_map,
 };
 use crate::request_pipeline::{RequestPolicy, execute_with_retry, execute_with_timeout};
 use haven_common::types::{CanonicalMessage, ContentPart};
@@ -28,16 +28,11 @@ use haven_common::config::{
 };
 use haven_common::media::CapabilityProfile;
 
-/// Legacy request selectors. New code should prefer [`RequestKind`]; this
-/// re-export keeps the old agent/tool boundary source-compatible while the
-/// persisted configuration is capability/policy based.
-pub use haven_common::config::EndpointRole;
-
 // ---------------------------------------------------------------------------
 // §2.6: Circuit Breaker state
 // ---------------------------------------------------------------------------
 
-/// Stream wrapper that holds a role's concurrency permit until the stream is
+/// Stream wrapper that holds a model's concurrency permit until the stream is
 /// dropped, so a raw `chat_stream` result cannot bypass the per-endpoint
 /// in-flight cap once the caller starts consuming it.
 struct PermitStream<S> {
@@ -64,8 +59,8 @@ where
 type RuntimeStateParts = (
     RwLock<EndpointHealthMap>,
     RwLock<Vec<StreamRule>>,
-    StdMutex<[Arc<tokio::sync::Semaphore>; 5]>,
-    RwLock<[Option<Instant>; 5]>,
+    StdMutex<HashMap<String, Arc<tokio::sync::Semaphore>>>,
+    RwLock<HashMap<String, Instant>>,
 );
 
 pub struct LlmRouter {
@@ -79,25 +74,24 @@ pub struct LlmRouter {
     /// policy. Rebuilt with the router on config hot-swap; the mutex only
     /// supports the test-only policy mutation helpers.
     routes: StdMutex<HashMap<RequestKind, String>>,
-    // §5.3: per configured routed-model health. Concurrency remains shared
-    // by legacy role, while circuit state is isolated by model identity.
+    // §5.3: per configured model health. A model shared by several request
+    // policies has one circuit breaker, regardless of which policy selected it.
     health: RwLock<EndpointHealthMap>,
     /// Stream rules that are checked against accumulated output (§3.7)
     stream_rules: RwLock<Vec<StreamRule>>,
-    /// Per-role concurrency limit: at most `llm.max_concurrent_requests`
-    /// requests may be in flight per endpoint role. Parallel sessions hitting
-    /// the same provider queue here instead of piling onto the provider
-    /// (which would produce 429 storms and thundering-herd retries).
+    /// Per-model concurrency limit: at most `llm.max_concurrent_requests`
+    /// requests may be in flight per routed model. Parallel request kinds that
+    /// share a model queue here instead of piling onto the provider.
     /// Semaphores are created from the config at construction; a settings
     /// save rebuilds the router (`hot_swap_router`), so the limit is
     /// applied to new requests immediately. The mutex is only held to clone
     /// an `Arc<Semaphore>` (never across an await), so it adds no contention.
-    semaphores: StdMutex<[Arc<tokio::sync::Semaphore>; 5]>,
-    /// Shared rate-limit cooldown per role: when a request ends with a 429
-    /// (RateLimit), subsequent callers to the same role wait until the
+    semaphores: StdMutex<HashMap<String, Arc<tokio::sync::Semaphore>>>,
+    /// Shared rate-limit cooldown per model: when a request ends with a 429
+    /// (RateLimit), subsequent callers to the same model wait until the
     /// deadline before dispatching, so a burst of parallel sessions does not
     /// retry simultaneously and amplify the load.
-    rate_limited: RwLock<[Option<Instant>; 5]>,
+    rate_limited: RwLock<HashMap<String, Instant>>,
 }
 
 /// Callbacks and output policy for one routed streaming request.
@@ -145,19 +139,6 @@ struct RetryStreamRequest {
 }
 
 impl LlmRouter {
-    fn health_role_for_request(request: RequestKind) -> EndpointRole {
-        match request {
-            RequestKind::Chat => EndpointRole::DefaultModel,
-            RequestKind::FastChat => EndpointRole::SmallModel,
-            RequestKind::Vision => EndpointRole::ImageModel,
-            RequestKind::AudioChat | RequestKind::Transcription => EndpointRole::AudioModel,
-            RequestKind::Embedding => EndpointRole::EmbeddingModel,
-            RequestKind::ImageGeneration | RequestKind::SpeechSynthesis => {
-                EndpointRole::DefaultModel
-            }
-        }
-    }
-
     fn build_routes(config: &RouterConfig) -> HashMap<RequestKind, String> {
         config
             .request_policies
@@ -197,7 +178,7 @@ impl LlmRouter {
     }
 
     /// Like [`Self::new`], but clamp `max_tokens` against
-    /// `context_limits.default_context_window` when a role has no explicit
+    /// `context_limits.default_context_window` when a model has no explicit
     /// `context_window` (instead of the hardcoded 128K fallback).
     pub fn with_default_context_window(
         mut config: RouterConfig,
@@ -264,133 +245,171 @@ impl LlmRouter {
         }
     }
 
-    /// Config-driven per-role request limit. Clamped to >= 1 so a hand-edited
+    /// Config-driven per-model request limit. Clamped to >= 1 so a hand-edited
     /// 0 (or a config without the new field) can never deadlock the router on
     /// an unacquirable permit.
     fn request_limit(config: &RouterConfig) -> usize {
         config.max_concurrent_requests.max(1)
     }
 
-    /// Default runtime state shared by every constructor: per-role health
+    /// Default runtime state shared by every constructor: per-model health
     /// trackers, stream rules, concurrency semaphores, and rate-limit flags.
     fn runtime_state(
         request_limit: usize,
         model_ids: impl IntoIterator<Item = String>,
     ) -> RuntimeStateParts {
+        let model_ids = model_ids.into_iter().collect::<Vec<_>>();
         (
-            RwLock::new(new_endpoint_health_map(model_ids)),
+            RwLock::new(new_endpoint_health_map(model_ids.iter().cloned())),
             RwLock::new(Vec::new()),
-            StdMutex::new(Self::make_semaphores(request_limit)),
-            RwLock::new([None, None, None, None, None]),
+            StdMutex::new(Self::make_semaphores(request_limit, model_ids)),
+            RwLock::new(HashMap::new()),
         )
     }
 
-    /// Clone the concurrency permit for a role (the mutex is released before
+    /// Clone the concurrency permit for a model (the mutex is released before
     /// any await; the Arc clone is cheap).
-    fn role_permit(&self, idx: usize) -> Arc<tokio::sync::Semaphore> {
-        self.semaphores.lock().unwrap()[idx].clone()
+    fn model_permit(&self, model_id: &str) -> Arc<tokio::sync::Semaphore> {
+        self.semaphores
+            .lock()
+            .unwrap()
+            .entry(model_id.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(1)))
+            .clone()
     }
 
-    fn make_semaphores(limit: usize) -> [Arc<tokio::sync::Semaphore>; 5] {
-        [
-            Arc::new(tokio::sync::Semaphore::new(limit)),
-            Arc::new(tokio::sync::Semaphore::new(limit)),
-            Arc::new(tokio::sync::Semaphore::new(limit)),
-            Arc::new(tokio::sync::Semaphore::new(limit)),
-            Arc::new(tokio::sync::Semaphore::new(limit)),
-        ]
+    fn make_semaphores(
+        limit: usize,
+        model_ids: impl IntoIterator<Item = String>,
+    ) -> HashMap<String, Arc<tokio::sync::Semaphore>> {
+        model_ids
+            .into_iter()
+            .map(|id| {
+                (
+                    id,
+                    Arc::new(tokio::sync::Semaphore::new(limit)),
+                )
+            })
+            .collect()
     }
 
-    /// Wait out the shared rate-limit cooldown for a role (if any).
-    async fn wait_rate_limit_cooldown(&self, role: &EndpointRole) {
-        let idx = Self::health_index(role);
-        let cooldown_until = self.rate_limited.read().await[idx];
+    /// Wait out the shared rate-limit cooldown for a model (if any).
+    async fn wait_rate_limit_cooldown(&self, model_id: &str) {
+        let cooldown_until = self.rate_limited.read().await.get(model_id).copied();
         if let Some(until) = cooldown_until {
             let now = Instant::now();
             if until > now {
                 tracing::debug!(
-                    "router role {:?} rate-limited, waiting {:?} before dispatch",
-                    role,
-                    until - now
+                    model_id,
+                    wait = ?(until - now),
+                    "router model is rate-limited, waiting before dispatch"
                 );
                 tokio::time::sleep(until - now).await;
             }
         }
     }
 
-    /// Extend the shared cooldown for a role after a RateLimit result, so a
+    /// Extend the shared cooldown for a model after a RateLimit result, so a
     /// burst of parallel sessions queues behind the longest wait instead of
     /// re-hammering the provider simultaneously.
     ///
     /// The wait is CLAMPED: `Retry-After` comes from the (possibly hostile or
-    /// misbehaving) provider, and the cooldown blocks the whole role while
+    /// misbehaving) provider, and the cooldown blocks the whole model while
     /// holding a semaphore permit — an unbounded value would freeze every
     /// agent/embedding/STT request through that endpoint.
-    async fn record_rate_limit(&self, role: &EndpointRole, retry_after: Option<Duration>) {
-        let idx = Self::health_index(role);
+    async fn record_rate_limit(&self, model_id: &str, retry_after: Option<Duration>) {
         // Cap at 30s: long enough to ride out a provider-side rate window,
-        // short enough that a hostile endpoint cannot pin the role.
+        // short enough that a hostile endpoint cannot pin the model.
         let wait = retry_after
             .unwrap_or(Duration::from_secs(5))
             .min(Duration::from_secs(30));
         let until = Instant::now() + wait;
         let mut rl = self.rate_limited.write().await;
-        if rl[idx].is_none_or(|c| c < until) {
-            rl[idx] = Some(until);
+        if rl.get(model_id).is_none_or(|current| *current < until) {
+            rl.insert(model_id.to_string(), until);
         }
     }
 
-    async fn record_rate_limit_result(&self, role: &EndpointRole, error: &LlmError) {
+    async fn record_rate_limit_result(&self, model_id: &str, error: &LlmError) {
         if let LlmError::RateLimit { retry_after } = error {
-            self.record_rate_limit(role, *retry_after).await;
+            self.record_rate_limit(model_id, *retry_after).await;
         }
     }
 
-    /// Run `f` under the role's concurrency permit, waiting out any shared
+    async fn acquire_model_permit(
+        &self,
+        model_id: &str,
+    ) -> Result<tokio::sync::OwnedSemaphorePermit, LlmError> {
+        self.model_permit(model_id)
+            .acquire_owned()
+            .await
+            .map_err(|_| LlmError::ServerError("router semaphore closed".into()))
+    }
+
+    /// Run `f` under the selected model's concurrency permit, waiting out any shared
     /// rate-limit cooldown first. The permit is held across the WHOLE call
     /// (including retries and stream consumption), so the concurrency cap is
     /// real provider load, not just request starts.
     ///
-    /// After a RateLimit result, the role's cooldown is extended so other
+    /// After a RateLimit result, the model's cooldown is extended so other
     /// sessions queue behind this one instead of re-hammering the provider —
     /// `with_retry` already waits per-request, this paces the herd.
-    async fn with_endpoint_permit<T, F, Fut>(
+    async fn with_model_permit<T, F, Fut>(
         &self,
-        role: &EndpointRole,
+        model_id: String,
         f: F,
     ) -> Result<T, LlmError>
     where
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = Result<T, LlmError>>,
     {
-        let idx = Self::health_index(role);
-        let permit = self
-            .role_permit(idx)
-            .acquire_owned()
-            .await
-            .map_err(|_| LlmError::ServerError("router semaphore closed".into()))?;
-        self.wait_rate_limit_cooldown(role).await;
+        let permit = self.acquire_model_permit(&model_id).await?;
+        self.wait_rate_limit_cooldown(&model_id).await;
         let result = f().await;
         if let Err(LlmError::RateLimit { retry_after }) = &result {
-            self.record_rate_limit(role, *retry_after).await;
+            self.record_rate_limit(&model_id, *retry_after).await;
         }
         drop(permit);
         result
     }
 
-    /// Test utility: replace the per-role semaphores with a new limit, to
+    /// Resolve a request, then run it under the selected model's circuit,
+    /// concurrency and rate-limit state. The model id is passed to the
+    /// operation so health accounting cannot accidentally fall back to a
+    /// request-kind or legacy role identity.
+    async fn with_request_permit<T, F, Fut>(
+        &self,
+        request: RequestKind,
+        f: F,
+    ) -> Result<T, LlmError>
+    where
+        F: FnOnce(String, Arc<dyn LlmClient>) -> Fut,
+        Fut: std::future::Future<Output = Result<T, LlmError>>,
+    {
+        let (model_id, client) = self.resolve_client(request)?;
+        let check_id = model_id.clone();
+        self.with_model_permit(model_id.clone(), || async move {
+            self.check_circuit(&check_id).await?;
+            f(model_id, client).await
+        })
+        .await
+    }
+
+    /// Test utility: replace the per-model semaphores with a new limit, to
     /// exercise the concurrency cap without rebuilding the router with real
     /// HTTP adapters. Production limits come from `llm.max_concurrent_requests`
     /// at construction (and are refreshed by `hot_swap_router` on save).
     #[doc(hidden)]
     pub fn set_request_limit_for_test(&self, limit: usize) {
-        *self.semaphores.lock().unwrap() = Self::make_semaphores(limit.max(1));
+        let mut semaphores = self.semaphores.lock().unwrap();
+        let model_ids = semaphores.keys().cloned().collect::<Vec<_>>();
+        *semaphores = Self::make_semaphores(limit.max(1), model_ids);
     }
 
-    /// Test utility: read the current rate-limit cooldown deadline for a role.
+    /// Test utility: read the current rate-limit cooldown deadline for a model.
     #[doc(hidden)]
-    pub async fn rate_limit_deadline_for_test(&self, role: &EndpointRole) -> Option<Instant> {
-        self.rate_limited.read().await[Self::health_index(role)]
+    pub async fn rate_limit_deadline_for_test(&self, model_id: &str) -> Option<Instant> {
+        self.rate_limited.read().await.get(model_id).copied()
     }
 
     pub fn new_with_clients(
@@ -441,7 +460,7 @@ impl LlmRouter {
             routes: StdMutex::new(routes),
             health,
             stream_rules,
-            // Test constructors bypass the config, so use a high per-role
+            // Test constructors bypass the config, so use a high per-model
             // limit: the semaphore is meant to pace real provider traffic,
             // not to serialize mock-based tests.
             semaphores,
@@ -505,10 +524,10 @@ impl LlmRouter {
             .unwrap_or_else(|| Arc::from(adapter_for(&ModelEndpoint::default())))
     }
 
-    /// Resolve the selected configured client for a request and reject an open
-    /// circuit. There is deliberately no alternate provider/model candidate:
-    /// same-endpoint retry is the only recovery path for one logical request.
-    async fn selected_client(
+    /// Resolve the selected configured client for a request. There is
+    /// deliberately no alternate provider/model candidate: same-endpoint retry
+    /// is the only recovery path for one logical request.
+    fn resolve_client(
         &self,
         request: RequestKind,
     ) -> Result<(String, Arc<dyn LlmClient>), LlmError> {
@@ -524,30 +543,24 @@ impl LlmRouter {
         let client = self.models.get(&model_id).cloned().ok_or_else(|| {
             LlmError::Configuration(format!("model client is unavailable: {model_id}"))
         })?;
-        self.check_circuit(&model_id).await?;
         Ok((model_id, client))
     }
 
-    pub fn select_endpoint(&self, role: EndpointRole) -> Arc<dyn LlmClient> {
-        self.select_request(role.request_kind())
-    }
-
     /// Return the selected adapter's wire-level media profile. This is kept
-    /// separate from role selection so the pure planner can make a request
+    /// separate from request selection so the pure planner can make a request
     /// projection without inferring capabilities from a model id.
-    pub fn capability_profile(&self, role: EndpointRole) -> CapabilityProfile {
-        self.select_endpoint(role).capability_profile()
-    }
-
     pub fn capability_profile_for_request(&self, request: RequestKind) -> CapabilityProfile {
         self.select_request(request).capability_profile()
     }
 
     /// Resolve the model context window using the same endpoint metadata and
     /// fallback used during router construction.
-    pub async fn context_window_for_role(&self, role: EndpointRole) -> u32 {
+    pub async fn context_window_for_request(&self, request: RequestKind) -> u32 {
         let config = self.config.read().await;
-        crate::registry::context_window_for(config.endpoint(role))
+        let Some(endpoint) = config.route(request).map(|model| &model.endpoint) else {
+            return self.default_context_window.max(1);
+        };
+        crate::registry::context_window_for(endpoint)
             .unwrap_or(self.default_context_window)
             .max(1)
     }
@@ -557,12 +570,14 @@ impl LlmRouter {
     /// commonly validate input + requested output against one shared window.
     pub async fn effective_output_tokens(
         &self,
-        role: EndpointRole,
+        request: RequestKind,
         estimated_input_tokens: u32,
     ) -> u32 {
         const REQUEST_SAFETY_MARGIN: u32 = 256;
         let config = self.config.read().await;
-        let endpoint = config.endpoint(role);
+        let Some(endpoint) = config.route(request).map(|model| &model.endpoint) else {
+            return 1;
+        };
         let window = crate::registry::context_window_for(endpoint)
             .unwrap_or(self.default_context_window)
             .max(1);
@@ -573,57 +588,39 @@ impl LlmRouter {
         endpoint.max_tokens.max(1).min(remaining)
     }
 
-    fn health_index(role: &EndpointRole) -> usize {
-        health_index(role)
-    }
-
-    /// Returns true if the role has a non-empty api_key configured.
+    /// Returns true if the request has a usable configured model.
     /// Used by tools that should no-op gracefully when an endpoint is not set up.
-    pub async fn is_role_configured(&self, role: EndpointRole) -> bool {
-        self.config.read().await.is_configured(role)
-    }
-
     pub async fn is_request_configured(&self, request: RequestKind) -> bool {
         self.config.read().await.route(request).is_some()
     }
 
-    /// Test utility: force the configured state of a role (empty vs non-empty
+    /// Test utility: force the configured state of a request (empty vs non-empty
     /// api_key). `new_with_clients` builds with a default config where all
-    /// keys are empty; cross-crate tests that exercise `is_role_configured`
+    /// keys are empty; cross-crate tests that exercise `is_request_configured`
     /// guards use this to simulate a configured endpoint.
     #[doc(hidden)]
-    pub async fn force_role_configured(&self, role: EndpointRole, configured: bool) {
+    pub async fn force_request_configured(&self, request: RequestKind, configured: bool) {
         let mut cfg = self.config.write().await;
-        let mut ids = vec![
-            cfg.policy(role.request_kind())
-                .map(|policy| policy.primary.clone()),
-        ];
-        if role == EndpointRole::AudioModel {
-            ids.push(
-                cfg.policy(RequestKind::Transcription)
-                    .map(|policy| policy.primary.clone()),
-            );
-        }
-        for id in ids
-            .into_iter()
-            .flatten()
-            .collect::<std::collections::HashSet<_>>()
+        if let Some(id) = cfg.policy(request).map(|policy| policy.primary.clone())
+            && let Some(model) = cfg.model_mut(&id)
         {
-            if let Some(endpoint) = cfg.model_mut(&id).map(|model| &mut model.endpoint) {
-                endpoint.api_key = if configured {
-                    "sk-test".to_string()
-                } else {
-                    String::new()
-                };
-            }
+            model.endpoint.api_key = if configured {
+                "sk-test".to_string()
+            } else {
+                String::new()
+            };
         }
-        *self.routes.lock().unwrap() = Self::build_routes(&cfg);
+        *self.routes.lock().unwrap() = if configured {
+            Self::build_injected_routes(&cfg)
+        } else {
+            Self::build_routes(&cfg)
+        };
     }
 
     /// Test utility retained for old tests. It now edits the corresponding
     /// request policies instead of mutating boolean routing switches.
     #[doc(hidden)]
-    pub async fn force_routing_flags(
+    pub async fn force_request_routes(
         &self,
         stt_use_audio_model: bool,
         vision_use_image_model: bool,
@@ -664,30 +661,14 @@ impl LlmRouter {
         *self.routes.lock().unwrap() = Self::build_injected_routes(&cfg);
     }
 
-    /// Resolve the legacy endpoint view used by speech-to-text callers. The
-    /// actual client is selected with the `transcription` request policy.
-    /// A policy whose primary is the compatibility default remains selectable
-    /// for injected/keyless test clients even when no credential is present.
-    pub async fn stt_role(&self) -> Option<EndpointRole> {
-        let cfg = self.config.read().await;
-        if cfg.route(RequestKind::Transcription).is_some() {
-            return Some(EndpointRole::AudioModel);
-        }
-        cfg.policy(RequestKind::Transcription).and_then(|policy| {
-            (policy.primary == "default_model").then_some(EndpointRole::AudioModel)
-        })
-    }
-
-    /// Resolve the endpoint for a conversational request that contains audio.
-    /// Unlike [`Self::stt_role`], this is a best-effort chat route: an
-    /// unconfigured audio role falls back to the default model so the caller
-    /// can still use providers that accept audio on their normal chat slot.
-    pub async fn audio_role(&self) -> EndpointRole {
-        let cfg = self.config.read().await;
-        cfg.route(RequestKind::AudioChat)
-            .or_else(|| cfg.route(RequestKind::Transcription))
-            .map(|_| EndpointRole::AudioModel)
-            .unwrap_or(EndpointRole::DefaultModel)
+    #[doc(hidden)]
+    pub async fn force_routing_flags(
+        &self,
+        stt_use_audio_model: bool,
+        vision_use_image_model: bool,
+    ) {
+        self.force_request_routes(stt_use_audio_model, vision_use_image_model)
+            .await;
     }
 
     /// Transcribe WAV audio through the `transcription` request policy.
@@ -698,23 +679,19 @@ impl LlmRouter {
         &self,
         wav_data: &[u8],
     ) -> Result<crate::types::SttResult, LlmError> {
-        let role = match self.stt_role().await {
-            Some(role) => role,
-            None => {
-                return Err(LlmError::RequestFailed(
-                    "transcription request is not configured; configure a transcription policy in Settings -> Models"
-                        .into(),
-                ));
-            }
-        };
+        if !self.is_request_configured(RequestKind::Transcription).await {
+            return Err(LlmError::RequestFailed(
+                "transcription request is not configured; configure a transcription policy in Settings -> Models"
+                    .into(),
+            ));
+        }
         // Keep native STT under the same permit, circuit, retry, and timeout
         // policy as chat/embedding. The capability fallback to multimodal
-        // chat is deliberately outside this closure: it uses the same
-        // AudioModel role and would deadlock if it tried to acquire the role
-        // semaphore while native STT still held it.
+        // chat is deliberately outside this closure so it can acquire the
+        // audio-chat model's own permit after native transcription releases
+        // its permit.
         let native_result = self
-            .with_endpoint_permit(&role, || async {
-                let (model_id, client) = self.selected_client(RequestKind::Transcription).await?;
+            .with_request_permit(RequestKind::Transcription, |model_id, client| async move {
                 let cfg = self.config.read().await;
                 let policy = RequestPolicy::primary(&cfg);
                 drop(cfg);
@@ -728,7 +705,7 @@ impl LlmRouter {
                         Ok(_) => self.record_success(&model_id).await,
                         Err(error) => {
                             self.record_failure(&model_id).await;
-                            self.record_rate_limit_result(&role, error).await;
+                            self.record_rate_limit_result(&model_id, error).await;
                         }
                     }
                     result
@@ -738,20 +715,10 @@ impl LlmRouter {
             .await;
         match native_result {
             Err(error) if error.is_unsupported() => {
-                crate::stt::transcribe_via_chat(self, role, wav_data).await
+                crate::stt::transcribe_via_chat(self, wav_data).await
             }
             result => result,
         }
-    }
-
-    /// Resolve the endpoint role for image understanding in chat from the
-    /// `vision` request policy. The legacy role is only a compatibility view;
-    /// the selected client is still request-policy driven.
-    pub async fn vision_role(&self) -> EndpointRole {
-        let cfg = self.config.read().await;
-        cfg.route(RequestKind::Vision)
-            .map(|_| EndpointRole::ImageModel)
-            .unwrap_or(EndpointRole::DefaultModel)
     }
 
     /// Provider-wire adapter for one already-read image payload.
@@ -820,7 +787,6 @@ impl LlmRouter {
         client: Arc<dyn LlmClient>,
         messages: Vec<CanonicalMessage>,
         tools: Vec<ToolDefinition>,
-        role: &EndpointRole,
         max_output_tokens: Option<u32>,
     ) -> Result<LlmResponse, LlmError> {
         let cfg = self.config.read().await;
@@ -848,7 +814,7 @@ impl LlmRouter {
             Ok(_) => self.record_success(&model_id).await,
             Err(error) => {
                 self.record_failure(&model_id).await;
-                self.record_rate_limit_result(role, error).await;
+                self.record_rate_limit_result(&model_id, error).await;
             }
         }
         result
@@ -856,14 +822,14 @@ impl LlmRouter {
 
     pub async fn chat(
         &self,
-        role: EndpointRole,
+        request: RequestKind,
         messages: Vec<CanonicalMessage>,
     ) -> Result<LlmResponse, LlmError> {
-        self.chat_request(role.request_kind(), messages).await
+        self.chat_request(request, messages).await
     }
 
     /// Chat through an explicit request policy. This is the preferred entry
-    /// point for new callers; the role-shaped methods below are compatibility
+    /// point for new callers; the request-shaped methods below keep the public
     /// wrappers for existing agent/tool code.
     pub async fn chat_request(
         &self,
@@ -879,11 +845,11 @@ impl LlmRouter {
     /// policy.
     pub async fn chat_with_output_cap(
         &self,
-        role: EndpointRole,
+        request: RequestKind,
         messages: Vec<CanonicalMessage>,
         max_output_tokens: Option<u32>,
     ) -> Result<LlmResponse, LlmError> {
-        self.chat_request_with_output_cap(role.request_kind(), messages, max_output_tokens)
+        self.chat_request_with_output_cap(request, messages, max_output_tokens)
             .await
     }
 
@@ -893,16 +859,13 @@ impl LlmRouter {
         messages: Vec<CanonicalMessage>,
         max_output_tokens: Option<u32>,
     ) -> Result<LlmResponse, LlmError> {
-        let role = Self::health_role_for_request(request);
-        self.with_endpoint_permit(&role, || async {
-            let (model_id, client) = self.selected_client(request).await?;
+        self.with_request_permit(request, |model_id, client| async move {
             self.with_total_timeout(|| async {
                 self.call_with_retry(
                     model_id,
                     client,
                     messages,
                     Vec::new(),
-                    &role,
                     max_output_tokens,
                 )
                 .await
@@ -918,17 +881,17 @@ impl LlmRouter {
     /// generation, fact extraction, conversation summarization).
     pub async fn chat_with_prompt(
         &self,
-        role: EndpointRole,
+        request: RequestKind,
         system: &str,
         user: &str,
     ) -> Result<LlmResponse, LlmError> {
-        self.chat_with_prompt_output_cap(role, system, user, None)
+        self.chat_with_prompt_output_cap(request, system, user, None)
             .await
     }
 
     pub async fn chat_with_prompt_output_cap(
         &self,
-        role: EndpointRole,
+        request: RequestKind,
         system: &str,
         user: &str,
         max_output_tokens: Option<u32>,
@@ -938,7 +901,7 @@ impl LlmRouter {
             messages.push(CanonicalMessage::system(vec![ContentPart::text(system)]));
         }
         messages.push(CanonicalMessage::user(vec![ContentPart::text(user)]));
-        self.chat_with_output_cap(role, messages, max_output_tokens)
+        self.chat_with_output_cap(request, messages, max_output_tokens)
             .await
     }
 
@@ -947,7 +910,7 @@ impl LlmRouter {
     /// soon as the user cancels the owning session.
     pub async fn chat_messages_cancellable(
         &self,
-        role: EndpointRole,
+        request: RequestKind,
         messages: Vec<CanonicalMessage>,
         max_output_tokens: Option<u32>,
         cancel: CancellationToken,
@@ -955,7 +918,7 @@ impl LlmRouter {
         tokio::select! {
             biased;
             _ = cancel.cancelled() => Err(LlmError::Cancelled),
-            result = self.chat_with_output_cap(role, messages, max_output_tokens) => result,
+            result = self.chat_with_output_cap(request, messages, max_output_tokens) => result,
         }
     }
 
@@ -970,9 +933,7 @@ impl LlmRouter {
                 usage: Usage::default(),
             });
         }
-        let role = EndpointRole::EmbeddingModel;
-        self.with_endpoint_permit(&role, || async {
-            let (model_id, client) = self.selected_client(RequestKind::Embedding).await?;
+        self.with_request_permit(RequestKind::Embedding, |model_id, client| async move {
             let cfg = self.config.read().await;
             let policy = RequestPolicy::primary(&cfg);
             drop(cfg);
@@ -984,7 +945,7 @@ impl LlmRouter {
                     Ok(_) => self.record_success(&model_id).await,
                     Err(error) => {
                         self.record_failure(&model_id).await;
-                        self.record_rate_limit_result(&role, error).await;
+                        self.record_rate_limit_result(&model_id, error).await;
                     }
                 }
                 result
@@ -1002,32 +963,28 @@ impl LlmRouter {
 
     pub async fn chat_with_tools(
         &self,
-        role: EndpointRole,
+        request: RequestKind,
         messages: Vec<CanonicalMessage>,
         tools: Vec<ToolDefinition>,
     ) -> Result<LlmResponse, LlmError> {
-        self.chat_with_tools_output_cap(role, messages, tools, None)
+        self.chat_with_tools_output_cap(request, messages, tools, None)
             .await
     }
 
     pub async fn chat_with_tools_output_cap(
         &self,
-        role: EndpointRole,
+        request: RequestKind,
         messages: Vec<CanonicalMessage>,
         tools: Vec<ToolDefinition>,
         max_output_tokens: Option<u32>,
     ) -> Result<LlmResponse, LlmError> {
-        let request = role.request_kind();
-        let health_role = Self::health_role_for_request(request);
-        self.with_endpoint_permit(&role, || async {
-            let (model_id, client) = self.selected_client(request).await?;
+        self.with_request_permit(request, |model_id, client| async move {
             self.with_total_timeout(|| async {
                 self.call_with_retry(
                     model_id,
                     client,
                     messages,
                     tools,
-                    &health_role,
                     max_output_tokens,
                 )
                 .await
@@ -1039,7 +996,7 @@ impl LlmRouter {
 
     pub async fn chat_stream(
         &self,
-        role: EndpointRole,
+        request: RequestKind,
         messages: Vec<CanonicalMessage>,
     ) -> Result<
         std::pin::Pin<
@@ -1049,14 +1006,10 @@ impl LlmRouter {
         >,
         LlmError,
     > {
-        let idx = Self::health_index(&role);
-        let permit = self
-            .role_permit(idx)
-            .acquire_owned()
-            .await
-            .map_err(|_| LlmError::ServerError("router semaphore closed".into()))?;
-        self.wait_rate_limit_cooldown(&role).await;
-        let (model_id, candidate) = self.selected_client(role.request_kind()).await?;
+        let (model_id, candidate) = self.resolve_client(request)?;
+        let permit = self.acquire_model_permit(&model_id).await?;
+        self.wait_rate_limit_cooldown(&model_id).await;
+        self.check_circuit(&model_id).await?;
         let cfg = self.config.read().await;
         let primary_policy = RequestPolicy::primary(&cfg);
         drop(cfg);
@@ -1076,7 +1029,7 @@ impl LlmRouter {
                     Ok(_) => self.record_success(&model_id).await,
                     Err(error) => {
                         self.record_failure(&model_id).await;
-                        self.record_rate_limit_result(&role, error).await;
+                        self.record_rate_limit_result(&model_id, error).await;
                     }
                 }
                 result
@@ -1100,13 +1053,13 @@ impl LlmRouter {
     /// per step and reuse the same converted messages across retries.
     pub async fn chat_stream_with_tools_aggregated(
         &self,
-        role: EndpointRole,
+        request: RequestKind,
         messages: &[CanonicalMessage],
         tools: &[ToolDefinition],
         on_chunk: impl FnMut(&StreamChunk) + Send + 'static,
     ) -> Result<LlmResponse, LlmError> {
         self.chat_stream_with_tools_aggregated_cancellable(
-            role,
+            request,
             messages,
             tools,
             on_chunk,
@@ -1122,20 +1075,20 @@ impl LlmRouter {
     /// duplicate visible thought/reasoning output, so the router returns the
     /// stream error rather than replaying that same stream.
     ///
-    /// Runs under the role's concurrency permit (see
-    /// [`Self::with_endpoint_permit`]): the permit covers the whole stream —
+    /// Runs under the model's concurrency permit (see
+    /// [`Self::with_request_permit`]): the permit covers the whole stream —
     /// retries and chunk consumption — so parallel sessions cannot
     /// exceed the configured per-endpoint in-flight request cap.
     pub async fn chat_stream_with_tools_aggregated_cancellable(
         &self,
-        role: EndpointRole,
+        request: RequestKind,
         messages: &[CanonicalMessage],
         tools: &[ToolDefinition],
         on_chunk: impl FnMut(&StreamChunk) + Send + 'static,
         cancel: CancellationToken,
     ) -> Result<LlmResponse, LlmError> {
         self.chat_stream_with_tools_aggregated_cancellable_with_attempts(
-            role,
+            request,
             messages,
             tools,
             StreamAttemptHooks::new(on_chunk, |_| {}, false),
@@ -1155,18 +1108,19 @@ impl LlmRouter {
     /// non-agent callers.
     pub async fn chat_stream_with_tools_aggregated_cancellable_with_attempts(
         &self,
-        role: EndpointRole,
+        request: RequestKind,
         messages: &[CanonicalMessage],
         tools: &[ToolDefinition],
         hooks: StreamAttemptHooks,
         cancel: CancellationToken,
         max_output_tokens: Option<u32>,
     ) -> Result<LlmResponse, LlmError> {
-        let operation = self.with_endpoint_permit(&role, || {
+        let operation = self.with_request_permit(request, |model_id, _client| {
             let cancel = cancel.clone();
             async move {
                 self.chat_stream_with_tools_aggregated_cancellable_inner(
-                    role,
+                    request,
+                    model_id,
                     messages,
                     tools,
                     hooks,
@@ -1235,9 +1189,11 @@ impl LlmRouter {
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn chat_stream_with_tools_aggregated_cancellable_inner(
         &self,
-        role: EndpointRole,
+        request: RequestKind,
+        model_id: String,
         messages: &[CanonicalMessage],
         tools: &[ToolDefinition],
         hooks: StreamAttemptHooks,
@@ -1245,8 +1201,8 @@ impl LlmRouter {
         max_output_tokens: Option<u32>,
     ) -> Result<LlmResponse, LlmError> {
         tracing::debug!(
-            "router streaming LLM call, role={:?} messages={} tools={}",
-            role,
+            "router streaming LLM call, request={:?} messages={} tools={}",
+            request,
             messages.len(),
             tools.len()
         );
@@ -1272,7 +1228,11 @@ impl LlmRouter {
             tools: Arc::from(tools),
             max_output_tokens,
         };
-        let (model_id, candidate) = self.selected_client(role.request_kind()).await?;
+        let candidate = self
+            .models
+            .get(&model_id)
+            .cloned()
+            .ok_or_else(|| LlmError::Configuration(format!("model client is unavailable: {model_id}")))?;
         candidate.validate_content(&stream_context.messages)?;
 
         execute_with_timeout(
@@ -1318,7 +1278,7 @@ impl LlmRouter {
                     Err(LlmError::Cancelled) => Err(LlmError::Cancelled),
                     Err(error) => {
                         self.record_failure(&model_id).await;
-                        self.record_rate_limit_result(&role, &error).await;
+                        self.record_rate_limit_result(&model_id, &error).await;
                         Err(error)
                     }
                 }
@@ -1339,9 +1299,8 @@ impl LlmRouter {
         check_stream_rules(&rules, text)
     }
 
-    pub async fn health_check(&self, role: EndpointRole) -> Result<(), LlmError> {
-        self.with_endpoint_permit(&role, || async {
-            let (model_id, candidate) = self.selected_client(role.request_kind()).await?;
+    pub async fn health_check(&self, request: RequestKind) -> Result<(), LlmError> {
+        self.with_request_permit(request, |model_id, candidate| async move {
             let cfg = self.config.read().await;
             let policy = RequestPolicy::primary(&cfg);
             drop(cfg);
@@ -1352,7 +1311,7 @@ impl LlmRouter {
                     Ok(()) => self.record_success(&model_id).await,
                     Err(error) => {
                         self.record_failure(&model_id).await;
-                        self.record_rate_limit_result(&role, error).await;
+                        self.record_rate_limit_result(&model_id, error).await;
                     }
                 }
                 result
@@ -1364,15 +1323,28 @@ impl LlmRouter {
 
     /// Tri-state connectivity probe for the top-right status chip.
     ///
-    /// - A role without configured credentials short-circuits to
+    /// - A request without configured credentials short-circuits to
     ///   [`LlmConnectionStatus::Unconfigured`] **without any network I/O** —
     ///   neither the TCP/TLS handshake nor the GET is attempted, so an
     ///   unset-up install never wastes a probe on a bare default base_url.
-    /// - A configured role runs the same `/models` health check as
+    /// - A configured request runs the same `/models` health check as
     ///   [`LlmRouter::health_check`] and reports Ready on success /
     ///   Disconnected on failure.
-    pub async fn connection_status(&self, role: EndpointRole) -> LlmConnectionReport {
-        let endpoint = self.config.read().await.endpoint(role).clone();
+    pub async fn connection_status(&self, request: RequestKind) -> LlmConnectionReport {
+        let endpoint = self
+            .config
+            .read()
+            .await
+            .route(request)
+            .map(|model| model.endpoint.clone());
+        let Some(endpoint) = endpoint else {
+            return LlmConnectionReport {
+                status: LlmConnectionStatus::Unconfigured,
+                reason: None,
+                provider: String::new(),
+                model: String::new(),
+            };
+        };
         if !haven_common::config::endpoint_credentials_ready(&endpoint) {
             return LlmConnectionReport {
                 status: LlmConnectionStatus::Unconfigured,
@@ -1381,7 +1353,7 @@ impl LlmRouter {
                 model: String::new(),
             };
         }
-        match self.health_check(role).await {
+        match self.health_check(request).await {
             Ok(()) => LlmConnectionReport {
                 status: LlmConnectionStatus::Ready,
                 reason: None,
@@ -1391,7 +1363,7 @@ impl LlmRouter {
             Err(e) => {
                 let reason = e.connection_failure_reason();
                 tracing::warn!(
-                    role = role.as_str(),
+                    request = request.as_str(),
                     provider = %endpoint.provider,
                     model = %endpoint.model_name,
                     endpoint_host = %endpoint_host(&endpoint.base_url),
@@ -1409,16 +1381,22 @@ impl LlmRouter {
         }
     }
 
-    /// Pre-warm HTTP connections for every configured endpoint so the first
-    /// request to any model slot skips TCP+TLS handshake (~50-200ms).
-    /// Unconfigured roles (empty `api_key`) are skipped. Each endpoint is
+    /// Pre-warm HTTP connections for every configured request model so the
+    /// first request to any model skips TCP+TLS handshake (~50-200ms).
+    /// Unconfigured requests are skipped. Each model is
     /// checked concurrently and retried once on transient failure.
     pub async fn prewarm_all(&self) {
         let cfg = self.config.read().await;
-        let configured: Vec<EndpointRole> = EndpointRole::ALL
+        let mut seen_models = HashSet::new();
+        let configured: Vec<RequestKind> = cfg
+            .request_policies
             .iter()
-            .copied()
-            .filter(|role| cfg.is_configured(*role))
+            .filter_map(|policy| {
+                let model = cfg.route(policy.request)?;
+                seen_models
+                    .insert(model.id.clone())
+                    .then_some(policy.request)
+            })
             .collect();
         drop(cfg);
 
@@ -1427,13 +1405,13 @@ impl LlmRouter {
             return;
         }
 
-        let roles = configured.clone();
-        let checks = roles.into_iter().map(|role| async move {
-            let first = self.health_check(role).await;
+        let requests = configured.clone();
+        let checks = requests.into_iter().map(|request| async move {
+            let first = self.health_check(request).await;
             if first.is_err() {
                 // One retry: transient failures (conn reset, 5xx) should not
                 // leave the pool cold for the first user message.
-                self.health_check(role).await
+                self.health_check(request).await
             } else {
                 first
             }
@@ -1441,14 +1419,14 @@ impl LlmRouter {
         let results = join_all(checks).await;
 
         let mut ok = 0;
-        for (role, result) in configured.iter().zip(results.iter()) {
+        for (request, result) in configured.iter().zip(results.iter()) {
             match result {
                 Ok(()) => {
                     ok += 1;
-                    tracing::debug!("LLM endpoint {} pre-warmed", role.as_str());
+                    tracing::debug!("LLM request {} pre-warmed", request.as_str());
                 }
                 Err(e) => tracing::warn!(
-                    role = role.as_str(),
+                    request = request.as_str(),
                     reason = e.connection_failure_reason().as_str(),
                     error = %haven_common::error::sanitize_error_text(&e.to_string()),
                     "LLM pre-warm failed (will retry on first request)"
@@ -1467,10 +1445,11 @@ impl LlmRouter {
 
     /// Compute USD cost with provider-normalized cache accounting. Unset
     /// cache-lane prices fall back to the ordinary input rate.
-    pub async fn compute_cost(&self, role: EndpointRole, usage: &Usage) -> Option<f64> {
+    pub async fn compute_cost(&self, request: RequestKind, usage: &Usage) -> Option<f64> {
         let cfg = self.config.read().await;
+        let endpoint = cfg.route(request).map(|model| &model.endpoint)?;
         compute_cost_usd(
-            cfg.endpoint(role),
+            endpoint,
             usage.cache_miss_tokens(),
             usage.cached_tokens,
             usage.cache_creation_tokens,
@@ -1705,11 +1684,11 @@ mod tests {
     fn router_selects_correct_endpoint() {
         let cfg = RouterConfig::default();
         let router = LlmRouter::new(cfg);
-        let _sm = router.select_endpoint(EndpointRole::SmallModel);
-        let _re = router.select_endpoint(EndpointRole::DefaultModel);
-        let _mm = router.select_endpoint(EndpointRole::ImageModel);
-        let _au = router.select_endpoint(EndpointRole::AudioModel);
-        let _em = router.select_endpoint(EndpointRole::EmbeddingModel);
+        let _sm = router.select_request(RequestKind::FastChat);
+        let _re = router.select_request(RequestKind::Chat);
+        let _mm = router.select_request(RequestKind::Vision);
+        let _au = router.select_request(RequestKind::AudioChat);
+        let _em = router.select_request(RequestKind::Embedding);
     }
 
     #[tokio::test]
@@ -1736,7 +1715,7 @@ mod tests {
         }
 
         let error = router
-            .chat(EndpointRole::DefaultModel, Vec::new())
+            .chat(RequestKind::Chat, Vec::new())
             .await
             .expect_err("the selected provider error must be returned");
         assert!(matches!(error, LlmError::ServerError(_)));
@@ -1767,7 +1746,7 @@ mod tests {
 
         for _ in 0..3 {
             router
-                .chat(EndpointRole::DefaultModel, Vec::new())
+                .chat(RequestKind::Chat, Vec::new())
                 .await
                 .expect_err("the selected provider must remain the only target");
         }
@@ -1781,7 +1760,7 @@ mod tests {
 
         // The fourth request must not skip to the other provider.
         let error = router
-            .chat(EndpointRole::DefaultModel, Vec::new())
+            .chat(RequestKind::Chat, Vec::new())
             .await
             .expect_err("an open circuit must fail instead of changing namespace");
         assert!(
@@ -1826,14 +1805,14 @@ mod tests {
         }
 
         let error = router
-            .chat_stream_with_tools_aggregated(EndpointRole::DefaultModel, &[], &[], |_| {})
+            .chat_stream_with_tools_aggregated(RequestKind::Chat, &[], &[], |_| {})
             .await
             .expect_err("stream errors must stay on the selected provider");
         assert!(matches!(error, LlmError::ServerError(_)));
     }
 
     #[tokio::test]
-    async fn is_role_configured_reports_api_key_state() {
+    async fn is_request_configured_reports_api_key_state() {
         let mut cfg = LlmRouter::test_config();
         cfg.model_mut("small_model").unwrap().endpoint.api_key = "sk-test".into();
         cfg.model_mut("default_model").unwrap().endpoint.api_key = String::new();
@@ -1842,24 +1821,24 @@ mod tests {
         cfg.model_mut("embedding_model").unwrap().endpoint.api_key = "sk-emb".into();
         let router = LlmRouter::new(cfg);
         assert!(
-            router.is_role_configured(EndpointRole::SmallModel).await,
+            router.is_request_configured(RequestKind::FastChat).await,
             "small_model api_key is set"
         );
         assert!(
-            !router.is_role_configured(EndpointRole::DefaultModel).await,
+            !router.is_request_configured(RequestKind::Chat).await,
             "default_model api_key is empty"
         );
         assert!(
-            router.is_role_configured(EndpointRole::ImageModel).await,
+            router.is_request_configured(RequestKind::Vision).await,
             "image_model api_key is set"
         );
         assert!(
-            router.is_role_configured(EndpointRole::AudioModel).await,
+            router.is_request_configured(RequestKind::AudioChat).await,
             "audio_model api_key is set"
         );
         assert!(
             router
-                .is_role_configured(EndpointRole::EmbeddingModel)
+                .is_request_configured(RequestKind::Embedding)
                 .await,
             "embedding_model api_key is set"
         );
@@ -2012,7 +1991,7 @@ mod tests {
         let seen_text = StdArc::new(StdMutex::new(String::new()));
         let seen_clone = seen_text.clone();
         let resp = router
-            .chat_stream_with_tools_aggregated(EndpointRole::DefaultModel, &[], &[], move |c| {
+            .chat_stream_with_tools_aggregated(RequestKind::Chat, &[], &[], move |c| {
                 if let Some(t) = &c.text {
                     seen_clone.lock().unwrap().push_str(t);
                 }
@@ -2285,7 +2264,7 @@ mod tests {
         let phases = StdArc::new(StdMutex::new(Vec::new()));
         let phases_clone = phases.clone();
         let resp = router
-            .chat_stream_with_tools_aggregated(EndpointRole::DefaultModel, &[], &[], move |c| {
+            .chat_stream_with_tools_aggregated(RequestKind::Chat, &[], &[], move |c| {
                 if let Some(p) = &c.web_search {
                     phases_clone
                         .lock()
@@ -2308,7 +2287,7 @@ mod tests {
 
     #[tokio::test]
     async fn chat_small_model_uses_small_model_endpoint() {
-        // Small model role should be routed to the small_model slot.
+        // Fast-chat request should be routed to the small_model test model.
         let small = Arc::new(MockStreamClient {
             chunks: Vec::new(),
             fail_chat: false,
@@ -2331,7 +2310,7 @@ mod tests {
         );
 
         let resp = router
-            .chat(EndpointRole::SmallModel, Vec::new())
+            .chat(RequestKind::FastChat, Vec::new())
             .await
             .expect("small_model should succeed");
         assert_eq!(resp.text, "mock response");
@@ -2362,7 +2341,7 @@ mod tests {
 
         // First 3 calls should fail and trigger circuit breaker
         for _ in 0..3 {
-            let _ = router.chat(EndpointRole::DefaultModel, Vec::new()).await;
+            let _ = router.chat(RequestKind::Chat, Vec::new()).await;
         }
 
         // Circuit breaker should reject requests directly
@@ -2576,7 +2555,7 @@ mod tests {
         }) as Arc<dyn LlmClient>;
         let router =
             LlmRouter::new_with_clients(client.clone(), client.clone(), client.clone(), client);
-        let result = router.health_check(EndpointRole::DefaultModel).await;
+        let result = router.health_check(RequestKind::Chat).await;
         assert!(result.is_ok());
     }
 
@@ -2605,15 +2584,6 @@ mod tests {
         assert_eq!(result.unwrap().rule_name, "forbidden");
     }
 
-    #[test]
-    fn endpoint_role_health_index_mapping() {
-        assert_eq!(LlmRouter::health_index(&EndpointRole::SmallModel), 0);
-        assert_eq!(LlmRouter::health_index(&EndpointRole::DefaultModel), 1);
-        assert_eq!(LlmRouter::health_index(&EndpointRole::ImageModel), 2);
-        assert_eq!(LlmRouter::health_index(&EndpointRole::AudioModel), 3);
-        assert_eq!(LlmRouter::health_index(&EndpointRole::EmbeddingModel), 4);
-    }
-
     #[tokio::test]
     async fn chat_stream_with_tools_no_chunks() {
         let client = Arc::new(MockStreamClient {
@@ -2623,7 +2593,7 @@ mod tests {
         let router =
             LlmRouter::new_with_clients(client.clone(), client.clone(), client.clone(), client);
         let resp = router
-            .chat_stream_with_tools_aggregated(EndpointRole::DefaultModel, &[], &[], |_| {})
+            .chat_stream_with_tools_aggregated(RequestKind::Chat, &[], &[], |_| {})
             .await
             .expect("aggregation succeeds");
         assert!(resp.text.is_empty());
@@ -2648,12 +2618,12 @@ mod tests {
         }) as Arc<dyn LlmClient>;
         let router =
             LlmRouter::new_with_clients(client.clone(), client.clone(), client.clone(), client);
-        let result = router.chat_stream(EndpointRole::DefaultModel, vec![]).await;
+        let result = router.chat_stream(RequestKind::Chat, vec![]).await;
         assert!(result.is_ok());
     }
 
     /// Mock that tracks how many calls are in flight concurrently and stalls
-    /// briefly, so the per-role semaphore's serialization is observable.
+    /// briefly, so the per-model semaphore's serialization is observable.
     struct ConcurrencyProbe {
         concurrent: Arc<std::sync::atomic::AtomicUsize>,
         max_seen: Arc<std::sync::atomic::AtomicUsize>,
@@ -2704,7 +2674,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn per_role_semaphore_caps_concurrent_requests() {
+    async fn per_model_semaphore_caps_concurrent_requests() {
         let concurrent = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let max_seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let probe: Arc<dyn LlmClient> = Arc::new(ConcurrencyProbe {
@@ -2713,7 +2683,7 @@ mod tests {
         });
         let router =
             LlmRouter::new_with_clients(probe.clone(), probe.clone(), probe.clone(), probe);
-        // Cap the default-model role at 1 in-flight request.
+        // Cap the default test model at 1 in-flight request.
         router.set_request_limit_for_test(1);
 
         let router = Arc::new(router);
@@ -2722,7 +2692,7 @@ mod tests {
             let router = router.clone();
             handles.push(tokio::spawn(async move {
                 router
-                    .chat(EndpointRole::DefaultModel, vec![])
+                    .chat(RequestKind::Chat, vec![])
                     .await
                     .unwrap();
             }));
@@ -2733,12 +2703,12 @@ mod tests {
         assert_eq!(
             max_seen.load(std::sync::atomic::Ordering::SeqCst),
             1,
-            "per-role limit 1 must serialize concurrent calls to the same role"
+            "per-model limit 1 must serialize concurrent calls to the same model"
         );
-        // Different roles have independent permits: small_model can proceed
+        // Different models have independent permits: small_model can proceed
         // while default_model is capped.
         router.set_request_limit_for_test(1);
-        let _ = router.chat(EndpointRole::SmallModel, vec![]).await.unwrap();
+        let _ = router.chat(RequestKind::FastChat, vec![]).await.unwrap();
         assert_eq!(max_seen.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
@@ -2777,7 +2747,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rate_limit_sets_shared_cooldown_for_role() {
+    async fn rate_limit_sets_shared_cooldown_for_model() {
         let client: Arc<dyn LlmClient> = Arc::new(AlwaysRateLimited);
         let router = Arc::new(LlmRouter::new_with_clients(
             client.clone(),
@@ -2796,8 +2766,8 @@ mod tests {
         };
         *router.config.write().await = cfg;
 
-        let role = EndpointRole::DefaultModel;
-        let err = router.chat(role, vec![]).await.unwrap_err();
+        let model_id = "default_model";
+        let err = router.chat(RequestKind::Chat, vec![]).await.unwrap_err();
         assert!(
             matches!(err, LlmError::RateLimit { .. }),
             "first call must surface the RateLimit failure: {}",
@@ -2805,7 +2775,7 @@ mod tests {
         );
         // The cooldown deadline was recorded before returning the provider
         // error, so subsequent callers wait it out.
-        let deadline = router.rate_limit_deadline_for_test(&role).await;
+        let deadline = router.rate_limit_deadline_for_test(model_id).await;
         assert!(
             deadline.is_some_and(|d| d > Instant::now()),
             "cooldown deadline must be set in the future"
@@ -2814,7 +2784,7 @@ mod tests {
         // of firing immediately: it must take at least the Retry-After before
         // dispatching (it fails again, but only after the shared wait).
         let t0 = Instant::now();
-        let err2 = router.chat(role, vec![]).await.unwrap_err();
+        let err2 = router.chat(RequestKind::Chat, vec![]).await.unwrap_err();
         assert!(matches!(err2, LlmError::RateLimit { .. }));
         assert!(
             t0.elapsed() >= Duration::from_millis(250),
@@ -2823,7 +2793,7 @@ mod tests {
         );
         // A third caller starting later re-uses the (still running) cooldown
         // window: the deadline only moves forward, never backward.
-        let deadline2 = router.rate_limit_deadline_for_test(&role).await;
+        let deadline2 = router.rate_limit_deadline_for_test(model_id).await;
         assert!(
             deadline2.unwrap() >= deadline.unwrap(),
             "cooldown deadline must never shrink"
@@ -2862,20 +2832,20 @@ mod tests {
 
         assert_eq!(
             router
-                .context_window_for_role(EndpointRole::DefaultModel)
+                .context_window_for_request(RequestKind::Chat)
                 .await,
             4_096
         );
         // 4,096 - 3,000 input - 256 safety margin.
         assert_eq!(
             router
-                .effective_output_tokens(EndpointRole::DefaultModel, 3_000)
+                .effective_output_tokens(RequestKind::Chat, 3_000)
                 .await,
             840
         );
         assert_eq!(
             router
-                .effective_output_tokens(EndpointRole::DefaultModel, 10_000)
+                .effective_output_tokens(RequestKind::Chat, 10_000)
                 .await,
             1,
             "an over-window request still receives a valid positive provider cap"
@@ -2930,7 +2900,7 @@ mod tests {
         let router =
             LlmRouter::new_with_clients(client.clone(), client.clone(), client.clone(), client);
         router
-            .chat_with_output_cap(EndpointRole::DefaultModel, Vec::new(), Some(37))
+            .chat_with_output_cap(RequestKind::Chat, Vec::new(), Some(37))
             .await
             .unwrap();
         assert_eq!(*seen.lock().unwrap(), Some(37));
@@ -2982,7 +2952,7 @@ mod tests {
         let task = tokio::spawn(async move {
             task_router
                 .chat_messages_cancellable(
-                    EndpointRole::DefaultModel,
+                    RequestKind::Chat,
                     Vec::new(),
                     Some(64),
                     task_cancel,

@@ -546,7 +546,7 @@ async fn media_tool_usage_flows_to_event_and_database() {
     assert_eq!(calls.len(), 1, "only the media client reports usage");
     assert_eq!(calls[0].call_kind, "media");
     assert_eq!(calls[0].step_number, Some(1));
-    assert_eq!(calls[0].role, "default_model");
+    assert_eq!(calls[0].role, "vision");
     assert_eq!(calls[0].model.as_deref(), Some("vision-test"));
     assert_eq!(calls[0].prompt_tokens, 11);
     assert_eq!(calls[0].completion_tokens, 7);

@@ -9,7 +9,8 @@ use std::ops::Deref;
 use std::sync::{Arc, Mutex};
 
 use anyhow::Context as _;
-use haven_llm::{EndpointRole, LlmRouter};
+use haven_common::config::RequestKind;
+use haven_llm::LlmRouter;
 use haven_memory::Database;
 use haven_memory::recall::{
     MAX_MEMORY_QUERY_CHARS, MAX_RECALL_LIMIT, MemoryKind, MemoryQuery, MemoryRecall,
@@ -121,7 +122,7 @@ impl MemoryService {
     pub(crate) async fn context_window(&self, fallback: u32) -> u32 {
         match &self.router {
             Some(router) => router
-                .context_window_for_role(EndpointRole::DefaultModel)
+                .context_window_for_request(RequestKind::Chat)
                 .await
                 .max(1),
             None => fallback.max(1),
@@ -137,7 +138,7 @@ impl MemoryService {
             return String::new();
         };
         if !router
-            .is_role_configured(EndpointRole::EmbeddingModel)
+            .is_request_configured(RequestKind::Embedding)
             .await
         {
             return String::new();
@@ -145,8 +146,10 @@ impl MemoryService {
         let endpoint = router
             .config()
             .await
-            .endpoint(EndpointRole::EmbeddingModel)
-            .clone();
+            .route(RequestKind::Embedding)
+            .map(|model| &model.endpoint)
+            .cloned()
+            .unwrap_or_default();
         if endpoint.model_name.trim().is_empty() {
             String::new()
         } else {

@@ -13,7 +13,9 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use base64::Engine;
-use haven_common::config::{ModelEndpoint, ProviderConfig, SttConfig, provider_config_wire_style};
+use haven_common::config::{
+    ModelEndpoint, ProviderConfig, RequestKind, SttConfig, provider_config_wire_style,
+};
 use haven_common::media::{
     MediaAsset, MediaAssetLifecycle, MediaAssetSource, MediaInput, MediaInputStrategy,
     MediaProvenance, MediaRepresentation, MediaRepresentationKind, MediaRepresentationPayload,
@@ -301,11 +303,10 @@ impl SttClient for McpSttClient {
     }
 }
 
-/// Chat + `input_audio` fallback used when the selected role's adapter does
+/// Chat + `input_audio` fallback used when the transcription adapter does
 /// not implement native STT. Shared by [`LlmRouter::transcribe_audio`].
 pub(crate) async fn transcribe_via_chat(
     router: &LlmRouter,
-    role: crate::EndpointRole,
     wav_data: &[u8],
 ) -> Result<SttResult, LlmError> {
     let input = MediaInput {
@@ -326,7 +327,7 @@ pub(crate) async fn transcribe_via_chat(
         )],
         preferred_representation: Some(MediaRepresentationKind::RawAudio),
     };
-    let mut capabilities = router.capability_profile(role);
+    let mut capabilities = router.capability_profile_for_request(RequestKind::AudioChat);
     // Lightweight/custom clients historically did not publish a capability
     // profile. Preserve the chat fallback for that case; an explicit
     // `Unsupported` value must still fail through the planner with a useful
@@ -354,7 +355,7 @@ pub(crate) async fn transcribe_via_chat(
     ];
 
     let resp = match router
-        .chat_stream_with_tools_aggregated(role, &messages, &[], |_| {})
+        .chat_stream_with_tools_aggregated(RequestKind::AudioChat, &messages, &[], |_| {})
         .await
     {
         Ok(r) => r,
@@ -388,7 +389,7 @@ mod tests {
     use std::pin::Pin;
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    use crate::EndpointRole;
+    use haven_common::config::RequestKind;
     use crate::client::LlmClient;
     use crate::types::{LlmError, LlmResponse, StreamChunk, ToolDefinition};
 
@@ -523,7 +524,7 @@ mod tests {
     async fn test_transcribe_audio_via_router() {
         let router = mock_router("你好世界");
         router
-            .force_role_configured(EndpointRole::AudioModel, true)
+            .force_request_configured(RequestKind::AudioChat, true)
             .await;
         let result = router.transcribe_audio(&[0u8; 44]).await.unwrap();
         assert_eq!(result.text, "你好世界");
@@ -541,6 +542,9 @@ mod tests {
     async fn test_transcribe_audio_uses_default_model_when_routing_disabled() {
         let router = mock_router("走默认模型的转写");
         router.force_routing_flags(false, true).await;
+        router
+            .force_request_configured(RequestKind::Transcription, true)
+            .await;
         let result = router.transcribe_audio(&[0u8; 44]).await.unwrap();
         assert_eq!(result.text, "走默认模型的转写");
     }
@@ -604,7 +608,7 @@ mod tests {
             client,
         ));
         router
-            .force_role_configured(EndpointRole::AudioModel, true)
+            .force_request_configured(RequestKind::AudioChat, true)
             .await;
         let err = router
             .transcribe_audio(&[0u8; 44])

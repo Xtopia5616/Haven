@@ -167,7 +167,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn plans_and_dispatches_image_through_vision_role() {
+    async fn plans_and_dispatches_image_through_vision_request() {
         let client = Arc::new(MockImageClient);
         let router =
             LlmRouter::new_with_clients(client.clone(), client.clone(), client.clone(), client);

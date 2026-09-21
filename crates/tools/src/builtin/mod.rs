@@ -74,7 +74,7 @@ pub(crate) async fn resolve_media_capabilities(
             .image
             .is_supported();
 
-    let transcribe_available = if router.stt_role().await.is_some() {
+    let transcribe_available = if router.is_request_configured(RequestKind::Transcription).await {
         let configured = router
             .is_request_configured(RequestKind::Transcription)
             .await;

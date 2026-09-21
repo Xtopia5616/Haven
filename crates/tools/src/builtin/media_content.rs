@@ -197,10 +197,12 @@ impl MediaTranscriber {
         let Some(router) = self.router.clone() else {
             return self.result_without_fallback(dedicated_outcome);
         };
-        let role = router.stt_role().await;
-        let Some(role) = role else {
+        if !router
+            .is_request_configured(haven_common::config::RequestKind::Transcription)
+            .await
+        {
             return self.result_without_fallback(dedicated_outcome);
-        };
+        }
         let started = std::time::Instant::now();
         let result = tokio::select! {
             _ = cancel.cancelled() => {
@@ -226,7 +228,7 @@ impl MediaTranscriber {
         let usage = result
             .usage
             .map(|usage| haven_llm::LlmCallUsage {
-                role,
+                request: haven_common::config::RequestKind::Transcription,
                 usage,
                 model: result.model.clone(),
                 duration_ms: Some(started.elapsed().as_millis() as u64),
@@ -557,7 +559,6 @@ impl MediaTool {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(|value| value.chars().take(MAX_FOCUS_CHARS).collect::<String>());
-        let role = router.vision_role().await;
         let started = std::time::Instant::now();
         let response = match tokio::select! {
             _ = cancel.cancelled() => {
@@ -605,7 +606,7 @@ impl MediaTool {
         };
         result.llm_usage.push(ToolLlmUsage {
             call_kind: "media",
-            role,
+            request: haven_common::config::RequestKind::Vision,
             usage: response.usage,
             model: response.model,
             duration_ms: Some(started.elapsed().as_millis() as u64),
@@ -664,7 +665,7 @@ impl MediaTool {
                 for usage in transcription.llm_usage {
                     tool_result.llm_usage.push(ToolLlmUsage {
                         call_kind: "media",
-                        role: usage.role,
+                        request: usage.request,
                         usage: usage.usage,
                         model: usage.model,
                         duration_ms: usage.duration_ms,

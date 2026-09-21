@@ -7,7 +7,8 @@
 use super::snapshot_io::RecoveryPersistenceResult;
 use super::*;
 use crate::types::media_inputs_from_events;
-use haven_llm::{EndpointRole, LlmResponse, LlmRouter, StreamAttemptHooks, ToolDefinition};
+use haven_common::config::RequestKind;
+use haven_llm::{LlmResponse, LlmRouter, StreamAttemptHooks, ToolDefinition};
 
 struct CheckpointRequest {
     session_id: String,
@@ -258,13 +259,13 @@ impl CheckpointWriter {
 }
 
 /// Streaming session for one step: primary call + empty/cut-off retries.
-/// Owns the effective endpoint role, partial buffers and msg-id reuse; the
+/// Owns the effective request kind, partial buffers and msg-id reuse; the
 /// loop only matches outcomes.
 pub(super) struct StreamSession<'a> {
     engine: &'a ReActEngine,
     ctx: &'a StepCtx,
     router: Arc<LlmRouter>,
-    role: EndpointRole,
+    request: RequestKind,
     tools: &'a [ToolDefinition],
     cancel: tokio_util::sync::CancellationToken,
     partial_thought: &'a Arc<std::sync::Mutex<String>>,
@@ -277,7 +278,7 @@ impl<'a> StreamSession<'a> {
         engine: &'a ReActEngine,
         ctx: &'a StepCtx,
         router: Arc<LlmRouter>,
-        role: EndpointRole,
+        request: RequestKind,
         tools: &'a [ToolDefinition],
         cancel: tokio_util::sync::CancellationToken,
         partial_thought: &'a Arc<std::sync::Mutex<String>>,
@@ -287,7 +288,7 @@ impl<'a> StreamSession<'a> {
             engine,
             ctx,
             router,
-            role,
+            request,
             tools,
             cancel,
             partial_thought,
@@ -309,7 +310,7 @@ impl<'a> StreamSession<'a> {
             .call_step_llm(
                 self.ctx,
                 self.router.clone(),
-                &mut self.role,
+                &mut self.request,
                 self.tools,
                 self.cancel.clone(),
                 state,
@@ -330,7 +331,7 @@ impl<'a> StreamSession<'a> {
             .stream_llm_call(
                 self.ctx,
                 self.router.clone(),
-                self.role,
+                self.request,
                 request_context,
                 true,
                 self.tools,
@@ -341,8 +342,8 @@ impl<'a> StreamSession<'a> {
             .await
     }
 
-    pub(super) fn role(&self) -> EndpointRole {
-        self.role
+    pub(super) fn request(&self) -> RequestKind {
+        self.request
     }
 
     /// Promote the current stream scratch into the explicit recovery-only
@@ -731,7 +732,7 @@ impl ReActEngine {
         &self,
         ctx: &StepCtx,
         router: Arc<LlmRouter>,
-        role: EndpointRole,
+        request: RequestKind,
         request_context: &RequestContext,
         replace_output_on_start: bool,
         tools: &[ToolDefinition],
@@ -779,11 +780,11 @@ impl ReActEngine {
                 request_context.message_tokens(),
             );
         let max_output_tokens = router
-            .effective_output_tokens(role, estimated_input_tokens)
+            .effective_output_tokens(request, estimated_input_tokens)
             .await;
         let result = router
             .chat_stream_with_tools_aggregated_cancellable_with_attempts(
-                role,
+                request,
                 request_context.messages(),
                 tools,
                 StreamAttemptHooks::new(on_chunk, on_attempt_start, replace_output_on_start),
@@ -820,14 +821,14 @@ impl ReActEngine {
     pub(super) async fn record_step_usage(
         &self,
         ctx: &StepCtx,
-        role: EndpointRole,
+        request: RequestKind,
         response: &LlmResponse,
         duration_ms: u64,
         cancel: tokio_util::sync::CancellationToken,
     ) {
         self.record_usage_and_emit(
             &ctx.session_id,
-            role,
+            request,
             response,
             ctx.step_num as i32,
             Some(duration_ms),
@@ -847,7 +848,7 @@ impl ReActEngine {
         &self,
         ctx: &StepCtx,
         router: Arc<LlmRouter>,
-        role: &mut EndpointRole,
+        request: &mut RequestKind,
         tools: &[ToolDefinition],
         cancel: tokio_util::sync::CancellationToken,
         state: &mut ReActState,
@@ -860,7 +861,7 @@ impl ReActEngine {
             .stream_llm_call(
                 ctx,
                 router.clone(),
-                *role,
+                *request,
                 request_context,
                 false,
                 tools,
@@ -871,7 +872,7 @@ impl ReActEngine {
             .await
         {
             Ok((resp, duration_ms)) => {
-                self.record_step_usage(ctx, *role, &resp, duration_ms, cancel.clone())
+                self.record_step_usage(ctx, *request, &resp, duration_ms, cancel.clone())
                     .await;
                 StepCallOutcome::Response(Box::new(resp))
             }
@@ -881,7 +882,7 @@ impl ReActEngine {
                     ctx.session_id
                 );
                 let compaction = {
-                    let compactor = self.context_compactor(*role).await;
+                    let compactor = self.context_compactor(*request).await;
                     compactor
                         .compact(&state.canonical, tools, &self.router(), cancel.clone())
                         .await
@@ -944,14 +945,19 @@ impl ReActEngine {
                             return StepCallOutcome::Fatal(err_msg);
                         }
                         // Retry streams the *compacted* canonical in place; the
-                        // role must be re-resolved: summarizing away the last
+                        // request must be re-resolved: summarizing away the last
                         // image-bearing turn changes routing for the retry.
+                        // The compaction root replaces the middle of
+                        // canonical. Rebuild the provider projection from
+                        // that new root so its post-anchor prefix can receive
+                        // a fresh cache identity; never reuse the pre-error
+                        // request snapshot here.
                         let raw_retry_context = RequestContext::from_state(state, retry_nudge);
-                        let retry_role =
-                            super::choose_agent_role(&router, &raw_retry_context).await;
-                        *role = retry_role;
+                        let retry_request =
+                            super::choose_agent_request(&router, &raw_retry_context).await;
+                        *request = retry_request;
                         let (retry_context, media_plan) = raw_retry_context.with_capabilities(
-                            &router.capability_profile(retry_role),
+                            &router.capability_profile_for_request(retry_request),
                             self.media_strategy(),
                         );
                         super::emit_media_plan(
@@ -959,7 +965,7 @@ impl ReActEngine {
                             &ctx.session_id,
                             ctx.step_num,
                             ctx.run_id,
-                            retry_role,
+                            retry_request,
                             media_plan,
                         )
                         .await;
@@ -967,7 +973,7 @@ impl ReActEngine {
                             .stream_llm_call(
                                 ctx,
                                 router.clone(),
-                                retry_role,
+                                retry_request,
                                 &retry_context,
                                 true,
                                 tools,
@@ -980,7 +986,7 @@ impl ReActEngine {
                             Ok((retry_resp, retry_duration_ms)) => {
                                 self.record_step_usage(
                                     ctx,
-                                    retry_role,
+                                    retry_request,
                                     &retry_resp,
                                     retry_duration_ms,
                                     cancel.clone(),
@@ -1413,7 +1419,7 @@ mod tests {
             &engine,
             &ctx,
             router,
-            EndpointRole::ImageModel,
+            RequestKind::Vision,
             &[],
             CancellationToken::new(),
             &partial_thought,
@@ -1430,7 +1436,7 @@ mod tests {
         assert_eq!(
             default_client.stream_calls.load(Ordering::Relaxed),
             2,
-            "both the compaction retry and the follow-up response retry must use the new role"
+            "both the compaction retry and the follow-up response retry must use the new request"
         );
     }
 

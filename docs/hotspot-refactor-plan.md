@@ -259,8 +259,8 @@ turn context 依赖；`PromptRenderer` 负责纯 system/MEMORY fence 渲染。�
 形状；`stt_use_audio_model` 与 `vision_use_image_model` 不再进入运行时配置。router
 按 request kind 选择唯一 primary，并拒绝未配置或 capability 不匹配的模型；provider/model
 failover 已由 ADR 0192 删除，避免切换缓存命名空间；
-provider adapter 继续保持 wire compatibility。后续可把 agent/tools 的兼容
-`EndpointRole` 调用点逐步迁移到 `RequestKind`，再删除临时 selector facade。
+provider adapter 继续保持 wire compatibility。agent/tools 生产调用点已统一
+迁移到 `RequestKind`，旧角色名只在配置加载边界转换。
 
 更清晰的模型是：请求声明 `RequestKind` / `Capability`（chat、fast_chat、vision、transcription、embedding、image_generation、speech_synthesis），配置声明 provider capability，router 只执行显式请求策略；provider identity、wire protocol、model capability 也分别建模。
 

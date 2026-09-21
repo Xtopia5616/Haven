@@ -1,7 +1,8 @@
 use crate::is_dangling_boundary;
 use haven_common::prompts::CONVERSATION_SUMMARY_PROMPT;
+use haven_common::config::RequestKind;
 use haven_common::types::{CanonicalMessage, ContentPart};
-use haven_llm::{EndpointRole, LlmError, LlmRouter, ToolDefinition};
+use haven_llm::{LlmError, LlmRouter, ToolDefinition};
 use std::sync::Arc;
 use std::sync::{LazyLock, OnceLock};
 use tiktoken_rs::o200k_base;
@@ -630,17 +631,17 @@ impl ContextCompactor {
         let summarized_count = end_idx - start_idx;
 
         let tokens_before = estimate_provider_request_tokens(messages, tools);
-        let summary_role = if middle.iter().any(|message| {
+        let summary_request = if middle.iter().any(|message| {
             message
                 .content
                 .iter()
                 .any(|part| matches!(part, ContentPart::Image { .. }))
         }) {
-            router.vision_role().await
+            RequestKind::Vision
         } else {
-            EndpointRole::DefaultModel
+            RequestKind::Chat
         };
-        let summary_window = router.context_window_for_role(summary_role).await;
+        let summary_window = router.context_window_for_request(summary_request).await;
         let summary_budget = SUMMARY_INPUT_TOKEN_BUDGET.min(
             summary_window
                 .saturating_sub(SUMMARY_TEXT_TOKEN_BUDGET)
@@ -656,11 +657,16 @@ impl ContextCompactor {
 
         let summary = if summary_fits {
             let output_cap = router
-                .effective_output_tokens(summary_role, summary_input_tokens)
+                .effective_output_tokens(summary_request, summary_input_tokens)
                 .await
                 .clamp(1, SUMMARY_TEXT_TOKEN_BUDGET);
             match router
-                .chat_messages_cancellable(summary_role, summary_messages, Some(output_cap), cancel)
+                .chat_messages_cancellable(
+                    summary_request,
+                    summary_messages,
+                    Some(output_cap),
+                    cancel,
+                )
                 .await
             {
                 Ok(response) => {

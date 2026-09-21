@@ -5,14 +5,14 @@ use std::sync::RwLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::session::{SessionStatus, SessionSupervisor};
-use haven_common::config::ContextLimitsConfig;
+use haven_common::config::{ContextLimitsConfig, RequestKind};
 use haven_common::media::{
     CapabilityProfile, CapabilitySupport, MediaInput, MediaInputStrategy, MediaPlan,
     MediaProjectionMode, build_media_plan, message_attachment_to_media_input,
 };
 use haven_common::types::MessageAttachment;
 use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
-use haven_llm::{EndpointRole, FinishReason, LlmResponse, LlmRouter, ToolDefinition};
+use haven_llm::{FinishReason, LlmResponse, LlmRouter, ToolDefinition};
 use haven_memory::{Database, SessionEventStore};
 
 use crate::compactor::{ContextCompactor, estimate_provider_request_tokens_with_message_estimate};
@@ -157,7 +157,7 @@ fn media_capabilities_for_input(input: &MediaInput) -> CapabilityProfile {
 
 /// Media requirements of one provider request. This is deliberately a small
 /// internal policy type: content parts remain provider-neutral, while routing
-/// decides which configured role should receive them.
+/// decides which configured request should receive them.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct MediaRequirements {
     pub(crate) image: bool,
@@ -166,7 +166,7 @@ pub(crate) struct MediaRequirements {
 }
 
 /// Scan canonical content once per step. The result is shared by compaction,
-/// role selection and stream retry so those paths cannot disagree about the
+/// request selection and stream retry so those paths cannot disagree about the
 /// media carried by the request.
 pub(crate) fn canonical_media_requirements(messages: &[CanonicalMessage]) -> MediaRequirements {
     let mut requirements = MediaRequirements::default();
@@ -181,37 +181,41 @@ pub(crate) fn canonical_media_requirements(messages: &[CanonicalMessage]) -> Med
     requirements
 }
 
-/// Pick the endpoint role for an agent step. Image content routes through the
-/// vision role and audio-only content through the audio role; a configured
-/// dedicated role is used only when its capability profile can preserve every
-/// raw media part. Otherwise the default role gets the first opportunity to
-/// carry the request.
-pub(super) async fn choose_agent_role(
+/// Pick the request kind for an agent step. Image content routes through the
+/// vision request and audio-only content through the audio request; a
+/// configured dedicated request is used only when its capability profile can
+/// preserve every raw media part. Otherwise the chat request gets the first
+/// opportunity to carry the request.
+pub(super) async fn choose_agent_request(
     router: &LlmRouter,
     request_context: &RequestContext,
-) -> EndpointRole {
+) -> RequestKind {
     let requirements = request_context.media_requirements();
     let preferred = if requirements.image || requirements.video {
-        router.vision_role().await
+        RequestKind::Vision
     } else if requirements.audio {
-        router.audio_role().await
+        RequestKind::AudioChat
     } else {
-        EndpointRole::DefaultModel
+        RequestKind::Chat
     };
-    if preferred == EndpointRole::DefaultModel
-        || request_context.raw_media_fits_profile(&router.capability_profile(preferred))
-    {
+    if preferred == RequestKind::Chat {
+        return preferred;
+    }
+    if !router.is_request_configured(preferred).await {
+        return RequestKind::Chat;
+    }
+    if request_context.raw_media_fits_profile(&router.capability_profile_for_request(preferred)) {
         return preferred;
     }
 
-    let default_role = EndpointRole::DefaultModel;
-    if request_context.raw_media_fits_profile(&router.capability_profile(default_role)) {
+    let default_request = RequestKind::Chat;
+    if request_context.raw_media_fits_profile(&router.capability_profile_for_request(default_request)) {
         tracing::info!(
-            preferred_role = preferred.as_str(),
-            fallback_role = default_role.as_str(),
-            "dedicated media role cannot represent the request; using default role"
+            preferred_request = preferred.as_str(),
+            fallback_request = default_request.as_str(),
+            "dedicated media request cannot represent the request; using chat request"
         );
-        return default_role;
+        return default_request;
     }
 
     preferred
@@ -222,7 +226,7 @@ pub(super) async fn emit_media_plan(
     session_id: &str,
     step_number: u32,
     run_id: u64,
-    role: EndpointRole,
+    request: RequestKind,
     plan: MediaPlan,
 ) {
     if plan.is_empty() && plan.notices.is_empty() {
@@ -237,7 +241,7 @@ pub(super) async fn emit_media_plan(
         tracing::debug!(
             session_id,
             step_number,
-            role = role.as_str(),
+            request = request.as_str(),
             strategy = plan.strategy.as_str(),
             projections = ?plan.projections,
             "media request plan recorded"
@@ -246,7 +250,7 @@ pub(super) async fn emit_media_plan(
         tracing::info!(
             session_id,
             step_number,
-            role = role.as_str(),
+            request = request.as_str(),
             strategy = plan.strategy.as_str(),
             projections = ?plan.projections,
             "media request selected a non-raw representation"
@@ -255,7 +259,7 @@ pub(super) async fn emit_media_plan(
         tracing::warn!(
             session_id,
             step_number,
-            role = role.as_str(),
+            request = request.as_str(),
             strategy = plan.strategy.as_str(),
             projections = ?plan.projections,
             notices = ?plan.notices,
@@ -267,7 +271,7 @@ pub(super) async fn emit_media_plan(
             session_id: session_id.to_string(),
             step_number,
             run_id,
-            role: role.as_str().to_string(),
+            role: request.as_str().to_string(),
             strategy: plan.strategy,
             projections: plan.projections,
             notices: plan.notices,
@@ -340,7 +344,7 @@ pub struct ReActEngine {
     snapshot_bufs: SnapshotBufs,
     /// Mid-run DB snapshot throttle (Phase 7 / F3).
     snapshot_store: Mutex<snapshot_io::SnapshotStore>,
-    /// Per-role context-window cache keyed by router instance pointer.
+    /// Per-request context-window cache keyed by router instance pointer.
     context_windows: ContextWindowCache,
     /// Minted streaming-message ids (Phase 6 / I3).
     identity: IdentityMap,
@@ -530,7 +534,7 @@ impl ReActEngine {
     pub async fn check_connection(&self) -> haven_llm::LlmConnectionReport {
         let router = self.router();
         router
-            .connection_status(haven_llm::EndpointRole::DefaultModel)
+            .connection_status(RequestKind::Chat)
             .await
     }
 
@@ -715,15 +719,15 @@ impl ReActEngine {
     /// Update the per-session cumulative token counters, persist one per-call
     /// usage-detail row, and emit an `AgentEvent::Usage` event so the UI can
     /// refresh its display.
-    /// `role` is the endpoint that produced the response (used for cost
-    /// lookup); `response` carries the token counts and model name;
+    /// `request` identifies the request policy that produced the response
+    /// (used for cost lookup); `response` carries the token counts and model name;
     /// `step_number` is the ReAct step the call served and `duration_ms` its
     /// wall-clock duration, both recorded with the detail row.
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn record_usage_and_emit(
         &self,
         session_id: &str,
-        role: EndpointRole,
+        request: RequestKind,
         response: &LlmResponse,
         step_number: i32,
         duration_ms: Option<u64>,
@@ -737,10 +741,10 @@ impl ReActEngine {
         }
 
         let router = self.router();
-        let step_cost = router.compute_cost(role, &usage).await;
-        // `context_window_for_role` always yields Some; the cached resolver
+        let step_cost = router.compute_cost(request, &usage).await;
+        // `context_window_for_request` always yields Some; the cached resolver
         // avoids cloning the full LlmConfig on every step.
-        let context_window = Some(self.cached_context_window(role).await);
+        let context_window = Some(self.cached_context_window(request).await);
 
         let seed = if self.usage.needs_seed(session_id) {
             let db = self.db.clone();
@@ -836,7 +840,7 @@ impl ReActEngine {
                 .persist_llm_call_and_refresh_session_usage_with_cache_accounting_and_context(
                     &session_id_for_persist,
                     Some(step_number),
-                    role.as_str(),
+                    request.as_str(),
                     model_for_persist.as_deref(),
                     usage_prompt,
                     usage_completion,
@@ -900,7 +904,7 @@ impl ReActEngine {
                 context_window,
                 step_number: Some(step_number as u32),
                 duration_ms,
-                role: Some(role.as_str().to_string()),
+                role: Some(request.as_str().to_string()),
                 call_kind: "agent".into(),
                 has_cost: call_has_cost,
             },
@@ -931,7 +935,7 @@ impl ReActEngine {
             if usage.prompt_tokens == 0 && usage.completion_tokens == 0 && usage.total_tokens == 0 {
                 continue;
             }
-            let role = tool_usage.role;
+            let request = tool_usage.request;
             let call_kind = match tool_usage.call_kind {
                 "media" => "media",
                 "tool" => "tool",
@@ -943,7 +947,7 @@ impl ReActEngine {
                     "tool"
                 }
             };
-            let step_cost = self.router().compute_cost(role, &usage).await;
+            let step_cost = self.router().compute_cost(request, &usage).await;
             let model = tool_usage
                 .model
                 .clone()
@@ -977,14 +981,14 @@ impl ReActEngine {
                 context_window: None,
                 step_number: Some(step_number as u32),
                 duration_ms: tool_usage.duration_ms,
-                role: Some(role.as_str().to_string()),
+                role: Some(request.as_str().to_string()),
                 call_kind: call_kind.to_string(),
                 has_cost: step_cost.is_some(),
             };
             pending.push(PendingToolUsage {
                 input: haven_memory::LlmCallUsageInput {
                     step_number: Some(step_number),
-                    role: role.as_str().to_string(),
+                    role: request.as_str().to_string(),
                     call_kind: call_kind.to_string(),
                     model,
                     prompt_tokens: usage.prompt_tokens,
@@ -1065,8 +1069,8 @@ impl ReActEngine {
             if usage.prompt_tokens == 0 && usage.completion_tokens == 0 && usage.total_tokens == 0 {
                 continue;
             }
-            let role = tool_usage.role;
-            let step_cost = self.router().compute_cost(role, &usage).await;
+            let request = tool_usage.request;
+            let step_cost = self.router().compute_cost(request, &usage).await;
             let model = tool_usage
                 .model
                 .clone()
@@ -1096,7 +1100,7 @@ impl ReActEngine {
                 db.persist_llm_call_and_refresh_session_usage_with_kind_and_context(
                     &session_id_for_persist,
                     step_number,
-                    role.as_str(),
+                    request.as_str(),
                     &call_kind_for_persist,
                     model_for_persist.as_deref(),
                     usage_prompt,
@@ -1161,7 +1165,7 @@ impl ReActEngine {
                     context_window: None,
                     step_number: step_number.and_then(|step| u32::try_from(step).ok()),
                     duration_ms,
-                    role: Some(role.as_str().to_string()),
+                    role: Some(request.as_str().to_string()),
                     call_kind: call_kind.to_string(),
                     has_cost: call_has_cost,
                 },
@@ -1192,31 +1196,32 @@ impl ReActEngine {
         self.usage.invalidate_after_truncate(session_id);
     }
 
-    /// Resolve the model's true context window for the endpoint used by
-    /// `role`. Explicit `context_window` on the role/endpoint takes
+    /// Resolve the model's true context window for the request used by
+    /// `request`. Explicit `context_window` on the model endpoint takes
     /// precedence; callers fall back to the context-limit default. Prefer
-    /// writing the window from provider `/models` metadata into the role slot
+    /// writing the window from provider `/models` metadata into the model slot
     /// when the user picks a model. This is the real input budget for the
     /// token-usage display, not the per-response output cap (`max_tokens`).
-    pub(super) fn context_window_for_role(
+    pub(super) fn context_window_for_request(
         cfg: &haven_common::config::RouterConfig,
-        role: EndpointRole,
+        request: RequestKind,
     ) -> Option<u32> {
-        haven_llm::registry::context_window_for(cfg.endpoint(role))
+        cfg.route(request)
+            .and_then(|model| haven_llm::registry::context_window_for(&model.endpoint))
     }
 
-    /// Resolve the model's true context window for `role` using a per-router
+    /// Resolve the model's true context window for `request` using a per-router
     /// cache. Cloning the full LlmConfig on every step (compactor window +
     /// usage display) is wasteful when the router only changes via
     /// `replace_router`; the cache is keyed by the router instance pointer so
     /// a hot-swapped router invalidates it immediately.
-    pub(super) async fn cached_context_window(&self, role: EndpointRole) -> u32 {
+    pub(super) async fn cached_context_window(&self, request: RequestKind) -> u32 {
         let router = self.router();
         let ptr = Arc::as_ptr(&router) as usize;
         // Fast path: read the cached window without awaiting the router
         // config. The cache guard is scoped so it never crosses an await
         // (the std Mutex guard is not Send).
-        if let Some(window) = self.context_windows.get(ptr, role) {
+        if let Some(window) = self.context_windows.get(ptr, request) {
             return window;
         }
         // Slow path: resolve from the live router config. A concurrent
@@ -1224,21 +1229,21 @@ impl ReActEngine {
         // the entry is stored under the pointer that was current at read
         // time and recomputed on the next miss.
         let cfg = router.config().await;
-        let window = Self::context_window_for_role(&cfg, role)
+        let window = Self::context_window_for_request(&cfg, request)
             .unwrap_or(self.limits().default_context_window);
-        self.context_windows.insert(ptr, role, window);
+        self.context_windows.insert(ptr, request, window);
         window
     }
 
     /// Build a compactor whose context window reflects the *actual* model for
-    /// the role that will handle the step (explicit `context_window` on the
-    /// role, else `context_limits.default_context_window`). The window comes
+    /// the request that will handle the step (explicit `context_window` on the
+    /// model, else `context_limits.default_context_window`). The window comes
     /// from `cached_context_window`, so a hot-swapped router config takes
     /// effect immediately without cloning the full config on every step. The
     /// compaction threshold (ratio and reserve) and the fallback window come
     /// from `context_limits`.
-    pub(super) async fn context_compactor(&self, role: EndpointRole) -> ContextCompactor {
-        let window = self.cached_context_window(role).await;
+    pub(super) async fn context_compactor(&self, request: RequestKind) -> ContextCompactor {
+        let window = self.cached_context_window(request).await;
         let limits = self.limits();
         ContextCompactor::with_ratio(
             window,
@@ -1303,16 +1308,16 @@ impl ReActEngine {
             return Ok(false);
         }
         // The compaction window must match the endpoint the next step will
-        // use, mirroring choose_agent_role's role selection.
+        // use, mirroring choose_agent_request's request selection.
         let router = self.router();
-        let role = if requirements.image || requirements.video {
-            router.vision_role().await
+        let request = if requirements.image || requirements.video {
+            RequestKind::Vision
         } else if requirements.audio {
-            router.audio_role().await
+            RequestKind::AudioChat
         } else {
-            EndpointRole::DefaultModel
+            RequestKind::Chat
         };
-        let compactor = self.context_compactor(role).await;
+        let compactor = self.context_compactor(request).await;
         // Compare the incremental estimate against the threshold directly;
         // `needs_compaction` would re-estimate the whole canonical and undo
         // the incremental cache.
@@ -1734,7 +1739,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn choose_agent_role_default_without_images() {
+    async fn choose_agent_request_default_without_images() {
         let router = mock_router();
         let messages = [
             text_msg(CanonicalRole::System, "be concise"),
@@ -1742,67 +1747,67 @@ mod tests {
         ];
         let context = request_context(messages.into());
         assert_eq!(
-            choose_agent_role(&router, &context).await,
-            EndpointRole::DefaultModel
+            choose_agent_request(&router, &context).await,
+            RequestKind::Chat
         );
     }
 
     #[tokio::test]
-    async fn choose_agent_role_default_when_image_model_unconfigured() {
+    async fn choose_agent_request_default_when_image_model_unconfigured() {
         let router = mock_router();
         let context =
             media_request_context(image_msg(CanonicalRole::User), "image/png", "aGVsbG8=");
         assert_eq!(
-            choose_agent_role(&router, &context).await,
-            EndpointRole::DefaultModel
+            choose_agent_request(&router, &context).await,
+            RequestKind::Chat
         );
     }
 
     #[tokio::test]
-    async fn choose_agent_role_image_model_when_configured() {
+    async fn choose_agent_request_vision_when_configured() {
         let router = mock_router();
         router
-            .force_role_configured(EndpointRole::ImageModel, true)
+            .force_request_configured(RequestKind::Vision, true)
             .await;
         let messages = [image_msg(CanonicalRole::User)];
         let context = request_context(messages.into());
         assert_eq!(
-            choose_agent_role(&router, &context).await,
-            EndpointRole::ImageModel
+            choose_agent_request(&router, &context).await,
+            RequestKind::Vision
         );
     }
 
     #[tokio::test]
-    async fn choose_agent_role_default_when_image_routing_disabled() {
+    async fn choose_agent_request_default_when_vision_routing_disabled() {
         let router = mock_router();
         router
-            .force_role_configured(EndpointRole::ImageModel, true)
+            .force_request_configured(RequestKind::Vision, true)
             .await;
         router.force_routing_flags(true, false).await;
         let messages = [image_msg(CanonicalRole::User)];
         let context = request_context(messages.into());
         assert_eq!(
-            choose_agent_role(&router, &context).await,
-            EndpointRole::DefaultModel
+            choose_agent_request(&router, &context).await,
+            RequestKind::Chat
         );
     }
 
     #[tokio::test]
-    async fn choose_agent_role_audio_model_when_configured() {
+    async fn choose_agent_request_audio_when_configured() {
         let router = mock_router();
         router
-            .force_role_configured(EndpointRole::AudioModel, true)
+            .force_request_configured(RequestKind::AudioChat, true)
             .await;
         let messages = [audio_msg(CanonicalRole::User)];
         let context = request_context(messages.into());
         assert_eq!(
-            choose_agent_role(&router, &context).await,
-            EndpointRole::AudioModel
+            choose_agent_request(&router, &context).await,
+            RequestKind::AudioChat
         );
     }
 
     #[tokio::test]
-    async fn choose_agent_role_falls_back_when_specialized_mime_is_unsupported() {
+    async fn choose_agent_request_falls_back_when_specialized_mime_is_unsupported() {
         let mut default_profile = CapabilityProfile::default();
         default_profile.image = CapabilitySupport::Supported;
         let mut image_profile = default_profile.clone();
@@ -1810,19 +1815,19 @@ mod tests {
         let router =
             mock_router_with_profiles(default_profile, image_profile, CapabilityProfile::default());
         router
-            .force_role_configured(EndpointRole::ImageModel, true)
+            .force_request_configured(RequestKind::Vision, true)
             .await;
         let context =
             media_request_context(image_msg(CanonicalRole::User), "image/png", "aGVsbG8=");
 
         assert_eq!(
-            choose_agent_role(&router, &context).await,
-            EndpointRole::DefaultModel
+            choose_agent_request(&router, &context).await,
+            RequestKind::Chat
         );
     }
 
     #[tokio::test]
-    async fn choose_agent_role_falls_back_when_specialized_size_is_exceeded() {
+    async fn choose_agent_request_falls_back_when_specialized_size_is_exceeded() {
         let mut default_profile = CapabilityProfile::default();
         default_profile.image = CapabilitySupport::Supported;
         let mut image_profile = default_profile.clone();
@@ -1830,14 +1835,14 @@ mod tests {
         let router =
             mock_router_with_profiles(default_profile, image_profile, CapabilityProfile::default());
         router
-            .force_role_configured(EndpointRole::ImageModel, true)
+            .force_request_configured(RequestKind::Vision, true)
             .await;
         let context =
             media_request_context(image_msg(CanonicalRole::User), "image/png", "aGVsbG8=");
 
         assert_eq!(
-            choose_agent_role(&router, &context).await,
-            EndpointRole::DefaultModel
+            choose_agent_request(&router, &context).await,
+            RequestKind::Chat
         );
     }
 

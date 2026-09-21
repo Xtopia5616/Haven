@@ -6,9 +6,8 @@
 //! shared loader mutex themselves.
 
 use super::{
-    AppConfig, ConfigLoader, EndpointRole, LlmConfig, LogLevel, McpDiscoveryConfig,
-    McpServerConfig, RoleConfig, SecurityConfig, Settings, SkillsConfig, SkillsExecConfig,
-    ToolConfig,
+    AppConfig, ConfigLoader, LlmConfig, LogLevel, McpDiscoveryConfig, McpServerConfig,
+    ModelConfig, SecurityConfig, Settings, SkillsConfig, SkillsExecConfig, ToolConfig,
 };
 use crate::types::ShellChoice;
 use serde::{Deserialize, Serialize};
@@ -72,9 +71,9 @@ pub struct ConfigUpdate<T> {
 pub enum ConfigPatch {
     Settings(Box<Settings>),
     Llm(LlmConfig),
-    LlmRole {
-        role: EndpointRole,
-        patch: LlmRolePatch,
+    LlmModel {
+        model_id: String,
+        patch: LlmModelPatch,
     },
     DefaultShell(ShellChoice),
     Security(SecurityConfig),
@@ -92,8 +91,8 @@ pub enum ConfigPatch {
 
 /// Field-level patch for a configured named model.
 #[derive(Debug, Clone)]
-pub enum LlmRolePatch {
-    Replace(Box<RoleConfig>),
+pub enum LlmModelPatch {
+    Replace(Box<ModelConfig>),
     Model(String),
     ReasoningEffort(Option<String>),
     WebSearch(Option<String>),
@@ -104,19 +103,19 @@ impl ConfigPatch {
         match self {
             Self::Settings(settings) => config.apply_settings(&settings),
             Self::Llm(llm) => config.llm = llm,
-            Self::LlmRole { role, patch } => {
-                let slot = config.llm.model_mut(role.as_str()).ok_or_else(|| {
-                    anyhow::anyhow!("unknown or unconfigured role: {}", role.as_str())
+            Self::LlmModel { model_id, patch } => {
+                let slot = config.llm.model_mut(&model_id).ok_or_else(|| {
+                    anyhow::anyhow!("unknown or unconfigured model: {}", model_id)
                 })?;
                 match patch {
-                    LlmRolePatch::Replace(updated) => {
+                    LlmModelPatch::Replace(updated) => {
                         let mut updated = *updated;
-                        updated.stamp_id(role.as_str());
+                        updated.stamp_id(&model_id);
                         *slot = updated;
                     }
-                    LlmRolePatch::Model(model) => slot.model = model,
-                    LlmRolePatch::ReasoningEffort(effort) => slot.reasoning_effort = effort,
-                    LlmRolePatch::WebSearch(mode) => slot.web_search = mode,
+                    LlmModelPatch::Model(model) => slot.model = model,
+                    LlmModelPatch::ReasoningEffort(effort) => slot.reasoning_effort = effort,
+                    LlmModelPatch::WebSearch(mode) => slot.web_search = mode,
                 }
             }
             Self::DefaultShell(shell) => config.default_shell = shell,
@@ -373,12 +372,12 @@ mod tests {
     }
 
     #[test]
-    fn role_patch_is_typed_and_reports_llm_domain() {
+    fn model_patch_is_typed_and_reports_llm_domain() {
         let (service, _dir) = service();
         let mut config = service.snapshot().unwrap().config;
-        config.llm.set_role(
-            EndpointRole::DefaultModel,
-            RoleConfig {
+        config.llm.set_model(
+            "default_model",
+            ModelConfig {
                 provider: "openai".into(),
                 model: "old-model".into(),
                 ..Default::default()
@@ -392,9 +391,9 @@ mod tests {
             .unwrap();
 
         let update = service
-            .apply_patch(ConfigPatch::LlmRole {
-                role: EndpointRole::DefaultModel,
-                patch: LlmRolePatch::Model("new-model".into()),
+            .apply_patch(ConfigPatch::LlmModel {
+                model_id: "default_model".into(),
+                patch: LlmModelPatch::Model("new-model".into()),
             })
             .unwrap();
         assert_eq!(
@@ -402,7 +401,7 @@ mod tests {
                 .snapshot
                 .config
                 .llm
-                .role(EndpointRole::DefaultModel)
+                .model("default_model")
                 .unwrap()
                 .model,
             "new-model"

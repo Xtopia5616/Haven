@@ -135,7 +135,7 @@ CI 以 `scripts/check-crate-dependencies.ps1` 对此表执行内部 crate 依赖
 - `router.rs`：`LlmRouter`，按 `RequestKind` 查找显式 request policy，再从
   命名模型注册表中选择声明了所需 `Capability` 且凭据可用的唯一 primary；
   同一模型内重试耗尽后直接返回错误，不跨 provider/model 切换缓存命名空间（ADR 0192）；
-  `EndpointRole` 只作为迁移期的边界兼容 selector，不是持久化配置模型。
+  旧 `llm.roles` 仅在配置加载时转换，不进入生产路由。
 - `request_pipeline.rs`：provider-neutral 的 `RequestPolicy`/`RetryPolicy`；
   为普通聊天、工具聊天、embedding 和流式端点尝试提供同一份重试预算快照与
   总超时执行语义。router 仍拥有熔断、限流和流式聚合，adapter 不实现第二套

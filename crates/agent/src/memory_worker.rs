@@ -8,7 +8,8 @@ use haven_common::prompts::{
     COMPACTED_SUMMARY_PREFIX, CONTRADICTION_ARBITRATE_SYSTEM_PROMPT, FACT_EXTRACTION_SYSTEM_PROMPT,
     predicate_merge_system_prompt,
 };
-use haven_llm::{EndpointRole, LlmRouter};
+use haven_common::config::RequestKind;
+use haven_llm::LlmRouter;
 use haven_memory::Database;
 use haven_memory::recall::{MemoryQuery, MemoryRecall, MemoryRetriever};
 use haven_memory::repositories::facts::{
@@ -742,7 +743,7 @@ impl MemoryWorker {
     async fn arbitrate_contradictions_with_llm(&self) -> u64 {
         if !self
             .router
-            .is_role_configured(EndpointRole::SmallModel)
+            .is_request_configured(RequestKind::FastChat)
             .await
         {
             return 0;
@@ -783,7 +784,7 @@ impl MemoryWorker {
         let response = match self
             .router
             .chat_with_prompt(
-                EndpointRole::SmallModel,
+                RequestKind::FastChat,
                 CONTRADICTION_ARBITRATE_SYSTEM_PROMPT,
                 &user_content,
             )
@@ -849,7 +850,7 @@ impl MemoryWorker {
     async fn merge_predicates_with_llm(&self) -> u64 {
         if !self
             .router
-            .is_role_configured(EndpointRole::SmallModel)
+            .is_request_configured(RequestKind::FastChat)
             .await
         {
             return 0;
@@ -888,7 +889,7 @@ impl MemoryWorker {
         let merge_prompt = predicate_merge_system_prompt(CANONICAL_MERGE_TARGETS);
         let response = match self
             .router
-            .chat_with_prompt(EndpointRole::SmallModel, &merge_prompt, &user_content)
+            .chat_with_prompt(RequestKind::FastChat, &merge_prompt, &user_content)
             .await
         {
             Ok(r) => r,
@@ -1139,7 +1140,7 @@ impl MemoryWorker {
         let response = self
             .router
             .chat_with_prompt(
-                EndpointRole::SmallModel,
+                RequestKind::FastChat,
                 FACT_EXTRACTION_SYSTEM_PROMPT,
                 &user_content,
             )

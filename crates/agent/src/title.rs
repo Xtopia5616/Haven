@@ -1,5 +1,6 @@
 use haven_common::prompts::TITLE_SYSTEM_PROMPT;
-use haven_llm::{EndpointRole, LlmRouter};
+use haven_common::config::RequestKind;
+use haven_llm::LlmRouter;
 use std::sync::Arc;
 
 /// Generates concise conversation titles using the small_model endpoint.
@@ -23,7 +24,7 @@ impl TitleGenerator {
         // configured (mirrors the guard in the file tool's `summarize`).
         if !self
             .router
-            .is_role_configured(EndpointRole::SmallModel)
+            .is_request_configured(RequestKind::FastChat)
             .await
         {
             return None;
@@ -32,7 +33,7 @@ impl TitleGenerator {
 
         match self
             .router
-            .chat_with_prompt(EndpointRole::SmallModel, TITLE_SYSTEM_PROMPT, &conv_text)
+            .chat_with_prompt(RequestKind::FastChat, TITLE_SYSTEM_PROMPT, &conv_text)
             .await
         {
             Ok(response) => {
@@ -140,9 +141,9 @@ mod tests {
             audio_client,
         ));
         // Simulate a configured small_model so generate() passes the
-        // is_role_configured guard and reaches the recording mock.
+        // request-configuration guard and reaches the recording mock.
         router
-            .force_role_configured(EndpointRole::SmallModel, true)
+            .force_request_configured(RequestKind::FastChat, true)
             .await;
         TestRouter { router, mock }
     }
@@ -168,7 +169,7 @@ mod tests {
         let tr = test_router(ok_response("ignored")).await;
         // The default (empty-key) config simulates an unconfigured small_model.
         tr.router
-            .force_role_configured(EndpointRole::SmallModel, false)
+            .force_request_configured(RequestKind::FastChat, false)
             .await;
         let generator = TitleGenerator::new(tr.router);
         assert!(generator.generate(&["hi".into()]).await.is_none());

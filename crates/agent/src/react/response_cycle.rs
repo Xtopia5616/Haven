@@ -129,7 +129,7 @@ impl ReActEngine {
                                 );
                             self.record_step_usage(
                                 ctx,
-                                stream.role(),
+                                stream.request(),
                                 &retry_response,
                                 duration_ms,
                                 cancel.clone(),
@@ -183,7 +183,7 @@ impl ReActEngine {
                                 );
                             self.record_step_usage(
                                 ctx,
-                                stream.role(),
+                                stream.request(),
                                 &retry_response,
                                 duration_ms,
                                 cancel.clone(),

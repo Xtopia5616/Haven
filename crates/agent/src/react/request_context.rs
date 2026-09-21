@@ -30,7 +30,7 @@ pub(crate) struct RequestContext {
     /// beside the immutable request view avoids fingerprinting the cloned
     /// request again during stream setup.
     message_tokens: u32,
-    /// Cached once at the request boundary so role selection and media
+    /// Cached once at the request boundary so request selection and media
     /// projection do not rescan the full canonical list.
     media_requirements: MediaRequirements,
     /// Number of raw media parts in the provider-visible request.  This is
@@ -216,10 +216,10 @@ impl RequestContext {
         self.media_requirements
     }
 
-    /// Check whether every raw image/audio part can remain raw for a role.
-    /// This is used before choosing a dedicated modality role, so an
+    /// Check whether every raw image/audio part can remain raw for a request.
+    /// This is used before choosing a dedicated modality request, so an
     /// unsupported MIME, size limit, part limit, or malformed raw projection
-    /// can trigger a retry through the default role instead of silently
+    /// can trigger a retry through the chat request instead of silently
     /// becoming a placeholder on the specialized endpoint.
     pub(super) fn raw_media_fits_profile(&self, capabilities: &CapabilityProfile) -> bool {
         let mut inputs = Vec::new();

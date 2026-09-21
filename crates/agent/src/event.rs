@@ -250,7 +250,8 @@ pub enum AgentEvent {
         /// Wall-clock duration of the call in milliseconds.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         duration_ms: Option<u64>,
-        /// Endpoint role that produced the response (`default` / `small` / …).
+        /// Request kind that produced the response, kept under the legacy wire
+        /// field name for client compatibility (for example `chat` or `vision`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         role: Option<String>,
         call_kind: String,

@@ -518,7 +518,7 @@ use haven_common::types::RiskLevel;
 #[cfg(test)]
 use haven_common::types::{CanonicalMessage, ContentPart};
 #[cfg(test)]
-use haven_llm::EndpointRole;
+use haven_common::config::RequestKind;
 #[cfg(test)]
 use serde_json::Value;
 include!("files_tests.rs");

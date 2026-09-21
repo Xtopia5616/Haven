@@ -106,7 +106,8 @@ pub struct LlmCallUsage {
     pub session_id: String,
     /// ReAct step number the call served (NULL when not attributable).
     pub step_number: Option<i32>,
-    /// Endpoint role that produced the call (e.g. "default_model").
+    /// Request kind that produced the call, serialized in the legacy `role`
+    /// column for storage compatibility (e.g. "chat" or "vision").
     pub role: String,
     /// Call surface that owns the usage. Agent turns feed session totals;
     /// tool-owned media and other tool inference are retained for diagnostics

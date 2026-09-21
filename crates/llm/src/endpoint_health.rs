@@ -1,8 +1,6 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use haven_common::config::EndpointRole;
-
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum CircuitState {
     Closed,
@@ -162,14 +160,4 @@ pub(crate) fn new_endpoint_health_map(
         .into_iter()
         .map(|id| (id, EndpointHealth::new()))
         .collect()
-}
-
-pub(crate) fn health_index(role: &EndpointRole) -> usize {
-    match role {
-        EndpointRole::SmallModel => 0,
-        EndpointRole::DefaultModel => 1,
-        EndpointRole::ImageModel => 2,
-        EndpointRole::AudioModel => 3,
-        EndpointRole::EmbeddingModel => 4,
-    }
 }

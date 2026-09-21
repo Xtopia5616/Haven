@@ -92,8 +92,8 @@ impl AgentLayer {
             .with_inference(inference.clone()),
         );
         // Title generator is always available: it routes through the shared
-        // LlmRouter, which uses EndpointRole::SmallModel. If the small_model
-        // endpoint isn't configured the router will simply surface the error
+        // LlmRouter, which uses the fast_chat request policy. If that policy
+        // isn't configured the router will simply surface the error
         // and `generate` returns None.
         let title = Some(TitleGenerator::new(router));
 
@@ -297,7 +297,7 @@ impl AgentLayer {
         let warm = new_router.clone();
         tokio::spawn(async move {
             match warm
-                .health_check(haven_llm::EndpointRole::DefaultModel)
+                .health_check(haven_common::config::RequestKind::Chat)
                 .await
             {
                 Ok(()) => tracing::info!("LLM connection pre-warmed after router swap"),

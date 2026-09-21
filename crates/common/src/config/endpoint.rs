@@ -3,7 +3,6 @@
 //! [`LlmConfig`], and [`RouterConfig`].
 
 use super::*;
-use std::sync::OnceLock;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
@@ -271,6 +270,18 @@ pub enum RequestKind {
 }
 
 impl RequestKind {
+    /// All logical request kinds in stable UI/diagnostics order.
+    pub const ALL: &'static [Self] = &[
+        Self::Chat,
+        Self::FastChat,
+        Self::Vision,
+        Self::AudioChat,
+        Self::Transcription,
+        Self::Embedding,
+        Self::ImageGeneration,
+        Self::SpeechSynthesis,
+    ];
+
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Chat => "chat",
@@ -342,10 +353,6 @@ impl Default for RequestPolicy {
 pub struct ModelConfig {
     /// Stable user-chosen identity referenced by [`RequestPolicy`].
     pub id: String,
-    /// In-memory compatibility spelling for old callers. It is never written
-    /// to the new `[[llm.models]]` shape.
-    #[serde(skip)]
-    pub role: String,
     /// Referenced provider name (empty = model unconfigured).
     pub provider: String,
     /// Model id on that provider.
@@ -377,7 +384,6 @@ pub struct ModelConfig {
 impl ModelConfig {
     pub fn stamp_id(&mut self, id: &str) {
         self.id = id.to_string();
-        self.role = id.to_string();
     }
 
     pub fn is_assigned(&self) -> bool {
@@ -385,82 +391,11 @@ impl ModelConfig {
     }
 }
 
-/// Model→(provider, model) assignment. New
-/// configuration uses [`ModelConfig`] plus [`RequestPolicy`].
-/// The transient `role` field only keeps old in-process callers source-compatible;
-/// it is never persisted. `provider` names a [`ProviderConfig`]; `model` is
+/// Model→(provider, model) assignment. New configuration uses [`ModelConfig`]
+/// plus [`RequestPolicy`]. `provider` names a [`ProviderConfig`]; `model` is
 /// a model id on that provider. All tuning fields are optional overrides:
 /// `None` falls back to the provider default, then
 /// `context_limits.default_context_window` / [`ModelEndpoint`] built-ins.
-/// An empty `provider` means the role is unconfigured.
-/// Source-compatibility alias for code that only needs the model tuning
-/// fields. It is not used by the persisted configuration shape.
-pub type RoleConfig = ModelConfig;
-
-/// Legacy request selectors accepted at the router and IPC boundaries while
-/// callers migrate to [`RequestKind`]. These values are not persisted and do
-/// not define the model configuration shape.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum EndpointRole {
-    SmallModel,
-    DefaultModel,
-    ImageModel,
-    AudioModel,
-    EmbeddingModel,
-}
-
-impl EndpointRole {
-    /// Canonical string identifier used in TOML, the frontend protocol, and
-    /// the model commands. Single source of truth for the role name mapping.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::SmallModel => "small_model",
-            Self::DefaultModel => "default_model",
-            Self::ImageModel => "image_model",
-            Self::AudioModel => "audio_model",
-            Self::EmbeddingModel => "embedding_model",
-        }
-    }
-
-    /// Inverse of [`Self::as_str`]. Returns `None` for unknown role strings
-    /// so callers can validate input from the frontend/CLI.
-    #[allow(clippy::should_implement_trait)]
-    pub fn from_str(s: &str) -> Option<Self> {
-        Some(match s {
-            "small_model" => Self::SmallModel,
-            "default_model" => Self::DefaultModel,
-            "image_model" => Self::ImageModel,
-            "audio_model" => Self::AudioModel,
-            "embedding_model" => Self::EmbeddingModel,
-            _ => return None,
-        })
-    }
-
-    /// All variants in their canonical order. Useful for iterating every
-    /// endpoint slot without duplicating the list at call sites.
-    pub const ALL: &'static [EndpointRole] = &[
-        Self::SmallModel,
-        Self::DefaultModel,
-        Self::ImageModel,
-        Self::AudioModel,
-        Self::EmbeddingModel,
-    ];
-
-    pub const fn request_kind(self) -> RequestKind {
-        match self {
-            Self::SmallModel => RequestKind::FastChat,
-            Self::DefaultModel => RequestKind::Chat,
-            Self::ImageModel => RequestKind::Vision,
-            // The legacy audio selector represents audio-input chat. Native
-            // transcription now uses `RequestKind::Transcription` directly;
-            // the adapter still decides whether native transcription is
-            // supported by this endpoint.
-            Self::AudioModel => RequestKind::AudioChat,
-            Self::EmbeddingModel => RequestKind::Embedding,
-        }
-    }
-}
-
 /// A materialized model plus its declared request capabilities.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
@@ -505,8 +440,8 @@ pub struct LlmConfig {
     pub retry_factor: u32,
     pub retry_max_secs: u64,
     pub retry_jitter: f32,
-    /// Per-endpoint (role) cap on concurrent LLM requests, applied by the
-    /// router with a semaphore per role. Prevents N parallel sessions from
+    /// Per-model cap on concurrent LLM requests, applied by the router with a
+    /// semaphore per routed model. Prevents N parallel sessions from
     /// hammering the same provider simultaneously (thundering-herd retries on
     /// 429). A session whose LLM call is queued behind this limit waits; its
     /// slot in `session.max_concurrent` is still held, so set it below the session
@@ -534,45 +469,11 @@ impl Default for LlmConfig {
 
 impl LlmConfig {
     pub fn model(&self, id: &str) -> Option<&ModelConfig> {
-        self.models
-            .iter()
-            .find(|model| model.id == id || model.role == id)
+        self.models.iter().find(|model| model.id == id)
     }
 
     pub fn model_mut(&mut self, id: &str) -> Option<&mut ModelConfig> {
-        self.models
-            .iter_mut()
-            .find(|model| model.id == id || model.role == id)
-    }
-
-    /// Compatibility lookup for callers that still use the legacy selector.
-    /// It resolves through the request policy before falling back to the
-    /// legacy selector spelling as a model id.
-    pub fn role(&self, role: EndpointRole) -> Option<&ModelConfig> {
-        let id = self
-            .policy(role.request_kind())
-            .map(|policy| policy.primary.as_str())
-            .unwrap_or_else(|| role.as_str());
-        self.model(id)
-    }
-
-    pub fn role_mut(&mut self, role: EndpointRole) -> Option<&mut ModelConfig> {
-        let id = self
-            .policy(role.request_kind())
-            .map(|policy| policy.primary.clone())
-            .unwrap_or_else(|| role.as_str().to_string());
-        self.model_mut(&id)
-    }
-
-    /// Compatibility writer. New code should use [`Self::set_model`] and
-    /// [`Self::set_policy`] explicitly.
-    pub fn set_role(&mut self, role: EndpointRole, mut config: ModelConfig) {
-        let id = role.as_str();
-        if config.capabilities.is_empty() {
-            config.capabilities = vec![role.request_kind().required_capability()];
-        }
-        self.set_model(id, config);
-        self.set_policy(role.request_kind(), id);
+        self.models.iter_mut().find(|model| model.id == id)
     }
 
     pub fn set_model(&mut self, id: impl Into<String>, mut config: ModelConfig) {
@@ -633,14 +534,6 @@ impl LlmConfig {
     /// Look up a provider by name.
     pub fn provider(&self, name: &str) -> Option<&ProviderConfig> {
         self.providers.iter().find(|p| p.name == name)
-    }
-
-    /// True when a role is usable at runtime: it references a configured
-    /// provider (API key present, or a keyless local server) and names a
-    /// model. Used by tools that should no-op gracefully when an endpoint is
-    /// not set up.
-    pub fn is_configured(&self, role: EndpointRole) -> bool {
-        self.is_request_configured(role.request_kind())
     }
 
     /// Materialize a named model from its provider and per-model overrides.
@@ -728,27 +621,12 @@ impl LlmConfig {
         }
     }
 
-    /// Compatibility helper for callers that still use the legacy selector.
-    /// The request policy, rather than the selector name, chooses the model.
-    pub fn materialize_endpoint(&self, role: EndpointRole) -> ModelEndpoint {
-        self.route_model(role.request_kind())
-            .map(|model| {
-                self.materialize_model(if model.id.is_empty() {
-                    &model.role
-                } else {
-                    &model.id
-                })
-                .endpoint
-            })
-            .unwrap_or_default()
-    }
-
     /// Build the fully materialized router configuration: a dynamic model
     /// registry plus request policies and every router-level tuning knob. Called whenever the router is
     /// constructed or hot-swapped. `response_cap` / `reasoning_echo_cap`
     /// mirror the `with_response_cap` / `with_reasoning_echo_cap` transforms
     /// (applied to the materialized endpoints so hand-edited
-    /// per-role overrides are still respected).
+    /// per-model overrides are still respected).
     pub fn materialize(
         &self,
         response_cap: Option<u32>,
@@ -934,32 +812,10 @@ impl RouterConfig {
         .then_some(model)
     }
 
-    /// Legacy selector view. The selected endpoint is still policy-driven.
-    pub fn endpoint(&self, role: EndpointRole) -> &ModelEndpoint {
-        static EMPTY: OnceLock<ModelEndpoint> = OnceLock::new();
-        self.route(role.request_kind())
-            .map(|model| &model.endpoint)
-            .unwrap_or_else(|| EMPTY.get_or_init(ModelEndpoint::default))
-    }
-
-    pub fn endpoint_mut(&mut self, role: EndpointRole) -> Option<&mut ModelEndpoint> {
-        let id = self
-            .policy(role.request_kind())
-            .map(|policy| policy.primary.clone())?;
-        self.model_mut(&id).map(|model| &mut model.endpoint)
-    }
-
     pub fn policy_mut(&mut self, request: RequestKind) -> Option<&mut RequestPolicy> {
         self.request_policies
             .iter_mut()
             .find(|policy| policy.request == request)
-    }
-
-    /// True when the role has usable credentials (API key or keyless local
-    /// server). Used by tools that should no-op gracefully when an endpoint
-    /// is not set up.
-    pub fn is_configured(&self, role: EndpointRole) -> bool {
-        self.route(role.request_kind()).is_some()
     }
 
     /// Iterate over every configured model, regardless of its capabilities.
@@ -1004,8 +860,8 @@ mod tests {
                 base_url: "https://api.openai.com/v1".into(),
                 ..Default::default()
             }],
-            models: vec![RoleConfig {
-                role: "default_model".into(),
+            models: vec![ModelConfig {
+                id: "default_model".into(),
                 provider: "chat".into(),
                 model: "gpt-4o".into(),
                 capabilities: vec![Capability::Chat],
@@ -1019,7 +875,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        let ep = llm.materialize_endpoint(EndpointRole::DefaultModel);
+        let ep = llm.materialize_model("default_model").endpoint;
         assert!(ep.web_search.is_none());
     }
 
@@ -1034,8 +890,8 @@ mod tests {
                 base_url: "https://api.deepseek.com".into(),
                 ..Default::default()
             }],
-            models: vec![RoleConfig {
-                role: "default_model".into(),
+            models: vec![ModelConfig {
+                id: "default_model".into(),
                 provider: "ds".into(),
                 model: "deepseek-reasoner".into(),
                 capabilities: vec![Capability::Chat],
@@ -1049,7 +905,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        let ep = llm.materialize_endpoint(EndpointRole::DefaultModel);
+        let ep = llm.materialize_model("default_model").endpoint;
         assert_eq!(ep.web_search.as_deref(), Some("always"));
         assert_eq!(ep.provider, "deepseek");
     }
@@ -1067,8 +923,8 @@ mod tests {
         assert!(provider_credentials_ready(&ollama));
         let llm = LlmConfig {
             providers: vec![ollama],
-            models: vec![RoleConfig {
-                role: "default_model".into(),
+            models: vec![ModelConfig {
+                id: "default_model".into(),
                 provider: "local".into(),
                 model: "llama3.2".into(),
                 capabilities: vec![Capability::Chat],
@@ -1081,8 +937,8 @@ mod tests {
             }],
             ..Default::default()
         };
-        assert!(llm.is_configured(EndpointRole::DefaultModel));
-        let ep = llm.materialize_endpoint(EndpointRole::DefaultModel);
+        assert!(llm.is_request_configured(RequestKind::Chat));
+        let ep = llm.materialize_model("default_model").endpoint;
         assert!(endpoint_credentials_ready(&ep));
     }
 

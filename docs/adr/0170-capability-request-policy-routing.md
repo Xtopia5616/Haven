@@ -24,9 +24,9 @@ that fixed shape.
 - Keep provider identity and wire protocol (`api_style`) separate from model
   capability. Provider adapters and their external wire contracts are
   unchanged.
-- Make `RequestKind` the public router selector. `EndpointRole` remains only as
-  a temporary source-compatible boundary for existing agent/tool call sites;
-  it is not serialized and no longer defines the configuration schema.
+- Make `RequestKind` the public router selector. Legacy role names are accepted
+  only while loading old configuration and are converted once in memory; they
+  are not serialized and do not define the configuration schema.
 - Replace the STT/vision booleans with `transcription`, `audio_chat`, and
   `vision` policies. A model may serve multiple policies, so the same model
   assignment is not duplicated into slots.
@@ -57,14 +57,11 @@ that fixed shape.
 The configuration can express arbitrary named models, shared models, new
 capabilities, and ordered fallbacks without adding another slot. A policy with
 no eligible candidate is observably unconfigured and callers can degrade or
-surface setup guidance. Existing source call sites can migrate incrementally
-through the `RequestKind` API, while old persisted role files are converted at
-load time.
+surface setup guidance. Production call sites use the `RequestKind` API or
+resolved model ids, while old persisted role files are converted at load time.
 
-The compatibility selector and fixed-name migration code are intentionally
-temporary. Once agent/tool consumers use `RequestKind` directly, the legacy
-`EndpointRole` boundary and old role-name assumptions can be removed under a
-follow-up cleanup.
+The fixed-name migration code is intentionally limited to the configuration
+loader. No compatibility selector is kept in the production router.
 
 ## Verification and rollback/reset
 

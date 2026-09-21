@@ -571,7 +571,7 @@ impl AppConfig {
         let mut llm = settings.llm.clone();
         // Preserve masked provider keys, matched by provider name. Roles never
         // carry keys (the api_key lives on the referenced provider), so no
-        // role-level key preservation is needed.
+        // model-level key preservation is needed.
         for prov in llm.providers.iter_mut() {
             if prov.api_key.is_empty()
                 && let Some(prev) = prev_llm.providers.iter().find(|p| p.name == prov.name)
@@ -812,18 +812,18 @@ mod tests {
             default_max_tokens: Some(8192),
             ..Default::default()
         });
-        llm.set_role(
-            EndpointRole::SmallModel,
-            RoleConfig {
+        llm.set_model(
+            "small_model",
+            ModelConfig {
                 provider: "openai".into(),
                 model: "gpt-4o-mini".into(),
                 max_tokens: Some(4096),
                 ..Default::default()
             },
         );
-        llm.set_role(
-            EndpointRole::DefaultModel,
-            RoleConfig {
+        llm.set_model(
+            "default_model",
+            ModelConfig {
                 provider: "openai".into(),
                 model: "gpt-4o".into(),
                 max_tokens: Some(20_000),
@@ -831,17 +831,17 @@ mod tests {
             },
         );
         let lifted = llm.materialize(Some(10_000), None);
-        // Small role cap is raised to the floor.
+        // The fast-chat model cap is raised to the floor.
         assert_eq!(
             lifted.model("small_model").unwrap().endpoint.max_tokens,
             10_000
         );
-        // A role already above the floor keeps its own value.
+        // A model already above the floor keeps its own value.
         assert_eq!(
             lifted.model("default_model").unwrap().endpoint.max_tokens,
             20_000
         );
-        // Materialized endpoints carry provider key + role model.
+        // Materialized endpoints carry provider key + model id.
         assert_eq!(
             lifted.model("default_model").unwrap().endpoint.api_key,
             "key"
@@ -860,18 +860,18 @@ mod tests {
             api_key: "key".into(),
             ..Default::default()
         });
-        llm.set_role(
-            EndpointRole::DefaultModel,
-            RoleConfig {
+        llm.set_model(
+            "default_model",
+            ModelConfig {
                 provider: "openai".into(),
                 model: "gpt-4o".into(),
                 reasoning_echo_max_chars: Some(1234),
                 ..Default::default()
             },
         );
-        llm.set_role(
-            EndpointRole::SmallModel,
-            RoleConfig {
+        llm.set_model(
+            "small_model",
+            ModelConfig {
                 provider: "openai".into(),
                 model: "gpt-4o-mini".into(),
                 ..Default::default()
@@ -887,7 +887,7 @@ mod tests {
                 .reasoning_echo_max_chars,
             Some(5000)
         );
-        // A per-role override is preserved.
+        // A per-model override is preserved.
         assert_eq!(
             filled
                 .model("default_model")
@@ -915,16 +915,14 @@ mod tests {
         // Frontend sends empty api keys (masked) but a new base URL / model.
         settings.llm.providers[0].base_url = "https://gateway.example/v1".to_string();
         settings.llm.providers[1].name = "renamed".to_string();
-        settings.llm.models.push(RoleConfig {
+        settings.llm.models.push(ModelConfig {
             id: "default_model".into(),
-            role: "default_model".into(),
             provider: "openai".into(),
             model: "new-model".into(),
             ..Default::default()
         });
-        settings.llm.models.push(RoleConfig {
+        settings.llm.models.push(ModelConfig {
             id: "retired_model".into(),
-            role: "retired_model".into(),
             provider: "openai".into(),
             model: "old-model".into(),
             ..Default::default()
@@ -943,12 +941,12 @@ mod tests {
         // A renamed provider loses the key (no stable name match), as expected.
         assert_eq!(loader.config().llm.providers[1].name, "renamed");
         assert!(loader.config().llm.providers[1].api_key.is_empty());
-        // The role slot was applied.
+        // The named model assignment was applied.
         assert_eq!(
             loader
                 .config()
                 .llm
-                .role(EndpointRole::DefaultModel)
+                .model("default_model")
                 .unwrap()
                 .model,
             "new-model"
@@ -1185,7 +1183,7 @@ encrypt_sensitive = true
             loader
                 .config()
                 .llm
-                .is_configured(EndpointRole::DefaultModel)
+                .is_request_configured(RequestKind::Chat)
         );
         assert_eq!(
             loader
