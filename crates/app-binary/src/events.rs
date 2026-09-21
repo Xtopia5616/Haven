@@ -236,8 +236,8 @@ pub(crate) struct SessionLifecycleEvent {
     pub status: SessionStatus,
     /// A newly-created session may not have a generated title yet.
     pub title: Option<String>,
-    /// Present for terminal lifecycle events so the UI can explain why the
-    /// conversation stopped. Non-terminal events leave it empty.
+    /// Present when a lifecycle transition has a user-visible explanation,
+    /// including an explicit interruption of a resumable session.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }

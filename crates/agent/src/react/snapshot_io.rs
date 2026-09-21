@@ -143,6 +143,7 @@ pub(crate) async fn set_status_and_emit(
             .emit(crate::event::AgentEvent::SessionUpdated {
                 session_id: session_id.into(),
                 status,
+                reason: None,
             })
             .await;
     }

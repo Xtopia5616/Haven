@@ -43,7 +43,7 @@ export interface SessionError {
 	reason: string;
 }
 
-export type SessionTerminationStatus = 'completed' | 'error';
+export type SessionTerminationStatus = 'paused' | 'completed' | 'error';
 
 export interface SessionTermination {
 	sessionId: string;

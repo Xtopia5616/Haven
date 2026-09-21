@@ -3,21 +3,29 @@
 	import StatusBadge from './StatusBadge.svelte';
 
 	/**
-	 * SessionTerminationBanner — shows why a terminal conversation stopped.
-	 * @prop {'completed'|'error'} status — terminal session status
+	 * SessionTerminationBanner — shows why a conversation stopped or paused.
+	 * @prop {'paused'|'completed'|'error'} status — session lifecycle status
 	 * @prop {string} reason — sanitized user-visible termination reason
 	 */
 	let { status = 'error', reason = '' } = $props();
 	let isError = $derived(status === 'error');
+	let isPaused = $derived(status === 'paused');
 	let displayReason = $derived(
-		reason.trim() || (isError ? '本次会话因错误停止，暂未收到更具体的原因。' : '会话已结束。'),
+		reason.trim() ||
+			(isError
+				? '本次会话因错误停止，暂未收到更具体的原因。'
+				: isPaused
+					? '本次会话已暂停，暂未收到更具体的原因。'
+					: '会话已结束。'),
 	);
-	let heading = $derived(isError ? '本次会话已停止' : '本次会话已结束');
-	let badge = $derived(isError ? '错误' : '已结束');
+	let heading = $derived(isError ? '本次会话已停止' : isPaused ? '本次会话已暂停' : '本次会话已结束');
+	let badge = $derived(isError ? '错误' : isPaused ? '已暂停' : '已结束');
 	let hint = $derived(
 		isError
 			? '内容已保留，可以使用下方“继续生成”再次尝试。'
-			: '会话内容已保留，可以新建会话继续工作。',
+			: isPaused
+				? '已保留当前输出，可以继续生成或发送新的消息。'
+				: '会话内容已保留，可以新建会话继续工作。',
 	);
 </script>
 
@@ -28,12 +36,12 @@
 	aria-live={isError ? 'assertive' : 'polite'}
 >
 	<div class="session-termination-banner__icon" aria-hidden="true">
-		<Icon name={isError ? 'alertTriangle' : 'checkCircle'} size={18} />
+		<Icon name={isError ? 'alertTriangle' : isPaused ? 'pause' : 'checkCircle'} size={18} />
 	</div>
 	<div class="session-termination-banner__body">
 		<div class="session-termination-banner__heading">
 			<strong>{heading}</strong>
-			<StatusBadge label={badge} tone={isError ? 'error' : 'success'} />
+			<StatusBadge label={badge} tone={isError ? 'error' : isPaused ? 'warning' : 'success'} />
 		</div>
 		<div class="session-termination-banner__label">终止原因</div>
 		<p class="session-termination-banner__reason">{displayReason}</p>
@@ -76,6 +84,19 @@
 			var(--md-sys-color-surface-container-low)
 		);
 	}
+	.session-termination-banner[data-status='paused'] {
+		border-color: color-mix(
+			in srgb,
+			var(--md-sys-color-warning) 32%,
+			var(--md-sys-color-outline-variant)
+		);
+		border-left-color: var(--md-sys-color-warning);
+		background: color-mix(
+			in srgb,
+			var(--md-sys-color-warning-container) 34%,
+			var(--md-sys-color-surface-container-low)
+		);
+	}
 	.session-termination-banner__icon {
 		display: grid;
 		place-items: center;
@@ -89,6 +110,10 @@
 	.session-termination-banner[data-status='error'] .session-termination-banner__icon {
 		background: var(--md-sys-color-error-container);
 		color: var(--md-sys-color-on-error-container);
+	}
+	.session-termination-banner[data-status='paused'] .session-termination-banner__icon {
+		background: var(--md-sys-color-warning-container);
+		color: var(--md-sys-color-on-warning-container);
 	}
 	.session-termination-banner__body {
 		min-width: 0;

@@ -150,4 +150,28 @@ describe('chat session lifecycle handlers', () => {
 			reason: '用户主动结束会话',
 		});
 	});
+
+	it('shows the reason for an explicitly interrupted active session', () => {
+		const reducer = new SessionReducer({
+			...initialSessionState,
+			sessions: [{ id: 'ses-paused', status: 'running', title: '研究' }],
+			activeSessionId: 'ses-paused',
+		});
+		const eventHandlers = handlers({ activeSessionId: 'ses-paused', reducer });
+
+		eventHandlers['session:updated']({
+			payload: {
+				sessionId: 'ses-paused',
+				status: 'paused',
+				title: null,
+				reason: '用户主动打断输出',
+			},
+		} as never);
+
+		expect(reducer.getState().termination).toEqual({
+			sessionId: 'ses-paused',
+			status: 'paused',
+			reason: '用户主动打断输出',
+		});
+	});
 });

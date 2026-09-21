@@ -20,6 +20,14 @@ describe('SessionTerminationBanner', () => {
 		expect(screen.getByText('用户主动结束会话')).toBeTruthy();
 	});
 
+	it('shows the reason when the user interrupts a conversation', () => {
+		render(SessionTerminationBanner, { status: 'paused', reason: '用户主动打断输出' });
+
+		expect(screen.getByRole('status')).toBeTruthy();
+		expect(screen.getByText('已暂停')).toBeTruthy();
+		expect(screen.getByText('用户主动打断输出')).toBeTruthy();
+	});
+
 	it('uses a friendly fallback when no reason is available', () => {
 		render(SessionTerminationBanner, { status: 'error', reason: '' });
 

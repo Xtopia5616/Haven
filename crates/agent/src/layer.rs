@@ -271,7 +271,11 @@ impl AgentLayer {
     pub async fn interrupt_session(&self, session_id: &str) -> anyhow::Result<()> {
         if self.executor.interrupt_session(session_id).await? {
             self.events
-                .emit_session_updated(session_id, SessionStatus::Paused)
+                .emit_session_updated_with_reason(
+                    session_id,
+                    SessionStatus::Paused,
+                    Some("用户主动打断输出"),
+                )
                 .await;
         }
         Ok(())

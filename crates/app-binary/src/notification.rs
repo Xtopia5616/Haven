@@ -139,7 +139,9 @@ impl DesktopNotifications {
                     .unwrap_or(session.id.as_str());
                 self.cache_title(&session.id, display.to_string());
             }
-            AgentEvent::SessionUpdated { session_id, status } => {
+            AgentEvent::SessionUpdated {
+                session_id, status, ..
+            } => {
                 self.lock_session_statuses()
                     .insert(session_id.clone(), status.as_str().to_string());
             }
@@ -209,18 +211,18 @@ impl DesktopNotifications {
                     format!("会话出错: {}", sanitize_error_text(error)),
                 );
             }
-            AgentEvent::SessionUpdated { session_id, status }
-                if *status == haven_common::SessionStatus::Paused =>
-            {
+            AgentEvent::SessionUpdated {
+                session_id, status, ..
+            } if *status == haven_common::SessionStatus::Paused => {
                 if !self.windows_enabled(|n| n.session_paused.windows, false) {
                     return;
                 }
                 let display = self.session_display_title(session_id);
                 self.show_windows_toast("Haven", format!("会话已暂停: {}", display));
             }
-            AgentEvent::SessionUpdated { session_id, status }
-                if *status == haven_common::SessionStatus::Pending =>
-            {
+            AgentEvent::SessionUpdated {
+                session_id, status, ..
+            } if *status == haven_common::SessionStatus::Pending => {
                 // Only paused*/error → pending counts as resume. Running→Pending
                 // (ask answered in-turn) must not toast.
                 let prev = self.previous_session_status(session_id);

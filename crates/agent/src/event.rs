@@ -172,6 +172,11 @@ pub enum AgentEvent {
     SessionUpdated {
         session_id: String,
         status: SessionStatus,
+        /// Optional user-visible explanation for a status transition. This is
+        /// populated for explicit user interruptions so the UI can explain
+        /// why a resumable session stopped producing output.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
     },
     Compaction {
         session_id: String,
@@ -934,10 +939,21 @@ impl EventDispatcher {
     }
 
     pub async fn emit_session_updated(&self, session_id: &str, status: SessionStatus) {
+        self.emit_session_updated_with_reason(session_id, status, None)
+            .await;
+    }
+
+    pub async fn emit_session_updated_with_reason(
+        &self,
+        session_id: &str,
+        status: SessionStatus,
+        reason: Option<&str>,
+    ) {
         tracing::debug!(
-            "emit_session_updated event: session={} status={}",
+            "emit_session_updated event: session={} status={} reason={:?}",
             session_id,
-            status.as_str()
+            status.as_str(),
+            reason
         );
         let emitter = lock_or_recover(&self.emitter, "event_emitter").clone();
         if let Some(emitter) = emitter {
@@ -945,6 +961,7 @@ impl EventDispatcher {
                 .emit(AgentEvent::SessionUpdated {
                     session_id: session_id.into(),
                     status,
+                    reason: reason.map(str::to_owned),
                 })
                 .await;
         }
@@ -1477,6 +1494,7 @@ mod tests {
                 .emit(AgentEvent::SessionUpdated {
                     session_id: format!("ses-{i}"),
                     status: SessionStatus::Running,
+                    reason: None,
                 })
                 .await;
         }

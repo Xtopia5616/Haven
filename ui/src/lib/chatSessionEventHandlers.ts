@@ -108,7 +108,10 @@ export function createChatSessionEventHandlers({
 				status: data.status,
 				title: data.title,
 			});
-			if ((data.status === 'completed' || data.status === 'error') && data.reason?.trim()) {
+			if (
+				(data.status === 'paused' || data.status === 'completed' || data.status === 'error') &&
+				data.reason?.trim()
+			) {
 				dispatchSession({
 					type: 'session/termination-shown',
 					sessionId: data.sessionId,

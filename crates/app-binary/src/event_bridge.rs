@@ -256,11 +256,15 @@ impl TauriEmitter {
                 title: Some(title.clone()),
                 reason: Some(sanitize_error_text(reason)),
             }),
-            AgentEvent::SessionUpdated { session_id, status } => serialize(SessionLifecycleEvent {
+            AgentEvent::SessionUpdated {
+                session_id,
+                status,
+                reason,
+            } => serialize(SessionLifecycleEvent {
                 session_id: session_id.clone(),
                 status: *status,
                 title: Some(String::new()),
-                reason: None,
+                reason: reason.as_deref().map(sanitize_error_text),
             }),
             AgentEvent::SessionError { session_id, error } => serialize(SessionErrorEvent {
                 session_id: session_id.clone(),
@@ -517,7 +521,9 @@ impl TauriEmitter {
                     "TauriEmitter::on_session_completed"
                 );
             }
-            AgentEvent::SessionUpdated { session_id, status } => {
+            AgentEvent::SessionUpdated {
+                session_id, status, ..
+            } => {
                 tracing::info!(
                     session_id = %session_id,
                     status = status.as_str(),
