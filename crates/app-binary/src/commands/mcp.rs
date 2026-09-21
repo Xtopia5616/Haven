@@ -298,7 +298,7 @@ pub async fn mcp_tool_call(
             )
             .await?);
         }
-        AuthorizationDecision::Blocked { reason } => {
+        AuthorizationDecision::Blocked { reason, .. } => {
             return Err(format!(
                 "MCP tool call blocked by security policy ({reason})"
             ));

@@ -207,7 +207,7 @@ pub async fn execute_skill(
             )
             .await?);
         }
-        AuthorizationDecision::Blocked { reason } => {
+        AuthorizationDecision::Blocked { reason, .. } => {
             return Err(format!(
                 "skill execution blocked by security policy ({reason})"
             ));

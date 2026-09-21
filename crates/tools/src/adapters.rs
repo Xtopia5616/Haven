@@ -9,7 +9,7 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 use crate::skill_runner::SkillRunner;
-use crate::{StructuredToolError, Tool, ToolErrorMetadata, ToolResult};
+use crate::{OperationPolicy, StructuredToolError, Tool, ToolErrorMetadata, ToolResult};
 use haven_mcp::{McpClient, McpToolInfo};
 use haven_skills::Skill;
 
@@ -133,6 +133,12 @@ impl Tool for McpToolAdapter {
         // gate. High keeps them gated at every threshold except "Critical
         // only".
         RiskLevel::High
+    }
+
+    fn operation_policy(&self, _input: &Value) -> OperationPolicy {
+        // The adapter, rather than AuthorizationEngine's name heuristics, is
+        // the authority for this capability's opaque external boundary.
+        OperationPolicy::external(self.name(), RiskLevel::High)
     }
 
     fn input_schema(&self) -> Value {
@@ -277,6 +283,10 @@ impl Tool for SkillToolAdapter {
         // Flat High keeps them gated at every threshold except "Critical
         // only" — see McpToolAdapter::risk_level for the rationale.
         RiskLevel::High
+    }
+
+    fn operation_policy(&self, _input: &Value) -> OperationPolicy {
+        OperationPolicy::external(self.name(), RiskLevel::High)
     }
 
     fn input_schema(&self) -> Value {

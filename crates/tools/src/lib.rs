@@ -130,8 +130,8 @@ pub use registry::{
     DeferredToolCatalog, RegistryProbe, SessionCatalog, ToolCatalogSnapshot, ToolRegistry,
 };
 pub use security::{
-    AuthorizationDecision, AuthorizationEngine, AuthorizationRequest, ConfirmationReceipt,
-    LOCAL_TOOL_SECURITY_MATRIX, LocalToolSecurityCase, is_safe_local_path,
+    AuthorizationDecision, AuthorizationEngine, AuthorizationReasonCode, AuthorizationRequest,
+    ConfirmationReceipt, LOCAL_TOOL_SECURITY_MATRIX, LocalToolSecurityCase, is_safe_local_path,
     permission_prompt_summary,
 };
 #[cfg(windows)]

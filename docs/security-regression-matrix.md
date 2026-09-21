@@ -53,7 +53,7 @@
 | 授权优先级 | permanent deny + session allow | `Blocked` |
 | 会话隔离 | session allow 在 `ses-a`，无 session 或 `ses-b` 调用 | 后两者不能自动批准 |
 | policy reset | 修改阈值、重新加载安全配置、clear history | 清除旧 session grants，不残留信任 |
-| disabled op | `disabled_operations` 命中 op/scope/scope:op | `Blocked`，优先于风险确认 |
+| disabled op | `disabled_operations` 命中 canonical capability 或工具设置名下的短写；即使原始 discriminator 不一致也按 capability 判断 | `Blocked`，优先于风险确认 |
 | operation view contract | view 的 schema、固定 operation/scope、风险、幂等性、并发、权限 key、renderer、icon、prompt 任一不一致 | catalog、AuthorizationEngine、UI parser/renderer 和 prompt 不得各自接受不同定义 |
 | HTTP destination | `http://localhost`, loopback、RFC1918/ULA、link-local、`169.254.169.254`、metadata hostname | `Blocked`，不能依赖代理或 DNS 结果把本地目标变成可访问目标 |
 | HTTP redirect | 公网 URL 重定向到上述地址，或超过 10 跳 | `Blocked`；自动跟随必须关闭，逐跳解析、allowlist 和地址检查 |

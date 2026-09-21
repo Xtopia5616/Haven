@@ -300,6 +300,38 @@ pub struct ConfirmationReceipt {
     pub expires_at: u64,
 }
 
+/// Machine-readable reason for a gate result. User-facing text remains
+/// backend-generated, but callers no longer need to parse that text to decide
+/// whether a result came from a hard boundary, a rule, or an approval mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthorizationReasonCode {
+    DisabledOperation,
+    NetworkPolicy,
+    SandboxBoundary,
+    PlanMode,
+    PermanentDeny,
+    SessionDeny,
+    CriticalOperation,
+    ApprovalPolicy,
+    SensitiveData,
+}
+
+impl AuthorizationReasonCode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::DisabledOperation => "disabled_operation",
+            Self::NetworkPolicy => "network_policy",
+            Self::SandboxBoundary => "sandbox_boundary",
+            Self::PlanMode => "plan_mode",
+            Self::PermanentDeny => "permanent_deny",
+            Self::SessionDeny => "session_deny",
+            Self::CriticalOperation => "critical_operation",
+            Self::ApprovalPolicy => "approval_policy",
+            Self::SensitiveData => "sensitive_data",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum AuthorizationDecision {
     AutoApproved,
@@ -307,10 +339,12 @@ pub enum AuthorizationDecision {
         capability: CapabilityScope,
         risk_level: RiskLevel,
         receipt: ConfirmationReceipt,
+        reason_code: AuthorizationReasonCode,
     },
     /// Hard deny — permanent/session denylist, disabled operation, or path sandbox.
     Blocked {
         reason: String,
+        reason_code: AuthorizationReasonCode,
     },
 }
 
@@ -409,7 +443,18 @@ impl AuthorizationEngine {
         cfg.network_policy = security.network_policy;
         cfg.permanent.clear();
         for p in &security.permissions {
-            cfg.permanent.insert(p.key.clone().into(), p.effect);
+            match CapabilityScope::try_new(&p.key) {
+                Ok(capability) => {
+                    cfg.permanent.insert(capability, p.effect);
+                }
+                Err(error) => {
+                    // Config loading already rejects known legacy formats. A
+                    // second validation here keeps runtime policy fail-closed
+                    // if a caller constructs SecurityConfig in memory or if a
+                    // future wire boundary bypasses the loader.
+                    tracing::warn!(key = %p.key, %error, "ignoring invalid persisted capability rule");
+                }
+            }
         }
         cfg.session_grants.clear();
         bump_policy_revision(&mut cfg);
@@ -493,13 +538,19 @@ impl AuthorizationEngine {
         let cfg = self.config.read().await;
         let risk = effective_risk_from(&cfg, tool_name, policy.risk_level);
 
-        if let Some(reason) = disabled_operation_block(&cfg.tool_settings, tool_name, params) {
-            return AuthorizationDecision::Blocked { reason };
+        if let Some(reason) = disabled_operation_block(&cfg.tool_settings, tool_name, key) {
+            return AuthorizationDecision::Blocked {
+                reason,
+                reason_code: AuthorizationReasonCode::DisabledOperation,
+            };
         }
         if let Some(reason) =
             network_policy_block(cfg.network_policy, cfg.sandbox_mode, tool_name, policy)
         {
-            return AuthorizationDecision::Blocked { reason };
+            return AuthorizationDecision::Blocked {
+                reason,
+                reason_code: AuthorizationReasonCode::NetworkPolicy,
+            };
         }
         if let Some(reason) = path_sandbox_block(
             &cfg.tool_settings,
@@ -509,7 +560,10 @@ impl AuthorizationEngine {
             params,
             policy,
         ) {
-            return AuthorizationDecision::Blocked { reason };
+            return AuthorizationDecision::Blocked {
+                reason,
+                reason_code: AuthorizationReasonCode::SandboxBoundary,
+            };
         }
 
         // Plan is a capability boundary, not a prompting preference. It must
@@ -518,6 +572,7 @@ impl AuthorizationEngine {
         if matches!(cfg.permission_mode, PermissionMode::Plan) && !policy.is_read_only() {
             return AuthorizationDecision::Blocked {
                 reason: "plan mode only permits read-only operations".into(),
+                reason_code: AuthorizationReasonCode::PlanMode,
             };
         }
 
@@ -527,6 +582,7 @@ impl AuthorizationEngine {
         if match_grant(&cfg.permanent, key) == Some(PermissionEffect::Deny) {
             return AuthorizationDecision::Blocked {
                 reason: format!("permanently denied: {key}"),
+                reason_code: AuthorizationReasonCode::PermanentDeny,
             };
         }
         if let Some(sid) = session_id
@@ -535,6 +591,7 @@ impl AuthorizationEngine {
         {
             return AuthorizationDecision::Blocked {
                 reason: format!("denied for this session: {key}"),
+                reason_code: AuthorizationReasonCode::SessionDeny,
             };
         }
         // Critical operations are a hard confirmation floor. An allow grant
@@ -580,6 +637,14 @@ impl AuthorizationEngine {
             return AuthorizationDecision::AutoApproved;
         }
 
+        let reason_code = if hard_confirmation {
+            AuthorizationReasonCode::CriticalOperation
+        } else if policy.requires_disclosure_confirmation() {
+            AuthorizationReasonCode::SensitiveData
+        } else {
+            AuthorizationReasonCode::ApprovalPolicy
+        };
+
         let receipt = ConfirmationReceipt {
             confirmation_id: haven_common::types::new_id("conf").into(),
             capability: key.clone(),
@@ -592,6 +657,7 @@ impl AuthorizationEngine {
             capability: key.clone(),
             risk_level: risk,
             receipt,
+            reason_code,
         }
     }
 
@@ -627,7 +693,7 @@ impl AuthorizationEngine {
         if risk >= RiskLevel::Critical {
             return Err("Critical operations always require a fresh confirmation".into());
         }
-        if let Some(reason) = disabled_operation_block(&cfg.tool_settings, tool_name, params) {
+        if let Some(reason) = disabled_operation_block(&cfg.tool_settings, tool_name, key) {
             return Err(reason);
         }
         if let Some(reason) =
@@ -839,35 +905,13 @@ fn is_auto_edit_safe(key: &CapabilityScope, policy: &OperationPolicy) -> bool {
         && matches!(policy.network_access, NetworkAccess::None)
 }
 
-fn is_legacy_network_tool(tool_name: &str) -> bool {
-    tool_name == "http"
-        || matches!(
-            tool_name,
-            "haven.mcp.mcp_connect"
-                | "haven.mcp.mcp_add"
-                | "haven.mcp.mcp_update"
-                | "haven.mcp.mcp_toggle"
-                | "haven.mcp.mcp_reload"
-        )
-        || tool_name.starts_with("mcp::")
-        || tool_name.starts_with("mcp__")
-        || tool_name.starts_with("skill::")
-        || tool_name.starts_with("skill__")
-}
-
 fn network_policy_block(
     network_policy: NetworkPolicy,
     sandbox_mode: SandboxMode,
     tool_name: &str,
     operation: &OperationPolicy,
 ) -> Option<String> {
-    let access = if matches!(operation.network_access, NetworkAccess::None)
-        && is_legacy_network_tool(tool_name)
-    {
-        NetworkAccess::Opaque
-    } else {
-        operation.network_access
-    };
+    let access = operation.network_access;
     match (network_policy, access) {
         (NetworkPolicy::Deny, NetworkAccess::None) => None,
         (NetworkPolicy::Deny, _) => {
@@ -903,7 +947,7 @@ fn match_grant(
     let candidates = key.candidates();
     // A child Allow must never outrank a parent Deny. Check the entire
     // inheritance chain for denies before considering any allow, otherwise a
-    // broad deny such as `files` could be bypassed by `files:read`.
+    // broad deny such as `files` could be bypassed by `files.read`.
     if candidates
         .iter()
         .any(|candidate| map.get(candidate) == Some(&PermissionEffect::Deny))
@@ -925,13 +969,8 @@ fn match_key_set(set: &HashSet<CapabilityScope>, key: &CapabilityScope) -> bool 
 fn disabled_operation_block(
     settings: &HashMap<String, ToolConfig>,
     tool_name: &str,
-    params: &Value,
+    capability: &CapabilityScope,
 ) -> Option<String> {
-    let op = params
-        .get("operation")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    let scope = params.get("scope").and_then(|v| v.as_str()).unwrap_or("");
     for name in tool_setting_names(tool_name) {
         let Some(cfg) = settings.get(name) else {
             continue;
@@ -941,13 +980,17 @@ fn disabled_operation_block(
             if d.is_empty() {
                 continue;
             }
-            if d == tool_name
-                || d == op
-                || d == scope
-                || (!scope.is_empty() && d == format!("{scope}:{op}"))
-            {
+            // Disabled operations are matched against the canonical
+            // capability identity. A bare value remains a convenient
+            // operation-local shorthand (`files` + `read`), but arbitrary
+            // request fields can no longer change what is disabled.
+            let matches = d == tool_name
+                || d == capability.as_str()
+                || format!("{name}.{d}") == capability.as_str();
+            if matches {
                 return Some(format!(
-                    "operation '{disabled}' is disabled for tool '{tool_name}'"
+                    "capability '{}' is disabled for tool '{tool_name}'",
+                    capability
                 ));
             }
         }
@@ -1183,6 +1226,18 @@ mod tests {
     type ConfirmationResult = AuthorizationDecision;
 
     fn fixture_policy(tool_name: &str, params: &Value, risk_level: RiskLevel) -> OperationPolicy {
+        let network_access = match tool_name {
+            "http" => NetworkAccess::Public,
+            name if name.starts_with("mcp::")
+                || name.starts_with("mcp__")
+                || name.starts_with("skill::")
+                || name.starts_with("skill__")
+                || name.starts_with("haven.mcp.") =>
+            {
+                NetworkAccess::Opaque
+            }
+            _ => NetworkAccess::None,
+        };
         OperationPolicy {
             risk_level,
             capability: permission_key(tool_name, params).into(),
@@ -1198,7 +1253,7 @@ mod tests {
             concurrency: ToolConcurrency::Exclusive,
             effect: OperationEffect::ExternalEffect,
             data_sensitivity: DataSensitivity::None,
-            network_access: NetworkAccess::None,
+            network_access,
         }
     }
 
@@ -1890,13 +1945,13 @@ mod tests {
         let gw = ThresholdFixture::new(RiskLevel::Safe);
         gw.grant(
             None,
-            "system:hibernate",
+            "system.hibernate",
             PermissionEffect::Allow,
             PermissionScope::Always,
         )
         .await;
         assert!(matches!(
-            gw.check(None, "system:hibernate", &json!({}), RiskLevel::Critical)
+            gw.check(None, "system.hibernate", &json!({}), RiskLevel::Critical)
                 .await,
             ConfirmationResult::RequiresConfirmation { .. }
         ));
@@ -1952,6 +2007,73 @@ mod tests {
             )
             .await;
         assert!(matches!(result, ConfirmationResult::Blocked { .. }));
+    }
+
+    #[tokio::test]
+    async fn disabled_operation_matching_uses_canonical_capability_identity() {
+        let gw = ThresholdFixture::new(RiskLevel::Medium);
+        gw.set_tool_settings(HashMap::from([(
+            "files".into(),
+            ToolConfig {
+                disabled_operations: vec!["read".into()],
+                ..ToolConfig::default()
+            },
+        )]))
+        .await;
+
+        // The discriminator is intentionally inconsistent with the operation
+        // view. Authorization must follow the registered capability identity,
+        // not re-interpret arbitrary input fields.
+        let result = gw
+            .check(
+                None,
+                "files.read",
+                &json!({"operation": "delete", "path": "notes.md"}),
+                RiskLevel::Low,
+            )
+            .await;
+        assert!(matches!(result, ConfirmationResult::Blocked { .. }));
+    }
+
+    #[tokio::test]
+    async fn authorization_decisions_expose_reason_codes_without_parsing_text() {
+        let gw = ThresholdFixture::new(RiskLevel::Medium);
+        gw.set_tool_settings(HashMap::from([(
+            "files".into(),
+            ToolConfig {
+                disabled_operations: vec!["read".into()],
+                ..ToolConfig::default()
+            },
+        )]))
+        .await;
+        let decision = gw
+            .check(
+                None,
+                "files.read",
+                &json!({"operation": "read"}),
+                RiskLevel::Low,
+            )
+            .await;
+        let AuthorizationDecision::Blocked { reason_code, .. } = decision else {
+            panic!("expected disabled capability to be blocked");
+        };
+        assert_eq!(reason_code, AuthorizationReasonCode::DisabledOperation);
+        assert_eq!(reason_code.as_str(), "disabled_operation");
+    }
+
+    #[tokio::test]
+    async fn invalid_persisted_capability_rules_fail_closed() {
+        let gw = ThresholdFixture::new(RiskLevel::Safe);
+        gw.apply_security(&SecurityConfig {
+            permissions: vec![StoredPermission {
+                key: "files:read".into(),
+                effect: PermissionEffect::Allow,
+            }],
+            ..SecurityConfig::default()
+        })
+        .await;
+
+        assert!(gw.list_permanent().await.is_empty());
     }
 
     #[tokio::test]
@@ -2042,7 +2164,7 @@ mod tests {
         .await;
         gw.grant(
             None,
-            "files:read",
+            "files.read",
             PermissionEffect::Allow,
             PermissionScope::Always,
         )
@@ -2067,7 +2189,7 @@ mod tests {
         .await;
         gw.grant(
             None,
-            "files:delete",
+            "files.delete",
             PermissionEffect::Deny,
             PermissionScope::Always,
         )
@@ -2090,14 +2212,14 @@ mod tests {
         let gw = ThresholdFixture::new(RiskLevel::Medium);
         gw.grant(
             Some("ses-a"),
-            "system:power",
+            "system.power",
             PermissionEffect::Deny,
             PermissionScope::Session,
         )
         .await;
         gw.grant(
             Some("ses-a"),
-            "system:power:lock",
+            "system.power.lock",
             PermissionEffect::Allow,
             PermissionScope::Session,
         )

@@ -728,7 +728,9 @@ impl AgentLayer {
                                     .authorize(&authorization_request)
                                     .await
                                 {
-                                    haven_tools::AuthorizationDecision::Blocked { reason } => {
+                                    haven_tools::AuthorizationDecision::Blocked {
+                                        reason, ..
+                                    } => {
                                         agent.events.emit_notification(
                                             &fired.title,
                                             &format!("定时任务未执行：工具“{tool_name}”被安全策略拦截（{reason}）。"),

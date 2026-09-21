@@ -39,7 +39,7 @@
 
 ## 影响
 
-模型工具目录和权限键发生破坏性变化。`system:process:kill`、`system:power:hibernate`
+模型工具目录和权限键发生破坏性变化。`system.process.kill`、`system.power.hibernate`
 和 `haven:mcp_add` 等高风险操作继续单独确认；`system:info`、`haven:mcp_list` 等读取
 仍按各自低风险策略执行。UI 根据 system 的 `scope` 和 haven 的 operation 前缀复用现有
 专用结果卡片。配置、未完成快照和历史调用不保证旧根名兼容。

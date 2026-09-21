@@ -291,6 +291,28 @@ pub struct OperationPolicy {
 }
 
 impl OperationPolicy {
+    /// Contract for an external adapter whose destination/effect is not
+    /// inspectable by Haven. External capabilities intentionally remain
+    /// `Opaque` even when the adapter happens to be used for a read request;
+    /// the network/sandbox policy must not infer trust from a tool name.
+    pub fn external(capability: impl Into<CapabilityScope>, risk_level: RiskLevel) -> Self {
+        Self {
+            risk_level,
+            capability: capability.into(),
+            confirmation: if risk_level >= RiskLevel::Critical {
+                ConfirmationRequirement::Required
+            } else {
+                ConfirmationRequirement::SecurityPolicy
+            },
+            idempotency: OperationIdempotency::Unknown,
+            scope: ToolOperationScope::Session,
+            concurrency: ToolConcurrency::Exclusive,
+            effect: OperationEffect::ExternalEffect,
+            data_sensitivity: DataSensitivity::Sensitive,
+            network_access: NetworkAccess::Opaque,
+        }
+    }
+
     /// Build a contract for a native/UI entry point that does not have a
     /// registered `Tool` object. Callers must still provide the same stable
     /// capability scope and explicitly declare the network capability.

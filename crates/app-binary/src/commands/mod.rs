@@ -161,7 +161,7 @@ pub(crate) async fn authorize_admin_request(
             )
             .await?)
         }
-        haven_tools::AuthorizationDecision::Blocked { reason } => Err(format!(
+        haven_tools::AuthorizationDecision::Blocked { reason, .. } => Err(format!(
             "native admin operation blocked by security policy ({reason})"
         )),
     }

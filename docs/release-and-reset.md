@@ -11,6 +11,10 @@ Haven 处于测试阶段。数据库 schema、`config.toml`、ReAct snapshot 与
 `confirmation_mode` / `min_risk_level` 组合不再自动解释，`[security]` 中的未知字段会使配置解析失败；
 原配置会被备份为 `config.toml.*.bak` 并以默认配置启动。请按下文完整重置或仅手工重建新的 `[security]` 段。
 
+权限规则的 canonical key 统一为点号层级（例如 `files.read`、`system.power.lock`）。含冒号
+operation key 的旧规则不会被猜测迁移，会触发同样的备份/重置边界；运行时也会再次校验
+外部规则，非法 key 不会获得授权。
+
 本版本同样不再迁移顶层 `[audio]`、旧的 `[tool_settings.audio]` 或已删除的 `[tool_settings.*]` 名称；这几类配置会备份后以默认值启动。
 旧工具名称不再迁移或兼容：`[tool_settings.file]`、`file[:operation]`、
 `file_search[:operation]`、`scheduled_action[:operation]`、旧的聚合根权限和旧的 `haven_*`

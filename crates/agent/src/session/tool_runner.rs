@@ -956,7 +956,7 @@ impl SessionSupervisor {
             .await
         {
             AuthorizationDecision::AutoApproved => {}
-            AuthorizationDecision::Blocked { reason } => {
+            AuthorizationDecision::Blocked { reason, .. } => {
                 return Ok(ToolExecution {
                     result: ToolResult {
                         success: false,

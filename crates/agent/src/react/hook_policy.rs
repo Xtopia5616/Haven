@@ -168,7 +168,7 @@ impl LoopHooks for DefaultHooks {
             .await
         {
             AuthorizationDecision::AutoApproved => BeforeToolAction::Proceed { receipt: None },
-            AuthorizationDecision::Blocked { reason } => BeforeToolAction::Block {
+            AuthorizationDecision::Blocked { reason, .. } => BeforeToolAction::Block {
                 error: format!(
                     "operation '{}' is blocked by the security policy ({reason}). Do NOT retry it — ask the user what to do instead or choose a different approach.",
                     tool_name

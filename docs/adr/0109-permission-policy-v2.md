@@ -14,7 +14,7 @@
 2. 用 `SecurityConfig.permission_mode` 替代旧的双字段策略：
    `balanced`（Medium+）、`careful`（Low+）、`manual`（全部）、`autonomous`（仅
    Critical）。策略变更会清除会话信任；永久规则仍保留 deny-first 和权限键父级继承。
-3. 规则管理继续使用 `tool` / `tool:operation` 精确键。允许写精确键，拒绝写工具根键，
+3. 规则管理继续使用 `tool` / `tool.operation` 精确键。允许写精确键，拒绝写工具根键，
    避免“始终拒绝”只覆盖当前一次操作的误解。
 4. `interaction:requested` 只发送后端生成的 `summary`，不再发送原始 `params`。原始参数
    只保留在后端待确认状态中，确认结果仍由后端按 step id、效果和范围重新校验。

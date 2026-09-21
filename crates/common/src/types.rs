@@ -249,6 +249,31 @@ impl CapabilityScope {
         Self(value)
     }
 
+    /// Parse an externally supplied capability identity.
+    ///
+    /// Capability identities are policy data, not arbitrary labels. Keeping
+    /// validation here prevents config/UI strings from silently creating a
+    /// second hierarchy (for example by mixing `:` and `.` separators).
+    pub fn try_new(value: impl Into<String>) -> Result<Self, String> {
+        let value = value.into();
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return Err("capability scope cannot be empty".into());
+        }
+        if trimmed != value {
+            return Err("capability scope cannot contain surrounding whitespace".into());
+        }
+        if trimmed.split('.').any(|segment| {
+            segment.is_empty()
+                || !segment
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric() || "_-".contains(character))
+        }) {
+            return Err(format!("invalid capability scope '{trimmed}'"));
+        }
+        Ok(Self(value))
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -325,8 +350,8 @@ const ROUTING_PARAM_TOOLS: &[&str] = &[
 ];
 
 /// Default `operation` when a routing tool omits it — must match execution
-/// defaults so Always grants cannot land on a bare `tool:scope` parent key
-/// that later auto-approves mutating sibling ops (e.g. `system:env` → set).
+/// defaults so Always grants cannot land on a bare `tool.scope` parent key
+/// that later auto-approves mutating sibling ops (e.g. `system.env` → set).
 fn default_routing_operation(tool_name: &str, scope: Option<&str>) -> Option<&'static str> {
     if tool_name != "system" {
         return None;
@@ -338,9 +363,9 @@ fn default_routing_operation(tool_name: &str, scope: Option<&str>) -> Option<&'s
     }
 }
 
-/// Build a permission key from tool name + optional routing params.
+/// Build the canonical capability identity from a tool name + routing params.
 ///
-/// Examples: `shell`, `files:delete`, `system:power:lock`.
+/// Examples: `shell`, `files.delete`, `system.power.lock`.
 /// Omitted `system` operations are canonicalized to the same defaults used
 /// by risk/execution (`env`/`registry` → `list`, `power` → `status`).
 pub fn permission_key(tool_name: &str, params: &serde_json::Value) -> String {
@@ -363,29 +388,27 @@ pub fn permission_key(tool_name: &str, params: &serde_json::Value) -> String {
     if let Some(op) = op {
         parts.push(op.to_string());
     }
-    parts.join(":")
+    parts.join(".")
 }
 
-/// Tool root of a permission key (`system:power:lock` or
-/// `system.power.lock` → `system`).
+/// Tool root of a capability identity (`system.power.lock` → `system`).
 pub fn permission_tool_root(key: &str) -> &str {
-    key.find([':', '.']).map_or(key, |index| &key[..index])
+    key.find('.').map_or(key, |index| &key[..index])
 }
 
 /// Ancestor keys for grant matching: exact key first, then parents.
 ///
-/// `files:delete` → `["files:delete", "files"]`
-/// `system:power:lock` → `["system:power:lock", "system:power", "system"]`
+/// `files.delete` → `["files.delete", "files"]`
+/// `system.power.lock` → `["system.power.lock", "system.power", "system"]`
 ///
-/// Operation-view keys use the canonical dotted form, and legacy aggregate
-/// keys may still reach this helper while a config is being inspected, so
-/// both separators are understood at the matching boundary.
+/// Legacy colon keys are deliberately not interpreted here. The config loader
+/// treats them as a reset boundary instead of guessing their old meaning.
 pub fn permission_key_candidates(key: &str) -> Vec<&str> {
     let mut out = Vec::new();
     let mut end = key.len();
     loop {
         out.push(&key[..end]);
-        match key[..end].rfind([':', '.']) {
+        match key[..end].rfind('.') {
             Some(i) => end = i,
             None => break,
         }
@@ -1436,55 +1459,55 @@ mod tests {
         assert_eq!(permission_key("shell", &serde_json::json!({})), "shell");
         assert_eq!(
             permission_key("files", &serde_json::json!({"operation": "delete"})),
-            "files:delete"
+            "files.delete"
         );
         assert_eq!(
             permission_key("media", &serde_json::json!({"operation": "speak"})),
-            "media:speak"
+            "media.speak"
         );
         assert_eq!(
             permission_key("schedule", &serde_json::json!({"operation": "set"})),
-            "schedule:set"
+            "schedule.set"
         );
         assert_eq!(
             permission_key("actions", &serde_json::json!({"operation": "cancel"})),
-            "actions:cancel"
+            "actions.cancel"
         );
         assert_eq!(
             permission_key("agent", &serde_json::json!({"operation": "spawn"})),
-            "agent:spawn"
+            "agent.spawn"
         );
         assert_eq!(
             permission_key(
                 "haven_config",
                 &serde_json::json!({"operation": "logs_level"})
             ),
-            "haven_config:logs_level"
+            "haven_config.logs_level"
         );
         assert_eq!(
             permission_key(
                 "system",
                 &serde_json::json!({"scope": "power", "operation": "lock"})
             ),
-            "system:power:lock"
+            "system.power.lock"
         );
         // Omitted operations must canonicalize to execution defaults so Always
         // on a list/status call cannot parent-match mutating sibling ops.
         assert_eq!(
             permission_key("system", &serde_json::json!({"scope": "env"})),
-            "system:env:list"
+            "system.env.list"
         );
         assert_eq!(
             permission_key("system", &serde_json::json!({"scope": "registry"})),
-            "system:registry:list"
+            "system.registry.list"
         );
         assert_eq!(
             permission_key("system", &serde_json::json!({"scope": "power"})),
-            "system:power:status"
+            "system.power.status"
         );
         assert_eq!(
             permission_key("system", &serde_json::json!({"scope": "info"})),
-            "system:info"
+            "system.info"
         );
         // Non-routing tools ignore operation/scope in args.
         assert_eq!(
@@ -1494,10 +1517,10 @@ mod tests {
             ),
             "mcp_srv_tool"
         );
-        assert_eq!(permission_tool_root("system:power:lock"), "system");
+        assert_eq!(permission_tool_root("system.power.lock"), "system");
         assert_eq!(
             permission_key("process", &serde_json::json!({"operation": "kill"})),
-            "process:kill"
+            "process.kill"
         );
         // Model-facing operation views use their complete dotted name as the
         // permission key; the aggregate discriminator is internal only.
@@ -1517,8 +1540,8 @@ mod tests {
     #[test]
     fn permission_key_candidates_walk_parents() {
         assert_eq!(
-            permission_key_candidates("system:power:lock"),
-            vec!["system:power:lock", "system:power", "system"]
+            permission_key_candidates("system.power.lock"),
+            vec!["system.power.lock", "system.power", "system"]
         );
         assert_eq!(
             permission_key_candidates("system.power.lock"),
@@ -1543,6 +1566,15 @@ mod tests {
             serde_json::to_string(&scope).unwrap(),
             "\"system.power.lock\""
         );
+    }
+
+    #[test]
+    fn capability_scope_rejects_ambiguous_external_keys() {
+        assert!(CapabilityScope::try_new("files.read").is_ok());
+        assert!(CapabilityScope::try_new("files:read").is_err());
+        assert!(CapabilityScope::try_new(" files.read").is_err());
+        assert!(CapabilityScope::try_new("files..read").is_err());
+        assert!(CapabilityScope::try_new("").is_err());
     }
 
     #[test]
