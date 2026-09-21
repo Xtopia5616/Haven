@@ -313,14 +313,17 @@ impl RequestKind {
     }
 }
 
-/// Explicit routing policy for a logical request. Candidates are tried in
-/// order; only configured models advertising the required capability qualify.
+/// Explicit routing policy for a logical request.
+///
+/// A request has exactly one model assignment. Provider/model failover was
+/// intentionally removed because changing the endpoint changes the provider
+/// request and its cache namespace; transient failures are retried by the
+/// router on this same endpoint instead.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct RequestPolicy {
     pub request: RequestKind,
     pub primary: String,
-    pub fallbacks: Vec<String>,
 }
 
 impl Default for RequestPolicy {
@@ -328,14 +331,7 @@ impl Default for RequestPolicy {
         Self {
             request: RequestKind::Chat,
             primary: String::new(),
-            fallbacks: Vec::new(),
         }
-    }
-}
-
-impl RequestPolicy {
-    pub fn candidates(&self) -> impl Iterator<Item = &str> {
-        std::iter::once(self.primary.as_str()).chain(self.fallbacks.iter().map(String::as_str))
     }
 }
 
@@ -457,7 +453,8 @@ impl EndpointRole {
             Self::ImageModel => RequestKind::Vision,
             // The legacy audio selector represents audio-input chat. Native
             // transcription now uses `RequestKind::Transcription` directly;
-            // the adapter still decides whether chat fallback is needed.
+            // the adapter still decides whether native transcription is
+            // supported by this endpoint.
             Self::AudioModel => RequestKind::AudioChat,
             Self::EmbeddingModel => RequestKind::Embedding,
         }
@@ -482,7 +479,7 @@ pub struct LlmConfig {
     /// Named model assignments. A model may advertise multiple capabilities.
     #[serde(default)]
     pub models: Vec<ModelConfig>,
-    /// Explicit request policies. Candidate order defines fallback order.
+    /// Explicit request policies. Each policy names exactly one model.
     #[serde(default)]
     pub request_policies: Vec<RequestPolicy>,
     // §2.12: router-level total timeout
@@ -575,11 +572,7 @@ impl LlmConfig {
             config.capabilities = vec![role.request_kind().required_capability()];
         }
         self.set_model(id, config);
-        let fallback = matches!(role, EndpointRole::ImageModel | EndpointRole::AudioModel)
-            .then(|| EndpointRole::DefaultModel.as_str().to_string())
-            .into_iter()
-            .collect();
-        self.set_policy(role.request_kind(), id, fallback);
+        self.set_policy(role.request_kind(), id);
     }
 
     pub fn set_model(&mut self, id: impl Into<String>, mut config: ModelConfig) {
@@ -608,16 +601,10 @@ impl LlmConfig {
             .find(|policy| policy.request == request)
     }
 
-    pub fn set_policy(
-        &mut self,
-        request: RequestKind,
-        primary: impl Into<String>,
-        fallbacks: Vec<String>,
-    ) {
+    pub fn set_policy(&mut self, request: RequestKind, primary: impl Into<String>) {
         let policy = RequestPolicy {
             request,
             primary: primary.into(),
-            fallbacks,
         };
         if let Some(existing) = self.policy_mut(request) {
             *existing = policy;
@@ -626,19 +613,17 @@ impl LlmConfig {
         }
     }
 
-    /// Resolve a request through its explicit policy, skipping incomplete
-    /// candidates and models that do not advertise the required capability.
+    /// Resolve a request through its explicit policy, rejecting incomplete
+    /// models and models that do not advertise the required capability.
     pub fn route_model(&self, request: RequestKind) -> Option<&ModelConfig> {
         let policy = self.policy(request)?;
-        policy.candidates().find_map(|id| {
-            let model = self.model(id)?;
-            (model.is_assigned()
-                && self
-                    .provider(model.provider.as_str())
-                    .is_some_and(provider_credentials_ready)
-                && model.capabilities.contains(&request.required_capability()))
-            .then_some(model)
-        })
+        let model = self.model(&policy.primary)?;
+        (model.is_assigned()
+            && self
+                .provider(model.provider.as_str())
+                .is_some_and(provider_credentials_ready)
+            && model.capabilities.contains(&request.required_capability()))
+        .then_some(model)
     }
 
     pub fn is_request_configured(&self, request: RequestKind) -> bool {
@@ -939,16 +924,14 @@ impl RouterConfig {
             .find(|policy| policy.request == request)
     }
 
-    /// Resolve a request policy to its first configured model with the
-    /// required declared capability.
+    /// Resolve a request policy to its configured model with the required
+    /// declared capability.
     pub fn route(&self, request: RequestKind) -> Option<&RoutedModel> {
         let policy = self.policy(request)?;
-        policy.candidates().find_map(|id| {
-            let model = self.model(id)?;
-            (endpoint_credentials_ready(&model.endpoint)
-                && model.capabilities.contains(&request.required_capability()))
-            .then_some(model)
-        })
+        let model = self.model(&policy.primary)?;
+        (endpoint_credentials_ready(&model.endpoint)
+            && model.capabilities.contains(&request.required_capability()))
+        .then_some(model)
     }
 
     /// Legacy selector view. The selected endpoint is still policy-driven.
@@ -1120,48 +1103,28 @@ mod tests {
     }
 
     #[test]
-    fn request_policy_skips_unconfigured_primary_and_uses_fallback() {
+    fn request_policy_requires_the_configured_primary() {
         let llm = LlmConfig {
-            providers: vec![
-                ProviderConfig {
-                    name: "primary".into(),
-                    api_key: String::new(),
-                    ..Default::default()
-                },
-                ProviderConfig {
-                    name: "fallback".into(),
-                    api_key: "sk-fallback".into(),
-                    ..Default::default()
-                },
-            ],
-            models: vec![
-                ModelConfig {
-                    id: "vision-primary".into(),
-                    provider: "primary".into(),
-                    model: "vision-a".into(),
-                    capabilities: vec![Capability::Vision],
-                    ..Default::default()
-                },
-                ModelConfig {
-                    id: "vision-fallback".into(),
-                    provider: "fallback".into(),
-                    model: "vision-b".into(),
-                    capabilities: vec![Capability::Vision, Capability::Chat],
-                    ..Default::default()
-                },
-            ],
+            providers: vec![ProviderConfig {
+                name: "primary".into(),
+                api_key: String::new(),
+                ..Default::default()
+            }],
+            models: vec![ModelConfig {
+                id: "vision-primary".into(),
+                provider: "primary".into(),
+                model: "vision-a".into(),
+                capabilities: vec![Capability::Vision],
+                ..Default::default()
+            }],
             request_policies: vec![RequestPolicy {
                 request: RequestKind::Vision,
                 primary: "vision-primary".into(),
-                fallbacks: vec!["vision-fallback".into()],
             }],
             ..Default::default()
         };
 
-        assert_eq!(
-            llm.route_model(RequestKind::Vision).unwrap().id,
-            "vision-fallback"
-        );
+        assert!(llm.route_model(RequestKind::Vision).is_none());
     }
 
     #[test]

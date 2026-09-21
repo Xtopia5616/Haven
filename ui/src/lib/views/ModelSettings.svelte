@@ -64,7 +64,6 @@
 		llmConfig.models = (llmConfig.models || []).filter((/** @type {any} */ item) => item !== model);
 		for (const policy of llmConfig.request_policies || []) {
 			if (policy.primary === model.id) policy.primary = '';
-			policy.fallbacks = (policy.fallbacks || []).filter((/** @type {string} */ id) => id !== model.id);
 		}
 	}
 	/** @param {any} model @param {string} providerName */
@@ -107,7 +106,7 @@
 			(item) => !(llmConfig.request_policies || []).some((/** @type {any} */ policy) => policy.request === item.value),
 		)?.value;
 		if (!request) return;
-		llmConfig.request_policies.push({ request, primary: '', fallbacks: [] });
+		llmConfig.request_policies.push({ request, primary: '' });
 	}
 	/** @param {any} policy @param {string} request */
 	function setPolicyRequest(policy, request) {
@@ -121,7 +120,6 @@
 		}
 		policy.request = request;
 		policy.primary = '';
-		policy.fallbacks = [];
 	}
 	/** @param {any} policy */
 	function removePolicy(policy) {
@@ -186,24 +184,7 @@
 		model.id = id;
 		for (const policy of llmConfig.request_policies || []) {
 			if (policy.primary === previousId) policy.primary = id;
-			policy.fallbacks = (policy.fallbacks || []).map((/** @type {string} */ candidate) =>
-				candidate === previousId ? id : candidate,
-			);
 		}
-	}
-	/** @param {any} policy @param {number} index @param {string} value */
-	function setPolicyFallback(policy, index, value) {
-		const fallbacks = [...(policy.fallbacks || [])];
-		if (value) fallbacks[index] = value;
-		else fallbacks.splice(index, 1);
-		policy.fallbacks = fallbacks;
-	}
-	/** @param {any} policy */
-	function addPolicyFallback(policy) {
-		const options = modelOptionsForPolicy(policy).filter(
-			(option) => option.value && !(policy.fallbacks || []).includes(option.value),
-		);
-		if (options.length > 0) policy.fallbacks = [...(policy.fallbacks || []), ''];
 	}
 	/** @param {any} provider */
 	function isProviderKeyConfigured(provider) {
@@ -413,7 +394,7 @@
 			{:else}<p class="provider-note">尚未配置模型。先添加一个模型，再为请求策略选择 capability。</p>{/each}
 		</div>
 		<div class="model-group">Request policies</div>
-		<p class="model-hint">请求策略声明能力需求与候选模型顺序；不再通过专用 slot 或布尔开关决定 STT/视觉路由。</p>
+		<p class="model-hint">请求策略为每种请求声明所需能力与唯一模型；不再通过专用 slot 或布尔开关决定 STT/视觉路由。</p>
 		<div class="card-list policy-list">
 			{#each llmConfig.request_policies || [] as policy (policy.request)}
 				<MaterialCard variant="outlined" className="settings-card policy-card">
@@ -433,29 +414,6 @@
 							value={policy.primary || ''}
 							options={modelOptionsForPolicy(policy)}
 							onChange={withStringValue((value) => (policy.primary = value))}
-						/>
-					</div>
-					<div class="fallback-list">
-						<span class="field-label">Fallbacks（按顺序）</span>
-						{#each policy.fallbacks || [] as fallback, fallbackIndex}
-							<div class="fallback-row">
-								<MaterialSelect
-									id="policy-{policy.request}-fallback-{fallbackIndex}"
-									value={fallback}
-									options={modelOptionsForPolicy(policy)}
-									onChange={withStringValue((value) => setPolicyFallback(policy, fallbackIndex, value))}
-								/>
-								<MaterialButton
-									variant="text"
-									label="移除"
-									onclick={() => setPolicyFallback(policy, fallbackIndex, '')}
-								/>
-							</div>
-						{/each}
-						<MaterialButton
-							variant="text"
-							label="添加 fallback"
-							onclick={() => addPolicyFallback(policy)}
 						/>
 					</div>
 					<MaterialButton variant="text" label="移除" onclick={() => removePolicy(policy)} />
@@ -700,16 +658,14 @@
 		background: var(--md-sys-color-surface-container-lowest);
 		color: var(--md-sys-color-on-surface);
 	}
-	.capability-list,
-	.fallback-list {
+	.capability-list {
 		display: flex;
 		flex-wrap: wrap;
 		align-items: center;
 		gap: var(--md-sys-space-sm);
 		margin-top: var(--md-sys-space-md);
 	}
-	.capability-list .field-label,
-	.fallback-list .field-label {
+	.capability-list .field-label {
 		width: 100%;
 	}
 	.capability-option {
@@ -718,15 +674,6 @@
 		gap: var(--md-sys-space-xs);
 		color: var(--md-sys-color-on-surface-variant);
 		font-size: var(--md-sys-typescale-body-small-size);
-	}
-	.fallback-row {
-		display: flex;
-		align-items: center;
-		gap: var(--md-sys-space-xs);
-		width: min(100%, 360px);
-	}
-	.fallback-row :global(.md-select-container) {
-		flex: 1;
 	}
 	.model-hint {
 		font-size: var(--md-sys-typescale-label-small-size);

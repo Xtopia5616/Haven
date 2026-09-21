@@ -257,7 +257,8 @@ turn context 依赖；`PromptRenderer` 负责纯 system/MEMORY fence 渲染。�
 2026-09-19 已完成第一阶段（ADR 0170）：配置改为命名模型、显式
 `Capability` 与有序 `RequestPolicy`。旧 `llm.roles` 在加载时转换为新模型/策略
 形状；`stt_use_audio_model` 与 `vision_use_image_model` 不再进入运行时配置。router
-按 request kind 选择 primary/fallback，并跳过未配置或 capability 不匹配的模型；
+按 request kind 选择唯一 primary，并拒绝未配置或 capability 不匹配的模型；provider/model
+failover 已由 ADR 0192 删除，避免切换缓存命名空间；
 provider adapter 继续保持 wire compatibility。后续可把 agent/tools 的兼容
 `EndpointRole` 调用点逐步迁移到 `RequestKind`，再删除临时 selector facade。
 

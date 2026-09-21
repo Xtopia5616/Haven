@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
@@ -33,15 +32,6 @@ use haven_common::media::CapabilityProfile;
 /// re-export keeps the old agent/tool boundary source-compatible while the
 /// persisted configuration is capability/policy based.
 pub use haven_common::config::EndpointRole;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FailureDisposition {
-    Retryable,
-    Failover,
-    NoRetry,
-    UserInput,
-    AuthOrConfiguration,
-}
 
 // ---------------------------------------------------------------------------
 // §2.6: Circuit Breaker state
@@ -85,13 +75,12 @@ pub struct LlmRouter {
     /// window as construction-time max-token clamping.
     default_context_window: u32,
     models: HashMap<String, Arc<dyn LlmClient>>,
-    /// Request → ordered model identities resolved from the explicit request
-    /// policies. The first entry is primary; later entries are failover
-    /// candidates. Rebuilt with the router on config hot-swap; the mutex only
+    /// Request → the single model identity resolved from the explicit request
+    /// policy. Rebuilt with the router on config hot-swap; the mutex only
     /// supports the test-only policy mutation helpers.
-    routes: StdMutex<HashMap<RequestKind, Vec<String>>>,
+    routes: StdMutex<HashMap<RequestKind, String>>,
     // §5.3: per configured routed-model health. Concurrency remains shared
-    // by legacy role, but circuit state must not be shared by candidates.
+    // by legacy role, while circuit state is isolated by model identity.
     health: RwLock<EndpointHealthMap>,
     /// Stream rules that are checked against accumulated output (§3.7)
     stream_rules: RwLock<Vec<StreamRule>>,
@@ -169,46 +158,36 @@ impl LlmRouter {
         }
     }
 
-    fn build_routes(config: &RouterConfig) -> HashMap<RequestKind, Vec<String>> {
+    fn build_routes(config: &RouterConfig) -> HashMap<RequestKind, String> {
         config
             .request_policies
             .iter()
             .filter_map(|policy| {
-                let all_candidates = policy
-                    .candidates()
-                    .filter_map(|id| {
-                        config.model(id).and_then(|model| {
-                            model
-                                .capabilities
-                                .contains(&policy.request.required_capability())
-                                .then_some(id.to_string())
-                        })
-                    })
-                    .fold(Vec::new(), |mut candidates, id| {
-                        if !candidates.iter().any(|candidate| candidate == &id) {
-                            candidates.push(id);
-                        }
-                        candidates
-                    });
-                // Production routing must skip an unconfigured primary and
-                // only use credential-ready fallbacks. Test constructors use
-                // injected clients with empty credentials, so preserve their
-                // capability-only route when no candidate has credentials.
-                let configured_candidates = all_candidates
-                    .iter()
-                    .filter(|id| {
-                        config
-                            .model(id)
-                            .is_some_and(|model| endpoint_credentials_ready(&model.endpoint))
-                    })
-                    .cloned()
-                    .collect::<Vec<_>>();
-                let candidates = if configured_candidates.is_empty() {
-                    all_candidates
-                } else {
-                    configured_candidates
-                };
-                (!candidates.is_empty()).then_some((policy.request, candidates))
+                let id = policy.primary.trim();
+                let model = config.model(id)?;
+                (model
+                    .capabilities
+                    .contains(&policy.request.required_capability())
+                    && endpoint_credentials_ready(&model.endpoint))
+                .then_some((policy.request, id.to_string()))
+            })
+            .collect()
+    }
+
+    /// Build primary-only routes for injected test clients. These clients do
+    /// not carry production credentials, so this helper intentionally skips
+    /// only the credential gate while keeping capability validation intact.
+    fn build_injected_routes(config: &RouterConfig) -> HashMap<RequestKind, String> {
+        config
+            .request_policies
+            .iter()
+            .filter_map(|policy| {
+                let id = policy.primary.trim();
+                let model = config.model(id)?;
+                model
+                    .capabilities
+                    .contains(&policy.request.required_capability())
+                    .then_some((policy.request, id.to_string()))
             })
             .collect()
     }
@@ -439,7 +418,10 @@ impl LlmRouter {
         embedding_model: Arc<dyn LlmClient>,
     ) -> Self {
         let config = Self::test_config();
-        let routes = Self::build_routes(&config);
+        // Injected test clients intentionally do not carry credentials. Keep
+        // the test constructor's explicit primary assignments routable while
+        // production construction remains credential-gated.
+        let routes = Self::build_injected_routes(&config);
         let models: HashMap<String, Arc<dyn LlmClient>> = [
             ("small_model", small_model),
             ("default_model", default_model),
@@ -497,21 +479,18 @@ impl LlmRouter {
         })
         .collect();
         let request_policies = [
-            (RequestKind::FastChat, "small_model", vec!["default_model"]),
-            (RequestKind::Chat, "default_model", vec![]),
-            (RequestKind::Vision, "image_model", vec!["default_model"]),
-            (RequestKind::AudioChat, "audio_model", vec!["default_model"]),
-            (RequestKind::Transcription, "audio_model", vec![]),
-            (RequestKind::Embedding, "embedding_model", vec![]),
+            (RequestKind::FastChat, "small_model"),
+            (RequestKind::Chat, "default_model"),
+            (RequestKind::Vision, "image_model"),
+            (RequestKind::AudioChat, "audio_model"),
+            (RequestKind::Transcription, "audio_model"),
+            (RequestKind::Embedding, "embedding_model"),
         ]
         .into_iter()
-        .map(
-            |(request, primary, fallbacks)| haven_common::config::RequestPolicy {
-                request,
-                primary: primary.into(),
-                fallbacks: fallbacks.into_iter().map(str::to_string).collect(),
-            },
-        )
+        .map(|(request, primary)| haven_common::config::RequestPolicy {
+            request,
+            primary: primary.into(),
+        })
         .collect();
         RouterConfig {
             models,
@@ -521,82 +500,32 @@ impl LlmRouter {
     }
 
     pub fn select_request(&self, request: RequestKind) -> Arc<dyn LlmClient> {
-        let id = self
-            .routes
-            .lock()
-            .unwrap()
-            .get(&request)
-            .and_then(|ids| ids.first().cloned());
+        let id = self.routes.lock().unwrap().get(&request).cloned();
         id.and_then(|id| self.models.get(&id).cloned())
             .unwrap_or_else(|| Arc::from(adapter_for(&ModelEndpoint::default())))
     }
 
-    /// Return the configured primary and failover clients in policy order.
-    /// Selection is snapshotted before the request starts so a hot reload
-    /// cannot change the candidate list halfway through one logical call.
-    fn request_candidates(&self, request: RequestKind) -> Vec<(String, Arc<dyn LlmClient>)> {
-        self.routes
+    /// Resolve the selected configured client for a request and reject an open
+    /// circuit. There is deliberately no alternate provider/model candidate:
+    /// same-endpoint retry is the only recovery path for one logical request.
+    async fn selected_client(
+        &self,
+        request: RequestKind,
+    ) -> Result<(String, Arc<dyn LlmClient>), LlmError> {
+        let model_id = self
+            .routes
             .lock()
             .unwrap()
             .get(&request)
-            .into_iter()
-            .flat_map(|ids| ids.iter())
-            .filter_map(|id| {
-                self.models
-                    .get(id)
-                    .cloned()
-                    .map(|client| (id.clone(), client))
-            })
-            .collect()
-    }
-
-    /// Filter open breakers before a request enters the candidate loop. The
-    /// semaphore stays role-scoped, while each routed model/provider gets an
-    /// independent circuit and can recover without resetting its siblings.
-    async fn healthy_candidates(&self, request: RequestKind) -> Vec<(String, Arc<dyn LlmClient>)> {
-        let mut healthy = Vec::new();
-        for (model_id, client) in self.request_candidates(request) {
-            if self.check_circuit(&model_id).await.is_ok() {
-                healthy.push((model_id, client));
-            } else {
-                tracing::debug!(model_id = %model_id, "skipping model with open circuit breaker");
-            }
-        }
-        healthy
-    }
-
-    fn failure_disposition(error: &LlmError) -> FailureDisposition {
-        match error {
-            LlmError::Timeout(_)
-            | LlmError::Network(_)
-            | LlmError::ServerError(_)
-            | LlmError::StreamTruncated => FailureDisposition::Failover,
-            LlmError::RateLimit { .. } => FailureDisposition::Retryable,
-            LlmError::ContextLengthExceeded
-            | LlmError::ContentFilter
-            | LlmError::Billing(_)
-            | LlmError::StreamAborted(_, _) => FailureDisposition::UserInput,
-            LlmError::Auth(_) | LlmError::Configuration(_) => {
-                FailureDisposition::AuthOrConfiguration
-            }
-            LlmError::Cancelled => FailureDisposition::NoRetry,
-            LlmError::InvalidResponse(_) | LlmError::RequestFailed(_) => {
-                FailureDisposition::NoRetry
-            }
-            LlmError::UnsupportedCapability(_) | LlmError::Unknown(_) => {
-                FailureDisposition::NoRetry
-            }
-        }
-    }
-
-    /// A failover is safe only for endpoint/transport failures. Prompt,
-    /// capability, authentication and ordinary 4xx errors are surfaced
-    /// instead of silently sending the same request to every candidate.
-    fn should_failover(error: &LlmError) -> bool {
-        matches!(
-            Self::failure_disposition(error),
-            FailureDisposition::Retryable | FailureDisposition::Failover
-        )
+            .cloned()
+            .ok_or_else(|| {
+                LlmError::Configuration(format!("no configured model for {}", request.as_str()))
+            })?;
+        let client = self.models.get(&model_id).cloned().ok_or_else(|| {
+            LlmError::Configuration(format!("model client is unavailable: {model_id}"))
+        })?;
+        self.check_circuit(&model_id).await?;
+        Ok((model_id, client))
     }
 
     pub fn select_endpoint(&self, role: EndpointRole) -> Arc<dyn LlmClient> {
@@ -732,7 +661,7 @@ impl LlmRouter {
                 };
             }
         }
-        *self.routes.lock().unwrap() = Self::build_routes(&cfg);
+        *self.routes.lock().unwrap() = Self::build_injected_routes(&cfg);
     }
 
     /// Resolve the legacy endpoint view used by speech-to-text callers. The
@@ -778,76 +707,32 @@ impl LlmRouter {
                 ));
             }
         };
-        // Keep native STT under the same permit, circuit, retry, timeout, and
-        // ordered-candidate policy as chat/embedding. The multimodal chat
-        // fallback is deliberately outside this closure: it uses the same
+        // Keep native STT under the same permit, circuit, retry, and timeout
+        // policy as chat/embedding. The capability fallback to multimodal
+        // chat is deliberately outside this closure: it uses the same
         // AudioModel role and would deadlock if it tried to acquire the role
         // semaphore while native STT still held it.
         let native_result = self
             .with_endpoint_permit(&role, || async {
-                let candidates = self.healthy_candidates(RequestKind::Transcription).await;
+                let (model_id, client) = self.selected_client(RequestKind::Transcription).await?;
                 let cfg = self.config.read().await;
                 let policy = RequestPolicy::primary(&cfg);
                 drop(cfg);
 
-                // As with embedding, the timeout is for the logical
-                // transcription request, not multiplied by each candidate.
-                execute_with_timeout(
-                    policy.total_timeout_secs,
-                    "transcription",
-                    || async {
-                        let mut last_error = None;
-                        for (index, (model_id, client)) in candidates.iter().enumerate() {
-                            let candidate_result =
-                                execute_with_retry(policy.retry, None, || async {
-                                    client.transcribe(wav_data).await
-                                })
-                                .await;
-                            match candidate_result {
-                                Ok(value) => {
-                                    self.record_success(model_id).await;
-                                    if index > 0 {
-                                        tracing::warn!(
-                                            candidate_index = index,
-                                            "transcription recovered on a configured fallback candidate"
-                                        );
-                                    }
-                                    return Ok(value);
-                                }
-                                Err(error)
-                                    if error.is_unsupported()
-                                        && index + 1 < candidates.len() =>
-                                {
-                                    last_error = Some(error);
-                                }
-                                Err(error)
-                                    if Self::should_failover(&error)
-                                        && index + 1 < candidates.len() =>
-                                {
-                                    self.record_failure(model_id).await;
-                                    if let LlmError::RateLimit { retry_after } = &error {
-                                        self.record_rate_limit(&role, *retry_after).await;
-                                    }
-                                    tracing::warn!(
-                                        candidate_index = index,
-                                        error = %haven_common::error::sanitize_error_text(&error.to_string()),
-                                        "native transcription candidate failed; trying the next configured candidate"
-                                    );
-                                    last_error = Some(error);
-                                }
-                                Err(error) => {
-                                    self.record_rate_limit_result(&role, &error).await;
-                                    return Err(error);
-                                }
-                            }
+                execute_with_timeout(policy.total_timeout_secs, "transcription", || async {
+                    let result = execute_with_retry(policy.retry, None, || async {
+                        client.transcribe(wav_data).await
+                    })
+                    .await;
+                    match &result {
+                        Ok(_) => self.record_success(&model_id).await,
+                        Err(error) => {
+                            self.record_failure(&model_id).await;
+                            self.record_rate_limit_result(&role, error).await;
                         }
-                        Err(last_error.unwrap_or_else(|| {
-                            LlmError::Configuration(
-                                "no configured transcription model candidate".into(),
-                            )
-                        }))
-                    },
-                )
+                    }
+                    result
+                })
                 .await
             })
             .await;
@@ -885,7 +770,7 @@ impl LlmRouter {
         crate::media::analyze_image(self, bytes, media_type, system_prompt, focus).await
     }
 
-    // §2.6: check the candidate's circuit breaker before dispatching.
+    // §2.6: check the selected model's circuit breaker before dispatching.
     async fn check_circuit(&self, model_id: &str) -> Result<(), LlmError> {
         let mut health = self.health.write().await;
         let endpoint = health
@@ -931,7 +816,8 @@ impl LlmRouter {
     // §2.11: execute with retry on the selected endpoint
     async fn call_with_retry(
         &self,
-        candidates: Vec<(String, Arc<dyn LlmClient>)>,
+        model_id: String,
+        client: Arc<dyn LlmClient>,
         messages: Vec<CanonicalMessage>,
         tools: Vec<ToolDefinition>,
         role: &EndpointRole,
@@ -940,78 +826,32 @@ impl LlmRouter {
         let cfg = self.config.read().await;
         let primary_policy = RequestPolicy::primary(&cfg);
         drop(cfg);
-        let mut last_error = None;
-        for (index, (model_id, client)) in candidates.iter().enumerate() {
-            if let Err(error) = client.validate_content(&messages) {
-                if !Self::should_failover(&error) || index + 1 == candidates.len() {
-                    return Err(error);
-                }
-                tracing::warn!(
-                    role = role.as_str(),
-                    candidate_index = index,
-                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
-                    "LLM candidate rejected the request; trying the next configured candidate"
-                );
-                last_error = Some(error);
-                continue;
-            }
+        client.validate_content(&messages)?;
 
-            let result = if tools.is_empty() {
-                execute_with_retry(primary_policy.retry, None, || async {
-                    client
-                        .chat_with_output_cap(messages.clone(), max_output_tokens)
-                        .await
-                })
-                .await
-            } else {
-                execute_with_retry(primary_policy.retry, None, || async {
-                    client
-                        .chat_with_tools_output_cap(
-                            messages.clone(),
-                            tools.clone(),
-                            max_output_tokens,
-                        )
-                        .await
-                })
-                .await
-            };
+        let result = if tools.is_empty() {
+            execute_with_retry(primary_policy.retry, None, || async {
+                client
+                    .chat_with_output_cap(messages.clone(), max_output_tokens)
+                    .await
+            })
+            .await
+        } else {
+            execute_with_retry(primary_policy.retry, None, || async {
+                client
+                    .chat_with_tools_output_cap(messages.clone(), tools.clone(), max_output_tokens)
+                    .await
+            })
+            .await
+        };
 
-            match result {
-                Ok(response) => {
-                    if index > 0 {
-                        tracing::warn!(
-                            role = role.as_str(),
-                            candidate_index = index,
-                            "LLM request recovered on a configured fallback candidate"
-                        );
-                    }
-                    self.record_success(model_id).await;
-                    return Ok(response);
-                }
-                Err(error) if Self::should_failover(&error) && index + 1 < candidates.len() => {
-                    self.record_failure(model_id).await;
-                    tracing::warn!(
-                        role = role.as_str(),
-                        candidate_index = index,
-                        error = %haven_common::error::sanitize_error_text(&error.to_string()),
-                        "LLM primary candidate failed; trying the next configured candidate"
-                    );
-                    last_error = Some(error);
-                }
-                Err(error) => {
-                    self.record_failure(model_id).await;
-                    self.record_rate_limit_result(role, &error).await;
-                    return Err(error);
-                }
+        match &result {
+            Ok(_) => self.record_success(&model_id).await,
+            Err(error) => {
+                self.record_failure(&model_id).await;
+                self.record_rate_limit_result(role, error).await;
             }
         }
-
-        Err(last_error.unwrap_or_else(|| {
-            LlmError::Configuration(format!(
-                "no configured model candidate for {}",
-                role.as_str()
-            ))
-        }))
+        result
     }
 
     pub async fn chat(
@@ -1055,10 +895,17 @@ impl LlmRouter {
     ) -> Result<LlmResponse, LlmError> {
         let role = Self::health_role_for_request(request);
         self.with_endpoint_permit(&role, || async {
-            let candidates = self.healthy_candidates(request).await;
+            let (model_id, client) = self.selected_client(request).await?;
             self.with_total_timeout(|| async {
-                self.call_with_retry(candidates, messages, Vec::new(), &role, max_output_tokens)
-                    .await
+                self.call_with_retry(
+                    model_id,
+                    client,
+                    messages,
+                    Vec::new(),
+                    &role,
+                    max_output_tokens,
+                )
+                .await
             })
             .await
         })
@@ -1125,60 +972,24 @@ impl LlmRouter {
         }
         let role = EndpointRole::EmbeddingModel;
         self.with_endpoint_permit(&role, || async {
-            let candidates = self.healthy_candidates(RequestKind::Embedding).await;
+            let (model_id, client) = self.selected_client(RequestKind::Embedding).await?;
             let cfg = self.config.read().await;
             let policy = RequestPolicy::primary(&cfg);
             drop(cfg);
 
-            // The deadline wraps the whole candidate sequence. A timeout per
-            // candidate would multiply the configured budget by the number of
-            // fallbacks and make a failed request appear to hang forever.
-            let result = execute_with_timeout(policy.total_timeout_secs, "embedding", || async {
-                let mut last_error = None;
-                for (index, (model_id, client)) in candidates.iter().enumerate() {
-                    let candidate_result =
-                        execute_with_retry(policy.retry, None, || client.embed(input.clone()))
-                            .await;
-                    match candidate_result {
-                        Ok(value) => {
-                            self.record_success(model_id).await;
-                            if index > 0 {
-                                tracing::warn!(
-                                    candidate_index = index,
-                                    "embedding request recovered on a configured fallback candidate"
-                                );
-                            }
-                            return Ok(value);
-                        }
-                        Err(error)
-                            if Self::should_failover(&error) && index + 1 < candidates.len() =>
-                        {
-                            self.record_failure(model_id).await;
-                            if let LlmError::RateLimit { retry_after } = &error {
-                                self.record_rate_limit(&role, *retry_after).await;
-                            }
-                            tracing::warn!(
-                                candidate_index = index,
-                                error = %haven_common::error::sanitize_error_text(&error.to_string()),
-                                "embedding primary candidate failed; trying the next configured candidate"
-                            );
-                            last_error = Some(error);
-                        }
-                        Err(error) => {
-                            self.record_rate_limit_result(&role, &error).await;
-                            return Err(error);
-                        }
+            execute_with_timeout(policy.total_timeout_secs, "embedding", || async {
+                let result =
+                    execute_with_retry(policy.retry, None, || client.embed(input.clone())).await;
+                match &result {
+                    Ok(_) => self.record_success(&model_id).await,
+                    Err(error) => {
+                        self.record_failure(&model_id).await;
+                        self.record_rate_limit_result(&role, error).await;
                     }
                 }
-                Err(last_error.unwrap_or_else(|| {
-                    LlmError::Configuration("no configured embedding model candidate".into())
-                }))
+                result
             })
-            .await;
-            match result {
-                Ok(value) => Ok(value),
-                Err(error) => Err(error),
-            }
+            .await
         })
         .await
     }
@@ -1209,10 +1020,17 @@ impl LlmRouter {
         let request = role.request_kind();
         let health_role = Self::health_role_for_request(request);
         self.with_endpoint_permit(&role, || async {
-            let candidates = self.healthy_candidates(request).await;
+            let (model_id, client) = self.selected_client(request).await?;
             self.with_total_timeout(|| async {
-                self.call_with_retry(candidates, messages, tools, &health_role, max_output_tokens)
-                    .await
+                self.call_with_retry(
+                    model_id,
+                    client,
+                    messages,
+                    tools,
+                    &health_role,
+                    max_output_tokens,
+                )
+                .await
             })
             .await
         })
@@ -1238,71 +1056,35 @@ impl LlmRouter {
             .await
             .map_err(|_| LlmError::ServerError("router semaphore closed".into()))?;
         self.wait_rate_limit_cooldown(&role).await;
-        let candidates = self.healthy_candidates(role.request_kind()).await;
+        let (model_id, candidate) = self.selected_client(role.request_kind()).await?;
         let cfg = self.config.read().await;
         let primary_policy = RequestPolicy::primary(&cfg);
         drop(cfg);
-        // Raw stream callers own consumption, so fallback is only possible
-        // while opening the stream. Once a stream is returned, its later
-        // transport error must be handled by the caller without replaying
-        // already-consumed deltas.
+        // Raw stream callers own consumption. Once a stream is returned, its
+        // later transport error must be handled by the caller without
+        // replaying already-consumed deltas.
         let result = execute_with_timeout(
             primary_policy.total_timeout_secs,
             "router stream",
             || async {
-                let mut last_error = None;
-                for (index, (model_id, candidate)) in candidates.iter().enumerate() {
-                    if let Err(error) = candidate.validate_content(&messages) {
-                        if !Self::should_failover(&error) || index + 1 == candidates.len() {
-                            return Err(error);
-                        }
-                        last_error = Some(error);
-                        continue;
-                    }
-                    match execute_with_retry(primary_policy.retry, None, || {
-                        candidate.chat_stream(messages.clone())
-                    })
-                    .await
-                    {
-                        Ok(stream) => {
-                            self.record_success(model_id).await;
-                            if index > 0 {
-                                tracing::warn!(
-                                    candidate_index = index,
-                                    "raw stream recovered on a configured fallback candidate"
-                                );
-                            }
-                            return Ok((stream, model_id.clone()));
-                        }
-                        Err(error)
-                            if Self::should_failover(&error) && index + 1 < candidates.len() =>
-                        {
-                            self.record_failure(model_id).await;
-                            if let LlmError::RateLimit { retry_after } = &error {
-                                self.record_rate_limit(&role, *retry_after).await;
-                            }
-                            last_error = Some(error);
-                        }
-                        Err(error) => {
-                            self.record_failure(model_id).await;
-                            if let LlmError::RateLimit { retry_after } = &error {
-                                self.record_rate_limit(&role, *retry_after).await;
-                            }
-                            return Err(error);
-                        }
+                candidate.validate_content(&messages)?;
+                let result = execute_with_retry(primary_policy.retry, None, || {
+                    candidate.chat_stream(messages.clone())
+                })
+                .await;
+                match &result {
+                    Ok(_) => self.record_success(&model_id).await,
+                    Err(error) => {
+                        self.record_failure(&model_id).await;
+                        self.record_rate_limit_result(&role, error).await;
                     }
                 }
-                Err(last_error.unwrap_or_else(|| {
-                    LlmError::Configuration(format!(
-                        "no configured model candidate for {}",
-                        role.as_str()
-                    ))
-                }))
+                result
             },
         )
         .await;
         match result {
-            Ok((stream, _model_id)) => Ok(Box::pin(PermitStream {
+            Ok(stream) => Ok(Box::pin(PermitStream {
                 inner: stream,
                 _permit: Some(permit),
             })),
@@ -1473,13 +1255,6 @@ impl LlmRouter {
             on_attempt_start,
             replace_output_on_start,
         } = hooks;
-        let emitted = Arc::new(AtomicBool::new(false));
-        let emitted_by_callback = emitted.clone();
-        let mut on_chunk = on_chunk;
-        let on_chunk = move |chunk: &StreamChunk| {
-            emitted_by_callback.store(true, Ordering::SeqCst);
-            on_chunk(chunk);
-        };
         let hooks = ActiveStreamHooks {
             on_chunk: Arc::new(StdMutex::new(Box::new(on_chunk))),
             on_attempt_start: Arc::new(StdMutex::new(on_attempt_start)),
@@ -1497,107 +1272,56 @@ impl LlmRouter {
             tools: Arc::from(tools),
             max_output_tokens,
         };
-        let candidates = self.healthy_candidates(role.request_kind()).await;
+        let (model_id, candidate) = self.selected_client(role.request_kind()).await?;
+        candidate.validate_content(&stream_context.messages)?;
 
         execute_with_timeout(
             primary_policy.total_timeout_secs,
             "router streaming",
             || async {
-                let mut last_error = None;
-                for (index, (model_id, candidate)) in candidates.iter().enumerate() {
-                    if let Err(error) = candidate.validate_content(&stream_context.messages) {
-                        if !Self::should_failover(&error) || index + 1 == candidates.len() {
-                            last_error = Some(error);
-                            break;
-                        }
-                        tracing::warn!(
-                            candidate_index = index,
-                            error = %haven_common::error::sanitize_error_text(&error.to_string()),
-                            "stream candidate rejected the request; trying the next configured candidate"
-                        );
-                        last_error = Some(error);
-                        hooks.on_attempt_start.lock().unwrap()(true);
-                        continue;
+                let attempt_result = streaming::aggregate_stream_with_retry_before_output(
+                    candidate.clone(),
+                    stream_context.clone(),
+                    hooks.on_chunk.clone(),
+                    cancel.clone(),
+                    &self.stream_rules,
+                    idle_dur,
+                    primary_policy.retry,
+                )
+                .await;
+
+                let result = match attempt_result {
+                    Ok(response) => Ok(response),
+                    Err(error @ LlmError::StreamAborted(_, _)) => {
+                        self.retry_stream_with_guidance(
+                            &candidate,
+                            &hooks,
+                            RetryStreamRequest {
+                                messages: stream_context.messages.clone(),
+                                tools: stream_context.tools.clone(),
+                                max_output_tokens,
+                                cancel: cancel.clone(),
+                                error,
+                                replace_output: true,
+                            },
+                        )
+                        .await
                     }
+                    Err(error) => Err(error),
+                };
 
-                    if index > 0 {
-                        hooks.on_attempt_start.lock().unwrap()(true);
+                match result {
+                    Ok(response) => {
+                        self.record_success(&model_id).await;
+                        Ok(response)
                     }
-                    let attempt_result = streaming::aggregate_stream_with_retry_before_output(
-                        candidate.clone(),
-                        stream_context.clone(),
-                        hooks.on_chunk.clone(),
-                        cancel.clone(),
-                        &self.stream_rules,
-                        idle_dur,
-                        primary_policy.retry,
-                    )
-                    .await;
-
-                    let result = match attempt_result {
-                        Ok(response) => Ok(response),
-                        Err(error @ LlmError::StreamAborted(_, _)) => {
-                            self.retry_stream_with_guidance(
-                                candidate,
-                                &hooks,
-                                RetryStreamRequest {
-                                    messages: stream_context.messages.clone(),
-                                    tools: stream_context.tools.clone(),
-                                    max_output_tokens,
-                                    cancel: cancel.clone(),
-                                    error,
-                                    replace_output: true,
-                                },
-                            )
-                            .await
-                        }
-                        Err(error) => Err(error),
-                    };
-
-                    match result {
-                        Ok(response) => {
-                            self.record_success(model_id).await;
-                            if index > 0 {
-                                tracing::warn!(
-                                    candidate_index = index,
-                                    "stream recovered on a configured fallback candidate"
-                                );
-                            }
-                            return Ok(response);
-                        }
-                        Err(LlmError::Cancelled) => return Err(LlmError::Cancelled),
-                        Err(error) => {
-                            self.record_failure(model_id).await;
-                            if let LlmError::RateLimit { retry_after } = &error {
-                                self.record_rate_limit(&role, *retry_after).await;
-                            }
-                            if emitted.load(Ordering::SeqCst) {
-                                // Replaying after visible output would
-                                // duplicate the assistant bubble and tool
-                                // deltas. The Agent persists the partial stream
-                                // and can resume from its checkpoint.
-                                return Err(error);
-                            }
-                            if Self::should_failover(&error) && index + 1 < candidates.len() {
-                                tracing::warn!(
-                                    candidate_index = index,
-                                    error = %haven_common::error::sanitize_error_text(&error.to_string()),
-                                    "stream candidate failed before output; trying the next configured candidate"
-                                );
-                                last_error = Some(error);
-                                continue;
-                            }
-                            return Err(error);
-                        }
+                    Err(LlmError::Cancelled) => Err(LlmError::Cancelled),
+                    Err(error) => {
+                        self.record_failure(&model_id).await;
+                        self.record_rate_limit_result(&role, &error).await;
+                        Err(error)
                     }
                 }
-
-                Err(last_error.unwrap_or_else(|| {
-                    LlmError::Configuration(format!(
-                        "no configured model candidate for {}",
-                        role.as_str()
-                    ))
-                }))
             },
         )
         .await
@@ -1617,48 +1341,21 @@ impl LlmRouter {
 
     pub async fn health_check(&self, role: EndpointRole) -> Result<(), LlmError> {
         self.with_endpoint_permit(&role, || async {
-            let candidates = self.healthy_candidates(role.request_kind()).await;
+            let (model_id, candidate) = self.selected_client(role.request_kind()).await?;
             let cfg = self.config.read().await;
             let policy = RequestPolicy::primary(&cfg);
             drop(cfg);
 
             execute_with_timeout(policy.total_timeout_secs, "health check", || async {
-                let mut last_error = None;
-                for (index, (model_id, candidate)) in candidates.iter().enumerate() {
-                    match candidate.health_check().await {
-                        Ok(()) => {
-                            self.record_success(model_id).await;
-                            if index > 0 {
-                                tracing::warn!(
-                                    role = role.as_str(),
-                                    candidate_index = index,
-                                    "health check recovered on a configured fallback candidate"
-                                );
-                            }
-                            return Ok(());
-                        }
-                        Err(error)
-                            if Self::should_failover(&error) && index + 1 < candidates.len() =>
-                        {
-                            self.record_failure(model_id).await;
-                            if let LlmError::RateLimit { retry_after } = &error {
-                                self.record_rate_limit(&role, *retry_after).await;
-                            }
-                            last_error = Some(error);
-                        }
-                        Err(error) => {
-                            self.record_failure(model_id).await;
-                            self.record_rate_limit_result(&role, &error).await;
-                            return Err(error);
-                        }
+                let result = candidate.health_check().await;
+                match &result {
+                    Ok(()) => self.record_success(&model_id).await,
+                    Err(error) => {
+                        self.record_failure(&model_id).await;
+                        self.record_rate_limit_result(&role, error).await;
                     }
                 }
-                Err(last_error.unwrap_or_else(|| {
-                    LlmError::Configuration(format!(
-                        "no configured model candidate for {}",
-                        role.as_str()
-                    ))
-                }))
+                result
             })
             .await
         })
@@ -2016,7 +1713,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn chat_fails_over_to_next_policy_candidate() {
+    async fn chat_does_not_fail_over_to_another_provider() {
         let failing: Arc<dyn LlmClient> = Arc::new(MockStreamClient {
             chunks: Vec::new(),
             fail_chat: true,
@@ -2031,10 +1728,6 @@ mod tests {
             healthy.clone(),
             healthy.clone(),
             healthy,
-        );
-        router.routes.lock().unwrap().insert(
-            RequestKind::Chat,
-            vec!["default_model".into(), "small_model".into()],
         );
         {
             let mut config = router.config.write().await;
@@ -2042,15 +1735,15 @@ mod tests {
             config.max_total_duration_secs = 1;
         }
 
-        let response = router
+        let error = router
             .chat(EndpointRole::DefaultModel, Vec::new())
             .await
-            .expect("fallback candidate should answer");
-        assert_eq!(response.text, "mock response");
+            .expect_err("the selected provider error must be returned");
+        assert!(matches!(error, LlmError::ServerError(_)));
     }
 
     #[tokio::test]
-    async fn failed_primary_breaker_does_not_poison_healthy_fallback() {
+    async fn open_primary_circuit_does_not_select_an_alternate_provider() {
         let failing: Arc<dyn LlmClient> = Arc::new(MockStreamClient {
             chunks: Vec::new(),
             fail_chat: true,
@@ -2065,10 +1758,6 @@ mod tests {
             healthy.clone(),
             healthy.clone(),
             healthy,
-        );
-        router.routes.lock().unwrap().insert(
-            RequestKind::Chat,
-            vec!["default_model".into(), "small_model".into()],
         );
         {
             let mut config = router.config.write().await;
@@ -2080,7 +1769,7 @@ mod tests {
             router
                 .chat(EndpointRole::DefaultModel, Vec::new())
                 .await
-                .expect("fallback remains healthy");
+                .expect_err("the selected provider must remain the only target");
         }
         let before = router.health.read().await;
         assert_eq!(
@@ -2090,19 +1779,21 @@ mod tests {
         assert_eq!(before["small_model"].consecutive_failures, 0);
         drop(before);
 
-        // The fourth request must skip the open primary entirely. The
-        // fallback still succeeds and its health state remains independent.
-        router
+        // The fourth request must not skip to the other provider.
+        let error = router
             .chat(EndpointRole::DefaultModel, Vec::new())
             .await
-            .expect("open primary is skipped");
+            .expect_err("an open circuit must fail instead of changing namespace");
+        assert!(
+            matches!(error, LlmError::ServerError(message) if message.contains("circuit breaker"))
+        );
         let after = router.health.read().await;
         assert_eq!(after["default_model"].consecutive_failures, 3);
         assert_eq!(after["small_model"].consecutive_failures, 0);
     }
 
     #[tokio::test]
-    async fn streaming_fails_over_before_any_visible_output() {
+    async fn streaming_does_not_fail_over_before_visible_output() {
         let failing: Arc<dyn LlmClient> = Arc::new(MockStreamClient {
             chunks: Vec::new(),
             fail_chat: true,
@@ -2128,48 +1819,17 @@ mod tests {
             healthy.clone(),
             healthy,
         );
-        router.routes.lock().unwrap().insert(
-            RequestKind::Chat,
-            vec!["default_model".into(), "small_model".into()],
-        );
         {
             let mut config = router.config.write().await;
             config.retry_max_retries = 0;
             config.max_total_duration_secs = 1;
         }
 
-        let response = router
+        let error = router
             .chat_stream_with_tools_aggregated(EndpointRole::DefaultModel, &[], &[], |_| {})
             .await
-            .expect("stream fallback candidate should answer");
-        assert_eq!(response.text, "recovered");
-    }
-
-    #[test]
-    fn failover_keeps_semantic_errors_on_the_original_candidate() {
-        assert!(LlmRouter::should_failover(&LlmError::Network(
-            "down".into()
-        )));
-        assert!(LlmRouter::should_failover(&LlmError::Timeout(
-            "408: timeout".into()
-        )));
-        assert!(LlmRouter::should_failover(&LlmError::ServerError(
-            "425: too early".into()
-        )));
-        assert!(!LlmRouter::should_failover(&LlmError::RequestFailed(
-            "409: conflict".into()
-        )));
-        assert!(!LlmRouter::should_failover(
-            &LlmError::ContextLengthExceeded
-        ));
-        assert!(!LlmRouter::should_failover(&LlmError::ContentFilter));
-        assert!(!LlmRouter::should_failover(&LlmError::Cancelled));
-        assert!(!LlmRouter::should_failover(&LlmError::InvalidResponse(
-            "malformed provider body".into()
-        )));
-        assert!(!LlmRouter::should_failover(&LlmError::Unknown(
-            "unclassified provider failure".into()
-        )));
+            .expect_err("stream errors must stay on the selected provider");
+        assert!(matches!(error, LlmError::ServerError(_)));
     }
 
     #[tokio::test]
