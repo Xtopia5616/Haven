@@ -125,6 +125,60 @@ describe('ConversationActivityGroup', () => {
 		expect(headers()[1].getAttribute('aria-expanded')).toBe('true');
 	});
 
+	it('keeps each tool card independently collapsible in a parallel batch', async () => {
+		const entries = [
+			{
+				message: {
+					id: 'tool-1',
+					role: 'assistant',
+					content: 'first result',
+					type: 'tool',
+					toolName: 'shell',
+					streaming: false,
+				},
+				index: 0,
+			},
+			{
+				message: {
+					id: 'tool-2',
+					role: 'assistant',
+					content: 'second result',
+					type: 'tool',
+					toolName: 'files',
+					streaming: false,
+				},
+				index: 1,
+			},
+		];
+		const { container } = render(ConversationActivityGroup, {
+			entries,
+			streaming: false,
+			toolCount: 2,
+			stepCount: 1,
+			allMessages: entries.map((entry) => entry.message),
+		});
+		const headers = () =>
+			Array.from(container.querySelectorAll('.md-collapsible-header')) as HTMLButtonElement[];
+
+		expect(headers()).toHaveLength(3);
+		expect(headers()[0].getAttribute('aria-expanded')).toBe('false');
+		await fireEvent.click(headers()[0]);
+		await fireEvent.click(headers()[1]);
+		await fireEvent.click(headers()[2]);
+		expect(headers().map((header) => header.getAttribute('aria-expanded'))).toEqual([
+			'true',
+			'true',
+			'true',
+		]);
+
+		await fireEvent.click(headers()[1]);
+		expect(headers().map((header) => header.getAttribute('aria-expanded'))).toEqual([
+			'true',
+			'false',
+			'true',
+		]);
+	});
+
 	it('keeps the collapsible work surface outlined around nested work entries', () => {
 		const toolMessage = {
 			...entry(false).message,

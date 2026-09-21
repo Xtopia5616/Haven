@@ -24,7 +24,7 @@ describe('conversationTimeline grouping', () => {
 		expect(items[0]).toMatchObject({ kind: 'message', message: { id: 'user-1' } });
 		expect(items[1]).toMatchObject({
 			kind: 'activity',
-			id: 'activity-thought-1',
+			id: 'activity-user-1-step-1',
 			streaming: false,
 			toolCount: 1,
 			stepCount: 2,

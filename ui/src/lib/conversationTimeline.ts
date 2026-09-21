@@ -60,6 +60,7 @@ export function groupConversationMessages(
 ): ConversationTimelineItem[] {
 	const items: ConversationTimelineItem[] = [];
 	let activity: TimelineActivityItem | null = null;
+	let precedingBoundaryId = 'root';
 
 	const flushActivity = () => {
 		if (!activity) return;
@@ -71,13 +72,22 @@ export function groupConversationMessages(
 		if (!isMergedConversationMessage(message)) {
 			flushActivity();
 			items.push({ kind: 'message', message, index });
+			precedingBoundaryId = message.id;
 			return;
 		}
 
 		if (!activity) {
+			// The first entry can change while a live tool batch is reconciled:
+			// for example, a late thought/reasoning block may be inserted before
+			// the already-visible tool cards. Anchor the group to the surrounding
+			// conversation boundary and step, rather than to that mutable first
+			// entry, so Svelte keeps the disclosure instances and their local open
+			// state alive.
+			const stepAnchor =
+				message.stepNumber == null ? `message-${message.id}` : `step-${message.stepNumber}`;
 			activity = {
 				kind: 'activity',
-				id: `activity-${message.id}`,
+				id: `activity-${precedingBoundaryId}-${stepAnchor}`,
 				entries: [],
 				streaming: false,
 				toolCount: 0,
