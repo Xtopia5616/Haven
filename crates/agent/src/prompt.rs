@@ -918,6 +918,42 @@ impl SystemPromptBuilder {
         }
     }
 
+    /// Resume variant that rebuilds the tool/runtime shell immediately while
+    /// leaving semantic memory to the background prefetch path. The next
+    /// turn's MEMORY fence patch fills the same canonical system message once
+    /// recall is ready.
+    pub(crate) async fn rebuild_canonical_system_without_memory(
+        &self,
+        description: &str,
+        canonical: &mut [CanonicalMessage],
+    ) {
+        let Some(sys) = canonical.first_mut() else {
+            return;
+        };
+        if sys.role != CanonicalRole::System {
+            return;
+        }
+        let prior = sys
+            .content
+            .iter()
+            .find_map(|p| match p {
+                ContentPart::Text(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .unwrap_or("");
+        let preserved_context = extract_additional_context_lines(prior);
+        self.context_provider.clear_schema();
+        let rebuilt = self
+            .build_for_session_without_memory(description, &preserved_context)
+            .await;
+        for part in &mut sys.content {
+            if let ContentPart::Text(text) = part {
+                *text = rebuilt;
+                return;
+            }
+        }
+    }
+
     async fn get_or_build_sections(&self) -> SchemaCache {
         // The builtin registry and MCP tools/list clocks are both authorities
         // for this frozen global index. Per-session registrations do not enter
