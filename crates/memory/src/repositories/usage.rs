@@ -170,6 +170,39 @@ pub struct LlmCallUsageInput {
 }
 
 impl LlmCallUsage {
+    pub(crate) fn from_input(
+        id: String,
+        session_id: &str,
+        input: &LlmCallUsageInput,
+        created_at: String,
+    ) -> Self {
+        Self {
+            id,
+            session_id: session_id.into(),
+            step_number: input.step_number,
+            role: input.request_kind,
+            call_kind: input.call_kind.clone(),
+            model: input.model.clone(),
+            prompt_tokens: input.prompt_tokens,
+            completion_tokens: input.completion_tokens,
+            total_tokens: input.total_tokens,
+            cached_tokens: input.cached_tokens,
+            cache_creation_tokens: input.cache_creation_tokens,
+            cache_miss_tokens: input.cache_miss_tokens,
+            cache_accounting: input.cache_accounting.clone(),
+            cache_diagnostics: input
+                .cache_diagnostics
+                .as_deref()
+                .and_then(|value| serde_json::from_str(value).ok()),
+            context_tokens: input.context_tokens,
+            context_window: input.context_window,
+            cost_usd: input.cost_usd,
+            has_cost: input.has_cost,
+            duration_ms: input.duration_ms,
+            created_at,
+        }
+    }
+
     pub fn coalesce_total(&mut self) {
         self.total_tokens = coalesced_total(
             self.prompt_tokens,
@@ -722,6 +755,58 @@ impl Database {
         let conn = self.conn();
         conn.execute("DELETE FROM llm_usage WHERE id = ?1", rusqlite::params![id])?;
         Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn project_llm_call_usage_conn(
+        conn: &rusqlite::Connection,
+        record: &LlmCallUsage,
+    ) -> anyhow::Result<()> {
+        let cache_diagnostics = record
+            .cache_diagnostics
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
+        Self::insert_llm_call_usage_conn(
+            conn,
+            &record.id,
+            &record.session_id,
+            record.step_number,
+            record.role,
+            &record.call_kind,
+            record.model.as_deref(),
+            record.prompt_tokens,
+            record.completion_tokens,
+            record.total_tokens,
+            record.cached_tokens,
+            record.cache_creation_tokens,
+            record.cache_miss_tokens,
+            &record.cache_accounting,
+            cache_diagnostics.as_deref(),
+            record.context_tokens,
+            record.context_window,
+            record.cost_usd,
+            record.has_cost,
+            record.duration_ms,
+            &record.created_at,
+        )?;
+        let mut delta = SessionUsageDelta::default();
+        delta.add_call(
+            &record.call_kind,
+            record.prompt_tokens,
+            record.completion_tokens,
+            record.total_tokens,
+            record.cached_tokens,
+            record.cache_creation_tokens,
+            record.cache_miss_tokens,
+            &record.cache_accounting,
+            record.cost_usd,
+            record.has_cost,
+            record.context_tokens,
+            record.context_window,
+            &record.created_at,
+        );
+        Self::apply_session_usage_delta_conn(conn, &record.session_id, &delta)
     }
 
     #[allow(clippy::too_many_arguments)]

@@ -56,6 +56,7 @@ pub(crate) use state::{ReActState, RetryNudge};
 use transcript::{ObservationCard, TranscriptEvent};
 
 pub(crate) use snapshot_io::set_status_and_emit;
+pub(crate) use snapshot_io::DurableEventState;
 #[cfg(test)]
 use tool_batch_policy::FailureKind;
 
@@ -274,6 +275,7 @@ pub(super) async fn emit_media_plan(
             strategy: plan.strategy,
             projections: plan.projections,
             notices: plan.notices,
+            event_seq: None,
         })
         .await;
 }
@@ -333,8 +335,6 @@ pub struct ReActEngine {
     run_counter: AtomicU64,
     /// Queue/inbox source adapter; projection remains in `inject`.
     context_source: ContextSource,
-    /// Mid-run checkpoint throttle (Phase 7 / F3).
-    checkpoint_store: Mutex<snapshot_io::CheckpointStore>,
     /// Per-request context-window cache keyed by router instance pointer.
     context_windows: ContextWindowCache,
     /// Domain side effects (inbox / compact / infer). Thin loop only calls
@@ -393,7 +393,6 @@ impl ReActEngine {
             media_strategy: Mutex::new(MediaInputStrategy::Auto),
             run_counter: AtomicU64::new(0),
             context_source,
-            checkpoint_store: Mutex::new(snapshot_io::CheckpointStore::default()),
             context_windows: ContextWindowCache::new(),
             hooks: default_hooks(),
             memory_worker: None,
@@ -418,18 +417,6 @@ impl ReActEngine {
         if let Some(actor) = self.executor.actor_for(session_id).await {
             actor.set_run_budget(budget).await;
         }
-    }
-
-    #[cfg(test)]
-    pub(super) async fn current_run_budget(
-        &self,
-        session_id: &str,
-    ) -> Option<crate::types::RunBudget> {
-        self.executor
-            .actor_for(session_id)
-            .await?
-            .current_run_budget()
-            .await
     }
 
     /// Replace loop hooks (production: `default_hooks_with_infer`; tests:
@@ -571,31 +558,6 @@ impl ReActEngine {
                 .tool_catalog_snapshot(session_id)
                 .await,
         )
-    }
-
-    pub(super) async fn refresh_last_msg_at(
-        &self,
-        session_id: &str,
-    ) -> anyhow::Result<Option<String>> {
-        let db = self.db.clone();
-        let store = self.event_store.clone();
-        let session_id_owned = session_id.to_string();
-        let fetched = db
-            .run_blocking(move |_| {
-                store
-                    .cursor(&session_id_owned)
-                    .map(|cursor| cursor.last_msg_at)
-            })
-            .await
-            .map_err(|error| {
-                tracing::warn!(
-                    session_id,
-                    error = %error,
-                    "failed to refresh last message timestamp"
-                );
-                anyhow::anyhow!("failed to refresh last message timestamp: {error}")
-            })?;
-        Ok(fetched)
     }
 
     /// Validate every non-final tool call without altering its arguments.
@@ -963,14 +925,16 @@ impl ReActEngine {
             .iter()
             .map(|item| item.input.clone())
             .collect::<Vec<_>>();
-        let db = self.db.clone();
+        let store = self.event_store.clone();
         let session_id_for_persist = session_id.to_string();
-        let persist = move |db: &Database| {
-            db.persist_llm_call_batch_and_refresh_session_usage(&session_id_for_persist, &inputs)
+        let persist = move |_db: &Database| {
+            store
+                .append_usage_batch(&session_id_for_persist, &inputs)
+                .map(|_| ())
         };
         let persisted = match cancel {
-            Some(cancel) => db.run_blocking_cancellable(cancel, persist).await,
-            None => db.run_blocking(persist).await,
+            Some(cancel) => self.db.run_blocking_cancellable(cancel, persist).await,
+            None => self.db.run_blocking(persist).await,
         };
         match persisted {
             Ok(_) => {}
@@ -1034,7 +998,7 @@ impl ReActEngine {
                 .as_ref()
                 .and_then(|value| serde_json::to_string(value).ok());
             let cache_diagnostics_for_event = usage.cache_diagnostics.clone();
-            let db = self.db.clone();
+            let store = self.event_store.clone();
             let session_id_for_persist = session_id.to_string();
             let call_kind_for_persist = call_kind.to_string();
             let model_for_persist = model.clone();
@@ -1043,25 +1007,27 @@ impl ReActEngine {
             let duration_ms = tool_usage.duration_ms;
             let usage_context_tokens = usage.context_tokens();
             let persist = tokio::task::spawn_blocking(move || {
-                db.persist_llm_call_and_refresh_session_usage_with_kind_and_context(
+                store.append_usage(
                     &session_id_for_persist,
-                    step_number,
-                    request,
-                    &call_kind_for_persist,
-                    model_for_persist.as_deref(),
-                    usage_prompt,
-                    usage_completion,
-                    usage_total,
-                    usage_cached,
-                    usage_cache_creation,
-                    usage_cache_miss,
-                    &usage_cache_accounting_for_persist,
-                    cache_diagnostics.as_deref(),
-                    call_cost,
-                    call_has_cost,
-                    duration_ms,
-                    usage_context_tokens,
-                    None,
+                    &haven_memory::LlmCallUsageInput {
+                        step_number,
+                        request_kind: request,
+                        call_kind: call_kind_for_persist,
+                        model: model_for_persist,
+                        prompt_tokens: usage_prompt,
+                        completion_tokens: usage_completion,
+                        total_tokens: usage_total,
+                        cached_tokens: usage_cached,
+                        cache_creation_tokens: usage_cache_creation,
+                        cache_miss_tokens: usage_cache_miss,
+                        cache_accounting: usage_cache_accounting_for_persist,
+                        cache_diagnostics,
+                        cost_usd: call_cost,
+                        has_cost: call_has_cost,
+                        duration_ms,
+                        context_tokens: usage_context_tokens,
+                        context_window: None,
+                    },
                 )
             });
             match persist.await {
@@ -1120,14 +1086,10 @@ impl ReActEngine {
         }
     }
 
-    /// Drop cumulative counters and process-local checkpoint caches for a
-    /// finished session so all per-session maps stay bounded across long runs.
+    /// Drop cumulative counters and process-local turn caches for a finished
+    /// session so all per-session actor state stays bounded across long runs.
     pub fn reset_cumulative_usage(&self, session_id: &str) {
         self.reset_token_estimate(session_id);
-        self.checkpoint_store
-            .lock()
-            .unwrap()
-            .clear_session(session_id);
         self.context_source.clear_session(session_id);
         if let Some(actor) = self.executor.actor_for_now(session_id) {
             actor.reset_usage_now();

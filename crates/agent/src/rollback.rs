@@ -9,9 +9,11 @@
 use crate::AgentLayer;
 use crate::lifecycle::{LifecycleOp, LifecycleWindow, decide};
 use crate::resume_support::infer_resume_step;
+use crate::react::DurableEventState;
 use crate::rollback_support::truncate_at_user_message;
 use crate::session::SessionStatus;
-use crate::types::{BranchPoint, ReActSnapshot, TranscriptRecord};
+use crate::types::{BranchPoint, TranscriptRecord, project_transcript_with_strategy};
+use haven_memory::ProjectionCutoff;
 
 impl AgentLayer {
     /// Roll back a session to a specific branch point. The session is rewound
@@ -80,15 +82,13 @@ impl AgentLayer {
                 session_id
             ));
         }
-        let mut snapshot = match durable_state {
+        let mut replay = match durable_state {
             Some(durable) => {
-                let mut snapshot = ReActSnapshot::default();
-                snapshot.events = durable.events;
-                snapshot.event_cursor = snapshot.events.len();
-                snapshot.branch_points = durable.branch_points;
-                snapshot.step_number = infer_resume_step(&snapshot.events);
-                snapshot.last_ingress_seq = durable.cursor.message_ingress_seq;
-                snapshot
+                DurableEventState {
+                    events: durable.events,
+                    branch_points: durable.branch_points,
+                    cursor: durable.cursor,
+                }
             }
             None => unreachable!("durable state absence handled above"),
         };
@@ -98,12 +98,12 @@ impl AgentLayer {
         // restorable: rollback is an overwrite operation, not a branch tree,
         // and silently falling back to the compacted head would target the
         // wrong timeline.
-        if target_step < snapshot.step_number
-            && snapshot
+        if target_step < infer_resume_step(&replay.events)
+            && replay
                 .events
                 .first()
                 .is_some_and(|event| matches!(event, TranscriptRecord::CompactSummary { .. }))
-            && !snapshot.branch_points.contains_key(&target_step)
+            && !replay.branch_points.contains_key(&target_step)
         {
             return Err(anyhow::anyhow!(
                 "rollback_session {}: step {} is before the current compaction boundary and is no longer restorable",
@@ -116,35 +116,34 @@ impl AgentLayer {
         // failed before save_branch_point was called (e.g. LLM error
         // mid-stream). In that case the snapshot's current events ARE the
         // pre-step state — use them directly.
-        let bp = if let Some(bp) = snapshot.branch_points.get(&target_step).cloned() {
+        let bp = if let Some(bp) = replay.branch_points.get(&target_step).cloned() {
             bp
         } else {
             tracing::warn!(
                 "rollback_session {}: no branch_point at step {}, using snapshot state (step_number={})",
                 session_id,
                 target_step,
-                snapshot.step_number
+                infer_resume_step(&replay.events)
             );
             // Determine the cutoff timestamp from session messages: the last
             // user message for user-rollback (pause=true), or the last user
             // message for agent-rollback too (delete the partial output after
             // it).
-            let db = self.db.clone();
+            let store = self.react_engine.event_store.clone();
             let sid = session_id.to_string();
-            let cutoff_ts = db
-                .run_blocking(move |db| db.last_user_message_ts(&sid))
+            let cutoff_ts = self
+                .db
+                .run_blocking(move |_| store.last_user_message_at(&sid))
                 .await?;
             BranchPoint {
-                event_cursor: snapshot.events.len(),
+                event_cursor: replay.events.len(),
                 step_number: target_step,
                 last_msg_at: cutoff_ts,
             }
         };
 
         // Restore the append-only event log to the recorded cursor.
-        snapshot.events.truncate(bp.event_cursor);
-        snapshot.event_cursor = snapshot.events.len();
-        snapshot.step_number = bp.step_number;
+        replay.events.truncate(bp.event_cursor);
 
         // If the branch point was saved right after a ToolCall event but
         // before ToolResult(s) were appended, the projected canonical ends
@@ -152,12 +151,11 @@ impl AgentLayer {
         // tool-result messages. Sending this to the LLM triggers a 400.
         // Trim the dangling ToolCall (and its Thought) so the loop
         // re-requests the tool call cleanly.
-        crate::rollback_support::trim_dangling_tool_call(&mut snapshot.events);
-        snapshot.event_cursor = snapshot.events.len();
+        crate::rollback_support::trim_dangling_tool_call(&mut replay.events);
 
         // Newest branch-point cutoff (computed BEFORE pruning): used below to
         // detect a user message persisted after every branch point.
-        let max_bp_ts = snapshot
+        let max_bp_ts = replay
             .branch_points
             .values()
             .filter_map(|b| b.last_msg_at.clone())
@@ -165,8 +163,8 @@ impl AgentLayer {
 
         // Prune branch points created after the target step, and any whose
         // cursor now sits past the truncated events.
-        let event_len = snapshot.events.len();
-        snapshot
+        let event_len = replay.events.len();
+        replay
             .branch_points
             .retain(|&k, b| k <= target_step && b.event_cursor <= event_len);
 
@@ -214,45 +212,6 @@ impl AgentLayer {
                     .is_some_and(|max| m.created_at.as_str() > max)
         });
 
-        if let Some(ref ts) = bp.last_msg_at {
-            if pause {
-                // User-message rollback: delete the user message itself too
-                // (inclusive), so the context is clean when the user re-sends
-                // an edited version. `target_msg` is guaranteed to resolve
-                // (validated above), so its own timestamp is authoritative —
-                // the "newest user message at/before the branch point" guess
-                // is gone.
-                let user_ts = target_msg
-                    .as_ref()
-                    .expect("pause target resolved above")
-                    .created_at
-                    .clone();
-                // Rollback overwrites: remove the clicked user message and
-                // every projection row after it in one transaction, including
-                // the cumulative usage rebuild.
-                let db = self.db.clone();
-                let sid = session_id.to_string();
-                db.run_blocking(move |db| db.truncate_session_after(&sid, &user_ts, true))
-                    .await?;
-            } else {
-                // Strict `>` for both: the branch-point cutoff is the last
-                // message BEFORE the discarded step, so we keep the cutoff
-                // itself intact (truncate_session_after is non-inclusive).
-                // Also rebuilds session_usage from remaining llm_usage rows.
-                let db = self.db.clone();
-                let sid = session_id.to_string();
-                let cutoff = ts.clone();
-                db.run_blocking(move |db| db.truncate_session_after(&sid, &cutoff, false))
-                    .await?;
-            }
-        }
-        // Clear after join + truncation so unwind persists cannot leave a
-        // stale-high cutoff in the mid-run branch-point cache. Invalidate
-        // usage so in-memory counters re-seed from the rebuilt DB row and
-        // late detached persists from discarded calls are ignored.
-        self.react_engine
-            .invalidate_usage_after_truncate(session_id);
-
         // Drop any checkpointed partial stream text: the restored timeline
         // must not inherit a stale partial from the discarded run. Discard
         // goes through the executor's PartialStore so an in-flight stream
@@ -266,12 +225,25 @@ impl AgentLayer {
         //
         // Match the exact `UserInject.message_id` or compacted canonical
         // message id. Text is never used as an identity fallback.
+        let target_in_compacted_summary = pause
+            && !is_orphan_rollback
+            && target_msg.as_ref().is_some_and(|target| {
+                replay.events.iter().any(|event| {
+                    matches!(
+                        event,
+                        TranscriptRecord::CompactSummary { compacted, .. }
+                            if compacted.iter().any(|message| {
+                                message.id.as_deref() == Some(target.id.as_str())
+                            })
+                    )
+                })
+            });
         if pause
             && !is_orphan_rollback
             && let Some(target) = target_msg.as_ref()
             && !truncate_at_user_message(
-                &mut snapshot.events,
-                &mut snapshot.branch_points,
+                &mut replay.events,
+                &mut replay.branch_points,
                 target_step,
                 &target.id,
             )
@@ -282,79 +254,69 @@ impl AgentLayer {
             ));
         }
 
-        // R6: branch restore must not resurrect interactions from the parent
-        // snapshot (continue clears them; rollback previously did not).
-        snapshot.interactions.clear();
-        // Budget is per-run observability; a restored branch starts a new run.
-        snapshot.run_budget = None;
+        // SessionStore::rollback_to applies this cutoff atomically with the
+        // timeline marker below. User-message rollback is inclusive so the
+        // clicked message itself is removed; step rollback keeps the branch
+        // cutoff and removes only newer projection rows.
+        let projection_cutoff = if pause {
+            target_msg.as_ref().map(|message| ProjectionCutoff {
+                created_at: message.created_at.clone(),
+                inclusive: true,
+            })
+        } else {
+            bp.last_msg_at.clone().map(|created_at| ProjectionCutoff {
+                created_at,
+                inclusive: false,
+            })
+        };
+
+        // A compact summary is itself the active transcript root. Removing a
+        // message from its canonical payload cannot be represented by a
+        // cursor-only marker, so append the filtered root after the marker in
+        // the same SessionStore transaction.
+        let replacement_transcript = if target_in_compacted_summary {
+            replay
+                .events
+                .iter()
+                .map(|event| crate::react::ReActEngine::transcript_event_input(event, 0))
+                .collect::<anyhow::Result<Vec<_>>>()?
+        } else {
+            Vec::new()
+        };
 
         // Keep the database event log append-only. The marker changes the
         // active replay cursor; discarded rows remain available for audit and
         // can never leak into the resumed timeline.
         let event_store = self.react_engine.event_store.clone();
         let sid = session_id.to_string();
-        let event_cursor = snapshot.events.len();
-        let branch_point_sequence = self
-            .db
-            .run_blocking({
-                let event_store = self.react_engine.event_store.clone();
-                let sid = session_id.to_string();
-                move |_| {
-                    Ok(event_store
-                        .branch_point_for_step(&sid, target_step)?
-                        .filter(|(_, cursor, _)| *cursor == event_cursor)
-                        .map(|(event, _, _)| event.sequence))
-                }
-            })
-            .await?;
-        let to_sequence = if let Some(sequence) = branch_point_sequence {
-            sequence
-        } else {
-            self.db
-                .run_blocking(move |_| {
-                    event_store.sequence_for_transcript_cursor(&sid, event_cursor)
-                })
-                .await?
-        };
-        let event_store = self.react_engine.event_store.clone();
-        let sid = session_id.to_string();
+        let event_cursor = replay.events.len();
         self.db
             .run_blocking(move |_| {
-                event_store.append_rollback(&sid, to_sequence, target_step, None)?;
+                event_store.rollback_to(
+                    &sid,
+                    event_cursor,
+                    target_step,
+                    projection_cutoff.as_ref(),
+                    &replacement_transcript,
+                    None,
+                )?;
                 Ok(())
             })
             .await?;
 
-        // The rollback marker is the durable timeline update. The lightweight
-        // cursor checkpoint is refreshed after the marker, but no serialized
-        // ReAct snapshot is written.
-        let store = self.react_engine.event_store.clone();
-        let sid = session_id.to_string();
-        self.db
-            .run_blocking(move |_| {
-                store.checkpoint(&sid)?;
-                Ok::<(), anyhow::Error>(())
-            })
-            .await?;
-
-        // Unit-test compatibility only: production recovery never reads this
-        // JSON row. Keeping the fixture updated lets legacy projection tests
-        // inspect the restored event-derived state while the runtime path is
-        // already fully event-sourced.
-        #[cfg(test)]
-        {
-            let json = serde_json::to_string(&snapshot)?;
-            let db = self.db.clone();
-            let sid = session_id.to_string();
-            db.run_blocking(move |db| db.save_react_state(&sid, &json))
-                .await?;
-        }
+        // Clear after the atomic rollback so in-memory counters re-seed from
+        // the rebuilt DB row and late detached persists are ignored.
+        self.react_engine
+            .invalidate_usage_after_truncate(session_id);
 
         // Rebuild per-session tool registrations from the restored rounds so
         // that tools loaded after the rollback point are dropped, and tools
         // loaded before it remain available.
         // Cursor-aware project (equivalent to project() after truncate).
-        let (_, rounds) = snapshot.project_at(snapshot.events.len());
+        let (_, rounds) = project_transcript_with_strategy(
+            &replay.events,
+            self.react_engine.media_strategy(),
+        );
         self.restore_per_session_tools(session_id, &rounds).await;
 
         // Reload the session into executor memory (it may have been removed if we
@@ -435,31 +397,18 @@ impl AgentLayer {
                 let sid = session_id.to_string();
                 let branch = self
                     .db
-                    .run_blocking(move |_| store.branch_point_for_step(&sid, step))
+                    .run_blocking(move |_| store.projection_cutoff_for_step(&sid, step))
                     .await?;
-                if let Some((_, _, Some(cutoff))) = branch {
-                    let db = self.db.clone();
+                if let Some(cutoff) = branch {
+                    let store = self.react_engine.event_store.clone();
                     let sid = session_id.to_string();
-                    db.run_blocking(move |db| db.truncate_session_after(&sid, &cutoff, false))
+                    self.db
+                        .run_blocking(move |_| {
+                            store.truncate_projection_after(&sid, &cutoff)?;
+                            Ok(())
+                        })
                         .await?;
                 }
-            }
-        }
-        #[cfg(test)]
-        {
-            // Legacy unit fixtures may still seed the old explicit partial
-            // id marker. The production path above uses only recovery events;
-            // this bridge is compiled out of application builds.
-            let db = self.db.clone();
-            let sid = session_id.to_string();
-            if let Ok(Some(state_json)) = db.run_blocking(move |db| db.get_react_state(&sid)).await
-                && let Ok(snapshot) = ReActSnapshot::from_json(&state_json)
-                && let Some(ids) = snapshot.error_partial_message_ids
-            {
-                let db = self.db.clone();
-                let sid = session_id.to_string();
-                db.run_blocking(move |db| db.delete_messages_by_ids(&sid, &ids))
-                    .await?;
             }
         }
         // Clear after join + truncation so unwind persists cannot leave a

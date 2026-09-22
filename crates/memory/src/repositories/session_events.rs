@@ -7,6 +7,8 @@
 //! timeline from the complete log.
 
 use crate::Database;
+use crate::repositories::messages::now_rfc3339_millis;
+use crate::repositories::usage::{LlmCallUsage, LlmCallUsageInput};
 use chrono::{SecondsFormat, Utc};
 use rusqlite::OptionalExtension;
 use std::sync::Arc;
@@ -15,6 +17,10 @@ use std::time::Instant;
 pub const TRANSCRIPT_EVENT_TYPE: &str = "transcript";
 pub const BRANCH_POINT_EVENT_TYPE: &str = "branch_point";
 pub const TIMELINE_ROLLBACK_EVENT_TYPE: &str = "timeline_rollback";
+/// Durable usage domain events. Their payload is the complete
+/// [`LlmCallUsage`] value; `llm_usage` and `session_usage` are projections.
+pub const USAGE_RECORDED_EVENT_TYPE: &str = "usage_recorded";
+pub const USAGE_DISCARDED_EVENT_TYPE: &str = "usage_discarded";
 /// Session-local interaction lifecycle events. The payload is an Agent-owned
 /// `InteractionRequest` or a small `{ "ids": [...] }` object; Memory only
 /// orders and durably stores the event.
@@ -71,6 +77,35 @@ pub struct SessionCursor {
     pub message_ingress_seq: i64,
     pub step_seq: i64,
     pub last_msg_at: Option<String>,
+}
+
+/// The complete durable input required to rebuild an Agent session.
+///
+/// The event store returns the active transcript and branch metadata together
+/// with the projection clocks from one read boundary. Callers must not load
+/// these pieces independently and then try to reconcile their timestamps.
+#[derive(Debug, Clone)]
+pub struct SessionReplayState {
+    pub transcript: Vec<SessionEvent>,
+    pub branch_points: Vec<StoredBranchPoint>,
+    pub cursor: SessionCursor,
+}
+
+/// The projection side of a rollback boundary. `inclusive` is true for a
+/// user-message rollback (the selected message is removed) and false for a
+/// failed/agent step rollback (the branch-point message is retained).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectionCutoff {
+    pub created_at: String,
+    pub inclusive: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct RollbackResult {
+    pub marker: SessionEvent,
+    pub replacement_events: Vec<SessionEvent>,
+    pub cursor: SessionCursor,
+    pub to_sequence: i64,
 }
 
 /// Projection rows written together with a live transcript batch.
@@ -219,59 +254,49 @@ impl SessionStore {
         Self::cursor_in_connection(&conn, session_id)
     }
 
-    /// Record a small performance checkpoint without copying any ReAct
-    /// state. The event stream and projection clocks remain the only durable
-    /// recovery inputs; this row is merely a cheap high-water mark for
-    /// diagnostics and future indexing.
-    pub fn checkpoint(&self, session_id: &str) -> anyhow::Result<SessionCursor> {
+    /// Load the active transcript, branch points and all projection clocks
+    /// from one SQLite read boundary. This is the only recovery read surface
+    /// exposed to Agent resume/rollback code.
+    pub fn load_replay_state(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Option<SessionReplayState>> {
         let conn = self.db.conn();
-        conn.execute_batch("BEGIN IMMEDIATE")?;
-        let result = (|| -> anyhow::Result<SessionCursor> {
-            let cursor = Self::cursor_in_connection(&conn, session_id)?;
-            let revision: i64 = conn
-                .query_row(
-                    "SELECT COALESCE(revision, 0) + 1
-                     FROM react_checkpoints WHERE session_id = ?1",
-                    rusqlite::params![session_id],
-                    |row| row.get(0),
-                )
-                .optional()?
-                .unwrap_or(1);
-            let now = chrono::Utc::now().to_rfc3339();
-            conn.execute(
-                "INSERT INTO react_checkpoints
-                    (session_id, revision, event_cursor, event_sequence,
-                     message_ingress_seq, step_seq, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-                 ON CONFLICT(session_id) DO UPDATE SET
-                    revision = excluded.revision,
-                    event_cursor = excluded.event_cursor,
-                    event_sequence = excluded.event_sequence,
-                    message_ingress_seq = excluded.message_ingress_seq,
-                    step_seq = excluded.step_seq,
-                    updated_at = excluded.updated_at",
-                rusqlite::params![
-                    session_id,
-                    revision,
-                    cursor.event_cursor as i64,
-                    cursor.event_sequence,
-                    cursor.message_ingress_seq,
-                    cursor.step_seq,
-                    now,
-                ],
+        conn.execute_batch("BEGIN")?;
+        let result = (|| -> anyhow::Result<Option<SessionReplayState>> {
+            let latest_sequence: i64 = conn.query_row(
+                "SELECT COALESCE(MAX(sequence), 0) FROM session_events WHERE session_id = ?1",
+                rusqlite::params![session_id],
+                |row| row.get(0),
             )?;
-            Ok(cursor)
+            if latest_sequence == 0 {
+                return Ok(None);
+            }
+            Ok(Some(SessionReplayState {
+                transcript: Self::read_active_in_connection(&conn, session_id)?
+                    .into_iter()
+                    .filter(|event| event.event_type == TRANSCRIPT_EVENT_TYPE)
+                    .collect(),
+                branch_points: Self::read_active_branch_points_in_connection(&conn, session_id)?,
+                cursor: Self::cursor_in_connection(&conn, session_id)?,
+            }))
         })();
         match result {
-            Ok(cursor) => {
+            Ok(state) => {
                 conn.execute_batch("COMMIT")?;
-                Ok(cursor)
+                Ok(state)
             }
             Err(error) => {
                 let _ = conn.execute_batch("ROLLBACK");
                 Err(error)
             }
         }
+    }
+
+    /// Return the latest user-message projection clock without exposing the
+    /// underlying `messages` repository to Agent recovery code.
+    pub fn last_user_message_at(&self, session_id: &str) -> anyhow::Result<Option<String>> {
+        self.db.last_user_message_ts(session_id)
     }
 
     pub fn append(
@@ -510,12 +535,10 @@ impl SessionStore {
             rusqlite::params![session_id],
             |row| row.get(0),
         )?;
-        let event_cursor = conn.query_row(
-            "SELECT COUNT(*) FROM session_events
-             WHERE session_id = ?1 AND event_type = ?2",
-            rusqlite::params![session_id, TRANSCRIPT_EVENT_TYPE],
-            |row| row.get::<_, i64>(0),
-        )?;
+        let event_cursor = Self::read_active_in_connection(conn, session_id)?
+            .into_iter()
+            .filter(|event| event.event_type == TRANSCRIPT_EVENT_TYPE)
+            .count();
         let message_ingress_seq = conn
             .query_row(
                 "SELECT COALESCE(last_ingress_seq, 0)
@@ -544,8 +567,7 @@ impl SessionStore {
             .optional()?;
         Ok(SessionCursor {
             event_sequence,
-            event_cursor: usize::try_from(event_cursor)
-                .map_err(|_| anyhow::anyhow!("event cursor does not fit usize"))?,
+            event_cursor,
             message_ingress_seq,
             step_seq,
             last_msg_at,
@@ -589,6 +611,277 @@ impl SessionStore {
         )
     }
 
+    /// Roll back one session timeline and all of its materialized projections
+    /// in one SQLite transaction. `transcript_cursor` is an index into the
+    /// active transcript returned by [`Self::load_replay_state`]; this method
+    /// resolves the corresponding append-only event sequence internally.
+    /// Discarded event history is retained for audit.
+    pub fn rollback_to(
+        &self,
+        session_id: &str,
+        transcript_cursor: usize,
+        target_step: u32,
+        projection_cutoff: Option<&ProjectionCutoff>,
+        replacement_transcript: &[SessionEventInput],
+        run_id: Option<u64>,
+    ) -> anyhow::Result<RollbackResult> {
+        Self::validate_inputs(replacement_transcript)?;
+        Self::validate_transcript_events(replacement_transcript)?;
+        let conn = self.db.conn();
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| -> anyhow::Result<RollbackResult> {
+            let to_sequence = Self::read_active_branch_points_in_connection(&conn, session_id)?
+                .into_iter()
+                .find(|(_, cursor, step, _)| {
+                    *step == target_step && *cursor == transcript_cursor
+                })
+                .map(|(event, _, _, _)| event.sequence)
+                .unwrap_or(Self::sequence_for_transcript_cursor_in_connection(
+                    &conn,
+                    session_id,
+                    transcript_cursor,
+                )?);
+            let payload = serde_json::json!({
+                "to_sequence": to_sequence,
+                "target_step": target_step,
+            });
+            let input = SessionEventInput {
+                event_type: TIMELINE_ROLLBACK_EVENT_TYPE.into(),
+                payload: payload.to_string(),
+                run_id,
+                step_number: Some(target_step),
+            };
+            if let Some(cutoff) = projection_cutoff {
+                Self::truncate_session_projections_in_transaction(
+                    &conn,
+                    session_id,
+                    &cutoff.created_at,
+                    cutoff.inclusive,
+                )?;
+            }
+            let mut events = Self::append_batch_in_transaction(&conn, session_id, &[input])?;
+            let event = events
+                .pop()
+                .ok_or_else(|| anyhow::anyhow!("rollback append returned no event"))?;
+            let replacement = if replacement_transcript.is_empty() {
+                Vec::new()
+            } else {
+                Self::append_batch_in_transaction(&conn, session_id, replacement_transcript)?
+            };
+            let cursor = Self::cursor_in_connection(&conn, session_id)?;
+            Ok(RollbackResult {
+                marker: event,
+                replacement_events: replacement,
+                cursor,
+                to_sequence,
+            })
+        })();
+        match result {
+            Ok(result) => {
+                conn.execute_batch("COMMIT")?;
+                if projection_cutoff.is_some() {
+                    self.db.cache_invalidate_messages(session_id);
+                }
+                let _ = self.live_tx.send(result.marker.clone());
+                for event in &result.replacement_events {
+                    let _ = self.live_tx.send(event.clone());
+                }
+                Ok(result)
+            }
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(error)
+            }
+        }
+    }
+
+    /// Truncate only materialized projections through the session store.
+    /// Continue/retry uses this boundary without moving the active event
+    /// timeline.
+    pub fn truncate_projection_after(
+        &self,
+        session_id: &str,
+        cutoff: &ProjectionCutoff,
+    ) -> anyhow::Result<()> {
+        let conn = self.db.conn();
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| -> anyhow::Result<Vec<SessionEvent>> {
+            let op = if cutoff.inclusive { ">=" } else { ">" };
+            let usage_sql =
+                format!("SELECT id FROM llm_usage WHERE session_id = ?1 AND created_at {op} ?2");
+            let mut statement = conn.prepare(&usage_sql)?;
+            let usage_ids = statement
+                .query_map(rusqlite::params![session_id, cutoff.created_at], |row| {
+                    row.get::<_, String>(0)
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            drop(statement);
+            Self::truncate_session_projections_in_transaction(
+                &conn,
+                session_id,
+                &cutoff.created_at,
+                cutoff.inclusive,
+            )?;
+            let discard_inputs = usage_ids
+                .iter()
+                .map(|usage_id| {
+                    SessionEventInput::new(
+                        USAGE_DISCARDED_EVENT_TYPE,
+                        serde_json::json!({ "usage_id": usage_id }).to_string(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            if discard_inputs.is_empty() {
+                return Ok(Vec::new());
+            }
+            Self::append_batch_in_transaction(&conn, session_id, &discard_inputs)
+        })();
+        match result {
+            Ok(events) => {
+                conn.execute_batch("COMMIT")?;
+                self.db.cache_invalidate_messages(session_id);
+                for event in events {
+                    let _ = self.live_tx.send(event);
+                }
+                Ok(())
+            }
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(error)
+            }
+        }
+    }
+
+    /// Resolve a branch point's projection cutoff without exposing the event
+    /// payload or timestamp lookup to Agent recovery code.
+    pub fn projection_cutoff_for_step(
+        &self,
+        session_id: &str,
+        step_number: u32,
+    ) -> anyhow::Result<Option<ProjectionCutoff>> {
+        Ok(self
+            .branch_point_for_step(session_id, step_number)?
+            .and_then(|(_, _, last_msg_at)| {
+                last_msg_at.map(|created_at| ProjectionCutoff {
+                    created_at,
+                    inclusive: false,
+                })
+            }))
+    }
+
+    /// Append usage domain events and project them into the usage tables in
+    /// the same transaction. This is the only live usage write boundary for
+    /// Agent-owned, tool-owned and media-owned model calls.
+    pub fn append_usage(
+        &self,
+        session_id: &str,
+        input: &LlmCallUsageInput,
+    ) -> anyhow::Result<LlmCallUsage> {
+        let mut records = self.append_usage_batch(session_id, std::slice::from_ref(input))?;
+        records
+            .pop()
+            .ok_or_else(|| anyhow::anyhow!("usage append returned no record"))
+    }
+
+    pub fn append_usage_batch(
+        &self,
+        session_id: &str,
+        inputs: &[LlmCallUsageInput],
+    ) -> anyhow::Result<Vec<LlmCallUsage>> {
+        if inputs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let records = inputs
+            .iter()
+            .map(|input| {
+                let step_number = input
+                    .step_number
+                    .map(|value| {
+                        u32::try_from(value)
+                            .map_err(|_| anyhow::anyhow!("usage step_number must not be negative"))
+                    })
+                    .transpose();
+                step_number.map(|step_number| {
+                    let mut record = LlmCallUsage::from_input(
+                        haven_common::types::new_id("usage"),
+                        session_id,
+                        input,
+                        now_rfc3339_millis(),
+                    );
+                    record.step_number = step_number.map(|value| value as i32);
+                    record
+                })
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        let events = records
+            .iter()
+            .map(|record| {
+                Ok(SessionEventInput {
+                    event_type: USAGE_RECORDED_EVENT_TYPE.into(),
+                    payload: serde_json::to_string(record)?,
+                    run_id: None,
+                    step_number: record.step_number.and_then(|value| u32::try_from(value).ok()),
+                })
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+
+        let conn = self.db.conn();
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| -> anyhow::Result<(Vec<LlmCallUsage>, Vec<SessionEvent>)> {
+            let stored_events = Self::append_batch_in_transaction(&conn, session_id, &events)?;
+            for record in &records {
+                Database::project_llm_call_usage_conn(&conn, record)?;
+            }
+            Ok((records, stored_events))
+        })();
+        match result {
+            Ok((records, stored_events)) => {
+                conn.execute_batch("COMMIT")?;
+                for event in stored_events {
+                    let _ = self.live_tx.send(event);
+                }
+                Ok(records)
+            }
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(error)
+            }
+        }
+    }
+
+    /// Record a compensating domain event when an in-flight usage write loses
+    /// a rollback epoch race. Deleting only the projection would leave the
+    /// usage event active and allow a later event replay to resurrect it.
+    pub fn discard_usage(&self, session_id: &str, usage_id: &str) -> anyhow::Result<()> {
+        let payload = serde_json::json!({ "usage_id": usage_id }).to_string();
+        let input = SessionEventInput::new(USAGE_DISCARDED_EVENT_TYPE, payload);
+        let conn = self.db.conn();
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| -> anyhow::Result<SessionEvent> {
+            let mut events = Self::append_batch_in_transaction(&conn, session_id, &[input])?;
+            let event = events
+                .pop()
+                .ok_or_else(|| anyhow::anyhow!("usage discard append returned no event"))?;
+            conn.execute(
+                "DELETE FROM llm_usage WHERE session_id = ?1 AND id = ?2",
+                rusqlite::params![session_id, usage_id],
+            )?;
+            Database::rebuild_session_usage_from_calls_conn(&conn, session_id)?;
+            Ok(event)
+        })();
+        match result {
+            Ok(event) => {
+                conn.execute_batch("COMMIT")?;
+                let _ = self.live_tx.send(event.clone());
+                Ok(())
+            }
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(error)
+            }
+        }
+    }
+
     pub fn append_branch_point(
         &self,
         session_id: &str,
@@ -609,6 +902,49 @@ impl SessionStore {
             run_id,
             Some(step_number),
         )
+    }
+
+    /// Append a branch point using the projection clocks observed under the
+    /// same SQLite write transaction. ReAct callers receive the clocks as
+    /// data; they never read `messages` or derive an event cursor locally.
+    pub fn append_branch_point_from_projection(
+        &self,
+        session_id: &str,
+        step_number: u32,
+        run_id: Option<u64>,
+    ) -> anyhow::Result<(SessionEvent, SessionCursor)> {
+        let conn = self.db.conn();
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| -> anyhow::Result<(SessionEvent, SessionCursor)> {
+            let cursor = Self::cursor_in_connection(&conn, session_id)?;
+            let payload = serde_json::json!({
+                "event_cursor": cursor.event_cursor,
+                "step_number": step_number,
+                "last_msg_at": cursor.last_msg_at,
+            });
+            let input = SessionEventInput {
+                event_type: BRANCH_POINT_EVENT_TYPE.into(),
+                payload: payload.to_string(),
+                run_id,
+                step_number: Some(step_number),
+            };
+            let mut events = Self::append_batch_in_transaction(&conn, session_id, &[input])?;
+            let event = events
+                .pop()
+                .ok_or_else(|| anyhow::anyhow!("branch point append returned no event"))?;
+            Ok((event, cursor))
+        })();
+        match result {
+            Ok(result) => {
+                conn.execute_batch("COMMIT")?;
+                let _ = self.live_tx.send(result.0.clone());
+                Ok(result)
+            }
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(error)
+            }
+        }
     }
 
     /// Record one phase of the recovery-only persistence protocol. The
@@ -670,6 +1006,14 @@ impl SessionStore {
         after_sequence: i64,
     ) -> anyhow::Result<Vec<SessionEvent>> {
         let conn = self.db.conn();
+        Self::read_from_in_connection(&conn, session_id, after_sequence)
+    }
+
+    fn read_from_in_connection(
+        conn: &rusqlite::Connection,
+        session_id: &str,
+        after_sequence: i64,
+    ) -> anyhow::Result<Vec<SessionEvent>> {
         let mut stmt = conn.prepare(
             "SELECT session_id, sequence, event_type, event_version, payload,
                     created_at, run_id, step_number
@@ -710,15 +1054,23 @@ impl SessionStore {
     /// cursor; the underlying append-only rows remain available for audit and
     /// future branch tooling.
     pub fn read_active(&self, session_id: &str) -> anyhow::Result<Vec<SessionEvent>> {
+        let conn = self.db.conn();
+        Self::read_active_in_connection(&conn, session_id)
+    }
+
+    fn read_active_in_connection(
+        conn: &rusqlite::Connection,
+        session_id: &str,
+    ) -> anyhow::Result<Vec<SessionEvent>> {
         let started = Instant::now();
         // A compact_summary is a durable active-root marker.  The audit log
         // before it remains readable through read_all, but normal recovery
         // only needs the root and its suffix.  Fall back to a full replay if
         // an unusual late rollback targets before that root; correctness wins
         // over the optimization for that branch.
-        let after_sequence = self.active_replay_boundary(session_id)?;
+        let after_sequence = Self::active_replay_boundary_in_connection(conn, session_id)?;
         let mut active = Vec::new();
-        for event in self.read_from(session_id, after_sequence)? {
+        for event in Self::read_from_in_connection(conn, session_id, after_sequence)? {
             anyhow::ensure!(
                 event.event_version == CURRENT_EVENT_VERSION,
                 "unsupported session event version {} at sequence {}",
@@ -758,8 +1110,10 @@ impl SessionStore {
         Ok(active)
     }
 
-    fn active_replay_boundary(&self, session_id: &str) -> anyhow::Result<i64> {
-        let conn = self.db.conn();
+    fn active_replay_boundary_in_connection(
+        conn: &rusqlite::Connection,
+        session_id: &str,
+    ) -> anyhow::Result<i64> {
         let root = conn.query_row(
             "SELECT MAX(sequence) FROM session_events
                  WHERE session_id = ?1 AND event_type = ?2
@@ -819,8 +1173,16 @@ impl SessionStore {
         &self,
         session_id: &str,
     ) -> anyhow::Result<Vec<StoredBranchPoint>> {
+        let conn = self.db.conn();
+        Self::read_active_branch_points_in_connection(&conn, session_id)
+    }
+
+    fn read_active_branch_points_in_connection(
+        conn: &rusqlite::Connection,
+        session_id: &str,
+    ) -> anyhow::Result<Vec<StoredBranchPoint>> {
         let mut points = Vec::new();
-        for event in self.read_active(session_id)? {
+        for event in Self::read_active_in_connection(conn, session_id)? {
             if event.event_type != BRANCH_POINT_EVENT_TYPE {
                 continue;
             }
@@ -870,10 +1232,29 @@ impl SessionStore {
         session_id: &str,
         transcript_cursor: usize,
     ) -> anyhow::Result<i64> {
-        let events = self.read_active_transcript(session_id)?;
+        let conn = self.db.conn();
+        Self::sequence_for_transcript_cursor_in_connection(
+            &conn,
+            session_id,
+            transcript_cursor,
+        )
+    }
+
+    fn sequence_for_transcript_cursor_in_connection(
+        conn: &rusqlite::Connection,
+        session_id: &str,
+        transcript_cursor: usize,
+    ) -> anyhow::Result<i64> {
+        let events = Self::read_active_in_connection(conn, session_id)?;
         Ok(transcript_cursor
             .checked_sub(1)
-            .and_then(|index| events.get(index).map(|event| event.sequence))
+            .and_then(|index| {
+                events
+                    .iter()
+                    .filter(|event| event.event_type == TRANSCRIPT_EVENT_TYPE)
+                    .nth(index)
+                    .map(|event| event.sequence)
+            })
             .unwrap_or(0))
     }
 
@@ -922,6 +1303,25 @@ impl SessionStore {
                 Err(error)
             }
         }
+    }
+
+    fn truncate_session_projections_in_transaction(
+        conn: &rusqlite::Connection,
+        session_id: &str,
+        cutoff: &str,
+        inclusive: bool,
+    ) -> anyhow::Result<()> {
+        let op = if inclusive { ">=" } else { ">" };
+        let messages_sql =
+            format!("DELETE FROM messages WHERE session_id = ?1 AND created_at {op} ?2");
+        let steps_sql =
+            format!("DELETE FROM session_steps WHERE session_id = ?1 AND created_at {op} ?2");
+        let usage_sql =
+            format!("DELETE FROM llm_usage WHERE session_id = ?1 AND created_at {op} ?2");
+        conn.execute(&messages_sql, rusqlite::params![session_id, cutoff])?;
+        conn.execute(&steps_sql, rusqlite::params![session_id, cutoff])?;
+        conn.execute(&usage_sql, rusqlite::params![session_id, cutoff])?;
+        Database::rebuild_session_usage_from_calls_conn(conn, session_id)
     }
 }
 
@@ -1044,6 +1444,29 @@ fn bump_message_millis(last: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use haven_common::config::RequestKind;
+
+    fn usage_input(step_number: i32, total_tokens: u32) -> LlmCallUsageInput {
+        LlmCallUsageInput {
+            step_number: Some(step_number),
+            request_kind: RequestKind::Chat,
+            call_kind: "agent".into(),
+            model: Some("test-model".into()),
+            prompt_tokens: total_tokens,
+            completion_tokens: 0,
+            total_tokens,
+            cached_tokens: 0,
+            cache_creation_tokens: 0,
+            cache_miss_tokens: 0,
+            cache_accounting: "unknown".into(),
+            cache_diagnostics: None,
+            cost_usd: 0.0,
+            has_cost: false,
+            duration_ms: None,
+            context_tokens: 0,
+            context_window: None,
+        }
+    }
 
     fn store() -> (Arc<Database>, SessionEventStore, String) {
         let db = Arc::new(Database::open_in_memory().unwrap());
@@ -1085,6 +1508,115 @@ mod tests {
         assert_eq!(active[0].sequence, 1);
         assert_eq!(active[1].payload, r#"{"type":"replacement"}"#);
         assert_eq!(store.read_all(&session_id).unwrap().len(), 4);
+    }
+
+    #[test]
+    fn usage_events_and_rollback_projection_share_one_transaction() {
+        let (db, store, session_id) = store();
+        store
+            .append_transcript(&session_id, r#"{"type":"base"}"#, 1, 1)
+            .unwrap();
+        let first_usage = store
+            .append_usage(&session_id, &usage_input(1, 10))
+            .unwrap();
+        let first_message = db
+            .add_message(&session_id, "assistant", "base", None, None)
+            .unwrap();
+        let first_step = db
+            .create_thought_step(&session_id, 1, "step-first")
+            .unwrap();
+        let cutoff = first_message
+            .created_at
+            .clone()
+            .max(first_step.created_at.clone());
+        store
+            .append_branch_point(&session_id, 1, 2, Some(&cutoff), None)
+            .unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(3));
+        store
+            .append_transcript(&session_id, r#"{"type":"discarded"}"#, 1, 2)
+            .unwrap();
+        store
+            .append_usage(&session_id, &usage_input(2, 20))
+            .unwrap();
+        db.add_message(&session_id, "assistant", "discarded", None, None)
+            .unwrap();
+        db.create_thought_step(&session_id, 2, "step-second")
+            .unwrap();
+
+        let active_usage_event = store
+            .read_active_domain_events(&session_id)
+            .unwrap()
+            .into_iter()
+            .find(|event| event.event_type == USAGE_RECORDED_EVENT_TYPE)
+            .unwrap();
+        let payload: LlmCallUsage = serde_json::from_str(&active_usage_event.payload).unwrap();
+        assert_eq!(payload.id, first_usage.id);
+
+        store
+            .rollback_to(
+                &session_id,
+                1,
+                2,
+                Some(&ProjectionCutoff {
+                    created_at: cutoff,
+                    inclusive: false,
+                }),
+                &[],
+                None,
+            )
+            .unwrap();
+        let messages = db.get_session_messages(&session_id).unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(db.get_session_steps(&session_id).unwrap().len(), 1);
+        let usage = db.get_session_llm_usage(&session_id).unwrap();
+        assert_eq!(usage.len(), 1);
+        assert_eq!(usage[0].id, first_usage.id);
+        assert_eq!(db.get_session_usage(&session_id).unwrap().unwrap().total_tokens, 10);
+        assert_eq!(store.read_all(&session_id).unwrap().len(), 6);
+        assert_eq!(store.read_active_domain_events(&session_id).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn projection_truncate_emits_usage_discard_compensation() {
+        let (db, store, session_id) = store();
+        store
+            .append_transcript(&session_id, r#"{"type":"base"}"#, 1, 1)
+            .unwrap();
+        let first = store
+            .append_usage(&session_id, &usage_input(1, 10))
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(3));
+        let second = store
+            .append_usage(&session_id, &usage_input(2, 20))
+            .unwrap();
+
+        store
+            .truncate_projection_after(
+                &session_id,
+                &ProjectionCutoff {
+                    created_at: first.created_at,
+                    inclusive: false,
+                },
+            )
+            .unwrap();
+
+        let usage = db.get_session_llm_usage(&session_id).unwrap();
+        assert_eq!(usage.iter().map(|record| &record.id).collect::<Vec<_>>(), [&first.id]);
+        let discard = store
+            .read_active_domain_events(&session_id)
+            .unwrap()
+            .into_iter()
+            .find(|event| event.event_type == USAGE_DISCARDED_EVENT_TYPE)
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&discard.payload)
+                .unwrap()
+                .get("usage_id")
+                .and_then(serde_json::Value::as_str),
+            Some(second.id.as_str())
+        );
     }
 
     #[test]
@@ -1530,28 +2062,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn checkpoint_records_clocks_without_writing_react_state() {
-        let (db, store, session_id) = store();
-        store
-            .append_transcript(&session_id, r#"{"type":"turn"}"#, 1, 1)
-            .unwrap();
-        store
-            .append(
-                &session_id,
-                "interaction_requested",
-                r#"{"id":"req"}"#,
-                None,
-                None,
-            )
-            .unwrap();
-
-        let cursor = store.checkpoint(&session_id).unwrap();
-        assert_eq!(cursor.event_cursor, 1);
-        assert_eq!(cursor.event_sequence, 2);
-        assert!(db.get_react_state(&session_id).unwrap().is_none());
-        let checkpoint = db.get_react_checkpoint(&session_id).unwrap().unwrap();
-        assert_eq!(checkpoint.event_cursor, 1);
-        assert_eq!(checkpoint.event_sequence, 2);
-    }
 }

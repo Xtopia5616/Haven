@@ -189,10 +189,6 @@ pub(crate) enum ActorCommand {
     SetRunBudget {
         budget: RunBudget,
     },
-    #[cfg(test)]
-    CurrentRunBudget {
-        reply: oneshot::Sender<Option<RunBudget>>,
-    },
     ClearRunBudget,
     EnsureStreamId {
         step: u32,
@@ -424,19 +420,6 @@ impl SessionActorHandle {
 
     pub(crate) async fn set_run_budget(&self, budget: RunBudget) {
         let _ = self.send(ActorCommand::SetRunBudget { budget }).await;
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn current_run_budget(&self) -> Option<RunBudget> {
-        let (reply, rx) = oneshot::channel();
-        if self
-            .send(ActorCommand::CurrentRunBudget { reply })
-            .await
-            .is_err()
-        {
-            return None;
-        }
-        rx.await.ok().flatten()
     }
 
     pub(crate) fn clear_run_budget_now(&self) {
@@ -1185,10 +1168,6 @@ pub(crate) fn spawn(
                 ActorCommand::SetRunBudget { budget } => {
                     state.runtime.run_budget = Some(budget);
                 }
-                #[cfg(test)]
-                ActorCommand::CurrentRunBudget { reply } => {
-                    let _ = reply.send(state.runtime.run_budget.clone());
-                }
                 ActorCommand::ClearRunBudget => {
                     state.runtime.run_budget = None;
                 }
@@ -1225,7 +1204,7 @@ pub(crate) fn spawn(
                         .clear_for_session(&state.info.id);
                 }
                 ActorCommand::RecordUsage { update, reply } => {
-                    let result = record_usage(&db, &mut state, update).await;
+                    let result = record_usage(&db, &store, &mut state, update).await;
                     let _ = reply.send(result);
                 }
                 ActorCommand::ResetUsage => {
@@ -1585,6 +1564,7 @@ fn history(state: &SessionState, limit: usize) -> Vec<Envelope> {
 
 async fn record_usage(
     db: &Arc<Database>,
+    store: &SessionStore,
     state: &mut SessionState,
     update: UsageUpdate,
 ) -> anyhow::Result<CumulativeTotals> {
@@ -1640,7 +1620,27 @@ async fn record_usage(
     let persist_epoch = state.runtime.usage.epoch(&session_id);
     let epochs = state.runtime.usage.epochs_handle();
     let persist_session_id = session_id.clone();
-    let persist = move |db: &Database| -> anyhow::Result<()> {
+    let usage_input = haven_memory::LlmCallUsageInput {
+        step_number: Some(step_number),
+        request_kind: request,
+        call_kind: "agent".into(),
+        model,
+        prompt_tokens,
+        completion_tokens,
+        total_tokens,
+        cached_tokens,
+        cache_creation_tokens,
+        cache_miss_tokens,
+        cache_accounting,
+        cache_diagnostics,
+        cost_usd,
+        has_cost,
+        duration_ms,
+        context_tokens,
+        context_window,
+    };
+    let store = store.clone();
+    let persist = move |_db: &Database| -> anyhow::Result<()> {
         let epoch_now = || {
             epochs
                 .lock()
@@ -1652,29 +1652,9 @@ async fn record_usage(
         if epoch_now() != persist_epoch {
             return Ok(());
         }
-        let record = db
-            .persist_llm_call_and_refresh_session_usage_with_cache_accounting_and_context(
-                &persist_session_id,
-                Some(step_number),
-                request,
-                model.as_deref(),
-                prompt_tokens,
-                completion_tokens,
-                total_tokens,
-                cached_tokens,
-                cache_creation_tokens,
-                cache_miss_tokens,
-                &cache_accounting,
-                cache_diagnostics.as_deref(),
-                cost_usd,
-                has_cost,
-                duration_ms,
-                context_tokens,
-                context_window,
-            )?;
+        let record = store.append_usage(&persist_session_id, &usage_input)?;
         if epoch_now() != persist_epoch {
-            let _ = db.delete_llm_usage_by_id(&record.id);
-            let _ = db.rebuild_session_usage_from_calls(&persist_session_id);
+            store.discard_usage(&persist_session_id, &record.id)?;
         }
         Ok(())
     };
