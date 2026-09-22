@@ -42,9 +42,8 @@ pub use session::{
 };
 
 pub use types::{
-    Action, BranchPoint, ProcessResult, ReActRound, ReActSnapshot, RunBudget, ToolRecord,
-    TranscriptRecord, project_transcript, project_transcript_with_strategy,
-    seed_events_from_canonical,
+    Action, BranchPoint, ProcessResult, ReActRound, RunBudget, ToolRecord, TranscriptRecord,
+    project_transcript, project_transcript_with_strategy, seed_events_from_canonical,
 };
 // The store owns SQLite ordering/persistence in `haven-memory`, while this
 // re-export keeps the Agent's session boundary discoverable to callers.

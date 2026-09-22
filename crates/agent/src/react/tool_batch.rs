@@ -4,7 +4,6 @@
 //! remains ordered by the assistant's tool-call list so the next model request
 //! is deterministic.
 
-use super::snapshot_io::PauseTurnInput;
 #[cfg(test)]
 use super::tool_batch_policy::{FailureKind, failure_kind};
 use super::tool_batch_policy::{
@@ -88,9 +87,11 @@ impl ToolBatchState {
                 state.turn_cancel.clone(),
             )
             .await;
-        engine
-            .apply_transcript_batch(ctx, transcript_events, state)
-            .await?;
+        let mut effects = super::effects::EffectBatch::continue_batch();
+        for event in transcript_events {
+            effects.transcript(event);
+        }
+        engine.apply_committed_batch(ctx, state, effects).await?;
         Ok(())
     }
 
@@ -617,17 +618,21 @@ impl ReActEngine {
             self.executor.request_interaction(pending.clone()).await?;
             SessionStatus::Paused
         };
-        self.pause_turn(PauseTurnInput {
-            session_id,
-            state,
-            snapshot_step: step_num + 1,
-            emitter,
+        let ctx = StepCtx {
+            session_id: session_id.to_string(),
+            step_num,
+            run_id: 0,
+            emitter: emitter.clone(),
+        };
+        let mut effects = super::effects::EffectBatch::continue_batch();
+        effects.pause(
+            step_num + 1,
             status,
-            waiting_reason: Some(haven_common::SessionWaitingReason::Ask),
-            final_text: &pending.prompt,
-            branch_point_step: None,
-        })
-        .await?;
+            Some(haven_common::SessionWaitingReason::Ask),
+            pending.prompt.clone(),
+            None,
+        );
+        self.apply_committed_batch(&ctx, state, effects).await?;
         Ok(ToolBatchOutcome::Done(LoopExit::Paused {
             reason: PauseReason::Ask,
         }))

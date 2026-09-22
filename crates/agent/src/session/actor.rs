@@ -151,6 +151,16 @@ pub(crate) struct UsageUpdate {
     pub cancel: Option<CancellationToken>,
 }
 
+/// `'static` subscribe closure carried by [`ActorCommand`]. It is not
+/// debugged; the actor runs it at most once.
+pub(crate) struct InboxSubscribe(Box<dyn FnOnce() -> watch::Receiver<u64> + Send>);
+
+impl std::fmt::Debug for InboxSubscribe {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("InboxSubscribe(..)")
+    }
+}
+
 #[derive(Debug)]
 pub(crate) enum ActorCommand {
     Session(SessionCommand),
@@ -222,6 +232,15 @@ pub(crate) enum ActorCommand {
         revision: u64,
     },
     ResetTokenEstimate,
+    TickMessagingPoll {
+        every_steps: u32,
+        subscribe: InboxSubscribe,
+        reply: oneshot::Sender<MessagingPollTick>,
+    },
+    RememberMessagingTitle {
+        title: Option<String>,
+    },
+    ClearMessaging,
     DrainFollowUps {
         reply: oneshot::Sender<Vec<FollowUp>>,
     },
@@ -756,6 +775,45 @@ impl SessionActorHandle {
         let _ = self.send(ActorCommand::ClearRuntime).await;
     }
 
+    /// Advance this session's inbox poll cursor. The subscribe closure runs
+    /// only when the actor does not already hold a watch receiver, so a second
+    /// turn cannot replace another session's notification position.
+    pub(crate) async fn tick_messaging_poll(
+        &self,
+        every_steps: u32,
+        subscribe: impl FnOnce() -> watch::Receiver<u64> + Send + 'static,
+    ) -> MessagingPollTick {
+        let (reply, rx) = oneshot::channel();
+        if self
+            .send(ActorCommand::TickMessagingPoll {
+                every_steps,
+                subscribe: InboxSubscribe(Box::new(subscribe)),
+                reply,
+            })
+            .await
+            .is_err()
+        {
+            return MessagingPollTick {
+                title: MessagingTitle::Missing,
+                due: false,
+            };
+        }
+        rx.await.unwrap_or(MessagingPollTick {
+            title: MessagingTitle::Missing,
+            due: false,
+        })
+    }
+
+    pub(crate) async fn remember_messaging_title(&self, title: Option<String>) {
+        let _ = self
+            .send(ActorCommand::RememberMessagingTitle { title })
+            .await;
+    }
+
+    pub(crate) fn clear_messaging_now(&self) {
+        let _ = self.tx.try_send(ActorCommand::ClearMessaging);
+    }
+
     /// Synchronous mailbox operations are called from the service's blocking
     /// transport boundary. Tokio's blocking channel/receiver methods preserve
     /// actor serialization without exposing `SessionState`.
@@ -886,6 +944,7 @@ struct SessionRuntimeState {
     stream_identity: IdentityMap,
     usage: UsageTracker,
     token_estimates: TokenEstimateCache,
+    messaging: SessionMessagingState,
 }
 
 /// Replay only the interaction domain events needed to initialize a fresh
@@ -1396,6 +1455,19 @@ pub(crate) fn spawn(
                 ActorCommand::HasChildren { reply } => {
                     let _ = reply.send(state.has_children);
                 }
+                ActorCommand::TickMessagingPoll {
+                    every_steps,
+                    subscribe,
+                    reply,
+                } => {
+                    let _ = reply.send(tick_messaging_poll(&mut state, every_steps, subscribe));
+                }
+                ActorCommand::RememberMessagingTitle { title } => {
+                    remember_messaging_title(&mut state, title);
+                }
+                ActorCommand::ClearMessaging => {
+                    clear_messaging(&mut state);
+                }
                 ActorCommand::ClearRuntime => {
                     state.action_completions.clear();
                     state.action_completion_chars = 0;
@@ -1407,6 +1479,7 @@ pub(crate) fn spawn(
                     state.steering_attachment_bytes = 0;
                     state.interactions.clear();
                     state.has_children = false;
+                    clear_messaging(&mut state);
                 }
                 ActorCommand::DeliverMessage { envelope, reply } => {
                     let result = if message_known(&state, &envelope.id) {
@@ -1986,6 +2059,68 @@ fn resolve_interaction(
     })
 }
 
+#[derive(Default)]
+struct SessionMessagingState {
+    inbox_watch: Option<watch::Receiver<u64>>,
+    steps_since_poll: u32,
+    /// `None` has not been loaded. `Some(None)` is a session with no title.
+    title: Option<Option<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum MessagingTitle {
+    Cached(Option<String>),
+    Missing,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MessagingPollTick {
+    pub(crate) title: MessagingTitle,
+    pub(crate) due: bool,
+}
+
+fn tick_messaging_poll(
+    state: &mut SessionState,
+    every_steps: u32,
+    subscribe: InboxSubscribe,
+) -> MessagingPollTick {
+    let messaging = &mut state.runtime.messaging;
+    messaging.steps_since_poll = messaging.steps_since_poll.saturating_add(1);
+    if messaging.inbox_watch.is_none() {
+        messaging.inbox_watch = Some((subscribe.0)());
+    }
+    let notified = messaging
+        .inbox_watch
+        .as_mut()
+        .map(|receiver| match receiver.has_changed() {
+            Ok(changed) => {
+                if changed {
+                    let _ = receiver.borrow_and_update();
+                }
+                changed
+            }
+            Err(_) => false,
+        })
+        .unwrap_or(false);
+    let due = notified || messaging.steps_since_poll >= every_steps.max(1);
+    if due {
+        messaging.steps_since_poll = 0;
+    }
+    let title = match &messaging.title {
+        Some(title) => MessagingTitle::Cached(title.clone()),
+        None => MessagingTitle::Missing,
+    };
+    MessagingPollTick { title, due }
+}
+
+fn remember_messaging_title(state: &mut SessionState, title: Option<String>) {
+    state.runtime.messaging.title = Some(title);
+}
+
+fn clear_messaging(state: &mut SessionState) {
+    state.runtime.messaging = SessionMessagingState::default();
+}
+
 #[cfg(test)]
 mod queue_tests {
     use super::*;
@@ -2021,6 +2156,40 @@ mod queue_tests {
             archive_message_ids: HashSet::new(),
             runtime: SessionRuntimeState::default(),
         }
+    }
+
+    #[test]
+    fn messaging_poll_state_stays_on_the_session_and_clears() {
+        let mut state = empty_state();
+        let (tx, _rx) = watch::channel(0_u64);
+        // Production subscriptions come from Sender::subscribe, which marks
+        // the current value as seen. Cloning a receiver that never observed
+        // the latest send would look like a fresh notification.
+        let subscribe = |tx: &watch::Sender<u64>| {
+            let tx = tx.clone();
+            InboxSubscribe(Box::new(move || tx.subscribe()))
+        };
+        let first = tick_messaging_poll(&mut state, 3, subscribe(&tx));
+        assert_eq!(first.title, MessagingTitle::Missing);
+        assert!(!first.due);
+
+        remember_messaging_title(&mut state, Some("hello".into()));
+        let second = tick_messaging_poll(&mut state, 3, subscribe(&tx));
+        assert_eq!(second.title, MessagingTitle::Cached(Some("hello".into())));
+        assert!(!second.due);
+
+        let third = tick_messaging_poll(&mut state, 3, subscribe(&tx));
+        assert!(third.due);
+
+        tx.send_replace(1);
+        let notified = tick_messaging_poll(&mut state, 3, subscribe(&tx));
+        assert!(notified.due);
+        assert_eq!(notified.title, MessagingTitle::Cached(Some("hello".into())));
+
+        clear_messaging(&mut state);
+        let cleared = tick_messaging_poll(&mut state, 3, subscribe(&tx));
+        assert_eq!(cleared.title, MessagingTitle::Missing);
+        assert!(!cleared.due);
     }
 
     #[test]

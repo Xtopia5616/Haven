@@ -1,7 +1,6 @@
 use crate::db::Database;
 use chrono::{Local, NaiveDate, TimeZone, Utc};
 use haven_common::SessionStatus;
-use rusqlite::OptionalExtension;
 
 /// WHERE clause shared by every session search query (list, count, paginated).
 /// Kept as one constant so search semantics cannot drift between queries.
@@ -9,7 +8,7 @@ const SEARCH_WHERE: &str = "WHERE input_text LIKE ?1 OR title LIKE ?1
     OR EXISTS (SELECT 1 FROM messages
                WHERE messages.session_id = sessions.id AND messages.content LIKE ?1)";
 
-/// Map a row produced by a history-list query (6 columns, no react_state).
+/// Map a row produced by a history-list query (id, input, title, status, timestamps).
 fn map_session_list_row(row: &rusqlite::Row) -> rusqlite::Result<Session> {
     let status = row.get::<_, String>(3)?;
     Ok(Session {
@@ -19,7 +18,6 @@ fn map_session_list_row(row: &rusqlite::Row) -> rusqlite::Result<Session> {
         status: SessionStatus::from_status_str(&status),
         created_at: row.get(4)?,
         updated_at: row.get(5)?,
-        react_state: None,
     })
 }
 
@@ -56,22 +54,6 @@ pub struct Session {
     pub status: SessionStatus,
     pub created_at: String,
     pub updated_at: String,
-    pub react_state: Option<String>,
-}
-
-/// Metadata committed alongside `sessions.react_state`.
-///
-/// The snapshot JSON is a checkpoint cache; `event_sequence` records the
-/// durable event high-water mark observed by that cache write. The remaining
-/// cursors describe the materialized projections at the same boundary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ReactCheckpoint {
-    pub revision: i64,
-    pub event_cursor: i64,
-    /// High-water mark in `session_events` observed by this cache write.
-    pub event_sequence: i64,
-    pub message_ingress_seq: i64,
-    pub step_seq: i64,
 }
 
 impl Database {
@@ -92,16 +74,11 @@ impl Database {
             status: SessionStatus::Pending,
             created_at: now.clone(),
             updated_at: now,
-            react_state: None,
         })
     }
 
     pub fn get_session(&self, id: &str) -> anyhow::Result<Option<Session>> {
         let conn = self.conn();
-        // react_state is excluded here too: it is a full ReAct snapshot that
-        // can be tens of KB, and consumers of the Session row (resume payload,
-        // last-conversation restore) never read it. The agent reads it via
-        // `get_react_state`, which selects only that column.
         let mut stmt = conn.prepare(
             "SELECT id, input_text, title, status, created_at, updated_at
              FROM sessions WHERE id = ?1",
@@ -521,260 +498,6 @@ impl Database {
         }
         Ok(sessions)
     }
-
-    /// Save serialized ReAct state as a checkpoint/cache for pause/resume.
-    ///
-    /// The snapshot is gzip-compressed before storage. It contains runtime
-    /// checkpoint metadata, projection cursors and at most a bounded event
-    /// tail; the durable transcript lives in `session_events` and remains the
-    /// recovery authority.
-    pub fn save_react_state(&self, session_id: &str, state_json: &str) -> anyhow::Result<()> {
-        let now = Utc::now().to_rfc3339();
-        let conn = self.conn();
-        conn.execute_batch("BEGIN IMMEDIATE")?;
-        let result = save_react_state_in_transaction(&conn, session_id, state_json, &now);
-        match result {
-            Ok(()) => conn.execute_batch("COMMIT")?,
-            Err(error) => {
-                let _ = conn.execute_batch("ROLLBACK");
-                return Err(error);
-            }
-        }
-        Ok(())
-    }
-
-    /// Update only the checkpoint's interaction metadata while holding the
-    /// SQLite write transaction.  Reading a snapshot in the caller and then
-    /// writing the modified JSON back is unsafe: a concurrent stream snapshot
-    /// can commit in between and the stale interaction write would erase its
-    /// newer transcript/events.  This method reads the current blob after
-    /// acquiring `BEGIN IMMEDIATE`, changes one field, and refreshes the
-    /// checkpoint metadata from that same transaction.
-    pub fn update_react_state_interactions_json(
-        &self,
-        session_id: &str,
-        interactions_json: &str,
-    ) -> anyhow::Result<()> {
-        let interactions: serde_json::Value = serde_json::from_str(interactions_json)?;
-        if !interactions.is_array() {
-            anyhow::bail!("react_state interactions must be a JSON array");
-        }
-        let conn = self.conn();
-        conn.execute_batch("BEGIN IMMEDIATE")?;
-        let result = (|| -> anyhow::Result<()> {
-            let stored: rusqlite::types::Value = conn.query_row(
-                "SELECT react_state FROM sessions WHERE id = ?1",
-                rusqlite::params![session_id],
-                |row| row.get(0),
-            )?;
-            let json = match stored {
-                rusqlite::types::Value::Blob(blob) => decompress_react_state(&blob)?,
-                rusqlite::types::Value::Text(_) => anyhow::bail!(
-                    "incompatible react_state: legacy uncompressed snapshot requires reset"
-                ),
-                rusqlite::types::Value::Null => {
-                    anyhow::bail!("react_state checkpoint is missing")
-                }
-                other => anyhow::bail!("invalid react_state storage type: {other:?}"),
-            };
-            let mut snapshot: serde_json::Value = serde_json::from_str(&json)?;
-            let object = snapshot
-                .as_object_mut()
-                .ok_or_else(|| anyhow::anyhow!("react_state snapshot must be a JSON object"))?;
-            object.insert("interactions".into(), interactions.clone());
-            let updated_json = serde_json::to_string(&snapshot)?;
-            save_react_state_in_transaction(
-                &conn,
-                session_id,
-                &updated_json,
-                &Utc::now().to_rfc3339(),
-            )
-        })();
-        match result {
-            Ok(()) => conn.execute_batch("COMMIT")?,
-            Err(error) => {
-                let _ = conn.execute_batch("ROLLBACK");
-                return Err(error);
-            }
-        }
-        Ok(())
-    }
-
-    /// Read the checkpoint metadata written with the latest snapshot.
-    pub fn get_react_checkpoint(
-        &self,
-        session_id: &str,
-    ) -> anyhow::Result<Option<ReactCheckpoint>> {
-        let conn = self.conn();
-        let value = conn
-            .query_row(
-                "SELECT revision, event_cursor, event_sequence,
-                        message_ingress_seq, step_seq
-                 FROM react_checkpoints WHERE session_id = ?1",
-                rusqlite::params![session_id],
-                |row| {
-                    Ok(ReactCheckpoint {
-                        revision: row.get(0)?,
-                        event_cursor: row.get(1)?,
-                        event_sequence: row.get(2)?,
-                        message_ingress_seq: row.get(3)?,
-                        step_seq: row.get(4)?,
-                    })
-                },
-            )
-            .optional()?;
-        Ok(value)
-    }
-
-    /// Read the current high-water marks of the materialized projections.
-    pub fn get_react_projection_cursor(&self, session_id: &str) -> anyhow::Result<(i64, i64)> {
-        let conn = self.conn();
-        let message_ingress_seq = conn
-            .query_row(
-                "SELECT COALESCE(last_ingress_seq, 0)
-                 FROM message_ingress_cursors WHERE session_id = ?1",
-                rusqlite::params![session_id],
-                |row| row.get(0),
-            )
-            .optional()?
-            .unwrap_or(0);
-        let step_seq = conn
-            .query_row(
-                "SELECT COALESCE(last_step_seq, 0)
-                 FROM session_step_cursors WHERE session_id = ?1",
-                rusqlite::params![session_id],
-                |row| row.get(0),
-            )
-            .optional()?
-            .unwrap_or(0);
-        Ok((message_ingress_seq, step_seq))
-    }
-
-    /// Load serialized ReAct state for a paused session. Snapshots must be
-    /// gzip-compressed rows written by `save_react_state`; older uncompressed
-    /// rows are incompatible and require a data reset.
-    pub fn get_react_state(&self, session_id: &str) -> anyhow::Result<Option<String>> {
-        let conn = self.conn();
-        let value: Option<rusqlite::types::Value> = conn
-            .query_row(
-                "SELECT react_state FROM sessions WHERE id = ?1",
-                rusqlite::params![session_id],
-                |row| row.get(0),
-            )
-            .map_err(anyhow::Error::from)?;
-        match value {
-            Some(rusqlite::types::Value::Blob(b)) => decompress_react_state(&b).map(Some),
-            Some(rusqlite::types::Value::Text(_)) => {
-                anyhow::bail!(
-                    "incompatible react_state: legacy uncompressed snapshot requires reset"
-                )
-            }
-            _ => Ok(None),
-        }
-    }
-}
-
-/// Write a checkpoint and its high-water metadata using the caller's active
-/// SQLite transaction.  Keeping this bookkeeping in one helper is important
-/// for partial snapshot updates: they must advance the same revision and
-/// cursors as ordinary snapshot writes without reconstructing stale metadata.
-fn save_react_state_in_transaction(
-    conn: &rusqlite::Connection,
-    session_id: &str,
-    state_json: &str,
-    now: &str,
-) -> anyhow::Result<()> {
-    let compressed = compress_react_state(state_json)?;
-    let event_cursor = serde_json::from_str::<serde_json::Value>(state_json)
-        .ok()
-        .and_then(|value| {
-            value
-                .get("event_cursor")
-                .and_then(serde_json::Value::as_i64)
-        })
-        .unwrap_or(0);
-    let previous_revision: Option<i64> = conn
-        .query_row(
-            "SELECT COALESCE(revision, 0) + 1
-             FROM react_checkpoints WHERE session_id = ?1",
-            rusqlite::params![session_id],
-            |row| row.get(0),
-        )
-        .optional()?;
-    let revision = previous_revision.unwrap_or(1);
-    let message_ingress_seq: i64 = conn
-        .query_row(
-            "SELECT COALESCE(last_ingress_seq, 0)
-             FROM message_ingress_cursors WHERE session_id = ?1",
-            rusqlite::params![session_id],
-            |row| row.get(0),
-        )
-        .optional()?
-        .unwrap_or(0);
-    let event_sequence: i64 = conn.query_row(
-        "SELECT COALESCE(MAX(sequence), 0)
-         FROM session_events WHERE session_id = ?1",
-        rusqlite::params![session_id],
-        |row| row.get(0),
-    )?;
-    let step_seq: i64 = conn
-        .query_row(
-            "SELECT COALESCE(last_step_seq, 0)
-             FROM session_step_cursors WHERE session_id = ?1",
-            rusqlite::params![session_id],
-            |row| row.get(0),
-        )
-        .optional()?
-        .unwrap_or(0);
-    conn.execute(
-        "UPDATE sessions SET react_state = ?1, updated_at = ?2 WHERE id = ?3",
-        rusqlite::params![compressed, now, session_id],
-    )?;
-    conn.execute(
-        "INSERT INTO react_checkpoints
-            (session_id, revision, event_cursor, event_sequence,
-             message_ingress_seq, step_seq, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-         ON CONFLICT(session_id) DO UPDATE SET
-            revision = excluded.revision,
-            event_cursor = excluded.event_cursor,
-            event_sequence = excluded.event_sequence,
-            message_ingress_seq = excluded.message_ingress_seq,
-            step_seq = excluded.step_seq,
-            updated_at = excluded.updated_at",
-        rusqlite::params![
-            session_id,
-            revision,
-            event_cursor,
-            event_sequence,
-            message_ingress_seq,
-            step_seq,
-            now
-        ],
-    )?;
-    Ok(())
-}
-
-/// Gzip-compress a JSON snapshot.
-fn compress_react_state(json: &str) -> anyhow::Result<Vec<u8>> {
-    use std::io::Write;
-    let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-    enc.write_all(json.as_bytes())?;
-    Ok(enc.finish()?)
-}
-
-/// Decompress a stored snapshot. Non-gzip blobs are incompatible with the
-/// current snapshot contract and require a data reset.
-fn decompress_react_state(blob: &[u8]) -> anyhow::Result<String> {
-    if blob.len() >= 2 && blob[0] == 0x1f && blob[1] == 0x8b {
-        use std::io::Read;
-        let mut dec = flate2::read::GzDecoder::new(blob);
-        let mut out = String::new();
-        dec.read_to_string(&mut out)?;
-        Ok(out)
-    } else {
-        anyhow::bail!("incompatible react_state: legacy uncompressed snapshot requires reset")
-    }
 }
 
 #[cfg(test)]
@@ -797,7 +520,6 @@ mod tests {
         assert_eq!(session.status, SessionStatus::Pending);
         assert!(!session.created_at.is_empty());
         assert!(!session.updated_at.is_empty());
-        assert!(session.react_state.is_none());
 
         let has_transcript: i64 = db
             .conn()
@@ -1222,22 +944,6 @@ mod tests {
     }
 
     #[test]
-    fn test_search_sessions_filtered_list_rows_have_no_react_state() {
-        let db = create_db();
-        let session = db.create_session("a").unwrap();
-        db.save_react_state(&session.id, r#"{"v":1}"#).unwrap();
-
-        let results = db
-            .search_sessions_filtered(None, None, None, None, 50, 0)
-            .unwrap();
-        assert_eq!(results.len(), 1);
-        assert!(results[0].react_state.is_none());
-
-        let listed = db.list_sessions(50, 0).unwrap();
-        assert!(listed[0].react_state.is_none());
-    }
-
-    #[test]
     fn test_search_sessions_filtered_no_filters_uses_cache() {
         let db = create_db();
         db.create_session("a").unwrap();
@@ -1260,218 +966,5 @@ mod tests {
             .search_sessions_filtered(None, None, None, None, 50, 0)
             .unwrap();
         assert_eq!(third.len(), 3);
-    }
-
-    #[test]
-    fn test_get_session_excludes_react_state() {
-        let db = create_db();
-        let session = db.create_session("a").unwrap();
-        db.save_react_state(&session.id, r#"{"v":1}"#).unwrap();
-
-        let loaded = db.get_session(&session.id).unwrap().unwrap();
-        assert!(loaded.react_state.is_none());
-        // The full state is still retrievable through the dedicated accessor.
-        assert_eq!(
-            db.get_react_state(&session.id).unwrap().unwrap(),
-            r#"{"v":1}"#
-        );
-    }
-
-    #[test]
-    fn test_save_and_get_react_state() {
-        let db = create_db();
-        let session = db.create_session("input").unwrap();
-
-        let result = db.get_react_state(&session.id).unwrap();
-        assert!(result.is_none());
-
-        let state = r#"{"step":0,"messages":[]}"#;
-        db.save_react_state(&session.id, state).unwrap();
-
-        let loaded = db.get_react_state(&session.id).unwrap();
-        assert!(loaded.is_some());
-        assert_eq!(loaded.unwrap(), state);
-    }
-
-    #[test]
-    fn test_save_react_state_overwrites() {
-        let db = create_db();
-        let session = db.create_session("input").unwrap();
-
-        db.save_react_state(&session.id, r#"{"v":1}"#).unwrap();
-        db.save_react_state(&session.id, r#"{"v":2}"#).unwrap();
-
-        let loaded = db.get_react_state(&session.id).unwrap().unwrap();
-        assert_eq!(loaded, r#"{"v":2}"#);
-    }
-
-    #[test]
-    fn test_update_react_state_interactions_preserves_latest_snapshot() {
-        let db = create_db();
-        let session = db.create_session("input").unwrap();
-
-        db.save_react_state(
-            &session.id,
-            r#"{"event_cursor":2,"interactions":[{"id":"old"}]}"#,
-        )
-        .unwrap();
-        // Simulate a newer streamed-output checkpoint landing before the
-        // interaction update. The update must merge into this latest blob,
-        // not write back the caller's older snapshot.
-        db.save_react_state(
-            &session.id,
-            r#"{"event_cursor":3,"interactions":[{"id":"old"}]}"#,
-        )
-        .unwrap();
-        db.update_react_state_interactions_json(&session.id, r#"[{"id":"new"}]"#)
-            .unwrap();
-
-        let loaded: serde_json::Value =
-            serde_json::from_str(&db.get_react_state(&session.id).unwrap().unwrap()).unwrap();
-        assert_eq!(loaded["event_cursor"], 3);
-        assert_eq!(loaded["interactions"][0]["id"], "new");
-        let checkpoint = db
-            .get_react_checkpoint(&session.id)
-            .unwrap()
-            .expect("checkpoint after interaction update");
-        assert_eq!(checkpoint.revision, 3);
-        assert_eq!(checkpoint.event_cursor, 3);
-    }
-
-    #[test]
-    fn test_update_react_state_interactions_rejects_invalid_inputs() {
-        let db = create_db();
-        let session = db.create_session("input").unwrap();
-        let error = db
-            .update_react_state_interactions_json(&session.id, r#"{"id":"bad"}"#)
-            .unwrap_err();
-        assert!(error.to_string().contains("JSON array"));
-
-        let error = db
-            .update_react_state_interactions_json(&session.id, "[]")
-            .unwrap_err();
-        assert!(error.to_string().contains("checkpoint is missing"));
-
-        db.save_react_state(&session.id, r#"{"event_cursor":0}"#)
-            .unwrap();
-        db.update_react_state_interactions_json(&session.id, "[]")
-            .unwrap();
-    }
-
-    #[test]
-    fn test_react_checkpoint_tracks_revision_event_and_projection_cursors() {
-        let db = create_db();
-        let session = db.create_session("input").unwrap();
-
-        db.save_react_state(&session.id, r#"{"event_cursor":2}"#)
-            .unwrap();
-        let first = db
-            .get_react_checkpoint(&session.id)
-            .unwrap()
-            .expect("checkpoint after snapshot");
-        assert_eq!(first.revision, 1);
-        assert_eq!(first.event_cursor, 2);
-        assert_eq!(first.message_ingress_seq, 0);
-        assert_eq!(first.step_seq, 0);
-
-        db.add_message(&session.id, "user", "later", None, None)
-            .unwrap();
-        db.create_thought_step(&session.id, 1, "step-checkpoint")
-            .unwrap();
-        db.save_react_state(&session.id, r#"{"event_cursor":3}"#)
-            .unwrap();
-
-        let second = db
-            .get_react_checkpoint(&session.id)
-            .unwrap()
-            .expect("updated checkpoint");
-        assert_eq!(second.revision, 2);
-        assert_eq!(second.event_cursor, 3);
-        assert_eq!(second.message_ingress_seq, 1);
-        assert_eq!(second.step_seq, 1);
-        assert!(second.message_ingress_seq > first.message_ingress_seq);
-        assert!(second.step_seq > first.step_seq);
-    }
-
-    #[test]
-    fn test_react_checkpoint_uses_snapshot_cursor_not_event_tail_length() {
-        let db = create_db();
-        let session = db.create_session("input").unwrap();
-
-        db.save_react_state(
-            &session.id,
-            r#"{"event_cursor":99,"event_tail":[{}],"step_number":4}"#,
-        )
-        .unwrap();
-
-        let checkpoint = db
-            .get_react_checkpoint(&session.id)
-            .unwrap()
-            .expect("checkpoint after snapshot");
-        assert_eq!(checkpoint.event_cursor, 99);
-    }
-
-    #[test]
-    fn test_react_state_roundtrip_compresses() {
-        let db = create_db();
-        let session = db.create_session("input").unwrap();
-        let big = format!(
-            r#"{{"canonical":[{}]}}"#,
-            (0..500)
-                .map(|i| format!(r#"{{"role":"user","content":[{{"type":"text","text":"message {} 中文内容"}}]}}"#, i))
-                .collect::<Vec<_>>()
-                .join(",")
-        );
-        db.save_react_state(&session.id, &big).unwrap();
-        let loaded = db.get_react_state(&session.id).unwrap().unwrap();
-        assert_eq!(loaded, big);
-        // The stored column must actually be compressed (not the raw JSON).
-        let raw_len: i64 = db
-            .conn()
-            .query_row(
-                "SELECT length(react_state) FROM sessions WHERE id = ?1",
-                [&session.id],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert!(
-            (raw_len as usize) < (big.len() / 2),
-            "snapshot should be compressed, raw {} vs stored {}",
-            big.len(),
-            raw_len
-        );
-    }
-
-    #[test]
-    fn test_react_state_legacy_uncompressed_requires_reset() {
-        let db = create_db();
-        let session = db.create_session("input").unwrap();
-        // Simulate a row written by an older build (plain TEXT, no gzip magic).
-        db.conn()
-            .execute(
-                "UPDATE sessions SET react_state = ?1 WHERE id = ?2",
-                rusqlite::params![r#"{"legacy":true}"#, session.id],
-            )
-            .unwrap();
-        let err = db.get_react_state(&session.id).unwrap_err();
-        assert!(err.to_string().contains("requires reset"));
-    }
-
-    #[test]
-    fn test_react_state_non_gzip_blob_requires_reset() {
-        let db = create_db();
-        let session = db.create_session("input").unwrap();
-        // A non-gzip BLOB is also outside the current snapshot contract.
-        db.conn()
-            .execute(
-                "UPDATE sessions SET react_state = ?1 WHERE id = ?2",
-                rusqlite::params![
-                    rusqlite::types::Value::Blob(br#"{"legacy":true}"#.to_vec()),
-                    session.id
-                ],
-            )
-            .unwrap();
-        let err = db.get_react_state(&session.id).unwrap_err();
-        assert!(err.to_string().contains("requires reset"));
     }
 }

@@ -3,13 +3,13 @@
 ## 背景
 
 失败的流式模型回合同时拥有 `partial_messages` scratch、恢复消息、branch point
-和 recovery snapshot。旧路径在写入失败后仍会丢弃 scratch，导致 Continue 既没有
+和 recovery event boundary。旧路径在写入失败后仍会丢弃 scratch，导致 Continue 既没有
 可见消息也没有恢复标记。模型路由也已经支持候选列表，但熔断器仍按 legacy role
 共享，主模型失败会污染备用模型的健康状态。
 
 ## 决定
 
-- 恢复路径返回结构化结果；只有 branch point、恢复消息/投影和 recovery snapshot
+- 恢复路径返回结构化结果；只有 branch point、恢复消息/投影和 recovery event boundary
   全部成功时才允许 `PartialStore::discard`。失败时保留 scratch，并记录明确的
   recovery persistence failure。
 - 路由熔断与半开探测按 routed model id 隔离；role 继续只承载并发 semaphore 和

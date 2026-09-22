@@ -170,7 +170,7 @@ pub struct RecoveryPersistenceStatus {
     pub branch_point: bool,
     pub partial_messages: bool,
     pub projection: bool,
-    pub recovery_snapshot: bool,
+    pub event_boundary: bool,
 }
 
 impl SessionEventInput {
@@ -969,7 +969,7 @@ impl SessionStore {
             "branch_point": status.branch_point,
             "partial_messages": status.partial_messages,
             "projection": status.projection,
-            "recovery_snapshot": status.recovery_snapshot,
+            "event_boundary": status.event_boundary,
         });
         self.append(
             session_id,
@@ -2069,7 +2069,7 @@ mod tests {
                     branch_point: true,
                     partial_messages: false,
                     projection: false,
-                    recovery_snapshot: false,
+                    event_boundary: false,
                 },
             )
             .unwrap();

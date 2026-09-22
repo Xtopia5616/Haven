@@ -8,7 +8,7 @@
 //! version stamp rejects both older and newer database contracts.
 
 /// Current database contract. Any schema change requires a fresh database.
-pub const SCHEMA_VERSION: i32 = 26;
+pub const SCHEMA_VERSION: i32 = 27;
 /// Current schema, created idempotently on every open.
 const SCHEMA_SQL: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS sessions (
@@ -19,6 +19,9 @@ const SCHEMA_SQL: &[&str] = &[
             CHECK(status IN ('pending','running','paused','completed','error')),
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        -- Unused by production recovery. Kept as a test-compatibility column
+        -- until the next schema reset; resume and rollback must not read or
+        -- write it.
         react_state TEXT
     )",
     "CREATE TABLE IF NOT EXISTS messages (
@@ -40,18 +43,6 @@ const SCHEMA_SQL: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS message_ingress_cursors (
         session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
         last_ingress_seq INTEGER NOT NULL DEFAULT 0
-    )",
-    "CREATE TABLE IF NOT EXISTS react_checkpoints (
-        session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
-        revision INTEGER NOT NULL DEFAULT 0,
-        -- Active transcript record count represented by the checkpoint. This
-        -- is a bounded snapshot cursor, not a copy of the transcript.
-        event_cursor INTEGER NOT NULL DEFAULT 0,
-        -- High-water mark across all session_events, including control rows.
-        event_sequence INTEGER NOT NULL DEFAULT 0,
-        message_ingress_seq INTEGER NOT NULL DEFAULT 0,
-        step_seq INTEGER NOT NULL DEFAULT 0,
-        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     )",
     // Durable session event authority. Rows are never updated or deleted by
     // the repository; rollback is represented by a timeline_rollback marker.
@@ -468,9 +459,9 @@ fn table_exists(conn: &rusqlite::Connection, table: &str) -> anyhow::Result<bool
 }
 
 const REQUIRED_COLUMNS: &[(&str, &str)] = &[
+    ("sessions", "react_state"),
     ("messages", "voice"),
     ("messages", "ui_metadata"),
-    ("react_checkpoints", "event_sequence"),
     ("messages", "media_inputs"),
     ("session_events", "payload"),
     ("session_events", "event_version"),
@@ -611,7 +602,6 @@ mod tests {
             "message_ingress_cursors",
             "messages",
             "partial_messages",
-            "react_checkpoints",
             "session_steps",
             "session_events",
             "session_step_cursors",
@@ -635,6 +625,16 @@ mod tests {
             .unwrap();
         assert!(columns.iter().any(|column| column == "ui_metadata"));
         assert!(!columns.iter().any(|column| column == "attachments"));
+
+        let session_columns = conn
+            .prepare("SELECT name FROM pragma_table_info('sessions')")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(session_columns.iter().any(|column| column == "react_state"));
+        assert!(!table_exists(&conn, "react_checkpoints").unwrap());
     }
 
     #[test]

@@ -48,5 +48,5 @@ cargo test -p haven-agent -- --test-threads=1
 
 ## 回滚与重置
 
-回滚时恢复 `finish_turn_end` 与 `TurnEndOutcome` 到 `react/inject.rs`，删除
+回滚时恢复 `finish_turn_end` 到 `react/inject.rs`，删除
 `react/turn_end.rs`，不需要删除数据库、配置或缓存。

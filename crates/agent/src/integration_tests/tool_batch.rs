@@ -439,12 +439,7 @@ async fn run_session_cancelled_mid_batch_surfaces_interrupted_tools() {
     // The saved snapshot canonical stays a valid assistant/tool chain: no
     // dangling assistant tool_calls without a following result (which
     // providers would reject as a 400 on resume).
-    let state_json = agent
-        .db
-        .get_react_state(&session.id)
-        .unwrap()
-        .expect("exit snapshot must be saved after mid-batch cancel");
-    let snapshot: ReActSnapshot = serde_json::from_str(&state_json).unwrap();
+    let snapshot = load_event_projection(&agent, &session.id).await;
     let mut pending: Vec<String> = Vec::new();
     let mut interrupted_with_fields = 0;
     let (canonical, _) = snapshot.project();

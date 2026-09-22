@@ -117,7 +117,7 @@ impl ReActEngine {
 
         if let Some(claim) = inbox_claim {
             if self
-                .save_snapshot_with_branches(&ctx.session_id, state, ctx.step_num)
+                .ensure_event_boundary(&ctx.session_id, state, ctx.step_num)
                 .await
             {
                 if !claim.complete().await {
@@ -125,7 +125,7 @@ impl ReActEngine {
                 }
             } else {
                 tracing::warn!(
-                    "leaving cross-session inbox claim unacknowledged for {} because its snapshot was not durable",
+                    "leaving cross-session inbox claim unacknowledged for {} because its event boundary was not durable",
                     ctx.session_id
                 );
             }

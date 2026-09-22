@@ -112,7 +112,7 @@ provider tool name、权限矩阵、session catalog、历史恢复和旧步骤�
 
 - `workspace_root` 只改善相对路径的默认定位，不绕过 `AuthorizationEngine`、allowed paths、reparse-point 和 managed asset 校验。
 - `retry_safety` 不等于 `risk_level`：可重试的读操作仍可能需要权限；不可重试的写操作仍不能因为失败而自动重放。
-- 结构化 observation 是模型视图，不改变 X12 `ReActSnapshot.events` 权威、不新增数据库迁移。
+- 结构化 observation 是模型视图，不改变 X12 `session_events` 权威、不新增数据库迁移。
 - provider/model 的 capability profile 是协议能力与运行时路由的交集；未知能力不写成可用。
 - HTTP 工具默认阻断 localhost、loopback、私网、link-local 和云元数据地址；自动重定向关闭并逐跳复核目标，域名 allowlist 只会进一步收窄范围。
 - agent 的重试诊断消费结构化错误分类；错误文本仅在工具边界作为兼容 fallback，不作为 agent 的主要分支条件。

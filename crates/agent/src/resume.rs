@@ -23,6 +23,7 @@
 //! recovery.
 
 use crate::AgentLayer;
+use crate::react::DurableEventState;
 use crate::react::{ReActState, RunInput};
 use crate::resume_support::{
     builtin_selection, infer_resume_step, load_mcp_tool_names, load_skill_names,
@@ -31,7 +32,7 @@ use crate::resume_support::{
 
 use crate::session::SessionStatus;
 use crate::types::{
-    BranchPoint, ReActRound, ReActSnapshot, TranscriptRecord, project_transcript_with_strategy,
+    BranchPoint, ReActRound, TranscriptRecord, project_transcript_with_strategy,
     seed_events_from_canonical,
 };
 use haven_common::media::MediaInput;
@@ -210,30 +211,19 @@ impl AgentLayer {
             .react_engine
             .load_durable_event_state(session_id)
             .await?;
-        let snapshot = match durable_state {
-            Some(durable) => {
-                let active_event_cursor = durable.events.len();
-                let mut snapshot = ReActSnapshot::default();
-                snapshot.events = durable.events;
-                snapshot.event_cursor = active_event_cursor;
-                snapshot.branch_points = durable.branch_points;
-                snapshot.step_number = infer_resume_step(&snapshot.events);
-                snapshot.last_ingress_seq = durable.cursor.message_ingress_seq;
-                Some(snapshot)
-            }
-            None => None,
-        };
-
-        match snapshot {
-            Some(snapshot) => {
+        match durable_state {
+            Some(replay) => {
                 tracing::info!(
                     "restoring ReAct state for session {} ({} events)",
                     session_id,
-                    snapshot.events.len()
+                    replay.events.len()
                 );
                 // Re-register per-session tools (skills/MCP) from projected
                 // rounds, since in-memory registrations are lost on restart.
-                let (_, rounds) = snapshot.project();
+                let (_, rounds) = project_transcript_with_strategy(
+                    &replay.events,
+                    self.react_engine.media_strategy(),
+                );
                 self.restore_per_session_tools(session_id, &rounds).await;
                 let interactions = self.executor.interaction_requests(session_id).await;
                 let has_pending_ask = interactions.iter().any(|request| {
@@ -272,7 +262,7 @@ impl AgentLayer {
                         );
                     }
                 }
-                self.run_session_resumed(session_id, snapshot, run_id, &description)
+                self.run_session_resumed(session_id, replay, run_id, &description)
                     .await
             }
             None => {
@@ -372,15 +362,15 @@ impl AgentLayer {
     async fn run_session_resumed(
         &self,
         session_id: &str,
-        snapshot: ReActSnapshot,
+        replay: DurableEventState,
         run_id: u64,
         description: &str,
     ) -> anyhow::Result<Vec<ReActRound>> {
-        let events = snapshot.events;
+        let events = replay.events;
         let (mut canonical, _) =
             project_transcript_with_strategy(&events, self.react_engine.media_strategy());
-        let start_step = snapshot.step_number;
-        let branch_points = snapshot.branch_points;
+        let start_step = infer_resume_step(&events);
+        let branch_points = replay.branch_points;
 
         // X2: rebuild the tool/runtime shell immediately on resume. Semantic
         // memory is prefetched in the background so a slow embedding provider
@@ -415,7 +405,7 @@ impl AgentLayer {
         // the same process), the ReAct loop injects them and the DB copy
         // must NOT be re-queued — that would double-inject.
         if !self.executor.has_pending_context(session_id).await {
-            let ingress_cursor = snapshot.last_ingress_seq;
+            let ingress_cursor = replay.cursor.message_ingress_seq;
             let since = haven_memory::repositories::messages::undelivered_recovery_since();
             let db = self.db.clone();
             let sid = session_id.to_string();

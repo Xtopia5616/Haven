@@ -237,26 +237,16 @@ async fn resume_dedups_supplement_inputs_against_prefixed_canonical() {
         CanonicalMessage::user_text("Additional context from user: please be brief"),
         CanonicalMessage::user_text("Steering: please be brief"),
     ];
-    let snapshot = ReActSnapshot {
+    let snapshot = EventProjection {
         events: seed_events_from_canonical(canonical),
-        event_cursor: 0,
         step_number: 1,
         branch_points: HashMap::new(),
-        last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
         interactions: Vec::new(),
-        run_budget: None,
-        error_partial_message_ids: None,
     };
-    seed_snapshot_events(&agent, &session.id, &snapshot).await;
-    agent
-        .db
-        .save_react_state(&session.id, &serde_json::to_string(&snapshot).unwrap())
-        .unwrap();
-
+    seed_event_projection(&agent, &session.id, &snapshot).await;
     agent.run_session_from_id(&session.id).await.unwrap();
 
-    let saved: ReActSnapshot =
-        serde_json::from_str(&agent.db.get_react_state(&session.id).unwrap().unwrap()).unwrap();
+    let saved = load_event_projection(&agent, &session.id).await;
     let (canonical, _) = saved.project();
     let user_texts: Vec<String> = canonical
         .iter()
@@ -296,9 +286,8 @@ async fn resume_keeps_repeated_same_text_turns() {
         .persist_message_parts(&session.id, "assistant", "好的", Some("text"), &[], false)
         .await
         .unwrap();
-    // Snapshot saved right after the first pair: its ingress cursor sits
-    // before the second user "好的" below.
-    let ingress_cursor = agent.db.get_last_message_ingress_seq(&session.id);
+    // The first pair is already in the event log. The second identical user
+    // turn is persisted after that seed and must be recovered by id.
     let canonical = vec![
         CanonicalMessage::system(vec![ContentPart::text("sys")]),
         CanonicalMessage::user_text("好的"),
@@ -310,21 +299,13 @@ async fn resume_keeps_repeated_same_text_turns() {
             Vec::new(),
         ),
     ];
-    let snapshot = ReActSnapshot {
+    let snapshot = EventProjection {
         events: seed_events_from_canonical(canonical),
-        event_cursor: 0,
         step_number: 1,
         branch_points: HashMap::new(),
-        last_ingress_seq: ingress_cursor,
         interactions: Vec::new(),
-        run_budget: None,
-        error_partial_message_ids: None,
     };
-    seed_snapshot_events(&agent, &session.id, &snapshot).await;
-    agent
-        .db
-        .save_react_state(&session.id, &serde_json::to_string(&snapshot).unwrap())
-        .unwrap();
+    seed_event_projection(&agent, &session.id, &snapshot).await;
     // The second identical user turn lands after the snapshot.
     agent
         .persist_message_parts(&session.id, "user", "好的", Some("text"), &[], false)
@@ -333,8 +314,7 @@ async fn resume_keeps_repeated_same_text_turns() {
 
     agent.run_session_from_id(&session.id).await.unwrap();
 
-    let saved: ReActSnapshot =
-        serde_json::from_str(&agent.db.get_react_state(&session.id).unwrap().unwrap()).unwrap();
+    let saved = load_event_projection(&agent, &session.id).await;
     let (canonical, _) = saved.project();
     let user_texts: Vec<String> = canonical
         .iter()
@@ -383,7 +363,6 @@ async fn resume_does_not_recover_messages_before_ingress_cursor() {
         .persist_message_parts(&session.id, "user", "hello", Some("text"), &[], false)
         .await
         .unwrap();
-    let ingress_cursor = agent.db.get_last_message_ingress_seq(&session.id);
     let canonical = vec![
         CanonicalMessage::system(vec![ContentPart::text("sys")]),
         CanonicalMessage::user_text("hello"),
@@ -395,21 +374,13 @@ async fn resume_does_not_recover_messages_before_ingress_cursor() {
             Vec::new(),
         ),
     ];
-    let snapshot = ReActSnapshot {
+    let snapshot = EventProjection {
         events: seed_events_from_canonical(canonical),
-        event_cursor: 0,
         step_number: 1,
         branch_points: HashMap::new(),
-        last_ingress_seq: ingress_cursor,
         interactions: Vec::new(),
-        run_budget: None,
-        error_partial_message_ids: None,
     };
-    seed_snapshot_events(&agent, &session.id, &snapshot).await;
-    agent
-        .db
-        .save_react_state(&session.id, &serde_json::to_string(&snapshot).unwrap())
-        .unwrap();
+    seed_event_projection(&agent, &session.id, &snapshot).await;
     // Assistant rows after the cursor are not user inputs and are not
     // recovered either.
     agent
@@ -426,8 +397,7 @@ async fn resume_does_not_recover_messages_before_ingress_cursor() {
 
     agent.run_session_from_id(&session.id).await.unwrap();
 
-    let saved: ReActSnapshot =
-        serde_json::from_str(&agent.db.get_react_state(&session.id).unwrap().unwrap()).unwrap();
+    let saved = load_event_projection(&agent, &session.id).await;
     let (canonical, _) = saved.project();
     let user_texts: Vec<String> = canonical
         .iter()
@@ -492,26 +462,17 @@ async fn resume_skips_conversation_reseed_when_canonical_is_compacted() {
             Vec::new(),
         ),
     ];
-    let snapshot = ReActSnapshot {
+    let snapshot = EventProjection {
         events: seed_events_from_canonical(canonical),
-        event_cursor: 0,
         step_number: 1,
         branch_points: HashMap::new(),
-        last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
         interactions: Vec::new(),
-        run_budget: None,
-        error_partial_message_ids: None,
     };
-    seed_snapshot_events(&agent, &session.id, &snapshot).await;
-    agent
-        .db
-        .save_react_state(&session.id, &serde_json::to_string(&snapshot).unwrap())
-        .unwrap();
+    seed_event_projection(&agent, &session.id, &snapshot).await;
 
     agent.run_session_from_id(&session.id).await.unwrap();
 
-    let saved: ReActSnapshot =
-        serde_json::from_str(&agent.db.get_react_state(&session.id).unwrap().unwrap()).unwrap();
+    let saved = load_event_projection(&agent, &session.id).await;
     let (canonical, _) = saved.project();
     let user_texts: Vec<String> = canonical
         .iter()
@@ -544,8 +505,7 @@ async fn run_session_from_id_keeps_first_user_media_out_of_snapshot_bytes() {
         .await
         .unwrap();
     agent.run_session_from_id(&session.id).await.unwrap();
-    let snapshot: crate::types::ReActSnapshot =
-        serde_json::from_str(&agent.db.get_react_state(&session.id).unwrap().unwrap()).unwrap();
+    let snapshot = load_event_projection(&agent, &session.id).await;
     let (canonical, _) = snapshot.project();
     let user_msg = canonical
         .iter()
@@ -585,8 +545,7 @@ async fn run_session_from_id_keeps_later_media_as_managed_reference() {
         .await
         .unwrap();
     agent.run_session_from_id(&session.id).await.unwrap();
-    let snapshot: crate::types::ReActSnapshot =
-        serde_json::from_str(&agent.db.get_react_state(&session.id).unwrap().unwrap()).unwrap();
+    let snapshot = load_event_projection(&agent, &session.id).await;
     let (canonical, _) = snapshot.project();
     let first_user = canonical
         .iter()
@@ -695,21 +654,13 @@ async fn run_session_from_id_trims_dangling_tool_call_before_resume() {
         });
         e
     };
-    let snapshot = ReActSnapshot {
+    let snapshot = EventProjection {
         events,
-        event_cursor: 0,
         step_number: 2,
         branch_points: HashMap::new(),
-        last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
         interactions: Vec::new(),
-        run_budget: None,
-        error_partial_message_ids: None,
     };
-    seed_snapshot_events(&agent, &session.id, &snapshot).await;
-    agent
-        .db
-        .save_react_state(&session.id, &serde_json::to_string(&snapshot).unwrap())
-        .unwrap();
+    seed_event_projection(&agent, &session.id, &snapshot).await;
 
     let result = agent.run_session_from_id(&session.id).await.unwrap();
 
@@ -732,95 +683,4 @@ async fn run_session_from_id_trims_dangling_tool_call_before_resume() {
         Some(SessionStatus::Paused),
         "final_answer should complete the resumed session"
     );
-}
-
-/// A legacy/corrupt JSON cache never blocks a fresh session: without durable
-/// events the actor starts the normal first turn, and with durable events the
-/// event stream is the recovery authority.
-#[tokio::test]
-async fn corrupt_react_state_is_ignored_without_durable_events() {
-    let tools = Arc::new(ToolsManager::new());
-    let mock = Arc::new(ScriptedMock::new(vec![ScriptedResponse::Chunk(
-        StreamChunk {
-            text: Some("should not run".into()),
-            tool_calls: vec![CanonicalToolCall {
-                id: "final".into(),
-                name: "final_answer".into(),
-                arguments: serde_json::json!({}),
-            }],
-            finish_reason: Some(FinishReason::Stop),
-            usage: None,
-            model: None,
-            reasoning: None,
-            web_search: None,
-            web_search_calls: Vec::new(),
-            thinking_blocks: Vec::new(),
-        },
-    )]));
-    let (agent, executor) = make_test_agent_with(mock.clone(), tools);
-    let collector = Arc::new(EventCollector::new());
-    agent.set_emitter(collector);
-    let session = executor.create_session("corrupt snap").await.unwrap();
-    agent
-        .db
-        .save_react_state(&session.id, "{not-valid-json")
-        .unwrap();
-
-    agent.run_session_from_id(&session.id).await.unwrap();
-    assert!(
-        !mock.seen.lock().unwrap().is_empty(),
-        "fresh sessions must not be blocked by a legacy cache"
-    );
-}
-
-#[tokio::test]
-async fn resume_ignores_corrupt_snapshot_when_durable_events_exist() {
-    let tools = Arc::new(ToolsManager::new());
-    let mock = Arc::new(ScriptedMock::new(vec![ScriptedResponse::Chunk(
-        StreamChunk {
-            text: Some("recovered".into()),
-            tool_calls: vec![CanonicalToolCall {
-                id: "final".into(),
-                name: "final_answer".into(),
-                arguments: serde_json::json!({}),
-            }],
-            finish_reason: Some(FinishReason::Stop),
-            usage: None,
-            model: None,
-            reasoning: None,
-            web_search: None,
-            web_search_calls: Vec::new(),
-            thinking_blocks: Vec::new(),
-        },
-    )]));
-    let (agent, executor) = make_test_agent_with(mock.clone(), tools);
-    agent.set_emitter(make_recording_emitter());
-    let session = executor.create_session("durable history").await.unwrap();
-
-    let canonical = vec![
-        CanonicalMessage::system(vec![ContentPart::text("system")]),
-        CanonicalMessage::user_text("durable history"),
-    ];
-    let event = seed_events_from_canonical(canonical).remove(0);
-    let store = haven_memory::SessionEventStore::new(agent.db.clone());
-    store
-        .append_transcript(&session.id, &serde_json::to_string(&event).unwrap(), 1, 1)
-        .unwrap();
-
-    // The checkpoint is deliberately unreadable JSON. The durable event row
-    // above is the only valid transcript source and must still be resumed.
-    agent
-        .db
-        .save_react_state(&session.id, "{not-valid-json")
-        .unwrap();
-
-    agent.run_session_from_id(&session.id).await.unwrap();
-
-    assert!(!mock.seen.lock().unwrap().is_empty());
-    assert_eq!(
-        executor.get_active_session_status(&session.id).await,
-        Some(SessionStatus::Paused)
-    );
-    let events = store.read_active_transcript(&session.id).unwrap();
-    assert!(events.len() >= 2, "resume must append the recovered turn");
 }

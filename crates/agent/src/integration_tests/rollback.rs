@@ -17,21 +17,13 @@ async fn rollback_with_snapshot_no_branch_point_uses_snapshot() {
         source: None,
         id: None,
     }];
-    let snapshot = ReActSnapshot {
+    let snapshot = EventProjection {
         events: seed_events_from_canonical(canonical.clone()),
-        event_cursor: 0,
         step_number: 1,
         branch_points: HashMap::new(),
-        last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
         interactions: Vec::new(),
-        run_budget: None,
-        error_partial_message_ids: None,
     };
-    seed_snapshot_events(&agent, &session.id, &snapshot).await;
-    agent
-        .db
-        .save_react_state(&session.id, &serde_json::to_string(&snapshot).unwrap())
-        .unwrap();
+    seed_event_projection(&agent, &session.id, &snapshot).await;
     agent
         .db
         .add_message(&session.id, "user", "hello", Some("text"), None)
@@ -120,21 +112,13 @@ async fn rollback_pause_true_removes_user_message_from_session() {
             last_msg_at: Some(thought_ts),
         },
     );
-    let snapshot = ReActSnapshot {
+    let snapshot = EventProjection {
         events: seed_events_from_canonical(canonical),
-        event_cursor: 0,
         step_number: 1,
         branch_points,
-        last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
         interactions: Vec::new(),
-        run_budget: None,
-        error_partial_message_ids: None,
     };
-    seed_snapshot_events(&agent, &session.id, &snapshot).await;
-    agent
-        .db
-        .save_react_state(&session.id, &serde_json::to_string(&snapshot).unwrap())
-        .unwrap();
+    seed_event_projection(&agent, &session.id, &snapshot).await;
 
     // User-message rollback: the user message itself must be removed from
     // the session (its text returns to the composer for editing) ??not
@@ -219,21 +203,13 @@ async fn rollback_fallback_no_branch_point_pause_true_deletes_from_last_user_mes
             last_msg_at: Some(reply1_ts),
         },
     );
-    let snapshot = ReActSnapshot {
+    let snapshot = EventProjection {
         events: seed_events_from_canonical(canonical),
-        event_cursor: 0,
         step_number: 2,
         branch_points,
-        last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
         interactions: Vec::new(),
-        run_budget: None,
-        error_partial_message_ids: None,
     };
-    seed_snapshot_events(&agent, &session.id, &snapshot).await;
-    agent
-        .db
-        .save_react_state(&session.id, &serde_json::to_string(&snapshot).unwrap())
-        .unwrap();
+    seed_event_projection(&agent, &session.id, &snapshot).await;
 
     // The user clicked "second" (the newest user message, whose id
     // resolves to a persisted row).
@@ -308,21 +284,13 @@ async fn rollback_errors_when_target_message_id_does_not_match() {
             last_msg_at: Some(reply_a_ts),
         },
     );
-    let snapshot = ReActSnapshot {
+    let snapshot = EventProjection {
         events: seed_events_from_canonical(canonical),
-        event_cursor: 0,
         step_number: 2,
         branch_points,
-        last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
         interactions: Vec::new(),
-        run_budget: None,
-        error_partial_message_ids: None,
     };
-    seed_snapshot_events(&agent, &session.id, &snapshot).await;
-    agent
-        .db
-        .save_react_state(&session.id, &serde_json::to_string(&snapshot).unwrap())
-        .unwrap();
+    seed_event_projection(&agent, &session.id, &snapshot).await;
 
     // The live-view id never matches a DB id and no content fallback
     // exists anymore: rollback must error and delete nothing.
@@ -371,8 +339,7 @@ async fn rollback_orphan_after_processed_turn_preserves_earlier_history() {
     );
     // The canonical must NOT be truncated: "hello" is a legitimately
     // processed message and stays in the restored context.
-    let restored: ReActSnapshot =
-        serde_json::from_str(&agent.db.get_react_state(&session.id).unwrap().unwrap()).unwrap();
+    let restored = load_event_projection(&agent, &session.id).await;
     let (restored_canonical, _) = restored.project();
     assert!(
         restored_canonical
@@ -413,8 +380,7 @@ async fn rollback_processed_user_message_with_later_orphan_wipes_target_timeline
         "rollback of the processed message must wipe the orphan too, got {:?}",
         msgs.iter().map(|m| &m.content).collect::<Vec<_>>()
     );
-    let restored: ReActSnapshot =
-        serde_json::from_str(&agent.db.get_react_state(&session.id).unwrap().unwrap()).unwrap();
+    let restored = load_event_projection(&agent, &session.id).await;
     let (restored_canonical, _) = restored.project();
     assert!(
         !restored_canonical
@@ -498,21 +464,13 @@ async fn rollback_pause_uses_target_message_ts_not_latest_user() {
             last_msg_at: Some(thinking_ts),
         },
     );
-    let snapshot = ReActSnapshot {
+    let snapshot = EventProjection {
         events: seed_events_from_canonical(canonical),
-        event_cursor: 0,
         step_number: 1,
         branch_points,
-        last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
         interactions: Vec::new(),
-        run_budget: None,
-        error_partial_message_ids: None,
     };
-    seed_snapshot_events(&agent, &session.id, &snapshot).await;
-    agent
-        .db
-        .save_react_state(&session.id, &serde_json::to_string(&snapshot).unwrap())
-        .unwrap();
+    seed_event_projection(&agent, &session.id, &snapshot).await;
 
     // Roll back "hello" specifically —the steering interjection must
     // NOT keep "hello" alive.
@@ -530,8 +488,7 @@ async fn rollback_pause_uses_target_message_ts_not_latest_user() {
         "rolling back 'hello' must delete it (and the interjection), got {:?}",
         msgs.iter().map(|m| &m.content).collect::<Vec<_>>()
     );
-    let restored: ReActSnapshot =
-        serde_json::from_str(&agent.db.get_react_state(&session.id).unwrap().unwrap()).unwrap();
+    let restored = load_event_projection(&agent, &session.id).await;
     let (restored_canonical, _) = restored.project();
     assert!(
         !restored_canonical
@@ -626,21 +583,13 @@ async fn rollback_pause_matches_compacted_message_id() {
             last_msg_at: Some(thinking_ts),
         },
     );
-    let snapshot = ReActSnapshot {
+    let snapshot = EventProjection {
         events: seed_events_from_canonical(canonical),
-        event_cursor: 0,
         step_number: 2,
         branch_points,
-        last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
         interactions: Vec::new(),
-        run_budget: None,
-        error_partial_message_ids: None,
     };
-    seed_snapshot_events(&agent, &session.id, &snapshot).await;
-    agent
-        .db
-        .save_react_state(&session.id, &serde_json::to_string(&snapshot).unwrap())
-        .unwrap();
+    seed_event_projection(&agent, &session.id, &snapshot).await;
 
     agent
         .rollback_session(&session.id, 2, true, Some(&steering_id))
@@ -658,8 +607,7 @@ async fn rollback_pause_matches_compacted_message_id() {
         msgs.iter().map(|m| &m.content).collect::<Vec<_>>()
     );
     assert_eq!(msgs[0].content, "do it");
-    let restored: ReActSnapshot =
-        serde_json::from_str(&agent.db.get_react_state(&session.id).unwrap().unwrap()).unwrap();
+    let restored = load_event_projection(&agent, &session.id).await;
     let (restored_canonical, _) = restored.project();
     assert!(
         !restored_canonical
@@ -725,12 +673,17 @@ async fn rollback_while_ask_wait_clears_interaction_gate() {
         "ask gate must be set before rollback"
     );
 
-    let state_json = agent.db.get_react_state(&session.id).unwrap().unwrap();
-    let snap = ReActSnapshot::from_json(&state_json).unwrap();
-    assert!(snap.interactions.iter().any(|request| {
-        request.kind == crate::interaction::InteractionKind::Ask
-            && request.status == crate::interaction::InteractionStatus::Pending
-    }));
+    let snap = load_event_projection(&agent, &session.id).await;
+    assert!(
+        executor
+            .interaction_requests(&session.id)
+            .await
+            .iter()
+            .any(|request| {
+                request.kind == crate::interaction::InteractionKind::Ask
+                    && request.status == crate::interaction::InteractionStatus::Pending
+            })
+    );
     let target_step = snap.step_number.max(1);
 
     agent
@@ -748,17 +701,13 @@ async fn rollback_while_ask_wait_clears_interaction_gate() {
             .await,
         "ask gate must be cleared after rollback"
     );
-    let restored =
-        ReActSnapshot::from_json(&agent.db.get_react_state(&session.id).unwrap().unwrap()).unwrap();
-    assert!(!restored.interactions.iter().any(|request| {
-        request.status == crate::interaction::InteractionStatus::Pending
-            && matches!(
-                request.kind,
-                crate::interaction::InteractionKind::Ask
-                    | crate::interaction::InteractionKind::Confirm
-            )
-    }));
-    assert!(restored.run_budget.is_none());
+    assert!(
+        executor
+            .interaction_requests(&session.id)
+            .await
+            .iter()
+            .all(|request| request.status != crate::interaction::InteractionStatus::Pending)
+    );
 }
 
 /// R6 W7×O1: rollback during an in-flight tool batch cancels, joins, and
@@ -851,8 +800,7 @@ async fn rollback_mid_tool_batch_joins_and_restores() {
         !executor.is_run_in_flight(&session.id).await,
         "run slot must be released after rollback join"
     );
-    let restored =
-        ReActSnapshot::from_json(&agent.db.get_react_state(&session.id).unwrap().unwrap()).unwrap();
+    let restored = load_event_projection(&agent, &session.id).await;
     let (canonical, _) = restored.project();
     let dangling = canonical.iter().any(|m| {
         m.role == CanonicalRole::Assistant
@@ -915,8 +863,7 @@ async fn rollback_ask_wait_pause_true_leaves_plain_paused() {
         executor.get_active_session_status(&session.id).await,
         Some(SessionStatus::Paused)
     );
-    let snap =
-        ReActSnapshot::from_json(&agent.db.get_react_state(&session.id).unwrap().unwrap()).unwrap();
+    let snap = load_event_projection(&agent, &session.id).await;
     let target_step = snap.step_number.max(1);
     agent
         .rollback_session(&session.id, target_step, true, Some(&user.id))

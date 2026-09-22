@@ -24,15 +24,15 @@ Codex 的 turn 模型将“一次 turn”定义为一次模型采样及其工具
     聚合以及工具结果物化。
 - Turn 的正常顺序固定为：注入上下文 → before-step hook → sanitize → 模型采样 →
   after-LLM 策略 → 搜索/思考投影 → 工具批次或 turn-end。暂停和取消通过显式的
-  `TurnOutcome` / `ToolBatchOutcome` / `LoopExit` 返回，不再通过循环内部的隐式
+  `EffectBatch` / `ToolBatchOutcome` / `LoopExit` 返回，不再通过循环内部的隐式
   `continue`/`return` 传播状态。
 - 工具可以并发执行，但 `CompletedTool` 先按 assistant 返回的 tool-call 顺序
   缓存，待批次完成后再经 `apply_transcript` 依序物化。这样执行吞吐与 canonical
   transcript 顺序解耦，恢复和 provider 输入不受竞态影响。
 - 上下文队列在单次 turn 边界只选择一种用户输入来源：steering 优先；没有 steering
   时才取 follow-up；后台 action 结果始终随批次取出。下一次 turn 再继续取剩余队列。
-- 不增加旧 loop 的兼容层，不改变 `ReActSnapshot.events` 的 authority、X12 投影
-  规则或快照结构；这是内部控制流重组，旧的模块内调用边界直接删除。
+- 不增加旧 loop 的兼容层；事件流仍是 X12 authority，turn 终态通过
+  `EffectBatch` 统一提交，旧的模块内调用边界直接删除。
 
 ## 替代方案
 
@@ -47,8 +47,8 @@ Codex 的 turn 模型将“一次 turn”定义为一次模型采样及其工具
 
 这是 Agent 内部控制流重组。`loop.rs` 从约 800 行缩为 run 驱动器，单次采样逻辑
 集中在 `turn.rs`；工具完成的 canonical 写入从完成先后改为 assistant 调用顺序，
-steering 在下一次模型调用前优先于 follow-up。数据库 schema、快照字段、Agent
-事件通道和 dispatcher 外部调用不变。
+steering 在下一次模型调用前优先于 follow-up。数据库 schema、Agent 事件通道和
+dispatcher 外部调用不变。
 
 ## 验证
 

@@ -2,14 +2,15 @@
 //!
 //! The driver owns only run-scoped concerns: the step budget, lifecycle
 //! checks, cancellation, and the transition between turns. One model sample
-//! is implemented by [`super::turn::ReActEngine::run_turn`]; tool execution
-//! and persistence live behind the turn boundary. This mirrors the useful
-//! shape shared by Codex and Pi: a small outer run, a turn loop, and explicit
-//! tool-batch outcomes.
+//! is planned by [`super::turn::TurnEngine`]; this driver applies the
+//! resulting [`super::effects::EffectBatch`] under the same turn deadline.
+//! This mirrors the useful shape shared by Codex and Pi: a small outer run,
+//! a turn loop, and explicit tool-batch outcomes.
 
+use super::effects::TurnControl;
 use super::tool_batch::ToolBatchOutcome;
 use super::tool_batch_policy::ToolRetryBudget;
-use super::turn::{TurnInput, TurnOutcome};
+use super::turn::TurnInput;
 use super::*;
 use crate::types::RunBudget;
 use std::sync::Arc;
@@ -126,7 +127,7 @@ impl RunBudgetConfig {
 impl ReActEngine {
     /// Run the session one turn at a time. The shared `ReActState` carries the
     /// authoritative transcript, its live projection, and branch indexes so
-    /// every boundary checkpoints one coherent state.
+    /// every boundary advances one coherent event/projection state.
     pub(crate) async fn run_react_loop(&self, input: RunInput<'_>) -> anyhow::Result<LoopExit> {
         let RunInput {
             session_id,
@@ -237,48 +238,62 @@ impl ReActEngine {
             });
             state.turn_cancel = Some(turn_cancel.clone());
             let turn_engine = self.turn_engine();
-            let turn_future = turn_engine
-                .run(TurnInput {
-                    ctx: StepCtx {
+            let turn_result = tokio::time::timeout(remaining, async {
+                let batch = turn_engine
+                    .run(TurnInput {
+                        ctx: StepCtx {
+                            session_id: session_id.to_string(),
+                            step_num,
+                            run_id,
+                            emitter: emitter.clone(),
+                        },
+                        state,
+                        cancel: turn_cancel.clone(),
+                        deadline,
+                        // The turn receives the policy result, not the budget
+                        // representation. This keeps tool execution independent
+                        // from run accounting and fixes resumed-run boundaries.
+                        allow_tool_retry: budget.allows_tool_retry(step_num),
+                        tool_retry_budget: &mut tool_retry_budget,
+                        cut_off_retries: &mut cut_off_retries,
+                    })
+                    .instrument(tracing::info_span!("turn", session_id, step_num))
+                    .await?;
+                // Tool execution is one effect of the batch, so it shares this
+                // absolute deadline and cancellation token with provider work.
+                self.apply_effect_batch(
+                    &StepCtx {
                         session_id: session_id.to_string(),
                         step_num,
                         run_id,
                         emitter: emitter.clone(),
                     },
                     state,
-                    cancel: turn_cancel.clone(),
-                    deadline,
-                    // The turn receives the policy result, not the budget
-                    // representation. This keeps tool execution independent
-                    // from run accounting and fixes resumed-run boundaries.
-                    allow_tool_retry: budget.allows_tool_retry(step_num),
-                    tool_retry_budget: &mut tool_retry_budget,
-                    cut_off_retries: &mut cut_off_retries,
-                })
-                .instrument(tracing::info_span!("turn", session_id, step_num));
-            let turn_result = tokio::time::timeout(remaining, turn_future).await;
+                    batch,
+                    &mut tool_retry_budget,
+                )
+                .await
+            })
+            .await;
             if turn_result.is_err() {
                 turn_cancel.cancel();
             }
             deadline_task.abort();
+            state.turn_cancel = None;
             let outcome = match turn_result {
-                Ok(Ok(outcome)) => {
-                    state.turn_cancel = None;
-                    outcome
-                }
+                Ok(Ok(outcome)) => outcome,
                 Ok(Err(error)) => {
                     if !self
-                        .save_snapshot_with_branches(session_id, state, step_num)
+                        .ensure_event_boundary(session_id, state, step_num)
                         .await
                     {
                         tracing::error!(
                             session_id,
                             step = step_num,
                             error = %error,
-                            "failed to checkpoint ReAct turn error"
+                            "failed to verify ReAct event boundary after turn error"
                         );
                     }
-                    state.turn_cancel = None;
                     self.mark_session_error(session_id).await;
                     return Err(error);
                 }
@@ -289,23 +304,22 @@ impl ReActEngine {
                         step_num
                     );
                     if !self
-                        .save_snapshot_with_branches(session_id, state, step_num)
+                        .ensure_event_boundary(session_id, state, step_num)
                         .await
                     {
                         tracing::error!(
                             session_id,
                             step = step_num,
-                            "failed to checkpoint turn-deadline error"
+                            "failed to verify event boundary after turn deadline"
                         );
                     }
-                    state.turn_cancel = None;
                     self.mark_session_error(session_id).await;
                     return Err(error);
                 }
             };
             match outcome {
-                TurnOutcome::Continue => {}
-                TurnOutcome::Done(exit) => return Ok(exit),
+                TurnControl::Continue => {}
+                TurnControl::Done(exit) => return Ok(exit),
             }
         }
 
@@ -326,14 +340,14 @@ impl ReActEngine {
     ) -> RunBoundary {
         match self.executor.get_active_session_status(session_id).await {
             None | Some(SessionStatus::Completed) => RunBoundary::Exit(
-                self.exit_with_snapshot(session_id, state, step_num, LoopExit::Completed)
+                self.exit_at_boundary(session_id, state, step_num, LoopExit::Completed)
                     .await,
             ),
             Some(SessionStatus::Error) => {
                 self.emit_error(emitter, session_id, "session interrupted")
                     .await;
                 RunBoundary::Exit(
-                    self.exit_with_snapshot(
+                    self.exit_at_boundary(
                         session_id,
                         state,
                         step_num,

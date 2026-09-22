@@ -30,7 +30,7 @@ pub(super) enum RecoveryPersistenceResult {
     Failed {
         branch_point: bool,
         partial_messages: bool,
-        recovery_snapshot: bool,
+        event_boundary: bool,
         projection: bool,
         /// Whether the terminal `failed` marker itself was committed to the
         /// durable event stream. If false, the database was unavailable even
@@ -105,7 +105,7 @@ pub(crate) async fn set_status_and_emit_with_waiting_reason(
 /// fact memory mid-session, so memory is refreshed before the session
 /// ever pauses or completes.
 /// Message persisted when a run exhausts its step budget (`max_steps`). The
-/// session is intentionally paused as a checkpoint —the session is NOT finished,
+/// session is intentionally paused at an event boundary —the session is NOT finished,
 /// and the next user message resumes it with a fresh budget. System notices
 /// like this must NOT land in the chat as an assistant bubble; they are
 /// surfaced as a notification (in-app toast + Windows) instead.
@@ -116,8 +116,8 @@ const BUDGET_EXHAUSTED_BODY: &str = "本轮运行的步骤上限已用完，任�
 impl ReActEngine {
     /// Load the active transcript and branch metadata from the durable event
     /// stream in one blocking read. `None` means that no durable event log
-    /// exists; once any control or transcript event exists, the snapshot
-    /// cache is never consulted for transcript state.
+    /// exists; once any control or transcript event exists, no cache is
+    /// consulted for transcript state.
     pub(crate) async fn load_durable_event_state(
         &self,
         session_id: &str,
@@ -187,7 +187,7 @@ impl ReActEngine {
     }
 
     /// Seed the durable event log for a fresh session before the first model
-    /// request. Resume never calls this helper: an existing checkpoint must
+    /// request. Resume never calls this helper: an existing event stream must
     /// already have a durable event log or it requires a reset.
     pub(crate) async fn seed_transcript_events(
         &self,
@@ -213,7 +213,7 @@ impl ReActEngine {
     }
 
     /// Append one transcript record to the durable event authority. The
-    /// returned sequence is useful for checkpoint metadata, while the hot
+    /// returned sequence is useful for boundary metadata, while the hot
     /// ReAct projection continues to use the record itself.
     pub(super) async fn append_transcript_record(
         &self,
@@ -343,12 +343,13 @@ impl ReActEngine {
         }
     }
 
-    /// Finalize a turn: save the branch point (when requested), snapshot the
-    /// ReAct state, then mark the session with the given status and notify the
+    /// Finalize a turn: save the branch point (when requested), verify the
+    /// durable event boundary, then mark the session with the given status and notify the
     /// frontend + memory worker.
     ///
     /// X12: chat content must already be projected via `apply_transcript`
-    /// before this call. The pause path only checkpoints state and changes the
+    /// before this call. The pause path only verifies the durable event
+    /// boundary and changes the
     /// lifecycle; it never writes a second assistant message.
     pub(super) async fn pause_turn(&self, input: PauseTurnInput<'_>) -> anyhow::Result<()> {
         let PauseTurnInput {
@@ -379,7 +380,7 @@ impl ReActEngine {
                 .await
             {
                 anyhow::bail!(
-                    "failed to durably checkpoint session '{}' at step {}",
+                    "failed to durably record event boundary for session '{}' at step {}",
                     session_id,
                     boundary_step
                 );
@@ -432,7 +433,7 @@ impl ReActEngine {
     }
 
     /// Pause the session because the run exhausted its step budget. Mirrors
-    /// `pause_turn`'s checkpoint side effects (snapshot, Paused status,
+    /// `pause_turn`'s event-boundary side effects (Paused status,
     /// infer) but does NOT persist an assistant chat message: system notices
     /// of this kind must not pollute the conversation stream as fake agent
     /// replies —they are surfaced as a notification (in-app toast +
@@ -458,7 +459,7 @@ impl ReActEngine {
                 .await
             {
                 anyhow::bail!(
-                    "failed to durably checkpoint session '{}' after step-budget exhaustion",
+                    "failed to durably record event boundary for session '{}' after step-budget exhaustion",
                     session_id
                 );
             }
@@ -495,7 +496,7 @@ impl ReActEngine {
         .await
     }
 
-    /// Persist one final snapshot before leaving the loop on a cancellation,
+    /// Verify one final event boundary before leaving the loop on a cancellation,
     /// so the DB row is never stale when `rollback_session` / `continue_session`
     /// read it after the handler exits. The mid-run throttle in
     /// `save_branch_point` may have skipped the last write, and the state at
@@ -511,7 +512,7 @@ impl ReActEngine {
             .await
     }
 
-    /// Phase 7 / C4: single cancel-exit path — write the exit checkpoint then
+    /// Phase 7 / C4: single cancel-exit path — verify the event boundary then
     /// return [`LoopExit::Cancelled`]. All cancel sites in the thin loop /
     /// tool batch must go through this helper.
     pub(super) async fn exit_cancelled(
@@ -524,7 +525,7 @@ impl ReActEngine {
             .await
     }
 
-    /// Write the exit checkpoint then return `exit`. Used by Completed / Error /
+    /// Verify the event boundary then return `exit`. Used by Completed / Error /
     /// Cancelled so every lifecycle exit advances the durable clocks.
     pub(super) async fn exit_at_boundary(
         &self,
@@ -540,13 +541,13 @@ impl ReActEngine {
             exit
         } else {
             LoopExit::Error(format!(
-                "failed to durably checkpoint session '{}' before exit",
+                "failed to durably record event boundary for session '{}' before exit",
                 session_id
             ))
         }
     }
 
-    /// Shared External-pause exit (step-head and mid-batch): checkpoint →
+    /// Shared External-pause exit (step-head and mid-batch): boundary check →
     /// `on_pause(External)` → `LoopExit::Paused`.
     pub(super) async fn exit_external_pause(
         &self,
@@ -561,7 +562,7 @@ impl ReActEngine {
             .await
         {
             return LoopExit::Error(format!(
-                "failed to durably checkpoint session '{}' before pause",
+                "failed to durably record event boundary for session '{}' before pause",
                 session_id
             ));
         }
@@ -577,7 +578,7 @@ impl ReActEngine {
         }
     }
 
-    /// Save snapshot including rollback points for overwrite rollback (§2).
+    /// Verify the event stream and projection clocks, including rollback points.
     ///
     /// Serializes a borrowed view of the ReAct state (no per-step deep copies
     /// of events/branch_points — those clones were O(n²) over a long session)
@@ -593,9 +594,9 @@ impl ReActEngine {
             .await
     }
 
-    /// Checkpoint a completed tool batch before the loop makes another LLM
+    /// Verify a completed tool batch before the loop makes another LLM
     /// request. This closes the crash window where `session_steps` and chat
-    /// rows already contain tool results but the periodic snapshot still ends
+    /// rows already contain tool results but the durable event boundary still ends
     /// at the assistant's unanswered tool call.
     pub(super) async fn ensure_event_boundary_after_tool_results(
         &self,
@@ -607,9 +608,9 @@ impl ReActEngine {
             .await
     }
 
-    /// Same checkpoint as [`Self::save_snapshot_after_tool_results`], but the
+    /// Same boundary check as [`Self::ensure_event_boundary_after_tool_results`], but the
     /// completed confirmation batch must not remain resumable. Writing the
-    /// result events and clearing confirm interactions in one snapshot prevents
+    /// result events and clearing confirm interactions in one boundary prevents
     /// a crash between result projection and the in-memory gate cleanup from
     /// replaying an already executed side effect.
     pub(super) async fn ensure_event_boundary_after_confirm_results(
@@ -622,8 +623,8 @@ impl ReActEngine {
             .await
     }
 
-    /// Persist a snapshot carrying the recovery marker for a failed LLM
-    /// response. Normal snapshots pass `None`, which clears any marker
+    /// Persist recovery-only rows carrying the marker for a failed LLM
+    /// response. Normal boundaries pass `None`, which clears any marker
     /// consumed by a prior Continue. `Some(&[])` still marks an error whose
     /// stream produced no visible partial text.
     async fn ensure_event_boundary_with_error_partials(
@@ -693,7 +694,7 @@ impl ReActEngine {
         }
     }
 
-    /// and save a snapshot so the session can be resumed via "continue" or
+    /// and record recovery-only rows so the session can be resumed via "continue" or
     /// rolled back. Without this, any text streamed before the error is lost
     /// on page refresh because it was only in the frontend's memory.
     pub(super) async fn persist_partial_on_error(
@@ -704,8 +705,8 @@ impl ReActEngine {
         partial_reasoning: &std::sync::Arc<std::sync::Mutex<String>>,
     ) -> RecoveryPersistenceResult {
         // Start a durable two-phase marker before any of the independent
-        // branch/message/projection/snapshot writes. A later resume can see
-        // that this repair was in flight even if the snapshot cache is stale.
+        // branch/message/projection/boundary writes. A later resume can see
+        // that this repair was in flight even if the process-local projection is stale.
         let protocol_started = self
             .append_recovery_marker(
                 &ctx.session_id,
@@ -716,7 +717,7 @@ impl ReActEngine {
                     branch_point: false,
                     partial_messages: false,
                     projection: false,
-                    recovery_snapshot: false,
+                    event_boundary: false,
                 },
             )
             .await;
@@ -731,14 +732,14 @@ impl ReActEngine {
                         branch_point: false,
                         partial_messages: false,
                         projection: false,
-                        recovery_snapshot: false,
+                        event_boundary: false,
                     },
                 )
                 .await;
             let result = RecoveryPersistenceResult::Failed {
                 branch_point: false,
                 partial_messages: false,
-                recovery_snapshot: false,
+                event_boundary: false,
                 projection: false,
                 failure_marker,
             };
@@ -758,7 +759,7 @@ impl ReActEngine {
         // The events here represent the state BEFORE the failed LLM call
         // (the response was never appended), so resuming will retry cleanly.
         // FORCED write: continue_session / rollback_session locate this branch
-        // point in the DB snapshot; a throttled (stale) row would silently
+        // point in the durable event timeline; a throttled (stale) row would silently
         // skip their message truncation.
         let branch_point = self
             .save_branch_point(&ctx.session_id, state, ctx.step_num, true)
@@ -842,11 +843,11 @@ impl ReActEngine {
                 );
             }
         }
-        // The branch-point snapshot above is intentionally written before the
+        // The branch-point marker above is intentionally written before the
         // recovery-only rows. Mark this follow-up write even when no visible
         // text arrived: only this marker authorizes Continue to replace the
-        // failed step, never an ordinary periodic pre-crash snapshot.
-        let recovery_snapshot = self
+        // failed step, never an ordinary periodic boundary check.
+        let event_boundary = self
             .ensure_event_boundary_with_error_partials(
                 &ctx.session_id,
                 state,
@@ -860,8 +861,7 @@ impl ReActEngine {
         // in-flight checkpoint write must not re-create it. Discard goes
         // through the PartialStore, whose generation bump invalidates stale
         // writes.
-        let all_phases_succeeded =
-            branch_point && partial_messages && recovery_snapshot && projection;
+        let all_phases_succeeded = branch_point && partial_messages && event_boundary && projection;
         let marker_phase = if all_phases_succeeded {
             "committed"
         } else {
@@ -877,7 +877,7 @@ impl ReActEngine {
                     branch_point,
                     partial_messages,
                     projection,
-                    recovery_snapshot,
+                    event_boundary,
                 },
             )
             .await;
@@ -887,7 +887,7 @@ impl ReActEngine {
             RecoveryPersistenceResult::Failed {
                 branch_point,
                 partial_messages,
-                recovery_snapshot,
+                event_boundary,
                 projection,
                 failure_marker: if all_phases_succeeded {
                     // A failed commit marker is itself a failed protocol. Try
@@ -902,7 +902,7 @@ impl ReActEngine {
                             branch_point,
                             partial_messages,
                             projection,
-                            recovery_snapshot,
+                            event_boundary,
                         },
                     )
                     .await

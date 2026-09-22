@@ -874,28 +874,38 @@ pub(super) async fn seed_hello_snapshot(
             last_msg_at: Some(thinking_ts),
         },
     );
-    let snapshot = ReActSnapshot {
+    let snapshot = EventProjection {
         events: seed_events_from_canonical(canonical),
-        event_cursor: 0,
         step_number: 1,
         branch_points,
-        last_ingress_seq: agent.db.get_last_message_ingress_seq(session_id),
         interactions: Vec::new(),
-        run_budget: None,
-        error_partial_message_ids: None,
     };
-    seed_snapshot_events(agent, session_id, &snapshot).await;
-    agent
-        .db
-        .save_react_state(session_id, &serde_json::to_string(&snapshot).unwrap())
-        .unwrap();
+    seed_event_projection(agent, session_id, &snapshot).await;
     msgs
 }
 
-pub(super) async fn seed_snapshot_events(
+/// In-memory view of a session event log for tests.
+///
+/// This is not a checkpoint and is never serialized. Production recovery reads
+/// `session_events` directly; tests seed that log and project it back.
+#[derive(Debug)]
+pub(super) struct EventProjection {
+    pub(super) events: Vec<TranscriptRecord>,
+    pub(super) step_number: u32,
+    pub(super) branch_points: HashMap<u32, BranchPoint>,
+    pub(super) interactions: Vec<crate::interaction::InteractionRequest>,
+}
+
+impl EventProjection {
+    pub(super) fn project(&self) -> (Vec<CanonicalMessage>, Vec<ReActRound>) {
+        project_transcript(&self.events)
+    }
+}
+
+pub(super) async fn seed_event_projection(
     agent: &AgentLayer,
     session_id: &str,
-    snapshot: &ReActSnapshot,
+    snapshot: &EventProjection,
 ) {
     agent
         .react_engine
@@ -930,5 +940,23 @@ pub(super) async fn seed_snapshot_events(
             .request_interaction(request.clone())
             .await
             .unwrap();
+    }
+}
+
+/// Build the in-process projection used by assertions from the only durable
+/// recovery source. Tests must not emulate a removed database snapshot row.
+pub(super) async fn load_event_projection(agent: &AgentLayer, session_id: &str) -> EventProjection {
+    let durable = agent
+        .react_engine
+        .load_durable_event_state(session_id)
+        .await
+        .unwrap()
+        .expect("session event log");
+    let step_number = crate::resume_support::infer_resume_step(&durable.events);
+    EventProjection {
+        events: durable.events,
+        step_number,
+        branch_points: durable.branch_points,
+        interactions: Vec::new(),
     }
 }

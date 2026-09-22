@@ -5,12 +5,11 @@
 //! response, and either executes one tool batch or reaches a turn boundary.
 //! The outer run owns the step budget and lifecycle transitions.
 
+use super::effects::EffectBatch;
 use super::response_cycle::{AcceptedResponse, ResponseCycleOutcome};
-use super::snapshot_io::PauseTurnInput;
 use super::stream_step::SearchContextOutcome;
-use super::tool_batch::ToolBatchOutcome;
 use super::tool_batch_policy::ToolRetryBudget;
-use super::turn_end::{TurnEndInput, TurnEndOutcome};
+use super::turn_end::TurnEndInput;
 use super::*;
 use std::sync::Arc;
 use tracing::Instrument;
@@ -28,17 +27,9 @@ pub(super) struct TurnInput<'a> {
     pub(super) cut_off_retries: &'a mut u32,
 }
 
-/// Control returned to the outer run after a single turn.
-pub(super) enum TurnOutcome {
-    /// The run may start another turn at the next step boundary.
-    Continue,
-    /// The turn reached a terminal or pause boundary.
-    Done(LoopExit),
-}
-
 /// Stateless turn coordinator. All session-owned mutable state remains in the
 /// borrowed [`ReActState`] and the `SessionActor`; this type only advances one
-/// model/tool turn and returns its boundary outcome to the run driver.
+/// model/tool turn and returns an [`EffectBatch`] for the run driver to apply.
 pub(super) struct TurnEngine<'a> {
     engine: &'a ReActEngine,
 }
@@ -50,7 +41,7 @@ impl ReActEngine {
 }
 
 impl TurnEngine<'_> {
-    pub(super) async fn run(&self, input: TurnInput<'_>) -> anyhow::Result<TurnOutcome> {
+    pub(super) async fn run(&self, input: TurnInput<'_>) -> anyhow::Result<EffectBatch> {
         self.engine.run_turn_impl(input).await
     }
 }
@@ -60,45 +51,44 @@ impl ReActEngine {
     /// folded. Streaming providers already emitted lifecycle updates; this
     /// final pass attaches the compact result payload and covers providers
     /// whose search calls are only visible in the aggregate response.
-    async fn emit_web_search_returns(
-        emitter: &Arc<dyn AgentEventEmitter>,
+    fn web_search_return_effects(
         session_id: &str,
         step_num: u32,
         run_id: u64,
         web_search_calls: &[serde_json::Value],
-    ) {
+    ) -> Vec<crate::event::AgentEvent> {
+        let mut events = Vec::new();
         for item in web_search_calls {
             let Some(result) = haven_llm::web_search_result_of(item) else {
                 continue;
             };
-            emitter
-                .emit(crate::event::AgentEvent::WebSearch {
-                    session_id: session_id.to_string(),
-                    phase: "completed".into(),
-                    step_number: step_num,
-                    run_id,
-                    call_id: item
-                        .get("id")
-                        .and_then(serde_json::Value::as_str)
-                        .map(str::to_string),
-                    action: item
-                        .pointer("/action/type")
-                        .and_then(serde_json::Value::as_str)
-                        .map(str::to_string),
-                    result: Some(result),
-                })
-                .await;
+            events.push(crate::event::AgentEvent::WebSearch {
+                session_id: session_id.to_string(),
+                phase: "completed".into(),
+                step_number: step_num,
+                run_id,
+                call_id: item
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string),
+                action: item
+                    .pointer("/action/type")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string),
+                result: Some(result),
+            });
         }
+        events
     }
 
-    async fn run_turn_impl(&self, input: TurnInput<'_>) -> anyhow::Result<TurnOutcome> {
+    async fn run_turn_impl(&self, input: TurnInput<'_>) -> anyhow::Result<EffectBatch> {
         let TurnInput {
             ctx,
             state,
             cancel,
             deadline,
             allow_tool_retry,
-            tool_retry_budget,
+            tool_retry_budget: _tool_retry_budget,
             cut_off_retries,
         } = input;
         let session_id = &ctx.session_id;
@@ -184,6 +174,9 @@ impl ReActEngine {
             &router.capability_profile_for_request(request),
             self.media_strategy(),
         );
+        // The media plan is a request-preparation signal, not a deferred
+        // turn-end projection. Publish it before streaming so cancellation
+        // and provider errors cannot drop or reorder it.
         super::emit_media_plan(
             &ctx.emitter,
             session_id,
@@ -193,6 +186,7 @@ impl ReActEngine {
             media_plan,
         )
         .await;
+        let mut effects = EffectBatch::continue_batch();
         let partial_thought = Arc::new(std::sync::Mutex::new(String::new()));
         let partial_reasoning = Arc::new(std::sync::Mutex::new(String::new()));
 
@@ -230,16 +224,14 @@ impl ReActEngine {
                             "turn deadline exceeded during provider request"
                         ));
                     }
-                    return Ok(TurnOutcome::Done(
-                        self.exit_cancelled(session_id, state, step_num).await,
-                    ));
+                    return Ok(effects.with_exit(LoopExit::Cancelled));
                 }
                 StepCallOutcome::Fatal(message) => {
                     // `StreamSession` has already persisted the provider error
                     // and any partial scratch output. Keep this as a soft exit so
-                    // the outer loop does not overwrite that recovery checkpoint
-                    // with a generic turn-error snapshot.
-                    return Ok(TurnOutcome::Done(LoopExit::Error(message)));
+                    // the outer loop does not overwrite that recovery event
+                    // boundary with a generic turn-error path.
+                    return Ok(EffectBatch::done(LoopExit::Error(message)));
                 }
             }
         };
@@ -253,9 +245,7 @@ impl ReActEngine {
                 session_id,
                 step_num
             );
-            return Ok(TurnOutcome::Done(
-                self.exit_cancelled(session_id, state, step_num).await,
-            ));
+            return Ok(effects.with_exit(LoopExit::Cancelled));
         }
 
         // Response-policy retries are isolated from transcript projection. A
@@ -297,20 +287,14 @@ impl ReActEngine {
                         "turn deadline exceeded during response retry"
                     ));
                 }
-                return Ok(TurnOutcome::Done(
-                    self.exit_cancelled(session_id, state, step_num).await,
-                ));
+                return Ok(effects.with_exit(LoopExit::Cancelled));
             }
             ResponseCycleOutcome::RetryableError(message) => {
-                self.emit_error(&ctx.emitter, session_id, &message).await;
-                self.executor
-                    .update_session_status(session_id, SessionStatus::Error)
-                    .await?;
                 // The response-policy failure already persisted the clean
-                // pre-response checkpoint. Keep it as a soft loop exit so the
-                // dispatcher does not run a second generic failure path and
-                // accidentally overwrite the recovery marker.
-                return Ok(TurnOutcome::Done(LoopExit::Error(message)));
+                // pre-response event boundary. Publish the session error from
+                // the batch so this soft exit cannot race a second generic
+                // failure path or overwrite that recovery marker.
+                return Ok(effects.fail_session(message, false));
             }
         };
 
@@ -318,25 +302,20 @@ impl ReActEngine {
             let reasoning_id = self
                 .block_msg_id(session_id, step_num, ctx.run_id, "reasoning")
                 .await;
-            self.apply_transcript(
-                &ctx,
-                TranscriptEvent::Reasoning {
-                    text: reasoning.clone(),
-                    message_id: reasoning_id.clone(),
-                },
-                state,
-            )
-            .await?;
+            effects.transcript(TranscriptEvent::Reasoning {
+                text: reasoning.clone(),
+                message_id: reasoning_id.clone(),
+            });
             // Reconcile streamed reasoning with the final accepted response.
-            ctx.emitter
-                .emit(crate::event::AgentEvent::ReasoningChunk {
+            effects.push(crate::react::effects::TurnEffect::Emit(
+                crate::event::AgentEvent::ReasoningChunk {
                     session_id: session_id.clone(),
                     delta: reasoning,
                     step_number: step_num,
                     run_id: ctx.run_id,
                     message_id: reasoning_id,
-                })
-                .await;
+                },
+            ));
         }
 
         // An unresolved ask owns the turn. Do not let a synthetic final answer
@@ -350,32 +329,40 @@ impl ReActEngine {
             actions.clear();
         }
 
-        Self::emit_web_search_returns(
-            &ctx.emitter,
+        for event in Self::web_search_return_effects(
             session_id,
             step_num,
             ctx.run_id,
             &response.web_search_calls,
-        )
-        .await;
+        ) {
+            effects.push(crate::react::effects::TurnEffect::Emit(event));
+        }
 
         if let Some(text) = thought.clone() {
             let message_id = self
                 .block_msg_id(session_id, step_num, ctx.run_id, "thought")
                 .await;
-            self.apply_transcript(&ctx, TranscriptEvent::Thought { text, message_id }, state)
-                .await?;
+            effects.transcript(TranscriptEvent::Thought { text, message_id });
         }
 
         let search_pushed = match self
-            .prepare_search_context(&ctx, &response, &thought, &actions, state)
+            .prepare_search_context(&ctx, &response, &thought, &actions, &mut effects)
             .await?
         {
-            SearchContextOutcome::ContinueWithoutTools => return Ok(TurnOutcome::Continue),
+            SearchContextOutcome::ContinueWithoutTools => return Ok(effects),
             SearchContextOutcome::Proceed {
                 assistant_already_pushed,
             } => assistant_already_pushed,
         };
+
+        let thought_projected = thought.is_some()
+            || state.events.iter().any(|event| {
+                matches!(
+                    event,
+                    crate::types::TranscriptRecord::Thought { step_number, .. }
+                        if *step_number == step_num
+                )
+            });
 
         if actions.is_empty() {
             if pending_ask {
@@ -387,95 +374,78 @@ impl ReActEngine {
                     .next()
                     .ok_or_else(|| anyhow::anyhow!("ask state changed before resume"))?;
                 let question = pending.prompt.clone();
-                self.project_chat_message(
-                    session_id,
-                    "assistant",
-                    &question,
-                    Some("text"),
+                effects.push(crate::react::effects::TurnEffect::ProjectChatMessage {
+                    role: "assistant".into(),
+                    content: question.clone(),
+                    message_type: Some("text".into()),
+                    tool_call_id: None,
+                    message_id: None,
+                });
+                effects.pause(
+                    step_num + 1,
+                    SessionStatus::Paused,
+                    Some(haven_common::SessionWaitingReason::Ask),
+                    question,
                     None,
-                    None,
-                )
-                .await?;
-                self.pause_turn(PauseTurnInput {
-                    session_id,
-                    state,
-                    snapshot_step: step_num + 1,
-                    emitter: &ctx.emitter,
-                    status: SessionStatus::Paused,
-                    waiting_reason: Some(haven_common::SessionWaitingReason::Ask),
-                    final_text: &question,
-                    branch_point_step: None,
-                })
-                .await?;
-                return Ok(TurnOutcome::Done(LoopExit::Paused {
-                    reason: PauseReason::Ask,
-                }));
+                );
+                effects = EffectBatch::with_effects(
+                    super::effects::TurnControl::Done(LoopExit::Paused {
+                        reason: PauseReason::Ask,
+                    }),
+                    effects.into_effects(),
+                );
+                return Ok(effects);
             }
             if thought.is_none() && empty_retries_remaining < limits.empty_response_max_retries {
                 let message = "模型连续多次返回空响应（服务端异常）。请稍后点击「继续任务」重试，或检查模型服务状态。";
-                self.emit_error(&ctx.emitter, session_id, message).await;
-                self.executor
-                    .update_session_status(session_id, SessionStatus::Error)
-                    .await?;
-                return Err(anyhow::anyhow!(message));
+                // Commit any accepted reasoning/thought effects first, then
+                // fail closed. Returning early here used to drop that batch.
+                return Ok(effects.fail_session(message, true));
             }
             let text = thought.unwrap_or_else(|| "No action decided.".into());
-            return self
+            let mut end = self
                 .finish_turn_end(TurnEndInput {
                     ctx: &ctx,
-                    state,
                     final_text: &text,
                     reasoning: response.reasoning.clone(),
                     thinking_blocks: response.thinking_blocks.clone(),
                     already_pushed: search_pushed,
+                    thought_projected,
                 })
-                .await
-                .map(|outcome| match outcome {
-                    TurnEndOutcome::Continue => TurnOutcome::Continue,
-                    TurnEndOutcome::Done(exit) => TurnOutcome::Done(exit),
-                });
+                .await;
+            if let Ok(ref mut end) = end {
+                end.prepend(effects);
+            }
+            return end;
         }
 
         let has_non_final = actions.iter().any(|action| !action.is_final);
         if !has_non_final && actions.iter().any(|action| action.is_final) {
             let text = thought.unwrap_or_else(|| "Session completed.".into());
-            return self
+            let mut end = self
                 .finish_turn_end(TurnEndInput {
                     ctx: &ctx,
-                    state,
                     final_text: &text,
                     reasoning: response.reasoning.clone(),
                     thinking_blocks: response.thinking_blocks.clone(),
                     already_pushed: search_pushed,
+                    thought_projected,
                 })
-                .await
-                .map(|outcome| match outcome {
-                    TurnEndOutcome::Continue => TurnOutcome::Continue,
-                    TurnEndOutcome::Done(exit) => TurnOutcome::Done(exit),
-                });
+                .await;
+            if let Ok(ref mut end) = end {
+                end.prepend(effects);
+            }
+            return end;
         }
 
-        let tool_outcome = self
-            .execute_tool_batch(
-                session_id,
-                state,
-                step_num,
-                &ctx.emitter,
-                ctx.run_id,
-                &actions,
-                &thought,
-                &response,
-                catalog,
-                &cancel,
-                allow_tool_retry,
-                tool_retry_budget,
-            )
-            .instrument(tracing::info_span!("tools", session_id, step_num))
-            .await?;
-        deadline.ensure_remaining("tool batch")?;
-        match tool_outcome {
-            ToolBatchOutcome::Continue => Ok(TurnOutcome::Continue),
-            ToolBatchOutcome::Done(exit) => Ok(TurnOutcome::Done(exit)),
-        }
+        effects.push(crate::react::effects::TurnEffect::ExecuteToolBatch {
+            actions,
+            thought,
+            response,
+            catalog,
+            cancel,
+            allow_tool_retry,
+        });
+        Ok(effects)
     }
 }

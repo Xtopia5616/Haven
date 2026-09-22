@@ -9,30 +9,20 @@ use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::MutexGuard;
 
+use crate::compactor::estimate_message_tokens;
 use haven_common::config::RequestKind;
 use haven_common::types::CanonicalMessage;
 use haven_llm::ToolDefinition;
 use haven_tools::MessagingService;
-use tokio::sync::watch;
 
-use crate::compactor::estimate_message_tokens;
-
-/// State for the automatic cross-session inbox check, one per engine.
-/// Notification cursors and fallback cadence are per session: the process-wide
-/// inbox notifier is a shared wake-up signal, but consuming session A's signal
-/// must never postpone session B's delivery.
-pub(super) struct MessagingState {
-    pub(super) service: Arc<MessagingService>,
-    pub(super) receivers: HashMap<String, watch::Receiver<u64>>,
-    pub(super) steps_since_poll: HashMap<String, u32>,
-    pub(super) title_cache: HashMap<String, Option<String>>,
-}
-
-/// Sidecar wrapping [`MessagingState`] for cross-session inbox polling.
+/// Process-wide inbox transport for cross-session polling.
+///
+/// Per-session notification cursors, poll cadence and title cache live on
+/// `SessionState`. This sidecar only shares the messaging service and coalesces
+/// heartbeat tasks so one session cannot fill the blocking pool.
 pub(crate) struct MessagingPoller {
-    inner: Mutex<MessagingState>,
+    service: Arc<MessagingService>,
     /// Sessions with a heartbeat `spawn_blocking` already queued/running —
     /// coalesce so steps cannot unboundedly fill the blocking pool.
     heartbeat_inflight: Arc<Mutex<HashSet<String>>>,
@@ -45,18 +35,13 @@ impl MessagingPoller {
 
     pub(crate) fn with_service(service: Arc<MessagingService>) -> Self {
         Self {
-            inner: Mutex::new(MessagingState {
-                service,
-                receivers: HashMap::new(),
-                steps_since_poll: HashMap::new(),
-                title_cache: HashMap::new(),
-            }),
+            service,
             heartbeat_inflight: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
-    pub(super) fn lock(&self) -> MutexGuard<'_, MessagingState> {
-        self.inner.lock().unwrap()
+    pub(crate) fn service(&self) -> Arc<MessagingService> {
+        Arc::clone(&self.service)
     }
 
     /// Claim a heartbeat slot for `session_id`. Returns `None` when one is
@@ -73,12 +58,9 @@ impl MessagingPoller {
         Some(Arc::clone(&self.heartbeat_inflight))
     }
 
-    /// Drop per-session title cache so finished sessions do not accumulate.
+    /// Release a coalesced heartbeat slot. Session poll state is owned by the
+    /// actor and cleared through `SessionActorHandle::clear_messaging_now`.
     pub(crate) fn clear_session(&self, session_id: &str) {
-        let mut state = self.inner.lock().unwrap();
-        state.title_cache.remove(session_id);
-        state.receivers.remove(session_id);
-        state.steps_since_poll.remove(session_id);
         self.heartbeat_inflight.lock().unwrap().remove(session_id);
     }
 }
@@ -526,14 +508,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn messaging_clear_session_drops_title_cache() {
+    fn clear_session_releases_heartbeat_slot() {
         let poller = MessagingPoller::new();
-        {
-            let mut st = poller.lock();
-            st.title_cache.insert("ses-a".into(), Some("hello".into()));
-        }
+        assert!(poller.try_begin_heartbeat("ses-a").is_some());
+        assert!(poller.try_begin_heartbeat("ses-a").is_none());
         poller.clear_session("ses-a");
-        assert!(!poller.lock().title_cache.contains_key("ses-a"));
+        assert!(poller.try_begin_heartbeat("ses-a").is_some());
     }
 
     #[test]

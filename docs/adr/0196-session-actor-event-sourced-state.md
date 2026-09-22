@@ -2,7 +2,7 @@
 
 ## 状态
 
-已接受（2026-09-22）
+已接受（2026-09-22）。ADR 0209 删除公开 `ReActSnapshot`，并把 session-local inbox 轮询状态放进 `SessionState`。`sessions.react_state` 仍只作测试兼容列保留。
 
 ## 背景
 
@@ -15,7 +15,8 @@
 
 - `SessionSupervisor` 只管理 session registry、并发 admission 和生命周期。
 - `SessionActor` 独占一个 `SessionState`，包括 follow-up/steering/action 队列、
-  interaction registry、run budget、usage、stream identity、token estimate 和运行状态。
+  interaction registry、run budget、usage、stream identity、token estimate、运行状态，
+  以及 inbox 通知游标、轮询节拍和标题缓存。进程级 heartbeat 合并不进入 `SessionState`。
   外部输入统一通过 `Submit`、`Steer`、`ResolveInteraction`、`Cancel`、
   `BackgroundResult` 等 mailbox command 进入。
 - interaction lifecycle 以 `interaction_requested`、`interaction_resolved`、
@@ -25,11 +26,11 @@
   append event、更新 messages/steps projection 并在 commit 后广播 UI/live event；
   `last_msg_at`、`event_cursor`、`step_seq` 和 `message_ingress_seq` 不再由 ReAct
   层维护 sidecar。
-- `ReActSnapshot` 只作为进程内投影 scratch；生产 checkpoint 只更新
-  `react_checkpoints` 的游标元数据。生产 resume/rollback 不读取 `react_state`，也不以
-  projection 修复 event stream。旧 `react_state` 列暂留至下一次 schema reset，之后删除。
-- `TurnEngine` 是单 turn 的协调边界，返回 turn outcome；run budget 和生命周期仍由
-  run driver/actor 持有。
+- `ReActState` 只作为进程内投影 scratch；生产恢复边界由 `session_events` 的 event
+  cursor 和 projection cutoff 表达，不另建 checkpoint 表。`sessions.react_state` 生产路径不读写，列暂留到下一次 schema reset。
+  resume/rollback 不从 snapshot 导入，也不以 projection 修复 event stream。
+- `TurnEngine` 是单 turn 的协调边界，返回按序执行的 `EffectBatch`；run budget 和
+  生命周期仍由 run driver/actor 持有。
 
 ## 影响
 

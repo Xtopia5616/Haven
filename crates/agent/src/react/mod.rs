@@ -17,9 +17,13 @@ use haven_memory::{Database, SessionStore};
 
 use crate::compactor::{ContextCompactor, estimate_provider_request_tokens_with_message_estimate};
 use crate::event::{AgentEvent, AgentEventEmitter, EventDispatcher, UsagePayload};
-use crate::types::{Action, TranscriptRecord, media_inputs_from_events};
+#[cfg(test)]
+use crate::types::TranscriptRecord;
+use crate::types::{Action, media_inputs_from_events};
 
 mod context;
+mod effects;
+mod event_boundary;
 mod hook_policy;
 mod hooks;
 pub(crate) mod identity;
@@ -30,7 +34,6 @@ mod request_context;
 mod response_cycle;
 mod retries;
 pub(crate) mod sidecars;
-mod snapshot_io;
 mod state;
 pub(crate) mod stream_step;
 mod tool_batch;
@@ -55,8 +58,8 @@ use sidecars::ContextWindowCache;
 pub(crate) use state::{ReActState, RetryNudge};
 use transcript::{ObservationCard, TranscriptEvent};
 
-pub(crate) use snapshot_io::set_status_and_emit;
-pub(crate) use snapshot_io::DurableEventState;
+pub(crate) use event_boundary::DurableEventState;
+pub(crate) use event_boundary::set_status_and_emit;
 #[cfg(test)]
 use tool_batch_policy::FailureKind;
 
@@ -122,6 +125,68 @@ pub(crate) fn media_plan_for_inputs(
         plan.notices.extend(input_plan.notices);
     }
     plan
+}
+
+/// Publish a media plan while a provider request is being prepared.
+/// This is a request-time signal for both the initial turn and compaction
+/// retries. It is not a deferred turn-end effect.
+pub(super) async fn emit_media_plan(
+    emitter: &Arc<dyn AgentEventEmitter>,
+    session_id: &str,
+    step_number: u32,
+    run_id: u64,
+    request: RequestKind,
+    plan: MediaPlan,
+) {
+    if plan.is_empty() && plan.notices.is_empty() {
+        return;
+    }
+    if plan.notices.is_empty()
+        && plan
+            .projections
+            .iter()
+            .all(|projection| projection.mode == MediaProjectionMode::Raw)
+    {
+        tracing::debug!(
+            session_id,
+            step_number,
+            request = request.as_str(),
+            strategy = plan.strategy.as_str(),
+            projections = ?plan.projections,
+            "media request plan recorded"
+        );
+    } else if plan.notices.is_empty() {
+        tracing::info!(
+            session_id,
+            step_number,
+            request = request.as_str(),
+            strategy = plan.strategy.as_str(),
+            projections = ?plan.projections,
+            "media request selected a non-raw representation"
+        );
+    } else {
+        tracing::warn!(
+            session_id,
+            step_number,
+            request = request.as_str(),
+            strategy = plan.strategy.as_str(),
+            projections = ?plan.projections,
+            notices = ?plan.notices,
+            "media request was downgraded to match the selected adapter capability profile"
+        );
+    }
+    emitter
+        .emit(AgentEvent::MediaPlan {
+            session_id: session_id.to_string(),
+            step_number,
+            run_id,
+            role: request,
+            strategy: plan.strategy,
+            projections: plan.projections,
+            notices: plan.notices,
+            event_seq: None,
+        })
+        .await;
 }
 
 fn media_capabilities_for_input(input: &MediaInput) -> CapabilityProfile {
@@ -219,65 +284,6 @@ pub(super) async fn choose_agent_request(
     }
 
     preferred
-}
-
-pub(super) async fn emit_media_plan(
-    emitter: &Arc<dyn AgentEventEmitter>,
-    session_id: &str,
-    step_number: u32,
-    run_id: u64,
-    request: RequestKind,
-    plan: MediaPlan,
-) {
-    if plan.is_empty() && plan.notices.is_empty() {
-        return;
-    }
-    if plan.notices.is_empty()
-        && plan
-            .projections
-            .iter()
-            .all(|projection| projection.mode == MediaProjectionMode::Raw)
-    {
-        tracing::debug!(
-            session_id,
-            step_number,
-            request = request.as_str(),
-            strategy = plan.strategy.as_str(),
-            projections = ?plan.projections,
-            "media request plan recorded"
-        );
-    } else if plan.notices.is_empty() {
-        tracing::info!(
-            session_id,
-            step_number,
-            request = request.as_str(),
-            strategy = plan.strategy.as_str(),
-            projections = ?plan.projections,
-            "media request selected a non-raw representation"
-        );
-    } else {
-        tracing::warn!(
-            session_id,
-            step_number,
-            request = request.as_str(),
-            strategy = plan.strategy.as_str(),
-            projections = ?plan.projections,
-            notices = ?plan.notices,
-            "media request was downgraded to match the selected adapter capability profile"
-        );
-    }
-    emitter
-        .emit(AgentEvent::MediaPlan {
-            session_id: session_id.to_string(),
-            step_number,
-            run_id,
-            role: request,
-            strategy: plan.strategy,
-            projections: plan.projections,
-            notices: plan.notices,
-            event_seq: None,
-        })
-        .await;
 }
 
 /// A tool input that cannot be executed without changing the model's

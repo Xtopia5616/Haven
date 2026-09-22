@@ -257,22 +257,18 @@ async fn loop_pauses_on_pending_ask_instead_of_heuristic_final() {
             Some("call_ask".into()),
         ),
     ];
-    let snapshot = ReActSnapshot {
+    let snapshot = EventProjection {
         events: seed_events_from_canonical(canonical),
-        event_cursor: 0,
         step_number: 1,
         branch_points: HashMap::new(),
-        last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
         interactions: vec![crate::interaction::InteractionRequest::ask(
             &session.id,
             "which file?",
             Vec::new(),
             vec!["step-ask".into()],
         )],
-        run_budget: None,
-        error_partial_message_ids: None,
     };
-    seed_snapshot_events(&agent, &session.id, &snapshot).await;
+    seed_event_projection(&agent, &session.id, &snapshot).await;
     agent.run_session_from_id(&session.id).await.unwrap();
 
     assert_eq!(
@@ -1549,7 +1545,7 @@ async fn continue_session_resumes_errored_session() {
         .update_session_status(&session.id, SessionStatus::Error)
         .await
         .unwrap();
-    let snapshot = ReActSnapshot {
+    let snapshot = EventProjection {
         events: seed_events_from_canonical(vec![CanonicalMessage {
             role: CanonicalRole::User,
             content: vec![ContentPart::text("hello")],
@@ -1561,13 +1557,9 @@ async fn continue_session_resumes_errored_session() {
             source: None,
             id: None,
         }]),
-        event_cursor: 0,
         step_number: 1,
         branch_points: HashMap::new(),
-        last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
         interactions: Vec::new(),
-        run_budget: None,
-        error_partial_message_ids: None,
     };
     // Add a partial assistant message that should be cleaned up.
     agent
@@ -1584,7 +1576,7 @@ async fn continue_session_resumes_errored_session() {
             None,
         )
         .unwrap();
-    seed_snapshot_events(&agent, &session.id, &snapshot).await;
+    seed_event_projection(&agent, &session.id, &snapshot).await;
     let hello_created_at = agent
         .db
         .get_session_messages(&session.id)
@@ -1608,7 +1600,7 @@ async fn continue_session_resumes_errored_session() {
                     branch_point: true,
                     partial_messages: true,
                     projection: true,
-                    recovery_snapshot: true,
+                    event_boundary: true,
                 },
             )?;
             Ok(())
@@ -1678,17 +1670,13 @@ async fn continue_session_preserves_history_without_an_error_partial_marker() {
             last_msg_at: Some(opening.created_at),
         },
     );
-    let snapshot = ReActSnapshot {
+    let snapshot = EventProjection {
         events: seed_events_from_canonical(vec![CanonicalMessage::user_text("opening")]),
-        event_cursor: 0,
         step_number: 1,
         branch_points,
-        last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
-        error_partial_message_ids: None,
         interactions: Vec::new(),
-        run_budget: None,
     };
-    seed_snapshot_events(&agent, &session.id, &snapshot).await;
+    seed_event_projection(&agent, &session.id, &snapshot).await;
     agent.continue_session(&session.id).await.unwrap();
 
     let ids: Vec<String> = agent

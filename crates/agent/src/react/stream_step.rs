@@ -4,7 +4,8 @@
 //! [`StreamSession`] so the thin loop only consumes [`StepCallOutcome`]
 //! and never constructs [`StreamForwarder`].
 
-use super::snapshot_io::RecoveryPersistenceResult;
+use super::effects::{EffectBatch, TurnEffect};
+use super::event_boundary::RecoveryPersistenceResult;
 use super::*;
 use crate::types::media_inputs_from_events;
 use haven_common::config::RequestKind;
@@ -1533,7 +1534,7 @@ impl ReActEngine {
         response: &LlmResponse,
         thought: &Option<String>,
         actions: &[Action],
-        state: &mut ReActState,
+        effects: &mut EffectBatch,
     ) -> anyhow::Result<SearchContextOutcome> {
         if response.web_search_calls.is_empty() {
             return Ok(SearchContextOutcome::Proceed {
@@ -1560,26 +1561,22 @@ impl ReActEngine {
             None
         };
         // Thought already projected the messages row when present.
-        self.apply_transcript(
-            ctx,
-            TranscriptEvent::ToolCall {
-                text: push_text.to_string(),
-                tool_calls: Vec::new(),
-                reasoning,
-                web_search_calls: response.web_search_calls.clone(),
-                thinking_blocks: response.thinking_blocks.clone(),
-                action_cards: Vec::new(),
-                persist_text_id: None,
-            },
-            state,
-        )
-        .await?;
+        effects.transcript(TranscriptEvent::ToolCall {
+            text: push_text.to_string(),
+            tool_calls: Vec::new(),
+            reasoning,
+            web_search_calls: response.web_search_calls.clone(),
+            thinking_blocks: response.thinking_blocks.clone(),
+            action_cards: Vec::new(),
+            persist_text_id: None,
+        });
 
         if actions.is_empty() {
             // Search round: no answer yet — keep the turn open and re-request
             // with the search context in the next input.
-            self.save_branch_point(&ctx.session_id, state, ctx.step_num, false)
-                .await?;
+            effects.push(TurnEffect::SaveBranchPoint {
+                step_number: ctx.step_num,
+            });
             tracing::debug!(
                 "ReAct step {} session {} server-side search round ({} item(s)); continuing",
                 ctx.step_num,

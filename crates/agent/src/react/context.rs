@@ -223,13 +223,21 @@ impl ContextSource {
     /// context item: joining peer messages into one string destroyed message
     /// boundaries and made receipts/replies impossible to reason about.
     async fn poll_inbox(&self, session_id: &str) -> PendingContextBatch {
-        let cached_title = {
-            let state = self.messaging.lock();
-            state.title_cache.get(session_id).cloned()
+        // Poll cadence and the inbox watch belong to the session actor. The
+        // engine only shares the process-wide messaging service.
+        let Some(actor) = self.executor.actor_for(session_id).await else {
+            return PendingContextBatch::default();
         };
-        let title = match cached_title {
-            Some(title) => title,
-            None => {
+        let service = self.messaging.service();
+        let subscribe_service = Arc::clone(&service);
+        let tick = actor
+            .tick_messaging_poll(MESSAGING_POLL_EVERY_STEPS, move || {
+                subscribe_service.subscribe()
+            })
+            .await;
+        let title = match tick.title {
+            crate::session::MessagingTitle::Cached(title) => title,
+            crate::session::MessagingTitle::Missing => {
                 let title = match self
                     .db
                     .run_blocking({
@@ -249,39 +257,11 @@ impl ContextSource {
                         None
                     }
                 };
-                self.messaging
-                    .lock()
-                    .title_cache
-                    .insert(session_id.to_string(), title.clone());
+                actor.remember_messaging_title(title.clone()).await;
                 title
             }
         };
-
-        let (service, due) = {
-            let mut state = self.messaging.lock();
-            let service = state.service.clone();
-            let steps = {
-                let steps_since_poll = state
-                    .steps_since_poll
-                    .entry(session_id.to_string())
-                    .or_insert(0);
-                *steps_since_poll += 1;
-                *steps_since_poll
-            };
-            let rx = state
-                .receivers
-                .entry(session_id.to_string())
-                .or_insert_with(|| service.subscribe());
-            let notified = rx.has_changed().unwrap_or(false);
-            if notified {
-                let _ = rx.borrow_and_update();
-            }
-            let due = notified || steps >= MESSAGING_POLL_EVERY_STEPS;
-            if due {
-                state.steps_since_poll.insert(session_id.to_string(), 0);
-            }
-            (service, due)
-        };
+        let due = tick.due;
 
         let session_id_owned = session_id.to_string();
         if let Some(inflight) = self.messaging.try_begin_heartbeat(session_id) {
@@ -402,6 +382,9 @@ impl ContextSource {
     /// Drop per-session inbox caches when a session leaves the working set.
     pub(super) fn clear_session(&self, session_id: &str) {
         self.messaging.clear_session(session_id);
+        if let Some(actor) = self.executor.actor_for_now(session_id) {
+            actor.clear_messaging_now();
+        }
     }
 }
 

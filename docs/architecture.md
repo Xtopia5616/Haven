@@ -187,9 +187,11 @@ CI 以 `scripts/check-crate-dependencies.ps1` 对此表执行内部 crate 依赖
 
 schema 初始化不改变 X12：`session_events` 经 `SessionStore` 追加并按
 sequence replay，是会话恢复、rollback、交互重建和实时订阅的唯一事件权威；
-`messages` / `session_steps` 仍是投影，`react_checkpoints` 只保存轻量游标元数据，
-不再保存可恢复的 ReAct JSON。`ReActSnapshot` 只存在于进程内作为投影 scratch；
-完整 `events`、interaction、usage、run budget 和多套 cursor 不得写入 snapshot。
+`messages` / `session_steps` 仍是投影，生产路径没有独立的 ReAct checkpoint 表，
+也不把可恢复的 ReAct JSON 写回数据库。`ReActState` 只存在于进程内作为投影
+scratch；完整 `events`、interaction、usage、run budget 和多套 cursor 不得写入
+数据库快照。`sessions.react_state` 只作测试兼容列保留到下一次 schema reset，生产恢复不读写；
+测试 transcript 只投影 `session_events`。
 `UserInject` 事件只保存 `MediaInput` 元数据，reset 只替换持久化载体，不成为新的业务真源。
 
 **判定标准**：只负责 SQLite 生命周期与记忆数据持久化；Agent 编排、LLM
@@ -219,12 +221,12 @@ Agent（ADR 0022、0063、0169）。
 
 ### 2.5 `haven-agent` —— ReAct 编排与会话执行
 
-- `react/`：ReAct 循环（`loop` / `turn` / `response_cycle` / `stream_step` / `tool_batch` / `tool_batch_execute` / `tool_batch_policy` / `tool_batch_plan` / `context` / `inject` / `turn_end` / `snapshot_io` / `retries` / `hooks` / `hook_policy` / `transcript` / `state` / `request_context`），按 Run → Turn → ToolBatch 分层；`ReActState` 统一持有当前 run 的 events、canonical 和 branch points，所有边界共享同一运行态。`loop` 只负责 run 预算与生命周期，`turn` 负责阶段编排，`response_cycle` 负责一次采样后的空响应/截断重试，`tool_batch_plan` 固化 assistant 调用顺序和跨层身份，`tool_batch_execute` 负责批次准入、并发执行、取消与按序提交，`tool_batch_policy` 负责失败分类与重试提示，`tool_batch` 负责工具执行原语、确认生命周期与结果状态。`RequestContext` 从 durable canonical 生成不可变的 provider 请求视图，统一承载 sanitize、retry nudge 和一次性重试指令，不反写 transcript；`context` 只收集有边界的上下文项，`inject` 只经 `apply_transcript` 投影，`turn_end` 负责最终事件与暂停边界，`hooks` 只定义扩展契约，`hook_policy` 装配生产副作用策略。
+- `react/`：ReAct 循环（`loop` / `turn` / `effects` / `response_cycle` / `stream_step` / `tool_batch` / `tool_batch_execute` / `tool_batch_policy` / `tool_batch_plan` / `context` / `inject` / `turn_end` / `event_boundary` / `retries` / `hooks` / `hook_policy` / `transcript` / `state` / `request_context`），按 Run → Turn → ToolBatch 分层；`ReActState` 统一持有当前 run 的 events、canonical 和 branch points，所有边界共享同一运行态。`loop` 只负责 run 预算、生命周期和按序应用 `EffectBatch`，`turn` 负责模型阶段编排并产出 effect batch，`effects` 是 transcript、UI-only 投影、branch point 和 pause 的唯一按序应用边界；turn 终态与工具批次的 durable 提交都走这里，turn-start 注入和 stream chunk 仍留在各自边界，`response_cycle` 负责一次采样后的空响应/截断重试，`tool_batch_plan` 固化 assistant 调用顺序和跨层身份，`tool_batch_execute` 负责批次准入、并发执行、取消与按序提交，`tool_batch_policy` 负责失败分类与重试提示，`tool_batch` 负责工具执行原语、确认生命周期与结果状态。`RequestContext` 从 durable canonical 生成不可变的 provider 请求视图，统一承载 sanitize、retry nudge 和一次性重试指令，不反写 transcript；`context` 只收集有边界的上下文项，`inject` 只经 `apply_transcript` 投影，`turn_end` 只组装最终 effect batch，`event_boundary` 负责事件流完整性与生命周期边界，`hooks` 只定义扩展契约，`hook_policy` 装配生产副作用策略。
 - 流式输出由 `stream_step` 产生，`event.rs` 用一个有序 chunk 队列归并 thought/reasoning；provider retry 通过 `agent:stream_reset` 标记新的输出代次，UI 只清理 live stream block，不修改 durable transcript。`streamAggregator` 只合并相邻且同身份的 chunk，保留交错输出顺序；最终 thought/reasoning 投影仍是丢 chunk 时的权威修复路径。
-- **X12 持久化契约**：`SessionStore` 是 `session_events` 的 append-only writer；`apply_transcript` 先提交 durable event，再维护 `messages`/`session_steps` 物化投影并发出同一语义的 live event。交互请求也必须由 `SessionActor` 命令追加为 domain event，恢复只 replay 事件流；resume、rollback 和实时重放均从 event sequence 读取，checkpoint 只保存轻量游标元数据。rollback 的 event cursor 用于 active transcript 投影，event sequence 用于 append-only timeline；`last_msg_at` 只用于截断物化消息投影，三者由 `SessionStore` 封装且不得互相推导或作为 transcript 真源。多模态输入在 ingress 接受 `MessageAttachment`，但事件/数据库 canonical 投影使用 `MediaAsset → MediaRepresentation → MediaPlan`，事件不保存 inline bytes；OCR/STT 成功追加派生表示且保留 raw asset。
-- **工具调用身份契约**：同一 assistant tool batch 内，`action_index` 是 provider 调用数组的零基稳定位置，`step_id` 是该调用的持久执行行/卡片身份，`tool_call_id` 是 provider 调用身份；`session_steps` 与 ReAct events 同步保存三者。确认恢复必须按完整身份关联，禁止按工具名、参数或 observation 文本猜测；缺失 snapshot 不再从步骤投影重建 ReAct transcript，旧数据按 reset 边界处理。
+- **X12 持久化契约**：`SessionStore` 是 `session_events` 的 append-only writer；`apply_transcript` 先提交 durable event，再维护 `messages`/`session_steps` 物化投影并发出同一语义的 live event。交互请求也必须由 `SessionActor` 命令追加为 domain event，恢复只 replay 事件流；resume、rollback 和实时重放均从 event sequence 读取，事件流本身承载恢复游标。rollback 的 event cursor 用于 active transcript 投影，event sequence 用于 append-only timeline；`last_msg_at` 只用于截断物化消息投影，三者由 `SessionStore` 封装且不得互相推导或作为 transcript 真源。多模态输入在 ingress 接受 `MessageAttachment`，但事件/数据库 canonical 投影使用 `MediaAsset → MediaRepresentation → MediaPlan`，事件不保存 inline bytes；OCR/STT 成功追加派生表示且保留 raw asset。
+- **工具调用身份契约**：同一 assistant tool batch 内，`action_index` 是 provider 调用数组的零基稳定位置，`step_id` 是该调用的持久执行行/卡片身份，`tool_call_id` 是 provider 调用身份；`session_steps` 与 ReAct events 同步保存三者。确认恢复必须按完整身份关联，禁止按工具名、参数或 observation 文本猜测；缺失事件流不再从步骤投影重建 ReAct transcript，旧数据按 reset 边界处理。
 - **工具参数验证契约**：执行前只验证，不用 schema default、首个 enum 或类型占位符改写输入；无效参数以包含 `action_index`、工具名和验证明细的失败 observation 返回给模型，避免改变副作用语义。
-- `session/`：`SessionSupervisor` 只负责 registry、并发 admission 和生命周期；`SessionActor` 通过 mailbox 串行拥有单会话状态、队列、交互、run budget、usage、stream identity 和运行游标；`TurnEngine` 只推进一次 turn，`RunEngine` 负责 run 边界；`dispatcher` / `queues` / `status` / `tool_runner` 只提供各层协作能力。
+- `session/`：`SessionSupervisor` 只负责 registry、并发 admission 和生命周期；`SessionActor` 通过 mailbox 串行拥有单会话状态、队列、交互、run budget、usage、stream identity、运行游标，以及 inbox 通知游标、轮询节拍和标题缓存；进程级 heartbeat 合并仍留在 `MessagingPoller`；`TurnEngine` 只推进一次 turn 并产出 `EffectBatch`，`RunEngine` 负责应用批次和 run 边界；`dispatcher` / `queues` / `status` / `tool_runner` 只提供各层协作能力。
 - `layer.rs` + `ingress.rs` / `resume.rs` / `resume_support.rs`：对外入口与 resume 恢复；`resume_support` 只提供确定性的候选合并、悬空工具调用修复和运行时工具选择恢复。
 - `canonical.rs`：发送前 `sanitize_canonical` 闸门。
 - `memory_worker.rs` / `memory_service.rs` / `memory_index.rs` / `prompt_context.rs` / `prompt_renderer.rs` / `prompt.rs` / `compactor.rs` / `rollback.rs` / `rollback_support.rs` / `title.rs` / `event.rs` / `partial.rs`；`memory_service` 统一 typed memory/embedding/cache 边界，`prompt_context` 取得 bounded turn snapshot，`prompt_renderer` 纯渲染 bounded MEMORY fence；`rollback.rs` 编排生命周期与 DB 双时钟，`rollback_support` 只操作 events 和 branch cursor。
@@ -261,7 +263,7 @@ Parent session                    Child session(s)
 | 传输 | `haven-tools` `inbox.rs` | JSONL file transport adapter：`%APPDATA%/haven/inbox` 的 registry / mailbox / archive / lock；不向应用暴露同步 drain 语义 |
 | 编排 | `haven-agent` `layer::spawn_peer_session` | 先落库 `peer_kickoff` 并 inbox 注册 parent，再 Pending 调度；返回 `queued`（相对 `session.max_concurrent`） |
 | 接线 | `haven-app-binary` `app_state` | 安装一个 typed `MessagingRuntime`，同时提供 SessionActor mailbox 与 peer 生命周期（tools 不依赖 agent） |
-| 运行时 | `react/context.rs` + `react/inject.rs` | `context` 负责每步 heartbeat、通知或每 3 步通过 `MessagingService::claim` poll inbox；每个 envelope 保留为独立上下文项，投影 durable 后由 `MessageClaim::complete` ack 并发 receipt；`inject` 经 `apply_transcript` 注入带消毒后的 `id`/`in_reply_to`/`subject`；`InjectSource::CrossSession` |
+| 运行时 | `react/context.rs` + `react/inject.rs` | `context` 负责每步 heartbeat、通知或每 3 步通过 `MessagingService::claim` poll inbox（receiver、节拍和标题缓存在 `SessionState`，heartbeat 合并仍是进程级）；每个 envelope 保留为独立上下文项，投影 durable 后由 `MessageClaim::complete` ack 并发 receipt；`inject` 经 `apply_transcript` 注入带消毒后的 `id`/`in_reply_to`/`subject`；`InjectSource::CrossSession` |
 | 生命周期 | `session/status.rs` | `interrupt_session`/`end_session` 先取消并立即返回控制结果；若 run 仍在收尾，terminal cleanup、partial promote 与 actor 移除延迟到 dispatcher 的 run-exit 边界；终端态继续 BFS 子孙 system notice + 无嵌套 cascade 结束；`type=system` 仅运行时 |
 | 信任 / 记忆 | `memory_worker.rs` | 跳过 `peer_kickoff` 与跨会话注入文本的 fact 抽取 |
 | UI | 对话页 tool card | `agent` 结构化卡片；自动同伴邮件以 `agent`/`inbox`/`auto` 卡片展示；kickoff 左侧「低信任委托」 |
@@ -477,6 +479,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 | 日期 | 内容 |
 |---|---|
 | 2026-09-22 | §2.5 Tools：按组合 wiring、catalog/session discovery 与 execution 入口拆分 `ToolsManager` 实现，并将 manager 回归测试移出 crate root；公共工具、授权、IPC 与持久化契约不变（ADR 0205） |
+| 2026-09-22 | §2.3/§2.5：删除 `react_checkpoints`，生产恢复只 replay `session_events`；`sessions.react_state` 仅保留为测试列；turn 终态和工具批次 durable 提交都经 `EffectBatch`；inbox 轮询状态进入 `SessionState`（ADR 0196/0208/0209），schema v27 |
 | 2026-09-21 | §2.3 Memory / §2.5 Agent / Common / UI：首轮 system prompt 不再等待 embedding，记忆改为有界后台预取并通过 MEMORY fence 补入；收紧默认上下文、输出、观察、工具与 reasoning 回显预算（ADR 0191） |
 | 2026-09-20 | §2.5 Agent / §2.6 UI：工具实时预览移出 SessionReducer，避免输出 tick 重算整条时间线；运行中的停止/结束立即返回，终端清理延迟到 run-exit 边界，删除/清空仍保留 destructive cleanup fence（ADR 0184） |
 | 2026-09-19 | §2.5 Agent / §2.6 UI：Action board 刷新加入状态版本校验；损坏 waiting scheduled row 增加可取消的指数退避隔离重试；scheduled fire 改为服务级 claim/lease，阻止多 receiver 重复执行（ADR 0174） |
@@ -487,7 +490,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 | 2026-09-15 | §2.5 Security / Tools / Agent / App：由 `AuthorizationEngine` 统一承载 typed `AuthorizationRequest`、`AuthorizationDecision` 与 `CapabilityScope`；scheduled、MCP、skill、Tauri/UI confirmation 共用同一请求与 receipt 校验路径（ADR 0163） |
 | 2026-09-15 | §2.6 App：引入 `ApplicationRuntime` 统一服务句柄、后台任务 owner、根取消 token、退出 shutdown/teardown；输入、session、action、MCP 和 bootstrap worker 按依赖顺序停止，pending scheduled action 保留恢复语义（ADR 0161） |
 | 2026-09-15 | §2.6 UI：以 typed `SessionReducer` 统一 live event、resume、rollback/reconnect replay、Interaction、usage 与 optimistic 状态；旧消息/用量 store 降为兼容投影（ADR 0160） |
-| 2026-09-15 | §2.3 Memory / §2.5 Agent：新增版本化 `session_events` append-only 事件流与 `SessionEventStore`；snapshot 降级为 checkpoint/cache，resume、rollback、transcript 投影与 live replay 共用 durable sequence（ADR 0159） |
+| 2026-09-15 | §2.3 Memory / §2.5 Agent：新增版本化 `session_events` append-only 事件流与 `SessionEventStore`；resume、rollback、transcript 投影与 live replay 共用 durable sequence（ADR 0159，后由 ADR 0196/0207 收口） |
 | 2026-09-12 | §2.5 Tools / Agent / App：删除 `MediaGateway`、coverage、intent 与 ingress eager preprocessing；由单一共享 `MediaTool` 统一 OCR、STT fallback、文档抽取和显式媒体生成，并同步 UI 媒体结果契约（ADR 0130） |
 | 2026-09-12 | §2.5 Tools / UI / Security：删除独立 `audio` 模型工具，将录音、播放、TTS、音量和静音纳入 `media` operation 分支；旧 audio 配置/权限按测试版策略重置（ADR 0133） |
 | 2026-09-12 | §2.5 Tools：按公共契约、媒体引用、内容派生、生成/资产登记和测试职责拆分 `media` 内部模块；模型入口与运行时行为不变（ADR 0134） |

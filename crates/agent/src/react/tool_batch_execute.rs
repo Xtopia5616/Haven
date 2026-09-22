@@ -6,7 +6,6 @@
 //! `tool_batch.rs`; failure policy lives in `tool_batch_policy.rs`.
 
 use super::hooks::{BeforeToolAction, ToolCallIdentity};
-use super::snapshot_io::PauseTurnInput;
 use super::tool_batch::{
     CompletedTool, MAX_CONCURRENT_TOOL_CALLS, MAX_RUNTIME_TOOL_CALLS_PER_BATCH, ToolActionRequest,
     ToolBatchGate, ToolBatchOutcome, ToolBatchResults, ToolBatchState, action_step_metadata,
@@ -471,6 +470,16 @@ impl ReActEngine {
                 validation_failures.len()
             );
         }
+        let step_ctx = StepCtx {
+            session_id: session_id.to_string(),
+            step_num,
+            run_id,
+            emitter: emitter.clone(),
+        };
+        // Assistant tool calls and the branch marker share one ordered commit.
+        // An empty plan still records the branch point, and neither write
+        // bypasses the effect applier.
+        let mut commit = super::effects::EffectBatch::continue_batch();
         if !plan.is_empty() {
             let tool_calls = plan.canonical_calls();
             // Text matches Thought projection (trimmed) so review/resume
@@ -489,44 +498,28 @@ impl ReActEngine {
             // Thought already projected the messages row — no persist_text_id.
             let action_cards =
                 plan.action_cards_with_catalog(suppress_streamed_thought, catalog.as_ref());
-            let step_ctx = StepCtx {
-                session_id: session_id.to_string(),
-                step_num,
-                run_id,
-                emitter: emitter.clone(),
-            };
-            self.apply_transcript(
-                &step_ctx,
-                TranscriptEvent::ToolCall {
-                    text: push_text.to_string(),
-                    tool_calls,
-                    reasoning: if response.thinking_blocks.is_empty() {
-                        response.reasoning.clone()
-                    } else {
-                        None
-                    },
-                    web_search_calls: response.web_search_calls.clone(),
-                    thinking_blocks: response.thinking_blocks.clone(),
-                    action_cards,
-                    persist_text_id: None,
+            commit.transcript(TranscriptEvent::ToolCall {
+                text: push_text.to_string(),
+                tool_calls,
+                reasoning: if response.thinking_blocks.is_empty() {
+                    response.reasoning.clone()
+                } else {
+                    None
                 },
-                state,
-            )
-            .await?;
+                web_search_calls: response.web_search_calls.clone(),
+                thinking_blocks: response.thinking_blocks.clone(),
+                action_cards,
+                persist_text_id: None,
+            });
         }
-
-        self.save_branch_point(session_id, state, step_num, false)
-            .await?;
+        commit.push(super::effects::TurnEffect::SaveBranchPoint {
+            step_number: step_num,
+        });
+        self.apply_committed_batch(&step_ctx, state, commit).await?;
 
         // Phase 5 / E3: pre-check every planned action before spawning.
         // Proceed tools run in parallel; blocked calls become immediate
         // observations; NeedConfirm is collected and pauses after the drain.
-        let gate_ctx = StepCtx {
-            session_id: session_id.to_string(),
-            step_num,
-            run_id,
-            emitter: emitter.clone(),
-        };
         let admission = {
             let _timer =
                 self.metrics
@@ -534,7 +527,7 @@ impl ReActEngine {
             self.admit_tool_batch(
                 session_id,
                 step_num,
-                &gate_ctx,
+                &step_ctx,
                 catalog.as_ref(),
                 &plan,
                 &validation_failures,
@@ -573,7 +566,7 @@ impl ReActEngine {
                 self.metrics
                     .start(MetricsPhase::OrderedCommit, session_id, run_id, step_num);
             batch_state
-                .commit_ordered_results(self, &gate_ctx, execution.results, state)
+                .commit_ordered_results(self, &step_ctx, execution.results, state)
                 .await?;
         }
 
@@ -637,7 +630,7 @@ impl ReActEngine {
         if need_confirm.is_empty()
             && batch_state.asked_questions.is_empty()
             && !self
-                .save_snapshot_after_tool_results(session_id, state, step_num + 1)
+                .ensure_event_boundary_after_tool_results(session_id, state, step_num + 1)
                 .await
         {
             anyhow::bail!(
@@ -669,21 +662,24 @@ impl ReActEngine {
                 .request_confirm_batch(session_id, need_confirm)
                 .await?;
             // UI-only waiting notice in `messages` (not an LLM event — must
-            // not enter `react_state.events` or resume would re-feed it).
+            // not enter the durable event stream or resume would re-feed it).
             let notice = "Waiting for confirmation…";
-            self.project_chat_message(session_id, "assistant", notice, Some("text"), None, None)
-                .await?;
-            self.pause_turn(PauseTurnInput {
-                session_id,
-                state,
-                snapshot_step: step_num + 1,
-                emitter,
-                status: SessionStatus::Paused,
-                waiting_reason: Some(haven_common::SessionWaitingReason::Confirmation),
-                final_text: notice,
-                branch_point_step: None,
-            })
-            .await?;
+            let mut pause = super::effects::EffectBatch::continue_batch();
+            pause.push(super::effects::TurnEffect::ProjectChatMessage {
+                role: "assistant".into(),
+                content: notice.into(),
+                message_type: Some("text".into()),
+                tool_call_id: None,
+                message_id: None,
+            });
+            pause.pause(
+                step_num + 1,
+                SessionStatus::Paused,
+                Some(haven_common::SessionWaitingReason::Confirmation),
+                notice,
+                None,
+            );
+            self.apply_committed_batch(&step_ctx, state, pause).await?;
             return Ok(ToolBatchOutcome::Done(LoopExit::Paused {
                 reason: PauseReason::Confirm,
             }));
@@ -721,7 +717,7 @@ impl ReActEngine {
             }
             Some(SessionStatus::Error) => {
                 return Ok(ToolBatchOutcome::Done(
-                    self.exit_with_snapshot(
+                    self.exit_at_boundary(
                         session_id,
                         state,
                         step_num,
@@ -733,7 +729,7 @@ impl ReActEngine {
             // Session gone (end_session/terminal cleanup) or completed: exit.
             None | Some(SessionStatus::Completed) => {
                 return Ok(ToolBatchOutcome::Done(
-                    self.exit_with_snapshot(session_id, state, step_num, LoopExit::Completed)
+                    self.exit_at_boundary(session_id, state, step_num, LoopExit::Completed)
                         .await,
                 ));
             }
@@ -918,7 +914,7 @@ impl ReActEngine {
         }
 
         if !self
-            .save_snapshot_after_confirm_results(session_id, state, step_num + 1)
+            .ensure_event_boundary_after_confirm_results(session_id, state, step_num + 1)
             .await
         {
             anyhow::bail!(

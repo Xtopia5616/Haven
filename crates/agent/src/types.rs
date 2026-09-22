@@ -1,10 +1,6 @@
-use std::collections::HashMap;
-
 use haven_common::media::{MediaAssetSource, MediaInput, MediaInputStrategy};
 use haven_common::text::sanitize_prompt_field;
-use haven_common::types::{
-    CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart, InjectSource,
-};
+use haven_common::types::{CanonicalMessage, CanonicalToolCall, ContentPart, InjectSource};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -140,187 +136,6 @@ pub struct RunBudget {
     pub session_max_steps: Option<u32>,
 }
 
-/// Number of transcript records retained in a serialized snapshot cache.
-///
-/// The durable event stream is unbounded and lives in `session_events`. A
-/// small tail is useful for diagnostics, but it must never be mistaken for a
-/// resumable transcript.
-pub const SNAPSHOT_EVENT_TAIL_LIMIT: usize = 32;
-
-/// Serializable snapshot of the ReAct loop state for pause/resume.
-///
-/// `events` is process-local recovery scratch. It is intentionally omitted
-/// from serialization; the durable transcript is `session_events`. New
-/// snapshots carry only `event_cursor` and a bounded `event_tail` cache.
-/// Canonical and [`ReActRound`]s are derived via [`project_transcript`] /
-/// [`Self::project`]; resume replaces the scratch cache from `SessionEventStore`
-/// before projecting.
-#[derive(Debug, Clone, Default)]
-pub struct ReActSnapshot {
-    /// Active transcript loaded from `session_events`; never serialized.
-    pub events: Vec<TranscriptRecord>,
-    /// Number of active transcript records represented by the durable event
-    /// stream when this checkpoint was written.
-    pub event_cursor: usize,
-    pub step_number: u32,
-    /// Rollback points keyed by step number for overwrite rollback (§2).
-    pub branch_points: HashMap<u32, BranchPoint>,
-    /// Highest durable message ingress sequence included when this snapshot
-    /// was written. Resume recovers rows strictly after this cursor.
-    pub last_ingress_seq: i64,
-    /// Present only when the ReAct loop itself recorded a failed LLM stream.
-    /// Continue may then use this step's branch point to replace the failed
-    /// attempt. A normal periodic snapshot leaves this `None`, so an app or
-    /// process interruption cannot truncate later completed history.
-    pub error_partial_message_ids: Option<Vec<String>>,
-    /// Canonical lifecycle records for ask/confirm/scheduled-confirm waits.
-    /// This is the only persisted interaction authority.
-    pub interactions: Vec<crate::interaction::InteractionRequest>,
-    /// Last run's effective step budget (R4). Absent before a run starts.
-    pub run_budget: Option<RunBudget>,
-}
-
-fn slice_is_empty<T>(slice: &[T]) -> bool {
-    slice.is_empty()
-}
-
-#[derive(Serialize)]
-struct ReActSnapshotWire<'a> {
-    event_cursor: usize,
-    #[serde(skip_serializing_if = "slice_is_empty")]
-    event_tail: &'a [TranscriptRecord],
-    step_number: u32,
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    branch_points: &'a HashMap<u32, BranchPoint>,
-    last_ingress_seq: i64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    error_partial_message_ids: Option<&'a [String]>,
-    #[serde(default, skip_serializing_if = "slice_is_empty")]
-    interactions: &'a [crate::interaction::InteractionRequest],
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    run_budget: Option<&'a RunBudget>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ReActSnapshotWireOwned {
-    #[serde(default)]
-    event_tail: Vec<TranscriptRecord>,
-    event_cursor: usize,
-    step_number: u32,
-    #[serde(default)]
-    branch_points: HashMap<u32, BranchPoint>,
-    #[serde(default)]
-    last_ingress_seq: i64,
-    #[serde(default)]
-    error_partial_message_ids: Option<Vec<String>>,
-    #[serde(default)]
-    interactions: Vec<crate::interaction::InteractionRequest>,
-    #[serde(default)]
-    run_budget: Option<RunBudget>,
-}
-
-impl Serialize for ReActSnapshot {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        let event_cursor = self.event_cursor.max(self.events.len());
-        let tail_start = self.events.len().saturating_sub(SNAPSHOT_EVENT_TAIL_LIMIT);
-        ReActSnapshotWire {
-            event_cursor,
-            event_tail: &self.events[tail_start..],
-            step_number: self.step_number,
-            branch_points: &self.branch_points,
-            last_ingress_seq: self.last_ingress_seq,
-            error_partial_message_ids: self.error_partial_message_ids.as_deref(),
-            interactions: &self.interactions,
-            run_budget: self.run_budget.as_ref(),
-        }
-        .serialize(serializer)
-    }
-}
-
-impl<'de> Deserialize<'de> for ReActSnapshot {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let wire = ReActSnapshotWireOwned::deserialize(deserializer)?;
-        Ok(Self {
-            events: wire.event_tail,
-            event_cursor: wire.event_cursor,
-            step_number: wire.step_number,
-            branch_points: wire.branch_points,
-            last_ingress_seq: wire.last_ingress_seq,
-            error_partial_message_ids: wire.error_partial_message_ids,
-            interactions: wire.interactions,
-            run_budget: wire.run_budget,
-        })
-    }
-}
-
-impl ReActSnapshot {
-    pub fn interaction_requests(&self) -> &[crate::interaction::InteractionRequest] {
-        &self.interactions
-    }
-    /// Parse the current snapshot-cache shape.
-    ///
-    /// Parse the current bounded snapshot-cache shape. The durable event
-    /// stream remains the only source for a resumable transcript.
-    pub fn from_json(json: &str) -> anyhow::Result<Self> {
-        let snapshot: Self = serde_json::from_str(json)
-            .map_err(|e| anyhow::anyhow!("corrupt or incompatible react_state: {e}"))?;
-        if snapshot.events.iter().any(|event| match event {
-            TranscriptRecord::UserInject { text, .. } => text.starts_with("[conversation] "),
-            TranscriptRecord::CompactSummary { compacted, .. } => compacted.iter().any(|message| {
-                message.role == CanonicalRole::User
-                    && message.content.iter().any(|part| {
-                        matches!(part, ContentPart::Text(text) if text.starts_with("[conversation] "))
-                    })
-            }),
-            _ => false,
-        }) {
-            anyhow::bail!(
-                "corrupt or incompatible react_state: legacy conversation seed is unsupported"
-            );
-        }
-        Ok(snapshot)
-    }
-
-    /// Project the full event log to canonical + rounds.
-    pub fn project(&self) -> (Vec<CanonicalMessage>, Vec<ReActRound>) {
-        project_transcript(&self.events)
-    }
-
-    /// Project with the current provider-facing media input policy.
-    pub fn project_with_strategy(
-        &self,
-        strategy: MediaInputStrategy,
-    ) -> (Vec<CanonicalMessage>, Vec<ReActRound>) {
-        project_transcript_with_strategy(&self.events, strategy)
-    }
-
-    /// Project `events[..cursor]` (cursor clamped to `events.len()`).
-    pub fn project_at(&self, cursor: usize) -> (Vec<CanonicalMessage>, Vec<ReActRound>) {
-        let end = cursor.min(self.events.len());
-        project_transcript(&self.events[..end])
-    }
-
-    /// Project a bounded event prefix with the current media policy.
-    pub fn project_at_with_strategy(
-        &self,
-        cursor: usize,
-        strategy: MediaInputStrategy,
-    ) -> (Vec<CanonicalMessage>, Vec<ReActRound>) {
-        let end = cursor.min(self.events.len());
-        project_transcript_with_strategy(&self.events[..end], strategy)
-    }
-}
-
-/// Project an append-only event log into the LLM transcript and debug/tool
-/// rounds. Pure — no I/O. Parallel `ToolResult`s with the same `step_number`
-/// become siblings on one [`ReActRound`].
 pub fn project_transcript(events: &[TranscriptRecord]) -> (Vec<CanonicalMessage>, Vec<ReActRound>) {
     project_transcript_with_strategy(events, MediaInputStrategy::Auto)
 }
@@ -715,20 +530,6 @@ mod tests {
     use haven_common::types::CanonicalRole;
     use haven_common::types::MessageAttachment;
 
-    fn canonical_msg(role: CanonicalRole, text: &str) -> CanonicalMessage {
-        CanonicalMessage {
-            role,
-            content: vec![ContentPart::text(text)],
-            tool_calls: None,
-            tool_call_id: None,
-            reasoning: None,
-            web_search_calls: Vec::new(),
-            thinking_blocks: Vec::new(),
-            source: None,
-            id: None,
-        }
-    }
-
     #[test]
     fn action_serde_roundtrip() {
         let action = Action {
@@ -843,70 +644,6 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_roundtrip_with_branch_points() {
-        let mut snapshot = ReActSnapshot {
-            events: seed_events_from_canonical(vec![canonical_msg(CanonicalRole::System, "sys")]),
-            step_number: 7,
-            ..Default::default()
-        };
-        snapshot.branch_points.insert(
-            4,
-            BranchPoint {
-                event_cursor: 1,
-                step_number: 4,
-                last_msg_at: None,
-            },
-        );
-        let json = serde_json::to_string(&snapshot).unwrap();
-        assert!(json.contains("branch_points"));
-        assert!(json.contains("event_cursor"));
-        assert!(json.contains("event_tail"));
-        assert!(!json.contains("\"events\""));
-        assert!(!json.contains("\"canonical\""));
-        assert!(!json.contains("\"history\""));
-        let back = ReActSnapshot::from_json(&json).unwrap();
-        assert_eq!(back.step_number, 7);
-        assert_eq!(back.branch_points.len(), 1);
-        assert_eq!(back.branch_points.get(&4).unwrap().event_cursor, 1);
-        let (canonical, _) = back.project();
-        assert_eq!(canonical.len(), 1);
-        assert_eq!(back.event_cursor, 1);
-    }
-
-    #[test]
-    fn snapshot_serialization_keeps_only_a_bounded_event_tail() {
-        let events = (0..(SNAPSHOT_EVENT_TAIL_LIMIT + 7))
-            .map(|index| TranscriptRecord::UserInject {
-                step_number: index as u32,
-                source: InjectSource::FollowUp,
-                text: format!("message-{index}"),
-                media_inputs: Vec::new(),
-                message_id: None,
-            })
-            .collect::<Vec<_>>();
-        let snapshot = ReActSnapshot {
-            event_cursor: events.len(),
-            events,
-            ..Default::default()
-        };
-
-        let json = serde_json::to_string(&snapshot).unwrap();
-        assert!(!json.contains("\"events\""));
-        assert!(json.contains(&format!(
-            "\"event_cursor\":{}",
-            SNAPSHOT_EVENT_TAIL_LIMIT + 7
-        )));
-
-        let restored = ReActSnapshot::from_json(&json).unwrap();
-        assert_eq!(restored.event_cursor, SNAPSHOT_EVENT_TAIL_LIMIT + 7);
-        assert_eq!(restored.events.len(), SNAPSHOT_EVENT_TAIL_LIMIT);
-        assert_eq!(
-            serde_json::to_string(&restored.events[0]).unwrap(),
-            serde_json::to_string(&snapshot.events[7]).unwrap()
-        );
-    }
-
-    #[test]
     fn new_user_inject_snapshot_contains_media_metadata_not_inline_bytes() {
         let mut attachment = MessageAttachment::new("image/png", "aGVsbG8=");
         attachment.asset_id = Some("asset-0123456789abcdef0123456789abcdef".into());
@@ -941,26 +678,23 @@ mod tests {
     }
 
     #[test]
-    fn compact_summary_snapshot_replaces_inline_media_with_safe_marker() {
-        let snapshot = ReActSnapshot {
-            events: seed_events_from_canonical(vec![CanonicalMessage {
-                role: CanonicalRole::User,
-                content: vec![ContentPart::Image {
-                    content_type: "image_url".into(),
-                    media_type: "image/png".into(),
-                    data: "aGVsbG8=".into(),
-                }],
-                tool_calls: None,
-                tool_call_id: None,
-                reasoning: None,
-                web_search_calls: Vec::new(),
-                thinking_blocks: Vec::new(),
-                source: None,
-                id: None,
-            }]),
-            ..Default::default()
-        };
-        let json = serde_json::to_string(&snapshot).unwrap();
+    fn compact_summary_event_replaces_inline_media_with_safe_marker() {
+        let events = seed_events_from_canonical(vec![CanonicalMessage {
+            role: CanonicalRole::User,
+            content: vec![ContentPart::Image {
+                content_type: "image_url".into(),
+                media_type: "image/png".into(),
+                data: "aGVsbG8=".into(),
+            }],
+            tool_calls: None,
+            tool_call_id: None,
+            reasoning: None,
+            web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
+            source: None,
+            id: None,
+        }]);
+        let json = serde_json::to_string(&events).unwrap();
 
         assert!(!json.contains("aGVsbG8="));
         assert!(json.contains("managed image omitted from snapshot"));
@@ -1014,156 +748,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_from_json_rejects_legacy_phase7_shape() {
-        // ContentPart::Text is an untagged string on the wire.
-        let legacy = serde_json::json!({
-            "canonical": [
-                {
-                    "role": "user",
-                    "content": ["hi"]
-                }
-            ],
-            "history": [],
-            "step_number": 3,
-            "branch_points": {
-                "2": {
-                    "canonical": [
-                        {
-                            "role": "user",
-                            "content": ["hi"]
-                        }
-                    ],
-                    "step_number": 2,
-                    "last_msg_at": "2026-08-01T00:00:00Z"
-                }
-            },
-            "saved_at": "2026-08-01T00:01:00Z"
-        });
-        let err = ReActSnapshot::from_json(&legacy.to_string()).unwrap_err();
-        assert!(err.to_string().contains("incompatible"));
-    }
-
-    #[test]
-    fn snapshot_empty_branch_points_skipped_in_json() {
-        let snapshot = ReActSnapshot {
-            events: vec![],
-            step_number: 1,
-            ..Default::default()
-        };
-        let json = serde_json::to_string(&snapshot).unwrap();
-        assert!(!json.contains("branch_points"));
-        assert!(!json.contains("interactions"));
-        let back: ReActSnapshot = serde_json::from_str(&json).unwrap();
-        assert!(back.branch_points.is_empty());
-        assert!(back.interactions.is_empty());
-    }
-
-    #[test]
-    fn snapshot_interaction_ask_roundtrip() {
-        let snapshot = ReActSnapshot {
-            events: vec![],
-            step_number: 2,
-            interactions: vec![crate::interaction::InteractionRequest::ask(
-                "ses-0123456789abcdef0123456789abcdef",
-                "which file?",
-                vec!["notes.md".into(), "README.md".into()],
-                vec!["step-0123456789abcdef0123456789abcdef".into()],
-            )],
-            ..Default::default()
-        };
-        let json = serde_json::to_string(&snapshot).unwrap();
-        let back: ReActSnapshot = serde_json::from_str(&json).unwrap();
-        let request = &back.interactions[0];
-        assert_eq!(request.kind, crate::interaction::InteractionKind::Ask);
-        assert_eq!(request.prompt, "which file?");
-        assert_eq!(
-            request.correlation_ids,
-            vec!["step-0123456789abcdef0123456789abcdef"]
-        );
-    }
-
-    #[test]
-    fn snapshot_interaction_confirm_roundtrip_preserves_invocation_identity() {
-        let snapshot = ReActSnapshot {
-            events: vec![],
-            step_number: 4,
-            interactions: vec![
-                crate::interaction::InteractionRequest::confirm(
-                    "ses-0123456789abcdef0123456789abcdef",
-                    4,
-                    "run_command".into(),
-                    serde_json::json!({"command":"same"}),
-                    "call-a".into(),
-                    "step-0123456789abcdef0123456789abcdef".into(),
-                    0,
-                    haven_common::types::RiskLevel::High,
-                    None,
-                ),
-                crate::interaction::InteractionRequest::confirm(
-                    "ses-0123456789abcdef0123456789abcdef",
-                    4,
-                    "run_command".into(),
-                    serde_json::json!({"command":"same"}),
-                    "call-b".into(),
-                    "step-0123456789abcdef0123456789abcdef".into(),
-                    1,
-                    haven_common::types::RiskLevel::High,
-                    None,
-                ),
-            ],
-            ..Default::default()
-        };
-        let json = serde_json::to_string(&snapshot).unwrap();
-        let back: ReActSnapshot = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.interactions.len(), 2);
-        for (request, call_id, action_index) in back
-            .interactions
-            .iter()
-            .zip(["call-a", "call-b"])
-            .zip([0u32, 1])
-            .map(|((request, call_id), action_index)| (request, call_id, action_index))
-        {
-            match &request.details {
-                crate::interaction::InteractionDetails::Confirm {
-                    step_id,
-                    action_index: actual_index,
-                    tool_call_id,
-                    ..
-                } => {
-                    assert_eq!(step_id, "step-0123456789abcdef0123456789abcdef");
-                    assert_eq!(*actual_index, action_index);
-                    assert_eq!(tool_call_id, call_id);
-                }
-                other => panic!("expected confirm details, got {other:?}"),
-            }
-        }
-    }
-
-    #[test]
-    fn snapshot_run_budget_roundtrip() {
-        let snapshot = ReActSnapshot {
-            events: vec![],
-            step_number: 3,
-            run_budget: Some(RunBudget {
-                start_step: 1,
-                effective_max: 20,
-                max_steps: 20,
-                session_max_steps: Some(100),
-            }),
-            ..Default::default()
-        };
-        let json = serde_json::to_string(&snapshot).unwrap();
-        assert!(json.contains("run_budget"));
-        let back: ReActSnapshot = serde_json::from_str(&json).unwrap();
-        let budget = back.run_budget.expect("budget restored");
-        assert_eq!(budget.start_step, 1);
-        assert_eq!(budget.effective_max, 20);
-        assert_eq!(budget.max_steps, 20);
-        assert_eq!(budget.session_max_steps, Some(100));
-    }
-
-    #[test]
-    fn snapshot_project_at_truncates() {
+    fn project_transcript_prefix_truncates() {
         let events = vec![
             TranscriptRecord::UserInject {
                 step_number: 1,
@@ -1180,15 +765,10 @@ mod tests {
                 message_id: None,
             },
         ];
-        let snapshot = ReActSnapshot {
-            events,
-            step_number: 1,
-            ..Default::default()
-        };
-        let (full, _) = snapshot.project();
+        let (full, _) = project_transcript(&events);
         assert_eq!(full.len(), 2);
-        let (at1, _) = snapshot.project_at(1);
-        assert_eq!(at1.len(), 1);
+        let (prefix, _) = project_transcript(&events[..1]);
+        assert_eq!(prefix.len(), 1);
     }
 
     #[test]
