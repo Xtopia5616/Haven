@@ -4,7 +4,7 @@
 >
 > 本文是执行计划，不授权新增功能或顺手清理无关代码。每个目标应独立完成、独立验证、独立提交。
 >
-> 状态（2026-09-19）：机械拆分阶段 A–F 已完成；provider adapter 的内部模块化切片已完成；阶段 G 与第 2.3–2.5 节战略性重构仍是后续路线。本文件中的规模数字以本日期审计为准，历史完成记录保留原始日期。
+> 状态（2026-09-22）：机械拆分阶段 A–F 已完成；provider adapter 的内部模块化切片已完成；ToolsManager 已完成一次内部实现边界拆分，但阶段 G 与第 2.3–2.5 节战略性重构仍是后续路线。本文件中的规模数字以本日期审计为准，历史完成记录保留原始日期。
 
 ## 1. 执行前必须阅读
 
@@ -51,9 +51,10 @@
 | Admin typed surfaces | `admin.rs` / `admin_services.rs` | 阶段 G 已完成：五个受限 surface 使用独立 `TypedToolOperation`，旧 broad dispatcher 已删除 |
 
 本次复查还发现原阶段表没有覆盖的当前热点：`crates/tools/src/builtin/files.rs` 约 3,385 行、
-`crates/tools/src/builtin/window.rs` 约 2,035 行、`crates/tools/src/lib.rs` 约 2,923 行、
-`ui/src/routes/+page.svelte` 约 1,685 行。前两者应另立文件级拆分任务；ToolsManager 和聊天页分别由
-第 2.3 节 E/H 的战略重构覆盖，不能仅通过继续拆文件宣布完成。
+`crates/tools/src/builtin/window.rs` 约 2,035 行、`ui/src/routes/+page.svelte` 约 1,685 行。
+`ToolsManager` 的 crate root 已收窄为约 379 行，生产实现分为 `manager.rs`（约 571 行）、
+`catalog.rs`（约 542 行）和 `execution.rs`（约 298 行），测试移至 `tests.rs`；但其
+service-locator 收窄仍由第 2.3 节 E 的战略重构覆盖，不能仅通过文件拆分宣布完成。
 
 ## 2.1 兼容层原则
 

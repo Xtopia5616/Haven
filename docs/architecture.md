@@ -50,7 +50,8 @@ operation 与执行策略）、`registry.rs`（全局注册表、SessionCatalog�
 `security.rs`（AuthorizationEngine、权限继承、disabled operation、路径沙箱与本机安全矩阵）。
 在这组稳定模块之上，`tool_core.rs` 只组合 catalog/authorization，`tool_runtime.rs` 只
 组合执行依赖和一次性 typed capability ports，`tool_builtins.rs` 只组合 MCP/Skills 与
-具体 builtin provider；`ToolsManager` 只是三者的 facade。安全矩阵只有 `security.rs`
+具体 builtin provider；`manager.rs`、`catalog.rs`、`execution.rs` 分别承载 facade 的
+启动 wiring、目录/session overlay 与执行入口实现，`ToolsManager` 只是三者的 facade。安全矩阵只有 `security.rs`
 一个权威来源，五个 Admin surface 由 ADR 0070/0071 定义的 typed operation 实现。
 ToolsManager 的三层边界见 ADR 0162。
 
@@ -474,6 +475,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 
 | 日期 | 内容 |
 |---|---|
+| 2026-09-22 | §2.5 Tools：按组合 wiring、catalog/session discovery 与 execution 入口拆分 `ToolsManager` 实现，并将 manager 回归测试移出 crate root；公共工具、授权、IPC 与持久化契约不变（ADR 0205） |
 | 2026-09-21 | §2.3 Memory / §2.5 Agent / Common / UI：首轮 system prompt 不再等待 embedding，记忆改为有界后台预取并通过 MEMORY fence 补入；收紧默认上下文、输出、观察、工具与 reasoning 回显预算（ADR 0191） |
 | 2026-09-20 | §2.5 Agent / §2.6 UI：工具实时预览移出 SessionReducer，避免输出 tick 重算整条时间线；运行中的停止/结束立即返回，终端清理延迟到 run-exit 边界，删除/清空仍保留 destructive cleanup fence（ADR 0184） |
 | 2026-09-19 | §2.5 Agent / §2.6 UI：Action board 刷新加入状态版本校验；损坏 waiting scheduled row 增加可取消的指数退避隔离重试；scheduled fire 改为服务级 claim/lease，阻止多 receiver 重复执行（ADR 0174） |
