@@ -8,8 +8,8 @@
 
 use crate::AgentLayer;
 use crate::lifecycle::{LifecycleOp, LifecycleWindow, decide};
-use crate::resume_support::infer_resume_step;
 use crate::react::DurableEventState;
+use crate::resume_support::infer_resume_step;
 use crate::rollback_support::truncate_at_user_message;
 use crate::session::SessionStatus;
 use crate::types::{BranchPoint, TranscriptRecord, project_transcript_with_strategy};
@@ -83,13 +83,11 @@ impl AgentLayer {
             ));
         }
         let mut replay = match durable_state {
-            Some(durable) => {
-                DurableEventState {
-                    events: durable.events,
-                    branch_points: durable.branch_points,
-                    cursor: durable.cursor,
-                }
-            }
+            Some(durable) => DurableEventState {
+                events: durable.events,
+                branch_points: durable.branch_points,
+                cursor: durable.cursor,
+            },
             None => unreachable!("durable state absence handled above"),
         };
 
@@ -313,10 +311,8 @@ impl AgentLayer {
         // that tools loaded after the rollback point are dropped, and tools
         // loaded before it remain available.
         // Cursor-aware project (equivalent to project() after truncate).
-        let (_, rounds) = project_transcript_with_strategy(
-            &replay.events,
-            self.react_engine.media_strategy(),
-        );
+        let (_, rounds) =
+            project_transcript_with_strategy(&replay.events, self.react_engine.media_strategy());
         self.restore_per_session_tools(session_id, &rounds).await;
 
         // Reload the session into executor memory (it may have been removed if we

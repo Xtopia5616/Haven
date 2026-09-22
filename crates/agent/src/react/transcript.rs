@@ -35,6 +35,13 @@ use haven_tools::{
 };
 use serde_json::Value;
 
+struct TranscriptProjection {
+    record: TranscriptRecord,
+    persisted_media_record: Option<TranscriptRecord>,
+    event_sequence: Option<u64>,
+    media_event_sequence: Option<u64>,
+}
+
 /// The live transcript persistence boundary.  One writer builds the durable
 /// event and its projection rows, then delegates one bounded SQLite
 /// transaction to `SessionEventStore`.  Callers update ReAct memory and emit
@@ -452,8 +459,30 @@ impl ReActEngine {
             MetricsPhase::SqliteLockWait,
             std::time::Duration::from_millis(write_result.lock_wait_ms),
         );
+        let event_sequence = write_result
+            .events
+            .first()
+            .map(|event| u64::try_from(event.sequence))
+            .transpose()
+            .map_err(|_| anyhow::anyhow!("durable event sequence must be non-negative"))?;
+        let media_event_sequence = write_result
+            .events
+            .get(1)
+            .map(|event| u64::try_from(event.sequence))
+            .transpose()
+            .map_err(|_| anyhow::anyhow!("durable event sequence must be non-negative"))?;
         let result = self
-            .apply_transcript_projection(ctx, event, record, state, media_record)
+            .apply_transcript_projection(
+                ctx,
+                event,
+                state,
+                TranscriptProjection {
+                    record,
+                    persisted_media_record: media_record,
+                    event_sequence,
+                    media_event_sequence,
+                },
+            )
             .await;
         if result.is_err() {
             self.metrics.increment(MetricsCounter::ProjectionFailures);
@@ -476,13 +505,14 @@ impl ReActEngine {
         let mut batch = TranscriptBatch::default();
         let mut projected = Vec::with_capacity(events.len());
         for event in events {
+            let event_offset = batch.events.len();
             let (event, record, media_record, item_batch) =
                 self.build_transcript_item(ctx, event).await?;
             batch.events.extend(item_batch.events);
             batch.messages.extend(item_batch.messages);
             batch.thought_steps.extend(item_batch.thought_steps);
             batch.action_steps.extend(item_batch.action_steps);
-            projected.push((event, record, media_record));
+            projected.push((event, record, media_record, event_offset));
         }
         let write_result = {
             let _timer = self.metrics.start(
@@ -499,9 +529,34 @@ impl ReActEngine {
             MetricsPhase::SqliteLockWait,
             std::time::Duration::from_millis(write_result.lock_wait_ms),
         );
-        for (event, record, media_record) in projected {
+        for (event, record, media_record, event_offset) in projected {
+            let event_sequence = write_result
+                .events
+                .get(event_offset)
+                .map(|event| u64::try_from(event.sequence))
+                .transpose()
+                .map_err(|_| anyhow::anyhow!("durable event sequence must be non-negative"))?;
+            let media_event_sequence = media_record.as_ref().and_then(|_| {
+                write_result
+                    .events
+                    .get(event_offset + 1)
+                    .map(|event| u64::try_from(event.sequence))
+            });
+            let media_event_sequence = media_event_sequence
+                .transpose()
+                .map_err(|_| anyhow::anyhow!("durable event sequence must be non-negative"))?;
             let result = self
-                .apply_transcript_projection(ctx, event, record, state, media_record)
+                .apply_transcript_projection(
+                    ctx,
+                    event,
+                    state,
+                    TranscriptProjection {
+                        record,
+                        persisted_media_record: media_record,
+                        event_sequence,
+                        media_event_sequence,
+                    },
+                )
                 .await;
             if result.is_err() {
                 self.metrics.increment(MetricsCounter::ProjectionFailures);
@@ -515,10 +570,15 @@ impl ReActEngine {
         &self,
         ctx: &StepCtx,
         event: TranscriptEvent,
-        record: TranscriptRecord,
         state: &mut ReActState,
-        persisted_media_record: Option<TranscriptRecord>,
+        projection: TranscriptProjection,
     ) -> anyhow::Result<()> {
+        let TranscriptProjection {
+            record,
+            persisted_media_record,
+            event_sequence,
+            media_event_sequence,
+        } = projection;
         let _timer = self.metrics.start(
             MetricsPhase::Projection,
             &ctx.session_id,
@@ -563,6 +623,7 @@ impl ReActEngine {
                             step_id: card.step_id.clone(),
                             action_index: card.action_index,
                             suppress_streamed_thought: card.suppress_streamed_thought,
+                            event_seq: event_sequence,
                         })
                         .await;
                 }
@@ -616,6 +677,7 @@ impl ReActEngine {
                             operation_scope: card.operation_scope.as_str().into(),
                             renderer: card.renderer.clone(),
                             result: card.result_envelope.clone(),
+                            event_seq: event_sequence,
                         })
                         .await;
                 }
@@ -655,6 +717,7 @@ impl ReActEngine {
                             .clone()
                             .unwrap_or_else(|| haven_common::types::new_id("msg")),
                         inject_source: Some(source),
+                        event_seq: event_sequence,
                     })
                     .await;
                 state.push_event(record);
@@ -692,6 +755,7 @@ impl ReActEngine {
                                 strategy,
                                 projections: projections.clone(),
                                 notices: notices.clone(),
+                                event_seq: media_event_sequence,
                             })
                             .await;
                     }
@@ -721,12 +785,15 @@ impl ReActEngine {
                 state.replace_with_compaction(record, compacted);
                 EventDispatcher::emit_compaction_from(
                     &ctx.emitter,
-                    &ctx.session_id,
-                    &summary,
-                    tokens_before,
-                    tokens_after,
-                    &episode_id,
-                    degraded,
+                    crate::event::CompactionEventData {
+                        session_id: &ctx.session_id,
+                        summary: &summary,
+                        tokens_before,
+                        tokens_after,
+                        episode_id: &episode_id,
+                        degraded,
+                        event_seq: event_sequence,
+                    },
                 )
                 .await;
                 self.persist_compaction_summary(&ctx.session_id, &summary, &episode_id)
@@ -1060,6 +1127,13 @@ mod tests {
         assert!(state.branch_points.is_empty());
         let (_, rounds) = project_transcript(&state.events);
         assert!(rounds.is_empty());
+        let durable_sequence = engine
+            .event_store
+            .read_active_transcript(&session.id)
+            .unwrap()
+            .first()
+            .expect("committed compact summary event")
+            .sequence as u64;
         let ev = ui_events.lock().unwrap();
         assert!(
             ev.iter().any(|e| matches!(
@@ -1067,8 +1141,9 @@ mod tests {
                 crate::event::AgentEvent::Compaction {
                     tokens_before: 100,
                     tokens_after: 40,
+                    event_seq: Some(sequence),
                     ..
-                }
+                } if *sequence == durable_sequence
             )),
             "expected Compaction event, got {ev:?}"
         );
@@ -1125,6 +1200,13 @@ mod tests {
             .unwrap();
         assert_eq!(state.canonical.len(), 1);
         assert_eq!(state.events.len(), 1);
+        let durable_sequence = engine
+            .event_store
+            .read_active_transcript(&session.id)
+            .unwrap()
+            .first()
+            .expect("committed tool-call event")
+            .sequence as u64;
         let ev = ui_events.lock().unwrap();
         assert!(
             ev.iter().any(|e| matches!(
@@ -1132,8 +1214,9 @@ mod tests {
                 crate::event::AgentEvent::Action {
                     tool_name,
                     step_id: sid,
+                    event_seq: Some(sequence),
                     ..
-                } if tool_name == "echo" && sid == &step_id
+                } if tool_name == "echo" && sid == &step_id && *sequence == durable_sequence
             )),
             "expected Action card, got {ev:?}"
         );
@@ -1204,6 +1287,13 @@ mod tests {
         assert_eq!(rounds[0].tools[0].observation.as_deref(), Some("ok"));
         assert_eq!(rounds[0].tools[0].action_index, 0);
         assert_eq!(rounds[0].tools[0].step_id, step_id);
+        let durable_sequence = engine
+            .event_store
+            .read_active_transcript(&session.id)
+            .unwrap()
+            .first()
+            .expect("committed tool-result event")
+            .sequence as u64;
         let ev = ui_events.lock().unwrap();
         assert!(
             ev.iter().any(|e| matches!(
@@ -1211,8 +1301,9 @@ mod tests {
                 crate::event::AgentEvent::Observation {
                     observation,
                     step_id: sid,
+                    event_seq: Some(sequence),
                     ..
-                } if observation == "ok" && sid == &step_id
+                } if observation == "ok" && sid == &step_id && *sequence == durable_sequence
             )),
             "expected Observation card, got {ev:?}"
         );

@@ -10,7 +10,6 @@ use tauri::Emitter;
 pub(crate) struct TauriEmitter {
     pub(crate) handle: tauri::AppHandle,
     pub(crate) chunk_seq: AtomicU64,
-    pub(crate) event_seq: AtomicU64,
     pub(crate) notifications: DesktopNotifications,
 }
 
@@ -92,14 +91,10 @@ impl AgentEventEmitter for TauriEmitter {
             }
             _ => None,
         };
-        let event_seq = match &event {
-            AgentEvent::ThoughtChunk { .. } | AgentEvent::ReasoningChunk { .. } => None,
-            _ => Some(self.event_seq.fetch_add(1, Ordering::Relaxed)),
-        };
         // Cache titles from create/rename/complete before any path that may
         // resolve a display title (SessionUpdated fill, toasts, secondary).
         self.notifications.remember_session_status(&event);
-        let mut payload = Self::payload_with_event_seq(&event, chunk_seq, event_seq);
+        let mut payload = Self::payload_with_chunk_seq(&event, chunk_seq);
         // Add a safe display title so in-app toast matches Windows (never raw
         // input).
         if let AgentEvent::SessionUpdated { session_id, .. } = &event {
@@ -148,14 +143,10 @@ impl TauriEmitter {
     /// extension point: tool input, web-search result, and usage diagnostics.
     #[cfg(test)]
     pub(crate) fn payload(event: &AgentEvent, chunk_seq: Option<u64>) -> serde_json::Value {
-        Self::payload_with_event_seq(event, chunk_seq, None)
+        Self::payload_with_chunk_seq(event, chunk_seq)
     }
 
-    fn payload_with_event_seq(
-        event: &AgentEvent,
-        chunk_seq: Option<u64>,
-        event_seq: Option<u64>,
-    ) -> serde_json::Value {
+    fn payload_with_chunk_seq(event: &AgentEvent, chunk_seq: Option<u64>) -> serde_json::Value {
         fn serialize<T: serde::Serialize>(payload: T) -> serde_json::Value {
             match serde_json::to_value(payload) {
                 Ok(value) => value,
@@ -193,6 +184,7 @@ impl TauriEmitter {
                 action_index,
                 step_id,
                 suppress_streamed_thought,
+                event_seq: durable_event_seq,
             } => serialize(AgentActionEvent {
                 session_id: session_id.clone(),
                 tool_name: tool_name.clone(),
@@ -204,7 +196,7 @@ impl TauriEmitter {
                 step_id: step_id.clone(),
                 suppress_streamed_thought: *suppress_streamed_thought,
                 silent: haven_tools::is_silent_action(tool_name, input),
-                event_seq,
+                event_seq: *durable_event_seq,
             }),
             AgentEvent::Observation {
                 session_id,
@@ -222,6 +214,7 @@ impl TauriEmitter {
                 operation_scope,
                 renderer,
                 result,
+                event_seq: durable_event_seq,
             } => serialize(AgentObservationEvent {
                 session_id: session_id.clone(),
                 observation: observation.clone(),
@@ -238,7 +231,7 @@ impl TauriEmitter {
                 operation_scope: operation_scope.clone(),
                 renderer: renderer.clone(),
                 result: result.clone(),
-                event_seq,
+                event_seq: *durable_event_seq,
             }),
             AgentEvent::SessionCreated(session) => serialize(SessionLifecycleEvent {
                 session_id: session.id.clone(),
@@ -323,6 +316,7 @@ impl TauriEmitter {
                 strategy,
                 projections,
                 notices,
+                event_seq: durable_event_seq,
             } => serialize(AgentMediaPlanEvent {
                 session_id: session_id.clone(),
                 step_number: *step_number,
@@ -331,6 +325,7 @@ impl TauriEmitter {
                 strategy: *strategy,
                 projections: projections.clone(),
                 notices: notices.clone(),
+                event_seq: *durable_event_seq,
             }),
             AgentEvent::WebSearch {
                 session_id,
@@ -360,6 +355,7 @@ impl TauriEmitter {
                 message_id,
                 supplement_id,
                 inject_source,
+                event_seq: durable_event_seq,
             } => serialize(AgentSupplementEvent {
                 session_id: session_id.clone(),
                 additional_context: additional_context.clone(),
@@ -368,7 +364,7 @@ impl TauriEmitter {
                 message_id: message_id.clone(),
                 supplement_id: supplement_id.clone(),
                 inject_source: *inject_source,
-                event_seq,
+                event_seq: *durable_event_seq,
             }),
             AgentEvent::Compaction {
                 session_id,
@@ -377,6 +373,7 @@ impl TauriEmitter {
                 tokens_after,
                 degraded,
                 episode_id,
+                event_seq: durable_event_seq,
             } => serialize(AgentCompactionEvent {
                 session_id: session_id.clone(),
                 summary: summary.clone(),
@@ -384,6 +381,7 @@ impl TauriEmitter {
                 tokens_after: *tokens_after,
                 degraded: *degraded,
                 episode_id: episode_id.clone(),
+                event_seq: *durable_event_seq,
             }),
             AgentEvent::TitleUpdated { session_id, title } => serialize(SessionTitleUpdatedEvent {
                 session_id: session_id.clone(),

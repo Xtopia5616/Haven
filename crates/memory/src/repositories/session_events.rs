@@ -590,6 +590,12 @@ impl SessionStore {
         )
     }
 
+    /// Append a raw rollback marker for audit/import tooling.
+    ///
+    /// Live Agent rollback must use [`Self::rollback_to`], which resolves the
+    /// active cursor and updates projections in the same transaction. This
+    /// narrow primitive remains available for importing an already-materialized
+    /// historical marker without pretending that it also repairs projections.
     pub fn append_rollback(
         &self,
         session_id: &str,
@@ -632,9 +638,7 @@ impl SessionStore {
         let result = (|| -> anyhow::Result<RollbackResult> {
             let to_sequence = Self::read_active_branch_points_in_connection(&conn, session_id)?
                 .into_iter()
-                .find(|(_, cursor, step, _)| {
-                    *step == target_step && *cursor == transcript_cursor
-                })
+                .find(|(_, cursor, step, _)| *step == target_step && *cursor == transcript_cursor)
                 .map(|(event, _, _, _)| event.sequence)
                 .unwrap_or(Self::sequence_for_transcript_cursor_in_connection(
                     &conn,
@@ -820,7 +824,9 @@ impl SessionStore {
                     event_type: USAGE_RECORDED_EVENT_TYPE.into(),
                     payload: serde_json::to_string(record)?,
                     run_id: None,
-                    step_number: record.step_number.and_then(|value| u32::try_from(value).ok()),
+                    step_number: record
+                        .step_number
+                        .and_then(|value| u32::try_from(value).ok()),
                 })
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
@@ -1233,11 +1239,7 @@ impl SessionStore {
         transcript_cursor: usize,
     ) -> anyhow::Result<i64> {
         let conn = self.db.conn();
-        Self::sequence_for_transcript_cursor_in_connection(
-            &conn,
-            session_id,
-            transcript_cursor,
-        )
+        Self::sequence_for_transcript_cursor_in_connection(&conn, session_id, transcript_cursor)
     }
 
     fn sequence_for_transcript_cursor_in_connection(
@@ -1498,16 +1500,31 @@ mod tests {
         store
             .append_transcript(&session_id, r#"{"type":"two"}"#, 1, 2)
             .unwrap();
-        store.append_rollback(&session_id, 1, 2, Some(2)).unwrap();
-        store
-            .append_transcript(&session_id, r#"{"type":"replacement"}"#, 2, 2)
+        let rollback = store
+            .rollback_to(
+                &session_id,
+                1,
+                2,
+                None,
+                &[SessionEventInput::transcript(
+                    r#"{"type":"replacement"}"#,
+                    2,
+                    2,
+                )],
+                Some(2),
+            )
             .unwrap();
+        assert_eq!(rollback.to_sequence, 1);
 
         let active = store.read_active_transcript(&session_id).unwrap();
         assert_eq!(active.len(), 2);
         assert_eq!(active[0].sequence, 1);
         assert_eq!(active[1].payload, r#"{"type":"replacement"}"#);
         assert_eq!(store.read_all(&session_id).unwrap().len(), 4);
+        let replay = store.load_replay_state(&session_id).unwrap().unwrap();
+        assert_eq!(replay.cursor.event_cursor, 2);
+        assert_eq!(replay.transcript.len(), 2);
+        assert!(replay.branch_points.is_empty());
     }
 
     #[test]
@@ -1573,9 +1590,18 @@ mod tests {
         let usage = db.get_session_llm_usage(&session_id).unwrap();
         assert_eq!(usage.len(), 1);
         assert_eq!(usage[0].id, first_usage.id);
-        assert_eq!(db.get_session_usage(&session_id).unwrap().unwrap().total_tokens, 10);
+        assert_eq!(
+            db.get_session_usage(&session_id)
+                .unwrap()
+                .unwrap()
+                .total_tokens,
+            10
+        );
         assert_eq!(store.read_all(&session_id).unwrap().len(), 6);
-        assert_eq!(store.read_active_domain_events(&session_id).unwrap().len(), 2);
+        assert_eq!(
+            store.read_active_domain_events(&session_id).unwrap().len(),
+            2
+        );
     }
 
     #[test]
@@ -1603,7 +1629,10 @@ mod tests {
             .unwrap();
 
         let usage = db.get_session_llm_usage(&session_id).unwrap();
-        assert_eq!(usage.iter().map(|record| &record.id).collect::<Vec<_>>(), [&first.id]);
+        assert_eq!(
+            usage.iter().map(|record| &record.id).collect::<Vec<_>>(),
+            [&first.id]
+        );
         let discard = store
             .read_active_domain_events(&session_id)
             .unwrap()
@@ -2061,5 +2090,4 @@ mod tests {
                 .is_empty()
         );
     }
-
 }

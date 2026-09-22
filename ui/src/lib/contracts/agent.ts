@@ -113,6 +113,7 @@ export interface AgentMediaPlanPayload {
 		mode: string;
 	}>;
 	notices: Array<{ assetId: string; code: string }>;
+	eventSeq?: number;
 }
 
 export interface AgentWebSearchPayload {
@@ -147,6 +148,7 @@ export interface AgentCompactionPayload {
 	tokensAfter: number;
 	degraded: boolean;
 	episodeId?: string;
+	eventSeq?: number;
 }
 
 export interface AgentNotificationPayload {
@@ -276,6 +278,7 @@ interface AgentMediaPlanWirePayload {
 		mode: string;
 	}>;
 	notices: Array<{ asset_id: string; code: string }>;
+	event_seq?: number;
 }
 interface AgentWebSearchWirePayload {
 	session_id: string;
@@ -304,6 +307,7 @@ interface AgentCompactionWirePayload {
 	tokens_after: number;
 	degraded: boolean;
 	episode_id?: string;
+	event_seq?: number;
 }
 interface AgentNotificationWirePayload { session_id: string; title: string; body: string; }
 interface AgentUsageWirePayload {
@@ -476,6 +480,7 @@ export function mapAgentEvent<K extends AgentEventName>(
 					assetId: notice.asset_id,
 					code: notice.code,
 				})),
+				...(payload.event_seq !== undefined ? { eventSeq: payload.event_seq } : {}),
 			} } as unknown as TauriEvent<AgentEventPayloadMap[K]>;
 		}
 		case 'agent:supplement': {
@@ -500,6 +505,7 @@ export function mapAgentEvent<K extends AgentEventName>(
 				tokensAfter: payload.tokens_after,
 				degraded: payload.degraded,
 				...(payload.episode_id !== undefined ? { episodeId: payload.episode_id } : {}),
+				...(payload.event_seq !== undefined ? { eventSeq: payload.event_seq } : {}),
 			} } as unknown as TauriEvent<AgentEventPayloadMap[K]>;
 		}
 		case 'agent:usage': {

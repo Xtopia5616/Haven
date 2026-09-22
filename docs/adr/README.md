@@ -197,3 +197,4 @@
 - [0201：统一事实表与记忆后台编排命名](0201-unify-fact-storage-and-memory-worker-naming.md)
 - [0202：会话用量汇总采用增量投影](0202-incremental-session-usage-projection.md)
 - [0206：SessionStore 统一用量事件投影与回滚边界](0206-session-store-usage-events-and-atomic-rollback.md)
+- [0207：SessionStore 统一恢复边界与持久化 UI 序号](0207-session-store-replay-boundaries-and-durable-ui-sequences.md)

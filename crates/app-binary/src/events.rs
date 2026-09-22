@@ -484,6 +484,8 @@ pub(crate) struct AgentMediaPlanEvent {
     pub strategy: haven_common::media::MediaInputStrategy,
     pub projections: Vec<haven_common::media::MediaProjection>,
     pub notices: Vec<haven_common::media::MediaPlanNotice>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub event_seq: Option<u64>,
 }
 
 #[derive(Clone, Serialize)]
@@ -510,6 +512,8 @@ pub(crate) struct AgentCompactionEvent {
     pub degraded: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub episode_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub event_seq: Option<u64>,
 }
 
 #[derive(Clone, Serialize)]

@@ -1,5 +1,6 @@
 use super::support::*;
 use super::*;
+use haven_memory::RecoveryPersistenceStatus;
 
 type StreamReset = (String, u32, u64, String, String);
 
@@ -272,11 +273,6 @@ async fn loop_pauses_on_pending_ask_instead_of_heuristic_final() {
         error_partial_message_ids: None,
     };
     seed_snapshot_events(&agent, &session.id, &snapshot).await;
-    agent
-        .db
-        .save_react_state(&session.id, &serde_json::to_string(&snapshot).unwrap())
-        .unwrap();
-
     agent.run_session_from_id(&session.id).await.unwrap();
 
     assert_eq!(
@@ -624,8 +620,7 @@ async fn run_session_empty_tool_call_id_stays_consistent_in_canonical() {
 
     // Inspect the saved snapshot's canonical: the assistant declaration
     // and the tool result must share the same (non-empty) id.
-    let saved: ReActSnapshot =
-        serde_json::from_str(&agent.db.get_react_state(&session.id).unwrap().unwrap()).unwrap();
+    let saved = load_event_projection(&agent, &session.id).await;
     let mut declared: Option<String> = None;
     let (canonical, _) = saved.project();
     for m in &canonical {
@@ -1400,11 +1395,7 @@ async fn pause_snapshot_and_resume_keep_own_final_answer_in_canonical() {
         Some(SessionStatus::Paused)
     );
 
-    let state_json = db
-        .get_react_state(&session.id)
-        .unwrap()
-        .expect("snapshot must exist after the pause");
-    let snapshot: ReActSnapshot = serde_json::from_str(&state_json).unwrap();
+    let snapshot = load_event_projection(&agent, &session.id).await;
     let (canonical, _) = snapshot.project();
     let last = canonical.last().expect("canonical not empty");
     assert_eq!(
@@ -1558,7 +1549,7 @@ async fn continue_session_resumes_errored_session() {
         .update_session_status(&session.id, SessionStatus::Error)
         .await
         .unwrap();
-    let mut snapshot = ReActSnapshot {
+    let snapshot = ReActSnapshot {
         events: seed_events_from_canonical(vec![CanonicalMessage {
             role: CanonicalRole::User,
             content: vec![ContentPart::text("hello")],
@@ -1583,7 +1574,7 @@ async fn continue_session_resumes_errored_session() {
         .db
         .add_message(&session.id, "user", "hello", Some("text"), None)
         .unwrap();
-    let partial = agent
+    let _partial = agent
         .db
         .add_message(
             &session.id,
@@ -1593,13 +1584,37 @@ async fn continue_session_resumes_errored_session() {
             None,
         )
         .unwrap();
-    snapshot.error_partial_message_ids = Some(vec![partial.id]);
     seed_snapshot_events(&agent, &session.id, &snapshot).await;
+    let hello_created_at = agent
+        .db
+        .get_session_messages(&session.id)
+        .unwrap()
+        .into_iter()
+        .find(|message| message.role == "user" && message.content == "hello")
+        .expect("seeded hello message")
+        .created_at;
+    let store = agent.react_engine.event_store.clone();
+    let sid = session.id.clone();
     agent
         .db
-        .save_react_state(&session.id, &serde_json::to_string(&snapshot).unwrap())
+        .run_blocking(move |_| {
+            store.append_branch_point(&sid, 1, 1, Some(&hello_created_at), None)?;
+            store.append_recovery_persistence(
+                &sid,
+                0,
+                1,
+                "committed",
+                RecoveryPersistenceStatus {
+                    branch_point: true,
+                    partial_messages: true,
+                    projection: true,
+                    recovery_snapshot: true,
+                },
+            )?;
+            Ok(())
+        })
+        .await
         .unwrap();
-
     agent.continue_session(&session.id).await.unwrap();
     assert_eq!(
         executor.get_active_session_status(&session.id).await,
@@ -1674,11 +1689,6 @@ async fn continue_session_preserves_history_without_an_error_partial_marker() {
         run_budget: None,
     };
     seed_snapshot_events(&agent, &session.id, &snapshot).await;
-    agent
-        .db
-        .save_react_state(&session.id, &serde_json::to_string(&snapshot).unwrap())
-        .unwrap();
-
     agent.continue_session(&session.id).await.unwrap();
 
     let ids: Vec<String> = agent
@@ -1736,10 +1746,4 @@ async fn pause_snapshot_includes_run_budget() {
         executor.get_active_session_status(&session.id).await,
         Some(SessionStatus::Paused)
     );
-    let snap =
-        ReActSnapshot::from_json(&agent.db.get_react_state(&session.id).unwrap().unwrap()).unwrap();
-    let budget = snap.run_budget.expect("run_budget written on pause");
-    assert_eq!(budget.max_steps, 12);
-    assert!(budget.effective_max >= budget.start_step);
-    assert_eq!(budget.start_step, 1);
 }

@@ -47,6 +47,9 @@ pub enum AgentEvent {
         /// Remove provider text that was streamed before a tool call but was
         /// rejected as a non-meaningful fragment by the ReAct parser.
         suppress_streamed_thought: bool,
+        /// Sequence of the committed `session_events` row that produced this
+        /// UI projection. `None` is reserved for non-transcript/runtime cards.
+        event_seq: Option<u64>,
     },
     Observation {
         session_id: String,
@@ -75,6 +78,9 @@ pub enum AgentEvent {
         /// Stable result metadata; operation-specific payload stays in
         /// `observation` and is not forced into a shared output schema.
         result: ToolResultEnvelope,
+        /// Sequence of the committed `session_events` row that produced this
+        /// UI projection.
+        event_seq: Option<u64>,
     },
     SessionCreated(SessionInfo),
     SessionCompleted {
@@ -126,6 +132,9 @@ pub enum AgentEvent {
         strategy: haven_common::media::MediaInputStrategy,
         projections: Vec<haven_common::media::MediaProjection>,
         notices: Vec<haven_common::media::MediaPlanNotice>,
+        /// Sequence of the committed `session_events` row that produced this
+        /// UI projection.
+        event_seq: Option<u64>,
     },
     /// Live status of the provider's built-in web search tool. Forwarded from
     /// the stream events (`in_progress` → `searching` → `completed`) so the
@@ -170,6 +179,9 @@ pub enum AgentEvent {
         /// card, and still mark human steering as received.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         inject_source: Option<haven_common::types::InjectSource>,
+        /// Sequence of the committed `session_events` row that produced this
+        /// UI projection.
+        event_seq: Option<u64>,
     },
     SessionUpdated {
         session_id: String,
@@ -196,6 +208,9 @@ pub enum AgentEvent {
         /// True when a deterministic older-context marker was used instead
         /// of an LLM-generated summary.
         degraded: bool,
+        /// Sequence of the committed `session_events` row that produced this
+        /// UI projection.
+        event_seq: Option<u64>,
     },
     TitleUpdated {
         session_id: String,
@@ -870,6 +885,16 @@ pub struct EventDispatcher {
     emitter: Arc<Mutex<Option<Arc<dyn AgentEventEmitter>>>>,
 }
 
+pub struct CompactionEventData<'a> {
+    pub session_id: &'a str,
+    pub summary: &'a str,
+    pub tokens_before: u32,
+    pub tokens_after: u32,
+    pub episode_id: &'a str,
+    pub degraded: bool,
+    pub event_seq: Option<u64>,
+}
+
 impl Default for EventDispatcher {
     fn default() -> Self {
         Self::new()
@@ -1060,21 +1085,17 @@ impl EventDispatcher {
 
     pub async fn emit_compaction_from(
         emitter: &Arc<dyn AgentEventEmitter>,
-        session_id: &str,
-        summary: &str,
-        tokens_before: u32,
-        tokens_after: u32,
-        episode_id: &str,
-        degraded: bool,
+        data: CompactionEventData<'_>,
     ) {
         emitter
             .emit(AgentEvent::Compaction {
-                session_id: session_id.into(),
-                summary: summary.into(),
-                tokens_before,
-                tokens_after,
-                episode_id: Some(episode_id.into()),
-                degraded,
+                session_id: data.session_id.into(),
+                summary: data.summary.into(),
+                tokens_before: data.tokens_before,
+                tokens_after: data.tokens_after,
+                episode_id: Some(data.episode_id.into()),
+                degraded: data.degraded,
+                event_seq: data.event_seq,
             })
             .await;
     }

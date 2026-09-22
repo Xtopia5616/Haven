@@ -1,8 +1,8 @@
-//! Snapshot / branch / pause persistence helpers for the ReAct loop.
+//! Event-boundary / branch / pause persistence helpers for the ReAct loop.
 //!
-//! Owns checkpoint serialization and lifecycle exits for the shared
+//! Owns durable event-boundary checks and lifecycle exits for the shared
 //! [`ReActState`]; the loop modules delegate here instead of carrying their
-//! own snapshot argument lists.
+//! own persistence argument lists.
 
 use tracing::Instrument;
 
@@ -12,10 +12,8 @@ use haven_memory::{RecoveryPersistenceStatus, SessionCursor, SessionEventInput};
 
 /// The durable event-derived session state used by resume and rollback.
 ///
-/// `ReActSnapshot` is intentionally not returned here: it also contains
-/// checkpoint-only interaction and budget metadata. Keeping this value
-/// separate makes it impossible for a stale snapshot transcript or branch map
-/// to accidentally win over the event stream.
+/// This value contains only event replay data and projection clocks. It is
+/// never serialized; the event stream is the recovery authority.
 #[derive(Debug)]
 pub(crate) struct DurableEventState {
     pub(crate) events: Vec<TranscriptRecord>,
@@ -47,60 +45,12 @@ impl RecoveryPersistenceResult {
     }
 }
 
-/// Mid-run DB snapshot throttle policy (Phase 7 / F3).
-///
-/// Tracks the last step at which each session wrote a snapshot so
-/// [`ReActEngine::save_branch_point`] can decide whether a write is due
-/// without embedding the interval math in the loop. Unit-testable without
-/// starting the full ReAct loop.
-#[derive(Debug, Default)]
-pub(crate) struct CheckpointStore {
-    last_written: HashMap<String, u32>,
-}
-
-impl CheckpointStore {
-    /// Steps between mid-run DB snapshot writes on the happy path.
-    pub const WRITE_INTERVAL: u32 = 3;
-
-    /// Whether a DB snapshot write should happen at `step`.
-    ///
-    /// `force` always writes. Otherwise write if this session has never
-    /// written, or `step - last >= WRITE_INTERVAL`.
-    pub fn should_write(&self, session_id: &str, step: u32, force: bool) -> bool {
-        force
-            || self
-                .last_written
-                .get(session_id)
-                .is_none_or(|last| step.saturating_sub(*last) >= Self::WRITE_INTERVAL)
-    }
-
-    /// Record that a snapshot was written at `step` for `session_id`.
-    pub fn record_write(&mut self, session_id: &str, step: u32) {
-        self.last_written.insert(session_id.to_string(), step);
-    }
-
-    /// Step-boundary hook: return whether a write is due and, if so, record it.
-    #[cfg(test)]
-    pub fn on_step_boundary(&mut self, session_id: &str, step: u32, force: bool) -> bool {
-        let due = self.should_write(session_id, step, force);
-        if due {
-            self.record_write(session_id, step);
-        }
-        due
-    }
-
-    /// Drop throttle state for a finished session.
-    pub fn clear_session(&mut self, session_id: &str) {
-        self.last_written.remove(session_id);
-    }
-}
-
-/// Inputs for a pause checkpoint. Keeping this boundary named prevents the
+/// Inputs for a pause boundary. Keeping this boundary named prevents the
 /// lifecycle writer from growing another positional-argument list.
 pub(super) struct PauseTurnInput<'a> {
     pub(super) session_id: &'a str,
     pub(super) state: &'a mut ReActState,
-    pub(super) snapshot_step: u32,
+    pub(super) boundary_step: u32,
     pub(super) emitter: &'a Arc<dyn AgentEventEmitter>,
     pub(super) status: SessionStatus,
     pub(super) waiting_reason: Option<haven_common::SessionWaitingReason>,
@@ -176,13 +126,11 @@ impl ReActEngine {
         let session_id = session_id.to_string();
         self.db
             .run_blocking(move |_| {
-                let latest_sequence = store.latest_sequence(&session_id)?;
-                if latest_sequence == 0 {
+                let Some(replay) = store.load_replay_state(&session_id)? else {
                     return Ok(None);
-                }
-                let cursor = store.cursor(&session_id)?;
-                let events = store
-                    .read_active_transcript(&session_id)?
+                };
+                let events = replay
+                    .transcript
                     .into_iter()
                     .map(|event| {
                         serde_json::from_str::<TranscriptRecord>(&event.payload).map_err(|error| {
@@ -195,8 +143,8 @@ impl ReActEngine {
                         })
                     })
                     .collect::<anyhow::Result<Vec<_>>>()?;
-                let branch_points = store
-                    .read_active_branch_points(&session_id)?
+                let branch_points = replay
+                    .branch_points
                     .into_iter()
                     .map(|(_, event_cursor, step_number, last_msg_at)| {
                         (
@@ -212,13 +160,13 @@ impl ReActEngine {
                 Ok(Some(DurableEventState {
                     events,
                     branch_points,
-                    cursor,
+                    cursor: replay.cursor,
                 }))
             })
             .await
     }
 
-    fn transcript_event_input(
+    pub(crate) fn transcript_event_input(
         event: &TranscriptRecord,
         run_id: u64,
     ) -> anyhow::Result<SessionEventInput> {
@@ -406,7 +354,7 @@ impl ReActEngine {
         let PauseTurnInput {
             session_id,
             state,
-            snapshot_step,
+            boundary_step,
             emitter,
             status,
             waiting_reason,
@@ -418,7 +366,7 @@ impl ReActEngine {
             tracing::info!(
                 "ReAct turn finished: session={} step={} status={} final={} chars",
                 session_id,
-                snapshot_step,
+                boundary_step,
                 status_label,
                 final_text.chars().count()
             );
@@ -427,13 +375,13 @@ impl ReActEngine {
                     .await?;
             }
             if !self
-                .save_snapshot_with_branches(session_id, state, snapshot_step)
+                .ensure_event_boundary(session_id, state, boundary_step)
                 .await
             {
                 anyhow::bail!(
                     "failed to durably checkpoint session '{}' at step {}",
                     session_id,
-                    snapshot_step
+                    boundary_step
                 );
             }
             let reason = if self
@@ -467,7 +415,7 @@ impl ReActEngine {
             }
             let ctx = StepCtx {
                 session_id: session_id.to_string(),
-                step_num: snapshot_step,
+                step_num: boundary_step,
                 run_id: 0,
                 emitter: emitter.clone(),
             };
@@ -477,7 +425,7 @@ impl ReActEngine {
         .instrument(tracing::info_span!(
             "pause",
             session_id,
-            step = snapshot_step,
+            step = boundary_step,
             status = status_label
         ))
         .await
@@ -495,7 +443,7 @@ impl ReActEngine {
         &self,
         session_id: &str,
         state: &ReActState,
-        snapshot_step: u32,
+        boundary_step: u32,
         emitter: &Arc<dyn AgentEventEmitter>,
     ) -> anyhow::Result<()> {
         // Phase 7 / I2: pause span for budget exhaustion (no assistant persist).
@@ -503,10 +451,10 @@ impl ReActEngine {
             tracing::info!(
                 "ReAct step budget exhausted: session={} next_step={}",
                 session_id,
-                snapshot_step
+                boundary_step
             );
             if !self
-                .save_snapshot_with_branches(session_id, state, snapshot_step)
+                .ensure_event_boundary(session_id, state, boundary_step)
                 .await
             {
                 anyhow::bail!(
@@ -531,7 +479,7 @@ impl ReActEngine {
                 .await;
             let ctx = StepCtx {
                 session_id: session_id.to_string(),
-                step_num: snapshot_step,
+                step_num: boundary_step,
                 run_id: 0,
                 emitter: emitter.clone(),
             };
@@ -541,7 +489,7 @@ impl ReActEngine {
         .instrument(tracing::info_span!(
             "pause",
             session_id,
-            step = snapshot_step,
+            step = boundary_step,
             reason = "budget"
         ))
         .await
@@ -553,13 +501,13 @@ impl ReActEngine {
     /// `save_branch_point` may have skipped the last write, and the state at
     /// this point is always a clean step boundary (the cancelled response or
     /// partial tool results are discarded by the exit).
-    pub(super) async fn save_exit_snapshot(
+    pub(super) async fn check_event_boundary(
         &self,
         session_id: &str,
         state: &ReActState,
         step_number: u32,
     ) -> bool {
-        self.save_snapshot_with_branches(session_id, state, step_number)
+        self.ensure_event_boundary(session_id, state, step_number)
             .await
     }
 
@@ -572,13 +520,13 @@ impl ReActEngine {
         state: &ReActState,
         step_number: u32,
     ) -> LoopExit {
-        self.exit_with_snapshot(session_id, state, step_number, LoopExit::Cancelled)
+        self.exit_at_boundary(session_id, state, step_number, LoopExit::Cancelled)
             .await
     }
 
     /// Write the exit checkpoint then return `exit`. Used by Completed / Error /
     /// Cancelled so every lifecycle exit advances the durable clocks.
-    pub(super) async fn exit_with_snapshot(
+    pub(super) async fn exit_at_boundary(
         &self,
         session_id: &str,
         state: &ReActState,
@@ -586,7 +534,7 @@ impl ReActEngine {
         exit: LoopExit,
     ) -> LoopExit {
         if self
-            .save_exit_snapshot(session_id, state, step_number)
+            .check_event_boundary(session_id, state, step_number)
             .await
         {
             exit
@@ -609,7 +557,7 @@ impl ReActEngine {
         run_id: u64,
     ) -> LoopExit {
         if !self
-            .save_snapshot_with_branches(session_id, state, step_number)
+            .ensure_event_boundary(session_id, state, step_number)
             .await
         {
             return LoopExit::Error(format!(
@@ -635,13 +583,13 @@ impl ReActEngine {
     /// of events/branch_points — those clones were O(n²) over a long session)
     /// into a reusable buffer, then writes to SQLite on the blocking thread
     /// pool so the WAL fsync never stalls the async runtime.
-    pub(super) async fn save_snapshot_with_branches(
+    pub(super) async fn ensure_event_boundary(
         &self,
         session_id: &str,
         state: &ReActState,
         step_number: u32,
     ) -> bool {
-        self.save_snapshot_with_error_partials(session_id, state, step_number, None, false)
+        self.ensure_event_boundary_with_error_partials(session_id, state, step_number, None, false)
             .await
     }
 
@@ -649,13 +597,13 @@ impl ReActEngine {
     /// request. This closes the crash window where `session_steps` and chat
     /// rows already contain tool results but the periodic snapshot still ends
     /// at the assistant's unanswered tool call.
-    pub(super) async fn save_snapshot_after_tool_results(
+    pub(super) async fn ensure_event_boundary_after_tool_results(
         &self,
         session_id: &str,
         state: &ReActState,
         step_number: u32,
     ) -> bool {
-        self.save_snapshot_with_error_partials(session_id, state, step_number, None, false)
+        self.ensure_event_boundary_with_error_partials(session_id, state, step_number, None, false)
             .await
     }
 
@@ -664,13 +612,13 @@ impl ReActEngine {
     /// result events and clearing confirm interactions in one snapshot prevents
     /// a crash between result projection and the in-memory gate cleanup from
     /// replaying an already executed side effect.
-    pub(super) async fn save_snapshot_after_confirm_results(
+    pub(super) async fn ensure_event_boundary_after_confirm_results(
         &self,
         session_id: &str,
         state: &ReActState,
         step_number: u32,
     ) -> bool {
-        self.save_snapshot_with_error_partials(session_id, state, step_number, None, true)
+        self.ensure_event_boundary_with_error_partials(session_id, state, step_number, None, true)
             .await
     }
 
@@ -678,7 +626,7 @@ impl ReActEngine {
     /// response. Normal snapshots pass `None`, which clears any marker
     /// consumed by a prior Continue. `Some(&[])` still marks an error whose
     /// stream produced no visible partial text.
-    async fn save_snapshot_with_error_partials(
+    async fn ensure_event_boundary_with_error_partials(
         &self,
         session_id: &str,
         state: &ReActState,
@@ -687,7 +635,7 @@ impl ReActEngine {
         clear_confirm_interactions: bool,
     ) -> bool {
         let result = self
-            .write_snapshot_with_error_partials(
+            .read_event_boundary_with_error_partials(
                 session_id,
                 state,
                 step_number,
@@ -701,7 +649,7 @@ impl ReActEngine {
         result
     }
 
-    async fn write_snapshot_with_error_partials(
+    async fn read_event_boundary_with_error_partials(
         &self,
         session_id: &str,
         state: &ReActState,
@@ -710,19 +658,19 @@ impl ReActEngine {
         _clear_confirm_interactions: bool,
     ) -> bool {
         // Some lifecycle callers do not carry a provider run id (for example
-        // a pause checkpoint). The checkpoint is deliberately independent of
-        // ReAct runtime state; it records only the clocks observed after the
-        // durable event/projection writes.
+        // a pause boundary). There is no serialized ReAct state to write:
+        // the event stream and atomic projections are already durable. Read
+        // the store cursor only as a final integrity check for the boundary.
         let _timer = self
             .metrics
             .start(MetricsPhase::Snapshot, session_id, 0, step_number);
         let store = self.event_store.clone();
         let sid = session_id.to_string();
-        let write = move |db: &Database| {
-            if db.get_session(&sid)?.is_none() {
-                return store.cursor(&sid);
-            }
-            store.checkpoint(&sid)
+        let write = move |_db: &Database| {
+            Ok(store
+                .load_replay_state(&sid)?
+                .map(|replay| replay.cursor)
+                .unwrap_or_default())
         };
         let saved = match state.turn_cancel.clone() {
             Some(cancel) => self.db.run_blocking_cancellable(cancel, write).await,
@@ -730,27 +678,12 @@ impl ReActEngine {
         };
         match saved {
             Ok(cursor) => {
-                #[cfg(test)]
-                if let Err(error) = self
-                    .write_test_compat_snapshot(
-                        session_id,
-                        state,
-                        step_number,
-                        _error_partial_message_ids,
-                        _clear_confirm_interactions,
-                        cursor,
-                    )
-                    .await
-                {
-                    tracing::warn!(
-                        session_id,
-                        error = %error,
-                        "test compatibility snapshot write failed"
-                    );
-                    return false;
-                }
-                #[cfg(not(test))]
-                let _ = cursor;
+                let _ = (
+                    cursor,
+                    state,
+                    _error_partial_message_ids,
+                    _clear_confirm_interactions,
+                );
                 true
             }
             Err(error) => {
@@ -758,38 +691,6 @@ impl ReActEngine {
                 false
             }
         }
-    }
-
-    #[cfg(test)]
-    async fn write_test_compat_snapshot(
-        &self,
-        session_id: &str,
-        state: &ReActState,
-        step_number: u32,
-        error_partial_message_ids: Option<&[String]>,
-        clear_confirm_interactions: bool,
-        cursor: SessionCursor,
-    ) -> anyhow::Result<()> {
-        let mut interactions = self.executor.interaction_requests(session_id).await;
-        if clear_confirm_interactions {
-            interactions
-                .retain(|request| request.kind != crate::interaction::InteractionKind::Confirm);
-        }
-        let snapshot = crate::types::ReActSnapshot {
-            events: state.events.clone(),
-            event_cursor: state.events.len(),
-            step_number,
-            branch_points: state.branch_points.clone(),
-            last_ingress_seq: cursor.message_ingress_seq,
-            error_partial_message_ids: error_partial_message_ids.map(ToOwned::to_owned),
-            interactions,
-            run_budget: self.current_run_budget(session_id).await,
-        };
-        let json = serde_json::to_string(&snapshot)?;
-        let db = self.db.clone();
-        let sid = session_id.to_string();
-        db.run_blocking(move |db| db.save_react_state(&sid, &json))
-            .await
     }
 
     /// and save a snapshot so the session can be resumed via "continue" or
@@ -946,7 +847,7 @@ impl ReActEngine {
         // text arrived: only this marker authorizes Continue to replace the
         // failed step, never an ordinary periodic pre-crash snapshot.
         let recovery_snapshot = self
-            .save_snapshot_with_error_partials(
+            .ensure_event_boundary_with_error_partials(
                 &ctx.session_id,
                 state,
                 ctx.step_num,
@@ -1071,14 +972,9 @@ impl ReActEngine {
 
     /// Save a branch point at the current step before tool execution (§2).
     ///
-    /// The DB checkpoint write is throttled via [`CheckpointStore`] on the happy
-    /// path (`force = false`): every pause/error/final path plus every
-    /// cancellation exit writes unconditionally. Error paths MUST pass
-    /// `force = true` (e.g.
-    /// `persist_partial_on_error`): `continue_session` / `rollback_session`
-    /// locate the failed step's branch point in the DB snapshot, and a stale
-    /// row would silently skip their message truncation. The durable append
-    /// happens before the in-memory cache is updated; all failures propagate.
+    /// Append the durable branch marker before updating the actor's cache.
+    /// `force` remains part of the call contract for terminal/error paths, but
+    /// persistence is no longer throttled or stored as a session snapshot.
     pub(super) async fn save_branch_point(
         &self,
         session_id: &str,
@@ -1086,288 +982,39 @@ impl ReActEngine {
         step_number: u32,
         force: bool,
     ) -> anyhow::Result<()> {
-        // The projection cutoff is read through SessionStore.  In particular,
-        // do not reuse a ReAct-side timestamp cache here: rollback and an
-        // ingress write may commit between two turns.
         let _ = force;
-        let last_msg_at = self.refresh_last_msg_at(session_id).await;
-        let last_msg_at = match last_msg_at {
-            Ok(value) => value,
-            Err(error) => {
-                tracing::error!(
-                    session_id,
-                    step = step_number,
-                    error = %error,
-                    "refusing to write branch point without a durable message cutoff"
-                );
-                return Err(error);
-            }
-        };
-        let last_msg_at_for_event = last_msg_at.clone();
-        // Phase 8 / F4: store only an index into the parent events vec — no
-        // Arc copies of transcript state.
-        let branch_point = BranchPoint {
-            event_cursor: state.events.len(),
-            step_number,
-            last_msg_at,
-        };
-        // Branch metadata is part of the durable timeline as well. This lets
-        // rollback recover its target without requiring the snapshot cache;
-        // the cache still stores the same map for cheap hot-path access.
         let store = self.event_store.clone();
         let sid = session_id.to_string();
-        let event_cursor = state.events.len();
-        if let Err(error) = self
+        let (_, cursor) = self
             .db
             .run_blocking(move |db| {
                 if db.get_session(&sid)?.is_none() {
                     anyhow::bail!("session '{}' disappeared before branch-point append", sid);
                 }
-                store.append_branch_point(
-                    &sid,
-                    event_cursor,
-                    step_number,
-                    last_msg_at_for_event.as_deref(),
-                    None,
-                )?;
-                Ok(())
+                store.append_branch_point_from_projection(&sid, step_number, None)
             })
             .await
-        {
-            tracing::warn!(
-                session_id,
-                step = step_number,
-                error = %error,
-                "failed to append durable branch point"
-            );
-            self.metrics.increment(MetricsCounter::BranchPointFailures);
-            return Err(error);
-        }
+            .map_err(|error| {
+                tracing::warn!(
+                    session_id,
+                    step = step_number,
+                    error = %error,
+                    "failed to append durable branch point"
+                );
+                self.metrics.increment(MetricsCounter::BranchPointFailures);
+                error
+            })?;
+
+        let branch_point = BranchPoint {
+            event_cursor: cursor.event_cursor,
+            step_number,
+            last_msg_at: cursor.last_msg_at,
+        };
 
         // The in-memory index is a cache of the durable marker.  Publishing it
         // only after the append succeeds keeps rollback fail-closed when SQLite
         // is unavailable.
         state.branch_points.insert(step_number, branch_point);
-        // The throttle marker guard is confined to this block so it is always
-        // dropped before the write's await.
-        let due = {
-            let store = self.checkpoint_store.lock().unwrap();
-            store.should_write(session_id, step_number, force)
-        };
-        if due {
-            if !self
-                .save_snapshot_with_branches(session_id, state, step_number)
-                .await
-            {
-                self.metrics.increment(MetricsCounter::SnapshotFailures);
-                anyhow::bail!(
-                    "failed to durably checkpoint branch point for session '{}' at step {}",
-                    session_id,
-                    step_number
-                );
-            }
-            self.checkpoint_store
-                .lock()
-                .unwrap()
-                .record_write(session_id, step_number);
-        } else {
-            // Nothing else to persist for this checkpoint.
-        }
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{CheckpointStore, ReActEngine, ReActState, RecoveryPersistenceResult};
-    use crate::session::SessionSupervisor;
-    use haven_common::config::{ContextLimitsConfig, RouterConfig};
-    use haven_llm::LlmRouter;
-    use haven_memory::Database;
-    use haven_tools::ToolsManager;
-    use std::collections::HashMap;
-    use std::sync::Arc;
-
-    #[test]
-    fn recovery_discards_scratch_only_after_every_projection_succeeds() {
-        assert!(RecoveryPersistenceResult::Persisted.should_discard());
-        assert!(
-            !RecoveryPersistenceResult::Failed {
-                branch_point: false,
-                partial_messages: true,
-                recovery_snapshot: true,
-                projection: true,
-                failure_marker: false,
-            }
-            .should_discard()
-        );
-    }
-
-    #[test]
-    fn should_write_first_step_always() {
-        let store = CheckpointStore::default();
-        assert!(store.should_write("s", 1, false));
-        assert!(store.should_write("s", 100, false));
-    }
-
-    #[test]
-    fn throttle_skips_until_interval() {
-        let mut store = CheckpointStore::default();
-        assert!(store.on_step_boundary("s", 1, false));
-        assert!(!store.should_write("s", 2, false));
-        assert!(!store.should_write("s", 3, false));
-        assert!(store.should_write("s", 4, false));
-        assert!(store.on_step_boundary("s", 4, false));
-        assert!(!store.should_write("s", 5, false));
-        assert!(!store.should_write("s", 6, false));
-        assert!(store.should_write("s", 7, false));
-    }
-
-    #[test]
-    fn force_bypasses_throttle() {
-        let mut store = CheckpointStore::default();
-        assert!(store.on_step_boundary("s", 1, false));
-        assert!(!store.should_write("s", 2, false));
-        assert!(store.should_write("s", 2, true));
-        assert!(store.on_step_boundary("s", 2, true));
-        assert_eq!(store.last_written.get("s"), Some(&2));
-    }
-
-    #[test]
-    fn clear_session_resets_throttle() {
-        let mut store = CheckpointStore::default();
-        assert!(store.on_step_boundary("s", 1, false));
-        store.clear_session("s");
-        assert!(store.should_write("s", 2, false));
-    }
-
-    #[test]
-    fn sessions_throttled_independently() {
-        let mut store = CheckpointStore::default();
-        assert!(store.on_step_boundary("a", 1, false));
-        assert!(store.on_step_boundary("b", 1, false));
-        assert!(!store.should_write("a", 2, false));
-        assert!(!store.should_write("b", 2, false));
-        assert!(store.on_step_boundary("a", 4, false));
-        assert!(!store.should_write("b", 3, false));
-    }
-
-    #[test]
-    fn tool_result_checkpoint_is_not_throttled_by_mid_run_interval() {
-        let mut store = CheckpointStore::default();
-        assert!(store.on_step_boundary("s", 1, false));
-        assert!(!store.should_write("s", 2, false));
-        assert!(store.should_write("s", 2, true));
-    }
-
-    #[tokio::test]
-    async fn branch_point_fault_does_not_publish_in_memory_cache() {
-        let path =
-            std::env::temp_dir().join(format!("haven_branch_fault_{}.db", uuid::Uuid::new_v4()));
-        let db = Arc::new(Database::open(&path).unwrap());
-        let session = db.create_session("input").unwrap();
-        db.conn()
-            .execute_batch(
-                "CREATE TRIGGER branch_point_fault
-                 BEFORE INSERT ON session_events
-                 WHEN NEW.event_type = 'branch_point'
-                 BEGIN SELECT RAISE(ABORT, 'injected branch-point failure'); END;",
-            )
-            .unwrap();
-        let executor = Arc::new(SessionSupervisor::new(
-            db.clone(),
-            Arc::new(ToolsManager::new()),
-            1,
-        ));
-        let engine = ReActEngine::new(
-            Arc::new(LlmRouter::new(RouterConfig::default())),
-            executor,
-            db,
-            8,
-            ContextLimitsConfig::default(),
-        );
-        let mut state = ReActState::new(Vec::new(), Vec::new(), HashMap::new());
-
-        let error = engine
-            .save_branch_point(&session.id, &mut state, 3, true)
-            .await
-            .unwrap_err();
-
-        assert!(error.to_string().contains("injected branch-point failure"));
-        assert!(state.branch_points.is_empty());
-        assert!(
-            engine
-                .event_store
-                .read_active_branch_points(&session.id)
-                .unwrap()
-                .is_empty()
-        );
-        drop(engine);
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[tokio::test]
-    async fn snapshot_fault_after_branch_append_preserves_durable_cutoff() {
-        let path = std::env::temp_dir().join(format!(
-            "haven_snapshot_before_crash_{}.db",
-            uuid::Uuid::new_v4()
-        ));
-        let db = Arc::new(Database::open(&path).unwrap());
-        let session = db.create_session("input").unwrap();
-        db.conn()
-            .execute_batch(
-                "CREATE TRIGGER snapshot_fault
-                 BEFORE UPDATE OF react_state ON sessions
-                 BEGIN SELECT RAISE(ABORT, 'injected snapshot failure'); END;",
-            )
-            .unwrap();
-        let executor = Arc::new(SessionSupervisor::new(
-            db.clone(),
-            Arc::new(ToolsManager::new()),
-            1,
-        ));
-        let engine = ReActEngine::new(
-            Arc::new(LlmRouter::new(RouterConfig::default())),
-            executor,
-            db.clone(),
-            8,
-            ContextLimitsConfig::default(),
-        );
-        let mut state = ReActState::new(Vec::new(), Vec::new(), HashMap::new());
-
-        let error = engine
-            .save_branch_point(&session.id, &mut state, 3, true)
-            .await
-            .unwrap_err();
-
-        assert!(
-            error.to_string().contains("failed to durably checkpoint"),
-            "unexpected snapshot failure: {error}"
-        );
-        assert!(state.branch_points.contains_key(&3));
-        assert_eq!(
-            engine
-                .event_store
-                .read_active_branch_points(&session.id)
-                .unwrap()
-                .len(),
-            1,
-            "the branch cutoff must survive a crash before the cache snapshot"
-        );
-        assert!(
-            db.get_react_state(&session.id).unwrap().is_none(),
-            "the failed snapshot transaction must not publish a partial cache"
-        );
-        assert!(
-            !engine
-                .checkpoint_store
-                .lock()
-                .unwrap()
-                .last_written
-                .contains_key(&session.id),
-            "a failed snapshot must not advance the write throttle"
-        );
-        drop(engine);
-        let _ = std::fs::remove_file(path);
     }
 }
