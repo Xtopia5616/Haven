@@ -389,9 +389,9 @@ mod tests {
     use std::pin::Pin;
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    use haven_common::config::RequestKind;
     use crate::client::LlmClient;
     use crate::types::{LlmError, LlmResponse, StreamChunk, ToolDefinition};
+    use haven_common::config::RequestKind;
 
     struct MockSttClient {
         response: String,

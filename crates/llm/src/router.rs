@@ -9,9 +9,7 @@ use crate::adapters::adapter_for;
 use crate::client::{LlmClient, endpoint_host};
 #[cfg(test)]
 use crate::endpoint_health::{CircuitBreaker, CircuitState};
-use crate::endpoint_health::{
-    EndpointHealth, EndpointHealthMap, new_endpoint_health_map,
-};
+use crate::endpoint_health::{EndpointHealth, EndpointHealthMap, new_endpoint_health_map};
 use crate::request_pipeline::{RequestPolicy, execute_with_retry, execute_with_timeout};
 use haven_common::types::{CanonicalMessage, ContentPart};
 
@@ -284,12 +282,7 @@ impl LlmRouter {
     ) -> HashMap<String, Arc<tokio::sync::Semaphore>> {
         model_ids
             .into_iter()
-            .map(|id| {
-                (
-                    id,
-                    Arc::new(tokio::sync::Semaphore::new(limit)),
-                )
-            })
+            .map(|id| (id, Arc::new(tokio::sync::Semaphore::new(limit))))
             .collect()
     }
 
@@ -354,11 +347,7 @@ impl LlmRouter {
     /// After a RateLimit result, the model's cooldown is extended so other
     /// sessions queue behind this one instead of re-hammering the provider —
     /// `with_retry` already waits per-request, this paces the herd.
-    async fn with_model_permit<T, F, Fut>(
-        &self,
-        model_id: String,
-        f: F,
-    ) -> Result<T, LlmError>
+    async fn with_model_permit<T, F, Fut>(&self, model_id: String, f: F) -> Result<T, LlmError>
     where
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = Result<T, LlmError>>,
@@ -861,14 +850,8 @@ impl LlmRouter {
     ) -> Result<LlmResponse, LlmError> {
         self.with_request_permit(request, |model_id, client| async move {
             self.with_total_timeout(|| async {
-                self.call_with_retry(
-                    model_id,
-                    client,
-                    messages,
-                    Vec::new(),
-                    max_output_tokens,
-                )
-                .await
+                self.call_with_retry(model_id, client, messages, Vec::new(), max_output_tokens)
+                    .await
             })
             .await
         })
@@ -980,14 +963,8 @@ impl LlmRouter {
     ) -> Result<LlmResponse, LlmError> {
         self.with_request_permit(request, |model_id, client| async move {
             self.with_total_timeout(|| async {
-                self.call_with_retry(
-                    model_id,
-                    client,
-                    messages,
-                    tools,
-                    max_output_tokens,
-                )
-                .await
+                self.call_with_retry(model_id, client, messages, tools, max_output_tokens)
+                    .await
             })
             .await
         })
@@ -1228,11 +1205,9 @@ impl LlmRouter {
             tools: Arc::from(tools),
             max_output_tokens,
         };
-        let candidate = self
-            .models
-            .get(&model_id)
-            .cloned()
-            .ok_or_else(|| LlmError::Configuration(format!("model client is unavailable: {model_id}")))?;
+        let candidate = self.models.get(&model_id).cloned().ok_or_else(|| {
+            LlmError::Configuration(format!("model client is unavailable: {model_id}"))
+        })?;
         candidate.validate_content(&stream_context.messages)?;
 
         execute_with_timeout(
@@ -1837,9 +1812,7 @@ mod tests {
             "audio_model api_key is set"
         );
         assert!(
-            router
-                .is_request_configured(RequestKind::Embedding)
-                .await,
+            router.is_request_configured(RequestKind::Embedding).await,
             "embedding_model api_key is set"
         );
     }
@@ -2691,10 +2664,7 @@ mod tests {
         for _ in 0..3 {
             let router = router.clone();
             handles.push(tokio::spawn(async move {
-                router
-                    .chat(RequestKind::Chat, vec![])
-                    .await
-                    .unwrap();
+                router.chat(RequestKind::Chat, vec![]).await.unwrap();
             }));
         }
         for h in handles {
@@ -2831,9 +2801,7 @@ mod tests {
         let router = LlmRouter::with_default_context_window(cfg, 128_000);
 
         assert_eq!(
-            router
-                .context_window_for_request(RequestKind::Chat)
-                .await,
+            router.context_window_for_request(RequestKind::Chat).await,
             4_096
         );
         // 4,096 - 3,000 input - 256 safety margin.
@@ -2951,12 +2919,7 @@ mod tests {
         let task_router = router.clone();
         let task = tokio::spawn(async move {
             task_router
-                .chat_messages_cancellable(
-                    RequestKind::Chat,
-                    Vec::new(),
-                    Some(64),
-                    task_cancel,
-                )
+                .chat_messages_cancellable(RequestKind::Chat, Vec::new(), Some(64), task_cancel)
                 .await
         });
         tokio::task::yield_now().await;

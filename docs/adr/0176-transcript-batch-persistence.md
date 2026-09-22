@@ -24,8 +24,9 @@
   行数上限并放大 SQLite 事务。
 - Tool-owned LLM usage 先在 Agent 层归一化为写入 DTO，再由
   `persist_llm_call_batch_and_refresh_session_usage` 在一次事务中插入全部明细并
-  重建聚合行；UI usage 事件仍在提交后按原顺序逐条发出。这样 64 个工具调用不会
-  因明细行或 transcript 行分别产生 64 次事务。
+  增量更新聚合行；只有 rollback/truncate 等删除路径才从明细重建。UI usage 事件仍
+  在提交后按原顺序逐条发出。这样 64 个工具调用不会因明细行或 transcript 行分别
+  产生 64 次事务，也不会为每次追加扫描整个历史明细集。
 - 事务提交后才发送 SessionEventStore live broadcast；Agent 随后才发 Action、
   Observation、Thought、Supplement 等权威 UI 事件并更新内存 canonical。事务失败
   不得修改 canonical，也不得产生 live UI 事件；事件 authority 可在 resume 时修复

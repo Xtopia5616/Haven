@@ -182,6 +182,81 @@ impl LlmCallUsage {
     }
 }
 
+/// The agent-owned portion of one or more usage rows. Live writes apply this
+/// delta directly to `session_usage`; the detail table remains the durable
+/// source used for rebuilds after deletion/rollback.
+#[derive(Debug, Default)]
+struct SessionUsageDelta {
+    prompt_tokens: u32,
+    completion_tokens: u32,
+    total_tokens: u32,
+    cached_tokens: u32,
+    cache_creation_tokens: u32,
+    cache_miss_tokens: u32,
+    cost_usd: f64,
+    has_cost: bool,
+    latest_agent_created_at: Option<String>,
+    latest_context_tokens: u32,
+    latest_context_window: Option<u32>,
+}
+
+impl SessionUsageDelta {
+    #[allow(clippy::too_many_arguments)]
+    fn add_call(
+        &mut self,
+        call_kind: &str,
+        prompt_tokens: u32,
+        completion_tokens: u32,
+        total_tokens: u32,
+        cached_tokens: u32,
+        cache_creation_tokens: u32,
+        cache_miss_tokens: u32,
+        cache_accounting: &str,
+        cost_usd: f64,
+        has_cost: bool,
+        context_tokens: u32,
+        context_window: Option<u32>,
+        created_at: &str,
+    ) {
+        if call_kind != "agent" {
+            return;
+        }
+
+        self.prompt_tokens = self.prompt_tokens.saturating_add(prompt_tokens);
+        self.completion_tokens = self.completion_tokens.saturating_add(completion_tokens);
+        self.total_tokens = self.total_tokens.saturating_add(coalesced_total(
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
+            cached_tokens,
+            cache_creation_tokens,
+            cache_accounting,
+        ));
+        self.cached_tokens = self.cached_tokens.saturating_add(cached_tokens);
+        self.cache_creation_tokens = self
+            .cache_creation_tokens
+            .saturating_add(cache_creation_tokens);
+        self.cache_miss_tokens = self.cache_miss_tokens.saturating_add(cache_miss_tokens);
+        if has_cost {
+            self.cost_usd += cost_usd;
+            self.has_cost = true;
+        }
+
+        // `created_at` is the same RFC3339-millis timeline used by rollback.
+        // Keep the newest context snapshot even when blocking DB writes finish
+        // out of order.
+        let is_newer = self
+            .latest_agent_created_at
+            .as_deref()
+            .is_none_or(|current| created_at >= current);
+        if is_newer {
+            self.latest_agent_created_at = Some(created_at.to_owned());
+            self.latest_context_tokens = context_tokens;
+            self.latest_context_window = context_window;
+        }
+    }
+}
+
 impl Database {
     /// Test-only insert without refreshing `session_usage`. Live path must use
     /// [`Self::persist_llm_call_and_refresh_session_usage`].
@@ -291,10 +366,10 @@ impl Database {
         })
     }
 
-    /// Insert one call-detail row and rebuild `session_usage` from the
-    /// remaining `llm_usage` rows in a single transaction. Using the SUM of
-    /// detail rows (instead of an absolute in-memory cumulative write) keeps
-    /// totals correct when fire-and-forget persists complete out of order.
+    /// Insert one call-detail row and apply its Agent delta to `session_usage`
+    /// in a single transaction. This keeps the common append path O(1) in the
+    /// number of calls; the detail table is still the rebuild source after a
+    /// rollback or deletion.
     ///
     /// `created_at` uses [`now_rfc3339_millis`] (same shape as messages/steps)
     /// so string cutoffs in rollback/`truncate_session_after` compare correctly.
@@ -466,7 +541,23 @@ impl Database {
                 duration_ms,
                 &created_at,
             )?;
-            Self::rebuild_session_usage_from_calls_conn(&conn, session_id)?;
+            let mut delta = SessionUsageDelta::default();
+            delta.add_call(
+                call_kind,
+                prompt_tokens,
+                completion_tokens,
+                total_tokens,
+                cached_tokens,
+                cache_creation_tokens,
+                cache_miss_tokens,
+                cache_accounting,
+                cost_usd,
+                has_cost,
+                context_tokens,
+                context_window,
+                &created_at,
+            );
+            Self::apply_session_usage_delta_conn(&conn, session_id, &delta)?;
             Ok(LlmCallUsage {
                 id: id.clone(),
                 session_id: session_id.into(),
@@ -503,9 +594,9 @@ impl Database {
         }
     }
 
-    /// Append multiple call-detail rows and rebuild the session aggregate once
-    /// in one SQLite transaction.  Tool batches use this boundary so usage
-    /// persistence scales with the batch rather than with its call count.
+    /// Append multiple call-detail rows and apply one aggregate delta in a
+    /// single SQLite transaction. Tool batches therefore do one summary write
+    /// without scanning all historical detail rows.
     pub fn persist_llm_call_batch_and_refresh_session_usage(
         &self,
         session_id: &str,
@@ -521,6 +612,7 @@ impl Database {
         let conn = self.conn();
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<Vec<LlmCallUsage>> {
+            let mut delta = SessionUsageDelta::default();
             for (input, (id, created_at)) in inputs.iter().zip(&stamped) {
                 Self::insert_llm_call_usage_conn(
                     &conn,
@@ -545,8 +637,23 @@ impl Database {
                     input.duration_ms,
                     created_at,
                 )?;
+                delta.add_call(
+                    &input.call_kind,
+                    input.prompt_tokens,
+                    input.completion_tokens,
+                    input.total_tokens,
+                    input.cached_tokens,
+                    input.cache_creation_tokens,
+                    input.cache_miss_tokens,
+                    &input.cache_accounting,
+                    input.cost_usd,
+                    input.has_cost,
+                    input.context_tokens,
+                    input.context_window,
+                    created_at,
+                );
             }
-            Self::rebuild_session_usage_from_calls_conn(&conn, session_id)?;
+            Self::apply_session_usage_delta_conn(&conn, session_id, &delta)?;
             Ok(inputs
                 .iter()
                 .zip(&stamped)
@@ -681,6 +788,75 @@ impl Database {
         Ok(())
     }
 
+    fn apply_session_usage_delta_conn(
+        conn: &rusqlite::Connection,
+        session_id: &str,
+        delta: &SessionUsageDelta,
+    ) -> anyhow::Result<()> {
+        // An aggregate row can be created by a media/tool-only call. An empty
+        // watermark keeps a later Agent call eligible even if its request was
+        // started before that non-Agent call finished.
+        let watermark = delta.latest_agent_created_at.as_deref().unwrap_or("");
+        let has_agent_context = delta.latest_agent_created_at.is_some();
+
+        // `updated_at` acts as the context-snapshot watermark. It is kept in
+        // the existing column so this optimization does not change the DB
+        // schema. Counters are additive, while context is replaced only by a
+        // newer Agent call. Media/tool rows still create the zero summary row
+        // when needed but never affect Agent totals.
+        conn.execute(
+            "INSERT INTO session_usage
+                 (session_id, prompt_tokens, completion_tokens, total_tokens,
+                   cached_tokens, cache_creation_tokens, cache_miss_tokens,
+                   context_tokens, context_window, cost_usd, has_cost, updated_at)
+              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+             ON CONFLICT(session_id) DO UPDATE SET
+                 prompt_tokens = session_usage.prompt_tokens + excluded.prompt_tokens,
+                 completion_tokens = session_usage.completion_tokens + excluded.completion_tokens,
+                 total_tokens = session_usage.total_tokens + excluded.total_tokens,
+                 cached_tokens = session_usage.cached_tokens + excluded.cached_tokens,
+                 cache_creation_tokens = session_usage.cache_creation_tokens + excluded.cache_creation_tokens,
+                 cache_miss_tokens = session_usage.cache_miss_tokens + excluded.cache_miss_tokens,
+                 context_tokens = CASE
+                     WHEN ?13 != 0 AND excluded.updated_at >= session_usage.updated_at
+                     THEN excluded.context_tokens ELSE session_usage.context_tokens END,
+                 context_window = CASE
+                     WHEN ?13 != 0 AND excluded.updated_at >= session_usage.updated_at
+                     THEN excluded.context_window ELSE session_usage.context_window END,
+                 cost_usd = session_usage.cost_usd + excluded.cost_usd,
+                 has_cost = CASE
+                     WHEN session_usage.has_cost != 0 OR excluded.has_cost != 0
+                     THEN 1 ELSE 0 END,
+                 updated_at = CASE
+                     WHEN ?13 != 0 AND excluded.updated_at >= session_usage.updated_at
+                     THEN excluded.updated_at ELSE session_usage.updated_at END",
+            rusqlite::params![
+                session_id,
+                delta.prompt_tokens,
+                delta.completion_tokens,
+                delta.total_tokens,
+                delta.cached_tokens,
+                delta.cache_creation_tokens,
+                delta.cache_miss_tokens,
+                if has_agent_context {
+                    delta.latest_context_tokens
+                } else {
+                    0
+                },
+                if has_agent_context {
+                    delta.latest_context_window
+                } else {
+                    None
+                },
+                delta.cost_usd,
+                delta.has_cost,
+                watermark,
+                has_agent_context,
+            ],
+        )?;
+        Ok(())
+    }
+
     pub(crate) fn rebuild_session_usage_from_calls_conn(
         conn: &rusqlite::Connection,
         session_id: &str,
@@ -718,18 +894,23 @@ impl Database {
                 ))
             },
         )?;
-        let (context_tokens, context_window): (u32, Option<u32>) = conn
+        let (context_tokens, context_window, latest_created_at): (
+            u32,
+            Option<u32>,
+            Option<String>,
+        ) = conn
             .query_row(
-                "SELECT context_tokens, context_window
+                "SELECT context_tokens, context_window, created_at
                    FROM llm_usage
                   WHERE session_id = ?1 AND call_kind = 'agent'
                   ORDER BY created_at DESC, rowid DESC
                   LIMIT 1",
                 rusqlite::params![session_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()?
-            .unwrap_or((0, None));
+            .unwrap_or((0, None, None));
+        let updated_at = latest_created_at.unwrap_or_default();
         // Always upsert — including zeros when no detail remains — so resume
         // does not treat a cleared row as if usage persistence had never run.
         conn.execute(
@@ -737,7 +918,7 @@ impl Database {
                  (session_id, prompt_tokens, completion_tokens, total_tokens,
                    cached_tokens, cache_creation_tokens, cache_miss_tokens,
                    context_tokens, context_window, cost_usd, has_cost, updated_at)
-              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, datetime('now'))
+              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
              ON CONFLICT(session_id) DO UPDATE SET
                  prompt_tokens = excluded.prompt_tokens,
                  completion_tokens = excluded.completion_tokens,
@@ -761,7 +942,8 @@ impl Database {
                 context_tokens,
                 context_window,
                 cost,
-                has_cost != 0
+                has_cost != 0,
+                updated_at,
             ],
         )?;
         Ok(())
@@ -823,6 +1005,7 @@ impl Database {
 
 #[cfg(test)]
 mod tests {
+    use super::SessionUsageDelta;
     use crate::LlmCallUsageInput;
     use crate::db::Database;
     use haven_common::config::RequestKind;
@@ -862,7 +1045,7 @@ mod tests {
     }
 
     #[test]
-    fn persist_usage_batch_writes_rows_and_rebuilds_aggregate() {
+    fn persist_usage_batch_writes_rows_and_updates_aggregate_once() {
         let db = test_db();
         let session = db.create_session("hello").unwrap();
         let records = db
@@ -1143,7 +1326,7 @@ mod tests {
     }
 
     #[test]
-    fn persist_llm_call_refreshes_session_usage_from_sum() {
+    fn persist_llm_call_updates_session_usage_incrementally() {
         let db = test_db();
         let session = db.create_session("hello").unwrap();
         db.persist_llm_call_and_refresh_session_usage(
@@ -1184,6 +1367,103 @@ mod tests {
         assert_eq!(u.cache_creation_tokens, 1);
         assert!((u.cost_usd - 0.30).abs() < 1e-9);
         assert!(u.has_cost);
+    }
+
+    #[test]
+    fn incremental_projection_does_not_regress_newer_context_on_late_write() {
+        let db = test_db();
+        let session = db.create_session("hello").unwrap();
+        db.persist_llm_call_and_refresh_session_usage_with_cache_accounting_and_context(
+            &session.id,
+            Some(1),
+            RequestKind::Chat,
+            None,
+            10,
+            5,
+            15,
+            0,
+            0,
+            0,
+            "unknown",
+            None,
+            0.0,
+            false,
+            None,
+            900,
+            Some(4096),
+        )
+        .unwrap();
+        db.persist_llm_call_and_refresh_session_usage_with_cache_accounting_and_context(
+            &session.id,
+            Some(2),
+            RequestKind::Chat,
+            None,
+            20,
+            10,
+            30,
+            0,
+            0,
+            0,
+            "unknown",
+            None,
+            0.0,
+            false,
+            None,
+            1200,
+            Some(4096),
+        )
+        .unwrap();
+
+        let old_created_at = "2000-01-01T00:00:00.000Z";
+        let old_id = haven_common::types::new_id("usage");
+        let conn = db.conn();
+        Database::insert_llm_call_usage_conn(
+            &conn,
+            &old_id,
+            &session.id,
+            Some(0),
+            RequestKind::Chat,
+            "agent",
+            None,
+            1,
+            1,
+            2,
+            0,
+            0,
+            0,
+            "unknown",
+            None,
+            400,
+            Some(4096),
+            0.0,
+            false,
+            None,
+            old_created_at,
+        )
+        .unwrap();
+        let mut delta = SessionUsageDelta::default();
+        delta.add_call(
+            "agent",
+            1,
+            1,
+            2,
+            0,
+            0,
+            0,
+            "unknown",
+            0.0,
+            false,
+            400,
+            Some(4096),
+            old_created_at,
+        );
+        Database::apply_session_usage_delta_conn(&conn, &session.id, &delta).unwrap();
+        drop(conn);
+
+        let summary = db.get_session_usage(&session.id).unwrap().unwrap();
+        assert_eq!(summary.total_tokens, 47);
+        assert_eq!(summary.context_tokens, 1200);
+        assert_eq!(summary.context_window, Some(4096));
     }
 
     #[test]

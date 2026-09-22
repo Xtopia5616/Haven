@@ -6,8 +6,8 @@
 //! shared loader mutex themselves.
 
 use super::{
-    AppConfig, ConfigLoader, LlmConfig, LogLevel, McpDiscoveryConfig, McpServerConfig,
-    ModelConfig, SecurityConfig, Settings, SkillsConfig, SkillsExecConfig, ToolConfig,
+    AppConfig, ConfigLoader, LlmConfig, LogLevel, McpDiscoveryConfig, McpServerConfig, ModelConfig,
+    SecurityConfig, Settings, SkillsConfig, SkillsExecConfig, ToolConfig,
 };
 use crate::types::ShellChoice;
 use serde::{Deserialize, Serialize};

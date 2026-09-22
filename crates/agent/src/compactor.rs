@@ -1,6 +1,6 @@
 use crate::is_dangling_boundary;
-use haven_common::prompts::CONVERSATION_SUMMARY_PROMPT;
 use haven_common::config::RequestKind;
+use haven_common::prompts::CONVERSATION_SUMMARY_PROMPT;
 use haven_common::types::{CanonicalMessage, ContentPart};
 use haven_llm::{LlmError, LlmRouter, ToolDefinition};
 use std::sync::Arc;

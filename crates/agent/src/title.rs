@@ -1,5 +1,5 @@
-use haven_common::prompts::TITLE_SYSTEM_PROMPT;
 use haven_common::config::RequestKind;
+use haven_common::prompts::TITLE_SYSTEM_PROMPT;
 use haven_llm::LlmRouter;
 use std::sync::Arc;
 
