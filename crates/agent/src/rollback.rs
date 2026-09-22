@@ -33,7 +33,7 @@ impl AgentLayer {
         pause: bool,
         target_message_id: Option<&str>,
     ) -> anyhow::Result<()> {
-        let state = self.executor.get_session_state(session_id).await;
+        let state = self.executor.get_active_session_status(session_id).await;
         let run_in_flight = self.executor.is_run_in_flight(session_id).await;
         let window = LifecycleWindow::classify(state.as_ref(), run_in_flight);
         match decide(window, LifecycleOp::BranchRollback, state.as_ref()) {
@@ -79,29 +79,21 @@ impl AgentLayer {
                 Ok(state) => (state, None),
                 Err(error) => (None, Some(error)),
             };
-        let mut durable_state = self
+        let durable_state = self
             .react_engine
             .load_durable_event_state(session_id)
             .await?;
-        if durable_state.is_none()
-            && let Some(state_json) = state_json.as_deref()
-        {
-            let cached = ReActSnapshot::from_json(state_json)?;
-            self.react_engine
-                .seed_snapshot_events(session_id, &cached, 0)
-                .await?;
-            durable_state = self
-                .react_engine
-                .load_durable_event_state(session_id)
-                .await?;
-        }
-        if durable_state.is_none()
-            && let Some(error) = state_json_error
-        {
+        if durable_state.is_none() {
+            if let Some(error) = state_json_error {
+                return Err(anyhow::anyhow!(
+                    "rollback_session {}: failed to read session checkpoint: {}",
+                    session_id,
+                    error
+                ));
+            }
             return Err(anyhow::anyhow!(
-                "rollback_session {}: failed to read legacy snapshot: {}",
-                session_id,
-                error
+                "rollback_session {}: no session event log; reset is required",
+                session_id
             ));
         }
         let mut snapshot = match durable_state {
@@ -118,15 +110,7 @@ impl AgentLayer {
                 snapshot.branch_points = durable.branch_points;
                 snapshot
             }
-            None => match state_json {
-                Some(state_json) => ReActSnapshot::from_json(&state_json)?,
-                None => {
-                    return Err(anyhow::anyhow!(
-                        "rollback_session {}: no session event log; session is not resumable",
-                        session_id
-                    ));
-                }
-            },
+            None => unreachable!("durable state absence handled above"),
         };
 
         // Compaction replaces the pre-compaction event prefix and clears its

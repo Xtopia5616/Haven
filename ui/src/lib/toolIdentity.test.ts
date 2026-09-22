@@ -7,6 +7,40 @@ import {
 } from './toolIdentity.ts';
 import { setToolManifests } from './toolManifest.ts';
 
+function manifest(stableName: string, root: string, label: string) {
+	return {
+		identity: {
+			source: 'builtin',
+			catalog_group: 'system',
+			root,
+			operation: stableName.split('.').at(-1) ?? null,
+			stable_name: stableName,
+		},
+		model: { name: stableName, description: label, input_schema: { type: 'object' } },
+		policy: {
+			risk_level: 'safe',
+			permission_key: stableName,
+			confirmation: 'none',
+			idempotency: 'idempotent',
+			scope: 'session',
+			concurrency: 'read_only',
+			effect: 'read_only',
+			data_sensitivity: 'none',
+			network_access: 'none',
+		},
+		presentation: { label, renderer: root, icon: 'tools', represented_source: 'builtin' },
+		root_presentation: { label: root, description: `${root} capabilities`, icon: 'tools' },
+		prompt: { when_to_use: 'use', when_not_to_use: 'never', key_operations: [stableName] },
+		availability: {
+			enabled: true,
+			available: true,
+			availability_reason: null,
+			requires_connection: false,
+			requires_permission: false,
+		},
+	};
+}
+
 describe('classifyToolSource', () => {
 	it('detects mcp and skill wire prefixes', () => {
 		expect(classifyToolSource('mcp__filesystem__read')).toBe('mcp');
@@ -45,9 +79,9 @@ describe('toolSourceLabel / toolDisplayName', () => {
 
 	it('uses stable labels for operation views', () => {
 		setToolManifests([
-			{ manifest: { identity: { stable_name: 'files.read' }, presentation: { label: '读取文件', renderer: 'files', icon: 'file' } } },
-			{ manifest: { identity: { stable_name: 'files.search' }, presentation: { label: '搜索文件', renderer: 'files.search', icon: 'search' } } },
-			{ manifest: { identity: { stable_name: 'system.info' }, presentation: { label: '系统信息', renderer: 'system', icon: 'cpu' } } },
+			manifest('files.read', 'files', '读取文件'),
+			manifest('files.search', 'files', '搜索文件'),
+			manifest('system.info', 'system', '系统信息'),
 		]);
 		expect(toolDisplayName('files.read')).toBe('读取文件');
 		expect(toolDisplayName('files.search')).toBe('搜索文件');

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { get } from 'svelte/store';
 import { createChatSessionEventHandlers } from './chatSessionEventHandlers.ts';
 import { initialSessionState, SessionReducer } from './sessionReducer.ts';
-import { setToolOutputPreview, toolOutputPreviewStore } from './stores.ts';
+import { setToolOutputPreview, toolOutputPreviewStore } from './toolOutputPreviewStore.ts';
 
 function handlers(options: {
 	fresh?: boolean;

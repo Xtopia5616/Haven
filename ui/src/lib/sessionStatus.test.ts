@@ -13,13 +13,7 @@ import {
 
 describe('SESSION_STATUSES', () => {
 	it('covers the canonical backend session statuses', () => {
-		expect(SESSION_STATUSES).toEqual([
-			'pending',
-			'running',
-			'paused',
-			'completed',
-			'error',
-		]);
+		expect(SESSION_STATUSES).toEqual(['pending', 'running', 'paused', 'completed', 'error']);
 	});
 });
 
@@ -48,9 +42,8 @@ describe('session waiting reasons', () => {
 		expect(waitingReasonLabel('unknown')).toBeNull();
 	});
 
-	it('reads normalized and legacy list payload fields at the boundary', () => {
+	it('reads the normalized list payload field', () => {
 		expect(sessionWaitingReason({ waitingReason: 'confirmation' })).toBe('confirmation');
-		expect(sessionWaitingReason({ waiting_reason: 'scheduled_task' })).toBe('scheduled_task');
 		expect(sessionWaitingReason(undefined)).toBeNull();
 	});
 });

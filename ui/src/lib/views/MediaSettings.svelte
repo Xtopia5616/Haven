@@ -1,7 +1,7 @@
 <script>
 	import { onDestroy } from 'svelte';
 	import { invoke } from '$lib/tauri.ts';
-	import { addNotification } from '$lib/stores.ts';
+	import { addNotification } from '$lib/notificationStore.ts';
 	import { reportError } from '$lib/errorHandling.ts';
 	import MaterialCard from '$lib/MaterialCard.svelte';
 	import SettingsSection from '$lib/SettingsSection.svelte';
@@ -196,15 +196,15 @@
 
 <SettingsSection ariaLabel="媒体" className="media-section">
 	<p class="model-hint">
-		按模态配置输入与输出。STT / OCR 可走专用通道或「模型」页的 transcription / vision
-		策略；TTS /
-		文生图复用「模型」页已添加的 Provider（Base URL + API Key）。
+		按模态配置输入与输出。STT / OCR 可走专用通道或「模型」页的 transcription / vision 策略；TTS
+		/ 文生图复用「模型」页已添加的 Provider（Base URL + API Key）。
 	</p>
 	<MaterialCard variant="outlined" className="settings-card media-strategy-card">
 		<div class="card-head">
 			<span class="card-title">附件输入策略</span>
 			<p class="card-hint">
-				控制附件进入模型请求时优先使用原始媒体还是 OCR / STT 等派生表示；策略不会把本机路径发送给模型。
+				控制附件进入模型请求时优先使用原始媒体还是 OCR / STT
+				等派生表示；策略不会把本机路径发送给模型。
 			</p>
 		</div>
 		<div class="model-field strategy-field">
@@ -232,7 +232,10 @@
 				{#if format.id === 'voice'}
 					<div class="capability-block first">
 						<h4>输入 · 采集</h4>
-						<p class="model-hint">录音转写由「transcription」请求策略选择模型；请在模型页配置 capability 与 fallback。</p>
+						<p class="model-hint">
+							录音转写由「transcription」请求策略选择模型；请在模型页配置 capability
+							与 fallback。
+						</p>
 						<div class="form-row">
 							<label for="audio-sample-rate">Sample Rate</label><MaterialNumberField
 								id="audio-sample-rate"
@@ -385,7 +388,7 @@
 					<div class="capability-block">
 						<h4>输出 · 语音合成（TTS）</h4>
 						<p class="model-hint">
-			模型会在需要用户听到内容时调用 media 的 speak 操作；选「模型」页已添加的
+							模型会在需要用户听到内容时调用 media 的 speak 操作；选「模型」页已添加的
 							Provider。TTS 只产生扬声器输出，不会自动触发通知。
 						</p>
 						<div class="stt-grid">
@@ -460,7 +463,10 @@
 								contextLimits.attachment_image_jpeg_quality * 100,
 							)}%。
 						</p>
-						<p class="model-hint">图片理解由「vision」请求策略选择模型；请在模型页配置 capability 与 fallback。</p>
+						<p class="model-hint">
+							图片理解由「vision」请求策略选择模型；请在模型页配置 capability 与
+							fallback。
+						</p>
 						<div class="form-row">
 							<label for="max-attachment-images">单条消息最多图片数</label
 							><MaterialNumberField

@@ -242,19 +242,6 @@ impl ToolBudgetCandidate {
             .manifest
             .as_ref()
             .map(|manifest| manifest.identity.source)
-            .or_else(|| {
-                // ToolDef is the shared contract, but keep the selector
-                // defensive for legacy/custom definitions that predate the
-                // manifest field. The name prefixes are the same canonical
-                // boundaries used by the adapters.
-                if self.def.name.starts_with("skill__") {
-                    Some(ToolSource::Skill)
-                } else if self.def.name.starts_with("mcp__") {
-                    Some(ToolSource::Mcp)
-                } else {
-                    None
-                }
-            })
     }
 
     fn priority(&self) -> ToolBudgetPriority {

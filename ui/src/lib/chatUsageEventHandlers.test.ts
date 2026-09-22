@@ -2,7 +2,8 @@ import { get } from 'svelte/store';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createChatUsageEventHandlers } from './chatUsageEventHandlers.ts';
 import { SessionReducer } from './sessionReducer.ts';
-import { mediaPlanStore, notificationStore } from './stores.ts';
+import { mediaPlanStore } from './mediaPlanStore.ts';
+import { notificationStore } from './notificationStore.ts';
 
 describe('createChatUsageEventHandlers', () => {
 	let reducer: SessionReducer;

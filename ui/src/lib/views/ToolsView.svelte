@@ -16,7 +16,7 @@
 
 	import { onMount, onDestroy } from 'svelte';
 	import { invoke } from '$lib/tauri.ts';
-	import { addNotification } from '$lib/stores.ts';
+	import { addNotification } from '$lib/notificationStore.ts';
 	import { reportError } from '$lib/errorHandling.ts';
 	import logger from '$lib/logger.ts';
 	import { registerOne } from '$lib/events.ts';

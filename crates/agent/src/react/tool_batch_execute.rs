@@ -711,7 +711,7 @@ impl ReActEngine {
                 .await;
         }
 
-        let session_state = self.executor.get_session_state(session_id).await;
+        let session_state = self.executor.get_active_session_status(session_id).await;
         match session_state {
             Some(s) if s.is_paused() => {
                 return Ok(ToolBatchOutcome::Done(

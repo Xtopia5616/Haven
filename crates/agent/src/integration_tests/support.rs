@@ -146,12 +146,12 @@ impl AgentEventEmitter for RecordingEmitter {
     }
 }
 
-pub(super) fn make_test_agent() -> (Arc<AgentLayer>, Arc<SessionExecutor>) {
+pub(super) fn make_test_agent() -> (Arc<AgentLayer>, Arc<SessionSupervisor>) {
     let mut p = std::env::temp_dir();
     p.push(format!("haven_agent_test_{}.db", uuid::Uuid::new_v4()));
     let db = Arc::new(Database::open(&p).unwrap());
     let tools = Arc::new(ToolsManager::new());
-    let executor = Arc::new(SessionExecutor::new(db.clone(), tools, 1));
+    let executor = Arc::new(SessionSupervisor::new(db.clone(), tools, 1));
     let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
     let router = Arc::new(LlmRouter::new_with_clients(
         client.clone(),
@@ -216,7 +216,7 @@ pub(super) fn make_tool_result(call_id: &str, text: &str) -> CanonicalMessage {
 pub(super) fn make_test_agent_with(
     client: Arc<dyn LlmClient>,
     tools: Arc<ToolsManager>,
-) -> (Arc<AgentLayer>, Arc<SessionExecutor>) {
+) -> (Arc<AgentLayer>, Arc<SessionSupervisor>) {
     make_test_agent_with_limits(client, tools, ContextLimitsConfig::default())
 }
 
@@ -224,7 +224,7 @@ pub(super) fn make_test_agent_with_limits(
     client: Arc<dyn LlmClient>,
     tools: Arc<ToolsManager>,
     context_limits: ContextLimitsConfig,
-) -> (Arc<AgentLayer>, Arc<SessionExecutor>) {
+) -> (Arc<AgentLayer>, Arc<SessionSupervisor>) {
     let mut p = std::env::temp_dir();
     p.push(format!("haven_agent_test_{}.db", uuid::Uuid::new_v4()));
     let db = Arc::new(Database::open(&p).unwrap());
@@ -236,8 +236,8 @@ pub(super) fn make_test_agent_with_db(
     client: Arc<dyn LlmClient>,
     tools: Arc<ToolsManager>,
     context_limits: ContextLimitsConfig,
-) -> (Arc<AgentLayer>, Arc<SessionExecutor>) {
-    let executor = Arc::new(SessionExecutor::new(db.clone(), tools, 1));
+) -> (Arc<AgentLayer>, Arc<SessionSupervisor>) {
+    let executor = Arc::new(SessionSupervisor::new(db.clone(), tools, 1));
     let router = Arc::new(LlmRouter::new_with_clients(
         client.clone(),
         client.clone(),
@@ -812,7 +812,7 @@ impl Tool for TimingTool {
 /// `interrupt` plus a saved ReAct snapshot at step 1 (canonical =
 /// [System "sys", User "hello"], branch point after the thinking turn).
 /// Returns the persisted messages so tests can resolve specific ids.
-pub(super) fn seed_hello_snapshot(
+pub(super) async fn seed_hello_snapshot(
     agent: &AgentLayer,
     session_id: &str,
 ) -> Vec<haven_memory::repositories::messages::Message> {
@@ -884,9 +884,41 @@ pub(super) fn seed_hello_snapshot(
         run_budget: None,
         error_partial_message_ids: None,
     };
+    seed_snapshot_events(agent, session_id, &snapshot).await;
     agent
         .db
         .save_react_state(session_id, &serde_json::to_string(&snapshot).unwrap())
         .unwrap();
     msgs
+}
+
+pub(super) async fn seed_snapshot_events(
+    agent: &AgentLayer,
+    session_id: &str,
+    snapshot: &ReActSnapshot,
+) {
+    agent
+        .react_engine
+        .seed_transcript_events(session_id, &snapshot.events, 0)
+        .await
+        .unwrap();
+    let store = agent.react_engine.event_store.clone();
+    let branches = snapshot.branch_points.values().cloned().collect::<Vec<_>>();
+    let session_id = session_id.to_string();
+    agent
+        .db
+        .run_blocking(move |_| {
+            for branch in branches {
+                store.append_branch_point(
+                    &session_id,
+                    branch.event_cursor,
+                    branch.step_number,
+                    branch.last_msg_at.as_deref(),
+                    None,
+                )?;
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
 }

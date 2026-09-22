@@ -1,12 +1,9 @@
 import { get } from 'svelte/store';
 import { browser } from '$app/environment';
 import { DRAFT_SESSION_ID, type SessionReducer } from './sessionReducer.ts';
-import {
-	modelStateStore,
-	newMessage,
-	newSessionIntentStore,
-	NEW_ACTION_INTENT_KEY,
-} from './stores.ts';
+import { modelStateStore } from './runtimeStateStore.ts';
+import { newMessage } from './messageFactory.ts';
+import { newSessionIntentStore, NEW_ACTION_INTENT_KEY } from './sessionIntentStore.ts';
 import { isBusyStatus, isPausedStatus } from './sessionStatus.ts';
 import { invoke } from './tauri.ts';
 

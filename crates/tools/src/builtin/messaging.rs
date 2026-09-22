@@ -1350,6 +1350,10 @@ mod tests {
             Ok(None)
         }
 
+        fn try_claim(&self, _recipient: &str) -> anyhow::Result<Option<Vec<Envelope>>> {
+            Ok(None)
+        }
+
         fn ack(&self, _recipient: &str, _ids: &[String]) -> anyhow::Result<Option<()>> {
             Ok(None)
         }

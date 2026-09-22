@@ -4,7 +4,7 @@ import {
 	mergeLiveStreaming,
 	isDisplayOnlyMessageId,
 } from './resumeMessages.ts';
-import { formatMessageTime } from './stores.ts';
+import { formatMessageTime } from './messageFormat.ts';
 
 const sampleSession = {
 	id: 'session-1',
@@ -47,13 +47,33 @@ describe('buildResumeMessages', () => {
 		const items = buildResumeMessages({
 			session: sampleSession,
 			messages: [
-				{ id: 'm1', role: 'user', content: '打开记事本', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
-				{ id: 'm2', role: 'assistant', content: '已打开', message_type: 'text', created_at: '2026-08-01T10:01:00Z', attachments: [] },
+				{
+					id: 'm1',
+					role: 'user',
+					content: '打开记事本',
+					message_type: 'text',
+					created_at: '2026-08-01T10:00:00Z',
+					attachments: [],
+				},
+				{
+					id: 'm2',
+					role: 'assistant',
+					content: '已打开',
+					message_type: 'text',
+					created_at: '2026-08-01T10:01:00Z',
+					attachments: [],
+				},
 			],
 			steps: [],
 		});
 		expect(items).toHaveLength(2);
-		expect(items[0]).toMatchObject({ id: 'm1', role: 'user', content: '打开记事本', streaming: false, voice: false });
+		expect(items[0]).toMatchObject({
+			id: 'm1',
+			role: 'user',
+			content: '打开记事本',
+			streaming: false,
+			voice: false,
+		});
 		expect(items[1]).toMatchObject({ id: 'm2', role: 'assistant', content: '已打开' });
 	});
 
@@ -61,8 +81,23 @@ describe('buildResumeMessages', () => {
 		const items = buildResumeMessages({
 			session: sampleSession,
 			messages: [
-				{ id: 'mv', role: 'user', content: '打开计算器', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [], voice: true },
-				{ id: 'mt', role: 'user', content: '打开记事本', message_type: 'text', created_at: '2026-08-01T10:02:00Z', attachments: [] },
+				{
+					id: 'mv',
+					role: 'user',
+					content: '打开计算器',
+					message_type: 'text',
+					created_at: '2026-08-01T10:00:00Z',
+					attachments: [],
+					voice: true,
+				},
+				{
+					id: 'mt',
+					role: 'user',
+					content: '打开记事本',
+					message_type: 'text',
+					created_at: '2026-08-01T10:02:00Z',
+					attachments: [],
+				},
 			],
 			steps: [],
 		});
@@ -74,25 +109,66 @@ describe('buildResumeMessages', () => {
 		const items = buildResumeMessages({
 			session: sampleSession,
 			messages: [
-				{ id: 'm1', role: 'user', content: 'hi', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
+				{
+					id: 'm1',
+					role: 'user',
+					content: 'hi',
+					message_type: 'text',
+					created_at: '2026-08-01T10:00:00Z',
+					attachments: [],
+				},
 			],
 			steps: [
-				{ id: 'step-s1', action_tool: 'files', observation: '{"ok":true}', thought: null, step_number: 1, created_at: '2026-08-01T10:01:00Z' },
+				{
+					id: 'step-s1',
+					action_tool: 'files',
+					observation: '{"ok":true}',
+					thought: null,
+					step_number: 1,
+					created_at: '2026-08-01T10:01:00Z',
+				},
 			],
 		});
 		expect(items).toHaveLength(2);
-		expect(items[1]).toMatchObject({ id: 'step-s1', type: 'tool', toolName: 'files', content: '{"ok":true}' });
+		expect(items[1]).toMatchObject({
+			id: 'step-s1',
+			type: 'tool',
+			toolName: 'files',
+			content: '{"ok":true}',
+		});
 	});
 
 	it('restores operation-view steps by stable step identity, not thought text', () => {
 		const items = buildResumeMessages({
 			session: sampleSession,
 			messages: [
-				{ id: 'm1', role: 'user', content: '读取文件', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
-				{ id: 'm-thought', role: 'assistant', content: '检查目标文件', message_type: 'text', created_at: '2026-08-01T10:01:00Z', attachments: [] },
+				{
+					id: 'm1',
+					role: 'user',
+					content: '读取文件',
+					message_type: 'text',
+					created_at: '2026-08-01T10:00:00Z',
+					attachments: [],
+				},
+				{
+					id: 'm-thought',
+					role: 'assistant',
+					content: '检查目标文件',
+					message_type: 'text',
+					created_at: '2026-08-01T10:01:00Z',
+					attachments: [],
+				},
 			],
 			steps: [
-				{ id: 'step-view', action_tool: 'files.read', action_input: '{"path":"notes.md"}', observation: '{"operation":"read","path":"notes.md","content":"ok"}', thought: null, step_number: 1, created_at: '2026-08-01T10:01:01Z' },
+				{
+					id: 'step-view',
+					action_tool: 'files.read',
+					action_input: '{"path":"notes.md"}',
+					observation: '{"operation":"read","path":"notes.md","content":"ok"}',
+					thought: null,
+					step_number: 1,
+					created_at: '2026-08-01T10:01:01Z',
+				},
 			],
 		});
 		const tool = items.find((item) => item.id === 'step-view');
@@ -109,23 +185,70 @@ describe('buildResumeMessages', () => {
 			session: sampleSession,
 			messages: [],
 			steps: [
-				{ id: 'step-file', action_tool: 'file', observation: '{"content":"old"}', thought: null, step_number: 1, created_at: '2026-08-01T10:01:00Z' },
-				{ id: 'step-search', action_tool: 'file_search', observation: '{"results":[]}', thought: null, step_number: 2, created_at: '2026-08-01T10:02:00Z' },
-				{ id: 'step-schedule', action_tool: 'scheduled_action', observation: '{"scheduled_actions":[]}', thought: null, step_number: 3, created_at: '2026-08-01T10:03:00Z' },
+				{
+					id: 'step-file',
+					action_tool: 'file',
+					observation: '{"content":"old"}',
+					thought: null,
+					step_number: 1,
+					created_at: '2026-08-01T10:01:00Z',
+				},
+				{
+					id: 'step-search',
+					action_tool: 'file_search',
+					observation: '{"results":[]}',
+					thought: null,
+					step_number: 2,
+					created_at: '2026-08-01T10:02:00Z',
+				},
+				{
+					id: 'step-schedule',
+					action_tool: 'scheduled_action',
+					observation: '{"scheduled_actions":[]}',
+					thought: null,
+					step_number: 3,
+					created_at: '2026-08-01T10:03:00Z',
+				},
 			],
 		});
-		expect(items.map((item) => item.toolName)).toEqual(['file', 'file_search', 'scheduled_action']);
+		expect(items.map((item) => item.toolName)).toEqual([
+			'file',
+			'file_search',
+			'scheduled_action',
+		]);
 	});
 
 	it('normalizes persisted tool-role observations into tool cards', () => {
 		const items = buildResumeMessages({
 			session: sampleSession,
 			messages: [
-				{ id: 'm1', role: 'user', content: '检查', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
-				{ id: 'step-s1', role: 'tool', content: '{"output":"ok"}', message_type: 'observation', created_at: '2026-08-01T10:01:00Z', attachments: [] },
+				{
+					id: 'm1',
+					role: 'user',
+					content: '检查',
+					message_type: 'text',
+					created_at: '2026-08-01T10:00:00Z',
+					attachments: [],
+				},
+				{
+					id: 'step-s1',
+					role: 'tool',
+					content: '{"output":"ok"}',
+					message_type: 'observation',
+					created_at: '2026-08-01T10:01:00Z',
+					attachments: [],
+				},
 			],
 			steps: [
-				{ id: 'step-s1', action_tool: 'shell', action_input: '{"cmd":"dir"}', observation: '{"output":"ok"}', thought: null, step_number: 1, created_at: '2026-08-01T10:01:00Z' },
+				{
+					id: 'step-s1',
+					action_tool: 'shell',
+					action_input: '{"cmd":"dir"}',
+					observation: '{"output":"ok"}',
+					thought: null,
+					step_number: 1,
+					created_at: '2026-08-01T10:01:00Z',
+				},
 			],
 		});
 		const tool = items.find((item) => item.id === 'step-s1');
@@ -141,7 +264,14 @@ describe('buildResumeMessages', () => {
 		const items = buildResumeMessages({
 			session: sampleSession,
 			messages: [
-				{ id: 'm1', role: 'user', content: 'hi', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
+				{
+					id: 'm1',
+					role: 'user',
+					content: 'hi',
+					message_type: 'text',
+					created_at: '2026-08-01T10:00:00Z',
+					attachments: [],
+				},
 			],
 			steps: [
 				{
@@ -170,11 +300,34 @@ describe('buildResumeMessages', () => {
 		const items = buildResumeMessages({
 			session: sampleSession,
 			messages: [
-				{ id: 'm1', role: 'user', content: 'hi', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
-				{ id: 'm2', role: 'assistant', content: '稍等', message_type: 'text', created_at: '2026-08-01T10:01:00Z', attachments: [] },
+				{
+					id: 'm1',
+					role: 'user',
+					content: 'hi',
+					message_type: 'text',
+					created_at: '2026-08-01T10:00:00Z',
+					attachments: [],
+				},
+				{
+					id: 'm2',
+					role: 'assistant',
+					content: '稍等',
+					message_type: 'text',
+					created_at: '2026-08-01T10:01:00Z',
+					attachments: [],
+				},
 			],
 			steps: [
-				{ id: 's1', action_tool: 'shell', action_input: '{"command":"echo hi","silent":true}', observation: '{"silent":true,"ok":true}', thought: null, silent: true, step_number: 1, created_at: '2026-08-01T10:01:00Z' },
+				{
+					id: 's1',
+					action_tool: 'shell',
+					action_input: '{"command":"echo hi","silent":true}',
+					observation: '{"silent":true,"ok":true}',
+					thought: null,
+					silent: true,
+					step_number: 1,
+					created_at: '2026-08-01T10:01:00Z',
+				},
 			],
 		});
 		expect(items).toHaveLength(3);
@@ -192,13 +345,49 @@ describe('buildResumeMessages', () => {
 		const items = buildResumeMessages({
 			session: sampleSession,
 			messages: [
-				{ id: 'm1', role: 'user', content: 'hi', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
-				{ id: 'm2', role: 'assistant', content: '稍等，我检查一下', message_type: 'text', created_at: '2026-08-01T10:01:00Z', attachments: [] },
-				{ id: 'm3', role: 'assistant', content: '完成了', message_type: 'text', created_at: '2026-08-01T10:02:00Z', attachments: [] },
+				{
+					id: 'm1',
+					role: 'user',
+					content: 'hi',
+					message_type: 'text',
+					created_at: '2026-08-01T10:00:00Z',
+					attachments: [],
+				},
+				{
+					id: 'm2',
+					role: 'assistant',
+					content: '稍等，我检查一下',
+					message_type: 'text',
+					created_at: '2026-08-01T10:01:00Z',
+					attachments: [],
+				},
+				{
+					id: 'm3',
+					role: 'assistant',
+					content: '完成了',
+					message_type: 'text',
+					created_at: '2026-08-01T10:02:00Z',
+					attachments: [],
+				},
 			],
 			steps: [
-				{ id: 't1', action_tool: null, thought: '稍等，我检查一下', silent: false, step_number: 1, created_at: '2026-08-01T10:01:00Z' },
-				{ id: 's1', action_tool: 'shell', observation: 'ok', thought: null, silent: true, step_number: 1, created_at: '2026-08-01T10:01:01Z' },
+				{
+					id: 't1',
+					action_tool: null,
+					thought: '稍等，我检查一下',
+					silent: false,
+					step_number: 1,
+					created_at: '2026-08-01T10:01:00Z',
+				},
+				{
+					id: 's1',
+					action_tool: 'shell',
+					observation: 'ok',
+					thought: null,
+					silent: true,
+					step_number: 1,
+					created_at: '2026-08-01T10:01:01Z',
+				},
 			],
 		});
 		expect(items.find((i) => i.id === 'm2')!.stepNumber).toBe(1);
@@ -215,8 +404,22 @@ describe('buildResumeMessages', () => {
 		const items = buildResumeMessages({
 			session: sampleSession,
 			messages: [
-				{ id: 'late', role: 'assistant', content: 'later', message_type: 'text', created_at: '2026-08-01T10:05:00Z', attachments: [] },
-				{ id: 'early', role: 'user', content: 'first', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
+				{
+					id: 'late',
+					role: 'assistant',
+					content: 'later',
+					message_type: 'text',
+					created_at: '2026-08-01T10:05:00Z',
+					attachments: [],
+				},
+				{
+					id: 'early',
+					role: 'user',
+					content: 'first',
+					message_type: 'text',
+					created_at: '2026-08-01T10:00:00Z',
+					attachments: [],
+				},
 			],
 			steps: [],
 		});
@@ -233,9 +436,30 @@ describe('buildResumeMessages', () => {
 		const items = buildResumeMessages({
 			session: sampleSession,
 			messages: [
-				{ id: 'm1', role: 'user', content: 'hi', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
-				{ id: 'm2', role: 'assistant', content: '稍等，我查一下', message_type: 'text', created_at: '2026-08-01T10:01:00Z', attachments: [] },
-				{ id: 'm3', role: 'assistant', content: '完成了', message_type: 'text', created_at: '2026-08-01T10:02:00Z', attachments: [] },
+				{
+					id: 'm1',
+					role: 'user',
+					content: 'hi',
+					message_type: 'text',
+					created_at: '2026-08-01T10:00:00Z',
+					attachments: [],
+				},
+				{
+					id: 'm2',
+					role: 'assistant',
+					content: '稍等，我查一下',
+					message_type: 'text',
+					created_at: '2026-08-01T10:01:00Z',
+					attachments: [],
+				},
+				{
+					id: 'm3',
+					role: 'assistant',
+					content: '完成了',
+					message_type: 'text',
+					created_at: '2026-08-01T10:02:00Z',
+					attachments: [],
+				},
 			],
 			steps: [
 				{
@@ -260,9 +484,30 @@ describe('buildResumeMessages', () => {
 		const items = buildResumeMessages({
 			session: sampleSession,
 			messages: [
-				{ id: 'm1', role: 'user', content: 'hi', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
-				{ id: 'm2', role: 'assistant', content: '稍等', message_type: 'text', created_at: '2026-08-01T10:01:00.100Z', attachments: [] },
-				{ id: 'm3', role: 'assistant', content: '完成了', message_type: 'text', created_at: '2026-08-01T10:01:00.900Z', attachments: [] },
+				{
+					id: 'm1',
+					role: 'user',
+					content: 'hi',
+					message_type: 'text',
+					created_at: '2026-08-01T10:00:00Z',
+					attachments: [],
+				},
+				{
+					id: 'm2',
+					role: 'assistant',
+					content: '稍等',
+					message_type: 'text',
+					created_at: '2026-08-01T10:01:00.100Z',
+					attachments: [],
+				},
+				{
+					id: 'm3',
+					role: 'assistant',
+					content: '完成了',
+					message_type: 'text',
+					created_at: '2026-08-01T10:01:00.900Z',
+					attachments: [],
+				},
 			],
 			steps: [
 				{
@@ -285,8 +530,22 @@ describe('buildResumeMessages', () => {
 		const items = buildResumeMessages({
 			session: sampleSession,
 			messages: [
-				{ id: 'm1', role: 'user', content: 'hi', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
-				{ id: 'm2', role: 'assistant', content: '稍等', message_type: 'text', created_at: '2026-08-01T10:02:00Z', attachments: [] },
+				{
+					id: 'm1',
+					role: 'user',
+					content: 'hi',
+					message_type: 'text',
+					created_at: '2026-08-01T10:00:00Z',
+					attachments: [],
+				},
+				{
+					id: 'm2',
+					role: 'assistant',
+					content: '稍等',
+					message_type: 'text',
+					created_at: '2026-08-01T10:02:00Z',
+					attachments: [],
+				},
 			],
 			steps: [
 				{
@@ -311,8 +570,22 @@ describe('buildResumeMessages', () => {
 		const items = buildResumeMessages({
 			session: sampleSession,
 			messages: [
-				{ id: 'm1', role: 'user', content: 'do it', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
-				{ id: 'step-s1', role: 'assistant', content: '你想要怎么处理？A 还是 B？', message_type: 'text', created_at: '2026-08-01T10:01:00Z', attachments: [] },
+				{
+					id: 'm1',
+					role: 'user',
+					content: 'do it',
+					message_type: 'text',
+					created_at: '2026-08-01T10:00:00Z',
+					attachments: [],
+				},
+				{
+					id: 'step-s1',
+					role: 'assistant',
+					content: '你想要怎么处理？A 还是 B？',
+					message_type: 'text',
+					created_at: '2026-08-01T10:01:00Z',
+					attachments: [],
+				},
 			],
 			steps: [
 				{
@@ -345,14 +618,32 @@ describe('buildResumeMessages', () => {
 		const items = buildResumeMessages({
 			session: sampleSession,
 			messages: [
-				{ id: 'm1', role: 'user', content: 'do it', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
-				{ id: 'step-s1', role: 'assistant', content: '继续吗？', message_type: 'text', created_at: '2026-08-01T10:01:00Z', attachments: [] },
+				{
+					id: 'm1',
+					role: 'user',
+					content: 'do it',
+					message_type: 'text',
+					created_at: '2026-08-01T10:00:00Z',
+					attachments: [],
+				},
+				{
+					id: 'step-s1',
+					role: 'assistant',
+					content: '继续吗？',
+					message_type: 'text',
+					created_at: '2026-08-01T10:01:00Z',
+					attachments: [],
+				},
 			],
 			steps: [
 				{
 					id: 'step-s1',
 					action_tool: 'ask',
-					observation: JSON.stringify({ ask: true, question: '继续吗？', options: ['A', 'B'] }),
+					observation: JSON.stringify({
+						ask: true,
+						question: '继续吗？',
+						options: ['A', 'B'],
+					}),
 					thought: null,
 					step_number: 1,
 					created_at: '2026-08-01T10:01:00Z',
@@ -376,17 +667,55 @@ describe('buildResumeMessages', () => {
 		const items = buildResumeMessages({
 			session: sampleSession,
 			messages: [
-				{ id: 'm1', role: 'user', content: 'go', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
-				{ id: 'step-s1', role: 'assistant', content: 'Q1？', message_type: 'text', created_at: '2026-08-01T10:01:00Z', attachments: [] },
-				{ id: 'step-s2', role: 'assistant', content: 'Q2？', message_type: 'text', created_at: '2026-08-01T10:01:01Z', attachments: [] },
+				{
+					id: 'm1',
+					role: 'user',
+					content: 'go',
+					message_type: 'text',
+					created_at: '2026-08-01T10:00:00Z',
+					attachments: [],
+				},
+				{
+					id: 'step-s1',
+					role: 'assistant',
+					content: 'Q1？',
+					message_type: 'text',
+					created_at: '2026-08-01T10:01:00Z',
+					attachments: [],
+				},
+				{
+					id: 'step-s2',
+					role: 'assistant',
+					content: 'Q2？',
+					message_type: 'text',
+					created_at: '2026-08-01T10:01:01Z',
+					attachments: [],
+				},
 			],
 			steps: [
-				{ id: 'step-s1', action_tool: 'ask', observation: 'Q1？', thought: null, step_number: 1, created_at: '2026-08-01T10:01:00Z' },
-				{ id: 'step-s2', action_tool: 'ask', observation: 'Q2？', thought: null, step_number: 2, created_at: '2026-08-01T10:01:01Z' },
+				{
+					id: 'step-s1',
+					action_tool: 'ask',
+					observation: 'Q1？',
+					thought: null,
+					step_number: 1,
+					created_at: '2026-08-01T10:01:00Z',
+				},
+				{
+					id: 'step-s2',
+					action_tool: 'ask',
+					observation: 'Q2？',
+					thought: null,
+					step_number: 2,
+					created_at: '2026-08-01T10:01:01Z',
+				},
 			],
 		});
 		expect(items).toHaveLength(3);
-		expect(items.filter((i) => i.type === 'ask').map((i) => i.content)).toEqual(['Q1？', 'Q2？']);
+		expect(items.filter((i) => i.type === 'ask').map((i) => i.content)).toEqual([
+			'Q1？',
+			'Q2？',
+		]);
 		expect(items.filter((i) => i.type === 'tool')).toHaveLength(0);
 	});
 
@@ -396,11 +725,32 @@ describe('buildResumeMessages', () => {
 		const items = buildResumeMessages({
 			session: sampleSession,
 			messages: [
-				{ id: 'm1', role: 'user', content: 'hi', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
-				{ id: 'step-t1', role: 'assistant', content: '稍等，我检查一下', message_type: 'text', created_at: '2026-08-01T10:01:00Z', attachments: [] },
+				{
+					id: 'm1',
+					role: 'user',
+					content: 'hi',
+					message_type: 'text',
+					created_at: '2026-08-01T10:00:00Z',
+					attachments: [],
+				},
+				{
+					id: 'step-t1',
+					role: 'assistant',
+					content: '稍等，我检查一下',
+					message_type: 'text',
+					created_at: '2026-08-01T10:01:00Z',
+					attachments: [],
+				},
 			],
 			steps: [
-				{ id: 'step-t1', action_tool: null, thought: null, silent: false, step_number: 1, created_at: '2026-08-01T10:01:00Z' },
+				{
+					id: 'step-t1',
+					action_tool: null,
+					thought: null,
+					silent: false,
+					step_number: 1,
+					created_at: '2026-08-01T10:01:00Z',
+				},
 			],
 		});
 		expect(items).toHaveLength(2);
@@ -414,11 +764,31 @@ describe('buildResumeMessages', () => {
 		const items = buildResumeMessages({
 			session: sampleSession,
 			messages: [
-				{ id: 'm1', role: 'user', content: '打开记事本', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
-				{ id: 'm3', role: 'user', content: '网络不好就让我帮忙', message_type: 'text', created_at: '2026-08-01T10:02:00Z', attachments: [] },
+				{
+					id: 'm1',
+					role: 'user',
+					content: '打开记事本',
+					message_type: 'text',
+					created_at: '2026-08-01T10:00:00Z',
+					attachments: [],
+				},
+				{
+					id: 'm3',
+					role: 'user',
+					content: '网络不好就让我帮忙',
+					message_type: 'text',
+					created_at: '2026-08-01T10:02:00Z',
+					attachments: [],
+				},
 			],
 			steps: [
-				{ id: 'm3', action_tool: null, thought: null, step_number: 2, created_at: '2026-08-01T10:02:00Z' },
+				{
+					id: 'm3',
+					action_tool: null,
+					thought: null,
+					step_number: 2,
+					created_at: '2026-08-01T10:02:00Z',
+				},
 			],
 		});
 		expect(items.find((i) => i.id === 'm3')!.stepNumber).toBe(2);
@@ -433,11 +803,31 @@ describe('buildResumeMessages', () => {
 		const items = buildResumeMessages({
 			session: sampleSession,
 			messages: [
-				{ id: 'm1', role: 'user', content: '打开记事本', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
-				{ id: 'm3', role: 'user', content: '网络不好就让我帮忙', message_type: 'text', created_at: '2026-08-01T10:02:00Z', attachments: [] },
+				{
+					id: 'm1',
+					role: 'user',
+					content: '打开记事本',
+					message_type: 'text',
+					created_at: '2026-08-01T10:00:00Z',
+					attachments: [],
+				},
+				{
+					id: 'm3',
+					role: 'user',
+					content: '网络不好就让我帮忙',
+					message_type: 'text',
+					created_at: '2026-08-01T10:02:00Z',
+					attachments: [],
+				},
 			],
 			steps: [
-				{ id: 'm3', action_tool: null, thought: null, step_number: 2, created_at: '2026-08-01T10:02:00Z' },
+				{
+					id: 'm3',
+					action_tool: null,
+					thought: null,
+					step_number: 2,
+					created_at: '2026-08-01T10:02:00Z',
+				},
 			],
 		});
 		expect(items.find((i) => i.id === 'm3')!.stepNumber).toBe(2);
@@ -449,14 +839,32 @@ describe('buildResumeMessages', () => {
 		const items = buildResumeMessages({
 			session: { ...sampleSession, status: 'paused' },
 			messages: [
-				{ id: 'm1', role: 'user', content: 'go', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
-				{ id: 'step-s1', role: 'assistant', content: '继续吗？', message_type: 'text', created_at: '2026-08-01T10:01:00Z', attachments: [] },
+				{
+					id: 'm1',
+					role: 'user',
+					content: 'go',
+					message_type: 'text',
+					created_at: '2026-08-01T10:00:00Z',
+					attachments: [],
+				},
+				{
+					id: 'step-s1',
+					role: 'assistant',
+					content: '继续吗？',
+					message_type: 'text',
+					created_at: '2026-08-01T10:01:00Z',
+					attachments: [],
+				},
 			],
 			steps: [
 				{
 					id: 'step-s1',
 					action_tool: 'ask',
-					observation: JSON.stringify({ ask: true, question: '继续吗？', options: ['A', 'B'] }),
+					observation: JSON.stringify({
+						ask: true,
+						question: '继续吗？',
+						options: ['A', 'B'],
+					}),
 					thought: null,
 					step_number: 1,
 					created_at: '2026-08-01T10:01:00Z',
@@ -476,14 +884,32 @@ describe('buildResumeMessages', () => {
 		const items = buildResumeMessages({
 			session: { ...sampleSession, status: 'completed' },
 			messages: [
-				{ id: 'm1', role: 'user', content: 'go', message_type: 'text', created_at: '2026-08-01T10:00:00Z', attachments: [] },
-				{ id: 'step-s1', role: 'assistant', content: '继续吗？', message_type: 'text', created_at: '2026-08-01T10:01:00Z', attachments: [] },
+				{
+					id: 'm1',
+					role: 'user',
+					content: 'go',
+					message_type: 'text',
+					created_at: '2026-08-01T10:00:00Z',
+					attachments: [],
+				},
+				{
+					id: 'step-s1',
+					role: 'assistant',
+					content: '继续吗？',
+					message_type: 'text',
+					created_at: '2026-08-01T10:01:00Z',
+					attachments: [],
+				},
 			],
 			steps: [
 				{
 					id: 'step-s1',
 					action_tool: 'ask',
-					observation: JSON.stringify({ ask: true, question: '继续吗？', options: ['A', 'B'] }),
+					observation: JSON.stringify({
+						ask: true,
+						question: '继续吗？',
+						options: ['A', 'B'],
+					}),
 					thought: null,
 					step_number: 1,
 					created_at: '2026-08-01T10:01:00Z',
@@ -521,9 +947,7 @@ describe('mergeLiveStreaming', () => {
 	});
 
 	it('appends streaming messages not already in the DB', () => {
-		const existing = [
-			{ id: 'step-s2', type: 'tool', stepNumber: 2, streaming: true },
-		];
+		const existing = [{ id: 'step-s2', type: 'tool', stepNumber: 2, streaming: true }];
 		const merged = mergeLiveStreaming(dbMessages, existing);
 		expect(merged.map((m) => m.id)).toEqual(['m1', 'step-s1', 'step-s2']);
 	});
@@ -560,10 +984,22 @@ describe('mergeLiveStreaming', () => {
 		// minted message id, so the DB copy simply replaces the live one.
 		const db = [
 			{ id: 'm1', role: 'user', content: 'hi' },
-			{ id: 'msg-9', role: 'assistant', type: 'reasoning', content: '完整推理文本', streaming: false },
+			{
+				id: 'msg-9',
+				role: 'assistant',
+				type: 'reasoning',
+				content: '完整推理文本',
+				streaming: false,
+			},
 		];
 		const existing = [
-			{ id: 'msg-9', role: 'assistant', type: 'reasoning', content: '完整推理文本', streaming: false },
+			{
+				id: 'msg-9',
+				role: 'assistant',
+				type: 'reasoning',
+				content: '完整推理文本',
+				streaming: false,
+			},
 		];
 		const merged = mergeLiveStreaming(db, existing);
 		const reasoning = merged.filter((m) => m.type === 'reasoning');
@@ -576,7 +1012,13 @@ describe('mergeLiveStreaming', () => {
 		// the block entirely.
 		const db = [{ id: 'm1', role: 'user', content: 'hi' }];
 		const existing = [
-			{ id: 'msg-9', role: 'assistant', type: 'reasoning', content: '新鲜推理', streaming: false },
+			{
+				id: 'msg-9',
+				role: 'assistant',
+				type: 'reasoning',
+				content: '新鲜推理',
+				streaming: false,
+			},
 		];
 		const merged = mergeLiveStreaming(db, existing);
 		expect(merged.map((m) => m.id)).toContain('msg-9');
@@ -650,7 +1092,13 @@ describe('mergeLiveStreaming', () => {
 		// has no row with that id.
 		const db = [{ id: 'm1', role: 'user', content: 'hi' }];
 		const existing = [
-			{ id: 'msg-9', role: 'assistant', type: 'reasoning', content: '先想想一部分', streaming: false },
+			{
+				id: 'msg-9',
+				role: 'assistant',
+				type: 'reasoning',
+				content: '先想想一部分',
+				streaming: false,
+			},
 		];
 		const merged = mergeLiveStreaming(db, existing);
 		expect(merged.map((m) => m.id)).toContain('msg-9');
@@ -663,8 +1111,20 @@ describe('mergeLiveStreaming', () => {
 		// tool calls vanish. web_search indicators are never persisted — drop.
 		const db = [{ id: 'm1', role: 'user', content: 'hi' }];
 		const existing = [
-			{ id: 'step-cut', type: 'tool', toolName: 'shell', content: 'Interrupted', streaming: false },
-			{ id: 'tool-t-1-0-web_search', type: 'tool', toolName: 'web_search', content: '已联网搜索', streaming: false },
+			{
+				id: 'step-cut',
+				type: 'tool',
+				toolName: 'shell',
+				content: 'Interrupted',
+				streaming: false,
+			},
+			{
+				id: 'tool-t-1-0-web_search',
+				type: 'tool',
+				toolName: 'web_search',
+				content: '已联网搜索',
+				streaming: false,
+			},
 		];
 		const merged = mergeLiveStreaming(db, existing);
 		expect(merged.map((m) => m.id)).toEqual(['m1', 'step-cut']);
@@ -676,9 +1136,7 @@ describe('mergeLiveStreaming', () => {
 
 	it('drops finalized live user bubbles not in the DB (placeholder copies)', () => {
 		const db = [{ id: 'm1', role: 'user', content: 'hi' }];
-		const existing = [
-			{ id: 'placeholder-xyz', role: 'user', content: 'hi', streaming: false },
-		];
+		const existing = [{ id: 'placeholder-xyz', role: 'user', content: 'hi', streaming: false }];
 		const merged = mergeLiveStreaming(db, existing);
 		expect(merged.map((m) => m.id)).toEqual(['m1']);
 	});
@@ -699,10 +1157,26 @@ describe('mergeLiveStreaming', () => {
 		// same step id so the user can answer.
 		const db = [
 			{ id: 'm1', role: 'user', content: 'hi' },
-			{ id: 'step-7', role: 'assistant', type: 'ask', content: '继续吗？', options: [], awaiting: false, streaming: false },
+			{
+				id: 'step-7',
+				role: 'assistant',
+				type: 'ask',
+				content: '继续吗？',
+				options: [],
+				awaiting: false,
+				streaming: false,
+			},
 		];
 		const existing = [
-			{ id: 'step-7', type: 'ask', toolName: 'ask', content: '继续吗？', options: ['A', 'B'], awaiting: true, streaming: false },
+			{
+				id: 'step-7',
+				type: 'ask',
+				toolName: 'ask',
+				content: '继续吗？',
+				options: ['A', 'B'],
+				awaiting: true,
+				streaming: false,
+			},
 		];
 		const merged = mergeLiveStreaming(db, existing);
 		const asks = merged.filter((m) => m.type === 'ask');
@@ -716,12 +1190,44 @@ describe('mergeLiveStreaming', () => {
 		// just the first.
 		const db = [
 			{ id: 'm1', role: 'user', content: 'hi' },
-			{ id: 'step-1', role: 'assistant', type: 'ask', content: 'Q1？', options: [], awaiting: false, streaming: false },
-			{ id: 'step-2', role: 'assistant', type: 'ask', content: 'Q2？', options: [], awaiting: false, streaming: false },
+			{
+				id: 'step-1',
+				role: 'assistant',
+				type: 'ask',
+				content: 'Q1？',
+				options: [],
+				awaiting: false,
+				streaming: false,
+			},
+			{
+				id: 'step-2',
+				role: 'assistant',
+				type: 'ask',
+				content: 'Q2？',
+				options: [],
+				awaiting: false,
+				streaming: false,
+			},
 		];
 		const existing = [
-			{ id: 'step-1', type: 'ask', toolName: 'ask', content: 'Q1？', options: ['A'], awaiting: true, streaming: false },
-			{ id: 'step-2', type: 'ask', toolName: 'ask', content: 'Q2？', options: ['B'], awaiting: true, streaming: false },
+			{
+				id: 'step-1',
+				type: 'ask',
+				toolName: 'ask',
+				content: 'Q1？',
+				options: ['A'],
+				awaiting: true,
+				streaming: false,
+			},
+			{
+				id: 'step-2',
+				type: 'ask',
+				toolName: 'ask',
+				content: 'Q2？',
+				options: ['B'],
+				awaiting: true,
+				streaming: false,
+			},
 		];
 		const merged = mergeLiveStreaming(db, existing);
 		const asks = merged.filter((m) => m.type === 'ask');
@@ -740,7 +1246,14 @@ describe('mergeLiveStreaming', () => {
 			{ id: 'step-9', type: 'tool', toolName: 'shell', stepNumber: 2, streaming: false },
 		];
 		const existing = [
-			{ id: 'step-9', type: 'tool', toolName: 'shell', stepNumber: 2, content: '', streaming: true },
+			{
+				id: 'step-9',
+				type: 'tool',
+				toolName: 'shell',
+				stepNumber: 2,
+				content: '',
+				streaming: true,
+			},
 		];
 		const merged = mergeLiveStreaming(db, existing);
 		expect(merged.map((m) => m.id)).toEqual(['m1', 'step-9']);
@@ -752,10 +1265,24 @@ describe('mergeLiveStreaming', () => {
 		// as before — the streaming preference only applies mid-tool.
 		const db = [
 			{ id: 'm1', role: 'user', content: 'hi' },
-			{ id: 'step-9', type: 'tool', toolName: 'shell', stepNumber: 2, content: 'done', streaming: false },
+			{
+				id: 'step-9',
+				type: 'tool',
+				toolName: 'shell',
+				stepNumber: 2,
+				content: 'done',
+				streaming: false,
+			},
 		];
 		const existing = [
-			{ id: 'step-9', type: 'tool', toolName: 'shell', stepNumber: 2, content: 'done', streaming: false },
+			{
+				id: 'step-9',
+				type: 'tool',
+				toolName: 'shell',
+				stepNumber: 2,
+				content: 'done',
+				streaming: false,
+			},
 		];
 		const merged = mergeLiveStreaming(db, existing);
 		expect(merged).toEqual(db);

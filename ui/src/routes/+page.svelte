@@ -46,19 +46,22 @@
 	} from '$lib/events.ts';
 	import {
 		activeConversationStatusStore,
-		addNotification,
+		modelStateStore,
+		updateModelState,
+	} from '$lib/runtimeStateStore.ts';
+	import { addNotification } from '$lib/notificationStore.ts';
+	import {
 		resumeTargetStore,
+		NEW_ACTION_INTENT_KEY,
+		newSessionIntentStore,
+	} from '$lib/sessionIntentStore.ts';
+	import {
 		rememberSessionError,
 		forgetSessionError,
 		getSessionErrorReason,
-		updateModelState,
-		modelStateStore,
-		refreshActions,
-		actionStore,
-		mediaPlanStore,
-		NEW_ACTION_INTENT_KEY,
-		newSessionIntentStore,
-	} from '$lib/stores.ts';
+	} from '$lib/sessionErrorStore.ts';
+	import { refreshActions, actionStore } from '$lib/actionStore.ts';
+	import { mediaPlanStore } from '$lib/mediaPlanStore.ts';
 	import { syncStore } from '$lib/syncStore.ts';
 	import { dragScroll } from '$lib/dragScroll.ts';
 	import {

@@ -8,13 +8,7 @@
 // isBusyStatus() covers dispatcher queue (pending) and claimed run (running).
 
 /** Session statuses only. */
-export const SESSION_STATUSES = [
-	'pending',
-	'running',
-	'paused',
-	'completed',
-	'error',
-] as const;
+export const SESSION_STATUSES = ['pending', 'running', 'paused', 'completed', 'error'] as const;
 
 export type SessionStatus = (typeof SESSION_STATUSES)[number];
 
@@ -70,13 +64,17 @@ export function waitingReasonLabel(reason: unknown): string | null {
 	return isSessionWaitingReason(reason) ? WAITING_REASON_LABELS[reason] : null;
 }
 
-/** Read the normalized field plus the raw command-list spelling at one edge. */
-export function sessionWaitingReason(session: {
-	waitingReason?: unknown;
-	waiting_reason?: unknown;
-} | Record<string, unknown> | null | undefined): SessionWaitingReason | null {
+/** Read the normalized session field. IPC snake_case is mapped at the boundary. */
+export function sessionWaitingReason(
+	session:
+		| {
+				waitingReason?: unknown;
+		  }
+		| null
+		| undefined,
+): SessionWaitingReason | null {
 	if (!session) return null;
-	const value = session.waitingReason ?? session.waiting_reason;
+	const value = session.waitingReason;
 	return isSessionWaitingReason(value) ? value : null;
 }
 

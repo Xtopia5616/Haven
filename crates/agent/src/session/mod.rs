@@ -212,11 +212,6 @@ pub struct SessionSupervisor {
     pub notification_summary_chars: AtomicUsize,
 }
 
-/// Test-only compatibility name kept inside the legacy unit-test module while
-/// production callers use [`SessionSupervisor`] directly.
-#[cfg(test)]
-pub(crate) type SessionExecutor = SessionSupervisor;
-
 mod actor;
 mod dispatcher;
 mod queues;
@@ -403,6 +398,13 @@ impl haven_tools::SessionMailbox for SessionSupervisor {
         Ok(actor.map(|actor| actor.claim_messages()))
     }
 
+    fn try_claim(
+        &self,
+        recipient: &str,
+    ) -> anyhow::Result<Option<Vec<haven_tools::inbox::Envelope>>> {
+        self.claim(recipient)
+    }
+
     fn ack(&self, recipient: &str, ids: &[String]) -> anyhow::Result<Option<()>> {
         let actor = self.actors.blocking_lock().get(recipient).cloned();
         let Some(actor) = actor else {
@@ -464,11 +466,11 @@ mod tests {
         p
     }
 
-    fn make_executor(max_concurrent: usize) -> Arc<SessionExecutor> {
+    fn make_executor(max_concurrent: usize) -> Arc<SessionSupervisor> {
         let path = temp_db_path();
         let db = Arc::new(Database::open(&path).unwrap());
         let tools = Arc::new(ToolsManager::new());
-        let exec = Arc::new(SessionExecutor::new(db, tools, max_concurrent));
+        let exec = Arc::new(SessionSupervisor::new(db, tools, max_concurrent));
         // Best-effort cleanup; failures are ignored since the OS will purge
         // temp files eventually.
         let _ = path;
@@ -521,7 +523,7 @@ mod tests {
         let mut released = false;
         for _ in 0..100 {
             if !exec.is_run_in_flight(&session.id).await
-                && exec.get_session_state(&session.id).await.is_none()
+                && exec.get_active_session_status(&session.id).await.is_none()
             {
                 released = true;
                 break;
@@ -691,7 +693,7 @@ mod tests {
         let claimed = exec.try_claim_pending().await;
         assert_eq!(claimed.as_deref(), Some(session.id.as_str()));
 
-        let state = exec.get_session_state(&session.id).await;
+        let state = exec.get_active_session_status(&session.id).await;
         assert_eq!(state, Some(SessionStatus::Running));
         assert!(exec.is_run_in_flight(&session.id).await);
         let db_status = exec
@@ -727,7 +729,7 @@ mod tests {
         let claimed = exec.try_claim_pending().await;
         assert_eq!(claimed.as_deref(), Some(session.id.as_str()));
         assert_eq!(
-            exec.get_session_state(&session.id).await,
+            exec.get_active_session_status(&session.id).await,
             Some(SessionStatus::Running)
         );
     }
@@ -973,7 +975,7 @@ mod tests {
     async fn messaging_service_routes_full_lifecycle_through_actor_mailboxes() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = Arc::new(SessionExecutor::new(db, tools, 2));
+        let exec = Arc::new(SessionSupervisor::new(db, tools, 2));
         let sender = exec.create_session("sender").await.unwrap();
         let receiver = exec.create_session("receiver").await.unwrap();
         let service = exec.messaging_service();
@@ -1101,7 +1103,7 @@ mod tests {
     async fn constructor_creates_executor() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = SessionExecutor::new(db.clone(), tools.clone(), 3);
+        let exec = SessionSupervisor::new(db.clone(), tools.clone(), 3);
         assert_eq!(exec.running_count().await, 0);
         assert!(exec.list_sessions().await.is_empty());
     }
@@ -1110,7 +1112,7 @@ mod tests {
     async fn create_session_returns_pending_session() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = SessionExecutor::new(db, tools, 3);
+        let exec = SessionSupervisor::new(db, tools, 3);
         let session = exec.create_session("hello world").await.unwrap();
         assert_eq!(session.status, SessionStatus::Pending);
         assert_eq!(session.input, "hello world");
@@ -1122,7 +1124,7 @@ mod tests {
     async fn create_session_with_summary_preserves_fields() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = SessionExecutor::new(db, tools, 3);
+        let exec = SessionSupervisor::new(db, tools, 3);
         let session = exec
             .create_session_with_summary("raw input", "summary text")
             .await
@@ -1135,7 +1137,7 @@ mod tests {
     async fn end_session_running_marks_completed_and_triggers_token() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = Arc::new(SessionExecutor::new(db, tools, 3));
+        let exec = Arc::new(SessionSupervisor::new(db, tools, 3));
         let session = exec.create_session("test").await.unwrap();
         // Set to Running so end_session also cancels the loop token.
         exec.update_session_status(&session.id, SessionStatus::Running)
@@ -1147,7 +1149,7 @@ mod tests {
         assert_eq!(status, SessionStatus::Completed);
         assert!(real_token.is_cancelled());
         // end_session removes the session from the working set entirely.
-        assert_eq!(exec.get_session_state(&session.id).await, None);
+        assert_eq!(exec.get_active_session_status(&session.id).await, None);
     }
 
     #[tokio::test]
@@ -1235,14 +1237,14 @@ mod tests {
         .await
         .expect("terminal cleanup should finish after the run exits");
         assert_eq!(exited.load(Ordering::SeqCst), 1);
-        assert_eq!(exec.get_session_state(&session.id).await, None);
+        assert_eq!(exec.get_active_session_status(&session.id).await, None);
     }
 
     #[tokio::test]
     async fn interrupt_session_pauses_and_cancels_without_removing() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = Arc::new(SessionExecutor::new(db, tools, 3));
+        let exec = Arc::new(SessionSupervisor::new(db, tools, 3));
         let session = exec.create_session("test").await.unwrap();
         exec.update_session_status(&session.id, SessionStatus::Running)
             .await
@@ -1253,7 +1255,7 @@ mod tests {
         assert!(exec.interrupt_session(&session.id).await.unwrap());
         assert!(real_token.is_cancelled());
         assert_eq!(
-            exec.get_session_state(&session.id).await,
+            exec.get_active_session_status(&session.id).await,
             Some(SessionStatus::Paused)
         );
         assert!(exec.get_session(&session.id).await.is_some());
@@ -1331,7 +1333,7 @@ mod tests {
         assert!(paused);
         assert_eq!(exited.load(Ordering::SeqCst), 0);
         assert_eq!(
-            exec.get_session_state(&session.id).await,
+            exec.get_active_session_status(&session.id).await,
             Some(SessionStatus::Paused)
         );
         assert!(exec.is_run_in_flight(&session.id).await);
@@ -1351,7 +1353,7 @@ mod tests {
     async fn end_session_nonexistent_succeeds() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = SessionExecutor::new(db, tools, 3);
+        let exec = SessionSupervisor::new(db, tools, 3);
         // end_session on a nonexistent session updates DB directly.
         let result = exec.end_session("nonexistent").await;
         assert!(result.is_ok());
@@ -1361,7 +1363,7 @@ mod tests {
     async fn end_session_paused_marks_completed() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = SessionExecutor::new(db, tools, 3);
+        let exec = SessionSupervisor::new(db, tools, 3);
         let session = exec.create_session("test").await.unwrap();
         exec.update_session_status(&session.id, SessionStatus::Paused)
             .await
@@ -1374,7 +1376,7 @@ mod tests {
     async fn add_and_get_follow_ups() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = SessionExecutor::new(db, tools, 3);
+        let exec = SessionSupervisor::new(db, tools, 3);
         let session = exec.create_session("test").await.unwrap();
         exec.add_follow_up(&session.id, "extra context 1")
             .await
@@ -1396,7 +1398,7 @@ mod tests {
     async fn answer_supplement_carries_is_answer_flag() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = SessionExecutor::new(db, tools, 3);
+        let exec = SessionSupervisor::new(db, tools, 3);
         let session = exec.create_session("test").await.unwrap();
         exec.add_answer_with_attachments(&session.id, "the answer", &[], None)
             .await
@@ -1415,7 +1417,7 @@ mod tests {
     async fn persisted_interaction_clear_is_fail_closed_on_snapshot_error() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = SessionExecutor::new(db.clone(), tools, 3);
+        let exec = SessionSupervisor::new(db.clone(), tools, 3);
         let session = exec.create_session("test").await.unwrap();
         exec.request_interaction(crate::interaction::InteractionRequest::ask(
             &session.id,
@@ -1463,7 +1465,7 @@ mod tests {
     async fn interaction_persistence_fails_when_react_checkpoint_is_missing() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = SessionExecutor::new(db, tools, 3);
+        let exec = SessionSupervisor::new(db, tools, 3);
         let session = exec.create_session("test").await.unwrap();
         exec.request_interaction(crate::interaction::InteractionRequest::ask(
             &session.id,
@@ -1492,7 +1494,7 @@ mod tests {
     async fn add_and_get_follow_ups_with_attachments() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = SessionExecutor::new(db, tools, 3);
+        let exec = SessionSupervisor::new(db, tools, 3);
         let session = exec.create_session("test").await.unwrap();
         let att = MessageAttachment::new("image/png", "aGVsbG8=");
         exec.add_follow_up_with_attachments(&session.id, "看图", std::slice::from_ref(&att), None)
@@ -1509,7 +1511,7 @@ mod tests {
     async fn add_follow_up_nonexistent_session_errors() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = SessionExecutor::new(db, tools, 3);
+        let exec = SessionSupervisor::new(db, tools, 3);
         let result = exec.add_follow_up("nonexistent", "ctx").await;
         assert!(result.is_err());
     }
@@ -1518,7 +1520,7 @@ mod tests {
     async fn add_and_get_steering() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = SessionExecutor::new(db, tools, 3);
+        let exec = SessionSupervisor::new(db, tools, 3);
         let session = exec.create_session("test").await.unwrap();
         exec.add_steering(&session.id, "steer 1").await.unwrap();
         let drained: Vec<String> = exec
@@ -1534,7 +1536,7 @@ mod tests {
     async fn list_actions_all_present() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = SessionExecutor::new(db, tools, 3);
+        let exec = SessionSupervisor::new(db, tools, 3);
 
         let _low = exec.create_session("low").await.unwrap();
         let _normal = exec.create_session("normal").await.unwrap();
@@ -1545,31 +1547,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn get_session_state_returns_correct_status() {
+    async fn get_active_session_status_returns_correct_status() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = SessionExecutor::new(db, tools, 3);
+        let exec = SessionSupervisor::new(db, tools, 3);
         let session = exec.create_session("test").await.unwrap();
         assert_eq!(
-            exec.get_session_state(&session.id).await,
+            exec.get_active_session_status(&session.id).await,
             Some(SessionStatus::Pending)
         );
     }
 
     #[tokio::test]
-    async fn get_session_state_nonexistent_returns_none() {
+    async fn get_active_session_status_nonexistent_returns_none() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = SessionExecutor::new(db, tools, 3);
+        let exec = SessionSupervisor::new(db, tools, 3);
         // Absent means "not in the working set", NOT Error.
-        assert_eq!(exec.get_session_state("nonexistent").await, None);
+        assert_eq!(exec.get_active_session_status("nonexistent").await, None);
     }
 
     #[tokio::test]
     async fn cancellation_token_returns_default_for_unknown_session() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = SessionExecutor::new(db, tools, 3);
+        let exec = SessionSupervisor::new(db, tools, 3);
         let token = exec.cancellation_token("nonexistent").await;
         assert!(!token.is_cancelled());
     }
@@ -1578,12 +1580,12 @@ mod tests {
     async fn load_pending_actions_reloads_after_restart() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = SessionExecutor::new(db.clone(), tools.clone(), 3);
+        let exec = SessionSupervisor::new(db.clone(), tools.clone(), 3);
         let session = exec.create_session("queued before restart").await.unwrap();
 
         // Simulate a restart: fresh executor over the same DB with an empty
         // working set. The pending session must be reloaded and dispatchable.
-        let exec2 = SessionExecutor::new(db.clone(), tools, 3);
+        let exec2 = SessionSupervisor::new(db.clone(), tools, 3);
         assert!(exec2.list_sessions().await.is_empty());
         let loaded = exec2.load_pending_sessions().await.unwrap();
         assert_eq!(loaded, 1);
@@ -1591,7 +1593,7 @@ mod tests {
         let claimed = exec2.try_claim_pending().await;
         assert_eq!(claimed.as_deref(), Some(session.id.as_str()));
         assert_eq!(
-            exec2.get_session_state(&session.id).await,
+            exec2.get_active_session_status(&session.id).await,
             Some(SessionStatus::Running)
         );
     }
@@ -1600,9 +1602,9 @@ mod tests {
     async fn dispatcher_can_defer_pending_recovery_until_catalog_ready() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = Arc::new(SessionExecutor::new(db.clone(), tools.clone(), 1));
+        let exec = Arc::new(SessionSupervisor::new(db.clone(), tools.clone(), 1));
         let session = exec.create_session("queued before catalog").await.unwrap();
-        let exec2 = Arc::new(SessionExecutor::new(db, tools, 1));
+        let exec2 = Arc::new(SessionSupervisor::new(db, tools, 1));
         let handled = Arc::new(AtomicU32::new(0));
         let handled_by_runner = handled.clone();
         let exec_for_runner = exec2.clone();
@@ -1639,7 +1641,7 @@ mod tests {
         .await
         .expect("deferred recovery should dispatch after loading pending sessions");
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            while exec2.get_session_state(&session.id).await.is_some() {
+            while exec2.get_active_session_status(&session.id).await.is_some() {
                 tokio::task::yield_now().await;
             }
         })
@@ -1651,7 +1653,7 @@ mod tests {
     async fn load_pending_actions_skips_non_pending() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = SessionExecutor::new(db.clone(), tools.clone(), 3);
+        let exec = SessionSupervisor::new(db.clone(), tools.clone(), 3);
         let done = exec.create_session("done").await.unwrap();
         exec.end_session(&done.id).await.unwrap();
         let paused = exec.create_session("paused").await.unwrap();
@@ -1660,7 +1662,7 @@ mod tests {
             .unwrap();
 
         // Restart: only the still-pending session is reloaded.
-        let exec2 = SessionExecutor::new(db, tools, 3);
+        let exec2 = SessionSupervisor::new(db, tools, 3);
         let loaded = exec2.load_pending_sessions().await.unwrap();
         assert_eq!(loaded, 0);
         assert!(exec2.list_sessions().await.is_empty());
@@ -1670,33 +1672,33 @@ mod tests {
     async fn update_session_status_changes_state() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = SessionExecutor::new(db, tools, 3);
+        let exec = SessionSupervisor::new(db, tools, 3);
         let session = exec.create_session("test").await.unwrap();
         exec.update_session_status(&session.id, SessionStatus::Completed)
             .await
             .unwrap();
         // Terminal status removes the session from the in-memory working set.
-        assert_eq!(exec.get_session_state(&session.id).await, None);
+        assert_eq!(exec.get_active_session_status(&session.id).await, None);
     }
 
     #[tokio::test]
     async fn update_session_status_completed_cleans_up() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = Arc::new(SessionExecutor::new(db, tools, 3));
+        let exec = Arc::new(SessionSupervisor::new(db, tools, 3));
         let session = exec.create_session("test").await.unwrap();
         exec.update_session_status(&session.id, SessionStatus::Completed)
             .await
             .unwrap();
         assert!(!exec.is_run_in_flight(&session.id).await);
-        assert!(exec.get_session_state(&session.id).await.is_none());
+        assert!(exec.get_active_session_status(&session.id).await.is_none());
     }
 
     #[tokio::test]
     async fn execute_step_unknown_tool_errors() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = Arc::new(SessionExecutor::new(db, tools, 3));
+        let exec = Arc::new(SessionSupervisor::new(db, tools, 3));
         let session = exec.create_session("test").await.unwrap();
         let result = exec
             .execute_step(
@@ -1714,7 +1716,7 @@ mod tests {
     async fn execute_step_rejects_paused_without_forcing_running() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = SessionExecutor::new(db, tools, 3);
+        let exec = SessionSupervisor::new(db, tools, 3);
         let session = exec.create_session("paused tool").await.unwrap();
         exec.update_session_status(&session.id, SessionStatus::Paused)
             .await
@@ -1731,7 +1733,7 @@ mod tests {
         assert!(result.is_err());
         // Must not have forced memory back to Running.
         assert_eq!(
-            exec.get_session_state(&session.id).await,
+            exec.get_active_session_status(&session.id).await,
             Some(SessionStatus::Paused)
         );
     }
@@ -1740,10 +1742,10 @@ mod tests {
     async fn execute_step_rejects_pending_without_forcing_running() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = SessionExecutor::new(db, tools, 3);
+        let exec = SessionSupervisor::new(db, tools, 3);
         let session = exec.create_session("pending tool").await.unwrap();
         assert_eq!(
-            exec.get_session_state(&session.id).await,
+            exec.get_active_session_status(&session.id).await,
             Some(SessionStatus::Pending)
         );
         let result = exec
@@ -1757,7 +1759,7 @@ mod tests {
             .await;
         assert!(result.is_err());
         assert_eq!(
-            exec.get_session_state(&session.id).await,
+            exec.get_active_session_status(&session.id).await,
             Some(SessionStatus::Pending)
         );
     }
@@ -1766,7 +1768,7 @@ mod tests {
     async fn execute_step_rejects_missing_session_fail_closed() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = SessionExecutor::new(db, tools, 3);
+        let exec = SessionSupervisor::new(db, tools, 3);
         let result = exec
             .execute_step(
                 "ses-deadbeefdeadbeefdeadbeefdeadbeef",
@@ -1788,7 +1790,7 @@ mod tests {
     async fn paused_state_uses_interaction_registry() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = SessionExecutor::new(db, tools, 3);
+        let exec = SessionSupervisor::new(db, tools, 3);
         let session = exec.create_session("ask me").await.unwrap();
 
         exec.update_session_status(&session.id, SessionStatus::Paused)
@@ -1803,7 +1805,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(
-            exec.get_session_state(&session.id).await,
+            exec.get_active_session_status(&session.id).await,
             Some(SessionStatus::Paused)
         );
         let pending = exec
@@ -1817,7 +1819,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            exec.get_session_state(&session.id).await,
+            exec.get_active_session_status(&session.id).await,
             Some(SessionStatus::Pending)
         );
     }
@@ -1826,12 +1828,12 @@ mod tests {
     async fn plain_pause_has_no_interaction() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = SessionExecutor::new(db, tools, 3);
+        let exec = SessionSupervisor::new(db, tools, 3);
         let session = exec.create_session("pause me").await.unwrap();
         exec.update_session_status(&session.id, SessionStatus::Paused)
             .await
             .unwrap();
-        let state = exec.get_session_state(&session.id).await.unwrap();
+        let state = exec.get_active_session_status(&session.id).await.unwrap();
         assert!(state.is_paused());
         assert!(
             exec.pending_interactions(&session.id, crate::interaction::InteractionKind::Ask)
@@ -1845,7 +1847,7 @@ mod tests {
     async fn terminal_actions_need_explicit_reopen_to_reactivate() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = SessionExecutor::new(db, tools, 3);
+        let exec = SessionSupervisor::new(db, tools, 3);
         let session = exec.create_session("t").await.unwrap();
         exec.update_session_status(&session.id, SessionStatus::Completed)
             .await
@@ -1855,7 +1857,7 @@ mod tests {
         exec.update_session_status(&session.id, SessionStatus::Pending)
             .await
             .unwrap();
-        assert_eq!(exec.get_session_state(&session.id).await, None);
+        assert_eq!(exec.get_active_session_status(&session.id).await, None);
         // In-memory resurrection is only possible through the explicit
         // reopen path (Completed → Paused) after ensure_session_loaded.
         exec.ensure_session_loaded(&session.id).await.unwrap();
@@ -1863,7 +1865,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            exec.get_session_state(&session.id).await,
+            exec.get_active_session_status(&session.id).await,
             Some(SessionStatus::Paused)
         );
         // And from Paused the session resumes via the normal Paused → Pending
@@ -1872,7 +1874,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            exec.get_session_state(&session.id).await,
+            exec.get_active_session_status(&session.id).await,
             Some(SessionStatus::Pending)
         );
     }
@@ -1881,7 +1883,7 @@ mod tests {
     async fn status_watch_wakes_waiter_on_transition() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = Arc::new(SessionExecutor::new(db, tools, 3));
+        let exec = Arc::new(SessionSupervisor::new(db, tools, 3));
         let session = exec.create_session("wait").await.unwrap();
         exec.update_session_status(&session.id, SessionStatus::Running)
             .await
@@ -1898,7 +1900,7 @@ mod tests {
         tokio::spawn(async move {
             let mut rx = exec2.subscribe_status(&tid).await;
             let _ = rx.changed().await;
-            let _ = done_tx.send(exec2.get_session_state(&tid).await);
+            let _ = done_tx.send(exec2.get_active_session_status(&tid).await);
         });
 
         // Give the waiter a moment to register, then transition.
@@ -1932,7 +1934,7 @@ mod tests {
 
         assert!(!changed);
         assert_eq!(
-            exec.get_session_state(&session.id).await,
+            exec.get_active_session_status(&session.id).await,
             Some(SessionStatus::Running)
         );
     }
@@ -1941,7 +1943,7 @@ mod tests {
     async fn same_status_pending_still_wakes_dispatcher() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = Arc::new(SessionExecutor::new(db, tools, 3));
+        let exec = Arc::new(SessionSupervisor::new(db, tools, 3));
         let session = exec.create_session("already pending").await.unwrap();
 
         // Re-registering as Pending (as `create_session_with_first_message`
@@ -1999,7 +2001,7 @@ mod tests {
     async fn action_completions_buffered_and_drained() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = SessionExecutor::new(db, tools, 3);
+        let exec = SessionSupervisor::new(db, tools, 3);
         let session = exec.create_session("bg action").await.unwrap();
 
         assert!(exec.drain_action_completions(&session.id).await.is_empty());
@@ -2020,7 +2022,7 @@ mod tests {
     async fn concurrent_steering_ingress_is_bounded_and_never_truncated() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = Arc::new(SessionExecutor::new(db, tools, 3));
+        let exec = Arc::new(SessionSupervisor::new(db, tools, 3));
         let session = exec.create_session("concurrent steering").await.unwrap();
         let mut tasks = tokio::task::JoinSet::new();
         for index in 0..(crate::session::actor::CONTEXT_QUEUE_MAX_ITEMS + 16) {
@@ -2051,7 +2053,7 @@ mod tests {
     async fn drain_react_context_prioritizes_steering_over_follow_ups() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = SessionExecutor::new(db, tools, 3);
+        let exec = SessionSupervisor::new(db, tools, 3);
         let session = exec.create_session("context priority").await.unwrap();
 
         exec.add_follow_up(&session.id, "follow-up").await.unwrap();
@@ -2136,7 +2138,7 @@ mod tests {
     async fn remove_session_clears_action_buffers_and_status_watcher() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = SessionExecutor::new(db, tools, 3);
+        let exec = SessionSupervisor::new(db, tools, 3);
         let session = exec.create_session("cleanup").await.unwrap();
         exec.update_session_status(&session.id, SessionStatus::Paused)
             .await
@@ -2148,7 +2150,7 @@ mod tests {
         let _ = rx; // a subscriber must not keep the session alive after removal
 
         exec.remove_session(&session.id).await.unwrap();
-        assert_eq!(exec.get_session_state(&session.id).await, None);
+        assert_eq!(exec.get_active_session_status(&session.id).await, None);
         assert!(exec.drain_action_completions(&session.id).await.is_empty());
     }
 }

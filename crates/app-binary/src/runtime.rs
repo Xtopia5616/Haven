@@ -178,13 +178,6 @@ impl ApplicationRuntime {
         }
     }
 
-    /// Explicit teardown entry point used by setup-failure and test paths.
-    /// Keeping it as an alias makes the lifecycle boundary discoverable without
-    /// introducing a second cleanup implementation.
-    pub(crate) async fn teardown(&self) {
-        self.shutdown().await;
-    }
-
     /// Bridge the synchronous Tauri exit callback to the async teardown path.
     /// Tauri normally invokes the callback while the app runtime is active;
     /// the fallback also handles a callback delivered from a plain host
@@ -192,9 +185,9 @@ impl ApplicationRuntime {
     pub(crate) fn teardown_blocking(&self) {
         if tokio::runtime::Handle::try_current().is_ok() {
             let handle = self.runtime_handle.clone();
-            tokio::task::block_in_place(|| handle.block_on(self.teardown()));
+            tokio::task::block_in_place(|| handle.block_on(self.shutdown()));
         } else {
-            self.runtime_handle.block_on(self.teardown());
+            self.runtime_handle.block_on(self.shutdown());
         }
     }
 }

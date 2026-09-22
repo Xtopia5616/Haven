@@ -35,6 +35,7 @@ const EVENT_SEQ_HISTORY_LIMIT = 4096;
 export interface SessionSummary {
 	id: string;
 	status: string;
+	waitingReason?: unknown;
 	[key: string]: unknown;
 }
 
@@ -104,22 +105,18 @@ export interface AgentChunkBatchItem {
 	payload: AgentChunkPayload;
 }
 
-/**
- * One serializable state tree for the conversation. The optional runtime
- * fields keep old list-only reducer fixtures source-compatible; the exported
- * application state is always initialized with every field populated.
- */
+/** One serializable state tree for the conversation. */
 export interface SessionReducerState {
 	sessions: SessionSummary[];
 	activeSessionId: string | null;
 	error: SessionError | null;
-	termination?: SessionTermination | null;
-	messages?: Record<string, SessionMessage[]>;
-	interactions?: Record<string, InteractionRequest>;
-	tokenStats?: Record<string, SessionTokenStats>;
-	llmUsage?: Record<string, LlmUsage[]>;
-	replay?: SessionReplayState;
-	optimistic?: Record<string, SessionOptimisticMessage>;
+	termination: SessionTermination | null;
+	messages: Record<string, SessionMessage[]>;
+	interactions: Record<string, InteractionRequest>;
+	tokenStats: Record<string, SessionTokenStats>;
+	llmUsage: Record<string, LlmUsage[]>;
+	replay: SessionReplayState;
+	optimistic: Record<string, SessionOptimisticMessage>;
 }
 
 export interface ResumeUsage {
@@ -204,12 +201,6 @@ export type SessionAction =
 	  }
 	| { type: 'session/interactions-cleared'; sessionId: string; kind?: InteractionKind }
 	| { type: 'session/interaction-resolved'; id: string; response?: unknown }
-	| {
-			type: 'agent/chunk';
-			kind: 'thought' | 'reasoning';
-			msgType?: string;
-			payload: AgentChunkPayload;
-	  }
 	| { type: 'agent/chunks'; chunks: AgentChunkBatchItem[] }
 	| {
 			type: 'agent/thought';
@@ -258,7 +249,7 @@ function cloneSession(session: SessionSummary): SessionSummary {
 }
 
 function messagesOf(state: SessionReducerState, sessionId: string): SessionMessage[] {
-	return state.messages?.[sessionId] || [];
+	return state.messages[sessionId] || [];
 }
 
 function withMessages(
@@ -269,17 +260,11 @@ function withMessages(
 	const current = messagesOf(state, sessionId);
 	const next = fn(current);
 	if (next === current) return state;
-	return { ...state, messages: { ...(state.messages || {}), [sessionId]: next } };
+	return { ...state, messages: { ...state.messages, [sessionId]: next } };
 }
 
 function replayOf(state: SessionReducerState): SessionReplayState {
-	return (
-		state.replay || {
-			eventSeqBySession: {},
-			chunkSeqByMessage: {},
-			blockIdsBySession: {},
-		}
-	);
+	return state.replay;
 }
 
 function streamBlockKey(stepNumber: number, runId: number): string {
@@ -368,10 +353,9 @@ function clearReplayForSession(
 
 /**
  * Apply one frame of stream deltas with one state/message-list copy per
- * session. The single-chunk action remains the public compatibility shape;
- * the frame action avoids copying the complete message array for every token
- * while retaining the same sequence, block registration and arrival-order
- * semantics.
+ * session. The frame action avoids copying the complete message array for
+ * every token while retaining the same sequence, block registration and
+ * arrival-order semantics.
  */
 function applyAgentChunks(
 	state: SessionReducerState,
@@ -391,7 +375,7 @@ function applyAgentChunks(
 	const replay = replayOf(state);
 	const chunkSeqByMessage = { ...replay.chunkSeqByMessage };
 	const blockIdsBySession = { ...replay.blockIdsBySession };
-	const messages = { ...(state.messages || {}) };
+	const messages = { ...state.messages };
 	let replayChanged = false;
 	let messagesChanged = false;
 
@@ -474,7 +458,7 @@ function moveMessages(
 	return {
 		...state,
 		messages: {
-			...(state.messages || {}),
+			...state.messages,
 			[fromSessionId]: remaining,
 			[toSessionId]: [...prepared, ...messagesOf(state, toSessionId)],
 		},
@@ -807,7 +791,7 @@ export function reduceSession(
 			return {
 				...next,
 				optimistic: {
-					...(next.optimistic || {}),
+					...next.optimistic,
 					[action.message.id]: {
 						sessionId: action.sessionId,
 						messageId: action.message.id,
@@ -835,7 +819,7 @@ export function reduceSession(
 					return result;
 				});
 			}
-			const optimistic = { ...(next.optimistic || {}) };
+			const optimistic = { ...next.optimistic };
 			optimistic[action.optimisticId] = {
 				sessionId: action.toSessionId,
 				messageId: action.persistedId || action.optimisticId,
@@ -845,7 +829,7 @@ export function reduceSession(
 		}
 
 		case 'session/messages/rejected': {
-			const optimisticEntry = state.optimistic?.[action.messageId];
+			const optimisticEntry = state.optimistic[action.messageId];
 			let next = withMessages(state, action.sessionId, (messages) =>
 				messages.filter((message) => message.id !== action.messageId),
 			);
@@ -854,7 +838,7 @@ export function reduceSession(
 					messages.filter((message) => message.id !== action.messageId),
 				);
 			}
-			const optimistic = { ...(next.optimistic || {}) };
+			const optimistic = { ...next.optimistic };
 			if (optimistic[action.messageId])
 				optimistic[action.messageId] = {
 					...optimistic[action.messageId],
@@ -868,13 +852,13 @@ export function reduceSession(
 			const cleared: SessionReducerState = {
 				...next,
 				tokenStats: Object.fromEntries(
-					Object.entries(next.tokenStats || {}).filter(([id]) => id !== action.sessionId),
+					Object.entries(next.tokenStats).filter(([id]) => id !== action.sessionId),
 				),
 				llmUsage: Object.fromEntries(
-					Object.entries(next.llmUsage || {}).filter(([id]) => id !== action.sessionId),
+					Object.entries(next.llmUsage).filter(([id]) => id !== action.sessionId),
 				),
 				interactions: Object.fromEntries(
-					Object.entries(next.interactions || {}).filter(
+					Object.entries(next.interactions).filter(
 						([, request]) => request.sessionId !== action.sessionId,
 					),
 				),
@@ -924,7 +908,7 @@ export function reduceSession(
 			} else if (action.llmUsage) {
 				next = {
 					...next,
-					llmUsage: { ...(next.llmUsage || {}), [action.sessionId]: action.llmUsage },
+					llmUsage: { ...next.llmUsage, [action.sessionId]: action.llmUsage },
 				};
 			}
 			return next;
@@ -965,9 +949,7 @@ export function reduceSession(
 		}
 
 		case 'session/background-result': {
-			const sessionIds = action.sessionId
-				? [action.sessionId]
-				: Object.keys(state.messages || {});
+			const sessionIds = action.sessionId ? [action.sessionId] : Object.keys(state.messages);
 			return sessionIds.reduce(
 				(next, sessionId) =>
 					withMessages(next, sessionId, (messages) => {
@@ -991,17 +973,17 @@ export function reduceSession(
 		case 'session/interaction-upserted': {
 			const request = action.request;
 			if (!request.id || !request.sessionId) return state;
-			const previous = state.interactions?.[request.id];
+			const previous = state.interactions[request.id];
 			if (previous && JSON.stringify(previous) === JSON.stringify(request)) return state;
 			return {
 				...state,
-				interactions: { ...(state.interactions || {}), [request.id]: request },
+				interactions: { ...state.interactions, [request.id]: request },
 			};
 		}
 
 		case 'session/interactions-hydrated': {
 			const interactions = Object.fromEntries(
-				Object.entries(state.interactions || {}).filter(
+				Object.entries(state.interactions).filter(
 					([, request]) => request.sessionId !== action.sessionId,
 				),
 			);
@@ -1013,7 +995,7 @@ export function reduceSession(
 			// them (for example, an interaction event raced the SQLite checkpoint).
 			// An incoming row always wins, including a resolved/expired row.
 			const preserveIds = new Set(action.preserveInteractionIds || []);
-			for (const [id, request] of Object.entries(state.interactions || {})) {
+			for (const [id, request] of Object.entries(state.interactions)) {
 				if (
 					preserveIds.has(id) &&
 					request.sessionId === action.sessionId &&
@@ -1029,7 +1011,7 @@ export function reduceSession(
 			return {
 				...state,
 				interactions: Object.fromEntries(
-					Object.entries(state.interactions || {}).filter(
+					Object.entries(state.interactions).filter(
 						([, request]) =>
 							request.sessionId !== action.sessionId ||
 							(!!action.kind && request.kind !== action.kind),
@@ -1038,12 +1020,12 @@ export function reduceSession(
 			};
 
 		case 'session/interaction-resolved': {
-			const request = state.interactions?.[action.id];
+			const request = state.interactions[action.id];
 			if (!request || request.status !== 'pending') return state;
 			return {
 				...state,
 				interactions: {
-					...(state.interactions || {}),
+					...state.interactions,
 					[action.id]: {
 						...request,
 						status: 'resolved',
@@ -1051,10 +1033,6 @@ export function reduceSession(
 					},
 				},
 			};
-		}
-
-		case 'agent/chunk': {
-			return applyAgentChunks(state, [action]);
 		}
 
 		case 'agent/chunks': {
@@ -1226,7 +1204,7 @@ export function reduceSession(
 					? {
 							...state,
 							llmUsage: {
-								...(state.llmUsage || {}),
+								...state.llmUsage,
 								[action.sessionId]: action.llmUsage,
 							},
 						}
@@ -1234,18 +1212,18 @@ export function reduceSession(
 			return {
 				...state,
 				tokenStats: {
-					...(state.tokenStats || {}),
+					...state.tokenStats,
 					[action.sessionId]: restoreTokenStats(action.usage),
 				},
 				llmUsage: action.llmUsage
-					? { ...(state.llmUsage || {}), [action.sessionId]: action.llmUsage }
+					? { ...state.llmUsage, [action.sessionId]: action.llmUsage }
 					: state.llmUsage,
 			};
 
 		case 'session/usage-live': {
 			const tokenStats = action.stats
 				? {
-						...(state.tokenStats || {}),
+						...state.tokenStats,
 						[action.sessionId]: {
 							...action.stats,
 							restored: false,
@@ -1255,9 +1233,9 @@ export function reduceSession(
 				: state.tokenStats;
 			const llmUsage = action.call
 				? {
-						...(state.llmUsage || {}),
+						...state.llmUsage,
 						[action.sessionId]: [
-							...(state.llmUsage?.[action.sessionId] || []),
+							...(state.llmUsage[action.sessionId] || []),
 							action.call,
 						],
 					}
@@ -1266,8 +1244,8 @@ export function reduceSession(
 		}
 
 		case 'session/usage-cleared': {
-			const tokenStats = { ...(state.tokenStats || {}) };
-			const llmUsage = { ...(state.llmUsage || {}) };
+			const tokenStats = { ...state.tokenStats };
+			const llmUsage = { ...state.llmUsage };
 			delete tokenStats[action.sessionId];
 			delete llmUsage[action.sessionId];
 			return { ...state, tokenStats, llmUsage };

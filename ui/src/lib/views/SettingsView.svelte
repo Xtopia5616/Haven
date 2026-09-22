@@ -5,7 +5,7 @@
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import MaterialTabs from '$lib/MaterialTabs.svelte';
-	import { addNotification } from '$lib/stores.ts';
+	import { addNotification } from '$lib/notificationStore.ts';
 	import { formatError } from '$lib/formatError.ts';
 	import { reportError } from '$lib/errorHandling.ts';
 	import { registerSettingsLeaveGuard } from '$lib/settingsGuard.ts';

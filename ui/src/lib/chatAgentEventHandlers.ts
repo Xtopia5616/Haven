@@ -1,4 +1,5 @@
-import { clearToolOutputPreview, setToolOutputPreview, updateModelState } from './stores';
+import { clearToolOutputPreview, setToolOutputPreview } from './toolOutputPreviewStore.ts';
+import { updateModelState } from './runtimeStateStore.ts';
 import type { SessionAction } from './sessionReducer.ts';
 
 export interface ChatAgentEventContext {

@@ -2,7 +2,7 @@
 	import { onMount, onDestroy, tick } from 'svelte';
 	import { fly } from 'svelte/transition';
 	import { cubicOut } from 'svelte/easing';
-	import { notificationStore } from './stores.ts';
+	import { notificationStore } from './notificationStore.ts';
 	import { getStatusColorTokens } from './statusColors.ts';
 	import Icon from './Icon.svelte';
 	// The container stays mounted (empty when idle) and items are only

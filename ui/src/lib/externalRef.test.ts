@@ -1,10 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import {
-	EXT_REF_CLASS,
-	extRefTarget,
-	handleExtRefEvent,
-	looksLikeUrl,
-} from './externalRef.ts';
+import { EXT_REF_CLASS, extRefTarget, handleExtRefEvent, looksLikeUrl } from './externalRef.ts';
 
 vi.mock('$lib/clipboard.ts', () => ({
 	copyText: vi.fn().mockResolvedValue(true),
@@ -14,7 +9,7 @@ vi.mock('$lib/tauri.ts', () => ({
 	invoke: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock('$lib/stores.ts', () => ({
+vi.mock('$lib/notificationStore.ts', () => ({
 	addNotification: vi.fn(),
 }));
 

@@ -59,7 +59,7 @@ async fn run_session_emits_supplement_when_additional_context_queued() {
     assert_eq!(sups.len(), 1, "exactly one supplement event expected");
     assert_eq!(sups[0], "extra: remember path X");
     // With supplements, session pauses instead of completing (conversation mode)
-    let state = executor.get_session_state(&session.id).await;
+    let state = executor.get_active_session_status(&session.id).await;
     assert_eq!(
         state,
         Some(SessionStatus::Paused),
@@ -119,7 +119,7 @@ async fn empty_retry_emits_stream_reset_before_replacement_output() {
 
     assert!(!history.is_empty());
     assert_eq!(
-        executor.get_session_state(&session.id).await,
+        executor.get_active_session_status(&session.id).await,
         Some(SessionStatus::Paused)
     );
     let resets = emitter.resets.lock().unwrap();
@@ -271,6 +271,7 @@ async fn loop_pauses_on_pending_ask_instead_of_heuristic_final() {
         run_budget: None,
         error_partial_message_ids: None,
     };
+    seed_snapshot_events(&agent, &session.id, &snapshot).await;
     agent
         .db
         .save_react_state(&session.id, &serde_json::to_string(&snapshot).unwrap())
@@ -279,7 +280,7 @@ async fn loop_pauses_on_pending_ask_instead_of_heuristic_final() {
     agent.run_session_from_id(&session.id).await.unwrap();
 
     assert_eq!(
-        executor.get_session_state(&session.id).await,
+        executor.get_active_session_status(&session.id).await,
         Some(SessionStatus::Paused),
         "session must pause for the pending question instead of completing"
     );
@@ -328,7 +329,7 @@ async fn budget_exhaustion_pauses_with_notification_and_no_chat_message() {
     agent.run_session_from_id(&session.id).await.unwrap();
 
     assert_eq!(
-        executor.get_session_state(&session.id).await,
+        executor.get_active_session_status(&session.id).await,
         Some(SessionStatus::Paused),
         "budget exhaustion must pause the session as a checkpoint"
     );
@@ -385,7 +386,7 @@ async fn truncated_text_only_response_retried_before_final() {
     agent.run_session_from_id(&session.id).await.unwrap();
 
     assert_eq!(
-        executor.get_session_state(&session.id).await,
+        executor.get_active_session_status(&session.id).await,
         Some(SessionStatus::Paused),
         "turn must end paused after the retried final"
     );
@@ -446,7 +447,7 @@ async fn run_session_executes_tool_then_final_answer() {
     assert!(collector.has_action("echo"));
     assert!(collector.has_observation("echo"));
     assert_eq!(
-        executor.get_session_state(&session.id).await,
+        executor.get_active_session_status(&session.id).await,
         Some(SessionStatus::Paused)
     );
 }
@@ -768,7 +769,7 @@ async fn run_session_injects_mid_turn_steering_before_final_content() {
         "should have re-run after steering injection"
     );
     assert_eq!(
-        executor.get_session_state(&session.id).await,
+        executor.get_active_session_status(&session.id).await,
         Some(SessionStatus::Paused)
     );
 }
@@ -854,7 +855,7 @@ async fn run_session_injects_steering_between_tool_calls() {
         );
     }
     assert_eq!(
-        executor.get_session_state(&session.id).await,
+        executor.get_active_session_status(&session.id).await,
         Some(SessionStatus::Paused)
     );
 }
@@ -913,7 +914,7 @@ async fn run_session_ask_tool_pauses_and_surfaces_question() {
 
     // Session must be paused, awaiting the user's answer.
     assert_eq!(
-        executor.get_session_state(&session.id).await,
+        executor.get_active_session_status(&session.id).await,
         Some(SessionStatus::Paused),
         "ask should pause the session"
     );
@@ -1050,7 +1051,7 @@ async fn run_session_ask_resumes_after_user_answer() {
     let session = executor.create_session("pick a path").await.unwrap();
     agent.run_session_from_id(&session.id).await.unwrap();
     assert_eq!(
-        executor.get_session_state(&session.id).await,
+        executor.get_active_session_status(&session.id).await,
         Some(SessionStatus::Paused),
         "ask should pause"
     );
@@ -1066,7 +1067,7 @@ async fn run_session_ask_resumes_after_user_answer() {
         .unwrap();
     agent.run_session_from_id(&session.id).await.unwrap();
     assert_eq!(
-        executor.get_session_state(&session.id).await,
+        executor.get_active_session_status(&session.id).await,
         Some(SessionStatus::Paused),
         "session should pause again after final answer"
     );
@@ -1147,7 +1148,7 @@ async fn retry_after_ask_answer_error_keeps_single_history() {
     // Turn 1: the ask pauses the session.
     agent.run_session_from_id(&session.id).await.unwrap();
     assert_eq!(
-        executor.get_session_state(&session.id).await,
+        executor.get_active_session_status(&session.id).await,
         Some(SessionStatus::Paused)
     );
 
@@ -1160,12 +1161,12 @@ async fn retry_after_ask_answer_error_keeps_single_history() {
     let _ = agent.run_session_from_id(&session.id).await;
     // The failed run ended in Error; terminal cleanup removed the session
     // from the working set.
-    assert_eq!(executor.get_session_state(&session.id).await, None);
+    assert_eq!(executor.get_active_session_status(&session.id).await, None);
 
     // Turn 3: retry via continue_session ??Pending ??re-run.
     agent.continue_session(&session.id).await.unwrap();
     assert_eq!(
-        executor.get_session_state(&session.id).await,
+        executor.get_active_session_status(&session.id).await,
         Some(SessionStatus::Pending)
     );
     agent.run_session_from_id(&session.id).await.unwrap();
@@ -1273,7 +1274,7 @@ async fn run_session_notify_tool_emits_notification_without_pausing() {
     // continued past the notify step (history has 2 steps) and reached the
     // normal end state (Paused = conversation mode, waiting for follow-up).
     assert_eq!(
-        executor.get_session_state(&session.id).await,
+        executor.get_active_session_status(&session.id).await,
         Some(SessionStatus::Paused)
     );
 }
@@ -1318,7 +1319,7 @@ async fn run_session_multiple_asks_surface_all_questions() {
     let session = executor.create_session("two questions").await.unwrap();
     agent.run_session_from_id(&session.id).await.unwrap();
     assert_eq!(
-        executor.get_session_state(&session.id).await,
+        executor.get_active_session_status(&session.id).await,
         Some(SessionStatus::Paused),
         "ask should pause"
     );
@@ -1349,7 +1350,7 @@ async fn pause_snapshot_and_resume_keep_own_final_answer_in_canonical() {
     // it at the transcript head, out of order.
     let db = temp_db();
     let tools = Arc::new(ToolsManager::new());
-    let executor = Arc::new(SessionExecutor::new(db.clone(), tools, 1));
+    let executor = Arc::new(SessionSupervisor::new(db.clone(), tools, 1));
     let mock = Arc::new(ScriptedMock::new(vec![
         ScriptedResponse::Chunk(StreamChunk {
             text: Some("First answer.".into()),
@@ -1395,7 +1396,7 @@ async fn pause_snapshot_and_resume_keep_own_final_answer_in_canonical() {
 
     agent.run_session_from_id(&session.id).await.unwrap();
     assert_eq!(
-        executor.get_session_state(&session.id).await,
+        executor.get_active_session_status(&session.id).await,
         Some(SessionStatus::Paused)
     );
 
@@ -1523,7 +1524,7 @@ async fn run_session_compaction_retry_on_context_exceeded() {
         "Compaction event should be emitted"
     );
     assert_eq!(
-        executor.get_session_state(&session.id).await,
+        executor.get_active_session_status(&session.id).await,
         Some(SessionStatus::Paused)
     );
 }
@@ -1541,7 +1542,7 @@ async fn run_session_context_exceeded_compaction_fails() {
     let result = agent.run_session_from_id(&session.id).await;
     assert!(result.is_err(), "should error when compaction fails");
     // Terminal cleanup removed the session from the working set.
-    assert_eq!(executor.get_session_state(&session.id).await, None);
+    assert_eq!(executor.get_active_session_status(&session.id).await, None);
 }
 
 #[tokio::test]
@@ -1593,6 +1594,7 @@ async fn continue_session_resumes_errored_session() {
         )
         .unwrap();
     snapshot.error_partial_message_ids = Some(vec![partial.id]);
+    seed_snapshot_events(&agent, &session.id, &snapshot).await;
     agent
         .db
         .save_react_state(&session.id, &serde_json::to_string(&snapshot).unwrap())
@@ -1600,7 +1602,7 @@ async fn continue_session_resumes_errored_session() {
 
     agent.continue_session(&session.id).await.unwrap();
     assert_eq!(
-        executor.get_session_state(&session.id).await,
+        executor.get_active_session_status(&session.id).await,
         Some(SessionStatus::Pending)
     );
     // The explicitly marked partial output should have been deleted.
@@ -1671,6 +1673,7 @@ async fn continue_session_preserves_history_without_an_error_partial_marker() {
         interactions: Vec::new(),
         run_budget: None,
     };
+    seed_snapshot_events(&agent, &session.id, &snapshot).await;
     agent
         .db
         .save_react_state(&session.id, &serde_json::to_string(&snapshot).unwrap())
@@ -1730,7 +1733,7 @@ async fn pause_snapshot_includes_run_budget() {
     let session = executor.create_session("budget on pause").await.unwrap();
     agent.run_session_from_id(&session.id).await.unwrap();
     assert_eq!(
-        executor.get_session_state(&session.id).await,
+        executor.get_active_session_status(&session.id).await,
         Some(SessionStatus::Paused)
     );
     let snap =

@@ -1,5 +1,5 @@
 <script>
-	import { addNotification } from '$lib/stores.ts';
+	import { addNotification } from '$lib/notificationStore.ts';
 	import MaterialCard from '$lib/MaterialCard.svelte';
 	import MaterialNumberField from '$lib/MaterialNumberField.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
@@ -61,7 +61,9 @@
 	}
 	/** @param {any} model */
 	function removeModel(model) {
-		llmConfig.models = (llmConfig.models || []).filter((/** @type {any} */ item) => item !== model);
+		llmConfig.models = (llmConfig.models || []).filter(
+			(/** @type {any} */ item) => item !== model,
+		);
 		for (const policy of llmConfig.request_policies || []) {
 			if (policy.primary === model.id) policy.primary = '';
 		}
@@ -103,7 +105,10 @@
 	};
 	function addPolicy() {
 		const request = requestPolicyOptions.find(
-			(item) => !(llmConfig.request_policies || []).some((/** @type {any} */ policy) => policy.request === item.value),
+			(item) =>
+				!(llmConfig.request_policies || []).some(
+					(/** @type {any} */ policy) => policy.request === item.value,
+				),
 		)?.value;
 		if (!request) return;
 		llmConfig.request_policies.push({ request, primary: '' });
@@ -112,7 +117,8 @@
 	function setPolicyRequest(policy, request) {
 		if (
 			(llmConfig.request_policies || []).some(
-				(/** @type {any} */ candidate) => candidate !== policy && candidate.request === request,
+				(/** @type {any} */ candidate) =>
+					candidate !== policy && candidate.request === request,
 			)
 		) {
 			addNotification('每种 RequestKind 只能有一条策略', 'error', 3000);
@@ -123,7 +129,9 @@
 	}
 	/** @param {any} policy */
 	function removePolicy(policy) {
-		llmConfig.request_policies = (llmConfig.request_policies || []).filter((/** @type {any} */ item) => item !== policy);
+		llmConfig.request_policies = (llmConfig.request_policies || []).filter(
+			(/** @type {any} */ item) => item !== policy,
+		);
 	}
 	/** @param {any} model */
 	function modelLabel(model) {
@@ -391,10 +399,15 @@
 		<div class="card-list model-list">
 			{#each llmConfig.models || [] as model, index (model.id)}
 				{@render modelPicker(ensureModelShape(model), index)}
-			{:else}<p class="provider-note">尚未配置模型。先添加一个模型，再为请求策略选择 capability。</p>{/each}
+			{:else}<p class="provider-note">
+					尚未配置模型。先添加一个模型，再为请求策略选择 capability。
+				</p>{/each}
 		</div>
 		<div class="model-group">Request policies</div>
-		<p class="model-hint">请求策略为每种请求声明所需能力与唯一模型；不再通过专用 slot 或布尔开关决定 STT/视觉路由。</p>
+		<p class="model-hint">
+			请求策略为每种请求声明所需能力与唯一模型；不再通过专用 slot 或布尔开关决定
+			STT/视觉路由。
+		</p>
 		<div class="card-list policy-list">
 			{#each llmConfig.request_policies || [] as policy (policy.request)}
 				<MaterialCard variant="outlined" className="settings-card policy-card">
@@ -416,7 +429,11 @@
 							onChange={withStringValue((value) => (policy.primary = value))}
 						/>
 					</div>
-					<MaterialButton variant="text" label="移除" onclick={() => removePolicy(policy)} />
+					<MaterialButton
+						variant="text"
+						label="移除"
+						onclick={() => removePolicy(policy)}
+					/>
 				</MaterialCard>
 			{/each}
 			<div class="section-actions">
@@ -427,129 +444,132 @@
 			Context / 成本优先用 Provider
 			返回的元数据；均未填写时上下文回退到「限制」页的默认上下文窗口，成本按 0（不显示）。
 		</p>
-</SettingsSection>
+	</SettingsSection>
 {/if}
 
 {#snippet modelPicker(model = /** @type {any} */ (null), index = 0)}
-		<MaterialCard variant="outlined" className="settings-card">
-			<div class="picker-card">
-				<div class="model-field model-role">
-					<span class="field-label">Model {index + 1}</span>
-					<div class="role-hint">{model.id} · {isAssigned(model) ? model.model : '未配置'}</div>
+	<MaterialCard variant="outlined" className="settings-card">
+		<div class="picker-card">
+			<div class="model-field model-role">
+				<span class="field-label">Model {index + 1}</span>
+				<div class="role-hint">
+					{model.id} · {isAssigned(model) ? model.model : '未配置'}
+				</div>
+				<input
+					class="model-id"
+					value={model.id}
+					onchange={(event) => renameModel(model, event.currentTarget.value)}
+				/>
+			</div>
+			<div class="model-field">
+				<span class="field-label">Provider</span><MaterialSelect
+					id="model-{index}-provider"
+					value={model.provider}
+					options={providerOptions()}
+					onChange={withStringValue((v) => setModelProvider(model, v))}
+				/>
+			</div>
+			<div class="model-field">
+				<span class="field-label">Model</span>{#if model.provider}<MaterialAutocomplete
+						id="model-{index}-name"
+						value={model.model}
+						options={modelOptions(model.provider)}
+						placeholder={model.model ? model.model : '从获取的模型列表中选择或输入'}
+						loading={modelLoading(model.provider)}
+						onChange={withStringValue((v) => setModel(model, v))}
+						onFocus={() => {
+							if (!modelsByProvider[model.provider]?.length)
+								discovery.refreshProviderModels(model.provider);
+						}}
+					/>{:else}<span class="provider-note">先选择 Provider</span>{/if}
+			</div>
+		</div>
+		<div class="capability-list">
+			<span class="field-label">Capabilities</span>
+			{#each capabilityOptions as capability}
+				<label class="capability-option">
 					<input
-						class="model-id"
-						value={model.id}
-						onchange={(event) => renameModel(model, event.currentTarget.value)}
-					/>
-				</div>
-				<div class="model-field">
-					<span class="field-label">Provider</span><MaterialSelect
-						id="model-{index}-provider"
-						value={model.provider}
-						options={providerOptions()}
-						onChange={withStringValue((v) => setModelProvider(model, v))}
-					/>
-				</div>
-				<div class="model-field">
-					<span class="field-label">Model</span>{#if model.provider}<MaterialAutocomplete
-							id="model-{index}-name"
-							value={model.model}
-							options={modelOptions(model.provider)}
-							placeholder={model.model ? model.model : '从获取的模型列表中选择或输入'}
-							loading={modelLoading(model.provider)}
-							onChange={withStringValue((v) => setModel(model, v))}
-							onFocus={() => {
-								if (!modelsByProvider[model.provider]?.length)
-									discovery.refreshProviderModels(model.provider);
-							}}
-						/>{:else}<span class="provider-note">先选择 Provider</span>{/if}
-				</div>
+						type="checkbox"
+						checked={(model.capabilities || []).includes(capability.value)}
+						onchange={(event) =>
+							setCapability(model, capability.value, event.currentTarget.checked)}
+					/>{capability.label}
+				</label>
+			{/each}
+		</div>
+		<div class="model-row overrides-row">
+			<div class="model-field">
+				<span class="field-label">Temp（可选）</span><MaterialNumberField
+					id="model-{index}-temp"
+					value={model.temperature ?? 0.7}
+					step={0.1}
+					min={0}
+					max={2}
+					onChange={withNumberValue((v) => {
+						model.temperature = v;
+					})}
+				/>
 			</div>
-			<div class="capability-list">
-				<span class="field-label">Capabilities</span>
-				{#each capabilityOptions as capability}
-					<label class="capability-option">
-						<input
-							type="checkbox"
-							checked={(model.capabilities || []).includes(capability.value)}
-							onchange={(event) => setCapability(model, capability.value, event.currentTarget.checked)}
-						/>{capability.label}
-					</label>
-				{/each}
+			<div class="model-field">
+				<span class="field-label">Context K（可选）</span><MaterialNumberField
+					id="model-{index}-context-window"
+					value={model.context_window != null && model.context_window > 0
+						? Math.round(model.context_window / 1000)
+						: 0}
+					step={1}
+					min={0}
+					onChange={withNumberValue((v) => {
+						model.context_window = v > 0 ? Math.round(v * 1000) : null;
+					})}
+				/>
 			</div>
-			<div class="model-row overrides-row">
-				<div class="model-field">
-					<span class="field-label">Temp（可选）</span><MaterialNumberField
-						id="model-{index}-temp"
-						value={model.temperature ?? 0.7}
-						step={0.1}
-						min={0}
-						max={2}
-						onChange={withNumberValue((v) => {
-							model.temperature = v;
-						})}
-					/>
-				</div>
-				<div class="model-field">
-					<span class="field-label">Context K（可选）</span><MaterialNumberField
-						id="model-{index}-context-window"
-						value={model.context_window != null && model.context_window > 0
-							? Math.round(model.context_window / 1000)
-							: 0}
-						step={1}
-						min={0}
-						onChange={withNumberValue((v) => {
-							model.context_window = v > 0 ? Math.round(v * 1000) : null;
-						})}
-					/>
-				</div>
-				<div class="model-field">
-					<span class="field-label">Cost $/1K in（可选）</span><MaterialNumberField
-						id="model-{index}-cost-in"
-						value={model.cost_per_1k_input_tokens ?? 0}
-						step={0.01}
-						min={0}
-						onChange={withNumberValue((v) => {
-							model.cost_per_1k_input_tokens = v;
-						})}
-					/>
-				</div>
-				<div class="model-field">
-					<span class="field-label">Cost $/1K out（可选）</span><MaterialNumberField
-						id="model-{index}-cost-out"
-						value={model.cost_per_1k_output_tokens ?? 0}
-						step={0.01}
-						min={0}
-						onChange={withNumberValue((v) => {
-							model.cost_per_1k_output_tokens = v;
-						})}
-					/>
-				</div>
-				<div class="model-field">
-					<span class="field-label">Cache read $/1K（可选）</span><MaterialNumberField
-						id="model-{index}-cost-cache-read"
-						value={model.cost_per_1k_cache_read_tokens ?? 0}
-						step={0.01}
-						min={0}
-						onChange={withNumberValue((v) => {
-							model.cost_per_1k_cache_read_tokens = v;
-						})}
-					/>
-				</div>
-				<div class="model-field">
-					<span class="field-label">Cache write $/1K（可选）</span><MaterialNumberField
-						id="model-{index}-cost-cache-write"
-						value={model.cost_per_1k_cache_write_tokens ?? 0}
-						step={0.01}
-						min={0}
-						onChange={withNumberValue((v) => {
-							model.cost_per_1k_cache_write_tokens = v;
-						})}
-					/>
-				</div>
+			<div class="model-field">
+				<span class="field-label">Cost $/1K in（可选）</span><MaterialNumberField
+					id="model-{index}-cost-in"
+					value={model.cost_per_1k_input_tokens ?? 0}
+					step={0.01}
+					min={0}
+					onChange={withNumberValue((v) => {
+						model.cost_per_1k_input_tokens = v;
+					})}
+				/>
 			</div>
-		</MaterialCard>
-		<MaterialButton variant="text" label="移除模型" onclick={() => removeModel(model)} />
+			<div class="model-field">
+				<span class="field-label">Cost $/1K out（可选）</span><MaterialNumberField
+					id="model-{index}-cost-out"
+					value={model.cost_per_1k_output_tokens ?? 0}
+					step={0.01}
+					min={0}
+					onChange={withNumberValue((v) => {
+						model.cost_per_1k_output_tokens = v;
+					})}
+				/>
+			</div>
+			<div class="model-field">
+				<span class="field-label">Cache read $/1K（可选）</span><MaterialNumberField
+					id="model-{index}-cost-cache-read"
+					value={model.cost_per_1k_cache_read_tokens ?? 0}
+					step={0.01}
+					min={0}
+					onChange={withNumberValue((v) => {
+						model.cost_per_1k_cache_read_tokens = v;
+					})}
+				/>
+			</div>
+			<div class="model-field">
+				<span class="field-label">Cache write $/1K（可选）</span><MaterialNumberField
+					id="model-{index}-cost-cache-write"
+					value={model.cost_per_1k_cache_write_tokens ?? 0}
+					step={0.01}
+					min={0}
+					onChange={withNumberValue((v) => {
+						model.cost_per_1k_cache_write_tokens = v;
+					})}
+				/>
+			</div>
+		</div>
+	</MaterialCard>
+	<MaterialButton variant="text" label="移除模型" onclick={() => removeModel(model)} />
 {/snippet}
 
 <ProviderDialog

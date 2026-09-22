@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { get } from 'svelte/store';
-import { modelStateStore, newSessionIntentStore } from './stores.ts';
+import { modelStateStore } from './runtimeStateStore.ts';
+import { newSessionIntentStore } from './sessionIntentStore.ts';
 import { SessionReducer } from './sessionReducer.ts';
 
 vi.mock('./tauri.ts', () => ({

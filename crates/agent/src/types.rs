@@ -143,9 +143,8 @@ pub struct RunBudget {
 /// Number of transcript records retained in a serialized snapshot cache.
 ///
 /// The durable event stream is unbounded and lives in `session_events`. A
-/// small tail is useful for diagnostics and for importing the tiny number of
-/// pre-event-store snapshots that were written by tests, but it must never be
-/// mistaken for a resumable transcript.
+/// small tail is useful for diagnostics, but it must never be mistaken for a
+/// resumable transcript.
 pub const SNAPSHOT_EVENT_TAIL_LIMIT: usize = 32;
 
 /// Serializable snapshot of the ReAct loop state for pause/resume.
@@ -205,14 +204,9 @@ struct ReActSnapshotWire<'a> {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ReActSnapshotWireOwned {
-    /// Accepted only to import snapshots written before the event-store
-    /// cutover. It is never emitted by the current serializer.
-    #[serde(default)]
-    events: Vec<TranscriptRecord>,
     #[serde(default)]
     event_tail: Vec<TranscriptRecord>,
-    #[serde(default)]
-    event_cursor: Option<usize>,
+    event_cursor: usize,
     step_number: u32,
     #[serde(default)]
     branch_points: HashMap<u32, BranchPoint>,
@@ -253,18 +247,9 @@ impl<'de> Deserialize<'de> for ReActSnapshot {
         D: serde::Deserializer<'de>,
     {
         let wire = ReActSnapshotWireOwned::deserialize(deserializer)?;
-        // `events` is the pre-cutover shape; `event_tail` is the bounded
-        // current cache. Prefer the former only when importing that legacy
-        // shape, otherwise expose the tail through the same in-memory API.
-        let events = if wire.events.is_empty() {
-            wire.event_tail
-        } else {
-            wire.events
-        };
-        let event_cursor = wire.event_cursor.unwrap_or(events.len());
         Ok(Self {
-            events,
-            event_cursor,
+            events: wire.event_tail,
+            event_cursor: wire.event_cursor,
             step_number: wire.step_number,
             branch_points: wire.branch_points,
             last_ingress_seq: wire.last_ingress_seq,
@@ -281,11 +266,8 @@ impl ReActSnapshot {
     }
     /// Parse the current snapshot-cache shape.
     ///
-    /// The deserializer still accepts the old full-`events` shape so a session
-    /// with no `session_events` rows can be imported exactly once. Current
-    /// snapshots expose only a bounded tail through the same in-memory field;
-    /// callers must reject it as a recovery source when `event_cursor` is
-    /// larger than `events.len()`.
+    /// Parse the current bounded snapshot-cache shape. The durable event
+    /// stream remains the only source for a resumable transcript.
     pub fn from_json(json: &str) -> anyhow::Result<Self> {
         let snapshot: Self = serde_json::from_str(json)
             .map_err(|e| anyhow::anyhow!("corrupt or incompatible react_state: {e}"))?;

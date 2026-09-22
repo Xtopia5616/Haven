@@ -1,19 +1,21 @@
 <script>
 	import '../app.css';
 	import {
-		addNotification,
 		recordingOverlay,
 		modelStateStore,
 		activeConversationStatusStore,
 		updateModelState,
 		clearModelStateTimer,
+	} from '$lib/runtimeStateStore.ts';
+	import { addNotification } from '$lib/notificationStore.ts';
+	import {
 		upsertAction,
 		removeAction,
 		refreshActions,
 		actionStore,
 		cancelAction,
-		resumeTargetStore,
-	} from '$lib/stores.ts';
+	} from '$lib/actionStore.ts';
+	import { resumeTargetStore } from '$lib/sessionIntentStore.ts';
 	import {
 		appSessionReducer,
 		backgroundActionResultContent,
@@ -200,6 +202,7 @@
 	let theme = $state(themeStore.currentTheme);
 	$effect(() => syncStore(themeStore, (v) => (theme = v.theme)));
 
+	/** @type {import('$lib/runtimeStateStore.ts').RecordingOverlayState} */
 	let overlay = $state({
 		visible: false,
 		isRecording: false,

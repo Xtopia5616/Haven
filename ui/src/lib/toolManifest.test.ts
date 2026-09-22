@@ -13,9 +13,51 @@ import {
 
 function manifest(stableName: string, root: string, renderer: string) {
 	return {
-		manifest: {
-			identity: { stable_name: stableName, root },
-			presentation: { label: stableName, renderer, icon: 'tools' },
+		identity: {
+			source: 'builtin',
+			catalog_group: 'system',
+			root,
+			operation: stableName.includes('.') ? stableName.split('.').at(-1) : null,
+			stable_name: stableName,
+		},
+		model: {
+			name: stableName,
+			description: `${stableName} description`,
+			input_schema: { type: 'object' },
+		},
+		policy: {
+			risk_level: 'safe',
+			permission_key: stableName,
+			confirmation: 'none',
+			idempotency: 'idempotent',
+			scope: 'session',
+			concurrency: 'read_only',
+			effect: 'read_only',
+			data_sensitivity: 'none',
+			network_access: 'none',
+		},
+		presentation: {
+			label: stableName,
+			renderer,
+			icon: 'tools',
+			represented_source: 'builtin',
+		},
+		root_presentation: {
+			label: root,
+			description: `${root} capabilities`,
+			icon: 'tools',
+		},
+		prompt: {
+			when_to_use: `Use ${stableName}`,
+			when_not_to_use: 'Never',
+			key_operations: [stableName],
+		},
+		availability: {
+			enabled: true,
+			available: true,
+			availability_reason: null,
+			requires_connection: false,
+			requires_permission: false,
 		},
 	};
 }
@@ -42,6 +84,9 @@ describe('tool manifest snapshots', () => {
 				idempotency: 'idempotent',
 				scope: 'session',
 				concurrency: 'read_only',
+				effect: 'read_only',
+				data_sensitivity: 'none',
+				network_access: 'none',
 			},
 			presentation: {
 				label: '读取文件',
@@ -49,7 +94,12 @@ describe('tool manifest snapshots', () => {
 				icon: 'file',
 				represented_source: 'builtin',
 			},
-			prompt: { when_to_use: 'read', when_not_to_use: 'write', key_operations: ['files.read'] },
+			root_presentation: { label: '文件', description: '文件操作', icon: 'file' },
+			prompt: {
+				when_to_use: 'read',
+				when_not_to_use: 'write',
+				key_operations: ['files.read'],
+			},
 			availability: {
 				enabled: true,
 				available: true,
@@ -89,7 +139,7 @@ describe('tool manifest snapshots', () => {
 		expect(getToolManifest('files.read')).toBeNull();
 	});
 
-	it('keeps legacy top-level catalog fields while normalizing partial manifests', () => {
+	it('rejects wrapper and partial manifest payloads', () => {
 		setToolManifests([
 			{
 				name: 'files.read',
@@ -102,8 +152,8 @@ describe('tool manifest snapshots', () => {
 				risk_level: 'high',
 			},
 		]);
-		expect(getToolManifest('files.read')?.identity.catalogGroup).toBe('system');
-		expect(getToolManifest('shell')?.identity.catalogGroup).toBe('system');
+		expect(getToolManifest('files.read')).toBeNull();
+		expect(getToolManifest('shell')).toBeNull();
 	});
 });
 

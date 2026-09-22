@@ -7,7 +7,7 @@
 use tracing::Instrument;
 
 use super::{PauseReason, StepCtx, *};
-use crate::types::{BranchPoint, ReActSnapshot, SNAPSHOT_EVENT_TAIL_LIMIT, TranscriptRecord};
+use crate::types::{BranchPoint, SNAPSHOT_EVENT_TAIL_LIMIT, TranscriptRecord};
 use haven_memory::{RecoveryPersistenceStatus, SessionEventInput};
 
 /// The durable event-derived session state used by resume and rollback.
@@ -192,9 +192,9 @@ const BUDGET_EXHAUSTED_BODY: &str = "本轮运行的步骤上限已用完，任�
 
 impl ReActEngine {
     /// Load the active transcript and branch metadata from the durable event
-    /// stream in one blocking read. `None` means the session has not crossed
-    /// the event-store cutover yet; once any control or transcript event
-    /// exists, the snapshot cache is never consulted for transcript state.
+    /// stream in one blocking read. `None` means that no durable event log
+    /// exists; once any control or transcript event exists, the snapshot
+    /// cache is never consulted for transcript state.
     pub(crate) async fn load_durable_event_state(
         &self,
         session_id: &str,
@@ -296,9 +296,9 @@ impl ReActEngine {
             .await
     }
 
-    /// Import a valid snapshot cache only when no durable events exist. This
-    /// is a one-way cutover helper; once the event table has one row, the
-    /// snapshot can never overwrite it.
+    /// Seed the durable event log for a fresh session before the first model
+    /// request. Resume never calls this helper: an existing checkpoint must
+    /// already have a durable event log or it requires a reset.
     pub(crate) async fn seed_transcript_events(
         &self,
         session_id: &str,
@@ -312,55 +312,6 @@ impl ReActEngine {
             .iter()
             .map(|event| Self::transcript_event_input(event, run_id))
             .collect::<anyhow::Result<Vec<_>>>()?;
-        let store = self.event_store.clone();
-        let session_id = session_id.to_string();
-        self.db
-            .run_blocking(move |_| {
-                store.seed_if_empty(&session_id, &inputs)?;
-                Ok(())
-            })
-            .await
-    }
-
-    /// Import a legacy snapshot exactly once, including its branch metadata.
-    /// Transcript rows are appended before branch markers; their cursors are
-    /// indexes into that transcript and therefore remain valid regardless of
-    /// the control-event ordering used for the one-time import.
-    pub(crate) async fn seed_snapshot_events(
-        &self,
-        session_id: &str,
-        snapshot: &ReActSnapshot,
-        run_id: u64,
-    ) -> anyhow::Result<()> {
-        anyhow::ensure!(
-            snapshot.event_cursor <= snapshot.events.len(),
-            "react_state contains only a bounded event tail (cursor {}, cached {}); durable session_events are required",
-            snapshot.event_cursor,
-            snapshot.events.len()
-        );
-        if snapshot.events.is_empty() && snapshot.branch_points.is_empty() {
-            return Ok(());
-        }
-        let mut inputs = snapshot
-            .events
-            .iter()
-            .map(|event| Self::transcript_event_input(event, run_id))
-            .collect::<anyhow::Result<Vec<_>>>()?;
-        let mut branch_points = snapshot.branch_points.iter().collect::<Vec<_>>();
-        branch_points.sort_by_key(|(step_number, _)| **step_number);
-        inputs.extend(branch_points.into_iter().map(|(_, branch)| {
-            let payload = serde_json::json!({
-                "event_cursor": branch.event_cursor,
-                "step_number": branch.step_number,
-                "last_msg_at": branch.last_msg_at,
-            });
-            SessionEventInput {
-                event_type: haven_memory::BRANCH_POINT_EVENT_TYPE.into(),
-                payload: payload.to_string(),
-                run_id: Some(run_id),
-                step_number: Some(branch.step_number),
-            }
-        }));
         let store = self.event_store.clone();
         let session_id = session_id.to_string();
         self.db
@@ -562,7 +513,9 @@ impl ReActEngine {
             };
             // A synchronous resolve may have already woken a confirm batch.
             // Do not overwrite that Pending transition with a stale pause.
-            if self.executor.get_session_state(session_id).await != Some(SessionStatus::Pending) {
+            if self.executor.get_active_session_status(session_id).await
+                != Some(SessionStatus::Pending)
+            {
                 set_status_and_emit_with_waiting_reason(
                     &self.executor,
                     emitter,

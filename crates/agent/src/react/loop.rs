@@ -157,7 +157,7 @@ impl ReActEngine {
         // assertion catches accidental direct invocation that skips the
         // lifecycle boundary without adding a second promotion path here.
         debug_assert_ne!(
-            self.executor.get_session_state(session_id).await,
+            self.executor.get_active_session_status(session_id).await,
             Some(SessionStatus::Pending),
             "Pending -> Running must happen before run_react_loop"
         );
@@ -322,7 +322,7 @@ impl ReActEngine {
         emitter: &Arc<dyn AgentEventEmitter>,
         run_id: u64,
     ) -> RunBoundary {
-        match self.executor.get_session_state(session_id).await {
+        match self.executor.get_active_session_status(session_id).await {
             None | Some(SessionStatus::Completed) => RunBoundary::Exit(
                 self.exit_with_snapshot(session_id, state, step_num, LoopExit::Completed)
                     .await,

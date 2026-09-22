@@ -12,6 +12,40 @@ vi.mock('$lib/events.ts', () => ({
 	registerOne: vi.fn(async () => ({ dispose: vi.fn() })),
 }));
 
+function manifest(name: string, root: string, label: string, enabled = true) {
+	return {
+		identity: {
+			source: 'builtin',
+			catalog_group: 'system',
+			root,
+			operation: name.includes('.') ? name.split('.').at(-1) : null,
+			stable_name: name,
+		},
+		model: { name, description: `${name} description`, input_schema: { type: 'object' } },
+		policy: {
+			risk_level: 'safe',
+			permission_key: name,
+			confirmation: 'none',
+			idempotency: 'idempotent',
+			scope: 'session',
+			concurrency: 'read_only',
+			effect: 'read_only',
+			data_sensitivity: 'none',
+			network_access: 'none',
+		},
+		presentation: { label, renderer: root, icon: 'tools', represented_source: 'builtin' },
+		root_presentation: { label: root, description: `${root} capabilities`, icon: 'tools' },
+		prompt: { when_to_use: 'use', when_not_to_use: 'never', key_operations: [name] },
+		availability: {
+			enabled,
+			available: true,
+			availability_reason: null,
+			requires_connection: false,
+			requires_permission: false,
+		},
+	};
+}
+
 describe('ToolsView toolbar actions', () => {
 	beforeEach(() => {
 		invoke.mockImplementation(async (command: string) => {
@@ -57,10 +91,7 @@ describe('ToolsView toolbar actions', () => {
 		invoke.mockImplementation(async (command: string) => {
 			if (command === 'get_tools') {
 				return {
-					tools: [
-						{ name: 'files', description: '', risk_level: 'safe', catalog_group: 'system', input_schema: {} },
-						{ name: 'shell', description: '', risk_level: 'high', catalog_group: 'system', input_schema: {} },
-					],
+					tools: [manifest('files', 'files', '文件'), manifest('shell', 'shell', '终端')],
 				};
 			}
 			if (command === 'list_mcp_tools') {
@@ -94,30 +125,9 @@ describe('ToolsView toolbar actions', () => {
 			if (command === 'get_tools') {
 				return {
 					tools: [
-						{
-							name: 'files.read',
-							description: 'Read a file',
-							risk_level: 'low',
-							catalog_group: 'system',
-							input_schema: { type: 'object' },
-							manifest: { presentation: { label: '读取文件' } },
-						},
-						{
-							name: 'files.search',
-							description: 'Search files',
-							risk_level: 'medium',
-							catalog_group: 'system',
-							input_schema: { type: 'object' },
-							enabled: false,
-							manifest: { presentation: { label: '搜索文件' } },
-						},
-						{
-							name: 'shell',
-							description: 'Run a command',
-							risk_level: 'high',
-							catalog_group: 'system',
-							input_schema: { type: 'object' },
-						},
+						manifest('files.read', 'files', '读取文件'),
+						manifest('files.search', 'files', '搜索文件', false),
+						manifest('shell', 'shell', '终端'),
 					],
 				};
 			}

@@ -1,4 +1,4 @@
-import { addNotification, NOTIFICATION_DURATIONS } from './stores.ts';
+import { addNotification, NOTIFICATION_DURATIONS } from './notificationStore.ts';
 import { formatError } from './formatError.ts';
 import logger from './logger.ts';
 

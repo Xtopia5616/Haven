@@ -22,57 +22,6 @@ fn managed_test_image() -> (haven_common::types::MessageAttachment, std::path::P
 }
 
 #[tokio::test]
-async fn snapshot_import_replays_transcript_and_branch_events_together() {
-    let (agent, executor) = make_test_agent();
-    let session = executor.create_session("mixed snapshot").await.unwrap();
-    let mut branch_points = HashMap::new();
-    branch_points.insert(
-        7,
-        BranchPoint {
-            event_cursor: 1,
-            step_number: 7,
-            last_msg_at: Some("2026-01-01T00:00:00.000Z".into()),
-        },
-    );
-    let snapshot = ReActSnapshot {
-        events: seed_events_from_canonical(vec![CanonicalMessage::user_text("cached")]),
-        event_cursor: 0,
-        step_number: 7,
-        branch_points,
-        last_ingress_seq: 0,
-        interactions: Vec::new(),
-        run_budget: None,
-        error_partial_message_ids: None,
-    };
-
-    agent
-        .react_engine
-        .seed_snapshot_events(&session.id, &snapshot, 3)
-        .await
-        .unwrap();
-    let durable = agent
-        .react_engine
-        .load_durable_event_state(&session.id)
-        .await
-        .unwrap()
-        .expect("snapshot import should create durable events");
-
-    assert_eq!(durable.events.len(), 1);
-    assert_eq!(durable.branch_points[&7].event_cursor, 1);
-    let all = agent
-        .react_engine
-        .event_store
-        .read_all(&session.id)
-        .unwrap();
-    assert_eq!(
-        all.iter()
-            .map(|event| event.event_type.as_str())
-            .collect::<Vec<_>>(),
-        vec!["transcript", "branch_point"]
-    );
-}
-
-#[tokio::test]
 async fn enabled_skills_are_global_and_resume_does_not_rebuild_skill_sessions() {
     // Create a skill on disk so SkillsEngine can discover it.
     let dir = std::env::temp_dir().join(format!("haven_restore_test_{}", uuid::Uuid::new_v4()));
@@ -97,7 +46,7 @@ async fn enabled_skills_are_global_and_resume_does_not_rebuild_skill_sessions() 
         .await
         .unwrap();
     tools.rebuild_catalog().await;
-    let executor = Arc::new(SessionExecutor::new(db.clone(), tools.clone(), 1));
+    let executor = Arc::new(SessionSupervisor::new(db.clone(), tools.clone(), 1));
     let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
     let router = Arc::new(LlmRouter::new_with_clients(
         client.clone(),
@@ -181,14 +130,14 @@ async fn reopen_session_requeues_undelivered_inputs_stays_paused() {
         .update_session_status(&session.id, SessionStatus::Completed)
         .await
         .unwrap();
-    assert_eq!(executor.get_session_state(&session.id).await, None);
+    assert_eq!(executor.get_active_session_status(&session.id).await, None);
 
     agent.reopen_session(&session.id).await.unwrap();
 
     // Re-queued for a later Continue / follow-up, but resume stays Paused
     // so opening history never auto-runs ReAct on old chats.
     assert_eq!(
-        executor.get_session_state(&session.id).await,
+        executor.get_active_session_status(&session.id).await,
         Some(SessionStatus::Paused)
     );
     let supps = executor.get_follow_ups(&session.id).await;
@@ -253,48 +202,10 @@ async fn reopen_session_without_pending_inputs_stays_paused() {
 
     // No lost inputs: the session reopens as Paused (resume-only).
     assert_eq!(
-        executor.get_session_state(&session.id).await,
+        executor.get_active_session_status(&session.id).await,
         Some(SessionStatus::Paused)
     );
     assert!(executor.get_follow_ups(&session.id).await.is_empty());
-}
-
-#[tokio::test]
-async fn resume_rejects_legacy_conversation_prefix_snapshot() {
-    // A snapshot carrying the old `[conversation]` seed is incompatible with
-    // the current events-authority format and must require a reset.
-    let (agent, executor) = make_test_agent();
-    let session = executor.create_session("hello").await.unwrap();
-    let canonical = vec![
-        CanonicalMessage::system(vec![ContentPart::text("sys")]),
-        CanonicalMessage::user_text("hello"),
-        CanonicalMessage::assistant(
-            vec![ContentPart::text("hi there")],
-            None,
-            None,
-            Vec::new(),
-            Vec::new(),
-        ),
-        CanonicalMessage::user_text("[conversation] [user] hello"),
-        CanonicalMessage::user_text("[conversation] [assistant] hi there"),
-    ];
-    let snapshot = ReActSnapshot {
-        events: seed_events_from_canonical(canonical),
-        event_cursor: 0,
-        step_number: 1,
-        branch_points: HashMap::new(),
-        last_ingress_seq: agent.db.get_last_message_ingress_seq(&session.id),
-        interactions: Vec::new(),
-        run_budget: None,
-        error_partial_message_ids: None,
-    };
-    agent
-        .db
-        .save_react_state(&session.id, &serde_json::to_string(&snapshot).unwrap())
-        .unwrap();
-
-    let err = agent.run_session_from_id(&session.id).await.unwrap_err();
-    assert!(err.to_string().contains("incompatible"));
 }
 
 #[tokio::test]
@@ -336,6 +247,7 @@ async fn resume_dedups_supplement_inputs_against_prefixed_canonical() {
         run_budget: None,
         error_partial_message_ids: None,
     };
+    seed_snapshot_events(&agent, &session.id, &snapshot).await;
     agent
         .db
         .save_react_state(&session.id, &serde_json::to_string(&snapshot).unwrap())
@@ -408,6 +320,7 @@ async fn resume_keeps_repeated_same_text_turns() {
         run_budget: None,
         error_partial_message_ids: None,
     };
+    seed_snapshot_events(&agent, &session.id, &snapshot).await;
     agent
         .db
         .save_react_state(&session.id, &serde_json::to_string(&snapshot).unwrap())
@@ -492,6 +405,7 @@ async fn resume_does_not_recover_messages_before_ingress_cursor() {
         run_budget: None,
         error_partial_message_ids: None,
     };
+    seed_snapshot_events(&agent, &session.id, &snapshot).await;
     agent
         .db
         .save_react_state(&session.id, &serde_json::to_string(&snapshot).unwrap())
@@ -588,6 +502,7 @@ async fn resume_skips_conversation_reseed_when_canonical_is_compacted() {
         run_budget: None,
         error_partial_message_ids: None,
     };
+    seed_snapshot_events(&agent, &session.id, &snapshot).await;
     agent
         .db
         .save_react_state(&session.id, &serde_json::to_string(&snapshot).unwrap())
@@ -790,6 +705,7 @@ async fn run_session_from_id_trims_dangling_tool_call_before_resume() {
         run_budget: None,
         error_partial_message_ids: None,
     };
+    seed_snapshot_events(&agent, &session.id, &snapshot).await;
     agent
         .db
         .save_react_state(&session.id, &serde_json::to_string(&snapshot).unwrap())
@@ -812,7 +728,7 @@ async fn run_session_from_id_trims_dangling_tool_call_before_resume() {
     }
     assert!(!result.is_empty(), "resumed loop should produce history");
     assert_eq!(
-        executor.get_session_state(&session.id).await,
+        executor.get_active_session_status(&session.id).await,
         Some(SessionStatus::Paused),
         "final_answer should complete the resumed session"
     );
@@ -909,7 +825,7 @@ async fn resume_ignores_corrupt_snapshot_when_durable_events_exist() {
 
     assert!(!mock.seen.lock().unwrap().is_empty());
     assert_eq!(
-        executor.get_session_state(&session.id).await,
+        executor.get_active_session_status(&session.id).await,
         Some(SessionStatus::Paused)
     );
     let events = store.read_active_transcript(&session.id).unwrap();

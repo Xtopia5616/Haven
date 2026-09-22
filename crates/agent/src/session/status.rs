@@ -56,7 +56,7 @@ impl SessionSupervisor {
 
     pub async fn interrupt_session(&self, session_id: &str) -> anyhow::Result<bool> {
         let status = self
-            .get_session_state(session_id)
+            .get_active_session_status(session_id)
             .await
             .ok_or_else(|| anyhow::anyhow!("session '{}' not found", session_id))?;
         match status {
@@ -69,12 +69,12 @@ impl SessionSupervisor {
                 cancel.cancel();
                 self.update_session_status(session_id, SessionStatus::Paused)
                     .await?;
-                Ok(self.get_session_state(session_id).await == Some(SessionStatus::Paused))
+                Ok(self.get_active_session_status(session_id).await == Some(SessionStatus::Paused))
             }
             SessionStatus::Pending => {
                 self.update_session_status(session_id, SessionStatus::Paused)
                     .await?;
-                Ok(self.get_session_state(session_id).await == Some(SessionStatus::Paused))
+                Ok(self.get_active_session_status(session_id).await == Some(SessionStatus::Paused))
             }
             SessionStatus::Paused => Ok(false),
             SessionStatus::Completed | SessionStatus::Error => Err(anyhow::anyhow!(
@@ -507,7 +507,7 @@ impl SessionSupervisor {
             session_id: session_id.to_string(),
         });
         if self
-            .get_session_state(session_id)
+            .get_active_session_status(session_id)
             .await
             .is_none_or(|status| status.is_terminal())
         {
@@ -636,16 +636,15 @@ impl SessionSupervisor {
         Ok(loaded)
     }
 
-    pub async fn get_session_state(&self, session_id: &str) -> Option<SessionStatus> {
+    pub async fn get_active_session_status(&self, session_id: &str) -> Option<SessionStatus> {
         let status = self.get_session_status(session_id).await?;
         (!status.is_terminal()).then_some(status)
     }
 
-    /// Return the actor's exact status, including terminal states. The
-    /// compatibility `get_session_state` API intentionally hides Completed
-    /// because it means the session is no longer in the active working set;
-    /// lifecycle operations such as reopen and ingress cleanup still need the
-    /// terminal value to avoid accidentally resurrecting it.
+    /// Return the actor's exact status, including terminal states. The active
+    /// status view intentionally hides Completed because it means the session
+    /// is no longer in the working set; lifecycle operations such as reopen and
+    /// ingress cleanup still need the terminal value to avoid resurrecting it.
     pub async fn get_session_status(&self, session_id: &str) -> Option<SessionStatus> {
         self.actor_for(session_id)
             .await?
@@ -655,7 +654,7 @@ impl SessionSupervisor {
     }
 
     pub async fn session_is_live(&self, session_id: &str) -> bool {
-        self.get_session_state(session_id).await.is_some()
+        self.get_active_session_status(session_id).await.is_some()
     }
     pub fn get_tools(&self) -> Arc<ToolsManager> {
         self.tools.clone()

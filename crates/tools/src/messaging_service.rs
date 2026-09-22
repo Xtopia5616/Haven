@@ -45,9 +45,7 @@ pub trait MessageTransport: std::fmt::Debug + Send + Sync {
     /// Best-effort claim for background polling. `None` means the transport
     /// is busy and the caller should retry later; the normal `claim` path may
     /// wait for the transport lock.
-    fn try_claim(&self, recipient: &str) -> anyhow::Result<Option<Vec<Envelope>>> {
-        self.claim(recipient).map(Some)
-    }
+    fn try_claim(&self, recipient: &str) -> anyhow::Result<Option<Vec<Envelope>>>;
     fn ack(&self, recipient: &str, ids: &[String]) -> anyhow::Result<()>;
     fn last_received(&self, name: &str) -> anyhow::Result<Option<Envelope>>;
     fn find_message(&self, name: &str, id: &str) -> anyhow::Result<Option<Envelope>>;
@@ -161,11 +159,8 @@ pub trait SessionMailbox: Send + Sync {
     /// service can fall back to the cross-process transport.
     fn deliver(&self, to: &str, envelope: &Envelope) -> anyhow::Result<Option<SendOutcome>>;
     fn claim(&self, recipient: &str) -> anyhow::Result<Option<Vec<Envelope>>>;
-    /// Session mailboxes are in-process and non-blocking by contract. The
-    /// default keeps custom mailbox implementations source-compatible.
-    fn try_claim(&self, recipient: &str) -> anyhow::Result<Option<Vec<Envelope>>> {
-        self.claim(recipient)
-    }
+    /// Session mailboxes are in-process and non-blocking by contract.
+    fn try_claim(&self, recipient: &str) -> anyhow::Result<Option<Vec<Envelope>>>;
     fn ack(&self, recipient: &str, ids: &[String]) -> anyhow::Result<Option<()>>;
     fn last_received(&self, name: &str) -> anyhow::Result<Option<Option<Envelope>>>;
     fn find_message(&self, name: &str, id: &str) -> anyhow::Result<Option<Option<Envelope>>>;

@@ -13,19 +13,16 @@ import {
 	cumulativeCacheHitRatePercent,
 } from './sessionUsage.ts';
 import { appSessionReducer } from './sessionReducer.ts';
+import { notificationStore, addNotification } from './notificationStore.ts';
+import { newMessage } from './messageFactory.ts';
+import { modelStateStore, updateModelState, clearModelStateTimer } from './runtimeStateStore.ts';
 import {
-	notificationStore,
-	addNotification,
-	newMessage,
-	modelStateStore,
-	updateModelState,
-	clearModelStateTimer,
 	actionStore,
 	upsertAction,
 	removeAction,
 	refreshActions,
 	finalizeBackgroundActionMessages,
-} from './stores.ts';
+} from './actionStore.ts';
 
 describe('upsertAction', () => {
 	beforeEach(() => {

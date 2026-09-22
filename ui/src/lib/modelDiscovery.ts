@@ -1,7 +1,7 @@
 import logger from '$lib/logger.ts';
 import { reportError } from '$lib/errorHandling.ts';
 import { formatError } from '$lib/formatError.ts';
-import { addNotification } from '$lib/stores.ts';
+import { addNotification } from '$lib/notificationStore.ts';
 import { invoke } from '$lib/tauri.ts';
 
 type Provider = {

@@ -691,16 +691,6 @@ fn save_react_state_in_transaction(
             value
                 .get("event_cursor")
                 .and_then(serde_json::Value::as_i64)
-                // Keep the fallback only for one-time inspection of old
-                // unbounded snapshots. Current serializers never emit the
-                // `events` field, so the checkpoint no longer grows with the
-                // event log.
-                .or_else(|| {
-                    value
-                        .get("events")
-                        .and_then(|events| events.as_array())
-                        .map(|events| events.len() as i64)
-                })
         })
         .unwrap_or(0);
     let previous_revision: Option<i64> = conn
@@ -1322,7 +1312,7 @@ mod tests {
 
         db.save_react_state(
             &session.id,
-            r#"{"events":[{},{}],"interactions":[{"id":"old"}]}"#,
+            r#"{"event_cursor":2,"interactions":[{"id":"old"}]}"#,
         )
         .unwrap();
         // Simulate a newer streamed-output checkpoint landing before the
@@ -1330,7 +1320,7 @@ mod tests {
         // not write back the caller's older snapshot.
         db.save_react_state(
             &session.id,
-            r#"{"events":[{},{},{}],"interactions":[{"id":"old"}]}"#,
+            r#"{"event_cursor":3,"interactions":[{"id":"old"}]}"#,
         )
         .unwrap();
         db.update_react_state_interactions_json(&session.id, r#"[{"id":"new"}]"#)
@@ -1338,7 +1328,7 @@ mod tests {
 
         let loaded: serde_json::Value =
             serde_json::from_str(&db.get_react_state(&session.id).unwrap().unwrap()).unwrap();
-        assert_eq!(loaded["events"].as_array().unwrap().len(), 3);
+        assert_eq!(loaded["event_cursor"], 3);
         assert_eq!(loaded["interactions"][0]["id"], "new");
         let checkpoint = db
             .get_react_checkpoint(&session.id)
@@ -1362,7 +1352,7 @@ mod tests {
             .unwrap_err();
         assert!(error.to_string().contains("checkpoint is missing"));
 
-        db.save_react_state(&session.id, r#"{"events":[]}"#)
+        db.save_react_state(&session.id, r#"{"event_cursor":0}"#)
             .unwrap();
         db.update_react_state_interactions_json(&session.id, "[]")
             .unwrap();
@@ -1373,7 +1363,7 @@ mod tests {
         let db = create_db();
         let session = db.create_session("input").unwrap();
 
-        db.save_react_state(&session.id, r#"{"events":[{},{}]}"#)
+        db.save_react_state(&session.id, r#"{"event_cursor":2}"#)
             .unwrap();
         let first = db
             .get_react_checkpoint(&session.id)
@@ -1388,7 +1378,7 @@ mod tests {
             .unwrap();
         db.create_thought_step(&session.id, 1, "step-checkpoint")
             .unwrap();
-        db.save_react_state(&session.id, r#"{"events":[{}, {}, {}]}"#)
+        db.save_react_state(&session.id, r#"{"event_cursor":3}"#)
             .unwrap();
 
         let second = db

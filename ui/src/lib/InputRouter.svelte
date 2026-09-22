@@ -3,7 +3,9 @@
 	import logger from '$lib/logger.ts';
 	import { browser } from '$app/environment';
 	import { invoke } from '$lib/tauri.ts';
-	import { addNotification, recordingOverlay, mediaDataUrl } from '$lib/stores.ts';
+	import { addNotification } from '$lib/notificationStore.ts';
+	import { recordingOverlay } from '$lib/runtimeStateStore.ts';
+	import { mediaDataUrl } from '$lib/mediaData.ts';
 	import { reportError } from '$lib/errorHandling.ts';
 	import { formatError } from '$lib/formatError.ts';
 	import { syncStore } from '$lib/syncStore.ts';

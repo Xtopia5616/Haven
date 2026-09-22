@@ -7,7 +7,7 @@ import type {
 import type { TauriEvent } from './contracts/session.ts';
 import { isBusyStatus, isPausedStatus } from './sessionStatus.ts';
 import type { SessionAction } from './sessionReducer.ts';
-import { clearToolOutputPreviewsForSession } from './stores.ts';
+import { clearToolOutputPreviewsForSession } from './toolOutputPreviewStore.ts';
 
 interface ChatSessionEventContext {
 	getActiveSessionId: () => string | null;
@@ -110,7 +110,9 @@ export function createChatSessionEventHandlers({
 				waitingReason: data.waitingReason,
 			});
 			if (
-				(data.status === 'paused' || data.status === 'completed' || data.status === 'error') &&
+				(data.status === 'paused' ||
+					data.status === 'completed' ||
+					data.status === 'error') &&
 				data.reason?.trim()
 			) {
 				dispatchSession({

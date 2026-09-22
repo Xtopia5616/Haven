@@ -5,12 +5,10 @@
 	import { buildResumeMessages } from '$lib/resumeMessages.ts';
 	import { createSessionRefreshScheduler } from '$lib/sessionRefresh.ts';
 	import { appSessionReducer, resumeInteractions } from '$lib/sessionReducer.ts';
-	import {
-		formatMessageTime,
-		addNotification,
-		getSessionErrorReason,
-		resumeTargetStore,
-	} from '$lib/stores.ts';
+	import { formatMessageTime } from '$lib/messageFormat.ts';
+	import { addNotification } from '$lib/notificationStore.ts';
+	import { getSessionErrorReason } from '$lib/sessionErrorStore.ts';
+	import { resumeTargetStore } from '$lib/sessionIntentStore.ts';
 	import { isErrorStatus, statusVariant } from '$lib/sessionStatus.ts';
 	import { onMount, onDestroy } from 'svelte';
 	import { get } from 'svelte/store';

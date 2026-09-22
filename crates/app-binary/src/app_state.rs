@@ -722,7 +722,7 @@ mod tests {
 
         // The second call is intentionally a no-op: teardown is safe to call
         // from both an exit hook and an owning test fixture.
-        runtime.teardown().await;
+        runtime.shutdown().await;
     }
 
     #[tokio::test]

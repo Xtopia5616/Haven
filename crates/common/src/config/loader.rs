@@ -105,17 +105,15 @@ fn automatic_backup_timestamp(path: &Path, config_path: &Path) -> Option<(u64, u
         .strip_prefix(&format!("{base}.toml."))?
         .strip_suffix(".bak")?;
     let parts: Vec<_> = middle.split('.').collect();
-    match parts.as_slice() {
-        // Backwards-compatible with the pre-retention backup format.
-        [timestamp] => Some((timestamp.parse().ok()?, 0, 0)),
-        // Current format: timestamp, process id, per-process sequence.
-        [timestamp, pid, sequence] => Some((
-            timestamp.parse().ok()?,
-            pid.parse().ok()?,
-            sequence.parse().ok()?,
-        )),
-        _ => None,
-    }
+    // Current format: timestamp, process id, per-process sequence.
+    let [timestamp, pid, sequence] = parts.as_slice() else {
+        return None;
+    };
+    Some((
+        timestamp.parse().ok()?,
+        pid.parse().ok()?,
+        sequence.parse().ok()?,
+    ))
 }
 
 /// Keep only the newest automatic recovery copies for this config. Manual
@@ -318,110 +316,6 @@ fn removed_config_entry(value: &toml::Value) -> Option<&'static str> {
     })
 }
 
-/// Convert the pre-capability `llm.roles` shape once at load time. The old
-/// five role names become ordinary model ids and the old STT/vision switches
-/// become explicit request policies. The in-memory config is written in the
-/// new shape on the next settings save.
-fn migrate_legacy_model_routing(value: &mut toml::Value) {
-    let Some(llm) = value.get_mut("llm").and_then(toml::Value::as_table_mut) else {
-        return;
-    };
-    if llm.contains_key("models") || !llm.contains_key("roles") {
-        return;
-    }
-    let Some(roles) = llm
-        .remove("roles")
-        .and_then(|value| value.as_array().cloned())
-    else {
-        return;
-    };
-
-    let stt_dedicated = llm
-        .remove("stt_use_audio_model")
-        .and_then(|value| value.as_bool())
-        .unwrap_or(true);
-    let vision_dedicated = llm
-        .remove("vision_use_image_model")
-        .and_then(|value| value.as_bool())
-        .unwrap_or(true);
-
-    let mut models = Vec::new();
-    for role in roles {
-        let Some(mut model) = role.as_table().cloned() else {
-            continue;
-        };
-        let Some(role_name) = model
-            .remove("role")
-            .and_then(|value| value.as_str().map(str::to_string))
-        else {
-            continue;
-        };
-        if !matches!(
-            role_name.as_str(),
-            "small_model" | "default_model" | "image_model" | "audio_model" | "embedding_model"
-        ) {
-            continue;
-        }
-        let capabilities: Vec<toml::Value> = match role_name.as_str() {
-            "small_model" => vec![toml::Value::String("fast_chat".into())],
-            "default_model" => vec![
-                toml::Value::String("chat".into()),
-                toml::Value::String("vision".into()),
-                toml::Value::String("audio_input".into()),
-                toml::Value::String("transcription".into()),
-            ],
-            "image_model" => vec![toml::Value::String("vision".into())],
-            "audio_model" => vec![
-                toml::Value::String("audio_input".into()),
-                toml::Value::String("transcription".into()),
-            ],
-            "embedding_model" => vec![toml::Value::String("embedding".into())],
-            _ => unreachable!(),
-        };
-        model.insert("id".into(), toml::Value::String(role_name.clone()));
-        model.insert("capabilities".into(), toml::Value::Array(capabilities));
-        models.push(toml::Value::Table(model));
-    }
-
-    let mut policies = Vec::new();
-    let mut add_policy = |request: &str, primary: &str| {
-        let mut policy = toml::map::Map::new();
-        policy.insert("request".into(), toml::Value::String(request.into()));
-        policy.insert("primary".into(), toml::Value::String(primary.into()));
-        policies.push(toml::Value::Table(policy));
-    };
-    add_policy("chat", "default_model");
-    add_policy("fast_chat", "small_model");
-    add_policy(
-        "vision",
-        if vision_dedicated {
-            "image_model"
-        } else {
-            "default_model"
-        },
-    );
-    add_policy(
-        "audio_chat",
-        if stt_dedicated {
-            "audio_model"
-        } else {
-            "default_model"
-        },
-    );
-    add_policy(
-        "transcription",
-        if stt_dedicated {
-            "audio_model"
-        } else {
-            "default_model"
-        },
-    );
-    add_policy("embedding", "embedding_model");
-
-    llm.insert("models".into(), toml::Value::Array(models));
-    llm.insert("request_policies".into(), toml::Value::Array(policies));
-}
-
 impl ConfigLoader {
     /// Returns the default config path: `%APPDATA%/haven/config.toml` on Windows.
     pub fn default_path() -> PathBuf {
@@ -472,8 +366,6 @@ impl ConfigLoader {
         let content = std::fs::read_to_string(path)?;
         let config: AppConfig = match toml::from_str::<toml::Value>(&content) {
             Ok(value) => {
-                let mut value = value;
-                migrate_legacy_model_routing(&mut value);
                 if let Some(entry) = removed_config_entry(&value) {
                     backup_unparsable_config(path, &format!("removed configuration: {entry}"));
                     AppConfig::default()
@@ -943,12 +835,7 @@ mod tests {
         assert!(loader.config().llm.providers[1].api_key.is_empty());
         // The named model assignment was applied.
         assert_eq!(
-            loader
-                .config()
-                .llm
-                .model("default_model")
-                .unwrap()
-                .model,
+            loader.config().llm.model("default_model").unwrap().model,
             "new-model"
         );
         // Named model assignments are independent of request policies; a
@@ -1146,62 +1033,6 @@ mod tests {
         std::fs::write(&path, toml::to_string_pretty(&cfg).unwrap()).unwrap();
         let loader = ConfigLoader::load_from(&path).unwrap();
         assert_eq!(loader.config().media.audio.sample_rate, 44100);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn load_keeps_configured_default_model_with_new_permission_policy() {
-        let dir = std::env::temp_dir().join(format!("haven_test_{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("config.toml");
-        std::fs::write(
-            &path,
-            r#"
-[llm]
-
-[[llm.providers]]
-name = "test-provider"
-provider = "openai"
-api_style = "openai-chat"
-base_url = "https://example.test/v1"
-api_key = "test-key"
-
-[[llm.roles]]
-role = "default_model"
-provider = "test-provider"
-model = "test-model"
-
-[security]
-permission_mode = "default"
-encrypt_sensitive = true
-"#,
-        )
-        .unwrap();
-
-        let loader = ConfigLoader::load_from(&path).unwrap();
-        assert!(
-            loader
-                .config()
-                .llm
-                .is_request_configured(RequestKind::Chat)
-        );
-        assert_eq!(
-            loader
-                .config()
-                .llm
-                .policy(RequestKind::Chat)
-                .map(|policy| policy.primary.as_str()),
-            Some("default_model")
-        );
-        assert!(
-            loader.config().llm.models[0]
-                .capabilities
-                .contains(&Capability::Chat)
-        );
-        assert_eq!(
-            loader.config().security.permission_mode,
-            PermissionMode::Default
-        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1614,7 +1445,7 @@ base_url = "https://api.deepgram.com"
         let path = dir.join("config.toml");
         for timestamp in 1..=12 {
             std::fs::write(
-                dir.join(format!("config.toml.{timestamp}.bak")),
+                dir.join(format!("config.toml.{timestamp}.1.0.bak")),
                 timestamp.to_string(),
             )
             .unwrap();
@@ -1631,9 +1462,9 @@ base_url = "https://api.deepgram.com"
             .filter_map(|entry| automatic_backup_timestamp(&entry.path(), &path))
             .collect();
         assert_eq!(automatic.len(), MAX_AUTOMATIC_CONFIG_BACKUPS);
-        assert!(dir.join("config.toml.12.bak").exists());
-        assert!(dir.join("config.toml.3.bak").exists());
-        assert!(!dir.join("config.toml.2.bak").exists());
+        assert!(dir.join("config.toml.12.1.0.bak").exists());
+        assert!(dir.join("config.toml.3.1.0.bak").exists());
+        assert!(!dir.join("config.toml.2.1.0.bak").exists());
         assert!(manual.exists(), "manual migration backup must be preserved");
         let _ = std::fs::remove_dir_all(&dir);
     }

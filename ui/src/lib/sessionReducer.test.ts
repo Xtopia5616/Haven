@@ -4,10 +4,15 @@ import {
 	SessionReducer,
 	reduceSession,
 	type SessionMessage,
+	type SessionReducerState,
 	type SessionSummary,
 } from './sessionReducer.ts';
 
 const session = (id: string, status = 'pending'): SessionSummary => ({ id, status });
+const stateWith = (partial: Partial<SessionReducerState>): SessionReducerState => ({
+	...initialSessionState,
+	...partial,
+});
 
 describe('SessionReducer', () => {
 	it('does not let an unrelated background session hijack a fresh draft', () => {
@@ -33,11 +38,11 @@ describe('SessionReducer', () => {
 	});
 
 	it('preserves an active error session when a list refresh omits it', () => {
-		const state = {
+		const state = stateWith({
 			sessions: [session('ses-error', 'error')],
 			activeSessionId: 'ses-error',
 			error: { sessionId: 'ses-error', reason: '网络失败' },
-		};
+		});
 
 		const next = reduceSession(state, {
 			type: 'sessions/loaded',
@@ -48,11 +53,11 @@ describe('SessionReducer', () => {
 	});
 
 	it('clears an error only when the same session becomes busy or is left', () => {
-		const state = {
+		const state = stateWith({
 			sessions: [session('ses-error', 'error')],
 			activeSessionId: 'ses-error',
 			error: { sessionId: 'ses-error', reason: '失败' },
-		};
+		});
 
 		expect(
 			reduceSession(state, {
@@ -74,7 +79,7 @@ describe('SessionReducer', () => {
 	});
 
 	it('preserves an active terminal reason when a live-session refresh omits it', () => {
-		const state = {
+		const state = stateWith({
 			sessions: [session('ses-done', 'completed')],
 			activeSessionId: 'ses-done',
 			error: null,
@@ -83,7 +88,7 @@ describe('SessionReducer', () => {
 				status: 'completed' as const,
 				reason: '用户主动结束会话',
 			},
-		};
+		});
 
 		const next = reduceSession(state, {
 			type: 'sessions/loaded',
@@ -210,14 +215,12 @@ describe('SessionReducer', () => {
 			seq: 7,
 		} as const;
 		const first = reduceSession(initialSessionState, {
-			type: 'agent/chunk',
-			kind: 'thought',
-			payload: chunk,
+			type: 'agent/chunks',
+			chunks: [{ kind: 'thought', payload: chunk }],
 		});
 		const duplicate = reduceSession(first, {
-			type: 'agent/chunk',
-			kind: 'thought',
-			payload: chunk,
+			type: 'agent/chunks',
+			chunks: [{ kind: 'thought', payload: chunk }],
 		});
 		expect(duplicate).toBe(first);
 		expect(duplicate.messages?.['ses-replay']).toHaveLength(1);

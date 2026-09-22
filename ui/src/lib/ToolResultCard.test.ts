@@ -4,7 +4,8 @@ import { tick } from 'svelte';
 import ToolResultCard from './ToolResultCard.svelte';
 import GlobalContextMenu from './GlobalContextMenu.svelte';
 import { canRenderToolResult, parseToolResult } from './toolResultParsing.ts';
-import { actionStore, toolOutputPreviewStore, upsertAction } from './stores.ts';
+import { actionStore, upsertAction } from './actionStore.ts';
+import { toolOutputPreviewStore } from './toolOutputPreviewStore.ts';
 import { getToolResultRenderer } from './toolResultRenderers.ts';
 
 const searchJson = (results: any[], extra: any = {}) =>
@@ -429,7 +430,8 @@ describe('ToolResultCard outcomes', () => {
 		});
 		await expandToolCard(successful.container);
 		expect(
-			successful.container.querySelector('[data-detail="output"] .tool-card-empty')?.textContent,
+			successful.container.querySelector('[data-detail="output"] .tool-card-empty')
+				?.textContent,
 		).toBe('（无结果）');
 
 		successful.unmount();
@@ -439,9 +441,9 @@ describe('ToolResultCard outcomes', () => {
 			outcome: 'failed',
 		});
 		await expandToolCard(failed.container);
-		expect(failed.container.querySelector('[data-detail="output"] .tool-card-empty')?.textContent).toBe(
-			'调用失败',
-		);
+		expect(
+			failed.container.querySelector('[data-detail="output"] .tool-card-empty')?.textContent,
+		).toBe('调用失败');
 		expect(failed.container.querySelector('.tool-card-empty--error')).toBeTruthy();
 	});
 
@@ -452,9 +454,9 @@ describe('ToolResultCard outcomes', () => {
 			result: { outcome: 'failed' },
 		});
 		await expandToolCard(container);
-		expect(container.querySelector('[data-detail="output"] .tool-card-empty')?.textContent).toBe(
-			'调用失败',
-		);
+		expect(
+			container.querySelector('[data-detail="output"] .tool-card-empty')?.textContent,
+		).toBe('调用失败');
 	});
 });
 

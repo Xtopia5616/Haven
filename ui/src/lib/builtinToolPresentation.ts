@@ -4,12 +4,12 @@ export type BuiltinToolEntry = {
 	name: string;
 	desc: string;
 	risk: string;
-	category?: string;
-	root?: string;
-	rootLabel?: string;
-	rootDescription?: string;
-	rootIcon?: string;
-	operation?: string | null;
+	category: string;
+	root: string;
+	rootLabel: string;
+	rootDescription: string;
+	rootIcon: string;
+	operation: string | null;
 	schema: Record<string, unknown>;
 	enabled: boolean;
 	[key: string]: any;
@@ -63,7 +63,7 @@ export function groupBuiltinTools(tools: BuiltinToolEntry[]): BuiltinToolCard[] 
 	const groups = new Map<string, BuiltinToolCard>();
 
 	for (const tool of tools) {
-		const category = tool.category || 'other';
+		const category = tool.category;
 		let group = groups.get(category);
 		if (!group) {
 			group = {
@@ -75,15 +75,15 @@ export function groupBuiltinTools(tools: BuiltinToolEntry[]): BuiltinToolCard[] 
 			groups.set(category, group);
 		}
 
-		const rootName = tool.root || legacyRootName(tool.name);
+		const rootName = tool.root;
 		let root = group.roots.find((candidate) => candidate.name === rootName);
 		if (!root) {
 			root = {
 				kind: 'root-group',
 				name: rootName,
-				label: tool.rootLabel || rootName,
-				description: tool.rootDescription || '',
-				icon: tool.rootIcon || 'tools',
+				label: tool.rootLabel,
+				description: tool.rootDescription,
+				icon: tool.rootIcon,
 				operations: [],
 			};
 			group.roots.push(root);
@@ -92,9 +92,7 @@ export function groupBuiltinTools(tools: BuiltinToolEntry[]): BuiltinToolCard[] 
 	}
 
 	for (const group of groups.values()) {
-		group.roots.sort(
-			(a, b) => a.name.localeCompare(b.name),
-		);
+		group.roots.sort((a, b) => a.name.localeCompare(b.name));
 		for (const root of group.roots) {
 			root.operations.sort((a, b) => a.name.localeCompare(b.name));
 		}
@@ -110,14 +108,16 @@ function categoryOrder(category: string): number {
 }
 
 function categoryLabel(category: string): string {
-	return {
-		haven: 'Haven',
-		system: 'System',
-		agent: 'Agent',
-		skills: 'Skills',
-		mcp: 'MCP',
-		other: 'Other',
-	}[category] || category;
+	return (
+		{
+			haven: 'Haven',
+			system: 'System',
+			agent: 'Agent',
+			skills: 'Skills',
+			mcp: 'MCP',
+			other: 'Other',
+		}[category] || category
+	);
 }
 
 function normalizedQuery(query: string): string {
@@ -185,8 +185,4 @@ export function matchesBuiltinToolCard(
 	enabledFilter: string,
 ): boolean {
 	return filterBuiltinToolCard(card, query, enabledFilter) !== null;
-}
-
-function legacyRootName(toolName: string): string {
-	return toolName.split('.')[0] || toolName;
 }

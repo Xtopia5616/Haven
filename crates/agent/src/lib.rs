@@ -41,8 +41,6 @@ pub use session::{
     SessionSupervisor, SessionWaitingReason, StepInfo, ToolExecution,
 };
 
-#[cfg(test)]
-type SessionExecutor = SessionSupervisor;
 pub use types::{
     Action, BranchPoint, ProcessResult, ReActRound, ReActSnapshot, RunBudget, ToolRecord,
     TranscriptRecord, project_transcript, project_transcript_with_strategy,

@@ -2,7 +2,7 @@
 	import { onDestroy, untrack } from 'svelte';
 	import { fly } from 'svelte/transition';
 	import { cubicOut } from 'svelte/easing';
-	import { mediaDataUrl } from '$lib/stores.ts';
+	import { mediaDataUrl } from '$lib/mediaData.ts';
 	import { getMarkdownRenderer, renderMarkdown } from '$lib/markdownRenderer.ts';
 	import { handleExtRefEvent } from '$lib/externalRef.ts';
 	import { createDragScrollController } from '$lib/dragScroll.ts';
@@ -358,8 +358,8 @@
 				embedded
 				{toolName}
 				{outcome}
-				renderer={renderer}
-				result={result}
+				{renderer}
+				{result}
 				{content}
 				{streaming}
 				{actionId}

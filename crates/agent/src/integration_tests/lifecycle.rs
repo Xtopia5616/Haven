@@ -7,7 +7,7 @@ fn agent_new_constructor_works() {
     p.push(format!("haven_agent_new_{}.db", uuid::Uuid::new_v4()));
     let db = Arc::new(Database::open(&p).unwrap());
     let tools = Arc::new(ToolsManager::new());
-    let executor = Arc::new(SessionExecutor::new(db.clone(), tools, 1));
+    let executor = Arc::new(SessionSupervisor::new(db.clone(), tools, 1));
     let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
     let router = Arc::new(LlmRouter::new_with_clients(
         client.clone(),
@@ -51,7 +51,7 @@ async fn replace_router_and_router_work() {
     p.push(format!("haven_agent_router_{}.db", uuid::Uuid::new_v4()));
     let db = Arc::new(Database::open(&p).unwrap());
     let tools = Arc::new(ToolsManager::new());
-    let executor = Arc::new(SessionExecutor::new(db.clone(), tools, 1));
+    let executor = Arc::new(SessionSupervisor::new(db.clone(), tools, 1));
     let client_a = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
     let router_a = Arc::new(LlmRouter::new_with_clients(
         client_a.clone(),
@@ -437,7 +437,7 @@ async fn process_input_does_not_resurrect_ended_session() {
     let session = executor.create_session("original").await.unwrap();
     executor.end_session(&session.id).await.unwrap();
     // end_session removes the session from the working set entirely.
-    assert_eq!(executor.get_session_state(&session.id).await, None);
+    assert_eq!(executor.get_active_session_status(&session.id).await, None);
 
     let result = agent
         .process_input("more context", Some(session.id.clone()))
@@ -445,7 +445,7 @@ async fn process_input_does_not_resurrect_ended_session() {
         .unwrap();
     assert!(matches!(result, ProcessResult::Supplemented { .. }));
     // Session is not reloaded into the working set and never becomes Pending.
-    assert_eq!(executor.get_session_state(&session.id).await, None);
+    assert_eq!(executor.get_active_session_status(&session.id).await, None);
     assert!(executor.get_follow_ups(&session.id).await.is_empty());
 }
 
@@ -464,7 +464,7 @@ async fn process_input_reactivates_paused_session() {
         .unwrap();
     assert!(matches!(result, ProcessResult::Supplemented { .. }));
     assert_eq!(
-        executor.get_session_state(&session.id).await,
+        executor.get_active_session_status(&session.id).await,
         Some(SessionStatus::Pending)
     );
     let supps: Vec<String> = executor
@@ -507,7 +507,7 @@ async fn process_input_marks_reply_as_answer_when_awaiting() {
         .unwrap();
     assert!(matches!(result, ProcessResult::Supplemented { .. }));
     assert_eq!(
-        executor.get_session_state(&session.id).await,
+        executor.get_active_session_status(&session.id).await,
         Some(SessionStatus::Pending)
     );
     let supps = executor.get_follow_ups(&session.id).await;
@@ -572,7 +572,7 @@ async fn process_input_with_attachments_queues_and_persists_attachments() {
         .unwrap();
     assert!(matches!(result, ProcessResult::Supplemented { .. }));
     assert_eq!(
-        executor.get_session_state(&session.id).await,
+        executor.get_active_session_status(&session.id).await,
         Some(SessionStatus::Pending)
     );
     let supps = executor.get_follow_ups(&session.id).await;
@@ -606,7 +606,7 @@ async fn process_input_creates_new_session() {
                     .is_some_and(|id| id.starts_with("msg-")),
                 "SessionCreated must return the persisted first-user msg id"
             );
-            let state = executor.get_session_state(&session_id).await;
+            let state = executor.get_active_session_status(&session_id).await;
             assert_eq!(state, Some(SessionStatus::Pending));
         }
         ProcessResult::Supplemented { .. } => panic!("expected SessionCreated"),

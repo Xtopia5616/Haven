@@ -1,7 +1,7 @@
 import { copyText } from '$lib/clipboard.ts';
 import { invoke } from '$lib/tauri.ts';
 import logger from '$lib/logger.ts';
-import { addNotification } from '$lib/stores.ts';
+import { addNotification } from '$lib/notificationStore.ts';
 
 /** Native tooltip shown on every external ref (URL or filesystem path). */
 export const EXT_REF_TITLE = '单击复制 · 按住 Ctrl 再点击打开';
@@ -43,8 +43,7 @@ export async function openExternal(target: string): Promise<boolean> {
  * Returns true when the event targeted an ext-ref (caller should stop bubble menus).
  */
 export function handleExtRefEvent(e: MouseEvent): boolean {
-	const el =
-		e.target instanceof Element ? e.target.closest(`.${EXT_REF_CLASS}`) : null;
+	const el = e.target instanceof Element ? e.target.closest(`.${EXT_REF_CLASS}`) : null;
 	if (!el) return false;
 
 	e.preventDefault();

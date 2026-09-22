@@ -9,7 +9,8 @@
 	import { getToolResultRenderer } from '$lib/toolResultRenderers.ts';
 	import { parseToolResult } from '$lib/toolResultParsing.ts';
 	import { copyText } from '$lib/clipboard.ts';
-	import { actionStore, getToolOutputPreviewStore } from '$lib/stores.ts';
+	import { actionStore } from '$lib/actionStore.ts';
+	import { getToolOutputPreviewStore } from '$lib/toolOutputPreviewStore.ts';
 	import { formatTokenCount } from '$lib/sessionUsage.ts';
 	import { estimateToolDataTokens } from '$lib/sessionUsagePresentation.ts';
 	import {
@@ -112,8 +113,7 @@
 	);
 	let effectiveOutcome = $derived(outcome || result?.outcome || actionOutcome || null);
 	let toolState = $derived.by(() => {
-		const rawState =
-			effectiveOutcome || (liveStreaming ? 'running' : 'completed');
+		const rawState = effectiveOutcome || (liveStreaming ? 'running' : 'completed');
 		return TOOL_STATE_ALIASES[rawState] || rawState;
 	});
 	let toolStateLabel = $derived(TOOL_STATE_LABELS[toolState] || toolState);

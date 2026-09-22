@@ -4,16 +4,15 @@
 //! Split out of `layer.rs` so the facade stays focused on wiring; these
 //! methods operate on the same private fields via `impl AgentLayer` blocks.
 //!
-//! ## Resume authority (event store cutover)
+//! ## Resume authority
 //!
 //! - **Session event stream present** → single authority. [`run_session_resumed`]
 //!   replays it (canonical + rounds are projected); the snapshot and RAM queues
 //!   are caches only.
-//! - **Event stream empty with a valid snapshot** → import the cache once.
+//! - **Event stream missing** → the session is not resumable and must be reset.
 //! - **Both event stream and snapshot absent** → fresh-session startup.
 //! - **Event stream present with a corrupt snapshot** → ignore the cache and
-//!   continue from durable events; a corrupt snapshot with no event stream
-//!   remains a hard failure.
+//!   continue from durable events.
 //!
 //! ## Queue durability (Phase 7 / D2)
 //!
@@ -98,7 +97,7 @@ impl AgentLayer {
         // callers (tests / continue) may still be Pending — promote, then always
         // emit `running` so the UI busy chip tracks a real transition instead of
         // treating Pending as a stand-in for Running.
-        if self.executor.get_session_state(session_id).await == Some(SessionStatus::Pending)
+        if self.executor.get_active_session_status(session_id).await == Some(SessionStatus::Pending)
             && let Err(error) = self
                 .executor
                 .update_session_status(session_id, SessionStatus::Running)
@@ -110,7 +109,8 @@ impl AgentLayer {
                 "failed to persist session running status before resume"
             );
         }
-        if self.executor.get_session_state(session_id).await == Some(SessionStatus::Running) {
+        if self.executor.get_active_session_status(session_id).await == Some(SessionStatus::Running)
+        {
             self.events
                 .emit_session_updated(session_id, SessionStatus::Running)
                 .await;
@@ -195,8 +195,8 @@ impl AgentLayer {
                     .unwrap_or_default();
                 // Read the cache independently from the session/projection
                 // data. A bad cache is recoverable when the event stream is
-                // present, but must still be reported if this is a legacy
-                // session that has no durable events to fall back to.
+                // present, but must still be reported if the session has no
+                // durable events to fall back to.
                 let (react_state, react_state_error) = match db.get_react_state(&sid) {
                     Ok(state) => (state, None),
                     Err(error) => (None, Some(error.to_string())),
@@ -220,35 +220,30 @@ impl AgentLayer {
             .get_tools()
             .register_managed_assets_for_session(session_id, &all_attachments);
 
-        // The event stream is authoritative. A snapshot is read only for
-        // checkpoint metadata and as a one-time import source for sessions
-        // created before `session_events` existed. Import the legacy cache
-        // (including branch points) before reading durable state again so
-        // every later path follows one event-derived timeline.
-        let mut durable_state = self
+        // The event stream is authoritative. A snapshot supplies checkpoint
+        // metadata only; sessions without a durable event stream are no
+        // longer resumable without a durable event log.
+        let durable_state = self
             .react_engine
             .load_durable_event_state(session_id)
             .await?;
-        if durable_state.is_none()
-            && let Some(state_json) = react_state.as_deref()
-        {
-            let snapshot = ReActSnapshot::from_json(state_json)?;
-            self.react_engine
-                .seed_snapshot_events(session_id, &snapshot, run_id)
-                .await?;
-            durable_state = self
-                .react_engine
-                .load_durable_event_state(session_id)
-                .await?;
-        }
-        if durable_state.is_none()
-            && let Some(error) = react_state_error
-        {
-            return Err(anyhow::anyhow!(
-                "failed to read legacy session snapshot for {}: {}",
-                session_id,
-                error
-            ));
+        if durable_state.is_none() {
+            if let Some(error) = react_state_error {
+                return Err(anyhow::anyhow!(
+                    "failed to read session checkpoint for {}: {}",
+                    session_id,
+                    error
+                ));
+            }
+            if react_state.is_some() {
+                if let Some(state_json) = react_state.as_deref() {
+                    ReActSnapshot::from_json(state_json)?;
+                }
+                return Err(anyhow::anyhow!(
+                    "session '{}' has no durable event log; reset is required",
+                    session_id
+                ));
+            }
         }
         let durable_event_sequence = durable_state.as_ref().map(|state| state.latest_sequence);
         let durable_event_cursor = durable_state.as_ref().map(|state| state.events.len());
@@ -292,10 +287,7 @@ impl AgentLayer {
                 }
                 Some(snapshot)
             }
-            None => match react_state {
-                Some(state_json) => Some(ReActSnapshot::from_json(&state_json)?),
-                None => None,
-            },
+            None => None,
         };
 
         match snapshot {

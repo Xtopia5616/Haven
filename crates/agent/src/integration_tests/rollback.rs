@@ -27,6 +27,7 @@ async fn rollback_with_snapshot_no_branch_point_uses_snapshot() {
         run_budget: None,
         error_partial_message_ids: None,
     };
+    seed_snapshot_events(&agent, &session.id, &snapshot).await;
     agent
         .db
         .save_react_state(&session.id, &serde_json::to_string(&snapshot).unwrap())
@@ -49,7 +50,7 @@ async fn rollback_with_snapshot_no_branch_point_uses_snapshot() {
         .await
         .unwrap();
     assert_eq!(
-        executor.get_session_state(&session.id).await,
+        executor.get_active_session_status(&session.id).await,
         Some(SessionStatus::Pending)
     );
     // The partial assistant message should be deleted, user message kept.
@@ -129,6 +130,7 @@ async fn rollback_pause_true_removes_user_message_from_session() {
         run_budget: None,
         error_partial_message_ids: None,
     };
+    seed_snapshot_events(&agent, &session.id, &snapshot).await;
     agent
         .db
         .save_react_state(&session.id, &serde_json::to_string(&snapshot).unwrap())
@@ -142,7 +144,7 @@ async fn rollback_pause_true_removes_user_message_from_session() {
         .await
         .unwrap();
     assert_eq!(
-        executor.get_session_state(&session.id).await,
+        executor.get_active_session_status(&session.id).await,
         Some(SessionStatus::Paused)
     );
     let msgs = agent.db.get_session_messages(&session.id).unwrap();
@@ -227,6 +229,7 @@ async fn rollback_fallback_no_branch_point_pause_true_deletes_from_last_user_mes
         run_budget: None,
         error_partial_message_ids: None,
     };
+    seed_snapshot_events(&agent, &session.id, &snapshot).await;
     agent
         .db
         .save_react_state(&session.id, &serde_json::to_string(&snapshot).unwrap())
@@ -239,7 +242,7 @@ async fn rollback_fallback_no_branch_point_pause_true_deletes_from_last_user_mes
         .await
         .unwrap();
     assert_eq!(
-        executor.get_session_state(&session.id).await,
+        executor.get_active_session_status(&session.id).await,
         Some(SessionStatus::Paused)
     );
     let msgs = agent.db.get_session_messages(&session.id).unwrap();
@@ -315,6 +318,7 @@ async fn rollback_errors_when_target_message_id_does_not_match() {
         run_budget: None,
         error_partial_message_ids: None,
     };
+    seed_snapshot_events(&agent, &session.id, &snapshot).await;
     agent
         .db
         .save_react_state(&session.id, &serde_json::to_string(&snapshot).unwrap())
@@ -339,7 +343,7 @@ async fn rollback_errors_when_target_message_id_does_not_match() {
 async fn rollback_orphan_after_processed_turn_preserves_earlier_history() {
     let (agent, executor) = make_test_agent();
     let session = executor.create_session("orphan rollback").await.unwrap();
-    let msgs = seed_hello_snapshot(&agent, &session.id);
+    let msgs = seed_hello_snapshot(&agent, &session.id).await;
 
     // Roll back the interrupted message: only it must be discarded; the
     // earlier exchange ("hello" / "thinking") survives.
@@ -354,7 +358,7 @@ async fn rollback_orphan_after_processed_turn_preserves_earlier_history() {
         .await
         .unwrap();
     assert_eq!(
-        executor.get_session_state(&session.id).await,
+        executor.get_active_session_status(&session.id).await,
         Some(SessionStatus::Paused)
     );
     let msgs = agent.db.get_session_messages(&session.id).unwrap();
@@ -387,7 +391,7 @@ async fn rollback_processed_user_message_with_later_orphan_wipes_target_timeline
     // discarded timeline), and the canonical IS truncated.
     let (agent, executor) = make_test_agent();
     let session = executor.create_session("processed rollback").await.unwrap();
-    let msgs = seed_hello_snapshot(&agent, &session.id);
+    let msgs = seed_hello_snapshot(&agent, &session.id).await;
 
     let hello_id = msgs
         .iter()
@@ -400,7 +404,7 @@ async fn rollback_processed_user_message_with_later_orphan_wipes_target_timeline
         .await
         .unwrap();
     assert_eq!(
-        executor.get_session_state(&session.id).await,
+        executor.get_active_session_status(&session.id).await,
         Some(SessionStatus::Paused)
     );
     let msgs = agent.db.get_session_messages(&session.id).unwrap();
@@ -504,6 +508,7 @@ async fn rollback_pause_uses_target_message_ts_not_latest_user() {
         run_budget: None,
         error_partial_message_ids: None,
     };
+    seed_snapshot_events(&agent, &session.id, &snapshot).await;
     agent
         .db
         .save_react_state(&session.id, &serde_json::to_string(&snapshot).unwrap())
@@ -516,7 +521,7 @@ async fn rollback_pause_uses_target_message_ts_not_latest_user() {
         .await
         .unwrap();
     assert_eq!(
-        executor.get_session_state(&session.id).await,
+        executor.get_active_session_status(&session.id).await,
         Some(SessionStatus::Paused)
     );
     let msgs = agent.db.get_session_messages(&session.id).unwrap();
@@ -631,6 +636,7 @@ async fn rollback_pause_matches_compacted_message_id() {
         run_budget: None,
         error_partial_message_ids: None,
     };
+    seed_snapshot_events(&agent, &session.id, &snapshot).await;
     agent
         .db
         .save_react_state(&session.id, &serde_json::to_string(&snapshot).unwrap())
@@ -641,7 +647,7 @@ async fn rollback_pause_matches_compacted_message_id() {
         .await
         .unwrap();
     assert_eq!(
-        executor.get_session_state(&session.id).await,
+        executor.get_active_session_status(&session.id).await,
         Some(SessionStatus::Paused)
     );
     let msgs = agent.db.get_session_messages(&session.id).unwrap();
@@ -709,7 +715,7 @@ async fn rollback_while_ask_wait_clears_interaction_gate() {
     let session = executor.create_session("ask then rollback").await.unwrap();
     agent.run_session_from_id(&session.id).await.unwrap();
     assert_eq!(
-        executor.get_session_state(&session.id).await,
+        executor.get_active_session_status(&session.id).await,
         Some(SessionStatus::Paused)
     );
     assert!(
@@ -733,7 +739,7 @@ async fn rollback_while_ask_wait_clears_interaction_gate() {
         .unwrap();
 
     assert_eq!(
-        executor.get_session_state(&session.id).await,
+        executor.get_active_session_status(&session.id).await,
         Some(SessionStatus::Pending)
     );
     assert!(
@@ -838,7 +844,7 @@ async fn rollback_mid_tool_batch_joins_and_restores() {
     let _ = run.await;
 
     assert_eq!(
-        executor.get_session_state(&session.id).await,
+        executor.get_active_session_status(&session.id).await,
         Some(SessionStatus::Pending)
     );
     assert!(
@@ -906,7 +912,7 @@ async fn rollback_ask_wait_pause_true_leaves_plain_paused() {
         .unwrap();
     agent.run_session_from_id(&session.id).await.unwrap();
     assert_eq!(
-        executor.get_session_state(&session.id).await,
+        executor.get_active_session_status(&session.id).await,
         Some(SessionStatus::Paused)
     );
     let snap =
@@ -917,7 +923,7 @@ async fn rollback_ask_wait_pause_true_leaves_plain_paused() {
         .await
         .unwrap();
     assert_eq!(
-        executor.get_session_state(&session.id).await,
+        executor.get_active_session_status(&session.id).await,
         Some(SessionStatus::Paused),
         "user-edit rollback must leave plain Paused"
     );

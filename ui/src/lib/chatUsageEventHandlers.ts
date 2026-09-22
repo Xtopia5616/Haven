@@ -4,10 +4,10 @@ import type {
 	AgentUsagePayload,
 } from './contracts/agent.ts';
 import type { TauriEvent } from './contracts/session.ts';
-import { addNotification } from './stores.ts';
+import { addNotification } from './notificationStore.ts';
 import { coalesceTokenTotal, formatTokenCount } from './sessionUsage.ts';
 import type { SessionAction, SessionTokenStats } from './sessionReducer.ts';
-import { rememberMediaPlan } from './stores.ts';
+import { rememberMediaPlan } from './mediaPlanStore.ts';
 import logger from '$lib/logger.ts';
 import {
 	mediaPlanNoticeLabel,

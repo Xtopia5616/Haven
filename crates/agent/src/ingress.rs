@@ -84,7 +84,7 @@ impl AgentLayer {
             None
         };
         if let Some(session_id) = active_session_id.as_ref() {
-            let state = self.executor.get_session_state(session_id).await;
+            let state = self.executor.get_active_session_status(session_id).await;
 
             // Phase 4 / D1 routing (+ Phase 5 / E3 confirm gate):
             //   Running                 → steering
@@ -193,7 +193,7 @@ impl AgentLayer {
                     }
                     // Re-read state after ensure_session_loaded may have reloaded
                     // the session from DB (M3/H10 TOCTOU: end_session may have ended
-                    // it between the get_session_state read above and the failed
+                    // it between the get_active_session_status read above and the failed
                     // add_follow_up). Only non-terminal sessions may be
                     // reactivated by a follow-up message; Completed/Error sessions
                     // were ended on purpose and must be reopened explicitly via

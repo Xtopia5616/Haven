@@ -43,90 +43,160 @@ let manifests = new Map<string, ToolManifest>();
 
 /** Convert the snake_case Tauri payload into the camelCase UI contract. */
 export function parseToolManifest(value: unknown): ToolManifest | null {
-	const candidate = unwrapManifest(value);
-	if (!candidate || typeof candidate !== 'object') return null;
-	const raw = candidate as Record<string, any>;
-	const identity = raw.identity || {};
-	const stableName = stringOr(identity.stable_name, stringOr(raw.name, ''));
-	if (!stableName) return null;
-	const root = stringOr(identity.root, stableName.split('.')[0] || stableName);
-	const model = raw.model || {};
-	const policy = raw.policy || {};
-	const presentation = raw.presentation || {};
-	const prompt = raw.prompt || {};
-	const availability = raw.availability || {};
-	const rootPresentation = raw.root_presentation || {};
-	const source = stringOr(identity.source, 'builtin');
+	const raw = record(value);
+	if (!raw || 'manifest' in raw) return null;
+	const identity = record(raw.identity);
+	const model = record(raw.model);
+	const policy = record(raw.policy);
+	const presentation = record(raw.presentation);
+	const prompt = record(raw.prompt);
+	const availability = record(raw.availability);
+	const rootPresentation = record(raw.root_presentation);
+	if (
+		!identity ||
+		!model ||
+		!policy ||
+		!presentation ||
+		!prompt ||
+		!availability ||
+		!rootPresentation
+	) {
+		return null;
+	}
+	const source = requiredString(identity.source);
+	const catalogGroup = requiredString(identity.catalog_group);
+	const root = requiredString(identity.root);
+	const stableName = requiredString(identity.stable_name);
+	const modelName = requiredString(model.name);
+	const modelDescription = requiredString(model.description);
+	if (!source || !catalogGroup || !root || !stableName || !modelName || !modelDescription)
+		return null;
+	if (!('input_schema' in model)) return null;
+	const operation = identity.operation;
+	if (operation !== null && typeof operation !== 'string') return null;
+	const riskLevel = requiredString(policy.risk_level);
+	const permissionKey = requiredString(policy.permission_key);
+	const confirmation = requiredString(policy.confirmation);
+	const idempotency = requiredString(policy.idempotency);
+	const scope = requiredString(policy.scope);
+	const concurrency = requiredString(policy.concurrency);
+	const effect = requiredString(policy.effect);
+	const dataSensitivity = requiredString(policy.data_sensitivity);
+	const networkAccess = requiredString(policy.network_access);
+	const presentationLabel = requiredString(presentation.label);
+	const renderer = requiredString(presentation.renderer);
+	const icon = requiredString(presentation.icon);
+	const representedSource = requiredString(presentation.represented_source);
+	const whenToUse = requiredString(prompt.when_to_use);
+	const whenNotToUse = requiredString(prompt.when_not_to_use);
+	const keyOperations = prompt.key_operations;
+	if (
+		!riskLevel ||
+		!permissionKey ||
+		!confirmation ||
+		!idempotency ||
+		!scope ||
+		!concurrency ||
+		!effect ||
+		!dataSensitivity ||
+		!networkAccess ||
+		!presentationLabel ||
+		!renderer ||
+		!icon ||
+		!representedSource ||
+		!whenToUse ||
+		!whenNotToUse ||
+		!Array.isArray(keyOperations) ||
+		!keyOperations.every((item) => typeof item === 'string')
+	) {
+		return null;
+	}
+	const enabled = booleanValue(availability.enabled);
+	const available = booleanValue(availability.available);
+	const requiresConnection = booleanValue(availability.requires_connection);
+	const requiresPermission = booleanValue(availability.requires_permission);
+	if (
+		enabled === null ||
+		available === null ||
+		requiresConnection === null ||
+		requiresPermission === null
+	) {
+		return null;
+	}
+	const availabilityReason = availability.availability_reason;
+	if (
+		availabilityReason !== undefined &&
+		availabilityReason !== null &&
+		typeof availabilityReason !== 'string'
+	) {
+		return null;
+	}
+	const rootLabel = requiredString(rootPresentation.label);
+	const rootDescription = requiredString(rootPresentation.description);
+	const rootIcon = requiredString(rootPresentation.icon);
+	if (!rootLabel || !rootDescription || !rootIcon) return null;
 	return {
 		identity: {
 			source,
-			catalogGroup: stringOr(identity.catalog_group, stringOr(raw.catalog_group, 'other')),
+			catalogGroup,
 			root,
-			operation: typeof identity.operation === 'string' ? identity.operation : null,
+			operation,
 			stableName,
 		},
 		model: {
-			name: stringOr(model.name, stableName),
-			description: stringOr(model.description, stringOr(raw.description, '')),
-			inputSchema: model.input_schema ?? raw.input_schema ?? {},
+			name: modelName,
+			description: modelDescription,
+			inputSchema: model.input_schema,
 		},
 		policy: {
-			riskLevel: stringOr(policy.risk_level, stringOr(raw.risk_level, 'unknown')),
-			permissionKey: stringOr(policy.permission_key, ''),
-			confirmation: stringOr(policy.confirmation, 'none'),
-			idempotency: stringOr(policy.idempotency, 'unknown'),
-			scope: stringOr(policy.scope, 'session'),
-			concurrency: stringOr(policy.concurrency, 'exclusive'),
-			effect: optionalString(policy.effect),
-			dataSensitivity: optionalString(policy.data_sensitivity),
-			networkAccess: optionalString(policy.network_access),
+			riskLevel,
+			permissionKey,
+			confirmation,
+			idempotency,
+			scope,
+			concurrency,
+			effect,
+			dataSensitivity,
+			networkAccess,
 		},
 		presentation: {
-			label: stringOr(presentation.label, stringOr(raw.label, stableName)),
-			renderer: stringOr(presentation.renderer, root),
-			icon: stringOr(presentation.icon, 'tools'),
-			representedSource: stringOr(presentation.represented_source, source),
+			label: presentationLabel,
+			renderer,
+			icon,
+			representedSource,
 		},
 		rootPresentation: {
-			label: stringOr(rootPresentation.label, root),
-			description: stringOr(rootPresentation.description, ''),
-			icon: stringOr(rootPresentation.icon, 'tools'),
+			label: rootLabel,
+			description: rootDescription,
+			icon: rootIcon,
 		},
 		prompt: {
-			whenToUse: stringOr(prompt.when_to_use, ''),
-			whenNotToUse: stringOr(prompt.when_not_to_use, ''),
-			keyOperations: Array.isArray(prompt.key_operations)
-				? prompt.key_operations.filter((item: unknown): item is string => typeof item === 'string')
-				: [],
+			whenToUse,
+			whenNotToUse,
+			keyOperations,
 		},
 		availability: {
-			enabled: availability.enabled !== false && raw.enabled !== false,
-			available: availability.available !== false,
-			availabilityReason:
-				typeof availability.availability_reason === 'string'
-					? availability.availability_reason
-					: null,
-			requiresConnection: availability.requires_connection === true,
-			requiresPermission: availability.requires_permission === true,
+			enabled,
+			available,
+			availabilityReason: availabilityReason ?? null,
+			requiresConnection,
+			requiresPermission,
 		},
 	};
 }
 
-function unwrapManifest(value: unknown): unknown {
-	if (!value || typeof value !== 'object') return null;
-	const raw = value as Record<string, unknown>;
-	if (!('manifest' in raw) || !raw.manifest || typeof raw.manifest !== 'object') return value;
-	// A few older callers put the stable name and enabled flag beside a
-	// partial manifest. Merge those compatibility fields before normalization.
-	return { ...raw, ...(raw.manifest as Record<string, unknown>) };
+function record(value: unknown): Record<string, any> | null {
+	return typeof value === 'object' && value !== null && !Array.isArray(value)
+		? (value as Record<string, any>)
+		: null;
 }
 
-function stringOr(value: unknown, fallback: string): string {
-	return typeof value === 'string' && value.length > 0 ? value : fallback;
+function requiredString(value: unknown): string | null {
+	return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
-function optionalString(value: unknown): string | undefined {
-	return typeof value === 'string' ? value : undefined;
+function booleanValue(value: unknown): boolean | null {
+	return typeof value === 'boolean' ? value : null;
 }
 
 /** Replace the live catalog snapshot received from the backend. */
@@ -149,10 +219,9 @@ export function toolRendererName(toolName: string): string | null {
 	return getToolManifest(toolName)?.presentation.renderer ?? null;
 }
 
-/** Tool family/group root, with a compatibility fallback for old messages. */
+/** Tool family/group root from the current backend-owned manifest. */
 export function toolRootName(toolName: string): string {
-	const manifest = getToolManifest(toolName);
-	return manifest?.identity.root || legacyRootName(toolName);
+	return getToolManifest(toolName)?.identity.root ?? toolName.split('.')[0];
 }
 
 export function toolIconName(toolName: string): string | null {
@@ -165,11 +234,4 @@ export function toolLabel(toolName: string): string | null {
 
 export function toolRepresentedSource(toolName: string): ToolSource | null {
 	return getToolManifest(toolName)?.presentation.representedSource ?? null;
-}
-
-function legacyRootName(toolName: string): string {
-	const name = String(toolName || '');
-	if (name === 'load_mcp' || name.startsWith('mcp__')) return 'mcp';
-	if (name === 'load_skill' || name.startsWith('skill__')) return 'skills';
-	return name.split('.')[0] || name;
 }

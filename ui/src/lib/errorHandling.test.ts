@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { get } from 'svelte/store';
-import { notificationStore } from './stores.ts';
+import { notificationStore } from './notificationStore.ts';
 import { reportError } from './errorHandling.ts';
 
 describe('errorHandling', () => {

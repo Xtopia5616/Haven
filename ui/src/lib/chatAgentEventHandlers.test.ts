@@ -1,9 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { get } from 'svelte/store';
-import {
-	createChatAgentEventHandlers,
-} from './chatAgentEventHandlers.ts';
-import { toolOutputPreviewStore } from './stores.ts';
+import { createChatAgentEventHandlers } from './chatAgentEventHandlers.ts';
+import { toolOutputPreviewStore } from './toolOutputPreviewStore.ts';
 
 describe('chat agent live tool output', () => {
 	it('keeps preview ticks out of the session reducer hot path', () => {
