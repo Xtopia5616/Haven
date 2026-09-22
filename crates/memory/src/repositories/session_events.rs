@@ -15,6 +15,12 @@ use std::time::Instant;
 pub const TRANSCRIPT_EVENT_TYPE: &str = "transcript";
 pub const BRANCH_POINT_EVENT_TYPE: &str = "branch_point";
 pub const TIMELINE_ROLLBACK_EVENT_TYPE: &str = "timeline_rollback";
+/// Session-local interaction lifecycle events. The payload is an Agent-owned
+/// `InteractionRequest` or a small `{ "ids": [...] }` object; Memory only
+/// orders and durably stores the event.
+pub const INTERACTION_REQUESTED_EVENT_TYPE: &str = "interaction_requested";
+pub const INTERACTION_RESOLVED_EVENT_TYPE: &str = "interaction_resolved";
+pub const INTERACTION_CLEARED_EVENT_TYPE: &str = "interaction_cleared";
 /// Two-phase marker for recovery-only partial persistence. It is deliberately
 /// an append-only control event so an interrupted repair remains observable
 /// even when the snapshot cache is stale or unreadable.
@@ -50,6 +56,21 @@ pub struct SessionEventInput {
     pub payload: String,
     pub run_id: Option<u64>,
     pub step_number: Option<u32>,
+}
+
+/// The only cursor view exposed to the Agent layer.
+///
+/// `session_events` owns the event sequence, while messages and steps are
+/// materialized projections.  Callers must not derive one clock from another;
+/// this value is read from the same SQLite connection so a recovery boundary
+/// observes one coherent point in time.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub struct SessionCursor {
+    pub event_sequence: i64,
+    pub event_cursor: usize,
+    pub message_ingress_seq: i64,
+    pub step_seq: i64,
+    pub last_msg_at: Option<String>,
 }
 
 /// Projection rows written together with a live transcript batch.
@@ -102,6 +123,8 @@ pub struct TranscriptBatchResult {
     /// Time spent entering the immediate SQLite transaction, including any
     /// writer-lock wait before the event/projection batch could begin.
     pub lock_wait_ms: u64,
+    /// All session clocks after this batch committed.
+    pub cursor: SessionCursor,
 }
 
 /// Stage results carried by a recovery-persistence control event. Keeping the
@@ -140,10 +163,14 @@ impl SessionEventInput {
 /// stable persistence dependency and can replay events without loading the
 /// ReAct implementation.
 #[derive(Clone)]
-pub struct SessionEventStore {
+pub struct SessionStore {
     db: Arc<Database>,
     live_tx: tokio::sync::broadcast::Sender<SessionEvent>,
 }
+
+/// Transitional name for code that only consumes the append-only event API.
+/// New ownership code should use [`SessionStore`].
+pub type SessionEventStore = SessionStore;
 
 /// A race-safe handoff from durable replay to live events.
 ///
@@ -156,7 +183,7 @@ pub struct SessionEventSubscription {
     pub live: tokio::sync::broadcast::Receiver<SessionEvent>,
 }
 
-impl SessionEventStore {
+impl SessionStore {
     pub fn new(db: Arc<Database>) -> Self {
         let (live_tx, _) = tokio::sync::broadcast::channel(256);
         Self { db, live_tx }
@@ -180,6 +207,71 @@ impl SessionEventStore {
         let live = self.subscribe();
         let replay = self.read_from(session_id, after_sequence)?;
         Ok(SessionEventSubscription { replay, live })
+    }
+
+    /// Read all durable session clocks through one persistence boundary.
+    ///
+    /// This is intentionally the only Agent-facing API for `event_cursor`,
+    /// `message_ingress_seq`, `step_seq` and `last_msg_at`.  The values are
+    /// projection metadata, never a source for reconstructing the transcript.
+    pub fn cursor(&self, session_id: &str) -> anyhow::Result<SessionCursor> {
+        let conn = self.db.conn();
+        Self::cursor_in_connection(&conn, session_id)
+    }
+
+    /// Record a small performance checkpoint without copying any ReAct
+    /// state. The event stream and projection clocks remain the only durable
+    /// recovery inputs; this row is merely a cheap high-water mark for
+    /// diagnostics and future indexing.
+    pub fn checkpoint(&self, session_id: &str) -> anyhow::Result<SessionCursor> {
+        let conn = self.db.conn();
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| -> anyhow::Result<SessionCursor> {
+            let cursor = Self::cursor_in_connection(&conn, session_id)?;
+            let revision: i64 = conn
+                .query_row(
+                    "SELECT COALESCE(revision, 0) + 1
+                     FROM react_checkpoints WHERE session_id = ?1",
+                    rusqlite::params![session_id],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .unwrap_or(1);
+            let now = chrono::Utc::now().to_rfc3339();
+            conn.execute(
+                "INSERT INTO react_checkpoints
+                    (session_id, revision, event_cursor, event_sequence,
+                     message_ingress_seq, step_seq, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(session_id) DO UPDATE SET
+                    revision = excluded.revision,
+                    event_cursor = excluded.event_cursor,
+                    event_sequence = excluded.event_sequence,
+                    message_ingress_seq = excluded.message_ingress_seq,
+                    step_seq = excluded.step_seq,
+                    updated_at = excluded.updated_at",
+                rusqlite::params![
+                    session_id,
+                    revision,
+                    cursor.event_cursor as i64,
+                    cursor.event_sequence,
+                    cursor.message_ingress_seq,
+                    cursor.step_seq,
+                    now,
+                ],
+            )?;
+            Ok(cursor)
+        })();
+        match result {
+            Ok(cursor) => {
+                conn.execute_batch("COMMIT")?;
+                Ok(cursor)
+            }
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(error)
+            }
+        }
     }
 
     pub fn append(
@@ -279,10 +371,12 @@ impl SessionEventStore {
             let message_created_at = self
                 .db
                 .write_transcript_projections(&conn, session_id, batch)?;
+            let cursor = Self::cursor_in_connection(&conn, session_id)?;
             Ok(TranscriptBatchResult {
                 events,
                 message_created_at,
                 lock_wait_ms,
+                cursor,
             })
         })();
         match result {
@@ -405,6 +499,57 @@ impl SessionEventStore {
             });
         }
         Ok(stored)
+    }
+
+    fn cursor_in_connection(
+        conn: &rusqlite::Connection,
+        session_id: &str,
+    ) -> anyhow::Result<SessionCursor> {
+        let event_sequence = conn.query_row(
+            "SELECT COALESCE(MAX(sequence), 0) FROM session_events WHERE session_id = ?1",
+            rusqlite::params![session_id],
+            |row| row.get(0),
+        )?;
+        let event_cursor = conn.query_row(
+            "SELECT COUNT(*) FROM session_events
+             WHERE session_id = ?1 AND event_type = ?2",
+            rusqlite::params![session_id, TRANSCRIPT_EVENT_TYPE],
+            |row| row.get::<_, i64>(0),
+        )?;
+        let message_ingress_seq = conn
+            .query_row(
+                "SELECT COALESCE(last_ingress_seq, 0)
+                 FROM message_ingress_cursors WHERE session_id = ?1",
+                rusqlite::params![session_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .unwrap_or(0);
+        let step_seq = conn
+            .query_row(
+                "SELECT COALESCE(last_step_seq, 0)
+                 FROM session_step_cursors WHERE session_id = ?1",
+                rusqlite::params![session_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .unwrap_or(0);
+        let last_msg_at = conn
+            .query_row(
+                "SELECT created_at FROM messages
+                 WHERE session_id = ?1 ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                rusqlite::params![session_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(SessionCursor {
+            event_sequence,
+            event_cursor: usize::try_from(event_cursor)
+                .map_err(|_| anyhow::anyhow!("event cursor does not fit usize"))?,
+            message_ingress_seq,
+            step_seq,
+            last_msg_at,
+        })
     }
 
     pub fn append_transcript(
@@ -653,6 +798,17 @@ impl SessionEventStore {
             .read_active(session_id)?
             .into_iter()
             .filter(|event| event.event_type == TRANSCRIPT_EVENT_TYPE)
+            .collect())
+    }
+
+    /// Return active non-transcript domain events for the session.  ReAct
+    /// recovery uses this for interaction state; messages and steps are never
+    /// consulted to reconstruct the actor.
+    pub fn read_active_domain_events(&self, session_id: &str) -> anyhow::Result<Vec<SessionEvent>> {
+        Ok(self
+            .read_active(session_id)?
+            .into_iter()
+            .filter(|event| event.event_type != TRANSCRIPT_EVENT_TYPE)
             .collect())
     }
 
@@ -1372,5 +1528,30 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn checkpoint_records_clocks_without_writing_react_state() {
+        let (db, store, session_id) = store();
+        store
+            .append_transcript(&session_id, r#"{"type":"turn"}"#, 1, 1)
+            .unwrap();
+        store
+            .append(
+                &session_id,
+                "interaction_requested",
+                r#"{"id":"req"}"#,
+                None,
+                None,
+            )
+            .unwrap();
+
+        let cursor = store.checkpoint(&session_id).unwrap();
+        assert_eq!(cursor.event_cursor, 1);
+        assert_eq!(cursor.event_sequence, 2);
+        assert!(db.get_react_state(&session_id).unwrap().is_none());
+        let checkpoint = db.get_react_checkpoint(&session_id).unwrap().unwrap();
+        assert_eq!(checkpoint.event_cursor, 1);
+        assert_eq!(checkpoint.event_sequence, 2);
     }
 }

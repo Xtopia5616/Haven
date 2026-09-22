@@ -67,6 +67,9 @@ impl SessionSupervisor {
                 // provider/tool to cooperate here: the UI must regain its
                 // controls even when the active tool is slow or stuck.
                 cancel.cancel();
+                if let Some(actor) = self.actor_for(session_id).await {
+                    let _ = actor.cancel_session().await;
+                }
                 self.update_session_status(session_id, SessionStatus::Paused)
                     .await?;
                 Ok(self.get_active_session_status(session_id).await == Some(SessionStatus::Paused))
@@ -659,6 +662,11 @@ impl SessionSupervisor {
     pub fn get_tools(&self) -> Arc<ToolsManager> {
         self.tools.clone()
     }
+
+    pub(crate) fn session_store(&self) -> haven_memory::SessionStore {
+        self.store.clone()
+    }
+
     pub fn db(&self) -> &Arc<Database> {
         &self.db
     }

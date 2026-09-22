@@ -2,7 +2,7 @@
 
 ## 状态
 
-已接受（2026-09-21）
+已接受（2026-09-21）；运行态部分由 ADR 0196 取代
 
 ## 背景
 
@@ -15,13 +15,13 @@ replay 的 append-only 权威来源。此前 `ReActSnapshot.events` 又把完整
 
 - `ReActSnapshot.events` 仅作为进程内恢复/投影 scratch，不再由当前 serializer
   写入数据库。
-- 新 snapshot 保存 `event_cursor`、运行时检查点元数据、interaction/budget 状态、
-  ingress/projection 游标，以及最多 32 条 `event_tail` 诊断缓存。
+- 旧版本 snapshot 曾保存 `event_cursor`、运行时检查点元数据、interaction/budget 状态、
+  ingress/projection 游标，以及最多 32 条 `event_tail` 诊断缓存；这些运行态现由
+  `SessionActor` 和 `SessionStore` 拥有，生产 checkpoint 只保留游标元数据。
 - resume 与 rollback 在存在事件行时始终从 `SessionEventStore` 读取完整 active
   transcript；snapshot 不能覆盖或修复 durable event stream。
-- 旧的、仍包含完整 `events` 的 snapshot 只在该 session 没有事件行时一次性导入。
-  只有尾部缓存而 `event_cursor` 更大的新 snapshot 不可作为完整恢复源，并应要求
-  durable `session_events` 或按发布重置策略处理。
+- 旧的、仍包含完整 `events` 的 snapshot 不再作为生产恢复源；若缺少 durable
+  `session_events`，session 按 fresh/reset contract 处理。
 - `event_cursor` 是 active transcript 的投影索引，`event_sequence` 是包含控制事件
   的 append-only 高水位，`last_msg_at` 只用于物化消息投影截断；它们属于不同边界，
   不互相推导，也不承载 transcript 内容。

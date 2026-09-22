@@ -13,7 +13,7 @@ use haven_common::media::{
 use haven_common::types::MessageAttachment;
 use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
 use haven_llm::{FinishReason, LlmResponse, LlmRouter, ToolDefinition};
-use haven_memory::{Database, SessionEventStore};
+use haven_memory::{Database, SessionStore};
 
 use crate::compactor::{ContextCompactor, estimate_provider_request_tokens_with_message_estimate};
 use crate::event::{AgentEvent, AgentEventEmitter, EventDispatcher, UsagePayload};
@@ -22,14 +22,14 @@ use crate::types::{Action, TranscriptRecord, media_inputs_from_events};
 mod context;
 mod hook_policy;
 mod hooks;
-mod identity;
+pub(crate) mod identity;
 mod inject;
 mod r#loop;
 mod metrics;
 mod request_context;
 mod response_cycle;
 mod retries;
-mod sidecars;
+pub(crate) mod sidecars;
 mod snapshot_io;
 mod state;
 pub(crate) mod stream_step;
@@ -41,20 +41,17 @@ mod transcript;
 mod turn;
 mod turn_end;
 
+use crate::session::UsageUpdate;
 use context::ContextSource;
 pub(crate) use context::action_result_message_id;
 pub(crate) use hooks::{InferCallback, MemoryPatchHandle, default_hooks_with_infer_and_patch};
 use hooks::{LoopHooksHandle, default_hooks};
-use identity::IdentityMap;
 pub(crate) use r#loop::RunInput;
 pub use r#loop::{LoopExit, PauseReason};
 use metrics::{Counter as MetricsCounter, Phase as MetricsPhase, ReActMetrics};
 pub use metrics::{MetricsSnapshot, UiMetricsSnapshot};
 pub(crate) use request_context::RequestContext;
-use sidecars::{
-    ContextWindowCache, CumulativeUsage, LastMsgAtCache, SnapshotBufs, TokenEstimateCache,
-    UsageTracker,
-};
+use sidecars::ContextWindowCache;
 pub(crate) use state::{ReActState, RetryNudge};
 use transcript::{ObservationCard, TranscriptEvent};
 
@@ -314,7 +311,7 @@ pub(super) struct RunMsgIdGuard<'a> {
 impl Drop for RunMsgIdGuard<'_> {
     fn drop(&mut self) {
         self.engine.clear_msg_ids_for_session(&self.session_id);
-        self.engine.clear_run_budget(&self.session_id);
+        self.engine.clear_run_budget_now(&self.session_id);
     }
 }
 
@@ -322,10 +319,10 @@ pub struct ReActEngine {
     router: Arc<RwLock<Arc<LlmRouter>>>,
     executor: Arc<SessionSupervisor>,
     db: Arc<Database>,
-    /// Durable transcript/event boundary. Snapshot JSON is only a checkpoint
-    /// cache; all new transcript records are appended here before entering
-    /// the in-memory projection.
-    pub(crate) event_store: SessionEventStore,
+    /// Durable transcript/event boundary. All new transcript records are
+    /// appended here before entering the in-memory projection; checkpoint
+    /// metadata is written through the same store.
+    pub(crate) event_store: SessionStore,
     max_steps: Mutex<u32>,
     /// Optional session-lifetime step cap (Phase 8 / J1). `None` = unlimited.
     session_max_steps: Mutex<Option<u32>>,
@@ -336,28 +333,15 @@ pub struct ReActEngine {
     run_counter: AtomicU64,
     /// Queue/inbox source adapter; projection remains in `inject`.
     context_source: ContextSource,
-    /// Per-session cumulative token usage.
-    usage: UsageTracker,
-    /// Newest message `created_at` per session (branch-point cutoff cache).
-    last_msg_at: LastMsgAtCache,
-    /// Per-session incremental token-estimate cache.
-    token_estimates: TokenEstimateCache,
-    /// Snapshot serialization buffers.
-    snapshot_bufs: SnapshotBufs,
-    /// Mid-run DB snapshot throttle (Phase 7 / F3).
-    snapshot_store: Mutex<snapshot_io::SnapshotStore>,
+    /// Mid-run checkpoint throttle (Phase 7 / F3).
+    checkpoint_store: Mutex<snapshot_io::CheckpointStore>,
     /// Per-request context-window cache keyed by router instance pointer.
     context_windows: ContextWindowCache,
-    /// Minted streaming-message ids (Phase 6 / I3).
-    identity: IdentityMap,
     /// Domain side effects (inbox / compact / infer). Thin loop only calls
     /// `hooks.before_step` / `on_pause` (Phase 3 / G1).
     hooks: LoopHooksHandle,
     /// Optional fact engine for compaction-summary extraction (M3).
     memory_worker: Option<Arc<crate::MemoryWorker>>,
-    /// Live per-run budget mirrored into snapshots (R4). Cleared when the
-    /// run exits so a later pause/resume cannot leak a stale budget.
-    run_budgets: Mutex<HashMap<String, crate::types::RunBudget>>,
     /// Fixed-size, in-process ReAct baseline metrics. Updates are atomic and
     /// deliberately separate from the durable session/event projection.
     metrics: Arc<ReActMetrics>,
@@ -397,7 +381,7 @@ impl ReActEngine {
     ) -> Self {
         let metrics = Arc::new(ReActMetrics::new());
         let context_source = ContextSource::new(executor.clone(), db.clone(), metrics.clone());
-        let event_store = SessionEventStore::new(db.clone());
+        let event_store = executor.session_store();
         Self {
             router: Arc::new(RwLock::new(router)),
             executor,
@@ -409,16 +393,10 @@ impl ReActEngine {
             media_strategy: Mutex::new(MediaInputStrategy::Auto),
             run_counter: AtomicU64::new(0),
             context_source,
-            usage: UsageTracker::new(),
-            last_msg_at: LastMsgAtCache::new(),
-            token_estimates: TokenEstimateCache::new(),
-            snapshot_bufs: SnapshotBufs::new(),
-            snapshot_store: Mutex::new(snapshot_io::SnapshotStore::default()),
+            checkpoint_store: Mutex::new(snapshot_io::CheckpointStore::default()),
             context_windows: ContextWindowCache::new(),
-            identity: IdentityMap::new(),
             hooks: default_hooks(),
             memory_worker: None,
-            run_budgets: Mutex::new(HashMap::new()),
             metrics,
         }
     }
@@ -434,22 +412,24 @@ impl ReActEngine {
         self.metrics.increment(MetricsCounter::ActionResultRetries);
     }
 
-    /// Record the live run budget so mid-run / pause snapshots include it (R4).
-    pub(super) fn set_run_budget(&self, session_id: &str, budget: crate::types::RunBudget) {
-        self.run_budgets
-            .lock()
-            .unwrap()
-            .insert(session_id.to_string(), budget);
+    /// Record the live run budget in the session actor (R4). The ReAct facade
+    /// only sends commands to the session mailbox.
+    pub(super) async fn set_run_budget(&self, session_id: &str, budget: crate::types::RunBudget) {
+        if let Some(actor) = self.executor.actor_for(session_id).await {
+            actor.set_run_budget(budget).await;
+        }
     }
 
-    /// Drop the live run budget when the loop exits (any path).
-    pub(super) fn clear_run_budget(&self, session_id: &str) {
-        self.run_budgets.lock().unwrap().remove(session_id);
-    }
-
-    /// Snapshot of the live run budget for `session_id`, if any.
-    pub(super) fn current_run_budget(&self, session_id: &str) -> Option<crate::types::RunBudget> {
-        self.run_budgets.lock().unwrap().get(session_id).cloned()
+    #[cfg(test)]
+    pub(super) async fn current_run_budget(
+        &self,
+        session_id: &str,
+    ) -> Option<crate::types::RunBudget> {
+        self.executor
+            .actor_for(session_id)
+            .await?
+            .current_run_budget()
+            .await
     }
 
     /// Replace loop hooks (production: `default_hooks_with_infer`; tests:
@@ -467,30 +447,64 @@ impl ReActEngine {
 
     /// Mint (or reuse) the id a streamed thought/reasoning block accumulates
     /// into (Phase 6 / I3 — delegates to [`IdentityMap`]).
-    pub(super) fn ensure_msg_id(
+    pub(super) async fn ensure_msg_id(
         &self,
         session_id: &str,
         step: u32,
         run: u64,
         kind: &'static str,
     ) -> String {
-        self.identity.ensure_msg_id(session_id, step, run, kind)
+        let actor = match self.executor.actor_for(session_id).await {
+            Some(actor) => Some(actor),
+            None => {
+                let _ = self.executor.ensure_session_loaded(session_id).await;
+                self.executor.actor_for(session_id).await
+            }
+        };
+        if let Some(actor) = actor
+            && let Some(id) = actor.ensure_stream_id(step, run, kind).await
+        {
+            return id;
+        }
+        let prefix = if kind == "thought" { "step" } else { "msg" };
+        haven_common::types::new_id(prefix)
     }
 
     /// The id a streamed block is persisted under (minted or fresh fallback).
-    pub(super) fn block_msg_id(
+    pub(super) async fn block_msg_id(
         &self,
         session_id: &str,
         step: u32,
         run: u64,
         kind: &'static str,
     ) -> String {
-        self.identity.block_msg_id(session_id, step, run, kind)
+        let actor = match self.executor.actor_for(session_id).await {
+            Some(actor) => Some(actor),
+            None => {
+                let _ = self.executor.ensure_session_loaded(session_id).await;
+                self.executor.actor_for(session_id).await
+            }
+        };
+        if let Some(actor) = actor
+            && let Some(id) = actor.block_stream_id(step, run, kind).await
+        {
+            return id;
+        }
+        let prefix = if kind == "thought" { "step" } else { "msg" };
+        haven_common::types::new_id(prefix)
     }
 
     /// Drop every minted message id belonging to a session.
     pub(super) fn clear_msg_ids_for_session(&self, session_id: &str) {
-        self.identity.clear_for_session(session_id);
+        if let Some(actor) = self.executor.actor_for_now(session_id) {
+            actor.clear_stream_ids_now();
+        }
+    }
+
+    pub(super) fn clear_run_budget_now(&self, session_id: &str) {
+        if let Some(actor) = self.executor.actor_for_now(session_id) {
+            actor.clear_run_budget_now();
+        }
     }
 
     pub fn replace_router(&self, new_router: Arc<LlmRouter>) {
@@ -559,23 +573,19 @@ impl ReActEngine {
         )
     }
 
-    pub fn note_last_msg_at(&self, session_id: &str, created_at: Option<String>) {
-        self.last_msg_at.set(session_id, created_at);
-    }
-
-    /// Drop the cached newest-message timestamp (rollback / truncate).
-    pub fn clear_last_msg_at(&self, session_id: &str) {
-        self.last_msg_at.remove(session_id);
-    }
-
     pub(super) async fn refresh_last_msg_at(
         &self,
         session_id: &str,
     ) -> anyhow::Result<Option<String>> {
         let db = self.db.clone();
+        let store = self.event_store.clone();
         let session_id_owned = session_id.to_string();
         let fetched = db
-            .run_blocking(move |db| db.try_get_last_message_created_at(&session_id_owned))
+            .run_blocking(move |_| {
+                store
+                    .cursor(&session_id_owned)
+                    .map(|cursor| cursor.last_msg_at)
+            })
             .await
             .map_err(|error| {
                 tracing::warn!(
@@ -585,7 +595,6 @@ impl ReActEngine {
                 );
                 anyhow::anyhow!("failed to refresh last message timestamp: {error}")
             })?;
-        self.note_last_msg_at(session_id, fetched.clone());
         Ok(fetched)
     }
 
@@ -746,36 +755,54 @@ impl ReActEngine {
         // avoids cloning the full LlmConfig on every step.
         let context_window = Some(self.cached_context_window(request).await);
 
-        let seed = if self.usage.needs_seed(session_id) {
-            let db = self.db.clone();
-            let session_id_for_seed = session_id.to_string();
-            let read_seed = move |db: &Database| -> anyhow::Result<CumulativeUsage> {
-                Ok(db
-                    .get_session_usage(&session_id_for_seed)?
-                    .map(CumulativeUsage::from)
-                    .unwrap_or_default())
-            };
-            match cancel.clone() {
-                Some(cancel) => db
-                    .run_blocking_cancellable(cancel, read_seed)
-                    .await
-                    .unwrap_or_default(),
-                None => db.run_blocking(read_seed).await.unwrap_or_default(),
+        let actor = match self.executor.actor_for(session_id).await {
+            Some(actor) => actor,
+            None => {
+                if let Err(error) = self.executor.ensure_session_loaded(session_id).await {
+                    tracing::warn!(session_id, %error, "failed to load actor for usage update");
+                    return;
+                }
+                let Some(actor) = self.executor.actor_for(session_id).await else {
+                    tracing::warn!(session_id, "session actor disappeared during usage update");
+                    return;
+                };
+                actor
             }
-        } else {
-            CumulativeUsage::default()
         };
-        let totals = self.usage.record_with_seed(
-            session_id,
-            usage.prompt_tokens,
-            usage.completion_tokens,
-            usage.total_tokens,
-            usage.cached_tokens,
-            usage.cache_creation_tokens,
-            usage.cache_miss_tokens(),
-            step_cost,
-            || seed,
-        );
+        let model = response.model.clone().or_else(|| usage.model_name.clone());
+        let call_has_cost = step_cost.is_some();
+        let cache_diagnostics = usage
+            .cache_diagnostics
+            .as_ref()
+            .and_then(|diagnostics| serde_json::to_string(diagnostics).ok());
+        let totals = match actor
+            .record_usage(UsageUpdate {
+                request,
+                model: model.clone(),
+                step_number,
+                prompt_tokens: usage.prompt_tokens,
+                completion_tokens: usage.completion_tokens,
+                total_tokens: usage.total_tokens,
+                cached_tokens: usage.cached_tokens,
+                cache_creation_tokens: usage.cache_creation_tokens,
+                cache_miss_tokens: usage.cache_miss_tokens(),
+                cache_accounting: usage.cache_accounting.as_str().into(),
+                cache_diagnostics,
+                cost_usd: step_cost.unwrap_or(0.0),
+                has_cost: call_has_cost,
+                duration_ms,
+                context_tokens: usage.context_tokens(),
+                context_window,
+                cancel,
+            })
+            .await
+        {
+            Ok(totals) => totals,
+            Err(error) => {
+                tracing::warn!(session_id, %error, "failed to record session usage");
+                return;
+            }
+        };
         let cum_prompt = totals.prompt_tokens;
         let cum_completion = totals.completion_tokens;
         let cum_total = totals.total_tokens;
@@ -783,8 +810,6 @@ impl ReActEngine {
         let cum_cache_creation = totals.cache_creation_tokens;
         let cum_cache_miss = totals.cache_miss_tokens;
         let cum_cost_opt = totals.cost_usd;
-
-        let model = response.model.clone().or_else(|| usage.model_name.clone());
 
         tracing::debug!(
             "ReAct step {} session {} LLM usage: {}/{}/{} tokens (cache hit {} / write {}), {} ms, model={:?}",
@@ -798,85 +823,6 @@ impl ReActEngine {
             duration_ms.unwrap_or(0),
             model
         );
-
-        // Persist one per-call detail row and rebuild `session_usage` from the
-        // SUM of remaining detail rows (not the in-memory absolute totals).
-        // Await the blocking write before emitting the usage event: a user can
-        // pause and immediately reopen a session after seeing that event, and
-        // resume must observe the same cumulative counters as the live UI.
-        // An epoch captured here is checked inside the task so a rollback that
-        // truncates usage after this spawn cannot be undone by a late insert.
-        let db = self.db.clone();
-        let session_id_for_persist = session_id.to_string();
-        let call_cost = step_cost.unwrap_or(0.0);
-        let call_has_cost = step_cost.is_some();
-        let model_for_persist = model.clone();
-        let usage_prompt = usage.prompt_tokens;
-        let usage_completion = usage.completion_tokens;
-        let usage_total = usage.total_tokens;
-        let usage_cached = usage.cached_tokens;
-        let usage_cache_creation = usage.cache_creation_tokens;
-        let usage_cache_miss = usage.cache_miss_tokens();
-        let usage_context_tokens = usage.context_tokens();
-        let usage_cache_diagnostics = usage
-            .cache_diagnostics
-            .as_ref()
-            .and_then(|diagnostics| serde_json::to_string(diagnostics).ok());
-        let persist_epoch = self.usage.epoch(session_id);
-        let epochs = self.usage.epochs_handle();
-        let persist = move |db: &Database| -> anyhow::Result<()> {
-            let epoch_now = || {
-                epochs
-                    .lock()
-                    .unwrap()
-                    .get(&session_id_for_persist)
-                    .copied()
-                    .unwrap_or(0)
-            };
-            if epoch_now() != persist_epoch {
-                return Ok(());
-            }
-            let rec = db
-                .persist_llm_call_and_refresh_session_usage_with_cache_accounting_and_context(
-                    &session_id_for_persist,
-                    Some(step_number),
-                    request,
-                    model_for_persist.as_deref(),
-                    usage_prompt,
-                    usage_completion,
-                    usage_total,
-                    usage_cached,
-                    usage_cache_creation,
-                    usage_cache_miss,
-                    usage.cache_accounting.as_str(),
-                    usage_cache_diagnostics.as_deref(),
-                    call_cost,
-                    call_has_cost,
-                    duration_ms,
-                    usage_context_tokens,
-                    context_window,
-                )?;
-            // Rollback may have truncated between the pre-check and the
-            // insert; drop the phantom row and rebuild so totals stay true.
-            if epoch_now() != persist_epoch {
-                let _ = db.delete_llm_usage_by_id(&rec.id);
-                let _ = db.rebuild_session_usage_from_calls(&session_id_for_persist);
-            }
-            Ok(())
-        };
-        let persisted = match cancel {
-            Some(cancel) => db.run_blocking_cancellable(cancel, persist).await,
-            None => db.run_blocking(persist).await,
-        };
-        match persisted {
-            Ok(()) => {}
-            Err(e) => tracing::warn!(
-                "ReAct: failed to persist usage for session {} step {}: {}",
-                session_id,
-                step_number,
-                e
-            ),
-        }
 
         EventDispatcher::emit_usage_from(
             emitter,
@@ -1177,15 +1123,15 @@ impl ReActEngine {
     /// Drop cumulative counters and process-local checkpoint caches for a
     /// finished session so all per-session maps stay bounded across long runs.
     pub fn reset_cumulative_usage(&self, session_id: &str) {
-        self.usage.reset(session_id);
         self.reset_token_estimate(session_id);
-        self.snapshot_store
+        self.checkpoint_store
             .lock()
             .unwrap()
             .clear_session(session_id);
-        self.last_msg_at.remove(session_id);
-        self.snapshot_bufs.remove(session_id);
         self.context_source.clear_session(session_id);
+        if let Some(actor) = self.executor.actor_for_now(session_id) {
+            actor.reset_usage_now();
+        }
     }
 
     /// After rollback/truncate rebuilt `session_usage` from remaining
@@ -1193,7 +1139,9 @@ impl ReActEngine {
     /// so a late fire-and-forget write from a discarded call cannot re-inflate
     /// the totals. Next live usage event re-seeds from the rebuilt DB row.
     pub fn invalidate_usage_after_truncate(&self, session_id: &str) {
-        self.usage.invalidate_after_truncate(session_id);
+        if let Some(actor) = self.executor.actor_for_now(session_id) {
+            actor.invalidate_usage_now();
+        }
     }
 
     /// Resolve the model's true context window for the request used by
@@ -1259,35 +1207,55 @@ impl ReActEngine {
     /// or compaction increments the canonical revision and causes one safe
     /// rebuild. This avoids serializing the whole history merely to validate a
     /// cache hit.
-    pub(super) fn estimate_canonical_tokens(&self, session_id: &str, state: &ReActState) -> u32 {
-        self.token_estimates.estimate(
-            session_id,
-            &state.canonical,
-            state.canonical_generation(),
-            state.canonical_revision(),
-        )
+    pub(super) async fn estimate_canonical_tokens(
+        &self,
+        session_id: &str,
+        state: &ReActState,
+    ) -> u32 {
+        let actor = match self.executor.actor_for(session_id).await {
+            Some(actor) => actor,
+            None => {
+                let _ = self.executor.ensure_session_loaded(session_id).await;
+                let Some(actor) = self.executor.actor_for(session_id).await else {
+                    return crate::compactor::estimate_message_tokens(&state.canonical);
+                };
+                actor
+            }
+        };
+        actor
+            .estimate_tokens(
+                state.canonical.clone(),
+                state.canonical_generation(),
+                state.canonical_revision(),
+            )
+            .await
     }
 
     /// Keep the token sidecar synchronized with the one canonical append
     /// boundary. This is deliberately adjacent to the transcript projector so
     /// callers cannot forget to invalidate the estimate when adding a message.
-    pub(super) fn note_canonical_append(&self, session_id: &str, state: &mut ReActState) {
+    pub(super) async fn note_canonical_append(&self, session_id: &str, state: &mut ReActState) {
         state.mark_canonical_append();
-        if let Some(message) = state.canonical.last() {
-            self.token_estimates.append_message(
-                session_id,
-                message,
-                state.canonical.len(),
-                state.canonical_generation(),
-                state.canonical_revision(),
-            );
+        if let Some(message) = state.canonical.last()
+            && let Some(actor) = self.executor.actor_for(session_id).await
+        {
+            actor
+                .append_token_estimate(
+                    message.clone(),
+                    state.canonical.len(),
+                    state.canonical_generation(),
+                    state.canonical_revision(),
+                )
+                .await;
         }
     }
 
     /// Drop the per-session token-estimate cache entry (called alongside
     /// `reset_cumulative_usage` on session completion/error).
     pub fn reset_token_estimate(&self, session_id: &str) {
-        self.token_estimates.remove(session_id);
+        if let Some(actor) = self.executor.actor_for_now(session_id) {
+            actor.reset_token_estimate_now();
+        }
     }
 
     /// Check if context compaction is needed before the next LLM call.
@@ -1321,7 +1289,7 @@ impl ReActEngine {
         // Compare the incremental estimate against the threshold directly;
         // `needs_compaction` would re-estimate the whole canonical and undo
         // the incremental cache.
-        let cached_message_tokens = self.estimate_canonical_tokens(&ctx.session_id, state);
+        let cached_message_tokens = self.estimate_canonical_tokens(&ctx.session_id, state).await;
         let request_tokens = estimate_provider_request_tokens_with_message_estimate(
             &state.canonical,
             tool_defs,

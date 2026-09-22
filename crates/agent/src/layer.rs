@@ -218,11 +218,6 @@ impl AgentLayer {
             None,
         )
         .await?;
-        // Keep ReAct branch-point cutoff cache aligned with ingress writes
-        // (steering / follow-up) so mid-run `save_branch_point(force=false)`
-        // cannot embed a stale-low `last_msg_at`.
-        self.react_engine
-            .note_last_msg_at(session_id, Some(msg.created_at.clone()));
         Ok(msg)
     }
 
@@ -541,10 +536,7 @@ impl AgentLayer {
                             )
                             .await
                             {
-                                Ok(persisted) => {
-                                    agent
-                                        .react_engine
-                                        .note_last_msg_at(&tid, Some(persisted.created_at));
+                                Ok(_persisted) => {
                                     action_service
                                         .acknowledge_background_completion(&comp.action_result_id)
                                         .await;

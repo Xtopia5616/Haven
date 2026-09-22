@@ -7,8 +7,15 @@
 
 use super::{FollowUp, SessionInfo, SessionStatus, SessionWaitingReason, StepInfo};
 use crate::interaction::{InteractionKind, InteractionRequest, InteractionStatus};
-use haven_common::types::MessageAttachment;
-use haven_memory::Database;
+use crate::react::identity::IdentityMap;
+use crate::react::sidecars::{CumulativeTotals, CumulativeUsage, TokenEstimateCache, UsageTracker};
+use crate::types::RunBudget;
+use haven_common::config::RequestKind;
+use haven_common::types::{CanonicalMessage, MessageAttachment};
+use haven_memory::{
+    Database, INTERACTION_CLEARED_EVENT_TYPE, INTERACTION_REQUESTED_EVENT_TYPE,
+    INTERACTION_RESOLVED_EVENT_TYPE, SessionStore,
+};
 use haven_tools::inbox::{Envelope, MessageType};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -87,8 +94,66 @@ pub(crate) struct ConfirmDecision {
     pub wake_session: bool,
 }
 
+/// The stable command surface of a session actor.  The supervisor and the
+/// ReAct loop use these commands instead of reaching into separate queue,
+/// interaction, or background-result maps.
+#[derive(Debug)]
+pub(crate) enum SessionCommand {
+    Submit {
+        text: String,
+        attachments: Vec<MessageAttachment>,
+        is_answer: bool,
+        message_id: Option<String>,
+        reply: oneshot::Sender<anyhow::Result<()>>,
+    },
+    Steer {
+        text: String,
+        attachments: Vec<MessageAttachment>,
+        message_id: Option<String>,
+        reply: oneshot::Sender<anyhow::Result<()>>,
+    },
+    ResolveInteraction {
+        request_id: String,
+        response: Value,
+        reply: oneshot::Sender<anyhow::Result<Option<ConfirmDecision>>>,
+    },
+    Cancel {
+        reply: oneshot::Sender<anyhow::Result<()>>,
+    },
+    BackgroundResult {
+        action_result_id: String,
+        text: String,
+        reply: oneshot::Sender<anyhow::Result<()>>,
+    },
+}
+
+/// Provider-neutral usage input accepted by the actor.  Keeping this DTO at
+/// the actor boundary prevents the ReAct facade from mutating a per-session
+/// cumulative map and then separately persisting the same call.
+#[derive(Debug, Clone)]
+pub(crate) struct UsageUpdate {
+    pub request: RequestKind,
+    pub model: Option<String>,
+    pub step_number: i32,
+    pub prompt_tokens: u32,
+    pub completion_tokens: u32,
+    pub total_tokens: u32,
+    pub cached_tokens: u32,
+    pub cache_creation_tokens: u32,
+    pub cache_miss_tokens: u32,
+    pub cache_accounting: String,
+    pub cache_diagnostics: Option<String>,
+    pub cost_usd: f64,
+    pub has_cost: bool,
+    pub duration_ms: Option<u64>,
+    pub context_tokens: u32,
+    pub context_window: Option<u32>,
+    pub cancel: Option<CancellationToken>,
+}
+
 #[derive(Debug)]
 pub(crate) enum ActorCommand {
+    Session(SessionCommand),
     Snapshot {
         reply: oneshot::Sender<SessionInfo>,
     },
@@ -121,21 +186,48 @@ pub(crate) enum ActorCommand {
     IsRunning {
         reply: oneshot::Sender<bool>,
     },
-    QueueFollowUp {
-        text: String,
-        attachments: Vec<MessageAttachment>,
-        is_answer: bool,
-        message_id: Option<String>,
-        reply: oneshot::Sender<anyhow::Result<()>>,
+    SetRunBudget {
+        budget: RunBudget,
     },
+    #[cfg(test)]
+    CurrentRunBudget {
+        reply: oneshot::Sender<Option<RunBudget>>,
+    },
+    ClearRunBudget,
+    EnsureStreamId {
+        step: u32,
+        run: u64,
+        kind: &'static str,
+        reply: oneshot::Sender<String>,
+    },
+    BlockStreamId {
+        step: u32,
+        run: u64,
+        kind: &'static str,
+        reply: oneshot::Sender<String>,
+    },
+    ClearStreamIds,
+    RecordUsage {
+        update: UsageUpdate,
+        reply: oneshot::Sender<anyhow::Result<CumulativeTotals>>,
+    },
+    ResetUsage,
+    InvalidateUsage,
+    EstimateTokens {
+        canonical: Vec<CanonicalMessage>,
+        generation: u64,
+        revision: u64,
+        reply: oneshot::Sender<u32>,
+    },
+    AppendTokenEstimate {
+        message: CanonicalMessage,
+        canonical_len: usize,
+        generation: u64,
+        revision: u64,
+    },
+    ResetTokenEstimate,
     DrainFollowUps {
         reply: oneshot::Sender<Vec<FollowUp>>,
-    },
-    QueueSteering {
-        text: String,
-        attachments: Vec<MessageAttachment>,
-        message_id: Option<String>,
-        reply: oneshot::Sender<anyhow::Result<()>>,
     },
     DrainSteering {
         reply: oneshot::Sender<Vec<FollowUp>>,
@@ -150,11 +242,6 @@ pub(crate) enum ActorCommand {
         reply: oneshot::Sender<ContextQueueStats>,
     },
     MarkQueuesAsAnswer,
-    AddActionCompletion {
-        action_result_id: String,
-        text: String,
-        reply: oneshot::Sender<anyhow::Result<()>>,
-    },
     DrainActionCompletions {
         reply: oneshot::Sender<Vec<ActionResult>>,
     },
@@ -169,11 +256,7 @@ pub(crate) enum ActorCommand {
     },
     ClearInteractions {
         kind: Option<InteractionKind>,
-    },
-    ResolveInteraction {
-        request_id: String,
-        response: Value,
-        reply: oneshot::Sender<Option<ConfirmDecision>>,
+        reply: oneshot::Sender<anyhow::Result<()>>,
     },
     RecordStep {
         step: Box<StepInfo>,
@@ -339,6 +422,129 @@ impl SessionActorHandle {
         rx.await.unwrap_or(false)
     }
 
+    pub(crate) async fn set_run_budget(&self, budget: RunBudget) {
+        let _ = self.send(ActorCommand::SetRunBudget { budget }).await;
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn current_run_budget(&self) -> Option<RunBudget> {
+        let (reply, rx) = oneshot::channel();
+        if self
+            .send(ActorCommand::CurrentRunBudget { reply })
+            .await
+            .is_err()
+        {
+            return None;
+        }
+        rx.await.ok().flatten()
+    }
+
+    pub(crate) fn clear_run_budget_now(&self) {
+        let _ = self.tx.try_send(ActorCommand::ClearRunBudget);
+    }
+
+    pub(crate) async fn ensure_stream_id(
+        &self,
+        step: u32,
+        run: u64,
+        kind: &'static str,
+    ) -> Option<String> {
+        let (reply, rx) = oneshot::channel();
+        self.send(ActorCommand::EnsureStreamId {
+            step,
+            run,
+            kind,
+            reply,
+        })
+        .await
+        .ok()?;
+        rx.await.ok()
+    }
+
+    pub(crate) async fn block_stream_id(
+        &self,
+        step: u32,
+        run: u64,
+        kind: &'static str,
+    ) -> Option<String> {
+        let (reply, rx) = oneshot::channel();
+        self.send(ActorCommand::BlockStreamId {
+            step,
+            run,
+            kind,
+            reply,
+        })
+        .await
+        .ok()?;
+        rx.await.ok()
+    }
+
+    pub(crate) fn clear_stream_ids_now(&self) {
+        let _ = self.tx.try_send(ActorCommand::ClearStreamIds);
+    }
+
+    pub(crate) async fn record_usage(
+        &self,
+        update: UsageUpdate,
+    ) -> anyhow::Result<CumulativeTotals> {
+        let (reply, rx) = oneshot::channel();
+        self.send(ActorCommand::RecordUsage { update, reply })
+            .await?;
+        rx.await
+            .map_err(|_| anyhow::anyhow!("session actor '{}' dropped usage update", self.id))?
+    }
+
+    pub(crate) fn reset_usage_now(&self) {
+        let _ = self.tx.try_send(ActorCommand::ResetUsage);
+    }
+
+    pub(crate) fn invalidate_usage_now(&self) {
+        let _ = self.tx.try_send(ActorCommand::InvalidateUsage);
+    }
+
+    pub(crate) async fn estimate_tokens(
+        &self,
+        canonical: Vec<CanonicalMessage>,
+        generation: u64,
+        revision: u64,
+    ) -> u32 {
+        let (reply, rx) = oneshot::channel();
+        if self
+            .send(ActorCommand::EstimateTokens {
+                canonical,
+                generation,
+                revision,
+                reply,
+            })
+            .await
+            .is_err()
+        {
+            return 0;
+        }
+        rx.await.unwrap_or(0)
+    }
+
+    pub(crate) async fn append_token_estimate(
+        &self,
+        message: CanonicalMessage,
+        canonical_len: usize,
+        generation: u64,
+        revision: u64,
+    ) {
+        let _ = self
+            .send(ActorCommand::AppendTokenEstimate {
+                message,
+                canonical_len,
+                generation,
+                revision,
+            })
+            .await;
+    }
+
+    pub(crate) fn reset_token_estimate_now(&self) {
+        let _ = self.tx.try_send(ActorCommand::ResetTokenEstimate);
+    }
+
     pub(crate) async fn queue_follow_up(
         &self,
         text: &str,
@@ -347,13 +553,13 @@ impl SessionActorHandle {
         message_id: Option<String>,
     ) -> anyhow::Result<()> {
         let (reply, rx) = oneshot::channel();
-        self.send(ActorCommand::QueueFollowUp {
+        self.send(ActorCommand::Session(SessionCommand::Submit {
             text: text.to_string(),
             attachments: attachments.to_vec(),
             is_answer,
             message_id,
             reply,
-        })
+        }))
         .await?;
         rx.await
             .map_err(|_| anyhow::anyhow!("session actor '{}' dropped follow-up", self.id))?
@@ -378,12 +584,12 @@ impl SessionActorHandle {
         message_id: Option<String>,
     ) -> anyhow::Result<()> {
         let (reply, rx) = oneshot::channel();
-        self.send(ActorCommand::QueueSteering {
+        self.send(ActorCommand::Session(SessionCommand::Steer {
             text: text.to_string(),
             attachments: attachments.to_vec(),
             message_id,
             reply,
-        })
+        }))
         .await?;
         rx.await
             .map_err(|_| anyhow::anyhow!("session actor '{}' dropped steering", self.id))?
@@ -447,11 +653,11 @@ impl SessionActorHandle {
         text: String,
     ) -> anyhow::Result<()> {
         let (reply, rx) = oneshot::channel();
-        self.send(ActorCommand::AddActionCompletion {
+        self.send(ActorCommand::Session(SessionCommand::BackgroundResult {
             action_result_id,
             text,
             reply,
-        })
+        }))
         .await?;
         rx.await
             .map_err(|_| anyhow::anyhow!("session actor '{}' dropped action result", self.id))?
@@ -503,24 +709,40 @@ impl SessionActorHandle {
         rx.await.unwrap_or_default()
     }
 
-    pub(crate) async fn clear_interactions(&self, kind: Option<InteractionKind>) {
-        let _ = self.send(ActorCommand::ClearInteractions { kind }).await;
+    pub(crate) async fn clear_interactions(
+        &self,
+        kind: Option<InteractionKind>,
+    ) -> anyhow::Result<()> {
+        let (reply, rx) = oneshot::channel();
+        self.send(ActorCommand::ClearInteractions { kind, reply })
+            .await?;
+        rx.await
+            .map_err(|_| anyhow::anyhow!("session actor '{}' dropped interaction clear", self.id))?
     }
 
     pub(crate) async fn resolve_interaction(
         &self,
         request_id: String,
         response: Value,
-    ) -> Option<ConfirmDecision> {
+    ) -> anyhow::Result<Option<ConfirmDecision>> {
         let (reply, rx) = oneshot::channel();
-        self.send(ActorCommand::ResolveInteraction {
+        self.send(ActorCommand::Session(SessionCommand::ResolveInteraction {
             request_id,
             response,
             reply,
-        })
-        .await
-        .ok()?;
-        rx.await.ok().flatten()
+        }))
+        .await?;
+        rx.await.map_err(|_| {
+            anyhow::anyhow!("session actor '{}' dropped interaction resolution", self.id)
+        })?
+    }
+
+    pub(crate) async fn cancel_session(&self) -> anyhow::Result<()> {
+        let (reply, rx) = oneshot::channel();
+        self.send(ActorCommand::Session(SessionCommand::Cancel { reply }))
+            .await?;
+        rx.await
+            .map_err(|_| anyhow::anyhow!("session actor '{}' dropped cancel", self.id))?
     }
 
     pub(crate) async fn record_step(&self, step: StepInfo) {
@@ -553,7 +775,7 @@ impl SessionActorHandle {
 
     /// Synchronous mailbox operations are called from the service's blocking
     /// transport boundary. Tokio's blocking channel/receiver methods preserve
-    /// actor serialization without exposing `ActorState`.
+    /// actor serialization without exposing `SessionState`.
     pub(crate) fn deliver_message(&self, envelope: Envelope) -> anyhow::Result<()> {
         let (reply, rx) = oneshot::channel();
         self.tx
@@ -646,7 +868,12 @@ impl SessionActorHandle {
     }
 }
 
-struct ActorState {
+/// Complete mutable state for one session.
+///
+/// The supervisor never owns a field from this structure.  It only owns the
+/// registry and sends commands to the actor mailbox; this invariant is what
+/// makes admission and lifecycle coordination independent from turn state.
+pub(crate) struct SessionState {
     info: SessionInfo,
     action_completions: Vec<ActionResult>,
     action_completion_chars: usize,
@@ -664,9 +891,104 @@ struct ActorState {
     archive: VecDeque<Envelope>,
     active_message_ids: HashSet<String>,
     archive_message_ids: HashSet<String>,
+    /// Run-local identity and budget belong to the session actor, not to the
+    /// process-wide ReAct facade.  The rest of the runtime state is migrated
+    /// through the same command boundary below.
+    runtime: SessionRuntimeState,
 }
 
-pub(crate) fn spawn(db: Arc<Database>, info: SessionInfo) -> SessionActorHandle {
+#[derive(Default)]
+struct SessionRuntimeState {
+    run_budget: Option<RunBudget>,
+    stream_identity: IdentityMap,
+    usage: UsageTracker,
+    token_estimates: TokenEstimateCache,
+}
+
+/// Replay only the interaction domain events needed to initialize a fresh
+/// actor.  The transcript, messages and steps are intentionally absent from
+/// this reducer: they are projections for UI/history and never recovery input.
+pub(crate) fn load_interactions(
+    store: &SessionStore,
+    session_id: &str,
+) -> anyhow::Result<Vec<InteractionRequest>> {
+    let mut interactions: Vec<InteractionRequest> = Vec::new();
+    for event in store.read_active_domain_events(session_id)? {
+        match event.event_type.as_str() {
+            INTERACTION_REQUESTED_EVENT_TYPE | INTERACTION_RESOLVED_EVENT_TYPE => {
+                let request: InteractionRequest =
+                    serde_json::from_str(&event.payload).map_err(|error| {
+                        anyhow::anyhow!(
+                            "invalid interaction event at sequence {}: {error}",
+                            event.sequence
+                        )
+                    })?;
+                interactions.retain(|existing| existing.id != request.id);
+                if request.status == InteractionStatus::Pending {
+                    interactions.push(request);
+                }
+            }
+            INTERACTION_CLEARED_EVENT_TYPE => {
+                let payload: serde_json::Value =
+                    serde_json::from_str(&event.payload).map_err(|error| {
+                        anyhow::anyhow!(
+                            "invalid interaction clear event at sequence {}: {error}",
+                            event.sequence
+                        )
+                    })?;
+                let ids = payload
+                    .get("ids")
+                    .and_then(serde_json::Value::as_array)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "interaction clear event at sequence {} has no ids",
+                            event.sequence
+                        )
+                    })?;
+                interactions.retain(|request| {
+                    !ids.iter()
+                        .any(|id| id.as_str() == Some(request.id.as_str()))
+                });
+            }
+            _ => {}
+        }
+    }
+    Ok(interactions)
+}
+
+async fn append_interaction_event(
+    db: &Arc<Database>,
+    store: &SessionStore,
+    session_id: &str,
+    event_type: &str,
+    payload: String,
+) -> anyhow::Result<()> {
+    let store = store.clone();
+    let session_id = session_id.to_string();
+    let event_type = event_type.to_string();
+    db.run_blocking(move |_| {
+        store.append(&session_id, &event_type, &payload, None, None)?;
+        Ok(())
+    })
+    .await
+}
+
+fn restore_interaction(state: &mut SessionState, resolved: &InteractionRequest) {
+    let mut pending = resolved.clone();
+    pending.status = InteractionStatus::Pending;
+    pending.response = None;
+    state
+        .interactions
+        .retain(|request| request.id != pending.id);
+    state.interactions.push(pending);
+}
+
+pub(crate) fn spawn(
+    db: Arc<Database>,
+    store: SessionStore,
+    info: SessionInfo,
+    interactions: Vec<InteractionRequest>,
+) -> SessionActorHandle {
     let (tx, mut rx) = mpsc::channel(ACTOR_MAILBOX_CAPACITY);
     let (status, _) = watch::channel(info.status);
     let (run_state, _) = watch::channel(false);
@@ -679,11 +1001,11 @@ pub(crate) fn spawn(db: Arc<Database>, info: SessionInfo) -> SessionActorHandle 
         run_state: run_state.clone(),
     };
     tokio::spawn(async move {
-        let mut state = ActorState {
+        let mut state = SessionState {
             info,
             action_completions: Vec::new(),
             action_completion_chars: 0,
-            interactions: Vec::new(),
+            interactions,
             follow_up_queue: Vec::new(),
             follow_up_chars: 0,
             follow_up_attachment_bytes: 0,
@@ -697,9 +1019,114 @@ pub(crate) fn spawn(db: Arc<Database>, info: SessionInfo) -> SessionActorHandle 
             archive: VecDeque::new(),
             active_message_ids: HashSet::new(),
             archive_message_ids: HashSet::new(),
+            runtime: SessionRuntimeState::default(),
         };
         while let Some(command) = rx.recv().await {
             match command {
+                ActorCommand::Session(command) => match command {
+                    SessionCommand::Submit {
+                        text,
+                        attachments,
+                        is_answer,
+                        message_id,
+                        reply,
+                    } => {
+                        let result =
+                            queue_follow_up(&mut state, text, attachments, is_answer, message_id);
+                        let _ = reply.send(result);
+                    }
+                    SessionCommand::Steer {
+                        text,
+                        attachments,
+                        message_id,
+                        reply,
+                    } => {
+                        let result = queue_steering(&mut state, text, attachments, message_id);
+                        let _ = reply.send(result);
+                    }
+                    SessionCommand::ResolveInteraction {
+                        request_id,
+                        response,
+                        reply,
+                    } => {
+                        let result = resolve_interaction(&mut state, &request_id, response);
+                        let result = match result {
+                            Some(decision) => {
+                                let payload = match serde_json::to_string(&decision.request) {
+                                    Ok(payload) => payload,
+                                    Err(error) => {
+                                        restore_interaction(&mut state, &decision.request);
+                                        let _ = reply.send(Err(error.into()));
+                                        continue;
+                                    }
+                                };
+                                let persisted = append_interaction_event(
+                                    &db,
+                                    &store,
+                                    &state.info.id,
+                                    INTERACTION_RESOLVED_EVENT_TYPE,
+                                    payload,
+                                )
+                                .await;
+                                match persisted {
+                                    Ok(()) => Ok(Some(decision)),
+                                    Err(error) => {
+                                        restore_interaction(&mut state, &decision.request);
+                                        Err(error)
+                                    }
+                                }
+                            }
+                            None => Ok(None),
+                        };
+                        let _ = reply.send(result);
+                    }
+                    SessionCommand::Cancel { reply } => {
+                        let ids = state
+                            .interactions
+                            .iter()
+                            .map(|request| request.id.clone())
+                            .collect::<Vec<_>>();
+                        let result = if ids.is_empty() {
+                            Ok(())
+                        } else {
+                            let payload = serde_json::json!({ "ids": ids });
+                            append_interaction_event(
+                                &db,
+                                &store,
+                                &state.info.id,
+                                INTERACTION_CLEARED_EVENT_TYPE,
+                                payload.to_string(),
+                            )
+                            .await
+                        };
+                        if result.is_ok() {
+                            state.action_completions.clear();
+                            state.action_completion_chars = 0;
+                            state.follow_up_queue.clear();
+                            state.follow_up_chars = 0;
+                            state.follow_up_attachment_bytes = 0;
+                            state.steering_queue.clear();
+                            state.steering_chars = 0;
+                            state.steering_attachment_bytes = 0;
+                            state.interactions.clear();
+                            cancel.cancel();
+                        }
+                        let _ = reply.send(result);
+                    }
+                    SessionCommand::BackgroundResult {
+                        action_result_id,
+                        text,
+                        reply,
+                    } => {
+                        let result = queue_action_completion(
+                            &mut state.action_completions,
+                            &mut state.action_completion_chars,
+                            action_result_id,
+                            text,
+                        );
+                        let _ = reply.send(result);
+                    }
+                },
                 ActorCommand::Snapshot { reply } => {
                     let _ = reply.send(state.info.clone());
                 }
@@ -755,30 +1182,96 @@ pub(crate) fn spawn(db: Arc<Database>, info: SessionInfo) -> SessionActorHandle 
                 ActorCommand::IsRunning { reply } => {
                     let _ = reply.send(state.running);
                 }
-                ActorCommand::QueueFollowUp {
-                    text,
-                    attachments,
-                    is_answer,
-                    message_id,
+                ActorCommand::SetRunBudget { budget } => {
+                    state.runtime.run_budget = Some(budget);
+                }
+                #[cfg(test)]
+                ActorCommand::CurrentRunBudget { reply } => {
+                    let _ = reply.send(state.runtime.run_budget.clone());
+                }
+                ActorCommand::ClearRunBudget => {
+                    state.runtime.run_budget = None;
+                }
+                ActorCommand::EnsureStreamId {
+                    step,
+                    run,
+                    kind,
                     reply,
                 } => {
-                    let result =
-                        queue_follow_up(&mut state, text, attachments, is_answer, message_id);
+                    let _ = reply.send(state.runtime.stream_identity.ensure_msg_id(
+                        &state.info.id,
+                        step,
+                        run,
+                        kind,
+                    ));
+                }
+                ActorCommand::BlockStreamId {
+                    step,
+                    run,
+                    kind,
+                    reply,
+                } => {
+                    let _ = reply.send(state.runtime.stream_identity.block_msg_id(
+                        &state.info.id,
+                        step,
+                        run,
+                        kind,
+                    ));
+                }
+                ActorCommand::ClearStreamIds => {
+                    state
+                        .runtime
+                        .stream_identity
+                        .clear_for_session(&state.info.id);
+                }
+                ActorCommand::RecordUsage { update, reply } => {
+                    let result = record_usage(&db, &mut state, update).await;
                     let _ = reply.send(result);
+                }
+                ActorCommand::ResetUsage => {
+                    state.runtime.usage.reset(&state.info.id);
+                }
+                ActorCommand::InvalidateUsage => {
+                    state
+                        .runtime
+                        .usage
+                        .invalidate_after_truncate(&state.info.id);
+                }
+                ActorCommand::EstimateTokens {
+                    canonical,
+                    generation,
+                    revision,
+                    reply,
+                } => {
+                    let tokens = state.runtime.token_estimates.estimate(
+                        &state.info.id,
+                        &canonical,
+                        generation,
+                        revision,
+                    );
+                    let _ = reply.send(tokens);
+                }
+                ActorCommand::AppendTokenEstimate {
+                    message,
+                    canonical_len,
+                    generation,
+                    revision,
+                } => {
+                    state.runtime.token_estimates.append_message(
+                        &state.info.id,
+                        &message,
+                        canonical_len,
+                        generation,
+                        revision,
+                    );
+                }
+                ActorCommand::ResetTokenEstimate => {
+                    state.runtime.token_estimates.remove(&state.info.id);
                 }
                 ActorCommand::DrainFollowUps { reply } => {
                     state.follow_up_chars = 0;
                     state.follow_up_attachment_bytes = 0;
                     let _ = reply.send(std::mem::take(&mut state.follow_up_queue));
-                }
-                ActorCommand::QueueSteering {
-                    text,
-                    attachments,
-                    message_id,
-                    reply,
-                } => {
-                    let result = queue_steering(&mut state, text, attachments, message_id);
-                    let _ = reply.send(result);
                 }
                 ActorCommand::DrainSteering { reply } => {
                     state.steering_chars = 0;
@@ -837,30 +1330,32 @@ pub(crate) fn spawn(db: Arc<Database>, info: SessionInfo) -> SessionActorHandle 
                         item.is_answer = true;
                     }
                 }
-                ActorCommand::AddActionCompletion {
-                    action_result_id,
-                    text,
-                    reply,
-                } => {
-                    let result = queue_action_completion(
-                        &mut state.action_completions,
-                        &mut state.action_completion_chars,
-                        action_result_id,
-                        text,
-                    );
-                    let _ = reply.send(result);
-                }
                 ActorCommand::DrainActionCompletions { reply } => {
                     state.action_completion_chars = 0;
                     let _ = reply.send(std::mem::take(&mut state.action_completions));
                 }
                 ActorCommand::RequestInteraction { request, reply } => {
                     let request = *request;
-                    state
-                        .interactions
-                        .retain(|existing| existing.id != request.id);
-                    state.interactions.push(request);
-                    let _ = reply.send(Ok(()));
+                    let result = match serde_json::to_string(&request) {
+                        Ok(payload) => {
+                            append_interaction_event(
+                                &db,
+                                &store,
+                                &state.info.id,
+                                INTERACTION_REQUESTED_EVENT_TYPE,
+                                payload,
+                            )
+                            .await
+                        }
+                        Err(error) => Err(error.into()),
+                    };
+                    if result.is_ok() {
+                        state
+                            .interactions
+                            .retain(|existing| existing.id != request.id);
+                        state.interactions.push(request);
+                    }
+                    let _ = reply.send(result);
                 }
                 ActorCommand::ListInteractions {
                     kind,
@@ -878,17 +1373,36 @@ pub(crate) fn spawn(db: Arc<Database>, info: SessionInfo) -> SessionActorHandle 
                         .collect();
                     let _ = reply.send(requests);
                 }
-                ActorCommand::ClearInteractions { kind } => {
-                    state
+                ActorCommand::ClearInteractions { kind, reply } => {
+                    let ids = state
                         .interactions
-                        .retain(|request| kind.is_some_and(|wanted| request.kind != wanted));
-                }
-                ActorCommand::ResolveInteraction {
-                    request_id,
-                    response,
-                    reply,
-                } => {
-                    let result = resolve_interaction(&mut state, &request_id, response);
+                        .iter()
+                        .filter(|request| kind.is_none_or(|wanted| request.kind == wanted))
+                        .map(|request| request.id.clone())
+                        .collect::<Vec<_>>();
+                    let result = if ids.is_empty() {
+                        Ok(())
+                    } else {
+                        let payload = serde_json::json!({ "ids": ids });
+                        match serde_json::to_string(&payload) {
+                            Ok(payload) => {
+                                append_interaction_event(
+                                    &db,
+                                    &store,
+                                    &state.info.id,
+                                    INTERACTION_CLEARED_EVENT_TYPE,
+                                    payload,
+                                )
+                                .await
+                            }
+                            Err(error) => Err(error.into()),
+                        }
+                    };
+                    if result.is_ok() {
+                        state
+                            .interactions
+                            .retain(|request| !kind.is_none_or(|wanted| request.kind == wanted));
+                    }
                     let _ = reply.send(result);
                 }
                 ActorCommand::RecordStep { step } => {
@@ -1007,11 +1521,11 @@ pub(crate) fn spawn(db: Arc<Database>, info: SessionInfo) -> SessionActorHandle 
     handle
 }
 
-fn message_known(state: &ActorState, id: &str) -> bool {
+fn message_known(state: &SessionState, id: &str) -> bool {
     state.active_message_ids.contains(id) || state.archive_message_ids.contains(id)
 }
 
-fn archive_once(state: &mut ActorState, envelope: Envelope) {
+fn archive_once(state: &mut SessionState, envelope: Envelope) {
     if !state.archive_message_ids.insert(envelope.id.clone()) {
         return;
     }
@@ -1023,7 +1537,7 @@ fn archive_once(state: &mut ActorState, envelope: Envelope) {
     }
 }
 
-fn claim_messages(state: &mut ActorState) -> Vec<Envelope> {
+fn claim_messages(state: &mut SessionState) -> Vec<Envelope> {
     let mut candidates = Vec::with_capacity(state.processing.len() + state.inbox.len());
     candidates.extend(std::mem::take(&mut state.processing));
     candidates.extend(state.inbox.drain(..));
@@ -1051,7 +1565,7 @@ fn is_matching_reply(envelope: &Envelope, in_reply_to: &str, expected_from: &str
         && matches!(envelope.r#type, MessageType::Reply | MessageType::Message)
 }
 
-fn history(state: &ActorState, limit: usize) -> Vec<Envelope> {
+fn history(state: &SessionState, limit: usize) -> Vec<Envelope> {
     let mut by_id = HashMap::new();
     for envelope in &state.archive {
         by_id.insert(envelope.id.clone(), envelope.clone());
@@ -1069,9 +1583,111 @@ fn history(state: &ActorState, limit: usize) -> Vec<Envelope> {
     entries
 }
 
+async fn record_usage(
+    db: &Arc<Database>,
+    state: &mut SessionState,
+    update: UsageUpdate,
+) -> anyhow::Result<CumulativeTotals> {
+    let session_id = state.info.id.clone();
+    let UsageUpdate {
+        request,
+        model,
+        step_number,
+        prompt_tokens,
+        completion_tokens,
+        total_tokens,
+        cached_tokens,
+        cache_creation_tokens,
+        cache_miss_tokens,
+        cache_accounting,
+        cache_diagnostics,
+        cost_usd,
+        has_cost,
+        duration_ms,
+        context_tokens,
+        context_window,
+        cancel,
+    } = update;
+    let seed = if state.runtime.usage.needs_seed(&session_id) {
+        let db = db.clone();
+        let sid = session_id.clone();
+        let read = move |db: &Database| -> anyhow::Result<CumulativeUsage> {
+            Ok(db
+                .get_session_usage(&sid)?
+                .map(CumulativeUsage::from)
+                .unwrap_or_default())
+        };
+        match cancel.clone() {
+            Some(cancel) => db.run_blocking_cancellable(cancel, read).await?,
+            None => db.run_blocking(read).await?,
+        }
+    } else {
+        CumulativeUsage::default()
+    };
+
+    let totals = state.runtime.usage.record_with_seed(
+        &session_id,
+        prompt_tokens,
+        completion_tokens,
+        total_tokens,
+        cached_tokens,
+        cache_creation_tokens,
+        cache_miss_tokens,
+        if has_cost { Some(cost_usd) } else { None },
+        || seed,
+    );
+
+    let persist_epoch = state.runtime.usage.epoch(&session_id);
+    let epochs = state.runtime.usage.epochs_handle();
+    let persist_session_id = session_id.clone();
+    let persist = move |db: &Database| -> anyhow::Result<()> {
+        let epoch_now = || {
+            epochs
+                .lock()
+                .unwrap()
+                .get(&persist_session_id)
+                .copied()
+                .unwrap_or(0)
+        };
+        if epoch_now() != persist_epoch {
+            return Ok(());
+        }
+        let record = db
+            .persist_llm_call_and_refresh_session_usage_with_cache_accounting_and_context(
+                &persist_session_id,
+                Some(step_number),
+                request,
+                model.as_deref(),
+                prompt_tokens,
+                completion_tokens,
+                total_tokens,
+                cached_tokens,
+                cache_creation_tokens,
+                cache_miss_tokens,
+                &cache_accounting,
+                cache_diagnostics.as_deref(),
+                cost_usd,
+                has_cost,
+                duration_ms,
+                context_tokens,
+                context_window,
+            )?;
+        if epoch_now() != persist_epoch {
+            let _ = db.delete_llm_usage_by_id(&record.id);
+            let _ = db.rebuild_session_usage_from_calls(&persist_session_id);
+        }
+        Ok(())
+    };
+    match cancel {
+        Some(cancel) => db.run_blocking_cancellable(cancel, persist).await?,
+        None => db.run_blocking(persist).await?,
+    }
+    Ok(totals)
+}
+
 async fn transition(
     db: &Arc<Database>,
-    state: &mut ActorState,
+    state: &mut SessionState,
     status: &watch::Sender<SessionStatus>,
     next: SessionStatus,
     persist: bool,
@@ -1115,7 +1731,7 @@ async fn transition(
 
 async fn claim_run(
     db: &Arc<Database>,
-    state: &mut ActorState,
+    state: &mut SessionState,
     status: &watch::Sender<SessionStatus>,
     run_state: &watch::Sender<bool>,
 ) -> anyhow::Result<RunClaim> {
@@ -1133,7 +1749,7 @@ async fn claim_run(
 }
 
 fn queue_follow_up(
-    state: &mut ActorState,
+    state: &mut SessionState,
     text: String,
     attachments: Vec<MessageAttachment>,
     is_answer: bool,
@@ -1169,7 +1785,7 @@ fn queue_follow_up(
 }
 
 fn queue_steering(
-    state: &mut ActorState,
+    state: &mut SessionState,
     text: String,
     attachments: Vec<MessageAttachment>,
     message_id: Option<String>,
@@ -1360,7 +1976,7 @@ fn take_action_results(
 }
 
 fn resolve_interaction(
-    state: &mut ActorState,
+    state: &mut SessionState,
     request_id: &str,
     response: Value,
 ) -> Option<ConfirmDecision> {
@@ -1394,8 +2010,8 @@ fn resolve_interaction(
 mod queue_tests {
     use super::*;
 
-    fn empty_state() -> ActorState {
-        ActorState {
+    fn empty_state() -> SessionState {
+        SessionState {
             info: SessionInfo {
                 id: "ses-queue".into(),
                 input: "queue".into(),
@@ -1423,6 +2039,7 @@ mod queue_tests {
             archive: VecDeque::new(),
             active_message_ids: HashSet::new(),
             archive_message_ids: HashSet::new(),
+            runtime: SessionRuntimeState::default(),
         }
     }
 

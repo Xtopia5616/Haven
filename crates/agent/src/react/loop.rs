@@ -142,7 +142,8 @@ impl ReActEngine {
             engine: self,
             session_id: session_id.to_string(),
         };
-        self.set_run_budget(session_id, budget.snapshot(session_max_steps));
+        self.set_run_budget(session_id, budget.snapshot(session_max_steps))
+            .await;
 
         tracing::info!(
             session_id,
@@ -235,8 +236,9 @@ impl ReActEngine {
                 deadline_cancel.cancel();
             });
             state.turn_cancel = Some(turn_cancel.clone());
-            let turn_future = self
-                .run_turn(TurnInput {
+            let turn_engine = self.turn_engine();
+            let turn_future = turn_engine
+                .run(TurnInput {
                     ctx: StepCtx {
                         session_id: session_id.to_string(),
                         step_num,

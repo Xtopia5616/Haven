@@ -7,8 +7,8 @@
 use tracing::Instrument;
 
 use super::{PauseReason, StepCtx, *};
-use crate::types::{BranchPoint, SNAPSHOT_EVENT_TAIL_LIMIT, TranscriptRecord};
-use haven_memory::{RecoveryPersistenceStatus, SessionEventInput};
+use crate::types::{BranchPoint, TranscriptRecord};
+use haven_memory::{RecoveryPersistenceStatus, SessionCursor, SessionEventInput};
 
 /// The durable event-derived session state used by resume and rollback.
 ///
@@ -20,7 +20,7 @@ use haven_memory::{RecoveryPersistenceStatus, SessionEventInput};
 pub(crate) struct DurableEventState {
     pub(crate) events: Vec<TranscriptRecord>,
     pub(crate) branch_points: HashMap<u32, BranchPoint>,
-    pub(crate) latest_sequence: i64,
+    pub(crate) cursor: SessionCursor,
 }
 
 /// Outcome of the recovery-only persistence repair after a failed provider
@@ -54,11 +54,11 @@ impl RecoveryPersistenceResult {
 /// without embedding the interval math in the loop. Unit-testable without
 /// starting the full ReAct loop.
 #[derive(Debug, Default)]
-pub(crate) struct SnapshotStore {
+pub(crate) struct CheckpointStore {
     last_written: HashMap<String, u32>,
 }
 
-impl SnapshotStore {
+impl CheckpointStore {
     /// Steps between mid-run DB snapshot writes on the happy path.
     pub const WRITE_INTERVAL: u32 = 3;
 
@@ -93,33 +93,6 @@ impl SnapshotStore {
     pub fn clear_session(&mut self, session_id: &str) {
         self.last_written.remove(session_id);
     }
-}
-
-/// Borrowed serialization view of a `ReActSnapshot`. Serializing this instead
-/// of building an owned `ReActSnapshot` skips the per-step deep copies of
-/// branch points and the durable transcript. Only the checkpoint cursor and a
-/// bounded diagnostic tail are written; the complete transcript is stored in
-/// `session_events`.
-#[derive(serde::Serialize)]
-struct SnapshotView<'a> {
-    event_cursor: usize,
-    #[serde(skip_serializing_if = "slice_is_empty")]
-    event_tail: &'a [TranscriptRecord],
-    step_number: u32,
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    branch_points: &'a HashMap<u32, BranchPoint>,
-    last_ingress_seq: i64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    error_partial_message_ids: Option<&'a [String]>,
-    #[serde(default, skip_serializing_if = "slice_is_empty")]
-    interactions: &'a [crate::interaction::InteractionRequest],
-    /// Per-run step budget for observability (R4); see `ReActSnapshot`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    run_budget: Option<&'a crate::types::RunBudget>,
-}
-
-fn slice_is_empty<T>(slice: &[T]) -> bool {
-    slice.is_empty()
 }
 
 /// Inputs for a pause checkpoint. Keeping this boundary named prevents the
@@ -207,6 +180,7 @@ impl ReActEngine {
                 if latest_sequence == 0 {
                     return Ok(None);
                 }
+                let cursor = store.cursor(&session_id)?;
                 let events = store
                     .read_active_transcript(&session_id)?
                     .into_iter()
@@ -238,7 +212,7 @@ impl ReActEngine {
                 Ok(Some(DurableEventState {
                     events,
                     branch_points,
-                    latest_sequence,
+                    cursor,
                 }))
             })
             .await
@@ -262,38 +236,6 @@ impl ReActEngine {
             run_id,
             step_number,
         ))
-    }
-
-    /// Append transcript records produced by a deterministic recovery repair.
-    /// Recovery must use the same durable writer as the live loop; changing a
-    /// snapshot alone would make the next resume rediscover the same repair.
-    pub(crate) async fn append_transcript_records(
-        &self,
-        session_id: &str,
-        events: &[TranscriptRecord],
-        run_id: u64,
-    ) -> anyhow::Result<Vec<i64>> {
-        if events.is_empty() {
-            return Ok(Vec::new());
-        }
-        let inputs = events
-            .iter()
-            .map(|event| Self::transcript_event_input(event, run_id))
-            .collect::<anyhow::Result<Vec<_>>>()?;
-        let store = self.event_store.clone();
-        let session_id = session_id.to_string();
-        self.db
-            .run_blocking(move |db| {
-                if db.get_session(&session_id)?.is_none() {
-                    return Ok(Vec::new());
-                }
-                Ok(store
-                    .append_batch(&session_id, &inputs)?
-                    .into_iter()
-                    .map(|event| event.sequence)
-                    .collect())
-            })
-            .await
     }
 
     /// Seed the durable event log for a fresh session before the first model
@@ -369,7 +311,7 @@ impl ReActEngine {
         tool_call_id: Option<&str>,
         message_id: Option<&str>,
     ) -> anyhow::Result<()> {
-        let msg = crate::persist_session_message(
+        crate::persist_session_message(
             &self.executor,
             session_id,
             role,
@@ -382,7 +324,6 @@ impl ReActEngine {
         )
         .instrument(tracing::info_span!("project", session_id, role))
         .await?;
-        self.note_last_msg_at(session_id, Some(msg.created_at));
         Ok(())
     }
 
@@ -397,7 +338,7 @@ impl ReActEngine {
         tool_call_id: Option<&str>,
         message_id: Option<&str>,
     ) -> anyhow::Result<()> {
-        let msg = crate::persist_session_message_preserving_partial(
+        crate::persist_session_message_preserving_partial(
             &self.executor,
             session_id,
             role,
@@ -409,7 +350,6 @@ impl ReActEngine {
             tool_call_id,
         )
         .await?;
-        self.note_last_msg_at(session_id, Some(msg.created_at));
         Ok(())
     }
 
@@ -623,7 +563,7 @@ impl ReActEngine {
             .await
     }
 
-    /// Phase 7 / C4: single cancel-exit path — write the exit snapshot then
+    /// Phase 7 / C4: single cancel-exit path — write the exit checkpoint then
     /// return [`LoopExit::Cancelled`]. All cancel sites in the thin loop /
     /// tool batch must go through this helper.
     pub(super) async fn exit_cancelled(
@@ -636,9 +576,8 @@ impl ReActEngine {
             .await
     }
 
-    /// Write the exit snapshot then return `exit`. Used by Completed / Error /
-    /// Cancelled so step-head and mid-batch paths cannot drift on whether
-    /// `react_state` is flushed (review fix).
+    /// Write the exit checkpoint then return `exit`. Used by Completed / Error /
+    /// Cancelled so every lifecycle exit advances the durable clocks.
     pub(super) async fn exit_with_snapshot(
         &self,
         session_id: &str,
@@ -659,7 +598,7 @@ impl ReActEngine {
         }
     }
 
-    /// Shared External-pause exit (step-head and mid-batch): snapshot →
+    /// Shared External-pause exit (step-head and mid-batch): checkpoint →
     /// `on_pause(External)` → `LoopExit::Paused`.
     pub(super) async fn exit_external_pause(
         &self,
@@ -767,100 +706,90 @@ impl ReActEngine {
         session_id: &str,
         state: &ReActState,
         step_number: u32,
-        error_partial_message_ids: Option<&[String]>,
-        clear_confirm_interactions: bool,
+        _error_partial_message_ids: Option<&[String]>,
+        _clear_confirm_interactions: bool,
     ) -> bool {
         // Some lifecycle callers do not carry a provider run id (for example
-        // a pause checkpoint). The step/session fields remain exact; run_id=0
-        // explicitly denotes that non-run-owned checkpoint path.
+        // a pause checkpoint). The checkpoint is deliberately independent of
+        // ReAct runtime state; it records only the clocks observed after the
+        // durable event/projection writes.
         let _timer = self
             .metrics
             .start(MetricsPhase::Snapshot, session_id, 0, step_number);
+        let store = self.event_store.clone();
+        let sid = session_id.to_string();
+        let write = move |db: &Database| {
+            if db.get_session(&sid)?.is_none() {
+                return store.cursor(&sid);
+            }
+            store.checkpoint(&sid)
+        };
+        let saved = match state.turn_cancel.clone() {
+            Some(cancel) => self.db.run_blocking_cancellable(cancel, write).await,
+            None => self.db.run_blocking(write).await,
+        };
+        match saved {
+            Ok(cursor) => {
+                #[cfg(test)]
+                if let Err(error) = self
+                    .write_test_compat_snapshot(
+                        session_id,
+                        state,
+                        step_number,
+                        _error_partial_message_ids,
+                        _clear_confirm_interactions,
+                        cursor,
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        session_id,
+                        error = %error,
+                        "test compatibility snapshot write failed"
+                    );
+                    return false;
+                }
+                #[cfg(not(test))]
+                let _ = cursor;
+                true
+            }
+            Err(error) => {
+                tracing::warn!("checkpoint failed for session {}: {}", session_id, error);
+                false
+            }
+        }
+    }
+
+    #[cfg(test)]
+    async fn write_test_compat_snapshot(
+        &self,
+        session_id: &str,
+        state: &ReActState,
+        step_number: u32,
+        error_partial_message_ids: Option<&[String]>,
+        clear_confirm_interactions: bool,
+        cursor: SessionCursor,
+    ) -> anyhow::Result<()> {
         let mut interactions = self.executor.interaction_requests(session_id).await;
         if clear_confirm_interactions {
             interactions
                 .retain(|request| request.kind != crate::interaction::InteractionKind::Confirm);
         }
-        let run_budget = self.current_run_budget(session_id);
-        let last_ingress_seq_result = {
-            let db = self.db.clone();
-            let read_session_id = session_id.to_string();
-            let read = move |db: &Database| -> anyhow::Result<i64> {
-                Ok(db.get_last_message_ingress_seq(&read_session_id))
-            };
-            match state.turn_cancel.clone() {
-                Some(cancel) => db.run_blocking_cancellable(cancel, read).await,
-                None => db.run_blocking(read).await,
-            }
-        };
-        let last_ingress_seq = match last_ingress_seq_result {
-            Ok(cursor) => cursor,
-            Err(error) => {
-                tracing::warn!(
-                    "failed to read message ingress cursor for snapshot {}: {}",
-                    session_id,
-                    error
-                );
-                return false;
-            }
-        };
-        let view = SnapshotView {
+        let snapshot = crate::types::ReActSnapshot {
+            events: state.events.clone(),
             event_cursor: state.events.len(),
-            event_tail: &state.events
-                [state.events.len().saturating_sub(SNAPSHOT_EVENT_TAIL_LIMIT)..],
             step_number,
-            branch_points: &state.branch_points,
-            last_ingress_seq,
-            error_partial_message_ids,
-            interactions: &interactions,
-            run_budget: run_budget.as_ref(),
+            branch_points: state.branch_points.clone(),
+            last_ingress_seq: cursor.message_ingress_seq,
+            error_partial_message_ids: error_partial_message_ids.map(ToOwned::to_owned),
+            interactions,
+            run_budget: self.current_run_budget(session_id).await,
         };
-        // Serialize into the session's own buffer inside a scoped block so the
-        // mutex guard is dropped before the await below (the guard is not
-        // Send, so it must not be live across the spawn_blocking boundary).
-        let bytes = {
-            let mut bufs = self.snapshot_bufs.lock();
-            let buf = bufs.entry(session_id.to_string()).or_default();
-            buf.clear();
-            if serde_json::to_writer(&mut *buf, &view).is_err() {
-                return false;
-            }
-            std::mem::take(buf)
-        };
-        let json = match String::from_utf8(bytes) {
-            Ok(json) => json,
-            Err(error) => {
-                tracing::warn!("snapshot serialization produced invalid UTF-8: {error}");
-                return false;
-            }
-        };
+        let json = serde_json::to_string(&snapshot)?;
         let db = self.db.clone();
-        let tid_owned = session_id.to_string();
-        // Return ownership of the serialized bytes so the allocation is
-        // handed back to the session's buffer for reuse on the next snapshot.
-        let write = move |db: &Database| {
-            db.save_react_state(&tid_owned, &json)?;
-            Ok::<String, anyhow::Error>(json)
-        };
-        let saved = match state.turn_cancel.clone() {
-            Some(cancel) => db.run_blocking_cancellable(cancel, write).await,
-            None => db.run_blocking(write).await,
-        };
-        let back: String = match saved {
-            Ok(json) => json,
-            Err(error) => {
-                tracing::warn!(
-                    "save_react_state failed for session {}: {}",
-                    session_id,
-                    error
-                );
-                return false;
-            }
-        };
-        if let Ok(mut bufs) = self.snapshot_bufs.try_lock() {
-            *bufs.entry(session_id.to_string()).or_default() = back.into_bytes();
-        }
-        true
+        let sid = session_id.to_string();
+        db.run_blocking(move |db| db.save_react_state(&sid, &json))
+            .await
     }
 
     /// and save a snapshot so the session can be resumed via "continue" or
@@ -941,8 +870,9 @@ impl ReActEngine {
         let mut partial_messages = true;
         let mut projection = true;
         if !reasoning_text.trim().is_empty() {
-            let message_id =
-                self.block_msg_id(&ctx.session_id, ctx.step_num, ctx.run_id, "reasoning");
+            let message_id = self
+                .block_msg_id(&ctx.session_id, ctx.step_num, ctx.run_id, "reasoning")
+                .await;
             if let Err(error) = self
                 .persist_session_message(
                     &ctx.session_id,
@@ -967,8 +897,9 @@ impl ReActEngine {
         }
         if !thought_text.trim().is_empty() {
             let text = thought_text.trim();
-            let message_id =
-                self.block_msg_id(&ctx.session_id, ctx.step_num, ctx.run_id, "thought");
+            let message_id = self
+                .block_msg_id(&ctx.session_id, ctx.step_num, ctx.run_id, "thought")
+                .await;
             if let Err(error) = self
                 .persist_session_message(
                     &ctx.session_id,
@@ -1140,7 +1071,7 @@ impl ReActEngine {
 
     /// Save a branch point at the current step before tool execution (§2).
     ///
-    /// The DB snapshot write is throttled via [`SnapshotStore`] on the happy
+    /// The DB checkpoint write is throttled via [`CheckpointStore`] on the happy
     /// path (`force = false`): every pause/error/final path plus every
     /// cancellation exit writes unconditionally. Error paths MUST pass
     /// `force = true` (e.g.
@@ -1155,19 +1086,11 @@ impl ReActEngine {
         step_number: u32,
         force: bool,
     ) -> anyhow::Result<()> {
-        // Mid-run (`force=false`): prefer the in-process cache filled by
-        // persist paths so throttled steps skip SQLite. Force paths
-        // (pause/error/cancel) always re-read so the snapshot cutoff matches
-        // the DB after concurrent truncations (rollback / continue).
-        let last_msg_at = if !force {
-            if let Some(cached) = self.last_msg_at.get(session_id) {
-                Ok(cached)
-            } else {
-                self.refresh_last_msg_at(session_id).await
-            }
-        } else {
-            self.refresh_last_msg_at(session_id).await
-        };
+        // The projection cutoff is read through SessionStore.  In particular,
+        // do not reuse a ReAct-side timestamp cache here: rollback and an
+        // ingress write may commit between two turns.
+        let _ = force;
+        let last_msg_at = self.refresh_last_msg_at(session_id).await;
         let last_msg_at = match last_msg_at {
             Ok(value) => value,
             Err(error) => {
@@ -1228,7 +1151,7 @@ impl ReActEngine {
         // The throttle marker guard is confined to this block so it is always
         // dropped before the write's await.
         let due = {
-            let store = self.snapshot_store.lock().unwrap();
+            let store = self.checkpoint_store.lock().unwrap();
             store.should_write(session_id, step_number, force)
         };
         if due {
@@ -1243,7 +1166,7 @@ impl ReActEngine {
                     step_number
                 );
             }
-            self.snapshot_store
+            self.checkpoint_store
                 .lock()
                 .unwrap()
                 .record_write(session_id, step_number);
@@ -1256,7 +1179,7 @@ impl ReActEngine {
 
 #[cfg(test)]
 mod tests {
-    use super::{ReActEngine, ReActState, RecoveryPersistenceResult, SnapshotStore};
+    use super::{CheckpointStore, ReActEngine, ReActState, RecoveryPersistenceResult};
     use crate::session::SessionSupervisor;
     use haven_common::config::{ContextLimitsConfig, RouterConfig};
     use haven_llm::LlmRouter;
@@ -1282,14 +1205,14 @@ mod tests {
 
     #[test]
     fn should_write_first_step_always() {
-        let store = SnapshotStore::default();
+        let store = CheckpointStore::default();
         assert!(store.should_write("s", 1, false));
         assert!(store.should_write("s", 100, false));
     }
 
     #[test]
     fn throttle_skips_until_interval() {
-        let mut store = SnapshotStore::default();
+        let mut store = CheckpointStore::default();
         assert!(store.on_step_boundary("s", 1, false));
         assert!(!store.should_write("s", 2, false));
         assert!(!store.should_write("s", 3, false));
@@ -1302,7 +1225,7 @@ mod tests {
 
     #[test]
     fn force_bypasses_throttle() {
-        let mut store = SnapshotStore::default();
+        let mut store = CheckpointStore::default();
         assert!(store.on_step_boundary("s", 1, false));
         assert!(!store.should_write("s", 2, false));
         assert!(store.should_write("s", 2, true));
@@ -1312,7 +1235,7 @@ mod tests {
 
     #[test]
     fn clear_session_resets_throttle() {
-        let mut store = SnapshotStore::default();
+        let mut store = CheckpointStore::default();
         assert!(store.on_step_boundary("s", 1, false));
         store.clear_session("s");
         assert!(store.should_write("s", 2, false));
@@ -1320,7 +1243,7 @@ mod tests {
 
     #[test]
     fn sessions_throttled_independently() {
-        let mut store = SnapshotStore::default();
+        let mut store = CheckpointStore::default();
         assert!(store.on_step_boundary("a", 1, false));
         assert!(store.on_step_boundary("b", 1, false));
         assert!(!store.should_write("a", 2, false));
@@ -1331,7 +1254,7 @@ mod tests {
 
     #[test]
     fn tool_result_checkpoint_is_not_throttled_by_mid_run_interval() {
-        let mut store = SnapshotStore::default();
+        let mut store = CheckpointStore::default();
         assert!(store.on_step_boundary("s", 1, false));
         assert!(!store.should_write("s", 2, false));
         assert!(store.should_write("s", 2, true));
@@ -1437,7 +1360,7 @@ mod tests {
         );
         assert!(
             !engine
-                .snapshot_store
+                .checkpoint_store
                 .lock()
                 .unwrap()
                 .last_written

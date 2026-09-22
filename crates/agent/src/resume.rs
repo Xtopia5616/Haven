@@ -7,12 +7,12 @@
 //! ## Resume authority
 //!
 //! - **Session event stream present** → single authority. [`run_session_resumed`]
-//!   replays it (canonical + rounds are projected); the snapshot and RAM queues
-//!   are caches only.
-//! - **Event stream missing** → the session is not resumable and must be reset.
-//! - **Both event stream and snapshot absent** → fresh-session startup.
-//! - **Event stream present with a corrupt snapshot** → ignore the cache and
-//!   continue from durable events.
+//!   replays it (canonical + rounds are projected); checkpoint metadata and RAM
+//!   queues are caches only.
+//! - **Event stream missing** → fresh-session startup for a session that has
+//!   not entered the ReAct loop yet.
+//! - **Event stream present with a legacy/corrupt JSON cache** → ignore the
+//!   cache and continue from durable events.
 //!
 //! ## Queue durability (Phase 7 / D2)
 //!
@@ -26,7 +26,7 @@ use crate::AgentLayer;
 use crate::react::{ReActState, RunInput};
 use crate::resume_support::{
     builtin_selection, infer_resume_step, load_mcp_tool_names, load_skill_names,
-    merge_recovery_candidates, reconcile_dangling_tool_call,
+    merge_recovery_candidates,
 };
 
 use crate::session::SessionStatus;
@@ -168,14 +168,7 @@ impl AgentLayer {
         // be duplicated.
         let db = self.db.clone();
         let sid = session_id.to_string();
-        let (
-            initial_message_id,
-            initial_attachments,
-            initial_media_inputs,
-            all_attachments,
-            react_state,
-            react_state_error,
-        ) = db
+        let (initial_message_id, initial_attachments, initial_media_inputs, all_attachments) = db
             .run_blocking(move |db| {
                 let messages = db.get_session_messages(&sid)?;
                 let all_attachments = messages
@@ -193,21 +186,11 @@ impl AgentLayer {
                     .filter(|m| !m.media_inputs.is_empty())
                     .map(|m| m.media_inputs)
                     .unwrap_or_default();
-                // Read the cache independently from the session/projection
-                // data. A bad cache is recoverable when the event stream is
-                // present, but must still be reported if the session has no
-                // durable events to fall back to.
-                let (react_state, react_state_error) = match db.get_react_state(&sid) {
-                    Ok(state) => (state, None),
-                    Err(error) => (None, Some(error.to_string())),
-                };
                 Ok((
                     initial_message_id,
                     initial_attachments,
                     initial_media_inputs,
                     all_attachments,
-                    react_state,
-                    react_state_error,
                 ))
             })
             .await
@@ -220,169 +203,38 @@ impl AgentLayer {
             .get_tools()
             .register_managed_assets_for_session(session_id, &all_attachments);
 
-        // The event stream is authoritative. A snapshot supplies checkpoint
-        // metadata only; sessions without a durable event stream are no
-        // longer resumable without a durable event log.
+        // The event stream is authoritative. A checkpoint supplies no runtime
+        // state; sessions without a durable event stream take the fresh-run
+        // path below.
         let durable_state = self
             .react_engine
             .load_durable_event_state(session_id)
             .await?;
-        if durable_state.is_none() {
-            if let Some(error) = react_state_error {
-                return Err(anyhow::anyhow!(
-                    "failed to read session checkpoint for {}: {}",
-                    session_id,
-                    error
-                ));
-            }
-            if react_state.is_some() {
-                if let Some(state_json) = react_state.as_deref() {
-                    ReActSnapshot::from_json(state_json)?;
-                }
-                return Err(anyhow::anyhow!(
-                    "session '{}' has no durable event log; reset is required",
-                    session_id
-                ));
-            }
-        }
-        let durable_event_sequence = durable_state.as_ref().map(|state| state.latest_sequence);
-        let durable_event_cursor = durable_state.as_ref().map(|state| state.events.len());
         let snapshot = match durable_state {
             Some(durable) => {
-                let (mut snapshot, cache_is_valid) = match react_state {
-                    Some(state_json) => match ReActSnapshot::from_json(&state_json) {
-                        Ok(snapshot) => (snapshot, true),
-                        Err(error) => {
-                            tracing::warn!(
-                                session_id,
-                                error = %error,
-                                "ignoring corrupt snapshot cache because the durable event stream is available"
-                            );
-                            (ReActSnapshot::default(), false)
-                        }
-                    },
-                    None => (ReActSnapshot::default(), false),
-                };
                 let active_event_cursor = durable.events.len();
+                let mut snapshot = ReActSnapshot::default();
                 snapshot.events = durable.events;
                 snapshot.event_cursor = active_event_cursor;
-                // Branch points are control events, not cache metadata. An
-                // empty durable map deliberately clears stale cache entries.
                 snapshot.branch_points = durable.branch_points;
-                // A current cache carries the exact next-step boundary. When
-                // it is missing, corrupt, or older than the event high-water
-                // mark, derive a safe boundary from the durable tail.
-                let db = self.db.clone();
-                let sid = session_id.to_string();
-                let checkpoint = db
-                    .run_blocking(move |db| db.get_react_checkpoint(&sid))
-                    .await?;
-                if !cache_is_valid
-                    || checkpoint.as_ref().is_some_and(|checkpoint| {
-                        checkpoint.event_sequence != durable.latest_sequence
-                    })
-                    || snapshot.step_number == 0
-                {
-                    snapshot.step_number = infer_resume_step(&snapshot.events);
-                }
+                snapshot.step_number = infer_resume_step(&snapshot.events);
+                snapshot.last_ingress_seq = durable.cursor.message_ingress_seq;
                 Some(snapshot)
             }
             None => None,
         };
 
         match snapshot {
-            Some(mut snapshot) => {
+            Some(snapshot) => {
                 tracing::info!(
                     "restoring ReAct state for session {} ({} events)",
                     session_id,
                     snapshot.events.len()
                 );
-                // The snapshot and materialized projections are written at
-                // different boundaries. If the process died after an
-                // action step was persisted but before the next snapshot,
-                // the restored event log can end at ToolCall while the DB
-                // already knows the result. Reconcile that edge before
-                // any dangling-call trim; replaying the call would mint a
-                // new step id and could repeat an external side effect.
-                let db = self.db.clone();
-                let sid = session_id.to_string();
-                let (durable_steps, checkpoint) = db
-                    .run_blocking(move |db| {
-                        Ok((db.get_session_steps(&sid)?, db.get_react_checkpoint(&sid)?))
-                    })
-                    .await
-                    .map_err(|error| {
-                        anyhow::anyhow!(
-                            "failed to load durable action steps for session {session_id}: {error}"
-                        )
-                    })?;
-                if let Some(checkpoint) = checkpoint {
-                    if let Some(event_sequence) = durable_event_sequence {
-                        if checkpoint.event_sequence > event_sequence {
-                            return Err(anyhow::anyhow!(
-                                "session '{}' event stream is behind checkpoint {} (current {})",
-                                session_id,
-                                checkpoint.event_sequence,
-                                event_sequence
-                            ));
-                        }
-                        if checkpoint.event_sequence < event_sequence {
-                            tracing::debug!(
-                                session_id,
-                                cached_event_sequence = checkpoint.event_sequence,
-                                durable_event_sequence = event_sequence,
-                                "event stream is ahead of snapshot cache"
-                            );
-                        }
-                    }
-                    if durable_event_cursor
-                        .is_some_and(|cursor| checkpoint.event_cursor != cursor as i64)
-                    {
-                        tracing::warn!(
-                            session_id,
-                            durable_events = durable_event_cursor.unwrap_or_default(),
-                            checkpoint_events = checkpoint.event_cursor,
-                            revision = checkpoint.revision,
-                            "checkpoint event cursor differs from the durable transcript"
-                        );
-                    }
-                }
-                let event_count_before_repair = snapshot.events.len();
-                if reconcile_dangling_tool_call(&mut snapshot.events, &durable_steps) {
-                    let repaired_events = snapshot.events[event_count_before_repair..].to_vec();
-                    self.react_engine
-                        .append_transcript_records(session_id, &repaired_events, run_id)
-                        .await?;
-                    for branch in snapshot.branch_points.values_mut() {
-                        branch.event_cursor = branch.event_cursor.min(snapshot.events.len());
-                    }
-                    snapshot.event_cursor = snapshot.events.len();
-                    let repaired_json = serde_json::to_string(&snapshot)?;
-                    let db = self.db.clone();
-                    let sid = session_id.to_string();
-                    db.run_blocking(move |db| db.save_react_state(&sid, &repaired_json))
-                            .await
-                            .map_err(|error| {
-                                anyhow::anyhow!(
-                                    "failed to persist reconciled snapshot for session {session_id}: {error}"
-                                )
-                            })?;
-                    tracing::warn!(
-                        session_id,
-                        repaired_events = repaired_events.len(),
-                        "reconciled a dangling tool call from durable action steps before resuming"
-                    );
-                }
                 // Re-register per-session tools (skills/MCP) from projected
                 // rounds, since in-memory registrations are lost on restart.
                 let (_, rounds) = snapshot.project();
                 self.restore_per_session_tools(session_id, &rounds).await;
-                // Restore the single interaction registry before resuming.
-                // The actor replaces by request id, so this is idempotent
-                // when a same-process resume races a snapshot reload.
-                for request in snapshot.interactions.clone() {
-                    self.executor.request_interaction(request).await?;
-                }
                 let interactions = self.executor.interaction_requests(session_id).await;
                 let has_pending_ask = interactions.iter().any(|request| {
                     request.kind == crate::interaction::InteractionKind::Ask
@@ -542,18 +394,18 @@ impl AgentLayer {
         // Phase 7 / D2 — post-checkpoint recovery (durability ≠ RAM queues):
         //
         // RAM follow-up / steering queues are a same-process cache only.
-        // Durability = DB user messages + snapshot ingress cursor + undelivered
+        // Durability = DB user messages + the SessionStore ingress cursor + undelivered
         // (anchor-less) scan. Replay is idempotent by `message_id`
         // (`push_follow_up` / steering skip duplicates).
         //
         // By ingress sequence instead of timestamps or content matching: any
-        // message persisted after the snapshot cursor cannot be in the
+        // message persisted after the ingress cursor cannot be in the
         // restored events, even when the wall clock moves backwards or two
         // writes share a millisecond. The durable event stream is the single
         // authority for the transcript; the checkpoint only supplies the
         // ingress cursor for messages that have not been applied yet.
         //
-        // This alone misses inputs that PREDATE the snapshot yet were never
+        // This alone misses inputs that PREDATE the checkpoint yet were never
         // injected: a steering/supplement queued after the loop's last
         // per-step drain is not in the events. Those rows carry no step
         // anchor (see `push_user_context`), so they are recovered by the
@@ -774,7 +626,7 @@ impl AgentLayer {
             initial_user,
         ];
 
-        // Seed events so pause/resume snapshots carry the system and initial
+        // Seed events so pause/resume has a durable system and initial
         // user request as a CompactSummary; later applies append. The same
         // seed is written to the durable event stream before the first model
         // call, so a crash before the first snapshot is still resumable.

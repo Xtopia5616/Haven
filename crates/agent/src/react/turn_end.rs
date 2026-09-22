@@ -66,7 +66,10 @@ impl ReActEngine {
         let persist_text_id = if thought_projected {
             None
         } else {
-            Some(self.block_msg_id(&ctx.session_id, ctx.step_num, ctx.run_id, "thought"))
+            Some(
+                self.block_msg_id(&ctx.session_id, ctx.step_num, ctx.run_id, "thought")
+                    .await,
+            )
         };
 
         if !already_pushed {

@@ -27,8 +27,8 @@ use crate::types::{Action, TranscriptRecord, canonical_for_snapshot_with_media_i
 use haven_common::types::InjectSource;
 use haven_common::types::{CanonicalToolCall, MessageAttachment};
 use haven_memory::{
-    SessionEventInput, TranscriptActionStepProjection, TranscriptBatch, TranscriptBatchResult,
-    TranscriptMessageProjection, TranscriptThoughtStepProjection,
+    SessionEventInput, SessionStore, TranscriptActionStepProjection, TranscriptBatch,
+    TranscriptBatchResult, TranscriptMessageProjection, TranscriptThoughtStepProjection,
 };
 use haven_tools::{
     OperationIdempotency, ToolExecutionOutcome, ToolOperationScope, ToolResultEnvelope,
@@ -42,11 +42,11 @@ use serde_json::Value;
 #[derive(Clone)]
 pub(super) struct TranscriptBatchWriter {
     db: Arc<Database>,
-    store: SessionEventStore,
+    store: SessionStore,
 }
 
 impl TranscriptBatchWriter {
-    pub(super) fn new(db: Arc<Database>, store: SessionEventStore) -> Self {
+    pub(super) fn new(db: Arc<Database>, store: SessionStore) -> Self {
         Self { db, store }
     }
 
@@ -452,9 +452,6 @@ impl ReActEngine {
             MetricsPhase::SqliteLockWait,
             std::time::Duration::from_millis(write_result.lock_wait_ms),
         );
-        if let Some(created_at) = write_result.message_created_at.last() {
-            self.note_last_msg_at(&ctx.session_id, Some(created_at.clone()));
-        }
         let result = self
             .apply_transcript_projection(ctx, event, record, state, media_record)
             .await;
@@ -502,9 +499,6 @@ impl ReActEngine {
             MetricsPhase::SqliteLockWait,
             std::time::Duration::from_millis(write_result.lock_wait_ms),
         );
-        if let Some(created_at) = write_result.message_created_at.last() {
-            self.note_last_msg_at(&ctx.session_id, Some(created_at.clone()));
-        }
         for (event, record, media_record) in projected {
             let result = self
                 .apply_transcript_projection(ctx, event, record, state, media_record)
@@ -584,7 +578,7 @@ impl ReActEngine {
                     web_search_calls,
                     thinking_blocks,
                 ));
-                self.note_canonical_append(&ctx.session_id, state);
+                self.note_canonical_append(&ctx.session_id, state).await;
             }
             TranscriptEvent::ToolResult {
                 canonical_observation,
@@ -632,7 +626,7 @@ impl ReActEngine {
                         vec![ContentPart::text(canonical_observation)],
                         tool_call_id,
                     ));
-                    self.note_canonical_append(&ctx.session_id, state);
+                    self.note_canonical_append(&ctx.session_id, state).await;
                 }
             }
             TranscriptEvent::UserInject {
@@ -711,7 +705,7 @@ impl ReActEngine {
                 state
                     .canonical
                     .push(CanonicalMessage::user_with_source(content, source));
-                self.note_canonical_append(&ctx.session_id, state);
+                self.note_canonical_append(&ctx.session_id, state).await;
             }
             TranscriptEvent::CompactSummary {
                 compacted,

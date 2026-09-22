@@ -8,16 +8,17 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 /// Key for a streamed thought/reasoning block within a run.
-pub(super) type StreamBlockKey = (String, u32, u64, &'static str);
+pub(crate) type StreamBlockKey = (String, u32, u64, &'static str);
 
 /// Mint / reuse / clear message ids for streamed blocks.
 #[derive(Debug, Default)]
-pub(super) struct IdentityMap {
+pub(crate) struct IdentityMap {
     step_msg_ids: Mutex<HashMap<StreamBlockKey, String>>,
 }
 
 impl IdentityMap {
-    pub(super) fn new() -> Self {
+    #[cfg(test)]
+    pub(crate) fn new() -> Self {
         Self {
             step_msg_ids: Mutex::new(HashMap::new()),
         }
@@ -29,7 +30,7 @@ impl IdentityMap {
     /// A `thought` block is the content view of a ReAct step: its id is
     /// minted with the `step-` prefix so the message row and the thought
     /// step row share one entity. `reasoning` blocks keep `msg-` ids.
-    pub(super) fn ensure_msg_id(
+    pub(crate) fn ensure_msg_id(
         &self,
         session_id: &str,
         step: u32,
@@ -46,7 +47,7 @@ impl IdentityMap {
     }
 
     /// Read the minted id for a block without consuming it.
-    pub(super) fn peek_msg_id(
+    pub(crate) fn peek_msg_id(
         &self,
         session_id: &str,
         step: u32,
@@ -62,7 +63,7 @@ impl IdentityMap {
 
     /// Id a streamed block is persisted under: minted id when the block
     /// streamed, else a fresh id with the same per-kind prefix.
-    pub(super) fn block_msg_id(
+    pub(crate) fn block_msg_id(
         &self,
         session_id: &str,
         step: u32,
@@ -77,7 +78,7 @@ impl IdentityMap {
     }
 
     /// Drop every minted id belonging to a session (once per `run_react_loop`).
-    pub(super) fn clear_for_session(&self, session_id: &str) {
+    pub(crate) fn clear_for_session(&self, session_id: &str) {
         self.step_msg_ids
             .lock()
             .unwrap()

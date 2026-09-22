@@ -45,7 +45,8 @@ Provider 的 `api_style` 现在只接受 canonical wire protocol id；旧的 ven
 会话正文只从 `session_events` 恢复并由 `messages` 物化；新增 `session_events` append-only
 会话事件表（`sequence`、`event_type`、`event_version`、JSON payload、run/step identity）和
 checkpoint 的 `event_cursor` / `event_sequence` 游标；ReAct snapshot 新写入只保留运行时
-检查点与最多 32 条 `event_tail`，不再保存完整事件流；消息新增 `media_inputs` canonical
+运行态不再写入大型 JSON snapshot；`react_checkpoints` 只保存事件/投影游标元数据，
+不保存 transcript、interaction、usage 或 run budget；消息新增 `media_inputs` canonical
 媒体表示列。旧数据库不再执行运行时 schema/data 迁移，也不会尝试拼接旧表、旧列或旧
 FTS/embedding 形状；消息表的旧 `attachments` 列已删除并由仅供 UI/资产保留使用的
 `ui_metadata` 取代，`media_inputs` 是唯一 canonical 媒体持久化来源；`llm_usage.call_kind` 将 Agent 主循环和工具拥有的媒体推理调用分开，
@@ -64,8 +65,9 @@ reconcile 后台任务结果。
 只表示任务类型，取消或触发后保留为终态历史。旧数据库必须按本节删除并重建。
 
 本版本同时删除了旧的 ask/confirm 等待字段和 session 状态，统一使用
-`InteractionRequest`（快照字段 `interactions`）。旧 `react_state` 不做运行时迁移；若打开旧快照
-失败，请按本节删除数据库文件后重新创建。
+`InteractionRequest` 及其 session domain events。旧 `react_state` 不做运行时迁移，生产
+恢复不会读取它；旧数据库仍按本节删除数据库文件后重新创建，下一次 schema reset 将移除
+该兼容列。
 
 本版本将事实图谱的物理表从 `memory_edges` 统一为 `facts`，并删除 Agent 的
 `InferenceEngine` 兼容入口；当前后台事实编排只使用 `MemoryWorker`。数据库 schema

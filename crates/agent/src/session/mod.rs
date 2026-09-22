@@ -3,8 +3,8 @@ pub use haven_common::lifecycle::SessionStatus;
 pub use haven_common::lifecycle::SessionWaitingReason;
 use haven_common::types::MessageAttachment;
 use haven_common::types::RiskLevel;
-use haven_memory::Database;
 use haven_memory::repositories::sessions::Session as DbSession;
+use haven_memory::{Database, SessionStore};
 use haven_tools::{AuthorizationDecision, ToolResult, ToolsManager, is_silent_action};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -158,6 +158,10 @@ pub struct ToolExecution {
 
 pub struct SessionSupervisor {
     db: Arc<Database>,
+    /// The single durable session event boundary shared by all actors and the
+    /// ReAct turn runner. Keeping one store instance also makes the live event
+    /// broadcast observe interaction/control events, not just transcript rows.
+    store: SessionStore,
     tools: Arc<ToolsManager>,
     /// The sole cross-session registry. A session's mutable runtime state is
     /// owned by its actor and is never protected by a shared per-session lock.
@@ -221,7 +225,7 @@ mod tool_runner;
 pub(crate) use dispatcher::DirectRunLease;
 pub(crate) use tool_runner::{ActionStepMetadata, ActionStepPersistenceError};
 
-pub(crate) use actor::{CONTEXT_BATCH_MAX_CHARS, CONTEXT_BATCH_MAX_ITEMS};
+pub(crate) use actor::{CONTEXT_BATCH_MAX_CHARS, CONTEXT_BATCH_MAX_ITEMS, UsageUpdate};
 pub(crate) use queues::ReactContextBatch;
 pub use run_engine::RunEngine;
 
@@ -230,6 +234,7 @@ impl SessionSupervisor {
         let (event_tx, _) = broadcast::channel(256);
         Self {
             partials: Arc::new(crate::partial::PartialStore::new(db.clone())),
+            store: SessionStore::new(db.clone()),
             db,
             tools,
             actors: Arc::new(Mutex::new(HashMap::new())),
@@ -255,6 +260,13 @@ impl SessionSupervisor {
 
     pub(crate) async fn actor_for(&self, session_id: &str) -> Option<actor::SessionActorHandle> {
         self.actors.lock().await.get(session_id).cloned()
+    }
+
+    /// Non-blocking actor lookup for cancellation-safe guard cleanup.  It is
+    /// intentionally only a fast path; lifecycle operations continue to use
+    /// the awaited registry lock.
+    pub(crate) fn actor_for_now(&self, session_id: &str) -> Option<actor::SessionActorHandle> {
+        self.actors.try_lock().ok()?.get(session_id).cloned()
     }
 
     /// Hold the lifecycle gate across a multi-step registry/DB operation.
@@ -310,7 +322,24 @@ impl SessionSupervisor {
     }
 
     async fn install_actor(&self, info: SessionInfo) -> actor::SessionActorHandle {
-        let handle = actor::spawn(self.db.clone(), info);
+        let store = self.store.clone();
+        let session_id = info.id.clone();
+        let interactions = match self
+            .db
+            .run_blocking(move |_| actor::load_interactions(&store, &session_id))
+            .await
+        {
+            Ok(interactions) => interactions,
+            Err(error) => {
+                tracing::warn!(
+                    session_id = %info.id,
+                    %error,
+                    "failed to replay session interactions; starting actor empty"
+                );
+                Vec::new()
+            }
+        };
+        let handle = actor::spawn(self.db.clone(), self.store.clone(), info, interactions);
         self.actors
             .lock()
             .await
@@ -1411,83 +1440,6 @@ mod tests {
         assert!(drained[0].is_answer, "first message is an ask reply");
         assert_eq!(drained[0].text, "the answer");
         assert!(!drained[1].is_answer, "plain supplement is not an answer");
-    }
-
-    #[tokio::test]
-    async fn persisted_interaction_clear_is_fail_closed_on_snapshot_error() {
-        let db = temp_db();
-        let tools = Arc::new(ToolsManager::new());
-        let exec = SessionSupervisor::new(db.clone(), tools, 3);
-        let session = exec.create_session("test").await.unwrap();
-        exec.request_interaction(crate::interaction::InteractionRequest::ask(
-            &session.id,
-            "the answer",
-            Vec::new(),
-            vec!["step-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into()],
-        ))
-        .await
-        .unwrap();
-        db.save_react_state(
-            &session.id,
-            &serde_json::to_string(&crate::types::ReActSnapshot::default()).unwrap(),
-        )
-        .unwrap();
-        exec.persist_interactions(&session.id).await.unwrap();
-        db.conn()
-            .execute_batch(
-                "CREATE TRIGGER interaction_snapshot_fault
-                 BEFORE UPDATE OF react_state ON sessions
-                 BEGIN SELECT RAISE(ABORT, 'injected interaction snapshot failure'); END;",
-            )
-            .unwrap();
-
-        let error = exec
-            .clear_interactions_persisted(
-                &session.id,
-                Some(crate::interaction::InteractionKind::Ask),
-            )
-            .await
-            .unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("injected interaction snapshot failure")
-        );
-        assert!(
-            !exec
-                .pending_interactions(&session.id, crate::interaction::InteractionKind::Ask)
-                .await
-                .is_empty()
-        );
-    }
-
-    #[tokio::test]
-    async fn interaction_persistence_fails_when_react_checkpoint_is_missing() {
-        let db = temp_db();
-        let tools = Arc::new(ToolsManager::new());
-        let exec = SessionSupervisor::new(db, tools, 3);
-        let session = exec.create_session("test").await.unwrap();
-        exec.request_interaction(crate::interaction::InteractionRequest::ask(
-            &session.id,
-            "the answer",
-            Vec::new(),
-            vec!["step-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into()],
-        ))
-        .await
-        .unwrap();
-
-        let error = exec.persist_interactions(&session.id).await.unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("react_state checkpoint is missing")
-        );
-        assert_eq!(
-            exec.pending_interactions(&session.id, crate::interaction::InteractionKind::Ask)
-                .await
-                .len(),
-            1
-        );
     }
 
     #[tokio::test]

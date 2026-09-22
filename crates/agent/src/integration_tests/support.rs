@@ -921,4 +921,14 @@ pub(super) async fn seed_snapshot_events(
         })
         .await
         .unwrap();
+    // Seed interactions through the actor command boundary as production
+    // ingress does. This updates both the live mailbox and the durable domain
+    // event stream, so tests do not construct a second interaction authority.
+    for request in &snapshot.interactions {
+        agent
+            .executor
+            .request_interaction(request.clone())
+            .await
+            .unwrap();
+    }
 }

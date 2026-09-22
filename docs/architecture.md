@@ -185,10 +185,11 @@ CI 以 `scripts/check-crate-dependencies.ps1` 对此表执行内部 crate 依赖
   并由受信 host 根目录重建历史预览，不参与 provider 规划或 transcript 恢复。
 - `embeddings.rs`：向量编码、相似度/ANN 查询和 embedding 存储操作。
 
-schema 初始化不改变 X12：`session_events` 经 `SessionEventStore` 追加并按
-sequence replay，是会话恢复、rollback 和实时订阅的唯一事件权威；
-`messages` / `session_steps` 仍是投影，`ReActSnapshot` 只保存运行时 checkpoint、
-active transcript cursor 和最多 32 条诊断尾部缓存；完整 `events` 不再写入 snapshot。
+schema 初始化不改变 X12：`session_events` 经 `SessionStore` 追加并按
+sequence replay，是会话恢复、rollback、交互重建和实时订阅的唯一事件权威；
+`messages` / `session_steps` 仍是投影，`react_checkpoints` 只保存轻量游标元数据，
+不再保存可恢复的 ReAct JSON。`ReActSnapshot` 只存在于进程内作为投影 scratch；
+完整 `events`、interaction、usage、run budget 和多套 cursor 不得写入 snapshot。
 `UserInject` 事件只保存 `MediaInput` 元数据，reset 只替换持久化载体，不成为新的业务真源。
 
 **判定标准**：只负责 SQLite 生命周期与记忆数据持久化；Agent 编排、LLM
@@ -220,10 +221,10 @@ Agent（ADR 0022、0063、0169）。
 
 - `react/`：ReAct 循环（`loop` / `turn` / `response_cycle` / `stream_step` / `tool_batch` / `tool_batch_execute` / `tool_batch_policy` / `tool_batch_plan` / `context` / `inject` / `turn_end` / `snapshot_io` / `retries` / `hooks` / `hook_policy` / `transcript` / `state` / `request_context`），按 Run → Turn → ToolBatch 分层；`ReActState` 统一持有当前 run 的 events、canonical 和 branch points，所有边界共享同一运行态。`loop` 只负责 run 预算与生命周期，`turn` 负责阶段编排，`response_cycle` 负责一次采样后的空响应/截断重试，`tool_batch_plan` 固化 assistant 调用顺序和跨层身份，`tool_batch_execute` 负责批次准入、并发执行、取消与按序提交，`tool_batch_policy` 负责失败分类与重试提示，`tool_batch` 负责工具执行原语、确认生命周期与结果状态。`RequestContext` 从 durable canonical 生成不可变的 provider 请求视图，统一承载 sanitize、retry nudge 和一次性重试指令，不反写 transcript；`context` 只收集有边界的上下文项，`inject` 只经 `apply_transcript` 投影，`turn_end` 负责最终事件与暂停边界，`hooks` 只定义扩展契约，`hook_policy` 装配生产副作用策略。
 - 流式输出由 `stream_step` 产生，`event.rs` 用一个有序 chunk 队列归并 thought/reasoning；provider retry 通过 `agent:stream_reset` 标记新的输出代次，UI 只清理 live stream block，不修改 durable transcript。`streamAggregator` 只合并相邻且同身份的 chunk，保留交错输出顺序；最终 thought/reasoning 投影仍是丢 chunk 时的权威修复路径。
-- **X12 持久化契约**：`SessionEventStore` 是 `session_events` 的 append-only writer；`apply_transcript` 先提交 durable event，再维护 `messages`/`session_steps` 物化投影并发出同一语义的 live event。resume、rollback 和实时重放均从 event sequence 读取，snapshot 仅保存运行时 checkpoint、transcript cursor 和有限尾部缓存。rollback 的 event cursor 用于 active transcript 投影，event sequence 用于 append-only timeline；`last_msg_at` 只用于截断物化消息投影，三者不得互相推导或作为 transcript 真源。多模态输入在 ingress 接受 `MessageAttachment`，但事件/数据库 canonical 投影使用 `MediaAsset → MediaRepresentation → MediaPlan`，事件与 snapshot 不保存 inline bytes；OCR/STT 成功追加派生表示且保留 raw asset。
+- **X12 持久化契约**：`SessionStore` 是 `session_events` 的 append-only writer；`apply_transcript` 先提交 durable event，再维护 `messages`/`session_steps` 物化投影并发出同一语义的 live event。交互请求也必须由 `SessionActor` 命令追加为 domain event，恢复只 replay 事件流；resume、rollback 和实时重放均从 event sequence 读取，checkpoint 只保存轻量游标元数据。rollback 的 event cursor 用于 active transcript 投影，event sequence 用于 append-only timeline；`last_msg_at` 只用于截断物化消息投影，三者由 `SessionStore` 封装且不得互相推导或作为 transcript 真源。多模态输入在 ingress 接受 `MessageAttachment`，但事件/数据库 canonical 投影使用 `MediaAsset → MediaRepresentation → MediaPlan`，事件不保存 inline bytes；OCR/STT 成功追加派生表示且保留 raw asset。
 - **工具调用身份契约**：同一 assistant tool batch 内，`action_index` 是 provider 调用数组的零基稳定位置，`step_id` 是该调用的持久执行行/卡片身份，`tool_call_id` 是 provider 调用身份；`session_steps` 与 ReAct events 同步保存三者。确认恢复必须按完整身份关联，禁止按工具名、参数或 observation 文本猜测；缺失 snapshot 不再从步骤投影重建 ReAct transcript，旧数据按 reset 边界处理。
 - **工具参数验证契约**：执行前只验证，不用 schema default、首个 enum 或类型占位符改写输入；无效参数以包含 `action_index`、工具名和验证明细的失败 observation 返回给模型，避免改变副作用语义。
-- `session/`：`SessionSupervisor` 负责 FIFO、精确 active-run admission、生命周期闸门和 actor 生命周期；`SessionActor` 通过 mailbox 串行拥有单会话状态，`RunEngine` 承载一次 ReAct run；`dispatcher` / `queues` / `status` / `tool_runner` 只提供各层协作能力。
+- `session/`：`SessionSupervisor` 只负责 registry、并发 admission 和生命周期；`SessionActor` 通过 mailbox 串行拥有单会话状态、队列、交互、run budget、usage、stream identity 和运行游标；`TurnEngine` 只推进一次 turn，`RunEngine` 负责 run 边界；`dispatcher` / `queues` / `status` / `tool_runner` 只提供各层协作能力。
 - `layer.rs` + `ingress.rs` / `resume.rs` / `resume_support.rs`：对外入口与 resume 恢复；`resume_support` 只提供确定性的候选合并、悬空工具调用修复和运行时工具选择恢复。
 - `canonical.rs`：发送前 `sanitize_canonical` 闸门。
 - `memory_worker.rs` / `memory_service.rs` / `memory_index.rs` / `prompt_context.rs` / `prompt_renderer.rs` / `prompt.rs` / `compactor.rs` / `rollback.rs` / `rollback_support.rs` / `title.rs` / `event.rs` / `partial.rs`；`memory_service` 统一 typed memory/embedding/cache 边界，`prompt_context` 取得 bounded turn snapshot，`prompt_renderer` 纯渲染 bounded MEMORY fence；`rollback.rs` 编排生命周期与 DB 双时钟，`rollback_support` 只操作 events 和 branch cursor。

@@ -207,9 +207,11 @@ impl SessionSupervisor {
         &self,
         session_id: &str,
         kind: Option<crate::interaction::InteractionKind>,
-    ) {
+    ) -> anyhow::Result<()> {
         if let Some(actor) = self.actor_for(session_id).await {
-            actor.clear_interactions(kind).await;
+            actor.clear_interactions(kind).await
+        } else {
+            Ok(())
         }
     }
 
@@ -221,41 +223,7 @@ impl SessionSupervisor {
         let Some(actor) = self.actor_for(session_id).await else {
             return Ok(());
         };
-        let current = actor.interactions(None, false).await;
-        let retained = current
-            .into_iter()
-            .filter(|request| kind.is_none_or(|wanted| request.kind != wanted))
-            .collect();
-        // Persist the post-clear view before mutating the actor.  A snapshot
-        // failure therefore leaves the in-memory Ask gate intact and the
-        // answer can be retried without losing the question.
-        self.persist_interactions_snapshot(session_id, retained)
-            .await?;
-        actor.clear_interactions(kind).await;
-        Ok(())
-    }
-
-    pub(crate) async fn persist_interactions(&self, session_id: &str) -> anyhow::Result<()> {
-        let interactions = self.interaction_requests(session_id).await;
-        self.persist_interactions_snapshot(session_id, interactions)
-            .await
-    }
-
-    async fn persist_interactions_snapshot(
-        &self,
-        session_id: &str,
-        interactions: Vec<crate::interaction::InteractionRequest>,
-    ) -> anyhow::Result<()> {
-        let interactions = serde_json::to_string(&interactions)?;
-        let sid = session_id.to_string();
-        self.db
-            .run_blocking(move |db| {
-                db.update_react_state_interactions_json(&sid, &interactions)
-                    .map_err(|error| {
-                        anyhow::anyhow!("cannot persist interactions for session {sid}: {error}")
-                    })
-            })
-            .await
+        actor.clear_interactions(kind).await
     }
 
     pub async fn resolve_interaction(
@@ -271,32 +239,11 @@ impl SessionSupervisor {
             .cloned()
             .collect::<Vec<_>>();
         for actor in actors {
-            let previous = actor
-                .interactions(None, false)
-                .await
-                .into_iter()
-                .find(|request| request.id == request_id);
             if let Some(decision) = actor
                 .resolve_interaction(request_id.to_string(), response.clone())
-                .await
+                .await?
             {
                 let request = decision.request.clone();
-                if let Err(error) = self.persist_interactions(&request.session_id).await {
-                    // The actor mutation is reversible, so a missing or
-                    // failed checkpoint cannot turn a failed resolve into a
-                    // silently consumed confirmation gate.
-                    if let Some(previous) = previous
-                        && let Err(restore_error) = actor.request_interaction(previous).await
-                    {
-                        tracing::error!(
-                            session_id = %request.session_id,
-                            request_id = %request.id,
-                            error = %restore_error,
-                            "failed to restore interaction after persistence failure"
-                        );
-                    }
-                    return Err(error);
-                }
                 if decision.wake_session {
                     self.update_session_status_if(
                         &request.session_id,

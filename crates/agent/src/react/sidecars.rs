@@ -2,7 +2,7 @@
 //!
 //! Each type owns one mutex-backed concern previously inlined on
 //! `ReActEngine`. The engine remains a facade that holds collaboration
-//! deps plus these named sidecars (+ `IdentityMap`, `SnapshotStore`, hooks).
+//! deps plus these named sidecars (+ `IdentityMap`, `CheckpointStore`, hooks).
 
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -55,7 +55,7 @@ impl MessagingPoller {
         }
     }
 
-    pub(crate) fn lock(&self) -> MutexGuard<'_, MessagingState> {
+    pub(super) fn lock(&self) -> MutexGuard<'_, MessagingState> {
         self.inner.lock().unwrap()
     }
 
@@ -90,15 +90,15 @@ impl Default for MessagingPoller {
 }
 
 #[derive(Debug, Clone, Default)]
-pub(super) struct CumulativeUsage {
-    pub(super) prompt_tokens: u32,
-    pub(super) completion_tokens: u32,
-    pub(super) total_tokens: u32,
-    pub(super) cached_tokens: u32,
-    pub(super) cache_creation_tokens: u32,
-    pub(super) cache_miss_tokens: u32,
-    pub(super) cost_usd: f64,
-    pub(super) has_cost: bool,
+pub(crate) struct CumulativeUsage {
+    pub(crate) prompt_tokens: u32,
+    pub(crate) completion_tokens: u32,
+    pub(crate) total_tokens: u32,
+    pub(crate) cached_tokens: u32,
+    pub(crate) cache_creation_tokens: u32,
+    pub(crate) cache_miss_tokens: u32,
+    pub(crate) cost_usd: f64,
+    pub(crate) has_cost: bool,
 }
 
 impl From<haven_memory::repositories::usage::SessionUsage> for CumulativeUsage {
@@ -118,14 +118,14 @@ impl From<haven_memory::repositories::usage::SessionUsage> for CumulativeUsage {
 
 /// Cumulative totals after a usage accumulate pass.
 #[derive(Debug, Clone, Copy)]
-pub(super) struct CumulativeTotals {
-    pub(super) prompt_tokens: u32,
-    pub(super) completion_tokens: u32,
-    pub(super) total_tokens: u32,
-    pub(super) cached_tokens: u32,
-    pub(super) cache_creation_tokens: u32,
-    pub(super) cache_miss_tokens: u32,
-    pub(super) cost_usd: Option<f64>,
+pub(crate) struct CumulativeTotals {
+    pub(crate) prompt_tokens: u32,
+    pub(crate) completion_tokens: u32,
+    pub(crate) total_tokens: u32,
+    pub(crate) cached_tokens: u32,
+    pub(crate) cache_creation_tokens: u32,
+    pub(crate) cache_miss_tokens: u32,
+    pub(crate) cost_usd: Option<f64>,
 }
 
 /// Per-session cumulative token usage tracker.
@@ -170,7 +170,7 @@ impl UsageTracker {
 
     /// Seed (if missing) then add one call's tokens/cost; returns running totals.
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn record_with_seed<F>(
+    pub(crate) fn record_with_seed<F>(
         &self,
         session_id: &str,
         prompt_tokens: u32,
@@ -318,42 +318,6 @@ impl ToolDefCache {
     }
 }
 
-/// Cached `messages.created_at` of the newest row per session, used by
-/// [`super::snapshot_io::ReActEngine::save_branch_point`] so mid-run branch
-/// points do not hit SQLite on every step when the snapshot write is throttled.
-pub(crate) struct LastMsgAtCache {
-    map: Mutex<HashMap<String, Option<String>>>,
-}
-
-impl LastMsgAtCache {
-    pub(crate) fn new() -> Self {
-        Self {
-            map: Mutex::new(HashMap::new()),
-        }
-    }
-
-    pub(super) fn get(&self, session_id: &str) -> Option<Option<String>> {
-        self.map.lock().unwrap().get(session_id).cloned()
-    }
-
-    pub(super) fn set(&self, session_id: &str, last_msg_at: Option<String>) {
-        self.map
-            .lock()
-            .unwrap()
-            .insert(session_id.to_string(), last_msg_at);
-    }
-
-    pub(crate) fn remove(&self, session_id: &str) {
-        self.map.lock().unwrap().remove(session_id);
-    }
-}
-
-impl Default for LastMsgAtCache {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl Default for ToolDefCache {
     fn default() -> Self {
         Self::new()
@@ -399,7 +363,7 @@ impl TokenEstimateCache {
         }
     }
 
-    pub(super) fn estimate(
+    pub(crate) fn estimate(
         &self,
         session_id: &str,
         canonical: &[CanonicalMessage],
@@ -459,7 +423,7 @@ impl TokenEstimateCache {
     /// so subsequent turn-start checks remain O(1) with respect to history
     /// length. If the cache is cold or the revision does not line up, leave it
     /// untouched and let the next `estimate` rebuild it safely.
-    pub(super) fn append_message(
+    pub(crate) fn append_message(
         &self,
         session_id: &str,
         message: &CanonicalMessage,
@@ -513,38 +477,6 @@ impl Default for TokenEstimateCache {
     }
 }
 
-/// Reusable per-session snapshot serialization buffers.
-/// Mid-run write throttle lives on [`super::snapshot_io::SnapshotStore`].
-pub(crate) struct SnapshotBufs {
-    bufs: Mutex<HashMap<String, Vec<u8>>>,
-}
-
-impl SnapshotBufs {
-    pub(crate) fn new() -> Self {
-        Self {
-            bufs: Mutex::new(HashMap::new()),
-        }
-    }
-
-    pub(super) fn lock(&self) -> MutexGuard<'_, HashMap<String, Vec<u8>>> {
-        self.bufs.lock().unwrap()
-    }
-
-    pub(super) fn try_lock(&self) -> Result<MutexGuard<'_, HashMap<String, Vec<u8>>>, ()> {
-        self.bufs.try_lock().map_err(|_| ())
-    }
-
-    pub(crate) fn remove(&self, session_id: &str) {
-        self.bufs.lock().unwrap().remove(session_id);
-    }
-}
-
-impl Default for SnapshotBufs {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 /// Per-request context-window cache keyed by the router instance pointer.
 pub(crate) struct ContextWindowCache {
     cache: Mutex<(usize, HashMap<RequestKind, u32>)>,
@@ -592,16 +524,6 @@ impl Default for ContextWindowCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn snapshot_bufs_try_lock_is_non_blocking() {
-        let bufs = SnapshotBufs::new();
-        let _guard = bufs.lock();
-        assert!(
-            bufs.try_lock().is_err(),
-            "try_lock must fail while another guard holds the mutex"
-        );
-    }
 
     #[test]
     fn messaging_clear_session_drops_title_cache() {

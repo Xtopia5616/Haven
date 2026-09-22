@@ -734,10 +734,11 @@ async fn run_session_from_id_trims_dangling_tool_call_before_resume() {
     );
 }
 
-/// Legacy sessions with no durable events still hard-fail on corrupt
-/// `react_state` instead of starting a different transcript path.
+/// A legacy/corrupt JSON cache never blocks a fresh session: without durable
+/// events the actor starts the normal first turn, and with durable events the
+/// event stream is the recovery authority.
 #[tokio::test]
-async fn corrupt_react_state_hard_fails_resume() {
+async fn corrupt_react_state_is_ignored_without_durable_events() {
     let tools = Arc::new(ToolsManager::new());
     let mock = Arc::new(ScriptedMock::new(vec![ScriptedResponse::Chunk(
         StreamChunk {
@@ -765,18 +766,10 @@ async fn corrupt_react_state_hard_fails_resume() {
         .save_react_state(&session.id, "{not-valid-json")
         .unwrap();
 
-    let err = agent
-        .run_session_from_id(&session.id)
-        .await
-        .expect_err("corrupt snapshot must hard-fail");
-    let msg = format!("{err:#}");
+    agent.run_session_from_id(&session.id).await.unwrap();
     assert!(
-        msg.contains("corrupt") || msg.contains("incompatible"),
-        "error should mention corrupt/incompatible snapshot: {msg}"
-    );
-    assert!(
-        mock.seen.lock().unwrap().is_empty(),
-        "LLM must not be called after corrupt-snapshot hard-fail"
+        !mock.seen.lock().unwrap().is_empty(),
+        "fresh sessions must not be blocked by a legacy cache"
     );
 }
 

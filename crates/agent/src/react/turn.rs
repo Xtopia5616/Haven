@@ -36,6 +36,25 @@ pub(super) enum TurnOutcome {
     Done(LoopExit),
 }
 
+/// Stateless turn coordinator. All session-owned mutable state remains in the
+/// borrowed [`ReActState`] and the `SessionActor`; this type only advances one
+/// model/tool turn and returns its boundary outcome to the run driver.
+pub(super) struct TurnEngine<'a> {
+    engine: &'a ReActEngine,
+}
+
+impl ReActEngine {
+    pub(super) fn turn_engine(&self) -> TurnEngine<'_> {
+        TurnEngine { engine: self }
+    }
+}
+
+impl TurnEngine<'_> {
+    pub(super) async fn run(&self, input: TurnInput<'_>) -> anyhow::Result<TurnOutcome> {
+        self.engine.run_turn_impl(input).await
+    }
+}
+
 impl ReActEngine {
     /// Emit completed provider web-search items after the stream has been
     /// folded. Streaming providers already emitted lifecycle updates; this
@@ -72,7 +91,7 @@ impl ReActEngine {
         }
     }
 
-    pub(super) async fn run_turn(&self, input: TurnInput<'_>) -> anyhow::Result<TurnOutcome> {
+    async fn run_turn_impl(&self, input: TurnInput<'_>) -> anyhow::Result<TurnOutcome> {
         let TurnInput {
             ctx,
             state,
@@ -120,7 +139,7 @@ impl ReActEngine {
                 ctx.run_id,
                 step_num,
             );
-            self.estimate_canonical_tokens(session_id, state)
+            self.estimate_canonical_tokens(session_id, state).await
         };
         let request_context = {
             let _timer = self.metrics.start(
@@ -296,7 +315,9 @@ impl ReActEngine {
         };
 
         if let Some(reasoning) = response.reasoning.clone() {
-            let reasoning_id = self.block_msg_id(session_id, step_num, ctx.run_id, "reasoning");
+            let reasoning_id = self
+                .block_msg_id(session_id, step_num, ctx.run_id, "reasoning")
+                .await;
             self.apply_transcript(
                 &ctx,
                 TranscriptEvent::Reasoning {
@@ -339,7 +360,9 @@ impl ReActEngine {
         .await;
 
         if let Some(text) = thought.clone() {
-            let message_id = self.block_msg_id(session_id, step_num, ctx.run_id, "thought");
+            let message_id = self
+                .block_msg_id(session_id, step_num, ctx.run_id, "thought")
+                .await;
             self.apply_transcript(&ctx, TranscriptEvent::Thought { text, message_id }, state)
                 .await?;
         }

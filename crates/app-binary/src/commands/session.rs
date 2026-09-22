@@ -6,6 +6,7 @@ use crate::events::{
     SessionDeletedEvent, SessionTitleUpdatedEvent,
 };
 use crate::logging::sanitize_error_text;
+use haven_agent::{InteractionRequest, InteractionStatus};
 use haven_memory::repositories::messages::Message;
 use haven_memory::repositories::session_steps::SessionStep;
 use haven_memory::repositories::sessions::Session;
@@ -484,8 +485,8 @@ pub struct SessionResumeResponse {
 
 /// Load the session's messages and steps into a resume response.
 /// Shared by `get_session_for_resume` and `get_last_conversation`.
-fn resume_response_for_session(
-    db: &haven_memory::Database,
+async fn resume_response_for_session(
+    db: Arc<haven_memory::Database>,
     session: Session,
 ) -> Result<SessionResumeResponse, String> {
     let messages = db
@@ -500,35 +501,42 @@ fn resume_response_for_session(
     let llm_usage = db
         .get_session_llm_usage(&session.id)
         .map_err(|e| log_err("resume_response_for_session", e))?;
-    // `react_state` is a checkpoint cache. A damaged cache must not make the
-    // history view unavailable; the Agent resume path will use the durable
-    // event stream and restore whatever interaction state is still present.
-    let interactions = match db.get_react_state(&session.id) {
-        Ok(Some(json)) => match haven_agent::ReActSnapshot::from_json(&json) {
-            Ok(snapshot) => snapshot
-                .interactions
-                .iter()
-                .map(crate::bootstrap::project_interaction)
-                .collect(),
-            Err(error) => {
-                tracing::warn!(
-                    session_id = %session.id,
-                    error = %error,
-                    "ignoring corrupt react_state cache while loading session history"
-                );
-                Vec::new()
+    // Interactions are domain events owned by the session actor. The UI
+    // history projection replays only that small control stream; messages and
+    // steps remain projections and are not recovery input.
+    let store = haven_memory::SessionStore::new(db.clone());
+    let mut active_interactions: Vec<InteractionRequest> = Vec::new();
+    for event in store
+        .read_active_domain_events(&session.id)
+        .map_err(|e| log_err("resume_response_for_session", e))?
+    {
+        match event.event_type.as_str() {
+            haven_memory::INTERACTION_REQUESTED_EVENT_TYPE
+            | haven_memory::INTERACTION_RESOLVED_EVENT_TYPE => {
+                let request: InteractionRequest = serde_json::from_str(&event.payload)
+                    .map_err(|e| log_err("resume_response_for_session", e))?;
+                active_interactions.retain(|existing| existing.id != request.id);
+                if request.status == InteractionStatus::Pending {
+                    active_interactions.push(request);
+                }
             }
-        },
-        Ok(None) => Vec::new(),
-        Err(error) => {
-            tracing::warn!(
-                session_id = %session.id,
-                error = %error,
-                "ignoring unreadable react_state cache while loading session history"
-            );
-            Vec::new()
+            haven_memory::INTERACTION_CLEARED_EVENT_TYPE => {
+                let ids = serde_json::from_str::<serde_json::Value>(&event.payload)
+                    .ok()
+                    .and_then(|payload| payload.get("ids")?.as_array().cloned())
+                    .unwrap_or_default();
+                active_interactions.retain(|request| {
+                    !ids.iter()
+                        .any(|id| id.as_str() == Some(request.id.as_str()))
+                });
+            }
+            _ => {}
         }
-    };
+    }
+    let interactions = active_interactions
+        .iter()
+        .map(crate::bootstrap::project_interaction)
+        .collect();
     Ok(SessionResumeResponse {
         session,
         messages,
@@ -549,7 +557,7 @@ pub async fn get_session_for_resume(
         .get_session(&session_id)
         .map_err(|e| log_err("get_session_for_resume", e))?
         .ok_or_else(|| format!("Session not found: {}", session_id))?;
-    resume_response_for_session(&state.db, session)
+    resume_response_for_session(state.db.clone(), session).await
 }
 
 /// Return the most recent persisted session with its session messages and
@@ -564,7 +572,9 @@ pub async fn get_last_conversation(
         .list_sessions(1, 0)
         .map_err(|e| log_err("get_last_conversation", e))?;
     match sessions.into_iter().next() {
-        Some(session) => resume_response_for_session(&state.db, session).map(Some),
+        Some(session) => resume_response_for_session(state.db.clone(), session)
+            .await
+            .map(Some),
         None => Ok(None),
     }
 }

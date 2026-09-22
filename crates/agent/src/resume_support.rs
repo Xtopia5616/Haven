@@ -8,16 +8,18 @@
 use std::collections::HashSet;
 
 use haven_memory::repositories::messages::Message;
+#[cfg(test)]
 use haven_memory::repositories::session_steps::SessionStep;
 use serde_json::Value;
 
-use crate::types::{Action, TranscriptRecord};
+#[cfg(test)]
+use crate::types::Action;
+use crate::types::TranscriptRecord;
 
-/// Infer the next step when the optional checkpoint cache is unavailable or
-/// is older than the durable event stream. A completed tool result advances
-/// the loop; a user inject remains the input for its recorded step. This is a
-/// conservative fallback for crash recovery — a current cache, when present,
-/// still carries the exact next-step boundary.
+/// Infer the next step from the durable event tail. A completed tool result
+/// advances the loop; a user inject remains the input for its recorded step.
+/// This is the only resume boundary after the JSON checkpoint was removed from
+/// the recovery path.
 pub(crate) fn infer_resume_step(events: &[TranscriptRecord]) -> u32 {
     let mut max_step = 0;
     let mut last = None;
@@ -149,6 +151,7 @@ pub(crate) fn load_skill_names(input: &Value) -> Vec<String> {
 /// The function is deliberately pure. The caller owns the one durable write
 /// of the repaired snapshot, so a crash before that write leaves the same
 /// dangling input and the next resume repeats this idempotent reconciliation.
+#[cfg(test)]
 pub(crate) fn reconcile_dangling_tool_call(
     events: &mut Vec<TranscriptRecord>,
     steps: &[SessionStep],
