@@ -1,5 +1,7 @@
 # ADR-0169: Memory and Prompt Boundary Split
 
+> Superseded for naming and compatibility policy by [ADR-0201](0201-unify-fact-storage-and-memory-worker-naming.md).
+
 - Status: Accepted
 - Date: 2026-09-19
 - Owners: Haven maintainers

@@ -240,7 +240,7 @@ impl MemoryTool {
         Ok(ToolResult::ok(json!({ "deleted": deleted })))
     }
 
-    /// Unified recall: prefer the desktop-wired History/`InferenceEngine`
+    /// Unified recall: prefer the desktop-wired History/`MemoryWorker`
     /// callback; fall back to keyword/FTS when unset (tests/headless).
     async fn execute_recall(
         &self,

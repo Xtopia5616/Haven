@@ -90,7 +90,7 @@ pub struct MemoryService {
 
 /// Narrow persistence capability handed to the worker.  Keeping this handle
 /// private to the memory boundary avoids passing raw database ownership into
-/// prompt and inference composition code.
+/// prompt and memory-worker composition code.
 #[derive(Clone)]
 pub(crate) struct MemoryDatabase(Arc<Database>);
 
@@ -137,10 +137,7 @@ impl MemoryService {
         let Some(router) = &self.router else {
             return String::new();
         };
-        if !router
-            .is_request_configured(RequestKind::Embedding)
-            .await
-        {
+        if !router.is_request_configured(RequestKind::Embedding).await {
             return String::new();
         }
         let endpoint = router

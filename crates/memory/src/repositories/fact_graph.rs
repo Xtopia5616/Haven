@@ -1,7 +1,7 @@
 //! Graph mutation boundary for memory facts.
 //!
 //! `facts.rs` owns fact reads, search and ranking. This module owns the
-//! mutation semantics for `memory_edges`, including node linking, provenance
+//! mutation semantics for `facts`, including node linking, provenance
 //! storage, user authority and inferred-fact reinforcement. Keeping those
 //! rules together prevents a new write path from bypassing graph invariants.
 
@@ -74,7 +74,7 @@ fn validate_fact_fields(
 /// Internal writer for the typed memory graph's fact edges.
 ///
 /// This is deliberately a small, non-`pub`-API facade. Callers continue to
-/// use the stable `Database` methods while all `memory_edges` mutations are
+/// use the stable `Database` methods while all `facts` mutations are
 /// implemented in one place.
 pub(crate) struct FactGraph<'db> {
     db: &'db Database,
@@ -125,7 +125,7 @@ impl<'db> FactGraph<'db> {
             self.provenance_cols_from_source_ref(source_ref)?;
         let conn = self.db.conn();
         conn.execute(
-            "INSERT INTO memory_edges (
+            "INSERT INTO facts (
                 id, subject, subject_id, predicate, object, object_id,
                 source, confidence, created_at, tags, mention_count, last_seen_at,
                 provenance_item_id, provenance_record_id, provenance_snippet, durability
@@ -213,7 +213,7 @@ impl<'db> FactGraph<'db> {
         let now = Utc::now().to_rfc3339();
         let tags_json = serialize_tags(tags);
         conn.execute(
-            "INSERT INTO memory_edges (
+            "INSERT INTO facts (
                 id, subject, subject_id, predicate, object, object_id,
                 source, confidence, created_at, tags, mention_count, last_seen_at,
                 durability
@@ -261,7 +261,7 @@ impl<'db> FactGraph<'db> {
             let existing: Option<Fact> = conn
                 .query_row(
                     &format!(
-                        "SELECT {FACT_COLS} FROM memory_edges WHERE subject = ?1 AND predicate = ?2 AND object = ?3"
+                        "SELECT {FACT_COLS} FROM facts WHERE subject = ?1 AND predicate = ?2 AND object = ?3"
                     ),
                     rusqlite::params![subject, predicate, object],
                     fact_from_row,
@@ -271,7 +271,7 @@ impl<'db> FactGraph<'db> {
                 let now = Utc::now().to_rfc3339();
                 if existing.source == "user" {
                     conn.execute(
-                        "UPDATE memory_edges
+                        "UPDATE facts
                          SET mention_count = mention_count + 1, last_seen_at = ?1, confidence = 1.0,
                              durability = 1.0
                          WHERE id = ?2",
@@ -285,7 +285,7 @@ impl<'db> FactGraph<'db> {
                     return Ok((fact, true));
                 }
                 conn.execute(
-                    "UPDATE memory_edges
+                    "UPDATE facts
                      SET source = 'user', confidence = 1.0, last_seen_at = ?1, durability = 1.0
                      WHERE id = ?2",
                     rusqlite::params![now, existing.id],
@@ -299,7 +299,7 @@ impl<'db> FactGraph<'db> {
             }
             let replaced = if is_single_valued_predicate(&predicate) {
                 conn.execute(
-                    "DELETE FROM memory_edges WHERE subject = ?1 AND predicate = ?2",
+                    "DELETE FROM facts WHERE subject = ?1 AND predicate = ?2",
                     rusqlite::params![subject, predicate],
                 )? > 0
             } else {
@@ -344,11 +344,11 @@ impl<'db> FactGraph<'db> {
         let conn = self.db.conn();
         let deleted = match object {
             Some(obj) => conn.execute(
-                "DELETE FROM memory_edges WHERE subject = ?1 AND predicate = ?2 AND object = ?3",
+                "DELETE FROM facts WHERE subject = ?1 AND predicate = ?2 AND object = ?3",
                 rusqlite::params![subject, predicate, obj],
             )?,
             None => conn.execute(
-                "DELETE FROM memory_edges WHERE subject = ?1 AND predicate = ?2",
+                "DELETE FROM facts WHERE subject = ?1 AND predicate = ?2",
                 rusqlite::params![subject, predicate],
             )?,
         };
@@ -371,7 +371,7 @@ impl<'db> FactGraph<'db> {
             let conn = self.db.conn();
             conn.query_row(
                 &format!(
-                    "SELECT {FACT_COLS} FROM memory_edges WHERE subject = ?1 AND predicate = ?2 AND object = ?3"
+                    "SELECT {FACT_COLS} FROM facts WHERE subject = ?1 AND predicate = ?2 AND object = ?3"
                 ),
                 rusqlite::params![subject, predicate, object],
                 fact_from_row,
@@ -408,7 +408,7 @@ impl<'db> FactGraph<'db> {
             let existing: Option<Fact> = conn
                 .query_row(
                     &format!(
-                        "SELECT {FACT_COLS} FROM memory_edges WHERE subject = ?1 AND predicate = ?2 AND object = ?3"
+                        "SELECT {FACT_COLS} FROM facts WHERE subject = ?1 AND predicate = ?2 AND object = ?3"
                     ),
                     rusqlite::params![subject, predicate, object],
                     fact_from_row,
@@ -433,7 +433,7 @@ impl<'db> FactGraph<'db> {
                 {
                     let conn = self.db.conn();
                     conn.execute(
-                        "UPDATE memory_edges
+                        "UPDATE facts
                          SET mention_count = mention_count + 1, last_seen_at = ?1, confidence = ?2,
                              provenance_item_id = ?3, provenance_record_id = ?4,
                              provenance_snippet = ?5, tags = ?6, durability = ?7
@@ -459,7 +459,7 @@ impl<'db> FactGraph<'db> {
             if is_single_valued_predicate(&predicate) {
                 let has_user_value = conn
                     .query_row(
-                        "SELECT 1 FROM memory_edges WHERE subject = ?1 AND predicate = ?2 AND source = 'user' AND object <> ?3 LIMIT 1",
+                        "SELECT 1 FROM facts WHERE subject = ?1 AND predicate = ?2 AND source = 'user' AND object <> ?3 LIMIT 1",
                         rusqlite::params![subject, predicate, object],
                         |r| r.get::<_, i32>(0),
                     )
@@ -469,7 +469,7 @@ impl<'db> FactGraph<'db> {
                     return Ok(UpsertOutcome::Skipped);
                 }
                 let n = conn.execute(
-                    "UPDATE memory_edges SET confidence = confidence * ?1
+                    "UPDATE facts SET confidence = confidence * ?1
                      WHERE subject = ?2 AND predicate = ?3 AND object <> ?4 AND source = 'inferred'",
                     rusqlite::params![CONTRADICTION_DEMOTE_FACTOR, subject, predicate, object],
                 )?;
@@ -479,7 +479,7 @@ impl<'db> FactGraph<'db> {
             if let Some(opp) = opposite {
                 let incoming_is_user = (source == "user") as i32;
                 let _ = conn.execute(
-                    "UPDATE memory_edges SET confidence = confidence * ?1
+                    "UPDATE facts SET confidence = confidence * ?1
                      WHERE subject = ?2 AND object = ?3 AND predicate = ?4
                        AND (?5 = 1 OR source = 'inferred')",
                     rusqlite::params![
@@ -510,15 +510,12 @@ impl<'db> FactGraph<'db> {
         let conn = self.db.conn();
         let subject: Option<String> = conn
             .query_row(
-                "SELECT subject FROM memory_edges WHERE id = ?1",
+                "SELECT subject FROM facts WHERE id = ?1",
                 rusqlite::params![id],
                 |r| r.get(0),
             )
             .optional()?;
-        conn.execute(
-            "DELETE FROM memory_edges WHERE id = ?1",
-            rusqlite::params![id],
-        )?;
+        conn.execute("DELETE FROM facts WHERE id = ?1", rusqlite::params![id])?;
         if let Some(subject) = subject {
             self.db.cache_invalidate_facts(&subject);
         }
@@ -578,7 +575,7 @@ mod tests {
         let count: i64 = db
             .conn()
             .query_row(
-                "SELECT COUNT(*) FROM memory_edges WHERE predicate = 'project_path'",
+                "SELECT COUNT(*) FROM facts WHERE predicate = 'project_path'",
                 [],
                 |row| row.get(0),
             )

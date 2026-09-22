@@ -75,7 +75,7 @@ corepack pnpm run check
 | `ses-` | 会话 sessions.id | `haven_memory` |
 | `msg-` | 消息 messages.id；记忆条目 memory_items.id（compaction 摘要等）与 transcript 共用该 ID 空间 | `haven_memory` |
 | `step-` | 步骤 session_steps.id | `haven_memory` |
-| `fact-` | 记忆边 memory_edges.id（SPO；原 facts） | `haven_memory` |
+| `fact-` | 事实 facts.id（SPO 图谱行） | `haven_memory` |
 | `node-` | 记忆节点 memory_nodes.id | `haven_memory` |
 | `act-` | 工作单元 actions.id（后台任务 kind=`background` + 定时任务 kind=`scheduled`） | `haven_tools` |
 | `asset-` | 受管媒体资产 MediaAsset.asset_id | `haven_common` |

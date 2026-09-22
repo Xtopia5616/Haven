@@ -41,7 +41,7 @@ fn default_durability() -> f64 {
 }
 
 /// Reference back to the conversation message a fact was extracted from.
-/// Rehydrated from provenance_* columns on `memory_edges` for traceability
+/// Rehydrated from provenance_* columns on `facts` for traceability
 /// and contradiction checks.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct FactSourceRef {
@@ -1067,7 +1067,7 @@ mod tests {
         // Bypass normalize_predicate to simulate legacy free-form rows (M6).
         let conn = db.conn();
         conn.execute(
-            "INSERT INTO memory_edges (id, subject, predicate, object, source, confidence, created_at)
+            "INSERT INTO facts (id, subject, predicate, object, source, confidence, created_at)
              VALUES ('fact-a', 'user', 'fav_lang', 'Rust', 'inferred', 0.8, '2026-01-01T00:00:00Z'),
                     ('fact-b', 'user', 'language', 'Rust', 'inferred', 0.9, '2026-01-01T00:00:01Z'),
                     ('fact-c', 'user', 'fav_lang', 'Go', 'inferred', 0.7, '2026-01-01T00:00:02Z')",
@@ -1097,7 +1097,7 @@ mod tests {
         let old = (chrono::Utc::now() - chrono::Duration::days(days)).to_rfc3339();
         let conn = db.conn();
         conn.execute(
-            "UPDATE memory_edges SET created_at = ?1, last_seen_at = ?1",
+            "UPDATE facts SET created_at = ?1, last_seen_at = ?1",
             rusqlite::params![old],
         )
         .unwrap();
@@ -1493,7 +1493,7 @@ mod tests {
         let raw: String = db
             .conn()
             .query_row(
-                "SELECT provenance_snippet FROM memory_edges WHERE id = ?1",
+                "SELECT provenance_snippet FROM facts WHERE id = ?1",
                 rusqlite::params![stored[0].id],
                 |row| row.get(0),
             )
@@ -1510,7 +1510,7 @@ mod tests {
         {
             let conn = db.conn();
             conn.execute(
-                "UPDATE memory_edges SET provenance_record_id = '   ' WHERE id = ?1",
+                "UPDATE facts SET provenance_record_id = '   ' WHERE id = ?1",
                 rusqlite::params![fact.id],
             )
             .unwrap();
@@ -1619,7 +1619,7 @@ mod tests {
         let old = "2024-01-01T00:00:00Z";
         let conn = db.conn();
         conn.execute(
-            "UPDATE memory_edges SET created_at = ?1, last_seen_at = ?1",
+            "UPDATE facts SET created_at = ?1, last_seen_at = ?1",
             rusqlite::params![old],
         )
         .unwrap();
@@ -1658,7 +1658,7 @@ mod tests {
         .unwrap();
         let conn = db.conn();
         conn.execute(
-            "UPDATE memory_edges SET created_at = '2024-01-01T00:00:00Z', last_seen_at = '2024-01-01T00:00:00Z'",
+            "UPDATE facts SET created_at = '2024-01-01T00:00:00Z', last_seen_at = '2024-01-01T00:00:00Z'",
             [],
         )
         .unwrap();
@@ -1692,7 +1692,7 @@ mod tests {
         .unwrap();
         let conn = db.conn();
         conn.execute(
-            "UPDATE memory_edges SET created_at = '2024-01-01T00:00:00Z', last_seen_at = '2024-01-01T00:00:00Z'
+            "UPDATE facts SET created_at = '2024-01-01T00:00:00Z', last_seen_at = '2024-01-01T00:00:00Z'
              WHERE predicate = 'project_path'",
             [],
         )
@@ -2060,7 +2060,7 @@ mod tests {
         {
             let conn = db.conn();
             conn.execute(
-                "UPDATE memory_edges SET created_at = ?1, last_seen_at = ?1",
+                "UPDATE facts SET created_at = ?1, last_seen_at = ?1",
                 rusqlite::params![stale],
             )
             .unwrap();

@@ -384,6 +384,6 @@ try {
 | 进程名 / crate / 包名 / Tauri identifier | `haven` | `haven-app-binary`、`haven-ui`、`com.haven.app` |
 | localStorage / kv 键 | `haven` | `haven.theme`、`haven.accent`、`haven.no_auto_restore` |
 | MCP `clientInfo.name` 等协议标识 | `haven` | `crates/tools/src/mcp/mod.rs` |
-| 测试 fixture 中的实体数据（subject 等） | `haven` | `inference.rs` / `prompt.rs` 测试 |
+| 测试 fixture 中的实体数据（subject 等） | `haven` | `memory_worker.rs` / `prompt.rs` 测试 |
 
 判别方法：**会显示给用户看 → `Haven`；会被机器比较 / 拼接成路径 / 写入存储 → `haven`。**

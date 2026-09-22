@@ -32,16 +32,16 @@ type EpisodeSearchRow = (String, String, String, String);
 /// the embedding index is a derived table and must have one unambiguous owner
 /// vocabulary.
 pub mod entity_kind {
-    /// Embedding domain for `memory_edges` SPO rows.
+    /// Embedding domain for `facts` SPO rows.
     pub const FACT: &str = "fact";
     /// Embedding domain for `memory_items` rows.
     pub const EPISODE: &str = "episode";
 }
 
 /// `memory_fts.entity_type` vocabulary (X1 unified FTS). Maps to
-/// [`entity_kind`] as: `EDGE` ↔ `FACT`, `ITEM` ↔ `EPISODE`.
+/// [`entity_kind`] as: `FACT` ↔ `FACT`, `ITEM` ↔ `EPISODE`.
 pub mod fts_kind {
-    pub const EDGE: &str = "edge";
+    pub const FACT: &str = "fact";
     pub const ITEM: &str = "item";
 }
 
@@ -189,7 +189,7 @@ fn live_owner_filter(alias: &str) -> String {
     };
     format!(
         "(({entity_type} = 'fact' AND EXISTS (
-              SELECT 1 FROM memory_edges WHERE id = {entity_id}
+              SELECT 1 FROM facts WHERE id = {entity_id}
           ))
           OR ({entity_type} = 'episode' AND EXISTS (
               SELECT 1 FROM memory_items WHERE id = {entity_id}
@@ -252,7 +252,7 @@ impl Database {
             let owner_exists: Option<i32> = match entity_type {
                 entity_kind::FACT => conn
                     .query_row(
-                        "SELECT 1 FROM memory_edges WHERE id = ?1",
+                        "SELECT 1 FROM facts WHERE id = ?1",
                         rusqlite::params![entity_id],
                         |row| row.get(0),
                     )
@@ -272,7 +272,7 @@ impl Database {
                 let current_text: Option<String> = match entity_type {
                     entity_kind::FACT => conn.query_row(
                         "SELECT subject || ' ' || predicate || ' ' || object
-                         FROM memory_edges WHERE id = ?1",
+                         FROM facts WHERE id = ?1",
                         rusqlite::params![entity_id],
                         |row| row.get(0),
                     ),
@@ -475,7 +475,7 @@ impl Database {
         let ids = match entity_type {
             entity_kind::FACT => {
                 let mut stmt = conn.prepare(
-                    "SELECT id FROM memory_edges
+                    "SELECT id FROM facts
                      WHERE id NOT IN (
                          SELECT entity_id FROM memory_embeddings
                          WHERE entity_type = ?1 AND model = ?2
@@ -516,7 +516,7 @@ impl Database {
     pub fn fact_text_by_id(&self, fact_id: &str) -> anyhow::Result<Option<String>> {
         let conn = self.conn();
         let text = match conn.query_row(
-            "SELECT subject || ' ' || predicate || ' ' || object FROM memory_edges WHERE id = ?1",
+            "SELECT subject || ' ' || predicate || ' ' || object FROM facts WHERE id = ?1",
             rusqlite::params![fact_id],
             |r| r.get(0),
         ) {
@@ -716,7 +716,7 @@ impl Database {
               AND l.model = e.model ",
         );
         if entity_type == entity_kind::FACT && fact_subject.is_some_and(|s| !s.is_empty()) {
-            sql.push_str("INNER JOIN memory_edges f ON f.id = e.entity_id ");
+            sql.push_str("INNER JOIN facts f ON f.id = e.entity_id ");
         }
         if entity_type == entity_kind::EPISODE {
             sql.push_str("INNER JOIN memory_items i ON i.id = e.entity_id ");
@@ -800,7 +800,7 @@ impl Database {
                     "SELECT e.entity_type, e.entity_id, e.model, e.vector, e.text,
                             e.created_at, e.updated_at
                      FROM memory_embeddings e
-                     INNER JOIN memory_edges f ON f.id = e.entity_id
+                     INNER JOIN facts f ON f.id = e.entity_id
                      WHERE e.entity_type = ?1 AND e.model = ?2 AND f.subject = ?3
                      ORDER BY e.updated_at DESC
                      LIMIT ?4",
@@ -1142,7 +1142,7 @@ impl Database {
         Ok(deleted)
     }
 
-    /// Remove embeddings whose owning entity no longer exists (edges/items
+    /// Remove embeddings whose owning entity no longer exists (facts/items
     /// deleted). Keeps the index from growing unbounded around pruned memory.
     pub fn prune_orphaned_embeddings(&self) -> anyhow::Result<u64> {
         let conn = self.conn();
@@ -1150,7 +1150,7 @@ impl Database {
         let result = (|| -> anyhow::Result<(u64, u64)> {
             let deleted = conn.execute(
                 "DELETE FROM memory_embeddings WHERE
-                    (entity_type = 'fact' AND entity_id NOT IN (SELECT id FROM memory_edges))
+                    (entity_type = 'fact' AND entity_id NOT IN (SELECT id FROM facts))
                  OR (entity_type = 'episode'
                      AND entity_id NOT IN (SELECT id FROM memory_items))",
                 [],
@@ -1250,7 +1250,7 @@ mod tests {
     fn insert_fact_with_id(db: &Database, id: &str) {
         let conn = db.conn();
         conn.execute(
-            "INSERT INTO memory_edges (id, subject, predicate, object, source, confidence, created_at)
+            "INSERT INTO facts (id, subject, predicate, object, source, confidence, created_at)
              VALUES (?1, 'user', 'test', ?1, 'inferred', 1.0, '2026-01-01T00:00:00Z')",
             rusqlite::params![id],
         )
@@ -1453,7 +1453,7 @@ mod tests {
         {
             let conn = db.conn();
             conn.execute(
-                "UPDATE memory_edges SET object = 'Go' WHERE id = ?1",
+                "UPDATE facts SET object = 'Go' WHERE id = ?1",
                 rusqlite::params![fact.id],
             )
             .unwrap();
@@ -1804,7 +1804,7 @@ mod tests {
         {
             let conn = db.conn();
             conn.execute(
-                "UPDATE memory_edges SET object = 'French' WHERE id = ?1",
+                "UPDATE facts SET object = 'French' WHERE id = ?1",
                 rusqlite::params![fact.id],
             )
             .unwrap();

@@ -1,6 +1,6 @@
 //! Shared fact-extraction wire parsing and sanitization.
 //!
-//! The inference engine owns scheduling, prompts and persistence orchestration.
+//! The memory worker owns scheduling, prompts and persistence orchestration.
 //! This module owns only the model-facing fact shape and the normalization
 //! rules that protect extracted values before they enter prompts or storage.
 
@@ -99,7 +99,7 @@ pub(crate) fn sanitize_tags(tags: &[String]) -> Vec<String> {
 }
 
 /// Normalize a predicate to its canonical form (trim + lowercase + alias
-/// mapping). Delegates to the memory layer so the inference path and the
+/// mapping). Delegates to the memory layer so the worker path and the
 /// repository write paths share ONE normalization policy.
 pub(crate) fn normalize_predicate(predicate: &str) -> String {
     haven_memory::repositories::facts::normalize_predicate(predicate)

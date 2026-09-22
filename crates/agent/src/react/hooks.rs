@@ -24,7 +24,7 @@ pub(crate) use super::hook_policy::{default_hooks, default_hooks_with_infer_and_
 use super::retries::{AfterLlmAction, ResponsePolicyState};
 use super::{Action, PauseReason, ReActEngine, ReActState, StepCtx};
 
-/// Fact-inference callback: `(session_id, bypass_throttle)`.
+/// Fact-memory callback: `(session_id, bypass_throttle)`.
 /// `bypass_throttle=true` for pause-path infer so interval extract cannot starve
 /// the fresher post-pause pass. Installed once on [`DefaultHooks`]; the thin
 /// loop never threads this (Phase 7 / G6).
@@ -34,7 +34,7 @@ pub(crate) type InferCallback = Arc<dyn Fn(&str, bool) + Send + Sync>;
 /// patch uses [`crate::SystemPromptBuilder::patch_canonical_memory_fence`] only
 /// (resume uses full rebuild — X2; do not widen this to tools/skills).
 pub(crate) struct MemoryPatchHandle {
-    pub inference: Arc<crate::MemoryWorker>,
+    pub memory_worker: Arc<crate::MemoryWorker>,
     pub prompt_builder: Arc<crate::SystemPromptBuilder>,
 }
 

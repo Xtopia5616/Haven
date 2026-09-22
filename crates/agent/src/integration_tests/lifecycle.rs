@@ -618,5 +618,5 @@ async fn run_fact_inference_does_not_panic() {
     let (agent, executor) = make_test_agent();
     let session = executor.create_session("test").await.unwrap();
     executor.end_session(&session.id).await.unwrap();
-    agent.inference.infer_facts(&session.id).await;
+    agent.memory_worker.infer_facts(&session.id).await;
 }

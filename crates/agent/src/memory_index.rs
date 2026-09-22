@@ -4,13 +4,13 @@
 //! embedding endpoint. Database methods remain the persistence authority;
 //! this component only chooses bounded work, calls the shared LLM router, and
 //! coordinates writes/rebuilds around that call. Fact extraction and rule
-//! based maintenance stay in `inference.rs`.
+//! based maintenance stay in `memory_worker.rs`.
 
 use std::sync::Arc;
 
 use haven_common::config::{ModelEndpoint, RequestKind};
-use haven_llm::adapters::api_style_for;
 use haven_llm::LlmRouter;
+use haven_llm::adapters::api_style_for;
 use haven_memory::Database;
 use haven_memory::embeddings::entity_kind;
 use haven_memory::recall::{MemoryHit, MemoryQuery, MemoryRetriever};

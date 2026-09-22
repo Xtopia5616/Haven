@@ -52,7 +52,7 @@ impl<'db> FactMaintenance<'db> {
     pub(crate) fn list_predicate_counts(&self) -> anyhow::Result<Vec<(String, u64)>> {
         let conn = self.db.conn();
         let mut stmt = conn.prepare(
-            "SELECT predicate, COUNT(*) AS n FROM memory_edges
+            "SELECT predicate, COUNT(*) AS n FROM facts
              GROUP BY predicate
              ORDER BY n DESC, predicate ASC",
         )?;
@@ -73,7 +73,7 @@ impl<'db> FactMaintenance<'db> {
         let updated = {
             let conn = self.db.conn();
             conn.execute(
-                "UPDATE memory_edges SET predicate = ?1 WHERE predicate = ?2",
+                "UPDATE facts SET predicate = ?1 WHERE predicate = ?2",
                 rusqlite::params![to, from],
             )? as u64
         };
@@ -95,9 +95,9 @@ impl<'db> FactMaintenance<'db> {
         // window DELETE used by migrate_v2.
         let conn = self.db.conn();
         let mut stmt = conn.prepare(&format!(
-            "SELECT {FACT_COLS} FROM memory_edges
+            "SELECT {FACT_COLS} FROM facts
              WHERE (subject, predicate, object) IN (
-                 SELECT subject, predicate, object FROM memory_edges
+                 SELECT subject, predicate, object FROM facts
                  GROUP BY subject, predicate, object
                  HAVING COUNT(*) > 1
              )"
@@ -144,20 +144,20 @@ impl<'db> FactMaintenance<'db> {
         for (tags, id) in &keeper_updates {
             let tags_json = serde_json::to_string(tags).unwrap_or_else(|_| "[]".into());
             conn.execute(
-                "UPDATE memory_edges SET tags = ?1 WHERE id = ?2",
+                "UPDATE facts SET tags = ?1 WHERE id = ?2",
                 rusqlite::params![tags_json, id],
             )?;
         }
 
         let deleted = if had_duplicate_groups {
             conn.execute(
-                "DELETE FROM memory_edges
+                "DELETE FROM facts
                  WHERE id NOT IN (
                      SELECT id FROM (
                          SELECT id, ROW_NUMBER() OVER (
                              PARTITION BY subject, predicate, object
                              ORDER BY confidence DESC, created_at DESC
-                         ) AS rn FROM memory_edges
+                         ) AS rn FROM facts
                      ) WHERE rn = 1
                  )",
                 [],
@@ -181,7 +181,7 @@ impl<'db> FactMaintenance<'db> {
         // credential forms that are purged here.
         let conn = self.db.conn();
         let deleted = conn.execute(
-            "DELETE FROM memory_edges WHERE
+            "DELETE FROM facts WHERE
                 instr(lower(predicate), 'api_key') > 0
              OR instr(lower(predicate), 'apikey') > 0
              OR instr(lower(predicate), 'api-key') > 0
@@ -237,7 +237,7 @@ impl<'db> FactMaintenance<'db> {
         let cutoff = (Utc::now() - chrono::Duration::days(1)).to_rfc3339();
         let conn = self.db.conn();
         let mut stmt = conn.prepare(&format!(
-            "SELECT {FACT_COLS} FROM memory_edges
+            "SELECT {FACT_COLS} FROM facts
              WHERE COALESCE(last_seen_at, created_at) <= ?1"
         ))?;
         let rows = stmt.query_map(rusqlite::params![cutoff], fact_from_row)?;
@@ -253,7 +253,7 @@ impl<'db> FactMaintenance<'db> {
         }
         let placeholders = vec!["?"; stale_ids.len()].join(",");
         let count = conn.execute(
-            &format!("DELETE FROM memory_edges WHERE id IN ({placeholders})"),
+            &format!("DELETE FROM facts WHERE id IN ({placeholders})"),
             rusqlite::params_from_iter(stale_ids.iter().map(|s| s.as_str())),
         )? as u64;
         self.db.cache_invalidate_all_facts();
@@ -267,7 +267,7 @@ impl<'db> FactMaintenance<'db> {
     pub(crate) fn cleanup_orphan_source_refs(&self) -> anyhow::Result<u64> {
         let conn = self.db.conn();
         let n = conn.execute(
-            "UPDATE memory_edges
+            "UPDATE facts
              SET provenance_record_id = NULL
              WHERE provenance_record_id IS NOT NULL
                AND TRIM(provenance_record_id) = ''",
@@ -334,9 +334,7 @@ impl<'db> FactMaintenance<'db> {
             params.push(id.clone().into());
         }
         let n = conn.execute(
-            &format!(
-                "UPDATE memory_edges SET confidence = confidence * ? WHERE id IN ({placeholders})"
-            ),
+            &format!("UPDATE facts SET confidence = confidence * ? WHERE id IN ({placeholders})"),
             rusqlite::params_from_iter(params),
         )? as u64;
         if n > 0 {
@@ -359,8 +357,8 @@ impl<'db> FactMaintenance<'db> {
         // Case-insensitive object match so "Rust" / "rust" still conflict.
         // `a.id < b.id` keeps each pair once; hydrate both ids in one IN query.
         let mut stmt = conn.prepare(
-            "SELECT a.id, b.id FROM memory_edges a
-             INNER JOIN memory_edges b
+            "SELECT a.id, b.id FROM facts a
+             INNER JOIN facts b
                ON a.subject = b.subject
               AND lower(a.object) = lower(b.object)
               AND a.id < b.id
@@ -418,7 +416,7 @@ impl<'db> FactMaintenance<'db> {
         // One scan: all live single-valued rows, then group in Rust where
         // distinct objects collide (avoids N+1 prepare per subject/predicate).
         let sql = format!(
-            "SELECT {FACT_COLS} FROM memory_edges
+            "SELECT {FACT_COLS} FROM facts
              WHERE lower(predicate) IN ({placeholders})
                AND confidence >= ?"
         );

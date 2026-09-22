@@ -32,7 +32,7 @@ pub struct AgentLayer {
     pub(crate) prompt_builder: Arc<SystemPromptBuilder>,
     pub(crate) memory: Arc<MemoryService>,
     pub(crate) react_engine: Arc<ReActEngine>,
-    pub(crate) inference: Arc<MemoryWorker>,
+    pub(crate) memory_worker: Arc<MemoryWorker>,
     pub(crate) title: Option<TitleGenerator>,
     pub(crate) title_in_flight: Arc<Mutex<HashSet<String>>>,
 }
@@ -56,7 +56,7 @@ impl AgentLayer {
             executor.get_tools(),
             memory_service.clone(),
         ));
-        let inference = Arc::new(MemoryWorker::new_with_memory(
+        let memory_worker = Arc::new(MemoryWorker::new_with_memory(
             memory_service.clone(),
             router.clone(),
             context_limits.max_transcript_chars,
@@ -67,14 +67,14 @@ impl AgentLayer {
         // L3 / P1-7: ReAct only enqueues session_id; a single outbox worker
         // (started lazily on first enqueue) runs infer_session.
         let infer_cb: crate::react::InferCallback = {
-            let inference = inference.clone();
+            let memory_worker = memory_worker.clone();
             Arc::new(move |session_id: &str, bypass_throttle: bool| {
-                inference.enqueue_infer(session_id, bypass_throttle);
+                memory_worker.enqueue_infer(session_id, bypass_throttle);
             })
         };
         // M2: mid-run MEMORY fence refresh after successful fact writes.
         let memory_patch = crate::react::MemoryPatchHandle {
-            inference: inference.clone(),
+            memory_worker: memory_worker.clone(),
             prompt_builder: prompt_builder.clone(),
         };
         let react_engine = Arc::new(
@@ -89,7 +89,7 @@ impl AgentLayer {
                 infer_cb,
                 memory_patch,
             ))
-            .with_inference(inference.clone()),
+            .with_memory_worker(memory_worker.clone()),
         );
         // Title generator is always available: it routes through the shared
         // LlmRouter, which uses the fast_chat request policy. If that policy
@@ -106,7 +106,7 @@ impl AgentLayer {
             prompt_builder,
             memory: memory_service,
             react_engine,
-            inference,
+            memory_worker,
             title,
             title_in_flight: Arc::new(Mutex::new(HashSet::new())),
         }
@@ -319,7 +319,7 @@ impl AgentLayer {
     /// Exposed for the app-level scheduler and the manual settings command;
     /// hot-path infer does not call this.
     pub async fn run_memory_maintenance(&self) -> anyhow::Result<u64> {
-        self.inference.run_memory_maintenance().await
+        self.memory_worker.run_memory_maintenance().await
     }
 
     /// Forward a fully-scoped memory query through the agent boundary.
@@ -397,12 +397,12 @@ impl AgentLayer {
 
         // Session lifecycle side effects consume the supervisor's typed event
         // stream. The supervisor owns session state; this layer owns UI and
-        // inference integrations, so neither installs a callback into the
+        // memory worker integrations, so neither installs a callback into the
         // other or shares a second cross-session registry.
         {
             let mut events_rx = self.executor.subscribe_events();
             let events = self.events.clone();
-            let inference = self.inference.clone();
+            let memory_worker = self.memory_worker.clone();
             let cancellation = cancellation.clone();
             tokio::spawn(async move {
                 loop {
@@ -418,7 +418,7 @@ impl AgentLayer {
                             events.emit_notification(&title, &body).await;
                         }
                         SessionEvent::SessionCleanup { session_id } => {
-                            inference.clear_session(&session_id);
+                            memory_worker.clear_session(&session_id);
                         }
                         SessionEvent::CascadeCompleted { session_id, title } => {
                             events

@@ -194,3 +194,5 @@
 - [0197：消息媒体 canonical 与 UI 元数据列边界](0197-message-media-canonical-ui-metadata.md)
 - [0198：稳定核心工具面与统一 builtin 目录加载](0198-stable-core-tool-surface-and-unified-catalog-loader.md)
 - [0199：删除 sessions.transcript 快照列](0199-remove-session-transcript-snapshot.md)
+- [0201：统一事实表与记忆后台编排命名](0201-unify-fact-storage-and-memory-worker-naming.md)
+- [0202：会话用量汇总采用增量投影](0202-incremental-session-usage-projection.md)

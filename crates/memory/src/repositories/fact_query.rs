@@ -134,9 +134,7 @@ impl Database {
     /// recall hits back into full facts for ranking and rendering.
     pub fn get_fact_by_id(&self, id: &str) -> anyhow::Result<Option<Fact>> {
         let conn = self.conn();
-        let mut stmt = conn.prepare(&format!(
-            "SELECT {FACT_COLS} FROM memory_edges WHERE id = ?1"
-        ))?;
+        let mut stmt = conn.prepare(&format!("SELECT {FACT_COLS} FROM facts WHERE id = ?1"))?;
         let mut rows = stmt.query(rusqlite::params![id])?;
         match rows.next()? {
             Some(row) => Ok(Some(fact_from_row(row)?)),
@@ -153,7 +151,7 @@ impl Database {
         let conn = self.conn();
         let placeholders: Vec<String> = (1..=ids.len()).map(|i| format!("?{i}")).collect();
         let sql = format!(
-            "SELECT {FACT_COLS} FROM memory_edges WHERE id IN ({})",
+            "SELECT {FACT_COLS} FROM facts WHERE id IN ({})",
             placeholders.join(",")
         );
         let mut stmt = conn.prepare(&sql)?;
@@ -173,9 +171,8 @@ impl Database {
         let key = format!("_facts_{subject}");
         let cache_gen = self.cache_generation(&key);
         let conn = self.conn();
-        let mut stmt = conn.prepare(&format!(
-            "SELECT {FACT_COLS} FROM memory_edges WHERE subject = ?1"
-        ))?;
+        let mut stmt =
+            conn.prepare(&format!("SELECT {FACT_COLS} FROM facts WHERE subject = ?1"))?;
         let rows = stmt.query_map(rusqlite::params![subject], fact_from_row)?;
         let mut facts = Vec::new();
         for row in rows {
@@ -194,7 +191,7 @@ impl Database {
         }
         let conn = self.conn();
         let mut stmt = conn.prepare(&format!(
-            "SELECT {FACT_COLS} FROM memory_edges WHERE subject = ?1
+            "SELECT {FACT_COLS} FROM facts WHERE subject = ?1
              ORDER BY confidence DESC, COALESCE(last_seen_at, created_at) DESC
              LIMIT ?2"
         ))?;
@@ -215,7 +212,7 @@ impl Database {
         let placeholders = vec!["?"; subjects.len()].join(",");
         let conn = self.conn();
         let mut stmt = conn.prepare(&format!(
-            "SELECT subject, predicate, object FROM memory_edges WHERE subject IN ({placeholders})"
+            "SELECT subject, predicate, object FROM facts WHERE subject IN ({placeholders})"
         ))?;
         let rows = stmt.query_map(rusqlite::params_from_iter(subjects.iter().copied()), |r| {
             Ok((
@@ -242,7 +239,7 @@ impl Database {
         }
         let cache_gen = self.cache_generation("_facts_all");
         let conn = self.conn();
-        let mut stmt = conn.prepare(&format!("SELECT {FACT_COLS} FROM memory_edges"))?;
+        let mut stmt = conn.prepare(&format!("SELECT {FACT_COLS} FROM facts"))?;
         let rows = stmt.query_map([], fact_from_row)?;
         let mut facts = Vec::new();
         for row in rows {
@@ -255,9 +252,7 @@ impl Database {
 
     pub fn list_facts_by_source(&self, source: &str) -> anyhow::Result<Vec<Fact>> {
         let conn = self.conn();
-        let mut stmt = conn.prepare(&format!(
-            "SELECT {FACT_COLS} FROM memory_edges WHERE source = ?1"
-        ))?;
+        let mut stmt = conn.prepare(&format!("SELECT {FACT_COLS} FROM facts WHERE source = ?1"))?;
         let rows = stmt.query_map(rusqlite::params![source], fact_from_row)?;
         let mut facts = Vec::new();
         for row in rows {
@@ -319,14 +314,14 @@ impl Database {
         fact_subject: Option<&str>,
     ) -> anyhow::Result<Vec<Fact>> {
         let conn = self.conn();
-        let edge = crate::embeddings::fts_kind::EDGE;
+        let fact = crate::embeddings::fts_kind::FACT;
         let (fts_sql, bind_limit) = if let Some(lim) = limit {
             (
                 format!(
                     "SELECT {FACT_COLS_ALIASED}
-                     FROM memory_edges f
+                     FROM facts f
                      JOIN memory_fts ON memory_fts.entity_id = f.id
-                       AND memory_fts.entity_type = '{edge}'
+                       AND memory_fts.entity_type = '{fact}'
                      WHERE memory_fts MATCH ?1
                        AND (?2 IS NULL OR f.subject = ?2)
                      ORDER BY bm25(memory_fts)
@@ -338,9 +333,9 @@ impl Database {
             (
                 format!(
                     "SELECT {FACT_COLS_ALIASED}
-                     FROM memory_edges f
+                     FROM facts f
                      JOIN memory_fts ON memory_fts.entity_id = f.id
-                       AND memory_fts.entity_type = '{edge}'
+                       AND memory_fts.entity_type = '{fact}'
                      WHERE memory_fts MATCH ?1
                        AND (?2 IS NULL OR f.subject = ?2)
                      ORDER BY bm25(memory_fts)"
@@ -386,7 +381,7 @@ impl Database {
         let subject_param = terms.len() + 1;
         let limit_param = terms.len() + 2;
         let sql = format!(
-            "SELECT {FACT_COLS} FROM memory_edges
+            "SELECT {FACT_COLS} FROM facts
              WHERE ({}) AND (?{subject_param} IS NULL OR subject = ?{subject_param})
              ORDER BY confidence DESC, COALESCE(last_seen_at, created_at) DESC
              LIMIT ?{limit_param}",
@@ -495,8 +490,8 @@ impl Database {
     pub fn get_facts_by_tag(&self, tag: &str) -> anyhow::Result<Vec<Fact>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(&format!(
-            "SELECT {FACT_COLS} FROM memory_edges
-             WHERE EXISTS (SELECT 1 FROM json_each(memory_edges.tags) AS te WHERE te.value = ?1)"
+            "SELECT {FACT_COLS} FROM facts
+             WHERE EXISTS (SELECT 1 FROM json_each(facts.tags) AS te WHERE te.value = ?1)"
         ))?;
         let rows = stmt.query_map(rusqlite::params![tag], fact_from_row)?;
         let mut facts = Vec::new();

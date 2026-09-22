@@ -541,7 +541,7 @@ impl AgentLayer {
         // X2: rebuild the tool/runtime shell immediately on resume. Semantic
         // memory is prefetched in the background so a slow embedding provider
         // cannot delay the first resumed model request.
-        self.inference
+        self.memory_worker
             .prefetch_prompt_memory(session_id, description);
         self.prompt_builder
             .rebuild_canonical_system_without_memory(description, &mut canonical)
@@ -743,7 +743,7 @@ impl AgentLayer {
         // background prefetch. The first provider request must not wait for a
         // remote embedding endpoint; a later before-step MEMORY patch consumes
         // the bounded cached result when it is ready.
-        self.inference
+        self.memory_worker
             .prefetch_prompt_memory(session_id, description);
         // S2: exclude this session from Past conversation excerpts. The first
         // prompt deliberately carries an empty MEMORY fence and is patched in

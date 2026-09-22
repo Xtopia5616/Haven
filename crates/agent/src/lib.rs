@@ -6,7 +6,6 @@ mod compactor;
 mod event;
 mod fact_extraction;
 mod fact_inference;
-mod inference;
 mod ingress;
 pub mod interaction;
 mod lifecycle;
@@ -30,7 +29,6 @@ pub(crate) use canonical::{is_dangling_boundary, sanitize_canonical};
 
 pub use compactor::ContextCompactor;
 pub use event::{AgentEvent, AgentEventEmitter, BufferedEmitter, EventBus, EventDispatcher};
-pub use inference::InferenceEngine;
 pub use interaction::{InteractionDetails, InteractionKind, InteractionRequest, InteractionStatus};
 pub use memory_service::MemoryService;
 pub use memory_worker::MemoryWorker;

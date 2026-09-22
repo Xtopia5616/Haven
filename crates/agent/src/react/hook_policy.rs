@@ -1,7 +1,7 @@
 //! Production [`LoopHooks`] policy.
 //!
 //! `hooks.rs` owns the stable extension contract and test double. This module
-//! owns the production composition of compaction, inference, response
+//! owns the production composition of compaction, memory worker, response
 //! classification and the safety gate. Turn-start context assembly owns inbox
 //! polling before these hooks run. Keeping the policy separate
 //! makes it possible to exercise the loop with a deliberately inert hook
@@ -24,7 +24,7 @@ use super::{PauseReason, ReActEngine, ReActState, StepCtx, canonical_media_requi
 /// Production hooks: context compaction, interval + pause infer, throttled
 /// MEMORY fence refresh (M2), response policy, and confirm pre-check.
 pub(crate) struct DefaultHooks {
-    /// Optional session-scoped fact inference. `None` in unit tests that
+    /// Optional session-scoped memory worker. `None` in unit tests that
     /// construct an engine without an [`crate::MemoryWorker`].
     infer: Option<InferCallback>,
     /// Optional mid-run MEMORY patch after outbox fact writes (M2).
@@ -65,7 +65,9 @@ impl LoopHooks for DefaultHooks {
         // sees the exact system prompt that will be sent to the provider.
         // Never rebuild tools/skills/MCP short index.
         if let Some(ref patch) = self.memory_patch
-            && patch.inference.take_memory_dirty_throttled(&ctx.session_id)
+            && patch
+                .memory_worker
+                .take_memory_dirty_throttled(&ctx.session_id)
         {
             let description = match engine.executor.get_session(&ctx.session_id).await {
                 Some(s) if !s.summary.is_empty() => s.summary,

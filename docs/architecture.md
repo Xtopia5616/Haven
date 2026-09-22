@@ -176,7 +176,7 @@ CI 以 `scripts/check-crate-dependencies.ps1` 对此表执行内部 crate 依赖
 - `schema.rs`：唯一的当前 SQLite schema、FTS/embedding 维护对象、版本戳和
   初始化编排。数据库 schema 是严格的 reset contract，不在运行时承载历史迁移。
 - `repositories/`：会话、消息、步骤、图谱、用量和任务的持久化读写；其中
-  `fact_graph.rs` 集中负责 `memory_edges` 写入与图谱不变量，`fact_query.rs`
+  `fact_graph.rs` 集中负责 `facts` 写入与图谱不变量，`fact_query.rs`
   负责事实读取、搜索/排序，`fact_maintenance.rs` 负责事实清理、衰减与矛盾
   扫描，`facts.rs` 负责事实类型、谓词策略和稳定 `Database` 外观。消息的
   `media_inputs` 是多模态 canonical 持久化投影；消息返回对象中的 `attachments` 仅是
@@ -196,8 +196,8 @@ provider 协议和 UI 展示逻辑不得进入本 crate。
 Agent 的 `memory_service.rs` 是 prompt/worker 共用的 typed memory 边界：它集中管理
 有界候选、recall、embedding/index 句柄和 prompt-memory cache；向量行的 scope、敏感
 过滤、规范化与 keyword 融合仍由 `haven_memory::recall::MemoryRetriever` 统一负责。
-`memory_worker.rs`（旧名 `inference.rs`）只编排事实抽取、durable outbox、维护、提案
-提交和索引 catch-up；`inference.rs` 仅保留 `InferenceEngine` 兼容别名。`prompt_context.rs`
+`memory_worker.rs` 只编排事实抽取、durable outbox、维护、提案提交和索引 catch-up；
+`MemoryWorker` 是唯一的后台记忆编排入口。`prompt_context.rs`
 在 turn 边界取得一次工具/运行时/记忆快照，`prompt_renderer.rs` 以纯函数渲染 system
 message 与 MEMORY fence，不访问 DB、router 或 cache。事实抽取 outbox 以 `kv_store`
 marker 持久化，不把 provider 网络调用下沉到 Memory；事实维护的 SQL 清理与矛盾候选
@@ -261,7 +261,7 @@ Parent session                    Child session(s)
 | 接线 | `haven-app-binary` `app_state` | 安装一个 typed `MessagingRuntime`，同时提供 SessionActor mailbox 与 peer 生命周期（tools 不依赖 agent） |
 | 运行时 | `react/context.rs` + `react/inject.rs` | `context` 负责每步 heartbeat、通知或每 3 步通过 `MessagingService::claim` poll inbox；每个 envelope 保留为独立上下文项，投影 durable 后由 `MessageClaim::complete` ack 并发 receipt；`inject` 经 `apply_transcript` 注入带消毒后的 `id`/`in_reply_to`/`subject`；`InjectSource::CrossSession` |
 | 生命周期 | `session/status.rs` | `interrupt_session`/`end_session` 先取消并立即返回控制结果；若 run 仍在收尾，terminal cleanup、partial promote 与 actor 移除延迟到 dispatcher 的 run-exit 边界；终端态继续 BFS 子孙 system notice + 无嵌套 cascade 结束；`type=system` 仅运行时 |
-| 信任 / 记忆 | `inference.rs` | 跳过 `peer_kickoff` 与跨会话注入文本的 fact 抽取 |
+| 信任 / 记忆 | `memory_worker.rs` | 跳过 `peer_kickoff` 与跨会话注入文本的 fact 抽取 |
 | UI | 对话页 tool card | `agent` 结构化卡片；自动同伴邮件以 `agent`/`inbox`/`auto` 卡片展示；kickoff 左侧「低信任委托」 |
 
 协议约定：同伴消息 ≠ 用户指令；`id` 是稳定的 `msg-{uuid32}`，`in_reply_to` 对齐 request id，
@@ -549,6 +549,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 | 2026-08-30 | §2.6 UI / 持久化：删除已到期的 `stores.ts` 消息/用量兼容 re-export 与未压缩 ReAct snapshot 读取回退；旧数据按发布说明重置（ADR 0052） |
 | 2026-08-30 | §2.2 LLM：将流式上下文估算、idle scaling、规则门禁、chunk 聚合与首 chunk 前重试收口到 `crates/llm/src/streaming.rs`，router 保留 endpoint 编排（ADR 0053） |
 | 2026-08-30 | §2.4 Agent：将增量事实抽取窗口、transcript 构造、来源解析与提案安全门禁收口到 `crates/agent/src/fact_inference.rs`，inference 保留调度与写入编排（ADR 0054） |
+| 2026-09-22 | §2.3/§2.5：统一事实存储表为 `facts`、后台编排入口为 `MemoryWorker`，删除 `InferenceEngine` 兼容别名；旧数据库按 schema v26 重置（ADR 0201） |
 | 2026-08-30 | §2.6 UI：将默认模型发现缓存、设置投影、provider 能力归一化与刷新代次收口到 `ui/src/lib/chatModelSync.ts`，路由页保留响应式状态与菜单编排（ADR 0055） |
 | 2026-08-31 | §2.5 Agent：将 ReAct loop 拆为 Run/Turn/ToolBatch，明确一次采样边界、steering 优先级和工具结果的 canonical 顺序（ADR 0056） |
 | 2026-08-31 | §2.5 Agent：以 `react::ReActState` 统一 Run/Turn/ToolBatch 的 events、canonical 与 branch points；provider sanitize 和失败 retry nudge 收口为临时请求态（ADR 0057） |

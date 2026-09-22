@@ -8,7 +8,7 @@
 //! version stamp rejects both older and newer database contracts.
 
 /// Current database contract. Any schema change requires a fresh database.
-pub const SCHEMA_VERSION: i32 = 25;
+pub const SCHEMA_VERSION: i32 = 26;
 /// Current schema, created idempotently on every open.
 const SCHEMA_SQL: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS sessions (
@@ -99,7 +99,7 @@ const SCHEMA_SQL: &[&str] = &[
         value TEXT NOT NULL,
         updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     )",
-    // Typed memory graph (X1): nodes + SPO edges + episodic items.
+    // Typed memory graph (X1): nodes + SPO facts + episodic items.
     "CREATE TABLE IF NOT EXISTS memory_nodes (
         id TEXT PRIMARY KEY,
         kind TEXT NOT NULL CHECK(kind IN ('user','concept')),
@@ -121,9 +121,9 @@ const SCHEMA_SQL: &[&str] = &[
         entities TEXT NOT NULL DEFAULT '[]',
         created_at TEXT NOT NULL
     )",
-    // Today's facts as SPO edges. Keeps `fact-*` ids. `entity_type='fact'`
-    // in memory_embeddings points directly at these edge rows.
-    "CREATE TABLE IF NOT EXISTS memory_edges (
+    // Today's facts as SPO rows. Keeps `fact-*` ids. `entity_type='fact'`
+    // in memory_embeddings points directly at these fact rows.
+    "CREATE TABLE IF NOT EXISTS facts (
         id TEXT PRIMARY KEY,
         subject TEXT NOT NULL CHECK(length(trim(subject)) > 0),
         subject_id TEXT REFERENCES memory_nodes(id) ON DELETE SET NULL,
@@ -240,8 +240,8 @@ const SCHEMA_SQL: &[&str] = &[
         BEGIN
             SELECT RAISE(ABORT, 'session_events is append-only');
         END",
-    "CREATE INDEX IF NOT EXISTS idx_memory_edges_subject ON memory_edges(subject)",
-    "CREATE INDEX IF NOT EXISTS idx_memory_edges_confidence ON memory_edges(confidence)",
+    "CREATE INDEX IF NOT EXISTS idx_facts_subject ON facts(subject)",
+    "CREATE INDEX IF NOT EXISTS idx_facts_confidence ON facts(confidence)",
     "CREATE INDEX IF NOT EXISTS idx_memory_items_session ON memory_items(session_id)",
     "CREATE INDEX IF NOT EXISTS idx_memory_items_created ON memory_items(created_at)",
     "CREATE INDEX IF NOT EXISTS idx_memory_nodes_label ON memory_nodes(label)",
@@ -252,7 +252,7 @@ const SCHEMA_SQL: &[&str] = &[
 ];
 
 /// Vector index for semantic memory. `entity_type` selects the owning memory
-/// domain (`fact` = `memory_edges`, `episode` = `memory_items`). The domain is
+/// domain (`fact` = `facts`, `episode` = `memory_items`). The domain is
 /// intentionally closed: a polymorphic index without a closed vocabulary is
 /// impossible to validate and used to preserve obsolete rows.
 const MEMORY_EMBEDDINGS_SCHEMA: &str = "
@@ -287,16 +287,16 @@ fn ensure_fact_embedding_triggers(conn: &rusqlite::Connection) -> anyhow::Result
     conn.execute_batch(
         "DROP TRIGGER IF EXISTS facts_embed_del;
          DROP TRIGGER IF EXISTS facts_embed_upd;
-         DROP TRIGGER IF EXISTS memory_edges_embed_del;
-         DROP TRIGGER IF EXISTS memory_edges_embed_upd;
+         DROP TRIGGER IF EXISTS facts_embed_del;
+         DROP TRIGGER IF EXISTS facts_embed_upd;
          DROP TRIGGER IF EXISTS memory_items_embed_del;
          DROP TRIGGER IF EXISTS memory_items_embed_upd;
-         CREATE TRIGGER memory_edges_embed_del AFTER DELETE ON memory_edges BEGIN
+         CREATE TRIGGER facts_embed_del AFTER DELETE ON facts BEGIN
              DELETE FROM memory_embeddings WHERE entity_type = 'fact' AND entity_id = old.id;
              DELETE FROM embedding_lsh WHERE entity_type = 'fact' AND entity_id = old.id;
          END;
-         CREATE TRIGGER memory_edges_embed_upd
-         AFTER UPDATE OF subject, predicate, object ON memory_edges
+         CREATE TRIGGER facts_embed_upd
+         AFTER UPDATE OF subject, predicate, object ON facts
          BEGIN
              DELETE FROM memory_embeddings WHERE entity_type = 'fact' AND entity_id = old.id;
              DELETE FROM embedding_lsh WHERE entity_type = 'fact' AND entity_id = old.id;
@@ -317,7 +317,7 @@ fn ensure_fact_embedding_triggers(conn: &rusqlite::Connection) -> anyhow::Result
     // the database, rather than waiting for periodic maintenance.
     conn.execute_batch(
         "DELETE FROM memory_embeddings
-          WHERE (entity_type = 'fact' AND entity_id NOT IN (SELECT id FROM memory_edges))
+          WHERE (entity_type = 'fact' AND entity_id NOT IN (SELECT id FROM facts))
              OR (entity_type = 'episode' AND entity_id NOT IN (SELECT id FROM memory_items));
          DELETE FROM embedding_lsh
           WHERE (entity_type, entity_id, model) NOT IN (
@@ -327,7 +327,7 @@ fn ensure_fact_embedding_triggers(conn: &rusqlite::Connection) -> anyhow::Result
     Ok(())
 }
 
-/// Unified FTS5 over memory edges + items (trigram). It is part of the current
+/// Unified FTS5 over facts + items (trigram). It is part of the current
 /// database contract; tokenizer state in `kv_store` makes a tokenizer change
 /// rebuild the derived index exactly once.
 const FTS_TOKENIZER: &str = "trigram";
@@ -352,7 +352,7 @@ fn record_fts_tokenizer(conn: &rusqlite::Connection, key: &str) -> anyhow::Resul
 }
 
 fn ensure_memory_fts(conn: &rusqlite::Connection) -> anyhow::Result<()> {
-    if !table_exists(conn, "memory_edges")? || !table_exists(conn, "memory_items")? {
+    if !table_exists(conn, "facts")? || !table_exists(conn, "memory_items")? {
         return Ok(());
     }
     let has_fts: bool = conn
@@ -361,9 +361,9 @@ fn ensure_memory_fts(conn: &rusqlite::Connection) -> anyhow::Result<()> {
         .map(|c| c > 0)
         .unwrap_or(false);
     let trigger_names = [
-        "memory_edges_ai",
-        "memory_edges_ad",
-        "memory_edges_au",
+        "facts_ai",
+        "facts_ad",
+        "facts_au",
         "memory_items_ai",
         "memory_items_ad",
         "memory_items_au",
@@ -380,9 +380,9 @@ fn ensure_memory_fts(conn: &rusqlite::Connection) -> anyhow::Result<()> {
         let fts_sql = format!(
             "BEGIN;
             DROP TABLE IF EXISTS memory_fts;
-            DROP TRIGGER IF EXISTS memory_edges_ai;
-            DROP TRIGGER IF EXISTS memory_edges_ad;
-            DROP TRIGGER IF EXISTS memory_edges_au;
+            DROP TRIGGER IF EXISTS facts_ai;
+            DROP TRIGGER IF EXISTS facts_ad;
+            DROP TRIGGER IF EXISTS facts_au;
             DROP TRIGGER IF EXISTS memory_items_ai;
             DROP TRIGGER IF EXISTS memory_items_ad;
             DROP TRIGGER IF EXISTS memory_items_au;
@@ -392,27 +392,27 @@ fn ensure_memory_fts(conn: &rusqlite::Connection) -> anyhow::Result<()> {
                 entity_id UNINDEXED,
                 tokenize='{FTS_TOKENIZER}'
             );
-            CREATE TRIGGER memory_edges_ai AFTER INSERT ON memory_edges BEGIN
+            CREATE TRIGGER facts_ai AFTER INSERT ON facts BEGIN
                 INSERT INTO memory_fts(rowid, body, entity_type, entity_id)
                 VALUES (
                     new.rowid,
                     new.subject || ' ' || new.predicate || ' ' || new.object || ' ' || new.tags,
-                    'edge',
+                    'fact',
                     new.id
                 );
             END;
-            CREATE TRIGGER memory_edges_ad AFTER DELETE ON memory_edges BEGIN
+            CREATE TRIGGER facts_ad AFTER DELETE ON facts BEGIN
                 DELETE FROM memory_fts WHERE rowid = old.rowid;
             END;
-            CREATE TRIGGER memory_edges_au
-            AFTER UPDATE OF subject, predicate, object, tags ON memory_edges
+            CREATE TRIGGER facts_au
+            AFTER UPDATE OF subject, predicate, object, tags ON facts
             BEGIN
                 DELETE FROM memory_fts WHERE rowid = old.rowid;
                 INSERT INTO memory_fts(rowid, body, entity_type, entity_id)
                 VALUES (
                     new.rowid,
                     new.subject || ' ' || new.predicate || ' ' || new.object || ' ' || new.tags,
-                    'edge',
+                    'fact',
                     new.id
                 );
             END;
@@ -441,8 +441,8 @@ fn ensure_memory_fts(conn: &rusqlite::Connection) -> anyhow::Result<()> {
                 );
             END;
             INSERT INTO memory_fts(rowid, body, entity_type, entity_id)
-            SELECT rowid, subject || ' ' || predicate || ' ' || object || ' ' || tags, 'edge', id
-              FROM memory_edges;
+            SELECT rowid, subject || ' ' || predicate || ' ' || object || ' ' || tags, 'fact', id
+              FROM facts;
             INSERT INTO memory_fts(rowid, body, entity_type, entity_id)
             SELECT -rowid, content || ' ' || topics || ' ' || entities, 'item', id
               FROM memory_items;
@@ -477,7 +477,7 @@ const REQUIRED_COLUMNS: &[(&str, &str)] = &[
     ("session_steps", "thought"),
     ("memory_nodes", "kind"),
     ("memory_items", "content"),
-    ("memory_edges", "durability"),
+    ("facts", "durability"),
     ("actions", "kind"),
     ("llm_usage", "call_kind"),
 ];
@@ -496,12 +496,11 @@ fn validate_current_schema(conn: &rusqlite::Connection) -> anyhow::Result<()> {
             "current schema is incomplete: missing {table}.{column}; delete haven.db and restart"
         );
     }
-    for table in ["facts", "memory_episodes"] {
-        anyhow::ensure!(
-            !table_exists(conn, table)?,
-            "current schema contains removed table {table}; delete haven.db and restart"
-        );
-    }
+    let removed_table = "memory_episodes";
+    anyhow::ensure!(
+        !table_exists(conn, removed_table)?,
+        "current schema contains removed table {removed_table}; delete haven.db and restart"
+    );
     Ok(())
 }
 
@@ -605,7 +604,7 @@ mod tests {
             "embedding_lsh",
             "kv_store",
             "llm_usage",
-            "memory_edges",
+            "facts",
             "memory_embeddings",
             "memory_items",
             "memory_nodes",
@@ -621,6 +620,7 @@ mod tests {
         ] {
             assert!(user_tables(&conn).iter().any(|name| name == table));
         }
+        assert!(!table_exists(&conn, "memory_edges").unwrap());
 
         let version = user_version(&conn).unwrap();
         assert_eq!(version, SCHEMA_VERSION);
@@ -687,7 +687,7 @@ mod tests {
         let conn = create_test_conn();
         init_schema(&conn).unwrap();
         conn.execute(
-            "INSERT INTO memory_edges (id, subject, predicate, object, created_at)
+            "INSERT INTO facts (id, subject, predicate, object, created_at)
              VALUES ('fact-1', 'user', 'likes', 'Rust', '2026-01-01')",
             [],
         )
@@ -713,7 +713,7 @@ mod tests {
         );
         assert!(
             conn.execute(
-                "INSERT INTO memory_edges
+                "INSERT INTO facts
                     (id, subject, predicate, object, confidence, created_at)
                  VALUES ('fact-2', ' ', 'likes', 'Rust', 1.0, '2026-01-01')",
                 [],
@@ -722,7 +722,7 @@ mod tests {
         );
         assert!(
             conn.execute(
-                "INSERT INTO memory_edges
+                "INSERT INTO facts
                     (id, subject, predicate, object, confidence, created_at)
                  VALUES ('fact-3', 'user', 'likes', 'Rust', 1.1, '2026-01-01')",
                 [],
@@ -736,7 +736,7 @@ mod tests {
         let conn = create_test_conn();
         init_schema(&conn).unwrap();
         conn.execute(
-            "INSERT INTO memory_edges (id, subject, predicate, object, created_at)
+            "INSERT INTO facts (id, subject, predicate, object, created_at)
              VALUES ('fact-1', 'user', 'likes', 'Rust', '2026-01-01')",
             [],
         )
@@ -748,11 +748,8 @@ mod tests {
             [],
         )
         .unwrap();
-        conn.execute(
-            "UPDATE memory_edges SET confidence = 0.5 WHERE id = 'fact-1'",
-            [],
-        )
-        .unwrap();
+        conn.execute("UPDATE facts SET confidence = 0.5 WHERE id = 'fact-1'", [])
+            .unwrap();
         assert_eq!(
             conn.query_row(
                 "SELECT COUNT(*) FROM memory_embeddings WHERE entity_id = 'fact-1'",
@@ -762,11 +759,8 @@ mod tests {
             .unwrap(),
             1
         );
-        conn.execute(
-            "UPDATE memory_edges SET object = 'Golang' WHERE id = 'fact-1'",
-            [],
-        )
-        .unwrap();
+        conn.execute("UPDATE facts SET object = 'Golang' WHERE id = 'fact-1'", [])
+            .unwrap();
         assert_eq!(
             conn.query_row(
                 "SELECT COUNT(*) FROM memory_embeddings WHERE entity_id = 'fact-1'",
@@ -783,7 +777,7 @@ mod tests {
         let conn = create_test_conn();
         init_schema(&conn).unwrap();
         conn.execute(
-            "INSERT INTO memory_edges (id, subject, predicate, object, tags, created_at)
+            "INSERT INTO facts (id, subject, predicate, object, tags, created_at)
              VALUES ('fact-1', 'user', 'likes', 'Rust', '[\"dev\"]', '2026-01-01')",
             [],
         )
@@ -791,7 +785,7 @@ mod tests {
         let hits: i32 = conn
             .query_row(
                 "SELECT COUNT(*) FROM memory_fts
-                 WHERE entity_type = 'edge' AND memory_fts MATCH '\"Rust\"'",
+                 WHERE entity_type = 'fact' AND memory_fts MATCH '\"Rust\"'",
                 [],
                 |row| row.get(0),
             )

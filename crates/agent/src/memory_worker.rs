@@ -4,11 +4,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use anyhow::Context as _;
+use haven_common::config::RequestKind;
 use haven_common::prompts::{
     COMPACTED_SUMMARY_PREFIX, CONTRADICTION_ARBITRATE_SYSTEM_PROMPT, FACT_EXTRACTION_SYSTEM_PROMPT,
     predicate_merge_system_prompt,
 };
-use haven_common::config::RequestKind;
 use haven_llm::LlmRouter;
 use haven_memory::Database;
 use haven_memory::recall::{MemoryQuery, MemoryRecall, MemoryRetriever};
@@ -1458,9 +1458,6 @@ pub enum SummaryExtractOutcome {
 }
 
 #[cfg(test)]
-type InferenceEngine = MemoryWorker;
-
-#[cfg(test)]
 mod tests {
     use super::*;
     use crate::fact_inference::{
@@ -1758,9 +1755,9 @@ mod tests {
         assert!(!known.contains("hunter2"));
     }
 
-    fn make_engine(db: Arc<Database>) -> InferenceEngine {
+    fn make_engine(db: Arc<Database>) -> MemoryWorker {
         let router = mock_router("[]");
-        InferenceEngine::new(db, router, 4_000, 64, 40, 256, 0)
+        MemoryWorker::new(db, router, 4_000, 64, 40, 256, 0)
     }
 
     fn make_role_message(role: &str, content: &str) -> Message {
@@ -2074,7 +2071,7 @@ mod tests {
         assert!(engine.take_memory_dirty_throttled("ses-a"));
         let db = temp_db();
         let router = mock_router("[]");
-        let engine = InferenceEngine::new(db.clone(), router, 4_000, 64, 40, 256, 3_600);
+        let engine = MemoryWorker::new(db.clone(), router, 4_000, 64, 40, 256, 3_600);
         engine.mark_memory_dirty("ses-b");
         assert!(engine.take_memory_dirty_throttled("ses-b"));
         engine.mark_memory_dirty("ses-b");
@@ -2156,7 +2153,7 @@ mod tests {
             .add_message(&session.id, "user", "I like Rust.", Some("text"), None)
             .unwrap();
         let router = mock_router("[]");
-        let engine = InferenceEngine::new(db.clone(), router, 4_000, 64, 40, 256, 3_600);
+        let engine = MemoryWorker::new(db.clone(), router, 4_000, 64, 40, 256, 3_600);
         engine.infer_facts(&session.id).await;
         let cursor: Option<String> = db
             .get_kv(&format!("fact_extraction.{}", session.id))
@@ -2207,7 +2204,7 @@ mod tests {
             .add_message(&session.id, "user", "I like Rust.", Some("text"), None)
             .unwrap();
         let router = mock_router("not a json array");
-        let engine = InferenceEngine::new(db.clone(), router, 4_000, 64, 40, 256, 0);
+        let engine = MemoryWorker::new(db.clone(), router, 4_000, 64, 40, 256, 0);
         engine.infer_facts(&session.id).await;
         let facts = db.get_facts("user").unwrap();
         assert!(

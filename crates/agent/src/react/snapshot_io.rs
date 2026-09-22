@@ -179,7 +179,7 @@ pub(crate) async fn set_status_and_emit_with_waiting_reason(
 }
 
 /// Interval (in ReAct steps) at which long-running sessions re-run fact
-/// inference mid-session, so memory is refreshed before the session
+/// fact memory mid-session, so memory is refreshed before the session
 /// ever pauses or completes.
 /// Message persisted when a run exhausts its step budget (`max_steps`). The
 /// session is intentionally paused as a checkpoint —the session is NOT finished,
@@ -499,14 +499,14 @@ impl ReActEngine {
         }
         // M3: light fact extraction from the compaction summary (throttled,
         // separate episode cursor — does not advance the user-message cursor).
-        if let Some(ref inference) = self.inference {
-            inference.enqueue_summary_extract(&session_id, &episode_id, &summary);
+        if let Some(ref memory_worker) = self.memory_worker {
+            memory_worker.enqueue_summary_extract(&session_id, &episode_id, &summary);
         }
     }
 
     /// Finalize a turn: save the branch point (when requested), snapshot the
     /// ReAct state, then mark the session with the given status and notify the
-    /// frontend + inference.
+    /// frontend + memory worker.
     ///
     /// X12: chat content must already be projected via `apply_transcript`
     /// before this call. The pause path only checkpoints state and changes the
