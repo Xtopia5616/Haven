@@ -1,5 +1,18 @@
 /** Capability/request policy metadata shared by the model settings view. */
 
+export const requestKindValues = [
+	'chat',
+	'fast_chat',
+	'vision',
+	'audio_chat',
+	'transcription',
+	'embedding',
+	'image_generation',
+	'speech_synthesis',
+] as const;
+
+export type RequestKind = (typeof requestKindValues)[number];
+
 export const capabilityOptions = [
 	{ value: 'chat', label: 'Chat' },
 	{ value: 'fast_chat', label: 'Fast chat' },
@@ -11,7 +24,7 @@ export const capabilityOptions = [
 	{ value: 'speech_synthesis', label: 'Speech synthesis' },
 ];
 
-export const requestPolicyOptions = [
+export const requestPolicyOptions: Array<{ value: RequestKind; label: string }> = [
 	{ value: 'chat', label: 'Chat' },
 	{ value: 'fast_chat', label: 'Fast chat' },
 	{ value: 'vision', label: 'Vision' },

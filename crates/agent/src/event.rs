@@ -5,6 +5,7 @@ use std::sync::{Mutex, MutexGuard};
 use crate::session::SessionInfo;
 use async_trait::async_trait;
 use haven_common::SessionStatus;
+use haven_common::config::RequestKind;
 use haven_memory::Database;
 use haven_tools::ToolResultEnvelope;
 use serde::{Deserialize, Serialize};
@@ -120,8 +121,8 @@ pub enum AgentEvent {
         session_id: String,
         step_number: u32,
         run_id: u64,
-        /// RequestKind string; the field name remains `role` for UI compatibility.
-        role: String,
+        /// Request kind serialized under the established `role` wire field.
+        role: RequestKind,
         strategy: haven_common::media::MediaInputStrategy,
         projections: Vec<haven_common::media::MediaProjection>,
         notices: Vec<haven_common::media::MediaPlanNotice>,
@@ -256,10 +257,9 @@ pub enum AgentEvent {
         /// Wall-clock duration of the call in milliseconds.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         duration_ms: Option<u64>,
-        /// Request kind that produced the response, kept under the legacy wire
-        /// field name for client compatibility (for example `chat` or `vision`).
+        /// Request kind serialized under the established `role` wire field.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        role: Option<String>,
+        role: Option<RequestKind>,
         call_kind: String,
         /// Whether `cost_usd` is a real priced value (vs absent pricing).
         has_cost: bool,
@@ -1157,9 +1157,9 @@ pub struct UsagePayload {
     pub context_window: Option<u32>,
     pub step_number: Option<u32>,
     pub duration_ms: Option<u64>,
-    /// Request kind; the `AgentEvent::Usage.role` field preserves the legacy
-    /// wire name for the frontend contract.
-    pub request_kind: Option<String>,
+    /// Request kind; `AgentEvent::Usage` serializes it as the established
+    /// `role` field.
+    pub request_kind: Option<RequestKind>,
     pub call_kind: String,
     pub has_cost: bool,
 }

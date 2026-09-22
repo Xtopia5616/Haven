@@ -1,8 +1,10 @@
+import type { RequestKind } from './modelRoles.ts';
+
 /** One LLM call's usage detail row. */
 export interface LlmUsage {
 	id?: string;
 	step_number?: number | null;
-	role?: string;
+	role?: RequestKind;
 	call_kind: 'agent' | 'media' | 'tool' | string;
 	model?: string | null;
 	prompt_tokens?: number;

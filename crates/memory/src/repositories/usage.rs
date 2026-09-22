@@ -2,6 +2,7 @@ use crate::db::Database;
 use crate::repositories::messages::now_rfc3339_millis;
 use haven_common::config::RequestKind;
 use rusqlite::OptionalExtension;
+use rusqlite::types::Type;
 
 /// Per-session cumulative token/cost counters, persisted so a resumed or
 /// reopened session can restore the token-stats display instead of resetting
@@ -107,9 +108,9 @@ pub struct LlmCallUsage {
     pub session_id: String,
     /// ReAct step number the call served (NULL when not attributable).
     pub step_number: Option<i32>,
-    /// Request kind that produced the call, serialized in the legacy `role`
-    /// column for storage compatibility (e.g. "chat" or "vision").
-    pub role: String,
+    /// Request kind that produced the call, serialized in the established
+    /// `role` column as a snake_case string (e.g. "chat" or "vision").
+    pub role: RequestKind,
     /// Call surface that owns the usage. Agent turns feed session totals;
     /// tool-owned media and other tool inference are retained for diagnostics
     /// but excluded from those totals.
@@ -149,7 +150,7 @@ pub struct LlmCallUsage {
 #[derive(Debug, Clone)]
 pub struct LlmCallUsageInput {
     pub step_number: Option<i32>,
-    /// Request kind stored in the legacy `llm_usage.role` column.
+    /// Request kind stored in the established `llm_usage.role` column.
     pub request_kind: RequestKind,
     pub call_kind: String,
     pub model: Option<String>,
@@ -248,7 +249,7 @@ impl Database {
             &id,
             session_id,
             step_number,
-            request_kind.as_str(),
+            request_kind,
             "agent",
             model,
             prompt_tokens,
@@ -270,7 +271,7 @@ impl Database {
             id,
             session_id: session_id.into(),
             step_number,
-            role: request_kind.as_str().into(),
+            role: request_kind,
             call_kind: "agent".into(),
             model: model.map(String::from),
             prompt_tokens,
@@ -447,7 +448,7 @@ impl Database {
                 &id,
                 session_id,
                 step_number,
-                request_kind.as_str(),
+                request_kind,
                 call_kind,
                 model,
                 prompt_tokens,
@@ -470,7 +471,7 @@ impl Database {
                 id: id.clone(),
                 session_id: session_id.into(),
                 step_number,
-                role: request_kind.as_str().into(),
+                role: request_kind,
                 call_kind: call_kind.into(),
                 model: model.map(String::from),
                 prompt_tokens,
@@ -526,7 +527,7 @@ impl Database {
                     id,
                     session_id,
                     input.step_number,
-                    input.request_kind.as_str(),
+                    input.request_kind,
                     &input.call_kind,
                     input.model.as_deref(),
                     input.prompt_tokens,
@@ -553,7 +554,7 @@ impl Database {
                     id: id.clone(),
                     session_id: session_id.into(),
                     step_number: input.step_number,
-                    role: input.request_kind.as_str().into(),
+                    role: input.request_kind,
                     call_kind: input.call_kind.clone(),
                     model: input.model.clone(),
                     prompt_tokens: input.prompt_tokens,
@@ -622,7 +623,7 @@ impl Database {
         id: &str,
         session_id: &str,
         step_number: Option<i32>,
-        request_kind: &str,
+        request_kind: RequestKind,
         call_kind: &str,
         model: Option<&str>,
         prompt_tokens: u32,
@@ -658,7 +659,7 @@ impl Database {
                 id,
                 session_id,
                 step_number,
-                request_kind,
+                request_kind.as_str(),
                 call_kind,
                 model,
                 prompt_tokens,
@@ -777,11 +778,19 @@ impl Database {
              FROM llm_usage WHERE session_id = ?1 ORDER BY created_at ASC, rowid ASC",
         )?;
         let rows = stmt.query_map(rusqlite::params![session_id], |row| {
+            let role_text: String = row.get(3)?;
+            let role = RequestKind::from_str(&role_text).ok_or_else(|| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    3,
+                    Type::Text,
+                    format!("invalid RequestKind in llm_usage.role: {role_text}").into(),
+                )
+            })?;
             Ok(LlmCallUsage {
                 id: row.get(0)?,
                 session_id: row.get(1)?,
                 step_number: row.get(2)?,
-                role: row.get(3)?,
+                role,
                 call_kind: row.get(4)?,
                 model: row.get(5)?,
                 prompt_tokens: row.get(6)?,
@@ -1054,7 +1063,7 @@ mod tests {
         assert_eq!(usage[0].cost_usd, 0.25);
         assert!(usage[0].has_cost);
         assert_eq!(usage[0].duration_ms, Some(1234));
-        assert_eq!(usage[0].role, RequestKind::Chat.as_str());
+        assert_eq!(usage[0].role, RequestKind::Chat);
     }
 
     #[test]

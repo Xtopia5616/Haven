@@ -71,6 +71,7 @@ export function createChatModelSync(options: ModelSyncOptions) {
 			baseUrl: requestedUrl,
 			apiKey: '',
 			provider: providerName || '',
+			role: 'chat',
 		})
 			.then((list) => {
 				const next = list || [];

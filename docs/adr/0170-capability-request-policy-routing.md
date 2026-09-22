@@ -27,6 +27,10 @@ that fixed shape.
 - Make `RequestKind` the public router selector. Legacy role names are accepted
   only while loading old configuration and are converted once in memory; they
   are not serialized and do not define the configuration schema.
+- Keep the established IPC/event/database field name `role` at the wire
+  boundary, but make its producer-side value a `RequestKind` and serialize it
+  as the enum's snake_case string. Model-setting IPC commands accept either a
+  named model id or a `RequestKind` through that field.
 - Replace the STT/vision booleans with `transcription`, `audio_chat`, and
   `vision` policies. A model may serve multiple policies, so the same model
   assignment is not duplicated into slots.

@@ -565,7 +565,9 @@ pub async fn set_web_search(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use haven_common::config::{AppConfig, ProviderConfig};
+    use haven_common::config::{
+        AppConfig, ModelConfig, ProviderConfig, RequestKind, RequestPolicy,
+    };
 
     fn provider(name: &str, key: &str, style: Option<&str>) -> ProviderConfig {
         ProviderConfig {
@@ -632,5 +634,28 @@ mod tests {
             "",
             Some("llama.cpp")
         )));
+    }
+
+    #[test]
+    fn model_selector_accepts_named_model_id_or_request_kind() {
+        let mut cfg = AppConfig::default();
+        cfg.llm.models.push(ModelConfig {
+            id: "chat-primary".into(),
+            ..Default::default()
+        });
+        cfg.llm.request_policies.push(RequestPolicy {
+            request: RequestKind::Chat,
+            primary: "chat-primary".into(),
+        });
+
+        assert_eq!(
+            model_id_for_selector(&cfg.llm, "chat-primary"),
+            Some("chat-primary".into())
+        );
+        assert_eq!(
+            model_id_for_selector(&cfg.llm, "chat"),
+            Some("chat-primary".into())
+        );
+        assert_eq!(model_id_for_selector(&cfg.llm, "vision"), None);
     }
 }

@@ -1,5 +1,6 @@
 /** Agent event IPC contract at the frontend boundary. */
 
+import type { RequestKind } from '../modelRoles.ts';
 import type { TauriEvent } from './session.ts';
 
 export const AGENT_EVENT_NAMES = [
@@ -103,8 +104,8 @@ export interface AgentMediaPlanPayload {
 	sessionId: string;
 	stepNumber: number;
 	runId: number;
-	/** RequestKind string; the wire field remains `role` for UI compatibility. */
-	role: string;
+	/** RequestKind string under the established `role` wire field. */
+	role: RequestKind;
 	strategy: string;
 	projections: Array<{
 		assetId: string;
@@ -178,7 +179,7 @@ export interface AgentUsagePayload {
 	contextWindow: number | null;
 	stepNumber?: number;
 	durationMs?: number;
-	role?: string;
+	role?: RequestKind;
 	callKind: 'agent' | 'media' | 'tool';
 	hasCost: boolean;
 }
@@ -266,8 +267,8 @@ interface AgentMediaPlanWirePayload {
 	session_id: string;
 	step_number: number;
 	run_id: number;
-	/** RequestKind string; the wire field remains `role` for UI compatibility. */
-	role: string;
+	/** RequestKind string under the established `role` wire field. */
+	role: RequestKind;
 	strategy: string;
 	projections: Array<{
 		asset_id: string;
@@ -329,7 +330,7 @@ interface AgentUsageWirePayload {
 	context_window: number | null;
 	step_number?: number;
 	duration_ms?: number;
-	role?: string;
+	role?: RequestKind;
 	call_kind: string;
 	has_cost: boolean;
 }

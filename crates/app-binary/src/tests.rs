@@ -153,7 +153,7 @@ fn channel_maps_every_variant_to_expected_channel() {
                 session_id: "t".into(),
                 step_number: 1,
                 run_id: 1,
-                role: "vision".into(),
+                role: haven_common::config::RequestKind::Vision,
                 strategy: haven_common::media::MediaInputStrategy::Auto,
                 projections: vec![],
                 notices: vec![haven_common::media::MediaPlanNotice {
@@ -229,7 +229,7 @@ fn channel_maps_every_variant_to_expected_channel() {
                 context_window: None,
                 step_number: Some(1),
                 duration_ms: Some(42),
-                role: Some("chat".into()),
+                role: Some(haven_common::config::RequestKind::Chat),
                 call_kind: "agent".into(),
                 has_cost: false,
             },
@@ -252,7 +252,7 @@ fn media_plan_payload_contains_strategy_projection_and_reason() {
         session_id: "ses-1".into(),
         step_number: 4,
         run_id: 8,
-        role: "audio_chat".into(),
+        role: haven_common::config::RequestKind::AudioChat,
         strategy: haven_common::media::MediaInputStrategy::Auto,
         projections: vec![haven_common::media::MediaProjection {
             asset_id: "asset-1".into(),
@@ -271,6 +271,7 @@ fn media_plan_payload_contains_strategy_projection_and_reason() {
     };
 
     let payload = TauriEmitter::payload(&event, None);
+    assert_eq!(payload["role"], "audio_chat");
     assert_eq!(payload["strategy"], "auto");
     assert_eq!(payload["projections"][0]["asset_id"], "asset-1");
     assert_eq!(payload["projections"][0]["representation"], "transcript");

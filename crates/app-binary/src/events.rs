@@ -479,8 +479,8 @@ pub(crate) struct AgentMediaPlanEvent {
     pub session_id: String,
     pub step_number: u32,
     pub run_id: u64,
-    /// RequestKind string; the field name remains `role` for UI compatibility.
-    pub role: String,
+    /// Request kind serialized under the established `role` wire field.
+    pub role: haven_common::config::RequestKind,
     pub strategy: haven_common::media::MediaInputStrategy,
     pub projections: Vec<haven_common::media::MediaProjection>,
     pub notices: Vec<haven_common::media::MediaPlanNotice>,
@@ -548,8 +548,8 @@ pub(crate) struct AgentUsageEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    /// RequestKind string; the field name remains `role` for UI compatibility.
-    pub role: Option<String>,
+    /// Request kind serialized under the established `role` wire field.
+    pub role: Option<haven_common::config::RequestKind>,
     pub call_kind: String,
     pub has_cost: bool,
 }
