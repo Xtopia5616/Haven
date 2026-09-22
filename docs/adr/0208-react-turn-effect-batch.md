@@ -2,7 +2,7 @@
 
 ## 状态
 
-已接受（2026-09-22）。ADR 0209 将工具批次的 durable 提交纳入同一应用器。`sessions.react_state` 仍只为测试兼容保留，schema 为 v27。
+已接受（2026-09-22）。ADR 0209 将工具批次的 durable 提交纳入同一应用器，并删除 `sessions.react_state`（schema v28）。下文“列暂留、schema v27”已被该决定取代。
 
 ## 背景
 

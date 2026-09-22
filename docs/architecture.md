@@ -190,7 +190,7 @@ sequence replay，是会话恢复、rollback、交互重建和实时订阅的唯
 `messages` / `session_steps` 仍是投影，生产路径没有独立的 ReAct checkpoint 表，
 也不把可恢复的 ReAct JSON 写回数据库。`ReActState` 只存在于进程内作为投影
 scratch；完整 `events`、interaction、usage、run budget 和多套 cursor 不得写入
-数据库快照。`sessions.react_state` 只作测试兼容列保留到下一次 schema reset，生产恢复不读写；
+数据库快照。`sessions.react_state` 已随 schema v28 删除；旧库按 reset 丢弃，不迁移，
 测试 transcript 只投影 `session_events`。
 `UserInject` 事件只保存 `MediaInput` 元数据，reset 只替换持久化载体，不成为新的业务真源。
 
@@ -479,7 +479,8 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 | 日期 | 内容 |
 |---|---|
 | 2026-09-22 | §2.5 Tools：按组合 wiring、catalog/session discovery 与 execution 入口拆分 `ToolsManager` 实现，并将 manager 回归测试移出 crate root；公共工具、授权、IPC 与持久化契约不变（ADR 0205） |
-| 2026-09-22 | §2.3/§2.5：删除 `react_checkpoints`，生产恢复只 replay `session_events`；`sessions.react_state` 仅保留为测试列；turn 终态和工具批次 durable 提交都经 `EffectBatch`；inbox 轮询状态进入 `SessionState`（ADR 0196/0208/0209），schema v27 |
+| 2026-09-22 | §2.3：删除 `sessions.react_state`，schema v28；旧库删除重建，不迁移（ADR 0209） |
+| 2026-09-22 | §2.3/§2.5：删除 `react_checkpoints`，生产恢复只 replay `session_events`；turn 终态和工具批次 durable 提交都经 `EffectBatch`；inbox 轮询状态进入 `SessionState`（ADR 0196/0208/0209），schema v27 |
 | 2026-09-21 | §2.3 Memory / §2.5 Agent / Common / UI：首轮 system prompt 不再等待 embedding，记忆改为有界后台预取并通过 MEMORY fence 补入；收紧默认上下文、输出、观察、工具与 reasoning 回显预算（ADR 0191） |
 | 2026-09-20 | §2.5 Agent / §2.6 UI：工具实时预览移出 SessionReducer，避免输出 tick 重算整条时间线；运行中的停止/结束立即返回，终端清理延迟到 run-exit 边界，删除/清空仍保留 destructive cleanup fence（ADR 0184） |
 | 2026-09-19 | §2.5 Agent / §2.6 UI：Action board 刷新加入状态版本校验；损坏 waiting scheduled row 增加可取消的指数退避隔离重试；scheduled fire 改为服务级 claim/lease，阻止多 receiver 重复执行（ADR 0174） |

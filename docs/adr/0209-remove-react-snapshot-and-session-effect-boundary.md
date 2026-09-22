@@ -13,9 +13,8 @@
 
 ## 决定
 
-- 删除公开 `ReActSnapshot`。测试只通过 event projection 建立 transcript，不再
-  序列化 snapshot。`sessions.react_state` 仍只作测试兼容列保留，生产恢复不读写；
-  schema 维持 ADR 0208 的 v27，不在本次再升版本。
+- 删除公开 `ReActSnapshot` 和 `sessions.react_state`。测试只通过 event projection
+  建立 transcript，不再序列化 snapshot。schema 升至 v28；旧数据库删除后重建，不迁移。
 - session-local inbox watch、`steps_since_poll` 和 title cache 放在 `SessionState`，
   随 session clear 一起清除。进程级 `MessagingPoller` 只保留 `MessagingService` 和
   heartbeat coalescing，避免一个 session 占满 blocking pool。
@@ -27,17 +26,15 @@
 
 ## 替代方案
 
-现在删除 `react_state` 列会把一次副作用收口变成第二次 schema reset。该列暂留，
-下一次 schema reset 再移除。把轮询缓存留在 `MessagingPoller` 会让 session 清理和
-actor 所有权分裂。让工具批次继续直接写，则会在 confirm pause 与 transcript commit
-之间保留第二套顺序。
+保留 `react_state` 测试列会让 schema 继续携带没有生产读者的 snapshot 模型。把轮询缓存
+留在 `MessagingPoller` 会让 session 清理和 actor 所有权分裂。让工具批次继续直接写，则会
+在 confirm pause 与 transcript commit 之间保留第二套顺序。
 
 ## 影响、重置与回滚
 
-IPC 与前端事件契约不变。含有 `react_checkpoints` 的旧数据库必须按
+IPC 与前端事件契约不变。含有 `sessions.react_state` 或 `react_checkpoints` 的旧数据库必须按
 `docs/release-and-reset.md` 删除 `haven.db`、`haven.db-wal` 和 `haven.db-shm` 后重建，不能
-运行时迁移或与新库混用。`sessions.react_state` 仍在 v27 schema 中，但不是恢复来源。
-回滚本变更必须同时回到 schema v26，不能只回滚调用方。
+运行时迁移或与新库混用。回滚本变更必须同时回到 schema v26，不能只回滚调用方。
 
 ## 验证
 

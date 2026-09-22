@@ -8,7 +8,7 @@
 //! version stamp rejects both older and newer database contracts.
 
 /// Current database contract. Any schema change requires a fresh database.
-pub const SCHEMA_VERSION: i32 = 27;
+pub const SCHEMA_VERSION: i32 = 28;
 /// Current schema, created idempotently on every open.
 const SCHEMA_SQL: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS sessions (
@@ -18,11 +18,7 @@ const SCHEMA_SQL: &[&str] = &[
         status TEXT NOT NULL DEFAULT 'pending'
             CHECK(status IN ('pending','running','paused','completed','error')),
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
-        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-        -- Unused by production recovery. Kept as a test-compatibility column
-        -- until the next schema reset; resume and rollback must not read or
-        -- write it.
-        react_state TEXT
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     )",
     "CREATE TABLE IF NOT EXISTS messages (
         id TEXT PRIMARY KEY,
@@ -459,7 +455,6 @@ fn table_exists(conn: &rusqlite::Connection, table: &str) -> anyhow::Result<bool
 }
 
 const REQUIRED_COLUMNS: &[(&str, &str)] = &[
-    ("sessions", "react_state"),
     ("messages", "voice"),
     ("messages", "ui_metadata"),
     ("messages", "media_inputs"),
@@ -633,7 +628,7 @@ mod tests {
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
-        assert!(session_columns.iter().any(|column| column == "react_state"));
+        assert!(!session_columns.iter().any(|column| column == "react_state"));
         assert!(!table_exists(&conn, "react_checkpoints").unwrap());
     }
 

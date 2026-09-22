@@ -2,7 +2,7 @@
 
 ## 状态
 
-已接受（2026-09-22）。ADR 0209 删除公开 `ReActSnapshot`，并把 session-local inbox 轮询状态放进 `SessionState`。`sessions.react_state` 仍只作测试兼容列保留。
+已接受（2026-09-22）。ADR 0209 删除公开 `ReActSnapshot` 与 `sessions.react_state`，并把 session-local inbox 轮询状态放进 `SessionState`。
 
 ## 背景
 
@@ -27,7 +27,7 @@
   `last_msg_at`、`event_cursor`、`step_seq` 和 `message_ingress_seq` 不再由 ReAct
   层维护 sidecar。
 - `ReActState` 只作为进程内投影 scratch；生产恢复边界由 `session_events` 的 event
-  cursor 和 projection cutoff 表达，不另建 checkpoint 表。`sessions.react_state` 生产路径不读写，列暂留到下一次 schema reset。
+  cursor 和 projection cutoff 表达，不另建 checkpoint 表，也不再保留 `sessions.react_state`。
   resume/rollback 不从 snapshot 导入，也不以 projection 修复 event stream。
 - `TurnEngine` 是单 turn 的协调边界，返回按序执行的 `EffectBatch`；run budget 和
   生命周期仍由 run driver/actor 持有。
