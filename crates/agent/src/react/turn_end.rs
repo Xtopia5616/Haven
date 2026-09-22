@@ -113,6 +113,7 @@ impl ReActEngine {
             snapshot_step: ctx.step_num + 1,
             emitter: &ctx.emitter,
             status: SessionStatus::Paused,
+            waiting_reason: None,
             final_text,
             branch_point_step: Some(ctx.step_num),
         })

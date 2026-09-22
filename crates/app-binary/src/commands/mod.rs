@@ -23,9 +23,7 @@ pub mod settings;
 pub mod skills;
 
 use crate::app_state::{AppState, UiConfirmationAction, UiConfirmationPending};
-use crate::events::{
-    INTERACTION_REQUESTED_EVENT, InteractionRequestedEvent, LLM_CONFIG_CHANGED_EVENT,
-};
+use crate::events::{INTERACTION_REQUESTED_EVENT, LLM_CONFIG_CHANGED_EVENT};
 use crate::logging::sanitize_error_text;
 use haven_common::McpServerConfig;
 use haven_llm::LlmRouter;
@@ -241,10 +239,10 @@ pub(crate) async fn finalize_admin_ui_operation(
     Ok(())
 }
 
-/// Register a renderer-triggered MCP/skill invocation and expose only the
-/// renderer-safe confirmation contract. The executor owns agent/scheduled
-/// confirmations; this small app-level store gives direct UI invocations the
-/// same resolve path without moving provider arguments across the boundary.
+/// Register a renderer-triggered MCP/skill invocation as the same canonical
+/// confirmation interaction used by agent and scheduled confirmations. The
+/// app-level store retains the typed execution payload needed after resolve;
+/// only the renderer-safe projection crosses the Tauri boundary.
 pub(crate) async fn queue_ui_confirmation(
     state: &AppState,
     app: &AppHandle,
@@ -252,14 +250,21 @@ pub(crate) async fn queue_ui_confirmation(
     receipt: haven_tools::ConfirmationReceipt,
     action: UiConfirmationAction,
 ) -> Result<String, String> {
-    let request_id = receipt.confirmation_id.clone();
     let tool_name = authorization_request.tool_name.clone();
     let summary = haven_tools::permission_prompt_summary(&tool_name, &authorization_request.input);
     let permission_key = authorization_request.policy.capability.to_string();
     let risk_level = receipt.effective_risk;
+    let request = haven_agent::InteractionRequest::ui_confirm(
+        tool_name,
+        authorization_request.input.clone(),
+        summary.clone(),
+        receipt.clone(),
+    );
+    let request_id = request.id.clone();
     state.ui_confirmations.lock().await.insert(
         request_id.to_string(),
         UiConfirmationPending {
+            request: request.clone(),
             session_id: "ui".into(),
             authorization_request,
             summary: summary.clone(),
@@ -269,23 +274,7 @@ pub(crate) async fn queue_ui_confirmation(
     );
     if let Err(error) = app.emit(
         INTERACTION_REQUESTED_EVENT,
-        InteractionRequestedEvent {
-            id: request_id.clone().to_string(),
-            kind: "confirm".into(),
-            status: "pending".into(),
-            prompt: summary.clone(),
-            options: Vec::new(),
-            tool_name: Some(tool_name),
-            session_id: "ui".into(),
-            risk_level: Some(risk_level),
-            summary: Some(summary.clone()),
-            permission_key: Some(permission_key.clone()),
-            invocation_step_id: None,
-            action_index: Some(0),
-            tool_call_id: None,
-            created_at: chrono::Utc::now().to_rfc3339(),
-            expires_at: None,
-        },
+        crate::bootstrap::project_interaction(&request),
     ) {
         state
             .ui_confirmations

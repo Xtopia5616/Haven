@@ -539,6 +539,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 | 2026-08-30 | §2.6 UI：将每步用量聚合、缓存命中率与 token tooltip 收口到 `ui/src/lib/sessionUsagePresentation.ts`，路由页保留响应式状态适配（ADR 0043） |
 | 2026-08-30 | §2.6 UI：将 Agent thought/reasoning、web search、补充输入、工具 action/output/observation 的事件 handler 收口到 `ui/src/lib/chatAgentEventHandlers.ts`，路由页只保留状态与监听器编排（ADR 0044） |
 | 2026-08-30 | §2.6 UI：将 Agent 用量与上下文压缩事件投影收口到 `ui/src/lib/chatUsageEventHandlers.ts`，路由页只保留监听器编排（ADR 0045） |
+| 2026-09-22 | §2.5 Agent / §2.6 UI：保留持久化 `Paused`，通过 `waiting_reason` 派生等待原因；直接 UI confirm 也复用 `InteractionRequest` 和统一 renderer projection（ADR 0200） |
 | 2026-09-14 | §2.5 Agent / §2.6 UI：ask、confirm、scheduled confirm 统一为 `InteractionRequest`；session 只保留通用 `Paused`，Tauri 使用 `interaction:requested`，前端统一由 `interactionStore` 投影与恢复（ADR 0156） |
 | 2026-09-14 | §2.5 Agent/Tools：`MessagingService` 接入 `SessionActor` mailbox；同进程优先 actor、跨进程 fallback JSONL；统一 request/reply/receipt/ack/retry/expiry，并以 typed `MessagingRuntime` 取代 spawn/lifecycle callback（ADR 0158） |
 | 2026-08-30 | §2.6 UI：将 session 生命周期事件的状态投影与终态清理收口到 `ui/src/lib/chatSessionEventHandlers.ts`，路由页保留响应式状态回调（ADR 0047） |

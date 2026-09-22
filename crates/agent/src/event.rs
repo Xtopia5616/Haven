@@ -173,6 +173,11 @@ pub enum AgentEvent {
     SessionUpdated {
         session_id: String,
         status: SessionStatus,
+        /// Derived explanation for a paused session. Durable state remains
+        /// the coarse `SessionStatus::Paused`; this field is a runtime/UI
+        /// projection and is absent for every other status.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        waiting_reason: Option<haven_common::SessionWaitingReason>,
         /// Optional user-visible explanation for a status transition. This is
         /// populated for explicit user interruptions so the UI can explain
         /// why a resumable session stopped producing output.
@@ -951,10 +956,22 @@ impl EventDispatcher {
         status: SessionStatus,
         reason: Option<&str>,
     ) {
+        self.emit_session_updated_with_reason_and_waiting_reason(session_id, status, None, reason)
+            .await;
+    }
+
+    pub async fn emit_session_updated_with_reason_and_waiting_reason(
+        &self,
+        session_id: &str,
+        status: SessionStatus,
+        waiting_reason: Option<haven_common::SessionWaitingReason>,
+        reason: Option<&str>,
+    ) {
         tracing::debug!(
-            "emit_session_updated event: session={} status={} reason={:?}",
+            "emit_session_updated event: session={} status={} waiting_reason={:?} reason={:?}",
             session_id,
             status.as_str(),
+            waiting_reason,
             reason
         );
         let emitter = lock_or_recover(&self.emitter, "event_emitter").clone();
@@ -963,6 +980,7 @@ impl EventDispatcher {
                 .emit(AgentEvent::SessionUpdated {
                     session_id: session_id.into(),
                     status,
+                    waiting_reason,
                     reason: reason.map(str::to_owned),
                 })
                 .await;
@@ -1498,6 +1516,7 @@ mod tests {
                 .emit(AgentEvent::SessionUpdated {
                     session_id: format!("ses-{i}"),
                     status: SessionStatus::Running,
+                    waiting_reason: None,
                     reason: None,
                 })
                 .await;

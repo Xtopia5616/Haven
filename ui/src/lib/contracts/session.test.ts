@@ -10,10 +10,16 @@ describe('mapSessionEvent', () => {
 		});
 
 		expect(event).toEqual({
-			event: 'session:updated',
-			id: 7,
-			payload: { sessionId: 'ses-1', status: 'paused', title: '', reason: null },
-		});
+				event: 'session:updated',
+				id: 7,
+				payload: {
+					sessionId: 'ses-1',
+					status: 'paused',
+					waitingReason: null,
+					title: '',
+					reason: null,
+				},
+			});
 		expect(event.payload).not.toHaveProperty('session_id');
 	});
 

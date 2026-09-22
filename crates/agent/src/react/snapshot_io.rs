@@ -130,6 +130,7 @@ pub(super) struct PauseTurnInput<'a> {
     pub(super) snapshot_step: u32,
     pub(super) emitter: &'a Arc<dyn AgentEventEmitter>,
     pub(super) status: SessionStatus,
+    pub(super) waiting_reason: Option<haven_common::SessionWaitingReason>,
     pub(super) final_text: &'a str,
     pub(super) branch_point_step: Option<u32>,
 }
@@ -143,12 +144,33 @@ pub(crate) async fn set_status_and_emit(
     session_id: &str,
     status: SessionStatus,
 ) -> anyhow::Result<()> {
+    set_status_and_emit_with_waiting_reason(executor, emitter, session_id, status, None).await
+}
+
+/// Update a session and publish the derived paused reason in the same event.
+/// The explicit value is used for boundaries such as step-budget exhaustion;
+/// ordinary pauses derive from the interaction/action registry.
+pub(crate) async fn set_status_and_emit_with_waiting_reason(
+    executor: &SessionSupervisor,
+    emitter: &Arc<dyn AgentEventEmitter>,
+    session_id: &str,
+    status: SessionStatus,
+    explicit_reason: Option<haven_common::SessionWaitingReason>,
+) -> anyhow::Result<()> {
     tracing::debug!("session {} status -> {}", session_id, status.as_str());
     if executor.update_session_status(session_id, status).await? {
+        let waiting_reason = if status == SessionStatus::Paused {
+            let reason = explicit_reason.or(executor.waiting_reason(session_id).await);
+            executor.set_waiting_reason(session_id, reason).await?;
+            reason
+        } else {
+            None
+        };
         emitter
             .emit(crate::event::AgentEvent::SessionUpdated {
                 session_id: session_id.into(),
                 status,
+                waiting_reason,
                 reason: None,
             })
             .await;
@@ -496,6 +518,7 @@ impl ReActEngine {
             snapshot_step,
             emitter,
             status,
+            waiting_reason,
             final_text,
             branch_point_step,
         } = input;
@@ -540,7 +563,14 @@ impl ReActEngine {
             // A synchronous resolve may have already woken a confirm batch.
             // Do not overwrite that Pending transition with a stale pause.
             if self.executor.get_session_state(session_id).await != Some(SessionStatus::Pending) {
-                set_status_and_emit(&self.executor, emitter, session_id, status).await?;
+                set_status_and_emit_with_waiting_reason(
+                    &self.executor,
+                    emitter,
+                    session_id,
+                    status,
+                    waiting_reason,
+                )
+                .await?;
             }
             let ctx = StepCtx {
                 session_id: session_id.to_string(),
@@ -591,7 +621,14 @@ impl ReActEngine {
                     session_id
                 );
             }
-            set_status_and_emit(&self.executor, emitter, session_id, SessionStatus::Paused).await?;
+            set_status_and_emit_with_waiting_reason(
+                &self.executor,
+                emitter,
+                session_id,
+                SessionStatus::Paused,
+                Some(haven_common::SessionWaitingReason::StepBudget),
+            )
+            .await?;
             emitter
                 .emit(crate::event::AgentEvent::Notification {
                     session_id: session_id.into(),

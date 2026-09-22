@@ -21,6 +21,7 @@ fn test_session_info() -> SessionInfo {
         summary: "my summary".into(),
         title: Some("My Title".into()),
         status: SessionStatus::Running,
+        waiting_reason: None,
         steps: vec![],
         created_at: "2026-01-01T00:00:00Z".into(),
         updated_at: "2026-01-01T00:00:00Z".into(),
@@ -90,6 +91,7 @@ fn channel_maps_every_variant_to_expected_channel() {
             AgentEvent::SessionUpdated {
                 session_id: "t".into(),
                 status: haven_common::SessionStatus::Paused,
+                waiting_reason: None,
                 reason: None,
             },
             "session:updated",
@@ -426,6 +428,7 @@ fn payload_preserves_session_lifecycle_and_error_wire_shapes() {
     let updated = AgentEvent::SessionUpdated {
         session_id: "t".into(),
         status: haven_common::SessionStatus::Paused,
+        waiting_reason: None,
         reason: Some("用户主动打断输出".into()),
     };
     let payload = TauriEmitter::payload(&updated, None);

@@ -270,10 +270,17 @@ impl AgentLayer {
     /// follow-up, while the cancellation token stops an in-flight provider call.
     pub async fn interrupt_session(&self, session_id: &str) -> anyhow::Result<()> {
         if self.executor.interrupt_session(session_id).await? {
+            self.executor
+                .set_waiting_reason(
+                    session_id,
+                    Some(haven_common::SessionWaitingReason::UserInterrupt),
+                )
+                .await?;
             self.events
-                .emit_session_updated_with_reason(
+                .emit_session_updated_with_reason_and_waiting_reason(
                     session_id,
                     SessionStatus::Paused,
+                    Some(haven_common::SessionWaitingReason::UserInterrupt),
                     Some("用户主动打断输出"),
                 )
                 .await;

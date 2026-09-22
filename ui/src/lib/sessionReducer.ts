@@ -149,7 +149,13 @@ export type SessionAction =
 	| { type: 'session/selected'; sessionId: string | null }
 	| { type: 'session/cleared' }
 	| { type: 'session/deleted'; sessionId: string | null }
-	| { type: 'session/status-updated'; sessionId: string; status: string; title?: string | null }
+	| {
+			type: 'session/status-updated';
+			sessionId: string;
+			status: string;
+			title?: string | null;
+			waitingReason?: string | null;
+	  }
 	| { type: 'session/error-shown'; sessionId: string; reason: string }
 	| { type: 'session/error-cleared'; sessionId?: string | null }
 	| {
@@ -697,6 +703,9 @@ export function reduceSession(
 					? {
 							...session,
 							status: action.status,
+							...(action.waitingReason !== undefined
+								? { waitingReason: action.waitingReason }
+								: {}),
 							...(action.title != null ? { title: action.title } : {}),
 						}
 					: session,

@@ -86,7 +86,7 @@ pub(crate) fn project_interaction(
             event.permission_key = receipt
                 .as_ref()
                 .map(|receipt| receipt.capability.to_string());
-            event.invocation_step_id = Some(step_id.clone());
+            event.invocation_step_id = (!step_id.is_empty()).then(|| step_id.clone());
             event.action_index = Some(*action_index);
             event.tool_call_id = (!tool_call_id.is_empty()).then(|| tool_call_id.clone());
         }
@@ -503,6 +503,7 @@ pub(crate) fn run() {
                                                 SessionLifecycleEvent {
                                                     session_id,
                                                     status: haven_common::SessionStatus::Error,
+                                                    waiting_reason: None,
                                                     title: Some(String::new()),
                                                     reason: Some(sanitize_error_text(&reason)),
                                                 },

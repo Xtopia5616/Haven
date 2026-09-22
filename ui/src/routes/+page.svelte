@@ -8,7 +8,13 @@
 		shouldResubmitOriginalUser,
 		shouldShowContinueButton,
 	} from '$lib/continueSession.ts';
-	import { isBusyStatus, isErrorStatus, isPausedStatus } from '$lib/sessionStatus.ts';
+	import {
+		isBusyStatus,
+		isErrorStatus,
+		isPausedStatus,
+		sessionWaitingReason,
+		waitingReasonLabel,
+	} from '$lib/sessionStatus.ts';
 	import { processResultSessionId, submitTranscript } from '$lib/submit.ts';
 	import { createChatAgentEventHandlers } from '$lib/chatAgentEventHandlers.ts';
 	import { createAskInteractionController } from '$lib/chatAskInteraction.ts';
@@ -247,19 +253,14 @@
 	const activeSessionStatus = $derived(
 		activeSessionId ? sessions.find((t) => t.id === activeSessionId)?.status : undefined,
 	);
-	/** Plain paused (not ask/confirm) with still-running background actions for this session. */
+	/** The backend's derived reason is authoritative; actions only provide the count. */
 	const awaitingBackground = $derived.by(() => {
 		if (!activeSessionId || activeSessionStatus !== 'paused') return false;
-		return Object.values(actionsById).some(
-			(a) =>
-				a &&
-				a.kind !== 'scheduled' &&
-				a.status === 'running' &&
-				a.sessionId === activeSessionId,
-		);
+		const session = sessions.find((item) => item.id === activeSessionId);
+		return sessionWaitingReason(session) === 'background_task';
 	});
 	const awaitingBackgroundCount = $derived.by(() => {
-		if (!activeSessionId || activeSessionStatus !== 'paused') return 0;
+		if (!awaitingBackground || !activeSessionId) return 0;
 		return Object.values(actionsById).filter(
 			(a) =>
 				a &&
@@ -1226,7 +1227,10 @@
 				const before = sessionReducer.getState();
 				dispatchSession({
 					type: 'sessions/loaded',
-					sessions: result.sessions,
+					sessions: result.sessions.map((/** @type {any} */ session) => ({
+						...session,
+						waitingReason: session.waiting_reason ?? null,
+					})),
 					autoSelect: !before.activeSessionId && !get(newSessionIntentStore),
 				});
 				const after = sessionReducer.getState();
@@ -1421,17 +1425,8 @@
 	function sessionStatusLabel(session) {
 		if (session.status === 'running') return '运行中';
 		if (isErrorStatus(session.status)) return '错误';
-		if (
-			session.status === 'paused' &&
-			Object.values(actionsById).some(
-				(action) =>
-					action &&
-					action.kind !== 'scheduled' &&
-					action.status === 'running' &&
-					action.sessionId === session.id,
-			)
-		)
-			return '等待后台任务';
+		const waitingLabel = waitingReasonLabel(sessionWaitingReason(session));
+		if (waitingLabel) return waitingLabel;
 		return isPausedStatus(session.status) ? '已暂停' : '等待中';
 	}
 

@@ -170,6 +170,42 @@ impl InteractionRequest {
         }
     }
 
+    /// Build a confirmation raised by a direct renderer invocation.
+    ///
+    /// These requests do not belong to an agent session, but they still use
+    /// the same interaction lifecycle and renderer projection as agent and
+    /// scheduled confirmations. The app keeps the typed execution payload
+    /// separately so it can resume the native command after resolution.
+    pub fn ui_confirm(
+        tool_name: String,
+        tool_input: Value,
+        prompt: String,
+        receipt: haven_tools::ConfirmationReceipt,
+    ) -> Self {
+        let confirmation_id = receipt.confirmation_id.to_string();
+        Self {
+            id: confirmation_id.clone(),
+            session_id: "ui".into(),
+            kind: InteractionKind::Confirm,
+            status: InteractionStatus::Pending,
+            prompt,
+            details: InteractionDetails::Confirm {
+                step_number: 0,
+                tool_name,
+                tool_input,
+                tool_call_id: String::new(),
+                step_id: String::new(),
+                action_index: 0,
+                risk_level: receipt.effective_risk,
+                receipt: Some(receipt),
+            },
+            correlation_ids: Vec::new(),
+            response: None,
+            created_at: chrono::Utc::now().to_rfc3339(),
+            expires_at: None,
+        }
+    }
+
     pub fn scheduled_confirm(
         action_id: String,
         session_id: &str,
@@ -272,5 +308,35 @@ mod tests {
         );
         assert!(expired.expire());
         assert!(!expired.resolve(Value::Bool(true)));
+    }
+
+    #[test]
+    fn direct_ui_confirmation_uses_the_canonical_confirm_shape() {
+        let receipt = haven_tools::ConfirmationReceipt {
+            confirmation_id: haven_common::types::new_id("conf").into(),
+            capability: haven_tools::CapabilityScope::new("admin.test"),
+            canonical_input_hash: "hash".into(),
+            effective_risk: haven_common::types::RiskLevel::Medium,
+            policy_revision: 1,
+            expires_at: 1,
+        };
+        let request = InteractionRequest::ui_confirm(
+            "haven.test".into(),
+            serde_json::json!({"value": 1}),
+            "Allow the test operation?".into(),
+            receipt.clone(),
+        );
+
+        assert_eq!(request.id, receipt.confirmation_id.to_string());
+        assert_eq!(request.session_id, "ui");
+        assert_eq!(request.kind, InteractionKind::Confirm);
+        assert!(matches!(
+            request.details,
+            InteractionDetails::Confirm {
+                step_number: 0,
+                action_index: 0,
+                ..
+            }
+        ));
     }
 }

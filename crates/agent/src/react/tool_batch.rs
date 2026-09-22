@@ -623,6 +623,7 @@ impl ReActEngine {
             snapshot_step: step_num + 1,
             emitter,
             status,
+            waiting_reason: Some(haven_common::SessionWaitingReason::Ask),
             final_text: &pending.prompt,
             branch_point_step: None,
         })

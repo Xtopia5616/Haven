@@ -243,6 +243,7 @@ impl TauriEmitter {
             AgentEvent::SessionCreated(session) => serialize(SessionLifecycleEvent {
                 session_id: session.id.clone(),
                 status: session.status,
+                waiting_reason: session.waiting_reason,
                 title: session.title.clone(),
                 reason: None,
             }),
@@ -253,16 +254,19 @@ impl TauriEmitter {
             } => serialize(SessionLifecycleEvent {
                 session_id: session_id.clone(),
                 status: haven_common::SessionStatus::Completed,
+                waiting_reason: None,
                 title: Some(title.clone()),
                 reason: Some(sanitize_error_text(reason)),
             }),
             AgentEvent::SessionUpdated {
                 session_id,
                 status,
+                waiting_reason,
                 reason,
             } => serialize(SessionLifecycleEvent {
                 session_id: session_id.clone(),
                 status: *status,
+                waiting_reason: *waiting_reason,
                 title: Some(String::new()),
                 reason: reason.as_deref().map(sanitize_error_text),
             }),
@@ -576,6 +580,7 @@ impl TauriEmitter {
             } => serde_json::to_value(SessionLifecycleEvent {
                 session_id: session_id.clone(),
                 status: haven_common::SessionStatus::Completed,
+                waiting_reason: None,
                 title: Some(title.clone()),
                 reason: Some(sanitize_error_text(reason)),
             })
@@ -590,6 +595,7 @@ impl TauriEmitter {
                 serde_json::to_value(SessionLifecycleEvent {
                     session_id: session_id.clone(),
                     status: haven_common::SessionStatus::Error,
+                    waiting_reason: None,
                     title: Some(self.notifications.session_display_title(session_id)),
                     reason: Some(sanitize_error_text(error)),
                 })

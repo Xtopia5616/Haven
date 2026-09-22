@@ -1,5 +1,6 @@
 use crate::interaction::InteractionRequest;
 pub use haven_common::lifecycle::SessionStatus;
+pub use haven_common::lifecycle::SessionWaitingReason;
 use haven_common::types::MessageAttachment;
 use haven_common::types::RiskLevel;
 use haven_memory::Database;
@@ -86,6 +87,10 @@ pub struct SessionInfo {
     /// first ReAct loop completes, or manually by the user.
     pub title: Option<String>,
     pub status: SessionStatus,
+    /// Runtime/UI projection explaining why `status == Paused`. It is not
+    /// persisted and is recomputed from interactions and live actions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting_reason: Option<SessionWaitingReason>,
     pub steps: Vec<StepInfo>,
     pub created_at: String,
     pub updated_at: String,
@@ -103,6 +108,7 @@ impl SessionInfo {
             summary: record.input_text.clone(),
             title: record.title.clone(),
             status: record.status,
+            waiting_reason: None,
             steps: Vec::new(),
             created_at: record.created_at.clone(),
             updated_at: record.updated_at.clone(),

@@ -213,6 +213,8 @@ async fn resolve_ui_confirmation(
             )
         })?;
     tracing::debug!(
+        interaction_id = %pending.request.id,
+        interaction_kind = ?pending.request.kind,
         tool = %pending.authorization_request.tool_name,
         risk = ?pending.receipt.effective_risk,
         summary = %pending.summary,

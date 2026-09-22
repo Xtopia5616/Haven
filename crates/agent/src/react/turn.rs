@@ -379,6 +379,7 @@ impl ReActEngine {
                     snapshot_step: step_num + 1,
                     emitter: &ctx.emitter,
                     status: SessionStatus::Paused,
+                    waiting_reason: Some(haven_common::SessionWaitingReason::Ask),
                     final_text: &question,
                     branch_point_step: None,
                 })

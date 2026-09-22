@@ -1,4 +1,4 @@
-use haven_common::{ActionStatus, SessionStatus};
+use haven_common::{ActionStatus, SessionStatus, SessionWaitingReason};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -234,6 +234,8 @@ fn value_type(value: &Value) -> &'static str {
 pub(crate) struct SessionLifecycleEvent {
     pub session_id: String,
     pub status: SessionStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub waiting_reason: Option<SessionWaitingReason>,
     /// A newly-created session may not have a generated title yet.
     pub title: Option<String>,
     /// Present when a lifecycle transition has a user-visible explanation,
@@ -581,6 +583,7 @@ mod tests {
         let event = SessionLifecycleEvent {
             session_id: "ses-1".into(),
             status: SessionStatus::Paused,
+            waiting_reason: None,
             title: Some("Plan migration".into()),
             reason: None,
         };

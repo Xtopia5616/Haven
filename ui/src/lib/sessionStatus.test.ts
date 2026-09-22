@@ -1,11 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import {
 	SESSION_STATUSES,
+	SESSION_WAITING_REASONS,
 	isBusyStatus,
 	isPausedStatus,
+	sessionWaitingReason,
 	statusColor,
 	statusVariant,
 	isErrorStatus,
+	waitingReasonLabel,
 } from './sessionStatus.ts';
 
 describe('SESSION_STATUSES', () => {
@@ -25,6 +28,30 @@ describe('isPausedStatus', () => {
 		expect(isPausedStatus('paused')).toBe(true);
 		expect(isPausedStatus('pending')).toBe(false);
 		expect(isPausedStatus(undefined)).toBe(false);
+	});
+});
+
+describe('session waiting reasons', () => {
+	it('keeps the backend vocabulary and labels stable', () => {
+		expect(SESSION_WAITING_REASONS).toEqual([
+			'user_input',
+			'user_interrupt',
+			'ask',
+			'confirmation',
+			'scheduled_confirmation',
+			'background_task',
+			'scheduled_task',
+			'step_budget',
+		]);
+		expect(waitingReasonLabel('ask')).toBe('等待回答');
+		expect(waitingReasonLabel('background_task')).toBe('等待后台任务');
+		expect(waitingReasonLabel('unknown')).toBeNull();
+	});
+
+	it('reads normalized and legacy list payload fields at the boundary', () => {
+		expect(sessionWaitingReason({ waitingReason: 'confirmation' })).toBe('confirmation');
+		expect(sessionWaitingReason({ waiting_reason: 'scheduled_task' })).toBe('scheduled_task');
+		expect(sessionWaitingReason(undefined)).toBeNull();
 	});
 });
 

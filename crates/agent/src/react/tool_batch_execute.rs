@@ -679,6 +679,7 @@ impl ReActEngine {
                 snapshot_step: step_num + 1,
                 emitter,
                 status: SessionStatus::Paused,
+                waiting_reason: Some(haven_common::SessionWaitingReason::Confirmation),
                 final_text: notice,
                 branch_point_step: None,
             })

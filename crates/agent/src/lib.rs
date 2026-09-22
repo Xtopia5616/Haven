@@ -40,7 +40,7 @@ pub use prompt_renderer::{MemorySections, PromptRenderer};
 pub use react::{LoopExit, MetricsSnapshot, PauseReason, ReActEngine, UiMetricsSnapshot};
 pub use session::{
     ConfirmResolution, RunEngine, RunHandler, SessionEvent, SessionInfo, SessionStatus,
-    SessionSupervisor, StepInfo, ToolExecution,
+    SessionSupervisor, SessionWaitingReason, StepInfo, ToolExecution,
 };
 
 #[cfg(test)]

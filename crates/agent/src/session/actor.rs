@@ -5,7 +5,7 @@
 //! commands; they never acquire a lock around `SessionInfo` or one of the
 //! session's auxiliary queues.
 
-use super::{FollowUp, SessionInfo, SessionStatus, StepInfo};
+use super::{FollowUp, SessionInfo, SessionStatus, SessionWaitingReason, StepInfo};
 use crate::interaction::{InteractionKind, InteractionRequest, InteractionStatus};
 use haven_common::types::MessageAttachment;
 use haven_memory::Database;
@@ -94,6 +94,9 @@ pub(crate) enum ActorCommand {
     },
     UpdateTitle {
         title: String,
+    },
+    SetWaitingReason {
+        reason: Option<SessionWaitingReason>,
     },
     Transition {
         expected: Option<SessionStatus>,
@@ -280,6 +283,13 @@ impl SessionActorHandle {
         .await?;
         rx.await
             .map_err(|_| anyhow::anyhow!("session actor '{}' dropped transition", self.id))?
+    }
+
+    pub(crate) async fn set_waiting_reason(
+        &self,
+        reason: Option<SessionWaitingReason>,
+    ) -> anyhow::Result<()> {
+        self.send(ActorCommand::SetWaitingReason { reason }).await
     }
 
     pub(crate) async fn claim_run(&self) -> anyhow::Result<RunClaim> {
@@ -696,6 +706,11 @@ pub(crate) fn spawn(db: Arc<Database>, info: SessionInfo) -> SessionActorHandle 
                 ActorCommand::UpdateTitle { title } => {
                     state.info.title = Some(title);
                 }
+                ActorCommand::SetWaitingReason { reason } => {
+                    state.info.waiting_reason = (state.info.status == SessionStatus::Paused)
+                        .then_some(reason)
+                        .flatten();
+                }
                 ActorCommand::Transition {
                     expected,
                     status: next,
@@ -1086,6 +1101,9 @@ async fn transition(
         super::SessionSupervisor::persist_status(db, &state.info.id, next).await?;
     }
     state.info.status = next;
+    if next != SessionStatus::Paused {
+        state.info.waiting_reason = None;
+    }
     state.info.updated_at = chrono::Utc::now().to_rfc3339();
     let _ = status.send(next);
     Ok(StatusTransition {
@@ -1106,6 +1124,7 @@ async fn claim_run(
     }
     super::SessionSupervisor::persist_status(db, &state.info.id, SessionStatus::Running).await?;
     state.info.status = SessionStatus::Running;
+    state.info.waiting_reason = None;
     state.info.updated_at = chrono::Utc::now().to_rfc3339();
     state.running = true;
     let _ = status.send(SessionStatus::Running);
@@ -1383,6 +1402,7 @@ mod queue_tests {
                 summary: "queue".into(),
                 title: None,
                 status: SessionStatus::Pending,
+                waiting_reason: None,
                 steps: Vec::new(),
                 created_at: String::new(),
                 updated_at: String::new(),

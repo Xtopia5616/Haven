@@ -3,8 +3,8 @@
 //
 // statusColor() returns a hex color for inline badges (SessionCard dot).
 // statusVariant() returns a MaterialBadge variant for the memory/sessions page.
-// InteractionRequest carries ask/confirm pause reasons; session status only
-// exposes the generic paused state.
+// Paused sessions carry a derived waitingReason so views do not infer the
+// cause by combining status, interactions, and action state.
 // isBusyStatus() covers dispatcher queue (pending) and claimed run (running).
 
 /** Session statuses only. */
@@ -17,6 +17,30 @@ export const SESSION_STATUSES = [
 ] as const;
 
 export type SessionStatus = (typeof SESSION_STATUSES)[number];
+
+export const SESSION_WAITING_REASONS = [
+	'user_input',
+	'user_interrupt',
+	'ask',
+	'confirmation',
+	'scheduled_confirmation',
+	'background_task',
+	'scheduled_task',
+	'step_budget',
+] as const;
+
+export type SessionWaitingReason = (typeof SESSION_WAITING_REASONS)[number];
+
+const WAITING_REASON_LABELS: Record<SessionWaitingReason, string> = {
+	user_input: '等待输入',
+	user_interrupt: '已暂停',
+	ask: '等待回答',
+	confirmation: '等待确认',
+	scheduled_confirmation: '等待定时任务确认',
+	background_task: '等待后台任务',
+	scheduled_task: '等待定时任务',
+	step_budget: '等待继续',
+};
 
 const COLOR_MAP: Record<string, string> = {
 	pending: '#666',
@@ -36,6 +60,24 @@ const VARIANT_MAP: Record<string, string> = {
 
 export function isPausedStatus(status: string | undefined | null): boolean {
 	return status === 'paused';
+}
+
+export function isSessionWaitingReason(value: unknown): value is SessionWaitingReason {
+	return (SESSION_WAITING_REASONS as readonly unknown[]).includes(value);
+}
+
+export function waitingReasonLabel(reason: unknown): string | null {
+	return isSessionWaitingReason(reason) ? WAITING_REASON_LABELS[reason] : null;
+}
+
+/** Read the normalized field plus the raw command-list spelling at one edge. */
+export function sessionWaitingReason(session: {
+	waitingReason?: unknown;
+	waiting_reason?: unknown;
+} | Record<string, unknown> | null | undefined): SessionWaitingReason | null {
+	if (!session) return null;
+	const value = session.waitingReason ?? session.waiting_reason;
+	return isSessionWaitingReason(value) ? value : null;
 }
 
 /** Queued (`pending`) or claimed (`running`) — both block "idle" UI. */

@@ -38,7 +38,7 @@
 	import { page } from '$app/stores';
 	import { goto } from '$app/navigation';
 	import { syncStore } from '$lib/syncStore.ts';
-	import { isBusyStatus, isPausedStatus } from '$lib/sessionStatus.ts';
+	import { isBusyStatus, isPausedStatus, sessionWaitingReason } from '$lib/sessionStatus.ts';
 	import { confirmLeaveSettingsIfNeeded } from '$lib/settingsGuard.ts';
 	import { actionStatusLabel } from '$lib/taskTerminology.ts';
 	import { setToolManifests } from '$lib/toolManifest.ts';
@@ -474,25 +474,24 @@
 		backgroundActionEntries.filter((action) => action.status === 'running'),
 	);
 	const runningActionCount = $derived(runningBackgroundActions.length);
-	// Active chat is plain-paused while its own background action(s) still run
-	// — titlebar should say "等待后台任务" so it does not look idle/ready.
 	let sessionState = $state(appSessionReducer.getState());
 	$effect(() => syncStore(sessionStateStore, (v) => (sessionState = v)));
+	// Session lifecycle events expose the derived pause reason directly. The
+	// action registry remains available for the task panel and counts, but it
+	// no longer determines why a paused conversation is waiting.
+	const sessions = $derived(sessionState.sessions);
+	// Active chat is plain-paused while its own background action(s) still run
+	// — titlebar should say "等待后台任务" so it does not look idle/ready.
 	const activeSessionId = $derived(sessionState.activeSessionId);
 	const awaitingBackgroundActive = $derived.by(() => {
 		if (!activeSessionId) return false;
-		const st = sessions.find((t) => t.id === activeSessionId)?.status;
-		if (st !== 'paused') return false;
-		return runningBackgroundActions.some((a) => a.sessionId === activeSessionId);
+		const session = sessions.find((t) => t.id === activeSessionId);
+		return sessionWaitingReason(session) === 'background_task';
 	});
 
 	const taskCenterVisible = $derived(
 		activeTab === 'memory' && $page.url.searchParams.get('section') === 'tasks',
 	);
-
-	// Session titles for background-action rows; mirrored from the chat page's
-	// loadSessions().
-	const sessions = $derived(sessionState.sessions);
 
 	// Permission confirmations belong to the application shell, not the chat
 	// page. The chat page is kept mounted but hidden when another workspace is

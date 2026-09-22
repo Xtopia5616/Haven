@@ -16,6 +16,63 @@ pub enum SessionStatus {
     Error,
 }
 
+/// Derived explanation for a session that is durably `Paused`.
+///
+/// `SessionStatus` remains intentionally coarse because it is persisted and
+/// participates in the lifecycle state machine. This value is a runtime/UI
+/// projection: it explains what can make a paused session progress again and
+/// must therefore be `None` for non-paused states.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SessionWaitingReason {
+    UserInput,
+    UserInterrupt,
+    Ask,
+    Confirmation,
+    ScheduledConfirmation,
+    BackgroundTask,
+    ScheduledTask,
+    StepBudget,
+}
+
+impl SessionWaitingReason {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::UserInput => "user_input",
+            Self::UserInterrupt => "user_interrupt",
+            Self::Ask => "ask",
+            Self::Confirmation => "confirmation",
+            Self::ScheduledConfirmation => "scheduled_confirmation",
+            Self::BackgroundTask => "background_task",
+            Self::ScheduledTask => "scheduled_task",
+            Self::StepBudget => "step_budget",
+        }
+    }
+}
+
+impl Serialize for SessionWaitingReason {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for SessionWaitingReason {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        match String::deserialize(deserializer)?.as_str() {
+            "user_input" => Ok(Self::UserInput),
+            "user_interrupt" => Ok(Self::UserInterrupt),
+            "ask" => Ok(Self::Ask),
+            "confirmation" => Ok(Self::Confirmation),
+            "scheduled_confirmation" => Ok(Self::ScheduledConfirmation),
+            "background_task" => Ok(Self::BackgroundTask),
+            "scheduled_task" => Ok(Self::ScheduledTask),
+            "step_budget" => Ok(Self::StepBudget),
+            value => Err(serde::de::Error::custom(format!(
+                "unknown session waiting reason '{value}'"
+            ))),
+        }
+    }
+}
+
 impl SessionStatus {
     pub const ALL: [Self; 5] = [
         Self::Pending,
@@ -178,7 +235,20 @@ impl<'de> Deserialize<'de> for ActionStatus {
 
 #[cfg(test)]
 mod tests {
-    use super::{ActionStatus, SessionStatus};
+    use super::{ActionStatus, SessionStatus, SessionWaitingReason};
+
+    #[test]
+    fn waiting_reason_serializes_as_stable_wire_vocabulary() {
+        assert_eq!(
+            serde_json::to_string(&SessionWaitingReason::ScheduledConfirmation).unwrap(),
+            "\"scheduled_confirmation\""
+        );
+        assert_eq!(
+            serde_json::from_str::<SessionWaitingReason>("\"background_task\"").unwrap(),
+            SessionWaitingReason::BackgroundTask
+        );
+        assert!(serde_json::from_str::<SessionWaitingReason>("\"bogus\"").is_err());
+    }
 
     #[test]
     fn session_transition_table_is_the_single_policy() {

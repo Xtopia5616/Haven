@@ -5,7 +5,12 @@
  * allowed conversion point; Svelte routes receive camelCase fields only.
  */
 
-import { SESSION_STATUSES, type SessionStatus } from '../sessionStatus.ts';
+import {
+	SESSION_STATUSES,
+	SESSION_WAITING_REASONS,
+	type SessionStatus,
+	type SessionWaitingReason,
+} from '../sessionStatus.ts';
 
 export const SESSION_EVENT_NAMES = [
 	'session:created',
@@ -21,6 +26,7 @@ export type SessionEventName = (typeof SESSION_EVENT_NAMES)[number];
 export interface SessionLifecyclePayload {
 	sessionId: string;
 	status: SessionStatus;
+	waitingReason: SessionWaitingReason | null;
 	title: string | null;
 	reason: string | null;
 }
@@ -52,6 +58,7 @@ export interface SessionEventPayloadMap {
 interface SessionLifecycleWirePayload {
 	session_id: string;
 	status: string;
+	waiting_reason?: string | null;
 	title: string | null;
 	reason?: string | null;
 }
@@ -99,6 +106,9 @@ export function mapSessionEvent<K extends SessionEventName>(
 				payload: {
 					sessionId: (payload as SessionLifecycleWirePayload).session_id,
 					status: mapSessionStatus((payload as SessionLifecycleWirePayload).status),
+					waitingReason: mapWaitingReason(
+						(payload as SessionLifecycleWirePayload).waiting_reason,
+					),
 					title: (payload as SessionLifecycleWirePayload).title,
 					reason: (payload as SessionLifecycleWirePayload).reason ?? null,
 				},
@@ -131,4 +141,10 @@ function mapSessionStatus(value: unknown): SessionStatus {
 	return (SESSION_STATUSES as readonly string[]).includes(value as string)
 		? (value as SessionStatus)
 		: 'error';
+}
+
+function mapWaitingReason(value: unknown): SessionWaitingReason | null {
+	return (SESSION_WAITING_REASONS as readonly string[]).includes(value as string)
+		? (value as SessionWaitingReason)
+		: null;
 }

@@ -256,9 +256,10 @@ impl SessionSupervisor {
             .collect::<Vec<_>>();
         let mut sessions = Vec::with_capacity(actors.len());
         for actor in actors {
-            if let Some(session) = actor.snapshot().await
+            if let Some(mut session) = actor.snapshot().await
                 && !session.status.is_terminal()
             {
+                session.waiting_reason = self.waiting_reason(&session.id).await;
                 sessions.push(session);
             }
         }
@@ -515,8 +516,75 @@ impl SessionSupervisor {
     }
 
     pub async fn get_session(&self, session_id: &str) -> Option<SessionInfo> {
-        let session = self.actor_for(session_id).await?.snapshot().await?;
+        let mut session = self.actor_for(session_id).await?.snapshot().await?;
+        session.waiting_reason = self.waiting_reason(session_id).await;
         (!session.status.is_terminal()).then_some(session)
+    }
+
+    /// Return the derived reason a paused session is waiting. The actor-owned
+    /// value covers explicit interruption and pause boundaries; the fallback
+    /// inspection makes recovery/list projections accurate after a restart.
+    pub async fn waiting_reason(&self, session_id: &str) -> Option<SessionWaitingReason> {
+        let actor = self.actor_for(session_id).await?;
+        let session = actor.snapshot().await?;
+        if session.status != SessionStatus::Paused {
+            return None;
+        }
+        if session.waiting_reason.is_some() {
+            return session.waiting_reason;
+        }
+
+        let interactions = actor.interactions(None, true).await;
+        if interactions
+            .iter()
+            .any(|request| request.kind == crate::interaction::InteractionKind::Ask)
+        {
+            return Some(SessionWaitingReason::Ask);
+        }
+        if interactions
+            .iter()
+            .any(|request| request.kind == crate::interaction::InteractionKind::Confirm)
+        {
+            return Some(SessionWaitingReason::Confirmation);
+        }
+        if self.scheduled_confirms.lock().await.iter().any(|request| {
+            request.session_id == session_id
+                && request.status == crate::interaction::InteractionStatus::Pending
+        }) {
+            return Some(SessionWaitingReason::ScheduledConfirmation);
+        }
+
+        for action in self
+            .tools
+            .action_service()
+            .list_for_session(session_id)
+            .await
+        {
+            let live = matches!(action["status"].as_str(), Some("waiting" | "running"));
+            if !live {
+                continue;
+            }
+            return match action["kind"].as_str() {
+                Some("scheduled") => Some(SessionWaitingReason::ScheduledTask),
+                Some("background") => Some(SessionWaitingReason::BackgroundTask),
+                _ => None,
+            };
+        }
+        Some(SessionWaitingReason::UserInput)
+    }
+
+    /// Set the non-durable reason attached to the current paused projection.
+    /// A non-paused actor ignores the value, keeping the field derived from
+    /// lifecycle state rather than allowing stale reason data to leak.
+    pub async fn set_waiting_reason(
+        &self,
+        session_id: &str,
+        reason: Option<SessionWaitingReason>,
+    ) -> anyhow::Result<()> {
+        if let Some(actor) = self.actor_for(session_id).await {
+            actor.set_waiting_reason(reason).await?;
+        }
+        Ok(())
     }
 
     pub async fn ensure_session_loaded(&self, session_id: &str) -> anyhow::Result<()> {

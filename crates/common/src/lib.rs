@@ -38,7 +38,7 @@ pub use tools::{
     ToolPresentation, ToolPrompt, ToolRetrySafety, ToolSource,
 };
 
-pub use lifecycle::{ActionStatus, SessionStatus};
+pub use lifecycle::{ActionStatus, SessionStatus, SessionWaitingReason};
 pub use types::{
     CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart, FollowUp, InjectSource,
     MessageAttachment, PEER_KICKOFF_PREFIX,

@@ -107,6 +107,7 @@ export function createChatSessionEventHandlers({
 				sessionId: data.sessionId,
 				status: data.status,
 				title: data.title,
+				waitingReason: data.waitingReason,
 			});
 			if (
 				(data.status === 'paused' || data.status === 'completed' || data.status === 'error') &&
@@ -145,6 +146,7 @@ export function createChatSessionEventHandlers({
 				sessionId,
 				status: 'completed',
 				title: event.payload.title,
+				waitingReason: null,
 			});
 			dispatchSession({
 				type: 'session/termination-shown',

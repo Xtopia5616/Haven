@@ -66,6 +66,9 @@ pub(crate) enum UiConfirmationAction {
 }
 
 pub(crate) struct UiConfirmationPending {
+    /// Canonical interaction lifecycle used by the renderer projection and
+    /// shared with agent/scheduled confirmations.
+    pub request: haven_agent::InteractionRequest,
     pub session_id: String,
     pub authorization_request: haven_tools::AuthorizationRequest,
     pub summary: String,
