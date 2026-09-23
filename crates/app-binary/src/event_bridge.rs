@@ -167,12 +167,14 @@ impl TauriEmitter {
                 step_number,
                 run_id,
                 message_id,
+                event_seq,
             } => serialize(AgentThoughtEvent {
                 session_id: session_id.clone(),
                 thought: thought.clone(),
                 step_number: *step_number,
                 run_id: *run_id,
                 message_id: message_id.clone(),
+                event_seq: *event_seq,
             }),
             AgentEvent::Action {
                 session_id,

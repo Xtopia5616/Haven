@@ -213,17 +213,17 @@ DTO 位于 `crates/app-binary/src/events.rs`；前端镜像分别位于
 | `interaction:requested` | `InteractionRequestedEvent { id, session_id, kind, status, prompt, options, tool_name, risk_level, summary, permission_key, invocation_step_id, action_index, tool_call_id, created_at, expires_at }` | 聊天页 | ask、confirm、scheduled confirm 共用 request id 和生命周期；confirm 的原始参数、receipt 不跨边界，renderer 只收到安全摘要，决策仍由后端校验；前端按 `id` 幂等覆盖并交给统一 `interactionStore`。 |
 | `hotkey:conflict` / `hotkey:rebind` | `HotkeyConflictEvent` / `HotkeyRebindEvent` | 根布局、设置页 | 仅报告绑定状态；不执行 renderer 传入的快捷键。 |
 | `llm:config_changed` | `()` | 设置页、模型页 | 无 payload；通知页面重新读取脱敏配置。 |
-| `agent:thought` | `AgentThoughtEvent` | 聊天页 | 按 `session_id + run_id + step_number` 归并；文本不得重复写入普通日志。 |
-| `agent:action` | `AgentActionEvent` | 聊天页 | `input` 是工具参数动态扩展点；其余执行身份固定，`silent` 由后端计算。 |
-| `agent:observation` | `AgentObservationEvent` | 聊天页 | 与 action 的 `step_id` / `tool_call_id` 关联；工具输出按后端门禁净化。 |
+| `agent:thought` | `AgentThoughtEvent` | 聊天页 | 按 `message_id` 归并；可选 `event_seq` 是已提交的 `session_events.sequence`，缺失表示没有 durable 行的 snap。文本不得重复写入普通日志。 |
+| `agent:action` | `AgentActionEvent` | 聊天页 | `input` 是工具参数动态扩展点；其余执行身份固定，`silent` 由后端计算。同一 `event_seq` 可以对应多个 `step_id`，前端按 `(event_seq, step_id)` 去重。 |
+| `agent:observation` | `AgentObservationEvent` | 聊天页 | 与 action 的 `step_id` / `tool_call_id` 关联；工具输出按后端门禁净化。去重键是 `(event_seq, step_id)`。 |
 | `agent:stream_stalled` | `AgentStreamStalledEvent` | 根布局、聊天页 | 状态提示可重复；不得携带 provider 原始响应。 |
-| `agent:thought_chunk` / `agent:reasoning_chunk` | `Agent*ChunkEvent` | 聊天页 | 通过 `seq` 排序，丢失 chunk 时由完整消息投影兜底。 |
+| `agent:thought_chunk` / `agent:reasoning_chunk` | `Agent*ChunkEvent` | 聊天页 | 只使用 chunk `seq`，不分配 durable `event_seq`。丢失 chunk 时由完整消息投影兜底。 |
 | `agent:stream_reset` | `AgentStreamResetEvent` | 聊天页 | 与 chunk 共用后端有序队列；先清空对应 live thought/reasoning，再接受新尝试；不回滚 durable transcript。 |
-| `agent:media_plan` | `AgentMediaPlanEvent { session_id, step_number, run_id, role, strategy, projections, notices }` | 聊天页媒体计划卡 | `role` 字段承载 `RequestKind` 字符串；按 `session_id + step_number + run_id + role` 归并；展示实际媒体表示和能力降级原因，不携带原始媒体 bytes。 |
-| `agent:web_search` | `AgentWebSearchEvent` | 聊天页 | `result` 是 provider 动态扩展点；错误和结果按阶段更新。 |
-| `agent:supplement` | `AgentSupplementEvent` | 聊天页 | 按 run/step 顺序消费；只发送补充上下文，不发送快照内部对象。 |
-| `agent:compaction` | `AgentCompactionEvent { summary, tokens_before, tokens_after, degraded, episode_id? }` | 聊天页 | 按事件顺序消费；`degraded=true` 表示摘要请求未完成、使用了 `[older context omitted]`，UI 必须提示较早内容已省略；不发送快照内部对象。 |
-| `agent:usage` | `AgentUsageEvent` | 用量面板、聊天页 | 固定 token/cost/cache/context 字段；`role` 字段承载 `RequestKind` 字符串；`call_kind=agent` 为 Agent 主循环，`call_kind=media` 为工具拥有的媒体推理，`call_kind=tool` 为其它工具内部 LLM 调用，后二者均不更新主循环累计统计；`cache_diagnostics` 仅为 provider 诊断扩展点；缓存率由每次调用的 accounting 合同计算，未知口径不得猜测。 |
+| `agent:media_plan` | `AgentMediaPlanEvent { session_id, step_number, run_id, role, strategy, projections, notices, event_seq? }` | 聊天页媒体计划卡 | `role` 字段承载 `RequestKind` 字符串。ingress 计划携带 `event_seq`；请求准备阶段的计划没有 durable 行，`event_seq` 为空。按 `session_id + step_number + run_id + role` 归并；不携带原始媒体 bytes。 |
+| `agent:web_search` | `AgentWebSearchEvent` | 聊天页 | `result` 是 provider 动态扩展点；错误和结果按阶段更新。不占用 durable `event_seq`。 |
+| `agent:supplement` | `AgentSupplementEvent` | 聊天页 | 按 `(event_seq, supplement_id)` 去重；只发送补充上下文，不发送快照内部对象。 |
+| `agent:compaction` | `AgentCompactionEvent { summary, tokens_before, tokens_after, degraded, episode_id?, event_seq? }` | 聊天页 | `event_seq` 对应该条压缩摘要的 durable sequence。`degraded=true` 表示摘要请求未完成、使用了 `[older context omitted]`，UI 必须提示较早内容已省略；不发送快照内部对象。 |
+| `agent:usage` | `AgentUsageEvent` | 用量面板、聊天页 | 不占用 durable `event_seq`，live 事件自带累计值。固定 token/cost/cache/context 字段；`role` 字段承载 `RequestKind` 字符串；`call_kind=agent` 为 Agent 主循环，`call_kind=media` 为工具拥有的媒体推理，`call_kind=tool` 为其它工具内部 LLM 调用，后二者均不更新主循环累计统计；`cache_diagnostics` 仅为 provider 诊断扩展点；缓存率由每次调用的 accounting 合同计算，未知口径不得猜测。 |
 | `agent:tool_output` | `AgentToolOutputEvent` | 聊天页 | UI-only 的有界输出通道；未知 channel 或畸形 payload 直接丢弃并记录。 |
 | `notification:show` | `AgentNotificationEvent` | 根布局 | 纯文本 toast/系统通知；不承载密钥、完整命令输出或原始 provider 错误。 |
 

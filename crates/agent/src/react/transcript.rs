@@ -9,8 +9,10 @@
 //! [`ReActEngine::apply_transcript`]
 //! (or the shared [`ReActEngine::project_chat_message`] helper it owns).
 //!
-//! `apply` first commits [`TranscriptRecord`] to `SessionEventStore`, then
-//! projects rows, emits the live transport event, and updates `canonical`.
+//! `apply` first commits [`TranscriptRecord`] to `SessionEventStore`. The
+//! committed row is then published by [`super::committed_ui::CommittedUiPublisher`]
+//! in sequence order. In-memory canonical updates happen after that publish, so
+//! a projection failure cannot drop the live UI event.
 //!
 //! Exceptions (documented, not parallel authorities):
 //! - **Ingress user seed**: `layer`/`ingress` may insert the user `messages`
@@ -22,13 +24,17 @@
 //!   them via `last_msg_at` without replaying a failed step.
 //! - **Terminal action-result**: no live loop left — history-only persist.
 
+use super::committed_ui::{
+    CommittedUi, StoredActionUi, StoredObservationUi, encode_transcript_payload,
+};
 use super::*;
 use crate::types::{Action, TranscriptRecord, canonical_for_snapshot_with_media_inputs};
 use haven_common::types::InjectSource;
 use haven_common::types::{CanonicalToolCall, MessageAttachment};
 use haven_memory::{
-    SessionEventInput, SessionStore, TranscriptActionStepProjection, TranscriptBatch,
-    TranscriptBatchResult, TranscriptMessageProjection, TranscriptThoughtStepProjection,
+    CURRENT_EVENT_VERSION, SessionEvent, SessionEventInput, SessionStore, TRANSCRIPT_EVENT_TYPE,
+    TranscriptActionStepProjection, TranscriptBatch, TranscriptBatchResult,
+    TranscriptMessageProjection, TranscriptThoughtStepProjection,
 };
 use haven_tools::{
     OperationIdempotency, ToolExecutionOutcome, ToolOperationScope, ToolResultEnvelope,
@@ -38,8 +44,6 @@ use serde_json::Value;
 struct TranscriptProjection {
     record: TranscriptRecord,
     persisted_media_record: Option<TranscriptRecord>,
-    event_sequence: Option<u64>,
-    media_event_sequence: Option<u64>,
 }
 
 /// The live transcript persistence boundary.  One writer builds the durable
@@ -296,6 +300,50 @@ fn media_record_for_inject(
     })
 }
 
+fn committed_ui_for(event: &TranscriptEvent) -> Option<CommittedUi> {
+    match event {
+        TranscriptEvent::ToolCall { action_cards, .. } if !action_cards.is_empty() => {
+            Some(CommittedUi::Actions {
+                cards: action_cards
+                    .iter()
+                    .map(|card| StoredActionUi {
+                        tool_name: card.tool_name.clone(),
+                        tool_input: card.tool_input.clone(),
+                        tool_call_id: card.tool_call_id.clone(),
+                        step_id: card.step_id.clone(),
+                        action_index: card.action_index,
+                        suppress_streamed_thought: card.suppress_streamed_thought,
+                    })
+                    .collect(),
+            })
+        }
+        TranscriptEvent::ToolResult {
+            observation_card: Some(card),
+            ..
+        } => Some(CommittedUi::Observation {
+            card: Box::new(StoredObservationUi {
+                tool_name: card.tool_name.clone(),
+                tool_call_id: card.tool_call_id.clone(),
+                step_id: card.step_id.clone(),
+                action_index: card.action_index,
+                silent: card.silent,
+                ask_options: card.ask_options.clone(),
+                outcome: card.outcome.as_str().to_owned(),
+                idempotency: card.idempotency.as_str().to_owned(),
+                operation_scope: card.operation_scope.as_str().to_owned(),
+                renderer: card.renderer.clone(),
+                result: card.result_envelope.clone(),
+            }),
+        }),
+        TranscriptEvent::UserInject { message_id, .. } => Some(CommittedUi::Supplement {
+            supplement_id: message_id
+                .clone()
+                .unwrap_or_else(|| haven_common::types::new_id("msg")),
+        }),
+        _ => None,
+    }
+}
+
 impl ReActEngine {
     async fn build_transcript_item(
         &self,
@@ -310,6 +358,11 @@ impl ReActEngine {
         let event = normalize_transcript_event(event)?;
         let record = event.to_record(ctx.step_num);
         let mut batch = self.build_transcript_batch(ctx, &event, &record).await?;
+        if let Some(ui) = committed_ui_for(&event)
+            && let Some(first) = batch.events.first_mut()
+        {
+            first.payload = encode_transcript_payload(&record, Some(&ui))?;
+        }
         let media_record = match &event {
             TranscriptEvent::UserInject { attachments, .. } => {
                 media_record_for_inject(ctx.step_num, attachments, self.media_strategy())
@@ -428,7 +481,7 @@ impl ReActEngine {
         Ok(batch)
     }
 
-    /// Project → emit → append record → project into canonical cache.
+    /// Commit the durable row, publish its sequenced UI cards, then project canonical state.
     ///
     /// All durable assistant/thought/ask/reasoning chat rows for the ReAct
     /// loop are written here (X12). See module docs for the few documented
@@ -459,18 +512,9 @@ impl ReActEngine {
             MetricsPhase::SqliteLockWait,
             std::time::Duration::from_millis(write_result.lock_wait_ms),
         );
-        let event_sequence = write_result
-            .events
-            .first()
-            .map(|event| u64::try_from(event.sequence))
-            .transpose()
-            .map_err(|_| anyhow::anyhow!("durable event sequence must be non-negative"))?;
-        let media_event_sequence = write_result
-            .events
-            .get(1)
-            .map(|event| u64::try_from(event.sequence))
-            .transpose()
-            .map_err(|_| anyhow::anyhow!("durable event sequence must be non-negative"))?;
+        self.committed_ui
+            .publish(&ctx.emitter, &write_result.events)
+            .await;
         let result = self
             .apply_transcript_projection(
                 ctx,
@@ -479,8 +523,6 @@ impl ReActEngine {
                 TranscriptProjection {
                     record,
                     persisted_media_record: media_record,
-                    event_sequence,
-                    media_event_sequence,
                 },
             )
             .await;
@@ -505,14 +547,13 @@ impl ReActEngine {
         let mut batch = TranscriptBatch::default();
         let mut projected = Vec::with_capacity(events.len());
         for event in events {
-            let event_offset = batch.events.len();
             let (event, record, media_record, item_batch) =
                 self.build_transcript_item(ctx, event).await?;
             batch.events.extend(item_batch.events);
             batch.messages.extend(item_batch.messages);
             batch.thought_steps.extend(item_batch.thought_steps);
             batch.action_steps.extend(item_batch.action_steps);
-            projected.push((event, record, media_record, event_offset));
+            projected.push((event, record, media_record));
         }
         let write_result = {
             let _timer = self.metrics.start(
@@ -529,22 +570,10 @@ impl ReActEngine {
             MetricsPhase::SqliteLockWait,
             std::time::Duration::from_millis(write_result.lock_wait_ms),
         );
-        for (event, record, media_record, event_offset) in projected {
-            let event_sequence = write_result
-                .events
-                .get(event_offset)
-                .map(|event| u64::try_from(event.sequence))
-                .transpose()
-                .map_err(|_| anyhow::anyhow!("durable event sequence must be non-negative"))?;
-            let media_event_sequence = media_record.as_ref().and_then(|_| {
-                write_result
-                    .events
-                    .get(event_offset + 1)
-                    .map(|event| u64::try_from(event.sequence))
-            });
-            let media_event_sequence = media_event_sequence
-                .transpose()
-                .map_err(|_| anyhow::anyhow!("durable event sequence must be non-negative"))?;
+        self.committed_ui
+            .publish(&ctx.emitter, &write_result.events)
+            .await;
+        for (event, record, media_record) in projected {
             let result = self
                 .apply_transcript_projection(
                     ctx,
@@ -553,8 +582,6 @@ impl ReActEngine {
                     TranscriptProjection {
                         record,
                         persisted_media_record: media_record,
-                        event_sequence,
-                        media_event_sequence,
                     },
                 )
                 .await;
@@ -576,8 +603,6 @@ impl ReActEngine {
         let TranscriptProjection {
             record,
             persisted_media_record,
-            event_sequence,
-            media_event_sequence,
         } = projection;
         let _timer = self.metrics.start(
             MetricsPhase::Projection,
@@ -586,13 +611,13 @@ impl ReActEngine {
             ctx.step_num,
         );
         match event {
-            TranscriptEvent::Thought { text, message_id } => {
-                EventDispatcher::emit_thought_from(
-                    &ctx.emitter,
+            TranscriptEvent::Thought { message_id, .. } => {
+                // The sequenced Thought UI event was already published from
+                // the committed row. This step write can still fail; resume
+                // repairs the materialized row from the durable event.
+                EventDispatcher::persist_thought_step(
                     &ctx.session_id,
-                    &text,
                     ctx.step_num,
-                    ctx.run_id,
                     &message_id,
                     &self.db,
                 )
@@ -608,25 +633,9 @@ impl ReActEngine {
                 reasoning,
                 web_search_calls,
                 thinking_blocks,
-                action_cards,
+                action_cards: _,
                 persist_text_id: _,
             } => {
-                for card in &action_cards {
-                    ctx.emitter
-                        .emit(crate::event::AgentEvent::Action {
-                            session_id: ctx.session_id.clone(),
-                            tool_name: card.tool_name.clone(),
-                            input: card.tool_input.clone(),
-                            step_number: ctx.step_num,
-                            run_id: ctx.run_id,
-                            tool_call_id: card.tool_call_id.clone(),
-                            step_id: card.step_id.clone(),
-                            action_index: card.action_index,
-                            suppress_streamed_thought: card.suppress_streamed_thought,
-                            event_seq: event_sequence,
-                        })
-                        .await;
-                }
                 state.push_event(record);
                 state.canonical.push(CanonicalMessage::assistant(
                     vec![ContentPart::text(text)],
@@ -643,44 +652,13 @@ impl ReActEngine {
             }
             TranscriptEvent::ToolResult {
                 canonical_observation,
-                history_observation,
+                history_observation: _,
                 tool_call_id,
                 action,
                 action_index: _,
                 step_id: _,
-                observation_card,
+                observation_card: _,
             } => {
-                if let Some(ref card) = observation_card {
-                    // Ask question text is the messages projection under the
-                    // shared step id (review card content authority).
-                    if card.tool_name == "ask" {
-                        let q = history_observation.trim();
-                        if !q.is_empty() {
-                            // The ask message row was committed with the
-                            // tool-result event above.
-                        }
-                    }
-                    ctx.emitter
-                        .emit(crate::event::AgentEvent::Observation {
-                            session_id: ctx.session_id.clone(),
-                            observation: history_observation.clone(),
-                            tool_name: card.tool_name.clone(),
-                            step_number: ctx.step_num,
-                            run_id: ctx.run_id,
-                            silent: card.silent,
-                            tool_call_id: card.tool_call_id.clone(),
-                            ask_options: card.ask_options.clone(),
-                            step_id: card.step_id.clone(),
-                            action_index: card.action_index,
-                            outcome: card.outcome.as_str().into(),
-                            idempotency: card.idempotency.as_str().into(),
-                            operation_scope: card.operation_scope.as_str().into(),
-                            renderer: card.renderer.clone(),
-                            result: card.result_envelope.clone(),
-                            event_seq: event_sequence,
-                        })
-                        .await;
-                }
                 state.push_event(record);
                 let is_final = action.is_final || action.tool_name == "final_answer";
                 if !is_final {
@@ -695,31 +673,11 @@ impl ReActEngine {
                 source,
                 text,
                 attachments,
-                message_id,
+                message_id: _,
             } => {
-                // Persist the thought step before notifying the UI. The
-                // transcript event was already committed above; if this
-                // materialized projection fails, resume repairs it from the
-                // durable event rather than losing the transcript.
-                // Notify the UI only after the durable projection succeeded.
-                // Always notify the UI so auto-wake from a background action is
-                // visible in-chat (not only a toast). ActionResult still skips
-                // the thought-step DB write — it is producer-labelled context,
-                // not a human steering/answer turn.
-                ctx.emitter
-                    .emit(crate::event::AgentEvent::Supplement {
-                        session_id: ctx.session_id.clone(),
-                        additional_context: text.clone(),
-                        step_number: ctx.step_num,
-                        run_id: ctx.run_id,
-                        message_id: message_id.clone(),
-                        supplement_id: message_id
-                            .clone()
-                            .unwrap_or_else(|| haven_common::types::new_id("msg")),
-                        inject_source: Some(source),
-                        event_seq: event_sequence,
-                    })
-                    .await;
+                // Supplement and any ingress MediaPlan were already published
+                // from the committed rows. Canonical updates stay here so a
+                // later projection failure cannot drop those live UI events.
                 state.push_event(record);
                 let strategy = self.media_strategy();
                 let media_was_persisted = persisted_media_record.is_some();
@@ -729,35 +687,32 @@ impl ReActEngine {
                 };
                 if let Some(media_record) = media_record {
                     if !media_was_persisted {
-                        self.append_transcript_record(
-                            &ctx.session_id,
-                            &media_record,
-                            ctx.run_id,
-                            ctx.step_num,
-                        )
-                        .await?;
-                    }
-                    if let TranscriptRecord::MediaPlan {
-                        projections,
-                        notices,
-                        ..
-                    } = &media_record
-                    {
-                        ctx.emitter
-                            .emit(crate::event::AgentEvent::MediaPlan {
+                        // The batch did not include this plan. Append it and
+                        // publish that sequence here so a test without the
+                        // store bridge still emits the card.
+                        let sequence = self
+                            .append_transcript_record(
+                                &ctx.session_id,
+                                &media_record,
+                                ctx.run_id,
+                                ctx.step_num,
+                            )
+                            .await?;
+                        if sequence > 0 {
+                            let committed = SessionEvent {
                                 session_id: ctx.session_id.clone(),
-                                step_number: ctx.step_num,
-                                run_id: ctx.run_id,
-                                // This ingress-side plan has no provider request
-                                // yet; use the session's default logical request
-                                // kind under the established `role` field.
-                                role: haven_common::config::RequestKind::Chat,
-                                strategy,
-                                projections: projections.clone(),
-                                notices: notices.clone(),
-                                event_seq: media_event_sequence,
-                            })
-                            .await;
+                                sequence,
+                                event_type: TRANSCRIPT_EVENT_TYPE.to_string(),
+                                event_version: CURRENT_EVENT_VERSION,
+                                payload: serde_json::to_string(&media_record)?,
+                                created_at: String::new(),
+                                run_id: Some(ctx.run_id),
+                                step_number: Some(ctx.step_num),
+                            };
+                            self.committed_ui
+                                .publish(&ctx.emitter, std::slice::from_ref(&committed))
+                                .await;
+                        }
                     }
                     state.push_event(media_record);
                 }
@@ -775,27 +730,15 @@ impl ReActEngine {
                 compacted,
                 media_inputs: _media_inputs,
                 summary,
-                tokens_before,
-                tokens_after,
+                tokens_before: _,
+                tokens_after: _,
                 episode_id,
-                degraded,
+                degraded: _,
             } => {
                 // Replace the log with the CompactSummary root so pre-compaction
                 // events (and embedded prior CompactSummaries) do not grow forever.
+                // The sequenced Compaction event was published from the committed row.
                 state.replace_with_compaction(record, compacted);
-                EventDispatcher::emit_compaction_from(
-                    &ctx.emitter,
-                    crate::event::CompactionEventData {
-                        session_id: &ctx.session_id,
-                        summary: &summary,
-                        tokens_before,
-                        tokens_after,
-                        episode_id: &episode_id,
-                        degraded,
-                        event_seq: event_sequence,
-                    },
-                )
-                .await;
                 self.persist_compaction_summary(&ctx.session_id, &summary, &episode_id)
                     .await;
             }
@@ -1422,6 +1365,143 @@ mod tests {
             msgs.iter()
                 .any(|m| m.id == step_id && m.content == "Pick one?" && m.role == "assistant"),
             "ask question must project under shared step id, got {msgs:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn thought_ui_is_published_when_step_projection_fails() {
+        let dir = std::env::temp_dir().join(format!(
+            "haven_transcript_thought_fail_{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let db = Arc::new(Database::open(&dir).unwrap());
+        let session = db.create_session("t").unwrap();
+        let message_id = haven_common::types::new_id("step");
+        db.create_thought_step(&session.id, 1, &message_id).unwrap();
+        let recorded = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let engine = test_engine(db);
+        let mut ctx = step_ctx(&session.id);
+        ctx.emitter = Arc::new(RecordingEmitter {
+            events: recorded.clone(),
+        });
+        let mut state = ReActState::new(Vec::new(), Vec::new(), std::collections::HashMap::new());
+        let error = engine
+            .apply_transcript(
+                &ctx,
+                TranscriptEvent::Thought {
+                    text: "keep".into(),
+                    message_id: message_id.clone(),
+                },
+                &mut state,
+            )
+            .await;
+        assert!(error.is_err(), "step collision must fail the projection");
+        let durable = engine
+            .event_store
+            .read_active_transcript(&session.id)
+            .unwrap();
+        assert_eq!(durable.len(), 1, "the thought row is already committed");
+        let sequence = durable[0].sequence as u64;
+        let events = recorded.lock().unwrap().clone();
+        assert_eq!(
+            events.len(),
+            1,
+            "projection failure must not drop the UI event"
+        );
+        assert!(
+            matches!(
+                &events[0],
+                crate::event::AgentEvent::Thought {
+                    thought,
+                    message_id: id,
+                    event_seq: Some(event_seq),
+                    ..
+                } if thought == "keep" && id == &message_id && *event_seq == sequence
+            ),
+            "expected the committed Thought sequence, got {events:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn bridge_and_apply_publish_one_action() {
+        let dir = std::env::temp_dir().join(format!(
+            "haven_transcript_bridge_action_{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let db = Arc::new(Database::open(&dir).unwrap());
+        let session = db.create_session("t").unwrap();
+        let recorded = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let emitter: Arc<dyn AgentEventEmitter> = Arc::new(RecordingEmitter {
+            events: recorded.clone(),
+        });
+        let engine = test_engine(db);
+        let dispatcher = Arc::new(EventDispatcher::new());
+        dispatcher.set_emitter(emitter.clone());
+        let rx = engine.event_store.subscribe();
+        engine.start_committed_ui_bridge(dispatcher, rx);
+        let ctx = StepCtx {
+            session_id: session.id.clone(),
+            step_num: 2,
+            run_id: 3,
+            emitter,
+        };
+        let step_id = haven_common::types::new_id("step");
+        let mut state = ReActState::new(Vec::new(), Vec::new(), std::collections::HashMap::new());
+        engine
+            .apply_transcript(
+                &ctx,
+                TranscriptEvent::ToolCall {
+                    text: String::new(),
+                    tool_calls: vec![CanonicalToolCall {
+                        id: "call-1".into(),
+                        name: "echo".into(),
+                        arguments: serde_json::json!({}),
+                    }],
+                    reasoning: None,
+                    web_search_calls: vec![],
+                    thinking_blocks: vec![],
+                    action_cards: vec![ActionCard {
+                        tool_name: "echo".into(),
+                        tool_input: serde_json::json!({}),
+                        tool_call_id: Some("call-1".into()),
+                        step_id: step_id.clone(),
+                        action_index: 0,
+                        suppress_streamed_thought: false,
+                        is_high_risk: false,
+                        silent: false,
+                    }],
+                    persist_text_id: None,
+                },
+                &mut state,
+            )
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        let events = recorded.lock().unwrap().clone();
+        let actions: Vec<_> = events
+            .iter()
+            .filter(|event| matches!(event, crate::event::AgentEvent::Action { .. }))
+            .collect();
+        assert_eq!(
+            actions.len(),
+            1,
+            "the store bridge and apply_transcript must publish one Action, got {events:?}"
+        );
+        let sequence = engine
+            .event_store
+            .read_active_transcript(&session.id)
+            .unwrap()[0]
+            .sequence as u64;
+        assert!(
+            matches!(
+                actions[0],
+                crate::event::AgentEvent::Action {
+                    step_id: id,
+                    event_seq: Some(event_seq),
+                    ..
+                } if id == &step_id && *event_seq == sequence
+            ),
+            "expected the committed Action sequence, got {actions:?}"
         );
     }
 }

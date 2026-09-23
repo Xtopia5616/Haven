@@ -306,4 +306,96 @@ describe('SessionReducer', () => {
 			}),
 		).toBe(reducer.getState());
 	});
+
+	it('keeps parallel cards that share one durable sequence', () => {
+		const base = {
+			sessionId: 'ses-parallel',
+			toolName: 'shell.run',
+			input: { command: 'echo ok' },
+			stepNumber: 1,
+			runId: 1,
+			toolCallId: 'call-1',
+			actionIndex: 0,
+			suppressStreamedThought: false,
+			silent: false,
+			eventSeq: 4,
+		};
+		const first = reduceSession(initialSessionState, {
+			type: 'agent/action',
+			payload: { ...base, stepId: 'step-a', actionIndex: 0, toolCallId: 'call-a' },
+		});
+		const second = reduceSession(first, {
+			type: 'agent/action',
+			payload: { ...base, stepId: 'step-b', actionIndex: 1, toolCallId: 'call-b' },
+		});
+		expect(second.messages?.['ses-parallel']?.map((message) => message.id)).toEqual([
+			'step-a',
+			'step-b',
+		]);
+		const replayA = reduceSession(second, {
+			type: 'agent/action',
+			payload: { ...base, stepId: 'step-a', actionIndex: 0, toolCallId: 'call-a' },
+		});
+		const replayB = reduceSession(replayA, {
+			type: 'agent/action',
+			payload: { ...base, stepId: 'step-b', actionIndex: 1, toolCallId: 'call-b' },
+		});
+		expect(replayA).toBe(second);
+		expect(replayB).toBe(replayA);
+
+		const thought = reduceSession(replayB, {
+			type: 'agent/thought',
+			payload: {
+				sessionId: 'ses-parallel',
+				thought: 'keep',
+				stepNumber: 2,
+				runId: 1,
+				messageId: 'step-thought',
+				eventSeq: 4,
+			},
+		});
+		const thoughtReplay = reduceSession(thought, {
+			type: 'agent/thought',
+			payload: {
+				sessionId: 'ses-parallel',
+				thought: 'changed',
+				stepNumber: 2,
+				runId: 1,
+				messageId: 'step-thought',
+				eventSeq: 4,
+			},
+		});
+		expect(thoughtReplay).toBe(thought);
+		expect(
+			thought.messages?.['ses-parallel']?.some((message) => message.content === 'keep'),
+		).toBe(true);
+
+		const unsequenced = reduceSession(thought, {
+			type: 'agent/thought',
+			payload: {
+				sessionId: 'ses-parallel',
+				thought: 'snap',
+				stepNumber: 3,
+				runId: 1,
+				messageId: 'step-snap',
+			},
+		});
+		const unsequencedAgain = reduceSession(unsequenced, {
+			type: 'agent/thought',
+			payload: {
+				sessionId: 'ses-parallel',
+				thought: 'snap-again',
+				stepNumber: 3,
+				runId: 1,
+				messageId: 'step-snap',
+			},
+		});
+		expect(unsequencedAgain).not.toBe(unsequenced);
+		expect(
+			unsequencedAgain.messages?.['ses-parallel']?.some(
+				(message) => message.content === 'snap-again',
+			),
+		).toBe(true);
+	});
+
 });

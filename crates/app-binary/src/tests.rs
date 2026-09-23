@@ -38,6 +38,7 @@ fn channel_maps_every_variant_to_expected_channel() {
                 step_number: 1,
                 run_id: 1,
                 message_id: "msg-1".into(),
+                event_seq: None,
             },
             "agent:thought",
         ),
@@ -293,6 +294,7 @@ fn thought_payload_uses_the_explicit_wire_dto() {
         step_number: 2,
         run_id: 7,
         message_id: "msg-1".into(),
+        event_seq: Some(11),
     };
     assert_eq!(
         TauriEmitter::payload(&event, None),
@@ -302,6 +304,7 @@ fn thought_payload_uses_the_explicit_wire_dto() {
             "step_number": 2,
             "run_id": 7,
             "message_id": "msg-1",
+            "event_seq": 11,
         })
     );
 }

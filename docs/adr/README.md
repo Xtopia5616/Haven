@@ -198,3 +198,4 @@
 - [0207：SessionStore 统一恢复边界与持久化 UI 序号](0207-session-store-replay-boundaries-and-durable-ui-sequences.md)
 - [0208：TurnEngine 产出 EffectBatch](0208-react-turn-effect-batch.md)
 - [0209：删除 ReAct snapshot 并收口 session 副作用](0209-remove-react-snapshot-and-session-effect-boundary.md)
+- [0210：提交成功后按 sequence 发布 durable UI 事件](0210-committed-ui-sequence-publisher.md)

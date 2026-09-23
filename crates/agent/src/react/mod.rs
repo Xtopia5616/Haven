@@ -21,6 +21,7 @@ use crate::event::{AgentEvent, AgentEventEmitter, EventDispatcher, UsagePayload}
 use crate::types::TranscriptRecord;
 use crate::types::{Action, media_inputs_from_events};
 
+mod committed_ui;
 mod context;
 mod effects;
 mod event_boundary;
@@ -129,7 +130,9 @@ pub(crate) fn media_plan_for_inputs(
 
 /// Publish a media plan while a provider request is being prepared.
 /// This is a request-time signal for both the initial turn and compaction
-/// retries. It is not a deferred turn-end effect.
+/// retries. It is not a deferred turn-end effect and it is not a committed
+/// `session_events` row, so `event_seq` stays `None`. The durable ingress
+/// plan is published by [`committed_ui::CommittedUiPublisher`].
 pub(super) async fn emit_media_plan(
     emitter: &Arc<dyn AgentEventEmitter>,
     session_id: &str,
@@ -351,6 +354,9 @@ pub struct ReActEngine {
     /// Fixed-size, in-process ReAct baseline metrics. Updates are atomic and
     /// deliberately separate from the durable session/event projection.
     metrics: Arc<ReActMetrics>,
+    /// Publishes UI cards from committed transcript rows. Shared with the
+    /// process-wide store subscription started from `AgentLayer`.
+    committed_ui: Arc<committed_ui::CommittedUiPublisher>,
 }
 
 /// Per-step context shared by the ReAct-loop helpers (context injection,
@@ -403,7 +409,25 @@ impl ReActEngine {
             hooks: default_hooks(),
             memory_worker: None,
             metrics,
+            committed_ui: Arc::new(committed_ui::CommittedUiPublisher::new()),
         }
+    }
+
+    /// Subscribe `rx` to publish committed transcript rows as UI events.
+    /// The caller must already be inside a Tokio runtime. A second call is
+    /// ignored so replacing the emitter does not start a second bridge.
+    pub(crate) fn start_committed_ui_bridge(
+        &self,
+        events: Arc<EventDispatcher>,
+        rx: tokio::sync::broadcast::Receiver<haven_memory::SessionEvent>,
+    ) {
+        if !self.committed_ui.try_mark_started() {
+            return;
+        }
+        let publisher = Arc::clone(&self.committed_ui);
+        tokio::spawn(async move {
+            publisher.run(rx, events).await;
+        });
     }
 
     /// Return a point-in-time diagnostic snapshot for local diagnostics and

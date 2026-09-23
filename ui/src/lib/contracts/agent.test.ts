@@ -173,4 +173,23 @@ describe('agent IPC contract', () => {
 
 		expect(event.payload.degraded).toBe(true);
 	});
+
+	it('maps the committed thought sequence', () => {
+		const event = mapAgentEvent({
+			event: 'agent:thought',
+			id: 7,
+			payload: {
+				session_id: 'ses-1',
+				thought: 'keep',
+				step_number: 2,
+				run_id: 4,
+				message_id: 'step-keep',
+				event_seq: 9,
+			},
+		});
+
+		expect(event.payload.messageId).toBe('step-keep');
+		expect(event.payload.eventSeq).toBe(9);
+	});
+
 });

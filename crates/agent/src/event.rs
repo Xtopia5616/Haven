@@ -30,6 +30,9 @@ pub enum AgentEvent {
         /// bubble id, so live streaming, snap and the DB copy share one id
         /// and merges need no content-based dedup.
         message_id: String,
+        /// Sequence of the committed `session_events` row. `None` is only for
+        /// callers that snap a thought without a durable transcript row.
+        event_seq: Option<u64>,
     },
     Action {
         session_id: String,
@@ -1058,11 +1061,34 @@ impl EventDispatcher {
             message_id,
             thought.len()
         );
-        // The step row shares the streamed bubble's id (the message row is
-        // persisted under the same id) and stores no text: the thought text
-        // lives exclusively in the `messages` table. Run on the blocking pool
-        // so WAL fsync cannot stall the async runtime (same contract as
-        // UserInject thought-step writes).
+        // The step row shares the streamed bubble id. Sequenced UI publication
+        // is separate; this helper remains for callers that snap without a
+        // committed transcript sequence.
+        Self::persist_thought_step(session_id, step_number, message_id, db).await?;
+        emitter
+            .emit(AgentEvent::Thought {
+                session_id: session_id.into(),
+                thought: thought.into(),
+                step_number,
+                run_id,
+                message_id: message_id.into(),
+                event_seq: None,
+            })
+            .await;
+        Ok(())
+    }
+
+    /// Persist the thought step row without publishing a UI event.
+    ///
+    /// The sequenced Thought event is published from the committed transcript
+    /// row. This write is the materialized `session_steps` projection and may
+    /// fail after that UI event has already been sent.
+    pub async fn persist_thought_step(
+        session_id: &str,
+        step_number: u32,
+        message_id: &str,
+        db: &Arc<Database>,
+    ) -> anyhow::Result<()> {
         let sid = session_id.to_string();
         let mid = message_id.to_string();
         let step = step_number;
@@ -1071,15 +1097,6 @@ impl EventDispatcher {
             Ok::<(), anyhow::Error>(())
         })
         .await?;
-        emitter
-            .emit(AgentEvent::Thought {
-                session_id: session_id.into(),
-                thought: thought.into(),
-                step_number,
-                run_id,
-                message_id: message_id.into(),
-            })
-            .await;
         Ok(())
     }
 
@@ -1650,6 +1667,7 @@ mod tests {
                 thought: "full authoritative text".into(),
                 step_number: 1,
                 run_id: 1,
+                event_seq: None,
             })
             .await;
         buffered
@@ -1705,6 +1723,7 @@ mod tests {
                 thought: "full authoritative text after stream".into(),
                 step_number: 1,
                 run_id: 1,
+                event_seq: None,
             })
             .await;
 

@@ -5,6 +5,7 @@ import type {
 	AgentObservationPayload,
 	AgentStreamResetPayload,
 	AgentSupplementPayload,
+	AgentThoughtPayload,
 	AgentWebSearchPayload,
 } from './contracts/agent.ts';
 import type { InteractionKind, InteractionRequest } from './contracts/app.ts';
@@ -88,7 +89,7 @@ export interface SessionTokenStats {
 }
 
 export interface SessionReplayState {
-	eventSeqBySession: Record<string, number[]>;
+	eventSeqBySession: Record<string, string[]>;
 	chunkSeqByMessage: Record<string, number>;
 	blockIdsBySession: Record<string, Record<string, StreamBlockIds>>;
 }
@@ -202,16 +203,7 @@ export type SessionAction =
 	| { type: 'session/interactions-cleared'; sessionId: string; kind?: InteractionKind }
 	| { type: 'session/interaction-resolved'; id: string; response?: unknown }
 	| { type: 'agent/chunks'; chunks: AgentChunkBatchItem[] }
-	| {
-			type: 'agent/thought';
-			payload: {
-				sessionId: string;
-				thought: string;
-				stepNumber: number;
-				runId: number;
-				messageId: string;
-			};
-	  }
+	| { type: 'agent/thought'; payload: AgentThoughtPayload }
 	| { type: 'agent/stream-reset'; payload: AgentStreamResetPayload }
 	| { type: 'agent/web-search'; payload: AgentWebSearchPayload }
 	| { type: 'agent/supplement'; payload: AgentSupplementPayload }
@@ -307,17 +299,19 @@ function registerBlock(
 	};
 }
 
-/** Return null for a duplicate event, otherwise advance the session replay set. */
+/** Return null for a duplicate durable card. Parallel actions share one sequence, so the key is eventSeq plus the card identity. A missing sequence is not durable and must not dedup. */
 function acceptEventSequence(
 	state: SessionReducerState,
 	sessionId: string,
 	eventSeq: number | undefined,
+	identity: string,
 ): SessionReducerState | null {
-	if (eventSeq == null || !Number.isFinite(eventSeq)) return state;
+	if (eventSeq == null || !Number.isFinite(eventSeq) || !identity) return state;
 	const replay = replayOf(state);
 	const previous = replay.eventSeqBySession[sessionId] || [];
-	if (previous.includes(eventSeq)) return null;
-	const seen = [...previous, eventSeq];
+	const key = `${eventSeq}:${identity}`;
+	if (previous.includes(key)) return null;
+	const seen = [...previous, key];
 	if (seen.length > EVENT_SEQ_HISTORY_LIMIT)
 		seen.splice(0, seen.length - EVENT_SEQ_HISTORY_LIMIT);
 	return {
@@ -1041,8 +1035,15 @@ export function reduceSession(
 
 		case 'agent/thought': {
 			const payload = action.payload;
-			const registered = registerBlock(
+			const accepted = acceptEventSequence(
 				state,
+				payload.sessionId,
+				payload.eventSeq,
+				payload.messageId,
+			);
+			if (!accepted) return state;
+			const registered = registerBlock(
+				accepted,
 				payload.sessionId,
 				payload.stepNumber,
 				payload.runId,
@@ -1138,13 +1139,14 @@ export function reduceSession(
 				state,
 				action.payload.sessionId,
 				action.payload.eventSeq,
+				action.payload.supplementId,
 			);
 			return accepted ? applySupplement(accepted, action.payload) : state;
 		}
 
 		case 'agent/action': {
 			const payload = action.payload;
-			const accepted = acceptEventSequence(state, payload.sessionId, payload.eventSeq);
+			const accepted = acceptEventSequence(state, payload.sessionId, payload.eventSeq, payload.stepId);
 			if (!accepted) return state;
 			const ids = blockIdsOf(accepted, payload.sessionId, payload.stepNumber, payload.runId);
 			return withMessages(accepted, payload.sessionId, (messages) => {
@@ -1173,7 +1175,7 @@ export function reduceSession(
 
 		case 'agent/observation': {
 			const payload = action.payload;
-			const accepted = acceptEventSequence(state, payload.sessionId, payload.eventSeq);
+			const accepted = acceptEventSequence(state, payload.sessionId, payload.eventSeq, payload.stepId);
 			if (!accepted) return state;
 			const ids = blockIdsOf(accepted, payload.sessionId, payload.stepNumber, payload.runId);
 			const updated = withMessages(accepted, payload.sessionId, (messages) => {

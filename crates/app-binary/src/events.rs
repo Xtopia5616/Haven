@@ -355,6 +355,8 @@ pub(crate) struct AgentThoughtEvent {
     pub step_number: u32,
     pub run_id: u64,
     pub message_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub event_seq: Option<u64>,
 }
 
 #[derive(Clone, Serialize)]

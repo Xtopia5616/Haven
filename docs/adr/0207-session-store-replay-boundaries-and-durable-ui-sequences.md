@@ -26,7 +26,7 @@ Transcript 写入已经由 `SessionStore` 在 SQLite 事务内完成，但 UI �
   广播事件。Agent 不再直接解析 branch payload 或调用 projection truncate。
 - Transcript 投影只有在事务提交成功后才构造 UI 事件；Action、Observation、
   Supplement、MediaPlan、Compaction 携带对应 `session_events.sequence`。Tauri
-  不再生成进程级 durable event sequence，前端以该序号去重并关联恢复事件。
+  不再生成进程级 durable event sequence，前端以该序号去重并关联恢复事件。发布时序由 ADR 0210 收紧：这些事件在提交成功后由 `CommittedUiPublisher` 从已提交行发布，而不是等可失败的投影完成后再发。Thought 同样携带 `event_seq`。并行工具卡不能只按序号去重。
 - `event_cursor`、`event_sequence`、`last_msg_at` 和 `message_ingress_seq` 仍
   是独立时钟；本次改动只集中读取和传递边界，不允许互相推导。
 

@@ -28,6 +28,7 @@ export interface AgentThoughtPayload {
 	stepNumber: number;
 	runId: number;
 	messageId: string;
+	eventSeq?: number;
 }
 
 export interface AgentActionPayload {
@@ -215,6 +216,7 @@ interface AgentThoughtWirePayload {
 	step_number: number;
 	run_id: number;
 	message_id: string;
+	event_seq?: number;
 }
 
 interface AgentActionWirePayload {
@@ -375,6 +377,7 @@ export function mapAgentEvent<K extends AgentEventName>(
 				stepNumber: payload.step_number,
 				runId: payload.run_id,
 				messageId: payload.message_id,
+				...(payload.event_seq !== undefined ? { eventSeq: payload.event_seq } : {}),
 			} } as unknown as TauriEvent<AgentEventPayloadMap[K]>;
 		}
 		case 'agent:action': {

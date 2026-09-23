@@ -112,9 +112,10 @@ impl AgentLayer {
         }
     }
 
-    /// Subscribe to the same durable event source used by resume and
-    /// rollback. Consumers should replay from their last sequence before
-    /// listening; a lagged receiver must replay again.
+    /// Subscribe to committed session events. The production consumer is the
+    /// committed UI bridge started from [`Self::set_emitter`]: after each
+    /// successful commit it publishes transcript UI events by sequence.
+    /// A lagged receiver must replay again.
     pub fn subscribe_session_events(
         &self,
     ) -> tokio::sync::broadcast::Receiver<haven_memory::SessionEvent> {
@@ -285,6 +286,15 @@ impl AgentLayer {
 
     pub fn set_emitter(&self, emitter: Arc<dyn AgentEventEmitter>) {
         self.events.set_emitter(emitter);
+        // Sync tests install an emitter before a runtime exists. The bridge
+        // only needs to be running before live commits, which happens on the
+        // app runtime when the bus is installed.
+        if tokio::runtime::Handle::try_current().is_err() {
+            return;
+        }
+        let rx = self.subscribe_session_events();
+        self.react_engine
+            .start_committed_ui_bridge(self.events.clone(), rx);
     }
 
     /// Install an `EventBus` as the active emitter and return it so callers
