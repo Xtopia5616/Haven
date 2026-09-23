@@ -690,13 +690,7 @@ impl LlmRouter {
                         client.transcribe(wav_data).await
                     })
                     .await;
-                    match &result {
-                        Ok(_) => self.record_success(&model_id).await,
-                        Err(error) => {
-                            self.record_failure(&model_id).await;
-                            self.record_rate_limit_result(&model_id, error).await;
-                        }
-                    }
+                    self.record_request_outcome(&model_id, &result).await;
                     result
                 })
                 .await
@@ -757,6 +751,19 @@ impl LlmRouter {
             .record_failure();
     }
 
+    /// Project one completed router request onto model health and rate-limit
+    /// state. Callers invoke this at the same point they receive the logical
+    /// request result, before returning it to their caller.
+    async fn record_request_outcome<T>(&self, model_id: &str, result: &Result<T, LlmError>) {
+        match result {
+            Ok(_) => self.record_success(model_id).await,
+            Err(error) => {
+                self.record_failure(model_id).await;
+                self.record_rate_limit_result(model_id, error).await;
+            }
+        }
+    }
+
     // §2.12: apply total timeout wrapper
     async fn with_total_timeout<F, Fut>(
         policy: RequestPolicy,
@@ -797,13 +804,7 @@ impl LlmRouter {
             .await
         };
 
-        match &result {
-            Ok(_) => self.record_success(&model_id).await,
-            Err(error) => {
-                self.record_failure(&model_id).await;
-                self.record_rate_limit_result(&model_id, error).await;
-            }
-        }
+        self.record_request_outcome(&model_id, &result).await;
         result
     }
 
@@ -926,13 +927,7 @@ impl LlmRouter {
             execute_with_timeout(policy.total_timeout_secs, "embedding", || async {
                 let result =
                     execute_with_retry(policy.retry, None, || client.embed(input.clone())).await;
-                match &result {
-                    Ok(_) => self.record_success(&model_id).await,
-                    Err(error) => {
-                        self.record_failure(&model_id).await;
-                        self.record_rate_limit_result(&model_id, error).await;
-                    }
-                }
+                self.record_request_outcome(&model_id, &result).await;
                 result
             })
             .await
@@ -981,13 +976,7 @@ impl LlmRouter {
                     candidate.chat_stream(messages.clone())
                 })
                 .await;
-                match &result {
-                    Ok(_) => self.record_success(&model_id).await,
-                    Err(error) => {
-                        self.record_failure(&model_id).await;
-                        self.record_rate_limit_result(&model_id, error).await;
-                    }
-                }
+                self.record_request_outcome(&model_id, &result).await;
                 result
             },
         )
@@ -1259,13 +1248,7 @@ impl LlmRouter {
 
             execute_with_timeout(policy.total_timeout_secs, "health check", || async {
                 let result = candidate.health_check().await;
-                match &result {
-                    Ok(()) => self.record_success(&model_id).await,
-                    Err(error) => {
-                        self.record_failure(&model_id).await;
-                        self.record_rate_limit_result(&model_id, error).await;
-                    }
-                }
+                self.record_request_outcome(&model_id, &result).await;
                 result
             })
             .await
@@ -1433,6 +1416,38 @@ mod tests {
             source: None,
             id: None,
         }
+    }
+
+    #[tokio::test]
+    async fn request_outcome_projection_preserves_health_and_cooldown_mapping() {
+        let router = LlmRouter::new(RouterConfig::default());
+        let model_id = "outcome-projection-test";
+
+        let failure: Result<(), LlmError> = Err(LlmError::Unknown("provider failed".into()));
+        router.record_request_outcome(model_id, &failure).await;
+        assert_eq!(router.health.read().await[model_id].consecutive_failures, 1);
+        assert!(
+            router
+                .rate_limit_deadline_for_test(model_id)
+                .await
+                .is_none()
+        );
+
+        let success: Result<(), LlmError> = Ok(());
+        router.record_request_outcome(model_id, &success).await;
+        assert_eq!(router.health.read().await[model_id].consecutive_failures, 0);
+
+        let rate_limit: Result<(), LlmError> = Err(LlmError::RateLimit {
+            retry_after: Some(Duration::from_secs(7)),
+        });
+        let started_at = Instant::now();
+        router.record_request_outcome(model_id, &rate_limit).await;
+        let deadline = router
+            .rate_limit_deadline_for_test(model_id)
+            .await
+            .expect("rate-limited outcomes establish a model cooldown");
+        assert!(deadline >= started_at + Duration::from_secs(6));
+        assert_eq!(router.health.read().await[model_id].consecutive_failures, 1);
     }
 
     #[test]
