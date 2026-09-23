@@ -1,8 +1,10 @@
 use crate::app_state::AppState;
 use crate::commands::log_err;
 use crate::commands::rebuild_router;
+use crate::config_runtime::{RuntimeConfigApplyPlan, RuntimeConfigTarget};
 use haven_common::config::{
-    AppConfig, LlmConfig, ModelConfig, ProviderConfig, RequestKind, provider_config_wire_style,
+    AppConfig, ConfigChanged, LlmConfig, ModelConfig, ProviderConfig, RequestKind,
+    provider_config_wire_style,
 };
 use haven_llm::ModelInfo;
 use haven_llm::ModelRegistry;
@@ -28,6 +30,12 @@ fn model_slot<'a>(
 ) -> Option<&'a mut ModelConfig> {
     let id = model_id_for_selector(cfg, model_id_or_request_kind)?;
     cfg.model_mut(&id)
+}
+
+fn model_change_requires_router(change: Option<&ConfigChanged>) -> bool {
+    change.is_some_and(|change| {
+        RuntimeConfigApplyPlan::from_change(change).contains(RuntimeConfigTarget::LlmRouter)
+    })
 }
 
 /// Normalize an endpoint URL for comparison: strip the trailing slash and
@@ -455,7 +463,7 @@ async fn update_model_field(
             mutate(slot).map_err(anyhow::Error::msg)
         })
         .map_err(|e| log_err(ctx, e))?;
-    if update.change.is_some() {
+    if model_change_requires_router(update.change.as_ref()) {
         rebuild_router(state, &update.snapshot, ctx).await?;
     }
     Ok(())
@@ -584,7 +592,8 @@ pub async fn set_web_search(
 mod tests {
     use super::*;
     use haven_common::config::{
-        AppConfig, ModelConfig, ProviderConfig, RequestKind, RequestPolicy,
+        AppConfig, ConfigDomain, ConfigLoader, ConfigService, ModelConfig, ProviderConfig,
+        RequestKind, RequestPolicy,
     };
 
     fn provider(name: &str, key: &str, style: Option<&str>) -> ProviderConfig {
@@ -604,6 +613,40 @@ mod tests {
         let mut cfg = AppConfig::default();
         cfg.llm.providers = providers;
         cfg
+    }
+
+    #[test]
+    fn model_config_edit_plan_selects_router_and_no_op_skips_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let loader = ConfigLoader::load_from(&dir.path().join("config.toml")).unwrap();
+        let service = ConfigService::new(loader);
+
+        let update = service
+            .edit(|config| {
+                config.llm.set_model(
+                    "default_model",
+                    ModelConfig {
+                        provider: "provider".into(),
+                        model: "model-v2".into(),
+                        ..Default::default()
+                    },
+                );
+                Ok(())
+            })
+            .unwrap();
+        let change = update.change.unwrap();
+
+        assert_eq!(change.domains, vec![ConfigDomain::Llm]);
+        assert!(model_change_requires_router(Some(&change)));
+        assert!(!model_change_requires_router(None));
+        assert!(!model_change_requires_router(Some(&ConfigChanged {
+            version: change.version + 1,
+            domains: vec![ConfigDomain::Notification],
+        })));
+
+        let unchanged = service.edit(|_| Ok(())).unwrap();
+        assert!(unchanged.change.is_none());
+        assert!(!model_change_requires_router(unchanged.change.as_ref()));
     }
 
     #[test]

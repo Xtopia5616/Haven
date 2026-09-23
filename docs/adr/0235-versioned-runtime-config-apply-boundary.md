@@ -19,6 +19,7 @@ Router 和媒体客户端。这样会让一次应用混用不同版本，并且�
 5. 这只是 settings/model 的窄边界，不宣称 Agent 与 Tools 的跨容器原子发布，也不自动覆盖 admin/MCP/Skills/logging 的其他写入入口。
 6. `update_settings` 在同一次 `ConfigService::edit` 中读取旧 hotkey 并调用 `AppConfig::apply_settings`。该 edit 返回的旧 hotkey、snapshot 和 change 共同构成这一轮运行时应用上下文；命令不再在 edit 前单独读取完整 snapshot，也不复制 `security.permissions` 到表单对象。permissions、`encrypt_sensitive` 和 Settings 不管理的配置段由 `apply_settings` 在 live config 上保护。
 7. edit 无变化时不返回运行时应用上下文，命令立即成功返回，不触发 runtime apply。旧 hotkey 因此来自同一把配置锁下、紧邻 Settings 合并之前的 live config。
+8. `update_model_field` 与 settings 共用 `RuntimeConfigApplyPlan` 的目标映射；Router 只在 plan 包含 `LlmRouter` 时重建。模型命令仅编辑 `LlmConfig`，其持久化 change 映射为 `ConfigDomain::Llm` → `LlmRouter`；no-op 仍跳过重建。两入口继续共用 `ApplicationRuntime::config_apply_gate`。
 
 ### Settings edit 的失败语义与范围
 
@@ -34,8 +35,7 @@ Router 和媒体客户端。这样会让一次应用混用不同版本，并且�
 
 ## 影响与验证
 
-配置格式、数据库、IPC、provider wire 和持久化先行语义不变，无需重置。新增 coordinator helper、应用锁、同 snapshot
-准备和失败/并发测试；敏感配置只进入 sanitized error，不进入测试日志。
+配置格式、数据库、IPC、provider wire 和持久化先行语义不变，无需重置。settings/model 两条入口共用 apply gate，Router 目标由 typed plan 决定；配置提交、准备、发布以及后续副作用顺序不变。模型路径增加 change domain 到 Router target 的选择测试；敏感配置只进入 sanitized error，不进入测试日志。
 
 验证：`cargo fmt --all -- --check`、`cargo test --locked -p haven-app-binary`、
 `cargo clippy --workspace --locked -- -D warnings`。
