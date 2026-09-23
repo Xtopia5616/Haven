@@ -772,12 +772,7 @@ impl ReActEngine {
             })
             .unwrap_or(0);
         let plan = ToolBatchPlan::from_confirm_requests(&pending);
-        let catalog = Arc::new(
-            self.executor
-                .get_tools()
-                .tool_catalog_snapshot(session_id)
-                .await,
-        );
+        let catalog = self.tool_catalog.catalog_snapshot(session_id).await;
         let proj_ctx = StepCtx {
             session_id: session_id.to_string(),
             step_num,

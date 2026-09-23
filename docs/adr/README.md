@@ -212,3 +212,4 @@
 - [0221：普通与工具 chat 固定 RequestPolicy 快照](0221-chat-request-policy-snapshot.md)
 - [0222：Token estimate 有界进程内缓存归属](0222-token-estimate-sidecar-boundary.md)
 - [0223：Agent usage runtime 脱离 SessionActor mailbox](0223-usage-runtime-boundary.md)
+- [0224：Agent ToolCatalogPort 单一读取边界](0224-tool-catalog-port.md)

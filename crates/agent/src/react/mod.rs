@@ -41,6 +41,7 @@ mod tool_batch;
 mod tool_batch_execute;
 mod tool_batch_plan;
 mod tool_batch_policy;
+mod tool_ports;
 mod transcript;
 mod turn;
 mod turn_end;
@@ -58,6 +59,7 @@ pub use metrics::{MetricsSnapshot, UiMetricsSnapshot};
 pub(crate) use request_context::RequestContext;
 use sidecars::{ContextWindowCache, TokenEstimateCache};
 pub(crate) use state::{ReActState, RetryNudge};
+use tool_ports::{ToolCatalogPort, ToolsManagerToolCatalogAdapter};
 use transcript::{ObservationCard, TranscriptEvent};
 use usage::{UsageRuntime, UsageUpdate};
 
@@ -330,6 +332,8 @@ impl Drop for RunMsgIdGuard<'_> {
 pub struct ReActEngine {
     router: Arc<RwLock<Arc<LlmRouter>>>,
     executor: Arc<SessionSupervisor>,
+    /// Agent-owned read boundary for immutable per-session tool catalogs.
+    tool_catalog: Arc<dyn ToolCatalogPort>,
     db: Arc<Database>,
     /// Process-local streamed message identity, shared by all engine callers.
     identity_map: IdentityMap,
@@ -402,11 +406,13 @@ impl ReActEngine {
     ) -> Self {
         let metrics = Arc::new(ReActMetrics::new());
         let context_source = ContextSource::new(executor.clone(), db.clone(), metrics.clone());
+        let tool_catalog = Arc::new(ToolsManagerToolCatalogAdapter::new(executor.get_tools()));
         let event_store = executor.session_store();
         let usage_runtime = UsageRuntime::new(db.clone(), event_store.clone());
         Self {
             router: Arc::new(RwLock::new(router)),
             executor,
+            tool_catalog,
             db,
             identity_map: IdentityMap::default(),
             event_store,
@@ -553,12 +559,7 @@ impl ReActEngine {
         &self,
         session_id: &str,
     ) -> Arc<haven_tools::ToolCatalogSnapshot> {
-        Arc::new(
-            self.executor
-                .get_tools()
-                .tool_catalog_snapshot(session_id)
-                .await,
-        )
+        self.tool_catalog.catalog_snapshot(session_id).await
     }
 
     /// Validate every non-final tool call without altering its arguments.
@@ -573,11 +574,7 @@ impl ReActEngine {
         session_id: &str,
         actions: &[Action],
     ) -> Vec<ToolInputValidationFailure> {
-        let catalog = self
-            .executor
-            .get_tools()
-            .tool_catalog_snapshot(session_id)
-            .await;
+        let catalog = self.tool_catalog.catalog_snapshot(session_id).await;
         self.validate_tool_inputs_from_catalog(&catalog, actions)
     }
 
