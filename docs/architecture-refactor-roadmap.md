@@ -58,6 +58,7 @@
 - `40563f9`：删除聊天页重复的 active-session 错误清理 effect，错误迁移统一归 reducer（UI 706 项测试）。
 - `10b72fc`：后台 action 终态写入改为 first-wins CAS，completion outbox 只记录胜出事务；完整 Job 生命周期合并仍延期（ADR 0236）。
 - `9b73c5e`：定时任务授权请求与 live authorization engine 调用收口到 SessionSupervisor 窄方法，确认/receipt/execute_gated 顺序不变（ADR 0237）。
+- `a2ddd11`：resume 的 ingress-cursor-after 与 unanchored-user-window 查询归属 SessionStore，保持两个恢复边界分离（ADR 0238）。
 
 当前阶段判断：阶段 1 的 mailbox/运行态收口已基本完成；阶段 2 已收口 rollback boundary 失败语义，但 resume ingress 与全局恢复仍待继续验证；阶段 3 仍需继续缩小 raw Database；阶段 4 已完成目录/观察/资产租约读取边界，执行/授权必须作为安全边界继续审查；阶段 5 已完成 settings/model 的 snapshot prepare/apply 切片但尚未成为完整协调器；阶段 6 已完成 `CompleteRequest` 与唯一 `complete` 入口首切片，stream/embed/health request object 和 executor 拆分仍待实施；阶段 8 已完成 Action DTO 漂移检查，其他 IPC/UI 编排仍待收口；阶段 7、9 尚未完成。
 
