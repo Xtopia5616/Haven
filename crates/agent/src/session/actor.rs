@@ -995,11 +995,24 @@ pub(crate) struct SessionState {
 #[derive(Default)]
 struct SessionRuntimeState {
     run_budget: Option<RunBudget>,
-    react_state: Option<ReActState>,
     stream_identity: IdentityMap,
     usage: UsageTracker,
     token_estimates: TokenEstimateCache,
     messaging: SessionMessagingState,
+}
+
+type ReactLoopFuture = Pin<Box<dyn Future<Output = anyhow::Result<ReactRunOutput>> + Send>>;
+
+/// The active-loop slot owns its future and reply together. Its presence also
+/// represents the per-run claim; after completion, `Claimed` keeps duplicate
+/// starts closed until the surrounding actor run releases that claim.
+enum ActiveReactRun {
+    Running {
+        future: ReactLoopFuture,
+        reply: oneshot::Sender<anyhow::Result<ReactRunOutput>>,
+        claimed: bool,
+    },
+    Claimed,
 }
 
 /// Replay only the interaction domain events needed to initialize a fresh
@@ -1127,21 +1140,14 @@ pub(crate) fn spawn(
             runtime: SessionRuntimeState::default(),
         };
         type ActiveRun = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>>;
-        type ActiveReactLoop =
-            Pin<Box<dyn Future<Output = (ReActState, anyhow::Result<LoopExit>)> + Send>>;
         let mut active_run: Option<ActiveRun> = None;
         let mut active_run_reply: Option<oneshot::Sender<anyhow::Result<()>>> = None;
-        let mut active_react_loop: Option<ActiveReactLoop> = None;
-        let mut active_react_reply: Option<oneshot::Sender<anyhow::Result<ReactRunOutput>>> = None;
-        // Keep the ReAct claim until the surrounding run releases the actor's
-        // running bit. A completed loop can otherwise leave a window where a
-        // second direct resume starts another loop in the same run.
-        let mut react_run_claimed = false;
+        let mut active_react_run: Option<ActiveReactRun> = None;
         loop {
             enum Wake {
                 Command(Option<ActorCommand>),
                 Run(anyhow::Result<()>),
-                ReactLoop((ReActState, anyhow::Result<LoopExit>)),
+                ReactLoop(anyhow::Result<ReactRunOutput>),
             }
             let wake = tokio::select! {
                 biased;
@@ -1153,9 +1159,10 @@ pub(crate) fn spawn(
                     }
                 } => Wake::Run(result),
                 result = async {
-                    match active_react_loop.as_mut() {
-                        Some(run) => run.as_mut().await,
+                    match active_react_run.as_mut() {
+                        Some(ActiveReactRun::Running { future, .. }) => future.as_mut().await,
                         None => std::future::pending().await,
+                        Some(ActiveReactRun::Claimed) => std::future::pending().await,
                     }
                 } => Wake::ReactLoop(result),
             };
@@ -1166,7 +1173,7 @@ pub(crate) fn spawn(
                         let _ =
                             reply.send(Err(anyhow::anyhow!("session actor stopped during run")));
                     }
-                    if let Some(reply) = active_react_reply.take() {
+                    if let Some(ActiveReactRun::Running { reply, .. }) = active_react_run.take() {
                         let _ = reply.send(Err(anyhow::anyhow!(
                             "session actor stopped during ReAct loop"
                         )));
@@ -1180,13 +1187,16 @@ pub(crate) fn spawn(
                     }
                     continue;
                 }
-                Wake::ReactLoop((react_state, result)) => {
-                    active_react_loop = None;
-                    let events = react_state.events.clone();
-                    state.runtime.react_state = Some(react_state);
-                    if let Some(reply) = active_react_reply.take() {
-                        let _ = reply.send(result.map(|exit| ReactRunOutput { exit, events }));
+                Wake::ReactLoop(result) => {
+                    let Some(ActiveReactRun::Running { reply, claimed, .. }) =
+                        active_react_run.take()
+                    else {
+                        unreachable!("only a running ReAct loop can complete")
+                    };
+                    if claimed {
+                        active_react_run = Some(ActiveReactRun::Claimed);
                     }
+                    let _ = reply.send(result);
                     continue;
                 }
             };
@@ -1328,19 +1338,16 @@ pub(crate) fn spawn(
                     input,
                     reply,
                 } => {
-                    if !state.running || react_run_claimed || active_react_loop.is_some() {
+                    if !state.running || active_react_run.is_some() {
                         let _ = reply.send(Err(anyhow::anyhow!(
                             "session actor '{}' cannot start another ReAct loop",
                             state.info.id
                         )));
                         continue;
                     }
-                    react_run_claimed = true;
                     let mut react_state =
                         ReActState::new(replay.events, replay.canonical, replay.branch_points);
-                    state.runtime.react_state = Some(react_state);
-                    react_state = state.runtime.react_state.take().expect("just installed");
-                    active_react_loop = Some(Box::pin(async move {
+                    let future: ReactLoopFuture = Box::pin(async move {
                         let result =
                             AssertUnwindSafe(engine.run_react_loop(input, &mut react_state))
                                 .catch_unwind()
@@ -1352,9 +1359,16 @@ pub(crate) fn spawn(
                                     )
                                 })
                                 .and_then(std::convert::identity);
-                        (react_state, result)
-                    }));
-                    active_react_reply = Some(reply);
+                        result.map(|exit| ReactRunOutput {
+                            exit,
+                            events: react_state.events.clone(),
+                        })
+                    });
+                    active_react_run = Some(ActiveReactRun::Running {
+                        future,
+                        reply,
+                        claimed: true,
+                    });
                 }
                 ActorCommand::Snapshot { reply } => {
                     let _ = reply.send(state.info.clone());
@@ -1398,7 +1412,11 @@ pub(crate) fn spawn(
                 }
                 ActorCommand::FinishRun { reply } => {
                     state.running = false;
-                    react_run_claimed = false;
+                    match active_react_run.as_mut() {
+                        Some(ActiveReactRun::Running { claimed, .. }) => *claimed = false,
+                        Some(ActiveReactRun::Claimed) => active_react_run = None,
+                        None => {}
+                    }
                     let _ = run_state.send(false);
                     let _ = reply.send(RunFinished {
                         pending: state.info.status == SessionStatus::Pending,
@@ -1407,7 +1425,11 @@ pub(crate) fn spawn(
                 }
                 ActorCommand::ReleaseRun => {
                     state.running = false;
-                    react_run_claimed = false;
+                    match active_react_run.as_mut() {
+                        Some(ActiveReactRun::Running { claimed, .. }) => *claimed = false,
+                        Some(ActiveReactRun::Claimed) => active_react_run = None,
+                        None => {}
+                    }
                     let _ = run_state.send(false);
                 }
                 ActorCommand::IsRunning { reply } => {
@@ -2404,6 +2426,120 @@ mod queue_tests {
             .expect("run handler should complete");
         drop(actor);
         tokio::task::yield_now().await;
+    }
+
+    #[tokio::test]
+    async fn completed_react_loop_returns_events_and_next_run_can_start() {
+        struct NoopEmitter;
+
+        #[async_trait::async_trait]
+        impl crate::event::AgentEventEmitter for NoopEmitter {
+            async fn emit(&self, _event: crate::event::AgentEvent) {}
+        }
+
+        let directory = tempfile::tempdir().expect("temporary database directory");
+        let db = Arc::new(
+            Database::open(&directory.path().join("actor-react-loop.db"))
+                .expect("temporary database"),
+        );
+        let session = db.create_session("actor ReAct loop").expect("session");
+        db.update_session_status(&session.id, SessionStatus::Paused)
+            .expect("paused session status");
+
+        let executor = Arc::new(crate::session::SessionSupervisor::new(
+            db.clone(),
+            Arc::new(haven_tools::ToolsManager::new()),
+            1,
+        ));
+        executor
+            .ensure_session_loaded(&session.id)
+            .await
+            .expect("load actor");
+        let actor = executor
+            .actor_for(&session.id)
+            .await
+            .expect("session actor");
+        let engine = Arc::new(crate::react::ReActEngine::new(
+            Arc::new(haven_llm::LlmRouter::new(
+                haven_common::config::RouterConfig::default(),
+            )),
+            executor,
+            db.clone(),
+            1,
+            haven_common::config::ContextLimitsConfig::default(),
+        ));
+        let events = vec![crate::types::TranscriptRecord::Thought {
+            step_number: 1,
+            text: "replayed thought".into(),
+            message_id: "step-actor-test".into(),
+        }];
+        engine
+            .seed_transcript_events(&session.id, &events, 1)
+            .await
+            .expect("seed durable transcript");
+
+        let session_id = session.id.clone();
+        let run_loop = |run_id| {
+            let actor = actor.clone();
+            let engine = engine.clone();
+            let events = events.clone();
+            let session_id = session_id.clone();
+            async move {
+                actor
+                    .run_react_loop(
+                        engine,
+                        RunReplay {
+                            events,
+                            canonical: Vec::new(),
+                            branch_points: HashMap::new(),
+                        },
+                        RunInput {
+                            session_id,
+                            start_step: 1,
+                            emitter: Arc::new(NoopEmitter),
+                            run_id,
+                        },
+                    )
+                    .await
+            }
+        };
+
+        assert!(actor.begin_direct_run().await);
+        let first = run_loop(1).await.expect("first ReAct loop");
+        assert_eq!(
+            first.exit,
+            LoopExit::Paused {
+                reason: crate::react::PauseReason::External,
+            }
+        );
+        assert!(matches!(
+            first.events.as_slice(),
+            [crate::types::TranscriptRecord::Thought { text, .. }]
+                if text == "replayed thought"
+        ));
+
+        let duplicate = run_loop(1).await.err().expect("same run remains claimed");
+        assert!(
+            duplicate
+                .to_string()
+                .contains("cannot start another ReAct loop")
+        );
+
+        actor.finish_run().await.expect("finish first run");
+        assert!(actor.begin_direct_run().await);
+        let second = run_loop(2).await.expect("next ReAct loop");
+        assert_eq!(
+            second.exit,
+            LoopExit::Paused {
+                reason: crate::react::PauseReason::External,
+            }
+        );
+        assert!(matches!(
+            second.events.as_slice(),
+            [crate::types::TranscriptRecord::Thought { text, .. }]
+                if text == "replayed thought"
+        ));
+        actor.finish_run().await.expect("finish second run");
     }
 
     #[test]
