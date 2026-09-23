@@ -15,6 +15,52 @@ const stateWith = (partial: Partial<SessionReducerState>): SessionReducerState =
 });
 
 describe('SessionReducer', () => {
+	it('keeps usage projections scoped to their session', () => {
+		const otherStats = {
+			promptTokens: 90,
+			completionTokens: 9,
+			totalTokens: 99,
+			cumulativePromptTokens: 90,
+			cumulativeCompletionTokens: 9,
+			cumulativeTotalTokens: 99,
+			costUsd: null,
+			cumulativeCostUsd: null,
+			contextWindow: null,
+			model: 'other-model',
+		};
+		const otherCall = { call_kind: 'agent' as const, total_tokens: 99 };
+		const state = stateWith({
+			activeSessionId: 'ses-active',
+			tokenStats: { 'ses-other': otherStats },
+			llmUsage: { 'ses-other': [otherCall] },
+		});
+		const activeStats = {
+			promptTokens: 11,
+			completionTokens: 7,
+			totalTokens: 18,
+			cumulativePromptTokens: 11,
+			cumulativeCompletionTokens: 7,
+			cumulativeTotalTokens: 18,
+			costUsd: null,
+			cumulativeCostUsd: null,
+			contextWindow: null,
+			model: 'active-model',
+		};
+		const activeCall = { call_kind: 'agent' as const, total_tokens: 18 };
+
+		const next = reduceSession(state, {
+			type: 'session/usage-live',
+			sessionId: 'ses-active',
+			stats: activeStats,
+			call: activeCall,
+		});
+
+		expect(next.tokenStats[next.activeSessionId!]).toMatchObject(activeStats);
+		expect(next.llmUsage[next.activeSessionId!]).toEqual([activeCall]);
+		expect(next.tokenStats['ses-other']).toBe(otherStats);
+		expect(next.llmUsage['ses-other']).toBe(state.llmUsage['ses-other']);
+	});
+
 	it('does not let an unrelated background session hijack a fresh draft', () => {
 		const state = reduceSession(initialSessionState, {
 			type: 'session/created',
@@ -397,5 +443,4 @@ describe('SessionReducer', () => {
 			),
 		).toBe(true);
 	});
-
 });

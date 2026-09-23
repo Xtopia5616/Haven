@@ -155,63 +155,17 @@
 	// in sync via `hotkey:rebind` so placeholders show the real value.
 	let hotkeyBinding = $state('Ctrl+Shift+Space');
 
-	// Active session token stats from the reducer. Cleared when the active
-	// session changes; updated on every `agent:usage` event.
-	/**
-	 * @typedef {object} SessionTokenStats
-	 * @property {number} promptTokens
-	 * @property {number} completionTokens
-	 * @property {number} totalTokens
-	 * @property {number} [cachedTokens]
-	 * @property {number} [cacheCreationTokens]
-	 * @property {number} [cacheMissTokens]
-	 * @property {number} [contextTokens]
-	 * @property {boolean} [cacheExclusive]
-	 * @property {number} cumulativePromptTokens
-	 * @property {number} cumulativeCompletionTokens
-	 * @property {number} cumulativeTotalTokens
-	 * @property {number} [cumulativeCachedTokens]
-	 * @property {number} [cumulativeCacheCreationTokens]
-	 * @property {number|null} costUsd
-	 * @property {number|null} cumulativeCostUsd
-	 * @property {number|null} contextWindow
-	 * @property {string|null} model
-	 * @property {boolean} [restored] - entry came from persistence (resume /
-	 *   reopened conversation) with no live `agent:usage` events expected;
-	 *   the current context falls back to the latest persisted call.
-	 */
-
-	/** @type {SessionTokenStats | null} */
-	let tokenStats = $state(null);
-	$effect(() => {
-		tokenStats = activeSessionId
-			? /** @type {SessionTokenStats | undefined} */ (
-					sessionState.tokenStats?.[activeSessionId]
-				) || null
-			: null;
-	});
-	// Clear per-session stats when the active session changes so a stale entry
-	// from a previous session doesn't bleed into the new session's display.
-	$effect(() => {
-		const _ = activeSessionId;
-		// Subscribe so any store change refreshes; the actual filter is in
-		// the subscription above. This effect just guarantees an unsubscribed
-		// session is wiped when the user starts a fresh conversation.
-		if (!activeSessionId) tokenStats = null;
-	});
+	// Read usage for the active session directly from the reducer-owned state.
+	const tokenStats = $derived(
+		activeSessionId ? (sessionState.tokenStats[activeSessionId] ?? null) : null,
+	);
 
 	// Per-LLM-call usage detail for the active session (restored from the
 	// persisted `llm_usage` when a resume conversation opens). Used by the
 	// session-level token tooltip and call count.
-	/** @type {Array<import('$lib/sessionUsage.ts').LlmUsage>} */
-	let llmUsage = $state([]);
-	$effect(() => {
-		llmUsage = activeSessionId ? sessionState.llmUsage?.[activeSessionId] || [] : [];
-	});
-	$effect(() => {
-		const _ = activeSessionId;
-		if (!activeSessionId) llmUsage = [];
-	});
+	const llmUsage = $derived(
+		activeSessionId ? (sessionState.llmUsage[activeSessionId] ?? []) : [],
+	);
 
 	/** @param {any} stats */
 	function buildTokenTooltip(stats) {
