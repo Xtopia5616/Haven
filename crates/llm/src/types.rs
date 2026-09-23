@@ -1,5 +1,5 @@
 use haven_common::config::RequestKind;
-use haven_common::types::CanonicalToolCall;
+use haven_common::types::{CanonicalMessage, CanonicalToolCall};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::fmt;
@@ -472,6 +472,39 @@ pub struct ToolFunction {
     pub name: String,
     pub description: String,
     pub parameters: Value,
+}
+
+/// One complete, non-streaming request routed through [`crate::LlmRouter`].
+/// Empty `tools` preserves the ordinary chat path; a non-empty list selects
+/// the provider's tool-capable path.
+#[derive(Debug, Clone)]
+pub struct CompleteRequest {
+    pub request: RequestKind,
+    pub messages: Vec<CanonicalMessage>,
+    pub tools: Vec<ToolDefinition>,
+    pub max_output_tokens: Option<u32>,
+}
+
+impl CompleteRequest {
+    /// Build an ordinary chat request with no explicit output cap.
+    pub fn new(request: RequestKind, messages: Vec<CanonicalMessage>) -> Self {
+        Self {
+            request,
+            messages,
+            tools: Vec::new(),
+            max_output_tokens: None,
+        }
+    }
+
+    pub fn with_tools(mut self, tools: Vec<ToolDefinition>) -> Self {
+        self.tools = tools;
+        self
+    }
+
+    pub fn with_max_output_tokens(mut self, max_output_tokens: u32) -> Self {
+        self.max_output_tokens = Some(max_output_tokens);
+        self
+    }
 }
 
 /// Canonicalize JSON object keys recursively for cache identity and provider

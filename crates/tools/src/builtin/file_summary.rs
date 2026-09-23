@@ -1,7 +1,7 @@
 use haven_common::config::RequestKind;
 use haven_common::prompts::FILE_SUMMARY_SYSTEM_PROMPT;
 use haven_common::types::{CanonicalMessage, ContentPart};
-use haven_llm::LlmRouter;
+use haven_llm::{CompleteRequest, LlmRouter};
 use std::sync::Arc;
 use tokio::io::BufReader;
 use tokio_util::sync::CancellationToken;
@@ -76,7 +76,7 @@ pub(super) async fn summarize(
     let call = async {
         tokio::time::timeout(
             std::time::Duration::from_secs(summary_timeout_secs),
-            client.chat_request(RequestKind::FastChat, messages),
+            client.complete(CompleteRequest::new(RequestKind::FastChat, messages)),
         )
         .await
     };

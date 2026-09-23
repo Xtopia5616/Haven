@@ -16,8 +16,8 @@ use haven_common::types::{CanonicalMessage, ContentPart};
 use crate::stream_rules::{StreamRule, StreamRuleMatch, check_stream_rules};
 use crate::streaming;
 use crate::types::{
-    Embedding, LlmConnectionReport, LlmConnectionStatus, LlmError, LlmResponse, StreamChunk,
-    ToolDefinition, Usage,
+    CompleteRequest, Embedding, LlmConnectionReport, LlmConnectionStatus, LlmError, LlmResponse,
+    StreamChunk, ToolDefinition, Usage,
 };
 use futures_util::future::join_all;
 use haven_common::config::{
@@ -810,11 +810,14 @@ impl LlmRouter {
     /// Ordinary and tool chat share one policy snapshot and execution boundary.
     async fn execute_chat_request(
         &self,
-        request: RequestKind,
-        messages: Vec<CanonicalMessage>,
-        tools: Vec<ToolDefinition>,
-        max_output_tokens: Option<u32>,
+        request: CompleteRequest,
     ) -> Result<LlmResponse, LlmError> {
+        let CompleteRequest {
+            request,
+            messages,
+            tools,
+            max_output_tokens,
+        } = request;
         self.with_request_permit(request, |model_id, client| async move {
             let config = self.config.read().await;
             let policy = RequestPolicy::primary(&config);
@@ -829,37 +832,39 @@ impl LlmRouter {
         .await
     }
 
-    /// Chat through an explicit request policy.
-    pub async fn chat_request(
-        &self,
-        request: RequestKind,
-        messages: Vec<CanonicalMessage>,
-    ) -> Result<LlmResponse, LlmError> {
-        self.chat_request_with_output_cap(request, messages, None)
-            .await
+    /// Complete one ordinary or tool-enabled request through its request policy.
+    pub async fn complete(&self, request: CompleteRequest) -> Result<LlmResponse, LlmError> {
+        self.execute_chat_request(request).await
     }
 
-    pub async fn chat_request_with_output_cap(
-        &self,
+    fn prompt_request(
         request: RequestKind,
-        messages: Vec<CanonicalMessage>,
+        system: &str,
+        user: &str,
         max_output_tokens: Option<u32>,
-    ) -> Result<LlmResponse, LlmError> {
-        self.execute_chat_request(request, messages, Vec::new(), max_output_tokens)
-            .await
+    ) -> CompleteRequest {
+        let mut messages = Vec::with_capacity(if system.is_empty() { 1 } else { 2 });
+        if !system.is_empty() {
+            messages.push(CanonicalMessage::system(vec![ContentPart::text(system)]));
+        }
+        messages.push(CanonicalMessage::user(vec![ContentPart::text(user)]));
+        CompleteRequest {
+            request,
+            messages,
+            tools: Vec::new(),
+            max_output_tokens,
+        }
     }
 
-    /// Convenience wrapper that builds a `System + User` message pair (or just
-    /// `User` when `system` is empty) and forwards to [`Self::chat_request`]. Used by
-    /// one-shot prompts that don't need a full conversation history (title
-    /// generation, fact extraction, conversation summarization).
+    /// Build a `System + User` pair (or just `User` when `system` is empty)
+    /// for one-shot prompts such as title generation and fact extraction.
     pub async fn chat_with_prompt(
         &self,
         request: RequestKind,
         system: &str,
         user: &str,
     ) -> Result<LlmResponse, LlmError> {
-        self.chat_with_prompt_output_cap(request, system, user, None)
+        self.complete(Self::prompt_request(request, system, user, None))
             .await
     }
 
@@ -870,13 +875,13 @@ impl LlmRouter {
         user: &str,
         max_output_tokens: Option<u32>,
     ) -> Result<LlmResponse, LlmError> {
-        let mut messages = Vec::with_capacity(if system.is_empty() { 1 } else { 2 });
-        if !system.is_empty() {
-            messages.push(CanonicalMessage::system(vec![ContentPart::text(system)]));
-        }
-        messages.push(CanonicalMessage::user(vec![ContentPart::text(user)]));
-        self.chat_request_with_output_cap(request, messages, max_output_tokens)
-            .await
+        self.complete(Self::prompt_request(
+            request,
+            system,
+            user,
+            max_output_tokens,
+        ))
+        .await
     }
 
     /// Cancellable one-shot chat used by compaction and other maintenance
@@ -892,7 +897,12 @@ impl LlmRouter {
         tokio::select! {
             biased;
             _ = cancel.cancelled() => Err(LlmError::Cancelled),
-            result = self.chat_request_with_output_cap(request, messages, max_output_tokens) => result,
+            result = self.complete(CompleteRequest {
+                request,
+                messages,
+                tools: Vec::new(),
+                max_output_tokens,
+            }) => result,
         }
     }
 
@@ -933,27 +943,6 @@ impl LlmRouter {
     pub async fn embed_text(&self, text: &str) -> Result<Vec<f32>, LlmError> {
         let emb = self.embed(vec![text.to_string()]).await?;
         Ok(emb.vectors.into_iter().next().unwrap_or_default())
-    }
-
-    pub async fn chat_with_tools(
-        &self,
-        request: RequestKind,
-        messages: Vec<CanonicalMessage>,
-        tools: Vec<ToolDefinition>,
-    ) -> Result<LlmResponse, LlmError> {
-        self.chat_with_tools_output_cap(request, messages, tools, None)
-            .await
-    }
-
-    pub async fn chat_with_tools_output_cap(
-        &self,
-        request: RequestKind,
-        messages: Vec<CanonicalMessage>,
-        tools: Vec<ToolDefinition>,
-        max_output_tokens: Option<u32>,
-    ) -> Result<LlmResponse, LlmError> {
-        self.execute_chat_request(request, messages, tools, max_output_tokens)
-            .await
     }
 
     pub async fn chat_stream(
@@ -1675,7 +1664,7 @@ mod tests {
         }
 
         let error = router
-            .chat_request(RequestKind::Chat, Vec::new())
+            .complete(CompleteRequest::new(RequestKind::Chat, Vec::new()))
             .await
             .expect_err("the selected provider error must be returned");
         assert!(matches!(error, LlmError::ServerError(_)));
@@ -1706,7 +1695,7 @@ mod tests {
 
         for _ in 0..3 {
             router
-                .chat_request(RequestKind::Chat, Vec::new())
+                .complete(CompleteRequest::new(RequestKind::Chat, Vec::new()))
                 .await
                 .expect_err("the selected provider must remain the only target");
         }
@@ -1720,7 +1709,7 @@ mod tests {
 
         // The fourth request must not skip to the other provider.
         let error = router
-            .chat_request(RequestKind::Chat, Vec::new())
+            .complete(CompleteRequest::new(RequestKind::Chat, Vec::new()))
             .await
             .expect_err("an open circuit must fail instead of changing namespace");
         assert!(
@@ -2268,7 +2257,7 @@ mod tests {
         );
 
         let resp = router
-            .chat_request(RequestKind::FastChat, Vec::new())
+            .complete(CompleteRequest::new(RequestKind::FastChat, Vec::new()))
             .await
             .expect("small_model should succeed");
         assert_eq!(resp.text, "mock response");
@@ -2299,7 +2288,9 @@ mod tests {
 
         // First 3 calls should fail and trigger circuit breaker
         for _ in 0..3 {
-            let _ = router.chat_request(RequestKind::Chat, Vec::new()).await;
+            let _ = router
+                .complete(CompleteRequest::new(RequestKind::Chat, Vec::new()))
+                .await;
         }
 
         // Circuit breaker should reject requests directly
@@ -2650,7 +2641,7 @@ mod tests {
             let router = router.clone();
             handles.push(tokio::spawn(async move {
                 router
-                    .chat_request(RequestKind::Chat, vec![])
+                    .complete(CompleteRequest::new(RequestKind::Chat, vec![]))
                     .await
                     .unwrap();
             }));
@@ -2667,7 +2658,7 @@ mod tests {
         // while default_model is capped.
         router.set_request_limit_for_test(1);
         let _ = router
-            .chat_request(RequestKind::FastChat, vec![])
+            .complete(CompleteRequest::new(RequestKind::FastChat, vec![]))
             .await
             .unwrap();
         assert_eq!(max_seen.load(std::sync::atomic::Ordering::SeqCst), 1);
@@ -2729,7 +2720,7 @@ mod tests {
 
         let model_id = "default_model";
         let err = router
-            .chat_request(RequestKind::Chat, vec![])
+            .complete(CompleteRequest::new(RequestKind::Chat, vec![]))
             .await
             .unwrap_err();
         assert!(
@@ -2749,7 +2740,7 @@ mod tests {
         // dispatching (it fails again, but only after the shared wait).
         let t0 = Instant::now();
         let err2 = router
-            .chat_request(RequestKind::Chat, vec![])
+            .complete(CompleteRequest::new(RequestKind::Chat, vec![]))
             .await
             .unwrap_err();
         assert!(matches!(err2, LlmError::RateLimit { .. }));
@@ -2818,7 +2809,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn chat_paths_share_policy_execution_and_preserve_cap_and_usage() {
+    async fn complete_preserves_chat_tool_branch_output_cap_and_usage() {
         struct ChatPathProbe(Arc<StdMutex<Vec<(bool, Option<u32>, usize)>>>);
 
         fn response() -> LlmResponse {
@@ -2887,7 +2878,17 @@ mod tests {
         let router =
             LlmRouter::new_with_clients(client.clone(), client.clone(), client.clone(), client);
         let ordinary = router
-            .chat_request_with_output_cap(RequestKind::Chat, Vec::new(), Some(37))
+            .complete(
+                CompleteRequest::new(RequestKind::Chat, Vec::new()).with_max_output_tokens(37),
+            )
+            .await
+            .unwrap();
+        let empty_tools = router
+            .complete(
+                CompleteRequest::new(RequestKind::Chat, Vec::new())
+                    .with_tools(Vec::new())
+                    .with_max_output_tokens(39),
+            )
             .await
             .unwrap();
         let tools = vec![ToolDefinition {
@@ -2899,19 +2900,47 @@ mod tests {
             },
         }];
         let tool_response = router
-            .chat_with_tools_output_cap(RequestKind::Chat, Vec::new(), tools, Some(41))
+            .complete(
+                CompleteRequest::new(RequestKind::Chat, Vec::new())
+                    .with_tools(tools)
+                    .with_max_output_tokens(41),
+            )
             .await
             .unwrap();
 
         assert_eq!(
             *seen.lock().unwrap(),
-            vec![(false, Some(37), 0), (true, Some(41), 1)]
+            vec![
+                (false, Some(37), 0),
+                (false, Some(39), 0),
+                (true, Some(41), 1)
+            ]
         );
-        for result in [ordinary, tool_response] {
+        for result in [ordinary, empty_tools, tool_response] {
             assert_eq!(result.usage.prompt_tokens, 23);
             assert_eq!(result.usage.completion_tokens, 11);
             assert_eq!(result.usage.total_tokens, 34);
         }
+    }
+
+    #[tokio::test]
+    async fn complete_rejects_request_without_required_capability() {
+        let mut config = LlmRouter::test_config();
+        config
+            .model_mut("image_model")
+            .unwrap()
+            .capabilities
+            .retain(|capability| *capability != Capability::Vision);
+        let router = LlmRouter::new(config);
+
+        let error = router
+            .complete(CompleteRequest::new(RequestKind::Vision, Vec::new()))
+            .await
+            .expect_err("a model without vision capability must not be routed");
+
+        assert!(
+            matches!(error, LlmError::Configuration(message) if message.contains("no configured model for vision"))
+        );
     }
 
     #[tokio::test]
@@ -2965,5 +2994,23 @@ mod tests {
         tokio::task::yield_now().await;
         cancel.cancel();
         assert!(matches!(task.await.unwrap(), Err(LlmError::Cancelled)));
+
+        // Cancellation wins even when the provider future is immediately ready.
+        let ready_client = Arc::new(MockStreamClient {
+            chunks: Vec::new(),
+            fail_chat: false,
+        }) as Arc<dyn LlmClient>;
+        let ready_router = LlmRouter::new_with_clients(
+            ready_client.clone(),
+            ready_client.clone(),
+            ready_client.clone(),
+            ready_client,
+        );
+        let already_cancelled = CancellationToken::new();
+        already_cancelled.cancel();
+        let result = ready_router
+            .chat_messages_cancellable(RequestKind::Chat, Vec::new(), None, already_cancelled)
+            .await;
+        assert!(matches!(result, Err(LlmError::Cancelled)));
     }
 }

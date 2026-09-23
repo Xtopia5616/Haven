@@ -15,8 +15,8 @@ use haven_common::media::{
 use haven_common::text::sanitize_prompt_field;
 use haven_common::types::{CanonicalMessage, ContentPart};
 
-use crate::LlmRouter;
 use crate::types::{LlmError, LlmResponse};
+use crate::{CompleteRequest, LlmRouter};
 use haven_common::config::RequestKind;
 
 const MAX_PROMPT_FIELD_CHARS: usize = 32_000;
@@ -89,7 +89,9 @@ pub async fn analyze_image(
         CanonicalMessage::system(vec![ContentPart::text(system)]),
         CanonicalMessage::user(vec![image_part]),
     ];
-    router.chat_request(RequestKind::Vision, messages).await
+    router
+        .complete(CompleteRequest::new(RequestKind::Vision, messages))
+        .await
 }
 
 /// Small test-only capability profile helper kept private to the module.

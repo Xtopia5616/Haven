@@ -51,8 +51,9 @@
 - `2b9844d`：UI 页面直接派生 active session 的 token stats/LLM usage，删除 usage 镜像与同步 effect；ReActEngine 剩余 Database 依赖经审查后暂缓统一封装，因为读取、事件权威写入、transcript 投影和记忆副作用仍是不同事务边界。
 - `95189fa`、`d7dd2e3`：MemoryEmbeddingIndex 成为 embedding vector-space identity 的唯一解析者；ActionService 接管 App action 历史读取，命令不再直接读取 raw Database（ADR 0232；ADR 0215 边界补充）。
 - `cfa080b`：会话恢复、初始输入和清理路径通过 `ManagedAssetLeasePort` 管理媒体资产租约，工具 session overlay 注销保持独立（ADR 0233）。
+- Phase 6 首个请求对象切片：`CompleteRequest` 成为普通与 tools 完整请求的唯一 Router 入口；删除 Router chat 转发 API 并迁移仓库内调用点（ADR 0234）。
 
-当前阶段判断：阶段 1 的 mailbox/运行态收口已基本完成，阶段 2–3 仍需继续验证恢复与 storage port 的全局边界；阶段 4 已完成目录/观察读取的切片，执行/授权必须作为一个安全边界继续审查；阶段 5 已完成 ContextLimits/Router 的一致性切片但尚未成为完整协调器；阶段 6–9 尚未完成。
+当前阶段判断：阶段 1 的 mailbox/运行态收口已基本完成，阶段 2–3 仍需继续验证恢复与 storage port 的全局边界；阶段 4 已完成目录/观察读取的切片，执行/授权必须作为一个安全边界继续审查；阶段 5 已完成 ContextLimits/Router 的一致性切片但尚未成为完整协调器；阶段 6 已完成 `CompleteRequest` 与唯一 `complete` 入口首切片，stream/embed/health request object 和 executor 拆分仍待实施；阶段 7–9 尚未完成。
 
 ## 3. 不变量与禁止事项
 
@@ -209,10 +210,12 @@ SessionStore
 
 目的：减少 router 公共包装入口，不改变 provider adapter。
 
+已完成的首切片：普通与 tools 完整请求统一为 `CompleteRequest`，只保留 `LlmRouter::complete(CompleteRequest)` 作为完整请求入口；保留语义化 prompt 与 cancellation helper，并让它们直接构造该 DTO。Router chat 转发入口及仓库内调用点已删除，不提供兼容别名（ADR 0234）。本切片不拆分 Capability / CallPurpose，也不改 stream、embed、health 接口与 provider adapter。
+
 工作项：
 
 - 将 `RequestKind` 中混合的 capability、call purpose、UI usage role 分成 `Capability`、`CallPurpose`、`RequestPolicy`；
-- 将 router 对外收敛为 `complete`、`stream`、`embed`、`health` 四类 request object；
+- 将 router 对外收敛为 `complete`、`stream`、`embed`、`health` 四类 request object；`complete` 已有请求对象，其他入口待后续切片；
 - 内部拆成 `ModelDirectory`、`CallExecutor`、`StreamExecutor`，保留已有 retry/timeout/health/semaphore/usage 管线；
 - 删除只转发参数的 chat/chat_request/output_cap/stream wrapper；
 - provider adapter 只做 wire mapping，保持 golden fixture。

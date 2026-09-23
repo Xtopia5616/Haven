@@ -1,6 +1,7 @@
 # ADR 0228：删除 LLM router chat 转发别名
 
-- 状态：已采纳（2026-09-24）
+- 状态：已被 [ADR 0234](0234-llm-complete-request-object.md) 替代
+- 原采纳日期：2026-09-24
 - 范围：`haven-llm` 的 `LlmRouter` chat 请求入口
 - 关联：[ADR 0221](0221-chat-request-policy-snapshot.md)、[ADR 0052](0052-remove-expired-compatibility-layers.md)
 
