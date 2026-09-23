@@ -7,17 +7,17 @@
 //!
 //! ADR 0214 的目标是让热 transcript 由这里的 `SessionState` 持有，并让一次 run
 //! 在本任务内只于 yield 点借用 `&mut SessionState`。stream identity 已按 ADR 0219
-//! 移为 ReActEngine 的进程内 sidecar；usage 和 token estimate 仍有内部 mailbox
-//! 命令，留待后续切片处理。
+//! 移为 ReActEngine 的进程内 sidecar；usage 仍经内部 mailbox 命令处理，留待
+//! 后续切片收口。
 
 use super::RunEngine;
 use super::{FollowUp, SessionInfo, SessionStatus, SessionWaitingReason, StepInfo};
 use crate::interaction::{InteractionKind, InteractionRequest, InteractionStatus};
-use crate::react::sidecars::{CumulativeTotals, CumulativeUsage, TokenEstimateCache, UsageTracker};
+use crate::react::sidecars::{CumulativeTotals, CumulativeUsage, UsageTracker};
 use crate::react::{LoopExit, ReActEngine, ReActState, RunInput, RunReplay};
 use futures_util::FutureExt;
 use haven_common::config::RequestKind;
-use haven_common::types::{CanonicalMessage, MessageAttachment};
+use haven_common::types::MessageAttachment;
 use haven_memory::{
     Database, INTERACTION_CLEARED_EVENT_TYPE, INTERACTION_REQUESTED_EVENT_TYPE,
     INTERACTION_RESOLVED_EVENT_TYPE, SessionStore,
@@ -226,19 +226,6 @@ pub(crate) enum ActorCommand {
     },
     ResetUsage,
     InvalidateUsage,
-    EstimateTokens {
-        canonical: Vec<CanonicalMessage>,
-        generation: u64,
-        revision: u64,
-        reply: oneshot::Sender<u32>,
-    },
-    AppendTokenEstimate {
-        message: CanonicalMessage,
-        canonical_len: usize,
-        generation: u64,
-        revision: u64,
-    },
-    ResetTokenEstimate,
     TickMessagingPoll {
         every_steps: u32,
         subscribe: InboxSubscribe,
@@ -489,49 +476,6 @@ impl SessionActorHandle {
 
     pub(crate) fn invalidate_usage_now(&self) {
         let _ = self.tx.try_send(ActorCommand::InvalidateUsage);
-    }
-
-    pub(crate) async fn estimate_tokens(
-        &self,
-        canonical: Vec<CanonicalMessage>,
-        generation: u64,
-        revision: u64,
-    ) -> u32 {
-        let (reply, rx) = oneshot::channel();
-        if self
-            .send(ActorCommand::EstimateTokens {
-                canonical,
-                generation,
-                revision,
-                reply,
-            })
-            .await
-            .is_err()
-        {
-            return 0;
-        }
-        rx.await.unwrap_or(0)
-    }
-
-    pub(crate) async fn append_token_estimate(
-        &self,
-        message: CanonicalMessage,
-        canonical_len: usize,
-        generation: u64,
-        revision: u64,
-    ) {
-        let _ = self
-            .send(ActorCommand::AppendTokenEstimate {
-                message,
-                canonical_len,
-                generation,
-                revision,
-            })
-            .await;
-    }
-
-    pub(crate) fn reset_token_estimate_now(&self) {
-        let _ = self.tx.try_send(ActorCommand::ResetTokenEstimate);
     }
 
     pub(crate) async fn queue_follow_up(
@@ -927,7 +871,6 @@ pub(crate) struct SessionState {
 #[derive(Default)]
 struct SessionRuntimeState {
     usage: UsageTracker,
-    token_estimates: TokenEstimateCache,
     messaging: SessionMessagingState,
 }
 
@@ -1377,37 +1320,6 @@ pub(crate) fn spawn(
                         .runtime
                         .usage
                         .invalidate_after_truncate(&state.info.id);
-                }
-                ActorCommand::EstimateTokens {
-                    canonical,
-                    generation,
-                    revision,
-                    reply,
-                } => {
-                    let tokens = state.runtime.token_estimates.estimate(
-                        &state.info.id,
-                        &canonical,
-                        generation,
-                        revision,
-                    );
-                    let _ = reply.send(tokens);
-                }
-                ActorCommand::AppendTokenEstimate {
-                    message,
-                    canonical_len,
-                    generation,
-                    revision,
-                } => {
-                    state.runtime.token_estimates.append_message(
-                        &state.info.id,
-                        &message,
-                        canonical_len,
-                        generation,
-                        revision,
-                    );
-                }
-                ActorCommand::ResetTokenEstimate => {
-                    state.runtime.token_estimates.remove(&state.info.id);
                 }
                 ActorCommand::DrainFollowUps { reply } => {
                     state.follow_up_chars = 0;

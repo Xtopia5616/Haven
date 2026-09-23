@@ -56,7 +56,7 @@ pub(crate) use r#loop::{RunInput, RunReplay};
 use metrics::{Counter as MetricsCounter, Phase as MetricsPhase, ReActMetrics};
 pub use metrics::{MetricsSnapshot, UiMetricsSnapshot};
 pub(crate) use request_context::RequestContext;
-use sidecars::ContextWindowCache;
+use sidecars::{ContextWindowCache, TokenEstimateCache};
 pub(crate) use state::{ReActState, RetryNudge};
 use transcript::{ObservationCard, TranscriptEvent};
 
@@ -348,6 +348,9 @@ pub struct ReActEngine {
     context_source: ContextSource,
     /// Per-request context-window cache keyed by router instance pointer.
     context_windows: ContextWindowCache,
+    /// Bounded process-local token estimates; canonical transcript remains the
+    /// source of truth and this cache is never persisted.
+    token_estimates: TokenEstimateCache,
     /// Domain side effects (inbox / compact / infer). Thin loop only calls
     /// `hooks.before_step` / `on_pause` (Phase 3 / G1).
     hooks: LoopHooksHandle,
@@ -409,6 +412,7 @@ impl ReActEngine {
             run_counter: AtomicU64::new(0),
             context_source,
             context_windows: ContextWindowCache::new(),
+            token_estimates: TokenEstimateCache::new(),
             hooks: default_hooks(),
             memory_worker: None,
             metrics,
@@ -1078,7 +1082,7 @@ impl ReActEngine {
     }
 
     /// Drop cumulative counters and process-local turn caches for a finished
-    /// session so all per-session actor state stays bounded across long runs.
+    /// session so per-session runtime state stays bounded across long runs.
     pub fn reset_cumulative_usage(&self, session_id: &str) {
         self.reset_token_estimate(session_id);
         self.context_source.clear_session(session_id);
@@ -1165,23 +1169,12 @@ impl ReActEngine {
         session_id: &str,
         state: &ReActState,
     ) -> u32 {
-        let actor = match self.executor.actor_for(session_id).await {
-            Some(actor) => actor,
-            None => {
-                let _ = self.executor.ensure_session_loaded(session_id).await;
-                let Some(actor) = self.executor.actor_for(session_id).await else {
-                    return crate::compactor::estimate_message_tokens(&state.canonical);
-                };
-                actor
-            }
-        };
-        actor
-            .estimate_tokens(
-                state.canonical.clone(),
-                state.canonical_generation(),
-                state.canonical_revision(),
-            )
-            .await
+        self.token_estimates.estimate(
+            session_id,
+            &state.canonical,
+            state.canonical_generation(),
+            state.canonical_revision(),
+        )
     }
 
     /// Keep the token sidecar synchronized with the one canonical append
@@ -1189,26 +1182,21 @@ impl ReActEngine {
     /// callers cannot forget to invalidate the estimate when adding a message.
     pub(super) async fn note_canonical_append(&self, session_id: &str, state: &mut ReActState) {
         state.mark_canonical_append();
-        if let Some(message) = state.canonical.last()
-            && let Some(actor) = self.executor.actor_for(session_id).await
-        {
-            actor
-                .append_token_estimate(
-                    message.clone(),
-                    state.canonical.len(),
-                    state.canonical_generation(),
-                    state.canonical_revision(),
-                )
-                .await;
+        if let Some(message) = state.canonical.last() {
+            self.token_estimates.append_message(
+                session_id,
+                message,
+                state.canonical.len(),
+                state.canonical_generation(),
+                state.canonical_revision(),
+            );
         }
     }
 
     /// Drop the per-session token-estimate cache entry (called alongside
     /// `reset_cumulative_usage` on session completion/error).
     pub fn reset_token_estimate(&self, session_id: &str) {
-        if let Some(actor) = self.executor.actor_for_now(session_id) {
-            actor.reset_token_estimate_now();
-        }
+        self.token_estimates.remove(session_id);
     }
 
     /// Check if context compaction is needed before the next LLM call.
@@ -1373,6 +1361,49 @@ mod tests {
                 .peek_msg_id("ses-identity-test", 3, 8, "thought")
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn token_estimate_cache_is_used_directly_without_a_session_actor() {
+        let directory = tempfile::tempdir().expect("temporary database directory");
+        let db = Arc::new(
+            Database::open(&directory.path().join("token-estimate.db"))
+                .expect("temporary database"),
+        );
+        let executor = Arc::new(SessionSupervisor::new(
+            db.clone(),
+            Arc::new(haven_tools::ToolsManager::new()),
+            1,
+        ));
+        let engine = ReActEngine::new(
+            Arc::new(mock_router()),
+            executor.clone(),
+            db,
+            4,
+            ContextLimitsConfig::default(),
+        );
+        let session_id = "ses-0123456789abcdef0123456789abcdef";
+        let mut state = ReActState::new(
+            Vec::new(),
+            vec![text_msg(CanonicalRole::User, "first message")],
+            HashMap::new(),
+        );
+
+        assert_eq!(
+            engine.estimate_canonical_tokens(session_id, &state).await,
+            crate::compactor::estimate_message_tokens(&state.canonical),
+        );
+        state
+            .canonical
+            .push(text_msg(CanonicalRole::Assistant, "appended message"));
+        engine.note_canonical_append(session_id, &mut state).await;
+        assert_eq!(
+            engine.estimate_canonical_tokens(session_id, &state).await,
+            crate::compactor::estimate_message_tokens(&state.canonical),
+        );
+
+        engine.reset_token_estimate(session_id);
+        assert!(executor.actor_for_now(session_id).is_none());
     }
 
     struct MockLlm {
