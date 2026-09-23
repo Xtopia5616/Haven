@@ -2323,7 +2323,7 @@ mod tests {
         let discarded_message = db
             .add_message(&session_id, "assistant", "discarded", None, None)
             .unwrap();
-        db.create_thought_step(&session_id, 2, "step-discarded")
+        db.create_thought_step(&session_id, 2, &haven_common::types::new_id("step"))
             .unwrap();
         let discarded_usage = store
             .append_usage(&session_id, &usage_input(2, 20))
@@ -2373,7 +2373,9 @@ mod tests {
         let (db, store, session_id) = store();
         db.add_message(&session_id, "assistant", "kept", None, None)
             .unwrap();
-        let kept_step = db.create_thought_step(&session_id, 1, "step-kept").unwrap();
+        let kept_step = db
+            .create_thought_step(&session_id, 1, &haven_common::types::new_id("step"))
+            .unwrap();
         let kept_usage = store
             .append_usage(&session_id, &usage_input(1, 10))
             .unwrap();
