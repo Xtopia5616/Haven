@@ -371,29 +371,13 @@ impl AgentLayer {
             | crate::lifecycle::LifecycleDecision::NotApplicable => {}
         }
 
-        // A normal branch point is not sufficient to identify the failed
-        // attempt after a restart. The recovery protocol marker is durable
-        // control data, so use its committed step and the corresponding
-        // branch-point cutoff instead of a serialized snapshot payload.
+        // The store owns the recovery marker decision and applies an
+        // authorized projection cutoff in the same transaction.
         let store = self.react_engine.event_store.clone();
         let sid = session_id.to_string();
-        let recovery = self
-            .db
-            .run_blocking(move |_| store.latest_recovery_persistence(&sid))
+        self.db
+            .run_blocking(move |_| store.truncate_projection_after_latest_committed_recovery(&sid))
             .await?;
-        if let Some(marker) = recovery {
-            let phase = serde_json::from_str::<serde_json::Value>(&marker.payload)
-                .ok()
-                .and_then(|payload| payload.get("phase")?.as_str().map(str::to_owned));
-            if phase.as_deref() == Some("committed") {
-                let step = marker.step_number.unwrap_or_default();
-                let store = self.react_engine.event_store.clone();
-                let sid = session_id.to_string();
-                self.db
-                    .run_blocking(move |_| store.truncate_projection_after_step(&sid, step))
-                    .await?;
-            }
-        }
         // Clear after join + truncation so unwind persists cannot leave a
         // stale-high cutoff in the mid-run branch-point cache. Invalidate
         // usage so retry re-seeds from rebuilt totals.

@@ -827,44 +827,57 @@ impl SessionStore {
     ) -> anyhow::Result<()> {
         let conn = self.db.conn();
         conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result =
+            Self::truncate_projection_after_step_in_transaction(&conn, session_id, step_number);
+        match result {
+            Ok(events) => {
+                conn.execute_batch("COMMIT")?;
+                if let Some(events) = events {
+                    self.db.cache_invalidate_messages(session_id);
+                    for event in events {
+                        let _ = self.live_tx.send(event);
+                    }
+                }
+                Ok(())
+            }
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(error)
+            }
+        }
+    }
+
+    /// Use the newest recovery marker in append-only history to decide whether
+    /// continue may remove projections. Marker lookup, phase validation,
+    /// active branch-point resolution, projection deletion, usage
+    /// compensation, and aggregate rebuilding share one write transaction.
+    /// A marker outside the active replay still participates in the decision.
+    pub fn truncate_projection_after_latest_committed_recovery(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<()> {
+        let conn = self.db.conn();
+        conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<Option<Vec<SessionEvent>>> {
-            let cutoff = Self::read_active_branch_points_in_connection(&conn, session_id)?
-                .into_iter()
-                .find(|(_, _, step, _)| *step == step_number)
-                .and_then(|(_, _, _, last_msg_at)| last_msg_at)
-                .map(|created_at| ProjectionCutoff {
-                    created_at,
-                    inclusive: false,
-                });
-            let Some(cutoff) = cutoff else {
+            let Some(marker) = Self::latest_recovery_persistence_in_connection(&conn, session_id)?
+            else {
                 return Ok(None);
             };
+            let phase = serde_json::from_str::<serde_json::Value>(&marker.payload)
+                .ok()
+                .and_then(|payload| payload.get("phase")?.as_str().map(str::to_owned));
+            if phase.as_deref() != Some("committed") {
+                return Ok(None);
+            }
 
-            let mut statement =
-                conn.prepare("SELECT id FROM llm_usage WHERE session_id = ?1 AND created_at > ?2")?;
-            let usage_ids = statement
-                .query_map(rusqlite::params![session_id, cutoff.created_at], |row| {
-                    row.get::<_, String>(0)
-                })?
-                .collect::<Result<Vec<_>, _>>()?;
-            drop(statement);
-
-            Self::truncate_session_projections_in_transaction(
+            // Preserve continue_session's legacy missing-step behavior: an
+            // absent step is interpreted as zero, which safely no-ops unless
+            // an active step-zero branch point exists.
+            Self::truncate_projection_after_step_in_transaction(
                 &conn,
                 session_id,
-                &cutoff.created_at,
-                false,
-            )?;
-            let discard_inputs = usage_ids
-                .iter()
-                .map(|usage_id| {
-                    SessionEventInput::new(
-                        USAGE_DISCARDED_EVENT_TYPE,
-                        serde_json::json!({ "usage_id": usage_id }).to_string(),
-                    )
-                })
-                .collect::<Vec<_>>();
-            Self::append_batch_in_transaction(&conn, session_id, &discard_inputs).map(Some)
+                marker.step_number.unwrap_or_default(),
+            )
         })();
         match result {
             Ok(events) => {
@@ -882,6 +895,50 @@ impl SessionStore {
                 Err(error)
             }
         }
+    }
+
+    fn truncate_projection_after_step_in_transaction(
+        conn: &rusqlite::Connection,
+        session_id: &str,
+        step_number: u32,
+    ) -> anyhow::Result<Option<Vec<SessionEvent>>> {
+        let cutoff = Self::read_active_branch_points_in_connection(conn, session_id)?
+            .into_iter()
+            .find(|(_, _, step, _)| *step == step_number)
+            .and_then(|(_, _, _, last_msg_at)| last_msg_at)
+            .map(|created_at| ProjectionCutoff {
+                created_at,
+                inclusive: false,
+            });
+        let Some(cutoff) = cutoff else {
+            return Ok(None);
+        };
+
+        let mut statement =
+            conn.prepare("SELECT id FROM llm_usage WHERE session_id = ?1 AND created_at > ?2")?;
+        let usage_ids = statement
+            .query_map(rusqlite::params![session_id, cutoff.created_at], |row| {
+                row.get::<_, String>(0)
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(statement);
+
+        Self::truncate_session_projections_in_transaction(
+            conn,
+            session_id,
+            &cutoff.created_at,
+            false,
+        )?;
+        let discard_inputs = usage_ids
+            .iter()
+            .map(|usage_id| {
+                SessionEventInput::new(
+                    USAGE_DISCARDED_EVENT_TYPE,
+                    serde_json::json!({ "usage_id": usage_id }).to_string(),
+                )
+            })
+            .collect::<Vec<_>>();
+        Self::append_batch_in_transaction(conn, session_id, &discard_inputs).map(Some)
     }
 
     pub fn truncate_projection_after(
@@ -1169,11 +1226,40 @@ impl SessionStore {
         &self,
         session_id: &str,
     ) -> anyhow::Result<Option<SessionEvent>> {
-        Ok(self
-            .read_all(session_id)?
-            .into_iter()
-            .rev()
-            .find(|event| event.event_type == RECOVERY_PERSISTENCE_EVENT_TYPE))
+        let conn = self.db.conn();
+        Self::latest_recovery_persistence_in_connection(&conn, session_id)
+    }
+
+    fn latest_recovery_persistence_in_connection(
+        conn: &rusqlite::Connection,
+        session_id: &str,
+    ) -> anyhow::Result<Option<SessionEvent>> {
+        conn.query_row(
+            "SELECT session_id, sequence, event_type, event_version, payload,
+                    created_at, run_id, step_number
+             FROM session_events
+             WHERE session_id = ?1 AND event_type = ?2
+             ORDER BY sequence DESC LIMIT 1",
+            rusqlite::params![session_id, RECOVERY_PERSISTENCE_EVENT_TYPE],
+            |row| {
+                Ok(SessionEvent {
+                    session_id: row.get(0)?,
+                    sequence: row.get(1)?,
+                    event_type: row.get(2)?,
+                    event_version: row.get(3)?,
+                    payload: row.get(4)?,
+                    created_at: row.get(5)?,
+                    run_id: row
+                        .get::<_, Option<i64>>(6)?
+                        .and_then(|value| u64::try_from(value).ok()),
+                    step_number: row
+                        .get::<_, Option<i64>>(7)?
+                        .and_then(|value| u32::try_from(value).ok()),
+                })
+            },
+        )
+        .optional()
+        .map_err(Into::into)
     }
 
     pub fn latest_sequence(&self, session_id: &str) -> anyhow::Result<i64> {
@@ -1663,6 +1749,23 @@ mod tests {
         (db, store, session.id)
     }
 
+    fn append_recovery_marker(store: &SessionEventStore, session_id: &str, phase: &str) {
+        store
+            .append_recovery_persistence(
+                session_id,
+                1,
+                2,
+                phase,
+                RecoveryPersistenceStatus {
+                    branch_point: true,
+                    partial_messages: true,
+                    projection: true,
+                    event_boundary: true,
+                },
+            )
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn session_store_reads_messages_after_ingress_cursor_with_projection() {
         let (db, store, session_id) = store();
@@ -2062,7 +2165,9 @@ mod tests {
         let kept_message = db
             .add_message(&session_id, "assistant", "kept", None, None)
             .unwrap();
-        let kept_step = db.create_thought_step(&session_id, 1, "step-kept").unwrap();
+        let kept_step = db
+            .create_thought_step(&session_id, 1, &haven_common::types::new_id("step"))
+            .unwrap();
         let kept_usage = store
             .append_usage(&session_id, &usage_input(1, 10))
             .unwrap();
@@ -2073,7 +2178,7 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(5));
         db.add_message(&session_id, "assistant", "discarded", None, None)
             .unwrap();
-        db.create_thought_step(&session_id, 2, "step-discarded")
+        db.create_thought_step(&session_id, 2, &haven_common::types::new_id("step"))
             .unwrap();
         let discarded_usage = store
             .append_usage(&session_id, &usage_input(2, 20))
@@ -2164,6 +2269,349 @@ mod tests {
                 .collect::<Vec<_>>();
 
             store.truncate_projection_after_step(session_id, 1).unwrap();
+
+            assert_eq!(
+                db.get_session_messages(session_id)
+                    .unwrap()
+                    .into_iter()
+                    .map(|message| message.id)
+                    .collect::<Vec<_>>(),
+                message_ids
+            );
+            assert_eq!(
+                db.get_session_steps(session_id)
+                    .unwrap()
+                    .into_iter()
+                    .map(|step| step.id)
+                    .collect::<Vec<_>>(),
+                step_ids
+            );
+            assert_eq!(
+                db.get_session_llm_usage(session_id)
+                    .unwrap()
+                    .into_iter()
+                    .map(|record| record.id)
+                    .collect::<Vec<_>>(),
+                usage_ids
+            );
+            assert!(
+                store
+                    .read_active_domain_events(session_id)
+                    .unwrap()
+                    .iter()
+                    .all(|event| event.event_type != USAGE_DISCARDED_EVENT_TYPE)
+            );
+        }
+    }
+
+    #[test]
+    fn committed_recovery_marker_truncates_projection_and_compensates_usage() {
+        let (db, store, session_id) = store();
+        db.add_message(&session_id, "assistant", "kept", None, None)
+            .unwrap();
+        let kept_step = db
+            .create_thought_step(&session_id, 1, &haven_common::types::new_id("step"))
+            .unwrap();
+        let kept_usage = store
+            .append_usage(&session_id, &usage_input(1, 10))
+            .unwrap();
+        store
+            .append_branch_point(&session_id, 1, 2, Some(&kept_usage.created_at), None)
+            .unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let discarded_message = db
+            .add_message(&session_id, "assistant", "discarded", None, None)
+            .unwrap();
+        db.create_thought_step(&session_id, 2, "step-discarded")
+            .unwrap();
+        let discarded_usage = store
+            .append_usage(&session_id, &usage_input(2, 20))
+            .unwrap();
+        append_recovery_marker(&store, &session_id, "committed");
+        assert_eq!(db.get_session_messages(&session_id).unwrap().len(), 2);
+        let mut live = store.subscribe();
+
+        store
+            .truncate_projection_after_latest_committed_recovery(&session_id)
+            .unwrap();
+
+        let messages = db.get_session_messages(&session_id).unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_ne!(messages[0].id, discarded_message.id);
+        let steps = db.get_session_steps(&session_id).unwrap();
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].id, kept_step.id);
+        let usage = db.get_session_llm_usage(&session_id).unwrap();
+        assert_eq!(
+            usage.iter().map(|record| &record.id).collect::<Vec<_>>(),
+            [&kept_usage.id]
+        );
+        assert_eq!(
+            db.get_session_usage(&session_id)
+                .unwrap()
+                .unwrap()
+                .total_tokens,
+            10
+        );
+        let discard = store
+            .read_active_domain_events(&session_id)
+            .unwrap()
+            .into_iter()
+            .find(|event| event.event_type == USAGE_DISCARDED_EVENT_TYPE)
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&discard.payload).unwrap()["usage_id"],
+            discarded_usage.id
+        );
+        assert_eq!(live.try_recv().unwrap(), discard);
+        assert!(live.try_recv().is_err());
+    }
+
+    #[test]
+    fn latest_failed_marker_outside_active_replay_overrides_earlier_commit() {
+        let (db, store, session_id) = store();
+        db.add_message(&session_id, "assistant", "kept", None, None)
+            .unwrap();
+        let kept_step = db.create_thought_step(&session_id, 1, "step-kept").unwrap();
+        let kept_usage = store
+            .append_usage(&session_id, &usage_input(1, 10))
+            .unwrap();
+        let branch_point = store
+            .append_branch_point(&session_id, 1, 2, Some(&kept_usage.created_at), None)
+            .unwrap();
+        let committed = store
+            .append_recovery_persistence(
+                &session_id,
+                1,
+                2,
+                "committed",
+                RecoveryPersistenceStatus {
+                    branch_point: true,
+                    partial_messages: true,
+                    projection: true,
+                    event_boundary: true,
+                },
+            )
+            .unwrap();
+        append_recovery_marker(&store, &session_id, "failed");
+        // Hide the failed marker from active replay while keeping the earlier
+        // committed marker active. Recovery authorization must use full log
+        // order, not the current active view.
+        store
+            .append_rollback(&session_id, committed.sequence, 2, None)
+            .unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let discarded_message = db
+            .add_message(&session_id, "assistant", "must remain", None, None)
+            .unwrap();
+        let discarded_step = db
+            .create_thought_step(&session_id, 2, &haven_common::types::new_id("step"))
+            .unwrap();
+        let discarded_usage = store
+            .append_usage(&session_id, &usage_input(2, 20))
+            .unwrap();
+        let active_markers = store
+            .read_active_domain_events(&session_id)
+            .unwrap()
+            .into_iter()
+            .filter(|event| event.event_type == RECOVERY_PERSISTENCE_EVENT_TYPE)
+            .collect::<Vec<_>>();
+        assert_eq!(active_markers.len(), 1);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&active_markers[0].payload).unwrap()["phase"],
+            "committed"
+        );
+        let latest = store
+            .latest_recovery_persistence(&session_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&latest.payload).unwrap()["phase"],
+            "failed"
+        );
+
+        store
+            .truncate_projection_after_latest_committed_recovery(&session_id)
+            .unwrap();
+
+        let messages = db.get_session_messages(&session_id).unwrap();
+        assert_eq!(messages.len(), 2);
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.id == discarded_message.id)
+        );
+        let steps = db.get_session_steps(&session_id).unwrap();
+        assert_eq!(steps.len(), 2);
+        assert!(steps.iter().any(|step| step.id == kept_step.id));
+        assert!(steps.iter().any(|step| step.id == discarded_step.id));
+        let usage = db.get_session_llm_usage(&session_id).unwrap();
+        assert_eq!(usage.len(), 2);
+        assert!(usage.iter().any(|record| record.id == kept_usage.id));
+        assert!(usage.iter().any(|record| record.id == discarded_usage.id));
+        assert_eq!(
+            db.get_session_usage(&session_id)
+                .unwrap()
+                .unwrap()
+                .total_tokens,
+            30
+        );
+        assert!(
+            store
+                .read_active_domain_events(&session_id)
+                .unwrap()
+                .iter()
+                .all(|event| event.event_type != USAGE_DISCARDED_EVENT_TYPE)
+        );
+        assert!(
+            store
+                .read_all(&session_id)
+                .unwrap()
+                .iter()
+                .any(|event| event.sequence == branch_point.sequence)
+        );
+    }
+
+    #[test]
+    fn latest_malformed_marker_outside_active_replay_blocks_earlier_commit() {
+        let (db, store, session_id) = store();
+        db.add_message(&session_id, "assistant", "kept", None, None)
+            .unwrap();
+        let kept_usage = store
+            .append_usage(&session_id, &usage_input(1, 10))
+            .unwrap();
+        store
+            .append_branch_point(&session_id, 1, 2, Some(&kept_usage.created_at), None)
+            .unwrap();
+        let committed = store
+            .append_recovery_persistence(
+                &session_id,
+                1,
+                2,
+                "committed",
+                RecoveryPersistenceStatus {
+                    branch_point: true,
+                    partial_messages: true,
+                    projection: true,
+                    event_boundary: true,
+                },
+            )
+            .unwrap();
+        store
+            .append(
+                &session_id,
+                RECOVERY_PERSISTENCE_EVENT_TYPE,
+                r#"{"phase":false}"#,
+                Some(1),
+                Some(2),
+            )
+            .unwrap();
+        store
+            .append_rollback(&session_id, committed.sequence, 2, None)
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let later_message = db
+            .add_message(&session_id, "assistant", "must remain", None, None)
+            .unwrap();
+        let later_step = db
+            .create_thought_step(&session_id, 2, &haven_common::types::new_id("step"))
+            .unwrap();
+        let later_usage = store
+            .append_usage(&session_id, &usage_input(2, 20))
+            .unwrap();
+
+        store
+            .truncate_projection_after_latest_committed_recovery(&session_id)
+            .unwrap();
+
+        assert!(
+            db.get_session_messages(&session_id)
+                .unwrap()
+                .iter()
+                .any(|message| message.id == later_message.id)
+        );
+        assert!(
+            db.get_session_steps(&session_id)
+                .unwrap()
+                .iter()
+                .any(|step| step.id == later_step.id)
+        );
+        assert!(
+            db.get_session_llm_usage(&session_id)
+                .unwrap()
+                .iter()
+                .any(|record| record.id == later_usage.id)
+        );
+        assert!(
+            store
+                .read_active_domain_events(&session_id)
+                .unwrap()
+                .iter()
+                .all(|event| event.event_type != USAGE_DISCARDED_EVENT_TYPE)
+        );
+    }
+
+    #[test]
+    fn recovery_truncation_is_noop_without_marker_or_valid_cutoff() {
+        let (db, store, first_session_id) = store();
+        let no_marker = first_session_id;
+        let no_branch_point = db.create_session("no branch point").unwrap().id;
+        let no_cutoff = db.create_session("no cutoff").unwrap().id;
+
+        for (session_id, has_marker, branch_point_cutoff) in [
+            (no_marker.as_str(), false, Some(true)),
+            (no_branch_point.as_str(), true, None),
+            (no_cutoff.as_str(), true, Some(false)),
+        ] {
+            db.add_message(session_id, "assistant", "anchor", None, None)
+                .unwrap();
+            db.create_thought_step(session_id, 1, &haven_common::types::new_id("step"))
+                .unwrap();
+            let anchor_usage = store.append_usage(session_id, &usage_input(1, 10)).unwrap();
+            if let Some(has_cutoff) = branch_point_cutoff {
+                store
+                    .append_branch_point(
+                        session_id,
+                        1,
+                        2,
+                        has_cutoff.then_some(anchor_usage.created_at.as_str()),
+                        None,
+                    )
+                    .unwrap();
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            db.add_message(session_id, "assistant", "later", None, None)
+                .unwrap();
+            db.create_thought_step(session_id, 2, &haven_common::types::new_id("step"))
+                .unwrap();
+            store.append_usage(session_id, &usage_input(2, 20)).unwrap();
+            if has_marker {
+                append_recovery_marker(&store, session_id, "committed");
+            }
+            let message_ids = db
+                .get_session_messages(session_id)
+                .unwrap()
+                .into_iter()
+                .map(|message| message.id)
+                .collect::<Vec<_>>();
+            let step_ids = db
+                .get_session_steps(session_id)
+                .unwrap()
+                .into_iter()
+                .map(|step| step.id)
+                .collect::<Vec<_>>();
+            let usage_ids = db
+                .get_session_llm_usage(session_id)
+                .unwrap()
+                .into_iter()
+                .map(|record| record.id)
+                .collect::<Vec<_>>();
+
+            store
+                .truncate_projection_after_latest_committed_recovery(session_id)
+                .unwrap();
 
             assert_eq!(
                 db.get_session_messages(session_id)

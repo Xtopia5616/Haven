@@ -231,3 +231,4 @@
 - [0240：Session tool overlay 恢复端口](0240-session-tool-overlay-port.md)
 - [0241：聚合流请求对象](0241-aggregated-stream-request-object.md)
 - [0242：Embedding 与 health 请求对象](0242-embedding-and-health-request-objects.md)
+- [0243：在 SessionStore 事务内应用 committed recovery 截断](0243-committed-recovery-truncation.md)
