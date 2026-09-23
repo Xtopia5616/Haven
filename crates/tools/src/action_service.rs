@@ -293,6 +293,38 @@ enum ActionKind {
     Scheduled,
 }
 
+/// Action kind exposed by the task panel projection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ActionViewKind {
+    Background,
+    Scheduled,
+}
+
+/// Safe, typed projection of one in-memory task board row.
+///
+/// This contains only fields used by the task panel. Execution internals such
+/// as shell metadata, log paths, scheduled tool arguments, continuation
+/// prompts, and dependency watch ids deliberately stay in `ActionEntry`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActionView {
+    pub id: String,
+    pub kind: ActionViewKind,
+    pub status: ActionStatus,
+    pub session_id: Option<String>,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+    pub due_at: Option<String>,
+    pub title: Option<String>,
+    pub body: Option<String>,
+    pub mode: Option<String>,
+    pub command: Option<String>,
+    pub output: Option<String>,
+    pub error: Option<String>,
+    pub error_reason: Option<String>,
+    pub exit_code: Option<i32>,
+    pub preview: Option<String>,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct ScheduledActionEntry {
     pub(crate) title: String,
@@ -960,30 +992,23 @@ impl ActionService {
     /// owning session id, and a bounded output/error preview. Surfaces the full
     /// action set to the UI (the per-session variant `list_for_session` serves the
     /// agent). Order: oldest first.
-    pub async fn board(&self) -> Vec<Value> {
+    pub async fn board(&self) -> Vec<ActionView> {
         let actions = self.actions.read().await;
         let mut rows = Vec::new();
         for (id, entry) in actions.iter() {
-            if entry.kind != ActionKind::Background {
-                if let Some(schedule) = &entry.scheduled
-                    && entry.state.status().is_live()
+            match entry.kind {
+                ActionKind::Background => rows.push(project_board_action(id, entry)),
+                ActionKind::Scheduled
+                    if entry.state.status().is_live() && entry.scheduled.is_some() =>
                 {
-                    rows.push(scheduled_status_json(id, schedule, &entry.state, None));
+                    rows.push(project_board_action(id, entry));
                 }
-                continue;
+                ActionKind::Scheduled => {}
             }
-            let mut row = match &entry.state {
-                ActionState::Running { .. } => running_status_json(id, entry),
-                _ => render_status_json(id, &entry.state),
-            };
-            if let Some(tid) = &entry.session_id {
-                row["session_id"] = json!(tid);
-            }
-            row["kind"] = json!("background");
-            attach_preview(&mut row);
-            rows.push(row);
         }
-        rows.sort_by(|a, b| a["started_at"].as_str().cmp(&b["started_at"].as_str()));
+        rows.sort_by(|a: &ActionView, b: &ActionView| {
+            a.started_at.as_deref().cmp(&b.started_at.as_deref())
+        });
         rows
     }
 
@@ -2625,6 +2650,103 @@ impl ActionService {
         }
         overdue
     }
+}
+
+fn project_board_action(action_id: &str, entry: &ActionEntry) -> ActionView {
+    let mut view = ActionView {
+        id: action_id.to_string(),
+        kind: match entry.kind {
+            ActionKind::Background => ActionViewKind::Background,
+            ActionKind::Scheduled => ActionViewKind::Scheduled,
+        },
+        status: entry.state.status(),
+        session_id: entry.session_id.clone(),
+        started_at: None,
+        finished_at: None,
+        due_at: None,
+        title: None,
+        body: None,
+        mode: None,
+        command: None,
+        output: None,
+        error: None,
+        error_reason: None,
+        exit_code: None,
+        preview: None,
+    };
+
+    match &entry.state {
+        ActionState::Waiting { due_at } => {
+            if entry.kind == ActionKind::Scheduled {
+                view.due_at = Some(due_at.clone());
+            }
+        }
+        ActionState::Running { started_at } => {
+            view.started_at = Some(started_at.clone());
+            if entry.kind == ActionKind::Background {
+                view.command = Some(entry.command.clone());
+                view.output = entry.tail.as_ref().and_then(|tail| {
+                    let output = lock_or_recover(tail, "action_output_tail");
+                    (!output.is_empty()).then(|| output.clone())
+                });
+            }
+        }
+        ActionState::Completed {
+            output,
+            exit_code,
+            started_at,
+            finished_at,
+            ..
+        } => {
+            view.started_at = Some(started_at.clone());
+            view.finished_at = Some(finished_at.clone());
+            if entry.kind == ActionKind::Background {
+                view.output = Some(output.clone());
+                view.exit_code = *exit_code;
+            }
+        }
+        ActionState::Failed {
+            error,
+            error_reason,
+            exit_code,
+            started_at,
+            finished_at,
+            ..
+        } => {
+            view.started_at = Some(started_at.clone());
+            view.finished_at = Some(finished_at.clone());
+            view.error_reason = Some(error_reason.clone());
+            if entry.kind == ActionKind::Background {
+                view.error = Some(error.clone());
+                view.exit_code = *exit_code;
+            }
+        }
+        ActionState::Cancelled {
+            started_at,
+            finished_at,
+        } => {
+            view.started_at = Some(started_at.clone());
+            view.finished_at = Some(finished_at.clone());
+        }
+    }
+
+    if entry.kind == ActionKind::Scheduled {
+        if let Some(schedule) = &entry.scheduled {
+            view.due_at = Some(schedule.due_at.clone());
+            view.title = Some(schedule.title.clone());
+            view.body = Some(schedule.body.clone());
+            view.mode = Some(schedule.mode.as_str().to_string());
+        }
+    } else {
+        let preview = view
+            .output
+            .as_deref()
+            .or(view.error.as_deref())
+            .unwrap_or("");
+        view.preview = Some(preview.chars().take(200).collect());
+    }
+
+    view
 }
 
 fn scheduled_status_json(

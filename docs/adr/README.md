@@ -203,3 +203,4 @@
 - [0212：进程服务移出 ToolsManager facade](0212-process-services-off-tools-facade.md)
 - [0213：OperationSpec 是运行时策略与 manifest 的唯一来源](0213-operation-spec-single-policy-source.md)
 - [0214：一次 run 在 SessionActor 任务内执行](0214-react-run-inside-session-actor.md)
+- [0215：任务面板 hydration 使用 typed ActionView](0215-action-board-typed-view.md)

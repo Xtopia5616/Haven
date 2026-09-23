@@ -1,4 +1,5 @@
 use haven_common::{ActionStatus, SessionStatus, SessionWaitingReason};
+use haven_tools::{ActionView, ActionViewKind};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -156,6 +157,32 @@ impl ActionEvent {
             exit_code: None,
             preview: None,
         })
+    }
+}
+
+impl From<ActionView> for ActionEvent {
+    fn from(view: ActionView) -> Self {
+        Self {
+            id: view.id,
+            kind: match view.kind {
+                ActionViewKind::Background => ActionKind::Background,
+                ActionViewKind::Scheduled => ActionKind::Scheduled,
+            },
+            status: Some(view.status),
+            session_id: view.session_id,
+            started_at: view.started_at,
+            finished_at: view.finished_at,
+            due_at: view.due_at,
+            title: view.title,
+            body: view.body,
+            mode: view.mode,
+            command: view.command,
+            output: view.output,
+            error: view.error,
+            error_reason: view.error_reason,
+            exit_code: view.exit_code,
+            preview: view.preview,
+        }
     }
 }
 
@@ -661,6 +688,92 @@ mod tests {
         assert!(wire.get("tool_name").is_none());
         assert!(wire.get("tool_args").is_none());
         assert!(wire.get("prompt").is_none());
+    }
+
+    #[test]
+    fn background_action_view_preserves_the_action_event_wire_contract() {
+        let event = ActionEvent::from(ActionView {
+            id: "act-board-background".into(),
+            kind: ActionViewKind::Background,
+            status: ActionStatus::Completed,
+            session_id: Some("ses-1".into()),
+            started_at: Some("2026-09-23T10:00:00Z".into()),
+            finished_at: Some("2026-09-23T10:00:01Z".into()),
+            due_at: None,
+            title: None,
+            body: None,
+            mode: None,
+            command: None,
+            output: Some("done".into()),
+            error: None,
+            error_reason: None,
+            exit_code: Some(0),
+            preview: Some("done".into()),
+        });
+
+        assert_eq!(
+            serde_json::to_value(event).unwrap(),
+            serde_json::json!({
+                "id": "act-board-background",
+                "kind": "background",
+                "status": "completed",
+                "session_id": "ses-1",
+                "started_at": "2026-09-23T10:00:00Z",
+                "finished_at": "2026-09-23T10:00:01Z",
+                "output": "done",
+                "exit_code": 0,
+                "preview": "done",
+            })
+        );
+    }
+
+    #[test]
+    fn scheduled_action_view_preserves_wire_contract_without_internal_fields() {
+        let event = ActionEvent::from(ActionView {
+            id: "act-board-scheduled".into(),
+            kind: ActionViewKind::Scheduled,
+            status: ActionStatus::Waiting,
+            session_id: Some("ses-2".into()),
+            started_at: None,
+            finished_at: None,
+            due_at: Some("2026-09-24T10:00:00Z".into()),
+            title: Some("Take a break".into()),
+            body: Some("Stand up".into()),
+            mode: Some("continue".into()),
+            command: None,
+            output: None,
+            error: None,
+            error_reason: None,
+            exit_code: None,
+            preview: None,
+        });
+        let wire = serde_json::to_value(event).unwrap();
+
+        assert_eq!(
+            wire,
+            serde_json::json!({
+                "id": "act-board-scheduled",
+                "kind": "scheduled",
+                "status": "waiting",
+                "session_id": "ses-2",
+                "due_at": "2026-09-24T10:00:00Z",
+                "title": "Take a break",
+                "body": "Stand up",
+                "mode": "continue",
+            })
+        );
+        for internal_field in [
+            "tool_args",
+            "prompt",
+            "tool_name",
+            "watch_action_id",
+            "log_path",
+        ] {
+            assert!(
+                wire.get(internal_field).is_none(),
+                "leaked {internal_field}"
+            );
+        }
     }
 
     #[test]

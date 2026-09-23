@@ -20,13 +20,8 @@ pub async fn list_actions(state: State<'_, Arc<AppState>>) -> Result<Vec<ActionE
     let live_rows = state.services.actions.board().await;
     let mut rows = Vec::with_capacity(live_rows.len());
     let mut live_ids = std::collections::HashSet::new();
-    for row in &live_rows {
-        let kind = row.get("kind").and_then(|value| value.as_str());
-        let event = match kind {
-            Some("scheduled") => ActionEvent::scheduled_from_value(row, false),
-            _ => ActionEvent::background_from_value(row),
-        }
-        .map_err(|error| log_err("list_actions task payload", error))?;
+    for row in live_rows {
+        let event = ActionEvent::from(row);
         live_ids.insert(event.id.clone());
         rows.push(event);
     }

@@ -101,11 +101,11 @@ impl CatalogRebuildScope {
 }
 
 pub(crate) use action_lifecycle::{ActionLifecycle, EventSinkState};
-pub use action_service::ActionService;
 pub use action_service::{
     ActionCompletion, ActionCompletionReceiver, BackgroundActionCompletion, EventSink,
     ScheduledActionFired,
 };
+pub use action_service::{ActionService, ActionView, ActionViewKind};
 pub use adapters::{McpToolAdapter, SkillToolAdapter};
 pub use asset_registry::{ManagedAsset, ManagedAssetRegistry};
 pub use builtin::{

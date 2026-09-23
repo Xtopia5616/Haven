@@ -294,12 +294,9 @@ async fn test_running_status_includes_command_and_live_output() {
     }
     // The running row of the board carries the same command + output.
     let board = actions.board().await;
-    let row = board
-        .iter()
-        .find(|r| r["action_id"] == id)
-        .expect("on board");
-    assert!(row["command"].as_str().unwrap().contains("live-line"));
-    assert!(row["preview"].as_str().unwrap_or("").contains("live-line"));
+    let row = board.iter().find(|row| row.id == id).expect("on board");
+    assert!(row.command.as_deref().unwrap().contains("live-line"));
+    assert!(row.preview.as_deref().unwrap_or("").contains("live-line"));
 }
 
 #[cfg(windows)]
@@ -567,20 +564,152 @@ async fn test_board_lists_all_jobs_with_session() {
 
     let rows = actions.board().await;
     assert_eq!(rows.len(), 2, "all actions on board: {rows:?}");
-    let by_id: HashMap<_, _> = rows
-        .iter()
-        .map(|r| (r["action_id"].as_str().unwrap(), r))
-        .collect();
-    assert_eq!(by_id[&id_a.as_str()]["session_id"], "ses-1");
-    assert_eq!(by_id[&id_b.as_str()]["session_id"], "ses-2");
-    assert_eq!(by_id[&id_a.as_str()]["status"], "completed");
+    let by_id: HashMap<_, _> = rows.iter().map(|row| (row.id.as_str(), row)).collect();
+    assert_eq!(by_id[&id_a.as_str()].session_id.as_deref(), Some("ses-1"));
+    assert_eq!(by_id[&id_b.as_str()].session_id.as_deref(), Some("ses-2"));
+    assert_eq!(by_id[&id_a.as_str()].status, ActionStatus::Completed);
     assert!(
-        by_id[&id_a.as_str()]["preview"]
-            .as_str()
+        by_id[&id_a.as_str()]
+            .preview
+            .as_deref()
             .unwrap()
             .contains("action-a"),
         "preview expected, got: {rows:?}"
     );
+}
+
+#[tokio::test]
+async fn board_returns_typed_safe_views_in_started_order() {
+    let service = ActionService::new();
+    let mut actions = service.actions.write().await;
+
+    let scheduled_entry = |state: ActionState, due_at: &str| ActionEntry {
+        kind: ActionKind::Scheduled,
+        session_id: Some("ses-scheduled".into()),
+        state,
+        kill: None,
+        tail: None,
+        command: String::new(),
+        shell: "private-shell".into(),
+        scheduled: Some(ScheduledActionEntry {
+            title: "Safe title".into(),
+            body: "Safe body".into(),
+            due_at: due_at.into(),
+            mode: crate::builtin::scheduled_action::ScheduleMode::Continue,
+            session_id: Some("ses-scheduled".into()),
+            tool_name: Some("private-tool-name".into()),
+            tool_args: Some(json!({"token": "private-tool-args"})),
+            prompt: Some("private-prompt".into()),
+            watch_action_id: Some("private-watch-id".into()),
+        }),
+    };
+
+    let long_output = "x".repeat(220);
+    actions.insert(
+        "act-background-old".into(),
+        ActionEntry {
+            kind: ActionKind::Background,
+            session_id: Some("ses-background".into()),
+            state: ActionState::Completed {
+                output: long_output.clone(),
+                exit_code: Some(0),
+                truncated: false,
+                log_path: Some("private-log-path".into()),
+                started_at: "2026-09-23T10:00:01Z".into(),
+                finished_at: "2026-09-23T10:00:02Z".into(),
+            },
+            kill: None,
+            tail: None,
+            command: "echo done".into(),
+            shell: "private-shell".into(),
+            scheduled: None,
+        },
+    );
+    actions.insert(
+        "act-scheduled-waiting".into(),
+        scheduled_entry(
+            ActionState::Waiting {
+                due_at: "2026-09-23T10:30:00Z".into(),
+            },
+            "2026-09-23T10:30:00Z",
+        ),
+    );
+    actions.insert(
+        "act-scheduled-running".into(),
+        scheduled_entry(
+            ActionState::Running {
+                started_at: "2026-09-23T10:00:03Z".into(),
+            },
+            "2026-09-23T10:30:00Z",
+        ),
+    );
+    actions.insert(
+        "act-background-running".into(),
+        ActionEntry {
+            kind: ActionKind::Background,
+            session_id: None,
+            state: ActionState::Running {
+                started_at: "2026-09-23T10:00:04Z".into(),
+            },
+            kill: None,
+            tail: Some(Arc::new(Mutex::new("live output".into()))),
+            command: "echo live output".into(),
+            shell: "private-shell".into(),
+            scheduled: None,
+        },
+    );
+    drop(actions);
+
+    let board = service.board().await;
+    assert_eq!(
+        board.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
+        [
+            "act-scheduled-waiting",
+            "act-background-old",
+            "act-scheduled-running",
+            "act-background-running",
+        ]
+    );
+
+    assert_eq!(board[0].kind, ActionViewKind::Scheduled);
+    assert_eq!(board[0].status, ActionStatus::Waiting);
+    assert_eq!(board[0].due_at.as_deref(), Some("2026-09-23T10:30:00Z"));
+    assert_eq!(board[0].title.as_deref(), Some("Safe title"));
+    assert_eq!(board[0].body.as_deref(), Some("Safe body"));
+    assert_eq!(board[0].mode.as_deref(), Some("continue"));
+
+    assert_eq!(board[1].kind, ActionViewKind::Background);
+    assert_eq!(board[1].status, ActionStatus::Completed);
+    assert_eq!(board[1].output.as_deref(), Some(long_output.as_str()));
+    assert_eq!(board[1].exit_code, Some(0));
+    assert_eq!(board[1].preview.as_deref().map(str::len), Some(200));
+
+    assert_eq!(board[2].kind, ActionViewKind::Scheduled);
+    assert_eq!(board[2].status, ActionStatus::Running);
+    assert_eq!(board[2].started_at.as_deref(), Some("2026-09-23T10:00:03Z"));
+
+    assert_eq!(board[3].kind, ActionViewKind::Background);
+    assert_eq!(board[3].status, ActionStatus::Running);
+    assert_eq!(board[3].command.as_deref(), Some("echo live output"));
+    assert_eq!(board[3].output.as_deref(), Some("live output"));
+    assert_eq!(board[3].preview.as_deref(), Some("live output"));
+
+    for row in &board {
+        let debug_view = format!("{row:?}");
+        for internal_value in [
+            "private-shell",
+            "private-tool-name",
+            "private-tool-args",
+            "private-prompt",
+            "private-watch-id",
+            "private-log-path",
+        ] {
+            assert!(
+                !debug_view.contains(internal_value),
+                "board view leaked internal value {internal_value}: {debug_view}"
+            );
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -683,9 +812,12 @@ async fn test_unified_service_owns_scheduled_state_and_cancel() {
 
     let board = service.board().await;
     assert_eq!(board.len(), 1);
-    assert_eq!(board[0]["action_id"], id);
-    assert_eq!(board[0]["kind"], "scheduled");
-    assert_eq!(board[0]["status"], "waiting");
+    assert_eq!(board[0].id, id);
+    assert_eq!(board[0].kind, ActionViewKind::Scheduled);
+    assert_eq!(board[0].status, ActionStatus::Waiting);
+    assert_eq!(board[0].title.as_deref(), Some("Unified"));
+    assert_eq!(board[0].body.as_deref(), Some("still waiting"));
+    assert_eq!(board[0].mode.as_deref(), Some("continue"));
     assert_eq!(
         service.status_for_session(&id, "ses-unified").await["status"],
         "waiting"
