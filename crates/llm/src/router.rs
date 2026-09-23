@@ -758,40 +758,38 @@ impl LlmRouter {
     }
 
     // §2.12: apply total timeout wrapper
-    async fn with_total_timeout<F, Fut>(&self, f: F) -> Result<LlmResponse, LlmError>
+    async fn with_total_timeout<F, Fut>(
+        policy: RequestPolicy,
+        f: F,
+    ) -> Result<LlmResponse, LlmError>
     where
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = Result<LlmResponse, LlmError>>,
     {
-        let cfg = self.config.read().await;
-        let max_dur = cfg.max_total_duration_secs.max(1);
-        drop(cfg);
-        execute_with_timeout(max_dur, "router", f).await
+        execute_with_timeout(policy.total_timeout_secs, "router", f).await
     }
 
     // §2.11: execute with retry on the selected endpoint
     async fn call_with_retry(
         &self,
+        policy: RequestPolicy,
         model_id: String,
         client: Arc<dyn LlmClient>,
         messages: Vec<CanonicalMessage>,
         tools: Vec<ToolDefinition>,
         max_output_tokens: Option<u32>,
     ) -> Result<LlmResponse, LlmError> {
-        let cfg = self.config.read().await;
-        let primary_policy = RequestPolicy::primary(&cfg);
-        drop(cfg);
         client.validate_content(&messages)?;
 
         let result = if tools.is_empty() {
-            execute_with_retry(primary_policy.retry, None, || async {
+            execute_with_retry(policy.retry, None, || async {
                 client
                     .chat_with_output_cap(messages.clone(), max_output_tokens)
                     .await
             })
             .await
         } else {
-            execute_with_retry(primary_policy.retry, None, || async {
+            execute_with_retry(policy.retry, None, || async {
                 client
                     .chat_with_tools_output_cap(messages.clone(), tools.clone(), max_output_tokens)
                     .await
@@ -807,6 +805,28 @@ impl LlmRouter {
             }
         }
         result
+    }
+
+    /// Ordinary and tool chat share one policy snapshot and execution boundary.
+    async fn execute_chat_request(
+        &self,
+        request: RequestKind,
+        messages: Vec<CanonicalMessage>,
+        tools: Vec<ToolDefinition>,
+        max_output_tokens: Option<u32>,
+    ) -> Result<LlmResponse, LlmError> {
+        self.with_request_permit(request, |model_id, client| async move {
+            let config = self.config.read().await;
+            let policy = RequestPolicy::primary(&config);
+            drop(config);
+
+            Self::with_total_timeout(policy, || async {
+                self.call_with_retry(policy, model_id, client, messages, tools, max_output_tokens)
+                    .await
+            })
+            .await
+        })
+        .await
     }
 
     pub async fn chat(
@@ -848,14 +868,8 @@ impl LlmRouter {
         messages: Vec<CanonicalMessage>,
         max_output_tokens: Option<u32>,
     ) -> Result<LlmResponse, LlmError> {
-        self.with_request_permit(request, |model_id, client| async move {
-            self.with_total_timeout(|| async {
-                self.call_with_retry(model_id, client, messages, Vec::new(), max_output_tokens)
-                    .await
-            })
+        self.execute_chat_request(request, messages, Vec::new(), max_output_tokens)
             .await
-        })
-        .await
     }
 
     /// Convenience wrapper that builds a `System + User` message pair (or just
@@ -961,14 +975,8 @@ impl LlmRouter {
         tools: Vec<ToolDefinition>,
         max_output_tokens: Option<u32>,
     ) -> Result<LlmResponse, LlmError> {
-        self.with_request_permit(request, |model_id, client| async move {
-            self.with_total_timeout(|| async {
-                self.call_with_retry(model_id, client, messages, tools, max_output_tokens)
-                    .await
-            })
+        self.execute_chat_request(request, messages, tools, max_output_tokens)
             .await
-        })
-        .await
     }
 
     pub async fn chat_stream(
@@ -2821,22 +2829,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn chat_with_output_cap_forwards_cap_to_client() {
-        struct OutputCapProbe(Arc<StdMutex<Option<u32>>>);
+    async fn chat_paths_share_policy_execution_and_preserve_cap_and_usage() {
+        struct ChatPathProbe(Arc<StdMutex<Vec<(bool, Option<u32>, usize)>>>);
+
+        fn response() -> LlmResponse {
+            LlmResponse {
+                text: "ok".into(),
+                tool_calls: Vec::new(),
+                finish_reason: Some(FinishReason::Stop),
+                usage: Usage {
+                    prompt_tokens: 23,
+                    completion_tokens: 11,
+                    total_tokens: 34,
+                    ..Usage::default()
+                },
+                model: None,
+                reasoning: None,
+                web_search_calls: Vec::new(),
+                thinking_blocks: Vec::new(),
+            }
+        }
 
         #[async_trait]
-        impl LlmClient for OutputCapProbe {
+        impl LlmClient for ChatPathProbe {
             async fn chat(&self, _: Vec<CanonicalMessage>) -> Result<LlmResponse, LlmError> {
-                Ok(LlmResponse {
-                    text: "ok".into(),
-                    tool_calls: Vec::new(),
-                    finish_reason: Some(FinishReason::Stop),
-                    usage: Usage::default(),
-                    model: None,
-                    reasoning: None,
-                    web_search_calls: Vec::new(),
-                    thinking_blocks: Vec::new(),
-                })
+                Ok(response())
             }
 
             async fn chat_with_output_cap(
@@ -2844,8 +2861,21 @@ mod tests {
                 _: Vec<CanonicalMessage>,
                 max_output_tokens: Option<u32>,
             ) -> Result<LlmResponse, LlmError> {
-                *self.0.lock().unwrap() = max_output_tokens;
-                self.chat(Vec::new()).await
+                self.0.lock().unwrap().push((false, max_output_tokens, 0));
+                Ok(response())
+            }
+
+            async fn chat_with_tools_output_cap(
+                &self,
+                _: Vec<CanonicalMessage>,
+                tools: Vec<ToolDefinition>,
+                max_output_tokens: Option<u32>,
+            ) -> Result<LlmResponse, LlmError> {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push((true, max_output_tokens, tools.len()));
+                Ok(response())
             }
 
             async fn chat_stream(
@@ -2863,15 +2893,36 @@ mod tests {
             }
         }
 
-        let seen = Arc::new(StdMutex::new(None));
-        let client: Arc<dyn LlmClient> = Arc::new(OutputCapProbe(seen.clone()));
+        let seen = Arc::new(StdMutex::new(Vec::new()));
+        let client: Arc<dyn LlmClient> = Arc::new(ChatPathProbe(seen.clone()));
         let router =
             LlmRouter::new_with_clients(client.clone(), client.clone(), client.clone(), client);
-        router
+        let ordinary = router
             .chat_with_output_cap(RequestKind::Chat, Vec::new(), Some(37))
             .await
             .unwrap();
-        assert_eq!(*seen.lock().unwrap(), Some(37));
+        let tools = vec![ToolDefinition {
+            tool_type: "function".into(),
+            function: crate::types::ToolFunction {
+                name: "probe".into(),
+                description: "test tool".into(),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+        }];
+        let tool_response = router
+            .chat_with_tools_output_cap(RequestKind::Chat, Vec::new(), tools, Some(41))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![(false, Some(37), 0), (true, Some(41), 1)]
+        );
+        for result in [ordinary, tool_response] {
+            assert_eq!(result.usage.prompt_tokens, 23);
+            assert_eq!(result.usage.completion_tokens, 11);
+            assert_eq!(result.usage.total_tokens, 34);
+        }
     }
 
     #[tokio::test]

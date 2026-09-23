@@ -209,3 +209,4 @@
 - [0218：Usage 写入边界收口](0218-usage-write-boundary.md)
 - [0219：Stream identity 的运行时边界](0219-stream-identity-runtime-boundary.md)
 - [0220：移除 run budget 的死写 actor 状态](0220-run-budget-sidecar-removal.md)
+- [0221：普通与工具 chat 固定 RequestPolicy 快照](0221-chat-request-policy-snapshot.md)
