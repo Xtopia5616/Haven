@@ -750,12 +750,10 @@ impl ReActEngine {
         }
         // Mint the block ids this call's chunks accumulate into. Reused by
         // the chunk events, the snap and the final persistence of this step.
-        let thought_msg_id = self
-            .ensure_msg_id(&ctx.session_id, ctx.step_num, ctx.run_id, "thought")
-            .await;
-        let reasoning_msg_id = self
-            .ensure_msg_id(&ctx.session_id, ctx.step_num, ctx.run_id, "reasoning")
-            .await;
+        let thought_msg_id =
+            self.ensure_msg_id(&ctx.session_id, ctx.step_num, ctx.run_id, "thought");
+        let reasoning_msg_id =
+            self.ensure_msg_id(&ctx.session_id, ctx.step_num, ctx.run_id, "reasoning");
         let limits = self.limits();
         let (forwarder, on_chunk, on_attempt_start) = StreamForwarder::new(
             self.metrics.clone(),

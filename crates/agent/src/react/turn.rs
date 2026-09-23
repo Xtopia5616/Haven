@@ -299,9 +299,7 @@ impl ReActEngine {
         };
 
         if let Some(reasoning) = response.reasoning.clone() {
-            let reasoning_id = self
-                .block_msg_id(session_id, step_num, ctx.run_id, "reasoning")
-                .await;
+            let reasoning_id = self.block_msg_id(session_id, step_num, ctx.run_id, "reasoning");
             effects.transcript(TranscriptEvent::Reasoning {
                 text: reasoning.clone(),
                 message_id: reasoning_id.clone(),
@@ -339,9 +337,7 @@ impl ReActEngine {
         }
 
         if let Some(text) = thought.clone() {
-            let message_id = self
-                .block_msg_id(session_id, step_num, ctx.run_id, "thought")
-                .await;
+            let message_id = self.block_msg_id(session_id, step_num, ctx.run_id, "thought");
             effects.transcript(TranscriptEvent::Thought { text, message_id });
         }
 

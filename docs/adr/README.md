@@ -207,3 +207,4 @@
 - [0216：RuntimeConfigCoordinator 日志级别应用切片](0216-runtime-config-coordinator.md)
 - [0217：continue_session 失败步骤投影截断边界](0217-continue-projection-truncation.md)
 - [0218：Usage 写入边界收口](0218-usage-write-boundary.md)
+- [0219：Stream identity 的运行时边界](0219-stream-identity-runtime-boundary.md)

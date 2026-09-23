@@ -50,6 +50,7 @@ use context::ContextSource;
 pub(crate) use context::action_result_message_id;
 pub(crate) use hooks::{InferCallback, MemoryPatchHandle, default_hooks_with_infer_and_patch};
 use hooks::{LoopHooksHandle, default_hooks};
+use identity::IdentityMap;
 pub use r#loop::{LoopExit, PauseReason};
 pub(crate) use r#loop::{RunInput, RunReplay};
 use metrics::{Counter as MetricsCounter, Phase as MetricsPhase, ReActMetrics};
@@ -330,6 +331,8 @@ pub struct ReActEngine {
     router: Arc<RwLock<Arc<LlmRouter>>>,
     executor: Arc<SessionSupervisor>,
     db: Arc<Database>,
+    /// Process-local streamed message identity, shared by all engine callers.
+    identity_map: IdentityMap,
     /// Durable transcript/event boundary. All new transcript records are
     /// appended here before entering the in-memory projection; checkpoint
     /// metadata is written through the same store.
@@ -398,6 +401,7 @@ impl ReActEngine {
             router: Arc::new(RwLock::new(router)),
             executor,
             db,
+            identity_map: IdentityMap::default(),
             event_store,
             max_steps: Mutex::new(max_steps),
             session_max_steps: Mutex::new(None),
@@ -468,58 +472,30 @@ impl ReActEngine {
 
     /// Mint (or reuse) the id a streamed thought/reasoning block accumulates
     /// into (Phase 6 / I3 — delegates to [`IdentityMap`]).
-    pub(super) async fn ensure_msg_id(
+    pub(super) fn ensure_msg_id(
         &self,
         session_id: &str,
         step: u32,
         run: u64,
         kind: &'static str,
     ) -> String {
-        let actor = match self.executor.actor_for(session_id).await {
-            Some(actor) => Some(actor),
-            None => {
-                let _ = self.executor.ensure_session_loaded(session_id).await;
-                self.executor.actor_for(session_id).await
-            }
-        };
-        if let Some(actor) = actor
-            && let Some(id) = actor.ensure_stream_id(step, run, kind).await
-        {
-            return id;
-        }
-        let prefix = if kind == "thought" { "step" } else { "msg" };
-        haven_common::types::new_id(prefix)
+        self.identity_map.ensure_msg_id(session_id, step, run, kind)
     }
 
     /// The id a streamed block is persisted under (minted or fresh fallback).
-    pub(super) async fn block_msg_id(
+    pub(super) fn block_msg_id(
         &self,
         session_id: &str,
         step: u32,
         run: u64,
         kind: &'static str,
     ) -> String {
-        let actor = match self.executor.actor_for(session_id).await {
-            Some(actor) => Some(actor),
-            None => {
-                let _ = self.executor.ensure_session_loaded(session_id).await;
-                self.executor.actor_for(session_id).await
-            }
-        };
-        if let Some(actor) = actor
-            && let Some(id) = actor.block_stream_id(step, run, kind).await
-        {
-            return id;
-        }
-        let prefix = if kind == "thought" { "step" } else { "msg" };
-        haven_common::types::new_id(prefix)
+        self.identity_map.block_msg_id(session_id, step, run, kind)
     }
 
     /// Drop every minted message id belonging to a session.
     pub(super) fn clear_msg_ids_for_session(&self, session_id: &str) {
-        if let Some(actor) = self.executor.actor_for_now(session_id) {
-            actor.clear_stream_ids_now();
-        }
+        self.identity_map.clear_for_session(session_id);
     }
 
     pub(super) fn clear_run_budget_now(&self, session_id: &str) {
@@ -1381,6 +1357,42 @@ mod tests {
     use haven_llm::client::LlmClient;
     use haven_llm::types::{FinishReason, LlmError, LlmResponse, StreamChunk};
     use std::pin::Pin;
+
+    #[test]
+    fn engine_stream_identity_is_direct_and_preserves_block_reuse() {
+        let directory = tempfile::tempdir().expect("temporary database directory");
+        let db = Arc::new(
+            Database::open(&directory.path().join("identity.db")).expect("temporary database"),
+        );
+        let executor = Arc::new(SessionSupervisor::new(
+            db.clone(),
+            Arc::new(haven_tools::ToolsManager::new()),
+            1,
+        ));
+        let engine = ReActEngine::new(
+            Arc::new(mock_router()),
+            executor.clone(),
+            db,
+            4,
+            ContextLimitsConfig::default(),
+        );
+
+        let thought_id = engine.ensure_msg_id("ses-identity-test", 3, 8, "thought");
+        assert!(thought_id.starts_with("step-"));
+        assert_eq!(
+            engine.block_msg_id("ses-identity-test", 3, 8, "thought"),
+            thought_id
+        );
+        assert!(executor.actor_for_now("ses-identity-test").is_none());
+
+        engine.clear_msg_ids_for_session("ses-identity-test");
+        assert!(
+            engine
+                .identity_map
+                .peek_msg_id("ses-identity-test", 3, 8, "thought")
+                .is_none()
+        );
+    }
 
     struct MockLlm {
         profile: CapabilityProfile,

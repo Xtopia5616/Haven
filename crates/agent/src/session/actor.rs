@@ -5,15 +5,14 @@
 //! commands; they never acquire a lock around `SessionInfo` or one of the
 //! session's auxiliary queues.
 //!
-//! ADR 0214：热 transcript 的目标主人是这里的 `SessionState`。一次 run 要在
-//! 本任务内执行，并且只在 yield 点拿 `&mut SessionState`。mailbox 只接收外部
-//! 命令。usage、stream id 和 token estimate 是函数调用，不是命令；在 run
-//! 迁入本任务之前，不要再增加这类内部命令，也不要只把缓存搬进来。
+//! ADR 0214 的目标是让热 transcript 由这里的 `SessionState` 持有，并让一次 run
+//! 在本任务内只于 yield 点借用 `&mut SessionState`。stream identity 已按 ADR 0219
+//! 移为 ReActEngine 的进程内 sidecar；usage、token estimate 和 run budget 仍有内部
+//! mailbox 命令，留待后续切片处理。
 
 use super::RunEngine;
 use super::{FollowUp, SessionInfo, SessionStatus, SessionWaitingReason, StepInfo};
 use crate::interaction::{InteractionKind, InteractionRequest, InteractionStatus};
-use crate::react::identity::IdentityMap;
 use crate::react::sidecars::{CumulativeTotals, CumulativeUsage, TokenEstimateCache, UsageTracker};
 use crate::react::{LoopExit, ReActEngine, ReActState, RunInput, RunReplay};
 use crate::types::RunBudget;
@@ -226,19 +225,6 @@ pub(crate) enum ActorCommand {
         budget: RunBudget,
     },
     ClearRunBudget,
-    EnsureStreamId {
-        step: u32,
-        run: u64,
-        kind: &'static str,
-        reply: oneshot::Sender<String>,
-    },
-    BlockStreamId {
-        step: u32,
-        run: u64,
-        kind: &'static str,
-        reply: oneshot::Sender<String>,
-    },
-    ClearStreamIds,
     RecordUsage {
         update: UsageUpdate,
         reply: oneshot::Sender<anyhow::Result<CumulativeTotals>>,
@@ -497,46 +483,6 @@ impl SessionActorHandle {
 
     pub(crate) fn clear_run_budget_now(&self) {
         let _ = self.tx.try_send(ActorCommand::ClearRunBudget);
-    }
-
-    pub(crate) async fn ensure_stream_id(
-        &self,
-        step: u32,
-        run: u64,
-        kind: &'static str,
-    ) -> Option<String> {
-        let (reply, rx) = oneshot::channel();
-        self.send(ActorCommand::EnsureStreamId {
-            step,
-            run,
-            kind,
-            reply,
-        })
-        .await
-        .ok()?;
-        rx.await.ok()
-    }
-
-    pub(crate) async fn block_stream_id(
-        &self,
-        step: u32,
-        run: u64,
-        kind: &'static str,
-    ) -> Option<String> {
-        let (reply, rx) = oneshot::channel();
-        self.send(ActorCommand::BlockStreamId {
-            step,
-            run,
-            kind,
-            reply,
-        })
-        .await
-        .ok()?;
-        rx.await.ok()
-    }
-
-    pub(crate) fn clear_stream_ids_now(&self) {
-        let _ = self.tx.try_send(ActorCommand::ClearStreamIds);
     }
 
     pub(crate) async fn record_usage(
@@ -986,16 +932,14 @@ pub(crate) struct SessionState {
     archive: VecDeque<Envelope>,
     active_message_ids: HashSet<String>,
     archive_message_ids: HashSet<String>,
-    /// Run-local identity and budget belong to the session actor, not to the
-    /// process-wide ReAct facade.  The rest of the runtime state is migrated
-    /// through the same command boundary below.
+    /// Session-local run budget and sidecars belong to the actor. Stream
+    /// identity is process-local and owned by ReActEngine (ADR 0219).
     runtime: SessionRuntimeState,
 }
 
 #[derive(Default)]
 struct SessionRuntimeState {
     run_budget: Option<RunBudget>,
-    stream_identity: IdentityMap,
     usage: UsageTracker,
     token_estimates: TokenEstimateCache,
     messaging: SessionMessagingState,
@@ -1440,38 +1384,6 @@ pub(crate) fn spawn(
                 }
                 ActorCommand::ClearRunBudget => {
                     state.runtime.run_budget = None;
-                }
-                ActorCommand::EnsureStreamId {
-                    step,
-                    run,
-                    kind,
-                    reply,
-                } => {
-                    let _ = reply.send(state.runtime.stream_identity.ensure_msg_id(
-                        &state.info.id,
-                        step,
-                        run,
-                        kind,
-                    ));
-                }
-                ActorCommand::BlockStreamId {
-                    step,
-                    run,
-                    kind,
-                    reply,
-                } => {
-                    let _ = reply.send(state.runtime.stream_identity.block_msg_id(
-                        &state.info.id,
-                        step,
-                        run,
-                        kind,
-                    ));
-                }
-                ActorCommand::ClearStreamIds => {
-                    state
-                        .runtime
-                        .stream_identity
-                        .clear_for_session(&state.info.id);
                 }
                 ActorCommand::RecordUsage { update, reply } => {
                     let result = record_usage(&db, &store, &mut state, update).await;
