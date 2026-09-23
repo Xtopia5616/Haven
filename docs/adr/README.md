@@ -228,3 +228,5 @@
 - [0237：定时任务授权入口收口](0237-scheduled-authorization-port.md)
 - [0238：SessionStore 恢复读取端口](0238-session-recovery-read-ports.md)
 - [0239：删除已无调用者的 facade API](0239-remove-unused-facade-apis.md)
+- [0240：Session tool overlay 恢复端口](0240-session-tool-overlay-port.md)
+- [0241：聚合流请求对象](0241-aggregated-stream-request-object.md)
