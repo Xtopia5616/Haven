@@ -596,7 +596,6 @@ async fn board_returns_typed_safe_views_in_started_order() {
             body: "Safe body".into(),
             due_at: due_at.into(),
             mode: crate::builtin::scheduled_action::ScheduleMode::Continue,
-            session_id: Some("ses-scheduled".into()),
             tool_name: Some("private-tool-name".into()),
             tool_args: Some(json!({"token": "private-tool-args"})),
             prompt: Some("private-prompt".into()),
@@ -627,12 +626,7 @@ async fn board_returns_typed_safe_views_in_started_order() {
     );
     actions.insert(
         "act-scheduled-waiting".into(),
-        scheduled_entry(
-            ActionState::Waiting {
-                due_at: "2026-09-23T10:30:00Z".into(),
-            },
-            "2026-09-23T10:30:00Z",
-        ),
+        scheduled_entry(ActionState::Waiting, "2026-09-23T10:30:00Z"),
     );
     actions.insert(
         "act-scheduled-running".into(),
@@ -673,6 +667,7 @@ async fn board_returns_typed_safe_views_in_started_order() {
 
     assert_eq!(board[0].kind, ActionViewKind::Scheduled);
     assert_eq!(board[0].status, ActionStatus::Waiting);
+    assert_eq!(board[0].session_id.as_deref(), Some("ses-scheduled"));
     assert_eq!(board[0].due_at.as_deref(), Some("2026-09-23T10:30:00Z"));
     assert_eq!(board[0].title.as_deref(), Some("Safe title"));
     assert_eq!(board[0].body.as_deref(), Some("Safe body"));
@@ -817,7 +812,17 @@ async fn test_unified_service_owns_scheduled_state_and_cancel() {
     assert_eq!(board[0].status, ActionStatus::Waiting);
     assert_eq!(board[0].title.as_deref(), Some("Unified"));
     assert_eq!(board[0].body.as_deref(), Some("still waiting"));
+    assert_eq!(board[0].session_id.as_deref(), Some("ses-unified"));
+    assert!(
+        board[0]
+            .due_at
+            .as_deref()
+            .is_some_and(|due_at| !due_at.is_empty())
+    );
     assert_eq!(board[0].mode.as_deref(), Some("continue"));
+    let status = service.status(&id).await;
+    assert_eq!(status["session_id"], "ses-unified");
+    assert_eq!(status["due_at"], board[0].due_at.as_deref().unwrap());
     assert_eq!(
         service.status_for_session(&id, "ses-unified").await["status"],
         "waiting"
@@ -827,6 +832,71 @@ async fn test_unified_service_owns_scheduled_state_and_cancel() {
     assert!(service.cancel_for_session(&id, "ses-unified").await);
     assert!(service.board().await.is_empty());
     assert_eq!(service.status(&id).await["status"], "cancelled");
+}
+
+#[tokio::test]
+async fn test_restore_scheduled_action_uses_action_session_and_schedule_due_at() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let db = Arc::new(haven_memory::Database::open(&dir.path().join("test.db")).unwrap());
+    let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink_events = events.clone();
+    let due_at = (chrono::Utc::now() + chrono::Duration::days(1)).to_rfc3339();
+    db.save_scheduled_action(
+        "act-restore-owner",
+        &due_at,
+        "Restored",
+        "restored payload",
+        "continue",
+        Some("ses-restored"),
+        None,
+        None,
+        Some("continue after restore"),
+    )
+    .unwrap();
+    let service = Arc::new(ActionService::new());
+    service.set_event_sink(Arc::new(move |name, payload| {
+        sink_events.lock().unwrap().push((name, payload));
+    }));
+    service.set_db(Some(db)).await;
+
+    assert_eq!(service.restore_pending().await, 0);
+    let status = service.status("act-restore-owner").await;
+    assert_eq!(status["status"], "waiting");
+    assert_eq!(status["session_id"], "ses-restored");
+    assert_eq!(status["due_at"], due_at);
+    assert_eq!(
+        service
+            .status_for_session("act-restore-owner", "ses-restored")
+            .await["status"],
+        "waiting"
+    );
+    assert_eq!(
+        service
+            .status_for_session("act-restore-owner", "ses-other")
+            .await["status"],
+        "not_found"
+    );
+    assert!(
+        !service
+            .cancel_for_session("act-restore-owner", "ses-other")
+            .await
+    );
+    assert!(
+        service
+            .cancel_for_session("act-restore-owner", "ses-restored")
+            .await
+    );
+    let cancelled = events
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|(name, payload)| {
+            name == "action:finished" && payload["action_id"] == "act-restore-owner"
+        })
+        .map(|(_, payload)| payload.clone())
+        .expect("restored scheduled cancellation event");
+    assert_eq!(cancelled["session_id"], "ses-restored");
+    assert_eq!(cancelled["due_at"], due_at);
 }
 
 #[tokio::test]
@@ -848,7 +918,7 @@ async fn test_unified_completion_bus_emits_scheduled_transition() {
             title: "Bus".into(),
             body: "fire".into(),
             mode: crate::builtin::scheduled_action::ScheduleMode::Tool,
-            session_id: None,
+            session_id: Some("ses-bus".into()),
             tool_name: Some("notify".into()),
             tool_args: None,
             prompt: None,
@@ -861,7 +931,10 @@ async fn test_unified_completion_bus_emits_scheduled_transition() {
         .expect("scheduled event received")
         .expect("unified bus open");
     match event {
-        ActionCompletion::Scheduled(fired) => assert_eq!(fired.action_id, id),
+        ActionCompletion::Scheduled(fired) => {
+            assert_eq!(fired.action_id, id);
+            assert_eq!(fired.session_id.as_deref(), Some("ses-bus"));
+        }
         ActionCompletion::Background(_) => panic!("scheduled fire used the background variant"),
     }
     assert_eq!(service.status(&id).await["status"], "running");
@@ -873,8 +946,17 @@ async fn test_unified_completion_bus_emits_scheduled_transition() {
         .map(|(_, payload)| payload.clone())
         .expect("scheduled running update event");
     assert_eq!(updated["status"], "running");
+    assert_eq!(updated["session_id"], "ses-bus");
     service.complete_scheduled(&id).await.unwrap();
     assert_eq!(service.status(&id).await["status"], "completed");
+    assert!(
+        !service
+            .pending_scheduled_fires
+            .read()
+            .await
+            .contains_key(&id)
+    );
+    assert!(!service.scheduled_fire_claims.read().await.contains_key(&id));
 }
 
 #[tokio::test]
@@ -894,7 +976,7 @@ async fn test_scheduled_fire_without_receiver_is_requeued_durably() {
             title: "No receiver".into(),
             body: "keep waiting".into(),
             mode: crate::builtin::scheduled_action::ScheduleMode::Continue,
-            session_id: None,
+            session_id: Some("ses-no-receiver".into()),
             tool_name: None,
             tool_args: None,
             prompt: Some("keep waiting".into()),
@@ -907,6 +989,15 @@ async fn test_scheduled_fire_without_receiver_is_requeued_durably() {
     assert_eq!(service.status(&id).await["status"], "waiting");
     let pending = db.list_pending_scheduled_actions().unwrap();
     assert_eq!(pending.iter().filter(|row| row.id == id).count(), 1);
+    assert_eq!(
+        pending
+            .iter()
+            .find(|row| row.id == id)
+            .unwrap()
+            .session_id
+            .as_deref(),
+        Some("ses-no-receiver")
+    );
     assert_eq!(
         pending.iter().find(|row| row.id == id).unwrap().status,
         haven_common::ActionStatus::Waiting
@@ -921,7 +1012,8 @@ async fn test_scheduled_fire_without_receiver_is_requeued_durably() {
         .await
         .expect("re-armed scheduled timer did not fire")
         .expect("completion bus open");
-    assert!(matches!(fired, ActionCompletion::Scheduled(ref value) if value.action_id == id));
+    assert!(matches!(fired, ActionCompletion::Scheduled(ref value)
+        if value.action_id == id && value.session_id.as_deref() == Some("ses-no-receiver")));
     service.complete_scheduled(&id).await.unwrap();
 }
 

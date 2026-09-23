@@ -256,9 +256,7 @@ pub use crate::action_lifecycle::EventSink;
 enum ActionState {
     /// A timer/dependency action is admitted but has not started its fire
     /// transition yet.
-    Waiting {
-        due_at: String,
-    },
+    Waiting,
     Running {
         started_at: String,
     },
@@ -331,7 +329,6 @@ pub(crate) struct ScheduledActionEntry {
     pub(crate) body: String,
     pub(crate) due_at: String,
     pub(crate) mode: crate::builtin::scheduled_action::ScheduleMode,
-    pub(crate) session_id: Option<String>,
     pub(crate) tool_name: Option<String>,
     pub(crate) tool_args: Option<Value>,
     pub(crate) prompt: Option<String>,
@@ -341,7 +338,7 @@ pub(crate) struct ScheduledActionEntry {
 impl ActionState {
     fn status(&self) -> ActionStatus {
         match self {
-            Self::Waiting { .. } => ActionStatus::Waiting,
+            Self::Waiting => ActionStatus::Waiting,
             Self::Running { .. } => ActionStatus::Running,
             Self::Completed { .. } => ActionStatus::Completed,
             Self::Failed { .. } => ActionStatus::Failed,
@@ -350,7 +347,7 @@ impl ActionState {
     }
 
     fn is_waiting(&self) -> bool {
-        matches!(self, Self::Waiting { .. })
+        matches!(self, Self::Waiting)
     }
 
     fn can_transition_to(&self, next: ActionStatus) -> bool {
@@ -389,7 +386,7 @@ fn terminal_entry_stale(entry: &ActionEntry, ttl: Duration) -> bool {
         ActionState::Completed { finished_at, .. }
         | ActionState::Failed { finished_at, .. }
         | ActionState::Cancelled { finished_at, .. } => finished_at,
-        ActionState::Running { .. } | ActionState::Waiting { .. } => return false,
+        ActionState::Running { .. } | ActionState::Waiting => return false,
     };
     let finished_ts = match chrono::DateTime::parse_from_rfc3339(finished) {
         Ok(t) => t.with_timezone(&chrono::Utc),
@@ -903,7 +900,7 @@ impl ActionService {
             ActionState::Cancelled { finished_at, .. } => {
                 (None, None, None, None, None, finished_at.as_str())
             }
-            ActionState::Running { .. } | ActionState::Waiting { .. } => return,
+            ActionState::Running { .. } | ActionState::Waiting => return,
         };
         let action_id = action_id.to_string();
         let status = state.status();
@@ -965,7 +962,7 @@ impl ActionService {
             ActionState::Completed { .. } => ActionStatus::Completed,
             ActionState::Failed { .. } => ActionStatus::Failed,
             ActionState::Cancelled { .. } => ActionStatus::Cancelled,
-            ActionState::Running { .. } | ActionState::Waiting { .. } => return,
+            ActionState::Running { .. } | ActionState::Waiting => return,
         };
         let status_json = render_status_json(action_id, &state);
         self.persist_terminal(action_id, &state, &status_json).await;
@@ -1023,13 +1020,13 @@ impl ActionService {
             if entry.kind != ActionKind::Background {
                 if let Some(schedule) = &entry.scheduled
                     && entry.state.status().is_live()
-                    && schedule.session_id.as_deref() == Some(session_id)
+                    && entry.session_id.as_deref() == Some(session_id)
                 {
                     rows.push(scheduled_status_json(
                         id,
+                        entry.session_id.as_deref(),
                         schedule,
                         &entry.state,
-                        Some(session_id),
                     ));
                 }
                 continue;
@@ -1332,7 +1329,12 @@ impl ActionService {
                     if !entry.state.is_waiting() {
                         json!({"action_id": action_id, "status": entry.state.status().as_str()})
                     } else {
-                        scheduled_status_json(action_id, schedule, &entry.state, None)
+                        scheduled_status_json(
+                            action_id,
+                            entry.session_id.as_deref(),
+                            schedule,
+                            &entry.state,
+                        )
                     }
                 })
                 .unwrap_or_else(|| json!({"action_id": action_id, "status": "not_found"}));
@@ -1351,11 +1353,15 @@ impl ActionService {
             let Some(schedule) = entry.scheduled.as_ref() else {
                 return json!({"action_id": action_id, "status": "not_found"});
             };
-            if schedule.session_id.as_deref() != Some(session_id) || !entry.state.status().is_live()
-            {
+            if entry.session_id.as_deref() != Some(session_id) || !entry.state.status().is_live() {
                 return json!({"action_id": action_id, "status": "not_found"});
             }
-            return scheduled_status_json(action_id, schedule, &entry.state, Some(session_id));
+            return scheduled_status_json(
+                action_id,
+                entry.session_id.as_deref(),
+                schedule,
+                &entry.state,
+            );
         }
         if entry.session_id.as_deref() != Some(session_id) {
             return json!({"action_id": action_id, "status": "not_found"});
@@ -1895,7 +1901,6 @@ impl ActionService {
             body: body.clone(),
             due_at: due_at.clone(),
             mode,
-            session_id: session_id.clone(),
             tool_name: tool_name.clone(),
             tool_args: tool_args.clone(),
             prompt: prompt.clone(),
@@ -1906,11 +1911,7 @@ impl ActionService {
             ActionEntry {
                 kind: ActionKind::Scheduled,
                 session_id: session_id.clone(),
-                // The schedule-specific state is authoritative for timer
-                // actions; this placeholder keeps the worker fields uniform.
-                state: ActionState::Waiting {
-                    due_at: due_at.clone(),
-                },
+                state: ActionState::Waiting,
                 kill: None,
                 tail: None,
                 command: String::new(),
@@ -1975,11 +1976,16 @@ impl ActionService {
                 let schedule = entry.scheduled.as_ref()?;
                 if entry.kind != ActionKind::Scheduled
                     || !entry.state.status().is_live()
-                    || owner.is_some_and(|value| schedule.session_id.as_deref() != Some(value))
+                    || owner.is_some_and(|value| entry.session_id.as_deref() != Some(value))
                 {
                     return None;
                 }
-                Some(scheduled_status_json(id, schedule, &entry.state, owner))
+                Some(scheduled_status_json(
+                    id,
+                    entry.session_id.as_deref(),
+                    schedule,
+                    &entry.state,
+                ))
             })
             .collect();
         rows.sort_by(|left, right| right["due_at"].as_str().cmp(&left["due_at"].as_str()));
@@ -1989,18 +1995,18 @@ impl ActionService {
     async fn fire_scheduled(self: &Arc<Self>, id: &str) {
         let _mutation = self.spawn_gate.lock().await;
         let started_at = chrono::Utc::now().to_rfc3339();
-        let schedule = {
+        let (schedule, session_id) = {
             let actions = self.actions.read().await;
             let Some(action) = actions.get(id) else {
                 return;
             };
-            if !matches!(action.state, ActionState::Waiting { .. }) {
+            if !matches!(action.state, ActionState::Waiting) {
                 return;
             }
             let Some(schedule) = action.scheduled.as_ref() else {
                 return;
             };
-            schedule.clone()
+            (schedule.clone(), action.session_id.clone())
         };
         if schedule.watch_action_id.is_none()
             && let Some(db) = self.db.read().await.clone()
@@ -2031,7 +2037,7 @@ impl ActionService {
             title: schedule.title.clone(),
             body: schedule.body.clone(),
             mode: schedule.mode,
-            session_id: schedule.session_id.clone(),
+            session_id: session_id.clone(),
             tool_name: schedule.tool_name.clone(),
             tool_args: schedule.tool_args.clone(),
             prompt: schedule.prompt.clone(),
@@ -2042,7 +2048,7 @@ impl ActionService {
             let Some(action) = actions.get_mut(id) else {
                 return;
             };
-            if !matches!(action.state, ActionState::Waiting { .. }) {
+            if !matches!(action.state, ActionState::Waiting) {
                 return;
             }
             action.state = ActionState::Running { started_at };
@@ -2051,11 +2057,11 @@ impl ActionService {
             "action:updated",
             scheduled_status_json(
                 id,
+                session_id.as_deref(),
                 &schedule,
                 &ActionState::Running {
                     started_at: started_at_for_event,
                 },
-                None,
             ),
         );
         self.pending_scheduled_fires
@@ -2115,20 +2121,11 @@ impl ActionService {
             if let Some(action) = self.actions.write().await.get_mut(id)
                 && matches!(action.state, ActionState::Running { .. })
             {
-                action.state = ActionState::Waiting {
-                    due_at: schedule.due_at.clone(),
-                };
+                action.state = ActionState::Waiting;
             }
             self.emit(
                 "action:updated",
-                scheduled_status_json(
-                    id,
-                    &schedule,
-                    &ActionState::Waiting {
-                        due_at: schedule.due_at.clone(),
-                    },
-                    None,
-                ),
+                scheduled_status_json(id, session_id.as_deref(), &schedule, &ActionState::Waiting),
             );
             self.arm_scheduled_worker(id.to_string(), &schedule);
         }
@@ -2147,7 +2144,7 @@ impl ActionService {
                 let Some(action) = actions.get_mut(&id) else {
                     return;
                 };
-                if !matches!(action.state, ActionState::Waiting { .. }) {
+                if !matches!(action.state, ActionState::Waiting) {
                     return;
                 }
                 let Some(schedule) = action.scheduled.as_mut() else {
@@ -2213,17 +2210,19 @@ impl ActionService {
         schedule: &ScheduledActionEntry,
         state: ActionState,
     ) -> bool {
-        let mut actions = self.actions.write().await;
-        let Some(action) = actions.get_mut(id) else {
-            return false;
+        let session_id = {
+            let mut actions = self.actions.write().await;
+            let Some(action) = actions.get_mut(id) else {
+                return false;
+            };
+            if !matches!(action.state, ActionState::Running { .. }) {
+                return false;
+            }
+            action.state = state.clone();
+            action.session_id.clone()
         };
-        if !matches!(action.state, ActionState::Running { .. }) {
-            return false;
-        }
-        action.state = state.clone();
         self.clear_scheduled_fire_claim(id).await;
-        drop(actions);
-        self.emit_scheduled_finished(id, schedule, &state);
+        self.emit_scheduled_finished(id, session_id.as_deref(), schedule, &state);
         true
     }
 
@@ -2409,13 +2408,22 @@ impl ActionService {
         Ok(self.finish_scheduled_in_memory(id, &schedule, state).await)
     }
 
-    fn emit_scheduled_finished(&self, id: &str, entry: &ScheduledActionEntry, state: &ActionState) {
-        self.emit("action:finished", scheduled_finished_json(id, entry, state));
+    fn emit_scheduled_finished(
+        &self,
+        id: &str,
+        session_id: Option<&str>,
+        entry: &ScheduledActionEntry,
+        state: &ActionState,
+    ) {
+        self.emit(
+            "action:finished",
+            scheduled_finished_json(id, session_id, entry, state),
+        );
     }
 
     async fn cancel_scheduled(&self, id: &str, owner: Option<&str>) -> bool {
         let _mutation = self.spawn_gate.lock().await;
-        let (schedule, started_at) = {
+        let (schedule, started_at, session_id) = {
             let actions = self.actions.read().await;
             let Some(action) = actions.get(id) else {
                 return false;
@@ -2433,11 +2441,11 @@ impl ActionService {
                 // A waiting schedule has not started. Keep this empty in the
                 // in-memory terminal projection; the durable repository leaves
                 // `started_at` NULL for the same reason.
-                ActionState::Waiting { .. } => String::new(),
+                ActionState::Waiting => String::new(),
                 ActionState::Running { started_at } => started_at.clone(),
                 _ => return false,
             };
-            (schedule.clone(), started_at)
+            (schedule.clone(), started_at, action.session_id.clone())
         };
         let finished_at = chrono::Utc::now().to_rfc3339();
         if schedule.watch_action_id.is_none()
@@ -2493,7 +2501,7 @@ impl ActionService {
         action.state = state.clone();
         self.clear_scheduled_fire_claim(id).await;
         drop(actions);
-        self.emit_scheduled_finished(id, &schedule, &state);
+        self.emit_scheduled_finished(id, session_id.as_deref(), &schedule, &state);
         true
     }
 
@@ -2503,10 +2511,10 @@ impl ActionService {
             actions
                 .iter()
                 .filter_map(|(id, entry)| {
-                    let schedule = entry.scheduled.as_ref()?;
+                    entry.scheduled.as_ref()?;
                     if entry.kind == ActionKind::Scheduled
                         && entry.state.status().is_live()
-                        && schedule.session_id.as_deref() == Some(session_id)
+                        && entry.session_id.as_deref() == Some(session_id)
                     {
                         Some(id.clone())
                     } else {
@@ -2617,7 +2625,6 @@ impl ActionService {
                 body: row.body,
                 due_at: row.due_at,
                 mode,
-                session_id: row.session_id,
                 tool_name: row.tool_name,
                 tool_args,
                 prompt: row.prompt,
@@ -2625,14 +2632,13 @@ impl ActionService {
             };
             let timer_entry = entry.clone();
             let id = row.id;
+            let session_id = row.session_id;
             self.actions.write().await.insert(
                 id.clone(),
                 ActionEntry {
                     kind: ActionKind::Scheduled,
-                    session_id: entry.session_id.clone(),
-                    state: ActionState::Waiting {
-                        due_at: entry.due_at.clone(),
-                    },
+                    session_id,
+                    state: ActionState::Waiting,
                     kill: None,
                     tail: None,
                     command: String::new(),
@@ -2676,11 +2682,7 @@ fn project_board_action(action_id: &str, entry: &ActionEntry) -> ActionView {
     };
 
     match &entry.state {
-        ActionState::Waiting { due_at } => {
-            if entry.kind == ActionKind::Scheduled {
-                view.due_at = Some(due_at.clone());
-            }
-        }
+        ActionState::Waiting => {}
         ActionState::Running { started_at } => {
             view.started_at = Some(started_at.clone());
             if entry.kind == ActionKind::Background {
@@ -2751,9 +2753,9 @@ fn project_board_action(action_id: &str, entry: &ActionEntry) -> ActionView {
 
 fn scheduled_status_json(
     id: &str,
+    session_id: Option<&str>,
     entry: &ScheduledActionEntry,
     state: &ActionState,
-    _owner: Option<&str>,
 ) -> Value {
     let mut value = json!({
         "id": id,
@@ -2763,7 +2765,7 @@ fn scheduled_status_json(
         "title": entry.title,
         "body": entry.body,
         "mode": entry.mode.as_str(),
-        "session_id": entry.session_id,
+        "session_id": session_id,
         "tool_name": entry.tool_name,
         "tool_args": entry.tool_args,
         "prompt": entry.prompt,
@@ -2776,7 +2778,12 @@ fn scheduled_status_json(
     value
 }
 
-fn scheduled_finished_json(id: &str, entry: &ScheduledActionEntry, state: &ActionState) -> Value {
+fn scheduled_finished_json(
+    id: &str,
+    session_id: Option<&str>,
+    entry: &ScheduledActionEntry,
+    state: &ActionState,
+) -> Value {
     let mut value = json!({
         "id": id,
         "action_id": id,
@@ -2785,7 +2792,7 @@ fn scheduled_finished_json(id: &str, entry: &ScheduledActionEntry, state: &Actio
         "title": entry.title,
         "body": entry.body,
         "mode": entry.mode.as_str(),
-        "session_id": entry.session_id,
+        "session_id": session_id,
         "due_at": entry.due_at,
     });
     match state {
@@ -2926,9 +2933,7 @@ fn render_status_json(action_id: &str, state: &ActionState) -> Value {
             "started_at": started_at,
             "finished_at": finished_at,
         }),
-        ActionState::Waiting { due_at } => {
-            json!({ "action_id": action_id, "status": "waiting", "due_at": due_at })
-        }
+        ActionState::Waiting => json!({ "action_id": action_id, "status": "waiting" }),
         ActionState::Running { .. } => {
             json!({ "action_id": action_id, "status": "running" })
         }
