@@ -12,7 +12,9 @@ use super::tool_batch::ToolBatchOutcome;
 use super::tool_batch_policy::ToolRetryBudget;
 use super::turn::TurnInput;
 use super::*;
-use crate::types::RunBudget;
+use crate::types::{BranchPoint, RunBudget, TranscriptRecord};
+use haven_common::types::CanonicalMessage;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::Instrument;
@@ -82,12 +84,17 @@ impl TurnDeadline {
     }
 }
 
-/// Complete input for one run. Grouping the mutable transcript and run
-/// metadata keeps the public orchestration boundary stable as the loop gains
-/// more run-scoped state.
-pub(crate) struct RunInput<'a> {
-    pub(crate) session_id: &'a str,
-    pub(crate) state: &'a mut ReActState,
+/// Durable replay data submitted to the session actor. The actor constructs
+/// the hot projection from this value and owns it for the lifetime of the run.
+pub(crate) struct RunReplay {
+    pub(crate) events: Vec<TranscriptRecord>,
+    pub(crate) canonical: Vec<CanonicalMessage>,
+    pub(crate) branch_points: HashMap<u32, BranchPoint>,
+}
+
+/// Run metadata passed to the actor-owned loop.
+pub(crate) struct RunInput {
+    pub(crate) session_id: String,
     pub(crate) start_step: u32,
     pub(crate) emitter: Arc<dyn AgentEventEmitter>,
     pub(crate) run_id: u64,
@@ -128,14 +135,18 @@ impl ReActEngine {
     /// Run the session one turn at a time. The shared `ReActState` carries the
     /// authoritative transcript, its live projection, and branch indexes so
     /// every boundary advances one coherent event/projection state.
-    pub(crate) async fn run_react_loop(&self, input: RunInput<'_>) -> anyhow::Result<LoopExit> {
+    pub(crate) async fn run_react_loop(
+        &self,
+        input: RunInput,
+        state: &mut ReActState,
+    ) -> anyhow::Result<LoopExit> {
         let RunInput {
             session_id,
-            state,
             start_step,
             emitter,
             run_id,
         } = input;
+        let session_id = session_id.as_str();
         let budget = RunBudgetConfig::from_engine(self, start_step);
         let session_max_steps = *self.session_max_steps.lock().unwrap();
         self.clear_msg_ids_for_session(session_id);

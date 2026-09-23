@@ -24,7 +24,7 @@
 
 use crate::AgentLayer;
 use crate::react::DurableEventState;
-use crate::react::{ReActState, RunInput};
+use crate::react::{RunInput, RunReplay};
 use crate::resume_support::{
     builtin_selection, infer_resume_step, load_mcp_tool_names, load_skill_names,
     merge_recovery_candidates,
@@ -32,12 +32,10 @@ use crate::resume_support::{
 
 use crate::session::SessionStatus;
 use crate::types::{
-    BranchPoint, ReActRound, TranscriptRecord, project_transcript_with_strategy,
-    seed_events_from_canonical,
+    ReActRound, TranscriptRecord, project_transcript_with_strategy, seed_events_from_canonical,
 };
 use haven_common::media::MediaInput;
 use haven_common::types::{CanonicalMessage, ContentPart};
-use std::collections::HashMap;
 
 /// A recent conversation message (role, content) used by the fresh-session
 /// system-prompt path. **S1 authority:** canonical is the LLM truth; this
@@ -476,26 +474,34 @@ impl AgentLayer {
                 .1);
             }
         };
-        let mut state = ReActState::new(events, canonical, branch_points);
-        let exit = self
-            .react_engine
-            .run_react_loop(RunInput {
-                session_id,
-                state: &mut state,
-                start_step,
-                emitter: emitter_arc,
-                run_id,
-            })
+        let actor = self.executor.actor_for(session_id).await.ok_or_else(|| {
+            anyhow::anyhow!("session actor '{session_id}' disappeared before run")
+        })?;
+        let result = actor
+            .run_react_loop(
+                self.react_engine.clone(),
+                RunReplay {
+                    events,
+                    canonical,
+                    branch_points,
+                },
+                RunInput {
+                    session_id: session_id.to_string(),
+                    start_step,
+                    emitter: emitter_arc,
+                    run_id,
+                },
+            )
             .await?;
         // C2: soft LoopExit::Error must hit the same host failure path as
         // hard Err so dispatcher cleanup (cancel actions / fail steps /
         // on_session_error) still runs.
-        match exit {
+        match result.exit {
             crate::react::LoopExit::Error(msg) => Err(anyhow::anyhow!(msg)),
             crate::react::LoopExit::Paused { .. }
             | crate::react::LoopExit::Cancelled
             | crate::react::LoopExit::Completed => Ok(project_transcript_with_strategy(
-                &state.events,
+                &result.events,
                 self.react_engine.media_strategy(),
             )
             .1),
@@ -624,29 +630,37 @@ impl AgentLayer {
         self.react_engine
             .seed_transcript_events(session_id, &events, 0)
             .await?;
-        let branch_points: HashMap<u32, BranchPoint> = HashMap::new();
+        let branch_points = std::collections::HashMap::new();
         let emitter_arc = match self.events.emitter_arc() {
             Some(e) => e,
             None => return Ok(project_transcript_with_strategy(&events, media_strategy).1),
         };
-        let mut state = ReActState::new(events, canonical, branch_points);
         let run_id = self.react_engine.next_run_id();
-        let exit = self
-            .react_engine
-            .run_react_loop(RunInput {
-                session_id,
-                state: &mut state,
-                start_step: 1,
-                emitter: emitter_arc,
-                run_id,
-            })
+        let actor = self.executor.actor_for(session_id).await.ok_or_else(|| {
+            anyhow::anyhow!("session actor '{session_id}' disappeared before run")
+        })?;
+        let result = actor
+            .run_react_loop(
+                self.react_engine.clone(),
+                RunReplay {
+                    events,
+                    canonical,
+                    branch_points,
+                },
+                RunInput {
+                    session_id: session_id.to_string(),
+                    start_step: 1,
+                    emitter: emitter_arc,
+                    run_id,
+                },
+            )
             .await?;
-        match exit {
+        match result.exit {
             crate::react::LoopExit::Error(msg) => Err(anyhow::anyhow!(msg)),
             crate::react::LoopExit::Paused { .. }
             | crate::react::LoopExit::Cancelled
             | crate::react::LoopExit::Completed => {
-                Ok(project_transcript_with_strategy(&state.events, media_strategy).1)
+                Ok(project_transcript_with_strategy(&result.events, media_strategy).1)
             }
         }
     }

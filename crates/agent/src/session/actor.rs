@@ -10,11 +10,14 @@
 //! 命令。usage、stream id 和 token estimate 是函数调用，不是命令；在 run
 //! 迁入本任务之前，不要再增加这类内部命令，也不要只把缓存搬进来。
 
+use super::RunEngine;
 use super::{FollowUp, SessionInfo, SessionStatus, SessionWaitingReason, StepInfo};
 use crate::interaction::{InteractionKind, InteractionRequest, InteractionStatus};
 use crate::react::identity::IdentityMap;
 use crate::react::sidecars::{CumulativeTotals, CumulativeUsage, TokenEstimateCache, UsageTracker};
+use crate::react::{LoopExit, ReActEngine, ReActState, RunInput, RunReplay};
 use crate::types::RunBudget;
+use futures_util::FutureExt;
 use haven_common::config::RequestKind;
 use haven_common::types::{CanonicalMessage, MessageAttachment};
 use haven_memory::{
@@ -23,7 +26,11 @@ use haven_memory::{
 };
 use haven_tools::inbox::{Envelope, MessageType};
 use serde_json::Value;
+use std::any::Any;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::future::Future;
+use std::panic::AssertUnwindSafe;
+use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
@@ -99,6 +106,11 @@ pub(crate) struct ConfirmDecision {
     pub wake_session: bool,
 }
 
+pub(crate) struct ReactRunOutput {
+    pub(crate) exit: LoopExit,
+    pub(crate) events: Vec<crate::types::TranscriptRecord>,
+}
+
 /// The stable command surface of a session actor.  The supervisor and the
 /// ReAct loop use these commands instead of reaching into separate queue,
 /// interaction, or background-result maps.
@@ -166,9 +178,18 @@ impl std::fmt::Debug for InboxSubscribe {
     }
 }
 
-#[derive(Debug)]
 pub(crate) enum ActorCommand {
     Session(SessionCommand),
+    Run {
+        engine: RunEngine,
+        reply: oneshot::Sender<anyhow::Result<()>>,
+    },
+    RunReactLoop {
+        engine: Arc<ReActEngine>,
+        replay: RunReplay,
+        input: RunInput,
+        reply: oneshot::Sender<anyhow::Result<ReactRunOutput>>,
+    },
     Snapshot {
         reply: oneshot::Sender<SessionInfo>,
     },
@@ -440,6 +461,34 @@ impl SessionActorHandle {
             return false;
         }
         rx.await.unwrap_or(false)
+    }
+
+    /// Start and await a run that is polled by this actor task. While the
+    /// handler is suspended on a provider, tool, or storage future, the actor
+    /// continues receiving and applying external mailbox commands.
+    pub(crate) async fn run(&self, engine: RunEngine) -> anyhow::Result<()> {
+        let (reply, rx) = oneshot::channel();
+        self.send(ActorCommand::Run { engine, reply }).await?;
+        rx.await
+            .map_err(|_| anyhow::anyhow!("session actor '{}' dropped run result", self.id))?
+    }
+
+    pub(crate) async fn run_react_loop(
+        &self,
+        engine: Arc<ReActEngine>,
+        replay: RunReplay,
+        input: RunInput,
+    ) -> anyhow::Result<ReactRunOutput> {
+        let (reply, rx) = oneshot::channel();
+        self.send(ActorCommand::RunReactLoop {
+            engine,
+            replay,
+            input,
+            reply,
+        })
+        .await?;
+        rx.await
+            .map_err(|_| anyhow::anyhow!("session actor '{}' dropped ReAct loop result", self.id))?
     }
 
     pub(crate) async fn set_run_budget(&self, budget: RunBudget) {
@@ -946,6 +995,7 @@ pub(crate) struct SessionState {
 #[derive(Default)]
 struct SessionRuntimeState {
     run_budget: Option<RunBudget>,
+    react_state: Option<ReActState>,
     stream_identity: IdentityMap,
     usage: UsageTracker,
     token_estimates: TokenEstimateCache,
@@ -1030,6 +1080,14 @@ fn restore_interaction(state: &mut SessionState, resolved: &InteractionRequest) 
     state.interactions.push(pending);
 }
 
+fn panic_reason(payload: Box<dyn Any + Send>) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|message| (*message).to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "non-string panic payload".into())
+}
+
 pub(crate) fn spawn(
     db: Arc<Database>,
     store: SessionStore,
@@ -1068,7 +1126,70 @@ pub(crate) fn spawn(
             archive_message_ids: HashSet::new(),
             runtime: SessionRuntimeState::default(),
         };
-        while let Some(command) = rx.recv().await {
+        type ActiveRun = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>>;
+        type ActiveReactLoop =
+            Pin<Box<dyn Future<Output = (ReActState, anyhow::Result<LoopExit>)> + Send>>;
+        let mut active_run: Option<ActiveRun> = None;
+        let mut active_run_reply: Option<oneshot::Sender<anyhow::Result<()>>> = None;
+        let mut active_react_loop: Option<ActiveReactLoop> = None;
+        let mut active_react_reply: Option<oneshot::Sender<anyhow::Result<ReactRunOutput>>> = None;
+        // Keep the ReAct claim until the surrounding run releases the actor's
+        // running bit. A completed loop can otherwise leave a window where a
+        // second direct resume starts another loop in the same run.
+        let mut react_run_claimed = false;
+        loop {
+            enum Wake {
+                Command(Option<ActorCommand>),
+                Run(anyhow::Result<()>),
+                ReactLoop((ReActState, anyhow::Result<LoopExit>)),
+            }
+            let wake = tokio::select! {
+                biased;
+                command = rx.recv() => Wake::Command(command),
+                result = async {
+                    match active_run.as_mut() {
+                        Some(run) => run.as_mut().await,
+                        None => std::future::pending().await,
+                    }
+                } => Wake::Run(result),
+                result = async {
+                    match active_react_loop.as_mut() {
+                        Some(run) => run.as_mut().await,
+                        None => std::future::pending().await,
+                    }
+                } => Wake::ReactLoop(result),
+            };
+            let command = match wake {
+                Wake::Command(Some(command)) => command,
+                Wake::Command(None) => {
+                    if let Some(reply) = active_run_reply.take() {
+                        let _ =
+                            reply.send(Err(anyhow::anyhow!("session actor stopped during run")));
+                    }
+                    if let Some(reply) = active_react_reply.take() {
+                        let _ = reply.send(Err(anyhow::anyhow!(
+                            "session actor stopped during ReAct loop"
+                        )));
+                    }
+                    break;
+                }
+                Wake::Run(result) => {
+                    active_run = None;
+                    if let Some(reply) = active_run_reply.take() {
+                        let _ = reply.send(result);
+                    }
+                    continue;
+                }
+                Wake::ReactLoop((react_state, result)) => {
+                    active_react_loop = None;
+                    let events = react_state.events.clone();
+                    state.runtime.react_state = Some(react_state);
+                    if let Some(reply) = active_react_reply.take() {
+                        let _ = reply.send(result.map(|exit| ReactRunOutput { exit, events }));
+                    }
+                    continue;
+                }
+            };
             match command {
                 ActorCommand::Session(command) => match command {
                     SessionCommand::Submit {
@@ -1174,6 +1295,67 @@ pub(crate) fn spawn(
                         let _ = reply.send(result);
                     }
                 },
+                ActorCommand::Run { engine, reply } => {
+                    if active_run.is_some() || !state.running {
+                        let _ = reply.send(Err(anyhow::anyhow!(
+                            "session actor '{}' cannot start a run in its current state",
+                            state.info.id
+                        )));
+                        continue;
+                    }
+                    let session_id = state.info.id.clone();
+                    active_run = Some(Box::pin(async move {
+                        match AssertUnwindSafe(engine.run(session_id))
+                            .catch_unwind()
+                            .await
+                        {
+                            Ok(result) => result,
+                            Err(payload) => {
+                                let reason = payload
+                                    .downcast_ref::<&str>()
+                                    .map(|message| (*message).to_string())
+                                    .or_else(|| payload.downcast_ref::<String>().cloned())
+                                    .unwrap_or_else(|| "non-string panic payload".into());
+                                Err(anyhow::anyhow!("handler panicked: {reason}"))
+                            }
+                        }
+                    }));
+                    active_run_reply = Some(reply);
+                }
+                ActorCommand::RunReactLoop {
+                    engine,
+                    replay,
+                    input,
+                    reply,
+                } => {
+                    if !state.running || react_run_claimed || active_react_loop.is_some() {
+                        let _ = reply.send(Err(anyhow::anyhow!(
+                            "session actor '{}' cannot start another ReAct loop",
+                            state.info.id
+                        )));
+                        continue;
+                    }
+                    react_run_claimed = true;
+                    let mut react_state =
+                        ReActState::new(replay.events, replay.canonical, replay.branch_points);
+                    state.runtime.react_state = Some(react_state);
+                    react_state = state.runtime.react_state.take().expect("just installed");
+                    active_react_loop = Some(Box::pin(async move {
+                        let result =
+                            AssertUnwindSafe(engine.run_react_loop(input, &mut react_state))
+                                .catch_unwind()
+                                .await
+                                .map_err(|payload| {
+                                    anyhow::anyhow!(
+                                        "ReAct loop panicked: {}",
+                                        panic_reason(payload)
+                                    )
+                                })
+                                .and_then(std::convert::identity);
+                        (react_state, result)
+                    }));
+                    active_react_reply = Some(reply);
+                }
                 ActorCommand::Snapshot { reply } => {
                     let _ = reply.send(state.info.clone());
                 }
@@ -1216,6 +1398,7 @@ pub(crate) fn spawn(
                 }
                 ActorCommand::FinishRun { reply } => {
                     state.running = false;
+                    react_run_claimed = false;
                     let _ = run_state.send(false);
                     let _ = reply.send(RunFinished {
                         pending: state.info.status == SessionStatus::Pending,
@@ -1224,6 +1407,7 @@ pub(crate) fn spawn(
                 }
                 ActorCommand::ReleaseRun => {
                     state.running = false;
+                    react_run_claimed = false;
                     let _ = run_state.send(false);
                 }
                 ActorCommand::IsRunning { reply } => {
@@ -2161,6 +2345,65 @@ mod queue_tests {
             archive_message_ids: HashSet::new(),
             runtime: SessionRuntimeState::default(),
         }
+    }
+
+    #[tokio::test]
+    async fn actor_services_external_commands_while_run_handler_is_awaiting_provider() {
+        let directory = tempfile::tempdir().expect("temporary database directory");
+        let db_path = directory.path().join("actor.db");
+        let db = Arc::new(Database::open(&db_path).expect("temporary database"));
+        let store = SessionStore::new(db.clone());
+        let info = empty_state().info;
+        let actor = spawn(db, store, info, Vec::new());
+        assert!(actor.begin_direct_run().await);
+
+        let (started_tx, mut started_rx) = watch::channel(false);
+        let cancellation = actor.cancel();
+        let handler: crate::session::RunHandler = Arc::new(move |_session_id| {
+            let cancellation = cancellation.clone();
+            let started_tx = started_tx.clone();
+            Box::pin(async move {
+                started_tx.send_replace(true);
+                cancellation.cancelled().await;
+                Ok(())
+            })
+        });
+        let run_actor = actor.clone();
+        let run = tokio::spawn(async move { run_actor.run(RunEngine::new(handler)).await });
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while !*started_rx.borrow() {
+                started_rx.changed().await.expect("started signal sender");
+            }
+        })
+        .await
+        .expect("run handler should start");
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            actor.queue_follow_up("submit while waiting", &[], false, None),
+        )
+        .await
+        .expect("submit should be serviced during the provider wait")
+        .expect("submit should be accepted");
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            actor.queue_steering("steer while waiting", &[], None),
+        )
+        .await
+        .expect("steer should be serviced during the provider wait")
+        .expect("steer should be accepted");
+
+        actor
+            .cancel_session()
+            .await
+            .expect("cancel should be serviced during the provider wait");
+        tokio::time::timeout(std::time::Duration::from_secs(1), run)
+            .await
+            .expect("run should finish after cancellation")
+            .expect("run task should join")
+            .expect("run handler should complete");
+        drop(actor);
+        tokio::task::yield_now().await;
     }
 
     #[test]

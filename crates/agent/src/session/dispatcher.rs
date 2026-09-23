@@ -212,9 +212,16 @@ impl SessionSupervisor {
                 let runner = engine.clone();
                 let span = tracing::info_span!("run_session", session_id = %session_id);
                 tokio::spawn(async move {
-                    let result =
-                        tokio::spawn(runner.run(session_id.clone()).instrument(span)).await;
-                    if let Err(reason) = handler_error(result) {
+                    let result = async {
+                        let actor = supervisor.actor_for(&session_id).await.ok_or_else(|| {
+                            anyhow::anyhow!("session actor disappeared before run")
+                        })?;
+                        actor.run(runner).await
+                    }
+                    .instrument(span)
+                    .await;
+                    if let Err(error) = result {
+                        let reason = error.to_string();
                         tracing::error!(session_id = %session_id, %reason, "session run failed");
                         let _ = supervisor
                             .update_session_status(&session_id, SessionStatus::Error)
@@ -438,16 +445,5 @@ impl SessionSupervisor {
             .await
             .map(|actor| actor.cancel())
             .unwrap_or_default()
-    }
-}
-
-fn handler_error(
-    result: Result<Result<(), anyhow::Error>, tokio::task::JoinError>,
-) -> Result<(), String> {
-    match result {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(error)) => Err(format!("handler failed: {error}")),
-        Err(error) if error.is_panic() => Err(format!("handler panicked: {error}")),
-        Err(error) => Err(format!("handler aborted: {error}")),
     }
 }
