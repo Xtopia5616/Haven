@@ -812,13 +812,7 @@ pub(crate) struct SessionState {
     archive: VecDeque<Envelope>,
     active_message_ids: HashSet<String>,
     archive_message_ids: HashSet<String>,
-    /// Session-local sidecars belong to the actor. Stream identity is
-    /// process-local and owned by ReActEngine (ADR 0219).
-    runtime: SessionRuntimeState,
-}
-
-#[derive(Default)]
-struct SessionRuntimeState {
+    /// Process-local messaging poll cursor and title cache.
     messaging: SessionMessagingState,
 }
 
@@ -958,7 +952,7 @@ pub(crate) fn spawn(
             archive: VecDeque::new(),
             active_message_ids: HashSet::new(),
             archive_message_ids: HashSet::new(),
-            runtime: SessionRuntimeState::default(),
+            messaging: SessionMessagingState::default(),
         };
         type ActiveRun = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>>;
         let mut active_run: Option<ActiveRun> = None;
@@ -1931,7 +1925,7 @@ fn tick_messaging_poll(
     every_steps: u32,
     subscribe: InboxSubscribe,
 ) -> MessagingPollTick {
-    let messaging = &mut state.runtime.messaging;
+    let messaging = &mut state.messaging;
     messaging.steps_since_poll = messaging.steps_since_poll.saturating_add(1);
     if messaging.inbox_watch.is_none() {
         messaging.inbox_watch = Some((subscribe.0)());
@@ -1961,11 +1955,11 @@ fn tick_messaging_poll(
 }
 
 fn remember_messaging_title(state: &mut SessionState, title: Option<String>) {
-    state.runtime.messaging.title = Some(title);
+    state.messaging.title = Some(title);
 }
 
 fn clear_messaging(state: &mut SessionState) {
-    state.runtime.messaging = SessionMessagingState::default();
+    state.messaging = SessionMessagingState::default();
 }
 
 #[cfg(test)]
@@ -2001,7 +1995,7 @@ mod queue_tests {
             archive: VecDeque::new(),
             active_message_ids: HashSet::new(),
             archive_message_ids: HashSet::new(),
-            runtime: SessionRuntimeState::default(),
+            messaging: SessionMessagingState::default(),
         }
     }
 
