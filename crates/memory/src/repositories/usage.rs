@@ -1,4 +1,5 @@
 use crate::db::Database;
+#[cfg(test)]
 use crate::repositories::messages::now_rfc3339_millis;
 use haven_common::config::RequestKind;
 use rusqlite::OptionalExtension;
@@ -406,6 +407,7 @@ impl Database {
     ///
     /// `created_at` uses [`now_rfc3339_millis`] (same shape as messages/steps)
     /// so string cutoffs in rollback/`truncate_session_after` compare correctly.
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub fn persist_llm_call_and_refresh_session_usage(
         &self,
@@ -441,6 +443,7 @@ impl Database {
         )
     }
 
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub fn persist_llm_call_and_refresh_session_usage_with_cache_accounting(
         &self,
@@ -481,6 +484,7 @@ impl Database {
         )
     }
 
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub fn persist_llm_call_and_refresh_session_usage_with_cache_accounting_and_context(
         &self,
@@ -524,6 +528,7 @@ impl Database {
         )
     }
 
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub fn persist_llm_call_and_refresh_session_usage_with_kind_and_context(
         &self,
@@ -630,6 +635,7 @@ impl Database {
     /// Append multiple call-detail rows and apply one aggregate delta in a
     /// single SQLite transaction. Tool batches therefore do one summary write
     /// without scanning all historical detail rows.
+    #[cfg(test)]
     pub fn persist_llm_call_batch_and_refresh_session_usage(
         &self,
         session_id: &str,
