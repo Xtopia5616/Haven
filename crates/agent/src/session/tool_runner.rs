@@ -1029,6 +1029,32 @@ impl SessionSupervisor {
         })
     }
 
+    async fn scheduled_authorization_request(
+        &self,
+        session_id: Option<&str>,
+        tool_name: &str,
+        input: &Value,
+    ) -> haven_tools::AuthorizationRequest {
+        self.tools
+            .get_authorization_request(session_id, tool_name, input)
+            .await
+    }
+
+    /// Authorize a scheduled tool invocation through the supervisor's live
+    /// authorization service. Confirmation queuing and execution remain with
+    /// their existing scheduled-action callers.
+    pub(crate) async fn authorize_scheduled_tool(
+        &self,
+        session_id: Option<&str>,
+        tool_name: &str,
+        input: &Value,
+    ) -> haven_tools::AuthorizationDecision {
+        let request = self
+            .scheduled_authorization_request(session_id, tool_name, input)
+            .await;
+        self.services.authorization.authorize(&request).await
+    }
+
     /// Queue a scheduled-tool confirmation without blocking the fired-action
     /// consumer (R2). Stores the canonical interaction request and emits it
     /// through the supervisor event stream; a
@@ -1346,5 +1372,133 @@ impl SessionSupervisor {
                     _ => None,
                 }
             })
+    }
+}
+
+#[cfg(test)]
+mod scheduled_authorization_tests {
+    use super::*;
+    use haven_common::types::PermissionMode;
+    use haven_memory::Database;
+    use haven_tools::{AuthorizationDecision, AuthorizationReasonCode};
+    use serde_json::json;
+    use std::sync::Arc;
+    use tokio_util::sync::CancellationToken;
+
+    struct PolicyTestTool {
+        name: String,
+        risk_level: RiskLevel,
+    }
+
+    #[async_trait::async_trait]
+    impl haven_tools::Tool for PolicyTestTool {
+        fn name(&self) -> String {
+            self.name.clone()
+        }
+
+        fn description(&self) -> String {
+            "test-only authorization policy".into()
+        }
+
+        fn risk_level(&self, _input: &Value) -> RiskLevel {
+            self.risk_level
+        }
+
+        async fn execute(
+            &self,
+            _input: Value,
+            _cancel: CancellationToken,
+        ) -> anyhow::Result<haven_tools::ToolResult> {
+            unreachable!("scheduled authorization tests never execute a tool")
+        }
+
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+    }
+
+    fn test_supervisor() -> (
+        Arc<SessionSupervisor>,
+        Arc<haven_tools::ToolsManager>,
+        tempfile::TempDir,
+    ) {
+        let tools = Arc::new(haven_tools::ToolsManager::new());
+        let directory = tempfile::tempdir().unwrap();
+        let database =
+            Arc::new(Database::open(&directory.path().join("authorization.db")).unwrap());
+        let supervisor = Arc::new(SessionSupervisor::new(database, tools.clone(), 1));
+        (supervisor, tools, directory)
+    }
+
+    #[tokio::test]
+    async fn scheduled_authorization_preserves_request_and_decision_behavior() {
+        let (supervisor, tools, _directory) = test_supervisor();
+        let session_id = "ses-00000000000000000000000000000001";
+        let tool_name = "scheduled.critical";
+        let input = json!({"target": "recording"});
+        tools
+            .register_for_session(
+                session_id,
+                Arc::new(PolicyTestTool {
+                    name: tool_name.into(),
+                    risk_level: RiskLevel::Critical,
+                }),
+            )
+            .await;
+
+        let request = supervisor
+            .scheduled_authorization_request(Some(session_id), tool_name, &input)
+            .await;
+        assert_eq!(request.session_id.as_deref(), Some(session_id));
+        assert_eq!(request.tool_name, tool_name);
+        assert_eq!(request.input, input);
+        assert_eq!(request.policy.risk_level, RiskLevel::Critical);
+        assert_eq!(
+            request.policy.capability.to_string(),
+            haven_common::types::permission_key(tool_name, &input)
+        );
+        assert_eq!(
+            request.policy.confirmation,
+            haven_tools::ConfirmationRequirement::Required
+        );
+
+        assert!(matches!(
+            supervisor
+                .authorize_scheduled_tool(Some(session_id), tool_name, &input)
+                .await,
+            AuthorizationDecision::RequiresConfirmation { .. }
+        ));
+
+        let safe_tool_name = "scheduled.safe";
+        tools
+            .register_for_session(
+                session_id,
+                Arc::new(PolicyTestTool {
+                    name: safe_tool_name.into(),
+                    risk_level: RiskLevel::Safe,
+                }),
+            )
+            .await;
+        assert!(matches!(
+            supervisor
+                .authorize_scheduled_tool(Some(session_id), safe_tool_name, &json!({}))
+                .await,
+            AuthorizationDecision::AutoApproved
+        ));
+
+        supervisor
+            .services()
+            .authorization
+            .set_permission_mode(PermissionMode::Plan)
+            .await;
+        assert!(matches!(
+            supervisor
+                .authorize_scheduled_tool(Some(session_id), tool_name, &input)
+                .await,
+            AuthorizationDecision::Blocked {
+                reason_code: AuthorizationReasonCode::PlanMode,
+                ..
+            }
+        ));
     }
 }

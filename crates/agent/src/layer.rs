@@ -725,21 +725,15 @@ impl AgentLayer {
                                     }
                                 };
                                 let args = fired.tool_args.unwrap_or(Value::Null);
-                                let tools = agent.executor.get_tools();
-                                let authorization_request = tools
-                                    .get_authorization_request(
+                                let decision = agent
+                                    .executor
+                                    .authorize_scheduled_tool(
                                         fired.session_id.as_deref(),
                                         &tool_name,
                                         &args,
                                     )
                                     .await;
-                                match agent
-                                    .executor
-                                    .services()
-                                    .authorization
-                                    .authorize(&authorization_request)
-                                    .await
-                                {
+                                match decision {
                                     haven_tools::AuthorizationDecision::Blocked {
                                         reason, ..
                                     } => {
