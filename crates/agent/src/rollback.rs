@@ -391,20 +391,9 @@ impl AgentLayer {
                 let step = marker.step_number.unwrap_or_default();
                 let store = self.react_engine.event_store.clone();
                 let sid = session_id.to_string();
-                let branch = self
-                    .db
-                    .run_blocking(move |_| store.projection_cutoff_for_step(&sid, step))
+                self.db
+                    .run_blocking(move |_| store.truncate_projection_after_step(&sid, step))
                     .await?;
-                if let Some(cutoff) = branch {
-                    let store = self.react_engine.event_store.clone();
-                    let sid = session_id.to_string();
-                    self.db
-                        .run_blocking(move |_| {
-                            store.truncate_projection_after(&sid, &cutoff)?;
-                            Ok(())
-                        })
-                        .await?;
-                }
             }
         }
         // Clear after join + truncation so unwind persists cannot leave a

@@ -205,3 +205,4 @@
 - [0214：一次 run 在 SessionActor 任务内执行](0214-react-run-inside-session-actor.md)
 - [0215：任务面板 hydration 使用 typed ActionView](0215-action-board-typed-view.md)
 - [0216：RuntimeConfigCoordinator 日志级别应用切片](0216-runtime-config-coordinator.md)
+- [0217：continue_session 失败步骤投影截断边界](0217-continue-projection-truncation.md)

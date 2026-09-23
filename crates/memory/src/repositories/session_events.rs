@@ -702,6 +702,74 @@ impl SessionStore {
     /// Truncate only materialized projections through the session store.
     /// Continue/retry uses this boundary without moving the active event
     /// timeline.
+    ///
+    /// The active branch point and its projection cutoff are resolved inside
+    /// the same immediate transaction as the projection deletion. A missing
+    /// branch point or timestamp is a safe no-op.
+    pub fn truncate_projection_after_step(
+        &self,
+        session_id: &str,
+        step_number: u32,
+    ) -> anyhow::Result<()> {
+        let conn = self.db.conn();
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| -> anyhow::Result<Option<Vec<SessionEvent>>> {
+            let cutoff = Self::read_active_branch_points_in_connection(&conn, session_id)?
+                .into_iter()
+                .find(|(_, _, step, _)| *step == step_number)
+                .and_then(|(_, _, _, last_msg_at)| last_msg_at)
+                .map(|created_at| ProjectionCutoff {
+                    created_at,
+                    inclusive: false,
+                });
+            let Some(cutoff) = cutoff else {
+                return Ok(None);
+            };
+
+            let mut statement =
+                conn.prepare("SELECT id FROM llm_usage WHERE session_id = ?1 AND created_at > ?2")?;
+            let usage_ids = statement
+                .query_map(rusqlite::params![session_id, cutoff.created_at], |row| {
+                    row.get::<_, String>(0)
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            drop(statement);
+
+            Self::truncate_session_projections_in_transaction(
+                &conn,
+                session_id,
+                &cutoff.created_at,
+                false,
+            )?;
+            let discard_inputs = usage_ids
+                .iter()
+                .map(|usage_id| {
+                    SessionEventInput::new(
+                        USAGE_DISCARDED_EVENT_TYPE,
+                        serde_json::json!({ "usage_id": usage_id }).to_string(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            Self::append_batch_in_transaction(&conn, session_id, &discard_inputs).map(Some)
+        })();
+        match result {
+            Ok(events) => {
+                conn.execute_batch("COMMIT")?;
+                if let Some(events) = events {
+                    self.db.cache_invalidate_messages(session_id);
+                    for event in events {
+                        let _ = self.live_tx.send(event);
+                    }
+                }
+                Ok(())
+            }
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(error)
+            }
+        }
+    }
+
     pub fn truncate_projection_after(
         &self,
         session_id: &str,
@@ -1646,6 +1714,149 @@ mod tests {
                 .and_then(serde_json::Value::as_str),
             Some(second.id.as_str())
         );
+    }
+
+    #[test]
+    fn projection_truncate_after_step_uses_active_branch_cutoff_and_publishes_discard() {
+        let (db, store, session_id) = store();
+        let kept_message = db
+            .add_message(&session_id, "assistant", "kept", None, None)
+            .unwrap();
+        let kept_step = db.create_thought_step(&session_id, 1, "step-kept").unwrap();
+        let kept_usage = store
+            .append_usage(&session_id, &usage_input(1, 10))
+            .unwrap();
+        store
+            .append_branch_point(&session_id, 2, 2, Some(&kept_usage.created_at), None)
+            .unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        db.add_message(&session_id, "assistant", "discarded", None, None)
+            .unwrap();
+        db.create_thought_step(&session_id, 2, "step-discarded")
+            .unwrap();
+        let discarded_usage = store
+            .append_usage(&session_id, &usage_input(2, 20))
+            .unwrap();
+        // Prime the message cache so the post-commit invalidation is covered.
+        assert_eq!(db.get_session_messages(&session_id).unwrap().len(), 2);
+        let mut live = store.subscribe();
+
+        store
+            .truncate_projection_after_step(&session_id, 2)
+            .unwrap();
+
+        let messages = db.get_session_messages(&session_id).unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].id, kept_message.id);
+        let steps = db.get_session_steps(&session_id).unwrap();
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].id, kept_step.id);
+        let usage = db.get_session_llm_usage(&session_id).unwrap();
+        assert_eq!(
+            usage.iter().map(|record| &record.id).collect::<Vec<_>>(),
+            [&kept_usage.id]
+        );
+        assert_eq!(
+            db.get_session_usage(&session_id)
+                .unwrap()
+                .unwrap()
+                .total_tokens,
+            10
+        );
+
+        let discarded = store
+            .read_active_domain_events(&session_id)
+            .unwrap()
+            .into_iter()
+            .filter(|event| event.event_type == USAGE_DISCARDED_EVENT_TYPE)
+            .collect::<Vec<_>>();
+        assert_eq!(discarded.len(), 1);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&discarded[0].payload)
+                .unwrap()
+                .get("usage_id")
+                .and_then(serde_json::Value::as_str),
+            Some(discarded_usage.id.as_str())
+        );
+        let published = live.try_recv().unwrap();
+        assert_eq!(published, discarded[0]);
+        assert!(live.try_recv().is_err());
+    }
+
+    #[test]
+    fn projection_truncate_after_step_is_noop_without_branch_point_or_cutoff() {
+        let (db, store, no_branch_point_session_id) = store();
+        let no_cutoff_session_id = db.create_session("no cutoff").unwrap().id;
+
+        for (session_id, branch_point) in [
+            (&no_branch_point_session_id, false),
+            (&no_cutoff_session_id, true),
+        ] {
+            db.add_message(session_id, "assistant", "kept", None, None)
+                .unwrap();
+            let step_id = haven_common::types::new_id("step");
+            db.create_thought_step(session_id, 1, &step_id).unwrap();
+            store.append_usage(session_id, &usage_input(1, 10)).unwrap();
+            if branch_point {
+                store
+                    .append_branch_point(session_id, 1, 2, None, None)
+                    .unwrap();
+            }
+
+            let message_ids = db
+                .get_session_messages(session_id)
+                .unwrap()
+                .into_iter()
+                .map(|message| message.id)
+                .collect::<Vec<_>>();
+            let step_ids = db
+                .get_session_steps(session_id)
+                .unwrap()
+                .into_iter()
+                .map(|step| step.id)
+                .collect::<Vec<_>>();
+            let usage_ids = db
+                .get_session_llm_usage(session_id)
+                .unwrap()
+                .into_iter()
+                .map(|record| record.id)
+                .collect::<Vec<_>>();
+
+            store.truncate_projection_after_step(session_id, 1).unwrap();
+
+            assert_eq!(
+                db.get_session_messages(session_id)
+                    .unwrap()
+                    .into_iter()
+                    .map(|message| message.id)
+                    .collect::<Vec<_>>(),
+                message_ids
+            );
+            assert_eq!(
+                db.get_session_steps(session_id)
+                    .unwrap()
+                    .into_iter()
+                    .map(|step| step.id)
+                    .collect::<Vec<_>>(),
+                step_ids
+            );
+            assert_eq!(
+                db.get_session_llm_usage(session_id)
+                    .unwrap()
+                    .into_iter()
+                    .map(|record| record.id)
+                    .collect::<Vec<_>>(),
+                usage_ids
+            );
+            assert!(
+                store
+                    .read_active_domain_events(session_id)
+                    .unwrap()
+                    .iter()
+                    .all(|event| event.event_type != USAGE_DISCARDED_EVENT_TYPE)
+            );
+        }
     }
 
     #[test]

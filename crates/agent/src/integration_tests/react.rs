@@ -1563,12 +1563,53 @@ async fn continue_session_resumes_errored_session() {
         branch_points: HashMap::new(),
         interactions: Vec::new(),
     };
-    // Add a partial assistant message that should be cleaned up.
     agent
         .db
         .add_message(&session.id, "user", "hello", Some("text"), None)
         .unwrap();
-    let _partial = agent
+    let completed = agent
+        .db
+        .add_message(
+            &session.id,
+            "assistant",
+            "completed before failure",
+            Some("text"),
+            None,
+        )
+        .unwrap();
+    let kept_step_id = haven_common::types::new_id("step");
+    let kept_step = agent
+        .db
+        .create_thought_step(&session.id, 1, &kept_step_id)
+        .unwrap();
+    seed_event_projection(&agent, &session.id, &snapshot).await;
+    let store = agent.react_engine.event_store.clone();
+    let kept_usage = store
+        .append_usage(
+            &session.id,
+            &haven_memory::LlmCallUsageInput {
+                step_number: Some(1),
+                request_kind: haven_common::config::RequestKind::Chat,
+                call_kind: "agent".into(),
+                model: Some("test-model".into()),
+                prompt_tokens: 10,
+                completion_tokens: 0,
+                total_tokens: 10,
+                cached_tokens: 0,
+                cache_creation_tokens: 0,
+                cache_miss_tokens: 0,
+                cache_accounting: "unknown".into(),
+                cache_diagnostics: None,
+                cost_usd: 0.0,
+                has_cost: false,
+                duration_ms: None,
+                context_tokens: 0,
+                context_window: None,
+            },
+        )
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    let partial = agent
         .db
         .add_message(
             &session.id,
@@ -1578,21 +1619,41 @@ async fn continue_session_resumes_errored_session() {
             None,
         )
         .unwrap();
-    seed_event_projection(&agent, &session.id, &snapshot).await;
-    let hello_created_at = agent
+    let discarded_step_id = haven_common::types::new_id("step");
+    agent
         .db
-        .get_session_messages(&session.id)
-        .unwrap()
-        .into_iter()
-        .find(|message| message.role == "user" && message.content == "hello")
-        .expect("seeded hello message")
-        .created_at;
-    let store = agent.react_engine.event_store.clone();
+        .create_thought_step(&session.id, 2, &discarded_step_id)
+        .unwrap();
+    let discarded_usage = store
+        .append_usage(
+            &session.id,
+            &haven_memory::LlmCallUsageInput {
+                step_number: Some(2),
+                request_kind: haven_common::config::RequestKind::Chat,
+                call_kind: "agent".into(),
+                model: Some("test-model".into()),
+                prompt_tokens: 20,
+                completion_tokens: 0,
+                total_tokens: 20,
+                cached_tokens: 0,
+                cache_creation_tokens: 0,
+                cache_miss_tokens: 0,
+                cache_accounting: "unknown".into(),
+                cache_diagnostics: None,
+                cost_usd: 0.0,
+                has_cost: false,
+                duration_ms: None,
+                context_tokens: 0,
+                context_window: None,
+            },
+        )
+        .unwrap();
+    let cutoff = kept_usage.created_at.clone();
     let sid = session.id.clone();
     agent
         .db
         .run_blocking(move |_| {
-            store.append_branch_point(&sid, 1, 1, Some(&hello_created_at), None)?;
+            store.append_branch_point(&sid, 1, 1, Some(&cutoff), None)?;
             store.append_recovery_persistence(
                 &sid,
                 0,
@@ -1614,10 +1675,44 @@ async fn continue_session_resumes_errored_session() {
         executor.get_active_session_status(&session.id).await,
         Some(SessionStatus::Pending)
     );
-    // The explicitly marked partial output should have been deleted.
+    // The committed recovery marker authorizes removal strictly after the
+    // branch-point cutoff, including execution and usage projections.
     let msgs = agent.db.get_session_messages(&session.id).unwrap();
-    assert_eq!(msgs.len(), 1);
+    assert_eq!(msgs.len(), 2);
     assert_eq!(msgs[0].content, "hello");
+    assert_eq!(msgs[1].id, completed.id);
+    assert!(!msgs.iter().any(|message| message.id == partial.id));
+    let steps = agent.db.get_session_steps(&session.id).unwrap();
+    assert_eq!(steps.len(), 1);
+    assert_eq!(steps[0].id, kept_step.id);
+    let usage = agent.db.get_session_llm_usage(&session.id).unwrap();
+    assert_eq!(usage.len(), 1);
+    assert_eq!(usage[0].id, kept_usage.id);
+    assert_eq!(
+        agent
+            .db
+            .get_session_usage(&session.id)
+            .unwrap()
+            .unwrap()
+            .total_tokens,
+        10
+    );
+    let discarded_events = agent
+        .react_engine
+        .event_store
+        .read_active_domain_events(&session.id)
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.event_type == haven_memory::USAGE_DISCARDED_EVENT_TYPE)
+        .collect::<Vec<_>>();
+    assert_eq!(discarded_events.len(), 1);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&discarded_events[0].payload)
+            .unwrap()
+            .get("usage_id")
+            .and_then(serde_json::Value::as_str),
+        Some(discarded_usage.id.as_str())
+    );
 }
 
 #[tokio::test]
