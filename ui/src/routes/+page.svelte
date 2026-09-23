@@ -20,6 +20,7 @@
 	import { createAskInteractionController } from '$lib/chatAskInteraction.ts';
 	import { createChatSessionEventHandlers } from '$lib/chatSessionEventHandlers.ts';
 	import { createChatUsageEventHandlers } from '$lib/chatUsageEventHandlers.ts';
+	import { selectChatVisibleMessages } from '$lib/chatVisibleMessages.ts';
 	import { createChatModelSync } from '$lib/chatModelSync.ts';
 	import { createStreamEventAggregator } from '$lib/streamAggregator.ts';
 	import { registerPerformanceMetricsProvider } from '$lib/performanceMetrics.ts';
@@ -96,7 +97,6 @@
 		maxFiles: 5,
 		maxFileBytes: 20 * 1024 * 1024,
 	});
-	let messages = /** @type {Array<any>} */ ($state([]));
 	let initialLoading = $state(true);
 	const sessionReducer = appSessionReducer;
 	let sessionState = $state(sessionReducer.getState());
@@ -124,13 +124,16 @@
 	const askHasOptions = $derived(
 		pendingAskInteractions.some((request) => request.options.length > 0),
 	);
-	let rollbackDialog = $state({
-		open: false,
-		stepNumber: null,
-		role: '',
-		content: '',
-		msgId: '',
-	});
+	let rollbackDialog =
+		/** @type {{ open: boolean, stepNumber: number | null, role: string, content: string, msgId: string }} */ (
+			$state({
+				open: false,
+				stepNumber: null,
+				role: '',
+				content: '',
+				msgId: '',
+			})
+		);
 	let rollbackLoading = $state(false);
 
 	// Model switcher state: the registry catalog plus the current default
@@ -754,31 +757,7 @@
 	// a newer one.
 	let loadSessionsSeq = 0;
 
-	// Visible messages are a projection of the reducer. Interaction metadata is
-	// joined by the stable request/message id, never by text or position.
-	$effect(() => {
-		const list = sessionState.messages?.[activeSessionId || DRAFT_SESSION_ID] || [];
-		const interactions = sessionState.interactions || {};
-		messages = list.map((message) => {
-			if (message.type !== 'ask') return message;
-			const request = interactions[message.id];
-			if (!request || request.kind !== 'ask') return message;
-			const response = /** @type {{ answer?: string; ignored?: boolean } | undefined} */ (
-				request.response
-			);
-			return {
-				...message,
-				options: request.options,
-				awaiting: request.status === 'pending',
-				resolved:
-					request.status === 'resolved'
-						? response?.ignored
-							? { ignored: true }
-							: { answer: response?.answer || '' }
-						: null,
-			};
-		});
-	});
+	const messages = $derived.by(() => selectChatVisibleMessages(sessionState, activeSessionId));
 
 	const activeSessionError = $derived(
 		!!activeSessionId && sessionState.error?.sessionId === activeSessionId,
