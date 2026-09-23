@@ -829,36 +829,13 @@ impl LlmRouter {
         .await
     }
 
-    pub async fn chat(
-        &self,
-        request: RequestKind,
-        messages: Vec<CanonicalMessage>,
-    ) -> Result<LlmResponse, LlmError> {
-        self.chat_request(request, messages).await
-    }
-
-    /// Chat through an explicit request policy. This is the preferred entry
-    /// point for new callers; the request-shaped methods below keep the public
-    /// wrappers for existing agent/tool code.
+    /// Chat through an explicit request policy.
     pub async fn chat_request(
         &self,
         request: RequestKind,
         messages: Vec<CanonicalMessage>,
     ) -> Result<LlmResponse, LlmError> {
         self.chat_request_with_output_cap(request, messages, None)
-            .await
-    }
-
-    /// Chat with an optional per-request output cap. The cap is forwarded to
-    /// the provider adapter and is still subject to the router's retry
-    /// policy.
-    pub async fn chat_with_output_cap(
-        &self,
-        request: RequestKind,
-        messages: Vec<CanonicalMessage>,
-        max_output_tokens: Option<u32>,
-    ) -> Result<LlmResponse, LlmError> {
-        self.chat_request_with_output_cap(request, messages, max_output_tokens)
             .await
     }
 
@@ -873,7 +850,7 @@ impl LlmRouter {
     }
 
     /// Convenience wrapper that builds a `System + User` message pair (or just
-    /// `User` when `system` is empty) and forwards to [`Self::chat`]. Used by
+    /// `User` when `system` is empty) and forwards to [`Self::chat_request`]. Used by
     /// one-shot prompts that don't need a full conversation history (title
     /// generation, fact extraction, conversation summarization).
     pub async fn chat_with_prompt(
@@ -898,7 +875,7 @@ impl LlmRouter {
             messages.push(CanonicalMessage::system(vec![ContentPart::text(system)]));
         }
         messages.push(CanonicalMessage::user(vec![ContentPart::text(user)]));
-        self.chat_with_output_cap(request, messages, max_output_tokens)
+        self.chat_request_with_output_cap(request, messages, max_output_tokens)
             .await
     }
 
@@ -915,7 +892,7 @@ impl LlmRouter {
         tokio::select! {
             biased;
             _ = cancel.cancelled() => Err(LlmError::Cancelled),
-            result = self.chat_with_output_cap(request, messages, max_output_tokens) => result,
+            result = self.chat_request_with_output_cap(request, messages, max_output_tokens) => result,
         }
     }
 
@@ -1698,7 +1675,7 @@ mod tests {
         }
 
         let error = router
-            .chat(RequestKind::Chat, Vec::new())
+            .chat_request(RequestKind::Chat, Vec::new())
             .await
             .expect_err("the selected provider error must be returned");
         assert!(matches!(error, LlmError::ServerError(_)));
@@ -1729,7 +1706,7 @@ mod tests {
 
         for _ in 0..3 {
             router
-                .chat(RequestKind::Chat, Vec::new())
+                .chat_request(RequestKind::Chat, Vec::new())
                 .await
                 .expect_err("the selected provider must remain the only target");
         }
@@ -1743,7 +1720,7 @@ mod tests {
 
         // The fourth request must not skip to the other provider.
         let error = router
-            .chat(RequestKind::Chat, Vec::new())
+            .chat_request(RequestKind::Chat, Vec::new())
             .await
             .expect_err("an open circuit must fail instead of changing namespace");
         assert!(
@@ -2291,7 +2268,7 @@ mod tests {
         );
 
         let resp = router
-            .chat(RequestKind::FastChat, Vec::new())
+            .chat_request(RequestKind::FastChat, Vec::new())
             .await
             .expect("small_model should succeed");
         assert_eq!(resp.text, "mock response");
@@ -2322,7 +2299,7 @@ mod tests {
 
         // First 3 calls should fail and trigger circuit breaker
         for _ in 0..3 {
-            let _ = router.chat(RequestKind::Chat, Vec::new()).await;
+            let _ = router.chat_request(RequestKind::Chat, Vec::new()).await;
         }
 
         // Circuit breaker should reject requests directly
@@ -2672,7 +2649,10 @@ mod tests {
         for _ in 0..3 {
             let router = router.clone();
             handles.push(tokio::spawn(async move {
-                router.chat(RequestKind::Chat, vec![]).await.unwrap();
+                router
+                    .chat_request(RequestKind::Chat, vec![])
+                    .await
+                    .unwrap();
             }));
         }
         for h in handles {
@@ -2686,7 +2666,10 @@ mod tests {
         // Different models have independent permits: small_model can proceed
         // while default_model is capped.
         router.set_request_limit_for_test(1);
-        let _ = router.chat(RequestKind::FastChat, vec![]).await.unwrap();
+        let _ = router
+            .chat_request(RequestKind::FastChat, vec![])
+            .await
+            .unwrap();
         assert_eq!(max_seen.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
@@ -2745,7 +2728,10 @@ mod tests {
         *router.config.write().await = cfg;
 
         let model_id = "default_model";
-        let err = router.chat(RequestKind::Chat, vec![]).await.unwrap_err();
+        let err = router
+            .chat_request(RequestKind::Chat, vec![])
+            .await
+            .unwrap_err();
         assert!(
             matches!(err, LlmError::RateLimit { .. }),
             "first call must surface the RateLimit failure: {}",
@@ -2762,7 +2748,10 @@ mod tests {
         // of firing immediately: it must take at least the Retry-After before
         // dispatching (it fails again, but only after the shared wait).
         let t0 = Instant::now();
-        let err2 = router.chat(RequestKind::Chat, vec![]).await.unwrap_err();
+        let err2 = router
+            .chat_request(RequestKind::Chat, vec![])
+            .await
+            .unwrap_err();
         assert!(matches!(err2, LlmError::RateLimit { .. }));
         assert!(
             t0.elapsed() >= Duration::from_millis(250),
@@ -2898,7 +2887,7 @@ mod tests {
         let router =
             LlmRouter::new_with_clients(client.clone(), client.clone(), client.clone(), client);
         let ordinary = router
-            .chat_with_output_cap(RequestKind::Chat, Vec::new(), Some(37))
+            .chat_request_with_output_cap(RequestKind::Chat, Vec::new(), Some(37))
             .await
             .unwrap();
         let tools = vec![ToolDefinition {

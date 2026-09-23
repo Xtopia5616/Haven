@@ -76,7 +76,7 @@ pub(super) async fn summarize(
     let call = async {
         tokio::time::timeout(
             std::time::Duration::from_secs(summary_timeout_secs),
-            client.chat(RequestKind::FastChat, messages),
+            client.chat_request(RequestKind::FastChat, messages),
         )
         .await
     };
