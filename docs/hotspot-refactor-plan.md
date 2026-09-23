@@ -4,7 +4,7 @@
 >
 > 本文是执行计划，不授权新增功能或顺手清理无关代码。每个目标应独立完成、独立验证、独立提交。
 >
-> 状态（2026-09-23）：机械拆分阶段 A–F 已完成；provider adapter 的内部模块化切片已完成。执行入口与 `PlatformRuntime` 快照见 ADR 0211；进程服务已按 ADR 0212 从 `ToolsManager` getter 迁到 `ToolServices`。`ToolPolicy` / `ToolManifest` / `ToolPresentation` 仍是 IPC 形状，`AuthorizedExecutor` 不做交互式确认，组合根仍是 `ApplicationRuntime`。阶段 G 的 UI 热点与其余战略性重构仍是后续路线。本文件的规模数字以 2026-09-23 审计为准，历史完成记录保留原始日期。
+> 状态（2026-09-23）：机械拆分阶段 A–F 已完成；provider adapter 的内部模块化切片已完成。执行入口与 `PlatformRuntime` 快照见 ADR 0211；进程服务已按 ADR 0212 从 `ToolsManager` getter 迁到 `ToolServices`。运行时策略与 manifest 以 `OperationSpec` 为唯一来源（ADR 0213）。`ToolPolicy` / `ToolManifest` / `ToolPresentation` 仍是 IPC 形状，`AuthorizedExecutor` 不做交互式确认，组合根仍是 `ApplicationRuntime`。阶段 G 的 UI 热点与其余战略性重构仍是后续路线。本文件的规模数字以 2026-09-23 审计为准，历史完成记录保留原始日期。
 
 ## 1. 执行前必须阅读
 
@@ -240,7 +240,7 @@ shell 后台执行、定时触发、等待另一个 action、完成后唤醒会�
 
 有意留下的边界，不是未删干净的 getter：
 
-- `OperationSpec` 没有 handler，只覆盖 builtin operation view。聚合工具在注册时把策略拷进 spec。MCP 在 adapter 里实现 `tool_manifest`，Skill 使用 `Tool::operation_policy` 的默认实现。`ToolPolicy`、`ToolManifest`、`ToolPresentation` 继续作为 IPC 形状。
+- `OperationSpec` 没有 handler，但是 builtin view、root tool、MCP 与 Skill 的运行时策略和 manifest 来源。`ToolPolicy`、`ToolManifest`、`ToolPresentation` 继续作为 IPC 形状，只由 `project_tool_manifest` 投影。见 ADR 0213。
 - `AuthorizedExecutor` 不签发交互式确认。它只做熔断、启用检查、校验、执行和结果分类；确认仍由调用方在 `execute_tool` 之前决定。
 - messaging runtime 与 memory recall 随 `StartupWiring` 进入 `wire_startup`，用 OnceLock 绑定一次，不放进可替换的 `PlatformRuntime`。`admin_surfaces` 要等 catalog rebuild 成功后才和 builtin 工具一起发布，重建前为空。tool settings、context limits、shell 与 security 跟模型/媒体客户端写在同一份快照里；热更新走 `set_router_and_media_clients`，没有单独的 `set_tts_client`。
 - 本轮不把 `tool-core` 拆成新 crate。

@@ -145,19 +145,18 @@ impl Tool for HttpTool {
         RiskLevel::Medium
     }
 
-    fn idempotency(&self, input: &Value) -> OperationIdempotency {
-        match input.get("method").and_then(Value::as_str) {
-            None | Some("GET") => OperationIdempotency::Idempotent,
-            Some("POST") => OperationIdempotency::NonIdempotent,
-            _ => OperationIdempotency::Unknown,
-        }
-    }
-
-    fn concurrency(&self, input: &Value) -> ToolConcurrency {
-        match input.get("method").and_then(Value::as_str) {
-            None | Some("GET") => ToolConcurrency::SharedResource("http".into()),
-            _ => ToolConcurrency::Resource("http".into()),
-        }
+    fn operation_spec(&self) -> Option<crate::operation_view::OperationSpec> {
+        Some(crate::operation_view::root_tool_spec(
+            "http",
+            crate::prompts::HTTP_DESCRIPTION,
+            self.input_schema(),
+            RiskLevel::Medium,
+            OperationIdempotency::Idempotent,
+            crate::ToolOperationScope::Session,
+            ToolConcurrency::SharedResource("http".into()),
+            ToolCatalogGroup::System,
+            Some(crate::operation_view::OperationPolicyRule::HttpVerb),
+        ))
     }
 
     fn timeout_outcome(&self) -> ToolExecutionOutcome {

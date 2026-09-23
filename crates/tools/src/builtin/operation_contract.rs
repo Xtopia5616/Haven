@@ -14,6 +14,8 @@ pub(crate) struct OperationContract {
     pub(crate) name: &'static str,
     pub(crate) label: &'static str,
     pub(crate) catalog_group: ToolCatalogGroup,
+    /// Selects idempotency. It does not waive confirmation.
+    #[allow(dead_code)]
     pub(crate) read_only: bool,
     pub(crate) risk_override: Option<RiskLevel>,
     pub(crate) idempotency: OperationIdempotency,

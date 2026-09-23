@@ -320,6 +320,20 @@ impl Tool for ShellTool {
         RiskLevel::High
     }
 
+    fn operation_spec(&self) -> Option<crate::operation_view::OperationSpec> {
+        Some(crate::operation_view::root_tool_spec(
+            "shell",
+            crate::prompts::SHELL_DESCRIPTION,
+            self.input_schema(),
+            RiskLevel::High,
+            crate::OperationIdempotency::Unknown,
+            crate::ToolOperationScope::Session,
+            crate::ToolConcurrency::Exclusive,
+            ToolCatalogGroup::System,
+            None,
+        ))
+    }
+
     fn timeout_outcome(&self) -> ToolExecutionOutcome {
         ToolExecutionOutcome::TimedOutUnknown
     }

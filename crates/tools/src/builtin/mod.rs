@@ -37,7 +37,7 @@ use self::operation_contract::operation_contract;
 use crate::ActionService;
 use crate::ToolRegistry;
 use crate::operation_view::{
-    OperationSpec, OperationViewRiskRule, OperationViewTool, split_operation_schema,
+    OperationPolicyRule, OperationSpec, OperationViewTool, split_operation_schema,
     split_scope_operation_schema,
 };
 use crate::prompts as tool_prompts;
@@ -512,41 +512,36 @@ fn operation_spec(
 ) -> OperationSpec {
     let metadata = operation_contract(name);
     let policy_input = Value::Object(fixed.iter().cloned().collect());
-    let mut policy = inner.operation_policy(&policy_input);
-    // Operation views are stable permission identities even though execution
-    // is delegated to an aggregate builtin implementation.
-    policy.capability = name.into();
-    policy.idempotency = metadata.idempotency;
-    if metadata.read_only {
-        // Preserve the aggregate's resource key for read operations. A
-        // blanket ReadOnly policy would let e.g. files.read run concurrently
-        // with files.write because it bypasses the shared `files` lock.
-        if policy.risk_level < RiskLevel::Critical {
-            policy.confirmation = ConfirmationRequirement::None;
-        }
+    // Freeze the aggregate call shape. Idempotency comes from the contract,
+    // including agent.inbox, and read_only does not waive confirmation.
+    let mut risk_level = inner.risk_level(&policy_input);
+    if let Some(override_risk) = metadata.risk_override {
+        risk_level = override_risk;
     }
-    if let Some(risk_level) = metadata.risk_override {
-        policy.risk_level = risk_level;
-        policy.confirmation = if risk_level >= RiskLevel::Critical {
-            ConfirmationRequirement::Required
-        } else if risk_level == RiskLevel::Safe {
-            ConfirmationRequirement::None
-        } else {
-            ConfirmationRequirement::SecurityPolicy
-        };
-    }
+    let concurrency = inner.concurrency(&policy_input);
     let (effect, data_sensitivity, network_access) =
-        crate::tool_contract::operation_attributes(name, policy.concurrency.clone());
-    policy.effect = effect;
-    policy.data_sensitivity = data_sensitivity;
-    policy.network_access = network_access;
+        crate::tool_contract::operation_attributes(name, concurrency.clone());
+    let policy = OperationPolicy {
+        risk_level,
+        capability: name.into(),
+        confirmation: crate::tool_contract::confirmation_for(
+            risk_level,
+            matches!(effect, crate::OperationEffect::ReadOnly),
+        ),
+        idempotency: metadata.idempotency,
+        scope: inner.operation_scope(&policy_input),
+        concurrency,
+        effect,
+        data_sensitivity,
+        network_access,
+    };
     OperationSpec {
         name: name.into(),
         description: description.into(),
         fixed,
         schema,
         policy,
-        risk_rule: None,
+        policy_rule: None,
         catalog_group: metadata.catalog_group,
         presentation: ToolPresentation {
             label: metadata.label.into(),
@@ -584,7 +579,7 @@ fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
                 data_sensitivity: crate::DataSensitivity::UserData,
                 network_access: crate::NetworkAccess::None,
             },
-            risk_rule: None,
+            policy_rule: None,
             catalog_group: ToolCatalogGroup::System,
             presentation: ToolPresentation {
                 label: operation_contract("files.read").label.into(),
@@ -615,7 +610,7 @@ fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
                 data_sensitivity: crate::DataSensitivity::UserData,
                 network_access: crate::NetworkAccess::None,
             },
-            risk_rule: None,
+            policy_rule: None,
             catalog_group: ToolCatalogGroup::System,
             presentation: ToolPresentation {
                 label: operation_contract("files.outline").label.into(),
@@ -646,7 +641,7 @@ fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
                 data_sensitivity: crate::DataSensitivity::UserData,
                 network_access: crate::NetworkAccess::Public,
             },
-            risk_rule: None,
+            policy_rule: None,
             catalog_group: ToolCatalogGroup::System,
             presentation: ToolPresentation {
                 label: operation_contract("files.summary").label.into(),
@@ -677,7 +672,7 @@ fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
                 data_sensitivity: crate::DataSensitivity::UserData,
                 network_access: crate::NetworkAccess::None,
             },
-            risk_rule: Some(OperationViewRiskRule::ContentSearchMedium),
+            policy_rule: Some(OperationPolicyRule::ContentSearchMedium),
             catalog_group: ToolCatalogGroup::System,
             presentation: ToolPresentation {
                 label: operation_contract("files.search").label.into(),
@@ -708,7 +703,7 @@ fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
                 data_sensitivity: crate::DataSensitivity::None,
                 network_access: crate::NetworkAccess::None,
             },
-            risk_rule: None,
+            policy_rule: None,
             catalog_group: ToolCatalogGroup::System,
             presentation: ToolPresentation {
                 label: operation_contract("system.info").label.into(),
@@ -1215,6 +1210,67 @@ mod tests {
             },
         );
         map
+    }
+
+    #[test]
+    fn media_views_freeze_concurrency_without_a_per_call_asset() {
+        let media = Arc::new(
+            media::MediaTool::new(
+                None,
+                crate::ManagedAssetRegistry::default(),
+                1024,
+                10,
+                2_000,
+            )
+            .with_capabilities(media::MediaCapabilities {
+                describe: true,
+                ocr: true,
+                transcribe: true,
+                generate: true,
+                record: true,
+                speak: true,
+            }),
+        );
+        let mut tools = Vec::new();
+        add_operation_views(&mut tools, media, &HashMap::new(), MEDIA_OPERATION_VIEWS);
+        let policy = |name: &str| {
+            tools
+                .iter()
+                .find(|tool| tool.name() == name)
+                .unwrap_or_else(|| panic!("missing {name}"))
+                .operation_policy(&json!({}))
+                .concurrency
+        };
+        for name in [
+            "media.inspect",
+            "media.describe",
+            "media.ocr",
+            "media.transcribe",
+            "media.extract",
+            "media.render",
+            "media.generate",
+        ] {
+            assert_eq!(
+                policy(name),
+                ToolConcurrency::Resource("media:unknown".into()),
+                "{name}"
+            );
+        }
+        for name in [
+            "media.record",
+            "media.play",
+            "media.speak",
+            "media.volume_get",
+            "media.volume_set",
+            "media.mute_get",
+            "media.mute_set",
+        ] {
+            assert_eq!(
+                policy(name),
+                ToolConcurrency::Resource("media:audio-device".into()),
+                "{name}"
+            );
+        }
     }
 
     #[test]

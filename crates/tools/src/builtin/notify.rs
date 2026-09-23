@@ -138,12 +138,19 @@ impl TypedToolOperation for NotifyTool {
 }
 
 pub fn typed_adapter() -> crate::TypedToolAdapter<NotifyTool> {
-    crate::TypedToolAdapter::new(
+    const DESCRIPTION: &str = "Send a visual/system notification without pausing the session — alert the user about something worth checking. Use media.speak for spoken content, not notify.";
+    let spec = crate::operation_view::root_tool_spec(
         "notify",
-        "Send a visual/system notification without pausing the session — alert the user about something worth checking. Use media.speak for spoken content, not notify.",
-        NotifyTool,
-    )
-    .with_catalog_group(ToolCatalogGroup::System)
+        DESCRIPTION,
+        <NotifyTool as Tool>::input_schema(&NotifyTool),
+        RiskLevel::Safe,
+        crate::OperationIdempotency::Unknown,
+        ToolOperationScope::Session,
+        ToolConcurrency::Exclusive,
+        ToolCatalogGroup::System,
+        None,
+    );
+    crate::TypedToolAdapter::new("notify", DESCRIPTION, NotifyTool).with_operation_spec(spec)
 }
 
 #[async_trait]

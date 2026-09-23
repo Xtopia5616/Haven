@@ -157,12 +157,21 @@ impl TypedToolOperation for AskTool {
 }
 
 pub fn typed_adapter() -> crate::TypedToolAdapter<AskTool> {
-    crate::TypedToolAdapter::new(
+    const DESCRIPTION: &str = "Ask the user one question when you need a decision or missing information. One question per call — do not pack multiple questions or mixed option sets into a single ask.";
+    // Empty input fails to parse, so the stored policy is Unknown rather than
+    // the typed NonIdempotent metadata. A valid call overlays that metadata.
+    let spec = crate::operation_view::root_tool_spec(
         "ask",
-        "Ask the user one question when you need a decision or missing information. One question per call — do not pack multiple questions or mixed option sets into a single ask.",
-        AskTool,
-    )
-    .with_catalog_group(ToolCatalogGroup::Haven)
+        DESCRIPTION,
+        <AskTool as Tool>::input_schema(&AskTool),
+        RiskLevel::Safe,
+        crate::OperationIdempotency::Unknown,
+        ToolOperationScope::Session,
+        ToolConcurrency::Exclusive,
+        ToolCatalogGroup::Haven,
+        None,
+    );
+    crate::TypedToolAdapter::new("ask", DESCRIPTION, AskTool).with_operation_spec(spec)
 }
 
 #[async_trait]

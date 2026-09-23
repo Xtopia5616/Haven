@@ -15,21 +15,22 @@ use haven_common::tools::{
     ToolPrompt, ToolRootPresentation, ToolSource,
 };
 
-/// Authored name, schema, presentation and policy for one builtin operation view.
+/// Authored name, schema, presentation, and policy for one operation.
 ///
-/// The spec has no handler. OperationViewTool pairs it with the aggregate tool,
-/// which copies the policy in at registration. MCP and Skill adapters are not
-/// views of this record: MCP implements tool_manifest, and Skill uses the default
-/// Tool::operation_policy. ToolManifest, ToolPolicy and ToolPresentation remain
-/// the IPC shapes projected for the UI.
+/// The spec has no handler. Builtin views, root tools, and MCP/Skill adapters
+/// all publish this record. `policy_for` is the policy for one call.
+/// `catalog_policy` is the model-visible upper bound. `ToolManifest`,
+/// `ToolPolicy`, and `ToolPresentation` remain the IPC shapes produced by
+/// `project_tool_manifest`.
+#[doc(hidden)]
 #[derive(Debug, Clone)]
-pub(crate) struct OperationSpec {
+pub struct OperationSpec {
     pub(crate) name: Cow<'static, str>,
     pub(crate) description: Cow<'static, str>,
     pub(crate) fixed: Vec<(String, Value)>,
     pub(crate) schema: Value,
     pub(crate) policy: OperationPolicy,
-    pub(crate) risk_rule: Option<OperationViewRiskRule>,
+    pub(crate) policy_rule: Option<OperationPolicyRule>,
     pub(crate) catalog_group: ToolCatalogGroup,
     pub(crate) presentation: ToolPresentation,
     pub(crate) prompt: ToolPrompt,
@@ -38,8 +39,8 @@ pub(crate) struct OperationSpec {
     pub(crate) identity: Option<OperationIdentity>,
 }
 
-/// Optional catalog identity for operations that are not builtin views.
-/// Builtin specs leave this empty so their manifests stay byte-for-byte stable.
+/// Optional catalog identity for operations that are not plain builtin views.
+/// Builtin view specs leave this empty so their manifests stay stable.
 #[derive(Debug, Clone)]
 pub(crate) struct OperationIdentity {
     pub(crate) source: ToolSource,
@@ -49,18 +50,21 @@ pub(crate) struct OperationIdentity {
     pub(crate) availability: ToolAvailability,
 }
 
-#[allow(dead_code)]
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum OperationViewRiskRule {
+/// Input-sensitive adjustment applied to one stored [`OperationSpec`] policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OperationPolicyRule {
+    /// Filename search keeps the stored risk. `mode=content` discloses file
+    /// text and raises that call to Medium. The catalog publishes the upper
+    /// bound and its security-policy confirmation.
     ContentSearchMedium,
+    /// The HTTP method changes replay safety and the request lock only.
+    HttpVerb,
 }
 
 /// A narrow provider-facing view over an aggregate tool.
 ///
-/// The aggregate implementation remains the single execution and policy
-/// source. This adapter only fixes the operation discriminator and publishes
-/// the smaller schema that the model needs for that operation. Native and
-/// model-facing callers therefore continue to share the same implementation.
+/// Execution stays on the aggregate. Policy, catalog group, and manifest come
+/// from the spec captured at registration, not from a second projection.
 pub(crate) struct OperationViewTool {
     handler: ToolBox,
     spec: OperationSpec,
@@ -68,8 +72,39 @@ pub(crate) struct OperationViewTool {
 }
 
 impl OperationSpec {
-    /// UI/IPC projection. Input-dependent risk rules use their conservative
-    /// upper bound here; execution still refines the same policy per call.
+    /// Policy for one invocation. Rules here must not invent a second
+    /// confirmation table; content search only raises risk, and HTTP only
+    /// changes idempotency and concurrency.
+    pub(crate) fn policy_for(&self, input: &Value) -> OperationPolicy {
+        let mut policy = self.policy.clone();
+        match self.policy_rule {
+            Some(OperationPolicyRule::ContentSearchMedium)
+                if input.get("mode").and_then(Value::as_str) == Some("content") =>
+            {
+                policy.risk_level = RiskLevel::Medium;
+            }
+            Some(OperationPolicyRule::HttpVerb) => apply_http_verb(&mut policy, input),
+            _ => {}
+        }
+        policy
+    }
+
+    /// Catalog upper bound. Only content search is wider than an empty call.
+    pub(crate) fn catalog_policy(&self) -> OperationPolicy {
+        let mut policy = self.policy.clone();
+        if matches!(
+            self.policy_rule,
+            Some(OperationPolicyRule::ContentSearchMedium)
+        ) {
+            if policy.risk_level < RiskLevel::Medium {
+                policy.risk_level = RiskLevel::Medium;
+            }
+            policy.confirmation = ConfirmationRequirement::SecurityPolicy;
+        }
+        policy
+    }
+
+    /// UI/IPC projection of [`Self::catalog_policy`].
     pub(crate) fn manifest(&self, schema: Value) -> ToolManifest {
         let name = self.name.to_string();
         let (source, root, operation, root_presentation, availability) = match &self.identity {
@@ -95,13 +130,7 @@ impl OperationSpec {
                 )
             }
         };
-        let mut policy = self.policy.clone();
-        if self.risk_rule.is_some() {
-            if policy.risk_level < RiskLevel::Medium {
-                policy.risk_level = RiskLevel::Medium;
-            }
-            policy.confirmation = ConfirmationRequirement::SecurityPolicy;
-        }
+        let policy = self.catalog_policy();
         crate::tool_contract::project_tool_manifest(
             ToolIdentity {
                 source,
@@ -122,6 +151,114 @@ impl OperationSpec {
             availability,
         )
     }
+}
+
+fn apply_http_verb(policy: &mut OperationPolicy, input: &Value) {
+    match input.get("method").and_then(Value::as_str) {
+        None | Some("GET") => {
+            policy.idempotency = OperationIdempotency::Idempotent;
+            policy.concurrency = ToolConcurrency::SharedResource("http".into());
+        }
+        Some("POST") => {
+            policy.idempotency = OperationIdempotency::NonIdempotent;
+            policy.concurrency = ToolConcurrency::Resource("http".into());
+        }
+        _ => {
+            policy.idempotency = OperationIdempotency::Unknown;
+            policy.concurrency = ToolConcurrency::Resource("http".into());
+        }
+    }
+}
+
+/// Static policy for a root tool whose attributes come from its name.
+pub(crate) fn root_policy(
+    name: &str,
+    risk_level: RiskLevel,
+    idempotency: OperationIdempotency,
+    scope: ToolOperationScope,
+    concurrency: ToolConcurrency,
+) -> OperationPolicy {
+    let (effect, data_sensitivity, network_access) =
+        crate::tool_contract::operation_attributes(name, concurrency.clone());
+    OperationPolicy {
+        risk_level,
+        capability: name.into(),
+        confirmation: crate::tool_contract::confirmation_for(
+            risk_level,
+            matches!(effect, crate::OperationEffect::ReadOnly),
+        ),
+        idempotency,
+        scope,
+        concurrency,
+        effect,
+        data_sensitivity,
+        network_access,
+    }
+}
+
+/// Root-tool spec whose manifest matches the historical default projection.
+pub(crate) fn root_operation_spec(
+    name: &'static str,
+    description: &'static str,
+    schema: Value,
+    policy: OperationPolicy,
+    catalog_group: ToolCatalogGroup,
+    policy_rule: Option<OperationPolicyRule>,
+) -> OperationSpec {
+    let represented = crate::tool_contract::display_source_for_name(name);
+    let root = crate::tool_contract::default_tool_root(name, represented);
+    let operation = crate::tool_contract::default_tool_operation(name, &root, represented);
+    let source = crate::tool_contract::tool_source_for_name(name);
+    let root_presentation = crate::tool_contract::default_root_presentation(&root, represented);
+    OperationSpec {
+        name: name.into(),
+        description: description.into(),
+        fixed: Vec::new(),
+        schema,
+        policy,
+        policy_rule,
+        catalog_group,
+        presentation: ToolPresentation {
+            label: crate::tool_contract::default_tool_label(name),
+            renderer: root.clone(),
+            icon: "tools".into(),
+            represented_source: represented,
+        },
+        prompt: ToolPrompt {
+            when_to_use: description.into(),
+            when_not_to_use: "Use a narrower operation when one is available.".into(),
+            key_operations: vec![name.into()],
+        },
+        identity: Some(OperationIdentity {
+            source,
+            root: root.into(),
+            operation: operation.map(Cow::from),
+            root_presentation,
+            availability: ToolAvailability::default(),
+        }),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn root_tool_spec(
+    name: &'static str,
+    description: &'static str,
+    schema: Value,
+    risk_level: RiskLevel,
+    idempotency: OperationIdempotency,
+    scope: ToolOperationScope,
+    concurrency: ToolConcurrency,
+    catalog_group: ToolCatalogGroup,
+    policy_rule: Option<OperationPolicyRule>,
+) -> OperationSpec {
+    root_operation_spec(
+        name,
+        description,
+        schema,
+        root_policy(name, risk_level, idempotency, scope, concurrency),
+        catalog_group,
+        policy_rule,
+    )
 }
 
 impl OperationViewTool {
@@ -318,36 +455,12 @@ impl Tool for OperationViewTool {
         self.spec.description.to_string()
     }
 
+    fn operation_spec(&self) -> Option<OperationSpec> {
+        Some(self.spec.clone())
+    }
+
     fn risk_level(&self, input: &Value) -> RiskLevel {
-        match self.spec.risk_rule {
-            Some(OperationViewRiskRule::ContentSearchMedium)
-                if input.get("mode").and_then(Value::as_str) == Some("content") =>
-            {
-                RiskLevel::Medium
-            }
-            _ => self.spec.policy.risk_level,
-        }
-    }
-
-    fn operation_policy(&self, input: &Value) -> OperationPolicy {
-        let mut policy = self.spec.policy.clone();
-        policy.risk_level = self.risk_level(input);
-        policy.confirmation = if policy.risk_level >= RiskLevel::Critical {
-            ConfirmationRequirement::Required
-        } else if policy.is_read_only() || policy.risk_level == RiskLevel::Safe {
-            ConfirmationRequirement::None
-        } else {
-            ConfirmationRequirement::SecurityPolicy
-        };
-        policy
-    }
-
-    fn idempotency(&self, _input: &Value) -> OperationIdempotency {
-        self.spec.policy.idempotency
-    }
-
-    fn operation_scope(&self, _input: &Value) -> ToolOperationScope {
-        self.spec.policy.scope
+        self.spec.policy_for(input).risk_level
     }
 
     fn timeout_outcome(&self) -> ToolExecutionOutcome {
@@ -386,20 +499,20 @@ impl Tool for OperationViewTool {
     }
 
     fn tool_def(&self) -> ToolDef {
+        // The default tool_def does not copy ToolDef.prompt. Views still need
+        // that prompt, and its risk is the empty-input policy rather than the
+        // catalog upper bound.
+        let empty = Value::Object(Map::new());
         ToolDef::new(
             self.name(),
             self.description(),
             self.input_schema(),
-            self.spec.policy.risk_level,
+            self.risk_level(&empty),
         )
-        .with_retry_safety(self.spec.policy.idempotency.tool_retry_safety())
-        .with_catalog_group(self.spec.catalog_group)
+        .with_retry_safety(self.idempotency(&empty).tool_retry_safety())
+        .with_catalog_group(self.catalog_group())
         .with_prompt(self.spec.prompt.clone())
         .with_manifest(self.tool_manifest())
-    }
-
-    fn concurrency(&self, _input: &Value) -> ToolConcurrency {
-        self.spec.policy.concurrency.clone()
     }
 
     fn default_timeout_secs(&self) -> u64 {
@@ -428,10 +541,6 @@ impl Tool for OperationViewTool {
 
     fn authorization_input(&self, input: &Value) -> Value {
         self.routed_input(input)
-    }
-
-    fn tool_manifest(&self) -> ToolManifest {
-        self.spec.manifest(self.input_schema())
     }
 }
 
@@ -505,7 +614,7 @@ mod tests {
                     data_sensitivity: crate::DataSensitivity::UserData,
                     network_access: crate::NetworkAccess::None,
                 },
-                risk_rule: None,
+                policy_rule: None,
                 catalog_group: ToolCatalogGroup::System,
                 presentation: ToolPresentation {
                     label: "读取文件".into(),

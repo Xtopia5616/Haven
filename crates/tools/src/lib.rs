@@ -11,7 +11,8 @@ pub mod inbox;
 pub mod live_output;
 mod manager;
 pub mod messaging_service;
-mod operation_view;
+#[doc(hidden)]
+pub mod operation_view;
 mod output;
 mod process;
 mod prompts;

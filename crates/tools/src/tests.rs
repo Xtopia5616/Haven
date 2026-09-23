@@ -1593,3 +1593,164 @@ async fn private_live_output_ids_are_stripped_and_reinjected() {
         "only trusted step id may be emitted, got {seen:?}"
     );
 }
+#[tokio::test]
+async fn registered_operation_manifest_matches_runtime_policy() {
+    let mgr = ToolsManager::new();
+    mgr.rebuild_catalog().await;
+    let mut tools = mgr.registry().list().await;
+    tools.extend(mgr.operations().deferred().list().await);
+    let find = |name: &str| {
+        tools
+            .iter()
+            .find(|tool| tool.name() == name)
+            .unwrap_or_else(|| panic!("missing {name}"))
+            .clone()
+    };
+
+    for name in [
+        "ask",
+        "notify",
+        "shell",
+        "http",
+        "tool_catalog",
+        "load_skill",
+        "load_mcp",
+        "files.read",
+        "files.list",
+        "agent.inbox",
+    ] {
+        assert!(find(name).operation_spec().is_some(), "{name} spec");
+    }
+
+    for tool in &tools {
+        let name = tool.name();
+        let runtime = tool.operation_policy(&json!({}));
+        let manifest = tool.tool_manifest();
+        let def = tool.tool_def();
+        assert_eq!(tool.catalog_group(), def.catalog_group, "{name}");
+        assert_eq!(manifest.policy.effect, runtime.effect.as_str(), "{name}");
+        assert_eq!(
+            manifest.policy.idempotency,
+            runtime.idempotency.as_str(),
+            "{name}"
+        );
+        assert_eq!(manifest.policy.scope, runtime.scope.as_str(), "{name}");
+        if name == "files.search" {
+            assert_eq!(runtime.risk_level, RiskLevel::Low, "{name}");
+            assert_eq!(
+                runtime.confirmation,
+                ConfirmationRequirement::None,
+                "{name}"
+            );
+            assert_eq!(manifest.policy.risk_level, RiskLevel::Medium, "{name}");
+            assert_eq!(manifest.policy.confirmation, "security_policy", "{name}");
+            continue;
+        }
+        assert_eq!(manifest.policy.risk_level, runtime.risk_level, "{name}");
+        assert_eq!(
+            manifest.policy.confirmation,
+            runtime.confirmation.as_str(),
+            "{name}"
+        );
+    }
+
+    let files_read = find("files.read").operation_policy(&json!({}));
+    assert_eq!(files_read.effect, OperationEffect::ReadOnly);
+    assert_eq!(files_read.confirmation, ConfirmationRequirement::None);
+    assert_eq!(files_read.risk_level, RiskLevel::Low);
+
+    let system_info = find("system.info").operation_policy(&json!({}));
+    assert_eq!(system_info.scope, ToolOperationScope::Global);
+    assert_eq!(system_info.effect, OperationEffect::ReadOnly);
+
+    let search = find("files.search");
+    let content = search.operation_policy(&json!({"mode": "content"}));
+    assert_eq!(content.risk_level, RiskLevel::Medium);
+    assert_eq!(content.confirmation, ConfirmationRequirement::None);
+
+    let http = find("http");
+    let get = http.operation_policy(&json!({}));
+    assert_eq!(get.idempotency, OperationIdempotency::Idempotent);
+    assert_eq!(
+        get.concurrency,
+        ToolConcurrency::SharedResource("http".into())
+    );
+    assert_eq!(get.confirmation, ConfirmationRequirement::SecurityPolicy);
+    let post = http.operation_policy(&json!({"method": "POST"}));
+    assert_eq!(post.idempotency, OperationIdempotency::NonIdempotent);
+    assert_eq!(post.concurrency, ToolConcurrency::Resource("http".into()));
+    assert_eq!(post.confirmation, get.confirmation);
+    let other = http.operation_policy(&json!({"method": "PUT"}));
+    assert_eq!(other.idempotency, OperationIdempotency::Unknown);
+    assert_eq!(other.concurrency, ToolConcurrency::Resource("http".into()));
+
+    for (name, represented, root, operation) in [
+        ("load_skill", ToolSource::Skill, "skills", "load"),
+        ("load_mcp", ToolSource::Mcp, "mcp", "load"),
+    ] {
+        let manifest = find(name).tool_manifest();
+        assert_eq!(manifest.identity.source, ToolSource::Builtin, "{name}");
+        assert_eq!(
+            manifest.presentation.represented_source, represented,
+            "{name}"
+        );
+        assert_eq!(manifest.identity.root, root, "{name}");
+        assert_eq!(
+            manifest.identity.operation.as_deref(),
+            Some(operation),
+            "{name}"
+        );
+    }
+
+    let ask = find("ask");
+    assert_eq!(ask.idempotency(&json!({})), OperationIdempotency::Unknown);
+    assert_eq!(
+        ask.idempotency(&json!({"question": "continue?"})),
+        OperationIdempotency::NonIdempotent
+    );
+    assert_eq!(
+        ask.tool_def().retry_safety,
+        OperationIdempotency::NonIdempotent.tool_retry_safety()
+    );
+
+    assert_eq!(
+        find("agent.inbox").operation_policy(&json!({})).idempotency,
+        OperationIdempotency::Idempotent
+    );
+
+    // Provider-backed media operations are absent until a live capability is
+    // wired. Their frozen concurrency is covered with every capability enabled.
+    for name in [
+        "media.describe",
+        "media.ocr",
+        "media.transcribe",
+        "media.generate",
+        "media.record",
+        "media.speak",
+    ] {
+        assert!(
+            tools.iter().all(|tool| tool.name() != name),
+            "{name} must stay unregistered until its capability exists"
+        );
+    }
+    for name in ["media.inspect", "media.extract", "media.render"] {
+        assert_eq!(
+            find(name).operation_policy(&json!({})).concurrency,
+            ToolConcurrency::Resource("media:unknown".into()),
+            "{name}"
+        );
+    }
+    for name in [
+        "media.play",
+        "media.volume_get",
+        "media.volume_set",
+        "media.mute_get",
+        "media.mute_set",
+    ] {
+        assert_eq!(
+            find(name).operation_policy(&json!({})).concurrency,
+            ToolConcurrency::Resource("media:audio-device".into()),
+            "{name}"
+        );
+    }
+}

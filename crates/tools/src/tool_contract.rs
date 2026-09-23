@@ -290,6 +290,22 @@ pub struct OperationPolicy {
     pub network_access: NetworkAccess,
 }
 
+/// Confirmation derived from risk and whether the effect is read-only.
+///
+/// Critical is a hard floor. A read-only effect or Safe risk needs no
+/// confirmation. Everything else follows the active security policy.
+/// Read-only here is [OperationEffect::ReadOnly], not an operation contract
+/// flag.
+pub(crate) fn confirmation_for(risk_level: RiskLevel, read_only: bool) -> ConfirmationRequirement {
+    if risk_level >= RiskLevel::Critical {
+        ConfirmationRequirement::Required
+    } else if read_only || risk_level == RiskLevel::Safe {
+        ConfirmationRequirement::None
+    } else {
+        ConfirmationRequirement::SecurityPolicy
+    }
+}
+
 impl OperationPolicy {
     /// Contract for an external adapter whose destination/effect is not
     /// inspectable by Haven. External capabilities intentionally remain
@@ -327,13 +343,7 @@ impl OperationPolicy {
         Self {
             risk_level,
             capability,
-            confirmation: if risk_level >= RiskLevel::Critical {
-                ConfirmationRequirement::Required
-            } else if risk_level == RiskLevel::Safe {
-                ConfirmationRequirement::None
-            } else {
-                ConfirmationRequirement::SecurityPolicy
-            },
+            confirmation: confirmation_for(risk_level, false),
             idempotency: OperationIdempotency::Unknown,
             scope: ToolOperationScope::Session,
             concurrency: ToolConcurrency::Exclusive,
@@ -424,6 +434,35 @@ pub(crate) fn operation_attributes_for_input(
         .as_deref()
         .map(|candidate| operation_attributes(candidate, concurrency.clone()))
         .unwrap_or_else(|| operation_attributes(name, concurrency))
+}
+
+/// Policy for a tool that has no [crate::operation_view::OperationSpec].
+///
+/// Confirmation stays on the historical risk-only table (the read-only
+/// effect flag is false). Operation views and root tools store confirmation
+/// on the spec instead of synthesizing it here.
+pub(crate) fn synthesize_operation_policy(
+    name: &str,
+    input: &Value,
+    risk_level: RiskLevel,
+    capability: CapabilityScope,
+    idempotency: OperationIdempotency,
+    scope: ToolOperationScope,
+    concurrency: ToolConcurrency,
+) -> OperationPolicy {
+    let (effect, data_sensitivity, network_access) =
+        operation_attributes_for_input(name, input, concurrency.clone());
+    OperationPolicy {
+        risk_level,
+        capability,
+        confirmation: confirmation_for(risk_level, false),
+        idempotency,
+        scope,
+        concurrency,
+        effect,
+        data_sensitivity,
+        network_access,
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -1197,7 +1236,7 @@ pub(crate) fn tool_source_for_name(name: &str) -> ToolSource {
     }
 }
 
-fn display_source_for_name(name: &str) -> ToolSource {
+pub(crate) fn display_source_for_name(name: &str) -> ToolSource {
     match name {
         "load_skill" => ToolSource::Skill,
         "load_mcp" => ToolSource::Mcp,
@@ -1345,37 +1384,39 @@ pub trait Tool: Send + Sync {
     fn description(&self) -> String;
     fn risk_level(&self, input: &Value) -> RiskLevel;
 
-    /// Canonical policy for the concrete invocation. All catalog and runtime
-    /// consumers should use this method instead of independently combining
-    /// risk, permission, idempotency, scope and concurrency fields.
+    /// Authored operation record, when this tool has one. Catalog projection
+    /// and per-call policy both read it. Aggregates and test doubles return
+    /// None and keep [synthesize_operation_policy].
+    fn operation_spec(&self) -> Option<crate::operation_view::OperationSpec> {
+        None
+    }
+
+    /// Canonical policy for the concrete invocation. Tools with an
+    /// [crate::operation_view::OperationSpec] return that spec's policy.
+    /// Other tools synthesize one confirmation table from risk only.
     fn operation_policy(&self, input: &Value) -> OperationPolicy {
-        let name = self.name();
-        let risk_level = self.risk_level(input);
-        let concurrency = self.concurrency(input);
-        let (effect, data_sensitivity, network_access) =
-            operation_attributes_for_input(&name, input, concurrency.clone());
-        OperationPolicy {
-            risk_level,
-            capability: permission_key(&name, &self.authorization_input(input)).into(),
-            confirmation: if risk_level >= RiskLevel::Critical {
-                ConfirmationRequirement::Required
-            } else if risk_level == RiskLevel::Safe {
-                ConfirmationRequirement::None
-            } else {
-                ConfirmationRequirement::SecurityPolicy
-            },
-            idempotency: self.idempotency(input),
-            scope: self.operation_scope(input),
-            concurrency,
-            effect,
-            data_sensitivity,
-            network_access,
+        if let Some(spec) = self.operation_spec() {
+            return spec.policy_for(input);
         }
+        let name = self.name();
+        let concurrency = self.concurrency(input);
+        synthesize_operation_policy(
+            &name,
+            input,
+            self.risk_level(input),
+            permission_key(&name, &self.authorization_input(input)).into(),
+            self.idempotency(input),
+            self.operation_scope(input),
+            concurrency,
+        )
     }
 
     /// Backend-owned metadata for prompt/UI/catalog consumers. It is not
     /// serialized into provider-facing tool definitions.
     fn tool_manifest(&self) -> ToolManifest {
+        if let Some(spec) = self.operation_spec() {
+            return spec.manifest(self.input_schema());
+        }
         let name = self.name();
         let source = tool_source_for_name(&name);
         let represented_source = self.represented_source();
@@ -1428,14 +1469,20 @@ pub trait Tool: Send + Sync {
     /// Retry policy is an operation property, not a safety-risk property.
     /// The default is conservative because an unknown operation may have
     /// performed an external side effect before returning an error.
-    fn idempotency(&self, _input: &Value) -> OperationIdempotency {
+    fn idempotency(&self, input: &Value) -> OperationIdempotency {
+        if let Some(spec) = self.operation_spec() {
+            return spec.policy_for(input).idempotency;
+        }
         OperationIdempotency::Unknown
     }
 
     /// Scope of the operation represented by this invocation.  The agent
     /// records this beside the outcome so an unknown result can be reviewed
     /// with enough context to decide whether a replay is safe.
-    fn operation_scope(&self, _input: &Value) -> ToolOperationScope {
+    fn operation_scope(&self, input: &Value) -> ToolOperationScope {
+        if let Some(spec) = self.operation_spec() {
+            return spec.policy_for(input).scope;
+        }
         ToolOperationScope::Session
     }
 
@@ -1471,7 +1518,9 @@ pub trait Tool: Send + Sync {
     /// exclusive by default; read-only/resource contracts must be explicit so
     /// a non-idempotent implementation cannot accidentally run in parallel.
     fn concurrency(&self, input: &Value) -> ToolConcurrency {
-        let _ = input;
+        if let Some(spec) = self.operation_spec() {
+            return spec.policy_for(input).concurrency;
+        }
         ToolConcurrency::Exclusive
     }
 
@@ -1498,6 +1547,9 @@ pub trait Tool: Send + Sync {
     /// High-level catalog grouping shared by the Agent prompt and UI. The
     /// default keeps test/custom tools valid without inventing a category.
     fn catalog_group(&self) -> ToolCatalogGroup {
+        if let Some(spec) = self.operation_spec() {
+            return spec.catalog_group;
+        }
         ToolCatalogGroup::Other
     }
 
@@ -1636,6 +1688,7 @@ pub struct TypedToolAdapter<O> {
     description: String,
     operation: O,
     catalog_group: ToolCatalogGroup,
+    spec: Option<crate::operation_view::OperationSpec>,
 }
 
 impl<O> TypedToolAdapter<O> {
@@ -1645,7 +1698,17 @@ impl<O> TypedToolAdapter<O> {
             description: description.into(),
             operation,
             catalog_group: ToolCatalogGroup::Other,
+            spec: None,
         }
+    }
+
+    pub(crate) fn with_operation_spec(
+        mut self,
+        spec: crate::operation_view::OperationSpec,
+    ) -> Self {
+        self.catalog_group = spec.catalog_group;
+        self.spec = Some(spec);
+        self
     }
 
     pub fn with_catalog_group(mut self, catalog_group: ToolCatalogGroup) -> Self {
@@ -1656,6 +1719,25 @@ impl<O> TypedToolAdapter<O> {
     pub fn operation(&self) -> &O {
         &self.operation
     }
+}
+
+fn typed_spec_policy<O>(adapter: &TypedToolAdapter<O>, input: &Value) -> Option<OperationPolicy>
+where
+    O: TypedToolOperation,
+{
+    let spec = adapter.spec.as_ref()?;
+    let mut policy = spec.policy_for(input);
+    // Empty or invalid input keeps the stored policy. A parsed call overlays
+    // the typed metadata but does not recompute effect or network access.
+    if let Ok(args) = serde_json::from_value::<O::Args>(input.clone()) {
+        let metadata = adapter.operation.metadata(&args);
+        policy.risk_level = metadata.risk_level;
+        policy.idempotency = metadata.idempotency;
+        policy.scope = metadata.scope;
+        policy.concurrency = metadata.concurrency;
+        policy.confirmation = confirmation_for(metadata.risk_level, false);
+    }
+    Some(policy)
 }
 
 #[async_trait::async_trait]
@@ -1671,11 +1753,38 @@ where
         self.description.clone()
     }
 
+    fn operation_spec(&self) -> Option<crate::operation_view::OperationSpec> {
+        self.spec.clone()
+    }
+
     fn catalog_group(&self) -> ToolCatalogGroup {
-        self.catalog_group
+        self.spec
+            .as_ref()
+            .map(|spec| spec.catalog_group)
+            .unwrap_or(self.catalog_group)
+    }
+
+    fn operation_policy(&self, input: &Value) -> OperationPolicy {
+        if let Some(policy) = typed_spec_policy(self, input) {
+            return policy;
+        }
+        let name = self.name();
+        let concurrency = self.concurrency(input);
+        synthesize_operation_policy(
+            &name,
+            input,
+            self.risk_level(input),
+            permission_key(&name, &self.authorization_input(input)).into(),
+            self.idempotency(input),
+            self.operation_scope(input),
+            concurrency,
+        )
     }
 
     fn risk_level(&self, input: &Value) -> RiskLevel {
+        if let Some(policy) = typed_spec_policy(self, input) {
+            return policy.risk_level;
+        }
         serde_json::from_value::<O::Args>(input.clone())
             .ok()
             .map(|args| self.operation.metadata(&args).risk_level)
@@ -1687,6 +1796,9 @@ where
     }
 
     fn idempotency(&self, input: &Value) -> OperationIdempotency {
+        if let Some(policy) = typed_spec_policy(self, input) {
+            return policy.idempotency;
+        }
         serde_json::from_value::<O::Args>(input.clone())
             .ok()
             .map(|args| self.operation.metadata(&args).idempotency)
@@ -1694,6 +1806,9 @@ where
     }
 
     fn operation_scope(&self, input: &Value) -> ToolOperationScope {
+        if let Some(policy) = typed_spec_policy(self, input) {
+            return policy.scope;
+        }
         serde_json::from_value::<O::Args>(input.clone())
             .ok()
             .map(|args| self.operation.metadata(&args).scope)
@@ -1718,6 +1833,9 @@ where
     }
 
     fn concurrency(&self, input: &Value) -> ToolConcurrency {
+        if let Some(policy) = typed_spec_policy(self, input) {
+            return policy.concurrency;
+        }
         serde_json::from_value::<O::Args>(input.clone())
             .ok()
             .map(|args| self.operation.metadata(&args).concurrency)

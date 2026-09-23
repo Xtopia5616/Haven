@@ -1,3 +1,4 @@
+> 2026-09-23：运行时策略与 manifest 都从 OperationSpec 派生，`OperationContract.read_only` 不再豁免确认。见 [ADR 0213](0213-operation-spec-single-policy-source.md)。本记录的 wire 形状仍然有效。
 > 2026-09-23：builtin operation view 的 manifest 从 OperationSpec 投影，见 [ADR 0211](0211-operation-registry-and-platform-snapshot.md)。MCP 与 Skill 不是这份 spec 的 view；ToolManifest / ToolPolicy / ToolPresentation 仍是 IPC 形状，见 [ADR 0212](0212-process-services-off-tools-facade.md)。本记录里的 wire 形状仍然有效。
 
 # ADR 0142：工具 Manifest、OperationSpec 与统一结果元数据

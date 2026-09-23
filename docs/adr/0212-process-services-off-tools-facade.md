@@ -1,3 +1,5 @@
+> 2026-09-23：OperationSpec 不再只覆盖 builtin view。见 [ADR 0213](0213-operation-spec-single-policy-source.md)。本记录的 ToolServices、不新增 AppRuntime，以及确认仍在 `execute_tool` 之前，仍然有效。
+
 # ADR 0212：进程服务移出 ToolsManager facade
 
 - 状态：accepted

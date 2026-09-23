@@ -50,10 +50,10 @@ operation 与执行策略）、`registry.rs`（全局注册表、SessionCatalog�
 `security.rs`（AuthorizationEngine、权限继承、disabled operation、路径沙箱与本机安全矩阵）。
 在这组稳定模块之上，`OperationRegistry` 持有已安装、deferred 与 session operation；
 `OperationCatalog` 是模型可见投影；`AuthorizedExecutor` 做熔断、启用检查、校验、执行和结果分类。
-交互式确认仍由调用方在 `execute_tool` 之前决定，不在工具 future 里阻塞。`OperationSpec` 只描述
-builtin operation view（名称、schema、presentation、policy），不含 handler；聚合工具在注册时把策略
-拷进 spec。MCP 自己实现 `tool_manifest`，Skill 使用 `Tool::operation_policy` 的默认实现。
-`ToolManifest`、`ToolPolicy`、`ToolPresentation` 保留为 Tauri/UI 的 IPC 形状。`tool_core.rs`
+交互式确认仍由调用方在 `execute_tool` 之前决定，不在工具 future 里阻塞。`OperationSpec` 是运行时
+策略和 manifest 的唯一定义，覆盖 builtin operation view、root tool，以及 MCP/Skill adapter；spec 没有
+handler。`policy_for` 是一次调用的 `OperationPolicy`，`catalog_policy` 是目录上界。`ToolManifest`、
+`ToolPolicy`、`ToolPresentation` 只由 `project_tool_manifest` 投影，保留为 Tauri/UI 的 IPC 形状。`tool_core.rs`
 组合 registry 与 authorization。`tool_runtime.rs` 用一份不可变 `PlatformRuntime` 承载模型、媒体、
 tool settings、context limits、shell 与 security，热更新整份替换。messaging 与 memory recall
 是进程服务，在 `wire_startup` 里绑定一次，不放进这份快照；`admin_surfaces` 随成功的 catalog
@@ -62,7 +62,7 @@ MCP、skills、授权、媒体资产、action 与 live output 由构造时交出
 不再向 `ToolsManager` 逐个取服务。组合根仍是 `ApplicationRuntime`，不另建 `AppRuntime`。
 `ToolsManager` 保留执行、目录投影、启动装配和录音转写入口，不再充当这些进程服务的 service locator。
 安全矩阵只有 `security.rs` 一个权威来源，五个 Admin surface 由 ADR 0070/0071 定义的 typed
-operation 实现。边界见 ADR 0162、ADR 0211 与 ADR 0212。
+operation 实现。边界见 ADR 0162、ADR 0211、ADR 0212 与 ADR 0213。
 
 `document.rs` 是受管附件的本地派生边界：由 `media.extract` 对 PDF/DOCX/XLSX/PPTX
 执行有资源上限的文本/表格抽取，输出带
@@ -487,6 +487,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 
 | 日期 | 内容 |
 |---|---|
+| 2026-09-23 | §1 Tools：`OperationSpec` 成为运行时策略与 manifest 的唯一来源；`OperationContract.read_only` 不再豁免确认，manifest 向运行时收紧（ADR 0213） |
 | 2026-09-23 | §1 Tools：进程服务改为 `ToolServices`，不再从 `ToolsManager` 取 MCP/skills/action；`OperationSpec` 只覆盖 builtin view，IPC 形状与交互式确认边界保持不变（ADR 0212） |
 | 2026-09-23 | §2.5 Tools：`ToolsManager` 收成执行 facade；operation 由 `OperationSpec` 投影 manifest，平台客户端按 `PlatformRuntime` 整份替换（ADR 0211） |
 | 2026-09-23 | §2.5 Agent / §2.6 UI：durable UI 事件在 `session_events` 提交成功后由 `CommittedUiPublisher` 按 sequence 发布；Thought 携带 `event_seq`，并行卡片按 `(eventSeq, identity)` 去重。不升 schema（ADR 0210） |

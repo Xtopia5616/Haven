@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use haven_common::tools::{
-    ToolAvailability, ToolCatalogGroup, ToolManifest, ToolPresentation, ToolPrompt,
-    ToolRootPresentation, ToolSource,
+    ToolAvailability, ToolCatalogGroup, ToolPresentation, ToolPrompt, ToolRootPresentation,
+    ToolSource,
 };
 use haven_common::types::RiskLevel;
 use serde_json::Value;
@@ -77,7 +77,7 @@ fn mcp_operation_spec(
         fixed: Vec::new(),
         schema,
         policy: OperationPolicy::external(name.to_string(), RiskLevel::High),
-        risk_rule: None,
+        policy_rule: None,
         catalog_group: ToolCatalogGroup::Mcp,
         presentation: ToolPresentation {
             label: name.to_string(),
@@ -132,7 +132,7 @@ fn skill_operation_spec(name: &str, description: &str, schema: Value) -> Operati
         fixed: Vec::new(),
         schema,
         policy: OperationPolicy::external(name.to_string(), RiskLevel::High),
-        risk_rule: None,
+        policy_rule: None,
         catalog_group: ToolCatalogGroup::Skills,
         presentation: ToolPresentation {
             label: crate::tool_contract::default_tool_label(name),
@@ -224,29 +224,16 @@ impl Tool for McpToolAdapter {
         ToolCatalogGroup::Mcp
     }
 
-    fn risk_level(&self, _input: &Value) -> RiskLevel {
-        // MCP tools run on external servers that can perform arbitrary
-        // actions (shell, file, network). Classifying them flat Medium would
-        // let them slip under a High/Critical confirmation threshold while
-        // the builtin `shell` tool stays gated — a prompt-injected agent
-        // could route all dangerous work through an adapter to bypass the
-        // gate. High keeps them gated at every threshold except "Critical
-        // only".
-        RiskLevel::High
+    fn operation_spec(&self) -> Option<OperationSpec> {
+        Some(self.spec.clone())
     }
 
-    fn operation_policy(&self, _input: &Value) -> OperationPolicy {
-        // The adapter, rather than AuthorizationEngine's name heuristics, is
-        // the authority for this capability's opaque external boundary.
-        OperationPolicy::external(self.name(), RiskLevel::High)
+    fn risk_level(&self, input: &Value) -> RiskLevel {
+        self.spec.policy_for(input).risk_level
     }
 
     fn input_schema(&self) -> Value {
         sanitize_external_schema(&self.info.input_schema)
-    }
-
-    fn tool_manifest(&self) -> ToolManifest {
-        self.spec.manifest(self.input_schema())
     }
 
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
@@ -343,23 +330,16 @@ impl Tool for SkillToolAdapter {
         ToolSource::Skill
     }
 
-    fn risk_level(&self, _input: &Value) -> RiskLevel {
-        // Skill tools execute arbitrary code (scripts) on the machine.
-        // Flat High keeps them gated at every threshold except "Critical
-        // only" — see McpToolAdapter::risk_level for the rationale.
-        RiskLevel::High
+    fn operation_spec(&self) -> Option<OperationSpec> {
+        Some(self.spec.clone())
     }
 
-    fn operation_policy(&self, _input: &Value) -> OperationPolicy {
-        OperationPolicy::external(self.name(), RiskLevel::High)
+    fn risk_level(&self, input: &Value) -> RiskLevel {
+        self.spec.policy_for(input).risk_level
     }
 
     fn input_schema(&self) -> Value {
         skill_input_schema()
-    }
-
-    fn tool_manifest(&self) -> ToolManifest {
-        self.spec.manifest(self.input_schema())
     }
 
     fn default_timeout_secs(&self) -> u64 {

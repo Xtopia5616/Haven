@@ -366,6 +366,20 @@ impl Tool for LoadMcpTool {
         RiskLevel::Safe
     }
 
+    fn operation_spec(&self) -> Option<crate::operation_view::OperationSpec> {
+        Some(crate::operation_view::root_tool_spec(
+            "load_mcp",
+            crate::prompts::LOAD_MCP_DESCRIPTION,
+            self.input_schema(),
+            RiskLevel::Safe,
+            crate::OperationIdempotency::Unknown,
+            crate::ToolOperationScope::Session,
+            crate::ToolConcurrency::Exclusive,
+            ToolCatalogGroup::Haven,
+            None,
+        ))
+    }
+
     fn input_schema(&self) -> Value {
         serde_json::json!({
             "type": "object",
