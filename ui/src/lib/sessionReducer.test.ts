@@ -103,6 +103,7 @@ describe('SessionReducer', () => {
 			sessions: [session('ses-error', 'error')],
 			activeSessionId: 'ses-error',
 			error: { sessionId: 'ses-error', reason: '失败' },
+			termination: { sessionId: 'ses-error', status: 'error', reason: '失败' },
 		});
 
 		expect(
@@ -113,15 +114,78 @@ describe('SessionReducer', () => {
 			}).error,
 		).toEqual(state.error);
 		expect(
+			reduceSession(state, { type: 'session/selected', sessionId: 'ses-error' }).error,
+		).toEqual(state.error);
+		expect(
 			reduceSession(state, {
 				type: 'session/status-updated',
 				sessionId: 'ses-error',
 				status: 'pending',
 			}).error,
 		).toBeNull();
-		expect(
-			reduceSession(state, { type: 'session/selected', sessionId: 'ses-other' }).error,
-		).toBeNull();
+		const left = reduceSession(state, { type: 'session/selected', sessionId: 'ses-other' });
+		expect(left.error).toBeNull();
+		expect(left.termination).toBeNull();
+	});
+
+	it('clears the current error when a newly created session is activated', () => {
+		const state = stateWith({
+			sessions: [session('ses-error', 'error')],
+			activeSessionId: 'ses-error',
+			error: { sessionId: 'ses-error', reason: '失败' },
+			termination: { sessionId: 'ses-error', status: 'error', reason: '失败' },
+		});
+
+		const next = reduceSession(state, {
+			type: 'session/created',
+			sessionId: 'ses-new',
+			freshStart: true,
+			adoptedDraft: true,
+		});
+
+		expect(next.activeSessionId).toBe('ses-new');
+		expect(next.error).toBeNull();
+		expect(next.termination).toBeNull();
+	});
+
+	it('preserves the current error when an unrelated background session is created', () => {
+		const state = stateWith({
+			sessions: [session('ses-error', 'error')],
+			activeSessionId: 'ses-error',
+			error: { sessionId: 'ses-error', reason: '失败' },
+			termination: { sessionId: 'ses-error', status: 'error', reason: '失败' },
+		});
+
+		const next = reduceSession(state, {
+			type: 'session/created',
+			sessionId: 'ses-background',
+			freshStart: true,
+			adoptedDraft: false,
+		});
+
+		expect(next.activeSessionId).toBe('ses-error');
+		expect(next.error).toEqual(state.error);
+		expect(next.termination).toEqual(state.termination);
+	});
+
+	it('clears the current error when the active session is cleared or deleted', () => {
+		const state = stateWith({
+			sessions: [session('ses-error', 'error'), session('ses-other')],
+			activeSessionId: 'ses-error',
+			error: { sessionId: 'ses-error', reason: '失败' },
+			termination: { sessionId: 'ses-error', status: 'error', reason: '失败' },
+		});
+
+		const cleared = reduceSession(state, { type: 'session/cleared' });
+		expect(cleared.activeSessionId).toBeNull();
+		expect(cleared.error).toBeNull();
+		expect(cleared.termination).toBeNull();
+
+		const deleted = reduceSession(state, { type: 'session/deleted', sessionId: 'ses-error' });
+		expect(deleted.sessions).toEqual([session('ses-other')]);
+		expect(deleted.activeSessionId).toBeNull();
+		expect(deleted.error).toBeNull();
+		expect(deleted.termination).toBeNull();
 	});
 
 	it('preserves an active terminal reason when a live-session refresh omits it', () => {

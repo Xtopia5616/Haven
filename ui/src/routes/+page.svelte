@@ -734,14 +734,6 @@
 		continuePending || (!activeSessionError && !isPausedStatus(activeSessionStatus)),
 	);
 
-	// Clear error state when the active session changes.
-	$effect(() => {
-		const _ = activeSessionId;
-		if (sessionErrorId && activeSessionId !== sessionErrorId) {
-			dispatchSession({ type: 'session/error-cleared', sessionId: sessionErrorId });
-		}
-	});
-
 	// Auto-scroll to the newest message whenever messages change.
 	$effect(() => {
 		const _ = messages;
