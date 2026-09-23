@@ -1,6 +1,160 @@
 use super::support::*;
 use super::*;
+use crate::session::SessionToolOverlayPort;
 use base64::Engine as _;
+use std::sync::Mutex as StdMutex;
+
+#[derive(Debug, PartialEq, Eq)]
+enum OverlayRestoreCall {
+    Unregister(String),
+    Mcp(String, String, Option<Vec<String>>),
+    Skill(String, Vec<String>),
+    Builtin(String, Option<Vec<String>>, Option<Vec<String>>),
+}
+
+#[derive(Default)]
+struct RecordingSessionToolOverlay {
+    calls: StdMutex<Vec<OverlayRestoreCall>>,
+}
+
+#[async_trait]
+impl SessionToolOverlayPort for RecordingSessionToolOverlay {
+    async fn unregister_session(&self, session_id: &str) {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(OverlayRestoreCall::Unregister(session_id.to_string()));
+    }
+
+    async fn register_mcp_for_session(
+        &self,
+        session_id: &str,
+        server_name: &str,
+        tool_names: Option<&[String]>,
+    ) -> bool {
+        self.calls.lock().unwrap().push(OverlayRestoreCall::Mcp(
+            session_id.to_string(),
+            server_name.to_string(),
+            tool_names.map(|names| names.to_vec()),
+        ));
+        false
+    }
+
+    async fn load_skill_for_session(&self, session_id: &str, names: Vec<String>) -> bool {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(OverlayRestoreCall::Skill(session_id.to_string(), names));
+        false
+    }
+
+    async fn load_builtin_operations_for_session(
+        &self,
+        session_id: &str,
+        operations: Option<Vec<String>>,
+        roots: Option<Vec<String>>,
+    ) -> bool {
+        self.calls.lock().unwrap().push(OverlayRestoreCall::Builtin(
+            session_id.to_string(),
+            operations,
+            roots,
+        ));
+        false
+    }
+}
+
+fn overlay_restore_tool(tool_name: &str, tool_input: serde_json::Value) -> ToolRecord {
+    ToolRecord {
+        action: Action {
+            tool_name: tool_name.to_string(),
+            tool_input,
+            is_final: false,
+            tool_call_id: None,
+        },
+        observation: None,
+        action_index: 0,
+        step_id: "step-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+    }
+}
+
+#[tokio::test]
+async fn resume_restores_tool_overlay_cleanly_in_round_order_and_best_effort() {
+    let db_dir = tempfile::tempdir().unwrap();
+    let db = Arc::new(Database::open(&db_dir.path().join("resume.db")).unwrap());
+    let tools = Arc::new(ToolsManager::new());
+    let overlay = Arc::new(RecordingSessionToolOverlay::default());
+    let executor = Arc::new(SessionSupervisor::new_with_session_tool_overlay_port(
+        db.clone(),
+        tools,
+        1,
+        overlay.clone(),
+    ));
+    let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
+    let router = Arc::new(LlmRouter::new_with_clients(
+        client.clone(),
+        client.clone(),
+        client.clone(),
+        client,
+    ));
+    let agent = AgentLayer::new(db, executor, router, 30, 50, ContextLimitsConfig::default());
+    let rounds = vec![
+        ReActRound {
+            step_number: 1,
+            thought: None,
+            tools: vec![
+                overlay_restore_tool("load_mcp", serde_json::json!({"server_name": "alpha"})),
+                overlay_restore_tool("load_skill", serde_json::json!({"skill_names": ["echo"]})),
+                overlay_restore_tool(
+                    "tool_catalog",
+                    serde_json::json!({
+                        "action": "load",
+                        "operations": ["files.list"],
+                        "roots": []
+                    }),
+                ),
+            ],
+        },
+        ReActRound {
+            step_number: 2,
+            thought: None,
+            tools: vec![overlay_restore_tool(
+                "load_mcp",
+                serde_json::json!({"server_name": "beta", "tool_names": []}),
+            )],
+        },
+    ];
+
+    agent
+        .restore_per_session_tools("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", &rounds)
+        .await;
+
+    assert_eq!(
+        *overlay.calls.lock().unwrap(),
+        vec![
+            OverlayRestoreCall::Unregister("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into()),
+            OverlayRestoreCall::Mcp(
+                "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+                "alpha".into(),
+                None,
+            ),
+            OverlayRestoreCall::Skill(
+                "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+                vec!["echo".into()],
+            ),
+            OverlayRestoreCall::Builtin(
+                "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+                Some(vec!["files.list".into()]),
+                Some(Vec::new()),
+            ),
+            OverlayRestoreCall::Mcp(
+                "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+                "beta".into(),
+                Some(Vec::new()),
+            ),
+        ],
+        "false best-effort results must not abort the ordered replay"
+    );
+}
 
 fn managed_test_image() -> (haven_common::types::MessageAttachment, std::path::PathBuf) {
     let dir = haven_common::default_work_dir()

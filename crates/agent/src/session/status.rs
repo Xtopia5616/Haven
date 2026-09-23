@@ -113,7 +113,7 @@ impl SessionSupervisor {
 
     pub(super) async fn finish_ended_session(&self, session_id: &str, cascade: bool) {
         Self::unregister_from_inbox(session_id);
-        self.tools.unregister_session(session_id).await;
+        self.unregister_session_tool_overlay(session_id).await;
         self.scheduled_confirms
             .lock()
             .await
@@ -226,7 +226,7 @@ impl SessionSupervisor {
             actor.clear_runtime().await;
         }
         self.dequeue_pending(session_id).await;
-        self.tools.unregister_session(session_id).await;
+        self.unregister_session_tool_overlay(session_id).await;
         self.services()
             .authorization
             .clear_session_trust(session_id)

@@ -169,6 +169,9 @@ pub struct SessionSupervisor {
     /// instead of taking MCP, skills, authorization, actions or live output
     /// back out of ToolsManager.
     services: ToolServices,
+    /// Agent-owned boundary for restoring and clearing per-session tool
+    /// registrations. Live loading remains owned by the tool execution path.
+    session_tool_overlay_port: Arc<dyn SessionToolOverlayPort>,
     /// Agent-owned lifecycle boundary for session-scoped managed asset leases.
     managed_asset_lease_port: Arc<dyn ManagedAssetLeasePort>,
     /// Agent-owned read boundary for formatting completed tool observations.
@@ -234,9 +237,10 @@ mod status;
 mod tool_ports;
 mod tool_runner;
 pub(crate) use dispatcher::DirectRunLease;
+pub(crate) use tool_ports::SessionToolOverlayPort;
 use tool_ports::{
     ManagedAssetLeasePort, ToolObservationPort, ToolsManagerManagedAssetLeaseAdapter,
-    ToolsManagerToolObservationAdapter,
+    ToolsManagerSessionToolOverlayAdapter, ToolsManagerToolObservationAdapter,
 };
 pub(crate) use tool_runner::{ActionStepMetadata, ActionStepPersistenceError};
 
@@ -246,6 +250,23 @@ pub use run_engine::RunEngine;
 
 impl SessionSupervisor {
     pub fn new(db: Arc<Database>, tools: Arc<ToolsManager>, max_concurrent: usize) -> Self {
+        let session_tool_overlay_port = Arc::new(ToolsManagerSessionToolOverlayAdapter::new(
+            Arc::clone(&tools),
+        ));
+        Self::new_with_session_tool_overlay_port(
+            db,
+            tools,
+            max_concurrent,
+            session_tool_overlay_port,
+        )
+    }
+
+    pub(crate) fn new_with_session_tool_overlay_port(
+        db: Arc<Database>,
+        tools: Arc<ToolsManager>,
+        max_concurrent: usize,
+        session_tool_overlay_port: Arc<dyn SessionToolOverlayPort>,
+    ) -> Self {
         let services = tools.share_services();
         let observation_port =
             Arc::new(ToolsManagerToolObservationAdapter::new(Arc::clone(&tools)));
@@ -259,6 +280,7 @@ impl SessionSupervisor {
             db,
             tools,
             services,
+            session_tool_overlay_port,
             observation_port,
             managed_asset_lease_port,
             actors: Arc::new(Mutex::new(HashMap::new())),
@@ -294,6 +316,44 @@ impl SessionSupervisor {
     pub(crate) fn release_managed_assets_for_session(&self, session_id: &str) {
         self.managed_asset_lease_port
             .release_for_session(session_id);
+    }
+
+    pub(crate) async fn unregister_session_tool_overlay(&self, session_id: &str) {
+        self.session_tool_overlay_port
+            .unregister_session(session_id)
+            .await;
+    }
+
+    pub(crate) async fn register_mcp_tool_overlay(
+        &self,
+        session_id: &str,
+        server_name: &str,
+        tool_names: Option<&[String]>,
+    ) -> bool {
+        self.session_tool_overlay_port
+            .register_mcp_for_session(session_id, server_name, tool_names)
+            .await
+    }
+
+    pub(crate) async fn load_skill_tool_overlay(
+        &self,
+        session_id: &str,
+        names: Vec<String>,
+    ) -> bool {
+        self.session_tool_overlay_port
+            .load_skill_for_session(session_id, names)
+            .await
+    }
+
+    pub(crate) async fn load_builtin_operations_tool_overlay(
+        &self,
+        session_id: &str,
+        operations: Option<Vec<String>>,
+        roots: Option<Vec<String>>,
+    ) -> bool {
+        self.session_tool_overlay_port
+            .load_builtin_operations_for_session(session_id, operations, roots)
+            .await
     }
 
     pub fn subscribe_events(&self) -> broadcast::Receiver<SessionEvent> {

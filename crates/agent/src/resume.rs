@@ -511,16 +511,18 @@ impl AgentLayer {
     /// rollback both call this after projecting the authoritative event log so
     /// tools loaded after a branch point cannot leak into the restored run.
     pub(crate) async fn restore_per_session_tools(&self, session_id: &str, rounds: &[ReActRound]) {
-        let tools = self.executor.get_tools();
-        tools.unregister_session(session_id).await;
+        self.executor
+            .unregister_session_tool_overlay(session_id)
+            .await;
         for round in rounds {
             for tool in &round.tools {
                 if tool.action.tool_name.as_str() == "load_mcp"
                     && let Some(name) = tool.action.tool_input["server_name"].as_str()
                 {
                     let tool_names = load_mcp_tool_names(&tool.action.tool_input);
-                    tools
-                        .register_mcp_for_session(session_id, name, tool_names.as_deref())
+                    let _ = self
+                        .executor
+                        .register_mcp_tool_overlay(session_id, name, tool_names.as_deref())
                         .await;
                 } else if tool.action.tool_name.as_str() == "tool_catalog"
                     && tool.action.tool_input["action"].as_str() == Some("load")
@@ -529,14 +531,18 @@ impl AgentLayer {
                     if operations.as_ref().is_some_and(|values| !values.is_empty())
                         || roots.as_ref().is_some_and(|values| !values.is_empty())
                     {
-                        tools
-                            .load_builtin_operations_for_session(session_id, operations, roots)
+                        let _ = self
+                            .executor
+                            .load_builtin_operations_tool_overlay(session_id, operations, roots)
                             .await;
                     }
                 } else if tool.action.tool_name.as_str() == "load_skill" {
                     let names = load_skill_names(&tool.action.tool_input);
                     if !names.is_empty() {
-                        tools.load_skill_for_session(session_id, names).await;
+                        let _ = self
+                            .executor
+                            .load_skill_tool_overlay(session_id, names)
+                            .await;
                     }
                 }
             }
