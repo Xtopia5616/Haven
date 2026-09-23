@@ -46,8 +46,10 @@
 - `00f5df5`：删除 AgentLayer 的 context limits 镜像，配置读取委托给 ReActEngine（ADR 0226）。
 - `ce26c21`、`a9b03a4`、`6f86362`：Action board 输出、continue 截断和 usage 写路径分别完成 typed/store ownership 收口（ADR 0215、0217–0218）。
 - `950e0fb`：UI 可见消息改为从 session reducer 纯派生，页面不再维护第二份消息数组，并补 selector 单测。
+- `fce6a90`、`562ba80`：删除 LLM router 的仓库内 chat 转发别名；定时任务以 `ActionEntry.session_id` 和 `ScheduledActionEntry.due_at` 为唯一进程内事实（ADR 0228–0229）。
+- `fc2662b`、`322c231`：ContextLimits 刷新同时覆盖 Router 且在 Router 成功后应用其他消费者；工具 Usage 批量写入归属 `UsageRuntime`（ADR 0230–0231）。
 
-当前阶段判断：阶段 1 的 mailbox/运行态收口已基本完成，阶段 2–3 仍需继续验证恢复与 storage port 的全局边界；阶段 4 已完成目录/观察读取的切片，执行/授权必须作为一个安全边界继续审查；阶段 5–9 尚未完成。
+当前阶段判断：阶段 1 的 mailbox/运行态收口已基本完成，阶段 2–3 仍需继续验证恢复与 storage port 的全局边界；阶段 4 已完成目录/观察读取的切片，执行/授权必须作为一个安全边界继续审查；阶段 5 已完成 ContextLimits/Router 的一致性切片但尚未成为完整协调器；阶段 6–9 尚未完成。
 
 ## 3. 不变量与禁止事项
 

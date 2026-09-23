@@ -219,3 +219,4 @@
 - [0228：删除 LLM router chat 转发别名](0228-llm-chat-alias-removal.md)
 - [0229：定时任务状态事实去重](0229-scheduled-action-state-dedup.md)
 - [0230：ContextLimits 路由刷新与应用顺序](0230-context-limits-router-refresh-order.md)
+- [0231：工具 Usage 批量写入归属 UsageRuntime](0231-tool-usage-write-runtime-boundary.md)
