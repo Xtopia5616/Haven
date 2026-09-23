@@ -603,6 +603,22 @@ impl ActionService {
         *self.db.write().await = db;
     }
 
+    /// List persisted action rows through the database owned by this service.
+    /// The desktop shell binds the database during startup; callers must treat
+    /// a missing binding as a configuration error rather than empty history.
+    pub async fn list_persisted_actions(
+        &self,
+        kind: Option<&str>,
+    ) -> anyhow::Result<Vec<haven_memory::repositories::scheduled_actions::ActionRow>> {
+        let db = self
+            .db
+            .read()
+            .await
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("ActionService database is not configured"))?;
+        db.list_actions(kind)
+    }
+
     /// Try to move a malformed persisted waiting row to terminal history.
     /// Returns `Ok(false)` when another path already removed it from the
     /// waiting set. Restore must never leave a row that the pending query

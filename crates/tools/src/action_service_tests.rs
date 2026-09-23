@@ -23,6 +23,78 @@ async fn recv_background(rx: &mut ActionCompletionReceiver) -> BackgroundActionC
         }
     }
 }
+
+#[tokio::test]
+async fn persisted_action_query_requires_a_bound_database() {
+    let service = ActionService::new();
+
+    let error = service
+        .list_persisted_actions(Some("background"))
+        .await
+        .expect_err("an unbound service must not report empty history");
+
+    assert!(error.to_string().contains("database is not configured"));
+}
+
+#[tokio::test]
+async fn persisted_action_query_uses_bound_database_kind_filter_and_order() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let db = Arc::new(Database::open(&dir.path().join("actions.db")).unwrap());
+    db.save_action(
+        "act-00000000000000000000000000000001",
+        None,
+        "echo older",
+        "2026-09-24T10:00:00Z",
+    )
+    .unwrap();
+    db.save_action(
+        "act-00000000000000000000000000000002",
+        None,
+        "echo newer",
+        "2026-09-24T11:00:00Z",
+    )
+    .unwrap();
+    db.save_scheduled_action(
+        "act-00000000000000000000000000000003",
+        "2026-09-25T10:00:00Z",
+        "Scheduled",
+        "body",
+        "tool",
+        None,
+        Some("notify"),
+        None,
+        None,
+    )
+    .unwrap();
+    let service = ActionService::new();
+    service.set_db(Some(db)).await;
+
+    let all = service.list_persisted_actions(None).await.unwrap();
+    assert_eq!(all.len(), 3);
+
+    let background = service
+        .list_persisted_actions(Some("background"))
+        .await
+        .unwrap();
+    assert_eq!(
+        background
+            .iter()
+            .map(|row| row.id.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "act-00000000000000000000000000000002",
+            "act-00000000000000000000000000000001"
+        ]
+    );
+
+    let scheduled = service
+        .list_persisted_actions(Some("scheduled"))
+        .await
+        .unwrap();
+    assert_eq!(scheduled.len(), 1);
+    assert_eq!(scheduled[0].id, "act-00000000000000000000000000000003");
+}
+
 /// Spawn the two fixture echo actions (`action-a` / `action-b`) and attach them to
 /// `ses-1` / `ses-2`. Shared by the board and scoped-list tests.
 async fn spawn_two_echo_actions(actions: &Arc<ActionService>) -> (String, String) {

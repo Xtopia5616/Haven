@@ -26,8 +26,10 @@ pub async fn list_actions(state: State<'_, Arc<AppState>>) -> Result<Vec<ActionE
         rows.push(event);
     }
     let history = state
-        .db
-        .list_actions(Some("background"))
+        .services
+        .actions
+        .list_persisted_actions(Some("background"))
+        .await
         .map_err(|e| log_err("list_actions history", e))?;
     for a in history {
         if live_ids.contains(&a.id) {
@@ -96,8 +98,10 @@ pub async fn list_action_history(
 ) -> Result<Vec<ActionEvent>, String> {
     let limit = limit.unwrap_or(50).min(200);
     let rows = state
-        .db
-        .list_actions(kind.map(ActionKind::as_str))
+        .services
+        .actions
+        .list_persisted_actions(kind.map(ActionKind::as_str))
+        .await
         .map_err(|e| log_err("list_action_history", e))?;
     let mut out = Vec::new();
     // Waiting scheduled actions are already exposed by `list_actions`; history
