@@ -413,7 +413,9 @@ impl SessionSupervisor {
     }
 
     pub async fn observation_text(&self, tool_name: &str, result: &ToolResult) -> String {
-        self.tools.observation_text(tool_name, result).await
+        self.observation_port
+            .observation_text(tool_name, result)
+            .await
     }
 
     /// Execute a tool step. `step_id` is the pre-minted `step-*` id the frontend's
@@ -847,7 +849,10 @@ impl SessionSupervisor {
                     .await;
             }
         }
-        let obs = self.tools.observation_text(tool_name, &result).await;
+        let obs = self
+            .observation_port
+            .observation_text(tool_name, &result)
+            .await;
         let step_outcome = action_step_outcome(&result);
         let persist_step_id = step_id.to_string();
         let tool_name_owned = tool_name.to_string();

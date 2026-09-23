@@ -169,6 +169,8 @@ pub struct SessionSupervisor {
     /// instead of taking MCP, skills, authorization, actions or live output
     /// back out of ToolsManager.
     services: ToolServices,
+    /// Agent-owned read boundary for formatting completed tool observations.
+    observation_port: Arc<dyn ToolObservationPort>,
     /// The sole cross-session registry. A session's mutable runtime state is
     /// owned by its actor and is never protected by a shared per-session lock.
     actors: Arc<Mutex<HashMap<String, actor::SessionActorHandle>>>,
@@ -227,8 +229,10 @@ mod dispatcher;
 mod queues;
 mod run_engine;
 mod status;
+mod tool_ports;
 mod tool_runner;
 pub(crate) use dispatcher::DirectRunLease;
+use tool_ports::{ToolObservationPort, ToolsManagerToolObservationAdapter};
 pub(crate) use tool_runner::{ActionStepMetadata, ActionStepPersistenceError};
 
 pub(crate) use actor::{CONTEXT_BATCH_MAX_CHARS, CONTEXT_BATCH_MAX_ITEMS, MessagingTitle};
@@ -238,6 +242,8 @@ pub use run_engine::RunEngine;
 impl SessionSupervisor {
     pub fn new(db: Arc<Database>, tools: Arc<ToolsManager>, max_concurrent: usize) -> Self {
         let services = tools.share_services();
+        let observation_port =
+            Arc::new(ToolsManagerToolObservationAdapter::new(Arc::clone(&tools)));
         let (event_tx, _) = broadcast::channel(256);
         Self {
             partials: Arc::new(crate::partial::PartialStore::new(db.clone())),
@@ -245,6 +251,7 @@ impl SessionSupervisor {
             db,
             tools,
             services,
+            observation_port,
             actors: Arc::new(Mutex::new(HashMap::new())),
             admission: Arc::new(dispatcher::RunAdmission::new(max_concurrent.max(1))),
             lifecycle_gate: Arc::new(Mutex::new(())),
