@@ -438,11 +438,14 @@ async fn update_model_field(
     state: &AppState,
     ctx: &str,
     model_id_or_request_kind: &str,
+    validate: impl FnOnce(&haven_common::config::AppConfig, &str) -> Result<(), String>,
     mutate: impl FnOnce(&mut ModelConfig) -> Result<(), String>,
 ) -> Result<(), String> {
-    state
+    let _apply_guard = state.config_apply_gate.lock().await;
+    let update = state
         .config_service
         .edit(|config| {
+            validate(config, model_id_or_request_kind).map_err(anyhow::Error::msg)?;
             let slot = model_slot(&mut config.llm, model_id_or_request_kind).ok_or_else(|| {
                 anyhow::anyhow!(
                     "unknown or unconfigured model/request: {}",
@@ -452,7 +455,10 @@ async fn update_model_field(
             mutate(slot).map_err(anyhow::Error::msg)
         })
         .map_err(|e| log_err(ctx, e))?;
-    rebuild_router(state, ctx).await
+    if update.change.is_some() {
+        rebuild_router(state, &update.snapshot, ctx).await?;
+    }
+    Ok(())
 }
 
 /// Switch a named model assignment to another provider model id. Updates config.toml and
@@ -464,10 +470,16 @@ pub async fn switch_model(
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     let state = app.state::<Arc<AppState>>();
-    update_model_field(&state, "switch_model", &role, |slot| {
-        slot.model = model_id;
-        Ok(())
-    })
+    update_model_field(
+        &state,
+        "switch_model",
+        &role,
+        |_, _| Ok(()),
+        |slot| {
+            slot.model = model_id;
+            Ok(())
+        },
+    )
     .await?;
     crate::commands::emit_llm_config_changed(&app);
     Ok(())
@@ -489,10 +501,16 @@ pub async fn set_reasoning_effort(
         None => None,
     };
 
-    update_model_field(&state, "set_reasoning_effort", &role, |slot| {
-        slot.reasoning_effort = normalized;
-        Ok(())
-    })
+    update_model_field(
+        &state,
+        "set_reasoning_effort",
+        &role,
+        |_, _| Ok(()),
+        |slot| {
+            slot.reasoning_effort = normalized;
+            Ok(())
+        },
+    )
     .await?;
     crate::commands::emit_llm_config_changed(&app);
     Ok(())
@@ -523,40 +541,40 @@ pub async fn set_web_search(
             ));
         }
     }
+    let requires_builtin_search = !matches!(normalized.as_deref(), Some("off") | None);
 
-    // Capability gate: only `off` (or clear) is allowed on styles without a
-    // provider built-in search tool. Resolve style from one immutable snapshot
-    // before `update_model_field` applies the typed mutation.
-    if !matches!(normalized.as_deref(), Some("off") | None) {
-        let style = {
-            let loader = state
-                .config_service
-                .snapshot()
-                .map_err(|e| log_err("set_web_search", e))?;
-            let llm = &loader.config.llm;
-            let model_id = model_id_for_selector(llm, &role)
-                .ok_or_else(|| format!("unknown or unconfigured model/request: {}", role))?;
+    update_model_field(
+        &state,
+        "set_web_search",
+        &role,
+        |config, selector| {
+            if !requires_builtin_search {
+                return Ok(());
+            }
+            let llm = &config.llm;
+            let model_id = model_id_for_selector(llm, selector)
+                .ok_or_else(|| format!("unknown or unconfigured model/request: {}", selector))?;
             let slot = llm
                 .model(&model_id)
-                .ok_or_else(|| format!("unknown or unconfigured model/request: {}", role))?;
-            llm.providers
+                .ok_or_else(|| format!("unknown or unconfigured model/request: {}", selector))?;
+            let style = llm
+                .providers
                 .iter()
-                .find(|p| p.name == slot.provider)
+                .find(|provider| provider.name == slot.provider)
                 .map(provider_config_wire_style)
-                .unwrap_or("openai-chat")
-                .to_string()
-        };
-        if !haven_llm::supports_builtin_web_search(&style) {
-            return Err(format!(
-                "provider wire style `{style}` does not support built-in web search"
-            ));
-        }
-    }
-
-    update_model_field(&state, "set_web_search", &role, |slot| {
-        slot.web_search = normalized;
-        Ok(())
-    })
+                .unwrap_or("openai-chat");
+            if !haven_llm::supports_builtin_web_search(style) {
+                return Err(format!(
+                    "provider wire style `{style}` does not support built-in search"
+                ));
+            }
+            Ok(())
+        },
+        |slot| {
+            slot.web_search = normalized;
+            Ok(())
+        },
+    )
     .await?;
     crate::commands::emit_llm_config_changed(&app);
     Ok(())

@@ -1,11 +1,9 @@
 use crate::app_state::AppState;
-use crate::commands::hot_swap_router;
-use crate::commands::log_err;
+use crate::commands::{log_err, prepare_router_runtime, publish_router_runtime};
 use crate::config_runtime::{
     RuntimeConfigApplyPlan, RuntimeConfigTarget, apply_log_level_to_handles,
 };
 use crate::events::{HOTKEY_REBIND_EVENT, HotkeyRebindEvent};
-use haven_llm::LlmRouter;
 use std::sync::Arc;
 use tauri::Emitter;
 use tauri::Manager;
@@ -42,6 +40,7 @@ pub async fn update_settings(
         last = now;
     };
     let state = app.state::<Arc<AppState>>();
+    let _apply_guard = state.config_apply_gate.lock().await;
     let current_config = state
         .config_service
         .snapshot()
@@ -62,7 +61,8 @@ pub async fn update_settings(
     let Some(change) = update.change else {
         return Ok(());
     };
-    let config = update.snapshot.config;
+    let snapshot = update.snapshot;
+    let config = &snapshot.config;
     let plan = RuntimeConfigApplyPlan::from_change(&change);
     tracing::debug!(
         version = change.version,
@@ -78,6 +78,20 @@ pub async fn update_settings(
             "configuration change requires a restart for some consumers"
         );
     }
+
+    // Build every fallible router/media dependency before the first live
+    // runtime update. A preparation failure leaves those consumers on their
+    // previous generation while the durable config snapshot remains saved.
+    let mut prepared_router = if plan.contains(RuntimeConfigTarget::LlmRouter) {
+        let mcp_caller: Arc<dyn haven_llm::McpToolCaller> = Arc::new(state.services.mcp.clone());
+        Some(prepare_router_runtime(
+            &snapshot,
+            Some(mcp_caller),
+            "update_settings",
+        )?)
+    } else {
+        None
+    };
     tick("config apply");
 
     // Propagate audio config to running pipeline
@@ -118,23 +132,22 @@ pub async fn update_settings(
     }
 
     if plan.contains(RuntimeConfigTarget::LlmRouter) {
-        let new_router = Arc::new(LlmRouter::with_default_context_window(
-            config.llm.materialize(
-                Some(config.context_limits.max_response_tokens),
-                Some(config.context_limits.reasoning_echo_max_chars),
-            ),
-            config.context_limits.default_context_window,
-        ));
-        tick("LlmRouter::new");
-        hot_swap_router(&state, new_router).await?;
-        tick("hot_swap_router");
+        publish_router_runtime(
+            &state,
+            prepared_router
+                .take()
+                .expect("router target always has a prepared runtime"),
+        )
+        .await;
+        tick("publish_router_runtime");
         crate::commands::emit_llm_config_changed(&app);
     }
 
     // Apply context limits only after the router and its dependent clients
-    // have been rebuilt successfully. If hot_swap_router fails, both the
-    // router and its context-limit consumers keep their previous runtime state.
+    // have been prepared successfully, so a preparation error leaves every
+    // context-limit consumer on its previous runtime state.
     if plan.contains(RuntimeConfigTarget::ContextLimits) {
+        state.pipeline.set_limits(&config.context_limits);
         state
             .tools
             .set_context_limits(config.context_limits.clone())
@@ -244,7 +257,7 @@ pub async fn update_settings(
             HOTKEY_REBIND_EVENT,
             HotkeyRebindEvent {
                 old_binding: old_hotkey,
-                new_binding: config.hotkey.key_binding,
+                new_binding: config.hotkey.key_binding.clone(),
             },
         ) {
             tracing::warn!(error = %e, "update_settings: hotkey rebind event emit failed");

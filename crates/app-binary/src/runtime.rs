@@ -6,6 +6,7 @@
 //! application gives them one cancellation boundary and tears them down in a
 //! deterministic order.
 
+use crate::config_runtime::ConfigApplyGate;
 use crate::desktop::DesktopShell;
 use haven_agent::{AgentLayer, SessionSupervisor};
 use haven_common::config::ConfigService;
@@ -40,6 +41,9 @@ pub struct ApplicationRuntime {
     pub(crate) shell: Arc<DesktopShell>,
     pub(crate) log_filter_handles: Vec<reload::Handle<EnvFilter, Registry>>,
     pub(crate) config_service: Arc<ConfigService>,
+    /// Serializes settings and model config commit-plus-apply operations so a
+    /// later snapshot cannot publish before an earlier runtime update ends.
+    pub(crate) config_apply_gate: ConfigApplyGate,
     shutdown_token: CancellationToken,
     shutting_down: AtomicBool,
     tasks: Mutex<Vec<JoinHandle<()>>>,
@@ -72,6 +76,7 @@ impl ApplicationRuntime {
             shell: runtime_services.shell,
             log_filter_handles: runtime_services.log_filter_handles,
             config_service: runtime_services.config_service,
+            config_apply_gate: ConfigApplyGate::default(),
             shutdown_token: CancellationToken::new(),
             shutting_down: AtomicBool::new(false),
             tasks: Mutex::new(Vec::new()),
