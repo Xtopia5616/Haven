@@ -371,12 +371,6 @@ impl From<CapabilityScope> for String {
     }
 }
 
-impl From<&CapabilityScope> for CapabilityScope {
-    fn from(value: &CapabilityScope) -> Self {
-        value.clone()
-    }
-}
-
 impl From<&String> for CapabilityScope {
     fn from(value: &String) -> Self {
         Self::new(value.clone())

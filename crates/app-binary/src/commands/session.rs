@@ -185,7 +185,7 @@ pub async fn resolve_confirmation(
         .authorization
         .grant(
             authorization_request.session_id.as_deref(),
-            &key,
+            key.clone(),
             perm_effect,
             perm_scope,
         )
@@ -283,7 +283,7 @@ async fn resolve_ui_confirmation(
         .authorization
         .grant(
             Some(&pending.session_id),
-            &grant_key,
+            grant_key.clone(),
             perm_effect,
             perm_scope,
         )

@@ -257,20 +257,6 @@ impl ToolsManager {
             .await
     }
 
-    /// Replace the shared LlmRouter and rebuild the catalog so tools (e.g.
-    /// `file summary`) pick up the new endpoint config.
-    pub async fn set_router(&self, router: Arc<LlmRouter>) {
-        self.runtime
-            .update_platform(|current| {
-                let mut next = current.clone();
-                next.router = Some(router);
-                next
-            })
-            .await;
-        self.rebuild_catalog_scoped(CatalogRebuildScope::roots(["media", "files"]))
-            .await;
-    }
-
     /// Replace the router and media clients together during a live settings
     /// update, then rebuild the builtin catalog once so media tools cannot
     /// observe a mixed-generation runtime.
