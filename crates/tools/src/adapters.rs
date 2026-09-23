@@ -148,8 +148,8 @@ impl Tool for McpToolAdapter {
     fn tool_manifest(&self) -> ToolManifest {
         let name = self.name();
         let policy = self.operation_policy(&Value::Object(Default::default()));
-        ToolManifest {
-            identity: ToolIdentity {
+        crate::tool_contract::project_tool_manifest(
+            ToolIdentity {
                 source: haven_common::tools::ToolSource::Mcp,
                 catalog_group: ToolCatalogGroup::Mcp,
                 // The server is the layer-2 root. Inferring this from the
@@ -159,34 +159,33 @@ impl Tool for McpToolAdapter {
                 operation: Some(self.info.name.clone()),
                 stable_name: name.clone(),
             },
-            model: ToolModel {
+            ToolModel {
                 name: name.clone(),
                 description: self.description(),
                 input_schema: self.input_schema(),
             },
-            policy: policy.to_catalog_policy(),
-            presentation: ToolPresentation {
+            &policy,
+            ToolPresentation {
                 label: name.clone(),
                 renderer: self.server_name.clone(),
                 icon: "tools".into(),
                 represented_source: ToolSource::Mcp,
             },
-            root_presentation: ToolRootPresentation {
+            ToolRootPresentation {
                 label: self.server_name.clone(),
                 description: format!("{} MCP 能力", self.server_name),
                 icon: "network".into(),
             },
-            prompt: ToolPrompt {
+            ToolPrompt {
                 when_to_use: self.description(),
                 when_not_to_use: "Use only after explicitly loading this MCP capability.".into(),
                 key_operations: vec![name],
             },
-            availability: ToolAvailability {
+            ToolAvailability {
                 requires_connection: true,
-                requires_permission: true,
                 ..ToolAvailability::default()
             },
-        }
+        )
     }
 
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {

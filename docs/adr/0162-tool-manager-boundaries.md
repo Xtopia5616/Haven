@@ -1,3 +1,5 @@
+> 2026-09-23：平台客户端不再逐字段 bind，改为替换整份 `PlatformRuntime`。见 [ADR 0211](0211-operation-registry-and-platform-snapshot.md)。本记录的 core / runtime / builtins 方向仍然有效。
+
 # ADR 0162：ToolsManager 的 core/runtime/builtins 边界
 
 - 状态：accepted

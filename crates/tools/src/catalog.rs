@@ -13,7 +13,7 @@ impl ToolsManager {
         // Configuration changes alter the discovery catalog even before a
         // client has connected. Keep catalog pagination/resume consumers on
         // the same invalidation clock as builtin rebuilds.
-        self.core.session_catalog.bump_global_version();
+        self.core.operations.sessions.bump_global_version();
 
         self.builtins.mcp_manager.load_from_config(servers).await;
     }
@@ -34,7 +34,7 @@ impl ToolsManager {
                 configs.insert(server.name.clone(), server.clone());
             }
         }
-        self.core.session_catalog.bump_global_version();
+        self.core.operations.sessions.bump_global_version();
         self.builtins
             .mcp_manager
             .discover_all(servers, config)
@@ -94,23 +94,27 @@ impl ToolsManager {
             .iter()
             .cloned()
             .partition(|tool| is_core_model_tool(&tool.name()));
-        if let Err(error) = self.core.registry.rebuild(active_tools).await {
+        if let Err(error) = self.core.operations.installed.rebuild(active_tools).await {
             // Keep the previous atomic snapshot on a construction conflict.
             // A partial catalog is more dangerous than a stale one because it
             // can make authorization and execution disagree about a name.
             tracing::error!(error = %error, "builtin catalog rebuild rejected");
             return;
         }
-        self.core.deferred_catalog.replace(deferred_tools).await;
+        self.core.operations.deferred.replace(deferred_tools).await;
         *self.core.all_builtin_tools.write().await = all_tools;
         *self.runtime.admin_surfaces.write().await = admin_surfaces;
-        self.core.session_catalog.bump_global_version();
+        self.core.operations.sessions.bump_global_version();
     }
 
     /// Register a tool for a specific session (per-session skill overlay).
     /// Does NOT modify the global registry.
     pub async fn register_for_session(&self, session_id: &str, tool: ToolBox) {
-        self.core.session_catalog.register(session_id, tool).await;
+        self.core
+            .operations
+            .sessions
+            .register(session_id, tool)
+            .await;
     }
 
     /// Rehydrate a saved built-in selection during resume without exposing the
@@ -122,9 +126,9 @@ impl ToolsManager {
         roots: Option<Vec<String>>,
     ) -> bool {
         let catalog = builtin::tool_catalog::ToolCatalogTool {
-            deferred_catalog: self.core.deferred_catalog.clone(),
-            registry: self.core.registry.clone(),
-            session_catalog: self.core.session_catalog.clone(),
+            deferred_catalog: self.core.operations.deferred.clone(),
+            registry: self.core.operations.installed.clone(),
+            session_catalog: self.core.operations.sessions.clone(),
             max_tools_per_request: self
                 .core
                 .context_limits
@@ -168,9 +172,9 @@ impl ToolsManager {
     /// that are still available.
     pub async fn load_skill_for_session(&self, session_id: &str, names: Vec<String>) -> bool {
         let loader = builtin::load_skill::LoadSkillTool {
-            deferred_catalog: self.core.deferred_catalog.clone(),
-            registry: self.core.registry.clone(),
-            session_catalog: self.core.session_catalog.clone(),
+            deferred_catalog: self.core.operations.deferred.clone(),
+            registry: self.core.operations.installed.clone(),
+            session_catalog: self.core.operations.sessions.clone(),
             max_tools_per_request: self
                 .core
                 .context_limits
@@ -199,7 +203,7 @@ impl ToolsManager {
 
     /// Remove all per-session tool registrations for a given session.
     pub async fn unregister_session(&self, session_id: &str) {
-        self.core.session_catalog.unregister(session_id).await;
+        self.core.operations.sessions.unregister(session_id).await;
     }
 
     /// Register tools from an MCP server as per-session adapters.
@@ -249,8 +253,8 @@ impl ToolsManager {
             .await
             .max_tools_per_request
             .max(1);
-        let global_count = self.core.registry.list().await.len();
-        let registrations = self.core.session_catalog.registrations();
+        let global_count = self.core.operations.installed.list().await.len();
+        let registrations = self.core.operations.sessions.registrations();
         let mut reg = registrations.write().await;
         let entry = reg.entry(session_id.to_string()).or_default();
         let session_count = entry.len();
@@ -279,7 +283,8 @@ impl ToolsManager {
         }
         drop(reg);
         self.core
-            .session_catalog
+            .operations
+            .sessions
             .bump_session_version(session_id)
             .await;
         true
@@ -292,11 +297,11 @@ impl ToolsManager {
         name: &str,
     ) -> Option<ToolBox> {
         if let Some(tid) = session_id
-            && let Some(tool) = self.core.session_catalog.get(tid, name).await
+            && let Some(tool) = self.core.operations.sessions.get(tid, name).await
         {
             return Some(tool);
         }
-        self.core.registry.get(name).await
+        self.core.operations.installed.get(name).await
     }
 
     /// Build an MCP server index (name + available tool names) for injection
@@ -366,44 +371,18 @@ impl ToolsManager {
     /// `register_mcp_for_session`; this method only handles defensive
     /// selection if the catalog later grows beyond the provider limit.
     pub async fn list_defs_for_session(&self, session_id: &str) -> Vec<ToolDef> {
-        let max = self
-            .core
-            .context_limits
-            .read()
+        self.operation_catalog()
+            .list_defs_for_session(session_id)
             .await
-            .max_tools_per_request
-            .max(1);
-        let global_defs = self.core.registry.list_defs().await;
-        let global_len = global_defs.len();
-        let session_defs = self.core.session_catalog.list_defs(session_id).await;
-        let total = global_len + session_defs.len();
-        let selection = select_tool_defs_for_budget(global_defs, session_defs, max);
-        if !selection.omitted.is_empty() {
-            let omitted_tools = selection.omitted.join(", ");
-            tracing::warn!(
-                session_id,
-                total,
-                max,
-                global = global_len,
-                selected = selection.selected.len(),
-                omitted = selection.omitted.len(),
-                omitted_core = selection.omitted_core,
-                omitted_tools = %omitted_tools,
-                "list_defs_for_session: omitted tools from max_tools_per_request budget; core builtins are selected before optional sources"
-            );
-        }
-        selection.selected
     }
 
     /// Return tool schemas for a session: global registry schemas derived
     /// from [`ToolDef`]s merged with per-session registered skill/MCP
     /// adapters. Convenience JSON view over [`Self::list_defs_for_session`].
     pub async fn list_schemas_for_session(&self, session_id: &str) -> Vec<Value> {
-        self.list_defs_for_session(session_id)
+        self.operation_catalog()
+            .list_schemas_for_session(session_id)
             .await
-            .into_iter()
-            .map(|d| d.json())
-            .collect()
     }
 
     /// Insert or replace a single MCP server config in the in-memory map.
@@ -416,14 +395,14 @@ impl ToolsManager {
             .await
             .insert(config.name.clone(), config);
         self.builtins.mcp_manager.invalidate_catalog();
-        self.core.session_catalog.bump_global_version();
+        self.core.operations.sessions.bump_global_version();
     }
 
     /// Remove a single MCP server config from the in-memory map.
     pub async fn remove_mcp_server_config(&self, name: &str) {
         self.builtins.mcp_server_configs.write().await.remove(name);
         self.builtins.mcp_manager.invalidate_catalog();
-        self.core.session_catalog.bump_global_version();
+        self.core.operations.sessions.bump_global_version();
     }
 
     /// List all known MCP server configs (enabled and disabled).
@@ -494,8 +473,124 @@ impl ToolsManager {
     }
 
     pub async fn list_builtin_tools(&self) -> Vec<Value> {
-        let tools = self.core.all_builtin_tools.read().await;
-        let settings = self.core.tool_settings.read().await;
+        self.operation_catalog().list_builtin_tools().await
+    }
+
+    /// Canonical UI catalog projection. Unlike `list_builtin_tools`, this
+    /// does not merge provider-facing fields into a second flat DTO: the
+    /// manifest is the only source the frontend should hydrate.
+    pub async fn list_builtin_manifests(&self) -> Vec<ToolManifest> {
+        self.operation_catalog().list_builtin_manifests().await
+    }
+
+    /// Prompt-facing catalog of every enabled builtin, including deferred
+    /// operation views. This intentionally returns structured definitions only
+    /// to the agent prompt builder; provider `tools[]` still uses the smaller
+    /// core + session-loaded surface from `list_defs_for_session`.
+    pub async fn list_enabled_builtin_defs(&self) -> Vec<ToolDef> {
+        self.operation_catalog().list_enabled_builtin_defs().await
+    }
+}
+
+/// Model-visible projection of [`OperationRegistry`].
+///
+/// Loading and session admission stay on `ToolsManager`. This type only
+/// reads the registry and emits provider definitions or UI manifests.
+pub struct OperationCatalog<'a> {
+    manager: &'a ToolsManager,
+}
+
+impl ToolsManager {
+    pub(crate) fn operation_catalog(&self) -> OperationCatalog<'_> {
+        OperationCatalog { manager: self }
+    }
+}
+
+impl OperationCatalog<'_> {
+    /// Capture the complete lookup surface used by one ReAct tool batch.
+    pub async fn tool_catalog_snapshot(&self, session_id: &str) -> ToolCatalogSnapshot {
+        let mut snapshot = None;
+        for _ in 0..2 {
+            let before = self.manager.catalog_version_for_session(session_id).await;
+            let global = self.manager.core.operations.installed.list().await;
+            let session = self.manager.core.operations.sessions.list(session_id).await;
+            let after = self.manager.catalog_version_for_session(session_id).await;
+
+            let mut tools = HashMap::with_capacity(global.len() + session.len());
+            let global_defs = global.iter().map(|tool| tool.tool_def()).collect();
+            let session_defs = session.iter().map(|tool| tool.tool_def()).collect();
+            for tool in global {
+                tools.insert(tool.name(), tool);
+            }
+            for tool in session {
+                tools.insert(tool.name(), tool);
+            }
+            let max = self
+                .manager
+                .core
+                .context_limits
+                .read()
+                .await
+                .max_tools_per_request
+                .max(1);
+            let provider_definitions =
+                select_tool_defs_for_budget(global_defs, session_defs, max).selected;
+            snapshot = Some((after, tools, provider_definitions));
+            if before == after {
+                break;
+            }
+        }
+        let (version, tools, provider_definitions) =
+            snapshot.expect("tool catalog snapshot attempt must produce a view");
+        ToolCatalogSnapshot::new_with_definitions(version, tools, provider_definitions)
+    }
+
+    pub async fn list_defs_for_session(&self, session_id: &str) -> Vec<ToolDef> {
+        let max = self
+            .manager
+            .core
+            .context_limits
+            .read()
+            .await
+            .max_tools_per_request
+            .max(1);
+        let global_defs = self.manager.core.operations.installed.list_defs().await;
+        let global_len = global_defs.len();
+        let session_defs = self
+            .manager
+            .core
+            .operations
+            .sessions
+            .list_defs(session_id)
+            .await;
+        let total = global_len + session_defs.len();
+        let selection = select_tool_defs_for_budget(global_defs, session_defs, max);
+        if !selection.omitted.is_empty() {
+            let omitted_tools = selection.omitted.join(", ");
+            tracing::warn!(
+                session_id,
+                total,
+                max,
+                global = global_len,
+                selected = selection.selected.len(),
+                omitted = selection.omitted.len(),
+                omitted_core = selection.omitted_core,
+                omitted_tools = %omitted_tools,
+                "list_defs_for_session: omitted tools from max_tools_per_request budget; core builtins are selected before optional sources"
+            );
+        }
+        selection.selected
+    }
+    pub async fn list_schemas_for_session(&self, session_id: &str) -> Vec<Value> {
+        self.list_defs_for_session(session_id)
+            .await
+            .into_iter()
+            .map(|d| d.json())
+            .collect()
+    }
+    pub async fn list_builtin_tools(&self) -> Vec<Value> {
+        let tools = self.manager.core.all_builtin_tools.read().await;
+        let settings = self.manager.core.tool_settings.read().await;
         tools
             .iter()
             .filter(|t| !t.name().starts_with("skill__"))
@@ -530,13 +625,9 @@ impl ToolsManager {
             })
             .collect()
     }
-
-    /// Canonical UI catalog projection. Unlike `list_builtin_tools`, this
-    /// does not merge provider-facing fields into a second flat DTO: the
-    /// manifest is the only source the frontend should hydrate.
     pub async fn list_builtin_manifests(&self) -> Vec<ToolManifest> {
-        let tools = self.core.all_builtin_tools.read().await;
-        let settings = self.core.tool_settings.read().await;
+        let tools = self.manager.core.all_builtin_tools.read().await;
+        let settings = self.manager.core.tool_settings.read().await;
         tools
             .iter()
             .filter(|tool| !tool.name().starts_with("skill__"))
@@ -548,14 +639,9 @@ impl ToolsManager {
             })
             .collect()
     }
-
-    /// Prompt-facing catalog of every enabled builtin, including deferred
-    /// operation views. This intentionally returns structured definitions only
-    /// to the agent prompt builder; provider `tools[]` still uses the smaller
-    /// core + session-loaded surface from `list_defs_for_session`.
     pub async fn list_enabled_builtin_defs(&self) -> Vec<ToolDef> {
-        let tools = self.core.all_builtin_tools.read().await;
-        let settings = self.core.tool_settings.read().await;
+        let tools = self.manager.core.all_builtin_tools.read().await;
+        let settings = self.manager.core.tool_settings.read().await;
         let mut defs: Vec<_> = tools
             .iter()
             .filter(|tool| !tool.name().starts_with("skill__"))

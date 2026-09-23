@@ -199,3 +199,4 @@
 - [0208：TurnEngine 产出 EffectBatch](0208-react-turn-effect-batch.md)
 - [0209：删除 ReAct snapshot 并收口 session 副作用](0209-remove-react-snapshot-and-session-effect-boundary.md)
 - [0210：提交成功后按 sequence 发布 durable UI 事件](0210-committed-ui-sequence-publisher.md)
+- [0211：ToolsManager 收成执行入口，operation 单一投影](0211-operation-registry-and-platform-snapshot.md)

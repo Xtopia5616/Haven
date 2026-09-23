@@ -1,12 +1,11 @@
 use super::*;
 
-/// Composition object for the tool subsystem.
+/// Facade for tool execution.
 ///
-/// The manager intentionally contains three explicit boundaries rather than
-/// exposing every provider and mutable dependency as a public field:
-/// `ToolCore` owns contracts/catalog/authorization, `ToolRuntime` owns
-/// execution capabilities, and `ToolBuiltins` owns concrete MCP/Skills
-/// providers. Application code uses the narrow accessors below.
+/// Callers enter through execution and catalog projection methods. The
+/// manager does not bind individual model or media clients: those inputs live
+/// on one `PlatformRuntime` snapshot owned by `ToolRuntime`. Installed,
+/// deferred and session operations live on [`OperationRegistry`].
 pub struct ToolsManager {
     pub(crate) core: tool_core::ToolCore,
     pub(crate) runtime: tool_runtime::ToolRuntime,
@@ -45,8 +44,12 @@ impl ToolsManager {
 
     /// Core catalog view. These accessors expose domain boundaries without
     /// exposing `ToolsManager`'s composition fields.
+    pub fn operations(&self) -> &OperationRegistry {
+        &self.core.operations
+    }
+
     pub fn registry(&self) -> &ToolRegistry {
-        &self.core.registry
+        self.operations().installed()
     }
 
     pub fn authorization(&self) -> &AuthorizationEngine {
@@ -216,7 +219,7 @@ impl ToolsManager {
     /// derived views (e.g. per-step LLM tool definitions) keyed by this
     /// value and rebuild only when it changes.
     pub fn catalog_version(&self) -> u64 {
-        self.core.session_catalog.global_version()
+        self.core.operations.sessions.global_version()
     }
 
     /// MCP has its own tools/list change clock and therefore must participate
@@ -230,7 +233,8 @@ impl ToolsManager {
     /// session's progressive MCP overlay.
     pub async fn catalog_version_for_session(&self, session_id: &str) -> (u64, u64) {
         self.core
-            .session_catalog
+            .operations
+            .sessions
             .catalog_version_for_session(session_id)
             .await
     }
@@ -245,45 +249,21 @@ impl ToolsManager {
     /// under sustained catalog churn: this is a performance snapshot, while
     /// the execution boundary remains responsible for a final runtime check.
     pub async fn tool_catalog_snapshot(&self, session_id: &str) -> ToolCatalogSnapshot {
-        let mut snapshot = None;
-        for _ in 0..2 {
-            let before = self.catalog_version_for_session(session_id).await;
-            let global = self.core.registry.list().await;
-            let session = self.core.session_catalog.list(session_id).await;
-            let after = self.catalog_version_for_session(session_id).await;
-
-            let mut tools = HashMap::with_capacity(global.len() + session.len());
-            let global_defs = global.iter().map(|tool| tool.tool_def()).collect();
-            let session_defs = session.iter().map(|tool| tool.tool_def()).collect();
-            for tool in global {
-                tools.insert(tool.name(), tool);
-            }
-            for tool in session {
-                tools.insert(tool.name(), tool);
-            }
-            let max = self
-                .core
-                .context_limits
-                .read()
-                .await
-                .max_tools_per_request
-                .max(1);
-            let provider_definitions =
-                select_tool_defs_for_budget(global_defs, session_defs, max).selected;
-            snapshot = Some((after, tools, provider_definitions));
-            if before == after {
-                break;
-            }
-        }
-        let (version, tools, provider_definitions) =
-            snapshot.expect("tool catalog snapshot attempt must produce a view");
-        ToolCatalogSnapshot::new_with_definitions(version, tools, provider_definitions)
+        self.operation_catalog()
+            .tool_catalog_snapshot(session_id)
+            .await
     }
 
     /// Replace the shared LlmRouter and rebuild the catalog so tools (e.g.
     /// `file summary`) pick up the new endpoint config.
     pub async fn set_router(&self, router: Arc<LlmRouter>) {
-        *self.runtime.router.write().await = Some(router);
+        self.runtime
+            .update_platform(|current| {
+                let mut next = current.clone();
+                next.router = Some(router);
+                next
+            })
+            .await;
         self.rebuild_catalog_scoped(CatalogRebuildScope::roots(["media", "files"]))
             .await;
     }
@@ -300,12 +280,18 @@ impl ToolsManager {
         tts_client: Option<Arc<dyn haven_llm::TtsClient>>,
         media_config: haven_common::config::MediaConfig,
     ) {
-        *self.runtime.router.write().await = Some(router);
-        *self.runtime.stt_client.write().await = stt_client;
-        *self.runtime.ocr_client.write().await = ocr_client;
-        *self.runtime.image_gen_client.write().await = image_gen_client;
-        *self.runtime.tts_client.write().await = tts_client;
-        *self.runtime.media_config.write().await = media_config;
+        self.runtime
+            .update_platform(|current| {
+                let mut next = current.clone();
+                next.router = Some(router);
+                next.stt_client = stt_client;
+                next.ocr_client = ocr_client;
+                next.image_gen_client = image_gen_client;
+                next.tts_client = tts_client;
+                next.media_config = media_config;
+                next
+            })
+            .await;
         self.rebuild_catalog_scoped(CatalogRebuildScope::roots(["media", "files", "window"]))
             .await;
     }
@@ -347,18 +333,22 @@ impl ToolsManager {
             .authorization
             .set_tool_settings(tool_settings)
             .await;
-        *self.runtime.router.write().await = Some(router);
-        *self.runtime.media_config.write().await = media_config;
-        *self.runtime.audio_pipeline.write().await = audio_pipeline;
-        *self.runtime.stt_client.write().await = stt_client;
-        *self.runtime.ocr_client.write().await = ocr_client;
-        *self.runtime.image_gen_client.write().await = image_gen_client;
-        *self.runtime.tts_client.write().await = tts_client;
         self.runtime
             .action_service
             .set_db(admin_context.db.clone())
             .await;
-        *self.runtime.admin_context.write().await = Some(admin_context);
+        self.runtime
+            .replace_platform(crate::tool_runtime::PlatformRuntime {
+                router: Some(router),
+                admin_context: Some(admin_context),
+                audio_pipeline,
+                tts_client,
+                stt_client,
+                ocr_client,
+                image_gen_client,
+                media_config,
+            })
+            .await;
         self.rebuild_catalog_scoped(CatalogRebuildScope::All).await;
     }
 
@@ -381,7 +371,13 @@ impl ToolsManager {
     /// persist across restarts.
     pub async fn set_admin_context(&self, ctx: builtin::AdminContext) {
         self.runtime.action_service.set_db(ctx.db.clone()).await;
-        *self.runtime.admin_context.write().await = Some(ctx);
+        self.runtime
+            .update_platform(|current| {
+                let mut next = current.clone();
+                next.admin_context = Some(ctx);
+                next
+            })
+            .await;
         self.rebuild_catalog_scoped(CatalogRebuildScope::All).await;
     }
 
@@ -467,15 +463,16 @@ impl ToolsManager {
     /// backend. This is intentionally separate from the media tool's schema
     /// so prompt assembly can report the same capability state.
     pub async fn tts_configured(&self) -> bool {
-        self.runtime.tts_client.read().await.is_some()
+        self.runtime.platform().await.tts_client.is_some()
     }
 
     /// Whether the shared media transcription boundary currently has a live
     /// route. This is the app-facing gate for voice ingress; capture itself is
     /// owned by `haven-input` and is intentionally not consulted here.
     pub async fn transcription_available(&self) -> bool {
-        let router = self.runtime.router.read().await.clone();
-        let stt_client = self.runtime.stt_client.read().await.clone();
+        let platform = self.runtime.platform().await;
+        let router = platform.router.clone();
+        let stt_client = platform.stt_client.clone();
         builtin::resolve_media_capabilities(router.as_ref(), stt_client.is_some())
             .await
             .transcribe
@@ -490,8 +487,9 @@ impl ToolsManager {
         wav_data: &[u8],
         cancel: CancellationToken,
     ) -> builtin::MediaTranscriptionResult {
-        let router = self.runtime.router.read().await.clone();
-        let stt_client = self.runtime.stt_client.read().await.clone();
+        let platform = self.runtime.platform().await;
+        let router = platform.router.clone();
+        let stt_client = platform.stt_client.clone();
         let capabilities =
             builtin::resolve_media_capabilities(router.as_ref(), stt_client.is_some()).await;
         if !capabilities.transcribe {
@@ -499,7 +497,7 @@ impl ToolsManager {
                 "No speech-to-text provider is configured.",
             );
         }
-        let media_config = self.runtime.media_config.read().await.clone();
+        let media_config = platform.media_config.clone();
         let limits = self.core.context_limits.read().await;
         let max_output_chars = limits.max_observation_chars;
         drop(limits);
@@ -518,22 +516,22 @@ impl ToolsManager {
     /// builtin catalog. Keeping this at the manager boundary prevents the
     /// prompt snapshot from advertising a role that the tool schema removed.
     pub async fn runtime_capabilities(&self) -> RuntimeCapabilities {
-        let router = self.runtime.router.read().await.clone();
-        let stt_client = self.runtime.stt_client.read().await.clone();
+        let platform = self.runtime.platform().await;
+        let router = platform.router.clone();
+        let stt_client = platform.stt_client.clone();
         let media_capabilities =
             builtin::resolve_media_capabilities(router.as_ref(), stt_client.is_some()).await;
         let vision = media_capabilities.describe;
         let transcription = media_capabilities.transcribe;
-        let audio_pipeline = self.runtime.audio_pipeline.read().await.clone();
         // Capturing and transcribing are separate capabilities: a recording
         // must remain available even when STT is temporarily unconfigured so
         // it can still produce an asset for a later `media.transcribe` call.
         // Recording is a capture capability. It remains available without an
         // STT provider so a managed audio asset can be retained for later
         // derivation.
-        let recording = audio_pipeline.is_some();
-        let image_generation = self.runtime.image_gen_client.read().await.is_some();
-        let tts = self.runtime.tts_client.read().await.is_some();
+        let recording = platform.audio_pipeline.is_some();
+        let image_generation = platform.image_gen_client.is_some();
+        let tts = platform.tts_client.is_some();
         let mcp_search_available = self
             .build_mcp_index()
             .await
@@ -581,7 +579,13 @@ impl ToolsManager {
     /// Replace the TTS client used by the `media` tool after a live settings
     /// update. A disabled or failed client is represented by `None`.
     pub async fn set_tts_client(&self, client: Option<Arc<dyn haven_llm::TtsClient>>) {
-        *self.runtime.tts_client.write().await = client;
+        self.runtime
+            .update_platform(|current| {
+                let mut next = current.clone();
+                next.tts_client = client;
+                next
+            })
+            .await;
         self.rebuild_catalog_scoped(CatalogRebuildScope::roots(["media"]))
             .await;
     }

@@ -46,25 +46,26 @@ impl ToolBuiltins {
         core: &ToolCore,
         runtime: &ToolRuntime,
     ) -> BuiltinContext {
-        let router = runtime.router.read().await.clone();
-        let admin_context = runtime.admin_context.read().await.clone();
+        let platform = runtime.platform().await;
         let settings = core.tool_settings.read().await.clone();
         let limits = core.context_limits.read().await.clone();
-        let audio_pipeline = runtime.audio_pipeline.read().await.clone();
-        let stt_client = runtime.stt_client.read().await.clone();
-        let ocr_client = runtime.ocr_client.read().await.clone();
-        let image_gen_client = runtime.image_gen_client.read().await.clone();
-        let media_config = runtime.media_config.read().await.clone();
-        let tts_client = runtime.tts_client.read().await.clone();
+        let router = platform.router.clone();
+        let admin_context = platform.admin_context.clone();
+        let audio_pipeline = platform.audio_pipeline.clone();
+        let stt_client = platform.stt_client.clone();
+        let ocr_client = platform.ocr_client.clone();
+        let image_gen_client = platform.image_gen_client.clone();
+        let media_config = platform.media_config.clone();
+        let tts_client = platform.tts_client.clone();
 
         BuiltinContext {
             skills_engine: self.skills_engine.clone(),
             skill_runner: self.skill_runner.clone(),
             mcp_manager: Arc::new(self.mcp_manager.clone()),
             server_configs: self.mcp_server_configs.clone(),
-            registry: core.registry.clone(),
-            session_catalog: core.session_catalog.clone(),
-            deferred_catalog: core.deferred_catalog.clone(),
+            registry: core.operations.installed.clone(),
+            session_catalog: core.operations.sessions.clone(),
+            deferred_catalog: core.operations.deferred.clone(),
             settings,
             limits,
             default_shell: *self.default_shell.read().await,

@@ -354,26 +354,6 @@ impl OperationPolicy {
         matches!(self.data_sensitivity, DataSensitivity::Sensitive)
             || !matches!(self.network_access, NetworkAccess::None)
     }
-
-    pub fn to_catalog_policy(&self) -> ToolPolicy {
-        let concurrency = match self.concurrency {
-            ToolConcurrency::ReadOnly => "read_only".to_string(),
-            ToolConcurrency::SharedResource(_) => "shared_resource".to_string(),
-            ToolConcurrency::Resource(_) => "resource".to_string(),
-            ToolConcurrency::Exclusive => "exclusive".to_string(),
-        };
-        ToolPolicy {
-            risk_level: self.risk_level,
-            permission_key: self.capability.to_string(),
-            confirmation: self.confirmation.as_str().into(),
-            idempotency: self.idempotency.as_str().into(),
-            scope: self.scope.as_str().into(),
-            concurrency,
-            effect: self.effect.as_str().into(),
-            data_sensitivity: self.data_sensitivity.as_str().into(),
-            network_access: self.network_access.as_str().into(),
-        }
-    }
 }
 
 /// Conservative operation attributes shared by the default Tool contract and
@@ -1318,6 +1298,47 @@ pub(crate) fn default_root_presentation(
     }
 }
 
+/// Project the single typed operation policy into the UI/IPC manifest.
+/// `ToolPolicy` and `ToolManifest` are wire shapes, not a second policy.
+pub(crate) fn project_tool_manifest(
+    identity: ToolIdentity,
+    model: ToolModel,
+    policy: &OperationPolicy,
+    presentation: ToolPresentation,
+    root_presentation: ToolRootPresentation,
+    prompt: ToolPrompt,
+    mut availability: ToolAvailability,
+) -> ToolManifest {
+    if policy.risk_level >= RiskLevel::Medium {
+        availability.requires_permission = true;
+    }
+    let concurrency = match &policy.concurrency {
+        ToolConcurrency::ReadOnly => "read_only",
+        ToolConcurrency::SharedResource(_) => "shared_resource",
+        ToolConcurrency::Resource(_) => "resource",
+        ToolConcurrency::Exclusive => "exclusive",
+    };
+    ToolManifest {
+        identity,
+        model,
+        policy: ToolPolicy {
+            risk_level: policy.risk_level,
+            permission_key: policy.capability.to_string(),
+            confirmation: policy.confirmation.as_str().into(),
+            idempotency: policy.idempotency.as_str().into(),
+            scope: policy.scope.as_str().into(),
+            concurrency: concurrency.into(),
+            effect: policy.effect.as_str().into(),
+            data_sensitivity: policy.data_sensitivity.as_str().into(),
+            network_access: policy.network_access.as_str().into(),
+        },
+        presentation,
+        root_presentation,
+        prompt,
+        availability,
+    }
+}
+
 #[async_trait::async_trait]
 pub trait Tool: Send + Sync {
     fn name(&self) -> String;
@@ -1362,37 +1383,34 @@ pub trait Tool: Send + Sync {
         let operation = default_tool_operation(&name, &root, represented_source);
         let description = self.description();
         let policy = self.operation_policy(&Value::Object(Default::default()));
-        ToolManifest {
-            identity: ToolIdentity {
+        project_tool_manifest(
+            ToolIdentity {
                 source,
                 catalog_group: self.catalog_group(),
                 root: root.clone(),
                 operation,
                 stable_name: name.clone(),
             },
-            model: ToolModel {
+            ToolModel {
                 name: name.clone(),
                 description: description.clone(),
                 input_schema: self.input_schema(),
             },
-            availability: ToolAvailability {
-                requires_permission: policy.risk_level >= RiskLevel::Medium,
-                ..ToolAvailability::default()
-            },
-            policy: policy.to_catalog_policy(),
-            presentation: ToolPresentation {
+            &policy,
+            ToolPresentation {
                 label: default_tool_label(&name),
                 renderer: root.clone(),
                 icon: "tools".into(),
                 represented_source,
             },
-            root_presentation: default_root_presentation(&root, represented_source),
-            prompt: ToolPrompt {
+            default_root_presentation(&root, represented_source),
+            ToolPrompt {
                 when_to_use: description,
                 when_not_to_use: "Use a narrower operation when one is available.".into(),
                 key_operations: vec![name],
             },
-        }
+            ToolAvailability::default(),
+        )
     }
 
     /// Source represented by the UI card. Activation tools execute in Haven

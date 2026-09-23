@@ -48,12 +48,14 @@ haven-input / haven-llm / haven-memory / haven-skills ──► haven-common
 `haven-tools` 的工具核心按稳定边界分为 `tool_contract.rs`（Tool、ToolResult、typed
 operation 与执行策略）、`registry.rs`（全局注册表、SessionCatalog、版本快照与 probe）和
 `security.rs`（AuthorizationEngine、权限继承、disabled operation、路径沙箱与本机安全矩阵）。
-在这组稳定模块之上，`tool_core.rs` 只组合 catalog/authorization，`tool_runtime.rs` 只
-组合执行依赖和一次性 typed capability ports，`tool_builtins.rs` 只组合 MCP/Skills 与
-具体 builtin provider；`manager.rs`、`catalog.rs`、`execution.rs` 分别承载 facade 的
-启动 wiring、目录/session overlay 与执行入口实现，`ToolsManager` 只是三者的 facade。安全矩阵只有 `security.rs`
+在这组稳定模块之上，`OperationRegistry` 持有已安装、deferred 与 session operation；
+`OperationCatalog` 是模型可见投影；`AuthorizedExecutor` 是校验、执行和结果分类入口。
+`OperationSpec` 是 operation 的唯一定义，UI manifest 只从它投影。`tool_core.rs` 只组合
+registry 与 authorization，`tool_runtime.rs` 用一份不可变 `PlatformRuntime` 快照承载模型与
+媒体客户端（热更新整体替换，不再逐字段 bind），`tool_builtins.rs` 只组合 MCP/Skills 与
+具体 builtin provider。`ToolsManager` 只做 facade。安全矩阵只有 `security.rs`
 一个权威来源，五个 Admin surface 由 ADR 0070/0071 定义的 typed operation 实现。
-ToolsManager 的三层边界见 ADR 0162。
+边界见 ADR 0162 与 ADR 0211。
 
 `document.rs` 是受管附件的本地派生边界：由 `media.extract` 对 PDF/DOCX/XLSX/PPTX
 执行有资源上限的文本/表格抽取，输出带
@@ -478,6 +480,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 
 | 日期 | 内容 |
 |---|---|
+| 2026-09-23 | §2.5 Tools：`ToolsManager` 收成执行 facade；operation 由 `OperationSpec` 投影 manifest，平台客户端按 `PlatformRuntime` 整份替换（ADR 0211） |
 | 2026-09-23 | §2.5 Agent / §2.6 UI：durable UI 事件在 `session_events` 提交成功后由 `CommittedUiPublisher` 按 sequence 发布；Thought 携带 `event_seq`，并行卡片按 `(eventSeq, identity)` 去重。不升 schema（ADR 0210） |
 | 2026-09-22 | §2.5 Tools：按组合 wiring、catalog/session discovery 与 execution 入口拆分 `ToolsManager` 实现，并将 manager 回归测试移出 crate root；公共工具、授权、IPC 与持久化契约不变（ADR 0205） |
 | 2026-09-22 | §2.3：删除 `sessions.react_state`，schema v28；旧库删除重建，不迁移（ADR 0209） |

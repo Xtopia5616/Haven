@@ -1,3 +1,5 @@
+> 2026-09-23：manifest 与 `ToolPolicy` 的权威来源收紧为 `OperationSpec` 的单一投影，见 [ADR 0211](0211-operation-registry-and-platform-snapshot.md)。本记录里的 wire 形状仍然有效。
+
 # ADR 0142：工具 Manifest、OperationSpec 与统一结果元数据
 
 ## 状态

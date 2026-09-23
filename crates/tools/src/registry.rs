@@ -442,6 +442,35 @@ impl RegistryProbe {
     }
 }
 
+/// Static builtins plus dynamically loaded MCP and Skill operations.
+///
+/// The installed registry is the host catalog. Deferred operations stay out
+/// of the provider surface until a loader moves them into a session overlay.
+#[derive(Clone, Default)]
+pub struct OperationRegistry {
+    pub(crate) installed: ToolRegistry,
+    pub(crate) deferred: DeferredToolCatalog,
+    pub(crate) sessions: SessionCatalog,
+}
+
+impl OperationRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn installed(&self) -> &ToolRegistry {
+        &self.installed
+    }
+
+    pub fn deferred(&self) -> &DeferredToolCatalog {
+        &self.deferred
+    }
+
+    pub fn sessions(&self) -> &SessionCatalog {
+        &self.sessions
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

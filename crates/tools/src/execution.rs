@@ -1,6 +1,115 @@
 use super::*;
 
+/// Pure execution entry: admit the call, validate it, run the handler, and
+/// classify the outcome.
+///
+/// `ToolsManager` only forwards to this type. Interactive authorization is
+/// assembled here and decided by the caller before `execute`, because a
+/// missing confirmation receipt must fail closed without blocking inside the
+/// tool future.
+pub(crate) struct AuthorizedExecutor<'a> {
+    tools: &'a ToolsManager,
+}
+
 impl ToolsManager {
+    pub(crate) fn executor(&self) -> AuthorizedExecutor<'_> {
+        AuthorizedExecutor { tools: self }
+    }
+
+    pub async fn execute_tool(
+        &self,
+        session_id: Option<&str>,
+        tool_name: &str,
+        input: Value,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<ToolResult> {
+        self.executor()
+            .execute_tool(session_id, tool_name, input, cancel)
+            .await
+    }
+
+    pub async fn execute_tool_with_step(
+        &self,
+        session_id: Option<&str>,
+        tool_name: &str,
+        input: Value,
+        cancel: CancellationToken,
+        step_id: Option<&str>,
+    ) -> anyhow::Result<ToolResult> {
+        self.executor()
+            .execute_tool_with_step(session_id, tool_name, input, cancel, step_id)
+            .await
+    }
+
+    pub fn tool_circuits(&self) -> &ToolCircuitRegistry {
+        &self.core.tool_circuits
+    }
+
+    pub async fn get_tool(&self, name: &str) -> Option<ToolBox> {
+        self.executor().get_tool(name).await
+    }
+
+    pub async fn get_risk_level(
+        &self,
+        session_id: Option<&str>,
+        tool_name: &str,
+        input: &Value,
+    ) -> RiskLevel {
+        self.executor()
+            .get_risk_level(session_id, tool_name, input)
+            .await
+    }
+
+    pub async fn get_operation_policy(
+        &self,
+        session_id: Option<&str>,
+        tool_name: &str,
+        input: &Value,
+    ) -> OperationPolicy {
+        self.executor()
+            .get_operation_policy(session_id, tool_name, input)
+            .await
+    }
+
+    pub async fn get_authorization_request(
+        &self,
+        session_id: Option<&str>,
+        tool_name: &str,
+        input: &Value,
+    ) -> AuthorizationRequest {
+        self.executor()
+            .get_authorization_request(session_id, tool_name, input)
+            .await
+    }
+
+    pub fn get_authorization_request_from_snapshot(
+        &self,
+        catalog: &ToolCatalogSnapshot,
+        session_id: Option<&str>,
+        tool_name: &str,
+        input: &Value,
+    ) -> AuthorizationRequest {
+        self.executor()
+            .get_authorization_request_from_snapshot(catalog, session_id, tool_name, input)
+    }
+
+    pub async fn get_authorization_input(
+        &self,
+        session_id: Option<&str>,
+        tool_name: &str,
+        input: &Value,
+    ) -> Value {
+        self.executor()
+            .get_authorization_input(session_id, tool_name, input)
+            .await
+    }
+
+    pub async fn observation_text(&self, tool_name: &str, result: &ToolResult) -> String {
+        self.executor().observation_text(tool_name, result).await
+    }
+}
+
+impl AuthorizedExecutor<'_> {
     pub async fn execute_tool(
         &self,
         session_id: Option<&str>,
@@ -23,7 +132,7 @@ impl ToolsManager {
         cancel: CancellationToken,
         step_id: Option<&str>,
     ) -> anyhow::Result<ToolResult> {
-        if !self.core.tool_circuits.allow_request(tool_name) {
+        if !self.tools.core.tool_circuits.allow_request(tool_name) {
             tracing::warn!("tool '{}' circuit breaker open — fast-failing", tool_name);
             return Err(anyhow::Error::new(StructuredToolError::new(
                 format!(
@@ -34,7 +143,7 @@ impl ToolsManager {
             )));
         }
 
-        if !self.tool_enabled(tool_name).await {
+        if !self.tools.tool_enabled(tool_name).await {
             tracing::warn!("tool '{}' is disabled", tool_name);
             return Err(anyhow::Error::new(StructuredToolError::new(
                 format!("tool '{}' is disabled", tool_name),
@@ -47,6 +156,7 @@ impl ToolsManager {
         }
 
         let tool = self
+            .tools
             .get_tool_for_session(session_id, tool_name)
             .await
             .ok_or_else(|| {
@@ -81,7 +191,7 @@ impl ToolsManager {
                 obj.insert("_step_id".into(), serde_json::json!(sid));
             }
         }
-        let settings = self.core.tool_settings.read().await;
+        let settings = self.tools.core.tool_settings.read().await;
         let configured = settings
             .get(tool_name)
             .or_else(|| {
@@ -155,7 +265,7 @@ impl ToolsManager {
             };
             result.attempts = attempt + 1;
             if result.success {
-                self.core.tool_circuits.record_success(tool_name);
+                self.tools.core.tool_circuits.record_success(tool_name);
                 // Attach the tool's declared side-channel signals (ask
                 // question / notify toast) BEFORE returning.
                 result.signals = tool.signals(&result.output);
@@ -175,26 +285,22 @@ impl ToolsManager {
                 );
                 continue;
             }
-            self.core.tool_circuits.record_failure(tool_name);
+            self.tools.core.tool_circuits.record_failure(tool_name);
             annotate_retry_safety(&mut result, idempotency);
             return Ok(result);
         }
-        self.core.tool_circuits.record_failure(tool_name);
+        self.tools.core.tool_circuits.record_failure(tool_name);
         Ok(ToolResult::failed(
             Value::Null,
             format!("tool '{}' retries exhausted", tool_name),
         ))
     }
 
-    pub fn tool_circuits(&self) -> &ToolCircuitRegistry {
-        &self.core.tool_circuits
-    }
-
     pub async fn get_tool(&self, name: &str) -> Option<ToolBox> {
-        if let Some(tool) = self.core.registry.get(name).await {
+        if let Some(tool) = self.tools.core.operations.installed.get(name).await {
             return Some(tool);
         }
-        self.core.deferred_catalog.get(name).await
+        self.tools.core.operations.deferred.get(name).await
     }
 
     pub async fn get_risk_level(
@@ -204,11 +310,13 @@ impl ToolsManager {
         input: &Value,
     ) -> RiskLevel {
         let reported = self
+            .tools
             .get_tool_for_session(session_id, tool_name)
             .await
             .map(|t| t.operation_policy(input).risk_level)
             .unwrap_or(RiskLevel::Safe);
-        self.core
+        self.tools
+            .core
             .authorization
             .effective_risk(tool_name, reported)
             .await
@@ -223,7 +331,8 @@ impl ToolsManager {
         tool_name: &str,
         input: &Value,
     ) -> OperationPolicy {
-        self.get_tool_for_session(session_id, tool_name)
+        self.tools
+            .get_tool_for_session(session_id, tool_name)
             .await
             .map(|tool| tool.operation_policy(input))
             .unwrap_or_else(|| OperationPolicy {
@@ -287,7 +396,8 @@ impl ToolsManager {
         tool_name: &str,
         input: &Value,
     ) -> Value {
-        self.get_tool_for_session(session_id, tool_name)
+        self.tools
+            .get_tool_for_session(session_id, tool_name)
             .await
             .map(|tool| tool.authorization_input(input))
             .unwrap_or_else(|| input.clone())
@@ -297,8 +407,8 @@ impl ToolsManager {
     /// ToolResult summary. Agent, step persistence and resume all consume this
     /// exact helper so an adapter cannot create a longer recovery observation.
     pub async fn observation_text(&self, tool_name: &str, result: &ToolResult) -> String {
-        let limits = self.core.context_limits.read().await;
-        let settings = self.core.tool_settings.read().await;
+        let limits = self.tools.core.context_limits.read().await;
+        let settings = self.tools.core.tool_settings.read().await;
         let cap = settings
             .get(tool_name)
             .or_else(|| {

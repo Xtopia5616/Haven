@@ -14,9 +14,12 @@ use haven_common::tools::{
     ToolPrompt, ToolSource,
 };
 
-/// Declarative specification for a model-facing operation view. The aggregate tool
-/// remains the execution implementation, while this record is the one source
-/// for the view's model schema and runtime policy metadata.
+/// The only authored definition of a model-facing operation.
+///
+/// Schema, presentation and policy live here. The registered
+/// [`OperationViewTool`] pairs this record with its handler. Catalog
+/// manifests and provider definitions are projections of this spec; they are
+/// not authored or converted from a sibling policy type.
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub(crate) struct OperationSpec {
@@ -44,16 +47,59 @@ pub(crate) enum OperationViewRiskRule {
 /// the smaller schema that the model needs for that operation. Native and
 /// model-facing callers therefore continue to share the same implementation.
 pub(crate) struct OperationViewTool {
-    inner: ToolBox,
+    handler: ToolBox,
     spec: OperationSpec,
     fixed: Map<String, Value>,
 }
 
+impl OperationSpec {
+    /// UI/IPC projection. Input-dependent risk rules use their conservative
+    /// upper bound here; execution still refines the same policy per call.
+    pub(crate) fn manifest(&self, schema: Value) -> ToolManifest {
+        let name = self.name.to_string();
+        let root = name.split('.').next().unwrap_or(&name).to_string();
+        let operation = name
+            .strip_prefix(&format!("{root}."))
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string);
+        let mut policy = self.policy.clone();
+        if self.risk_rule.is_some() {
+            if policy.risk_level < RiskLevel::Medium {
+                policy.risk_level = RiskLevel::Medium;
+            }
+            policy.confirmation = ConfirmationRequirement::SecurityPolicy;
+        }
+        crate::tool_contract::project_tool_manifest(
+            ToolIdentity {
+                source: ToolSource::Builtin,
+                catalog_group: self.catalog_group,
+                root: root.clone(),
+                operation,
+                stable_name: name.clone(),
+            },
+            ToolModel {
+                name,
+                description: self.description.to_string(),
+                input_schema: schema,
+            },
+            &policy,
+            self.presentation.clone(),
+            crate::tool_contract::default_root_presentation(&root, ToolSource::Builtin),
+            self.prompt.clone(),
+            ToolAvailability::default(),
+        )
+    }
+}
+
 impl OperationViewTool {
-    pub(crate) fn new(inner: ToolBox, mut spec: OperationSpec) -> Arc<Self> {
+    pub(crate) fn new(handler: ToolBox, mut spec: OperationSpec) -> Arc<Self> {
         annotate_schema(&mut spec);
         let fixed = Map::from_iter(spec.fixed.iter().cloned());
-        Arc::new(Self { inner, spec, fixed })
+        Arc::new(Self {
+            handler,
+            spec,
+            fixed,
+        })
     }
 
     fn routed_input(&self, input: &Value) -> Value {
@@ -269,15 +315,15 @@ impl Tool for OperationViewTool {
     }
 
     fn timeout_outcome(&self) -> ToolExecutionOutcome {
-        self.inner.timeout_outcome()
+        self.handler.timeout_outcome()
     }
 
     fn default_max_retries(&self) -> u32 {
-        self.inner.default_max_retries()
+        self.handler.default_max_retries()
     }
 
     fn default_retry_backoff_secs(&self) -> u64 {
-        self.inner.default_retry_backoff_secs()
+        self.handler.default_retry_backoff_secs()
     }
 
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
@@ -294,7 +340,9 @@ impl Tool for OperationViewTool {
                 ToolErrorMetadata::validation(),
             )));
         }
-        self.inner.execute(self.routed_input(&input), cancel).await
+        self.handler
+            .execute(self.routed_input(&input), cancel)
+            .await
     }
 
     fn input_schema(&self) -> Value {
@@ -319,27 +367,27 @@ impl Tool for OperationViewTool {
     }
 
     fn default_timeout_secs(&self) -> u64 {
-        self.inner.default_timeout_secs()
+        self.handler.default_timeout_secs()
     }
 
     fn timeout_secs_for(&self, input: &Value) -> u64 {
-        self.inner.timeout_secs_for(&self.routed_input(input))
+        self.handler.timeout_secs_for(&self.routed_input(input))
     }
 
     fn requires_session_id(&self) -> bool {
-        self.inner.requires_session_id()
+        self.handler.requires_session_id()
     }
 
     fn supports_live_output(&self) -> bool {
-        self.inner.supports_live_output()
+        self.handler.supports_live_output()
     }
 
     fn signals(&self, output: &Value) -> ToolSignals {
-        self.inner.signals(output)
+        self.handler.signals(output)
     }
 
     fn registrations(&self, output: &Value) -> Vec<ToolRegistration> {
-        self.inner.registrations(output)
+        self.handler.registrations(output)
     }
 
     fn authorization_input(&self, input: &Value) -> Value {
@@ -347,47 +395,7 @@ impl Tool for OperationViewTool {
     }
 
     fn tool_manifest(&self) -> ToolManifest {
-        let name = self.name();
-        let root = name.split('.').next().unwrap_or(&name).to_string();
-        let operation = name
-            .strip_prefix(&format!("{root}."))
-            .filter(|value| !value.is_empty())
-            .map(ToString::to_string);
-        // A manifest has no concrete input, so expose the conservative upper
-        // bound for input-dependent risk rules. Runtime calls still refine the
-        // same policy through `operation_policy(input)`.
-        let mut manifest_policy = self.spec.policy.clone();
-        if self.spec.risk_rule.is_some() {
-            if manifest_policy.risk_level < RiskLevel::Medium {
-                manifest_policy.risk_level = RiskLevel::Medium;
-            }
-            manifest_policy.confirmation = ConfirmationRequirement::SecurityPolicy;
-        }
-        ToolManifest {
-            identity: ToolIdentity {
-                source: ToolSource::Builtin,
-                catalog_group: self.spec.catalog_group,
-                root: root.clone(),
-                operation,
-                stable_name: name.clone(),
-            },
-            model: ToolModel {
-                name: name.clone(),
-                description: self.description(),
-                input_schema: self.input_schema(),
-            },
-            policy: manifest_policy.to_catalog_policy(),
-            presentation: self.spec.presentation.clone(),
-            root_presentation: crate::tool_contract::default_root_presentation(
-                &root,
-                ToolSource::Builtin,
-            ),
-            prompt: self.spec.prompt.clone(),
-            availability: ToolAvailability {
-                requires_permission: manifest_policy.risk_level >= RiskLevel::Medium,
-                ..ToolAvailability::default()
-            },
-        }
+        self.spec.manifest(self.input_schema())
     }
 }
 
@@ -485,7 +493,16 @@ mod tests {
         assert_eq!(manifest.identity.stable_name, "files.read");
         assert_eq!(manifest.presentation.renderer, "files");
         assert_eq!(manifest.presentation.label, "读取文件");
+        assert_eq!(manifest.policy.permission_key, "files.read");
+        assert_eq!(manifest.policy.effect, "read_only");
+        assert_eq!(manifest.policy.concurrency, "read_only");
+        assert_eq!(manifest.policy.data_sensitivity, "user_data");
+        assert_eq!(manifest.model.description, "Read text.");
         assert_eq!(manifest.root_presentation.label, "文件");
+        assert_eq!(
+            view.tool_manifest(),
+            view.spec.manifest(view.input_schema())
+        );
         assert!(def.json().get("manifest").is_none());
     }
 

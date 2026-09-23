@@ -89,9 +89,9 @@ pub struct ToolModel {
     pub input_schema: Value,
 }
 
-/// Catalog form of the operation policy. Runtime code uses the typed policy
-/// enums; this DTO deliberately remains provider-independent and stable over
-/// the Tauri/UI boundary.
+/// IPC projection of an operation policy. Runtime code does not author or
+/// match on this DTO; haven-tools builds it from the typed operation policy
+/// in one place. The shape stays stable over the Tauri/UI boundary.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolPolicy {
     pub risk_level: crate::types::RiskLevel,

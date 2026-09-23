@@ -47,21 +47,36 @@ pub fn new_memory_recall_slot() -> MemoryRecallSlot {
     Arc::new(OnceLock::new())
 }
 
-/// Dependencies that can change while the application is running.
+/// Immutable model, media and admin inputs for one catalog generation.
+///
+/// Hot updates replace this value as a whole. Readers keep the `Arc` they
+/// already loaded, so a rebuild cannot observe a router from one generation
+/// and a speech client from another.
+#[derive(Clone, Default)]
+pub(crate) struct PlatformRuntime {
+    pub(crate) router: Option<Arc<LlmRouter>>,
+    pub(crate) admin_context: Option<AdminContext>,
+    pub(crate) audio_pipeline: Option<Arc<haven_input::InputPipeline>>,
+    pub(crate) tts_client: Option<Arc<dyn haven_llm::TtsClient>>,
+    pub(crate) stt_client: Option<Arc<dyn haven_llm::SttClient>>,
+    pub(crate) ocr_client: Option<Arc<dyn haven_llm::OcrClient>>,
+    pub(crate) image_gen_client: Option<Arc<dyn haven_llm::ImageGenClient>>,
+    pub(crate) media_config: haven_common::config::MediaConfig,
+}
+
+/// Process services plus the swappable platform snapshot.
+///
+/// Action, asset, messaging and memory ports are created with the process.
+/// They are not optional bind slots. Platform clients change only by
+/// replacing [`PlatformRuntime`].
 pub(crate) struct ToolRuntime {
     pub(crate) managed_assets: ManagedAssetRegistry,
-    pub(crate) router: RwLock<Option<Arc<LlmRouter>>>,
+    platform: RwLock<Arc<PlatformRuntime>>,
     pub(crate) action_service: Arc<ActionService>,
     pub(crate) live_outputs: Arc<LiveOutputHub>,
-    pub(crate) admin_context: RwLock<Option<AdminContext>>,
+    /// Produced by catalog registration, not injected at startup.
     pub(crate) admin_surfaces: RwLock<Option<Arc<crate::builtin::AdminSurfaces>>>,
     pub(crate) clipboard_history: Arc<crate::builtin::clipboard::ClipboardHistory>,
-    pub(crate) audio_pipeline: RwLock<Option<Arc<haven_input::InputPipeline>>>,
-    pub(crate) tts_client: RwLock<Option<Arc<dyn haven_llm::TtsClient>>>,
-    pub(crate) stt_client: RwLock<Option<Arc<dyn haven_llm::SttClient>>>,
-    pub(crate) ocr_client: RwLock<Option<Arc<dyn haven_llm::OcrClient>>>,
-    pub(crate) image_gen_client: RwLock<Option<Arc<dyn haven_llm::ImageGenClient>>>,
-    pub(crate) media_config: RwLock<haven_common::config::MediaConfig>,
     pub(crate) messaging_service: Arc<MessagingService>,
     pub(crate) memory_recall: MemoryRecallSlot,
 }
@@ -70,21 +85,33 @@ impl ToolRuntime {
     pub(crate) fn new() -> Self {
         Self {
             managed_assets: ManagedAssetRegistry::default(),
-            router: RwLock::new(None),
+            platform: RwLock::new(Arc::new(PlatformRuntime::default())),
             action_service: Arc::new(ActionService::new()),
             live_outputs: Arc::new(LiveOutputHub::new()),
-            admin_context: RwLock::new(None),
             admin_surfaces: RwLock::new(None),
             clipboard_history: Arc::new(crate::builtin::clipboard::ClipboardHistory::new(50)),
-            audio_pipeline: RwLock::new(None),
-            tts_client: RwLock::new(None),
-            stt_client: RwLock::new(None),
-            ocr_client: RwLock::new(None),
-            image_gen_client: RwLock::new(None),
-            media_config: RwLock::new(haven_common::config::MediaConfig::default()),
             messaging_service: Arc::new(MessagingService::default_root()),
             memory_recall: new_memory_recall_slot(),
         }
+    }
+
+    pub(crate) async fn platform(&self) -> Arc<PlatformRuntime> {
+        self.platform.read().await.clone()
+    }
+
+    /// Replace every platform client together.
+    pub(crate) async fn replace_platform(&self, platform: PlatformRuntime) {
+        *self.platform.write().await = Arc::new(platform);
+    }
+
+    /// Build the next snapshot from the current one and publish it atomically.
+    pub(crate) async fn update_platform(
+        &self,
+        update: impl FnOnce(&PlatformRuntime) -> PlatformRuntime,
+    ) {
+        let mut slot = self.platform.write().await;
+        let next = update(slot.as_ref());
+        *slot = Arc::new(next);
     }
 
     pub(crate) fn bind_memory_recall(
@@ -150,5 +177,28 @@ mod tests {
         let slot = new_memory_recall_slot();
         assert!(slot.set(Arc::new(TestRecallPort)).is_ok());
         assert!(slot.set(Arc::new(TestRecallPort)).is_err());
+    }
+
+    #[tokio::test]
+    async fn platform_snapshot_replacement_keeps_the_previous_view() {
+        let runtime = ToolRuntime::new();
+        let before = runtime.platform().await;
+        assert_eq!(before.media_config.stt.timeout_secs, 30);
+        assert!(before.router.is_none());
+        assert!(before.tts_client.is_none());
+        runtime
+            .update_platform(|current| {
+                let mut next = current.clone();
+                next.media_config.stt.timeout_secs = 42;
+                next.media_config.ocr.timeout_secs = 7;
+                next
+            })
+            .await;
+        let after = runtime.platform().await;
+        assert_eq!(before.media_config.stt.timeout_secs, 30);
+        assert_eq!(before.media_config.ocr.timeout_secs, 20);
+        assert_eq!(after.media_config.stt.timeout_secs, 42);
+        assert_eq!(after.media_config.ocr.timeout_secs, 7);
+        assert!(!Arc::ptr_eq(&before, &after));
     }
 }
