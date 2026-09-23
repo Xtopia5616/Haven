@@ -474,6 +474,18 @@ pub struct ToolFunction {
     pub parameters: Value,
 }
 
+/// Borrowed input for one aggregated streaming request.
+///
+/// Cancellation and attempt callbacks are lifecycle controls supplied
+/// separately to the router; this DTO contains only the routed request data.
+#[derive(Debug, Clone, Copy)]
+pub struct StreamRequest<'a> {
+    pub request: RequestKind,
+    pub messages: &'a [CanonicalMessage],
+    pub tools: &'a [ToolDefinition],
+    pub max_output_tokens: Option<u32>,
+}
+
 /// One complete, non-streaming request routed through [`crate::LlmRouter`].
 /// Empty `tools` preserves the ordinary chat path; a non-empty list selects
 /// the provider's tool-capable path.

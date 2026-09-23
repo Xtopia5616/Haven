@@ -9,7 +9,7 @@ use super::event_boundary::RecoveryPersistenceResult;
 use super::*;
 use crate::types::media_inputs_from_events;
 use haven_common::config::RequestKind;
-use haven_llm::{LlmResponse, LlmRouter, StreamAttemptHooks, ToolDefinition};
+use haven_llm::{LlmResponse, LlmRouter, StreamAttemptHooks, StreamRequest, ToolDefinition};
 
 struct CheckpointRequest {
     session_id: String,
@@ -785,12 +785,14 @@ impl ReActEngine {
             .await;
         let result = router
             .chat_stream_with_tools_aggregated_cancellable_with_attempts(
-                request,
-                request_context.messages(),
-                tools,
+                StreamRequest {
+                    request,
+                    messages: request_context.messages(),
+                    tools,
+                    max_output_tokens: Some(max_output_tokens),
+                },
                 StreamAttemptHooks::new(on_chunk, on_attempt_start, replace_output_on_start),
                 cancel,
-                Some(max_output_tokens),
             )
             .await;
         let duration_ms = started.elapsed().as_millis() as u64;

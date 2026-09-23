@@ -17,7 +17,7 @@ use crate::stream_rules::{StreamRule, StreamRuleMatch, check_stream_rules};
 use crate::streaming;
 use crate::types::{
     CompleteRequest, Embedding, LlmConnectionReport, LlmConnectionStatus, LlmError, LlmResponse,
-    StreamChunk, ToolDefinition, Usage,
+    StreamChunk, StreamRequest, ToolDefinition, Usage,
 };
 use futures_util::future::join_all;
 use haven_common::config::{
@@ -1039,12 +1039,14 @@ impl LlmRouter {
         cancel: CancellationToken,
     ) -> Result<LlmResponse, LlmError> {
         self.chat_stream_with_tools_aggregated_cancellable_with_attempts(
-            request,
-            messages,
-            tools,
+            StreamRequest {
+                request,
+                messages,
+                tools,
+                max_output_tokens: None,
+            },
             StreamAttemptHooks::new(on_chunk, |_| {}, false),
             cancel,
-            None,
         )
         .await
     }
@@ -1059,24 +1061,18 @@ impl LlmRouter {
     /// non-agent callers.
     pub async fn chat_stream_with_tools_aggregated_cancellable_with_attempts(
         &self,
-        request: RequestKind,
-        messages: &[CanonicalMessage],
-        tools: &[ToolDefinition],
+        stream_request: StreamRequest<'_>,
         hooks: StreamAttemptHooks,
         cancel: CancellationToken,
-        max_output_tokens: Option<u32>,
     ) -> Result<LlmResponse, LlmError> {
-        let operation = self.with_request_permit(request, |model_id, _client| {
+        let operation = self.with_request_permit(stream_request.request, |model_id, _client| {
             let cancel = cancel.clone();
             async move {
                 self.chat_stream_with_tools_aggregated_cancellable_inner(
-                    request,
+                    stream_request,
                     model_id,
-                    messages,
-                    tools,
                     hooks,
                     cancel,
-                    max_output_tokens,
                 )
                 .await
             }
@@ -1140,17 +1136,19 @@ impl LlmRouter {
         .await
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn chat_stream_with_tools_aggregated_cancellable_inner(
         &self,
-        request: RequestKind,
+        stream_request: StreamRequest<'_>,
         model_id: String,
-        messages: &[CanonicalMessage],
-        tools: &[ToolDefinition],
         hooks: StreamAttemptHooks,
         cancel: CancellationToken,
-        max_output_tokens: Option<u32>,
     ) -> Result<LlmResponse, LlmError> {
+        let StreamRequest {
+            request,
+            messages,
+            tools,
+            max_output_tokens,
+        } = stream_request;
         tracing::debug!(
             "router streaming LLM call, request={:?} messages={} tools={}",
             request,
@@ -1627,6 +1625,155 @@ mod tests {
         async fn health_check(&self) -> Result<(), LlmError> {
             Ok(())
         }
+    }
+
+    struct StreamRequestProbe {
+        seen: std::sync::Mutex<Vec<serde_json::Value>>,
+        chunks: Vec<StreamChunk>,
+    }
+
+    #[async_trait]
+    impl LlmClient for StreamRequestProbe {
+        async fn chat(&self, _: Vec<CanonicalMessage>) -> Result<LlmResponse, LlmError> {
+            Err(Unknown("probe: chat not implemented".into()))
+        }
+
+        async fn chat_stream(
+            &self,
+            _: Vec<CanonicalMessage>,
+        ) -> Result<
+            Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+            LlmError,
+        > {
+            Err(Unknown("probe: raw chat_stream not implemented".into()))
+        }
+
+        async fn chat_stream_with_tools_output_cap_shared(
+            &self,
+            messages: Arc<[CanonicalMessage]>,
+            tools: Arc<[ToolDefinition]>,
+            max_output_tokens: Option<u32>,
+        ) -> Result<
+            Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+            LlmError,
+        > {
+            self.seen.lock().unwrap().push(serde_json::json!({
+                "messages": serde_json::to_value(messages.as_ref()).unwrap(),
+                "tools": serde_json::to_value(tools.as_ref()).unwrap(),
+                "max_output_tokens": max_output_tokens,
+            }));
+            Ok(Box::pin(stream::iter(
+                self.chunks.clone().into_iter().map(Ok),
+            )))
+        }
+
+        async fn health_check(&self) -> Result<(), LlmError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn stream_request_preserves_payload_for_plain_and_tool_aggregated_streams() {
+        let ordinary_message = llm_message(vec![ContentPart::text("ordinary prompt")]);
+        let mut tool_message = llm_message(vec![ContentPart::text("tool prompt")]);
+        tool_message.reasoning = Some("opaque reasoning context".into());
+        tool_message.tool_calls = Some(vec![CanonicalToolCall {
+            id: "call-1".into(),
+            name: "prior_tool".into(),
+            arguments: serde_json::json!({"arg": "value"}),
+        }]);
+        let ordinary_messages = vec![ordinary_message];
+        let tool_messages = vec![tool_message];
+        let tools = vec![ToolDefinition {
+            tool_type: "function".into(),
+            function: crate::types::ToolFunction {
+                name: "probe_tool".into(),
+                description: "preserve this definition".into(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {"value": {"type": "string"}}
+                }),
+            },
+        }];
+        let ordinary_probe = Arc::new(StreamRequestProbe {
+            seen: std::sync::Mutex::new(Vec::new()),
+            chunks: vec![StreamChunk {
+                text: Some("ordinary response".into()),
+                finish_reason: Some(FinishReason::Stop),
+                ..Default::default()
+            }],
+        });
+        let tool_probe = Arc::new(StreamRequestProbe {
+            seen: std::sync::Mutex::new(Vec::new()),
+            chunks: vec![StreamChunk {
+                tool_calls: vec![CanonicalToolCall {
+                    id: "result-call".into(),
+                    name: "probe_tool".into(),
+                    arguments: serde_json::json!({"value": "ok"}),
+                }],
+                finish_reason: Some(FinishReason::ToolCalls),
+                ..Default::default()
+            }],
+        });
+        let ordinary_client: Arc<dyn LlmClient> = ordinary_probe.clone();
+        let tool_client: Arc<dyn LlmClient> = tool_probe.clone();
+        let router = LlmRouter::new_with_clients(
+            ordinary_client.clone(),
+            ordinary_client.clone(),
+            tool_client,
+            ordinary_client,
+        );
+
+        let ordinary = router
+            .chat_stream_with_tools_aggregated_cancellable_with_attempts(
+                StreamRequest {
+                    request: RequestKind::Chat,
+                    messages: &ordinary_messages,
+                    tools: &[],
+                    max_output_tokens: Some(23),
+                },
+                StreamAttemptHooks::new(|_| {}, |_| {}, false),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let with_tools = router
+            .chat_stream_with_tools_aggregated_cancellable_with_attempts(
+                StreamRequest {
+                    request: RequestKind::Vision,
+                    messages: &tool_messages,
+                    tools: &tools,
+                    max_output_tokens: Some(41),
+                },
+                StreamAttemptHooks::new(|_| {}, |_| {}, false),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(ordinary.text, "ordinary response");
+        assert_eq!(ordinary.finish_reason, Some(FinishReason::Stop));
+        assert_eq!(with_tools.tool_calls.len(), 1);
+        assert_eq!(with_tools.tool_calls[0].name, "probe_tool");
+        assert_eq!(with_tools.finish_reason, Some(FinishReason::ToolCalls));
+        assert_eq!(
+            *ordinary_probe.seen.lock().unwrap(),
+            vec![serde_json::json!({
+                "messages": serde_json::to_value(&ordinary_messages).unwrap(),
+                "tools": serde_json::to_value(Vec::<ToolDefinition>::new()).unwrap(),
+                "max_output_tokens": 23,
+            })],
+            "the Chat request must route its borrowed message slice unchanged"
+        );
+        assert_eq!(
+            *tool_probe.seen.lock().unwrap(),
+            vec![serde_json::json!({
+                "messages": serde_json::to_value(&tool_messages).unwrap(),
+                "tools": serde_json::to_value(&tools).unwrap(),
+                "max_output_tokens": 41,
+            })],
+            "the Vision request must route tools, messages, and output cap unchanged"
+        );
     }
 
     #[test]
@@ -2945,7 +3092,9 @@ mod tests {
 
     #[tokio::test]
     async fn cancellable_chat_returns_cancelled_while_client_is_pending() {
-        struct PendingClient;
+        struct PendingClient {
+            stream_started: Arc<std::sync::atomic::AtomicBool>,
+        }
 
         #[async_trait]
         impl LlmClient for PendingClient {
@@ -2971,12 +3120,29 @@ mod tests {
                 std::future::pending().await
             }
 
+            async fn chat_stream_with_tools_output_cap_shared(
+                &self,
+                _: Arc<[CanonicalMessage]>,
+                _: Arc<[ToolDefinition]>,
+                _: Option<u32>,
+            ) -> Result<
+                Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+                LlmError,
+            > {
+                self.stream_started
+                    .store(true, std::sync::atomic::Ordering::Release);
+                std::future::pending().await
+            }
+
             async fn health_check(&self) -> Result<(), LlmError> {
                 Ok(())
             }
         }
 
-        let client: Arc<dyn LlmClient> = Arc::new(PendingClient);
+        let stream_started = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let client: Arc<dyn LlmClient> = Arc::new(PendingClient {
+            stream_started: stream_started.clone(),
+        });
         let router = Arc::new(LlmRouter::new_with_clients(
             client.clone(),
             client.clone(),
@@ -2994,6 +3160,38 @@ mod tests {
         tokio::task::yield_now().await;
         cancel.cancel();
         assert!(matches!(task.await.unwrap(), Err(LlmError::Cancelled)));
+
+        let stream_cancel = CancellationToken::new();
+        let task_cancel = stream_cancel.clone();
+        let task_router = router.clone();
+        let stream_task = tokio::spawn(async move {
+            let messages = Vec::new();
+            let tools = Vec::new();
+            task_router
+                .chat_stream_with_tools_aggregated_cancellable_with_attempts(
+                    StreamRequest {
+                        request: RequestKind::Chat,
+                        messages: &messages,
+                        tools: &tools,
+                        max_output_tokens: Some(64),
+                    },
+                    StreamAttemptHooks::new(|_| {}, |_| {}, false),
+                    task_cancel,
+                )
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !stream_started.load(std::sync::atomic::Ordering::Acquire) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the provider stream should start before cancellation");
+        stream_cancel.cancel();
+        assert!(matches!(
+            stream_task.await.unwrap(),
+            Err(LlmError::Cancelled)
+        ));
 
         // Cancellation wins even when the provider future is immediately ready.
         let ready_client = Arc::new(MockStreamClient {
