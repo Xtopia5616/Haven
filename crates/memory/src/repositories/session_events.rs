@@ -8,8 +8,10 @@
 
 use crate::Database;
 use crate::repositories::messages::{Message, now_rfc3339_millis, undelivered_recovery_since};
+use crate::repositories::sessions::Session;
 use crate::repositories::usage::{LlmCallUsage, LlmCallUsageInput};
 use chrono::{SecondsFormat, Utc};
+use haven_common::SessionStatus;
 use rusqlite::OptionalExtension;
 use std::sync::Arc;
 use std::time::Instant;
@@ -243,6 +245,30 @@ impl SessionStore {
     pub fn new(db: Arc<Database>) -> Self {
         let (live_tx, _) = tokio::sync::broadcast::channel(256);
         Self { db, live_tx }
+    }
+
+    /// Read a persisted session record by id for actor installation.
+    ///
+    /// A missing record remains `Ok(None)` so lifecycle callers can preserve
+    /// their existing not-found behavior.
+    pub fn session_record(&self, session_id: &str) -> anyhow::Result<Option<Session>> {
+        self.db.get_session(session_id)
+    }
+
+    /// Read every pending session for dispatcher recovery, newest first.
+    ///
+    /// This is the semantic equivalent of the unbounded pending-session query:
+    /// no text/date filters, `limit = -1`, and `offset = 0`. The generic search
+    /// surface remains an implementation detail of the Database repository.
+    pub fn pending_session_records(&self) -> anyhow::Result<Vec<Session>> {
+        self.db.search_sessions_filtered(
+            None,
+            Some(SessionStatus::Pending.as_str()),
+            None,
+            None,
+            -1,
+            0,
+        )
     }
 
     /// Subscribe to events committed through this store. Use
@@ -1747,6 +1773,58 @@ mod tests {
         let session = db.create_session("input").unwrap();
         let store = SessionEventStore::new(db.clone());
         (db, store, session.id)
+    }
+
+    #[test]
+    fn session_store_reads_session_records_and_preserves_missing_as_none() {
+        let (_db, store, session_id) = store();
+        assert_eq!(
+            store.session_record(&session_id).unwrap().unwrap().id,
+            session_id
+        );
+
+        let missing_session_id = haven_common::types::new_id("ses");
+
+        assert!(store.session_record(&missing_session_id).unwrap().is_none());
+    }
+
+    #[test]
+    fn session_store_lists_all_pending_records_newest_first_and_filters_other_states() {
+        let (db, store, oldest_id) = store();
+        let middle = db.create_session("middle").unwrap();
+        let newest = db.create_session("newest").unwrap();
+        let completed = db.create_session("completed").unwrap();
+        db.update_session_status(&completed.id, SessionStatus::Completed)
+            .unwrap();
+
+        let conn = db.conn();
+        for (session_id, created_at) in [
+            (&oldest_id, "2026-09-20T10:00:00.000Z"),
+            (&middle.id, "2026-09-21T10:00:00.000Z"),
+            (&newest.id, "2026-09-22T10:00:00.000Z"),
+            (&completed.id, "2026-09-23T10:00:00.000Z"),
+        ] {
+            conn.execute(
+                "UPDATE sessions SET created_at = ?1 WHERE id = ?2",
+                rusqlite::params![created_at, session_id],
+            )
+            .unwrap();
+        }
+        drop(conn);
+
+        let pending = store.pending_session_records().unwrap();
+        assert_eq!(
+            pending
+                .iter()
+                .map(|session| session.id.as_str())
+                .collect::<Vec<_>>(),
+            [newest.id.as_str(), middle.id.as_str(), oldest_id.as_str()]
+        );
+        assert!(
+            pending
+                .iter()
+                .all(|session| session.status == SessionStatus::Pending)
+        );
     }
 
     fn append_recovery_marker(store: &SessionEventStore, session_id: &str, phase: &str) {

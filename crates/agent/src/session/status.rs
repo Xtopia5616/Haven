@@ -602,8 +602,8 @@ impl SessionSupervisor {
             return Ok(());
         }
         let record = self
-            .db
-            .get_session(session_id)?
+            .store
+            .session_record(session_id)?
             .ok_or_else(|| anyhow::anyhow!("session '{}' not found in database", session_id))?;
         self.install_actor(SessionInfo::from_db_record(&record))
             .await;
@@ -613,9 +613,7 @@ impl SessionSupervisor {
     pub async fn load_pending_sessions(&self) -> anyhow::Result<usize> {
         let _lifecycle = self.lifecycle_guard().await;
         self.ensure_lifecycle_open()?;
-        let pending = self
-            .db
-            .search_sessions_filtered(None, Some("pending"), None, None, -1, 0)?;
+        let pending = self.store.pending_session_records()?;
         let mut loaded = 0;
         for record in pending {
             if self.is_session_closing(&record.id) {
