@@ -17,6 +17,14 @@ Router 和媒体客户端。这样会让一次应用混用不同版本，并且�
 3. 所有这些可失败的准备完成后，才发布 Agent/Tools Router 与媒体运行时，并继续按既有顺序应用 ContextLimits 等消费者。
 4. 准备失败时持久化配置保留新版本，live runtime 保持旧代；不引入补偿回滚。
 5. 这只是 settings/model 的窄边界，不宣称 Agent 与 Tools 的跨容器原子发布，也不自动覆盖 admin/MCP/Skills/logging 的其他写入入口。
+6. `update_settings` 在同一次 `ConfigService::edit` 中读取旧 hotkey 并调用 `AppConfig::apply_settings`。该 edit 返回的旧 hotkey、snapshot 和 change 共同构成这一轮运行时应用上下文；命令不再在 edit 前单独读取完整 snapshot，也不复制 `security.permissions` 到表单对象。permissions、`encrypt_sensitive` 和 Settings 不管理的配置段由 `apply_settings` 在 live config 上保护。
+7. edit 无变化时不返回运行时应用上下文，命令立即成功返回，不触发 runtime apply。旧 hotkey 因此来自同一把配置锁下、紧邻 Settings 合并之前的 live config。
+
+### Settings edit 的失败语义与范围
+
+`ConfigService::edit` 在闭包失败或持久化失败时恢复原内存配置；成功持久化后才递增版本并发布 `ConfigChanged`。运行时准备失败时，已保存的新配置和通知保留，Router/媒体 live runtime 保持旧代。准备成功后仍按命令当前顺序应用各消费者；Skills、日志或 hotkey 等后续步骤失败时，不回滚已完成的配置写入或较早的 runtime 更新。此细化只合并 Settings 事实读取与 patch，不改变这些阶段和半失败语义。
+
+这不是完整的 `RuntimeConfigCoordinator`：运行时副作用仍由 `update_settings` 编排；model 命令、其他配置写入口、跨容器原子发布和失败补偿策略均不在本决策范围。
 
 ## 替代方案
 
@@ -30,7 +38,7 @@ Router 和媒体客户端。这样会让一次应用混用不同版本，并且�
 准备和失败/并发测试；敏感配置只进入 sanitized error，不进入测试日志。
 
 验证：`cargo fmt --all -- --check`、`cargo test --locked -p haven-app-binary`、
-`cargo clippy --locked -p haven-app-binary -- -D warnings`。
+`cargo clippy --workspace --locked -- -D warnings`。
 
 ## 回滚
 

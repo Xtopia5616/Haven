@@ -54,6 +54,7 @@
 - Phase 6 首个请求对象切片：`CompleteRequest` 成为普通与 tools 完整请求的唯一 Router 入口；删除 Router chat 转发 API 并迁移仓库内调用点（ADR 0234）。
 - `3bc807d`：回滚目标先校验，SessionStore 在事务内解析消息/分支 projection boundary，过期 transcript cursor fail closed（补充 ADR 0207）。
 - `0321a61`：settings/model 共用配置应用串行边界，Router 与媒体依赖从同一 `ConfigSnapshot` 预构建，准备失败不修改 live runtime（ADR 0235）。
+- `update_settings` 的旧 hotkey 读取与 Settings 合并现由同一次 `ConfigService::edit` 完成；该 edit 返回运行时应用所用的旧 hotkey、snapshot 和 change。移除外层 snapshot 读取及 permissions 复制，no-op 仍在 runtime apply 前快返；`AppConfig::apply_settings` 继续保护 permissions、`encrypt_sensitive` 和表单不管理字段，运行时顺序与半失败语义不变（补充 ADR 0235）。完整 RuntimeConfigCoordinator 仍待后续阶段设计。
 - `9f45e46`：Action IPC wire DTO、状态值和可选字段加入静态漂移检查；不引入通用 codegen，性能诊断命令目录同步修正。
 - `40563f9`：删除聊天页重复的 active-session 错误清理 effect，错误迁移统一归 reducer（UI 706 项测试）。
 - `10b72fc`：后台 action 终态写入改为 first-wins CAS，completion outbox 只记录胜出事务；完整 Job 生命周期合并仍延期（ADR 0236）。
@@ -67,7 +68,7 @@
 - 当前切片：Tools 将 `RuntimeCapabilities.web_search` 从展示字符串改为 `WebSearchAvailability`，provider/MCP 能力判定与优先级留在 Tools，Agent 映射回逐字相同的三种 prompt 值（ADR 0244）。
 - 当前切片：历史错误原因缓存并入 `SessionReducer`，`sessionErrorStore` 函数保留为兼容委托；busy 清除时机、历史页 fallback 和删除/清空列表生命周期不变（ADR 0245）。
 
-当前阶段判断：阶段 1 的 mailbox/运行态收口已基本完成；阶段 2 已收口 rollback boundary、两类 resume 读取 port、session overlay 恢复边界，以及 continue 的 committed recovery marker 决策与 projection 截断事务，但全局恢复/事件重放和崩溃窗口仍待继续验证；阶段 3 已开始以 SessionStore typed read ports 替代局部 raw Database 读取，其他传播仍待收窄；阶段 4 已完成目录/观察/资产租约/overlay/定时授权入口边界及 runtime web-search typed capability；完整 ToolsManager 解耦仍需拆分；阶段 5 已完成 settings/model 的 snapshot prepare/apply 切片但尚未成为完整协调器；阶段 6 已完成 CompleteRequest、聚合 StreamRequest、EmbeddingRequest 与 HealthCheckRequest 请求对象切片，Router executor 拆分和 capability/call-purpose 语义分离仍待实施；阶段 7 已完成后台终态 CAS，完整 Job 生命周期与 MemoryRuntime durable replay 仍待设计；阶段 8 已完成 Action DTO 漂移检查和 UI 错误/usage/message 派生收口，其他 IPC/UI 编排仍待收口；阶段 9 已删除三个无调用者 facade API，剩余工作以 profiling 和更大范围公共面审查为主。
+当前阶段判断：阶段 1 的 mailbox/运行态收口已基本完成；阶段 2 已收口 rollback boundary、两类 resume 读取 port、session overlay 恢复边界，以及 continue 的 committed recovery marker 决策与 projection 截断事务，但全局恢复/事件重放和崩溃窗口仍待继续验证；阶段 3 已开始以 SessionStore typed read ports 替代局部 raw Database 读取，其他传播仍待收窄；阶段 4 已完成目录/观察/资产租约/overlay/定时授权入口边界及 runtime web-search typed capability；完整 ToolsManager 解耦仍需拆分；阶段 5 已完成 settings/model 的 snapshot prepare/apply 切片，并把 update_settings 的旧 hotkey 与 Settings patch 合并到同一配置 edit；完整 RuntimeConfigCoordinator 与其他写入口仍待设计；阶段 6 已完成 CompleteRequest、聚合 StreamRequest、EmbeddingRequest 与 HealthCheckRequest 请求对象切片，Router executor 拆分和 capability/call-purpose 语义分离仍待实施；阶段 7 已完成后台终态 CAS，完整 Job 生命周期与 MemoryRuntime durable replay 仍待设计；阶段 8 已完成 Action DTO 漂移检查和 UI 错误/usage/message 派生收口，其他 IPC/UI 编排仍待收口；阶段 9 已删除三个无调用者 facade API，剩余工作以 profiling 和更大范围公共面审查为主。
 
 ## 3. 不变量与禁止事项
 

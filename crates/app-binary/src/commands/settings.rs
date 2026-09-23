@@ -9,6 +9,32 @@ use tauri::Emitter;
 use tauri::Manager;
 use tauri::State;
 
+struct SettingsApplyContext {
+    old_hotkey: String,
+    snapshot: haven_common::config::ConfigSnapshot,
+    change: haven_common::config::ConfigChanged,
+}
+
+fn apply_settings_edit(
+    config_service: &haven_common::config::ConfigService,
+    settings: &haven_common::config::Settings,
+) -> anyhow::Result<Option<SettingsApplyContext>> {
+    let update = config_service.edit(|config| {
+        let old_hotkey = config.hotkey.key_binding.clone();
+        config.apply_settings(settings);
+        Ok(old_hotkey)
+    })?;
+
+    let Some(change) = update.change else {
+        return Ok(None);
+    };
+    Ok(Some(SettingsApplyContext {
+        old_hotkey: update.value,
+        snapshot: update.snapshot,
+        change,
+    }))
+}
+
 #[tauri::command]
 pub async fn get_settings(app: tauri::AppHandle) -> Result<haven_common::config::Settings, String> {
     let state = app.state::<Arc<AppState>>();
@@ -41,27 +67,16 @@ pub async fn update_settings(
     };
     let state = app.state::<Arc<AppState>>();
     let _apply_guard = state.config_apply_gate.lock().await;
-    let current_config = state
-        .config_service
-        .snapshot()
+    let Some(update) = apply_settings_edit(&state.config_service, &settings)
         .map_err(|e| log_err("update_settings", e))?
-        .config;
-    let old_hotkey = current_config.hotkey.key_binding.clone();
-    // Permission grants have their own revoke/reset lifecycle. The broad
-    // settings form does not own that list, so never let a stale form payload
-    // erase or replace it while saving an unrelated setting.
-    let mut settings = settings;
-    settings.security.permissions = current_config.security.permissions.clone();
-    let update = state
-        .config_service
-        .apply_patch(haven_common::config::ConfigPatch::Settings(Box::new(
-            settings,
-        )))
-        .map_err(|e| log_err("update_settings", e))?;
-    let Some(change) = update.change else {
+    else {
         return Ok(());
     };
-    let snapshot = update.snapshot;
+    let SettingsApplyContext {
+        old_hotkey,
+        snapshot,
+        change,
+    } = update;
     let config = &snapshot.config;
     let plan = RuntimeConfigApplyPlan::from_change(&change);
     tracing::debug!(
@@ -367,7 +382,20 @@ pub async fn is_autostart_enabled() -> Result<bool, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::ShellAvailability;
+    use super::{ShellAvailability, apply_settings_edit};
+    use haven_common::config::{
+        AppConfig, ConfigLoader, ConfigService, Settings, StoredPermission,
+    };
+    use haven_common::types::PermissionEffect;
+
+    fn config_service_with_config(config: AppConfig) -> (ConfigService, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let mut loader = ConfigLoader::load_from(&path).unwrap();
+        *loader.config_mut() = config;
+        loader.save().unwrap();
+        (ConfigService::new(loader), dir)
+    }
 
     #[test]
     fn shell_availability_has_a_named_stable_wire_shape() {
@@ -375,5 +403,45 @@ mod tests {
             serde_json::to_value(ShellAvailability { available: true }).unwrap(),
             serde_json::json!({"available": true})
         );
+    }
+
+    #[test]
+    fn settings_edit_captures_hotkey_and_preserves_live_security_state() {
+        let mut live_config = AppConfig::default();
+        let mut stale_settings = Settings::from(&live_config);
+        live_config.hotkey.key_binding = "Ctrl+Alt+O".into();
+        let live_permission = StoredPermission {
+            key: "files.read".into(),
+            effect: PermissionEffect::Allow,
+        };
+        live_config.security.permissions = vec![live_permission.clone()];
+        live_config.security.encrypt_sensitive = false;
+        stale_settings.hotkey.key_binding = "Ctrl+Alt+N".into();
+        let (service, _dir) = config_service_with_config(live_config);
+
+        let update = apply_settings_edit(&service, &stale_settings)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(update.old_hotkey, "Ctrl+Alt+O");
+        assert_eq!(update.snapshot.config.hotkey.key_binding, "Ctrl+Alt+N");
+        assert_eq!(
+            update.snapshot.config.security.permissions,
+            vec![live_permission]
+        );
+        assert!(!update.snapshot.config.security.encrypt_sensitive);
+    }
+
+    #[test]
+    fn no_op_settings_edit_returns_no_runtime_apply_context() {
+        let (service, _dir) = config_service_with_config(AppConfig::default());
+        let settings = service.settings().unwrap();
+        let receiver = service.subscribe().unwrap();
+
+        let update = apply_settings_edit(&service, &settings).unwrap();
+
+        assert!(update.is_none());
+        assert!(receiver.try_recv().is_err());
+        assert_eq!(service.snapshot().unwrap().version, 0);
     }
 }
