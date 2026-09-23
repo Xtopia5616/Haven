@@ -305,13 +305,17 @@ impl Database {
         log_path: Option<&str>,
         exit_code: Option<i32>,
         finished_at: &str,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<bool> {
+        anyhow::ensure!(
+            matches!(status, ActionStatus::Completed | ActionStatus::Failed),
+            "background action terminal status must be completed or failed"
+        );
         let conn = self.conn();
-        conn.execute(
+        let changed = conn.execute(
             "UPDATE actions
              SET status = ?2, output = ?3, error = ?4, error_reason = ?5,
                  log_path = ?6, exit_code = ?7, finished_at = ?8
-             WHERE id = ?1 AND kind = 'background'",
+             WHERE id = ?1 AND kind = 'background' AND status = 'running'",
             rusqlite::params![
                 id,
                 status.as_str(),
@@ -323,7 +327,21 @@ impl Database {
                 finished_at
             ],
         )?;
-        Ok(())
+        Ok(changed > 0)
+    }
+
+    /// Persist cancellation of a running background action. Cancellation has
+    /// no transcript completion outbox entry, but still competes with process
+    /// completion for the same single terminal transition.
+    pub fn cancel_background_action(&self, id: &str, finished_at: &str) -> anyhow::Result<bool> {
+        let conn = self.conn();
+        let changed = conn.execute(
+            "UPDATE actions
+             SET status = 'cancelled', finished_at = ?2
+             WHERE id = ?1 AND kind = 'background' AND status = 'running'",
+            rusqlite::params![id, finished_at],
+        )?;
+        Ok(changed > 0)
     }
 
     /// Finalize a background action and enqueue its agent completion in one
@@ -341,7 +359,7 @@ impl Database {
         exit_code: Option<i32>,
         finished_at: &str,
         status_json: &str,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<bool> {
         anyhow::ensure!(
             matches!(status, ActionStatus::Completed | ActionStatus::Failed),
             "background completion outbox only accepts completed or failed actions"
@@ -349,11 +367,11 @@ impl Database {
         let conn = self.conn();
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| {
-            conn.execute(
+            let changed = conn.execute(
                 "UPDATE actions
                  SET status = ?2, output = ?3, error = ?4, error_reason = ?5,
                      log_path = ?6, exit_code = ?7, finished_at = ?8
-                 WHERE id = ?1 AND kind = 'background'",
+                 WHERE id = ?1 AND kind = 'background' AND status = 'running'",
                 rusqlite::params![
                     id,
                     status.as_str(),
@@ -365,20 +383,23 @@ impl Database {
                     finished_at
                 ],
             )?;
+            if changed == 0 {
+                return Ok(false);
+            }
             conn.execute(
                 "INSERT OR IGNORE INTO action_completion_outbox
                      (action_id, action_result_id, session_id, status, status_json)
                  SELECT id, id, session_id, ?2, ?3
                  FROM actions
-                 WHERE id = ?1 AND kind = 'background'",
+                 WHERE id = ?1 AND kind = 'background' AND status = ?2",
                 rusqlite::params![id, status.as_str(), status_json],
             )?;
-            Ok::<_, anyhow::Error>(())
+            Ok::<_, anyhow::Error>(true)
         })();
         match result {
-            Ok(()) => {
+            Ok(changed) => {
                 conn.execute_batch("COMMIT")?;
-                Ok(())
+                Ok(changed)
             }
             Err(error) => {
                 let _ = conn.execute_batch("ROLLBACK");
@@ -642,6 +663,144 @@ mod tests {
 
         assert!(db.get_action("action-1").unwrap().is_some());
         assert!(db.get_action("nope").unwrap().is_none());
+    }
+
+    #[test]
+    fn background_action_terminal_writes_only_apply_once() {
+        let db = test_db();
+        for (id, first_status, late_status) in [
+            (
+                "action-completed",
+                ActionStatus::Completed,
+                ActionStatus::Failed,
+            ),
+            (
+                "action-failed",
+                ActionStatus::Failed,
+                ActionStatus::Completed,
+            ),
+            (
+                "action-cancelled",
+                ActionStatus::Cancelled,
+                ActionStatus::Failed,
+            ),
+        ] {
+            db.save_action(id, None, "echo lifecycle", "started")
+                .unwrap();
+            if first_status == ActionStatus::Cancelled {
+                assert!(db.cancel_background_action(id, "first finish").unwrap());
+            } else {
+                assert!(
+                    db.finish_action(
+                        id,
+                        first_status,
+                        Some("first output"),
+                        Some("first error"),
+                        Some("first reason"),
+                        None,
+                        Some(1),
+                        "first finish",
+                    )
+                    .unwrap()
+                );
+            }
+            let first = db.get_action(id).unwrap().unwrap();
+
+            assert!(
+                !db.finish_action(
+                    id,
+                    late_status,
+                    Some("late output"),
+                    Some("late error"),
+                    Some("late reason"),
+                    Some("late.log"),
+                    Some(2),
+                    "late finish",
+                )
+                .unwrap()
+            );
+            assert!(
+                !db.cancel_background_action(id, "late cancellation")
+                    .unwrap()
+            );
+
+            let after_late_write = db.get_action(id).unwrap().unwrap();
+            assert_eq!(after_late_write.status, first.status, "{id}");
+            assert_eq!(after_late_write.output, first.output, "{id}");
+            assert_eq!(after_late_write.error, first.error, "{id}");
+            assert_eq!(after_late_write.error_reason, first.error_reason, "{id}");
+            assert_eq!(after_late_write.log_path, first.log_path, "{id}");
+            assert_eq!(after_late_write.exit_code, first.exit_code, "{id}");
+            assert_eq!(after_late_write.finished_at, first.finished_at, "{id}");
+        }
+    }
+
+    #[test]
+    fn background_finish_rejects_cancelled_status() {
+        let db = test_db();
+        db.save_action("action-cancel-api", None, "echo cancel", "started")
+            .unwrap();
+
+        assert!(
+            db.finish_action(
+                "action-cancel-api",
+                ActionStatus::Cancelled,
+                None,
+                None,
+                None,
+                None,
+                None,
+                "finished",
+            )
+            .is_err()
+        );
+        assert!(
+            db.cancel_background_action("action-cancel-api", "finished")
+                .unwrap()
+        );
+        assert_eq!(
+            db.get_action("action-cancel-api").unwrap().unwrap().status,
+            ActionStatus::Cancelled
+        );
+    }
+
+    #[test]
+    fn late_completion_cannot_overwrite_restart_failure() {
+        let db = test_db();
+        db.save_action("action-restarted", Some("ses-1"), "echo restart", "started")
+            .unwrap();
+        assert_eq!(db.mark_interrupted_actions().unwrap(), 1);
+        let interrupted = db.get_action("action-restarted").unwrap().unwrap();
+
+        assert!(
+            !db.finish_action_with_completion(
+                "action-restarted",
+                ActionStatus::Completed,
+                Some("late output"),
+                None,
+                None,
+                None,
+                Some(0),
+                "late finish",
+                r#"{"action_id":"action-restarted","status":"completed","output":"late output"}"#,
+            )
+            .unwrap()
+        );
+
+        let after_late_completion = db.get_action("action-restarted").unwrap().unwrap();
+        assert_eq!(after_late_completion.status, ActionStatus::Failed);
+        assert_eq!(after_late_completion.error_reason, interrupted.error_reason);
+        assert_eq!(after_late_completion.finished_at, interrupted.finished_at);
+        assert!(after_late_completion.output.is_none());
+        let outbox_count: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM action_completion_outbox WHERE action_id = ?1",
+                ["action-restarted"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(outbox_count, 0);
     }
 
     #[test]

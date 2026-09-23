@@ -776,7 +776,7 @@ impl ActionService {
                 })
                 .await
             {
-                Ok(()) => {
+                Ok(_) => {
                     fallback_error = None;
                     break;
                 }
@@ -928,30 +928,23 @@ impl ActionService {
         let action_id_for_db = action_id.clone();
         let status_json = serde_json::to_string(status_json).unwrap_or_else(|_| "{}".into());
         if let Err(e) = db
-            .run_blocking(move |db| {
-                if matches!(status, ActionStatus::Completed | ActionStatus::Failed) {
-                    db.finish_action_with_completion(
-                        &action_id_for_db,
-                        status,
-                        output.as_deref(),
-                        error.as_deref(),
-                        error_reason.as_deref(),
-                        log_path.as_deref(),
-                        exit_code,
-                        &finished_at,
-                        &status_json,
-                    )
-                } else {
-                    db.finish_action(
-                        &action_id_for_db,
-                        status,
-                        output.as_deref(),
-                        error.as_deref(),
-                        error_reason.as_deref(),
-                        log_path.as_deref(),
-                        exit_code,
-                        &finished_at,
-                    )
+            .run_blocking(move |db| match status {
+                ActionStatus::Completed | ActionStatus::Failed => db.finish_action_with_completion(
+                    &action_id_for_db,
+                    status,
+                    output.as_deref(),
+                    error.as_deref(),
+                    error_reason.as_deref(),
+                    log_path.as_deref(),
+                    exit_code,
+                    &finished_at,
+                    &status_json,
+                ),
+                ActionStatus::Cancelled => {
+                    db.cancel_background_action(&action_id_for_db, &finished_at)
+                }
+                ActionStatus::Waiting | ActionStatus::Running => {
+                    anyhow::bail!("cannot persist non-terminal background action status")
                 }
             })
             .await

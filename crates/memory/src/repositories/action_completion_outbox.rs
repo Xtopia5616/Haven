@@ -241,4 +241,59 @@ mod tests {
         assert!(db.acknowledge_action_completion("act-outbox").unwrap());
         assert!(db.claim_action_completion().unwrap().is_none());
     }
+
+    #[test]
+    fn completion_snapshot_belongs_to_the_winning_terminal_transition() {
+        let db = Database::open_in_memory().unwrap();
+        db.save_action("act-cas", Some("ses-cas"), "echo winner", "started")
+            .unwrap();
+
+        assert!(db.finish_action_with_completion(
+            "act-cas",
+            ActionStatus::Completed,
+            Some("winning output"),
+            None,
+            None,
+            Some("winner.log"),
+            Some(0),
+            "winner finish",
+            r#"{"action_id":"act-cas","status":"completed","output":"winning output","finished_at":"winner finish"}"#,
+        )
+        .unwrap());
+        assert!(!db.finish_action_with_completion(
+            "act-cas",
+            ActionStatus::Failed,
+            None,
+            Some("late error"),
+            Some("late reason"),
+            Some("late.log"),
+            Some(1),
+            "late finish",
+            r#"{"action_id":"act-cas","status":"failed","error":"late error","finished_at":"late finish"}"#,
+        )
+        .unwrap());
+
+        let action = db.get_action("act-cas").unwrap().unwrap();
+        assert_eq!(action.status, ActionStatus::Completed);
+        assert_eq!(action.output.as_deref(), Some("winning output"));
+        assert_eq!(action.log_path.as_deref(), Some("winner.log"));
+        assert_eq!(action.finished_at.as_deref(), Some("winner finish"));
+
+        let completion = db.claim_action_completion().unwrap().unwrap();
+        assert_eq!(completion.status, action.status);
+        assert_eq!(
+            completion.session_id.as_deref(),
+            action.session_id.as_deref()
+        );
+        assert_eq!(completion.status_json["status"], action.status.as_str());
+        assert_eq!(
+            completion.status_json["output"],
+            action.output.as_deref().unwrap()
+        );
+        assert_eq!(
+            completion.status_json["finished_at"],
+            action.finished_at.as_deref().unwrap()
+        );
+        assert!(completion.status_json.get("error").is_none());
+    }
 }
