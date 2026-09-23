@@ -204,3 +204,4 @@
 - [0213：OperationSpec 是运行时策略与 manifest 的唯一来源](0213-operation-spec-single-policy-source.md)
 - [0214：一次 run 在 SessionActor 任务内执行](0214-react-run-inside-session-actor.md)
 - [0215：任务面板 hydration 使用 typed ActionView](0215-action-board-typed-view.md)
+- [0216：RuntimeConfigCoordinator 日志级别应用切片](0216-runtime-config-coordinator.md)

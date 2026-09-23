@@ -1,14 +1,15 @@
 use crate::app_state::AppState;
 use crate::commands::hot_swap_router;
 use crate::commands::log_err;
-use crate::config_runtime::{RuntimeConfigApplyPlan, RuntimeConfigTarget};
+use crate::config_runtime::{
+    RuntimeConfigApplyPlan, RuntimeConfigTarget, apply_log_level_to_handles,
+};
 use crate::events::{HOTKEY_REBIND_EVENT, HotkeyRebindEvent};
 use haven_llm::LlmRouter;
 use std::sync::Arc;
 use tauri::Emitter;
 use tauri::Manager;
 use tauri::State;
-use tracing_subscriber::filter::EnvFilter;
 
 #[tauri::command]
 pub async fn get_settings(app: tauri::AppHandle) -> Result<haven_common::config::Settings, String> {
@@ -174,14 +175,8 @@ pub async fn update_settings(
 
     // Propagate log level to tracing subscriber (console + file)
     if plan.contains(RuntimeConfigTarget::Logging) {
-        let level = config.log.level.as_str();
-        for handle in &state.log_filter_handles {
-            handle
-                .modify(|filter| {
-                    *filter = EnvFilter::new(format!("haven={}", level));
-                })
-                .map_err(|e| log_err("update_settings logging", e))?;
-        }
+        apply_log_level_to_handles(&state.log_filter_handles, &config.log.level)
+            .map_err(|e| log_err("update_settings logging", e))?;
     }
 
     // Propagate hotkey mode change (always)

@@ -1,3 +1,4 @@
+use crate::config_runtime::apply_log_level_to_handles;
 use crate::desktop::DesktopShell;
 use crate::events::AppBootstrapEvent;
 use crate::runtime::{ApplicationRuntime, RuntimeServices};
@@ -24,9 +25,7 @@ struct ReloadLogLevelPort {
 impl haven_tools::LogLevelPort for ReloadLogLevelPort {
     fn set_level(&self, level: &LogLevel) -> anyhow::Result<()> {
         for handle in &self.handles {
-            if let Err(error) = handle.modify(|filter| {
-                *filter = EnvFilter::new(format!("haven={}", level.as_str()));
-            }) {
+            if let Err(error) = apply_log_level_to_handles(std::slice::from_ref(handle), level) {
                 tracing::warn!(
                     error = %haven_common::error::sanitize_error_text(&error.to_string()),
                     "failed to apply runtime log level"

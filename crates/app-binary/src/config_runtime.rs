@@ -4,7 +4,27 @@
 //! stays in the application composition root because only the app knows which
 //! live components can be rebuilt and which settings require a restart.
 
-use haven_common::config::{ConfigChanged, ConfigDomain};
+use haven_common::config::{ConfigChanged, ConfigDomain, LogLevel};
+use tracing_subscriber::Registry;
+use tracing_subscriber::filter::EnvFilter;
+use tracing_subscriber::reload;
+
+/// Apply a configured log level to every reloadable application filter.
+///
+/// The first reload failure is returned to the caller. Callers that own a
+/// best-effort boundary can invoke this with one handle at a time and decide
+/// how to report each failure.
+pub(crate) fn apply_log_level_to_handles(
+    handles: &[reload::Handle<EnvFilter, Registry>],
+    level: &LogLevel,
+) -> anyhow::Result<()> {
+    for handle in handles {
+        handle.modify(|current| {
+            *current = EnvFilter::new(format!("haven={}", level.as_str()));
+        })?;
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RuntimeConfigTarget {
@@ -86,6 +106,7 @@ impl RuntimeConfigApplyPlan {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tracing_subscriber::reload;
 
     #[test]
     fn plan_deduplicates_targets_and_marks_restart_boundaries() {
@@ -111,5 +132,29 @@ mod tests {
         assert_eq!(plan.restart_required, vec![RuntimeConfigTarget::Skills]);
         assert!(plan.contains(RuntimeConfigTarget::LlmRouter));
         assert!(plan.contains(RuntimeConfigTarget::Skills));
+    }
+
+    #[test]
+    fn applies_log_level_to_every_reload_handle() {
+        let (_layer_one, handle_one): (
+            reload::Layer<EnvFilter, Registry>,
+            reload::Handle<EnvFilter, Registry>,
+        ) = reload::Layer::new(EnvFilter::new("haven=off"));
+        let (_layer_two, handle_two): (
+            reload::Layer<EnvFilter, Registry>,
+            reload::Handle<EnvFilter, Registry>,
+        ) = reload::Layer::new(EnvFilter::new("haven=error"));
+        let handles = vec![handle_one, handle_two];
+        let level = LogLevel::Debug;
+
+        apply_log_level_to_handles(&handles, &level).unwrap();
+
+        let expected = EnvFilter::new(format!("haven={}", level.as_str())).to_string();
+        for handle in &handles {
+            assert_eq!(
+                handle.with_current(|filter| filter.to_string()).unwrap(),
+                expected
+            );
+        }
     }
 }
