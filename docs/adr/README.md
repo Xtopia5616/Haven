@@ -216,3 +216,5 @@
 - [0225：Agent ToolObservationPort 观察文本边界](0225-tool-observation-port.md)
 - [0226：Agent context limits 单一运行时 owner](0226-agent-context-limits-single-owner.md)
 - [0227：扁平化 SessionActor messaging 状态](0227-session-state-flatten-runtime.md)
+- [0228：删除 LLM router chat 转发别名](0228-llm-chat-alias-removal.md)
+- [0229：定时任务状态事实去重](0229-scheduled-action-state-dedup.md)
