@@ -869,22 +869,6 @@ impl LlmRouter {
             .await
     }
 
-    pub async fn chat_with_prompt_output_cap(
-        &self,
-        request: RequestKind,
-        system: &str,
-        user: &str,
-        max_output_tokens: Option<u32>,
-    ) -> Result<LlmResponse, LlmError> {
-        self.complete(Self::prompt_request(
-            request,
-            system,
-            user,
-            max_output_tokens,
-        ))
-        .await
-    }
-
     /// Cancellable one-shot chat used by compaction and other maintenance
     /// calls. Dropping the in-flight request releases the provider future as
     /// soon as the user cancels the owning session.

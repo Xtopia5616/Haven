@@ -13,7 +13,7 @@ Router 已将普通 chat 和工具 chat 收敛到同一 permit、retry、timeout
 1. 在 `haven-llm` 定义并导出 `CompleteRequest`，集中承载 `RequestKind`、canonical messages、tools 和可选 `max_output_tokens`。
 2. `LlmRouter::complete(CompleteRequest)` 是唯一非流式 chat/tool Router 请求入口。删除 `chat_request`、`chat_request_with_output_cap`、`chat_with_tools` 与 `chat_with_tools_output_cap`；不保留兼容别名。
 3. `tools` 为空时继续调用 provider 的普通 chat output-cap 方法；`tools` 非空时继续调用 tools output-cap 方法。DTO 不改变调用策略或 provider wire 行为。
-4. `chat_with_prompt`、`chat_with_prompt_output_cap` 和 `chat_messages_cancellable` 保留为有语义 helper，并直接构造 `CompleteRequest`。取消仍使用 biased select，使取消在同时就绪时优先，并在取消后丢弃正在执行的 provider future。
+4. `chat_with_prompt` 和 `chat_messages_cancellable` 保留为有语义 helper，并直接构造 `CompleteRequest`。此前保留的 `chat_with_prompt_output_cap` 后因无仓库调用者而由 ADR 0250 删除；输出上限仍由 `CompleteRequest::max_output_tokens` 表达。取消仍使用 biased select，使取消在同时就绪时优先，并在取消后丢弃正在执行的 provider future。
 5. 每个完整请求仍先通过已有路由、capability、permit 和 circuit gate，再于 permit 内读取一次 retry/total-timeout 策略快照；输出 cap 原样传递，retry、timeout、health 和 usage 仍沿用既有管线。
 6. 迁移 vision 与 file-summary 调用点及所有仓库内 Router 完整请求调用。`LlmClient` 和 provider adapter 的 chat 方法仅作为下层 provider 执行契约保留，不属于 Router 兼容入口。
 7. 本切片不拆 `Capability` / `CallPurpose` / `RequestPolicy`，不重写 request pipeline 的策略类型，不改 stream、embedding、health API、provider adapter、wire fixture 或 usage 持久化。

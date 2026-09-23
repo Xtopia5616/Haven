@@ -238,3 +238,4 @@
 - [0247：MemoryWorker 使用窄推理端口](0247-memory-worker-inference-port.md)
 - [0248：后台 action 终态提交与运行态发布顺序](0248-background-action-terminal-commit-order.md)
 - [0249：SessionStore 会话记录读取端口](0249-session-store-session-record-reads.md)
+- [0250：删除无调用的 prompt output-cap wrapper](0250-remove-unused-prompt-output-cap-wrapper.md)
