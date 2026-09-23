@@ -221,3 +221,4 @@
 - [0230：ContextLimits 路由刷新与应用顺序](0230-context-limits-router-refresh-order.md)
 - [0231：工具 Usage 批量写入归属 UsageRuntime](0231-tool-usage-write-runtime-boundary.md)
 - [0232：Memory vector-space identity 唯一解析边界](0232-memory-vector-space-identity-owner.md)
+- [0233：会话托管媒体资产租约端口](0233-session-managed-asset-lease-port.md)

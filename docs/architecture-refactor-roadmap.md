@@ -50,6 +50,7 @@
 - `fc2662b`、`322c231`：ContextLimits 刷新同时覆盖 Router 且在 Router 成功后应用其他消费者；工具 Usage 批量写入归属 `UsageRuntime`（ADR 0230–0231）。
 - `2b9844d`：UI 页面直接派生 active session 的 token stats/LLM usage，删除 usage 镜像与同步 effect；ReActEngine 剩余 Database 依赖经审查后暂缓统一封装，因为读取、事件权威写入、transcript 投影和记忆副作用仍是不同事务边界。
 - `95189fa`、`d7dd2e3`：MemoryEmbeddingIndex 成为 embedding vector-space identity 的唯一解析者；ActionService 接管 App action 历史读取，命令不再直接读取 raw Database（ADR 0232；ADR 0215 边界补充）。
+- `cfa080b`：会话恢复、初始输入和清理路径通过 `ManagedAssetLeasePort` 管理媒体资产租约，工具 session overlay 注销保持独立（ADR 0233）。
 
 当前阶段判断：阶段 1 的 mailbox/运行态收口已基本完成，阶段 2–3 仍需继续验证恢复与 storage port 的全局边界；阶段 4 已完成目录/观察读取的切片，执行/授权必须作为一个安全边界继续审查；阶段 5 已完成 ContextLimits/Router 的一致性切片但尚未成为完整协调器；阶段 6–9 尚未完成。
 
