@@ -100,6 +100,27 @@ pub struct ProjectionCutoff {
     pub inclusive: bool,
 }
 
+/// Describes how a rollback's materialized projection boundary is resolved.
+/// The SessionStore resolves either boundary inside the rollback transaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RollbackProjectionBoundary {
+    /// Remove the selected message and all projection rows at or after it.
+    UserMessage { message_id: String },
+    /// Use the active branch point's exclusive message cutoff. When no branch
+    /// point exists, retain the legacy snapshot fallback at the latest user
+    /// message timestamp.
+    BranchPoint,
+}
+
+/// The durable and projection boundary captured by the Agent before rollback.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RollbackRequest {
+    pub expected_event_sequence: i64,
+    pub transcript_cursor: usize,
+    pub target_step: u32,
+    pub projection_boundary: RollbackProjectionBoundary,
+}
+
 #[derive(Debug, Clone)]
 pub struct RollbackResult {
     pub marker: SessionEvent,
@@ -620,14 +641,15 @@ impl SessionStore {
     /// Roll back one session timeline and all of its materialized projections
     /// in one SQLite transaction. `transcript_cursor` is an index into the
     /// active transcript returned by [`Self::load_replay_state`]; this method
-    /// resolves the corresponding append-only event sequence internally.
+    /// resolves the corresponding append-only event sequence internally and
+    /// fails if the event high-water changed or the cursor is outside the
+    /// active transcript. The projection boundary is resolved from the same
+    /// transaction snapshot.
     /// Discarded event history is retained for audit.
     pub fn rollback_to(
         &self,
         session_id: &str,
-        transcript_cursor: usize,
-        target_step: u32,
-        projection_cutoff: Option<&ProjectionCutoff>,
+        request: &RollbackRequest,
         replacement_transcript: &[SessionEventInput],
         run_id: Option<u64>,
     ) -> anyhow::Result<RollbackResult> {
@@ -636,26 +658,87 @@ impl SessionStore {
         let conn = self.db.conn();
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<RollbackResult> {
-            let to_sequence = Self::read_active_branch_points_in_connection(&conn, session_id)?
-                .into_iter()
-                .find(|(_, cursor, step, _)| *step == target_step && *cursor == transcript_cursor)
-                .map(|(event, _, _, _)| event.sequence)
-                .unwrap_or(Self::sequence_for_transcript_cursor_in_connection(
-                    &conn,
-                    session_id,
-                    transcript_cursor,
-                )?);
+            let current_event_sequence: i64 = conn.query_row(
+                "SELECT COALESCE(MAX(sequence), 0) FROM session_events WHERE session_id = ?1",
+                rusqlite::params![session_id],
+                |row| row.get(0),
+            )?;
+            anyhow::ensure!(
+                current_event_sequence == request.expected_event_sequence,
+                "session event boundary changed during rollback (expected {}, found {})",
+                request.expected_event_sequence,
+                current_event_sequence
+            );
+            let branch_points = Self::read_active_branch_points_in_connection(&conn, session_id)?;
+            let mapped_sequence = Self::sequence_for_transcript_cursor_in_connection(
+                &conn,
+                session_id,
+                request.transcript_cursor,
+            )?;
+            let to_sequence = branch_points
+                .iter()
+                .find(|(_, cursor, step, _)| {
+                    *step == request.target_step && *cursor == request.transcript_cursor
+                })
+                .map_or(mapped_sequence, |(event, _, _, _)| event.sequence);
+            let projection_cutoff = match &request.projection_boundary {
+                RollbackProjectionBoundary::UserMessage { message_id } => {
+                    let created_at = conn
+                        .query_row(
+                            "SELECT created_at FROM messages
+                             WHERE session_id = ?1 AND id = ?2",
+                            rusqlite::params![session_id, message_id],
+                            |row| row.get::<_, String>(0),
+                        )
+                        .optional()?
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "rollback target message '{}' not found in session messages",
+                                message_id
+                            )
+                        })?;
+                    Some(ProjectionCutoff {
+                        created_at,
+                        inclusive: true,
+                    })
+                }
+                RollbackProjectionBoundary::BranchPoint => {
+                    match branch_points
+                        .iter()
+                        .find(|(_, _, step, _)| *step == request.target_step)
+                    {
+                        Some((_, _, _, Some(created_at))) => Some(ProjectionCutoff {
+                            created_at: created_at.clone(),
+                            inclusive: false,
+                        }),
+                        Some((_, _, _, None)) => None,
+                        None => conn
+                            .query_row(
+                                "SELECT created_at FROM messages
+                                 WHERE session_id = ?1 AND role = 'user'
+                                 ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                                rusqlite::params![session_id],
+                                |row| row.get::<_, String>(0),
+                            )
+                            .optional()?
+                            .map(|created_at| ProjectionCutoff {
+                                created_at,
+                                inclusive: false,
+                            }),
+                    }
+                }
+            };
             let payload = serde_json::json!({
                 "to_sequence": to_sequence,
-                "target_step": target_step,
+                "target_step": request.target_step,
             });
             let input = SessionEventInput {
                 event_type: TIMELINE_ROLLBACK_EVENT_TYPE.into(),
                 payload: payload.to_string(),
                 run_id,
-                step_number: Some(target_step),
+                step_number: Some(request.target_step),
             };
-            if let Some(cutoff) = projection_cutoff {
+            if let Some(cutoff) = projection_cutoff.as_ref() {
                 Self::truncate_session_projections_in_transaction(
                     &conn,
                     session_id,
@@ -683,9 +766,7 @@ impl SessionStore {
         match result {
             Ok(result) => {
                 conn.execute_batch("COMMIT")?;
-                if projection_cutoff.is_some() {
-                    self.db.cache_invalidate_messages(session_id);
-                }
+                self.db.cache_invalidate_messages(session_id);
                 let _ = self.live_tx.send(result.marker.clone());
                 for event in &result.replacement_events {
                     let _ = self.live_tx.send(event.clone());
@@ -1316,16 +1397,20 @@ impl SessionStore {
         transcript_cursor: usize,
     ) -> anyhow::Result<i64> {
         let events = Self::read_active_in_connection(conn, session_id)?;
-        Ok(transcript_cursor
-            .checked_sub(1)
-            .and_then(|index| {
-                events
-                    .iter()
-                    .filter(|event| event.event_type == TRANSCRIPT_EVENT_TYPE)
-                    .nth(index)
-                    .map(|event| event.sequence)
+        if transcript_cursor == 0 {
+            return Ok(0);
+        }
+        events
+            .iter()
+            .filter(|event| event.event_type == TRANSCRIPT_EVENT_TYPE)
+            .nth(transcript_cursor - 1)
+            .map(|event| event.sequence)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "transcript cursor {} is outside the active session timeline",
+                    transcript_cursor
+                )
             })
-            .unwrap_or(0))
     }
 
     /// Seed an event stream exactly once when importing a snapshot cache.  A
@@ -1545,6 +1630,20 @@ mod tests {
         (db, store, session.id)
     }
 
+    fn rollback_request(
+        expected_event_sequence: i64,
+        transcript_cursor: usize,
+        target_step: u32,
+        projection_boundary: RollbackProjectionBoundary,
+    ) -> RollbackRequest {
+        RollbackRequest {
+            expected_event_sequence,
+            transcript_cursor,
+            target_step,
+            projection_boundary,
+        }
+    }
+
     #[test]
     fn appends_monotonic_sequences_and_reads_after_cursor() {
         let (_db, store, session_id) = store();
@@ -1571,9 +1670,7 @@ mod tests {
         let rollback = store
             .rollback_to(
                 &session_id,
-                1,
-                2,
-                None,
+                &rollback_request(2, 1, 2, RollbackProjectionBoundary::BranchPoint),
                 &[SessionEventInput::transcript(
                     r#"{"type":"replacement"}"#,
                     2,
@@ -1639,15 +1736,21 @@ mod tests {
         let payload: LlmCallUsage = serde_json::from_str(&active_usage_event.payload).unwrap();
         assert_eq!(payload.id, first_usage.id);
 
+        let expected_event_sequence = store
+            .load_replay_state(&session_id)
+            .unwrap()
+            .unwrap()
+            .cursor
+            .event_sequence;
         store
             .rollback_to(
                 &session_id,
-                1,
-                2,
-                Some(&ProjectionCutoff {
-                    created_at: cutoff,
-                    inclusive: false,
-                }),
+                &rollback_request(
+                    expected_event_sequence,
+                    1,
+                    2,
+                    RollbackProjectionBoundary::BranchPoint,
+                ),
                 &[],
                 None,
             )
@@ -1670,6 +1773,100 @@ mod tests {
             store.read_active_domain_events(&session_id).unwrap().len(),
             2
         );
+    }
+
+    #[test]
+    fn rollback_rejects_unmappable_transcript_cursor_without_writes() {
+        let (_db, store, session_id) = store();
+        store
+            .append_transcript(&session_id, r#"{"type":"one"}"#, 1, 1)
+            .unwrap();
+        store
+            .append_transcript(&session_id, r#"{"type":"two"}"#, 1, 2)
+            .unwrap();
+
+        let result = store.rollback_to(
+            &session_id,
+            &rollback_request(2, 3, 2, RollbackProjectionBoundary::BranchPoint),
+            &[],
+            None,
+        );
+
+        assert!(result.is_err());
+        assert_eq!(store.read_all(&session_id).unwrap().len(), 2);
+        assert_eq!(store.read_active_transcript(&session_id).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn rollback_rejects_stale_event_boundary_even_when_cursor_still_maps() {
+        let (_db, store, session_id) = store();
+        store
+            .append_transcript(&session_id, r#"{"type":"one"}"#, 1, 1)
+            .unwrap();
+        store
+            .append_transcript(&session_id, r#"{"type":"two"}"#, 1, 2)
+            .unwrap();
+        let expected_event_sequence = store
+            .load_replay_state(&session_id)
+            .unwrap()
+            .unwrap()
+            .cursor
+            .event_sequence;
+        store
+            .append_transcript(&session_id, r#"{"type":"three"}"#, 1, 3)
+            .unwrap();
+
+        let result = store.rollback_to(
+            &session_id,
+            &rollback_request(
+                expected_event_sequence,
+                1,
+                1,
+                RollbackProjectionBoundary::BranchPoint,
+            ),
+            &[],
+            None,
+        );
+
+        assert!(result.is_err());
+        assert_eq!(store.read_all(&session_id).unwrap().len(), 3);
+        assert_eq!(store.read_active_transcript(&session_id).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn rollback_revalidates_target_message_inside_transaction() {
+        let (db, store, session_id) = store();
+        store
+            .append_transcript(&session_id, r#"{"type":"one"}"#, 1, 1)
+            .unwrap();
+        let message = db
+            .add_message(&session_id, "user", "keep", Some("text"), None)
+            .unwrap();
+        let other_session = db.create_session("other session").unwrap();
+        let foreign_message = db
+            .add_message(&other_session.id, "user", "foreign", Some("text"), None)
+            .unwrap();
+
+        let result = store.rollback_to(
+            &session_id,
+            &rollback_request(
+                1,
+                1,
+                1,
+                RollbackProjectionBoundary::UserMessage {
+                    message_id: foreign_message.id,
+                },
+            ),
+            &[],
+            None,
+        );
+
+        assert!(result.is_err());
+        assert_eq!(
+            db.get_session_messages(&session_id).unwrap()[0].id,
+            message.id
+        );
+        assert_eq!(store.read_all(&session_id).unwrap().len(), 1);
     }
 
     #[test]

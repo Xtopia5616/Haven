@@ -13,7 +13,7 @@ use crate::resume_support::infer_resume_step;
 use crate::rollback_support::truncate_at_user_message;
 use crate::session::SessionStatus;
 use crate::types::{BranchPoint, TranscriptRecord, project_transcript_with_strategy};
-use haven_memory::ProjectionCutoff;
+use haven_memory::{RollbackProjectionBoundary, RollbackRequest};
 
 impl AgentLayer {
     /// Roll back a session to a specific branch point. The session is rewound
@@ -36,6 +36,36 @@ impl AgentLayer {
         pause: bool,
         target_message_id: Option<&str>,
     ) -> anyhow::Result<()> {
+        // Validate the exact requested row before lifecycle handling can
+        // cancel actions, clear interactions, or otherwise change session
+        // state. The store repeats this lookup in its rollback transaction.
+        let target_msg = match target_message_id {
+            Some(message_id) => {
+                let db = self.db.clone();
+                let session_id = session_id.to_string();
+                let message_id = message_id.to_string();
+                Some(
+                    db.run_blocking(move |db| {
+                        db.get_message_by_id(&session_id, &message_id)?
+                            .ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "rollback target message '{}' not found in session messages",
+                                    message_id
+                                )
+                            })
+                    })
+                    .await?,
+                )
+            }
+            None if pause => {
+                return Err(anyhow::anyhow!(
+                    "rollback_session {}: pause=true requires target_message_id",
+                    session_id
+                ));
+            }
+            None => None,
+        };
+
         let state = self.executor.get_active_session_status(session_id).await;
         let run_in_flight = self.executor.is_run_in_flight(session_id).await;
         let window = LifecycleWindow::classify(state.as_ref(), run_in_flight);
@@ -123,20 +153,10 @@ impl AgentLayer {
                 target_step,
                 infer_resume_step(&replay.events)
             );
-            // Determine the cutoff timestamp from session messages: the last
-            // user message for user-rollback (pause=true), or the last user
-            // message for agent-rollback too (delete the partial output after
-            // it).
-            let store = self.react_engine.event_store.clone();
-            let sid = session_id.to_string();
-            let cutoff_ts = self
-                .db
-                .run_blocking(move |_| store.last_user_message_at(&sid))
-                .await?;
             BranchPoint {
                 event_cursor: replay.events.len(),
                 step_number: target_step,
-                last_msg_at: cutoff_ts,
+                last_msg_at: None,
             }
         };
 
@@ -176,33 +196,12 @@ impl AgentLayer {
         // Such a message was never added to the ReAct events, so rolling
         // back to it must discard ONLY that message — deleting from the
         // branch point's cutoff would wipe valid earlier history.
-        let db = self.db.clone();
-        let sid = session_id.to_string();
-        let session_msgs = db
-            .run_blocking(move |db| db.get_session_messages(&sid))
-            .await?;
         // User-message rollback (pause=true) needs the EXACT clicked
         // message. The old fallbacks — matching by content when the id
         // missed, or guessing the newest user message — could delete the
-        // wrong message, so an unresolvable id is now an error instead.
+        // wrong message, so an unresolvable id is rejected before any
+        // lifecycle mutation.
         // Step rollbacks (pause=false) need no message id at all.
-        let target_msg = if pause {
-            let id = target_message_id.ok_or_else(|| {
-                anyhow::anyhow!(
-                    "rollback_session {}: pause=true requires target_message_id",
-                    session_id
-                )
-            })?;
-            Some(session_msgs.iter().find(|m| m.id == id).cloned().ok_or_else(|| {
-                anyhow::anyhow!(
-                    "rollback_session {}: target message '{}' not found in session messages",
-                    session_id,
-                    id
-                )
-            })?)
-        } else {
-            None
-        };
         let is_orphan_rollback = target_msg.as_ref().is_some_and(|m| {
             m.role == "user"
                 && max_bp_ts
@@ -256,16 +255,16 @@ impl AgentLayer {
         // timeline marker below. User-message rollback is inclusive so the
         // clicked message itself is removed; step rollback keeps the branch
         // cutoff and removes only newer projection rows.
-        let projection_cutoff = if pause {
-            target_msg.as_ref().map(|message| ProjectionCutoff {
-                created_at: message.created_at.clone(),
-                inclusive: true,
-            })
+        let projection_boundary = if pause {
+            RollbackProjectionBoundary::UserMessage {
+                message_id: target_msg
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("rollback target message is missing"))?
+                    .id
+                    .clone(),
+            }
         } else {
-            bp.last_msg_at.clone().map(|created_at| ProjectionCutoff {
-                created_at,
-                inclusive: false,
-            })
+            RollbackProjectionBoundary::BranchPoint
         };
 
         // A compact summary is itself the active transcript root. Removing a
@@ -288,16 +287,15 @@ impl AgentLayer {
         let event_store = self.react_engine.event_store.clone();
         let sid = session_id.to_string();
         let event_cursor = replay.events.len();
+        let rollback_request = RollbackRequest {
+            expected_event_sequence: replay.cursor.event_sequence,
+            transcript_cursor: event_cursor,
+            target_step,
+            projection_boundary,
+        };
         self.db
             .run_blocking(move |_| {
-                event_store.rollback_to(
-                    &sid,
-                    event_cursor,
-                    target_step,
-                    projection_cutoff.as_ref(),
-                    &replacement_transcript,
-                    None,
-                )?;
+                event_store.rollback_to(&sid, &rollback_request, &replacement_transcript, None)?;
                 Ok(())
             })
             .await?;

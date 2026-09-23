@@ -865,6 +865,27 @@ async fn rollback_ask_wait_pause_true_leaves_plain_paused() {
     );
     let snap = load_event_projection(&agent, &session.id).await;
     let target_step = snap.step_number.max(1);
+    let err = agent
+        .rollback_session(&session.id, target_step, true, Some("msg-not-in-session"))
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("not found in session messages"));
+    assert_eq!(
+        executor.get_active_session_status(&session.id).await,
+        Some(SessionStatus::Paused),
+        "invalid target must leave the session status unchanged"
+    );
+    assert!(
+        executor.is_ask_gated(&session.id).await,
+        "invalid target must leave the ask gate intact"
+    );
+    assert!(
+        executor
+            .has_pending_interaction(&session.id, InteractionKind::Ask)
+            .await,
+        "invalid target must leave the pending ask interaction intact"
+    );
+
     agent
         .rollback_session(&session.id, target_step, true, Some(&user.id))
         .await

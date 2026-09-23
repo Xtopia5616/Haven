@@ -21,9 +21,12 @@ Transcript 写入已经由 `SessionStore` 在 SQLite 事务内完成，但 UI �
   transcript、active branch points 和 `SessionCursor`。Agent 的恢复路径只从
   这个聚合结果重建状态。
 - `SessionStore::rollback_to` 接收 transcript cursor、目标 step 和 projection
-  cutoff，在一个 `BEGIN IMMEDIATE` 事务内解析 active timeline、截断 projection、
+  boundary 意图，在一个 `BEGIN IMMEDIATE` 事务内重新解析 active timeline 与
+  branch point，并解析目标消息或 branch point 的 projection cutoff。event
+  high-water 若已变化、transcript cursor 无法映射，或目标消息不属于该 session，
+  都会 fail closed，不追加 marker、不截断 projection。事务内截断 projection、
   追加 `timeline_rollback`，并可追加压缩摘要替换根；提交后按 durable sequence
-  广播事件。Agent 不再直接解析 branch payload 或调用 projection truncate。
+  广播事件。Agent 不再直接解析 branch payload 或决定 projection 时间戳。
 - Transcript 投影只有在事务提交成功后才构造 UI 事件；Action、Observation、
   Supplement、MediaPlan、Compaction 携带对应 `session_events.sequence`。Tauri
   不再生成进程级 durable event sequence，前端以该序号去重并关联恢复事件。发布时序由 ADR 0210 收紧：这些事件在提交成功后由 `CommittedUiPublisher` 从已提交行发布，而不是等可失败的投影完成后再发。Thought 同样携带 `event_seq`。并行工具卡不能只按序号去重。
