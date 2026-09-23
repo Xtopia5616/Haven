@@ -202,3 +202,4 @@
 - [0211：ToolsManager 收成执行入口，operation 单一投影](0211-operation-registry-and-platform-snapshot.md)
 - [0212：进程服务移出 ToolsManager facade](0212-process-services-off-tools-facade.md)
 - [0213：OperationSpec 是运行时策略与 manifest 的唯一来源](0213-operation-spec-single-policy-source.md)
+- [0214：一次 run 在 SessionActor 任务内执行](0214-react-run-inside-session-actor.md)

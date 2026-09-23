@@ -35,6 +35,7 @@
 
 - 给 `ReActState.canonical` 引入 revision/generation。
 - 让 token estimate cache 以 revision 为主要键，移除每轮对完整 canonical 的 fingerprint 扫描。
+- 不把 estimate 缓存单独搬进 `SessionState` 而把循环留在 actor 外。热 transcript 的主人和 run 的所在任务见 ADR 0214：estimate 是 yield 点上的函数调用，禁止经 mailbox 复制整份 canonical。
 - 给 `RequestContext` 增加 canonical/media projection 的 fast path 和必要缓存。
 - 无媒体输入时不构建 media index；provider retry 不重复 clone 完整 messages/tools。
 

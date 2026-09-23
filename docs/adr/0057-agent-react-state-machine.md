@@ -1,6 +1,6 @@
 # ADR 0057：Agent ReAct Run 状态机与单一运行态
 
-> 请求上下文与流式重试代次的后续细化见 [ADR 0058](0058-agent-request-context-and-stream-attempts.md)。
+> 请求上下文与流式重试代次的后续细化见 [ADR 0058](0058-agent-request-context-and-stream-attempts.md)。热 transcript 的主人见 [ADR 0214](0214-react-run-inside-session-actor.md)：单一运行态对象不变，但由 actor 内的 `SessionState` 持有。
 
 ## 背景
 

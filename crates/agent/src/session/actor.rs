@@ -4,6 +4,11 @@
 //! state.  Callers hold a cheap [`SessionActorHandle`] and send typed
 //! commands; they never acquire a lock around `SessionInfo` or one of the
 //! session's auxiliary queues.
+//!
+//! ADR 0214：热 transcript 的目标主人是这里的 `SessionState`。一次 run 要在
+//! 本任务内执行，并且只在 yield 点拿 `&mut SessionState`。mailbox 只接收外部
+//! 命令。usage、stream id 和 token estimate 是函数调用，不是命令；在 run
+//! 迁入本任务之前，不要再增加这类内部命令，也不要只把缓存搬进来。
 
 use super::{FollowUp, SessionInfo, SessionStatus, SessionWaitingReason, StepInfo};
 use crate::interaction::{InteractionKind, InteractionRequest, InteractionStatus};

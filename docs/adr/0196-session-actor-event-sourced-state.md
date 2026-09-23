@@ -2,7 +2,7 @@
 
 ## 状态
 
-已接受（2026-09-22）。ADR 0209 删除公开 `ReActSnapshot` 与 `sessions.react_state`，并把 session-local inbox 轮询状态放进 `SessionState`。
+已接受（2026-09-22）。ADR 0209 删除公开 `ReActSnapshot` 与 `sessions.react_state`，并把 session-local inbox 轮询状态放进 `SessionState`。ADR 0214 取代下文里 usage、stream identity、token estimate 走 mailbox，以及热 transcript 留在 actor 外的部分：一次 run 在 actor 任务内执行，只在 yield 点拿 `&mut SessionState`。
 
 ## 背景
 

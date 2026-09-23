@@ -441,8 +441,12 @@ impl ReActEngine {
         self.metrics.increment(MetricsCounter::ActionResultRetries);
     }
 
-    /// Record the live run budget in the session actor (R4). The ReAct facade
-    /// only sends commands to the session mailbox.
+    /// Record the live run budget in the session actor (R4).
+    ///
+    /// This still crosses the mailbox. ADR 0214 forbids adding more internal
+    /// commands like it: once the run executes on the actor task, budget,
+    /// usage, stream id and token estimate are function calls on
+    /// `&mut SessionState` at yield points.
     pub(super) async fn set_run_budget(&self, session_id: &str, budget: crate::types::RunBudget) {
         if let Some(actor) = self.executor.actor_for(session_id).await {
             actor.set_run_budget(budget).await;

@@ -150,7 +150,7 @@ RunEngine（纯 ReAct 状态机）
 
 1. `SessionSupervisor` 只负责全局排队、并发 permit、启动/停止 session actor。
 2. `SessionActor` 以 mailbox 串行拥有一个会话的 status、输入队列、interaction、run lifecycle、partial/checkpoint 和 action completion。
-3. `RunEngine` 是 dispatcher 的单次运行边界；typed `SessionEvent` 替代跨层 callback，actor mailbox 负责会话内命令顺序。
+3. `RunEngine` 是 dispatcher 的单次运行边界；typed `SessionEvent` 替代跨层 callback，actor mailbox 负责会话内命令顺序。ADR 0214 进一步规定：一次 run 在 actor 任务内执行，mailbox 只接收外部命令；usage、stream id 和 estimate 是对 `&mut SessionState` 的函数调用。
 
 迁移后已删除 session 级多表交叉协调、`on_*` callback 网和 `SessionInfo` 内的运行时队列。全局只保留 supervisor 的 actor 注册表和 FIFO 调度队列；会话局部状态不再暴露 mutex，对外只通过 actor handle 发送 typed 命令。
 
