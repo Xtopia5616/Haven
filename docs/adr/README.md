@@ -225,3 +225,4 @@
 - [0234：LLM 完整请求对象与唯一 complete 入口](0234-llm-complete-request-object.md)
 - [0235：版本化运行时配置应用边界](0235-versioned-runtime-config-apply-boundary.md)
 - [0236：后台任务终态写入采用 first-wins CAS](0236-background-action-terminal-cas.md)
+- [0237：定时任务授权入口收口](0237-scheduled-authorization-port.md)
