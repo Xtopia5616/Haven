@@ -160,7 +160,7 @@ pub use tool_contract::{
 };
 pub use tool_runtime::{
     LogLevelPort, MemoryRecallPort, MemoryRecallSlot, RuntimeCapabilities, StartupWiring,
-    ToolControlPort,
+    ToolControlPort, WebSearchAvailability,
 };
 
 /// Convert an internal qualified tool name (`mcp::server::tool`, `skill::name`)

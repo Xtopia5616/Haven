@@ -7,7 +7,7 @@ use haven_common::prompts::SESSION_CONTEXT_FENCE_START;
 use haven_common::tools::{ToolCatalogGroup, ToolDef, ToolPrompt};
 use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
 use haven_memory::recall::MemoryRetriever;
-use haven_tools::ToolsManager;
+use haven_tools::{ToolsManager, WebSearchAvailability};
 
 #[cfg(test)]
 use haven_memory::Database;
@@ -75,6 +75,16 @@ const RECENT_CONTEXT_ITEM_MAX_TOKENS: u32 = 300;
 /// the whole context allocation or become an unbounded embedding query.
 const SESSION_DESCRIPTION_CHAR_BUDGET: usize = 1200;
 const SESSION_DESCRIPTION_TOKEN_BUDGET: u32 = 384;
+
+fn web_search_availability_prompt_value(availability: WebSearchAvailability) -> &'static str {
+    match availability {
+        WebSearchAvailability::Provider => "provider",
+        WebSearchAvailability::Mcp => "mcp",
+        WebSearchAvailability::Unavailable => {
+            "unavailable (no provider builtin search; no MCP search server)"
+        }
+    }
+}
 
 fn runtime_value(value: impl Into<String>) -> String {
     haven_common::text::sanitize_prompt_field(&value.into(), 320)
@@ -503,7 +513,7 @@ impl SystemPromptBuilder {
             runtime_value(tool_cwd),
             runtime_value(sandbox_cwd),
             runtime_value(shell),
-            runtime_capabilities.web_search,
+            web_search_availability_prompt_value(runtime_capabilities.web_search),
             if runtime_capabilities.vision {
                 "available"
             } else {
@@ -1122,6 +1132,22 @@ mod tests {
     fn sanitize_caps_length() {
         let out = sanitize_prompt_field(&"x".repeat(300));
         assert_eq!(out.len(), 256);
+    }
+
+    #[test]
+    fn web_search_availability_keeps_existing_prompt_values() {
+        assert_eq!(
+            web_search_availability_prompt_value(WebSearchAvailability::Provider),
+            "provider"
+        );
+        assert_eq!(
+            web_search_availability_prompt_value(WebSearchAvailability::Mcp),
+            "mcp"
+        );
+        assert_eq!(
+            web_search_availability_prompt_value(WebSearchAvailability::Unavailable),
+            "unavailable (no provider builtin search; no MCP search server)"
+        );
     }
 
     /// Dummy tool so tests can control which tools appear in the registry.

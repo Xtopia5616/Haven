@@ -1,5 +1,18 @@
 use super::*;
 
+fn resolve_web_search_availability(
+    provider_search_available: bool,
+    mcp_search_available: bool,
+) -> WebSearchAvailability {
+    if provider_search_available {
+        WebSearchAvailability::Provider
+    } else if mcp_search_available {
+        WebSearchAvailability::Mcp
+    } else {
+        WebSearchAvailability::Unavailable
+    }
+}
+
 /// Process services shared outside the execution facade.
 ///
 /// MCP, skills and the asset registry clone as handles. Authorization,
@@ -575,7 +588,7 @@ impl ToolsManager {
             .await
             .iter()
             .any(mcp_index_entry_has_search_tool);
-        let web_search = match router.as_ref() {
+        let provider_search_available = match router.as_ref() {
             Some(router) => {
                 let config = router.config().await;
                 let endpoint = config
@@ -590,20 +603,14 @@ impl ToolsManager {
                     });
                 let style = haven_llm::adapters::api_style_for(endpoint);
                 let mode = haven_llm::adapters::resolve_web_search_mode(endpoint);
-                if config.route(RequestKind::Chat).is_some()
+                config.route(RequestKind::Chat).is_some()
                     && !matches!(mode, haven_llm::WebSearchMode::Off)
                     && haven_llm::supports_builtin_web_search(style)
-                {
-                    "provider".into()
-                } else if mcp_search_available {
-                    "mcp".into()
-                } else {
-                    "unavailable (no provider builtin search; no MCP search server)".into()
-                }
             }
-            None if mcp_search_available => "mcp".into(),
-            None => "unavailable (no provider builtin search; no MCP search server)".into(),
+            None => false,
         };
+        let web_search =
+            resolve_web_search_availability(provider_search_available, mcp_search_available);
         RuntimeCapabilities {
             vision,
             image_generation,
@@ -641,5 +648,30 @@ impl ToolControlPort for ToolControlHandle {
 impl Default for ToolsManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod runtime_capability_tests {
+    use super::*;
+
+    #[test]
+    fn provider_search_takes_priority_over_mcp_search() {
+        assert_eq!(
+            resolve_web_search_availability(true, true),
+            WebSearchAvailability::Provider
+        );
+        assert_eq!(
+            resolve_web_search_availability(true, false),
+            WebSearchAvailability::Provider
+        );
+        assert_eq!(
+            resolve_web_search_availability(false, true),
+            WebSearchAvailability::Mcp
+        );
+        assert_eq!(
+            resolve_web_search_availability(false, false),
+            WebSearchAvailability::Unavailable
+        );
     }
 }

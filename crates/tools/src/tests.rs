@@ -184,10 +184,7 @@ async fn runtime_capabilities_report_unavailable_backends_explicitly() {
     assert!(!capabilities.transcription);
     assert!(!capabilities.recording);
     assert!(!capabilities.tts);
-    assert_eq!(
-        capabilities.web_search,
-        "unavailable (no provider builtin search; no MCP search server)"
-    );
+    assert_eq!(capabilities.web_search, WebSearchAvailability::Unavailable);
 }
 
 #[tokio::test]

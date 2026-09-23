@@ -198,6 +198,17 @@ pub struct StartupWiring {
     pub memory_recall: Arc<dyn MemoryRecallPort>,
 }
 
+/// The source currently providing model-visible web search.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WebSearchAvailability {
+    /// The configured Chat route supports provider built-in search.
+    Provider,
+    /// At least one discovered MCP server exposes a web-search tool.
+    Mcp,
+    /// Neither provider built-in search nor MCP search is available.
+    Unavailable,
+}
+
 /// Live capabilities shared by prompt assembly and builtin registration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeCapabilities {
@@ -206,7 +217,7 @@ pub struct RuntimeCapabilities {
     pub transcription: bool,
     pub recording: bool,
     pub tts: bool,
-    pub web_search: String,
+    pub web_search: WebSearchAvailability,
 }
 
 #[cfg(test)]
