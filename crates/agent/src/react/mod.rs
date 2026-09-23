@@ -44,8 +44,8 @@ mod tool_batch_policy;
 mod transcript;
 mod turn;
 mod turn_end;
+mod usage;
 
-use crate::session::UsageUpdate;
 use context::ContextSource;
 pub(crate) use context::action_result_message_id;
 pub(crate) use hooks::{InferCallback, MemoryPatchHandle, default_hooks_with_infer_and_patch};
@@ -59,6 +59,7 @@ pub(crate) use request_context::RequestContext;
 use sidecars::{ContextWindowCache, TokenEstimateCache};
 pub(crate) use state::{ReActState, RetryNudge};
 use transcript::{ObservationCard, TranscriptEvent};
+use usage::{UsageRuntime, UsageUpdate};
 
 pub(crate) use event_boundary::DurableEventState;
 pub(crate) use event_boundary::set_status_and_emit;
@@ -336,6 +337,9 @@ pub struct ReActEngine {
     /// appended here before entering the in-memory projection; checkpoint
     /// metadata is written through the same store.
     pub(crate) event_store: SessionStore,
+    /// Agent-owned usage persistence and cumulative counters. The runtime
+    /// preserves per-session ordering without blocking the session actor.
+    usage_runtime: UsageRuntime,
     max_steps: Mutex<u32>,
     /// Optional session-lifetime step cap (Phase 8 / J1). `None` = unlimited.
     session_max_steps: Mutex<Option<u32>>,
@@ -399,12 +403,14 @@ impl ReActEngine {
         let metrics = Arc::new(ReActMetrics::new());
         let context_source = ContextSource::new(executor.clone(), db.clone(), metrics.clone());
         let event_store = executor.session_store();
+        let usage_runtime = UsageRuntime::new(db.clone(), event_store.clone());
         Self {
             router: Arc::new(RwLock::new(router)),
             executor,
             db,
             identity_map: IdentityMap::default(),
             event_store,
+            usage_runtime,
             max_steps: Mutex::new(max_steps),
             session_max_steps: Mutex::new(None),
             context_limits: std::sync::Mutex::new(context_limits),
@@ -712,46 +718,36 @@ impl ReActEngine {
         // avoids cloning the full LlmConfig on every step.
         let context_window = Some(self.cached_context_window(request).await);
 
-        let actor = match self.executor.actor_for(session_id).await {
-            Some(actor) => actor,
-            None => {
-                if let Err(error) = self.executor.ensure_session_loaded(session_id).await {
-                    tracing::warn!(session_id, %error, "failed to load actor for usage update");
-                    return;
-                }
-                let Some(actor) = self.executor.actor_for(session_id).await else {
-                    tracing::warn!(session_id, "session actor disappeared during usage update");
-                    return;
-                };
-                actor
-            }
-        };
         let model = response.model.clone().or_else(|| usage.model_name.clone());
         let call_has_cost = step_cost.is_some();
         let cache_diagnostics = usage
             .cache_diagnostics
             .as_ref()
             .and_then(|diagnostics| serde_json::to_string(diagnostics).ok());
-        let totals = match actor
-            .record_usage(UsageUpdate {
-                request,
-                model: model.clone(),
-                step_number,
-                prompt_tokens: usage.prompt_tokens,
-                completion_tokens: usage.completion_tokens,
-                total_tokens: usage.total_tokens,
-                cached_tokens: usage.cached_tokens,
-                cache_creation_tokens: usage.cache_creation_tokens,
-                cache_miss_tokens: usage.cache_miss_tokens(),
-                cache_accounting: usage.cache_accounting.as_str().into(),
-                cache_diagnostics,
-                cost_usd: step_cost.unwrap_or(0.0),
-                has_cost: call_has_cost,
-                duration_ms,
-                context_tokens: usage.context_tokens(),
-                context_window,
-                cancel,
-            })
+        let totals = match self
+            .usage_runtime
+            .record(
+                session_id,
+                UsageUpdate {
+                    request,
+                    model: model.clone(),
+                    step_number,
+                    prompt_tokens: usage.prompt_tokens,
+                    completion_tokens: usage.completion_tokens,
+                    total_tokens: usage.total_tokens,
+                    cached_tokens: usage.cached_tokens,
+                    cache_creation_tokens: usage.cache_creation_tokens,
+                    cache_miss_tokens: usage.cache_miss_tokens(),
+                    cache_accounting: usage.cache_accounting.as_str().into(),
+                    cache_diagnostics,
+                    cost_usd: step_cost.unwrap_or(0.0),
+                    has_cost: call_has_cost,
+                    duration_ms,
+                    context_tokens: usage.context_tokens(),
+                    context_window,
+                    cancel,
+                },
+            )
             .await
         {
             Ok(totals) => totals,
@@ -1082,13 +1078,12 @@ impl ReActEngine {
     }
 
     /// Drop cumulative counters and process-local turn caches for a finished
-    /// session so per-session runtime state stays bounded across long runs.
+    /// session. UsageRuntime retains its session entry until a safe detached
+    /// worker reclamation protocol exists.
     pub fn reset_cumulative_usage(&self, session_id: &str) {
         self.reset_token_estimate(session_id);
         self.context_source.clear_session(session_id);
-        if let Some(actor) = self.executor.actor_for_now(session_id) {
-            actor.reset_usage_now();
-        }
+        self.usage_runtime.reset(session_id);
     }
 
     /// After rollback/truncate rebuilt `session_usage` from remaining
@@ -1096,9 +1091,7 @@ impl ReActEngine {
     /// so a late fire-and-forget write from a discarded call cannot re-inflate
     /// the totals. Next live usage event re-seeds from the rebuilt DB row.
     pub fn invalidate_usage_after_truncate(&self, session_id: &str) {
-        if let Some(actor) = self.executor.actor_for_now(session_id) {
-            actor.invalidate_usage_now();
-        }
+        self.usage_runtime.invalidate_after_truncate(session_id);
     }
 
     /// Resolve the model's true context window for the request used by

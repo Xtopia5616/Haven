@@ -7,16 +7,14 @@
 //!
 //! ADR 0214 的目标是让热 transcript 由这里的 `SessionState` 持有，并让一次 run
 //! 在本任务内只于 yield 点借用 `&mut SessionState`。stream identity 已按 ADR 0219
-//! 移为 ReActEngine 的进程内 sidecar；usage 仍经内部 mailbox 命令处理，留待
-//! 后续切片收口。
+//! 移为 ReActEngine 的进程内 sidecar；agent usage 已按 ADR 0223 移到
+//! `ReActEngine::UsageRuntime`，actor 只保留会话状态与队列。
 
 use super::RunEngine;
 use super::{FollowUp, SessionInfo, SessionStatus, SessionWaitingReason, StepInfo};
 use crate::interaction::{InteractionKind, InteractionRequest, InteractionStatus};
-use crate::react::sidecars::{CumulativeTotals, CumulativeUsage, UsageTracker};
 use crate::react::{LoopExit, ReActEngine, ReActState, RunInput, RunReplay};
 use futures_util::FutureExt;
-use haven_common::config::RequestKind;
 use haven_common::types::MessageAttachment;
 use haven_memory::{
     Database, INTERACTION_CLEARED_EVENT_TYPE, INTERACTION_REQUESTED_EVENT_TYPE,
@@ -142,30 +140,6 @@ pub(crate) enum SessionCommand {
     },
 }
 
-/// Provider-neutral usage input accepted by the actor.  Keeping this DTO at
-/// the actor boundary prevents the ReAct facade from mutating a per-session
-/// cumulative map and then separately persisting the same call.
-#[derive(Debug, Clone)]
-pub(crate) struct UsageUpdate {
-    pub request: RequestKind,
-    pub model: Option<String>,
-    pub step_number: i32,
-    pub prompt_tokens: u32,
-    pub completion_tokens: u32,
-    pub total_tokens: u32,
-    pub cached_tokens: u32,
-    pub cache_creation_tokens: u32,
-    pub cache_miss_tokens: u32,
-    pub cache_accounting: String,
-    pub cache_diagnostics: Option<String>,
-    pub cost_usd: f64,
-    pub has_cost: bool,
-    pub duration_ms: Option<u64>,
-    pub context_tokens: u32,
-    pub context_window: Option<u32>,
-    pub cancel: Option<CancellationToken>,
-}
-
 /// `'static` subscribe closure carried by [`ActorCommand`]. It is not
 /// debugged; the actor runs it at most once.
 pub(crate) struct InboxSubscribe(Box<dyn FnOnce() -> watch::Receiver<u64> + Send>);
@@ -220,12 +194,6 @@ pub(crate) enum ActorCommand {
     IsRunning {
         reply: oneshot::Sender<bool>,
     },
-    RecordUsage {
-        update: UsageUpdate,
-        reply: oneshot::Sender<anyhow::Result<CumulativeTotals>>,
-    },
-    ResetUsage,
-    InvalidateUsage,
     TickMessagingPoll {
         every_steps: u32,
         subscribe: InboxSubscribe,
@@ -457,25 +425,6 @@ impl SessionActorHandle {
         .await?;
         rx.await
             .map_err(|_| anyhow::anyhow!("session actor '{}' dropped ReAct loop result", self.id))?
-    }
-
-    pub(crate) async fn record_usage(
-        &self,
-        update: UsageUpdate,
-    ) -> anyhow::Result<CumulativeTotals> {
-        let (reply, rx) = oneshot::channel();
-        self.send(ActorCommand::RecordUsage { update, reply })
-            .await?;
-        rx.await
-            .map_err(|_| anyhow::anyhow!("session actor '{}' dropped usage update", self.id))?
-    }
-
-    pub(crate) fn reset_usage_now(&self) {
-        let _ = self.tx.try_send(ActorCommand::ResetUsage);
-    }
-
-    pub(crate) fn invalidate_usage_now(&self) {
-        let _ = self.tx.try_send(ActorCommand::InvalidateUsage);
     }
 
     pub(crate) async fn queue_follow_up(
@@ -870,7 +819,6 @@ pub(crate) struct SessionState {
 
 #[derive(Default)]
 struct SessionRuntimeState {
-    usage: UsageTracker,
     messaging: SessionMessagingState,
 }
 
@@ -1308,19 +1256,6 @@ pub(crate) fn spawn(
                 ActorCommand::IsRunning { reply } => {
                     let _ = reply.send(state.running);
                 }
-                ActorCommand::RecordUsage { update, reply } => {
-                    let result = record_usage(&db, &store, &mut state, update).await;
-                    let _ = reply.send(result);
-                }
-                ActorCommand::ResetUsage => {
-                    state.runtime.usage.reset(&state.info.id);
-                }
-                ActorCommand::InvalidateUsage => {
-                    state
-                        .runtime
-                        .usage
-                        .invalidate_after_truncate(&state.info.id);
-                }
                 ActorCommand::DrainFollowUps { reply } => {
                     state.follow_up_chars = 0;
                     state.follow_up_attachment_bytes = 0;
@@ -1648,109 +1583,6 @@ fn history(state: &SessionState, limit: usize) -> Vec<Envelope> {
     entries.reverse();
     entries.truncate(limit);
     entries
-}
-
-async fn record_usage(
-    db: &Arc<Database>,
-    store: &SessionStore,
-    state: &mut SessionState,
-    update: UsageUpdate,
-) -> anyhow::Result<CumulativeTotals> {
-    let session_id = state.info.id.clone();
-    let UsageUpdate {
-        request,
-        model,
-        step_number,
-        prompt_tokens,
-        completion_tokens,
-        total_tokens,
-        cached_tokens,
-        cache_creation_tokens,
-        cache_miss_tokens,
-        cache_accounting,
-        cache_diagnostics,
-        cost_usd,
-        has_cost,
-        duration_ms,
-        context_tokens,
-        context_window,
-        cancel,
-    } = update;
-    let seed = if state.runtime.usage.needs_seed(&session_id) {
-        let db = db.clone();
-        let sid = session_id.clone();
-        let read = move |db: &Database| -> anyhow::Result<CumulativeUsage> {
-            Ok(db
-                .get_session_usage(&sid)?
-                .map(CumulativeUsage::from)
-                .unwrap_or_default())
-        };
-        match cancel.clone() {
-            Some(cancel) => db.run_blocking_cancellable(cancel, read).await?,
-            None => db.run_blocking(read).await?,
-        }
-    } else {
-        CumulativeUsage::default()
-    };
-
-    let totals = state.runtime.usage.record_with_seed(
-        &session_id,
-        prompt_tokens,
-        completion_tokens,
-        total_tokens,
-        cached_tokens,
-        cache_creation_tokens,
-        cache_miss_tokens,
-        if has_cost { Some(cost_usd) } else { None },
-        || seed,
-    );
-
-    let persist_epoch = state.runtime.usage.epoch(&session_id);
-    let epochs = state.runtime.usage.epochs_handle();
-    let persist_session_id = session_id.clone();
-    let usage_input = haven_memory::LlmCallUsageInput {
-        step_number: Some(step_number),
-        request_kind: request,
-        call_kind: "agent".into(),
-        model,
-        prompt_tokens,
-        completion_tokens,
-        total_tokens,
-        cached_tokens,
-        cache_creation_tokens,
-        cache_miss_tokens,
-        cache_accounting,
-        cache_diagnostics,
-        cost_usd,
-        has_cost,
-        duration_ms,
-        context_tokens,
-        context_window,
-    };
-    let store = store.clone();
-    let persist = move |_db: &Database| -> anyhow::Result<()> {
-        let epoch_now = || {
-            epochs
-                .lock()
-                .unwrap()
-                .get(&persist_session_id)
-                .copied()
-                .unwrap_or(0)
-        };
-        if epoch_now() != persist_epoch {
-            return Ok(());
-        }
-        let record = store.append_usage(&persist_session_id, &usage_input)?;
-        if epoch_now() != persist_epoch {
-            store.discard_usage(&persist_session_id, &record.id)?;
-        }
-        Ok(())
-    };
-    match cancel {
-        Some(cancel) => db.run_blocking_cancellable(cancel, persist).await?,
-        None => db.run_blocking(persist).await?,
-    }
-    Ok(totals)
 }
 
 async fn transition(

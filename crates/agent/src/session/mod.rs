@@ -231,9 +231,7 @@ mod tool_runner;
 pub(crate) use dispatcher::DirectRunLease;
 pub(crate) use tool_runner::{ActionStepMetadata, ActionStepPersistenceError};
 
-pub(crate) use actor::{
-    CONTEXT_BATCH_MAX_CHARS, CONTEXT_BATCH_MAX_ITEMS, MessagingTitle, UsageUpdate,
-};
+pub(crate) use actor::{CONTEXT_BATCH_MAX_CHARS, CONTEXT_BATCH_MAX_ITEMS, MessagingTitle};
 pub(crate) use queues::ReactContextBatch;
 pub use run_engine::RunEngine;
 
