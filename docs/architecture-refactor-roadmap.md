@@ -62,8 +62,9 @@
 - `18507a3`：删除已无调用者的 LLM/Tools/Common facade API，保留仍有语义或生产调用的 helper（ADR 0239）。
 - `a7a1a1d`：MCP/Skill/builtin session overlay 的恢复与清理通过 SessionToolOverlayPort 收口，保持 asset lease/live registration 分离（ADR 0240）。
 - `3cf3a47`：聚合 stream 主入口用借用式 StreamRequest 承载请求数据，cancel/hooks 继续独立（ADR 0241）。
+- 当前切片：embedding 与 health_check 主入口分别改用拥有数据的 `EmbeddingRequest`、`HealthCheckRequest`；embed 空批次、路由、重试、permit、usage、健康状态与连接诊断语义保持不变（ADR 0242）。
 
-当前阶段判断：阶段 1 的 mailbox/运行态收口已基本完成；阶段 2 已收口 rollback boundary、两类 resume 读取 port 和 session overlay 恢复边界，但全局恢复/事件重放仍待继续验证；阶段 3 已开始以 SessionStore typed read ports 替代局部 raw Database 读取，其他传播仍待收窄；阶段 4 已完成目录/观察/资产租约/overlay/定时授权入口边界，完整 ToolsManager 解耦仍需拆分；阶段 5 已完成 settings/model 的 snapshot prepare/apply 切片但尚未成为完整协调器；阶段 6 已完成 CompleteRequest 与聚合 StreamRequest 首切片，embed/health request object 和 executor 拆分仍待实施；阶段 7 已完成后台终态 CAS，完整 Job 生命周期与 MemoryRuntime durable replay 仍待设计；阶段 8 已完成 Action DTO 漂移检查和 UI 错误/usage/message 派生收口，其他 IPC/UI 编排仍待收口；阶段 9 已删除三个无调用者 facade API，剩余工作以 profiling 和更大范围公共面审查为主。
+当前阶段判断：阶段 1 的 mailbox/运行态收口已基本完成；阶段 2 已收口 rollback boundary、两类 resume 读取 port 和 session overlay 恢复边界，但全局恢复/事件重放仍待继续验证；阶段 3 已开始以 SessionStore typed read ports 替代局部 raw Database 读取，其他传播仍待收窄；阶段 4 已完成目录/观察/资产租约/overlay/定时授权入口边界，完整 ToolsManager 解耦仍需拆分；阶段 5 已完成 settings/model 的 snapshot prepare/apply 切片但尚未成为完整协调器；阶段 6 已完成 CompleteRequest、聚合 StreamRequest、EmbeddingRequest 与 HealthCheckRequest 请求对象切片，Router executor 拆分和 capability/call-purpose 语义分离仍待实施；阶段 7 已完成后台终态 CAS，完整 Job 生命周期与 MemoryRuntime durable replay 仍待设计；阶段 8 已完成 Action DTO 漂移检查和 UI 错误/usage/message 派生收口，其他 IPC/UI 编排仍待收口；阶段 9 已删除三个无调用者 facade API，剩余工作以 profiling 和更大范围公共面审查为主。
 
 ## 3. 不变量与禁止事项
 
@@ -220,12 +221,12 @@ SessionStore
 
 目的：减少 router 公共包装入口，不改变 provider adapter。
 
-已完成的首切片：普通与 tools 完整请求统一为 `CompleteRequest`，只保留 `LlmRouter::complete(CompleteRequest)` 作为完整请求入口；保留语义化 prompt 与 cancellation helper，并让它们直接构造该 DTO。Router chat 转发入口及仓库内调用点已删除，不提供兼容别名（ADR 0234）。本切片不拆分 Capability / CallPurpose，也不改 stream、embed、health 接口与 provider adapter。
+已完成的请求对象切片：普通与 tools 完整请求统一为 `CompleteRequest`（ADR 0234）；聚合 streaming 主入口使用借用式 `StreamRequest`，cancel/hooks 作为独立执行控制（ADR 0241）；embedding 与 health_check 主入口使用 `EmbeddingRequest`、`HealthCheckRequest`（ADR 0242）。Router chat 转发入口及仓库内调用点已删除，不提供兼容别名。请求对象只承载路由数据；provider adapter、重试/超时/permit/熔断/usage 执行状态仍归 Router 管理。
 
 工作项：
 
 - 将 `RequestKind` 中混合的 capability、call purpose、UI usage role 分成 `Capability`、`CallPurpose`、`RequestPolicy`；
-- 将 router 对外收敛为 `complete`、`stream`、`embed`、`health` 四类 request object；`complete` 已有请求对象，其他入口待后续切片；
+- 后续按需收敛 Router 内部 executor 与路由策略所有权；当前 `complete`、聚合 `stream`、`embed`、`health_check` 已有请求对象，raw stream 消费与取消控制仍按其生命周期语义单独表达；
 - 内部拆成 `ModelDirectory`、`CallExecutor`、`StreamExecutor`，保留已有 retry/timeout/health/semaphore/usage 管线；
 - 删除只转发参数的 chat/chat_request/output_cap/stream wrapper；
 - provider adapter 只做 wire mapping，保持 golden fixture。

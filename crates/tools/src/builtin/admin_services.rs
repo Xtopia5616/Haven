@@ -149,7 +149,10 @@ impl AdminServices {
                 let status = if !configured {
                     "not_configured".to_string()
                 } else {
-                    match router.health_check(*request).await {
+                    match router
+                        .health_check(haven_llm::types::HealthCheckRequest { request: *request })
+                        .await
+                    {
                         Ok(()) => "ok".to_string(),
                         Err(error) => {
                             format!("error: {}", sanitize_diagnostic(&error.to_string()))

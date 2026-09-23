@@ -230,3 +230,4 @@
 - [0239：删除已无调用者的 facade API](0239-remove-unused-facade-apis.md)
 - [0240：Session tool overlay 恢复端口](0240-session-tool-overlay-port.md)
 - [0241：聚合流请求对象](0241-aggregated-stream-request-object.md)
+- [0242：Embedding 与 health 请求对象](0242-embedding-and-health-request-objects.md)

@@ -459,6 +459,18 @@ pub struct Embedding {
     pub usage: Usage,
 }
 
+/// Owned input for one batch embedding request routed through [`crate::LlmRouter`].
+#[derive(Debug, Clone)]
+pub struct EmbeddingRequest {
+    pub input: Vec<String>,
+}
+
+/// Selects the configured request route for a router health check.
+#[derive(Debug, Clone, Copy)]
+pub struct HealthCheckRequest {
+    pub request: RequestKind,
+}
+
 /// OpenAI-compatible tool definition for function calling.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolDefinition {

@@ -16,8 +16,8 @@ use haven_common::types::{CanonicalMessage, ContentPart};
 use crate::stream_rules::{StreamRule, StreamRuleMatch, check_stream_rules};
 use crate::streaming;
 use crate::types::{
-    CompleteRequest, Embedding, LlmConnectionReport, LlmConnectionStatus, LlmError, LlmResponse,
-    StreamChunk, StreamRequest, ToolDefinition, Usage,
+    CompleteRequest, Embedding, EmbeddingRequest, HealthCheckRequest, LlmConnectionReport,
+    LlmConnectionStatus, LlmError, LlmResponse, StreamChunk, StreamRequest, ToolDefinition, Usage,
 };
 use futures_util::future::join_all;
 use haven_common::config::{
@@ -909,7 +909,8 @@ impl LlmRouter {
     /// Embed a batch of texts into vectors via the dedicated `embedding_model`
     /// endpoint. Applies the circuit breaker, retry, and router-level total
     /// timeout like other calls.
-    pub async fn embed(&self, input: Vec<String>) -> Result<Embedding, LlmError> {
+    pub async fn embed(&self, request: EmbeddingRequest) -> Result<Embedding, LlmError> {
+        let input = request.input;
         if input.is_empty() {
             return Ok(Embedding {
                 vectors: Vec::new(),
@@ -941,7 +942,11 @@ impl LlmRouter {
 
     /// Convenience wrapper for single-text embedding.
     pub async fn embed_text(&self, text: &str) -> Result<Vec<f32>, LlmError> {
-        let emb = self.embed(vec![text.to_string()]).await?;
+        let emb = self
+            .embed(EmbeddingRequest {
+                input: vec![text.to_string()],
+            })
+            .await?;
         Ok(emb.vectors.into_iter().next().unwrap_or_default())
     }
 
@@ -1246,8 +1251,8 @@ impl LlmRouter {
         check_stream_rules(&rules, text)
     }
 
-    pub async fn health_check(&self, request: RequestKind) -> Result<(), LlmError> {
-        self.with_request_permit(request, |model_id, candidate| async move {
+    pub async fn health_check(&self, request: HealthCheckRequest) -> Result<(), LlmError> {
+        self.with_request_permit(request.request, |model_id, candidate| async move {
             let cfg = self.config.read().await;
             let policy = RequestPolicy::primary(&cfg);
             drop(cfg);
@@ -1300,7 +1305,7 @@ impl LlmRouter {
                 model: String::new(),
             };
         }
-        match self.health_check(request).await {
+        match self.health_check(HealthCheckRequest { request }).await {
             Ok(()) => LlmConnectionReport {
                 status: LlmConnectionStatus::Ready,
                 reason: None,
@@ -1354,11 +1359,11 @@ impl LlmRouter {
 
         let requests = configured.clone();
         let checks = requests.into_iter().map(|request| async move {
-            let first = self.health_check(request).await;
+            let first = self.health_check(HealthCheckRequest { request }).await;
             if first.is_err() {
                 // One retry: transient failures (conn reset, 5xx) should not
                 // leave the pool cold for the first user message.
-                self.health_check(request).await
+                self.health_check(HealthCheckRequest { request }).await
             } else {
                 first
             }
@@ -1940,7 +1945,9 @@ mod tests {
 
     #[tokio::test]
     async fn embed_routes_to_embedding_endpoint_and_tracks_health() {
-        struct MockEmbedClient;
+        struct MockEmbedClient {
+            seen: Arc<std::sync::Mutex<Vec<Vec<String>>>>,
+        }
         #[async_trait]
         impl LlmClient for MockEmbedClient {
             async fn chat(&self, _: Vec<CanonicalMessage>) -> Result<LlmResponse, LlmError> {
@@ -1956,6 +1963,7 @@ mod tests {
                 Err(LlmError::Unknown("mock: no stream".into()))
             }
             async fn embed(&self, input: Vec<String>) -> Result<Embedding, LlmError> {
+                self.seen.lock().unwrap().push(input.clone());
                 Ok(Embedding {
                     vectors: input.iter().map(|_| vec![1.0f32, 0.0]).collect(),
                     model: Some("test-emb".into()),
@@ -1970,11 +1978,19 @@ mod tests {
             chunks: Vec::new(),
             fail_chat: false,
         });
-        let emb: Arc<dyn LlmClient> = Arc::new(MockEmbedClient);
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let emb: Arc<dyn LlmClient> = Arc::new(MockEmbedClient { seen: seen.clone() });
         let router =
             LlmRouter::new_with_clients_full(chat.clone(), chat.clone(), chat.clone(), chat, emb);
-        let result = router.embed(vec!["a".into(), "b".into()]).await.unwrap();
-        assert_eq!(result.vectors.len(), 2);
+        let input = vec!["a".into(), " b ".into(), "a".into()];
+        let result = router
+            .embed(EmbeddingRequest {
+                input: input.clone(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(*seen.lock().unwrap(), vec![input]);
+        assert_eq!(result.vectors.len(), 3);
         assert_eq!(result.vectors[0], vec![1.0f32, 0.0]);
         assert_eq!(result.model.as_deref(), Some("test-emb"));
 
@@ -2012,7 +2028,27 @@ mod tests {
             chat,
             Arc::new(FailingEmbed),
         );
-        assert!(router.embed(vec!["x".into()]).await.is_err());
+        assert!(
+            router
+                .embed(EmbeddingRequest {
+                    input: vec!["x".into()],
+                })
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn embed_empty_batch_short_circuits_without_a_configured_route() {
+        let router = LlmRouter::new(RouterConfig::default());
+        let embedding = router
+            .embed(EmbeddingRequest { input: Vec::new() })
+            .await
+            .unwrap();
+
+        assert!(embedding.vectors.is_empty());
+        assert_eq!(embedding.model, None);
+        assert_eq!(embedding.usage.total_tokens, 0);
     }
 
     #[tokio::test]
@@ -2651,8 +2687,26 @@ mod tests {
         }) as Arc<dyn LlmClient>;
         let router =
             LlmRouter::new_with_clients(client.clone(), client.clone(), client.clone(), client);
-        let result = router.health_check(RequestKind::Chat).await;
+        let result = router
+            .health_check(HealthCheckRequest {
+                request: RequestKind::Chat,
+            })
+            .await;
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn health_check_request_preserves_unconfigured_route_semantics() {
+        let router = LlmRouter::new(RouterConfig::default());
+        let result = router
+            .health_check(HealthCheckRequest {
+                request: RequestKind::Chat,
+            })
+            .await;
+        assert!(matches!(result, Err(LlmError::Configuration(_))));
+
+        let report = router.connection_status(RequestKind::Chat).await;
+        assert_eq!(report.status, LlmConnectionStatus::Unconfigured);
     }
 
     #[tokio::test]

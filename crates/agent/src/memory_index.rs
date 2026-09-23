@@ -11,6 +11,7 @@ use std::sync::Arc;
 use haven_common::config::{ModelEndpoint, RequestKind};
 use haven_llm::LlmRouter;
 use haven_llm::adapters::api_style_for;
+use haven_llm::types::EmbeddingRequest;
 use haven_memory::Database;
 use haven_memory::embeddings::entity_kind;
 use haven_memory::recall::{MemoryHit, MemoryQuery, MemoryRetriever};
@@ -175,7 +176,7 @@ impl MemoryEmbeddingIndex {
 
         for chunk in pending.chunks(self.embed_chunk_size) {
             let texts: Vec<String> = chunk.iter().map(|(_, _, text)| text.clone()).collect();
-            let embedding = match self.router.embed(texts).await {
+            let embedding = match self.router.embed(EmbeddingRequest { input: texts }).await {
                 Ok(embedding) => embedding,
                 Err(error) => {
                     tracing::warn!("memory embedding batch failed: {}", error);
