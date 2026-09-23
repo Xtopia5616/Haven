@@ -7,7 +7,7 @@
 //! timeline from the complete log.
 
 use crate::Database;
-use crate::repositories::messages::now_rfc3339_millis;
+use crate::repositories::messages::{Message, now_rfc3339_millis, undelivered_recovery_since};
 use crate::repositories::usage::{LlmCallUsage, LlmCallUsageInput};
 use chrono::{SecondsFormat, Utc};
 use rusqlite::OptionalExtension;
@@ -273,6 +273,39 @@ impl SessionStore {
     pub fn cursor(&self, session_id: &str) -> anyhow::Result<SessionCursor> {
         let conn = self.db.conn();
         Self::cursor_in_connection(&conn, session_id)
+    }
+
+    /// Read messages whose durable ingress sequence is newer than the
+    /// checkpoint cursor. This query intentionally returns all message roles
+    /// and types; callers apply the same recovery filtering as before.
+    pub async fn messages_after_ingress_cursor(
+        &self,
+        session_id: &str,
+        ingress_cursor: i64,
+    ) -> anyhow::Result<Vec<Message>> {
+        let session_id = session_id.to_owned();
+        self.db
+            .run_blocking(move |db| {
+                db.get_session_messages_since_ingress_seq(&session_id, ingress_cursor)
+            })
+            .await
+    }
+
+    /// Read recent user messages that have no session-step anchor. The
+    /// existing two-day recovery window, first-user exclusion, ID filtering,
+    /// ingress ordering and message projections are owned by the messages
+    /// repository query.
+    pub async fn recent_unanchored_user_messages(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Vec<Message>> {
+        let session_id = session_id.to_owned();
+        let since_created_at = undelivered_recovery_since();
+        self.db
+            .run_blocking(move |db| {
+                db.get_undelivered_user_messages_since(&session_id, &since_created_at)
+            })
+            .await
     }
 
     /// Load the active transcript, branch points and all projection clocks
@@ -1628,6 +1661,116 @@ mod tests {
         let session = db.create_session("input").unwrap();
         let store = SessionEventStore::new(db.clone());
         (db, store, session.id)
+    }
+
+    #[tokio::test]
+    async fn session_store_reads_messages_after_ingress_cursor_with_projection() {
+        let (db, store, session_id) = store();
+        let first = db
+            .add_message(&session_id, "user", "first", None, None)
+            .unwrap();
+        let attachment = haven_common::types::MessageAttachment::new("image/png", "aGVsbG8=");
+        let second = db
+            .add_message_full(
+                &session_id,
+                "user",
+                "second",
+                None,
+                None,
+                std::slice::from_ref(&attachment),
+                false,
+                None,
+            )
+            .unwrap();
+        let third = db
+            .add_message(&session_id, "assistant", "third", None, None)
+            .unwrap();
+
+        let messages = store
+            .messages_after_ingress_cursor(&session_id, first.ingress_seq)
+            .await
+            .unwrap();
+        assert_eq!(
+            messages
+                .iter()
+                .map(|message| message.id.as_str())
+                .collect::<Vec<_>>(),
+            [second.id.as_str(), third.id.as_str()]
+        );
+        assert_eq!(messages[0].attachments[0].media_type, "image/png");
+        assert_eq!(messages[0].media_inputs.len(), 1);
+        assert!(matches!(
+            messages[0].media_inputs[0].representations[0].payload,
+            haven_common::media::MediaRepresentationPayload::ManagedFileRef { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn session_store_reads_recent_unanchored_users_with_existing_window() {
+        let (db, store, session_id) = store();
+        db.add_message(&session_id, "user", "seed", None, None)
+            .unwrap();
+        let anchored = db
+            .add_message(&session_id, "user", "delivered", None, None)
+            .unwrap();
+        db.create_thought_step(&session_id, 1, &anchored.id)
+            .unwrap();
+        let attachment = haven_common::types::MessageAttachment::new("image/png", "aGVsbG8=");
+        let pending = db
+            .add_message_full(
+                &session_id,
+                "user",
+                "pending",
+                None,
+                None,
+                std::slice::from_ref(&attachment),
+                false,
+                None,
+            )
+            .unwrap();
+        db.add_message(&session_id, "assistant", "ignored", None, None)
+            .unwrap();
+
+        let messages = store
+            .recent_unanchored_user_messages(&session_id)
+            .await
+            .unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].id, pending.id);
+        assert_eq!(messages[0].attachments[0].media_type, "image/png");
+        assert_eq!(messages[0].media_inputs.len(), 1);
+
+        let old_session = db.create_session("old input").unwrap();
+        let old_seed = db
+            .add_message(&old_session.id, "user", "old seed", None, None)
+            .unwrap();
+        let old_pending = db
+            .add_message(&old_session.id, "user", "old pending", None, None)
+            .unwrap();
+        let old_cutoff = (chrono::Utc::now() - chrono::Duration::days(3))
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let seed_cutoff =
+            (chrono::Utc::now() - chrono::Duration::days(3) - chrono::Duration::seconds(1))
+                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let conn = db.conn();
+        conn.execute(
+            "UPDATE messages SET created_at = ?1 WHERE id = ?2",
+            rusqlite::params![seed_cutoff, old_seed.id],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE messages SET created_at = ?1 WHERE id = ?2",
+            rusqlite::params![old_cutoff, old_pending.id],
+        )
+        .unwrap();
+        drop(conn);
+        assert!(
+            store
+                .recent_unanchored_user_messages(&old_session.id)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     fn rollback_request(

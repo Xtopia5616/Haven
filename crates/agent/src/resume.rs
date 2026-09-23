@@ -305,11 +305,10 @@ impl AgentLayer {
         if self.executor.has_pending_context(session_id).await {
             return Ok(());
         }
-        let db = self.db.clone();
-        let sid = session_id.to_string();
-        let since = haven_memory::repositories::messages::undelivered_recovery_since();
-        let undelivered = db
-            .run_blocking(move |db| db.get_undelivered_user_messages_since(&sid, since.as_str()))
+        let undelivered = self
+            .react_engine
+            .event_store
+            .recent_unanchored_user_messages(session_id)
             .await
             .map_err(|e| anyhow::anyhow!("failed to scan pending inputs: {e}"))?;
         if undelivered.is_empty() {
@@ -403,17 +402,17 @@ impl AgentLayer {
         // must NOT be re-queued — that would double-inject.
         if !self.executor.has_pending_context(session_id).await {
             let ingress_cursor = replay.cursor.message_ingress_seq;
-            let since = haven_memory::repositories::messages::undelivered_recovery_since();
-            let db = self.db.clone();
-            let sid = session_id.to_string();
-            let (pending, undelivered) = db
-                .run_blocking(move |db| {
-                    let pending =
-                        db.get_session_messages_since_ingress_seq(&sid, ingress_cursor)?;
-                    let undelivered =
-                        db.get_undelivered_user_messages_since(&sid, since.as_str())?;
-                    Ok((pending, undelivered))
-                })
+            let store = &self.react_engine.event_store;
+            let pending = store
+                .messages_after_ingress_cursor(session_id, ingress_cursor)
+                .await
+                .map_err(|error| {
+                    anyhow::anyhow!(
+                        "failed to recover post-checkpoint inputs for session {session_id}: {error}"
+                    )
+                })?;
+            let undelivered = store
+                .recent_unanchored_user_messages(session_id)
                 .await
                 .map_err(|error| {
                     anyhow::anyhow!(
