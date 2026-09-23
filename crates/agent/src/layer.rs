@@ -27,7 +27,6 @@ pub struct AgentLayer {
     pub(crate) db: Arc<Database>,
     pub(crate) executor: Arc<SessionSupervisor>,
     pub(crate) conversation_window_size: usize,
-    context_limits: std::sync::Mutex<ContextLimitsConfig>,
     pub(crate) events: Arc<EventDispatcher>,
     pub(crate) prompt_builder: Arc<SystemPromptBuilder>,
     pub(crate) memory: Arc<MemoryService>,
@@ -101,7 +100,6 @@ impl AgentLayer {
             db,
             executor,
             conversation_window_size,
-            context_limits: std::sync::Mutex::new(context_limits),
             events,
             prompt_builder,
             memory: memory_service,
@@ -153,9 +151,8 @@ impl AgentLayer {
             .await;
     }
 
-    /// Hot-reload `[context_limits]` into the layer + ReAct engine (settings save).
+    /// Hot-reload `[context_limits]` into the ReAct engine (settings save).
     pub fn set_context_limits(&self, limits: ContextLimitsConfig) {
-        *self.context_limits.lock().unwrap() = limits.clone();
         self.react_engine.set_context_limits(limits);
     }
 
@@ -165,7 +162,7 @@ impl AgentLayer {
     }
 
     pub(crate) fn limits(&self) -> ContextLimitsConfig {
-        self.context_limits.lock().unwrap().clone()
+        self.react_engine.limits()
     }
 
     /// Persist a message into the session's message stream (conversation history).
@@ -1481,5 +1478,67 @@ impl haven_tools::MemoryRecallPort for AgentLayer {
         query: haven_memory::recall::MemoryQuery,
     ) -> anyhow::Result<haven_memory::recall::MemoryRecall> {
         self.recall_memory_query(query).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures_util::Stream;
+    use std::pin::Pin;
+
+    struct UnusedClient;
+
+    #[async_trait::async_trait]
+    impl haven_llm::LlmClient for UnusedClient {
+        async fn chat(
+            &self,
+            _: Vec<haven_common::types::CanonicalMessage>,
+        ) -> Result<haven_llm::LlmResponse, haven_llm::LlmError> {
+            Err(haven_llm::LlmError::Unknown("unused test client".into()))
+        }
+
+        async fn chat_stream(
+            &self,
+            _: Vec<haven_common::types::CanonicalMessage>,
+        ) -> Result<
+            Pin<Box<dyn Stream<Item = Result<haven_llm::StreamChunk, haven_llm::LlmError>> + Send>>,
+            haven_llm::LlmError,
+        > {
+            Err(haven_llm::LlmError::Unknown("unused test client".into()))
+        }
+
+        async fn health_check(&self) -> Result<(), haven_llm::LlmError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn context_limits_are_owned_by_react_engine() {
+        let mut db_path = std::env::temp_dir();
+        db_path.push(format!("haven_agent_limits_{}.db", uuid::Uuid::new_v4()));
+        let db = Arc::new(Database::open(&db_path).unwrap());
+        let executor = Arc::new(SessionSupervisor::new(
+            db.clone(),
+            Arc::new(haven_tools::ToolsManager::new()),
+            1,
+        ));
+        let client = Arc::new(UnusedClient);
+        let router = Arc::new(LlmRouter::new_with_clients(
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client,
+        ));
+        let agent = AgentLayer::new(db, executor, router, 10, 20, ContextLimitsConfig::default());
+
+        let limits = ContextLimitsConfig {
+            notification_summary_chars: 137,
+            ..ContextLimitsConfig::default()
+        };
+        agent.set_context_limits(limits);
+
+        assert_eq!(agent.limits().notification_summary_chars, 137);
+        assert_eq!(agent.limits(), agent.react_engine.limits());
     }
 }

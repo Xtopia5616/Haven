@@ -214,3 +214,4 @@
 - [0223：Agent usage runtime 脱离 SessionActor mailbox](0223-usage-runtime-boundary.md)
 - [0224：Agent ToolCatalogPort 单一读取边界](0224-tool-catalog-port.md)
 - [0225：Agent ToolObservationPort 观察文本边界](0225-tool-observation-port.md)
+- [0226：Agent context limits 单一运行时 owner](0226-agent-context-limits-single-owner.md)
