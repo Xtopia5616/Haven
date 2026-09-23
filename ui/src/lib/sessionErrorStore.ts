@@ -1,32 +1,25 @@
-import { get, writable } from 'svelte/store';
+import { appSessionReducer } from './sessionReducer.ts';
 
 /**
- * User-visible error reasons for sessions that failed during this app run.
- * The backend error event is already sanitized; this UI cache lets a
- * history-opened error session show the same reason without changing its
- * persisted lifecycle state just to inspect it.
+ * Compatibility facade for the volatile per-session error cache owned by
+ * SessionReducer. This remains renderer-only state and is not persisted or sent
+ * over IPC.
  */
-export const sessionErrorReasonStore = writable<Record<string, string>>({});
-
 export function rememberSessionError(sessionId: string, reason: string) {
-	const normalized = reason.trim();
-	if (!sessionId || !normalized) return;
-	sessionErrorReasonStore.update((reasons) => {
-		if (reasons[sessionId] === normalized) return reasons;
-		return { ...reasons, [sessionId]: normalized };
+	appSessionReducer.dispatch({
+		type: 'session/error-reason-remembered',
+		sessionId,
+		reason,
 	});
 }
 
 export function forgetSessionError(sessionId: string) {
-	if (!sessionId) return;
-	sessionErrorReasonStore.update((reasons) => {
-		if (!(sessionId in reasons)) return reasons;
-		const next = { ...reasons };
-		delete next[sessionId];
-		return next;
+	appSessionReducer.dispatch({
+		type: 'session/error-reason-forgotten',
+		sessionId,
 	});
 }
 
 export function getSessionErrorReason(sessionId: string): string {
-	return get(sessionErrorReasonStore)[sessionId] || '';
+	return appSessionReducer.getSessionErrorReason(sessionId);
 }

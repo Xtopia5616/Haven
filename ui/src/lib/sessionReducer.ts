@@ -106,12 +106,14 @@ export interface AgentChunkBatchItem {
 	payload: AgentChunkPayload;
 }
 
-/** One serializable state tree for the conversation. */
+/** One in-memory runtime state tree for the conversation. */
 export interface SessionReducerState {
 	sessions: SessionSummary[];
 	activeSessionId: string | null;
 	error: SessionError | null;
 	termination: SessionTermination | null;
+	/** Volatile per-session error reasons used when reopening history during this app run. */
+	sessionErrorReasons: Record<string, string>;
 	messages: Record<string, SessionMessage[]>;
 	interactions: Record<string, InteractionRequest>;
 	tokenStats: Record<string, SessionTokenStats>;
@@ -156,6 +158,8 @@ export type SessionAction =
 	  }
 	| { type: 'session/error-shown'; sessionId: string; reason: string }
 	| { type: 'session/error-cleared'; sessionId?: string | null }
+	| { type: 'session/error-reason-remembered'; sessionId: string; reason: string }
+	| { type: 'session/error-reason-forgotten'; sessionId: string }
 	| {
 			type: 'session/termination-shown';
 			sessionId: string;
@@ -228,6 +232,7 @@ export const initialSessionState: SessionReducerState = {
 	activeSessionId: null,
 	error: null,
 	termination: null,
+	sessionErrorReasons: {},
 	messages: {},
 	interactions: {},
 	tokenStats: {},
@@ -732,6 +737,27 @@ export function reduceSession(
 					}
 				: state;
 
+		case 'session/error-reason-remembered': {
+			const reason = action.reason.trim();
+			if (
+				!action.sessionId ||
+				!reason ||
+				state.sessionErrorReasons[action.sessionId] === reason
+			)
+				return state;
+			return {
+				...state,
+				sessionErrorReasons: { ...state.sessionErrorReasons, [action.sessionId]: reason },
+			};
+		}
+
+		case 'session/error-reason-forgotten': {
+			if (!action.sessionId || !(action.sessionId in state.sessionErrorReasons)) return state;
+			const sessionErrorReasons = { ...state.sessionErrorReasons };
+			delete sessionErrorReasons[action.sessionId];
+			return { ...state, sessionErrorReasons };
+		}
+
 		case 'session/termination-shown': {
 			const alreadyShown =
 				state.activeSessionId === action.sessionId &&
@@ -1146,7 +1172,12 @@ export function reduceSession(
 
 		case 'agent/action': {
 			const payload = action.payload;
-			const accepted = acceptEventSequence(state, payload.sessionId, payload.eventSeq, payload.stepId);
+			const accepted = acceptEventSequence(
+				state,
+				payload.sessionId,
+				payload.eventSeq,
+				payload.stepId,
+			);
 			if (!accepted) return state;
 			const ids = blockIdsOf(accepted, payload.sessionId, payload.stepNumber, payload.runId);
 			return withMessages(accepted, payload.sessionId, (messages) => {
@@ -1175,7 +1206,12 @@ export function reduceSession(
 
 		case 'agent/observation': {
 			const payload = action.payload;
-			const accepted = acceptEventSequence(state, payload.sessionId, payload.eventSeq, payload.stepId);
+			const accepted = acceptEventSequence(
+				state,
+				payload.sessionId,
+				payload.eventSeq,
+				payload.stepId,
+			);
 			if (!accepted) return state;
 			const ids = blockIdsOf(accepted, payload.sessionId, payload.stepNumber, payload.runId);
 			const updated = withMessages(accepted, payload.sessionId, (messages) => {
@@ -1277,6 +1313,10 @@ export class SessionReducer {
 
 	getMessages(sessionId: string): SessionMessage[] {
 		return messagesOf(this.state, sessionId);
+	}
+
+	getSessionErrorReason(sessionId: string): string {
+		return this.state.sessionErrorReasons[sessionId] || '';
 	}
 
 	getBlockIds(sessionId: string, stepNumber: number, runId: number): StreamBlockIds {
