@@ -68,8 +68,9 @@
 - 当前切片：Tools 将 `RuntimeCapabilities.web_search` 从展示字符串改为 `WebSearchAvailability`，provider/MCP 能力判定与优先级留在 Tools，Agent 映射回逐字相同的三种 prompt 值（ADR 0244）。
 - 当前切片：历史错误原因缓存并入 `SessionReducer`，`sessionErrorStore` 函数保留为兼容委托；busy 清除时机、历史页 fallback 和删除/清空列表生命周期不变（ADR 0245）。
 - 当前切片：LLM Router 的 native transcription、complete、embedding、raw stream 建流和 health check 共用请求结果投影；聚合 stream 的取消豁免与其他状态语义不变（ADR 0246）。
+- 当前切片：`MemoryWorker` 的 FastChat 调用经注入的 `MemoryInferencePort`；Agent 层的事实抽取、维护与游标行为不变，Router 适配器独占请求类型和响应 DTO（ADR 0247）。
 
-当前阶段判断：阶段 1 的 mailbox/运行态收口已基本完成；阶段 2 已收口 rollback boundary、两类 resume 读取 port、session overlay 恢复边界，以及 continue 的 committed recovery marker 决策与 projection 截断事务，但全局恢复/事件重放和崩溃窗口仍待继续验证；阶段 3 已开始以 SessionStore typed read ports 替代局部 raw Database 读取，其他传播仍待收窄；阶段 4 已完成目录/观察/资产租约/overlay/定时授权入口边界及 runtime web-search typed capability；完整 ToolsManager 解耦仍需拆分；阶段 5 已完成 settings/model 的 snapshot prepare/apply 切片，并把 update_settings 的旧 hotkey 与 Settings patch 合并到同一配置 edit；完整 RuntimeConfigCoordinator 与其他写入口仍待设计；阶段 6 已完成 CompleteRequest、聚合 StreamRequest、EmbeddingRequest 与 HealthCheckRequest 请求对象切片，并统一五类请求的结果状态投影；Router executor 拆分和 capability/call-purpose 语义分离仍待实施；阶段 7 已完成后台终态 CAS，完整 Job 生命周期与 MemoryRuntime durable replay 仍待设计；阶段 8 已完成 Action DTO 漂移检查和 UI 错误/usage/message 派生收口，其他 IPC/UI 编排仍待收口；阶段 9 已删除三个无调用者 facade API，剩余工作以 profiling 和更大范围公共面审查为主。
+当前阶段判断：阶段 1 的 mailbox/运行态收口已基本完成；阶段 2 已收口 rollback boundary、两类 resume 读取 port、session overlay 恢复边界，以及 continue 的 committed recovery marker 决策与 projection 截断事务，但全局恢复/事件重放和崩溃窗口仍待继续验证；阶段 3 已开始以 SessionStore typed read ports 替代局部 raw Database 读取，其他传播仍待收窄；阶段 4 已完成目录/观察/资产租约/overlay/定时授权入口边界及 runtime web-search typed capability；完整 ToolsManager 解耦仍需拆分；阶段 5 已完成 settings/model 的 snapshot prepare/apply 切片，并把 update_settings 的旧 hotkey 与 Settings patch 合并到同一配置 edit；完整 RuntimeConfigCoordinator 与其他写入口仍待设计；阶段 6 已完成 CompleteRequest、聚合 StreamRequest、EmbeddingRequest 与 HealthCheckRequest 请求对象切片，并统一五类请求的结果状态投影；Router executor 拆分和 capability/call-purpose 语义分离仍待实施；阶段 7 已完成后台终态 CAS 与 MemoryWorker FastChat 窄端口注入，完整 Job 生命周期、MemoryRuntime committed-event 消费和 MemoryReader 仍待设计；阶段 8 已完成 Action DTO 漂移检查和 UI 错误/usage/message 派生收口，其他 IPC/UI 编排仍待收口；阶段 9 已删除三个无调用者 facade API，剩余工作以 profiling 和更大范围公共面审查为主。
 
 ## 3. 不变量与禁止事项
 
@@ -250,7 +251,7 @@ SessionStore
 - 统一 claim、cancel、timeout、retry、tail output、completion outbox 和 UI projection；
 - messaging 不并入 Job，仍是独立 transport domain；
 - `MemoryRuntime` 监听 committed session event，负责 fact extraction/maintenance/index catch-up；
-- Agent 只提交 `SessionCommitted` 并通过 MemoryReader 获取 recall；LLM 调用通过小型 `InferencePort` 注入。
+- `MemoryWorker` 的 FastChat 调用已通过小型 `MemoryInferencePort` 注入（ADR 0247）；后续仍需让 Agent 只提交 `SessionCommitted` 并通过 MemoryReader 获取 recall。
 
 主要文件：`crates/tools/src/action_service.rs`、`action_lifecycle.rs`、`crates/agent/src/memory_worker.rs`、`memory_service.rs`、`memory_index.rs`、`crates/memory/src/`。
 

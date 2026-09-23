@@ -235,3 +235,4 @@
 - [0244：类型化运行时 Web Search 能力](0244-typed-runtime-web-search-capability.md)
 - [0245：会话错误原因缓存归 SessionReducer](0245-session-error-cache-in-reducer.md)
 - [0246：LLM Router 请求结果投影收口](0246-llm-request-outcome-projection.md)
+- [0247：MemoryWorker 使用窄推理端口](0247-memory-worker-inference-port.md)

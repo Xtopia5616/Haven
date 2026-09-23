@@ -4,6 +4,7 @@
 //! lives in `rollback.rs`. The entry gates live in the crate root.
 
 use super::*;
+use crate::memory_inference::RouterMemoryInferencePort;
 use crate::session::SessionEvent;
 use serde_json::Value;
 
@@ -55,9 +56,10 @@ impl AgentLayer {
             executor.get_tools(),
             memory_service.clone(),
         ));
-        let memory_worker = Arc::new(MemoryWorker::new_with_memory(
+        let memory_inference = Arc::new(RouterMemoryInferencePort::new(router.clone()));
+        let memory_worker = Arc::new(MemoryWorker::new_with_inference(
             memory_service.clone(),
-            router.clone(),
+            memory_inference,
             context_limits.max_transcript_chars,
             context_limits.max_known_facts,
             context_limits.sanitize_field_max_chars,

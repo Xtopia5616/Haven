@@ -4,7 +4,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use anyhow::Context as _;
-use haven_common::config::RequestKind;
 use haven_common::prompts::{
     COMPACTED_SUMMARY_PREFIX, CONTRADICTION_ARBITRATE_SYSTEM_PROMPT, FACT_EXTRACTION_SYSTEM_PROMPT,
     predicate_merge_system_prompt,
@@ -27,6 +26,7 @@ use crate::fact_inference::{
     build_numbered_transcript, format_contradiction_groups, gate_contradiction_demote,
     gate_predicate_merge, resolve_source_message,
 };
+use crate::memory_inference::{MemoryInferencePort, RouterMemoryInferencePort};
 use crate::memory_service::{MemoryDatabase, MemoryService};
 
 /// Background memory worker: fact extraction, maintenance, outbox draining,
@@ -34,7 +34,7 @@ use crate::memory_service::{MemoryDatabase, MemoryService};
 pub struct MemoryWorker {
     memory: Arc<MemoryService>,
     db: MemoryDatabase,
-    router: Arc<LlmRouter>,
+    inference: Arc<dyn MemoryInferencePort>,
     /// Cap (chars) for transcripts sent to the SmallModel for fact
     /// extraction. Prevents unbounded token cost on long conversations.
     max_transcript_chars: usize,
@@ -85,14 +85,15 @@ impl MemoryWorker {
         sanitize_max_chars: usize,
         fact_extraction_min_interval_secs: u64,
     ) -> Self {
+        let inference = Arc::new(RouterMemoryInferencePort::new(router.clone()));
         let memory = Arc::new(MemoryService::new(
             db,
             Some(router.clone()),
             embed_chunk_size,
         ));
-        Self::new_with_memory(
+        Self::new_with_inference(
             memory,
-            router,
+            inference,
             max_transcript_chars,
             max_known_facts,
             sanitize_max_chars,
@@ -100,9 +101,9 @@ impl MemoryWorker {
         )
     }
 
-    pub fn new_with_memory(
+    pub(crate) fn new_with_inference(
         memory: Arc<MemoryService>,
-        router: Arc<LlmRouter>,
+        inference: Arc<dyn MemoryInferencePort>,
         max_transcript_chars: usize,
         max_known_facts: usize,
         sanitize_max_chars: usize,
@@ -112,7 +113,7 @@ impl MemoryWorker {
         Self {
             memory,
             db,
-            router: router.clone(),
+            inference,
             max_transcript_chars,
             max_known_facts,
             sanitize_max_chars,
@@ -741,11 +742,7 @@ impl MemoryWorker {
     /// the DB lock; demotes are gated then applied in a separate blocking
     /// call. Returns rows demoted.
     async fn arbitrate_contradictions_with_llm(&self) -> u64 {
-        if !self
-            .router
-            .is_request_configured(RequestKind::FastChat)
-            .await
-        {
+        if !self.inference.is_fast_chat_configured().await {
             return 0;
         }
         let db = self.db.clone();
@@ -782,15 +779,11 @@ impl MemoryWorker {
             Err(_) => return 0,
         };
         let response = match self
-            .router
-            .chat_with_prompt(
-                RequestKind::FastChat,
-                CONTRADICTION_ARBITRATE_SYSTEM_PROMPT,
-                &user_content,
-            )
+            .inference
+            .fast_chat(CONTRADICTION_ARBITRATE_SYSTEM_PROMPT, &user_content)
             .await
         {
-            Ok(r) => r,
+            Ok(text) => text,
             Err(e) => {
                 tracing::warn!(
                     "memory maintenance: contradiction arbitrate LLM failed: {}",
@@ -799,10 +792,10 @@ impl MemoryWorker {
                 return 0;
             }
         };
-        if response.text.trim().is_empty() {
+        if response.trim().is_empty() {
             return 0;
         }
-        let json_str = extract_json_array(&response.text);
+        let json_str = extract_json_array(&response);
         let proposals: Vec<ContradictionDemoteProposal> = match serde_json::from_str(&json_str) {
             Ok(v) => v,
             Err(e) => {
@@ -848,11 +841,7 @@ impl MemoryWorker {
     /// only gated rewrites. LLM runs outside the DB lock; SQL apply is a
     /// separate blocking call. Returns rows rewritten.
     async fn merge_predicates_with_llm(&self) -> u64 {
-        if !self
-            .router
-            .is_request_configured(RequestKind::FastChat)
-            .await
-        {
+        if !self.inference.is_fast_chat_configured().await {
             return 0;
         }
         let db = self.db.clone();
@@ -887,21 +876,17 @@ impl MemoryWorker {
             Err(_) => return 0,
         };
         let merge_prompt = predicate_merge_system_prompt(CANONICAL_MERGE_TARGETS);
-        let response = match self
-            .router
-            .chat_with_prompt(RequestKind::FastChat, &merge_prompt, &user_content)
-            .await
-        {
-            Ok(r) => r,
+        let response = match self.inference.fast_chat(&merge_prompt, &user_content).await {
+            Ok(text) => text,
             Err(e) => {
                 tracing::warn!("memory maintenance: predicate merge LLM failed: {}", e);
                 return 0;
             }
         };
-        if response.text.trim().is_empty() {
+        if response.trim().is_empty() {
             return 0;
         }
-        let json_str = extract_json_array(&response.text);
+        let json_str = extract_json_array(&response);
         let proposals: Vec<PredicateMergeProposal> = match serde_json::from_str(&json_str) {
             Ok(v) => v,
             Err(e) => {
@@ -1138,23 +1123,19 @@ impl MemoryWorker {
             .map_err(|e| anyhow::anyhow!("inference semaphore closed: {}", e))?;
 
         let response = self
-            .router
-            .chat_with_prompt(
-                RequestKind::FastChat,
-                FACT_EXTRACTION_SYSTEM_PROMPT,
-                &user_content,
-            )
+            .inference
+            .fast_chat(FACT_EXTRACTION_SYSTEM_PROMPT, &user_content)
             .await
             .map_err(|e| anyhow::anyhow!("small model chat failed: {}", e))?;
 
-        if response.text.trim().is_empty() {
+        if response.trim().is_empty() {
             tracing::debug!("LLM fact extraction: empty model response, treating as no facts");
             return Ok(Vec::new());
         }
 
-        let json_str = extract_json_array(&response.text);
+        let json_str = extract_json_array(&response);
         let facts: Vec<LlmFact> = serde_json::from_str(&json_str).map_err(|e| {
-            let preview: String = response.text.chars().take(200).collect();
+            let preview: String = response.chars().take(200).collect();
             anyhow::anyhow!("failed to parse LLM fact JSON: {} —raw: {}", e, preview)
         })?;
 
@@ -1472,6 +1453,28 @@ mod tests {
     use haven_memory::repositories::messages::Message;
     use haven_memory::repositories::session_steps::SessionStep;
     use std::pin::Pin;
+    use std::sync::atomic::AtomicUsize;
+
+    struct FixedMemoryInference {
+        response: String,
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl MemoryInferencePort for FixedMemoryInference {
+        async fn is_fast_chat_configured(&self) -> bool {
+            true
+        }
+
+        async fn fast_chat(
+            &self,
+            _system_prompt: &str,
+            _user_prompt: &str,
+        ) -> anyhow::Result<String> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            Ok(self.response.clone())
+        }
+    }
 
     /// Mock whose chat answers with a fixed JSON fact array.
     struct FakeLlm {
@@ -2115,6 +2118,30 @@ mod tests {
             .get_kv(&format!("fact_extraction.{}", session.id))
             .unwrap();
         assert_eq!(cursor2, cursor);
+    }
+
+    #[tokio::test]
+    async fn infer_facts_uses_injected_memory_inference_port() {
+        let db = temp_db();
+        let session = db.create_session("injected inference").unwrap();
+        db.add_message(&session.id, "user", "I like Rust.", Some("text"), None)
+            .unwrap();
+        let inference = Arc::new(FixedMemoryInference {
+            response: r#"[{"subject":"user","predicate":"likes","object":"Rust","confidence":0.9,"durability":0.8,"message_index":1}]"#.into(),
+            calls: AtomicUsize::new(0),
+        });
+        let memory = Arc::new(MemoryService::new(db.clone(), None, 64));
+        let worker = MemoryWorker::new_with_inference(memory, inference.clone(), 4_000, 64, 256, 0);
+
+        assert!(worker.infer_facts(&session.id).await);
+
+        let facts = db.get_facts("user").unwrap();
+        assert!(
+            facts
+                .iter()
+                .any(|fact| { fact.predicate == "likes" && fact.object == "Rust" })
+        );
+        assert_eq!(inference.calls.load(Ordering::Relaxed), 1);
     }
 
     #[tokio::test]

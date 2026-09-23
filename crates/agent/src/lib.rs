@@ -10,6 +10,7 @@ mod ingress;
 pub mod interaction;
 mod lifecycle;
 mod memory_index;
+mod memory_inference;
 mod memory_service;
 mod memory_worker;
 mod partial;
