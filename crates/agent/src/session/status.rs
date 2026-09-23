@@ -514,7 +514,7 @@ impl SessionSupervisor {
             .await
             .is_none_or(|status| status.is_terminal())
         {
-            self.tools.release_managed_assets_for_session(session_id);
+            self.release_managed_assets_for_session(session_id);
         }
     }
 

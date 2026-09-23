@@ -199,7 +199,6 @@ impl AgentLayer {
         // host-owned files from the materialized media projection before a
         // resumed request can ask the `files` tool to resolve them.
         self.executor
-            .get_tools()
             .register_managed_assets_for_session(session_id, &all_attachments);
 
         // The event stream is authoritative. A checkpoint supplies no runtime
@@ -425,7 +424,6 @@ impl AgentLayer {
             let mut answer_pending = self.executor.is_ask_gated(session_id).await;
             for msg in merge_recovery_candidates(pending, undelivered) {
                 self.executor
-                    .get_tools()
                     .register_managed_assets_for_session(session_id, &msg.attachments);
                 let is_answer = answer_pending;
                 let queued = if is_answer {
@@ -555,7 +553,6 @@ impl AgentLayer {
         initial: InitialUserInput<'_>,
     ) -> anyhow::Result<Vec<ReActRound>> {
         self.executor
-            .get_tools()
             .register_managed_assets_for_session(session_id, initial.attachments);
         tracing::debug!(
             "run_session start: session_id={:?} context={:?} attachments={}",

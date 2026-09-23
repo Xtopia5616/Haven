@@ -169,6 +169,8 @@ pub struct SessionSupervisor {
     /// instead of taking MCP, skills, authorization, actions or live output
     /// back out of ToolsManager.
     services: ToolServices,
+    /// Agent-owned lifecycle boundary for session-scoped managed asset leases.
+    managed_asset_lease_port: Arc<dyn ManagedAssetLeasePort>,
     /// Agent-owned read boundary for formatting completed tool observations.
     observation_port: Arc<dyn ToolObservationPort>,
     /// The sole cross-session registry. A session's mutable runtime state is
@@ -232,7 +234,10 @@ mod status;
 mod tool_ports;
 mod tool_runner;
 pub(crate) use dispatcher::DirectRunLease;
-use tool_ports::{ToolObservationPort, ToolsManagerToolObservationAdapter};
+use tool_ports::{
+    ManagedAssetLeasePort, ToolObservationPort, ToolsManagerManagedAssetLeaseAdapter,
+    ToolsManagerToolObservationAdapter,
+};
 pub(crate) use tool_runner::{ActionStepMetadata, ActionStepPersistenceError};
 
 pub(crate) use actor::{CONTEXT_BATCH_MAX_CHARS, CONTEXT_BATCH_MAX_ITEMS, MessagingTitle};
@@ -244,6 +249,9 @@ impl SessionSupervisor {
         let services = tools.share_services();
         let observation_port =
             Arc::new(ToolsManagerToolObservationAdapter::new(Arc::clone(&tools)));
+        let managed_asset_lease_port = Arc::new(ToolsManagerManagedAssetLeaseAdapter::new(
+            Arc::clone(&tools),
+        ));
         let (event_tx, _) = broadcast::channel(256);
         Self {
             partials: Arc::new(crate::partial::PartialStore::new(db.clone())),
@@ -252,6 +260,7 @@ impl SessionSupervisor {
             tools,
             services,
             observation_port,
+            managed_asset_lease_port,
             actors: Arc::new(Mutex::new(HashMap::new())),
             admission: Arc::new(dispatcher::RunAdmission::new(max_concurrent.max(1))),
             lifecycle_gate: Arc::new(Mutex::new(())),
@@ -271,6 +280,20 @@ impl SessionSupervisor {
 
     pub fn services(&self) -> &ToolServices {
         &self.services
+    }
+
+    pub(crate) fn register_managed_assets_for_session(
+        &self,
+        session_id: &str,
+        attachments: &[MessageAttachment],
+    ) {
+        self.managed_asset_lease_port
+            .register_for_session(session_id, attachments);
+    }
+
+    pub(crate) fn release_managed_assets_for_session(&self, session_id: &str) {
+        self.managed_asset_lease_port
+            .release_for_session(session_id);
     }
 
     pub fn subscribe_events(&self) -> broadcast::Receiver<SessionEvent> {
