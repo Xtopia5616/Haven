@@ -62,7 +62,10 @@ impl RuntimeConfigApplyPlan {
                 ConfigDomain::Llm => plan.push_live(RuntimeConfigTarget::LlmRouter),
                 ConfigDomain::Hotkey => plan.push_live(RuntimeConfigTarget::Hotkey),
                 ConfigDomain::Session => plan.push_live(RuntimeConfigTarget::SessionRuntime),
-                ConfigDomain::ContextLimits => plan.push_live(RuntimeConfigTarget::ContextLimits),
+                ConfigDomain::ContextLimits => {
+                    plan.push_live(RuntimeConfigTarget::ContextLimits);
+                    plan.push_live(RuntimeConfigTarget::LlmRouter);
+                }
                 ConfigDomain::Security => plan.push_live(RuntimeConfigTarget::Security),
                 ConfigDomain::Media => {
                     plan.push_live(RuntimeConfigTarget::InputPipeline);
@@ -115,6 +118,7 @@ mod tests {
             domains: vec![
                 ConfigDomain::Media,
                 ConfigDomain::Llm,
+                ConfigDomain::ContextLimits,
                 ConfigDomain::SkillsExec,
                 ConfigDomain::Skills,
                 ConfigDomain::Notification,
@@ -126,12 +130,31 @@ mod tests {
             plan.live,
             vec![
                 RuntimeConfigTarget::InputPipeline,
-                RuntimeConfigTarget::LlmRouter
+                RuntimeConfigTarget::LlmRouter,
+                RuntimeConfigTarget::ContextLimits
             ]
         );
         assert_eq!(plan.restart_required, vec![RuntimeConfigTarget::Skills]);
         assert!(plan.contains(RuntimeConfigTarget::LlmRouter));
         assert!(plan.contains(RuntimeConfigTarget::Skills));
+    }
+
+    #[test]
+    fn context_limits_alone_refresh_context_consumers_and_router_live() {
+        let plan = RuntimeConfigApplyPlan::from_change(&ConfigChanged {
+            version: 8,
+            domains: vec![ConfigDomain::ContextLimits],
+        });
+
+        assert_eq!(plan.version, 8);
+        assert_eq!(
+            plan.live,
+            vec![
+                RuntimeConfigTarget::ContextLimits,
+                RuntimeConfigTarget::LlmRouter,
+            ]
+        );
+        assert!(plan.restart_required.is_empty());
     }
 
     #[test]

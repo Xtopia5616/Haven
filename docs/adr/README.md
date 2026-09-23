@@ -218,3 +218,4 @@
 - [0227：扁平化 SessionActor messaging 状态](0227-session-state-flatten-runtime.md)
 - [0228：删除 LLM router chat 转发别名](0228-llm-chat-alias-removal.md)
 - [0229：定时任务状态事实去重](0229-scheduled-action-state-dedup.md)
+- [0230：ContextLimits 路由刷新与应用顺序](0230-context-limits-router-refresh-order.md)

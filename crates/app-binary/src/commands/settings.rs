@@ -97,20 +97,6 @@ pub async fn update_settings(
         tick("set_default_shell");
     }
 
-    // Propagate context limits (incl. max_tools_per_request / default
-    // context window) so tools + agent pick up Settings changes without a
-    // process restart.
-    if plan.contains(RuntimeConfigTarget::ContextLimits) {
-        state
-            .tools
-            .set_context_limits(config.context_limits.clone())
-            .await;
-        state
-            .agent
-            .set_context_limits(config.context_limits.clone());
-        tick("set_context_limits");
-    }
-
     // Apply the new security boundary before any config reload can start a
     // connection. A single settings update may change both MCP definitions
     // and network policy; the stricter policy must win during that transition.
@@ -143,6 +129,20 @@ pub async fn update_settings(
         hot_swap_router(&state, new_router).await?;
         tick("hot_swap_router");
         crate::commands::emit_llm_config_changed(&app);
+    }
+
+    // Apply context limits only after the router and its dependent clients
+    // have been rebuilt successfully. If hot_swap_router fails, both the
+    // router and its context-limit consumers keep their previous runtime state.
+    if plan.contains(RuntimeConfigTarget::ContextLimits) {
+        state
+            .tools
+            .set_context_limits(config.context_limits.clone())
+            .await;
+        state
+            .agent
+            .set_context_limits(config.context_limits.clone());
+        tick("set_context_limits");
     }
 
     if plan.contains(RuntimeConfigTarget::SessionRuntime) {
