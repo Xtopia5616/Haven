@@ -52,8 +52,11 @@
 - `95189fa`、`d7dd2e3`：MemoryEmbeddingIndex 成为 embedding vector-space identity 的唯一解析者；ActionService 接管 App action 历史读取，命令不再直接读取 raw Database（ADR 0232；ADR 0215 边界补充）。
 - `cfa080b`：会话恢复、初始输入和清理路径通过 `ManagedAssetLeasePort` 管理媒体资产租约，工具 session overlay 注销保持独立（ADR 0233）。
 - Phase 6 首个请求对象切片：`CompleteRequest` 成为普通与 tools 完整请求的唯一 Router 入口；删除 Router chat 转发 API 并迁移仓库内调用点（ADR 0234）。
+- `3bc807d`：回滚目标先校验，SessionStore 在事务内解析消息/分支 projection boundary，过期 transcript cursor fail closed（补充 ADR 0207）。
+- `0321a61`：settings/model 共用配置应用串行边界，Router 与媒体依赖从同一 `ConfigSnapshot` 预构建，准备失败不修改 live runtime（ADR 0235）。
+- `9f45e46`：Action IPC wire DTO、状态值和可选字段加入静态漂移检查；不引入通用 codegen，性能诊断命令目录同步修正。
 
-当前阶段判断：阶段 1 的 mailbox/运行态收口已基本完成，阶段 2–3 仍需继续验证恢复与 storage port 的全局边界；阶段 4 已完成目录/观察读取的切片，执行/授权必须作为一个安全边界继续审查；阶段 5 已完成 ContextLimits/Router 的一致性切片但尚未成为完整协调器；阶段 6 已完成 `CompleteRequest` 与唯一 `complete` 入口首切片，stream/embed/health request object 和 executor 拆分仍待实施；阶段 7–9 尚未完成。
+当前阶段判断：阶段 1 的 mailbox/运行态收口已基本完成；阶段 2 已收口 rollback boundary 失败语义，但 resume ingress 与全局恢复仍待继续验证；阶段 3 仍需继续缩小 raw Database；阶段 4 已完成目录/观察/资产租约读取边界，执行/授权必须作为安全边界继续审查；阶段 5 已完成 settings/model 的 snapshot prepare/apply 切片但尚未成为完整协调器；阶段 6 已完成 `CompleteRequest` 与唯一 `complete` 入口首切片，stream/embed/health request object 和 executor 拆分仍待实施；阶段 8 已完成 Action DTO 漂移检查，其他 IPC/UI 编排仍待收口；阶段 7、9 尚未完成。
 
 ## 3. 不变量与禁止事项
 

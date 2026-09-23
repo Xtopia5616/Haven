@@ -223,3 +223,4 @@
 - [0232：Memory vector-space identity 唯一解析边界](0232-memory-vector-space-identity-owner.md)
 - [0233：会话托管媒体资产租约端口](0233-session-managed-asset-lease-port.md)
 - [0234：LLM 完整请求对象与唯一 complete 入口](0234-llm-complete-request-object.md)
+- [0235：版本化运行时配置应用边界](0235-versioned-runtime-config-apply-boundary.md)
