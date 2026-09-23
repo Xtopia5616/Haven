@@ -227,3 +227,4 @@
 - [0236：后台任务终态写入采用 first-wins CAS](0236-background-action-terminal-cas.md)
 - [0237：定时任务授权入口收口](0237-scheduled-authorization-port.md)
 - [0238：SessionStore 恢复读取端口](0238-session-recovery-read-ports.md)
+- [0239：删除已无调用者的 facade API](0239-remove-unused-facade-apis.md)
