@@ -236,3 +236,4 @@
 - [0245：会话错误原因缓存归 SessionReducer](0245-session-error-cache-in-reducer.md)
 - [0246：LLM Router 请求结果投影收口](0246-llm-request-outcome-projection.md)
 - [0247：MemoryWorker 使用窄推理端口](0247-memory-worker-inference-port.md)
+- [0248：后台 action 终态提交与运行态发布顺序](0248-background-action-terminal-commit-order.md)
