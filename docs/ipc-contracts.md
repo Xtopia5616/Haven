@@ -32,6 +32,7 @@
 | `get_log_info` | `-` | `LogInfo` | read | 不返回环境详情 |
 | `read_log_tail` | `ReadLogTailRequest` | `LogTail` | read | 尾部长度受限 |
 | `log_frontend_error` | `FrontendErrorRequest` | `()` | mutate | 脱敏后写入后端日志 |
+| `get_performance_metrics` | `UiMetricsSnapshot?` | `MetricsSnapshot` | read | 仅返回有界、无内容的后端与渲染器计数 |
 | `list_mcp_tools` | `-` | `McpServerSnapshot[]` | read | 快照不执行工具，env 值统一遮蔽 |
 | `reconnect_mcp` | `McpNameRequest` | `()` | execute | 只能选择已配置客户端 |
 | `refresh_mcp_servers` | `-` | `McpRefreshResult` | execute | 只重 reconcile 配置客户端 |

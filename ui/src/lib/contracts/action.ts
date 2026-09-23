@@ -45,7 +45,7 @@ export interface ActionPayload {
 interface ActionWirePayload {
 	id: string;
 	kind: ActionKind;
-	status?: string;
+	status?: ActionStatus;
 	session_id?: string;
 	started_at?: string;
 	finished_at?: string;
@@ -61,6 +61,8 @@ interface ActionWirePayload {
 	preview?: string;
 }
 
+type ActionWireInput = Omit<ActionWirePayload, 'status'> & { status?: unknown };
+
 export interface TauriEvent<T> {
 	event: string;
 	id: number;
@@ -74,7 +76,7 @@ function mapActionStatus(value: unknown): ActionStatus | undefined {
 }
 
 /** Convert a command result or event payload from the Rust wire shape. */
-export function mapActionPayload(payload: ActionWirePayload): ActionPayload {
+export function mapActionPayload(payload: ActionWireInput): ActionPayload {
 	return {
 		id: payload.id,
 		kind: payload.kind,
@@ -95,6 +97,6 @@ export function mapActionPayload(payload: ActionWirePayload): ActionPayload {
 	};
 }
 
-export function mapActionEvent(event: TauriEvent<ActionWirePayload>): TauriEvent<ActionPayload> {
+export function mapActionEvent(event: TauriEvent<ActionWireInput>): TauriEvent<ActionPayload> {
 	return { ...event, payload: mapActionPayload(event.payload) };
 }
