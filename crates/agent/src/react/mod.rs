@@ -334,6 +334,7 @@ pub struct ReActEngine {
     executor: Arc<SessionSupervisor>,
     /// Agent-owned read boundary for immutable per-session tool catalogs.
     tool_catalog: Arc<dyn ToolCatalogPort>,
+    /// Database access for the event-boundary and transcript persistence paths.
     db: Arc<Database>,
     /// Process-local streamed message identity, shared by all engine callers.
     identity_map: IdentityMap,
@@ -913,17 +914,10 @@ impl ReActEngine {
             .iter()
             .map(|item| item.input.clone())
             .collect::<Vec<_>>();
-        let store = self.event_store.clone();
-        let session_id_for_persist = session_id.to_string();
-        let persist = move |_db: &Database| {
-            store
-                .append_usage_batch(&session_id_for_persist, &inputs)
-                .map(|_| ())
-        };
-        let persisted = match cancel {
-            Some(cancel) => self.db.run_blocking_cancellable(cancel, persist).await,
-            None => self.db.run_blocking(persist).await,
-        };
+        let persisted = self
+            .usage_runtime
+            .append_tool_usage_batch(session_id, inputs, cancel)
+            .await;
         match persisted {
             Ok(_) => {}
             Err(error) => tracing::warn!(

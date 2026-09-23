@@ -223,6 +223,29 @@ impl UsageRuntime {
             .map_err(|_| anyhow::anyhow!("usage runtime dropped session '{session_id}' result"))?
     }
 
+    /// Persist tool-owned usage outside the Agent cumulative FIFO. The batch
+    /// remains one SessionStore transaction and uses the caller's original
+    /// cancellable blocking path.
+    pub(crate) async fn append_tool_usage_batch(
+        &self,
+        session_id: &str,
+        inputs: Vec<LlmCallUsageInput>,
+        cancel: Option<CancellationToken>,
+    ) -> anyhow::Result<()> {
+        if inputs.is_empty() {
+            return Ok(());
+        }
+
+        let store = self.store.clone();
+        let session_id = session_id.to_string();
+        let persist =
+            move |_db: &Database| store.append_usage_batch(&session_id, &inputs).map(|_| ());
+        match cancel {
+            Some(cancel) => self.db.run_blocking_cancellable(cancel, persist).await,
+            None => self.db.run_blocking(persist).await,
+        }
+    }
+
     /// Queue a reset in the same FIFO as record operations. This remains
     /// synchronous for existing lifecycle call sites, matching actor try_send.
     pub(crate) fn reset(&self, session_id: &str) {
@@ -398,6 +421,28 @@ async fn record_usage(
 mod tests {
     use super::*;
 
+    fn tool_usage_input(call_kind: &str, model: &str, prompt_tokens: u32) -> LlmCallUsageInput {
+        LlmCallUsageInput {
+            step_number: Some(3),
+            request_kind: RequestKind::Chat,
+            call_kind: call_kind.into(),
+            model: Some(model.into()),
+            prompt_tokens,
+            completion_tokens: 2,
+            total_tokens: prompt_tokens + 2,
+            cached_tokens: 0,
+            cache_creation_tokens: 0,
+            cache_miss_tokens: prompt_tokens,
+            cache_accounting: "inclusive".into(),
+            cache_diagnostics: None,
+            cost_usd: 0.01,
+            has_cost: true,
+            duration_ms: Some(12),
+            context_tokens: prompt_tokens,
+            context_window: Some(4096),
+        }
+    }
+
     fn update(prompt_tokens: u32) -> UsageUpdate {
         UsageUpdate {
             request: RequestKind::Chat,
@@ -505,6 +550,108 @@ mod tests {
         assert_eq!(runtime.sessions.lock().unwrap().len(), 1);
         let session_state = runtime.sessions.lock().unwrap()[&session.id]._state.clone();
         assert_eq!(session_state.tracker.epoch(&session.id), 1);
+    }
+
+    #[tokio::test]
+    async fn tool_usage_batch_appends_events_and_projects_rows_in_order() {
+        let directory = tempfile::tempdir().expect("temporary DB directory");
+        let db = Arc::new(Database::open(&directory.path().join("tool-usage.db")).unwrap());
+        let session = db.create_session("tool usage batch").unwrap();
+        let store = SessionStore::new(Arc::clone(&db));
+        let runtime = UsageRuntime::new(Arc::clone(&db), store.clone());
+
+        runtime
+            .append_tool_usage_batch(
+                &session.id,
+                vec![
+                    tool_usage_input("tool", "tool-model", 11),
+                    tool_usage_input("media", "media-model", 17),
+                ],
+                None,
+            )
+            .await
+            .unwrap();
+
+        let usage_events = store
+            .read_all(&session.id)
+            .unwrap()
+            .into_iter()
+            .filter(|event| event.event_type == "usage_recorded")
+            .map(|event| serde_json::from_str::<serde_json::Value>(&event.payload).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(usage_events.len(), 2);
+        assert_eq!(usage_events[0]["model"].as_str(), Some("tool-model"));
+        assert_eq!(usage_events[0]["call_kind"], "tool");
+        assert_eq!(usage_events[1]["model"].as_str(), Some("media-model"));
+        assert_eq!(usage_events[1]["call_kind"], "media");
+
+        let projected = db.get_session_llm_usage(&session.id).unwrap();
+        assert_eq!(projected.len(), 2);
+        assert!(projected.iter().any(|row| {
+            row.model.as_deref() == Some("tool-model")
+                && row.call_kind == "tool"
+                && row.prompt_tokens == 11
+        }));
+        assert!(projected.iter().any(|row| {
+            row.model.as_deref() == Some("media-model")
+                && row.call_kind == "media"
+                && row.prompt_tokens == 17
+        }));
+    }
+
+    #[tokio::test]
+    async fn cancelled_tool_usage_batch_interrupts_blocking_store_write() {
+        let directory = tempfile::tempdir().expect("temporary DB directory");
+        let db = Arc::new(Database::open(&directory.path().join("tool-usage-cancel.db")).unwrap());
+        let session = db.create_session("cancel tool usage batch").unwrap();
+        let store = SessionStore::new(Arc::clone(&db));
+        let runtime = Arc::new(UsageRuntime::new(Arc::clone(&db), store.clone()));
+
+        let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let lock_db = Arc::clone(&db);
+        let lock_holder = std::thread::spawn(move || {
+            let conn = lock_db.conn();
+            conn.execute_batch("BEGIN IMMEDIATE").unwrap();
+            locked_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            conn.execute_batch("ROLLBACK").unwrap();
+        });
+        locked_rx.recv().unwrap();
+
+        let cancel = CancellationToken::new();
+        let task_runtime = Arc::clone(&runtime);
+        let task_session_id = session.id.clone();
+        let task_cancel = cancel.clone();
+        let task = tokio::spawn(async move {
+            task_runtime
+                .append_tool_usage_batch(
+                    &task_session_id,
+                    vec![tool_usage_input("tool", "cancelled-model", 5)],
+                    Some(task_cancel),
+                )
+                .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        cancel.cancel();
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(1), task).await;
+        release_tx.send(()).unwrap();
+        lock_holder.join().unwrap();
+        assert!(
+            result
+                .expect("cancellation must stop the blocking write promptly")
+                .unwrap()
+                .is_err()
+        );
+        assert!(
+            store
+                .read_all(&session.id)
+                .unwrap()
+                .iter()
+                .all(|event| event.event_type != "usage_recorded")
+        );
+        assert!(db.get_session_llm_usage(&session.id).unwrap().is_empty());
     }
 
     #[test]
