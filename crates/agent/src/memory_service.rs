@@ -17,7 +17,7 @@ use haven_memory::recall::{
     MemoryRetriever,
 };
 
-use crate::memory_index::{MemoryEmbeddingIndex, embedding_index_model};
+use crate::memory_index::MemoryEmbeddingIndex;
 
 const MAX_EPISODES_IN_PROMPT: usize = 5;
 
@@ -134,23 +134,9 @@ impl MemoryService {
     }
 
     pub(crate) async fn current_embedding_model(&self) -> String {
-        let Some(router) = &self.router else {
-            return String::new();
-        };
-        if !router.is_request_configured(RequestKind::Embedding).await {
-            return String::new();
-        }
-        let endpoint = router
-            .config()
-            .await
-            .route(RequestKind::Embedding)
-            .map(|model| &model.endpoint)
-            .cloned()
-            .unwrap_or_default();
-        if endpoint.model_name.trim().is_empty() {
-            String::new()
-        } else {
-            embedding_index_model(&endpoint)
+        match &self.embedding_index {
+            Some(index) => index.current_vector_space_identity().await,
+            None => String::new(),
         }
     }
 
@@ -353,6 +339,30 @@ fn collect_prompt_candidates(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use haven_common::config::{
+        Capability, ModelEndpoint, RequestPolicy, RoutedModel, RouterConfig,
+    };
+
+    fn embedding_router() -> Arc<LlmRouter> {
+        let endpoint = ModelEndpoint {
+            api_key: "test-key".into(),
+            base_url: "https://embedding.example/v1".into(),
+            model_name: "text-embedding-3-small".into(),
+            ..Default::default()
+        };
+        Arc::new(LlmRouter::new(RouterConfig {
+            models: vec![RoutedModel {
+                id: "embedding".into(),
+                endpoint,
+                capabilities: vec![Capability::Embedding],
+            }],
+            request_policies: vec![RequestPolicy {
+                request: RequestKind::Embedding,
+                primary: "embedding".into(),
+            }],
+            ..Default::default()
+        }))
+    }
 
     #[test]
     fn prompt_cache_is_bounded() {
@@ -391,5 +401,33 @@ mod tests {
         assert!(cache.get(&first).is_some());
         assert!(cache.get(&second).is_none());
         assert_eq!(cache.entries.len(), PromptMemoryCache::CAPACITY);
+    }
+
+    #[tokio::test]
+    async fn current_embedding_model_matches_index_identity() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::open(&temp_dir.path().join("memory.db")).unwrap());
+        let router = embedding_router();
+        let service = MemoryService::new(db, Some(router.clone()), 1);
+
+        let service_identity = service.current_embedding_model().await;
+        let index_identity = service
+            .embedding_index
+            .as_ref()
+            .unwrap()
+            .current_vector_space_identity()
+            .await;
+
+        assert!(!service_identity.is_empty());
+        assert_eq!(service_identity, index_identity);
+    }
+
+    #[tokio::test]
+    async fn current_embedding_model_is_empty_without_an_index() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::open(&temp_dir.path().join("memory.db")).unwrap());
+        let service = MemoryService::new(db, None, 1);
+
+        assert_eq!(service.current_embedding_model().await, "");
     }
 }

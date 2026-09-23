@@ -96,6 +96,16 @@ impl MemoryEmbeddingIndex {
         })
     }
 
+    /// Return the identity used to scope persisted vectors and prompt-memory
+    /// cache entries. An empty identity means vector recall is unavailable and
+    /// callers should retain the keyword path.
+    pub(crate) async fn current_vector_space_identity(&self) -> String {
+        self.configured_identity()
+            .await
+            .map(|identity| identity.storage_model)
+            .unwrap_or_default()
+    }
+
     /// True when persisted vectors belong to another model and cannot be
     /// compared safely with the configured endpoint.
     async fn model_changed(&self, current: &str) -> anyhow::Result<bool> {
@@ -393,6 +403,28 @@ fn collect_pending_from_db(db: &Database, model: &str) -> anyhow::Result<Vec<Pen
 #[cfg(test)]
 mod tests {
     use super::*;
+    use haven_common::config::{Capability, RequestPolicy, RoutedModel, RouterConfig};
+
+    fn embedding_router(model_name: &str, base_url: &str) -> Arc<LlmRouter> {
+        let endpoint = ModelEndpoint {
+            api_key: "test-key".into(),
+            base_url: base_url.into(),
+            model_name: model_name.into(),
+            ..Default::default()
+        };
+        Arc::new(LlmRouter::new(RouterConfig {
+            models: vec![RoutedModel {
+                id: "embedding".into(),
+                endpoint,
+                capabilities: vec![Capability::Embedding],
+            }],
+            request_policies: vec![RequestPolicy {
+                request: RequestKind::Embedding,
+                primary: "embedding".into(),
+            }],
+            ..Default::default()
+        }))
+    }
 
     #[test]
     fn embedding_batch_size_is_provider_bounded() {
@@ -416,6 +448,45 @@ mod tests {
         );
         assert!(embedding_index_model(&first).starts_with("embedding-v2:"));
         assert!(!embedding_index_model(&first).contains("gateway-a"));
+    }
+
+    #[tokio::test]
+    async fn current_vector_space_identity_is_empty_without_embedding_configuration() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::open(&temp_dir.path().join("memory.db")).unwrap());
+        let unconfigured = MemoryEmbeddingIndex::new(
+            db.clone(),
+            Arc::new(LlmRouter::new(RouterConfig::default())),
+            1,
+        );
+        let empty_model =
+            MemoryEmbeddingIndex::new(db, embedding_router("  ", "https://gateway.example/v1"), 1);
+
+        assert_eq!(unconfigured.current_vector_space_identity().await, "");
+        assert_eq!(empty_model.current_vector_space_identity().await, "");
+    }
+
+    #[tokio::test]
+    async fn current_vector_space_identity_changes_when_endpoint_changes() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::open(&temp_dir.path().join("memory.db")).unwrap());
+        let gateway_a = MemoryEmbeddingIndex::new(
+            db.clone(),
+            embedding_router("text-embedding-3-small", "https://gateway-a.example/v1"),
+            1,
+        );
+        let gateway_b = MemoryEmbeddingIndex::new(
+            db,
+            embedding_router("text-embedding-3-small", "https://gateway-b.example/v1"),
+            1,
+        );
+
+        let identity_a = gateway_a.current_vector_space_identity().await;
+        let identity_b = gateway_b.current_vector_space_identity().await;
+
+        assert_ne!(identity_a, identity_b);
+        assert!(identity_a.starts_with("embedding-v2:"));
+        assert!(identity_b.starts_with("embedding-v2:"));
     }
 
     #[test]
