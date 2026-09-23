@@ -12,7 +12,7 @@ use super::tool_batch::ToolBatchOutcome;
 use super::tool_batch_policy::ToolRetryBudget;
 use super::turn::TurnInput;
 use super::*;
-use crate::types::{BranchPoint, RunBudget, TranscriptRecord};
+use crate::types::{BranchPoint, TranscriptRecord};
 use haven_common::types::CanonicalMessage;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -117,15 +117,6 @@ impl RunBudgetConfig {
         Self::new(max_steps, session_cap, start_step)
     }
 
-    fn snapshot(&self, session_max_steps: Option<u32>) -> RunBudget {
-        RunBudget {
-            start_step: self.start_step,
-            effective_max: self.effective_max,
-            max_steps: self.max_steps,
-            session_max_steps,
-        }
-    }
-
     fn allows_tool_retry(&self, step_num: u32) -> bool {
         step_num < self.effective_max
     }
@@ -148,15 +139,11 @@ impl ReActEngine {
         } = input;
         let session_id = session_id.as_str();
         let budget = RunBudgetConfig::from_engine(self, start_step);
-        let session_max_steps = *self.session_max_steps.lock().unwrap();
         self.clear_msg_ids_for_session(session_id);
         let _run_guard = RunMsgIdGuard {
             engine: self,
             session_id: session_id.to_string(),
         };
-        self.set_run_budget(session_id, budget.snapshot(session_max_steps))
-            .await;
-
         tracing::info!(
             session_id,
             run_id,

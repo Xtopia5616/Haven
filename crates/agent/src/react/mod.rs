@@ -323,7 +323,6 @@ pub(super) struct RunMsgIdGuard<'a> {
 impl Drop for RunMsgIdGuard<'_> {
     fn drop(&mut self) {
         self.engine.clear_msg_ids_for_session(&self.session_id);
-        self.engine.clear_run_budget_now(&self.session_id);
     }
 }
 
@@ -445,18 +444,6 @@ impl ReActEngine {
         self.metrics.increment(MetricsCounter::ActionResultRetries);
     }
 
-    /// Record the live run budget in the session actor (R4).
-    ///
-    /// This still crosses the mailbox. ADR 0214 forbids adding more internal
-    /// commands like it: once the run executes on the actor task, budget,
-    /// usage, stream id and token estimate are function calls on
-    /// `&mut SessionState` at yield points.
-    pub(super) async fn set_run_budget(&self, session_id: &str, budget: crate::types::RunBudget) {
-        if let Some(actor) = self.executor.actor_for(session_id).await {
-            actor.set_run_budget(budget).await;
-        }
-    }
-
     /// Replace loop hooks (production: `default_hooks_with_infer`; tests:
     /// `hooks::NoopHooks` to skip inbox/infer).
     pub(crate) fn with_hooks(mut self, hooks: LoopHooksHandle) -> Self {
@@ -496,12 +483,6 @@ impl ReActEngine {
     /// Drop every minted message id belonging to a session.
     pub(super) fn clear_msg_ids_for_session(&self, session_id: &str) {
         self.identity_map.clear_for_session(session_id);
-    }
-
-    pub(super) fn clear_run_budget_now(&self, session_id: &str) {
-        if let Some(actor) = self.executor.actor_for_now(session_id) {
-            actor.clear_run_budget_now();
-        }
     }
 
     pub fn replace_router(&self, new_router: Arc<LlmRouter>) {

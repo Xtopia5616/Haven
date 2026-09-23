@@ -7,15 +7,14 @@
 //!
 //! ADR 0214 的目标是让热 transcript 由这里的 `SessionState` 持有，并让一次 run
 //! 在本任务内只于 yield 点借用 `&mut SessionState`。stream identity 已按 ADR 0219
-//! 移为 ReActEngine 的进程内 sidecar；usage、token estimate 和 run budget 仍有内部
-//! mailbox 命令，留待后续切片处理。
+//! 移为 ReActEngine 的进程内 sidecar；usage 和 token estimate 仍有内部 mailbox
+//! 命令，留待后续切片处理。
 
 use super::RunEngine;
 use super::{FollowUp, SessionInfo, SessionStatus, SessionWaitingReason, StepInfo};
 use crate::interaction::{InteractionKind, InteractionRequest, InteractionStatus};
 use crate::react::sidecars::{CumulativeTotals, CumulativeUsage, TokenEstimateCache, UsageTracker};
 use crate::react::{LoopExit, ReActEngine, ReActState, RunInput, RunReplay};
-use crate::types::RunBudget;
 use futures_util::FutureExt;
 use haven_common::config::RequestKind;
 use haven_common::types::{CanonicalMessage, MessageAttachment};
@@ -221,10 +220,6 @@ pub(crate) enum ActorCommand {
     IsRunning {
         reply: oneshot::Sender<bool>,
     },
-    SetRunBudget {
-        budget: RunBudget,
-    },
-    ClearRunBudget,
     RecordUsage {
         update: UsageUpdate,
         reply: oneshot::Sender<anyhow::Result<CumulativeTotals>>,
@@ -475,14 +470,6 @@ impl SessionActorHandle {
         .await?;
         rx.await
             .map_err(|_| anyhow::anyhow!("session actor '{}' dropped ReAct loop result", self.id))?
-    }
-
-    pub(crate) async fn set_run_budget(&self, budget: RunBudget) {
-        let _ = self.send(ActorCommand::SetRunBudget { budget }).await;
-    }
-
-    pub(crate) fn clear_run_budget_now(&self) {
-        let _ = self.tx.try_send(ActorCommand::ClearRunBudget);
     }
 
     pub(crate) async fn record_usage(
@@ -932,14 +919,13 @@ pub(crate) struct SessionState {
     archive: VecDeque<Envelope>,
     active_message_ids: HashSet<String>,
     archive_message_ids: HashSet<String>,
-    /// Session-local run budget and sidecars belong to the actor. Stream
-    /// identity is process-local and owned by ReActEngine (ADR 0219).
+    /// Session-local sidecars belong to the actor. Stream identity is
+    /// process-local and owned by ReActEngine (ADR 0219).
     runtime: SessionRuntimeState,
 }
 
 #[derive(Default)]
 struct SessionRuntimeState {
-    run_budget: Option<RunBudget>,
     usage: UsageTracker,
     token_estimates: TokenEstimateCache,
     messaging: SessionMessagingState,
@@ -1378,12 +1364,6 @@ pub(crate) fn spawn(
                 }
                 ActorCommand::IsRunning { reply } => {
                     let _ = reply.send(state.running);
-                }
-                ActorCommand::SetRunBudget { budget } => {
-                    state.runtime.run_budget = Some(budget);
-                }
-                ActorCommand::ClearRunBudget => {
-                    state.runtime.run_budget = None;
                 }
                 ActorCommand::RecordUsage { update, reply } => {
                     let result = record_usage(&db, &store, &mut state, update).await;
