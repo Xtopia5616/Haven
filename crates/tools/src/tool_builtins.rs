@@ -9,7 +9,6 @@ use crate::skill_runner::SkillRunner;
 use crate::tool_core::ToolCore;
 use crate::tool_runtime::ToolRuntime;
 use haven_common::config::{McpServerConfig, SkillsExecConfig};
-use haven_common::types::ShellChoice;
 use haven_mcp::McpManager;
 use haven_skills::{SkillsEngine, VenvManager};
 use std::collections::HashMap;
@@ -21,7 +20,6 @@ pub(crate) struct ToolBuiltins {
     pub(crate) mcp_server_configs: Arc<RwLock<HashMap<String, McpServerConfig>>>,
     pub(crate) skills_engine: SkillsEngine,
     pub(crate) skill_runner: Arc<RwLock<SkillRunner>>,
-    pub(crate) default_shell: RwLock<ShellChoice>,
 }
 
 impl ToolBuiltins {
@@ -34,7 +32,6 @@ impl ToolBuiltins {
                 VenvManager::new(exec_config.venv_root.clone()),
                 exec_config,
             ))),
-            default_shell: RwLock::new(ShellChoice::default()),
         }
     }
 
@@ -47,8 +44,8 @@ impl ToolBuiltins {
         runtime: &ToolRuntime,
     ) -> BuiltinContext {
         let platform = runtime.platform().await;
-        let settings = core.tool_settings.read().await.clone();
-        let limits = core.context_limits.read().await.clone();
+        let settings = platform.tool_settings.clone();
+        let limits = platform.context_limits.clone();
         let router = platform.router.clone();
         let admin_context = platform.admin_context.clone();
         let audio_pipeline = platform.audio_pipeline.clone();
@@ -68,7 +65,7 @@ impl ToolBuiltins {
             deferred_catalog: core.operations.deferred.clone(),
             settings,
             limits,
-            default_shell: *self.default_shell.read().await,
+            default_shell: platform.default_shell,
             clipboard_history: runtime.clipboard_history.clone(),
             admin_context,
             messaging_service: runtime.messaging_service.clone(),

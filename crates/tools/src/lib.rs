@@ -403,4 +403,4 @@ fn retryable_result(result: &ToolResult) -> bool {
     result.retryability == crate::ToolRetryability::Retryable
 }
 
-pub use manager::ToolsManager;
+pub use manager::{ToolServices, ToolsManager};

@@ -201,7 +201,7 @@ pub(crate) fn run() {
             // manual refresh.
             {
                 let emit_handle = handle.clone();
-                let mut rx = state.tools.mcp_manager().subscribe();
+                let mut rx = state.services.mcp.subscribe();
                 state
                     .runtime
                     .spawn_with_child_token("mcp-status-forwarder", move |cancel| async move {
@@ -299,7 +299,7 @@ pub(crate) fn run() {
             // never expose dynamic tool args, continuation prompts, or
             // output-log paths.
             let action_sink_handle = handle.clone();
-                    state.tools.action_service().set_event_sink(Arc::new(
+                    state.services.actions.set_event_sink(Arc::new(
                 move |event: String, payload: serde_json::Value| {
                     let kind = match payload.get("kind").and_then(|value| value.as_str()) {
                         Some("scheduled") => ActionKind::Scheduled,
@@ -313,7 +313,7 @@ pub(crate) fn run() {
             // shell (and future long-running tools) can expand the chat card
             // while still running.
             let tool_output_handle = handle.clone();
-                state.tools.live_outputs().set_event_sink(Arc::new(
+                state.services.live_outputs.set_event_sink(Arc::new(
                 move |event: String, payload: serde_json::Value| {
                     if event != AGENT_TOOL_OUTPUT_EVENT {
                         tracing::warn!(event, "dropping unknown live tool-output event");

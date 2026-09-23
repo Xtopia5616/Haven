@@ -17,7 +17,7 @@ use tauri::State;
 /// survive app restarts).
 #[tauri::command]
 pub async fn list_actions(state: State<'_, Arc<AppState>>) -> Result<Vec<ActionEvent>, String> {
-    let live_rows = state.tools.action_service().board().await;
+    let live_rows = state.services.actions.board().await;
     let mut rows = Vec::with_capacity(live_rows.len());
     let mut live_ids = std::collections::HashSet::new();
     for row in &live_rows {
@@ -78,8 +78,8 @@ pub async fn cancel_action(
     kind: ActionKind,
 ) -> Result<bool, String> {
     let cancelled = state
-        .tools
-        .action_service()
+        .services
+        .actions
         .cancel_for_kind(&action_id, kind.as_str())
         .await;
     if !cancelled {
@@ -175,8 +175,8 @@ pub async fn delete_action(
     action_id: String,
 ) -> Result<bool, String> {
     state
-        .tools
-        .action_service()
+        .services
+        .actions
         .delete_terminal(&action_id)
         .await
         .map_err(|e| log_err("delete_action", e))

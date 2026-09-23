@@ -122,8 +122,8 @@ impl SessionSupervisor {
             Box::pin(self.cascade_end_children(session_id)).await;
         }
         self.clear_has_children(session_id).await;
-        self.tools
-            .authorization()
+        self.services()
+            .authorization
             .clear_session_trust(session_id)
             .await;
     }
@@ -227,8 +227,8 @@ impl SessionSupervisor {
         }
         self.dequeue_pending(session_id).await;
         self.tools.unregister_session(session_id).await;
-        self.tools
-            .authorization()
+        self.services()
+            .authorization
             .clear_session_trust(session_id)
             .await;
         self.scheduled_confirms
@@ -331,7 +331,7 @@ impl SessionSupervisor {
         for actor in &actors {
             actor.clear_runtime().await;
         }
-        self.tools.authorization().clear_all_trust().await;
+        self.services().authorization.clear_all_trust().await;
         self.actors.lock().await.clear();
         self.pending_queue.lock().await.clear();
         self.scheduled_confirms.lock().await.clear();
@@ -557,12 +557,7 @@ impl SessionSupervisor {
             return Some(SessionWaitingReason::ScheduledConfirmation);
         }
 
-        for action in self
-            .tools
-            .action_service()
-            .list_for_session(session_id)
-            .await
-        {
+        for action in self.services().actions.list_for_session(session_id).await {
             let live = matches!(action["status"].as_str(), Some("waiting" | "running"));
             if !live {
                 continue;
@@ -672,15 +667,15 @@ impl SessionSupervisor {
     }
 
     pub async fn cancel_session_actions(&self, session_id: &str) {
-        self.tools
-            .action_service()
+        self.services()
+            .actions
             .cancel_owned_by_session(session_id)
             .await;
     }
 
     pub async fn cancel_session_background_actions(&self, session_id: &str) {
-        self.tools
-            .action_service()
+        self.services()
+            .actions
             .cancel_owned_background_by_session(session_id)
             .await;
     }

@@ -161,15 +161,6 @@ impl AppState {
         agent.set_media_strategy(cfg.media.input_strategy);
         agent.set_session_max_steps(session_max_steps);
 
-        // Bind one typed messaging runtime. It supplies both the in-process
-        // SessionActor mailbox and peer lifecycle operations, so the catalog
-        // never needs a mutable spawn/controller callback pair.
-        tools.bind_messaging_runtime(agent.clone())?;
-        // `memory` recall shares the Agent/`MemoryService::recall` boundary
-        // through a typed capability port. The port is immutable after this
-        // composition step, so catalog rebuilds cannot retain a stale closure.
-        tools.bind_memory_recall(agent.clone())?;
-
         let pipeline = Arc::new(InputPipeline::new());
         pipeline.set_limits(&context_limits_clone);
         let shell = Arc::new(DesktopShell::new());
@@ -211,7 +202,7 @@ impl AppState {
         // (e.g. `mcp` provider with no server) or `none`, the optional
         // transcription capability degrades without affecting capture.
         let mcp_caller: std::sync::Arc<dyn haven_llm::McpToolCaller> =
-            std::sync::Arc::new(tools.mcp_manager().clone());
+            std::sync::Arc::new(tools.share_services().mcp.clone());
         let stt_client: Option<std::sync::Arc<dyn haven_llm::SttClient>> =
             match build_stt_client(Some(mcp_caller), stt_config, &cfg.llm.providers) {
                 Ok(client) => client.map(std::sync::Arc::from),
@@ -299,7 +290,7 @@ impl AppState {
             let upload_ttl = std::time::Duration::from_secs(
                 u64::from(retention_days).saturating_mul(24 * 60 * 60),
             );
-            let upload_registry = tools.managed_assets().clone();
+            let upload_registry = tools.share_services().assets.clone();
             let db_upload_cleanup = db.clone();
             runtime.spawn("upload-retention-cleanup", async move {
                 let referenced_paths = match db_upload_cleanup.list_managed_attachment_paths() {
@@ -336,7 +327,7 @@ impl AppState {
         // state, so their cleanup is independent from history retention.
         let staging_root = haven_common::default_work_dir().join("uploads");
         let generated_root = haven_common::config::default_generated_media_dir();
-        let generated_registry = tools.managed_assets().clone();
+        let generated_registry = tools.share_services().assets.clone();
         runtime.spawn("stale-upload-cleanup", async move {
             match crate::commands::recording::cleanup_stale_upload_staging(staging_root).await {
                 Ok(n) if n > 0 => {
@@ -372,9 +363,9 @@ impl AppState {
         let upload_ttl = std::time::Duration::from_secs(
             u64::from(retention_days.max(1)).saturating_mul(24 * 60 * 60),
         );
-        let upload_registry = tools.managed_assets().clone();
+        let upload_registry = tools.share_services().assets.clone();
         let generated_root = haven_common::config::default_generated_media_dir();
-        let generated_registry = tools.managed_assets().clone();
+        let generated_registry = tools.share_services().assets.clone();
         runtime.spawn_with_child_token("daily-cleanup", move |cancel| async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(86400));
             loop {
@@ -504,7 +495,7 @@ impl AppState {
             tool_control: Some(tools.tool_control_port()),
         };
 
-        // Single catalog rebuild for all startup wiring (settings / shell /
+        // Single catalog rebuild for all startup wiring (messaging, memory, settings / shell /
         // limits / router / audio pipeline / admin surface). Previously each
         // setter rebuilt the catalog and delayed window creation.
         tools
@@ -521,8 +512,10 @@ impl AppState {
                 image_gen_client,
                 tts_client: tts,
                 admin_context,
+                messaging_runtime: agent.clone(),
+                memory_recall: agent.clone(),
             })
-            .await;
+            .await?;
 
         tracing::debug!(
             "AppState::new phase=done elapsed={}ms",
@@ -599,8 +592,7 @@ impl AppState {
                     std::time::Duration::from_secs(10),
                     async {
                         tools.discover_all(&mcp_servers, &mcp_discovery).await;
-                        if let Err(e) = tools
-                            .skills_engine()
+                        if let Err(e) = tools.share_services().skills
                             .set_config(skills_cfg_root, skills_cfg_enabled)
                             .await
                         {
@@ -740,8 +732,8 @@ mod tests {
             .unwrap();
         let action_id = state
             .runtime
-            .tools
-            .action_service()
+            .services
+            .actions
             .set(
                 haven_tools::builtin::scheduled_action::ScheduledActionSpec {
                     due_at: None,

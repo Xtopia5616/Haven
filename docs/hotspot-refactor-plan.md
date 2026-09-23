@@ -4,7 +4,7 @@
 >
 > 本文是执行计划，不授权新增功能或顺手清理无关代码。每个目标应独立完成、独立验证、独立提交。
 >
-> 状态（2026-09-23）：机械拆分阶段 A–F 已完成；provider adapter 的内部模块化切片已完成。ToolsManager 已进一步收成执行 facade：operation 投影与 `PlatformRuntime` 快照见 ADR 0211。阶段 G 与其余战略性重构仍是后续路线。本文件中的规模数字以 2026-09-22 审计为准，历史完成记录保留原始日期。
+> 状态（2026-09-23）：机械拆分阶段 A–F 已完成；provider adapter 的内部模块化切片已完成。执行入口与 `PlatformRuntime` 快照见 ADR 0211；进程服务已按 ADR 0212 从 `ToolsManager` getter 迁到 `ToolServices`。`ToolPolicy` / `ToolManifest` / `ToolPresentation` 仍是 IPC 形状，`AuthorizedExecutor` 不做交互式确认，组合根仍是 `ApplicationRuntime`。阶段 G 的 UI 热点与其余战略性重构仍是后续路线。本文件的规模数字以 2026-09-23 审计为准，历史完成记录保留原始日期。
 
 ## 1. 执行前必须阅读
 
@@ -25,36 +25,36 @@
 
 | crate | Rust 总行数 | 生产代码 | 测试代码 | 源文件数 |
 |---|---:|---:|---:|---:|
-| `haven-agent` | 31.4k | 18.3k | 13.1k | 46 |
-| `haven-tools` | 29.0k | 17.0k | 12.0k | 34 |
-| `haven-llm` | 21.0k | 12.3k | 8.7k | 32 |
-| `haven-memory` | 14.7k | 8.7k | 5.9k | 21 |
-| `haven-app-binary` | 8.9k | 7.2k | 1.7k | 22 |
-| `haven-mcp` | 2.4k | 2.0k | 0.4k | 2 |
+| `haven-agent` | 43.4k | 27.2k | 16.2k | 63 |
+| `haven-tools` | 54.1k | 39.6k | 14.5k | 91 |
+| `haven-llm` | 25.9k | 14.9k | 11.0k | 62 |
+| `haven-memory` | 16.9k | 10.4k | 6.5k | 22 |
+| `haven-app-binary` | 11.6k | 9.3k | 2.3k | 29 |
+| `haven-mcp` | 3.7k | 2.7k | 0.9k | 8 |
 
 最大的非代码文件是 `assets/models/silero_vad.onnx`（约 2.7 MB），它是模型文件，不进行代码拆分。
 
 结论：当前优先做文件级拆分，不把 `agent`、`tools` 或 `llm` 直接拆成新 crate。它们已经按领域拥有较多子模块；贸然拆 crate 会扩大依赖、公共 API 和测试迁移范围。
 
-### 2.0 当前热点快照（2026-09-14）
+### 2.0 当前热点快照（2026-09-23）
 
-阶段 A–F 的原始拆分目标已完成，但部分拆分后的模块仍然较大；这不表示机械拆分失败，而是后续战略边界仍未落地。当前规模（含注释和空行）如下：
+阶段 A–F 的原始拆分目标已完成，但部分拆分后的模块仍然较大；这不表示机械拆分失败。已落地的战略边界见各节完成记录，其余项仍是后续路线。下表为 2026-09-23 复查，行数含注释和空行。`tests.rs` 与路径含 `integration_tests` 的文件整份计入测试，其余源文件只把 `#[cfg(test)]` 块计入测试：
 
 | 区域 | 当前规模 | 状态 / 后续动作 |
 |---|---:|---|
-| Agent 集成测试 | 入口 `integration_tests.rs` 31 行；8 个测试模块合计约 5,002 行 | 阶段 A 已完成；保持测试入口和共享 support 稳定 |
-| MCP 拆分模块 | `protocol` 265、`transport` 390、`client` 792、`manager` 433、`sse` 163，合计约 2,055 行 | 阶段 B 已完成；`client.rs` 接近热点阈值，后续仅在职责继续增长时拆分 |
-| Tools shell/background | `shell_runtime` 207、`action_service` 1,895、`output` 390、`process` 128，合计约 2,620 行 | 阶段 C 已完成；ActionService 状态机统一已完成，后续只收窄内部 worker 边界 |
-| Tool contract / registry / security | 1,737 / 434 / 1,912 行，合计约 4,083 行 | 阶段 D 的边界拆分已完成；`tool_contract` 与 `security` 仍由 TypedToolOperation / AuthorizationEngine 后续任务继续收窄 |
-| app-binary 组合根拆分模块 | `event_bridge` 581、`handlers` 242、`bootstrap` 737、`lib` 21，合计约 1,581 行 | 阶段 E 已完成；`event_bridge` 是当前唯一事件映射边界 |
-| UI 视图 | `SettingsView` 1,118、`ModelSettings` 916、`MemoryView` 767 行 | 阶段 F 已完成；ModelSettings 的 provider discovery/CRUD 边界仍有意保留 |
+| Agent 集成测试 | 入口 `integration_tests.rs` 31 行；8 个测试模块合计约 5,893 行 | 阶段 A 已完成；保持测试入口和共享 support 稳定 |
+| MCP 拆分模块 | `protocol` 286、`transport` 900、`client` 1,029、`manager` 557、`sse` 181，合计约 2,953 行 | 阶段 B 已完成；`client.rs` 已超过 1,000 行，后续仅在职责继续增长时拆分 |
+| Tools shell/background | `shell_runtime` 220、`action_service` 2,818、`output` 412、`process` 132，合计约 3,582 行 | 阶段 C 已完成；ActionService 状态机统一已完成，后续只收窄内部 worker 边界 |
+| Tool contract / registry / security | 2,349 / 625 / 3,162 行，合计约 6,136 行 | 阶段 D 的边界拆分已完成；`tool_contract` 与 `security` 仍由后续任务继续收窄 |
+| app-binary 组合根拆分模块 | `event_bridge` 619、`handlers` 261、`bootstrap` 837、`lib` 26，合计约 1,743 行 | 阶段 E 已完成；`event_bridge` 是当前唯一事件映射边界 |
+| UI 视图 | `SettingsView` 1,213、`ModelSettings` 723、`MemoryView` 771 行 | 阶段 F 已完成；ModelSettings 的 provider discovery/CRUD 边界仍有意保留 |
 | Admin typed surfaces | `admin.rs` / `admin_services.rs` | 阶段 G 已完成：五个受限 surface 使用独立 `TypedToolOperation`，旧 broad dispatcher 已删除 |
 
-本次复查还发现原阶段表没有覆盖的当前热点：`crates/tools/src/builtin/files.rs` 约 3,385 行、
-`crates/tools/src/builtin/window.rs` 约 2,035 行、`ui/src/routes/+page.svelte` 约 1,685 行。
-`ToolsManager` 的 crate root 已收窄为约 379 行，生产实现分为 `manager.rs`（约 571 行）、
-`catalog.rs`（约 542 行）和 `execution.rs`（约 298 行），测试移至 `tests.rs`；但其
-service-locator 收窄仍由第 2.3 节 E 的战略重构覆盖，不能仅通过文件拆分宣布完成。
+本次复查的当前模块规模：`ui/src/routes/+page.svelte` 1,632 行。`crates/tools/src/builtin/files.rs`
+与 `window.rs` 已不再是 3,385 / 2,035 行的单体，当前分别是 524 与 301 行。`ToolsManager` 的
+crate root（`lib.rs`）为 406 行，生产实现分为 `manager.rs` 659 行、`catalog.rs` 666 行和
+`execution.rs` 425 行，测试在 `tests.rs` 1,595 行。进程服务 getter 已按 ADR 0212 删除；文件拆分
+本身仍然不等于其余战略边界完成。
 
 ## 2.1 兼容层原则
 
@@ -235,6 +235,15 @@ shell 后台执行、定时触发、等待另一个 action、完成后唤醒会�
 - MCP/skills/agent/memory adapter：作为组合根注入的 capability implementation。
 
 不一定马上新增四个 crate；先用模块和 trait 建立边界，再决定是否把 `tool-core` 单独成 crate。目标是 `ToolsManager` 成为 catalog/composition 对象，不再成为整个应用的 service locator；模型启动子 agent、查询 memory、创建 action 应通过明确的 capability port，而不是可变 callback slot。
+
+2026-09-23 已完成调用点迁移（ADR 0212）。`ToolServices` 在 `ToolsManager` 构造时一次交出 MCP、MCP 配置、skills、skill runner、授权、媒体资产、action 与 live output。`ApplicationRuntime.services` 是组合根上的句柄；agent supervisor 与 app 命令使用这份 bundle，不再调用 `mcp_manager()`、`skills_engine()` 或 `action_service()`。不另建 `AppRuntime`。`ToolsManager` 仍是执行、目录投影、启动装配和录音转写的稳定入口，不是待删除的兼容 facade。
+
+有意留下的边界，不是未删干净的 getter：
+
+- `OperationSpec` 没有 handler，只覆盖 builtin operation view。聚合工具在注册时把策略拷进 spec。MCP 在 adapter 里实现 `tool_manifest`，Skill 使用 `Tool::operation_policy` 的默认实现。`ToolPolicy`、`ToolManifest`、`ToolPresentation` 继续作为 IPC 形状。
+- `AuthorizedExecutor` 不签发交互式确认。它只做熔断、启用检查、校验、执行和结果分类；确认仍由调用方在 `execute_tool` 之前决定。
+- messaging runtime 与 memory recall 随 `StartupWiring` 进入 `wire_startup`，用 OnceLock 绑定一次，不放进可替换的 `PlatformRuntime`。`admin_surfaces` 要等 catalog rebuild 成功后才和 builtin 工具一起发布，重建前为空。tool settings、context limits、shell 与 security 跟模型/媒体客户端写在同一份快照里；热更新走 `set_router_and_media_clients`，没有单独的 `set_tts_client`。
+- 本轮不把 `tool-core` 拆成新 crate。
 
 ### F. P1：重做 memory 与 prompt 的责任边界，并删除硬编码身份事实
 

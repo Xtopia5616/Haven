@@ -123,8 +123,8 @@ pub async fn update_settings(
         state.tools.load_mcp_from_config(&config.mcp_servers).await;
         tick("load_mcp_from_config");
         state
-            .tools
-            .mcp_manager()
+            .services
+            .mcp
             .start_monitors(&config.mcp_discovery)
             .await;
         tick("mcp_manager.start_monitors");
@@ -156,16 +156,16 @@ pub async fn update_settings(
 
     if plan.contains(RuntimeConfigTarget::ToolSettings) {
         state
-            .tools
-            .authorization()
+            .services
+            .authorization
             .set_tool_settings(config.tool_settings.clone())
             .await;
     }
 
     if plan.contains(RuntimeConfigTarget::Skills)
         && let Err(error) = state
-            .tools
-            .skills_engine()
+            .services
+            .skills
             .set_config(config.skills.root.clone(), config.skills.enabled.clone())
             .await
     {
@@ -267,7 +267,7 @@ pub async fn update_settings(
 pub async fn list_permissions(
     state: State<'_, Arc<AppState>>,
 ) -> Result<Vec<haven_common::config::StoredPermission>, String> {
-    Ok(state.tools.authorization().list_permanent().await)
+    Ok(state.services.authorization.list_permanent().await)
 }
 
 #[tauri::command]
@@ -286,7 +286,7 @@ pub async fn revoke_permission(state: State<'_, Arc<AppState>>, key: String) -> 
             Ok(())
         })
         .map_err(|e| log_err("revoke_permission", e))?;
-    state.tools.authorization().revoke_permanent(&key).await;
+    state.services.authorization.revoke_permanent(&key).await;
     Ok(())
 }
 
@@ -301,7 +301,7 @@ pub async fn reset_permissions(state: State<'_, Arc<AppState>>) -> Result<(), St
             Ok(())
         })
         .map_err(|e| log_err("reset_permissions", e))?;
-    state.tools.authorization().clear_permanent().await;
+    state.services.authorization.clear_permanent().await;
     Ok(())
 }
 

@@ -1750,7 +1750,8 @@ mod tests {
         )
         .unwrap();
         manager
-            .skills_engine()
+            .share_services()
+            .skills
             .set_config(Some(dir.path().to_path_buf()), None)
             .await
             .unwrap();
@@ -1768,9 +1769,9 @@ mod tests {
         };
         let surfaces = AdminSurfaces::new(
             context,
-            manager.skills_engine().clone(),
-            Arc::new(manager.mcp_manager().clone()),
-            manager.mcp_server_configs().clone(),
+            manager.share_services().skills.clone(),
+            Arc::new(manager.share_services().mcp.clone()),
+            manager.share_services().mcp_configs.clone(),
             manager.registry().clone(),
             256 * 1024,
             512 * 1024,

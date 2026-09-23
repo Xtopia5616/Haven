@@ -1,3 +1,5 @@
+> 2026-09-23：service-locator 调用点已迁到 ToolServices。见 [ADR 0212](0212-process-services-off-tools-facade.md)。本记录的模块拆分仍然有效。
+
 # ADR-0205: Split ToolsManager Implementation by Runtime Boundary
 
 - Status: Accepted

@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use haven_common::types::RiskLevel;
 use serde_json::{Map, Value};
+use std::borrow::Cow;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
@@ -11,20 +12,20 @@ use crate::{
 };
 use haven_common::tools::{
     ToolAvailability, ToolCatalogGroup, ToolIdentity, ToolManifest, ToolModel, ToolPresentation,
-    ToolPrompt, ToolSource,
+    ToolPrompt, ToolRootPresentation, ToolSource,
 };
 
-/// The only authored definition of a model-facing operation.
+/// Authored name, schema, presentation and policy for one builtin operation view.
 ///
-/// Schema, presentation and policy live here. The registered
-/// [`OperationViewTool`] pairs this record with its handler. Catalog
-/// manifests and provider definitions are projections of this spec; they are
-/// not authored or converted from a sibling policy type.
-#[allow(dead_code)]
+/// The spec has no handler. OperationViewTool pairs it with the aggregate tool,
+/// which copies the policy in at registration. MCP and Skill adapters are not
+/// views of this record: MCP implements tool_manifest, and Skill uses the default
+/// Tool::operation_policy. ToolManifest, ToolPolicy and ToolPresentation remain
+/// the IPC shapes projected for the UI.
 #[derive(Debug, Clone)]
 pub(crate) struct OperationSpec {
-    pub(crate) name: &'static str,
-    pub(crate) description: &'static str,
+    pub(crate) name: Cow<'static, str>,
+    pub(crate) description: Cow<'static, str>,
     pub(crate) fixed: Vec<(String, Value)>,
     pub(crate) schema: Value,
     pub(crate) policy: OperationPolicy,
@@ -32,6 +33,20 @@ pub(crate) struct OperationSpec {
     pub(crate) catalog_group: ToolCatalogGroup,
     pub(crate) presentation: ToolPresentation,
     pub(crate) prompt: ToolPrompt,
+    /// `None` keeps the builtin projection: source is builtin, root is the
+    /// name prefix, and root presentation comes from the builtin table.
+    pub(crate) identity: Option<OperationIdentity>,
+}
+
+/// Optional catalog identity for operations that are not builtin views.
+/// Builtin specs leave this empty so their manifests stay byte-for-byte stable.
+#[derive(Debug, Clone)]
+pub(crate) struct OperationIdentity {
+    pub(crate) source: ToolSource,
+    pub(crate) root: Cow<'static, str>,
+    pub(crate) operation: Option<Cow<'static, str>>,
+    pub(crate) root_presentation: ToolRootPresentation,
+    pub(crate) availability: ToolAvailability,
 }
 
 #[allow(dead_code)]
@@ -57,11 +72,29 @@ impl OperationSpec {
     /// upper bound here; execution still refines the same policy per call.
     pub(crate) fn manifest(&self, schema: Value) -> ToolManifest {
         let name = self.name.to_string();
-        let root = name.split('.').next().unwrap_or(&name).to_string();
-        let operation = name
-            .strip_prefix(&format!("{root}."))
-            .filter(|value| !value.is_empty())
-            .map(ToString::to_string);
+        let (source, root, operation, root_presentation, availability) = match &self.identity {
+            Some(identity) => (
+                identity.source,
+                identity.root.to_string(),
+                identity.operation.as_ref().map(ToString::to_string),
+                identity.root_presentation.clone(),
+                identity.availability.clone(),
+            ),
+            None => {
+                let root = name.split('.').next().unwrap_or(&name).to_string();
+                let operation = name
+                    .strip_prefix(&format!("{root}."))
+                    .filter(|value| !value.is_empty())
+                    .map(ToString::to_string);
+                (
+                    ToolSource::Builtin,
+                    root.clone(),
+                    operation,
+                    crate::tool_contract::default_root_presentation(&root, ToolSource::Builtin),
+                    ToolAvailability::default(),
+                )
+            }
+        };
         let mut policy = self.policy.clone();
         if self.risk_rule.is_some() {
             if policy.risk_level < RiskLevel::Medium {
@@ -71,9 +104,9 @@ impl OperationSpec {
         }
         crate::tool_contract::project_tool_manifest(
             ToolIdentity {
-                source: ToolSource::Builtin,
+                source,
                 catalog_group: self.catalog_group,
-                root: root.clone(),
+                root,
                 operation,
                 stable_name: name.clone(),
             },
@@ -84,9 +117,9 @@ impl OperationSpec {
             },
             &policy,
             self.presentation.clone(),
-            crate::tool_contract::default_root_presentation(&root, ToolSource::Builtin),
+            root_presentation,
             self.prompt.clone(),
-            ToolAvailability::default(),
+            availability,
         )
     }
 }
@@ -123,8 +156,11 @@ fn annotate_schema(spec: &mut OperationSpec) {
     let Some(schema) = spec.schema.as_object_mut() else {
         return;
     };
-    schema.insert("title".into(), Value::String(spec.name.into()));
-    schema.insert("description".into(), Value::String(spec.description.into()));
+    schema.insert("title".into(), Value::String(spec.name.to_string()));
+    schema.insert(
+        "description".into(),
+        Value::String(spec.description.to_string()),
+    );
 }
 
 /// Operation branches are the provider boundary. Some aggregate schemas use
@@ -449,8 +485,8 @@ mod tests {
         let view = OperationViewTool::new(
             inner,
             OperationSpec {
-                name: "files.read",
-                description: "Read text.",
+                name: "files.read".into(),
+                description: "Read text.".into(),
                 fixed: vec![("operation".into(), json!("read"))],
                 schema: json!({
                     "type": "object",
@@ -482,6 +518,7 @@ mod tests {
                     when_not_to_use: "Use another operation view.".into(),
                     key_operations: vec!["files.read".into()],
                 },
+                identity: None,
             },
         );
 

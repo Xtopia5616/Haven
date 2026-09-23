@@ -1,13 +1,14 @@
 use async_trait::async_trait;
 use haven_common::tools::{
-    ToolAvailability, ToolCatalogGroup, ToolIdentity, ToolManifest, ToolModel, ToolPresentation,
-    ToolPrompt, ToolRootPresentation, ToolSource,
+    ToolAvailability, ToolCatalogGroup, ToolManifest, ToolPresentation, ToolPrompt,
+    ToolRootPresentation, ToolSource,
 };
 use haven_common::types::RiskLevel;
 use serde_json::Value;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
+use crate::operation_view::{OperationIdentity, OperationSpec};
 use crate::skill_runner::SkillRunner;
 use crate::{OperationPolicy, StructuredToolError, Tool, ToolErrorMetadata, ToolResult};
 use haven_mcp::{McpClient, McpToolInfo};
@@ -63,20 +64,119 @@ pub(crate) fn sanitize_external_schema(value: &Value) -> Value {
 // McpToolAdapter — wraps an MCP client tool as a dyn Tool
 // ---------------------------------------------------------------------------
 
+fn mcp_operation_spec(
+    name: &str,
+    description: &str,
+    server_name: &str,
+    operation: &str,
+    schema: Value,
+) -> OperationSpec {
+    OperationSpec {
+        name: name.to_string().into(),
+        description: description.to_string().into(),
+        fixed: Vec::new(),
+        schema,
+        policy: OperationPolicy::external(name.to_string(), RiskLevel::High),
+        risk_rule: None,
+        catalog_group: ToolCatalogGroup::Mcp,
+        presentation: ToolPresentation {
+            label: name.to_string(),
+            renderer: server_name.to_string(),
+            icon: "tools".into(),
+            represented_source: ToolSource::Mcp,
+        },
+        prompt: ToolPrompt {
+            when_to_use: description.to_string(),
+            when_not_to_use: "Use only after explicitly loading this MCP capability.".into(),
+            key_operations: vec![name.to_string()],
+        },
+        identity: Some(OperationIdentity {
+            source: ToolSource::Mcp,
+            root: server_name.to_string().into(),
+            operation: Some(operation.to_string().into()),
+            root_presentation: ToolRootPresentation {
+                label: server_name.to_string(),
+                description: format!("{} MCP 能力", server_name),
+                icon: "network".into(),
+            },
+            availability: ToolAvailability {
+                requires_connection: true,
+                ..ToolAvailability::default()
+            },
+        }),
+    }
+}
+
+fn skill_input_schema() -> Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "params": {
+                "type": "object",
+                "description": "Skill-specific parameters passed as JSON object"
+            }
+        },
+        "required": ["params"]
+    })
+}
+
+fn skill_operation_spec(name: &str, description: &str, schema: Value) -> OperationSpec {
+    let source = crate::tool_contract::tool_source_for_name(name);
+    let represented = ToolSource::Skill;
+    let root = crate::tool_contract::default_tool_root(name, represented);
+    let operation = crate::tool_contract::default_tool_operation(name, &root, represented);
+    let root_presentation = crate::tool_contract::default_root_presentation(&root, represented);
+    OperationSpec {
+        name: name.to_string().into(),
+        description: description.to_string().into(),
+        fixed: Vec::new(),
+        schema,
+        policy: OperationPolicy::external(name.to_string(), RiskLevel::High),
+        risk_rule: None,
+        catalog_group: ToolCatalogGroup::Skills,
+        presentation: ToolPresentation {
+            label: crate::tool_contract::default_tool_label(name),
+            renderer: root.clone(),
+            icon: "tools".into(),
+            represented_source: represented,
+        },
+        prompt: ToolPrompt {
+            when_to_use: description.to_string(),
+            when_not_to_use: "Use a narrower operation when one is available.".into(),
+            key_operations: vec![name.to_string()],
+        },
+        identity: Some(OperationIdentity {
+            source,
+            root: root.into(),
+            operation: operation.map(Into::into),
+            root_presentation,
+            availability: ToolAvailability::default(),
+        }),
+    }
+}
+
 pub struct McpToolAdapter {
     client: Arc<McpClient>,
     info: McpToolInfo,
     server_name: String,
+    spec: OperationSpec,
     #[cfg(debug_assertions)]
     panic_on_execute: bool,
 }
 
 impl McpToolAdapter {
     pub fn new(client: Arc<McpClient>, server_name: &str, info: McpToolInfo) -> Self {
+        let server_name = server_name.to_string();
+        let name = Self::qualified_name_of(&server_name, &info.name);
+        let description = sanitize_external_description(&info.description);
+        let operation = info.name.clone();
+        let schema = sanitize_external_schema(&info.input_schema);
+        let spec = mcp_operation_spec(&name, &description, &server_name, &operation, schema);
         Self {
             client,
             info,
-            server_name: server_name.into(),
+            server_name,
+            spec,
             #[cfg(debug_assertions)]
             panic_on_execute: false,
         }
@@ -146,46 +246,7 @@ impl Tool for McpToolAdapter {
     }
 
     fn tool_manifest(&self) -> ToolManifest {
-        let name = self.name();
-        let policy = self.operation_policy(&Value::Object(Default::default()));
-        crate::tool_contract::project_tool_manifest(
-            ToolIdentity {
-                source: haven_common::tools::ToolSource::Mcp,
-                catalog_group: ToolCatalogGroup::Mcp,
-                // The server is the layer-2 root. Inferring this from the
-                // provider name would be ambiguous after name sanitization or
-                // truncation, so retain the host-side identity explicitly.
-                root: self.server_name.clone(),
-                operation: Some(self.info.name.clone()),
-                stable_name: name.clone(),
-            },
-            ToolModel {
-                name: name.clone(),
-                description: self.description(),
-                input_schema: self.input_schema(),
-            },
-            &policy,
-            ToolPresentation {
-                label: name.clone(),
-                renderer: self.server_name.clone(),
-                icon: "tools".into(),
-                represented_source: ToolSource::Mcp,
-            },
-            ToolRootPresentation {
-                label: self.server_name.clone(),
-                description: format!("{} MCP 能力", self.server_name),
-                icon: "network".into(),
-            },
-            ToolPrompt {
-                when_to_use: self.description(),
-                when_not_to_use: "Use only after explicitly loading this MCP capability.".into(),
-                key_operations: vec![name],
-            },
-            ToolAvailability {
-                requires_connection: true,
-                ..ToolAvailability::default()
-            },
-        )
+        self.spec.manifest(self.input_schema())
     }
 
     async fn execute(&self, input: Value, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
@@ -223,15 +284,20 @@ impl Tool for McpToolAdapter {
 pub struct SkillToolAdapter {
     skill: Arc<Skill>,
     runner: SkillRunner,
+    spec: OperationSpec,
     #[cfg(debug_assertions)]
     panic_on_execute: bool,
 }
 
 impl SkillToolAdapter {
     pub fn new(skill: Arc<Skill>, runner: SkillRunner) -> Self {
+        let name = Self::qualified_name_of(skill.name());
+        let description = sanitize_external_description(skill.description());
+        let spec = skill_operation_spec(&name, &description, skill_input_schema());
         Self {
             skill,
             runner,
+            spec,
             #[cfg(debug_assertions)]
             panic_on_execute: false,
         }
@@ -289,16 +355,11 @@ impl Tool for SkillToolAdapter {
     }
 
     fn input_schema(&self) -> Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "params": {
-                    "type": "object",
-                    "description": "Skill-specific parameters passed as JSON object"
-                }
-            },
-            "required": ["params"]
-        })
+        skill_input_schema()
+    }
+
+    fn tool_manifest(&self) -> ToolManifest {
+        self.spec.manifest(self.input_schema())
     }
 
     fn default_timeout_secs(&self) -> u64 {

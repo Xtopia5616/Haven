@@ -841,8 +841,8 @@ impl SessionSupervisor {
         // extracted once, before the guard.
         for reg in &registrations {
             if let haven_tools::ToolRegistration::Action(action_id) = reg {
-                self.tools
-                    .action_service()
+                self.services()
+                    .actions
                     .attach_session(action_id, session_id)
                     .await;
             }
@@ -918,8 +918,8 @@ impl SessionSupervisor {
         let mut confirmed: Option<bool> = None;
         if let Some(receipt) = receipt.as_ref()
             && let Err(reason) = self
-                .tools
-                .authorization()
+                .services()
+                .authorization
                 .verify_receipt(&authorization_request, receipt)
                 .await
         {
@@ -950,8 +950,8 @@ impl SessionSupervisor {
             });
         }
         match self
-            .tools
-            .authorization()
+            .services()
+            .authorization
             .authorize(&authorization_request)
             .await
         {
@@ -1227,7 +1227,7 @@ impl SessionSupervisor {
             ),
             _ => return,
         };
-        let action_service = self.tools.action_service();
+        let action_service = self.services().actions.clone();
         if confirmed
             && let Some(session_id) = session_id.as_deref()
             && !self.session_is_live(session_id).await
@@ -1302,8 +1302,8 @@ impl SessionSupervisor {
             tool_name,
             input,
         );
-        self.tools
-            .authorization()
+        self.services()
+            .authorization
             .authorize(&authorization_request)
             .await
     }

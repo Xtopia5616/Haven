@@ -191,7 +191,8 @@ impl AuthorizedExecutor<'_> {
                 obj.insert("_step_id".into(), serde_json::json!(sid));
             }
         }
-        let settings = self.tools.core.tool_settings.read().await;
+        let platform = self.tools.runtime.platform().await;
+        let settings = &platform.tool_settings;
         let configured = settings
             .get(tool_name)
             .or_else(|| {
@@ -217,7 +218,6 @@ impl AuthorizedExecutor<'_> {
             .and_then(|c| c.retry_backoff_secs)
             .unwrap_or_else(|| tool.default_retry_backoff_secs());
         let idempotency = tool.idempotency(&exec_input);
-        drop(settings);
 
         // Keep tool-local retries bounded even when a persisted settings file
         // contains an accidentally large value. Agent-level retries have a
@@ -407,8 +407,9 @@ impl AuthorizedExecutor<'_> {
     /// ToolResult summary. Agent, step persistence and resume all consume this
     /// exact helper so an adapter cannot create a longer recovery observation.
     pub async fn observation_text(&self, tool_name: &str, result: &ToolResult) -> String {
-        let limits = self.tools.core.context_limits.read().await;
-        let settings = self.tools.core.tool_settings.read().await;
+        let platform = self.tools.runtime.platform().await;
+        let limits = &platform.context_limits;
+        let settings = &platform.tool_settings;
         let cap = settings
             .get(tool_name)
             .or_else(|| {

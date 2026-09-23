@@ -181,8 +181,8 @@ pub async fn resolve_confirmation(
         persist_permanent_permission(&state, key.as_str(), perm_effect).await?;
     }
     state
-        .tools
-        .authorization()
+        .services
+        .authorization
         .grant(
             authorization_request.session_id.as_deref(),
             &key,
@@ -224,8 +224,8 @@ async fn resolve_ui_confirmation(
     if matches!(perm_effect, haven_common::types::PermissionEffect::Allow) {
         let authorization_request = &pending.authorization_request;
         state
-            .tools
-            .authorization()
+            .services
+            .authorization
             .verify_receipt(authorization_request, &pending.receipt)
             .await
             .map_err(|reason| format!("confirmation is no longer valid: {reason}"))?;
@@ -233,8 +233,8 @@ async fn resolve_ui_confirmation(
         match &pending.action {
             UiConfirmationAction::Mcp { client, tool, args } => {
                 state
-                    .tools
-                    .mcp_manager()
+                    .services
+                    .mcp
                     .call_tool(
                         client,
                         tool,
@@ -246,14 +246,14 @@ async fn resolve_ui_confirmation(
             }
             UiConfirmationAction::Skill { name, params } => {
                 let skill = state
-                    .tools
-                    .skills_engine()
+                    .services
+                    .skills
                     .get_skill(name)
                     .await
                     .ok_or_else(|| format!("skill '{}' not found", name))?;
                 state
-                    .tools
-                    .skill_runner()
+                    .services
+                    .skill_runner
                     .read()
                     .await
                     .execute(&skill, params, tokio_util::sync::CancellationToken::new())
@@ -279,8 +279,8 @@ async fn resolve_ui_confirmation(
         persist_permanent_permission(state, grant_key.as_str(), perm_effect).await?;
     }
     state
-        .tools
-        .authorization()
+        .services
+        .authorization
         .grant(
             Some(&pending.session_id),
             &grant_key,

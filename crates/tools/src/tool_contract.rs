@@ -1187,7 +1187,7 @@ pub fn is_silent_action(tool_name: &str, input: &Value) -> bool {
             .unwrap_or(false)
 }
 
-fn tool_source_for_name(name: &str) -> ToolSource {
+pub(crate) fn tool_source_for_name(name: &str) -> ToolSource {
     if name.starts_with("skill__") {
         ToolSource::Skill
     } else if name.starts_with("mcp__") {
@@ -1205,7 +1205,7 @@ fn display_source_for_name(name: &str) -> ToolSource {
     }
 }
 
-fn default_tool_root(name: &str, represented_source: ToolSource) -> String {
+pub(crate) fn default_tool_root(name: &str, represented_source: ToolSource) -> String {
     match represented_source {
         ToolSource::Skill => "skills".into(),
         ToolSource::Mcp => "mcp".into(),
@@ -1213,7 +1213,7 @@ fn default_tool_root(name: &str, represented_source: ToolSource) -> String {
     }
 }
 
-fn default_tool_operation(
+pub(crate) fn default_tool_operation(
     name: &str,
     root: &str,
     represented_source: ToolSource,
@@ -1234,7 +1234,7 @@ fn default_tool_operation(
     }
 }
 
-fn default_tool_label(name: &str) -> String {
+pub(crate) fn default_tool_label(name: &str) -> String {
     let label = match name {
         "ask" => "询问用户",
         "notify" => "发送通知",

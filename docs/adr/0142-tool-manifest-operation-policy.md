@@ -1,4 +1,4 @@
-> 2026-09-23：manifest 与 `ToolPolicy` 的权威来源收紧为 `OperationSpec` 的单一投影，见 [ADR 0211](0211-operation-registry-and-platform-snapshot.md)。本记录里的 wire 形状仍然有效。
+> 2026-09-23：builtin operation view 的 manifest 从 OperationSpec 投影，见 [ADR 0211](0211-operation-registry-and-platform-snapshot.md)。MCP 与 Skill 不是这份 spec 的 view；ToolManifest / ToolPolicy / ToolPresentation 仍是 IPC 形状，见 [ADR 0212](0212-process-services-off-tools-facade.md)。本记录里的 wire 形状仍然有效。
 
 # ADR 0142：工具 Manifest、OperationSpec 与统一结果元数据
 

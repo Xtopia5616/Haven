@@ -1,15 +1,53 @@
 use super::*;
 
+/// Process services shared outside the execution facade.
+///
+/// MCP, skills and the asset registry clone as handles. Authorization,
+/// actions and live output are `Arc`s. Callers keep this bundle instead of
+/// asking `ToolsManager` for each service.
+#[derive(Clone)]
+pub struct ToolServices {
+    pub mcp: McpManager,
+    pub mcp_configs: Arc<RwLock<HashMap<String, McpServerConfig>>>,
+    pub skills: SkillsEngine,
+    pub skill_runner: Arc<RwLock<SkillRunner>>,
+    pub authorization: Arc<AuthorizationEngine>,
+    pub assets: ManagedAssetRegistry,
+    pub actions: Arc<ActionService>,
+    pub live_outputs: Arc<LiveOutputHub>,
+}
+
+impl ToolServices {
+    fn from_parts(
+        core: &tool_core::ToolCore,
+        runtime: &tool_runtime::ToolRuntime,
+        builtins: &tool_builtins::ToolBuiltins,
+    ) -> Self {
+        Self {
+            mcp: builtins.mcp_manager.clone(),
+            mcp_configs: builtins.mcp_server_configs.clone(),
+            skills: builtins.skills_engine.clone(),
+            skill_runner: builtins.skill_runner.clone(),
+            authorization: Arc::clone(&core.authorization),
+            assets: runtime.managed_assets.clone(),
+            actions: Arc::clone(&runtime.action_service),
+            live_outputs: Arc::clone(&runtime.live_outputs),
+        }
+    }
+}
+
 /// Facade for tool execution.
 ///
-/// Callers enter through execution and catalog projection methods. The
-/// manager does not bind individual model or media clients: those inputs live
-/// on one `PlatformRuntime` snapshot owned by `ToolRuntime`. Installed,
-/// deferred and session operations live on [`OperationRegistry`].
+/// Callers enter through execution and catalog projection methods. Process
+/// services are handed out once via [`ToolServices`]; the manager does not
+/// bind individual model or media clients. Those inputs live on one
+/// `PlatformRuntime` snapshot owned by `ToolRuntime`. Installed, deferred and
+/// session operations live on [`OperationRegistry`].
 pub struct ToolsManager {
     pub(crate) core: tool_core::ToolCore,
     pub(crate) runtime: tool_runtime::ToolRuntime,
     pub(crate) builtins: tool_builtins::ToolBuiltins,
+    services: ToolServices,
 }
 
 impl ToolsManager {
@@ -18,22 +56,21 @@ impl ToolsManager {
     }
 
     pub fn new_with_exec_config(exec_config: SkillsExecConfig) -> Self {
+        let core = tool_core::ToolCore::new();
+        let runtime = tool_runtime::ToolRuntime::new();
+        let builtins = tool_builtins::ToolBuiltins::new(exec_config);
+        let services = ToolServices::from_parts(&core, &runtime, &builtins);
         Self {
-            core: tool_core::ToolCore::new(),
-            runtime: tool_runtime::ToolRuntime::new(),
-            builtins: tool_builtins::ToolBuiltins::new(exec_config),
+            core,
+            runtime,
+            builtins,
+            services,
         }
     }
 
-    /// Bind the single session runtime used by peer spawn, lifecycle control,
-    /// and in-process actor-mailbox delivery.
-    pub fn bind_messaging_runtime(&self, runtime: Arc<dyn MessagingRuntime>) -> anyhow::Result<()> {
-        self.runtime.bind_messaging_runtime(runtime)
-    }
-
-    /// Install History-aligned recall for `memory` operation=recall.
-    pub fn bind_memory_recall(&self, recall: Arc<dyn MemoryRecallPort>) -> anyhow::Result<()> {
-        self.runtime.bind_memory_recall(recall)
+    /// Clone of the process-service bundle captured at construction.
+    pub fn share_services(&self) -> ToolServices {
+        self.services.clone()
     }
 
     /// Create a non-owning, typed admin capability for live tool toggles.
@@ -50,40 +87,6 @@ impl ToolsManager {
 
     pub fn registry(&self) -> &ToolRegistry {
         self.operations().installed()
-    }
-
-    pub fn authorization(&self) -> &AuthorizationEngine {
-        &self.core.authorization
-    }
-
-    /// Builtin discovery services are domain views, not replaceable manager
-    /// fields.
-    pub fn mcp_manager(&self) -> &McpManager {
-        &self.builtins.mcp_manager
-    }
-
-    pub fn mcp_server_configs(&self) -> &Arc<RwLock<HashMap<String, McpServerConfig>>> {
-        &self.builtins.mcp_server_configs
-    }
-
-    pub fn skills_engine(&self) -> &SkillsEngine {
-        &self.builtins.skills_engine
-    }
-
-    pub fn skill_runner(&self) -> &Arc<RwLock<SkillRunner>> {
-        &self.builtins.skill_runner
-    }
-
-    pub fn managed_assets(&self) -> &ManagedAssetRegistry {
-        &self.runtime.managed_assets
-    }
-
-    pub fn action_service(&self) -> &Arc<ActionService> {
-        &self.runtime.action_service
-    }
-
-    pub fn live_outputs(&self) -> &Arc<live_output::LiveOutputHub> {
-        &self.runtime.live_outputs
     }
 
     /// Register host-persisted attachments for the trusted files boundary and
@@ -297,10 +300,11 @@ impl ToolsManager {
     }
 
     /// Apply cold-start wiring in one pass and rebuild the catalog once.
-    /// Avoids the N sequential rebuilds that used to block window creation
-    /// (`set_tool_settings` + `set_default_shell` + `set_context_limits` +
-    /// `set_router` + audio/TTS wiring + admin context).
-    pub async fn wire_startup(&self, wiring: StartupWiring) {
+    ///
+    /// Messaging and memory ports are bound before the rebuild. Limits,
+    /// security and tool settings are applied to their engines, then one
+    /// `PlatformRuntime` snapshot is published with every field.
+    pub async fn wire_startup(&self, wiring: StartupWiring) -> anyhow::Result<()> {
         let StartupWiring {
             tool_settings,
             default_shell,
@@ -314,9 +318,11 @@ impl ToolsManager {
             image_gen_client,
             tts_client,
             admin_context,
+            messaging_runtime,
+            memory_recall,
         } = wiring;
-        *self.core.tool_settings.write().await = tool_settings.clone();
-        *self.builtins.default_shell.write().await = default_shell;
+        self.runtime.bind_messaging_runtime(messaging_runtime)?;
+        self.runtime.bind_memory_recall(memory_recall)?;
         self.builtins.mcp_manager.set_limits(&context_limits).await;
         self.builtins
             .skills_engine
@@ -327,11 +333,14 @@ impl ToolsManager {
             .set_limits(&context_limits)
             .await;
         self.runtime.live_outputs.set_limits(&context_limits).await;
-        *self.core.context_limits.write().await = context_limits;
-        self.apply_security(&security).await;
+        self.core.authorization.apply_security(&security).await;
+        self.builtins
+            .mcp_manager
+            .set_network_policy(security.network_policy)
+            .await;
         self.core
             .authorization
-            .set_tool_settings(tool_settings)
+            .set_tool_settings(tool_settings.clone())
             .await;
         self.runtime
             .action_service
@@ -347,9 +356,19 @@ impl ToolsManager {
                 ocr_client,
                 image_gen_client,
                 media_config,
+                tool_settings,
+                context_limits,
+                default_shell,
+                security,
             })
             .await;
+        let applied = self.runtime.platform().await;
+        tracing::debug!(
+            network_policy = ?applied.security.network_policy,
+            "startup platform snapshot published"
+        );
         self.rebuild_catalog_scoped(CatalogRebuildScope::All).await;
+        Ok(())
     }
 
     /// Apply the security configuration to every runtime boundary that needs
@@ -362,6 +381,18 @@ impl ToolsManager {
             .mcp_manager
             .set_network_policy(security.network_policy)
             .await;
+        self.runtime
+            .update_platform(|current| {
+                let mut next = current.clone();
+                next.security = security.clone();
+                next
+            })
+            .await;
+        let applied = self.runtime.platform().await;
+        tracing::debug!(
+            network_policy = ?applied.security.network_policy,
+            "applied security configuration to the platform snapshot"
+        );
     }
 
     /// Wire the app-level context for the five native admin surfaces. Called by the
@@ -382,16 +413,23 @@ impl ToolsManager {
     }
 
     pub async fn set_tool_settings(&self, settings: HashMap<String, ToolConfig>) {
-        let affected = {
-            let current = self.core.tool_settings.read().await;
-            current
-                .keys()
-                .chain(settings.keys())
-                .filter(|name| current.get(*name) != settings.get(*name))
-                .map(|name| name.split('.').next().unwrap_or(name).to_string())
-                .collect::<HashSet<_>>()
-        };
-        *self.core.tool_settings.write().await = settings.clone();
+        let affected = self
+            .runtime
+            .update_platform_with(|current| {
+                let affected = current
+                    .tool_settings
+                    .keys()
+                    .chain(settings.keys())
+                    .filter(|name| current.tool_settings.get(*name) != settings.get(*name))
+                    .map(|name| name.split('.').next().unwrap_or(name).to_string())
+                    .collect::<HashSet<_>>();
+                let mut next = current.clone();
+                next.tool_settings = settings.clone();
+                (next, affected)
+            })
+            .await;
+        // Settings are not a security-policy change. Replaying `apply_security`
+        // here would clear session grants.
         self.core.authorization.set_tool_settings(settings).await;
         if !affected.is_empty() {
             self.rebuild_catalog_scoped(CatalogRebuildScope::Roots(affected))
@@ -402,7 +440,7 @@ impl ToolsManager {
     /// The five native admin surfaces, when the desktop shell wired the app
     /// context. The model sees the same operations through five typed adapters.
     pub async fn admin_surfaces(&self) -> Option<Arc<builtin::AdminSurfaces>> {
-        self.runtime.admin_surfaces.read().await.clone()
+        self.runtime.builtin_catalog().await.admin_surfaces.clone()
     }
 
     /// Flip the `enabled` flag for one builtin tool in the in-memory
@@ -411,12 +449,16 @@ impl ToolsManager {
     /// caller (the admin surface's `tool_enable`/`tool_disable` operations,
     /// which call this after persisting).
     pub async fn set_tool_enabled(&self, name: &str, enabled: bool) {
-        let mut settings = self.core.tool_settings.write().await;
-        settings
-            .entry(name.to_string())
-            .or_insert_with(ToolConfig::default)
-            .enabled = enabled;
-        drop(settings);
+        self.runtime
+            .update_platform(|current| {
+                let mut next = current.clone();
+                next.tool_settings
+                    .entry(name.to_string())
+                    .or_insert_with(ToolConfig::default)
+                    .enabled = enabled;
+                next
+            })
+            .await;
         self.rebuild_catalog_scoped(CatalogRebuildScope::roots([name
             .split('.')
             .next()
@@ -431,24 +473,36 @@ impl ToolsManager {
         self.builtins.skills_engine.set_limits(&limits).await;
         self.runtime.action_service.set_limits(&limits).await;
         self.runtime.live_outputs.set_limits(&limits).await;
-        *self.core.context_limits.write().await = limits;
+        self.runtime
+            .update_platform(|current| {
+                let mut next = current.clone();
+                next.context_limits = limits;
+                next
+            })
+            .await;
         self.rebuild_catalog_scoped(CatalogRebuildScope::All).await;
     }
 
     /// Replace the default shell for the `shell` tool and rebuild the catalog
     /// so the running agent picks up the new value on its next step.
     pub async fn set_default_shell(&self, shell: ShellChoice) {
-        *self.builtins.default_shell.write().await = shell;
+        self.runtime
+            .update_platform(|current| {
+                let mut next = current.clone();
+                next.default_shell = shell;
+                next
+            })
+            .await;
         self.rebuild_catalog_scoped(CatalogRebuildScope::roots(["shell"]))
             .await;
     }
 
     /// Snapshot the shell default used by the model-facing `shell` tool.
     pub async fn default_shell_name(&self) -> String {
-        self.builtins
-            .default_shell
-            .read()
+        self.runtime
+            .platform()
             .await
+            .default_shell
             .as_str()
             .to_string()
     }
@@ -456,7 +510,7 @@ impl ToolsManager {
     /// Snapshot the limits that shape model-visible tool and observation
     /// budgets. Prompt assembly uses this instead of duplicating defaults.
     pub async fn context_limits(&self) -> ContextLimitsConfig {
-        self.core.context_limits.read().await.clone()
+        self.runtime.platform().await.context_limits.clone()
     }
 
     /// Whether the model-facing `media.speak` operation has a live TTS
@@ -498,9 +552,7 @@ impl ToolsManager {
             );
         }
         let media_config = platform.media_config.clone();
-        let limits = self.core.context_limits.read().await;
-        let max_output_chars = limits.max_observation_chars;
-        drop(limits);
+        let max_output_chars = platform.context_limits.max_observation_chars;
         builtin::media::MediaTranscriber::new(
             router,
             stt_client,
@@ -574,20 +626,6 @@ impl ToolsManager {
             tts,
             web_search,
         }
-    }
-
-    /// Replace the TTS client used by the `media` tool after a live settings
-    /// update. A disabled or failed client is represented by `None`.
-    pub async fn set_tts_client(&self, client: Option<Arc<dyn haven_llm::TtsClient>>) {
-        self.runtime
-            .update_platform(|current| {
-                let mut next = current.clone();
-                next.tts_client = client;
-                next
-            })
-            .await;
-        self.rebuild_catalog_scoped(CatalogRebuildScope::roots(["media"]))
-            .await;
     }
 }
 

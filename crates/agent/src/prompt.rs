@@ -452,7 +452,7 @@ impl SystemPromptBuilder {
         let limits = tools.context_limits().await;
         let shell = tools.default_shell_name().await;
         let runtime_capabilities = tools.runtime_capabilities().await;
-        let permissions = tools.authorization().prompt_summary().await;
+        let permissions = tools.share_services().authorization.prompt_summary().await;
         let mcp_count = tools
             .list_mcp_server_configs()
             .await
@@ -460,7 +460,8 @@ impl SystemPromptBuilder {
             .filter(|server| server.enabled)
             .count();
         let skill_count = tools
-            .skills_engine()
+            .share_services()
+            .skills
             .list()
             .await
             .into_iter()
@@ -962,7 +963,7 @@ impl SystemPromptBuilder {
         let tools = self.context_provider.tools();
         let version = tools.registry().version();
         let mcp_catalog_version = tools.mcp_catalog_version();
-        let skills_catalog_version = tools.skills_engine().catalog_version();
+        let skills_catalog_version = tools.share_services().skills.catalog_version();
         if let Some(cache) = self.context_provider.cached_schema(
             version,
             mcp_catalog_version,
@@ -1026,7 +1027,15 @@ impl SystemPromptBuilder {
             "use `load_mcp` or `tool_catalog` for details",
         );
         let skills_section = cap_capability_index(
-            render_skill_index(&self.context_provider.tools().skills_engine().list().await),
+            render_skill_index(
+                &self
+                    .context_provider
+                    .tools()
+                    .share_services()
+                    .skills
+                    .list()
+                    .await,
+            ),
             SKILL_INDEX_CHAR_BUDGET,
             "use `load_skill` or `tool_catalog` for details",
         );
@@ -1787,7 +1796,8 @@ mod tests {
         )
         .unwrap();
         tools
-            .skills_engine()
+            .share_services()
+            .skills
             .set_config(Some(skills_root.path().to_path_buf()), None)
             .await
             .unwrap();
@@ -1805,7 +1815,12 @@ mod tests {
             "# Skill: second-skill\n\n## Metadata\n- description: second\n\n## Instructions\nrun second\n",
         )
         .unwrap();
-        tools.skills_engine().refresh_from_disk().await.unwrap();
+        tools
+            .share_services()
+            .skills
+            .refresh_from_disk()
+            .await
+            .unwrap();
 
         let after = builder
             .build_for_session_without_memory("use skills", &[])

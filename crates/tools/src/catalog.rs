@@ -59,9 +59,11 @@ impl ToolsManager {
     /// adapters.
     pub(super) async fn rebuild_catalog_scoped(&self, scope: CatalogRebuildScope) {
         let mut all_tools: Vec<ToolBox> = Vec::new();
-        let previous_tools = self.core.all_builtin_tools.read().await.clone();
-        let previous_by_name: HashMap<String, ToolBox> = previous_tools
-            .into_iter()
+        let previous_catalog = self.runtime.builtin_catalog().await;
+        let previous_by_name: HashMap<String, ToolBox> = previous_catalog
+            .tools
+            .iter()
+            .cloned()
             .map(|tool| (tool.name(), tool))
             .collect();
 
@@ -102,8 +104,12 @@ impl ToolsManager {
             return;
         }
         self.core.operations.deferred.replace(deferred_tools).await;
-        *self.core.all_builtin_tools.write().await = all_tools;
-        *self.runtime.admin_surfaces.write().await = admin_surfaces;
+        self.runtime
+            .publish_builtin_catalog(crate::tool_runtime::BuiltinCatalog {
+                tools: all_tools,
+                admin_surfaces,
+            })
+            .await;
         self.core.operations.sessions.bump_global_version();
     }
 
@@ -130,10 +136,10 @@ impl ToolsManager {
             registry: self.core.operations.installed.clone(),
             session_catalog: self.core.operations.sessions.clone(),
             max_tools_per_request: self
-                .core
-                .context_limits
-                .read()
+                .runtime
+                .platform()
                 .await
+                .context_limits
                 .max_tools_per_request
                 .max(1),
             mcp_manager: Arc::new(self.builtins.mcp_manager.clone()),
@@ -176,10 +182,10 @@ impl ToolsManager {
             registry: self.core.operations.installed.clone(),
             session_catalog: self.core.operations.sessions.clone(),
             max_tools_per_request: self
-                .core
-                .context_limits
-                .read()
+                .runtime
+                .platform()
                 .await
+                .context_limits
                 .max_tools_per_request
                 .max(1),
         };
@@ -247,10 +253,10 @@ impl ToolsManager {
             }
         };
         let max = self
-            .core
-            .context_limits
-            .read()
+            .runtime
+            .platform()
             .await
+            .context_limits
             .max_tools_per_request
             .max(1);
         let global_count = self.core.operations.installed.list().await.len();
@@ -419,7 +425,7 @@ impl ToolsManager {
     /// Whether a tool is enabled per `tool_settings`. Tools without a
     /// settings entry are enabled by default.
     pub async fn tool_enabled(&self, name: &str) -> bool {
-        tool_config_enabled(&*self.core.tool_settings.read().await, name)
+        tool_config_enabled(&self.runtime.platform().await.tool_settings, name)
     }
 
     /// Schemas for ALL model-facing builtin operation views (enabled and disabled) plus their
@@ -527,10 +533,10 @@ impl OperationCatalog<'_> {
             }
             let max = self
                 .manager
-                .core
-                .context_limits
-                .read()
+                .runtime
+                .platform()
                 .await
+                .context_limits
                 .max_tools_per_request
                 .max(1);
             let provider_definitions =
@@ -548,10 +554,10 @@ impl OperationCatalog<'_> {
     pub async fn list_defs_for_session(&self, session_id: &str) -> Vec<ToolDef> {
         let max = self
             .manager
-            .core
-            .context_limits
-            .read()
+            .runtime
+            .platform()
             .await
+            .context_limits
             .max_tools_per_request
             .max(1);
         let global_defs = self.manager.core.operations.installed.list_defs().await;
@@ -589,8 +595,10 @@ impl OperationCatalog<'_> {
             .collect()
     }
     pub async fn list_builtin_tools(&self) -> Vec<Value> {
-        let tools = self.manager.core.all_builtin_tools.read().await;
-        let settings = self.manager.core.tool_settings.read().await;
+        let catalog = self.manager.runtime.builtin_catalog().await;
+        let platform = self.manager.runtime.platform().await;
+        let tools = &catalog.tools;
+        let settings = &platform.tool_settings;
         tools
             .iter()
             .filter(|t| !t.name().starts_with("skill__"))
@@ -601,7 +609,7 @@ impl OperationCatalog<'_> {
                 // drift from custom/operation-view metadata (root, policy or
                 // presentation) that the definition already carries.
                 let mut manifest = def.manifest.clone().unwrap_or_else(|| t.tool_manifest());
-                manifest.availability.enabled = tool_config_enabled(&settings, &t.name());
+                manifest.availability.enabled = tool_config_enabled(settings, &t.name());
                 let mut json = def.json();
                 json.as_object_mut()
                     .expect("ToolDef::json returns an object")
@@ -626,26 +634,30 @@ impl OperationCatalog<'_> {
             .collect()
     }
     pub async fn list_builtin_manifests(&self) -> Vec<ToolManifest> {
-        let tools = self.manager.core.all_builtin_tools.read().await;
-        let settings = self.manager.core.tool_settings.read().await;
+        let catalog = self.manager.runtime.builtin_catalog().await;
+        let platform = self.manager.runtime.platform().await;
+        let tools = &catalog.tools;
+        let settings = &platform.tool_settings;
         tools
             .iter()
             .filter(|tool| !tool.name().starts_with("skill__"))
             .map(|tool| {
                 let def = tool.tool_def();
                 let mut manifest = def.manifest.clone().unwrap_or_else(|| tool.tool_manifest());
-                manifest.availability.enabled = tool_config_enabled(&settings, &tool.name());
+                manifest.availability.enabled = tool_config_enabled(settings, &tool.name());
                 manifest
             })
             .collect()
     }
     pub async fn list_enabled_builtin_defs(&self) -> Vec<ToolDef> {
-        let tools = self.manager.core.all_builtin_tools.read().await;
-        let settings = self.manager.core.tool_settings.read().await;
+        let catalog = self.manager.runtime.builtin_catalog().await;
+        let platform = self.manager.runtime.platform().await;
+        let tools = &catalog.tools;
+        let settings = &platform.tool_settings;
         let mut defs: Vec<_> = tools
             .iter()
             .filter(|tool| !tool.name().starts_with("skill__"))
-            .filter(|tool| tool_config_enabled(&settings, &tool.name()))
+            .filter(|tool| tool_config_enabled(settings, &tool.name()))
             .map(|tool| tool.tool_def())
             .collect();
         defs.sort_by(|a, b| a.name.cmp(&b.name));

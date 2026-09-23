@@ -13,6 +13,7 @@ use haven_common::config::{ContextLimitsConfig, SecurityConfig, ToolConfig};
 use haven_common::types::ShellChoice;
 use haven_llm::LlmRouter;
 use haven_memory::recall::{MemoryQuery, MemoryRecall};
+use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 use tokio::sync::RwLock;
 
@@ -62,6 +63,31 @@ pub(crate) struct PlatformRuntime {
     pub(crate) ocr_client: Option<Arc<dyn haven_llm::OcrClient>>,
     pub(crate) image_gen_client: Option<Arc<dyn haven_llm::ImageGenClient>>,
     pub(crate) media_config: haven_common::config::MediaConfig,
+    /// Enabled flags, timeouts and per-tool caps for this generation.
+    pub(crate) tool_settings: HashMap<String, ToolConfig>,
+    pub(crate) context_limits: ContextLimitsConfig,
+    pub(crate) default_shell: ShellChoice,
+    /// Generation record applied to `AuthorizationEngine` and MCP network
+    /// policy. Live decisions still go through the engine; storing the config
+    /// here keeps it from tearing away from settings during a snapshot swap.
+    pub(crate) security: SecurityConfig,
+}
+
+/// Builtin tools and the admin surfaces produced by one successful rebuild.
+/// The pair is published together so a rejected rebuild cannot expose new
+/// tools without the surfaces that own them, or the reverse.
+pub(crate) struct BuiltinCatalog {
+    pub(crate) tools: Vec<crate::tool_contract::ToolBox>,
+    pub(crate) admin_surfaces: Option<Arc<crate::builtin::AdminSurfaces>>,
+}
+
+impl BuiltinCatalog {
+    pub(crate) fn empty() -> Self {
+        Self {
+            tools: Vec::new(),
+            admin_surfaces: None,
+        }
+    }
 }
 
 /// Process services plus the swappable platform snapshot.
@@ -74,8 +100,8 @@ pub(crate) struct ToolRuntime {
     platform: RwLock<Arc<PlatformRuntime>>,
     pub(crate) action_service: Arc<ActionService>,
     pub(crate) live_outputs: Arc<LiveOutputHub>,
-    /// Produced by catalog registration, not injected at startup.
-    pub(crate) admin_surfaces: RwLock<Option<Arc<crate::builtin::AdminSurfaces>>>,
+    /// Swapped only after a catalog rebuild is accepted.
+    builtin_catalog: RwLock<Arc<BuiltinCatalog>>,
     pub(crate) clipboard_history: Arc<crate::builtin::clipboard::ClipboardHistory>,
     pub(crate) messaging_service: Arc<MessagingService>,
     pub(crate) memory_recall: MemoryRecallSlot,
@@ -88,7 +114,7 @@ impl ToolRuntime {
             platform: RwLock::new(Arc::new(PlatformRuntime::default())),
             action_service: Arc::new(ActionService::new()),
             live_outputs: Arc::new(LiveOutputHub::new()),
-            admin_surfaces: RwLock::new(None),
+            builtin_catalog: RwLock::new(Arc::new(BuiltinCatalog::empty())),
             clipboard_history: Arc::new(crate::builtin::clipboard::ClipboardHistory::new(50)),
             messaging_service: Arc::new(MessagingService::default_root()),
             memory_recall: new_memory_recall_slot(),
@@ -109,9 +135,29 @@ impl ToolRuntime {
         &self,
         update: impl FnOnce(&PlatformRuntime) -> PlatformRuntime,
     ) {
+        self.update_platform_with(|current| (update(current), ()))
+            .await;
+    }
+
+    /// Apply a platform update and return a value computed from the same
+    /// pre-update snapshot. Settings mutations use this so a concurrent
+    /// replacement cannot drop keys that were read outside the write lock.
+    pub(crate) async fn update_platform_with<T>(
+        &self,
+        update: impl FnOnce(&PlatformRuntime) -> (PlatformRuntime, T),
+    ) -> T {
         let mut slot = self.platform.write().await;
-        let next = update(slot.as_ref());
+        let (next, value) = update(slot.as_ref());
         *slot = Arc::new(next);
+        value
+    }
+
+    pub(crate) async fn builtin_catalog(&self) -> Arc<BuiltinCatalog> {
+        self.builtin_catalog.read().await.clone()
+    }
+
+    pub(crate) async fn publish_builtin_catalog(&self, catalog: BuiltinCatalog) {
+        *self.builtin_catalog.write().await = Arc::new(catalog);
     }
 
     pub(crate) fn bind_memory_recall(
@@ -146,6 +192,10 @@ pub struct StartupWiring {
     pub image_gen_client: Option<Arc<dyn haven_llm::ImageGenClient>>,
     pub tts_client: Option<Arc<dyn haven_llm::TtsClient>>,
     pub admin_context: AdminContext,
+    /// Installed before the first catalog rebuild. `AgentLayer` is the only
+    /// production implementation; there is no later public bind slot.
+    pub messaging_runtime: Arc<dyn MessagingRuntime>,
+    pub memory_recall: Arc<dyn MemoryRecallPort>,
 }
 
 /// Live capabilities shared by prompt assembly and builtin registration.

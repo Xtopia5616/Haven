@@ -1,3 +1,5 @@
+> 2026-09-23：进程服务已从 facade getter 迁到 ToolServices。OperationSpec 不是全部 operation 的定义。见 [ADR 0212](0212-process-services-off-tools-facade.md)。本记录的执行入口、PlatformRuntime 与不新增 AppRuntime 仍然有效。
+
 # ADR 0211：ToolsManager 收成执行入口，operation 单一投影
 
 - 状态：accepted

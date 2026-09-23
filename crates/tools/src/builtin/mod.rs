@@ -541,8 +541,8 @@ fn operation_spec(
     policy.data_sensitivity = data_sensitivity;
     policy.network_access = network_access;
     OperationSpec {
-        name,
-        description,
+        name: name.into(),
+        description: description.into(),
         fixed,
         schema,
         policy,
@@ -560,6 +560,7 @@ fn operation_spec(
                 "Use only for this named operation; its operation/scope fields are fixed.".into(),
             key_operations: vec![name.into()],
         },
+        identity: None,
     }
 }
 
@@ -568,8 +569,8 @@ fn operation_spec(
 fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
     vec![
         OperationSpec {
-            name: "files.read",
-            description: tool_prompts::operation_text("files.read").description,
+            name: "files.read".into(),
+            description: tool_prompts::operation_text("files.read").description.into(),
             fixed: vec![("operation".into(), serde_json::json!("read"))],
             schema: files_read_text_schema(),
             policy: OperationPolicy {
@@ -596,10 +597,11 @@ fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
                 when_not_to_use: "Use a different operation view for another action; do not add an operation field.".into(),
                 key_operations: vec!["files.read".into()],
             },
+            identity: None,
         },
         OperationSpec {
-            name: "files.outline",
-            description: tool_prompts::operation_text("files.outline").description,
+            name: "files.outline".into(),
+            description: tool_prompts::operation_text("files.outline").description.into(),
             fixed: vec![("operation".into(), serde_json::json!("outline"))],
             schema: files_outline_schema(),
             policy: OperationPolicy {
@@ -626,10 +628,11 @@ fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
                 when_not_to_use: "Use a different operation view for another action; do not add an operation field.".into(),
                 key_operations: vec!["files.outline".into()],
             },
+            identity: None,
         },
         OperationSpec {
-            name: "files.summary",
-            description: tool_prompts::operation_text("files.summary").description,
+            name: "files.summary".into(),
+            description: tool_prompts::operation_text("files.summary").description.into(),
             fixed: vec![("operation".into(), serde_json::json!("summary"))],
             schema: files_summary_schema(),
             policy: OperationPolicy {
@@ -656,10 +659,11 @@ fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
                 when_not_to_use: "Use a different operation view for another action; do not add an operation field.".into(),
                 key_operations: vec!["files.summary".into()],
             },
+            identity: None,
         },
         OperationSpec {
-            name: "files.search",
-            description: tool_prompts::operation_text("files.search").description,
+            name: "files.search".into(),
+            description: tool_prompts::operation_text("files.search").description.into(),
             fixed: vec![("operation".into(), serde_json::json!("search"))],
             schema: files_search_schema(max_results),
             policy: OperationPolicy {
@@ -686,10 +690,11 @@ fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
                 when_not_to_use: "Use a different operation view for another action; do not add an operation field.".into(),
                 key_operations: vec!["files.search".into()],
             },
+            identity: None,
         },
         OperationSpec {
-            name: "system.info",
-            description: tool_prompts::operation_text("system.info").description,
+            name: "system.info".into(),
+            description: tool_prompts::operation_text("system.info").description.into(),
             fixed: vec![("scope".into(), serde_json::json!("info"))],
             schema: system_info_schema(),
             policy: OperationPolicy {
@@ -716,6 +721,7 @@ fn operation_specs(max_results: usize) -> Vec<OperationSpec> {
                 when_not_to_use: "Use a different operation view for another action; do not add an operation field.".into(),
                 key_operations: vec!["system.info".into()],
             },
+            identity: None,
         },
     ]
 }
@@ -1318,7 +1324,7 @@ mod tests {
         assert_eq!(
             contracts
                 .iter()
-                .map(|contract| contract.name)
+                .map(|contract| contract.name.as_ref())
                 .collect::<Vec<_>>(),
             vec![
                 "files.read",
@@ -1344,7 +1350,7 @@ mod tests {
                     .collect::<serde_json::Map<_, _>>()
             );
             assert_eq!(
-                haven_common::types::permission_key(contract.name, &policy_input),
+                haven_common::types::permission_key(contract.name.as_ref(), &policy_input),
                 contract.policy.capability.to_string(),
                 "permission key drift for {}",
                 contract.name

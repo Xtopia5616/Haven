@@ -5,7 +5,9 @@ use haven_common::types::MessageAttachment;
 use haven_common::types::RiskLevel;
 use haven_memory::repositories::sessions::Session as DbSession;
 use haven_memory::{Database, SessionStore};
-use haven_tools::{AuthorizationDecision, ToolResult, ToolsManager, is_silent_action};
+use haven_tools::{
+    AuthorizationDecision, ToolResult, ToolServices, ToolsManager, is_silent_action,
+};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
@@ -163,6 +165,10 @@ pub struct SessionSupervisor {
     /// broadcast observe interaction/control events, not just transcript rows.
     store: SessionStore,
     tools: Arc<ToolsManager>,
+    /// Process services captured at construction. Hot paths use services()
+    /// instead of taking MCP, skills, authorization, actions or live output
+    /// back out of ToolsManager.
+    services: ToolServices,
     /// The sole cross-session registry. A session's mutable runtime state is
     /// owned by its actor and is never protected by a shared per-session lock.
     actors: Arc<Mutex<HashMap<String, actor::SessionActorHandle>>>,
@@ -233,12 +239,14 @@ pub use run_engine::RunEngine;
 
 impl SessionSupervisor {
     pub fn new(db: Arc<Database>, tools: Arc<ToolsManager>, max_concurrent: usize) -> Self {
+        let services = tools.share_services();
         let (event_tx, _) = broadcast::channel(256);
         Self {
             partials: Arc::new(crate::partial::PartialStore::new(db.clone())),
             store: SessionStore::new(db.clone()),
             db,
             tools,
+            services,
             actors: Arc::new(Mutex::new(HashMap::new())),
             admission: Arc::new(dispatcher::RunAdmission::new(max_concurrent.max(1))),
             lifecycle_gate: Arc::new(Mutex::new(())),
@@ -254,6 +262,10 @@ impl SessionSupervisor {
             message_tx: watch::channel(0).0,
             notification_summary_chars: AtomicUsize::new(800),
         }
+    }
+
+    pub fn services(&self) -> &ToolServices {
+        &self.services
     }
 
     pub fn subscribe_events(&self) -> broadcast::Receiver<SessionEvent> {

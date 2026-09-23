@@ -169,11 +169,13 @@ async fn run_session_contains_custom_extension_panic() {
 async fn run_session_contains_real_mcp_and_skill_adapter_panics() {
     let tools = Arc::new(ToolsManager::new());
     tools
-        .authorization()
+        .share_services()
+        .authorization
         .set_permission_mode(haven_common::types::PermissionMode::Autonomous)
         .await;
     tools
-        .authorization()
+        .share_services()
+        .authorization
         .set_boundaries(
             haven_common::types::SandboxMode::FullAccess,
             Vec::new(),
@@ -234,7 +236,8 @@ async fn run_session_contains_real_mcp_and_skill_adapter_panics() {
     ] {
         let policy = tools.get_operation_policy(None, tool_name, &input).await;
         tools
-            .authorization()
+            .share_services()
+            .authorization
             .grant(
                 None,
                 policy.capability.to_string(),

@@ -478,14 +478,16 @@ async fn media_tool_usage_flows_to_event_and_database() {
 
     let tools = Arc::new(ToolsManager::new());
     tools
-        .authorization()
+        .share_services()
+        .authorization
         .set_permission_mode(haven_common::types::PermissionMode::Autonomous)
         .await;
     // `media.describe` delegates to a configured vision provider, so the
     // external-network disclosure gate still applies in Autonomous mode.
     // This test exercises usage propagation after that explicit approval.
     tools
-        .authorization()
+        .share_services()
+        .authorization
         .grant(
             None,
             "media.describe",

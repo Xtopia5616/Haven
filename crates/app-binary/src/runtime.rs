@@ -11,7 +11,7 @@ use haven_agent::{AgentLayer, SessionSupervisor};
 use haven_common::config::ConfigService;
 use haven_input::InputPipeline;
 use haven_memory::Database;
-use haven_tools::ToolsManager;
+use haven_tools::{ToolServices, ToolsManager};
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -31,6 +31,9 @@ use tracing_subscriber::reload;
 pub struct ApplicationRuntime {
     pub(crate) db: Arc<Database>,
     pub(crate) tools: Arc<ToolsManager>,
+    /// Process services captured with the manager. Command handlers use this
+    /// bundle instead of asking ToolsManager for each service.
+    pub(crate) services: ToolServices,
     pub(crate) executor: Arc<SessionSupervisor>,
     pub(crate) agent: Arc<AgentLayer>,
     pub(crate) pipeline: Arc<InputPipeline>,
@@ -57,21 +60,27 @@ pub(crate) struct RuntimeServices {
 }
 
 impl ApplicationRuntime {
-    pub(crate) fn new(services: RuntimeServices) -> Self {
+    pub(crate) fn new(runtime_services: RuntimeServices) -> Self {
+        let services = runtime_services.tools.share_services();
         Self {
-            db: services.db,
-            tools: services.tools,
-            executor: services.executor,
-            agent: services.agent,
-            pipeline: services.pipeline,
-            shell: services.shell,
-            log_filter_handles: services.log_filter_handles,
-            config_service: services.config_service,
+            db: runtime_services.db,
+            tools: runtime_services.tools,
+            services,
+            executor: runtime_services.executor,
+            agent: runtime_services.agent,
+            pipeline: runtime_services.pipeline,
+            shell: runtime_services.shell,
+            log_filter_handles: runtime_services.log_filter_handles,
+            config_service: runtime_services.config_service,
             shutdown_token: CancellationToken::new(),
             shutting_down: AtomicBool::new(false),
             tasks: Mutex::new(Vec::new()),
             runtime_handle: tokio::runtime::Handle::current(),
         }
+    }
+
+    pub(crate) fn services(&self) -> &ToolServices {
+        &self.services
     }
 
     /// Return the root token shared by app-scoped workers and domain startup
@@ -149,8 +158,8 @@ impl ApplicationRuntime {
         if let Err(error) = self.executor.clear_all_sessions_for_shutdown().await {
             tracing::warn!(error = %error, "session shutdown did not quiesce every run");
         }
-        self.tools.action_service().shutdown().await;
-        self.tools.mcp_manager().shutdown_all().await;
+        self.services().actions.shutdown().await;
+        self.services().mcp.shutdown_all().await;
 
         let tasks = {
             let mut registered = self.tasks.lock().unwrap_or_else(|poisoned| {

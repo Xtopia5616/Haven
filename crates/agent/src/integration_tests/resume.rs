@@ -41,7 +41,8 @@ async fn enabled_skills_are_global_and_resume_does_not_rebuild_skill_sessions() 
     );
     let tools = Arc::new(ToolsManager::new());
     tools
-        .skills_engine()
+        .share_services()
+        .skills
         .set_config(Some(dir.clone()), None)
         .await
         .unwrap();

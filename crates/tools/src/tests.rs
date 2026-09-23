@@ -378,26 +378,22 @@ async fn test_tools_manager_set_tool_settings() {
 #[tokio::test]
 async fn test_tools_manager_set_context_limits_stores_global_cap() {
     let mgr = ToolsManager::new();
-    assert_eq!(
-        mgr.core.context_limits.read().await.max_observation_chars,
-        16_000
-    );
+    assert_eq!(mgr.context_limits().await.max_observation_chars, 16_000);
     let limits = ContextLimitsConfig {
         max_observation_chars: 5_000,
         ..Default::default()
     };
     mgr.set_context_limits(limits).await;
-    assert_eq!(
-        mgr.core.context_limits.read().await.max_observation_chars,
-        5_000
-    );
+    assert_eq!(mgr.context_limits().await.max_observation_chars, 5_000);
 }
 
 #[tokio::test]
 async fn observation_text_uses_same_global_cap_for_adapters() {
     let mgr = ToolsManager::new();
-    let mut limits = ContextLimitsConfig::default();
-    limits.max_observation_chars = 4;
+    let limits = ContextLimitsConfig {
+        max_observation_chars: 4,
+        ..Default::default()
+    };
     mgr.set_context_limits(limits).await;
     let result = ToolResult::ok(json!("123456"));
     assert_eq!(mgr.observation_text("adapter", &result).await, "1234");
@@ -792,7 +788,7 @@ async fn tool_catalog_describe_does_not_connect_or_execute_mcp() {
         .unwrap();
     assert_eq!(result.output["status"], "ok");
     assert_eq!(result.output["source"], "mcp");
-    assert!(mgr.mcp_manager().list_clients().await.is_empty());
+    assert!(mgr.share_services().mcp.list_clients().await.is_empty());
 }
 
 #[tokio::test]
@@ -1287,7 +1283,7 @@ async fn test_list_schemas_for_session_includes_per_session_tools() {
         instructions: "do stuff".into(),
     };
     let skill = Skill::from_manifest_unchecked(manifest, std::path::PathBuf::from("."), true);
-    let runner = mgr.skill_runner().read().await.clone();
+    let runner = mgr.share_services().skill_runner.read().await.clone();
     let adapter = SkillToolAdapter::new(Arc::new(skill), runner);
     mgr.register_for_session("ses-a", Arc::new(adapter)).await;
 
@@ -1483,9 +1479,17 @@ async fn test_list_defs_for_session_caps_at_max_tools() {
 
     // Leave room for only 2 session overlays. Write the limit directly so
     // we do not rebuild the catalog (and shift `global`) mid-test.
-    let mut limits = ContextLimitsConfig::default();
-    limits.max_tools_per_request = global + 2;
-    *mgr.core.context_limits.write().await = limits;
+    let limits = ContextLimitsConfig {
+        max_tools_per_request: global + 2,
+        ..Default::default()
+    };
+    mgr.runtime
+        .update_platform(|current| {
+            let mut next = current.clone();
+            next.context_limits = limits;
+            next
+        })
+        .await;
 
     struct NamedStub(&'static str);
     #[async_trait::async_trait]
@@ -1533,7 +1537,8 @@ async fn private_live_output_ids_are_stripped_and_reinjected() {
     mgr.rebuild_catalog().await;
     let hits: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let hits2 = hits.clone();
-    mgr.live_outputs()
+    mgr.share_services()
+        .live_outputs
         .set_event_sink(Arc::new(move |_event, payload| {
             if let Some(sid) = payload["step_id"].as_str() {
                 hits2.lock().unwrap().push(sid.to_string());

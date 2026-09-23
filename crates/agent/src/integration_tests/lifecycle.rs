@@ -238,7 +238,7 @@ async fn terminal_action_result_projection_is_idempotent() {
 #[tokio::test]
 async fn queued_action_result_is_reconciled_after_session_becomes_terminal() {
     let (agent, executor) = make_test_agent();
-    let action_service = executor.get_tools().action_service().clone();
+    let action_service = executor.services().actions.clone();
     action_service.set_db(Some(agent.db.clone())).await;
     let session = executor
         .create_session("terminal action race")

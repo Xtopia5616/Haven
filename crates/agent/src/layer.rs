@@ -449,9 +449,8 @@ impl AgentLayer {
         // based on subprocess output before the user has answered. The result
         // is still buffered and delivered as context once the user resumes.
         let agent = self.clone();
-        let tools = self.executor.get_tools();
-        let action_service = tools.action_service().clone();
-        if let Some(mut rx) = tools.action_service().take_action_receiver() {
+        let action_service = self.executor.services().actions.clone();
+        if let Some(mut rx) = action_service.take_action_receiver() {
             let cancellation = cancellation.clone();
             tokio::spawn(async move {
                 loop {
@@ -672,9 +671,8 @@ impl AgentLayer {
         //   same ReAct loop without anyone speaking. A continue-mode action
         //   without a session id is an error (no fallback).
         let agent = self.clone();
-        let tools = self.executor.get_tools();
-        let action_service = tools.action_service().clone();
-        if let Some(mut rx) = tools.action_service().take_action_receiver() {
+        let action_service = self.executor.services().actions.clone();
+        if let Some(mut rx) = action_service.take_action_receiver() {
             let cancellation = cancellation.clone();
             tokio::spawn(async move {
                 loop {
@@ -738,8 +736,10 @@ impl AgentLayer {
                                         &args,
                                     )
                                     .await;
-                                match tools
-                                    .authorization()
+                                match agent
+                                    .executor
+                                    .services()
+                                    .authorization
                                     .authorize(&authorization_request)
                                     .await
                                 {
@@ -944,12 +944,12 @@ impl AgentLayer {
         // spawned above delivers the overdue fires. Also clean up action rows a
         // previous run left `running` (their child processes died with the
         // app), so persisted action history never shows stale live work.
-        let restore_tools = self.executor.get_tools();
+        let actions = self.executor.services().actions.clone();
         let cancellation = cancellation.clone();
         tokio::spawn(async move {
             let (overdue, interrupted) = tokio::select! {
                 _ = cancellation.cancelled() => return,
-                result = restore_tools.action_service().restore() => result,
+                result = actions.restore() => result,
             };
             if overdue > 0 {
                 tracing::info!(
