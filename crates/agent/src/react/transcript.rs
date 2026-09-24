@@ -787,6 +787,149 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn event_boundary_store_ports_seed_append_and_replay_transcript_records() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let session = db.create_session("event boundary").unwrap();
+        let engine = test_engine(db);
+        let mut live = engine.event_store.subscribe();
+        let seeded = TranscriptRecord::Thought {
+            step_number: 1,
+            text: "seed".into(),
+            message_id: haven_common::types::new_id("step"),
+        };
+        let appended = TranscriptRecord::Reasoning {
+            step_number: 2,
+            text: "appended".into(),
+            message_id: haven_common::types::new_id("msg"),
+        };
+
+        engine
+            .seed_transcript_events(&session.id, std::slice::from_ref(&seeded), 7)
+            .await
+            .unwrap();
+        assert_eq!(live.try_recv().unwrap().sequence, 1);
+        assert_eq!(
+            engine
+                .append_transcript_record(&session.id, &appended, 8, 2)
+                .await
+                .unwrap(),
+            2
+        );
+        let live_append = live.try_recv().unwrap();
+        assert_eq!(live_append.sequence, 2);
+        assert_eq!(live_append.run_id, Some(8));
+        assert_eq!(live_append.step_number, Some(2));
+
+        engine
+            .event_store
+            .append_branch_point(&session.id, 1, 1, Some("2026-09-24T00:00:00Z"), None)
+            .unwrap();
+        let replay = engine
+            .load_durable_event_state(&session.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(replay.events).unwrap(),
+            serde_json::json!([seeded, appended])
+        );
+        assert_eq!(replay.cursor.event_sequence, 3);
+        assert_eq!(replay.cursor.event_cursor, 2);
+        let branch_point = replay.branch_points.get(&1).unwrap();
+        assert_eq!(branch_point.event_cursor, 1);
+        assert_eq!(branch_point.step_number, 1);
+        assert_eq!(
+            branch_point.last_msg_at.as_deref(),
+            Some("2026-09-24T00:00:00Z")
+        );
+    }
+
+    #[tokio::test]
+    async fn transcript_append_keeps_synthetic_missing_session_compatibility() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let engine = test_engine(db);
+        let missing_session_id = haven_common::types::new_id("ses");
+        let mut live = engine.event_store.subscribe();
+        let record = TranscriptRecord::Thought {
+            step_number: 1,
+            text: "isolated test".into(),
+            message_id: haven_common::types::new_id("step"),
+        };
+
+        assert_eq!(
+            engine
+                .append_transcript_record(&missing_session_id, &record, 1, 1)
+                .await
+                .unwrap(),
+            0
+        );
+        assert!(
+            engine
+                .event_store
+                .read_all(&missing_session_id)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(matches!(
+            live.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[tokio::test]
+    async fn transcript_append_validation_failure_has_no_durable_or_live_side_effect() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let session = db.create_session("event boundary failure").unwrap();
+        let engine = test_engine(db.clone());
+        let mut live = engine.event_store.subscribe();
+        let oversized = TranscriptRecord::Thought {
+            step_number: 1,
+            text: "x".repeat(4 * 1024 * 1024 + 1),
+            message_id: haven_common::types::new_id("step"),
+        };
+
+        let error = engine
+            .append_transcript_record(&session.id, &oversized, 1, 1)
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("transcript batch exceeds"));
+        assert!(engine.event_store.read_all(&session.id).unwrap().is_empty());
+        assert!(db.get_session_messages(&session.id).unwrap().is_empty());
+        assert!(matches!(
+            live.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[tokio::test]
+    async fn durable_event_replay_keeps_agent_transcript_validation_and_error_text() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let session = db.create_session("invalid event boundary replay").unwrap();
+        let engine = test_engine(db);
+        engine
+            .event_store
+            .append(
+                &session.id,
+                haven_memory::TRANSCRIPT_EVENT_TYPE,
+                r#"{"not_a_transcript_record":true}"#,
+                Some(1),
+                Some(1),
+            )
+            .unwrap();
+
+        let error = engine
+            .load_durable_event_state(&session.id)
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().starts_with(&format!(
+            "invalid transcript event 1 for session {}:",
+            session.id
+        )));
+    }
+
+    #[tokio::test]
     async fn transcript_batch_writer_preserves_empty_batch_contract() {
         let db_path = std::env::temp_dir().join(format!(
             "haven_transcript_batch_writer_empty_{}.db",

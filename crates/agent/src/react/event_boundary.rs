@@ -118,55 +118,49 @@ const BUDGET_EXHAUSTED_BODY: &str = "本轮运行的步骤上限已用完，任�
 
 impl ReActEngine {
     /// Load the active transcript and branch metadata from the durable event
-    /// stream in one blocking read. `None` means that no durable event log
+    /// stream in one SessionStore read. `None` means that no durable event log
     /// exists; once any control or transcript event exists, no cache is
     /// consulted for transcript state.
     pub(crate) async fn load_durable_event_state(
         &self,
         session_id: &str,
     ) -> anyhow::Result<Option<DurableEventState>> {
-        let store = self.event_store.clone();
-        let session_id = session_id.to_string();
-        self.db
-            .run_blocking(move |_| {
-                let Some(replay) = store.load_replay_state(&session_id)? else {
-                    return Ok(None);
-                };
-                let events = replay
-                    .transcript
-                    .into_iter()
-                    .map(|event| {
-                        serde_json::from_str::<TranscriptRecord>(&event.payload).map_err(|error| {
-                            anyhow::anyhow!(
-                                "invalid transcript event {} for session {}: {}",
-                                event.sequence,
-                                session_id,
-                                error
-                            )
-                        })
-                    })
-                    .collect::<anyhow::Result<Vec<_>>>()?;
-                let branch_points = replay
-                    .branch_points
-                    .into_iter()
-                    .map(|(_, event_cursor, step_number, last_msg_at)| {
-                        (
-                            step_number,
-                            BranchPoint {
-                                event_cursor,
-                                step_number,
-                                last_msg_at,
-                            },
-                        )
-                    })
-                    .collect();
-                Ok(Some(DurableEventState {
-                    events,
-                    branch_points,
-                    cursor: replay.cursor,
-                }))
+        let Some(replay) = self.event_store.load_replay_state_async(session_id).await? else {
+            return Ok(None);
+        };
+        let events = replay
+            .transcript
+            .into_iter()
+            .map(|event| {
+                serde_json::from_str::<TranscriptRecord>(&event.payload).map_err(|error| {
+                    anyhow::anyhow!(
+                        "invalid transcript event {} for session {}: {}",
+                        event.sequence,
+                        session_id,
+                        error
+                    )
+                })
             })
-            .await
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        let branch_points = replay
+            .branch_points
+            .into_iter()
+            .map(|(_, event_cursor, step_number, last_msg_at)| {
+                (
+                    step_number,
+                    BranchPoint {
+                        event_cursor,
+                        step_number,
+                        last_msg_at,
+                    },
+                )
+            })
+            .collect();
+        Ok(Some(DurableEventState {
+            events,
+            branch_points,
+            cursor: replay.cursor,
+        }))
     }
 
     pub(crate) fn transcript_event_input(
@@ -205,14 +199,10 @@ impl ReActEngine {
             .iter()
             .map(|event| Self::transcript_event_input(event, run_id))
             .collect::<anyhow::Result<Vec<_>>>()?;
-        let store = self.event_store.clone();
-        let session_id = session_id.to_string();
-        self.db
-            .run_blocking(move |_| {
-                store.seed_if_empty(&session_id, &inputs)?;
-                Ok(())
-            })
-            .await
+        self.event_store
+            .seed_if_empty_async(session_id, inputs)
+            .await?;
+        Ok(())
     }
 
     /// Append one transcript record to the durable event authority. The
@@ -229,21 +219,8 @@ impl ReActEngine {
             .metrics
             .start(MetricsPhase::EventAppend, session_id, run_id, step_number);
         let payload = serde_json::to_string(record)?;
-        let store = self.event_store.clone();
-        let session_id = session_id.to_string();
-        self.db
-            .run_blocking(move |db| {
-                // A few provider/stream unit tests exercise the ReAct engine
-                // with a synthetic session id and no database session row.
-                // Production ingress always creates the row first; keep the
-                // isolated engine test path side-effect free.
-                if db.get_session(&session_id)?.is_none() {
-                    return Ok(0);
-                }
-                Ok(store
-                    .append_transcript(&session_id, &payload, run_id, step_number)?
-                    .sequence)
-            })
+        self.event_store
+            .append_transcript_async(session_id, &payload, run_id, step_number)
             .await
     }
 

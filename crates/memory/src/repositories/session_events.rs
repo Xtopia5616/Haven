@@ -1075,6 +1075,19 @@ impl SessionStore {
         }
     }
 
+    /// Load the durable replay state on SQLite's blocking pool. Agent keeps
+    /// transcript decoding and ReAct projection policy outside Memory.
+    pub async fn load_replay_state_async(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Option<SessionReplayState>> {
+        let store = self.clone();
+        let session_id = session_id.to_owned();
+        self.db
+            .run_blocking(move |_| store.load_replay_state(&session_id))
+            .await
+    }
+
     /// Return the latest user-message projection clock without exposing the
     /// underlying `messages` repository to Agent recovery code.
     pub fn last_user_message_at(&self, session_id: &str) -> anyhow::Result<Option<String>> {
@@ -1419,6 +1432,31 @@ impl SessionStore {
             Some(run_id),
             Some(step_number),
         )
+    }
+
+    /// Append one transcript event on SQLite's blocking pool and return its
+    /// durable sequence. Preserve the live-loop compatibility behavior for a
+    /// synthetic session without a database row: no write and sequence zero.
+    pub async fn append_transcript_async(
+        &self,
+        session_id: &str,
+        payload: &str,
+        run_id: u64,
+        step_number: u32,
+    ) -> anyhow::Result<i64> {
+        let store = self.clone();
+        let session_id = session_id.to_owned();
+        let payload = payload.to_owned();
+        self.db
+            .run_blocking(move |db| {
+                if db.get_session(&session_id)?.is_none() {
+                    return Ok(0);
+                }
+                Ok(store
+                    .append_transcript(&session_id, &payload, run_id, step_number)?
+                    .sequence)
+            })
+            .await
     }
 
     /// Append a raw rollback marker for audit/import tooling.
@@ -2496,6 +2534,20 @@ impl SessionStore {
         }
     }
 
+    /// Seed an event stream once on SQLite's blocking pool, reusing the
+    /// synchronous transaction, validation, and post-commit broadcast path.
+    pub async fn seed_if_empty_async(
+        &self,
+        session_id: &str,
+        events: Vec<SessionEventInput>,
+    ) -> anyhow::Result<Vec<SessionEvent>> {
+        let store = self.clone();
+        let session_id = session_id.to_owned();
+        self.db
+            .run_blocking(move |_| store.seed_if_empty(&session_id, &events))
+            .await
+    }
+
     fn truncate_session_projections_in_transaction(
         conn: &rusqlite::Connection,
         session_id: &str,
@@ -2665,6 +2717,105 @@ mod tests {
         let session = db.create_session("input").unwrap();
         let store = SessionEventStore::new(db.clone());
         (db, store, session.id)
+    }
+
+    #[tokio::test]
+    async fn session_store_async_replay_seed_and_transcript_ports_preserve_event_order() {
+        let (_db, store, session_id) = store();
+        let mut live = store.subscribe();
+
+        assert!(
+            store
+                .load_replay_state_async(&session_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        let seeded = store
+            .seed_if_empty_async(
+                &session_id,
+                vec![SessionEventInput::transcript(r#"{"type":"first"}"#, 4, 8)],
+            )
+            .await
+            .unwrap();
+        assert_eq!(seeded.len(), 1);
+        assert_eq!(seeded[0].sequence, 1);
+        assert_eq!(live.try_recv().unwrap(), seeded[0]);
+
+        let duplicate_seed = store
+            .seed_if_empty_async(
+                &session_id,
+                vec![SessionEventInput::transcript(r#"{"type":"stale"}"#, 9, 9)],
+            )
+            .await
+            .unwrap();
+        assert_eq!(duplicate_seed, seeded);
+        assert!(matches!(
+            live.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
+
+        assert_eq!(
+            store
+                .append_transcript_async(&session_id, r#"{"type":"second"}"#, 4, 9)
+                .await
+                .unwrap(),
+            2
+        );
+        let appended = live.try_recv().unwrap();
+        assert_eq!(appended.sequence, 2);
+        assert_eq!(appended.run_id, Some(4));
+        assert_eq!(appended.step_number, Some(9));
+
+        let replay = store
+            .load_replay_state_async(&session_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(replay.transcript.len(), 2);
+        assert_eq!(replay.transcript[0].payload, r#"{"type":"first"}"#);
+        assert_eq!(replay.transcript[1], appended);
+        assert_eq!(replay.cursor.event_sequence, 2);
+        assert_eq!(replay.cursor.event_cursor, 2);
+    }
+
+    #[tokio::test]
+    async fn session_store_async_transcript_append_preserves_missing_session_compatibility() {
+        let (_db, store, _session_id) = store();
+        let missing_session_id = haven_common::types::new_id("ses");
+        let mut live = store.subscribe();
+
+        assert_eq!(
+            store
+                .append_transcript_async(&missing_session_id, r#"{"type":"synthetic"}"#, 1, 1,)
+                .await
+                .unwrap(),
+            0
+        );
+        assert!(store.read_all(&missing_session_id).unwrap().is_empty());
+        assert!(matches!(
+            live.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[tokio::test]
+    async fn session_store_async_transcript_port_failure_has_no_durable_or_live_side_effect() {
+        let (_db, store, session_id) = store();
+        let mut live = store.subscribe();
+
+        let error = store
+            .append_transcript_async(&session_id, "not-json", 1, 1)
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("valid JSON"));
+        assert!(store.read_all(&session_id).unwrap().is_empty());
+        assert!(matches!(
+            live.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
     }
 
     fn action_step_write(session_id: &str, step_id: &str) -> ActionStepWrite {
