@@ -76,8 +76,12 @@
 - `acd11de`：PartialStore 的 checkpoint/promote/discard 改经共享的 SessionStore typed port；保留 per-session lock、generation、原子 promote 与 scratch projection 时序，不改变 schema（ADR 0251）。
 - `a14f596`：标题生成与后台记忆推理迁移到 `PromptRequest`，删除旧三参数 `chat_with_prompt`；全仓代码调用为零，Router 只保留拥有数据的请求入口（ADR 0252）。
 - `5aadd3c`：settings/model 的 Router prepare/publish 编排归 `RuntimeConfigCoordinator`，model 使用完整 prepare→publish，settings 保留原有分阶段副作用顺序；删除 commands 层重复 Router helper（ADR 0253）。
+- `7775e11`：`TranscriptBatchWriter` 只依赖 `SessionStore`；阻塞调度、可选取消和缺少 session 行的兼容语义下沉到 typed transcript batch port，保留既有事务实现（Phase 3，ADR 0255）。
+- 当前 Phase 7 小切片：删除全仓无调用的 `MemoryWorker::recall_memory_query` 转发；recall 继续由 `MemoryService`/`MemoryRecallPort` 所有，不新增同义 `MemoryReader` trait（ADR 0254）。这不改变 committed-event 驱动 MemoryRuntime 仍未完成的判断。
 
 当前阶段判断：阶段 1 的 mailbox/运行态收口已基本完成；阶段 2 已收口 rollback boundary、两类 resume 读取 port、session overlay 恢复边界，以及 continue 的 committed recovery marker 决策与 projection 截断事务，但全局恢复/事件重放和崩溃窗口仍待继续验证；阶段 3 已开始以 SessionStore typed read ports 替代局部 raw Database 读取，当前覆盖 session record、pending session 与 partial stream（ADR 0238、0249、0251），其他传播仍待收窄；阶段 4 已完成目录/观察/资产租约/overlay/定时授权入口边界及 runtime web-search typed capability；完整 ToolsManager 解耦仍需拆分；阶段 5 已完成 settings/model 的 snapshot prepare/apply 切片、ApplyPlan 对 Router target 的共享、update_settings 的旧 hotkey 与 Settings patch 合并，以及 Router runtime 的统一 coordinator；完整半失败协调和其他配置写入口仍待设计；阶段 6 已完成 CompleteRequest、聚合 StreamRequest、EmbeddingRequest、HealthCheckRequest 与 PromptRequest 请求对象切片，并已删除旧 prompt wrapper；统一请求结果投影已完成，Router executor 拆分和 capability/call-purpose 语义分离仍待实施；阶段 7 已完成 action 持久层 CAS/outbox、ActionService 终态仲裁和 MemoryWorker FastChat 窄端口；完整 Job 生命周期、MemoryRuntime committed-event 消费和 MemoryReader 仍待设计/实施；阶段 8 已完成 Action DTO 漂移检查和 UI 错误/usage/message 派生收口，其他 IPC/UI 编排仍待收口；阶段 9 已删除三个无调用者 facade API，并移除两个由 CompleteRequest/PromptRequest 完整替代的无调用 Router wrapper，剩余工作以 profiling 和更大范围公共面审查为主。
+
+补充：阶段 3 的 transcript batch writer 已在 `7775e11` 进一步只依赖 `SessionStore`（ADR 0255）；阶段 7 的无调用 recall 转发已在本轮删除（ADR 0254），这两项都不改变全局恢复/事件重放和 committed-event MemoryRuntime 仍待完成的判断。
 
 ## 3. 不变量与禁止事项
 

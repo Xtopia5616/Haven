@@ -10,7 +10,7 @@ use haven_common::prompts::{
 };
 use haven_llm::LlmRouter;
 use haven_memory::Database;
-use haven_memory::recall::{MemoryQuery, MemoryRecall, MemoryRetriever};
+use haven_memory::recall::MemoryRetriever;
 use haven_memory::repositories::facts::{
     CANONICAL_MERGE_TARGETS, Fact, FactSourceRef, is_canonical_merge_target, is_sensitive_object,
     is_sensitive_predicate, is_single_valued_predicate,
@@ -935,12 +935,6 @@ impl MemoryWorker {
         })
         .await
         .unwrap_or(0)
-    }
-
-    /// Execute a fully-scoped typed recall request. Session and subject scope
-    /// remain attached to the query through the agent boundary.
-    pub async fn recall_memory_query(&self, query: MemoryQuery) -> anyhow::Result<MemoryRecall> {
-        self.memory.recall(query).await
     }
 
     /// Persist a batch of LLM-extracted facts. `messages` is the extraction

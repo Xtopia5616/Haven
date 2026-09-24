@@ -242,3 +242,5 @@
 - [0252：PromptRequest 迁移与旧 prompt wrapper 删除](0252-prompt-request-migration.md)
 - [0253：RuntimeConfigCoordinator 统一 Router runtime 应用](0253-runtime-config-coordinator.md)
 - [0251：partial stream 通过 SessionStore 持久化](0251-partial-stream-session-store-port.md)
+- [0254：删除无调用的 MemoryWorker recall 转发](0254-remove-unused-memory-recall-forwarder.md)
+- [0255：TranscriptBatchWriter 通过 SessionStore 持久化](0255-transcript-batch-session-store-port.md)
