@@ -414,7 +414,7 @@ impl ReActEngine {
         let metrics = Arc::new(ReActMetrics::new());
         let context_source = ContextSource::new(executor.clone(), db.clone(), metrics.clone());
         let event_store = executor.session_store();
-        let usage_runtime = UsageRuntime::new(db.clone(), event_store.clone());
+        let usage_runtime = UsageRuntime::new(event_store.clone());
         Self {
             router: Arc::new(RwLock::new(router)),
             executor,

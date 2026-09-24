@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex as StdMutex};
 
 use haven_common::config::RequestKind;
 use haven_common::types::{CacheAccounting, LlmCallKind};
-use haven_memory::{Database, LlmCallUsageInput, SessionStore};
+use haven_memory::{LlmCallUsageInput, SessionStore};
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
@@ -195,15 +195,13 @@ enum UsageOperation {
 /// Per-session FIFO queues preserve call/reset/truncate ordering while the
 /// async operation gate protects each complete seed-to-persist interval.
 pub(crate) struct UsageRuntime {
-    db: Arc<Database>,
     store: SessionStore,
     sessions: StdMutex<HashMap<String, SessionUsageHandle>>,
 }
 
 impl UsageRuntime {
-    pub(crate) fn new(db: Arc<Database>, store: SessionStore) -> Self {
+    pub(crate) fn new(store: SessionStore) -> Self {
         Self {
-            db,
             store,
             sessions: StdMutex::new(HashMap::new()),
         }
@@ -238,14 +236,10 @@ impl UsageRuntime {
             return Ok(());
         }
 
-        let store = self.store.clone();
-        let session_id = session_id.to_string();
-        let persist =
-            move |_db: &Database| store.append_usage_batch(&session_id, &inputs).map(|_| ());
-        match cancel {
-            Some(cancel) => self.db.run_blocking_cancellable(cancel, persist).await,
-            None => self.db.run_blocking(persist).await,
-        }
+        self.store
+            .append_usage_batch_cancellable(session_id, inputs, cancel)
+            .await
+            .map(|_| ())
     }
 
     /// Queue a reset in the same FIFO as record operations. This remains
@@ -284,12 +278,11 @@ impl UsageRuntime {
             tx,
             _state: Arc::clone(&state),
         };
-        let db = Arc::clone(&self.db);
         let store = self.store.clone();
         let session_id = session_id.to_string();
         let worker_session_id = session_id.clone();
         runtime.spawn(async move {
-            run_session_usage_operations(rx, db, store, worker_session_id, state).await;
+            run_session_usage_operations(rx, store, worker_session_id, state).await;
         });
         sessions.insert(session_id, session.clone());
         Ok(session)
@@ -298,7 +291,6 @@ impl UsageRuntime {
 
 async fn run_session_usage_operations(
     mut rx: mpsc::Receiver<UsageOperation>,
-    db: Arc<Database>,
     store: SessionStore,
     session_id: String,
     state: Arc<SessionUsageState>,
@@ -307,7 +299,7 @@ async fn run_session_usage_operations(
         let _gate = state.operation_gate.lock().await;
         match operation {
             UsageOperation::Record { update, reply } => {
-                let result = record_usage(&db, &store, &session_id, &state.tracker, update).await;
+                let result = record_usage(&store, &session_id, &state.tracker, update).await;
                 let _ = reply.send(result);
             }
             UsageOperation::Reset => state.tracker.reset(&session_id),
@@ -317,7 +309,6 @@ async fn run_session_usage_operations(
 }
 
 async fn record_usage(
-    db: &Arc<Database>,
     store: &SessionStore,
     session_id: &str,
     tracker: &UsageTracker,
@@ -348,18 +339,11 @@ async fn record_usage(
         "Agent usage updates must use call_kind=agent"
     );
     let seed = if tracker.needs_seed(session_id) {
-        let db = Arc::clone(db);
-        let sid = session_id.to_string();
-        let read = move |db: &Database| -> anyhow::Result<CumulativeUsage> {
-            Ok(db
-                .get_session_usage(&sid)?
-                .map(CumulativeUsage::from)
-                .unwrap_or_default())
-        };
-        match cancel.clone() {
-            Some(cancel) => db.run_blocking_cancellable(cancel, read).await?,
-            None => db.run_blocking(read).await?,
-        }
+        store
+            .load_session_usage(session_id, cancel.clone())
+            .await?
+            .map(CumulativeUsage::from)
+            .unwrap_or_default()
     } else {
         CumulativeUsage::default()
     };
@@ -398,28 +382,26 @@ async fn record_usage(
         context_tokens,
         context_window,
     };
-    let store = store.clone();
-    let persist = move |_db: &Database| -> anyhow::Result<()> {
-        let epoch_now = || {
-            epochs
-                .lock()
-                .unwrap()
-                .get(&persist_session_id)
-                .copied()
-                .unwrap_or(0)
-        };
-        if epoch_now() != persist_epoch {
-            return Ok(());
-        }
-        let record = store.append_usage(&persist_session_id, &usage_input)?;
-        if epoch_now() != persist_epoch {
-            store.discard_usage(&persist_session_id, &record.id)?;
-        }
-        Ok(())
+    let epoch_now = || {
+        epochs
+            .lock()
+            .unwrap()
+            .get(&persist_session_id)
+            .copied()
+            .unwrap_or(0)
     };
-    match cancel {
-        Some(cancel) => db.run_blocking_cancellable(cancel, persist).await?,
-        None => db.run_blocking(persist).await?,
+    if epoch_now() == persist_epoch {
+        let record = store
+            .append_usage_batch_cancellable(&persist_session_id, vec![usage_input], cancel.clone())
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("usage append returned no record"))?;
+        if epoch_now() != persist_epoch {
+            store
+                .discard_usage_cancellable(&persist_session_id, &record.id, None)
+                .await?;
+        }
     }
     Ok(totals)
 }
@@ -427,6 +409,7 @@ async fn record_usage(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use haven_memory::Database;
 
     fn tool_usage_input(
         call_kind: LlmCallKind,
@@ -482,10 +465,7 @@ mod tests {
         let directory = tempfile::tempdir().expect("temporary DB directory");
         let db = Arc::new(Database::open(&directory.path().join("usage-concurrent.db")).unwrap());
         let session = db.create_session("concurrent usage").unwrap();
-        let runtime = Arc::new(UsageRuntime::new(
-            Arc::clone(&db),
-            SessionStore::new(Arc::clone(&db)),
-        ));
+        let runtime = Arc::new(UsageRuntime::new(SessionStore::new(Arc::clone(&db))));
 
         let mut tasks = Vec::new();
         for _ in 0..32 {
@@ -516,7 +496,7 @@ mod tests {
         let directory = tempfile::tempdir().expect("temporary DB directory");
         let db = Arc::new(Database::open(&directory.path().join("usage-kind.db")).unwrap());
         let session = db.create_session("usage kind").unwrap();
-        let runtime = UsageRuntime::new(Arc::clone(&db), SessionStore::new(Arc::clone(&db)));
+        let runtime = UsageRuntime::new(SessionStore::new(Arc::clone(&db)));
 
         let mut update = update(1);
         update.call_kind = LlmCallKind::Media;
@@ -531,7 +511,7 @@ mod tests {
         let db = Arc::new(Database::open(&directory.path().join("usage-order.db")).unwrap());
         let session = db.create_session("usage ordering").unwrap();
         let store = SessionStore::new(Arc::clone(&db));
-        let runtime = UsageRuntime::new(Arc::clone(&db), store.clone());
+        let runtime = UsageRuntime::new(store.clone());
 
         runtime.record(&session.id, update(3)).await.unwrap();
         store
@@ -584,7 +564,7 @@ mod tests {
         let db = Arc::new(Database::open(&directory.path().join("tool-usage.db")).unwrap());
         let session = db.create_session("tool usage batch").unwrap();
         let store = SessionStore::new(Arc::clone(&db));
-        let runtime = UsageRuntime::new(Arc::clone(&db), store.clone());
+        let runtime = UsageRuntime::new(store.clone());
 
         runtime
             .append_tool_usage_batch(
@@ -631,7 +611,7 @@ mod tests {
         let db = Arc::new(Database::open(&directory.path().join("tool-usage-cancel.db")).unwrap());
         let session = db.create_session("cancel tool usage batch").unwrap();
         let store = SessionStore::new(Arc::clone(&db));
-        let runtime = Arc::new(UsageRuntime::new(Arc::clone(&db), store.clone()));
+        let runtime = Arc::new(UsageRuntime::new(store.clone()));
 
         let (locked_tx, locked_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();

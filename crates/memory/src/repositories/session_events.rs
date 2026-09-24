@@ -9,7 +9,7 @@
 use crate::Database;
 use crate::repositories::messages::{Message, now_rfc3339_millis, undelivered_recovery_since};
 use crate::repositories::sessions::Session;
-use crate::repositories::usage::{LlmCallUsage, LlmCallUsageInput};
+use crate::repositories::usage::{LlmCallUsage, LlmCallUsageInput, SessionUsage};
 use chrono::{SecondsFormat, Utc};
 use haven_common::SessionStatus;
 use haven_common::types::MessageAttachment;
@@ -283,6 +283,22 @@ impl SessionStore {
         self.db
             .run_blocking(move |db| db.create_session(&input_text))
             .await
+    }
+
+    /// Load the materialized session usage through the usage store boundary.
+    /// The caller never needs to borrow the raw Database just to seed a live
+    /// usage tracker.
+    pub async fn load_session_usage(
+        &self,
+        session_id: &str,
+        cancel: Option<CancellationToken>,
+    ) -> anyhow::Result<Option<SessionUsage>> {
+        let session_id = session_id.to_owned();
+        let read = move |db: &Database| db.get_session_usage(&session_id);
+        match cancel {
+            Some(cancel) => self.db.run_blocking_cancellable(cancel, read).await,
+            None => self.db.run_blocking(read).await,
+        }
     }
 
     /// Read a persisted session record by id for actor installation.
@@ -1379,6 +1395,23 @@ impl SessionStore {
         }
     }
 
+    /// Append usage records on the blocking pool while keeping cancellation
+    /// and SQLite interrupt handling inside the memory boundary.
+    pub async fn append_usage_batch_cancellable(
+        &self,
+        session_id: &str,
+        inputs: Vec<LlmCallUsageInput>,
+        cancel: Option<CancellationToken>,
+    ) -> anyhow::Result<Vec<LlmCallUsage>> {
+        let session_id = session_id.to_owned();
+        let store = self.clone();
+        let persist = move |_db: &Database| store.append_usage_batch(&session_id, &inputs);
+        match cancel {
+            Some(cancel) => self.db.run_blocking_cancellable(cancel, persist).await,
+            None => self.db.run_blocking(persist).await,
+        }
+    }
+
     /// Record a compensating domain event when an in-flight usage write loses
     /// a rollback epoch race. Deleting only the projection would leave the
     /// usage event active and allow a later event replay to resurrect it.
@@ -1409,6 +1442,24 @@ impl SessionStore {
                 let _ = conn.execute_batch("ROLLBACK");
                 Err(error)
             }
+        }
+    }
+
+    /// Append a compensating usage-discard event on the blocking pool after
+    /// a rollback epoch invalidates an already-written usage record.
+    pub async fn discard_usage_cancellable(
+        &self,
+        session_id: &str,
+        usage_id: &str,
+        cancel: Option<CancellationToken>,
+    ) -> anyhow::Result<()> {
+        let session_id = session_id.to_owned();
+        let usage_id = usage_id.to_owned();
+        let store = self.clone();
+        let discard = move |_db: &Database| store.discard_usage(&session_id, &usage_id);
+        match cancel {
+            Some(cancel) => self.db.run_blocking_cancellable(cancel, discard).await,
+            None => self.db.run_blocking(discard).await,
         }
     }
 
