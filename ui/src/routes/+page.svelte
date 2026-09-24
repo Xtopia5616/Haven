@@ -4,8 +4,6 @@
 	import { formatError } from '$lib/formatError.ts';
 	import { buildResumeMessages, isDisplayOnlyMessageId } from '$lib/resumeMessages.ts';
 	import {
-		pickContinueStrategy,
-		shouldResubmitOriginalUser,
 		shouldShowContinueButton,
 	} from '$lib/continueSession.ts';
 	import {
@@ -15,7 +13,8 @@
 		sessionWaitingReason,
 		waitingReasonLabel,
 	} from '$lib/sessionStatus.ts';
-	import { processResultSessionId, submitTranscript } from '$lib/submit.ts';
+	import { submitTranscript } from '$lib/submit.ts';
+	import { createChatController } from '$lib/chatController.ts';
 	import { createChatAgentEventHandlers } from '$lib/chatAgentEventHandlers.ts';
 	import { createAskInteractionController } from '$lib/chatAskInteraction.ts';
 	import { createChatSessionEventHandlers } from '$lib/chatSessionEventHandlers.ts';
@@ -438,83 +437,6 @@
 
 	// Merged into existing onMount/onDestroy below
 
-	async function confirmRollbackAction() {
-		const { stepNumber, role, content, msgId } = rollbackDialog;
-		const rollbackSessionId = activeSessionId;
-		if (!rollbackSessionId) return;
-		rollbackLoading = true;
-		try {
-			if (role === 'user') {
-				if (!/^msg-[0-9a-f]{32}$/.test(msgId)) {
-					addNotification('消息仍在保存，请稍后再试', 'info', 2000);
-					return;
-				}
-				// User-message rollback: pause the session and put the message
-				// text back in the input box so the user can edit and re-send.
-				await invoke('rollback_session', {
-					sessionId: rollbackSessionId,
-					targetStep: stepNumber,
-					pause: true,
-					targetMessageId: msgId,
-				});
-				dispatchSession({ type: 'session/replay-reset', sessionId: rollbackSessionId });
-				clearStepBlockIds(rollbackSessionId);
-				// The backend is the source of truth for what the rollback
-				// deleted (target message + its whole discarded timeline);
-				// rebuild from the DB instead.
-				await resyncSessionMessages(rollbackSessionId);
-				inputRouterRef?.setDraft(content);
-				addNotification('已回退，请编辑后重新发送', 'info', 3000);
-			} else {
-				await invoke('rollback_session', {
-					sessionId: rollbackSessionId,
-					targetStep: stepNumber,
-					pause: false,
-					targetMessageId: msgId,
-				});
-				dispatchSession({ type: 'session/replay-reset', sessionId: rollbackSessionId });
-				clearStepBlockIds(rollbackSessionId);
-				await resyncSessionMessages(rollbackSessionId);
-				addNotification(`已回退到第 ${stepNumber} 步`, 'info', 3000);
-			}
-		} catch (e) {
-			reportError(e, { context: '+page', message: '回退失败', log: false });
-		}
-		rollbackLoading = false;
-		rollbackDialog = { open: false, stepNumber: null, role: '', content: '', msgId: '' };
-		await loadSessions();
-	}
-
-	// Rebuild a session's in-memory message list from the authoritative DB
-	// state. Used after rollback (and by handleContinue) so the UI cannot
-	// diverge from what the backend actually kept/deleted.
-	/** @param {string} sessionId */
-	function pendingInteractionIdsForSession(sessionId) {
-		return Object.values(sessionReducer.getState().interactions || {})
-			.filter((request) => request.sessionId === sessionId && request.status === 'pending')
-			.map((request) => request.id);
-	}
-
-	/** @param {string | null} sessionId */
-	async function resyncSessionMessages(sessionId) {
-		if (!sessionId) return;
-		try {
-			const result = await invoke('get_session_for_resume', { sessionId });
-			dispatchSession({
-				type: 'session/messages/resume-loaded',
-				sessionId,
-				messages: buildResumeMessages(result),
-				interactions: resumeInteractions(result),
-				preserveInteractionIds: pendingInteractionIdsForSession(sessionId),
-				usage: result.usage,
-				llmUsage: result.llm_usage,
-				preserveStreamingOnly: true,
-			});
-		} catch (e) {
-			reportError(e, { context: '+page', message: '同步消息失败', log: false });
-		}
-	}
-
 	function newSession() {
 		if (activeSessionId) {
 			dispatchSession({ type: 'session/memory-cleared', sessionId: activeSessionId });
@@ -533,167 +455,11 @@
 		sessionMenuOpen = false;
 	}
 
-	// Switch the chat view to another parallel session. Merges the persisted
-	// DB messages with any in-memory streaming messages that arrived
-	// concurrently (the session may still be running).
-	// A terminal session has no more streaming events: drop its in-memory
-	// message list, token stats and seq bookkeeping (switchToSession reloads
-	// everything from the DB on demand). Keeps parallel-conversation memory
-	// bounded across a long session. Never evicts the active conversation.
+	// Terminal sessions are not in get_sessions, so drop their cached messages
+	// when they are deactivated. A later switch reloads them from the database.
 	/** @param {string | null} sessionId */
 	function evictTerminalSessionMemory(sessionId) {
-		if (!sessionId || (activeSessionId && sessionId === activeSessionId)) return;
-		dispatchSession({ type: 'session/memory-cleared', sessionId });
-	}
-
-	/** @param {string} sessionId */
-	async function switchToSession(sessionId) {
-		sessionMenuOpen = false;
-		// The previously active session is about to be deactivated: if it is
-		// already terminal (completed/error — it never evicted while it was
-		// being watched), reclaim its memory after the switch (evicting BEFORE
-		// it would be skipped by evictTerminalSessionMemory's active guard);
-		// switchToSession reloads from the DB when it is re-opened.
-		const prevActive = activeSessionId;
-		try {
-			const result = await invoke('get_session_for_resume', { sessionId });
-			// Live tool cards and DB step badges share the same `step-*` id
-			// (minted by the backend when the action started), so the merge
-			// dedups them by id alone — a mid-step card keeps streaming its
-			// observation, the DB copy wins once it is finalized.
-			dispatchSession({
-				type: 'session/messages/resume-loaded',
-				sessionId,
-				messages: buildResumeMessages(result),
-				interactions: resumeInteractions(result),
-				preserveInteractionIds: pendingInteractionIdsForSession(sessionId),
-				usage: result.usage,
-				llmUsage: result.llm_usage,
-			});
-			// An explicit switch abandons the fresh-start intent: the chosen
-			// session becomes the active conversation (and may be auto-restored
-			// on the next app launch).
-			newSessionIntentStore.set(false);
-			if (browser) localStorage.removeItem(NEW_ACTION_INTENT_KEY);
-			dispatchSession({ type: 'session/selected', sessionId });
-			// Reclaim the deactivated session's memory when it is terminal.
-			// `get_sessions` lists only the executor's in-memory working set
-			// and terminal sessions are REMOVED from it, so a completed/errored
-			// session is never found by the status check — evict on the
-			// "missing from the list" branch too.
-			if (prevActive && prevActive !== sessionId) {
-				const prevSession = sessions.find((x) => x.id === prevActive);
-				if (
-					!prevSession ||
-					prevSession.status === 'completed' ||
-					isErrorStatus(prevSession.status)
-				) {
-					evictTerminalSessionMemory(prevActive);
-				}
-			}
-			const t = sessions.find((x) => x.id === sessionId);
-			addNotification(`已切换到：${t?.title || '会话'}`, 'info', 1500);
-		} catch (e) {
-			reportError(e, { context: '+page', message: '切换会话失败', log: false });
-		}
-	}
-
-	async function endSession() {
-		if (!activeSessionId) return;
-		// While the end is in flight, no event may resurrect the ended session.
-		newSessionIntentStore.set(true);
-		const endedId = activeSessionId;
-		try {
-			await invoke('end_session', { sessionId: endedId });
-		} catch (e) {
-			// The session is still alive server-side: keep the view attached to
-			// it so the user can retry. Clearing the pointer here would orphan a
-			// session that keeps running (and streaming) with no visible target.
-			newSessionIntentStore.set(false);
-			reportError(e, { context: '+page', message: '完成会话失败', log: false });
-			return;
-		}
-		// Keep the finished conversation selected so its terminal reason remains
-		// visible in the timeline. The fresh-start intent makes the next message
-		// create a new session; the user can also use the new-session button.
-	}
-
-	async function interruptOutput() {
-		if (!activeSessionId || interruptPending) return;
-		interruptPending = true;
-		try {
-			await invoke('interrupt_session', { sessionId: activeSessionId });
-			addNotification('输出已中断，可继续生成', 'info', 2000);
-		} catch (e) {
-			reportError(e, { context: '+page', message: '中断输出失败', log: false });
-		} finally {
-			interruptPending = false;
-		}
-	}
-
-	async function handleContinue() {
-		if (!activeSessionId || continuePending) return;
-		continuePending = true;
-		const tid = activeSessionId;
-		const currentMessages = sessionReducer.getMessages(tid);
-		// A retry can begin as soon as continue_session resolves. Keep only
-		// bubbles created after this point when merging its DB snapshot: every
-		// pre-existing bubble is either represented by the DB or was explicitly
-		// removed there as a failed-stream partial. Classifying a whole trailing
-		// assistant suffix as partial erased completed tool rounds after errors.
-		const preContinueMessageIds = new Set(currentMessages.map((m) => m.id));
-		// Strategy must be picked before truncate: mid-generation partials are
-		// what distinguish "send 继续" from "pass the original user message".
-		const strategy = pickContinueStrategy(currentMessages);
-		try {
-			// First unblock the errored session: continue_session truncates the
-			// partial output and sets the session to Pending so a follow-up user
-			// message below is accepted instead of being dropped as a
-			// terminal-state supplement.
-			await invoke('continue_session', { sessionId: tid });
-			dispatchSession({ type: 'session/error-cleared', sessionId: tid });
-			// Re-sync from the authoritative post-continue DB state. Any retry
-			// stream that won the race with this request has a fresh id and is
-			// retained; stale pre-continue UI entries cannot leak back in.
-			try {
-				const result = await invoke('get_session_for_resume', { sessionId: tid });
-				dispatchSession({
-					type: 'session/messages/resume-loaded',
-					sessionId: tid,
-					messages: buildResumeMessages(result),
-					interactions: resumeInteractions(result),
-					preserveInteractionIds: pendingInteractionIdsForSession(tid),
-					usage: result.usage,
-					llmUsage: result.llm_usage,
-					preserveStreamingOnly: true,
-					excludeMessageIds: [...preContinueMessageIds],
-				});
-			} catch (e) {
-				// Keep the current view until a later sync succeeds. A failed read
-				// is not evidence that any visible history is a failed partial.
-			}
-			dispatchSession({ type: 'session/replay-reset', sessionId: tid });
-			// Two strategies:
-			// - LLM mid-generation interrupt → send "继续" as a real user turn.
-			// - User message sent but agent never generated → pass the original
-			//   text (resubmit only when it did not survive as a persisted
-			//   trailing user turn; otherwise Pending resume alone retries).
-			autoFollow = true;
-			if (strategy.mode === 'continue') {
-				submitMessage(strategy.text, []);
-			} else {
-				const synced = sessionReducer.getMessages(tid);
-				if (shouldResubmitOriginalUser(synced, strategy.text)) {
-					submitMessage(strategy.text, []);
-				}
-			}
-			await loadSessions();
-		} catch (e) {
-			reportError(e, { context: '+page', message: '继续失败', log: false });
-			// Keep the banner visible so the user can retry.
-		} finally {
-			continuePending = false;
-		}
+		chatController.evictTerminalSessionMemory(sessionId);
 	}
 
 	// Tauri event listener handle (registered in onMount, disposed in
@@ -1286,23 +1052,61 @@
 		await loadSessions();
 	}
 
-	// Deliver a user message to the backend. Shared by the normal send
-	// button and the queued follow-up flush (which sends a stashed message
-	// once the agent's current output completes).
+	const chatController = createChatController({
+		invoke,
+		submitTranscript: (text, options) => submitTranscript(text, options),
+		reducer: sessionReducer,
+		dispatch: dispatchSession,
+		getActiveSessionId: () => sessionReducer.getState().activeSessionId,
+		getSessionSnapshot: () => sessionReducer.getState().sessions,
+		notify: addNotification,
+		reportError,
+		setInputDraft: (content) => inputRouterRef?.setDraft(content),
+		loadSessions,
+		clearStepBlockIds,
+		setFreshSessionIntent: (value) => newSessionIntentStore.set(value),
+		clearPersistedFreshSessionIntent: () => {
+			if (browser) localStorage.removeItem(NEW_ACTION_INTENT_KEY);
+		},
+		setRollbackLoading: (loading) => (rollbackLoading = loading),
+		closeRollbackDialog: () => {
+			rollbackDialog = { open: false, stepNumber: null, role: '', content: '', msgId: '' };
+		},
+		closeSessionMenu: () => (sessionMenuOpen = false),
+		setContinuePending: (pending) => (continuePending = pending),
+		setInterruptPending: (pending) => (interruptPending = pending),
+		setAutoFollow: (follow) => (autoFollow = follow),
+	});
+
 	/** @param {string} text @param {any} [images] @param {any} [files] */
-	async function submitMessage(text, images, files) {
-		try {
-			const result = await submitTranscript(text, { images, files, reducer: sessionReducer });
-			const createdId = processResultSessionId(result);
-			if (createdId) {
-				dispatchSession({ type: 'session/selected', sessionId: createdId });
-				// The submission itself created the session (submitTranscript
-				// already cleared the intent store): nothing to do here.
-			}
-			loadSessions();
-		} catch (e) {
-			reportError(e, { context: '+page', message: '发送失败', log: false });
-		}
+	function submitMessage(text, images, files) {
+		return chatController.submitMessage(text, images, files);
+	}
+
+	function confirmRollbackAction() {
+		return chatController.confirmRollbackAction({ ...rollbackDialog });
+	}
+
+	/** @param {string} sessionId */
+	function pendingInteractionIdsForSession(sessionId) {
+		return chatController.pendingInteractionIdsForSession(sessionId);
+	}
+
+	/** @param {string} sessionId */
+	function switchToSession(sessionId) {
+		return chatController.switchToSession(sessionId);
+	}
+
+	function endSession() {
+		return chatController.endSession();
+	}
+
+	function interruptOutput() {
+		return chatController.interruptOutput();
+	}
+
+	function handleContinue() {
+		return chatController.handleContinue();
 	}
 
 	// True when every currently awaiting ask card has at least one selected

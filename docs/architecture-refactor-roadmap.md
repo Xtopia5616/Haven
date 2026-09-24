@@ -354,7 +354,8 @@ Phase 7.1 验收与未决风险：见 ADR 0259、0261、0262、0263、0264、026
 
 - Rust wire DTO 作为生成 TypeScript contract/字段映射的唯一来源；保留前端运行时校验；
 - 命令数量不为减少复杂度而强行合并；事件按 `session/agent/action/recording/app` envelope 收敛；
-- 将 `+page.svelte` 的事件注册、提交、resume、rollback、model 操作抽到 typed `ChatController`；
+- 已完成（ADR 0313）：将 `+page.svelte` 的 session submit、resume reload、rollback、continue、switch/终态内存回收、end/interrupt 编排抽到 typed `ChatController`；
+- 剩余：事件注册和 model 操作的归属收口；ask/input 决策、启动恢复与 view state 继续由页面编排；
 - 将 `sessionReducer.ts` 按 lifecycle/transcript/interaction/usage/stream 拆成内部 reducer module，对外仍是单一 store；
 - reducer 以 session/selector 订阅，避免每个 stream batch 广播完整状态树；
 - 删除手写镜像中的旧 shape、mapper 和兼容测试。
@@ -362,6 +363,8 @@ Phase 7.1 验收与未决风险：见 ADR 0259、0261、0262、0263、0264、026
 主要文件：`crates/app-binary/src/events.rs`、`ui/src/lib/contracts/`、`ui/src/lib/sessionReducer.ts`、`ui/src/routes/+page.svelte`、`+layout.svelte`、scripts。
 
 验收：Rust/TS 生成检查在 CI 通过；单一事件登记点；UI session/stream/resume/rollback/optimistic 行为测试通过。
+
+2026-09-25 切片进展：Controller 只通过 typed invoke/submit/reducer/session-snapshot/通知与 UI callback dependencies 执行会话异步流程；`continueSession.ts` 与 `resumeMessages.ts` 保持纯策略/message projection 边界。页面保留 input-router/ask 决策、event listener、model sync、resume target/auto-restore、新会话入口及 dialog/loading/menu/scroll 状态。纯 Vitest 覆盖 rollback 两分支、continue 两种策略、interaction preservation、created-session selection 和失败/重复请求保护。其余 Phase 8 工作仍按上列范围推进。
 
 ### 阶段 9：Common 收缩、性能剖析和发布验收（最后）
 

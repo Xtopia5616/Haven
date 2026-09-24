@@ -1,6 +1,6 @@
 # Haven 架构与 crate 职责
 
-> 版本: v1.4 | 日期: 2026-09-25
+> 版本: v1.5 | 日期: 2026-09-25
 > 范围: `crates/` (Rust 后端, Tauri 2)
 > 原则: **依赖单向、叶子优先**。上层 crate 只依赖下层，绝不反向依赖；共享数据与类型放叶子（`haven-common`），
 > 组件职责按「谁拥有实现、谁只消费接口」划分。
@@ -447,10 +447,14 @@ limit、创建时间倒序和 errors 的 status 过滤顺序保持原样。组�
 聊天 UI 的会话状态位于 `ui/src/lib/sessionReducer.ts`：`SessionReducer` 统一处理会话
 列表/选择、消息、Interaction、usage、tool preview、optimistic 生命周期以及 replay
 sequence/block identity；live event、resume、rollback 同步和 reconnect replay 都只
-通过 typed `SessionAction` 迁移。`+page.svelte`/`+layout.svelte` 负责视图、滚动、IPC
-和通知副作用，`chat*EventHandlers.ts` 只做 DTO 到 action 的适配；旧
-`sessionMessages.ts`、`sessionUsage.ts` 仅保留兼容投影，`streamAggregator.ts` 只负责
-排队后 dispatch chunk action（ADR 0160）。
+通过 typed `SessionAction` 迁移。`ui/src/lib/chatController.ts` 负责会话命令的异步编排：
+权威 resume reload、interaction 保留、切换与终态会话内存回收、rollback、continue、end/interrupt 和
+`submitTranscript` 提交适配；它通过 typed dependency 接收 invoke、reducer dispatch、
+session snapshot、通知/错误报告和页面回调，不持有 Svelte state 或 DOM。
+`+page.svelte` 保留视图/滚动及 dialog/loading/menu 状态、输入路由与 ask 决策、事件监听、
+model sync、resume target/auto-restore 和新会话入口；`chat*EventHandlers.ts` 只做 DTO 到
+action 的适配。旧 `sessionMessages.ts`、`sessionUsage.ts` 仅保留兼容投影，
+`streamAggregator.ts` 只负责排队后 dispatch chunk action（ADR 0160、0313）。
 `ModelSettings.svelte` 当前保留命名模型、Provider CRUD 与 discovery 的页面编排，已补
 组件行为测试，后续再按 discovery / mutation 边界拆分。
 
@@ -526,6 +530,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 
 | 日期 | 内容 |
 |---|---|
+| 2026-09-25 | §2.6 UI：将会话切换、rollback、continue、end/interrupt、resume reload 与提交编排提取到 typed `ChatController`；页面继续拥有 ask/input、事件、model sync、恢复入口和视图状态（ADR 0313） |
 | 2026-09-25 | §2.3 Memory：summary cursor 与共享 extraction throttle 经 MemoryFactExtractionStore；生产 MemoryWorker 不再使用 raw Database，MemoryService 私有句柄只用于 typed store/index 实现（ADR 0312） |
 | 2026-09-25 | §2.3 Memory：LLM 矛盾候选/demote 与 predicate count/逐项 rewrite 经 MemoryMaintenanceStore；Agent 保留配置、prompt、解析、候选与安全 gate、日志和降级（ADR 0311） |
 | 2026-09-25 | §2.3 Memory：facts 确定性维护、孤儿 embedding/cursor 和 source ref 清理由 MemoryMaintenanceStore 按原顺序逐项调度；Worker 保留 best-effort 继续、计数/日志与聚合错误，LLM 维护和 summary cursor/throttle 留在原边界（ADR 0310） |

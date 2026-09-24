@@ -3,6 +3,8 @@
 // history resume flow.
 
 import { formatMessageTime } from './messageFormat.ts';
+import type { ResumeUsage } from './sessionReducer.ts';
+import type { LlmUsage } from './sessionUsage.ts';
 
 /** A resume-only bubble shown when a session has no persisted message rows. */
 export function isDisplayOnlyMessageId(id: unknown): boolean {
@@ -63,7 +65,7 @@ interface ResumeMsg {
 	tool_call_id?: string | null;
 }
 
-interface ResumeData {
+export interface ResumeData {
 	session?: {
 		id?: string;
 		status?: string;
@@ -72,6 +74,10 @@ interface ResumeData {
 	} | null;
 	messages?: ResumeMsg[];
 	steps?: ResumeStep[];
+	usage?: ResumeUsage | null;
+	llm_usage?: LlmUsage[];
+	/** Renderer-safe interaction rows are normalized by `resumeInteractions`. */
+	interactions?: unknown[];
 }
 
 /**
