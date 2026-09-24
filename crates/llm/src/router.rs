@@ -17,7 +17,8 @@ use crate::stream_rules::{StreamRule, StreamRuleMatch, check_stream_rules};
 use crate::streaming;
 use crate::types::{
     CompleteRequest, Embedding, EmbeddingRequest, HealthCheckRequest, LlmConnectionReport,
-    LlmConnectionStatus, LlmError, LlmResponse, StreamChunk, StreamRequest, ToolDefinition, Usage,
+    LlmConnectionStatus, LlmError, LlmResponse, PromptRequest, StreamChunk, StreamRequest,
+    ToolDefinition, Usage,
 };
 use futures_util::future::join_all;
 use haven_common::config::{
@@ -838,34 +839,46 @@ impl LlmRouter {
         self.execute_chat_request(request).await
     }
 
-    fn prompt_request(
-        request: RequestKind,
-        system: &str,
-        user: &str,
-        max_output_tokens: Option<u32>,
-    ) -> CompleteRequest {
-        let mut messages = Vec::with_capacity(if system.is_empty() { 1 } else { 2 });
-        if !system.is_empty() {
-            messages.push(CanonicalMessage::system(vec![ContentPart::text(system)]));
+    fn prompt_request(request: PromptRequest) -> CompleteRequest {
+        let mut messages = Vec::with_capacity(if request.system_prompt.is_empty() {
+            1
+        } else {
+            2
+        });
+        if !request.system_prompt.is_empty() {
+            messages.push(CanonicalMessage::system(vec![ContentPart::text(
+                request.system_prompt,
+            )]));
         }
-        messages.push(CanonicalMessage::user(vec![ContentPart::text(user)]));
+        messages.push(CanonicalMessage::user(vec![ContentPart::text(
+            request.user_prompt,
+        )]));
         CompleteRequest {
-            request,
+            request: request.request,
             messages,
             tools: Vec::new(),
-            max_output_tokens,
+            max_output_tokens: None,
         }
     }
 
-    /// Build a `System + User` pair (or just `User` when `system` is empty)
-    /// for one-shot prompts such as title generation and fact extraction.
+    /// Route one owned `System + User` prompt (or just `User` when the system
+    /// prompt is empty) through the ordinary completion policy.
+    pub async fn chat_with_prompt_request(
+        &self,
+        request: PromptRequest,
+    ) -> Result<LlmResponse, LlmError> {
+        self.complete(Self::prompt_request(request)).await
+    }
+
+    /// Compatibility wrapper for callers that still provide separate prompt
+    /// strings. New code should use [`Self::chat_with_prompt_request`].
     pub async fn chat_with_prompt(
         &self,
         request: RequestKind,
         system: &str,
         user: &str,
     ) -> Result<LlmResponse, LlmError> {
-        self.complete(Self::prompt_request(request, system, user, None))
+        self.chat_with_prompt_request(PromptRequest::new(request, system, user))
             .await
     }
 
@@ -1382,7 +1395,7 @@ mod tests {
     use super::*;
     use crate::stream_rules::StreamRuleMode;
     use crate::streaming::{IDLE_SCALE_CAP_SECS, estimate_prompt_tokens, scale_stream_idle};
-    use crate::types::{FinishReason, LlmError::Unknown, Usage};
+    use crate::types::{FinishReason, LlmError::Unknown, PromptRequest, Usage};
     use async_trait::async_trait;
     use futures_util::stream;
     use haven_common::types::CanonicalToolCall;
@@ -1432,6 +1445,225 @@ mod tests {
             .expect("rate-limited outcomes establish a model cooldown");
         assert!(deadline >= started_at + Duration::from_secs(6));
         assert_eq!(router.health.read().await[model_id].consecutive_failures, 1);
+    }
+
+    struct PromptRequestProbe {
+        seen: Arc<StdMutex<Vec<Vec<CanonicalMessage>>>>,
+        rate_limited: bool,
+    }
+
+    impl PromptRequestProbe {
+        fn respond(&self, messages: Vec<CanonicalMessage>) -> Result<LlmResponse, LlmError> {
+            self.seen.lock().unwrap().push(messages);
+            if self.rate_limited {
+                Err(LlmError::RateLimit {
+                    retry_after: Some(Duration::from_secs(5)),
+                })
+            } else {
+                Ok(LlmResponse {
+                    text: "prompt response".into(),
+                    ..LlmResponse::default()
+                })
+            }
+        }
+    }
+
+    #[async_trait]
+    impl LlmClient for PromptRequestProbe {
+        async fn chat(&self, messages: Vec<CanonicalMessage>) -> Result<LlmResponse, LlmError> {
+            self.respond(messages)
+        }
+
+        async fn chat_with_output_cap(
+            &self,
+            messages: Vec<CanonicalMessage>,
+            _: Option<u32>,
+        ) -> Result<LlmResponse, LlmError> {
+            self.respond(messages)
+        }
+
+        async fn chat_stream(
+            &self,
+            _: Vec<CanonicalMessage>,
+        ) -> Result<
+            Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+            LlmError,
+        > {
+            Err(LlmError::UnsupportedCapability(
+                "prompt request probe does not stream".into(),
+            ))
+        }
+
+        async fn health_check(&self) -> Result<(), LlmError> {
+            Ok(())
+        }
+    }
+
+    fn assert_prompt_message(
+        message: &CanonicalMessage,
+        role: haven_common::types::CanonicalRole,
+        expected_text: &str,
+    ) {
+        assert_eq!(message.role, role);
+        match message.content.as_slice() {
+            [ContentPart::Text(text)] => assert_eq!(text, expected_text),
+            content => panic!("expected one text content part, got {content:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn prompt_request_preserves_request_route_and_prompt_messages() {
+        let fast_seen = Arc::new(StdMutex::new(Vec::new()));
+        let chat_seen = Arc::new(StdMutex::new(Vec::new()));
+        let fast_client: Arc<dyn LlmClient> = Arc::new(PromptRequestProbe {
+            seen: fast_seen.clone(),
+            rate_limited: false,
+        });
+        let chat_client: Arc<dyn LlmClient> = Arc::new(PromptRequestProbe {
+            seen: chat_seen.clone(),
+            rate_limited: false,
+        });
+        let router = LlmRouter::new_with_clients(
+            fast_client,
+            chat_client.clone(),
+            chat_client.clone(),
+            chat_client,
+        );
+
+        let response = router
+            .chat_with_prompt_request(PromptRequest::new(
+                RequestKind::FastChat,
+                "fast system prompt",
+                "fast user prompt",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.text, "prompt response");
+        {
+            let fast_calls = fast_seen.lock().unwrap();
+            assert_eq!(fast_calls.len(), 1);
+            assert_eq!(fast_calls[0].len(), 2);
+            assert_prompt_message(
+                &fast_calls[0][0],
+                haven_common::types::CanonicalRole::System,
+                "fast system prompt",
+            );
+            assert_prompt_message(
+                &fast_calls[0][1],
+                haven_common::types::CanonicalRole::User,
+                "fast user prompt",
+            );
+        }
+        assert!(chat_seen.lock().unwrap().is_empty());
+
+        // The public three-argument API remains a behavior-preserving wrapper.
+        router
+            .chat_with_prompt(RequestKind::Chat, "legacy system", "legacy user")
+            .await
+            .unwrap();
+        {
+            let chat_calls = chat_seen.lock().unwrap();
+            assert_eq!(chat_calls.len(), 1);
+            assert_eq!(chat_calls[0].len(), 2);
+            assert_prompt_message(
+                &chat_calls[0][0],
+                haven_common::types::CanonicalRole::System,
+                "legacy system",
+            );
+            assert_prompt_message(
+                &chat_calls[0][1],
+                haven_common::types::CanonicalRole::User,
+                "legacy user",
+            );
+        }
+
+        router
+            .chat_with_prompt_request(PromptRequest::new(
+                RequestKind::Chat,
+                "",
+                "user-only prompt",
+            ))
+            .await
+            .unwrap();
+        {
+            let chat_calls = chat_seen.lock().unwrap();
+            assert_eq!(chat_calls.len(), 2);
+            assert_eq!(chat_calls[1].len(), 1);
+            assert_prompt_message(
+                &chat_calls[1][0],
+                haven_common::types::CanonicalRole::User,
+                "user-only prompt",
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn prompt_request_preserves_rate_limit_error_and_router_projection() {
+        let fast_seen = Arc::new(StdMutex::new(Vec::new()));
+        let chat_seen = Arc::new(StdMutex::new(Vec::new()));
+        let fast_client: Arc<dyn LlmClient> = Arc::new(PromptRequestProbe {
+            seen: fast_seen.clone(),
+            rate_limited: false,
+        });
+        let chat_client: Arc<dyn LlmClient> = Arc::new(PromptRequestProbe {
+            seen: chat_seen.clone(),
+            rate_limited: true,
+        });
+        let router = LlmRouter::new_with_clients(
+            fast_client,
+            chat_client.clone(),
+            chat_client.clone(),
+            chat_client,
+        );
+        router.config.write().await.retry_max_retries = 0;
+
+        let error = router
+            .chat_with_prompt_request(PromptRequest::new(
+                RequestKind::Chat,
+                "failure system prompt",
+                "failure user prompt",
+            ))
+            .await
+            .expect_err("the provider's rate-limit error must reach the caller");
+        assert!(matches!(
+            error,
+            LlmError::RateLimit {
+                retry_after: Some(delay)
+            } if delay == Duration::from_secs(5)
+        ));
+
+        {
+            let chat_calls = chat_seen.lock().unwrap();
+            assert_eq!(chat_calls.len(), 1);
+            assert_eq!(chat_calls[0].len(), 2);
+            assert_prompt_message(
+                &chat_calls[0][0],
+                haven_common::types::CanonicalRole::System,
+                "failure system prompt",
+            );
+            assert_prompt_message(
+                &chat_calls[0][1],
+                haven_common::types::CanonicalRole::User,
+                "failure user prompt",
+            );
+        }
+        assert!(fast_seen.lock().unwrap().is_empty());
+        assert_eq!(
+            router.health.read().await["default_model"].consecutive_failures,
+            1
+        );
+        assert!(
+            router
+                .rate_limit_deadline_for_test("default_model")
+                .await
+                .is_some_and(|deadline| deadline > Instant::now())
+        );
+        assert!(
+            router
+                .rate_limit_deadline_for_test("small_model")
+                .await
+                .is_none()
+        );
     }
 
     #[test]

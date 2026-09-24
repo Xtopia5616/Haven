@@ -465,6 +465,30 @@ pub struct EmbeddingRequest {
     pub input: Vec<String>,
 }
 
+/// Owned input for a one-shot system/user prompt routed through
+/// [`crate::LlmRouter`]. An empty `system_prompt` preserves the user-only
+/// message behavior used by the prompt convenience API.
+#[derive(Debug, Clone)]
+pub struct PromptRequest {
+    pub request: RequestKind,
+    pub system_prompt: String,
+    pub user_prompt: String,
+}
+
+impl PromptRequest {
+    pub fn new(
+        request: RequestKind,
+        system_prompt: impl Into<String>,
+        user_prompt: impl Into<String>,
+    ) -> Self {
+        Self {
+            request,
+            system_prompt: system_prompt.into(),
+            user_prompt: user_prompt.into(),
+        }
+    }
+}
+
 /// Selects the configured request route for a router health check.
 #[derive(Debug, Clone, Copy)]
 pub struct HealthCheckRequest {
