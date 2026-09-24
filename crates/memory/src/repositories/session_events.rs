@@ -487,6 +487,20 @@ impl SessionStore {
             .await
     }
 
+    /// Persist a session title on SQLite's blocking pool.
+    ///
+    /// This delegates to the existing Database operation so its cache
+    /// invalidation and error behavior remain authoritative. Dropping this
+    /// future cannot interrupt a write already running on Tokio's blocking
+    /// pool.
+    pub async fn update_session_title(&self, session_id: &str, title: &str) -> anyhow::Result<()> {
+        let session_id = session_id.to_owned();
+        let title = title.to_owned();
+        self.db
+            .run_blocking(move |db| db.update_session_title(&session_id, &title))
+            .await
+    }
+
     /// Persist an ingress or recovery message through the session boundary.
     ///
     /// SQLite work runs on the blocking pool and may be cooperatively
@@ -2386,6 +2400,22 @@ mod tests {
                 .await
                 .unwrap()
                 .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn session_store_updates_session_title_and_invalidates_history_cache() {
+        let (db, store, session_id) = store();
+        assert_eq!(db.list_sessions(50, 0).unwrap()[0].title, None);
+
+        store
+            .update_session_title(&session_id, "Updated through SessionStore")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            store.list_history(50, 0).await.unwrap()[0].title.as_deref(),
+            Some("Updated through SessionStore")
         );
     }
 

@@ -355,8 +355,9 @@ pub async fn update_session_title(
         return Err("Title cannot be empty".into());
     }
     state
-        .db
+        .session_store
         .update_session_title(&session_id, &title)
+        .await
         .map_err(|e| log_err("update_session_title", e))?;
     state
         .executor

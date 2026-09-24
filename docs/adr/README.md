@@ -269,3 +269,4 @@
 - [0278：ReActState 独占 stream identity](0278-react-state-owns-stream-identity.md)
 - [0279：App 历史查询通过 SessionStore blocking-pool ports](0279-app-history-session-store-ports.md)
 - [0280：fresh-run conversation window 通过 SessionStore 读取](0280-fresh-run-conversation-window-session-store-port.md)
+- [0281：App 会话标题写入通过 SessionStore](0281-session-title-write-session-store-port.md)
