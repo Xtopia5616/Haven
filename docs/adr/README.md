@@ -239,4 +239,5 @@
 - [0248：后台 action 终态提交与运行态发布顺序](0248-background-action-terminal-commit-order.md)
 - [0249：SessionStore 会话记录读取端口](0249-session-store-session-record-reads.md)
 - [0250：删除无调用的 prompt output-cap wrapper](0250-remove-unused-prompt-output-cap-wrapper.md)
+- [0252：PromptRequest 迁移与旧 prompt wrapper 删除](0252-prompt-request-migration.md)
 - [0251：partial stream 通过 SessionStore 持久化](0251-partial-stream-session-store-port.md)
