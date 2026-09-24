@@ -15,13 +15,14 @@ async fn action_completion_session_status(
     if let Some(status) = agent.executor.get_session_status(session_id).await {
         return Some(status);
     }
-    let session_id = session_id.to_string();
     agent
-        .db
-        .run_blocking(move |db| Ok(db.get_session(&session_id)?.map(|session| session.status)))
+        .executor
+        .session_store()
+        .load_session_record(session_id)
         .await
         .ok()
         .flatten()
+        .map(|session| session.status)
 }
 
 pub struct AgentLayer {
@@ -1275,10 +1276,10 @@ impl AgentLayer {
                 title: session.title,
             });
         }
-        let session_id_owned = session_id.to_string();
         let record = self
-            .db
-            .run_blocking(move |db| db.get_session(&session_id_owned))
+            .executor
+            .session_store()
+            .load_session_record(session_id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("session '{}' not found", session_id))?;
         let status = record.status;
@@ -1562,5 +1563,69 @@ mod tests {
 
         assert_eq!(agent.limits().notification_summary_chars, 137);
         assert_eq!(agent.limits(), agent.react_engine.limits());
+    }
+
+    #[tokio::test]
+    async fn session_metadata_reads_fall_back_to_store_after_executor_miss() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let executor = Arc::new(SessionSupervisor::new(
+            db.clone(),
+            Arc::new(haven_tools::ToolsManager::new()),
+            1,
+        ));
+        let client = Arc::new(UnusedClient);
+        let router = Arc::new(LlmRouter::new_with_clients(
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client,
+        ));
+        let agent = AgentLayer::new(
+            db.clone(),
+            executor.clone(),
+            router,
+            10,
+            20,
+            ContextLimitsConfig::default(),
+        );
+
+        let stored = db.create_session("stored session").unwrap();
+        db.update_session_title(&stored.id, "stored title").unwrap();
+        db.update_session_status(&stored.id, SessionStatus::Completed)
+            .unwrap();
+
+        assert_eq!(executor.get_session_status(&stored.id).await, None);
+        assert_eq!(
+            action_completion_session_status(&agent, &stored.id).await,
+            Some(SessionStatus::Completed)
+        );
+        let peer = agent.inspect_peer_session(&stored.id).await.unwrap();
+        assert_eq!(peer.session_id, stored.id);
+        assert_eq!(peer.status, SessionStatus::Completed.as_str());
+        assert!(peer.terminal);
+        assert!(!peer.timed_out);
+        assert_eq!(peer.title.as_deref(), Some("stored title"));
+
+        let missing = "ses-00000000000000000000000000000000";
+        assert_eq!(
+            action_completion_session_status(&agent, missing).await,
+            None
+        );
+        let error = agent.inspect_peer_session(missing).await.unwrap_err();
+        assert_eq!(error.to_string(), format!("session '{missing}' not found"));
+
+        let active = executor.create_session("executor session").await.unwrap();
+        db.update_session_title(&active.id, "database title")
+            .unwrap();
+        db.update_session_status(&active.id, SessionStatus::Completed)
+            .unwrap();
+        assert_eq!(
+            action_completion_session_status(&agent, &active.id).await,
+            Some(SessionStatus::Pending)
+        );
+        let peer = agent.inspect_peer_session(&active.id).await.unwrap();
+        assert_eq!(peer.status, SessionStatus::Pending.as_str());
+        assert!(!peer.terminal);
+        assert_eq!(peer.title, None);
     }
 }
