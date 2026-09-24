@@ -112,7 +112,8 @@
 - 当前 Phase 3/7 小切片：`MemoryService` 的 prompt candidate 与 typed recall 查询通过 `MemoryRecallStore` 调度；Agent 保留 prompt 归一化、缓存、provider 调用与候选合并，Memory 保留 keyword/vector 过滤、可见 facts hydration 与完整 retrieve 边界（ADR 0304）。
 - 当前 Phase 3/7 小切片：`ActionService` 的 completion outbox、action history、后台 action 和 scheduled action 所有 SQLite 调用通过 `ActionStore` typed ports；Memory 内部拥有 blocking 调度与终态/outbox 事务，Tools 继续拥有 board、CAS 结果仲裁、恢复和重试策略（ADR 0305）。
 - 当前 Phase 3 小切片：Tools 的 `AdminContext` 只接收 `SessionStore` 与 `MemoryFactStore` capability；诊断列表/计数通过 SessionStore 异步 history ports，MemoryTool 的事实 store 由 app-binary 组合根创建并注入，不再由 builtin 从 raw Database 构造。unavailable、limit、排序、status 过滤、错误日志与 provider wire contract 保持不变（ADR 0306）。
-- 当前 Phase 3/7 小切片：MemoryService 构造并共享 `MemoryFactStore` 给 MemoryWorker；`load_known_facts` 通过有界端口读取，blocking 调度、有效置信度顺序、敏感过滤和 limit 属于 Memory，Agent 保留既有 prompt 格式、sanitize 和错误降级。Worker 的 facts 写入、KV cursor、维护扫描及兼容 Database 句柄不迁移（ADR 0307）。
+- 当前 Phase 3/7 小切片：MemoryService 构造并共享 `MemoryFactStore` 给 MemoryWorker；`load_known_facts` 通过有界端口读取，blocking 调度、有效置信度顺序、敏感过滤和 limit 属于 Memory，Agent 保留既有 prompt 格式、sanitize 和错误降级（ADR 0307）。
+- 当前 Phase 3/7 小切片：专用 `MemoryFactExtractionStore` 承接普通 session fact extraction 的 transcript projections、节流时间戳、`fact_extraction.{session_id}` 用户消息游标及游标推进；MemoryWorker 保留窗口/LLM/事实写入策略。事实批量候选校验/写入、summary episode cursor 与共享节流读写、维护/矛盾裁决/谓词合并等仍保留 MemoryDatabase 路径；embedding catch-up 沿用 MemoryService 的 MemoryEmbeddingStore，不宣称 MemoryWorker 已无 DB（ADR 0308）。
 - 当前 Phase 5/6 小切片：LLM usage runtime input 的 `cache_accounting` 使用 `haven-common::CacheAccounting`；SQLite 与 IPC 仍在边界转换为既有字符串，外部文本恢复统一按 `Unknown` 处理（ADR 0270）。
 - 当前 Phase 4 切片：`AgentLayer` 在 composition root 只取得一次 `ToolsManager`，共享给 prompt builder 与 `ToolsManagerToolCatalogAdapter`，并显式注入 `ReActEngine`；engine 不再从 executor 查找 catalog port。目录 snapshot、session ID、工具执行和 live authorization 语义不变（ADR 0257）。
 
@@ -149,6 +150,8 @@
 阶段 3/7 小切片补充（2026-09-25）：fact/summary durable outbox marker 的 enqueue、pending restore、条件 ack 与 summary episode read 经 MemoryService 共享的 MemoryStore 执行；MemoryWorker 继续负责 live projection、inference 和逐 job 退避。ack 失败时 durable marker 保留并重试，停机取消不提前确认。fact extraction 算法和其他维护路径保持不变（ADR 0301）。
 
 阶段 3/7 小切片补充（2026-09-25）：MemoryWorker 的已知事实上下文通过 MemoryService 持有并注入的 MemoryFactStore 有界读取；Memory 层先执行可见性过滤，再保留有效置信度顺序并截断，Agent 的 prompt 行格式、subject 前缀、sanitize 和错误降级保持不变。其他 MemoryWorker Database 路径不迁移（ADR 0307）。
+
+阶段 3/7 小切片补充（2026-09-25）：普通 session fact extraction 经 MemoryFactExtractionStore 读取消息/步骤投影、读取与写入节流时间戳、读取与推进用户消息 cursor；窗口构造、模型调用、事实持久化策略与取消后保留 durable outbox marker 的语义不变。事实批量候选校验/写入、summary episode cursor/共享节流、维护/矛盾裁决/谓词合并未迁移；embedding catch-up 继续通过 MemoryService 的 MemoryEmbeddingStore，MemoryWorker 仍持有 MemoryDatabase（ADR 0308）。
 
 阶段 3/2 小切片补充（2026-09-25）：resume 的初始消息 id、attachments、`media_inputs` 与 session 全量 attachments 由 `SessionStore::session_resume_media` 在一个 blocking closure 中读取；保留消息顺序、首个 user 选择、空媒体与错误映射。Agent 继续负责 canonical initial input、fresh-run/resume 分界和 managed asset lease/register，事件流仍是恢复 authority；不迁移 memory_index/MemoryWorker 其他 Database 路径（ADR 0300）。
 
@@ -331,7 +334,7 @@ SessionStore
 - 统一 claim、cancel、timeout、retry、tail output、completion outbox 和 UI projection；
 - messaging 不并入 Job，仍是独立 transport domain；
 - `MemoryRuntime` 监听 committed session event，负责 fact extraction/maintenance/index catch-up；
-- `MemoryWorker` 的 FastChat 调用已通过小型 `MemoryInferencePort` 注入（ADR 0247）；Agent recall 查询已由 `MemoryRecallStore` 提供（ADR 0304）；后续仍需让 Agent 只提交 `SessionCommitted`，并迁移 MemoryWorker 的其他 Database 路径。
+- `MemoryWorker` 的 FastChat 调用已通过小型 `MemoryInferencePort` 注入（ADR 0247）；Agent recall 查询已由 `MemoryRecallStore` 提供（ADR 0304）；后续仍需让 Agent 只提交 `SessionCommitted`，并迁移 MemoryWorker 维护、summary extraction 与 embedding 等剩余 Database 路径。
 
 状态：committed-event consumer 架构设计已完成并采纳（ADR 0259）；Phase 7.1 的 SessionStore cursor/replay、`MemoryRuntime::process_event` 顺序处理、启动时已有 cursor 回放和 `run_until_cancelled` bounded live/replay recovery 已实现，并由 AgentLayer 在 dispatcher recovery 前装配与启动（ADR 0261、0262、0263）。interval、pause trigger 与 compact-summary extraction 已通过 durable producer/outbox 接入，周期 maintenance 调度已由 MemoryRuntime 负责；MemoryWorker durable outbox 已加入逐 job retry/backoff 和应用停机 cancellation boundary，marker 持久化与读取/ack 现归 MemoryStore（ADR 0264、0265、0266、0267、0268、0269、0301）。ActionService 的全部 action 持久化经 ActionStore 调度，后台终态与 outbox 仍由同一事务提交，transcript durable 后才 ack（ADR 0305）。usage runtime 的 cache accounting 与 `llm_usage.call_kind` 运行时输入均已完成 typed input 收口（ADR 0270、0271）；durable read model 和 IPC 继续使用既有字符串字段。
 
@@ -339,7 +342,7 @@ SessionStore
 
 验收：两类 Job 共用一套生命周期和 UI 投影；记忆失败不改变 ReAct turn 结果；重启、重复 outbox、取消和限额有测试。
 
-Phase 7.1 验收与未决风险：见 ADR 0259、0261、0262、0263、0264、0265、0266、0267、0268、0269、0301、0304、0305、0307。当前已完成持久化端口、按序处理核心、启动回放、bounded live/replay runner、AgentLayer dispatcher readiness barrier、interval/pause producer、summary per-episode durable outbox、maintenance scheduler ownership、MemoryStore marker persistence/read/ack ownership、MemoryWorker retry/backoff、app shutdown boundary、Agent recall/query 的 MemoryRecallStore、MemoryWorker known-facts prompt 读取的 MemoryFactStore 和 ActionService 的 ActionStore；完整 Job 生命周期和 MemoryWorker 其他 Database 路径仍未迁移。
+Phase 7.1 验收与未决风险：见 ADR 0259、0261、0262、0263、0264、0265、0266、0267、0268、0269、0301、0304、0305、0307、0308。当前已完成持久化端口、按序处理核心、启动回放、bounded live/replay runner、AgentLayer dispatcher readiness barrier、interval/pause producer、summary per-episode durable outbox、maintenance scheduler ownership、MemoryStore marker persistence/read/ack ownership、MemoryWorker retry/backoff、app shutdown boundary、Agent recall/query 的 MemoryRecallStore、MemoryWorker known-facts prompt 读取的 MemoryFactStore、普通 session fact extraction 状态与投影的 MemoryFactExtractionStore 和 ActionService 的 ActionStore；完整 Job 生命周期仍未迁移。MemoryWorker 仍通过 MemoryDatabase 执行事实批量写入、maintenance、矛盾/谓词路径与 summary episode cursor/共享 throttle；embedding catch-up 沿用 MemoryService 的 MemoryEmbeddingStore。
 
 ### 阶段 8：IPC 单源生成与 UI 编排收口（P2）
 

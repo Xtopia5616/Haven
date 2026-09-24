@@ -221,6 +221,13 @@ embedding 生命周期读写和 LSH 维护，`memory_index.rs` 保留模型路�
 `MemoryFactStore`，`MemoryWorker::load_known_facts` 通过其有界读取端口取得抽取上下文；
 blocking 调度、事实有效置信度顺序、敏感事实过滤和 limit 属于 Memory，Agent 仍负责
 prompt 行格式、subject 前缀与字段清洗（ADR 0307）。
+`MemoryFactExtractionStore` 通过同一 `MemoryService` owner 提供普通 session extraction 的
+transcript projections、节流时间戳与 user-message cursor；Agent 仍负责窗口构造、LLM 调用、
+事实写入策略和仅在成功后推进 cursor（ADR 0308）。`MemoryWorker` 仍保留
+`MemoryDatabase` 用于事实批量候选校验/写入、维护、矛盾/谓词工作、摘要 episode cursor 与
+共享节流状态；embedding catch-up 沿用 `MemoryService` 的 `MemoryEmbeddingStore` 边界。本轮
+只迁移普通 session fact-extraction hot path 的状态与 transcript 持久化端口，没有移除 Worker
+对 DB 的其他职责。
 `memory_worker.rs` 只编排事实抽取、durable outbox、维护、提案提交和索引 catch-up；
 `MemoryWorker` 是唯一的后台记忆编排入口。`prompt_context.rs`
 在 turn 边界取得一次工具/运行时/记忆快照，`prompt_renderer.rs` 以纯函数渲染 system
@@ -508,6 +515,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 
 | 日期 | 内容 |
 |---|---|
+| 2026-09-25 | §2.3 Memory：普通 session 事实抽取的 transcript、节流戳和游标通过 MemoryFactExtractionStore 持久化；Worker 仍保留事实批量写入、维护和摘要抽取相关 MemoryDatabase 路径，索引 catch-up 沿用 MemoryEmbeddingStore（ADR 0308） |
 | 2026-09-25 | §2.3 Memory / §2.5 Agent：MemoryWorker 的已知事实 prompt 读取经 MemoryService 共享的 MemoryFactStore 有界端口；过滤、顺序和 limit 收口在 Memory，prompt 格式与字段清洗保持不变（ADR 0307） |
 | 2026-09-25 | §2.5 Tools：admin capability 通过 SessionStore / MemoryFactStore typed handles 注入；诊断行为与 provider wire contract 保持不变（ADR 0306） |
 | 2026-09-25 | §2.3 Memory / §2.5 Tools：ActionService 所有 action 持久化改经窄异步 ActionStore；保留 SQLite CAS/outbox 事务、内存生命周期和 headless 行为（ADR 0305） |

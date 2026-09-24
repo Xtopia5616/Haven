@@ -19,6 +19,9 @@ pub use repositories::embedding_store::{
     MemoryEmbeddingStore, MemoryEmbeddingVector, PendingMemoryEmbedding,
 };
 pub use repositories::fact_store::MemoryFactStore;
+pub use repositories::memory_fact_extraction_store::{
+    FactExtractionTranscript, MemoryFactExtractionStore,
+};
 pub use repositories::memory_recall_store::MemoryRecallStore;
 pub use repositories::memory_store::MemoryStore;
 pub use repositories::scheduled_actions::{ActionRow, ScheduledActionRow};

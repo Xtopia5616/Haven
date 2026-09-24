@@ -71,11 +71,18 @@ Rust 测试应使用内存数据库或唯一临时目录，不能读写真实用
 
 - [架构与 crate 边界](docs/architecture.md)
 - [开发与架构治理规范](docs/development-standards.md)
+- [架构降复杂度路线图](docs/architecture-refactor-roadmap.md)
 - [Git 提交流程](docs/git-workflow.md)
 - [稳定性重构计划](docs/stability-refactor-plan.md)
 - [重构实施手册](docs/refactor-execution-guide.md)
 - [发布与数据重置](docs/release-and-reset.md)
 - [架构决策记录](docs/adr/README.md)
+
+记忆事实提取的 session transcript、节流戳和用户消息游标由
+`MemoryFactExtractionStore` 持久化；窗口构造、模型调用与事实写入策略仍由
+`MemoryWorker` 管理；事实批量候选校验和写入、维护、矛盾/谓词处理、summary episode
+状态仍保留 `MemoryDatabase` 路径；embedding catch-up 沿用 `MemoryService` 的
+`MemoryEmbeddingStore` 边界，详见 ADR 0308 和架构路线图。
 
 ## 故障报告
 

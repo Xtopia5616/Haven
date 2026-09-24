@@ -14,7 +14,7 @@ use haven_memory::repositories::facts::{
     CANONICAL_MERGE_TARGETS, Fact, FactSourceRef, is_canonical_merge_target, is_sensitive_object,
     is_sensitive_predicate, is_single_valued_predicate,
 };
-use haven_memory::{Database, MemoryFactStore, MemoryStore};
+use haven_memory::{Database, MemoryFactExtractionStore, MemoryFactStore, MemoryStore};
 use tokio::sync::{Notify, Semaphore};
 use tokio_util::sync::CancellationToken;
 
@@ -37,9 +37,11 @@ pub struct MemoryWorker {
     memory: Arc<MemoryService>,
     memory_store: MemoryStore,
     fact_store: MemoryFactStore,
-    // Compatibility handle for the fact-inference algorithm and maintenance,
-    // KV cursor/throttle, and embedding paths that this slice leaves intact.
-    // Durable outbox marker reads and acknowledgements go through memory_store.
+    fact_extraction_store: MemoryFactExtractionStore,
+    // Compatibility handle for fact-batch policy/persistence, maintenance,
+    // summary-extraction state, and contradiction/predicate work that remain
+    // in Agent. Ordinary session extraction state and durable outbox markers
+    // use their dedicated Memory stores; embedding catch-up uses MemoryService.
     db: MemoryDatabase,
     inference: Arc<dyn MemoryInferencePort>,
     /// Cap (chars) for transcripts sent to the SmallModel for fact
@@ -130,11 +132,13 @@ impl MemoryWorker {
         fact_extraction_min_interval_secs: u64,
     ) -> Self {
         let memory_store = memory.memory_store();
+        let fact_extraction_store = memory.memory_fact_extraction_store();
         let db = memory.database_handle();
         Self {
             memory,
             memory_store,
             fact_store,
+            fact_extraction_store,
             db,
             inference,
             max_transcript_chars,
@@ -784,13 +788,9 @@ impl MemoryWorker {
         // session-scoped state family and removes all of them with dead
         // sessions.
         if !bypass_throttle && self.fact_extraction_min_interval_secs > 0 {
-            let last_key = format!("fact_extraction_last_run.{}", session_id);
             let last_run = match self
-                .db
-                .run_blocking({
-                    let key = last_key.clone();
-                    move |db| db.get_kv(&key)
-                })
+                .fact_extraction_store
+                .last_attempt_timestamp(session_id)
                 .await
             {
                 Ok(value) => value,
@@ -818,28 +818,19 @@ impl MemoryWorker {
             }
         }
 
-        let (messages, steps) = {
-            let db = self.db.clone();
-            let session_id_for_db = session_id.to_string();
-            match db
-                .run_blocking(move |db| {
-                    let messages = db.get_session_messages(&session_id_for_db)?;
-                    let steps = db.get_session_steps(&session_id_for_db)?;
-                    Ok::<_, anyhow::Error>((messages, steps))
-                })
-                .await
-            {
-                Ok(pair) => pair,
-                Err(error) => {
-                    tracing::warn!(
-                        "fact inference: failed to load transcript for session {}: {}",
-                        session_id,
-                        error
-                    );
-                    return false;
-                }
+        let transcript = match self.fact_extraction_store.load_transcript(session_id).await {
+            Ok(transcript) => transcript,
+            Err(error) => {
+                tracing::warn!(
+                    "fact inference: failed to load transcript for session {}: {}",
+                    session_id,
+                    error
+                );
+                return false;
             }
         };
+        let messages = transcript.messages;
+        let steps = transcript.steps;
         if messages.is_empty() {
             return true;
         }
@@ -848,13 +839,9 @@ impl MemoryWorker {
         // user turn may include a bounded slice of preceding assistant/tool
         // context so short confirmations and tool-grounded replies stay
         // aligned with the model's recent vision — not a full transcript.
-        let cursor_key = format!("fact_extraction.{}", session_id);
         let cursor = match self
-            .db
-            .run_blocking({
-                let key = cursor_key.clone();
-                move |db| db.get_kv(&key)
-            })
+            .fact_extraction_store
+            .extraction_cursor(session_id)
             .await
         {
             Ok(value) => value,
@@ -872,23 +859,18 @@ impl MemoryWorker {
             tracing::debug!("fact inference: no new messages since cursor");
             // Still advance when the only new rows were low-trust (peer
             // kickoff / cross-session) so extraction does not stall forever.
-            if let Some(last) = window.cursor_last {
-                let db = self.db.clone();
-                let key = cursor_key.clone();
-                if let Err(error) = db
-                    .run_blocking(move |db| {
-                        db.set_kv(&key, &last)?;
-                        Ok::<(), anyhow::Error>(())
-                    })
+            if let Some(last) = window.cursor_last
+                && let Err(error) = self
+                    .fact_extraction_store
+                    .advance_cursor(session_id, &last)
                     .await
-                {
-                    tracing::warn!(
-                        "fact inference cursor advance failed for session {}: {}",
-                        session_id,
-                        error
-                    );
-                    return false;
-                }
+            {
+                tracing::warn!(
+                    "fact inference cursor advance failed for session {}: {}",
+                    session_id,
+                    error
+                );
+                return false;
             }
             return true;
         }
@@ -898,14 +880,10 @@ impl MemoryWorker {
         // call counts as a run (otherwise a persistent failure would retry
         // every turn despite the cursor advancing).
         if self.fact_extraction_min_interval_secs > 0 {
-            let db = self.db.clone();
-            let key = format!("fact_extraction_last_run.{}", session_id);
             let now = chrono::Utc::now().to_rfc3339();
-            if let Err(error) = db
-                .run_blocking(move |db| {
-                    db.set_kv(&key, &now)?;
-                    Ok::<(), anyhow::Error>(())
-                })
+            if let Err(error) = self
+                .fact_extraction_store
+                .stamp_last_attempt(session_id, &now)
                 .await
             {
                 tracing::warn!(
@@ -955,23 +933,18 @@ impl MemoryWorker {
         }
 
         // Advance the cursor so the next run only sees brand-new user messages.
-        if let Some(last) = window.cursor_last {
-            let db = self.db.clone();
-            let key = cursor_key.clone();
-            if let Err(e) = db
-                .run_blocking(move |db| {
-                    db.set_kv(&key, &last)?;
-                    Ok::<(), anyhow::Error>(())
-                })
+        if let Some(last) = window.cursor_last
+            && let Err(e) = self
+                .fact_extraction_store
+                .advance_cursor(session_id, &last)
                 .await
-            {
-                tracing::warn!(
-                    "fact extraction cursor advance failed for session {}: {}",
-                    session_id,
-                    e
-                );
-                return false;
-            }
+        {
+            tracing::warn!(
+                "fact extraction cursor advance failed for session {}: {}",
+                session_id,
+                e
+            );
+            return false;
         }
         true
     }
@@ -2320,6 +2293,102 @@ mod tests {
         assert_eq!(window.messages[2].id, user.id);
     }
 
+    #[tokio::test]
+    async fn extraction_store_projections_keep_the_incremental_message_window() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let session = db
+            .create_session("fact extraction persisted window")
+            .unwrap();
+        let previous_user = db
+            .add_message(&session.id, "user", "Earlier user turn", Some("text"), None)
+            .unwrap();
+        let ask = db
+            .add_message(
+                &session.id,
+                "assistant",
+                "Checking the path",
+                Some("text"),
+                None,
+            )
+            .unwrap();
+        let reasoning = db
+            .add_message(
+                &session.id,
+                "assistant",
+                "private reasoning",
+                Some("reasoning"),
+                None,
+            )
+            .unwrap();
+        let current_user = db
+            .add_message(&session.id, "user", "Use that path", Some("text"), None)
+            .unwrap();
+        let message_times = [
+            (previous_user.id.as_str(), "2026-01-01T00:00:00.000Z"),
+            (ask.id.as_str(), "2026-01-01T00:00:01.000Z"),
+            (reasoning.id.as_str(), "2026-01-01T00:00:02.000Z"),
+            (current_user.id.as_str(), "2026-01-01T00:00:05.000Z"),
+        ];
+        for (message_id, timestamp) in message_times {
+            db.conn()
+                .execute(
+                    "UPDATE messages SET created_at = ?1 WHERE id = ?2",
+                    [timestamp, message_id],
+                )
+                .unwrap();
+        }
+
+        let step_id = haven_common::types::new_id("step");
+        let step = db
+            .create_action_step(
+                &session.id,
+                1,
+                "shell",
+                "{}",
+                false,
+                false,
+                None,
+                Some(&step_id),
+            )
+            .unwrap();
+        db.complete_action_step(&step.id, "C:/Workspace/Haven", true)
+            .unwrap();
+        db.conn()
+            .execute(
+                "UPDATE session_steps
+                 SET created_at = ?1, started_at = ?2, completed_at = ?3
+                 WHERE id = ?4",
+                [
+                    "2026-01-01T00:00:03.000Z",
+                    "2026-01-01T00:00:03.000Z",
+                    "2026-01-01T00:00:04.000Z",
+                    step.id.as_str(),
+                ],
+            )
+            .unwrap();
+
+        let transcript = MemoryFactExtractionStore::new(db)
+            .load_transcript(&session.id)
+            .await
+            .unwrap();
+        let window = build_extraction_window(
+            &transcript.messages,
+            Some(&previous_user.id),
+            &transcript.steps,
+        );
+
+        assert_eq!(window.messages.len(), 3);
+        assert_eq!(window.messages[0].id, ask.id);
+        assert_eq!(window.messages[1].role, "tool");
+        assert!(window.messages[1].content.contains("tool(shell):"));
+        assert!(window.messages[1].content.contains("C:/Workspace/Haven"));
+        assert_eq!(window.messages[2].id, current_user.id);
+        assert_eq!(
+            window.cursor_last.as_deref(),
+            Some(current_user.id.as_str())
+        );
+    }
+
     #[test]
     fn resolve_source_prefers_following_user() {
         let ask = make_role_message("assistant", "Which theme?");
@@ -2734,7 +2803,7 @@ mod tests {
 
     #[tokio::test]
     async fn cancelling_worker_during_inference_leaves_fact_marker_for_restore() {
-        let db = temp_db();
+        let db = Arc::new(Database::open_in_memory().unwrap());
         let session = db.create_session("outbox cancellation").unwrap();
         db.add_message(&session.id, "user", "I prefer Rust.", Some("text"), None)
             .unwrap();
@@ -2768,7 +2837,13 @@ mod tests {
 
         assert_eq!(
             db.pending_fact_extractions().unwrap(),
-            vec![(session.id, true)]
+            vec![(session.id.clone(), true)]
+        );
+        assert_eq!(
+            db.get_kv(&format!("fact_extraction.{}", session.id))
+                .unwrap(),
+            None,
+            "cancellation during inference must leave the message cursor behind"
         );
     }
 
@@ -2929,6 +3004,31 @@ mod tests {
             .get_kv(&format!("fact_extraction.{}", session.id))
             .unwrap();
         assert_eq!(cursor, None);
+    }
+
+    #[tokio::test]
+    async fn infer_facts_transcript_store_errors_are_nonfatal_and_keep_cursor() {
+        for missing_table in ["messages", "session_steps"] {
+            let db = Arc::new(Database::open_in_memory().unwrap());
+            let session = db.create_session("missing extraction projection").unwrap();
+            db.add_message(&session.id, "user", "I prefer Rust.", Some("text"), None)
+                .unwrap();
+            db.conn()
+                .execute_batch(&format!("DROP TABLE {missing_table}"))
+                .unwrap();
+            let worker = MemoryWorker::new(db.clone(), mock_router("[]"), 4_000, 64, 40, 256, 0);
+
+            assert!(
+                !worker.infer_facts(&session.id).await,
+                "missing {missing_table} must preserve the existing non-fatal extraction failure"
+            );
+            assert_eq!(
+                db.get_kv(&format!("fact_extraction.{}", session.id))
+                    .unwrap(),
+                None,
+                "missing {missing_table} must not advance the extraction cursor"
+            );
+        }
     }
 
     #[test]
