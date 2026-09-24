@@ -1088,6 +1088,30 @@ impl SessionStore {
             .await
     }
 
+    /// Read the durable replay cursor used to verify an Agent event boundary.
+    /// A session without an event log keeps the same default cursor as an
+    /// absent replay state. Agent owns the boundary policy; this port only
+    /// schedules the existing replay read and preserves optional cancellation.
+    pub async fn event_boundary_cursor(
+        &self,
+        session_id: &str,
+        cancel: Option<CancellationToken>,
+    ) -> anyhow::Result<SessionCursor> {
+        let store = self.clone();
+        let session_id = session_id.to_owned();
+        let read = move |_db: &Database| {
+            Ok(store
+                .load_replay_state(&session_id)?
+                .map(|replay| replay.cursor)
+                .unwrap_or_default())
+        };
+
+        match cancel {
+            Some(cancel) => self.db.run_blocking_cancellable(cancel, read).await,
+            None => self.db.run_blocking(read).await,
+        }
+    }
+
     /// Return the latest user-message projection clock without exposing the
     /// underlying `messages` repository to Agent recovery code.
     pub fn last_user_message_at(&self, session_id: &str) -> anyhow::Result<Option<String>> {
@@ -2781,6 +2805,59 @@ mod tests {
         let session = db.create_session("input").unwrap();
         let store = SessionEventStore::new(db.clone());
         (db, store, session.id)
+    }
+
+    #[tokio::test]
+    async fn session_store_event_boundary_cursor_defaults_or_matches_replay() {
+        let (_db, store, session_id) = store();
+
+        assert_eq!(
+            store
+                .event_boundary_cursor(&session_id, None)
+                .await
+                .unwrap(),
+            SessionCursor::default()
+        );
+
+        store
+            .seed_if_empty_async(
+                &session_id,
+                vec![SessionEventInput::transcript(
+                    r#"{"type":"boundary"}"#,
+                    4,
+                    8,
+                )],
+            )
+            .await
+            .unwrap();
+        let replay = store
+            .load_replay_state_async(&session_id)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            store
+                .event_boundary_cursor(&session_id, Some(CancellationToken::new()))
+                .await
+                .unwrap(),
+            replay.cursor
+        );
+    }
+
+    #[tokio::test]
+    async fn session_store_event_boundary_cursor_observes_cancellation() {
+        let (db, store, session_id) = store();
+        // In-memory databases have one pooled connection. Holding it keeps
+        // the replay worker pending until the cancellable scheduler times out.
+        let connection = db.conn();
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        let result = store.event_boundary_cursor(&session_id, Some(cancel)).await;
+        drop(connection);
+
+        assert!(result.is_err());
     }
 
     #[tokio::test]

@@ -667,18 +667,10 @@ impl ReActEngine {
         let _timer = self
             .metrics
             .start(MetricsPhase::Snapshot, session_id, 0, step_number);
-        let store = self.event_store.clone();
-        let sid = session_id.to_string();
-        let write = move |_db: &Database| {
-            Ok(store
-                .load_replay_state(&sid)?
-                .map(|replay| replay.cursor)
-                .unwrap_or_default())
-        };
-        let saved = match state.turn_cancel.clone() {
-            Some(cancel) => self.db.run_blocking_cancellable(cancel, write).await,
-            None => self.db.run_blocking(write).await,
-        };
+        let saved = self
+            .event_store
+            .event_boundary_cursor(session_id, state.turn_cancel.clone())
+            .await;
         match saved {
             Ok(cursor) => {
                 let _ = (
@@ -1016,3 +1008,7 @@ impl ReActEngine {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "event_boundary_tests.rs"]
+mod tests;

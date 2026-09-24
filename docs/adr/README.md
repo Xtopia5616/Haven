@@ -286,3 +286,4 @@
 - [0295：SessionSupervisor action-step 写入通过 SessionStore](0295-session-action-step-writes-through-session-store.md)
 - [0296：ReAct transcript 事件读写通过 SessionStore](0296-react-transcript-event-store-ports.md)
 - [0297：Rollback 事务通过 SessionStore 异步端口](0297-rollback-session-store-ports.md)
+- [0298：ReAct event boundary cursor 通过 SessionStore 读取](0298-react-event-boundary-cursor-session-store-port.md)
