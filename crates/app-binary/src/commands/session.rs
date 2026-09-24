@@ -45,23 +45,16 @@ pub async fn end_session(
     // L3: capture the title BEFORE end_session removes the session from the
     // in-memory list; reading afterwards would fall back to the DB and lose
     // the generated title (end_session clears the working set).
-    let title = state
+    let executor_session = state
         .executor
         .get_session(&session_id)
         .await
-        .map(|t| t.title.clone().unwrap_or(t.input))
-        .or_else(|| match state.db.get_session(&session_id) {
-            Ok(session) => session.map(|t| t.title.unwrap_or(t.input_text)),
-            Err(error) => {
-                tracing::warn!(
-                    session_id,
-                    error = %sanitize_error_text(&error.to_string()),
-                    "failed to resolve session title before ending session"
-                );
-                None
-            }
-        })
-        .unwrap_or_default();
+        .map(|session| ExecutorSessionDisplay {
+            title: session.title,
+            input: session.input,
+        });
+    let title =
+        end_session_display_title(&session_id, executor_session, &state.session_store).await;
 
     let _ = state
         .executor
@@ -75,6 +68,34 @@ pub async fn end_session(
         .emit_session_completed(&session_id, &title, "用户主动结束会话")
         .await;
     Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct ExecutorSessionDisplay {
+    title: Option<String>,
+    input: String,
+}
+
+async fn end_session_display_title(
+    session_id: &str,
+    executor_session: Option<ExecutorSessionDisplay>,
+    session_store: &haven_memory::SessionStore,
+) -> String {
+    if let Some(session) = executor_session {
+        return session.title.unwrap_or(session.input);
+    }
+
+    match session_store.session_display_title(session_id).await {
+        Ok(title) => title.unwrap_or_default(),
+        Err(error) => {
+            tracing::warn!(
+                session_id,
+                error = %sanitize_error_text(&error.to_string()),
+                "failed to resolve session title before ending session"
+            );
+            String::new()
+        }
+    }
 }
 
 /// Interrupt the active model/tool run but keep the session resumable.
@@ -583,7 +604,10 @@ pub async fn get_last_conversation(
 
 #[cfg(test)]
 mod tests {
-    use super::{last_conversation_from_store, resume_session_from_store};
+    use super::{
+        ExecutorSessionDisplay, end_session_display_title, last_conversation_from_store,
+        resume_session_from_store,
+    };
     use crate::commands::SessionListResponse;
 
     #[test]
@@ -654,5 +678,68 @@ mod tests {
             .expect("a persisted session must be returned");
 
         assert_eq!(response.session.id, session.id);
+    }
+
+    #[tokio::test]
+    async fn end_session_title_prefers_executor_title_or_input() {
+        let db = std::sync::Arc::new(haven_memory::Database::open_in_memory().unwrap());
+        let session = db.create_session("persisted input").unwrap();
+        db.update_session_title(&session.id, "persisted title")
+            .unwrap();
+        let session_store = haven_memory::SessionStore::new(db);
+
+        let generated_title = end_session_display_title(
+            &session.id,
+            Some(ExecutorSessionDisplay {
+                title: Some("executor title".into()),
+                input: "executor input".into(),
+            }),
+            &session_store,
+        )
+        .await;
+        assert_eq!(generated_title, "executor title");
+
+        let executor_input = end_session_display_title(
+            &session.id,
+            Some(ExecutorSessionDisplay {
+                title: None,
+                input: "executor input".into(),
+            }),
+            &session_store,
+        )
+        .await;
+        assert_eq!(executor_input, "executor input");
+    }
+
+    #[tokio::test]
+    async fn end_session_title_uses_persisted_display_title_when_executor_has_no_session() {
+        let db = std::sync::Arc::new(haven_memory::Database::open_in_memory().unwrap());
+        let titled_session = db.create_session("persisted input").unwrap();
+        db.update_session_title(&titled_session.id, "persisted title")
+            .unwrap();
+        let untitled_session = db.create_session("input fallback").unwrap();
+        let session_store = haven_memory::SessionStore::new(db);
+
+        assert_eq!(
+            end_session_display_title(&titled_session.id, None, &session_store).await,
+            "persisted title"
+        );
+        assert_eq!(
+            end_session_display_title(&untitled_session.id, None, &session_store).await,
+            "input fallback"
+        );
+    }
+
+    #[tokio::test]
+    async fn end_session_title_query_failure_falls_back_to_empty_title() {
+        let db = std::sync::Arc::new(haven_memory::Database::open_in_memory().unwrap());
+        let session = db.create_session("persisted input").unwrap();
+        db.conn().execute_batch("DROP TABLE sessions").unwrap();
+        let session_store = haven_memory::SessionStore::new(db);
+
+        assert_eq!(
+            end_session_display_title(&session.id, None, &session_store).await,
+            ""
+        );
     }
 }

@@ -272,3 +272,4 @@
 - [0281：App 会话标题写入通过 SessionStore](0281-session-title-write-session-store-port.md)
 - [0282：App 会话恢复 read model 通过 SessionStore](0282-app-session-resume-projection-session-store-port.md)
 - [0283：App 会话记录读取通过 SessionStore 异步端口](0283-app-session-record-lookups-through-session-store.md)
+- [0284：end_session 展示标题读取通过 SessionStore](0284-end-session-display-title-session-store-port.md)

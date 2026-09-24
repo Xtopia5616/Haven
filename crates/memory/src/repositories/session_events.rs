@@ -549,6 +549,21 @@ impl SessionStore {
             .await
     }
 
+    /// Read the title shown when ending a session, falling back to its input
+    /// text when no title has been assigned. Missing sessions remain `None`.
+    /// SQLite work runs on the blocking pool; dropping this future cannot
+    /// interrupt a query that has already started.
+    pub async fn session_display_title(&self, session_id: &str) -> anyhow::Result<Option<String>> {
+        let session_id = session_id.to_owned();
+        self.db
+            .run_blocking(move |db| {
+                Ok(db
+                    .get_session(&session_id)?
+                    .map(|session| session.title.unwrap_or(session.input_text)))
+            })
+            .await
+    }
+
     /// Persist a session title on SQLite's blocking pool.
     ///
     /// This delegates to the existing Database operation so its cache
@@ -2511,6 +2526,40 @@ mod tests {
         assert!(
             store
                 .session_title(&missing_session_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn session_store_reads_display_title_with_input_text_fallback() {
+        let (db, store, session_id) = store();
+
+        assert_eq!(
+            store
+                .session_display_title(&session_id)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("input")
+        );
+
+        db.update_session_title(&session_id, "Display title")
+            .unwrap();
+        assert_eq!(
+            store
+                .session_display_title(&session_id)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("Display title")
+        );
+
+        let missing_session_id = haven_common::types::new_id("ses");
+        assert!(
+            store
+                .session_display_title(&missing_session_id)
                 .await
                 .unwrap()
                 .is_none()
