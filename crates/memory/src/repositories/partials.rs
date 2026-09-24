@@ -101,6 +101,8 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use crate::db::Database;
+    use crate::repositories::session_events::SessionStore;
+    use std::sync::Arc;
 
     fn test_db() -> Database {
         Database::open_in_memory().expect("create in-memory db")
@@ -173,5 +175,38 @@ mod tests {
         let msgs = db.get_session_messages(&session_id).unwrap();
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].content, "newer real message");
+    }
+
+    #[tokio::test]
+    async fn session_store_partial_stream_port_preserves_checkpoint_and_promote_semantics() {
+        let db = Arc::new(test_db());
+        let session_id = db.create_session("input").unwrap().id;
+        let store = SessionStore::new(db.clone());
+        let initial_last_msg_at = store.cursor(&session_id).unwrap().last_msg_at;
+
+        assert!(!store.promote_partial_stream(&session_id).await.unwrap());
+        store.discard_partial_stream(&session_id).await.unwrap();
+
+        store
+            .upsert_partial_stream(&session_id, "  \t ")
+            .await
+            .unwrap();
+        assert_eq!(
+            store.cursor(&session_id).unwrap().last_msg_at,
+            initial_last_msg_at,
+            "a scratch checkpoint must not advance the message projection clock"
+        );
+        assert!(!store.promote_partial_stream(&session_id).await.unwrap());
+
+        store
+            .upsert_partial_stream(&session_id, "  streamed reply  ")
+            .await
+            .unwrap();
+        assert!(store.promote_partial_stream(&session_id).await.unwrap());
+        let messages = db.get_session_messages(&session_id).unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].content, "streamed reply");
+        assert!(store.cursor(&session_id).unwrap().last_msg_at.is_some());
+        assert!(!store.promote_partial_stream(&session_id).await.unwrap());
     }
 }

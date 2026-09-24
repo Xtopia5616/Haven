@@ -1137,7 +1137,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db = Arc::new(Database::open(&dir.path().join("test.db")).unwrap());
         let session = db.create_session("input").unwrap();
-        let store = Arc::new(crate::partial::PartialStore::new(db.clone()));
+        let store = Arc::new(crate::partial::PartialStore::new(
+            haven_memory::SessionStore::new(db.clone()),
+        ));
         let generation = store.generation(&session.id);
         let writer = CheckpointWriter::new(store, Arc::new(ReActMetrics::new()));
         writer.submit(CheckpointRequest {

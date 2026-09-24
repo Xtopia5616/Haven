@@ -1,4 +1,4 @@
-use haven_memory::Database;
+use haven_memory::SessionStore;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -30,7 +30,7 @@ const KNOWN_EMPTY_MAX_SESSIONS: usize = 1024;
 /// checkpoints on DIFFERENT sessions never contend with each other, and a
 /// checkpoint and a promote/discard on the SAME session can never interleave.
 pub struct PartialStore {
-    db: Arc<Database>,
+    store: SessionStore,
     /// Per-session async mutex, keyed by session id. Only sessions sharing a session id
     /// serialize against each other, so a slow checkpoint on one session does
     /// not stall promote/discard on other sessions (no cross-session head-of-line
@@ -61,9 +61,9 @@ struct SessionLockGuard {
 }
 
 impl PartialStore {
-    pub fn new(db: Arc<Database>) -> Self {
+    pub fn new(store: SessionStore) -> Self {
         Self {
-            db,
+            store,
             locks: tokio::sync::Mutex::new(HashMap::new()),
             generation: std::sync::Mutex::new(HashMap::new()),
             last_written: std::sync::Mutex::new(HashMap::new()),
@@ -154,11 +154,9 @@ impl PartialStore {
             self.release_session_lock(session_id, &guard).await;
             return Ok(());
         }
-        let db = self.db.clone();
-        let tid = session_id.to_string();
-        let snapshot = content.to_string();
-        let result = db
-            .run_blocking(move |db| db.upsert_partial_message(&tid, &snapshot))
+        let result = self
+            .store
+            .upsert_partial_stream(session_id, content)
             .await
             .map_err(|e| {
                 e.context(format!(
@@ -185,11 +183,7 @@ impl PartialStore {
         self.bump_generation(session_id);
         self.last_written.lock().unwrap().remove(session_id);
         self.known_empty.lock().unwrap().remove(session_id);
-        let db = self.db.clone();
-        let tid = session_id.to_string();
-        let result = db
-            .run_blocking(move |db| db.promote_partial_message(&tid))
-            .await;
+        let result = self.store.promote_partial_stream(session_id).await;
         if result.is_ok() {
             self.mark_known_empty(session_id);
         }
@@ -208,12 +202,8 @@ impl PartialStore {
             self.release_session_lock(session_id, &guard).await;
             return;
         }
-        let db = self.db.clone();
         let tid = session_id.to_string();
-        let tid_for_db = tid.clone();
-        let result = db
-            .run_blocking(move |db| db.delete_partial_message(&tid_for_db))
-            .await;
+        let result = self.store.discard_partial_stream(&tid).await;
         if let Err(e) = result {
             tracing::warn!("delete_partial_message failed for session {}: {}", tid, e);
         } else {
@@ -244,6 +234,7 @@ impl PartialStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use haven_memory::Database;
     use tempfile::tempdir;
 
     fn test_store() -> (PartialStore, Arc<Database>, tempfile::TempDir, String) {
@@ -251,7 +242,12 @@ mod tests {
         let db = Arc::new(Database::open(&dir.path().join("test.db")).unwrap());
         let session = db.create_session("input").unwrap();
         let session_id = session.id.clone();
-        (PartialStore::new(db.clone()), db, dir, session_id)
+        (
+            PartialStore::new(SessionStore::new(db.clone())),
+            db,
+            dir,
+            session_id,
+        )
     }
 
     #[tokio::test]

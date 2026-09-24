@@ -255,6 +255,42 @@ impl SessionStore {
         self.db.get_session(session_id)
     }
 
+    /// Persist one checkpoint of an in-flight assistant stream.
+    ///
+    /// Partial stream rows remain scratch data and do not advance the
+    /// projection `last_msg_at` clock. Promotion delegates to the existing
+    /// Database operation, retaining its single-statement take and timestamp
+    /// guard.
+    pub async fn upsert_partial_stream(
+        &self,
+        session_id: &str,
+        content: &str,
+    ) -> anyhow::Result<()> {
+        let session_id = session_id.to_owned();
+        let content = content.to_owned();
+        self.db
+            .run_blocking(move |db| db.upsert_partial_message(&session_id, &content))
+            .await
+    }
+
+    /// Consume and, when still current and non-empty, promote a checkpointed
+    /// stream into the session transcript using the existing Database
+    /// operation.
+    pub async fn promote_partial_stream(&self, session_id: &str) -> anyhow::Result<bool> {
+        let session_id = session_id.to_owned();
+        self.db
+            .run_blocking(move |db| db.promote_partial_message(&session_id))
+            .await
+    }
+
+    /// Remove an unpromoted stream checkpoint. Missing rows remain a no-op.
+    pub async fn discard_partial_stream(&self, session_id: &str) -> anyhow::Result<()> {
+        let session_id = session_id.to_owned();
+        self.db
+            .run_blocking(move |db| db.delete_partial_message(&session_id))
+            .await
+    }
+
     /// Read every pending session for dispatcher recovery, newest first.
     ///
     /// This is the semantic equivalent of the unbounded pending-session query:

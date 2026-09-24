@@ -274,9 +274,10 @@ impl SessionSupervisor {
             Arc::clone(&tools),
         ));
         let (event_tx, _) = broadcast::channel(256);
+        let store = SessionStore::new(db.clone());
         Self {
-            partials: Arc::new(crate::partial::PartialStore::new(db.clone())),
-            store: SessionStore::new(db.clone()),
+            partials: Arc::new(crate::partial::PartialStore::new(store.clone())),
+            store,
             db,
             tools,
             services,
