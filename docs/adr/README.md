@@ -249,3 +249,4 @@
 - [0258：失败会话 action-step 清理通过 SessionStore](0258-failed-action-step-cleanup-session-store-port.md)
 - [0259：MemoryRuntime 消费已提交会话事件（设计已采纳；实现未开始）](0259-memory-runtime-committed-event-consumer.md)
 - [0260：SessionStore 会话创建端口](0260-session-store-session-creation-port.md)
+- [0261：MemoryRuntime 事件游标与有界回放端口](0261-memory-event-cursor-and-bounded-replay.md)
