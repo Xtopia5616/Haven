@@ -294,3 +294,4 @@
 - [0303：Agent embedding 索引通过 MemoryEmbeddingStore 持久化](0303-agent-memory-embedding-store-port.md)
 - [0304：Agent memory recall 查询通过 MemoryRecallStore](0304-agent-memory-recall-store-port.md)
 - [0305：ActionService action 持久化通过 ActionStore](0305-action-service-action-store-port.md)
+- [0306：Tools admin capability 通过 typed stores 注入](0306-tools-admin-capabilities-through-typed-stores.md)

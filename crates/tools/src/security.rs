@@ -2477,7 +2477,8 @@ mod tests {
         manager
             .set_admin_context(AdminContext {
                 config_service: Some(Arc::new(ConfigService::new(loader))),
-                db: None,
+                session_store: None,
+                memory_facts: None,
                 router: None,
                 log_path: None,
                 log_level: None,
@@ -2803,7 +2804,8 @@ mod tests {
         manager
             .set_admin_context(AdminContext {
                 config_service: Some(Arc::new(ConfigService::new(loader))),
-                db: None,
+                session_store: None,
+                memory_facts: None,
                 router: None,
                 log_path: None,
                 log_level: None,
@@ -2877,7 +2879,8 @@ mod tests {
         manager
             .set_admin_context(AdminContext {
                 config_service: Some(Arc::new(ConfigService::new(loader))),
-                db: None,
+                session_store: None,
+                memory_facts: None,
                 router: None,
                 log_path: None,
                 log_level: None,

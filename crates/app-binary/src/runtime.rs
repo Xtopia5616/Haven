@@ -11,7 +11,7 @@ use crate::desktop::DesktopShell;
 use haven_agent::{AgentLayer, SessionSupervisor};
 use haven_common::config::ConfigService;
 use haven_input::InputPipeline;
-use haven_memory::{Database, MemoryFactStore, SessionStore};
+use haven_memory::{MemoryFactStore, SessionStore};
 use haven_tools::{ToolServices, ToolsManager};
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -54,8 +54,8 @@ pub struct ApplicationRuntime {
 const TASK_SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
 pub(crate) struct RuntimeServices {
-    pub(crate) db: Arc<Database>,
     pub(crate) session_store: SessionStore,
+    pub(crate) memory_fact_store: MemoryFactStore,
     pub(crate) tools: Arc<ToolsManager>,
     pub(crate) executor: Arc<SessionSupervisor>,
     pub(crate) agent: Arc<AgentLayer>,
@@ -68,11 +68,9 @@ pub(crate) struct RuntimeServices {
 impl ApplicationRuntime {
     pub(crate) fn new(runtime_services: RuntimeServices) -> Self {
         let services = runtime_services.tools.share_services();
-        let db = runtime_services.db;
-        let memory_fact_store = MemoryFactStore::new(db);
         Self {
             session_store: runtime_services.session_store,
-            memory_fact_store,
+            memory_fact_store: runtime_services.memory_fact_store,
             tools: runtime_services.tools,
             services,
             executor: runtime_services.executor,

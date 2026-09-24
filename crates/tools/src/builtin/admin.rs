@@ -23,7 +23,7 @@ use haven_common::config::{ConfigService, LogLevel, McpServerConfig};
 use haven_common::types::{McpTransportType, RiskLevel};
 use haven_llm::LlmRouter;
 use haven_mcp::McpManager;
-use haven_memory::Database;
+use haven_memory::{MemoryFactStore, SessionStore};
 use haven_skills::SkillsEngine;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -41,7 +41,8 @@ pub(crate) use admin_services::sanitize_diagnostic;
 #[derive(Clone)]
 pub struct AdminContext {
     pub config_service: Option<Arc<ConfigService>>,
-    pub db: Option<Arc<Database>>,
+    pub session_store: Option<SessionStore>,
+    pub memory_facts: Option<MemoryFactStore>,
     pub router: Option<Arc<LlmRouter>>,
     pub log_path: Option<PathBuf>,
     pub log_level: Option<Arc<dyn LogLevelPort>>,
@@ -60,7 +61,8 @@ impl From<ConfigAdminContext> for AdminContext {
     fn from(context: ConfigAdminContext) -> Self {
         Self {
             config_service: context.config_service,
-            db: None,
+            session_store: None,
+            memory_facts: None,
             router: None,
             log_path: None,
             log_level: context.log_level,
@@ -1337,8 +1339,11 @@ impl AdminSurfaces {
 mod tests {
     use super::*;
     use crate::{StructuredToolError, Tool, ToolsManager};
+    use haven_common::SessionStatus;
     use haven_common::config::{ConfigLoader, ConfigService};
+    use haven_memory::{Database, MemoryFactStore, SessionStore};
     use serde_json::json;
+    use std::sync::Arc;
     use tempfile::TempDir;
 
     struct AdminOperationCase {
@@ -1557,11 +1562,26 @@ mod tests {
     }
 
     fn test_surfaces() -> (AdminSurfaces, TempDir) {
+        test_surfaces_with_stores(None, None)
+    }
+
+    fn test_surfaces_with_db(db: Arc<Database>) -> (AdminSurfaces, TempDir) {
+        test_surfaces_with_stores(
+            Some(SessionStore::new(db.clone())),
+            Some(MemoryFactStore::new(db)),
+        )
+    }
+
+    fn test_surfaces_with_stores(
+        session_store: Option<SessionStore>,
+        memory_facts: Option<MemoryFactStore>,
+    ) -> (AdminSurfaces, TempDir) {
         let dir = TempDir::new().expect("temporary config directory");
         let loader = ConfigLoader::load_from(&dir.path().join("config.toml")).unwrap();
         let context = AdminContext {
             config_service: Some(Arc::new(ConfigService::new(loader))),
-            db: None,
+            session_store,
+            memory_facts,
             router: None,
             log_path: Some(dir.path().join("logs").join("haven.log")),
             log_level: None,
@@ -1616,6 +1636,137 @@ mod tests {
                 "malformed input must use a conservative risk"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn diagnostics_session_operations_report_unavailable_without_session_store() {
+        let (surfaces, _dir) = test_surfaces();
+
+        let status = surfaces
+            .execute(
+                AdminRequest::Diagnostics(DiagnosticsOperationArgs::Status),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(status.output["sessions"], json!({"unavailable": true}));
+
+        for args in [
+            DiagnosticsOperationArgs::Sessions { limit: None },
+            DiagnosticsOperationArgs::Errors { limit: None },
+        ] {
+            let result = surfaces
+                .execute(AdminRequest::Diagnostics(args), CancellationToken::new())
+                .await
+                .unwrap();
+            assert_eq!(result.output, json!({"unavailable": true}));
+        }
+    }
+
+    #[tokio::test]
+    async fn diagnostics_status_counts_all_sessions_and_only_groups_the_recent_fifty() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let older_error = db.create_session("older error").unwrap();
+        db.update_session_status(&older_error.id, SessionStatus::Error)
+            .unwrap();
+        db.conn()
+            .execute(
+                "UPDATE sessions SET created_at = '2000-01-01T00:00:00Z' WHERE id = ?1",
+                [older_error.id.as_str()],
+            )
+            .unwrap();
+        db.cache_invalidate_sessions();
+
+        for index in 0..50 {
+            let session = db.create_session(&format!("recent {index}")).unwrap();
+            db.update_session_status(&session.id, SessionStatus::Completed)
+                .unwrap();
+        }
+
+        let (surfaces, _dir) = test_surfaces_with_db(db);
+        let result = surfaces
+            .execute(
+                AdminRequest::Diagnostics(DiagnosticsOperationArgs::Status),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.output["sessions"]["total"], 51);
+        assert_eq!(
+            result.output["sessions"]["recent_50_by_status"],
+            json!({"completed": 50})
+        );
+    }
+
+    #[tokio::test]
+    async fn diagnostics_lists_keep_limit_order_and_error_filter_semantics() {
+        fn set_created_at(db: &Database, session_id: &str, created_at: &str) {
+            db.conn()
+                .execute(
+                    "UPDATE sessions SET created_at = ?1 WHERE id = ?2",
+                    [created_at, session_id],
+                )
+                .unwrap();
+            db.cache_invalidate_sessions();
+        }
+
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let oldest_error = db.create_session("oldest error").unwrap();
+        db.update_session_status(&oldest_error.id, SessionStatus::Error)
+            .unwrap();
+        set_created_at(&db, &oldest_error.id, "2020-01-01T00:00:00Z");
+
+        let middle_error = db.create_session("middle error").unwrap();
+        db.update_session_status(&middle_error.id, SessionStatus::Error)
+            .unwrap();
+        set_created_at(&db, &middle_error.id, "2021-01-01T00:00:00Z");
+
+        let recent_completed = db.create_session("completed").unwrap();
+        db.update_session_status(&recent_completed.id, SessionStatus::Completed)
+            .unwrap();
+        set_created_at(&db, &recent_completed.id, "2022-01-01T00:00:00Z");
+
+        let newest_error = db.create_session("你 🙂").unwrap();
+        db.update_session_status(&newest_error.id, SessionStatus::Error)
+            .unwrap();
+        set_created_at(&db, &newest_error.id, "2023-01-01T00:00:00Z");
+
+        let (surfaces, _dir) = test_surfaces_with_db(db);
+        let sessions = surfaces
+            .execute(
+                AdminRequest::Diagnostics(DiagnosticsOperationArgs::Sessions { limit: Some(2) }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap()
+            .output;
+        assert_eq!(sessions["sessions"].as_array().unwrap().len(), 2);
+        assert_eq!(sessions["sessions"][0]["id"], newest_error.id);
+        assert_eq!(sessions["sessions"][1]["id"], recent_completed.id);
+        assert_eq!(sessions["sessions"][0]["input_chars"], 3);
+
+        let clamped_sessions = surfaces
+            .execute(
+                AdminRequest::Diagnostics(DiagnosticsOperationArgs::Sessions { limit: Some(0) }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap()
+            .output;
+        assert_eq!(clamped_sessions["sessions"].as_array().unwrap().len(), 1);
+        assert_eq!(clamped_sessions["sessions"][0]["id"], newest_error.id);
+
+        let errors = surfaces
+            .execute(
+                AdminRequest::Diagnostics(DiagnosticsOperationArgs::Errors { limit: Some(2) }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap()
+            .output;
+        assert_eq!(errors["errors"].as_array().unwrap().len(), 1);
+        assert_eq!(errors["errors"][0]["id"], newest_error.id);
     }
 
     #[test]
@@ -1761,7 +1912,8 @@ mod tests {
         let config_service = Arc::new(ConfigService::new(loader));
         let context = AdminContext {
             config_service: Some(config_service),
-            db: None,
+            session_store: None,
+            memory_facts: None,
             router: None,
             log_path: None,
             log_level: None,
@@ -2189,7 +2341,8 @@ mod tests {
         let service = Arc::new(ConfigService::new(loader));
         let context = AdminContext {
             config_service: Some(service.clone()),
-            db: None,
+            session_store: None,
+            memory_facts: None,
             router: None,
             log_path: Some(dir.path().join("logs").join("haven.log")),
             log_level: None,

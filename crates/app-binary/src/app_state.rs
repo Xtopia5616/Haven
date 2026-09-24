@@ -8,7 +8,7 @@ use haven_common::config::{ConfigLoader, ConfigService, LogLevel};
 use haven_input::InputPipeline;
 use haven_llm::LlmRouter;
 use haven_llm::stt::build_stt_client;
-use haven_memory::{ActionStore, Database, SessionStore};
+use haven_memory::{ActionStore, Database, MemoryFactStore, SessionStore};
 use haven_tools::ToolsManager;
 use std::collections::HashMap;
 use std::ops::Deref;
@@ -121,6 +121,7 @@ impl AppState {
         let t0 = std::time::Instant::now();
         let db = Arc::new(Database::open(db_path)?);
         let session_store = SessionStore::new(db.clone());
+        let memory_fact_store = MemoryFactStore::new(db.clone());
         tracing::debug!(
             "AppState::new phase=db elapsed={}ms",
             t0.elapsed().as_millis()
@@ -165,8 +166,8 @@ impl AppState {
         pipeline.set_limits(&context_limits_clone);
         let shell = Arc::new(DesktopShell::new());
         let runtime = Arc::new(ApplicationRuntime::new(RuntimeServices {
-            db: db.clone(),
-            session_store,
+            session_store: session_store.clone(),
+            memory_fact_store: memory_fact_store.clone(),
             tools: tools.clone(),
             executor: executor.clone(),
             agent: agent.clone(),
@@ -476,7 +477,8 @@ impl AppState {
         }) as Arc<dyn haven_tools::LogLevelPort>);
         let admin_context = haven_tools::AdminContext {
             config_service: Some(config_service.clone()),
-            db: Some(db.clone()),
+            session_store: Some(session_store),
+            memory_facts: Some(memory_fact_store),
             router: Some(router.clone()),
             log_path,
             log_level,

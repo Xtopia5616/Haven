@@ -111,6 +111,7 @@
 - 当前 Phase 3 小切片：`MemoryTool` 的 search/list/remember/forget 与 keyword recall fallback 经 `MemoryFactStore` typed ports 执行；Tools 只保留参数、安全和输出适配，desktop `MemoryRecallPort` 仍优先并拥有 embedding-aware recall（ADR 0302）。
 - 当前 Phase 3/7 小切片：`MemoryService` 的 prompt candidate 与 typed recall 查询通过 `MemoryRecallStore` 调度；Agent 保留 prompt 归一化、缓存、provider 调用与候选合并，Memory 保留 keyword/vector 过滤、可见 facts hydration 与完整 retrieve 边界（ADR 0304）。
 - 当前 Phase 3/7 小切片：`ActionService` 的 completion outbox、action history、后台 action 和 scheduled action 所有 SQLite 调用通过 `ActionStore` typed ports；Memory 内部拥有 blocking 调度与终态/outbox 事务，Tools 继续拥有 board、CAS 结果仲裁、恢复和重试策略（ADR 0305）。
+- 当前 Phase 3 小切片：Tools 的 `AdminContext` 只接收 `SessionStore` 与 `MemoryFactStore` capability；诊断列表/计数通过 SessionStore 异步 history ports，MemoryTool 的事实 store 由 app-binary 组合根创建并注入，不再由 builtin 从 raw Database 构造。unavailable、limit、排序、status 过滤、错误日志与 provider wire contract 保持不变（ADR 0306）。
 - 当前 Phase 5/6 小切片：LLM usage runtime input 的 `cache_accounting` 使用 `haven-common::CacheAccounting`；SQLite 与 IPC 仍在边界转换为既有字符串，外部文本恢复统一按 `Unknown` 处理（ADR 0270）。
 - 当前 Phase 4 切片：`AgentLayer` 在 composition root 只取得一次 `ToolsManager`，共享给 prompt builder 与 `ToolsManagerToolCatalogAdapter`，并显式注入 `ReActEngine`；engine 不再从 executor 查找 catalog port。目录 snapshot、session ID、工具执行和 live authorization 语义不变（ADR 0257）。
 

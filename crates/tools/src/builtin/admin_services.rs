@@ -194,9 +194,9 @@ impl AdminServices {
             .collect();
         out["skills"] = Value::Array(skills);
 
-        if let Some(db) = &self.context.db {
+        if let Some(session_store) = &self.context.session_store {
             let mut counts: HashMap<String, usize> = HashMap::new();
-            match db.list_sessions(50, 0) {
+            match session_store.list_history(50, 0).await {
                 Ok(sessions) => {
                     for session in &sessions {
                         *counts
@@ -208,7 +208,7 @@ impl AdminServices {
                     tracing::warn!(error = %error, "admin diagnostics list_sessions failed")
                 }
             }
-            let total = match db.count_sessions() {
+            let total = match session_store.count_history().await {
                 Ok(total) => total,
                 Err(error) => {
                     tracing::warn!(error = %error, "admin diagnostics count_sessions failed");
@@ -264,10 +264,12 @@ impl AdminServices {
     }
 
     pub(crate) async fn sessions(&self, limit: Option<i64>) -> Result<Value> {
-        let Some(db) = &self.context.db else {
+        let Some(session_store) = &self.context.session_store else {
             return Ok(serde_json::json!({"unavailable": true}));
         };
-        let sessions = db.list_sessions(limit.unwrap_or(10).clamp(1, 50), 0)?;
+        let sessions = session_store
+            .list_history(limit.unwrap_or(10).clamp(1, 50), 0)
+            .await?;
         let rows: Vec<Value> = sessions
             .into_iter()
             .map(|session| {
@@ -285,10 +287,12 @@ impl AdminServices {
     }
 
     pub(crate) async fn errors(&self, limit: Option<i64>) -> Result<Value> {
-        let Some(db) = &self.context.db else {
+        let Some(session_store) = &self.context.session_store else {
             return Ok(serde_json::json!({"unavailable": true}));
         };
-        let sessions = db.list_sessions(limit.unwrap_or(10).clamp(1, 50), 0)?;
+        let sessions = session_store
+            .list_history(limit.unwrap_or(10).clamp(1, 50), 0)
+            .await?;
         let rows: Vec<Value> = sessions
             .into_iter()
             .filter(|session| session.status == haven_common::SessionStatus::Error)

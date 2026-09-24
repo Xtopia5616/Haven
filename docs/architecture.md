@@ -390,6 +390,11 @@ session 归属；因此 `mcp_add` 是 High，而 `mcp_list` 是 Low，二者不�
 返回 API key、完整 prompt、完整命令输出或会话正文。五个 capability root 由各自的
 `TypedToolOperation` 实现，provider JSON 只在 `TypedToolAdapter` 边界转换；native Tauri
 command 保存同一组 typed request 并调用对应 surface，未注册 broad `haven` dispatcher。
+`AdminContext` 只注入 `SessionStore` 与 `MemoryFactStore` 等 capability-scoped typed handles，
+不暴露通用数据库 facade；诊断列表和总数由 `SessionStore` 异步端口提供，最近 50 条状态分组、
+limit、创建时间倒序和 errors 的 status 过滤顺序保持原样。组合根将 `MemoryFactStore`
+同时提供给 `MemoryTool` 和应用 runtime；缺少对应可选 capability 时保留既有 unavailable 行为
+（ADR 0306）。
 高风险、网络、媒体、文件和跨 session 协作仍保留独立的内部实现边界，以维持各自的确认、
 路径、provider 和生命周期边界；模型看到的名称仍遵循点号 view 契约。
 
@@ -500,6 +505,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 
 | 日期 | 内容 |
 |---|---|
+| 2026-09-25 | §2.5 Tools：admin capability 通过 SessionStore / MemoryFactStore typed handles 注入；诊断行为与 provider wire contract 保持不变（ADR 0306） |
 | 2026-09-25 | §2.3 Memory / §2.5 Tools：ActionService 所有 action 持久化改经窄异步 ActionStore；保留 SQLite CAS/outbox 事务、内存生命周期和 headless 行为（ADR 0305） |
 | 2026-09-23 | §2.5 Agent：热 transcript 的主人定为 actor 内的 `SessionState`；一次 run 在 actor 任务内执行，只在 yield 点借用状态。usage、stream id、token estimate 是函数调用，不是 mailbox 命令。当前循环仍在 actor 外，迁移必须一次跨过这条边界（ADR 0214） |
 | 2026-09-23 | §1 Tools：`OperationSpec` 成为运行时策略与 manifest 的唯一来源；`OperationContract.read_only` 不再豁免确认，manifest 向运行时收紧（ADR 0213） |

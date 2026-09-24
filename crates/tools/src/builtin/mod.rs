@@ -393,12 +393,9 @@ pub async fn register_builtin_tools(
         max_tools_per_request: max_tools,
     }));
     if let Some(ctx) = admin_context {
-        // Facts memory needs the DB; it is registered only once the desktop
-        // shell wires the app context (headless builds skip it).
-        let memory_facts = ctx
-            .db
-            .as_ref()
-            .map(|db| haven_memory::MemoryFactStore::new(db.clone()));
+        // The composition root provides this typed capability explicitly;
+        // headless builds can omit it without exposing the database here.
+        let memory_facts = ctx.memory_facts.clone();
         let memory_tool: ToolBox = Arc::new(memory::MemoryTool::new(memory_facts, memory_recall));
         add_operation_views(tools, memory_tool, settings, MEMORY_OPERATION_VIEWS);
         let surfaces = Arc::new(admin::AdminSurfaces::new(
