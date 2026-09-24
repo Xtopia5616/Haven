@@ -9,12 +9,12 @@ use haven_common::prompts::{
     predicate_merge_system_prompt,
 };
 use haven_llm::LlmRouter;
-use haven_memory::Database;
 use haven_memory::recall::MemoryRetriever;
 use haven_memory::repositories::facts::{
     CANONICAL_MERGE_TARGETS, Fact, FactSourceRef, is_canonical_merge_target, is_sensitive_object,
     is_sensitive_predicate, is_single_valued_predicate,
 };
+use haven_memory::{Database, MemoryStore};
 use tokio::sync::{Notify, Semaphore};
 use tokio_util::sync::CancellationToken;
 
@@ -35,6 +35,10 @@ const OUTBOX_RETRY_MAX_SECS: u64 = 30;
 /// and embedding catch-up. Prompt assembly does not depend on this type.
 pub struct MemoryWorker {
     memory: Arc<MemoryService>,
+    memory_store: MemoryStore,
+    // Compatibility handle for the fact-inference algorithm and maintenance,
+    // KV cursor/throttle, and embedding paths that this slice leaves intact.
+    // Durable outbox marker reads and acknowledgements go through memory_store.
     db: MemoryDatabase,
     inference: Arc<dyn MemoryInferencePort>,
     /// Cap (chars) for transcripts sent to the SmallModel for fact
@@ -121,9 +125,11 @@ impl MemoryWorker {
         sanitize_max_chars: usize,
         fact_extraction_min_interval_secs: u64,
     ) -> Self {
+        let memory_store = memory.memory_store();
         let db = memory.database_handle();
         Self {
             memory,
+            memory_store,
             db,
             inference,
             max_transcript_chars,
@@ -279,8 +285,10 @@ impl MemoryWorker {
             // Construction-only/unit-test callers may have no runtime. Keep
             // the synchronous fallback for that API boundary; production
             // ReAct callbacks always take the async branch above.
-            let db = self.db.clone();
-            if let Err(error) = db.enqueue_fact_extraction(&session_id, bypass_throttle) {
+            if let Err(error) = self
+                .memory_store
+                .enqueue_fact_extraction_without_runtime(&session_id, bypass_throttle)
+            {
                 tracing::warn!(
                     "fact extraction durable enqueue failed for session {}: {}",
                     session_id,
@@ -301,11 +309,8 @@ impl MemoryWorker {
         cancellation: &CancellationToken,
     ) -> anyhow::Result<()> {
         anyhow::ensure!(!session_id.trim().is_empty(), "session id is required");
-        let session_id_for_db = session_id.to_owned();
-        self.db
-            .run_blocking_cancellable(cancellation.clone(), move |db| {
-                db.enqueue_fact_extraction(&session_id_for_db, bypass_throttle)
-            })
+        self.memory_store
+            .enqueue_fact_extraction_cancellable(session_id, bypass_throttle, cancellation)
             .await?;
         anyhow::ensure!(
             !cancellation.is_cancelled(),
@@ -327,12 +332,12 @@ impl MemoryWorker {
             "memory worker is shut down"
         );
         let pending = self
-            .db
-            .run_blocking_cancellable(cancellation.clone(), |db| db.pending_fact_extractions())
+            .memory_store
+            .pending_fact_extractions_cancellable(cancellation)
             .await?;
         let pending_summaries = self
-            .db
-            .run_blocking_cancellable(cancellation.clone(), |db| db.pending_summary_extractions())
+            .memory_store
+            .pending_summary_extractions_cancellable(cancellation)
             .await?;
         anyhow::ensure!(
             !cancellation.is_cancelled(),
@@ -444,8 +449,8 @@ impl MemoryWorker {
             // stay durable until successful completion; the extraction cursor
             // makes a replay after a crash idempotent.
             match engine
-                .db
-                .run_blocking_cancellable(cancellation.clone(), |db| db.pending_fact_extractions())
+                .memory_store
+                .pending_fact_extractions_cancellable(&cancellation)
                 .await
             {
                 Ok(restored) => {
@@ -464,10 +469,8 @@ impl MemoryWorker {
                 return;
             }
             match engine
-                .db
-                .run_blocking_cancellable(cancellation.clone(), |db| {
-                    db.pending_summary_extractions()
-                })
+                .memory_store
+                .pending_summary_extractions_cancellable(&cancellation)
                 .await
             {
                 Ok(restored) => {
@@ -538,15 +541,13 @@ impl MemoryWorker {
                         return;
                     }
                     if completed {
-                        let session_id_for_db = session_id.clone();
                         match engine
-                            .db
-                            .run_blocking_cancellable(cancellation.clone(), move |db| {
-                                db.clear_pending_fact_extraction_if_not_upgraded(
-                                    &session_id_for_db,
-                                    bypass,
-                                )
-                            })
+                            .memory_store
+                            .clear_pending_fact_extraction_if_not_upgraded_cancellable(
+                                &session_id,
+                                bypass,
+                                &cancellation,
+                            )
                             .await
                         {
                             Ok(()) => {
@@ -593,11 +594,8 @@ impl MemoryWorker {
                         return;
                     }
                     let summary = match engine
-                        .db
-                        .run_blocking_cancellable(cancellation.clone(), {
-                            let episode_id = episode_id.clone();
-                            move |db| db.episode_text(&episode_id)
-                        })
+                        .memory_store
+                        .episode_text_cancellable(&episode_id, &cancellation)
                         .await
                     {
                         Ok(Some(summary)) if !cancellation.is_cancelled() => summary,
@@ -612,12 +610,12 @@ impl MemoryWorker {
                                 "dropping summary extraction job for missing episode"
                             );
                             let clear_result = engine
-                                .db
-                                .run_blocking_cancellable(cancellation.clone(), {
-                                    let session_id = session_id.clone();
-                                    let episode_id = episode_id.clone();
-                                    move |db| db.clear_summary_extraction(&session_id, &episode_id)
-                                })
+                                .memory_store
+                                .clear_summary_extraction_cancellable(
+                                    &session_id,
+                                    &episode_id,
+                                    &cancellation,
+                                )
                                 .await;
                             if cancellation.is_cancelled() {
                                 return;
@@ -677,16 +675,13 @@ impl MemoryWorker {
                     }
                     match outcome {
                         SummaryExtractOutcome::Done => {
-                            let session_id_for_db = session_id.clone();
-                            let episode_id_for_db = episode_id.clone();
                             match engine
-                                .db
-                                .run_blocking_cancellable(cancellation.clone(), move |db| {
-                                    db.clear_summary_extraction(
-                                        &session_id_for_db,
-                                        &episode_id_for_db,
-                                    )
-                                })
+                                .memory_store
+                                .clear_summary_extraction_cancellable(
+                                    &session_id,
+                                    &episode_id,
+                                    &cancellation,
+                                )
                                 .await
                             {
                                 Ok(()) => {
@@ -1584,13 +1579,10 @@ impl MemoryWorker {
         }
         let session_id = session_id.to_owned();
         let episode_id = episode_id.to_owned();
+        let cancellation = CancellationToken::new();
         let result = self
-            .db
-            .run_blocking({
-                let session_id = session_id.clone();
-                let episode_id = episode_id.clone();
-                move |db| db.enqueue_summary_extraction(&session_id, &episode_id)
-            })
+            .memory_store
+            .enqueue_summary_extraction_cancellable(&session_id, &episode_id, &cancellation)
             .await;
         match result {
             Ok(()) => self.enqueue_summary_memory(session_id, episode_id),
@@ -1835,6 +1827,26 @@ mod tests {
         ) -> anyhow::Result<String> {
             self.calls.fetch_add(1, Ordering::Relaxed);
             Ok(self.response.clone())
+        }
+    }
+
+    struct BlockingMemoryInference {
+        started: Notify,
+    }
+
+    #[async_trait]
+    impl MemoryInferencePort for BlockingMemoryInference {
+        async fn is_fast_chat_configured(&self) -> bool {
+            true
+        }
+
+        async fn fast_chat(
+            &self,
+            _system_prompt: &str,
+            _user_prompt: &str,
+        ) -> anyhow::Result<String> {
+            self.started.notify_one();
+            std::future::pending().await
         }
     }
 
@@ -2549,6 +2561,197 @@ mod tests {
         assert_eq!(
             worker.summary_outbox.lock().unwrap().get(episode_id),
             Some(&session.id)
+        );
+    }
+
+    #[tokio::test]
+    async fn restored_fact_and_summary_jobs_acknowledge_successful_durable_markers() {
+        let db = temp_db();
+        let session = db.create_session("outbox acknowledgements").unwrap();
+        db.enqueue_fact_extraction(&session.id, false).unwrap();
+        db.add_episode_with_pending_extraction(
+            &session.id,
+            "A durable summary with enough text for the extraction path.",
+            "msg-summary-ack-success",
+            true,
+        )
+        .unwrap();
+        let inference: Arc<dyn MemoryInferencePort> = Arc::new(FixedMemoryInference {
+            response: "[]".to_owned(),
+            calls: AtomicUsize::new(0),
+        });
+        let memory = Arc::new(MemoryService::new(db.clone(), None, 64));
+        let worker = Arc::new(MemoryWorker::new_with_inference(
+            memory, inference, 4_000, 64, 256, 0,
+        ));
+
+        assert_eq!(
+            worker
+                .restore_pending_outbox(&CancellationToken::new())
+                .await
+                .unwrap(),
+            2
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if db.pending_fact_extractions().unwrap().is_empty()
+                    && db.pending_summary_extractions().unwrap().is_empty()
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("successful jobs should acknowledge their durable markers");
+        worker.shutdown();
+    }
+
+    #[tokio::test]
+    async fn failed_fact_marker_ack_keeps_marker_and_requeues_live_job() {
+        let db = temp_db();
+        let session = db.create_session("outbox fact retry").unwrap();
+        db.enqueue_fact_extraction(&session.id, false).unwrap();
+        db.conn()
+            .execute_batch(
+                "CREATE TABLE marker_ack_attempts (kind TEXT NOT NULL);
+                 CREATE TRIGGER reject_fact_marker_ack
+                 BEFORE DELETE ON kv_store
+                 WHEN old.key LIKE 'fact_extraction_pending.%'
+                 BEGIN
+                    INSERT INTO marker_ack_attempts (kind) VALUES ('fact');
+                    SELECT RAISE(FAIL, 'fact marker acknowledgement unavailable');
+                 END;",
+            )
+            .unwrap();
+        let worker = Arc::new(make_engine(db.clone()));
+
+        worker
+            .restore_pending_outbox(&CancellationToken::new())
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let attempts: i64 = db
+                    .conn()
+                    .query_row(
+                        "SELECT COUNT(*) FROM marker_ack_attempts WHERE kind = 'fact'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                if attempts > 0 && worker.pending_outbox_value_for_test(&session.id) == Some(false)
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("failed acknowledgement should requeue the live job");
+
+        assert_eq!(
+            db.pending_fact_extractions().unwrap(),
+            vec![(session.id.clone(), false)]
+        );
+        worker.shutdown();
+    }
+
+    #[tokio::test]
+    async fn failed_summary_marker_ack_keeps_marker_and_requeues_live_job() {
+        let db = temp_db();
+        let session = db.create_session("outbox summary retry").unwrap();
+        let episode_id = "msg-summary-ack-retry";
+        db.add_episode_with_pending_extraction(
+            &session.id,
+            "A durable summary with enough text for a successful empty extraction.",
+            episode_id,
+            true,
+        )
+        .unwrap();
+        db.conn()
+            .execute_batch(
+                "CREATE TABLE marker_ack_attempts (kind TEXT NOT NULL);
+                 CREATE TRIGGER reject_summary_marker_ack
+                 BEFORE DELETE ON kv_store
+                 WHEN old.key LIKE 'fact_extraction_episode_pending.%'
+                 BEGIN
+                    INSERT INTO marker_ack_attempts (kind) VALUES ('summary');
+                    SELECT RAISE(FAIL, 'summary marker acknowledgement unavailable');
+                 END;",
+            )
+            .unwrap();
+        let worker = Arc::new(make_engine(db.clone()));
+
+        worker
+            .restore_pending_outbox(&CancellationToken::new())
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let attempts: i64 = db
+                    .conn()
+                    .query_row(
+                        "SELECT COUNT(*) FROM marker_ack_attempts WHERE kind = 'summary'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                if attempts > 0
+                    && worker.pending_summary_outbox_value_for_test(episode_id)
+                        == Some(session.id.clone())
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("failed acknowledgement should requeue the summary job");
+
+        assert_eq!(
+            db.pending_summary_extractions().unwrap(),
+            vec![(session.id.clone(), episode_id.to_owned())]
+        );
+        worker.shutdown();
+    }
+
+    #[tokio::test]
+    async fn cancelling_worker_during_inference_leaves_fact_marker_for_restore() {
+        let db = temp_db();
+        let session = db.create_session("outbox cancellation").unwrap();
+        db.add_message(&session.id, "user", "I prefer Rust.", Some("text"), None)
+            .unwrap();
+        db.enqueue_fact_extraction(&session.id, true).unwrap();
+        let inference = Arc::new(BlockingMemoryInference {
+            started: Notify::new(),
+        });
+        let memory = Arc::new(MemoryService::new(db.clone(), None, 64));
+        let worker = Arc::new(MemoryWorker::new_with_inference(
+            memory,
+            inference.clone(),
+            4_000,
+            64,
+            256,
+            0,
+        ));
+
+        worker
+            .restore_pending_outbox(&CancellationToken::new())
+            .await
+            .unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            inference.started.notified(),
+        )
+        .await
+        .expect("worker should enter inference before cancellation");
+        worker.shutdown();
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        assert_eq!(
+            db.pending_fact_extractions().unwrap(),
+            vec![(session.id, true)]
         );
     }
 

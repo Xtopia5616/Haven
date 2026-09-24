@@ -50,12 +50,12 @@ impl AgentLayer {
         context_limits: ContextLimitsConfig,
     ) -> Self {
         let events = Arc::new(EventDispatcher::new());
-        let memory_store = haven_memory::MemoryStore::new(db.clone());
         let memory_service = Arc::new(MemoryService::new(
             db.clone(),
             Some(router.clone()),
             context_limits.embedding_chunk_size,
         ));
+        let memory_store = memory_service.memory_store();
         let tools = executor.get_tools();
         let prompt_builder = Arc::new(SystemPromptBuilder::with_memory_service(
             tools.clone(),

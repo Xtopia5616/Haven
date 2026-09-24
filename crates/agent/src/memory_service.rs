@@ -11,11 +11,11 @@ use std::sync::{Arc, Mutex};
 use anyhow::Context as _;
 use haven_common::config::RequestKind;
 use haven_llm::LlmRouter;
-use haven_memory::Database;
 use haven_memory::recall::{
     MAX_MEMORY_QUERY_CHARS, MAX_RECALL_LIMIT, MemoryKind, MemoryQuery, MemoryRecall,
     MemoryRetriever,
 };
+use haven_memory::{Database, MemoryStore};
 
 use crate::memory_index::MemoryEmbeddingIndex;
 
@@ -83,6 +83,7 @@ impl PromptMemoryCache {
 /// background memory worker.
 pub struct MemoryService {
     db: Arc<Database>,
+    memory_store: MemoryStore,
     router: Option<Arc<LlmRouter>>,
     embedding_index: Option<MemoryEmbeddingIndex>,
     prompt_cache: Mutex<PromptMemoryCache>,
@@ -108,6 +109,7 @@ impl MemoryService {
             MemoryEmbeddingIndex::new(db.clone(), router.clone(), embed_chunk_size.max(1))
         });
         Self {
+            memory_store: MemoryStore::new(db.clone()),
             db,
             router,
             embedding_index,
@@ -117,6 +119,12 @@ impl MemoryService {
 
     pub(crate) fn database_handle(&self) -> MemoryDatabase {
         MemoryDatabase(self.db.clone())
+    }
+
+    /// Return the shared store used for memory-owned durable episode and
+    /// outbox persistence. The service and worker keep the same Database Arc.
+    pub(crate) fn memory_store(&self) -> MemoryStore {
+        self.memory_store.clone()
     }
 
     pub(crate) async fn context_window(&self, fallback: u32) -> u32 {
