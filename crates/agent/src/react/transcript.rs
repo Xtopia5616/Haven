@@ -48,17 +48,16 @@ struct TranscriptProjection {
 
 /// The live transcript persistence boundary.  One writer builds the durable
 /// event and its projection rows, then delegates one bounded SQLite
-/// transaction to `SessionEventStore`.  Callers update ReAct memory and emit
+/// transaction to `SessionStore`. Callers update ReAct memory and emit
 /// authoritative UI events only after this future succeeds.
 #[derive(Clone)]
 pub(super) struct TranscriptBatchWriter {
-    db: Arc<Database>,
     store: SessionStore,
 }
 
 impl TranscriptBatchWriter {
-    pub(super) fn new(db: Arc<Database>, store: SessionStore) -> Self {
-        Self { db, store }
+    pub(super) fn new(store: SessionStore) -> Self {
+        Self { store }
     }
 
     pub(super) async fn write(
@@ -76,22 +75,9 @@ impl TranscriptBatchWriter {
             );
             return Ok(TranscriptBatchResult::default());
         }
-        let db = self.db.clone();
-        let store = self.store.clone();
-        let session_id = session_id.to_string();
-        let write = move |db: &Database| {
-            // Synthetic engine tests do not create a session row.  Production
-            // ingress always does, and keeping this guard preserves their
-            // side-effect-free behavior.
-            if db.get_session(&session_id)?.is_none() {
-                return Ok(TranscriptBatchResult::default());
-            }
-            store.append_transcript_batch(&session_id, &batch)
-        };
-        match cancel {
-            Some(cancel) => db.run_blocking_cancellable(cancel, write).await,
-            None => db.run_blocking(write).await,
-        }
+        self.store
+            .append_transcript_batch_cancellable(session_id, batch, cancel)
+            .await
     }
 }
 
@@ -504,7 +490,7 @@ impl ReActEngine {
                 ctx.run_id,
                 ctx.step_num,
             );
-            TranscriptBatchWriter::new(self.db.clone(), self.event_store.clone())
+            TranscriptBatchWriter::new(self.event_store.clone())
                 .write(&ctx.session_id, batch, state.turn_cancel.clone())
                 .await?
         };
@@ -562,7 +548,7 @@ impl ReActEngine {
                 ctx.run_id,
                 ctx.step_num,
             );
-            TranscriptBatchWriter::new(self.db.clone(), self.event_store.clone())
+            TranscriptBatchWriter::new(self.event_store.clone())
                 .write(&ctx.session_id, batch, state.turn_cancel.clone())
                 .await?
         };
@@ -797,6 +783,44 @@ mod tests {
             10,
             haven_common::config::ContextLimitsConfig::default(),
         )
+    }
+
+    #[tokio::test]
+    async fn transcript_batch_writer_preserves_empty_batch_contract() {
+        let db_path = std::env::temp_dir().join(format!(
+            "haven_transcript_batch_writer_empty_{}.db",
+            uuid::Uuid::new_v4()
+        ));
+        let db = Arc::new(Database::open(&db_path).unwrap());
+        let writer = TranscriptBatchWriter::new(SessionStore::new(db));
+        let missing_session_id = haven_common::types::new_id("ses");
+
+        let result = writer
+            .write(&missing_session_id, TranscriptBatch::default(), None)
+            .await
+            .unwrap();
+        assert!(result.events.is_empty());
+        assert!(result.message_created_at.is_empty());
+        assert_eq!(result.cursor, Default::default());
+
+        let invalid_empty_batch = TranscriptBatch {
+            messages: vec![TranscriptMessageProjection {
+                id: haven_common::types::new_id("msg"),
+                role: "assistant".into(),
+                content: "projection without event".into(),
+                message_type: None,
+                tool_call_id: None,
+            }],
+            ..TranscriptBatch::default()
+        };
+        let error = writer
+            .write(&missing_session_id, invalid_empty_batch, None)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "empty transcript batch cannot contain projections"
+        );
     }
 
     #[tokio::test]

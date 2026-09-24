@@ -15,6 +15,7 @@ use haven_common::SessionStatus;
 use rusqlite::OptionalExtension;
 use std::sync::Arc;
 use std::time::Instant;
+use tokio_util::sync::CancellationToken;
 
 pub const TRANSCRIPT_EVENT_TYPE: &str = "transcript";
 pub const BRANCH_POINT_EVENT_TYPE: &str = "branch_point";
@@ -461,6 +462,34 @@ impl SessionStore {
                 let _ = conn.execute_batch("ROLLBACK");
                 Err(error)
             }
+        }
+    }
+
+    /// Append a transcript batch on the blocking pool, with optional
+    /// cooperative cancellation for the SQLite operation.
+    ///
+    /// A missing session row historically produced an empty result for live
+    /// Agent transcript writes. Keep that compatibility check inside this
+    /// boundary; all event and projection SQL remains owned by
+    /// [`Self::append_transcript_batch`].
+    pub async fn append_transcript_batch_cancellable(
+        &self,
+        session_id: &str,
+        batch: TranscriptBatch,
+        cancel: Option<CancellationToken>,
+    ) -> anyhow::Result<TranscriptBatchResult> {
+        let store = self.clone();
+        let session_id = session_id.to_owned();
+        let write = move |db: &Database| {
+            if db.get_session(&session_id)?.is_none() {
+                return Ok(TranscriptBatchResult::default());
+            }
+            store.append_transcript_batch(&session_id, &batch)
+        };
+
+        match cancel {
+            Some(cancel) => self.db.run_blocking_cancellable(cancel, write).await,
+            None => self.db.run_blocking(write).await,
         }
     }
 
@@ -2931,6 +2960,77 @@ mod tests {
         );
         let steps = db.get_session_steps(&session_id).unwrap();
         assert!(steps.iter().any(|step| step.id == action_id));
+    }
+
+    #[tokio::test]
+    async fn cancellable_transcript_batch_port_writes_with_existing_store_semantics() {
+        let (db, store, session_id) = store();
+        let batch = TranscriptBatch {
+            events: vec![SessionEventInput::transcript(r#"{"type":"port"}"#, 2, 3)],
+            messages: vec![TranscriptMessageProjection {
+                id: "step-port-thought".into(),
+                role: "assistant".into(),
+                content: "port write".into(),
+                message_type: Some("text".into()),
+                tool_call_id: None,
+            }],
+            ..TranscriptBatch::default()
+        };
+
+        let result = store
+            .append_transcript_batch_cancellable(&session_id, batch, Some(CancellationToken::new()))
+            .await
+            .unwrap();
+
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(store.read_all(&session_id).unwrap().len(), 1);
+        assert_eq!(
+            db.get_session_messages(&session_id).unwrap()[0].content,
+            "port write"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancellable_transcript_batch_port_preserves_empty_batch_result() {
+        let (_db, store, session_id) = store();
+
+        let result = store
+            .append_transcript_batch_cancellable(&session_id, TranscriptBatch::default(), None)
+            .await
+            .unwrap();
+
+        assert!(result.events.is_empty());
+        assert!(result.message_created_at.is_empty());
+        assert_eq!(result.lock_wait_ms, 0);
+        assert_eq!(result.cursor, SessionCursor::default());
+    }
+
+    #[tokio::test]
+    async fn cancellable_transcript_batch_port_returns_empty_for_missing_session() {
+        let (_db, store, _session_id) = store();
+        let missing_session_id = haven_common::types::new_id("ses");
+        let batch = TranscriptBatch {
+            events: vec![SessionEventInput::transcript(
+                r#"{"type":"missing-session"}"#,
+                1,
+                1,
+            )],
+            ..TranscriptBatch::default()
+        };
+
+        let result = store
+            .append_transcript_batch_cancellable(
+                &missing_session_id,
+                batch,
+                Some(CancellationToken::new()),
+            )
+            .await
+            .unwrap();
+
+        assert!(result.events.is_empty());
+        assert!(result.message_created_at.is_empty());
+        assert_eq!(result.cursor, SessionCursor::default());
+        assert!(store.read_all(&missing_session_id).unwrap().is_empty());
     }
 
     #[test]
