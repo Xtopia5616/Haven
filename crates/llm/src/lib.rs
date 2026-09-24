@@ -3,6 +3,7 @@ pub mod client;
 mod endpoint_health;
 pub mod image_gen;
 pub mod media;
+mod model_directory;
 pub mod ocr;
 pub mod registry;
 mod request_pipeline;

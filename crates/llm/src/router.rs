@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::time::{Duration, Instant};
@@ -10,6 +10,7 @@ use crate::client::{LlmClient, endpoint_host};
 #[cfg(test)]
 use crate::endpoint_health::{CircuitBreaker, CircuitState};
 use crate::endpoint_health::{EndpointHealth, EndpointHealthMap, new_endpoint_health_map};
+use crate::model_directory::{ModelDirectory, RouteMode};
 use crate::request_pipeline::{RequestPolicy, execute_with_retry, execute_with_timeout};
 use haven_common::types::{CanonicalMessage, ContentPart};
 
@@ -23,7 +24,6 @@ use crate::types::{
 use futures_util::future::join_all;
 use haven_common::config::{
     Capability, ModelEndpoint, RequestKind, RoutedModel, RouterConfig, compute_cost_usd,
-    endpoint_credentials_ready,
 };
 use haven_common::media::CapabilityProfile;
 
@@ -68,11 +68,10 @@ pub struct LlmRouter {
     /// Kept on the router so per-request output caps use the same resolved
     /// window as construction-time max-token clamping.
     default_context_window: u32,
-    models: HashMap<String, Arc<dyn LlmClient>>,
-    /// Request → the single model identity resolved from the explicit request
-    /// policy. Rebuilt with the router on config hot-swap; the mutex only
-    /// supports the test-only policy mutation helpers.
-    routes: StdMutex<HashMap<RequestKind, String>>,
+    /// Provider clients and request-kind → primary model identity directory.
+    /// Endpoint metadata is always read from `config`, the router's sole
+    /// configuration snapshot.
+    model_directory: ModelDirectory,
     // §5.3: per configured model health. A model shared by several request
     // policies has one circuit breaker, regardless of which policy selected it.
     health: RwLock<EndpointHealthMap>,
@@ -138,40 +137,6 @@ struct RetryStreamRequest {
 }
 
 impl LlmRouter {
-    fn build_routes(config: &RouterConfig) -> HashMap<RequestKind, String> {
-        config
-            .request_policies
-            .iter()
-            .filter_map(|policy| {
-                let id = policy.primary.trim();
-                let model = config.model(id)?;
-                (model
-                    .capabilities
-                    .contains(&policy.request.required_capability())
-                    && endpoint_credentials_ready(&model.endpoint))
-                .then_some((policy.request, id.to_string()))
-            })
-            .collect()
-    }
-
-    /// Build primary-only routes for injected test clients. These clients do
-    /// not carry production credentials, so this helper intentionally skips
-    /// only the credential gate while keeping capability validation intact.
-    fn build_injected_routes(config: &RouterConfig) -> HashMap<RequestKind, String> {
-        config
-            .request_policies
-            .iter()
-            .filter_map(|policy| {
-                let id = policy.primary.trim();
-                let model = config.model(id)?;
-                model
-                    .capabilities
-                    .contains(&policy.request.required_capability())
-                    .then_some((policy.request, id.to_string()))
-            })
-            .collect()
-    }
-
     pub fn new(config: RouterConfig) -> Self {
         Self::with_default_context_window(config, crate::registry::FALLBACK_CONTEXT_WINDOW)
     }
@@ -196,32 +161,17 @@ impl LlmRouter {
         } else {
             crate::registry::FALLBACK_CONTEXT_WINDOW
         };
-        for model in &mut config.models {
-            let ep = &mut model.endpoint;
-            let window = crate::registry::context_window_for(ep).unwrap_or(fallback);
-            if window > 0 {
-                ep.max_tokens = ep.max_tokens.min(window);
-            }
-        }
-        let models: HashMap<String, Arc<dyn LlmClient>> = config
-            .models
-            .iter()
-            .map(|model| {
-                (
-                    model.id.clone(),
-                    Arc::from(adapter_for(&model.endpoint)) as Arc<dyn LlmClient>,
-                )
-            })
-            .collect();
-        let routes = Self::build_routes(&config);
+        ModelDirectory::clamp_max_tokens_to_context_windows(&mut config, fallback);
+        let model_directory = ModelDirectory::from_config(&config);
         let request_limit = Self::request_limit(&config);
-        let (health, _, semaphores, rate_limited) =
-            Self::runtime_state(request_limit, models.keys().cloned());
+        let (health, _, semaphores, rate_limited) = Self::runtime_state(
+            request_limit,
+            model_directory.model_ids().map(str::to_string),
+        );
         Self {
             config: Arc::new(RwLock::new(config)),
             default_context_window: fallback,
-            models,
-            routes: StdMutex::new(routes),
+            model_directory,
             health,
             // Production routers start with the default no-code-block guard.
             // Test constructors keep an empty rule list via `runtime_state`.
@@ -376,7 +326,7 @@ impl LlmRouter {
         F: FnOnce(String, Arc<dyn LlmClient>) -> Fut,
         Fut: std::future::Future<Output = Result<T, LlmError>>,
     {
-        let (model_id, client) = self.resolve_client(request)?;
+        let (model_id, client) = self.model_directory.resolve_client(request)?;
         let check_id = model_id.clone();
         self.with_model_permit(model_id.clone(), || async move {
             self.check_circuit(&check_id).await?;
@@ -430,24 +380,24 @@ impl LlmRouter {
         // Injected test clients intentionally do not carry credentials. Keep
         // the test constructor's explicit primary assignments routable while
         // production construction remains credential-gated.
-        let routes = Self::build_injected_routes(&config);
-        let models: HashMap<String, Arc<dyn LlmClient>> = [
-            ("small_model", small_model),
-            ("default_model", default_model),
-            ("image_model", image_model),
-            ("audio_model", audio_model),
-            ("embedding_model", embedding_model),
-        ]
-        .into_iter()
-        .map(|(id, client)| (id.to_string(), client))
-        .collect();
+        let model_directory = ModelDirectory::with_injected_clients(
+            &config,
+            [
+                ("small_model", small_model),
+                ("default_model", default_model),
+                ("image_model", image_model),
+                ("audio_model", audio_model),
+                ("embedding_model", embedding_model),
+            ]
+            .into_iter()
+            .map(|(id, client)| (id.to_string(), client)),
+        );
         let (health, stream_rules, semaphores, rate_limited) =
-            Self::runtime_state(64, models.keys().cloned());
+            Self::runtime_state(64, model_directory.model_ids().map(str::to_string));
         Self {
             config: Arc::new(RwLock::new(config)),
             default_context_window: crate::registry::FALLBACK_CONTEXT_WINDOW,
-            models,
-            routes: StdMutex::new(routes),
+            model_directory,
             health,
             stream_rules,
             // Test constructors bypass the config, so use a high per-model
@@ -509,48 +459,22 @@ impl LlmRouter {
     }
 
     pub fn select_request(&self, request: RequestKind) -> Arc<dyn LlmClient> {
-        let id = self.routes.lock().unwrap().get(&request).cloned();
-        id.and_then(|id| self.models.get(&id).cloned())
-            .unwrap_or_else(|| Arc::from(adapter_for(&ModelEndpoint::default())))
-    }
-
-    /// Resolve the selected configured client for a request. There is
-    /// deliberately no alternate provider/model candidate: same-endpoint retry
-    /// is the only recovery path for one logical request.
-    fn resolve_client(
-        &self,
-        request: RequestKind,
-    ) -> Result<(String, Arc<dyn LlmClient>), LlmError> {
-        let model_id = self
-            .routes
-            .lock()
-            .unwrap()
-            .get(&request)
-            .cloned()
-            .ok_or_else(|| {
-                LlmError::Configuration(format!("no configured model for {}", request.as_str()))
-            })?;
-        let client = self.models.get(&model_id).cloned().ok_or_else(|| {
-            LlmError::Configuration(format!("model client is unavailable: {model_id}"))
-        })?;
-        Ok((model_id, client))
+        self.model_directory.select_client(request)
     }
 
     /// Return the selected adapter's wire-level media profile. This is kept
     /// separate from request selection so the pure planner can make a request
     /// projection without inferring capabilities from a model id.
     pub fn capability_profile_for_request(&self, request: RequestKind) -> CapabilityProfile {
-        self.select_request(request).capability_profile()
+        self.model_directory.capability_profile_for_request(request)
     }
 
     /// Resolve the model context window using the same endpoint metadata and
     /// fallback used during router construction.
     pub async fn context_window_for_request(&self, request: RequestKind) -> u32 {
         let config = self.config.read().await;
-        let Some(endpoint) = config.route(request).map(|model| &model.endpoint) else {
-            return self.default_context_window.max(1);
-        };
-        crate::registry::context_window_for(endpoint)
+        self.model_directory
+            .context_window_for_request(&config, request)
             .unwrap_or(self.default_context_window)
             .max(1)
     }
@@ -565,7 +489,7 @@ impl LlmRouter {
     ) -> u32 {
         const REQUEST_SAFETY_MARGIN: u32 = 256;
         let config = self.config.read().await;
-        let Some(endpoint) = config.route(request).map(|model| &model.endpoint) else {
+        let Some(endpoint) = self.model_directory.endpoint_for_request(&config, request) else {
             return 1;
         };
         let window = crate::registry::context_window_for(endpoint)
@@ -581,7 +505,8 @@ impl LlmRouter {
     /// Returns true if the request has a usable configured model.
     /// Used by tools that should no-op gracefully when an endpoint is not set up.
     pub async fn is_request_configured(&self, request: RequestKind) -> bool {
-        self.config.read().await.route(request).is_some()
+        let config = self.config.read().await;
+        self.model_directory.is_request_configured(&config, request)
     }
 
     /// Test utility: force the configured state of a request (empty vs non-empty
@@ -600,11 +525,13 @@ impl LlmRouter {
                 String::new()
             };
         }
-        *self.routes.lock().unwrap() = if configured {
-            Self::build_injected_routes(&cfg)
+        let route_mode = if configured {
+            RouteMode::InjectedClients
         } else {
-            Self::build_routes(&cfg)
+            RouteMode::Production
         };
+        self.model_directory
+            .rebuild_primary_routes(&cfg, route_mode);
     }
 
     /// Test utility retained for old tests. It now edits the corresponding
@@ -648,7 +575,8 @@ impl LlmRouter {
                 };
             }
         }
-        *self.routes.lock().unwrap() = Self::build_injected_routes(&cfg);
+        self.model_directory
+            .rebuild_primary_routes(&cfg, RouteMode::InjectedClients);
     }
 
     #[doc(hidden)]
@@ -942,7 +870,7 @@ impl LlmRouter {
         >,
         LlmError,
     > {
-        let (model_id, candidate) = self.resolve_client(request)?;
+        let (model_id, candidate) = self.model_directory.resolve_client(request)?;
         let permit = self.acquire_model_permit(&model_id).await?;
         self.wait_rate_limit_cooldown(&model_id).await;
         self.check_circuit(&model_id).await?;
@@ -1156,9 +1084,7 @@ impl LlmRouter {
             tools: Arc::from(tools),
             max_output_tokens,
         };
-        let candidate = self.models.get(&model_id).cloned().ok_or_else(|| {
-            LlmError::Configuration(format!("model client is unavailable: {model_id}"))
-        })?;
+        let candidate = self.model_directory.client_for_model_id(&model_id)?;
         candidate.validate_content(&stream_context.messages)?;
 
         execute_with_timeout(
@@ -1251,12 +1177,12 @@ impl LlmRouter {
     ///   [`LlmRouter::health_check`] and reports Ready on success /
     ///   Disconnected on failure.
     pub async fn connection_status(&self, request: RequestKind) -> LlmConnectionReport {
-        let endpoint = self
-            .config
-            .read()
-            .await
-            .route(request)
-            .map(|model| model.endpoint.clone());
+        let endpoint = {
+            let config = self.config.read().await;
+            self.model_directory
+                .endpoint_for_request(&config, request)
+                .cloned()
+        };
         let Some(endpoint) = endpoint else {
             return LlmConnectionReport {
                 status: LlmConnectionStatus::Unconfigured,
@@ -1307,17 +1233,7 @@ impl LlmRouter {
     /// checked concurrently and retried once on transient failure.
     pub async fn prewarm_all(&self) {
         let cfg = self.config.read().await;
-        let mut seen_models = HashSet::new();
-        let configured: Vec<RequestKind> = cfg
-            .request_policies
-            .iter()
-            .filter_map(|policy| {
-                let model = cfg.route(policy.request)?;
-                seen_models
-                    .insert(model.id.clone())
-                    .then_some(policy.request)
-            })
-            .collect();
+        let configured = self.model_directory.configured_requests(&cfg);
         drop(cfg);
 
         if configured.is_empty() {
@@ -1367,7 +1283,7 @@ impl LlmRouter {
     /// cache-lane prices fall back to the ordinary input rate.
     pub async fn compute_cost(&self, request: RequestKind, usage: &Usage) -> Option<f64> {
         let cfg = self.config.read().await;
-        let endpoint = cfg.route(request).map(|model| &model.endpoint)?;
+        let endpoint = self.model_directory.endpoint_for_request(&cfg, request)?;
         compute_cost_usd(
             endpoint,
             usage.cache_miss_tokens(),

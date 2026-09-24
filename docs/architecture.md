@@ -142,10 +142,17 @@ CI 以 `scripts/check-crate-dependencies.ps1` 对此表执行内部 crate 依赖
 - 厂商扩展（DeepSeek `thinking` / Responses `reasoning.effort`、Kimi
   `thinking.type`+`keep` 等）挂在对应 adapter + provider/base_url/model 检测上，
   复用聊天页「思考强度」，不另开线协议。
-- `router.rs`：`LlmRouter`，按 `RequestKind` 查找显式 request policy，再从
-  命名模型注册表中选择声明了所需 `Capability` 且凭据可用的唯一 primary；
-  同一模型内重试耗尽后直接返回错误，不跨 provider/model 切换缓存命名空间（ADR 0192）；
-  旧 `llm.roles` 仅在配置加载时转换，不进入生产路由。
+- `model_directory.rs`：crate-private `ModelDirectory`，从 Router 的配置 snapshot
+  构造 provider client map 与 `RequestKind → primary model id` 路由，集中 client/model
+  选择、capability profile 和 endpoint/context-window metadata 查询；生产路由同时要求
+  所需 `Capability` 与可用凭据，测试注入只跳过凭据过滤。metadata 借用 Router 的单一
+  `RouterConfig` snapshot，不复制配置真源（ADR 0316）。
+- `router.rs`：`LlmRouter` 保留配置 snapshot 与请求执行状态，拥有 health/circuit、
+  rate-limit cooldown、semaphore、stream rules、retry/timeout、usage、cancellation 和
+  provider 调用编排。每个 request kind 仍只走唯一 primary；同一模型内重试耗尽后直接
+  返回错误，不跨 provider/model 切换缓存命名空间（ADR 0192）。旧 `llm.roles` 仅在
+  配置加载时转换，不进入生产路由；`CallExecutor` / `StreamExecutor` 与 capability /
+  call-purpose split 尚未迁移。
 - `request_pipeline.rs`：provider-neutral 的 `RequestPolicy`/`RetryPolicy`；
   为普通聊天、工具聊天、embedding 和流式端点尝试提供同一份重试预算快照与
   总超时执行语义。router 仍拥有熔断、限流和流式聚合，adapter 不实现第二套
@@ -541,6 +548,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 
 | 日期 | 内容 |
 |---|---|
+| 2026-09-25 | §2.6 LLM：`ModelDirectory` 接管 provider client map、primary routes、client/model 选择及 capability/endpoint metadata 查询；Router 继续拥有单一 config snapshot 与执行状态（ADR 0316） |
 | 2026-09-25 | §2.6 UI：聊天页 handler map 组合与 listener 生命周期由 typed `chatEventController` 持有；`events.ts` 保持唯一 wire mapper 和注册 primitive（ADR 0315） |
 | 2026-09-25 | §2.6 UI：将 `SessionReducer` 按 lifecycle、transcript、interaction、usage、Agent stream 拆为内部模块；原 facade、公共导出路径和单一 store 订阅保持不变（ADR 0314） |
 | 2026-09-25 | §2.6 UI：将会话切换、rollback、continue、end/interrupt、resume reload 与提交编排提取到 typed `ChatController`；页面继续拥有 ask/input、事件、model sync、恢复入口和视图状态（ADR 0313） |

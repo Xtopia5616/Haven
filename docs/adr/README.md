@@ -304,3 +304,4 @@
 - [0313：聊天页会话编排收口到 ChatController](0313-chat-controller-session-orchestration.md)
 - [0314：SessionReducer 内部按职责拆分](0314-session-reducer-internal-modules.md)
 - [0315：聊天页事件注册组合 controller](0315-chat-event-registration-controller.md)
+- [0316：LLM Router 模型目录边界](0316-llm-model-directory.md)
