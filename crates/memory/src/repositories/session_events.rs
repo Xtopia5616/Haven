@@ -12,6 +12,7 @@ use crate::repositories::sessions::Session;
 use crate::repositories::usage::{LlmCallUsage, LlmCallUsageInput};
 use chrono::{SecondsFormat, Utc};
 use haven_common::SessionStatus;
+use haven_common::types::MessageAttachment;
 use rusqlite::OptionalExtension;
 use std::sync::Arc;
 use std::time::Instant;
@@ -254,6 +255,67 @@ impl SessionStore {
     /// their existing not-found behavior.
     pub fn session_record(&self, session_id: &str) -> anyhow::Result<Option<Session>> {
         self.db.get_session(session_id)
+    }
+
+    /// Persist an ingress or recovery message through the session boundary.
+    ///
+    /// SQLite work runs on the blocking pool and may be cooperatively
+    /// cancelled. A supplied message id preserves the Agent's retry
+    /// idempotency behavior; without one, the messages repository mints a new
+    /// id through `add_message_full`.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn persist_session_message(
+        &self,
+        session_id: &str,
+        role: &str,
+        content: &str,
+        message_type: Option<&str>,
+        attachments: &[MessageAttachment],
+        voice: bool,
+        message_id: Option<&str>,
+        tool_call_id: Option<&str>,
+        cancel: Option<CancellationToken>,
+    ) -> anyhow::Result<Message> {
+        let session_id = session_id.to_owned();
+        let role = role.to_owned();
+        let content = content.to_owned();
+        let message_type = message_type.map(str::to_owned);
+        let attachments = attachments.to_vec();
+        let message_id = message_id.map(str::to_owned);
+        let tool_call_id = tool_call_id.map(str::to_owned);
+        let persist = move |db: &Database| {
+            if let Some(message_id) = message_id.as_deref()
+                && let Some(existing) = db.get_message_by_id(&session_id, message_id)?
+            {
+                if existing.role != role
+                    || existing.content != content
+                    || existing.message_type.as_deref() != message_type.as_deref()
+                    || existing.tool_call_id.as_deref() != tool_call_id.as_deref()
+                {
+                    anyhow::bail!(
+                        "message idempotency conflict for session {} message {}",
+                        session_id,
+                        message_id
+                    );
+                }
+                return Ok(existing);
+            }
+            db.add_message_full(
+                &session_id,
+                &role,
+                &content,
+                message_type.as_deref(),
+                tool_call_id.as_deref(),
+                &attachments,
+                voice,
+                message_id.as_deref(),
+            )
+        };
+
+        match cancel {
+            Some(cancel) => self.db.run_blocking_cancellable(cancel, persist).await,
+            None => self.db.run_blocking(persist).await,
+        }
     }
 
     /// Persist one checkpoint of an in-flight assistant stream.
@@ -1890,6 +1952,138 @@ mod tests {
                 .iter()
                 .all(|session| session.status == SessionStatus::Pending)
         );
+    }
+
+    #[tokio::test]
+    async fn session_store_persists_message_with_all_fields_without_id() {
+        let (db, store, session_id) = store();
+        let mut attachment = MessageAttachment::new("image/png", "aGVsbG8=");
+        attachment.asset_id = Some("asset-test".into());
+        attachment.filename = Some("photo.png".into());
+        let attachments = [attachment.clone()];
+
+        let inserted = store
+            .persist_session_message(
+                &session_id,
+                "user",
+                "describe this",
+                Some("text"),
+                &attachments,
+                true,
+                None,
+                Some("call-test"),
+                Some(CancellationToken::new()),
+            )
+            .await
+            .unwrap();
+
+        assert!(inserted.id.starts_with("msg-"));
+        assert_eq!(inserted.role, "user");
+        assert_eq!(inserted.content, "describe this");
+        assert_eq!(inserted.message_type.as_deref(), Some("text"));
+        assert_eq!(inserted.tool_call_id.as_deref(), Some("call-test"));
+        assert_eq!(inserted.attachments, attachments);
+        assert!(inserted.voice);
+
+        let persisted = db
+            .get_message_by_id(&session_id, &inserted.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            persisted.attachments[0].asset_id.as_deref(),
+            Some("asset-test")
+        );
+        assert_eq!(
+            persisted.attachments[0].filename.as_deref(),
+            Some("photo.png")
+        );
+        assert!(persisted.voice);
+        assert_eq!(persisted.role, "user");
+        assert_eq!(persisted.content, "describe this");
+        assert_eq!(persisted.message_type.as_deref(), Some("text"));
+        assert_eq!(persisted.tool_call_id.as_deref(), Some("call-test"));
+        assert_eq!(persisted.media_inputs.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn session_store_persist_message_returns_existing_for_same_id_and_content() {
+        let (db, store, session_id) = store();
+        let first = store
+            .persist_session_message(
+                &session_id,
+                "user",
+                "retry me",
+                Some("text"),
+                &[],
+                false,
+                Some("msg-retry"),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let retried = store
+            .persist_session_message(
+                &session_id,
+                "user",
+                "retry me",
+                Some("text"),
+                &[],
+                false,
+                Some("msg-retry"),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(retried.id, first.id);
+        assert_eq!(retried.created_at, first.created_at);
+        assert_eq!(db.get_session_messages(&session_id).unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn session_store_persist_message_rejects_idempotency_conflict() {
+        let (db, store, session_id) = store();
+        store
+            .persist_session_message(
+                &session_id,
+                "user",
+                "original",
+                None,
+                &[],
+                false,
+                Some("msg-conflict"),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let error = store
+            .persist_session_message(
+                &session_id,
+                "user",
+                "changed",
+                None,
+                &[],
+                false,
+                Some("msg-conflict"),
+                None,
+                None,
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "message idempotency conflict for session {} message msg-conflict",
+                session_id
+            )
+        );
+        assert_eq!(db.get_session_messages(&session_id).unwrap().len(), 1);
     }
 
     fn append_recovery_marker(store: &SessionEventStore, session_id: &str, phase: &str) {

@@ -660,10 +660,6 @@ impl SessionSupervisor {
         self.store.clone()
     }
 
-    pub fn db(&self) -> &Arc<Database> {
-        &self.db
-    }
-
     pub async fn cancel_session_actions(&self, session_id: &str) {
         self.services()
             .actions
