@@ -306,8 +306,9 @@ impl ReActEngine {
 
     /// Persist a compaction summary into episodic long-term memory
     /// (`memory_items`) so context that compaction summarized away stays
-    /// retrievable across sessions (embedding + keyword recall). Fire-and-forget:
-    /// a dropped write only loses the summary episode, never the session itself.
+    /// retrievable across sessions (embedding + keyword recall). The episode
+    /// and its optional summary-extraction marker are committed together so a
+    /// process exit cannot leave a durable episode without its job marker.
     pub(super) async fn persist_compaction_summary(
         &self,
         session_id: &str,
@@ -322,13 +323,18 @@ impl ReActEngine {
         let session_id = session_id.to_string();
         let summary = summary.to_string();
         let episode_id = episode_id.to_string();
+        let enqueue_extraction = summary.len() >= 24;
         let session_id_owned = session_id.clone();
         let summary_for_db = summary.clone();
         let episode_id_for_db = episode_id.clone();
         if let Err(e) = db
             .run_blocking(move |db| {
-                db.add_episode_with_id(&session_id_owned, &summary_for_db, &episode_id_for_db)?;
-                Ok::<(), anyhow::Error>(())
+                db.add_episode_with_pending_extraction(
+                    &session_id_owned,
+                    &summary_for_db,
+                    &episode_id_for_db,
+                    enqueue_extraction,
+                )
             })
             .await
         {
@@ -341,8 +347,8 @@ impl ReActEngine {
         }
         // M3: light fact extraction from the compaction summary (throttled,
         // separate episode cursor — does not advance the user-message cursor).
-        if let Some(ref memory_worker) = self.memory_worker {
-            memory_worker.enqueue_summary_extract(&session_id, &episode_id, &summary);
+        if enqueue_extraction && let Some(ref memory_worker) = self.memory_worker {
+            memory_worker.wake_summary_extract(&session_id, &episode_id);
         }
     }
 

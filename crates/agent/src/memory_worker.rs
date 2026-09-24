@@ -55,6 +55,10 @@ pub struct MemoryWorker {
     /// earlier interval enqueue (L3 / P1-7). The same marker is mirrored in
     /// `kv_store` so a process crash cannot silently discard the queue.
     outbox: Mutex<HashMap<String, bool>>,
+    /// Pending compaction-summary extraction jobs keyed by episode id. Each
+    /// marker is durable in `kv_store`; this map is only the live wake-up
+    /// projection.
+    summary_outbox: Mutex<HashMap<String, String>>,
     outbox_notify: Notify,
     /// Lazy worker start so `AgentLayer::new` stays usable outside a Tokio
     /// runtime (unit tests that only construct the layer).
@@ -120,6 +124,7 @@ impl MemoryWorker {
             fact_extraction_min_interval_secs,
             inference_semaphore: Arc::new(Semaphore::new(1)),
             outbox: Mutex::new(HashMap::new()),
+            summary_outbox: Mutex::new(HashMap::new()),
             outbox_notify: Notify::new(),
             outbox_worker_started: AtomicBool::new(false),
             memory_dirty: Mutex::new(HashMap::new()),
@@ -299,9 +304,9 @@ impl MemoryWorker {
         Ok(())
     }
 
-    /// Restore durable fact-extraction jobs into the existing in-memory
-    /// outbox and ensure its worker is running. The durable markers remain the
-    /// authority until the normal worker completes each job.
+    /// Restore durable fact and compaction-summary extraction jobs into the
+    /// existing in-memory outboxes and ensure their shared worker is running.
+    /// Durable markers remain the authority until each job completes.
     pub(crate) async fn restore_pending_outbox(
         self: &Arc<Self>,
         cancellation: &CancellationToken,
@@ -310,17 +315,28 @@ impl MemoryWorker {
             .db
             .run_blocking_cancellable(cancellation.clone(), |db| db.pending_fact_extractions())
             .await?;
+        let pending_summaries = self
+            .db
+            .run_blocking_cancellable(cancellation.clone(), |db| db.pending_summary_extractions())
+            .await?;
         anyhow::ensure!(
             !cancellation.is_cancelled(),
             "fact extraction outbox restore cancelled"
         );
-        let restored_count = pending.len();
+        let restored_count = pending.len() + pending_summaries.len();
         for (session_id, bypass_throttle) in pending {
             anyhow::ensure!(
                 !cancellation.is_cancelled(),
                 "fact extraction outbox restore cancelled"
             );
             self.enqueue_memory(session_id, bypass_throttle);
+        }
+        for (session_id, episode_id) in pending_summaries {
+            anyhow::ensure!(
+                !cancellation.is_cancelled(),
+                "summary extraction outbox restore cancelled"
+            );
+            self.enqueue_summary_memory(session_id, episode_id);
         }
         self.ensure_outbox_worker();
         self.outbox_notify.notify_one();
@@ -344,6 +360,20 @@ impl MemoryWorker {
         }
         self.ensure_outbox_worker();
         self.outbox_notify.notify_one();
+    }
+
+    fn enqueue_summary_memory(self: &Arc<Self>, session_id: String, episode_id: String) {
+        if let Ok(mut pending) = self.summary_outbox.lock() {
+            pending.insert(episode_id, session_id);
+        }
+        self.ensure_outbox_worker();
+        self.outbox_notify.notify_one();
+    }
+
+    /// Wake the live projection after a producer has atomically persisted the
+    /// episode and its durable summary-extraction marker.
+    pub(crate) fn wake_summary_extract(self: &Arc<Self>, session_id: &str, episode_id: &str) {
+        self.enqueue_summary_memory(session_id.to_owned(), episode_id.to_owned());
     }
 
     fn ensure_outbox_worker(self: &Arc<Self>) {
@@ -382,6 +412,25 @@ impl MemoryWorker {
                     tracing::warn!("fact extraction durable outbox restore failed: {}", error);
                 }
             }
+            match engine
+                .db
+                .run_blocking(|db| db.pending_summary_extractions())
+                .await
+            {
+                Ok(restored) => {
+                    if let Ok(mut pending) = engine.summary_outbox.lock() {
+                        for (session_id, episode_id) in restored {
+                            pending.insert(episode_id, session_id);
+                        }
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        "summary extraction durable outbox restore failed: {}",
+                        error
+                    );
+                }
+            }
             loop {
                 let batch: Vec<(String, bool)> = {
                     let mut pending = engine.outbox.lock().unwrap_or_else(|e| e.into_inner());
@@ -391,7 +440,17 @@ impl MemoryWorker {
                         pending.drain().collect()
                     }
                 };
-                if batch.is_empty() {
+                let summary_batch: Vec<(String, String)> = {
+                    let mut pending = engine
+                        .summary_outbox
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    pending
+                        .drain()
+                        .map(|(episode_id, session_id)| (session_id, episode_id))
+                        .collect()
+                };
+                if batch.is_empty() && summary_batch.is_empty() {
                     engine.outbox_notify.notified().await;
                     continue;
                 }
@@ -418,6 +477,80 @@ impl MemoryWorker {
                                 session_id,
                                 error
                             );
+                        }
+                    }
+                }
+                for (session_id, episode_id) in summary_batch {
+                    let summary = match engine
+                        .db
+                        .run_blocking({
+                            let episode_id = episode_id.clone();
+                            move |db| db.episode_text(&episode_id)
+                        })
+                        .await
+                    {
+                        Ok(Some(summary)) => summary,
+                        Ok(None) => {
+                            tracing::debug!(
+                                session = %session_id,
+                                episode = %episode_id,
+                                "dropping summary extraction job for missing episode"
+                            );
+                            let _ = engine
+                                .db
+                                .run_blocking({
+                                    let session_id = session_id.clone();
+                                    let episode_id = episode_id.clone();
+                                    move |db| db.clear_summary_extraction(&session_id, &episode_id)
+                                })
+                                .await;
+                            continue;
+                        }
+                        Err(error) => {
+                            tracing::warn!(
+                                session = %session_id,
+                                episode = %episode_id,
+                                "summary extraction episode read failed: {error}"
+                            );
+                            engine.enqueue_summary_memory(session_id, episode_id);
+                            continue;
+                        }
+                    };
+                    match engine
+                        .infer_facts_from_summary(&session_id, &episode_id, &summary)
+                        .await
+                    {
+                        SummaryExtractOutcome::Done => {
+                            let session_id_for_db = session_id.clone();
+                            let episode_id_for_db = episode_id.clone();
+                            if let Err(error) = engine
+                                .db
+                                .run_blocking(move |db| {
+                                    db.clear_summary_extraction(
+                                        &session_id_for_db,
+                                        &episode_id_for_db,
+                                    )
+                                })
+                                .await
+                            {
+                                tracing::warn!(
+                                    session = %session_id,
+                                    episode = %episode_id,
+                                    "summary extraction durable completion failed: {error}"
+                                );
+                            }
+                        }
+                        SummaryExtractOutcome::Throttled { wait_secs }
+                        | SummaryExtractOutcome::Retryable { wait_secs } => {
+                            tracing::debug!(
+                                session = %session_id,
+                                episode = %episode_id,
+                                wait_secs,
+                                "summary fact inference deferred"
+                            );
+                            engine.enqueue_summary_memory(session_id, episode_id);
+                            tokio::time::sleep(std::time::Duration::from_secs(wait_secs.max(1)))
+                                .await;
                         }
                     }
                 }
@@ -1255,10 +1388,10 @@ impl MemoryWorker {
         }
     }
 
-    /// M3: enqueue light fact extraction from a compaction summary.
+    /// M3: durably enqueue light fact extraction from a compaction summary.
     /// Does not advance the user-message cursor (`fact_extraction.{session}`).
-    /// Retries after the shared throttle instead of dropping the episode.
-    pub fn enqueue_summary_extract(
+    /// The episode id makes each compaction an independent recoverable job.
+    pub async fn enqueue_summary_extract(
         self: &Arc<Self>,
         session_id: &str,
         episode_id: &str,
@@ -1267,40 +1400,25 @@ impl MemoryWorker {
         if session_id.is_empty() || episode_id.is_empty() || summary.trim().len() < 24 {
             return;
         }
-        if tokio::runtime::Handle::try_current().is_err() {
-            return;
-        }
-        let engine = self.clone();
-        let session_id = session_id.to_string();
-        let episode_id = episode_id.to_string();
-        let summary = summary.to_string();
-        tokio::spawn(async move {
-            // Cap retries so a permanently busy throttle cannot spin forever.
-            for attempt in 0..8 {
-                match engine
-                    .infer_facts_from_summary(&session_id, &episode_id, &summary)
-                    .await
-                {
-                    SummaryExtractOutcome::Done => return,
-                    SummaryExtractOutcome::Throttled { wait_secs }
-                    | SummaryExtractOutcome::Retryable { wait_secs } => {
-                        tracing::debug!(
-                            session = %session_id,
-                            episode = %episode_id,
-                            attempt,
-                            wait_secs,
-                            "summary fact inference deferred"
-                        );
-                        tokio::time::sleep(std::time::Duration::from_secs(wait_secs.max(1))).await;
-                    }
-                }
-            }
-            tracing::warn!(
-                "summary fact inference exhausted retries for session {} episode {}",
+        let session_id = session_id.to_owned();
+        let episode_id = episode_id.to_owned();
+        let result = self
+            .db
+            .run_blocking({
+                let session_id = session_id.clone();
+                let episode_id = episode_id.clone();
+                move |db| db.enqueue_summary_extraction(&session_id, &episode_id)
+            })
+            .await;
+        match result {
+            Ok(()) => self.enqueue_summary_memory(session_id, episode_id),
+            Err(error) => tracing::warn!(
+                "summary fact extraction durable enqueue failed for session {} episode {}: {}",
                 session_id,
-                episode_id
-            );
-        });
+                episode_id,
+                error
+            ),
+        }
     }
 
     /// Light extraction from a CompactSummary episode (M3). Respects the
@@ -2137,6 +2255,62 @@ mod tests {
 
         worker.clear_session("ses-prefetch");
         assert!(worker.prompt_prefetches.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn summary_enqueue_persists_before_live_worker_projection() {
+        let db = temp_db();
+        let session = db.create_session("summary enqueue").unwrap();
+        let episode_id = db
+            .add_episode_with_id(
+                &session.id,
+                "A durable summary containing enough context for extraction.",
+                "msg-summary-job",
+            )
+            .map(|_| "msg-summary-job".to_owned())
+            .unwrap();
+        let worker = Arc::new(make_engine(db.clone()));
+        worker.suspend_outbox_worker_for_test();
+
+        worker
+            .enqueue_summary_extract(&session.id, &episode_id, "summary text long enough")
+            .await;
+
+        assert_eq!(
+            db.pending_summary_extractions().unwrap(),
+            vec![(session.id.clone(), episode_id.clone())]
+        );
+        assert_eq!(
+            worker.summary_outbox.lock().unwrap().get(&episode_id),
+            Some(&session.id)
+        );
+    }
+
+    #[tokio::test]
+    async fn restore_pending_summary_extraction_rehydrates_live_projection() {
+        let db = temp_db();
+        let session = db.create_session("summary restore").unwrap();
+        let episode_id = "msg-summary-restore";
+        db.add_episode_with_pending_extraction(
+            &session.id,
+            "A durable summary restored after process restart.",
+            episode_id,
+            true,
+        )
+        .unwrap();
+        let worker = Arc::new(make_engine(db));
+        worker.suspend_outbox_worker_for_test();
+
+        let restored = worker
+            .restore_pending_outbox(&CancellationToken::new())
+            .await
+            .unwrap();
+
+        assert_eq!(restored, 1);
+        assert_eq!(
+            worker.summary_outbox.lock().unwrap().get(episode_id),
+            Some(&session.id)
+        );
     }
 
     #[tokio::test]

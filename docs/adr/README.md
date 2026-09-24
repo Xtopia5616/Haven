@@ -254,3 +254,4 @@
 - [0263：AgentLayer 的 MemoryRuntime 启动屏障](0263-memory-runtime-agentlayer-startup-barrier.md)
 - [0264：Interval Memory Trigger 的 durable producer](0264-memory-trigger-interval-producer.md)
 - [0265：Pause Memory Trigger 的 durable producer](0265-memory-trigger-pause-producer.md)
+- [0266：Compaction Summary Fact Extraction 的 durable job](0266-summary-fact-extraction-durable-job.md)

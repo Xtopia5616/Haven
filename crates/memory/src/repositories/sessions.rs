@@ -222,13 +222,15 @@ impl Database {
         // this session; otherwise deletion leaves permanent kv_store rows.
         conn.execute(
             "DELETE FROM kv_store
-             WHERE key = ?1 OR key = ?2 OR key = ?3 OR key = ?4 OR key = ?5",
+             WHERE key = ?1 OR key = ?2 OR key = ?3 OR key = ?4 OR key = ?5
+                OR key LIKE ?6",
             rusqlite::params![
                 format!("fact_extraction.{}", id),
                 format!("fact_extraction_last_run.{}", id),
                 format!("fact_extraction_episode.{}", id),
                 format!("fact_extraction_pending.{}", id),
-                format!("memory_event_cursor.{}", id)
+                format!("memory_event_cursor.{}", id),
+                format!("fact_extraction_episode_pending.{}.%", id)
             ],
         )?;
         drop(conn);
@@ -265,6 +267,7 @@ impl Database {
                     OR key LIKE 'fact_extraction_last_run.%'
                     OR key LIKE 'fact_extraction_episode.%'
                     OR key LIKE 'fact_extraction_pending.%'
+                    OR key LIKE 'fact_extraction_episode_pending.%'
                     OR key GLOB 'memory_event_cursor.*'",
                 [],
             )?;
@@ -384,6 +387,7 @@ impl Database {
                     OR key LIKE 'fact_extraction_last_run.%'
                     OR key LIKE 'fact_extraction_episode.%'
                     OR key LIKE 'fact_extraction_pending.%'
+                    OR key LIKE 'fact_extraction_episode_pending.%'
                     OR key GLOB 'memory_event_cursor.*')
                AND NOT EXISTS (SELECT 1 FROM sessions
                                WHERE id = CASE
@@ -395,6 +399,8 @@ impl Database {
                                    THEN substr(key, 25)
                                    WHEN key LIKE 'fact_extraction_pending.%'
                                    THEN substr(key, 25)
+                                   WHEN key LIKE 'fact_extraction_episode_pending.%'
+                                   THEN value
                                    ELSE substr(key, 17)
                                END)",
             [],

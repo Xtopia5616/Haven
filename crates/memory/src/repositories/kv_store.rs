@@ -7,7 +7,8 @@ use rusqlite::OptionalExtension;
 /// User-facing preferences live in the `facts` table (tag `preference`);
 /// this table holds only internal state such as the fact-extraction cursor
 /// (`fact_extraction.<session_id>`), the durable extraction outbox
-/// (`fact_extraction_pending.<session_id>`), and the committed-event cursor
+/// (`fact_extraction_pending.<session_id>` and
+/// `fact_extraction_episode_pending.<session_id>.<episode_id>`), and the committed-event cursor
 /// (`memory_event_cursor.<session_id>`). Exposed as `kv_store` in the schema.
 impl Database {
     pub fn set_kv(&self, key: &str, value: &str) -> anyhow::Result<()> {
@@ -217,6 +218,68 @@ impl Database {
         Ok(())
     }
 
+    /// Queue one compaction-summary episode for durable fact extraction.
+    /// Episode jobs are keyed by both session and episode so multiple
+    /// compactions cannot overwrite one another before the worker drains them.
+    pub fn enqueue_summary_extraction(
+        &self,
+        session_id: &str,
+        episode_id: &str,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(!session_id.trim().is_empty(), "session id is required");
+        anyhow::ensure!(!episode_id.trim().is_empty(), "episode id is required");
+        let key = format!("fact_extraction_episode_pending.{session_id}.{episode_id}");
+        self.set_kv(&key, session_id)
+    }
+
+    /// Load durable compaction-summary extraction jobs. The episode id is
+    /// encoded in the key while the value keeps session cleanup inexpensive.
+    pub fn pending_summary_extractions(&self) -> anyhow::Result<Vec<(String, String)>> {
+        let prefix = "fact_extraction_episode_pending.";
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT key, value FROM kv_store
+             WHERE key LIKE 'fact_extraction_episode_pending.%'
+             ORDER BY updated_at, key",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let key: String = row.get(0)?;
+            let session_id: String = row.get(1)?;
+            Ok((key, session_id))
+        })?;
+        let mut pending = Vec::new();
+        for row in rows {
+            let (key, session_id) = row?;
+            let Some(suffix) = key.strip_prefix(prefix) else {
+                continue;
+            };
+            let Some((key_session_id, episode_id)) = suffix.split_once('.') else {
+                continue;
+            };
+            if key_session_id == session_id && !episode_id.is_empty() {
+                pending.push((session_id, episode_id.to_owned()));
+            }
+        }
+        Ok(pending)
+    }
+
+    /// Acknowledge one completed compaction-summary extraction.
+    pub fn clear_summary_extraction(
+        &self,
+        session_id: &str,
+        episode_id: &str,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(!session_id.trim().is_empty(), "session id is required");
+        anyhow::ensure!(!episode_id.trim().is_empty(), "episode id is required");
+        self.conn().execute(
+            "DELETE FROM kv_store WHERE key = ?1",
+            rusqlite::params![format!(
+                "fact_extraction_episode_pending.{session_id}.{episode_id}"
+            )],
+        )?;
+        Ok(())
+    }
+
     /// Remove session-scoped internal cursors whose session no longer exists
     /// (session rows are deleted without going through `delete_session`, e.g.
     /// history purge or older deletions before cursor cleanup was added). This
@@ -232,6 +295,7 @@ impl Database {
                     OR key LIKE 'fact_extraction_last_run.%'
                     OR key LIKE 'fact_extraction_episode.%'
                     OR key LIKE 'fact_extraction_pending.%'
+                    OR key LIKE 'fact_extraction_episode_pending.%'
                     OR key GLOB 'memory_event_cursor.*')
                AND NOT EXISTS (SELECT 1 FROM sessions
                                WHERE id = CASE
@@ -243,6 +307,8 @@ impl Database {
                                    THEN substr(key, 25)
                                    WHEN key LIKE 'fact_extraction_pending.%'
                                    THEN substr(key, 25)
+                                   WHEN key LIKE 'fact_extraction_episode_pending.%'
+                                   THEN value
                                    ELSE substr(key, 17)
                                END)",
             [],
@@ -331,6 +397,27 @@ mod tests {
         db.set_kv("cursor", "a").unwrap();
         db.set_kv("cursor", "b").unwrap();
         assert_eq!(db.get_kv("cursor").unwrap(), Some("b".into()));
+    }
+
+    #[test]
+    fn summary_extraction_jobs_keep_each_episode_and_ack_independently() {
+        let db = test_db();
+        let session = db.create_session("summary jobs").unwrap();
+        db.enqueue_summary_extraction(&session.id, "msg-1").unwrap();
+        db.enqueue_summary_extraction(&session.id, "msg-2").unwrap();
+
+        assert_eq!(
+            db.pending_summary_extractions().unwrap(),
+            vec![
+                (session.id.clone(), "msg-1".to_owned()),
+                (session.id.clone(), "msg-2".to_owned())
+            ]
+        );
+        db.clear_summary_extraction(&session.id, "msg-1").unwrap();
+        assert_eq!(
+            db.pending_summary_extractions().unwrap(),
+            vec![(session.id, "msg-2".to_owned())]
+        );
     }
 
     #[test]
@@ -437,6 +524,7 @@ mod tests {
             .unwrap();
         db.set_kv(&format!("fact_extraction_pending.{}", session.id), "1")
             .unwrap();
+        db.enqueue_summary_extraction(&session.id, "msg-3").unwrap();
         db.checkpoint_memory_event_cursor(&session.id, 6).unwrap();
         db.delete_session(&session.id).unwrap();
         assert!(
@@ -458,6 +546,14 @@ mod tests {
             db.get_kv(&format!("fact_extraction_pending.{}", session.id))
                 .unwrap()
                 .is_none()
+        );
+        assert!(
+            db.get_kv(&format!(
+                "fact_extraction_episode_pending.{}.msg-3",
+                session.id
+            ))
+            .unwrap()
+            .is_none()
         );
         assert_eq!(db.memory_event_cursor(&session.id).unwrap(), 0);
     }
