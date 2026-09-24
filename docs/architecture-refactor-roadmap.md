@@ -85,7 +85,7 @@
 
 当前阶段判断：阶段 1 的 mailbox/运行态收口已基本完成；阶段 2 已收口 rollback boundary、两类 resume 读取 port、session overlay 恢复边界，以及 continue 的 committed recovery marker 决策与 projection 截断事务，但全局恢复/事件重放和崩溃窗口仍待继续验证；阶段 3 已开始以 SessionStore typed ports 替代局部 raw Database 读取，当前覆盖 session record、pending session、partial stream、transcript batch writer、ingress/recovery 消息写入及失败会话 action-step 清理（ADR 0238、0249、0251、0255、0256、0258），其他传播仍待收窄；本次清理不涉及 ActionService 或 MemoryRuntime；阶段 4 已完成目录/观察/资产租约/overlay/定时授权入口边界、runtime web-search typed capability，以及 ReActEngine catalog port 的 composition-root 显式注入（ADR 0257）；完整 ToolsManager 解耦仍需拆分；阶段 5 已完成 settings/model 的 snapshot prepare/apply 切片、ApplyPlan 对 Router target 的共享、update_settings 的旧 hotkey 与 Settings patch 合并，以及 Router runtime 的统一 coordinator；完整半失败协调和其他配置写入口仍待设计；阶段 6 已完成 CompleteRequest、聚合 StreamRequest、EmbeddingRequest、HealthCheckRequest 与 PromptRequest 请求对象切片，并已删除旧 prompt wrapper；统一请求结果投影已完成，Router executor 拆分和 capability/call-purpose 语义分离仍待实施；阶段 7 已完成 action 持久层 CAS/outbox、ActionService 终态仲裁和 MemoryWorker FastChat 窄端口；MemoryRuntime committed-event 消费设计已采纳、实现未开始（ADR 0259），完整 Job 生命周期与 MemoryReader 仍待设计/实施；阶段 8 已完成 Action DTO 漂移检查和 UI 错误/usage/message 派生收口，其他 IPC/UI 编排仍待收口；阶段 9 已删除三个无调用者 facade API，并移除两个由 CompleteRequest/PromptRequest 完整替代的无调用 Router wrapper，剩余工作以 profiling 和更大范围公共面审查为主。
 
-阶段 7 的 MemoryRuntime committed-event 消费设计已由 ADR 0259 采纳；Phase 7.1 的第一个基础切片已完成：SessionStore 提供独立 event cursor、有界 durable replay 与生命周期清理（ADR 0261）。事件 consumer、复用现有 durable fact-extraction outbox、Runtime 在 dispatcher recovery 前启动、按 sequence 去重/lag 恢复及 interval/pause bypass 仍待实现。compact-summary episode durable job、maintenance 生命周期迁移与 MemoryReader 抽象留待后续切片；本设计不改变 recall 或 rollback facts 语义。
+阶段 7 的 MemoryRuntime committed-event 消费设计已由 ADR 0259 采纳；Phase 7.1 已完成 SessionStore 独立 event cursor/有界 durable replay/生命周期清理（ADR 0261）和按序处理核心（ADR 0262）。事件 live/replay consumer、自动 gap 补读、Runtime 在 dispatcher recovery 前启动、旧 session baseline 与 hooks trigger 替换仍待实现。compact-summary episode durable job、maintenance 生命周期迁移与 MemoryReader 抽象留待后续切片；本设计不改变 recall 或 rollback facts 语义。
 
 补充：阶段 3 的 transcript batch writer 已在 `7775e11` 进一步只依赖 `SessionStore`（ADR 0255），Ingress/recovery 消息路径、失败会话 action-step 清理与生产会话创建也已通过 SessionStore typed port 收口（ADR 0256、0258、0260）；阶段 7 的无调用 recall 转发已在本轮删除（ADR 0254）。这些切片都不改变全局恢复/事件重放和 committed-event MemoryRuntime 仍待完成的判断。
 
@@ -270,13 +270,13 @@ SessionStore
 - `MemoryRuntime` 监听 committed session event，负责 fact extraction/maintenance/index catch-up；
 - `MemoryWorker` 的 FastChat 调用已通过小型 `MemoryInferencePort` 注入（ADR 0247）；后续仍需让 Agent 只提交 `SessionCommitted` 并通过 MemoryReader 获取 recall。
 
-状态：committed-event consumer 架构设计已完成并采纳（ADR 0259）；Phase 7.1 的 SessionStore cursor/replay 基础端口已实现（ADR 0261），consumer 尚未实现。当前 MemoryWorker 仍由 ReAct hooks 直接触发，compact-summary extraction 仍为独立的进程内重试流程。
+状态：committed-event consumer 架构设计已完成并采纳（ADR 0259）；Phase 7.1 的 SessionStore cursor/replay 基础端口与 `MemoryRuntime::process_event` 顺序处理核心已实现（ADR 0261、0262），live/replay consumer 尚未接入。当前 MemoryWorker 仍由 ReAct hooks 直接触发，compact-summary extraction 仍为独立的进程内重试流程。
 
 主要文件：`crates/tools/src/action_service.rs`、`action_lifecycle.rs`、`crates/agent/src/memory_worker.rs`、`memory_service.rs`、`memory_index.rs`、`crates/memory/src/`。
 
 验收：两类 Job 共用一套生命周期和 UI 投影；记忆失败不改变 ReAct turn 结果；重启、重复 outbox、取消和限额有测试。
 
-Phase 7.1 验收与未决风险：见 ADR 0259、0261。当前仅完成持久化基础端口；不得将“设计已采纳”或“cursor/replay 已实现”表述为 MemoryRuntime consumer 已完成。
+Phase 7.1 验收与未决风险：见 ADR 0259、0261、0262。当前仅完成持久化端口与按序处理核心；不得将其表述为 live/replay MemoryRuntime consumer 已完成。
 
 ### 阶段 8：IPC 单源生成与 UI 编排收口（P2）
 

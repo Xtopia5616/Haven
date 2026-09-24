@@ -250,3 +250,4 @@
 - [0259：MemoryRuntime 消费已提交会话事件（设计已采纳；实现未开始）](0259-memory-runtime-committed-event-consumer.md)
 - [0260：SessionStore 会话创建端口](0260-session-store-session-creation-port.md)
 - [0261：MemoryRuntime 事件游标与有界回放端口](0261-memory-event-cursor-and-bounded-replay.md)
+- [0262：MemoryRuntime 已提交触发的顺序处理核心](0262-memory-runtime-ordered-trigger-processing.md)
