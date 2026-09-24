@@ -159,9 +159,6 @@ pub struct ToolExecution {
 }
 
 pub struct SessionSupervisor {
-    /// Raw Database remains for tool-runner action-step paths; session
-    /// interaction event reads and writes use `store` instead.
-    db: Arc<Database>,
     /// The single durable session event boundary shared by all actors and the
     /// ReAct turn runner. Keeping one store instance also makes the live event
     /// broadcast observe interaction/control events, not just transcript rows.
@@ -276,11 +273,10 @@ impl SessionSupervisor {
             Arc::clone(&tools),
         ));
         let (event_tx, _) = broadcast::channel(256);
-        let store = SessionStore::new(db.clone());
+        let store = SessionStore::new(db);
         Self {
             partials: Arc::new(crate::partial::PartialStore::new(store.clone())),
             store,
-            db,
             tools,
             services,
             session_tool_overlay_port,
@@ -594,22 +590,26 @@ mod tests {
         p
     }
 
-    fn make_executor(max_concurrent: usize) -> Arc<SessionSupervisor> {
+    fn make_executor_with_db(max_concurrent: usize) -> (Arc<SessionSupervisor>, Arc<Database>) {
         let path = temp_db_path();
         let db = Arc::new(Database::open(&path).unwrap());
         let tools = Arc::new(ToolsManager::new());
-        let exec = Arc::new(SessionSupervisor::new(db, tools, max_concurrent));
+        let exec = Arc::new(SessionSupervisor::new(db.clone(), tools, max_concurrent));
         // Best-effort cleanup; failures are ignored since the OS will purge
         // temp files eventually.
         let _ = path;
-        exec
+        (exec, db)
+    }
+
+    fn make_executor(max_concurrent: usize) -> Arc<SessionSupervisor> {
+        make_executor_with_db(max_concurrent).0
     }
 
     /// A handler that panics must still release the running slot and mark the
     /// session Error —otherwise the session is stuck in Running forever.
     #[tokio::test]
     async fn dispatcher_panicked_handler_marks_error() {
-        let exec = make_executor(1);
+        let (exec, db) = make_executor_with_db(1);
         let session = exec.create_session("t1").await.unwrap();
 
         let mut events = exec.subscribe_events();
@@ -627,8 +627,7 @@ mod tests {
         // handler, and mark it Error in the DB (pending → running → error).
         let mut db_status = SessionStatus::Pending;
         for _ in 0..100 {
-            db_status = exec
-                .db
+            db_status = db
                 .get_session(&session.id)
                 .unwrap()
                 .map(|t| t.status)
@@ -815,7 +814,7 @@ mod tests {
     /// inserts it into the running set, so a second claim returns nothing.
     #[tokio::test]
     async fn try_claim_pending_claims_once_and_persists() {
-        let exec = make_executor(2);
+        let (exec, db) = make_executor_with_db(2);
         let session = exec.create_session("t1").await.unwrap();
 
         let claimed = exec.try_claim_pending().await;
@@ -824,8 +823,7 @@ mod tests {
         let state = exec.get_active_session_status(&session.id).await;
         assert_eq!(state, Some(SessionStatus::Running));
         assert!(exec.is_run_in_flight(&session.id).await);
-        let db_status = exec
-            .db
+        let db_status = db
             .get_session(&session.id)
             .unwrap()
             .map(|t| t.status)
@@ -942,34 +940,26 @@ mod tests {
 
     #[tokio::test]
     async fn delete_session_removes_durable_row_and_actor_together() {
-        let exec = make_executor(1);
+        let (exec, db) = make_executor_with_db(1);
         let session = exec.create_session("delete atomically").await.unwrap();
-        exec.db
-            .add_message(
-                &session.id,
-                "user",
-                "delete with session",
-                Some("text"),
-                None,
-            )
-            .unwrap();
-        exec.db
-            .set_kv(&format!("fact_extraction_pending.{}", session.id), "1")
+        db.add_message(
+            &session.id,
+            "user",
+            "delete with session",
+            Some("text"),
+            None,
+        )
+        .unwrap();
+        db.set_kv(&format!("fact_extraction_pending.{}", session.id), "1")
             .unwrap();
 
         exec.delete_session(&session.id).await.unwrap();
 
         assert!(exec.actor_for(&session.id).await.is_none());
-        assert!(exec.db.get_session(&session.id).unwrap().is_none());
+        assert!(db.get_session(&session.id).unwrap().is_none());
+        assert!(db.get_session_messages(&session.id).unwrap().is_empty());
         assert!(
-            exec.db
-                .get_session_messages(&session.id)
-                .unwrap()
-                .is_empty()
-        );
-        assert!(
-            exec.db
-                .get_kv(&format!("fact_extraction_pending.{}", session.id))
+            db.get_kv(&format!("fact_extraction_pending.{}", session.id))
                 .unwrap()
                 .is_none()
         );
@@ -982,29 +972,27 @@ mod tests {
 
     #[tokio::test]
     async fn clear_sessions_and_delete_clears_actors_and_returns_deleted_count() {
-        let exec = make_executor(1);
+        let (exec, db) = make_executor_with_db(1);
         let first = exec.create_session("first to clear").await.unwrap();
         let second = exec.create_session("second to clear").await.unwrap();
-        exec.db
-            .add_message(&first.id, "user", "first message", Some("text"), None)
+        db.add_message(&first.id, "user", "first message", Some("text"), None)
             .unwrap();
-        exec.db
-            .add_message(&second.id, "user", "second message", Some("text"), None)
+        db.add_message(&second.id, "user", "second message", Some("text"), None)
             .unwrap();
         let kv_key = format!("fact_extraction_pending.{}", first.id);
-        exec.db.set_kv(&kv_key, "1").unwrap();
+        db.set_kv(&kv_key, "1").unwrap();
 
         assert_eq!(exec.clear_sessions_and_delete().await.unwrap(), 2);
 
         assert!(exec.actors.lock().await.is_empty());
         assert!(exec.pending_queue.lock().await.is_empty());
         assert!(exec.direct_run_waiters.lock().await.is_empty());
-        assert_eq!(exec.db.count_sessions().unwrap(), 0);
-        assert!(exec.db.get_session(&first.id).unwrap().is_none());
-        assert!(exec.db.get_session(&second.id).unwrap().is_none());
-        assert!(exec.db.get_session_messages(&first.id).unwrap().is_empty());
-        assert!(exec.db.get_session_messages(&second.id).unwrap().is_empty());
-        assert!(exec.db.get_kv(&kv_key).unwrap().is_none());
+        assert_eq!(db.count_sessions().unwrap(), 0);
+        assert!(db.get_session(&first.id).unwrap().is_none());
+        assert!(db.get_session(&second.id).unwrap().is_none());
+        assert!(db.get_session_messages(&first.id).unwrap().is_empty());
+        assert!(db.get_session_messages(&second.id).unwrap().is_empty());
+        assert!(db.get_kv(&kv_key).unwrap().is_none());
         assert_eq!(exec.clear_sessions_and_delete().await.unwrap(), 0);
     }
 
@@ -1712,7 +1700,7 @@ mod tests {
         let tools = Arc::new(ToolsManager::new());
         let exec = Arc::new(SessionSupervisor::new(db.clone(), tools.clone(), 1));
         let session = exec.create_session("queued before catalog").await.unwrap();
-        let exec2 = Arc::new(SessionSupervisor::new(db, tools, 1));
+        let exec2 = Arc::new(SessionSupervisor::new(db.clone(), tools, 1));
         let handled = Arc::new(AtomicU32::new(0));
         let handled_by_runner = handled.clone();
         let exec_for_runner = exec2.clone();
@@ -1732,9 +1720,7 @@ mod tests {
         assert_eq!(handled.load(Ordering::SeqCst), 0);
         assert!(exec2.list_sessions().await.is_empty());
         assert_eq!(
-            exec2
-                .db
-                .get_session(&session.id)
+            db.get_session(&session.id)
                 .unwrap()
                 .map(|record| record.status),
             Some(SessionStatus::Pending)

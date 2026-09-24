@@ -39,6 +39,22 @@ pub enum ActionStepOutcome {
     Unknown,
 }
 
+/// Owned action-step identity and metadata accepted by SessionStore ports.
+/// Agent owns how this data is chosen; Memory only persists it using the
+/// existing session-step operations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActionStepWrite {
+    pub session_id: String,
+    pub step_number: i32,
+    pub action_index: i32,
+    pub tool_name: String,
+    pub tool_input: String,
+    pub tool_call_id: Option<String>,
+    pub is_high_risk: bool,
+    pub silent: bool,
+    pub step_id: String,
+}
+
 #[derive(Clone, Copy)]
 struct ActionStepFields<'a> {
     id: &'a str,

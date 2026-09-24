@@ -5,7 +5,7 @@
 //! use [`SessionSupervisor::request_scheduled_confirm`].
 
 use super::*;
-use haven_memory::repositories::session_steps::ActionStepOutcome;
+use haven_memory::repositories::session_steps::{ActionStepOutcome, ActionStepWrite};
 
 /// The tool may already have produced an external side effect when its final
 /// action-step projection fails. Callers must surface this as an unknown
@@ -93,19 +93,18 @@ impl ActionStepContext {
         }
     }
 
-    fn ensure(&self, db: &Database, confirmed: Option<bool>) -> anyhow::Result<()> {
-        db.ensure_action_step_with_identity(
-            &self.session_id,
-            self.step_number,
-            self.action_index,
-            &self.tool_name,
-            &self.tool_input,
-            self.tool_call_id.as_deref(),
-            self.is_high_risk,
-            self.silent,
-            confirmed,
-            &self.step_id,
-        )
+    fn into_write(self) -> ActionStepWrite {
+        ActionStepWrite {
+            session_id: self.session_id,
+            step_number: self.step_number,
+            action_index: self.action_index,
+            tool_name: self.tool_name,
+            tool_input: self.tool_input,
+            tool_call_id: self.tool_call_id,
+            is_high_risk: self.is_high_risk,
+            silent: self.silent,
+            step_id: self.step_id,
+        }
     }
 }
 
@@ -167,8 +166,8 @@ impl SessionSupervisor {
         context: ActionStepContext,
     ) -> anyhow::Result<()> {
         let step_id_for_log = context.step_id.clone();
-        self.db
-            .run_blocking(move |db| context.ensure(db, None))
+        self.store
+            .ensure_action_step(context.into_write(), None)
             .await
             .map_err(|e| {
                 tracing::error!(
@@ -279,11 +278,8 @@ impl SessionSupervisor {
         let step_id_for_log = context.step_id.clone();
         let observation = observation.to_string();
         if let Err(e) = self
-            .db
-            .run_blocking(move |db| {
-                context.ensure(db, None)?;
-                db.finish_action_step(&context.step_id, &observation, outcome)
-            })
+            .store
+            .ensure_and_finish_action_step(context.into_write(), None, observation, outcome)
             .await
         {
             tracing::warn!(
@@ -395,11 +391,8 @@ impl SessionSupervisor {
         context: ActionStepContext,
     ) -> anyhow::Result<()> {
         let step_id_for_log = context.step_id.clone();
-        self.db
-            .run_blocking(move |db| {
-                context.ensure(db, None)?;
-                db.start_action_step(&context.step_id)
-            })
+        self.store
+            .ensure_and_start_action_step(context.into_write(), None)
             .await
             .map(|_| ())
             .map_err(|e| {
@@ -886,11 +879,8 @@ impl SessionSupervisor {
             },
             risk_level,
         );
-        self.db
-            .run_blocking(move |db| {
-                action_step.ensure(db, confirmed)?;
-                db.finish_action_step(&action_step.step_id, &obs, step_outcome)
-            })
+        self.store
+            .ensure_and_finish_action_step(action_step.into_write(), confirmed, obs, step_outcome)
             .await
             .map_err(|error| anyhow::Error::new(ActionStepPersistenceError(error)))?;
         Ok(result)
@@ -1500,5 +1490,84 @@ mod scheduled_authorization_tests {
                 ..
             }
         ));
+    }
+}
+
+#[cfg(test)]
+mod action_step_persistence_tests {
+    use super::*;
+    use haven_memory::Database;
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn action_step_lifecycle_persists_identity_through_session_store() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let supervisor = SessionSupervisor::new(db.clone(), Arc::new(ToolsManager::new()), 1);
+        let session = supervisor
+            .create_session("action step store port")
+            .await
+            .unwrap();
+        let step_id = "step-tool-runner-port";
+        let input = json!({"path": "notes.txt", "silent": true});
+
+        supervisor
+            .begin_action_step_with_identity(
+                &session.id,
+                "files.read",
+                &input,
+                5,
+                3,
+                Some("provider-call-5"),
+                step_id,
+            )
+            .await
+            .unwrap();
+
+        let pending = db.get_session_steps(&session.id).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id, step_id);
+        assert_eq!(pending[0].step_number, 5);
+        assert_eq!(pending[0].action_index, 3);
+        assert_eq!(pending[0].action_tool.as_deref(), Some("files.read"));
+        assert_eq!(pending[0].tool_call_id.as_deref(), Some("provider-call-5"));
+        assert!(pending[0].silent);
+        assert!(!pending[0].is_high_risk);
+        assert_eq!(pending[0].status, "pending");
+
+        supervisor
+            .start_action_step_with_identity(
+                &session.id,
+                "files.read",
+                &input,
+                5,
+                3,
+                Some("provider-call-5"),
+                step_id,
+            )
+            .await
+            .unwrap();
+        supervisor
+            .finish_step_with_outcome(
+                &session.id,
+                "files.read",
+                &input,
+                5,
+                3,
+                Some("provider-call-5"),
+                step_id,
+                "cancelled during execution",
+                ActionStepOutcome::Cancelled,
+            )
+            .await;
+
+        let finished = db.get_session_steps(&session.id).unwrap();
+        assert_eq!(finished.len(), 1);
+        assert_eq!(finished[0].status, "cancelled");
+        assert_eq!(
+            finished[0].observation.as_deref(),
+            Some("cancelled during execution")
+        );
+        assert!(finished[0].started_at.is_some());
+        assert!(finished[0].completed_at.is_some());
     }
 }

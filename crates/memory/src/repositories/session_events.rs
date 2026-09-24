@@ -8,7 +8,7 @@
 
 use crate::Database;
 use crate::repositories::messages::{Message, now_rfc3339_millis, undelivered_recovery_since};
-use crate::repositories::session_steps::SessionStep;
+use crate::repositories::session_steps::{ActionStepOutcome, ActionStepWrite, SessionStep};
 use crate::repositories::sessions::Session;
 use crate::repositories::usage::{LlmCallUsage, LlmCallUsageInput, SessionUsage};
 use chrono::{SecondsFormat, Utc};
@@ -326,6 +326,86 @@ impl SessionStore {
         let session_id = session_id.to_owned();
         self.db
             .run_blocking(move |db| db.update_session_status(&session_id, status))
+            .await
+    }
+
+    /// Ensure a pending action-step row exists with the supplied durable
+    /// invocation identity and confirmation decision.
+    pub async fn ensure_action_step(
+        &self,
+        write: ActionStepWrite,
+        confirmed: Option<bool>,
+    ) -> anyhow::Result<()> {
+        self.db
+            .run_blocking(move |db| {
+                db.ensure_action_step_with_identity(
+                    &write.session_id,
+                    write.step_number,
+                    write.action_index,
+                    &write.tool_name,
+                    &write.tool_input,
+                    write.tool_call_id.as_deref(),
+                    write.is_high_risk,
+                    write.silent,
+                    confirmed,
+                    &write.step_id,
+                )
+            })
+            .await
+    }
+
+    /// Ensure an action-step row and mark it running as one blocking-pool
+    /// operation. Keeping both Database calls in this closure preserves the
+    /// existing ordering and avoids an interleaving window between them.
+    pub async fn ensure_and_start_action_step(
+        &self,
+        write: ActionStepWrite,
+        confirmed: Option<bool>,
+    ) -> anyhow::Result<bool> {
+        self.db
+            .run_blocking(move |db| {
+                db.ensure_action_step_with_identity(
+                    &write.session_id,
+                    write.step_number,
+                    write.action_index,
+                    &write.tool_name,
+                    &write.tool_input,
+                    write.tool_call_id.as_deref(),
+                    write.is_high_risk,
+                    write.silent,
+                    confirmed,
+                    &write.step_id,
+                )?;
+                db.start_action_step(&write.step_id)
+            })
+            .await
+    }
+
+    /// Ensure an action-step row and record its final observation/outcome as
+    /// one blocking-pool operation, retaining the existing Database order.
+    pub async fn ensure_and_finish_action_step(
+        &self,
+        write: ActionStepWrite,
+        confirmed: Option<bool>,
+        observation: String,
+        outcome: ActionStepOutcome,
+    ) -> anyhow::Result<bool> {
+        self.db
+            .run_blocking(move |db| {
+                db.ensure_action_step_with_identity(
+                    &write.session_id,
+                    write.step_number,
+                    write.action_index,
+                    &write.tool_name,
+                    &write.tool_input,
+                    write.tool_call_id.as_deref(),
+                    write.is_high_risk,
+                    write.silent,
+                    confirmed,
+                    &write.step_id,
+                )?;
+                db.finish_action_step(&write.step_id, &observation, outcome)
+            })
             .await
     }
 
@@ -2585,6 +2665,109 @@ mod tests {
         let session = db.create_session("input").unwrap();
         let store = SessionEventStore::new(db.clone());
         (db, store, session.id)
+    }
+
+    fn action_step_write(session_id: &str, step_id: &str) -> ActionStepWrite {
+        ActionStepWrite {
+            session_id: session_id.into(),
+            step_number: 7,
+            action_index: 2,
+            tool_name: "files.read".into(),
+            tool_input: r#"{"path":"notes.txt"}"#.into(),
+            tool_call_id: Some("provider-call-7".into()),
+            is_high_risk: true,
+            silent: false,
+            step_id: step_id.into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn session_store_action_step_ports_preserve_identity_confirmation_and_start() {
+        let (db, store, session_id) = store();
+        let write = action_step_write(&session_id, "step-store-start");
+
+        store
+            .ensure_action_step(write.clone(), Some(false))
+            .await
+            .unwrap();
+        store
+            .ensure_action_step(write.clone(), Some(true))
+            .await
+            .unwrap();
+
+        let pending = db.get_session_steps(&session_id).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id, write.step_id);
+        assert_eq!(pending[0].session_id, session_id);
+        assert_eq!(pending[0].step_number, 7);
+        assert_eq!(pending[0].action_index, 2);
+        assert_eq!(pending[0].action_tool.as_deref(), Some("files.read"));
+        assert_eq!(
+            pending[0].action_input.as_deref(),
+            Some(r#"{"path":"notes.txt"}"#)
+        );
+        assert_eq!(pending[0].tool_call_id.as_deref(), Some("provider-call-7"));
+        assert!(pending[0].is_high_risk);
+        assert_eq!(pending[0].confirmed, Some(true));
+        assert_eq!(pending[0].status, "pending");
+
+        assert!(
+            store
+                .ensure_and_start_action_step(write.clone(), None)
+                .await
+                .unwrap()
+        );
+        assert!(
+            store
+                .ensure_and_start_action_step(write, None)
+                .await
+                .unwrap()
+        );
+
+        let running = db.get_session_steps(&session_id).unwrap();
+        assert_eq!(running.len(), 1);
+        assert_eq!(running[0].status, "running");
+        assert!(running[0].started_at.is_some());
+        assert_eq!(running[0].confirmed, Some(true));
+    }
+
+    #[tokio::test]
+    async fn session_store_action_step_finish_port_preserves_outcome_and_observation() {
+        let (db, store, session_id) = store();
+        let write = action_step_write(&session_id, "step-store-finish");
+
+        assert!(
+            store
+                .ensure_and_finish_action_step(
+                    write.clone(),
+                    Some(false),
+                    "tool may have crossed a side-effect boundary".into(),
+                    ActionStepOutcome::Unknown,
+                )
+                .await
+                .unwrap()
+        );
+        assert!(
+            !store
+                .ensure_and_finish_action_step(
+                    write,
+                    Some(true),
+                    "late completion must not overwrite the terminal row".into(),
+                    ActionStepOutcome::Completed,
+                )
+                .await
+                .unwrap()
+        );
+
+        let steps = db.get_session_steps(&session_id).unwrap();
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].status, "unknown");
+        assert_eq!(steps[0].confirmed, Some(false));
+        assert_eq!(
+            steps[0].observation.as_deref(),
+            Some("tool may have crossed a side-effect boundary")
+        );
+        assert!(steps[0].completed_at.is_some());
     }
 
     #[test]
