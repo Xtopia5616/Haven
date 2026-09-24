@@ -1,7 +1,7 @@
 use crate::app_state::AppState;
 use crate::commands::contracts::MemoryRecallItem;
 use crate::commands::log_err;
-use haven_memory::recall::{MemoryKind, MemoryQuery, MemoryRetriever};
+use haven_memory::recall::{MemoryKind, MemoryQuery};
 use std::sync::Arc;
 use tauri::State;
 
@@ -55,27 +55,29 @@ pub async fn list_facts(
     state: State<'_, Arc<AppState>>,
     source: Option<String>,
 ) -> Result<Vec<haven_memory::repositories::facts::Fact>, String> {
-    let db = state.db.clone();
-    db.run_blocking(move |db| {
-        let facts = match source.as_deref().filter(|s| !s.is_empty()) {
-            Some(src) => db.list_facts_by_source(src)?,
-            None => db.list_facts()?,
-        };
-        Ok(MemoryRetriever::filter_visible_facts(facts))
-    })
-    .await
-    .map_err(|e| log_err("list_facts", e))
+    state
+        .memory_fact_store
+        .list_facts(source)
+        .await
+        .map_err(|e| log_err("list_facts", e))
 }
 
-#[tauri::command]
-pub async fn add_fact(
-    state: State<'_, Arc<AppState>>,
+#[derive(Debug, PartialEq, Eq)]
+struct AddFactInput {
+    subject: String,
+    predicate: String,
+    object: String,
+    tags: Vec<String>,
+}
+
+fn validate_add_fact_input(
     subject: String,
     predicate: String,
     object: String,
     tags: Option<Vec<String>>,
-) -> Result<haven_memory::repositories::facts::Fact, String> {
+) -> Result<AddFactInput, String> {
     use haven_memory::repositories::facts::{is_sensitive_object, is_sensitive_predicate};
+
     let subject = subject.trim().to_string();
     let predicate = predicate.trim().to_string();
     let object = object.trim().to_string();
@@ -88,25 +90,84 @@ pub async fn add_fact(
     if is_sensitive_predicate(&predicate) || is_sensitive_object(&object) {
         return Err("refusing to store credential-like facts".into());
     }
-    let tags_owned: Vec<String> = tags
+    let tags = tags
         .unwrap_or_default()
         .into_iter()
         .map(|tag| tag.trim().to_string())
         .filter(|tag| !tag.is_empty())
         .collect();
-    let db = state.db.clone();
-    db.run_blocking(move |db| {
-        let tags: Vec<&str> = tags_owned.iter().map(String::as_str).collect();
-        db.set_user_fact(&subject, &predicate, &object, &tags)
+
+    Ok(AddFactInput {
+        subject,
+        predicate,
+        object,
+        tags,
     })
-    .await
-    .map_err(|e| log_err("add_fact", e))
+}
+
+#[tauri::command]
+pub async fn add_fact(
+    state: State<'_, Arc<AppState>>,
+    subject: String,
+    predicate: String,
+    object: String,
+    tags: Option<Vec<String>>,
+) -> Result<haven_memory::repositories::facts::Fact, String> {
+    let input = validate_add_fact_input(subject, predicate, object, tags)?;
+    state
+        .memory_fact_store
+        .set_user_fact(input.subject, input.predicate, input.object, input.tags)
+        .await
+        .map_err(|e| log_err("add_fact", e))
 }
 
 #[tauri::command]
 pub async fn delete_fact(state: State<'_, Arc<AppState>>, fact_id: String) -> Result<(), String> {
-    let db = state.db.clone();
-    db.run_blocking(move |db| db.delete_fact(&fact_id))
+    state
+        .memory_fact_store
+        .delete_fact(fact_id)
         .await
         .map_err(|e| log_err("delete_fact", e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AddFactInput, validate_add_fact_input};
+
+    #[test]
+    fn add_fact_input_trims_fields_and_filters_empty_tags() {
+        let input = validate_add_fact_input(
+            " user ".into(),
+            " likes ".into(),
+            " Rust ".into(),
+            Some(vec![" preference ".into(), "  ".into(), "workspace".into()]),
+        )
+        .unwrap();
+
+        assert_eq!(
+            input,
+            AddFactInput {
+                subject: "user".into(),
+                predicate: "likes".into(),
+                object: "Rust".into(),
+                tags: vec!["preference".into(), "workspace".into()],
+            }
+        );
+    }
+
+    #[test]
+    fn add_fact_input_preserves_empty_and_sensitive_rejections() {
+        assert_eq!(
+            validate_add_fact_input("user".into(), "  ".into(), "Rust".into(), None),
+            Err("subject, predicate, and object are required".into())
+        );
+        assert_eq!(
+            validate_add_fact_input("user".into(), "api_key".into(), "value".into(), None),
+            Err("refusing to store credential-like facts".into())
+        );
+        assert_eq!(
+            validate_add_fact_input("user".into(), "likes".into(), "sk-secret".into(), None),
+            Err("refusing to store credential-like facts".into())
+        );
+    }
 }
