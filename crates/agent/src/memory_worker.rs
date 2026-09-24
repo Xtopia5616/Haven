@@ -239,39 +239,26 @@ impl MemoryWorker {
             return;
         }
         let session_id = session_id.to_string();
-        let async_engine = self.clone();
-        let async_session_id = session_id.clone();
-        let enqueue_durable = move || {
-            let db = async_engine.db.clone();
-            let session_id = async_session_id.clone();
-            let engine = async_engine.clone();
-            let session_id_for_db = session_id.clone();
-            async move {
-                let result = db
-                    .run_blocking(move |db| {
-                        db.enqueue_fact_extraction(&session_id_for_db, bypass_throttle)
-                    })
-                    .await;
-                if let Err(error) = result {
-                    // Keep the in-memory path available even if the durable
-                    // marker cannot be written; the current process can still
-                    // make progress and the failure remains observable.
+        if tokio::runtime::Handle::try_current().is_ok() {
+            // ReAct invokes this callback from an async turn. SQLite must not
+            // run on that executor thread. Retain the legacy best-effort
+            // fallback on durable failure; committed-event consumers use the
+            // strict method below and advance only after its success.
+            let engine = self.clone();
+            tokio::spawn(async move {
+                let cancellation = CancellationToken::new();
+                if let Err(error) = engine
+                    .enqueue_infer_durable(&session_id, bypass_throttle, &cancellation)
+                    .await
+                {
                     tracing::warn!(
                         "fact extraction durable enqueue failed for session {}: {}",
                         session_id,
                         error
                     );
+                    engine.enqueue_memory(session_id, bypass_throttle);
                 }
-                engine.enqueue_memory(session_id, bypass_throttle);
-            }
-        };
-
-        if tokio::runtime::Handle::try_current().is_ok() {
-            // ReAct invokes this callback from an async turn. SQLite must not
-            // run on that executor thread; durable enqueue completes before
-            // the job enters the in-memory outbox, preserving the old
-            // durable-before-drain ordering without blocking the callback.
-            tokio::spawn(enqueue_durable());
+            });
         } else {
             // Construction-only/unit-test callers may have no runtime. Keep
             // the synchronous fallback for that API boundary; production
@@ -286,6 +273,40 @@ impl MemoryWorker {
             }
             self.enqueue_memory(session_id, bypass_throttle);
         }
+    }
+
+    /// Durably enqueue extraction before exposing it to the existing
+    /// in-memory outbox and worker. Persistence failures are returned and do
+    /// not enqueue an in-memory job.
+    pub(crate) async fn enqueue_infer_durable(
+        self: &Arc<Self>,
+        session_id: &str,
+        bypass_throttle: bool,
+        cancellation: &CancellationToken,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(!session_id.trim().is_empty(), "session id is required");
+        let session_id_for_db = session_id.to_owned();
+        self.db
+            .run_blocking_cancellable(cancellation.clone(), move |db| {
+                db.enqueue_fact_extraction(&session_id_for_db, bypass_throttle)
+            })
+            .await?;
+        anyhow::ensure!(
+            !cancellation.is_cancelled(),
+            "fact extraction enqueue cancelled after durable write"
+        );
+        self.enqueue_memory(session_id.to_owned(), bypass_throttle);
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn suspend_outbox_worker_for_test(&self) {
+        self.outbox_worker_started.store(true, Ordering::Release);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending_outbox_value_for_test(&self, session_id: &str) -> Option<bool> {
+        self.outbox.lock().ok()?.get(session_id).copied()
     }
 
     fn enqueue_memory(self: &Arc<Self>, session_id: String, bypass_throttle: bool) {
@@ -357,7 +378,10 @@ impl MemoryWorker {
                         if let Err(error) = engine
                             .db
                             .run_blocking(move |db| {
-                                db.clear_pending_fact_extraction(&session_id_for_db)
+                                db.clear_pending_fact_extraction_if_not_upgraded(
+                                    &session_id_for_db,
+                                    bypass,
+                                )
                             })
                             .await
                         {

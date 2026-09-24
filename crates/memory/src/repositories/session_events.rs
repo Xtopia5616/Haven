@@ -19,6 +19,9 @@ use std::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 pub const TRANSCRIPT_EVENT_TYPE: &str = "transcript";
+/// Agent-owned durable signal for memory work. Memory stores the event
+/// without depending on Agent payload types.
+pub const MEMORY_TRIGGER_EVENT_TYPE: &str = "memory_trigger";
 pub const BRANCH_POINT_EVENT_TYPE: &str = "branch_point";
 pub const TIMELINE_ROLLBACK_EVENT_TYPE: &str = "timeline_rollback";
 /// Durable usage domain events. Their payload is the complete
@@ -435,6 +438,20 @@ impl SessionStore {
         self.db.memory_event_cursor(session_id)
     }
 
+    /// Read the memory event cursor on SQLite's blocking pool with
+    /// cancellation for an in-flight database operation.
+    pub async fn memory_event_cursor_cancellable(
+        &self,
+        session_id: &str,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<i64> {
+        let store = self.clone();
+        let session_id = session_id.to_owned();
+        self.db
+            .run_blocking_cancellable(cancel, move |_| store.memory_event_cursor(&session_id))
+            .await
+    }
+
     /// Advance the durable memory event cursor monotonically.
     pub fn checkpoint_memory_event_cursor(
         &self,
@@ -442,6 +459,23 @@ impl SessionStore {
         sequence: i64,
     ) -> anyhow::Result<()> {
         self.db.checkpoint_memory_event_cursor(session_id, sequence)
+    }
+
+    /// Persist a memory event checkpoint on SQLite's blocking pool with
+    /// cancellation for an in-flight database operation.
+    pub async fn checkpoint_memory_event_cursor_cancellable(
+        &self,
+        session_id: &str,
+        sequence: i64,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<()> {
+        let store = self.clone();
+        let session_id = session_id.to_owned();
+        self.db
+            .run_blocking_cancellable(cancel, move |_| {
+                store.checkpoint_memory_event_cursor(&session_id, sequence)
+            })
+            .await
     }
 
     /// Clear one session's durable memory event cursor.

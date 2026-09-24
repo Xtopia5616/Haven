@@ -260,7 +260,8 @@ impl Database {
         })
     }
 
-    #[cfg(test)]
+    /// Open an isolated shared-cache in-memory database. The pool is limited
+    /// to one connection because SQLite serializes writers in this mode.
     pub fn open_in_memory() -> anyhow::Result<Self> {
         tracing::debug!("opening in-memory database");
         // Shared-cache URI so every pooled connection sees the SAME in-memory

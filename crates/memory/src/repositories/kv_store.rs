@@ -157,6 +157,26 @@ impl Database {
         Ok(())
     }
 
+    /// Acknowledge a completed extraction without allowing an older ordinary
+    /// job to erase a concurrent bypass upgrade. A bypass job can clear either
+    /// marker; an ordinary job only clears an ordinary marker.
+    pub fn clear_pending_fact_extraction_if_not_upgraded(
+        &self,
+        session_id: &str,
+        processed_bypass: bool,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(!session_id.trim().is_empty(), "session id is required");
+        self.conn().execute(
+            "DELETE FROM kv_store
+             WHERE key = ?1 AND (?2 = 1 OR value <> '1')",
+            rusqlite::params![
+                format!("fact_extraction_pending.{session_id}"),
+                processed_bypass
+            ],
+        )?;
+        Ok(())
+    }
+
     /// Remove session-scoped internal cursors whose session no longer exists
     /// (session rows are deleted without going through `delete_session`, e.g.
     /// history purge or older deletions before cursor cleanup was added). This
@@ -375,6 +395,25 @@ mod tests {
         );
 
         db.clear_pending_fact_extraction(&session.id).unwrap();
+        assert!(db.pending_fact_extractions().unwrap().is_empty());
+    }
+
+    #[test]
+    fn ordinary_ack_preserves_a_concurrent_bypass_upgrade() {
+        let db = test_db();
+        let session = db.create_session("t-pending-upgrade").unwrap();
+        db.enqueue_fact_extraction(&session.id, false).unwrap();
+        db.enqueue_fact_extraction(&session.id, true).unwrap();
+
+        db.clear_pending_fact_extraction_if_not_upgraded(&session.id, false)
+            .unwrap();
+        assert_eq!(
+            db.pending_fact_extractions().unwrap(),
+            vec![(session.id.clone(), true)]
+        );
+
+        db.clear_pending_fact_extraction_if_not_upgraded(&session.id, true)
+            .unwrap();
         assert!(db.pending_fact_extractions().unwrap().is_empty());
     }
 }
