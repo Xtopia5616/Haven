@@ -159,6 +159,8 @@ pub struct ToolExecution {
 }
 
 pub struct SessionSupervisor {
+    /// Raw Database remains for tool-runner action-step paths; session
+    /// interaction event reads and writes use `store` instead.
     db: Arc<Database>,
     /// The single durable session event boundary shared by all actors and the
     /// ReAct turn runner. Keeping one store instance also makes the live event
@@ -425,13 +427,7 @@ impl SessionSupervisor {
     }
 
     async fn install_actor(&self, info: SessionInfo) -> actor::SessionActorHandle {
-        let store = self.store.clone();
-        let session_id = info.id.clone();
-        let interactions = match self
-            .db
-            .run_blocking(move |_| actor::load_interactions(&store, &session_id))
-            .await
-        {
+        let interactions = match actor::load_interactions(&self.store, &info.id).await {
             Ok(interactions) => interactions,
             Err(error) => {
                 tracing::warn!(
@@ -442,7 +438,7 @@ impl SessionSupervisor {
                 Vec::new()
             }
         };
-        let handle = actor::spawn(self.db.clone(), self.store.clone(), info, interactions);
+        let handle = actor::spawn(self.store.clone(), info, interactions);
         self.actors
             .lock()
             .await
@@ -1964,39 +1960,128 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn paused_state_uses_interaction_registry() {
+    async fn interaction_events_persist_and_replay_into_reloaded_actor() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = SessionSupervisor::new(db, tools, 3);
+        let exec = SessionSupervisor::new(db.clone(), tools.clone(), 3);
         let session = exec.create_session("ask me").await.unwrap();
 
         exec.update_session_status(&session.id, SessionStatus::Paused)
             .await
             .unwrap();
-        exec.request_interaction(crate::interaction::InteractionRequest::ask(
+        let request = crate::interaction::InteractionRequest::ask(
             &session.id,
             "which file?",
             vec!["README.md".into()],
             vec!["step-0123456789abcdef0123456789abcdef".into()],
-        ))
-        .await
-        .unwrap();
+        );
+        exec.request_interaction(request.clone()).await.unwrap();
         assert_eq!(
             exec.get_active_session_status(&session.id).await,
             Some(SessionStatus::Paused)
         );
-        let pending = exec
+
+        let events = exec
+            .store
+            .read_active_domain_events_async(&session.id)
+            .await
+            .unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].event_type,
+            haven_memory::INTERACTION_REQUESTED_EVENT_TYPE
+        );
+        assert_eq!(events[0].run_id, None);
+        assert_eq!(events[0].step_number, None);
+        assert_eq!(
+            serde_json::from_str::<crate::interaction::InteractionRequest>(&events[0].payload)
+                .unwrap(),
+            request
+        );
+
+        // A fresh supervisor reconstructs actor interaction state from the
+        // durable domain event through SessionStore.
+        let reloaded = SessionSupervisor::new(db.clone(), tools.clone(), 3);
+        reloaded.ensure_session_loaded(&session.id).await.unwrap();
+        let pending = reloaded
             .pending_interactions(&session.id, crate::interaction::InteractionKind::Ask)
             .await;
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].prompt, "which file?");
 
-        // Reactivation (user answered → Pending) exits the awaiting state.
-        exec.update_session_status(&session.id, SessionStatus::Pending)
+        reloaded
+            .clear_interactions(&session.id, Some(crate::interaction::InteractionKind::Ask))
             .await
             .unwrap();
+        let confirm = crate::interaction::InteractionRequest::confirm(
+            &session.id,
+            1,
+            "test.operation".into(),
+            serde_json::json!({}),
+            "call-test".into(),
+            "step-confirm".into(),
+            0,
+            haven_common::types::RiskLevel::Safe,
+            None,
+        );
+        reloaded.request_interaction(confirm.clone()).await.unwrap();
+        let resolved = reloaded
+            .resolve_interaction(&confirm.id, serde_json::json!(true))
+            .await
+            .unwrap()
+            .expect("confirmation should resolve");
         assert_eq!(
-            exec.get_active_session_status(&session.id).await,
+            resolved.status,
+            crate::interaction::InteractionStatus::Resolved
+        );
+
+        let events = reloaded
+            .store
+            .read_active_domain_events_async(&session.id)
+            .await
+            .unwrap();
+        assert_eq!(events.len(), 4);
+        assert_eq!(
+            events[1].event_type,
+            haven_memory::INTERACTION_CLEARED_EVENT_TYPE
+        );
+        assert_eq!(
+            events[2].event_type,
+            haven_memory::INTERACTION_REQUESTED_EVENT_TYPE
+        );
+        assert_eq!(
+            events[3].event_type,
+            haven_memory::INTERACTION_RESOLVED_EVENT_TYPE
+        );
+        assert_eq!(
+            serde_json::from_str::<crate::interaction::InteractionRequest>(&events[3].payload)
+                .unwrap()
+                .status,
+            crate::interaction::InteractionStatus::Resolved
+        );
+
+        // A subsequent actor reload observes the resolved request as cleared.
+        let final_reload = SessionSupervisor::new(db, tools, 3);
+        final_reload
+            .ensure_session_loaded(&session.id)
+            .await
+            .unwrap();
+        assert!(
+            final_reload
+                .pending_interactions(&session.id, crate::interaction::InteractionKind::Ask)
+                .await
+                .is_empty()
+        );
+        assert!(
+            final_reload
+                .pending_interactions(&session.id, crate::interaction::InteractionKind::Confirm)
+                .await
+                .is_empty()
+        );
+
+        // Resolving the last pending confirmation reactivates the session.
+        assert_eq!(
+            reloaded.get_active_session_status(&session.id).await,
             Some(SessionStatus::Pending)
         );
     }

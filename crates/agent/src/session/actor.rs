@@ -16,8 +16,10 @@ use crate::interaction::{InteractionKind, InteractionRequest, InteractionStatus}
 use crate::react::{LoopExit, ReActEngine, ReActState, RunInput, RunReplay};
 use futures_util::FutureExt;
 use haven_common::types::MessageAttachment;
+#[cfg(test)]
+use haven_memory::Database;
 use haven_memory::{
-    Database, INTERACTION_CLEARED_EVENT_TYPE, INTERACTION_REQUESTED_EVENT_TYPE,
+    INTERACTION_CLEARED_EVENT_TYPE, INTERACTION_REQUESTED_EVENT_TYPE,
     INTERACTION_RESOLVED_EVENT_TYPE, SessionStore,
 };
 use haven_tools::inbox::{Envelope, MessageType};
@@ -833,12 +835,12 @@ enum ActiveReactRun {
 /// Replay only the interaction domain events needed to initialize a fresh
 /// actor.  The transcript, messages and steps are intentionally absent from
 /// this reducer: they are projections for UI/history and never recovery input.
-pub(crate) fn load_interactions(
+pub(crate) async fn load_interactions(
     store: &SessionStore,
     session_id: &str,
 ) -> anyhow::Result<Vec<InteractionRequest>> {
     let mut interactions: Vec<InteractionRequest> = Vec::new();
-    for event in store.read_active_domain_events(session_id)? {
+    for event in store.read_active_domain_events_async(session_id).await? {
         match event.event_type.as_str() {
             INTERACTION_REQUESTED_EVENT_TYPE | INTERACTION_RESOLVED_EVENT_TYPE => {
                 let request: InteractionRequest =
@@ -882,30 +884,15 @@ pub(crate) fn load_interactions(
 }
 
 async fn append_interaction_event(
-    db: &Arc<Database>,
     store: &SessionStore,
     session_id: &str,
     event_type: &str,
     payload: String,
 ) -> anyhow::Result<()> {
-    let store = store.clone();
-    let session_id = session_id.to_string();
-    let event_type = event_type.to_string();
-    db.run_blocking(move |_| {
-        store.append(&session_id, &event_type, &payload, None, None)?;
-        Ok(())
-    })
-    .await
-}
-
-fn restore_interaction(state: &mut SessionState, resolved: &InteractionRequest) {
-    let mut pending = resolved.clone();
-    pending.status = InteractionStatus::Pending;
-    pending.response = None;
-    state
-        .interactions
-        .retain(|request| request.id != pending.id);
-    state.interactions.push(pending);
+    store
+        .append_domain_event(session_id, event_type, &payload)
+        .await?;
+    Ok(())
 }
 
 fn panic_reason(payload: Box<dyn Any + Send>) -> String {
@@ -917,7 +904,6 @@ fn panic_reason(payload: Box<dyn Any + Send>) -> String {
 }
 
 pub(crate) fn spawn(
-    db: Arc<Database>,
     store: SessionStore,
     info: SessionInfo,
     interactions: Vec<InteractionRequest>,
@@ -1042,19 +1028,17 @@ pub(crate) fn spawn(
                         response,
                         reply,
                     } => {
-                        let result = resolve_interaction(&mut state, &request_id, response);
+                        let result = resolve_interaction(&state, &request_id, response);
                         let result = match result {
                             Some(decision) => {
                                 let payload = match serde_json::to_string(&decision.request) {
                                     Ok(payload) => payload,
                                     Err(error) => {
-                                        restore_interaction(&mut state, &decision.request);
                                         let _ = reply.send(Err(error.into()));
                                         continue;
                                     }
                                 };
                                 let persisted = append_interaction_event(
-                                    &db,
                                     &store,
                                     &state.info.id,
                                     INTERACTION_RESOLVED_EVENT_TYPE,
@@ -1062,11 +1046,17 @@ pub(crate) fn spawn(
                                 )
                                 .await;
                                 match persisted {
-                                    Ok(()) => Ok(Some(decision)),
-                                    Err(error) => {
-                                        restore_interaction(&mut state, &decision.request);
-                                        Err(error)
+                                    Ok(()) => {
+                                        if let Some(request) = state
+                                            .interactions
+                                            .iter_mut()
+                                            .find(|request| request.id == decision.request.id)
+                                        {
+                                            *request = decision.request.clone();
+                                        }
+                                        Ok(Some(decision))
                                     }
+                                    Err(error) => Err(error),
                                 }
                             }
                             None => Ok(None),
@@ -1084,7 +1074,6 @@ pub(crate) fn spawn(
                         } else {
                             let payload = serde_json::json!({ "ids": ids });
                             append_interaction_event(
-                                &db,
                                 &store,
                                 &state.info.id,
                                 INTERACTION_CLEARED_EVENT_TYPE,
@@ -1321,7 +1310,6 @@ pub(crate) fn spawn(
                     let result = match serde_json::to_string(&request) {
                         Ok(payload) => {
                             append_interaction_event(
-                                &db,
                                 &store,
                                 &state.info.id,
                                 INTERACTION_REQUESTED_EVENT_TYPE,
@@ -1369,7 +1357,6 @@ pub(crate) fn spawn(
                         match serde_json::to_string(&payload) {
                             Ok(payload) => {
                                 append_interaction_event(
-                                    &db,
                                     &store,
                                     &state.info.id,
                                     INTERACTION_CLEARED_EVENT_TYPE,
@@ -1870,30 +1857,27 @@ fn take_action_results(
 }
 
 fn resolve_interaction(
-    state: &mut SessionState,
+    state: &SessionState,
     request_id: &str,
     response: Value,
 ) -> Option<ConfirmDecision> {
-    let index = state
+    let request = state
         .interactions
         .iter()
-        .position(|request| request.id == request_id)?;
-    let resolved = {
-        let request = &mut state.interactions[index];
-        if request.status != InteractionStatus::Pending
-            || request.kind != InteractionKind::Confirm
-            || !response.is_boolean()
-            || !request.resolve(response)
-        {
-            return None;
-        }
-        request.clone()
-    };
+        .find(|request| request.id == request_id)?;
+    let mut resolved = request.clone();
+    if resolved.status != InteractionStatus::Pending
+        || resolved.kind != InteractionKind::Confirm
+        || !response.is_boolean()
+        || !resolved.resolve(response)
+    {
+        return None;
+    }
     let wake_session = state
         .interactions
         .iter()
         .filter(|entry| entry.kind == InteractionKind::Confirm)
-        .all(|entry| entry.status != InteractionStatus::Pending);
+        .all(|entry| entry.id == resolved.id || entry.status != InteractionStatus::Pending);
     Some(ConfirmDecision {
         request: resolved,
         wake_session,
@@ -2004,9 +1988,9 @@ mod queue_tests {
         let directory = tempfile::tempdir().expect("temporary database directory");
         let db_path = directory.path().join("actor.db");
         let db = Arc::new(Database::open(&db_path).expect("temporary database"));
-        let store = SessionStore::new(db.clone());
+        let store = SessionStore::new(db);
         let info = empty_state().info;
-        let actor = spawn(db, store, info, Vec::new());
+        let actor = spawn(store, info, Vec::new());
         assert!(actor.begin_direct_run().await);
 
         let (started_tx, mut started_rx) = watch::channel(false);

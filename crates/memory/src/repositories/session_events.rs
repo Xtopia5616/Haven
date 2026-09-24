@@ -1019,6 +1019,27 @@ impl SessionStore {
             .map(|mut events| events.remove(0))
     }
 
+    /// Append a non-transcript domain event through the session persistence
+    /// boundary. The caller owns the domain payload and policy; this port only
+    /// schedules the existing append operation on SQLite's blocking pool.
+    /// Domain events have no run or step association. The existing append
+    /// implementation continues to broadcast the committed event to live
+    /// subscribers.
+    pub async fn append_domain_event(
+        &self,
+        session_id: &str,
+        event_type: &str,
+        payload: &str,
+    ) -> anyhow::Result<SessionEvent> {
+        let store = self.clone();
+        let session_id = session_id.to_owned();
+        let event_type = event_type.to_owned();
+        let payload = payload.to_owned();
+        self.db
+            .run_blocking(move |_| store.append(&session_id, &event_type, &payload, None, None))
+            .await
+    }
+
     /// Append a batch in one SQLite transaction.  Sequence allocation happens
     /// under `BEGIN IMMEDIATE`, so concurrent sessions and concurrent writers
     /// cannot produce duplicate per-session cursors.
@@ -2243,6 +2264,19 @@ impl SessionStore {
             .collect())
     }
 
+    /// Read active non-transcript domain events through the session
+    /// persistence boundary on SQLite's blocking pool.
+    pub async fn read_active_domain_events_async(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Vec<SessionEvent>> {
+        let store = self.clone();
+        let session_id = session_id.to_owned();
+        self.db
+            .run_blocking(move |_| store.read_active_domain_events(&session_id))
+            .await
+    }
+
     /// Return the latest active branch point for each step. Branch points are
     /// control events and are intentionally kept separate from transcript
     /// replay, but they share the same rollback cursor and audit log.
@@ -3052,6 +3086,32 @@ mod tests {
         assert_eq!(session.status, SessionStatus::Pending);
         assert!(store.session_record(&session.id).unwrap().is_some());
         assert_eq!(store.latest_sequence(&session.id).unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn session_store_async_domain_event_ports_preserve_append_and_live_replay() {
+        let (_db, store, session_id) = store();
+        let mut live = store.subscribe();
+        let payload = r#"{"id":"step-interaction","status":"pending"}"#;
+
+        let appended = store
+            .append_domain_event(&session_id, INTERACTION_REQUESTED_EVENT_TYPE, payload)
+            .await
+            .unwrap();
+
+        assert_eq!(appended.sequence, 1);
+        assert_eq!(appended.event_type, INTERACTION_REQUESTED_EVENT_TYPE);
+        assert_eq!(appended.payload, payload);
+        assert_eq!(appended.run_id, None);
+        assert_eq!(appended.step_number, None);
+        assert_eq!(live.recv().await.unwrap(), appended);
+        assert_eq!(
+            store
+                .read_active_domain_events_async(&session_id)
+                .await
+                .unwrap(),
+            vec![appended]
+        );
     }
 
     #[test]
