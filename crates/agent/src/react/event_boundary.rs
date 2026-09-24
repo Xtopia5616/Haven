@@ -296,23 +296,12 @@ impl ReActEngine {
         if summary.is_empty() {
             return;
         }
-        let db = self.db.clone();
         let session_id = session_id.to_string();
-        let summary = summary.to_string();
         let episode_id = episode_id.to_string();
         let enqueue_extraction = summary.len() >= 24;
-        let session_id_owned = session_id.clone();
-        let summary_for_db = summary.clone();
-        let episode_id_for_db = episode_id.clone();
-        if let Err(e) = db
-            .run_blocking(move |db| {
-                db.add_episode_with_pending_extraction(
-                    &session_id_owned,
-                    &summary_for_db,
-                    &episode_id_for_db,
-                    enqueue_extraction,
-                )
-            })
+        if let Err(e) = self
+            .memory_store
+            .persist_compaction_summary(&session_id, summary, &episode_id, enqueue_extraction)
             .await
         {
             tracing::warn!(
@@ -922,31 +911,19 @@ impl ReActEngine {
         phase: &str,
         status: RecoveryPersistenceStatus,
     ) -> bool {
-        let store = self.event_store.clone();
-        let sid = session_id.to_string();
         let phase = phase.to_string();
-        let phase_for_write = phase.clone();
         match self
-            .db
-            .run_blocking(move |db| {
-                // Synthetic ReAct unit tests do not create a session row. As
-                // with the existing event writer, keep those tests side
-                // effect free while production sessions get the durable mark.
-                if db.get_session(&sid)?.is_none() {
-                    return Ok(true);
-                }
-                store.append_recovery_persistence(
-                    &sid,
-                    run_id,
-                    step_number,
-                    &phase_for_write,
-                    status,
-                )?;
-                Ok(true)
-            })
+            .event_store
+            .append_recovery_persistence_if_session_exists(
+                session_id,
+                run_id,
+                step_number,
+                &phase,
+                status,
+            )
             .await
         {
-            Ok(value) => value,
+            Ok(()) => true,
             Err(error) => {
                 tracing::error!(
                     session_id,
@@ -973,16 +950,9 @@ impl ReActEngine {
         force: bool,
     ) -> anyhow::Result<()> {
         let _ = force;
-        let store = self.event_store.clone();
-        let sid = session_id.to_string();
-        let (_, cursor) = self
-            .db
-            .run_blocking(move |db| {
-                if db.get_session(&sid)?.is_none() {
-                    anyhow::bail!("session '{}' disappeared before branch-point append", sid);
-                }
-                store.append_branch_point_from_projection(&sid, step_number, None)
-            })
+        let cursor = self
+            .event_store
+            .append_branch_point_from_projection_for_existing_session(session_id, step_number, None)
             .await
             .map_err(|error| {
                 tracing::warn!(

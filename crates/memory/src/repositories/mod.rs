@@ -6,6 +6,7 @@ pub(crate) mod fact_query;
 pub mod fact_store;
 pub mod facts;
 pub mod kv_store;
+pub mod memory_store;
 pub mod messages;
 pub mod nodes;
 pub mod partials;

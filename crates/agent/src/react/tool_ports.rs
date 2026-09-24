@@ -73,7 +73,7 @@ mod tests {
             Arc::new(LlmRouter::new(RouterConfig::default())),
             Arc::clone(&tool_catalog),
             executor,
-            db,
+            haven_memory::MemoryStore::new(db.clone()),
             1,
             ContextLimitsConfig::default(),
         );

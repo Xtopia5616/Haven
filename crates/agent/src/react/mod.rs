@@ -13,7 +13,9 @@ use haven_common::media::{
 use haven_common::types::MessageAttachment;
 use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart, LlmCallKind};
 use haven_llm::{FinishReason, LlmResponse, LlmRouter, ToolDefinition};
-use haven_memory::{Database, SessionStore};
+#[cfg(test)]
+use haven_memory::Database;
+use haven_memory::{MemoryStore, SessionStore};
 
 use crate::compactor::{ContextCompactor, estimate_provider_request_tokens_with_message_estimate};
 use crate::event::{AgentEvent, AgentEventEmitter, EventDispatcher, UsagePayload};
@@ -22,6 +24,8 @@ use crate::types::TranscriptRecord;
 use crate::types::{Action, media_inputs_from_events};
 
 mod committed_ui;
+#[cfg(test)]
+mod compaction_summary_tests;
 mod context;
 mod effects;
 mod event_boundary;
@@ -319,8 +323,8 @@ pub struct ReActEngine {
     executor: Arc<SessionSupervisor>,
     /// Agent-owned read boundary for immutable per-session tool catalogs.
     tool_catalog: Arc<dyn ToolCatalogPort>,
-    /// Database access for the event-boundary and transcript persistence paths.
-    db: Arc<Database>,
+    /// Durable episode-summary writes are owned by Memory's narrow store port.
+    memory_store: MemoryStore,
     /// Durable transcript/event boundary. All new transcript records are
     /// appended here before entering the in-memory projection; checkpoint
     /// metadata is written through the same store.
@@ -387,7 +391,7 @@ impl ReActEngine {
         router: Arc<LlmRouter>,
         tool_catalog: Arc<dyn ToolCatalogPort>,
         executor: Arc<SessionSupervisor>,
-        db: Arc<Database>,
+        memory_store: MemoryStore,
         max_steps: u32,
         context_limits: ContextLimitsConfig,
     ) -> Self {
@@ -400,7 +404,7 @@ impl ReActEngine {
             router: Arc::new(RwLock::new(router)),
             executor,
             tool_catalog,
-            db,
+            memory_store,
             event_store,
             usage_runtime,
             max_steps: Mutex::new(max_steps),

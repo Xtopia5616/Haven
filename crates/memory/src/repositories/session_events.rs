@@ -1112,6 +1112,63 @@ impl SessionStore {
         }
     }
 
+    /// Append a recovery protocol marker on SQLite's blocking pool. Synthetic
+    /// Agent tests may use a session id without a durable session row; retain
+    /// their historical successful no-op behavior inside this boundary.
+    pub async fn append_recovery_persistence_if_session_exists(
+        &self,
+        session_id: &str,
+        run_id: u64,
+        step_number: u32,
+        phase: &str,
+        status: RecoveryPersistenceStatus,
+    ) -> anyhow::Result<()> {
+        let store = self.clone();
+        let session_id = session_id.to_owned();
+        let phase = phase.to_owned();
+        self.db
+            .run_blocking(move |db| {
+                if db.get_session(&session_id)?.is_none() {
+                    return Ok(());
+                }
+                store.append_recovery_persistence(
+                    &session_id,
+                    run_id,
+                    step_number,
+                    &phase,
+                    status,
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
+    /// Append a branch point using the projection clocks observed under its
+    /// existing transaction. The durable-session check and append stay within
+    /// one blocking-pool operation, preserving the caller's not-found error.
+    pub async fn append_branch_point_from_projection_for_existing_session(
+        &self,
+        session_id: &str,
+        step_number: u32,
+        run_id: Option<u64>,
+    ) -> anyhow::Result<SessionCursor> {
+        let store = self.clone();
+        let session_id = session_id.to_owned();
+        self.db
+            .run_blocking(move |db| {
+                if db.get_session(&session_id)?.is_none() {
+                    anyhow::bail!(
+                        "session '{}' disappeared before branch-point append",
+                        session_id
+                    );
+                }
+                let (_, cursor) =
+                    store.append_branch_point_from_projection(&session_id, step_number, run_id)?;
+                Ok(cursor)
+            })
+            .await
+    }
+
     /// Return the latest user-message projection clock without exposing the
     /// underlying `messages` repository to Agent recovery code.
     pub fn last_user_message_at(&self, session_id: &str) -> anyhow::Result<Option<String>> {
@@ -2843,6 +2900,65 @@ mod tests {
                 .unwrap(),
             replay.cursor
         );
+    }
+
+    #[tokio::test]
+    async fn session_store_react_marker_ports_preserve_session_check_behavior() {
+        let (_db, store, session_id) = store();
+        let cursor = store
+            .append_branch_point_from_projection_for_existing_session(&session_id, 3, Some(7))
+            .await
+            .unwrap();
+        assert_eq!(cursor, SessionCursor::default());
+        assert_eq!(store.read_all(&session_id).unwrap().len(), 1);
+
+        let missing_session_id = haven_common::types::new_id("ses");
+        let error = store
+            .append_branch_point_from_projection_for_existing_session(
+                &missing_session_id,
+                4,
+                Some(8),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("disappeared before branch-point append")
+        );
+        store
+            .append_recovery_persistence_if_session_exists(
+                &missing_session_id,
+                8,
+                4,
+                "failed",
+                RecoveryPersistenceStatus {
+                    branch_point: false,
+                    partial_messages: false,
+                    projection: false,
+                    event_boundary: false,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(store.read_all(&session_id).unwrap().len(), 1);
+
+        store
+            .append_recovery_persistence_if_session_exists(
+                &session_id,
+                8,
+                4,
+                "failed",
+                RecoveryPersistenceStatus {
+                    branch_point: true,
+                    partial_messages: false,
+                    projection: false,
+                    event_boundary: true,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(store.read_all(&session_id).unwrap().len(), 2);
     }
 
     #[tokio::test]

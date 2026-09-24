@@ -49,6 +49,7 @@ impl AgentLayer {
         context_limits: ContextLimitsConfig,
     ) -> Self {
         let events = Arc::new(EventDispatcher::new());
+        let memory_store = haven_memory::MemoryStore::new(db.clone());
         let memory_service = Arc::new(MemoryService::new(
             db.clone(),
             Some(router.clone()),
@@ -83,7 +84,7 @@ impl AgentLayer {
                 router.clone(),
                 tool_catalog,
                 executor.clone(),
-                db.clone(),
+                memory_store,
                 max_steps,
                 context_limits.clone(),
             )

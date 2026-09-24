@@ -396,6 +396,11 @@ impl MemoryWorker {
         self.outbox.lock().ok()?.get(session_id).copied()
     }
 
+    #[cfg(test)]
+    pub(crate) fn pending_summary_outbox_value_for_test(&self, episode_id: &str) -> Option<String> {
+        self.summary_outbox.lock().ok()?.get(episode_id).cloned()
+    }
+
     fn enqueue_memory(self: &Arc<Self>, session_id: String, bypass_throttle: bool) {
         if let Ok(mut pending) = self.outbox.lock() {
             let entry = pending.entry(session_id).or_insert(false);

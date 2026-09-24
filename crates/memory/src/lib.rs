@@ -13,6 +13,7 @@ pub use recall::{
     MemoryRetriever,
 };
 pub use repositories::fact_store::MemoryFactStore;
+pub use repositories::memory_store::MemoryStore;
 pub use repositories::session_events::{
     BRANCH_POINT_EVENT_TYPE, CURRENT_EVENT_VERSION, INTERACTION_CLEARED_EVENT_TYPE,
     INTERACTION_REQUESTED_EVENT_TYPE, INTERACTION_RESOLVED_EVENT_TYPE,
