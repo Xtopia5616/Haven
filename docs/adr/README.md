@@ -247,3 +247,4 @@
 - [0256：Ingress 与 recovery 消息通过 SessionStore 持久化](0256-session-message-session-store-port.md)
 - [0257：显式注入 ReAct 工具目录 port](0257-explicit-tool-catalog-injection.md)
 - [0258：失败会话 action-step 清理通过 SessionStore](0258-failed-action-step-cleanup-session-store-port.md)
+- [0259：MemoryRuntime 消费已提交会话事件（设计已采纳；实现未开始）](0259-memory-runtime-committed-event-consumer.md)
