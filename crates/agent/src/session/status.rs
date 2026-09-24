@@ -342,10 +342,7 @@ impl SessionSupervisor {
             self.quiesce_session(session_id).await?;
             let _lifecycle = self.lifecycle_guard().await;
             self.remove_session_locked(session_id).await?;
-            let db = self.db.clone();
-            let session_id = session_id.to_string();
-            db.run_blocking(move |db| db.delete_session(&session_id))
-                .await
+            self.store.delete_session(session_id).await
         }
         .await
     }
@@ -358,7 +355,7 @@ impl SessionSupervisor {
             self.quiesce_all_sessions(false).await?;
             let _lifecycle = self.lifecycle_guard().await;
             self.clear_all_sessions_locked().await?;
-            self.db.clone().run_blocking(|db| db.clear_sessions()).await
+            self.store.clear_sessions().await
         }
         .await
     }

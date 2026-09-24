@@ -329,6 +329,28 @@ impl SessionStore {
             .await
     }
 
+    /// Delete one durable session through the session persistence boundary.
+    ///
+    /// The existing Database method remains responsible for cascades,
+    /// session-scoped cleanup, and cache invalidation. Dropping this future
+    /// cannot interrupt a write already running on Tokio's blocking pool.
+    pub async fn delete_session(&self, session_id: &str) -> anyhow::Result<()> {
+        let session_id = session_id.to_owned();
+        self.db
+            .run_blocking(move |db| db.delete_session(&session_id))
+            .await
+    }
+
+    /// Atomically clear durable sessions through the session persistence
+    /// boundary and return the number of deleted session rows.
+    ///
+    /// The existing Database method remains responsible for the transaction,
+    /// session-scoped cleanup, and cache invalidation. Dropping this future
+    /// cannot interrupt a write already running on Tokio's blocking pool.
+    pub async fn clear_sessions(&self) -> anyhow::Result<usize> {
+        self.db.clone().run_blocking(|db| db.clear_sessions()).await
+    }
+
     /// Load the latest textual messages for a fresh-run conversation window.
     ///
     /// The underlying query preserves its existing message-type filter,
@@ -2581,6 +2603,63 @@ mod tests {
             db.get_session(&session_id).unwrap().unwrap().status,
             SessionStatus::Running
         );
+    }
+
+    #[tokio::test]
+    async fn session_store_deletes_session_and_preserves_database_cleanup_and_error() {
+        let (db, store, session_id) = store();
+        db.add_message(
+            &session_id,
+            "user",
+            "keep only until delete",
+            Some("text"),
+            None,
+        )
+        .unwrap();
+        db.get_session_messages(&session_id).unwrap();
+        let kv_key = format!("fact_extraction_pending.{session_id}");
+        db.set_kv(&kv_key, "1").unwrap();
+
+        store.delete_session(&session_id).await.unwrap();
+
+        assert!(db.get_session(&session_id).unwrap().is_none());
+        assert!(db.get_session_messages(&session_id).unwrap().is_empty());
+        assert!(db.get_kv(&kv_key).unwrap().is_none());
+        let error = store.delete_session(&session_id).await.unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!("session '{}' not found in database", session_id)
+        );
+    }
+
+    #[tokio::test]
+    async fn session_store_clears_sessions_and_returns_deleted_row_count() {
+        let (db, store, first_session_id) = store();
+        let second = db.create_session("second input").unwrap();
+        db.add_message(
+            &first_session_id,
+            "user",
+            "first message",
+            Some("text"),
+            None,
+        )
+        .unwrap();
+        db.add_message(&second.id, "user", "second message", Some("text"), None)
+            .unwrap();
+        let kv_key = format!("fact_extraction_pending.{first_session_id}");
+        db.set_kv(&kv_key, "1").unwrap();
+
+        assert_eq!(store.clear_sessions().await.unwrap(), 2);
+
+        assert_eq!(db.count_sessions().unwrap(), 0);
+        assert!(
+            db.get_session_messages(&first_session_id)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(db.get_session_messages(&second.id).unwrap().is_empty());
+        assert!(db.get_kv(&kv_key).unwrap().is_none());
+        assert_eq!(store.clear_sessions().await.unwrap(), 0);
     }
 
     #[tokio::test]

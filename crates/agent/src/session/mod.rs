@@ -948,11 +948,68 @@ mod tests {
     async fn delete_session_removes_durable_row_and_actor_together() {
         let exec = make_executor(1);
         let session = exec.create_session("delete atomically").await.unwrap();
+        exec.db
+            .add_message(
+                &session.id,
+                "user",
+                "delete with session",
+                Some("text"),
+                None,
+            )
+            .unwrap();
+        exec.db
+            .set_kv(&format!("fact_extraction_pending.{}", session.id), "1")
+            .unwrap();
 
         exec.delete_session(&session.id).await.unwrap();
 
         assert!(exec.actor_for(&session.id).await.is_none());
         assert!(exec.db.get_session(&session.id).unwrap().is_none());
+        assert!(
+            exec.db
+                .get_session_messages(&session.id)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            exec.db
+                .get_kv(&format!("fact_extraction_pending.{}", session.id))
+                .unwrap()
+                .is_none()
+        );
+        let error = exec.delete_session(&session.id).await.unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            format!("session '{}' not found in database", session.id)
+        );
+    }
+
+    #[tokio::test]
+    async fn clear_sessions_and_delete_clears_actors_and_returns_deleted_count() {
+        let exec = make_executor(1);
+        let first = exec.create_session("first to clear").await.unwrap();
+        let second = exec.create_session("second to clear").await.unwrap();
+        exec.db
+            .add_message(&first.id, "user", "first message", Some("text"), None)
+            .unwrap();
+        exec.db
+            .add_message(&second.id, "user", "second message", Some("text"), None)
+            .unwrap();
+        let kv_key = format!("fact_extraction_pending.{}", first.id);
+        exec.db.set_kv(&kv_key, "1").unwrap();
+
+        assert_eq!(exec.clear_sessions_and_delete().await.unwrap(), 2);
+
+        assert!(exec.actors.lock().await.is_empty());
+        assert!(exec.pending_queue.lock().await.is_empty());
+        assert!(exec.direct_run_waiters.lock().await.is_empty());
+        assert_eq!(exec.db.count_sessions().unwrap(), 0);
+        assert!(exec.db.get_session(&first.id).unwrap().is_none());
+        assert!(exec.db.get_session(&second.id).unwrap().is_none());
+        assert!(exec.db.get_session_messages(&first.id).unwrap().is_empty());
+        assert!(exec.db.get_session_messages(&second.id).unwrap().is_empty());
+        assert!(exec.db.get_kv(&kv_key).unwrap().is_none());
+        assert_eq!(exec.clear_sessions_and_delete().await.unwrap(), 0);
     }
 
     #[tokio::test]
