@@ -14,7 +14,8 @@ use haven_memory::repositories::facts::{
     is_sensitive_predicate, is_single_valued_predicate,
 };
 use haven_memory::{
-    Database, MemoryFactExtractionStore, MemoryFactStore, MemoryFactWrite, MemoryStore,
+    Database, MemoryFactExtractionStore, MemoryFactStore, MemoryFactWrite, MemoryMaintenanceStore,
+    MemoryStore,
 };
 use tokio::sync::{Notify, Semaphore};
 use tokio_util::sync::CancellationToken;
@@ -39,10 +40,11 @@ pub struct MemoryWorker {
     memory_store: MemoryStore,
     fact_store: MemoryFactStore,
     fact_extraction_store: MemoryFactExtractionStore,
-    // Remaining raw-DB work: maintenance, summary-extraction state, and
-    // contradiction/predicate work. Ordinary session extraction state,
-    // prepared fact-batch writes, and durable outbox markers use dedicated
-    // Memory stores; embedding catch-up uses MemoryService.
+    maintenance_store: MemoryMaintenanceStore,
+    // Remaining raw-DB work: LLM contradiction arbitration/predicate merges,
+    // and summary-extraction state/shared throttle. Fact writes, deterministic
+    // maintenance, ordinary extraction state, and outbox markers use Memory
+    // stores; embedding catch-up uses MemoryService.
     db: MemoryDatabase,
     inference: Arc<dyn MemoryInferencePort>,
     /// Cap (chars) for transcripts sent to the SmallModel for fact
@@ -95,6 +97,16 @@ pub struct MemoryWorker {
     prompt_prefetch_slots: Arc<Semaphore>,
 }
 
+fn ensure_memory_maintenance_active(
+    cancellation: Option<&CancellationToken>,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !cancellation.is_some_and(CancellationToken::is_cancelled),
+        "memory maintenance cancelled"
+    );
+    Ok(())
+}
+
 impl MemoryWorker {
     pub fn new(
         db: Arc<Database>,
@@ -134,12 +146,14 @@ impl MemoryWorker {
     ) -> Self {
         let memory_store = memory.memory_store();
         let fact_extraction_store = memory.memory_fact_extraction_store();
+        let maintenance_store = memory.memory_maintenance_store();
         let db = memory.database_handle();
         Self {
             memory,
             memory_store,
             fact_store,
             fact_extraction_store,
+            maintenance_store,
             db,
             inference,
             max_transcript_chars,
@@ -960,118 +974,184 @@ impl MemoryWorker {
     /// explicit admin paths) — not the ReAct hot path, which only runs
     /// [`Self::infer_session`].
     ///
-    /// Returns the sum of rows touched by dedup / sensitive / flush / prune /
-    /// contradiction demotes / predicate rewrites (cursor cleanup and embed
-    /// catch-up are best-effort and not counted).
+    /// Returns the sum of rows touched by dedup / sensitive / rule-based
+    /// contradiction demotes / flush / embedding prune / predicate rewrites
+    /// / LLM arbitration (cursor cleanup and embedding catch-up are best-effort
+    /// and not counted).
     pub async fn run_memory_maintenance(&self) -> anyhow::Result<u64> {
-        let db = self.db.clone();
-        let cleaned = db
-            .run_blocking(move |db| {
-                let mut total = 0u64;
-                let mut failures = Vec::new();
-                match db.dedup_facts() {
-                    Ok(n) => total += n,
-                    Err(e) => {
-                        tracing::warn!("memory maintenance: dedup_facts failed: {}", e);
-                        failures.push(format!("dedup_facts: {e}"));
-                    }
-                }
-                match db.delete_sensitive_facts() {
-                    Ok(n) => total += n,
-                    Err(e) => {
-                        tracing::error!("memory maintenance: delete_sensitive_facts failed: {}", e);
-                        failures.push(format!("delete_sensitive_facts: {e}"));
-                    }
-                }
-                // X5: demote recent polarity / single-valued losers that
-                // slipped past upsert (age-capped), before low-confidence
-                // flush can delete them in the same pass.
-                match db.resolve_contradictions() {
-                    Ok(n) => {
-                        if n > 0 {
-                            tracing::info!(
-                                "memory maintenance: resolved {} contradictory fact(s)",
-                                n
-                            );
-                        }
-                        total += n;
-                    }
-                    Err(e) => {
-                        tracing::warn!("memory maintenance: resolve_contradictions failed: {}", e);
-                        failures.push(format!("resolve_contradictions: {e}"));
-                    }
-                }
-                match db.flush_low_confidence(0.3) {
-                    Ok(n) => total += n,
-                    Err(e) => {
-                        tracing::warn!("memory maintenance: flush_low_confidence failed: {}", e);
-                        failures.push(format!("flush_low_confidence: {e}"));
-                    }
-                }
-                match db.prune_orphaned_embeddings() {
-                    Ok(n) => total += n,
-                    Err(e) => {
-                        tracing::warn!(
-                            "memory maintenance: prune_orphaned_embeddings failed: {}",
-                            e
-                        );
-                        failures.push(format!("prune_orphaned_embeddings: {e}"));
-                    }
-                }
-                if let Err(e) = db.cleanup_orphan_extraction_cursors() {
-                    tracing::warn!(
-                        "memory maintenance: cleanup_orphan_extraction_cursors failed: {}",
-                        e
+        self.run_memory_maintenance_with_cancellation(None).await
+    }
+
+    pub(crate) async fn run_memory_maintenance_cancellable(
+        &self,
+        cancellation: &CancellationToken,
+    ) -> anyhow::Result<u64> {
+        self.run_memory_maintenance_with_cancellation(Some(cancellation))
+            .await
+    }
+
+    async fn run_memory_maintenance_with_cancellation(
+        &self,
+        cancellation: Option<&CancellationToken>,
+    ) -> anyhow::Result<u64> {
+        ensure_memory_maintenance_active(cancellation)?;
+        let mut cleaned = 0u64;
+        let mut failures = Vec::new();
+
+        let dedup = self.maintenance_store.dedup_facts(cancellation).await;
+        ensure_memory_maintenance_active(cancellation)?;
+        match dedup {
+            Ok(count) => cleaned += count,
+            Err(error) => {
+                tracing::warn!("memory maintenance: dedup_facts failed: {}", error);
+                failures.push(format!("dedup_facts: {error}"));
+            }
+        }
+
+        let sensitive = self
+            .maintenance_store
+            .delete_sensitive_facts(cancellation)
+            .await;
+        ensure_memory_maintenance_active(cancellation)?;
+        match sensitive {
+            Ok(count) => cleaned += count,
+            Err(error) => {
+                tracing::error!(
+                    "memory maintenance: delete_sensitive_facts failed: {}",
+                    error
+                );
+                failures.push(format!("delete_sensitive_facts: {error}"));
+            }
+        }
+
+        // X5: demote recent polarity / single-valued losers that slipped past
+        // upsert (age-capped), before low-confidence flush can delete them in
+        // the same pass.
+        let contradictions = self
+            .maintenance_store
+            .resolve_contradictions(cancellation)
+            .await;
+        ensure_memory_maintenance_active(cancellation)?;
+        match contradictions {
+            Ok(count) => {
+                if count > 0 {
+                    tracing::info!(
+                        "memory maintenance: resolved {} contradictory fact(s)",
+                        count
                     );
-                    failures.push(format!("cleanup_orphan_extraction_cursors: {e}"));
                 }
-                // provenance_item_id is FK ON DELETE SET NULL; opaque
-                // provenance_record_id values are intentional transcript refs.
-                // Still normalize empty record ids.
-                match db.cleanup_orphan_source_refs() {
-                    Ok(n) => total += n,
-                    Err(e) => {
-                        tracing::warn!(
-                            "memory maintenance: cleanup_orphan_source_refs failed: {}",
-                            e
-                        );
-                        failures.push(format!("cleanup_orphan_source_refs: {e}"));
-                    }
-                }
-                if failures.is_empty() {
-                    Ok(total)
-                } else {
-                    Err(anyhow::anyhow!(
-                        "memory maintenance failed: {}",
-                        failures.join("; ")
-                    ))
-                }
-            })
-            .await?;
+                cleaned += count;
+            }
+            Err(error) => {
+                tracing::warn!(
+                    "memory maintenance: resolve_contradictions failed: {}",
+                    error
+                );
+                failures.push(format!("resolve_contradictions: {error}"));
+            }
+        }
+
+        let low_confidence = self
+            .maintenance_store
+            .flush_low_confidence(0.3, cancellation)
+            .await;
+        ensure_memory_maintenance_active(cancellation)?;
+        match low_confidence {
+            Ok(count) => cleaned += count,
+            Err(error) => {
+                tracing::warn!("memory maintenance: flush_low_confidence failed: {}", error);
+                failures.push(format!("flush_low_confidence: {error}"));
+            }
+        }
+
+        let pruned = self
+            .maintenance_store
+            .prune_orphaned_embeddings(cancellation)
+            .await;
+        ensure_memory_maintenance_active(cancellation)?;
+        match pruned {
+            Ok(count) => cleaned += count,
+            Err(error) => {
+                tracing::warn!(
+                    "memory maintenance: prune_orphaned_embeddings failed: {}",
+                    error
+                );
+                failures.push(format!("prune_orphaned_embeddings: {error}"));
+            }
+        }
+
+        let orphan_cursors = self
+            .maintenance_store
+            .cleanup_orphan_extraction_cursors(cancellation)
+            .await;
+        ensure_memory_maintenance_active(cancellation)?;
+        if let Err(error) = orphan_cursors {
+            tracing::warn!(
+                "memory maintenance: cleanup_orphan_extraction_cursors failed: {}",
+                error
+            );
+            failures.push(format!("cleanup_orphan_extraction_cursors: {error}"));
+        }
+
+        // provenance_item_id is FK ON DELETE SET NULL; opaque
+        // provenance_record_id values are intentional transcript refs. Still
+        // normalize empty record ids.
+        let source_refs = self
+            .maintenance_store
+            .cleanup_orphan_source_refs(cancellation)
+            .await;
+        ensure_memory_maintenance_active(cancellation)?;
+        match source_refs {
+            Ok(count) => cleaned += count,
+            Err(error) => {
+                tracing::warn!(
+                    "memory maintenance: cleanup_orphan_source_refs failed: {}",
+                    error
+                );
+                failures.push(format!("cleanup_orphan_source_refs: {error}"));
+            }
+        }
+
+        if !failures.is_empty() {
+            anyhow::bail!("memory maintenance failed: {}", failures.join("; "));
+        }
+
+        ensure_memory_maintenance_active(cancellation)?;
         let merged = self.merge_predicates_with_llm().await;
+        ensure_memory_maintenance_active(cancellation)?;
         // Alias merges can create new single-valued multi-object conflicts;
         // re-run the rule keeper before LLM arbitration so merge-created
         // pairs get the same user>inferred / confidence treatment.
         let resolved_after_merge = if merged > 0 {
-            let db = self.db.clone();
-            db.run_blocking(move |db| db.resolve_contradictions())
+            match self
+                .maintenance_store
+                .resolve_contradictions(cancellation)
                 .await
-                .unwrap_or_else(|e| {
+            {
+                Ok(count) => count,
+                Err(_error) if cancellation.is_some_and(CancellationToken::is_cancelled) => {
+                    anyhow::bail!("memory maintenance cancelled")
+                }
+                Err(error) => {
                     tracing::warn!(
                         "memory maintenance: post-merge resolve_contradictions failed: {}",
-                        e
+                        error
                     );
                     0
-                })
+                }
+            }
         } else {
             0
         };
+        ensure_memory_maintenance_active(cancellation)?;
         let arbitrated = self.arbitrate_contradictions_with_llm().await;
+        ensure_memory_maintenance_active(cancellation)?;
         // Catch up on vector indexing too, so memory that accumulated while
         // the embedding model was unconfigured gets indexed once it is set up.
         // Rebuild LSH only when the side table lags the embedding rows (M5).
         self.memory.embed_new_memory().await;
         self.memory.rebuild_lsh_if_lagging().await;
+        ensure_memory_maintenance_active(cancellation)?;
         Ok(cleaned
             .saturating_add(merged)
             .saturating_add(resolved_after_merge)
@@ -2061,6 +2141,117 @@ mod tests {
     fn make_engine(db: Arc<Database>) -> MemoryWorker {
         let router = mock_router("[]");
         MemoryWorker::new(db, router, 4_000, 64, 40, 256, 0)
+    }
+
+    fn insert_orphan_embedding(db: &Database) {
+        db.conn()
+            .execute(
+                "INSERT INTO memory_embeddings
+                    (entity_type, entity_id, model, vector, text)
+                 VALUES ('fact', 'fact-orphan', 'model', x'00000000', 'orphan')",
+                [],
+            )
+            .unwrap();
+        db.conn()
+            .execute(
+                "INSERT INTO embedding_lsh (entity_type, entity_id, model, bucket)
+                 VALUES ('fact', 'fact-orphan', 'model', 1)",
+                [],
+            )
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn memory_maintenance_returns_sum_of_deterministic_success_counts() {
+        let db = temp_db();
+        db.insert_fact("user", "likes", "Go", "user", 0.5, &[])
+            .unwrap();
+        db.insert_fact("user", "likes", "Go", "user", 0.9, &[])
+            .unwrap();
+        db.insert_fact("user", "api_key", "sk-test-secret", "inferred", 0.9, &[])
+            .unwrap();
+        let stale = db
+            .insert_fact("user", "likes", "Python", "inferred", 0.1, &[])
+            .unwrap();
+        db.conn()
+            .execute(
+                "UPDATE facts SET created_at = '2000-01-01T00:00:00Z',
+                                  last_seen_at = '2000-01-01T00:00:00Z'
+                 WHERE id = ?1",
+                [&stale.id],
+            )
+            .unwrap();
+        db.insert_fact("user", "likes", "Rust", "inferred", 0.9, &[])
+            .unwrap();
+        db.insert_fact("user", "dislikes", "Rust", "user", 1.0, &[])
+            .unwrap();
+        insert_orphan_embedding(&db);
+        let worker = make_engine(db);
+
+        assert_eq!(worker.run_memory_maintenance().await.unwrap(), 5);
+    }
+
+    #[tokio::test]
+    async fn memory_maintenance_continues_after_one_store_operation_fails() {
+        let db = temp_db();
+        let fact = db
+            .insert_fact("user", "likes", "Go", "inferred", 0.8, &[])
+            .unwrap();
+        db.conn()
+            .execute(
+                "UPDATE facts SET provenance_record_id = '  ' WHERE id = ?1",
+                [&fact.id],
+            )
+            .unwrap();
+        db.set_kv("fact_extraction.ses-deadbeef", "msg-deadbeef")
+            .unwrap();
+        db.conn()
+            .execute_batch("DROP TABLE memory_embeddings")
+            .unwrap();
+        let worker = make_engine(db.clone());
+
+        let error = worker.run_memory_maintenance().await.unwrap_err();
+
+        let message = error.to_string();
+        assert!(message.contains("memory maintenance failed"));
+        assert!(message.contains("prune_orphaned_embeddings"));
+        assert!(!message.contains("cleanup_orphan_extraction_cursors"));
+        assert!(!message.contains("cleanup_orphan_source_refs"));
+        assert_eq!(
+            db.get_kv("fact_extraction.ses-deadbeef").unwrap(),
+            None,
+            "cursor cleanup after the failed prune must still run"
+        );
+        assert!(
+            db.get_fact_by_id(&fact.id)
+                .unwrap()
+                .unwrap()
+                .source_ref
+                .is_none(),
+            "source ref cleanup after the failed prune must still run"
+        );
+    }
+
+    #[tokio::test]
+    async fn memory_maintenance_cancellation_stops_before_first_database_operation() {
+        let db = temp_db();
+        let first = db
+            .insert_fact("user", "likes", "Rust", "user", 0.8, &[])
+            .unwrap();
+        db.insert_fact("user", "likes", "Rust", "user", 0.7, &[])
+            .unwrap();
+        let worker = make_engine(db.clone());
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+
+        let error = worker
+            .run_memory_maintenance_cancellable(&cancellation)
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("cancelled"));
+        assert_eq!(db.get_facts("user").unwrap().len(), 2);
+        assert!(db.get_fact_by_id(&first.id).unwrap().is_some());
     }
 
     #[test]

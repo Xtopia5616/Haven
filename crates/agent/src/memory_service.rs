@@ -16,8 +16,8 @@ use haven_memory::recall::{
     MemoryRetriever,
 };
 use haven_memory::{
-    Database, MemoryEmbeddingStore, MemoryFactExtractionStore, MemoryFactStore, MemoryRecallStore,
-    MemoryStore,
+    Database, MemoryEmbeddingStore, MemoryFactExtractionStore, MemoryFactStore,
+    MemoryMaintenanceStore, MemoryRecallStore, MemoryStore,
 };
 
 use crate::memory_index::MemoryEmbeddingIndex;
@@ -88,6 +88,7 @@ pub struct MemoryService {
     db: Arc<Database>,
     fact_store: MemoryFactStore,
     fact_extraction_store: MemoryFactExtractionStore,
+    maintenance_store: MemoryMaintenanceStore,
     memory_store: MemoryStore,
     recall_store: MemoryRecallStore,
     router: Option<Arc<LlmRouter>>,
@@ -113,6 +114,7 @@ impl MemoryService {
     pub fn new(db: Arc<Database>, router: Option<Arc<LlmRouter>>, embed_chunk_size: usize) -> Self {
         let fact_store = MemoryFactStore::new(db.clone());
         let fact_extraction_store = MemoryFactExtractionStore::new(db.clone());
+        let maintenance_store = MemoryMaintenanceStore::new(db.clone());
         let recall_store = MemoryRecallStore::new(db.clone());
         let embedding_index = router.as_ref().map(|router| {
             MemoryEmbeddingIndex::new(
@@ -125,6 +127,7 @@ impl MemoryService {
         Self {
             fact_store,
             fact_extraction_store,
+            maintenance_store,
             memory_store: MemoryStore::new(db.clone()),
             recall_store,
             db,
@@ -153,6 +156,11 @@ impl MemoryService {
     /// extraction state and transcript projections.
     pub(crate) fn memory_fact_extraction_store(&self) -> MemoryFactExtractionStore {
         self.fact_extraction_store.clone()
+    }
+
+    /// Return the shared persistence port for deterministic maintenance SQL.
+    pub(crate) fn memory_maintenance_store(&self) -> MemoryMaintenanceStore {
+        self.maintenance_store.clone()
     }
 
     pub(crate) async fn context_window(&self, fallback: u32) -> u32 {

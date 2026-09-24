@@ -322,7 +322,9 @@ impl MemoryRuntime {
                 biased;
                 _ = cancellation.cancelled() => return,
                 _ = ticker.tick() => {
-                    if let Err(error) = self.memory_worker.run_memory_maintenance().await {
+                    if let Err(error) = self.memory_worker.run_memory_maintenance_cancellable(cancellation).await
+                        && !cancellation.is_cancelled()
+                    {
                         tracing::warn!("periodic memory maintenance failed: {}", error);
                     }
                 }

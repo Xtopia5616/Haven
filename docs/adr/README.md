@@ -298,3 +298,4 @@
 - [0307：MemoryWorker 已知事实读取通过 MemoryFactStore](0307-memory-worker-known-facts-through-memory-fact-store.md)
 - [0308：MemoryWorker session 事实提取状态通过专用 Store](0308-memory-worker-fact-extraction-state-store.md)
 - [0309：MemoryWorker 事实批量写入通过 MemoryFactStore](0309-memory-worker-fact-batch-through-store.md)
+- [0310：MemoryWorker 确定性维护通过 MemoryMaintenanceStore](0310-memory-worker-deterministic-maintenance-store.md)

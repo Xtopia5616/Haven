@@ -79,10 +79,11 @@ Rust 测试应使用内存数据库或唯一临时目录，不能读写真实用
 - [架构决策记录](docs/adr/README.md)
 
 记忆事实提取的 session transcript、节流戳和用户消息游标由
-`MemoryFactExtractionStore` 持久化；窗口构造、模型调用与事实写入策略仍由
-`MemoryWorker` 管理；事实批量候选校验和写入、维护、矛盾/谓词处理、summary episode
-状态仍保留 `MemoryDatabase` 路径；embedding catch-up 沿用 `MemoryService` 的
-`MemoryEmbeddingStore` 边界，详见 ADR 0308 和架构路线图。
+`MemoryFactExtractionStore` 持久化；已清洗事实的批量写入由 `MemoryFactStore` 承接。
+`MemoryWorker` 仍负责窗口构造、模型调用与维护策略；确定性清理经
+`MemoryMaintenanceStore` 执行。LLM 矛盾仲裁/谓词合并和 summary extraction 的 episode cursor
+读写/共享节流仍保留 `MemoryDatabase` 路径；embedding catch-up 沿用 `MemoryService` 的
+`MemoryEmbeddingStore` 边界，详见 ADR 0308–0310 和架构路线图。
 
 ## 故障报告
 
