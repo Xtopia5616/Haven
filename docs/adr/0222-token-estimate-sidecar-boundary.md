@@ -1,8 +1,12 @@
 # ADR 0222：Token estimate 有界进程内缓存归属
 
-- 状态：已采纳（2026-09-24）
+- 状态：已采纳，已由 [ADR 0276](0276-react-state-owns-token-estimate.md) 取代（2026-09-24）
 - 范围：`haven-agent` 的 token estimate sidecar 与 SessionActor mailbox
 - 关联：[ADR 0214](0214-react-run-inside-session-actor.md)
+
+> 后续实现验证了该缓存只在单次 ReAct run 内复用，因此本 ADR 中“由
+> `ReActEngine` 按 session 管理”的决定已被 ADR 0276 收窄为由 `ReActState`
+> 独占；本记录保留用于说明此前从 actor mailbox 移出的中间阶段。
 
 ## 背景
 

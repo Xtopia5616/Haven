@@ -11,17 +11,17 @@
 //! token estimate 单独搬进 actor，否则这些字段旁边还会再长出缓存。
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, Ordering};
 use tokio_util::sync::CancellationToken;
 
+use crate::compactor::estimate_message_tokens;
 use crate::types::{BranchPoint, TranscriptRecord};
 use haven_common::types::CanonicalMessage;
 
-// A revision starts at zero for every freshly rebuilt state.  The generation
-// distinguishes two different in-memory projections for the same session
-// (most importantly rollback/resume) so a per-session sidecar can never
-// mistake a new canonical vector for the old revision zero.
-static NEXT_CANONICAL_GENERATION: AtomicU64 = AtomicU64::new(1);
+#[derive(Debug, Clone, Copy)]
+struct TokenEstimate {
+    message_count: usize,
+    tokens: u32,
+}
 
 /// A retry hint that belongs to the next provider request only.
 ///
@@ -51,13 +51,10 @@ pub(crate) struct ReActState {
     /// once when the durable state is loaded and updated on append, so an
     /// inbox redelivery does not rescan the complete event vector.
     applied_inject_message_ids: HashSet<String>,
-    /// Monotonic revision for the in-memory canonical projection.  The
-    /// token-estimate sidecar uses this instead of serializing the whole
-    /// transcript just to prove that its cached value is still current.
-    canonical_revision: u64,
-    /// Identity of this in-memory canonical projection.  This is deliberately
-    /// not persisted: a rebuilt state must cold-start its process-local cache.
-    canonical_generation: u64,
+    /// Process-local token estimate for this canonical projection. It is
+    /// intentionally owned by the run state so it cannot be reused by another
+    /// session or by a rebuilt projection with the same message count.
+    token_estimate: Option<TokenEstimate>,
     retry_nudge: Option<RetryNudge>,
     /// The cancellation token for the currently executing turn. This is
     /// process-local and lets synchronous persistence share the same deadline
@@ -100,31 +97,50 @@ impl ReActState {
             media_event_indices,
             canonical,
             branch_points,
-            canonical_revision: 0,
-            canonical_generation: NEXT_CANONICAL_GENERATION.fetch_add(1, Ordering::Relaxed),
+            token_estimate: None,
             retry_nudge: None,
             turn_cancel: None,
         }
     }
 
-    pub(crate) fn canonical_revision(&self) -> u64 {
-        self.canonical_revision
-    }
-
-    pub(crate) fn canonical_generation(&self) -> u64 {
-        self.canonical_generation
-    }
-
     /// Mark a non-append canonical edit (for example a MEMORY fence refresh).
-    /// The next estimate will perform one full tokenization pass because the
+    /// The next estimate will perform one full tokenization pass because any
     /// prior append delta can no longer be trusted.
     pub(crate) fn mark_canonical_changed(&mut self) {
-        self.canonical_revision = self.canonical_revision.wrapping_add(1);
+        self.token_estimate = None;
     }
 
     /// Mark one message appended to the canonical projection.
     pub(crate) fn mark_canonical_append(&mut self) {
-        self.mark_canonical_changed();
+        let Some(message) = self.canonical.last() else {
+            self.token_estimate = None;
+            return;
+        };
+        let Some(estimate) = &mut self.token_estimate else {
+            return;
+        };
+        if estimate.message_count.saturating_add(1) != self.canonical.len() {
+            self.token_estimate = None;
+            return;
+        }
+        estimate.tokens = estimate
+            .tokens
+            .saturating_add(estimate_message_tokens(std::slice::from_ref(message)));
+        estimate.message_count = self.canonical.len();
+    }
+
+    pub(crate) fn estimate_canonical_tokens(&mut self) -> u32 {
+        if let Some(estimate) = self.token_estimate
+            && estimate.message_count == self.canonical.len()
+        {
+            return estimate.tokens;
+        }
+        let tokens = estimate_message_tokens(&self.canonical);
+        self.token_estimate = Some(TokenEstimate {
+            message_count: self.canonical.len(),
+            tokens,
+        });
+        tokens
     }
 
     pub(crate) fn stage_retry_nudge(&mut self, tool_call_id: String, text: String) {
@@ -189,11 +205,9 @@ impl ReActState {
             .collect();
         self.canonical = compacted;
         self.branch_points.clear();
-        // Compaction creates a new canonical root.  Keep the generation
-        // separate from the revision so process-local caches cannot treat the
-        // post-compaction prefix as a continuation of the discarded one.
-        self.canonical_generation = NEXT_CANONICAL_GENERATION.fetch_add(1, Ordering::Relaxed);
-        self.mark_canonical_changed();
+        // Compaction creates a new canonical root. Any prior incremental
+        // estimate described the discarded projection and must be rebuilt.
+        self.token_estimate = None;
     }
 }
 
@@ -271,32 +285,53 @@ mod tests {
     }
 
     #[test]
-    fn rebuilt_state_gets_a_new_generation_even_when_revision_restarts_at_zero() {
-        let first = ReActState::new(
+    fn token_estimate_is_state_local_and_tracks_append_or_replacement() {
+        let mut first = ReActState::new(
             Vec::new(),
-            vec![CanonicalMessage::user_text("first")],
+            vec![CanonicalMessage::user_text("short")],
             HashMap::new(),
         );
-        let second = ReActState::new(
-            Vec::new(),
-            vec![CanonicalMessage::user_text("second")],
-            HashMap::new(),
+        let first_tokens = first.estimate_canonical_tokens();
+        assert_eq!(first_tokens, estimate_message_tokens(&first.canonical));
+
+        first
+            .canonical
+            .push(CanonicalMessage::user_text("appended"));
+        first.mark_canonical_append();
+        assert_eq!(
+            first.estimate_canonical_tokens(),
+            estimate_message_tokens(&first.canonical)
         );
 
-        assert_eq!(first.canonical_revision(), 0);
-        assert_eq!(second.canonical_revision(), 0);
-        assert_ne!(first.canonical_generation(), second.canonical_generation());
+        first.canonical[0] = CanonicalMessage::user_text(
+            "a substantially longer replacement with a different token cost",
+        );
+        first.mark_canonical_changed();
+        assert_eq!(
+            first.estimate_canonical_tokens(),
+            estimate_message_tokens(&first.canonical)
+        );
+
+        let mut second = ReActState::new(
+            Vec::new(),
+            vec![CanonicalMessage::user_text("a different state")],
+            HashMap::new(),
+        );
+        assert_eq!(
+            second.estimate_canonical_tokens(),
+            estimate_message_tokens(&second.canonical)
+        );
+        assert_ne!(first_tokens, second.estimate_canonical_tokens());
     }
 
     #[test]
-    fn compaction_gets_a_new_canonical_generation() {
+    fn compaction_invalidates_the_state_token_estimate() {
         let mut state = ReActState::new(
             Vec::new(),
             vec![CanonicalMessage::user_text("before")],
             HashMap::new(),
         );
-        let generation_before = state.canonical_generation();
-        let revision_before = state.canonical_revision();
+        let _ = state.estimate_canonical_tokens();
         let record = TranscriptRecord::CompactSummary {
             compacted: Vec::new(),
             media_inputs: Vec::new(),
@@ -309,7 +344,9 @@ mod tests {
 
         state.replace_with_compaction(record, vec![CanonicalMessage::user_text("after")]);
 
-        assert_ne!(state.canonical_generation(), generation_before);
-        assert_ne!(state.canonical_revision(), revision_before);
+        assert_eq!(
+            state.estimate_canonical_tokens(),
+            estimate_message_tokens(&state.canonical)
+        );
     }
 }

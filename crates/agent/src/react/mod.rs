@@ -57,7 +57,7 @@ pub(crate) use r#loop::{RunInput, RunReplay};
 use metrics::{Counter as MetricsCounter, Phase as MetricsPhase, ReActMetrics};
 pub use metrics::{MetricsSnapshot, UiMetricsSnapshot};
 pub(crate) use request_context::RequestContext;
-use sidecars::{ContextWindowCache, TokenEstimateCache};
+use sidecars::ContextWindowCache;
 pub(crate) use state::{ReActState, RetryNudge};
 pub(crate) use tool_ports::{ToolCatalogPort, ToolsManagerToolCatalogAdapter};
 use transcript::{ObservationCard, TranscriptEvent};
@@ -357,9 +357,6 @@ pub struct ReActEngine {
     context_source: ContextSource,
     /// Per-request context-window cache keyed by router instance pointer.
     context_windows: ContextWindowCache,
-    /// Bounded process-local token estimates; canonical transcript remains the
-    /// source of truth and this cache is never persisted.
-    token_estimates: TokenEstimateCache,
     /// Domain side effects (inbox / compact / infer). Thin loop only calls
     /// `hooks.before_step` / `on_pause` (Phase 3 / G1).
     hooks: LoopHooksHandle,
@@ -430,7 +427,6 @@ impl ReActEngine {
             run_counter: AtomicU64::new(0),
             context_source,
             context_windows: ContextWindowCache::new(),
-            token_estimates: TokenEstimateCache::new(),
             hooks: default_hooks(),
             memory_worker: None,
             metrics,
@@ -1067,7 +1063,6 @@ impl ReActEngine {
     /// session. UsageRuntime retains its session entry until a safe detached
     /// worker reclamation protocol exists.
     pub fn reset_cumulative_usage(&self, session_id: &str) {
-        self.reset_token_estimate(session_id);
         self.context_source.clear_session(session_id);
         self.usage_runtime.reset(session_id);
     }
@@ -1136,48 +1131,6 @@ impl ReActEngine {
         )
     }
 
-    /// Incremental token estimate for a session's canonical message list.
-    ///
-    /// The estimate is cached per session. Transcript appends update the
-    /// cached total at the projection boundary; replacement, rollback, repair,
-    /// or compaction increments the canonical revision and causes one safe
-    /// rebuild. This avoids serializing the whole history merely to validate a
-    /// cache hit.
-    pub(super) async fn estimate_canonical_tokens(
-        &self,
-        session_id: &str,
-        state: &ReActState,
-    ) -> u32 {
-        self.token_estimates.estimate(
-            session_id,
-            &state.canonical,
-            state.canonical_generation(),
-            state.canonical_revision(),
-        )
-    }
-
-    /// Keep the token sidecar synchronized with the one canonical append
-    /// boundary. This is deliberately adjacent to the transcript projector so
-    /// callers cannot forget to invalidate the estimate when adding a message.
-    pub(super) async fn note_canonical_append(&self, session_id: &str, state: &mut ReActState) {
-        state.mark_canonical_append();
-        if let Some(message) = state.canonical.last() {
-            self.token_estimates.append_message(
-                session_id,
-                message,
-                state.canonical.len(),
-                state.canonical_generation(),
-                state.canonical_revision(),
-            );
-        }
-    }
-
-    /// Drop the per-session token-estimate cache entry (called alongside
-    /// `reset_cumulative_usage` on session completion/error).
-    pub fn reset_token_estimate(&self, session_id: &str) {
-        self.token_estimates.remove(session_id);
-    }
-
     /// Check if context compaction is needed before the next LLM call.
     ///
     /// Returns `true` when a compaction actually ran (the caller re-checks
@@ -1209,7 +1162,7 @@ impl ReActEngine {
         // Compare the incremental estimate against the threshold directly;
         // `needs_compaction` would re-estimate the whole canonical and undo
         // the incremental cache.
-        let cached_message_tokens = self.estimate_canonical_tokens(&ctx.session_id, state).await;
+        let cached_message_tokens = state.estimate_canonical_tokens();
         let request_tokens = estimate_provider_request_tokens_with_message_estimate(
             &state.canonical,
             tool_defs,
@@ -1231,9 +1184,6 @@ impl ReActEngine {
                     degraded = result.degraded,
                     "compaction completed"
                 );
-                // Compaction replaced the list wholesale: the incremental
-                // estimate is stale, drop it so the next step does a full pass.
-                self.reset_token_estimate(&ctx.session_id);
                 self.apply_transcript(
                     ctx,
                     TranscriptEvent::CompactSummary {
@@ -1355,14 +1305,6 @@ mod tests {
             Arc::new(haven_tools::ToolsManager::new()),
             1,
         ));
-        let engine = ReActEngine::new(
-            Arc::new(mock_router()),
-            test_tool_catalog_port(&executor),
-            executor.clone(),
-            db,
-            4,
-            ContextLimitsConfig::default(),
-        );
         let session_id = "ses-0123456789abcdef0123456789abcdef";
         let mut state = ReActState::new(
             Vec::new(),
@@ -1371,19 +1313,18 @@ mod tests {
         );
 
         assert_eq!(
-            engine.estimate_canonical_tokens(session_id, &state).await,
+            state.estimate_canonical_tokens(),
             crate::compactor::estimate_message_tokens(&state.canonical),
         );
         state
             .canonical
             .push(text_msg(CanonicalRole::Assistant, "appended message"));
-        engine.note_canonical_append(session_id, &mut state).await;
+        state.mark_canonical_append();
         assert_eq!(
-            engine.estimate_canonical_tokens(session_id, &state).await,
+            state.estimate_canonical_tokens(),
             crate::compactor::estimate_message_tokens(&state.canonical),
         );
 
-        engine.reset_token_estimate(session_id);
         assert!(executor.actor_for_now(session_id).is_none());
     }
 

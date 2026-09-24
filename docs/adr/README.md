@@ -264,3 +264,4 @@
 - [0273：memory trigger producer 只依赖 SessionStore](0273-memory-trigger-session-store-port.md)
 - [0274：thought projection 只依赖 SessionStore](0274-thought-projection-session-store-port.md)
 - [0275：ActionService typed agent projection](0275-action-service-typed-agent-projections.md)
+- [0276：ReActState 独占 token estimate](0276-react-state-owns-token-estimate.md)

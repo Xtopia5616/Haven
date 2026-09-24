@@ -634,7 +634,7 @@ impl ReActEngine {
                     web_search_calls,
                     thinking_blocks,
                 ));
-                self.note_canonical_append(&ctx.session_id, state).await;
+                state.mark_canonical_append();
             }
             TranscriptEvent::ToolResult {
                 canonical_observation,
@@ -652,7 +652,7 @@ impl ReActEngine {
                         vec![ContentPart::text(canonical_observation)],
                         tool_call_id,
                     ));
-                    self.note_canonical_append(&ctx.session_id, state).await;
+                    state.mark_canonical_append();
                 }
             }
             TranscriptEvent::UserInject {
@@ -710,7 +710,7 @@ impl ReActEngine {
                 state
                     .canonical
                     .push(CanonicalMessage::user_with_source(content, source));
-                self.note_canonical_append(&ctx.session_id, state).await;
+                state.mark_canonical_append();
             }
             TranscriptEvent::CompactSummary {
                 compacted,

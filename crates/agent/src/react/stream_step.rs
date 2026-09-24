@@ -898,7 +898,6 @@ impl ReActEngine {
                             result.tokens_after
                         );
                         // Phase 6.1: CompactSummary via apply (emit + persist + replace).
-                        self.reset_token_estimate(&ctx.session_id);
                         if let Err(error) = self
                             .apply_transcript(
                                 ctx,

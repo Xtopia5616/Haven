@@ -139,7 +139,7 @@ impl ReActEngine {
                 ctx.run_id,
                 step_num,
             );
-            self.estimate_canonical_tokens(session_id, state).await
+            state.estimate_canonical_tokens()
         };
         let request_context = {
             let _timer = self.metrics.start(
