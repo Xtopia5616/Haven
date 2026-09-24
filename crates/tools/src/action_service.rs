@@ -323,6 +323,354 @@ pub struct ActionView {
     pub preview: Option<String>,
 }
 
+/// Typed model-facing projection of an action status.
+///
+/// `ActionView` is intentionally a UI projection and therefore is not reused
+/// here: the agent-facing shapes include live shell fields, completion output,
+/// and scheduled-action metadata. The final JSON conversion stays at the tool
+/// boundary (or in the legacy compatibility wrappers below).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum ActionStatusView {
+    NotFound {
+        action_id: String,
+    },
+    Background {
+        action_id: String,
+        state: ActionStateView,
+    },
+    Scheduled {
+        action_id: String,
+        session_id: Option<String>,
+        schedule: Box<ScheduledActionView>,
+        state: ActionStateView,
+    },
+    ScheduledTerminal {
+        action_id: String,
+        status: ActionStatus,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum ActionStateView {
+    Waiting,
+    Running {
+        started_at: String,
+        command: Option<String>,
+        shell: Option<String>,
+        output: Option<String>,
+    },
+    Completed {
+        output: String,
+        exit_code: Option<i32>,
+        truncated: bool,
+        log_path: Option<String>,
+        started_at: String,
+        finished_at: String,
+    },
+    Failed {
+        error: String,
+        error_reason: String,
+        log_path: Option<String>,
+        exit_code: Option<i32>,
+        started_at: String,
+        finished_at: String,
+    },
+    Cancelled {
+        started_at: String,
+        finished_at: String,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ScheduledActionView {
+    pub title: String,
+    pub body: String,
+    pub due_at: String,
+    pub mode: String,
+    pub tool_name: Option<String>,
+    pub tool_args: Option<Value>,
+    pub prompt: Option<String>,
+    pub watch_action_id: Option<String>,
+}
+
+/// A scoped list row. Its status remains typed until the actions tool has
+/// applied filtering and built its final JSON result.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ActionListView {
+    pub status: ActionStatus,
+    pub projection: ActionStatusView,
+    pub kind: ActionViewKind,
+    pub session_id: Option<String>,
+    pub preview: String,
+}
+
+impl ActionStateView {
+    fn from_entry(entry: &ActionEntry) -> Self {
+        match &entry.state {
+            ActionState::Waiting => Self::Waiting,
+            ActionState::Running { started_at } => Self::Running {
+                started_at: started_at.clone(),
+                command: (entry.kind == ActionKind::Background).then(|| entry.command.clone()),
+                shell: (entry.kind == ActionKind::Background).then(|| entry.shell.clone()),
+                output: entry.tail.as_ref().and_then(|tail| {
+                    let output = lock_or_recover(tail, "action_output_tail");
+                    (!output.is_empty()).then(|| output.clone())
+                }),
+            },
+            ActionState::Completed {
+                output,
+                exit_code,
+                truncated,
+                log_path,
+                started_at,
+                finished_at,
+            } => Self::Completed {
+                output: output.clone(),
+                exit_code: *exit_code,
+                truncated: *truncated,
+                log_path: log_path.clone(),
+                started_at: started_at.clone(),
+                finished_at: finished_at.clone(),
+            },
+            ActionState::Failed {
+                error,
+                error_reason,
+                log_path,
+                exit_code,
+                started_at,
+                finished_at,
+            } => Self::Failed {
+                error: error.clone(),
+                error_reason: error_reason.clone(),
+                log_path: log_path.clone(),
+                exit_code: *exit_code,
+                started_at: started_at.clone(),
+                finished_at: finished_at.clone(),
+            },
+            ActionState::Cancelled {
+                started_at,
+                finished_at,
+            } => Self::Cancelled {
+                started_at: started_at.clone(),
+                finished_at: finished_at.clone(),
+            },
+        }
+    }
+
+    fn status(&self) -> ActionStatus {
+        match self {
+            Self::Waiting => ActionStatus::Waiting,
+            Self::Running { .. } => ActionStatus::Running,
+            Self::Completed { .. } => ActionStatus::Completed,
+            Self::Failed { .. } => ActionStatus::Failed,
+            Self::Cancelled { .. } => ActionStatus::Cancelled,
+        }
+    }
+
+    fn preview(&self) -> String {
+        let source = match self {
+            Self::Running { output, .. } => output.as_deref(),
+            Self::Completed { output, .. } => Some(output.as_str()),
+            Self::Failed { error, .. } => Some(error.as_str()),
+            Self::Waiting | Self::Cancelled { .. } => None,
+        };
+        source.unwrap_or_default().chars().take(200).collect()
+    }
+
+    fn started_at(&self) -> Option<&str> {
+        match self {
+            Self::Running { started_at, .. }
+            | Self::Completed { started_at, .. }
+            | Self::Failed { started_at, .. }
+            | Self::Cancelled { started_at, .. } => Some(started_at),
+            Self::Waiting => None,
+        }
+    }
+}
+
+impl ActionStatusView {
+    pub(crate) fn status(&self) -> Option<ActionStatus> {
+        match self {
+            Self::NotFound { .. } | Self::ScheduledTerminal { .. } => match self {
+                Self::ScheduledTerminal { status, .. } => Some(*status),
+                _ => None,
+            },
+            Self::Background { state, .. } | Self::Scheduled { state, .. } => Some(state.status()),
+        }
+    }
+
+    pub(crate) fn to_json(&self, include_background_wait: bool) -> Value {
+        match self {
+            Self::NotFound { action_id } => json!({
+                "action_id": action_id,
+                "status": "not_found",
+            }),
+            Self::ScheduledTerminal { action_id, status } => json!({
+                "action_id": action_id,
+                "status": status.as_str(),
+            }),
+            Self::Background { action_id, state } => {
+                background_status_json(action_id, state, include_background_wait)
+            }
+            Self::Scheduled {
+                action_id,
+                session_id,
+                schedule,
+                state,
+            } => {
+                let mut value = json!({
+                    "id": action_id,
+                    "action_id": action_id,
+                    "kind": "scheduled",
+                    "status": state.status().as_str(),
+                    "title": schedule.title,
+                    "body": schedule.body,
+                    "mode": schedule.mode,
+                    "session_id": session_id,
+                    "tool_name": schedule.tool_name,
+                    "tool_args": schedule.tool_args,
+                    "prompt": schedule.prompt,
+                    "watch_action_id": schedule.watch_action_id,
+                    "due_at": schedule.due_at,
+                });
+                if let ActionStateView::Running { started_at, .. } = state {
+                    value["started_at"] = json!(started_at);
+                }
+                value
+            }
+        }
+    }
+}
+
+impl ActionListView {
+    pub(crate) fn to_json(&self) -> Value {
+        let mut value = self.projection.to_json(false);
+        if self.kind == ActionViewKind::Background {
+            value["session_id"] = json!(self.session_id);
+            value["kind"] = json!("background");
+            value["preview"] = json!(self.preview);
+        }
+        value
+    }
+}
+
+fn list_view_started_at(view: &ActionListView) -> Option<&str> {
+    match &view.projection {
+        ActionStatusView::Background { state, .. } | ActionStatusView::Scheduled { state, .. } => {
+            state.started_at()
+        }
+        ActionStatusView::NotFound { .. } | ActionStatusView::ScheduledTerminal { .. } => None,
+    }
+}
+
+fn scheduled_action_view(entry: &ScheduledActionEntry) -> ScheduledActionView {
+    ScheduledActionView {
+        title: entry.title.clone(),
+        body: entry.body.clone(),
+        due_at: entry.due_at.clone(),
+        mode: entry.mode.as_str().to_string(),
+        tool_name: entry.tool_name.clone(),
+        tool_args: entry.tool_args.clone(),
+        prompt: entry.prompt.clone(),
+        watch_action_id: entry.watch_action_id.clone(),
+    }
+}
+
+fn background_status_json(action_id: &str, state: &ActionStateView, include_wait: bool) -> Value {
+    match state {
+        ActionStateView::Waiting => json!({
+            "action_id": action_id,
+            "status": "waiting",
+        }),
+        ActionStateView::Running {
+            started_at,
+            command,
+            shell,
+            output,
+        } => {
+            let mut value = if include_wait {
+                haven_common::tools::background_wait_object(
+                    "The action is still running. END YOUR TURN if you have nothing else useful to do — do not poll. The result is auto-pushed and the session is auto-woken when it finishes.",
+                )
+            } else {
+                serde_json::Map::new()
+            };
+            value.insert("action_id".into(), json!(action_id));
+            value.insert("status".into(), json!("running"));
+            if let Some(command) = command {
+                value.insert("command".into(), json!(command));
+            }
+            if let Some(shell) = shell {
+                value.insert("shell".into(), json!(shell));
+            }
+            value.insert("started_at".into(), json!(started_at));
+            if let Some(output) = output {
+                value.insert("output".into(), json!(output));
+            }
+            Value::Object(value)
+        }
+        ActionStateView::Completed {
+            output,
+            exit_code,
+            truncated,
+            log_path,
+            started_at,
+            finished_at,
+        } => {
+            let mut value = json!({
+                "action_id": action_id,
+                "status": "completed",
+                "output": output,
+                "started_at": started_at,
+                "finished_at": finished_at,
+            });
+            if let Some(code) = exit_code {
+                value["exit_code"] = json!(code);
+            }
+            if *truncated {
+                value["truncated"] = json!(true);
+            }
+            if let Some(path) = log_path {
+                value["log_path"] = json!(path);
+            }
+            value
+        }
+        ActionStateView::Failed {
+            error,
+            error_reason,
+            log_path,
+            exit_code,
+            started_at,
+            finished_at,
+        } => {
+            let mut value = json!({
+                "action_id": action_id,
+                "status": "failed",
+                "error": error,
+                "error_reason": error_reason,
+                "started_at": started_at,
+                "finished_at": finished_at,
+            });
+            if let Some(code) = exit_code {
+                value["exit_code"] = json!(code);
+            }
+            if let Some(path) = log_path {
+                value["log_path"] = json!(path);
+            }
+            value
+        }
+        ActionStateView::Cancelled {
+            started_at,
+            finished_at,
+        } => json!({
+            "action_id": action_id,
+            "status": "cancelled",
+            "started_at": started_at,
+            "finished_at": finished_at,
+        }),
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct ScheduledActionEntry {
     pub(crate) title: String,
@@ -1197,6 +1545,16 @@ impl ActionService {
     /// see all background work of a session in a single call instead of polling
     /// `status` action by action. Order: oldest first.
     pub async fn list_for_session(&self, session_id: &str) -> Vec<Value> {
+        self.list_for_session_views(session_id)
+            .await
+            .into_iter()
+            .map(|row| row.to_json())
+            .collect()
+    }
+
+    /// Typed agent-facing board projection. JSON conversion is intentionally
+    /// deferred until the actions tool has applied its status filter.
+    pub(crate) async fn list_for_session_views(&self, session_id: &str) -> Vec<ActionListView> {
         let actions = self.actions.read().await;
         let mut rows = Vec::new();
         for (id, entry) in actions.iter() {
@@ -1205,30 +1563,49 @@ impl ActionService {
                     && entry.state.status().is_live()
                     && entry.session_id.as_deref() == Some(session_id)
                 {
-                    rows.push(scheduled_status_json(
-                        id,
-                        entry.session_id.as_deref(),
-                        schedule,
-                        &entry.state,
-                    ));
+                    let state = ActionStateView::from_entry(entry);
+                    let projection = ActionStatusView::Scheduled {
+                        action_id: id.clone(),
+                        session_id: entry.session_id.clone(),
+                        schedule: Box::new(ScheduledActionView {
+                            title: schedule.title.clone(),
+                            body: schedule.body.clone(),
+                            due_at: schedule.due_at.clone(),
+                            mode: schedule.mode.as_str().to_string(),
+                            tool_name: schedule.tool_name.clone(),
+                            tool_args: schedule.tool_args.clone(),
+                            prompt: schedule.prompt.clone(),
+                            watch_action_id: schedule.watch_action_id.clone(),
+                        }),
+                        state,
+                    };
+                    rows.push(ActionListView {
+                        status: projection.status().expect("scheduled view has status"),
+                        projection,
+                        kind: ActionViewKind::Scheduled,
+                        session_id: entry.session_id.clone(),
+                        preview: String::new(),
+                    });
                 }
                 continue;
             }
             if entry.session_id.as_deref() != Some(session_id) {
                 continue;
             }
-            let mut row = match &entry.state {
-                ActionState::Running { .. } => running_status_json(id, entry),
-                _ => render_status_json(id, &entry.state),
+            let state = ActionStateView::from_entry(entry);
+            let projection = ActionStatusView::Background {
+                action_id: id.clone(),
+                state: state.clone(),
             };
-            if let Some(tid) = &entry.session_id {
-                row["session_id"] = json!(tid);
-            }
-            row["kind"] = json!("background");
-            attach_preview(&mut row);
-            rows.push(row);
+            rows.push(ActionListView {
+                status: state.status(),
+                projection,
+                kind: ActionViewKind::Background,
+                session_id: entry.session_id.clone(),
+                preview: state.preview(),
+            });
         }
-        rows.sort_by(|a, b| a["started_at"].as_str().cmp(&b["started_at"].as_str()));
+        rows.sort_by(|left, right| list_view_started_at(left).cmp(&list_view_started_at(right)));
         rows
     }
 
@@ -1500,75 +1877,89 @@ impl ActionService {
 
     /// Report the current status of a action as JSON.
     pub async fn status(&self, action_id: &str) -> Value {
+        self.status_view(action_id).await.to_json(true)
+    }
+
+    /// Typed unscoped status projection. The legacy `status` method is only a
+    /// wire-compatibility serializer around this view.
+    pub(crate) async fn status_view(&self, action_id: &str) -> ActionStatusView {
         let actions = self.actions.read().await;
         let Some(entry) = actions.get(action_id) else {
-            return json!({"action_id": action_id, "status": "not_found"});
+            return ActionStatusView::NotFound {
+                action_id: action_id.to_string(),
+            };
         };
         if entry.kind == ActionKind::Scheduled {
-            return entry
-                .scheduled
-                .as_ref()
-                .map(|schedule| {
-                    if !entry.state.is_waiting() {
-                        json!({"action_id": action_id, "status": entry.state.status().as_str()})
-                    } else {
-                        scheduled_status_json(
-                            action_id,
-                            entry.session_id.as_deref(),
-                            schedule,
-                            &entry.state,
-                        )
-                    }
-                })
-                .unwrap_or_else(|| json!({"action_id": action_id, "status": "not_found"}));
+            let Some(schedule) = entry.scheduled.as_ref() else {
+                return ActionStatusView::NotFound {
+                    action_id: action_id.to_string(),
+                };
+            };
+            if !entry.state.is_waiting() {
+                return ActionStatusView::ScheduledTerminal {
+                    action_id: action_id.to_string(),
+                    status: entry.state.status(),
+                };
+            }
+            return ActionStatusView::Scheduled {
+                action_id: action_id.to_string(),
+                session_id: entry.session_id.clone(),
+                schedule: Box::new(scheduled_action_view(schedule)),
+                state: ActionStateView::from_entry(entry),
+            };
         }
-        Self::render_action_status(action_id, entry)
+        ActionStatusView::Background {
+            action_id: action_id.to_string(),
+            state: ActionStateView::from_entry(entry),
+        }
     }
 
     /// Status lookup scoped to the owning session. Agent-facing callers must
     /// never be able to enumerate another session's action by guessing its id.
     pub async fn status_for_session(&self, action_id: &str, session_id: &str) -> Value {
+        self.status_for_session_view(action_id, session_id)
+            .await
+            .to_json(true)
+    }
+
+    /// Typed status lookup scoped to the owning session.
+    pub(crate) async fn status_for_session_view(
+        &self,
+        action_id: &str,
+        session_id: &str,
+    ) -> ActionStatusView {
         let actions = self.actions.read().await;
         let Some(entry) = actions.get(action_id) else {
-            return json!({"action_id": action_id, "status": "not_found"});
+            return ActionStatusView::NotFound {
+                action_id: action_id.to_string(),
+            };
         };
         if entry.kind == ActionKind::Scheduled {
             let Some(schedule) = entry.scheduled.as_ref() else {
-                return json!({"action_id": action_id, "status": "not_found"});
+                return ActionStatusView::NotFound {
+                    action_id: action_id.to_string(),
+                };
             };
             if entry.session_id.as_deref() != Some(session_id) || !entry.state.status().is_live() {
-                return json!({"action_id": action_id, "status": "not_found"});
+                return ActionStatusView::NotFound {
+                    action_id: action_id.to_string(),
+                };
             }
-            return scheduled_status_json(
-                action_id,
-                entry.session_id.as_deref(),
-                schedule,
-                &entry.state,
-            );
+            return ActionStatusView::Scheduled {
+                action_id: action_id.to_string(),
+                session_id: entry.session_id.clone(),
+                schedule: Box::new(scheduled_action_view(schedule)),
+                state: ActionStateView::from_entry(entry),
+            };
         }
         if entry.session_id.as_deref() != Some(session_id) {
-            return json!({"action_id": action_id, "status": "not_found"});
+            return ActionStatusView::NotFound {
+                action_id: action_id.to_string(),
+            };
         }
-        Self::render_action_status(action_id, entry)
-    }
-
-    fn render_action_status(action_id: &str, entry: &ActionEntry) -> Value {
-        match &entry.state {
-            ActionState::Running { .. } => {
-                let body = running_status_json(action_id, entry);
-                let mut ordered = haven_common::tools::background_wait_object(
-                    "The action is still running. END YOUR TURN if you have nothing else useful to do — do not poll. The result is auto-pushed and the session is auto-woken when it finishes.",
-                );
-                // Move fields (including the live output tail) — do not clone
-                // the potentially large `output` string just to reorder keys.
-                if let Value::Object(obj) = body {
-                    for (k, val) in obj {
-                        ordered.insert(k, val);
-                    }
-                }
-                Value::Object(ordered)
-            }
-            _ => render_status_json(action_id, &entry.state),
+        ActionStatusView::Background {
+            action_id: action_id.to_string(),
+            state: ActionStateView::from_entry(entry),
         }
     }
 
@@ -3061,40 +3452,6 @@ fn action_finished_prompt(action_id: &str, status: &Value) -> String {
         .or_else(|| status["error"].as_str())
         .unwrap_or_default();
     format!("Background action {action_id} {state}.\nOutput:\n{payload}")
-}
-
-/// Attach a bounded `preview` (first 200 chars of output, else error) to a
-/// status row. Shared by the board and scoped-list views.
-fn attach_preview(row: &mut Value) {
-    let preview = row
-        .get("output")
-        .and_then(|v| v.as_str())
-        .or_else(|| row.get("error").and_then(|v| v.as_str()))
-        .unwrap_or("");
-    row["preview"] = json!(preview.chars().take(200).collect::<String>());
-}
-
-/// Render the running-state row for a action: the command line it is executing
-/// and the bounded live-output tail, so the agent sees what the action is doing
-/// right now instead of only "running". `output` is omitted while empty (the
-/// command has not produced anything yet).
-fn running_status_json(action_id: &str, entry: &ActionEntry) -> Value {
-    let mut v = json!({
-        "action_id": action_id,
-        "status": "running",
-        "command": entry.command,
-        "shell": entry.shell,
-    });
-    if let ActionState::Running { started_at } = &entry.state {
-        v["started_at"] = json!(started_at);
-    }
-    if let Some(tail) = &entry.tail {
-        let out = lock_or_recover(tail, "action_output_tail");
-        if !out.is_empty() {
-            v["output"] = json!(out.as_str());
-        }
-    }
-    v
 }
 
 /// Render the terminal status JSON for a action (mirrors `status()` output for

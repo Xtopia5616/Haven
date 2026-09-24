@@ -1322,6 +1322,52 @@ async fn test_unified_service_owns_scheduled_state_and_cancel() {
 }
 
 #[tokio::test]
+async fn typed_agent_views_match_legacy_json_boundary() {
+    let service = Arc::new(ActionService::new());
+    let id = service
+        .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+            due_at: None,
+            delay_secs: Some(3600),
+            watch_action_id: None,
+            title: "Typed view".into(),
+            body: "boundary compatibility".into(),
+            mode: crate::builtin::scheduled_action::ScheduleMode::Continue,
+            session_id: Some("ses-typed-view".into()),
+            tool_name: None,
+            tool_args: None,
+            prompt: Some("continue later".into()),
+        })
+        .await
+        .unwrap();
+
+    let unscoped = service.status_view(&id).await;
+    assert_eq!(unscoped.status(), Some(ActionStatus::Waiting));
+    assert_eq!(
+        unscoped.to_json(true),
+        service.status(&id).await,
+        "typed status projection must preserve the existing JSON boundary"
+    );
+
+    let scoped = service.status_for_session_view(&id, "ses-typed-view").await;
+    assert_eq!(scoped.status(), Some(ActionStatus::Waiting));
+    assert_eq!(
+        scoped.to_json(true),
+        service.status_for_session(&id, "ses-typed-view").await
+    );
+
+    let typed_rows = service.list_for_session_views("ses-typed-view").await;
+    assert_eq!(typed_rows.len(), 1);
+    assert_eq!(typed_rows[0].status, ActionStatus::Waiting);
+    assert_eq!(
+        typed_rows
+            .iter()
+            .map(ActionListView::to_json)
+            .collect::<Vec<_>>(),
+        service.list_for_session("ses-typed-view").await
+    );
+}
+
+#[tokio::test]
 async fn test_restore_scheduled_action_uses_action_session_and_schedule_due_at() {
     let dir = tempfile::TempDir::new().unwrap();
     let db = Arc::new(haven_memory::Database::open(&dir.path().join("test.db")).unwrap());

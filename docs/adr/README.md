@@ -263,3 +263,4 @@
 - [0272：UsageRuntime 只依赖 SessionStore](0272-usage-runtime-session-store-port.md)
 - [0273：memory trigger producer 只依赖 SessionStore](0273-memory-trigger-session-store-port.md)
 - [0274：thought projection 只依赖 SessionStore](0274-thought-projection-session-store-port.md)
+- [0275：ActionService typed agent projection](0275-action-service-typed-agent-projections.md)

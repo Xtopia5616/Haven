@@ -84,9 +84,9 @@ impl ActionsTool {
         {
             let status = self
                 .actions
-                .status_for_session(action_id, &session_id)
+                .status_for_session_view(action_id, &session_id)
                 .await;
-            let mut output = status;
+            let mut output = status.to_json(true);
             if let Some(object) = output.as_object_mut() {
                 object.insert("operation".into(), serde_json::json!("inspect"));
             }
@@ -95,24 +95,23 @@ impl ActionsTool {
         }
 
         let filter = params.status;
-        let mut rows = self.actions.list_for_session(&session_id).await;
+        let mut rows = self.actions.list_for_session_views(&session_id).await;
         if let Some(f) = filter {
-            rows.retain(|r| r["status"].as_str() == Some(f.as_str()));
+            rows.retain(|row| row.status == f);
         }
-        let all_running = !rows.is_empty()
-            && rows
-                .iter()
-                .all(|r| r.get("status").and_then(|s| s.as_str()) == Some("running"));
+        let all_running =
+            !rows.is_empty() && rows.iter().all(|row| row.status == ActionStatus::Running);
+        let rows_json = || rows.iter().map(|row| row.to_json()).collect::<Vec<_>>();
         if all_running {
             let mut body = haven_common::tools::background_wait_object(
                 "All listed background actions are still running. END YOUR TURN if you have nothing else useful to do — do not poll. Results are auto-pushed and the session is auto-woken when they finish.",
             );
             body.insert("operation".into(), serde_json::json!("list"));
-            body.insert("actions".into(), serde_json::json!(rows));
+            body.insert("actions".into(), serde_json::json!(rows_json()));
             return Ok(ToolResult::ok(serde_json::Value::Object(body)));
         }
         Ok(ToolResult::ok(
-            serde_json::json!({ "operation": "list", "actions": rows }),
+            serde_json::json!({ "operation": "list", "actions": rows_json() }),
         ))
     }
 }
