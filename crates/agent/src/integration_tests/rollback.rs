@@ -900,3 +900,92 @@ async fn rollback_ask_wait_pause_true_leaves_plain_paused() {
         "ask gate must be fully clear after user-edit rollback"
     );
 }
+
+#[tokio::test]
+async fn rollback_transaction_failure_keeps_agent_status_and_projections_unchanged() {
+    let (agent, executor) = make_test_agent();
+    let session = executor
+        .create_session("rollback transaction failure")
+        .await
+        .unwrap();
+    agent
+        .db
+        .update_session_status(&session.id, SessionStatus::Paused)
+        .unwrap();
+    executor
+        .update_session_status(&session.id, SessionStatus::Paused)
+        .await
+        .unwrap();
+    assert_eq!(
+        executor.get_active_session_status(&session.id).await,
+        Some(SessionStatus::Paused)
+    );
+    agent
+        .db
+        .add_message(&session.id, "user", "kept", Some("text"), None)
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    agent
+        .db
+        .add_message(
+            &session.id,
+            "assistant",
+            "would be truncated",
+            Some("text"),
+            None,
+        )
+        .unwrap();
+    seed_event_projection(
+        &agent,
+        &session.id,
+        &EventProjection {
+            events: seed_events_from_canonical(vec![CanonicalMessage::user_text("kept")]),
+            step_number: 1,
+            branch_points: HashMap::new(),
+            interactions: Vec::new(),
+        },
+    )
+    .await;
+
+    let before_messages = agent.db.get_session_messages(&session.id).unwrap();
+    let event_store = agent.react_engine.event_store.clone();
+    let before_events = event_store.read_all(&session.id).unwrap();
+    agent
+        .db
+        .conn()
+        .execute_batch(
+            r#"
+            CREATE TRIGGER reject_rollback_marker
+            BEFORE INSERT ON session_events
+            WHEN NEW.event_type = 'timeline_rollback'
+            BEGIN SELECT RAISE(ABORT, 'forced rollback transaction failure'); END;
+            "#,
+        )
+        .unwrap();
+
+    let error = agent
+        .rollback_session(&session.id, 1, false, None)
+        .await
+        .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("forced rollback transaction failure")
+    );
+    assert_eq!(
+        executor.get_active_session_status(&session.id).await,
+        Some(SessionStatus::Paused),
+        "status changes only after the rollback transaction commits"
+    );
+    assert_eq!(
+        agent.db.get_session(&session.id).unwrap().unwrap().status,
+        SessionStatus::Paused
+    );
+    assert_eq!(
+        agent.db.get_session_messages(&session.id).unwrap().len(),
+        before_messages.len(),
+        "the transaction must restore projection rows when marker append fails"
+    );
+    assert_eq!(event_store.read_all(&session.id).unwrap(), before_events);
+}

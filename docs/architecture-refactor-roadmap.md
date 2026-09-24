@@ -130,6 +130,8 @@
 
 阶段 3 小切片补充（2026-09-24）：ReAct durable replay state 读取、transcript seed 与单条 transcript 追加通过 SessionStore blocking-pool ports；Agent 保留 record 解析、ReActState 投影与解析错误语义，单条追加缺失 session 仍返回 sequence `0`，校验失败不产生 durable/live event 副作用。compaction summary、branch/rollback/recovery 的其他路径不变；ReActEngine 因剩余路径仍使用 raw Database 而保留该字段（ADR 0296）。
 
+阶段 3/2 小切片补充（2026-09-25）：rollback target 精确读取、`rollback_to` 整体事务（含 replacement transcript）与 continue recovery projection 截断改由 SessionStore 异步端口在 blocking pool 调度。Agent 保留 lifecycle cancel/join、replay 与边界策略、事件/branch trimming、tools restore、usage invalidation 和 status 更新；事务失败时成功后置步骤不运行。三条路径继续使用不可取消的 `run_blocking`，`rollback.rs` 不再自行调度 raw Database；AgentLayer、ReActEngine 其他职责的 raw Database 仍在，resume attachments、compaction summary、Tools/UI 不在本切片（ADR 0297）。
+
 阶段 7 的 MemoryRuntime committed-event 消费设计已由 ADR 0259 采纳；Phase 7.1 已完成 SessionStore 独立 event cursor/有界 durable replay/生命周期清理（ADR 0261）、按序处理核心、启动时已有 cursor 回放、bounded live/replay recovery runner，以及 AgentLayer composition/dispatcher recovery readiness barrier（ADR 0262、0263）。interval、pause hook trigger、compact-summary episode extraction 与周期 maintenance 调度已经由 typed intent/atomic episode write + durable producer/outbox/runtime schedule 接管（ADR 0264、0265、0266、0267）。MemoryReader 抽象留待后续切片；本设计不改变 recall 或 rollback facts 语义。
 
 补充：阶段 3 的 transcript batch writer 已在 `7775e11` 进一步只依赖 `SessionStore`（ADR 0255），Ingress/recovery 消息路径、失败会话 action-step 清理与生产会话创建也已通过 SessionStore typed port 收口（ADR 0256、0258、0260）；阶段 7 的无调用 recall 转发已在本轮删除（ADR 0254），compaction-summary extraction 已完成 per-episode durable marker/outbox（ADR 0266），周期 maintenance 的调度策略已归 MemoryRuntime（ADR 0267）。这些切片不改变 facts/recall/rollback 语义；完整 Job 生命周期与 MemoryReader 仍未完成。

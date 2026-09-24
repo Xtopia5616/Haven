@@ -40,23 +40,12 @@ impl AgentLayer {
         // cancel actions, clear interactions, or otherwise change session
         // state. The store repeats this lookup in its rollback transaction.
         let target_msg = match target_message_id {
-            Some(message_id) => {
-                let db = self.db.clone();
-                let session_id = session_id.to_string();
-                let message_id = message_id.to_string();
-                Some(
-                    db.run_blocking(move |db| {
-                        db.get_message_by_id(&session_id, &message_id)?
-                            .ok_or_else(|| {
-                                anyhow::anyhow!(
-                                    "rollback target message '{}' not found in session messages",
-                                    message_id
-                                )
-                            })
-                    })
+            Some(message_id) => Some(
+                self.react_engine
+                    .event_store
+                    .load_rollback_target_message(session_id, message_id)
                     .await?,
-                )
-            }
+            ),
             None if pause => {
                 return Err(anyhow::anyhow!(
                     "rollback_session {}: pause=true requires target_message_id",
@@ -284,8 +273,6 @@ impl AgentLayer {
         // Keep the database event log append-only. The marker changes the
         // active replay cursor; discarded rows remain available for audit and
         // can never leak into the resumed timeline.
-        let event_store = self.react_engine.event_store.clone();
-        let sid = session_id.to_string();
         let event_cursor = replay.events.len();
         let rollback_request = RollbackRequest {
             expected_event_sequence: replay.cursor.event_sequence,
@@ -293,11 +280,9 @@ impl AgentLayer {
             target_step,
             projection_boundary,
         };
-        self.db
-            .run_blocking(move |_| {
-                event_store.rollback_to(&sid, &rollback_request, &replacement_transcript, None)?;
-                Ok(())
-            })
+        self.react_engine
+            .event_store
+            .rollback_to_async(session_id, rollback_request, replacement_transcript, None)
             .await?;
 
         // Clear after the atomic rollback so in-memory counters re-seed from
@@ -373,10 +358,9 @@ impl AgentLayer {
 
         // The store owns the recovery marker decision and applies an
         // authorized projection cutoff in the same transaction.
-        let store = self.react_engine.event_store.clone();
-        let sid = session_id.to_string();
-        self.db
-            .run_blocking(move |_| store.truncate_projection_after_latest_committed_recovery(&sid))
+        self.react_engine
+            .event_store
+            .truncate_projection_after_latest_committed_recovery_async(session_id)
             .await?;
         // Clear after join + truncation so unwind persists cannot leave a
         // stale-high cutoff in the mid-run branch-point cache. Invalidate

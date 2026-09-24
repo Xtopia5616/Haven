@@ -1486,6 +1486,33 @@ impl SessionStore {
         )
     }
 
+    /// Read the exact persisted message selected as a rollback target.
+    ///
+    /// The session-scoped lookup and its not-found error live at the session
+    /// persistence boundary; Agent still decides whether the message is a
+    /// user message and how it relates to the restored transcript. Dropping
+    /// this future cannot interrupt a query already running on Tokio's
+    /// blocking pool.
+    pub async fn load_rollback_target_message(
+        &self,
+        session_id: &str,
+        message_id: &str,
+    ) -> anyhow::Result<Message> {
+        let session_id = session_id.to_owned();
+        let message_id = message_id.to_owned();
+        self.db
+            .run_blocking(move |db| {
+                db.get_message_by_id(&session_id, &message_id)?
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "rollback target message '{}' not found in session messages",
+                            message_id
+                        )
+                    })
+            })
+            .await
+    }
+
     /// Roll back one session timeline and all of its materialized projections
     /// in one SQLite transaction. `transcript_cursor` is an index into the
     /// active transcript returned by [`Self::load_replay_state`]; this method
@@ -1628,6 +1655,26 @@ impl SessionStore {
         }
     }
 
+    /// Run the complete rollback transaction on SQLite's blocking pool,
+    /// including its marker, projection changes, and optional replacement
+    /// transcript. Dropping this future cannot interrupt a transaction
+    /// already running on Tokio's blocking pool.
+    pub async fn rollback_to_async(
+        &self,
+        session_id: &str,
+        request: RollbackRequest,
+        replacement_transcript: Vec<SessionEventInput>,
+        run_id: Option<u64>,
+    ) -> anyhow::Result<RollbackResult> {
+        let store = self.clone();
+        let session_id = session_id.to_owned();
+        self.db
+            .run_blocking(move |_| {
+                store.rollback_to(&session_id, &request, &replacement_transcript, run_id)
+            })
+            .await
+    }
+
     /// Truncate only materialized projections through the session store.
     /// Continue/retry uses this boundary without moving the active event
     /// timeline.
@@ -1710,6 +1757,23 @@ impl SessionStore {
                 Err(error)
             }
         }
+    }
+
+    /// Apply the committed-recovery projection cutoff on SQLite's blocking
+    /// pool by reusing the existing single-transaction operation. Dropping
+    /// this future cannot interrupt a transaction already running on Tokio's
+    /// blocking pool.
+    pub async fn truncate_projection_after_latest_committed_recovery_async(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<()> {
+        let store = self.clone();
+        let session_id = session_id.to_owned();
+        self.db
+            .run_blocking(move |_| {
+                store.truncate_projection_after_latest_committed_recovery(&session_id)
+            })
+            .await
     }
 
     fn truncate_projection_after_step_in_transaction(
@@ -3839,6 +3903,141 @@ mod tests {
             target_step,
             projection_boundary,
         }
+    }
+
+    #[tokio::test]
+    async fn session_store_loads_only_the_exact_session_rollback_target() {
+        let (db, store, session_id) = store();
+        let target = db
+            .add_message(&session_id, "user", "selected", Some("text"), None)
+            .unwrap();
+        let other_session = db.create_session("other rollback target").unwrap();
+        let foreign = db
+            .add_message(&other_session.id, "user", "foreign", Some("text"), None)
+            .unwrap();
+
+        let loaded = store
+            .load_rollback_target_message(&session_id, &target.id)
+            .await
+            .unwrap();
+        assert_eq!(loaded.id, target.id);
+        assert_eq!(loaded.session_id, session_id);
+        assert_eq!(loaded.role, "user");
+
+        for missing_id in [foreign.id.as_str(), "msg-missing"] {
+            let error = store
+                .load_rollback_target_message(&session_id, missing_id)
+                .await
+                .unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                format!(
+                    "rollback target message '{}' not found in session messages",
+                    missing_id
+                )
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn session_store_async_rollback_keeps_replacement_in_the_atomic_timeline() {
+        let (_db, store, session_id) = store();
+        store
+            .append_transcript(&session_id, r#"{"type":"one"}"#, 1, 1)
+            .unwrap();
+        store
+            .append_transcript(&session_id, r#"{"type":"two"}"#, 1, 2)
+            .unwrap();
+        let mut live = store.subscribe();
+
+        let result = store
+            .rollback_to_async(
+                &session_id,
+                rollback_request(2, 1, 2, RollbackProjectionBoundary::BranchPoint),
+                vec![SessionEventInput::transcript(
+                    r#"{"type":"compact_summary","summary":"replacement root"}"#,
+                    2,
+                    2,
+                )],
+                Some(2),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(result.to_sequence, 1);
+        assert_eq!(result.replacement_events.len(), 1);
+        assert_eq!(
+            result.replacement_events[0].sequence,
+            result.marker.sequence + 1
+        );
+        assert_eq!(live.try_recv().unwrap(), result.marker);
+        assert_eq!(live.try_recv().unwrap(), result.replacement_events[0]);
+        let active = store.read_active_transcript(&session_id).unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0], result.replacement_events[0]);
+        assert_eq!(active[0].run_id, Some(2));
+        assert_eq!(store.read_all(&session_id).unwrap().len(), 4);
+    }
+
+    #[tokio::test]
+    async fn session_store_async_rollback_fails_closed_on_stale_event_cursor() {
+        let (_db, store, session_id) = store();
+        store
+            .append_transcript(&session_id, r#"{"type":"one"}"#, 1, 1)
+            .unwrap();
+        store
+            .append_transcript(&session_id, r#"{"type":"two"}"#, 1, 2)
+            .unwrap();
+        let before = store.read_all(&session_id).unwrap();
+        let mut live = store.subscribe();
+
+        let error = store
+            .rollback_to_async(
+                &session_id,
+                rollback_request(1, 1, 1, RollbackProjectionBoundary::BranchPoint),
+                Vec::new(),
+                None,
+            )
+            .await
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("event boundary changed during rollback")
+        );
+        assert_eq!(store.read_all(&session_id).unwrap().len(), before.len());
+        assert_eq!(store.read_active_transcript(&session_id).unwrap(), before);
+        assert!(matches!(
+            live.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[tokio::test]
+    async fn session_store_async_recovery_truncate_applies_committed_projection_cutoff() {
+        let (db, store, session_id) = store();
+        let kept = db
+            .add_message(&session_id, "assistant", "kept", None, None)
+            .unwrap();
+        store
+            .append_branch_point(&session_id, 0, 2, Some(&kept.created_at), None)
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let discarded = db
+            .add_message(&session_id, "assistant", "discarded", None, None)
+            .unwrap();
+        append_recovery_marker(&store, &session_id, "committed");
+
+        store
+            .truncate_projection_after_latest_committed_recovery_async(&session_id)
+            .await
+            .unwrap();
+
+        let messages = db.get_session_messages(&session_id).unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].id, kept.id);
+        assert!(!messages.iter().any(|message| message.id == discarded.id));
     }
 
     #[test]
