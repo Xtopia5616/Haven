@@ -258,6 +258,14 @@ pub struct SessionHistoryFilter {
     pub offset: i64,
 }
 
+/// The role and text needed to assemble a fresh-run conversation window.
+/// Agent keeps ownership of its `ConversationMessage` prompt type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionMessageText {
+    pub role: String,
+    pub content: String,
+}
+
 /// Transitional name for code that only consumes the append-only event API.
 /// New ownership code should use [`SessionStore`].
 pub type SessionEventStore = SessionStore;
@@ -277,6 +285,32 @@ impl SessionStore {
     pub fn new(db: Arc<Database>) -> Self {
         let (live_tx, _) = tokio::sync::broadcast::channel(256);
         Self { db, live_tx }
+    }
+
+    /// Load the latest textual messages for a fresh-run conversation window.
+    ///
+    /// The underlying query preserves its existing message-type filter,
+    /// chronological result order, and `limit` behavior. Dropping this future
+    /// cannot interrupt a `run_blocking` query already running on Tokio's
+    /// blocking pool.
+    pub async fn conversation_window(
+        &self,
+        session_id: &str,
+        limit: usize,
+    ) -> anyhow::Result<Vec<SessionMessageText>> {
+        let session_id = session_id.to_owned();
+        self.db
+            .run_blocking(move |db| {
+                Ok(db
+                    .get_session_messages_limit(&session_id, limit)?
+                    .into_iter()
+                    .map(|message| SessionMessageText {
+                        role: message.role,
+                        content: message.content,
+                    })
+                    .collect())
+            })
+            .await
     }
 
     /// List session history on SQLite's blocking pool.
@@ -2352,6 +2386,41 @@ mod tests {
                 .await
                 .unwrap()
                 .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn session_store_conversation_window_keeps_latest_limit_in_chronological_order() {
+        let (db, store, session_id) = store();
+        db.add_message(&session_id, "user", "old", Some("text"), None)
+            .unwrap();
+        db.add_message(&session_id, "assistant", "middle", Some("text"), None)
+            .unwrap();
+        db.add_message(&session_id, "user", "latest", Some("text"), None)
+            .unwrap();
+
+        let window = store.conversation_window(&session_id, 2).await.unwrap();
+
+        assert_eq!(
+            window,
+            vec![
+                SessionMessageText {
+                    role: "assistant".into(),
+                    content: "middle".into(),
+                },
+                SessionMessageText {
+                    role: "user".into(),
+                    content: "latest".into(),
+                },
+            ]
+        );
+        let missing_session_id = haven_common::types::new_id("ses");
+        assert!(
+            store
+                .conversation_window(&missing_session_id, 2)
+                .await
+                .unwrap()
+                .is_empty()
         );
     }
 

@@ -20,9 +20,9 @@ pub use repositories::session_events::{
     RECOVERY_PERSISTENCE_EVENT_TYPE, RecoveryPersistenceStatus, RollbackProjectionBoundary,
     RollbackRequest, RollbackResult, SessionCursor, SessionEvent, SessionEventInput,
     SessionEventPage, SessionEventStore, SessionEventSubscription, SessionHistoryFilter,
-    SessionReplayState, SessionStore, StoredBranchPoint, TIMELINE_ROLLBACK_EVENT_TYPE,
-    TRANSCRIPT_EVENT_TYPE, TranscriptActionStepProjection, TranscriptBatch, TranscriptBatchResult,
-    TranscriptMessageProjection, TranscriptThoughtStepProjection, USAGE_DISCARDED_EVENT_TYPE,
-    USAGE_RECORDED_EVENT_TYPE,
+    SessionMessageText, SessionReplayState, SessionStore, StoredBranchPoint,
+    TIMELINE_ROLLBACK_EVENT_TYPE, TRANSCRIPT_EVENT_TYPE, TranscriptActionStepProjection,
+    TranscriptBatch, TranscriptBatchResult, TranscriptMessageProjection,
+    TranscriptThoughtStepProjection, USAGE_DISCARDED_EVENT_TYPE, USAGE_RECORDED_EVENT_TYPE,
 };
 pub use repositories::usage::LlmCallUsageInput;

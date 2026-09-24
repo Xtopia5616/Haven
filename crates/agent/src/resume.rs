@@ -65,21 +65,20 @@ impl AgentLayer {
         &self,
         session_id: &str,
     ) -> anyhow::Result<Vec<ConversationMessage>> {
-        let db = self.db.clone();
-        let sid = session_id.to_string();
-        let limit = self.conversation_window_size;
-        db.run_blocking(move |db| {
-            Ok(db
-                .get_session_messages_limit(&sid, limit)?
-                .into_iter()
-                .map(|m| ConversationMessage {
-                    role: m.role,
-                    content: m.content,
-                })
-                .collect())
-        })
-        .await
-        .map_err(|error| anyhow::anyhow!("failed to load conversation history: {error}"))
+        self.executor
+            .session_store()
+            .conversation_window(session_id, self.conversation_window_size)
+            .await
+            .map(|messages| {
+                messages
+                    .into_iter()
+                    .map(|message| ConversationMessage {
+                        role: message.role,
+                        content: message.content,
+                    })
+                    .collect()
+            })
+            .map_err(|error| anyhow::anyhow!("failed to load conversation history: {error}"))
     }
 
     /// Dispatcher entrypoint. Looks up the session by id, fills in the
