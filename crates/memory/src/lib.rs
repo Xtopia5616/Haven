@@ -22,8 +22,8 @@ pub use repositories::session_events::{
     RollbackRequest, RollbackResult, SessionCursor, SessionEvent, SessionEventInput,
     SessionEventPage, SessionEventStore, SessionEventSubscription, SessionHistoryFilter,
     SessionMessageText, SessionReplayState, SessionResumeProjection, SessionStore,
-    StoredBranchPoint, TIMELINE_ROLLBACK_EVENT_TYPE, TRANSCRIPT_EVENT_TYPE,
-    TranscriptActionStepProjection, TranscriptBatch, TranscriptBatchResult,
+    SessionTitleGenerationContext, StoredBranchPoint, TIMELINE_ROLLBACK_EVENT_TYPE,
+    TRANSCRIPT_EVENT_TYPE, TranscriptActionStepProjection, TranscriptBatch, TranscriptBatchResult,
     TranscriptMessageProjection, TranscriptThoughtStepProjection, USAGE_DISCARDED_EVENT_TYPE,
     USAGE_RECORDED_EVENT_TYPE,
 };

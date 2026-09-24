@@ -267,6 +267,18 @@ pub struct SessionMessageText {
     pub content: String,
 }
 
+/// User-only transcript context used to generate a session title.
+///
+/// The store checks session existence and the persisted title before loading
+/// the latest ten title-eligible messages, then applies the existing role
+/// filter while preserving chronological order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionTitleGenerationContext {
+    pub user_messages: Vec<String>,
+}
+
+const TITLE_GENERATION_MESSAGE_LIMIT: usize = 10;
+
 /// Existing read models needed to build the App's session-resume response.
 ///
 /// The projection groups the current queries behind one SessionStore port;
@@ -323,6 +335,37 @@ impl SessionStore {
                         content: message.content,
                     })
                     .collect())
+            })
+            .await
+    }
+
+    /// Load the user messages used for title generation on SQLite's blocking
+    /// pool. Missing sessions and sessions that already have a title return
+    /// `None`; an existing untitled session returns its user-only context,
+    /// which may be empty. The original limit, message eligibility, role
+    /// filtering, and chronological order are preserved. Dropping this future
+    /// cannot interrupt a query already running on Tokio's blocking pool.
+    pub async fn title_generation_context(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Option<SessionTitleGenerationContext>> {
+        let session_id = session_id.to_owned();
+        self.db
+            .run_blocking(move |db| {
+                let Some(session) = db.get_session(&session_id)? else {
+                    return Ok(None);
+                };
+                if session.title.is_some() {
+                    return Ok(None);
+                }
+
+                let user_messages = db
+                    .get_session_messages_limit(&session_id, TITLE_GENERATION_MESSAGE_LIMIT)?
+                    .into_iter()
+                    .filter(|message| message.role == "user")
+                    .map(|message| message.content)
+                    .collect();
+                Ok(Some(SessionTitleGenerationContext { user_messages }))
             })
             .await
     }
@@ -2575,6 +2618,59 @@ mod tests {
         assert!(
             store
                 .session_title(&missing_session_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn session_store_loads_title_generation_context_with_original_filter_and_limit() {
+        let (db, store, session_id) = store();
+        let missing_session_id = haven_common::types::new_id("ses");
+        assert!(
+            store
+                .title_generation_context(&missing_session_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        for index in 0..12 {
+            let role = if index % 2 == 0 { "assistant" } else { "user" };
+            db.add_message(
+                &session_id,
+                role,
+                &format!("{role}-{index}"),
+                Some("text"),
+                None,
+            )
+            .unwrap();
+        }
+
+        let context = store
+            .title_generation_context(&session_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            context,
+            SessionTitleGenerationContext {
+                user_messages: vec![
+                    "user-3".into(),
+                    "user-5".into(),
+                    "user-7".into(),
+                    "user-9".into(),
+                    "user-11".into(),
+                ],
+            }
+        );
+
+        db.update_session_title(&session_id, "Already titled")
+            .unwrap();
+        assert!(
+            store
+                .title_generation_context(&session_id)
                 .await
                 .unwrap()
                 .is_none()

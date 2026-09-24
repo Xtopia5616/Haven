@@ -1031,14 +1031,14 @@ impl AgentLayer {
     /// first response is being generated. Only one title call per session may
     /// be in flight.
     pub(crate) fn spawn_title_generation(&self, session_id: &str) {
-        let db = self.db.clone();
+        let store = self.executor.session_store();
         let executor = self.executor.clone();
         let title = self.title.clone();
         let events = self.events.clone();
         let in_flight = self.title_in_flight.clone();
         let tid = session_id.to_string();
         tokio::spawn(async move {
-            Self::try_generate_title(db, executor, title, events, in_flight, tid).await;
+            Self::try_generate_title(store, executor, title, events, in_flight, tid).await;
         });
     }
 
@@ -1047,7 +1047,7 @@ impl AgentLayer {
     /// overlapping dispatches of the same session (auto-reload plus a manual
     /// continue) must not fire concurrent title calls.
     pub(crate) async fn try_generate_title(
-        db: Arc<Database>,
+        store: haven_memory::SessionStore,
         executor: Arc<SessionSupervisor>,
         title: Option<TitleGenerator>,
         events: Arc<EventDispatcher>,
@@ -1055,7 +1055,7 @@ impl AgentLayer {
         session_id: String,
     ) {
         let Some(generator) = title else { return };
-        // Claim the in-flight slot before the DB check so two concurrent
+        // Claim the in-flight slot before the store read so two concurrent
         // spawns both pass the title check only once. Released after the
         // generation attempt ends (success or failure).
         {
@@ -1064,41 +1064,19 @@ impl AgentLayer {
                 return;
             }
         }
-        Self::generate_title(db, executor, generator, events, session_id.clone()).await;
+        Self::generate_title(store, executor, generator, events, session_id.clone()).await;
         in_flight.lock().await.remove(&session_id);
     }
 
     async fn generate_title(
-        db: Arc<Database>,
+        store: haven_memory::SessionStore,
         executor: Arc<SessionSupervisor>,
         generator: TitleGenerator,
         events: Arc<EventDispatcher>,
         session_id: String,
     ) {
-        // Check the title and load the small user-only context in one blocking
-        // task. Both operations are synchronous SQLite reads and must not run
-        // on the async title-generation task.
-        let sid = session_id.clone();
-        let user_lines = match db
-            .run_blocking(move |db| {
-                let Some(session) = db.get_session(&sid)? else {
-                    return Ok(None);
-                };
-                if session.title.is_some() {
-                    return Ok(None);
-                }
-                let messages = db.get_session_messages_limit(&sid, 10)?;
-                Ok(Some(
-                    messages
-                        .into_iter()
-                        .filter(|message| message.role == "user")
-                        .map(|message| message.content)
-                        .collect::<Vec<_>>(),
-                ))
-            })
-            .await
-        {
-            Ok(Some(lines)) => lines,
+        let context = match store.title_generation_context(&session_id).await {
+            Ok(Some(context)) => context,
             Ok(None) => return,
             Err(error) => {
                 tracing::warn!(
@@ -1109,20 +1087,14 @@ impl AgentLayer {
                 return;
             }
         };
-        if user_lines.is_empty() {
+        if context.user_messages.is_empty() {
             return;
         }
-        let title = match generator.generate(&user_lines).await {
+        let title = match generator.generate(&context.user_messages).await {
             Some(t) => t,
             None => return,
         };
-        // Save to DB
-        let sid = session_id.clone();
-        let title_for_db = title.clone();
-        if let Err(e) = db
-            .run_blocking(move |db| db.update_session_title(&sid, &title_for_db))
-            .await
-        {
+        if let Err(e) = store.update_session_title(&session_id, &title).await {
             tracing::warn!("failed to save generated title: {}", e);
             return;
         }
