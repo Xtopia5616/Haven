@@ -80,12 +80,12 @@ Rust 测试应使用内存数据库或唯一临时目录，不能读写真实用
 
 记忆事实提取的 session transcript、节流戳和用户消息游标由
 `MemoryFactExtractionStore` 持久化；已清洗事实的批量写入由 `MemoryFactStore` 承接。
-`MemoryWorker` 仍负责窗口构造、模型调用与维护策略；确定性清理经
-`MemoryMaintenanceStore` 执行。LLM 矛盾候选读取/门控后的 demote，以及谓词计数和逐项
-rewrite 也经该 store 调度；配置门禁、提示词、候选过滤、提案校验和失败策略仍由 Worker
-负责。`MemoryWorker` 的 `MemoryDatabase` 只用于 summary extraction 的 episode cursor 与共享
-节流 KV 读写；embedding catch-up 沿用 `MemoryService` 的 `MemoryEmbeddingStore` 边界，详见
-ADR 0308–0311 和架构路线图。
+`MemoryWorker` 仍负责窗口构造、模型调用与维护策略；普通和摘要抽取状态（各自的 cursor、共享
+节流戳）由 `MemoryFactExtractionStore` 持久化，确定性清理和 LLM maintenance persistence 经
+`MemoryMaintenanceStore` 执行。候选过滤、提案校验和失败策略仍由 Worker 负责。生产
+`MemoryWorker` 不持有 raw Database；`MemoryService` 的私有数据库句柄只用于构造 typed stores 与
+embedding index，不向 Worker 暴露。embedding catch-up 沿用 `MemoryService` 的
+`MemoryEmbeddingStore` 边界，详见 ADR 0308–0312 和架构路线图。
 
 ## 故障报告
 

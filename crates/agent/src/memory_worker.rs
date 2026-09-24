@@ -7,14 +7,17 @@ use haven_common::prompts::{
     COMPACTED_SUMMARY_PREFIX, CONTRADICTION_ARBITRATE_SYSTEM_PROMPT, FACT_EXTRACTION_SYSTEM_PROMPT,
     predicate_merge_system_prompt,
 };
+#[cfg(test)]
 use haven_llm::LlmRouter;
+#[cfg(test)]
+use haven_memory::Database;
 use haven_memory::recall::MemoryRetriever;
 use haven_memory::repositories::facts::{
     CANONICAL_MERGE_TARGETS, Fact, FactSourceRef, is_canonical_merge_target, is_sensitive_object,
     is_sensitive_predicate, is_single_valued_predicate,
 };
 use haven_memory::{
-    Database, MemoryFactExtractionStore, MemoryFactStore, MemoryFactWrite, MemoryMaintenanceStore,
+    MemoryFactExtractionStore, MemoryFactStore, MemoryFactWrite, MemoryMaintenanceStore,
     MemoryStore,
 };
 use tokio::sync::{Notify, Semaphore};
@@ -28,8 +31,10 @@ use crate::fact_inference::{
     build_numbered_transcript, format_contradiction_groups, gate_contradiction_demote,
     gate_predicate_merge, resolve_source_message,
 };
-use crate::memory_inference::{MemoryInferencePort, RouterMemoryInferencePort};
-use crate::memory_service::{MemoryDatabase, MemoryService};
+use crate::memory_inference::MemoryInferencePort;
+#[cfg(test)]
+use crate::memory_inference::RouterMemoryInferencePort;
+use crate::memory_service::MemoryService;
 
 const OUTBOX_RETRY_MAX_SECS: u64 = 30;
 
@@ -41,11 +46,6 @@ pub struct MemoryWorker {
     fact_store: MemoryFactStore,
     fact_extraction_store: MemoryFactExtractionStore,
     maintenance_store: MemoryMaintenanceStore,
-    // Remaining raw-DB work is summary extraction's episode cursor and shared
-    // throttle KV state. Fact writes, LLM/deterministic maintenance, ordinary
-    // extraction state, and outbox markers use Memory stores; embedding
-    // catch-up uses MemoryService.
-    db: MemoryDatabase,
     inference: Arc<dyn MemoryInferencePort>,
     /// Cap (chars) for transcripts sent to the SmallModel for fact
     /// extraction. Prevents unbounded token cost on long conversations.
@@ -108,7 +108,8 @@ fn ensure_memory_maintenance_active(
 }
 
 impl MemoryWorker {
-    pub fn new(
+    #[cfg(test)]
+    pub(crate) fn new(
         db: Arc<Database>,
         router: Arc<LlmRouter>,
         max_transcript_chars: usize,
@@ -147,14 +148,12 @@ impl MemoryWorker {
         let memory_store = memory.memory_store();
         let fact_extraction_store = memory.memory_fact_extraction_store();
         let maintenance_store = memory.memory_maintenance_store();
-        let db = memory.database_handle();
         Self {
             memory,
             memory_store,
             fact_store,
             fact_extraction_store,
             maintenance_store,
-            db,
             inference,
             max_transcript_chars,
             max_known_facts,
@@ -805,7 +804,7 @@ impl MemoryWorker {
         if !bypass_throttle && self.fact_extraction_min_interval_secs > 0 {
             let last_run = match self
                 .fact_extraction_store
-                .last_attempt_timestamp(session_id)
+                .shared_extraction_last_attempt_timestamp(session_id)
                 .await
             {
                 Ok(value) => value,
@@ -833,7 +832,11 @@ impl MemoryWorker {
             }
         }
 
-        let transcript = match self.fact_extraction_store.load_transcript(session_id).await {
+        let transcript = match self
+            .fact_extraction_store
+            .load_ordinary_transcript(session_id)
+            .await
+        {
             Ok(transcript) => transcript,
             Err(error) => {
                 tracing::warn!(
@@ -856,7 +859,7 @@ impl MemoryWorker {
         // aligned with the model's recent vision — not a full transcript.
         let cursor = match self
             .fact_extraction_store
-            .extraction_cursor(session_id)
+            .ordinary_extraction_cursor(session_id)
             .await
         {
             Ok(value) => value,
@@ -877,7 +880,7 @@ impl MemoryWorker {
             if let Some(last) = window.cursor_last
                 && let Err(error) = self
                     .fact_extraction_store
-                    .advance_cursor(session_id, &last)
+                    .advance_ordinary_extraction_cursor(session_id, &last)
                     .await
             {
                 tracing::warn!(
@@ -898,7 +901,7 @@ impl MemoryWorker {
             let now = chrono::Utc::now().to_rfc3339();
             if let Err(error) = self
                 .fact_extraction_store
-                .stamp_last_attempt(session_id, &now)
+                .stamp_shared_extraction_attempt(session_id, &now)
                 .await
             {
                 tracing::warn!(
@@ -951,7 +954,7 @@ impl MemoryWorker {
         if let Some(last) = window.cursor_last
             && let Err(e) = self
                 .fact_extraction_store
-                .advance_cursor(session_id, &last)
+                .advance_ordinary_extraction_cursor(session_id, &last)
                 .await
         {
             tracing::warn!(
@@ -1605,13 +1608,9 @@ impl MemoryWorker {
             );
             return SummaryExtractOutcome::Done;
         }
-        let episode_cursor_key = format!("fact_extraction_episode.{}", session_id);
         let last_episode = match self
-            .db
-            .run_blocking({
-                let key = episode_cursor_key.clone();
-                move |db| db.get_kv(&key)
-            })
+            .fact_extraction_store
+            .summary_extraction_cursor(session_id)
             .await
         {
             Ok(value) => value,
@@ -1630,13 +1629,9 @@ impl MemoryWorker {
         // Share the wall-clock throttle with normal extraction so compaction
         // cannot bypass the interval and spam the small model.
         if self.fact_extraction_min_interval_secs > 0 {
-            let last_key = format!("fact_extraction_last_run.{}", session_id);
             let last_run = match self
-                .db
-                .run_blocking({
-                    let key = last_key.clone();
-                    move |db| db.get_kv(&key)
-                })
+                .fact_extraction_store
+                .shared_extraction_last_attempt_timestamp(session_id)
                 .await
             {
                 Ok(value) => value,
@@ -1660,13 +1655,10 @@ impl MemoryWorker {
                     };
                 }
             }
-            let db = self.db.clone();
             let now = chrono::Utc::now().to_rfc3339();
-            if let Err(error) = db
-                .run_blocking(move |db| {
-                    db.set_kv(&last_key, &now)?;
-                    Ok::<(), anyhow::Error>(())
-                })
+            if let Err(error) = self
+                .fact_extraction_store
+                .stamp_shared_extraction_attempt(session_id, &now)
                 .await
             {
                 tracing::warn!(
@@ -1734,14 +1726,9 @@ impl MemoryWorker {
             }
         }
 
-        let db = self.db.clone();
-        let key = episode_cursor_key;
-        let episode_id = episode_id.to_string();
-        if let Err(e) = db
-            .run_blocking(move |db| {
-                db.set_kv(&key, &episode_id)?;
-                Ok::<(), anyhow::Error>(())
-            })
+        if let Err(e) = self
+            .fact_extraction_store
+            .advance_summary_extraction_cursor(session_id, episode_id)
             .await
         {
             tracing::warn!(
@@ -2137,6 +2124,14 @@ mod tests {
         db: Arc<Database>,
         inference: Arc<dyn MemoryInferencePort>,
     ) -> MemoryWorker {
+        make_engine_with_inference_and_interval(db, inference, 0)
+    }
+
+    fn make_engine_with_inference_and_interval(
+        db: Arc<Database>,
+        inference: Arc<dyn MemoryInferencePort>,
+        fact_extraction_min_interval_secs: u64,
+    ) -> MemoryWorker {
         let memory = Arc::new(MemoryService::new(db, None, 64));
         MemoryWorker::new_with_inference(
             memory.clone(),
@@ -2145,7 +2140,7 @@ mod tests {
             4_000,
             64,
             256,
-            0,
+            fact_extraction_min_interval_secs,
         )
     }
 
@@ -2621,7 +2616,7 @@ mod tests {
             .unwrap();
 
         let transcript = MemoryFactExtractionStore::new(db)
-            .load_transcript(&session.id)
+            .load_ordinary_transcript(&session.id)
             .await
             .unwrap();
         let window = build_extraction_window(
@@ -3253,6 +3248,146 @@ mod tests {
         );
 
         assert!(!worker.persist_fact_batch(Vec::new()).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn summary_extraction_skips_an_episode_already_in_its_cursor() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let session = db.create_session("summary cursor duplicate").unwrap();
+        db.set_kv(
+            &format!("fact_extraction_episode.{}", session.id),
+            "msg-summary-already-processed",
+        )
+        .unwrap();
+        let inference = Arc::new(FixedMemoryInference {
+            fast_chat_configured: true,
+            response: r#"[{"subject":"user","predicate":"likes","object":"Rust"}]"#.into(),
+            calls: AtomicUsize::new(0),
+        });
+        let worker = make_engine_with_inference(db, inference.clone());
+
+        let outcome = worker
+            .infer_facts_from_summary(
+                &session.id,
+                "msg-summary-already-processed",
+                "The user prefers Rust for personal projects and tooling.",
+            )
+            .await;
+
+        assert_eq!(outcome, SummaryExtractOutcome::Done);
+        assert_eq!(inference.calls.load(Ordering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn summary_cursor_advances_only_after_fact_persistence_succeeds() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let session = db.create_session("summary persistence retry").unwrap();
+        db.conn()
+            .execute_batch(
+                "CREATE TRIGGER fail_summary_fact_insert
+                 BEFORE INSERT ON facts
+                 BEGIN SELECT RAISE(ABORT, 'injected summary fact write failure'); END;",
+            )
+            .unwrap();
+        let inference = Arc::new(FixedMemoryInference {
+            fast_chat_configured: true,
+            response:
+                r#"[{"subject":"user","predicate":"likes","object":"Rust","confidence":0.9}]"#
+                    .into(),
+            calls: AtomicUsize::new(0),
+        });
+        let worker = make_engine_with_inference(db.clone(), inference.clone());
+        let episode_id = "msg-summary-persist-after-success";
+        let summary = "The user prefers Rust for personal projects and tooling.";
+
+        assert!(matches!(
+            worker
+                .infer_facts_from_summary(&session.id, episode_id, summary)
+                .await,
+            SummaryExtractOutcome::Retryable { .. }
+        ));
+        assert_eq!(
+            db.get_kv(&format!("fact_extraction_episode.{}", session.id))
+                .unwrap(),
+            None,
+            "a failed fact transaction must leave the summary cursor behind"
+        );
+        assert!(db.get_facts("user").unwrap().is_empty());
+
+        db.conn()
+            .execute_batch("DROP TRIGGER fail_summary_fact_insert")
+            .unwrap();
+        assert_eq!(
+            worker
+                .infer_facts_from_summary(&session.id, episode_id, summary)
+                .await,
+            SummaryExtractOutcome::Done
+        );
+        assert_eq!(
+            db.get_kv(&format!("fact_extraction_episode.{}", session.id))
+                .unwrap()
+                .as_deref(),
+            Some(episode_id)
+        );
+        assert!(
+            db.get_facts("user")
+                .unwrap()
+                .iter()
+                .any(|fact| fact.predicate == "likes" && fact.object == "Rust")
+        );
+        assert_eq!(inference.calls.load(Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test]
+    async fn failed_summary_throttle_stamp_does_not_block_a_later_retry() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let session = db.create_session("summary throttle stamp retry").unwrap();
+        db.conn()
+            .execute_batch(
+                "CREATE TRIGGER fail_summary_throttle_insert
+                 BEFORE INSERT ON kv_store
+                 WHEN NEW.key LIKE 'fact_extraction_last_run.%'
+                 BEGIN SELECT RAISE(ABORT, 'injected summary throttle stamp failure'); END;",
+            )
+            .unwrap();
+        let inference = Arc::new(FixedMemoryInference {
+            fast_chat_configured: true,
+            response: "[]".into(),
+            calls: AtomicUsize::new(0),
+        });
+        let worker = make_engine_with_inference_and_interval(db.clone(), inference.clone(), 3_600);
+        let episode_id = "msg-summary-throttle-retry";
+        let summary = "The user prefers Rust for personal projects and tooling.";
+
+        assert!(matches!(
+            worker
+                .infer_facts_from_summary(&session.id, episode_id, summary)
+                .await,
+            SummaryExtractOutcome::Retryable { .. }
+        ));
+        assert_eq!(inference.calls.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            db.get_kv(&format!("fact_extraction_episode.{}", session.id))
+                .unwrap(),
+            None
+        );
+
+        db.conn()
+            .execute_batch("DROP TRIGGER fail_summary_throttle_insert")
+            .unwrap();
+        assert_eq!(
+            worker
+                .infer_facts_from_summary(&session.id, episode_id, summary)
+                .await,
+            SummaryExtractOutcome::Done
+        );
+        assert_eq!(inference.calls.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            db.get_kv(&format!("fact_extraction_episode.{}", session.id))
+                .unwrap()
+                .as_deref(),
+            Some(episode_id)
+        );
     }
 
     #[tokio::test]

@@ -12,7 +12,7 @@ pub struct FactExtractionTranscript {
     pub steps: Vec<SessionStep>,
 }
 
-/// Persistence port for the incremental session fact-extraction hot path.
+/// Persistence port for ordinary and summary fact-extraction state.
 ///
 /// This owns the SQLite blocking boundary and the extraction KV keys, while
 /// leaving throttling decisions, transcript window construction, inference,
@@ -27,16 +27,19 @@ impl MemoryFactExtractionStore {
         Self { db }
     }
 
-    /// Read the timestamp of the most recent ordinary session extraction
-    /// attempt. The caller decides whether it is still inside the throttle.
-    pub async fn last_attempt_timestamp(&self, session_id: &str) -> anyhow::Result<Option<String>> {
+    /// Read the shared wall-clock throttle timestamp used by ordinary and
+    /// summary extraction. Callers decide whether it is still inside policy.
+    pub async fn shared_extraction_last_attempt_timestamp(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Option<String>> {
         let key = format!("fact_extraction_last_run.{session_id}");
         self.db.run_blocking(move |db| db.get_kv(&key)).await
     }
 
     /// Load message and execution-step projections used to build an extraction
     /// window, in the same blocking operation as the previous implementation.
-    pub async fn load_transcript(
+    pub async fn load_ordinary_transcript(
         &self,
         session_id: &str,
     ) -> anyhow::Result<FactExtractionTranscript> {
@@ -50,16 +53,27 @@ impl MemoryFactExtractionStore {
             .await
     }
 
-    /// Read the last processed user-message id for ordinary session
-    /// extraction. Summary extraction uses a separate cursor and remains
-    /// outside this port.
-    pub async fn extraction_cursor(&self, session_id: &str) -> anyhow::Result<Option<String>> {
+    /// Read the last processed user-message id for ordinary extraction.
+    pub async fn ordinary_extraction_cursor(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Option<String>> {
         let key = format!("fact_extraction.{session_id}");
         self.db.run_blocking(move |db| db.get_kv(&key)).await
     }
 
-    /// Record the attempt timestamp before the Agent calls the model.
-    pub async fn stamp_last_attempt(
+    /// Read the last processed compact-summary episode id.
+    pub async fn summary_extraction_cursor(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Option<String>> {
+        let key = format!("fact_extraction_episode.{session_id}");
+        self.db.run_blocking(move |db| db.get_kv(&key)).await
+    }
+
+    /// Record an extraction attempt before the caller calls the model. The
+    /// ordinary and summary paths intentionally share this timestamp/key.
+    pub async fn stamp_shared_extraction_attempt(
         &self,
         session_id: &str,
         timestamp: &str,
@@ -71,13 +85,32 @@ impl MemoryFactExtractionStore {
             .await
     }
 
-    /// Advance the cursor after a valid empty extraction or successful fact
-    /// persistence. The Agent decides when advancement is allowed.
-    pub async fn advance_cursor(&self, session_id: &str, message_id: &str) -> anyhow::Result<()> {
+    /// Advance the ordinary user-message cursor after a valid empty extraction
+    /// or successful fact persistence. The Agent decides when advancement is
+    /// allowed.
+    pub async fn advance_ordinary_extraction_cursor(
+        &self,
+        session_id: &str,
+        message_id: &str,
+    ) -> anyhow::Result<()> {
         let key = format!("fact_extraction.{session_id}");
         let message_id = message_id.to_owned();
         self.db
             .run_blocking(move |db| db.set_kv(&key, &message_id))
+            .await
+    }
+
+    /// Advance the summary episode cursor only after extraction has completed
+    /// successfully (including a valid empty result).
+    pub async fn advance_summary_extraction_cursor(
+        &self,
+        session_id: &str,
+        episode_id: &str,
+    ) -> anyhow::Result<()> {
+        let key = format!("fact_extraction_episode.{session_id}");
+        let episode_id = episode_id.to_owned();
+        self.db
+            .run_blocking(move |db| db.set_kv(&key, &episode_id))
             .await
     }
 }
@@ -115,7 +148,7 @@ mod tests {
             .unwrap();
 
         let transcript = MemoryFactExtractionStore::new(db)
-            .load_transcript(&session.id)
+            .load_ordinary_transcript(&session.id)
             .await
             .unwrap();
 
@@ -138,7 +171,7 @@ mod tests {
             .execute_batch("DROP TABLE messages")
             .unwrap();
         let error = MemoryFactExtractionStore::new(messages_db)
-            .load_transcript("ses-missing-messages")
+            .load_ordinary_transcript("ses-missing-messages")
             .await
             .unwrap_err();
         assert!(error.to_string().contains("no such table: messages"));
@@ -149,43 +182,52 @@ mod tests {
             .execute_batch("DROP TABLE session_steps")
             .unwrap();
         let error = MemoryFactExtractionStore::new(steps_db)
-            .load_transcript("ses-missing-steps")
+            .load_ordinary_transcript("ses-missing-steps")
             .await
             .unwrap_err();
         assert!(error.to_string().contains("no such table: session_steps"));
     }
 
     #[tokio::test]
-    async fn extraction_cursor_and_attempt_timestamp_round_trip_and_report_kv_errors() {
+    async fn ordinary_cursor_and_shared_attempt_timestamp_round_trip_and_report_kv_errors() {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let store = MemoryFactExtractionStore::new(db.clone());
 
-        assert_eq!(store.extraction_cursor("ses-state").await.unwrap(), None);
         assert_eq!(
-            store.last_attempt_timestamp("ses-state").await.unwrap(),
+            store.ordinary_extraction_cursor("ses-state").await.unwrap(),
+            None
+        );
+        assert_eq!(
+            store
+                .shared_extraction_last_attempt_timestamp("ses-state")
+                .await
+                .unwrap(),
             None
         );
         store
-            .stamp_last_attempt("ses-state", "2026-09-25T10:00:00Z")
+            .stamp_shared_extraction_attempt("ses-state", "2026-09-25T10:00:00Z")
             .await
             .unwrap();
         store
-            .advance_cursor("ses-state", "msg-last-processed")
+            .advance_ordinary_extraction_cursor("ses-state", "msg-last-processed")
             .await
             .unwrap();
         assert_eq!(
-            store.last_attempt_timestamp("ses-state").await.unwrap(),
+            store
+                .shared_extraction_last_attempt_timestamp("ses-state")
+                .await
+                .unwrap(),
             Some("2026-09-25T10:00:00Z".into())
         );
         assert_eq!(
-            store.extraction_cursor("ses-state").await.unwrap(),
+            store.ordinary_extraction_cursor("ses-state").await.unwrap(),
             Some("msg-last-processed".into())
         );
 
         db.conn().execute_batch("DROP TABLE kv_store").unwrap();
         assert!(
             store
-                .last_attempt_timestamp("ses-state")
+                .shared_extraction_last_attempt_timestamp("ses-state")
                 .await
                 .unwrap_err()
                 .to_string()
@@ -193,7 +235,7 @@ mod tests {
         );
         assert!(
             store
-                .extraction_cursor("ses-state")
+                .ordinary_extraction_cursor("ses-state")
                 .await
                 .unwrap_err()
                 .to_string()
@@ -201,7 +243,7 @@ mod tests {
         );
         assert!(
             store
-                .stamp_last_attempt("ses-state", "2026-09-25T10:01:00Z")
+                .stamp_shared_extraction_attempt("ses-state", "2026-09-25T10:01:00Z")
                 .await
                 .unwrap_err()
                 .to_string()
@@ -209,11 +251,61 @@ mod tests {
         );
         assert!(
             store
-                .advance_cursor("ses-state", "msg-next")
+                .advance_ordinary_extraction_cursor("ses-state", "msg-next")
                 .await
                 .unwrap_err()
                 .to_string()
                 .contains("no such table: kv_store")
+        );
+        assert!(
+            store
+                .summary_extraction_cursor("ses-state")
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("no such table: kv_store")
+        );
+        assert!(
+            store
+                .advance_summary_extraction_cursor("ses-state", "msg-next-episode")
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("no such table: kv_store")
+        );
+    }
+
+    #[tokio::test]
+    async fn summary_episode_cursor_round_trips_without_changing_ordinary_cursor() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let store = MemoryFactExtractionStore::new(db);
+
+        assert_eq!(
+            store
+                .summary_extraction_cursor("ses-summary")
+                .await
+                .unwrap(),
+            None
+        );
+        store
+            .advance_summary_extraction_cursor("ses-summary", "msg-summary-episode")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            store
+                .summary_extraction_cursor("ses-summary")
+                .await
+                .unwrap(),
+            Some("msg-summary-episode".into())
+        );
+        assert_eq!(
+            store
+                .ordinary_extraction_cursor("ses-summary")
+                .await
+                .unwrap(),
+            None,
+            "summary and ordinary extraction use separate cursor keys"
         );
     }
 }

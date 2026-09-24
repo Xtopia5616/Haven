@@ -5,7 +5,6 @@
 //! about SQLite, embedding providers, or the memory cache layout.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::ops::Deref;
 use std::sync::{Arc, Mutex};
 
 use anyhow::Context as _;
@@ -85,7 +84,9 @@ impl PromptMemoryCache {
 /// Memory capability boundary shared by prompt context, tools, and the
 /// background memory worker.
 pub struct MemoryService {
-    db: Arc<Database>,
+    // The backing database stays private to this service and the typed stores
+    // it constructs; workers receive store capabilities only.
+    _db: Arc<Database>,
     fact_store: MemoryFactStore,
     fact_extraction_store: MemoryFactExtractionStore,
     maintenance_store: MemoryMaintenanceStore,
@@ -94,20 +95,6 @@ pub struct MemoryService {
     router: Option<Arc<LlmRouter>>,
     embedding_index: Option<MemoryEmbeddingIndex>,
     prompt_cache: Mutex<PromptMemoryCache>,
-}
-
-/// Legacy raw persistence capability handed to the worker only for summary
-/// episode cursor and shared extraction-throttle KV state. All migrated
-/// maintenance operations use typed stores.
-#[derive(Clone)]
-pub(crate) struct MemoryDatabase(Arc<Database>);
-
-impl Deref for MemoryDatabase {
-    type Target = Arc<Database>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
 }
 
 impl MemoryService {
@@ -130,19 +117,15 @@ impl MemoryService {
             maintenance_store,
             memory_store: MemoryStore::new(db.clone()),
             recall_store,
-            db,
+            _db: db,
             router,
             embedding_index,
             prompt_cache: Mutex::new(PromptMemoryCache::new()),
         }
     }
 
-    pub(crate) fn database_handle(&self) -> MemoryDatabase {
-        MemoryDatabase(self.db.clone())
-    }
-
     /// Return the shared store used for memory-owned durable episode and
-    /// outbox persistence. The service and worker keep the same Database Arc.
+    /// outbox persistence, backed by the service's shared database.
     pub(crate) fn memory_store(&self) -> MemoryStore {
         self.memory_store.clone()
     }
@@ -152,8 +135,9 @@ impl MemoryService {
         self.fact_store.clone()
     }
 
-    /// Return the shared persistence port for ordinary session fact
-    /// extraction state and transcript projections.
+    /// Return the shared persistence port for ordinary/summary extraction
+    /// cursors, their shared throttle timestamp, and ordinary transcript
+    /// projections.
     pub(crate) fn memory_fact_extraction_store(&self) -> MemoryFactExtractionStore {
         self.fact_extraction_store.clone()
     }
