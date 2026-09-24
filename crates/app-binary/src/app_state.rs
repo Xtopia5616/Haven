@@ -8,7 +8,7 @@ use haven_common::config::{ConfigLoader, ConfigService, LogLevel};
 use haven_input::InputPipeline;
 use haven_llm::LlmRouter;
 use haven_llm::stt::build_stt_client;
-use haven_memory::{Database, SessionStore};
+use haven_memory::{ActionStore, Database, SessionStore};
 use haven_tools::ToolsManager;
 use std::collections::HashMap;
 use std::ops::Deref;
@@ -490,6 +490,7 @@ impl AppState {
         // setter rebuilt the catalog and delayed window creation.
         tools
             .wire_startup(haven_tools::StartupWiring {
+                action_store: Some(ActionStore::new(db.clone())),
                 tool_settings: cfg.tool_settings.clone(),
                 default_shell: cfg.default_shell,
                 context_limits: context_limits_clone,

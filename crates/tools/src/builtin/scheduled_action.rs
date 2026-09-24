@@ -475,7 +475,7 @@ impl Tool for ScheduledActionTool {
 mod tests {
     use super::*;
     use crate::{ActionCompletion, ActionCompletionReceiver, Tool, ToolRegistry};
-    use haven_memory::Database;
+    use haven_memory::{ActionStore, Database};
     use serde_json::json;
     use std::sync::Mutex;
     use std::time::Duration;
@@ -846,7 +846,9 @@ mod tests {
     async fn test_watch_action_not_persisted_to_db() {
         let (db, _dir) = test_db();
         let center = Arc::new(ActionService::new());
-        center.set_db(Some(db.clone())).await;
+        center
+            .set_action_store(Some(ActionStore::new(db.clone())))
+            .await;
         center
             .set(ScheduledActionSpec {
                 due_at: None,
@@ -1010,7 +1012,9 @@ mod tests {
     async fn test_set_with_due_at_and_prompt() {
         let (db, _dir) = test_db();
         let center = Arc::new(ActionService::new());
-        center.set_db(Some(db.clone())).await;
+        center
+            .set_action_store(Some(ActionStore::new(db.clone())))
+            .await;
         let mut rx = center.take_action_receiver().expect("receiver available");
 
         // Absolute time 2s out, continue mode with a wake prompt.
@@ -1054,7 +1058,9 @@ mod tests {
     async fn test_set_tool_mode_records_call_and_fires() {
         let (db, _dir) = test_db();
         let center = Arc::new(ActionService::new());
-        center.set_db(Some(db.clone())).await;
+        center
+            .set_action_store(Some(ActionStore::new(db.clone())))
+            .await;
         let mut rx = center.take_action_receiver().expect("receiver available");
 
         let id = center
@@ -1264,7 +1270,9 @@ mod tests {
 
         // A fresh center (simulating app restart) restores from the DB.
         let restored = Arc::new(ActionService::new());
-        restored.set_db(Some(db.clone())).await;
+        restored
+            .set_action_store(Some(ActionStore::new(db.clone())))
+            .await;
         let mut rx2 = restored.take_action_receiver().expect("receiver available");
         let overdue_count = restored.restore_pending().await;
         assert_eq!(overdue_count, 1, "exactly one scheduled_action was overdue");
@@ -1295,7 +1303,9 @@ mod tests {
     async fn test_restore_pending_quarantines_corrupt_rows_without_defaults() {
         let (db, _dir) = test_db();
         let center = Arc::new(ActionService::new());
-        center.set_db(Some(db.clone())).await;
+        center
+            .set_action_store(Some(ActionStore::new(db.clone())))
+            .await;
 
         db.save_scheduled_action(
             "act-invalid-due",
@@ -1351,7 +1361,9 @@ mod tests {
     async fn test_reminder_set_persists_to_db() {
         let (db, _dir) = test_db();
         let center = Arc::new(ActionService::new());
-        center.set_db(Some(db.clone())).await;
+        center
+            .set_action_store(Some(ActionStore::new(db.clone())))
+            .await;
         let id = center.set(tool_spec(3600, "Drink", "water")).await.unwrap();
         let pending = db.list_pending_scheduled_actions().unwrap();
         assert_eq!(pending.len(), 1);

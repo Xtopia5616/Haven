@@ -1,6 +1,7 @@
 use crate::process::{append_tail, read_stream_capped, take_tail_if_changed};
 
 use super::*;
+use haven_memory::{ActionStore, Database};
 use std::time::Duration;
 
 /// Poll `status` until it is no longer "running" (or timeout).
@@ -52,7 +53,9 @@ async fn terminal_test_service() -> (Arc<ActionService>, Arc<Database>, String, 
     let dir = tempfile::TempDir::new().unwrap();
     let db = Arc::new(Database::open(&dir.path().join("actions.db")).unwrap());
     let service = Arc::new(ActionService::new());
-    service.set_db(Some(db.clone())).await;
+    service
+        .set_action_store(Some(ActionStore::new(db.clone())))
+        .await;
     let action_id = haven_common::types::new_id("act");
     insert_running_background(&service, &db, &action_id, None).await;
     (service, db, action_id, dir)
@@ -440,7 +443,7 @@ async fn session_cleanup_keeps_running_action_until_cancel_commit() {
 }
 
 #[tokio::test]
-async fn persisted_action_query_requires_a_bound_database() {
+async fn persisted_action_query_requires_a_bound_store() {
     let service = ActionService::new();
 
     let error = service
@@ -448,7 +451,48 @@ async fn persisted_action_query_requires_a_bound_database() {
         .await
         .expect_err("an unbound service must not report empty history");
 
-    assert!(error.to_string().contains("database is not configured"));
+    assert!(error.to_string().contains("action store is not configured"));
+}
+
+#[tokio::test]
+async fn missing_store_keeps_background_actions_memory_only() {
+    let service = Arc::new(ActionService::new());
+    let mut receiver = service.take_action_receiver().unwrap();
+    let action_id = haven_common::types::new_id("act");
+    let session_id = haven_common::types::new_id("ses");
+    service.actions.write().await.insert(
+        action_id.clone(),
+        ActionEntry {
+            kind: ActionKind::Background,
+            session_id: Some(session_id.clone()),
+            state: ActionState::Running {
+                started_at: "started".into(),
+            },
+            kill: None,
+            tail: None,
+            command: "echo memory-only".into(),
+            shell: "test".into(),
+            scheduled: None,
+        },
+    );
+
+    service
+        .mark_finished(
+            &action_id,
+            "started",
+            "test",
+            "echo memory-only",
+            "memory result".into(),
+            true,
+            Some(0),
+            false,
+        )
+        .await;
+
+    assert_eq!(service.status(&action_id).await["status"], "completed");
+    let completion = recv_background(&mut receiver).await;
+    assert_eq!(completion.session_id.as_deref(), Some(session_id.as_str()));
+    assert_eq!(completion.status_json["output"], "memory result");
 }
 
 #[tokio::test]
@@ -482,7 +526,7 @@ async fn persisted_action_query_uses_bound_database_kind_filter_and_order() {
     )
     .unwrap();
     let service = ActionService::new();
-    service.set_db(Some(db)).await;
+    service.set_action_store(Some(ActionStore::new(db))).await;
 
     let all = service.list_persisted_actions(None).await.unwrap();
     assert_eq!(all.len(), 3);
@@ -587,7 +631,9 @@ async fn test_action_result_persisted_to_db() {
     let dir = tempfile::TempDir::new().expect("temp dir");
     let db = Arc::new(Database::open(&dir.path().join("test.db")).expect("temp db"));
     let actions = Arc::new(ActionService::new());
-    actions.set_db(Some(db.clone())).await;
+    actions
+        .set_action_store(Some(ActionStore::new(db.clone())))
+        .await;
 
     let id = actions
         .spawn_shell(
@@ -692,7 +738,7 @@ async fn test_background_completion_reconciles_after_broadcast_loss() {
     // completion from terminal action history and keep it pending until the
     // transcript consumer acknowledges it.
     let actions = Arc::new(ActionService::new());
-    actions.set_db(Some(db)).await;
+    actions.set_action_store(Some(ActionStore::new(db))).await;
     let mut rx = actions.take_action_receiver().unwrap();
     let completion = tokio::time::timeout(
         Duration::from_secs(2),
@@ -1390,7 +1436,7 @@ async fn test_restore_scheduled_action_uses_action_session_and_schedule_due_at()
     service.set_event_sink(Arc::new(move |name, payload| {
         sink_events.lock().unwrap().push((name, payload));
     }));
-    service.set_db(Some(db)).await;
+    service.set_action_store(Some(ActionStore::new(db))).await;
 
     assert_eq!(service.restore_pending().await, 0);
     let status = service.status("act-restore-owner").await;
@@ -1500,7 +1546,9 @@ async fn test_scheduled_fire_without_receiver_is_requeued_durably() {
         (db, dir)
     };
     let service = Arc::new(ActionService::new());
-    service.set_db(Some(db.clone())).await;
+    service
+        .set_action_store(Some(ActionStore::new(db.clone())))
+        .await;
     let id = service
         .set(crate::builtin::scheduled_action::ScheduledActionSpec {
             due_at: None,
@@ -1555,7 +1603,9 @@ async fn test_scheduled_fire_recovery_survives_requeue_failure_for_late_receiver
     let dir = tempfile::TempDir::new().unwrap();
     let db = Arc::new(haven_memory::Database::open(&dir.path().join("test.db")).unwrap());
     let service = Arc::new(ActionService::new());
-    service.set_db(Some(db.clone())).await;
+    service
+        .set_action_store(Some(ActionStore::new(db.clone())))
+        .await;
     let id = service
         .set(crate::builtin::scheduled_action::ScheduledActionSpec {
             due_at: None,
@@ -1657,7 +1707,9 @@ async fn test_scheduled_trigger_db_failure_rearms_timer() {
     let dir = tempfile::TempDir::new().unwrap();
     let db = Arc::new(haven_memory::Database::open(&dir.path().join("test.db")).unwrap());
     let service = Arc::new(ActionService::new());
-    service.set_db(Some(db.clone())).await;
+    service
+        .set_action_store(Some(ActionStore::new(db.clone())))
+        .await;
     let mut rx = service.take_action_receiver().expect("receiver available");
     let id = service
         .set(crate::builtin::scheduled_action::ScheduledActionSpec {
@@ -1703,7 +1755,9 @@ async fn test_scheduled_cancel_db_failure_keeps_live_state_until_retry() {
     let dir = tempfile::TempDir::new().unwrap();
     let db = Arc::new(haven_memory::Database::open(&dir.path().join("test.db")).unwrap());
     let service = Arc::new(ActionService::new());
-    service.set_db(Some(db.clone())).await;
+    service
+        .set_action_store(Some(ActionStore::new(db.clone())))
+        .await;
     let id = service
         .set(crate::builtin::scheduled_action::ScheduledActionSpec {
             due_at: None,
@@ -1751,7 +1805,9 @@ async fn test_scheduled_terminal_db_failure_retries_before_memory_transition() {
     let dir = tempfile::TempDir::new().unwrap();
     let db = Arc::new(haven_memory::Database::open(&dir.path().join("test.db")).unwrap());
     let service = Arc::new(ActionService::new());
-    service.set_db(Some(db.clone())).await;
+    service
+        .set_action_store(Some(ActionStore::new(db.clone())))
+        .await;
     let mut rx = service.take_action_receiver().expect("receiver available");
     let id = service
         .set(crate::builtin::scheduled_action::ScheduledActionSpec {
@@ -1927,7 +1983,9 @@ async fn test_corrupt_row_quarantine_retries_after_transient_db_failure() {
         .unwrap();
 
     let service = Arc::new(ActionService::new());
-    service.set_db(Some(db.clone())).await;
+    service
+        .set_action_store(Some(ActionStore::new(db.clone())))
+        .await;
     assert_eq!(service.restore_pending().await, 0);
     assert_eq!(
         db.get_action("act-quarantine-retry")
@@ -1960,7 +2018,9 @@ async fn test_scheduled_terminal_event_reuses_persisted_timestamps() {
     let dir = tempfile::TempDir::new().unwrap();
     let db = Arc::new(haven_memory::Database::open(&dir.path().join("test.db")).unwrap());
     let service = Arc::new(ActionService::new());
-    service.set_db(Some(db.clone())).await;
+    service
+        .set_action_store(Some(ActionStore::new(db.clone())))
+        .await;
     let events = Arc::new(std::sync::Mutex::new(Vec::new()));
     let sink_events = events.clone();
     service.set_event_sink(Arc::new(move |name, payload| {
@@ -2055,7 +2115,9 @@ async fn test_restore_quarantines_corrupt_waiting_scheduled_rows() {
     )
     .unwrap();
     let service = Arc::new(ActionService::new());
-    service.set_db(Some(db.clone())).await;
+    service
+        .set_action_store(Some(ActionStore::new(db.clone())))
+        .await;
 
     assert_eq!(service.restore_pending().await, 0);
     assert_eq!(service.status("act-corrupt").await["status"], "not_found");
@@ -2101,7 +2163,9 @@ async fn test_background_registration_rollback_removes_durable_row() {
     let dir = tempfile::TempDir::new().unwrap();
     let db = Arc::new(haven_memory::Database::open(&dir.path().join("test.db")).unwrap());
     let service = Arc::new(ActionService::new());
-    service.set_db(Some(db.clone())).await;
+    service
+        .set_action_store(Some(ActionStore::new(db.clone())))
+        .await;
     let id = haven_common::types::new_id("act");
     db.save_action(
         &id,

@@ -12,6 +12,7 @@ use crate::messaging_service::{MessagingRuntime, MessagingService};
 use haven_common::config::{ContextLimitsConfig, SecurityConfig, ToolConfig};
 use haven_common::types::ShellChoice;
 use haven_llm::LlmRouter;
+use haven_memory::ActionStore;
 use haven_memory::recall::{MemoryQuery, MemoryRecall};
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
@@ -180,6 +181,8 @@ impl ToolRuntime {
 /// All application-provided values needed for the first builtin catalog.
 /// This is a composition value, not a mutable service registry.
 pub struct StartupWiring {
+    /// Durable action persistence constructed by the application composition root.
+    pub action_store: Option<ActionStore>,
     pub tool_settings: std::collections::HashMap<String, ToolConfig>,
     pub default_shell: ShellChoice,
     pub context_limits: ContextLimitsConfig,

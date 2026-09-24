@@ -9,7 +9,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
 use crate::ActionLifecycle;
-use haven_memory::repositories::action_completion_outbox::ActionCompletionOutboxRow;
+use haven_memory::{ActionCompletionOutboxRow, ActionRow, ActionStore};
 
 fn lock_or_recover<'a, T>(lock: &'a Mutex<T>, name: &'static str) -> MutexGuard<'a, T> {
     lock.lock().unwrap_or_else(|poisoned| {
@@ -24,7 +24,6 @@ fn lock_or_recover<'a, T>(lock: &'a Mutex<T>, name: &'static str) -> MutexGuard<
 use crate::output::{append_windows_diagnostics, sanitize_shell_output, summarize_error};
 use crate::process::{kill_process_tree, read_stream_capped, take_tail_if_changed};
 use crate::shell_runtime::{build_shell_command, collect_byte_cap, write_output_log};
-use haven_memory::Database;
 
 const ACTION_DB_RETRY_ATTEMPTS: usize = 3;
 const ACTION_DB_RETRY_DELAY: Duration = Duration::from_millis(50);
@@ -816,10 +815,10 @@ pub struct ActionService {
     /// Optional UI event sink (see `EventSink`). Wired by the desktop shell
     /// to forward lifecycle events as Tauri events.
     event_sink: ActionLifecycle,
-    /// Persistent store; `None` in headless/test builds (in-memory only).
+    /// Persistent action store; `None` in headless/test builds (in-memory only).
     /// Terminal action rows stay here as history even after the in-memory board
     /// reaps them (`TERMINAL_JOB_TTL`), so results survive app restarts.
-    db: RwLock<Option<Arc<Database>>>,
+    action_store: RwLock<Option<ActionStore>>,
     /// Cancels process runners, output preview loops and scheduled timers
     /// during application teardown.
     shutdown_token: CancellationToken,
@@ -852,7 +851,7 @@ impl ActionService {
             max_scheduled_actions: RwLock::new(32),
             max_due_horizon_secs: RwLock::new(365 * 24 * 3600),
             event_sink: ActionLifecycle::default(),
-            db: RwLock::new(None),
+            action_store: RwLock::new(None),
             shutdown_token: CancellationToken::new(),
             shutting_down: AtomicBool::new(false),
         }
@@ -890,8 +889,8 @@ impl ActionService {
     }
 
     async fn claim_pending_background_completion(&self) -> Option<BackgroundActionCompletion> {
-        let db = self.db.read().await.clone()?;
-        match db.run_blocking(|db| db.claim_action_completion()).await {
+        let store = self.action_store.read().await.clone()?;
+        match store.claim_pending_completion().await {
             Ok(Some(ActionCompletionOutboxRow {
                 action_id,
                 action_result_id,
@@ -918,15 +917,12 @@ impl ActionService {
     /// session may become terminal and clear its actor queue immediately after
     /// admission.
     pub async fn acknowledge_background_completion(&self, action_result_id: &str) {
-        let Some(db) = self.db.read().await.clone() else {
+        let Some(store) = self.action_store.read().await.clone() else {
             return;
         };
         let action_result_id = action_result_id.to_string();
         let action_result_id_for_log = action_result_id.clone();
-        if let Err(error) = db
-            .run_blocking(move |db| db.acknowledge_action_completion(&action_result_id))
-            .await
-        {
+        if let Err(error) = store.acknowledge_completion(action_result_id).await {
             tracing::warn!(
                 action_result_id = %action_result_id_for_log,
                 "failed to acknowledge durable action completion: {error}"
@@ -956,26 +952,25 @@ impl ActionService {
         *self.max_due_horizon_secs.write().await = limits.scheduled_actions_due_horizon_secs;
     }
 
-    /// Attach the database used for persistence. Wired by the desktop shell;
-    /// headless tests skip it.
-    pub async fn set_db(&self, db: Option<Arc<Database>>) {
-        *self.db.write().await = db;
+    /// Attach the action persistence port. Headless/test builds leave it unset.
+    pub async fn set_action_store(&self, action_store: Option<ActionStore>) {
+        *self.action_store.write().await = action_store;
     }
 
-    /// List persisted action rows through the database owned by this service.
-    /// The desktop shell binds the database during startup; callers must treat
-    /// a missing binding as a configuration error rather than empty history.
+    /// List persisted action rows through the configured action store. Callers
+    /// must treat a missing binding as a configuration error rather than empty
+    /// history.
     pub async fn list_persisted_actions(
         &self,
         kind: Option<&str>,
-    ) -> anyhow::Result<Vec<haven_memory::repositories::scheduled_actions::ActionRow>> {
-        let db = self
-            .db
+    ) -> anyhow::Result<Vec<ActionRow>> {
+        let store = self
+            .action_store
             .read()
             .await
             .clone()
-            .ok_or_else(|| anyhow::anyhow!("ActionService database is not configured"))?;
-        db.list_actions(kind)
+            .ok_or_else(|| anyhow::anyhow!("ActionService action store is not configured"))?;
+        store.list_actions(kind.map(str::to_owned)).await
     }
 
     /// Try to move a malformed persisted waiting row to terminal history.
@@ -988,18 +983,17 @@ impl ActionService {
         reason: &str,
         finished_at: &str,
     ) -> anyhow::Result<bool> {
-        let Some(db) = self.db.read().await.clone() else {
+        let Some(store) = self.action_store.read().await.clone() else {
             return Ok(true);
         };
         let mut last_error = None;
         for attempt in 0..ACTION_DB_RETRY_ATTEMPTS {
-            let action_id = id.to_string();
-            let reason = reason.to_string();
-            let finished_at_for_db = finished_at.to_string();
-            match db
-                .run_blocking(move |db| {
-                    db.fail_waiting_scheduled_action(&action_id, &reason, &finished_at_for_db)
-                })
+            match store
+                .quarantine_waiting_scheduled_action(
+                    id.to_string(),
+                    reason.to_string(),
+                    finished_at.to_string(),
+                )
                 .await
             {
                 Ok(changed) => return Ok(changed),
@@ -1081,7 +1075,7 @@ impl ActionService {
     }
 
     async fn rollback_background_registration(&self, action_id: &str) {
-        let Some(db) = self.db.read().await.clone() else {
+        let Some(store) = self.action_store.read().await.clone() else {
             self.actions.write().await.remove(action_id);
             return;
         };
@@ -1089,8 +1083,7 @@ impl ActionService {
         let mut delete_error = None;
         let mut deleted = false;
         for attempt in 0..ACTION_DB_RETRY_ATTEMPTS {
-            let id = action_id.to_string();
-            match db.run_blocking(move |db| db.delete_action(&id)).await {
+            match store.delete_action(action_id.to_string()).await {
                 Ok(true) | Ok(false) => {
                     deleted = true;
                     break;
@@ -1118,21 +1111,17 @@ impl ActionService {
         let reason = "background action failed before its process was admitted";
         let mut fallback_error = None;
         for attempt in 0..ACTION_DB_RETRY_ATTEMPTS {
-            let id = id.clone();
-            let finished_at_for_db = finished_at.clone();
-            match db
-                .run_blocking(move |db| {
-                    db.finish_action(
-                        &id,
-                        ActionStatus::Failed,
-                        None,
-                        Some(reason),
-                        Some(reason),
-                        None,
-                        None,
-                        &finished_at_for_db,
-                    )
-                })
+            match store
+                .finish_background_action(
+                    id.clone(),
+                    ActionStatus::Failed,
+                    None,
+                    Some(reason.to_string()),
+                    Some(reason.to_string()),
+                    None,
+                    None,
+                    finished_at.clone(),
+                )
                 .await
             {
                 Ok(_) => {
@@ -1223,27 +1212,26 @@ impl ActionService {
     /// Called once from the agent layer startup. Returns the number of rows
     /// marked. Idempotent.
     pub async fn restore_after_restart(&self) -> usize {
-        let Some(db) = self.db.read().await.clone() else {
+        let Some(store) = self.action_store.read().await.clone() else {
             return 0;
         };
-        db.run_blocking(|db| db.mark_interrupted_actions())
-            .await
-            .unwrap_or_else(|e| {
-                tracing::warn!("restore_after_restart: failed to mark interrupted actions: {e}");
-                0
-            })
+        store.mark_interrupted_actions().await.unwrap_or_else(|e| {
+            tracing::warn!("restore_after_restart: failed to mark interrupted actions: {e}");
+            0
+        })
     }
 
     /// Persist a terminal action row and completion outbox record. `Ok(false)`
-    /// means another terminal transition already won the database CAS. A
-    /// service without a database uses its in-memory transition as the commit.
+    /// means another terminal transition already won the durable CAS. A
+    /// service without an action store uses its in-memory transition as the
+    /// commit.
     async fn persist_terminal(
         &self,
         action_id: &str,
         state: &ActionState,
         status_json: &Value,
     ) -> anyhow::Result<bool> {
-        let Some(db) = self.db.read().await.clone() else {
+        let Some(store) = self.action_store.read().await.clone() else {
             return Ok(true);
         };
         let (output, error, error_reason, log_path, exit_code, finished_at) = match state {
@@ -1285,31 +1273,32 @@ impl ActionService {
         };
         let action_id = action_id.to_string();
         let status = state.status();
-        let output = output.map(str::to_string);
-        let error = error.map(str::to_string);
-        let error_reason = error_reason.map(str::to_string);
-        let log_path = log_path.map(str::to_string);
+        let output = output.map(str::to_owned);
+        let error = error.map(str::to_owned);
+        let error_reason = error_reason.map(str::to_owned);
+        let log_path = log_path.map(str::to_owned);
         let finished_at = finished_at.to_string();
-        let action_id_for_db = action_id.clone();
-        let status_json = serde_json::to_string(status_json)?;
-        db.run_blocking(move |db| match status {
-            ActionStatus::Completed | ActionStatus::Failed => db.finish_action_with_completion(
-                &action_id_for_db,
-                status,
-                output.as_deref(),
-                error.as_deref(),
-                error_reason.as_deref(),
-                log_path.as_deref(),
-                exit_code,
-                &finished_at,
-                &status_json,
-            ),
-            ActionStatus::Cancelled => db.cancel_background_action(&action_id_for_db, &finished_at),
+        match status {
+            ActionStatus::Completed | ActionStatus::Failed => {
+                store
+                    .finish_background_action_with_completion(
+                        action_id,
+                        status,
+                        output,
+                        error,
+                        error_reason,
+                        log_path,
+                        exit_code,
+                        finished_at,
+                        status_json.clone(),
+                    )
+                    .await
+            }
+            ActionStatus::Cancelled => store.cancel_background_action(action_id, finished_at).await,
             ActionStatus::Waiting | ActionStatus::Running => {
                 anyhow::bail!("cannot persist non-terminal background action status")
             }
-        })
-        .await
+        }
     }
 
     /// Try one terminal transition. Both memory-only transitions and durable
@@ -1376,11 +1365,10 @@ impl ActionService {
     }
 
     async fn reconcile_background_terminal(&self, action_id: &str) {
-        let Some(db) = self.db.read().await.clone() else {
+        let Some(store) = self.action_store.read().await.clone() else {
             return;
         };
-        let id = action_id.to_string();
-        let row = match db.run_blocking(move |db| db.get_action(&id)).await {
+        let row = match store.get_action(action_id.to_string()).await {
             Ok(row) => row,
             Err(error) => {
                 tracing::warn!(
@@ -1680,25 +1668,18 @@ impl ActionService {
         // Persist before publishing the action to the in-memory board or
         // starting a process. A failed database write therefore cannot leave a
         // process that restore_after_restart does not know how to clean up.
-        if let Some(db) = self.db.read().await.clone() {
-            let action_id = id.clone();
-            let command_for_db = command.to_string();
-            let started_at_for_db = started_at.clone();
-            let session_id_for_db = session_id.map(str::to_owned);
-            if let Err(error) = db
-                .run_blocking(move |db| {
-                    db.save_action(
-                        &action_id,
-                        session_id_for_db.as_deref(),
-                        &command_for_db,
-                        &started_at_for_db,
-                    )
-                })
+        if let Some(store) = self.action_store.read().await.clone()
+            && let Err(error) = store
+                .save_background_action(
+                    id.clone(),
+                    session_id.map(str::to_owned),
+                    command.to_string(),
+                    started_at.clone(),
+                )
                 .await
-            {
-                tracing::warn!(action_id = %id, "failed to persist action spawn: {error}");
-                return Err(error);
-            }
+        {
+            tracing::warn!(action_id = %id, "failed to persist action spawn: {error}");
+            return Err(error);
         }
 
         self.actions.write().await.insert(
@@ -1996,19 +1977,14 @@ impl ActionService {
         // history and any undelivered completion keep their owner (spawn rows
         // start with session_id NULL). Do not update memory if the transaction
         // fails; otherwise the runtime could claim a binding the outbox lacks.
-        let db = self.db.read().await.clone();
-        if let Some(db) = &db {
-            let action_id_for_db = action_id.to_string();
-            let session_id_for_db = session_id.to_string();
-            if let Err(e) = db
-                .run_blocking(move |db| {
-                    db.update_action_session(&action_id_for_db, &session_id_for_db)
-                })
+        let action_store = self.action_store.read().await.clone();
+        if let Some(store) = &action_store
+            && let Err(e) = store
+                .bind_background_action_session(action_id.to_string(), session_id.to_string())
                 .await
-            {
-                tracing::warn!(action_id, "failed to persist action session binding: {e}");
-                return;
-            }
+        {
+            tracing::warn!(action_id, "failed to persist action session binding: {e}");
+            return;
         }
         let terminal_state = {
             let mut actions = self.actions.write().await;
@@ -2031,7 +2007,7 @@ impl ActionService {
         // Headless mode has no durable outbox to recover a completion that was
         // first published without an owner. Re-notify only with the newly
         // bound owner; persistent mode relies on the updated outbox row.
-        if db.is_none()
+        if action_store.is_none()
             && let Some(state) = terminal_state
         {
             self.publish_background_completion(action_id, state, Some(session_id.to_string()));
@@ -2121,37 +2097,28 @@ impl ActionService {
             }
         };
         if !memory_terminal {
-            if let Some(db) = self.db.read().await.clone() {
-                let id = action_id.to_string();
-                let row = db.run_blocking(move |db| db.get_action(&id)).await?;
+            if let Some(store) = self.action_store.read().await.clone() {
+                let row = store.get_action(action_id.to_string()).await?;
                 let Some(row) = row else {
                     return Ok(false);
                 };
                 if row.kind != kind || !row.status.is_terminal() {
                     return Ok(false);
                 }
-                let id = action_id.to_string();
-                if !db.run_blocking(move |db| db.delete_action(&id)).await? {
+                if !store.delete_action(action_id.to_string()).await? {
                     return Ok(false);
                 }
             } else {
                 return Ok(false);
             }
-        } else if let Some(db) = self.db.read().await.clone() {
-            let id = action_id.to_string();
-            if let Some(row) = db
-                .run_blocking({
-                    let id = id.clone();
-                    move |db| db.get_action(&id)
-                })
-                .await?
-            {
-                if row.kind != kind || !row.status.is_terminal() {
-                    return Ok(false);
-                }
-                if !db.run_blocking(move |db| db.delete_action(&id)).await? {
-                    return Ok(false);
-                }
+        } else if let Some(store) = self.action_store.read().await.clone()
+            && let Some(row) = store.get_action(action_id.to_string()).await?
+        {
+            if row.kind != kind || !row.status.is_terminal() {
+                return Ok(false);
+            }
+            if !store.delete_action(action_id.to_string()).await? {
+                return Ok(false);
             }
         }
         self.actions.write().await.remove(action_id);
@@ -2172,11 +2139,10 @@ impl ActionService {
         if let Some(kind) = memory_kind {
             return self.delete(action_id, kind).await;
         }
-        let Some(db) = self.db.read().await.clone() else {
+        let Some(store) = self.action_store.read().await.clone() else {
             return Ok(false);
         };
-        let id = action_id.to_string();
-        let Some(row) = db.run_blocking(move |db| db.get_action(&id)).await? else {
+        let Some(row) = store.get_action(action_id.to_string()).await? else {
             return Ok(false);
         };
         self.delete(action_id, &row.kind).await
@@ -2484,34 +2450,25 @@ impl ActionService {
         // durable action table. Cross-restart dependency recovery needs a
         // separate durable producer/idempotency contract (ADR 0172).
         if watch_action_id.is_none()
-            && let Some(db) = self.db.read().await.clone()
+            && let Some(store) = self.action_store.read().await.clone()
         {
             let args_json = tool_args.as_ref().map(Value::to_string);
-            let id_for_db = id.clone();
-            let due_for_db = due_at.clone();
-            let mode_for_db = mode.as_str().to_string();
-            let title_for_db = title.clone();
-            let body_for_db = body.clone();
-            let session_for_db = session_id.clone();
-            let tool_for_db = tool_name.clone();
-            let prompt_for_db = prompt.clone();
-            db.run_blocking(move |db| {
-                db.save_scheduled_action(
-                    &id_for_db,
-                    &due_for_db,
-                    &title_for_db,
-                    &body_for_db,
-                    &mode_for_db,
-                    session_for_db.as_deref(),
-                    tool_for_db.as_deref(),
-                    args_json.as_deref(),
-                    prompt_for_db.as_deref(),
+            store
+                .save_scheduled_action(
+                    id.clone(),
+                    due_at.clone(),
+                    title.clone(),
+                    body.clone(),
+                    mode.as_str().to_string(),
+                    session_id.clone(),
+                    tool_name.clone(),
+                    args_json,
+                    prompt.clone(),
                 )
-            })
-            .await
-            .map_err(|error| {
-                anyhow::anyhow!("failed to persist scheduled task '{}': {error}", id)
-            })?;
+                .await
+                .map_err(|error| {
+                    anyhow::anyhow!("failed to persist scheduled task '{}': {error}", id)
+                })?;
         }
 
         let entry = ScheduledActionEntry {
@@ -2627,12 +2584,10 @@ impl ActionService {
             (schedule.clone(), action.session_id.clone())
         };
         if schedule.watch_action_id.is_none()
-            && let Some(db) = self.db.read().await.clone()
+            && let Some(store) = self.action_store.read().await.clone()
         {
-            let action_id = id.to_string();
-            let started_at_for_db = started_at.clone();
-            match db
-                .run_blocking(move |db| db.start_scheduled_action(&action_id, &started_at_for_db))
+            match store
+                .start_scheduled_action(id.to_string(), started_at.clone())
                 .await
             {
                 Ok(true) => {}
@@ -2697,16 +2652,12 @@ impl ActionService {
             // can still acknowledge it later instead of silently losing work.
             self.clear_scheduled_fire_claim(id).await;
             let mut requeued = true;
-            if let Some(db) = self.db.read().await.clone()
+            if let Some(store) = self.action_store.read().await.clone()
                 && schedule.watch_action_id.is_none()
             {
                 let mut last_error = None;
                 for attempt in 0..ACTION_DB_RETRY_ATTEMPTS {
-                    let action_id = id.to_string();
-                    match db
-                        .run_blocking(move |db| db.requeue_scheduled_action(&action_id))
-                        .await
-                    {
+                    match store.requeue_scheduled_action(id.to_string()).await {
                         Ok(true) => {
                             last_error = None;
                             break;
@@ -2851,23 +2802,18 @@ impl ActionService {
         error_reason: Option<&str>,
         finished_at: &str,
     ) -> anyhow::Result<bool> {
-        let Some(db) = self.db.read().await.clone() else {
+        let Some(store) = self.action_store.read().await.clone() else {
             return Ok(true);
         };
         let mut last_error = None;
         for attempt in 0..ACTION_DB_RETRY_ATTEMPTS {
-            let action_id = id.to_string();
-            let reason = error_reason.map(str::to_owned);
-            let finished_at_for_db = finished_at.to_string();
-            match db
-                .run_blocking(move |db| {
-                    db.finish_scheduled_action(
-                        &action_id,
-                        status,
-                        reason.as_deref(),
-                        &finished_at_for_db,
-                    )
-                })
+            match store
+                .finish_scheduled_action(
+                    id.to_string(),
+                    status,
+                    error_reason.map(str::to_owned),
+                    finished_at.to_string(),
+                )
                 .await
             {
                 Ok(changed) => return Ok(changed),
@@ -3067,18 +3013,12 @@ impl ActionService {
         };
         let finished_at = chrono::Utc::now().to_rfc3339();
         if schedule.watch_action_id.is_none()
-            && let Some(db) = self.db.read().await.clone()
+            && let Some(store) = self.action_store.read().await.clone()
         {
-            let action_id = id.to_string();
-            let finished_at_for_db = finished_at.clone();
             let mut last_error = None;
             for attempt in 0..ACTION_DB_RETRY_ATTEMPTS {
-                let action_id = action_id.clone();
-                let finished_at_for_db = finished_at_for_db.clone();
-                match db
-                    .run_blocking(move |db| {
-                        db.cancel_scheduled_action(&action_id, &finished_at_for_db)
-                    })
+                match store
+                    .cancel_scheduled_action(id.to_string(), finished_at.clone())
                     .await
                 {
                     Ok(true) => {
@@ -3157,13 +3097,10 @@ impl ActionService {
     /// [`restore_after_restart`], but both are deliberately exposed through
     /// this service rather than separate registries.
     pub async fn restore_pending(self: &Arc<Self>) -> usize {
-        let Some(db) = self.db.read().await.clone() else {
+        let Some(store) = self.action_store.read().await.clone() else {
             return 0;
         };
-        let rows = match db
-            .run_blocking(|db| db.list_pending_scheduled_actions())
-            .await
-        {
+        let rows = match store.list_pending_scheduled_actions().await {
             Ok(rows) => rows,
             Err(error) => {
                 tracing::warn!("restore_pending: failed to load scheduled actions: {error}");

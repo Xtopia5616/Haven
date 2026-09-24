@@ -305,6 +305,7 @@ impl ToolsManager {
     /// `PlatformRuntime` snapshot is published with every field.
     pub async fn wire_startup(&self, wiring: StartupWiring) -> anyhow::Result<()> {
         let StartupWiring {
+            action_store,
             tool_settings,
             default_shell,
             context_limits,
@@ -343,7 +344,7 @@ impl ToolsManager {
             .await;
         self.runtime
             .action_service
-            .set_db(admin_context.db.clone())
+            .set_action_store(action_store)
             .await;
         self.runtime
             .replace_platform(crate::tool_runtime::PlatformRuntime {
@@ -396,11 +397,9 @@ impl ToolsManager {
 
     /// Wire the app-level context for the five native admin surfaces. Called by the
     /// desktop shell after the config loader exists; later catalog rebuilds
-    /// keep the capability-scoped adapters registered. Also hands the DB to
-    /// the unified action state machine so timer and process action results
-    /// persist across restarts.
+    /// keep the capability-scoped adapters registered. Durable action storage
+    /// is injected separately through startup wiring by the composition root.
     pub async fn set_admin_context(&self, ctx: builtin::AdminContext) {
-        self.runtime.action_service.set_db(ctx.db.clone()).await;
         self.runtime
             .update_platform(|current| {
                 let mut next = current.clone();

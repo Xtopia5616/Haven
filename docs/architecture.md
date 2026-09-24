@@ -1,6 +1,6 @@
 # Haven 架构与 crate 职责
 
-> 版本: v1.3 | 日期: 2026-09-25
+> 版本: v1.4 | 日期: 2026-09-25
 > 范围: `crates/` (Rust 后端, Tauri 2)
 > 原则: **依赖单向、叶子优先**。上层 crate 只依赖下层，绝不反向依赖；共享数据与类型放叶子（`haven-common`），
 > 组件职责按「谁拥有实现、谁只消费接口」划分。
@@ -190,7 +190,9 @@ CI 以 `scripts/check-crate-dependencies.ps1` 对此表执行内部 crate 依赖
   负责事实读取、搜索/排序，`fact_maintenance.rs` 负责事实清理、衰减与矛盾
   扫描，`embedding_store.rs` 以窄异步 `MemoryEmbeddingStore` 提供嵌入索引生命周期
   的持久化端口，`memory_recall_store.rs` 以 `MemoryRecallStore` 提供异步 typed
-  keyword/vector recall、可见事实 hydration、revision 与完整 recall 端口；`facts.rs`
+  keyword/vector recall、可见事实 hydration、revision 与完整 recall 端口；
+  `action_store.rs` 以异步 typed `ActionStore` 提供后台/定时 action 与 completion outbox
+  的窄持久化端口，并在 Memory 内调度 SQLite blocking 操作；`facts.rs`
   负责事实类型、谓词策略和稳定 `Database` 外观。消息的
   `media_inputs` 是多模态 canonical 持久化投影；消息返回对象中的 `attachments` 仅是
   ingress/UI DTO。数据库的 `ui_metadata` 只保留 UI 展示与受管资产保留所需的元数据，
@@ -318,6 +320,10 @@ completion bus。统一状态为 `waiting → running → completed | failed | c
 `kind` 只表示任务类型，不再作为状态值。model-facing `actions.*` 和 app action board 都
 直接读取规范化 task row。scheduled fire 的恢复 map 是共享 claim/lease 的唯一领取入口，
 后台 completion consumer 不领取 scheduled fire，避免未来多个 receiver 重复执行。
+action 表、scheduled trigger 和 completion outbox 的全部持久化调用经 `ActionStore`；Tools
+不持有 raw `Database` 或安排 SQLite blocking 工作。CAS 仲裁、内存 board、恢复/重试策略与
+生命周期事件仍由 `ActionService` 所有；终态行和 outbox 在同一事务提交，agent 只在
+transcript durable 后确认 outbox（ADR 0305）。
 `InteractionRequest`（`haven-agent/src/interaction.rs`）
 是 ask、confirm 和 scheduled confirm 的共同生命周期投影，快照通过 `interactions` 保存当前
 请求；旧快照不做运行时兼容读取，新的交互状态以 `Pending → Resolved | Expired | Cancelled`
@@ -494,6 +500,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 
 | 日期 | 内容 |
 |---|---|
+| 2026-09-25 | §2.3 Memory / §2.5 Tools：ActionService 所有 action 持久化改经窄异步 ActionStore；保留 SQLite CAS/outbox 事务、内存生命周期和 headless 行为（ADR 0305） |
 | 2026-09-23 | §2.5 Agent：热 transcript 的主人定为 actor 内的 `SessionState`；一次 run 在 actor 任务内执行，只在 yield 点借用状态。usage、stream id、token estimate 是函数调用，不是 mailbox 命令。当前循环仍在 actor 外，迁移必须一次跨过这条边界（ADR 0214） |
 | 2026-09-23 | §1 Tools：`OperationSpec` 成为运行时策略与 manifest 的唯一来源；`OperationContract.read_only` 不再豁免确认，manifest 向运行时收紧（ADR 0213） |
 | 2026-09-23 | §1 Tools：进程服务改为 `ToolServices`，不再从 `ToolsManager` 取 MCP/skills/action；`OperationSpec` 只覆盖 builtin view，IPC 形状与交互式确认边界保持不变（ADR 0212） |

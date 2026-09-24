@@ -1,5 +1,6 @@
 use super::support::*;
 use super::*;
+use haven_memory::ActionStore;
 
 #[derive(Default)]
 struct SessionUpdateCapture(std::sync::Mutex<Vec<(String, SessionStatus)>>);
@@ -344,7 +345,9 @@ async fn terminal_action_result_projection_is_idempotent() {
 async fn queued_action_result_is_reconciled_after_session_becomes_terminal() {
     let (agent, executor) = make_test_agent();
     let action_service = executor.services().actions.clone();
-    action_service.set_db(Some(agent.db.clone())).await;
+    action_service
+        .set_action_store(Some(ActionStore::new(agent.db.clone())))
+        .await;
     let session = executor
         .create_session("terminal action race")
         .await

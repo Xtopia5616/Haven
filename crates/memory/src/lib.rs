@@ -12,6 +12,8 @@ pub use recall::{
     MemoryRecallEmptyReason, MemoryRecallMode, MemoryRecallSourceStatus, MemoryRecallSuggestion,
     MemoryRetriever,
 };
+pub use repositories::action_completion_outbox::ActionCompletionOutboxRow;
+pub use repositories::action_store::ActionStore;
 pub use repositories::embedding_store::{
     MemoryEmbeddingEntity, MemoryEmbeddingSaveFailure, MemoryEmbeddingSaveReport,
     MemoryEmbeddingStore, MemoryEmbeddingVector, PendingMemoryEmbedding,
@@ -19,6 +21,7 @@ pub use repositories::embedding_store::{
 pub use repositories::fact_store::MemoryFactStore;
 pub use repositories::memory_recall_store::MemoryRecallStore;
 pub use repositories::memory_store::MemoryStore;
+pub use repositories::scheduled_actions::{ActionRow, ScheduledActionRow};
 pub use repositories::session_events::{
     BRANCH_POINT_EVENT_TYPE, CURRENT_EVENT_VERSION, INTERACTION_CLEARED_EVENT_TYPE,
     INTERACTION_REQUESTED_EVENT_TYPE, INTERACTION_RESOLVED_EVENT_TYPE,
