@@ -299,3 +299,4 @@
 - [0308：MemoryWorker session 事实提取状态通过专用 Store](0308-memory-worker-fact-extraction-state-store.md)
 - [0309：MemoryWorker 事实批量写入通过 MemoryFactStore](0309-memory-worker-fact-batch-through-store.md)
 - [0310：MemoryWorker 确定性维护通过 MemoryMaintenanceStore](0310-memory-worker-deterministic-maintenance-store.md)
+- [0311：MemoryWorker LLM 维护持久化通过 MemoryMaintenanceStore](0311-memory-worker-llm-maintenance-store.md)

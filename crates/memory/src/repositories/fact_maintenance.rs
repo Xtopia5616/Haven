@@ -23,7 +23,8 @@ pub const CONTRADICTION_LIVE_FLOOR: f64 = 0.4;
 pub const CONTRADICTION_DEMOTE_MAX_AGE_DAYS: i64 = 2;
 
 /// Kind of contradiction a maintenance candidate group represents (X5).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ContradictionKind {
     /// `likes` ↔ `dislikes` on the same subject+object.
     Polarity,
@@ -32,7 +33,7 @@ pub enum ContradictionKind {
 }
 
 /// A conflict group surfaced to the optional LLM arbitrator (X5).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ContradictionCandidate {
     pub kind: ContradictionKind,
     pub facts: Vec<Fact>,

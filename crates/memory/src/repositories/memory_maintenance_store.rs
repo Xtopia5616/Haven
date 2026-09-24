@@ -3,12 +3,20 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 use crate::Database;
+use crate::repositories::facts::ContradictionCandidate;
 
-/// Typed persistence boundary for deterministic, scheduled memory cleanup.
+/// Predicate row count returned to maintenance policy callers.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PredicateCount {
+    pub predicate: String,
+    pub row_count: u64,
+}
+
+/// Typed persistence boundary for scheduled memory maintenance persistence.
 ///
 /// Each method schedules exactly one existing repository operation on the
-/// SQLite blocking pool. The caller owns the maintenance order, logging,
-/// best-effort continuation, and aggregate error policy.
+/// SQLite blocking pool. The caller owns maintenance order, LLM policy,
+/// logging, best-effort continuation, and aggregate error policy.
 #[derive(Clone)]
 pub struct MemoryMaintenanceStore {
     db: Arc<Database>,
@@ -111,12 +119,53 @@ impl MemoryMaintenanceStore {
         self.run(cancellation, |db| db.cleanup_orphan_source_refs())
             .await
     }
+
+    /// List residual contradiction groups that the optional LLM arbitrator
+    /// may consider. Candidate visibility filtering and proposal policy stay
+    /// with the caller.
+    pub async fn list_ambiguous_contradictions(
+        &self,
+    ) -> anyhow::Result<Vec<ContradictionCandidate>> {
+        self.run(None, |db| db.list_ambiguous_contradictions())
+            .await
+    }
+
+    /// Demote the selected fact ids after the caller has applied its policy
+    /// gate. An empty list retains the repository's zero-count behavior.
+    pub async fn demote_fact_ids(&self, ids: Vec<String>) -> anyhow::Result<u64> {
+        self.run(None, move |db| db.demote_fact_ids(ids)).await
+    }
+
+    /// Return exact predicate counts for maintenance policy decisions.
+    pub async fn list_predicate_counts(&self) -> anyhow::Result<Vec<PredicateCount>> {
+        self.run(None, |db| db.list_predicate_counts())
+            .await
+            .map(|counts| {
+                counts
+                    .into_iter()
+                    .map(|(predicate, row_count)| PredicateCount {
+                        predicate,
+                        row_count,
+                    })
+                    .collect()
+            })
+    }
+
+    /// Rewrite one predicate and run the repository's existing duplicate
+    /// collapse. Each proposal is an independent store call.
+    pub async fn rewrite_predicate(&self, from: &str, to: &str) -> anyhow::Result<u64> {
+        let from = from.to_string();
+        let to = to.to_string();
+        self.run(None, move |db| db.rewrite_predicate(&from, &to))
+            .await
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::MemoryMaintenanceStore;
     use crate::Database;
+    use crate::repositories::facts::{ContradictionCandidate, ContradictionKind};
     use std::sync::Arc;
     use tokio_util::sync::CancellationToken;
 
@@ -224,5 +273,70 @@ mod tests {
         let error = store.dedup_facts(Some(&cancellation)).await.unwrap_err();
         assert!(error.to_string().contains("cancelled"));
         assert_eq!(db.get_facts("user").unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn llm_maintenance_results_are_typed_dtos_with_serde_round_trip() {
+        let (db, store) = fixture();
+        db.insert_fact("user", "likes", "Rust", "inferred", 0.9, &[])
+            .unwrap();
+        db.insert_fact("user", "dislikes", "Rust", "inferred", 0.8, &[])
+            .unwrap();
+
+        let candidates = store.list_ambiguous_contradictions().await.unwrap();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].kind, ContradictionKind::Polarity);
+        let encoded_candidates = serde_json::to_value(&candidates).unwrap();
+        let decoded_candidates: Vec<ContradictionCandidate> =
+            serde_json::from_value(encoded_candidates.clone()).unwrap();
+        assert_eq!(
+            serde_json::to_value(decoded_candidates).unwrap(),
+            encoded_candidates
+        );
+
+        let counts = store.list_predicate_counts().await.unwrap();
+        assert_eq!(
+            counts,
+            vec![
+                super::PredicateCount {
+                    predicate: "dislikes".into(),
+                    row_count: 1,
+                },
+                super::PredicateCount {
+                    predicate: "likes".into(),
+                    row_count: 1,
+                },
+            ]
+        );
+        let encoded_counts = serde_json::to_value(&counts).unwrap();
+        let decoded_counts: Vec<super::PredicateCount> =
+            serde_json::from_value(encoded_counts.clone()).unwrap();
+        assert_eq!(decoded_counts, counts);
+        assert_eq!(
+            serde_json::to_value(decoded_counts).unwrap(),
+            encoded_counts
+        );
+    }
+
+    #[tokio::test]
+    async fn llm_maintenance_store_propagates_database_errors_and_empty_demote_is_zero() {
+        let (db, store) = fixture();
+        assert_eq!(store.demote_fact_ids(Vec::new()).await.unwrap(), 0);
+
+        db.conn().execute_batch("DROP TABLE facts").unwrap();
+        for error in [
+            store.list_ambiguous_contradictions().await.unwrap_err(),
+            store.list_predicate_counts().await.unwrap_err(),
+            store
+                .demote_fact_ids(vec!["fact-00000000000000000000000000000000".into()])
+                .await
+                .unwrap_err(),
+            store
+                .rewrite_predicate("workspace", "project_path")
+                .await
+                .unwrap_err(),
+        ] {
+            assert!(error.to_string().contains("no such table: facts"));
+        }
     }
 }

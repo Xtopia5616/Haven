@@ -96,9 +96,9 @@ pub struct MemoryService {
     prompt_cache: Mutex<PromptMemoryCache>,
 }
 
-/// Narrow persistence capability handed to the worker.  Keeping this handle
-/// private to the memory boundary avoids passing raw database ownership into
-/// prompt and memory-worker composition code.
+/// Legacy raw persistence capability handed to the worker only for summary
+/// episode cursor and shared extraction-throttle KV state. All migrated
+/// maintenance operations use typed stores.
 #[derive(Clone)]
 pub(crate) struct MemoryDatabase(Arc<Database>);
 
@@ -158,7 +158,8 @@ impl MemoryService {
         self.fact_extraction_store.clone()
     }
 
-    /// Return the shared persistence port for deterministic maintenance SQL.
+    /// Return the shared persistence port for deterministic and LLM
+    /// maintenance database operations.
     pub(crate) fn memory_maintenance_store(&self) -> MemoryMaintenanceStore {
         self.maintenance_store.clone()
     }

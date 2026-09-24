@@ -41,10 +41,10 @@ pub struct MemoryWorker {
     fact_store: MemoryFactStore,
     fact_extraction_store: MemoryFactExtractionStore,
     maintenance_store: MemoryMaintenanceStore,
-    // Remaining raw-DB work: LLM contradiction arbitration/predicate merges,
-    // and summary-extraction state/shared throttle. Fact writes, deterministic
-    // maintenance, ordinary extraction state, and outbox markers use Memory
-    // stores; embedding catch-up uses MemoryService.
+    // Remaining raw-DB work is summary extraction's episode cursor and shared
+    // throttle KV state. Fact writes, LLM/deterministic maintenance, ordinary
+    // extraction state, and outbox markers use Memory stores; embedding
+    // catch-up uses MemoryService.
     db: MemoryDatabase,
     inference: Arc<dyn MemoryInferencePort>,
     /// Cap (chars) for transcripts sent to the SmallModel for fact
@@ -1166,11 +1166,7 @@ impl MemoryWorker {
         if !self.inference.is_fast_chat_configured().await {
             return 0;
         }
-        let db = self.db.clone();
-        let groups = match db
-            .run_blocking(move |db| db.list_ambiguous_contradictions())
-            .await
-        {
+        let groups = match self.maintenance_store.list_ambiguous_contradictions().await {
             Ok(v) => v,
             Err(e) => {
                 tracing::warn!(
@@ -1243,19 +1239,18 @@ impl MemoryWorker {
         if demote_ids.is_empty() {
             return 0;
         }
-        let db = self.db.clone();
-        db.run_blocking(move |db| {
-            let n = db.demote_fact_ids(demote_ids)?;
-            if n > 0 {
-                tracing::info!(
-                    "memory maintenance: LLM demoted {} contradictory fact(s)",
-                    n
-                );
+        match self.maintenance_store.demote_fact_ids(demote_ids).await {
+            Ok(count) => {
+                if count > 0 {
+                    tracing::info!(
+                        "memory maintenance: LLM demoted {} contradictory fact(s)",
+                        count
+                    );
+                }
+                count
             }
-            Ok::<u64, anyhow::Error>(n)
-        })
-        .await
-        .unwrap_or(0)
+            Err(_) => 0,
+        }
     }
 
     /// Maintenance LLM pass (M6): propose predicate alias merges and apply
@@ -1265,8 +1260,7 @@ impl MemoryWorker {
         if !self.inference.is_fast_chat_configured().await {
             return 0;
         }
-        let db = self.db.clone();
-        let counts = match db.run_blocking(move |db| db.list_predicate_counts()).await {
+        let counts = match self.maintenance_store.list_predicate_counts().await {
             Ok(v) => v,
             Err(e) => {
                 tracing::warn!("memory maintenance: list_predicate_counts failed: {}", e);
@@ -1275,9 +1269,9 @@ impl MemoryWorker {
         };
         // Only bother the model when some keys still need collapsing: either
         // a legacy alias spelling, or a free-form non-canonical predicate.
-        let needs_merge = counts.iter().any(|(p, _)| {
-            let n = normalize_predicate(p);
-            n != *p || !is_canonical_merge_target(&n)
+        let needs_merge = counts.iter().any(|entry| {
+            let normalized = normalize_predicate(&entry.predicate);
+            normalized != entry.predicate || !is_canonical_merge_target(&normalized)
         });
         if !needs_merge || counts.len() < 2 {
             return 0;
@@ -1285,7 +1279,7 @@ impl MemoryWorker {
         let listing = counts
             .iter()
             .take(60)
-            .map(|(p, n)| format!("{p}\t{n}"))
+            .map(|entry| format!("{}\t{}", entry.predicate, entry.row_count))
             .collect::<Vec<_>>()
             .join("\n");
         let user_content = format!(
@@ -1328,34 +1322,29 @@ impl MemoryWorker {
         if accepted.is_empty() {
             return 0;
         }
-        let db = self.db.clone();
-        db.run_blocking(move |db| {
-            let mut total = 0u64;
-            for (from, to) in accepted {
-                match db.rewrite_predicate(&from, &to) {
-                    Ok(n) => {
-                        if n > 0 {
-                            tracing::info!(
-                                "memory maintenance: rewrote predicate '{}' → '{}' ({} rows)",
-                                from,
-                                to,
-                                n
-                            );
-                            total += n;
-                        }
+        let mut total = 0u64;
+        for (from, to) in accepted {
+            match self.maintenance_store.rewrite_predicate(&from, &to).await {
+                Ok(count) => {
+                    if count > 0 {
+                        tracing::info!(
+                            "memory maintenance: rewrote predicate '{}' → '{}' ({} rows)",
+                            from,
+                            to,
+                            count
+                        );
+                        total += count;
                     }
-                    Err(e) => tracing::warn!(
-                        "memory maintenance: rewrite_predicate {}→{} failed: {}",
-                        from,
-                        to,
-                        e
-                    ),
                 }
+                Err(error) => tracing::warn!(
+                    "memory maintenance: rewrite_predicate {}→{} failed: {}",
+                    from,
+                    to,
+                    error
+                ),
             }
-            Ok::<u64, anyhow::Error>(total)
-        })
-        .await
-        .unwrap_or(0)
+        }
+        total
     }
 
     /// Persist a batch of LLM-extracted facts. `messages` is the extraction
@@ -1810,6 +1799,7 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
 
     struct FixedMemoryInference {
+        fast_chat_configured: bool,
         response: String,
         calls: AtomicUsize,
     }
@@ -1817,7 +1807,7 @@ mod tests {
     #[async_trait]
     impl MemoryInferencePort for FixedMemoryInference {
         async fn is_fast_chat_configured(&self) -> bool {
-            true
+            self.fast_chat_configured
         }
 
         async fn fast_chat(
@@ -2143,6 +2133,35 @@ mod tests {
         MemoryWorker::new(db, router, 4_000, 64, 40, 256, 0)
     }
 
+    fn make_engine_with_inference(
+        db: Arc<Database>,
+        inference: Arc<dyn MemoryInferencePort>,
+    ) -> MemoryWorker {
+        let memory = Arc::new(MemoryService::new(db, None, 64));
+        MemoryWorker::new_with_inference(
+            memory.clone(),
+            memory.memory_fact_store(),
+            inference,
+            4_000,
+            64,
+            256,
+            0,
+        )
+    }
+
+    fn insert_legacy_predicate(db: &Database, predicate: &str, object: &str) -> String {
+        let fact = db
+            .insert_fact("user", "likes", object, "inferred", 0.9, &[])
+            .unwrap();
+        db.conn()
+            .execute(
+                "UPDATE facts SET predicate = ?1 WHERE id = ?2",
+                [predicate, fact.id.as_str()],
+            )
+            .unwrap();
+        fact.id
+    }
+
     fn insert_orphan_embedding(db: &Database) {
         db.conn()
             .execute(
@@ -2252,6 +2271,106 @@ mod tests {
         assert!(error.to_string().contains("cancelled"));
         assert_eq!(db.get_facts("user").unwrap().len(), 2);
         assert!(db.get_fact_by_id(&first.id).unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn predicate_llm_rewrites_keep_gates_and_accumulate_each_store_result() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        for object in ["D:/one", "D:/two", "D:/three"] {
+            insert_legacy_predicate(&db, "workspace", object);
+        }
+        for object in ["Rust", "Go"] {
+            insert_legacy_predicate(&db, "fav_lang", object);
+        }
+        let canonical = db
+            .insert_fact("user", "likes", "tea", "user", 1.0, &[])
+            .unwrap();
+        let inference = Arc::new(FixedMemoryInference {
+            fast_chat_configured: true,
+            response: r#"[
+                {"from":"workspace","to":"project_path","confidence":0.95},
+                {"from":"fav_lang","to":"language","confidence":0.95},
+                {"from":"likes","to":"dislikes","confidence":1.0}
+            ]"#
+            .into(),
+            calls: AtomicUsize::new(0),
+        });
+        let worker = make_engine_with_inference(db.clone(), inference.clone());
+
+        let rewritten = worker.merge_predicates_with_llm().await;
+
+        assert_eq!(
+            rewritten, 5,
+            "counts from separate rewrites are accumulated"
+        );
+        assert_eq!(inference.calls.load(Ordering::Relaxed), 1);
+        let facts = db.get_facts("user").unwrap();
+        assert_eq!(
+            facts
+                .iter()
+                .filter(|fact| fact.predicate == "project_path")
+                .count(),
+            3
+        );
+        assert_eq!(
+            facts
+                .iter()
+                .filter(|fact| fact.predicate == "language")
+                .count(),
+            2
+        );
+        assert!(
+            facts
+                .iter()
+                .any(|fact| fact.id == canonical.id && fact.predicate == "likes")
+        );
+        assert!(
+            !facts
+                .iter()
+                .any(|fact| matches!(fact.predicate.as_str(), "workspace" | "fav_lang"))
+        );
+    }
+
+    #[tokio::test]
+    async fn contradiction_llm_arbitration_uses_store_after_policy_gate() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        db.insert_fact("user", "likes", "Rust", "user", 1.0, &[])
+            .unwrap();
+        let inferred = db
+            .insert_fact("user", "dislikes", "Rust", "inferred", 0.8, &[])
+            .unwrap();
+        let inference = Arc::new(FixedMemoryInference {
+            fast_chat_configured: true,
+            response: format!(r#"[{{"demote_id":"{}","confidence":0.95}}]"#, inferred.id),
+            calls: AtomicUsize::new(0),
+        });
+        let worker = make_engine_with_inference(db.clone(), inference.clone());
+
+        let demoted = worker.arbitrate_contradictions_with_llm().await;
+
+        assert_eq!(demoted, 1);
+        assert_eq!(inference.calls.load(Ordering::Relaxed), 1);
+        let updated = db.get_fact_by_id(&inferred.id).unwrap().unwrap();
+        assert!((updated.confidence - 0.4).abs() < f64::EPSILON);
+    }
+
+    #[tokio::test]
+    async fn llm_maintenance_still_skips_calls_when_fast_chat_is_unconfigured() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        insert_legacy_predicate(&db, "workspace", "D:/one");
+        insert_legacy_predicate(&db, "fav_lang", "Rust");
+        db.insert_fact("user", "likes", "Rust", "user", 1.0, &[])
+            .unwrap();
+        let inference = Arc::new(FixedMemoryInference {
+            fast_chat_configured: false,
+            response: r#"[{"from":"workspace","to":"project_path","confidence":1.0}]"#.into(),
+            calls: AtomicUsize::new(0),
+        });
+        let worker = make_engine_with_inference(db, inference.clone());
+
+        assert_eq!(worker.merge_predicates_with_llm().await, 0);
+        assert_eq!(worker.arbitrate_contradictions_with_llm().await, 0);
+        assert_eq!(inference.calls.load(Ordering::Relaxed), 0);
     }
 
     #[test]
@@ -2790,6 +2909,7 @@ mod tests {
         )
         .unwrap();
         let inference: Arc<dyn MemoryInferencePort> = Arc::new(FixedMemoryInference {
+            fast_chat_configured: true,
             response: "[]".to_owned(),
             calls: AtomicUsize::new(0),
         });
@@ -3015,6 +3135,7 @@ mod tests {
         db.add_message(&session.id, "user", "I like Rust.", Some("text"), None)
             .unwrap();
         let inference = Arc::new(FixedMemoryInference {
+            fast_chat_configured: true,
             response: r#"[{"subject":"user","predicate":"likes","object":"Rust","confidence":0.9,"durability":0.8,"message_index":1}]"#.into(),
             calls: AtomicUsize::new(0),
         });
