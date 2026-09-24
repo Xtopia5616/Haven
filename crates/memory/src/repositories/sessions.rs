@@ -206,15 +206,17 @@ impl Database {
         if affected == 0 {
             anyhow::bail!("session '{}' not found in database", id);
         }
-        // Drop all session-scoped fact-extraction state for this session;
-        // otherwise every deleted session leaves permanent kv_store rows behind.
+        // Drop all session-scoped fact-extraction and event-consumer state for
+        // this session; otherwise deletion leaves permanent kv_store rows.
         conn.execute(
-            "DELETE FROM kv_store WHERE key = ?1 OR key = ?2 OR key = ?3 OR key = ?4",
+            "DELETE FROM kv_store
+             WHERE key = ?1 OR key = ?2 OR key = ?3 OR key = ?4 OR key = ?5",
             rusqlite::params![
                 format!("fact_extraction.{}", id),
                 format!("fact_extraction_last_run.{}", id),
                 format!("fact_extraction_episode.{}", id),
-                format!("fact_extraction_pending.{}", id)
+                format!("fact_extraction_pending.{}", id),
+                format!("memory_event_cursor.{}", id)
             ],
         )?;
         drop(conn);
@@ -243,15 +245,15 @@ impl Database {
             conn.execute("DELETE FROM messages", [])?;
             // CASCADE handles session_steps.
             let count = conn.execute("DELETE FROM sessions", [])?;
-            // Extraction state is session-scoped even though it lives in the
-            // generic internal kv table. Clear all four namespaces together
-            // with the session rows so a history reset is complete.
+            // Extraction and event-consumer state are session-scoped even
+            // though they live in the generic internal kv table.
             conn.execute(
                 "DELETE FROM kv_store
                  WHERE key LIKE 'fact_extraction.%'
                     OR key LIKE 'fact_extraction_last_run.%'
                     OR key LIKE 'fact_extraction_episode.%'
-                    OR key LIKE 'fact_extraction_pending.%'",
+                    OR key LIKE 'fact_extraction_pending.%'
+                    OR key GLOB 'memory_event_cursor.*'",
                 [],
             )?;
             Ok(count)
@@ -369,9 +371,12 @@ impl Database {
              WHERE (key LIKE 'fact_extraction.%'
                     OR key LIKE 'fact_extraction_last_run.%'
                     OR key LIKE 'fact_extraction_episode.%'
-                    OR key LIKE 'fact_extraction_pending.%')
+                    OR key LIKE 'fact_extraction_pending.%'
+                    OR key GLOB 'memory_event_cursor.*')
                AND NOT EXISTS (SELECT 1 FROM sessions
                                WHERE id = CASE
+                                   WHEN key GLOB 'memory_event_cursor.*'
+                                   THEN substr(key, 21)
                                    WHEN key LIKE 'fact_extraction_last_run.%'
                                    THEN substr(key, 26)
                                    WHEN key LIKE 'fact_extraction_episode.%'
@@ -689,9 +694,14 @@ mod tests {
     fn test_delete_session() {
         let db = create_db();
         let session = db.create_session("input").unwrap();
+        let other = db.create_session("other").unwrap();
+        db.checkpoint_memory_event_cursor(&session.id, 5).unwrap();
+        db.checkpoint_memory_event_cursor(&other.id, 8).unwrap();
         db.delete_session(&session.id).unwrap();
         assert!(db.get_session(&session.id).unwrap().is_none());
-        assert_eq!(db.count_sessions().unwrap(), 0);
+        assert_eq!(db.count_sessions().unwrap(), 1);
+        assert_eq!(db.memory_event_cursor(&session.id).unwrap(), 0);
+        assert_eq!(db.memory_event_cursor(&other.id).unwrap(), 8);
     }
 
     #[test]
@@ -719,6 +729,7 @@ mod tests {
             .unwrap();
         db.set_kv(&format!("fact_extraction_pending.{}", first.id), "1")
             .unwrap();
+        db.checkpoint_memory_event_cursor(&first.id, 12).unwrap();
 
         let count = db.clear_sessions().unwrap();
         assert_eq!(count, 3);
@@ -743,6 +754,7 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+        assert_eq!(db.memory_event_cursor(&first.id).unwrap(), 0);
     }
 
     #[test]
@@ -804,6 +816,7 @@ mod tests {
             .unwrap();
         db.set_kv(&format!("fact_extraction_pending.{}", first.id), "1")
             .unwrap();
+        db.checkpoint_memory_event_cursor(&first.id, 15).unwrap();
 
         let count = db.delete_old_sessions(0).unwrap();
         assert_eq!(count, 2);
@@ -828,6 +841,7 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+        assert_eq!(db.memory_event_cursor(&first.id).unwrap(), 0);
     }
 
     #[test]

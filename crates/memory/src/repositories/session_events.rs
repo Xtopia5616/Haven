@@ -60,6 +60,19 @@ pub struct SessionEvent {
     pub step_number: Option<u32>,
 }
 
+/// One bounded page from the append-only session event log.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionEventPage {
+    pub events: Vec<SessionEvent>,
+    /// Sequence to pass as `after_sequence` for the next page. Remains the
+    /// input cursor when this page contains no events.
+    pub next_cursor: i64,
+    pub has_more: bool,
+}
+
+/// Maximum number of durable events returned by a single replay page.
+pub const MAX_SESSION_EVENT_REPLAY_PAGE_SIZE: usize = 256;
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct SessionEventInput {
     pub event_type: String,
@@ -414,6 +427,26 @@ impl SessionStore {
         let live = self.subscribe();
         let replay = self.read_from(session_id, after_sequence)?;
         Ok(SessionEventSubscription { replay, live })
+    }
+
+    /// Read the durable memory event cursor. This clock is independent from
+    /// the fact-extraction message-id cursor and projection cursors.
+    pub fn memory_event_cursor(&self, session_id: &str) -> anyhow::Result<i64> {
+        self.db.memory_event_cursor(session_id)
+    }
+
+    /// Advance the durable memory event cursor monotonically.
+    pub fn checkpoint_memory_event_cursor(
+        &self,
+        session_id: &str,
+        sequence: i64,
+    ) -> anyhow::Result<()> {
+        self.db.checkpoint_memory_event_cursor(session_id, sequence)
+    }
+
+    /// Clear one session's durable memory event cursor.
+    pub fn clear_memory_event_cursor(&self, session_id: &str) -> anyhow::Result<()> {
+        self.db.clear_memory_event_cursor(session_id)
     }
 
     /// Read all durable session clocks through one persistence boundary.
@@ -1462,6 +1495,68 @@ impl SessionStore {
         Self::read_from_in_connection(&conn, session_id, after_sequence)
     }
 
+    /// Read one bounded page of durable events strictly after
+    /// `after_sequence`. Rows are ordered by ascending sequence. The page
+    /// limit must be between one and [`MAX_SESSION_EVENT_REPLAY_PAGE_SIZE`].
+    pub fn replay_page(
+        &self,
+        session_id: &str,
+        after_sequence: i64,
+        limit: usize,
+    ) -> anyhow::Result<SessionEventPage> {
+        anyhow::ensure!(
+            after_sequence >= 0,
+            "event replay cursor cannot be negative"
+        );
+        anyhow::ensure!(
+            (1..=MAX_SESSION_EVENT_REPLAY_PAGE_SIZE).contains(&limit),
+            "event replay page size must be between 1 and {MAX_SESSION_EVENT_REPLAY_PAGE_SIZE}"
+        );
+
+        let conn = self.db.conn();
+        let mut stmt = conn.prepare(
+            "SELECT session_id, sequence, event_type, event_version, payload,
+                    created_at, run_id, step_number
+             FROM session_events
+             WHERE session_id = ?1 AND sequence > ?2
+             ORDER BY sequence ASC
+             LIMIT ?3",
+        )?;
+        let rows = stmt.query_map(
+            rusqlite::params![session_id, after_sequence, (limit + 1) as i64],
+            |row| {
+                Ok(SessionEvent {
+                    session_id: row.get(0)?,
+                    sequence: row.get(1)?,
+                    event_type: row.get(2)?,
+                    event_version: row.get(3)?,
+                    payload: row.get(4)?,
+                    created_at: row.get(5)?,
+                    run_id: row
+                        .get::<_, Option<i64>>(6)?
+                        .and_then(|value| u64::try_from(value).ok()),
+                    step_number: row
+                        .get::<_, Option<i64>>(7)?
+                        .and_then(|value| u32::try_from(value).ok()),
+                })
+            },
+        )?;
+        let mut events = rows.collect::<Result<Vec<_>, _>>()?;
+        let has_more = events.len() > limit;
+        if has_more {
+            events.pop();
+        }
+        let next_cursor = events
+            .last()
+            .map(|event| event.sequence)
+            .unwrap_or(after_sequence);
+        Ok(SessionEventPage {
+            events,
+            next_cursor,
+            has_more,
+        })
+    }
+
     fn read_from_in_connection(
         conn: &rusqlite::Connection,
         session_id: &str,
@@ -2360,6 +2455,114 @@ mod tests {
         assert_eq!(first.sequence, 1);
         assert_eq!(second.sequence, 2);
         assert_eq!(store.read_from(&session_id, 1).unwrap(), vec![second]);
+    }
+
+    #[test]
+    fn memory_event_cursor_store_api_is_monotonic_and_clearable() {
+        let (_db, store, session_id) = store();
+        assert_eq!(store.memory_event_cursor(&session_id).unwrap(), 0);
+        store
+            .checkpoint_memory_event_cursor(&session_id, 3)
+            .unwrap();
+        assert_eq!(store.memory_event_cursor(&session_id).unwrap(), 3);
+        assert!(
+            store
+                .checkpoint_memory_event_cursor(&session_id, 2)
+                .is_err()
+        );
+        assert_eq!(store.memory_event_cursor(&session_id).unwrap(), 3);
+        store.clear_memory_event_cursor(&session_id).unwrap();
+        assert_eq!(store.memory_event_cursor(&session_id).unwrap(), 0);
+    }
+
+    #[test]
+    fn replay_page_is_bounded_ordered_and_returns_next_cursor() {
+        let (db, store, session_id) = store();
+        let other_session = db.create_session("other").unwrap();
+        for index in 1..=5 {
+            store
+                .append(
+                    &session_id,
+                    "usage_recorded",
+                    &format!(r#"{{"payload":"payload-{index}"}}"#),
+                    None,
+                    None,
+                )
+                .unwrap();
+        }
+        store
+            .append(
+                &other_session.id,
+                "usage_recorded",
+                r#"{"payload":"other"}"#,
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            store.subscribe_from(&session_id, 0).unwrap().replay.len(),
+            5
+        );
+
+        let first = store.replay_page(&session_id, 0, 2).unwrap();
+        assert_eq!(
+            first
+                .events
+                .iter()
+                .map(|event| event.sequence)
+                .collect::<Vec<_>>(),
+            [1, 2]
+        );
+        assert!(first.has_more);
+        assert_eq!(first.next_cursor, 2);
+
+        let second = store
+            .replay_page(&session_id, first.next_cursor, 2)
+            .unwrap();
+        assert_eq!(
+            second
+                .events
+                .iter()
+                .map(|event| event.sequence)
+                .collect::<Vec<_>>(),
+            [3, 4]
+        );
+        assert!(second.has_more);
+        assert_eq!(second.next_cursor, 4);
+
+        let third = store
+            .replay_page(&session_id, second.next_cursor, 2)
+            .unwrap();
+        assert_eq!(
+            third
+                .events
+                .iter()
+                .map(|event| event.sequence)
+                .collect::<Vec<_>>(),
+            [5]
+        );
+        assert!(!third.has_more);
+        assert_eq!(third.next_cursor, 5);
+
+        let empty = store.replay_page(&session_id, 12, 2).unwrap();
+        assert!(empty.events.is_empty());
+        assert!(!empty.has_more);
+        assert_eq!(empty.next_cursor, 12);
+        assert_eq!(
+            store
+                .replay_page(&other_session.id, 0, 2)
+                .unwrap()
+                .events
+                .len(),
+            1
+        );
+        assert!(store.replay_page(&session_id, 0, 0).is_err());
+        assert!(
+            store
+                .replay_page(&session_id, 0, MAX_SESSION_EVENT_REPLAY_PAGE_SIZE + 1)
+                .is_err()
+        );
+        assert!(store.replay_page(&session_id, -1, 2).is_err());
     }
 
     #[test]

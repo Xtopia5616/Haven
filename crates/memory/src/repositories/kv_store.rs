@@ -1,13 +1,14 @@
 use crate::db::Database;
 use chrono::Utc;
+use rusqlite::OptionalExtension;
 
 /// Internal key-value store for agent bookkeeping that is not user memory.
 ///
 /// User-facing preferences live in the `facts` table (tag `preference`);
 /// this table holds only internal state such as the fact-extraction cursor
-/// (`fact_extraction.<session_id>`) and the durable extraction outbox
-/// (`fact_extraction_pending.<session_id>`). Exposed as `kv_store` in the
-/// schema.
+/// (`fact_extraction.<session_id>`), the durable extraction outbox
+/// (`fact_extraction_pending.<session_id>`), and the committed-event cursor
+/// (`memory_event_cursor.<session_id>`). Exposed as `kv_store` in the schema.
 impl Database {
     pub fn set_kv(&self, key: &str, value: &str) -> anyhow::Result<()> {
         let now = Utc::now().to_rfc3339();
@@ -29,6 +30,71 @@ impl Database {
             Some(row) => Ok(Some(row.get(0)?)),
             None => Ok(None),
         }
+    }
+
+    /// Read the last committed session event consumed by the memory runtime.
+    /// An absent key is the initial event sequence zero. This clock is separate
+    /// from the fact-extraction message-id cursor.
+    pub fn memory_event_cursor(&self, session_id: &str) -> anyhow::Result<i64> {
+        let key = memory_event_cursor_key(session_id)?;
+        let value = self.get_kv(&key)?;
+        parse_memory_event_cursor(value.as_deref())
+    }
+
+    /// Persist a memory event checkpoint without allowing it to move
+    /// backwards. An equal checkpoint is a no-op; writing zero to a missing
+    /// key materializes the initial checkpoint before the first event.
+    pub fn checkpoint_memory_event_cursor(
+        &self,
+        session_id: &str,
+        sequence: i64,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(sequence >= 0, "memory event cursor cannot be negative");
+        let key = memory_event_cursor_key(session_id)?;
+        let now = Utc::now().to_rfc3339();
+        let conn = self.conn();
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| -> anyhow::Result<()> {
+            let stored_value: Option<String> = conn
+                .query_row(
+                    "SELECT value FROM kv_store WHERE key = ?1",
+                    rusqlite::params![key],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let current = parse_memory_event_cursor(stored_value.as_deref())?;
+            anyhow::ensure!(
+                sequence >= current,
+                "memory event cursor cannot move backwards from {current} to {sequence}"
+            );
+            if stored_value.is_none() || sequence > current {
+                conn.execute(
+                    "INSERT INTO kv_store (key, value, updated_at)
+                     VALUES (?1, ?2, ?3)
+                     ON CONFLICT(key) DO UPDATE SET value = excluded.value,
+                         updated_at = excluded.updated_at",
+                    rusqlite::params![key, sequence.to_string(), now],
+                )?;
+            }
+            Ok(())
+        })();
+        match result {
+            Ok(()) => conn.execute_batch("COMMIT").map_err(Into::into),
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(error)
+            }
+        }
+    }
+
+    /// Remove one session's memory event checkpoint.
+    pub fn clear_memory_event_cursor(&self, session_id: &str) -> anyhow::Result<()> {
+        let key = memory_event_cursor_key(session_id)?;
+        self.conn().execute(
+            "DELETE FROM kv_store WHERE key = ?1",
+            rusqlite::params![key],
+        )?;
+        Ok(())
     }
 
     /// Coalesce a fact-extraction job in durable internal state. `1` means the
@@ -91,12 +157,11 @@ impl Database {
         Ok(())
     }
 
-    /// Remove fact-extraction cursors whose session no longer exists (session rows
-    /// are deleted without going through `delete_session`, e.g. history purge or
-    /// older deletions before cursor cleanup was added). Also purges the
-    /// `fact_extraction_last_run.<session_id>` throttle stamps,
-    /// `fact_extraction_episode.<session_id>` summary cursors, and
-    /// `fact_extraction_pending.<session_id>` outbox markers of dead sessions.
+    /// Remove session-scoped internal cursors whose session no longer exists
+    /// (session rows are deleted without going through `delete_session`, e.g.
+    /// history purge or older deletions before cursor cleanup was added). This
+    /// also purges extraction throttle stamps, episode cursors, pending markers,
+    /// and `memory_event_cursor.<session_id>` checkpoints of dead sessions.
     /// Called during memory maintenance so the kv table does not grow without
     /// bound.
     pub fn cleanup_orphan_extraction_cursors(&self) -> anyhow::Result<u64> {
@@ -106,9 +171,12 @@ impl Database {
              WHERE (key LIKE 'fact_extraction.%'
                     OR key LIKE 'fact_extraction_last_run.%'
                     OR key LIKE 'fact_extraction_episode.%'
-                    OR key LIKE 'fact_extraction_pending.%')
+                    OR key LIKE 'fact_extraction_pending.%'
+                    OR key GLOB 'memory_event_cursor.*')
                AND NOT EXISTS (SELECT 1 FROM sessions
                                WHERE id = CASE
+                                   WHEN key GLOB 'memory_event_cursor.*'
+                                   THEN substr(key, 21)
                                    WHEN key LIKE 'fact_extraction_last_run.%'
                                    THEN substr(key, 26)
                                    WHEN key LIKE 'fact_extraction_episode.%'
@@ -121,6 +189,22 @@ impl Database {
         )?;
         Ok(deleted as u64)
     }
+}
+
+fn memory_event_cursor_key(session_id: &str) -> anyhow::Result<String> {
+    anyhow::ensure!(!session_id.trim().is_empty(), "session id is required");
+    Ok(format!("memory_event_cursor.{session_id}"))
+}
+
+fn parse_memory_event_cursor(value: Option<&str>) -> anyhow::Result<i64> {
+    let Some(value) = value else {
+        return Ok(0);
+    };
+    let sequence = value
+        .parse::<i64>()
+        .map_err(|error| anyhow::anyhow!("invalid memory event cursor '{value}': {error}"))?;
+    anyhow::ensure!(sequence >= 0, "memory event cursor cannot be negative");
+    Ok(sequence)
 }
 
 #[cfg(test)]
@@ -162,6 +246,7 @@ mod tests {
             "2026-08-15T00:00:00Z",
         )
         .unwrap();
+        db.checkpoint_memory_event_cursor(&session.id, 9).unwrap();
         // Orphan cursor / orphan throttle stamp (no session row) and
         // non-cursor keys: the orphans are removed, unrelated kv keys survive.
         db.set_kv("fact_extraction.gone", "msg-9").unwrap();
@@ -169,10 +254,12 @@ mod tests {
             .unwrap();
         db.set_kv("fact_extraction_episode.gone", "msg-10").unwrap();
         db.set_kv("fact_extraction_pending.gone", "1").unwrap();
+        db.set_kv("memory_event_cursor.gone", "8").unwrap();
+        db.set_kv("memoryXeventYcursor.gone", "keep").unwrap();
         db.set_kv("other.state", "keep").unwrap();
 
         let removed = db.cleanup_orphan_extraction_cursors().unwrap();
-        assert_eq!(removed, 4);
+        assert_eq!(removed, 5);
         assert!(
             db.get_kv(&format!("fact_extraction.{}", session.id))
                 .unwrap()
@@ -183,6 +270,7 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+        assert_eq!(db.memory_event_cursor(&session.id).unwrap(), 9);
         assert!(db.get_kv("fact_extraction.gone").unwrap().is_none());
         assert!(
             db.get_kv("fact_extraction_last_run.gone")
@@ -191,7 +279,48 @@ mod tests {
         );
         assert!(db.get_kv("fact_extraction_episode.gone").unwrap().is_none());
         assert!(db.get_kv("fact_extraction_pending.gone").unwrap().is_none());
+        assert!(db.get_kv("memory_event_cursor.gone").unwrap().is_none());
+        assert_eq!(
+            db.get_kv("memoryXeventYcursor.gone").unwrap(),
+            Some("keep".into())
+        );
         assert_eq!(db.get_kv("other.state").unwrap(), Some("keep".into()));
+    }
+
+    #[test]
+    fn memory_event_cursor_defaults_is_monotonic_and_session_scoped() {
+        let db = test_db();
+        let first = db.create_session("first").unwrap();
+        let second = db.create_session("second").unwrap();
+        db.set_kv(&format!("fact_extraction.{}", first.id), "msg-7")
+            .unwrap();
+
+        assert_eq!(db.memory_event_cursor(&first.id).unwrap(), 0);
+        db.checkpoint_memory_event_cursor(&first.id, 0).unwrap();
+        db.checkpoint_memory_event_cursor(&first.id, 4).unwrap();
+        db.checkpoint_memory_event_cursor(&first.id, 4).unwrap();
+        assert_eq!(db.memory_event_cursor(&first.id).unwrap(), 4);
+        assert_eq!(db.memory_event_cursor(&second.id).unwrap(), 0);
+        assert!(db.checkpoint_memory_event_cursor(&first.id, 3).is_err());
+        assert_eq!(db.memory_event_cursor(&first.id).unwrap(), 4);
+
+        db.checkpoint_memory_event_cursor(&second.id, 2).unwrap();
+        assert_eq!(db.memory_event_cursor(&first.id).unwrap(), 4);
+        assert_eq!(db.memory_event_cursor(&second.id).unwrap(), 2);
+        assert_eq!(
+            db.get_kv(&format!("memory_event_cursor.{}", first.id))
+                .unwrap(),
+            Some("4".into())
+        );
+        assert_eq!(
+            db.get_kv(&format!("fact_extraction.{}", first.id)).unwrap(),
+            Some("msg-7".into())
+        );
+        assert!(db.checkpoint_memory_event_cursor(&first.id, -1).is_err());
+
+        db.clear_memory_event_cursor(&first.id).unwrap();
+        assert_eq!(db.memory_event_cursor(&first.id).unwrap(), 0);
+        assert_eq!(db.memory_event_cursor(&second.id).unwrap(), 2);
     }
 
     #[test]
@@ -209,6 +338,7 @@ mod tests {
             .unwrap();
         db.set_kv(&format!("fact_extraction_pending.{}", session.id), "1")
             .unwrap();
+        db.checkpoint_memory_event_cursor(&session.id, 6).unwrap();
         db.delete_session(&session.id).unwrap();
         assert!(
             db.get_kv(&format!("fact_extraction.{}", session.id))
@@ -230,6 +360,7 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+        assert_eq!(db.memory_event_cursor(&session.id).unwrap(), 0);
     }
 
     #[test]
