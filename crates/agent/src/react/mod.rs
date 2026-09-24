@@ -59,7 +59,7 @@ pub use metrics::{MetricsSnapshot, UiMetricsSnapshot};
 pub(crate) use request_context::RequestContext;
 use sidecars::{ContextWindowCache, TokenEstimateCache};
 pub(crate) use state::{ReActState, RetryNudge};
-use tool_ports::{ToolCatalogPort, ToolsManagerToolCatalogAdapter};
+pub(crate) use tool_ports::{ToolCatalogPort, ToolsManagerToolCatalogAdapter};
 use transcript::{ObservationCard, TranscriptEvent};
 use usage::{UsageRuntime, UsageUpdate};
 
@@ -396,10 +396,16 @@ pub(super) enum StepCallOutcome {
     Fatal(String),
 }
 
+#[cfg(test)]
+pub(crate) fn test_tool_catalog_port(executor: &SessionSupervisor) -> Arc<dyn ToolCatalogPort> {
+    Arc::new(ToolsManagerToolCatalogAdapter::new(executor.get_tools()))
+}
+
 impl ReActEngine {
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    pub(crate) fn new(
         router: Arc<LlmRouter>,
+        tool_catalog: Arc<dyn ToolCatalogPort>,
         executor: Arc<SessionSupervisor>,
         db: Arc<Database>,
         max_steps: u32,
@@ -407,7 +413,6 @@ impl ReActEngine {
     ) -> Self {
         let metrics = Arc::new(ReActMetrics::new());
         let context_source = ContextSource::new(executor.clone(), db.clone(), metrics.clone());
-        let tool_catalog = Arc::new(ToolsManagerToolCatalogAdapter::new(executor.get_tools()));
         let event_store = executor.session_store();
         let usage_runtime = UsageRuntime::new(db.clone(), event_store.clone());
         Self {
@@ -1324,6 +1329,7 @@ mod tests {
         ));
         let engine = ReActEngine::new(
             Arc::new(mock_router()),
+            test_tool_catalog_port(&executor),
             executor.clone(),
             db,
             4,
@@ -1361,6 +1367,7 @@ mod tests {
         ));
         let engine = ReActEngine::new(
             Arc::new(mock_router()),
+            test_tool_catalog_port(&executor),
             executor.clone(),
             db,
             4,

@@ -52,10 +52,12 @@ impl AgentLayer {
             Some(router.clone()),
             context_limits.embedding_chunk_size,
         ));
+        let tools = executor.get_tools();
         let prompt_builder = Arc::new(SystemPromptBuilder::with_memory_service(
-            executor.get_tools(),
+            tools.clone(),
             memory_service.clone(),
         ));
+        let tool_catalog = Arc::new(crate::react::ToolsManagerToolCatalogAdapter::new(tools));
         let memory_inference = Arc::new(RouterMemoryInferencePort::new(router.clone()));
         let memory_worker = Arc::new(MemoryWorker::new_with_inference(
             memory_service.clone(),
@@ -81,6 +83,7 @@ impl AgentLayer {
         let react_engine = Arc::new(
             ReActEngine::new(
                 router.clone(),
+                tool_catalog,
                 executor.clone(),
                 db.clone(),
                 max_steps,

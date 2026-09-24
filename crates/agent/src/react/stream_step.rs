@@ -1398,6 +1398,7 @@ mod tests {
         ));
         let engine = ReActEngine::new(
             router.clone(),
+            crate::react::test_tool_catalog_port(&executor),
             executor,
             db,
             8,
@@ -1468,6 +1469,7 @@ mod tests {
         let router = Arc::new(LlmRouter::new(RouterConfig::default()));
         let engine = ReActEngine::new(
             router,
+            crate::react::test_tool_catalog_port(&executor),
             executor,
             db.clone(),
             8,

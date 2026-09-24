@@ -251,6 +251,7 @@ mod tests {
         let limits = haven_common::config::ContextLimitsConfig::default();
         let engine = ReActEngine::new(
             router.clone(),
+            crate::react::test_tool_catalog_port(&executor),
             executor.clone(),
             db.clone(),
             10,
@@ -287,8 +288,15 @@ mod tests {
         );
 
         // DefaultHooks::on_pause must invoke infer(session, true) when wired.
-        let default_engine = ReActEngine::new(router, executor, db, 10, limits)
-            .with_hooks(default_hooks_with_infer(infer));
+        let default_engine = ReActEngine::new(
+            router,
+            crate::react::test_tool_catalog_port(&executor),
+            executor,
+            db,
+            10,
+            limits,
+        )
+        .with_hooks(default_hooks_with_infer(infer));
         default_engine
             .hooks
             .on_pause(&default_engine, &ctx, PauseReason::TurnEnd)
@@ -401,7 +409,14 @@ mod tests {
                 client,
             ));
             let limits = haven_common::config::ContextLimitsConfig::default();
-            let engine = ReActEngine::new(router, executor, db, 10, limits);
+            let engine = ReActEngine::new(
+                router,
+                crate::react::test_tool_catalog_port(&executor),
+                executor,
+                db,
+                10,
+                limits,
+            );
             let emitter: Arc<dyn AgentEventEmitter> = Arc::new(SilentEmitter);
             let ctx = StepCtx {
                 session_id: "ses-test".into(),

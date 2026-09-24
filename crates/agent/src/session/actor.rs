@@ -2093,6 +2093,7 @@ mod queue_tests {
             Arc::new(haven_llm::LlmRouter::new(
                 haven_common::config::RouterConfig::default(),
             )),
+            crate::react::test_tool_catalog_port(&executor),
             executor,
             db.clone(),
             1,

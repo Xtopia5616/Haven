@@ -6,17 +6,17 @@ use std::sync::Arc;
 
 /// Reads the immutable tool catalog view for one session.
 #[async_trait]
-pub(super) trait ToolCatalogPort: Send + Sync {
+pub(crate) trait ToolCatalogPort: Send + Sync {
     async fn catalog_snapshot(&self, session_id: &str) -> Arc<ToolCatalogSnapshot>;
 }
 
 /// Production adapter that delegates catalog snapshot creation to tools.
-pub(super) struct ToolsManagerToolCatalogAdapter {
+pub(crate) struct ToolsManagerToolCatalogAdapter {
     tools: Arc<ToolsManager>,
 }
 
 impl ToolsManagerToolCatalogAdapter {
-    pub(super) fn new(tools: Arc<ToolsManager>) -> Self {
+    pub(crate) fn new(tools: Arc<ToolsManager>) -> Self {
         Self { tools }
     }
 }
@@ -64,18 +64,20 @@ mod tests {
         let tools = Arc::new(ToolsManager::new());
         let snapshot = Arc::new(tools.tool_catalog_snapshot("ses-seed").await);
         let executor = Arc::new(SessionSupervisor::new(db.clone(), tools, 1));
-        let mut engine = ReActEngine::new(
+        let session_ids = Arc::new(Mutex::new(Vec::new()));
+        let tool_catalog: Arc<dyn ToolCatalogPort> = Arc::new(RecordingToolCatalogPort {
+            session_ids: Arc::clone(&session_ids),
+            snapshot: Arc::clone(&snapshot),
+        });
+        let engine = ReActEngine::new(
             Arc::new(LlmRouter::new(RouterConfig::default())),
+            Arc::clone(&tool_catalog),
             executor,
             db,
             1,
             ContextLimitsConfig::default(),
         );
-        let session_ids = Arc::new(Mutex::new(Vec::new()));
-        engine.tool_catalog = Arc::new(RecordingToolCatalogPort {
-            session_ids: Arc::clone(&session_ids),
-            snapshot: Arc::clone(&snapshot),
-        });
+        assert!(Arc::ptr_eq(&engine.tool_catalog, &tool_catalog));
 
         let requested_session_id = " ses-session-id-with-padding ";
         let returned = engine

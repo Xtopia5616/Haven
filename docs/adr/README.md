@@ -245,3 +245,4 @@
 - [0254：删除无调用的 MemoryWorker recall 转发](0254-remove-unused-memory-recall-forwarder.md)
 - [0255：TranscriptBatchWriter 通过 SessionStore 持久化](0255-transcript-batch-session-store-port.md)
 - [0256：Ingress 与 recovery 消息通过 SessionStore 持久化](0256-session-message-session-store-port.md)
+- [0257：显式注入 ReAct 工具目录 port](0257-explicit-tool-catalog-injection.md)

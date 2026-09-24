@@ -238,6 +238,7 @@ mod pending_context_tests {
             std::sync::Arc::new(haven_llm::LlmRouter::new(
                 haven_common::config::RouterConfig::default(),
             )),
+            crate::react::test_tool_catalog_port(&executor),
             executor,
             db,
             4,
@@ -312,6 +313,7 @@ mod pending_context_tests {
             std::sync::Arc::new(haven_llm::LlmRouter::new(
                 haven_common::config::RouterConfig::default(),
             )),
+            crate::react::test_tool_catalog_port(&executor),
             executor,
             db.clone(),
             4,

@@ -778,6 +778,7 @@ mod tests {
         ));
         ReActEngine::new(
             router,
+            crate::react::test_tool_catalog_port(&executor),
             executor,
             db,
             10,
