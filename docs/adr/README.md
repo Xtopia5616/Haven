@@ -280,3 +280,4 @@
 - [0289：Agent 会话元数据读取通过 SessionStore](0289-agent-session-metadata-session-store-reads.md)
 - [0290：会话状态持久化通过 SessionStore](0290-session-status-persistence-through-session-store.md)
 - [0291：会话删除与清空通过 SessionStore](0291-session-deletion-through-session-store.md)
+- [0292：AgentLayer 会话写入通过 SessionStore](0292-agent-layer-session-writes-through-store.md)

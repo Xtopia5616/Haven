@@ -1156,10 +1156,11 @@ impl AgentLayer {
         {
             Ok(msg) => msg,
             Err(e) => {
-                let db = self.db.clone();
                 let session_id = record.id.clone();
-                let _ = db
-                    .run_blocking(move |db| db.delete_session(&session_id))
+                let _ = self
+                    .executor
+                    .session_store()
+                    .delete_session(&session_id)
                     .await;
                 return Err(e);
             }
@@ -1341,6 +1342,15 @@ impl AgentLayer {
         &self,
         req: haven_tools::AgentSpawnRequest,
     ) -> anyhow::Result<haven_tools::AgentSpawnResult> {
+        self.spawn_peer_session_with_messaging(req, haven_tools::MessagingService::default_root())
+            .await
+    }
+
+    async fn spawn_peer_session_with_messaging(
+        &self,
+        req: haven_tools::AgentSpawnRequest,
+        messaging: haven_tools::MessagingService,
+    ) -> anyhow::Result<haven_tools::AgentSpawnResult> {
         let role_line = req
             .role
             .as_deref()
@@ -1380,11 +1390,11 @@ impl AgentLayer {
             .create_session_with_first_message_typed(&brief, &[], false, "peer_kickoff", false)
             .await?;
         if let Some(title) = req.title.as_deref().filter(|t| !t.is_empty()) {
-            let db = self.db.clone();
             let session_id = session.id.clone();
-            let title_for_db = title.to_string();
-            if let Err(e) = db
-                .run_blocking(move |db| db.update_session_title(&session_id, &title_for_db))
+            if let Err(e) = self
+                .executor
+                .session_store()
+                .update_session_title(&session_id, title)
                 .await
             {
                 tracing::warn!(
@@ -1400,11 +1410,11 @@ impl AgentLayer {
             // Notification-safe fallback so SessionCreated never surfaces the
             // full delegated brief via Windows toast (title||id only).
             let fallback = format!("peer:{}", &session.id[session.id.len().saturating_sub(8)..]);
-            let db = self.db.clone();
             let session_id = session.id.clone();
-            let fallback_for_db = fallback.clone();
-            if let Err(e) = db
-                .run_blocking(move |db| db.update_session_title(&session_id, &fallback_for_db))
+            if let Err(e) = self
+                .executor
+                .session_store()
+                .update_session_title(&session_id, &fallback)
                 .await
             {
                 tracing::warn!(
@@ -1418,7 +1428,6 @@ impl AgentLayer {
                 session.title = Some(fallback);
             }
         }
-        let messaging = haven_tools::MessagingService::default_root();
         let child_id = session.id.clone();
         let title = session.title.clone();
         let role = req.role.clone();
@@ -1510,6 +1519,18 @@ mod tests {
     use futures_util::Stream;
     use std::pin::Pin;
 
+    #[derive(Default)]
+    struct EventCollector {
+        events: std::sync::Mutex<Vec<AgentEvent>>,
+    }
+
+    #[async_trait::async_trait]
+    impl AgentEventEmitter for EventCollector {
+        async fn emit(&self, event: AgentEvent) {
+            self.events.lock().unwrap().push(event);
+        }
+    }
+
     struct UnusedClient;
 
     #[async_trait::async_trait]
@@ -1534,6 +1555,185 @@ mod tests {
         async fn health_check(&self) -> Result<(), haven_llm::LlmError> {
             Ok(())
         }
+    }
+
+    fn make_agent(db: Arc<Database>) -> (AgentLayer, Arc<SessionSupervisor>) {
+        let executor = Arc::new(SessionSupervisor::new(
+            db.clone(),
+            Arc::new(haven_tools::ToolsManager::new()),
+            1,
+        ));
+        let client = Arc::new(UnusedClient);
+        let router = Arc::new(LlmRouter::new_with_clients(
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client,
+        ));
+        let agent = AgentLayer::new(
+            db,
+            executor.clone(),
+            router,
+            10,
+            20,
+            ContextLimitsConfig::default(),
+        );
+        (agent, executor)
+    }
+
+    fn peer_request(
+        parent_session_id: &str,
+        task: &str,
+        title: Option<&str>,
+    ) -> haven_tools::AgentSpawnRequest {
+        haven_tools::AgentSpawnRequest {
+            parent_session_id: parent_session_id.to_string(),
+            task: task.to_string(),
+            title: title.map(str::to_string),
+            role: Some("worker".into()),
+            capabilities: Vec::new(),
+        }
+    }
+
+    fn set_title_write_failure(db: &Database, fail: bool) {
+        let conn = db.conn();
+        if fail {
+            conn.execute_batch(
+                r#"
+                DROP TRIGGER IF EXISTS reject_session_title;
+                CREATE TRIGGER reject_session_title
+                BEFORE UPDATE OF title ON sessions
+                WHEN NEW.title IS NOT NULL
+                BEGIN SELECT RAISE(FAIL, 'forced title write failure'); END;
+                "#,
+            )
+            .unwrap();
+        } else {
+            conn.execute_batch("DROP TRIGGER IF EXISTS reject_session_title")
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn peer_title_writes_update_runtime_only_after_durable_success() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let (agent, executor) = make_agent(db.clone());
+        let parent = executor.create_session("parent").await.unwrap();
+        let events = Arc::new(EventCollector::default());
+        agent.events.set_emitter(events.clone());
+        let inbox_dir = tempfile::tempdir().unwrap();
+        let messaging = haven_tools::MessagingService::new(Arc::new(
+            haven_tools::inbox::InboxBus::new(inbox_dir.path()),
+        ));
+        let scenarios = [
+            ("explicit-success", Some("Explicit title"), false),
+            ("explicit-failure", Some("Rejected title"), true),
+            ("fallback-success", None, false),
+            ("fallback-failure", None, true),
+        ];
+        let mut session_ids = Vec::new();
+        let mut expected_created_titles = Vec::new();
+        let mut expected_title_events = Vec::new();
+        for (task, title, fail_write) in scenarios {
+            set_title_write_failure(&db, fail_write);
+            let result = agent
+                .spawn_peer_session_with_messaging(
+                    peer_request(&parent.id, task, title),
+                    messaging.clone(),
+                )
+                .await
+                .unwrap();
+            let expected_title = if fail_write {
+                None
+            } else if let Some(title) = title {
+                Some(title.to_string())
+            } else {
+                Some(format!(
+                    "peer:{}",
+                    &result.session_id[result.session_id.len().saturating_sub(8)..]
+                ))
+            };
+            assert_eq!(result.title, expected_title);
+            assert_eq!(
+                executor
+                    .get_session(&result.session_id)
+                    .await
+                    .unwrap()
+                    .title,
+                expected_title
+            );
+            assert_eq!(
+                executor
+                    .session_store()
+                    .load_session_record(&result.session_id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .title,
+                expected_title
+            );
+            if let Some(title) = title.filter(|_| !fail_write) {
+                expected_title_events.push((result.session_id.clone(), title.to_string()));
+            }
+            session_ids.push(result.session_id.clone());
+            expected_created_titles.push((result.session_id, expected_title));
+        }
+        let registered = messaging.list_agents().unwrap();
+        for session_id in &session_ids {
+            assert!(registered.iter().any(|entry| &entry.name == session_id));
+        }
+
+        let emitted = events.events.lock().unwrap();
+        let title_events: Vec<_> = emitted
+            .iter()
+            .filter_map(|event| match event {
+                AgentEvent::TitleUpdated { session_id, title } => {
+                    Some((session_id.clone(), title.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(title_events, expected_title_events);
+        let created_titles: Vec<_> = emitted
+            .iter()
+            .filter_map(|event| match event {
+                AgentEvent::SessionCreated(session) => {
+                    Some((session.id.clone(), session.title.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(created_titles, expected_created_titles);
+    }
+
+    #[tokio::test]
+    async fn first_message_failure_deletes_created_session_and_preserves_error() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let (agent, _) = make_agent(db.clone());
+        db.conn()
+            .execute_batch(
+                r#"
+                CREATE TRIGGER reject_first_user_message
+                BEFORE INSERT ON messages
+                WHEN NEW.role = 'user'
+                BEGIN SELECT RAISE(FAIL, 'forced first message failure'); END;
+                "#,
+            )
+            .unwrap();
+
+        let error = agent
+            .create_session_with_first_message_typed(
+                "first user input",
+                &[],
+                false,
+                "peer_kickoff",
+                false,
+            )
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("forced first message failure"));
+        assert!(db.all_session_ids().unwrap().is_empty());
     }
 
     #[test]
