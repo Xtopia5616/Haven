@@ -217,7 +217,10 @@ Agent 的 `memory_service.rs` 是 prompt/worker 共用的 typed memory 边界：
 `MemoryRecallStore` 调度 recall SQL 并返回 typed domain results。Agent 保留 prompt
 查询归一化、embedding provider 调用、候选合并与预算；`MemoryEmbeddingStore` 负责
 embedding 生命周期读写和 LSH 维护，`memory_index.rs` 保留模型路由、provider 校验、
-批处理和维护门控（ADR 0021、0303、0304）。
+批处理和维护门控（ADR 0021、0303、0304）。`MemoryService` 构造并持有共享的
+`MemoryFactStore`，`MemoryWorker::load_known_facts` 通过其有界读取端口取得抽取上下文；
+blocking 调度、事实有效置信度顺序、敏感事实过滤和 limit 属于 Memory，Agent 仍负责
+prompt 行格式、subject 前缀与字段清洗（ADR 0307）。
 `memory_worker.rs` 只编排事实抽取、durable outbox、维护、提案提交和索引 catch-up；
 `MemoryWorker` 是唯一的后台记忆编排入口。`prompt_context.rs`
 在 turn 边界取得一次工具/运行时/记忆快照，`prompt_renderer.rs` 以纯函数渲染 system
@@ -505,6 +508,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 
 | 日期 | 内容 |
 |---|---|
+| 2026-09-25 | §2.3 Memory / §2.5 Agent：MemoryWorker 的已知事实 prompt 读取经 MemoryService 共享的 MemoryFactStore 有界端口；过滤、顺序和 limit 收口在 Memory，prompt 格式与字段清洗保持不变（ADR 0307） |
 | 2026-09-25 | §2.5 Tools：admin capability 通过 SessionStore / MemoryFactStore typed handles 注入；诊断行为与 provider wire contract 保持不变（ADR 0306） |
 | 2026-09-25 | §2.3 Memory / §2.5 Tools：ActionService 所有 action 持久化改经窄异步 ActionStore；保留 SQLite CAS/outbox 事务、内存生命周期和 headless 行为（ADR 0305） |
 | 2026-09-23 | §2.5 Agent：热 transcript 的主人定为 actor 内的 `SessionState`；一次 run 在 actor 任务内执行，只在 yield 点借用状态。usage、stream id、token estimate 是函数调用，不是 mailbox 命令。当前循环仍在 actor 外，迁移必须一次跨过这条边界（ADR 0214） |

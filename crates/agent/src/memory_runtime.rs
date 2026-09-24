@@ -555,9 +555,10 @@ mod tests {
         let db = Arc::new(Database::open_in_memory().expect("open in-memory database"));
         let session = db.create_session("memory runtime test").unwrap();
         let service = Arc::new(MemoryService::new(db.clone(), None, 16));
+        let fact_store = service.memory_fact_store();
         let inference: Arc<dyn MemoryInferencePort> = Arc::new(StubInference);
         let worker = Arc::new(MemoryWorker::new_with_inference(
-            service, inference, 4_000, 64, 256, 0,
+            service, fact_store, inference, 4_000, 64, 256, 0,
         ));
         worker.suspend_outbox_worker_for_test();
         let runtime = MemoryRuntime::new(SessionStore::new(db.clone()), worker);

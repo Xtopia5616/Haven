@@ -97,6 +97,24 @@ impl MemoryFactStore {
             .await
     }
 
+    /// List at most `limit` visible facts across subjects, preserving the
+    /// effective-confidence order from `Database::list_facts`. Visibility is
+    /// applied before truncation so sensitive rows do not consume result slots.
+    pub async fn list_recent_visible_facts_limited(
+        &self,
+        limit: usize,
+    ) -> anyhow::Result<Vec<Fact>> {
+        self.db
+            .run_blocking(move |db| {
+                let facts = db.list_facts()?;
+                Ok(MemoryRetriever::filter_visible_facts(facts)
+                    .into_iter()
+                    .take(limit)
+                    .collect())
+            })
+            .await
+    }
+
     /// Delete facts matching an exact subject/predicate pair and optional
     /// exact object value.
     pub async fn delete_facts_by_triple(
@@ -279,6 +297,50 @@ mod tests {
                 .map(|fact| fact.object.as_str())
                 .collect::<Vec<_>>(),
             ["higher", "middle", "lower"]
+        );
+
+        let limited = store.list_recent_visible_facts_limited(2).await.unwrap();
+        assert_eq!(
+            limited
+                .iter()
+                .map(|fact| fact.object.as_str())
+                .collect::<Vec<_>>(),
+            ["higher", "middle"]
+        );
+        assert!(
+            store
+                .list_recent_visible_facts_limited(0)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn limited_recent_facts_filter_sensitive_rows_before_limit() {
+        let (db, store) = store();
+        db.insert_fact("user", "api_key", "hidden", "user", 1.0, &[])
+            .unwrap();
+        db.insert_fact("user", "likes", "Rust", "user", 0.95, &[])
+            .unwrap();
+        db.insert_fact("user", "token", "hidden-token", "user", 0.9, &[])
+            .unwrap();
+        db.insert_fact("user", "likes", "SQLite", "user", 0.85, &[])
+            .unwrap();
+
+        let facts = store.list_recent_visible_facts_limited(2).await.unwrap();
+
+        assert_eq!(
+            facts
+                .iter()
+                .map(|fact| fact.object.as_str())
+                .collect::<Vec<_>>(),
+            ["Rust", "SQLite"]
+        );
+        assert!(
+            facts
+                .iter()
+                .all(crate::recall::MemoryRetriever::visible_fact)
         );
     }
 

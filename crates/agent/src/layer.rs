@@ -65,6 +65,7 @@ impl AgentLayer {
         let memory_inference = Arc::new(RouterMemoryInferencePort::new(router.clone()));
         let memory_worker = Arc::new(MemoryWorker::new_with_inference(
             memory_service.clone(),
+            memory_service.memory_fact_store(),
             memory_inference,
             context_limits.max_transcript_chars,
             context_limits.max_known_facts,

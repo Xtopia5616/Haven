@@ -14,7 +14,7 @@ use haven_memory::repositories::facts::{
     CANONICAL_MERGE_TARGETS, Fact, FactSourceRef, is_canonical_merge_target, is_sensitive_object,
     is_sensitive_predicate, is_single_valued_predicate,
 };
-use haven_memory::{Database, MemoryStore};
+use haven_memory::{Database, MemoryFactStore, MemoryStore};
 use tokio::sync::{Notify, Semaphore};
 use tokio_util::sync::CancellationToken;
 
@@ -36,6 +36,7 @@ const OUTBOX_RETRY_MAX_SECS: u64 = 30;
 pub struct MemoryWorker {
     memory: Arc<MemoryService>,
     memory_store: MemoryStore,
+    fact_store: MemoryFactStore,
     // Compatibility handle for the fact-inference algorithm and maintenance,
     // KV cursor/throttle, and embedding paths that this slice leaves intact.
     // Durable outbox marker reads and acknowledgements go through memory_store.
@@ -107,8 +108,10 @@ impl MemoryWorker {
             Some(router.clone()),
             embed_chunk_size,
         ));
+        let fact_store = memory.memory_fact_store();
         Self::new_with_inference(
             memory,
+            fact_store,
             inference,
             max_transcript_chars,
             max_known_facts,
@@ -119,6 +122,7 @@ impl MemoryWorker {
 
     pub(crate) fn new_with_inference(
         memory: Arc<MemoryService>,
+        fact_store: MemoryFactStore,
         inference: Arc<dyn MemoryInferencePort>,
         max_transcript_chars: usize,
         max_known_facts: usize,
@@ -130,6 +134,7 @@ impl MemoryWorker {
         Self {
             memory,
             memory_store,
+            fact_store,
             db,
             inference,
             max_transcript_chars,
@@ -1505,8 +1510,11 @@ impl MemoryWorker {
     /// model can re-confirm or update them with the same subject instead of
     /// collapsing everything onto "user".
     async fn load_known_facts(&self) -> String {
-        let db = self.db.clone();
-        let facts = match db.run_blocking(move |db| db.list_facts()).await {
+        let facts = match self
+            .fact_store
+            .list_recent_visible_facts_limited(self.max_known_facts)
+            .await
+        {
             Ok(v) => v,
             Err(e) => {
                 tracing::warn!("load_known_facts: list_facts failed: {}", e);
@@ -1514,11 +1522,7 @@ impl MemoryWorker {
             }
         };
         let mut lines: Vec<String> = Vec::new();
-        for fact in facts
-            .iter()
-            .filter(|fact| MemoryRetriever::visible_fact(fact))
-            .take(self.max_known_facts)
-        {
+        for fact in &facts {
             let subject = if fact.subject == "user" {
                 String::new()
             } else {
@@ -2118,18 +2122,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn known_fact_context_excludes_legacy_sensitive_rows() {
+    async fn known_fact_context_preserves_order_format_limit_and_sensitive_filtering() {
         let db = temp_db();
-        db.insert_fact("user", "likes", "Rust", "inferred", 0.9, &[])
+        db.insert_fact("project: Haven", "uses", "Rust", "user", 0.95, &[])
             .unwrap();
-        db.insert_fact("user", "api_key", "hunter2", "inferred", 1.0, &[])
+        db.insert_fact("user", "likes", "tea", "user", 0.9, &[])
             .unwrap();
-        let engine = make_engine(db);
+        db.insert_fact("user", "api_key", "hunter2", "user", 1.0, &[])
+            .unwrap();
+        db.insert_fact("user", "uses", "sk-hidden-token", "user", 0.98, &[])
+            .unwrap();
+        let engine = MemoryWorker::new(db, mock_router("[]"), 4_000, 64, 2, 256, 0);
 
         let known = engine.load_known_facts().await;
 
-        assert!(known.contains("likes=Rust"));
-        assert!(!known.contains("hunter2"));
+        assert_eq!(
+            known,
+            "- [project: Haven] uses=Rust (95%)\n- likes=tea (90%)"
+        );
     }
 
     fn make_engine(db: Arc<Database>) -> MemoryWorker {
@@ -2582,7 +2592,13 @@ mod tests {
         });
         let memory = Arc::new(MemoryService::new(db.clone(), None, 64));
         let worker = Arc::new(MemoryWorker::new_with_inference(
-            memory, inference, 4_000, 64, 256, 0,
+            memory.clone(),
+            memory.memory_fact_store(),
+            inference,
+            4_000,
+            64,
+            256,
+            0,
         ));
 
         assert_eq!(
@@ -2728,7 +2744,8 @@ mod tests {
         });
         let memory = Arc::new(MemoryService::new(db.clone(), None, 64));
         let worker = Arc::new(MemoryWorker::new_with_inference(
-            memory,
+            memory.clone(),
+            memory.memory_fact_store(),
             inference.clone(),
             4_000,
             64,
@@ -2793,7 +2810,15 @@ mod tests {
             calls: AtomicUsize::new(0),
         });
         let memory = Arc::new(MemoryService::new(db.clone(), None, 64));
-        let worker = MemoryWorker::new_with_inference(memory, inference.clone(), 4_000, 64, 256, 0);
+        let worker = MemoryWorker::new_with_inference(
+            memory.clone(),
+            memory.memory_fact_store(),
+            inference.clone(),
+            4_000,
+            64,
+            256,
+            0,
+        );
 
         assert!(worker.infer_facts(&session.id).await);
 

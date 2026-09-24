@@ -15,7 +15,9 @@ use haven_memory::recall::{
     MAX_MEMORY_QUERY_CHARS, MAX_RECALL_LIMIT, MemoryKind, MemoryQuery, MemoryRecall,
     MemoryRetriever,
 };
-use haven_memory::{Database, MemoryEmbeddingStore, MemoryRecallStore, MemoryStore};
+use haven_memory::{
+    Database, MemoryEmbeddingStore, MemoryFactStore, MemoryRecallStore, MemoryStore,
+};
 
 use crate::memory_index::MemoryEmbeddingIndex;
 
@@ -83,6 +85,7 @@ impl PromptMemoryCache {
 /// background memory worker.
 pub struct MemoryService {
     db: Arc<Database>,
+    fact_store: MemoryFactStore,
     memory_store: MemoryStore,
     recall_store: MemoryRecallStore,
     router: Option<Arc<LlmRouter>>,
@@ -106,6 +109,7 @@ impl Deref for MemoryDatabase {
 
 impl MemoryService {
     pub fn new(db: Arc<Database>, router: Option<Arc<LlmRouter>>, embed_chunk_size: usize) -> Self {
+        let fact_store = MemoryFactStore::new(db.clone());
         let recall_store = MemoryRecallStore::new(db.clone());
         let embedding_index = router.as_ref().map(|router| {
             MemoryEmbeddingIndex::new(
@@ -116,6 +120,7 @@ impl MemoryService {
             )
         });
         Self {
+            fact_store,
             memory_store: MemoryStore::new(db.clone()),
             recall_store,
             db,
@@ -133,6 +138,11 @@ impl MemoryService {
     /// outbox persistence. The service and worker keep the same Database Arc.
     pub(crate) fn memory_store(&self) -> MemoryStore {
         self.memory_store.clone()
+    }
+
+    /// Return the shared typed fact capability used by the memory worker.
+    pub(crate) fn memory_fact_store(&self) -> MemoryFactStore {
+        self.fact_store.clone()
     }
 
     pub(crate) async fn context_window(&self, fallback: u32) -> u32 {
