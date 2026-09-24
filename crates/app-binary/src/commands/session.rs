@@ -487,30 +487,18 @@ pub struct SessionResumeResponse {
 /// Load the session's messages and steps into a resume response.
 /// Shared by `get_session_for_resume` and `get_last_conversation`.
 async fn resume_response_for_session(
-    db: Arc<haven_memory::Database>,
+    session_store: haven_memory::SessionStore,
     session: Session,
 ) -> Result<SessionResumeResponse, String> {
-    let messages = db
-        .get_session_messages(&session.id)
-        .map_err(|e| log_err("resume_response_for_session", e))?;
-    let steps = db
-        .get_session_steps(&session.id)
-        .map_err(|e| log_err("resume_response_for_session", e))?;
-    let usage = db
-        .get_session_usage(&session.id)
-        .map_err(|e| log_err("resume_response_for_session", e))?;
-    let llm_usage = db
-        .get_session_llm_usage(&session.id)
+    let projection = session_store
+        .session_resume_projection(&session.id)
+        .await
         .map_err(|e| log_err("resume_response_for_session", e))?;
     // Interactions are domain events owned by the session actor. The UI
     // history projection replays only that small control stream; messages and
     // steps remain projections and are not recovery input.
-    let store = haven_memory::SessionStore::new(db.clone());
     let mut active_interactions: Vec<InteractionRequest> = Vec::new();
-    for event in store
-        .read_active_domain_events(&session.id)
-        .map_err(|e| log_err("resume_response_for_session", e))?
-    {
+    for event in &projection.active_domain_events {
         match event.event_type.as_str() {
             haven_memory::INTERACTION_REQUESTED_EVENT_TYPE
             | haven_memory::INTERACTION_RESOLVED_EVENT_TYPE => {
@@ -540,10 +528,10 @@ async fn resume_response_for_session(
         .collect();
     Ok(SessionResumeResponse {
         session,
-        messages,
-        steps,
-        usage,
-        llm_usage,
+        messages: projection.messages,
+        steps: projection.steps,
+        usage: projection.usage,
+        llm_usage: projection.llm_usage,
         interactions,
     })
 }
@@ -558,7 +546,7 @@ pub async fn get_session_for_resume(
         .get_session(&session_id)
         .map_err(|e| log_err("get_session_for_resume", e))?
         .ok_or_else(|| format!("Session not found: {}", session_id))?;
-    resume_response_for_session(state.db.clone(), session).await
+    resume_response_for_session(state.session_store.clone(), session).await
 }
 
 /// Return the most recent persisted session with its session messages and
@@ -573,7 +561,7 @@ pub async fn get_last_conversation(
         .list_sessions(1, 0)
         .map_err(|e| log_err("get_last_conversation", e))?;
     match sessions.into_iter().next() {
-        Some(session) => resume_response_for_session(state.db.clone(), session)
+        Some(session) => resume_response_for_session(state.session_store.clone(), session)
             .await
             .map(Some),
         None => Ok(None),
@@ -582,6 +570,7 @@ pub async fn get_last_conversation(
 
 #[cfg(test)]
 mod tests {
+    use super::resume_response_for_session;
     use crate::commands::SessionListResponse;
 
     #[test]
@@ -589,5 +578,29 @@ mod tests {
         let resp = SessionListResponse { sessions: vec![] };
         let json = serde_json::to_string(&resp).unwrap();
         assert_eq!(json, r#"{"sessions":[]}"#);
+    }
+
+    #[tokio::test]
+    async fn resume_response_keeps_existing_ipc_field_names() {
+        let db = std::sync::Arc::new(haven_memory::Database::open_in_memory().unwrap());
+        let session = db.create_session("resume wire shape").unwrap();
+        let response = resume_response_for_session(haven_memory::SessionStore::new(db), session)
+            .await
+            .unwrap();
+
+        let value = serde_json::to_value(response).unwrap();
+        let fields = value.as_object().unwrap();
+        assert_eq!(fields.len(), 6);
+        for field in [
+            "session",
+            "messages",
+            "steps",
+            "usage",
+            "llm_usage",
+            "interactions",
+        ] {
+            assert!(fields.contains_key(field), "missing IPC field {field}");
+        }
+        assert!(!fields.contains_key("active_domain_events"));
     }
 }

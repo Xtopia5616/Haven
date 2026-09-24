@@ -8,6 +8,7 @@
 
 use crate::Database;
 use crate::repositories::messages::{Message, now_rfc3339_millis, undelivered_recovery_since};
+use crate::repositories::session_steps::SessionStep;
 use crate::repositories::sessions::Session;
 use crate::repositories::usage::{LlmCallUsage, LlmCallUsageInput, SessionUsage};
 use chrono::{SecondsFormat, Utc};
@@ -266,6 +267,19 @@ pub struct SessionMessageText {
     pub content: String,
 }
 
+/// Existing read models needed to build the App's session-resume response.
+///
+/// The projection groups the current queries behind one SessionStore port;
+/// its fields do not imply a shared database snapshot or transaction.
+#[derive(Debug, Clone)]
+pub struct SessionResumeProjection {
+    pub messages: Vec<Message>,
+    pub steps: Vec<SessionStep>,
+    pub usage: Option<SessionUsage>,
+    pub llm_usage: Vec<LlmCallUsage>,
+    pub active_domain_events: Vec<SessionEvent>,
+}
+
 /// Transitional name for code that only consumes the append-only event API.
 /// New ownership code should use [`SessionStore`].
 pub type SessionEventStore = SessionStore;
@@ -309,6 +323,35 @@ impl SessionStore {
                         content: message.content,
                     })
                     .collect())
+            })
+            .await
+    }
+
+    /// Load the existing read models used by App session resume on SQLite's
+    /// blocking pool. Queries run in the established order and retain their
+    /// independent read semantics; this port does not promise one snapshot.
+    /// Dropping this future cannot interrupt a query already running on
+    /// Tokio's blocking pool.
+    pub async fn session_resume_projection(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<SessionResumeProjection> {
+        let session_id = session_id.to_owned();
+        let store = self.clone();
+        self.db
+            .run_blocking(move |db| {
+                let messages = db.get_session_messages(&session_id)?;
+                let steps = db.get_session_steps(&session_id)?;
+                let usage = db.get_session_usage(&session_id)?;
+                let llm_usage = db.get_session_llm_usage(&session_id)?;
+                let active_domain_events = store.read_active_domain_events(&session_id)?;
+                Ok(SessionResumeProjection {
+                    messages,
+                    steps,
+                    usage,
+                    llm_usage,
+                    active_domain_events,
+                })
             })
             .await
     }
@@ -2451,6 +2494,64 @@ mod tests {
                 .await
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn session_store_session_resume_projection_groups_existing_reads() {
+        let (db, store, session_id) = store();
+        let message = db
+            .add_message(&session_id, "assistant", "resume message", None, None)
+            .unwrap();
+        let step = db.create_thought_step(&session_id, 1, &message.id).unwrap();
+        let usage = store
+            .append_usage(&session_id, &usage_input(1, 10))
+            .unwrap();
+        let domain_event = store
+            .append(
+                &session_id,
+                "resume_test",
+                r#"{"ready":true}"#,
+                Some(1),
+                Some(2),
+            )
+            .unwrap();
+
+        let projection = store.session_resume_projection(&session_id).await.unwrap();
+        let clone = projection.clone();
+
+        assert_eq!(
+            serde_json::to_value(&projection.messages).unwrap(),
+            serde_json::to_value(db.get_session_messages(&session_id).unwrap()).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value(&projection.steps).unwrap(),
+            serde_json::to_value(db.get_session_steps(&session_id).unwrap()).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value(&projection.usage).unwrap(),
+            serde_json::to_value(db.get_session_usage(&session_id).unwrap()).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value(&projection.llm_usage).unwrap(),
+            serde_json::to_value(db.get_session_llm_usage(&session_id).unwrap()).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value(&projection.active_domain_events).unwrap(),
+            serde_json::to_value(store.read_active_domain_events(&session_id).unwrap()).unwrap()
+        );
+        assert_eq!(projection.messages[0].id, message.id);
+        assert_eq!(projection.steps[0].id, step.id);
+        assert_eq!(projection.llm_usage[0].id, usage.id);
+        assert!(
+            projection
+                .active_domain_events
+                .iter()
+                .any(|event| event.sequence == domain_event.sequence)
+        );
+        assert_eq!(
+            serde_json::to_value(clone.active_domain_events).unwrap(),
+            serde_json::to_value(projection.active_domain_events).unwrap()
         );
     }
 
