@@ -281,3 +281,4 @@
 - [0290：会话状态持久化通过 SessionStore](0290-session-status-persistence-through-session-store.md)
 - [0291：会话删除与清空通过 SessionStore](0291-session-deletion-through-session-store.md)
 - [0292：AgentLayer 会话写入通过 SessionStore](0292-agent-layer-session-writes-through-store.md)
+- [0293：terminal ingress ghost message 清理通过 SessionStore](0293-terminal-ingress-ghost-message-cleanup-session-store.md)

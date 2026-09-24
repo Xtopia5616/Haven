@@ -1,6 +1,32 @@
 use super::support::*;
 use super::*;
 
+#[derive(Default)]
+struct SessionUpdateCapture(std::sync::Mutex<Vec<(String, SessionStatus)>>);
+
+#[async_trait::async_trait]
+impl AgentEventEmitter for SessionUpdateCapture {
+    async fn emit(&self, event: AgentEvent) {
+        if let AgentEvent::SessionUpdated {
+            session_id, status, ..
+        } = event
+        {
+            self.0.lock().unwrap().push((session_id, status));
+        }
+    }
+}
+
+fn make_in_memory_agent() -> (Arc<AgentLayer>, Arc<SessionSupervisor>, Arc<Database>) {
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    let (agent, executor) = make_test_agent_with_db(
+        db.clone(),
+        Arc::new(FinalAnswerMock),
+        Arc::new(ToolsManager::new()),
+        ContextLimitsConfig::default(),
+    );
+    (agent, executor, db)
+}
+
 async fn assert_dispatcher_waits_for_memory_runtime(recover_pending: bool) {
     let (agent, executor) = make_test_agent();
     let session = executor
@@ -526,6 +552,81 @@ async fn process_input_does_not_resurrect_ended_session() {
     // Session is not reloaded into the working set and never becomes Pending.
     assert_eq!(executor.get_active_session_status(&session.id).await, None);
     assert!(executor.get_follow_ups(&session.id).await.is_empty());
+}
+
+#[tokio::test]
+async fn process_input_deletes_terminal_ghost_message_through_session_store() {
+    let (agent, executor, db) = make_in_memory_agent();
+    let session = executor.create_session("original").await.unwrap();
+    executor.end_session(&session.id).await.unwrap();
+    let terminal_status = db.get_session(&session.id).unwrap().unwrap().status;
+    assert!(terminal_status.is_terminal());
+
+    let bus = agent.events.install_bus();
+    let updates = Arc::new(SessionUpdateCapture::default());
+    bus.subscribe("terminal-ingress-test", updates.clone())
+        .await;
+
+    let result = agent
+        .process_input("more context", Some(session.id.clone()))
+        .await
+        .unwrap();
+
+    assert_eq!(result, ProcessResult::Supplemented { message_id: None });
+    assert!(db.get_session_messages(&session.id).unwrap().is_empty());
+    assert_eq!(
+        db.get_session(&session.id).unwrap().unwrap().status,
+        terminal_status
+    );
+    assert_eq!(executor.get_session_status(&session.id).await, None);
+    assert_eq!(
+        *updates.0.lock().unwrap(),
+        vec![(session.id, terminal_status)]
+    );
+}
+
+#[tokio::test]
+async fn process_input_continues_when_terminal_ghost_delete_fails() {
+    let (agent, executor, db) = make_in_memory_agent();
+    let session = executor.create_session("original").await.unwrap();
+    executor.end_session(&session.id).await.unwrap();
+    let terminal_status = db.get_session(&session.id).unwrap().unwrap().status;
+    assert!(terminal_status.is_terminal());
+    db.conn()
+        .execute_batch(
+            r#"
+            CREATE TRIGGER reject_ghost_message_delete
+            BEFORE DELETE ON messages
+            WHEN OLD.role = 'user' AND OLD.content = 'more context'
+            BEGIN SELECT RAISE(ABORT, 'forced ghost delete failure'); END;
+            "#,
+        )
+        .unwrap();
+
+    let bus = agent.events.install_bus();
+    let updates = Arc::new(SessionUpdateCapture::default());
+    bus.subscribe("terminal-ingress-test", updates.clone())
+        .await;
+
+    let result = agent
+        .process_input("more context", Some(session.id.clone()))
+        .await
+        .unwrap();
+
+    assert_eq!(result, ProcessResult::Supplemented { message_id: None });
+    let messages = db.get_session_messages(&session.id).unwrap();
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].role, "user");
+    assert_eq!(messages[0].content, "more context");
+    assert_eq!(
+        db.get_session(&session.id).unwrap().unwrap().status,
+        terminal_status
+    );
+    assert_eq!(executor.get_session_status(&session.id).await, None);
+    assert_eq!(
+        *updates.0.lock().unwrap(),
+        vec![(session.id, terminal_status)]
+    );
 }
 
 #[tokio::test]

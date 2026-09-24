@@ -213,13 +213,12 @@ impl AgentLayer {
                         // does not show an unanswered ghost bubble (the
                         // frontend is told to drop its copy below).
                         if let Some(msg) = persisted_msg.take() {
-                            let db = self.db.clone();
                             let tid = session_id.clone();
                             let msg_id = msg.id.clone();
-                            let tid_c = tid.clone();
-                            let msg_id_c = msg_id.clone();
-                            if let Err(e) = db
-                                .run_blocking(move |db| db.delete_message_by_id(&tid_c, &msg_id_c))
+                            if let Err(e) = self
+                                .executor
+                                .session_store()
+                                .delete_message_by_id(&tid, &msg_id)
                                 .await
                             {
                                 tracing::warn!(

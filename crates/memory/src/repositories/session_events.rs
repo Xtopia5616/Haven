@@ -341,6 +341,23 @@ impl SessionStore {
             .await
     }
 
+    /// Delete a persisted message through the session persistence boundary.
+    ///
+    /// The existing Database method remains responsible for message cache
+    /// invalidation. This port only schedules that operation on the blocking
+    /// pool and returns its result unchanged.
+    pub async fn delete_message_by_id(
+        &self,
+        session_id: &str,
+        message_id: &str,
+    ) -> anyhow::Result<()> {
+        let session_id = session_id.to_owned();
+        let message_id = message_id.to_owned();
+        self.db
+            .run_blocking(move |db| db.delete_message_by_id(&session_id, &message_id))
+            .await
+    }
+
     /// Atomically clear durable sessions through the session persistence
     /// boundary and return the number of deleted session rows.
     ///
@@ -2603,6 +2620,26 @@ mod tests {
             db.get_session(&session_id).unwrap().unwrap().status,
             SessionStatus::Running
         );
+    }
+
+    #[tokio::test]
+    async fn session_store_deletes_message_by_id_on_blocking_pool() {
+        let (db, store, session_id) = store();
+        let keep = db
+            .add_message(&session_id, "user", "keep", Some("text"), None)
+            .unwrap();
+        let delete = db
+            .add_message(&session_id, "user", "delete", Some("text"), None)
+            .unwrap();
+
+        store
+            .delete_message_by_id(&session_id, &delete.id)
+            .await
+            .unwrap();
+
+        let messages = db.get_session_messages(&session_id).unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].id, keep.id);
     }
 
     #[tokio::test]
