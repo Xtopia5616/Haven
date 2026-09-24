@@ -17,6 +17,7 @@ pub use repositories::embedding_store::{
     MemoryEmbeddingStore, MemoryEmbeddingVector, PendingMemoryEmbedding,
 };
 pub use repositories::fact_store::MemoryFactStore;
+pub use repositories::memory_recall_store::MemoryRecallStore;
 pub use repositories::memory_store::MemoryStore;
 pub use repositories::session_events::{
     BRANCH_POINT_EVENT_TYPE, CURRENT_EVENT_VERSION, INTERACTION_CLEARED_EVENT_TYPE,

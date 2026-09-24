@@ -15,7 +15,7 @@ use haven_memory::recall::{
     MAX_MEMORY_QUERY_CHARS, MAX_RECALL_LIMIT, MemoryKind, MemoryQuery, MemoryRecall,
     MemoryRetriever,
 };
-use haven_memory::{Database, MemoryEmbeddingStore, MemoryStore};
+use haven_memory::{Database, MemoryEmbeddingStore, MemoryRecallStore, MemoryStore};
 
 use crate::memory_index::MemoryEmbeddingIndex;
 
@@ -84,6 +84,7 @@ impl PromptMemoryCache {
 pub struct MemoryService {
     db: Arc<Database>,
     memory_store: MemoryStore,
+    recall_store: MemoryRecallStore,
     router: Option<Arc<LlmRouter>>,
     embedding_index: Option<MemoryEmbeddingIndex>,
     prompt_cache: Mutex<PromptMemoryCache>,
@@ -105,15 +106,18 @@ impl Deref for MemoryDatabase {
 
 impl MemoryService {
     pub fn new(db: Arc<Database>, router: Option<Arc<LlmRouter>>, embed_chunk_size: usize) -> Self {
+        let recall_store = MemoryRecallStore::new(db.clone());
         let embedding_index = router.as_ref().map(|router| {
             MemoryEmbeddingIndex::new(
                 MemoryEmbeddingStore::new(db.clone()),
+                recall_store.clone(),
                 router.clone(),
                 embed_chunk_size.max(1),
             )
         });
         Self {
             memory_store: MemoryStore::new(db.clone()),
+            recall_store,
             db,
             router,
             embedding_index,
@@ -142,7 +146,7 @@ impl MemoryService {
     }
 
     pub(crate) fn memory_revision(&self) -> u64 {
-        self.db.memory_revision()
+        self.recall_store.memory_revision()
     }
 
     pub(crate) async fn current_embedding_model(&self) -> String {
@@ -198,22 +202,74 @@ impl MemoryService {
             (None, true)
         };
 
-        let db = self.db.clone();
-        let query_for_db = query_text.clone();
-        let embedding_model_for_db = embedding_model.clone();
-        let exclude_for_db = key.exclude_session_id.clone();
-        let candidates = db
-            .run_blocking(move |db| {
-                collect_prompt_candidates(
-                    db,
-                    &query_for_db,
-                    &embedding_model_for_db,
-                    vector.as_deref(),
-                    exclude_for_db.as_deref(),
-                )
+        let candidates = async {
+            let keyword_fact_hits = if query_text.trim().is_empty() {
+                Vec::new()
+            } else {
+                let query = MemoryQuery::new(&query_text, MemoryKind::Fact, MAX_RECALL_LIMIT)?;
+                self.recall_store.keyword_recall(query).await?
+            };
+
+            let (vector_fact_hits, vector_episode_hits) =
+                if let Some(vector) = vector.as_deref().filter(|_| !embedding_model.is_empty()) {
+                    let fact_query = MemoryQuery::new(&query_text, MemoryKind::Fact, 8)?
+                        .with_fact_subject(Some("user"));
+                    let episode_query =
+                        MemoryQuery::new(&query_text, MemoryKind::Episode, MAX_EPISODES_IN_PROMPT)?
+                            .with_excluded_session(key.exclude_session_id.as_deref());
+                    let fact_hits = self
+                        .recall_store
+                        .vector_recall(fact_query, vector.to_vec(), embedding_model.clone())
+                        .await?;
+                    let episode_hits = self
+                        .recall_store
+                        .vector_recall(episode_query, vector.to_vec(), embedding_model.clone())
+                        .await?;
+                    (fact_hits, episode_hits)
+                } else {
+                    (Vec::new(), Vec::new())
+                };
+
+            let mut all_facts = self.recall_store.visible_user_facts(40).await?;
+            let mut seen_ids: HashSet<String> =
+                all_facts.iter().map(|fact| fact.id.clone()).collect();
+            let candidate_ids: Vec<String> = keyword_fact_hits
+                .iter()
+                .chain(vector_fact_hits.iter())
+                .map(|hit| hit.entity_id.clone())
+                .filter(|id| !id.is_empty() && !seen_ids.contains(id))
+                .collect();
+            if !candidate_ids.is_empty() {
+                for fact in self
+                    .recall_store
+                    .visible_facts_by_ids(candidate_ids)
+                    .await?
+                {
+                    if seen_ids.insert(fact.id.clone()) {
+                        all_facts.push(fact);
+                    }
+                }
+            }
+
+            let keyword_episode_hits = if query_text.trim().is_empty() {
+                Vec::new()
+            } else {
+                let query =
+                    MemoryQuery::new(&query_text, MemoryKind::Episode, MAX_EPISODES_IN_PROMPT)?
+                        .with_excluded_session(key.exclude_session_id.as_deref());
+                self.recall_store.keyword_recall(query).await?
+            };
+
+            Ok::<_, anyhow::Error>(PromptMemoryCandidates {
+                query_text: String::new(),
+                vector_fact_hits,
+                vector_episode_hits,
+                keyword_episode_hits,
+                all_facts,
             })
-            .await
-            .context("collect prompt memory candidates")?;
+        }
+        .await
+        .context("collect prompt memory candidates")?;
         let candidates = PromptMemoryCandidates {
             query_text,
             ..candidates
@@ -261,10 +317,7 @@ impl MemoryService {
             Some(index) => index.search(&query).await?,
             None => None,
         };
-        let query_for_db = query.clone();
-        self.db
-            .run_blocking(move |db| MemoryRetriever::new(db).retrieve(&query_for_db, vector_hits))
-            .await
+        self.recall_store.retrieve(query, vector_hits).await
     }
 
     pub(crate) async fn embed_new_memory(&self) {
@@ -278,74 +331,6 @@ impl MemoryService {
             index.rebuild_lsh_if_lagging().await;
         }
     }
-}
-
-fn collect_prompt_candidates(
-    db: &Database,
-    query_text: &str,
-    embedding_model: &str,
-    vector: Option<&[f32]>,
-    exclude_session_id: Option<&str>,
-) -> anyhow::Result<PromptMemoryCandidates> {
-    let retriever = MemoryRetriever::new(db);
-    let keyword_fact_hits = if query_text.trim().is_empty() {
-        Vec::new()
-    } else {
-        let query = MemoryQuery::new(query_text, MemoryKind::Fact, MAX_RECALL_LIMIT)?;
-        retriever.keyword(&query)?
-    };
-
-    let (vector_fact_hits, vector_episode_hits) =
-        if let Some(vector) = vector.filter(|_| !embedding_model.is_empty()) {
-            let fact_query = MemoryQuery::new(query_text, MemoryKind::Fact, 8)?;
-            let episode_query =
-                MemoryQuery::new(query_text, MemoryKind::Episode, MAX_EPISODES_IN_PROMPT)?;
-            (
-                retriever.vector(
-                    &fact_query.with_fact_subject(Some("user")),
-                    vector,
-                    embedding_model,
-                )?,
-                retriever.vector(
-                    &episode_query.with_excluded_session(exclude_session_id),
-                    vector,
-                    embedding_model,
-                )?,
-            )
-        } else {
-            (Vec::new(), Vec::new())
-        };
-
-    let mut all_facts = MemoryRetriever::filter_visible_facts(db.get_facts_limited("user", 40)?);
-    let mut seen_ids: HashSet<String> = all_facts.iter().map(|fact| fact.id.clone()).collect();
-    let candidate_ids: Vec<String> = keyword_fact_hits
-        .iter()
-        .chain(vector_fact_hits.iter())
-        .map(|hit| hit.entity_id.clone())
-        .filter(|id| !id.is_empty() && !seen_ids.contains(id))
-        .collect();
-    if !candidate_ids.is_empty() {
-        for fact in MemoryRetriever::filter_visible_facts(db.get_facts_by_ids(&candidate_ids)?) {
-            if seen_ids.insert(fact.id.clone()) {
-                all_facts.push(fact);
-            }
-        }
-    }
-
-    let keyword_episode_hits = if query_text.trim().is_empty() {
-        Vec::new()
-    } else {
-        let query = MemoryQuery::new(query_text, MemoryKind::Episode, MAX_EPISODES_IN_PROMPT)?;
-        retriever.keyword(&query.with_excluded_session(exclude_session_id))?
-    };
-
-    Ok(PromptMemoryCandidates {
-        query_text: String::new(),
-        vector_fact_hits,
-        vector_episode_hits,
-        keyword_episode_hits,
-        all_facts,
-    })
 }
 
 #[cfg(test)]
@@ -441,5 +426,91 @@ mod tests {
         let service = MemoryService::new(db, None, 1);
 
         assert_eq!(service.current_embedding_model().await, "");
+    }
+
+    #[tokio::test]
+    async fn prompt_candidates_keep_keyword_fallback_visibility_exclusion_and_revision_cache() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let current = db.create_session("current recall session").unwrap();
+        let earlier = db.create_session("earlier recall session").unwrap();
+        let safe_fact = db
+            .insert_fact("user", "likes", "Rust", "user", 0.9, &[])
+            .unwrap();
+        db.insert_fact("user", "api_key", "sk-hidden", "user", 1.0, &[])
+            .unwrap();
+        db.add_episode(&current.id, "The user researches Rust testing.")
+            .unwrap();
+        db.add_episode(&earlier.id, "The user researches Rust testing.")
+            .unwrap();
+        let service = MemoryService::new(db.clone(), None, 1);
+
+        assert!(
+            !service
+                .has_cached_prompt_candidates(" Rust\n testing ", Some(&current.id))
+                .await
+        );
+        let candidates = service
+            .prompt_candidates(" Rust\n testing ", Some(&current.id))
+            .await
+            .unwrap();
+
+        assert_eq!(candidates.query_text, "Rust testing");
+        assert!(candidates.vector_fact_hits.is_empty());
+        assert!(candidates.vector_episode_hits.is_empty());
+        assert_eq!(candidates.all_facts.len(), 1);
+        assert_eq!(candidates.all_facts[0].id, safe_fact.id);
+        assert_eq!(candidates.keyword_episode_hits.len(), 1);
+        assert_eq!(
+            candidates.keyword_episode_hits[0].text,
+            "The user researches Rust testing."
+        );
+        assert!(
+            service
+                .has_cached_prompt_candidates("Rust testing", Some(&current.id))
+                .await
+        );
+
+        db.insert_fact("user", "uses", "Cargo", "user", 0.8, &[])
+            .unwrap();
+        assert!(
+            !service
+                .has_cached_prompt_candidates("Rust testing", Some(&current.id))
+                .await
+        );
+    }
+
+    #[tokio::test]
+    async fn recall_uses_keyword_fallback_and_filters_sensitive_facts() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let safe = db
+            .insert_fact("user", "uses", "SQLite", "user", 0.9, &[])
+            .unwrap();
+        db.insert_fact("user", "api_key", "SQLite sk-hidden", "user", 1.0, &[])
+            .unwrap();
+        let service = MemoryService::new(db, None, 1);
+
+        let recall = service
+            .recall(MemoryQuery::new("SQLite", MemoryKind::Fact, 5).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(recall.mode, haven_memory::MemoryRecallMode::Keyword);
+        assert_eq!(recall.hits.len(), 1);
+        assert_eq!(recall.hits[0].entity_id, safe.id);
+        assert!(recall.hits[0].model.is_empty());
+    }
+
+    #[tokio::test]
+    async fn prompt_candidate_store_errors_keep_the_existing_context() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        db.conn().execute_batch("DROP TABLE facts").unwrap();
+        let service = MemoryService::new(db, None, 1);
+
+        let error = match service.prompt_candidates("Rust", None).await {
+            Ok(_) => panic!("expected prompt memory query to fail"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.to_string(), "collect prompt memory candidates");
     }
 }

@@ -292,3 +292,4 @@
 - [0301：MemoryWorker outbox 持久化通过 MemoryStore](0301-memory-worker-outbox-through-memory-store.md)
 - [0302：MemoryTool 通过 MemoryFactStore 访问事实](0302-tools-memory-fact-store-port.md)
 - [0303：Agent embedding 索引通过 MemoryEmbeddingStore 持久化](0303-agent-memory-embedding-store-port.md)
+- [0304：Agent memory recall 查询通过 MemoryRecallStore](0304-agent-memory-recall-store-port.md)

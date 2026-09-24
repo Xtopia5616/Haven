@@ -188,8 +188,10 @@ CI 以 `scripts/check-crate-dependencies.ps1` 对此表执行内部 crate 依赖
 - `repositories/`：会话、消息、步骤、图谱、用量和任务的持久化读写；其中
   `fact_graph.rs` 集中负责 `facts` 写入与图谱不变量，`fact_query.rs`
   负责事实读取、搜索/排序，`fact_maintenance.rs` 负责事实清理、衰减与矛盾
-  扫描，`embedding_store.rs` 以窄异步 `MemoryEmbeddingStore` 提供嵌入索引与 typed
-  vector recall 的持久化端口，`facts.rs` 负责事实类型、谓词策略和稳定 `Database` 外观。消息的
+  扫描，`embedding_store.rs` 以窄异步 `MemoryEmbeddingStore` 提供嵌入索引生命周期
+  的持久化端口，`memory_recall_store.rs` 以 `MemoryRecallStore` 提供异步 typed
+  keyword/vector recall、可见事实 hydration、revision 与完整 recall 端口；`facts.rs`
+  负责事实类型、谓词策略和稳定 `Database` 外观。消息的
   `media_inputs` 是多模态 canonical 持久化投影；消息返回对象中的 `attachments` 仅是
   ingress/UI DTO。数据库的 `ui_metadata` 只保留 UI 展示与受管资产保留所需的元数据，
   并由受信 host 根目录重建历史预览，不参与 provider 规划或 transcript 恢复。
@@ -210,8 +212,10 @@ provider 协议和 UI 展示逻辑不得进入本 crate。
 Agent 的 `memory_service.rs` 是 prompt/worker 共用的 typed memory 边界：它集中管理
 有界候选、recall、embedding/index 句柄和 prompt-memory cache；向量行的 scope、敏感
 过滤、规范化与 keyword 融合仍由 `haven_memory::recall::MemoryRetriever` 统一负责；
-embedding 持久读写与向量召回由 `MemoryEmbeddingStore` 调度，Agent 的
-`memory_index.rs` 只保留模型路由、provider 校验、批处理和维护门控（ADR 0021、0303）。
+`MemoryRecallStore` 调度 recall SQL 并返回 typed domain results。Agent 保留 prompt
+查询归一化、embedding provider 调用、候选合并与预算；`MemoryEmbeddingStore` 负责
+embedding 生命周期读写和 LSH 维护，`memory_index.rs` 保留模型路由、provider 校验、
+批处理和维护门控（ADR 0021、0303、0304）。
 `memory_worker.rs` 只编排事实抽取、durable outbox、维护、提案提交和索引 catch-up；
 `MemoryWorker` 是唯一的后台记忆编排入口。`prompt_context.rs`
 在 turn 边界取得一次工具/运行时/记忆快照，`prompt_renderer.rs` 以纯函数渲染 system

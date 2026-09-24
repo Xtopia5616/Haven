@@ -109,6 +109,7 @@
 - 当前 Phase 7 小切片：`MemoryWorker` durable outbox 增加明确的应用停机边界；取消只停止 live projection，不确认或删除 durable marker，由 `AgentLayer`/`ApplicationRuntime` 显式触发（ADR 0269）。
 - 当前 Phase 3/7 小切片：MemoryStore 通过共享的 `MemoryService` owner 承接 MemoryWorker fact/summary outbox marker 的 enqueue、restore、ack 与 summary episode 读取；Worker 继续负责 live projection、inference 和逐 job 退避。marker ack 失败与取消均保留 durable marker；fact inference 算法及 maintenance/kv/embedding 路径不变（ADR 0301）。
 - 当前 Phase 3 小切片：`MemoryTool` 的 search/list/remember/forget 与 keyword recall fallback 经 `MemoryFactStore` typed ports 执行；Tools 只保留参数、安全和输出适配，desktop `MemoryRecallPort` 仍优先并拥有 embedding-aware recall（ADR 0302）。
+- 当前 Phase 3/7 小切片：`MemoryService` 的 prompt candidate 与 typed recall 查询通过 `MemoryRecallStore` 调度；Agent 保留 prompt 归一化、缓存、provider 调用与候选合并，Memory 保留 keyword/vector 过滤、可见 facts hydration 与完整 retrieve 边界（ADR 0304）。
 - 当前 Phase 5/6 小切片：LLM usage runtime input 的 `cache_accounting` 使用 `haven-common::CacheAccounting`；SQLite 与 IPC 仍在边界转换为既有字符串，外部文本恢复统一按 `Unknown` 处理（ADR 0270）。
 - 当前 Phase 4 切片：`AgentLayer` 在 composition root 只取得一次 `ToolsManager`，共享给 prompt builder 与 `ToolsManagerToolCatalogAdapter`，并显式注入 `ReActEngine`；engine 不再从 executor 查找 catalog port。目录 snapshot、session ID、工具执行和 live authorization 语义不变（ADR 0257）。
 
@@ -134,9 +135,9 @@
 
 阶段 3/2 小切片补充（2026-09-25）：rollback target 精确读取、`rollback_to` 整体事务（含 replacement transcript）与 continue recovery projection 截断改由 SessionStore 异步端口在 blocking pool 调度。Agent 保留 lifecycle cancel/join、replay 与边界策略、事件/branch trimming、tools restore、usage invalidation 和 status 更新；事务失败时成功后置步骤不运行。三条路径继续使用不可取消的 `run_blocking`，`rollback.rs` 不再自行调度 raw Database；AgentLayer、ReActEngine 其他职责的 raw Database 仍在，resume attachments、compaction summary、Tools/UI 不在本切片（ADR 0297）。
 
-阶段 7 的 MemoryRuntime committed-event 消费设计已由 ADR 0259 采纳；Phase 7.1 已完成 SessionStore 独立 event cursor/有界 durable replay/生命周期清理（ADR 0261）、按序处理核心、启动时已有 cursor 回放、bounded live/replay recovery runner，以及 AgentLayer composition/dispatcher recovery readiness barrier（ADR 0262、0263）。interval、pause hook trigger、compact-summary episode extraction 与周期 maintenance 调度已经由 typed intent/atomic episode write + durable producer/outbox/runtime schedule 接管（ADR 0264、0265、0266、0267）。MemoryReader 抽象留待后续切片；本设计不改变 recall 或 rollback facts 语义。
+阶段 7 的 MemoryRuntime committed-event 消费设计已由 ADR 0259 采纳；Phase 7.1 已完成 SessionStore 独立 event cursor/有界 durable replay/生命周期清理（ADR 0261）、按序处理核心、启动时已有 cursor 回放、bounded live/replay recovery runner，以及 AgentLayer composition/dispatcher recovery readiness barrier（ADR 0262、0263）。interval、pause hook trigger、compact-summary episode extraction 与周期 maintenance 调度已经由 typed intent/atomic episode write + durable producer/outbox/runtime schedule 接管（ADR 0264、0265、0266、0267）。Agent prompt/recall 查询现由 `MemoryRecallStore` 收口（ADR 0304）；MemoryWorker 其他 Database 路径仍待后续切片，本设计不改变 recall 或 rollback facts 语义。
 
-补充：阶段 3 的 transcript batch writer 已在 `7775e11` 进一步只依赖 `SessionStore`（ADR 0255），Ingress/recovery 消息路径、失败会话 action-step 清理与生产会话创建也已通过 SessionStore typed port 收口（ADR 0256、0258、0260）；阶段 7 的无调用 recall 转发已在本轮删除（ADR 0254），compaction-summary extraction 已完成 per-episode durable marker/outbox（ADR 0266），周期 maintenance 的调度策略已归 MemoryRuntime（ADR 0267）。这些切片不改变 facts/recall/rollback 语义；完整 Job 生命周期与 MemoryReader 仍未完成。
+补充：阶段 3 的 transcript batch writer 已在 `7775e11` 进一步只依赖 `SessionStore`（ADR 0255），Ingress/recovery 消息路径、失败会话 action-step 清理与生产会话创建也已通过 SessionStore typed port 收口（ADR 0256、0258、0260）；阶段 7 的无调用 recall 转发已在本轮删除（ADR 0254），compaction-summary extraction 已完成 per-episode durable marker/outbox（ADR 0266），周期 maintenance 的调度策略已归 MemoryRuntime（ADR 0267），Agent prompt/recall 查询已通过 MemoryRecallStore 收口（ADR 0304）。这些切片不改变 facts/recall/rollback 语义；完整 Job 生命周期与 MemoryWorker 其他 Database 路径仍未完成。
 
 阶段 3 小切片补充（2026-09-25）：ReAct pause/continue/error 共用的只读 event-boundary cursor 检查经 `SessionStore` 异步端口调度，Memory 复用 `load_replay_state`，保留可选 cancellation 与原 `run_blocking_cancellable`/`run_blocking` 分支；Agent 保留 boundary 返回值、warning 与指标语义，无投影或事件写入。`ReActEngine.db` 仍由 compaction-summary episode 写入使用，并在 summary 达到既有长度阈值时写 extraction marker（ADR 0298）。
 
@@ -325,7 +326,7 @@ SessionStore
 - 统一 claim、cancel、timeout、retry、tail output、completion outbox 和 UI projection；
 - messaging 不并入 Job，仍是独立 transport domain；
 - `MemoryRuntime` 监听 committed session event，负责 fact extraction/maintenance/index catch-up；
-- `MemoryWorker` 的 FastChat 调用已通过小型 `MemoryInferencePort` 注入（ADR 0247）；后续仍需让 Agent 只提交 `SessionCommitted` 并通过 MemoryReader 获取 recall。
+- `MemoryWorker` 的 FastChat 调用已通过小型 `MemoryInferencePort` 注入（ADR 0247）；Agent recall 查询已由 `MemoryRecallStore` 提供（ADR 0304）；后续仍需让 Agent 只提交 `SessionCommitted`，并迁移 MemoryWorker 的其他 Database 路径。
 
 状态：committed-event consumer 架构设计已完成并采纳（ADR 0259）；Phase 7.1 的 SessionStore cursor/replay、`MemoryRuntime::process_event` 顺序处理、启动时已有 cursor 回放和 `run_until_cancelled` bounded live/replay recovery 已实现，并由 AgentLayer 在 dispatcher recovery 前装配与启动（ADR 0261、0262、0263）。interval、pause trigger 与 compact-summary extraction 已通过 durable producer/outbox 接入，周期 maintenance 调度已由 MemoryRuntime 负责；MemoryWorker durable outbox 已加入逐 job retry/backoff 和应用停机 cancellation boundary，marker 持久化与读取/ack 现归 MemoryStore（ADR 0264、0265、0266、0267、0268、0269、0301）。usage runtime 的 cache accounting 与 `llm_usage.call_kind` 运行时输入均已完成 typed input 收口（ADR 0270、0271）；durable read model 和 IPC 继续使用既有字符串字段。
 
@@ -333,7 +334,7 @@ SessionStore
 
 验收：两类 Job 共用一套生命周期和 UI 投影；记忆失败不改变 ReAct turn 结果；重启、重复 outbox、取消和限额有测试。
 
-Phase 7.1 验收与未决风险：见 ADR 0259、0261、0262、0263、0264、0265、0266、0267、0268、0269、0301。当前已完成持久化端口、按序处理核心、启动回放、bounded live/replay runner、AgentLayer dispatcher readiness barrier、interval/pause producer、summary per-episode durable outbox、maintenance scheduler ownership、MemoryStore marker persistence/read/ack ownership、MemoryWorker retry/backoff 和 app shutdown boundary；完整 Job 生命周期与 MemoryReader 仍未迁移。
+Phase 7.1 验收与未决风险：见 ADR 0259、0261、0262、0263、0264、0265、0266、0267、0268、0269、0301、0304。当前已完成持久化端口、按序处理核心、启动回放、bounded live/replay runner、AgentLayer dispatcher readiness barrier、interval/pause producer、summary per-episode durable outbox、maintenance scheduler ownership、MemoryStore marker persistence/read/ack ownership、MemoryWorker retry/backoff、app shutdown boundary 与 Agent recall/query 的 MemoryRecallStore；完整 Job 生命周期和 MemoryWorker 其他 Database 路径仍未迁移。
 
 ### 阶段 8：IPC 单源生成与 UI 编排收口（P2）
 

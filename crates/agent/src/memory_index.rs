@@ -13,7 +13,7 @@ use haven_llm::LlmRouter;
 use haven_llm::adapters::api_style_for;
 use haven_llm::types::EmbeddingRequest;
 use haven_memory::recall::{MemoryHit, MemoryQuery};
-use haven_memory::{MemoryEmbeddingStore, MemoryEmbeddingVector};
+use haven_memory::{MemoryEmbeddingStore, MemoryEmbeddingVector, MemoryRecallStore};
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
@@ -53,6 +53,7 @@ struct EmbeddingIdentity {
 /// Agent-side owner of embedding lifecycle operations.
 pub(crate) struct MemoryEmbeddingIndex {
     store: MemoryEmbeddingStore,
+    recall_store: MemoryRecallStore,
     router: Arc<LlmRouter>,
     embed_chunk_size: usize,
     /// Serializes maintenance passes so two schedulers cannot embed the same
@@ -63,11 +64,13 @@ pub(crate) struct MemoryEmbeddingIndex {
 impl MemoryEmbeddingIndex {
     pub(crate) fn new(
         store: MemoryEmbeddingStore,
+        recall_store: MemoryRecallStore,
         router: Arc<LlmRouter>,
         embed_chunk_size: usize,
     ) -> Self {
         Self {
             store,
+            recall_store,
             router,
             embed_chunk_size: embedding_batch_size(embed_chunk_size),
             maintenance_gate: Mutex::new(()),
@@ -306,7 +309,7 @@ impl MemoryEmbeddingIndex {
     /// Acquire a vector and resolve it through the shared memory read policy.
     /// The provider/index adapter never returns raw embedding rows: facts and
     /// episodes are filtered, scoped, and normalized by the shared memory
-    /// retriever inside `MemoryEmbeddingStore`.
+    /// retriever inside `MemoryRecallStore`.
     /// `Ok(None)` means the caller should use its keyword fallback because the
     /// embedding provider is unavailable or not configured. Database and
     /// retriever errors remain errors so callers cannot confuse an outage with
@@ -351,7 +354,7 @@ impl MemoryEmbeddingIndex {
             );
             return Ok(None);
         }
-        self.store
+        self.recall_store
             .vector_recall(query.clone(), vector, identity.storage_model)
             .await
             .map(Some)
@@ -362,7 +365,11 @@ impl MemoryEmbeddingIndex {
 mod tests {
     use super::*;
     use haven_common::config::{Capability, RequestPolicy, RoutedModel, RouterConfig};
-    use haven_memory::Database;
+    use haven_memory::{Database, MemoryRecallStore};
+
+    fn recall_store(db: Arc<Database>) -> MemoryRecallStore {
+        MemoryRecallStore::new(db)
+    }
 
     fn embedding_router(model_name: &str, base_url: &str) -> Arc<LlmRouter> {
         let endpoint = ModelEndpoint {
@@ -415,11 +422,13 @@ mod tests {
         let db = Arc::new(Database::open(&temp_dir.path().join("memory.db")).unwrap());
         let unconfigured = MemoryEmbeddingIndex::new(
             MemoryEmbeddingStore::new(db.clone()),
+            recall_store(db.clone()),
             Arc::new(LlmRouter::new(RouterConfig::default())),
             1,
         );
         let empty_model = MemoryEmbeddingIndex::new(
-            MemoryEmbeddingStore::new(db),
+            MemoryEmbeddingStore::new(db.clone()),
+            recall_store(db),
             embedding_router("  ", "https://gateway.example/v1"),
             1,
         );
@@ -434,11 +443,13 @@ mod tests {
         let db = Arc::new(Database::open(&temp_dir.path().join("memory.db")).unwrap());
         let gateway_a = MemoryEmbeddingIndex::new(
             MemoryEmbeddingStore::new(db.clone()),
+            recall_store(db.clone()),
             embedding_router("text-embedding-3-small", "https://gateway-a.example/v1"),
             1,
         );
         let gateway_b = MemoryEmbeddingIndex::new(
-            MemoryEmbeddingStore::new(db),
+            MemoryEmbeddingStore::new(db.clone()),
+            recall_store(db),
             embedding_router("text-embedding-3-small", "https://gateway-b.example/v1"),
             1,
         );
@@ -467,7 +478,8 @@ mod tests {
         )
         .unwrap();
         let index = MemoryEmbeddingIndex::new(
-            MemoryEmbeddingStore::new(db),
+            MemoryEmbeddingStore::new(db.clone()),
+            recall_store(db),
             embedding_router("text-embedding-3-small", "https://gateway.example/v1"),
             1,
         );
@@ -485,7 +497,12 @@ mod tests {
             .execute("DROP TABLE memory_embeddings", [])
             .unwrap();
         let router = Arc::new(LlmRouter::new(haven_common::config::RouterConfig::default()));
-        let index = MemoryEmbeddingIndex::new(MemoryEmbeddingStore::new(db), router, 1);
+        let index = MemoryEmbeddingIndex::new(
+            MemoryEmbeddingStore::new(db.clone()),
+            recall_store(db),
+            router,
+            1,
+        );
 
         let error = index.model_changed("test-model").await.unwrap_err();
         assert!(error.to_string().contains("memory_embeddings"));

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::Database;
 use crate::embeddings::entity_kind;
-use crate::recall::{MemoryHit, MemoryQuery, MemoryRetriever};
+use crate::recall::MemoryRetriever;
 
 /// Closed set of entities that can own persisted memory embeddings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -172,25 +172,11 @@ impl MemoryEmbeddingStore {
             })
             .await
     }
-
-    /// Read model-scoped vector candidates through the shared visibility,
-    /// scope, and deterministic ordering policy.
-    pub async fn vector_recall(
-        &self,
-        query: MemoryQuery,
-        vector: Vec<f32>,
-        model: String,
-    ) -> anyhow::Result<Vec<MemoryHit>> {
-        self.db
-            .run_blocking(move |db| MemoryRetriever::new(db).vector(&query, &vector, &model))
-            .await
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::recall::MemoryKind;
 
     fn store() -> (Arc<Database>, MemoryEmbeddingStore) {
         let db = Arc::new(Database::open_in_memory().unwrap());
@@ -246,13 +232,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn embedding_lifecycle_store_preserves_dimensions_lsh_and_typed_recall() {
+    async fn embedding_lifecycle_store_preserves_dimensions_and_lsh() {
         let (db, store) = store();
-        let relevant = db
-            .insert_fact("user", "likes", "Rust", "inferred", 0.8, &[])
-            .unwrap();
-        let hidden = db
-            .insert_fact("user", "api_key", "sk-hidden", "inferred", 1.0, &[])
+        db.insert_fact("user", "likes", "Rust", "inferred", 0.8, &[])
             .unwrap();
         let mut pending = store.pending_embeddings("model-a".into()).await.unwrap();
         pending.sort_by(|a, b| a.entity_id.cmp(&b.entity_id));
@@ -269,16 +251,6 @@ mod tests {
         let report = store.save_batch("model-a".into(), vectors).await.unwrap();
         assert_eq!(report.attempted, 1);
         assert!(report.failures.is_empty());
-        // Simulate a legacy row that predates the store's sensitive-text
-        // filter so typed recall must still apply the shared read policy.
-        db.save_embedding(
-            entity_kind::FACT,
-            &hidden.id,
-            "model-a",
-            &[1.0, 0.0],
-            "user api_key sk-hidden",
-        )
-        .unwrap();
         assert_eq!(store.list_models().await.unwrap(), ["model-a"]);
         assert_eq!(store.list_dimensions("model-a".into()).await.unwrap(), [2]);
 
@@ -290,19 +262,6 @@ mod tests {
             .await
             .unwrap();
         assert!(!db.embedding_lsh_lagging("model-a").unwrap());
-
-        let hits = store
-            .vector_recall(
-                MemoryQuery::new("Rust", MemoryKind::Fact, 10).unwrap(),
-                vec![1.0, 0.0],
-                "model-a".into(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].entity_id, relevant.id);
-        assert_ne!(hits[0].entity_id, hidden.id);
-        assert_eq!(hits[0].text, "likes=Rust");
 
         store.clear_embeddings().await.unwrap();
         assert!(store.list_models().await.unwrap().is_empty());
