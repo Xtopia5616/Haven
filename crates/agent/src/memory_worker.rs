@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
 use haven_common::prompts::{
@@ -28,6 +28,8 @@ use crate::fact_inference::{
 };
 use crate::memory_inference::{MemoryInferencePort, RouterMemoryInferencePort};
 use crate::memory_service::{MemoryDatabase, MemoryService};
+
+const OUTBOX_RETRY_MAX_SECS: u64 = 30;
 
 /// Background memory worker: fact extraction, maintenance, outbox draining,
 /// and embedding catch-up. Prompt assembly does not depend on this type.
@@ -431,6 +433,8 @@ impl MemoryWorker {
                     );
                 }
             }
+            let mut fact_retry_attempts = HashMap::<String, u32>::new();
+            let mut summary_retry_attempts = HashMap::<String, u32>::new();
             loop {
                 let batch: Vec<(String, bool)> = {
                     let mut pending = engine.outbox.lock().unwrap_or_else(|e| e.into_inner());
@@ -462,7 +466,7 @@ impl MemoryWorker {
                     };
                     if completed {
                         let session_id_for_db = session_id.clone();
-                        if let Err(error) = engine
+                        match engine
                             .db
                             .run_blocking(move |db| {
                                 db.clear_pending_fact_extraction_if_not_upgraded(
@@ -472,12 +476,36 @@ impl MemoryWorker {
                             })
                             .await
                         {
-                            tracing::warn!(
-                                "fact extraction durable completion failed for session {}: {}",
-                                session_id,
-                                error
-                            );
+                            Ok(()) => {
+                                fact_retry_attempts.remove(&session_id);
+                            }
+                            Err(error) => {
+                                let wait_secs = next_outbox_retry_secs(
+                                    fact_retry_attempts.entry(session_id.clone()).or_default(),
+                                    0,
+                                );
+                                tracing::warn!(
+                                    "fact extraction durable completion failed for session {}: {}; retrying in {}s",
+                                    session_id,
+                                    error,
+                                    wait_secs
+                                );
+                                engine.enqueue_memory(session_id, bypass);
+                                tokio::time::sleep(Duration::from_secs(wait_secs)).await;
+                            }
                         }
+                    } else {
+                        let wait_secs = next_outbox_retry_secs(
+                            fact_retry_attempts.entry(session_id.clone()).or_default(),
+                            0,
+                        );
+                        tracing::debug!(
+                            session = %session_id,
+                            wait_secs,
+                            "fact extraction deferred; durable marker retained"
+                        );
+                        engine.enqueue_memory(session_id, bypass);
+                        tokio::time::sleep(Duration::from_secs(wait_secs)).await;
                     }
                 }
                 for (session_id, episode_id) in summary_batch {
@@ -496,7 +524,7 @@ impl MemoryWorker {
                                 episode = %episode_id,
                                 "dropping summary extraction job for missing episode"
                             );
-                            let _ = engine
+                            let clear_result = engine
                                 .db
                                 .run_blocking({
                                     let session_id = session_id.clone();
@@ -504,6 +532,24 @@ impl MemoryWorker {
                                     move |db| db.clear_summary_extraction(&session_id, &episode_id)
                                 })
                                 .await;
+                            if let Err(error) = clear_result {
+                                let wait_secs = next_outbox_retry_secs(
+                                    summary_retry_attempts
+                                        .entry(episode_id.clone())
+                                        .or_default(),
+                                    0,
+                                );
+                                tracing::warn!(
+                                    session = %session_id,
+                                    episode = %episode_id,
+                                    wait_secs,
+                                    "missing summary marker cleanup failed: {error}"
+                                );
+                                engine.enqueue_summary_memory(session_id, episode_id);
+                                tokio::time::sleep(Duration::from_secs(wait_secs)).await;
+                            } else {
+                                summary_retry_attempts.remove(&episode_id);
+                            }
                             continue;
                         }
                         Err(error) => {
@@ -512,7 +558,14 @@ impl MemoryWorker {
                                 episode = %episode_id,
                                 "summary extraction episode read failed: {error}"
                             );
+                            let wait_secs = next_outbox_retry_secs(
+                                summary_retry_attempts
+                                    .entry(episode_id.clone())
+                                    .or_default(),
+                                0,
+                            );
                             engine.enqueue_summary_memory(session_id, episode_id);
+                            tokio::time::sleep(Duration::from_secs(wait_secs)).await;
                             continue;
                         }
                     };
@@ -523,7 +576,7 @@ impl MemoryWorker {
                         SummaryExtractOutcome::Done => {
                             let session_id_for_db = session_id.clone();
                             let episode_id_for_db = episode_id.clone();
-                            if let Err(error) = engine
+                            match engine
                                 .db
                                 .run_blocking(move |db| {
                                     db.clear_summary_extraction(
@@ -533,15 +586,35 @@ impl MemoryWorker {
                                 })
                                 .await
                             {
-                                tracing::warn!(
-                                    session = %session_id,
-                                    episode = %episode_id,
-                                    "summary extraction durable completion failed: {error}"
-                                );
+                                Ok(()) => {
+                                    summary_retry_attempts.remove(&episode_id);
+                                }
+                                Err(error) => {
+                                    let wait_secs = next_outbox_retry_secs(
+                                        summary_retry_attempts
+                                            .entry(episode_id.clone())
+                                            .or_default(),
+                                        0,
+                                    );
+                                    tracing::warn!(
+                                        session = %session_id,
+                                        episode = %episode_id,
+                                        wait_secs,
+                                        "summary extraction durable completion failed: {error}"
+                                    );
+                                    engine.enqueue_summary_memory(session_id, episode_id);
+                                    tokio::time::sleep(Duration::from_secs(wait_secs)).await;
+                                }
                             }
                         }
                         SummaryExtractOutcome::Throttled { wait_secs }
                         | SummaryExtractOutcome::Retryable { wait_secs } => {
+                            let wait_secs = next_outbox_retry_secs(
+                                summary_retry_attempts
+                                    .entry(episode_id.clone())
+                                    .or_default(),
+                                wait_secs,
+                            );
                             tracing::debug!(
                                 session = %session_id,
                                 episode = %episode_id,
@@ -549,8 +622,7 @@ impl MemoryWorker {
                                 "summary fact inference deferred"
                             );
                             engine.enqueue_summary_memory(session_id, episode_id);
-                            tokio::time::sleep(std::time::Duration::from_secs(wait_secs.max(1)))
-                                .await;
+                            tokio::time::sleep(Duration::from_secs(wait_secs)).await;
                         }
                     }
                 }
@@ -1594,6 +1666,14 @@ impl MemoryWorker {
     }
 }
 
+fn next_outbox_retry_secs(attempt: &mut u32, requested_wait_secs: u64) -> u64 {
+    let backoff_secs = 1u64 << (*attempt).min(5);
+    *attempt = attempt.saturating_add(1);
+    requested_wait_secs
+        .max(backoff_secs)
+        .min(OUTBOX_RETRY_MAX_SECS.max(requested_wait_secs))
+}
+
 /// Result of a compaction-summary extraction attempt (M3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SummaryExtractOutcome {
@@ -1925,6 +2005,18 @@ mod tests {
     fn make_engine(db: Arc<Database>) -> MemoryWorker {
         let router = mock_router("[]");
         MemoryWorker::new(db, router, 4_000, 64, 40, 256, 0)
+    }
+
+    #[test]
+    fn outbox_retry_backoff_is_bounded_but_honors_throttle_wait() {
+        let mut attempt = 0;
+        assert_eq!(next_outbox_retry_secs(&mut attempt, 0), 1);
+        assert_eq!(next_outbox_retry_secs(&mut attempt, 0), 2);
+        assert_eq!(next_outbox_retry_secs(&mut attempt, 0), 4);
+        assert_eq!(next_outbox_retry_secs(&mut attempt, 0), 8);
+        assert_eq!(next_outbox_retry_secs(&mut attempt, 0), 16);
+        assert_eq!(next_outbox_retry_secs(&mut attempt, 0), 30);
+        assert_eq!(next_outbox_retry_secs(&mut attempt, 900), 900);
     }
 
     fn make_role_message(role: &str, content: &str) -> Message {

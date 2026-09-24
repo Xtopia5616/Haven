@@ -81,6 +81,7 @@
 - 当前 Phase 3 切片：失败会话的 pending/running action-step 清理通过 `SessionStore` 调度到 blocking pool，继续调用既有 Database 操作；`unknown` 状态、observation、完成时间、session 范围及 Error 更新后、`SessionError` 发布前的调用顺序不变（ADR 0258）。此切片不涉及 ActionService 或 MemoryRuntime。
 - `SessionSupervisor` 与 ingress 创建路径通过 `SessionStore::create_session` 创建 durable session row；生命周期闸门、首条消息顺序、actor 安装和 dispatch 仍由 Agent 持有，创建本身不追加事件（ADR 0260）。
 - 当前 Phase 7 小切片：删除全仓无调用的 `MemoryWorker::recall_memory_query` 转发；recall 继续由 `MemoryService`/`MemoryRecallPort` 所有，不新增同义 `MemoryReader` trait（ADR 0254）。MemoryRuntime 已完成 cursor/replay/ordered trigger/live recovery 核心，并已由 AgentLayer 在 dispatcher 前完成启动准备；interval、pause hook trigger、compaction-summary extraction 与周期 maintenance 调度均已收口到 MemoryRuntime 的 durable producer/outbox/scheduler 边界（ADR 0264、0265、0266、0267）。
+- 当前 Phase 7 小切片：`MemoryWorker` 普通事实抽取与 compaction-summary 抽取共用 durable outbox 的逐 job 指数退避；失败保留 marker，成功确认后才清理（ADR 0268）。不引入与 `ActionService` 混合的通用 Job 状态机。
 - 当前 Phase 4 切片：`AgentLayer` 在 composition root 只取得一次 `ToolsManager`，共享给 prompt builder 与 `ToolsManagerToolCatalogAdapter`，并显式注入 `ReActEngine`；engine 不再从 executor 查找 catalog port。目录 snapshot、session ID、工具执行和 live authorization 语义不变（ADR 0257）。
 
 当前阶段判断：阶段 1 的 mailbox/运行态收口已基本完成；阶段 2 已收口 rollback boundary、两类 resume 读取 port、session overlay 恢复边界，以及 continue 的 committed recovery marker 决策与 projection 截断事务，但全局恢复/事件重放和崩溃窗口仍待继续验证；阶段 3 已开始以 SessionStore typed ports 替代局部 raw Database 读取，当前覆盖 session record、pending session、partial stream、transcript batch writer、ingress/recovery 消息写入及失败会话 action-step 清理（ADR 0238、0249、0251、0255、0256、0258），其他传播仍待收窄；本次清理不涉及 ActionService 或 MemoryRuntime；阶段 4 已完成目录/观察/资产租约/overlay/定时授权入口边界、runtime web-search typed capability，以及 ReActEngine catalog port 的 composition-root 显式注入（ADR 0257）；完整 ToolsManager 解耦仍需拆分；阶段 5 已完成 settings/model 的 snapshot prepare/apply 切片、ApplyPlan 对 Router target 的共享、update_settings 的旧 hotkey 与 Settings patch 合并，以及 Router runtime 的统一 coordinator；完整半失败协调和其他配置写入口仍待设计；阶段 6 已完成 CompleteRequest、聚合 StreamRequest、EmbeddingRequest、HealthCheckRequest 与 PromptRequest 请求对象切片，并已删除旧 prompt wrapper；统一请求结果投影已完成，Router executor 拆分和 capability/call-purpose 语义分离仍待实施；阶段 7 已完成 action 持久层 CAS/outbox、ActionService 终态仲裁、MemoryWorker FastChat 窄端口、MemoryRuntime cursor/replay/ordered trigger/live recovery 核心、AgentLayer composition/dispatcher readiness barrier、interval/pause durable producer、compaction-summary durable per-episode outbox，以及 maintenance 调度策略收口到 MemoryRuntime（ADR 0247、0259、0261、0262、0263、0264、0265、0266、0267）；完整 Job 生命周期与 MemoryReader 仍待设计/实施；阶段 8 已完成 Action DTO 漂移检查和 UI 错误/usage/message 派生收口，其他 IPC/UI 编排仍待收口；阶段 9 已删除三个无调用者 facade API，并移除两个由 CompleteRequest/PromptRequest 完整替代的无调用 Router wrapper，剩余工作以 profiling 和更大范围公共面审查为主。
@@ -270,13 +271,13 @@ SessionStore
 - `MemoryRuntime` 监听 committed session event，负责 fact extraction/maintenance/index catch-up；
 - `MemoryWorker` 的 FastChat 调用已通过小型 `MemoryInferencePort` 注入（ADR 0247）；后续仍需让 Agent 只提交 `SessionCommitted` 并通过 MemoryReader 获取 recall。
 
-状态：committed-event consumer 架构设计已完成并采纳（ADR 0259）；Phase 7.1 的 SessionStore cursor/replay、`MemoryRuntime::process_event` 顺序处理、启动时已有 cursor 回放和 `run_until_cancelled` bounded live/replay recovery 已实现，并由 AgentLayer 在 dispatcher recovery 前装配与启动（ADR 0261、0262、0263）。interval、pause trigger 与 compact-summary extraction 已通过 durable producer/outbox 接入，周期 maintenance 调度已由 MemoryRuntime 负责（ADR 0264、0265、0266、0267）。
+状态：committed-event consumer 架构设计已完成并采纳（ADR 0259）；Phase 7.1 的 SessionStore cursor/replay、`MemoryRuntime::process_event` 顺序处理、启动时已有 cursor 回放和 `run_until_cancelled` bounded live/replay recovery 已实现，并由 AgentLayer 在 dispatcher recovery 前装配与启动（ADR 0261、0262、0263）。interval、pause trigger 与 compact-summary extraction 已通过 durable producer/outbox 接入，周期 maintenance 调度已由 MemoryRuntime 负责；MemoryWorker durable outbox 已加入逐 job retry/backoff（ADR 0264、0265、0266、0267、0268）。
 
 主要文件：`crates/tools/src/action_service.rs`、`action_lifecycle.rs`、`crates/agent/src/memory_worker.rs`、`memory_service.rs`、`memory_index.rs`、`crates/memory/src/`。
 
 验收：两类 Job 共用一套生命周期和 UI 投影；记忆失败不改变 ReAct turn 结果；重启、重复 outbox、取消和限额有测试。
 
-Phase 7.1 验收与未决风险：见 ADR 0259、0261、0262、0263、0264、0265、0266、0267。当前已完成持久化端口、按序处理核心、启动回放、bounded live/replay runner、AgentLayer dispatcher readiness barrier、interval/pause producer、summary per-episode durable outbox 和 maintenance scheduler ownership；完整 Job 生命周期与 MemoryReader 仍未迁移。
+Phase 7.1 验收与未决风险：见 ADR 0259、0261、0262、0263、0264、0265、0266、0267、0268。当前已完成持久化端口、按序处理核心、启动回放、bounded live/replay runner、AgentLayer dispatcher readiness barrier、interval/pause producer、summary per-episode durable outbox、maintenance scheduler ownership 和 MemoryWorker retry/backoff；完整 Job 生命周期与 MemoryReader 仍未迁移。
 
 ### 阶段 8：IPC 单源生成与 UI 编排收口（P2）
 

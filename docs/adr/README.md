@@ -256,3 +256,4 @@
 - [0265：Pause Memory Trigger 的 durable producer](0265-memory-trigger-pause-producer.md)
 - [0266：Compaction Summary Fact Extraction 的 durable job](0266-summary-fact-extraction-durable-job.md)
 - [0267：MemoryRuntime 拥有 maintenance 调度策略](0267-memory-runtime-maintenance-schedule.md)
+- [0268：MemoryWorker durable outbox 的逐 job 退避](0268-memory-outbox-retry-backoff.md)
