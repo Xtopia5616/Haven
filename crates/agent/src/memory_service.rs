@@ -15,7 +15,7 @@ use haven_memory::recall::{
     MAX_MEMORY_QUERY_CHARS, MAX_RECALL_LIMIT, MemoryKind, MemoryQuery, MemoryRecall,
     MemoryRetriever,
 };
-use haven_memory::{Database, MemoryStore};
+use haven_memory::{Database, MemoryEmbeddingStore, MemoryStore};
 
 use crate::memory_index::MemoryEmbeddingIndex;
 
@@ -106,7 +106,11 @@ impl Deref for MemoryDatabase {
 impl MemoryService {
     pub fn new(db: Arc<Database>, router: Option<Arc<LlmRouter>>, embed_chunk_size: usize) -> Self {
         let embedding_index = router.as_ref().map(|router| {
-            MemoryEmbeddingIndex::new(db.clone(), router.clone(), embed_chunk_size.max(1))
+            MemoryEmbeddingIndex::new(
+                MemoryEmbeddingStore::new(db.clone()),
+                router.clone(),
+                embed_chunk_size.max(1),
+            )
         });
         Self {
             memory_store: MemoryStore::new(db.clone()),

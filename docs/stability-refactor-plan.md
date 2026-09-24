@@ -159,6 +159,7 @@
 - 2026-09-21：权限策略契约收口：capability key 统一点号层级、disabled operation 按最终 capability 匹配、MCP/Skill 显式声明 opaque 网络边界，授权结果增加稳定 reason code，Settings 安全策略拆为独立视图（ADR 0187）。
 - 2026-09-21：确认授权拆分为独立的期限与目标范围；UI 支持操作、功能组、工具层级，后端只接受当前 capability 的合法父级（ADR 0188）。
 - 2026-09-21：`network_policy = ask` 对 MCP/Skill 等 opaque 网络能力统一进入确认流程；`deny`、`restricted` 与 `open + workspace_write` 的硬边界保持不变（ADR 0189）。
+- 2026-09-25：P2 Memory/Agent 嵌入持久化边界收口：`MemoryEmbeddingIndex` 删除 raw `Database` 持有与 `run_blocking`，通过 `MemoryEmbeddingStore` 访问模型列表、待嵌入可见文本、维度、向量保存、LSH 维护和 typed vector recall；provider 路由、批处理、响应校验与维护门控留在 Agent（ADR 0303）。
 
 ## 完成标准
 

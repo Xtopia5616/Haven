@@ -1,6 +1,6 @@
 # Haven 架构与 crate 职责
 
-> 版本: v1.2 | 日期: 2026-09-15
+> 版本: v1.3 | 日期: 2026-09-25
 > 范围: `crates/` (Rust 后端, Tauri 2)
 > 原则: **依赖单向、叶子优先**。上层 crate 只依赖下层，绝不反向依赖；共享数据与类型放叶子（`haven-common`），
 > 组件职责按「谁拥有实现、谁只消费接口」划分。
@@ -188,7 +188,8 @@ CI 以 `scripts/check-crate-dependencies.ps1` 对此表执行内部 crate 依赖
 - `repositories/`：会话、消息、步骤、图谱、用量和任务的持久化读写；其中
   `fact_graph.rs` 集中负责 `facts` 写入与图谱不变量，`fact_query.rs`
   负责事实读取、搜索/排序，`fact_maintenance.rs` 负责事实清理、衰减与矛盾
-  扫描，`facts.rs` 负责事实类型、谓词策略和稳定 `Database` 外观。消息的
+  扫描，`embedding_store.rs` 以窄异步 `MemoryEmbeddingStore` 提供嵌入索引与 typed
+  vector recall 的持久化端口，`facts.rs` 负责事实类型、谓词策略和稳定 `Database` 外观。消息的
   `media_inputs` 是多模态 canonical 持久化投影；消息返回对象中的 `attachments` 仅是
   ingress/UI DTO。数据库的 `ui_metadata` 只保留 UI 展示与受管资产保留所需的元数据，
   并由受信 host 根目录重建历史预览，不参与 provider 规划或 transcript 恢复。
@@ -208,7 +209,9 @@ provider 协议和 UI 展示逻辑不得进入本 crate。
 
 Agent 的 `memory_service.rs` 是 prompt/worker 共用的 typed memory 边界：它集中管理
 有界候选、recall、embedding/index 句柄和 prompt-memory cache；向量行的 scope、敏感
-过滤、规范化与 keyword 融合仍由 `haven_memory::recall::MemoryRetriever` 统一负责。
+过滤、规范化与 keyword 融合仍由 `haven_memory::recall::MemoryRetriever` 统一负责；
+embedding 持久读写与向量召回由 `MemoryEmbeddingStore` 调度，Agent 的
+`memory_index.rs` 只保留模型路由、provider 校验、批处理和维护门控（ADR 0021、0303）。
 `memory_worker.rs` 只编排事实抽取、durable outbox、维护、提案提交和索引 catch-up；
 `MemoryWorker` 是唯一的后台记忆编排入口。`prompt_context.rs`
 在 turn 边界取得一次工具/运行时/记忆快照，`prompt_renderer.rs` 以纯函数渲染 system

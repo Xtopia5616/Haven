@@ -12,9 +12,8 @@ use haven_common::config::{ModelEndpoint, RequestKind};
 use haven_llm::LlmRouter;
 use haven_llm::adapters::api_style_for;
 use haven_llm::types::EmbeddingRequest;
-use haven_memory::Database;
-use haven_memory::embeddings::entity_kind;
-use haven_memory::recall::{MemoryHit, MemoryQuery, MemoryRetriever};
+use haven_memory::recall::{MemoryHit, MemoryQuery};
+use haven_memory::{MemoryEmbeddingStore, MemoryEmbeddingVector};
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 
@@ -27,8 +26,6 @@ const MAX_EMBEDDING_BATCH_SIZE: usize = 10;
 pub(crate) fn embedding_batch_size(configured_size: usize) -> usize {
     configured_size.clamp(1, MAX_EMBEDDING_BATCH_SIZE)
 }
-
-type PendingEmbedding = (String, String, String);
 
 /// The persisted model column is a vector-space identity, not merely a
 /// provider model label. The same label served by two gateways can produce
@@ -55,7 +52,7 @@ struct EmbeddingIdentity {
 
 /// Agent-side owner of embedding lifecycle operations.
 pub(crate) struct MemoryEmbeddingIndex {
-    db: Arc<Database>,
+    store: MemoryEmbeddingStore,
     router: Arc<LlmRouter>,
     embed_chunk_size: usize,
     /// Serializes maintenance passes so two schedulers cannot embed the same
@@ -64,9 +61,13 @@ pub(crate) struct MemoryEmbeddingIndex {
 }
 
 impl MemoryEmbeddingIndex {
-    pub(crate) fn new(db: Arc<Database>, router: Arc<LlmRouter>, embed_chunk_size: usize) -> Self {
+    pub(crate) fn new(
+        store: MemoryEmbeddingStore,
+        router: Arc<LlmRouter>,
+        embed_chunk_size: usize,
+    ) -> Self {
         Self {
-            db,
+            store,
             router,
             embed_chunk_size: embedding_batch_size(embed_chunk_size),
             maintenance_gate: Mutex::new(()),
@@ -113,10 +114,7 @@ impl MemoryEmbeddingIndex {
         if current.is_empty() {
             return Ok(false);
         }
-        let db = self.db.clone();
-        let stored = db
-            .run_blocking(move |db| db.list_embedding_models())
-            .await?;
+        let stored = self.store.list_models().await?;
         Ok(!stored.is_empty() && stored.iter().any(|model| model != current))
     }
 
@@ -131,18 +129,15 @@ impl MemoryEmbeddingIndex {
         };
 
         match self.model_changed(&identity.storage_model).await {
-            Ok(true) => {
-                let db = self.db.clone();
-                match db.run_blocking(move |db| db.clear_embeddings()).await {
-                    Ok(_) => tracing::info!(
-                        "memory embedding model changed: cleared vector index for rebuild"
-                    ),
-                    Err(error) => tracing::error!(
-                        "memory embedding model changed: failed to clear vector index: {}",
-                        error
-                    ),
-                }
-            }
+            Ok(true) => match self.store.clear_embeddings().await {
+                Ok(_) => tracing::info!(
+                    "memory embedding model changed: cleared vector index for rebuild"
+                ),
+                Err(error) => tracing::error!(
+                    "memory embedding model changed: failed to clear vector index: {}",
+                    error
+                ),
+            },
             Ok(false) => {}
             Err(error) => {
                 tracing::warn!(
@@ -153,10 +148,9 @@ impl MemoryEmbeddingIndex {
             }
         }
 
-        let db = self.db.clone();
-        let model_for_missing = identity.storage_model.clone();
-        let pending = match db
-            .run_blocking(move |db| collect_pending_from_db(db, &model_for_missing))
+        let pending = match self
+            .store
+            .pending_embeddings(identity.storage_model.clone())
             .await
         {
             Ok(pending) => pending,
@@ -175,7 +169,7 @@ impl MemoryEmbeddingIndex {
         tracing::info!("embedding {} memory items", pending.len());
 
         for chunk in pending.chunks(self.embed_chunk_size) {
-            let texts: Vec<String> = chunk.iter().map(|(_, _, text)| text.clone()).collect();
+            let texts: Vec<String> = chunk.iter().map(|item| item.text.clone()).collect();
             let embedding = match self.router.embed(EmbeddingRequest { input: texts }).await {
                 Ok(embedding) => embedding,
                 Err(error) => {
@@ -218,10 +212,9 @@ impl MemoryEmbeddingIndex {
                 );
                 return;
             }
-            let db_for_dimensions = self.db.clone();
-            let model_for_dimensions = identity.storage_model.clone();
-            let stored_dimensions = match db_for_dimensions
-                .run_blocking(move |db| db.list_embedding_dimensions(&model_for_dimensions))
+            let stored_dimensions = match self
+                .store
+                .list_dimensions(identity.storage_model.clone())
                 .await
             {
                 Ok(dimensions) => dimensions,
@@ -237,8 +230,7 @@ impl MemoryEmbeddingIndex {
                 .iter()
                 .any(|stored_dimension| *stored_dimension != dimension)
             {
-                let db = self.db.clone();
-                match db.run_blocking(move |db| db.clear_embeddings()).await {
+                match self.store.clear_embeddings().await {
                     Ok(_) => tracing::info!(
                         configured_model = %identity.provider_model,
                         dimension,
@@ -253,45 +245,43 @@ impl MemoryEmbeddingIndex {
                     }
                 }
             }
-            let stored_model = identity.storage_model.clone();
-            let rows: Vec<_> = chunk
+            let vectors: Vec<_> = chunk
                 .iter()
                 .zip(embedding.vectors)
                 .filter(|(_, vector)| !vector.is_empty())
-                .map(|((kind, id, text), vector)| (kind.clone(), id.clone(), text.clone(), vector))
+                .map(|(item, vector)| MemoryEmbeddingVector {
+                    entity: item.entity,
+                    entity_id: item.entity_id.clone(),
+                    text: item.text.clone(),
+                    vector,
+                })
                 .collect();
-            let row_count = rows.len();
-            let db = self.db.clone();
-            if let Err(error) = db
-                .run_blocking(move |db| {
-                    let mut failures = 0usize;
-                    for (kind, id, text, vector) in rows {
-                        if let Err(error) =
-                            db.save_embedding(&kind, &id, &stored_model, &vector, &text)
-                        {
-                            failures += 1;
-                            if failures <= 3 {
-                                tracing::warn!(
-                                    "save_embedding failed for {} {}: {}",
-                                    kind,
-                                    id,
-                                    error
-                                );
-                            }
-                        }
+            let row_count = vectors.len();
+            match self
+                .store
+                .save_batch(identity.storage_model.clone(), vectors)
+                .await
+            {
+                Ok(report) => {
+                    for failure in report.failures.iter().take(3) {
+                        tracing::warn!(
+                            "save_embedding failed for {} {}: {}",
+                            failure.entity.as_str(),
+                            failure.entity_id,
+                            failure.error
+                        );
                     }
-                    if failures > 0 {
+                    if !report.failures.is_empty() {
                         tracing::warn!(
                             "memory embedding batch: {} of {} items failed to save",
-                            failures,
+                            report.failures.len(),
                             row_count
                         );
                     }
-                    Ok::<(), anyhow::Error>(())
-                })
-                .await
-            {
-                tracing::warn!("memory embedding batch persistence failed: {}", error);
+                }
+                Err(error) => {
+                    tracing::warn!("memory embedding batch persistence failed: {}", error);
+                }
             }
         }
     }
@@ -304,14 +294,9 @@ impl MemoryEmbeddingIndex {
         let Some(identity) = self.configured_identity().await else {
             return;
         };
-        let db = self.db.clone();
-        if let Err(error) = db
-            .run_blocking(move |db| {
-                if db.embedding_lsh_lagging(&identity.storage_model)? {
-                    db.rebuild_embedding_lsh(&identity.storage_model)?;
-                }
-                Ok::<(), anyhow::Error>(())
-            })
+        if let Err(error) = self
+            .store
+            .rebuild_lsh_if_lagging(identity.storage_model)
             .await
         {
             tracing::warn!("memory embedding LSH rebuild failed: {}", error);
@@ -320,7 +305,8 @@ impl MemoryEmbeddingIndex {
 
     /// Acquire a vector and resolve it through the shared memory read policy.
     /// The provider/index adapter never returns raw embedding rows: facts and
-    /// episodes are filtered, scoped, and normalized by `MemoryRetriever`.
+    /// episodes are filtered, scoped, and normalized by the shared memory
+    /// retriever inside `MemoryEmbeddingStore`.
     /// `Ok(None)` means the caller should use its keyword fallback because the
     /// embedding provider is unavailable or not configured. Database and
     /// retriever errors remain errors so callers cannot confuse an outage with
@@ -348,11 +334,10 @@ impl MemoryEmbeddingIndex {
         if vector.is_empty() {
             return Ok(None);
         }
-        let db_for_dimensions = self.db.clone();
-        let model_for_dimensions = identity.storage_model.clone();
         let query_dimension = vector.len();
-        let stored_dimensions = db_for_dimensions
-            .run_blocking(move |db| db.list_embedding_dimensions(&model_for_dimensions))
+        let stored_dimensions = self
+            .store
+            .list_dimensions(identity.storage_model.clone())
             .await?;
         if stored_dimensions
             .iter()
@@ -366,45 +351,18 @@ impl MemoryEmbeddingIndex {
             );
             return Ok(None);
         }
-        let db = self.db.clone();
-        let query = query.clone();
-        db.run_blocking(move |db| {
-            MemoryRetriever::new(db).vector(&query, &vector, &identity.storage_model)
-        })
-        .await
-        .map(Some)
+        self.store
+            .vector_recall(query.clone(), vector, identity.storage_model)
+            .await
+            .map(Some)
     }
-}
-
-fn collect_pending_from_db(db: &Database, model: &str) -> anyhow::Result<Vec<PendingEmbedding>> {
-    let mut pending = Vec::new();
-    for entity_type in [entity_kind::FACT, entity_kind::EPISODE] {
-        for id in db.missing_embedding_ids(entity_type, model)? {
-            let text = match entity_type {
-                entity_kind::FACT => db.fact_text_by_id(&id)?,
-                entity_kind::EPISODE => db.episode_text(&id)?,
-                _ => None,
-            };
-            if let Some(text) = text {
-                if MemoryRetriever::visible_text(&text) {
-                    pending.push((entity_type.to_string(), id, text));
-                } else {
-                    tracing::debug!(
-                        entity_type,
-                        entity_id = %id,
-                        "skipping sensitive memory from embedding provider"
-                    );
-                }
-            }
-        }
-    }
-    Ok(pending)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use haven_common::config::{Capability, RequestPolicy, RoutedModel, RouterConfig};
+    use haven_memory::Database;
 
     fn embedding_router(model_name: &str, base_url: &str) -> Arc<LlmRouter> {
         let endpoint = ModelEndpoint {
@@ -456,12 +414,15 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let db = Arc::new(Database::open(&temp_dir.path().join("memory.db")).unwrap());
         let unconfigured = MemoryEmbeddingIndex::new(
-            db.clone(),
+            MemoryEmbeddingStore::new(db.clone()),
             Arc::new(LlmRouter::new(RouterConfig::default())),
             1,
         );
-        let empty_model =
-            MemoryEmbeddingIndex::new(db, embedding_router("  ", "https://gateway.example/v1"), 1);
+        let empty_model = MemoryEmbeddingIndex::new(
+            MemoryEmbeddingStore::new(db),
+            embedding_router("  ", "https://gateway.example/v1"),
+            1,
+        );
 
         assert_eq!(unconfigured.current_vector_space_identity().await, "");
         assert_eq!(empty_model.current_vector_space_identity().await, "");
@@ -472,12 +433,12 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let db = Arc::new(Database::open(&temp_dir.path().join("memory.db")).unwrap());
         let gateway_a = MemoryEmbeddingIndex::new(
-            db.clone(),
+            MemoryEmbeddingStore::new(db.clone()),
             embedding_router("text-embedding-3-small", "https://gateway-a.example/v1"),
             1,
         );
         let gateway_b = MemoryEmbeddingIndex::new(
-            db,
+            MemoryEmbeddingStore::new(db),
             embedding_router("text-embedding-3-small", "https://gateway-b.example/v1"),
             1,
         );
@@ -490,63 +451,30 @@ mod tests {
         assert!(identity_b.starts_with("embedding-v2:"));
     }
 
-    #[test]
-    fn pending_collection_uses_bounded_repository_backlogs() {
+    #[tokio::test]
+    async fn model_change_detection_uses_the_configured_vector_space() {
         let temp_dir = tempfile::tempdir().unwrap();
         let db = Arc::new(Database::open(&temp_dir.path().join("memory.db")).unwrap());
-        let session = db.create_session("embedding-test").unwrap();
-        for index in 0..(haven_memory::embeddings::FACT_EMBED_BACKLOG_LIMIT + 2) {
-            db.insert_fact(
-                "user",
-                "likes",
-                &format!("item-{index}"),
-                "inferred",
-                0.8,
-                &[],
-            )
+        let fact = db
+            .insert_fact("user", "likes", "Rust", "inferred", 0.8, &[])
             .unwrap();
-        }
-        db.add_episode(&session.id, "episode text").unwrap();
+        db.save_embedding(
+            haven_memory::embeddings::entity_kind::FACT,
+            &fact.id,
+            "previous-vector-space",
+            &[1.0, 0.0],
+            "user likes Rust",
+        )
+        .unwrap();
         let index = MemoryEmbeddingIndex::new(
-            db,
-            Arc::new(LlmRouter::new(haven_common::config::RouterConfig::default())),
-            4,
+            MemoryEmbeddingStore::new(db),
+            embedding_router("text-embedding-3-small", "https://gateway.example/v1"),
+            1,
         );
-        let pending = collect_pending_from_db(&index.db, "test-model").unwrap();
-        assert_eq!(
-            pending
-                .iter()
-                .filter(|(kind, _, _)| kind == entity_kind::FACT)
-                .count(),
-            haven_memory::embeddings::FACT_EMBED_BACKLOG_LIMIT
-        );
-        assert!(
-            pending
-                .iter()
-                .any(|(kind, _, text)| { kind == entity_kind::EPISODE && text == "episode text" })
-        );
-    }
 
-    #[test]
-    fn pending_collection_excludes_legacy_sensitive_memory() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let db = Database::open(&temp_dir.path().join("memory.db")).unwrap();
-        let session = db.create_session("embedding-test").unwrap();
-        db.insert_fact("user", "likes", "Rust", "inferred", 0.8, &[])
-            .unwrap();
-        db.insert_fact("user", "api_key", "sk-secret", "inferred", 1.0, &[])
-            .unwrap();
-        db.add_episode(&session.id, "password is hunter2").unwrap();
+        let current = index.current_vector_space_identity().await;
 
-        let pending = collect_pending_from_db(&db, "test-model").unwrap();
-
-        assert!(pending.iter().any(|(_, _, text)| text.contains("Rust")));
-        assert!(
-            !pending
-                .iter()
-                .any(|(_, _, text)| text.contains("sk-secret"))
-        );
-        assert!(!pending.iter().any(|(_, _, text)| text.contains("hunter2")));
+        assert!(index.model_changed(&current).await.unwrap());
     }
 
     #[tokio::test]
@@ -557,7 +485,7 @@ mod tests {
             .execute("DROP TABLE memory_embeddings", [])
             .unwrap();
         let router = Arc::new(LlmRouter::new(haven_common::config::RouterConfig::default()));
-        let index = MemoryEmbeddingIndex::new(db, router, 1);
+        let index = MemoryEmbeddingIndex::new(MemoryEmbeddingStore::new(db), router, 1);
 
         let error = index.model_changed("test-model").await.unwrap_err();
         assert!(error.to_string().contains("memory_embeddings"));

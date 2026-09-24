@@ -12,6 +12,10 @@ pub use recall::{
     MemoryRecallEmptyReason, MemoryRecallMode, MemoryRecallSourceStatus, MemoryRecallSuggestion,
     MemoryRetriever,
 };
+pub use repositories::embedding_store::{
+    MemoryEmbeddingEntity, MemoryEmbeddingSaveFailure, MemoryEmbeddingSaveReport,
+    MemoryEmbeddingStore, MemoryEmbeddingVector, PendingMemoryEmbedding,
+};
 pub use repositories::fact_store::MemoryFactStore;
 pub use repositories::memory_store::MemoryStore;
 pub use repositories::session_events::{
