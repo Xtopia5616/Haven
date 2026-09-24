@@ -22,8 +22,10 @@ LLM usage 和 active domain event 查询。查询顺序、各自错误和结果�
 事务或跨查询一致快照承诺。dropping 调用方 future 不保证中断已启动的 blocking 查询。
 
 App 仅将投影映射到既有 `SessionResumeResponse`，继续在 App 解码 active interaction
-事件并生成 renderer projection。IPC 字段与 JSON 保持不变。两个 command 继续使用各自
-原有 session record 查询；`get_session_for_resume` 的 `Session not found: {id}` 语义不变。
+事件并生成 renderer projection。IPC 字段与 JSON 保持不变。当时两个 command 保留原有
+session record 查询；这些入口随后由 [ADR 0283](0283-app-session-record-lookups-through-session-store.md)
+迁移到异步 SessionStore ports，并保留 `get_session_for_resume` 的
+`Session not found: {id}` 语义。
 
 ## 影响与验证
 

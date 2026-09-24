@@ -368,6 +368,13 @@ impl SessionStore {
             .await
     }
 
+    /// Read the most recently created session using the existing history
+    /// ordering and first-row behavior. Dropping this future cannot interrupt
+    /// a query already running on Tokio's blocking pool.
+    pub async fn latest_session_record(&self) -> anyhow::Result<Option<Session>> {
+        Ok(self.list_history(1, 0).await?.into_iter().next())
+    }
+
     /// Count persisted sessions on SQLite's blocking pool.
     ///
     /// Dropping the returned future cannot interrupt a `run_blocking` query
@@ -518,6 +525,18 @@ impl SessionStore {
     /// their existing not-found behavior.
     pub fn session_record(&self, session_id: &str) -> anyhow::Result<Option<Session>> {
         self.db.get_session(session_id)
+    }
+
+    /// Read a persisted session record by id on SQLite's blocking pool.
+    ///
+    /// The synchronous `session_record` remains available to Agent lifecycle
+    /// callers that require a synchronous lookup. Missing records remain
+    /// `Ok(None)` for either API.
+    pub async fn load_session_record(&self, session_id: &str) -> anyhow::Result<Option<Session>> {
+        let session_id = session_id.to_owned();
+        self.db
+            .run_blocking(move |db| db.get_session(&session_id))
+            .await
     }
 
     /// Read only the title needed by the messaging heartbeat projection.
@@ -2424,6 +2443,58 @@ mod tests {
         let missing_session_id = haven_common::types::new_id("ses");
 
         assert!(store.session_record(&missing_session_id).unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn session_store_async_session_record_preserves_existing_and_missing_results() {
+        let (_db, store, session_id) = store();
+        assert_eq!(
+            serde_json::to_value(store.load_session_record(&session_id).await.unwrap()).unwrap(),
+            serde_json::to_value(store.session_record(&session_id).unwrap()).unwrap()
+        );
+
+        let missing_session_id = haven_common::types::new_id("ses");
+        assert!(
+            store
+                .load_session_record(&missing_session_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn session_store_latest_record_preserves_recent_history_order_and_empty_result() {
+        let (db, store, first_id) = store();
+        let second = db.create_session("second").unwrap();
+        let third = db.create_session("third").unwrap();
+        let conn = db.conn();
+        for (session_id, created_at) in [
+            (&first_id, "2026-09-20T10:00:00.000Z"),
+            (&second.id, "2026-09-21T10:00:00.000Z"),
+            (&third.id, "2026-09-22T10:00:00.000Z"),
+        ] {
+            conn.execute(
+                "UPDATE sessions SET created_at = ?1 WHERE id = ?2",
+                rusqlite::params![created_at, session_id],
+            )
+            .unwrap();
+        }
+        drop(conn);
+
+        let latest = store.latest_session_record().await.unwrap();
+        assert_eq!(
+            latest.as_ref().map(|session| session.id.as_str()),
+            Some(third.id.as_str())
+        );
+        assert_eq!(
+            serde_json::to_value(latest).unwrap(),
+            serde_json::to_value(db.list_sessions(1, 0).unwrap().into_iter().next()).unwrap()
+        );
+
+        let empty_db = Arc::new(Database::open_in_memory().unwrap());
+        let empty_store = SessionStore::new(empty_db);
+        assert!(empty_store.latest_session_record().await.unwrap().is_none());
     }
 
     #[tokio::test]

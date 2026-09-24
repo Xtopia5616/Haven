@@ -536,17 +536,39 @@ async fn resume_response_for_session(
     })
 }
 
+async fn resume_session_from_store(
+    session_store: haven_memory::SessionStore,
+    session_id: &str,
+) -> Result<SessionResumeResponse, String> {
+    let session = session_store
+        .load_session_record(session_id)
+        .await
+        .map_err(|e| log_err("get_session_for_resume", e))?
+        .ok_or_else(|| format!("Session not found: {}", session_id))?;
+    resume_response_for_session(session_store, session).await
+}
+
+async fn last_conversation_from_store(
+    session_store: haven_memory::SessionStore,
+) -> Result<Option<SessionResumeResponse>, String> {
+    match session_store
+        .latest_session_record()
+        .await
+        .map_err(|e| log_err("get_last_conversation", e))?
+    {
+        Some(session) => resume_response_for_session(session_store, session)
+            .await
+            .map(Some),
+        None => Ok(None),
+    }
+}
+
 #[tauri::command]
 pub async fn get_session_for_resume(
     state: State<'_, Arc<AppState>>,
     session_id: String,
 ) -> Result<SessionResumeResponse, String> {
-    let session = state
-        .db
-        .get_session(&session_id)
-        .map_err(|e| log_err("get_session_for_resume", e))?
-        .ok_or_else(|| format!("Session not found: {}", session_id))?;
-    resume_response_for_session(state.session_store.clone(), session).await
+    resume_session_from_store(state.session_store.clone(), &session_id).await
 }
 
 /// Return the most recent persisted session with its session messages and
@@ -556,21 +578,12 @@ pub async fn get_session_for_resume(
 pub async fn get_last_conversation(
     state: State<'_, Arc<AppState>>,
 ) -> Result<Option<SessionResumeResponse>, String> {
-    let sessions = state
-        .db
-        .list_sessions(1, 0)
-        .map_err(|e| log_err("get_last_conversation", e))?;
-    match sessions.into_iter().next() {
-        Some(session) => resume_response_for_session(state.session_store.clone(), session)
-            .await
-            .map(Some),
-        None => Ok(None),
-    }
+    last_conversation_from_store(state.session_store.clone()).await
 }
 
 #[cfg(test)]
 mod tests {
-    use super::resume_response_for_session;
+    use super::{last_conversation_from_store, resume_session_from_store};
     use crate::commands::SessionListResponse;
 
     #[test]
@@ -584,7 +597,7 @@ mod tests {
     async fn resume_response_keeps_existing_ipc_field_names() {
         let db = std::sync::Arc::new(haven_memory::Database::open_in_memory().unwrap());
         let session = db.create_session("resume wire shape").unwrap();
-        let response = resume_response_for_session(haven_memory::SessionStore::new(db), session)
+        let response = resume_session_from_store(haven_memory::SessionStore::new(db), &session.id)
             .await
             .unwrap();
 
@@ -602,5 +615,44 @@ mod tests {
             assert!(fields.contains_key(field), "missing IPC field {field}");
         }
         assert!(!fields.contains_key("active_domain_events"));
+    }
+
+    #[tokio::test]
+    async fn resume_lookup_preserves_exact_not_found_error() {
+        let db = std::sync::Arc::new(haven_memory::Database::open_in_memory().unwrap());
+        let session_store = haven_memory::SessionStore::new(db);
+        let session_id = haven_common::types::new_id("ses");
+
+        let error = resume_session_from_store(session_store, &session_id)
+            .await
+            .err()
+            .expect("missing session must return not-found");
+
+        assert_eq!(error, format!("Session not found: {session_id}"));
+    }
+
+    #[tokio::test]
+    async fn last_conversation_returns_none_when_no_session_exists() {
+        let db = std::sync::Arc::new(haven_memory::Database::open_in_memory().unwrap());
+
+        assert!(
+            last_conversation_from_store(haven_memory::SessionStore::new(db))
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn last_conversation_returns_the_selected_session() {
+        let db = std::sync::Arc::new(haven_memory::Database::open_in_memory().unwrap());
+        let session = db.create_session("latest conversation").unwrap();
+
+        let response = last_conversation_from_store(haven_memory::SessionStore::new(db))
+            .await
+            .unwrap()
+            .expect("a persisted session must be returned");
+
+        assert_eq!(response.session.id, session.id);
     }
 }
