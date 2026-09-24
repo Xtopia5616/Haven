@@ -139,11 +139,6 @@ impl ReActEngine {
         } = input;
         let session_id = session_id.as_str();
         let budget = RunBudgetConfig::from_engine(self, start_step);
-        self.clear_msg_ids_for_session(session_id);
-        let _run_guard = RunMsgIdGuard {
-            engine: self,
-            session_id: session_id.to_string(),
-        };
         tracing::info!(
             session_id,
             run_id,

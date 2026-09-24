@@ -19,6 +19,7 @@ use super::*;
 /// when the run driver applies the returned batch.
 pub(super) struct TurnEndInput<'a> {
     pub(super) ctx: &'a StepCtx,
+    pub(super) state: &'a ReActState,
     pub(super) final_text: &'a str,
     pub(super) reasoning: Option<String>,
     pub(super) thinking_blocks: Vec<Value>,
@@ -44,6 +45,7 @@ impl ReActEngine {
     ) -> anyhow::Result<EffectBatch> {
         let TurnEndInput {
             ctx,
+            state,
             final_text,
             reasoning,
             thinking_blocks,
@@ -61,7 +63,7 @@ impl ReActEngine {
         let persist_text_id = if thought_projected {
             None
         } else {
-            Some(self.block_msg_id(&ctx.session_id, ctx.step_num, ctx.run_id, "thought"))
+            Some(state.block_msg_id(ctx.step_num, ctx.run_id, "thought"))
         };
 
         let mut effects = EffectBatch::continue_batch();

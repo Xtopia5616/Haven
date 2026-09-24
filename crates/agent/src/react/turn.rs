@@ -213,6 +213,7 @@ impl ReActEngine {
             router,
             request,
             tools.as_slice(),
+            state.identity_map.clone(),
             cancel.clone(),
             &partial_thought,
             &partial_reasoning,
@@ -309,7 +310,7 @@ impl ReActEngine {
         };
 
         if let Some(reasoning) = response.reasoning.clone() {
-            let reasoning_id = self.block_msg_id(session_id, step_num, ctx.run_id, "reasoning");
+            let reasoning_id = state.block_msg_id(step_num, ctx.run_id, "reasoning");
             effects.transcript(TranscriptEvent::Reasoning {
                 text: reasoning.clone(),
                 message_id: reasoning_id.clone(),
@@ -347,7 +348,7 @@ impl ReActEngine {
         }
 
         if let Some(text) = thought.clone() {
-            let message_id = self.block_msg_id(session_id, step_num, ctx.run_id, "thought");
+            let message_id = state.block_msg_id(step_num, ctx.run_id, "thought");
             effects.transcript(TranscriptEvent::Thought { text, message_id });
         }
 
@@ -413,6 +414,7 @@ impl ReActEngine {
             let mut end = self
                 .finish_turn_end(TurnEndInput {
                     ctx: &ctx,
+                    state,
                     final_text: &text,
                     reasoning: response.reasoning.clone(),
                     thinking_blocks: response.thinking_blocks.clone(),
@@ -432,6 +434,7 @@ impl ReActEngine {
             let mut end = self
                 .finish_turn_end(TurnEndInput {
                     ctx: &ctx,
+                    state,
                     final_text: &text,
                     reasoning: response.reasoning.clone(),
                     thinking_blocks: response.thinking_blocks.clone(),

@@ -51,7 +51,6 @@ use context::ContextSource;
 pub(crate) use context::action_result_message_id;
 use hooks::{LoopHooksHandle, default_hooks};
 pub(crate) use hooks::{MemoryPatchHandle, default_hooks_with_patch};
-use identity::IdentityMap;
 pub use r#loop::{LoopExit, PauseReason};
 pub(crate) use r#loop::{RunInput, RunReplay};
 use metrics::{Counter as MetricsCounter, Phase as MetricsPhase, ReActMetrics};
@@ -315,20 +314,6 @@ impl ToolInputValidationFailure {
     }
 }
 
-/// RAII guard clearing a session's minted streaming-message ids when the
-/// ReAct run exits (every path — early returns, `?` propagation, cancels),
-/// so finished sessions never leave stale entries in [`IdentityMap`].
-pub(super) struct RunMsgIdGuard<'a> {
-    engine: &'a ReActEngine,
-    session_id: String,
-}
-
-impl Drop for RunMsgIdGuard<'_> {
-    fn drop(&mut self) {
-        self.engine.clear_msg_ids_for_session(&self.session_id);
-    }
-}
-
 pub struct ReActEngine {
     router: Arc<RwLock<Arc<LlmRouter>>>,
     executor: Arc<SessionSupervisor>,
@@ -336,8 +321,6 @@ pub struct ReActEngine {
     tool_catalog: Arc<dyn ToolCatalogPort>,
     /// Database access for the event-boundary and transcript persistence paths.
     db: Arc<Database>,
-    /// Process-local streamed message identity, shared by all engine callers.
-    identity_map: IdentityMap,
     /// Durable transcript/event boundary. All new transcript records are
     /// appended here before entering the in-memory projection; checkpoint
     /// metadata is written through the same store.
@@ -418,7 +401,6 @@ impl ReActEngine {
             executor,
             tool_catalog,
             db,
-            identity_map: IdentityMap::default(),
             event_store,
             usage_runtime,
             max_steps: Mutex::new(max_steps),
@@ -474,34 +456,6 @@ impl ReActEngine {
     pub(crate) fn with_memory_worker(mut self, memory_worker: Arc<crate::MemoryWorker>) -> Self {
         self.memory_worker = Some(memory_worker);
         self
-    }
-
-    /// Mint (or reuse) the id a streamed thought/reasoning block accumulates
-    /// into (Phase 6 / I3 — delegates to [`IdentityMap`]).
-    pub(super) fn ensure_msg_id(
-        &self,
-        session_id: &str,
-        step: u32,
-        run: u64,
-        kind: &'static str,
-    ) -> String {
-        self.identity_map.ensure_msg_id(session_id, step, run, kind)
-    }
-
-    /// The id a streamed block is persisted under (minted or fresh fallback).
-    pub(super) fn block_msg_id(
-        &self,
-        session_id: &str,
-        step: u32,
-        run: u64,
-        kind: &'static str,
-    ) -> String {
-        self.identity_map.block_msg_id(session_id, step, run, kind)
-    }
-
-    /// Drop every minted message id belonging to a session.
-    pub(super) fn clear_msg_ids_for_session(&self, session_id: &str) {
-        self.identity_map.clear_for_session(session_id);
     }
 
     pub fn replace_router(&self, new_router: Arc<LlmRouter>) {
@@ -1256,43 +1210,6 @@ mod tests {
     use haven_llm::client::LlmClient;
     use haven_llm::types::{FinishReason, LlmError, LlmResponse, StreamChunk};
     use std::pin::Pin;
-
-    #[test]
-    fn engine_stream_identity_is_direct_and_preserves_block_reuse() {
-        let directory = tempfile::tempdir().expect("temporary database directory");
-        let db = Arc::new(
-            Database::open(&directory.path().join("identity.db")).expect("temporary database"),
-        );
-        let executor = Arc::new(SessionSupervisor::new(
-            db.clone(),
-            Arc::new(haven_tools::ToolsManager::new()),
-            1,
-        ));
-        let engine = ReActEngine::new(
-            Arc::new(mock_router()),
-            test_tool_catalog_port(&executor),
-            executor.clone(),
-            db,
-            4,
-            ContextLimitsConfig::default(),
-        );
-
-        let thought_id = engine.ensure_msg_id("ses-identity-test", 3, 8, "thought");
-        assert!(thought_id.starts_with("step-"));
-        assert_eq!(
-            engine.block_msg_id("ses-identity-test", 3, 8, "thought"),
-            thought_id
-        );
-        assert!(executor.actor_for_now("ses-identity-test").is_none());
-
-        engine.clear_msg_ids_for_session("ses-identity-test");
-        assert!(
-            engine
-                .identity_map
-                .peek_msg_id("ses-identity-test", 3, 8, "thought")
-                .is_none()
-        );
-    }
 
     #[tokio::test]
     async fn token_estimate_cache_is_used_directly_without_a_session_actor() {

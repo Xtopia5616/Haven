@@ -2,7 +2,8 @@
 //!
 //! Each type owns one mutex-backed concern previously inlined on
 //! `ReActEngine`. The engine remains a facade that holds collaboration
-//! deps plus these named sidecars (+ `IdentityMap`, `CheckpointStore`, hooks).
+//! deps plus these named sidecars (`CheckpointStore`, hooks, and process-wide
+//! collaborators). Run-local stream identity is owned by `ReActState`.
 
 use std::collections::HashMap;
 use std::collections::HashSet;

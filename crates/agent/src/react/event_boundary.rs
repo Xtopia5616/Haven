@@ -797,8 +797,7 @@ impl ReActEngine {
         let mut partial_messages = true;
         let mut projection = true;
         if !reasoning_text.trim().is_empty() {
-            let message_id =
-                self.block_msg_id(&ctx.session_id, ctx.step_num, ctx.run_id, "reasoning");
+            let message_id = state.block_msg_id(ctx.step_num, ctx.run_id, "reasoning");
             if let Err(error) = self
                 .persist_session_message(
                     &ctx.session_id,
@@ -823,8 +822,7 @@ impl ReActEngine {
         }
         if !thought_text.trim().is_empty() {
             let text = thought_text.trim();
-            let message_id =
-                self.block_msg_id(&ctx.session_id, ctx.step_num, ctx.run_id, "thought");
+            let message_id = state.block_msg_id(ctx.step_num, ctx.run_id, "thought");
             if let Err(error) = self
                 .persist_session_message(
                     &ctx.session_id,

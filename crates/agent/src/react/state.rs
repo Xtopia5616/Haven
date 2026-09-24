@@ -11,8 +11,10 @@
 //! token estimate 单独搬进 actor，否则这些字段旁边还会再长出缓存。
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
+use super::identity::IdentityMap;
 use crate::compactor::estimate_message_tokens;
 use crate::types::{BranchPoint, TranscriptRecord};
 use haven_common::types::CanonicalMessage;
@@ -55,6 +57,10 @@ pub(crate) struct ReActState {
     /// intentionally owned by the run state so it cannot be reused by another
     /// session or by a rebuilt projection with the same message count.
     token_estimate: Option<TokenEstimate>,
+    /// Streamed assistant block ids shared by stream events and the final
+    /// transcript projection for this run. The state lifetime scopes the map
+    /// to one session run.
+    pub(super) identity_map: Arc<IdentityMap>,
     retry_nudge: Option<RetryNudge>,
     /// The cancellation token for the currently executing turn. This is
     /// process-local and lets synchronous persistence share the same deadline
@@ -98,9 +104,14 @@ impl ReActState {
             canonical,
             branch_points,
             token_estimate: None,
+            identity_map: Arc::new(IdentityMap::default()),
             retry_nudge: None,
             turn_cancel: None,
         }
+    }
+
+    pub(super) fn block_msg_id(&self, step: u32, run: u64, kind: &'static str) -> String {
+        self.identity_map.block_msg_id(step, run, kind)
     }
 
     /// Mark a non-append canonical edit (for example a MEMORY fence refresh).
@@ -234,6 +245,17 @@ mod tests {
         assert_eq!(state.canonical.len(), 1);
         assert!(state.branch_points.contains_key(&3));
         assert!(state.retry_nudge.is_none());
+    }
+
+    #[test]
+    fn stream_identity_is_shared_within_a_state_and_isolated_between_states() {
+        let first = ReActState::new(Vec::new(), Vec::new(), HashMap::new());
+        let second = ReActState::new(Vec::new(), Vec::new(), HashMap::new());
+
+        let first_id = first.identity_map.ensure_msg_id(3, 8, "thought");
+        assert_eq!(first.identity_map.ensure_msg_id(3, 8, "thought"), first_id);
+        assert_eq!(first.block_msg_id(3, 8, "thought"), first_id);
+        assert_ne!(second.identity_map.ensure_msg_id(3, 8, "thought"), first_id);
     }
 
     #[test]

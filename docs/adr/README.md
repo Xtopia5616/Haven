@@ -266,3 +266,4 @@
 - [0275：ActionService typed agent projection](0275-action-service-typed-agent-projections.md)
 - [0276：ReActState 独占 token estimate](0276-react-state-owns-token-estimate.md)
 - [0277：ContextSource 通过 SessionStore 读取 session title](0277-context-source-session-title-port.md)
+- [0278：ReActState 独占 stream identity](0278-react-state-owns-stream-identity.md)

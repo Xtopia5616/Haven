@@ -6,6 +6,7 @@
 
 use super::effects::{EffectBatch, TurnEffect};
 use super::event_boundary::RecoveryPersistenceResult;
+use super::identity::IdentityMap;
 use super::*;
 use crate::types::media_inputs_from_events;
 use haven_common::config::RequestKind;
@@ -268,6 +269,7 @@ pub(super) struct StreamSession<'a> {
     router: Arc<LlmRouter>,
     request: RequestKind,
     tools: &'a [ToolDefinition],
+    identity_map: Arc<IdentityMap>,
     cancel: tokio_util::sync::CancellationToken,
     partial_thought: &'a Arc<std::sync::Mutex<String>>,
     partial_reasoning: &'a Arc<std::sync::Mutex<String>>,
@@ -281,6 +283,7 @@ impl<'a> StreamSession<'a> {
         router: Arc<LlmRouter>,
         request: RequestKind,
         tools: &'a [ToolDefinition],
+        identity_map: Arc<IdentityMap>,
         cancel: tokio_util::sync::CancellationToken,
         partial_thought: &'a Arc<std::sync::Mutex<String>>,
         partial_reasoning: &'a Arc<std::sync::Mutex<String>>,
@@ -291,6 +294,7 @@ impl<'a> StreamSession<'a> {
             router,
             request,
             tools,
+            identity_map,
             cancel,
             partial_thought,
             partial_reasoning,
@@ -334,6 +338,7 @@ impl<'a> StreamSession<'a> {
                 self.router.clone(),
                 self.request,
                 request_context,
+                &self.identity_map,
                 true,
                 self.tools,
                 self.cancel.clone(),
@@ -735,6 +740,7 @@ impl ReActEngine {
         router: Arc<LlmRouter>,
         request: RequestKind,
         request_context: &RequestContext,
+        identity_map: &IdentityMap,
         replace_output_on_start: bool,
         tools: &[ToolDefinition],
         cancel: tokio_util::sync::CancellationToken,
@@ -750,10 +756,8 @@ impl ReActEngine {
         }
         // Mint the block ids this call's chunks accumulate into. Reused by
         // the chunk events, the snap and the final persistence of this step.
-        let thought_msg_id =
-            self.ensure_msg_id(&ctx.session_id, ctx.step_num, ctx.run_id, "thought");
-        let reasoning_msg_id =
-            self.ensure_msg_id(&ctx.session_id, ctx.step_num, ctx.run_id, "reasoning");
+        let thought_msg_id = identity_map.ensure_msg_id(ctx.step_num, ctx.run_id, "thought");
+        let reasoning_msg_id = identity_map.ensure_msg_id(ctx.step_num, ctx.run_id, "reasoning");
         let limits = self.limits();
         let (forwarder, on_chunk, on_attempt_start) = StreamForwarder::new(
             self.metrics.clone(),
@@ -866,6 +870,7 @@ impl ReActEngine {
                 router.clone(),
                 *request,
                 request_context,
+                state.identity_map.as_ref(),
                 false,
                 tools,
                 cancel.clone(),
@@ -977,6 +982,7 @@ impl ReActEngine {
                                 router.clone(),
                                 retry_request,
                                 &retry_context,
+                                state.identity_map.as_ref(),
                                 true,
                                 tools,
                                 cancel.clone(),
@@ -1426,17 +1432,41 @@ mod tests {
             router,
             RequestKind::Vision,
             &[],
+            state.identity_map.clone(),
             CancellationToken::new(),
             &partial_thought,
             &partial_reasoning,
         );
+        assert!(Arc::ptr_eq(&state.identity_map, &stream.identity_map));
 
         let outcome = stream.run(&mut state, &request_context, None).await;
         assert!(matches!(outcome, StepCallOutcome::Response(_)));
+        let thought_id = state
+            .identity_map
+            .peek_msg_id(ctx.step_num, ctx.run_id, "thought")
+            .expect("primary stream minted thought id");
+        let reasoning_id = state
+            .identity_map
+            .peek_msg_id(ctx.step_num, ctx.run_id, "reasoning")
+            .expect("primary stream minted reasoning id");
 
         let retry_context = RequestContext::from_state(&state, None);
         let (retry, _duration_ms) = stream.retry(&retry_context).await.unwrap();
         assert_eq!(retry.text, "Finished.");
+        assert_eq!(
+            state
+                .identity_map
+                .peek_msg_id(ctx.step_num, ctx.run_id, "thought"),
+            Some(thought_id),
+            "a response retry must keep appending to the original thought bubble"
+        );
+        assert_eq!(
+            state
+                .identity_map
+                .peek_msg_id(ctx.step_num, ctx.run_id, "reasoning"),
+            Some(reasoning_id),
+            "a response retry must keep appending to the original reasoning bubble"
+        );
         assert_eq!(image_client.stream_calls.load(Ordering::Relaxed), 1);
         assert_eq!(
             default_client.stream_calls.load(Ordering::Relaxed),
