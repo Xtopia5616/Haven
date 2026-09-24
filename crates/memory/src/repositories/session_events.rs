@@ -301,6 +301,32 @@ impl SessionStore {
         }
     }
 
+    /// Append one event only when the session still exists. This keeps
+    /// best-effort producers from reaching through the SessionStore merely to
+    /// perform a presence check before an append.
+    pub async fn append_if_session_exists(
+        &self,
+        session_id: &str,
+        input: SessionEventInput,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<Option<SessionEvent>> {
+        let session_id = session_id.to_owned();
+        let store = self.clone();
+        self.db
+            .run_blocking_cancellable(cancel, move |db| {
+                if db.get_session(&session_id)?.is_none() {
+                    return Ok(None);
+                }
+                store
+                    .append_batch(&session_id, std::slice::from_ref(&input))?
+                    .into_iter()
+                    .next()
+                    .map(Some)
+                    .ok_or_else(|| anyhow::anyhow!("session event append returned no event"))
+            })
+            .await
+    }
+
     /// Read a persisted session record by id for actor installation.
     ///
     /// A missing record remains `Ok(None)` so lifecycle callers can preserve

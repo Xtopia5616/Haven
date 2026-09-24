@@ -261,3 +261,4 @@
 - [0270：用量链路的 typed cache accounting](0270-typed-cache-accounting.md)
 - [0271：llm_usage.call_kind 运行时类型边界](0271-typed-llm-call-kind.md)
 - [0272：UsageRuntime 只依赖 SessionStore](0272-usage-runtime-session-store-port.md)
+- [0273：memory trigger producer 只依赖 SessionStore](0273-memory-trigger-session-store-port.md)

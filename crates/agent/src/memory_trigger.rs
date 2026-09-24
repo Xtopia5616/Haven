@@ -1,11 +1,7 @@
 //! Shared memory-trigger wire payload and best-effort event producer.
 
-use std::sync::Arc;
-
 use anyhow::Context as _;
-use haven_memory::{
-    Database, MEMORY_TRIGGER_EVENT_TYPE, SessionEvent, SessionEventInput, SessionStore,
-};
+use haven_memory::{MEMORY_TRIGGER_EVENT_TYPE, SessionEvent, SessionEventInput, SessionStore};
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
@@ -77,7 +73,6 @@ impl MemoryTriggerPayload {
 /// Persist an interval trigger through the ReAct engine's shared event store.
 /// A missing session is expected in synthetic loop tests and has no side effect.
 async fn append_memory_trigger(
-    db: Arc<Database>,
     store: SessionStore,
     session_id: &str,
     payload: MemoryTriggerPayload,
@@ -99,19 +94,8 @@ async fn append_memory_trigger(
     };
     let session_id = session_id.to_owned();
 
-    db.clone()
-        .run_blocking_cancellable(cancellation, move |db| {
-            if db.get_session(&session_id)?.is_none() {
-                return Ok(None);
-            }
-
-            store
-                .append_batch(&session_id, std::slice::from_ref(&event_input))?
-                .into_iter()
-                .next()
-                .map(Some)
-                .ok_or_else(|| anyhow::anyhow!("memory trigger append returned no event"))
-        })
+    store
+        .append_if_session_exists(&session_id, event_input, cancellation)
         .await
 }
 
@@ -119,13 +103,12 @@ async fn append_memory_trigger(
 /// event enables recovery when written, while its failure never changes the
 /// provider turn's existing success/cancellation semantics.
 pub(crate) async fn append_memory_trigger_nonfatal(
-    db: Arc<Database>,
     store: SessionStore,
     session_id: &str,
     payload: MemoryTriggerPayload,
     cancellation: CancellationToken,
 ) {
-    match append_memory_trigger(db, store, session_id, payload, cancellation.clone()).await {
+    match append_memory_trigger(store, session_id, payload, cancellation.clone()).await {
         Ok(Some(event)) => tracing::debug!(
             session_id,
             sequence = event.sequence,
@@ -144,6 +127,8 @@ pub(crate) async fn append_memory_trigger_nonfatal(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use haven_memory::Database;
+    use std::sync::Arc;
 
     #[tokio::test]
     async fn persists_interval_payload_after_existing_durable_event() {
@@ -155,7 +140,6 @@ mod tests {
             .unwrap();
 
         let event = append_memory_trigger(
-            db.clone(),
             store.clone(),
             &session.id,
             MemoryTriggerPayload::step_interval(17, 25),
@@ -187,7 +171,6 @@ mod tests {
         cancellation.cancel();
 
         append_memory_trigger_nonfatal(
-            db.clone(),
             store.clone(),
             &session.id,
             MemoryTriggerPayload::step_interval(3, 5),
@@ -215,7 +198,6 @@ mod tests {
             .unwrap();
 
         append_memory_trigger_nonfatal(
-            db,
             store.clone(),
             &session.id,
             MemoryTriggerPayload::step_interval(3, 5),
@@ -233,7 +215,6 @@ mod tests {
 
         assert!(
             append_memory_trigger(
-                db,
                 store,
                 "ses-synthetic",
                 MemoryTriggerPayload::step_interval(1, 25),

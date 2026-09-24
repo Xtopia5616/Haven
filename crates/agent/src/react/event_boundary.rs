@@ -418,7 +418,6 @@ impl ReActEngine {
             };
             if let Some(memory_trigger) = self.hooks.on_pause(self, &ctx, reason).await {
                 crate::memory_trigger::append_memory_trigger_nonfatal(
-                    self.db.clone(),
                     self.event_store.clone(),
                     session_id,
                     memory_trigger,
@@ -496,7 +495,6 @@ impl ReActEngine {
                 .await
             {
                 crate::memory_trigger::append_memory_trigger_nonfatal(
-                    self.db.clone(),
                     self.event_store.clone(),
                     session_id,
                     memory_trigger,
@@ -593,7 +591,6 @@ impl ReActEngine {
         };
         if let Some(memory_trigger) = self.hooks.on_pause(self, &ctx, PauseReason::External).await {
             crate::memory_trigger::append_memory_trigger_nonfatal(
-                self.db.clone(),
                 self.event_store.clone(),
                 session_id,
                 memory_trigger,
