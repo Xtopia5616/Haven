@@ -23,13 +23,9 @@ pub mod settings;
 pub mod skills;
 
 use crate::app_state::{AppState, UiConfirmationAction, UiConfirmationPending};
-use crate::config_runtime::prepare_then_apply;
 use crate::events::{INTERACTION_REQUESTED_EVENT, LLM_CONFIG_CHANGED_EVENT};
 use crate::logging::sanitize_error_text;
 use haven_common::McpServerConfig;
-use haven_common::config::ConfigSnapshot;
-use haven_llm::LlmRouter;
-use haven_llm::stt::build_stt_client;
 use serde::Serialize;
 use std::sync::Arc;
 use tauri::AppHandle;
@@ -295,102 +291,6 @@ pub(crate) async fn queue_ui_confirmation(
     .map_err(|error| log_err("queue_ui_confirmation", error))
 }
 
-/// Fully constructed router and media clients, all derived from one immutable
-/// config version. Construction is fallible; publishing this value is not.
-pub(crate) struct PreparedRouterRuntime {
-    config_version: u64,
-    router: Arc<LlmRouter>,
-    stt_client: Option<Arc<dyn haven_llm::SttClient>>,
-    ocr_client: Option<Arc<dyn haven_llm::OcrClient>>,
-    image_gen_client: Option<Arc<dyn haven_llm::ImageGenClient>>,
-    tts_client: Option<Arc<dyn haven_llm::TtsClient>>,
-    media: haven_common::config::MediaConfig,
-}
-
-/// Construct the router and every dependent media client from the exact
-/// snapshot whose mutation is being applied. No ConfigService read is allowed
-/// here: callers serialize the commit/apply sequence and pass its result.
-pub(crate) fn prepare_router_runtime(
-    snapshot: &ConfigSnapshot,
-    mcp_caller: Option<Arc<dyn haven_llm::McpToolCaller>>,
-    ctx: &str,
-) -> Result<PreparedRouterRuntime, String> {
-    let config = &snapshot.config;
-    let router = Arc::new(LlmRouter::with_default_context_window(
-        config.llm.materialize(
-            Some(config.context_limits.max_response_tokens),
-            Some(config.context_limits.reasoning_echo_max_chars),
-        ),
-        config.context_limits.default_context_window,
-    ));
-    let media = config.media.clone();
-    let providers = &config.llm.providers;
-    let stt_client: Option<Arc<dyn haven_llm::SttClient>> =
-        build_stt_client(mcp_caller, &media.stt, providers)
-            .map_err(|error| log_err(&format!("{ctx} STT"), error))?
-            .map(Arc::from);
-    let ocr_client: Option<Arc<dyn haven_llm::OcrClient>> = haven_llm::build_ocr_client(&media.ocr)
-        .map_err(|error| log_err(&format!("{ctx} OCR"), error))?
-        .map(Arc::from);
-    let tts_client: Option<Arc<dyn haven_llm::TtsClient>> =
-        haven_llm::build_tts_client(&media.tts, providers)
-            .map_err(|error| log_err(&format!("{ctx} TTS"), error))?
-            .map(Arc::from);
-    let image_gen_client: Option<Arc<dyn haven_llm::ImageGenClient>> =
-        haven_llm::build_image_gen_client(&media.image_gen, providers)
-            .map_err(|error| log_err(&format!("{ctx} image generation"), error))?
-            .map(Arc::from);
-
-    Ok(PreparedRouterRuntime {
-        config_version: snapshot.version,
-        router,
-        stt_client,
-        ocr_client,
-        image_gen_client,
-        tts_client,
-        media,
-    })
-}
-
-/// Publish an already prepared router generation to the agent and tools
-/// platform. The app does not claim a cross-component atomic swap.
-pub(crate) async fn publish_router_runtime(state: &AppState, prepared: PreparedRouterRuntime) {
-    tracing::debug!(
-        config_version = prepared.config_version,
-        "publishing prepared router runtime"
-    );
-    state.agent.replace_router(prepared.router.clone());
-    state
-        .tools
-        .set_router_and_media_clients(
-            prepared.router,
-            prepared.stt_client,
-            prepared.ocr_client,
-            prepared.image_gen_client,
-            prepared.tts_client,
-            prepared.media,
-        )
-        .await;
-}
-
-/// Shared model-command path: prepare from the just-committed snapshot, then
-/// publish the prepared router and its dependent clients.
-pub(crate) async fn rebuild_router(
-    state: &AppState,
-    snapshot: &ConfigSnapshot,
-    ctx: &str,
-) -> Result<(), String> {
-    let mcp_caller: Arc<dyn haven_llm::McpToolCaller> = Arc::new(state.services.mcp.clone());
-    prepare_then_apply(
-        || prepare_router_runtime(snapshot, Some(mcp_caller), ctx),
-        |prepared| async move {
-            publish_router_runtime(state, prepared).await;
-            Ok(())
-        },
-    )
-    .await
-}
-
 /// Build an `McpClient`, connect it (when `config.enabled`), and spawn the
 /// health monitor using the discovery settings from the supplied loader.
 /// Returns the constructed client either way so the caller can register it
@@ -442,80 +342,4 @@ pub(crate) async fn connect_and_monitor(
         );
     }
     Ok(client)
-}
-
-#[cfg(test)]
-mod runtime_apply_tests {
-    use super::*;
-    use haven_common::config::{AppConfig, ConfigSnapshot};
-    use std::io::{self, Write};
-    use std::sync::{Arc, Mutex};
-    use tracing_subscriber::fmt::MakeWriter;
-
-    #[derive(Clone)]
-    struct BufferWriter(Arc<Mutex<Vec<u8>>>);
-
-    impl Write for BufferWriter {
-        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(bytes);
-            Ok(bytes.len())
-        }
-
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-    }
-
-    impl<'a> MakeWriter<'a> for BufferWriter {
-        type Writer = Self;
-
-        fn make_writer(&'a self) -> Self::Writer {
-            self.clone()
-        }
-    }
-
-    #[test]
-    fn router_and_media_clients_are_prepared_from_the_supplied_snapshot() {
-        let mut config = AppConfig::default();
-        config.context_limits.default_context_window = 173_000;
-        config.media.audio.max_duration_secs = 37;
-        let snapshot = ConfigSnapshot {
-            version: 23,
-            config,
-        };
-
-        let prepared = prepare_router_runtime(&snapshot, None, "test")
-            .expect("default router and media clients should prepare");
-
-        assert_eq!(prepared.config_version, snapshot.version);
-        assert_eq!(prepared.media, snapshot.config.media);
-        assert!(Arc::strong_count(&prepared.router) >= 1);
-    }
-
-    #[test]
-    fn media_preparation_errors_and_logs_do_not_expose_config_secrets() {
-        let secret = "media-key-never-log-this";
-        let mut config = AppConfig::default();
-        config.media.ocr.provider = "invalid-provider".into();
-        config.media.ocr.api_key = secret.into();
-        let snapshot = ConfigSnapshot {
-            version: 24,
-            config,
-        };
-        let output = Arc::new(Mutex::new(Vec::new()));
-        let subscriber = tracing_subscriber::fmt()
-            .without_time()
-            .with_ansi(false)
-            .with_writer(BufferWriter(output.clone()))
-            .finish();
-
-        let result = tracing::subscriber::with_default(subscriber, || {
-            prepare_router_runtime(&snapshot, None, "test")
-        });
-        let logs = String::from_utf8(output.lock().unwrap().clone()).unwrap();
-
-        let error = result.err().expect("invalid OCR provider should fail");
-        assert!(!logs.contains(secret));
-        assert!(!error.contains(secret));
-    }
 }

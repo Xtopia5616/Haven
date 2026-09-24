@@ -1,6 +1,5 @@
 use crate::app_state::AppState;
 use crate::commands::log_err;
-use crate::commands::rebuild_router;
 use crate::config_runtime::{RuntimeConfigApplyPlan, RuntimeConfigTarget};
 use haven_common::config::{
     AppConfig, ConfigChanged, LlmConfig, ModelConfig, ProviderConfig, RequestKind,
@@ -464,7 +463,10 @@ async fn update_model_field(
         })
         .map_err(|e| log_err(ctx, e))?;
     if model_change_requires_router(update.change.as_ref()) {
-        rebuild_router(state, &update.snapshot, ctx).await?;
+        state
+            .config_apply_gate
+            .apply_router_runtime(state, &update.snapshot, ctx)
+            .await?;
     }
     Ok(())
 }

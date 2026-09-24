@@ -1,5 +1,5 @@
 use crate::app_state::AppState;
-use crate::commands::{log_err, prepare_router_runtime, publish_router_runtime};
+use crate::commands::log_err;
 use crate::config_runtime::{
     RuntimeConfigApplyPlan, RuntimeConfigTarget, apply_log_level_to_handles,
 };
@@ -98,10 +98,9 @@ pub async fn update_settings(
     // runtime update. A preparation failure leaves those consumers on their
     // previous generation while the durable config snapshot remains saved.
     let mut prepared_router = if plan.contains(RuntimeConfigTarget::LlmRouter) {
-        let mcp_caller: Arc<dyn haven_llm::McpToolCaller> = Arc::new(state.services.mcp.clone());
-        Some(prepare_router_runtime(
+        Some(state.config_apply_gate.prepare_router_runtime(
+            &state,
             &snapshot,
-            Some(mcp_caller),
             "update_settings",
         )?)
     } else {
@@ -147,13 +146,15 @@ pub async fn update_settings(
     }
 
     if plan.contains(RuntimeConfigTarget::LlmRouter) {
-        publish_router_runtime(
-            &state,
-            prepared_router
-                .take()
-                .expect("router target always has a prepared runtime"),
-        )
-        .await;
+        state
+            .config_apply_gate
+            .publish_router_runtime(
+                &state,
+                prepared_router
+                    .take()
+                    .expect("router target always has a prepared runtime"),
+            )
+            .await;
         tick("publish_router_runtime");
         crate::commands::emit_llm_config_changed(&app);
     }
