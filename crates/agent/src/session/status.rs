@@ -14,9 +14,7 @@ impl SessionSupervisor {
     ) -> anyhow::Result<SessionInfo> {
         let _lifecycle = self.lifecycle_guard().await;
         self.ensure_lifecycle_open()?;
-        let db = self.db.clone();
-        let input = input.to_string();
-        let record = db.run_blocking(move |db| db.create_session(&input)).await?;
+        let record = self.store.create_session(input).await?;
         let mut info = SessionInfo::from_db_record(&record);
         info.summary = summary.to_string();
         self.install_actor(info.clone()).await;

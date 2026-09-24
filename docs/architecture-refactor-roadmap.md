@@ -79,6 +79,7 @@
 - `7775e11`：`TranscriptBatchWriter` 只依赖 `SessionStore`；阻塞调度、可选取消和缺少 session 行的兼容语义下沉到 typed transcript batch port，保留既有事务实现（Phase 3，ADR 0255）。
 - 当前切片：Ingress/recovery 消息通过 `SessionStore::persist_session_message` 持久化；blocking 调度、可选取消和 message_id 幂等由 typed port 承接，移除唯一仓库调用的 `SessionSupervisor::db()` getter；partial discard 与 X12 assistant transcript 边界保持不变（Phase 3，ADR 0256）。
 - 当前 Phase 3 切片：失败会话的 pending/running action-step 清理通过 `SessionStore` 调度到 blocking pool，继续调用既有 Database 操作；`unknown` 状态、observation、完成时间、session 范围及 Error 更新后、`SessionError` 发布前的调用顺序不变（ADR 0258）。此切片不涉及 ActionService 或 MemoryRuntime。
+- `SessionSupervisor` 与 ingress 创建路径通过 `SessionStore::create_session` 创建 durable session row；生命周期闸门、首条消息顺序、actor 安装和 dispatch 仍由 Agent 持有，创建本身不追加事件（ADR 0260）。
 - 当前 Phase 7 小切片：删除全仓无调用的 `MemoryWorker::recall_memory_query` 转发；recall 继续由 `MemoryService`/`MemoryRecallPort` 所有，不新增同义 `MemoryReader` trait（ADR 0254）。这不改变 committed-event 驱动 MemoryRuntime 仍未完成的判断。
 - 当前 Phase 4 切片：`AgentLayer` 在 composition root 只取得一次 `ToolsManager`，共享给 prompt builder 与 `ToolsManagerToolCatalogAdapter`，并显式注入 `ReActEngine`；engine 不再从 executor 查找 catalog port。目录 snapshot、session ID、工具执行和 live authorization 语义不变（ADR 0257）。
 
@@ -86,7 +87,7 @@
 
 阶段 7 的 MemoryRuntime committed-event 消费设计已由 ADR 0259 采纳；实现未开始。首个代码切片限定为 Phase 7.1：SessionStore 有界 replay 与独立 event cursor、复用现有 durable fact-extraction outbox、Runtime 在 dispatcher recovery 前启动、按 sequence 去重/lag 恢复，并保留 interval/pause bypass。compact-summary episode durable job、maintenance 生命周期迁移与 MemoryReader 抽象留待后续切片；本设计不改变 recall 或 rollback facts 语义。
 
-补充：阶段 3 的 transcript batch writer 已在 `7775e11` 进一步只依赖 `SessionStore`（ADR 0255），Ingress/recovery 消息路径与失败会话 action-step 清理也已通过 SessionStore typed port 收口（ADR 0256、0258）；阶段 7 的无调用 recall 转发已在本轮删除（ADR 0254）。这些切片都不改变全局恢复/事件重放和 committed-event MemoryRuntime 仍待完成的判断。
+补充：阶段 3 的 transcript batch writer 已在 `7775e11` 进一步只依赖 `SessionStore`（ADR 0255），Ingress/recovery 消息路径、失败会话 action-step 清理与生产会话创建也已通过 SessionStore typed port 收口（ADR 0256、0258、0260）；阶段 7 的无调用 recall 转发已在本轮删除（ADR 0254）。这些切片都不改变全局恢复/事件重放和 committed-event MemoryRuntime 仍待完成的判断。
 
 ## 3. 不变量与禁止事项
 

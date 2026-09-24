@@ -249,6 +249,16 @@ impl SessionStore {
         Self { db, live_tx }
     }
 
+    /// Create a durable session record through the session persistence
+    /// boundary. Actor installation, lifecycle gates, and dispatch remain
+    /// owned by the Agent layer.
+    pub async fn create_session(&self, input_text: &str) -> anyhow::Result<Session> {
+        let input_text = input_text.to_owned();
+        self.db
+            .run_blocking(move |db| db.create_session(&input_text))
+            .await
+    }
+
     /// Read a persisted session record by id for actor installation.
     ///
     /// A missing record remains `Ok(None)` so lifecycle callers can preserve
@@ -1929,6 +1939,20 @@ mod tests {
         let missing_session_id = haven_common::types::new_id("ses");
 
         assert!(store.session_record(&missing_session_id).unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn session_store_creates_session_without_appending_events() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let store = SessionEventStore::new(db.clone());
+
+        let session = store.create_session("created through store").await.unwrap();
+
+        assert!(!session.id.is_empty());
+        assert_eq!(session.input_text, "created through store");
+        assert_eq!(session.status, SessionStatus::Pending);
+        assert!(store.session_record(&session.id).unwrap().is_some());
+        assert_eq!(store.latest_sequence(&session.id).unwrap(), 0);
     }
 
     #[test]

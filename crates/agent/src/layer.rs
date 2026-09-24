@@ -1113,11 +1113,7 @@ impl AgentLayer {
         // the complete new session or none of it.
         let _lifecycle = self.executor.lifecycle_guard().await;
         self.executor.ensure_lifecycle_open()?;
-        let db = self.db.clone();
-        let input_for_db = input.to_string();
-        let record = db
-            .run_blocking(move |db| db.create_session(&input_for_db))
-            .await?;
+        let record = self.executor.session_store().create_session(input).await?;
         // The first user turn (and its attachments) must be on disk BEFORE
         // the dispatcher can pick the session up; if persisting fails, remove
         // the session row again so no input-less session ever gets dispatched.
