@@ -313,6 +313,22 @@ impl SessionStore {
         Self { db, live_tx }
     }
 
+    /// Persist a session lifecycle status on SQLite's blocking pool.
+    ///
+    /// The caller owns lifecycle retry and in-memory transition policy; this
+    /// port only schedules the existing Database write. Dropping this future
+    /// cannot interrupt a write already running on Tokio's blocking pool.
+    pub async fn update_session_status(
+        &self,
+        session_id: &str,
+        status: SessionStatus,
+    ) -> anyhow::Result<()> {
+        let session_id = session_id.to_owned();
+        self.db
+            .run_blocking(move |db| db.update_session_status(&session_id, status))
+            .await
+    }
+
     /// Load the latest textual messages for a fresh-run conversation window.
     ///
     /// The underlying query preserves its existing message-type filter,
@@ -2550,6 +2566,21 @@ mod tests {
             SessionStatus::Completed
         );
         assert_eq!(store.pause_running_sessions().unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn session_store_updates_status_on_blocking_pool() {
+        let (db, store, session_id) = store();
+
+        store
+            .update_session_status(&session_id, SessionStatus::Running)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            db.get_session(&session_id).unwrap().unwrap().status,
+            SessionStatus::Running
+        );
     }
 
     #[tokio::test]

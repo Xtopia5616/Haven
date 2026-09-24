@@ -1727,13 +1727,78 @@ mod tests {
     async fn update_session_status_changes_state() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = SessionSupervisor::new(db, tools, 3);
+        let exec = SessionSupervisor::new(db.clone(), tools, 3);
         let session = exec.create_session("test").await.unwrap();
         exec.update_session_status(&session.id, SessionStatus::Completed)
             .await
             .unwrap();
         // Terminal status removes the session from the in-memory working set.
         assert_eq!(exec.get_active_session_status(&session.id).await, None);
+        assert_eq!(
+            db.get_session(&session.id).unwrap().unwrap().status,
+            SessionStatus::Completed
+        );
+    }
+
+    #[tokio::test]
+    async fn status_persistence_retries_and_failed_transition_keeps_actor_state() {
+        let db = temp_db();
+        let tools = Arc::new(ToolsManager::new());
+        let exec = SessionSupervisor::new(db.clone(), tools, 3);
+        let session = exec
+            .create_session("retry status persistence")
+            .await
+            .unwrap();
+
+        db.conn()
+            .execute_batch(
+                "CREATE TABLE status_update_attempts (attempt INTEGER NOT NULL);
+                 CREATE TRIGGER fail_session_status_update
+                 BEFORE UPDATE OF status ON sessions
+                 BEGIN
+                     INSERT INTO status_update_attempts VALUES (1);
+                     SELECT RAISE(FAIL, 'forced status write failure');
+                 END;",
+            )
+            .unwrap();
+
+        let error = exec
+            .update_session_status(&session.id, SessionStatus::Running)
+            .await
+            .expect_err("a failed durable write must reject the transition");
+        assert!(format!("{error:#}").contains("forced status write failure"));
+        assert_eq!(
+            exec.get_session_status(&session.id).await,
+            Some(SessionStatus::Pending),
+            "the actor state must not change before persistence succeeds"
+        );
+        assert_eq!(
+            db.get_session(&session.id).unwrap().unwrap().status,
+            SessionStatus::Pending
+        );
+        let attempts: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM status_update_attempts", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(attempts, 3, "status persistence retries three times");
+    }
+
+    #[tokio::test]
+    async fn end_session_persists_completed_when_actor_is_not_loaded() {
+        let db = temp_db();
+        let session = db.create_session("unloaded session").unwrap();
+        let exec = SessionSupervisor::new(db.clone(), Arc::new(ToolsManager::new()), 3);
+
+        assert_eq!(
+            exec.end_session(&session.id).await.unwrap(),
+            SessionStatus::Completed
+        );
+        assert_eq!(
+            db.get_session(&session.id).unwrap().unwrap().status,
+            SessionStatus::Completed
+        );
     }
 
     #[tokio::test]

@@ -24,18 +24,13 @@ impl SessionSupervisor {
     }
 
     pub(super) async fn persist_status(
-        db: &Arc<Database>,
+        store: &SessionStore,
         session_id: &str,
         status: SessionStatus,
     ) -> anyhow::Result<()> {
         let mut last_error = None;
         for attempt in 0..3 {
-            let db = db.clone();
-            let session_id = session_id.to_string();
-            match db
-                .run_blocking(move |db| db.update_session_status(&session_id, status))
-                .await
-            {
+            match store.update_session_status(session_id, status).await {
                 Ok(()) => return Ok(()),
                 Err(error) => {
                     last_error = Some(error);
@@ -93,7 +88,7 @@ impl SessionSupervisor {
     ) -> anyhow::Result<SessionStatus> {
         let Some(actor) = self.actor_for(session_id).await else {
             self.cancel_direct_waiters(session_id).await;
-            Self::persist_status(&self.db, session_id, SessionStatus::Completed).await?;
+            Self::persist_status(&self.store, session_id, SessionStatus::Completed).await?;
             self.finish_ended_session(session_id, cascade).await;
             return Ok(SessionStatus::Completed);
         };

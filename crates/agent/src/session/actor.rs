@@ -1203,7 +1203,7 @@ pub(crate) fn spawn(
                     reply,
                 } => {
                     let result = if expected.is_none_or(|expected| state.info.status == expected) {
-                        transition(&db, &mut state, &status, next, persist).await
+                        transition(&store, &mut state, &status, next, persist).await
                     } else {
                         Ok(StatusTransition {
                             changed: false,
@@ -1214,7 +1214,7 @@ pub(crate) fn spawn(
                     let _ = reply.send(result);
                 }
                 ActorCommand::ClaimRun { reply } => {
-                    let result = claim_run(&db, &mut state, &status, &run_state).await;
+                    let result = claim_run(&store, &mut state, &status, &run_state).await;
                     let _ = reply.send(result);
                 }
                 ActorCommand::BeginDirectRun { reply } => {
@@ -1580,7 +1580,7 @@ fn history(state: &SessionState, limit: usize) -> Vec<Envelope> {
 }
 
 async fn transition(
-    db: &Arc<Database>,
+    store: &SessionStore,
     state: &mut SessionState,
     status: &watch::Sender<SessionStatus>,
     next: SessionStatus,
@@ -1608,7 +1608,7 @@ async fn transition(
         );
     }
     if persist {
-        super::SessionSupervisor::persist_status(db, &state.info.id, next).await?;
+        super::SessionSupervisor::persist_status(store, &state.info.id, next).await?;
     }
     state.info.status = next;
     if next != SessionStatus::Paused {
@@ -1624,7 +1624,7 @@ async fn transition(
 }
 
 async fn claim_run(
-    db: &Arc<Database>,
+    store: &SessionStore,
     state: &mut SessionState,
     status: &watch::Sender<SessionStatus>,
     run_state: &watch::Sender<bool>,
@@ -1632,7 +1632,7 @@ async fn claim_run(
     if state.info.status != SessionStatus::Pending || state.running {
         return Ok(RunClaim { accepted: false });
     }
-    super::SessionSupervisor::persist_status(db, &state.info.id, SessionStatus::Running).await?;
+    super::SessionSupervisor::persist_status(store, &state.info.id, SessionStatus::Running).await?;
     state.info.status = SessionStatus::Running;
     state.info.waiting_reason = None;
     state.info.updated_at = chrono::Utc::now().to_rfc3339();

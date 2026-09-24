@@ -278,3 +278,4 @@
 - [0287：退出时通过 SessionStore 同步暂停运行会话](0287-app-exit-pause-sessions-session-store-port.md)
 - [0288：Agent 标题生成上下文通过 SessionStore](0288-agent-title-generation-session-store-port.md)
 - [0289：Agent 会话元数据读取通过 SessionStore](0289-agent-session-metadata-session-store-reads.md)
+- [0290：会话状态持久化通过 SessionStore](0290-session-status-persistence-through-session-store.md)
