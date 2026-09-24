@@ -244,6 +244,20 @@ pub struct SessionStore {
     live_tx: tokio::sync::broadcast::Sender<SessionEvent>,
 }
 
+/// Typed filters for app-facing session history queries.
+///
+/// `limit` and `offset` are required so each caller keeps ownership of its
+/// existing defaults (the history page and export have different limits).
+#[derive(Debug, Clone)]
+pub struct SessionHistoryFilter {
+    pub query: Option<String>,
+    pub status: Option<String>,
+    pub start_date: Option<String>,
+    pub end_date: Option<String>,
+    pub limit: i64,
+    pub offset: i64,
+}
+
 /// Transitional name for code that only consumes the append-only event API.
 /// New ownership code should use [`SessionStore`].
 pub type SessionEventStore = SessionStore;
@@ -263,6 +277,81 @@ impl SessionStore {
     pub fn new(db: Arc<Database>) -> Self {
         let (live_tx, _) = tokio::sync::broadcast::channel(256);
         Self { db, live_tx }
+    }
+
+    /// List session history on SQLite's blocking pool.
+    ///
+    /// This delegates to the existing database query, including its first
+    /// page cache behavior and `created_at DESC` ordering. Dropping the
+    /// returned future cannot interrupt a `run_blocking` query already
+    /// running on Tokio's blocking pool.
+    pub async fn list_history(&self, limit: i64, offset: i64) -> anyhow::Result<Vec<Session>> {
+        self.db
+            .run_blocking(move |db| db.list_sessions(limit, offset))
+            .await
+    }
+
+    /// Count persisted sessions on SQLite's blocking pool.
+    ///
+    /// Dropping the returned future cannot interrupt a `run_blocking` query
+    /// already running on Tokio's blocking pool.
+    pub async fn count_history(&self) -> anyhow::Result<i64> {
+        self.db.run_blocking(|db| db.count_sessions()).await
+    }
+
+    /// Search and page session history using the existing database predicate
+    /// and ordering. Dropping the returned future cannot interrupt a
+    /// `run_blocking` query already running on Tokio's blocking pool.
+    pub async fn search_history_paginated(
+        &self,
+        query: String,
+        limit: i64,
+        offset: i64,
+    ) -> anyhow::Result<Vec<Session>> {
+        self.db
+            .run_blocking(move |db| db.search_sessions_paginated(&query, limit, offset))
+            .await
+    }
+
+    /// Count matches using the existing database search predicate.
+    /// Dropping the returned future cannot interrupt a `run_blocking` query
+    /// already running on Tokio's blocking pool.
+    pub async fn count_history_search(&self, query: String) -> anyhow::Result<i64> {
+        self.db
+            .run_blocking(move |db| db.count_sessions_search(&query))
+            .await
+    }
+
+    /// Search the first 50 session history matches using the existing
+    /// database predicate and ordering. Dropping the returned future cannot
+    /// interrupt a `run_blocking` query already running on Tokio's blocking
+    /// pool.
+    pub async fn search_history(&self, query: String) -> anyhow::Result<Vec<Session>> {
+        self.db
+            .run_blocking(move |db| db.search_sessions(&query))
+            .await
+    }
+
+    /// Apply typed filters through the existing database query, preserving
+    /// its empty-filter handling, date conversion, cache behavior, predicate
+    /// and ordering. Dropping the returned future cannot interrupt a
+    /// `run_blocking` query already running on Tokio's blocking pool.
+    pub async fn search_history_filtered(
+        &self,
+        filter: SessionHistoryFilter,
+    ) -> anyhow::Result<Vec<Session>> {
+        self.db
+            .run_blocking(move |db| {
+                db.search_sessions_filtered(
+                    filter.query.as_deref(),
+                    filter.status.as_deref(),
+                    filter.start_date.as_deref(),
+                    filter.end_date.as_deref(),
+                    filter.limit,
+                    filter.offset,
+                )
+            })
+            .await
     }
 
     /// Read all persisted session ids on SQLite's blocking pool.
@@ -2263,6 +2352,79 @@ mod tests {
                 .await
                 .unwrap()
                 .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn session_store_history_ports_preserve_database_query_semantics() {
+        let (db, store, first_id) = store();
+        let second = db.create_session("history needle two").unwrap();
+        let third = db.create_session("history other three").unwrap();
+        db.update_session_title(&second.id, "named needle").unwrap();
+
+        let conn = db.conn();
+        for (session_id, created_at) in [
+            (&first_id, "2026-09-20T10:00:00.000Z"),
+            (&second.id, "2026-09-21T10:00:00.000Z"),
+            (&third.id, "2026-09-22T10:00:00.000Z"),
+        ] {
+            conn.execute(
+                "UPDATE sessions SET created_at = ?1 WHERE id = ?2",
+                rusqlite::params![created_at, session_id],
+            )
+            .unwrap();
+        }
+        drop(conn);
+
+        let as_json = |sessions: Vec<Session>| serde_json::to_value(sessions).unwrap();
+
+        assert_eq!(
+            as_json(store.list_history(2, 1).await.unwrap()),
+            as_json(db.list_sessions(2, 1).unwrap())
+        );
+        assert_eq!(
+            store.count_history().await.unwrap(),
+            db.count_sessions().unwrap()
+        );
+        assert_eq!(
+            as_json(
+                store
+                    .search_history_paginated("needle".into(), 1, 1)
+                    .await
+                    .unwrap()
+            ),
+            as_json(db.search_sessions_paginated("needle", 1, 1).unwrap())
+        );
+        assert_eq!(
+            store.count_history_search("needle".into()).await.unwrap(),
+            db.count_sessions_search("needle").unwrap()
+        );
+        assert_eq!(
+            as_json(store.search_history("needle".into()).await.unwrap()),
+            as_json(db.search_sessions("needle").unwrap())
+        );
+
+        let filter = SessionHistoryFilter {
+            query: Some("needle".into()),
+            status: Some("pending".into()),
+            start_date: None,
+            end_date: None,
+            limit: 10,
+            offset: 0,
+        };
+        assert_eq!(
+            as_json(store.search_history_filtered(filter.clone()).await.unwrap()),
+            as_json(
+                db.search_sessions_filtered(
+                    filter.query.as_deref(),
+                    filter.status.as_deref(),
+                    filter.start_date.as_deref(),
+                    filter.end_date.as_deref(),
+                    filter.limit,
+                    filter.offset,
+                )
+                .unwrap()
+            )
         );
     }
 

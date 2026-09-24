@@ -8,7 +8,7 @@ use haven_common::config::{ConfigLoader, ConfigService, LogLevel};
 use haven_input::InputPipeline;
 use haven_llm::LlmRouter;
 use haven_llm::stt::build_stt_client;
-use haven_memory::Database;
+use haven_memory::{Database, SessionStore};
 use haven_tools::ToolsManager;
 use std::collections::HashMap;
 use std::ops::Deref;
@@ -120,6 +120,7 @@ impl AppState {
     ) -> anyhow::Result<Self> {
         let t0 = std::time::Instant::now();
         let db = Arc::new(Database::open(db_path)?);
+        let session_store = SessionStore::new(db.clone());
         tracing::debug!(
             "AppState::new phase=db elapsed={}ms",
             t0.elapsed().as_millis()
@@ -165,6 +166,7 @@ impl AppState {
         let shell = Arc::new(DesktopShell::new());
         let runtime = Arc::new(ApplicationRuntime::new(RuntimeServices {
             db: db.clone(),
+            session_store,
             tools: tools.clone(),
             executor: executor.clone(),
             agent: agent.clone(),

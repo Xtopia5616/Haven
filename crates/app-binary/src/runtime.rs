@@ -11,7 +11,7 @@ use crate::desktop::DesktopShell;
 use haven_agent::{AgentLayer, SessionSupervisor};
 use haven_common::config::ConfigService;
 use haven_input::InputPipeline;
-use haven_memory::Database;
+use haven_memory::{Database, SessionStore};
 use haven_tools::{ToolServices, ToolsManager};
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -31,6 +31,7 @@ use tracing_subscriber::reload;
 /// of its own.
 pub struct ApplicationRuntime {
     pub(crate) db: Arc<Database>,
+    pub(crate) session_store: SessionStore,
     pub(crate) tools: Arc<ToolsManager>,
     /// Process services captured with the manager. Command handlers use this
     /// bundle instead of asking ToolsManager for each service.
@@ -54,6 +55,7 @@ const TASK_SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
 
 pub(crate) struct RuntimeServices {
     pub(crate) db: Arc<Database>,
+    pub(crate) session_store: SessionStore,
     pub(crate) tools: Arc<ToolsManager>,
     pub(crate) executor: Arc<SessionSupervisor>,
     pub(crate) agent: Arc<AgentLayer>,
@@ -68,6 +70,7 @@ impl ApplicationRuntime {
         let services = runtime_services.tools.share_services();
         Self {
             db: runtime_services.db,
+            session_store: runtime_services.session_store,
             tools: runtime_services.tools,
             services,
             executor: runtime_services.executor,

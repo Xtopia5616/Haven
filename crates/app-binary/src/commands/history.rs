@@ -10,16 +10,18 @@ pub async fn get_history(
     offset: i64,
 ) -> Result<Vec<haven_memory::repositories::sessions::Session>, String> {
     state
-        .db
-        .list_sessions(limit, offset)
+        .session_store
+        .list_history(limit, offset)
+        .await
         .map_err(|e| log_err("get_history", e))
 }
 
 #[tauri::command]
 pub async fn count_history(state: State<'_, Arc<AppState>>) -> Result<i64, String> {
     state
-        .db
-        .count_sessions()
+        .session_store
+        .count_history()
+        .await
         .map_err(|e| log_err("count_history", e))
 }
 
@@ -31,8 +33,9 @@ pub async fn search_history_paginated(
     offset: i64,
 ) -> Result<Vec<haven_memory::repositories::sessions::Session>, String> {
     state
-        .db
-        .search_sessions_paginated(&query, limit, offset)
+        .session_store
+        .search_history_paginated(query, limit, offset)
+        .await
         .map_err(|e| log_err("search_history_paginated", e))
 }
 
@@ -42,8 +45,9 @@ pub async fn count_history_search(
     query: String,
 ) -> Result<i64, String> {
     state
-        .db
-        .count_sessions_search(&query)
+        .session_store
+        .count_history_search(query)
+        .await
         .map_err(|e| log_err("count_history_search", e))
 }
 
@@ -53,8 +57,9 @@ pub async fn search_history(
     query: String,
 ) -> Result<Vec<haven_memory::repositories::sessions::Session>, String> {
     state
-        .db
-        .search_sessions(&query)
+        .session_store
+        .search_history(query)
+        .await
         .map_err(|e| log_err("search_history", e))
 }
 
@@ -70,15 +75,16 @@ pub async fn search_history_filtered(
     offset: Option<i64>,
 ) -> Result<Vec<haven_memory::repositories::sessions::Session>, String> {
     state
-        .db
-        .search_sessions_filtered(
-            query.as_deref(),
-            status.as_deref(),
-            start_date.as_deref(),
-            end_date.as_deref(),
-            limit.unwrap_or(50),
-            offset.unwrap_or(0),
-        )
+        .session_store
+        .search_history_filtered(haven_memory::SessionHistoryFilter {
+            query,
+            status,
+            start_date,
+            end_date,
+            limit: limit.unwrap_or(50),
+            offset: offset.unwrap_or(0),
+        })
+        .await
         .map_err(|e| log_err("search_history_filtered", e))
 }
 
@@ -90,15 +96,16 @@ pub async fn export_history(
     status: Option<String>,
 ) -> Result<String, String> {
     let sessions = state
-        .db
-        .search_sessions_filtered(
-            None,
-            status.as_deref(),
-            start_date.as_deref(),
-            end_date.as_deref(),
-            10000,
-            0,
-        )
+        .session_store
+        .search_history_filtered(haven_memory::SessionHistoryFilter {
+            query: None,
+            status,
+            start_date,
+            end_date,
+            limit: 10000,
+            offset: 0,
+        })
+        .await
         .map_err(|e| log_err("export_history", e))?;
     serde_json::to_string_pretty(&serde_json::json!({
         "exported_at": chrono::Utc::now().to_rfc3339(),
