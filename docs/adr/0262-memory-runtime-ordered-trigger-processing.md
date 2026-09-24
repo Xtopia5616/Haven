@@ -18,7 +18,7 @@
 
 普通事件只推进 memory event cursor，不触发事实抽取。任何 payload、outbox、checkpoint 或 cancellation 错误都不推进 cursor；checkpoint 失败会留下 durable marker，允许后续重放。普通任务完成 ack 不会清掉并发到达的 `bypass=true` 升级。
 
-Phase 7.1 第三个切片在该核心上增加 `MemoryRuntime::run_until_cancelled`。启动时先订阅同一 `SessionStore` 的 live broadcast，再固定启动 session ID 集合；集合内只有 cursor key 缺失的旧 session 才以 `latest_sequence` 建立 baseline，不回放其历史 transcript。显式 cursor `0` 保持有效，不会被 baseline 覆盖。durable fact outbox 通过 `MemoryWorker` 的窄恢复入口启动。
+Phase 7.1 第三个切片在该核心上增加 `MemoryRuntime::run_until_cancelled`。启动时先订阅同一 `SessionStore` 的 live broadcast，再固定启动 session ID 集合；集合内只有 cursor key 缺失的旧 session 才以 `latest_sequence` 建立 baseline，不回放其历史 transcript。显式 cursor `0` 保持有效，不会被 baseline 覆盖。durable fact outbox 通过 `MemoryWorker` 的窄恢复入口启动；随后，在返回 live receiver 前，对当前可见 sessions 按已有 cursor 有界回放。启动 snapshot 之后创建且没有 cursor 的 session 从 sequence `0` 回放；可能与 live receiver 重叠的事件由 `process_event` 的 cursor 幂等处理。
 
 live event 按 session 串行处理。sequence gap 从 durable `replay_page` 分页补齐（单页上限 256），再重试当前 event；cursor 覆盖范围内的 live/replay overlap 仍由 `process_event` 幂等跳过。broadcast lag 后枚举可见 session 并逐个分页恢复，不把完整 event transcript 载入内存。关闭或取消退出；错误写日志并采用可取消退避重试，取消不做 cursor checkpoint 或清除 durable outbox marker。
 
@@ -26,4 +26,4 @@ live event 按 session 串行处理。sequence gap 从 durable `replay_page` 分
 
 ## 验证
 
-覆盖普通事件、合法 interval/pause trigger、重复/升级、坏 payload、outbox/checkpoint 故障、sequence gap、跨 session 隔离和 cancellation-after-enqueue；另覆盖启动 baseline、缺失与显式零游标区分、outbox restore 调用、分页 gap recovery、live/replay overlap 和 session recovery。验证 Memory/Agent 两 crate 测试、两 crate clippy、fmt 与 staged diff。
+覆盖普通事件、合法 interval/pause trigger、重复/升级、坏 payload、outbox/checkpoint 故障、sequence gap、跨 session 隔离和 cancellation-after-enqueue；另覆盖启动 baseline、缺失与显式零游标区分、outbox restore 调用、已有 cursor 后 trigger 的启动回放、分页 gap recovery、live/replay overlap 和 session recovery。验证 Memory/Agent 两 crate 测试、两 crate clippy、fmt 与 staged diff。

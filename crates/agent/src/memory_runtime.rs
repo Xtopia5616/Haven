@@ -45,8 +45,8 @@ impl MemoryRuntime {
     }
 
     /// Subscribe before taking the startup session snapshot, baseline only
-    /// absent cursors for sessions in that snapshot, and restore the durable
-    /// fact outbox before returning the live receiver.
+    /// absent cursors for sessions in that snapshot, restore the durable fact
+    /// outbox, and replay visible sessions before returning the live receiver.
     ///
     /// Initialization failures are logged and retried with cancellable
     /// backoff while keeping the original broadcast receiver and session
@@ -105,12 +105,34 @@ impl MemoryRuntime {
                 .restore_pending_outbox(cancellation)
                 .await
             {
-                Ok(_) => return Ok(live),
+                Ok(_) => break,
                 Err(error) if cancellation.is_cancelled() => {
                     return Err(error).context("memory runtime startup cancelled");
                 }
                 Err(error) => {
                     tracing::warn!("memory runtime fact outbox restore failed: {}", error);
+                    if !wait_for_retry(cancellation, retry_backoff).await {
+                        anyhow::bail!("memory runtime startup cancelled");
+                    }
+                    retry_backoff = next_retry_backoff(retry_backoff);
+                }
+            }
+        }
+
+        loop {
+            if cancellation.is_cancelled() {
+                anyhow::bail!("memory runtime startup cancelled");
+            }
+            match self.recover_visible_sessions(cancellation).await {
+                Ok(()) if cancellation.is_cancelled() => {
+                    anyhow::bail!("memory runtime startup cancelled");
+                }
+                Ok(()) => return Ok(live),
+                Err(error) if cancellation.is_cancelled() => {
+                    return Err(error).context("memory runtime startup cancelled");
+                }
+                Err(error) => {
+                    tracing::warn!("memory runtime startup replay failed: {}", error);
                     if !wait_for_retry(cancellation, retry_backoff).await {
                         anyhow::bail!("memory runtime startup cancelled");
                     }
@@ -278,7 +300,7 @@ impl MemoryRuntime {
     /// closure. A lost broadcast range is recovered from each visible
     /// session's durable event pages.
     pub async fn run_until_cancelled(&self, cancellation: &CancellationToken) {
-        let mut live = match self.prepare_start(cancellation).await {
+        let live = match self.prepare_start(cancellation).await {
             Ok(live) => live,
             Err(_) if cancellation.is_cancelled() => return,
             Err(error) => {
@@ -286,6 +308,17 @@ impl MemoryRuntime {
                 return;
             }
         };
+        self.run_prepared(live, cancellation).await;
+    }
+
+    /// Run the live consumer using the receiver returned by `prepare_start`.
+    /// Agent startup calls this only after the recovery preparation has
+    /// completed, then opens the session dispatcher.
+    pub(crate) async fn run_prepared(
+        &self,
+        mut live: broadcast::Receiver<SessionEvent>,
+        cancellation: &CancellationToken,
+    ) {
         let mut retry_backoff = INITIAL_RETRY_BACKOFF;
         let mut recovery_deadline = None;
 
@@ -635,7 +668,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn startup_preserves_an_existing_zero_cursor_for_recovery() {
+    async fn startup_replays_from_an_existing_zero_cursor() {
         let (db, session_id, runtime) = fixture();
         db.checkpoint_memory_event_cursor(&session_id, 0).unwrap();
         let old_event = runtime
@@ -650,16 +683,48 @@ mod tests {
             .unwrap();
 
         let _live = runtime.prepare_start(&cancellation()).await.unwrap();
-        assert_eq!(cursor(&db, &session_id).await, 0);
+        assert_eq!(cursor(&db, &session_id).await, old_event.sequence);
         assert_eq!(
             runtime
                 .recover_session(&session_id, &cancellation())
                 .await
                 .unwrap(),
-            1
+            0
         );
         assert_eq!(cursor(&db, &session_id).await, old_event.sequence);
         assert_eq!(pending(&db).await, vec![(session_id, false)]);
+    }
+
+    #[tokio::test]
+    async fn prepare_start_replays_trigger_after_existing_cursor() {
+        let (db, session_id, runtime) = fixture();
+        let before_cursor = runtime
+            .session_store
+            .append(&session_id, "usage_recorded", "{}", None, None)
+            .unwrap();
+        db.checkpoint_memory_event_cursor(&session_id, before_cursor.sequence)
+            .unwrap();
+        let trigger_event = runtime
+            .session_store
+            .append(
+                &session_id,
+                MEMORY_TRIGGER_EVENT_TYPE,
+                &trigger("step_interval", false),
+                None,
+                None,
+            )
+            .unwrap();
+
+        let _live = runtime.prepare_start(&cancellation()).await.unwrap();
+
+        assert_eq!(cursor(&db, &session_id).await, trigger_event.sequence);
+        assert_eq!(pending(&db).await, vec![(session_id.clone(), false)]);
+        assert_eq!(
+            runtime
+                .memory_worker
+                .pending_outbox_value_for_test(&session_id),
+            Some(false)
+        );
     }
 
     #[tokio::test]

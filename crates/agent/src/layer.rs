@@ -33,6 +33,7 @@ pub struct AgentLayer {
     pub(crate) memory: Arc<MemoryService>,
     pub(crate) react_engine: Arc<ReActEngine>,
     pub(crate) memory_worker: Arc<MemoryWorker>,
+    pub(crate) memory_runtime: Arc<MemoryRuntime>,
     pub(crate) title: Option<TitleGenerator>,
     pub(crate) title_in_flight: Arc<Mutex<HashSet<String>>>,
 }
@@ -66,6 +67,10 @@ impl AgentLayer {
             context_limits.max_known_facts,
             context_limits.sanitize_field_max_chars,
             context_limits.fact_extraction_min_interval_secs,
+        ));
+        let memory_runtime = Arc::new(MemoryRuntime::new(
+            executor.session_store(),
+            memory_worker.clone(),
         ));
         // L3 / P1-7: ReAct only enqueues session_id; a single outbox worker
         // (started lazily on first enqueue) runs infer_session.
@@ -110,6 +115,7 @@ impl AgentLayer {
             memory: memory_service,
             react_engine,
             memory_worker,
+            memory_runtime,
             title,
             title_in_flight: Arc::new(Mutex::new(HashSet::new())),
         }
@@ -388,6 +394,45 @@ impl AgentLayer {
     }
 
     fn start_inner(self: Arc<Self>, recover_pending: bool, cancellation: CancellationToken) {
+        let agent = self.clone();
+        tokio::spawn(async move {
+            let live = match agent.memory_runtime.prepare_start(&cancellation).await {
+                Ok(live) => live,
+                Err(error) if cancellation.is_cancelled() => {
+                    tracing::debug!(%error, "memory runtime startup stopped by cancellation");
+                    return;
+                }
+                Err(error) => {
+                    tracing::error!(
+                        %error,
+                        "memory runtime failed to prepare; session dispatcher startup aborted"
+                    );
+                    return;
+                }
+            };
+
+            if cancellation.is_cancelled() {
+                tracing::debug!("memory runtime became ready after startup cancellation");
+                return;
+            }
+
+            let memory_runtime = agent.memory_runtime.clone();
+            let memory_cancellation = cancellation.clone();
+            tokio::spawn(async move {
+                memory_runtime
+                    .run_prepared(live, &memory_cancellation)
+                    .await;
+            });
+
+            agent.start_after_memory_ready(recover_pending, cancellation);
+        });
+    }
+
+    fn start_after_memory_ready(
+        self: Arc<Self>,
+        recover_pending: bool,
+        cancellation: CancellationToken,
+    ) {
         let agent = self.clone();
         let executor = self.executor.clone();
         let handler: RunHandler = Arc::new(move |session_id: String| {

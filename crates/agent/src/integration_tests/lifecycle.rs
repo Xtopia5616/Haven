@@ -1,6 +1,85 @@
 use super::support::*;
 use super::*;
 
+async fn assert_dispatcher_waits_for_memory_runtime(recover_pending: bool) {
+    let (agent, executor) = make_test_agent();
+    let session = executor
+        .create_session("startup readiness barrier")
+        .await
+        .unwrap();
+    agent
+        .db
+        .conn()
+        .execute_batch(
+            "CREATE TRIGGER block_memory_runtime_cursor BEFORE INSERT ON kv_store
+             WHEN NEW.key GLOB 'memory_event_cursor.*'
+             BEGIN SELECT RAISE(ABORT, 'test startup barrier'); END;",
+        )
+        .unwrap();
+
+    let cancellation = CancellationToken::new();
+    if recover_pending {
+        agent.clone().start_with_cancellation(cancellation.clone());
+    } else {
+        agent
+            .clone()
+            .start_without_pending_recovery_with_cancellation(cancellation.clone());
+    }
+
+    // prepare_start retries the injected persistence failure. The session is
+    // already queued, so any dispatcher start before readiness would consume it.
+    tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+    assert_eq!(
+        executor.get_session_status(&session.id).await,
+        Some(SessionStatus::Pending),
+        "dispatcher ran before memory runtime preparation completed"
+    );
+    assert_eq!(
+        agent
+            .db
+            .get_kv(&format!("memory_event_cursor.{}", session.id))
+            .unwrap(),
+        None,
+        "injected failure unexpectedly installed the startup cursor"
+    );
+
+    agent
+        .db
+        .clone()
+        .run_blocking(|db| {
+            db.conn()
+                .execute_batch("DROP TRIGGER block_memory_runtime_cursor")?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    let status = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            let status = executor.get_session_status(&session.id).await;
+            if status != Some(SessionStatus::Pending) {
+                break status;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("dispatcher did not claim the session after memory runtime became ready");
+    assert_ne!(
+        status,
+        Some(SessionStatus::Pending),
+        "dispatcher left the session pending after memory runtime became ready"
+    );
+
+    cancellation.cancel();
+}
+
+#[tokio::test]
+async fn both_dispatcher_start_modes_wait_for_memory_runtime_readiness() {
+    assert_dispatcher_waits_for_memory_runtime(true).await;
+    assert_dispatcher_waits_for_memory_runtime(false).await;
+}
+
 #[test]
 fn agent_new_constructor_works() {
     let mut p = std::env::temp_dir();
