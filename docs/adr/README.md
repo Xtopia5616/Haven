@@ -290,3 +290,4 @@
 - [0299：ReAct compaction summary 通过 MemoryStore 持久化](0299-react-compaction-summary-memory-store-port.md)
 - [0300：Agent resume 媒体读取通过 SessionStore read model](0300-agent-resume-media-session-store-read-model.md)
 - [0301：MemoryWorker outbox 持久化通过 MemoryStore](0301-memory-worker-outbox-through-memory-store.md)
+- [0302：MemoryTool 通过 MemoryFactStore 访问事实](0302-tools-memory-fact-store-port.md)

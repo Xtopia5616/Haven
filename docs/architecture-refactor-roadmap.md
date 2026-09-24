@@ -34,7 +34,7 @@
 - 设置命令仍手动编排多个 runtime 的更新；
 - UI 页面和 reducer 已有边界，但编排代码仍过重，IPC 类型仍是 Rust/TS 双份维护。
 
-### 2.1 已完成的降复杂度切片（截至 2026-09-24）
+### 2.1 已完成的降复杂度切片（截至 2026-09-25）
 
 以下切片已经独立提交并通过对应门禁；它们是阶段目标的增量落地，不代表后续阶段可以跳过契约收口：
 
@@ -108,6 +108,7 @@
 - 当前 Phase 7 小切片：`MemoryWorker` 普通事实抽取与 compaction-summary 抽取共用 durable outbox 的逐 job 指数退避；失败保留 marker，成功确认后才清理（ADR 0268）。不引入与 `ActionService` 混合的通用 Job 状态机。
 - 当前 Phase 7 小切片：`MemoryWorker` durable outbox 增加明确的应用停机边界；取消只停止 live projection，不确认或删除 durable marker，由 `AgentLayer`/`ApplicationRuntime` 显式触发（ADR 0269）。
 - 当前 Phase 3/7 小切片：MemoryStore 通过共享的 `MemoryService` owner 承接 MemoryWorker fact/summary outbox marker 的 enqueue、restore、ack 与 summary episode 读取；Worker 继续负责 live projection、inference 和逐 job 退避。marker ack 失败与取消均保留 durable marker；fact inference 算法及 maintenance/kv/embedding 路径不变（ADR 0301）。
+- 当前 Phase 3 小切片：`MemoryTool` 的 search/list/remember/forget 与 keyword recall fallback 经 `MemoryFactStore` typed ports 执行；Tools 只保留参数、安全和输出适配，desktop `MemoryRecallPort` 仍优先并拥有 embedding-aware recall（ADR 0302）。
 - 当前 Phase 5/6 小切片：LLM usage runtime input 的 `cache_accounting` 使用 `haven-common::CacheAccounting`；SQLite 与 IPC 仍在边界转换为既有字符串，外部文本恢复统一按 `Unknown` 处理（ADR 0270）。
 - 当前 Phase 4 切片：`AgentLayer` 在 composition root 只取得一次 `ToolsManager`，共享给 prompt builder 与 `ToolsManagerToolCatalogAdapter`，并显式注入 `ReActEngine`；engine 不再从 executor 查找 catalog port。目录 snapshot、session ID、工具执行和 live authorization 语义不变（ADR 0257）。
 

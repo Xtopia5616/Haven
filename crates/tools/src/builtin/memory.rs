@@ -1,13 +1,14 @@
 use async_trait::async_trait;
 use haven_common::types::RiskLevel;
-use haven_memory::Database;
+use haven_memory::MemoryFactStore;
 use haven_memory::recall::{
     MAX_MEMORY_QUERY_CHARS, MAX_RECALL_LIMIT, MemoryKind, MemoryQuery, MemoryRecall,
-    MemoryRecallEmptyReason, MemoryRetriever, normalize_memory_query,
+    MemoryRecallEmptyReason, normalize_memory_query,
 };
-use haven_memory::repositories::facts::{is_sensitive_object, is_sensitive_predicate};
+use haven_memory::repositories::facts::{
+    fact_effective_confidence, is_sensitive_object, is_sensitive_predicate,
+};
 use serde_json::{Value, json};
-use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 use crate::{MemoryRecallSlot, Tool, ToolConcurrency, ToolResult};
@@ -40,7 +41,7 @@ fn recall_output(kind: MemoryKind, recall: MemoryRecall) -> Value {
 ///   embedding_model is configured, else keyword/FTS). Aligns with
 ///   History `recall_memory`.
 pub struct MemoryTool {
-    db: Option<Arc<Database>>,
+    facts: Option<MemoryFactStore>,
     /// Prefer this over a local vector path so agent and History stay aligned.
     recall: MemoryRecallSlot,
 }
@@ -89,8 +90,8 @@ pub struct MemoryParams {
 }
 
 impl MemoryTool {
-    pub fn new(db: Option<Arc<Database>>, recall: MemoryRecallSlot) -> Self {
-        Self { db, recall }
+    pub fn new(facts: Option<MemoryFactStore>, recall: MemoryRecallSlot) -> Self {
+        Self { facts, recall }
     }
 
     fn parse_limit(params: &MemoryParams, default: usize) -> usize {
@@ -111,14 +112,6 @@ impl MemoryTool {
             .to_string()
     }
 
-    /// Drop secrets before anything is shown to the model (defense in depth:
-    /// the write path already purges them, this guards the read path too).
-    fn visible_facts(
-        facts: Vec<haven_memory::repositories::facts::Fact>,
-    ) -> Vec<haven_memory::repositories::facts::Fact> {
-        MemoryRetriever::filter_visible_facts(facts)
-    }
-
     fn to_output_rows(facts: &[haven_memory::repositories::facts::Fact]) -> Value {
         let rows: Vec<Value> = facts
             .iter()
@@ -127,7 +120,7 @@ impl MemoryTool {
                     "subject": f.subject,
                     "predicate": f.predicate,
                     "object": f.object,
-                    "confidence": (haven_memory::repositories::facts::fact_effective_confidence(f) * 100.0).round() / 100.0,
+                    "confidence": (fact_effective_confidence(f) * 100.0).round() / 100.0,
                     "source": f.source,
                     "tags": f.tags,
                 });
@@ -135,9 +128,7 @@ impl MemoryTool {
                     .source_ref
                     .as_ref()
                     .map(|r| r.snippet.trim())
-                    .filter(|s| {
-                        !s.is_empty() && *s != "[redacted]" && MemoryRetriever::visible_text(s)
-                    })
+                    .filter(|s| !s.is_empty() && *s != "[redacted]")
                 {
                     row["source_snippet"] = json!(snippet);
                 }
@@ -147,7 +138,10 @@ impl MemoryTool {
         json!({ "facts": rows })
     }
 
-    fn execute_search(params: &MemoryParams, db: &Database) -> anyhow::Result<ToolResult> {
+    async fn execute_search(
+        params: &MemoryParams,
+        facts: &MemoryFactStore,
+    ) -> anyhow::Result<ToolResult> {
         let query = params
             .query
             .as_deref()
@@ -164,29 +158,36 @@ impl MemoryTool {
             .subject
             .as_deref()
             .map(str::trim)
-            .filter(|s| !s.is_empty());
-        let mut facts = Self::visible_facts(db.search_facts_scoped(&query, subject)?);
-        facts.truncate(limit);
-        Ok(ToolResult::ok(Self::to_output_rows(&facts)))
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        let mut matched = facts.search_visible_facts(query, subject).await?;
+        matched.truncate(limit);
+        Ok(ToolResult::ok(Self::to_output_rows(&matched)))
     }
 
-    fn execute_list(params: &MemoryParams, db: &Database) -> anyhow::Result<ToolResult> {
+    async fn execute_list(
+        params: &MemoryParams,
+        facts: &MemoryFactStore,
+    ) -> anyhow::Result<ToolResult> {
         let limit = Self::parse_limit(params, 20);
         let subject = params
             .subject
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty());
-        let mut facts = Self::visible_facts(match subject {
-            Some(s) => db.get_facts(s)?,
+        let mut listed = match subject {
+            Some(s) => facts.list_visible_facts_for_subject(s.to_string()).await?,
             // Cross-subject recent N (already effective-confidence ordered).
-            None => db.list_facts()?,
-        });
-        facts.truncate(limit);
-        Ok(ToolResult::ok(Self::to_output_rows(&facts)))
+            None => facts.list_recent_visible_facts().await?,
+        };
+        listed.truncate(limit);
+        Ok(ToolResult::ok(Self::to_output_rows(&listed)))
     }
 
-    fn execute_remember(params: &MemoryParams, db: &Database) -> anyhow::Result<ToolResult> {
+    async fn execute_remember(
+        params: &MemoryParams,
+        facts: &MemoryFactStore,
+    ) -> anyhow::Result<ToolResult> {
         let predicate = params
             .predicate
             .as_deref()
@@ -202,15 +203,18 @@ impl MemoryTool {
         if is_sensitive_predicate(predicate) || is_sensitive_object(object) {
             anyhow::bail!("refusing to remember credential-like values");
         }
-        let tags: Vec<&str> = params
+        let tags: Vec<String> = params
             .tags
             .iter()
             .flatten()
-            .map(|t| t.trim())
-            .filter(|s| !s.is_empty())
+            .map(|tag| tag.trim())
+            .filter(|tag| !tag.is_empty())
+            .map(str::to_string)
             .collect();
         let subject = Self::write_subject(params);
-        let fact = db.set_user_fact(&subject, predicate, object, &tags)?;
+        let fact = facts
+            .set_user_fact(subject, predicate.to_string(), object.to_string(), tags)
+            .await?;
         Ok(ToolResult::ok(json!({
             "stored": {
                 "subject": fact.subject,
@@ -223,7 +227,10 @@ impl MemoryTool {
         })))
     }
 
-    fn execute_forget(params: &MemoryParams, db: &Database) -> anyhow::Result<ToolResult> {
+    async fn execute_forget(
+        params: &MemoryParams,
+        facts: &MemoryFactStore,
+    ) -> anyhow::Result<ToolResult> {
         let predicate = params
             .predicate
             .as_deref()
@@ -234,9 +241,12 @@ impl MemoryTool {
             .object
             .as_deref()
             .map(str::trim)
-            .filter(|s| !s.is_empty());
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
         let subject = Self::write_subject(params);
-        let deleted = db.delete_facts_by_triple(&subject, predicate, object)?;
+        let deleted = facts
+            .delete_facts_by_triple(subject, predicate.to_string(), object)
+            .await?;
         Ok(ToolResult::ok(json!({ "deleted": deleted })))
     }
 
@@ -245,7 +255,7 @@ impl MemoryTool {
     async fn execute_recall(
         &self,
         params: &MemoryParams,
-        db: Arc<Database>,
+        facts: &MemoryFactStore,
         session_id: Option<&str>,
     ) -> anyhow::Result<ToolResult> {
         let query = params
@@ -274,9 +284,7 @@ impl MemoryTool {
             return Ok(ToolResult::ok(recall_output(kind, recall)));
         }
 
-        let recall = db
-            .run_blocking(move |db| MemoryRetriever::new(db).retrieve(&query, None))
-            .await?;
+        let recall = facts.recall_keyword(query).await?;
 
         Ok(ToolResult::ok(recall_output(kind, recall)))
     }
@@ -292,30 +300,18 @@ impl MemoryTool {
         if cancel.is_cancelled() {
             anyhow::bail!("cancelled");
         }
-        let Some(db) = self.db.as_ref().cloned() else {
-            anyhow::bail!("memory database is not available");
+        let Some(facts) = self.facts.as_ref() else {
+            anyhow::bail!("memory fact store is not available");
         };
 
         let operation = params.operation.unwrap_or(MemoryOperation::Search);
         let mut result = match operation {
-            MemoryOperation::Search => {
-                db.run_blocking(move |db| Self::execute_search(&params, db))
-                    .await
-            }
-            MemoryOperation::List => {
-                db.run_blocking(move |db| Self::execute_list(&params, db))
-                    .await
-            }
-            MemoryOperation::Remember => {
-                db.run_blocking(move |db| Self::execute_remember(&params, db))
-                    .await
-            }
-            MemoryOperation::Forget => {
-                db.run_blocking(move |db| Self::execute_forget(&params, db))
-                    .await
-            }
+            MemoryOperation::Search => Self::execute_search(&params, facts).await,
+            MemoryOperation::List => Self::execute_list(&params, facts).await,
+            MemoryOperation::Remember => Self::execute_remember(&params, facts).await,
+            MemoryOperation::Forget => Self::execute_forget(&params, facts).await,
             MemoryOperation::Recall => {
-                self.execute_recall(&params, db, session_id.as_deref())
+                self.execute_recall(&params, facts, session_id.as_deref())
                     .await
             }
         }?;
@@ -468,8 +464,9 @@ mod tests {
     use super::*;
     use crate::Tool;
     use crate::tool_runtime::new_memory_recall_slot;
-    use haven_memory::MemoryHit;
+    use haven_memory::{Database, MemoryFactStore, MemoryHit};
     use std::future::Future;
+    use std::sync::Arc;
 
     struct TestRecall<F>(F);
 
@@ -496,7 +493,10 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let db = Arc::new(Database::open(&dir.path().join("test.db")).expect("temp db"));
         (
-            MemoryTool::new(Some(db.clone()), new_memory_recall_slot()),
+            MemoryTool::new(
+                Some(MemoryFactStore::new(db.clone())),
+                new_memory_recall_slot(),
+            ),
             db,
             dir,
         )
@@ -622,6 +622,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_search_matches_across_subjects_and_respects_exact_scope() {
+        let (tool, db, _dir) = test_tool();
+        db.insert_fact("alice", "likes", "green tea", "inferred", 0.9, &[])
+            .unwrap();
+        db.insert_fact("bob", "likes", "green tea", "inferred", 0.8, &[])
+            .unwrap();
+
+        let all = tool
+            .execute(
+                json!({"operation": "search", "query": "green tea"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let all_subjects = all.output["facts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|fact| fact["subject"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(all_subjects.len(), 2);
+        assert!(all_subjects.contains(&"alice") && all_subjects.contains(&"bob"));
+
+        let scoped = tool
+            .execute(
+                json!({"operation": "search", "query": "green tea", "subject": "bob"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let scoped_facts = scoped.output["facts"].as_array().unwrap();
+        assert_eq!(scoped_facts.len(), 1);
+        assert_eq!(scoped_facts[0]["subject"], "bob");
+    }
+
+    #[tokio::test]
     async fn test_search_excludes_sensitive_facts() {
         let (tool, _db, _dir) = db_with_facts();
         // Searching for the secret's object must not surface it.
@@ -678,6 +714,16 @@ mod tests {
             .collect();
         assert!(objs.contains(&"Rust"));
         assert!(objs.contains(&"/home/alice/app"));
+    }
+
+    #[tokio::test]
+    async fn test_empty_list_returns_empty_facts() {
+        let (tool, _db, _dir) = test_tool();
+        let result = tool
+            .execute(json!({"operation": "list"}), CancellationToken::new())
+            .await
+            .unwrap();
+        assert!(result.output["facts"].as_array().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -817,6 +863,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn bound_recall_port_takes_precedence_over_keyword_fallback() {
+        let (tool, _db, _dir) = db_with_facts();
+        let slot = tool.recall.clone();
+        bind_recall(&slot, |_query| async move {
+            Ok(MemoryRecall {
+                hits: vec![MemoryHit {
+                    entity_id: "slot-hit".into(),
+                    text: "bound recall result".into(),
+                    score: 0.8,
+                    model: "embedding-model".into(),
+                }],
+                mode: haven_memory::MemoryRecallMode::Hybrid,
+                empty_reason: None,
+                diagnostics: None,
+            })
+        });
+
+        let result = tool
+            .execute(
+                json!({"operation": "recall", "query": "Rust", "kind": "fact"}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.output["mode"], "hybrid");
+        assert_eq!(result.output["hits"][0]["entity_id"], "slot-hit");
+    }
+
+    #[tokio::test]
     async fn shared_recall_forwards_fact_subject_scope() {
         let (tool, _db, _dir) = test_tool();
         let slot = tool.recall.clone();
@@ -862,7 +937,7 @@ mod tests {
     #[tokio::test]
     async fn test_remember_rejects_credentials() {
         let (db, _dir) = temp_db();
-        let tool = MemoryTool::new(Some(db), new_memory_recall_slot());
+        let tool = MemoryTool::new(Some(MemoryFactStore::new(db)), new_memory_recall_slot());
         let result = tool
             .execute(
                 json!({"operation": "remember", "predicate": "tavily_api_key", "object": "tvly-dev-secret"}),
@@ -882,7 +957,7 @@ mod tests {
     #[tokio::test]
     async fn test_remember_requires_predicate_and_object() {
         let (db, _dir) = temp_db();
-        let tool = MemoryTool::new(Some(db), new_memory_recall_slot());
+        let tool = MemoryTool::new(Some(MemoryFactStore::new(db)), new_memory_recall_slot());
         assert!(
             tool.execute(
                 json!({"operation": "remember", "object": "x"}),
@@ -904,7 +979,10 @@ mod tests {
     #[tokio::test]
     async fn test_forget_deletes_by_predicate() {
         let (_, db, _dir) = db_with_facts();
-        let tool = MemoryTool::new(Some(db.clone()), new_memory_recall_slot());
+        let tool = MemoryTool::new(
+            Some(MemoryFactStore::new(db.clone())),
+            new_memory_recall_slot(),
+        );
         let result = tool
             .execute(
                 json!({"operation": "forget", "predicate": "likes"}),
@@ -923,7 +1001,10 @@ mod tests {
     #[tokio::test]
     async fn test_forget_deletes_single_value() {
         let (_, db, _dir) = db_with_facts();
-        let tool = MemoryTool::new(Some(db.clone()), new_memory_recall_slot());
+        let tool = MemoryTool::new(
+            Some(MemoryFactStore::new(db.clone())),
+            new_memory_recall_slot(),
+        );
         let result = tool
             .execute(
                 json!({"operation": "forget", "predicate": "likes", "object": "Rust"}),
@@ -945,7 +1026,7 @@ mod tests {
     #[tokio::test]
     async fn test_forget_requires_predicate() {
         let (db, _dir) = temp_db();
-        let tool = MemoryTool::new(Some(db), new_memory_recall_slot());
+        let tool = MemoryTool::new(Some(MemoryFactStore::new(db)), new_memory_recall_slot());
         assert!(
             tool.execute(json!({"operation": "forget"}), CancellationToken::new())
                 .await
