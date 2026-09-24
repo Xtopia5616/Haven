@@ -119,6 +119,17 @@ impl ReActEngine {
             .await?;
         deadline.ensure_remaining("before-step hooks")?;
 
+        if let Some(memory_trigger) = before_step.memory_trigger {
+            crate::memory_trigger::append_memory_trigger_nonfatal(
+                self.db.clone(),
+                self.event_store.clone(),
+                session_id,
+                memory_trigger,
+                cancel.clone(),
+            )
+            .await;
+        }
+
         // Build one immutable provider projection. Durable canonical state is
         // never used as a scratch buffer by retries or provider repairs.
         let retry_nudge = state.take_retry_nudge();

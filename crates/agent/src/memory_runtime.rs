@@ -8,11 +8,11 @@ use haven_memory::{
     CURRENT_EVENT_VERSION, MAX_SESSION_EVENT_REPLAY_PAGE_SIZE, MEMORY_TRIGGER_EVENT_TYPE,
     SessionEvent, SessionStore,
 };
-use serde::Deserialize;
 use tokio::sync::broadcast;
 use tokio::time::{Instant, sleep, sleep_until};
 use tokio_util::sync::CancellationToken;
 
+use crate::memory_trigger::MemoryTriggerPayload;
 use crate::memory_worker::MemoryWorker;
 
 const INITIAL_RETRY_BACKOFF: Duration = Duration::from_millis(250);
@@ -458,27 +458,14 @@ impl MemoryRuntime {
             );
             let payload: MemoryTriggerPayload =
                 serde_json::from_str(&event.payload).context("invalid memory_trigger payload")?;
-            let MemoryTriggerPayload {
-                trigger_kind,
-                bypass_throttle,
-                run_id,
-                step_number,
-                pause_reason,
-            } = payload;
+            payload
+                .validate()
+                .context("invalid memory_trigger fields")?;
             // These optional fields are validated at the wire boundary but
             // intentionally are not used to reconstruct transcript content.
-            let _metadata = (run_id, step_number, pause_reason);
-            match trigger_kind {
-                MemoryTriggerKind::StepInterval => anyhow::ensure!(
-                    !bypass_throttle,
-                    "step_interval memory trigger cannot bypass throttle"
-                ),
-                MemoryTriggerKind::Pause => {
-                    anyhow::ensure!(bypass_throttle, "pause memory trigger must bypass throttle")
-                }
-            }
+            let _metadata = (payload.run_id, payload.step_number, payload.pause_reason);
             self.memory_worker
-                .enqueue_infer_durable(target_session_id, bypass_throttle, cancellation)
+                .enqueue_infer_durable(target_session_id, payload.bypass_throttle, cancellation)
                 .await
                 .context("durably enqueue memory inference")?;
             after_enqueue();
@@ -517,26 +504,6 @@ async fn wait_for_retry(cancellation: &CancellationToken, delay: Duration) -> bo
 
 fn next_retry_backoff(current: Duration) -> Duration {
     current.saturating_mul(2).min(MAX_RETRY_BACKOFF)
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct MemoryTriggerPayload {
-    trigger_kind: MemoryTriggerKind,
-    bypass_throttle: bool,
-    #[serde(default)]
-    run_id: Option<u64>,
-    #[serde(default)]
-    step_number: Option<u32>,
-    #[serde(default)]
-    pause_reason: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum MemoryTriggerKind {
-    StepInterval,
-    Pause,
 }
 
 #[cfg(test)]

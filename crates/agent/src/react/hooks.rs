@@ -5,7 +5,7 @@
 //! `inject_pending_context` → `hooks.before_step` → `RequestContext` → LLM
 //! → `hooks.after_llm` (response policy) → tools (`before_tool` per call) / pause.
 //!
-//! Default hooks own prologue side effects (inbox / compact / interval infer),
+//! Default hooks own prologue side effects (inbox / compact / interval intent),
 //! empty/cut-off classification, confirm pre-check, and pause-time infer.
 //! Tests use [`NoopHooks`] so the thin loop can run without messaging or
 //! SQLite maintenance.
@@ -27,7 +27,8 @@ use super::{Action, PauseReason, ReActEngine, ReActState, StepCtx};
 /// Fact-memory callback: `(session_id, bypass_throttle)`.
 /// `bypass_throttle=true` for pause-path infer so interval extract cannot starve
 /// the fresher post-pause pass. Installed once on [`DefaultHooks`]; the thin
-/// loop never threads this (Phase 7 / G6).
+/// loop keeps it only for the pause path while interval work is committed as a
+/// durable typed event.
 pub(crate) type InferCallback = Arc<dyn Fn(&str, bool) + Send + Sync>;
 
 /// Mid-run MEMORY fence refresh (M2): dirty flag lives on [`crate::MemoryWorker`];
@@ -82,6 +83,7 @@ pub(crate) struct AfterLlmInput<'a> {
 pub(crate) struct BeforeStepOutput {
     pub(crate) tool_definitions: Option<Arc<Vec<ToolDefinition>>>,
     pub(crate) tool_catalog: Option<Arc<haven_tools::ToolCatalogSnapshot>>,
+    pub(crate) memory_trigger: Option<crate::memory_trigger::MemoryTriggerPayload>,
 }
 
 /// Extension seam for ReAct domain side effects. Production uses
@@ -89,7 +91,8 @@ pub(crate) struct BeforeStepOutput {
 #[async_trait]
 pub(crate) trait LoopHooks: Send + Sync {
     /// Prologue side effects after inject, before sanitize.
-    /// Interval infer (`infer(session, false)`) is time-throttled extraction.
+    /// Returns any interval memory-trigger intent for the turn boundary to
+    /// append after the hook succeeds.
     async fn before_step(
         &self,
         engine: &ReActEngine,
@@ -297,6 +300,30 @@ mod tests {
             limits,
         )
         .with_hooks(default_hooks_with_infer(infer));
+        let mut default_state =
+            ReActState::new(Vec::new(), Vec::new(), std::collections::HashMap::new());
+        let before_step = default_engine
+            .hooks
+            .before_step(
+                &default_engine,
+                &ctx,
+                &mut default_state,
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            before_step.memory_trigger,
+            Some(crate::memory_trigger::MemoryTriggerPayload::step_interval(
+                1, 25
+            )),
+            "interval extraction should be represented as a typed intent"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "interval extraction must not call the legacy worker callback"
+        );
         default_engine
             .hooks
             .on_pause(&default_engine, &ctx, PauseReason::TurnEnd)

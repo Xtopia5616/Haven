@@ -20,6 +20,7 @@ use super::hooks::{
 };
 use super::retries::{AfterLlmAction, ResponsePolicy};
 use super::{PauseReason, ReActEngine, ReActState, StepCtx, canonical_media_requirements};
+use crate::memory_trigger::MemoryTriggerPayload;
 
 /// Production hooks: context compaction, interval + pause infer, throttled
 /// MEMORY fence refresh (M2), response policy, and confirm pre-check.
@@ -108,12 +109,13 @@ impl LoopHooks for DefaultHooks {
             ))
             .await?;
         let interval = engine.limits().fact_infer_interval_steps;
-        if ctx.step_num > 0 && interval > 0 && ctx.step_num.is_multiple_of(interval) {
-            self.call_infer(&ctx.session_id, false);
-        }
+        let memory_trigger =
+            (ctx.step_num > 0 && interval > 0 && ctx.step_num.is_multiple_of(interval))
+                .then(|| MemoryTriggerPayload::step_interval(ctx.run_id, ctx.step_num));
         Ok(BeforeStepOutput {
             tool_definitions: Some(tool_defs),
             tool_catalog: Some(tool_catalog),
+            memory_trigger,
         })
     }
 

@@ -13,6 +13,7 @@ mod memory_index;
 mod memory_inference;
 mod memory_runtime;
 mod memory_service;
+mod memory_trigger;
 mod memory_worker;
 mod partial;
 mod prompt;
