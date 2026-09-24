@@ -370,6 +370,22 @@ impl SessionStore {
         )
     }
 
+    /// Mark pending/running action steps for a failed session as `unknown`.
+    ///
+    /// The existing session-steps repository owns the update semantics; this
+    /// port only moves its SQLite work onto the blocking pool.
+    pub async fn fail_pending_action_steps(
+        &self,
+        session_id: &str,
+        observation: &str,
+    ) -> anyhow::Result<usize> {
+        let session_id = session_id.to_owned();
+        let observation = observation.to_owned();
+        self.db
+            .run_blocking(move |db| db.fail_pending_action_steps(&session_id, &observation))
+            .await
+    }
+
     /// Subscribe to events committed through this store. Use
     /// [`Self::subscribe_from`] when a consumer needs a replay without a gap.
     /// A lagged receiver must perform the same replay again.
@@ -1952,6 +1968,87 @@ mod tests {
                 .iter()
                 .all(|session| session.status == SessionStatus::Pending)
         );
+    }
+
+    #[tokio::test]
+    async fn session_store_fail_pending_action_steps_scopes_unfinished_steps() {
+        let (db, store, session_id) = store();
+        let other_session = db.create_session("other").unwrap();
+        let pending = db
+            .create_action_step(&session_id, 0, "shell", "{}", false, false, None, None)
+            .unwrap();
+        let running = db
+            .create_action_step(&session_id, 1, "shell", "{}", false, false, None, None)
+            .unwrap();
+        assert!(db.start_action_step(&running.id).unwrap());
+        let completed = db
+            .create_action_step(&session_id, 2, "shell", "{}", false, false, None, None)
+            .unwrap();
+        db.complete_action_step(&completed.id, "already finished", true)
+            .unwrap();
+        let other_pending = db
+            .create_action_step(
+                &other_session.id,
+                0,
+                "shell",
+                "{}",
+                false,
+                false,
+                None,
+                None,
+            )
+            .unwrap();
+
+        let completed_at_before = db
+            .get_session_steps(&session_id)
+            .unwrap()
+            .into_iter()
+            .find(|step| step.id == completed.id)
+            .unwrap()
+            .completed_at;
+        assert!(completed_at_before.is_some());
+        let other_observation_before = db
+            .get_session_steps(&other_session.id)
+            .unwrap()
+            .into_iter()
+            .find(|step| step.id == other_pending.id)
+            .unwrap()
+            .observation;
+
+        let changed = store
+            .fail_pending_action_steps(&session_id, "session failed")
+            .await
+            .unwrap();
+
+        assert_eq!(changed, 2);
+        let target_steps = db.get_session_steps(&session_id).unwrap();
+        for step_id in [&pending.id, &running.id] {
+            let step = target_steps
+                .iter()
+                .find(|step| step.id == *step_id)
+                .unwrap();
+            assert_eq!(step.status, "unknown");
+            assert_eq!(step.observation.as_deref(), Some("session failed"));
+            assert!(step.completed_at.is_some());
+        }
+        let completed_after = target_steps
+            .iter()
+            .find(|step| step.id == completed.id)
+            .unwrap();
+        assert_eq!(completed_after.status, "completed");
+        assert_eq!(
+            completed_after.observation.as_deref(),
+            Some("already finished")
+        );
+        assert_eq!(completed_after.completed_at, completed_at_before);
+
+        let untouched = db.get_session_steps(&other_session.id).unwrap();
+        let other_pending_after = untouched
+            .iter()
+            .find(|step| step.id == other_pending.id)
+            .unwrap();
+        assert_eq!(other_pending_after.status, "pending");
+        assert_eq!(other_pending_after.observation, other_observation_before);
     }
 
     #[tokio::test]

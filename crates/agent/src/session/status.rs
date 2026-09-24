@@ -675,11 +675,9 @@ impl SessionSupervisor {
     }
 
     pub async fn fail_pending_action_steps(&self, session_id: &str, observation: &str) {
-        let session_id = session_id.to_string();
-        let observation = observation.to_string();
         let _ = self
-            .db
-            .run_blocking(move |db| db.fail_pending_action_steps(&session_id, &observation))
+            .store
+            .fail_pending_action_steps(session_id, observation)
             .await;
     }
 }
