@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use haven_common::config::RequestKind;
-use haven_llm::LlmRouter;
+use haven_llm::{LlmRouter, PromptRequest};
 
 /// The model capability used by background memory extraction and maintenance.
 ///
@@ -36,7 +36,11 @@ impl MemoryInferencePort for RouterMemoryInferencePort {
     async fn fast_chat(&self, system_prompt: &str, user_prompt: &str) -> anyhow::Result<String> {
         let response = self
             .router
-            .chat_with_prompt(RequestKind::FastChat, system_prompt, user_prompt)
+            .chat_with_prompt_request(PromptRequest::new(
+                RequestKind::FastChat,
+                system_prompt,
+                user_prompt,
+            ))
             .await?;
         Ok(response.text)
     }

@@ -1,6 +1,6 @@
 use haven_common::config::RequestKind;
 use haven_common::prompts::TITLE_SYSTEM_PROMPT;
-use haven_llm::LlmRouter;
+use haven_llm::{LlmRouter, PromptRequest};
 use std::sync::Arc;
 
 /// Generates concise conversation titles using the small_model endpoint.
@@ -33,7 +33,11 @@ impl TitleGenerator {
 
         match self
             .router
-            .chat_with_prompt(RequestKind::FastChat, TITLE_SYSTEM_PROMPT, &conv_text)
+            .chat_with_prompt_request(PromptRequest::new(
+                RequestKind::FastChat,
+                TITLE_SYSTEM_PROMPT,
+                conv_text,
+            ))
             .await
         {
             Ok(response) => {
@@ -193,8 +197,16 @@ mod tests {
         let calls = tr.mock.calls.lock().unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].len(), 2);
-        assert!(matches!(calls[0][0].role, CanonicalRole::System));
-        assert!(matches!(calls[0][1].role, CanonicalRole::User));
+        assert_prompt_message(&calls[0][0], CanonicalRole::System, TITLE_SYSTEM_PROMPT);
+        assert_prompt_message(&calls[0][1], CanonicalRole::User, "帮我整理代码");
+    }
+
+    fn assert_prompt_message(message: &CanonicalMessage, role: CanonicalRole, expected_text: &str) {
+        assert_eq!(message.role, role);
+        match message.content.as_slice() {
+            [haven_common::types::ContentPart::Text(text)] => assert_eq!(text, expected_text),
+            content => panic!("expected one text content part, got {content:?}"),
+        }
     }
 
     #[tokio::test]

@@ -870,18 +870,6 @@ impl LlmRouter {
         self.complete(Self::prompt_request(request)).await
     }
 
-    /// Compatibility wrapper for callers that still provide separate prompt
-    /// strings. New code should use [`Self::chat_with_prompt_request`].
-    pub async fn chat_with_prompt(
-        &self,
-        request: RequestKind,
-        system: &str,
-        user: &str,
-    ) -> Result<LlmResponse, LlmError> {
-        self.chat_with_prompt_request(PromptRequest::new(request, system, user))
-            .await
-    }
-
     /// Cancellable one-shot chat used by compaction and other maintenance
     /// calls. Dropping the in-flight request releases the provider future as
     /// soon as the user cancels the owning session.
@@ -1556,27 +1544,6 @@ mod tests {
         }
         assert!(chat_seen.lock().unwrap().is_empty());
 
-        // The public three-argument API remains a behavior-preserving wrapper.
-        router
-            .chat_with_prompt(RequestKind::Chat, "legacy system", "legacy user")
-            .await
-            .unwrap();
-        {
-            let chat_calls = chat_seen.lock().unwrap();
-            assert_eq!(chat_calls.len(), 1);
-            assert_eq!(chat_calls[0].len(), 2);
-            assert_prompt_message(
-                &chat_calls[0][0],
-                haven_common::types::CanonicalRole::System,
-                "legacy system",
-            );
-            assert_prompt_message(
-                &chat_calls[0][1],
-                haven_common::types::CanonicalRole::User,
-                "legacy user",
-            );
-        }
-
         router
             .chat_with_prompt_request(PromptRequest::new(
                 RequestKind::Chat,
@@ -1587,10 +1554,10 @@ mod tests {
             .unwrap();
         {
             let chat_calls = chat_seen.lock().unwrap();
-            assert_eq!(chat_calls.len(), 2);
-            assert_eq!(chat_calls[1].len(), 1);
+            assert_eq!(chat_calls.len(), 1);
+            assert_eq!(chat_calls[0].len(), 1);
             assert_prompt_message(
-                &chat_calls[1][0],
+                &chat_calls[0][0],
                 haven_common::types::CanonicalRole::User,
                 "user-only prompt",
             );
