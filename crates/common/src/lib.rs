@@ -40,6 +40,6 @@ pub use tools::{
 
 pub use lifecycle::{ActionStatus, SessionStatus, SessionWaitingReason};
 pub use types::{
-    CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart, FollowUp, InjectSource,
-    MessageAttachment, PEER_KICKOFF_PREFIX,
+    CacheAccounting, CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart, FollowUp,
+    InjectSource, MessageAttachment, PEER_KICKOFF_PREFIX,
 };

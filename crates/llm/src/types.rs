@@ -5,29 +5,7 @@ use serde_json::{Map, Value};
 use std::fmt;
 use thiserror::Error;
 
-/// How a provider accounts for prompt-cache tokens in `prompt_tokens`.
-///
-/// This must travel with each usage row. Anthropic cache reads sit outside
-/// `input_tokens`, while OpenAI-style cache hits are already inside prompt
-/// tokens; aggregate token counts cannot safely recover that distinction.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum CacheAccounting {
-    Inclusive,
-    Exclusive,
-    #[default]
-    Unknown,
-}
-
-impl CacheAccounting {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Inclusive => "inclusive",
-            Self::Exclusive => "exclusive",
-            Self::Unknown => "unknown",
-        }
-    }
-}
+pub use haven_common::types::CacheAccounting;
 
 /// Non-sensitive prompt-cache request and provider outcome metadata. This is
 /// persisted per call for diagnostics, never with the cache key or prompt.

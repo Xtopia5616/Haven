@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex};
 
 use haven_common::config::RequestKind;
+use haven_common::types::CacheAccounting;
 use haven_memory::{Database, LlmCallUsageInput, SessionStore};
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -26,7 +27,7 @@ pub(crate) struct UsageUpdate {
     pub cached_tokens: u32,
     pub cache_creation_tokens: u32,
     pub cache_miss_tokens: u32,
-    pub cache_accounting: String,
+    pub cache_accounting: CacheAccounting,
     pub cache_diagnostics: Option<String>,
     pub cost_usd: f64,
     pub has_cost: bool,
@@ -433,7 +434,7 @@ mod tests {
             cached_tokens: 0,
             cache_creation_tokens: 0,
             cache_miss_tokens: prompt_tokens,
-            cache_accounting: "inclusive".into(),
+            cache_accounting: CacheAccounting::Inclusive,
             cache_diagnostics: None,
             cost_usd: 0.01,
             has_cost: true,
@@ -454,7 +455,7 @@ mod tests {
             cached_tokens: 0,
             cache_creation_tokens: 0,
             cache_miss_tokens: prompt_tokens,
-            cache_accounting: "inclusive".into(),
+            cache_accounting: CacheAccounting::Inclusive,
             cache_diagnostics: None,
             cost_usd: 0.0,
             has_cost: false,
@@ -522,7 +523,7 @@ mod tests {
                     cached_tokens: 0,
                     cache_creation_tokens: 0,
                     cache_miss_tokens: 40,
-                    cache_accounting: "inclusive".into(),
+                    cache_accounting: CacheAccounting::Inclusive,
                     cache_diagnostics: None,
                     cost_usd: 0.0,
                     has_cost: false,

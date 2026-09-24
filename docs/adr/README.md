@@ -258,3 +258,4 @@
 - [0267：MemoryRuntime 拥有 maintenance 调度策略](0267-memory-runtime-maintenance-schedule.md)
 - [0268：MemoryWorker durable outbox 的逐 job 退避](0268-memory-outbox-retry-backoff.md)
 - [0269：MemoryWorker 的应用停机边界](0269-memory-worker-shutdown-boundary.md)
+- [0270：用量链路的 typed cache accounting](0270-typed-cache-accounting.md)

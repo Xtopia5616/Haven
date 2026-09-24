@@ -1,5 +1,37 @@
 use serde::{Deserialize, Serialize};
 
+/// How a provider accounts for prompt-cache tokens in `prompt_tokens`.
+///
+/// This value crosses the LLM, agent and durable-memory layers. The database
+/// still stores its snake_case representation, but runtime code should not
+/// pass the same three strings through every usage wrapper.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CacheAccounting {
+    Inclusive,
+    Exclusive,
+    #[default]
+    Unknown,
+}
+
+impl CacheAccounting {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Inclusive => "inclusive",
+            Self::Exclusive => "exclusive",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    pub fn parse(value: &str) -> Self {
+        match value {
+            "inclusive" => Self::Inclusive,
+            "exclusive" => Self::Exclusive,
+            _ => Self::Unknown,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Entity identifiers
 // ---------------------------------------------------------------------------

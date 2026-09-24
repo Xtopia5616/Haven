@@ -2,6 +2,7 @@ use crate::db::Database;
 #[cfg(test)]
 use crate::repositories::messages::now_rfc3339_millis;
 use haven_common::config::RequestKind;
+use haven_common::types::CacheAccounting;
 use rusqlite::OptionalExtension;
 use rusqlite::types::Type;
 
@@ -161,7 +162,7 @@ pub struct LlmCallUsageInput {
     pub cached_tokens: u32,
     pub cache_creation_tokens: u32,
     pub cache_miss_tokens: u32,
-    pub cache_accounting: String,
+    pub cache_accounting: CacheAccounting,
     pub cache_diagnostics: Option<String>,
     pub cost_usd: f64,
     pub has_cost: bool,
@@ -190,7 +191,7 @@ impl LlmCallUsage {
             cached_tokens: input.cached_tokens,
             cache_creation_tokens: input.cache_creation_tokens,
             cache_miss_tokens: input.cache_miss_tokens,
-            cache_accounting: input.cache_accounting.clone(),
+            cache_accounting: input.cache_accounting.as_str().to_string(),
             cache_diagnostics: input
                 .cache_diagnostics
                 .as_deref()
@@ -667,7 +668,7 @@ impl Database {
                     input.cached_tokens,
                     input.cache_creation_tokens,
                     input.cache_miss_tokens,
-                    &input.cache_accounting,
+                    input.cache_accounting.as_str(),
                     input.cache_diagnostics.as_deref(),
                     input.context_tokens,
                     input.context_window,
@@ -684,7 +685,7 @@ impl Database {
                     input.cached_tokens,
                     input.cache_creation_tokens,
                     input.cache_miss_tokens,
-                    &input.cache_accounting,
+                    input.cache_accounting.as_str(),
                     input.cost_usd,
                     input.has_cost,
                     input.context_tokens,
@@ -709,7 +710,7 @@ impl Database {
                     cached_tokens: input.cached_tokens,
                     cache_creation_tokens: input.cache_creation_tokens,
                     cache_miss_tokens: input.cache_miss_tokens,
-                    cache_accounting: input.cache_accounting.clone(),
+                    cache_accounting: input.cache_accounting.as_str().to_string(),
                     cache_diagnostics: input
                         .cache_diagnostics
                         .as_deref()
@@ -1100,6 +1101,7 @@ mod tests {
     use crate::LlmCallUsageInput;
     use crate::db::Database;
     use haven_common::config::RequestKind;
+    use haven_common::types::CacheAccounting;
 
     fn test_db() -> Database {
         Database::open_in_memory().expect("create in-memory db")
@@ -1154,7 +1156,7 @@ mod tests {
                         cached_tokens: 0,
                         cache_creation_tokens: 0,
                         cache_miss_tokens: 10,
-                        cache_accounting: "inclusive".into(),
+                        cache_accounting: CacheAccounting::Inclusive,
                         cache_diagnostics: None,
                         cost_usd: 0.1,
                         has_cost: true,
@@ -1173,7 +1175,7 @@ mod tests {
                         cached_tokens: 0,
                         cache_creation_tokens: 0,
                         cache_miss_tokens: 20,
-                        cache_accounting: "inclusive".into(),
+                        cache_accounting: CacheAccounting::Inclusive,
                         cache_diagnostics: None,
                         cost_usd: 0.2,
                         has_cost: true,

@@ -2096,6 +2096,7 @@ fn bump_message_millis(last: &str) -> String {
 mod tests {
     use super::*;
     use haven_common::config::RequestKind;
+    use haven_common::types::CacheAccounting;
 
     fn usage_input(step_number: i32, total_tokens: u32) -> LlmCallUsageInput {
         LlmCallUsageInput {
@@ -2109,7 +2110,7 @@ mod tests {
             cached_tokens: 0,
             cache_creation_tokens: 0,
             cache_miss_tokens: 0,
-            cache_accounting: "unknown".into(),
+            cache_accounting: CacheAccounting::Unknown,
             cache_diagnostics: None,
             cost_usd: 0.0,
             has_cost: false,

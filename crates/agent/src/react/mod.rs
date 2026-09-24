@@ -741,7 +741,7 @@ impl ReActEngine {
                     cached_tokens: usage.cached_tokens,
                     cache_creation_tokens: usage.cache_creation_tokens,
                     cache_miss_tokens: usage.cache_miss_tokens(),
-                    cache_accounting: usage.cache_accounting.as_str().into(),
+                    cache_accounting: usage.cache_accounting,
                     cache_diagnostics,
                     cost_usd: step_cost.unwrap_or(0.0),
                     has_cost: call_has_cost,
@@ -899,7 +899,7 @@ impl ReActEngine {
                     cached_tokens: usage.cached_tokens,
                     cache_creation_tokens: usage.cache_creation_tokens,
                     cache_miss_tokens: usage.cache_miss_tokens(),
-                    cache_accounting,
+                    cache_accounting: usage.cache_accounting,
                     cache_diagnostics,
                     cost_usd: step_cost.unwrap_or(0.0),
                     has_cost: step_cost.is_some(),
@@ -979,7 +979,6 @@ impl ReActEngine {
             let usage_cache_creation = usage.cache_creation_tokens;
             let usage_cache_miss = usage.cache_miss_tokens();
             let usage_cache_accounting = usage.cache_accounting.as_str().to_string();
-            let usage_cache_accounting_for_persist = usage_cache_accounting.clone();
             let cache_diagnostics = usage
                 .cache_diagnostics
                 .as_ref()
@@ -1007,7 +1006,7 @@ impl ReActEngine {
                         cached_tokens: usage_cached,
                         cache_creation_tokens: usage_cache_creation,
                         cache_miss_tokens: usage_cache_miss,
-                        cache_accounting: usage_cache_accounting_for_persist,
+                        cache_accounting: usage.cache_accounting,
                         cache_diagnostics,
                         cost_usd: call_cost,
                         has_cost: call_has_cost,
