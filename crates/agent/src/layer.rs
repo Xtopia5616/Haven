@@ -338,6 +338,13 @@ impl AgentLayer {
             .await;
     }
 
+    /// Stop background memory work during application teardown. Durable
+    /// outbox markers remain in the database; the worker only stops its live
+    /// projection and will restore those markers on the next process start.
+    pub fn shutdown_background_workers(&self) {
+        self.memory_worker.shutdown();
+    }
+
     /// Forward a fully-scoped memory query through the agent boundary.
     pub async fn recall_memory_query(
         &self,

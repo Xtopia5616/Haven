@@ -153,6 +153,11 @@ impl ApplicationRuntime {
         }
 
         self.shutdown_token.cancel();
+        // MemoryWorker owns a detached durable-outbox projection rather than
+        // an ApplicationRuntime task handle. Signal it explicitly after the
+        // shared cancellation boundary so it stops without acknowledging
+        // unfinished durable jobs.
+        self.agent.shutdown_background_workers();
 
         // Stop producers before consumers and resource owners. In particular,
         // this prevents a final recording or session run from starting while

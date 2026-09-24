@@ -62,6 +62,12 @@ pub struct MemoryWorker {
     /// projection.
     summary_outbox: Mutex<HashMap<String, String>>,
     outbox_notify: Notify,
+    /// Serializes worker startup with shutdown so a late enqueue cannot spawn
+    /// a replacement worker after the shutdown boundary.
+    outbox_lifecycle: Mutex<()>,
+    /// Shared shutdown signal for the detached outbox worker and prompt
+    /// prefetches. Durable markers remain authoritative when it is cancelled.
+    shutdown_token: CancellationToken,
     /// Lazy worker start so `AgentLayer::new` stays usable outside a Tokio
     /// runtime (unit tests that only construct the layer).
     outbox_worker_started: AtomicBool,
@@ -128,6 +134,8 @@ impl MemoryWorker {
             outbox: Mutex::new(HashMap::new()),
             summary_outbox: Mutex::new(HashMap::new()),
             outbox_notify: Notify::new(),
+            outbox_lifecycle: Mutex::new(()),
+            shutdown_token: CancellationToken::new(),
             outbox_worker_started: AtomicBool::new(false),
             memory_dirty: Mutex::new(HashMap::new()),
             memory_patch_last: Mutex::new(HashMap::new()),
@@ -146,16 +154,17 @@ impl MemoryWorker {
     pub fn prefetch_prompt_memory(self: &Arc<Self>, session_id: &str, description: &str) {
         if session_id.trim().is_empty()
             || description.trim().is_empty()
+            || self.shutdown_token.is_cancelled()
             || tokio::runtime::Handle::try_current().is_err()
         {
             return;
         }
         let session_id = session_id.to_string();
         let description = description.to_string();
-        let cancellation = CancellationToken::new();
+        let cancellation = self.shutdown_token.child_token();
         {
             let mut prefetches = self.prompt_prefetches.lock().unwrap();
-            if prefetches.contains_key(&session_id) {
+            if self.shutdown_token.is_cancelled() || prefetches.contains_key(&session_id) {
                 return;
             }
             prefetches.insert(session_id.clone(), cancellation.clone());
@@ -313,6 +322,10 @@ impl MemoryWorker {
         self: &Arc<Self>,
         cancellation: &CancellationToken,
     ) -> anyhow::Result<usize> {
+        anyhow::ensure!(
+            !self.shutdown_token.is_cancelled(),
+            "memory worker is shut down"
+        );
         let pending = self
             .db
             .run_blocking_cancellable(cancellation.clone(), |db| db.pending_fact_extractions())
@@ -328,21 +341,49 @@ impl MemoryWorker {
         let restored_count = pending.len() + pending_summaries.len();
         for (session_id, bypass_throttle) in pending {
             anyhow::ensure!(
-                !cancellation.is_cancelled(),
+                !cancellation.is_cancelled() && !self.shutdown_token.is_cancelled(),
                 "fact extraction outbox restore cancelled"
             );
             self.enqueue_memory(session_id, bypass_throttle);
         }
         for (session_id, episode_id) in pending_summaries {
             anyhow::ensure!(
-                !cancellation.is_cancelled(),
+                !cancellation.is_cancelled() && !self.shutdown_token.is_cancelled(),
                 "summary extraction outbox restore cancelled"
             );
             self.enqueue_summary_memory(session_id, episode_id);
         }
+        anyhow::ensure!(
+            !cancellation.is_cancelled() && !self.shutdown_token.is_cancelled(),
+            "fact extraction outbox restore cancelled"
+        );
         self.ensure_outbox_worker();
         self.outbox_notify.notify_one();
         Ok(restored_count)
+    }
+
+    /// Stop background work owned by this worker. Pending extraction markers
+    /// are intentionally left in durable storage for the next process start.
+    pub(crate) fn shutdown(&self) {
+        {
+            let _lifecycle = self
+                .outbox_lifecycle
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            self.shutdown_token.cancel();
+        }
+        self.outbox_notify.notify_waiters();
+
+        let prefetches = {
+            let mut prefetches = self
+                .prompt_prefetches
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            std::mem::take(&mut *prefetches)
+        };
+        for cancellation in prefetches.into_values() {
+            cancellation.cancel();
+        }
     }
 
     #[cfg(test)]
@@ -379,27 +420,27 @@ impl MemoryWorker {
     }
 
     fn ensure_outbox_worker(self: &Arc<Self>) {
-        if self.outbox_worker_started.load(Ordering::Acquire) {
-            return;
-        }
         if tokio::runtime::Handle::try_current().is_err() {
             return;
         }
-        if self
-            .outbox_worker_started
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
+        let _lifecycle = self
+            .outbox_lifecycle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if self.shutdown_token.is_cancelled() || self.outbox_worker_started.load(Ordering::Acquire)
         {
             return;
         }
+        self.outbox_worker_started.store(true, Ordering::Release);
         let engine = self.clone();
         tokio::spawn(async move {
+            let cancellation = engine.shutdown_token.clone();
             // Restore jobs that were enqueued by the previous process. Jobs
             // stay durable until successful completion; the extraction cursor
             // makes a replay after a crash idempotent.
             match engine
                 .db
-                .run_blocking(|db| db.pending_fact_extractions())
+                .run_blocking_cancellable(cancellation.clone(), |db| db.pending_fact_extractions())
                 .await
             {
                 Ok(restored) => {
@@ -414,9 +455,14 @@ impl MemoryWorker {
                     tracing::warn!("fact extraction durable outbox restore failed: {}", error);
                 }
             }
+            if cancellation.is_cancelled() {
+                return;
+            }
             match engine
                 .db
-                .run_blocking(|db| db.pending_summary_extractions())
+                .run_blocking_cancellable(cancellation.clone(), |db| {
+                    db.pending_summary_extractions()
+                })
                 .await
             {
                 Ok(restored) => {
@@ -433,9 +479,15 @@ impl MemoryWorker {
                     );
                 }
             }
+            if cancellation.is_cancelled() {
+                return;
+            }
             let mut fact_retry_attempts = HashMap::<String, u32>::new();
             let mut summary_retry_attempts = HashMap::<String, u32>::new();
             loop {
+                if cancellation.is_cancelled() {
+                    return;
+                }
                 let batch: Vec<(String, bool)> = {
                     let mut pending = engine.outbox.lock().unwrap_or_else(|e| e.into_inner());
                     if pending.is_empty() {
@@ -455,20 +507,36 @@ impl MemoryWorker {
                         .collect()
                 };
                 if batch.is_empty() && summary_batch.is_empty() {
-                    engine.outbox_notify.notified().await;
+                    tokio::select! {
+                        biased;
+                        _ = cancellation.cancelled() => return,
+                        _ = engine.outbox_notify.notified() => {}
+                    }
                     continue;
                 }
                 for (session_id, bypass) in batch {
-                    let completed = if bypass {
-                        engine.infer_session_on_pause(&session_id).await
-                    } else {
-                        engine.infer_session(&session_id).await
+                    if cancellation.is_cancelled() {
+                        return;
+                    }
+                    let completed = tokio::select! {
+                        biased;
+                        _ = cancellation.cancelled() => return,
+                        completed = async {
+                            if bypass {
+                                engine.infer_session_on_pause(&session_id).await
+                            } else {
+                                engine.infer_session(&session_id).await
+                            }
+                        } => completed,
                     };
+                    if cancellation.is_cancelled() {
+                        return;
+                    }
                     if completed {
                         let session_id_for_db = session_id.clone();
                         match engine
                             .db
-                            .run_blocking(move |db| {
+                            .run_blocking_cancellable(cancellation.clone(), move |db| {
                                 db.clear_pending_fact_extraction_if_not_upgraded(
                                     &session_id_for_db,
                                     bypass,
@@ -480,6 +548,9 @@ impl MemoryWorker {
                                 fact_retry_attempts.remove(&session_id);
                             }
                             Err(error) => {
+                                if cancellation.is_cancelled() {
+                                    return;
+                                }
                                 let wait_secs = next_outbox_retry_secs(
                                     fact_retry_attempts.entry(session_id.clone()).or_default(),
                                     0,
@@ -491,7 +562,9 @@ impl MemoryWorker {
                                     wait_secs
                                 );
                                 engine.enqueue_memory(session_id, bypass);
-                                tokio::time::sleep(Duration::from_secs(wait_secs)).await;
+                                if !wait_for_outbox_retry(&cancellation, wait_secs).await {
+                                    return;
+                                }
                             }
                         }
                     } else {
@@ -505,20 +578,29 @@ impl MemoryWorker {
                             "fact extraction deferred; durable marker retained"
                         );
                         engine.enqueue_memory(session_id, bypass);
-                        tokio::time::sleep(Duration::from_secs(wait_secs)).await;
+                        if !wait_for_outbox_retry(&cancellation, wait_secs).await {
+                            return;
+                        }
                     }
                 }
                 for (session_id, episode_id) in summary_batch {
+                    if cancellation.is_cancelled() {
+                        return;
+                    }
                     let summary = match engine
                         .db
-                        .run_blocking({
+                        .run_blocking_cancellable(cancellation.clone(), {
                             let episode_id = episode_id.clone();
                             move |db| db.episode_text(&episode_id)
                         })
                         .await
                     {
-                        Ok(Some(summary)) => summary,
+                        Ok(Some(summary)) if !cancellation.is_cancelled() => summary,
+                        Ok(Some(_)) => return,
                         Ok(None) => {
+                            if cancellation.is_cancelled() {
+                                return;
+                            }
                             tracing::debug!(
                                 session = %session_id,
                                 episode = %episode_id,
@@ -526,12 +608,15 @@ impl MemoryWorker {
                             );
                             let clear_result = engine
                                 .db
-                                .run_blocking({
+                                .run_blocking_cancellable(cancellation.clone(), {
                                     let session_id = session_id.clone();
                                     let episode_id = episode_id.clone();
                                     move |db| db.clear_summary_extraction(&session_id, &episode_id)
                                 })
                                 .await;
+                            if cancellation.is_cancelled() {
+                                return;
+                            }
                             if let Err(error) = clear_result {
                                 let wait_secs = next_outbox_retry_secs(
                                     summary_retry_attempts
@@ -546,13 +631,15 @@ impl MemoryWorker {
                                     "missing summary marker cleanup failed: {error}"
                                 );
                                 engine.enqueue_summary_memory(session_id, episode_id);
-                                tokio::time::sleep(Duration::from_secs(wait_secs)).await;
+                                if !wait_for_outbox_retry(&cancellation, wait_secs).await {
+                                    return;
+                                }
                             } else {
                                 summary_retry_attempts.remove(&episode_id);
                             }
                             continue;
                         }
-                        Err(error) => {
+                        Err(error) if !cancellation.is_cancelled() => {
                             tracing::warn!(
                                 session = %session_id,
                                 episode = %episode_id,
@@ -565,20 +652,31 @@ impl MemoryWorker {
                                 0,
                             );
                             engine.enqueue_summary_memory(session_id, episode_id);
-                            tokio::time::sleep(Duration::from_secs(wait_secs)).await;
+                            if !wait_for_outbox_retry(&cancellation, wait_secs).await {
+                                return;
+                            }
                             continue;
                         }
+                        Err(_) => return,
                     };
-                    match engine
-                        .infer_facts_from_summary(&session_id, &episode_id, &summary)
-                        .await
-                    {
+                    if cancellation.is_cancelled() {
+                        return;
+                    }
+                    let outcome = tokio::select! {
+                        biased;
+                        _ = cancellation.cancelled() => return,
+                        outcome = engine.infer_facts_from_summary(&session_id, &episode_id, &summary) => outcome,
+                    };
+                    if cancellation.is_cancelled() {
+                        return;
+                    }
+                    match outcome {
                         SummaryExtractOutcome::Done => {
                             let session_id_for_db = session_id.clone();
                             let episode_id_for_db = episode_id.clone();
                             match engine
                                 .db
-                                .run_blocking(move |db| {
+                                .run_blocking_cancellable(cancellation.clone(), move |db| {
                                     db.clear_summary_extraction(
                                         &session_id_for_db,
                                         &episode_id_for_db,
@@ -590,6 +688,9 @@ impl MemoryWorker {
                                     summary_retry_attempts.remove(&episode_id);
                                 }
                                 Err(error) => {
+                                    if cancellation.is_cancelled() {
+                                        return;
+                                    }
                                     let wait_secs = next_outbox_retry_secs(
                                         summary_retry_attempts
                                             .entry(episode_id.clone())
@@ -603,7 +704,9 @@ impl MemoryWorker {
                                         "summary extraction durable completion failed: {error}"
                                     );
                                     engine.enqueue_summary_memory(session_id, episode_id);
-                                    tokio::time::sleep(Duration::from_secs(wait_secs)).await;
+                                    if !wait_for_outbox_retry(&cancellation, wait_secs).await {
+                                        return;
+                                    }
                                 }
                             }
                         }
@@ -622,7 +725,9 @@ impl MemoryWorker {
                                 "summary fact inference deferred"
                             );
                             engine.enqueue_summary_memory(session_id, episode_id);
-                            tokio::time::sleep(Duration::from_secs(wait_secs)).await;
+                            if !wait_for_outbox_retry(&cancellation, wait_secs).await {
+                                return;
+                            }
                         }
                     }
                 }
@@ -1674,6 +1779,14 @@ fn next_outbox_retry_secs(attempt: &mut u32, requested_wait_secs: u64) -> u64 {
         .min(OUTBOX_RETRY_MAX_SECS.max(requested_wait_secs))
 }
 
+async fn wait_for_outbox_retry(cancellation: &CancellationToken, wait_secs: u64) -> bool {
+    tokio::select! {
+        biased;
+        _ = cancellation.cancelled() => false,
+        _ = tokio::time::sleep(Duration::from_secs(wait_secs)) => true,
+    }
+}
+
 /// Result of a compaction-summary extraction attempt (M3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SummaryExtractOutcome {
@@ -2017,6 +2130,35 @@ mod tests {
         assert_eq!(next_outbox_retry_secs(&mut attempt, 0), 16);
         assert_eq!(next_outbox_retry_secs(&mut attempt, 0), 30);
         assert_eq!(next_outbox_retry_secs(&mut attempt, 900), 900);
+    }
+
+    #[test]
+    fn shutdown_cancels_worker_and_prompt_prefetch_tokens() {
+        let worker = make_engine(temp_db());
+        let prefetch_cancellation = CancellationToken::new();
+        worker
+            .prompt_prefetches
+            .lock()
+            .unwrap()
+            .insert("ses-shutdown-test".into(), prefetch_cancellation.clone());
+
+        worker.shutdown();
+
+        assert!(worker.shutdown_token.is_cancelled());
+        assert!(prefetch_cancellation.is_cancelled());
+        assert!(worker.prompt_prefetches.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn outbox_worker_cannot_start_after_shutdown() {
+        let worker = Arc::new(make_engine(temp_db()));
+        worker.shutdown();
+
+        worker.ensure_outbox_worker();
+        tokio::task::yield_now().await;
+
+        assert!(worker.shutdown_token.is_cancelled());
+        assert!(!worker.outbox_worker_started.load(Ordering::Acquire));
     }
 
     fn make_role_message(role: &str, content: &str) -> Message {
