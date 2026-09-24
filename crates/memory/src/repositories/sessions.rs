@@ -90,6 +90,18 @@ impl Database {
         }
     }
 
+    /// Return every persisted session id in stable order.
+    ///
+    /// Memory runtime startup uses this narrow view to identify sessions that
+    /// existed before its live subscription began without loading session
+    /// records or transcript projections into memory.
+    pub fn all_session_ids(&self) -> anyhow::Result<Vec<String>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT id FROM sessions ORDER BY id ASC")?;
+        let rows = stmt.query_map([], |row| row.get(0))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     pub fn update_session_status(&self, id: &str, status: SessionStatus) -> anyhow::Result<()> {
         let now = Utc::now().to_rfc3339();
         let conn = self.conn();
@@ -542,6 +554,17 @@ mod tests {
         let db = create_db();
         let session = db.create_session("input").unwrap();
         assert!(!session.id.is_empty());
+    }
+
+    #[test]
+    fn all_session_ids_returns_every_id_in_stable_order() {
+        let db = create_db();
+        let first = db.create_session("first").unwrap();
+        let second = db.create_session("second").unwrap();
+
+        let mut expected = vec![first.id, second.id];
+        expected.sort();
+        assert_eq!(db.all_session_ids().unwrap(), expected);
     }
 
     #[test]

@@ -299,6 +299,34 @@ impl MemoryWorker {
         Ok(())
     }
 
+    /// Restore durable fact-extraction jobs into the existing in-memory
+    /// outbox and ensure its worker is running. The durable markers remain the
+    /// authority until the normal worker completes each job.
+    pub(crate) async fn restore_pending_outbox(
+        self: &Arc<Self>,
+        cancellation: &CancellationToken,
+    ) -> anyhow::Result<usize> {
+        let pending = self
+            .db
+            .run_blocking_cancellable(cancellation.clone(), |db| db.pending_fact_extractions())
+            .await?;
+        anyhow::ensure!(
+            !cancellation.is_cancelled(),
+            "fact extraction outbox restore cancelled"
+        );
+        let restored_count = pending.len();
+        for (session_id, bypass_throttle) in pending {
+            anyhow::ensure!(
+                !cancellation.is_cancelled(),
+                "fact extraction outbox restore cancelled"
+            );
+            self.enqueue_memory(session_id, bypass_throttle);
+        }
+        self.ensure_outbox_worker();
+        self.outbox_notify.notify_one();
+        Ok(restored_count)
+    }
+
     #[cfg(test)]
     pub(crate) fn suspend_outbox_worker_for_test(&self) {
         self.outbox_worker_started.store(true, Ordering::Release);

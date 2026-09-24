@@ -265,6 +265,16 @@ impl SessionStore {
         Self { db, live_tx }
     }
 
+    /// Read all persisted session ids on SQLite's blocking pool.
+    pub async fn all_session_ids_cancellable(
+        &self,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<Vec<String>> {
+        self.db
+            .run_blocking_cancellable(cancel, |db| db.all_session_ids())
+            .await
+    }
+
     /// Create a durable session record through the session persistence
     /// boundary. Actor installation, lifecycle gates, and dispatch remain
     /// owned by the Agent layer.
@@ -449,6 +459,35 @@ impl SessionStore {
         let session_id = session_id.to_owned();
         self.db
             .run_blocking_cancellable(cancel, move |_| store.memory_event_cursor(&session_id))
+            .await
+    }
+
+    /// Read the durable cursor while preserving a missing key as `None`.
+    pub async fn memory_event_cursor_optional_cancellable(
+        &self,
+        session_id: &str,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<Option<i64>> {
+        let session_id = session_id.to_owned();
+        self.db
+            .run_blocking_cancellable(cancel, move |db| {
+                db.memory_event_cursor_optional(&session_id)
+            })
+            .await
+    }
+
+    /// Set a startup baseline only if no cursor key has ever been written.
+    pub async fn initialize_memory_event_cursor_if_absent_cancellable(
+        &self,
+        session_id: &str,
+        sequence: i64,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<bool> {
+        let session_id = session_id.to_owned();
+        self.db
+            .run_blocking_cancellable(cancel, move |db| {
+                db.initialize_memory_event_cursor_if_absent(&session_id, sequence)
+            })
             .await
     }
 
@@ -1516,6 +1555,19 @@ impl SessionStore {
         )?)
     }
 
+    /// Read the latest durable event sequence on SQLite's blocking pool.
+    pub async fn latest_sequence_cancellable(
+        &self,
+        session_id: &str,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<i64> {
+        let store = self.clone();
+        let session_id = session_id.to_owned();
+        self.db
+            .run_blocking_cancellable(cancel, move |_| store.latest_sequence(&session_id))
+            .await
+    }
+
     pub fn read_all(&self, session_id: &str) -> anyhow::Result<Vec<SessionEvent>> {
         self.read_from(session_id, 0)
     }
@@ -1589,6 +1641,23 @@ impl SessionStore {
             next_cursor,
             has_more,
         })
+    }
+
+    /// Read one bounded event page on SQLite's blocking pool.
+    pub async fn replay_page_cancellable(
+        &self,
+        session_id: &str,
+        after_sequence: i64,
+        limit: usize,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<SessionEventPage> {
+        let store = self.clone();
+        let session_id = session_id.to_owned();
+        self.db
+            .run_blocking_cancellable(cancel, move |_| {
+                store.replay_page(&session_id, after_sequence, limit)
+            })
+            .await
     }
 
     fn read_from_in_connection(

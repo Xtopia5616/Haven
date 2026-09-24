@@ -36,9 +36,49 @@ impl Database {
     /// An absent key is the initial event sequence zero. This clock is separate
     /// from the fact-extraction message-id cursor.
     pub fn memory_event_cursor(&self, session_id: &str) -> anyhow::Result<i64> {
+        Ok(self.memory_event_cursor_optional(session_id)?.unwrap_or(0))
+    }
+
+    /// Read the memory event cursor while preserving whether its key exists.
+    /// An explicit zero is meaningful during startup baseline selection.
+    pub fn memory_event_cursor_optional(&self, session_id: &str) -> anyhow::Result<Option<i64>> {
         let key = memory_event_cursor_key(session_id)?;
         let value = self.get_kv(&key)?;
-        parse_memory_event_cursor(value.as_deref())
+        value
+            .as_deref()
+            .map(|value| parse_memory_event_cursor(Some(value)))
+            .transpose()
+    }
+
+    /// Initialize the memory event cursor only when no durable key exists.
+    /// Returns true when this call installed `sequence`; an existing zero is
+    /// preserved just like any other checkpoint.
+    pub fn initialize_memory_event_cursor_if_absent(
+        &self,
+        session_id: &str,
+        sequence: i64,
+    ) -> anyhow::Result<bool> {
+        anyhow::ensure!(sequence >= 0, "memory event cursor cannot be negative");
+        let key = memory_event_cursor_key(session_id)?;
+        let now = Utc::now().to_rfc3339();
+        let conn = self.conn();
+        let inserted = conn.execute(
+            "INSERT OR IGNORE INTO kv_store (key, value, updated_at) VALUES (?1, ?2, ?3)",
+            rusqlite::params![key, sequence.to_string(), now],
+        )?;
+        if inserted == 0 {
+            // Validate an existing value instead of treating a malformed key
+            // as a successful no-op.
+            let stored: Option<String> = conn
+                .query_row(
+                    "SELECT value FROM kv_store WHERE key = ?1",
+                    rusqlite::params![key],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            parse_memory_event_cursor(stored.as_deref())?;
+        }
+        Ok(inserted != 0)
     }
 
     /// Persist a memory event checkpoint without allowing it to move
@@ -233,6 +273,45 @@ mod tests {
 
     fn test_db() -> Database {
         Database::open_in_memory().expect("create in-memory db")
+    }
+
+    #[test]
+    fn memory_event_cursor_optional_distinguishes_missing_from_zero() {
+        let db = test_db();
+        let session = db.create_session("cursor").unwrap();
+
+        assert_eq!(db.memory_event_cursor_optional(&session.id).unwrap(), None);
+        assert!(
+            db.initialize_memory_event_cursor_if_absent(&session.id, 0)
+                .unwrap()
+        );
+        assert_eq!(
+            db.memory_event_cursor_optional(&session.id).unwrap(),
+            Some(0)
+        );
+        assert!(
+            !db.initialize_memory_event_cursor_if_absent(&session.id, 8)
+                .unwrap()
+        );
+        assert_eq!(
+            db.memory_event_cursor_optional(&session.id).unwrap(),
+            Some(0)
+        );
+        assert_eq!(db.memory_event_cursor(&session.id).unwrap(), 0);
+    }
+
+    #[test]
+    fn memory_event_cursor_optional_rejects_invalid_stored_values() {
+        let db = test_db();
+        let session = db.create_session("cursor").unwrap();
+        db.set_kv(&format!("memory_event_cursor.{}", session.id), "bad")
+            .unwrap();
+
+        assert!(db.memory_event_cursor_optional(&session.id).is_err());
+        assert!(
+            db.initialize_memory_event_cursor_if_absent(&session.id, 1)
+                .is_err()
+        );
     }
 
     #[test]

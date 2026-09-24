@@ -1,16 +1,22 @@
-//! Ordered processing core for committed session events that drive memory.
-//!
-//! This module intentionally does not subscribe to events or own application
-//! startup. Its caller supplies events for a target session in sequence order.
+//! Ordered processing and bounded live/replay recovery for memory events.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Context as _;
-use haven_memory::{CURRENT_EVENT_VERSION, MEMORY_TRIGGER_EVENT_TYPE, SessionEvent, SessionStore};
+use haven_memory::{
+    CURRENT_EVENT_VERSION, MAX_SESSION_EVENT_REPLAY_PAGE_SIZE, MEMORY_TRIGGER_EVENT_TYPE,
+    SessionEvent, SessionStore,
+};
 use serde::Deserialize;
+use tokio::sync::broadcast;
+use tokio::time::{Instant, sleep, sleep_until};
 use tokio_util::sync::CancellationToken;
 
 use crate::memory_worker::MemoryWorker;
+
+const INITIAL_RETRY_BACKOFF: Duration = Duration::from_millis(250);
+const MAX_RETRY_BACKOFF: Duration = Duration::from_secs(30);
 
 /// Result of processing one committed event for a target session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,6 +41,316 @@ impl MemoryRuntime {
         Self {
             session_store,
             memory_worker,
+        }
+    }
+
+    /// Subscribe before taking the startup session snapshot, baseline only
+    /// absent cursors for sessions in that snapshot, and restore the durable
+    /// fact outbox before returning the live receiver.
+    ///
+    /// Initialization failures are logged and retried with cancellable
+    /// backoff while keeping the original broadcast receiver and session
+    /// snapshot. A present cursor at zero is deliberately not baselined.
+    pub async fn prepare_start(
+        &self,
+        cancellation: &CancellationToken,
+    ) -> anyhow::Result<broadcast::Receiver<SessionEvent>> {
+        let live = self.session_store.subscribe();
+        let mut retry_backoff = INITIAL_RETRY_BACKOFF;
+        let startup_session_ids = loop {
+            if cancellation.is_cancelled() {
+                anyhow::bail!("memory runtime startup cancelled");
+            }
+            match self
+                .session_store
+                .all_session_ids_cancellable(cancellation.clone())
+                .await
+            {
+                Ok(session_ids) => break session_ids,
+                Err(error) if cancellation.is_cancelled() => {
+                    return Err(error).context("memory runtime startup cancelled");
+                }
+                Err(error) => {
+                    tracing::warn!("memory runtime session snapshot failed: {}", error);
+                    if !wait_for_retry(cancellation, retry_backoff).await {
+                        anyhow::bail!("memory runtime startup cancelled");
+                    }
+                    retry_backoff = next_retry_backoff(retry_backoff);
+                }
+            }
+        };
+
+        loop {
+            match self
+                .baseline_missing_startup_cursors(&startup_session_ids, cancellation)
+                .await
+            {
+                Ok(()) => break,
+                Err(error) if cancellation.is_cancelled() => {
+                    return Err(error).context("memory runtime startup cancelled");
+                }
+                Err(error) => {
+                    tracing::warn!("memory runtime cursor baseline failed: {}", error);
+                    if !wait_for_retry(cancellation, retry_backoff).await {
+                        anyhow::bail!("memory runtime startup cancelled");
+                    }
+                    retry_backoff = next_retry_backoff(retry_backoff);
+                }
+            }
+        }
+
+        loop {
+            match self
+                .memory_worker
+                .restore_pending_outbox(cancellation)
+                .await
+            {
+                Ok(_) => return Ok(live),
+                Err(error) if cancellation.is_cancelled() => {
+                    return Err(error).context("memory runtime startup cancelled");
+                }
+                Err(error) => {
+                    tracing::warn!("memory runtime fact outbox restore failed: {}", error);
+                    if !wait_for_retry(cancellation, retry_backoff).await {
+                        anyhow::bail!("memory runtime startup cancelled");
+                    }
+                    retry_backoff = next_retry_backoff(retry_backoff);
+                }
+            }
+        }
+    }
+
+    async fn baseline_missing_startup_cursors(
+        &self,
+        startup_session_ids: &[String],
+        cancellation: &CancellationToken,
+    ) -> anyhow::Result<()> {
+        for session_id in startup_session_ids {
+            if self
+                .session_store
+                .memory_event_cursor_optional_cancellable(session_id, cancellation.clone())
+                .await?
+                .is_some()
+            {
+                continue;
+            }
+            let latest_sequence = self
+                .session_store
+                .latest_sequence_cancellable(session_id, cancellation.clone())
+                .await?;
+            self.session_store
+                .initialize_memory_event_cursor_if_absent_cancellable(
+                    session_id,
+                    latest_sequence,
+                    cancellation.clone(),
+                )
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// Process a live event, filling any sequence gap from bounded durable
+    /// replay before retrying the received event. Duplicate overlap is
+    /// delegated to `process_event`'s durable cursor check.
+    pub async fn process_live_event(
+        &self,
+        target_session_id: &str,
+        event: &SessionEvent,
+        cancellation: &CancellationToken,
+    ) -> anyhow::Result<MemoryEventProcessOutcome> {
+        if event.session_id != target_session_id {
+            return self
+                .process_event(target_session_id, event, cancellation)
+                .await;
+        }
+        let cursor = self
+            .session_store
+            .memory_event_cursor_cancellable(target_session_id, cancellation.clone())
+            .await
+            .context("read memory cursor before live event")?;
+        if event.sequence > cursor.saturating_add(1) {
+            self.recover_session_through(target_session_id, event.sequence - 1, cancellation)
+                .await
+                .context("recover memory event sequence gap")?;
+        }
+        self.process_event(target_session_id, event, cancellation)
+            .await
+    }
+
+    /// Recover one session through its current durable high-water mark using
+    /// pages no larger than `MAX_SESSION_EVENT_REPLAY_PAGE_SIZE`.
+    pub async fn recover_session(
+        &self,
+        session_id: &str,
+        cancellation: &CancellationToken,
+    ) -> anyhow::Result<usize> {
+        let latest_sequence = self
+            .session_store
+            .latest_sequence_cancellable(session_id, cancellation.clone())
+            .await
+            .context("read latest memory recovery sequence")?;
+        self.recover_session_through(session_id, latest_sequence, cancellation)
+            .await
+    }
+
+    async fn recover_session_through(
+        &self,
+        session_id: &str,
+        through_sequence: i64,
+        cancellation: &CancellationToken,
+    ) -> anyhow::Result<usize> {
+        anyhow::ensure!(!session_id.trim().is_empty(), "session id is required");
+        anyhow::ensure!(
+            through_sequence >= 0,
+            "memory recovery sequence cannot be negative"
+        );
+        let mut cursor = self
+            .session_store
+            .memory_event_cursor_cancellable(session_id, cancellation.clone())
+            .await?;
+        let mut recovered = 0;
+
+        while cursor < through_sequence {
+            anyhow::ensure!(
+                !cancellation.is_cancelled(),
+                "memory event recovery cancelled"
+            );
+            let page = self
+                .session_store
+                .replay_page_cancellable(
+                    session_id,
+                    cursor,
+                    MAX_SESSION_EVENT_REPLAY_PAGE_SIZE,
+                    cancellation.clone(),
+                )
+                .await
+                .context("read bounded memory event replay page")?;
+            let mut advanced = false;
+            for event in page.events {
+                if event.sequence > through_sequence {
+                    break;
+                }
+                self.process_event(session_id, &event, cancellation)
+                    .await
+                    .context("process replayed memory event")?;
+                let next_cursor = self
+                    .session_store
+                    .memory_event_cursor_cancellable(session_id, cancellation.clone())
+                    .await
+                    .context("read replayed memory event cursor")?;
+                if next_cursor > cursor {
+                    cursor = next_cursor;
+                    recovered += 1;
+                    advanced = true;
+                }
+                if cursor >= through_sequence {
+                    break;
+                }
+            }
+            anyhow::ensure!(
+                advanced,
+                "memory event replay made no progress for session {} through sequence {}",
+                session_id,
+                through_sequence
+            );
+        }
+        Ok(recovered)
+    }
+
+    async fn recover_visible_sessions(
+        &self,
+        cancellation: &CancellationToken,
+    ) -> anyhow::Result<()> {
+        let session_ids = self
+            .session_store
+            .all_session_ids_cancellable(cancellation.clone())
+            .await
+            .context("list sessions for memory recovery")?;
+        for session_id in session_ids {
+            self.recover_session(&session_id, cancellation)
+                .await
+                .with_context(|| format!("recover memory events for session {session_id}"))?;
+        }
+        Ok(())
+    }
+
+    /// Run the live memory event consumer until cancellation or broadcast
+    /// closure. A lost broadcast range is recovered from each visible
+    /// session's durable event pages.
+    pub async fn run_until_cancelled(&self, cancellation: &CancellationToken) {
+        let mut live = match self.prepare_start(cancellation).await {
+            Ok(live) => live,
+            Err(_) if cancellation.is_cancelled() => return,
+            Err(error) => {
+                tracing::error!("memory runtime failed to prepare: {}", error);
+                return;
+            }
+        };
+        let mut retry_backoff = INITIAL_RETRY_BACKOFF;
+        let mut recovery_deadline = None;
+
+        loop {
+            let recovery_wait = async {
+                match recovery_deadline {
+                    Some(deadline) => sleep_until(deadline).await,
+                    None => std::future::pending::<()>().await,
+                }
+            };
+            tokio::select! {
+                _ = cancellation.cancelled() => return,
+                _ = recovery_wait => {
+                    recovery_deadline = None;
+                    match self.recover_visible_sessions(cancellation).await {
+                        Ok(()) => retry_backoff = INITIAL_RETRY_BACKOFF,
+                        Err(_error) if cancellation.is_cancelled() => return,
+                        Err(error) => {
+                            tracing::warn!("memory runtime recovery failed: {}", error);
+                            recovery_deadline = Some(Instant::now() + retry_backoff);
+                            retry_backoff = next_retry_backoff(retry_backoff);
+                        }
+                    }
+                }
+                received = live.recv() => match received {
+                    Ok(event) => {
+                        if let Err(error) = self
+                            .process_live_event(&event.session_id, &event, cancellation)
+                            .await
+                        {
+                            if cancellation.is_cancelled() {
+                                return;
+                            }
+                            tracing::warn!(
+                                "memory runtime event processing failed for session {} sequence {}: {}",
+                                event.session_id,
+                                event.sequence,
+                                error
+                            );
+                            if recovery_deadline.is_none() {
+                                recovery_deadline = Some(Instant::now() + retry_backoff);
+                            }
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        tracing::warn!(
+                            "memory runtime broadcast lagged; recovering after {} skipped events",
+                            skipped
+                        );
+                        match self.recover_visible_sessions(cancellation).await {
+                            Ok(()) => {
+                                recovery_deadline = None;
+                                retry_backoff = INITIAL_RETRY_BACKOFF;
+                            }
+                            Err(_error) if cancellation.is_cancelled() => return,
+                            Err(error) => {
+                                tracing::warn!("memory runtime lag recovery failed: {}", error);
+                                recovery_deadline = Some(Instant::now() + retry_backoff);
+                                retry_backoff = next_retry_backoff(retry_backoff);
+                            }
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Closed) => return,
+                }
+            }
         }
     }
 
@@ -159,6 +475,17 @@ impl MemoryRuntime {
     }
 }
 
+async fn wait_for_retry(cancellation: &CancellationToken, delay: Duration) -> bool {
+    tokio::select! {
+        _ = cancellation.cancelled() => false,
+        _ = sleep(delay) => true,
+    }
+}
+
+fn next_retry_backoff(current: Duration) -> Duration {
+    current.saturating_mul(2).min(MAX_RETRY_BACKOFF)
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct MemoryTriggerPayload {
@@ -259,6 +586,162 @@ mod tests {
 
     fn cancellation() -> CancellationToken {
         CancellationToken::new()
+    }
+
+    #[tokio::test]
+    async fn startup_baselines_old_sessions_and_processes_a_new_session_from_one() {
+        let (db, old_session_id, runtime) = fixture();
+        runtime
+            .session_store
+            .append(&old_session_id, "usage_recorded", "{}", None, None)
+            .unwrap();
+        runtime
+            .session_store
+            .append(
+                &old_session_id,
+                MEMORY_TRIGGER_EVENT_TYPE,
+                &trigger("pause", true),
+                None,
+                None,
+            )
+            .unwrap();
+
+        let mut live = runtime.prepare_start(&cancellation()).await.unwrap();
+        assert_eq!(cursor(&db, &old_session_id).await, 2);
+        assert!(pending(&db).await.is_empty());
+
+        let new_session = db.create_session("created after runtime startup").unwrap();
+        let event = runtime
+            .session_store
+            .append(
+                &new_session.id,
+                MEMORY_TRIGGER_EVENT_TYPE,
+                &trigger("step_interval", false),
+                None,
+                None,
+            )
+            .unwrap();
+        let received = live.recv().await.unwrap();
+        assert_eq!(received, event);
+        assert_eq!(
+            runtime
+                .process_live_event(&received.session_id, &received, &cancellation())
+                .await
+                .unwrap(),
+            MemoryEventProcessOutcome::Checkpointed { enqueued: true }
+        );
+        assert_eq!(cursor(&db, &new_session.id).await, 1);
+        assert_eq!(pending(&db).await, vec![(new_session.id, false)]);
+    }
+
+    #[tokio::test]
+    async fn startup_preserves_an_existing_zero_cursor_for_recovery() {
+        let (db, session_id, runtime) = fixture();
+        db.checkpoint_memory_event_cursor(&session_id, 0).unwrap();
+        let old_event = runtime
+            .session_store
+            .append(
+                &session_id,
+                MEMORY_TRIGGER_EVENT_TYPE,
+                &trigger("step_interval", false),
+                None,
+                None,
+            )
+            .unwrap();
+
+        let _live = runtime.prepare_start(&cancellation()).await.unwrap();
+        assert_eq!(cursor(&db, &session_id).await, 0);
+        assert_eq!(
+            runtime
+                .recover_session(&session_id, &cancellation())
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(cursor(&db, &session_id).await, old_event.sequence);
+        assert_eq!(pending(&db).await, vec![(session_id, false)]);
+    }
+
+    #[tokio::test]
+    async fn prepare_start_calls_durable_pending_outbox_restore() {
+        let (db, session_id, runtime) = fixture();
+        db.enqueue_fact_extraction(&session_id, true).unwrap();
+
+        let _live = runtime.prepare_start(&cancellation()).await.unwrap();
+
+        assert_eq!(
+            runtime
+                .memory_worker
+                .pending_outbox_value_for_test(&session_id),
+            Some(true)
+        );
+        assert_eq!(pending(&db).await, vec![(session_id, true)]);
+    }
+
+    #[tokio::test]
+    async fn live_gap_recovery_pages_before_retrying_current_event() {
+        let (db, session_id, runtime) = fixture();
+        let mut last_event = None;
+        for sequence in 1..=600 {
+            let (event_type, payload) = if sequence == 300 {
+                (MEMORY_TRIGGER_EVENT_TYPE, trigger("pause", true))
+            } else {
+                ("usage_recorded", format!(r#"{{"sequence":{sequence}}}"#))
+            };
+            last_event = Some(
+                runtime
+                    .session_store
+                    .append(&session_id, event_type, &payload, None, None)
+                    .unwrap(),
+            );
+        }
+        let current_event = last_event.expect("at least one stored event");
+
+        assert_eq!(
+            runtime
+                .process_live_event(&session_id, &current_event, &cancellation())
+                .await
+                .unwrap(),
+            MemoryEventProcessOutcome::Checkpointed { enqueued: false }
+        );
+        assert_eq!(cursor(&db, &session_id).await, 600);
+        assert_eq!(pending(&db).await, vec![(session_id, true)]);
+    }
+
+    #[tokio::test]
+    async fn replay_and_live_overlap_is_idempotently_skipped() {
+        let (db, session_id, runtime) = fixture();
+        let trigger_event = runtime
+            .session_store
+            .append(
+                &session_id,
+                MEMORY_TRIGGER_EVENT_TYPE,
+                &trigger("step_interval", false),
+                None,
+                None,
+            )
+            .unwrap();
+        runtime
+            .session_store
+            .append(&session_id, "usage_recorded", "{}", None, None)
+            .unwrap();
+
+        assert_eq!(
+            runtime
+                .recover_session(&session_id, &cancellation())
+                .await
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            runtime
+                .process_live_event(&session_id, &trigger_event, &cancellation())
+                .await
+                .unwrap(),
+            MemoryEventProcessOutcome::AlreadyProcessed
+        );
+        assert_eq!(cursor(&db, &session_id).await, 2);
+        assert_eq!(pending(&db).await, vec![(session_id, false)]);
     }
 
     #[tokio::test]
