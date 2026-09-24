@@ -6,7 +6,7 @@ use crate::session::SessionInfo;
 use async_trait::async_trait;
 use haven_common::SessionStatus;
 use haven_common::config::RequestKind;
-use haven_memory::Database;
+use haven_memory::SessionStore;
 use haven_tools::ToolResultEnvelope;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -1051,7 +1051,7 @@ impl EventDispatcher {
         step_number: u32,
         run_id: u64,
         message_id: &str,
-        db: &Arc<Database>,
+        store: &SessionStore,
     ) -> anyhow::Result<()> {
         tracing::debug!(
             "emit_thought: session={} step={} run={} msg={} thought_len={}",
@@ -1064,7 +1064,7 @@ impl EventDispatcher {
         // The step row shares the streamed bubble id. Sequenced UI publication
         // is separate; this helper remains for callers that snap without a
         // committed transcript sequence.
-        Self::persist_thought_step(session_id, step_number, message_id, db).await?;
+        Self::persist_thought_step(session_id, step_number, message_id, store).await?;
         emitter
             .emit(AgentEvent::Thought {
                 session_id: session_id.into(),
@@ -1087,17 +1087,11 @@ impl EventDispatcher {
         session_id: &str,
         step_number: u32,
         message_id: &str,
-        db: &Arc<Database>,
+        store: &SessionStore,
     ) -> anyhow::Result<()> {
-        let sid = session_id.to_string();
-        let mid = message_id.to_string();
-        let step = step_number;
-        db.run_blocking(move |db| {
-            db.create_thought_step(&sid, step as i32, &mid)?;
-            Ok::<(), anyhow::Error>(())
-        })
-        .await?;
-        Ok(())
+        store
+            .create_thought_step(session_id, step_number, message_id)
+            .await
     }
 
     pub async fn emit_compaction_from(
@@ -1205,6 +1199,7 @@ pub struct UsagePayload {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use haven_memory::{Database, SessionStore};
     use std::sync::Mutex;
 
     /// Default max-batch threshold used by the batcher tests (the production
@@ -1530,8 +1525,9 @@ mod tests {
         p.push(format!("haven_event_test_{}.db", uuid::Uuid::new_v4()));
         let db = Arc::new(Database::open(&p).unwrap());
         let session = db.create_session("t").unwrap();
+        let store = SessionStore::new(db);
         let bus_dyn: Arc<dyn AgentEventEmitter> = bus;
-        EventDispatcher::emit_thought_from(&bus_dyn, &session.id, "hello", 1, 1, "msg-t-1", &db)
+        EventDispatcher::emit_thought_from(&bus_dyn, &session.id, "hello", 1, 1, "msg-t-1", &store)
             .await
             .unwrap();
         assert_eq!(collector.events.lock().unwrap().len(), 1);

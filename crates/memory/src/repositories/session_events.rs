@@ -301,6 +301,25 @@ impl SessionStore {
         }
     }
 
+    /// Create the materialized thought step for a committed transcript row.
+    /// The message row remains the sole content authority; this method only
+    /// writes the execution-state projection.
+    pub async fn create_thought_step(
+        &self,
+        session_id: &str,
+        step_number: u32,
+        message_id: &str,
+    ) -> anyhow::Result<()> {
+        let session_id = session_id.to_owned();
+        let message_id = message_id.to_owned();
+        self.db
+            .run_blocking(move |db| {
+                db.create_thought_step(&session_id, step_number as i32, &message_id)?;
+                Ok::<(), anyhow::Error>(())
+            })
+            .await
+    }
+
     /// Append one event only when the session still exists. This keeps
     /// best-effort producers from reaching through the SessionStore merely to
     /// perform a presence check before an append.

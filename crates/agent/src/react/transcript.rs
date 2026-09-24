@@ -605,7 +605,7 @@ impl ReActEngine {
                     &ctx.session_id,
                     ctx.step_num,
                     &message_id,
-                    &self.db,
+                    &self.event_store,
                 )
                 .await?;
                 state.push_event(record);

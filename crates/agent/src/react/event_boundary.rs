@@ -853,7 +853,7 @@ impl ReActEngine {
                 ctx.step_num,
                 ctx.run_id,
                 &message_id,
-                &self.db,
+                &self.event_store,
             )
             .await
             {
