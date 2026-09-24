@@ -678,6 +678,7 @@ impl ReActEngine {
                 Some(haven_common::SessionWaitingReason::Confirmation),
                 notice,
                 None,
+                PauseReason::Confirm,
             );
             self.apply_committed_batch(&step_ctx, state, pause).await?;
             return Ok(ToolBatchOutcome::Done(LoopExit::Paused {
@@ -697,6 +698,7 @@ impl ReActEngine {
                     state,
                     step_num,
                     emitter,
+                    run_id,
                     crate::interaction::InteractionRequest::ask(
                         session_id,
                         question,
@@ -943,7 +945,7 @@ impl ReActEngine {
         };
         if let Some(pending) = pending_ask {
             return self
-                .pause_for_ask(session_id, state, step_num, emitter, pending)
+                .pause_for_ask(session_id, state, step_num, emitter, run_id, pending)
                 .await;
         }
 

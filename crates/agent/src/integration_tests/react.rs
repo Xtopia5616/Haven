@@ -342,6 +342,21 @@ async fn budget_exhaustion_pauses_with_notification_and_no_chat_message() {
         "budget notice must be emitted as a notification: {:?}",
         notifications
     );
+    let pause_triggers = agent
+        .react_engine
+        .event_store
+        .read_active_domain_events(&session.id)
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.event_type == haven_memory::MEMORY_TRIGGER_EVENT_TYPE)
+        .collect::<Vec<_>>();
+    assert_eq!(pause_triggers.len(), 1);
+    let payload: serde_json::Value = serde_json::from_str(&pause_triggers[0].payload).unwrap();
+    assert_eq!(payload["trigger_kind"], "pause");
+    assert_eq!(payload["bypass_throttle"], true);
+    assert_eq!(payload["pause_reason"], "budget");
+    assert_eq!(pause_triggers[0].run_id, Some(1));
+    assert_eq!(pause_triggers[0].step_number, Some(2));
 }
 
 #[tokio::test]
@@ -920,6 +935,22 @@ async fn run_session_ask_tool_pauses_and_surfaces_question() {
         .iter()
         .any(|m| m.role == "assistant" && m.content.contains("Which path should I take"));
     assert!(found, "question should be persisted as assistant message");
+
+    let pause_triggers = agent
+        .react_engine
+        .event_store
+        .read_active_domain_events(&session.id)
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.event_type == haven_memory::MEMORY_TRIGGER_EVENT_TYPE)
+        .collect::<Vec<_>>();
+    assert_eq!(pause_triggers.len(), 1);
+    let payload: serde_json::Value = serde_json::from_str(&pause_triggers[0].payload).unwrap();
+    assert_eq!(payload["trigger_kind"], "pause");
+    assert_eq!(payload["bypass_throttle"], true);
+    assert_eq!(payload["pause_reason"], "ask");
+    assert_eq!(pause_triggers[0].run_id, Some(1));
+    assert_eq!(pause_triggers[0].step_number, Some(2));
 }
 
 #[tokio::test]

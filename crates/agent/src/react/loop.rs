@@ -321,7 +321,7 @@ impl ReActEngine {
             }
         }
 
-        self.pause_turn_budget(session_id, state, last_step + 1, &emitter)
+        self.pause_turn_budget(session_id, state, last_step + 1, &emitter, run_id)
             .await?;
         Ok(LoopExit::Paused {
             reason: PauseReason::Budget,

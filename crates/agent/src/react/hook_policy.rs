@@ -15,40 +15,28 @@ use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
 use super::hooks::{
-    AfterLlmInput, BeforeStepOutput, BeforeToolAction, InferCallback, LoopHooks, MemoryPatchHandle,
+    AfterLlmInput, BeforeStepOutput, BeforeToolAction, LoopHooks, MemoryPatchHandle,
     ToolCallIdentity,
 };
 use super::retries::{AfterLlmAction, ResponsePolicy};
 use super::{PauseReason, ReActEngine, ReActState, StepCtx, canonical_media_requirements};
 use crate::memory_trigger::MemoryTriggerPayload;
 
-/// Production hooks: context compaction, interval + pause infer, throttled
+/// Production hooks: context compaction, interval + pause trigger intent, throttled
 /// MEMORY fence refresh (M2), response policy, and confirm pre-check.
 pub(crate) struct DefaultHooks {
-    /// Optional session-scoped memory worker. `None` in unit tests that
-    /// construct an engine without an [`crate::MemoryWorker`].
-    infer: Option<InferCallback>,
     /// Optional mid-run MEMORY patch after outbox fact writes (M2).
     memory_patch: Option<MemoryPatchHandle>,
 }
 
 impl DefaultHooks {
-    pub(crate) fn new(infer: Option<InferCallback>) -> Self {
-        Self {
-            infer,
-            memory_patch: None,
-        }
+    pub(crate) fn new() -> Self {
+        Self { memory_patch: None }
     }
 
     pub(crate) fn with_memory_patch(mut self, handle: MemoryPatchHandle) -> Self {
         self.memory_patch = Some(handle);
         self
-    }
-
-    fn call_infer(&self, session_id: &str, bypass_throttle: bool) {
-        if let Some(ref infer) = self.infer {
-            infer(session_id, bypass_throttle);
-        }
     }
 }
 
@@ -184,23 +172,33 @@ impl LoopHooks for DefaultHooks {
         }
     }
 
-    async fn on_pause(&self, _engine: &ReActEngine, ctx: &StepCtx, _reason: PauseReason) {
-        self.call_infer(&ctx.session_id, true);
+    async fn on_pause(
+        &self,
+        _engine: &ReActEngine,
+        ctx: &StepCtx,
+        reason: PauseReason,
+    ) -> Option<MemoryTriggerPayload> {
+        let pause_reason = match reason {
+            PauseReason::TurnEnd => "turn_end",
+            PauseReason::Ask => "ask",
+            PauseReason::Confirm => "confirm",
+            PauseReason::Budget => "budget",
+            PauseReason::External => "external",
+        };
+        Some(MemoryTriggerPayload::pause(
+            ctx.run_id,
+            ctx.step_num,
+            pause_reason,
+        ))
     }
 }
 
 pub(crate) fn default_hooks() -> super::hooks::LoopHooksHandle {
-    std::sync::Arc::new(DefaultHooks::new(None))
+    std::sync::Arc::new(DefaultHooks::new())
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn default_hooks_with_infer(infer: InferCallback) -> super::hooks::LoopHooksHandle {
-    std::sync::Arc::new(DefaultHooks::new(Some(infer)))
-}
-
-pub(crate) fn default_hooks_with_infer_and_patch(
-    infer: InferCallback,
+pub(crate) fn default_hooks_with_patch(
     memory_patch: MemoryPatchHandle,
 ) -> super::hooks::LoopHooksHandle {
-    std::sync::Arc::new(DefaultHooks::new(Some(infer)).with_memory_patch(memory_patch))
+    std::sync::Arc::new(DefaultHooks::new().with_memory_patch(memory_patch))
 }

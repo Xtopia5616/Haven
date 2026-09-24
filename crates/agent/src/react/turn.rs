@@ -394,6 +394,7 @@ impl ReActEngine {
                     Some(haven_common::SessionWaitingReason::Ask),
                     question,
                     None,
+                    PauseReason::Ask,
                 );
                 effects = EffectBatch::with_effects(
                     super::effects::TurnControl::Done(LoopExit::Paused {

@@ -253,3 +253,4 @@
 - [0262：MemoryRuntime 已提交触发的顺序处理核心](0262-memory-runtime-ordered-trigger-processing.md)
 - [0263：AgentLayer 的 MemoryRuntime 启动屏障](0263-memory-runtime-agentlayer-startup-barrier.md)
 - [0264：Interval Memory Trigger 的 durable producer](0264-memory-trigger-interval-producer.md)
+- [0265：Pause Memory Trigger 的 durable producer](0265-memory-trigger-pause-producer.md)

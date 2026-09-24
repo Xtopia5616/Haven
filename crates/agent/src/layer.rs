@@ -72,14 +72,6 @@ impl AgentLayer {
             executor.session_store(),
             memory_worker.clone(),
         ));
-        // L3 / P1-7: ReAct only enqueues session_id; a single outbox worker
-        // (started lazily on first enqueue) runs infer_session.
-        let infer_cb: crate::react::InferCallback = {
-            let memory_worker = memory_worker.clone();
-            Arc::new(move |session_id: &str, bypass_throttle: bool| {
-                memory_worker.enqueue_infer(session_id, bypass_throttle);
-            })
-        };
         // M2: mid-run MEMORY fence refresh after successful fact writes.
         let memory_patch = crate::react::MemoryPatchHandle {
             memory_worker: memory_worker.clone(),
@@ -94,10 +86,7 @@ impl AgentLayer {
                 max_steps,
                 context_limits.clone(),
             )
-            .with_hooks(crate::react::default_hooks_with_infer_and_patch(
-                infer_cb,
-                memory_patch,
-            ))
+            .with_hooks(crate::react::default_hooks_with_patch(memory_patch))
             .with_memory_worker(memory_worker.clone()),
         );
         // Title generator is always available: it routes through the shared

@@ -9,7 +9,7 @@ use super::event_boundary::PauseTurnInput;
 use super::tool_batch::ToolBatchOutcome;
 use super::tool_batch_policy::ToolRetryBudget;
 use super::transcript::TranscriptEvent;
-use super::{AgentEvent, LoopExit, ReActEngine, ReActState, SessionStatus, StepCtx};
+use super::{AgentEvent, LoopExit, PauseReason, ReActEngine, ReActState, SessionStatus, StepCtx};
 use crate::types::Action;
 use haven_llm::LlmResponse;
 use haven_tools::ToolCatalogSnapshot;
@@ -54,6 +54,7 @@ pub(super) enum TurnEffect {
         waiting_reason: Option<haven_common::SessionWaitingReason>,
         final_text: String,
         branch_point_step: Option<u32>,
+        reason: PauseReason,
     },
     /// Drain process-local context after the final transcript effect.
     /// Injected input keeps the run alive and suppresses every later effect,
@@ -125,6 +126,7 @@ impl EffectBatch {
         waiting_reason: Option<haven_common::SessionWaitingReason>,
         final_text: impl Into<String>,
         branch_point_step: Option<u32>,
+        reason: PauseReason,
     ) {
         self.push(TurnEffect::Pause {
             boundary_step,
@@ -132,6 +134,7 @@ impl EffectBatch {
             waiting_reason,
             final_text: final_text.into(),
             branch_point_step,
+            reason,
         });
     }
 
@@ -263,6 +266,7 @@ async fn apply_projection_effect(
             waiting_reason,
             final_text,
             branch_point_step,
+            reason,
         } => {
             engine
                 .pause_turn(PauseTurnInput {
@@ -274,6 +278,8 @@ async fn apply_projection_effect(
                     waiting_reason,
                     final_text: &final_text,
                     branch_point_step,
+                    run_id: ctx.run_id,
+                    reason,
                 })
                 .await?;
         }
@@ -387,7 +393,14 @@ mod tests {
             persist_text_id: None,
         });
         end.push(TurnEffect::InjectTurnEnd { step_number: 1 });
-        end.pause(2, SessionStatus::Paused, None, "final", Some(1));
+        end.pause(
+            2,
+            SessionStatus::Paused,
+            None,
+            "final",
+            Some(1),
+            PauseReason::TurnEnd,
+        );
         end = EffectBatch::with_effects(
             TurnControl::Done(LoopExit::Paused {
                 reason: super::super::PauseReason::TurnEnd,

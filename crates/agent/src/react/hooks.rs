@@ -6,7 +6,7 @@
 //! → `hooks.after_llm` (response policy) → tools (`before_tool` per call) / pause.
 //!
 //! Default hooks own prologue side effects (inbox / compact / interval intent),
-//! empty/cut-off classification, confirm pre-check, and pause-time infer.
+//! empty/cut-off classification, confirm pre-check, and pause-time intent.
 //! Tests use [`NoopHooks`] so the thin loop can run without messaging or
 //! SQLite maintenance.
 
@@ -19,17 +19,10 @@ use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
 #[cfg(test)]
-pub(crate) use super::hook_policy::{DefaultHooks, default_hooks_with_infer};
-pub(crate) use super::hook_policy::{default_hooks, default_hooks_with_infer_and_patch};
+pub(crate) use super::hook_policy::DefaultHooks;
+pub(crate) use super::hook_policy::{default_hooks, default_hooks_with_patch};
 use super::retries::{AfterLlmAction, ResponsePolicyState};
 use super::{Action, PauseReason, ReActEngine, ReActState, StepCtx};
-
-/// Fact-memory callback: `(session_id, bypass_throttle)`.
-/// `bypass_throttle=true` for pause-path infer so interval extract cannot starve
-/// the fresher post-pause pass. Installed once on [`DefaultHooks`]; the thin
-/// loop keeps it only for the pause path while interval work is committed as a
-/// durable typed event.
-pub(crate) type InferCallback = Arc<dyn Fn(&str, bool) + Send + Sync>;
 
 /// Mid-run MEMORY fence refresh (M2): dirty flag lives on [`crate::MemoryWorker`];
 /// patch uses [`crate::SystemPromptBuilder::patch_canonical_memory_fence`] only
@@ -125,9 +118,16 @@ pub(crate) trait LoopHooks: Send + Sync {
         BeforeToolAction::Proceed { receipt: None }
     }
 
-    /// Called after status is set to a pause flavor. Default: no-op.
-    /// Pause infer (`infer(session, true)`) bypasses the extraction throttle.
-    async fn on_pause(&self, _engine: &ReActEngine, _ctx: &StepCtx, _reason: PauseReason) {}
+    /// Called after status is set to a pause flavor. The returned intent is
+    /// appended only after the caller has verified the durable event boundary.
+    async fn on_pause(
+        &self,
+        _engine: &ReActEngine,
+        _ctx: &StepCtx,
+        _reason: PauseReason,
+    ) -> Option<crate::memory_trigger::MemoryTriggerPayload> {
+        None
+    }
 }
 
 /// No-op hooks for thin-loop tests: never touch inbox / compact / infer /
@@ -163,17 +163,16 @@ mod tests {
 
     #[test]
     fn noop_hooks_leave_on_pause_as_trait_default() {
-        // NoopHooks does not override on_pause → infer is never called from
-        // the default empty body. DefaultHooks overrides on_pause to call
-        // infer. This compile-time / type-level contract is the G1 acceptance
-        // for "禁用 infer 的单测不触达 maintenance".
+        // NoopHooks does not override on_pause, so it never produces a
+        // memory-trigger intent. This keeps thin-loop tests free of memory
+        // maintenance side effects.
         let noop: &dyn LoopHooks = &NoopHooks;
-        let default: &dyn LoopHooks = &DefaultHooks::new(None);
+        let default: &dyn LoopHooks = &DefaultHooks::new();
         let _ = (noop, default);
     }
 
     #[tokio::test]
-    async fn with_hooks_noop_skips_infer_on_before_step_and_on_pause() {
+    async fn with_hooks_noop_skips_memory_trigger_on_before_step_and_on_pause() {
         use crate::event::AgentEventEmitter;
         use crate::session::SessionSupervisor;
         use async_trait::async_trait;
@@ -183,7 +182,6 @@ mod tests {
         use haven_memory::Database;
         use haven_tools::ToolsManager;
         use std::pin::Pin;
-        use std::sync::atomic::{AtomicUsize, Ordering};
 
         struct SilentLlm;
         #[async_trait]
@@ -262,11 +260,6 @@ mod tests {
         )
         .with_hooks(Arc::new(NoopHooks));
 
-        let calls = Arc::new(AtomicUsize::new(0));
-        let calls_infer = calls.clone();
-        let infer: InferCallback = Arc::new(move |_: &str, _: bool| {
-            calls_infer.fetch_add(1, Ordering::SeqCst);
-        });
         let emitter: Arc<dyn AgentEventEmitter> = Arc::new(SilentEmitter);
         let ctx = StepCtx {
             session_id: "ses-test".into(),
@@ -275,22 +268,22 @@ mod tests {
             emitter: emitter.clone(),
         };
         let mut state = ReActState::new(Vec::new(), Vec::new(), std::collections::HashMap::new());
-        engine
+        let before_step = engine
             .hooks
             .before_step(&engine, &ctx, &mut state, CancellationToken::new())
             .await
             .unwrap();
-        engine
-            .hooks
-            .on_pause(&engine, &ctx, PauseReason::TurnEnd)
-            .await;
-        assert_eq!(
-            calls.load(Ordering::SeqCst),
-            0,
-            "NoopHooks must not invoke infer (G1 acceptance)"
+        assert!(before_step.memory_trigger.is_none());
+        assert!(
+            engine
+                .hooks
+                .on_pause(&engine, &ctx, PauseReason::TurnEnd)
+                .await
+                .is_none()
         );
 
-        // DefaultHooks::on_pause must invoke infer(session, true) when wired.
+        // DefaultHooks emits a typed pause intent; the boundary owns durable
+        // persistence, so the hook itself has no worker callback to invoke.
         let default_engine = ReActEngine::new(
             router,
             crate::react::test_tool_catalog_port(&executor),
@@ -299,7 +292,7 @@ mod tests {
             10,
             limits,
         )
-        .with_hooks(default_hooks_with_infer(infer));
+        .with_hooks(default_hooks());
         let mut default_state =
             ReActState::new(Vec::new(), Vec::new(), std::collections::HashMap::new());
         let before_step = default_engine
@@ -319,20 +312,32 @@ mod tests {
             )),
             "interval extraction should be represented as a typed intent"
         );
-        assert_eq!(
-            calls.load(Ordering::SeqCst),
-            0,
-            "interval extraction must not call the legacy worker callback"
-        );
-        default_engine
+        let pause_trigger = default_engine
             .hooks
             .on_pause(&default_engine, &ctx, PauseReason::TurnEnd)
-            .await;
+            .await
+            .expect("default hooks should produce a pause trigger");
         assert_eq!(
-            calls.load(Ordering::SeqCst),
-            1,
-            "DefaultHooks::on_pause must invoke infer"
+            pause_trigger,
+            crate::memory_trigger::MemoryTriggerPayload::pause(1, 25, "turn_end")
         );
+
+        for (reason, wire_reason) in [
+            (PauseReason::Ask, "ask"),
+            (PauseReason::Confirm, "confirm"),
+            (PauseReason::Budget, "budget"),
+            (PauseReason::External, "external"),
+        ] {
+            let trigger = default_engine
+                .hooks
+                .on_pause(&default_engine, &ctx, reason)
+                .await
+                .expect("default hooks should produce every pause trigger");
+            assert_eq!(
+                trigger,
+                crate::memory_trigger::MemoryTriggerPayload::pause(1, 25, wire_reason)
+            );
+        }
     }
 
     #[tokio::test]
@@ -356,7 +361,7 @@ mod tests {
             cut_off_retries_max: 2,
             pending_ask: false,
         };
-        let hooks = DefaultHooks::new(None);
+        let hooks = DefaultHooks::new();
         // after_llm does not need a real engine for classification.
         let action = {
             // Build a minimal engine only to satisfy the trait signature.

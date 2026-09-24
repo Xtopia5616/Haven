@@ -604,6 +604,7 @@ impl ReActEngine {
         state: &mut ReActState,
         step_num: u32,
         emitter: &Arc<dyn AgentEventEmitter>,
+        run_id: u64,
         pending: crate::interaction::InteractionRequest,
     ) -> anyhow::Result<ToolBatchOutcome> {
         self.executor.mark_user_queues_as_answer(session_id).await;
@@ -621,7 +622,7 @@ impl ReActEngine {
         let ctx = StepCtx {
             session_id: session_id.to_string(),
             step_num,
-            run_id: 0,
+            run_id,
             emitter: emitter.clone(),
         };
         let mut effects = super::effects::EffectBatch::continue_batch();
@@ -631,6 +632,7 @@ impl ReActEngine {
             Some(haven_common::SessionWaitingReason::Ask),
             pending.prompt.clone(),
             None,
+            PauseReason::Ask,
         );
         self.apply_committed_batch(&ctx, state, effects).await?;
         Ok(ToolBatchOutcome::Done(LoopExit::Paused {

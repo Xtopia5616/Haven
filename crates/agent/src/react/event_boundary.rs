@@ -4,6 +4,7 @@
 //! [`ReActState`]; the loop modules delegate here instead of carrying their
 //! own persistence argument lists.
 
+use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
 use super::{PauseReason, StepCtx, *};
@@ -56,6 +57,8 @@ pub(super) struct PauseTurnInput<'a> {
     pub(super) waiting_reason: Option<haven_common::SessionWaitingReason>,
     pub(super) final_text: &'a str,
     pub(super) branch_point_step: Option<u32>,
+    pub(super) run_id: u64,
+    pub(super) reason: PauseReason,
 }
 
 /// Update a session's status and emit the `SessionUpdated` event, in that order.
@@ -361,6 +364,8 @@ impl ReActEngine {
             waiting_reason,
             final_text,
             branch_point_step,
+            run_id,
+            reason,
         } = input;
         let status_label = status.as_str();
         async {
@@ -385,21 +390,6 @@ impl ReActEngine {
                     boundary_step
                 );
             }
-            let reason = if self
-                .executor
-                .has_pending_interaction(session_id, crate::interaction::InteractionKind::Ask)
-                .await
-            {
-                PauseReason::Ask
-            } else if self
-                .executor
-                .has_pending_interaction(session_id, crate::interaction::InteractionKind::Confirm)
-                .await
-            {
-                PauseReason::Confirm
-            } else {
-                PauseReason::TurnEnd
-            };
             // A synchronous resolve may have already woken a confirm batch.
             // Do not overwrite that Pending transition with a stale pause.
             if self.executor.get_active_session_status(session_id).await
@@ -417,10 +407,19 @@ impl ReActEngine {
             let ctx = StepCtx {
                 session_id: session_id.to_string(),
                 step_num: boundary_step,
-                run_id: 0,
+                run_id,
                 emitter: emitter.clone(),
             };
-            self.hooks.on_pause(self, &ctx, reason).await;
+            if let Some(memory_trigger) = self.hooks.on_pause(self, &ctx, reason).await {
+                crate::memory_trigger::append_memory_trigger_nonfatal(
+                    self.db.clone(),
+                    self.event_store.clone(),
+                    session_id,
+                    memory_trigger,
+                    CancellationToken::new(),
+                )
+                .await;
+            }
             Ok(())
         }
         .instrument(tracing::info_span!(
@@ -446,6 +445,7 @@ impl ReActEngine {
         state: &ReActState,
         boundary_step: u32,
         emitter: &Arc<dyn AgentEventEmitter>,
+        run_id: u64,
     ) -> anyhow::Result<()> {
         // Phase 7 / I2: pause span for budget exhaustion (no assistant persist).
         async {
@@ -481,10 +481,23 @@ impl ReActEngine {
             let ctx = StepCtx {
                 session_id: session_id.to_string(),
                 step_num: boundary_step,
-                run_id: 0,
+                run_id,
                 emitter: emitter.clone(),
             };
-            self.hooks.on_pause(self, &ctx, PauseReason::Budget).await;
+            if let Some(memory_trigger) = self
+                .hooks
+                .on_pause(self, &ctx, PauseReason::Budget)
+                .await
+            {
+                crate::memory_trigger::append_memory_trigger_nonfatal(
+                    self.db.clone(),
+                    self.event_store.clone(),
+                    session_id,
+                    memory_trigger,
+                    CancellationToken::new(),
+                )
+                .await;
+            }
             Ok(())
         }
         .instrument(tracing::info_span!(
@@ -548,7 +561,7 @@ impl ReActEngine {
     }
 
     /// Shared External-pause exit (step-head and mid-batch): boundary check →
-    /// `on_pause(External)` → `LoopExit::Paused`.
+    /// typed pause trigger → `LoopExit::Paused`.
     pub(super) async fn exit_external_pause(
         &self,
         session_id: &str,
@@ -572,7 +585,16 @@ impl ReActEngine {
             run_id,
             emitter: emitter.clone(),
         };
-        self.hooks.on_pause(self, &ctx, PauseReason::External).await;
+        if let Some(memory_trigger) = self.hooks.on_pause(self, &ctx, PauseReason::External).await {
+            crate::memory_trigger::append_memory_trigger_nonfatal(
+                self.db.clone(),
+                self.event_store.clone(),
+                session_id,
+                memory_trigger,
+                CancellationToken::new(),
+            )
+            .await;
+        }
         LoopExit::Paused {
             reason: PauseReason::External,
         }

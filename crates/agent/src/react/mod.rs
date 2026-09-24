@@ -49,8 +49,8 @@ mod usage;
 
 use context::ContextSource;
 pub(crate) use context::action_result_message_id;
-pub(crate) use hooks::{InferCallback, MemoryPatchHandle, default_hooks_with_infer_and_patch};
 use hooks::{LoopHooksHandle, default_hooks};
+pub(crate) use hooks::{MemoryPatchHandle, default_hooks_with_patch};
 use identity::IdentityMap;
 pub use r#loop::{LoopExit, PauseReason};
 pub(crate) use r#loop::{RunInput, RunReplay};
@@ -466,8 +466,8 @@ impl ReActEngine {
         self.metrics.increment(MetricsCounter::ActionResultRetries);
     }
 
-    /// Replace loop hooks (production: `default_hooks_with_infer`; tests:
-    /// `hooks::NoopHooks` to skip inbox/infer).
+    /// Replace loop hooks (production: `default_hooks_with_patch`; tests:
+    /// `hooks::NoopHooks` to skip inbox/memory maintenance).
     pub(crate) fn with_hooks(mut self, hooks: LoopHooksHandle) -> Self {
         self.hooks = hooks;
         self

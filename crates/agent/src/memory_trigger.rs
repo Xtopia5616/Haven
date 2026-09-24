@@ -41,6 +41,16 @@ impl MemoryTriggerPayload {
         }
     }
 
+    pub(crate) fn pause(run_id: u64, step_number: u32, reason: impl Into<String>) -> Self {
+        Self {
+            trigger_kind: MemoryTriggerKind::Pause,
+            bypass_throttle: true,
+            run_id: Some(run_id),
+            step_number: Some(step_number),
+            pause_reason: Some(reason.into()),
+        }
+    }
+
     pub(crate) fn validate(&self) -> anyhow::Result<()> {
         match self.trigger_kind {
             MemoryTriggerKind::StepInterval => anyhow::ensure!(
@@ -51,6 +61,14 @@ impl MemoryTriggerPayload {
                 self.bypass_throttle,
                 "pause memory trigger must bypass throttle"
             ),
+        }
+        if matches!(self.trigger_kind, MemoryTriggerKind::Pause) {
+            anyhow::ensure!(
+                self.pause_reason
+                    .as_deref()
+                    .is_some_and(|reason| !reason.is_empty()),
+                "pause memory trigger requires a pause_reason"
+            );
         }
         Ok(())
     }
@@ -69,6 +87,9 @@ async fn append_memory_trigger(
         !cancellation.is_cancelled(),
         "memory trigger append cancelled before persistence"
     );
+    payload
+        .validate()
+        .context("invalid memory trigger payload")?;
 
     let event_input = SessionEventInput {
         event_type: MEMORY_TRIGGER_EVENT_TYPE.to_owned(),
@@ -108,17 +129,14 @@ pub(crate) async fn append_memory_trigger_nonfatal(
         Ok(Some(event)) => tracing::debug!(
             session_id,
             sequence = event.sequence,
-            "appended interval memory trigger"
+            "appended memory trigger"
         ),
         Ok(None) => {}
         Err(error) if cancellation.is_cancelled() => {
-            tracing::debug!(
-                session_id,
-                "interval memory trigger append cancelled: {error}"
-            );
+            tracing::debug!(session_id, "memory trigger append cancelled: {error}");
         }
         Err(error) => {
-            tracing::warn!(session_id, "interval memory trigger append failed: {error}");
+            tracing::warn!(session_id, "memory trigger append failed: {error}");
         }
     }
 }

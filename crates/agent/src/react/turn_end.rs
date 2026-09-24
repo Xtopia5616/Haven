@@ -101,6 +101,7 @@ impl ReActEngine {
             None,
             final_text,
             Some(ctx.step_num),
+            PauseReason::TurnEnd,
         );
         effects = EffectBatch::with_effects(
             TurnControl::Done(LoopExit::Paused {
