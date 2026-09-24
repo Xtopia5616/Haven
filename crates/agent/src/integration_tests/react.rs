@@ -1621,7 +1621,7 @@ async fn continue_session_resumes_errored_session() {
             &haven_memory::LlmCallUsageInput {
                 step_number: Some(1),
                 request_kind: haven_common::config::RequestKind::Chat,
-                call_kind: "agent".into(),
+                call_kind: haven_common::types::LlmCallKind::Agent,
                 model: Some("test-model".into()),
                 prompt_tokens: 10,
                 completion_tokens: 0,
@@ -1661,7 +1661,7 @@ async fn continue_session_resumes_errored_session() {
             &haven_memory::LlmCallUsageInput {
                 step_number: Some(2),
                 request_kind: haven_common::config::RequestKind::Chat,
-                call_kind: "agent".into(),
+                call_kind: haven_common::types::LlmCallKind::Agent,
                 model: Some("test-model".into()),
                 prompt_tokens: 20,
                 completion_tokens: 0,

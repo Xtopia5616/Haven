@@ -559,7 +559,7 @@ impl ToolResultEnvelope {
 /// composite tool (such as `files`) owns both kinds of work.
 #[derive(Debug, Clone)]
 pub struct ToolLlmUsage {
-    pub call_kind: &'static str,
+    pub call_kind: haven_common::types::LlmCallKind,
     pub request: haven_common::config::RequestKind,
     pub usage: haven_llm::Usage,
     pub model: Option<String>,

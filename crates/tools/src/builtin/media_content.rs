@@ -3,6 +3,7 @@
 use haven_common::media::MediaRepresentationKind;
 use haven_common::media_detection::MediaType;
 use haven_common::prompts::IMAGE_ANALYSIS_SYSTEM_PROMPT;
+use haven_common::types::LlmCallKind;
 use haven_llm::{LlmRouter, SttClient};
 use serde_json::Value;
 use std::sync::Arc;
@@ -605,7 +606,7 @@ impl MediaTool {
             ToolResult::ok(output)
         };
         result.llm_usage.push(ToolLlmUsage {
-            call_kind: "media",
+            call_kind: LlmCallKind::Media,
             request: haven_common::config::RequestKind::Vision,
             usage: response.usage,
             model: response.model,
@@ -664,7 +665,7 @@ impl MediaTool {
                 };
                 for usage in transcription.llm_usage {
                     tool_result.llm_usage.push(ToolLlmUsage {
-                        call_kind: "media",
+                        call_kind: LlmCallKind::Media,
                         request: usage.request,
                         usage: usage.usage,
                         model: usage.model,

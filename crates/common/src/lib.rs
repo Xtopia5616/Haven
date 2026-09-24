@@ -41,5 +41,5 @@ pub use tools::{
 pub use lifecycle::{ActionStatus, SessionStatus, SessionWaitingReason};
 pub use types::{
     CacheAccounting, CanonicalMessage, CanonicalRole, CanonicalToolCall, ContentPart, FollowUp,
-    InjectSource, MessageAttachment, PEER_KICKOFF_PREFIX,
+    InjectSource, LlmCallKind, MessageAttachment, PEER_KICKOFF_PREFIX,
 };

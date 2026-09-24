@@ -32,6 +32,38 @@ impl CacheAccounting {
     }
 }
 
+/// The runtime owner of one LLM usage record.
+///
+/// Durable usage rows and the `agent:usage` IPC event keep the established
+/// snake_case string representation; runtime inputs use this enum so callers
+/// cannot introduce an unrecognized usage category.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LlmCallKind {
+    Agent,
+    Media,
+    Tool,
+}
+
+impl LlmCallKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Agent => "agent",
+            Self::Media => "media",
+            Self::Tool => "tool",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "agent" => Some(Self::Agent),
+            "media" => Some(Self::Media),
+            "tool" => Some(Self::Tool),
+            _ => None,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Entity identifiers
 // ---------------------------------------------------------------------------
@@ -1134,6 +1166,28 @@ impl From<&str> for FollowUp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn llm_call_kind_string_and_serde_contract() {
+        for (kind, value) in [
+            (LlmCallKind::Agent, "agent"),
+            (LlmCallKind::Media, "media"),
+            (LlmCallKind::Tool, "tool"),
+        ] {
+            assert_eq!(kind.as_str(), value);
+            assert_eq!(LlmCallKind::parse(value), Some(kind));
+            assert_eq!(
+                serde_json::to_string(&kind).unwrap(),
+                format!("\"{value}\"")
+            );
+            assert_eq!(
+                serde_json::from_str::<LlmCallKind>(&format!("\"{value}\"")).unwrap(),
+                kind
+            );
+        }
+        assert_eq!(LlmCallKind::parse("unknown"), None);
+        assert!(serde_json::from_str::<LlmCallKind>("\"unknown\"").is_err());
+    }
 
     #[test]
     fn canonical_role_all_variants() {

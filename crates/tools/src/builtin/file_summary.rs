@@ -1,6 +1,6 @@
 use haven_common::config::RequestKind;
 use haven_common::prompts::FILE_SUMMARY_SYSTEM_PROMPT;
-use haven_common::types::{CanonicalMessage, ContentPart};
+use haven_common::types::{CanonicalMessage, ContentPart, LlmCallKind};
 use haven_llm::{CompleteRequest, LlmRouter};
 use std::sync::Arc;
 use tokio::io::BufReader;
@@ -134,7 +134,7 @@ pub(super) async fn summarize(
     }
     let mut tool_result = ToolResult::ok(result);
     tool_result.llm_usage.push(ToolLlmUsage {
-        call_kind: "tool",
+        call_kind: LlmCallKind::Tool,
         request: RequestKind::FastChat,
         usage: response.usage,
         model: response.model,

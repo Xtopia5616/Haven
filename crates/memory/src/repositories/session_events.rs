@@ -2096,13 +2096,13 @@ fn bump_message_millis(last: &str) -> String {
 mod tests {
     use super::*;
     use haven_common::config::RequestKind;
-    use haven_common::types::CacheAccounting;
+    use haven_common::types::{CacheAccounting, LlmCallKind};
 
     fn usage_input(step_number: i32, total_tokens: u32) -> LlmCallUsageInput {
         LlmCallUsageInput {
             step_number: Some(step_number),
             request_kind: RequestKind::Chat,
-            call_kind: "agent".into(),
+            call_kind: LlmCallKind::Agent,
             model: Some("test-model".into()),
             prompt_tokens: total_tokens,
             completion_tokens: 0,

@@ -11,7 +11,7 @@ use haven_common::media::{
     MediaProjectionMode, build_media_plan, message_attachment_to_media_input,
 };
 use haven_common::types::MessageAttachment;
-use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
+use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart, LlmCallKind};
 use haven_llm::{FinishReason, LlmResponse, LlmRouter, ToolDefinition};
 use haven_memory::{Database, SessionStore};
 
@@ -732,6 +732,7 @@ impl ReActEngine {
             .record(
                 session_id,
                 UsageUpdate {
+                    call_kind: LlmCallKind::Agent,
                     request,
                     model: model.clone(),
                     step_number,
@@ -807,7 +808,7 @@ impl ReActEngine {
                 step_number: Some(step_number as u32),
                 duration_ms,
                 request_kind: Some(request),
-                call_kind: "agent".into(),
+                call_kind: LlmCallKind::Agent.as_str().to_string(),
                 has_cost: call_has_cost,
             },
         )
@@ -838,17 +839,7 @@ impl ReActEngine {
                 continue;
             }
             let request = tool_usage.request;
-            let call_kind = match tool_usage.call_kind {
-                "media" => "media",
-                "tool" => "tool",
-                other => {
-                    tracing::warn!(
-                        call_kind = other,
-                        "unknown tool usage kind; recording it as a generic tool call"
-                    );
-                    "tool"
-                }
-            };
+            let call_kind = tool_usage.call_kind;
             let step_cost = self.router().compute_cost(request, &usage).await;
             let model = tool_usage
                 .model
@@ -884,14 +875,14 @@ impl ReActEngine {
                 step_number: Some(step_number as u32),
                 duration_ms: tool_usage.duration_ms,
                 request_kind: Some(request),
-                call_kind: call_kind.to_string(),
+                call_kind: call_kind.as_str().to_string(),
                 has_cost: step_cost.is_some(),
             };
             pending.push(PendingToolUsage {
                 input: haven_memory::LlmCallUsageInput {
                     step_number: Some(step_number),
                     request_kind: request,
-                    call_kind: call_kind.to_string(),
+                    call_kind,
                     model,
                     prompt_tokens: usage.prompt_tokens,
                     completion_tokens: usage.completion_tokens,
@@ -949,7 +940,7 @@ impl ReActEngine {
         usages: &[haven_llm::LlmCallUsage],
         emitter: Option<&Arc<dyn AgentEventEmitter>>,
     ) {
-        self.record_usage_at_step(session_id, step_number, usages, "media", emitter)
+        self.record_usage_at_step(session_id, step_number, usages, LlmCallKind::Media, emitter)
             .await;
     }
 
@@ -958,7 +949,7 @@ impl ReActEngine {
         session_id: &str,
         step_number: Option<i32>,
         usages: &[haven_llm::LlmCallUsage],
-        call_kind: &str,
+        call_kind: LlmCallKind,
         emitter: Option<&Arc<dyn AgentEventEmitter>>,
     ) {
         for tool_usage in usages {
@@ -986,7 +977,7 @@ impl ReActEngine {
             let cache_diagnostics_for_event = usage.cache_diagnostics.clone();
             let store = self.event_store.clone();
             let session_id_for_persist = session_id.to_string();
-            let call_kind_for_persist = call_kind.to_string();
+            let call_kind_for_persist = call_kind;
             let model_for_persist = model.clone();
             let call_cost = step_cost.unwrap_or(0.0);
             let call_has_cost = step_cost.is_some();
@@ -1020,14 +1011,14 @@ impl ReActEngine {
                 Ok(Ok(_)) => {}
                 Ok(Err(error)) => tracing::warn!(
                     "ReAct: failed to persist {} usage for session {} step {:?}: {}",
-                    call_kind,
+                    call_kind.as_str(),
                     session_id,
                     step_number,
                     error
                 ),
                 Err(error) => tracing::warn!(
                     "ReAct: {} usage persistence task failed for session {} step {:?}: {}",
-                    call_kind,
+                    call_kind.as_str(),
                     session_id,
                     step_number,
                     error
@@ -1064,7 +1055,7 @@ impl ReActEngine {
                     step_number: step_number.and_then(|step| u32::try_from(step).ok()),
                     duration_ms,
                     request_kind: Some(request),
-                    call_kind: call_kind.to_string(),
+                    call_kind: call_kind.as_str().to_string(),
                     has_cost: call_has_cost,
                 },
             )

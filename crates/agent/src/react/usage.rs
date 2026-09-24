@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex};
 
 use haven_common::config::RequestKind;
-use haven_common::types::CacheAccounting;
+use haven_common::types::{CacheAccounting, LlmCallKind};
 use haven_memory::{Database, LlmCallUsageInput, SessionStore};
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -18,6 +18,7 @@ const USAGE_OPERATION_CAPACITY: usize = 128;
 /// Provider-neutral input for one Agent-owned model call.
 #[derive(Debug, Clone)]
 pub(crate) struct UsageUpdate {
+    pub call_kind: LlmCallKind,
     pub request: RequestKind,
     pub model: Option<String>,
     pub step_number: i32,
@@ -323,6 +324,7 @@ async fn record_usage(
     update: UsageUpdate,
 ) -> anyhow::Result<CumulativeTotals> {
     let UsageUpdate {
+        call_kind,
         request,
         model,
         step_number,
@@ -341,6 +343,10 @@ async fn record_usage(
         context_window,
         cancel,
     } = update;
+    anyhow::ensure!(
+        call_kind == LlmCallKind::Agent,
+        "Agent usage updates must use call_kind=agent"
+    );
     let seed = if tracker.needs_seed(session_id) {
         let db = Arc::clone(db);
         let sid = session_id.to_string();
@@ -376,7 +382,7 @@ async fn record_usage(
     let usage_input = LlmCallUsageInput {
         step_number: Some(step_number),
         request_kind: request,
-        call_kind: "agent".into(),
+        call_kind,
         model,
         prompt_tokens,
         completion_tokens,
@@ -422,11 +428,15 @@ async fn record_usage(
 mod tests {
     use super::*;
 
-    fn tool_usage_input(call_kind: &str, model: &str, prompt_tokens: u32) -> LlmCallUsageInput {
+    fn tool_usage_input(
+        call_kind: LlmCallKind,
+        model: &str,
+        prompt_tokens: u32,
+    ) -> LlmCallUsageInput {
         LlmCallUsageInput {
             step_number: Some(3),
             request_kind: RequestKind::Chat,
-            call_kind: call_kind.into(),
+            call_kind,
             model: Some(model.into()),
             prompt_tokens,
             completion_tokens: 2,
@@ -446,6 +456,7 @@ mod tests {
 
     fn update(prompt_tokens: u32) -> UsageUpdate {
         UsageUpdate {
+            call_kind: LlmCallKind::Agent,
             request: RequestKind::Chat,
             model: Some("test-model".into()),
             step_number: 1,
@@ -501,6 +512,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn agent_usage_runtime_rejects_non_agent_call_kind() {
+        let directory = tempfile::tempdir().expect("temporary DB directory");
+        let db = Arc::new(Database::open(&directory.path().join("usage-kind.db")).unwrap());
+        let session = db.create_session("usage kind").unwrap();
+        let runtime = UsageRuntime::new(Arc::clone(&db), SessionStore::new(Arc::clone(&db)));
+
+        let mut update = update(1);
+        update.call_kind = LlmCallKind::Media;
+        assert!(runtime.record(&session.id, update).await.is_err());
+        assert!(db.get_session_llm_usage(&session.id).unwrap().is_empty());
+        assert!(db.get_session_usage(&session.id).unwrap().is_none());
+    }
+
+    #[tokio::test]
     async fn reset_and_invalidate_are_ordered_with_record_operations() {
         let directory = tempfile::tempdir().expect("temporary DB directory");
         let db = Arc::new(Database::open(&directory.path().join("usage-order.db")).unwrap());
@@ -515,7 +540,7 @@ mod tests {
                 &LlmCallUsageInput {
                     step_number: Some(2),
                     request_kind: RequestKind::Chat,
-                    call_kind: "agent".into(),
+                    call_kind: LlmCallKind::Agent,
                     model: Some("external-seed".into()),
                     prompt_tokens: 40,
                     completion_tokens: 0,
@@ -565,8 +590,8 @@ mod tests {
             .append_tool_usage_batch(
                 &session.id,
                 vec![
-                    tool_usage_input("tool", "tool-model", 11),
-                    tool_usage_input("media", "media-model", 17),
+                    tool_usage_input(LlmCallKind::Tool, "tool-model", 11),
+                    tool_usage_input(LlmCallKind::Media, "media-model", 17),
                 ],
                 None,
             )
@@ -628,7 +653,7 @@ mod tests {
             task_runtime
                 .append_tool_usage_batch(
                     &task_session_id,
-                    vec![tool_usage_input("tool", "cancelled-model", 5)],
+                    vec![tool_usage_input(LlmCallKind::Tool, "cancelled-model", 5)],
                     Some(task_cancel),
                 )
                 .await

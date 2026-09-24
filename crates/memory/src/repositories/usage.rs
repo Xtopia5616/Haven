@@ -2,7 +2,7 @@ use crate::db::Database;
 #[cfg(test)]
 use crate::repositories::messages::now_rfc3339_millis;
 use haven_common::config::RequestKind;
-use haven_common::types::CacheAccounting;
+use haven_common::types::{CacheAccounting, LlmCallKind};
 use rusqlite::OptionalExtension;
 use rusqlite::types::Type;
 
@@ -154,7 +154,7 @@ pub struct LlmCallUsageInput {
     pub step_number: Option<i32>,
     /// Request kind stored in the established `llm_usage.role` column.
     pub request_kind: RequestKind,
-    pub call_kind: String,
+    pub call_kind: LlmCallKind,
     pub model: Option<String>,
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
@@ -183,7 +183,7 @@ impl LlmCallUsage {
             session_id: session_id.into(),
             step_number: input.step_number,
             role: input.request_kind,
-            call_kind: input.call_kind.clone(),
+            call_kind: input.call_kind.as_str().to_string(),
             model: input.model.clone(),
             prompt_tokens: input.prompt_tokens,
             completion_tokens: input.completion_tokens,
@@ -239,7 +239,7 @@ impl SessionUsageDelta {
     #[allow(clippy::too_many_arguments)]
     fn add_call(
         &mut self,
-        call_kind: &str,
+        call_kind: LlmCallKind,
         prompt_tokens: u32,
         completion_tokens: u32,
         total_tokens: u32,
@@ -253,7 +253,7 @@ impl SessionUsageDelta {
         context_window: Option<u32>,
         created_at: &str,
     ) {
-        if call_kind != "agent" {
+        if call_kind != LlmCallKind::Agent {
             return;
         }
 
@@ -360,7 +360,7 @@ impl Database {
             session_id,
             step_number,
             request_kind,
-            "agent",
+            LlmCallKind::Agent.as_str(),
             model,
             prompt_tokens,
             completion_tokens,
@@ -511,7 +511,7 @@ impl Database {
             session_id,
             step_number,
             request_kind,
-            "agent",
+            LlmCallKind::Agent,
             model,
             prompt_tokens,
             completion_tokens,
@@ -536,7 +536,7 @@ impl Database {
         session_id: &str,
         step_number: Option<i32>,
         request_kind: RequestKind,
-        call_kind: &str,
+        call_kind: LlmCallKind,
         model: Option<&str>,
         prompt_tokens: u32,
         completion_tokens: u32,
@@ -563,7 +563,7 @@ impl Database {
                 session_id,
                 step_number,
                 request_kind,
-                call_kind,
+                call_kind.as_str(),
                 model,
                 prompt_tokens,
                 completion_tokens,
@@ -602,7 +602,7 @@ impl Database {
                 session_id: session_id.into(),
                 step_number,
                 role: request_kind,
-                call_kind: call_kind.into(),
+                call_kind: call_kind.as_str().to_string(),
                 model: model.map(String::from),
                 prompt_tokens,
                 completion_tokens,
@@ -660,7 +660,7 @@ impl Database {
                     session_id,
                     input.step_number,
                     input.request_kind,
-                    &input.call_kind,
+                    input.call_kind.as_str(),
                     input.model.as_deref(),
                     input.prompt_tokens,
                     input.completion_tokens,
@@ -678,7 +678,7 @@ impl Database {
                     created_at,
                 )?;
                 delta.add_call(
-                    &input.call_kind,
+                    input.call_kind,
                     input.prompt_tokens,
                     input.completion_tokens,
                     input.total_tokens,
@@ -702,7 +702,7 @@ impl Database {
                     session_id: session_id.into(),
                     step_number: input.step_number,
                     role: input.request_kind,
-                    call_kind: input.call_kind.clone(),
+                    call_kind: input.call_kind.as_str().to_string(),
                     model: input.model.clone(),
                     prompt_tokens: input.prompt_tokens,
                     completion_tokens: input.completion_tokens,
@@ -798,21 +798,23 @@ impl Database {
             &record.created_at,
         )?;
         let mut delta = SessionUsageDelta::default();
-        delta.add_call(
-            &record.call_kind,
-            record.prompt_tokens,
-            record.completion_tokens,
-            record.total_tokens,
-            record.cached_tokens,
-            record.cache_creation_tokens,
-            record.cache_miss_tokens,
-            &record.cache_accounting,
-            record.cost_usd,
-            record.has_cost,
-            record.context_tokens,
-            record.context_window,
-            &record.created_at,
-        );
+        if let Some(call_kind) = LlmCallKind::parse(&record.call_kind) {
+            delta.add_call(
+                call_kind,
+                record.prompt_tokens,
+                record.completion_tokens,
+                record.total_tokens,
+                record.cached_tokens,
+                record.cache_creation_tokens,
+                record.cache_miss_tokens,
+                &record.cache_accounting,
+                record.cost_usd,
+                record.has_cost,
+                record.context_tokens,
+                record.context_window,
+                &record.created_at,
+            );
+        }
         Self::apply_session_usage_delta_conn(conn, &record.session_id, &delta)
     }
 
@@ -971,8 +973,8 @@ impl Database {
                     COALESCE(SUM(cache_miss_tokens), 0),
                     COALESCE(SUM(CASE WHEN has_cost != 0 THEN cost_usd ELSE 0 END), 0),
                     COALESCE(MAX(CASE WHEN has_cost != 0 THEN 1 ELSE 0 END), 0)
-             FROM llm_usage WHERE session_id = ?1 AND call_kind = 'agent'",
-            rusqlite::params![session_id],
+             FROM llm_usage WHERE session_id = ?1 AND call_kind = ?2",
+            rusqlite::params![session_id, LlmCallKind::Agent.as_str()],
             |row| {
                 Ok((
                     row.get(0)?,
@@ -994,10 +996,10 @@ impl Database {
             .query_row(
                 "SELECT context_tokens, context_window, created_at
                    FROM llm_usage
-                  WHERE session_id = ?1 AND call_kind = 'agent'
+                  WHERE session_id = ?1 AND call_kind = ?2
                   ORDER BY created_at DESC, rowid DESC
                   LIMIT 1",
-                rusqlite::params![session_id],
+                rusqlite::params![session_id, LlmCallKind::Agent.as_str()],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()?
@@ -1101,7 +1103,7 @@ mod tests {
     use crate::LlmCallUsageInput;
     use crate::db::Database;
     use haven_common::config::RequestKind;
-    use haven_common::types::CacheAccounting;
+    use haven_common::types::{CacheAccounting, LlmCallKind};
 
     fn test_db() -> Database {
         Database::open_in_memory().expect("create in-memory db")
@@ -1148,7 +1150,7 @@ mod tests {
                     LlmCallUsageInput {
                         step_number: Some(3),
                         request_kind: RequestKind::Chat,
-                        call_kind: "tool".into(),
+                        call_kind: LlmCallKind::Tool,
                         model: Some("model-a".into()),
                         prompt_tokens: 10,
                         completion_tokens: 2,
@@ -1167,7 +1169,7 @@ mod tests {
                     LlmCallUsageInput {
                         step_number: Some(3),
                         request_kind: RequestKind::Chat,
-                        call_kind: "media".into(),
+                        call_kind: LlmCallKind::Media,
                         model: Some("model-b".into()),
                         prompt_tokens: 20,
                         completion_tokens: 3,
@@ -1252,7 +1254,7 @@ mod tests {
             &session.id,
             Some(1),
             RequestKind::Vision,
-            "media",
+            LlmCallKind::Media,
             Some("vision-model"),
             80,
             10,
@@ -1516,7 +1518,7 @@ mod tests {
             &session.id,
             Some(0),
             RequestKind::Chat,
-            "agent",
+            LlmCallKind::Agent.as_str(),
             None,
             1,
             1,
@@ -1536,7 +1538,7 @@ mod tests {
         .unwrap();
         let mut delta = SessionUsageDelta::default();
         delta.add_call(
-            "agent",
+            LlmCallKind::Agent,
             1,
             1,
             2,

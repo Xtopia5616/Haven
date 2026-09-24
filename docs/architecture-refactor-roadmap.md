@@ -201,7 +201,7 @@ SessionStore
 
 - 在 `haven-memory` 内建立 `SessionStore`、`TranscriptStore`、`UsageStore`、`ActionStore` 的最小公开面；
 - 逐步删除 Agent/Tools/App 的 `Arc<Database>` 传递与上层 `conn()` 使用；
-- 统一 `persist_llm_call(session_id, LlmCallUsageInput)`，把 call purpose/cache accounting 等字符串收为 typed enum；
+- 统一 `persist_llm_call(session_id, LlmCallUsageInput)`；cache accounting 与 `llm_usage.call_kind` 运行时输入已完成 typed enum 收口（ADR 0270–0271），其他 call purpose 表达另行收敛；
 - 将 ActionService 的 board/status/list 输出收敛为 `ActionView`、`ActionKind`、`ActionState`、`ActionOutput` 等 DTO；动态 tool args/MCP payload 仍保留 `Value`；
 - 保留 projection/cache invalidation/事务细节在 Memory 内部；
 - 为每个删除的旧 Database API 删除无调用测试和旧文档入口。
@@ -273,7 +273,7 @@ SessionStore
 - `MemoryRuntime` 监听 committed session event，负责 fact extraction/maintenance/index catch-up；
 - `MemoryWorker` 的 FastChat 调用已通过小型 `MemoryInferencePort` 注入（ADR 0247）；后续仍需让 Agent 只提交 `SessionCommitted` 并通过 MemoryReader 获取 recall。
 
-状态：committed-event consumer 架构设计已完成并采纳（ADR 0259）；Phase 7.1 的 SessionStore cursor/replay、`MemoryRuntime::process_event` 顺序处理、启动时已有 cursor 回放和 `run_until_cancelled` bounded live/replay recovery 已实现，并由 AgentLayer 在 dispatcher recovery 前装配与启动（ADR 0261、0262、0263）。interval、pause trigger 与 compact-summary extraction 已通过 durable producer/outbox 接入，周期 maintenance 调度已由 MemoryRuntime 负责；MemoryWorker durable outbox 已加入逐 job retry/backoff 和应用停机 cancellation boundary（ADR 0264、0265、0266、0267、0268、0269）。usage runtime 的 cache accounting 也已完成 typed input 收口（ADR 0270）。
+状态：committed-event consumer 架构设计已完成并采纳（ADR 0259）；Phase 7.1 的 SessionStore cursor/replay、`MemoryRuntime::process_event` 顺序处理、启动时已有 cursor 回放和 `run_until_cancelled` bounded live/replay recovery 已实现，并由 AgentLayer 在 dispatcher recovery 前装配与启动（ADR 0261、0262、0263）。interval、pause trigger 与 compact-summary extraction 已通过 durable producer/outbox 接入，周期 maintenance 调度已由 MemoryRuntime 负责；MemoryWorker durable outbox 已加入逐 job retry/backoff 和应用停机 cancellation boundary（ADR 0264、0265、0266、0267、0268、0269）。usage runtime 的 cache accounting 与 `llm_usage.call_kind` 运行时输入均已完成 typed input 收口（ADR 0270、0271）；durable read model 和 IPC 继续使用既有字符串字段。
 
 主要文件：`crates/tools/src/action_service.rs`、`action_lifecycle.rs`、`crates/agent/src/memory_worker.rs`、`memory_service.rs`、`memory_index.rs`、`crates/memory/src/`。
 
