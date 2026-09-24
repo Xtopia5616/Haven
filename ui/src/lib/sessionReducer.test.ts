@@ -315,6 +315,78 @@ describe('SessionReducer', () => {
 		expect(resolved.interactions?.[pending.id]?.status).toBe('resolved');
 	});
 
+	it('composes resume interaction preservation with restored and live usage', () => {
+		const pending = {
+			id: 'conf-resume-live',
+			sessionId: 'ses-resume-live',
+			kind: 'confirm' as const,
+			status: 'pending' as const,
+			prompt: '允许继续吗？',
+			options: [],
+			createdAt: '2026-09-20T00:00:00Z',
+		};
+		const state = { ...initialSessionState, interactions: { [pending.id]: pending } };
+
+		const resumed = reduceSession(state, {
+			type: 'session/messages/resume-loaded',
+			sessionId: pending.sessionId,
+			messages: [{ id: 'msg-resumed', role: 'assistant', content: '已恢复' }],
+			interactions: [],
+			preserveInteractionIds: [pending.id],
+			usage: {
+				prompt_tokens: 13,
+				completion_tokens: 5,
+				total_tokens: 18,
+				cached_tokens: 2,
+				cache_creation_tokens: 1,
+				context_window: 128,
+				cost_usd: 0.02,
+				has_cost: true,
+			},
+			llmUsage: [{ call_kind: 'agent', total_tokens: 18 }],
+		});
+
+		expect(resumed.messages[pending.sessionId]).toEqual([
+			{ id: 'msg-resumed', role: 'assistant', content: '已恢复' },
+		]);
+		expect(resumed.interactions[pending.id]).toEqual(pending);
+		expect(resumed.tokenStats[pending.sessionId]).toMatchObject({
+			cumulativeTotalTokens: 18,
+			restored: true,
+		});
+		expect(resumed.llmUsage[pending.sessionId]).toEqual([
+			{ call_kind: 'agent', total_tokens: 18 },
+		]);
+
+		const live = reduceSession(resumed, {
+			type: 'session/usage-live',
+			sessionId: pending.sessionId,
+			stats: {
+				promptTokens: 7,
+				completionTokens: 3,
+				totalTokens: 10,
+				cumulativePromptTokens: 20,
+				cumulativeCompletionTokens: 8,
+				cumulativeTotalTokens: 28,
+				costUsd: null,
+				cumulativeCostUsd: null,
+				contextWindow: 128,
+				model: 'live-model',
+			},
+			call: { call_kind: 'agent', total_tokens: 10 },
+		});
+
+		expect(live.tokenStats[pending.sessionId]).toMatchObject({
+			promptTokens: 7,
+			restored: false,
+			lastUpdated: expect.any(Number),
+		});
+		expect(live.llmUsage[pending.sessionId]).toEqual([
+			{ call_kind: 'agent', total_tokens: 18 },
+			{ call_kind: 'agent', total_tokens: 10 },
+		]);
+	});
+
 	it('deduplicates replayed chunks and sequenced action events', () => {
 		const chunk = {
 			sessionId: 'ses-replay',
@@ -415,6 +487,83 @@ describe('SessionReducer', () => {
 				],
 			}),
 		).toBe(reducer.getState());
+	});
+
+	it('resets stream chunks by block identity so a new run can restart its sequence', () => {
+		const payload = {
+			sessionId: 'ses-reset',
+			delta: '旧代次',
+			stepNumber: 3,
+			runId: 7,
+			messageId: 'step-thought-reset',
+			seq: 5,
+		};
+		const streamed = reduceSession(initialSessionState, {
+			type: 'agent/chunks',
+			chunks: [{ kind: 'thought', payload }],
+		});
+		const reset = reduceSession(streamed, {
+			type: 'agent/stream-reset',
+			payload: {
+				sessionId: payload.sessionId,
+				stepNumber: payload.stepNumber,
+				runId: payload.runId,
+				thoughtMessageId: payload.messageId,
+				reasoningMessageId: 'step-reasoning-reset',
+			},
+		});
+		const restarted = reduceSession(reset, {
+			type: 'agent/chunks',
+			chunks: [{ kind: 'thought', payload: { ...payload, delta: '新代次', seq: 1 } }],
+		});
+
+		expect(reset.messages[payload.sessionId]).toEqual([]);
+		expect(restarted.messages[payload.sessionId]).toEqual([
+			expect.objectContaining({ id: payload.messageId, content: '新代次', streaming: true }),
+		]);
+		expect(restarted.replay.chunkSeqByMessage[payload.messageId]).toBe(1);
+		expect(restarted.replay.blockIdsBySession[payload.sessionId]?.['3:7']).toEqual({
+			thoughtId: payload.messageId,
+		});
+	});
+
+	it('keeps lifecycle error and termination projections aligned across list refreshes', () => {
+		const running = stateWith({
+			sessions: [session('ses-terminal', 'running')],
+			activeSessionId: 'ses-terminal',
+		});
+		const failed = reduceSession(running, {
+			type: 'session/error-shown',
+			sessionId: 'ses-terminal',
+			reason: '连接中断',
+		});
+		expect(failed.error?.reason).toBe('连接中断');
+		expect(failed.termination?.status).toBe('error');
+
+		const recovered = reduceSession(failed, {
+			type: 'session/status-updated',
+			sessionId: 'ses-terminal',
+			status: 'pending',
+		});
+		expect(recovered.error).toBeNull();
+		expect(recovered.termination).toBeNull();
+
+		const completed = reduceSession(recovered, {
+			type: 'session/termination-shown',
+			sessionId: 'ses-terminal',
+			status: 'completed',
+			reason: '用户主动结束会话',
+		});
+		const refreshed = reduceSession(completed, {
+			type: 'sessions/loaded',
+			sessions: [],
+		});
+		expect(refreshed.sessions).toContainEqual(session('ses-terminal', 'completed'));
+		expect(refreshed.termination).toEqual({
+			sessionId: 'ses-terminal',
+			status: 'completed',
+			reason: '用户主动结束会话',
+		});
 	});
 
 	it('keeps parallel cards that share one durable sequence', () => {

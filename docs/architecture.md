@@ -444,10 +444,14 @@ limit、创建时间倒序和 errors 的 status 过滤顺序保持原样。组�
   skills / memory / settings / log）。
 - `desktop.rs` / `events.rs` / `autostart.rs`。
 
-聊天 UI 的会话状态位于 `ui/src/lib/sessionReducer.ts`：`SessionReducer` 统一处理会话
-列表/选择、消息、Interaction、usage、tool preview、optimistic 生命周期以及 replay
-sequence/block identity；live event、resume、rollback 同步和 reconnect replay 都只
-通过 typed `SessionAction` 迁移。`ui/src/lib/chatController.ts` 负责会话命令的异步编排：
+聊天 UI 的会话状态 facade 位于 `ui/src/lib/sessionReducer.ts`：它导出稳定的
+`SessionReducer` / `reduceSession` API、Observable wrapper 和唯一的 `sessionStateStore`。
+状态转换按职责位于 `ui/src/lib/sessionReducer/`：lifecycle、transcript/messages、
+interaction、usage、Agent stream，以及共享的 types 和 immutable replay/state helper。
+领域模块只接收显式 state/action，不互相导入；facade 保留跨域 resume/clear 组合，
+live event、resume、rollback 同步和 reconnect replay 都只通过 typed `SessionAction` 迁移。
+store 订阅粒度仍为单一 writable，session/selector 订阅留待后续 Phase 8 切片。
+`ui/src/lib/chatController.ts` 负责会话命令的异步编排：
 权威 resume reload、interaction 保留、切换与终态会话内存回收、rollback、continue、end/interrupt 和
 `submitTranscript` 提交适配；它通过 typed dependency 接收 invoke、reducer dispatch、
 session snapshot、通知/错误报告和页面回调，不持有 Svelte state 或 DOM。
@@ -530,6 +534,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 
 | 日期 | 内容 |
 |---|---|
+| 2026-09-25 | §2.6 UI：将 `SessionReducer` 按 lifecycle、transcript、interaction、usage、Agent stream 拆为内部模块；原 facade、公共导出路径和单一 store 订阅保持不变（ADR 0314） |
 | 2026-09-25 | §2.6 UI：将会话切换、rollback、continue、end/interrupt、resume reload 与提交编排提取到 typed `ChatController`；页面继续拥有 ask/input、事件、model sync、恢复入口和视图状态（ADR 0313） |
 | 2026-09-25 | §2.3 Memory：summary cursor 与共享 extraction throttle 经 MemoryFactExtractionStore；生产 MemoryWorker 不再使用 raw Database，MemoryService 私有句柄只用于 typed store/index 实现（ADR 0312） |
 | 2026-09-25 | §2.3 Memory：LLM 矛盾候选/demote 与 predicate count/逐项 rewrite 经 MemoryMaintenanceStore；Agent 保留配置、prompt、解析、候选与安全 gate、日志和降级（ADR 0311） |
