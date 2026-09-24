@@ -1,5 +1,6 @@
 mod action_lifecycle;
 mod action_service;
+mod action_terminal;
 pub mod adapters;
 mod asset_registry;
 pub mod builtin;

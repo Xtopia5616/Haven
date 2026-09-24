@@ -305,3 +305,4 @@
 - [0314：SessionReducer 内部按职责拆分](0314-session-reducer-internal-modules.md)
 - [0315：聊天页事件注册组合 controller](0315-chat-event-registration-controller.md)
 - [0316：LLM Router 模型目录边界](0316-llm-model-directory.md)
+- [0317：后台与定时任务共享终态内核](0317-action-terminal-lifecycle-kernel.md)

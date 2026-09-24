@@ -1526,7 +1526,11 @@ async fn test_unified_completion_bus_emits_scheduled_transition() {
         .expect("scheduled running update event");
     assert_eq!(updated["status"], "running");
     assert_eq!(updated["session_id"], "ses-bus");
-    service.complete_scheduled(&id).await.unwrap();
+    assert!(service.complete_scheduled(&id).await.unwrap());
+    assert!(!service.complete_scheduled(&id).await.unwrap());
+    assert!(!service.fail_scheduled(&id, "late failure").await.unwrap());
+    assert!(!service.cancel(&id).await);
+    assert_eq!(terminal_event_count(&events), 1);
     assert_eq!(service.status(&id).await["status"], "completed");
     assert!(
         !service
@@ -2076,6 +2080,8 @@ async fn test_scheduled_terminal_event_reuses_persisted_timestamps() {
         .await
         .unwrap();
     assert!(service.cancel(&cancel_id).await);
+    assert!(!service.cancel(&cancel_id).await);
+    assert_eq!(terminal_event_count(&events), 2);
     let cancel_event = events
         .lock()
         .unwrap()

@@ -9,6 +9,10 @@ use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
 use crate::ActionLifecycle;
+use crate::action_terminal::{
+    ActionState, TerminalPayload, TerminalSource, TerminalTimestamps, TerminalTransitionGuard,
+    can_claim_terminal,
+};
 use haven_memory::{ActionCompletionOutboxRow, ActionRow, ActionStore};
 
 fn lock_or_recover<'a, T>(lock: &'a Mutex<T>, name: &'static str) -> MutexGuard<'a, T> {
@@ -250,39 +254,6 @@ const ACTION_COMPLETION_RECONCILE_INTERVAL: Duration = Duration::from_secs(1);
 ///
 /// Scheduled actions use the same callback shape and sink.
 pub use crate::action_lifecycle::EventSink;
-
-#[derive(Clone, Debug)]
-enum ActionState {
-    /// A timer/dependency action is admitted but has not started its fire
-    /// transition yet.
-    Waiting,
-    Running {
-        started_at: String,
-    },
-    Completed {
-        output: String,
-        exit_code: Option<i32>,
-        truncated: bool,
-        /// Path to the full-output log file (written when output was capped).
-        log_path: Option<String>,
-        started_at: String,
-        finished_at: String,
-    },
-    Failed {
-        error: String,
-        error_reason: String,
-        /// Path to the full-output log file (always written for failures so
-        /// the root cause survives the condensed `error_reason`).
-        log_path: Option<String>,
-        exit_code: Option<i32>,
-        started_at: String,
-        finished_at: String,
-    },
-    Cancelled {
-        started_at: String,
-        finished_at: String,
-    },
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ActionKind {
@@ -682,28 +653,30 @@ pub(crate) struct ScheduledActionEntry {
     pub(crate) watch_action_id: Option<String>,
 }
 
-impl ActionState {
-    fn status(&self) -> ActionStatus {
-        match self {
-            Self::Waiting => ActionStatus::Waiting,
-            Self::Running { .. } => ActionStatus::Running,
-            Self::Completed { .. } => ActionStatus::Completed,
-            Self::Failed { .. } => ActionStatus::Failed,
-            Self::Cancelled { .. } => ActionStatus::Cancelled,
+fn scheduled_terminal_state(
+    status: ActionStatus,
+    error_reason: Option<&str>,
+    timestamps: TerminalTimestamps,
+) -> Option<ActionState> {
+    let payload = match status {
+        ActionStatus::Completed => TerminalPayload::Completed {
+            output: String::new(),
+            exit_code: None,
+            truncated: false,
+            log_path: None,
+        },
+        ActionStatus::Failed => {
+            let reason = error_reason.unwrap_or_default().to_string();
+            TerminalPayload::Failed {
+                error: reason.clone(),
+                error_reason: reason,
+                log_path: None,
+                exit_code: None,
+            }
         }
-    }
-
-    fn is_waiting(&self) -> bool {
-        matches!(self, Self::Waiting)
-    }
-
-    fn can_transition_to(&self, next: ActionStatus) -> bool {
-        self.status().can_transition_to(next)
-    }
-
-    fn is_terminal(&self) -> bool {
-        self.status().is_terminal()
-    }
+        ActionStatus::Waiting | ActionStatus::Running | ActionStatus::Cancelled => return None,
+    };
+    Some(timestamps.build(payload))
 }
 
 struct ActionEntry {
@@ -771,11 +744,10 @@ pub struct ActionService {
     /// visible to cancellation until its `running` row is durable, avoiding
     /// orphaned DB rows or processes across the spawn failure window.
     spawn_gate: tokio::sync::Mutex<()>,
-    /// Serializes background terminal arbitration. The database CAS remains
-    /// authoritative across service instances; this gate also makes the
-    /// in-memory-only mode first-wins and prevents same-instance publication
-    /// races while a durable transition is in flight.
-    terminal_gate: tokio::sync::Mutex<()>,
+    /// Serializes terminal arbitration for both action kinds. The database CAS
+    /// remains authoritative across service instances; this gate makes
+    /// in-memory transitions first-wins while a durable transition is in flight.
+    terminal_transition: TerminalTransitionGuard,
     /// One bus for process completions and timer fires. Consumers may filter
     /// their subscription by variant, but no action kind owns a second bus.
     completion_tx: broadcast::Sender<ActionCompletion>,
@@ -837,7 +809,7 @@ impl ActionService {
         Self {
             actions: RwLock::new(HashMap::new()),
             spawn_gate: tokio::sync::Mutex::new(()),
-            terminal_gate: tokio::sync::Mutex::new(()),
+            terminal_transition: TerminalTransitionGuard::default(),
             completion_tx: tx,
             pending_scheduled_fires: Arc::new(RwLock::new(HashMap::new())),
             scheduled_fire_claims: Arc::new(RwLock::new(HashMap::new())),
@@ -1149,17 +1121,17 @@ impl ActionService {
         if let Some(entry) = actions.get_mut(action_id) {
             entry.kill = None;
             entry.tail = None;
-            entry.state = ActionState::Failed {
-                error: reason.to_string(),
-                error_reason: reason.to_string(),
-                log_path: None,
-                exit_code: None,
-                started_at: match &entry.state {
-                    ActionState::Running { started_at } => started_at.clone(),
-                    _ => finished_at.clone(),
-                },
-                finished_at,
+            let started_at = match &entry.state {
+                ActionState::Running { started_at } => started_at.clone(),
+                _ => finished_at.clone(),
             };
+            entry.state =
+                TerminalTimestamps::new(started_at, finished_at).build(TerminalPayload::Failed {
+                    error: reason.to_string(),
+                    error_reason: reason.to_string(),
+                    log_path: None,
+                    exit_code: None,
+                });
         }
     }
 
@@ -1314,13 +1286,16 @@ impl ActionService {
             return Ok(false);
         }
 
-        let _terminal = self.terminal_gate.lock().await;
+        let _terminal = self.terminal_transition.lock().await;
         let session_id = {
             let actions = self.actions.read().await;
             actions.get(action_id).and_then(|entry| {
                 (entry.kind == ActionKind::Background
-                    && !entry.state.is_terminal()
-                    && entry.state.can_transition_to(state.status()))
+                    && can_claim_terminal(
+                        entry.state.status(),
+                        state.status(),
+                        TerminalSource::Live,
+                    ))
                 .then(|| entry.session_id.clone())
             })
         };
@@ -1381,27 +1356,24 @@ impl ActionService {
         let Some(row) = row else {
             return;
         };
+        let timestamps = TerminalTimestamps::new(
+            row.started_at.unwrap_or_default(),
+            row.finished_at.unwrap_or_default(),
+        );
         let state = match row.status {
-            ActionStatus::Completed => ActionState::Completed {
+            ActionStatus::Completed => timestamps.clone().build(TerminalPayload::Completed {
                 output: row.output.unwrap_or_default(),
                 exit_code: row.exit_code,
                 truncated: row.log_path.is_some(),
                 log_path: row.log_path,
-                started_at: row.started_at.unwrap_or_default(),
-                finished_at: row.finished_at.unwrap_or_default(),
-            },
-            ActionStatus::Failed => ActionState::Failed {
+            }),
+            ActionStatus::Failed => timestamps.clone().build(TerminalPayload::Failed {
                 error: row.error.unwrap_or_default(),
                 error_reason: row.error_reason.unwrap_or_default(),
                 log_path: row.log_path,
                 exit_code: row.exit_code,
-                started_at: row.started_at.unwrap_or_default(),
-                finished_at: row.finished_at.unwrap_or_default(),
-            },
-            ActionStatus::Cancelled => ActionState::Cancelled {
-                started_at: row.started_at.unwrap_or_default(),
-                finished_at: row.finished_at.unwrap_or_default(),
-            },
+            }),
+            ActionStatus::Cancelled => timestamps.build(TerminalPayload::Cancelled),
             ActionStatus::Waiting | ActionStatus::Running => return,
         };
         let mut actions = self.actions.write().await;
@@ -2189,10 +2161,7 @@ impl ActionService {
                 continue;
             }
             if let Some(started_at) = started_at {
-                let state = ActionState::Cancelled {
-                    started_at,
-                    finished_at: chrono::Utc::now().to_rfc3339(),
-                };
+                let state = TerminalTimestamps::now(started_at).build(TerminalPayload::Cancelled);
                 match self.try_commit_background_terminal(&id, &state, true).await {
                     Ok(_) => {}
                     Err(error) => {
@@ -2228,30 +2197,24 @@ impl ActionService {
         exit_code: Option<i32>,
         truncated: bool,
     ) {
-        let running = {
-            let actions = self.actions.read().await;
-            actions.get(id).is_some_and(|entry| {
-                entry.kind == ActionKind::Background
-                    && !entry.state.is_terminal()
-                    && entry.state.can_transition_to(if success {
-                        ActionStatus::Completed
-                    } else {
-                        ActionStatus::Failed
-                    })
-            })
-        };
-        if !running {
-            return;
-        }
         let next = if success {
             ActionStatus::Completed
         } else {
             ActionStatus::Failed
         };
+        let running = {
+            let actions = self.actions.read().await;
+            actions.get(id).is_some_and(|entry| {
+                entry.kind == ActionKind::Background
+                    && can_claim_terminal(entry.state.status(), next, TerminalSource::Live)
+            })
+        };
+        if !running {
+            return;
+        }
         let state = {
-            let finished_at = chrono::Utc::now().to_rfc3339();
             if success {
-                ActionState::Completed {
+                TerminalTimestamps::now(started_at).build(TerminalPayload::Completed {
                     output: combined.clone(),
                     exit_code,
                     truncated,
@@ -2262,9 +2225,7 @@ impl ActionService {
                             .to_string_lossy()
                             .into_owned()
                     }),
-                    started_at: started_at.to_string(),
-                    finished_at,
-                }
+                })
             } else {
                 // The failure payload must not drown the model (or the user) in
                 // progress-bar spam: `error` keeps the sanitized output for full
@@ -2273,7 +2234,7 @@ impl ActionService {
                 // The full output always lands in a log file so the root cause
                 // is recoverable even when the summary misses it.
                 let diagnosed = append_windows_diagnostics(shell, command, &combined);
-                ActionState::Failed {
+                TerminalTimestamps::now(started_at).build(TerminalPayload::Failed {
                     error: combined.clone(),
                     error_reason: summarize_error(&diagnosed, 1200),
                     log_path: Some(
@@ -2282,9 +2243,7 @@ impl ActionService {
                             .into_owned(),
                     ),
                     exit_code,
-                    started_at: started_at.to_string(),
-                    finished_at,
-                }
+                })
             }
         };
         debug_assert_eq!(state.status(), next);
@@ -2303,17 +2262,17 @@ impl ActionService {
             let actions = self.actions.read().await;
             actions.get(id).is_some_and(|entry| {
                 entry.kind == ActionKind::Background
-                    && !entry.state.is_terminal()
-                    && entry.state.can_transition_to(ActionStatus::Cancelled)
+                    && can_claim_terminal(
+                        entry.state.status(),
+                        ActionStatus::Cancelled,
+                        TerminalSource::Live,
+                    )
             })
         };
         if !running {
             return;
         }
-        let state = ActionState::Cancelled {
-            started_at: started_at.to_string(),
-            finished_at: chrono::Utc::now().to_rfc3339(),
-        };
+        let state = TerminalTimestamps::now(started_at).build(TerminalPayload::Cancelled);
         match self.try_commit_background_terminal(id, &state, false).await {
             Ok(_) => {}
             Err(error) => {
@@ -2784,7 +2743,11 @@ impl ActionService {
             let Some(action) = actions.get_mut(id) else {
                 return false;
             };
-            if !matches!(action.state, ActionState::Running { .. }) {
+            if !can_claim_terminal(
+                action.state.status(),
+                state.status(),
+                TerminalSource::Running,
+            ) {
                 return false;
             }
             action.state = state.clone();
@@ -2853,29 +2816,18 @@ impl ActionService {
                     _ = service.shutdown_token.cancelled() => break,
                     _ = tokio::time::sleep(delay) => {}
                 }
+                let _terminal = service.terminal_transition.lock().await;
                 match service
                     .persist_scheduled_terminal(&id, status, error_reason.as_deref(), &finished_at)
                     .await
                 {
                     Ok(true) => {
-                        let state = match status {
-                            ActionStatus::Completed => ActionState::Completed {
-                                output: String::new(),
-                                exit_code: None,
-                                truncated: false,
-                                log_path: None,
-                                started_at: started_at.clone(),
-                                finished_at: finished_at.clone(),
-                            },
-                            ActionStatus::Failed => ActionState::Failed {
-                                error: error_reason.clone().unwrap_or_default(),
-                                error_reason: error_reason.clone().unwrap_or_default(),
-                                log_path: None,
-                                exit_code: None,
-                                started_at: started_at.clone(),
-                                finished_at: finished_at.clone(),
-                            },
-                            _ => break,
+                        let Some(state) = scheduled_terminal_state(
+                            status,
+                            error_reason.as_deref(),
+                            TerminalTimestamps::new(&started_at, &finished_at),
+                        ) else {
+                            break;
                         };
                         service
                             .finish_scheduled_in_memory(&id, &schedule, state)
@@ -2913,11 +2865,15 @@ impl ActionService {
         error_reason: Option<&str>,
     ) -> anyhow::Result<bool> {
         let _mutation = self.spawn_gate.lock().await;
+        let _terminal = self.terminal_transition.lock().await;
         let (schedule, started_at) = {
             let actions = self.actions.read().await;
             let Some(action) = actions.get(id) else {
                 return Ok(false);
             };
+            if !can_claim_terminal(action.state.status(), status, TerminalSource::Running) {
+                return Ok(false);
+            }
             let ActionState::Running { started_at } = &action.state else {
                 return Ok(false);
             };
@@ -2926,10 +2882,13 @@ impl ActionService {
             };
             (schedule.clone(), started_at.clone())
         };
-        let finished_at = chrono::Utc::now().to_rfc3339();
+        let timestamps = TerminalTimestamps::now(started_at);
+        let Some(state) = scheduled_terminal_state(status, error_reason, timestamps.clone()) else {
+            return Ok(false);
+        };
         if schedule.watch_action_id.is_none() {
             match self
-                .persist_scheduled_terminal(id, status, error_reason, &finished_at)
+                .persist_scheduled_terminal(id, status, error_reason, &timestamps.finished_at)
                 .await
             {
                 Ok(true) => {}
@@ -2938,10 +2897,10 @@ impl ActionService {
                     self.retry_scheduled_terminal_persistence(
                         id.to_string(),
                         schedule.clone(),
-                        started_at.clone(),
+                        timestamps.started_at.clone(),
                         status,
                         error_reason.map(str::to_owned),
-                        finished_at.clone(),
+                        timestamps.finished_at.clone(),
                     )
                     .await;
                     return Err(anyhow::anyhow!(
@@ -2950,25 +2909,6 @@ impl ActionService {
                 }
             }
         }
-        let state = match status {
-            ActionStatus::Completed => ActionState::Completed {
-                output: String::new(),
-                exit_code: None,
-                truncated: false,
-                log_path: None,
-                started_at,
-                finished_at,
-            },
-            ActionStatus::Failed => ActionState::Failed {
-                error: error_reason.unwrap_or_default().to_string(),
-                error_reason: error_reason.unwrap_or_default().to_string(),
-                log_path: None,
-                exit_code: None,
-                started_at,
-                finished_at,
-            },
-            _ => return Ok(false),
-        };
         Ok(self.finish_scheduled_in_memory(id, &schedule, state).await)
     }
 
@@ -2987,13 +2927,18 @@ impl ActionService {
 
     async fn cancel_scheduled(&self, id: &str, owner: Option<&str>) -> bool {
         let _mutation = self.spawn_gate.lock().await;
+        let _terminal = self.terminal_transition.lock().await;
         let (schedule, started_at, session_id) = {
             let actions = self.actions.read().await;
             let Some(action) = actions.get(id) else {
                 return false;
             };
             if action.kind != ActionKind::Scheduled
-                || !action.state.status().is_live()
+                || !can_claim_terminal(
+                    action.state.status(),
+                    ActionStatus::Cancelled,
+                    TerminalSource::Live,
+                )
                 || owner.is_some_and(|value| action.session_id.as_deref() != Some(value))
             {
                 return false;
@@ -3011,14 +2956,14 @@ impl ActionService {
             };
             (schedule.clone(), started_at, action.session_id.clone())
         };
-        let finished_at = chrono::Utc::now().to_rfc3339();
+        let timestamps = TerminalTimestamps::now(started_at);
         if schedule.watch_action_id.is_none()
             && let Some(store) = self.action_store.read().await.clone()
         {
             let mut last_error = None;
             for attempt in 0..ACTION_DB_RETRY_ATTEMPTS {
                 match store
-                    .cancel_scheduled_action(id.to_string(), finished_at.clone())
+                    .cancel_scheduled_action(id.to_string(), timestamps.finished_at.clone())
                     .await
                 {
                     Ok(true) => {
@@ -3045,15 +2990,16 @@ impl ActionService {
                 return false;
             }
         }
-        let state = ActionState::Cancelled {
-            started_at,
-            finished_at,
-        };
+        let state = timestamps.build(TerminalPayload::Cancelled);
         let mut actions = self.actions.write().await;
         let Some(action) = actions.get_mut(id) else {
             return false;
         };
-        if !action.state.status().is_live() {
+        if !can_claim_terminal(
+            action.state.status(),
+            ActionStatus::Cancelled,
+            TerminalSource::Live,
+        ) {
             return false;
         }
         action.state = state.clone();
