@@ -274,3 +274,4 @@
 - [0283：App 会话记录读取通过 SessionStore 异步端口](0283-app-session-record-lookups-through-session-store.md)
 - [0284：end_session 展示标题读取通过 SessionStore](0284-end-session-display-title-session-store-port.md)
 - [0285：App 事实管理命令通过 MemoryFactStore](0285-app-memory-fact-store.md)
+- [0286：App 桌面通知标题通过 SessionStore 同步端口读取](0286-app-notification-session-display-title-session-store-port.md)

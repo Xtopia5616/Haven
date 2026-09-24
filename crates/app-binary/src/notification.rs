@@ -8,6 +8,7 @@ use crate::app_state::AppState;
 use crate::logging::sanitize_error_text;
 use haven_agent::AgentEvent;
 use haven_common::config::NotificationConfig;
+use haven_memory::SessionStore;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 use tauri::Manager;
@@ -20,8 +21,9 @@ pub(crate) struct DesktopNotifications {
     /// paused/error → pending, not Running→Pending (ask-answer same turn).
     last_session_status: Mutex<HashMap<String, String>>,
     /// Cached display titles so `SessionUpdated` / toast paths do not sync
-    /// `get_session` on every status churn. Seeded from `SessionCreated` /
-    /// `TitleUpdated` / `SessionCompleted`; DB is a miss-only fallback.
+    /// `SessionStore::session_record` on every status churn. Seeded from
+    /// `SessionCreated` / `TitleUpdated` / `SessionCompleted`; SessionStore is
+    /// a miss-only fallback.
     session_titles: Mutex<HashMap<String, String>>,
 }
 
@@ -92,38 +94,18 @@ impl DesktopNotifications {
         })
     }
 
-    /// 会话展示名：cache → DB title → input_text → session_id（绝不把 raw input
+    /// 会话展示名：cache → persisted title → input_text → session_id（绝不把 raw input
     /// 当默认首选给 `SessionCreated`；该路径只用 title||id）。
     pub(crate) fn session_display_title(&self, session_id: &str) -> String {
-        let map = self.lock_session_titles();
-        if let Some(title) = map.get(session_id)
+        let mut titles = self.lock_session_titles();
+        if let Some(title) = titles.get(session_id)
             && !title.is_empty()
         {
             return title.clone();
         }
-        let resolved = match self
-            .handle
-            .state::<Arc<AppState>>()
-            .db
-            .get_session(session_id)
-        {
-            Ok(session) => session,
-            Err(error) => {
-                tracing::warn!(
-                    session_id,
-                    error = %sanitize_error_text(&error.to_string()),
-                    "failed to resolve session title for notification"
-                );
-                None
-            }
-        }
-        .and_then(|t| {
-            t.title
-                .filter(|s| !s.is_empty())
-                .or_else(|| (!t.input_text.is_empty()).then_some(t.input_text))
-        })
-        .unwrap_or_else(|| session_id.to_string());
-        self.cache_title(session_id, resolved.clone());
+        let state = self.handle.state::<Arc<AppState>>();
+        let resolved = resolve_session_display_title_from_store(&state.session_store, session_id);
+        titles.insert(session_id.to_string(), resolved.clone());
         resolved
     }
 
@@ -246,5 +228,78 @@ impl DesktopNotifications {
             }
             _ => {}
         }
+    }
+}
+
+fn resolve_session_display_title_from_store(
+    session_store: &SessionStore,
+    session_id: &str,
+) -> String {
+    let session = match session_store.session_record(session_id) {
+        Ok(session) => session,
+        Err(error) => {
+            tracing::warn!(
+                session_id,
+                error = %sanitize_error_text(&error.to_string()),
+                "failed to resolve session title for notification"
+            );
+            None
+        }
+    };
+    session
+        .and_then(|session| {
+            session
+                .title
+                .filter(|title| !title.is_empty())
+                .or_else(|| (!session.input_text.is_empty()).then_some(session.input_text))
+        })
+        .unwrap_or_else(|| session_id.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_session_display_title_from_store;
+    use haven_common::types::new_id;
+    use haven_memory::{Database, SessionStore};
+    use std::sync::Arc;
+
+    #[test]
+    fn notification_title_uses_session_store_and_preserves_fallbacks() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let session_store = SessionStore::new(db.clone());
+
+        let titled = db.create_session("original input").unwrap();
+        db.update_session_title(&titled.id, "Persisted title")
+            .unwrap();
+        assert_eq!(
+            resolve_session_display_title_from_store(&session_store, &titled.id),
+            "Persisted title"
+        );
+
+        let untitled = db.create_session("input fallback").unwrap();
+        assert_eq!(
+            resolve_session_display_title_from_store(&session_store, &untitled.id),
+            "input fallback"
+        );
+
+        let empty_title = db.create_session("empty title fallback").unwrap();
+        db.update_session_title(&empty_title.id, "").unwrap();
+        assert_eq!(
+            resolve_session_display_title_from_store(&session_store, &empty_title.id),
+            "empty title fallback"
+        );
+
+        let missing_id = new_id("ses");
+        assert_eq!(
+            resolve_session_display_title_from_store(&session_store, &missing_id),
+            missing_id
+        );
+
+        db.conn().execute_batch("DROP TABLE sessions").unwrap();
+        let query_error_id = new_id("ses");
+        assert_eq!(
+            resolve_session_display_title_from_store(&session_store, &query_error_id),
+            query_error_id
+        );
     }
 }
