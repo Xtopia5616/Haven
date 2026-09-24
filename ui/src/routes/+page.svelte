@@ -15,10 +15,8 @@
 	} from '$lib/sessionStatus.ts';
 	import { submitTranscript } from '$lib/submit.ts';
 	import { createChatController } from '$lib/chatController.ts';
-	import { createChatAgentEventHandlers } from '$lib/chatAgentEventHandlers.ts';
+	import { createChatEventController } from '$lib/chatEventController.ts';
 	import { createAskInteractionController } from '$lib/chatAskInteraction.ts';
-	import { createChatSessionEventHandlers } from '$lib/chatSessionEventHandlers.ts';
-	import { createChatUsageEventHandlers } from '$lib/chatUsageEventHandlers.ts';
 	import { selectChatVisibleMessages } from '$lib/chatVisibleMessages.ts';
 	import { createChatModelSync } from '$lib/chatModelSync.ts';
 	import { createStreamEventAggregator } from '$lib/streamAggregator.ts';
@@ -38,12 +36,6 @@
 	import { browser } from '$app/environment';
 	import { get } from 'svelte/store';
 	import { invoke } from '$lib/tauri.ts';
-	import {
-		agentEventListeners,
-		appEventListeners,
-		registerListeners,
-		sessionEventListeners,
-	} from '$lib/events.ts';
 	import {
 		activeConversationStatusStore,
 		modelStateStore,
@@ -462,9 +454,8 @@
 		chatController.evictTerminalSessionMemory(sessionId);
 	}
 
-	// Tauri event listener handle (registered in onMount, disposed in
-	// onDestroy). See eventRegistrations below.
-	let eventRegistrations = /** @type {{ ready: Promise<void>; dispose: () => void } | null} */ (
+	// Owns chat-page event composition and listener registration lifetime.
+	let chatEventController = /** @type {ReturnType<typeof createChatEventController> | null} */ (
 		null
 	);
 	let messagesEl = /** @type {HTMLElement | null | undefined} */ (undefined);
@@ -755,82 +746,53 @@
 
 		// Register listeners BEFORE any async data load so session/streaming
 		// events arriving while the page initializes are never missed.
-		const registrations = registerListeners(
-			{
-				...sessionEventListeners(
-					createChatSessionEventHandlers({
-						getActiveSessionId: () => activeSessionId,
-						isFreshSessionIntent: () => get(newSessionIntentStore),
-						adoptDraftMessages: (sessionId) => {
-							const adopted = sessionReducer.getMessages(DRAFT_SESSION_ID).length > 0;
-							dispatchSession({ type: 'session/messages/adopt-draft', sessionId });
-							return adopted;
-						},
-						dispatchSession,
-						getSessionErrorId: () => sessionErrorId,
-						rememberSessionError,
-						forgetSessionError,
-						clearAskAwaiting: (sessionId) => {
-							clearAskAwaiting(sessionId);
-							dispatchSession({ type: 'session/interactions-cleared', sessionId });
-						},
-						evictTerminalSessionMemory,
-						clearStepBlockIds,
-						flushChunksNow,
-						updateSessionTitle: (sessionId, title) => {
-							const index = sessions.findIndex((session) => session.id === sessionId);
-							if (index >= 0) {
-								dispatchSession({
-									type: 'session/title-updated',
-									sessionId,
-									title,
-								});
-								// Keep the shell's task/status view in sync with the chat
-								// header as soon as the generated title arrives.
-							} else {
-								// A title event can win the race with the initial session
-								// list load. The persisted title will be picked up here.
-								scheduleLoadSessions();
-							}
-						},
-						scheduleLoadSessions,
-					}),
-				),
-				...appEventListeners({
-					'hotkey:rebind': (event) => {
-						const data = event.payload;
-						if (data.newBinding) {
-							hotkeyBinding = data.newBinding;
-						}
-					},
-					// Settings save / model switch rebuilds the router. Keep-alive
-					// leaves this page mounted, so re-pull the chat request model
-					// instead of leaving the toolbar on a stale selection.
-					'llm:config_changed': () => {
-						if (skipNextDefaultModelRefresh) {
-							skipNextDefaultModelRefresh = false;
-							return;
-						}
-						refreshDefaultModelFromBackend();
-					},
-				}),
-				...agentEventListeners(
-					createChatAgentEventHandlers({
-						chunkHandler,
-						flushChunksNow,
-						dispatchSession,
-					}),
-				),
-				...agentEventListeners(createChatUsageEventHandlers({ dispatchSession })),
+		const eventController = createChatEventController({
+			getActiveSessionId: () => activeSessionId,
+			isFreshSessionIntent: () => get(newSessionIntentStore),
+			adoptDraftMessages: (sessionId) => {
+				const adopted = sessionReducer.getMessages(DRAFT_SESSION_ID).length > 0;
+				dispatchSession({ type: 'session/messages/adopt-draft', sessionId });
+				return adopted;
 			},
-			{ tag: '+page' },
-		);
-		eventRegistrations = registrations;
-		const readyP = registrations.ready;
+			dispatchSession,
+			getSessionErrorId: () => sessionErrorId,
+			rememberSessionError,
+			forgetSessionError,
+			clearAskAwaiting: (sessionId) => {
+				clearAskAwaiting(sessionId);
+				dispatchSession({ type: 'session/interactions-cleared', sessionId });
+			},
+			evictTerminalSessionMemory,
+			clearStepBlockIds,
+			flushChunksNow,
+			updateSessionTitle: (sessionId, title) => {
+				const index = sessions.findIndex((session) => session.id === sessionId);
+				if (index >= 0) {
+					dispatchSession({ type: 'session/title-updated', sessionId, title });
+					// Keep the shell's task/status view in sync with the chat header
+					// as soon as the generated title arrives.
+				} else {
+					// A title event can win the race with the initial session list load.
+					// The persisted title will be picked up here.
+					scheduleLoadSessions();
+				}
+			},
+			scheduleLoadSessions,
+			chunkHandler,
+			setHotkeyBinding: (binding) => {
+				hotkeyBinding = binding;
+			},
+			getSkipNextDefaultModelRefresh: () => skipNextDefaultModelRefresh,
+			clearSkipNextDefaultModelRefresh: () => {
+				skipNextDefaultModelRefresh = false;
+			},
+			refreshDefaultModelFromBackend,
+		});
+		chatEventController = eventController;
 		// Tauri listener registration is asynchronous. Complete it before any
 		// restore/reopen call can trigger a confirmation, otherwise the event can
 		// be emitted into the small registration gap and the modal never appears.
-		await readyP;
+		await eventController.register();
 		if (dead) return;
 
 		// Load the current default model for the toolbar model switcher and
@@ -897,7 +859,7 @@
 		// complete before the listeners are disposed (a re-entry to this page
 		// merges the store with the DB copy).
 		flushChunksNow();
-		eventRegistrations?.dispose();
+		chatEventController?.dispose();
 		loadSessionsRefresh.dispose();
 		stopJumpToBottom();
 		if (browser) {

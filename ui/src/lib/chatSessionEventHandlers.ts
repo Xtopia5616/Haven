@@ -9,7 +9,7 @@ import { isBusyStatus, isPausedStatus } from './sessionStatus.ts';
 import type { SessionAction } from './sessionReducer.ts';
 import { clearToolOutputPreviewsForSession } from './toolOutputPreviewStore.ts';
 
-interface ChatSessionEventContext {
+export interface ChatSessionEventContext {
 	getActiveSessionId: () => string | null;
 	isFreshSessionIntent: () => boolean;
 	adoptDraftMessages: (sessionId: string) => boolean;

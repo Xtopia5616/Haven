@@ -455,10 +455,17 @@ store 订阅粒度仍为单一 writable，session/selector 订阅留待后续 Ph
 权威 resume reload、interaction 保留、切换与终态会话内存回收、rollback、continue、end/interrupt 和
 `submitTranscript` 提交适配；它通过 typed dependency 接收 invoke、reducer dispatch、
 session snapshot、通知/错误报告和页面回调，不持有 Svelte state 或 DOM。
-`+page.svelte` 保留视图/滚动及 dialog/loading/menu 状态、输入路由与 ask 决策、事件监听、
-model sync、resume target/auto-restore 和新会话入口；`chat*EventHandlers.ts` 只做 DTO 到
-action 的适配。旧 `sessionMessages.ts`、`sessionUsage.ts` 仅保留兼容投影，
-`streamAggregator.ts` 只负责排队后 dispatch chunk action（ADR 0160、0313）。
+`ui/src/lib/chatEventController.ts` 只组合聊天页的 session/app/agent/usage handler map 并拥有
+异步注册/释放生命周期；它通过显式 typed dependencies 连接页面 reducer、错误/ask/stream 清理、
+session refresh、hotkey 与 model refresh 回调，不持有 Svelte state 或 DOM。`ui/src/lib/events.ts`
+仍是唯一 wire payload mapping 和共享 listener registration primitive，`chat*EventHandlers.ts`
+继续负责既有事件到页面状态/副作用的适配（ADR 0315）。
+`+page.svelte` 保留 view/scroll 与 dialog/loading/menu 状态、输入路由与 ask 决策、model sync、
+resume target/auto-restore、新会话入口及非 chat-event teardown；在 mount 时创建 controller、等待
+listener ready 后再 settings/load/restore，并在 destroy 时 dispose。旧 `sessionMessages.ts`、
+`sessionUsage.ts` 仅保留兼容投影，`streamAggregator.ts` 只负责排队后 dispatch chunk action
+（ADR 0160、0313、0315）。Phase 8 剩余 contract/mapper generation、model operation 归属及
+session/selector subscriptions。
 `ModelSettings.svelte` 当前保留命名模型、Provider CRUD 与 discovery 的页面编排，已补
 组件行为测试，后续再按 discovery / mutation 边界拆分。
 
@@ -534,6 +541,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 
 | 日期 | 内容 |
 |---|---|
+| 2026-09-25 | §2.6 UI：聊天页 handler map 组合与 listener 生命周期由 typed `chatEventController` 持有；`events.ts` 保持唯一 wire mapper 和注册 primitive（ADR 0315） |
 | 2026-09-25 | §2.6 UI：将 `SessionReducer` 按 lifecycle、transcript、interaction、usage、Agent stream 拆为内部模块；原 facade、公共导出路径和单一 store 订阅保持不变（ADR 0314） |
 | 2026-09-25 | §2.6 UI：将会话切换、rollback、continue、end/interrupt、resume reload 与提交编排提取到 typed `ChatController`；页面继续拥有 ask/input、事件、model sync、恢复入口和视图状态（ADR 0313） |
 | 2026-09-25 | §2.3 Memory：summary cursor 与共享 extraction throttle 经 MemoryFactExtractionStore；生产 MemoryWorker 不再使用 raw Database，MemoryService 私有句柄只用于 typed store/index 实现（ADR 0312） |
