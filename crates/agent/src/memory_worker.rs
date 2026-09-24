@@ -3,7 +3,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use anyhow::Context as _;
 use haven_common::prompts::{
     COMPACTED_SUMMARY_PREFIX, CONTRADICTION_ARBITRATE_SYSTEM_PROMPT, FACT_EXTRACTION_SYSTEM_PROMPT,
     predicate_merge_system_prompt,
@@ -14,7 +13,9 @@ use haven_memory::repositories::facts::{
     CANONICAL_MERGE_TARGETS, Fact, FactSourceRef, is_canonical_merge_target, is_sensitive_object,
     is_sensitive_predicate, is_single_valued_predicate,
 };
-use haven_memory::{Database, MemoryFactExtractionStore, MemoryFactStore, MemoryStore};
+use haven_memory::{
+    Database, MemoryFactExtractionStore, MemoryFactStore, MemoryFactWrite, MemoryStore,
+};
 use tokio::sync::{Notify, Semaphore};
 use tokio_util::sync::CancellationToken;
 
@@ -38,10 +39,10 @@ pub struct MemoryWorker {
     memory_store: MemoryStore,
     fact_store: MemoryFactStore,
     fact_extraction_store: MemoryFactExtractionStore,
-    // Compatibility handle for fact-batch policy/persistence, maintenance,
-    // summary-extraction state, and contradiction/predicate work that remain
-    // in Agent. Ordinary session extraction state and durable outbox markers
-    // use their dedicated Memory stores; embedding catch-up uses MemoryService.
+    // Remaining raw-DB work: maintenance, summary-extraction state, and
+    // contradiction/predicate work. Ordinary session extraction state,
+    // prepared fact-batch writes, and durable outbox markers use dedicated
+    // Memory stores; embedding catch-up uses MemoryService.
     db: MemoryDatabase,
     inference: Arc<dyn MemoryInferencePort>,
     /// Cap (chars) for transcripts sent to the SmallModel for fact
@@ -1315,8 +1316,6 @@ impl MemoryWorker {
     /// `run_memory_maintenance`, so the ReAct hot path never pays for a
     /// full-table sweep after every extract.
     async fn persist_fact_batch(&self, facts: Vec<FactDraft>) -> anyhow::Result<bool> {
-        let db = self.db.clone();
-        let sanitize_max = self.sanitize_max_chars;
         // Hard floor for NEW facts entering long-term memory. The extraction
         // prompt already asks for durable, generalizable facts; this rejects
         // whatever slips through with a borderline confidence so one-off
@@ -1327,107 +1326,49 @@ impl MemoryWorker {
         // last_seen_at refresh, confidence boost) and let genuinely
         // re-confirmed facts keep decaying.
         const PERSIST_CONFIDENCE_FLOOR: f64 = 0.55;
-        db.run_blocking(move |db| {
-            let mut wrote = false;
-            // Phase 1: sanitize/validate every draft, collecting the
-            // survivors' subjects so the existence check below runs as ONE
-            // query for the whole batch instead of two per fact (each
-            // query would re-checkout a pooled connection).
-            let mut candidates: Vec<FactDraft> = Vec::new();
-            for (
-                subject_raw,
-                predicate_raw,
-                object_raw,
-                confidence_raw,
-                tags_raw,
-                src_ref,
-                durability_raw,
-            ) in facts
-            {
-                let subject = sanitize_fact_field(&subject_raw, sanitize_max);
-                let predicate = normalize_predicate(&predicate_raw);
-                let object = sanitize_fact_field(&object_raw, sanitize_max);
-                if predicate.is_empty() || subject.is_empty() || object.is_empty() {
-                    tracing::debug!(
-                        "fact inference: dropping degenerate fact (empty subject/predicate/object)"
-                    );
-                    continue;
-                }
-                if is_sensitive_predicate(&predicate) || is_sensitive_object(&object) {
-                    tracing::debug!("fact inference: dropping sensitive fact '{}'", predicate);
-                    continue;
-                }
-                // Clamp to the documented range so an over-eager model
-                // (e.g. 1.2) does not skew decay/ordering.
-                candidates.push((
-                    subject,
-                    predicate,
-                    object,
-                    confidence_raw.clamp(0.5, 1.0),
-                    tags_raw,
-                    src_ref,
-                    durability_raw.clamp(0.1, 1.0),
-                ));
+        let mut writes = Vec::with_capacity(facts.len());
+        for (
+            subject_raw,
+            predicate_raw,
+            object_raw,
+            confidence_raw,
+            tags_raw,
+            src_ref,
+            durability_raw,
+        ) in facts
+        {
+            let subject = sanitize_fact_field(&subject_raw, self.sanitize_max_chars);
+            let predicate = normalize_predicate(&predicate_raw);
+            let object = sanitize_fact_field(&object_raw, self.sanitize_max_chars);
+            if predicate.is_empty() || subject.is_empty() || object.is_empty() {
+                tracing::debug!(
+                    "fact inference: dropping degenerate fact (empty subject/predicate/object)"
+                );
+                continue;
             }
-            let subjects: Vec<&str> = candidates
-                .iter()
-                .map(|(s, _, _, _, _, _, _)| s.as_str())
-                .collect();
-            let (existing_triples, existing_pairs) = db.facts_exist_batch(&subjects)?;
-            for (subject, predicate, object, confidence, tags_raw, src_ref, durability) in
-                candidates
-            {
-                let is_new_fact = !existing_triples.contains(&(
-                    subject.clone(),
-                    predicate.clone(),
-                    object.clone(),
-                ));
-                // A single-valued predicate that already has a stored value
-                // (for a DIFFERENT object) is a user correction/update, not
-                // a brand-new fact: the floor must not drop it, or the
-                // latest value the user stated would never replace the
-                // stale one.
-                let is_single_valued_update = is_single_valued_predicate(&predicate)
-                    && existing_pairs.contains(&(subject.clone(), predicate.clone()));
-                if is_new_fact && !is_single_valued_update && confidence < PERSIST_CONFIDENCE_FLOOR
-                {
-                    tracing::debug!(
-                        "fact inference: dropping low-confidence fact '{}' (confidence {})",
-                        predicate,
-                        confidence
-                    );
-                    continue;
-                }
-                let tags = sanitize_tags(&tags_raw);
-                let tags: Vec<&str> = tags.iter().map(|s| s.as_str()).collect();
-                match db.upsert_fact_with_durability(
-                    &subject,
-                    &predicate,
-                    &object,
-                    "inferred",
-                    confidence,
-                    &tags,
-                    src_ref.as_ref(),
-                    durability,
-                ) {
-                    Ok(outcome) => {
-                        use haven_memory::repositories::facts::UpsertOutcome::*;
-                        if matches!(outcome, Inserted | Reinforced | Corrected) {
-                            wrote = true;
-                        }
-                    }
-                    Err(e) => {
-                        return Err(e).context(format!(
-                            "failed to persist fact '{} {} {}'",
-                            subject, predicate, object
-                        ));
-                    }
-                }
+            if is_sensitive_predicate(&predicate) || is_sensitive_object(&object) {
+                tracing::debug!("fact inference: dropping sensitive fact '{}'", predicate);
+                continue;
             }
-            Ok::<bool, anyhow::Error>(wrote)
-        })
-        .await
-        .map_err(|error| anyhow::anyhow!("fact batch persistence failed: {error}"))
+            // Clamp to the documented range so an over-eager model
+            // (e.g. 1.2) does not skew decay/ordering.
+            let confidence = confidence_raw.clamp(0.5, 1.0);
+            let tags = sanitize_tags(&tags_raw);
+            writes.push(MemoryFactWrite {
+                subject,
+                is_single_valued_predicate: is_single_valued_predicate(&predicate),
+                predicate,
+                object,
+                confidence,
+                tags,
+                source_ref: src_ref,
+                durability: durability_raw.clamp(0.1, 1.0),
+            });
+        }
+        self.fact_store
+            .persist_inferred_batch(writes, PERSIST_CONFIDENCE_FLOOR)
+            .await
+            .map_err(|error| anyhow::anyhow!("fact batch persistence failed: {error}"))
     }
 
     /// Send the conversation transcript to the SmallModel and ask it to
@@ -1780,7 +1721,9 @@ mod tests {
     use haven_common::types::CanonicalMessage;
     use haven_llm::client::LlmClient;
     use haven_llm::types::{FinishReason, LlmError, LlmResponse, StreamChunk};
-    use haven_memory::repositories::facts::{ContradictionCandidate, ContradictionKind};
+    use haven_memory::repositories::facts::{
+        ContradictionCandidate, ContradictionKind, FactSourceRef,
+    };
     use haven_memory::repositories::messages::Message;
     use haven_memory::repositories::session_steps::SessionStep;
     use std::pin::Pin;
@@ -2904,6 +2847,100 @@ mod tests {
                 .any(|fact| { fact.predicate == "likes" && fact.object == "Rust" })
         );
         assert_eq!(inference.calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn prepared_fact_batch_keeps_agent_confidence_policy_and_source_reference() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        db.insert_fact("user", "likes", "Rust", "inferred", 0.65, &[])
+            .unwrap();
+        db.insert_fact(
+            "user",
+            "project_path",
+            "D:/old-project",
+            "inferred",
+            0.8,
+            &[],
+        )
+        .unwrap();
+        let worker = MemoryWorker::new(db.clone(), mock_router("[]"), 4_000, 64, 40, 256, 0);
+
+        let wrote = worker
+            .persist_fact_batch(vec![
+                (
+                    "user".into(),
+                    "likes".into(),
+                    "Rust".into(),
+                    0.4,
+                    vec!["Preference".into()],
+                    Some(FactSourceRef {
+                        message_id: "msg-reconfirmed-rust".into(),
+                        snippet: "I still use Rust.".into(),
+                    }),
+                    0.8,
+                ),
+                (
+                    "user".into(),
+                    "likes".into(),
+                    "Coffee".into(),
+                    0.549,
+                    vec![],
+                    None,
+                    0.6,
+                ),
+                (
+                    "user".into(),
+                    "likes".into(),
+                    "SQLite".into(),
+                    0.55,
+                    vec![],
+                    None,
+                    0.6,
+                ),
+                (
+                    "user".into(),
+                    "project_path".into(),
+                    "D:/new-project".into(),
+                    0.5,
+                    vec![],
+                    None,
+                    0.6,
+                ),
+            ])
+            .await
+            .unwrap();
+
+        assert!(wrote);
+        let facts = db.get_facts("user").unwrap();
+        let rust = facts.iter().find(|fact| fact.object == "Rust").unwrap();
+        assert_eq!(
+            rust.mention_count, 1,
+            "existing facts bypass the new-fact floor"
+        );
+        assert!(rust.confidence >= 0.65);
+        assert_eq!(rust.tags, ["preference"]);
+        assert_eq!(
+            rust.source_ref.as_ref().unwrap().message_id,
+            "msg-reconfirmed-rust"
+        );
+        assert!(facts.iter().all(|fact| fact.object != "Coffee"));
+        assert!(facts.iter().any(|fact| fact.object == "SQLite"));
+        assert!(
+            facts
+                .iter()
+                .any(|fact| fact.predicate == "project_path" && fact.object == "D:/new-project"),
+            "a low-confidence update to a stored single-valued pair remains eligible"
+        );
+        assert!(
+            facts
+                .iter()
+                .find(|fact| fact.object == "D:/old-project")
+                .unwrap()
+                .confidence
+                < 0.8
+        );
+
+        assert!(!worker.persist_fact_batch(Vec::new()).await.unwrap());
     }
 
     #[tokio::test]

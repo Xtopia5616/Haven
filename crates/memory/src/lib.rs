@@ -18,7 +18,7 @@ pub use repositories::embedding_store::{
     MemoryEmbeddingEntity, MemoryEmbeddingSaveFailure, MemoryEmbeddingSaveReport,
     MemoryEmbeddingStore, MemoryEmbeddingVector, PendingMemoryEmbedding,
 };
-pub use repositories::fact_store::MemoryFactStore;
+pub use repositories::fact_store::{MemoryFactStore, MemoryFactWrite};
 pub use repositories::memory_fact_extraction_store::{
     FactExtractionTranscript, MemoryFactExtractionStore,
 };

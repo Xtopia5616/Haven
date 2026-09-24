@@ -1,7 +1,25 @@
 use crate::db::Database;
 use crate::recall::{MemoryQuery, MemoryRecall, MemoryRetriever, normalize_memory_query};
-use crate::repositories::facts::Fact;
+use crate::repositories::fact_graph::FactGraph;
+use crate::repositories::facts::{Fact, FactSourceRef};
 use std::sync::Arc;
+
+/// A fact already parsed, normalized, and sanitized by its owning caller,
+/// ready for inferred-fact persistence.
+#[derive(Debug, Clone)]
+pub struct MemoryFactWrite {
+    pub subject: String,
+    pub predicate: String,
+    pub object: String,
+    pub confidence: f64,
+    pub tags: Vec<String>,
+    pub source_ref: Option<FactSourceRef>,
+    pub durability: f64,
+    /// The caller's canonical predicate policy, used only to decide whether
+    /// an existing `(subject, predicate)` pair qualifies as an update below
+    /// the new-fact confidence floor.
+    pub is_single_valued_predicate: bool,
+}
 
 /// Async application-facing boundary for user-managed memory facts.
 ///
@@ -15,6 +33,25 @@ pub struct MemoryFactStore {
 impl MemoryFactStore {
     pub fn new(db: Arc<Database>) -> Self {
         Self { db }
+    }
+
+    /// Persist a prepared batch of inferred facts in one blocking closure and
+    /// one SQLite transaction. `new_fact_confidence_floor` is selected by the
+    /// caller's extraction policy; exact re-confirmations and permitted
+    /// single-valued updates still pass through for reinforcement/correction.
+    /// Returns whether any fact was inserted, reinforced, or corrected.
+    pub async fn persist_inferred_batch(
+        &self,
+        writes: Vec<MemoryFactWrite>,
+        new_fact_confidence_floor: f64,
+    ) -> anyhow::Result<bool> {
+        self.db
+            .run_blocking(move |db| {
+                db.with_fact_write(|| {
+                    FactGraph::new(db).upsert_inferred_batch(&writes, new_fact_confidence_floor)
+                })
+            })
+            .await
     }
 
     /// List visible facts, optionally restricted to an exact source value.
@@ -142,7 +179,7 @@ impl MemoryFactStore {
 
 #[cfg(test)]
 mod tests {
-    use super::MemoryFactStore;
+    use super::{MemoryFactStore, MemoryFactWrite};
     use crate::Database;
     use crate::recall::MemoryQuery;
     use crate::repositories::facts::FactSourceRef;
@@ -152,6 +189,118 @@ mod tests {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let store = MemoryFactStore::new(db.clone());
         (db, store)
+    }
+
+    fn inferred_write(subject: &str, predicate: &str, object: &str) -> MemoryFactWrite {
+        MemoryFactWrite {
+            subject: subject.into(),
+            predicate: predicate.into(),
+            object: object.into(),
+            confidence: 0.8,
+            tags: Vec::new(),
+            source_ref: None,
+            durability: 0.6,
+            is_single_valued_predicate: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn inferred_batch_empty_input_returns_false() {
+        let (_db, store) = store();
+
+        assert!(
+            !store
+                .persist_inferred_batch(Vec::new(), 0.55)
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn inferred_batch_reinforces_existing_fact_and_persists_source_ref() {
+        let (db, store) = store();
+        db.insert_fact_with_source_ref(
+            "user",
+            "likes",
+            "Rust",
+            "inferred",
+            0.6,
+            &["preference"],
+            None,
+            0.5,
+        )
+        .unwrap();
+        let mut reinforced = inferred_write("user", "likes", "Rust");
+        reinforced.confidence = 0.7;
+        reinforced.tags = vec!["workspace".into()];
+        reinforced.source_ref = Some(FactSourceRef {
+            message_id: "msg-fact-batch-source".into(),
+            snippet: "I use Rust at work.".into(),
+        });
+        reinforced.durability = 0.8;
+        let mut inserted = inferred_write("user", "uses", "SQLite");
+        inserted.confidence = 0.55;
+
+        assert!(
+            store
+                .persist_inferred_batch(vec![reinforced, inserted], 0.55)
+                .await
+                .unwrap()
+        );
+
+        let facts = db.get_facts("user").unwrap();
+        let rust = facts.iter().find(|fact| fact.object == "Rust").unwrap();
+        assert_eq!(rust.mention_count, 1);
+        assert!(rust.confidence >= 0.7);
+        assert_eq!(rust.durability, 0.8);
+        assert_eq!(rust.tags, ["preference", "workspace"]);
+        assert_eq!(
+            rust.source_ref.as_ref().unwrap().message_id,
+            "msg-fact-batch-source"
+        );
+        assert_eq!(
+            rust.source_ref.as_ref().unwrap().snippet,
+            "I use Rust at work."
+        );
+        assert!(facts.iter().any(|fact| fact.object == "SQLite"));
+    }
+
+    #[tokio::test]
+    async fn inferred_batch_failure_rolls_back_prior_writes() {
+        let (db, store) = store();
+        db.conn()
+            .execute_batch(
+                "CREATE TRIGGER reject_selected_inferred_fact
+                 BEFORE INSERT ON facts
+                 WHEN NEW.object = 'blocked'
+                 BEGIN
+                    SELECT RAISE(ABORT, 'injected fact write failure');
+                 END;",
+            )
+            .unwrap();
+
+        let error = store
+            .persist_inferred_batch(
+                vec![
+                    inferred_write("user", "likes", "SQLite"),
+                    inferred_write("user", "likes", "blocked"),
+                ],
+                0.55,
+            )
+            .await
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("failed to persist fact 'user likes blocked'")
+        );
+        assert!(db.list_facts().unwrap().is_empty());
+        let node_count: i64 = db
+            .conn()
+            .query_row("SELECT COUNT(*) FROM memory_nodes", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(node_count, 0, "node writes must roll back with the batch");
     }
 
     #[tokio::test]

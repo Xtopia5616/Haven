@@ -297,3 +297,4 @@
 - [0306：Tools admin capability 通过 typed stores 注入](0306-tools-admin-capabilities-through-typed-stores.md)
 - [0307：MemoryWorker 已知事实读取通过 MemoryFactStore](0307-memory-worker-known-facts-through-memory-fact-store.md)
 - [0308：MemoryWorker session 事实提取状态通过专用 Store](0308-memory-worker-fact-extraction-state-store.md)
+- [0309：MemoryWorker 事实批量写入通过 MemoryFactStore](0309-memory-worker-fact-batch-through-store.md)

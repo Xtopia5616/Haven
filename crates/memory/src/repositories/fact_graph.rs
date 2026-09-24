@@ -6,19 +6,42 @@
 //! rules together prevents a new write path from bypassing graph invariants.
 
 use super::fact_query::{FACT_COLS, fact_from_row};
+use super::fact_store::MemoryFactWrite;
 use super::facts::{
     Fact, FactSourceRef, UpsertOutcome, is_sensitive_text, is_single_valued_predicate,
     normalize_predicate, polarity_opposite,
 };
 use crate::db::Database;
+use anyhow::Context as _;
 use chrono::Utc;
-use rusqlite::OptionalExtension;
+use rusqlite::{Connection, OptionalExtension};
+use std::collections::HashSet;
 
 const CONTRADICTION_DEMOTE_FACTOR: f64 = super::facts::CONTRADICTION_DEMOTE_FACTOR;
 const PROVENANCE_SNIPPET_MAX_CHARS: usize = 120;
 
 fn serialize_tags(tags: &[&str]) -> String {
     serde_json::to_string(tags).unwrap_or_else(|_| "[]".into())
+}
+
+fn in_immediate_transaction<T>(
+    conn: &Connection,
+    operation: impl FnOnce(&Connection) -> anyhow::Result<T>,
+) -> anyhow::Result<T> {
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    match operation(conn) {
+        Ok(value) => match conn.execute_batch("COMMIT") {
+            Ok(()) => Ok(value),
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(error.into())
+            }
+        },
+        Err(error) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(error)
+        }
+    }
 }
 
 fn node_kind_for_label(label: &str) -> &'static str {
@@ -113,17 +136,43 @@ impl<'db> FactGraph<'db> {
         source_ref: Option<&FactSourceRef>,
         durability: f64,
     ) -> anyhow::Result<Fact> {
+        let conn = self.db.conn();
+        self.insert_with_source_ref_on_connection(
+            &conn, subject, predicate, object, source, confidence, tags, source_ref, durability,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn insert_with_source_ref_on_connection(
+        &self,
+        conn: &Connection,
+        subject: &str,
+        predicate: &str,
+        object: &str,
+        source: &str,
+        confidence: f64,
+        tags: &[&str],
+        source_ref: Option<&FactSourceRef>,
+        durability: f64,
+    ) -> anyhow::Result<Fact> {
         let predicate = normalize_predicate(predicate);
         validate_fact_fields(subject, &predicate, object, source, confidence, durability)?;
         let safe_source_ref = sanitize_source_ref(source_ref);
         let id = haven_common::types::new_id("fact");
         let now = Utc::now().to_rfc3339();
         let tags_json = serialize_tags(tags);
-        let subject_id = self.db.ensure_node(node_kind_for_label(subject), subject)?;
-        let object_id = self.db.ensure_node(node_kind_for_label(object), object)?;
+        let subject_id = crate::repositories::nodes::ensure_node_on_connection(
+            conn,
+            node_kind_for_label(subject),
+            subject,
+        )?;
+        let object_id = crate::repositories::nodes::ensure_node_on_connection(
+            conn,
+            node_kind_for_label(object),
+            object,
+        )?;
         let (prov_item, prov_record, prov_snippet) =
-            self.provenance_cols_from_source_ref(source_ref)?;
-        let conn = self.db.conn();
+            Self::provenance_cols_from_source_ref(conn, source_ref)?;
         conn.execute(
             "INSERT INTO facts (
                 id, subject, subject_id, predicate, object, object_id,
@@ -169,7 +218,7 @@ impl<'db> FactGraph<'db> {
     /// opaque transcript reference. Snippets are bounded and redacted before
     /// they reach durable storage.
     fn provenance_cols_from_source_ref(
-        &self,
+        conn: &Connection,
         source_ref: Option<&FactSourceRef>,
     ) -> anyhow::Result<(Option<String>, Option<String>, Option<String>)> {
         let sanitized = sanitize_source_ref(source_ref);
@@ -184,7 +233,6 @@ impl<'db> FactGraph<'db> {
         if refer.message_id.is_empty() {
             return Ok((None, None, snippet));
         }
-        let conn = self.db.conn();
         let in_items = conn
             .query_row(
                 "SELECT 1 FROM memory_items WHERE id = ?1",
@@ -398,106 +446,215 @@ impl<'db> FactGraph<'db> {
         source_ref: Option<&FactSourceRef>,
         durability: f64,
     ) -> anyhow::Result<UpsertOutcome> {
+        let conn = self.db.conn();
+        self.upsert_on_connection(
+            &conn, subject, predicate, object, source, confidence, tags, source_ref, durability,
+        )
+    }
+
+    /// Persist one prepared inference batch atomically. The caller owns
+    /// confidence policy and marks canonical single-valued predicates; this
+    /// repository resolves those rules against one existence snapshot and
+    /// performs every accepted upsert in the same SQLite transaction.
+    pub(crate) fn upsert_inferred_batch(
+        &self,
+        writes: &[MemoryFactWrite],
+        new_fact_confidence_floor: f64,
+    ) -> anyhow::Result<bool> {
+        anyhow::ensure!(
+            new_fact_confidence_floor.is_finite()
+                && (0.0..=1.0).contains(&new_fact_confidence_floor),
+            "new fact confidence floor must be finite and between 0 and 1"
+        );
+        if writes.is_empty() {
+            return Ok(false);
+        }
+
+        let conn = self.db.conn();
+        in_immediate_transaction(&conn, |conn| {
+            let subjects = writes
+                .iter()
+                .map(|write| write.subject.as_str())
+                .collect::<HashSet<_>>();
+            let placeholders = vec!["?"; subjects.len()].join(",");
+            let mut stmt = conn.prepare(&format!(
+                "SELECT subject, predicate, object FROM facts WHERE subject IN ({placeholders})"
+            ))?;
+            let rows = stmt.query_map(
+                rusqlite::params_from_iter(subjects.iter().copied()),
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )?;
+            let mut existing_triples = HashSet::new();
+            let mut existing_pairs = HashSet::new();
+            for row in rows {
+                let (subject, predicate, object) = row?;
+                existing_triples.insert((subject.clone(), predicate.clone(), object));
+                existing_pairs.insert((subject, predicate));
+            }
+            drop(stmt);
+
+            let mut wrote = false;
+            for write in writes {
+                let is_new_fact = !existing_triples.contains(&(
+                    write.subject.clone(),
+                    write.predicate.clone(),
+                    write.object.clone(),
+                ));
+                let is_single_valued_update = write.is_single_valued_predicate
+                    && existing_pairs.contains(&(write.subject.clone(), write.predicate.clone()));
+                if is_new_fact
+                    && !is_single_valued_update
+                    && write.confidence < new_fact_confidence_floor
+                {
+                    tracing::debug!(
+                        "fact inference: dropping low-confidence fact '{}' (confidence {})",
+                        write.predicate,
+                        write.confidence
+                    );
+                    continue;
+                }
+
+                let tags: Vec<&str> = write.tags.iter().map(String::as_str).collect();
+                let outcome = self
+                    .upsert_on_connection(
+                        conn,
+                        &write.subject,
+                        &write.predicate,
+                        &write.object,
+                        "inferred",
+                        write.confidence,
+                        &tags,
+                        write.source_ref.as_ref(),
+                        write.durability,
+                    )
+                    .with_context(|| {
+                        format!(
+                            "failed to persist fact '{} {} {}'",
+                            write.subject, write.predicate, write.object
+                        )
+                    })?;
+                if matches!(
+                    outcome,
+                    UpsertOutcome::Inserted | UpsertOutcome::Reinforced | UpsertOutcome::Corrected
+                ) {
+                    wrote = true;
+                }
+            }
+            Ok(wrote)
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn upsert_on_connection(
+        &self,
+        conn: &Connection,
+        subject: &str,
+        predicate: &str,
+        object: &str,
+        source: &str,
+        confidence: f64,
+        tags: &[&str],
+        source_ref: Option<&FactSourceRef>,
+        durability: f64,
+    ) -> anyhow::Result<UpsertOutcome> {
         let predicate = normalize_predicate(predicate);
         validate_fact_fields(subject, &predicate, object, source, confidence, durability)?;
         let now = Utc::now().to_rfc3339();
         let mut corrected = false;
         let opposite = polarity_opposite(&predicate);
-        {
-            let conn = self.db.conn();
-            let existing: Option<Fact> = conn
+        let existing: Option<Fact> = conn
+            .query_row(
+                &format!(
+                    "SELECT {FACT_COLS} FROM facts WHERE subject = ?1 AND predicate = ?2 AND object = ?3"
+                ),
+                rusqlite::params![subject, predicate, object],
+                fact_from_row,
+            )
+            .optional()?;
+        if let Some(existing) = existing {
+            let boosted = (existing.confidence * 1.05).min(1.0).max(confidence);
+            let merged_durability = existing.durability.max(durability).clamp(0.0, 1.0);
+            let merged_ref = source_ref.or(existing.source_ref.as_ref());
+            let mut merged_tags = existing.tags.clone();
+            for tag in tags {
+                if !merged_tags.iter().any(|item| item == tag) {
+                    merged_tags.push((*tag).to_string());
+                }
+            }
+            let tag_refs: Vec<&str> = merged_tags.iter().map(|s| s.as_str()).collect();
+            let tags_json = serialize_tags(&tag_refs);
+            let (prov_item, prov_record, prov_snippet) =
+                Self::provenance_cols_from_source_ref(conn, merged_ref)?;
+            conn.execute(
+                "UPDATE facts
+                 SET mention_count = mention_count + 1, last_seen_at = ?1, confidence = ?2,
+                     provenance_item_id = ?3, provenance_record_id = ?4,
+                     provenance_snippet = ?5, tags = ?6, durability = ?7
+                 WHERE id = ?8",
+                rusqlite::params![
+                    now,
+                    boosted,
+                    prov_item,
+                    prov_record,
+                    prov_snippet,
+                    tags_json,
+                    merged_durability,
+                    existing.id
+                ],
+            )?;
+            self.db.cache_invalidate_facts(subject);
+            self.db
+                .cache_invalidate_embeddings(crate::embeddings::entity_kind::FACT);
+            return Ok(UpsertOutcome::Reinforced);
+        }
+
+        if is_single_valued_predicate(&predicate) {
+            let has_user_value = conn
                 .query_row(
-                    &format!(
-                        "SELECT {FACT_COLS} FROM facts WHERE subject = ?1 AND predicate = ?2 AND object = ?3"
-                    ),
+                    "SELECT 1 FROM facts WHERE subject = ?1 AND predicate = ?2 AND source = 'user' AND object <> ?3 LIMIT 1",
                     rusqlite::params![subject, predicate, object],
-                    fact_from_row,
+                    |r| r.get::<_, i32>(0),
                 )
-                .optional()?;
-            if let Some(existing) = existing {
-                let boosted = (existing.confidence * 1.05).min(1.0).max(confidence);
-                let merged_durability = existing.durability.max(durability).clamp(0.0, 1.0);
-                let merged_ref = source_ref.or(existing.source_ref.as_ref());
-                let mut merged_tags = existing.tags.clone();
-                for tag in tags {
-                    if !merged_tags.iter().any(|item| item == tag) {
-                        merged_tags.push((*tag).to_string());
-                    }
-                }
-                let tag_refs: Vec<&str> = merged_tags.iter().map(|s| s.as_str()).collect();
-                let tags_json = serialize_tags(&tag_refs);
-                let existing_id = existing.id.clone();
-                drop(conn);
-                let (prov_item, prov_record, prov_snippet) =
-                    self.provenance_cols_from_source_ref(merged_ref)?;
-                {
-                    let conn = self.db.conn();
-                    conn.execute(
-                        "UPDATE facts
-                         SET mention_count = mention_count + 1, last_seen_at = ?1, confidence = ?2,
-                             provenance_item_id = ?3, provenance_record_id = ?4,
-                             provenance_snippet = ?5, tags = ?6, durability = ?7
-                         WHERE id = ?8",
-                        rusqlite::params![
-                            now,
-                            boosted,
-                            prov_item,
-                            prov_record,
-                            prov_snippet,
-                            tags_json,
-                            merged_durability,
-                            existing_id
-                        ],
-                    )?;
-                }
-                self.db.cache_invalidate_facts(subject);
-                self.db
-                    .cache_invalidate_embeddings(crate::embeddings::entity_kind::FACT);
-                return Ok(UpsertOutcome::Reinforced);
+                .optional()?
+                .is_some();
+            if has_user_value && source == "inferred" {
+                return Ok(UpsertOutcome::Skipped);
             }
+            let n = conn.execute(
+                "UPDATE facts SET confidence = confidence * ?1
+                 WHERE subject = ?2 AND predicate = ?3 AND object <> ?4 AND source = 'inferred'",
+                rusqlite::params![CONTRADICTION_DEMOTE_FACTOR, subject, predicate, object],
+            )?;
+            corrected = n > 0;
+        }
 
-            if is_single_valued_predicate(&predicate) {
-                let has_user_value = conn
-                    .query_row(
-                        "SELECT 1 FROM facts WHERE subject = ?1 AND predicate = ?2 AND source = 'user' AND object <> ?3 LIMIT 1",
-                        rusqlite::params![subject, predicate, object],
-                        |r| r.get::<_, i32>(0),
-                    )
-                    .optional()?
-                    .is_some();
-                if has_user_value && source == "inferred" {
-                    return Ok(UpsertOutcome::Skipped);
-                }
-                let n = conn.execute(
-                    "UPDATE facts SET confidence = confidence * ?1
-                     WHERE subject = ?2 AND predicate = ?3 AND object <> ?4 AND source = 'inferred'",
-                    rusqlite::params![CONTRADICTION_DEMOTE_FACTOR, subject, predicate, object],
-                )?;
-                corrected = n > 0;
-            }
-
-            if let Some(opp) = opposite {
-                let incoming_is_user = (source == "user") as i32;
-                let _ = conn.execute(
-                    "UPDATE facts SET confidence = confidence * ?1
-                     WHERE subject = ?2 AND object = ?3 AND predicate = ?4
-                       AND (?5 = 1 OR source = 'inferred')",
-                    rusqlite::params![
-                        CONTRADICTION_DEMOTE_FACTOR,
-                        subject,
-                        object,
-                        opp,
-                        incoming_is_user
-                    ],
-                )?;
-            }
+        if let Some(opp) = opposite {
+            let incoming_is_user = (source == "user") as i32;
+            let _ = conn.execute(
+                "UPDATE facts SET confidence = confidence * ?1
+                 WHERE subject = ?2 AND object = ?3 AND predicate = ?4
+                   AND (?5 = 1 OR source = 'inferred')",
+                rusqlite::params![
+                    CONTRADICTION_DEMOTE_FACTOR,
+                    subject,
+                    object,
+                    opp,
+                    incoming_is_user
+                ],
+            )?;
         }
         if corrected || opposite.is_some() {
             self.db
                 .cache_invalidate_embeddings(crate::embeddings::entity_kind::FACT);
         }
-        let _ = self.insert_with_source_ref(
-            subject, &predicate, object, source, confidence, tags, source_ref, durability,
+        let _ = self.insert_with_source_ref_on_connection(
+            conn, subject, &predicate, object, source, confidence, tags, source_ref, durability,
         )?;
         Ok(if corrected {
             UpsertOutcome::Corrected

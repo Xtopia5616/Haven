@@ -114,6 +114,7 @@
 - 当前 Phase 3 小切片：Tools 的 `AdminContext` 只接收 `SessionStore` 与 `MemoryFactStore` capability；诊断列表/计数通过 SessionStore 异步 history ports，MemoryTool 的事实 store 由 app-binary 组合根创建并注入，不再由 builtin 从 raw Database 构造。unavailable、limit、排序、status 过滤、错误日志与 provider wire contract 保持不变（ADR 0306）。
 - 当前 Phase 3/7 小切片：MemoryService 构造并共享 `MemoryFactStore` 给 MemoryWorker；`load_known_facts` 通过有界端口读取，blocking 调度、有效置信度顺序、敏感过滤和 limit 属于 Memory，Agent 保留既有 prompt 格式、sanitize 和错误降级（ADR 0307）。
 - 当前 Phase 3/7 小切片：专用 `MemoryFactExtractionStore` 承接普通 session fact extraction 的 transcript projections、节流时间戳、`fact_extraction.{session_id}` 用户消息游标及游标推进；MemoryWorker 保留窗口/LLM/事实写入策略。事实批量候选校验/写入、summary episode cursor 与共享节流读写、维护/矛盾裁决/谓词合并等仍保留 MemoryDatabase 路径；embedding catch-up 沿用 MemoryService 的 MemoryEmbeddingStore，不宣称 MemoryWorker 已无 DB（ADR 0308）。
+- 当前 Phase 3/7 小切片：`MemoryFactStore::persist_inferred_batch` 接收 Agent 已解析、规范化和清洗的 typed writes，在一个 blocking closure/SQLite 事务内批量检查存在性并执行 upsert 与 source-ref 持久化；Agent 保留敏感/空值/置信度/长度/谓词/标签策略，整批失败回滚且保留 per-fact 错误上下文。MemoryWorker 仍经 MemoryDatabase 执行维护、矛盾裁决/谓词合并、summary episode cursor 与共享节流状态；embedding catch-up 继续使用 MemoryEmbeddingStore（ADR 0309）。
 - 当前 Phase 5/6 小切片：LLM usage runtime input 的 `cache_accounting` 使用 `haven-common::CacheAccounting`；SQLite 与 IPC 仍在边界转换为既有字符串，外部文本恢复统一按 `Unknown` 处理（ADR 0270）。
 - 当前 Phase 4 切片：`AgentLayer` 在 composition root 只取得一次 `ToolsManager`，共享给 prompt builder 与 `ToolsManagerToolCatalogAdapter`，并显式注入 `ReActEngine`；engine 不再从 executor 查找 catalog port。目录 snapshot、session ID、工具执行和 live authorization 语义不变（ADR 0257）。
 
@@ -151,7 +152,7 @@
 
 阶段 3/7 小切片补充（2026-09-25）：MemoryWorker 的已知事实上下文通过 MemoryService 持有并注入的 MemoryFactStore 有界读取；Memory 层先执行可见性过滤，再保留有效置信度顺序并截断，Agent 的 prompt 行格式、subject 前缀、sanitize 和错误降级保持不变。其他 MemoryWorker Database 路径不迁移（ADR 0307）。
 
-阶段 3/7 小切片补充（2026-09-25）：普通 session fact extraction 经 MemoryFactExtractionStore 读取消息/步骤投影、读取与写入节流时间戳、读取与推进用户消息 cursor；窗口构造、模型调用、事实持久化策略与取消后保留 durable outbox marker 的语义不变。事实批量候选校验/写入、summary episode cursor/共享节流、维护/矛盾裁决/谓词合并未迁移；embedding catch-up 继续通过 MemoryService 的 MemoryEmbeddingStore，MemoryWorker 仍持有 MemoryDatabase（ADR 0308）。
+阶段 3/7 小切片补充（2026-09-25）：普通 session fact extraction 经 MemoryFactExtractionStore 读取消息/步骤投影、读取与写入节流时间戳、读取与推进用户消息 cursor；窗口构造、模型调用、事实持久化策略与取消后保留 durable outbox marker 的语义不变。事实批量候选校验/写入随后经 MemoryFactStore 完成；summary episode cursor/共享节流、维护/矛盾裁决/谓词合并仍未迁移，embedding catch-up 继续通过 MemoryService 的 MemoryEmbeddingStore，MemoryWorker 仍持有 MemoryDatabase（ADR 0308、0309）。
 
 阶段 3/2 小切片补充（2026-09-25）：resume 的初始消息 id、attachments、`media_inputs` 与 session 全量 attachments 由 `SessionStore::session_resume_media` 在一个 blocking closure 中读取；保留消息顺序、首个 user 选择、空媒体与错误映射。Agent 继续负责 canonical initial input、fresh-run/resume 分界和 managed asset lease/register，事件流仍是恢复 authority；不迁移 memory_index/MemoryWorker 其他 Database 路径（ADR 0300）。
 
@@ -342,7 +343,7 @@ SessionStore
 
 验收：两类 Job 共用一套生命周期和 UI 投影；记忆失败不改变 ReAct turn 结果；重启、重复 outbox、取消和限额有测试。
 
-Phase 7.1 验收与未决风险：见 ADR 0259、0261、0262、0263、0264、0265、0266、0267、0268、0269、0301、0304、0305、0307、0308。当前已完成持久化端口、按序处理核心、启动回放、bounded live/replay runner、AgentLayer dispatcher readiness barrier、interval/pause producer、summary per-episode durable outbox、maintenance scheduler ownership、MemoryStore marker persistence/read/ack ownership、MemoryWorker retry/backoff、app shutdown boundary、Agent recall/query 的 MemoryRecallStore、MemoryWorker known-facts prompt 读取的 MemoryFactStore、普通 session fact extraction 状态与投影的 MemoryFactExtractionStore 和 ActionService 的 ActionStore；完整 Job 生命周期仍未迁移。MemoryWorker 仍通过 MemoryDatabase 执行事实批量写入、maintenance、矛盾/谓词路径与 summary episode cursor/共享 throttle；embedding catch-up 沿用 MemoryService 的 MemoryEmbeddingStore。
+Phase 7.1 验收与未决风险：见 ADR 0259、0261、0262、0263、0264、0265、0266、0267、0268、0269、0301、0304、0305、0307、0308、0309。当前已完成持久化端口、按序处理核心、启动回放、bounded live/replay runner、AgentLayer dispatcher readiness barrier、interval/pause producer、summary per-episode durable outbox、maintenance scheduler ownership、MemoryStore marker persistence/read/ack ownership、MemoryWorker retry/backoff、app shutdown boundary、Agent recall/query 的 MemoryRecallStore、MemoryWorker known-facts prompt 读取与事实批量写入的 MemoryFactStore、普通 session fact extraction 状态与投影的 MemoryFactExtractionStore 和 ActionService 的 ActionStore；完整 Job 生命周期仍未迁移。MemoryWorker 仍通过 MemoryDatabase 执行 maintenance、矛盾/谓词路径与 summary episode cursor/共享 throttle；embedding catch-up 沿用 MemoryService 的 MemoryEmbeddingStore。
 
 ### 阶段 8：IPC 单源生成与 UI 编排收口（P2）
 
