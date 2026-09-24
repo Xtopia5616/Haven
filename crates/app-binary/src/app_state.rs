@@ -174,24 +174,13 @@ impl AppState {
             config_service: config_service.clone(),
         }));
 
-        // Periodic memory maintenance: fact decay, dedup, sensitive purge and
-        // embedding pruning. Hot-path infer only extracts + bounded-embeds, so
-        // this scheduler owns the full sweep — run once at startup, then every
-        // 6 hours. (`interval` yields immediately on the first `tick`; we use
-        // that as the startup pass instead of discarding it.)
+        // ApplicationRuntime owns the task cancellation/join boundary;
+        // MemoryRuntime owns the six-hour maintenance schedule and keeps
+        // maintenance failures out of the ReAct path.
         {
             let agent = agent.clone();
             runtime.spawn_with_child_token("memory-maintenance", move |cancel| async move {
-                let mut ticker = tokio::time::interval(std::time::Duration::from_secs(6 * 60 * 60));
-                loop {
-                    tokio::select! {
-                        _ = cancel.cancelled() => break,
-                        _ = ticker.tick() => {}
-                    }
-                    if let Err(error) = agent.run_memory_maintenance().await {
-                        tracing::warn!("periodic memory maintenance failed: {}", error);
-                    }
-                }
+                agent.run_memory_maintenance_until_cancelled(&cancel).await;
             });
         }
 

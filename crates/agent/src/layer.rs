@@ -326,6 +326,18 @@ impl AgentLayer {
         self.memory_worker.run_memory_maintenance().await
     }
 
+    /// Run the app-owned periodic memory maintenance schedule. The
+    /// application runtime still owns the cancellation token and task join;
+    /// `MemoryRuntime` owns the interval policy and failure isolation.
+    pub async fn run_memory_maintenance_until_cancelled(
+        &self,
+        cancellation: &tokio_util::sync::CancellationToken,
+    ) {
+        self.memory_runtime
+            .run_maintenance_until_cancelled(cancellation)
+            .await;
+    }
+
     /// Forward a fully-scoped memory query through the agent boundary.
     pub async fn recall_memory_query(
         &self,

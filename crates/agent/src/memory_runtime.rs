@@ -17,6 +17,7 @@ use crate::memory_worker::MemoryWorker;
 
 const INITIAL_RETRY_BACKOFF: Duration = Duration::from_millis(250);
 const MAX_RETRY_BACKOFF: Duration = Duration::from_secs(30);
+const MEMORY_MAINTENANCE_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 
 /// Result of processing one committed event for a target session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -311,6 +312,24 @@ impl MemoryRuntime {
         self.run_prepared(live, cancellation).await;
     }
 
+    /// Own the periodic maintenance schedule while leaving task ownership and
+    /// cancellation joining to the application runtime. Manual maintenance
+    /// commands still use `AgentLayer::run_memory_maintenance` directly.
+    pub async fn run_maintenance_until_cancelled(&self, cancellation: &CancellationToken) {
+        let mut ticker = tokio::time::interval(MEMORY_MAINTENANCE_INTERVAL);
+        loop {
+            tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => return,
+                _ = ticker.tick() => {
+                    if let Err(error) = self.memory_worker.run_memory_maintenance().await {
+                        tracing::warn!("periodic memory maintenance failed: {}", error);
+                    }
+                }
+            }
+        }
+    }
+
     /// Run the live consumer using the receiver returned by `prepare_start`.
     /// Agent startup calls this only after the recovery preparation has
     /// completed, then opens the session dispatcher.
@@ -586,6 +605,15 @@ mod tests {
 
     fn cancellation() -> CancellationToken {
         CancellationToken::new()
+    }
+
+    #[tokio::test]
+    async fn maintenance_schedule_stops_before_first_tick_when_cancelled() {
+        let (_, _, runtime) = fixture();
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+
+        runtime.run_maintenance_until_cancelled(&cancellation).await;
     }
 
     #[tokio::test]
