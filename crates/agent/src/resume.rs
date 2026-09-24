@@ -164,35 +164,18 @@ impl AgentLayer {
         // follow-ups are supplements (injected by the ReAct loop at step
         // start) and must NOT be attached to the initial turn or they would
         // be duplicated.
-        let db = self.db.clone();
-        let sid = session_id.to_string();
-        let (initial_message_id, initial_attachments, initial_media_inputs, all_attachments) = db
-            .run_blocking(move |db| {
-                let messages = db.get_session_messages(&sid)?;
-                let all_attachments = messages
-                    .iter()
-                    .flat_map(|message| message.attachments.iter().cloned())
-                    .collect::<Vec<_>>();
-                let initial_message = messages.iter().find(|m| m.role == "user").cloned();
-                let initial_message_id = initial_message.as_ref().map(|message| message.id.clone());
-                let initial_attachments = initial_message
-                    .as_ref()
-                    .filter(|m| !m.attachments.is_empty())
-                    .map(|m| m.attachments.clone())
-                    .unwrap_or_default();
-                let initial_media_inputs = initial_message
-                    .filter(|m| !m.media_inputs.is_empty())
-                    .map(|m| m.media_inputs)
-                    .unwrap_or_default();
-                Ok((
-                    initial_message_id,
-                    initial_attachments,
-                    initial_media_inputs,
-                    all_attachments,
-                ))
-            })
+        let resume_media = self
+            .executor
+            .session_store()
+            .session_resume_media(session_id)
             .await
             .map_err(|error| anyhow::anyhow!("failed to load session resume data: {error}"))?;
+        let haven_memory::SessionResumeMedia {
+            initial_message_id,
+            initial_attachments,
+            initial_media_inputs,
+            all_attachments,
+        } = resume_media;
 
         // Snapshot events carry metadata-only media inputs. Re-register the
         // host-owned files from the materialized media projection before a

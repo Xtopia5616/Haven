@@ -288,3 +288,4 @@
 - [0297：Rollback 事务通过 SessionStore 异步端口](0297-rollback-session-store-ports.md)
 - [0298：ReAct event boundary cursor 通过 SessionStore 读取](0298-react-event-boundary-cursor-session-store-port.md)
 - [0299：ReAct compaction summary 通过 MemoryStore 持久化](0299-react-compaction-summary-memory-store-port.md)
+- [0300：Agent resume 媒体读取通过 SessionStore read model](0300-agent-resume-media-session-store-read-model.md)

@@ -13,6 +13,7 @@ use crate::repositories::sessions::Session;
 use crate::repositories::usage::{LlmCallUsage, LlmCallUsageInput, SessionUsage};
 use chrono::{SecondsFormat, Utc};
 use haven_common::SessionStatus;
+use haven_common::media::MediaInput;
 use haven_common::types::MessageAttachment;
 use rusqlite::OptionalExtension;
 use std::sync::Arc;
@@ -267,6 +268,18 @@ pub struct SessionMessageText {
     pub content: String,
 }
 
+/// The materialized media needed to initialize a session run.
+///
+/// This read model does not define resume authority or register/lease managed
+/// assets. Durable event replay and Agent-owned asset lifecycle stay separate.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SessionResumeMedia {
+    pub initial_message_id: Option<String>,
+    pub initial_attachments: Vec<MessageAttachment>,
+    pub initial_media_inputs: Vec<MediaInput>,
+    pub all_attachments: Vec<MessageAttachment>,
+}
+
 /// User-only transcript context used to generate a session title.
 ///
 /// The store checks session existence and the persisted title before loading
@@ -470,6 +483,40 @@ impl SessionStore {
                         content: message.content,
                     })
                     .collect())
+            })
+            .await
+    }
+
+    /// Load the ordered message media needed to initialize a session run.
+    ///
+    /// Messages are read and aggregated in one blocking-pool closure using
+    /// the existing `get_session_messages` ordering. The first user message
+    /// supplies the initial input media; all message attachments are flattened
+    /// in message order for the caller's asset registration. This read model
+    /// does not replay events or register/lease managed assets.
+    pub async fn session_resume_media(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<SessionResumeMedia> {
+        let session_id = session_id.to_owned();
+        self.db
+            .run_blocking(move |db| {
+                let messages = db.get_session_messages(&session_id)?;
+                let all_attachments = messages
+                    .iter()
+                    .flat_map(|message| message.attachments.iter().cloned())
+                    .collect();
+                let initial_message = messages.iter().find(|message| message.role == "user");
+                Ok(SessionResumeMedia {
+                    initial_message_id: initial_message.map(|message| message.id.clone()),
+                    initial_attachments: initial_message
+                        .map(|message| message.attachments.clone())
+                        .unwrap_or_default(),
+                    initial_media_inputs: initial_message
+                        .map(|message| message.media_inputs.clone())
+                        .unwrap_or_default(),
+                    all_attachments,
+                })
             })
             .await
     }
@@ -2864,6 +2911,13 @@ mod tests {
         (db, store, session.id)
     }
 
+    fn resume_test_attachment(filename: &str) -> MessageAttachment {
+        let mut attachment = MessageAttachment::new("image/png", "aGVsbG8=");
+        attachment.asset_id = Some(haven_common::types::new_id("asset"));
+        attachment.filename = Some(filename.to_owned());
+        attachment
+    }
+
     #[tokio::test]
     async fn session_store_event_boundary_cursor_defaults_or_matches_replay() {
         let (_db, store, session_id) = store();
@@ -3532,6 +3586,107 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[tokio::test]
+    async fn session_store_session_resume_media_uses_first_user_and_message_order() {
+        let (db, store, session_id) = store();
+        let assistant_attachment = resume_test_attachment("assistant.png");
+        db.add_message_full(
+            &session_id,
+            "assistant",
+            "before input",
+            Some("text"),
+            None,
+            std::slice::from_ref(&assistant_attachment),
+            false,
+            None,
+        )
+        .unwrap();
+        let initial_attachment = resume_test_attachment("initial.png");
+        let initial_message = db
+            .add_message_full(
+                &session_id,
+                "user",
+                "initial input",
+                Some("text"),
+                None,
+                std::slice::from_ref(&initial_attachment),
+                false,
+                None,
+            )
+            .unwrap();
+        let later_attachment = resume_test_attachment("later.png");
+        db.add_message_full(
+            &session_id,
+            "user",
+            "later input",
+            Some("text"),
+            None,
+            std::slice::from_ref(&later_attachment),
+            false,
+            None,
+        )
+        .unwrap();
+
+        let resume_media = store.session_resume_media(&session_id).await.unwrap();
+        let persisted_messages = db.get_session_messages(&session_id).unwrap();
+
+        assert_eq!(
+            resume_media.initial_message_id.as_deref(),
+            Some(initial_message.id.as_str())
+        );
+        assert_eq!(
+            resume_media
+                .initial_attachments
+                .iter()
+                .filter_map(|attachment| attachment.filename.as_deref())
+                .collect::<Vec<_>>(),
+            vec!["initial.png"]
+        );
+        assert_eq!(
+            resume_media.initial_media_inputs,
+            persisted_messages[1].media_inputs
+        );
+        assert_eq!(
+            resume_media
+                .all_attachments
+                .iter()
+                .filter_map(|attachment| attachment.filename.as_deref())
+                .collect::<Vec<_>>(),
+            vec!["assistant.png", "initial.png", "later.png"]
+        );
+    }
+
+    #[tokio::test]
+    async fn session_store_session_resume_media_returns_empty_media_and_isolates_sessions() {
+        let (db, store, session_id) = store();
+        let initial_message = db
+            .add_message(&session_id, "user", "plain input", Some("text"), None)
+            .unwrap();
+        let other_session = db.create_session("other session").unwrap();
+        let other_attachment = resume_test_attachment("other-session.png");
+        db.add_message_full(
+            &other_session.id,
+            "user",
+            "other input",
+            Some("text"),
+            None,
+            std::slice::from_ref(&other_attachment),
+            false,
+            None,
+        )
+        .unwrap();
+
+        let resume_media = store.session_resume_media(&session_id).await.unwrap();
+
+        assert_eq!(
+            resume_media.initial_message_id.as_deref(),
+            Some(initial_message.id.as_str())
+        );
+        assert!(resume_media.initial_attachments.is_empty());
+        assert!(resume_media.initial_media_inputs.is_empty());
+        assert!(resume_media.all_attachments.is_empty());
     }
 
     #[tokio::test]

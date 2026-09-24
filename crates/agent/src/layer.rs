@@ -26,6 +26,7 @@ async fn action_completion_session_status(
 }
 
 pub struct AgentLayer {
+    #[cfg(test)]
     pub(crate) db: Arc<Database>,
     pub(crate) executor: Arc<SessionSupervisor>,
     pub(crate) conversation_window_size: usize,
@@ -98,6 +99,7 @@ impl AgentLayer {
         let title = Some(TitleGenerator::new(router));
 
         Self {
+            #[cfg(test)]
             db,
             executor,
             conversation_window_size,
