@@ -711,9 +711,8 @@ mod tests {
     async fn runtime_shutdown_preserves_session_owned_scheduled_actions() {
         let dir = tempdir().unwrap();
         let loader = ConfigLoader::load_from(&dir.path().join("config.toml")).unwrap();
-        let state = AppState::new(&dir.path().join("test.db"), vec![], loader)
-            .await
-            .unwrap();
+        let db_path = dir.path().join("test.db");
+        let state = AppState::new(&db_path, vec![], loader).await.unwrap();
         let session = state
             .runtime
             .executor
@@ -743,7 +742,8 @@ mod tests {
 
         state.runtime.shutdown().await;
 
-        let pending = state.runtime.db.list_pending_scheduled_actions().unwrap();
+        let db = Database::open(&db_path).unwrap();
+        let pending = db.list_pending_scheduled_actions().unwrap();
         assert!(pending.iter().any(|row| row.id == action_id));
         assert_eq!(
             pending

@@ -527,6 +527,14 @@ impl SessionStore {
         self.db.get_session(session_id)
     }
 
+    /// Pause all running sessions during the synchronous application exit
+    /// callback. This delegates to the existing repository operation so its
+    /// status transition, update count, and crash recovery behavior stay the
+    /// same.
+    pub fn pause_running_sessions(&self) -> anyhow::Result<usize> {
+        self.db.pause_running_sessions()
+    }
+
     /// Read a persisted session record by id on SQLite's blocking pool.
     ///
     /// The synchronous `session_record` remains available to Agent lifecycle
@@ -2458,6 +2466,47 @@ mod tests {
         let missing_session_id = haven_common::types::new_id("ses");
 
         assert!(store.session_record(&missing_session_id).unwrap().is_none());
+    }
+
+    #[test]
+    fn session_store_pauses_running_sessions_and_returns_updated_count() {
+        let (db, store, first_running_id) = store();
+        db.update_session_status(&first_running_id, SessionStatus::Running)
+            .unwrap();
+
+        let second_running = db.create_session("second running").unwrap();
+        db.update_session_status(&second_running.id, SessionStatus::Running)
+            .unwrap();
+        let already_paused = db.create_session("already paused").unwrap();
+        db.update_session_status(&already_paused.id, SessionStatus::Paused)
+            .unwrap();
+        let still_pending = db.create_session("still pending").unwrap();
+        let completed = db.create_session("completed").unwrap();
+        db.update_session_status(&completed.id, SessionStatus::Completed)
+            .unwrap();
+
+        assert_eq!(store.pause_running_sessions().unwrap(), 2);
+        assert_eq!(
+            db.get_session(&first_running_id).unwrap().unwrap().status,
+            SessionStatus::Paused
+        );
+        assert_eq!(
+            db.get_session(&second_running.id).unwrap().unwrap().status,
+            SessionStatus::Paused
+        );
+        assert_eq!(
+            db.get_session(&already_paused.id).unwrap().unwrap().status,
+            SessionStatus::Paused
+        );
+        assert_eq!(
+            db.get_session(&still_pending.id).unwrap().unwrap().status,
+            SessionStatus::Pending
+        );
+        assert_eq!(
+            db.get_session(&completed.id).unwrap().unwrap().status,
+            SessionStatus::Completed
+        );
+        assert_eq!(store.pause_running_sessions().unwrap(), 0);
     }
 
     #[tokio::test]

@@ -30,7 +30,6 @@ use tracing_subscriber::reload;
 /// command compatibility while retaining only Tauri-specific transient state
 /// of its own.
 pub struct ApplicationRuntime {
-    pub(crate) db: Arc<Database>,
     pub(crate) session_store: SessionStore,
     pub(crate) memory_fact_store: MemoryFactStore,
     pub(crate) tools: Arc<ToolsManager>,
@@ -70,9 +69,8 @@ impl ApplicationRuntime {
     pub(crate) fn new(runtime_services: RuntimeServices) -> Self {
         let services = runtime_services.tools.share_services();
         let db = runtime_services.db;
-        let memory_fact_store = MemoryFactStore::new(db.clone());
+        let memory_fact_store = MemoryFactStore::new(db);
         Self {
-            db,
             session_store: runtime_services.session_store,
             memory_fact_store,
             tools: runtime_services.tools,

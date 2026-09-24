@@ -11,6 +11,7 @@ use crate::logging::init_tracing;
 use crate::notification::DesktopNotifications;
 use haven_common::config::LogConfig;
 use haven_common::error::sanitize_error_text;
+use haven_memory::SessionStore;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use tauri::Emitter;
@@ -687,21 +688,25 @@ pub(crate) fn run() {
                 // would be flipped to `error` at the next startup by
                 // `finalize_orphaned_running_sessions` (which only intends to
                 // catch crash leftovers).
-                match state.db.pause_running_sessions() {
-                    Ok(n) if n > 0 => {
-                        tracing::info!("paused {} running session(s) on exit", n);
-                    }
-                    Ok(_) => {}
-                    Err(error) => {
-                        tracing::error!(
-                            error = %sanitize_error_text(&error.to_string()),
-                            "failed to pause running sessions on exit"
-                        );
-                    }
-                }
+                pause_running_sessions_on_exit(&state.session_store);
                 state.runtime.teardown_blocking();
             }
         });
+}
+
+fn pause_running_sessions_on_exit(session_store: &SessionStore) {
+    match session_store.pause_running_sessions() {
+        Ok(n) if n > 0 => {
+            tracing::info!("paused {} running session(s) on exit", n);
+        }
+        Ok(_) => {}
+        Err(error) => {
+            tracing::error!(
+                error = %sanitize_error_text(&error.to_string()),
+                "failed to pause running sessions on exit"
+            );
+        }
+    }
 }
 
 /// Convert a neutral [`haven_input::hotkey::KeyCombo`] into the Tauri
@@ -834,4 +839,28 @@ fn init_app_state(
         );
         std::process::exit(1);
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pause_running_sessions_on_exit;
+    use haven_common::SessionStatus;
+    use haven_memory::{Database, SessionStore};
+    use std::sync::Arc;
+
+    #[test]
+    fn exit_pause_helper_uses_session_store_to_pause_running_sessions() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let session = db.create_session("in-flight session").unwrap();
+        db.update_session_status(&session.id, SessionStatus::Running)
+            .unwrap();
+        let session_store = SessionStore::new(db.clone());
+
+        pause_running_sessions_on_exit(&session_store);
+
+        assert_eq!(
+            db.get_session(&session.id).unwrap().unwrap().status,
+            SessionStatus::Paused
+        );
+    }
 }

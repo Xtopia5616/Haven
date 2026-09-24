@@ -275,3 +275,4 @@
 - [0284：end_session 展示标题读取通过 SessionStore](0284-end-session-display-title-session-store-port.md)
 - [0285：App 事实管理命令通过 MemoryFactStore](0285-app-memory-fact-store.md)
 - [0286：App 桌面通知标题通过 SessionStore 同步端口读取](0286-app-notification-session-display-title-session-store-port.md)
+- [0287：退出时通过 SessionStore 同步暂停运行会话](0287-app-exit-pause-sessions-session-store-port.md)
