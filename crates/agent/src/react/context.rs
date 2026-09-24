@@ -12,7 +12,7 @@ use crate::session::{
     CONTEXT_BATCH_MAX_CHARS, CONTEXT_BATCH_MAX_ITEMS, ReactContextBatch, SessionSupervisor,
 };
 use haven_common::types::{InjectSource, MessageAttachment};
-use haven_memory::Database;
+use haven_memory::SessionStore;
 use haven_tools::MessageClaim;
 use haven_tools::inbox::{Envelope, MessageType};
 use sha2::{Digest, Sha256};
@@ -123,7 +123,7 @@ impl PendingContextBatch {
 /// Reads pending session context and cross-session messages.
 pub(super) struct ContextSource {
     executor: Arc<SessionSupervisor>,
-    db: Arc<Database>,
+    store: SessionStore,
     messaging: MessagingPoller,
     metrics: Arc<ReActMetrics>,
 }
@@ -131,12 +131,12 @@ pub(super) struct ContextSource {
 impl ContextSource {
     pub(super) fn new(
         executor: Arc<SessionSupervisor>,
-        db: Arc<Database>,
+        store: SessionStore,
         metrics: Arc<ReActMetrics>,
     ) -> Self {
         Self {
             executor: executor.clone(),
-            db,
+            store,
             messaging: MessagingPoller::with_service(executor.messaging_service()),
             metrics,
         }
@@ -238,17 +238,7 @@ impl ContextSource {
         let title = match tick.title {
             crate::session::MessagingTitle::Cached(title) => title,
             crate::session::MessagingTitle::Missing => {
-                let title = match self
-                    .db
-                    .run_blocking({
-                        let sid = session_id.to_string();
-                        move |db| {
-                            let title = db.get_session(&sid)?.and_then(|s| s.title);
-                            Ok::<Option<String>, anyhow::Error>(title)
-                        }
-                    })
-                    .await
-                {
+                let title = match self.store.session_title(session_id).await {
                     Ok(title) => title,
                     Err(error) => {
                         tracing::warn!(

@@ -354,6 +354,16 @@ impl SessionStore {
         self.db.get_session(session_id)
     }
 
+    /// Read only the title needed by the messaging heartbeat projection.
+    /// Keeping this narrow avoids exposing the raw Database to Agent context
+    /// assembly merely for a presentation field.
+    pub async fn session_title(&self, session_id: &str) -> anyhow::Result<Option<String>> {
+        let session_id = session_id.to_owned();
+        self.db
+            .run_blocking(move |db| Ok(db.get_session(&session_id)?.and_then(|s| s.title)))
+            .await
+    }
+
     /// Persist an ingress or recovery message through the session boundary.
     ///
     /// SQLite work runs on the blocking pool and may be cooperatively
@@ -2234,6 +2244,26 @@ mod tests {
         let missing_session_id = haven_common::types::new_id("ses");
 
         assert!(store.session_record(&missing_session_id).unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn session_store_reads_only_the_session_title_for_context_assembly() {
+        let (db, store, session_id) = store();
+        db.update_session_title(&session_id, "Context title")
+            .unwrap();
+
+        assert_eq!(
+            store.session_title(&session_id).await.unwrap().as_deref(),
+            Some("Context title")
+        );
+        let missing_session_id = haven_common::types::new_id("ses");
+        assert!(
+            store
+                .session_title(&missing_session_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]

@@ -409,8 +409,9 @@ impl ReActEngine {
         context_limits: ContextLimitsConfig,
     ) -> Self {
         let metrics = Arc::new(ReActMetrics::new());
-        let context_source = ContextSource::new(executor.clone(), db.clone(), metrics.clone());
         let event_store = executor.session_store();
+        let context_source =
+            ContextSource::new(executor.clone(), event_store.clone(), metrics.clone());
         let usage_runtime = UsageRuntime::new(event_store.clone());
         Self {
             router: Arc::new(RwLock::new(router)),
