@@ -24,6 +24,421 @@ async fn recv_background(rx: &mut ActionCompletionReceiver) -> BackgroundActionC
     }
 }
 
+async fn insert_running_background(
+    service: &ActionService,
+    db: &Database,
+    action_id: &str,
+    session_id: Option<&str>,
+) {
+    let started_at = chrono::Utc::now().to_rfc3339();
+    db.save_action(action_id, session_id, "echo terminal-test", &started_at)
+        .unwrap();
+    service.actions.write().await.insert(
+        action_id.to_string(),
+        ActionEntry {
+            kind: ActionKind::Background,
+            session_id: session_id.map(str::to_string),
+            state: ActionState::Running { started_at },
+            kill: None,
+            tail: None,
+            command: "echo terminal-test".into(),
+            shell: "test".into(),
+            scheduled: None,
+        },
+    );
+}
+
+async fn terminal_test_service() -> (Arc<ActionService>, Arc<Database>, String, tempfile::TempDir) {
+    let dir = tempfile::TempDir::new().unwrap();
+    let db = Arc::new(Database::open(&dir.path().join("actions.db")).unwrap());
+    let service = Arc::new(ActionService::new());
+    service.set_db(Some(db.clone())).await;
+    let action_id = haven_common::types::new_id("act");
+    insert_running_background(&service, &db, &action_id, None).await;
+    (service, db, action_id, dir)
+}
+
+fn capture_action_events(service: &ActionService) -> Arc<std::sync::Mutex<Vec<(String, Value)>>> {
+    let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink_events = Arc::clone(&events);
+    service.set_event_sink(Arc::new(move |name, payload| {
+        sink_events.lock().unwrap().push((name, payload));
+    }));
+    events
+}
+
+fn terminal_event_count(events: &std::sync::Mutex<Vec<(String, Value)>>) -> usize {
+    events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(name, _)| name == "action:finished")
+        .count()
+}
+
+async fn assert_no_background_completion(rx: &mut ActionCompletionReceiver) {
+    assert!(
+        tokio::time::timeout(Duration::from_millis(75), recv_background(rx))
+            .await
+            .is_err(),
+        "unexpected duplicate or uncommitted background completion"
+    );
+}
+
+#[tokio::test]
+async fn background_terminal_race_publishes_only_the_database_cas_winner() {
+    let (service, db, action_id, _dir) = terminal_test_service().await;
+    let events = capture_action_events(&service);
+    let mut rx = service.take_action_receiver().unwrap();
+    let barrier = Arc::new(tokio::sync::Barrier::new(3));
+
+    let complete_service = Arc::clone(&service);
+    let complete_barrier = Arc::clone(&barrier);
+    let complete_id = action_id.clone();
+    let complete = tokio::spawn(async move {
+        complete_barrier.wait().await;
+        complete_service
+            .mark_finished(
+                &complete_id,
+                "started",
+                "test",
+                "echo terminal-test",
+                "completed output".into(),
+                true,
+                Some(0),
+                false,
+            )
+            .await;
+    });
+
+    let cancel_service = Arc::clone(&service);
+    let cancel_barrier = Arc::clone(&barrier);
+    let cancel_id = action_id.clone();
+    let cancel = tokio::spawn(async move {
+        cancel_barrier.wait().await;
+        cancel_service.mark_cancelled(&cancel_id, "started").await;
+    });
+
+    barrier.wait().await;
+    complete.await.unwrap();
+    cancel.await.unwrap();
+
+    let row = db.get_action(&action_id).unwrap().unwrap();
+    assert!(matches!(
+        row.status,
+        ActionStatus::Completed | ActionStatus::Cancelled
+    ));
+    assert_eq!(
+        service.status(&action_id).await["status"],
+        row.status.as_str()
+    );
+    assert_eq!(terminal_event_count(&events), 1);
+    let completion = tokio::time::timeout(Duration::from_secs(1), recv_background(&mut rx))
+        .await
+        .expect("the CAS winner publishes one completion");
+    assert_eq!(completion.status, row.status);
+    assert_no_background_completion(&mut rx).await;
+
+    let outbox_count: i64 = db
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM action_completion_outbox WHERE action_id = ?1",
+            [&action_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        outbox_count,
+        i64::from(row.status == ActionStatus::Completed)
+    );
+}
+
+#[tokio::test]
+async fn background_terminal_cas_loser_reconciles_without_publishing() {
+    let (service, db, action_id, _dir) = terminal_test_service().await;
+    let events = capture_action_events(&service);
+    let mut rx = service.take_action_receiver().unwrap();
+    let status_json = serde_json::to_string(&json!({
+        "action_id": action_id,
+        "status": "completed",
+        "output": "external winner",
+        "finished_at": "external finish"
+    }))
+    .unwrap();
+    assert!(
+        db.finish_action_with_completion(
+            &action_id,
+            ActionStatus::Completed,
+            Some("external winner"),
+            None,
+            None,
+            None,
+            Some(0),
+            "external finish",
+            &status_json,
+        )
+        .unwrap()
+    );
+
+    service
+        .mark_finished(
+            &action_id,
+            "started",
+            "test",
+            "echo terminal-test",
+            "local loser".into(),
+            true,
+            Some(0),
+            false,
+        )
+        .await;
+
+    assert_eq!(service.status(&action_id).await["status"], "completed");
+    assert_eq!(
+        db.get_action(&action_id)
+            .unwrap()
+            .unwrap()
+            .output
+            .as_deref(),
+        Some("external winner")
+    );
+    assert_eq!(terminal_event_count(&events), 0);
+    assert_no_background_completion(&mut rx).await;
+}
+
+#[tokio::test]
+async fn background_terminal_storage_error_stays_running_then_retries_once() {
+    let (service, db, action_id, _dir) = terminal_test_service().await;
+    let events = capture_action_events(&service);
+    let mut rx = service.take_action_receiver().unwrap();
+    db.conn()
+        .execute_batch(&format!(
+            "CREATE TRIGGER block_background_completion
+             BEFORE INSERT ON action_completion_outbox
+             WHEN NEW.action_id = '{action_id}'
+             BEGIN SELECT RAISE(ABORT, 'injected outbox failure'); END;"
+        ))
+        .unwrap();
+
+    service
+        .mark_finished(
+            &action_id,
+            "started",
+            "test",
+            "echo terminal-test",
+            "retry output".into(),
+            true,
+            Some(0),
+            false,
+        )
+        .await;
+
+    assert_eq!(service.status(&action_id).await["status"], "running");
+    assert_eq!(
+        db.get_action(&action_id).unwrap().unwrap().status,
+        ActionStatus::Running
+    );
+    assert_eq!(terminal_event_count(&events), 0);
+    assert_no_background_completion(&mut rx).await;
+
+    db.conn()
+        .execute_batch("DROP TRIGGER block_background_completion")
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while service.status(&action_id).await["status"] == "running" {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "terminal retry did not commit"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(service.status(&action_id).await["status"], "completed");
+    assert_eq!(terminal_event_count(&events), 1);
+    let completion = tokio::time::timeout(Duration::from_secs(1), recv_background(&mut rx))
+        .await
+        .expect("retry publishes after its database commit");
+    assert_eq!(completion.status_json["output"], "retry output");
+    assert_no_background_completion(&mut rx).await;
+
+    let outbox_count: i64 = db
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM action_completion_outbox WHERE action_id = ?1",
+            [&action_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(outbox_count, 1);
+}
+
+#[tokio::test]
+async fn background_cancel_storage_error_does_not_publish_before_retry_commit() {
+    let (service, db, action_id, _dir) = terminal_test_service().await;
+    let events = capture_action_events(&service);
+    let mut rx = service.take_action_receiver().unwrap();
+    db.conn()
+        .execute_batch(&format!(
+            "CREATE TRIGGER block_background_cancel
+             BEFORE UPDATE OF status ON actions
+             WHEN NEW.id = '{action_id}' AND NEW.status = 'cancelled'
+             BEGIN SELECT RAISE(ABORT, 'injected cancel failure'); END;"
+        ))
+        .unwrap();
+
+    service.mark_cancelled(&action_id, "started").await;
+    assert_eq!(service.status(&action_id).await["status"], "running");
+    assert_eq!(terminal_event_count(&events), 0);
+    assert_no_background_completion(&mut rx).await;
+
+    db.conn()
+        .execute_batch("DROP TRIGGER block_background_cancel")
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while service.status(&action_id).await["status"] == "running" {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "cancel retry did not commit"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(service.status(&action_id).await["status"], "cancelled");
+    assert_eq!(
+        db.get_action(&action_id).unwrap().unwrap().status,
+        ActionStatus::Cancelled
+    );
+    assert_eq!(terminal_event_count(&events), 1);
+    let completion = tokio::time::timeout(Duration::from_secs(1), recv_background(&mut rx))
+        .await
+        .expect("cancellation publishes only after durable commit");
+    assert_eq!(completion.status, ActionStatus::Cancelled);
+    assert_no_background_completion(&mut rx).await;
+}
+
+#[tokio::test]
+async fn repeated_background_completion_is_idempotent_and_publishes_once() {
+    let (service, db, action_id, _dir) = terminal_test_service().await;
+    let events = capture_action_events(&service);
+    let mut rx = service.take_action_receiver().unwrap();
+    for output in ["first output", "duplicate output"] {
+        service
+            .mark_finished(
+                &action_id,
+                "started",
+                "test",
+                "echo terminal-test",
+                output.into(),
+                true,
+                Some(0),
+                false,
+            )
+            .await;
+    }
+
+    assert_eq!(service.status(&action_id).await["output"], "first output");
+    assert_eq!(
+        db.get_action(&action_id)
+            .unwrap()
+            .unwrap()
+            .output
+            .as_deref(),
+        Some("first output")
+    );
+    assert_eq!(terminal_event_count(&events), 1);
+    let completion = tokio::time::timeout(Duration::from_secs(1), recv_background(&mut rx))
+        .await
+        .expect("first terminal commit published");
+    assert_eq!(completion.status_json["output"], "first output");
+    assert_no_background_completion(&mut rx).await;
+}
+
+#[tokio::test]
+async fn persistent_late_attach_updates_outbox_without_republishing_completion() {
+    let (service, db, action_id, _dir) = terminal_test_service().await;
+    let events = capture_action_events(&service);
+    let mut rx = service.take_action_receiver().unwrap();
+    service
+        .mark_finished(
+            &action_id,
+            "started",
+            "test",
+            "echo terminal-test",
+            "late owner output".into(),
+            true,
+            Some(0),
+            false,
+        )
+        .await;
+    let initial = tokio::time::timeout(Duration::from_secs(1), recv_background(&mut rx))
+        .await
+        .expect("committed completion published");
+    assert!(initial.session_id.is_none());
+
+    let session_id = haven_common::types::new_id("ses");
+    service.attach_session(&action_id, &session_id).await;
+    assert_no_background_completion(&mut rx).await;
+    assert_eq!(terminal_event_count(&events), 1);
+
+    let outbox = db.claim_action_completion().unwrap().unwrap();
+    assert_eq!(outbox.action_id, action_id);
+    assert_eq!(outbox.session_id.as_deref(), Some(session_id.as_str()));
+    assert_eq!(outbox.status_json["output"], "late owner output");
+}
+
+#[tokio::test]
+async fn session_cleanup_keeps_running_action_until_cancel_commit() {
+    let (service, db, action_id, _dir) = terminal_test_service().await;
+    let session_id = haven_common::types::new_id("ses");
+    {
+        let mut actions = service.actions.write().await;
+        actions.get_mut(&action_id).unwrap().session_id = Some(session_id.clone());
+    }
+    db.update_action_session(&action_id, &session_id).unwrap();
+    let events = capture_action_events(&service);
+    let mut rx = service.take_action_receiver().unwrap();
+    db.conn()
+        .execute_batch(&format!(
+            "CREATE TRIGGER block_cleanup_cancel
+             BEFORE UPDATE OF status ON actions
+             WHEN NEW.id = '{action_id}' AND NEW.status = 'cancelled'
+             BEGIN SELECT RAISE(ABORT, 'injected cleanup failure'); END;"
+        ))
+        .unwrap();
+
+    service
+        .cancel_owned_background_by_session(&session_id)
+        .await;
+    assert_eq!(service.status(&action_id).await["status"], "running");
+    assert_eq!(
+        db.get_action(&action_id).unwrap().unwrap().status,
+        ActionStatus::Running
+    );
+    assert_eq!(terminal_event_count(&events), 0);
+    assert_no_background_completion(&mut rx).await;
+
+    db.conn()
+        .execute_batch("DROP TRIGGER block_cleanup_cancel")
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while service.status(&action_id).await["status"] != "not_found" {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "cleanup retry did not commit and remove the board entry"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(
+        db.get_action(&action_id).unwrap().unwrap().status,
+        ActionStatus::Cancelled
+    );
+    assert_eq!(terminal_event_count(&events), 1);
+    let completion = tokio::time::timeout(Duration::from_secs(1), recv_background(&mut rx))
+        .await
+        .expect("cleanup publishes after the cancellation commits");
+    assert_eq!(completion.status, ActionStatus::Cancelled);
+    assert_eq!(completion.session_id.as_deref(), Some(session_id.as_str()));
+    assert_no_background_completion(&mut rx).await;
+}
+
 #[tokio::test]
 async fn persisted_action_query_requires_a_bound_database() {
     let service = ActionService::new();

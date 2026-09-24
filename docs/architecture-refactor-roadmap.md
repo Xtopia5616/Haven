@@ -58,7 +58,7 @@
 - 当前切片：settings 与 model 均由 `RuntimeConfigApplyPlan` 判定 Router target；model 的实际 `ConfigService::edit` 变更只产生 `ConfigDomain::Llm`，plan 映射到 `LlmRouter`，no-op 不重建。两个入口仍持有同一个 `ApplicationRuntime::config_apply_gate`；提交、预构建、发布及副作用顺序未变（ADR 0235）。
 - `9f45e46`：Action IPC wire DTO、状态值和可选字段加入静态漂移检查；不引入通用 codegen，性能诊断命令目录同步修正。
 - `40563f9`：删除聊天页重复的 active-session 错误清理 effect，错误迁移统一归 reducer（UI 706 项测试）。
-- `10b72fc`：后台 action 持久层终态写入改为 first-wins CAS，completion outbox 只记录胜出事务（ADR 0236）。后续审查发现 ActionService 仍先改内存、忽略 CAS `false`/持久化错误并继续发布；session cleanup 也先移除条目。现有 `update_action_session` 已能在事务内同步 pending outbox owner，但 late attach 的错误处理与重复发布仍未收口；跨 ActionService 与 haven-memory 的终态协调列为阶段 7 后续切片（ADR 0248）。
+- `10b72fc`：后台 action 持久层终态写入改为 first-wins CAS，completion outbox 只记录胜出事务（ADR 0236）。本轮按 ADR 0248 收口 ActionService 终态仲裁：只有 CAS 成功者应用内存状态并发布；CAS 输家按 action row 对齐但不通知；持久化错误保留候选并退避重试；session cleanup 在提交前保留 entry；late attach 先提交 owner/outbox 更新，持久模式不重复发 transient completion。完成/取消竞态、CAS 丢失、写入错误/重试、重复完成、cleanup 与 late attach 均有回归测试，无 schema/API 变更。
 - `9b73c5e`：定时任务授权请求与 live authorization engine 调用收口到 SessionSupervisor 窄方法，确认/receipt/execute_gated 顺序不变（ADR 0237）。
 - `a2ddd11`：resume 的 ingress-cursor-after 与 unanchored-user-window 查询归属 SessionStore，保持两个恢复边界分离（ADR 0238）。
 - `18507a3`：删除已无调用者的 LLM/Tools/Common facade API，保留仍有语义或生产调用的 helper（ADR 0239）。
@@ -70,11 +70,11 @@
 - 当前切片：历史错误原因缓存并入 `SessionReducer`，`sessionErrorStore` 函数保留为兼容委托；busy 清除时机、历史页 fallback 和删除/清空列表生命周期不变（ADR 0245）。
 - 当前切片：LLM Router 的 native transcription、complete、embedding、raw stream 建流和 health check 共用请求结果投影；聚合 stream 的取消豁免与其他状态语义不变（ADR 0246）。
 - 当前切片：`MemoryWorker` 的 FastChat 调用经注入的 `MemoryInferencePort`；Agent 层的事实抽取、维护与游标行为不变，Router 适配器独占请求类型和响应 DTO（ADR 0247）。
-- 终态顺序审查（ADR 0248）确认 ActionService 内存终态/事件发布未受数据库 CAS 胜负约束；现有 late-attach 存储事务已同步 pending outbox owner，但其错误处理与重复 transient 发布仍需和终态仲裁一起修复，暂不做 action_service-only 修改。
+- `ActionService` 后台终态仲裁已实现（ADR 0248）：数据库提交后再发布，错误重试，CAS 输家静默对齐，cleanup 保留未提交条目；持久 late attach 使用 outbox 恢复，headless late attach 仍补发 owner 绑定后的 completion。
 - 当前切片：SessionStore 增加按 ID 读取 session record 与全量 pending records 的 typed 方法；保持缺失返回、pending 状态过滤、`created_at DESC`、`limit=-1/offset=0` 及 dispatcher 安装/入队顺序（ADR 0249）。
 - 当前 Phase 9 切片：移除无仓库调用的 `LlmRouter::chat_with_prompt_output_cap`；`CompleteRequest` 仍直接承载 `max_output_tokens`，其他有调用或有独立语义的 helper 保留（ADR 0250）。
 
-当前阶段判断：阶段 1 的 mailbox/运行态收口已基本完成；阶段 2 已收口 rollback boundary、两类 resume 读取 port、session overlay 恢复边界，以及 continue 的 committed recovery marker 决策与 projection 截断事务，但全局恢复/事件重放和崩溃窗口仍待继续验证；阶段 3 已开始以 SessionStore typed read ports 替代局部 raw Database 读取（ADR 0238、0249），其他传播仍待收窄；阶段 4 已完成目录/观察/资产租约/overlay/定时授权入口边界及 runtime web-search typed capability；完整 ToolsManager 解耦仍需拆分；阶段 5 已完成 settings/model 的 snapshot prepare/apply 切片、ApplyPlan 对 Router target 的共享，以及 update_settings 的旧 hotkey 与 Settings patch 合并；完整 RuntimeConfigCoordinator、半失败协调和其他写入口仍待设计；阶段 6 已完成 CompleteRequest、聚合 StreamRequest、EmbeddingRequest 与 HealthCheckRequest 请求对象切片，并统一五类请求的结果状态投影；Router executor 拆分和 capability/call-purpose 语义分离仍待实施；阶段 7 的 action 持久层 CAS/outbox 与 MemoryWorker FastChat 窄端口已完成，但 ActionService 终态仲裁、pending owner/outbox 一致性、完整 Job 生命周期、MemoryRuntime committed-event 消费和 MemoryReader 仍待设计/实施（ADR 0248）；阶段 8 已完成 Action DTO 漂移检查和 UI 错误/usage/message 派生收口，其他 IPC/UI 编排仍待收口；阶段 9 已删除三个无调用者 facade API，并移除一个由 CompleteRequest 完整替代的无调用 Router wrapper，剩余工作以 profiling 和更大范围公共面审查为主。
+当前阶段判断：阶段 1 的 mailbox/运行态收口已基本完成；阶段 2 已收口 rollback boundary、两类 resume 读取 port、session overlay 恢复边界，以及 continue 的 committed recovery marker 决策与 projection 截断事务，但全局恢复/事件重放和崩溃窗口仍待继续验证；阶段 3 已开始以 SessionStore typed read ports 替代局部 raw Database 读取（ADR 0238、0249），其他传播仍待收窄；阶段 4 已完成目录/观察/资产租约/overlay/定时授权入口边界及 runtime web-search typed capability；完整 ToolsManager 解耦仍需拆分；阶段 5 已完成 settings/model 的 snapshot prepare/apply 切片、ApplyPlan 对 Router target 的共享，以及 update_settings 的旧 hotkey 与 Settings patch 合并；完整 RuntimeConfigCoordinator、半失败协调和其他写入口仍待设计；阶段 6 已完成 CompleteRequest、聚合 StreamRequest、EmbeddingRequest 与 HealthCheckRequest 请求对象切片，并统一五类请求的结果状态投影；Router executor 拆分和 capability/call-purpose 语义分离仍待实施；阶段 7 已完成 action 持久层 CAS/outbox、ActionService 终态仲裁和 MemoryWorker FastChat 窄端口；完整 Job 生命周期、MemoryRuntime committed-event 消费和 MemoryReader 仍待设计/实施；阶段 8 已完成 Action DTO 漂移检查和 UI 错误/usage/message 派生收口，其他 IPC/UI 编排仍待收口；阶段 9 已删除三个无调用者 facade API，并移除一个由 CompleteRequest 完整替代的无调用 Router wrapper，剩余工作以 profiling 和更大范围公共面审查为主。
 
 ## 3. 不变量与禁止事项
 

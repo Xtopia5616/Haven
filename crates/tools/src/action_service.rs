@@ -424,6 +424,11 @@ pub struct ActionService {
     /// visible to cancellation until its `running` row is durable, avoiding
     /// orphaned DB rows or processes across the spawn failure window.
     spawn_gate: tokio::sync::Mutex<()>,
+    /// Serializes background terminal arbitration. The database CAS remains
+    /// authoritative across service instances; this gate also makes the
+    /// in-memory-only mode first-wins and prevents same-instance publication
+    /// races while a durable transition is in flight.
+    terminal_gate: tokio::sync::Mutex<()>,
     /// One bus for process completions and timer fires. Consumers may filter
     /// their subscription by variant, but no action kind owns a second bus.
     completion_tx: broadcast::Sender<ActionCompletion>,
@@ -439,6 +444,10 @@ pub struct ActionService {
     /// terminal DB write failed. The worker is cancelled with the service and
     /// stops once the durable transition succeeds.
     terminal_persistence_retries: RwLock<HashSet<String>>,
+    /// At most one retry worker per background action whose terminal commit
+    /// failed. The worker retains the complete candidate until the durable CAS
+    /// commits or another terminal state wins.
+    background_terminal_retries: RwLock<HashSet<String>>,
     /// At most one quarantine retry task is allowed per malformed action row.
     quarantine_persistence_retries: RwLock<HashSet<String>>,
     /// Max concurrent *running* actions (from `context_limits.background_max_actions`).
@@ -481,10 +490,12 @@ impl ActionService {
         Self {
             actions: RwLock::new(HashMap::new()),
             spawn_gate: tokio::sync::Mutex::new(()),
+            terminal_gate: tokio::sync::Mutex::new(()),
             completion_tx: tx,
             pending_scheduled_fires: Arc::new(RwLock::new(HashMap::new())),
             scheduled_fire_claims: Arc::new(RwLock::new(HashMap::new())),
             terminal_persistence_retries: RwLock::new(HashSet::new()),
+            background_terminal_retries: RwLock::new(HashSet::new()),
             quarantine_persistence_retries: RwLock::new(HashSet::new()),
             max_actions: RwLock::new(64),
             job_tail_max_chars: RwLock::new(2000),
@@ -875,13 +886,17 @@ impl ActionService {
             })
     }
 
-    /// Persist a terminal action row (its status payload + owning session) so the
-    /// result survives the in-memory board's TTL and app restarts. No-op
-    /// without a database. Must run outside the `actions` lock is not required
-    /// (the DB is a separate lock); callers may hold either.
-    async fn persist_terminal(&self, action_id: &str, state: &ActionState, status_json: &Value) {
+    /// Persist a terminal action row and completion outbox record. `Ok(false)`
+    /// means another terminal transition already won the database CAS. A
+    /// service without a database uses its in-memory transition as the commit.
+    async fn persist_terminal(
+        &self,
+        action_id: &str,
+        state: &ActionState,
+        status_json: &Value,
+    ) -> anyhow::Result<bool> {
         let Some(db) = self.db.read().await.clone() else {
-            return;
+            return Ok(true);
         };
         let (output, error, error_reason, log_path, exit_code, finished_at) = match state {
             ActionState::Completed {
@@ -916,7 +931,9 @@ impl ActionService {
             ActionState::Cancelled { finished_at, .. } => {
                 (None, None, None, None, None, finished_at.as_str())
             }
-            ActionState::Running { .. } | ActionState::Waiting => return,
+            ActionState::Running { .. } | ActionState::Waiting => {
+                anyhow::bail!("cannot persist non-terminal background action status")
+            }
         };
         let action_id = action_id.to_string();
         let status = state.status();
@@ -926,47 +943,206 @@ impl ActionService {
         let log_path = log_path.map(str::to_string);
         let finished_at = finished_at.to_string();
         let action_id_for_db = action_id.clone();
-        let status_json = serde_json::to_string(status_json).unwrap_or_else(|_| "{}".into());
-        if let Err(e) = db
-            .run_blocking(move |db| match status {
-                ActionStatus::Completed | ActionStatus::Failed => db.finish_action_with_completion(
-                    &action_id_for_db,
-                    status,
-                    output.as_deref(),
-                    error.as_deref(),
-                    error_reason.as_deref(),
-                    log_path.as_deref(),
-                    exit_code,
-                    &finished_at,
-                    &status_json,
-                ),
-                ActionStatus::Cancelled => {
-                    db.cancel_background_action(&action_id_for_db, &finished_at)
-                }
-                ActionStatus::Waiting | ActionStatus::Running => {
-                    anyhow::bail!("cannot persist non-terminal background action status")
-                }
+        let status_json = serde_json::to_string(status_json)?;
+        db.run_blocking(move |db| match status {
+            ActionStatus::Completed | ActionStatus::Failed => db.finish_action_with_completion(
+                &action_id_for_db,
+                status,
+                output.as_deref(),
+                error.as_deref(),
+                error_reason.as_deref(),
+                log_path.as_deref(),
+                exit_code,
+                &finished_at,
+                &status_json,
+            ),
+            ActionStatus::Cancelled => db.cancel_background_action(&action_id_for_db, &finished_at),
+            ActionStatus::Waiting | ActionStatus::Running => {
+                anyhow::bail!("cannot persist non-terminal background action status")
+            }
+        })
+        .await
+    }
+
+    /// Try one terminal transition. Both memory-only transitions and durable
+    /// transitions are first-wins; when a database is configured, its CAS must
+    /// commit before the memory projection or either notification is published.
+    async fn try_commit_background_terminal(
+        self: &Arc<Self>,
+        action_id: &str,
+        state: &ActionState,
+        remove_after_commit: bool,
+    ) -> anyhow::Result<bool> {
+        if !state.is_terminal() {
+            return Ok(false);
+        }
+
+        let _terminal = self.terminal_gate.lock().await;
+        let session_id = {
+            let actions = self.actions.read().await;
+            actions.get(action_id).and_then(|entry| {
+                (entry.kind == ActionKind::Background
+                    && !entry.state.is_terminal()
+                    && entry.state.can_transition_to(state.status()))
+                .then(|| entry.session_id.clone())
             })
-            .await
-        {
-            tracing::warn!(action_id = %action_id, "failed to persist action result: {e}");
+        };
+        let Some(session_id) = session_id else {
+            if remove_after_commit {
+                self.actions.write().await.remove(action_id);
+            }
+            return Ok(false);
+        };
+
+        let status_json = render_status_json(action_id, state);
+        match self.persist_terminal(action_id, state, &status_json).await {
+            Ok(true) => {
+                {
+                    let mut actions = self.actions.write().await;
+                    if let Some(entry) = actions.get_mut(action_id)
+                        && entry.kind == ActionKind::Background
+                    {
+                        entry.kill = None;
+                        entry.tail = None;
+                        entry.state = state.clone();
+                    }
+                }
+                self.publish_committed_terminal(action_id, state.clone(), session_id);
+                if remove_after_commit {
+                    self.actions.write().await.remove(action_id);
+                }
+                Ok(true)
+            }
+            Ok(false) => {
+                // The durable row is authoritative when this process lost the
+                // CAS. Align its runtime projection, but do not publish: only
+                // the transaction that changed `running` may notify.
+                self.reconcile_background_terminal(action_id).await;
+                if remove_after_commit {
+                    self.actions.write().await.remove(action_id);
+                }
+                Ok(false)
+            }
+            Err(error) => Err(error),
         }
     }
 
-    /// Emit a completion notification for a action (if it has a terminal state),
-    /// reading the owning session_id from the entry. Called from `mark_finished`,
-    /// `mark_cancelled`, and `attach_session` (the latter to close the race where
-    /// a action finishes before its session binding is recorded). Also persists the
-    /// terminal row so the result survives restarts.
-    async fn notify_completion(
+    async fn reconcile_background_terminal(&self, action_id: &str) {
+        let Some(db) = self.db.read().await.clone() else {
+            return;
+        };
+        let id = action_id.to_string();
+        let row = match db.run_blocking(move |db| db.get_action(&id)).await {
+            Ok(row) => row,
+            Err(error) => {
+                tracing::warn!(
+                    action_id,
+                    "failed to read action after losing terminal CAS: {error}"
+                );
+                return;
+            }
+        };
+        let Some(row) = row else {
+            return;
+        };
+        let state = match row.status {
+            ActionStatus::Completed => ActionState::Completed {
+                output: row.output.unwrap_or_default(),
+                exit_code: row.exit_code,
+                truncated: row.log_path.is_some(),
+                log_path: row.log_path,
+                started_at: row.started_at.unwrap_or_default(),
+                finished_at: row.finished_at.unwrap_or_default(),
+            },
+            ActionStatus::Failed => ActionState::Failed {
+                error: row.error.unwrap_or_default(),
+                error_reason: row.error_reason.unwrap_or_default(),
+                log_path: row.log_path,
+                exit_code: row.exit_code,
+                started_at: row.started_at.unwrap_or_default(),
+                finished_at: row.finished_at.unwrap_or_default(),
+            },
+            ActionStatus::Cancelled => ActionState::Cancelled {
+                started_at: row.started_at.unwrap_or_default(),
+                finished_at: row.finished_at.unwrap_or_default(),
+            },
+            ActionStatus::Waiting | ActionStatus::Running => return,
+        };
+        let mut actions = self.actions.write().await;
+        if let Some(entry) = actions.get_mut(action_id)
+            && entry.kind == ActionKind::Background
+        {
+            entry.kill = None;
+            entry.tail = None;
+            entry.state = state;
+        }
+    }
+
+    async fn retry_background_terminal_persistence(
+        self: &Arc<Self>,
+        action_id: &str,
+        state: ActionState,
+        remove_after_commit: bool,
+    ) {
+        if !self
+            .background_terminal_retries
+            .write()
+            .await
+            .insert(action_id.to_string())
+        {
+            return;
+        }
+        let service = Arc::clone(self);
+        let action_id = action_id.to_string();
+        tokio::spawn(async move {
+            let mut delay = Duration::from_secs(1);
+            loop {
+                tokio::select! {
+                    _ = service.shutdown_token.cancelled() => break,
+                    _ = tokio::time::sleep(delay) => {}
+                }
+                match service
+                    .try_commit_background_terminal(&action_id, &state, remove_after_commit)
+                    .await
+                {
+                    Ok(_) => break,
+                    Err(error) => {
+                        tracing::warn!(
+                            action_id = %action_id,
+                            "background terminal persistence retry failed: {error}"
+                        );
+                        delay = (delay * 2).min(Duration::from_secs(30));
+                    }
+                }
+            }
+            service
+                .background_terminal_retries
+                .write()
+                .await
+                .remove(&action_id);
+        });
+    }
+
+    /// Publish only after the matching terminal write has committed. A failed
+    /// transient broadcast is recoverable from the durable completion outbox.
+    fn publish_committed_terminal(
         &self,
         action_id: &str,
         state: ActionState,
         session_id: Option<String>,
     ) {
-        if !state.is_terminal() {
-            return;
-        }
+        debug_assert!(state.is_terminal());
+        let status_json = render_status_json(action_id, &state);
+        self.emit("action:finished", status_json.clone());
+        self.publish_background_completion(action_id, state, session_id);
+    }
+
+    fn publish_background_completion(
+        &self,
+        action_id: &str,
+        state: ActionState,
+        session_id: Option<String>,
+    ) {
         let status = match &state {
             ActionState::Completed { .. } => ActionStatus::Completed,
             ActionState::Failed { .. } => ActionStatus::Failed,
@@ -974,8 +1150,6 @@ impl ActionService {
             ActionState::Running { .. } | ActionState::Waiting => return,
         };
         let status_json = render_status_json(action_id, &state);
-        self.persist_terminal(action_id, &state, &status_json).await;
-        self.emit("action:finished", status_json.clone());
         if let Err(error) =
             self.completion_tx
                 .send(ActionCompletion::Background(BackgroundActionCompletion {
@@ -1401,16 +1575,14 @@ impl ActionService {
     /// Associate a action with its owning session. Called by the session executor
     /// after a background tool call so `cancel_for_session` can clean it up.
     ///
-    /// Also closes a race: a short-lived action may finish (and call
-    /// `mark_finished`/`mark_cancelled`) before this binding is recorded, in
-    /// which case the completion notification carried `session_id: None` and was
-    /// dropped by the consumer. If the action is already terminal here, re-fire
-    /// the notification with the now-known session_id so the owning session still
-    /// receives the result.
+    /// If completion committed before binding, the transactional outbox owner
+    /// update makes the pending result recoverable for this session. Binding
+    /// never republishes a terminal completion.
     pub async fn attach_session(&self, action_id: &str, session_id: &str) {
-        let (terminal_state, session_id) = {
-            let mut actions = self.actions.write().await;
-            let Some(entry) = actions.get_mut(action_id) else {
+        let _mutation = self.spawn_gate.lock().await;
+        {
+            let actions = self.actions.read().await;
+            let Some(entry) = actions.get(action_id) else {
                 return;
             };
             if entry.kind != ActionKind::Background {
@@ -1428,11 +1600,35 @@ impl ActionService {
                 );
                 return;
             }
+        }
+        // Record the owning session in the persisted row too, so terminal
+        // history and any undelivered completion keep their owner (spawn rows
+        // start with session_id NULL). Do not update memory if the transaction
+        // fails; otherwise the runtime could claim a binding the outbox lacks.
+        let db = self.db.read().await.clone();
+        if let Some(db) = &db {
+            let action_id_for_db = action_id.to_string();
+            let session_id_for_db = session_id.to_string();
+            if let Err(e) = db
+                .run_blocking(move |db| {
+                    db.update_action_session(&action_id_for_db, &session_id_for_db)
+                })
+                .await
+            {
+                tracing::warn!(action_id, "failed to persist action session binding: {e}");
+                return;
+            }
+        }
+        let terminal_state = {
+            let mut actions = self.actions.write().await;
+            let Some(entry) = actions.get_mut(action_id) else {
+                return;
+            };
+            if entry.kind != ActionKind::Background || entry.session_id.is_some() {
+                return;
+            }
             entry.session_id = Some(session_id.to_string());
-            (
-                entry.state.is_terminal().then(|| entry.state.clone()),
-                session_id.to_string(),
-            )
+            entry.state.is_terminal().then(|| entry.state.clone())
         };
         self.emit(
             "action:updated",
@@ -1441,30 +1637,19 @@ impl ActionService {
                 "session_id": session_id,
             }),
         );
-        // Record the owning session in the persisted row too, so terminal
-        // history keeps its owner (spawn rows start with session_id NULL).
-        if let Some(db) = self.db.read().await.clone() {
-            let action_id = action_id.to_string();
-            let action_id_for_db = action_id.clone();
-            let session_id_for_db = session_id.clone();
-            if let Err(e) = db
-                .run_blocking(move |db| {
-                    db.update_action_session(&action_id_for_db, &session_id_for_db)
-                })
-                .await
-            {
-                tracing::warn!(action_id = %action_id, "failed to persist action session binding: {e}");
-            }
-        }
-        if let Some(state) = terminal_state {
-            self.notify_completion(action_id, state, Some(session_id))
-                .await;
+        // Headless mode has no durable outbox to recover a completion that was
+        // first published without an owner. Re-notify only with the newly
+        // bound owner; persistent mode relies on the updated outbox row.
+        if db.is_none()
+            && let Some(state) = terminal_state
+        {
+            self.publish_background_completion(action_id, state, Some(session_id.to_string()));
         }
     }
 
-    /// Cancel a single live action (kept for inspection afterwards).
-    /// Returns false when the action does not exist, is not live, or its
-    /// durable cancellation could not be committed.
+    /// Request cancellation of a live action (kept for inspection afterwards).
+    /// Returns whether a cancellation signal was sent; the terminal state is
+    /// reported later only after its durable compare-and-set succeeds.
     pub async fn cancel(&self, action_id: &str) -> bool {
         let mut actions = self.actions.write().await;
         let Some(entry) = actions.get_mut(action_id) else {
@@ -1483,7 +1668,7 @@ impl ActionService {
         true
     }
 
-    /// Cancel a single action only when it belongs to `session_id`.
+    /// Request cancellation only when the action belongs to `session_id`.
     pub async fn cancel_for_session(&self, action_id: &str, session_id: &str) -> bool {
         let mut actions = self.actions.write().await;
         let Some(entry) = actions.get_mut(action_id) else {
@@ -1611,7 +1796,7 @@ impl ActionService {
     /// Running actions are killed, marked cancelled, persisted, and surfaced to
     /// the UI via `action:finished` before leaving the board — otherwise the
     /// titlebar panel keeps a ghost "running" row that cannot be stopped.
-    pub async fn cancel_owned_background_by_session(&self, session_id: &str) {
+    pub async fn cancel_owned_background_by_session(self: &Arc<Self>, session_id: &str) {
         let ids: Vec<String> = {
             let actions = self.actions.read().await;
             actions
@@ -1623,30 +1808,45 @@ impl ActionService {
                 .collect()
         };
         for id in ids {
-            let Some(mut entry) = self.actions.write().await.remove(&id) else {
-                continue;
+            let (started_at, terminal) = {
+                let mut actions = self.actions.write().await;
+                let Some(entry) = actions.get_mut(&id) else {
+                    continue;
+                };
+                if let Some(tx) = entry.kill.take() {
+                    let _ = tx.send(());
+                }
+                let started_at = match &entry.state {
+                    ActionState::Running { started_at } => Some(started_at.clone()),
+                    ActionState::Completed { .. }
+                    | ActionState::Failed { .. }
+                    | ActionState::Cancelled { .. }
+                    | ActionState::Waiting => None,
+                };
+                (started_at, entry.state.is_terminal())
             };
-            if let Some(tx) = entry.kill.take() {
-                let _ = tx.send(());
+            if terminal {
+                // A previously committed result already published its terminal
+                // event. Cleanup only drops its board entry.
+                self.actions.write().await.remove(&id);
+                continue;
             }
-            entry.tail = None;
-            if let ActionState::Running { started_at } = &entry.state {
-                entry.state = ActionState::Cancelled {
-                    started_at: started_at.clone(),
+            if let Some(started_at) = started_at {
+                let state = ActionState::Cancelled {
+                    started_at,
                     finished_at: chrono::Utc::now().to_rfc3339(),
                 };
-                self.notify_completion(&id, entry.state.clone(), entry.session_id.clone())
-                    .await;
-            } else if entry.state.is_terminal() {
-                // UI-only: the board is dropping a row whose agent completion
-                // already reached a terminal state (or never needed one).
-                // Re-sending completion_tx
-                // would risk duplicate inject on an ending session.
-                let mut status_json = render_status_json(&id, &entry.state);
-                if let Some(tid) = &entry.session_id {
-                    status_json["session_id"] = json!(tid);
+                match self.try_commit_background_terminal(&id, &state, true).await {
+                    Ok(_) => {}
+                    Err(error) => {
+                        tracing::warn!(
+                            action_id = %id,
+                            "failed to persist session cleanup cancellation: {error}"
+                        );
+                        self.retry_background_terminal_persistence(&id, state, true)
+                            .await;
+                    }
                 }
-                self.emit("action:finished", status_json);
             }
         }
     }
@@ -1654,14 +1854,14 @@ impl ActionService {
     /// Cancel all action kinds owned by `session_id`. This is used by explicit
     /// session end/deletion; application shutdown uses the background-only
     /// variant so durable scheduled work remains waiting.
-    pub async fn cancel_owned_by_session(&self, session_id: &str) {
+    pub async fn cancel_owned_by_session(self: &Arc<Self>, session_id: &str) {
         self.cancel_owned_background_by_session(session_id).await;
         self.cancel_owned_scheduled_by_session(session_id).await;
     }
 
     #[allow(clippy::too_many_arguments)]
     async fn mark_finished(
-        &self,
+        self: &Arc<Self>,
         id: &str,
         started_at: &str,
         shell: &str,
@@ -1671,23 +1871,29 @@ impl ActionService {
         exit_code: Option<i32>,
         truncated: bool,
     ) {
-        let (state, session_id) = {
-            let mut actions = self.actions.write().await;
-            let Some(entry) = actions.get_mut(id) else {
-                return;
-            };
-            let next = if success {
-                ActionStatus::Completed
-            } else {
-                ActionStatus::Failed
-            };
-            if entry.state.is_terminal() || !entry.state.can_transition_to(next) {
-                return;
-            }
-            entry.kill = None;
-            entry.tail = None;
+        let running = {
+            let actions = self.actions.read().await;
+            actions.get(id).is_some_and(|entry| {
+                entry.kind == ActionKind::Background
+                    && !entry.state.is_terminal()
+                    && entry.state.can_transition_to(if success {
+                        ActionStatus::Completed
+                    } else {
+                        ActionStatus::Failed
+                    })
+            })
+        };
+        if !running {
+            return;
+        }
+        let next = if success {
+            ActionStatus::Completed
+        } else {
+            ActionStatus::Failed
+        };
+        let state = {
             let finished_at = chrono::Utc::now().to_rfc3339();
-            entry.state = if success {
+            if success {
                 ActionState::Completed {
                     output: combined.clone(),
                     exit_code,
@@ -1722,31 +1928,43 @@ impl ActionService {
                     started_at: started_at.to_string(),
                     finished_at,
                 }
-            };
-            (entry.state.clone(), entry.session_id.clone())
+            }
         };
-        self.notify_completion(id, state, session_id).await;
+        debug_assert_eq!(state.status(), next);
+        match self.try_commit_background_terminal(id, &state, false).await {
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(action_id = %id, "failed to persist action result: {error}");
+                self.retry_background_terminal_persistence(id, state, false)
+                    .await;
+            }
+        }
     }
 
-    async fn mark_cancelled(&self, id: &str, started_at: &str) {
-        let (state, session_id) = {
-            let mut actions = self.actions.write().await;
-            let Some(entry) = actions.get_mut(id) else {
-                return;
-            };
-            if entry.state.is_terminal() || !entry.state.can_transition_to(ActionStatus::Cancelled)
-            {
-                return;
-            }
-            entry.kill = None;
-            entry.tail = None;
-            entry.state = ActionState::Cancelled {
-                started_at: started_at.to_string(),
-                finished_at: chrono::Utc::now().to_rfc3339(),
-            };
-            (entry.state.clone(), entry.session_id.clone())
+    async fn mark_cancelled(self: &Arc<Self>, id: &str, started_at: &str) {
+        let running = {
+            let actions = self.actions.read().await;
+            actions.get(id).is_some_and(|entry| {
+                entry.kind == ActionKind::Background
+                    && !entry.state.is_terminal()
+                    && entry.state.can_transition_to(ActionStatus::Cancelled)
+            })
         };
-        self.notify_completion(id, state, session_id).await;
+        if !running {
+            return;
+        }
+        let state = ActionState::Cancelled {
+            started_at: started_at.to_string(),
+            finished_at: chrono::Utc::now().to_rfc3339(),
+        };
+        match self.try_commit_background_terminal(id, &state, false).await {
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(action_id = %id, "failed to persist action cancellation: {error}");
+                self.retry_background_terminal_persistence(id, state, false)
+                    .await;
+            }
+        }
     }
 }
 
