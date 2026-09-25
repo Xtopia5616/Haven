@@ -302,12 +302,13 @@ Agent 继续控制步骤顺序、日志、计数和部分失败后的聚合错�
 构造 typed stores 与 embedding index，不向 Agent Worker 暴露 raw handle。embedding catch-up 与
 LSH lagging 检查沿用 `MemoryService` 的 `MemoryEmbeddingStore` 边界。
 `memory_worker.rs` 只编排事实抽取、durable outbox、维护、提案提交和索引 catch-up；
-`MemoryWorker` 是唯一的后台记忆编排入口。`prompt_context.rs`
+`MemoryWorker` 是事实抽取和 maintenance pass 的后台执行编排入口。`prompt_context.rs`
 在 turn 边界取得一次工具/运行时/记忆快照，`prompt_renderer.rs` 以纯函数渲染 system
 message 与 MEMORY fence，不访问 DB、router 或 cache。事实抽取 outbox 以 `kv_store`
 marker 持久化，不把 provider 网络调用下沉到 Memory；事实维护的 SQL 清理与矛盾候选
 读取由 `fact_maintenance.rs` 负责，`MemoryMaintenanceStore` 提供确定性与 LLM 维护 persistence
-操作的异步 typed 边界；维护调度、LLM 仲裁、提案门禁与并发控制仍属于 Agent（ADR 0022、0063、0169、0310、0311）。
+操作的异步 typed 边界；maintenance pass 步骤编排、LLM 仲裁、提案门禁与并发控制仍属于 Agent（ADR 0022、0063、0169、0310、0311）。
+`MemoryRuntime` 负责 startup cursor/replay、committed-event live consumer 和六小时维护 schedule policy（ADR 0263、0267）；当前对象由 `AgentLayer::new` 构造并长期持有。`ApplicationRuntime` 持有周期 task 的 cancellation/join 边界，并经 AgentLayer facade 调用该 schedule。把 runtime 对象移到 app 同时需要 typed 构造交接和 readiness barrier 接口；现状审计及后续最小步骤见 ADR 0362。
 
 ### 2.4 `haven-input` —— 输入采集与语音生命周期
 
@@ -527,6 +528,9 @@ limit、创建时间倒序和 errors 的 status 过滤顺序保持原样。组�
   app-scoped task handles 和根 `CancellationToken`；`shutdown`/`teardown` 统一输入、
   session、action、MCP 与 bootstrap worker 的停止顺序。领域 worker 仍由所属 crate
   释放，但必须接收 runtime 子 token 或响应领域 shutdown。
+- `MemoryRuntime` 的周期 task 由 `ApplicationRuntime` 注册并 join，但 runtime 对象本身仍由
+  `AgentLayer` 构造和持有；AgentLayer 的 startup barrier 负责 memory recovery 成功后才开放
+  dispatcher。应用对象所有权迁移因需要新增 typed readiness handoff 而暂缓（ADR 0362）。
 - `app_state.rs`：装配 `AppState`（runtime / 瞬态录音状态 / bootstrap 状态 / UI
   confirmation）；命令通过 runtime 稳定句柄消费 db / router / tools / executor /
   agent / pipeline / shell / `config_service` / media clients / stt_client。
@@ -683,6 +687,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 
 | 日期 | 内容 |
 |---|---|
+| 2026-09-26 | §2.3/§2.5/§2.6：审计 MemoryRuntime 对象仍由 AgentLayer 持有、ApplicationRuntime 持有其周期 task 生命周期；现有 AgentLayer startup barrier 缺少 app 可组合的 prepared-consumer/readiness API，迁移暂缓并记录最小后续接口步骤（ADR 0362）|
 | 2026-09-26 | §2.5 Agent：最终验收审计校准 actor 所有权说明；`SessionActor` 轮询 active-run future，ReActState 为 run-local scratch，SessionState 持有会话队列与元数据；整体完成条件及发布验收缺口见 ADR 0361 |
 | 2026-09-25 | §2.5 Tools / §2.6 UI：审计 background/scheduled action board 生命周期投影；复用既有 background terminal transcript finalizer，保留 scheduled 删除、Agent 通知、kind-specific display/cancel 和无 UI event dedup 边界（ADR 0344） |
 | 2026-09-25 | §2.5 Tools：穷举审计 background/scheduled ActionStatus 与 terminal claim；已有纯策略 owner 覆盖唯一共享判断，不新增完整 Job transition policy，记录 trigger/execution 与恢复语义的未决决策（ADR 0352） |
