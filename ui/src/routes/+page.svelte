@@ -17,7 +17,7 @@
 	import { createChatController } from '$lib/chatController.ts';
 	import { createChatEventController } from '$lib/chatEventController.ts';
 	import { createAskInteractionController } from '$lib/chatAskInteraction.ts';
-	import { selectChatVisibleMessages } from '$lib/chatVisibleMessages.ts';
+	import { projectChatVisibleMessages } from '$lib/chatVisibleMessages.ts';
 	import { createChatModelSync } from '$lib/chatModelSync.ts';
 	import { createChatModelOperations } from '$lib/chatModelOperations.ts';
 	import { createStreamEventAggregator } from '$lib/streamAggregator.ts';
@@ -25,8 +25,8 @@
 	import { createSessionRefreshScheduler } from '$lib/sessionRefresh.ts';
 	import {
 		appSessionReducer,
+		createSessionSelectorStore,
 		DRAFT_SESSION_ID,
-		sessionStateStore,
 		resumeInteractions,
 	} from '$lib/sessionReducer.ts';
 	import {
@@ -91,21 +91,52 @@
 	});
 	let initialLoading = $state(true);
 	const sessionReducer = appSessionReducer;
-	let sessionState = $state(sessionReducer.getState());
+	const currentReducerState = sessionReducer.getState();
+	/** @type {import('$lib/sessionReducer.ts').SessionMessage[]} */
+	const emptySessionMessages = [];
+	/** @type {import('$lib/sessionUsage.ts').LlmUsage[]} */
+	const emptyLlmUsage = [];
+	const sessionsStore = createSessionSelectorStore((state) => state.sessions);
+	const activeSessionIdStore = createSessionSelectorStore((state) => state.activeSessionId);
+	const interactionsStore = createSessionSelectorStore((state) => state.interactions);
+	const activeSessionMessagesStore = createSessionSelectorStore((state) => {
+		const sessionId = state.activeSessionId || DRAFT_SESSION_ID;
+		return state.messages[sessionId] ?? emptySessionMessages;
+	});
+	const activeSessionTokenStatsStore = createSessionSelectorStore((state) =>
+		state.activeSessionId ? (state.tokenStats[state.activeSessionId] ?? null) : null,
+	);
+	const activeSessionLlmUsageStore = createSessionSelectorStore((state) =>
+		state.activeSessionId
+			? (state.llmUsage[state.activeSessionId] ?? emptyLlmUsage)
+			: emptyLlmUsage,
+	);
+	const sessionErrorStore = createSessionSelectorStore((state) => state.error);
+	const sessionTerminationStore = createSessionSelectorStore((state) => state.termination);
+	let sessions = $state(currentReducerState.sessions);
+	let activeSessionId = $state(currentReducerState.activeSessionId);
+	let interactionDict = $state(currentReducerState.interactions);
+	let activeSessionMessages = $state(
+		currentReducerState.messages[currentReducerState.activeSessionId || DRAFT_SESSION_ID] ??
+			emptySessionMessages,
+	);
+	let sessionError = $state(currentReducerState.error);
+	let sessionTermination = $state(currentReducerState.termination);
 
 	/** @param {import('$lib/sessionReducer.ts').SessionAction} action */
 	function dispatchSession(action) {
 		sessionReducer.dispatch(action);
 	}
 
-	$effect(() => syncStore(sessionStateStore, (next) => (sessionState = next)));
-
-	const sessions = $derived(sessionState.sessions);
-	const activeSessionId = $derived(sessionState.activeSessionId);
+	$effect(() => syncStore(sessionsStore, (next) => (sessions = next)));
+	$effect(() => syncStore(activeSessionIdStore, (next) => (activeSessionId = next)));
+	$effect(() => syncStore(interactionsStore, (next) => (interactionDict = next)));
+	$effect(() => syncStore(activeSessionMessagesStore, (next) => (activeSessionMessages = next)));
+	$effect(() => syncStore(sessionErrorStore, (next) => (sessionError = next)));
+	$effect(() => syncStore(sessionTerminationStore, (next) => (sessionTermination = next)));
 	// Interaction requests are shared by the ask cards and confirmation modal.
 	// The modal keeps only its current presentation id; pending requests remain
 	// owned by SessionReducer so ask/confirm/scheduled-confirm cannot drift.
-	const interactionDict = $derived(sessionState.interactions || {});
 	const pendingInteractions = $derived(
 		Object.values(interactionDict).filter((request) => request.status === 'pending'),
 	);
@@ -148,16 +179,22 @@
 	let hotkeyBinding = $state('Ctrl+Shift+Space');
 
 	// Read usage for the active session directly from the reducer-owned state.
-	const tokenStats = $derived(
-		activeSessionId ? (sessionState.tokenStats[activeSessionId] ?? null) : null,
+	let tokenStats = $state(
+		currentReducerState.activeSessionId
+			? (currentReducerState.tokenStats[currentReducerState.activeSessionId] ?? null)
+			: null,
 	);
+	$effect(() => syncStore(activeSessionTokenStatsStore, (next) => (tokenStats = next)));
 
 	// Per-LLM-call usage detail for the active session (restored from the
 	// persisted `llm_usage` when a resume conversation opens). Used by the
 	// session-level token tooltip and call count.
-	const llmUsage = $derived(
-		activeSessionId ? (sessionState.llmUsage[activeSessionId] ?? []) : [],
+	let llmUsage = $state(
+		currentReducerState.activeSessionId
+			? (currentReducerState.llmUsage[currentReducerState.activeSessionId] ?? emptyLlmUsage)
+			: emptyLlmUsage,
 	);
+	$effect(() => syncStore(activeSessionLlmUsageStore, (next) => (llmUsage = next)));
 
 	/** @param {any} stats */
 	function buildTokenTooltip(stats) {
@@ -422,18 +459,18 @@
 	// a newer one.
 	let loadSessionsSeq = 0;
 
-	const messages = $derived.by(() => selectChatVisibleMessages(sessionState, activeSessionId));
+	const messages = $derived(projectChatVisibleMessages(activeSessionMessages, interactionDict));
 
 	const activeSessionError = $derived(
-		!!activeSessionId && sessionState.error?.sessionId === activeSessionId,
+		!!activeSessionId && sessionError?.sessionId === activeSessionId,
 	);
 	const activeSessionTermination = $derived(
-		!!activeSessionId && sessionState.termination?.sessionId === activeSessionId
-			? sessionState.termination
+		!!activeSessionId && sessionTermination?.sessionId === activeSessionId
+			? sessionTermination
 			: null,
 	);
-	const sessionErrorId = $derived(sessionState.error?.sessionId || null);
-	const sessionErrorReason = $derived(sessionState.error?.reason || '');
+	const sessionErrorId = $derived(sessionError?.sessionId || null);
+	const sessionErrorReason = $derived(sessionError?.reason || '');
 	let continuePending = $state(false);
 	const showContinueButton = $derived(
 		!!activeSessionId && shouldShowContinueButton(messages, activeSessionError),

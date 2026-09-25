@@ -366,7 +366,8 @@ Phase 7.1 验收与未决风险：见 ADR 0259、0261、0262、0263、0264、026
 - 已完成（ADR 0320）：聊天页 model/effort/web-search 操作及 typed payload、成功状态更新、通知、失败处理与 refresh-suppression 收口到纯 TypeScript `chatModelOperations`；页面只注入 Svelte state callbacks 并传入 toolbar。`chatModelSync` 仍拥有 discovery/settings 同步。
 - 剩余：Rust DTO 到 TypeScript contract/mapper 的生成收口与旧手写 contract 镜像清理；ask/input 决策、启动恢复与 view state 继续由页面编排；
 - 已完成（ADR 0314）：将 `sessionReducer.ts` 按 lifecycle/transcript/interaction/usage/stream 拆成内部 reducer module；外部 API 和单一 `sessionStateStore` 订阅保持不变；
-- 后续：评估 reducer 的 session/selector subscriptions，减少每个 stream batch 对完整状态树的广播。
+- 已完成（ADR 0322）：页面与布局不再把完整 `SessionReducerState` 镜像到 `$state`；通过相等性门控 selector 订阅同一个 `sessionStateStore` 的 sessions、active session ID、活动 transcript/usage、interactions 和必要的 error/termination 切片。selector 只缓存当前结果，引用不变时不通知，最后一个 listener 离开时释放 root subscription；reducer state ownership、dispatch、事件顺序均不变。
+- 剩余：Rust DTO 到 TypeScript contract/mapper 的生成收口与旧手写 contract 镜像清理；ask/input 决策、复杂 view state 与启动恢复仍由页面/controller 原路径编排，replay 继续由现有 reducer/event 路径管理。此次只让页面读取的 interactions 进入 selector，不迁移 ask/input 决策状态或 replay 状态。
 
 主要文件：`crates/app-binary/src/events.rs`、`ui/src/lib/contracts/`、`ui/src/lib/sessionReducer.ts`、`ui/src/lib/sessionReducer/`、`ui/src/routes/+page.svelte`、`+layout.svelte`、scripts。
 
@@ -378,7 +379,9 @@ Phase 7.1 验收与未决风险：见 ADR 0259、0261、0262、0263、0264、026
 
 2026-09-25 切片进展（ADR 0315）：`chatEventController` 拥有聊天页 handler map 组合及注册/释放生命周期；页面等待 listener ready 后才加载 settings 和恢复会话。wire payload mapping 与共享 listener registration 仍唯一位于 `events.ts`；测试通过注入 registration port 覆盖通道、ready 和释放竞态。
 
-2026-09-25 切片进展（ADR 0320）：`chatModelOperations` 拥有三个 toolbar model 操作的 typed payload、状态更新、通知、错误处理与 refresh suppression；页面仅接线，`chatModelSync` 继续拥有 settings/discovery。Rust DTO → TS contract/mapper generation 与旧手写 contract 镜像清理仍待后续；session/selector subscriptions 也仍待评估。
+2026-09-25 切片进展（ADR 0320）：`chatModelOperations` 拥有三个 toolbar model 操作的 typed payload、状态更新、通知、错误处理与 refresh suppression；页面仅接线，`chatModelSync` 继续拥有 settings/discovery。Rust DTO → TS contract/mapper generation 与旧手写 contract 镜像清理仍待后续。
+
+2026-09-25 切片进展（ADR 0322）：`createSessionSelectorStore` 只观察唯一 `sessionStateStore`，按 `Object.is` 对当前选择结果门控通知，并在 selector 最后一个订阅者释放时断开 root subscription。页面迁移 sessions、active session ID、活动消息、usage、interactions、error/termination；布局迁移 sessions、active session ID、interactions。活动消息按 reducer 当前 active ID 选取，缺失消息复用稳定空数组。完整 root state 不再广播到这两个路由的 `$state` 镜像；复杂 view state、ask/input 决策、启动恢复和 replay 仍走既有路径。无 reducer ownership、状态转换、事件顺序、IPC 或持久化变化。
 
 ### 阶段 9：Common 收缩、性能剖析和发布验收（最后）
 

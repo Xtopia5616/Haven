@@ -5,6 +5,7 @@ import { reduceLifecycle } from './sessionReducer/lifecycle.ts';
 import { reduceTranscript } from './sessionReducer/transcript.ts';
 import { reduceUsage } from './sessionReducer/usage.ts';
 import { blockIdsOf, messagesOf } from './sessionReducer/state.ts';
+import { createEqualityGatedSessionSelectorStore } from './sessionReducer/selectorStore.ts';
 import { initialSessionState } from './sessionReducer/types.ts';
 import type {
 	SessionAction,
@@ -194,3 +195,11 @@ export class SessionReducer {
 /** The one application-wide reducer shared by chat, history and the shell. */
 export const sessionStateStore = writable<SessionReducerState>(initialSessionState);
 export const appSessionReducer = new SessionReducer(initialSessionState, sessionStateStore);
+
+/** Read a reducer-owned slice without notifying consumers for unrelated updates. */
+export function createSessionSelectorStore<T>(
+	select: (state: SessionReducerState) => T,
+	equals: (previous: T, next: T) => boolean = Object.is,
+) {
+	return createEqualityGatedSessionSelectorStore(sessionStateStore, select, equals);
+}

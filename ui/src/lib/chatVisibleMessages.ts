@@ -12,7 +12,14 @@ export function selectChatVisibleMessages(
 	const sessionId = activeSessionId || DRAFT_SESSION_ID;
 	const messages = state.messages[sessionId] || [];
 	const interactions = state.interactions || {};
+	return projectChatVisibleMessages(messages, interactions);
+}
 
+/** Project a selected transcript slice with its current ask-interaction state. */
+export function projectChatVisibleMessages(
+	messages: SessionMessage[],
+	interactions: SessionReducerState['interactions'],
+): SessionMessage[] {
 	return messages.map((message) => {
 		if (message.type !== 'ask') return message;
 

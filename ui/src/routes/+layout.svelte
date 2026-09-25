@@ -19,7 +19,7 @@
 	import {
 		appSessionReducer,
 		backgroundActionResultContent,
-		sessionStateStore,
+		createSessionSelectorStore,
 	} from '$lib/sessionReducer.ts';
 	import { submitVoiceTranscript } from '$lib/voiceSubmit.ts';
 	import { themeStore } from '$lib/themeStore.ts';
@@ -477,15 +477,20 @@
 		backgroundActionEntries.filter((action) => action.status === 'running'),
 	);
 	const runningActionCount = $derived(runningBackgroundActions.length);
-	let sessionState = $state(appSessionReducer.getState());
-	$effect(() => syncStore(sessionStateStore, (v) => (sessionState = v)));
+	const sessionsStore = createSessionSelectorStore((state) => state.sessions);
+	const activeSessionIdStore = createSessionSelectorStore((state) => state.activeSessionId);
+	const interactionsStore = createSessionSelectorStore((state) => state.interactions);
+	let sessions = $state(appSessionReducer.getState().sessions);
+	let activeSessionId = $state(appSessionReducer.getState().activeSessionId);
+	let interactionDict = $state(appSessionReducer.getState().interactions);
+	$effect(() => syncStore(sessionsStore, (v) => (sessions = v)));
+	$effect(() => syncStore(activeSessionIdStore, (v) => (activeSessionId = v)));
+	$effect(() => syncStore(interactionsStore, (v) => (interactionDict = v)));
 	// Session lifecycle events expose the derived pause reason directly. The
 	// action registry remains available for the task panel and counts, but it
 	// no longer determines why a paused conversation is waiting.
-	const sessions = $derived(sessionState.sessions);
 	// Active chat is plain-paused while its own background action(s) still run
 	// — titlebar should say "等待后台任务" so it does not look idle/ready.
-	const activeSessionId = $derived(sessionState.activeSessionId);
 	const awaitingBackgroundActive = $derived.by(() => {
 		if (!activeSessionId) return false;
 		const session = sessions.find((t) => t.id === activeSessionId);
@@ -499,7 +504,6 @@
 	// Permission confirmations belong to the application shell, not the chat
 	// page. The chat page is kept mounted but hidden when another workspace is
 	// active, so rendering the dialog there made pending requests invisible.
-	const interactionDict = $derived(sessionState.interactions || {});
 	const pendingConfirmInteractions = $derived(
 		Object.values(interactionDict).filter(
 			(request) =>

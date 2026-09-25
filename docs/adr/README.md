@@ -310,3 +310,4 @@
 - [0319：LLM 请求用途与模型能力语义分离](0319-llm-request-capability-semantics.md)
 - [0320：聊天页模型操作归属到 ChatModelOperations](0320-chat-model-operations-controller.md)
 - [0321：ActionService 按 session 取消共用遍历骨架](0321-action-owned-session-cancellation-traversal.md)
+- [0322：SessionReducer 相等性门控 selector store](0322-session-selector-stores.md)

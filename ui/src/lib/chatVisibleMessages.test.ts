@@ -6,7 +6,7 @@ import {
 	type SessionReducerState,
 } from './sessionReducer.ts';
 import type { InteractionRequest } from './contracts/app.ts';
-import { selectChatVisibleMessages } from './chatVisibleMessages.ts';
+import { projectChatVisibleMessages, selectChatVisibleMessages } from './chatVisibleMessages.ts';
 
 const stateWith = (partial: Partial<SessionReducerState>): SessionReducerState => ({
 	...initialSessionState,
@@ -38,6 +38,15 @@ const askInteraction = (
 });
 
 describe('selectChatVisibleMessages', () => {
+	it('projects ask state from the selected transcript and interaction slices', () => {
+		const ask = askMessage('step-active');
+		const selected = projectChatVisibleMessages([ask], {
+			'step-active': askInteraction('step-active', 'pending', ['继续']),
+		});
+
+		expect(selected).toEqual([{ ...ask, options: ['继续'], awaiting: true, resolved: null }]);
+	});
+
 	it('returns ordinary messages unchanged', () => {
 		const ordinary: SessionMessage = {
 			id: 'msg-1',
