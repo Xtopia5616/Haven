@@ -19,6 +19,7 @@
 	import { createAskInteractionController } from '$lib/chatAskInteraction.ts';
 	import { projectChatVisibleMessages } from '$lib/chatVisibleMessages.ts';
 	import { createChatModelSync } from '$lib/chatModelSync.ts';
+	import { loadSettings } from '$lib/settingsCommand.ts';
 	import { createChatModelOperations } from '$lib/chatModelOperations.ts';
 	import { createStreamEventAggregator } from '$lib/streamAggregator.ts';
 	import { registerPerformanceMetricsProvider } from '$lib/performanceMetrics.ts';
@@ -820,7 +821,7 @@
 		// api_key falls back to the stored key via the role name, and
 		// discovery is skipped when no base URL is set. Fire-and-forget so it
 		// never delays the conversation render.
-		invoke('get_settings')
+		loadSettings()
 			.then((s) => {
 				// The chat request policy references a provider + a model id on
 				// that provider (the "model library" is the provider's fetched

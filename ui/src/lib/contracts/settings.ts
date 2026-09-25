@@ -1,9 +1,4 @@
-/**
- * Stable command responses used by the settings diagnostics UI.
- *
- * These responses currently have no snake_case fields, but they still cross
- * the Tauri boundary and must be validated before the view consumes them.
- */
+/** Stable command responses used by the settings diagnostics UI. */
 
 export interface LogInfo {
 	enabled: boolean;
@@ -28,8 +23,20 @@ export interface ApiKeyStatus {
 	ocr_secret: boolean;
 }
 
+/** Open nested config shape owned by haven_common::config::Settings. */
+export type SettingsPayload = Record<string, any>;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * The full Settings shape is owned by haven_common::config::Settings. Keep the
+ * renderer boundary open so new config fields and enum strings pass through,
+ * while malformed root values keep the existing no-op behavior.
+ */
+export function parseSettingsPayload(value: unknown): SettingsPayload | null {
+	return isRecord(value) ? value : null;
 }
 
 export function parseLogInfo(value: unknown): LogInfo {

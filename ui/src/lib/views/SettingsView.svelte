@@ -10,6 +10,7 @@
 	import { reportError } from '$lib/errorHandling.ts';
 	import { registerSettingsLeaveGuard } from '$lib/settingsGuard.ts';
 	import { resolveSettingsSaveAction } from '$lib/settingsSaveAction.ts';
+	import { loadSettings } from '$lib/settingsCommand.ts';
 	import { getPerformanceMetrics } from '$lib/performanceMetrics.ts';
 	import {
 		parseApiKeyStatus,
@@ -455,7 +456,7 @@
 	async function syncDefaultModelRoleFromBackend() {
 		const generation = ++defaultModelSyncGen;
 		try {
-			const settings = await invoke('get_settings');
+			const settings = await loadSettings();
 			if (!mounted || generation !== defaultModelSyncGen || !settings?.llm) return;
 			const remote = /** @type {any[]} */ (
 				Array.isArray(settings.llm.models) ? settings.llm.models : []
@@ -468,7 +469,7 @@
 
 	async function reconcileDefaultModelBeforeSave() {
 		try {
-			const settings = await invoke('get_settings');
+			const settings = await loadSettings();
 			if (!mounted || !settings?.llm) return;
 			const remote = /** @type {any[]} */ (
 				Array.isArray(settings.llm.models) ? settings.llm.models : []
@@ -619,7 +620,7 @@
 			{ tag: 'SettingsView' },
 		);
 		try {
-			const settings = await invoke('get_settings');
+			const settings = await loadSettings();
 			if (!mounted) return;
 			if (settings) {
 				llmConfig = settings.llm || llmConfig;

@@ -327,3 +327,4 @@
 - [0336：ReAct transcript 以 SessionCommitted 提交](0336-react-session-committed-submission.md)
 - [0337：Settings runtime apply planning](0337-settings-runtime-apply-planning.md)
 - [0338：Action tail output policy and snapshot ownership](0338-action-tail-output-policy-and-snapshot.md)
+- [0341：Settings 命令 contract 边界收口](0341-settings-command-contract-boundary.md)

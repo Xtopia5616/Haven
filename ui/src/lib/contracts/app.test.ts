@@ -55,4 +55,22 @@ describe('app-shell IPC contract', () => {
 			status: { Offline: { error: 'timeout' } },
 		});
 	});
+
+	it('maps hotkey rebind fields once and ignores wire extensions', () => {
+		const payload = {
+			old_binding: 'Ctrl+Shift+Space',
+			new_binding: 'Ctrl+Alt+Space',
+			future_field: 'ignored',
+		} as { old_binding: string; new_binding: string };
+		const event = mapAppEvent({
+			event: 'hotkey:rebind',
+			id: 3,
+			payload,
+		});
+
+		expect(event.payload).toEqual({
+			oldBinding: 'Ctrl+Shift+Space',
+			newBinding: 'Ctrl+Alt+Space',
+		});
+	});
 });

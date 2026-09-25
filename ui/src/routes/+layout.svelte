@@ -42,6 +42,7 @@
 	import { syncStore } from '$lib/syncStore.ts';
 	import { isBusyStatus, isPausedStatus, sessionWaitingReason } from '$lib/sessionStatus.ts';
 	import { confirmLeaveSettingsIfNeeded } from '$lib/settingsGuard.ts';
+	import { loadSettings } from '$lib/settingsCommand.ts';
 	import { actionStatusLabel } from '$lib/taskTerminology.ts';
 	import { setToolManifests } from '$lib/toolManifest.ts';
 	import { createChatInteractionEventHandlers } from '$lib/chatInteractionEventHandlers.ts';
@@ -673,7 +674,7 @@
 		// Load notify config in background — don't block
 		// listener registration. Skip outside Tauri (browser / SSR preview).
 		if (isTauri()) {
-			invoke('get_settings')
+			loadSettings()
 				.then((settings) => {
 					if (settings?.notification) {
 						notifyCfg = { ...notifyCfg, ...settings.notification };

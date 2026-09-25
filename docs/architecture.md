@@ -541,8 +541,15 @@ Action board 与 lifecycle event 共用 Rust `events.rs::ActionEvent` wire DTO�
 `recordingEventListeners` 是这组事件唯一进入该 mapper 的 listener 边界。转换保留既有可选字段
 省略、畸形值安全默认、未知附加字段忽略与 VAD 字符串透传行为，不拒绝未知 signal/state，
 因为 Rust DTO 将它们定义为字符串而非封闭枚举（ADR 0340）。
-其它 agent/app 事件、settings/command contract 镜像，以及 session mapper 内部 camelCase
-类型和字段映射仍待 Phase 8 收口到 Rust DTO 驱动的生成流程；本轮审计不引入 codegen。
+Settings 的完整 wire shape 由 `haven_common::config::Settings` 所有；前端不再从多个页面直接读取
+`invoke('get_settings')` 的原始结果，所有读取经 `ui/src/lib/settingsCommand.ts::loadSettings` 和
+`ui/src/lib/contracts/settings.ts::parseSettingsPayload`。validator 只检查根对象，保留未知配置字段、
+未知枚举字符串和既有 snake_case 配置字段；null/非对象继续作为空结果，命令错误原样进入现有 catch。
+Settings 表单状态仍由 `SettingsView` 持有，`settingsSaveAction` 与 `settingsGuard` 只负责纯 UI 状态，
+没有额外的 settings store 或第二个 update serializer。`hotkey:rebind` 事件已由
+`ui/src/lib/contracts/app.ts::mapAppEvent` 唯一映射 `old_binding` / `new_binding` 到 camelCase；
+`settings.ts` 的诊断 command parsers 继续校验 ADR 0007 的命名响应 DTO。其它 agent/app 事件、command
+contract mirror，以及 session mapper 内部 camelCase 类型和字段映射仍待 Phase 8 逐域审计；不引入全局 codegen。
 `+page.svelte` 保留 view/scroll 与 dialog/loading/menu 状态、输入路由与 ask 决策、model sync、
 resume target/auto-restore、新会话入口及非 chat-event teardown；在 mount 时创建 controller、等待
 listener ready 后再 settings/load/restore，并在 destroy 时 dispose。旧 `sessionMessages.ts`、
@@ -624,6 +631,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 
 | 日期 | 内容 |
 |---|---|
+| 2026-09-25 | §2.6 App / UI：`get_settings` 读取统一经过唯一 `settingsCommand.ts` 入口与开放式根对象 validator；保留未知配置字段/枚举、原错误处理，hotkey event 继续走既有 camelCase mapper，不改 Rust DTO 与保存顺序（ADR 0341） |
 | 2026-09-25 | §2.6 App / UI：录音与转写事件审计确认 Rust DTO 是 wire 权威，前端只保留 camelCase 消费 DTO 和单一 mapper；补充未知 VAD 字符串、扩展字段、畸形默认、channel 集合与到达顺序回归覆盖，无 DTO 或生产逻辑变化（ADR 0340） |
 | 2026-09-25 | §2.2 LLM：审计 health/native transcription descriptor 边界；两者已在 route/permit 前使用同一语义映射，metadata/config helpers 是只读 route 查询，新增 contract tests，无无效 wrapper（ADR 0339） |
 | 2026-09-25 | §2.5 Tools / UI：ActionService 持有唯一共享 tail 长度策略，foreground/background 消费 bounded typed snapshots；两条既有 event identity/wire 与 terminal/outbox 时序保持（ADR 0338） |

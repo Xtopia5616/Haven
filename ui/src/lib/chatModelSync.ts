@@ -1,6 +1,7 @@
 import logger from '$lib/logger.ts';
 import { normalizeApiStyle, supportsBuiltinWebSearch } from '$lib/apiStyle.ts';
 import { invoke } from '$lib/tauri.ts';
+import { loadSettings } from '$lib/settingsCommand.ts';
 
 type ModelSyncOptions = {
 	isDead: () => boolean;
@@ -144,7 +145,7 @@ export function createChatModelSync(options: ModelSyncOptions) {
 	/** Re-fetch settings and refresh the toolbar default-model controls. */
 	function refreshDefaultModelFromBackend() {
 		const generation = ++syncGeneration;
-		invoke('get_settings')
+		loadSettings()
 			.then((s) => {
 				if (isDead() || generation !== syncGeneration) return;
 				applyDefaultModelFromSettings(s);
