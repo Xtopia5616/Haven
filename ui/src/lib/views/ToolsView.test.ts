@@ -2,14 +2,17 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import ToolsView from './ToolsView.svelte';
 
-const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
+const { invoke, registerAppListener } = vi.hoisted(() => ({
+	invoke: vi.fn(),
+	registerAppListener: vi.fn(async () => ({ dispose: vi.fn() })),
+}));
 
 vi.mock('$lib/tauri.ts', () => ({
 	invoke,
 }));
 
 vi.mock('$lib/events.ts', () => ({
-	registerOne: vi.fn(async () => ({ dispose: vi.fn() })),
+	registerAppListener,
 }));
 
 function manifest(name: string, root: string, label: string, enabled = true) {
@@ -48,6 +51,7 @@ function manifest(name: string, root: string, label: string, enabled = true) {
 
 describe('ToolsView toolbar actions', () => {
 	beforeEach(() => {
+		registerAppListener.mockClear();
 		invoke.mockImplementation(async (command: string) => {
 			if (command === 'get_tools') return { tools: [] };
 			if (command === 'list_mcp_tools') return [];
@@ -62,6 +66,19 @@ describe('ToolsView toolbar actions', () => {
 		render(ToolsView);
 
 		await waitFor(() => expect(screen.getByRole('tab', { name: '技能' })).toBeTruthy());
+		await waitFor(() => expect(registerAppListener).toHaveBeenCalledTimes(2));
+		expect(registerAppListener).toHaveBeenNthCalledWith(
+			1,
+			'skills:status_change',
+			expect.any(Function),
+			{ tag: 'tools' },
+		);
+		expect(registerAppListener).toHaveBeenNthCalledWith(
+			2,
+			'mcp:status_change',
+			expect.any(Function),
+			{ tag: 'tools' },
+		);
 		await fireEvent.click(screen.getByRole('tab', { name: '技能' }));
 		expect(screen.getByRole('heading', { name: '技能' })).toBeTruthy();
 		await fireEvent.click(screen.getByRole('tab', { name: 'MCP' }));

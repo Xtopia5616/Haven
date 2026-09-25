@@ -16,8 +16,10 @@ vi.mock('./logger.ts', () => ({
 
 import {
 	actionEventListeners,
+	appEventListeners,
 	recordingEventListeners,
 	registerListeners,
+	registerAppListener,
 	registerOne,
 	registerSessionListener,
 	sessionEventListeners,
@@ -192,6 +194,75 @@ describe('registerOne', () => {
 		expect(handler).toHaveBeenCalledWith(
 			expect.objectContaining({ payload: { status: 'paused' } }),
 		);
+	});
+});
+
+describe('appEventListeners', () => {
+	it('maps app events before calling shared shell handlers', () => {
+		const handler = vi.fn();
+		const listeners = appEventListeners({ 'hotkey:rebind': handler });
+
+		listeners['hotkey:rebind']({
+			event: 'hotkey:rebind',
+			id: 7,
+			payload: { old_binding: 'Ctrl+A', new_binding: 'Ctrl+B' },
+		} as never);
+
+		expect(handler).toHaveBeenCalledWith({
+			event: 'hotkey:rebind',
+			id: 7,
+			payload: { oldBinding: 'Ctrl+A', newBinding: 'Ctrl+B' },
+		});
+	});
+});
+
+describe('registerAppListener', () => {
+	beforeEach(() => {
+		mocks.listen.mockReset();
+		mocks.error.mockReset();
+		mocks.warn.mockReset();
+	});
+
+	it('maps one-off app listeners through the same contract boundary', async () => {
+		const handler = vi.fn();
+		mocks.listen.mockResolvedValueOnce(vi.fn());
+
+		await registerAppListener('hotkey:rebind', handler, { tag: 'tools' });
+		const rawListener = mocks.listen.mock.calls[0][1];
+		rawListener({
+			event: 'hotkey:rebind',
+			id: 8,
+			payload: {
+				old_binding: 'Ctrl+Shift+Space',
+				new_binding: 'Ctrl+Alt+Space',
+				future_field: 'not part of the view DTO',
+			},
+		});
+
+		expect(handler).toHaveBeenCalledWith({
+			event: 'hotkey:rebind',
+			id: 8,
+			payload: {
+				oldBinding: 'Ctrl+Shift+Space',
+				newBinding: 'Ctrl+Alt+Space',
+			},
+		});
+	});
+
+	it('preserves open status enums and additive fields for app events', async () => {
+		const handler = vi.fn();
+		mocks.listen.mockResolvedValueOnce(vi.fn());
+
+		await registerAppListener('mcp:status_change', handler, { tag: 'tools' });
+		const rawListener = mocks.listen.mock.calls[0][1];
+		const payload = {
+			name: 'server',
+			status: { FutureStatus: { retry_after_ms: 500 } },
+			future_field: 'preserved',
+		};
+		rawListener({ event: 'mcp:status_change', id: 9, payload });
+
+		expect(handler).toHaveBeenCalledWith({ event: 'mcp:status_change', id: 9, payload });
 	});
 });
 

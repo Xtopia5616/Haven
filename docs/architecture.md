@@ -568,8 +568,13 @@ Settings 的完整 wire shape 由 `haven_common::config::Settings` 所有；前�
 Settings 表单状态仍由 `SettingsView` 持有，`settingsSaveAction` 与 `settingsGuard` 只负责纯 UI 状态，
 没有额外的 settings store 或第二个 update serializer。`hotkey:rebind` 事件已由
 `ui/src/lib/contracts/app.ts::mapAppEvent` 唯一映射 `old_binding` / `new_binding` 到 camelCase；
-`settings.ts` 的诊断 command parsers 继续校验 ADR 0007 的命名响应 DTO。其它 agent/app 事件、command
-contract mirror，以及 session mapper 内部 camelCase 类型和字段映射仍待 Phase 8 逐域审计；不引入全局 codegen。
+`settings.ts` 的诊断 command parsers 继续校验 ADR 0007 的命名响应 DTO。app-shell 事件的批量
+`appEventListeners` 与单条 `registerAppListener` 共用 `mapAppEvent` adapter；ToolsView 的 MCP/Skills
+刷新监听也经过该入口，布局只拥有 MCP 通知副作用，Skills 不再保留空 listener。Rust MCP status 使用
+serde 外部标记 enum，既有 pass-through mapper 不校验其变体，因此可保留未知变体和附加字段；明确投影的 hotkey/interaction 字段仍只输出
+已知 camelCase DTO 字段。布局通知与 ToolsView 刷新是不同副作用，不做 event dedup。`SessionResumeResponse`
+中的 interactions 仍由原 session resume normalizer 处理。其余 agent/app 事件、command contract mirror，
+以及 session mapper 内部 camelCase 类型和字段映射仍待 Phase 8 逐域审计；不引入全局 codegen（ADR 0346）。
 `+page.svelte` 保留 view/scroll 与 dialog/loading/menu 状态、输入路由与 ask 决策、model sync、
 resume target/auto-restore、新会话入口及非 chat-event teardown；在 mount 时创建 controller、等待
 listener ready 后再 settings/load/restore，并在 destroy 时 dispose。旧 `sessionMessages.ts`、
@@ -652,6 +657,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 | 日期 | 内容 |
 |---|---|
 | 2026-09-25 | §2.5 Tools / §2.6 UI：审计 background/scheduled action board 生命周期投影；复用既有 background terminal transcript finalizer，保留 scheduled 删除、Agent 通知、kind-specific display/cancel 和无 UI event dedup 边界（ADR 0344） |
+| 2026-09-25 | §2.6 App / UI：ToolsView 的 MCP/Skills 单条订阅统一经过 `mapAppEvent`；保留 MCP 通知与刷新两个不同副作用、未知 status variant 与 pass-through 扩展字段，删除布局无效 Skills listener（ADR 0346） |
 | 2026-09-25 | §2.6 App / UI：`get_settings` 读取统一经过唯一 `settingsCommand.ts` 入口与开放式根对象 validator；保留未知配置字段/枚举、原错误处理，hotkey event 继续走既有 camelCase mapper，不改 Rust DTO 与保存顺序（ADR 0341） |
 | 2026-09-25 | §2.6 App / UI：录音与转写事件审计确认 Rust DTO 是 wire 权威，前端只保留 camelCase 消费 DTO 和单一 mapper；补充未知 VAD 字符串、扩展字段、畸形默认、channel 集合与到达顺序回归覆盖，无 DTO 或生产逻辑变化（ADR 0340） |
 | 2026-09-25 | §2.2 LLM：审计 health/native transcription descriptor 边界；两者已在 route/permit 前使用同一语义映射，metadata/config helpers 是只读 route 查询，新增 contract tests，无无效 wrapper（ADR 0339） |

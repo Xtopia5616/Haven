@@ -333,3 +333,4 @@
 - [0343：Scheduled action trigger policy boundary](0343-action-trigger-policy-boundary.md)
 - [0344：Action lifecycle UI projection boundary](0344-action-lifecycle-ui-projection-boundary.md)
 - [0345：ToolsManager 授权策略与执行边界](0345-tools-authorization-policy-boundary.md)
+- [0346：App event listener contract boundary](0346-app-event-listener-contract-boundary.md)

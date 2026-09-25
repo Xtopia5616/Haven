@@ -6,11 +6,7 @@ import {
 	type SessionEventPayloadMap,
 	type TauriEvent,
 } from './contracts/session.ts';
-import {
-	mapActionEvent,
-	type ActionEventName,
-	type ActionPayload,
-} from './contracts/action.ts';
+import { mapActionEvent, type ActionEventName, type ActionPayload } from './contracts/action.ts';
 import {
 	mapRecordingEvent,
 	type RecordingEventName,
@@ -21,11 +17,7 @@ import {
 	type AgentEventName,
 	type AgentEventPayloadMap,
 } from './contracts/agent.ts';
-import {
-	mapAppEvent,
-	type AppEventName,
-	type AppEventPayloadMap,
-} from './contracts/app.ts';
+import { mapAppEvent, type AppEventName, type AppEventPayloadMap } from './contracts/app.ts';
 
 type SessionListenerMap = Partial<{
 	[K in SessionEventName]: (event: TauriEvent<SessionEventPayloadMap[K]>) => void;
@@ -80,6 +72,13 @@ function adaptActionEvent<K extends ActionEventName>(
 	return mapped;
 }
 
+function adaptAppEvent<K extends AppEventName>(
+	eventName: K,
+	event: TauriEvent<unknown>,
+): TauriEvent<AppEventPayloadMap[K]> {
+	return mapAppEvent({ ...event, event: eventName } as never);
+}
+
 /**
  * Register many Tauri event listeners from a single map and return a handle
  * that can dispose them all. Listener registration failures are logged and
@@ -117,7 +116,7 @@ export function registerListeners(
 			} catch (e) {
 				logger.error(tag, `Failed to register listener for '${event}'`, e);
 			}
-		})
+		}),
 	).then(() => {});
 	return {
 		ready,
@@ -219,7 +218,8 @@ export function appEventListeners(
 			eventName,
 			(event: TauriEvent<unknown>) => {
 				protectEventCallback(eventName, () => {
-					handler?.(mapAppEvent({ ...event, event: eventName } as never) as never);
+					const name = eventName as AppEventName;
+					handler?.(adaptAppEvent(name, event) as never);
 				});
 			},
 		]),
@@ -265,10 +265,27 @@ export async function registerSessionListener<K extends SessionEventName>(
 ): Promise<{ dispose: () => void }> {
 	return registerOne(
 		event,
-		(rawEvent) => protectEventCallback(event, () => {
-			const mapped = adaptSessionEvent(event, rawEvent);
-			if (mapped) handler(mapped);
-		}),
+		(rawEvent) =>
+			protectEventCallback(event, () => {
+				const mapped = adaptSessionEvent(event, rawEvent);
+				if (mapped) handler(mapped);
+			}),
+		{ tag },
+	);
+}
+
+/** Register one typed app listener through the shared app event mapper. */
+export async function registerAppListener<K extends AppEventName>(
+	event: K,
+	handler: (event: TauriEvent<AppEventPayloadMap[K]>) => void,
+	{ tag = 'unknown' }: { tag?: string } = {},
+): Promise<{ dispose: () => void }> {
+	return registerOne(
+		event,
+		(rawEvent) =>
+			protectEventCallback(event, () => {
+				handler(adaptAppEvent(event, rawEvent as TauriEvent<unknown>));
+			}),
 		{ tag },
 	);
 }

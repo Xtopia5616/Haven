@@ -17,10 +17,7 @@
 		finalizeBackgroundActionMessages,
 	} from '$lib/actionStore.ts';
 	import { resumeTargetStore } from '$lib/sessionIntentStore.ts';
-	import {
-		appSessionReducer,
-		createSessionSelectorStore,
-	} from '$lib/sessionReducer.ts';
+	import { appSessionReducer, createSessionSelectorStore } from '$lib/sessionReducer.ts';
 	import { submitVoiceTranscript } from '$lib/voiceSubmit.ts';
 	import { themeStore } from '$lib/themeStore.ts';
 	import { invoke, isTauri } from '$lib/tauri.ts';
@@ -933,9 +930,6 @@
 								5000,
 							);
 						}
-					},
-					'skills:status_change': () => {
-						// Skill list refresh is notified by the tools page refresh button.
 					},
 				}),
 				...agentEventListeners({

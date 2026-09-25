@@ -19,7 +19,7 @@
 	import { addNotification } from '$lib/notificationStore.ts';
 	import { reportError } from '$lib/errorHandling.ts';
 	import logger from '$lib/logger.ts';
-	import { registerOne } from '$lib/events.ts';
+	import { registerAppListener } from '$lib/events.ts';
 	import SkillCard from '$lib/SkillCard.svelte';
 	import McpServerCard from '$lib/McpServerCard.svelte';
 	import McpEditDialog from '$lib/McpEditDialog.svelte';
@@ -116,14 +116,14 @@
 		}
 		await refreshMcpServers();
 		await refreshSkillList();
-		unlistenSkills = await registerOne(
+		unlistenSkills = await registerAppListener(
 			'skills:status_change',
 			async () => {
 				await refreshSkillList();
 			},
 			{ tag: 'tools' },
 		);
-		unlistenMcp = await registerOne(
+		unlistenMcp = await registerAppListener(
 			'mcp:status_change',
 			() => {
 				scheduleMcpRefresh();
