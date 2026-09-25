@@ -414,6 +414,11 @@ impl SystemPromptBuilder {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn uses_memory_service_for_test(&self, memory: &Arc<MemoryService>) -> bool {
+        Arc::ptr_eq(self.context_provider.memory(), memory)
+    }
+
     /// Build the system prompt.
     ///
     /// **Authority (memory S1 / ReAct B1-1 / S3 / X7 / X2):**

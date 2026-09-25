@@ -121,7 +121,9 @@ fn agent_new_constructor_works() {
         client.clone(),
         client,
     ));
-    let agent = AgentLayer::new(db, executor, router, 10, 20, ContextLimitsConfig::default());
+    let context_limits = ContextLimitsConfig::default();
+    let memory_service = memory_service_for_test(db.clone(), router.clone(), &context_limits);
+    let agent = AgentLayer::new(memory_service, executor, router, 10, 20, context_limits);
     // Verify construction succeeded; no per-session indirection remains.
     assert!(agent.db.get_facts("user").unwrap().is_empty());
     let session = agent.db.create_session("input").unwrap();
@@ -165,13 +167,15 @@ async fn replace_router_and_router_work() {
         client_a.clone(),
         client_a,
     ));
+    let context_limits = ContextLimitsConfig::default();
+    let memory_service = memory_service_for_test(db.clone(), router_a.clone(), &context_limits);
     let agent = Arc::new(AgentLayer::new(
-        db,
+        memory_service,
         executor,
         router_a,
         10,
         20,
-        ContextLimitsConfig::default(),
+        context_limits,
     ));
     // Create a new router via the same mock client factory
     let client_b = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;

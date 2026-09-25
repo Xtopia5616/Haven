@@ -59,6 +59,7 @@ pub use haven_memory::{
 use haven_common::config::ContextLimitsConfig;
 use haven_common::types::MessageAttachment;
 use haven_llm::LlmRouter;
+#[cfg(test)]
 use haven_memory::Database;
 use haven_memory::repositories::messages::Message;
 use haven_tools::ScheduleMode;

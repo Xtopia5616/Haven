@@ -124,6 +124,11 @@ impl MemoryService {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn database_handle_for_test(&self) -> Arc<Database> {
+        self._db.clone()
+    }
+
     /// Return the shared store used for memory-owned durable episode and
     /// outbox persistence, backed by the service's shared database.
     pub(crate) fn memory_store(&self) -> MemoryStore {

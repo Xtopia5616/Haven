@@ -350,3 +350,4 @@
 - [0361：全局架构完成定义最终验收审计](0361-final-architecture-acceptance-audit.md)
 - [0362：MemoryRuntime 应用边界所有权审计](0362-memory-runtime-app-ownership-audit.md)
 - [0363：SessionSupervisor 构造使用 typed SessionStore](0363-session-supervisor-typed-store-constructor.md)
+- [0364：AgentLayer 构造注入共享 MemoryService](0364-agent-layer-memory-service-constructor.md)

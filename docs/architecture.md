@@ -279,7 +279,11 @@ Agent 的 `memory_service.rs` 是 prompt/worker 共用的 typed memory 边界：
 `MemoryRecallStore` 调度 recall SQL 并返回 typed domain results。Agent 保留 prompt
 查询归一化、embedding provider 调用、候选合并与预算；`MemoryEmbeddingStore` 负责
 embedding 生命周期读写和 LSH 维护，`memory_index.rs` 保留模型路由、provider 校验、
-批处理和维护门控（ADR 0021、0303、0304）。`MemoryService` 构造并持有共享的
+批处理和维护门控（ADR 0021、0303、0304）。组合根 `AppState` 在已有 Database、Router
+和 `ContextLimitsConfig` 后创建唯一 `MemoryService`，按配置中的 `embedding_chunk_size`
+初始化并注入 `AgentLayer::new`；AgentLayer 从同一实例派生 stores、`MemoryWorker`、
+`MemoryRuntime` 和 `SystemPromptBuilder`。因此 prompt-memory cache、embedding index 与
+worker memory capability 属于同一服务实例（ADR 0364）。`MemoryService` 构造并持有共享的
 `MemoryFactStore`，`MemoryWorker::load_known_facts` 通过其有界读取端口取得抽取上下文；
 blocking 调度、事实有效置信度顺序、敏感事实过滤和 limit 属于 Memory，Agent 仍负责
 prompt 行格式、subject 前缀与字段清洗（ADR 0307）。
@@ -533,7 +537,8 @@ limit、创建时间倒序和 errors 的 status 过滤顺序保持原样。组�
   dispatcher。应用对象所有权迁移因需要新增 typed readiness handoff 而暂缓（ADR 0362）。
 - `app_state.rs`：装配 `AppState`（runtime / 瞬态录音状态 / bootstrap 状态 / UI
   confirmation）；命令通过 runtime 稳定句柄消费 db / router / tools / executor /
-  agent / pipeline / shell / `config_service` / media clients / stt_client。
+  agent / pipeline / shell / `config_service` / media clients / stt_client；在组合根创建
+  supervisor 专属 `SessionStore` 与唯一 `MemoryService` 并注入 AgentLayer（ADR 0363、0364）。
 - `config_runtime.rs`：根据 `ConfigChanged` 生成 runtime apply plan，区分 live consumer 和
   `restart_required` consumer；运行时编排留在组合根，不下沉到 `haven-common`。
 - `commands/recording.rs`：host 校验并落盘上传附件、分配 `asset_id`，并由 app-binary
@@ -687,6 +692,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 
 | 日期 | 内容 |
 |---|---|
+| 2026-09-26 | §2.3/§2.5/§2.6：`AgentLayer::new` 改接组合根创建的共享 `MemoryService`；AppState 用同一 Router 与配置的 embedding chunk size 创建一次，AgentLayer 继续派生并共享 Worker、Runtime、PromptBuilder 与 typed stores，Runtime 所有权/readiness 不变（ADR 0364）|
 | 2026-09-26 | §2.3/§2.5/§2.6：审计 MemoryRuntime 对象仍由 AgentLayer 持有、ApplicationRuntime 持有其周期 task 生命周期；现有 AgentLayer startup barrier 缺少 app 可组合的 prepared-consumer/readiness API，迁移暂缓并记录最小后续接口步骤（ADR 0362）|
 | 2026-09-26 | §2.5 Agent：最终验收审计校准 actor 所有权说明；`SessionActor` 轮询 active-run future，ReActState 为 run-local scratch，SessionState 持有会话队列与元数据；整体完成条件及发布验收缺口见 ADR 0361 |
 | 2026-09-26 | §2.5 Agent：`SessionSupervisor` 构造改接收 `SessionStore`，AppState 显式创建并保持独立事件 sender；`AgentLayer::new` 与其他 raw Database 路径仍按 ADR 0363 记录范围保留 |

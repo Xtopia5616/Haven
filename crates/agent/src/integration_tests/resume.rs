@@ -96,7 +96,9 @@ async fn resume_restores_tool_overlay_cleanly_in_round_order_and_best_effort() {
         client.clone(),
         client,
     ));
-    let agent = AgentLayer::new(db, executor, router, 30, 50, ContextLimitsConfig::default());
+    let context_limits = ContextLimitsConfig::default();
+    let memory_service = memory_service_for_test(db.clone(), router.clone(), &context_limits);
+    let agent = AgentLayer::new(memory_service, executor, router, 30, 50, context_limits);
     let rounds = vec![
         ReActRound {
             step_number: 1,
@@ -213,13 +215,15 @@ async fn enabled_skills_are_global_and_resume_does_not_rebuild_skill_sessions() 
         client.clone(),
         client,
     ));
+    let context_limits = ContextLimitsConfig::default();
+    let memory_service = memory_service_for_test(db.clone(), router.clone(), &context_limits);
     let agent = Arc::new(AgentLayer::new(
-        db,
+        memory_service,
         executor,
         router,
         30,
         50,
-        ContextLimitsConfig::default(),
+        context_limits,
     ));
 
     // Enabled skills remain host-owned deferred adapters. They are available

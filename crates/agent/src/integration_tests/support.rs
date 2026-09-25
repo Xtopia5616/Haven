@@ -159,13 +159,15 @@ pub(super) fn make_test_agent() -> (Arc<AgentLayer>, Arc<SessionSupervisor>) {
         client.clone(),
         client,
     ));
+    let context_limits = ContextLimitsConfig::default();
+    let memory_service = memory_service_for_test(db.clone(), router.clone(), &context_limits);
     let agent = Arc::new(AgentLayer::new(
-        db,
+        memory_service,
         executor.clone(),
         router,
         30,
         50,
-        ContextLimitsConfig::default(),
+        context_limits,
     ));
     (agent, executor)
 }
@@ -244,8 +246,9 @@ pub(super) fn make_test_agent_with_db(
         client.clone(),
         client,
     ));
+    let memory_service = memory_service_for_test(db.clone(), router.clone(), &context_limits);
     let agent = Arc::new(AgentLayer::new(
-        db,
+        memory_service,
         executor.clone(),
         router,
         30,
@@ -253,6 +256,18 @@ pub(super) fn make_test_agent_with_db(
         context_limits,
     ));
     (agent, executor)
+}
+
+pub(super) fn memory_service_for_test(
+    db: Arc<Database>,
+    router: Arc<LlmRouter>,
+    context_limits: &ContextLimitsConfig,
+) -> Arc<MemoryService> {
+    Arc::new(MemoryService::new(
+        db,
+        Some(router),
+        context_limits.embedding_chunk_size,
+    ))
 }
 
 /// A mock tool whose schema requires an `action` field, mirroring the

@@ -45,6 +45,11 @@ impl MemoryRuntime {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn uses_memory_worker_for_test(&self, worker: &Arc<MemoryWorker>) -> bool {
+        Arc::ptr_eq(&self.memory_worker, worker)
+    }
+
     /// Subscribe before taking the startup session snapshot, baseline only
     /// absent cursors for sessions in that snapshot, restore the durable fact
     /// outbox, and replay visible sessions before returning the live receiver.

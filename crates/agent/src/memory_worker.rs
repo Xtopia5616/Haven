@@ -109,6 +109,11 @@ fn ensure_memory_maintenance_active(
 
 impl MemoryWorker {
     #[cfg(test)]
+    pub(crate) fn uses_memory_service_for_test(&self, memory: &Arc<MemoryService>) -> bool {
+        Arc::ptr_eq(&self.memory, memory)
+    }
+
+    #[cfg(test)]
     pub(crate) fn new(
         db: Arc<Database>,
         router: Arc<LlmRouter>,

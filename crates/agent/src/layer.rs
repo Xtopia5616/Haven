@@ -42,7 +42,7 @@ pub struct AgentLayer {
 
 impl AgentLayer {
     pub fn new(
-        db: Arc<Database>,
+        memory_service: Arc<MemoryService>,
         executor: Arc<SessionSupervisor>,
         router: Arc<LlmRouter>,
         max_steps: u32,
@@ -50,11 +50,6 @@ impl AgentLayer {
         context_limits: ContextLimitsConfig,
     ) -> Self {
         let events = Arc::new(EventDispatcher::new());
-        let memory_service = Arc::new(MemoryService::new(
-            db.clone(),
-            Some(router.clone()),
-            context_limits.embedding_chunk_size,
-        ));
         let memory_store = memory_service.memory_store();
         let tools = executor.get_tools();
         let prompt_builder = Arc::new(SystemPromptBuilder::with_memory_service(
@@ -101,7 +96,7 @@ impl AgentLayer {
 
         Self {
             #[cfg(test)]
-            db,
+            db: memory_service.database_handle_for_test(),
             executor,
             conversation_window_size,
             events,
@@ -1574,13 +1569,19 @@ mod tests {
             client.clone(),
             client,
         ));
+        let context_limits = ContextLimitsConfig::default();
+        let memory_service = Arc::new(MemoryService::new(
+            db.clone(),
+            Some(router.clone()),
+            context_limits.embedding_chunk_size,
+        ));
         let agent = AgentLayer::new(
-            db,
+            memory_service,
             executor.clone(),
             router,
             10,
             20,
-            ContextLimitsConfig::default(),
+            context_limits,
         );
         (agent, executor)
     }
@@ -1757,7 +1758,13 @@ mod tests {
             client.clone(),
             client,
         ));
-        let agent = AgentLayer::new(db, executor, router, 10, 20, ContextLimitsConfig::default());
+        let context_limits = ContextLimitsConfig::default();
+        let memory_service = Arc::new(MemoryService::new(
+            db.clone(),
+            Some(router.clone()),
+            context_limits.embedding_chunk_size,
+        ));
+        let agent = AgentLayer::new(memory_service, executor, router, 10, 20, context_limits);
 
         let limits = ContextLimitsConfig {
             notification_summary_chars: 137,
@@ -1767,6 +1774,55 @@ mod tests {
 
         assert_eq!(agent.limits().notification_summary_chars, 137);
         assert_eq!(agent.limits(), agent.react_engine.limits());
+    }
+
+    #[test]
+    fn agent_memory_consumers_share_the_injected_memory_service() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let executor = Arc::new(SessionSupervisor::new_for_test(
+            db.clone(),
+            Arc::new(haven_tools::ToolsManager::new()),
+            1,
+        ));
+        let client = Arc::new(UnusedClient);
+        let router = Arc::new(LlmRouter::new_with_clients(
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client,
+        ));
+        let context_limits = ContextLimitsConfig::default();
+        let memory_service = Arc::new(MemoryService::new(
+            db,
+            Some(router.clone()),
+            context_limits.embedding_chunk_size,
+        ));
+
+        let agent = AgentLayer::new(
+            memory_service.clone(),
+            executor,
+            router,
+            10,
+            20,
+            context_limits,
+        );
+
+        assert!(Arc::ptr_eq(&agent.memory, &memory_service));
+        assert!(
+            agent
+                .memory_worker
+                .uses_memory_service_for_test(&memory_service)
+        );
+        assert!(
+            agent
+                .prompt_builder
+                .uses_memory_service_for_test(&memory_service)
+        );
+        assert!(
+            agent
+                .memory_runtime
+                .uses_memory_worker_for_test(&agent.memory_worker)
+        );
     }
 
     #[tokio::test]
@@ -1784,13 +1840,19 @@ mod tests {
             client.clone(),
             client,
         ));
-        let agent = AgentLayer::new(
+        let context_limits = ContextLimitsConfig::default();
+        let memory_service = Arc::new(MemoryService::new(
             db.clone(),
+            Some(router.clone()),
+            context_limits.embedding_chunk_size,
+        ));
+        let agent = AgentLayer::new(
+            memory_service,
             executor.clone(),
             router,
             10,
             20,
-            ContextLimitsConfig::default(),
+            context_limits,
         );
 
         let stored = db.create_session("stored session").unwrap();

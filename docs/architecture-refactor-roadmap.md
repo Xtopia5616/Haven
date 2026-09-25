@@ -29,7 +29,7 @@
 - `resume.rs` 负责组装 `RunReplay` 并向 actor 发起 run；`ReActState` 已在 actor 的 run 路径中创建，但仍是 run-local projection，尚未成为 `SessionState` 的字段；
 - actor mailbox 仍包含 messaging poll 等 actor-local 命令；usage 由 `UsageRuntime` 所有，stream identity 与 token estimate 已随单次 `ReActState` 收口，不再是跨 session engine sidecar；
 - resume 仍需协调 RAM 队列、ingress cursor、undelivered scan、partial promotion 和 interaction replay；
-- Agent、Tools、App 的部分 facade 仍较宽；已迁移路径通过 typed store/port 访问。`SessionSupervisor` 的生产构造现只接收组合根创建的 `SessionStore`（ADR 0363）；`AgentLayer::new` 仍把 Database 交给 `MemoryService` 创建 typed stores/index，生产 AgentLayer 不保留句柄字段，MemoryService 私有 backing handle 留作实现细节。`MemoryService::new` 与 `SystemPromptBuilder::new` 仍有独立的 raw Database 构造入口；本切片不声称全局 raw Database 已清零，其余 facade 边界继续逐域审计；
+- Agent、Tools、App 的部分 facade 仍较宽；已迁移路径通过 typed store/port 访问。`SessionSupervisor` 的生产构造现只接收组合根创建的 `SessionStore`（ADR 0363）；`AgentLayer::new` 接收组合根创建的 `MemoryService`，并从该实例派生 typed stores、worker、runtime 和 prompt builder（ADR 0364）。`MemoryService::new` 与 `SystemPromptBuilder::new` 仍有独立的 raw Database 构造入口；本切片不声称全局 raw Database 已清零，其余 facade 边界继续逐域审计；
 - ActionService 的终态仲裁、claim lease、持久化 retry、tail policy、scheduled trigger policy 与 UI 投影已有各自窄边界（ADR 0317、0325、0332、0334、0338、0343、0344）；完整跨 kind Job lifecycle 仍待 trigger/execution 分离、timeout、owner token/续租与 watcher recovery 决策；LLM request descriptor 与 usage owner 契约已由 ADR 0354 收口；
 - Settings 的 typed target/phase plan、执行顺序与失败观测现由 `SettingsRuntimeApplyCoordinator` 持有；命令回调仍调用既有 runtime owner。`RuntimeConfigCoordinator` 持有 model edit 及 Router/media prepare/publish；settings 全量补偿/rollback 尚未决策；
 - UI 页面和 reducer 已有边界，ask/input 决策、复杂 view state 与启动恢复编排仍在页面/controller；多个 IPC 域已完成手写 mapper/validator 审计，但全局 Rust→TypeScript codegen 未引入，其他 command families 仍待按域审计。
@@ -127,6 +127,8 @@
 MemoryRuntime 应用对象所有权审计（2026-09-26，ADR 0362）：MemoryRuntime 的启动回放、live consumer 和周期 schedule policy 已有单一对象，但对象仍由 `AgentLayer` 构造/持有，`ApplicationRuntime` 只拥有周期 task 的 cancel/join。`AgentLayer::start_inner` 是当前唯一能保证 prepare/replay 成功后再启动 live consumer 和 SessionActor dispatcher 的入口；app-binary 没有 prepared-consumer API 或 dispatcher readiness handoff。为避免字段空迁移、第二份 runtime 或 Agent 长期强持有 runtime，本轮不改代码。后续先设计唯一 typed 构造交接与可证明的 readiness token/port，再一起迁移 app schedule/manual maintenance/shutdown 接线并保留 barrier 与 lifecycle 回归。
 
 SessionSupervisor 构造边界切片（2026-09-26，ADR 0363）：`new` 与 `new_with_session_tool_overlay_port` 改为接收已有 `SessionStore`；AppState 在组合根显式创建 supervisor 专属 store，继续与 App command/read store 使用不同的 live sender。测试 fixture 仅通过 cfg(test) helper 创建 Store 后再调用 typed constructor。AgentLayer、MemoryService、SystemPromptBuilder 及其他 raw Database 路径未迁移；SessionStore clone 的事件 sender、MemoryRuntime 使用的实例及 start/recovery/shutdown 所有权关系未变。
+
+AgentLayer memory 构造边界切片（2026-09-26，ADR 0364）：`AppState` 在已有 `Database`、`LlmRouter` 与 `ContextLimitsConfig` 下只创建一个 `Arc<MemoryService>`，将它传给 `AgentLayer::new`。AgentLayer 从该实例派生 memory stores、`MemoryWorker`、`MemoryRuntime` 和 `SystemPromptBuilder`；Agent memory、Worker 与 PromptBuilder 共享同一 service/cache，Runtime 继续持有同一 Worker。Router 注入、worker context limits 与 `embedding_chunk_size` 的来源不变。MemoryRuntime 长期对象所有权和 startup readiness barrier 未迁移（ADR 0362）；`MemoryService::new` 与 `SystemPromptBuilder::new` 的 raw Database API 保留。
 
 阶段 3 增量校准（2026-09-24）：历史查询命令、App resume read model、两个 resume command 的 session record 读取、`end_session` 展示标题 fallback、桌面通知会话标题 fallback、退出时暂停运行会话与 Agent 标题生成上下文现纳入 SessionStore typed-port 覆盖范围（ADR 0279、0282、0283、0284、0286、0287、0288）；fresh-run window 与 App session title write 路径分别见 ADR 0280、0281；上段阶段汇总记录的是此前已完成的覆盖项。
 
@@ -496,13 +498,13 @@ Phase 7.1 验收与未决风险：见 ADR 0259、0261、0262、0263、0264、026
 
 ## 6. 全局完成定义
 
-全部阶段不等于文件变少；以下是截至 2026-09-26 的最终验收状态（证据见 ADR 0361）：
+全部阶段不等于文件变少；以下是截至 2026-09-26 的最终验收状态（验收审计见 ADR 0361，本轮 AgentLayer memory 构造更新见 ADR 0364）：
 
 | 条件 | 状态 | 审计结论 |
 |---|---|---|
 | durable session 恢复只依赖事件回放 | 满足 | `session_events` replay 是 transcript 恢复权威；未进入事件流的 ingress 用户输入按 cursor/message identity 重新排队是已记录例外。 |
 | session-local mutable state 只有 actor owner | actor-task 单 owner 满足；ADR 0214 字段布局仍待对齐 | `SessionActor` task 拥有 `SessionState` 与 active run future；run-local `ReActState` 随该 future 由同一 actor loop 轮询，但尚不是 ADR 0214 所述的 `SessionState` 字段。 |
-| 上层没有 raw Database/ToolsManager service locator 穿透 | 未满足 | `SessionSupervisor` 构造已改用 `SessionStore`（ADR 0363）；`AppState` 仍把 raw Database 传给 `AgentLayer::new`，`MemoryService::new` 与 `SystemPromptBuilder::new` 也仍公开该入口。Agent 仍通过 `get_tools()` / `services()` 访问 manager/service。 |
+| 上层没有 raw Database/ToolsManager service locator 穿透 | 未满足 | `SessionSupervisor` 构造已改用 `SessionStore`（ADR 0363），`AgentLayer::new` 已改接组合根创建的 `MemoryService`（ADR 0364）；`MemoryService::new` 与 `SystemPromptBuilder::new` 仍公开 raw Database 入口。Agent 仍通过 `get_tools()` / `services()` 访问 manager/service。 |
 | stable domain outputs typed，动态 JSON 边界有明确注释 | 部分满足 | 多个 IPC 和 agent/action projections 已 typed；仍需逐域确认 ActionService 等稳定跨层输出与动态 JSON 扩展的边界。 |
 | 配置、工具、模型、任务、记忆的 runtime replacement/失败/取消语义有测试 | 部分满足 | 各域已有局部回归测试；Settings 补偿/retry/restart、跨 writer 并发及完整 Job lifecycle 语义仍未决。 |
 | Rust/TS IPC 生成与校验一致 | 未满足 | IPC contract/event validators 通过；全局 codegen 未实现，且是否采用尚未决定。 |

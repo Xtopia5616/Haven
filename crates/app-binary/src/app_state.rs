@@ -2,8 +2,8 @@ use crate::config_runtime::apply_log_level_to_handles;
 use crate::desktop::DesktopShell;
 use crate::events::AppBootstrapEvent;
 use crate::runtime::{ApplicationRuntime, RuntimeServices};
-use haven_agent::AgentLayer;
 use haven_agent::SessionSupervisor;
+use haven_agent::{AgentLayer, MemoryService};
 use haven_common::config::{ConfigLoader, ConfigService, LogLevel};
 use haven_input::InputPipeline;
 use haven_llm::LlmRouter;
@@ -209,8 +209,13 @@ impl AppState {
             cfg.session.max_concurrent.max(1),
         ));
 
-        let agent = Arc::new(AgentLayer::new(
+        let memory_service = Arc::new(MemoryService::new(
             db.clone(),
+            Some(router.clone()),
+            context_limits.embedding_chunk_size,
+        ));
+        let agent = Arc::new(AgentLayer::new(
+            memory_service,
             executor.clone(),
             router.clone(),
             max_steps,
