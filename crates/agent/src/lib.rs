@@ -69,10 +69,12 @@ use crate::title::TitleGenerator;
 
 /// Low-level `messages` insert (partial discard + `add_message_full`).
 ///
-/// X12: ReAct-loop assistant/thought/ask/reasoning rows must go through
-/// `ReActEngine::apply_transcript` → `project_chat_message`. Direct callers
-/// are limited to ingress user seeds, terminal action-result history, and
-/// recovery partials. Do not reintroduce parallel assistant writers.
+/// X12: recoverable ReAct assistant/thought/ask/reasoning content must be
+/// submitted through `ReActEngine::apply_transcript` as `SessionCommitted`.
+/// Direct callers are limited to ingress user seeds, terminal action-result
+/// history, recovery partials, and the documented waiting-notice and
+/// search-final `project_chat_message` exceptions. Do not reintroduce parallel
+/// transcript writers.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn persist_session_message(
     executor: &crate::session::SessionSupervisor,

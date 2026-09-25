@@ -20,8 +20,8 @@ use tokio_util::sync::CancellationToken;
 pub(super) enum TurnEffect {
     /// Append and project one canonical transcript event.
     Transcript(TranscriptEvent),
-    /// Materialize a UI-only assistant row which has no canonical event of its
-    /// own (for example a synthetic final after a search context round).
+    /// Materialize an assistant row without adding a transcript event in this
+    /// effect (for example a waiting notice or a defensive search final).
     ProjectChatMessage {
         role: String,
         content: String,

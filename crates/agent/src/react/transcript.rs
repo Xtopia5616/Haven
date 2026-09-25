@@ -5,14 +5,17 @@
 //! # X12 projection contract
 //!
 //! The durable `session_events` rows are the append-only authority.
-//! `messages` / `session_steps` are materialized projections written from
-//! [`ReActEngine::apply_transcript`]
-//! (or the shared [`ReActEngine::project_chat_message`] helper it owns).
+//! [`ReActEngine::apply_transcript`] submits a [`SessionCommitted`] domain
+//! intent to `SessionStore`, which appends its events before materializing the
+//! included `messages` / `session_steps` projections in one SQLite transaction.
+//! A failure rolls back both; the store broadcasts only after commit.
 //!
-//! `apply` first commits [`TranscriptRecord`] to `SessionEventStore`. The
-//! committed row is then published by [`super::committed_ui::CommittedUiPublisher`]
-//! in sequence order. In-memory canonical updates happen after that publish, so
-//! a projection failure cannot drop the live UI event.
+//! The committed rows are then published by
+//! [`super::committed_ui::CommittedUiPublisher`] in sequence order, before
+//! Agent updates in-memory canonical state. The assistant Thought message is
+//! in the commit transaction; its shared-id thought step is a separate
+//! post-commit store operation, and resume repairs it from the event if that
+//! projection fails.
 //!
 //! Exceptions (documented, not parallel authorities):
 //! - **Ingress user seed**: `layer`/`ingress` may insert the user `messages`
@@ -23,6 +26,11 @@
 //!   intentionally *outside* the event log so continue/rollback can truncate
 //!   them via `last_msg_at` without replaying a failed step.
 //! - **Terminal action-result**: no live loop left — history-only persist.
+//! - **UI-only ask/confirm notices**: waiting prompts are materialized for the
+//!   UI but are not LLM transcript events.
+//! - **Defensive search final**: when a search round already committed its
+//!   ToolCall and no Thought message exists, turn-end may materialize the
+//!   synthetic final through `project_chat_message`; it has no separate event.
 
 use super::committed_ui::{
     CommittedUi, StoredActionUi, StoredObservationUi, encode_transcript_payload,
@@ -31,11 +39,7 @@ use super::*;
 use crate::types::{Action, TranscriptRecord, canonical_for_snapshot_with_media_inputs};
 use haven_common::types::InjectSource;
 use haven_common::types::{CanonicalToolCall, MessageAttachment};
-use haven_memory::{
-    CURRENT_EVENT_VERSION, SessionEvent, SessionEventInput, SessionStore, TRANSCRIPT_EVENT_TYPE,
-    TranscriptActionStepProjection, TranscriptBatch, TranscriptBatchResult,
-    TranscriptMessageProjection, TranscriptThoughtStepProjection,
-};
+use haven_memory::{CURRENT_EVENT_VERSION, SessionCommitted, SessionEvent, TRANSCRIPT_EVENT_TYPE};
 use haven_tools::{
     OperationIdempotency, ToolExecutionOutcome, ToolOperationScope, ToolResultEnvelope,
 };
@@ -44,41 +48,6 @@ use serde_json::Value;
 struct TranscriptProjection {
     record: TranscriptRecord,
     persisted_media_record: Option<TranscriptRecord>,
-}
-
-/// The live transcript persistence boundary.  One writer builds the durable
-/// event and its projection rows, then delegates one bounded SQLite
-/// transaction to `SessionStore`. Callers update ReAct memory and emit
-/// authoritative UI events only after this future succeeds.
-#[derive(Clone)]
-pub(super) struct TranscriptBatchWriter {
-    store: SessionStore,
-}
-
-impl TranscriptBatchWriter {
-    pub(super) fn new(store: SessionStore) -> Self {
-        Self { store }
-    }
-
-    pub(super) async fn write(
-        &self,
-        session_id: &str,
-        batch: TranscriptBatch,
-        cancel: Option<tokio_util::sync::CancellationToken>,
-    ) -> anyhow::Result<TranscriptBatchResult> {
-        if batch.events.is_empty() {
-            anyhow::ensure!(
-                batch.messages.is_empty()
-                    && batch.thought_steps.is_empty()
-                    && batch.action_steps.is_empty(),
-                "empty transcript batch cannot contain projections"
-            );
-            return Ok(TranscriptBatchResult::default());
-        }
-        self.store
-            .append_transcript_batch_cancellable(session_id, batch, cancel)
-            .await
-    }
 }
 
 /// Pending Action card (+ step row) emitted from [`TranscriptEvent::ToolCall`].
@@ -339,13 +308,13 @@ impl ReActEngine {
         TranscriptEvent,
         TranscriptRecord,
         Option<TranscriptRecord>,
-        TranscriptBatch,
+        SessionCommitted,
     )> {
         let event = normalize_transcript_event(event)?;
         let record = event.to_record(ctx.step_num);
-        let mut batch = self.build_transcript_batch(ctx, &event, &record).await?;
+        let mut committed = self.build_session_commit(ctx, &event, &record).await?;
         if let Some(ui) = committed_ui_for(&event)
-            && let Some(first) = batch.events.first_mut()
+            && let Some(first) = committed.events.first_mut()
         {
             first.payload = encode_transcript_payload(&record, Some(&ui))?;
         }
@@ -356,50 +325,40 @@ impl ReActEngine {
             _ => None,
         };
         if let Some(media_record) = &media_record {
-            batch.events.push(SessionEventInput::transcript(
+            committed.push_transcript(
                 serde_json::to_string(media_record)?,
                 ctx.run_id,
                 ctx.step_num,
-            ));
+            );
         }
-        Ok((event, record, media_record, batch))
+        Ok((event, record, media_record, committed))
     }
 
-    async fn build_transcript_batch(
+    async fn build_session_commit(
         &self,
         ctx: &StepCtx,
         event: &TranscriptEvent,
         record: &TranscriptRecord,
-    ) -> anyhow::Result<TranscriptBatch> {
-        let mut batch = TranscriptBatch {
-            events: vec![SessionEventInput::transcript(
-                serde_json::to_string(record)?,
-                ctx.run_id,
-                ctx.step_num,
-            )],
-            ..TranscriptBatch::default()
-        };
+    ) -> anyhow::Result<SessionCommitted> {
+        let mut committed =
+            SessionCommitted::transcript(serde_json::to_string(record)?, ctx.run_id, ctx.step_num);
         match event {
             TranscriptEvent::Thought { text, message_id } => {
                 if !text.trim().is_empty() {
-                    batch.messages.push(TranscriptMessageProjection {
-                        id: message_id.clone(),
-                        role: "assistant".into(),
-                        content: text.trim().into(),
-                        message_type: Some("text".into()),
-                        tool_call_id: None,
-                    });
+                    committed.project_assistant_message(
+                        message_id.clone(),
+                        text.trim(),
+                        Some("text".into()),
+                    );
                 }
             }
             TranscriptEvent::Reasoning { text, message_id } => {
                 if !text.trim().is_empty() {
-                    batch.messages.push(TranscriptMessageProjection {
-                        id: message_id.clone(),
-                        role: "assistant".into(),
-                        content: text.trim().into(),
-                        message_type: Some("reasoning".into()),
-                        tool_call_id: None,
-                    });
+                    committed.project_assistant_message(
+                        message_id.clone(),
+                        text.trim(),
+                        Some("reasoning".into()),
+                    );
                 }
             }
             TranscriptEvent::ToolCall {
@@ -411,25 +370,23 @@ impl ReActEngine {
                 if let Some(message_id) = persist_text_id
                     && !text.trim().is_empty()
                 {
-                    batch.messages.push(TranscriptMessageProjection {
-                        id: message_id.clone(),
-                        role: "assistant".into(),
-                        content: text.trim().into(),
-                        message_type: Some("text".into()),
-                        tool_call_id: None,
-                    });
+                    committed.project_assistant_message(
+                        message_id.clone(),
+                        text.trim(),
+                        Some("text".into()),
+                    );
                 }
                 for card in action_cards {
-                    batch.action_steps.push(TranscriptActionStepProjection {
-                        id: card.step_id.clone(),
-                        step_number: ctx.step_num as i32,
-                        action_index: card.action_index as i32,
-                        tool_name: card.tool_name.clone(),
-                        tool_input: card.tool_input.to_string(),
-                        tool_call_id: card.tool_call_id.clone(),
-                        is_high_risk: card.is_high_risk,
-                        silent: card.silent,
-                    });
+                    committed.project_action_step(
+                        card.step_id.clone(),
+                        ctx.step_num,
+                        card.action_index,
+                        card.tool_name.clone(),
+                        card.tool_input.to_string(),
+                        card.tool_call_id.clone(),
+                        card.is_high_risk,
+                        card.silent,
+                    );
                 }
             }
             TranscriptEvent::ToolResult {
@@ -441,30 +398,28 @@ impl ReActEngine {
                     && card.tool_name == "ask"
                     && !history_observation.trim().is_empty()
                 {
-                    batch.messages.push(TranscriptMessageProjection {
-                        id: card.step_id.clone(),
-                        role: "assistant".into(),
-                        content: history_observation.trim().into(),
-                        message_type: Some("text".into()),
-                        tool_call_id: None,
-                    });
+                    committed.project_assistant_message(
+                        card.step_id.clone(),
+                        history_observation.trim(),
+                        Some("text".into()),
+                    );
                 }
             }
             TranscriptEvent::UserInject {
                 source, message_id, ..
             } => {
                 if *source != InjectSource::ActionResult {
-                    batch.thought_steps.push(TranscriptThoughtStepProjection {
-                        id: message_id
+                    committed.project_thought_step(
+                        message_id
                             .clone()
                             .unwrap_or_else(|| haven_common::types::new_id("step")),
-                        step_number: ctx.step_num as i32,
-                    });
+                        ctx.step_num,
+                    );
                 }
             }
             TranscriptEvent::CompactSummary { .. } => {}
         }
-        Ok(batch)
+        Ok(committed)
     }
 
     /// Commit the durable row, publish its sequenced UI cards, then project canonical state.
@@ -478,7 +433,8 @@ impl ReActEngine {
         event: TranscriptEvent,
         state: &mut ReActState,
     ) -> anyhow::Result<()> {
-        let (event, record, media_record, batch) = self.build_transcript_item(ctx, event).await?;
+        let (event, record, media_record, committed) =
+            self.build_transcript_item(ctx, event).await?;
         // Persist the event and its materialized rows before mutating the
         // in-memory projection. A snapshot checkpoint may lag, but a
         // committed event is replayable after a crash and cannot be lost with
@@ -490,8 +446,12 @@ impl ReActEngine {
                 ctx.run_id,
                 ctx.step_num,
             );
-            TranscriptBatchWriter::new(self.event_store.clone())
-                .write(&ctx.session_id, batch, state.turn_cancel.clone())
+            self.event_store
+                .commit_transcript_cancellable(
+                    &ctx.session_id,
+                    committed,
+                    state.turn_cancel.clone(),
+                )
                 .await?
         };
         self.metrics.observe(
@@ -530,15 +490,13 @@ impl ReActEngine {
         if events.is_empty() {
             return Ok(());
         }
-        let mut batch = TranscriptBatch::default();
+        let mut committed = SessionCommitted::default();
         let mut projected = Vec::with_capacity(events.len());
         for event in events {
-            let (event, record, media_record, item_batch) =
+            let (event, record, media_record, item_commit) =
                 self.build_transcript_item(ctx, event).await?;
-            batch.events.extend(item_batch.events);
-            batch.messages.extend(item_batch.messages);
-            batch.thought_steps.extend(item_batch.thought_steps);
-            batch.action_steps.extend(item_batch.action_steps);
+            committed.events.extend(item_commit.events);
+            committed.projections.extend(item_commit.projections);
             projected.push((event, record, media_record));
         }
         let write_result = {
@@ -548,8 +506,12 @@ impl ReActEngine {
                 ctx.run_id,
                 ctx.step_num,
             );
-            TranscriptBatchWriter::new(self.event_store.clone())
-                .write(&ctx.session_id, batch, state.turn_cancel.clone())
+            self.event_store
+                .commit_transcript_cancellable(
+                    &ctx.session_id,
+                    committed,
+                    state.turn_cancel.clone(),
+                )
                 .await?
         };
         self.metrics.observe(
@@ -930,44 +892,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn transcript_batch_writer_preserves_empty_batch_contract() {
-        let db_path = std::env::temp_dir().join(format!(
-            "haven_transcript_batch_writer_empty_{}.db",
-            uuid::Uuid::new_v4()
-        ));
-        let db = Arc::new(Database::open(&db_path).unwrap());
-        let writer = TranscriptBatchWriter::new(SessionStore::new(db));
-        let missing_session_id = haven_common::types::new_id("ses");
-
-        let result = writer
-            .write(&missing_session_id, TranscriptBatch::default(), None)
-            .await
-            .unwrap();
-        assert!(result.events.is_empty());
-        assert!(result.message_created_at.is_empty());
-        assert_eq!(result.cursor, Default::default());
-
-        let invalid_empty_batch = TranscriptBatch {
-            messages: vec![TranscriptMessageProjection {
-                id: haven_common::types::new_id("msg"),
-                role: "assistant".into(),
-                content: "projection without event".into(),
-                message_type: None,
-                tool_call_id: None,
-            }],
-            ..TranscriptBatch::default()
-        };
-        let error = writer
-            .write(&missing_session_id, invalid_empty_batch, None)
-            .await
-            .unwrap_err();
-        assert_eq!(
-            error.to_string(),
-            "empty transcript batch cannot contain projections"
-        );
-    }
-
-    #[tokio::test]
     async fn apply_user_inject_sets_source_raw_text() {
         let dir = std::env::temp_dir().join(format!(
             "haven_transcript_inject_{}.db",
@@ -1116,6 +1040,13 @@ mod tests {
             msgs.iter()
                 .any(|m| m.id == mid && m.content == "thinking" && m.role == "assistant"),
             "expected projected thought message, got {msgs:?}"
+        );
+        assert!(
+            db.get_session_steps(&session.id)
+                .unwrap()
+                .iter()
+                .any(|step| step.id == mid && step.action_tool.is_none()),
+            "the thought message and execution step must share the committed id"
         );
     }
 
@@ -1552,6 +1483,10 @@ mod tests {
         ctx.emitter = Arc::new(RecordingEmitter {
             events: recorded.clone(),
         });
+        let dispatcher = Arc::new(EventDispatcher::new());
+        dispatcher.set_emitter(ctx.emitter.clone());
+        let committed_events = engine.event_store.subscribe();
+        engine.start_committed_ui_bridge(dispatcher, committed_events);
         let mut state = ReActState::new(Vec::new(), Vec::new(), std::collections::HashMap::new());
         let error = engine
             .apply_transcript(
@@ -1564,6 +1499,12 @@ mod tests {
             )
             .await;
         assert!(error.is_err(), "step collision must fail the projection");
+        for _ in 0..50 {
+            if recorded.lock().unwrap().len() == 1 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
         let durable = engine
             .event_store
             .read_active_transcript(&session.id)
@@ -1574,7 +1515,7 @@ mod tests {
         assert_eq!(
             events.len(),
             1,
-            "projection failure must not drop the UI event"
+            "projection failure and the committed-event bridge must still publish once"
         );
         assert!(
             matches!(

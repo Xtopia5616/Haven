@@ -226,10 +226,11 @@ impl ReActEngine {
 
     /// Project a chat row into `messages` and refresh `last_msg_at`.
     ///
-    /// X12: the ReAct loop must call this only from [`Self::apply_transcript`]
-    /// (or documented recovery exceptions). Ingress user seeds go through
-    /// `crate::persist_session_message` directly so the queue has a durable id
-    /// before `UserInject` lands.
+    /// X12: recoverable ReAct content goes through [`Self::apply_transcript`]
+    /// as a `SessionCommitted`. This helper remains for documented UI-only
+    /// waiting rows and the defensive search-final fallback. Ingress user seeds
+    /// go through `crate::persist_session_message` directly so the queue has a
+    /// durable id before `UserInject` lands.
     pub(super) async fn project_chat_message(
         &self,
         session_id: &str,

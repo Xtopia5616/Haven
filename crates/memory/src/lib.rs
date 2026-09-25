@@ -32,12 +32,11 @@ pub use repositories::session_events::{
     MAX_SESSION_EVENT_REPLAY_PAGE_SIZE, MAX_TRANSCRIPT_BATCH_EVENTS,
     MAX_TRANSCRIPT_BATCH_PROJECTION_ROWS, MEMORY_TRIGGER_EVENT_TYPE, ProjectionCutoff,
     RECOVERY_PERSISTENCE_EVENT_TYPE, RecoveryPersistenceStatus, RollbackProjectionBoundary,
-    RollbackRequest, RollbackResult, SessionCursor, SessionEvent, SessionEventInput,
-    SessionEventPage, SessionEventStore, SessionEventSubscription, SessionHistoryFilter,
-    SessionMessageText, SessionReplayState, SessionResumeMedia, SessionResumeProjection,
-    SessionStore, SessionTitleGenerationContext, StoredBranchPoint, TIMELINE_ROLLBACK_EVENT_TYPE,
-    TRANSCRIPT_EVENT_TYPE, TranscriptActionStepProjection, TranscriptBatch, TranscriptBatchResult,
-    TranscriptMessageProjection, TranscriptThoughtStepProjection, USAGE_DISCARDED_EVENT_TYPE,
-    USAGE_RECORDED_EVENT_TYPE,
+    RollbackRequest, RollbackResult, SessionCommitResult, SessionCommitted, SessionCommittedEvent,
+    SessionCursor, SessionEvent, SessionEventInput, SessionEventPage, SessionEventStore,
+    SessionEventSubscription, SessionHistoryFilter, SessionMessageText, SessionProjectionIntent,
+    SessionReplayState, SessionResumeMedia, SessionResumeProjection, SessionStore,
+    SessionTitleGenerationContext, StoredBranchPoint, TIMELINE_ROLLBACK_EVENT_TYPE,
+    TRANSCRIPT_EVENT_TYPE, USAGE_DISCARDED_EVENT_TYPE, USAGE_RECORDED_EVENT_TYPE,
 };
 pub use repositories::usage::LlmCallUsageInput;

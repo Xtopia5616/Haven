@@ -324,3 +324,4 @@
 - [0333：Tools runtime composition 与更新编排归 coordinator](0333-tools-runtime-coordinator.md)
 - [0334：Action 终态持久化重试策略归纯 typed owner](0334-action-terminal-persistence-retry-policy.md)
 - [0335: Action board UI contract mapper](0335-action-board-ui-contract-mapper.md)
+- [0336：ReAct transcript 以 SessionCommitted 提交](0336-react-session-committed-submission.md)
