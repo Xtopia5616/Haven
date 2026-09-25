@@ -110,11 +110,15 @@ pub(crate) struct ToolRuntime {
 
 impl ToolRuntime {
     pub(crate) fn new() -> Self {
+        let action_service = Arc::new(ActionService::new());
+        let live_outputs = Arc::new(LiveOutputHub::with_tail_factory(
+            action_service.output_tail_factory(),
+        ));
         Self {
             managed_assets: ManagedAssetRegistry::default(),
             platform: RwLock::new(Arc::new(PlatformRuntime::default())),
-            action_service: Arc::new(ActionService::new()),
-            live_outputs: Arc::new(LiveOutputHub::new()),
+            action_service,
+            live_outputs,
             builtin_catalog: RwLock::new(Arc::new(BuiltinCatalog::empty())),
             clipboard_history: Arc::new(crate::builtin::clipboard::ClipboardHistory::new(50)),
             messaging_service: Arc::new(MessagingService::default_root()),

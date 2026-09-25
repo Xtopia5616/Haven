@@ -5,9 +5,12 @@
 //! so the chat tool card can expand and show progress. Final observation
 //! remains the LLM/canonical authority; these events are UI-only.
 
+use crate::action_output::{
+    ActionOutputPort, ActionOutputTail, ActionTailFactory, ActionTailSnapshot,
+};
 use crate::{EventSink, EventSinkState};
 use serde_json::json;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 
@@ -16,8 +19,9 @@ use tokio::sync::RwLock;
 /// [`LiveOutputHub::set_event_sink`].
 pub struct LiveOutputHub {
     event_sink: EventSinkState,
-    /// Bounded live-output tail (chars). Defaults match background actions.
-    tail_max_chars: RwLock<usize>,
+    /// Shared policy owned by ActionService; this hub only emits the
+    /// foreground tool-card projection.
+    tail_factory: ActionTailFactory,
     /// Cadence of `agent:tool_output` events while a tool produces output.
     /// Slightly snappier than background actions because the user is watching
     /// the active tool card.
@@ -32,9 +36,13 @@ impl Default for LiveOutputHub {
 
 impl LiveOutputHub {
     pub fn new() -> Self {
+        Self::with_tail_factory(ActionOutputPort::new().tail_factory())
+    }
+
+    pub(crate) fn with_tail_factory(tail_factory: ActionTailFactory) -> Self {
         Self {
             event_sink: EventSinkState::default(),
-            tail_max_chars: RwLock::new(2000),
+            tail_factory,
             emit_interval: RwLock::new(Duration::from_millis(500)),
         }
     }
@@ -43,8 +51,10 @@ impl LiveOutputHub {
         self.event_sink.set(sink);
     }
 
-    pub async fn set_limits(&self, limits: &haven_common::config::ContextLimitsConfig) {
-        *self.tail_max_chars.write().await = limits.background_job_tail_max_chars;
+    pub(crate) async fn set_emit_interval(
+        &self,
+        limits: &haven_common::config::ContextLimitsConfig,
+    ) {
         // Foreground cards use a bounded, faster cadence than background
         // actions. The setting remains the source of truth, but a large
         // background interval must not make an active card look frozen.
@@ -52,8 +62,8 @@ impl LiveOutputHub {
         *self.emit_interval.write().await = Duration::from_millis((bg_ms / 4).clamp(100, 250));
     }
 
-    pub async fn tail_max_chars(&self) -> usize {
-        *self.tail_max_chars.read().await
+    pub(crate) async fn new_tail(&self) -> ActionOutputTail {
+        self.tail_factory.new_tail().await
     }
 
     pub async fn emit_interval(&self) -> Duration {
@@ -78,11 +88,11 @@ impl LiveOutputHub {
     /// Spawn a periodic emitter that pushes the shared `tail` while
     /// `running` stays true. Stops when `running` is cleared (tool finished
     /// or cancelled). No-op when `step_id` is empty.
-    pub fn spawn_tail_emitter(
+    pub(crate) fn spawn_tail_emitter(
         self: &Arc<Self>,
         session_id: String,
         step_id: String,
-        tail: Arc<Mutex<String>>,
+        tail: ActionOutputTail,
         running: Arc<std::sync::atomic::AtomicBool>,
         emit_interval: Duration,
     ) {
@@ -93,13 +103,13 @@ impl LiveOutputHub {
         tokio::spawn(async move {
             // Compare by value: a capped sliding window can change content
             // without changing length (same freeze as background actions).
-            let mut last_output = String::new();
+            let mut last_output = ActionTailSnapshot::default();
             loop {
                 if !running.load(std::sync::atomic::Ordering::Relaxed) {
                     return;
                 }
-                if crate::take_tail_if_changed(&tail, &mut last_output) {
-                    hub.emit_output(&session_id, &step_id, &last_output);
+                if tail.snapshot_if_changed(&mut last_output) {
+                    hub.emit_output(&session_id, &step_id, last_output.as_str());
                 }
                 tokio::time::sleep(emit_interval).await;
             }
@@ -124,6 +134,14 @@ mod tests {
             assert_eq!(event, "agent:tool_output");
             assert_eq!(payload["session_id"], "ses-1");
             assert_eq!(payload["step_id"], "step-1");
+            assert_eq!(
+                payload,
+                json!({
+                    "session_id": "ses-1",
+                    "step_id": "step-1",
+                    "output": "hello",
+                })
+            );
             *last2.lock().unwrap() = payload["output"].as_str().unwrap().into();
             hits2.fetch_add(1, Ordering::SeqCst);
         }));
@@ -145,8 +163,8 @@ mod tests {
             assert_eq!(payload["step_id"], "step-live");
             hits2.fetch_add(1, Ordering::SeqCst);
         }));
-        let tail = Arc::new(Mutex::new(String::new()));
         let running = Arc::new(AtomicBool::new(true));
+        let tail = hub.new_tail().await;
         hub.spawn_tail_emitter(
             "ses-1".into(),
             "step-live".into(),
@@ -155,7 +173,7 @@ mod tests {
             Duration::from_millis(30),
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
-        *tail.lock().unwrap() = "line1\n".into();
+        tail.append_text("line1\n");
         tokio::time::sleep(Duration::from_millis(80)).await;
         assert!(
             hits.load(Ordering::SeqCst) >= 1,
@@ -163,7 +181,7 @@ mod tests {
         );
         running.store(false, Ordering::SeqCst);
         let before = hits.load(Ordering::SeqCst);
-        *tail.lock().unwrap() = "line1\nline2\n".into();
+        tail.append_text("line2\n");
         tokio::time::sleep(Duration::from_millis(80)).await;
         assert_eq!(
             hits.load(Ordering::SeqCst),
@@ -182,7 +200,8 @@ mod tests {
             assert_eq!(payload["output"], "already available");
             hits2.fetch_add(1, Ordering::SeqCst);
         }));
-        let tail = Arc::new(Mutex::new("already available".into()));
+        let tail = hub.new_tail().await;
+        tail.append_text("already available");
         let running = Arc::new(AtomicBool::new(true));
         hub.spawn_tail_emitter(
             "ses-1".into(),
@@ -203,8 +222,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn foreground_and_background_tails_share_action_service_policy() {
+        let actions = crate::ActionService::new();
+        let limits = haven_common::config::ContextLimitsConfig {
+            background_job_tail_max_chars: 3,
+            ..Default::default()
+        };
+        actions.set_limits(&limits).await;
+        let tail_factory = actions.output_tail_factory();
+        let hub = LiveOutputHub::with_tail_factory(tail_factory.clone());
+
+        let foreground_tail = hub.new_tail().await;
+        foreground_tail.append_text("secret");
+        let background_tail = tail_factory.new_tail().await;
+        background_tail.append_text("secret");
+
+        assert_eq!(foreground_tail.snapshot().as_str(), "ret");
+        assert_eq!(background_tail.snapshot().as_str(), "ret");
+    }
+
+    #[tokio::test]
     async fn spawn_tail_emitter_pushes_when_content_slides_at_same_len() {
-        let hub = Arc::new(LiveOutputHub::new());
+        let actions = crate::ActionService::new();
+        let limits = haven_common::config::ContextLimitsConfig {
+            background_job_tail_max_chars: 64,
+            ..Default::default()
+        };
+        actions.set_limits(&limits).await;
+        let hub = Arc::new(LiveOutputHub::with_tail_factory(
+            actions.output_tail_factory(),
+        ));
         let hits = Arc::new(AtomicUsize::new(0));
         let last = Arc::new(Mutex::new(String::new()));
         let hits2 = hits.clone();
@@ -214,7 +261,7 @@ mod tests {
             *last2.lock().unwrap() = payload["output"].as_str().unwrap().into();
             hits2.fetch_add(1, Ordering::SeqCst);
         }));
-        let tail = Arc::new(Mutex::new(String::new()));
+        let tail = hub.new_tail().await;
         let running = Arc::new(AtomicBool::new(true));
         hub.spawn_tail_emitter(
             "ses-1".into(),
@@ -223,12 +270,12 @@ mod tests {
             running.clone(),
             Duration::from_millis(30),
         );
-        *tail.lock().unwrap() = "a".repeat(64);
+        tail.append_text(&"a".repeat(64));
         tokio::time::sleep(Duration::from_millis(80)).await;
         assert!(hits.load(Ordering::SeqCst) >= 1);
         let after_first = hits.load(Ordering::SeqCst);
         // Same length, different bytes — old len-only emitters would freeze here.
-        *tail.lock().unwrap() = "b".repeat(64);
+        tail.append_text(&"b".repeat(64));
         tokio::time::sleep(Duration::from_millis(80)).await;
         assert!(
             hits.load(Ordering::SeqCst) > after_first,

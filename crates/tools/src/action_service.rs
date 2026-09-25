@@ -2,8 +2,8 @@ use haven_common::ActionStatus;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 use tokio::sync::{RwLock, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -14,6 +14,9 @@ use crate::action_completion::ActionCompletionBus;
 pub use crate::action_completion::{
     ActionCompletion, ActionCompletionReceiver, BackgroundActionCompletion, ScheduledActionFired,
 };
+use crate::action_output::{
+    ActionOutputPort, ActionOutputTail, ActionTailFactory, ActionTailSnapshot,
+};
 use crate::action_retry_policy::{ActionPersistenceRetryPolicy, RetryDecision, RetrySignal};
 use crate::action_terminal::{
     ActionState, TerminalPayload, TerminalSource, TerminalTimestamps, TerminalTransitionGuard,
@@ -21,18 +24,8 @@ use crate::action_terminal::{
 };
 use haven_memory::{ActionCompletionOutboxRow, ActionRow, ActionStore};
 
-fn lock_or_recover<'a, T>(lock: &'a Mutex<T>, name: &'static str) -> MutexGuard<'a, T> {
-    lock.lock().unwrap_or_else(|poisoned| {
-        tracing::error!(
-            lock = name,
-            "background action lock poisoned; recovering state"
-        );
-        poisoned.into_inner()
-    })
-}
-
 use crate::output::{append_windows_diagnostics, sanitize_shell_output, summarize_error};
-use crate::process::{kill_process_tree, read_stream_capped, take_tail_if_changed};
+use crate::process::{kill_process_tree, read_stream_capped};
 use crate::shell_runtime::{build_shell_command, collect_byte_cap, write_output_log};
 
 const ACTION_DB_RETRY_ATTEMPTS: usize = 3;
@@ -182,8 +175,8 @@ impl ActionStateView {
                 command: (entry.kind == ActionKind::Background).then(|| entry.command.clone()),
                 shell: (entry.kind == ActionKind::Background).then(|| entry.shell.clone()),
                 output: entry.tail.as_ref().and_then(|tail| {
-                    let output = lock_or_recover(tail, "action_output_tail");
-                    (!output.is_empty()).then(|| output.clone())
+                    let output = tail.snapshot();
+                    (!output.is_empty()).then(|| output.as_str().to_string())
                 }),
             },
             ActionState::Completed {
@@ -486,7 +479,7 @@ struct ActionEntry {
     kill: Option<oneshot::Sender<()>>,
     /// Bounded tail of the combined live output, for `action:output` preview
     /// events while the action runs. `None` for terminal entries.
-    tail: Option<Arc<Mutex<String>>>,
+    tail: Option<ActionOutputTail>,
     /// The shell command this action is executing (surfaced in running status so
     /// the agent can see what the action is doing right now).
     command: String,
@@ -567,9 +560,9 @@ pub struct ActionService {
     quarantine_persistence_retries: RwLock<HashSet<String>>,
     /// Max concurrent *running* actions (from `context_limits.background_max_actions`).
     max_actions: RwLock<usize>,
-    /// Live-output tail cap (chars) for `action:output` preview events (from
-    /// `context_limits.background_job_tail_max_chars`).
-    job_tail_max_chars: RwLock<usize>,
+    /// Unique owner of bounded action-output tail policy for lifecycle and
+    /// foreground tool-card previews.
+    output_port: ActionOutputPort,
     /// Cadence of `action:output` events while a action produces output (from
     /// `context_limits.background_job_output_emit_interval_ms`).
     job_output_emit_interval: RwLock<Duration>,
@@ -610,7 +603,7 @@ impl ActionService {
             background_terminal_retries: RwLock::new(HashSet::new()),
             quarantine_persistence_retries: RwLock::new(HashSet::new()),
             max_actions: RwLock::new(64),
-            job_tail_max_chars: RwLock::new(2000),
+            output_port: ActionOutputPort::new(),
             job_output_emit_interval: RwLock::new(Duration::from_millis(1500)),
             terminal_job_ttl: RwLock::new(Duration::from_secs(600)),
             max_scheduled_actions: RwLock::new(32),
@@ -625,6 +618,10 @@ impl ActionService {
     /// Unified completion receiver consumed by the agent layer.
     pub fn take_action_receiver(&self) -> Option<ActionCompletionReceiver> {
         Some(self.completion_bus.subscribe())
+    }
+
+    pub(crate) fn output_tail_factory(&self) -> ActionTailFactory {
+        self.output_port.tail_factory()
     }
 
     pub(crate) async fn pending_scheduled_fire(&self) -> Option<ScheduledActionFired> {
@@ -689,7 +686,9 @@ impl ActionService {
     /// live-output tail size, output-event cadence, terminal-action TTL).
     pub async fn set_limits(&self, limits: &haven_common::config::ContextLimitsConfig) {
         *self.max_actions.write().await = limits.background_max_actions;
-        *self.job_tail_max_chars.write().await = limits.background_job_tail_max_chars;
+        self.output_port
+            .set_tail_max_chars(limits.background_job_tail_max_chars)
+            .await;
         *self.job_output_emit_interval.write().await =
             Duration::from_millis(limits.background_job_output_emit_interval_ms);
         *self.terminal_job_ttl.write().await = Duration::from_secs(limits.terminal_job_ttl_secs);
@@ -1395,8 +1394,7 @@ impl ActionService {
         let id = haven_common::types::new_id("act");
         let started_at = chrono::Utc::now().to_rfc3339();
         let (kill_tx, kill_rx) = oneshot::channel();
-        let tail = Arc::new(Mutex::new(String::new()));
-        let tail_max_chars = *self.job_tail_max_chars.read().await;
+        let tail = self.output_port.new_tail().await;
         let emit_interval = *self.job_output_emit_interval.read().await;
         let terminal_ttl = *self.terminal_job_ttl.read().await;
         let max_actions = *self.max_actions.read().await;
@@ -1537,13 +1535,11 @@ impl ActionService {
                 child.stdout.take(),
                 max_collect,
                 Some(stdout_tail),
-                tail_max_chars,
             );
             let stderr_fut = read_stream_capped(
                 child.stderr.take(),
                 max_collect,
                 Some(stderr_tail),
-                tail_max_chars,
             );
             let run = async {
                 let ((stdout, stdout_overflow), (stderr, stderr_overflow)) =
@@ -1592,7 +1588,7 @@ impl ActionService {
         let emit_tail = tail;
         let shutdown_token = self.shutdown_token.clone();
         tokio::spawn(async move {
-            let mut last_output = String::new();
+            let mut last_output = ActionTailSnapshot::default();
             loop {
                 tokio::select! {
                     _ = shutdown_token.cancelled() => return,
@@ -1601,7 +1597,7 @@ impl ActionService {
                 if emit_me.status(&emit_action_id).await["status"].as_str() != Some("running") {
                     return;
                 }
-                if take_tail_if_changed(&emit_tail, &mut last_output) {
+                if emit_tail.snapshot_if_changed(&mut last_output) {
                     emit_me.emit(
                         "action:output",
                         json!({
@@ -3051,8 +3047,8 @@ fn project_board_action(action_id: &str, entry: &ActionEntry) -> ActionView {
             if entry.kind == ActionKind::Background {
                 view.command = Some(entry.command.clone());
                 view.output = entry.tail.as_ref().and_then(|tail| {
-                    let output = lock_or_recover(tail, "action_output_tail");
-                    (!output.is_empty()).then(|| output.clone())
+                    let output = tail.snapshot();
+                    (!output.is_empty()).then(|| output.as_str().to_string())
                 });
             }
         }

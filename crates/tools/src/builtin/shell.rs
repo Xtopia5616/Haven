@@ -28,9 +28,13 @@ pub struct ShellTool {
 
 impl Default for ShellTool {
     fn default() -> Self {
+        let actions = Arc::new(ActionService::new());
+        let live_outputs = Arc::new(LiveOutputHub::with_tail_factory(
+            actions.output_tail_factory(),
+        ));
         Self {
-            actions: Arc::new(ActionService::new()),
-            live_outputs: Arc::new(LiveOutputHub::new()),
+            actions,
+            live_outputs,
             max_output_chars: 20_000,
             #[cfg(windows)]
             default_shell: "powershell".into(),
@@ -174,34 +178,25 @@ impl ShellTool {
         let step_id = params.step_id.clone().unwrap_or_default();
         let session_id = params.session_id.clone().unwrap_or_default();
         let live = !silent && !step_id.is_empty();
-        let (tail, running, tail_max) = if live {
-            let tail = Arc::new(std::sync::Mutex::new(String::new()));
+        let (tail, running) = if live {
+            let tail = self.live_outputs.new_tail().await;
             let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
             let emit_interval = self.live_outputs.emit_interval().await;
-            let tail_max = self.live_outputs.tail_max_chars().await;
             self.live_outputs.spawn_tail_emitter(
                 session_id.clone(),
                 step_id.clone(),
-                Arc::clone(&tail),
+                tail.clone(),
                 Arc::clone(&running),
                 emit_interval,
             );
-            (Some(tail), Some(running), tail_max)
+            (Some(tail), Some(running))
         } else {
-            (None, None, 0)
+            (None, None)
         };
-        let stdout_fut = read_stream_capped(
-            child.stdout.take(),
-            max_collect,
-            tail.as_ref().map(Arc::clone),
-            tail_max,
-        );
-        let stderr_fut = read_stream_capped(
-            child.stderr.take(),
-            max_collect,
-            tail.as_ref().map(Arc::clone),
-            tail_max,
-        );
+        let stdout_fut =
+            read_stream_capped(child.stdout.take(), max_collect, tail.as_ref().cloned());
+        let stderr_fut =
+            read_stream_capped(child.stderr.take(), max_collect, tail.as_ref().cloned());
         // Read both pipes concurrently: reading stdout to EOF first can
         // deadlock when the child fills the stderr pipe buffer meanwhile.
         // Keep the whole wait/read operation inside the cancellation race so

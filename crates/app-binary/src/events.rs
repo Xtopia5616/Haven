@@ -134,6 +134,30 @@ impl ActionEvent {
         })
     }
 
+    /// Narrow projection for a live `action:output` preview. Command output is
+    /// the only content field on this channel; execution metadata and other
+    /// dynamic values are intentionally ignored even if a producer adds them.
+    pub(crate) fn background_output_from_value(payload: &Value) -> Result<Self, String> {
+        Ok(Self {
+            id: required_string(payload, "action_id")?,
+            kind: ActionKind::Background,
+            status: optional_action_status(payload, "status")?,
+            session_id: None,
+            started_at: None,
+            finished_at: None,
+            due_at: None,
+            title: None,
+            body: None,
+            mode: None,
+            command: None,
+            output: optional_string(payload, "output")?,
+            error: None,
+            error_reason: None,
+            exit_code: None,
+            preview: None,
+        })
+    }
+
     pub(crate) fn scheduled_from_value(payload: &Value, cancelled: bool) -> Result<Self, String> {
         Ok(Self {
             id: required_string(payload, "id")?,

@@ -394,6 +394,12 @@ ActionService 继续按 kind 执行各自 CAS/outbox、内存状态、事件发�
 shell 没有 action-level 执行 timeout；scheduled `due_at` 是触发时刻。AgentLayer 对 background completion
 做 durable transcript 投影/入队的 100 ms 重试与 outbox ack 也保持独立；provider/LLM retry 和 Agent
 ReAct tool-call retry 不属于 action persistence retry（ADR 0305、0332、0334）。
+Action 输出 tail 的长度策略由 `ActionService` 持有的 crate-private `ActionOutputPort` 唯一配置；
+foreground shell card 与 background action 共用该 policy 生成有字符上限的 `ActionOutputTail`，
+consumer 仅拿不可 `Debug`/`Serialize` 的 `ActionTailSnapshot`。`agent:tool_output` 仍用
+`session_id/step_id`，`action:output` 仍用 `action_id`；App mapper 对后者只投影身份、状态和 bounded
+output。终态仍通过原 `action:finished` / background completion 路径承载最终已收集输出；完成提交、取消
+或 shutdown 清理 live tail。此边界没有统一 background/scheduled 的完整 UI projection 或 Job lifecycle（ADR 0338）。
 `InteractionRequest`（`haven-agent/src/interaction.rs`）
 是 ask、confirm 和 scheduled confirm 的共同生命周期投影，快照通过 `interactions` 保存当前
 请求；旧快照不做运行时兼容读取，新的交互状态以 `Pending → Resolved | Expired | Cancelled`
@@ -605,6 +611,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 
 | 日期 | 内容 |
 |---|---|
+| 2026-09-25 | §2.5 Tools / UI：ActionService 持有唯一共享 tail 长度策略，foreground/background 消费 bounded typed snapshots；两条既有 event identity/wire 与 terminal/outbox 时序保持（ADR 0338） |
 | 2026-09-25 | §2.5 App 配置：Settings runtime apply 的有序阶段与 phase/failure 元数据归 `SettingsRuntimeApplyCoordinator`；现有副作用 owner、Router prepare/publish、no-op 与半失败语义保持，补偿/rollback 仍未决（ADR 0337） |
 | 2026-09-25 | §2.5 Agent / §2.3 Memory：ReAct transcript 通过 `SessionCommitted` 提交事件与 domain projection intent；SessionStore 事务内先写 event 再写物化行、提交后广播，Agent 按 sequence 发布 UI（ADR 0336） |
 | 2026-09-25 | §2.5 Tools：由 crate-private `ToolRuntimeCoordinator` 持有 tool runtime composition、PlatformRuntime/config 更新顺序、MCP discovery index 与 builtin catalog rebuild；Tauri config gate、MCP 连接和应用 shutdown 仍留在原 owner（ADR 0333） |

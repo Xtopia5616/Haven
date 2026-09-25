@@ -1,5 +1,6 @@
 mod action_completion;
 mod action_lifecycle;
+mod action_output;
 mod action_retry_policy;
 mod action_service;
 mod action_terminal;
@@ -136,7 +137,7 @@ pub use output::{
     OutputBudget, ToolOutput, append_windows_diagnostics, is_progress_clixml,
     sanitize_shell_output, summarize_error,
 };
-pub(crate) use process::{read_stream_capped, take_tail_if_changed};
+pub(crate) use process::read_stream_capped;
 pub use registry::{
     DeferredToolCatalog, OperationRegistry, RegistryProbe, SessionCatalog, ToolCatalogSnapshot,
     ToolRegistry,

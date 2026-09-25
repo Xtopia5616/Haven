@@ -1,4 +1,5 @@
-use crate::process::{append_tail, read_stream_capped, take_tail_if_changed};
+use crate::action_output::{ActionOutputPort, ActionTailSnapshot};
+use crate::process::read_stream_capped;
 
 use super::*;
 use haven_memory::{ActionStore, Database};
@@ -941,14 +942,14 @@ async fn test_spawn_empty_command_rejected() {
 
 #[tokio::test]
 async fn test_read_stream_capped_under_cap() {
-    let (text, overflowed) = read_stream_capped(Some(&b"hello"[..]), 8192, None, 2000).await;
+    let (text, overflowed) = read_stream_capped(Some(&b"hello"[..]), 8192, None).await;
     assert_eq!(text, "hello");
     assert!(!overflowed);
 }
 
 #[tokio::test]
 async fn test_read_stream_capped_none() {
-    let (text, overflowed) = read_stream_capped::<&[u8]>(None, 8192, None, 2000).await;
+    let (text, overflowed) = read_stream_capped::<&[u8]>(None, 8192, None).await;
     assert_eq!(text, "");
     assert!(!overflowed);
 }
@@ -956,21 +957,20 @@ async fn test_read_stream_capped_none() {
 #[tokio::test]
 async fn test_read_stream_capped_over_cap() {
     let data = vec![b'x'; 1000];
-    let (text, overflowed) = read_stream_capped(Some(&data[..]), 100, None, 2000).await;
+    let (text, overflowed) = read_stream_capped(Some(&data[..]), 100, None).await;
     assert_eq!(text.len(), 100);
     assert!(overflowed);
 }
 
 #[tokio::test]
 async fn test_read_stream_capped_appends_tail() {
-    let tail = Arc::new(Mutex::new(String::new()));
-    let (text, _) =
-        read_stream_capped(Some(&b"hello tail"[..]), 8192, Some(tail.clone()), 2000).await;
+    let tail = ActionOutputPort::new().new_tail().await;
+    let (text, _) = read_stream_capped(Some(&b"hello tail"[..]), 8192, Some(tail.clone())).await;
     assert_eq!(text, "hello tail");
-    assert_eq!(*tail.lock().unwrap(), "hello tail");
+    assert_eq!(tail.snapshot().as_str(), "hello tail");
     // A second chunk appends (multi-chunk tee).
-    read_stream_capped(Some(&b" more"[..]), 8192, Some(tail.clone()), 2000).await;
-    assert_eq!(*tail.lock().unwrap(), "hello tail more");
+    read_stream_capped(Some(&b" more"[..]), 8192, Some(tail.clone())).await;
+    assert_eq!(tail.snapshot().as_str(), "hello tail more");
 }
 
 #[tokio::test]
@@ -978,11 +978,12 @@ async fn test_read_stream_capped_tail_carries_split_multibyte() {
     // 8191 ASCII + a 3-byte UTF-8 char: the first 8192-byte read splits the
     // char (lead byte only), the second read finishes it. The live tail must
     // still show the char intact, not GBK-fallback mojibake.
-    let tail = Arc::new(Mutex::new(String::new()));
+    let tail = ActionOutputPort::new().new_tail().await;
     let mut content = "a".repeat(8191);
     content.push('中');
-    read_stream_capped(Some(content.as_bytes()), 10_000, Some(tail.clone()), 2000).await;
-    let t = tail.lock().unwrap();
+    read_stream_capped(Some(content.as_bytes()), 10_000, Some(tail.clone())).await;
+    let snapshot = tail.snapshot();
+    let t = snapshot.as_str();
     assert!(
         t.ends_with('中'),
         "tail must keep the split char intact, got: {:?}",
@@ -991,17 +992,20 @@ async fn test_read_stream_capped_tail_carries_split_multibyte() {
     assert!(!t.contains('\u{FFFD}'), "no replacement chars in tail");
 }
 
-#[test]
-fn test_append_tail_bounded() {
-    let tail = Mutex::new(String::new());
+#[tokio::test]
+async fn test_tail_buffer_bounded_at_exact_char_limit() {
     // A single oversized chunk is truncated to the last max chars.
     let max_chars = 2000usize;
+    let output_port = ActionOutputPort::new();
+    output_port.set_tail_max_chars(max_chars).await;
+    let tail = output_port.new_tail().await;
     let big = "x".repeat(max_chars + 500);
-    append_tail(&tail, big.as_bytes(), max_chars);
-    assert_eq!(tail.lock().unwrap().len(), max_chars);
+    tail.append_bytes(big.as_bytes());
+    assert_eq!(tail.snapshot().as_str().chars().count(), max_chars);
     // Subsequent chunks drop the front.
-    append_tail(&tail, "tail-end".as_bytes(), max_chars);
-    let t = tail.lock().unwrap();
+    tail.append_bytes("tail-end".as_bytes());
+    let snapshot = tail.snapshot();
+    let t = snapshot.as_str();
     assert!(
         t.ends_with("tail-end"),
         "got tail: {}",
@@ -1009,17 +1013,114 @@ fn test_append_tail_bounded() {
     );
 }
 
-#[test]
-fn test_take_tail_if_changed_detects_sliding_window() {
-    let tail = Mutex::new("a".repeat(100));
-    let mut last = String::new();
-    assert!(take_tail_if_changed(&tail, &mut last));
-    assert_eq!(last.len(), 100);
-    assert!(!take_tail_if_changed(&tail, &mut last));
+#[tokio::test]
+async fn test_tail_snapshot_detects_sliding_window() {
+    let output_port = ActionOutputPort::new();
+    output_port.set_tail_max_chars(100).await;
+    let tail = output_port.new_tail().await;
+    tail.append_text(&"a".repeat(100));
+    let mut last = ActionTailSnapshot::default();
+    assert!(tail.snapshot_if_changed(&mut last));
+    assert_eq!(last.as_str().chars().count(), 100);
+    assert!(!tail.snapshot_if_changed(&mut last));
     // Same length, different content (capped-window slide).
-    *tail.lock().unwrap() = "b".repeat(100);
-    assert!(take_tail_if_changed(&tail, &mut last));
-    assert_eq!(last, "b".repeat(100));
+    tail.append_text(&"b".repeat(100));
+    assert!(tail.snapshot_if_changed(&mut last));
+    assert_eq!(last.as_str(), "b".repeat(100));
+}
+
+#[tokio::test]
+async fn terminal_projection_keeps_final_output_and_releases_live_tail() {
+    let service = Arc::new(ActionService::new());
+    let events = capture_action_events(&service);
+    let action_id = haven_common::types::new_id("act");
+    let tail = service.output_port.new_tail().await;
+    tail.append_text("live preview before exit");
+    service.actions.write().await.insert(
+        action_id.clone(),
+        ActionEntry {
+            kind: ActionKind::Background,
+            session_id: Some("ses-tail-terminal".into()),
+            state: ActionState::Running {
+                started_at: "started".into(),
+            },
+            kill: None,
+            tail: Some(tail),
+            command: "echo terminal".into(),
+            shell: "test".into(),
+            scheduled: None,
+        },
+    );
+
+    let final_output = "authoritative terminal output";
+    service
+        .mark_finished(
+            &action_id,
+            "started",
+            "test",
+            "echo terminal",
+            final_output.into(),
+            true,
+            Some(0),
+            false,
+        )
+        .await;
+
+    assert_eq!(service.status(&action_id).await["output"], final_output);
+    assert!(
+        service.actions.read().await[&action_id].tail.is_none(),
+        "terminal commit releases the live tail"
+    );
+    let finished = events
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|(name, _)| name == "action:finished")
+        .cloned()
+        .expect("terminal snapshot is published once");
+    assert_eq!(finished.1["action_id"], action_id);
+    assert_eq!(finished.1["output"], final_output);
+    assert_eq!(finished.1["status"], "completed");
+}
+
+#[tokio::test]
+async fn cancellation_drops_live_output_without_projecting_it_to_terminal_state() {
+    let service = Arc::new(ActionService::new());
+    let events = capture_action_events(&service);
+    let action_id = haven_common::types::new_id("act");
+    let sensitive_preview = "token=must-not-survive-cancel";
+    let tail = service.output_port.new_tail().await;
+    tail.append_text(sensitive_preview);
+    service.actions.write().await.insert(
+        action_id.clone(),
+        ActionEntry {
+            kind: ActionKind::Background,
+            session_id: Some("ses-tail-cancel".into()),
+            state: ActionState::Running {
+                started_at: "started".into(),
+            },
+            kill: None,
+            tail: Some(tail),
+            command: "echo token".into(),
+            shell: "test".into(),
+            scheduled: None,
+        },
+    );
+
+    service.mark_cancelled(&action_id, "started").await;
+
+    assert_eq!(service.status(&action_id).await["status"], "cancelled");
+    assert!(service.status(&action_id).await.get("output").is_none());
+    assert!(service.actions.read().await[&action_id].tail.is_none());
+    let finished = events
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|(name, _)| name == "action:finished")
+        .cloned()
+        .expect("cancellation publishes a terminal action event");
+    assert!(!finished.1.to_string().contains(sensitive_preview));
+    assert!(finished.1.get("output").is_none());
 }
 
 #[test]
@@ -1133,6 +1234,8 @@ async fn test_board_lists_all_jobs_with_session() {
 #[tokio::test]
 async fn board_returns_typed_safe_views_in_started_order() {
     let service = ActionService::new();
+    let output_tail = service.output_port.new_tail().await;
+    output_tail.append_text("live output");
     let mut actions = service.actions.write().await;
 
     let scheduled_entry = |state: ActionState, due_at: &str| ActionEntry {
@@ -1198,7 +1301,7 @@ async fn board_returns_typed_safe_views_in_started_order() {
                 started_at: "2026-09-23T10:00:04Z".into(),
             },
             kill: None,
-            tail: Some(Arc::new(Mutex::new("live output".into()))),
+            tail: Some(output_tail),
             command: "echo live output".into(),
             shell: "private-shell".into(),
             scheduled: None,

@@ -54,7 +54,7 @@ pub(crate) fn project_action_event(
         ),
         (ActionKind::Background, "action:output") => (
             ACTION_OUTPUT_EVENT,
-            ActionEvent::background_from_value(payload),
+            ActionEvent::background_output_from_value(payload),
         ),
         (ActionKind::Background, "action:finished") => (
             ACTION_FINISHED_EVENT,
@@ -78,6 +78,48 @@ pub(crate) fn project_action_event(
         }
     };
     Some(projected)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn action_output_event_projects_only_the_bounded_preview_fields() {
+        let payload = serde_json::json!({
+            "action_id": "act-output-preview",
+            "status": "running",
+            "output": "bounded tail snapshot",
+            "command": "echo token=private-command-value",
+            "tool_args": { "token": "private-argument-value" },
+            "log_path": "C:/private/action.log",
+            "stderr": "unbounded stderr value",
+        });
+
+        let (channel, projected) =
+            project_action_event(ActionKind::Background, "action:output", &payload)
+                .expect("background output event is registered");
+        assert_eq!(channel, ACTION_OUTPUT_EVENT);
+        let wire = serde_json::to_value(projected.unwrap()).unwrap();
+        assert_eq!(
+            wire,
+            serde_json::json!({
+                "id": "act-output-preview",
+                "kind": "background",
+                "status": "running",
+                "output": "bounded tail snapshot",
+            })
+        );
+        let serialized = wire.to_string();
+        for private_value in [
+            "private-command-value",
+            "private-argument-value",
+            "private/action.log",
+            "unbounded stderr value",
+        ] {
+            assert!(!serialized.contains(private_value));
+        }
+    }
 }
 
 #[async_trait::async_trait]

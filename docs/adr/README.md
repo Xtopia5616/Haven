@@ -325,3 +325,5 @@
 - [0334：Action 终态持久化重试策略归纯 typed owner](0334-action-terminal-persistence-retry-policy.md)
 - [0335: Action board UI contract mapper](0335-action-board-ui-contract-mapper.md)
 - [0336：ReAct transcript 以 SessionCommitted 提交](0336-react-session-committed-submission.md)
+- [0337：Settings runtime apply planning](0337-settings-runtime-apply-planning.md)
+- [0338：Action tail output policy and snapshot ownership](0338-action-tail-output-policy-and-snapshot.md)

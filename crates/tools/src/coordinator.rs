@@ -76,7 +76,10 @@ impl ToolRuntimeCoordinator {
             .action_service
             .set_limits(&context_limits)
             .await;
-        self.runtime.live_outputs.set_limits(&context_limits).await;
+        self.runtime
+            .live_outputs
+            .set_emit_interval(&context_limits)
+            .await;
         self.core.authorization.apply_security(&security).await;
         self.builtins
             .mcp_manager
@@ -193,7 +196,7 @@ impl ToolRuntimeCoordinator {
         self.builtins.mcp_manager.set_limits(&limits).await;
         self.builtins.skills_engine.set_limits(&limits).await;
         self.runtime.action_service.set_limits(&limits).await;
-        self.runtime.live_outputs.set_limits(&limits).await;
+        self.runtime.live_outputs.set_emit_interval(&limits).await;
         self.runtime
             .update_platform(|current| {
                 let mut next = current.clone();
