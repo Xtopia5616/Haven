@@ -3,6 +3,7 @@ import {
 	initialSessionState,
 	SessionReducer,
 	reduceSession,
+	resumeInteractions,
 	type SessionMessage,
 	type SessionReducerState,
 	type SessionSummary,
@@ -12,6 +13,73 @@ const session = (id: string, status = 'pending'): SessionSummary => ({ id, statu
 const stateWith = (partial: Partial<SessionReducerState>): SessionReducerState => ({
 	...initialSessionState,
 	...partial,
+});
+
+describe('resume interaction normalization', () => {
+	it('keeps snake_case wire and camelCase compatibility rows on the resume path', () => {
+		const requests = resumeInteractions({
+			interactions: [
+				{
+					id: 'conf-wire',
+					session_id: 'ses-wire',
+					kind: 'confirm',
+					status: 'pending',
+					prompt: 'Confirm this action?',
+					options: [],
+					tool_name: 'run_command',
+					risk_level: 'high',
+					invocation_step_id: 'step-1',
+					action_index: 2,
+					tool_call_id: 'call-1',
+					created_at: '2026-09-25T00:00:00Z',
+					expires_at: '2026-09-25T00:01:00Z',
+				},
+				{
+					id: 'ask-legacy',
+					sessionId: 'ses-legacy',
+					kind: 'ask',
+					status: 'pending',
+					prompt: 'Choose one',
+					options: ['A', 'B'],
+					createdAt: '2026-09-25T00:02:00Z',
+				},
+				{ id: 'missing-session', kind: 'ask', status: 'pending' },
+				{ id: 'invalid-session', session_id: 7, kind: 'ask', status: 'pending' },
+			],
+		});
+
+		expect(requests).toEqual([
+			{
+				id: 'conf-wire',
+				sessionId: 'ses-wire',
+				kind: 'confirm',
+				status: 'pending',
+				prompt: 'Confirm this action?',
+				options: [],
+				toolName: 'run_command',
+				riskLevel: 'high',
+				invocationStepId: 'step-1',
+				actionIndex: 2,
+				toolCallId: 'call-1',
+				createdAt: '2026-09-25T00:00:00Z',
+				expiresAt: '2026-09-25T00:01:00Z',
+			},
+			{
+				id: 'ask-legacy',
+				sessionId: 'ses-legacy',
+				kind: 'ask',
+				status: 'pending',
+				prompt: 'Choose one',
+				options: ['A', 'B'],
+				createdAt: '2026-09-25T00:02:00Z',
+			},
+		]);
+	});
+
+	it('returns an empty list for a malformed resume envelope', () => {
+		expect(resumeInteractions(null)).toEqual([]);
+		expect(resumeInteractions({ interactions: {} })).toEqual([]);
+	});
 });
 
 describe('SessionReducer', () => {
