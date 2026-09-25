@@ -1976,6 +1976,186 @@ async fn test_unified_completion_bus_emits_scheduled_transition() {
 }
 
 #[tokio::test]
+async fn scheduled_admission_keeps_running_row_until_completion_then_reaps_terminal_row() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let db = Arc::new(Database::open(&dir.path().join("test.db")).unwrap());
+    let service = Arc::new(ActionService::new());
+    service
+        .set_action_store(Some(ActionStore::new(db.clone())))
+        .await;
+    let mut rx = service.take_action_receiver().expect("receiver available");
+    let id = service
+        .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+            due_at: None,
+            delay_secs: Some(3600),
+            watch_action_id: None,
+            title: "Running retention".into(),
+            body: "complete after another admission".into(),
+            mode: crate::builtin::scheduled_action::ScheduleMode::Tool,
+            session_id: None,
+            tool_name: Some("notify".into()),
+            tool_args: None,
+            prompt: None,
+        })
+        .await
+        .unwrap();
+
+    service.fire_scheduled(&id).await;
+    assert!(matches!(
+        rx.recv().await,
+        Some(ActionCompletion::Scheduled(_))
+    ));
+    assert_eq!(service.status(&id).await["status"], "running");
+
+    service
+        .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+            due_at: None,
+            delay_secs: Some(3600),
+            watch_action_id: None,
+            title: "Another schedule".into(),
+            body: "admission must preserve active work".into(),
+            mode: crate::builtin::scheduled_action::ScheduleMode::Tool,
+            session_id: None,
+            tool_name: Some("notify".into()),
+            tool_args: None,
+            prompt: None,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(service.status(&id).await["status"], "running");
+    assert_eq!(
+        db.get_action(&id).unwrap().unwrap().status,
+        haven_common::ActionStatus::Running
+    );
+    assert!(service.complete_scheduled(&id).await.unwrap());
+    assert_eq!(service.status(&id).await["status"], "completed");
+
+    service
+        .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+            due_at: None,
+            delay_secs: Some(3600),
+            watch_action_id: None,
+            title: "Terminal cleanup".into(),
+            body: "reap completed board entry".into(),
+            mode: crate::builtin::scheduled_action::ScheduleMode::Tool,
+            session_id: None,
+            tool_name: Some("notify".into()),
+            tool_args: None,
+            prompt: None,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(service.status(&id).await["status"], "not_found");
+    assert_eq!(
+        db.get_action(&id).unwrap().unwrap().status,
+        haven_common::ActionStatus::Completed,
+        "terminal cleanup must retain durable scheduled history"
+    );
+}
+
+#[tokio::test]
+async fn scheduled_admission_keeps_running_row_available_for_cancellation() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let db = Arc::new(Database::open(&dir.path().join("test.db")).unwrap());
+    let service = Arc::new(ActionService::new());
+    service
+        .set_action_store(Some(ActionStore::new(db.clone())))
+        .await;
+    let mut rx = service.take_action_receiver().expect("receiver available");
+    let id = service
+        .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+            due_at: None,
+            delay_secs: Some(3600),
+            watch_action_id: None,
+            title: "Running cancellation".into(),
+            body: "cancel after another admission".into(),
+            mode: crate::builtin::scheduled_action::ScheduleMode::Tool,
+            session_id: None,
+            tool_name: Some("notify".into()),
+            tool_args: None,
+            prompt: None,
+        })
+        .await
+        .unwrap();
+    service.fire_scheduled(&id).await;
+    assert!(matches!(
+        rx.recv().await,
+        Some(ActionCompletion::Scheduled(_))
+    ));
+
+    service
+        .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+            due_at: None,
+            delay_secs: Some(3600),
+            watch_action_id: None,
+            title: "Another schedule".into(),
+            body: "admission must preserve active work".into(),
+            mode: crate::builtin::scheduled_action::ScheduleMode::Tool,
+            session_id: None,
+            tool_name: Some("notify".into()),
+            tool_args: None,
+            prompt: None,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(service.status(&id).await["status"], "running");
+    assert!(service.cancel(&id).await);
+    assert_eq!(service.status(&id).await["status"], "cancelled");
+    assert_eq!(
+        db.get_action(&id).unwrap().unwrap().status,
+        haven_common::ActionStatus::Cancelled
+    );
+}
+
+#[tokio::test]
+async fn restore_marks_running_scheduled_action_failed_without_replaying_it() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let db = Arc::new(Database::open(&dir.path().join("test.db")).unwrap());
+    let service = Arc::new(ActionService::new());
+    service
+        .set_action_store(Some(ActionStore::new(db.clone())))
+        .await;
+    let mut rx = service.take_action_receiver().expect("receiver available");
+    let id = service
+        .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+            due_at: None,
+            delay_secs: Some(3600),
+            watch_action_id: None,
+            title: "Restart handling".into(),
+            body: "a running fire is not replayed".into(),
+            mode: crate::builtin::scheduled_action::ScheduleMode::Tool,
+            session_id: None,
+            tool_name: Some("notify".into()),
+            tool_args: None,
+            prompt: None,
+        })
+        .await
+        .unwrap();
+    service.fire_scheduled(&id).await;
+    assert!(matches!(
+        rx.recv().await,
+        Some(ActionCompletion::Scheduled(_))
+    ));
+
+    let restored = Arc::new(ActionService::new());
+    restored
+        .set_action_store(Some(ActionStore::new(db.clone())))
+        .await;
+    assert_eq!(restored.restore().await, (0, 1));
+    assert_eq!(restored.status(&id).await["status"], "not_found");
+    let row = db.get_action(&id).unwrap().unwrap();
+    assert_eq!(row.status, haven_common::ActionStatus::Failed);
+    assert_eq!(
+        row.error_reason.as_deref(),
+        Some("App restarted while the action was running")
+    );
+    assert!(db.list_pending_scheduled_actions().unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn test_scheduled_fire_without_receiver_is_requeued_durably() {
     let (db, _dir) = {
         let dir = tempfile::TempDir::new().unwrap();
@@ -2069,6 +2249,24 @@ async fn test_scheduled_fire_recovery_survives_requeue_failure_for_late_receiver
 
     tokio::time::sleep(Duration::from_millis(1200)).await;
     assert_eq!(service.status(&id).await["status"], "running");
+
+    service
+        .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+            due_at: None,
+            delay_secs: Some(3600),
+            watch_action_id: None,
+            title: "Admission during recovery".into(),
+            body: "keep the retained running fire visible".into(),
+            mode: crate::builtin::scheduled_action::ScheduleMode::Tool,
+            session_id: None,
+            tool_name: Some("notify".into()),
+            tool_args: None,
+            prompt: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(service.status(&id).await["status"], "running");
+
     let mut rx = service.take_action_receiver().unwrap();
     let fired = tokio::time::timeout(
         Duration::from_millis(100),
@@ -2082,7 +2280,7 @@ async fn test_scheduled_fire_recovery_survives_requeue_failure_for_late_receiver
     db.conn()
         .execute_batch("DROP TRIGGER block_scheduled_requeue")
         .unwrap();
-    service.complete_scheduled(&id).await.unwrap();
+    assert!(service.complete_scheduled(&id).await.unwrap());
     assert_eq!(
         db.get_action(&id).unwrap().unwrap().status,
         haven_common::ActionStatus::Completed

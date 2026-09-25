@@ -1220,12 +1220,24 @@ mod tests {
         assert_eq!(fired.title, "Test");
         assert_eq!(fired.body, "fire now");
 
-        // Terminal scheduled actions are reaped by the next set (cap stays clean).
-        center
+        // A new admission must preserve the running action until its consumer
+        // acknowledges the work; both live entries remain on the board.
+        let next_id = center
             .set(tool_spec(3600, "Next", "still pending"))
             .await
             .unwrap();
-        assert_eq!(center.list().await.len(), 1);
+        let actions = center.list().await;
+        assert_eq!(actions.len(), 2);
+        assert!(
+            actions
+                .iter()
+                .any(|action| { action["action_id"] == id && action["status"] == "running" })
+        );
+        assert!(
+            actions
+                .iter()
+                .any(|action| { action["action_id"] == next_id && action["status"] == "waiting" })
+        );
         let _ = tool;
     }
 

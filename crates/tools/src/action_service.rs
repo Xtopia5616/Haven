@@ -2114,7 +2114,7 @@ impl ActionService {
         // the in-memory pending budget. Reap them at the next admission just
         // like terminal process entries are reaped by the process worker.
         actions
-            .retain(|_, entry| !(entry.kind == ActionKind::Scheduled && !entry.state.is_waiting()));
+            .retain(|_, entry| !(entry.kind == ActionKind::Scheduled && entry.state.is_terminal()));
         let pending = actions
             .values()
             .filter(|entry| entry.kind == ActionKind::Scheduled && entry.state.is_waiting())
