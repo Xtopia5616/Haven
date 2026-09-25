@@ -9,12 +9,13 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex as StdMutex};
 
 use haven_common::config::{
-    Capability, ModelEndpoint, RequestKind, RoutedModel, RouterConfig, endpoint_credentials_ready,
+    ModelEndpoint, RequestKind, RoutedModel, RouterConfig, endpoint_credentials_ready,
 };
 use haven_common::media::CapabilityProfile;
 
 use crate::adapters::adapter_for;
 use crate::client::LlmClient;
+use crate::request_descriptor::RequestDescriptor;
 use crate::types::LlmError;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -23,28 +24,16 @@ pub(crate) enum RouteMode {
     InjectedClients,
 }
 
-/// The logical purpose used as the configured route key and the model
-/// capability required to serve that purpose are separate semantics. Keep
-/// both explicit while building ModelDirectory's dispatch table.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct RequestDescriptor {
-    pub(crate) purpose: RequestKind,
-    pub(crate) required_capability: Capability,
-}
-
-impl From<RequestKind> for RequestDescriptor {
-    fn from(purpose: RequestKind) -> Self {
-        Self {
-            purpose,
-            required_capability: purpose.required_capability(),
-        }
-    }
+#[derive(Clone)]
+struct PrimaryRoute {
+    descriptor: RequestDescriptor,
+    model_id: String,
 }
 
 /// The clients and configured primary identities used by one router.
 pub(crate) struct ModelDirectory {
     clients: HashMap<String, Arc<dyn LlmClient>>,
-    primary_routes: StdMutex<HashMap<RequestKind, String>>,
+    primary_routes: StdMutex<HashMap<RequestKind, PrimaryRoute>>,
 }
 
 impl ModelDirectory {
@@ -92,7 +81,7 @@ impl ModelDirectory {
     fn build_primary_routes(
         config: &RouterConfig,
         route_mode: RouteMode,
-    ) -> HashMap<RequestKind, String> {
+    ) -> HashMap<RequestKind, PrimaryRoute> {
         config
             .request_policies
             .iter()
@@ -105,8 +94,13 @@ impl ModelDirectory {
                     RouteMode::Production => endpoint_credentials_ready(&model.endpoint),
                     RouteMode::InjectedClients => true,
                 };
-                (supports_request && credentials_ready)
-                    .then_some((request.purpose, model_id.to_string()))
+                (supports_request && credentials_ready).then_some((
+                    request.purpose,
+                    PrimaryRoute {
+                        descriptor: request,
+                        model_id: model_id.to_string(),
+                    },
+                ))
             })
             .collect()
     }
@@ -126,11 +120,22 @@ impl ModelDirectory {
     /// Resolve the single configured primary for an executing request.
     pub(crate) fn resolve_client(
         &self,
-        request: RequestKind,
+        descriptor: RequestDescriptor,
     ) -> Result<(String, Arc<dyn LlmClient>), LlmError> {
-        let model_id = self.primary_model_id(request).ok_or_else(|| {
-            LlmError::Configuration(format!("no configured model for {}", request.as_str()))
-        })?;
+        let route = self
+            .primary_routes
+            .lock()
+            .unwrap()
+            .get(&descriptor.purpose)
+            .cloned()
+            .filter(|route| route.descriptor == descriptor)
+            .ok_or_else(|| {
+                LlmError::Configuration(format!(
+                    "no configured model for {}",
+                    descriptor.purpose.as_str()
+                ))
+            })?;
+        let model_id = route.model_id;
         let client = self.clients.get(&model_id).cloned().ok_or_else(|| {
             LlmError::Configuration(format!("model client is unavailable: {model_id}"))
         })?;
@@ -153,7 +158,11 @@ impl ModelDirectory {
     }
 
     pub(crate) fn primary_model_id(&self, request: RequestKind) -> Option<String> {
-        self.primary_routes.lock().unwrap().get(&request).cloned()
+        self.primary_routes
+            .lock()
+            .unwrap()
+            .get(&request)
+            .map(|route| route.model_id.clone())
     }
 
     /// Read the configured model for metadata paths. This deliberately uses
@@ -236,6 +245,7 @@ impl ModelDirectory {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use haven_common::config::Capability;
     use haven_common::config::RequestPolicy;
 
     fn model(id: &str, capabilities: Vec<Capability>, api_key: &str) -> RoutedModel {
@@ -268,48 +278,6 @@ mod tests {
 
     fn injected_client() -> Arc<dyn LlmClient> {
         Arc::from(adapter_for(&ModelEndpoint::default()))
-    }
-
-    #[test]
-    fn every_logical_request_purpose_maps_to_its_provider_capability() {
-        let expected = [
-            (RequestKind::Chat, Capability::Chat),
-            (RequestKind::FastChat, Capability::FastChat),
-            (RequestKind::Vision, Capability::Vision),
-            (RequestKind::AudioChat, Capability::AudioInput),
-            (RequestKind::Transcription, Capability::Transcription),
-            (RequestKind::Embedding, Capability::Embedding),
-            (RequestKind::ImageGeneration, Capability::ImageGeneration),
-            (RequestKind::SpeechSynthesis, Capability::SpeechSynthesis),
-        ];
-
-        for (purpose, capability) in expected {
-            let descriptor = RequestDescriptor::from(purpose);
-            assert_eq!(descriptor.purpose, purpose);
-            assert_eq!(descriptor.required_capability, capability);
-        }
-    }
-
-    #[test]
-    fn request_purpose_and_capability_remain_distinct_for_similar_calls() {
-        let chat = RequestDescriptor::from(RequestKind::Chat);
-        let fast_chat = RequestDescriptor::from(RequestKind::FastChat);
-        assert_eq!(chat.purpose, RequestKind::Chat);
-        assert_eq!(chat.required_capability, Capability::Chat);
-        assert_eq!(fast_chat.purpose, RequestKind::FastChat);
-        assert_eq!(fast_chat.required_capability, Capability::FastChat);
-
-        let audio_chat = RequestDescriptor::from(RequestKind::AudioChat);
-        let transcription = RequestDescriptor::from(RequestKind::Transcription);
-        assert_eq!(audio_chat.purpose, RequestKind::AudioChat);
-        assert_eq!(audio_chat.required_capability, Capability::AudioInput);
-        assert_eq!(transcription.purpose, RequestKind::Transcription);
-        assert_eq!(transcription.required_capability, Capability::Transcription);
-
-        let vision = RequestDescriptor::from(RequestKind::Vision);
-        assert_eq!(vision.purpose, RequestKind::Vision);
-        assert_eq!(vision.required_capability, Capability::Vision);
-        assert_ne!(vision.purpose, RequestKind::Chat);
     }
 
     #[test]
@@ -361,6 +329,29 @@ mod tests {
             Some("keyless-chat")
         );
         assert_eq!(directory.primary_model_id(RequestKind::Vision), None);
+        assert!(matches!(
+            directory.resolve_client(RequestDescriptor::from(RequestKind::Vision)),
+            Err(LlmError::Configuration(message)) if message == "no configured model for vision"
+        ));
+    }
+
+    #[test]
+    fn execution_route_rejects_a_descriptor_that_disagrees_with_its_purpose() {
+        let config = config(
+            vec![model("chat", vec![Capability::Chat], "")],
+            vec![policy(RequestKind::Chat, "chat")],
+        );
+        let directory =
+            ModelDirectory::with_injected_clients(&config, [("chat".into(), injected_client())]);
+        let mismatched_descriptor = RequestDescriptor {
+            purpose: RequestKind::Chat,
+            required_capability: Capability::FastChat,
+        };
+
+        assert!(matches!(
+            directory.resolve_client(mismatched_descriptor),
+            Err(LlmError::Configuration(message)) if message == "no configured model for chat"
+        ));
     }
 
     #[test]
@@ -403,7 +394,7 @@ mod tests {
 
         assert_eq!(directory.primary_model_id(RequestKind::Vision), None);
         assert!(matches!(
-            directory.resolve_client(RequestKind::Vision),
+            directory.resolve_client(RequestDescriptor::from(RequestKind::Vision)),
             Err(LlmError::Configuration(message)) if message == "no configured model for vision"
         ));
     }
@@ -426,8 +417,12 @@ mod tests {
             &config,
             [("shared".into(), shared_client.clone())],
         );
-        let (chat_id, chat_client) = directory.resolve_client(RequestKind::Chat).unwrap();
-        let (vision_id, vision_client) = directory.resolve_client(RequestKind::Vision).unwrap();
+        let (chat_id, chat_client) = directory
+            .resolve_client(RequestDescriptor::from(RequestKind::Chat))
+            .unwrap();
+        let (vision_id, vision_client) = directory
+            .resolve_client(RequestDescriptor::from(RequestKind::Vision))
+            .unwrap();
 
         assert_eq!(chat_id, "shared");
         assert_eq!(vision_id, chat_id);

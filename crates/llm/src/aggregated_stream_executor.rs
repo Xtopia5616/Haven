@@ -16,6 +16,7 @@ use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
 use crate::client::{LlmClient, retry_delay};
+use crate::request_descriptor::RequestDescriptor;
 use crate::request_pipeline::{RequestPolicy, RetryPolicy, execute_with_timeout};
 use crate::stream_rules::StreamRule;
 use crate::streaming;
@@ -69,6 +70,7 @@ impl ActiveStreamHooks {
 
 /// Provider-neutral execution context for one selected model/client.
 pub(crate) struct AggregatedStreamExecutor<'a> {
+    descriptor: RequestDescriptor,
     client: Arc<dyn LlmClient>,
     policy: RequestPolicy,
     stream_rules: &'a RwLock<Vec<StreamRule>>,
@@ -77,12 +79,14 @@ pub(crate) struct AggregatedStreamExecutor<'a> {
 
 impl<'a> AggregatedStreamExecutor<'a> {
     pub(crate) fn new(
+        descriptor: RequestDescriptor,
         client: Arc<dyn LlmClient>,
         policy: RequestPolicy,
         stream_rules: &'a RwLock<Vec<StreamRule>>,
         idle_timeout: Duration,
     ) -> Self {
         Self {
+            descriptor,
             client,
             policy,
             stream_rules,
@@ -107,6 +111,11 @@ impl<'a> AggregatedStreamExecutor<'a> {
         I: FnOnce() -> IFut,
         IFut: Future<Output = Duration>,
     {
+        tracing::trace!(
+            request_purpose = self.descriptor.purpose.as_str(),
+            required_capability = self.descriptor.required_capability.as_str(),
+            "executing aggregated LLM stream"
+        );
         self.client.validate_content(&context.messages)?;
 
         let client = self.client.clone();
@@ -277,9 +286,14 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
     use tokio::sync::Notify;
 
+    use crate::request_descriptor::RequestDescriptor;
     use crate::request_pipeline::RetryPolicy;
     use crate::stream_rules::StreamRuleMode;
     use crate::types::{Embedding, SttResult, Usage};
+
+    fn chat_descriptor() -> RequestDescriptor {
+        RequestDescriptor::from(haven_common::config::RequestKind::Chat)
+    }
 
     type MockStream = Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>;
 
@@ -432,6 +446,7 @@ mod tests {
         let probe = Arc::new(ExecutorProbe::new(ProbeMode::RetryThenSuccess));
         let rules = RwLock::new(Vec::new());
         let executor = AggregatedStreamExecutor::new(
+            chat_descriptor(),
             probe.clone(),
             policy(10, 1),
             &rules,
@@ -475,6 +490,7 @@ mod tests {
             .unwrap(),
         ]);
         let executor = AggregatedStreamExecutor::new(
+            chat_descriptor(),
             probe.clone(),
             policy(10, 0),
             &rules,
@@ -555,6 +571,7 @@ mod tests {
             let projection_calls = projection_calls.clone();
             async move {
                 let executor = AggregatedStreamExecutor::new(
+                    chat_descriptor(),
                     probe,
                     policy(10, 0),
                     &rules,
@@ -587,6 +604,7 @@ mod tests {
         let rules = RwLock::new(Vec::new());
         let projection_calls = Arc::new(AtomicUsize::new(0));
         let executor = AggregatedStreamExecutor::new(
+            chat_descriptor(),
             probe.clone(),
             policy(1, 0),
             &rules,
@@ -615,5 +633,20 @@ mod tests {
         ));
         assert_eq!(probe.attempts.load(Ordering::SeqCst), 1);
         assert_eq!(projection_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn executor_keeps_the_explicit_routed_descriptor() {
+        let descriptor = RequestDescriptor::from(haven_common::config::RequestKind::FastChat);
+        let rules = RwLock::new(Vec::new());
+        let executor = AggregatedStreamExecutor::new(
+            descriptor,
+            Arc::new(ExecutorProbe::new(ProbeMode::RetryThenSuccess)),
+            policy(0, 5),
+            &rules,
+            Duration::from_secs(1),
+        );
+
+        assert_eq!(executor.descriptor, descriptor);
     }
 }

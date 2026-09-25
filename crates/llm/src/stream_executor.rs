@@ -16,6 +16,7 @@ use haven_common::types::CanonicalMessage;
 use tokio::sync::OwnedSemaphorePermit;
 
 use crate::client::LlmClient;
+use crate::request_descriptor::RequestDescriptor;
 use crate::request_pipeline::{
     RequestOutcome, RequestPolicy, execute_with_retry, execute_with_timeout,
 };
@@ -44,14 +45,21 @@ where
 }
 
 pub(crate) struct StreamExecutor {
+    descriptor: RequestDescriptor,
     model_id: String,
     client: Arc<dyn LlmClient>,
     policy: RequestPolicy,
 }
 
 impl StreamExecutor {
-    pub(crate) fn new(model_id: String, client: Arc<dyn LlmClient>, policy: RequestPolicy) -> Self {
+    pub(crate) fn new(
+        descriptor: RequestDescriptor,
+        model_id: String,
+        client: Arc<dyn LlmClient>,
+        policy: RequestPolicy,
+    ) -> Self {
         Self {
+            descriptor,
             model_id,
             client,
             policy,
@@ -71,6 +79,12 @@ impl StreamExecutor {
         F: FnOnce(String, RequestOutcome) -> Fut,
         Fut: Future<Output = ()>,
     {
+        tracing::trace!(
+            request_purpose = self.descriptor.purpose.as_str(),
+            required_capability = self.descriptor.required_capability.as_str(),
+            model_id = %self.model_id,
+            "establishing raw LLM stream"
+        );
         let client = self.client.clone();
         let model_id = &self.model_id;
         let policy = self.policy;
@@ -108,8 +122,13 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
+    use crate::request_descriptor::RequestDescriptor;
     use crate::request_pipeline::RetryPolicy;
     use crate::types::LlmResponse;
+
+    fn chat_descriptor() -> RequestDescriptor {
+        RequestDescriptor::from(haven_common::config::RequestKind::Chat)
+    }
 
     #[derive(Clone, Copy)]
     enum Behavior {
@@ -190,7 +209,12 @@ mod tests {
     #[tokio::test]
     async fn retries_only_stream_establishment_and_projects_final_success_once() {
         let client = Arc::new(StreamProbe::new(Behavior::RetryThenSuccess));
-        let executor = StreamExecutor::new("stream-model".into(), client.clone(), policy(1, 5));
+        let executor = StreamExecutor::new(
+            chat_descriptor(),
+            "stream-model".into(),
+            client.clone(),
+            policy(1, 5),
+        );
         let semaphore = permit_source();
         let outcomes = Arc::new(Mutex::new(Vec::new()));
         let recorded = outcomes.clone();
@@ -228,6 +252,7 @@ mod tests {
     #[tokio::test]
     async fn provider_stream_setup_error_is_returned_and_projected_once() {
         let executor = StreamExecutor::new(
+            chat_descriptor(),
             "stream-model".into(),
             Arc::new(StreamProbe::new(Behavior::Error)),
             policy(0, 5),
@@ -264,6 +289,7 @@ mod tests {
     async fn router_stream_timeout_text_is_preserved_without_provider_outcome_projection() {
         let semaphore = permit_source();
         let executor = StreamExecutor::new(
+            chat_descriptor(),
             "stream-model".into(),
             Arc::new(StreamProbe::new(Behavior::Pending)),
             policy(0, 1),
@@ -297,6 +323,7 @@ mod tests {
     async fn stream_holds_permit_until_the_returned_stream_is_dropped() {
         let semaphore = permit_source();
         let executor = StreamExecutor::new(
+            chat_descriptor(),
             "stream-model".into(),
             Arc::new(StreamProbe::new(Behavior::Success)),
             policy(0, 5),
@@ -331,6 +358,7 @@ mod tests {
     async fn failed_stream_establishment_releases_the_permit() {
         let semaphore = permit_source();
         let executor = StreamExecutor::new(
+            chat_descriptor(),
             "stream-model".into(),
             Arc::new(StreamProbe::new(Behavior::Error)),
             policy(0, 5),
@@ -348,5 +376,18 @@ mod tests {
             .await
             .expect("a failed setup releases its permit")
             .unwrap();
+    }
+
+    #[test]
+    fn executor_keeps_the_explicit_routed_descriptor() {
+        let descriptor = chat_descriptor();
+        let executor = StreamExecutor::new(
+            descriptor,
+            "stream-model".into(),
+            Arc::new(StreamProbe::new(Behavior::Success)),
+            policy(0, 5),
+        );
+
+        assert_eq!(executor.descriptor, descriptor);
     }
 }

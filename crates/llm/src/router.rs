@@ -15,6 +15,7 @@ use crate::client::{LlmClient, endpoint_host};
 use crate::endpoint_health::{CircuitBreaker, CircuitState};
 use crate::endpoint_health::{EndpointHealth, EndpointHealthMap, new_endpoint_health_map};
 use crate::model_directory::{ModelDirectory, RouteMode};
+use crate::request_descriptor::RequestDescriptor;
 use crate::request_pipeline::{
     RequestOutcome, RequestPolicy, execute_with_retry, execute_with_timeout,
 };
@@ -277,14 +278,14 @@ impl LlmRouter {
     /// request-kind or legacy role identity.
     async fn with_request_permit<T, F, Fut>(
         &self,
-        request: RequestKind,
+        descriptor: RequestDescriptor,
         f: F,
     ) -> Result<T, LlmError>
     where
         F: FnOnce(String, Arc<dyn LlmClient>) -> Fut,
         Fut: std::future::Future<Output = Result<T, LlmError>>,
     {
-        let (model_id, client) = self.model_directory.resolve_client(request)?;
+        let (model_id, client) = self.model_directory.resolve_client(descriptor)?;
         let check_id = model_id.clone();
         self.with_model_permit(model_id.clone(), || async move {
             self.check_circuit(&check_id).await?;
@@ -567,21 +568,24 @@ impl LlmRouter {
         // audio-chat model's own permit after native transcription releases
         // its permit.
         let native_result = self
-            .with_request_permit(RequestKind::Transcription, |model_id, client| async move {
-                let cfg = self.config.read().await;
-                let policy = RequestPolicy::primary(&cfg);
-                drop(cfg);
+            .with_request_permit(
+                RequestDescriptor::from(RequestKind::Transcription),
+                |model_id, client| async move {
+                    let cfg = self.config.read().await;
+                    let policy = RequestPolicy::primary(&cfg);
+                    drop(cfg);
 
-                execute_with_timeout(policy.total_timeout_secs, "transcription", || async {
-                    let result = execute_with_retry(policy.retry, None, || async {
-                        client.transcribe(wav_data).await
+                    execute_with_timeout(policy.total_timeout_secs, "transcription", || async {
+                        let result = execute_with_retry(policy.retry, None, || async {
+                            client.transcribe(wav_data).await
+                        })
+                        .await;
+                        self.record_request_outcome(&model_id, &result).await;
+                        result
                     })
-                    .await;
-                    self.record_request_outcome(&model_id, &result).await;
-                    result
-                })
-                .await
-            })
+                    .await
+                },
+            )
             .await;
         match native_result {
             Err(error) if error.is_unsupported() => {
@@ -669,12 +673,13 @@ impl LlmRouter {
             tools,
             max_output_tokens,
         } = request;
-        self.with_request_permit(request, |model_id, client| async move {
+        let descriptor = RequestDescriptor::from(request);
+        self.with_request_permit(descriptor, |model_id, client| async move {
             let config = self.config.read().await;
             let policy = RequestPolicy::primary(&config);
             drop(config);
 
-            CallExecutor::new(model_id, client, policy)
+            CallExecutor::new(descriptor, model_id, client, policy)
                 .complete(messages, tools, max_output_tokens, |model_id, outcome| {
                     self.project_request_outcome(model_id, outcome)
                 })
@@ -753,12 +758,13 @@ impl LlmRouter {
                 usage: Usage::default(),
             });
         }
-        self.with_request_permit(RequestKind::Embedding, |model_id, client| async move {
+        let descriptor = RequestDescriptor::from(RequestKind::Embedding);
+        self.with_request_permit(descriptor, |model_id, client| async move {
             let cfg = self.config.read().await;
             let policy = RequestPolicy::primary(&cfg);
             drop(cfg);
 
-            CallExecutor::new(model_id, client, policy)
+            CallExecutor::new(descriptor, model_id, client, policy)
                 .embed(input, |model_id, outcome| {
                     self.project_request_outcome(model_id, outcome)
                 })
@@ -789,7 +795,8 @@ impl LlmRouter {
         >,
         LlmError,
     > {
-        let (model_id, candidate) = self.model_directory.resolve_client(request)?;
+        let descriptor = RequestDescriptor::from(request);
+        let (model_id, candidate) = self.model_directory.resolve_client(descriptor)?;
         let permit = self.acquire_model_permit(&model_id).await?;
         self.wait_rate_limit_cooldown(&model_id).await;
         self.check_circuit(&model_id).await?;
@@ -799,7 +806,7 @@ impl LlmRouter {
         // Raw stream callers own consumption. Once a stream is returned, its
         // later transport error must be handled by the caller without
         // replaying already-consumed deltas.
-        StreamExecutor::new(model_id, candidate, primary_policy)
+        StreamExecutor::new(descriptor, model_id, candidate, primary_policy)
             .chat_stream(messages, permit, |model_id, outcome| {
                 self.project_request_outcome(model_id, outcome)
             })
@@ -875,11 +882,13 @@ impl LlmRouter {
         hooks: StreamAttemptHooks,
         cancel: CancellationToken,
     ) -> Result<LlmResponse, LlmError> {
-        let operation = self.with_request_permit(stream_request.request, |model_id, _client| {
+        let descriptor = RequestDescriptor::from(stream_request.request);
+        let operation = self.with_request_permit(descriptor, |model_id, _client| {
             let cancel = cancel.clone();
             async move {
                 self.chat_stream_with_tools_aggregated_cancellable_inner(
                     stream_request,
+                    descriptor,
                     model_id,
                     hooks,
                     cancel,
@@ -900,6 +909,7 @@ impl LlmRouter {
     async fn chat_stream_with_tools_aggregated_cancellable_inner(
         &self,
         stream_request: StreamRequest<'_>,
+        descriptor: RequestDescriptor,
         model_id: String,
         hooks: StreamAttemptHooks,
         cancel: CancellationToken,
@@ -926,21 +936,27 @@ impl LlmRouter {
         let stream_context = StreamContext::from_request(stream_request);
         let candidate = self.model_directory.client_for_model_id(&model_id)?;
         let model_id_for_projection = model_id.clone();
-        AggregatedStreamExecutor::new(candidate, primary_policy, &self.stream_rules, idle_dur)
-            .execute(
-                stream_context,
-                hooks,
-                cancel,
-                || async {
-                    Duration::from_secs(self.config.read().await.stream_idle_timeout_secs.max(1))
-                },
-                |result| async move {
-                    self.record_request_outcome(&model_id_for_projection, &result)
-                        .await;
-                    result
-                },
-            )
-            .await
+        AggregatedStreamExecutor::new(
+            descriptor,
+            candidate,
+            primary_policy,
+            &self.stream_rules,
+            idle_dur,
+        )
+        .execute(
+            stream_context,
+            hooks,
+            cancel,
+            || async {
+                Duration::from_secs(self.config.read().await.stream_idle_timeout_secs.max(1))
+            },
+            |result| async move {
+                self.record_request_outcome(&model_id_for_projection, &result)
+                    .await;
+                result
+            },
+        )
+        .await
     }
 
     /// §3.7: Set the active stream rules.
@@ -956,18 +972,21 @@ impl LlmRouter {
     }
 
     pub async fn health_check(&self, request: HealthCheckRequest) -> Result<(), LlmError> {
-        self.with_request_permit(request.request, |model_id, candidate| async move {
-            let cfg = self.config.read().await;
-            let policy = RequestPolicy::primary(&cfg);
-            drop(cfg);
+        self.with_request_permit(
+            RequestDescriptor::from(request.request),
+            |model_id, candidate| async move {
+                let cfg = self.config.read().await;
+                let policy = RequestPolicy::primary(&cfg);
+                drop(cfg);
 
-            execute_with_timeout(policy.total_timeout_secs, "health check", || async {
-                let result = candidate.health_check().await;
-                self.record_request_outcome(&model_id, &result).await;
-                result
-            })
-            .await
-        })
+                execute_with_timeout(policy.total_timeout_secs, "health check", || async {
+                    let result = candidate.health_check().await;
+                    self.record_request_outcome(&model_id, &result).await;
+                    result
+                })
+                .await
+            },
+        )
         .await
     }
 

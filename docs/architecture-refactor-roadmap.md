@@ -321,12 +321,13 @@ SessionStore
 
 工作项：
 
-- 已完成第一步（ADR 0319）：在 ModelDirectory route filtering 使用 crate-private `RequestDescriptor` 显式并列逻辑用途 `RequestKind` 与 provider/model `Capability`；`LlmCallKind` 继续作为独立 usage owner。`RequestKind` 仍保留原配置/route key 与序列化形式；完整 descriptor 尚未贯穿所有执行路径；
+- 已完成第一步（ADR 0319）：在 ModelDirectory route filtering 使用 crate-private `RequestDescriptor` 显式并列逻辑用途 `RequestKind` 与 provider/model `Capability`；`LlmCallKind` 继续作为独立 usage owner。`RequestKind` 仍保留原配置/route key 与序列化形式；
 - 已完成（ADR 0316）：crate-private `ModelDirectory` 拥有 provider client map、primary route 表、按 request 选择/解析 client 与 model id、configured route 判定及 capability/endpoint/context-window metadata lookup；Router 的 config snapshot 是唯一配置真源，health/circuit/rate-limit/semaphore、stream rules、retry/timeout/usage/cancellation 和执行编排继续由 Router 持有；
 - 已完成（ADR 0318）：crate-private CallExecutor 接管已解析 client/model 的 plain/tools complete 和非空 embedding 的内容校验、现有 retry/total timeout 与 Router outcome 投影调用；Router 仍决定路由并持有全部可变运行态，empty embedding 仍先于 route/permit 快返。
 - 已完成第一刀（ADR 0327）：crate-private `StreamExecutor` 只接管 raw `chat_stream` 的 validate、既有 retry/total timeout、最终 outcome closure 投影与 `PermitStream` 包装；Router 仍拥有 route/client 选择、permit acquisition/cooldown、circuit、config snapshot 和健康状态。retry 仅覆盖建流，permit 保持到返回 stream drop。
 - 已完成第二刀（ADR 0328）：crate-private `AggregatedStreamExecutor` 接管聚合流的共享 `StreamContext`、首次 `on_chunk` 交付前重试、StreamRule guidance retry、聚合总 timeout 与 final outcome handoff；`streaming.rs` 继续负责单条 provider stream 消费/聚合。Router 保留 client/model 选择、两处配置读取时点、permit 生命周期、stream rule 状态及 health/cooldown 投影；Cancelled 仍跳过 health failure。
-- 仍待独立 slice：`capability`/`RequestKind` descriptor 全贯穿。完整 RequestDescriptor 尚未迁移到 CompleteRequest/PromptRequest/StreamRequest、embedding/health-check、metadata/config helpers 与仓库其他 RequestKind 调用点；不在本次改动中扩展。
+- 已完成（ADR 0329）：Router 将 `RequestDescriptor` 贯穿到 CallExecutor 的 complete/embedding、raw StreamExecutor 和 AggregatedStreamExecutor；ModelDirectory 仍以 `RequestKind` 为 route key，并拒绝与 primary route descriptor 不一致的执行请求。
+- 仍待独立 slice：public `CompleteRequest`/`PromptRequest`/`StreamRequest` 与专用入口仍保留 `RequestKind` route data；health/native transcription、metadata/config helpers 和仓库其他 RequestKind 调用点尚未评估为 descriptor 使用者。`LlmCallKind` usage role 必须从调用方边界显式传递，不能由 Router 推断。
 - 删除只转发参数的 chat/chat_request/output_cap/stream wrapper；
 - provider adapter 只做 wire mapping，保持 golden fixture。
 
@@ -341,6 +342,8 @@ SessionStore
 2026-09-25 切片进展（ADR 0319）：ModelDirectory 构造 primary routes 时以 `RequestDescriptor` 将逻辑用途/原 route key 与显式 `Capability` 分开；production 仍要求凭据及能力匹配，注入 route 仍要求能力匹配。完整请求继续通过原 `RequestKind` 选配置和模型；配置字符串与 `LlmCallKind` usage owner 不变。此为语义类型第一步；完整 descriptor 向其他 Router 请求 DTO、streaming、embedding/health-check、metadata/config helpers 和仓库调用点迁移仍待独立评估。
 
 2026-09-25 切片进展（ADR 0327）：raw stream 建流执行已迁入 `StreamExecutor`，复用 `request_pipeline` retry/timeout 和 Router outcome closure；permit 包装仍覆盖 stream 完整对象生命周期。聚合 streaming retry/guidance/cancellation/callback orchestration 保留在原 Router/`streaming.rs` 路径；aggregated stream executor 与 descriptor 全贯穿仍待后续切片。
+
+2026-09-25 切片进展（ADR 0329）：`RequestDescriptor` 从 ModelDirectory route table 解析一路传入 complete/embedding、raw stream 与 aggregated stream executor；route key 仍为原 `RequestKind`，能力不匹配或 route descriptor 不一致时 fail closed。descriptor mapping 继续委托唯一的 `RequestKind::required_capability()`；usage role 仍由 Agent/Tools 调用方所有，public request DTO、health/native transcription、metadata/config helper 与仓库调用点迁移待后续评估。
 
 ### 阶段 7：统一 Job 生命周期与 MemoryRuntime（P2）
 

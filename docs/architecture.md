@@ -142,20 +142,26 @@ CI 以 `scripts/check-crate-dependencies.ps1` 对此表执行内部 crate 依赖
 - 厂商扩展（DeepSeek `thinking` / Responses `reasoning.effort`、Kimi
   `thinking.type`+`keep` 等）挂在对应 adapter + provider/base_url/model 检测上，
   复用聊天页「思考强度」，不另开线协议。
+- `request_descriptor.rs`：crate-private `RequestDescriptor` 显式并列承载逻辑请求用途和所需
+  `Capability`；用途到能力的映射复用 `RequestKind::required_capability()`。Router 将同一
+  descriptor 传至 complete、embedding、raw stream 与 aggregated stream 执行边界；usage
+  owner 仍由调用方表达（ADR 0319、0329）。
 - `model_directory.rs`：crate-private `ModelDirectory`，从 Router 的配置 snapshot
-  构造 provider client map 与 `RequestKind → primary model id` 路由，集中 client/model
+  构造 provider client map 与以 `RequestKind` 为原 key 的 primary route；route 保存筛选时
+  使用的 descriptor，执行解析要求收到的 descriptor 与 route 相同。它还集中 client/model
   选择、capability profile 和 endpoint/context-window metadata 查询；生产路由同时要求
   所需 `Capability` 与可用凭据，测试注入只跳过凭据过滤。metadata 借用 Router 的单一
-  `RouterConfig` snapshot，不复制配置真源（ADR 0316）。
+  `RouterConfig` snapshot，不复制配置真源（ADR 0316、0329）。
 - `router.rs`：`LlmRouter` 保留配置 snapshot 与请求执行状态，拥有 route/client 选择、
   health/circuit、rate-limit cooldown、semaphore 与 stream rules，并为执行器提供配置
   snapshot 和 health/rate-limit outcome closure。每个 request kind 仍只走唯一 primary；
   同一模型内重试耗尽后直接返回错误，不跨 provider/model 切换缓存命名空间（ADR 0192）。旧 `llm.roles` 仅在
   配置加载时转换，不进入生产路由；`CallExecutor` 执行 complete/embedding，`StreamExecutor`
   只执行 raw stream 建流与 permit 包装；`AggregatedStreamExecutor` 执行聚合流状态机。
-  capability / call-purpose split 尚未全贯穿。
+  执行器已接收显式 descriptor；public request DTO、专用 health/transcription/config helper
+  与调用方 usage-role 仍待评估和迁移。
 - `call_executor.rs` / `stream_executor.rs` / `aggregated_stream_executor.rs`：接收 Router
-  已解析的 model/client 与单份 `RequestPolicy`，复用 request pipeline 执行 complete/embedding、
+  已解析的 descriptor、model/client 与单份 `RequestPolicy`，复用 request pipeline 执行 complete/embedding、
   raw stream 建流或聚合流执行，并经 Router 注入的窄 outcome closure 投影健康状态。raw
   `PermitStream` 持有 permit 到 stream
   drop；聚合执行器集中首次 `on_chunk` 交付前重试、规则触发后的 guidance 重试、取消、总 timeout、attempt
@@ -560,6 +566,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 | 日期 | 内容 |
 |---|---|
 | 2026-09-25 | §2.2 LLM：将聚合 stream 的首次 `on_chunk` 交付前重试、guidance retry、总 timeout 与结果交接收口到 `AggregatedStreamExecutor`；Router 继续持路由、permit、规则和 health/cooldown 状态（ADR 0328） |
+| 2026-09-25 | §2.2 LLM：将显式 `RequestDescriptor` 从 Router route preparation 传入 complete、embedding、raw stream 与 aggregated stream 执行边界；route key 和 usage owner 保持原边界（ADR 0329） |
 | 2026-09-25 | §2.6 LLM：`ModelDirectory` 接管 provider client map、primary routes、client/model 选择及 capability/endpoint metadata 查询；Router 继续拥有单一 config snapshot 与执行状态（ADR 0316） |
 | 2026-09-25 | §2.6 UI：聊天页 handler map 组合与 listener 生命周期由 typed `chatEventController` 持有；`events.ts` 保持唯一 wire mapper 和注册 primitive（ADR 0315） |
 | 2026-09-25 | §2.6 UI：将 `SessionReducer` 按 lifecycle、transcript、interaction、usage、Agent stream 拆为内部模块；原 facade、公共导出路径和单一 store 订阅保持不变（ADR 0314） |

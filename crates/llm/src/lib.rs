@@ -8,6 +8,7 @@ pub mod media;
 mod model_directory;
 pub mod ocr;
 pub mod registry;
+mod request_descriptor;
 mod request_pipeline;
 pub mod router;
 mod stream_executor;

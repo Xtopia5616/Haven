@@ -12,20 +12,28 @@ use std::sync::Arc;
 use haven_common::types::CanonicalMessage;
 
 use crate::client::LlmClient;
+use crate::request_descriptor::RequestDescriptor;
 use crate::request_pipeline::{
     RequestOutcome, RequestPolicy, execute_with_retry, execute_with_timeout,
 };
 use crate::types::{Embedding, LlmError, LlmResponse, ToolDefinition};
 
 pub(crate) struct CallExecutor {
+    descriptor: RequestDescriptor,
     model_id: String,
     client: Arc<dyn LlmClient>,
     policy: RequestPolicy,
 }
 
 impl CallExecutor {
-    pub(crate) fn new(model_id: String, client: Arc<dyn LlmClient>, policy: RequestPolicy) -> Self {
+    pub(crate) fn new(
+        descriptor: RequestDescriptor,
+        model_id: String,
+        client: Arc<dyn LlmClient>,
+        policy: RequestPolicy,
+    ) -> Self {
         Self {
+            descriptor,
             model_id,
             client,
             policy,
@@ -46,6 +54,12 @@ impl CallExecutor {
         F: FnOnce(String, RequestOutcome) -> Fut,
         Fut: Future<Output = ()>,
     {
+        tracing::trace!(
+            request_purpose = self.descriptor.purpose.as_str(),
+            required_capability = self.descriptor.required_capability.as_str(),
+            model_id = %self.model_id,
+            "executing complete LLM request"
+        );
         let client = self.client.clone();
         let model_id = &self.model_id;
         let policy = self.policy;
@@ -94,6 +108,12 @@ impl CallExecutor {
         F: FnOnce(String, RequestOutcome) -> Fut,
         Fut: Future<Output = ()>,
     {
+        tracing::trace!(
+            request_purpose = self.descriptor.purpose.as_str(),
+            required_capability = self.descriptor.required_capability.as_str(),
+            model_id = %self.model_id,
+            "executing embedding LLM request"
+        );
         let client = self.client.clone();
         let model_id = &self.model_id;
         let policy = self.policy;
@@ -120,6 +140,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
+    use crate::request_descriptor::RequestDescriptor;
     use crate::request_pipeline::RetryPolicy;
     use crate::types::{StreamChunk, Usage};
 
@@ -246,8 +267,17 @@ mod tests {
         }
     }
 
-    fn executor(client: Arc<ExecutorProbe>, policy: RequestPolicy) -> CallExecutor {
-        CallExecutor::new("resolved-model-id".into(), client, policy)
+    fn executor(
+        client: Arc<ExecutorProbe>,
+        policy: RequestPolicy,
+        request: haven_common::config::RequestKind,
+    ) -> CallExecutor {
+        CallExecutor::new(
+            RequestDescriptor::from(request),
+            "resolved-model-id".into(),
+            client,
+            policy,
+        )
     }
 
     fn messages() -> Vec<CanonicalMessage> {
@@ -268,7 +298,11 @@ mod tests {
     #[tokio::test]
     async fn complete_dispatches_plain_and_tool_calls_with_their_request_data() {
         let client = Arc::new(ExecutorProbe::new());
-        let executor = executor(client.clone(), policy(0, 2));
+        let executor = executor(
+            client.clone(),
+            policy(0, 2),
+            haven_common::config::RequestKind::Chat,
+        );
 
         executor
             .complete(messages(), Vec::new(), Some(64), |_, _| async {})
@@ -301,7 +335,11 @@ mod tests {
             fail_first_complete: true,
             ..ExecutorProbe::new()
         });
-        let executor = executor(client.clone(), policy(1, 2));
+        let executor = executor(
+            client.clone(),
+            policy(1, 2),
+            haven_common::config::RequestKind::Chat,
+        );
         let projections = Arc::new(AtomicUsize::new(0));
 
         executor
@@ -324,7 +362,11 @@ mod tests {
             pending_complete: true,
             ..ExecutorProbe::new()
         });
-        let executor = executor(client, policy(0, 0));
+        let executor = executor(
+            client,
+            policy(0, 0),
+            haven_common::config::RequestKind::Chat,
+        );
         let projections = Arc::new(AtomicUsize::new(0));
 
         let error = executor
@@ -350,7 +392,11 @@ mod tests {
             rate_limit_embedding: true,
             ..ExecutorProbe::new()
         });
-        let executor = executor(client.clone(), policy(0, 2));
+        let executor = executor(
+            client.clone(),
+            policy(0, 2),
+            haven_common::config::RequestKind::Embedding,
+        );
         let projections = Arc::new(AtomicUsize::new(0));
 
         let error = executor
@@ -378,5 +424,18 @@ mod tests {
             *client.calls.lock().unwrap(),
             vec![ObservedCall::Embedding { input_count: 1 }]
         );
+    }
+
+    #[test]
+    fn executor_keeps_the_explicit_routed_descriptor() {
+        let descriptor = RequestDescriptor::from(haven_common::config::RequestKind::AudioChat);
+        let executor = CallExecutor::new(
+            descriptor,
+            "resolved-model-id".into(),
+            Arc::new(ExecutorProbe::new()),
+            policy(0, 2),
+        );
+
+        assert_eq!(executor.descriptor, descriptor);
     }
 }
