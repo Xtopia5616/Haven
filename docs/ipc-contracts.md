@@ -22,12 +22,12 @@
 | `list_action_history` | `ListActionHistoryRequest` | `ActionEvent[]` | read | limit ≤ 200 |
 | `delete_action` | `DeleteActionRequest` | `bool` | mutate | 按 id 删除单条任务 |
 | `open_external` | `OpenExternalRequest` | `()` | execute | 仅 http(s) 或校验后的本地绝对路径 |
-| `get_history` | `HistoryPageRequest` | `Session[]` | read | 只读会话投影 |
+| `get_history` | `HistoryPageRequest` | `SessionHistoryRow[]` | read | 只读会话投影 |
 | `count_history` | `-` | `i64` | read | 只读聚合 |
-| `search_history_paginated` | `HistorySearchPageRequest` | `Session[]` | read | 参数化查询 |
+| `search_history_paginated` | `HistorySearchPageRequest` | `SessionHistoryRow[]` | read | 参数化查询 |
 | `count_history_search` | `HistorySearchRequest` | `i64` | read | 参数化查询 |
-| `search_history` | `HistorySearchRequest` | `Session[]` | read | 参数化查询 |
-| `search_history_filtered` | `HistoryFilterRequest` | `Session[]` | read | 分页和日期边界 |
+| `search_history` | `HistorySearchRequest` | `SessionHistoryRow[]` | read | 参数化查询 |
+| `search_history_filtered` | `HistoryFilterRequest` | `SessionHistoryRow[]` | read | 分页和日期边界 |
 | `export_history` | `HistoryExportRequest` | `string` | read | 仅导出持久化历史 |
 | `get_log_info` | `-` | `LogInfo` | read | 不返回环境详情 |
 | `read_log_tail` | `ReadLogTailRequest` | `LogTail` | read | 尾部长度受限 |

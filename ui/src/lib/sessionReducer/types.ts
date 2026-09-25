@@ -8,6 +8,7 @@ import type {
 	AgentWebSearchPayload,
 } from '../contracts/agent.ts';
 import type { InteractionKind, InteractionRequest } from '../contracts/app.ts';
+import type { SessionResumeUsage } from '../contracts/sessionHistory.ts';
 import type { StreamMessage } from '../streaming.ts';
 import type { LlmUsage } from '../sessionUsage.ts';
 
@@ -103,18 +104,7 @@ export interface SessionReducerState {
 	optimistic: Record<string, SessionOptimisticMessage>;
 }
 
-export interface ResumeUsage {
-	prompt_tokens?: number;
-	completion_tokens?: number;
-	total_tokens?: number;
-	cached_tokens?: number;
-	cache_creation_tokens?: number;
-	cache_miss_tokens?: number;
-	context_tokens?: number;
-	context_window?: number | null;
-	cost_usd?: number | null;
-	has_cost?: boolean;
-}
+export type ResumeUsage = Partial<SessionResumeUsage>;
 
 export type SessionAction =
 	| { type: 'sessions/loaded'; sessions: SessionSummary[]; autoSelect?: boolean }

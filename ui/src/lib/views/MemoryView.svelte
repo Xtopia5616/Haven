@@ -1,5 +1,6 @@
 <script>
-	/** @typedef {{ id: string; title?: string; input_text?: string; status: string; created_at: string; [key: string]: any }} MemorySession */
+	/** @typedef {import('$lib/contracts/sessionHistory.ts').SessionHistoryRow} MemorySession */
+	/** @typedef {import('$lib/contracts/commands.ts').HistoryFilterRequest} HistoryFilterRequest */
 	/** @typedef {import('$lib/contracts/memory.ts').Fact} Fact */
 	/** @typedef {import('$lib/contracts/memory.ts').MemoryRecallResult} MemoryRecallResult */
 	/** @typedef {import('$lib/contracts/memory.ts').MemoryRecallState} MemoryRecallState */
@@ -17,13 +18,20 @@
 	import { get } from 'svelte/store';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/stores';
-	import { invoke } from '$lib/tauri.ts';
 	import {
 		addFact as addFactCommand,
 		deleteFact as deleteFactCommand,
 		listFacts,
 		recallMemory,
 	} from '$lib/memoryCommands.ts';
+	import {
+		clearHistory as clearHistoryCommand,
+		deleteSession as deleteSessionCommand,
+		getSessionForResume,
+		reopenSession as reopenSessionCommand,
+		searchHistoryFiltered,
+		updateSessionTitle as updateSessionTitleCommand,
+	} from '$lib/sessionHistoryCommands.ts';
 	import { registerSessionListener } from '$lib/events.ts';
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
@@ -53,7 +61,7 @@
 	let searchQuery = $state('');
 	/** @type {ReturnType<typeof setTimeout> | null} */
 	let searchTimer = null;
-	let deleteTarget = /** @type {Record<string, any> | null} */ ($state(null));
+	let deleteTarget = /** @type {MemorySession | null} */ ($state(null));
 	let showClearDialog = $state(false);
 	let selectMode = $state(false);
 	let selectedIds = $state(new Set());
@@ -169,7 +177,7 @@
 		void goto('/?' + params.toString(), { replaceState: true });
 	}
 
-	/** @param {Record<string, any>} extra */
+	/** @param {Pick<HistoryFilterRequest, 'limit' | 'offset'>} extra */
 	function filterParams(extra) {
 		return {
 			query: searchQuery || null,
@@ -191,8 +199,7 @@
 		const sequence = ++loadSessionsSeq;
 		loading = true;
 		try {
-			const results = await invoke(
-				'search_history_filtered',
+			const results = await searchHistoryFiltered(
 				filterParams({ limit: PAGE_SIZE, offset: 0 }),
 			);
 			if (sequence !== loadSessionsSeq) return;
@@ -214,8 +221,7 @@
 		const sequence = loadSessionsSeq;
 		loading = true;
 		try {
-			const more = await invoke(
-				'search_history_filtered',
+			const more = await searchHistoryFiltered(
 				filterParams({ limit: PAGE_SIZE, offset }),
 			);
 			if (sequence !== loadSessionsSeq) return;
@@ -279,8 +285,8 @@
 			// to change the in-memory status to Paused before the chat could render,
 			// which hid the actual failure state. Continue/retry performs the
 			// explicit transition when the user asks for it.
-			if (!wasError) await invoke('reopen_session', { sessionId: session.id });
-			const result = await invoke('get_session_for_resume', { sessionId: session.id });
+			if (!wasError) await reopenSessionCommand({ sessionId: session.id });
+			const result = await getSessionForResume({ sessionId: session.id });
 			appSessionReducer.dispatch({
 				type: 'session/messages/resume-loaded',
 				sessionId: session.id,
@@ -305,7 +311,7 @@
 	/** @param {string} sessionId */
 	async function deleteSession(sessionId) {
 		try {
-			await invoke('delete_session', { sessionId });
+			await deleteSessionCommand({ sessionId });
 			sessions = sessions.filter((session) => session.id !== sessionId);
 			totalCount = sessions.length;
 			appSessionReducer.dispatch({ type: 'session/memory-cleared', sessionId });
@@ -319,7 +325,7 @@
 	}
 	async function clearSessions() {
 		try {
-			const count = await invoke('clear_history');
+			const count = await clearHistoryCommand();
 			sessions = [];
 			totalCount = 0;
 			hasMore = false;
@@ -377,7 +383,7 @@
 			return;
 		}
 		try {
-			await invoke('update_session_title', { sessionId, title: value });
+			await updateSessionTitleCommand({ sessionId, title: value });
 			const session = sessions.find((item) => item.id === sessionId);
 			if (session) session.title = value;
 		} catch (e) {

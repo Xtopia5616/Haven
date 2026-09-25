@@ -413,3 +413,191 @@ foreach ($check in $memoryRequestChecks) {
 
 Write-Host "Memory IPC contract verified: $($memoryBoundaryChecks.Count) typed command helpers and MemoryView call boundary agree."
 
+function Get-TypeScriptInterfaceFields([string] $source, [string] $name) {
+    $escapedName = [regex]::Escape($name)
+    $interface = Get-RequiredMatch $source ('(?s)export\s+interface\s+' + $escapedName + '(?:\s+extends\s+([^\{]+))?\s*\{(.*?)\}') "TypeScript interface '$name'"
+    $fields = @{}
+    if ($interface.Groups[1].Success) {
+        foreach ($parent in ($interface.Groups[1].Value -split ',')) {
+            $parentName = $parent.Trim()
+            if ($parentName) {
+                $parentFields = Get-TypeScriptInterfaceFields $source $parentName
+                foreach ($field in $parentFields.Keys) { $fields[$field] = $parentFields[$field] }
+            }
+        }
+    }
+    if ([regex]::IsMatch($interface.Groups[2].Value, '(?m)^\s*[a-zA-Z_][a-zA-Z0-9_]*\??\s*:')) {
+        $localFields = Get-StructFields $interface.Groups[2].Value "TypeScript '$name'"
+        foreach ($field in $localFields.Keys) { $fields[$field] = $localFields[$field] }
+    }
+    $fields
+}
+
+function Assert-SessionHistoryRequestContract([string] $label, [hashtable] $rust, [hashtable] $ts) {
+    $mapped = @{}
+    foreach ($name in $rust.Keys) {
+        if ($name -in @('state', 'app', '_app')) { continue }
+        $mapped[(Convert-SnakeToCamel $name)] = $rust[$name]
+    }
+    Assert-SetEqual "$label request fields" @($mapped.Keys) @($ts.Keys)
+    foreach ($name in $mapped.Keys) {
+        $rustType = $mapped[$name].Type
+        $expectedType = switch ($rustType) {
+            'String' { 'string' }
+            'i64' { 'number' }
+            'Option<String>' { 'string|null' }
+            'Option<i64>' { 'number|null' }
+            default { throw "$label has unsupported Rust request type '$rustType' for '$name'" }
+        }
+        if ($ts[$name].Type -ne $expectedType) {
+            throw "$label request field '$name' type mismatch: Rust '$rustType' vs TypeScript '$($ts[$name].Type)'"
+        }
+        if ($ts[$name].Optional -ne $rustType.StartsWith('Option<')) {
+            throw "$label request field '$name' optionality mismatch"
+        }
+    }
+}
+
+$sessionHistoryContractUi = Get-Content (Join-Path $root 'ui/src/lib/contracts/sessionHistory.ts') -Raw
+$sessionHistoryCommandsUi = Get-Content (Join-Path $root 'ui/src/lib/sessionHistoryCommands.ts') -Raw
+$sessionHistoryView = Get-Content (Join-Path $root 'ui/src/lib/views/MemoryView.svelte') -Raw
+$sessionHistoryPage = Get-Content (Join-Path $root 'ui/src/routes/+page.svelte') -Raw
+$sessionHistoryChat = Get-Content (Join-Path $root 'ui/src/lib/chatController.ts') -Raw
+$sessionHistoryResume = Get-Content (Join-Path $root 'ui/src/lib/resumeMessages.ts') -Raw
+$sessionCommandsRs = Get-Content (Join-Path $commandsRoot 'session.rs') -Raw
+$historyCommandsRs = Get-Content (Join-Path $commandsRoot 'history.rs') -Raw
+$sessionRowsRs = Get-Content (Join-Path $root 'crates/memory/src/repositories/sessions.rs') -Raw
+
+$sessionHistoryChecks = @(
+    @{ Command = 'get_sessions'; Function = 'getSessions'; Request = '-'; Response = 'SessionListResponse'; RustResponse = 'SessionListResponse' },
+    @{ Command = 'search_history_filtered'; Function = 'searchHistoryFiltered'; Request = 'HistoryFilterRequest'; Response = 'SessionHistoryRow[]'; RustResponse = 'SessionHistoryRow[]' },
+    @{ Command = 'get_session_for_resume'; Function = 'getSessionForResume'; Request = 'SessionIdRequest'; Response = 'SessionResumeResponse'; RustResponse = 'SessionResumeResponse'; Invoker = $true },
+    @{ Command = 'get_last_conversation'; Function = 'getLastConversation'; Request = '-'; Response = 'SessionResumeResponse | null'; RustResponse = 'Option<SessionResumeResponse>' },
+    @{ Command = 'reopen_session'; Function = 'reopenSession'; Request = 'SessionIdRequest'; Response = 'void'; RustResponse = '()' },
+    @{ Command = 'delete_session'; Function = 'deleteSession'; Request = 'SessionIdRequest'; Response = 'void'; RustResponse = '()' },
+    @{ Command = 'clear_history'; Function = 'clearHistory'; Request = '-'; Response = 'number'; RustResponse = 'u64' },
+    @{ Command = 'update_session_title'; Function = 'updateSessionTitle'; Request = 'UpdateSessionTitleRequest'; Response = 'void'; RustResponse = '()' }
+)
+
+$historyContractChecks = @(
+    @{ Command = 'get_history'; Request = 'HistoryPageRequest'; Response = 'SessionHistoryRow[]'; RustResponse = 'SessionHistoryRow[]' },
+    @{ Command = 'count_history'; Request = '-'; Response = 'number'; RustResponse = 'i64' },
+    @{ Command = 'search_history_paginated'; Request = 'HistorySearchPageRequest'; Response = 'SessionHistoryRow[]'; RustResponse = 'SessionHistoryRow[]' },
+    @{ Command = 'count_history_search'; Request = 'HistorySearchRequest'; Response = 'number'; RustResponse = 'i64' },
+    @{ Command = 'search_history'; Request = 'HistorySearchRequest'; Response = 'SessionHistoryRow[]'; RustResponse = 'SessionHistoryRow[]' },
+    @{ Command = 'search_history_filtered'; Request = 'HistoryFilterRequest'; Response = 'SessionHistoryRow[]'; RustResponse = 'SessionHistoryRow[]' },
+    @{ Command = 'export_history'; Request = 'HistoryExportRequest'; Response = 'string'; RustResponse = 'string' }
+)
+
+foreach ($check in $historyContractChecks) {
+    $commandName = [regex]::Escape($check.Command)
+    $rustCommandContract = Get-RequiredMatch $rustContracts ('(?s)CommandContract\s*\{\s*name:\s*"' + $commandName + '"([^}]*)\}') "Rust contract for '$($check.Command)'"
+    $rustRequest = Get-RequiredMatch $rustCommandContract.Groups[1].Value 'request:\s*"([^"]+)"' "Rust request for '$($check.Command)'"
+    $rustResponse = Get-RequiredMatch $rustCommandContract.Groups[1].Value 'response:\s*"([^"]+)"' "Rust response for '$($check.Command)'"
+    $tsCommandContract = Get-RequiredMatch $tsContracts ('(?ms)^\s*' + $commandName + '\s*:\s*\{([^}]*)\}') "Frontend contract for '$($check.Command)'"
+    $tsRequest = Get-RequiredMatch $tsCommandContract.Groups[1].Value "request:\s*'([^']+)'" "Frontend request for '$($check.Command)'"
+    $tsResponse = Get-RequiredMatch $tsCommandContract.Groups[1].Value "response:\s*'([^']+)'" "Frontend response for '$($check.Command)'"
+    if ($rustRequest.Groups[1].Value -ne $check.Request -or $tsRequest.Groups[1].Value -ne $check.Request -or
+        $rustResponse.Groups[1].Value -ne $check.RustResponse -or $tsResponse.Groups[1].Value -ne $check.Response) {
+        throw "history command contract for '$($check.Command)' differs between Rust and TypeScript"
+    }
+}
+
+foreach ($check in $sessionHistoryChecks) {
+    $commandName = [regex]::Escape($check.Command)
+    $functionName = [regex]::Escape($check.Function)
+    $helper = Get-RequiredMatch $sessionHistoryCommandsUi ('(?s)export\s+function\s+' + $functionName + '\s*\((.*?)\)\s*:\s*Promise<([^>]+)>\s*\{(.*?)\n\}') "typed helper for '$($check.Command)'"
+    $actualResponse = $helper.Groups[2].Value -replace '\s+', ''
+    $expectedResponse = $check.Response -replace '\s+', ''
+    $expectedInvoke = if ($check.Invoker) {
+        '^\s*return\s+invokeCommand<SessionResumeResponse>\(''' + $commandName + ''',\s*request\);\s*$'
+    } elseif ($check.Request -eq '-') {
+        '^\s*return\s+invoke\(''' + $commandName + '''\);\s*$'
+    } else {
+        '^\s*return\s+invoke\(''' + $commandName + ''',\s*request\);\s*$'
+    }
+    $requestSignatureMatches = if ($check.Invoker) {
+        [regex]::IsMatch($helper.Groups[1].Value, ('^\s*request:\s*SessionIdRequest,\s*invokeCommand:\s*SessionHistoryInvoker\s*=\s*invoke,?\s*$'))
+    } elseif ($check.Request -eq '-') {
+        [string]::IsNullOrWhiteSpace($helper.Groups[1].Value)
+    } else {
+        [regex]::IsMatch($helper.Groups[1].Value, ('^\s*request:\s*' + [regex]::Escape($check.Request) + ',?\s*$'))
+    }
+    if (-not $requestSignatureMatches -or $actualResponse -ne $expectedResponse -or
+        -not [regex]::IsMatch($helper.Groups[3].Value, $expectedInvoke)) {
+        throw "session history command '$($check.Command)' must forward its named request/result through one direct helper"
+    }
+    $rustCommandContract = Get-RequiredMatch $rustContracts ('(?s)CommandContract\s*\{\s*name:\s*"' + $commandName + '"([^}]*)\}') "Rust contract for '$($check.Command)'"
+    $rustRequest = Get-RequiredMatch $rustCommandContract.Groups[1].Value 'request:\s*"([^"]+)"' "Rust request for '$($check.Command)'"
+    $rustResponse = Get-RequiredMatch $rustCommandContract.Groups[1].Value 'response:\s*"([^"]+)"' "Rust response for '$($check.Command)'"
+    if ($rustRequest.Groups[1].Value -ne $check.Request -or $rustResponse.Groups[1].Value -ne $check.RustResponse) {
+        throw "Rust command contract for '$($check.Command)' differs from the session history boundary"
+    }
+    $tsCommandContract = Get-RequiredMatch $tsContracts ('(?ms)^\s*' + $commandName + '\s*:\s*\{([^}]*)\}') "Frontend contract for '$($check.Command)'"
+    $tsRequest = Get-RequiredMatch $tsCommandContract.Groups[1].Value "request:\s*'([^']+)'" "Frontend request for '$($check.Command)'"
+    $tsResponse = Get-RequiredMatch $tsCommandContract.Groups[1].Value "response:\s*'([^']+)'" "Frontend response for '$($check.Command)'"
+    if ($tsRequest.Groups[1].Value -ne $check.Request -or $tsResponse.Groups[1].Value -ne $check.Response) {
+        throw "Frontend command contract for '$($check.Command)' differs from the session history boundary"
+    }
+}
+
+$historyRequestChecks = @(
+    @{ File = $historyCommandsRs; Function = 'get_history'; Request = 'HistoryPageRequest' },
+    @{ File = $historyCommandsRs; Function = 'search_history_paginated'; Request = 'HistorySearchPageRequest' },
+    @{ File = $historyCommandsRs; Function = 'count_history_search'; Request = 'HistorySearchRequest' },
+    @{ File = $historyCommandsRs; Function = 'search_history'; Request = 'HistorySearchRequest' },
+    @{ File = $historyCommandsRs; Function = 'search_history_filtered'; Request = 'HistoryFilterRequest' },
+    @{ File = $historyCommandsRs; Function = 'export_history'; Request = 'HistoryExportRequest' },
+    @{ File = $sessionCommandsRs; Function = 'reopen_session'; Request = 'SessionIdRequest' },
+    @{ File = $sessionCommandsRs; Function = 'get_session_for_resume'; Request = 'SessionIdRequest' },
+    @{ File = $sessionCommandsRs; Function = 'delete_session'; Request = 'SessionIdRequest' },
+    @{ File = $sessionCommandsRs; Function = 'update_session_title'; Request = 'UpdateSessionTitleRequest' }
+)
+foreach ($check in $historyRequestChecks) {
+    $functionName = [regex]::Escape($check.Function)
+    $requestName = [regex]::Escape($check.Request)
+    $rustFunction = Get-RequiredMatch $check.File ('(?ms)pub\s+async\s+fn\s+' + $functionName + '\s*\((.*?)\)\s*->') "Rust parameters for '$($check.Function)'"
+    $tsRequestFields = Get-TypeScriptInterfaceFields $tsContracts $check.Request
+    Assert-SessionHistoryRequestContract $check.Function (Get-RustCommandParameters $rustFunction.Groups[1].Value "Rust '$($check.Function)' parameters") $tsRequestFields
+}
+
+$sessionHistoryUiRoot = Join-Path $root 'ui/src'
+$sessionHistoryDirectInvokePattern = 'invoke\s*(?:<[^>]+>)?\s*\(\s*''(?:get_sessions|get_session_for_resume|get_last_conversation|search_history_filtered|reopen_session|delete_session|clear_history|update_session_title|get_history|count_history|search_history_paginated|count_history_search|search_history|export_history)'''
+foreach ($sourceFile in (Get-ChildItem $sessionHistoryUiRoot -Recurse -File | Where-Object { $_.Extension -in @('.ts', '.svelte') -and $_.Name -ne 'sessionHistoryCommands.ts' })) {
+    if ([regex]::IsMatch((Get-Content $sourceFile.FullName -Raw), $sessionHistoryDirectInvokePattern)) {
+        throw "UI source '$($sourceFile.FullName)' bypasses sessionHistoryCommands.ts"
+    }
+}
+if (-not [regex]::IsMatch($sessionHistoryView, '\bsearchHistoryFiltered\s*\(') -or
+    -not [regex]::IsMatch($sessionHistoryView, '\bgetSessionForResume\s*\(') -or
+    -not [regex]::IsMatch($sessionHistoryPage, '\bgetSessions\s*\(') -or
+    -not [regex]::IsMatch($sessionHistoryPage, '\bgetLastConversation\s*\(') -or
+    -not [regex]::IsMatch($sessionHistoryChat, '\bgetSessionForResume\s*\(')) {
+    throw 'session history call sites must use the shared typed command helpers'
+}
+if ([regex]::IsMatch($sessionHistoryResume, '(?m)^export\s+interface\s+(?:ResumeData|ResumeMsg|ResumeStep)\b')) {
+    throw 'resumeMessages.ts must reuse the session history response contract instead of redeclaring wire shapes'
+}
+if ([regex]::IsMatch($sessionHistoryView, '\b(?:MemorySession|HistoryFilterRequest)[^\r\n]*\bany\b|Record<string,\s*any>')) {
+    throw 'MemoryView session history rows and filter requests must not use raw any types'
+}
+
+$rustSessionRow = Get-RequiredMatch $sessionRowsRs '(?ms)pub\s+struct\s+Session\s*\{(.*?)\n\}' 'Rust session history row'
+$tsSessionRow = Get-RequiredMatch $sessionHistoryContractUi '(?ms)export\s+interface\s+SessionHistoryRow\s*\{(.*?)\n\}' 'TypeScript session history row'
+$rustSessionRowFields = Get-StructFields $rustSessionRow.Groups[1].Value 'Rust session history row'
+$tsSessionRowFields = Get-StructFields $tsSessionRow.Groups[1].Value 'TypeScript session history row'
+Assert-SetEqual 'SessionHistoryRow fields' @($rustSessionRowFields.Keys) @($tsSessionRowFields.Keys)
+foreach ($field in $rustSessionRowFields.Keys) {
+    $expectedType = switch ($rustSessionRowFields[$field].Type) {
+        'String' { 'string' }
+        'Option<String>' { 'string|null' }
+        'SessionStatus' { 'string' }
+        default { throw "session history row has unsupported Rust field type '$($rustSessionRowFields[$field].Type)' for '$field'" }
+    }
+    if ($tsSessionRowFields[$field].Type -ne $expectedType -or $tsSessionRowFields[$field].Optional) {
+        throw "session history row field '$field' differs from its Rust wire type"
+    }
+}
+
+Write-Host "Session history IPC contract verified: $($historyRequestChecks.Count) request shapes, $($historyContractChecks.Count) history registry entries, $($sessionHistoryChecks.Count) typed helpers, and Rust/UI command boundaries agree."
+

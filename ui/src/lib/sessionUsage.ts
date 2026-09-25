@@ -1,33 +1,7 @@
-import type { RequestKind } from './modelRoles.ts';
+import type { SessionLlmUsage } from './contracts/sessionHistory.ts';
 
-/** One LLM call's usage detail row. */
-export interface LlmUsage {
-	id?: string;
-	step_number?: number | null;
-	role?: RequestKind;
-	call_kind: 'agent' | 'media' | 'tool' | string;
-	model?: string | null;
-	prompt_tokens?: number;
-	completion_tokens?: number;
-	total_tokens?: number;
-	cached_tokens?: number;
-	cache_creation_tokens?: number;
-	cache_miss_tokens?: number;
-	cache_accounting?: 'inclusive' | 'exclusive' | 'unknown' | string;
-	context_tokens?: number;
-	context_window?: number | null;
-	cache_diagnostics?: {
-		mode?: string;
-		key_requested?: boolean;
-		system_split?: boolean;
-		downgraded?: boolean;
-		outcome?: string;
-	};
-	cost_usd?: number | null;
-	has_cost?: boolean;
-	duration_ms?: number | null;
-	created_at?: string;
-}
+/** Shared renderer shape for one LLM call usage row. */
+export type LlmUsage = SessionLlmUsage;
 
 /**
  * Reconstruct `total` when a provider omitted it. Matches

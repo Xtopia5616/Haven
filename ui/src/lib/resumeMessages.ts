@@ -3,8 +3,13 @@
 // history resume flow.
 
 import { formatMessageTime } from './messageFormat.ts';
-import type { ResumeUsage } from './sessionReducer.ts';
-import type { LlmUsage } from './sessionUsage.ts';
+import type {
+	SessionResumeInput,
+	SessionResumeMessageInput,
+	SessionResumeStepInput,
+} from './contracts/sessionHistory.ts';
+
+export type ResumeData = SessionResumeInput;
 
 /** A resume-only bubble shown when a session has no persisted message rows. */
 export function isDisplayOnlyMessageId(id: unknown): boolean {
@@ -34,51 +39,13 @@ interface ResumeMessage {
 	steering?: boolean;
 }
 
-interface ResumeStep {
-	id: string;
-	action_tool?: string | null;
-	/** JSON-serialized tool input from `session_steps.action_input`. */
-	action_input?: string | null;
-	silent?: boolean;
-	observation?: string | null;
-	thought?: string | null;
-	created_at: string;
-	/** Tool/ask completion time (observation landed). `null` for rows that
-	 * never completed (failed mid-execution); falls back to created_at. */
-	completed_at?: string | null;
-	status?: string;
-	step_number: number;
-}
+type ResumeStep = SessionResumeStepInput;
 
 function historicalToolOutcome(status: string | null | undefined): string | null {
 	return status === 'failed' || status === 'cancelled' || status === 'unknown' ? status : null;
 }
 
-interface ResumeMsg {
-	id: string;
-	role: string;
-	content: string;
-	message_type?: string | null;
-	voice?: boolean;
-	created_at: string;
-	attachments?: unknown[];
-	tool_call_id?: string | null;
-}
-
-export interface ResumeData {
-	session?: {
-		id?: string;
-		status?: string;
-		input_text?: string;
-		created_at?: string;
-	} | null;
-	messages?: ResumeMsg[];
-	steps?: ResumeStep[];
-	usage?: ResumeUsage | null;
-	llm_usage?: LlmUsage[];
-	/** Renderer-safe interaction rows are normalized by `resumeInteractions`. */
-	interactions?: unknown[];
-}
+type ResumeMsg = SessionResumeMessageInput;
 
 /**
  * Merge DB-loaded messages with any in-memory streaming messages that

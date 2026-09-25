@@ -344,3 +344,4 @@
 - [0354：LLM request purpose 与 usage owner 契约审计](0354-llm-request-purpose-usage-role-contract-audit.md)
 - [0356：架构路线图状态核对与文档校准](0356-architecture-roadmap-status-reconciliation.md)
 - [0357：Memory command contract boundary](0357-memory-command-contract-boundary.md)
+- [0358：Session history command contract boundary](0358-session-history-command-contract-boundary.md)

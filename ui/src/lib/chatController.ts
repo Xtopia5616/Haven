@@ -1,6 +1,7 @@
 import { reportError, type ErrorReportOptions } from './errorHandling.ts';
 import { addNotification, type NotificationType } from './notificationStore.ts';
-import { buildResumeMessages, type ResumeData } from './resumeMessages.ts';
+import { buildResumeMessages } from './resumeMessages.ts';
+import { getSessionForResume } from './sessionHistoryCommands.ts';
 import {
 	pickContinueStrategy,
 	shouldResubmitOriginalUser,
@@ -268,9 +269,7 @@ export class ChatController {
 		sessionId: string,
 		options: { preserveStreamingOnly?: boolean; excludeMessageIds?: string[] } = {},
 	): Promise<void> {
-		const result = await this.dependencies.invoke<ResumeData>('get_session_for_resume', {
-			sessionId,
-		});
+		const result = await getSessionForResume({ sessionId }, this.dependencies.invoke);
 		this.dependencies.dispatch({
 			type: 'session/messages/resume-loaded',
 			sessionId,

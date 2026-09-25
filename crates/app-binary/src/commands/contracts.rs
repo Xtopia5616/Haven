@@ -80,7 +80,7 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
     CommandContract {
         name: "get_history",
         request: "HistoryPageRequest",
-        response: "Session[]",
+        response: "SessionHistoryRow[]",
         boundary: CommandBoundary::Read,
         security: "read-only session projection",
     },
@@ -94,7 +94,7 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
     CommandContract {
         name: "search_history_paginated",
         request: "HistorySearchPageRequest",
-        response: "Session[]",
+        response: "SessionHistoryRow[]",
         boundary: CommandBoundary::Read,
         security: "parameterized read-only search",
     },
@@ -108,14 +108,14 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
     CommandContract {
         name: "search_history",
         request: "HistorySearchRequest",
-        response: "Session[]",
+        response: "SessionHistoryRow[]",
         boundary: CommandBoundary::Read,
         security: "parameterized read-only search",
     },
     CommandContract {
         name: "search_history_filtered",
         request: "HistoryFilterRequest",
-        response: "Session[]",
+        response: "SessionHistoryRow[]",
         boundary: CommandBoundary::Read,
         security: "bounded page and date-filtered projection",
     },

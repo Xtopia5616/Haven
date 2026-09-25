@@ -9,6 +9,47 @@
 
 import type { ActionKind } from './action.ts';
 
+/** Flat renderer arguments for one session id command. */
+export interface SessionIdRequest {
+	sessionId: string;
+}
+
+/** Flat renderer arguments for updating a session title. */
+export interface UpdateSessionTitleRequest extends SessionIdRequest {
+	title: string;
+}
+
+/** Flat pagination arguments for persisted session history. */
+export interface HistoryPageRequest {
+	limit: number;
+	offset: number;
+}
+
+/** Flat arguments for a text search over persisted session history. */
+export interface HistorySearchRequest {
+	query: string;
+}
+
+/** Flat pagination and search arguments for persisted session history. */
+export interface HistorySearchPageRequest extends HistorySearchRequest, HistoryPageRequest {}
+
+/** Flat arguments for the date/status-filtered session history view. */
+export interface HistoryFilterRequest {
+	query?: string | null;
+	status?: string | null;
+	startDate?: string | null;
+	endDate?: string | null;
+	limit?: number | null;
+	offset?: number | null;
+}
+
+/** Flat arguments for exporting persisted session history. */
+export interface HistoryExportRequest {
+	startDate?: string | null;
+	endDate?: string | null;
+	status?: string | null;
+}
+
 export type CommandBoundary = 'read' | 'mutate' | 'execute';
 
 export interface CommandContract {
@@ -71,12 +112,12 @@ export const TAURI_COMMAND_CONTRACTS = {
 	list_action_history: { request: 'ListActionHistoryRequest', response: 'ActionEvent[]', boundary: 'read', security: 'limit capped at 200; internal tool args excluded' },
 	delete_action: { request: 'DeleteActionRequest', response: 'boolean', boundary: 'mutate', security: 'delete one persisted task row by id' },
 	open_external: { request: 'OpenExternalRequest', response: 'void', boundary: 'execute', security: 'http(s) or validated absolute local path only' },
-	get_history: { request: 'HistoryPageRequest', response: 'Session[]', boundary: 'read', security: 'read-only session projection' },
+	get_history: { request: 'HistoryPageRequest', response: 'SessionHistoryRow[]', boundary: 'read', security: 'read-only session projection' },
 	count_history: { request: '-', response: 'number', boundary: 'read', security: 'read-only aggregate' },
-	search_history_paginated: { request: 'HistorySearchPageRequest', response: 'Session[]', boundary: 'read', security: 'parameterized read-only search' },
+	search_history_paginated: { request: 'HistorySearchPageRequest', response: 'SessionHistoryRow[]', boundary: 'read', security: 'parameterized read-only search' },
 	count_history_search: { request: 'HistorySearchRequest', response: 'number', boundary: 'read', security: 'parameterized read-only search' },
-	search_history: { request: 'HistorySearchRequest', response: 'Session[]', boundary: 'read', security: 'parameterized read-only search' },
-	search_history_filtered: { request: 'HistoryFilterRequest', response: 'Session[]', boundary: 'read', security: 'bounded page and date-filtered projection' },
+	search_history: { request: 'HistorySearchRequest', response: 'SessionHistoryRow[]', boundary: 'read', security: 'parameterized read-only search' },
+	search_history_filtered: { request: 'HistoryFilterRequest', response: 'SessionHistoryRow[]', boundary: 'read', security: 'bounded page and date-filtered projection' },
 	export_history: { request: 'HistoryExportRequest', response: 'string', boundary: 'read', security: 'export contains persisted history only' },
 	get_log_info: { request: '-', response: 'LogInfo', boundary: 'read', security: 'path is optional; no environment details' },
 	read_log_tail: { request: 'ReadLogTailRequest', response: 'LogTail', boundary: 'read', security: 'bounded tail; file logging must be enabled' },

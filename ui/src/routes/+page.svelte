@@ -25,6 +25,11 @@
 	import { registerPerformanceMetricsProvider } from '$lib/performanceMetrics.ts';
 	import { createSessionRefreshScheduler } from '$lib/sessionRefresh.ts';
 	import {
+		getLastConversation,
+		getSessions,
+		reopenSession,
+	} from '$lib/sessionHistoryCommands.ts';
+	import {
 		appSessionReducer,
 		createSessionSelectorStore,
 		DRAFT_SESSION_ID,
@@ -896,7 +901,7 @@
 	async function loadSessionsNow() {
 		const seq = ++loadSessionsSeq;
 		const run = (async () => {
-			const result = await invoke('get_sessions');
+			const result = await getSessions();
 			// Stale response guard: a newer loadSessions call superseded this one.
 			if (seq !== loadSessionsSeq) return;
 			if (result && result.sessions) {
@@ -958,7 +963,7 @@
 	// Messages render as soon as `get_last_conversation` returns. Non-error
 	// sessions still use `reopen_session` afterwards so follow-up messages can
 	// continue; errored sessions remain read-only until Continue is requested.
-	/** @param {any} resumeTarget */
+	/** @param {unknown} resumeTarget */
 	async function restoreLastConversation(resumeTarget) {
 		if (
 			resumeTarget ||
@@ -979,9 +984,10 @@
 			dispatchSession({ type: 'session/cleared' });
 		}
 		if (sessionReducer.getState().activeSessionId) return;
-		let last;
+		/** @type {import('$lib/contracts/sessionHistory.ts').SessionResumeResponse | null} */
+		let last = null;
 		try {
-			last = await invoke('get_last_conversation');
+			last = await getLastConversation();
 		} catch (e) {
 			logger.warn('+page', 'auto-restore conversation error', e);
 			return;
@@ -1027,7 +1033,7 @@
 			});
 		}
 		try {
-			if (!wasError) await invoke('reopen_session', { sessionId: last.session.id });
+			if (!wasError) await reopenSession({ sessionId: last.session.id });
 		} catch (e) {
 			logger.warn('+page', 'reopen_session error', e);
 		}

@@ -45,4 +45,26 @@ describe('Tauri command contract directory', () => {
 			response: 'void',
 		});
 	});
+
+	it('keeps session history and resume command contracts named', () => {
+		for (const command of [
+			'get_history',
+			'search_history_paginated',
+			'search_history',
+			'search_history_filtered',
+		]) {
+			expect(TAURI_COMMAND_CONTRACTS[command as keyof typeof TAURI_COMMAND_CONTRACTS].response).toBe(
+				'SessionHistoryRow[]',
+			);
+		}
+		expect(TAURI_COMMAND_CONTRACTS.search_history_filtered.request).toBe('HistoryFilterRequest');
+		expect(TAURI_COMMAND_CONTRACTS.get_sessions.response).toBe('SessionListResponse');
+		expect(TAURI_COMMAND_CONTRACTS.get_session_for_resume).toMatchObject({
+			request: 'SessionIdRequest',
+			response: 'SessionResumeResponse',
+		});
+		expect(TAURI_COMMAND_CONTRACTS.get_last_conversation.response).toBe(
+			'SessionResumeResponse | null',
+		);
+	});
 });
