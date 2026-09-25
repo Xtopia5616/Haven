@@ -367,12 +367,15 @@ Temp（全局约束）。
 shell 进程、定时器和 action dependency 共享一个 action map、一个生命周期 sink 和一个
 completion bus。统一状态为 `waiting → running → completed | failed | cancelled`；定时任务的
 `kind` 只表示任务类型，不再作为状态值。model-facing `actions.*` 和 app action board 都
-直接读取规范化 task row。scheduled fire 的恢复 map 是共享 claim/lease 的唯一领取入口，
-后台 completion consumer 不领取 scheduled fire，避免未来多个 receiver 重复执行。
-action 表、scheduled trigger 和 completion outbox 的全部持久化调用经 `ActionStore`；Tools
-不持有 raw `Database` 或安排 SQLite blocking 工作。CAS 仲裁、内存 board、恢复/重试策略与
-生命周期事件仍由 `ActionService` 所有；终态行和 outbox 在同一事务提交，agent 只在
-transcript durable 后确认 outbox（ADR 0305）。
+直接读取规范化 task row。background completion outbox 与 scheduled fire recovery 共用纯
+`haven_common::action_lease::ActionLease<T>` claim core：outbox 在 `BEGIN IMMEDIATE` 事务中以
+稳定 `action_result_id` 和 SQLite UTC deadline 判断 30 秒 claim，随后仍由原 SQL/CAS 写入；
+scheduled fire recovery 以 `action_id` 和单调时钟使用 15 分钟进程内 lease。现有契约没有独立
+的 claimant owner token，也没有 lease renewal 操作。scheduled 终态和无 consumer 回滚会清除
+其 pending fire 与 lease；background completion lease 过期后可再次 claim，直到 transcript
+durable 后按 `action_result_id` ack。ActionStore 仍各自拥有 outbox、scheduled trigger 的
+事务和 CAS；Tools 不持有 raw `Database` 或安排 SQLite blocking 工作。CAS 仲裁、内存 board、
+恢复/重试策略与生命周期事件仍由 `ActionService` 所有（ADR 0305、0332）。
 `InteractionRequest`（`haven-agent/src/interaction.rs`）
 是 ask、confirm 和 scheduled confirm 的共同生命周期投影，快照通过 `interactions` 保存当前
 请求；旧快照不做运行时兼容读取，新的交互状态以 `Pending → Resolved | Expired | Cancelled`
@@ -578,6 +581,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 
 | 日期 | 内容 |
 |---|---|
+| 2026-09-25 | §2.5 Tools / §2.3 Memory：background outbox 与 scheduled fire claim 共用纯 typed `ActionLease<T>` 状态校验；30 秒/15 分钟 lease、SQLite CAS、ack 和 terminal invalidation 保持各自边界（ADR 0332） |
 | 2026-09-25 | §2.5 Tools：ToolsManager 唯一构造 typed `ToolCapabilitySnapshot` 并供媒体 catalog、prompt、TTS/STT 与录音 gate 共用；每次从当前 runtime/router/MCP 状态重建，暂缓无共同失效时钟的缓存（ADR 0331） |
 | 2026-09-25 | §2.2 LLM：将聚合 stream 的首次 `on_chunk` 交付前重试、guidance retry、总 timeout 与结果交接收口到 `AggregatedStreamExecutor`；Router 继续持路由、permit、规则和 health/cooldown 状态（ADR 0328） |
 | 2026-09-25 | §2.2 LLM：将显式 `RequestDescriptor` 从 Router route preparation 传入 complete、embedding、raw stream 与 aggregated stream 执行边界；route key 和 usage owner 保持原边界（ADR 0329） |

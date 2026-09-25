@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use haven_common::ActionStatus;
+use haven_common::action_lease::ActionLease;
 use serde_json::Value;
 use tokio::sync::{RwLock, broadcast};
 
@@ -60,24 +61,17 @@ pub enum ActionCompletion {
 /// Receiver for the unified action completion stream.
 pub struct ActionCompletionReceiver {
     rx: broadcast::Receiver<ActionCompletion>,
-    /// Scheduled fire claim/lease ownership is deliberately shared by all
-    /// receivers: local de-duplication cannot prevent two scheduled consumers
-    /// from executing the same fire.
+    /// Scheduled fire claims are shared by all receivers. Background
+    /// completion claims remain durable in the ActionStore outbox.
     pending_scheduled_fires: Arc<RwLock<HashMap<String, ScheduledActionFired>>>,
-    scheduled_fire_claims: Arc<RwLock<HashMap<String, ScheduledFireClaim>>>,
+    action_leases: Arc<RwLock<HashMap<String, ActionLease<Instant>>>>,
 }
 
-#[derive(Clone, Copy, Debug)]
-struct ScheduledFireClaim {
-    expires_at: Instant,
-}
-
-/// Shared owner of the transient completion broadcast and scheduled-fire
-/// recovery claims.
+/// Shared owner of the transient completion broadcast and in-process claims.
 pub(crate) struct ActionCompletionBus {
     tx: broadcast::Sender<ActionCompletion>,
     pending_scheduled_fires: Arc<RwLock<HashMap<String, ScheduledActionFired>>>,
-    scheduled_fire_claims: Arc<RwLock<HashMap<String, ScheduledFireClaim>>>,
+    action_leases: Arc<RwLock<HashMap<String, ActionLease<Instant>>>>,
 }
 
 impl ActionCompletionBus {
@@ -86,7 +80,7 @@ impl ActionCompletionBus {
         Self {
             tx,
             pending_scheduled_fires: Arc::new(RwLock::new(HashMap::new())),
-            scheduled_fire_claims: Arc::new(RwLock::new(HashMap::new())),
+            action_leases: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -94,7 +88,7 @@ impl ActionCompletionBus {
         ActionCompletionReceiver {
             rx: self.tx.subscribe(),
             pending_scheduled_fires: Arc::clone(&self.pending_scheduled_fires),
-            scheduled_fire_claims: Arc::clone(&self.scheduled_fire_claims),
+            action_leases: Arc::clone(&self.action_leases),
         }
     }
 
@@ -126,7 +120,7 @@ impl ActionCompletionBus {
         for action_id in ids {
             if let Some(fired) = claim_scheduled_fire(
                 &self.pending_scheduled_fires,
-                &self.scheduled_fire_claims,
+                &self.action_leases,
                 &action_id,
             )
             .await
@@ -141,8 +135,20 @@ impl ActionCompletionBus {
     /// when a no-consumer fire is rolled back. Keep the claim -> pending lock
     /// order used by claims so simultaneous receivers cannot invert locks.
     pub(crate) async fn clear_scheduled_fire(&self, action_id: &str) {
-        self.scheduled_fire_claims.write().await.remove(action_id);
+        self.release_action_lease(action_id, action_id).await;
         self.pending_scheduled_fires.write().await.remove(action_id);
+    }
+
+    async fn release_action_lease(&self, action_id: &str, claim_token: &str) -> bool {
+        let mut leases = self.action_leases.write().await;
+        if !leases
+            .get_mut(action_id)
+            .is_some_and(|lease| lease.invalidate_for(claim_token))
+        {
+            return false;
+        }
+        leases.remove(action_id);
+        true
     }
 
     #[cfg(test)]
@@ -155,39 +161,37 @@ impl ActionCompletionBus {
 
     #[cfg(test)]
     pub(crate) async fn has_scheduled_fire_claim(&self, action_id: &str) -> bool {
-        self.scheduled_fire_claims
-            .read()
-            .await
-            .contains_key(action_id)
+        self.action_leases.read().await.contains_key(action_id)
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn has_action_lease(&self, action_id: &str) -> bool {
+        self.action_leases.read().await.contains_key(action_id)
     }
 }
 
 async fn claim_scheduled_fire(
     pending_scheduled_fires: &RwLock<HashMap<String, ScheduledActionFired>>,
-    scheduled_fire_claims: &RwLock<HashMap<String, ScheduledFireClaim>>,
+    action_leases: &RwLock<HashMap<String, ActionLease<Instant>>>,
     action_id: &str,
 ) -> Option<ScheduledActionFired> {
     // Claim and lookup use the same lock order everywhere. This makes the
     // claim check atomic from the perspective of concurrent receivers while
     // allowing an abandoned consumer to be recovered after the lease expires.
-    let mut claims = scheduled_fire_claims.write().await;
+    let mut leases = action_leases.write().await;
     let now = Instant::now();
-    if let Some(claim) = claims.get(action_id)
-        && claim.expires_at > now
-    {
-        return None;
-    }
+    let lease = ActionLease::try_claim(
+        leases.get(action_id),
+        action_id,
+        &now,
+        now + SCHEDULED_FIRE_LEASE,
+    )?;
     let fired = pending_scheduled_fires
         .read()
         .await
         .get(action_id)
         .cloned()?;
-    claims.insert(
-        action_id.to_string(),
-        ScheduledFireClaim {
-            expires_at: now + SCHEDULED_FIRE_LEASE,
-        },
-    );
+    leases.insert(action_id.to_string(), lease);
     Some(fired)
 }
 
@@ -198,7 +202,7 @@ impl ActionCompletionReceiver {
                 Ok(ActionCompletion::Scheduled(fired)) => {
                     if let Some(fired) = claim_scheduled_fire(
                         &self.pending_scheduled_fires,
-                        &self.scheduled_fire_claims,
+                        &self.action_leases,
                         &fired.action_id,
                     )
                     .await
@@ -294,7 +298,7 @@ impl ActionCompletionReceiver {
                 Ok(ActionCompletion::Scheduled(fired)) => {
                     if let Some(fired) = claim_scheduled_fire(
                         &self.pending_scheduled_fires,
-                        &self.scheduled_fire_claims,
+                        &self.action_leases,
                         &fired.action_id,
                     )
                     .await
@@ -359,27 +363,57 @@ mod tests {
         assert!(
             claim_scheduled_fire(
                 &bus.pending_scheduled_fires,
-                &bus.scheduled_fire_claims,
+                &bus.action_leases,
                 &fired.action_id,
             )
             .await
             .is_some()
         );
-        bus.scheduled_fire_claims
-            .write()
-            .await
-            .get_mut(&fired.action_id)
-            .unwrap()
-            .expires_at = Instant::now() - Duration::from_secs(1);
+        bus.action_leases.write().await.insert(
+            fired.action_id.clone(),
+            ActionLease::new(
+                fired.action_id.clone(),
+                Instant::now() - Duration::from_secs(1),
+            ),
+        );
 
         let recovered = claim_scheduled_fire(
             &bus.pending_scheduled_fires,
-            &bus.scheduled_fire_claims,
+            &bus.action_leases,
             &fired.action_id,
         )
         .await
         .expect("expired lease must permit recovery");
         assert_eq!(recovered.action_id, fired.action_id);
+    }
+
+    #[tokio::test]
+    async fn scheduled_claim_release_checks_token_and_terminal_clear_invalidates_it() {
+        let bus = ActionCompletionBus::new();
+        let fired = scheduled_fire("act-release-claim");
+        bus.retain_scheduled_fire(fired.clone()).await;
+        assert!(
+            claim_scheduled_fire(
+                &bus.pending_scheduled_fires,
+                &bus.action_leases,
+                &fired.action_id,
+            )
+            .await
+            .is_some()
+        );
+
+        assert!(
+            !bus.release_action_lease(&fired.action_id, "act-wrong-token")
+                .await
+        );
+        assert!(bus.has_action_lease(&fired.action_id).await);
+
+        // Scheduled completion/cancellation uses this clear path. Once
+        // terminal, both the lease and its recoverable fire are invalidated.
+        bus.clear_scheduled_fire(&fired.action_id).await;
+        assert!(!bus.has_scheduled_fire_claim(&fired.action_id).await);
+        assert!(!bus.has_pending_scheduled_fire(&fired.action_id).await);
+        assert!(bus.pending_scheduled_fire().await.is_none());
     }
 
     #[tokio::test]
@@ -401,7 +435,7 @@ mod tests {
             panic!("background receiver must pass through background completions");
         };
         assert_eq!(received.action_result_id, completion.action_result_id);
-        assert!(bus.scheduled_fire_claims.read().await.is_empty());
+        assert!(bus.action_leases.read().await.is_empty());
     }
 
     #[tokio::test]

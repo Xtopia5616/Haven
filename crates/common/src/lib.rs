@@ -1,3 +1,5 @@
+#[doc(hidden)]
+pub mod action_lease;
 pub mod config;
 pub mod encoding;
 pub mod error;

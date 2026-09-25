@@ -7,6 +7,7 @@
 
 use crate::db::Database;
 use haven_common::ActionStatus;
+use haven_common::action_lease::ActionLease;
 use serde_json::{Value, json};
 
 const CLAIM_LEASE_SECS: i64 = 30;
@@ -150,7 +151,8 @@ impl Database {
         let result = (|| {
             let row = conn
                 .query_row(
-                    "SELECT action_id, action_result_id, session_id, status, status_json
+                    "SELECT action_id, action_result_id, session_id, status, status_json,
+                            claimed_until, datetime('now')
                      FROM action_completion_outbox
                      WHERE delivered_at IS NULL
                        AND (claimed_until IS NULL OR claimed_until <= datetime('now'))
@@ -164,13 +166,29 @@ impl Database {
                             row.get::<_, Option<String>>(2)?,
                             row.get::<_, String>(3)?,
                             row.get::<_, String>(4)?,
+                            row.get::<_, Option<String>>(5)?,
+                            row.get::<_, String>(6)?,
                         ))
                     },
                 )
                 .optional()?;
-            let Some((action_id, action_result_id, session_id, status, status_json)) = row else {
+            let Some((
+                action_id,
+                action_result_id,
+                session_id,
+                status,
+                status_json,
+                claimed_until,
+                now,
+            )) = row
+            else {
                 return Ok(None);
             };
+            let current_lease = claimed_until
+                .map(|expires_at| ActionLease::new(action_result_id.clone(), expires_at));
+            if !ActionLease::can_claim(current_lease.as_ref(), &now) {
+                return Ok(None);
+            }
             conn.execute(
                 "UPDATE action_completion_outbox
                  SET claimed_until = datetime('now', ?2)
@@ -240,6 +258,43 @@ mod tests {
         assert_eq!(row.status_json["output"], "ok");
         assert!(db.acknowledge_action_completion("act-outbox").unwrap());
         assert!(db.claim_action_completion().unwrap().is_none());
+    }
+
+    #[test]
+    fn expired_completion_lease_can_be_reclaimed_and_ack_uses_result_identity() {
+        let db = Database::open_in_memory().unwrap();
+        db.save_action("act-expired-outbox", Some("ses-1"), "echo ok", "start")
+            .unwrap();
+        db.finish_action(
+            "act-expired-outbox",
+            ActionStatus::Completed,
+            Some("ok"),
+            None,
+            None,
+            None,
+            Some(0),
+            "finish",
+        )
+        .unwrap();
+
+        let first = db.claim_action_completion().unwrap().unwrap();
+        assert_eq!(first.action_result_id, "act-expired-outbox");
+        assert!(db.claim_action_completion().unwrap().is_none());
+        assert!(
+            !db.acknowledge_action_completion("act-different-result")
+                .unwrap()
+        );
+
+        db.conn()
+            .execute(
+                "UPDATE action_completion_outbox
+                 SET claimed_until = datetime('now', '-1 second')
+                 WHERE action_result_id = ?1",
+                ["act-expired-outbox"],
+            )
+            .unwrap();
+        let reclaimed = db.claim_action_completion().unwrap().unwrap();
+        assert_eq!(reclaimed.action_result_id, first.action_result_id);
     }
 
     #[test]

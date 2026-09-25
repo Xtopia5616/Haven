@@ -320,3 +320,4 @@
 - [0329：LLM 请求 descriptor 贯穿执行边界](0329-llm-request-descriptor-execution-boundary.md)
 - [0330：Session lifecycle UI contract mapper](0330-session-lifecycle-ui-contract-mapper.md)
 - [0331：ToolsManager typed capability snapshot 与缓存失效边界](0331-tools-manager-capability-snapshot.md)
+- [0332：后台与定时任务共用 ActionLease claim core](0332-action-claim-lease-core.md)
