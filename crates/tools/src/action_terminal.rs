@@ -232,40 +232,59 @@ mod tests {
     }
 
     #[test]
-    fn terminal_claims_reject_repeated_or_invalid_transitions() {
-        for target in [
-            ActionStatus::Completed,
-            ActionStatus::Failed,
-            ActionStatus::Cancelled,
-        ] {
-            assert!(can_claim_terminal(
-                ActionStatus::Running,
-                target,
-                TerminalSource::Running
-            ));
-            for current in [
-                ActionStatus::Completed,
-                ActionStatus::Failed,
-                ActionStatus::Cancelled,
-            ] {
-                assert!(!can_claim_terminal(current, target, TerminalSource::Live));
+    fn action_status_transition_graph_is_exhaustive() {
+        let allowed_transitions = [
+            (ActionStatus::Waiting, ActionStatus::Running),
+            (ActionStatus::Waiting, ActionStatus::Cancelled),
+            (ActionStatus::Running, ActionStatus::Completed),
+            (ActionStatus::Running, ActionStatus::Failed),
+            (ActionStatus::Running, ActionStatus::Cancelled),
+        ];
+
+        for current in ActionStatus::ALL {
+            for next in ActionStatus::ALL {
+                let expected = current == next || allowed_transitions.contains(&(current, next));
+                assert_eq!(
+                    current.can_transition_to(next),
+                    expected,
+                    "unexpected action status transition: {} -> {}",
+                    current.as_str(),
+                    next.as_str()
+                );
             }
         }
+    }
 
-        assert!(can_claim_terminal(
-            ActionStatus::Waiting,
-            ActionStatus::Cancelled,
-            TerminalSource::Live
-        ));
-        assert!(!can_claim_terminal(
-            ActionStatus::Waiting,
-            ActionStatus::Completed,
-            TerminalSource::Live
-        ));
-        assert!(!can_claim_terminal(
-            ActionStatus::Waiting,
-            ActionStatus::Cancelled,
-            TerminalSource::Running
-        ));
+    #[test]
+    fn terminal_claim_policy_covers_every_status_and_source_pair() {
+        for current in ActionStatus::ALL {
+            for target in ActionStatus::ALL {
+                for source in [TerminalSource::Running, TerminalSource::Live] {
+                    let expected = matches!(
+                        (source, current, target),
+                        (
+                            TerminalSource::Running | TerminalSource::Live,
+                            ActionStatus::Running,
+                            ActionStatus::Completed
+                                | ActionStatus::Failed
+                                | ActionStatus::Cancelled
+                        ) | (
+                            TerminalSource::Live,
+                            ActionStatus::Waiting,
+                            ActionStatus::Cancelled
+                        )
+                    );
+
+                    assert_eq!(
+                        can_claim_terminal(current, target, source),
+                        expected,
+                        "unexpected terminal claim: {:?} {:?} -> {:?}",
+                        source,
+                        current,
+                        target
+                    );
+                }
+            }
+        }
     }
 }

@@ -339,3 +339,4 @@
 - [0349：Session terminal cleanup audit](0349-session-terminal-cleanup-audit.md)
 - [0350：Session UI field mapping audit](0350-session-ui-field-mapping-audit.md)
 - [0351：配置 runtime apply 失败语义审计](0351-config-runtime-apply-failure-policy-audit.md)
+- [0352：Background/Scheduled action 生命周期转换内核审计](0352-action-lifecycle-transition-core-audit.md)

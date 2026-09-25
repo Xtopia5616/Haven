@@ -412,6 +412,13 @@ scheduled trigger 的输入分类和 due-time 计算由 crate-private 纯 typed 
 durable admission、board insertion、timer/watch worker、fire、terminal commit/retry 与 lifecycle event。
 这只是 trigger admission 的窄边界，不是 `Immediate`/`At`/`After` 与 execution 的完整 Job 模型；
 schedule tool 对 LLM 输入的前置验证仍保留在工具边界，App command/event adapter 仍只做 UI DTO 投影（ADR 0343）。
+完整 lifecycle 审计没有发现需要迁移到另一个纯 transition policy 的重复判断：status graph 与 terminal claim 已由
+`ActionStatus::can_transition_to` / `action_terminal::can_claim_terminal` 单点定义；background admission 直接进入
+`running`，`waiting → running` 只属于 scheduled fire。提交前后的重复检查跨越 durable CAS 与内存投影/回滚边界，保留为竞态校验。
+执行副作用、outbox、retry 与 UI finished 投影继续按 kind 分流；trigger/execution、deadline/claim identity 和 restart recovery
+语义需先决策，当前不引入新的 Job 状态或自动 replay（ADR 0352）。该审计还发现 `ActionService::set` 的 scheduled
+admission cleanup 会移除 Running row，虽注释仅描述 terminal cleanup；需单独补 admission/in-flight completion 回归并修复，
+本轮保持现状。
 Action 输出 tail 的长度策略由 `ActionService` 持有的 crate-private `ActionOutputPort` 唯一配置；
 foreground shell card 与 background action 共用该 policy 生成有字符上限的 `ActionOutputTail`，
 consumer 仅拿不可 `Debug`/`Serialize` 的 `ActionTailSnapshot`。`agent:tool_output` 仍用
@@ -666,6 +673,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 | 日期 | 内容 |
 |---|---|
 | 2026-09-25 | §2.5 Tools / §2.6 UI：审计 background/scheduled action board 生命周期投影；复用既有 background terminal transcript finalizer，保留 scheduled 删除、Agent 通知、kind-specific display/cancel 和无 UI event dedup 边界（ADR 0344） |
+| 2026-09-25 | §2.5 Tools：穷举审计 background/scheduled ActionStatus 与 terminal claim；已有纯策略 owner 覆盖唯一共享判断，不新增完整 Job transition policy，记录 trigger/execution 与恢复语义的未决决策（ADR 0352） |
 | 2026-09-25 | §2.6 App / UI：ToolsView 的 MCP/Skills 单条订阅统一经过 `mapAppEvent`；保留 MCP 通知与刷新两个不同副作用、未知 status variant 与 pass-through 扩展字段，删除布局无效 Skills listener（ADR 0346） |
 | 2026-09-25 | §2.6 App / UI：Agent 事件删除重复的 snake_case TS wire interfaces，并由唯一 `mapAgentEvent` 校验/映射未知 payload；未知 enum 字符串、动态扩展、usage error fallback、空通知默认与各自副作用 owner 保持。记录 SessionCompleted/SessionError 双 channel fan-out 的既有终态 cleanup 重叠，本切片不改 session contract（ADR 0347） |
 | 2026-09-25 | §2.6 App / UI：Action board 活跃 `list_actions`/`cancel_action` 统一经过 typed command boundary；list rows 复用 Action mapper，扁平 request 与 boolean result 有命名类型，wire/error/UI 行为保持（ADR 0348） |
