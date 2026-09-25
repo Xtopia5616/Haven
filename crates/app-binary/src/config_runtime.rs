@@ -301,8 +301,8 @@ impl RuntimeConfigApplyPlan {
     }
 }
 
-/// A named point in the existing settings runtime-apply sequence. These
-/// phases describe observability only; they do not imply rollback boundaries.
+/// A named point in the settings runtime-apply sequence. These phases describe
+/// ordering and observability only; they do not imply rollback boundaries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SettingsApplyPhase {
     RouterPrepare,
@@ -363,18 +363,84 @@ impl SettingsApplyPhase {
             Self::HotkeyRebindEvent => "hotkey_rebind_event",
         }
     }
+
+    fn requires_hotkey_binding_change(self) -> bool {
+        matches!(
+            self,
+            Self::HotkeyUnregister | Self::HotkeyRegister | Self::HotkeyRebindEvent
+        )
+    }
 }
 
-/// Safe metadata for a settings runtime-apply failure after durable commit.
+const SETTINGS_APPLY_PHASE_ORDER: [SettingsApplyPhase; 16] = [
+    SettingsApplyPhase::RouterPrepare,
+    SettingsApplyPhase::InputPipeline,
+    SettingsApplyPhase::Shell,
+    SettingsApplyPhase::Security,
+    SettingsApplyPhase::McpConfig,
+    SettingsApplyPhase::McpMonitors,
+    SettingsApplyPhase::RouterPublish,
+    SettingsApplyPhase::ContextLimits,
+    SettingsApplyPhase::SessionRuntime,
+    SettingsApplyPhase::ToolSettings,
+    SettingsApplyPhase::Skills,
+    SettingsApplyPhase::Logging,
+    SettingsApplyPhase::HotkeyMode,
+    SettingsApplyPhase::HotkeyUnregister,
+    SettingsApplyPhase::HotkeyRegister,
+    SettingsApplyPhase::HotkeyRebindEvent,
+];
+
+/// Typed settings targets and ordered stages derived from the shared runtime
+/// target map. The snapshot version is authoritative for apply diagnostics.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct SettingsApplyFailure {
+pub(crate) struct SettingsApplyPlan {
+    pub(crate) config_version: u64,
+    pub(crate) live_targets: Vec<RuntimeConfigTarget>,
+    pub(crate) restart_required_targets: Vec<RuntimeConfigTarget>,
+    phases: Vec<SettingsApplyPhase>,
+}
+
+impl SettingsApplyPlan {
+    pub(crate) fn from_change(
+        change: &ConfigChanged,
+        snapshot: &ConfigSnapshot,
+        old_hotkey: &str,
+    ) -> Self {
+        let runtime_plan = RuntimeConfigApplyPlan::from_change(change);
+        debug_assert_eq!(runtime_plan.version, snapshot.version);
+        let hotkey_binding_changed = old_hotkey != snapshot.config.hotkey.key_binding;
+        let phases = SETTINGS_APPLY_PHASE_ORDER
+            .into_iter()
+            .filter(|phase| {
+                runtime_plan.contains(phase.target())
+                    && (!phase.requires_hotkey_binding_change() || hotkey_binding_changed)
+            })
+            .collect();
+
+        Self {
+            config_version: snapshot.version,
+            live_targets: runtime_plan.live,
+            restart_required_targets: runtime_plan.restart_required,
+            phases,
+        }
+    }
+
+    pub(crate) fn phases(&self) -> &[SettingsApplyPhase] {
+        &self.phases
+    }
+}
+
+/// Safe metadata captured for the active settings runtime-apply phase.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SettingsApplyObservation {
     pub(crate) config_version: u64,
     pub(crate) phase: SettingsApplyPhase,
     pub(crate) router_published: bool,
     pub(crate) restart_required_targets: Vec<RuntimeConfigTarget>,
 }
 
-impl SettingsApplyFailure {
+impl SettingsApplyObservation {
     fn record(&self, command: &str, error: &dyn std::fmt::Display, warning: bool) {
         let safe_error = crate::logging::sanitize_error_text(&error.to_string());
         if warning {
@@ -403,83 +469,132 @@ impl SettingsApplyFailure {
     }
 }
 
-/// Tracks the phase currently executing and whether Router publication has
-/// completed. Entering a phase uses the same `contains` semantics as the
-/// previous settings command, including restart-required targets.
-pub(crate) struct SettingsApplyPhaseTracker {
-    config_version: u64,
-    restart_required_targets: Vec<RuntimeConfigTarget>,
+/// Result of one phase callback. The coordinator owns error rendering and
+/// structured failure/warning logging; a pre-rendered error is used only for
+/// Router preparation, whose builder already crosses `log_err` boundaries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SettingsApplyOutcome {
+    Applied,
+    Failed {
+        command: &'static str,
+        error: String,
+        already_rendered: bool,
+    },
+    Warning {
+        command: &'static str,
+        error: String,
+    },
+}
+
+impl SettingsApplyOutcome {
+    pub(crate) fn applied() -> Self {
+        Self::Applied
+    }
+
+    pub(crate) fn failed(command: &'static str, error: impl std::fmt::Display) -> Self {
+        Self::Failed {
+            command,
+            error: error.to_string(),
+            already_rendered: false,
+        }
+    }
+
+    pub(crate) fn failed_already_rendered(command: &'static str, error: String) -> Self {
+        Self::Failed {
+            command,
+            error,
+            already_rendered: true,
+        }
+    }
+
+    pub(crate) fn warning(command: &'static str, error: impl std::fmt::Display) -> Self {
+        Self::Warning {
+            command,
+            error: error.to_string(),
+        }
+    }
+}
+
+/// Owns the settings phase sequence and its failure observations. Side effects
+/// remain in their existing runtime owners and are supplied as phase callbacks.
+pub(crate) struct SettingsRuntimeApplyCoordinator {
+    plan: SettingsApplyPlan,
     phase: Option<SettingsApplyPhase>,
     router_published: bool,
 }
 
-impl SettingsApplyPhaseTracker {
-    pub(crate) fn new(plan: &RuntimeConfigApplyPlan) -> Self {
+impl SettingsRuntimeApplyCoordinator {
+    pub(crate) fn new(change: &ConfigChanged, snapshot: &ConfigSnapshot, old_hotkey: &str) -> Self {
         Self {
-            config_version: plan.version,
-            restart_required_targets: plan.restart_required.clone(),
+            plan: SettingsApplyPlan::from_change(change, snapshot, old_hotkey),
             phase: None,
             router_published: false,
         }
     }
 
-    /// Mark a phase as current only when its target is part of the plan.
-    pub(crate) fn enter(
-        &mut self,
-        plan: &RuntimeConfigApplyPlan,
-        phase: SettingsApplyPhase,
-    ) -> bool {
-        if !plan.contains(phase.target()) {
-            return false;
+    pub(crate) fn plan(&self) -> &SettingsApplyPlan {
+        &self.plan
+    }
+
+    /// Execute callbacks in the typed plan order. A failure stops later stages,
+    /// preserving the existing partial-apply behavior.
+    pub(crate) async fn apply<F, Fut>(&mut self, mut execute: F) -> Result<(), String>
+    where
+        F: FnMut(SettingsApplyPhase) -> Fut,
+        Fut: Future<Output = SettingsApplyOutcome>,
+    {
+        for phase in self.plan.phases().iter().copied() {
+            self.phase = Some(phase);
+            match execute(phase).await {
+                SettingsApplyOutcome::Applied => {
+                    if phase == SettingsApplyPhase::RouterPublish {
+                        self.router_published = true;
+                    }
+                }
+                SettingsApplyOutcome::Failed {
+                    command,
+                    error,
+                    already_rendered,
+                } => {
+                    let rendered = if already_rendered {
+                        error
+                    } else {
+                        log_err(command, error)
+                    };
+                    self.observation(phase).record(command, &rendered, false);
+                    return Err(rendered);
+                }
+                SettingsApplyOutcome::Warning { command, error } => {
+                    self.observation(phase).record(command, &error, true);
+                }
+            }
         }
-        self.phase = Some(phase);
-        true
+        Ok(())
     }
 
-    pub(crate) fn mark_router_published(&mut self) {
-        debug_assert_eq!(self.phase, Some(SettingsApplyPhase::RouterPublish));
-        self.router_published = true;
-    }
-
-    pub(crate) fn failure(&self, phase: SettingsApplyPhase) -> SettingsApplyFailure {
+    fn observation(&self, phase: SettingsApplyPhase) -> SettingsApplyObservation {
         debug_assert_eq!(self.phase, Some(phase));
-        SettingsApplyFailure {
-            config_version: self.config_version,
+        SettingsApplyObservation {
+            config_version: self.plan.config_version,
             phase,
             router_published: self.router_published,
-            restart_required_targets: self.restart_required_targets.clone(),
+            restart_required_targets: self.plan.restart_required_targets.clone(),
         }
     }
 
-    pub(crate) fn record_failure(
-        &self,
-        phase: SettingsApplyPhase,
-        command: &str,
-        error: &dyn std::fmt::Display,
-    ) {
-        self.failure(phase).record(command, error, false);
+    #[cfg(test)]
+    fn current_phase(&self) -> Option<SettingsApplyPhase> {
+        self.phase
     }
 
-    /// Preserve the command error renderer while attaching phase metadata to
-    /// the same failure path.
-    pub(crate) fn render_failure(
-        &self,
-        phase: SettingsApplyPhase,
-        command: &str,
-        error: impl std::fmt::Display,
-    ) -> String {
-        let rendered = crate::logging::log_err(command, error);
-        self.record_failure(phase, command, &rendered);
-        rendered
+    #[cfg(test)]
+    fn router_published(&self) -> bool {
+        self.router_published
     }
 
-    pub(crate) fn record_warning(
-        &self,
-        phase: SettingsApplyPhase,
-        command: &str,
-        error: &dyn std::fmt::Display,
-    ) {
-        self.failure(phase).record(command, error, true);
+    #[cfg(test)]
+    fn current_observation(&self) -> Option<SettingsApplyObservation> {
+        self.phase.map(|phase| self.observation(phase))
     }
 }
 
@@ -608,38 +723,244 @@ mod tests {
         assert!(order[3].ends_with(":finish"));
     }
 
-    #[tokio::test]
-    async fn failed_settings_prepare_is_before_router_publish() {
-        use std::sync::atomic::{AtomicBool, Ordering};
+    fn settings_change(version: u64) -> ConfigChanged {
+        ConfigChanged {
+            version,
+            domains: vec![
+                ConfigDomain::Media,
+                ConfigDomain::DefaultShell,
+                ConfigDomain::Security,
+                ConfigDomain::McpServers,
+                ConfigDomain::McpDiscovery,
+                ConfigDomain::Llm,
+                ConfigDomain::ContextLimits,
+                ConfigDomain::Session,
+                ConfigDomain::Tools,
+                ConfigDomain::Skills,
+                ConfigDomain::Log,
+                ConfigDomain::Hotkey,
+                ConfigDomain::SkillsExec,
+                ConfigDomain::Memory,
+            ],
+        }
+    }
 
-        let plan = RuntimeConfigApplyPlan::from_change(&ConfigChanged {
-            version: 19,
-            domains: vec![ConfigDomain::Llm],
-        });
-        let mut phases = SettingsApplyPhaseTracker::new(&plan);
-        assert!(phases.enter(&plan, SettingsApplyPhase::RouterPrepare));
+    fn settings_snapshot(version: u64, hotkey: &str) -> ConfigSnapshot {
+        let mut config = AppConfig::default();
+        config.hotkey.key_binding = hotkey.into();
+        ConfigSnapshot { version, config }
+    }
 
-        let applied = std::sync::Arc::new(AtomicBool::new(false));
-        let applied_in_closure = applied.clone();
-        let result: Result<(), &str> = RuntimeConfigCoordinator::prepare_then_publish(
-            || Err::<u8, _>("client preparation failed"),
-            |_generation: u8| async move {
-                applied_in_closure.store(true, Ordering::SeqCst);
-                Ok(())
-            },
-        )
-        .await;
-
-        assert_eq!(result, Err("client preparation failed"));
-        assert!(!applied.load(Ordering::SeqCst));
-        let failure = phases.failure(SettingsApplyPhase::RouterPrepare);
-        assert_eq!(failure.config_version, 19);
-        assert_eq!(failure.phase, SettingsApplyPhase::RouterPrepare);
-        assert!(!failure.router_published);
+    fn settings_coordinator(version: u64) -> SettingsRuntimeApplyCoordinator {
+        let change = settings_change(version);
+        let snapshot = settings_snapshot(version, "Ctrl+Alt+N");
+        SettingsRuntimeApplyCoordinator::new(&change, &snapshot, "Ctrl+Alt+O")
     }
 
     #[test]
-    fn failure_after_router_publish_logs_version_phase_and_restart_metadata() {
+    fn settings_plan_uses_shared_targets_and_declares_the_existing_phase_order() {
+        let change = settings_change(18);
+        let snapshot = settings_snapshot(18, "Ctrl+Alt+N");
+        let plan = SettingsApplyPlan::from_change(&change, &snapshot, "Ctrl+Alt+O");
+
+        assert_eq!(plan.config_version, snapshot.version);
+        assert_eq!(
+            plan.phases(),
+            &[
+                SettingsApplyPhase::RouterPrepare,
+                SettingsApplyPhase::InputPipeline,
+                SettingsApplyPhase::Shell,
+                SettingsApplyPhase::Security,
+                SettingsApplyPhase::McpConfig,
+                SettingsApplyPhase::McpMonitors,
+                SettingsApplyPhase::RouterPublish,
+                SettingsApplyPhase::ContextLimits,
+                SettingsApplyPhase::SessionRuntime,
+                SettingsApplyPhase::ToolSettings,
+                SettingsApplyPhase::Skills,
+                SettingsApplyPhase::Logging,
+                SettingsApplyPhase::HotkeyMode,
+                SettingsApplyPhase::HotkeyUnregister,
+                SettingsApplyPhase::HotkeyRegister,
+                SettingsApplyPhase::HotkeyRebindEvent,
+            ]
+        );
+        assert_eq!(
+            plan.restart_required_targets,
+            vec![
+                RuntimeConfigTarget::Skills,
+                RuntimeConfigTarget::MemoryRuntime
+            ]
+        );
+
+        let unchanged_hotkey = settings_snapshot(18, "Ctrl+Alt+O");
+        let plan = SettingsApplyPlan::from_change(&change, &unchanged_hotkey, "Ctrl+Alt+O");
+        assert!(plan.phases().contains(&SettingsApplyPhase::HotkeyMode));
+        assert!(
+            !plan
+                .phases()
+                .contains(&SettingsApplyPhase::HotkeyUnregister)
+        );
+        assert!(!plan.phases().contains(&SettingsApplyPhase::HotkeyRegister));
+        assert!(
+            !plan
+                .phases()
+                .contains(&SettingsApplyPhase::HotkeyRebindEvent)
+        );
+    }
+
+    #[tokio::test]
+    async fn settings_coordinator_runs_in_order_and_tracks_success_and_failure_for_every_phase() {
+        use std::sync::{Arc, Mutex};
+
+        let mut successful = settings_coordinator(19);
+        let expected_phases = successful.plan().phases().to_vec();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_by_callback = seen.clone();
+        successful
+            .apply(move |phase| {
+                let seen = seen_by_callback.clone();
+                async move {
+                    seen.lock().unwrap().push(phase);
+                    SettingsApplyOutcome::applied()
+                }
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(*seen.lock().unwrap(), expected_phases);
+        assert_eq!(successful.current_phase(), expected_phases.last().copied());
+        assert!(successful.router_published());
+        let successful_metadata = successful.current_observation().unwrap();
+        assert_eq!(successful_metadata.config_version, 19);
+        assert_eq!(
+            successful_metadata.phase,
+            SettingsApplyPhase::HotkeyRebindEvent
+        );
+        assert!(successful_metadata.router_published);
+        assert_eq!(
+            successful_metadata.restart_required_targets,
+            vec![
+                RuntimeConfigTarget::Skills,
+                RuntimeConfigTarget::MemoryRuntime
+            ]
+        );
+
+        for (failed_index, failed_phase) in expected_phases.iter().copied().enumerate() {
+            let mut coordinator = settings_coordinator(19);
+            let result = coordinator
+                .apply(|phase| async move {
+                    if phase == failed_phase {
+                        SettingsApplyOutcome::failed_already_rendered(
+                            "settings_phase_test",
+                            "phase failed".into(),
+                        )
+                    } else {
+                        SettingsApplyOutcome::applied()
+                    }
+                })
+                .await;
+
+            assert!(result.is_err(), "{failed_phase:?} should fail the apply");
+            let failure = coordinator.current_observation().unwrap();
+            assert_eq!(failure.config_version, 19);
+            assert_eq!(failure.phase, failed_phase);
+            assert_eq!(
+                failure.router_published,
+                expected_phases[..failed_index].contains(&SettingsApplyPhase::RouterPublish)
+            );
+            assert_eq!(
+                failure.restart_required_targets,
+                vec![
+                    RuntimeConfigTarget::Skills,
+                    RuntimeConfigTarget::MemoryRuntime
+                ]
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn router_prepare_failure_stops_before_publish_and_keeps_snapshot_metadata() {
+        let change = ConfigChanged {
+            version: 20,
+            domains: vec![
+                ConfigDomain::Llm,
+                ConfigDomain::SkillsExec,
+                ConfigDomain::Memory,
+            ],
+        };
+        let snapshot = settings_snapshot(20, "Ctrl+Alt+N");
+        let mut coordinator =
+            SettingsRuntimeApplyCoordinator::new(&change, &snapshot, "Ctrl+Alt+O");
+        let mut router_published = false;
+
+        let result = coordinator
+            .apply(|phase| {
+                let result = match phase {
+                    SettingsApplyPhase::RouterPrepare => {
+                        SettingsApplyOutcome::failed_already_rendered(
+                            "update_settings",
+                            "client preparation failed".into(),
+                        )
+                    }
+                    SettingsApplyPhase::RouterPublish => {
+                        router_published = true;
+                        SettingsApplyOutcome::applied()
+                    }
+                    _ => SettingsApplyOutcome::applied(),
+                };
+                async move { result }
+            })
+            .await;
+
+        assert_eq!(result, Err("client preparation failed".into()));
+        assert!(!router_published);
+        let failure = coordinator.current_observation().unwrap();
+        assert_eq!(failure.config_version, snapshot.version);
+        assert_eq!(failure.phase, SettingsApplyPhase::RouterPrepare);
+        assert!(!failure.router_published);
+        assert_eq!(
+            failure.restart_required_targets,
+            vec![
+                RuntimeConfigTarget::Skills,
+                RuntimeConfigTarget::MemoryRuntime
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn hotkey_rebind_event_warning_keeps_settings_apply_successful() {
+        let change = ConfigChanged {
+            version: 21,
+            domains: vec![ConfigDomain::Hotkey],
+        };
+        let snapshot = settings_snapshot(21, "Ctrl+Alt+N");
+        let mut coordinator =
+            SettingsRuntimeApplyCoordinator::new(&change, &snapshot, "Ctrl+Alt+O");
+
+        coordinator
+            .apply(|phase| async move {
+                if phase == SettingsApplyPhase::HotkeyRebindEvent {
+                    SettingsApplyOutcome::warning(
+                        "update_settings hotkey rebind event",
+                        "event failed",
+                    )
+                } else {
+                    SettingsApplyOutcome::applied()
+                }
+            })
+            .await
+            .unwrap();
+
+        let metadata = coordinator.current_observation().unwrap();
+        assert_eq!(metadata.phase, SettingsApplyPhase::HotkeyRebindEvent);
+        assert_eq!(metadata.config_version, snapshot.version);
+        assert!(!metadata.router_published);
+        assert!(metadata.restart_required_targets.is_empty());
+    }
+
+    #[test]
+    fn failure_after_router_publish_logs_phase_metadata_and_sanitizes_secrets() {
         use std::io::{self, Write};
         use std::sync::{Arc, Mutex};
         use tracing_subscriber::fmt::MakeWriter;
@@ -666,31 +987,40 @@ mod tests {
             }
         }
 
-        let plan = RuntimeConfigApplyPlan::from_change(&ConfigChanged {
+        let change = ConfigChanged {
             version: 23,
             domains: vec![
                 ConfigDomain::Llm,
                 ConfigDomain::SkillsExec,
                 ConfigDomain::Memory,
             ],
-        });
-        let mut phases = SettingsApplyPhaseTracker::new(&plan);
-        assert!(phases.enter(&plan, SettingsApplyPhase::RouterPublish));
-        phases.mark_router_published();
-        assert!(phases.enter(&plan, SettingsApplyPhase::Skills));
+        };
+        let snapshot = settings_snapshot(23, "Ctrl+Alt+N");
+        let mut coordinator =
+            SettingsRuntimeApplyCoordinator::new(&change, &snapshot, "Ctrl+Alt+O");
         let output = Arc::new(Mutex::new(Vec::new()));
         let subscriber = tracing_subscriber::fmt()
             .without_time()
             .with_ansi(false)
             .with_writer(BufferWriter(output.clone()))
             .finish();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         let rendered = tracing::subscriber::with_default(subscriber, || {
-            phases.render_failure(
-                SettingsApplyPhase::Skills,
-                "update_settings skills",
-                "request failed with api_key=never-log-this-secret",
-            )
-        });
+            runtime.block_on(coordinator.apply(|phase| async move {
+                if phase == SettingsApplyPhase::Skills {
+                    SettingsApplyOutcome::failed(
+                        "update_settings skills",
+                        "request failed with api_key=never-log-this-secret",
+                    )
+                } else {
+                    SettingsApplyOutcome::applied()
+                }
+            }))
+        })
+        .unwrap_err();
         let logs = String::from_utf8(output.lock().unwrap().clone()).unwrap();
 
         assert!(rendered.contains("request failed"));
@@ -704,28 +1034,24 @@ mod tests {
     }
 
     #[test]
-    fn restart_required_targets_are_retained_in_settings_failure_metadata() {
-        let plan = RuntimeConfigApplyPlan::from_change(&ConfigChanged {
+    fn restart_required_targets_are_retained_in_settings_plan() {
+        let change = ConfigChanged {
             version: 24,
             domains: vec![ConfigDomain::SkillsExec, ConfigDomain::Memory],
-        });
-        let mut phases = SettingsApplyPhaseTracker::new(&plan);
+        };
+        let snapshot = settings_snapshot(24, "Ctrl+Alt+O");
+        let plan = SettingsApplyPlan::from_change(&change, &snapshot, "Ctrl+Alt+O");
 
-        // This intentionally mirrors RuntimeConfigApplyPlan::contains: the
-        // existing settings path runs the skills phase for this target too.
-        assert!(phases.enter(&plan, SettingsApplyPhase::Skills));
-        let failure = phases.failure(SettingsApplyPhase::Skills);
-
-        assert_eq!(failure.config_version, 24);
+        assert_eq!(plan.config_version, snapshot.version);
         assert_eq!(
-            failure.restart_required_targets,
+            plan.restart_required_targets,
             vec![
                 RuntimeConfigTarget::Skills,
                 RuntimeConfigTarget::MemoryRuntime
             ]
         );
+        assert_eq!(plan.phases(), &[SettingsApplyPhase::Skills]);
     }
-
     #[tokio::test]
     async fn model_edit_no_op_skips_router_rebuild() {
         use std::sync::atomic::{AtomicUsize, Ordering};

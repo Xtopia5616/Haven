@@ -68,10 +68,15 @@ lease 操作、目录投影、runtime capability 请求和录音转写入口；�
 媒体 operation catalog、TTS/STT 与录音 gate 使用同一 typed 能力值，搜索优先级由它统一投影。
 snapshot 每次从当前 `PlatformRuntime`、Router config 与 MCP index 重建；三者没有共同版本钟，故当前不缓存。
 该 snapshot 只含能力结果，不暴露 Router、MCP manager、Database 或授权执行 facade（ADR 0331）。
-配置侧仍由 app-binary 的 `RuntimeConfigCoordinator` 准备 Router 与媒体 client、持有 config apply gate；
-`update_settings` 仍负责 settings 的跨阶段顺序。MCP Tauri 命令负责持久化和连接/刷新动作，完成后请求
-ToolsManager façade 重建 catalog；连接及其 `catalog_version` 仍由 `McpManager` 持有。应用退出顺序由
-`ApplicationRuntime` 负责，coordinator 不增加独立 shutdown 生命周期（ADR 0333）。
+配置侧仍由 app-binary 的 `RuntimeConfigCoordinator` 持有 config apply gate，并准备/发布 Router 与媒体
+client；model edit 的完整提交和应用也由它持有。`SettingsRuntimeApplyCoordinator` 从共享 target plan 生成
+Settings 有序阶段，驱动命令提供的执行回调，并唯一记录当前 phase、snapshot version、Router published、
+restart-required targets 与失败/警告。Security、MCP、context、logging、hotkey 等实际副作用仍由既有 owner
+执行；Settings edit/no-op 仍由命令按同一次 `ConfigService::edit` 保留旧 hotkey、snapshot 和 change。该
+coordinator 不复制 Router prepare/publish，也不为半失败状态增加 compensation/rollback。MCP Tauri 命令负责
+持久化和连接/刷新动作，完成后请求 ToolsManager façade 重建 catalog；连接及其 `catalog_version` 仍由
+`McpManager` 持有。应用退出顺序由 `ApplicationRuntime` 负责，coordinator 不增加独立 shutdown 生命周期
+（ADR 0333、0337）。
 安全矩阵只有 `security.rs` 一个权威来源，五个 Admin surface 由 ADR 0070/0071 定义的 typed
 operation 实现。边界见 ADR 0162、ADR 0211、ADR 0212 与 ADR 0213。
 
@@ -600,6 +605,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 
 | 日期 | 内容 |
 |---|---|
+| 2026-09-25 | §2.5 App 配置：Settings runtime apply 的有序阶段与 phase/failure 元数据归 `SettingsRuntimeApplyCoordinator`；现有副作用 owner、Router prepare/publish、no-op 与半失败语义保持，补偿/rollback 仍未决（ADR 0337） |
 | 2026-09-25 | §2.5 Agent / §2.3 Memory：ReAct transcript 通过 `SessionCommitted` 提交事件与 domain projection intent；SessionStore 事务内先写 event 再写物化行、提交后广播，Agent 按 sequence 发布 UI（ADR 0336） |
 | 2026-09-25 | §2.5 Tools：由 crate-private `ToolRuntimeCoordinator` 持有 tool runtime composition、PlatformRuntime/config 更新顺序、MCP discovery index 与 builtin catalog rebuild；Tauri config gate、MCP 连接和应用 shutdown 仍留在原 owner（ADR 0333） |
 | 2026-09-25 | §2.5 Tools：background/scheduled 终态持久化修复共用纯 `ActionPersistenceRetryPolicy`；无 deadline/预算、1 秒起步与 30 秒封顶保持，CAS/outbox/timer rollback 和执行行为仍归各路径（ADR 0334） |

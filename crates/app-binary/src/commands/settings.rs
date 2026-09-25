@@ -1,8 +1,8 @@
 use crate::app_state::AppState;
 use crate::commands::log_err;
 use crate::config_runtime::{
-    RuntimeConfigApplyPlan, SettingsApplyPhase, SettingsApplyPhaseTracker,
-    apply_log_level_to_handles,
+    PreparedRouterRuntime, SettingsApplyOutcome, SettingsApplyPhase,
+    SettingsRuntimeApplyCoordinator, apply_log_level_to_handles,
 };
 use crate::events::{HOTKEY_REBIND_EVENT, HotkeyRebindEvent};
 use std::sync::Arc;
@@ -16,21 +16,30 @@ struct SettingsApplyContext {
     change: haven_common::config::ConfigChanged,
 }
 
-struct SettingsApplyRun {
-    context: SettingsApplyContext,
-    plan: RuntimeConfigApplyPlan,
-    phases: SettingsApplyPhaseTracker,
+struct SettingsApplyTiming {
+    started: std::time::Instant,
+    last: std::sync::Mutex<std::time::Instant>,
 }
 
-fn begin_settings_apply(update: Option<SettingsApplyContext>) -> Option<SettingsApplyRun> {
-    let context = update?;
-    let plan = RuntimeConfigApplyPlan::from_change(&context.change);
-    let phases = SettingsApplyPhaseTracker::new(&plan);
-    Some(SettingsApplyRun {
-        context,
-        plan,
-        phases,
-    })
+impl SettingsApplyTiming {
+    fn new() -> Self {
+        let now = std::time::Instant::now();
+        Self {
+            started: now,
+            last: std::sync::Mutex::new(now),
+        }
+    }
+
+    fn tick(&self, name: &str) {
+        let now = std::time::Instant::now();
+        let mut last = self.last.lock().expect("settings timing mutex poisoned");
+        tracing::info!("update_settings: {name} += {:?}", now.duration_since(*last));
+        *last = now;
+    }
+
+    fn log_total(&self) {
+        tracing::info!("update_settings: TOTAL {:?}", self.started.elapsed());
+    }
 }
 
 fn apply_settings_edit(
@@ -71,214 +80,153 @@ pub async fn get_bootstrap_status(app: tauri::AppHandle) -> Result<String, Strin
     Ok(state.bootstrap_status().as_str().to_string())
 }
 
-#[tauri::command]
-pub async fn update_settings(
-    settings: haven_common::config::Settings,
+/// Executes one planned phase against its existing runtime owner. The typed
+/// coordinator controls ordering; this callback keeps Router preparation ahead
+/// of live updates and security ahead of MCP config reloads.
+async fn execute_settings_apply_phase(
+    phase: SettingsApplyPhase,
+    state: Arc<AppState>,
     app: tauri::AppHandle,
-) -> Result<(), String> {
-    let t0 = std::time::Instant::now();
-    let mut last = t0;
-    let mut tick = |name: &str| {
-        let now = std::time::Instant::now();
-        tracing::info!("update_settings: {name} += {:?}", now.duration_since(last));
-        last = now;
-    };
-    let state = app.state::<Arc<AppState>>();
-    let _apply_guard = state.config_apply_gate.lock().await;
-    let Some(run) = begin_settings_apply(
-        apply_settings_edit(&state.config_service, &settings)
-            .map_err(|e| log_err("update_settings", e))?,
-    ) else {
-        return Ok(());
-    };
-    let SettingsApplyRun {
-        context: update,
-        plan,
-        mut phases,
-    } = run;
-    let SettingsApplyContext {
-        old_hotkey,
-        snapshot,
-        change,
-    } = update;
+    snapshot: Arc<haven_common::config::ConfigSnapshot>,
+    old_hotkey: Arc<String>,
+    prepared_router: Arc<std::sync::Mutex<Option<PreparedRouterRuntime>>>,
+    timing: Arc<SettingsApplyTiming>,
+) -> SettingsApplyOutcome {
     let config = &snapshot.config;
-    tracing::debug!(
-        version = change.version,
-        domains = ?change.domains,
-        live = ?plan.live,
-        restart_required = ?plan.restart_required,
-        "configuration snapshot updated"
-    );
-    if !plan.restart_required.is_empty() {
-        tracing::warn!(
-            version = plan.version,
-            targets = ?plan.restart_required,
-            "configuration change requires a restart for some consumers"
-        );
-    }
-
-    // Build every fallible router/media dependency before the first live
-    // runtime update. A preparation failure leaves those consumers on their
-    // previous generation while the durable config snapshot remains saved.
-    let mut prepared_router = if phases.enter(&plan, SettingsApplyPhase::RouterPrepare) {
-        match state
-            .config_apply_gate
-            .prepare_router_runtime(&state, &snapshot, "update_settings")
-        {
-            Ok(prepared) => Some(prepared),
-            Err(error) => {
-                phases.record_failure(SettingsApplyPhase::RouterPrepare, "update_settings", &error);
-                return Err(error);
+    match phase {
+        SettingsApplyPhase::RouterPrepare => match state.config_apply_gate.prepare_router_runtime(
+            &state,
+            &snapshot,
+            "update_settings",
+        ) {
+            Ok(prepared) => {
+                *prepared_router
+                    .lock()
+                    .expect("prepared router mutex poisoned") = Some(prepared);
+                timing.tick("config apply");
+                SettingsApplyOutcome::applied()
             }
+            Err(error) => SettingsApplyOutcome::failed_already_rendered("update_settings", error),
+        },
+        SettingsApplyPhase::InputPipeline => {
+            state
+                .pipeline
+                .update_config(config.media.audio.clone())
+                .await;
+            state.agent.set_media_strategy(config.media.input_strategy);
+            timing.tick("pipeline.update_config");
+            SettingsApplyOutcome::applied()
         }
-    } else {
-        None
-    };
-    tick("config apply");
-
-    // Propagate audio config to running pipeline
-    if phases.enter(&plan, SettingsApplyPhase::InputPipeline) {
-        state
-            .pipeline
-            .update_config(config.media.audio.clone())
-            .await;
-        state.agent.set_media_strategy(config.media.input_strategy);
-        tick("pipeline.update_config");
-    }
-
-    // Propagate the default shell choice to the shell tool so the running
-    // agent executes new commands in the selected shell.
-    if phases.enter(&plan, SettingsApplyPhase::Shell) {
-        state.tools.set_default_shell(config.default_shell).await;
-        tick("set_default_shell");
-    }
-
-    // Apply the new security boundary before any config reload can start a
-    // connection. A single settings update may change both MCP definitions
-    // and network policy; the stricter policy must win during that transition.
-    if phases.enter(&plan, SettingsApplyPhase::Security) {
-        state.tools.apply_security(&config.security).await;
-        tick("apply_security");
-    }
-
-    // Reload MCP servers from config
-    if phases.enter(&plan, SettingsApplyPhase::McpConfig) {
-        state.tools.load_mcp_from_config(&config.mcp_servers).await;
-        tick("load_mcp_from_config");
-        phases.enter(&plan, SettingsApplyPhase::McpMonitors);
-        state
-            .services
-            .mcp
-            .start_monitors(&config.mcp_discovery)
-            .await;
-        tick("mcp_manager.start_monitors");
-    }
-
-    if phases.enter(&plan, SettingsApplyPhase::RouterPublish) {
-        state
-            .config_apply_gate
-            .publish_router_runtime(
-                &state,
-                prepared_router
-                    .take()
-                    .expect("router target always has a prepared runtime"),
-            )
-            .await;
-        phases.mark_router_published();
-        tick("publish_router_runtime");
-        crate::commands::emit_llm_config_changed(&app);
-    }
-
-    // Apply context limits only after the router and its dependent clients
-    // have been prepared successfully, so a preparation error leaves every
-    // context-limit consumer on its previous runtime state.
-    if phases.enter(&plan, SettingsApplyPhase::ContextLimits) {
-        state.pipeline.set_limits(&config.context_limits);
-        state
-            .tools
-            .set_context_limits(config.context_limits.clone())
-            .await;
-        state
-            .agent
-            .set_context_limits(config.context_limits.clone());
-        tick("set_context_limits");
-    }
-
-    if phases.enter(&plan, SettingsApplyPhase::SessionRuntime) {
-        state.agent.set_max_steps(config.session.max_steps);
-        state
-            .agent
-            .set_session_max_steps(config.session.session_max_steps);
-        state
-            .executor
-            .set_max_concurrent(config.session.max_concurrent);
-    }
-
-    if phases.enter(&plan, SettingsApplyPhase::ToolSettings) {
-        state
-            .services
-            .authorization
-            .set_tool_settings(config.tool_settings.clone())
-            .await;
-    }
-
-    if phases.enter(&plan, SettingsApplyPhase::Skills)
-        && let Err(error) = state
+        SettingsApplyPhase::Shell => {
+            state.tools.set_default_shell(config.default_shell).await;
+            timing.tick("set_default_shell");
+            SettingsApplyOutcome::applied()
+        }
+        SettingsApplyPhase::Security => {
+            state.tools.apply_security(&config.security).await;
+            timing.tick("apply_security");
+            SettingsApplyOutcome::applied()
+        }
+        SettingsApplyPhase::McpConfig => {
+            state.tools.load_mcp_from_config(&config.mcp_servers).await;
+            timing.tick("load_mcp_from_config");
+            SettingsApplyOutcome::applied()
+        }
+        SettingsApplyPhase::McpMonitors => {
+            state
+                .services
+                .mcp
+                .start_monitors(&config.mcp_discovery)
+                .await;
+            timing.tick("mcp_manager.start_monitors");
+            SettingsApplyOutcome::applied()
+        }
+        SettingsApplyPhase::RouterPublish => {
+            let prepared = prepared_router
+                .lock()
+                .expect("prepared router mutex poisoned")
+                .take()
+                .expect("router target always has a prepared runtime");
+            state
+                .config_apply_gate
+                .publish_router_runtime(&state, prepared)
+                .await;
+            timing.tick("publish_router_runtime");
+            crate::commands::emit_llm_config_changed(&app);
+            SettingsApplyOutcome::applied()
+        }
+        SettingsApplyPhase::ContextLimits => {
+            state.pipeline.set_limits(&config.context_limits);
+            state
+                .tools
+                .set_context_limits(config.context_limits.clone())
+                .await;
+            state
+                .agent
+                .set_context_limits(config.context_limits.clone());
+            timing.tick("set_context_limits");
+            SettingsApplyOutcome::applied()
+        }
+        SettingsApplyPhase::SessionRuntime => {
+            state.agent.set_max_steps(config.session.max_steps);
+            state
+                .agent
+                .set_session_max_steps(config.session.session_max_steps);
+            state
+                .executor
+                .set_max_concurrent(config.session.max_concurrent);
+            SettingsApplyOutcome::applied()
+        }
+        SettingsApplyPhase::ToolSettings => {
+            state
+                .services
+                .authorization
+                .set_tool_settings(config.tool_settings.clone())
+                .await;
+            SettingsApplyOutcome::applied()
+        }
+        SettingsApplyPhase::Skills => match state
             .services
             .skills
             .set_config(config.skills.root.clone(), config.skills.enabled.clone())
             .await
-    {
-        return Err(phases.render_failure(
-            SettingsApplyPhase::Skills,
-            "update_settings skills",
-            error,
-        ));
-    }
-
-    // Propagate log level to tracing subscriber (console + file)
-    if phases.enter(&plan, SettingsApplyPhase::Logging)
-        && let Err(error) = apply_log_level_to_handles(&state.log_filter_handles, &config.log.level)
-    {
-        return Err(phases.render_failure(
-            SettingsApplyPhase::Logging,
-            "update_settings logging",
-            error,
-        ));
-    }
-
-    // Propagate hotkey mode change (always)
-    use haven_common::types::HotkeyMode;
-    if phases.enter(&plan, SettingsApplyPhase::HotkeyMode) {
-        state
-            .shell
-            .set_hold_mode(config.hotkey.mode == HotkeyMode::Hold)
-            .await;
-    }
-
-    if config.hotkey.key_binding != old_hotkey
-        && phases.enter(&plan, SettingsApplyPhase::HotkeyUnregister)
-    {
-        use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
-
-        if let Some(old_shortcut) = haven_input::hotkey::KeyCombo::parse(&old_hotkey)
-            .and_then(|c| crate::to_tauri_shortcut(&c))
-            && let Err(e) = app.global_shortcut().unregister(old_shortcut)
         {
-            return Err(phases.render_failure(
-                SettingsApplyPhase::HotkeyUnregister,
-                "update_settings unregister hotkey",
-                e,
-            ));
+            Ok(()) => SettingsApplyOutcome::applied(),
+            Err(error) => SettingsApplyOutcome::failed("update_settings skills", error),
+        },
+        SettingsApplyPhase::Logging => {
+            match apply_log_level_to_handles(&state.log_filter_handles, &config.log.level) {
+                Ok(()) => SettingsApplyOutcome::applied(),
+                Err(error) => SettingsApplyOutcome::failed("update_settings logging", error),
+            }
         }
-
-        phases.enter(&plan, SettingsApplyPhase::HotkeyRegister);
-        if let Some(new_shortcut) = haven_input::hotkey::KeyCombo::parse(&config.hotkey.key_binding)
-            .and_then(|c| crate::to_tauri_shortcut(&c))
-        {
-            let result =
-                app.global_shortcut()
-                    .on_shortcut(new_shortcut, move |_app, _sc, event| {
+        SettingsApplyPhase::HotkeyMode => {
+            use haven_common::types::HotkeyMode;
+            state
+                .shell
+                .set_hold_mode(config.hotkey.mode == HotkeyMode::Hold)
+                .await;
+            SettingsApplyOutcome::applied()
+        }
+        SettingsApplyPhase::HotkeyUnregister => {
+            use tauri_plugin_global_shortcut::GlobalShortcutExt;
+            if let Some(old_shortcut) = haven_input::hotkey::KeyCombo::parse(&old_hotkey)
+                .and_then(|combo| crate::to_tauri_shortcut(&combo))
+                && let Err(error) = app.global_shortcut().unregister(old_shortcut)
+            {
+                return SettingsApplyOutcome::failed("update_settings unregister hotkey", error);
+            }
+            SettingsApplyOutcome::applied()
+        }
+        SettingsApplyPhase::HotkeyRegister => {
+            use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
+            if let Some(new_shortcut) =
+                haven_input::hotkey::KeyCombo::parse(&config.hotkey.key_binding)
+                    .and_then(|combo| crate::to_tauri_shortcut(&combo))
+            {
+                match app.global_shortcut().on_shortcut(
+                    new_shortcut,
+                    move |_app, _shortcut, event| {
                         let state = _app.state::<Arc<AppState>>();
                         let shell = &state.shell;
                         tokio::task::block_in_place(|| {
@@ -293,49 +241,117 @@ pub async fn update_settings(
                                 } else {
                                     rt.block_on(shell.hold_release());
                                 }
-                            } else {
-                                if event.state == ShortcutState::Pressed {
-                                    rt.block_on(shell.toggle_recording());
-                                }
+                            } else if event.state == ShortcutState::Pressed {
+                                rt.block_on(shell.toggle_recording());
                             }
                         });
-                    });
-
-            match result {
-                Ok(()) => {
-                    tracing::info!(
+                    },
+                ) {
+                    Ok(()) => tracing::info!(
                         "Hotkey rebound: {} -> {}",
                         old_hotkey,
                         config.hotkey.key_binding,
-                    );
-                }
-                Err(e) => {
-                    return Err(phases.render_failure(
-                        SettingsApplyPhase::HotkeyRegister,
-                        "update_settings register hotkey",
-                        e,
-                    ));
+                    ),
+                    Err(error) => {
+                        return SettingsApplyOutcome::failed(
+                            "update_settings register hotkey",
+                            error,
+                        );
+                    }
                 }
             }
+            SettingsApplyOutcome::applied()
         }
-
-        phases.enter(&plan, SettingsApplyPhase::HotkeyRebindEvent);
-        if let Err(e) = app.emit(
+        SettingsApplyPhase::HotkeyRebindEvent => match app.emit(
             HOTKEY_REBIND_EVENT,
             HotkeyRebindEvent {
-                old_binding: old_hotkey,
+                old_binding: (*old_hotkey).clone(),
                 new_binding: config.hotkey.key_binding.clone(),
             },
         ) {
-            phases.record_warning(
-                SettingsApplyPhase::HotkeyRebindEvent,
-                "update_settings hotkey rebind event",
-                &e,
-            );
-        }
+            Ok(()) => SettingsApplyOutcome::applied(),
+            Err(error) => {
+                SettingsApplyOutcome::warning("update_settings hotkey rebind event", error)
+            }
+        },
     }
-    tick("hotkey section");
-    tracing::info!("update_settings: TOTAL {:?}", t0.elapsed());
+}
+
+#[tauri::command]
+pub async fn update_settings(
+    settings: haven_common::config::Settings,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let timing = Arc::new(SettingsApplyTiming::new());
+    let state = app.state::<Arc<AppState>>();
+    let state = Arc::clone(&*state);
+    let _apply_guard = state.config_apply_gate.lock().await;
+    let Some(update) = apply_settings_edit(&state.config_service, &settings)
+        .map_err(|error| log_err("update_settings", error))?
+    else {
+        return Ok(());
+    };
+    let SettingsApplyContext {
+        old_hotkey,
+        snapshot,
+        change,
+    } = update;
+    let mut apply = SettingsRuntimeApplyCoordinator::new(&change, &snapshot, &old_hotkey);
+    let (version, live_targets, restart_required_targets, has_router_prepare) = {
+        let plan = apply.plan();
+        (
+            plan.config_version,
+            plan.live_targets.clone(),
+            plan.restart_required_targets.clone(),
+            plan.phases().contains(&SettingsApplyPhase::RouterPrepare),
+        )
+    };
+    tracing::debug!(
+        version = change.version,
+        domains = ?change.domains,
+        live = ?live_targets,
+        restart_required = ?restart_required_targets,
+        "configuration snapshot updated"
+    );
+    if !restart_required_targets.is_empty() {
+        tracing::warn!(
+            version,
+            targets = ?restart_required_targets,
+            "configuration change requires a restart for some consumers"
+        );
+    }
+
+    if !has_router_prepare {
+        timing.tick("config apply");
+    }
+
+    let snapshot = Arc::new(snapshot);
+    let old_hotkey = Arc::new(old_hotkey);
+    let prepared_router: Arc<std::sync::Mutex<Option<PreparedRouterRuntime>>> =
+        Arc::new(std::sync::Mutex::new(None));
+    let apply_state = state.clone();
+    let apply_app = app.clone();
+    let apply_snapshot = snapshot.clone();
+    let apply_old_hotkey = old_hotkey.clone();
+    let apply_prepared_router = prepared_router.clone();
+    let apply_timing = timing.clone();
+
+    apply
+        .apply(move |phase| {
+            execute_settings_apply_phase(
+                phase,
+                apply_state.clone(),
+                apply_app.clone(),
+                apply_snapshot.clone(),
+                apply_old_hotkey.clone(),
+                apply_prepared_router.clone(),
+                apply_timing.clone(),
+            )
+        })
+        .await?;
+
+    timing.tick("hotkey section");
+    timing.log_total();
     Ok(())
 }
 
@@ -438,7 +454,7 @@ pub async fn is_autostart_enabled() -> Result<bool, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ShellAvailability, apply_settings_edit, begin_settings_apply};
+    use super::{ShellAvailability, apply_settings_edit};
     use haven_common::config::{
         AppConfig, ConfigLoader, ConfigService, Settings, StoredPermission,
     };
@@ -489,14 +505,14 @@ mod tests {
     }
 
     #[test]
-    fn no_op_settings_edit_does_not_enter_the_phase_runner() {
+    fn no_op_settings_edit_does_not_start_runtime_apply() {
         let (service, _dir) = config_service_with_config(AppConfig::default());
         let settings = service.settings().unwrap();
         let receiver = service.subscribe().unwrap();
 
         let update = apply_settings_edit(&service, &settings).unwrap();
 
-        assert!(begin_settings_apply(update).is_none());
+        assert!(update.is_none());
         assert!(receiver.try_recv().is_err());
         assert_eq!(service.snapshot().unwrap().version, 0);
     }
