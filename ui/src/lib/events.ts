@@ -79,6 +79,17 @@ function adaptAppEvent<K extends AppEventName>(
 	return mapAppEvent({ ...event, event: eventName } as never);
 }
 
+function adaptAgentEvent<K extends AgentEventName>(
+	eventName: K,
+	event: TauriEvent<unknown>,
+): TauriEvent<AgentEventPayloadMap[K]> | null {
+	const mapped = mapAgentEvent({ ...event, event: eventName });
+	if (!mapped) {
+		logger.warn('events', `Dropping malformed payload for '${eventName}'`);
+	}
+	return mapped;
+}
+
 /**
  * Register many Tauri event listeners from a single map and return a handle
  * that can dispose them all. Listener registration failures are logged and
@@ -202,7 +213,9 @@ export function agentEventListeners(
 			eventName,
 			(event: TauriEvent<unknown>) => {
 				protectEventCallback(eventName, () => {
-					handler?.(mapAgentEvent({ ...event, event: eventName } as never) as never);
+					const name = eventName as AgentEventName;
+					const mapped = adaptAgentEvent(name, event);
+					if (mapped) handler?.(mapped as never);
 				});
 			},
 		]),

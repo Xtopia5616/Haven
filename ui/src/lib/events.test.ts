@@ -16,6 +16,7 @@ vi.mock('./logger.ts', () => ({
 
 import {
 	actionEventListeners,
+	agentEventListeners,
 	appEventListeners,
 	recordingEventListeners,
 	registerListeners,
@@ -313,6 +314,49 @@ describe('actionEventListeners', () => {
 		expect(mocks.warn).toHaveBeenCalledWith(
 			'events',
 			expect.stringContaining("Dropping malformed payload for 'action:finished'"),
+		);
+		expect(JSON.stringify(mocks.warn.mock.calls)).not.toContain(privateValue);
+	});
+});
+
+describe('agentEventListeners', () => {
+	beforeEach(() => {
+		mocks.warn.mockReset();
+		mocks.error.mockReset();
+	});
+
+	it('maps each arrival before dispatch and preserves arrival order', () => {
+		const received: string[] = [];
+		const listeners = agentEventListeners({
+			'agent:thought': (event) => received.push(`${event.payload.sessionId}:${event.payload.thought}`),
+		});
+		const arrivals = [
+			{ session_id: 'ses-1', thought: 'first', step_number: 1, run_id: 1, message_id: 'step-1' },
+			{ session_id: 'ses-1', thought: 'second', step_number: 2, run_id: 1, message_id: 'step-2' },
+		];
+
+		arrivals.forEach((payload, id) => {
+			listeners['agent:thought']({ event: 'agent:thought', id, payload } as never);
+		});
+
+		expect(received).toEqual(['ses-1:first', 'ses-1:second']);
+	});
+
+	it('drops malformed payloads with a generic warning that omits payload content', () => {
+		const handler = vi.fn();
+		const listeners = agentEventListeners({ 'agent:thought': handler });
+		const privateValue = 'sensitive-thought-content';
+
+		listeners['agent:thought']({
+			event: 'agent:thought',
+			id: 4,
+			payload: { session_id: 'ses-1', thought: privateValue, step_number: 'bad', run_id: 2, message_id: 'step-1' },
+		} as never);
+
+		expect(handler).not.toHaveBeenCalled();
+		expect(mocks.warn).toHaveBeenCalledWith(
+			'events',
+			expect.stringContaining("Dropping malformed payload for 'agent:thought'"),
 		);
 		expect(JSON.stringify(mocks.warn.mock.calls)).not.toContain(privateValue);
 	});

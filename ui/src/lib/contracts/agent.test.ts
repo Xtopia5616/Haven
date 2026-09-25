@@ -1,5 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { mapAgentEvent } from './agent.ts';
+import {
+	mapAgentEvent as mapAgentEventContract,
+	type AgentEventName,
+	type AgentEventPayloadMap,
+} from './agent.ts';
+import type { TauriEvent } from './session.ts';
+
+function mapAgentEvent<K extends AgentEventName>(event: TauriEvent<unknown> & { event: K }) {
+	const mapped = mapAgentEventContract(event);
+	if (!mapped) throw new Error('Expected a valid agent event');
+	return mapped as TauriEvent<AgentEventPayloadMap[K]>;
+}
 
 describe('agent IPC contract', () => {
 	it('maps execution identity fields to camelCase', () => {
@@ -64,7 +75,7 @@ describe('agent IPC contract', () => {
 				step_number: 3,
 				duration_ms: 42,
 				role: 'chat',
-				call_kind: 'agent',
+				call_kind: 'future_call_kind',
 				has_cost: false,
 			},
 		});
@@ -72,6 +83,7 @@ describe('agent IPC contract', () => {
 		expect(event.payload.sessionId).toBe('ses-1');
 		expect(event.payload.promptTokens).toBe(10);
 		expect(event.payload.cacheDiagnostics).toEqual({ source: 'provider' });
+		expect(event.payload.callKind).toBe('future_call_kind');
 		expect(event.payload).not.toHaveProperty('prompt_tokens');
 	});
 
@@ -131,6 +143,45 @@ describe('agent IPC contract', () => {
 		});
 	});
 
+	it('keeps future enum strings and drops unknown additive fields', () => {
+		const event = mapAgentEvent({
+			event: 'agent:media_plan',
+			id: 8,
+			payload: {
+				session_id: 'ses-1',
+				step_number: 4,
+				run_id: 8,
+				role: 'future_request_kind',
+				strategy: 'future_strategy',
+				projections: [{
+					asset_id: 'asset-1',
+					representation: 'future_representation',
+					mode: 'future_mode',
+					provenance: 'added-wire-field',
+				}],
+				notices: [{ asset_id: 'asset-1', code: 'future_notice', added: true }],
+				event_seq: 9,
+				added_wire_field: 'ignored',
+			},
+		});
+
+		expect(event).not.toBeNull();
+		expect(event?.payload).toEqual({
+			sessionId: 'ses-1',
+			stepNumber: 4,
+			runId: 8,
+			role: 'future_request_kind',
+			strategy: 'future_strategy',
+			projections: [{
+				assetId: 'asset-1',
+				representation: 'future_representation',
+				mode: 'future_mode',
+			}],
+			notices: [{ assetId: 'asset-1', code: 'future_notice' }],
+			eventSeq: 9,
+		});
+	});
+
 	it('maps outcome and event sequence for ordered tool observations', () => {
 		const event = mapAgentEvent({
 			event: 'agent:observation',
@@ -149,6 +200,16 @@ describe('agent IPC contract', () => {
 				outcome: 'unknown',
 				idempotency: 'unknown',
 				operation_scope: 'global',
+				result: {
+					outcome: 'future_result_outcome',
+					error_class: 'future_error_class',
+					retry_safety: 'future_retry_safety',
+					retryability: 'future_retryability',
+					verification_hint: null,
+					next_action: 'inspect',
+					assets: ['asset-1'],
+					added_wire_field: 'ignored',
+				},
 				event_seq: 17,
 			},
 		});
@@ -156,6 +217,15 @@ describe('agent IPC contract', () => {
 		expect(event.payload.outcome).toBe('unknown');
 		expect(event.payload.operationScope).toBe('global');
 		expect(event.payload.eventSeq).toBe(17);
+		expect(event.payload.result).toEqual({
+			outcome: 'future_result_outcome',
+			errorClass: 'future_error_class',
+			retrySafety: 'future_retry_safety',
+			retryability: 'future_retryability',
+			verificationHint: null,
+			nextAction: 'inspect',
+			assets: ['asset-1'],
+		});
 	});
 
 	it('maps the current compaction payload', () => {
@@ -190,6 +260,82 @@ describe('agent IPC contract', () => {
 
 		expect(event.payload.messageId).toBe('step-keep');
 		expect(event.payload.eventSeq).toBe(9);
+	});
+
+	it('rejects malformed agent envelopes and required fields without throwing', () => {
+		expect(mapAgentEventContract({
+			event: 'agent:thought', id: 1,
+			payload: {
+				session_id: 'ses-1', thought: 17, step_number: 2, run_id: 4, message_id: 'step-1',
+			},
+		})).toBeNull();
+		expect(mapAgentEventContract({
+			event: 'agent:media_plan', id: 1,
+			payload: {
+				session_id: 'ses-1', step_number: 2, run_id: 4, role: 'vision', strategy: 'auto',
+				projections: [{ asset_id: 'asset-1' }], notices: [],
+			},
+		})).toBeNull();
+		expect(mapAgentEventContract({ event: 'agent:future', id: 1, payload: {} })).toBeNull();
+		expect(mapAgentEventContract({ event: 'agent:thought', id: Number.NaN, payload: {} })).toBeNull();
+	});
+
+	it('preserves empty notification text for the existing UI fallback', () => {
+		const event = mapAgentEvent({
+			event: 'notification:show',
+			id: 11,
+			payload: { session_id: 'ses-1', title: '', body: '' },
+		});
+
+		expect(event.payload).toEqual({ sessionId: 'ses-1', title: '', body: '' });
+	});
+
+	it.each([
+		{
+			event: 'agent:thought_chunk',
+			wire: { session_id: 'ses-1', delta: 't', step_number: 1, run_id: 2, message_id: 'msg-1', seq: 3 },
+			expected: { sessionId: 'ses-1', delta: 't', stepNumber: 1, runId: 2, messageId: 'msg-1', seq: 3 },
+		},
+		{
+			event: 'agent:reasoning_chunk',
+			wire: { session_id: 'ses-1', delta: 'r', step_number: 1, run_id: 2, message_id: 'msg-2', seq: 4 },
+			expected: { sessionId: 'ses-1', delta: 'r', stepNumber: 1, runId: 2, messageId: 'msg-2', seq: 4 },
+		},
+		{
+			event: 'agent:web_search',
+			wire: {
+				session_id: 'ses-1', phase: 'started', step_number: 2, run_id: 3,
+				call_id: 'call-1', action: 'search', result: { count: 1 },
+			},
+			expected: {
+				sessionId: 'ses-1', phase: 'started', stepNumber: 2, runId: 3,
+				callId: 'call-1', action: 'search', result: { count: 1 },
+			},
+		},
+		{
+			event: 'agent:stream_stalled',
+			wire: { session_id: 'ses-1' },
+			expected: { sessionId: 'ses-1' },
+		},
+		{
+			event: 'agent:supplement',
+			wire: {
+				session_id: 'ses-1', additional_context: 'continue', step_number: 2, run_id: 3,
+				message_id: 'msg-1', supplement_id: 'msg-1', inject_source: 'future_source', event_seq: 9,
+			},
+			expected: {
+				sessionId: 'ses-1', additionalContext: 'continue', stepNumber: 2, runId: 3,
+				messageId: 'msg-1', supplementId: 'msg-1', injectSource: 'future_source', eventSeq: 9,
+			},
+		},
+		{
+			event: 'agent:tool_output',
+			wire: { session_id: 'ses-1', step_id: 'step-1', output: 'partial output' },
+			expected: { sessionId: 'ses-1', stepId: 'step-1', output: 'partial output' },
+		},
+	] as const)('maps $event payloads at the agent boundary', ({ event, wire, expected }) => {
+		const mapped = mapAgentEventContract({ event, id: 12, payload: wire });
+		expect(mapped?.payload).toEqual(expected);
 	});
 
 });
