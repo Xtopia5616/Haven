@@ -359,3 +359,4 @@
 - [0370：Diagnostics and logging read command boundary](0370-diagnostics-logging-command-contract-boundary.md)
 - [0371：Session control command contract audit](0371-session-control-command-contract-audit.md)
 - [0372：Settings 配置应用边界审计](0372-settings-config-apply-boundary-audit.md)
+- [0373：Tools Action admin writers 并发边界审计](0373-tools-action-admin-writers-audit.md)

@@ -2,6 +2,7 @@ use crate::app_state::AppState;
 use crate::commands::log_err;
 use crate::events::{ActionEvent, ActionKind};
 use haven_common::ActionStatus;
+use haven_memory::ActionRow;
 use std::sync::Arc;
 use tauri::State;
 
@@ -43,24 +44,12 @@ pub async fn list_actions(state: State<'_, Arc<AppState>>) -> Result<Vec<ActionE
             .chars()
             .take(200)
             .collect::<String>();
-        rows.push(ActionEvent {
-            id: a.id,
-            kind: ActionKind::Background,
-            status: Some(a.status),
-            session_id: a.session_id,
-            started_at: a.started_at,
-            finished_at: a.finished_at,
-            due_at: None,
-            title: None,
-            body: None,
-            mode: None,
-            command: a.command,
-            output: a.output,
-            error: a.error,
-            error_reason: a.error_reason,
-            exit_code: a.exit_code,
-            preview: Some(preview),
-        });
+        rows.push(action_event_from_row(
+            a,
+            ActionKind::Background,
+            PersistedActionProjection::BoardHistory,
+            Some(preview),
+        ));
     }
     Ok(rows)
 }
@@ -122,26 +111,55 @@ pub async fn list_action_history(
                 ));
             }
         };
-        out.push(ActionEvent {
-            id: a.id,
+        out.push(action_event_from_row(
+            a,
             kind,
-            status: Some(a.status),
-            session_id: a.session_id,
-            started_at: a.started_at,
-            finished_at: a.finished_at,
-            due_at: a.due_at,
-            title: (!a.title.is_empty()).then_some(a.title),
-            body: a.body,
-            mode: a.mode,
-            command: a.command,
-            output: a.output,
-            error: a.error,
-            error_reason: a.error_reason,
-            exit_code: a.exit_code,
-            preview: None,
-        });
+            PersistedActionProjection::History,
+            None,
+        ));
     }
     Ok(out)
+}
+
+#[derive(Clone, Copy)]
+enum PersistedActionProjection {
+    BoardHistory,
+    History,
+}
+
+fn action_event_from_row(
+    row: ActionRow,
+    kind: ActionKind,
+    projection: PersistedActionProjection,
+    preview: Option<String>,
+) -> ActionEvent {
+    let (due_at, title, body, mode) = match projection {
+        PersistedActionProjection::BoardHistory => (None, None, None, None),
+        PersistedActionProjection::History => (
+            row.due_at,
+            (!row.title.is_empty()).then_some(row.title),
+            row.body,
+            row.mode,
+        ),
+    };
+    ActionEvent {
+        id: row.id,
+        kind,
+        status: Some(row.status),
+        session_id: row.session_id,
+        started_at: row.started_at,
+        finished_at: row.finished_at,
+        due_at,
+        title,
+        body,
+        mode,
+        command: row.command,
+        output: row.output,
+        error: row.error,
+        error_reason: row.error_reason,
+        exit_code: row.exit_code,
+        preview,
+    }
 }
 
 fn is_history_row(status: ActionStatus) -> bool {
@@ -150,13 +168,76 @@ fn is_history_row(status: ActionStatus) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::is_history_row;
+    use super::{action_event_from_row, is_history_row};
     use haven_common::ActionStatus;
+    use haven_memory::ActionRow;
 
     #[test]
     fn pending_scheduled_rows_are_not_history() {
         assert!(!is_history_row(ActionStatus::Waiting));
         assert!(is_history_row(ActionStatus::Completed));
+    }
+
+    #[test]
+    fn persisted_action_projection_uses_one_safe_row_mapper() {
+        let row = ActionRow {
+            id: "act-history".into(),
+            kind: "scheduled".into(),
+            due_at: Some("2026-09-27T10:00:00Z".into()),
+            title: String::new(),
+            body: Some("reminder body".into()),
+            mode: Some("continue".into()),
+            session_id: Some("ses-owner".into()),
+            tool_name: Some("notify".into()),
+            tool_args: Some(r#"{"token":"internal-args"}"#.into()),
+            prompt: Some("internal prompt".into()),
+            status: ActionStatus::Completed,
+            command: None,
+            output: Some("result".into()),
+            error: None,
+            error_reason: None,
+            log_path: Some("C:/private/action.log".into()),
+            exit_code: Some(0),
+            started_at: Some("started".into()),
+            finished_at: Some("finished".into()),
+            created_at: "created".into(),
+        };
+        let event = action_event_from_row(
+            row.clone(),
+            crate::events::ActionKind::Scheduled,
+            super::PersistedActionProjection::BoardHistory,
+            Some("result".into()),
+        );
+
+        assert_eq!(event.id, "act-history");
+        assert_eq!(event.kind, crate::events::ActionKind::Scheduled);
+        assert_eq!(event.status, Some(ActionStatus::Completed));
+        assert_eq!(event.due_at, None);
+        assert_eq!(event.title, None);
+        assert_eq!(event.body, None);
+        assert_eq!(event.mode, None);
+        assert_eq!(event.preview.as_deref(), Some("result"));
+        let serialized = serde_json::to_string(&event).unwrap();
+        for internal_value in ["internal-args", "internal prompt", "private/action.log"] {
+            assert!(!serialized.contains(internal_value));
+        }
+
+        let event = action_event_from_row(
+            row,
+            crate::events::ActionKind::Scheduled,
+            super::PersistedActionProjection::History,
+            None,
+        );
+        assert_eq!(event.id, "act-history");
+        assert_eq!(event.kind, crate::events::ActionKind::Scheduled);
+        assert_eq!(event.status, Some(ActionStatus::Completed));
+        assert_eq!(event.due_at.as_deref(), Some("2026-09-27T10:00:00Z"));
+        assert_eq!(event.title, None);
+        assert_eq!(event.preview, None);
+        let serialized = serde_json::to_string(&event).unwrap();
+        for internal_value in ["internal-args", "internal prompt", "private/action.log"] {
+            assert!(!serialized.contains(internal_value));
+        }
     }
 
     #[test]

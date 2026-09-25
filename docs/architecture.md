@@ -456,6 +456,11 @@ reactive mirror，不再维护第二份 action lifecycle reducer。`list_actions
 仍由 ActionService board 返回。`TaskCenter` 的状态文案、取消能力和 background result 投影继续按 kind 区分；
 Rust bridge 只为 background 提供 `action:output`，scheduled action 不持有 tail。没有 durable event identity，
 因此不新增 UI event dedup 或统一 Job reducer；本轮只复用已测试的 terminal background projection（ADR 0344）。
+Action 管理写入口经 ADR 0373 审计：Tauri、`actions`/`schedule` 工具、timer worker 与 Agent completion 共用一个
+`ActionService`；`ActionStore` 仍是生产持久化写边界。`schedule.set` 只创建新 action，没有 update-existing 或手动
+trigger command，`ToolConcurrency` 也不是跨 Tauri/worker 的互斥机制。terminal history delete 只接受终态，但其
+`spawn_gate` 不覆盖所有 terminal CAS/retry；`actions` 到 completion outbox 的级联删除可能移除尚未确认的结果。
+删除历史是否应放弃 pending completion 仍需产品/架构决策，暂不改变 delete 或 recovery 语义。
 `InteractionRequest`（`haven-agent/src/interaction.rs`）
 是 ask、confirm 和 scheduled confirm 的共同生命周期投影，快照通过 `interactions` 保存当前
 请求；旧快照不做运行时兼容读取，新的交互状态以 `Pending → Resolved | Expired | Cancelled`
