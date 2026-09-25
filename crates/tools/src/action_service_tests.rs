@@ -1868,14 +1868,8 @@ async fn test_unified_completion_bus_emits_scheduled_transition() {
     assert!(!service.cancel(&id).await);
     assert_eq!(terminal_event_count(&events), 1);
     assert_eq!(service.status(&id).await["status"], "completed");
-    assert!(
-        !service
-            .pending_scheduled_fires
-            .read()
-            .await
-            .contains_key(&id)
-    );
-    assert!(!service.scheduled_fire_claims.read().await.contains_key(&id));
+    assert!(!service.completion_bus.has_pending_scheduled_fire(&id).await);
+    assert!(!service.completion_bus.has_scheduled_fire_claim(&id).await);
 }
 
 #[tokio::test]
@@ -2016,7 +2010,7 @@ async fn test_scheduled_fire_recovers_after_completion_bus_lag() {
     for index in 0..=256 {
         let _ =
             service
-                .completion_tx
+                .completion_bus
                 .send(ActionCompletion::Background(BackgroundActionCompletion {
                     action_id: format!("act-noise-{index}"),
                     action_result_id: format!("act-noise-{index}"),
@@ -2217,10 +2211,9 @@ async fn test_scheduled_recovery_is_available_to_late_receivers_and_deduplicated
         prompt: None,
     };
     service
-        .pending_scheduled_fires
-        .write()
-        .await
-        .insert(fired.action_id.clone(), fired.clone());
+        .completion_bus
+        .retain_scheduled_fire(fired.clone())
+        .await;
     let mut late_rx = service.take_action_receiver().unwrap();
     let recovered = tokio::time::timeout(
         Duration::from_millis(100),
@@ -2236,12 +2229,11 @@ async fn test_scheduled_recovery_is_available_to_late_receivers_and_deduplicated
     let duplicate_service = Arc::new(ActionService::new());
     let mut rx = duplicate_service.take_action_receiver().unwrap();
     duplicate_service
-        .pending_scheduled_fires
-        .write()
-        .await
-        .insert(fired.action_id.clone(), fired.clone());
+        .completion_bus
+        .retain_scheduled_fire(fired.clone())
+        .await;
     duplicate_service
-        .completion_tx
+        .completion_bus
         .send(ActionCompletion::Scheduled(fired))
         .unwrap();
     let first = rx
@@ -2275,12 +2267,11 @@ async fn test_scheduled_fire_claim_is_shared_across_receivers() {
         prompt: None,
     };
     service
-        .pending_scheduled_fires
-        .write()
-        .await
-        .insert(fired.action_id.clone(), fired.clone());
+        .completion_bus
+        .retain_scheduled_fire(fired.clone())
+        .await;
     service
-        .completion_tx
+        .completion_bus
         .send(ActionCompletion::Scheduled(fired))
         .unwrap();
 

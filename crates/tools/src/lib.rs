@@ -1,3 +1,4 @@
+mod action_completion;
 mod action_lifecycle;
 mod action_service;
 mod action_terminal;

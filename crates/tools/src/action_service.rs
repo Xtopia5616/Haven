@@ -4,12 +4,16 @@ use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{Duration, Instant};
-use tokio::sync::{RwLock, broadcast, oneshot};
+use std::time::Duration;
+use tokio::sync::{RwLock, oneshot};
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
 use crate::ActionLifecycle;
+use crate::action_completion::ActionCompletionBus;
+pub use crate::action_completion::{
+    ActionCompletion, ActionCompletionReceiver, BackgroundActionCompletion, ScheduledActionFired,
+};
 use crate::action_terminal::{
     ActionState, TerminalPayload, TerminalSource, TerminalTimestamps, TerminalTransitionGuard,
     can_claim_terminal,
@@ -32,213 +36,6 @@ use crate::shell_runtime::{build_shell_command, collect_byte_cap, write_output_l
 
 const ACTION_DB_RETRY_ATTEMPTS: usize = 3;
 const ACTION_DB_RETRY_DELAY: Duration = Duration::from_millis(50);
-const SCHEDULED_FIRE_LEASE: Duration = Duration::from_secs(15 * 60);
-
-/// A background action that has reached a terminal state, surfaced to a consumer
-/// (the agent layer) so the owning session can be auto-notified of the result
-/// instead of the model having to poll `status`.
-#[derive(Clone, Debug)]
-pub struct BackgroundActionCompletion {
-    pub action_id: String,
-    /// Stable identity of the terminal result. It remains the same when the
-    /// broadcast is replayed or the owning session queue retries delivery.
-    pub action_result_id: String,
-    pub session_id: Option<String>,
-    /// Canonical terminal lifecycle status.
-    pub status: ActionStatus,
-    /// The action's status JSON (same shape `status()` returns for terminal
-    /// states), carrying the output/error payload.
-    pub status_json: Value,
-}
-
-/// A scheduled action that reached its durable `Waiting -> Running` trigger
-/// transition. The agent must acknowledge the actual work with
-/// [`ActionService::complete_scheduled`] or [`ActionService::fail_scheduled`].
-#[derive(Clone, Debug, serde::Serialize)]
-pub struct ScheduledActionFired {
-    pub action_id: String,
-    pub title: String,
-    pub body: String,
-    pub mode: crate::builtin::scheduled_action::ScheduleMode,
-    pub session_id: Option<String>,
-    pub tool_name: Option<String>,
-    pub tool_args: Option<Value>,
-    pub prompt: Option<String>,
-}
-
-/// One completion stream for every action kind.
-#[derive(Clone, Debug)]
-pub enum ActionCompletion {
-    Background(BackgroundActionCompletion),
-    Scheduled(ScheduledActionFired),
-}
-
-/// Receiver for the unified action completion stream.
-pub struct ActionCompletionReceiver {
-    rx: broadcast::Receiver<ActionCompletion>,
-    /// Scheduled fire claim/lease ownership is deliberately shared by all
-    /// receivers: local de-duplication cannot prevent two scheduled consumers
-    /// from executing the same fire.
-    pending_scheduled_fires: Arc<RwLock<HashMap<String, ScheduledActionFired>>>,
-    scheduled_fire_claims: Arc<RwLock<HashMap<String, ScheduledFireClaim>>>,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct ScheduledFireClaim {
-    expires_at: Instant,
-}
-
-async fn claim_scheduled_fire(
-    pending_scheduled_fires: &RwLock<HashMap<String, ScheduledActionFired>>,
-    scheduled_fire_claims: &RwLock<HashMap<String, ScheduledFireClaim>>,
-    action_id: &str,
-) -> Option<ScheduledActionFired> {
-    // Claim and lookup use the same lock order everywhere. This makes the
-    // claim check atomic from the perspective of concurrent receivers while
-    // allowing an abandoned consumer to be recovered after the lease expires.
-    let mut claims = scheduled_fire_claims.write().await;
-    let now = Instant::now();
-    if let Some(claim) = claims.get(action_id)
-        && claim.expires_at > now
-    {
-        return None;
-    }
-    let fired = pending_scheduled_fires
-        .read()
-        .await
-        .get(action_id)
-        .cloned()?;
-    claims.insert(
-        action_id.to_string(),
-        ScheduledFireClaim {
-            expires_at: now + SCHEDULED_FIRE_LEASE,
-        },
-    );
-    Some(fired)
-}
-
-impl ActionCompletionReceiver {
-    pub async fn recv(&mut self) -> Option<ActionCompletion> {
-        loop {
-            match self.rx.recv().await {
-                Ok(ActionCompletion::Scheduled(fired)) => {
-                    if let Some(fired) = claim_scheduled_fire(
-                        &self.pending_scheduled_fires,
-                        &self.scheduled_fire_claims,
-                        &fired.action_id,
-                    )
-                    .await
-                    {
-                        return Some(ActionCompletion::Scheduled(fired));
-                    }
-                }
-                Ok(event) => return Some(event),
-                Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                    tracing::warn!(skipped, "action completion receiver lagged")
-                }
-                Err(broadcast::error::RecvError::Closed) => return None,
-            }
-        }
-    }
-
-    /// Receive background completions without claiming scheduled fires. The
-    /// agent's background consumer uses this so a second receiver cannot steal
-    /// a scheduled trigger before the dedicated scheduled consumer sees it.
-    pub async fn recv_background(&mut self) -> Option<ActionCompletion> {
-        loop {
-            match self.rx.recv().await {
-                Ok(ActionCompletion::Background(completion)) => {
-                    return Some(ActionCompletion::Background(completion));
-                }
-                Ok(ActionCompletion::Scheduled(_)) => {}
-                Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                    tracing::warn!(skipped, "action completion receiver lagged")
-                }
-                Err(broadcast::error::RecvError::Closed) => return None,
-            }
-        }
-    }
-
-    /// Receive a background completion from either the transient broadcast or
-    /// the durable outbox. The outbox is checked after every broadcast lag and
-    /// on a bounded interval so a completion that was never published still
-    /// wakes the owning session. Delivery claims expire if the consumer dies.
-    pub async fn recv_background_with_recovery(
-        &mut self,
-        service: &ActionService,
-    ) -> Option<ActionCompletion> {
-        let mut reconcile = tokio::time::interval(ACTION_COMPLETION_RECONCILE_INTERVAL);
-        reconcile.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        // Reconcile once immediately at startup; subsequent checks are
-        // bounded by the interval while the transient channel remains the
-        // fast path for newly completed actions.
-        reconcile.tick().await;
-        loop {
-            if let Some(completion) = service.claim_pending_background_completion().await {
-                return Some(ActionCompletion::Background(completion));
-            }
-            match tokio::select! {
-                result = self.rx.recv() => result,
-                _ = reconcile.tick() => continue,
-            } {
-                Ok(ActionCompletion::Background(completion)) => {
-                    return Some(ActionCompletion::Background(completion));
-                }
-                Ok(ActionCompletion::Scheduled(_)) => {}
-                Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                    tracing::warn!(
-                        skipped,
-                        "action completion receiver lagged; reconciling durable outbox"
-                    );
-                }
-                Err(broadcast::error::RecvError::Closed) => {
-                    return service
-                        .claim_pending_background_completion()
-                        .await
-                        .map(ActionCompletion::Background);
-                }
-            }
-        }
-    }
-
-    /// Receive a scheduled trigger with recovery for broadcast lag. The
-    /// scheduled action remains in an in-memory unacknowledged set until the
-    /// actual work is acknowledged, so a lagged receiver can replay it rather
-    /// than silently losing the trigger.
-    pub async fn recv_scheduled_with_recovery(
-        &mut self,
-        service: &ActionService,
-    ) -> Option<ActionCompletion> {
-        loop {
-            // A fire can have been retained after a send with no consumer. A
-            // receiver created later must drain that recovery source before
-            // waiting on the transient broadcast channel.
-            if let Some(fired) = service.pending_scheduled_fire().await {
-                return Some(ActionCompletion::Scheduled(fired));
-            }
-            match self.rx.recv().await {
-                Ok(ActionCompletion::Scheduled(fired)) => {
-                    if let Some(fired) = claim_scheduled_fire(
-                        &self.pending_scheduled_fires,
-                        &self.scheduled_fire_claims,
-                        &fired.action_id,
-                    )
-                    .await
-                    {
-                        return Some(ActionCompletion::Scheduled(fired));
-                    }
-                }
-                Ok(event) => return Some(event),
-                Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                    tracing::warn!(skipped, "action completion receiver lagged");
-                }
-                Err(broadcast::error::RecvError::Closed) => return None,
-            }
-        }
-    }
-}
-
-const ACTION_COMPLETION_RECONCILE_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Optional sink for action lifecycle events surfaced to the UI. The
 /// sink is called with `(event, payload)` where event is one of:
@@ -755,17 +552,8 @@ pub struct ActionService {
     /// remains authoritative across service instances; this gate makes
     /// in-memory transitions first-wins while a durable transition is in flight.
     terminal_transition: TerminalTransitionGuard,
-    /// One bus for process completions and timer fires. Consumers may filter
-    /// their subscription by variant, but no action kind owns a second bus.
-    completion_tx: broadcast::Sender<ActionCompletion>,
-    /// Scheduled triggers remain here until the agent acknowledges the actual
-    /// work. This is the recovery source when the transient broadcast receiver
-    /// falls behind.
-    pending_scheduled_fires: Arc<RwLock<HashMap<String, ScheduledActionFired>>>,
-    /// Service-wide scheduled-fire claims. A receiver owns a fire until it
-    /// acknowledges it or its lease expires, so multiple receivers cannot
-    /// execute the same trigger concurrently.
-    scheduled_fire_claims: Arc<RwLock<HashMap<String, ScheduledFireClaim>>>,
+    /// Transient completion transport and scheduled-fire recovery claims.
+    completion_bus: ActionCompletionBus,
     /// At most one retry worker is allowed for each scheduled action whose
     /// terminal DB write failed. The worker is cancelled with the service and
     /// stops once the durable transition succeeds.
@@ -812,14 +600,11 @@ impl Default for ActionService {
 
 impl ActionService {
     pub fn new() -> Self {
-        let (tx, _) = broadcast::channel(256);
         Self {
             actions: RwLock::new(HashMap::new()),
             spawn_gate: tokio::sync::Mutex::new(()),
             terminal_transition: TerminalTransitionGuard::default(),
-            completion_tx: tx,
-            pending_scheduled_fires: Arc::new(RwLock::new(HashMap::new())),
-            scheduled_fire_claims: Arc::new(RwLock::new(HashMap::new())),
+            completion_bus: ActionCompletionBus::new(),
             terminal_persistence_retries: RwLock::new(HashSet::new()),
             background_terminal_retries: RwLock::new(HashSet::new()),
             quarantine_persistence_retries: RwLock::new(HashSet::new()),
@@ -838,36 +623,16 @@ impl ActionService {
 
     /// Unified completion receiver consumed by the agent layer.
     pub fn take_action_receiver(&self) -> Option<ActionCompletionReceiver> {
-        Some(ActionCompletionReceiver {
-            rx: self.completion_tx.subscribe(),
-            pending_scheduled_fires: Arc::clone(&self.pending_scheduled_fires),
-            scheduled_fire_claims: Arc::clone(&self.scheduled_fire_claims),
-        })
+        Some(self.completion_bus.subscribe())
     }
 
-    async fn pending_scheduled_fire(&self) -> Option<ScheduledActionFired> {
-        let ids = self
-            .pending_scheduled_fires
-            .read()
-            .await
-            .keys()
-            .cloned()
-            .collect::<Vec<_>>();
-        for action_id in ids {
-            if let Some(fired) = claim_scheduled_fire(
-                &self.pending_scheduled_fires,
-                &self.scheduled_fire_claims,
-                &action_id,
-            )
-            .await
-            {
-                return Some(fired);
-            }
-        }
-        None
+    pub(crate) async fn pending_scheduled_fire(&self) -> Option<ScheduledActionFired> {
+        self.completion_bus.pending_scheduled_fire().await
     }
 
-    async fn claim_pending_background_completion(&self) -> Option<BackgroundActionCompletion> {
+    pub(crate) async fn claim_pending_background_completion(
+        &self,
+    ) -> Option<BackgroundActionCompletion> {
         let store = self.action_store.read().await.clone()?;
         match store.claim_pending_completion().await {
             Ok(Some(ActionCompletionOutboxRow {
@@ -1048,9 +813,7 @@ impl ActionService {
     }
 
     async fn clear_scheduled_fire_claim(&self, id: &str) {
-        // Keep the same claim -> pending lock order as claim_scheduled_fire.
-        self.scheduled_fire_claims.write().await.remove(id);
-        self.pending_scheduled_fires.write().await.remove(id);
+        self.completion_bus.clear_scheduled_fire(id).await;
     }
 
     async fn rollback_background_registration(&self, action_id: &str) {
@@ -1466,7 +1229,7 @@ impl ActionService {
         };
         let status_json = render_status_json(action_id, &state);
         if let Err(error) =
-            self.completion_tx
+            self.completion_bus
                 .send(ActionCompletion::Background(BackgroundActionCompletion {
                     action_id: action_id.to_string(),
                     action_result_id: action_id.to_string(),
@@ -2567,12 +2330,11 @@ impl ActionService {
                 },
             ),
         );
-        self.pending_scheduled_fires
-            .write()
-            .await
-            .insert(id.to_string(), payload.clone());
+        self.completion_bus
+            .retain_scheduled_fire(payload.clone())
+            .await;
         if self
-            .completion_tx
+            .completion_bus
             .send(ActionCompletion::Scheduled(payload.clone()))
             .is_err()
         {
@@ -2611,10 +2373,7 @@ impl ActionService {
                 }
             }
             if !requeued {
-                self.pending_scheduled_fires
-                    .write()
-                    .await
-                    .insert(id.to_string(), payload);
+                self.completion_bus.retain_scheduled_fire(payload).await;
                 return;
             }
             if let Some(action) = self.actions.write().await.get_mut(id)
