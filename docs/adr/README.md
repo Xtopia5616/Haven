@@ -342,3 +342,4 @@
 - [0352：Background/Scheduled action 生命周期转换内核审计](0352-action-lifecycle-transition-core-audit.md)
 - [0353：Scheduled admission 保留运行中的 action](0353-scheduled-admission-preserves-running-actions.md)
 - [0354：LLM request purpose 与 usage owner 契约审计](0354-llm-request-purpose-usage-role-contract-audit.md)
+- [0356：架构路线图状态核对与文档校准](0356-architecture-roadmap-status-reconciliation.md)

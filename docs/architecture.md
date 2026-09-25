@@ -76,7 +76,7 @@ client；model edit 的完整提交和应用也由它持有。`SettingsRuntimeAp
 Settings 有序阶段，驱动命令提供的执行回调，并唯一记录当前 phase、snapshot version、Router published、
 restart-required targets 与失败/警告。Security、MCP、context、logging、hotkey 等实际副作用仍由既有 owner
 执行；Settings edit/no-op 仍由命令按同一次 `ConfigService::edit` 保留旧 hotkey、snapshot 和 change。该
-coordinator 不复制 Router prepare/publish，也不为半失败状态增加 compensation/rollback。MCP Tauri 命令负责
+coordinator 不复制 Router prepare/publish，也不为半失败状态增加 compensation/rollback；Settings compensation/rollback、失败后的显式 retry/restart recovery 仍未决。Tools admin 的 MCP/Skills/Logging/ToolSettings writers 与 Settings apply 不共用 config_apply_gate，而 ConfigService lock 只覆盖 save，不覆盖 save 之后的 runtime apply；跨入口并发与部分应用策略仍待决（ADR 0351）。MCP Tauri 命令负责
 持久化和连接/刷新动作，完成后请求 ToolsManager façade 重建 catalog；连接及其 `catalog_version` 仍由
 `McpManager` 持有。应用退出顺序由 `ApplicationRuntime` 负责，coordinator 不增加独立 shutdown 生命周期
 （ADR 0333、0337）。
@@ -589,8 +589,7 @@ interfaces，忽略未知附加字段并透传 enum-like 字符串与动态扩�
 payload 记录不含 payload 的 warning 并丢弃；聊天页与布局订阅互不重叠，共用同一 session reducer，通知、
 usage fallback 与 media plan 双副作用保持原 owner（ADR 0347）。另保留既有 SessionCompleted/SessionError
 主事件加 `session:updated` secondary fan-out；聊天页终态 handler 会重复执行部分 cleanup，跨 channel 没有共享
-event identity，本切片不修改 session contract/reducer。其余 app event/command contract mirror、
-以及 session mapper 内部 camelCase 类型和字段映射仍待 Phase 8 逐域审计。Action board 的活跃
+event identity，本切片不修改 session contract/reducer。session、action、recording、settings read、app event 与 agent event contract 已完成对应 mapper/validator 或边界审计（ADR 0330、0335、0340、0341、0346、0347、0348、0350）；session live interaction 与 resume compatibility normalizer 保持各自策略，SessionCompleted/SessionError 跨 channel 仍缺共享 occurrence identity，当前不推断性去重（ADR 0349）。全局 Rust→TypeScript codegen 未引入，其余 command families 仍待按域审计；Settings update payload 仍由 SettingsView 的单一 builder 构造。Action board 的活跃
 `list_actions`/`cancel_action` 经 `actionCommands.ts`；list response 复用 `mapActionPayload`，cancel
 request/result 使用命名 TS contract，`actionStore` 不直接 invoke（ADR 0348）。其余命令仍按域审计，
 不引入全局 codegen。
@@ -598,8 +597,7 @@ request/result 使用命名 TS contract，`actionStore` 不直接 invoke（ADR 0
 resume target/auto-restore、新会话入口及非 chat-event teardown；在 mount 时创建 controller、等待
 listener ready 后再 settings/load/restore，并在 destroy 时 dispose。旧 `sessionMessages.ts`、
 `sessionUsage.ts` 仅保留兼容投影，`streamAggregator.ts` 只负责排队后 dispatch chunk action
-（ADR 0160、0313、0315、0320、0322）。Phase 8 剩余 Rust DTO 到 TypeScript contract/mapper
-generation、旧手写 mirror 清理，以及 ask/input 决策、复杂 view state 与启动恢复的编排边界。
+（ADR 0160、0313、0315、0320、0322）。Phase 8 尚未完成的工作包括其他 command families 的逐域审计、是否引入跨域 Rust→TypeScript codegen 的决策，以及 ask/input 决策、复杂 view state 和启动恢复的编排边界；已审计域保留手写 contract/mapper，不视为生成产物。
 `ModelSettings.svelte` 当前保留命名模型、Provider CRUD 与 discovery 的页面编排，已补
 组件行为测试，后续再按 discovery / mutation 边界拆分。
 
@@ -685,6 +683,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 | 2026-09-25 | §2.6 App / UI：录音与转写事件审计确认 Rust DTO 是 wire 权威，前端只保留 camelCase 消费 DTO 和单一 mapper；补充未知 VAD 字符串、扩展字段、畸形默认、channel 集合与到达顺序回归覆盖，无 DTO 或生产逻辑变化（ADR 0340） |
 | 2026-09-25 | §2.2 LLM：审计 health/native transcription descriptor 边界；两者已在 route/permit 前使用同一语义映射，metadata/config helpers 是只读 route 查询，新增 contract tests，无无效 wrapper（ADR 0339） |
 | 2026-09-25 | §2.2 LLM：完成 request purpose/route key/capability/usage owner 契约审计；删除 primary route value 中重复的 purpose 副本，保留 RequestKind route compatibility、capability fail-closed 与调用方显式 usage owner；不增加 public CallPurpose（ADR 0354） |
+| 2026-09-26 | §2.5/§2.6：路线图状态复核关闭 ADR 0354 的 Phase 6 请求契约待办，记录 ADR 0353 的 scheduled Running cleanup 修复与 Phase 8 已审计 contract domains；保留 Job lifecycle、Settings recovery/concurrency、session cross-channel identity、global codegen、其他 command families 和 UI orchestration 未决（ADR 0356） |
 | 2026-09-25 | §2.5 Tools / UI：ActionService 持有唯一共享 tail 长度策略，foreground/background 消费 bounded typed snapshots；两条既有 event identity/wire 与 terminal/outbox 时序保持（ADR 0338） |
 | 2026-09-25 | §2.5 Tools：scheduled trigger 输入分类与 due-time 计算收口到纯 typed policy；ActionService 保留配置读取、durable admission、timer/fire 与终态，scheduled execution 仍由 AgentLayer/tool runner 承担（ADR 0343） |
 | 2026-09-25 | §2.5 App 配置：Settings runtime apply 的有序阶段与 phase/failure 元数据归 `SettingsRuntimeApplyCoordinator`；现有副作用 owner、Router prepare/publish、no-op 与半失败语义保持，补偿/rollback 仍未决（ADR 0337） |

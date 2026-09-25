@@ -8,6 +8,8 @@ Tech stack: Rust (Tauri 2) backend, Svelte 5 frontend.
 
 固定开发工具链：Rust 1.98.0、Node.js 24.20.0、pnpm 11.24.0；版本分别由 `rust-toolchain.toml`、`.node-version` 和 `ui/package.json` 固定。
 
+架构重构阶段状态与未决事项以 `docs/architecture-refactor-roadmap.md` 的当前阶段判断及对应 ADR 为准；其中按日期记录的旧切片进展是历史快照，不代表仍未完成。
+
 ## Test Workflow
 
 ### Rust Backend
