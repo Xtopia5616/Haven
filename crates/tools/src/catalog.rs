@@ -69,7 +69,11 @@ impl ToolsManager {
 
         // Register builtin tools, including stable control-plane loaders for
         // optional Skill/MCP sources even when those sources are unavailable.
-        let context = self.builtins.build_context(&self.core, &self.runtime).await;
+        let platform = self.runtime.platform().await;
+        let capabilities = self.tool_capability_snapshot(&platform).await;
+        let context =
+            self.builtins
+                .build_context(&self.core, &self.runtime, platform, capabilities);
         let settings = context.settings.clone();
         let admin_surfaces = builtin::register_builtin_tools(&mut all_tools, context).await;
 

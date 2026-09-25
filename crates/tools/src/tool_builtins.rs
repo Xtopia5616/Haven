@@ -5,9 +5,10 @@
 //! second service locator for MCP and Skills.
 
 use crate::builtin::{ActionDeps, BuiltinContext, MediaDeps};
+use crate::runtime_capabilities::ToolCapabilitySnapshot;
 use crate::skill_runner::SkillRunner;
 use crate::tool_core::ToolCore;
-use crate::tool_runtime::ToolRuntime;
+use crate::tool_runtime::{PlatformRuntime, ToolRuntime};
 use haven_common::config::{McpServerConfig, SkillsExecConfig};
 use haven_mcp::McpManager;
 use haven_skills::{SkillsEngine, VenvManager};
@@ -38,12 +39,13 @@ impl ToolBuiltins {
     /// Assemble the concrete builtin dependency graph from the three tool
     /// boundaries. Registration remains atomic in `ToolRegistry`; this method
     /// only creates a value object and does not mutate the catalog.
-    pub(crate) async fn build_context(
+    pub(crate) fn build_context(
         &self,
         core: &ToolCore,
         runtime: &ToolRuntime,
+        platform: Arc<PlatformRuntime>,
+        capabilities: ToolCapabilitySnapshot,
     ) -> BuiltinContext {
-        let platform = runtime.platform().await;
         let settings = platform.tool_settings.clone();
         let limits = platform.context_limits.clone();
         let router = platform.router.clone();
@@ -79,6 +81,7 @@ impl ToolBuiltins {
                 image_gen_client,
                 tts_client,
                 config: media_config,
+                capabilities: capabilities.media,
             },
             actions: ActionDeps {
                 live_outputs: runtime.live_outputs.clone(),

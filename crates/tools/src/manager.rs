@@ -502,7 +502,8 @@ impl ToolsManager {
     /// backend. This is intentionally separate from the media tool's schema
     /// so prompt assembly can report the same capability state.
     pub async fn tts_configured(&self) -> bool {
-        self.runtime.platform().await.tts_client.is_some()
+        let platform = self.runtime.platform().await;
+        self.tool_capability_snapshot(&platform).await.media.speak
     }
 
     /// Whether the shared media transcription boundary currently has a live
@@ -510,8 +511,9 @@ impl ToolsManager {
     /// owned by `haven-input` and is intentionally not consulted here.
     pub async fn transcription_available(&self) -> bool {
         let platform = self.runtime.platform().await;
-        runtime_capabilities::resolve_media_capabilities(&platform)
+        self.tool_capability_snapshot(&platform)
             .await
+            .media
             .transcribe
     }
 
@@ -527,8 +529,8 @@ impl ToolsManager {
         let platform = self.runtime.platform().await;
         let router = platform.router.clone();
         let stt_client = platform.stt_client.clone();
-        let capabilities = runtime_capabilities::resolve_media_capabilities(&platform).await;
-        if !capabilities.transcribe {
+        let capabilities = self.tool_capability_snapshot(&platform).await;
+        if !capabilities.media.transcribe {
             return builtin::MediaTranscriptionResult::unavailable(
                 "No speech-to-text provider is configured.",
             );
@@ -551,8 +553,21 @@ impl ToolsManager {
     /// prompt snapshot from advertising a role that the tool schema removed.
     pub async fn runtime_capabilities(&self) -> RuntimeCapabilities {
         let platform = self.runtime.platform().await;
+        self.tool_capability_snapshot(&platform)
+            .await
+            .runtime_capabilities()
+    }
+
+    /// Construct the single capability view used by manager reads and builtin
+    /// catalog assembly. Each call resolves current platform, router and MCP
+    /// inputs instead of returning a cached value whose invalidation would
+    /// have to coordinate their independent update clocks.
+    pub(super) async fn tool_capability_snapshot(
+        &self,
+        platform: &crate::tool_runtime::PlatformRuntime,
+    ) -> runtime_capabilities::ToolCapabilitySnapshot {
         let mcp_index = self.build_mcp_index().await;
-        runtime_capabilities::resolve(&platform, &mcp_index).await
+        runtime_capabilities::resolve_snapshot(platform, &mcp_index).await
     }
 }
 
@@ -582,5 +597,205 @@ impl ToolControlPort for ToolControlHandle {
 impl Default for ToolsManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod capability_tests {
+    use super::*;
+    use haven_common::config::{
+        Capability, ModelEndpoint, RequestKind, RequestPolicy, RoutedModel, RouterConfig,
+    };
+
+    struct AvailableStt;
+
+    #[async_trait::async_trait]
+    impl haven_llm::SttClient for AvailableStt {
+        async fn transcribe(&self, _wav_data: &[u8]) -> anyhow::Result<haven_llm::SttResult> {
+            anyhow::bail!("unused test STT client")
+        }
+    }
+
+    struct AvailableTts;
+
+    #[async_trait::async_trait]
+    impl haven_llm::TtsClient for AvailableTts {
+        async fn synthesize(&self, _text: &str) -> anyhow::Result<Vec<u8>> {
+            anyhow::bail!("unused test TTS client")
+        }
+    }
+
+    fn provider_search_router() -> Arc<LlmRouter> {
+        Arc::new(LlmRouter::new(RouterConfig {
+            models: vec![RoutedModel {
+                id: "chat".into(),
+                endpoint: ModelEndpoint {
+                    provider: "deepseek".into(),
+                    api_style: Some("openai-responses".into()),
+                    api_key: "test-key".into(),
+                    web_search: Some("auto".into()),
+                    ..Default::default()
+                },
+                capabilities: vec![Capability::Chat],
+            }],
+            request_policies: vec![RequestPolicy {
+                request: RequestKind::Chat,
+                primary: "chat".into(),
+            }],
+            ..Default::default()
+        }))
+    }
+
+    #[tokio::test]
+    async fn capability_snapshot_tracks_runtime_replacement_across_read_paths() {
+        let tools = ToolsManager::new();
+        let initial = tools.runtime_capabilities().await;
+        assert_eq!(initial.web_search, WebSearchAvailability::Unavailable);
+        assert!(!initial.transcription);
+        assert!(!initial.recording);
+        assert!(!tools.transcription_available().await);
+        assert!(!tools.tts_configured().await);
+
+        tools
+            .set_router_and_media_clients(
+                provider_search_router(),
+                Some(Arc::new(AvailableStt)),
+                None,
+                None,
+                Some(Arc::new(AvailableTts)),
+                haven_common::config::MediaConfig::default(),
+            )
+            .await;
+
+        let after_config_publish = tools.runtime_capabilities().await;
+        assert_eq!(
+            after_config_publish.web_search,
+            WebSearchAvailability::Provider
+        );
+        assert!(after_config_publish.transcription);
+        assert!(!after_config_publish.recording);
+        assert!(tools.transcription_available().await);
+        assert!(after_config_publish.tts);
+        assert!(tools.tts_configured().await);
+
+        let pipeline = Arc::new(haven_input::InputPipeline::new());
+        tools
+            .runtime
+            .update_platform(|current| {
+                let mut next = current.clone();
+                next.audio_pipeline = Some(pipeline);
+                next
+            })
+            .await;
+        tools.rebuild_catalog().await;
+
+        let platform = tools.runtime.platform().await;
+        let snapshot = tools.tool_capability_snapshot(&platform).await;
+        assert!(snapshot.media.record);
+        assert!(snapshot.media.transcribe);
+        assert_eq!(snapshot.web_search, WebSearchAvailability::Provider);
+        let media_catalog = tools.runtime.builtin_catalog().await;
+        assert!(
+            media_catalog
+                .tools
+                .iter()
+                .any(|tool| tool.name() == "media.record")
+        );
+        assert!(
+            media_catalog
+                .tools
+                .iter()
+                .any(|tool| tool.name() == "media.transcribe")
+        );
+
+        tools
+            .set_router_and_media_clients(
+                Arc::new(LlmRouter::new(RouterConfig::default())),
+                None,
+                None,
+                None,
+                None,
+                haven_common::config::MediaConfig::default(),
+            )
+            .await;
+
+        let after_runtime_replacement = tools.runtime_capabilities().await;
+        assert_eq!(
+            after_runtime_replacement.web_search,
+            WebSearchAvailability::Unavailable
+        );
+        assert!(!after_runtime_replacement.transcription);
+        assert!(after_runtime_replacement.recording);
+        assert!(!tools.transcription_available().await);
+        let transcription = tools
+            .transcribe_recording(&[], CancellationToken::new())
+            .await;
+        assert_eq!(
+            transcription.status,
+            builtin::MediaTranscriptionStatus::Unavailable
+        );
+        assert!(!tools.tts_configured().await);
+        let media_catalog = tools.runtime.builtin_catalog().await;
+        assert!(
+            media_catalog
+                .tools
+                .iter()
+                .any(|tool| tool.name() == "media.record")
+        );
+        assert!(
+            !media_catalog
+                .tools
+                .iter()
+                .any(|tool| tool.name() == "media.transcribe")
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_capability_reads_and_platform_replacements_do_not_panic() {
+        let tools = Arc::new(ToolsManager::new());
+        let pipeline = Arc::new(haven_input::InputPipeline::new());
+        let stt: Arc<dyn haven_llm::SttClient> = Arc::new(AvailableStt);
+
+        let writer_tools = Arc::clone(&tools);
+        let writer_pipeline = Arc::clone(&pipeline);
+        let writer_stt = Arc::clone(&stt);
+        let writer = tokio::spawn(async move {
+            for generation in 0..32 {
+                let pipeline = (generation % 2 == 0).then(|| Arc::clone(&writer_pipeline));
+                let stt = (generation % 2 == 0).then(|| Arc::clone(&writer_stt));
+                writer_tools
+                    .runtime
+                    .update_platform(|current| {
+                        let mut next = current.clone();
+                        next.audio_pipeline = pipeline;
+                        next.stt_client = stt;
+                        next
+                    })
+                    .await;
+            }
+        });
+
+        let mut readers = Vec::new();
+        for _ in 0..4 {
+            let tools = Arc::clone(&tools);
+            readers.push(tokio::spawn(async move {
+                for _ in 0..16 {
+                    let capabilities = tools.runtime_capabilities().await;
+                    assert!(matches!(
+                        capabilities.web_search,
+                        WebSearchAvailability::Provider
+                            | WebSearchAvailability::Mcp
+                            | WebSearchAvailability::Unavailable
+                    ));
+                    let _ = tools.transcription_available().await;
+                    let _ = tools.tts_configured().await;
+                }
+            }));
+        }
+
+        writer.await.expect("platform writer must not panic");
+        for reader in readers {
+            reader.await.expect("capability reader must not panic");
+        }
     }
 }

@@ -11,14 +11,38 @@ use haven_llm::LlmRouter;
 use serde_json::Value;
 use std::sync::Arc;
 
-pub(crate) async fn resolve(
+pub(crate) async fn resolve_snapshot(
     platform: &PlatformRuntime,
     mcp_index: &[Value],
-) -> RuntimeCapabilities {
+) -> ToolCapabilitySnapshot {
     let media = resolve_media_capabilities(platform).await;
     let chat_endpoint = configured_chat_endpoint(platform.router.as_ref()).await;
     let provider_search_available = provider_search_available(chat_endpoint.as_ref());
-    assemble_runtime_capabilities(media, provider_search_available, mcp_index)
+    assemble_tool_capability_snapshot(media, provider_search_available, mcp_index)
+}
+
+/// One freshly resolved view of capabilities owned by `ToolsManager`.
+///
+/// This value is deliberately not cached: platform replacement, the router's
+/// own config publication, and MCP tools/list updates do not share one version
+/// clock. The manager rebuilds it from current inputs for each read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ToolCapabilitySnapshot {
+    pub(crate) media: MediaCapabilities,
+    pub(crate) web_search: WebSearchAvailability,
+}
+
+impl ToolCapabilitySnapshot {
+    pub(crate) fn runtime_capabilities(self) -> RuntimeCapabilities {
+        RuntimeCapabilities {
+            vision: self.media.describe,
+            image_generation: self.media.generate,
+            transcription: self.media.transcribe,
+            recording: self.media.record,
+            tts: self.media.speak,
+            web_search: self.web_search,
+        }
+    }
 }
 
 /// Resolve the media capability snapshot shared by prompt reporting and
@@ -55,18 +79,14 @@ fn provider_search_available(chat_endpoint: Option<&ModelEndpoint>) -> bool {
     !matches!(mode, haven_llm::WebSearchMode::Off) && haven_llm::supports_builtin_web_search(style)
 }
 
-fn assemble_runtime_capabilities(
+fn assemble_tool_capability_snapshot(
     media: MediaCapabilities,
     provider_search_available: bool,
     mcp_index: &[Value],
-) -> RuntimeCapabilities {
+) -> ToolCapabilitySnapshot {
     let mcp_search_available = mcp_index.iter().any(mcp_index_entry_has_search_tool);
-    RuntimeCapabilities {
-        vision: media.describe,
-        image_generation: media.generate,
-        transcription: media.transcribe,
-        recording: media.record,
-        tts: media.speak,
+    ToolCapabilitySnapshot {
+        media,
         web_search: resolve_web_search_availability(
             provider_search_available,
             mcp_search_available,
@@ -131,7 +151,7 @@ mod tests {
 
     #[test]
     fn media_capabilities_map_to_prompt_runtime_capabilities() {
-        let capabilities = assemble_runtime_capabilities(
+        let snapshot = assemble_tool_capability_snapshot(
             MediaCapabilities {
                 describe: true,
                 ocr: true,
@@ -143,6 +163,7 @@ mod tests {
             false,
             &[],
         );
+        let capabilities = snapshot.runtime_capabilities();
 
         assert!(capabilities.vision);
         assert!(capabilities.image_generation);
@@ -154,7 +175,7 @@ mod tests {
 
     #[test]
     fn recording_remains_available_without_transcription() {
-        let capabilities = assemble_runtime_capabilities(
+        let snapshot = assemble_tool_capability_snapshot(
             MediaCapabilities {
                 record: true,
                 ..MediaCapabilities::default()
@@ -162,9 +183,36 @@ mod tests {
             false,
             &[],
         );
+        let capabilities = snapshot.runtime_capabilities();
 
         assert!(capabilities.recording);
         assert!(!capabilities.transcription);
+        assert!(snapshot.media.record);
+        assert!(!snapshot.media.transcribe);
+    }
+
+    #[test]
+    fn snapshot_owns_media_and_provider_mcp_priority_together() {
+        let snapshot = assemble_tool_capability_snapshot(
+            MediaCapabilities {
+                transcribe: true,
+                record: true,
+                ..MediaCapabilities::default()
+            },
+            true,
+            &[serde_json::json!({
+                "name": "research",
+                "description": "MCP server 'research'; tools: web_search",
+            })],
+        );
+
+        assert!(snapshot.media.transcribe);
+        assert!(snapshot.media.record);
+        assert_eq!(snapshot.web_search, WebSearchAvailability::Provider);
+        assert_eq!(
+            snapshot.runtime_capabilities().web_search,
+            WebSearchAvailability::Provider
+        );
     }
 
     #[test]

@@ -61,6 +61,10 @@ rebuild 写入 `BuiltinCatalog`。`tool_builtins.rs` 组合 MCP/Skills 与具体
 MCP、skills、授权、媒体资产、action 与 live output 由构造时交出的 `ToolServices` 提供，调用方
 不再向 `ToolsManager` 逐个取服务。组合根仍是 `ApplicationRuntime`，不另建 `AppRuntime`。
 `ToolsManager` 保留执行、目录投影、启动装配和录音转写入口，不再充当这些进程服务的 service locator。
+能力判断由 ToolsManager 唯一构造的 crate-private `ToolCapabilitySnapshot` 收口：prompt runtime、
+媒体 operation catalog、TTS/STT 与录音 gate 使用同一 typed 能力值，搜索优先级由它统一投影。
+snapshot 每次从当前 `PlatformRuntime`、Router config 与 MCP index 重建；三者没有共同版本钟，故当前不缓存。
+该 snapshot 只含能力结果，不暴露 Router、MCP manager、Database 或授权执行 facade（ADR 0331）。
 安全矩阵只有 `security.rs` 一个权威来源，五个 Admin surface 由 ADR 0070/0071 定义的 typed
 operation 实现。边界见 ADR 0162、ADR 0211、ADR 0212 与 ADR 0213。
 
@@ -574,6 +578,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 
 | 日期 | 内容 |
 |---|---|
+| 2026-09-25 | §2.5 Tools：ToolsManager 唯一构造 typed `ToolCapabilitySnapshot` 并供媒体 catalog、prompt、TTS/STT 与录音 gate 共用；每次从当前 runtime/router/MCP 状态重建，暂缓无共同失效时钟的缓存（ADR 0331） |
 | 2026-09-25 | §2.2 LLM：将聚合 stream 的首次 `on_chunk` 交付前重试、guidance retry、总 timeout 与结果交接收口到 `AggregatedStreamExecutor`；Router 继续持路由、permit、规则和 health/cooldown 状态（ADR 0328） |
 | 2026-09-25 | §2.2 LLM：将显式 `RequestDescriptor` 从 Router route preparation 传入 complete、embedding、raw stream 与 aggregated stream 执行边界；route key 和 usage owner 保持原边界（ADR 0329） |
 | 2026-09-25 | §2.6 LLM：`ModelDirectory` 接管 provider client map、primary routes、client/model 选择及 capability/endpoint metadata 查询；Router 继续拥有单一 config snapshot 与执行状态（ADR 0316） |

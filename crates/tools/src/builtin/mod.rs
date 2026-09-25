@@ -145,6 +145,7 @@ pub struct MediaDeps {
     pub image_gen_client: Option<Arc<dyn haven_llm::ImageGenClient>>,
     pub tts_client: Option<Arc<dyn haven_llm::TtsClient>>,
     pub config: haven_common::config::MediaConfig,
+    pub(crate) capabilities: media::MediaCapabilities,
 }
 
 /// Long-running action dependencies. Background processes and scheduled
@@ -207,6 +208,7 @@ pub async fn register_builtin_tools(
                 image_gen_client,
                 tts_client,
                 config: media_config,
+                capabilities,
             },
         actions:
             ActionDeps {
@@ -217,11 +219,6 @@ pub async fn register_builtin_tools(
     let settings = &settings;
     let limits = &limits;
     let mut admin_surfaces: Option<Arc<admin::AdminSurfaces>> = None;
-    let mut capabilities = resolve_media_capabilities(router.as_ref(), stt_client.is_some()).await;
-    capabilities.record = audio_pipeline.is_some();
-    capabilities.ocr = ocr_client.is_some();
-    capabilities.generate = image_gen_client.is_some();
-    capabilities.speak = tts_client.is_some();
     let audio_runtime = Arc::new(
         media_audio::AudioRuntime::with_tts(audio_pipeline, tts_client)
             .with_managed_assets(managed_assets.clone()),
