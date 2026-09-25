@@ -7,6 +7,7 @@ mod action_terminal;
 mod action_trigger_policy;
 pub mod adapters;
 mod asset_registry;
+mod authorization_policy;
 pub mod builtin;
 mod catalog;
 pub mod circuit;

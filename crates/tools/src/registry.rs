@@ -1,3 +1,4 @@
+use crate::authorization_policy::ToolAuthorizationPolicy;
 use crate::tool_contract::{OperationPolicy, ToolBox, ToolDef};
 use haven_common::tools::ToolManifest;
 use serde_json::Value;
@@ -400,19 +401,7 @@ impl ToolCatalogSnapshot {
     }
 
     pub fn operation_policy(&self, name: &str, input: &serde_json::Value) -> OperationPolicy {
-        self.get(name)
-            .map(|tool| tool.operation_policy(input))
-            .unwrap_or_else(|| OperationPolicy {
-                risk_level: haven_common::types::RiskLevel::Safe,
-                capability: haven_common::types::permission_key(name, input).into(),
-                confirmation: crate::ConfirmationRequirement::None,
-                idempotency: crate::OperationIdempotency::Unknown,
-                scope: crate::ToolOperationScope::Session,
-                concurrency: crate::ToolConcurrency::Exclusive,
-                effect: crate::OperationEffect::ExternalEffect,
-                data_sensitivity: crate::DataSensitivity::None,
-                network_access: crate::NetworkAccess::None,
-            })
+        ToolAuthorizationPolicy::operation_policy_for(self.get(name), name, input)
     }
 
     pub fn manifest(&self, name: &str) -> Option<ToolManifest> {

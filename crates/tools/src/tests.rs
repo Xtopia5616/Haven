@@ -212,6 +212,83 @@ async fn tool_catalog_snapshot_captures_lookup_policy_and_manifest() {
     );
 }
 
+struct SessionAuthorizationTool;
+
+#[async_trait::async_trait]
+impl Tool for SessionAuthorizationTool {
+    fn name(&self) -> String {
+        "mcp__policy__invoke".into()
+    }
+
+    fn description(&self) -> String {
+        "session authorization policy probe".into()
+    }
+
+    fn risk_level(&self, _: &Value) -> RiskLevel {
+        RiskLevel::High
+    }
+
+    fn input_schema(&self) -> Value {
+        json!({"type": "object"})
+    }
+
+    fn authorization_input(&self, input: &Value) -> Value {
+        let mut canonical = input.as_object().cloned().unwrap_or_default();
+        canonical.insert("operation".into(), json!("invoke"));
+        Value::Object(canonical)
+    }
+
+    async fn execute(&self, _: Value, _: CancellationToken) -> anyhow::Result<ToolResult> {
+        Ok(ToolResult::ok(json!({"ok": true})))
+    }
+}
+
+#[tokio::test]
+async fn authorization_policy_matches_live_and_snapshot_session_overlay() {
+    let mgr = ToolsManager::new();
+    mgr.rebuild_catalog().await;
+    let session_id = "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    let tool_name = "mcp__policy__invoke";
+    let input = json!({"value": "payload"});
+    mgr.register_for_session(session_id, Arc::new(SessionAuthorizationTool))
+        .await;
+
+    let catalog = mgr.tool_catalog_snapshot(session_id).await;
+    let live = mgr
+        .get_authorization_request(Some(session_id), tool_name, &input)
+        .await;
+    let snapshot =
+        mgr.get_authorization_request_from_snapshot(&catalog, Some(session_id), tool_name, &input);
+
+    assert_eq!(live.session_id.as_deref(), Some(session_id));
+    assert_eq!(live.tool_name, tool_name);
+    assert_eq!(
+        live.input,
+        json!({"value": "payload", "operation": "invoke"})
+    );
+    assert_eq!(live.policy.risk_level, RiskLevel::High);
+    assert_eq!(snapshot.session_id, live.session_id);
+    assert_eq!(snapshot.tool_name, live.tool_name);
+    assert_eq!(snapshot.input, live.input);
+    assert_eq!(snapshot.policy, live.policy);
+
+    let missing_name = "mcp__missing__invoke";
+    let live_unknown = mgr
+        .get_authorization_request(Some(session_id), missing_name, &input)
+        .await;
+    let snapshot_unknown = mgr.get_authorization_request_from_snapshot(
+        &catalog,
+        Some(session_id),
+        missing_name,
+        &input,
+    );
+    assert_eq!(snapshot_unknown.session_id, live_unknown.session_id);
+    assert_eq!(snapshot_unknown.tool_name, live_unknown.tool_name);
+    assert_eq!(snapshot_unknown.input, live_unknown.input);
+    assert_eq!(snapshot_unknown.policy, live_unknown.policy);
+    assert_eq!(live_unknown.policy.risk_level, RiskLevel::Safe);
+}
+
 #[tokio::test]
 async fn tool_catalog_snapshot_keeps_provider_surface_stable_after_drift() {
     let mgr = ToolsManager::new();

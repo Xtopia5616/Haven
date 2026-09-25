@@ -50,7 +50,10 @@ operation 与执行策略）、`registry.rs`（全局注册表、SessionCatalog�
 `security.rs`（AuthorizationEngine、权限继承、disabled operation、路径沙箱与本机安全矩阵）。
 在这组稳定模块之上，`OperationRegistry` 持有已安装、deferred 与 session operation；
 `OperationCatalog` 是模型可见投影；`AuthorizedExecutor` 做熔断、启用检查、校验、执行和结果分类。
-交互式确认仍由调用方在 `execute_tool` 之前决定，不在工具 future 里阻塞。`OperationSpec` 是运行时
+crate-private `ToolAuthorizationPolicy` 负责从 live session lookup 或 turn snapshot 生成同一 typed
+`AuthorizationRequest`；未命中工具的保守 fallback 也只有一份。它不作 allow/deny/confirm 决定，
+该决定仍由调用方在 `execute_tool` 之前交给唯一的 `AuthorizationEngine`，不在工具 future 里阻塞。
+`OperationSpec` 是运行时
 策略和 manifest 的唯一定义，覆盖 builtin operation view、root tool，以及 MCP/Skill adapter；spec 没有
 handler。`policy_for` 是一次调用的 `OperationPolicy`，`catalog_policy` 是目录上界。`ToolManifest`、
 `ToolPolicy`、`ToolPresentation` 只由 `project_tool_manifest` 投影，保留为 Tauri/UI 的 IPC 形状。`tool_core.rs`
