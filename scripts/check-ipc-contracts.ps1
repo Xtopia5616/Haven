@@ -76,6 +76,21 @@ function Get-StructFields([string] $body, [string] $label) {
     $fields
 }
 
+function Get-RustCommandParameters([string] $signature, [string] $label) {
+    $fields = @{}
+    foreach ($match in [regex]::Matches($signature, '(?:^|,)\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*([^,\r\n\)]+)')) {
+        $name = $match.Groups[1].Value
+        $fields[$name] = @{
+            Optional = $false
+            Type = ($match.Groups[2].Value.Trim() -replace '\s+', '')
+        }
+    }
+    if ($fields.Count -eq 0) {
+        throw "could not parse command parameters for $label"
+    }
+    $fields
+}
+
 function Convert-SnakeToCamel([string] $name) {
     $parts = @($name -split '_')
     if ($parts.Count -eq 1) { return $name }
@@ -150,6 +165,53 @@ if (-not [regex]::IsMatch($tsEventMapper.Groups[1].Value, 'mapActionPayload\s*\(
 }
 if (-not [regex]::IsMatch($uiActionCommands, "(?s)invoke\('list_actions'\).*?rows\.map\(mapActionPayload\)")) {
     throw 'list_actions command boundary must pass response rows through mapActionPayload'
+}
+
+function Assert-MemoryWireFieldContract([string] $label, [hashtable] $rust, [hashtable] $ts) {
+    Assert-SetEqual "$label fields" @($rust.Keys) @($ts.Keys)
+    foreach ($name in $rust.Keys) {
+        $expectedType = switch ($rust[$name].Type) {
+            'String' { 'string' }
+            'f64' { 'number' }
+            'i64' { 'number' }
+            'Vec<String>' { 'string[]' }
+            'Option<String>' { 'string|null' }
+            'Option<FactSourceRef>' { 'FactSourceRef|null' }
+            default { throw "$label has unsupported Rust type '$($rust[$name].Type)' for '$name'" }
+        }
+        if ($ts[$name].Type -ne $expectedType) {
+            throw "$label field '$name' type mismatch: Rust '$($rust[$name].Type)' vs TypeScript '$($ts[$name].Type)'"
+        }
+        if ($ts[$name].Optional) {
+            throw "$label field '$name' must be present on the wire; nullable values use explicit null"
+        }
+    }
+}
+
+function Assert-MemoryRequestContract([string] $label, [hashtable] $rust, [hashtable] $ts) {
+    $mapped = @{}
+    foreach ($name in $rust.Keys) {
+        if ($name -eq 'state') { continue }
+        $mapped[(Convert-SnakeToCamel $name)] = $rust[$name]
+    }
+    Assert-SetEqual "$label request fields" @($mapped.Keys) @($ts.Keys)
+    foreach ($name in $mapped.Keys) {
+        $rustType = $mapped[$name].Type
+        $expectedType = switch ($rustType) {
+            'String' { 'string' }
+            'Option<String>' { 'string|null' }
+            'Option<usize>' { 'number|null' }
+            'Option<Vec<String>>' { 'string[]|null' }
+            default { throw "$label has unsupported Rust request type '$rustType' for '$name'" }
+        }
+        if ($ts[$name].Type -ne $expectedType) {
+            throw "$label request field '$name' type mismatch: Rust '$rustType' vs TypeScript '$($ts[$name].Type)'"
+        }
+        $rustOptional = $rustType.StartsWith('Option<')
+        if ($ts[$name].Optional -ne $rustOptional) {
+            throw "$label request field '$name' optionality mismatch"
+        }
+    }
 }
 if ([regex]::IsMatch($actionStore, "invoke\s*\(\s*'(?:list_actions|cancel_action)'")) {
     throw 'Action store must not bypass the action command boundary'
@@ -246,4 +308,108 @@ $tsStatusValues = @([regex]::Matches($tsStatus.Groups[1].Value, '''([^'']+)''') 
 Assert-SetEqual 'ActionStatus values' $rustStatusValues $tsStatusValues
 
 Write-Host "Action IPC contract verified: $($rustFields.Count) ActionEvent fields, $($actionCommandNames.Count) command responses, and $($rustActionChannels.Count) registered event channels agree."
+
+$memoryContract = Get-Content (Join-Path $root 'ui/src/lib/contracts/memory.ts') -Raw
+$memoryCommandsUi = Get-Content (Join-Path $root 'ui/src/lib/memoryCommands.ts') -Raw
+$memoryView = Get-Content (Join-Path $root 'ui/src/lib/views/MemoryView.svelte') -Raw
+$memoryFactsRs = Get-Content (Join-Path $root 'crates/memory/src/repositories/facts.rs') -Raw
+$memoryCommandsRs = Get-Content (Join-Path $commandsRoot 'memory.rs') -Raw
+$memoryCommandContractsRs = Get-Content (Join-Path $commandsRoot 'contracts.rs') -Raw
+
+$memoryBoundaryChecks = @(
+    @{
+        Command = 'list_facts'
+        Function = 'listFacts'
+        ViewCall = 'listFacts'
+        Request = 'ListFactsRequest'
+        Response = 'Fact[]'
+        RustResponse = 'Fact[]'
+    },
+    @{
+        Command = 'add_fact'
+        Function = 'addFact'
+        ViewCall = 'addFactCommand'
+        Request = 'AddFactRequest'
+        Response = 'Fact'
+        RustResponse = 'Fact'
+    },
+    @{
+        Command = 'delete_fact'
+        Function = 'deleteFact'
+        ViewCall = 'deleteFactCommand'
+        Request = 'DeleteFactRequest'
+        Response = 'void'
+        RustResponse = '()'
+    },
+    @{
+        Command = 'recall_memory'
+        Function = 'recallMemory'
+        ViewCall = 'recallMemory'
+        Request = 'RecallMemoryRequest'
+        Response = 'MemoryRecallItem[]'
+        RustResponse = 'MemoryRecallItem[]'
+    }
+)
+
+foreach ($check in $memoryBoundaryChecks) {
+    $functionName = [regex]::Escape($check.Function)
+    $requestName = [regex]::Escape($check.Request)
+    $responseName = [regex]::Escape($check.Response)
+    $rustResponseName = [regex]::Escape($check.RustResponse)
+    $commandName = [regex]::Escape($check.Command)
+    $functionPattern = "(?s)export\s+function\s+$functionName\s*\(\s*request:\s*$requestName\s*\):\s*Promise<$responseName>\s*\{\s*return\s+invoke\('$commandName',\s*request\);\s*\}"
+    if (-not [regex]::IsMatch($memoryCommandsUi, $functionPattern)) {
+        throw "memory command '$($check.Command)' must use its named request/response helper and forward request unchanged"
+    }
+    if (-not [regex]::IsMatch($memoryView, ('\b' + [regex]::Escape($check.ViewCall) + '\s*\('))) {
+        throw "MemoryView must call '$($check.ViewCall)' for '$($check.Command)'"
+    }
+    $rustContractPattern = '(?s)CommandContract\s*\{\s*name:\s*"' + $commandName + '"([^}]*)\}'
+    $rustCommandContract = Get-RequiredMatch $memoryCommandContractsRs $rustContractPattern "Rust contract for '$($check.Command)'"
+    if ($rustCommandContract.Groups[1].Value -notmatch ('request:\s*"' + $requestName + '"') -or
+        $rustCommandContract.Groups[1].Value -notmatch ('response:\s*"' + $rustResponseName + '"')) {
+        throw "Rust command contract for '$($check.Command)' does not match the frontend helper contract"
+    }
+    $tsContractPattern = '(?ms)^\s*' + $commandName + '\s*:\s*\{([^}]*)\}'
+    $tsCommandContract = Get-RequiredMatch $tsContracts $tsContractPattern "frontend contract for '$($check.Command)'"
+    if ($tsCommandContract.Groups[1].Value -notmatch ("request:\s*'" + $requestName + "'") -or
+        $tsCommandContract.Groups[1].Value -notmatch ("response:\s*'" + $responseName + "'")) {
+        throw "Frontend command contract for '$($check.Command)' does not match its helper"
+    }
+}
+
+if ([regex]::IsMatch($memoryView, "invoke\s*\(\s*'(?:list_facts|add_fact|delete_fact|recall_memory)'")) {
+    throw 'MemoryView must not bypass memoryCommands.ts for fact and recall commands'
+}
+
+if ([regex]::Matches($memoryContract, '(?m)^export\s+interface\s+Fact\s*\{').Count -ne 1 -or
+    [regex]::Matches($memoryContract, '(?m)^export\s+interface\s+MemoryRecallItem\s*\{').Count -ne 1) {
+    throw 'memory command responses must each have one named frontend contract'
+}
+
+$rustFact = Get-RequiredMatch $memoryFactsRs '(?ms)pub\s+struct\s+Fact\s*\{(.*?)\n\}' 'Rust Fact response'
+$rustFactSourceRef = Get-RequiredMatch $memoryFactsRs '(?ms)pub\s+struct\s+FactSourceRef\s*\{(.*?)\n\}' 'Rust FactSourceRef response'
+$rustRecall = Get-RequiredMatch $memoryCommandContractsRs '(?ms)pub\s+struct\s+MemoryRecallItem\s*\{(.*?)\n\}' 'Rust MemoryRecallItem response'
+$tsFact = Get-RequiredMatch $memoryContract '(?ms)export\s+interface\s+Fact\s*\{(.*?)\n\}' 'TypeScript Fact response'
+$tsFactSourceRef = Get-RequiredMatch $memoryContract '(?ms)export\s+interface\s+FactSourceRef\s*\{(.*?)\n\}' 'TypeScript FactSourceRef response'
+$tsRecall = Get-RequiredMatch $memoryContract '(?ms)export\s+interface\s+MemoryRecallItem\s*\{(.*?)\n\}' 'TypeScript MemoryRecallItem response'
+Assert-MemoryWireFieldContract 'Fact' (Get-StructFields $rustFact.Groups[1].Value 'Rust Fact') (Get-StructFields $tsFact.Groups[1].Value 'TypeScript Fact')
+Assert-MemoryWireFieldContract 'FactSourceRef' (Get-StructFields $rustFactSourceRef.Groups[1].Value 'Rust FactSourceRef') (Get-StructFields $tsFactSourceRef.Groups[1].Value 'TypeScript FactSourceRef')
+Assert-MemoryWireFieldContract 'MemoryRecallItem' (Get-StructFields $rustRecall.Groups[1].Value 'Rust MemoryRecallItem') (Get-StructFields $tsRecall.Groups[1].Value 'TypeScript MemoryRecallItem')
+
+$memoryRequestChecks = @(
+    @{ Function = 'recall_memory'; Request = 'RecallMemoryRequest' },
+    @{ Function = 'list_facts'; Request = 'ListFactsRequest' },
+    @{ Function = 'add_fact'; Request = 'AddFactRequest' },
+    @{ Function = 'delete_fact'; Request = 'DeleteFactRequest' }
+)
+foreach ($check in $memoryRequestChecks) {
+    $functionName = [regex]::Escape($check.Function)
+    $requestName = [regex]::Escape($check.Request)
+    $rustFunction = Get-RequiredMatch $memoryCommandsRs ('(?ms)pub\s+async\s+fn\s+' + $functionName + '\s*\((.*?)\)\s*->') "Rust parameters for '$($check.Function)'"
+    $tsRequest = Get-RequiredMatch $tsContracts ('(?ms)export\s+interface\s+' + $requestName + '\s*\{(.*?)\n\}') "TypeScript request '$($check.Request)'"
+    Assert-MemoryRequestContract $check.Function (Get-RustCommandParameters $rustFunction.Groups[1].Value "Rust '$($check.Function)' parameters") (Get-StructFields $tsRequest.Groups[1].Value "TypeScript '$($check.Request)'")
+}
+
+Write-Host "Memory IPC contract verified: $($memoryBoundaryChecks.Count) typed command helpers and MemoryView call boundary agree."
 

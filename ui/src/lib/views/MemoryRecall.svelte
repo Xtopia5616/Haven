@@ -1,5 +1,5 @@
 <script>
-	/** @typedef {{ entity_id: string; text: string; score?: number; kind?: string }} MemoryRecallResult */
+	/** @typedef {import('$lib/contracts/memory.ts').MemoryRecallResult} MemoryRecallResult */
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import LoadingState from '$lib/LoadingState.svelte';

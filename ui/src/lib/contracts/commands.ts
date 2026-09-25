@@ -40,6 +40,31 @@ export interface CancelActionRequest {
 	kind: ActionKind;
 }
 
+/** Flat renderer arguments for a bounded memory recall query. */
+export interface RecallMemoryRequest {
+	query: string;
+	kind?: string | null;
+	limit?: number | null;
+}
+
+/** Flat renderer arguments for listing facts, optionally filtered by source. */
+export interface ListFactsRequest {
+	source?: string | null;
+}
+
+/** Flat renderer arguments for storing one user-managed fact. */
+export interface AddFactRequest {
+	subject: string;
+	predicate: string;
+	object: string;
+	tags?: string[] | null;
+}
+
+/** Flat renderer arguments for deleting one fact. */
+export interface DeleteFactRequest {
+	factId: string;
+}
+
 export const TAURI_COMMAND_CONTRACTS = {
 	list_actions: { request: '-', response: 'ActionEvent[]', boundary: 'read', security: 'projected task fields only' },
 	cancel_action: { request: 'CancelActionRequest', response: 'boolean', boundary: 'mutate', security: 'kind is enum; cancel only the selected task kind' },

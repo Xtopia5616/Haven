@@ -26,4 +26,23 @@ describe('Tauri command contract directory', () => {
 		expect(TAURI_COMMAND_CONTRACTS.mcp_tool_call.response).toBe('McpToolCallResponse');
 		expect(TAURI_COMMAND_CONTRACTS.execute_skill.response).toBe('SkillExecutionResponse');
 	});
+
+	it('keeps memory fact and recall command contracts named', () => {
+		expect(TAURI_COMMAND_CONTRACTS.recall_memory).toMatchObject({
+			request: 'RecallMemoryRequest',
+			response: 'MemoryRecallItem[]',
+		});
+		expect(TAURI_COMMAND_CONTRACTS.list_facts).toMatchObject({
+			request: 'ListFactsRequest',
+			response: 'Fact[]',
+		});
+		expect(TAURI_COMMAND_CONTRACTS.add_fact).toMatchObject({
+			request: 'AddFactRequest',
+			response: 'Fact',
+		});
+		expect(TAURI_COMMAND_CONTRACTS.delete_fact).toMatchObject({
+			request: 'DeleteFactRequest',
+			response: 'void',
+		});
+	});
 });

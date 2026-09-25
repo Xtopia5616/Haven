@@ -1,4 +1,5 @@
 <script>
+	/** @typedef {import('$lib/contracts/memory.ts').Fact} Fact */
 	import MaterialBadge from '$lib/MaterialBadge.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
@@ -6,7 +7,7 @@
 	import CountChip from '$lib/CountChip.svelte';
 
 	let {
-		facts = [],
+		facts = /** @type {Fact[]} */ ([]),
 		factsLoaded = false,
 		factSourceFilter = '',
 		factSourceOptions = [],
@@ -18,9 +19,12 @@
 		onDeleteFact = () => {},
 	} = $props();
 
+	/** @type {string | null} */
 	let selectedFactId = $state(null);
 	let detailOpen = $state(false);
-	const selectedFact = $derived(facts.find((fact) => fact.id === selectedFactId) || null);
+	const selectedFact = $derived(
+		/** @type {Fact[]} */ (facts).find((fact) => fact.id === selectedFactId) || null,
+	);
 
 	$effect(() => {
 		if (selectedFactId && !selectedFact) {
@@ -29,27 +33,27 @@
 		}
 	});
 
-	/** @param {any} fact */
+	/** @param {Fact} fact */
 	function factSourceLabel(fact) {
 		return fact.source === 'inferred' ? '推断' : '手动';
 	}
 
-	/** @param {any} fact */
+	/** @param {Fact} fact */
 	function factSourceTone(fact) {
 		return fact.source === 'inferred' ? 'secondary' : 'primary';
 	}
 
-	/** @param {any} fact */
+	/** @param {Fact} fact */
 	function factSubjectLabel(fact) {
 		return fact.subject && fact.subject !== 'user' ? `关于 ${fact.subject}` : '关于你';
 	}
 
-	/** @param {any} fact */
+	/** @param {Fact} fact */
 	function factTitle(fact) {
 		return fact.predicate || '未命名记忆';
 	}
 
-	/** @param {any} fact */
+	/** @param {Fact} fact */
 	function factSentence(fact) {
 		const subject = fact.subject && fact.subject !== 'user' ? fact.subject : '你';
 		return `${subject} · ${fact.predicate || '未命名'} · ${fact.object || '暂无内容'}`;
@@ -61,7 +65,7 @@
 		return `置信度 ${Math.round(Math.max(0, Math.min(1, confidence)) * 100)}%`;
 	}
 
-	/** @param {any} fact */
+	/** @param {Fact} fact */
 	function reinforcementLabel(fact) {
 		const count = Number(fact.mention_count || 0);
 		return count > 0 ? `已复核 ${count} 次` : '尚未复核';
@@ -78,12 +82,12 @@
 		}).format(date);
 	}
 
-	/** @param {any} fact */
+	/** @param {Fact} fact */
 	function tagsLabel(fact) {
 		return Array.isArray(fact.tags) && fact.tags.length > 0 ? fact.tags.join('、') : '无';
 	}
 
-	/** @param {any} fact */
+	/** @param {Fact} fact */
 	function selectFact(fact) {
 		selectedFactId = fact.id;
 		detailOpen = true;

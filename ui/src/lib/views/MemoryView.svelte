@@ -1,5 +1,8 @@
 <script>
 	/** @typedef {{ id: string; title?: string; input_text?: string; status: string; created_at: string; [key: string]: any }} MemorySession */
+	/** @typedef {import('$lib/contracts/memory.ts').Fact} Fact */
+	/** @typedef {import('$lib/contracts/memory.ts').MemoryRecallResult} MemoryRecallResult */
+	/** @typedef {import('$lib/contracts/memory.ts').MemoryRecallState} MemoryRecallState */
 	import logger from '$lib/logger.ts';
 	import { reportError } from '$lib/errorHandling.ts';
 	import { buildResumeMessages } from '$lib/resumeMessages.ts';
@@ -15,6 +18,12 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/stores';
 	import { invoke } from '$lib/tauri.ts';
+	import {
+		addFact as addFactCommand,
+		deleteFact as deleteFactCommand,
+		listFacts,
+		recallMemory,
+	} from '$lib/memoryCommands.ts';
 	import { registerSessionListener } from '$lib/events.ts';
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
@@ -73,7 +82,7 @@
 		{ id: 'tasks', label: '任务' },
 		{ id: 'memory', label: '记忆' },
 	];
-	/** @type {{ query: string; kind: string; results: Array<Record<string, any>>; loading: boolean; searched: boolean }} */
+	/** @type {MemoryRecallState} */
 	let memoryRecall = $state({
 		query: '',
 		kind: 'all',
@@ -81,7 +90,7 @@
 		loading: false,
 		searched: false,
 	});
-	/** @type {any[]} */
+	/** @type {Fact[]} */
 	let facts = $state([]);
 	let factsLoaded = $state(false);
 	/** @type {'' | 'user' | 'inferred'} */
@@ -440,7 +449,7 @@
 	async function loadFacts() {
 		const sequence = ++loadFactsSeq;
 		try {
-			const rows = (await invoke('list_facts', { source: factSourceFilter || null })) || [];
+			const rows = (await listFacts({ source: factSourceFilter || null })) || [];
 			if (sequence !== loadFactsSeq) return;
 			facts = rows;
 			factsLoaded = true;
@@ -468,7 +477,7 @@
 				.split(',')
 				.map((tag) => tag.trim())
 				.filter(Boolean);
-			await invoke('add_fact', {
+			await addFactCommand({
 				subject: 'user',
 				predicate,
 				object,
@@ -486,7 +495,7 @@
 	/** @param {string} factId */
 	async function deleteFact(factId) {
 		try {
-			await invoke('delete_fact', { factId });
+			await deleteFactCommand({ factId });
 			facts = facts.filter((fact) => fact.id !== factId);
 		} catch (e) {
 			reportError(e, { context: 'MemoryView', message: '删除事实失败', log: false });
@@ -501,9 +510,7 @@
 			const limit = memoryRecall.kind === 'all' ? 5 : 10;
 			const resultGroups = await Promise.all(
 				kinds.map(async (kind) => {
-					const results = /** @type {Array<Record<string, any>>} */ (
-						(await invoke('recall_memory', { query, kind, limit })) || []
-					);
+					const results = (await recallMemory({ query, kind, limit })) || [];
 					return results.map((result) => ({ ...result, kind }));
 				}),
 			);
