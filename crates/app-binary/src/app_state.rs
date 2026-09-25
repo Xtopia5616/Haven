@@ -12,6 +12,7 @@ use haven_memory::{ActionStore, Database, MemoryFactStore, SessionStore};
 use haven_tools::ToolsManager;
 use std::collections::HashMap;
 use std::ops::Deref;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tracing_subscriber::Registry;
@@ -84,6 +85,29 @@ impl BootstrapStatus {
     }
 }
 
+#[derive(Clone)]
+struct CleanupRoots {
+    uploads: PathBuf,
+    generated_media: PathBuf,
+}
+
+impl CleanupRoots {
+    fn production() -> Self {
+        Self {
+            uploads: haven_common::default_work_dir().join("uploads"),
+            generated_media: haven_common::config::default_generated_media_dir(),
+        }
+    }
+
+    #[cfg(test)]
+    fn isolated(data_root: &Path) -> Self {
+        Self {
+            uploads: data_root.join("uploads"),
+            generated_media: data_root.join("media").join("generated"),
+        }
+    }
+}
+
 pub struct AppState {
     pub(crate) runtime: Arc<ApplicationRuntime>,
     /// The `rec-{uuid}` id of the in-flight voice recording. Set when a
@@ -117,6 +141,37 @@ impl AppState {
         db_path: &std::path::Path,
         filter_handles: Vec<reload::Handle<EnvFilter, Registry>>,
         config_loader: ConfigLoader,
+    ) -> anyhow::Result<Self> {
+        Self::new_with_cleanup_roots(
+            db_path,
+            filter_handles,
+            config_loader,
+            CleanupRoots::production(),
+        )
+        .await
+    }
+
+    #[cfg(test)]
+    async fn new_for_test(
+        db_path: &Path,
+        filter_handles: Vec<reload::Handle<EnvFilter, Registry>>,
+        config_loader: ConfigLoader,
+        test_data_root: &Path,
+    ) -> anyhow::Result<Self> {
+        Self::new_with_cleanup_roots(
+            db_path,
+            filter_handles,
+            config_loader,
+            CleanupRoots::isolated(test_data_root),
+        )
+        .await
+    }
+
+    async fn new_with_cleanup_roots(
+        db_path: &Path,
+        filter_handles: Vec<reload::Handle<EnvFilter, Registry>>,
+        config_loader: ConfigLoader,
+        cleanup_roots: CleanupRoots,
     ) -> anyhow::Result<Self> {
         let t0 = std::time::Instant::now();
         let db = Arc::new(Database::open(db_path)?);
@@ -277,7 +332,7 @@ impl AppState {
                 }
             });
 
-            let upload_root = haven_common::default_work_dir().join("uploads");
+            let upload_root = cleanup_roots.uploads.clone();
             let upload_ttl = std::time::Duration::from_secs(
                 u64::from(retention_days).saturating_mul(24 * 60 * 60),
             );
@@ -316,8 +371,8 @@ impl AppState {
 
         // Crash leftovers in private upload staging directories are temporary
         // state, so their cleanup is independent from history retention.
-        let staging_root = haven_common::default_work_dir().join("uploads");
-        let generated_root = haven_common::config::default_generated_media_dir();
+        let staging_root = cleanup_roots.uploads.clone();
+        let generated_root = cleanup_roots.generated_media.clone();
         let generated_registry = tools.share_services().assets.clone();
         runtime.spawn("stale-upload-cleanup", async move {
             match crate::commands::recording::cleanup_stale_upload_staging(staging_root).await {
@@ -350,12 +405,12 @@ impl AppState {
         // Spawn background cleanup every 24 hours
         let db_clone = db.clone();
         let retention = retention_days;
-        let upload_root = haven_common::default_work_dir().join("uploads");
+        let upload_root = cleanup_roots.uploads.clone();
         let upload_ttl = std::time::Duration::from_secs(
             u64::from(retention_days.max(1)).saturating_mul(24 * 60 * 60),
         );
         let upload_registry = tools.share_services().assets.clone();
-        let generated_root = haven_common::config::default_generated_media_dir();
+        let generated_root = cleanup_roots.generated_media.clone();
         let generated_registry = tools.share_services().assets.clone();
         runtime.spawn_with_child_token("daily-cleanup", move |cancel| async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(86400));
@@ -662,7 +717,9 @@ mod tests {
 
         // Missing config file → created with defaults.
         let loader = ConfigLoader::load_from(&cfg_path).unwrap();
-        let state = AppState::new(&db_path, vec![], loader).await.unwrap();
+        let state = AppState::new_for_test(&db_path, vec![], loader, dir.path())
+            .await
+            .unwrap();
 
         // Builtin tools are registered synchronously before new() returns.
         assert!(state.tools.get_tool("files.read").await.is_some());
@@ -687,7 +744,8 @@ mod tests {
 
         let dir = tempdir().unwrap();
         let loader = ConfigLoader::load_from(&dir.path().join("config.toml")).unwrap();
-        let state = AppState::new(&dir.path().join("test.db"), vec![], loader)
+        let db_path = dir.path().join("test.db");
+        let state = AppState::new_for_test(&db_path, vec![], loader, dir.path())
             .await
             .unwrap();
         let runtime = state.runtime.clone();
@@ -757,7 +815,9 @@ mod tests {
         let dir = tempdir().unwrap();
         let loader = ConfigLoader::load_from(&dir.path().join("config.toml")).unwrap();
         let db_path = dir.path().join("test.db");
-        let state = AppState::new(&db_path, vec![], loader).await.unwrap();
+        let state = AppState::new_for_test(&db_path, vec![], loader, dir.path())
+            .await
+            .unwrap();
         let session = state
             .runtime
             .executor
@@ -805,7 +865,9 @@ mod tests {
         let cfg_path = dir.path().join("config.toml");
         let db_path = dir.path().join("test.db");
         let loader = ConfigLoader::load_from(&cfg_path).unwrap();
-        let state = AppState::new(&db_path, vec![], loader).await.unwrap();
+        let state = AppState::new_for_test(&db_path, vec![], loader, dir.path())
+            .await
+            .unwrap();
         let mut config = state.config_service.snapshot().unwrap().config;
         config.session.max_steps = 42;
         state
@@ -818,7 +880,9 @@ mod tests {
         drop(state);
 
         let loader2 = ConfigLoader::load_from(&cfg_path).unwrap();
-        let state2 = AppState::new(&db_path, vec![], loader2).await.unwrap();
+        let state2 = AppState::new_for_test(&db_path, vec![], loader2, dir.path())
+            .await
+            .unwrap();
         assert_eq!(
             state2
                 .config_service

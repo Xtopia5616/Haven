@@ -475,6 +475,13 @@ Phase 7.1 验收与未决风险：见 ADR 0259、0261、0262、0263、0264、026
 - 扩充既有 session event replay 内存 SQLite fixture：1k/10k/100k 历史输入分别对 full read 与 compaction active suffix read 预热 2 次、交错测量 21 对，打印微秒 p50/p95；fixture 建立不计时。此输出只是 test profile、热内存数据库读取的局部观测，不表示磁盘、冷启动或生产延迟。
 - actor mailbox、UI reducer broadcast、Action completion outbox 与 Memory fact extraction outbox 继续只复跑行为测试并明确指标缺口。现有 fixture 尚不能隔离目标阶段成本，因此不加生产 timer、自制异步负载、依赖或性能阈值；不改变重试、取消、顺序、wire、UI 和 X12 语义。
 
+#### 2026-09-26 最终验收审计（ADR 0361）
+
+- 总体验收仍未完成：durable transcript recovery 与 SessionActor 单 task 所有权满足；raw `Database` / `ToolsManager` 穿透仍存在；稳定 outputs typed 与 runtime failure semantics 仅部分满足；Rust→TypeScript codegen 未引入且是否引入仍待决定。
+- 本轮 Rust workspace 与 UI 的格式、测试、类型检查、clippy、生产构建及 IPC validators 全部通过。AppState 测试启动的媒体和上传清理根已改为显式临时目录；测试使用仓库 `target` 下的隔离 `APPDATA` 根。详见 ADR 0361 的命令与证据。
+- 全新用户配置下的 GUI 启动、模型设置、媒体/任务流程、升级重置和卸载未执行；仓库当前没有 disposable profile / VM 自动验收入口。阶段 9 在完成一次性 Windows profile 或 VM 中的发布验收前保持开放。
+- 本轮不拆分 `haven-common`、不引入新的 runtime 性能优化，也不选择 Settings recovery/concurrency、完整 Job lifecycle、session occurrence identity、codegen 或剩余 UI command-family 策略；未决项继续由各自 ADR 跟踪。
+
 ## 5. Agent 委派策略
 
 - 只把有明确写集和退出条件的阶段交给一个 Agent；模型固定 `gpt-6-luna`、reasoning `xhigh`。
@@ -485,13 +492,17 @@ Phase 7.1 验收与未决风险：见 ADR 0259、0261、0262、0263、0264、026
 
 ## 6. 全局完成定义
 
-全部阶段不等于文件变少，而是以下检查同时成立：
+全部阶段不等于文件变少；以下是截至 2026-09-26 的最终验收状态（证据见 ADR 0361）：
 
-- durable session 恢复只依赖事件回放；
-- session-local mutable state 只有 actor owner；
-- 上层没有 raw Database/ToolsManager service locator 穿透；
-- stable domain outputs typed，动态 JSON 边界有明确注释；
-- 配置、工具、模型、任务、记忆的 runtime replacement/失败/取消语义有测试；
-- Rust/TS IPC 生成与校验一致；
-- 后端 `cargo fmt --all -- --check`、`cargo test --workspace --locked`、`cargo clippy --workspace --locked -- -D warnings`，UI `corepack pnpm run check`、`corepack pnpm run test:run` 与生产构建通过；
-- 文档、ADR、重置说明、Git 历史和工作区状态可审查。
+| 条件 | 状态 | 审计结论 |
+|---|---|---|
+| durable session 恢复只依赖事件回放 | 满足 | `session_events` replay 是 transcript 恢复权威；未进入事件流的 ingress 用户输入按 cursor/message identity 重新排队是已记录例外。 |
+| session-local mutable state 只有 actor owner | actor-task 单 owner 满足；ADR 0214 字段布局仍待对齐 | `SessionActor` task 拥有 `SessionState` 与 active run future；run-local `ReActState` 随该 future 由同一 actor loop 轮询，但尚不是 ADR 0214 所述的 `SessionState` 字段。 |
+| 上层没有 raw Database/ToolsManager service locator 穿透 | 未满足 | 生产构造仍传递 raw Database，Agent 仍通过 `get_tools()` / `services()` 访问 manager/service。 |
+| stable domain outputs typed，动态 JSON 边界有明确注释 | 部分满足 | 多个 IPC 和 agent/action projections 已 typed；仍需逐域确认 ActionService 等稳定跨层输出与动态 JSON 扩展的边界。 |
+| 配置、工具、模型、任务、记忆的 runtime replacement/失败/取消语义有测试 | 部分满足 | 各域已有局部回归测试；Settings 补偿/retry/restart、跨 writer 并发及完整 Job lifecycle 语义仍未决。 |
+| Rust/TS IPC 生成与校验一致 | 未满足 | IPC contract/event validators 通过；全局 codegen 未实现，且是否采用尚未决定。 |
+| Rust 与 UI 格式、测试、类型、lint/build 门禁通过 | 满足 | 本轮完整门禁通过；Rust 测试进程使用隔离 APPDATA。 |
+| 文档、ADR、重置说明、Git 历史和工作区状态可审查 | 满足 | ADR 0361、架构、路线图和发布/重置文档记录本次证据与限制；提交后复核 Git 状态。 |
+
+阶段 9 的全新数据根目录手动验收仍是单独的发布条件；本次 workspace checks 不证明桌面安装、升级重置或卸载流程。阶段状态以未决 ADR 及下方验收记录为准，不因质量门禁通过而宣告全局完成。
