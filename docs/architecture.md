@@ -382,7 +382,13 @@ scheduled fire recovery 以 `action_id` 和单调时钟使用 15 分钟进程内
 其 pending fire 与 lease；background completion lease 过期后可再次 claim，直到 transcript
 durable 后按 `action_result_id` ack。ActionStore 仍各自拥有 outbox、scheduled trigger 的
 事务和 CAS；Tools 不持有 raw `Database` 或安排 SQLite blocking 工作。CAS 仲裁、内存 board、
-恢复/重试策略与生命周期事件仍由 `ActionService` 所有（ADR 0305、0332）。
+终态持久化修复重试判定由 crate-private `ActionPersistenceRetryPolicy` 纯 typed owner 收口：
+background/scheduled worker 均无 retry deadline/预算，保留 1 秒起步、指数退避、30 秒封顶；scheduled
+每次 store 调用内部原有的 3 次/50 ms 重试仍保留。策略不持有 clock、sleep、store 或 terminal arbitration。
+ActionService 继续按 kind 执行各自 CAS/outbox、内存状态、事件发布、重试等待与生命周期。当前 background
+shell 没有 action-level 执行 timeout；scheduled `due_at` 是触发时刻。AgentLayer 对 background completion
+做 durable transcript 投影/入队的 100 ms 重试与 outbox ack 也保持独立；provider/LLM retry 和 Agent
+ReAct tool-call retry 不属于 action persistence retry（ADR 0305、0332、0334）。
 `InteractionRequest`（`haven-agent/src/interaction.rs`）
 是 ask、confirm 和 scheduled confirm 的共同生命周期投影，快照通过 `interactions` 保存当前
 请求；旧快照不做运行时兼容读取，新的交互状态以 `Pending → Resolved | Expired | Cancelled`
@@ -589,6 +595,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 | 日期 | 内容 |
 |---|---|
 | 2026-09-25 | §2.5 Tools：由 crate-private `ToolRuntimeCoordinator` 持有 tool runtime composition、PlatformRuntime/config 更新顺序、MCP discovery index 与 builtin catalog rebuild；Tauri config gate、MCP 连接和应用 shutdown 仍留在原 owner（ADR 0333） |
+| 2026-09-25 | §2.5 Tools：background/scheduled 终态持久化修复共用纯 `ActionPersistenceRetryPolicy`；无 deadline/预算、1 秒起步与 30 秒封顶保持，CAS/outbox/timer rollback 和执行行为仍归各路径（ADR 0334） |
 | 2026-09-25 | §2.5 Tools / §2.3 Memory：background outbox 与 scheduled fire claim 共用纯 typed `ActionLease<T>` 状态校验；30 秒/15 分钟 lease、SQLite CAS、ack 和 terminal invalidation 保持各自边界（ADR 0332） |
 | 2026-09-25 | §2.5 Tools：ToolsManager 唯一构造 typed `ToolCapabilitySnapshot` 并供媒体 catalog、prompt、TTS/STT 与录音 gate 共用；每次从当前 runtime/router/MCP 状态重建，暂缓无共同失效时钟的缓存（ADR 0331） |
 | 2026-09-25 | §2.2 LLM：将聚合 stream 的首次 `on_chunk` 交付前重试、guidance retry、总 timeout 与结果交接收口到 `AggregatedStreamExecutor`；Router 继续持路由、permit、规则和 health/cooldown 状态（ADR 0328） |

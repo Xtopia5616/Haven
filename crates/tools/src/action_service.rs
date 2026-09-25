@@ -14,6 +14,7 @@ use crate::action_completion::ActionCompletionBus;
 pub use crate::action_completion::{
     ActionCompletion, ActionCompletionReceiver, BackgroundActionCompletion, ScheduledActionFired,
 };
+use crate::action_retry_policy::{ActionPersistenceRetryPolicy, RetryDecision, RetrySignal};
 use crate::action_terminal::{
     ActionState, TerminalPayload, TerminalSource, TerminalTimestamps, TerminalTransitionGuard,
     can_claim_terminal,
@@ -1173,23 +1174,41 @@ impl ActionService {
         let service = Arc::clone(self);
         let action_id = action_id.to_string();
         tokio::spawn(async move {
-            let mut delay = Duration::from_secs(1);
-            loop {
-                tokio::select! {
-                    _ = service.shutdown_token.cancelled() => break,
-                    _ = tokio::time::sleep(delay) => {}
+            let policy = ActionPersistenceRetryPolicy::terminal_persistence();
+            let mut completed_attempts = 1;
+            let mut signal = RetrySignal::Failure { retryable: true };
+            while let RetryDecision::Retry {
+                next_attempt,
+                delay,
+            } = policy.decide(completed_attempts, signal, tokio::time::Instant::now())
+            {
+                let should_retry = tokio::select! {
+                    _ = service.shutdown_token.cancelled() => false,
+                    _ = tokio::time::sleep(delay) => true,
+                };
+                if !should_retry {
+                    signal = RetrySignal::Cancelled;
+                    continue;
+                }
+                if policy
+                    .can_start_attempt(next_attempt, tokio::time::Instant::now())
+                    .is_err()
+                {
+                    break;
                 }
                 match service
                     .try_commit_background_terminal(&action_id, &state, remove_after_commit)
                     .await
                 {
-                    Ok(_) => break,
+                    Ok(true) => signal = RetrySignal::Succeeded,
+                    Ok(false) => signal = RetrySignal::Terminal,
                     Err(error) => {
                         tracing::warn!(
                             action_id = %action_id,
                             "background terminal persistence retry failed: {error}"
                         );
-                        delay = (delay * 2).min(Duration::from_secs(30));
+                        completed_attempts = next_attempt;
+                        signal = RetrySignal::Failure { retryable: true };
                     }
                 }
             }
@@ -2540,11 +2559,27 @@ impl ActionService {
         }
         let service = Arc::clone(self);
         tokio::spawn(async move {
-            let mut delay = Duration::from_secs(1);
-            loop {
-                tokio::select! {
-                    _ = service.shutdown_token.cancelled() => break,
-                    _ = tokio::time::sleep(delay) => {}
+            let policy = ActionPersistenceRetryPolicy::terminal_persistence();
+            let mut completed_attempts = 1;
+            let mut signal = RetrySignal::Failure { retryable: true };
+            while let RetryDecision::Retry {
+                next_attempt,
+                delay,
+            } = policy.decide(completed_attempts, signal, tokio::time::Instant::now())
+            {
+                let should_retry = tokio::select! {
+                    _ = service.shutdown_token.cancelled() => false,
+                    _ = tokio::time::sleep(delay) => true,
+                };
+                if !should_retry {
+                    signal = RetrySignal::Cancelled;
+                    continue;
+                }
+                if policy
+                    .can_start_attempt(next_attempt, tokio::time::Instant::now())
+                    .is_err()
+                {
+                    break;
                 }
                 let _terminal = service.terminal_transition.lock().await;
                 match service
@@ -2557,26 +2592,35 @@ impl ActionService {
                             error_reason.as_deref(),
                             TerminalTimestamps::new(&started_at, &finished_at),
                         ) else {
-                            break;
+                            signal = RetrySignal::Terminal;
+                            completed_attempts = next_attempt;
+                            continue;
                         };
-                        service
+                        if service
                             .finish_scheduled_in_memory(&id, &schedule, state)
-                            .await;
-                        break;
+                            .await
+                        {
+                            signal = RetrySignal::Succeeded;
+                        } else {
+                            signal = RetrySignal::Terminal;
+                        }
+                        completed_attempts = next_attempt;
                     }
                     Ok(false) => {
                         tracing::warn!(
                             action_id = %id,
                             "scheduled terminal retry found no running durable row"
                         );
-                        break;
+                        signal = RetrySignal::Terminal;
+                        completed_attempts = next_attempt;
                     }
                     Err(error) => {
                         tracing::warn!(
                             action_id = %id,
                             "scheduled terminal persistence retry failed: {error}"
                         );
-                        delay = (delay * 2).min(Duration::from_secs(30));
+                        completed_attempts = next_attempt;
+                        signal = RetrySignal::Failure { retryable: true };
                     }
                 }
             }
