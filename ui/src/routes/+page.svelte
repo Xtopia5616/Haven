@@ -1072,7 +1072,9 @@
 	}
 
 	function confirmRollbackAction() {
-		return chatController.confirmRollbackAction({ ...rollbackDialog });
+		const stepNumber = rollbackDialog.stepNumber;
+		if (stepNumber == null) return;
+		return chatController.confirmRollbackAction({ ...rollbackDialog, stepNumber });
 	}
 
 	/** @param {string} sessionId */

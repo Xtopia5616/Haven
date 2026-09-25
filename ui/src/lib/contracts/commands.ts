@@ -14,6 +14,21 @@ export interface SessionIdRequest {
 	sessionId: string;
 }
 
+/** Flat renderer arguments for resolving one shell-owned confirmation. */
+export interface ResolveConfirmationRequest {
+	stepId: string;
+	effect: string;
+	scope: string;
+	target: string;
+}
+
+/** Flat renderer arguments for rolling back one session branch. */
+export interface RollbackSessionRequest extends SessionIdRequest {
+	targetStep: number;
+	pause?: boolean | null;
+	targetMessageId?: string | null;
+}
+
 /** Flat renderer arguments for updating a session title. */
 export interface UpdateSessionTitleRequest extends SessionIdRequest {
 	title: string;

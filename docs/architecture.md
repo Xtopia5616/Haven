@@ -621,6 +621,11 @@ event identity，本切片不修改 session contract/reducer。session、action�
 `list_actions`/`cancel_action` 经 `actionCommands.ts`；list response 复用 `mapActionPayload`，cancel
 request/result 使用命名 TS contract，`actionStore` 不直接 invoke（ADR 0348）。其余命令仍按域审计，
 不引入全局 codegen。
+`continue_session`、`interrupt_session`、`end_session` 与 `rollback_session` 由
+`ChatController` 单一编排并直接 invoke；请求在 `contracts/commands.ts` 使用命名 DTO，页面逻辑保留
+原 in-flight 锁、错误处理与通知顺序。`resolve_confirmation` 留在 `+layout.svelte` 的 shell confirmation
+入口，因为弹窗必须跨工作区可见；它也使用命名 request DTO 与本地 in-flight guard。没有重复 request
+mapper 或绕过 owner 的 UI caller，IPC script 对照 Rust handler 参数、TS DTO 和直接调用边界（ADR 0371）。
 `+page.svelte` 保留 view/scroll 与 dialog/loading/menu 状态、输入路由与 ask 决策、model sync、
 resume target/auto-restore、新会话入口及非 chat-event teardown；在 mount 时创建 controller、等待
 listener ready 后再 settings/load/restore，并在 destroy 时 dispose。旧 `sessionMessages.ts`、
@@ -704,6 +709,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 
 | 日期 | 内容 |
 |---|---|
+| 2026-09-26 | §2.6 App / UI：审计五个 session control command，补齐 rollback/confirmation request DTO 并固定 Rust 参数映射与 UI direct invoke owner；ChatController orchestration 与 shell confirmation 顺序不变（ADR 0371）|
 | 2026-09-26 | §2.6 App / UI：Settings 诊断与日志只读命令统一经 `diagnosticsCommands.ts`，沿用 `contracts/settings.ts` 的唯一 parser；metrics 响应保留动态字段，renderer 计数 provider 与 UI 错误状态仍归调用方（ADR 0370）|
 | 2026-09-26 | §2.3/§2.5/§2.6：AgentStartup 将唯一 MemoryStartup 交给 ApplicationRuntime；typed PreparedMemoryRuntime 一次消费、注册成功才返回 MemoryReady，AppRuntime 注册/join prepare/live/schedule tasks，dispatcher 与 maintenance/manual/shutdown 顺序保持（ADR 0367）|
 | 2026-09-26 | §2.3/§2.5 Memory/Agent：删除 `SystemPromptBuilder::new` 的 raw Database public constructor；prompt 测试显式创建 `MemoryService` 并使用 typed constructor，生产共享 service/cache owner 和运行行为不变（ADR 0365）|

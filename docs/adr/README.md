@@ -354,3 +354,7 @@
 - [0365：SystemPromptBuilder 构造注入 MemoryService](0365-system-prompt-builder-memory-service-constructor.md)
 - [0366：收窄 SessionSupervisor 内部 wiring 可见性](0366-session-supervisor-internal-wiring-visibility.md)
 - [0367：MemoryRuntime 所有权与 readiness handoff 移至应用边界](0367-memory-runtime-application-ownership.md)
+- [0368：Model discovery command contract boundary](0368-model-discovery-command-contract-boundary.md)
+- [0369：Tools catalog command contract boundary](0369-tools-catalog-command-contract-boundary.md)
+- [0370：Diagnostics and logging read command boundary](0370-diagnostics-logging-command-contract-boundary.md)
+- [0371：Session control command contract audit](0371-session-control-command-contract-audit.md)

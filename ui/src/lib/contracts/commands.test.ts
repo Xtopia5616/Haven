@@ -78,4 +78,27 @@ describe('Tauri command contract directory', () => {
 			'SessionResumeResponse | null',
 		);
 	});
+
+	it('keeps session control command requests named and void-returning', () => {
+		expect(TAURI_COMMAND_CONTRACTS.continue_session).toMatchObject({
+			request: 'SessionIdRequest',
+			response: 'void',
+		});
+		expect(TAURI_COMMAND_CONTRACTS.interrupt_session).toMatchObject({
+			request: 'SessionIdRequest',
+			response: 'void',
+		});
+		expect(TAURI_COMMAND_CONTRACTS.end_session).toMatchObject({
+			request: 'SessionIdRequest',
+			response: 'void',
+		});
+		expect(TAURI_COMMAND_CONTRACTS.rollback_session).toMatchObject({
+			request: 'RollbackSessionRequest',
+			response: 'void',
+		});
+		expect(TAURI_COMMAND_CONTRACTS.resolve_confirmation).toMatchObject({
+			request: 'ResolveConfirmationRequest',
+			response: 'void',
+		});
+	});
 });

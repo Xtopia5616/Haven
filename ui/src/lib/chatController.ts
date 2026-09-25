@@ -10,6 +10,7 @@ import {
 import { isErrorStatus } from './sessionStatus.ts';
 import { processResultSessionId } from './submit.ts';
 import type { InteractionRequest } from './contracts/app.ts';
+import type { RollbackSessionRequest, SessionIdRequest } from './contracts/commands.ts';
 import { resumeInteractions as resumeInteractionsFromProjection } from './sessionReducer.ts';
 import type {
 	SessionAction,
@@ -29,7 +30,7 @@ export interface ChatFileAttachment extends ChatImageAttachment {
 }
 
 export interface RollbackRequest {
-	stepNumber: number | null;
+	stepNumber: number;
 	role: string;
 	content: string;
 	msgId: string;
@@ -113,7 +114,7 @@ export class ChatController {
 				targetStep: request.stepNumber,
 				pause: request.role === 'user',
 				targetMessageId: request.msgId,
-			});
+			} satisfies RollbackSessionRequest);
 			this.dependencies.dispatch({ type: 'session/replay-reset', sessionId });
 			this.dependencies.clearStepBlockIds(sessionId);
 			await this.resyncSessionMessages(sessionId);
@@ -172,7 +173,7 @@ export class ChatController {
 		// Prevent lifecycle events from auto-selecting an existing session while ending.
 		this.dependencies.setFreshSessionIntent(true);
 		try {
-			await this.dependencies.invoke('end_session', { sessionId });
+			await this.dependencies.invoke('end_session', { sessionId } satisfies SessionIdRequest);
 		} catch (error) {
 			// Keep the active pointer attached so a still-running session stays visible.
 			this.dependencies.setFreshSessionIntent(false);
@@ -186,7 +187,7 @@ export class ChatController {
 		this.interruptInFlight = true;
 		this.dependencies.setInterruptPending(true);
 		try {
-			await this.dependencies.invoke('interrupt_session', { sessionId });
+			await this.dependencies.invoke('interrupt_session', { sessionId } satisfies SessionIdRequest);
 			this.dependencies.notify('输出已中断，可继续生成', 'info', 2000);
 		} catch (error) {
 			this.report(error, '中断输出失败');
@@ -207,7 +208,7 @@ export class ChatController {
 		const preContinueMessageIds = new Set(currentMessages.map((message) => message.id));
 		const strategy: ContinueStrategy = pickContinueStrategy(currentMessages);
 		try {
-			await this.dependencies.invoke('continue_session', { sessionId });
+			await this.dependencies.invoke('continue_session', { sessionId } satisfies SessionIdRequest);
 			this.dependencies.dispatch({ type: 'session/error-cleared', sessionId });
 
 			// A failed reload does not prove that visible messages were partial.

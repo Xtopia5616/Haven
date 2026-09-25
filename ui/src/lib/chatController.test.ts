@@ -216,6 +216,7 @@ describe('ChatController continue', () => {
 			'continue_session',
 			'get_session_for_resume',
 		]);
+		expect(harness.invokeCalls[0]?.args).toEqual({ sessionId: SESSION_ID });
 		expect(harness.submitCalls.map((call) => call.text)).toEqual(['继续']);
 		expect(harness.actions.map((action) => action.type)).toContain('session/error-cleared');
 		expect(harness.actions.map((action) => action.type)).toContain('session/replay-reset');
@@ -293,6 +294,35 @@ describe('ChatController continue', () => {
 		finishContinue?.();
 		await first;
 	});
+
+	it('ignores a duplicate rollback while the first command is in flight', async () => {
+		let finishRollback: (() => void) | undefined;
+		const rollbackCommand = new Promise<void>((resolve) => {
+			finishRollback = resolve;
+		});
+		const harness = makeHarness({
+			invoke: (command) => command === 'rollback_session' ? rollbackCommand : resumeData(),
+		});
+		const request = {
+			stepNumber: 7,
+			role: 'assistant',
+			content: '',
+			msgId: 'step-00000000000000000000000000000007',
+		};
+
+		const first = harness.controller.confirmRollbackAction(request);
+		await harness.controller.confirmRollbackAction(request);
+
+		expect(harness.invokeCalls.filter((call) => call.command === 'rollback_session')).toHaveLength(1);
+		expect(harness.invokeCalls[0]?.args).toEqual({
+			sessionId: SESSION_ID,
+			targetStep: 7,
+			pause: false,
+			targetMessageId: request.msgId,
+		});
+		finishRollback?.();
+		await first;
+	});
 });
 
 describe('ChatController session guards', () => {
@@ -313,6 +343,10 @@ describe('ChatController session guards', () => {
 
 		await harness.controller.endSession();
 
+		expect(harness.invokeCalls).toEqual([{
+			command: 'end_session',
+			args: { sessionId: SESSION_ID },
+		}]);
 		expect(harness.freshSessionIntent).toBe(false);
 		expect(harness.reducer.getState().activeSessionId).toBe(SESSION_ID);
 		expect(harness.reportedErrors).toEqual([{ error, message: '完成会话失败' }]);
@@ -324,6 +358,10 @@ describe('ChatController session guards', () => {
 
 		await harness.controller.interruptOutput();
 
+		expect(harness.invokeCalls).toEqual([{
+			command: 'interrupt_session',
+			args: { sessionId: SESSION_ID },
+		}]);
 		expect(harness.interruptPending).toEqual([true, false]);
 		expect(harness.reportedErrors).toEqual([{ error, message: '中断输出失败' }]);
 		expect(harness.notifications).toEqual([]);

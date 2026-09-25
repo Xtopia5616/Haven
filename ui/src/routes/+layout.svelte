@@ -532,6 +532,7 @@
 				})()
 			: null,
 	);
+	/** @type {Set<string>} */
 	const confirmationRequestsInFlight = new Set();
 
 	/** @param {{ stepId: string, approved: boolean, effect?: string, scope?: string, target?: string }} payload */
@@ -549,13 +550,15 @@
 		const resolvedEffect = effect || (approved ? 'allow' : 'deny');
 		const resolvedScope = scope || 'once';
 		const resolvedTarget = target || 'operation';
+		/** @type {import('$lib/contracts/commands.ts').ResolveConfirmationRequest} */
+		const confirmationRequest = {
+			stepId: resolvedStep,
+			effect: resolvedEffect,
+			scope: resolvedScope,
+			target: resolvedTarget,
+		};
 		try {
-			await invoke('resolve_confirmation', {
-				stepId: resolvedStep,
-				effect: resolvedEffect,
-				scope: resolvedScope,
-				target: resolvedTarget,
-			});
+			await invoke('resolve_confirmation', confirmationRequest);
 		} catch (e) {
 			if (formatError(e) === 'Confirmation request is stale or already resolved') {
 				addNotification('确认请求已过期或已处理，操作未执行', 'warning', 4000);

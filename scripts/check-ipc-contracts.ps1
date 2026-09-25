@@ -941,3 +941,116 @@ foreach ($sourceFile in (Get-ChildItem $diagnosticsUiRoot -Recurse -File | Where
 
 Write-Host 'Diagnostics IPC contract verified: Rust request/response fields, existing parsers, dynamic metrics, and UI call boundaries agree.'
 
+$sessionControlUiRoot = Join-Path $root 'ui/src'
+$sessionControlContractsUi = Get-Content (Join-Path $sessionControlUiRoot 'lib/contracts/commands.ts') -Raw
+$sessionControlChatUi = Get-Content (Join-Path $sessionControlUiRoot 'lib/chatController.ts') -Raw
+$sessionControlLayoutUi = Get-Content (Join-Path $sessionControlUiRoot 'routes/+layout.svelte') -Raw
+$sessionControlRust = Get-Content (Join-Path $commandsRoot 'session.rs') -Raw
+$sessionControlOwners = @{
+    continue_session = 'ui/src/lib/chatController.ts'
+    interrupt_session = 'ui/src/lib/chatController.ts'
+    end_session = 'ui/src/lib/chatController.ts'
+    rollback_session = 'ui/src/lib/chatController.ts'
+    resolve_confirmation = 'ui/src/routes/+layout.svelte'
+}
+$sessionControlChecks = @(
+    @{ Command = 'continue_session'; Request = 'SessionIdRequest'; Response = 'void'; RustResponse = '()' },
+    @{ Command = 'interrupt_session'; Request = 'SessionIdRequest'; Response = 'void'; RustResponse = '()' },
+    @{ Command = 'end_session'; Request = 'SessionIdRequest'; Response = 'void'; RustResponse = '()' },
+    @{ Command = 'rollback_session'; Request = 'RollbackSessionRequest'; Response = 'void'; RustResponse = '()' },
+    @{ Command = 'resolve_confirmation'; Request = 'ResolveConfirmationRequest'; Response = 'void'; RustResponse = '()' }
+)
+
+foreach ($check in $sessionControlChecks) {
+    $commandName = [regex]::Escape($check.Command)
+    $rustCommandContract = Get-RequiredMatch $rustContracts ('(?s)CommandContract\s*\{\s*name:\s*"' + $commandName + '"([^}]*)\}') "Rust contract for '$($check.Command)'"
+    $rustRequest = Get-RequiredMatch $rustCommandContract.Groups[1].Value 'request:\s*"([^"]+)"' "Rust request for '$($check.Command)'"
+    $rustResponse = Get-RequiredMatch $rustCommandContract.Groups[1].Value 'response:\s*"([^"]+)"' "Rust response for '$($check.Command)'"
+    $tsCommandContract = Get-RequiredMatch $tsSection ('(?ms)^\s*' + $commandName + '\s*:\s*\{([^}]*)\}') "frontend contract for '$($check.Command)'"
+    $tsRequest = Get-RequiredMatch $tsCommandContract.Groups[1].Value "request:\s*'([^']+)'" "frontend request for '$($check.Command)'"
+    $tsResponse = Get-RequiredMatch $tsCommandContract.Groups[1].Value "response:\s*'([^']+)'" "frontend response for '$($check.Command)'"
+    if ($rustRequest.Groups[1].Value -ne $check.Request -or $tsRequest.Groups[1].Value -ne $check.Request -or
+        $rustResponse.Groups[1].Value -ne $check.RustResponse -or $tsResponse.Groups[1].Value -ne $check.Response) {
+        throw "session control command contract for '$($check.Command)' differs between Rust and TypeScript"
+    }
+
+    $rustFunction = Get-RequiredMatch $sessionControlRust ('(?ms)pub\s+async\s+fn\s+' + $commandName + '\s*\((.*?)\)\s*->\s*Result\s*<\s*([^,]+),\s*String\s*>') "Rust handler for '$($check.Command)'"
+    if ($rustFunction.Groups[2].Value.Trim() -ne $check.RustResponse) {
+        throw "Rust handler response for '$($check.Command)' differs from its command contract"
+    }
+    $rustFields = Get-RustCommandParameters $rustFunction.Groups[1].Value "Rust '$($check.Command)' parameters"
+    foreach ($frameworkField in @('state', 'app', '_app')) { $rustFields.Remove($frameworkField) | Out-Null }
+    $tsFields = Get-TypeScriptInterfaceFields $sessionControlContractsUi $check.Request
+    $mappedFields = @{}
+    foreach ($name in $rustFields.Keys) { $mappedFields[(Convert-SnakeToCamel $name)] = $rustFields[$name] }
+    Assert-SetEqual "$($check.Command) request fields" @($mappedFields.Keys) @($tsFields.Keys)
+    foreach ($name in $mappedFields.Keys) {
+        $rustType = $mappedFields[$name].Type
+        $expectedType = switch ($rustType) {
+            'String' { 'string' }
+            'u32' { 'number' }
+            'Option<String>' { 'string|null' }
+            'Option<bool>' { 'boolean|null' }
+            default { throw "$($check.Command) has unsupported Rust request type '$rustType' for '$name'" }
+        }
+        if ($tsFields[$name].Type -ne $expectedType -or
+            $tsFields[$name].Optional -ne $rustType.StartsWith('Option<')) {
+            throw "$($check.Command) request field '$name' differs from its Rust argument"
+        }
+    }
+}
+
+$sessionControlDirectInvokePattern = "invoke\s*(?:<[^>]+>)?\s*\(\s*'($($sessionControlOwners.Keys -join '|'))'"
+foreach ($sourceFile in (Get-ChildItem $sessionControlUiRoot -Recurse -File | Where-Object { $_.Extension -in @('.ts', '.svelte') })) {
+    $sourceText = Get-Content $sourceFile.FullName -Raw
+    $relativePath = [IO.Path]::GetRelativePath($root, $sourceFile.FullName).Replace('\', '/')
+    foreach ($match in [regex]::Matches($sourceText, $sessionControlDirectInvokePattern)) {
+        $command = $match.Groups[1].Value
+        if ($relativePath -ne $sessionControlOwners[$command]) {
+            throw "UI source '$relativePath' bypasses the owner for '$command'"
+        }
+    }
+}
+foreach ($command in $sessionControlOwners.Keys) {
+    $ownerPath = Join-Path $root $sessionControlOwners[$command]
+    $ownerText = Get-Content $ownerPath -Raw
+    $pattern = "invoke\s*(?:<[^>]+>)?\s*\(\s*'$([regex]::Escape($command))'"
+    if ([regex]::Matches($ownerText, $pattern).Count -ne 1) {
+        throw "'$command' must have exactly one direct invoke in '$($sessionControlOwners[$command])'"
+    }
+}
+if (-not [regex]::IsMatch($sessionControlChatUi, "invoke\('rollback_session',\s*\{(?s:.*?)\}\s*satisfies\s*RollbackSessionRequest\)")) {
+    throw 'ChatController rollback_session must invoke with RollbackSessionRequest'
+}
+foreach ($command in @('continue_session', 'interrupt_session', 'end_session')) {
+    if (-not [regex]::IsMatch($sessionControlChatUi, "invoke\('$command',\s*\{\s*sessionId\s*\}\s*satisfies\s*SessionIdRequest\)")) {
+        throw "ChatController '$command' must invoke with SessionIdRequest"
+    }
+}
+if (-not [regex]::IsMatch($sessionControlLayoutUi, '(?s)@type\s*\{import\(''\$lib/contracts/commands\.ts''\)\.ResolveConfirmationRequest\}\s*\*/\s*const confirmationRequest\s*=') -or
+    -not [regex]::IsMatch($sessionControlLayoutUi, "invoke\('resolve_confirmation',\s*confirmationRequest\)")) {
+    throw 'layout confirmation handling must use the named ResolveConfirmationRequest directly'
+}
+$confirmFlow = Get-RequiredMatch $sessionControlLayoutUi '(?ms)async function handleConfirm\s*\(.*?^\t\}' 'layout confirmation flow'
+$confirmFlowText = $confirmFlow.Value
+$confirmFlowOrder = @(
+    'confirmationRequestsInFlight.has(resolvedStep)',
+    'confirmationRequestsInFlight.add(resolvedStep)',
+    "type: 'session/interaction-resolved'",
+    "await invoke('resolve_confirmation', confirmationRequest)",
+    "formatError(e) === 'Confirmation request is stale or already resolved'",
+    "addNotification('确认请求已过期或已处理，操作未执行', 'warning', 4000)",
+    "reportError(e, { context: '+layout', message: '确认失败', log: false })",
+    'confirmationRequestsInFlight.delete(resolvedStep)'
+)
+$previousFlowIndex = -1
+foreach ($flowToken in $confirmFlowOrder) {
+    $flowIndex = $confirmFlowText.IndexOf($flowToken, [StringComparison]::Ordinal)
+    if ($flowIndex -le $previousFlowIndex) {
+        throw "layout confirmation flow changed ordering or lost '$flowToken'"
+    }
+    $previousFlowIndex = $flowIndex
+}
+
+Write-Host 'Session control IPC contract verified: Rust arguments, named requests, void responses, and direct invoke owners agree.'
+
