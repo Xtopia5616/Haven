@@ -2317,7 +2317,6 @@ dependencies = [
  "toml 1.1.4+spec-1.1.0",
  "tracing",
  "uuid",
- "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2373,6 +2372,7 @@ dependencies = [
  "futures-util",
  "haven-common",
  "haven-llm",
+ "haven-platform",
  "reqwest",
  "serde",
  "serde_json",
@@ -2397,6 +2397,13 @@ dependencies = [
  "tokio-util",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "haven-platform"
+version = "0.1.0"
+dependencies = [
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2433,6 +2440,7 @@ dependencies = [
  "haven-llm",
  "haven-mcp",
  "haven-memory",
+ "haven-platform",
  "haven-skills",
  "ignore",
  "image",

@@ -5,11 +5,12 @@ $ErrorActionPreference = 'Stop'
 # remains the authority for third-party dependency resolution.
 $allowed = @{
     'haven-common' = @()
+    'haven-platform' = @()
     'haven-llm' = @('haven-common')
     'haven-memory' = @('haven-common')
     'haven-skills' = @('haven-common')
-    'haven-mcp' = @('haven-common', 'haven-llm')
-    'haven-tools' = @('haven-common', 'haven-memory', 'haven-skills', 'haven-mcp', 'haven-llm', 'haven-input')
+    'haven-mcp' = @('haven-common', 'haven-platform', 'haven-llm')
+    'haven-tools' = @('haven-common', 'haven-memory', 'haven-skills', 'haven-mcp', 'haven-llm', 'haven-input', 'haven-platform')
     'haven-input' = @('haven-common', 'haven-llm')
     'haven-agent' = @('haven-common', 'haven-llm', 'haven-memory', 'haven-tools')
     'haven-app-binary' = @('haven-common', 'haven-llm', 'haven-memory', 'haven-skills', 'haven-mcp', 'haven-tools', 'haven-input', 'haven-agent')

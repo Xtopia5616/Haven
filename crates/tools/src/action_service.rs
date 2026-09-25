@@ -1463,7 +1463,7 @@ impl ActionService {
             std_cmd.current_dir(cwd);
         }
 
-        let containment = match haven_common::process_containment::ProcessContainment::new() {
+        let containment = match haven_platform::process_containment::ProcessContainment::new() {
             Ok(containment) => containment,
             Err(error) => {
                 self.rollback_background_registration(&id).await;

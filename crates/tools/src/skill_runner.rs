@@ -2,7 +2,7 @@ use crate::tool_contract::ToolResult;
 use haven_common::config::SkillsExecConfig;
 use haven_common::encoding;
 use haven_common::error::sanitize_error_text;
-use haven_common::process_containment::ProcessContainment;
+use haven_platform::process_containment::ProcessContainment;
 use haven_skills::{Skill, VenvManager};
 use serde_json::Value;
 use tokio::io::AsyncReadExt;

@@ -359,7 +359,7 @@ impl McpClient {
                 )
             })?;
         let containment =
-            haven_common::process_containment::ProcessContainment::new().map_err(|error| {
+            haven_platform::process_containment::ProcessContainment::new().map_err(|error| {
                 anyhow::anyhow!("failed to contain MCP server '{}': {error}", self.name)
             })?;
         let pid = child.id().ok_or_else(|| {

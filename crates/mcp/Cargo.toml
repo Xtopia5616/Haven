@@ -15,6 +15,7 @@ futures-util.workspace = true
 tokio-util.workspace = true
 reqwest = { version = "0.13.4", features = ["json", "multipart", "stream"] }
 haven-common = { path = "../common" }
+haven-platform = { path = "../platform" }
 haven-llm = { path = "../llm" }
 
 [dev-dependencies]

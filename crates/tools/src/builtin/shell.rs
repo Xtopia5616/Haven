@@ -148,7 +148,7 @@ impl ShellTool {
             }
         }
 
-        let containment = haven_common::process_containment::ProcessContainment::new()?;
+        let containment = haven_platform::process_containment::ProcessContainment::new()?;
         let mut child = tokio::process::Command::from(std_cmd)
             .kill_on_drop(true)
             .spawn()?;

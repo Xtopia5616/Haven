@@ -345,3 +345,4 @@
 - [0356：架构路线图状态核对与文档校准](0356-architecture-roadmap-status-reconciliation.md)
 - [0357：Memory command contract boundary](0357-memory-command-contract-boundary.md)
 - [0358：Session history command contract boundary](0358-session-history-command-contract-boundary.md)
+- [0359：Common crate 边界与 profiling 基线审计](0359-common-boundary-and-profiling-baseline-audit.md)

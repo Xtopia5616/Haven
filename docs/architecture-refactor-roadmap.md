@@ -464,6 +464,12 @@ Phase 7.1 验收与未决风险：见 ADR 0259、0261、0262、0263、0264、026
 - 用全新数据目录完成启动、设置、会话、工具、媒体、任务、恢复、回滚、升级重置和卸载验收；
 - 更新 `architecture.md`、`stability-refactor-plan.md`、ADR 索引、发布/重置说明。
 
+#### 2026-09-26 第一轮审计（ADR 0359）
+
+- 将 Windows Job Object 子进程 containment 从 `haven-common` 移入无内部依赖的 `haven-platform`；MCP 与 Tools 两个独立进程 adapter 直接依赖该平台叶子。`haven-common` 不再直接依赖 `windows-sys`，containment 的创建、attach、drop 和非 Windows no-op 行为保持不变。
+- 暂不拆分 config、media、types 或 prompts：这些模块仍跨多个独立 crate 共享稳定类型；`ConfigService` 由 app 与 Tools admin 共用，`MediaType` 同时参与 app ingress 与 MediaAsset 契约。拆分会增加服务层依赖或分散权威定义。
+- `cargo metadata` 未发现 feature 开关；只有 app-binary 有 build script。工作区没有 Cargo bench target 或 Criterion 等采样基准框架。现有 ADR 0178/ReAct metrics 提供固定内存 phase histogram、错误/重试计数、context queue gauge，以及 UI frames/chunks/drops 导出；它不观测 actor mailbox queue、reducer 广播成本、durable event replay 的分布或完整 Action/Memory outbox 延迟。已有 event replay 1k/10k/100k 单测基准和多域行为回归；ADR 0359 记录复跑命令、可观测字段和未覆盖指标，不据此做缓存、selector 或 batching 优化。
+
 ## 5. Agent 委派策略
 
 - 只把有明确写集和退出条件的阶段交给一个 Agent；模型固定 `gpt-6-luna`、reasoning `xhigh`。

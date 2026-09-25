@@ -7,7 +7,6 @@ pub mod hooks;
 pub mod lifecycle;
 pub mod media;
 pub mod media_detection;
-pub mod process_containment;
 pub mod prompts;
 pub mod text;
 pub mod tools;

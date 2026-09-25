@@ -1,7 +1,7 @@
 use crate::protocol::{REQUEST_TIMEOUT_SECS, jsonrpc_notification, jsonrpc_request};
 use crate::sse::SseParser;
 use futures_util::StreamExt;
-use haven_common::process_containment::ProcessContainment;
+use haven_platform::process_containment::ProcessContainment;
 use serde_json::Value;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
