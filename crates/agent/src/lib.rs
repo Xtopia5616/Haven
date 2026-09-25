@@ -53,7 +53,7 @@ pub use types::{
 // re-export keeps the Agent's session boundary discoverable to callers.
 pub use haven_memory::{
     SessionEvent as DurableSessionEvent, SessionEventInput, SessionEventStore,
-    SessionEventSubscription,
+    SessionEventSubscription, SessionStore,
 };
 
 use haven_common::config::ContextLimitsConfig;

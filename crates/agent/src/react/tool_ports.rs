@@ -63,7 +63,7 @@ mod tests {
         );
         let tools = Arc::new(ToolsManager::new());
         let snapshot = Arc::new(tools.tool_catalog_snapshot("ses-seed").await);
-        let executor = Arc::new(SessionSupervisor::new(db.clone(), tools, 1));
+        let executor = Arc::new(SessionSupervisor::new_for_test(db.clone(), tools, 1));
         let session_ids = Arc::new(Mutex::new(Vec::new()));
         let tool_catalog: Arc<dyn ToolCatalogPort> = Arc::new(RecordingToolCatalogPort {
             session_ids: Arc::clone(&session_ids),

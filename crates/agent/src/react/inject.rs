@@ -229,7 +229,7 @@ mod pending_context_tests {
         let path =
             std::env::temp_dir().join(format!("haven_pending_context_{}.db", uuid::Uuid::new_v4()));
         let db = std::sync::Arc::new(haven_memory::Database::open(&path).unwrap());
-        let executor = std::sync::Arc::new(crate::session::SessionSupervisor::new(
+        let executor = std::sync::Arc::new(crate::session::SessionSupervisor::new_for_test(
             db.clone(),
             std::sync::Arc::new(haven_tools::ToolsManager::new()),
             1,
@@ -304,7 +304,7 @@ mod pending_context_tests {
         ));
         let db = std::sync::Arc::new(haven_memory::Database::open(&path).unwrap());
         let session = db.create_session("input").unwrap();
-        let executor = std::sync::Arc::new(crate::session::SessionSupervisor::new(
+        let executor = std::sync::Arc::new(crate::session::SessionSupervisor::new_for_test(
             db.clone(),
             std::sync::Arc::new(haven_tools::ToolsManager::new()),
             1,

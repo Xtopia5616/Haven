@@ -10,7 +10,7 @@ fn test_worker(db: Arc<Database>) -> Arc<crate::MemoryWorker> {
 
 fn test_engine(db: Arc<Database>, worker: Arc<crate::MemoryWorker>) -> ReActEngine {
     let router = Arc::new(LlmRouter::new(haven_common::config::RouterConfig::default()));
-    let executor = Arc::new(SessionSupervisor::new(
+    let executor = Arc::new(SessionSupervisor::new_for_test(
         db.clone(),
         Arc::new(haven_tools::ToolsManager::new()),
         2,

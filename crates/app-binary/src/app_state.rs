@@ -176,6 +176,9 @@ impl AppState {
         let t0 = std::time::Instant::now();
         let db = Arc::new(Database::open(db_path)?);
         let session_store = SessionStore::new(db.clone());
+        // Keep the supervisor's live event channel separate from the app's
+        // command/read store, as it was before the constructor accepted stores.
+        let supervisor_session_store = SessionStore::new(db.clone());
         let memory_fact_store = MemoryFactStore::new(db.clone());
         tracing::debug!(
             "AppState::new phase=db elapsed={}ms",
@@ -201,7 +204,7 @@ impl AppState {
         let tools = Arc::new(ToolsManager::new());
 
         let executor = Arc::new(SessionSupervisor::new(
-            db.clone(),
+            supervisor_session_store,
             tools.clone(),
             cfg.session.max_concurrent.max(1),
         ));

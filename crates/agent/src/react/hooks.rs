@@ -241,7 +241,7 @@ mod tests {
         p.push(format!("haven_noop_hooks_{}.db", uuid::Uuid::new_v4()));
         let db = Arc::new(Database::open(&p).unwrap());
         let tools = Arc::new(ToolsManager::new());
-        let executor = Arc::new(SessionSupervisor::new(db.clone(), tools, 1));
+        let executor = Arc::new(SessionSupervisor::new_for_test(db.clone(), tools, 1));
         let client = Arc::new(SilentLlm) as Arc<dyn LlmClient>;
         let router = Arc::new(LlmRouter::new_with_clients(
             client.clone(),
@@ -432,7 +432,7 @@ mod tests {
             p.push(format!("haven_after_llm_{}.db", uuid::Uuid::new_v4()));
             let db = Arc::new(Database::open(&p).unwrap());
             let tools = Arc::new(ToolsManager::new());
-            let executor = Arc::new(SessionSupervisor::new(db.clone(), tools, 1));
+            let executor = Arc::new(SessionSupervisor::new_for_test(db.clone(), tools, 1));
             let client = Arc::new(SilentLlm) as Arc<dyn LlmClient>;
             let router = Arc::new(LlmRouter::new_with_clients(
                 client.clone(),

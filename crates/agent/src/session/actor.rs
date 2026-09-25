@@ -2060,7 +2060,7 @@ mod queue_tests {
         db.update_session_status(&session.id, SessionStatus::Paused)
             .expect("paused session status");
 
-        let executor = Arc::new(crate::session::SessionSupervisor::new(
+        let executor = Arc::new(crate::session::SessionSupervisor::new_for_test(
             db.clone(),
             Arc::new(haven_tools::ToolsManager::new()),
             1,

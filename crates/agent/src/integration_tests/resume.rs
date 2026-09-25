@@ -84,7 +84,7 @@ async fn resume_restores_tool_overlay_cleanly_in_round_order_and_best_effort() {
     let tools = Arc::new(ToolsManager::new());
     let overlay = Arc::new(RecordingSessionToolOverlay::default());
     let executor = Arc::new(SessionSupervisor::new_with_session_tool_overlay_port(
-        db.clone(),
+        haven_memory::SessionStore::new(db.clone()),
         tools,
         1,
         overlay.clone(),
@@ -201,7 +201,11 @@ async fn enabled_skills_are_global_and_resume_does_not_rebuild_skill_sessions() 
         .await
         .unwrap();
     tools.rebuild_catalog().await;
-    let executor = Arc::new(SessionSupervisor::new(db.clone(), tools.clone(), 1));
+    let executor = Arc::new(SessionSupervisor::new_for_test(
+        db.clone(),
+        tools.clone(),
+        1,
+    ));
     let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
     let router = Arc::new(LlmRouter::new_with_clients(
         client.clone(),

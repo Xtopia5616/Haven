@@ -1416,7 +1416,7 @@ mod scheduled_authorization_tests {
         let directory = tempfile::tempdir().unwrap();
         let database =
             Arc::new(Database::open(&directory.path().join("authorization.db")).unwrap());
-        let supervisor = Arc::new(SessionSupervisor::new(database, tools.clone(), 1));
+        let supervisor = Arc::new(SessionSupervisor::new_for_test(database, tools.clone(), 1));
         (supervisor, tools, directory)
     }
 
@@ -1502,7 +1502,8 @@ mod action_step_persistence_tests {
     #[tokio::test]
     async fn action_step_lifecycle_persists_identity_through_session_store() {
         let db = Arc::new(Database::open_in_memory().unwrap());
-        let supervisor = SessionSupervisor::new(db.clone(), Arc::new(ToolsManager::new()), 1);
+        let supervisor =
+            SessionSupervisor::new_for_test(db.clone(), Arc::new(ToolsManager::new()), 1);
         let session = supervisor
             .create_session("action step store port")
             .await

@@ -113,7 +113,7 @@ fn agent_new_constructor_works() {
     p.push(format!("haven_agent_new_{}.db", uuid::Uuid::new_v4()));
     let db = Arc::new(Database::open(&p).unwrap());
     let tools = Arc::new(ToolsManager::new());
-    let executor = Arc::new(SessionSupervisor::new(db.clone(), tools, 1));
+    let executor = Arc::new(SessionSupervisor::new_for_test(db.clone(), tools, 1));
     let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
     let router = Arc::new(LlmRouter::new_with_clients(
         client.clone(),
@@ -157,7 +157,7 @@ async fn replace_router_and_router_work() {
     p.push(format!("haven_agent_router_{}.db", uuid::Uuid::new_v4()));
     let db = Arc::new(Database::open(&p).unwrap());
     let tools = Arc::new(ToolsManager::new());
-    let executor = Arc::new(SessionSupervisor::new(db.clone(), tools, 1));
+    let executor = Arc::new(SessionSupervisor::new_for_test(db.clone(), tools, 1));
     let client_a = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
     let router_a = Arc::new(LlmRouter::new_with_clients(
         client_a.clone(),

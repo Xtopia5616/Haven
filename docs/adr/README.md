@@ -349,3 +349,4 @@
 - [0360：核心流水线性能基线入口与测量边界](0360-core-pipeline-performance-baselines.md)
 - [0361：全局架构完成定义最终验收审计](0361-final-architecture-acceptance-audit.md)
 - [0362：MemoryRuntime 应用边界所有权审计](0362-memory-runtime-app-ownership-audit.md)
+- [0363：SessionSupervisor 构造使用 typed SessionStore](0363-session-supervisor-typed-store-constructor.md)

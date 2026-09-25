@@ -1562,7 +1562,7 @@ mod tests {
     }
 
     fn make_agent(db: Arc<Database>) -> (AgentLayer, Arc<SessionSupervisor>) {
-        let executor = Arc::new(SessionSupervisor::new(
+        let executor = Arc::new(SessionSupervisor::new_for_test(
             db.clone(),
             Arc::new(haven_tools::ToolsManager::new()),
             1,
@@ -1745,7 +1745,7 @@ mod tests {
         let mut db_path = std::env::temp_dir();
         db_path.push(format!("haven_agent_limits_{}.db", uuid::Uuid::new_v4()));
         let db = Arc::new(Database::open(&db_path).unwrap());
-        let executor = Arc::new(SessionSupervisor::new(
+        let executor = Arc::new(SessionSupervisor::new_for_test(
             db.clone(),
             Arc::new(haven_tools::ToolsManager::new()),
             1,
@@ -1772,7 +1772,7 @@ mod tests {
     #[tokio::test]
     async fn session_metadata_reads_fall_back_to_store_after_executor_miss() {
         let db = Arc::new(Database::open_in_memory().unwrap());
-        let executor = Arc::new(SessionSupervisor::new(
+        let executor = Arc::new(SessionSupervisor::new_for_test(
             db.clone(),
             Arc::new(haven_tools::ToolsManager::new()),
             1,

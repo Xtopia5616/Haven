@@ -1222,7 +1222,7 @@ mod tests {
             Database::open(&directory.path().join("token-estimate.db"))
                 .expect("temporary database"),
         );
-        let executor = Arc::new(SessionSupervisor::new(
+        let executor = Arc::new(SessionSupervisor::new_for_test(
             db.clone(),
             Arc::new(haven_tools::ToolsManager::new()),
             1,

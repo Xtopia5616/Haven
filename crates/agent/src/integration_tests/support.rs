@@ -151,7 +151,7 @@ pub(super) fn make_test_agent() -> (Arc<AgentLayer>, Arc<SessionSupervisor>) {
     p.push(format!("haven_agent_test_{}.db", uuid::Uuid::new_v4()));
     let db = Arc::new(Database::open(&p).unwrap());
     let tools = Arc::new(ToolsManager::new());
-    let executor = Arc::new(SessionSupervisor::new(db.clone(), tools, 1));
+    let executor = Arc::new(SessionSupervisor::new_for_test(db.clone(), tools, 1));
     let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
     let router = Arc::new(LlmRouter::new_with_clients(
         client.clone(),
@@ -237,7 +237,7 @@ pub(super) fn make_test_agent_with_db(
     tools: Arc<ToolsManager>,
     context_limits: ContextLimitsConfig,
 ) -> (Arc<AgentLayer>, Arc<SessionSupervisor>) {
-    let executor = Arc::new(SessionSupervisor::new(db.clone(), tools, 1));
+    let executor = Arc::new(SessionSupervisor::new_for_test(db.clone(), tools, 1));
     let router = Arc::new(LlmRouter::new_with_clients(
         client.clone(),
         client.clone(),

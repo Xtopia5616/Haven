@@ -3,8 +3,10 @@ pub use haven_common::lifecycle::SessionStatus;
 pub use haven_common::lifecycle::SessionWaitingReason;
 use haven_common::types::MessageAttachment;
 use haven_common::types::RiskLevel;
+#[cfg(test)]
+use haven_memory::Database;
+use haven_memory::SessionStore;
 use haven_memory::repositories::sessions::Session as DbSession;
-use haven_memory::{Database, SessionStore};
 use haven_tools::{
     AuthorizationDecision, ToolResult, ToolServices, ToolsManager, is_silent_action,
 };
@@ -248,12 +250,12 @@ pub(crate) use queues::ReactContextBatch;
 pub use run_engine::RunEngine;
 
 impl SessionSupervisor {
-    pub fn new(db: Arc<Database>, tools: Arc<ToolsManager>, max_concurrent: usize) -> Self {
+    pub fn new(store: SessionStore, tools: Arc<ToolsManager>, max_concurrent: usize) -> Self {
         let session_tool_overlay_port = Arc::new(ToolsManagerSessionToolOverlayAdapter::new(
             Arc::clone(&tools),
         ));
         Self::new_with_session_tool_overlay_port(
-            db,
+            store,
             tools,
             max_concurrent,
             session_tool_overlay_port,
@@ -261,7 +263,7 @@ impl SessionSupervisor {
     }
 
     pub(crate) fn new_with_session_tool_overlay_port(
-        db: Arc<Database>,
+        store: SessionStore,
         tools: Arc<ToolsManager>,
         max_concurrent: usize,
         session_tool_overlay_port: Arc<dyn SessionToolOverlayPort>,
@@ -273,7 +275,6 @@ impl SessionSupervisor {
             Arc::clone(&tools),
         ));
         let (event_tx, _) = broadcast::channel(256);
-        let store = SessionStore::new(db);
         Self {
             partials: Arc::new(crate::partial::PartialStore::new(store.clone())),
             store,
@@ -297,6 +298,17 @@ impl SessionSupervisor {
             message_tx: watch::channel(0).0,
             notification_summary_chars: AtomicUsize::new(800),
         }
+    }
+
+    /// Build an executor for unit tests while keeping the production
+    /// constructor on the typed session persistence boundary.
+    #[cfg(test)]
+    pub(crate) fn new_for_test(
+        db: Arc<Database>,
+        tools: Arc<ToolsManager>,
+        max_concurrent: usize,
+    ) -> Self {
+        Self::new(SessionStore::new(db), tools, max_concurrent)
     }
 
     pub fn services(&self) -> &ToolServices {
@@ -594,7 +606,11 @@ mod tests {
         let path = temp_db_path();
         let db = Arc::new(Database::open(&path).unwrap());
         let tools = Arc::new(ToolsManager::new());
-        let exec = Arc::new(SessionSupervisor::new(db.clone(), tools, max_concurrent));
+        let exec = Arc::new(SessionSupervisor::new_for_test(
+            db.clone(),
+            tools,
+            max_concurrent,
+        ));
         // Best-effort cleanup; failures are ignored since the OS will purge
         // temp files eventually.
         let _ = path;
@@ -603,6 +619,23 @@ mod tests {
 
     fn make_executor(max_concurrent: usize) -> Arc<SessionSupervisor> {
         make_executor_with_db(max_concurrent).0
+    }
+
+    #[tokio::test]
+    async fn constructor_uses_the_injected_session_store() {
+        let db = Arc::new(Database::open(&temp_db_path()).unwrap());
+        let store = SessionStore::new(db);
+        let exec = SessionSupervisor::new(store.clone(), Arc::new(ToolsManager::new()), 1);
+
+        let session = exec.create_session("typed constructor").await.unwrap();
+        let persisted = store
+            .load_session_record(&session.id)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(persisted.id, session.id);
+        assert_eq!(persisted.input_text, "typed constructor");
     }
 
     /// A handler that panics must still release the running slot and mark the
@@ -1148,7 +1181,7 @@ mod tests {
     async fn messaging_service_routes_full_lifecycle_through_actor_mailboxes() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = Arc::new(SessionSupervisor::new(db, tools, 2));
+        let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 2));
         let sender = exec.create_session("sender").await.unwrap();
         let receiver = exec.create_session("receiver").await.unwrap();
         let service = exec.messaging_service();
@@ -1276,7 +1309,7 @@ mod tests {
     async fn constructor_creates_executor() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = SessionSupervisor::new(db.clone(), tools.clone(), 3);
+        let exec = SessionSupervisor::new_for_test(db.clone(), tools.clone(), 3);
         assert_eq!(exec.running_count().await, 0);
         assert!(exec.list_sessions().await.is_empty());
     }
@@ -1285,7 +1318,7 @@ mod tests {
     async fn create_session_returns_pending_session() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = SessionSupervisor::new(db, tools, 3);
+        let exec = SessionSupervisor::new_for_test(db, tools, 3);
         let session = exec.create_session("hello world").await.unwrap();
         assert_eq!(session.status, SessionStatus::Pending);
         assert_eq!(session.input, "hello world");
@@ -1297,7 +1330,7 @@ mod tests {
     async fn create_session_with_summary_preserves_fields() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = SessionSupervisor::new(db, tools, 3);
+        let exec = SessionSupervisor::new_for_test(db, tools, 3);
         let session = exec
             .create_session_with_summary("raw input", "summary text")
             .await
@@ -1310,7 +1343,7 @@ mod tests {
     async fn end_session_running_marks_completed_and_triggers_token() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = Arc::new(SessionSupervisor::new(db, tools, 3));
+        let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
         let session = exec.create_session("test").await.unwrap();
         // Set to Running so end_session also cancels the loop token.
         exec.update_session_status(&session.id, SessionStatus::Running)
@@ -1417,7 +1450,7 @@ mod tests {
     async fn interrupt_session_pauses_and_cancels_without_removing() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = Arc::new(SessionSupervisor::new(db, tools, 3));
+        let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
         let session = exec.create_session("test").await.unwrap();
         exec.update_session_status(&session.id, SessionStatus::Running)
             .await
@@ -1526,7 +1559,7 @@ mod tests {
     async fn end_session_nonexistent_succeeds() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = SessionSupervisor::new(db, tools, 3);
+        let exec = SessionSupervisor::new_for_test(db, tools, 3);
         // end_session on a nonexistent session updates DB directly.
         let result = exec.end_session("nonexistent").await;
         assert!(result.is_ok());
@@ -1536,7 +1569,7 @@ mod tests {
     async fn end_session_paused_marks_completed() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = SessionSupervisor::new(db, tools, 3);
+        let exec = SessionSupervisor::new_for_test(db, tools, 3);
         let session = exec.create_session("test").await.unwrap();
         exec.update_session_status(&session.id, SessionStatus::Paused)
             .await
@@ -1549,7 +1582,7 @@ mod tests {
     async fn add_and_get_follow_ups() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = SessionSupervisor::new(db, tools, 3);
+        let exec = SessionSupervisor::new_for_test(db, tools, 3);
         let session = exec.create_session("test").await.unwrap();
         exec.add_follow_up(&session.id, "extra context 1")
             .await
@@ -1571,7 +1604,7 @@ mod tests {
     async fn answer_supplement_carries_is_answer_flag() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = SessionSupervisor::new(db, tools, 3);
+        let exec = SessionSupervisor::new_for_test(db, tools, 3);
         let session = exec.create_session("test").await.unwrap();
         exec.add_answer_with_attachments(&session.id, "the answer", &[], None)
             .await
@@ -1590,7 +1623,7 @@ mod tests {
     async fn add_and_get_follow_ups_with_attachments() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = SessionSupervisor::new(db, tools, 3);
+        let exec = SessionSupervisor::new_for_test(db, tools, 3);
         let session = exec.create_session("test").await.unwrap();
         let att = MessageAttachment::new("image/png", "aGVsbG8=");
         exec.add_follow_up_with_attachments(&session.id, "看图", std::slice::from_ref(&att), None)
@@ -1607,7 +1640,7 @@ mod tests {
     async fn add_follow_up_nonexistent_session_errors() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = SessionSupervisor::new(db, tools, 3);
+        let exec = SessionSupervisor::new_for_test(db, tools, 3);
         let result = exec.add_follow_up("nonexistent", "ctx").await;
         assert!(result.is_err());
     }
@@ -1616,7 +1649,7 @@ mod tests {
     async fn add_and_get_steering() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = SessionSupervisor::new(db, tools, 3);
+        let exec = SessionSupervisor::new_for_test(db, tools, 3);
         let session = exec.create_session("test").await.unwrap();
         exec.add_steering(&session.id, "steer 1").await.unwrap();
         let drained: Vec<String> = exec
@@ -1632,7 +1665,7 @@ mod tests {
     async fn list_actions_all_present() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = SessionSupervisor::new(db, tools, 3);
+        let exec = SessionSupervisor::new_for_test(db, tools, 3);
 
         let _low = exec.create_session("low").await.unwrap();
         let _normal = exec.create_session("normal").await.unwrap();
@@ -1646,7 +1679,7 @@ mod tests {
     async fn get_active_session_status_returns_correct_status() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = SessionSupervisor::new(db, tools, 3);
+        let exec = SessionSupervisor::new_for_test(db, tools, 3);
         let session = exec.create_session("test").await.unwrap();
         assert_eq!(
             exec.get_active_session_status(&session.id).await,
@@ -1658,7 +1691,7 @@ mod tests {
     async fn get_active_session_status_nonexistent_returns_none() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = SessionSupervisor::new(db, tools, 3);
+        let exec = SessionSupervisor::new_for_test(db, tools, 3);
         // Absent means "not in the working set", NOT Error.
         assert_eq!(exec.get_active_session_status("nonexistent").await, None);
     }
@@ -1667,7 +1700,7 @@ mod tests {
     async fn cancellation_token_returns_default_for_unknown_session() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = SessionSupervisor::new(db, tools, 3);
+        let exec = SessionSupervisor::new_for_test(db, tools, 3);
         let token = exec.cancellation_token("nonexistent").await;
         assert!(!token.is_cancelled());
     }
@@ -1676,12 +1709,12 @@ mod tests {
     async fn load_pending_actions_reloads_after_restart() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = SessionSupervisor::new(db.clone(), tools.clone(), 3);
+        let exec = SessionSupervisor::new_for_test(db.clone(), tools.clone(), 3);
         let session = exec.create_session("queued before restart").await.unwrap();
 
         // Simulate a restart: fresh executor over the same DB with an empty
         // working set. The pending session must be reloaded and dispatchable.
-        let exec2 = SessionSupervisor::new(db.clone(), tools, 3);
+        let exec2 = SessionSupervisor::new_for_test(db.clone(), tools, 3);
         assert!(exec2.list_sessions().await.is_empty());
         let loaded = exec2.load_pending_sessions().await.unwrap();
         assert_eq!(loaded, 1);
@@ -1698,9 +1731,13 @@ mod tests {
     async fn dispatcher_can_defer_pending_recovery_until_catalog_ready() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = Arc::new(SessionSupervisor::new(db.clone(), tools.clone(), 1));
+        let exec = Arc::new(SessionSupervisor::new_for_test(
+            db.clone(),
+            tools.clone(),
+            1,
+        ));
         let session = exec.create_session("queued before catalog").await.unwrap();
-        let exec2 = Arc::new(SessionSupervisor::new(db.clone(), tools, 1));
+        let exec2 = Arc::new(SessionSupervisor::new_for_test(db.clone(), tools, 1));
         let handled = Arc::new(AtomicU32::new(0));
         let handled_by_runner = handled.clone();
         let exec_for_runner = exec2.clone();
@@ -1747,7 +1784,7 @@ mod tests {
     async fn load_pending_actions_skips_non_pending() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = SessionSupervisor::new(db.clone(), tools.clone(), 3);
+        let exec = SessionSupervisor::new_for_test(db.clone(), tools.clone(), 3);
         let done = exec.create_session("done").await.unwrap();
         exec.end_session(&done.id).await.unwrap();
         let paused = exec.create_session("paused").await.unwrap();
@@ -1756,7 +1793,7 @@ mod tests {
             .unwrap();
 
         // Restart: only the still-pending session is reloaded.
-        let exec2 = SessionSupervisor::new(db, tools, 3);
+        let exec2 = SessionSupervisor::new_for_test(db, tools, 3);
         let loaded = exec2.load_pending_sessions().await.unwrap();
         assert_eq!(loaded, 0);
         assert!(exec2.list_sessions().await.is_empty());
@@ -1766,7 +1803,7 @@ mod tests {
     async fn update_session_status_changes_state() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = SessionSupervisor::new(db.clone(), tools, 3);
+        let exec = SessionSupervisor::new_for_test(db.clone(), tools, 3);
         let session = exec.create_session("test").await.unwrap();
         exec.update_session_status(&session.id, SessionStatus::Completed)
             .await
@@ -1783,7 +1820,7 @@ mod tests {
     async fn status_persistence_retries_and_failed_transition_keeps_actor_state() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = SessionSupervisor::new(db.clone(), tools, 3);
+        let exec = SessionSupervisor::new_for_test(db.clone(), tools, 3);
         let session = exec
             .create_session("retry status persistence")
             .await
@@ -1828,7 +1865,7 @@ mod tests {
     async fn end_session_persists_completed_when_actor_is_not_loaded() {
         let db = temp_db();
         let session = db.create_session("unloaded session").unwrap();
-        let exec = SessionSupervisor::new(db.clone(), Arc::new(ToolsManager::new()), 3);
+        let exec = SessionSupervisor::new_for_test(db.clone(), Arc::new(ToolsManager::new()), 3);
 
         assert_eq!(
             exec.end_session(&session.id).await.unwrap(),
@@ -1844,7 +1881,7 @@ mod tests {
     async fn update_session_status_completed_cleans_up() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = Arc::new(SessionSupervisor::new(db, tools, 3));
+        let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
         let session = exec.create_session("test").await.unwrap();
         exec.update_session_status(&session.id, SessionStatus::Completed)
             .await
@@ -1857,7 +1894,7 @@ mod tests {
     async fn execute_step_unknown_tool_errors() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = Arc::new(SessionSupervisor::new(db, tools, 3));
+        let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
         let session = exec.create_session("test").await.unwrap();
         let result = exec
             .execute_step(
@@ -1875,7 +1912,7 @@ mod tests {
     async fn execute_step_rejects_paused_without_forcing_running() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = SessionSupervisor::new(db, tools, 3);
+        let exec = SessionSupervisor::new_for_test(db, tools, 3);
         let session = exec.create_session("paused tool").await.unwrap();
         exec.update_session_status(&session.id, SessionStatus::Paused)
             .await
@@ -1901,7 +1938,7 @@ mod tests {
     async fn execute_step_rejects_pending_without_forcing_running() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = SessionSupervisor::new(db, tools, 3);
+        let exec = SessionSupervisor::new_for_test(db, tools, 3);
         let session = exec.create_session("pending tool").await.unwrap();
         assert_eq!(
             exec.get_active_session_status(&session.id).await,
@@ -1927,7 +1964,7 @@ mod tests {
     async fn execute_step_rejects_missing_session_fail_closed() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = SessionSupervisor::new(db, tools, 3);
+        let exec = SessionSupervisor::new_for_test(db, tools, 3);
         let result = exec
             .execute_step(
                 "ses-deadbeefdeadbeefdeadbeefdeadbeef",
@@ -1949,7 +1986,7 @@ mod tests {
     async fn interaction_events_persist_and_replay_into_reloaded_actor() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = SessionSupervisor::new(db.clone(), tools.clone(), 3);
+        let exec = SessionSupervisor::new_for_test(db.clone(), tools.clone(), 3);
         let session = exec.create_session("ask me").await.unwrap();
 
         exec.update_session_status(&session.id, SessionStatus::Paused)
@@ -1987,7 +2024,7 @@ mod tests {
 
         // A fresh supervisor reconstructs actor interaction state from the
         // durable domain event through SessionStore.
-        let reloaded = SessionSupervisor::new(db.clone(), tools.clone(), 3);
+        let reloaded = SessionSupervisor::new_for_test(db.clone(), tools.clone(), 3);
         reloaded.ensure_session_loaded(&session.id).await.unwrap();
         let pending = reloaded
             .pending_interactions(&session.id, crate::interaction::InteractionKind::Ask)
@@ -2047,7 +2084,7 @@ mod tests {
         );
 
         // A subsequent actor reload observes the resolved request as cleared.
-        let final_reload = SessionSupervisor::new(db, tools, 3);
+        let final_reload = SessionSupervisor::new_for_test(db, tools, 3);
         final_reload
             .ensure_session_loaded(&session.id)
             .await
@@ -2076,7 +2113,7 @@ mod tests {
     async fn plain_pause_has_no_interaction() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = SessionSupervisor::new(db, tools, 3);
+        let exec = SessionSupervisor::new_for_test(db, tools, 3);
         let session = exec.create_session("pause me").await.unwrap();
         exec.update_session_status(&session.id, SessionStatus::Paused)
             .await
@@ -2095,7 +2132,7 @@ mod tests {
     async fn terminal_actions_need_explicit_reopen_to_reactivate() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = SessionSupervisor::new(db, tools, 3);
+        let exec = SessionSupervisor::new_for_test(db, tools, 3);
         let session = exec.create_session("t").await.unwrap();
         exec.update_session_status(&session.id, SessionStatus::Completed)
             .await
@@ -2131,7 +2168,7 @@ mod tests {
     async fn status_watch_wakes_waiter_on_transition() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = Arc::new(SessionSupervisor::new(db, tools, 3));
+        let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
         let session = exec.create_session("wait").await.unwrap();
         exec.update_session_status(&session.id, SessionStatus::Running)
             .await
@@ -2191,7 +2228,7 @@ mod tests {
     async fn same_status_pending_still_wakes_dispatcher() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = Arc::new(SessionSupervisor::new(db, tools, 3));
+        let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
         let session = exec.create_session("already pending").await.unwrap();
 
         // Re-registering as Pending (as `create_session_with_first_message`
@@ -2249,7 +2286,7 @@ mod tests {
     async fn action_completions_buffered_and_drained() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = SessionSupervisor::new(db, tools, 3);
+        let exec = SessionSupervisor::new_for_test(db, tools, 3);
         let session = exec.create_session("bg action").await.unwrap();
 
         assert!(exec.drain_action_completions(&session.id).await.is_empty());
@@ -2270,7 +2307,7 @@ mod tests {
     async fn concurrent_steering_ingress_is_bounded_and_never_truncated() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = Arc::new(SessionSupervisor::new(db, tools, 3));
+        let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 3));
         let session = exec.create_session("concurrent steering").await.unwrap();
         let mut tasks = tokio::task::JoinSet::new();
         for index in 0..(crate::session::actor::CONTEXT_QUEUE_MAX_ITEMS + 16) {
@@ -2301,7 +2338,7 @@ mod tests {
     async fn drain_react_context_prioritizes_steering_over_follow_ups() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = SessionSupervisor::new(db, tools, 3);
+        let exec = SessionSupervisor::new_for_test(db, tools, 3);
         let session = exec.create_session("context priority").await.unwrap();
 
         exec.add_follow_up(&session.id, "follow-up").await.unwrap();
@@ -2386,7 +2423,7 @@ mod tests {
     async fn remove_session_clears_action_buffers_and_status_watcher() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());
-        let exec = SessionSupervisor::new(db, tools, 3);
+        let exec = SessionSupervisor::new_for_test(db, tools, 3);
         let session = exec.create_session("cleanup").await.unwrap();
         exec.update_session_status(&session.id, SessionStatus::Paused)
             .await
