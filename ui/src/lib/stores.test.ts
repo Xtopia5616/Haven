@@ -122,6 +122,25 @@ describe('upsertAction', () => {
 		vi.mocked(invoke).mockResolvedValue(undefined);
 	});
 
+	it('reconciles live rows across kinds while excluding terminal background history', async () => {
+		actionStore.set({});
+		vi.mocked(invoke).mockReset().mockResolvedValue([
+			{ id: 'act-background-live', kind: 'background', status: 'running' },
+			{ id: 'act-background-history', kind: 'background', status: 'completed' },
+			{ id: 'act-scheduled-waiting', kind: 'scheduled', status: 'waiting' },
+			{ id: 'act-scheduled-running', kind: 'scheduled', status: 'running' },
+		]);
+
+		await refreshActions();
+
+		const rows = get(actionStore);
+		expect(rows['act-background-live']?.status).toBe('running');
+		expect(rows['act-scheduled-waiting']?.status).toBe('waiting');
+		expect(rows['act-scheduled-running']?.status).toBe('running');
+		expect(rows['act-background-history']).toBeUndefined();
+		vi.mocked(invoke).mockResolvedValue(undefined);
+	});
+
 	it('finalizeBackgroundActionMessages clears actionId and writes terminal content', () => {
 		appSessionReducer.dispatch({ type: 'sessions/cleared' });
 		appSessionReducer.dispatch({
@@ -152,6 +171,37 @@ describe('upsertAction', () => {
 		const body = JSON.parse(String(msg.content));
 		expect(body.status).toBe('cancelled');
 		expect(body.output).toBe('stopped');
+	});
+
+	it('does not project scheduled completion into a background tool card', () => {
+		appSessionReducer.dispatch({ type: 'sessions/cleared' });
+		appSessionReducer.dispatch({
+			type: 'session/messages/resume-loaded',
+			sessionId: 'ses-1',
+			messages: [
+				{
+					id: 'msg-2',
+					actionId: 'act-scheduled-fin',
+					content: JSON.stringify({
+						background: true,
+						action_id: 'act-scheduled-fin',
+						status: 'running',
+					}),
+					streaming: true,
+				},
+			],
+		});
+
+		finalizeBackgroundActionMessages({
+			id: 'act-scheduled-fin',
+			kind: 'scheduled',
+			status: 'completed',
+		});
+
+		const msg = appSessionReducer.getMessages('ses-1')[0] as unknown as Record<string, unknown>;
+		expect(msg.actionId).toBe('act-scheduled-fin');
+		expect(msg.streaming).toBe(true);
+		expect(JSON.parse(String(msg.content))).toMatchObject({ status: 'running' });
 	});
 });
 

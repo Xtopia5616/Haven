@@ -1,6 +1,6 @@
 # Haven 架构与 crate 职责
 
-> 版本: v1.5 | 日期: 2026-09-25
+> 版本: v1.6 | 日期: 2026-09-25
 > 范围: `crates/` (Rust 后端, Tauri 2)
 > 原则: **依赖单向、叶子优先**。上层 crate 只依赖下层，绝不反向依赖；共享数据与类型放叶子（`haven-common`），
 > 组件职责按「谁拥有实现、谁只消费接口」划分。
@@ -415,6 +415,15 @@ consumer 仅拿不可 `Debug`/`Serialize` 的 `ActionTailSnapshot`。`agent:tool
 `session_id/step_id`，`action:output` 仍用 `action_id`；App mapper 对后者只投影身份、状态和 bounded
 output。终态仍通过原 `action:finished` / background completion 路径承载最终已收集输出；完成提交、取消
 或 shutdown 清理 live tail。此边界没有统一 background/scheduled 的完整 UI projection 或 Job lifecycle（ADR 0338）。
+UI action board 以 `actionStore` 的 action id 索引作为权威前端 registry；layout 的 `activities` 只是 Svelte
+reactive mirror，不再维护第二份 action lifecycle reducer。`list_actions` 与四个 lifecycle channel 共用
+`mapActionPayload`。created/updated/output 统一 upsert；refresh 的请求序号与 `actionStateVersion`
+只阻止旧 hydration 覆盖较新状态，不是事件去重。Background finished 先 upsert 终态，再由
+`finalizeBackgroundActionMessages` 投影到仍绑定该 action 的工具卡；scheduled finished 则从 board 删除，
+通知由 Agent 的 `notification:show` 提供。列表刷新会移除 terminal background history，scheduled live row
+仍由 ActionService board 返回。`TaskCenter` 的状态文案、取消能力和 background result 投影继续按 kind 区分；
+Rust bridge 只为 background 提供 `action:output`，scheduled action 不持有 tail。没有 durable event identity，
+因此不新增 UI event dedup 或统一 Job reducer；本轮只复用已测试的 terminal background projection（ADR 0344）。
 `InteractionRequest`（`haven-agent/src/interaction.rs`）
 是 ask、confirm 和 scheduled confirm 的共同生命周期投影，快照通过 `interactions` 保存当前
 请求；旧快照不做运行时兼容读取，新的交互状态以 `Pending → Resolved | Expired | Cancelled`
@@ -639,6 +648,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 
 | 日期 | 内容 |
 |---|---|
+| 2026-09-25 | §2.5 Tools / §2.6 UI：审计 background/scheduled action board 生命周期投影；复用既有 background terminal transcript finalizer，保留 scheduled 删除、Agent 通知、kind-specific display/cancel 和无 UI event dedup 边界（ADR 0344） |
 | 2026-09-25 | §2.6 App / UI：`get_settings` 读取统一经过唯一 `settingsCommand.ts` 入口与开放式根对象 validator；保留未知配置字段/枚举、原错误处理，hotkey event 继续走既有 camelCase mapper，不改 Rust DTO 与保存顺序（ADR 0341） |
 | 2026-09-25 | §2.6 App / UI：录音与转写事件审计确认 Rust DTO 是 wire 权威，前端只保留 camelCase 消费 DTO 和单一 mapper；补充未知 VAD 字符串、扩展字段、畸形默认、channel 集合与到达顺序回归覆盖，无 DTO 或生产逻辑变化（ADR 0340） |
 | 2026-09-25 | §2.2 LLM：审计 health/native transcription descriptor 边界；两者已在 route/permit 前使用同一语义映射，metadata/config helpers 是只读 route 查询，新增 contract tests，无无效 wrapper（ADR 0339） |

@@ -14,11 +14,11 @@
 		refreshActions,
 		actionStore,
 		cancelAction,
+		finalizeBackgroundActionMessages,
 	} from '$lib/actionStore.ts';
 	import { resumeTargetStore } from '$lib/sessionIntentStore.ts';
 	import {
 		appSessionReducer,
-		backgroundActionResultContent,
 		createSessionSelectorStore,
 	} from '$lib/sessionReducer.ts';
 	import { submitVoiceTranscript } from '$lib/voiceSubmit.ts';
@@ -990,15 +990,7 @@
 						const p = event.payload;
 						if (p.kind === 'background') {
 							upsertAction(p);
-							const content = backgroundActionResultContent(p);
-							if (content) {
-								appSessionReducer.dispatch({
-									type: 'session/background-result',
-									sessionId: p.sessionId,
-									actionId: p.id,
-									content,
-								});
-							}
+							finalizeBackgroundActionMessages(p);
 							// A background action finishing is only worth a toast when the
 							// user is not already watching its owning session (the result
 							// also lands in the session's conversation).
