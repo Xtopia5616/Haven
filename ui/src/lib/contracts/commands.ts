@@ -7,6 +7,8 @@
  * signatures; this module is the renderer's exhaustive boundary inventory.
  */
 
+import type { ActionKind } from './action.ts';
+
 export type CommandBoundary = 'read' | 'mutate' | 'execute';
 
 export interface CommandContract {
@@ -30,6 +32,12 @@ export interface SetReasoningEffortRequest {
 export interface SetWebSearchRequest {
 	role: string;
 	mode: string;
+}
+
+/** Flat renderer arguments for the `cancel_action` Tauri command. */
+export interface CancelActionRequest {
+	actionId: string;
+	kind: ActionKind;
 }
 
 export const TAURI_COMMAND_CONTRACTS = {

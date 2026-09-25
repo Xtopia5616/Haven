@@ -335,3 +335,4 @@
 - [0345：ToolsManager 授权策略与执行边界](0345-tools-authorization-policy-boundary.md)
 - [0346：App event listener contract boundary](0346-app-event-listener-contract-boundary.md)
 - [0347：Agent event contract validation boundary](0347-agent-event-contract-validation-boundary.md)
+- [0348：Action command contract boundary](0348-action-command-contract-boundary.md)

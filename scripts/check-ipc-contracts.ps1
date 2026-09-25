@@ -124,6 +124,7 @@ function Assert-ActionFieldMapped([string] $mapper, [string] $rustName) {
 
 $rustEvents = Get-Content (Join-Path $root 'crates/app-binary/src/events.rs') -Raw
 $tsAction = Get-Content (Join-Path $root 'ui/src/lib/contracts/action.ts') -Raw
+$uiActionCommands = Get-Content (Join-Path $root 'ui/src/lib/actionCommands.ts') -Raw
 $actionStore = Get-Content (Join-Path $root 'ui/src/lib/actionStore.ts') -Raw
 $actionLayout = Get-Content (Join-Path $root 'ui/src/routes/+layout.svelte') -Raw
 $actionCommands = Get-Content (Join-Path $commandsRoot 'action.rs') -Raw
@@ -147,8 +148,17 @@ $tsEventMapper = Get-RequiredMatch $tsAction '(?ms)export\s+function\s+mapAction
 if (-not [regex]::IsMatch($tsEventMapper.Groups[1].Value, 'mapActionPayload\s*\(\s*event\.payload\s*\)')) {
     throw 'mapActionEvent must route event payloads through mapActionPayload'
 }
-if (-not [regex]::IsMatch($actionStore, "(?s)invoke\('list_actions'\).*?mapActionPayload\s*\(\s*wireRow\s*\)")) {
-    throw 'list_actions frontend rows must pass through mapActionPayload'
+if (-not [regex]::IsMatch($uiActionCommands, "(?s)invoke\('list_actions'\).*?rows\.map\(mapActionPayload\)")) {
+    throw 'list_actions command boundary must pass response rows through mapActionPayload'
+}
+if ([regex]::IsMatch($actionStore, "invoke\s*\(\s*'(?:list_actions|cancel_action)'")) {
+    throw 'Action store must not bypass the action command boundary'
+}
+if (-not [regex]::IsMatch($uiActionCommands, 'cancelActionCommand\s*\(request:\s*CancelActionRequest\):\s*Promise<boolean>')) {
+    throw 'cancel_action must use a named request and boolean result contract'
+}
+if (-not [regex]::IsMatch($uiActionCommands, "(?s)cancelActionCommand\s*\(request:\s*CancelActionRequest\).*?invoke\('cancel_action',\s*request\)")) {
+    throw 'cancel_action command must receive the named request unchanged'
 }
 $rustFields = Get-StructFields $rustActionStruct.Groups[1].Value 'Rust ActionEvent'
 $tsFields = Get-StructFields $tsActionStruct.Groups[1].Value 'TypeScript ActionPayload'

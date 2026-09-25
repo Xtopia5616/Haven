@@ -1,7 +1,7 @@
 import { writable } from 'svelte/store';
-import { invoke } from './tauri.ts';
 import logger from '$lib/logger.ts';
-import { mapActionPayload, type ActionKind, type ActionPayload } from './contracts/action.ts';
+import { cancelActionCommand, listActionRows } from './actionCommands.ts';
+import { type ActionKind, type ActionPayload } from './contracts/action.ts';
 import { appSessionReducer, backgroundActionResultContent } from './sessionReducer.ts';
 
 /**
@@ -71,16 +71,15 @@ export async function refreshActions() {
 	const requestId = ++actionRefreshRequest;
 	const stateVersion = actionStateVersion;
 	try {
-		const rows = await invoke('list_actions');
-		if (!Array.isArray(rows)) return;
+		const rows = await listActionRows();
+		if (!rows) return;
 		if (requestId !== actionRefreshRequest) return;
 		if (stateVersion !== actionStateVersion) return;
 		// Missing rows were removed server-side, so replace the registry instead
 		// of leaving stale lifecycle entries in the UI.
 		actionStore.update((current) => {
 			const next: Record<string, ActionEntry> = {};
-			for (const wireRow of rows) {
-				const row = mapActionPayload(wireRow);
+			for (const row of rows) {
 				if (!row) {
 					logger.warn('actionStore', 'Dropping malformed action board row');
 					continue;
@@ -105,7 +104,7 @@ export async function refreshActions() {
 }
 
 export async function cancelAction(id: string, kind: ActionKind = 'background') {
-	return invoke('cancel_action', { actionId: id, kind });
+	return cancelActionCommand({ actionId: id, kind });
 }
 
 /**

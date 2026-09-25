@@ -580,7 +580,10 @@ payload 记录不含 payload 的 warning 并丢弃；聊天页与布局订阅互
 usage fallback 与 media plan 双副作用保持原 owner（ADR 0347）。另保留既有 SessionCompleted/SessionError
 主事件加 `session:updated` secondary fan-out；聊天页终态 handler 会重复执行部分 cleanup，跨 channel 没有共享
 event identity，本切片不修改 session contract/reducer。其余 app event/command contract mirror、
-以及 session mapper 内部 camelCase 类型和字段映射仍待 Phase 8 逐域审计；不引入全局 codegen。
+以及 session mapper 内部 camelCase 类型和字段映射仍待 Phase 8 逐域审计。Action board 的活跃
+`list_actions`/`cancel_action` 经 `actionCommands.ts`；list response 复用 `mapActionPayload`，cancel
+request/result 使用命名 TS contract，`actionStore` 不直接 invoke（ADR 0348）。其余命令仍按域审计，
+不引入全局 codegen。
 `+page.svelte` 保留 view/scroll 与 dialog/loading/menu 状态、输入路由与 ask 决策、model sync、
 resume target/auto-restore、新会话入口及非 chat-event teardown；在 mount 时创建 controller、等待
 listener ready 后再 settings/load/restore，并在 destroy 时 dispose。旧 `sessionMessages.ts`、
@@ -665,6 +668,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 | 2026-09-25 | §2.5 Tools / §2.6 UI：审计 background/scheduled action board 生命周期投影；复用既有 background terminal transcript finalizer，保留 scheduled 删除、Agent 通知、kind-specific display/cancel 和无 UI event dedup 边界（ADR 0344） |
 | 2026-09-25 | §2.6 App / UI：ToolsView 的 MCP/Skills 单条订阅统一经过 `mapAppEvent`；保留 MCP 通知与刷新两个不同副作用、未知 status variant 与 pass-through 扩展字段，删除布局无效 Skills listener（ADR 0346） |
 | 2026-09-25 | §2.6 App / UI：Agent 事件删除重复的 snake_case TS wire interfaces，并由唯一 `mapAgentEvent` 校验/映射未知 payload；未知 enum 字符串、动态扩展、usage error fallback、空通知默认与各自副作用 owner 保持。记录 SessionCompleted/SessionError 双 channel fan-out 的既有终态 cleanup 重叠，本切片不改 session contract（ADR 0347） |
+| 2026-09-25 | §2.6 App / UI：Action board 活跃 `list_actions`/`cancel_action` 统一经过 typed command boundary；list rows 复用 Action mapper，扁平 request 与 boolean result 有命名类型，wire/error/UI 行为保持（ADR 0348） |
 | 2026-09-25 | §2.6 App / UI：`get_settings` 读取统一经过唯一 `settingsCommand.ts` 入口与开放式根对象 validator；保留未知配置字段/枚举、原错误处理，hotkey event 继续走既有 camelCase mapper，不改 Rust DTO 与保存顺序（ADR 0341） |
 | 2026-09-25 | §2.6 App / UI：录音与转写事件审计确认 Rust DTO 是 wire 权威，前端只保留 camelCase 消费 DTO 和单一 mapper；补充未知 VAD 字符串、扩展字段、畸形默认、channel 集合与到达顺序回归覆盖，无 DTO 或生产逻辑变化（ADR 0340） |
 | 2026-09-25 | §2.2 LLM：审计 health/native transcription descriptor 边界；两者已在 route/permit 前使用同一语义映射，metadata/config helpers 是只读 route 查询，新增 contract tests，无无效 wrapper（ADR 0339） |
