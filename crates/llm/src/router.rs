@@ -6,12 +6,15 @@ use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
 use crate::adapters::adapter_for;
+use crate::call_executor::CallExecutor;
 use crate::client::{LlmClient, endpoint_host};
 #[cfg(test)]
 use crate::endpoint_health::{CircuitBreaker, CircuitState};
 use crate::endpoint_health::{EndpointHealth, EndpointHealthMap, new_endpoint_health_map};
 use crate::model_directory::{ModelDirectory, RouteMode};
-use crate::request_pipeline::{RequestPolicy, execute_with_retry, execute_with_timeout};
+use crate::request_pipeline::{
+    RequestOutcome, RequestPolicy, execute_with_retry, execute_with_timeout,
+};
 use haven_common::types::{CanonicalMessage, ContentPart};
 
 use crate::stream_rules::{StreamRule, StreamRuleMatch, check_stream_rules};
@@ -295,9 +298,9 @@ impl LlmRouter {
     /// (including retries and stream consumption), so the concurrency cap is
     /// real provider load, not just request starts.
     ///
-    /// After a RateLimit result, the model's cooldown is extended so other
-    /// sessions queue behind this one instead of re-hammering the provider —
-    /// `with_retry` already waits per-request, this paces the herd.
+    /// Cooldown projection happens at the request outcome boundary. Keeping it
+    /// out of this permit wrapper ensures that a 429 is projected only once;
+    /// this wrapper only paces the next call and holds the permit lifetime.
     async fn with_model_permit<T, F, Fut>(&self, model_id: String, f: F) -> Result<T, LlmError>
     where
         F: FnOnce() -> Fut,
@@ -306,9 +309,6 @@ impl LlmRouter {
         let permit = self.acquire_model_permit(&model_id).await?;
         self.wait_rate_limit_cooldown(&model_id).await;
         let result = f().await;
-        if let Err(LlmError::RateLimit { retry_after }) = &result {
-            self.record_rate_limit(&model_id, *retry_after).await;
-        }
         drop(permit);
         result
     }
@@ -684,57 +684,20 @@ impl LlmRouter {
     /// state. Callers invoke this at the same point they receive the logical
     /// request result, before returning it to their caller.
     async fn record_request_outcome<T>(&self, model_id: &str, result: &Result<T, LlmError>) {
-        match result {
-            Ok(_) => self.record_success(model_id).await,
-            Err(error) => {
-                self.record_failure(model_id).await;
-                self.record_rate_limit_result(model_id, error).await;
+        self.project_request_outcome(model_id.to_string(), RequestOutcome::from_result(result))
+            .await;
+    }
+
+    async fn project_request_outcome(&self, model_id: String, outcome: RequestOutcome) {
+        match outcome {
+            RequestOutcome::Success => self.record_success(&model_id).await,
+            RequestOutcome::Failure { rate_limit_after } => {
+                self.record_failure(&model_id).await;
+                if let Some(retry_after) = rate_limit_after {
+                    self.record_rate_limit(&model_id, Some(retry_after)).await;
+                }
             }
         }
-    }
-
-    // §2.12: apply total timeout wrapper
-    async fn with_total_timeout<F, Fut>(
-        policy: RequestPolicy,
-        f: F,
-    ) -> Result<LlmResponse, LlmError>
-    where
-        F: FnOnce() -> Fut,
-        Fut: std::future::Future<Output = Result<LlmResponse, LlmError>>,
-    {
-        execute_with_timeout(policy.total_timeout_secs, "router", f).await
-    }
-
-    // §2.11: execute with retry on the selected endpoint
-    async fn call_with_retry(
-        &self,
-        policy: RequestPolicy,
-        model_id: String,
-        client: Arc<dyn LlmClient>,
-        messages: Vec<CanonicalMessage>,
-        tools: Vec<ToolDefinition>,
-        max_output_tokens: Option<u32>,
-    ) -> Result<LlmResponse, LlmError> {
-        client.validate_content(&messages)?;
-
-        let result = if tools.is_empty() {
-            execute_with_retry(policy.retry, None, || async {
-                client
-                    .chat_with_output_cap(messages.clone(), max_output_tokens)
-                    .await
-            })
-            .await
-        } else {
-            execute_with_retry(policy.retry, None, || async {
-                client
-                    .chat_with_tools_output_cap(messages.clone(), tools.clone(), max_output_tokens)
-                    .await
-            })
-            .await
-        };
-
-        self.record_request_outcome(&model_id, &result).await;
-        result
     }
 
     /// Ordinary and tool chat share one policy snapshot and execution boundary.
@@ -753,11 +716,11 @@ impl LlmRouter {
             let policy = RequestPolicy::primary(&config);
             drop(config);
 
-            Self::with_total_timeout(policy, || async {
-                self.call_with_retry(policy, model_id, client, messages, tools, max_output_tokens)
-                    .await
-            })
-            .await
+            CallExecutor::new(model_id, client, policy)
+                .complete(messages, tools, max_output_tokens, |model_id, outcome| {
+                    self.project_request_outcome(model_id, outcome)
+                })
+                .await
         })
         .await
     }
@@ -837,13 +800,11 @@ impl LlmRouter {
             let policy = RequestPolicy::primary(&cfg);
             drop(cfg);
 
-            execute_with_timeout(policy.total_timeout_secs, "embedding", || async {
-                let result =
-                    execute_with_retry(policy.retry, None, || client.embed(input.clone())).await;
-                self.record_request_outcome(&model_id, &result).await;
-                result
-            })
-            .await
+            CallExecutor::new(model_id, client, policy)
+                .embed(input, |model_id, outcome| {
+                    self.project_request_outcome(model_id, outcome)
+                })
+                .await
         })
         .await
     }

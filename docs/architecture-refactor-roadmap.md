@@ -318,7 +318,8 @@ SessionStore
 
 - 后续独立 slice：将 `RequestKind` 中混合的 capability、call purpose、UI usage role 分成 `Capability`、`CallPurpose`、`RequestPolicy`；
 - 已完成（ADR 0316）：crate-private `ModelDirectory` 拥有 provider client map、primary route 表、按 request 选择/解析 client 与 model id、configured route 判定及 capability/endpoint/context-window metadata lookup；Router 的 config snapshot 是唯一配置真源，health/circuit/rate-limit/semaphore、stream rules、retry/timeout/usage/cancellation 和执行编排继续由 Router 持有；
-- 后续按需拆分 `CallExecutor` / `StreamExecutor` 并分离 `RequestKind` 的 capability、call purpose 与 usage role；当前 `complete`、聚合 `stream`、`embed`、`health_check` 已有请求对象，raw stream 消费与取消控制仍按其生命周期语义单独表达；
+- 已完成（ADR 0318）：crate-private CallExecutor 接管已解析 client/model 的 plain/tools complete 和非空 embedding 的内容校验、现有 retry/total timeout 与 Router outcome 投影调用；Router 仍决定路由并持有全部可变运行态，empty embedding 仍先于 route/permit 快返。
+- 后续独立 slice：streaming 仍由 Router/streaming.rs 按 permit、cancel、chunk callback 生命周期独立执行，是否提取 StreamExecutor 另行评估；RequestKind 的 capability、call purpose 与 UI usage role split 未迁移。
 - 删除只转发参数的 chat/chat_request/output_cap/stream wrapper；
 - provider adapter 只做 wire mapping，保持 golden fixture。
 
@@ -326,7 +327,9 @@ SessionStore
 
 验收：四类能力各有 request object 和负向 capability 测试；ModelDirectory 覆盖生产 credential/capability filtering、注入 route filtering、无 route、shared model identity 与 endpoint/context-window metadata；provider wire 与 usage/stream 契约不变；无重复 retry/usage 入口。
 
-2026-09-25 切片进展（ADR 0316）：`ModelDirectory` 已接管模型 client 与 primary route 目录，并按生产/注入构造保持对应 credential 与 capability 过滤；endpoint/context-window metadata 通过借用 Router 的单一 config snapshot 查询。Router 仍拥有所有执行状态和策略。CallExecutor / StreamExecutor 提取及 capability/call-purpose split 未迁移；单提交回滚，无配置、持久化或 wire 重置要求。
+2026-09-25 切片进展（ADR 0316）：ModelDirectory 已接管模型 client 与 primary route 目录，并按生产/注入构造保持对应 credential 与 capability 过滤；endpoint/context-window metadata 通过借用 Router 的单一 config snapshot 查询。Router 仍拥有所有执行状态和策略。
+
+2026-09-25 切片进展（ADR 0318）：crate-private CallExecutor 只接收 Router 已解析的 model identity/client 与单一 RequestPolicy，接管 plain/tools complete 和非空 embedding 的校验、retry、总 timeout 及通过 Router 闭包完成的 health/rate-limit outcome 投影；permit wrapper 只负责并发与 cooldown 等待，避免同一 429 cooldown 重复投影。embedding empty-input 仍在路由前快返。未完成：raw/aggregated streaming execution ownership，以及 RequestKind 的 capability/call-purpose/UI usage role split。无配置、持久化或 wire 重置要求。
 
 ### 阶段 7：统一 Job 生命周期与 MemoryRuntime（P2）
 

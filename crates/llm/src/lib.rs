@@ -1,4 +1,5 @@
 pub mod adapters;
+mod call_executor;
 pub mod client;
 mod endpoint_health;
 pub mod image_gen;

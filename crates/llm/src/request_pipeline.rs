@@ -1,9 +1,9 @@
 //! Provider-neutral request policy shared by every router request path.
 //!
-//! The router owns endpoint selection and health state; this module owns the
-//! immutable retry/timeout policy snapshot and its execution semantics. Keeping
-//! those concerns together prevents chat, tool, embedding, and streaming code
-//! from unpacking the same configuration differently.
+//! The router owns endpoint selection and mutable health state; this module
+//! captures immutable retry/timeout policy and provides shared primitives to
+//! the one-shot and streaming request executors. Keeping policy construction
+//! here prevents request paths from unpacking configuration differently.
 
 use std::future::Future;
 use std::time::Duration;
@@ -13,6 +13,29 @@ use tokio_util::sync::CancellationToken;
 
 use crate::client::with_retry;
 use crate::types::LlmError;
+
+/// Owned outcome summary passed across the private request-execution boundary.
+/// It retains only the Router projection inputs, so the executor callback does
+/// not borrow the result while creating an async future.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RequestOutcome {
+    Success,
+    Failure { rate_limit_after: Option<Duration> },
+}
+
+impl RequestOutcome {
+    pub(crate) fn from_result<T>(result: &Result<T, LlmError>) -> Self {
+        match result {
+            Ok(_) => Self::Success,
+            Err(LlmError::RateLimit { retry_after }) => Self::Failure {
+                rate_limit_after: *retry_after,
+            },
+            Err(_) => Self::Failure {
+                rate_limit_after: None,
+            },
+        }
+    }
+}
 
 /// Retry settings captured for one request or one streaming endpoint attempt.
 ///

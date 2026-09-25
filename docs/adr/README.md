@@ -306,3 +306,4 @@
 - [0315：聊天页事件注册组合 controller](0315-chat-event-registration-controller.md)
 - [0316：LLM Router 模型目录边界](0316-llm-model-directory.md)
 - [0317：后台与定时任务共享终态内核](0317-action-terminal-lifecycle-kernel.md)
+- [0318：LLM Router 一次性调用执行器](0318-llm-call-executor.md)

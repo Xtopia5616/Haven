@@ -25,6 +25,10 @@ Router 的 native transcription、普通/工具 complete、embedding、raw strea
 
 变化仅限 Router 内部私有实现；provider 请求参数、发送时点、重试、超时、模型选择、取消、health/circuit 与 cooldown 语义保持不变。新增单测覆盖普通失败、成功恢复连续失败计数，以及 429 的 retry-after cooldown；运行 `cargo fmt --all -- --check`、`cargo test --locked -p haven-llm` 和 `cargo clippy --locked -p haven-llm -- -D warnings`。
 
+## 后续收敛（ADR 0318）
+
+record_request_outcome 仍是 Router health 与 rate-limit cooldown 的统一投影入口。ADR 0318 将 plain/tools complete 与非空 embedding 的执行拆到 CallExecutor，并移除 with_model_permit 在同一个 RateLimit 返回后对 cooldown 的重复写入；cooldown 的等待、Retry-After 截断与 provider 结果投影位置保持不变。
+
 ## 回滚
 
 恢复各请求路径原有的局部 match 并删除 `record_request_outcome`、对应测试与本文索引/路线图记录即可。无数据库、配置、provider wire 或用户数据迁移。
