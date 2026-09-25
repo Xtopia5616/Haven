@@ -4,6 +4,7 @@ mod action_output;
 mod action_retry_policy;
 mod action_service;
 mod action_terminal;
+mod action_trigger_policy;
 pub mod adapters;
 mod asset_registry;
 pub mod builtin;

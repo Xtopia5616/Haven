@@ -22,6 +22,7 @@ use crate::action_terminal::{
     ActionState, TerminalPayload, TerminalSource, TerminalTimestamps, TerminalTransitionGuard,
     can_claim_terminal,
 };
+use crate::action_trigger_policy::{ScheduledTrigger, ScheduledTriggerRequest};
 use haven_memory::{ActionCompletionOutboxRow, ActionRow, ActionStore};
 
 use crate::output::{append_windows_diagnostics, sanitize_shell_output, summarize_error};
@@ -2057,46 +2058,19 @@ impl ActionService {
             tool_args,
             prompt,
         } = spec;
-        let watch_action_id = watch_action_id
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty());
-        if watch_action_id.is_some() && (due_at.is_some() || delay_secs.is_some()) {
-            anyhow::bail!("watch_action_id cannot be combined with due_at or delay_secs");
-        }
-
+        let trigger_request = ScheduledTriggerRequest::new(due_at, delay_secs, watch_action_id)?;
         let now = chrono::Utc::now();
-        let (due, remaining) = if watch_action_id.is_some() {
-            // Keep the dependency pending even if the producer is not in this
-            // process anymore. The watcher resolves that case as `not_found`
-            // instead of leaving a durable schedule that can never fire.
-            (None, 0_i64)
-        } else {
-            match (due_at.as_deref(), delay_secs) {
-                (Some(_), Some(_)) => {
-                    anyhow::bail!("use exactly one of due_at or delay_secs, not both")
-                }
-                (Some(value), None) => {
-                    let parsed = chrono::DateTime::parse_from_rfc3339(value.trim())
-                        .map_err(|_| anyhow::anyhow!("due_at must be an ISO 8601 timestamp"))?
-                        .with_timezone(&chrono::Utc);
-                    let remaining = (parsed - now).num_seconds();
-                    if remaining <= 0 {
-                        anyhow::bail!("due_at must be in the future");
-                    }
-                    if remaining > *self.max_due_horizon_secs.read().await {
-                        anyhow::bail!("due_at is more than 365 days in the future");
-                    }
-                    (Some(parsed), remaining)
-                }
-                (None, Some(delay)) if (1..=86_400).contains(&delay) => (
-                    Some(now + chrono::Duration::seconds(delay as i64)),
-                    delay as i64,
-                ),
-                (None, Some(_)) => anyhow::bail!("delay_secs must be between 1 and 86400"),
-                (None, None) => {
-                    anyhow::bail!("either due_at, delay_secs or watch_action_id is required")
-                }
-            }
+        let trigger_candidate = trigger_request.resolve(now)?;
+        if trigger_candidate.needs_due_horizon_check() {
+            let max_due_horizon_secs = *self.max_due_horizon_secs.read().await;
+            trigger_candidate.validate_due_horizon(max_due_horizon_secs)?;
+        }
+        let (due, remaining, watch_action_id) = match trigger_candidate.into_trigger() {
+            ScheduledTrigger::At {
+                due_at,
+                remaining_secs,
+            } => (Some(due_at), remaining_secs, None),
+            ScheduledTrigger::AfterAction { action_id } => (None, 0, Some(action_id)),
         };
 
         let body = body.trim().to_string();

@@ -401,6 +401,14 @@ ActionService 继续按 kind 执行各自 CAS/outbox、内存状态、事件发�
 shell 没有 action-level 执行 timeout；scheduled `due_at` 是触发时刻。AgentLayer 对 background completion
 做 durable transcript 投影/入队的 100 ms 重试与 outbox ack 也保持独立；provider/LLM retry 和 Agent
 ReAct tool-call retry 不属于 action persistence retry（ADR 0305、0332、0334）。
+调用边界并不是一个共享的执行 owner：后台 shell 的 child process 由 `ActionService` 启动并回收；
+scheduled fire 由 `ActionService` 按 `Waiting → Running` durable CAS 后交给 AgentLayer，AgentLayer/
+tool runner 执行 scheduled tool 或继续会话，再调用 `complete_scheduled` / `fail_scheduled`。
+scheduled trigger 的输入分类和 due-time 计算由 crate-private 纯 typed policy
+`ScheduledTriggerRequest`/`ScheduledTriggerCandidate` 承担；ActionService 仍读取 horizon 配置并拥有
+durable admission、board insertion、timer/watch worker、fire、terminal commit/retry 与 lifecycle event。
+这只是 trigger admission 的窄边界，不是 `Immediate`/`At`/`After` 与 execution 的完整 Job 模型；
+schedule tool 对 LLM 输入的前置验证仍保留在工具边界，App command/event adapter 仍只做 UI DTO 投影（ADR 0343）。
 Action 输出 tail 的长度策略由 `ActionService` 持有的 crate-private `ActionOutputPort` 唯一配置；
 foreground shell card 与 background action 共用该 policy 生成有字符上限的 `ActionOutputTail`，
 consumer 仅拿不可 `Debug`/`Serialize` 的 `ActionTailSnapshot`。`agent:tool_output` 仍用
@@ -635,6 +643,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 | 2026-09-25 | §2.6 App / UI：录音与转写事件审计确认 Rust DTO 是 wire 权威，前端只保留 camelCase 消费 DTO 和单一 mapper；补充未知 VAD 字符串、扩展字段、畸形默认、channel 集合与到达顺序回归覆盖，无 DTO 或生产逻辑变化（ADR 0340） |
 | 2026-09-25 | §2.2 LLM：审计 health/native transcription descriptor 边界；两者已在 route/permit 前使用同一语义映射，metadata/config helpers 是只读 route 查询，新增 contract tests，无无效 wrapper（ADR 0339） |
 | 2026-09-25 | §2.5 Tools / UI：ActionService 持有唯一共享 tail 长度策略，foreground/background 消费 bounded typed snapshots；两条既有 event identity/wire 与 terminal/outbox 时序保持（ADR 0338） |
+| 2026-09-25 | §2.5 Tools：scheduled trigger 输入分类与 due-time 计算收口到纯 typed policy；ActionService 保留配置读取、durable admission、timer/fire 与终态，scheduled execution 仍由 AgentLayer/tool runner 承担（ADR 0343） |
 | 2026-09-25 | §2.5 App 配置：Settings runtime apply 的有序阶段与 phase/failure 元数据归 `SettingsRuntimeApplyCoordinator`；现有副作用 owner、Router prepare/publish、no-op 与半失败语义保持，补偿/rollback 仍未决（ADR 0337） |
 | 2026-09-25 | §2.5 Agent / §2.3 Memory：ReAct transcript 通过 `SessionCommitted` 提交事件与 domain projection intent；SessionStore 事务内先写 event 再写物化行、提交后广播，Agent 按 sequence 发布 UI（ADR 0336） |
 | 2026-09-25 | §2.5 Tools：由 crate-private `ToolRuntimeCoordinator` 持有 tool runtime composition、PlatformRuntime/config 更新顺序、MCP discovery index 与 builtin catalog rebuild；Tauri config gate、MCP 连接和应用 shutdown 仍留在原 owner（ADR 0333） |
