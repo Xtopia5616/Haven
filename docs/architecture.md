@@ -160,22 +160,29 @@ CI 以 `scripts/check-crate-dependencies.ps1` 对此表执行内部 crate 依赖
   复用聊天页「思考强度」，不另开线协议。
 - `request_descriptor.rs`：crate-private `RequestDescriptor` 显式并列承载逻辑请求用途和所需
   `Capability`；用途到能力的映射复用 `RequestKind::required_capability()`。Router 将同一
-  descriptor 传至 complete、embedding、raw stream 与 aggregated stream 执行边界；usage
-  owner 仍由调用方表达（ADR 0319、0329）。
+  descriptor 传至 complete、embedding、raw stream 与 aggregated stream 执行边界；health check
+  与 native transcription 也在 Router route/permit boundary 从原 `RequestKind` 构造 descriptor。
+  health adapter 调用和已选 client 的 native `transcribe` 不再推导 route capability；STT fallback
+  以独立 `AudioChat` purpose 重新进入 aggregated route。usage owner 仍由调用方表达（ADR 0319、0329、0339）。
 - `model_directory.rs`：crate-private `ModelDirectory`，从 Router 的配置 snapshot
   构造 provider client map 与以 `RequestKind` 为原 key 的 primary route；route 保存筛选时
   使用的 descriptor，执行解析要求收到的 descriptor 与 route 相同。它还集中 client/model
   选择、capability profile 和 endpoint/context-window metadata 查询；生产路由同时要求
   所需 `Capability` 与可用凭据，测试注入只跳过凭据过滤。metadata 借用 Router 的单一
-  `RouterConfig` snapshot，不复制配置真源（ADR 0316、0329）。
+  `RouterConfig` snapshot，不复制配置真源。配置/metadata helper 继续接收 `RequestKind` 并
+  经 `RouterConfig::route` 校验 route，不调用 provider 或投影 usage/health；`capability_profile`
+  只读取已选 adapter 的本地 wire profile。`connection_status` 与 `prewarm_all` 是明确的健康
+  probe，会调用 health check 并按既有规则投影 outcome（ADR 0316、0329、0339）。
 - `router.rs`：`LlmRouter` 保留配置 snapshot 与请求执行状态，拥有 route/client 选择、
   health/circuit、rate-limit cooldown、semaphore 与 stream rules，并为执行器提供配置
   snapshot 和 health/rate-limit outcome closure。每个 request kind 仍只走唯一 primary；
   同一模型内重试耗尽后直接返回错误，不跨 provider/model 切换缓存命名空间（ADR 0192）。旧 `llm.roles` 仅在
   配置加载时转换，不进入生产路由；`CallExecutor` 执行 complete/embedding，`StreamExecutor`
   只执行 raw stream 建流与 permit 包装；`AggregatedStreamExecutor` 执行聚合流状态机。
-  执行器已接收显式 descriptor；public request DTO、专用 health/transcription/config helper
-  与调用方 usage-role 仍待评估和迁移。
+  执行器已接收显式 descriptor。public request DTO 继续以 `RequestKind` 表达兼容 route key，且
+  descriptor 的 `purpose` 仍是 `RequestKind`；health/native transcription 已在路由边界使用
+  descriptor，无需再传进不拥有 route 语义的 adapter。`LlmCallKind` usage role 继续由 Agent/Tools
+  调用方显式设置，不由 Router 推断（ADR 0339）。
 - `call_executor.rs` / `stream_executor.rs` / `aggregated_stream_executor.rs`：接收 Router
   已解析的 descriptor、model/client 与单份 `RequestPolicy`，复用 request pipeline 执行 complete/embedding、
   raw stream 建流或聚合流执行，并经 Router 注入的窄 outcome closure 投影健康状态。raw
@@ -611,6 +618,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 
 | 日期 | 内容 |
 |---|---|
+| 2026-09-25 | §2.2 LLM：审计 health/native transcription descriptor 边界；两者已在 route/permit 前使用同一语义映射，metadata/config helpers 是只读 route 查询，新增 contract tests，无无效 wrapper（ADR 0339） |
 | 2026-09-25 | §2.5 Tools / UI：ActionService 持有唯一共享 tail 长度策略，foreground/background 消费 bounded typed snapshots；两条既有 event identity/wire 与 terminal/outbox 时序保持（ADR 0338） |
 | 2026-09-25 | §2.5 App 配置：Settings runtime apply 的有序阶段与 phase/failure 元数据归 `SettingsRuntimeApplyCoordinator`；现有副作用 owner、Router prepare/publish、no-op 与半失败语义保持，补偿/rollback 仍未决（ADR 0337） |
 | 2026-09-25 | §2.5 Agent / §2.3 Memory：ReAct transcript 通过 `SessionCommitted` 提交事件与 domain projection intent；SessionStore 事务内先写 event 再写物化行、提交后广播，Agent 按 sequence 发布 UI（ADR 0336） |

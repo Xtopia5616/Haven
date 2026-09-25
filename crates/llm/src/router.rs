@@ -1142,6 +1142,64 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct RouterRequestProbe {
+        llm_calls: Arc<std::sync::atomic::AtomicUsize>,
+        health_calls: Arc<std::sync::atomic::AtomicUsize>,
+        transcription_calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl RouterRequestProbe {
+        fn record_llm_call(&self) {
+            self.llm_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    #[async_trait]
+    impl LlmClient for RouterRequestProbe {
+        async fn chat(&self, _messages: Vec<CanonicalMessage>) -> Result<LlmResponse, LlmError> {
+            self.record_llm_call();
+            Ok(LlmResponse::default())
+        }
+
+        async fn chat_stream(
+            &self,
+            _messages: Vec<CanonicalMessage>,
+        ) -> Result<
+            Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+            LlmError,
+        > {
+            self.record_llm_call();
+            Ok(Box::pin(stream::empty()))
+        }
+
+        async fn embed(&self, _input: Vec<String>) -> Result<Embedding, LlmError> {
+            self.record_llm_call();
+            Ok(Embedding {
+                vectors: Vec::new(),
+                model: None,
+                usage: Usage::default(),
+            })
+        }
+
+        async fn transcribe(&self, _wav_data: &[u8]) -> Result<crate::types::SttResult, LlmError> {
+            self.record_llm_call();
+            self.transcription_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(crate::types::SttResult {
+                text: "native transcript".into(),
+                ..Default::default()
+            })
+        }
+
+        async fn health_check(&self) -> Result<(), LlmError> {
+            self.health_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
     #[tokio::test]
     async fn request_outcome_projection_preserves_health_and_cooldown_mapping() {
         let router = LlmRouter::new(RouterConfig::default());
@@ -2678,6 +2736,190 @@ mod tests {
 
         let report = router.connection_status(RequestKind::Chat).await;
         assert_eq!(report.status, LlmConnectionStatus::Unconfigured);
+    }
+
+    #[tokio::test]
+    async fn health_and_native_transcription_share_the_transcription_capability_route() {
+        let probe = Arc::new(RouterRequestProbe::default());
+        let client: Arc<dyn LlmClient> = probe.clone();
+        let router = LlmRouter::new_with_clients_full(
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client,
+        );
+        router
+            .force_request_configured(RequestKind::Transcription, true)
+            .await;
+
+        router
+            .health_check(HealthCheckRequest {
+                request: RequestKind::Transcription,
+            })
+            .await
+            .expect("the transcription route must accept its declared capability");
+        let transcription = router
+            .transcribe_audio(&[0; 44])
+            .await
+            .expect("the native transcription route must be called");
+        assert_eq!(transcription.text, "native transcript");
+        assert_eq!(
+            probe.health_calls.load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        assert_eq!(
+            probe
+                .transcription_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+
+        {
+            let mut config = router.config.write().await;
+            config
+                .model_mut("audio_model")
+                .expect("test audio model")
+                .capabilities
+                .retain(|capability| *capability != Capability::Transcription);
+            router
+                .model_directory
+                .rebuild_primary_routes(&config, RouteMode::InjectedClients);
+        }
+
+        assert!(router.is_request_configured(RequestKind::AudioChat).await);
+        assert!(
+            !router
+                .is_request_configured(RequestKind::Transcription)
+                .await
+        );
+        assert!(matches!(
+            router
+                .health_check(HealthCheckRequest {
+                    request: RequestKind::Transcription,
+                })
+                .await,
+            Err(LlmError::Configuration(message)) if message == "no configured model for transcription"
+        ));
+        assert!(matches!(
+            router.transcribe_audio(&[0; 44]).await,
+            Err(LlmError::RequestFailed(message)) if message.contains("transcription request is not configured")
+        ));
+        assert_eq!(
+            probe.health_calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "a route missing the transcription capability must not health-probe its model"
+        );
+        assert_eq!(
+            probe
+                .transcription_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "a route missing the transcription capability must not invoke native STT"
+        );
+        assert_eq!(
+            probe.llm_calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "a missing native route must not silently fall back to AudioChat"
+        );
+    }
+
+    #[tokio::test]
+    async fn metadata_helpers_do_not_call_providers_or_project_health_or_usage() {
+        let probe = Arc::new(RouterRequestProbe::default());
+        let client: Arc<dyn LlmClient> = probe.clone();
+        let router = LlmRouter::new_with_clients_full(
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client,
+        );
+        router
+            .force_request_configured(RequestKind::Chat, true)
+            .await;
+        {
+            let mut config = router.config.write().await;
+            let endpoint = &mut config
+                .model_mut("default_model")
+                .expect("test chat model")
+                .endpoint;
+            endpoint.context_window = Some(8_192);
+            endpoint.max_tokens = 2_048;
+            endpoint.cost_per_1k_input_tokens = 0.001;
+            endpoint.cost_per_1k_output_tokens = 0.002;
+        }
+
+        let health_before = router
+            .health
+            .read()
+            .await
+            .iter()
+            .map(|(model_id, health)| {
+                (
+                    model_id.clone(),
+                    (
+                        health.consecutive_failures,
+                        health.circuit_breaker.total_calls,
+                    ),
+                )
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        assert!(router.is_request_configured(RequestKind::Chat).await);
+        let _adapter = router.select_request(RequestKind::Chat);
+        let _profile = router.capability_profile_for_request(RequestKind::Chat);
+        assert_eq!(
+            router.context_window_for_request(RequestKind::Chat).await,
+            8_192
+        );
+        assert_eq!(
+            router
+                .effective_output_tokens(RequestKind::Chat, 3_000)
+                .await,
+            2_048
+        );
+        let usage = Usage {
+            prompt_tokens: 1_000,
+            completion_tokens: 1_000,
+            total_tokens: 2_000,
+            ..Usage::default()
+        };
+        assert!(
+            router
+                .compute_cost(RequestKind::Chat, &usage)
+                .await
+                .is_some()
+        );
+        assert!(usage.cost.is_none(), "cost lookup must not mutate usage");
+
+        assert_eq!(probe.llm_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(
+            probe.health_calls.load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+        assert_eq!(
+            probe
+                .transcription_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+        let health_after = router
+            .health
+            .read()
+            .await
+            .iter()
+            .map(|(model_id, health)| {
+                (
+                    model_id.clone(),
+                    (
+                        health.consecutive_failures,
+                        health.circuit_breaker.total_calls,
+                    ),
+                )
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        assert_eq!(health_after, health_before);
+        assert!(router.rate_limited.read().await.is_empty());
     }
 
     #[tokio::test]
