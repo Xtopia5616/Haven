@@ -1,9 +1,7 @@
 use crate::app_state::AppState;
 use crate::commands::log_err;
-use crate::config_runtime::{RuntimeConfigApplyPlan, RuntimeConfigTarget};
 use haven_common::config::{
-    AppConfig, ConfigChanged, LlmConfig, ModelConfig, ProviderConfig, RequestKind,
-    provider_config_wire_style,
+    AppConfig, LlmConfig, ModelConfig, ProviderConfig, RequestKind, provider_config_wire_style,
 };
 use haven_llm::ModelInfo;
 use haven_llm::ModelRegistry;
@@ -31,10 +29,25 @@ fn model_slot<'a>(
     cfg.model_mut(&id)
 }
 
-fn model_change_requires_router(change: Option<&ConfigChanged>) -> bool {
-    change.is_some_and(|change| {
-        RuntimeConfigApplyPlan::from_change(change).contains(RuntimeConfigTarget::LlmRouter)
-    })
+fn validate_builtin_search(config: &AppConfig, selector: &str) -> Result<(), String> {
+    let llm = &config.llm;
+    let model_id = model_id_for_selector(llm, selector)
+        .ok_or_else(|| format!("unknown or unconfigured model/request: {}", selector))?;
+    let slot = llm
+        .model(&model_id)
+        .ok_or_else(|| format!("unknown or unconfigured model/request: {}", selector))?;
+    let style = llm
+        .providers
+        .iter()
+        .find(|provider| provider.name == slot.provider)
+        .map(provider_config_wire_style)
+        .unwrap_or("openai-chat");
+    if !haven_llm::supports_builtin_web_search(style) {
+        return Err(format!(
+            "provider wire style `{style}` does not support built-in search"
+        ));
+    }
+    Ok(())
 }
 
 /// Normalize an endpoint URL for comparison: strip the trailing slash and
@@ -438,9 +451,9 @@ pub async fn discover_all_models(
 /// §2.7: Switch a named model assignment to a different provider model.
 /// Updates config.toml and hot-swaps the LlmRouter at runtime.
 #[tauri::command]
-/// Apply a mutation to a named model through the versioned config service and
-/// hot-swap the LlmRouter at runtime. The service serializes the mutation and
-/// persists the complete snapshot before the runtime rebuild begins.
+/// Apply a model mutation through the runtime config coordinator. Command
+/// validation and slot mutation remain here; the coordinator serializes the
+/// durable edit and its complete live apply.
 async fn update_model_field(
     state: &AppState,
     ctx: &str,
@@ -448,10 +461,9 @@ async fn update_model_field(
     validate: impl FnOnce(&haven_common::config::AppConfig, &str) -> Result<(), String>,
     mutate: impl FnOnce(&mut ModelConfig) -> Result<(), String>,
 ) -> Result<(), String> {
-    let _apply_guard = state.config_apply_gate.lock().await;
-    let update = state
-        .config_service
-        .edit(|config| {
+    state
+        .config_apply_gate
+        .edit_model_and_apply(state, ctx, |config| {
             validate(config, model_id_or_request_kind).map_err(anyhow::Error::msg)?;
             let slot = model_slot(&mut config.llm, model_id_or_request_kind).ok_or_else(|| {
                 anyhow::anyhow!(
@@ -461,14 +473,7 @@ async fn update_model_field(
             })?;
             mutate(slot).map_err(anyhow::Error::msg)
         })
-        .map_err(|e| log_err(ctx, e))?;
-    if model_change_requires_router(update.change.as_ref()) {
-        state
-            .config_apply_gate
-            .apply_router_runtime(state, &update.snapshot, ctx)
-            .await?;
-    }
-    Ok(())
+        .await
 }
 
 /// Switch a named model assignment to another provider model id. Updates config.toml and
@@ -561,24 +566,7 @@ pub async fn set_web_search(
             if !requires_builtin_search {
                 return Ok(());
             }
-            let llm = &config.llm;
-            let model_id = model_id_for_selector(llm, selector)
-                .ok_or_else(|| format!("unknown or unconfigured model/request: {}", selector))?;
-            let slot = llm
-                .model(&model_id)
-                .ok_or_else(|| format!("unknown or unconfigured model/request: {}", selector))?;
-            let style = llm
-                .providers
-                .iter()
-                .find(|provider| provider.name == slot.provider)
-                .map(provider_config_wire_style)
-                .unwrap_or("openai-chat");
-            if !haven_llm::supports_builtin_web_search(style) {
-                return Err(format!(
-                    "provider wire style `{style}` does not support built-in search"
-                ));
-            }
-            Ok(())
+            validate_builtin_search(config, selector)
         },
         |slot| {
             slot.web_search = normalized;
@@ -594,8 +582,7 @@ pub async fn set_web_search(
 mod tests {
     use super::*;
     use haven_common::config::{
-        AppConfig, ConfigDomain, ConfigLoader, ConfigService, ModelConfig, ProviderConfig,
-        RequestKind, RequestPolicy,
+        AppConfig, ModelConfig, ProviderConfig, RequestKind, RequestPolicy,
     };
 
     fn provider(name: &str, key: &str, style: Option<&str>) -> ProviderConfig {
@@ -615,40 +602,6 @@ mod tests {
         let mut cfg = AppConfig::default();
         cfg.llm.providers = providers;
         cfg
-    }
-
-    #[test]
-    fn model_config_edit_plan_selects_router_and_no_op_skips_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let loader = ConfigLoader::load_from(&dir.path().join("config.toml")).unwrap();
-        let service = ConfigService::new(loader);
-
-        let update = service
-            .edit(|config| {
-                config.llm.set_model(
-                    "default_model",
-                    ModelConfig {
-                        provider: "provider".into(),
-                        model: "model-v2".into(),
-                        ..Default::default()
-                    },
-                );
-                Ok(())
-            })
-            .unwrap();
-        let change = update.change.unwrap();
-
-        assert_eq!(change.domains, vec![ConfigDomain::Llm]);
-        assert!(model_change_requires_router(Some(&change)));
-        assert!(!model_change_requires_router(None));
-        assert!(!model_change_requires_router(Some(&ConfigChanged {
-            version: change.version + 1,
-            domains: vec![ConfigDomain::Notification],
-        })));
-
-        let unchanged = service.edit(|_| Ok(())).unwrap();
-        assert!(unchanged.change.is_none());
-        assert!(!model_change_requires_router(unchanged.change.as_ref()));
     }
 
     #[test]
@@ -720,5 +673,35 @@ mod tests {
             Some("chat-primary".into())
         );
         assert_eq!(model_id_for_selector(&cfg.llm, "vision"), None);
+    }
+
+    #[test]
+    fn web_search_validation_uses_selected_provider_capability_and_preserves_errors() {
+        let mut cfg = cfg_with_providers(vec![provider(
+            "chat-provider",
+            "api-key",
+            Some("openai-chat"),
+        )]);
+        cfg.llm.models.push(ModelConfig {
+            id: "chat-model".into(),
+            provider: "chat-provider".into(),
+            ..Default::default()
+        });
+        cfg.llm.request_policies.push(RequestPolicy {
+            request: RequestKind::Chat,
+            primary: "chat-model".into(),
+        });
+
+        assert_eq!(
+            validate_builtin_search(&cfg, "chat"),
+            Err("provider wire style `openai-chat` does not support built-in search".into())
+        );
+        assert_eq!(
+            validate_builtin_search(&cfg, "missing"),
+            Err("unknown or unconfigured model/request: missing".into())
+        );
+
+        cfg.llm.providers[0].api_style = Some("openai-responses".into());
+        assert_eq!(validate_builtin_search(&cfg, "chat-model"), Ok(()));
     }
 }

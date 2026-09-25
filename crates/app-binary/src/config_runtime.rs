@@ -6,7 +6,9 @@
 
 use crate::app_state::AppState;
 use crate::logging::log_err;
-use haven_common::config::{ConfigChanged, ConfigDomain, ConfigSnapshot, LogLevel};
+use haven_common::config::{
+    AppConfig, ConfigChanged, ConfigDomain, ConfigService, ConfigSnapshot, LogLevel,
+};
 use haven_llm::LlmRouter;
 use haven_llm::stt::build_stt_client;
 use std::future::Future;
@@ -29,6 +31,50 @@ pub(crate) type ConfigApplyGate = RuntimeConfigCoordinator;
 impl RuntimeConfigCoordinator {
     pub(crate) async fn lock(&self) -> tokio::sync::MutexGuard<'_, ()> {
         self.apply_gate.lock().await
+    }
+
+    /// Commit a model configuration mutation and apply the committed router
+    /// generation while holding the shared settings/model serialization gate.
+    /// The mutation stays a closure so this app-level coordinator does not
+    /// depend on command selectors or model-field details.
+    pub(crate) async fn edit_model_and_apply(
+        &self,
+        state: &AppState,
+        ctx: &str,
+        edit: impl FnOnce(&mut AppConfig) -> anyhow::Result<()>,
+    ) -> Result<(), String> {
+        self.edit_model_and_apply_with(&state.config_service, ctx, edit, |snapshot| async move {
+            self.apply_router_runtime(state, &snapshot, ctx).await
+        })
+        .await
+    }
+
+    /// Injectable apply edge used by the production helper and its focused
+    /// concurrency/no-op tests. The apply callback is invoked only for a
+    /// committed change whose plan includes the LLM router.
+    async fn edit_model_and_apply_with<T, Edit, Apply, ApplyFuture>(
+        &self,
+        config_service: &ConfigService,
+        ctx: &str,
+        edit: Edit,
+        apply_router: Apply,
+    ) -> Result<T, String>
+    where
+        Edit: FnOnce(&mut AppConfig) -> anyhow::Result<T>,
+        Apply: FnOnce(ConfigSnapshot) -> ApplyFuture,
+        ApplyFuture: Future<Output = Result<(), String>>,
+    {
+        let _apply_guard = self.lock().await;
+        let update = config_service
+            .edit(edit)
+            .map_err(|error| log_err(ctx, error))?;
+        let should_apply_router = update.change.as_ref().is_some_and(|change| {
+            RuntimeConfigApplyPlan::from_change(change).contains(RuntimeConfigTarget::LlmRouter)
+        });
+        if should_apply_router {
+            apply_router(update.snapshot).await?;
+        }
+        Ok(update.value)
     }
 
     /// Prepare router and media clients from the exact committed snapshot.
@@ -258,6 +304,7 @@ impl RuntimeConfigApplyPlan {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use haven_common::config::{ConfigLoader, ModelConfig};
     use tracing_subscriber::reload;
 
     #[test]
@@ -380,7 +427,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn failed_prepare_does_not_call_runtime_apply() {
+    async fn failed_prepare_does_not_call_publish() {
         use std::sync::atomic::{AtomicBool, Ordering};
         let applied = std::sync::Arc::new(AtomicBool::new(false));
         let applied_in_closure = applied.clone();
@@ -395,6 +442,93 @@ mod tests {
 
         assert_eq!(result, Err("client preparation failed"));
         assert!(!applied.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn model_edit_no_op_skips_router_rebuild() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let dir = tempfile::tempdir().unwrap();
+        let loader = ConfigLoader::load_from(&dir.path().join("config.toml")).unwrap();
+        let service = Arc::new(ConfigService::new(loader));
+        let coordinator = Arc::new(RuntimeConfigCoordinator::default());
+        let rebuilds = Arc::new(AtomicUsize::new(0));
+        let rebuilds_in_apply = rebuilds.clone();
+
+        let value = coordinator
+            .edit_model_and_apply_with(
+                &service,
+                "model_test",
+                |_| Ok(7),
+                move |_| async move {
+                    rebuilds_in_apply.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(value, 7);
+        assert_eq!(rebuilds.load(Ordering::SeqCst), 0);
+        assert_eq!(service.snapshot().unwrap().version, 0);
+    }
+
+    struct ActiveModelOperation(Arc<std::sync::atomic::AtomicUsize>);
+
+    impl Drop for ActiveModelOperation {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    #[tokio::test]
+    async fn two_model_operations_do_not_overlap_edit_and_apply() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let dir = tempfile::tempdir().unwrap();
+        let loader = ConfigLoader::load_from(&dir.path().join("config.toml")).unwrap();
+        let service = Arc::new(ConfigService::new(loader));
+        let coordinator = Arc::new(RuntimeConfigCoordinator::default());
+        let active = Arc::new(AtomicUsize::new(0));
+        let max_active = Arc::new(AtomicUsize::new(0));
+        let rebuilds = Arc::new(AtomicUsize::new(0));
+
+        let run = |model_id: &'static str| {
+            let coordinator = coordinator.clone();
+            let service = service.clone();
+            let active = active.clone();
+            let max_active = max_active.clone();
+            let rebuilds = rebuilds.clone();
+            async move {
+                coordinator
+                    .edit_model_and_apply_with(
+                        &service,
+                        "model_test",
+                        move |config| {
+                            let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+                            max_active.fetch_max(current, Ordering::SeqCst);
+                            config.llm.models.push(ModelConfig {
+                                id: model_id.into(),
+                                ..Default::default()
+                            });
+                            Ok(ActiveModelOperation(active))
+                        },
+                        move |_| async move {
+                            rebuilds.fetch_add(1, Ordering::SeqCst);
+                            tokio::task::yield_now().await;
+                            Ok(())
+                        },
+                    )
+                    .await
+                    .unwrap();
+            }
+        };
+
+        tokio::join!(run("model-one"), run("model-two"));
+
+        assert_eq!(max_active.load(Ordering::SeqCst), 1);
+        assert_eq!(rebuilds.load(Ordering::SeqCst), 2);
+        assert_eq!(service.snapshot().unwrap().version, 2);
     }
 
     #[tokio::test]

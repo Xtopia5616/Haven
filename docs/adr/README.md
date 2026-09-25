@@ -311,3 +311,4 @@
 - [0320：聊天页模型操作归属到 ChatModelOperations](0320-chat-model-operations-controller.md)
 - [0321：ActionService 按 session 取消共用遍历骨架](0321-action-owned-session-cancellation-traversal.md)
 - [0322：SessionReducer 相等性门控 selector store](0322-session-selector-stores.md)
+- [0323：模型配置完整应用归 RuntimeConfigCoordinator](0323-model-config-apply-coordinator-ownership.md)
