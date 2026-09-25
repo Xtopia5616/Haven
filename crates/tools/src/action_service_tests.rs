@@ -70,6 +70,25 @@ fn capture_action_events(service: &ActionService) -> Arc<std::sync::Mutex<Vec<(S
     events
 }
 
+fn session_test_action_entry(
+    kind: ActionKind,
+    session_id: Option<&str>,
+    state: ActionState,
+    kill: Option<tokio::sync::oneshot::Sender<()>>,
+    scheduled: Option<ScheduledActionEntry>,
+) -> ActionEntry {
+    ActionEntry {
+        kind,
+        session_id: session_id.map(str::to_string),
+        state,
+        kill,
+        tail: None,
+        command: "echo session cancellation".into(),
+        shell: "test".into(),
+        scheduled,
+    }
+}
+
 fn terminal_event_count(events: &std::sync::Mutex<Vec<(String, Value)>>) -> usize {
     events
         .lock()
@@ -1365,6 +1384,323 @@ async fn test_unified_service_owns_scheduled_state_and_cancel() {
     assert!(service.cancel_for_session(&id, "ses-unified").await);
     assert!(service.board().await.is_empty());
     assert_eq!(service.status(&id).await["status"], "cancelled");
+}
+
+#[tokio::test]
+async fn owned_live_cancellation_selection_is_typed_sequential_and_non_short_circuiting() {
+    let service = Arc::new(ActionService::new());
+    let owner = "ses-selection-owner";
+    let live_a = "act-selection-a";
+    let live_b = "act-selection-b";
+    let terminal = "act-selection-terminal";
+    let other_owner = "act-selection-other-owner";
+    let scheduled = "act-selection-scheduled";
+    let completed =
+        TerminalTimestamps::new("started", "finished").build(TerminalPayload::Completed {
+            output: "done".into(),
+            exit_code: Some(0),
+            truncated: false,
+            log_path: None,
+        });
+    let scheduled_entry = ScheduledActionEntry {
+        title: "Scheduled".into(),
+        body: "belongs to another kind".into(),
+        due_at: "2099-01-01T00:00:00Z".into(),
+        mode: crate::builtin::scheduled_action::ScheduleMode::Tool,
+        tool_name: Some("notify".into()),
+        tool_args: None,
+        prompt: None,
+        watch_action_id: None,
+    };
+    {
+        let mut actions = service.actions.write().await;
+        for id in [live_a, live_b] {
+            actions.insert(
+                id.into(),
+                session_test_action_entry(
+                    ActionKind::Background,
+                    Some(owner),
+                    ActionState::Running {
+                        started_at: "started".into(),
+                    },
+                    None,
+                    None,
+                ),
+            );
+        }
+        actions.insert(
+            terminal.into(),
+            session_test_action_entry(ActionKind::Background, Some(owner), completed, None, None),
+        );
+        actions.insert(
+            other_owner.into(),
+            session_test_action_entry(
+                ActionKind::Background,
+                Some("ses-someone-else"),
+                ActionState::Running {
+                    started_at: "started".into(),
+                },
+                None,
+                None,
+            ),
+        );
+        actions.insert(
+            scheduled.into(),
+            session_test_action_entry(
+                ActionKind::Scheduled,
+                Some(owner),
+                ActionState::Waiting,
+                None,
+                Some(scheduled_entry),
+            ),
+        );
+    }
+
+    let visited = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let visited_by_callback = Arc::clone(&visited);
+    let failure_id = live_a.to_string();
+    let selection = service
+        .cancel_owned_live_actions(owner, ActionKind::Background, move |id| {
+            let visited = Arc::clone(&visited_by_callback);
+            let failure_id = failure_id.clone();
+            async move {
+                visited.lock().unwrap().push(id.clone());
+                tokio::task::yield_now().await;
+                if id == failure_id {
+                    Err("injected cancellation failure")
+                } else {
+                    Ok(())
+                }
+            }
+        })
+        .await;
+
+    assert_eq!(*visited.lock().unwrap(), selection.live_ids);
+    assert_eq!(selection.live_ids.len(), 2);
+    assert!(selection.live_ids.contains(&live_a.to_string()));
+    assert!(selection.live_ids.contains(&live_b.to_string()));
+    assert_eq!(selection.terminal_ids, vec![terminal.to_string()]);
+    assert!(!selection.live_ids.contains(&other_owner.to_string()));
+    assert!(!selection.live_ids.contains(&scheduled.to_string()));
+}
+
+#[tokio::test]
+async fn background_only_session_cleanup_leaves_owned_scheduled_action_waiting() {
+    let service = Arc::new(ActionService::new());
+    let session_id = "ses-background-only";
+    let scheduled_id = service
+        .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+            due_at: None,
+            delay_secs: Some(3600),
+            watch_action_id: None,
+            title: "Background only".into(),
+            body: "must remain waiting".into(),
+            mode: crate::builtin::scheduled_action::ScheduleMode::Tool,
+            session_id: Some(session_id.into()),
+            tool_name: Some("notify".into()),
+            tool_args: None,
+            prompt: None,
+        })
+        .await
+        .unwrap();
+
+    service.cancel_owned_background_by_session(session_id).await;
+
+    assert_eq!(service.status(&scheduled_id).await["status"], "waiting");
+}
+
+#[tokio::test]
+async fn full_session_cleanup_cancels_background_before_scheduled() {
+    let service = Arc::new(ActionService::new());
+    let session_id = "ses-full-cancel";
+    let scheduled_id = service
+        .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+            due_at: None,
+            delay_secs: Some(3600),
+            watch_action_id: None,
+            title: "Full cleanup".into(),
+            body: "cancel me".into(),
+            mode: crate::builtin::scheduled_action::ScheduleMode::Tool,
+            session_id: Some(session_id.into()),
+            tool_name: Some("notify".into()),
+            tool_args: None,
+            prompt: None,
+        })
+        .await
+        .unwrap();
+    let background_id = "act-full-cancel-background";
+    let (kill_tx, kill_rx) = tokio::sync::oneshot::channel();
+    service.actions.write().await.insert(
+        background_id.into(),
+        session_test_action_entry(
+            ActionKind::Background,
+            Some(session_id),
+            ActionState::Running {
+                started_at: "started".into(),
+            },
+            Some(kill_tx),
+            None,
+        ),
+    );
+    let events = capture_action_events(&service);
+
+    service.cancel_owned_by_session(session_id).await;
+
+    assert!(kill_rx.await.is_ok(), "background kill channel is signaled");
+    assert_eq!(service.status(background_id).await["status"], "not_found");
+    assert_eq!(service.status(&scheduled_id).await["status"], "cancelled");
+    let finished = events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(name, _)| name == "action:finished")
+        .map(|(_, payload)| payload["action_id"].as_str().unwrap().to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(finished, vec![background_id.to_string(), scheduled_id]);
+}
+
+#[tokio::test]
+async fn session_cleanup_leaves_non_owner_running_and_terminal_history_unchanged() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let db = Arc::new(Database::open(&dir.path().join("session-cancel.db")).unwrap());
+    let service = Arc::new(ActionService::new());
+    service
+        .set_action_store(Some(ActionStore::new(db.clone())))
+        .await;
+    let session_id = "ses-terminal-owner";
+    let terminal_id = "act-terminal-owner";
+    db.save_action(terminal_id, Some(session_id), "echo terminal", "started")
+        .unwrap();
+    db.finish_action(
+        terminal_id,
+        ActionStatus::Completed,
+        Some("completed"),
+        None,
+        None,
+        None,
+        Some(0),
+        "finished",
+    )
+    .unwrap();
+    let terminal_state =
+        TerminalTimestamps::new("started", "finished").build(TerminalPayload::Completed {
+            output: "completed".into(),
+            exit_code: Some(0),
+            truncated: false,
+            log_path: None,
+        });
+    service.actions.write().await.insert(
+        terminal_id.into(),
+        session_test_action_entry(
+            ActionKind::Background,
+            Some(session_id),
+            terminal_state,
+            None,
+            None,
+        ),
+    );
+
+    let non_owner_id = "act-other-session";
+    db.save_action(non_owner_id, Some("ses-other"), "echo other", "started")
+        .unwrap();
+    let (non_owner_kill_tx, mut non_owner_kill_rx) = tokio::sync::oneshot::channel();
+    service.actions.write().await.insert(
+        non_owner_id.into(),
+        session_test_action_entry(
+            ActionKind::Background,
+            Some("ses-other"),
+            ActionState::Running {
+                started_at: "started".into(),
+            },
+            Some(non_owner_kill_tx),
+            None,
+        ),
+    );
+    let events = capture_action_events(&service);
+
+    service.cancel_owned_by_session(session_id).await;
+
+    assert_eq!(
+        db.get_action(terminal_id).unwrap().unwrap().status,
+        ActionStatus::Completed
+    );
+    assert_eq!(
+        db.get_action(non_owner_id).unwrap().unwrap().status,
+        ActionStatus::Running
+    );
+    assert_eq!(service.status(non_owner_id).await["status"], "running");
+    assert!(matches!(
+        non_owner_kill_rx.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+    ));
+    assert_eq!(terminal_event_count(&events), 0);
+}
+
+#[tokio::test]
+async fn session_cleanup_continues_after_scheduled_cancel_failure() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let db = Arc::new(Database::open(&dir.path().join("scheduled-cancel-fold.db")).unwrap());
+    let service = Arc::new(ActionService::new());
+    service
+        .set_action_store(Some(ActionStore::new(db.clone())))
+        .await;
+    let session_id = "ses-cancel-fold";
+    let blocked_id = service
+        .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+            due_at: None,
+            delay_secs: Some(3600),
+            watch_action_id: None,
+            title: "Blocked cancellation".into(),
+            body: "remains waiting".into(),
+            mode: crate::builtin::scheduled_action::ScheduleMode::Tool,
+            session_id: Some(session_id.into()),
+            tool_name: Some("notify".into()),
+            tool_args: None,
+            prompt: None,
+        })
+        .await
+        .unwrap();
+    let other_id = service
+        .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+            due_at: None,
+            delay_secs: Some(3600),
+            watch_action_id: None,
+            title: "Independent cancellation".into(),
+            body: "still cancels".into(),
+            mode: crate::builtin::scheduled_action::ScheduleMode::Tool,
+            session_id: Some(session_id.into()),
+            tool_name: Some("notify".into()),
+            tool_args: None,
+            prompt: None,
+        })
+        .await
+        .unwrap();
+    db.conn()
+        .execute_batch(&format!(
+            "CREATE TRIGGER block_one_scheduled_cancel
+             BEFORE UPDATE OF status ON actions
+             WHEN NEW.id = '{blocked_id}' AND NEW.kind = 'scheduled' AND NEW.status = 'cancelled'
+             BEGIN SELECT RAISE(ABORT, 'injected cancellation failure'); END;"
+        ))
+        .unwrap();
+
+    service.cancel_owned_by_session(session_id).await;
+
+    assert_eq!(service.status(&blocked_id).await["status"], "waiting");
+    assert_eq!(service.status(&other_id).await["status"], "cancelled");
+    assert_eq!(
+        db.get_action(&blocked_id).unwrap().unwrap().status,
+        ActionStatus::Waiting
+    );
+    assert_eq!(
+        db.get_action(&other_id).unwrap().unwrap().status,
+        ActionStatus::Cancelled
+    );
+
+    db.conn()
+        .execute_batch("DROP TRIGGER block_one_scheduled_cancel")
+        .unwrap();
+    assert!(service.cancel(&blocked_id).await);
 }
 
 #[tokio::test]

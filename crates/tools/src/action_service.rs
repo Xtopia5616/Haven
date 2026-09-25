@@ -1,6 +1,7 @@
 use haven_common::ActionStatus;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -696,6 +697,12 @@ struct ActionEntry {
     /// Timer/dependency spec for scheduled actions.  Both process and timer
     /// actions live in the same map; only their worker-specific spec differs.
     scheduled: Option<ScheduledActionEntry>,
+}
+
+#[derive(Default)]
+struct OwnedActionSelection {
+    live_ids: Vec<String>,
+    terminal_ids: Vec<String>,
 }
 
 /// True when a terminal entry has outlived the configured terminal-action TTL
@@ -2126,55 +2133,19 @@ impl ActionService {
     /// the UI via `action:finished` before leaving the board — otherwise the
     /// titlebar panel keeps a ghost "running" row that cannot be stopped.
     pub async fn cancel_owned_background_by_session(self: &Arc<Self>, session_id: &str) {
-        let ids: Vec<String> = {
-            let actions = self.actions.read().await;
-            actions
-                .iter()
-                .filter(|(_, e)| {
-                    e.kind == ActionKind::Background && e.session_id.as_deref() == Some(session_id)
-                })
-                .map(|(id, _)| id.clone())
-                .collect()
-        };
-        for id in ids {
-            let (started_at, terminal) = {
-                let mut actions = self.actions.write().await;
-                let Some(entry) = actions.get_mut(&id) else {
-                    continue;
-                };
-                if let Some(tx) = entry.kill.take() {
-                    let _ = tx.send(());
+        let service = Arc::clone(self);
+        let owner = session_id.to_string();
+        let selection = self
+            .cancel_owned_live_actions(session_id, ActionKind::Background, move |id| {
+                let service = Arc::clone(&service);
+                let owner = owner.clone();
+                async move {
+                    service.cancel_owned_background_action(&id, &owner).await;
                 }
-                let started_at = match &entry.state {
-                    ActionState::Running { started_at } => Some(started_at.clone()),
-                    ActionState::Completed { .. }
-                    | ActionState::Failed { .. }
-                    | ActionState::Cancelled { .. }
-                    | ActionState::Waiting => None,
-                };
-                (started_at, entry.state.is_terminal())
-            };
-            if terminal {
-                // A previously committed result already published its terminal
-                // event. Cleanup only drops its board entry.
-                self.actions.write().await.remove(&id);
-                continue;
-            }
-            if let Some(started_at) = started_at {
-                let state = TerminalTimestamps::now(started_at).build(TerminalPayload::Cancelled);
-                match self.try_commit_background_terminal(&id, &state, true).await {
-                    Ok(_) => {}
-                    Err(error) => {
-                        tracing::warn!(
-                            action_id = %id,
-                            "failed to persist session cleanup cancellation: {error}"
-                        );
-                        self.retry_background_terminal_persistence(&id, state, true)
-                            .await;
-                    }
-                }
-            }
-        }
+            })
+            .await;
+        self.drop_owned_terminal_background_actions(&selection.terminal_ids, session_id)
+            .await;
     }
 
     /// Cancel all action kinds owned by `session_id`. This is used by explicit
@@ -3009,27 +2980,115 @@ impl ActionService {
         true
     }
 
-    async fn cancel_owned_scheduled_by_session(&self, session_id: &str) {
-        let ids: Vec<_> = {
-            let actions = self.actions.read().await;
-            actions
-                .iter()
-                .filter_map(|(id, entry)| {
-                    entry.scheduled.as_ref()?;
-                    if entry.kind == ActionKind::Scheduled
-                        && entry.state.status().is_live()
-                        && entry.session_id.as_deref() == Some(session_id)
-                    {
-                        Some(id.clone())
-                    } else {
-                        None
-                    }
-                })
-                .collect()
+    async fn cancel_owned_background_action(self: &Arc<Self>, id: &str, session_id: &str) {
+        let started_at = {
+            let mut actions = self.actions.write().await;
+            let Some(entry) = actions.get_mut(id) else {
+                return;
+            };
+            if entry.kind != ActionKind::Background
+                || entry.session_id.as_deref() != Some(session_id)
+            {
+                return;
+            }
+            if let Some(tx) = entry.kill.take() {
+                let _ = tx.send(());
+            }
+            match &entry.state {
+                ActionState::Running { started_at } => Some(started_at.clone()),
+                ActionState::Completed { .. }
+                | ActionState::Failed { .. }
+                | ActionState::Cancelled { .. }
+                | ActionState::Waiting => None,
+            }
         };
-        for id in ids {
-            let _ = self.cancel_scheduled(&id, Some(session_id)).await;
+        let Some(started_at) = started_at else {
+            // If the action finished after selection, it already published its
+            // terminal event. Cleanup only drops the board entry.
+            let mut actions = self.actions.write().await;
+            if actions.get(id).is_some_and(|entry| {
+                entry.kind == ActionKind::Background
+                    && entry.session_id.as_deref() == Some(session_id)
+                    && entry.state.is_terminal()
+            }) {
+                actions.remove(id);
+            }
+            return;
+        };
+
+        let state = TerminalTimestamps::now(started_at).build(TerminalPayload::Cancelled);
+        if let Err(error) = self.try_commit_background_terminal(id, &state, true).await {
+            tracing::warn!(
+                action_id = %id,
+                "failed to persist session cleanup cancellation: {error}"
+            );
+            self.retry_background_terminal_persistence(id, state, true)
+                .await;
         }
+    }
+
+    async fn drop_owned_terminal_background_actions(&self, ids: &[String], session_id: &str) {
+        let mut actions = self.actions.write().await;
+        for id in ids {
+            if actions.get(id).is_some_and(|entry| {
+                entry.kind == ActionKind::Background
+                    && entry.session_id.as_deref() == Some(session_id)
+                    && entry.state.is_terminal()
+            }) {
+                actions.remove(id);
+            }
+        }
+    }
+
+    async fn cancel_owned_scheduled_by_session(self: &Arc<Self>, session_id: &str) {
+        let service = Arc::clone(self);
+        let owner = session_id.to_string();
+        self.cancel_owned_live_actions(session_id, ActionKind::Scheduled, move |id| {
+            let service = Arc::clone(&service);
+            let owner = owner.clone();
+            async move { service.cancel_scheduled(&id, Some(&owner)).await }
+        })
+        .await;
+    }
+
+    /// Select once, then visit matching live owned actions sequentially without
+    /// holding the board lock across a family-specific asynchronous callback.
+    /// Terminal IDs are returned for background's existing board cleanup; they
+    /// are never fed into cancellation callbacks. Callback return values remain
+    /// intentionally ignored, so one false/error result cannot short-circuit
+    /// the remaining actions; family-specific logging and retries stay there.
+    async fn cancel_owned_live_actions<F, Fut, R>(
+        &self,
+        session_id: &str,
+        kind: ActionKind,
+        mut cancel: F,
+    ) -> OwnedActionSelection
+    where
+        F: FnMut(String) -> Fut,
+        Fut: Future<Output = R>,
+    {
+        let selection = {
+            let actions = self.actions.read().await;
+            let mut selection = OwnedActionSelection::default();
+            for (id, entry) in actions.iter() {
+                if entry.kind != kind || entry.session_id.as_deref() != Some(session_id) {
+                    continue;
+                }
+                if entry.state.status().is_live() {
+                    if kind != ActionKind::Scheduled || entry.scheduled.is_some() {
+                        selection.live_ids.push(id.clone());
+                    }
+                } else if entry.state.is_terminal() {
+                    selection.terminal_ids.push(id.clone());
+                }
+            }
+            selection
+        };
+
+        for id in selection.live_ids.iter().cloned() {
+            let _ = cancel(id).await;
+        }
+        selection
     }
 
     /// Restore every persisted action family through one entry point.
