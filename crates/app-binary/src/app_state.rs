@@ -3,7 +3,7 @@ use crate::desktop::DesktopShell;
 use crate::events::AppBootstrapEvent;
 use crate::runtime::{ApplicationRuntime, RuntimeServices};
 use haven_agent::SessionSupervisor;
-use haven_agent::{AgentLayer, MemoryService};
+use haven_agent::{AgentLayer, MemoryService, PendingSessionRecovery};
 use haven_common::config::{ConfigLoader, ConfigService, LogLevel};
 use haven_input::InputPipeline;
 use haven_llm::LlmRouter;
@@ -214,14 +214,16 @@ impl AppState {
             Some(router.clone()),
             context_limits.embedding_chunk_size,
         ));
-        let agent = Arc::new(AgentLayer::new(
+        let agent_startup = AgentLayer::build(
             memory_service,
             executor.clone(),
             router.clone(),
             max_steps,
             conversation_window_size,
             context_limits,
-        ));
+        );
+        let agent = Arc::new(agent_startup.agent);
+        let memory_startup = agent_startup.memory_startup;
         agent.set_media_strategy(cfg.media.input_strategy);
         agent.set_session_max_steps(session_max_steps);
 
@@ -234,19 +236,21 @@ impl AppState {
             tools: tools.clone(),
             executor: executor.clone(),
             agent: agent.clone(),
+            memory_startup,
             pipeline: pipeline.clone(),
             shell: shell.clone(),
             log_filter_handles: filter_handles.clone(),
             config_service: config_service.clone(),
         }));
 
-        // ApplicationRuntime owns the task cancellation/join boundary;
-        // MemoryRuntime owns the six-hour maintenance schedule and keeps
-        // maintenance failures out of the ReAct path.
+        // ApplicationRuntime owns task registration, cancellation, and join;
+        // MemoryStartup retains the six-hour schedule policy.
         {
-            let agent = agent.clone();
+            let memory_startup = runtime.memory_startup.clone();
             runtime.spawn_with_child_token("memory-maintenance", move |cancel| async move {
-                agent.run_memory_maintenance_until_cancelled(&cancel).await;
+                memory_startup
+                    .run_maintenance_until_cancelled(&cancel)
+                    .await;
             });
         }
 
@@ -608,6 +612,7 @@ impl AppState {
         let tools = self.tools.clone();
         let pipeline = self.pipeline.clone();
         let agent = self.agent.clone();
+        let runtime = self.runtime.clone();
         let bootstrap_ready = self.bootstrap_ready.clone();
         let cfg = match self.config_service.snapshot() {
             Ok(snapshot) => snapshot.config,
@@ -625,7 +630,8 @@ impl AppState {
             status: BootstrapStatus::Loading.as_str().to_string(),
         });
 
-        self.runtime
+        let bootstrap_runtime = runtime.clone();
+        runtime
             .spawn_with_child_token("app-bootstrap", move |cancel| async move {
             // Audio engine + VAD worker: first recording must not pay spawn
             // latency, but window creation should not wait for it either.
@@ -634,9 +640,9 @@ impl AppState {
             // Start new conversations immediately. Recovery of sessions left
             // Pending by a previous process is deferred until the catalog is
             // ready below, so restart semantics do not race an empty catalog.
-            agent
-                .clone()
-                .start_without_pending_recovery_with_cancellation(cancel.clone());
+            bootstrap_runtime.start_agent_after_memory_ready(
+                PendingSessionRecovery::DeferUntilCatalogReady,
+            );
 
             // MCP discover + skills scan run behind an explicit deadline so a
             // hung server cannot block session resume forever. This task is
@@ -757,6 +763,46 @@ mod tests {
             .await
             .unwrap();
         let runtime = state.runtime.clone();
+
+        let session = runtime
+            .executor
+            .create_session("app-owned memory runtime")
+            .await
+            .unwrap();
+        runtime
+            .session_store
+            .append(&session.id, "usage_recorded", "{}", None, None)
+            .unwrap();
+
+        // The UI maintenance command still calls the Agent's single-pass
+        // worker entry point rather than the periodic schedule.
+        runtime.agent.run_memory_maintenance().await.unwrap();
+
+        let tasks_before_memory_start = runtime.task_count_for_test();
+        assert!(
+            runtime.start_agent_after_memory_ready(PendingSessionRecovery::DeferUntilCatalogReady,)
+        );
+        let startup_deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            let cursor = runtime
+                .session_store
+                .memory_event_cursor_optional_cancellable(
+                    &session.id,
+                    tokio_util::sync::CancellationToken::new(),
+                )
+                .await
+                .unwrap();
+            let registered = runtime.task_count_for_test();
+            if cursor == Some(1) && registered >= tasks_before_memory_start + 2 {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < startup_deadline,
+                "app did not prepare memory and register its live consumer"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+
         let dropped = Arc::new(AtomicBool::new(false));
         let dropped_task = dropped.clone();
 
@@ -804,6 +850,10 @@ mod tests {
             .expect("capability reads must survive shutdown");
 
         assert!(runtime.cancellation_token().is_cancelled());
+        assert!(
+            runtime.task_count_for_test() == 0,
+            "shutdown must join the memory startup and live consumer tasks"
+        );
         assert!(dropped.load(Ordering::Acquire));
         assert!(!runtime.spawn("late-task", async {}));
         let after_shutdown = runtime.tools.runtime_capabilities().await;

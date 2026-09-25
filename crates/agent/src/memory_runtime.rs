@@ -1,5 +1,7 @@
 //! Ordered processing and bounded live/replay recovery for memory events.
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -32,13 +34,13 @@ pub enum MemoryEventProcessOutcome {
 
 /// Processes committed memory trigger events using the existing extraction
 /// outbox. Transcript contents are never read from event payloads.
-pub struct MemoryRuntime {
+struct MemoryRuntime {
     session_store: SessionStore,
     memory_worker: Arc<MemoryWorker>,
 }
 
 impl MemoryRuntime {
-    pub fn new(session_store: SessionStore, memory_worker: Arc<MemoryWorker>) -> Self {
+    fn new(session_store: SessionStore, memory_worker: Arc<MemoryWorker>) -> Self {
         Self {
             session_store,
             memory_worker,
@@ -57,7 +59,7 @@ impl MemoryRuntime {
     /// Initialization failures are logged and retried with cancellable
     /// backoff while keeping the original broadcast receiver and session
     /// snapshot. A present cursor at zero is deliberately not baselined.
-    pub async fn prepare_start(
+    async fn prepare_start(
         &self,
         cancellation: &CancellationToken,
     ) -> anyhow::Result<broadcast::Receiver<SessionEvent>> {
@@ -180,7 +182,7 @@ impl MemoryRuntime {
     /// Process a live event, filling any sequence gap from bounded durable
     /// replay before retrying the received event. Duplicate overlap is
     /// delegated to `process_event`'s durable cursor check.
-    pub async fn process_live_event(
+    async fn process_live_event(
         &self,
         target_session_id: &str,
         event: &SessionEvent,
@@ -207,7 +209,7 @@ impl MemoryRuntime {
 
     /// Recover one session through its current durable high-water mark using
     /// pages no larger than `MAX_SESSION_EVENT_REPLAY_PAGE_SIZE`.
-    pub async fn recover_session(
+    async fn recover_session(
         &self,
         session_id: &str,
         cancellation: &CancellationToken,
@@ -305,22 +307,10 @@ impl MemoryRuntime {
     /// Run the live memory event consumer until cancellation or broadcast
     /// closure. A lost broadcast range is recovered from each visible
     /// session's durable event pages.
-    pub async fn run_until_cancelled(&self, cancellation: &CancellationToken) {
-        let live = match self.prepare_start(cancellation).await {
-            Ok(live) => live,
-            Err(_) if cancellation.is_cancelled() => return,
-            Err(error) => {
-                tracing::error!("memory runtime failed to prepare: {}", error);
-                return;
-            }
-        };
-        self.run_prepared(live, cancellation).await;
-    }
-
     /// Own the periodic maintenance schedule while leaving task ownership and
     /// cancellation joining to the application runtime. Manual maintenance
     /// commands still use `AgentLayer::run_memory_maintenance` directly.
-    pub async fn run_maintenance_until_cancelled(&self, cancellation: &CancellationToken) {
+    async fn run_maintenance_until_cancelled(&self, cancellation: &CancellationToken) {
         let mut ticker = tokio::time::interval(MEMORY_MAINTENANCE_INTERVAL);
         loop {
             tokio::select! {
@@ -338,9 +328,9 @@ impl MemoryRuntime {
     }
 
     /// Run the live consumer using the receiver returned by `prepare_start`.
-    /// Agent startup calls this only after the recovery preparation has
-    /// completed, then opens the session dispatcher.
-    pub(crate) async fn run_prepared(
+    /// ApplicationRuntime registers this only after recovery preparation has
+    /// completed, then opens the Agent session dispatcher.
+    async fn run_prepared(
         &self,
         mut live: broadcast::Receiver<SessionEvent>,
         cancellation: &CancellationToken,
@@ -518,6 +508,101 @@ impl MemoryRuntime {
             .context("checkpoint memory event cursor")?;
 
         Ok(MemoryEventProcessOutcome::Checkpointed { enqueued })
+    }
+}
+
+/// App-owned lifecycle boundary for the unique memory runtime assembled with
+/// an AgentLayer. Its implementation stays private to haven-agent; the app
+/// receives only startup, live-task, maintenance, and shutdown operations.
+#[derive(Clone)]
+pub struct MemoryStartup {
+    runtime: Arc<MemoryRuntime>,
+}
+
+/// The receiver produced only after startup cursor baseline, outbox restore,
+/// and visible-session replay have all completed. It is intentionally
+/// non-Clone and has no receiver accessor: the live consumer takes it once.
+pub struct PreparedMemoryRuntime {
+    live: broadcast::Receiver<SessionEvent>,
+}
+
+/// Proof that a prepared memory consumer has been registered before the Agent
+/// dispatcher is opened. Only `MemoryStartup::start_prepared` can mint it.
+pub struct MemoryReady {
+    _private: (),
+}
+
+/// One-time task handoff for the prepared live consumer and its readiness
+/// proof. The application registers the future, then passes the proof to the
+/// Agent dispatcher entry point.
+pub struct MemoryLiveTask {
+    readiness: MemoryReady,
+    future: Pin<Box<dyn Future<Output = ()> + Send + 'static>>,
+}
+
+impl MemoryStartup {
+    pub(crate) fn new(session_store: SessionStore, memory_worker: Arc<MemoryWorker>) -> Self {
+        Self {
+            runtime: Arc::new(MemoryRuntime::new(session_store, memory_worker)),
+        }
+    }
+
+    /// Prepare subscriptions and durable memory recovery before an Agent
+    /// dispatcher can start.
+    pub async fn prepare_start(
+        &self,
+        cancellation: &CancellationToken,
+    ) -> anyhow::Result<PreparedMemoryRuntime> {
+        let live = self.runtime.prepare_start(cancellation).await?;
+        Ok(PreparedMemoryRuntime { live })
+    }
+
+    /// Consume the unique prepared receiver into a live task. The returned
+    /// proof is meaningful only together with this task registration.
+    pub fn start_prepared(
+        &self,
+        prepared: PreparedMemoryRuntime,
+        cancellation: CancellationToken,
+    ) -> MemoryLiveTask {
+        let runtime = self.runtime.clone();
+        let future = Box::pin(async move {
+            runtime.run_prepared(prepared.live, &cancellation).await;
+        });
+        MemoryLiveTask {
+            readiness: MemoryReady { _private: () },
+            future,
+        }
+    }
+
+    /// Run the memory-owned six-hour maintenance schedule. The application
+    /// owns the surrounding task and its join handle.
+    pub async fn run_maintenance_until_cancelled(&self, cancellation: &CancellationToken) {
+        self.runtime
+            .run_maintenance_until_cancelled(cancellation)
+            .await;
+    }
+
+    /// Stop the shared worker after the application cancellation boundary has
+    /// been signalled. Durable outbox markers remain available for recovery.
+    pub fn shutdown_background_workers(&self) {
+        self.runtime.memory_worker.shutdown();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn uses_memory_worker_for_test(&self, worker: &Arc<MemoryWorker>) -> bool {
+        self.runtime.uses_memory_worker_for_test(worker)
+    }
+}
+
+impl MemoryLiveTask {
+    /// Give the live future to an application-owned task registry. Readiness
+    /// is returned only when registration succeeds, preventing callers from
+    /// opening the dispatcher after a rejected task handoff.
+    pub fn register_with(
+        self,
+        register: impl FnOnce(Pin<Box<dyn Future<Output = ()> + Send + 'static>>) -> Option<()>,
+    ) -> Option<MemoryReady> {
+        register(self.future).map(|()| self.readiness)
     }
 }
 

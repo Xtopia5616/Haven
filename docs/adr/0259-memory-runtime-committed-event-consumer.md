@@ -1,5 +1,7 @@
 # ADR 0259：MemoryRuntime 消费已提交会话事件
 
+> 当前 app/Agent 所有权与启动入口由 [ADR 0367](0367-memory-runtime-application-ownership.md) 修订：事件处理语义不变，MemoryStartup 由 ApplicationRuntime 持有并负责 prepare/live task 注册；本文旧的 AgentLayer start wiring 仅是当时实现记录。
+
 - 状态：Accepted（设计已采纳；实现未开始）
 - 日期：2026-09-24
 - 范围：`haven-agent` 记忆后台触发、`haven-memory::SessionStore` 事件订阅与内部 `kv_store`

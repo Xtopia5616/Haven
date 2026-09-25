@@ -1,5 +1,7 @@
 # ADR 0362：MemoryRuntime 应用边界所有权审计
 
+> 后续决定见 [ADR 0367](0367-memory-runtime-application-ownership.md)：typed construction/readiness handoff 已实现，MemoryStartup、prepare task 与 live consumer 现由 ApplicationRuntime 持有。本文记录原审计及暂缓决定，不再描述当前实现。
+
 - 状态：审计完成；迁移暂缓
 - 日期：2026-09-26
 - 范围：`MemoryRuntime` 的长期容器所有权、Agent dispatcher readiness barrier 与应用退出边界

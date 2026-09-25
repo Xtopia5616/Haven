@@ -35,20 +35,34 @@ pub struct AgentLayer {
     pub(crate) memory: Arc<MemoryService>,
     pub(crate) react_engine: Arc<ReActEngine>,
     pub(crate) memory_worker: Arc<MemoryWorker>,
-    pub(crate) memory_runtime: Arc<MemoryRuntime>,
     pub(crate) title: Option<TitleGenerator>,
     pub(crate) title_in_flight: Arc<Mutex<HashSet<String>>>,
 }
 
+/// The one-time composition result from `AgentLayer::build`. The application
+/// keeps `memory_startup`; the Agent retains only its worker capability.
+pub struct AgentStartup {
+    pub agent: AgentLayer,
+    pub memory_startup: MemoryStartup,
+}
+
+/// Controls whether the dispatcher restores sessions that were already
+/// pending before process startup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PendingSessionRecovery {
+    RecoverImmediately,
+    DeferUntilCatalogReady,
+}
+
 impl AgentLayer {
-    pub fn new(
+    pub fn build(
         memory_service: Arc<MemoryService>,
         executor: Arc<SessionSupervisor>,
         router: Arc<LlmRouter>,
         max_steps: u32,
         conversation_window_size: usize,
         context_limits: ContextLimitsConfig,
-    ) -> Self {
+    ) -> AgentStartup {
         let events = Arc::new(EventDispatcher::new());
         let memory_store = memory_service.memory_store();
         let tools = executor.get_tools();
@@ -67,10 +81,7 @@ impl AgentLayer {
             context_limits.sanitize_field_max_chars,
             context_limits.fact_extraction_min_interval_secs,
         ));
-        let memory_runtime = Arc::new(MemoryRuntime::new(
-            executor.session_store(),
-            memory_worker.clone(),
-        ));
+        let memory_startup = MemoryStartup::new(executor.session_store(), memory_worker.clone());
         // M2: mid-run MEMORY fence refresh after successful fact writes.
         let memory_patch = crate::react::MemoryPatchHandle {
             memory_worker: memory_worker.clone(),
@@ -94,7 +105,7 @@ impl AgentLayer {
         // and `generate` returns None.
         let title = Some(TitleGenerator::new(router));
 
-        Self {
+        let agent = Self {
             #[cfg(test)]
             db: memory_service.database_handle_for_test(),
             executor,
@@ -104,9 +115,12 @@ impl AgentLayer {
             memory: memory_service,
             react_engine,
             memory_worker,
-            memory_runtime,
             title,
             title_in_flight: Arc::new(Mutex::new(HashSet::new())),
+        };
+        AgentStartup {
+            agent,
+            memory_startup,
         }
     }
 
@@ -326,25 +340,6 @@ impl AgentLayer {
         self.memory_worker.run_memory_maintenance().await
     }
 
-    /// Run the app-owned periodic memory maintenance schedule. The
-    /// application runtime still owns the cancellation token and task join;
-    /// `MemoryRuntime` owns the interval policy and failure isolation.
-    pub async fn run_memory_maintenance_until_cancelled(
-        &self,
-        cancellation: &tokio_util::sync::CancellationToken,
-    ) {
-        self.memory_runtime
-            .run_maintenance_until_cancelled(cancellation)
-            .await;
-    }
-
-    /// Stop background memory work during application teardown. Durable
-    /// outbox markers remain in the database; the worker only stops its live
-    /// projection and will restore those markers on the next process start.
-    pub fn shutdown_background_workers(&self) {
-        self.memory_worker.shutdown();
-    }
-
     /// Forward a fully-scoped memory query through the agent boundary.
     pub async fn recall_memory_query(
         &self,
@@ -367,91 +362,40 @@ impl AgentLayer {
         self.react_engine.check_connection().await
     }
 
-    /// Spawn the SessionSupervisor dispatcher with a runner wired to this
-    /// AgentLayer. Must be called exactly once after construction.
-    pub fn start(self: Arc<Self>) {
-        self.start_with_cancellation(CancellationToken::new());
-    }
-
-    /// Start the dispatcher and its lifecycle consumers under an application
-    /// supplied cancellation boundary.
-    pub fn start_with_cancellation(self: Arc<Self>, cancellation: CancellationToken) {
-        self.start_inner(true, cancellation);
-    }
-
-    /// Start the dispatcher immediately, but defer recovery of sessions that
-    /// were already pending before process startup. The desktop uses this
-    /// during cold start so a fresh conversation is not blocked by MCP/Skills
-    /// discovery; it calls `load_pending_sessions` once that catalog is ready.
-    pub fn start_without_pending_recovery(self: Arc<Self>) {
-        self.start_without_pending_recovery_with_cancellation(CancellationToken::new());
-    }
-
-    /// Cold-start variant of [`Self::start_with_cancellation`].
-    pub fn start_without_pending_recovery_with_cancellation(
-        self: Arc<Self>,
-        cancellation: CancellationToken,
-    ) {
-        self.start_inner(false, cancellation);
-    }
-
     /// Reload sessions that were left Pending by a previous process after the
     /// desktop has finished warming its tool catalog.
     pub async fn recover_pending_sessions(&self) -> anyhow::Result<usize> {
         self.executor.load_pending_sessions().await
     }
 
-    fn start_inner(self: Arc<Self>, recover_pending: bool, cancellation: CancellationToken) {
-        let agent = self.clone();
-        tokio::spawn(async move {
-            let live = match agent.memory_runtime.prepare_start(&cancellation).await {
-                Ok(live) => live,
-                Err(error) if cancellation.is_cancelled() => {
-                    tracing::debug!(%error, "memory runtime startup stopped by cancellation");
-                    return;
-                }
-                Err(error) => {
-                    tracing::error!(
-                        %error,
-                        "memory runtime failed to prepare; session dispatcher startup aborted"
-                    );
-                    return;
-                }
-            };
-
-            if cancellation.is_cancelled() {
-                tracing::debug!("memory runtime became ready after startup cancellation");
-                return;
-            }
-
-            let memory_runtime = agent.memory_runtime.clone();
-            let memory_cancellation = cancellation.clone();
-            tokio::spawn(async move {
-                memory_runtime
-                    .run_prepared(live, &memory_cancellation)
-                    .await;
-            });
-
-            agent.start_after_memory_ready(recover_pending, cancellation);
-        });
-    }
-
-    fn start_after_memory_ready(
+    /// Open the SessionSupervisor dispatcher only after ApplicationRuntime has
+    /// prepared memory recovery and registered the prepared live consumer.
+    pub fn start_after_memory_ready(
         self: Arc<Self>,
-        recover_pending: bool,
+        _memory_ready: MemoryReady,
+        recovery: PendingSessionRecovery,
         cancellation: CancellationToken,
     ) {
+        if cancellation.is_cancelled() {
+            tracing::debug!("memory runtime became ready after startup cancellation");
+            return;
+        }
         let agent = self.clone();
         let executor = self.executor.clone();
         let handler: RunHandler = Arc::new(move |session_id: String| {
             let agent = agent.clone();
             Box::pin(async move { agent.run_session_from_id(&session_id).await.map(|_| ()) })
         });
-        if recover_pending {
-            executor.start_dispatcher_with_cancellation(handler, cancellation.clone());
-        } else {
-            executor
-                .start_dispatcher_without_recovery_with_cancellation(handler, cancellation.clone());
+        match recovery {
+            PendingSessionRecovery::RecoverImmediately => {
+                executor.start_dispatcher_with_cancellation(handler, cancellation.clone());
+            }
+            PendingSessionRecovery::DeferUntilCatalogReady => {
+                executor.start_dispatcher_without_recovery_with_cancellation(
+                    handler,
+                    cancellation.clone(),
+                );
+            }
         }
 
         self.executor
@@ -1575,14 +1519,15 @@ mod tests {
             Some(router.clone()),
             context_limits.embedding_chunk_size,
         ));
-        let agent = AgentLayer::new(
+        let agent = AgentLayer::build(
             memory_service,
             executor.clone(),
             router,
             10,
             20,
             context_limits,
-        );
+        )
+        .agent;
         (agent, executor)
     }
 
@@ -1764,7 +1709,8 @@ mod tests {
             Some(router.clone()),
             context_limits.embedding_chunk_size,
         ));
-        let agent = AgentLayer::new(memory_service, executor, router, 10, 20, context_limits);
+        let agent =
+            AgentLayer::build(memory_service, executor, router, 10, 20, context_limits).agent;
 
         let limits = ContextLimitsConfig {
             notification_summary_chars: 137,
@@ -1798,7 +1744,7 @@ mod tests {
             context_limits.embedding_chunk_size,
         ));
 
-        let agent = AgentLayer::new(
+        let startup = AgentLayer::build(
             memory_service.clone(),
             executor,
             router,
@@ -1806,6 +1752,7 @@ mod tests {
             20,
             context_limits,
         );
+        let agent = startup.agent;
 
         assert!(Arc::ptr_eq(&agent.memory, &memory_service));
         assert!(
@@ -1819,8 +1766,8 @@ mod tests {
                 .uses_memory_service_for_test(&memory_service)
         );
         assert!(
-            agent
-                .memory_runtime
+            startup
+                .memory_startup
                 .uses_memory_worker_for_test(&agent.memory_worker)
         );
     }
@@ -1846,14 +1793,15 @@ mod tests {
             Some(router.clone()),
             context_limits.embedding_chunk_size,
         ));
-        let agent = AgentLayer::new(
+        let agent = AgentLayer::build(
             memory_service,
             executor.clone(),
             router,
             10,
             20,
             context_limits,
-        );
+        )
+        .agent;
 
         let stored = db.create_session("stored session").unwrap();
         db.update_session_title(&stored.id, "stored title").unwrap();

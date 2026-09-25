@@ -151,25 +151,51 @@ pub(super) fn make_test_agent() -> (Arc<AgentLayer>, Arc<SessionSupervisor>) {
     p.push(format!("haven_agent_test_{}.db", uuid::Uuid::new_v4()));
     let db = Arc::new(Database::open(&p).unwrap());
     let tools = Arc::new(ToolsManager::new());
+    let (agent, _memory_startup, executor) = make_test_agent_with_db_and_startup(
+        db,
+        Arc::new(FinalAnswerMock),
+        tools,
+        ContextLimitsConfig::default(),
+    );
+    (agent, executor)
+}
+
+pub(super) fn make_test_agent_with_startup()
+-> (Arc<AgentLayer>, MemoryStartup, Arc<SessionSupervisor>) {
+    let mut p = std::env::temp_dir();
+    p.push(format!("haven_agent_test_{}.db", uuid::Uuid::new_v4()));
+    let db = Arc::new(Database::open(&p).unwrap());
+    make_test_agent_with_db_and_startup(
+        db,
+        Arc::new(FinalAnswerMock),
+        Arc::new(ToolsManager::new()),
+        ContextLimitsConfig::default(),
+    )
+}
+
+pub(super) fn make_test_agent_with_db_and_startup(
+    db: Arc<Database>,
+    client: Arc<dyn LlmClient>,
+    tools: Arc<ToolsManager>,
+    context_limits: ContextLimitsConfig,
+) -> (Arc<AgentLayer>, MemoryStartup, Arc<SessionSupervisor>) {
     let executor = Arc::new(SessionSupervisor::new_for_test(db.clone(), tools, 1));
-    let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
     let router = Arc::new(LlmRouter::new_with_clients(
         client.clone(),
         client.clone(),
         client.clone(),
         client,
     ));
-    let context_limits = ContextLimitsConfig::default();
     let memory_service = memory_service_for_test(db.clone(), router.clone(), &context_limits);
-    let agent = Arc::new(AgentLayer::new(
+    let startup = AgentLayer::build(
         memory_service,
         executor.clone(),
         router,
         30,
         50,
         context_limits,
-    ));
-    (agent, executor)
+    );
+    (Arc::new(startup.agent), startup.memory_startup, executor)
 }
 
 pub(super) fn make_recording_emitter() -> Arc<RecordingEmitter> {
@@ -239,22 +265,8 @@ pub(super) fn make_test_agent_with_db(
     tools: Arc<ToolsManager>,
     context_limits: ContextLimitsConfig,
 ) -> (Arc<AgentLayer>, Arc<SessionSupervisor>) {
-    let executor = Arc::new(SessionSupervisor::new_for_test(db.clone(), tools, 1));
-    let router = Arc::new(LlmRouter::new_with_clients(
-        client.clone(),
-        client.clone(),
-        client.clone(),
-        client,
-    ));
-    let memory_service = memory_service_for_test(db.clone(), router.clone(), &context_limits);
-    let agent = Arc::new(AgentLayer::new(
-        memory_service,
-        executor.clone(),
-        router,
-        30,
-        50,
-        context_limits,
-    ));
+    let (agent, _memory_startup, executor) =
+        make_test_agent_with_db_and_startup(db, client, tools, context_limits);
     (agent, executor)
 }
 

@@ -98,7 +98,7 @@ async fn resume_restores_tool_overlay_cleanly_in_round_order_and_best_effort() {
     ));
     let context_limits = ContextLimitsConfig::default();
     let memory_service = memory_service_for_test(db.clone(), router.clone(), &context_limits);
-    let agent = AgentLayer::new(memory_service, executor, router, 30, 50, context_limits);
+    let agent = AgentLayer::build(memory_service, executor, router, 30, 50, context_limits).agent;
     let rounds = vec![
         ReActRound {
             step_number: 1,
@@ -217,14 +217,8 @@ async fn enabled_skills_are_global_and_resume_does_not_rebuild_skill_sessions() 
     ));
     let context_limits = ContextLimitsConfig::default();
     let memory_service = memory_service_for_test(db.clone(), router.clone(), &context_limits);
-    let agent = Arc::new(AgentLayer::new(
-        memory_service,
-        executor,
-        router,
-        30,
-        50,
-        context_limits,
-    ));
+    let agent =
+        Arc::new(AgentLayer::build(memory_service, executor, router, 30, 50, context_limits).agent);
 
     // Enabled skills remain host-owned deferred adapters. They are available
     // to the loader, but resume must not silently activate them in a session.

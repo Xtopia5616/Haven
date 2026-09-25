@@ -18,9 +18,10 @@ Memory 领域的调度策略，`MemoryRuntime` 又只负责 committed event cons
 执行完整维护 pass；不改变 dedup、sensitive purge、contradiction、低置信度清理、embedding
 catch-up 或 LLM 仲裁的顺序和返回语义。
 
-`ApplicationRuntime` 仍创建一个 app-scoped task，提供 child cancellation token、持有 join handle
-并负责 shutdown。`AgentLayer` 只提供 app-facing 的 schedule facade；手动 Tauri command 继续
-调用单次 `run_memory_maintenance`，不经过周期循环。周期维护错误不会进入 ReAct turn。
+`ApplicationRuntime` 创建一个 app-scoped task，提供 child cancellation token、持有 join handle
+并负责 shutdown。当前 task 通过 app-owned `MemoryStartup` 调用 schedule；`AgentLayer` 不再持有
+`MemoryRuntime` 或 schedule facade（所有权修订见 ADR 0367）。手动 Tauri command 继续调用
+单次 `AgentLayer::run_memory_maintenance`，不经过周期循环。周期维护错误不会进入 ReAct turn。
 
 本切片不把 `MemoryWorker` 的执行逻辑迁入 `MemoryRuntime`，不新增 `MemoryReader`，也不把
 maintenance 做成用户可见 `ActionService` job。后续若需要通用 Job 生命周期，必须另行定义

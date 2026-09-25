@@ -1,6 +1,6 @@
 # Haven 架构与 crate 职责
 
-> 版本: v1.7 | 日期: 2026-09-26
+> 版本: v1.8 | 日期: 2026-09-26
 > 范围: `crates/` (Rust 后端, Tauri 2)
 > 原则: **依赖单向、叶子优先**。上层 crate 只依赖下层，绝不反向依赖；共享数据与类型放叶子（`haven-common`），
 > 组件职责按「谁拥有实现、谁只消费接口」划分。
@@ -281,9 +281,11 @@ Agent 的 `memory_service.rs` 是 prompt/worker 共用的 typed memory 边界：
 embedding 生命周期读写和 LSH 维护，`memory_index.rs` 保留模型路由、provider 校验、
 批处理和维护门控（ADR 0021、0303、0304）。组合根 `AppState` 在已有 Database、Router
 和 `ContextLimitsConfig` 后创建唯一 `MemoryService`，按配置中的 `embedding_chunk_size`
-初始化并注入 `AgentLayer::new`；AgentLayer 从同一实例派生 stores、`MemoryWorker`、
-`MemoryRuntime` 和 `SystemPromptBuilder`。因此 prompt-memory cache、embedding index 与
-worker memory capability 属于同一服务实例（ADR 0364）。`SystemPromptBuilder::with_memory_service`
+初始化并注入 `AgentLayer::build`；该构造返回 `AgentStartup { agent, memory_startup }`。
+AgentLayer 从同一 service 派生 stores、共享的 `MemoryWorker` 与 `SystemPromptBuilder`；
+`MemoryStartup` 持有唯一 `MemoryRuntime`，并由 ApplicationRuntime 接管长期所有权。Prompt-memory
+cache、embedding index 与 worker memory capability 仍属于同一服务实例（ADR 0364、0367）。
+`SystemPromptBuilder::with_memory_service`
 是唯一公开 builder 构造入口；它不从 Database 创建额外的 MemoryService，因此不产生独立的
 prompt-memory cache 或 embedding index（ADR 0365）。`MemoryService` 构造并持有共享的
 `MemoryFactStore`，`MemoryWorker::load_known_facts` 通过其有界读取端口取得抽取上下文；
@@ -314,7 +316,7 @@ message 与 MEMORY fence，不访问 DB、router 或 cache。事实抽取 outbox
 marker 持久化，不把 provider 网络调用下沉到 Memory；事实维护的 SQL 清理与矛盾候选
 读取由 `fact_maintenance.rs` 负责，`MemoryMaintenanceStore` 提供确定性与 LLM 维护 persistence
 操作的异步 typed 边界；maintenance pass 步骤编排、LLM 仲裁、提案门禁与并发控制仍属于 Agent（ADR 0022、0063、0169、0310、0311）。
-`MemoryRuntime` 负责 startup cursor/replay、committed-event live consumer 和六小时维护 schedule policy（ADR 0263、0267）；当前对象由 `AgentLayer::new` 构造并长期持有。`ApplicationRuntime` 持有周期 task 的 cancellation/join 边界，并经 AgentLayer facade 调用该 schedule。把 runtime 对象移到 app 同时需要 typed 构造交接和 readiness barrier 接口；现状审计及后续最小步骤见 ADR 0362。
+`MemoryRuntime` 负责 startup cursor/replay、committed-event live consumer 和六小时维护 schedule policy（ADR 0263、0267）。`AgentLayer::build` 仅在组合过程中创建它，并通过 `AgentStartup` 将唯一 `MemoryStartup` 交给 ApplicationRuntime；AgentLayer 只保留同一个 `MemoryWorker` capability。AppRuntime 注册 prepare/startup、live consumer 与 maintenance tasks 并负责 cancel/join。`PreparedMemoryRuntime` 按值消费 prepared receiver；AppRuntime 只有在 live task 注册成功后才将 `MemoryReady` 交给 `AgentLayer::start_after_memory_ready`。prepare/replay 失败或取消时 dispatcher 不启动（ADR 0367）。
 
 ### 2.4 `haven-input` —— 输入采集与语音生命周期
 
@@ -534,9 +536,10 @@ limit、创建时间倒序和 errors 的 status 过滤顺序保持原样。组�
   app-scoped task handles 和根 `CancellationToken`；`shutdown`/`teardown` 统一输入、
   session、action、MCP 与 bootstrap worker 的停止顺序。领域 worker 仍由所属 crate
   释放，但必须接收 runtime 子 token 或响应领域 shutdown。
-- `MemoryRuntime` 的周期 task 由 `ApplicationRuntime` 注册并 join，但 runtime 对象本身仍由
-  `AgentLayer` 构造和持有；AgentLayer 的 startup barrier 负责 memory recovery 成功后才开放
-  dispatcher。应用对象所有权迁移因需要新增 typed readiness handoff 而暂缓（ADR 0362）。
+- `ApplicationRuntime` 长期持有 Agent 构造结果交接的 `MemoryStartup`，并注册/join prepare、
+  live consumer 与周期 maintenance task；prepare/replay 完成且 live task 注册后才获得 typed
+  `MemoryReady` 并开放 dispatcher。周期策略仍归 MemoryRuntime，手动 maintenance 命令仍调用
+  Agent 的单次 worker pass，shutdown 先停 worker、后按既有顺序 join app tasks（ADR 0367）。
 - `app_state.rs`：装配 `AppState`（runtime / 瞬态录音状态 / bootstrap 状态 / UI
   confirmation）；命令通过 runtime 稳定句柄消费 db / router / tools / executor /
   agent / pipeline / shell / `config_service` / media clients / stt_client；在组合根创建
@@ -694,6 +697,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 
 | 日期 | 内容 |
 |---|---|
+| 2026-09-26 | §2.3/§2.5/§2.6：AgentStartup 将唯一 MemoryStartup 交给 ApplicationRuntime；typed PreparedMemoryRuntime 一次消费、注册成功才返回 MemoryReady，AppRuntime 注册/join prepare/live/schedule tasks，dispatcher 与 maintenance/manual/shutdown 顺序保持（ADR 0367）|
 | 2026-09-26 | §2.3/§2.5 Memory/Agent：删除 `SystemPromptBuilder::new` 的 raw Database public constructor；prompt 测试显式创建 `MemoryService` 并使用 typed constructor，生产共享 service/cache owner 和运行行为不变（ADR 0365）|
 | 2026-09-26 | §2.3/§2.5/§2.6：`AgentLayer::new` 改接组合根创建的共享 `MemoryService`；AppState 用同一 Router 与配置的 embedding chunk size 创建一次，AgentLayer 继续派生并共享 Worker、Runtime、PromptBuilder 与 typed stores，Runtime 所有权/readiness 不变（ADR 0364）|
 | 2026-09-26 | §2.3/§2.5/§2.6：审计 MemoryRuntime 对象仍由 AgentLayer 持有、ApplicationRuntime 持有其周期 task 生命周期；现有 AgentLayer startup barrier 缺少 app 可组合的 prepared-consumer/readiness API，迁移暂缓并记录最小后续接口步骤（ADR 0362）|

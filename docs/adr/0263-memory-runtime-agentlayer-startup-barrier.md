@@ -1,5 +1,7 @@
 # ADR 0263：AgentLayer 的 MemoryRuntime 启动屏障
 
+> 所有权与跨 crate handoff 后续由 [ADR 0367](0367-memory-runtime-application-ownership.md) 修订：ApplicationRuntime 执行并注册 prepare/live task，取得 typed `MemoryReady` 后调用 Agent dispatcher entry。下方 startup/replay 顺序与 fail-closed 行为继续有效；旧 AgentLayer `start*` 便利入口已删除。
+
 - 状态：Accepted
 - 日期：2026-09-24
 - 范围：`haven-agent::AgentLayer` 启动编排与 `MemoryRuntime` 生命周期

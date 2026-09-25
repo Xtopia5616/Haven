@@ -78,7 +78,7 @@ pub struct MemoryWorker {
     /// Shared shutdown signal for the detached outbox worker and prompt
     /// prefetches. Durable markers remain authoritative when it is cancelled.
     shutdown_token: CancellationToken,
-    /// Lazy worker start so `AgentLayer::new` stays usable outside a Tokio
+    /// Lazy worker start so `AgentLayer::build` stays usable outside a Tokio
     /// runtime (unit tests that only construct the layer).
     outbox_worker_started: AtomicBool,
     /// Sessions whose MEMORY fence should be refreshed at the next

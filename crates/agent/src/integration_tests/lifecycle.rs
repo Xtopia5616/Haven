@@ -29,7 +29,7 @@ fn make_in_memory_agent() -> (Arc<AgentLayer>, Arc<SessionSupervisor>, Arc<Datab
 }
 
 async fn assert_dispatcher_waits_for_memory_runtime(recover_pending: bool) {
-    let (agent, executor) = make_test_agent();
+    let (agent, memory_startup, executor) = make_test_agent_with_startup();
     let session = executor
         .create_session("startup readiness barrier")
         .await
@@ -45,16 +45,13 @@ async fn assert_dispatcher_waits_for_memory_runtime(recover_pending: bool) {
         .unwrap();
 
     let cancellation = CancellationToken::new();
-    if recover_pending {
-        agent.clone().start_with_cancellation(cancellation.clone());
-    } else {
-        agent
-            .clone()
-            .start_without_pending_recovery_with_cancellation(cancellation.clone());
-    }
+    let prepare_cancellation = cancellation.clone();
+    let prepare_startup = memory_startup.clone();
+    let prepare =
+        tokio::spawn(async move { prepare_startup.prepare_start(&prepare_cancellation).await });
 
     // prepare_start retries the injected persistence failure. The session is
-    // already queued, so any dispatcher start before readiness would consume it.
+    // already queued, so no typed readiness handoff exists until it succeeds.
     tokio::time::sleep(std::time::Duration::from_millis(350)).await;
     assert_eq!(
         executor.get_session_status(&session.id).await,
@@ -81,6 +78,37 @@ async fn assert_dispatcher_waits_for_memory_runtime(recover_pending: bool) {
         .await
         .unwrap();
 
+    let prepared = tokio::time::timeout(std::time::Duration::from_secs(3), prepare)
+        .await
+        .expect("memory preparation did not recover after the injected failure")
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(
+        executor.get_session_status(&session.id).await,
+        Some(SessionStatus::Pending),
+        "dispatcher opened before the app registered the prepared live consumer"
+    );
+
+    let live = memory_startup.start_prepared(prepared, cancellation.clone());
+    let mut live_task = None;
+    let readiness = live
+        .register_with(|live_future| {
+            live_task = Some(tokio::spawn(live_future));
+            Some(())
+        })
+        .expect("test registry accepted the prepared live consumer");
+    let live_task = live_task.expect("registry received the live future");
+    agent.clone().start_after_memory_ready(
+        readiness,
+        if recover_pending {
+            PendingSessionRecovery::RecoverImmediately
+        } else {
+            PendingSessionRecovery::DeferUntilCatalogReady
+        },
+        cancellation.clone(),
+    );
+
     let status = tokio::time::timeout(std::time::Duration::from_secs(3), async {
         loop {
             let status = executor.get_session_status(&session.id).await;
@@ -99,6 +127,10 @@ async fn assert_dispatcher_waits_for_memory_runtime(recover_pending: bool) {
     );
 
     cancellation.cancel();
+    tokio::time::timeout(std::time::Duration::from_secs(1), live_task)
+        .await
+        .expect("prepared live memory consumer did not stop after cancellation")
+        .unwrap();
 }
 
 #[tokio::test]
@@ -107,10 +139,50 @@ async fn both_dispatcher_start_modes_wait_for_memory_runtime_readiness() {
     assert_dispatcher_waits_for_memory_runtime(false).await;
 }
 
+#[tokio::test]
+async fn cancelling_memory_preparation_does_not_open_dispatcher() {
+    let (agent, memory_startup, executor) = make_test_agent_with_startup();
+    let session = executor
+        .create_session("cancelled memory startup")
+        .await
+        .unwrap();
+    agent
+        .db
+        .conn()
+        .execute_batch(
+            "CREATE TRIGGER block_memory_runtime_cursor BEFORE INSERT ON kv_store
+             WHEN NEW.key GLOB 'memory_event_cursor.*'
+             BEGIN SELECT RAISE(ABORT, 'test startup cancellation'); END;",
+        )
+        .unwrap();
+
+    let cancellation = CancellationToken::new();
+    let prepare_cancellation = cancellation.clone();
+    let prepare =
+        tokio::spawn(async move { memory_startup.prepare_start(&prepare_cancellation).await });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    cancellation.cancel();
+
+    let result = tokio::time::timeout(std::time::Duration::from_secs(1), prepare)
+        .await
+        .expect("cancelled memory preparation did not exit")
+        .unwrap();
+    let error = match result {
+        Ok(_) => panic!("cancelled memory preparation unexpectedly succeeded"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("cancelled"));
+    assert_eq!(
+        executor.get_session_status(&session.id).await,
+        Some(SessionStatus::Pending),
+        "dispatcher must remain closed after cancelled memory preparation"
+    );
+}
+
 #[test]
-fn agent_new_constructor_works() {
+fn agent_build_constructor_works() {
     let mut p = std::env::temp_dir();
-    p.push(format!("haven_agent_new_{}.db", uuid::Uuid::new_v4()));
+    p.push(format!("haven_agent_build_{}.db", uuid::Uuid::new_v4()));
     let db = Arc::new(Database::open(&p).unwrap());
     let tools = Arc::new(ToolsManager::new());
     let executor = Arc::new(SessionSupervisor::new_for_test(db.clone(), tools, 1));
@@ -123,7 +195,7 @@ fn agent_new_constructor_works() {
     ));
     let context_limits = ContextLimitsConfig::default();
     let memory_service = memory_service_for_test(db.clone(), router.clone(), &context_limits);
-    let agent = AgentLayer::new(memory_service, executor, router, 10, 20, context_limits);
+    let agent = AgentLayer::build(memory_service, executor, router, 10, 20, context_limits).agent;
     // Verify construction succeeded; no per-session indirection remains.
     assert!(agent.db.get_facts("user").unwrap().is_empty());
     let session = agent.db.create_session("input").unwrap();
@@ -169,14 +241,9 @@ async fn replace_router_and_router_work() {
     ));
     let context_limits = ContextLimitsConfig::default();
     let memory_service = memory_service_for_test(db.clone(), router_a.clone(), &context_limits);
-    let agent = Arc::new(AgentLayer::new(
-        memory_service,
-        executor,
-        router_a,
-        10,
-        20,
-        context_limits,
-    ));
+    let agent = Arc::new(
+        AgentLayer::build(memory_service, executor, router_a, 10, 20, context_limits).agent,
+    );
     // Create a new router via the same mock client factory
     let client_b = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
     let router_b = Arc::new(LlmRouter::new_with_clients(
@@ -348,7 +415,7 @@ async fn terminal_action_result_projection_is_idempotent() {
 
 #[tokio::test]
 async fn queued_action_result_is_reconciled_after_session_becomes_terminal() {
-    let (agent, executor) = make_test_agent();
+    let (agent, memory_startup, executor) = make_test_agent_with_startup();
     let action_service = executor.services().actions.clone();
     action_service
         .set_action_store(Some(ActionStore::new(agent.db.clone())))
@@ -398,9 +465,21 @@ async fn queued_action_result_is_reconciled_after_session_becomes_terminal() {
         .unwrap();
 
     let cancellation = tokio_util::sync::CancellationToken::new();
-    agent
-        .clone()
-        .start_without_pending_recovery_with_cancellation(cancellation.clone());
+    let prepared = memory_startup.prepare_start(&cancellation).await.unwrap();
+    let live = memory_startup.start_prepared(prepared, cancellation.clone());
+    let mut live_task = None;
+    let readiness = live
+        .register_with(|live_future| {
+            live_task = Some(tokio::spawn(live_future));
+            Some(())
+        })
+        .expect("test registry accepted the prepared live consumer");
+    let live_task = live_task.expect("registry received the live future");
+    agent.clone().start_after_memory_ready(
+        readiness,
+        PendingSessionRecovery::DeferUntilCatalogReady,
+        cancellation.clone(),
+    );
     let message_id = crate::react::action_result_message_id(action_id);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
     loop {
@@ -434,6 +513,10 @@ async fn queued_action_result_is_reconciled_after_session_becomes_terminal() {
         "durable result must be acknowledged after projection"
     );
     cancellation.cancel();
+    tokio::time::timeout(std::time::Duration::from_secs(1), live_task)
+        .await
+        .expect("memory live task did not stop after cancellation")
+        .unwrap();
 }
 
 #[tokio::test]

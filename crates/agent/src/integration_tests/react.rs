@@ -1408,14 +1408,17 @@ async fn pause_snapshot_and_resume_keep_own_final_answer_in_canonical() {
     ));
     let context_limits = ContextLimitsConfig::default();
     let memory_service = memory_service_for_test(db.clone(), router.clone(), &context_limits);
-    let agent = Arc::new(AgentLayer::new(
-        memory_service,
-        executor.clone(),
-        router,
-        30,
-        50,
-        context_limits,
-    ));
+    let agent = Arc::new(
+        AgentLayer::build(
+            memory_service,
+            executor.clone(),
+            router,
+            30,
+            50,
+            context_limits,
+        )
+        .agent,
+    );
     let collector = Arc::new(EventCollector::new());
     agent.set_emitter(collector.clone());
     let session = executor.create_session("question one").await.unwrap();

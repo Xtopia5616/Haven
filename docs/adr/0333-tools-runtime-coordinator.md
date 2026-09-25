@@ -44,7 +44,7 @@ ADR 0326/0331 已将 runtime capability 策略和单一 typed snapshot 收口，
    ToolsManager façade 更新配置投影/重建目录；`McpManager` 继续拥有实际连接、monitor 与 MCP
    `catalog_version`。这些边界未提供跨来源原子发布，故不引入共同缓存或版本。
 4. `AuthorizedExecutor` 与 builtin/tool 业务逻辑不迁移。Coordinator 不自行实现 shutdown；
-   `ApplicationRuntime` 仍负责取消应用任务、停止 Agent worker、关闭 input pipeline、清理会话、关闭
+   `ApplicationRuntime` 仍负责取消应用任务、经 app-owned `MemoryStartup` 停止共享 Agent worker、关闭 input pipeline、清理会话、关闭
    actions 和 MCP clients，最后 join app-owned tasks。
 
 ## 替代方案

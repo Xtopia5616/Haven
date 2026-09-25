@@ -1,5 +1,7 @@
 # ADR 0262：MemoryRuntime 已提交触发的顺序处理核心
 
+> [ADR 0367](0367-memory-runtime-application-ownership.md) 移除了 public `run_until_cancelled` 便利入口，改由 typed `MemoryStartup::prepare_start` / `start_prepared` 组合准备与 live consumption；本 ADR 的事件处理、cursor、outbox 与 replay 语义保持不变。
+
 - 状态：Accepted
 - 日期：2026-09-24
 - 范围：`haven-agent::MemoryRuntime` 与现有事实抽取 outbox

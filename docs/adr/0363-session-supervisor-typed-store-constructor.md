@@ -1,5 +1,7 @@
 # ADR 0363：SessionSupervisor 构造使用 typed SessionStore
 
+> 后续 [ADR 0367](0367-memory-runtime-application-ownership.md) 将 MemoryRuntime 长期 owner 与启动/live task 移至 ApplicationRuntime；SessionSupervisor 与 Agent/ReAct 使用同一 supervisor SessionStore 的 live sender 关系不变。
+
 - 状态：已采纳（2026-09-26）
 - 范围：`haven-agent::SessionSupervisor::{new, new_with_session_tool_overlay_port}` 的持久化构造边界
 - 基线：HEAD `11df072`；工作区干净

@@ -1,5 +1,7 @@
 # ADR 0364：AgentLayer 构造注入共享 MemoryService
 
+> 后续 [ADR 0367](0367-memory-runtime-application-ownership.md) 调整 `AgentLayer::build` 的返回值为 `AgentStartup`，将同一 Worker 所属的 MemoryStartup 交给 ApplicationRuntime；本文关于共享 MemoryService/cache/worker 构造关系继续有效。
+
 - 状态：已采纳（2026-09-26）
 - 范围：`AgentLayer::new` 的 memory service 构造边界
 - 基线：HEAD `acc2845`；开始时工作区干净

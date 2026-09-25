@@ -8,7 +8,7 @@
 
 use crate::config_runtime::ConfigApplyGate;
 use crate::desktop::DesktopShell;
-use haven_agent::{AgentLayer, SessionSupervisor};
+use haven_agent::{AgentLayer, MemoryStartup, PendingSessionRecovery, SessionSupervisor};
 use haven_common::config::ConfigService;
 use haven_input::InputPipeline;
 use haven_memory::{MemoryFactStore, SessionStore};
@@ -38,6 +38,7 @@ pub struct ApplicationRuntime {
     pub(crate) services: ToolServices,
     pub(crate) executor: Arc<SessionSupervisor>,
     pub(crate) agent: Arc<AgentLayer>,
+    pub(crate) memory_startup: MemoryStartup,
     pub(crate) pipeline: Arc<InputPipeline>,
     pub(crate) shell: Arc<DesktopShell>,
     pub(crate) log_filter_handles: Vec<reload::Handle<EnvFilter, Registry>>,
@@ -45,6 +46,7 @@ pub struct ApplicationRuntime {
     /// Serializes settings and model config commit-plus-apply operations so a
     /// later snapshot cannot publish before an earlier runtime update ends.
     pub(crate) config_apply_gate: ConfigApplyGate,
+    agent_startup_started: AtomicBool,
     shutdown_token: CancellationToken,
     shutting_down: AtomicBool,
     tasks: Mutex<Vec<JoinHandle<()>>>,
@@ -59,6 +61,7 @@ pub(crate) struct RuntimeServices {
     pub(crate) tools: Arc<ToolsManager>,
     pub(crate) executor: Arc<SessionSupervisor>,
     pub(crate) agent: Arc<AgentLayer>,
+    pub(crate) memory_startup: MemoryStartup,
     pub(crate) pipeline: Arc<InputPipeline>,
     pub(crate) shell: Arc<DesktopShell>,
     pub(crate) log_filter_handles: Vec<reload::Handle<EnvFilter, Registry>>,
@@ -75,11 +78,13 @@ impl ApplicationRuntime {
             services,
             executor: runtime_services.executor,
             agent: runtime_services.agent,
+            memory_startup: runtime_services.memory_startup,
             pipeline: runtime_services.pipeline,
             shell: runtime_services.shell,
             log_filter_handles: runtime_services.log_filter_handles,
             config_service: runtime_services.config_service,
             config_apply_gate: ConfigApplyGate::default(),
+            agent_startup_started: AtomicBool::new(false),
             shutdown_token: CancellationToken::new(),
             shutting_down: AtomicBool::new(false),
             tasks: Mutex::new(Vec::new()),
@@ -97,6 +102,14 @@ impl ApplicationRuntime {
     /// runtime itself.
     pub(crate) fn cancellation_token(&self) -> CancellationToken {
         self.shutdown_token.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn task_count_for_test(&self) -> usize {
+        self.tasks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .len()
     }
 
     /// Register an app-scoped task. The task is cancelled and joined by
@@ -143,6 +156,115 @@ impl ApplicationRuntime {
         true
     }
 
+    /// Register a cancellation-aware task without an outer select that would
+    /// drop its future. Use for tasks whose own cancellation path must finish
+    /// before their join handle resolves.
+    pub(crate) fn spawn_cancellable_with_child_token<F, Fut>(
+        &self,
+        name: &'static str,
+        task: F,
+    ) -> bool
+    where
+        F: FnOnce(CancellationToken) -> Fut,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
+        let token = self.cancellation_token().child_token();
+        self.register_cancellation_aware_task(name, task(token))
+    }
+
+    /// Register a future that already owns its cancellation token and
+    /// performs its own orderly shutdown before resolving.
+    pub(crate) fn spawn_cancellable<F>(&self, name: &'static str, future: F) -> bool
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        self.register_cancellation_aware_task(name, future)
+    }
+
+    fn register_cancellation_aware_task<F>(&self, name: &'static str, future: F) -> bool
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        if self.shutting_down.load(Ordering::Acquire) {
+            return false;
+        }
+
+        let mut tasks = self.tasks.lock().unwrap_or_else(|poisoned| {
+            tracing::error!("application task registry lock poisoned; recovering");
+            poisoned.into_inner()
+        });
+        if self.shutting_down.load(Ordering::Acquire) {
+            return false;
+        }
+        tasks.push(self.runtime_handle.spawn(async move {
+            tracing::trace!(task = name, "application cancellation-aware task started");
+            future.await;
+        }));
+        true
+    }
+
+    /// Register app-owned memory preparation and live consumption before
+    /// opening the Agent dispatcher. The startup task is single-shot and the
+    /// live consumer receives its own task handle for shutdown joining.
+    pub(crate) fn start_agent_after_memory_ready(
+        self: &Arc<Self>,
+        recovery: PendingSessionRecovery,
+    ) -> bool {
+        if self
+            .agent_startup_started
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            tracing::warn!("Agent memory startup was requested more than once");
+            return false;
+        }
+
+        let runtime = self.clone();
+        self.spawn_cancellable_with_child_token(
+            "memory-runtime-startup",
+            move |cancellation| async move {
+                let prepared = match runtime.memory_startup.prepare_start(&cancellation).await {
+                    Ok(prepared) => prepared,
+                    Err(error) if cancellation.is_cancelled() => {
+                        tracing::debug!(%error, "memory runtime startup stopped by cancellation");
+                        return;
+                    }
+                    Err(error) => {
+                        tracing::error!(
+                            %error,
+                            "memory runtime failed to prepare; session dispatcher startup aborted"
+                        );
+                        return;
+                    }
+                };
+
+                if cancellation.is_cancelled() {
+                    tracing::debug!("memory runtime became ready after startup cancellation");
+                    return;
+                }
+
+                let live = runtime
+                    .memory_startup
+                    .start_prepared(prepared, runtime.cancellation_token().child_token());
+                let Some(readiness) = live.register_with(|live_future| {
+                    runtime
+                        .spawn_cancellable("memory-runtime-live-consumer", live_future)
+                        .then_some(())
+                }) else {
+                    return;
+                };
+                if cancellation.is_cancelled() {
+                    return;
+                }
+
+                runtime
+                    .agent
+                    .clone()
+                    .start_after_memory_ready(readiness, recovery, cancellation);
+            },
+        )
+    }
+
     /// Stop all application work and release domain resources in dependency
     /// order. This method is idempotent so both the Tauri exit hook and test
     /// teardown can call it safely.
@@ -156,11 +278,9 @@ impl ApplicationRuntime {
         }
 
         self.shutdown_token.cancel();
-        // MemoryWorker owns a detached durable-outbox projection rather than
-        // an ApplicationRuntime task handle. Signal it explicitly after the
-        // shared cancellation boundary so it stops without acknowledging
-        // unfinished durable jobs.
-        self.agent.shutdown_background_workers();
+        // Stop the shared memory worker after the cancellation boundary so it
+        // cannot acknowledge unfinished durable jobs during teardown.
+        self.memory_startup.shutdown_background_workers();
 
         // Stop producers before consumers and resource owners. In particular,
         // this prevents a final recording or session run from starting while
