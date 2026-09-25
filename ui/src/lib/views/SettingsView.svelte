@@ -788,7 +788,7 @@
 			await reconcileDefaultModelBeforeSave();
 			skipNextDefaultModelSync = true;
 			await invoke('update_settings', {
-				settings: {
+				settings: /** @type {import('$lib/contracts/settings.ts').SettingsPayload} */ ({
 					default_shell: defaultShell,
 					llm: llmConfig,
 					hotkey: { key_binding: hotkeyBinding, mode: hotkeyMode, mute_hotkey: null },
@@ -868,7 +868,7 @@
 						},
 					},
 					log: { level: log.level, file_enabled: log.file_enabled, file_path: null },
-				},
+				}),
 			});
 			addNotification('设置已保存', 'success');
 			try {

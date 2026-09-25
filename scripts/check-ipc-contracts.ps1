@@ -821,6 +821,43 @@ $logCommandsRs = Get-Content (Join-Path $commandsRoot 'log.rs') -Raw
 $modelCommandsRs = Get-Content (Join-Path $commandsRoot 'model.rs') -Raw
 $settingsCommandsRs = Get-Content (Join-Path $commandsRoot 'settings.rs') -Raw
 
+$updateSettingsSignature = Get-RequiredMatch $settingsCommandsRs '(?ms)pub\s+async\s+fn\s+update_settings\s*\((.*?)\)\s*->\s*Result\s*<\s*\(\s*\)\s*,\s*String\s*>' 'update_settings Rust signature'
+$updateSettingsRustFields = Get-RustCommandParameters $updateSettingsSignature.Groups[1].Value 'update_settings Rust parameters'
+$updateSettingsRustFields.Remove('app') | Out-Null
+Assert-SetEqual 'update_settings argument fields' @('settings') @($updateSettingsRustFields.Keys)
+if ($updateSettingsRustFields['settings'].Type -ne 'haven_common::config::Settings') {
+    throw 'update_settings must accept the Rust-owned haven_common::config::Settings payload'
+}
+$updateSettingsRustContract = Get-RequiredMatch $rustContracts '(?s)CommandContract\s*\{\s*name:\s*"update_settings"([^}]*)\}' 'Rust contract for update_settings'
+$updateSettingsRustRequest = Get-RequiredMatch $updateSettingsRustContract.Groups[1].Value 'request:\s*"([^"]+)"' 'Rust update_settings request contract'
+$updateSettingsRustResponse = Get-RequiredMatch $updateSettingsRustContract.Groups[1].Value 'response:\s*"([^"]+)"' 'Rust update_settings response contract'
+$updateSettingsTsContract = Get-RequiredMatch $tsContracts '(?ms)^\s*update_settings\s*:\s*\{([^}]*)\}' 'frontend contract for update_settings'
+$updateSettingsTsRequest = Get-RequiredMatch $updateSettingsTsContract.Groups[1].Value "request:\s*'([^']+)'" 'frontend update_settings request contract'
+$updateSettingsTsResponse = Get-RequiredMatch $updateSettingsTsContract.Groups[1].Value "response:\s*'([^']+)'" 'frontend update_settings response contract'
+if ($updateSettingsRustRequest.Groups[1].Value -ne 'Settings' -or
+    $updateSettingsTsRequest.Groups[1].Value -ne 'Settings' -or
+    $updateSettingsRustResponse.Groups[1].Value -ne '()' -or
+    $updateSettingsTsResponse.Groups[1].Value -ne 'void') {
+    throw 'update_settings registry must preserve the Settings request and unit response contract'
+}
+
+$settingsViewPath = Join-Path $root 'ui/src/lib/views/SettingsView.svelte'
+$settingsView = Get-Content $settingsViewPath -Raw
+Get-RequiredMatch $settingsContractUi '(?m)^export\s+type\s+SettingsPayload\s*=\s*Record<string,\s*any>;' 'open SettingsPayload type' | Out-Null
+if (-not [regex]::IsMatch($settingsView, '(?s)invoke\(''update_settings'',\s*\{\s*settings:\s*/\*\*\s*@type\s+\{import\(''\$lib/contracts/settings\.ts''\)\.SettingsPayload\}\s*\*/\s*\(\s*\{')) {
+    throw 'SettingsView update_settings builder must use the existing Rust-owned open SettingsPayload type'
+}
+$updateSettingsCallers = @()
+$uiSourceRoot = Join-Path $root 'ui/src'
+foreach ($sourceFile in (Get-ChildItem $uiSourceRoot -Recurse -File | Where-Object { $_.Extension -in @('.ts', '.svelte') })) {
+    if ([regex]::IsMatch((Get-Content $sourceFile.FullName -Raw), "invoke\s*(?:<[^>]+>)?\s*\(\s*'update_settings'")) {
+        $updateSettingsCallers += $sourceFile.FullName
+    }
+}
+if ($updateSettingsCallers.Count -ne 1 -or $updateSettingsCallers[0] -ne $settingsViewPath) {
+    throw 'SettingsView must remain the only UI owner that invokes update_settings'
+}
+
 $diagnosticsChecks = @(
     @{ Command = 'get_log_info'; Request = '-'; RustResponse = 'LogInfo'; TsResponse = 'LogInfo' },
     @{ Command = 'read_log_tail'; Request = 'ReadLogTailRequest'; RustResponse = 'LogTail'; TsResponse = 'LogTail' },

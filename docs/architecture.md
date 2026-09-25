@@ -85,7 +85,7 @@ client；model edit 的完整提交和应用也由它持有。`SettingsRuntimeAp
 Settings 有序阶段，驱动命令提供的执行回调，并唯一记录当前 phase、snapshot version、Router published、
 restart-required targets 与失败/警告。Security、MCP、context、logging、hotkey 等实际副作用仍由既有 owner
 执行；Settings edit/no-op 仍由命令按同一次 `ConfigService::edit` 保留旧 hotkey、snapshot 和 change。该
-coordinator 不复制 Router prepare/publish，也不为半失败状态增加 compensation/rollback；Settings compensation/rollback、失败后的显式 retry/restart recovery 仍未决。Tools admin 的 MCP/Skills/Logging/ToolSettings writers 与 Settings apply 不共用 config_apply_gate，而 ConfigService lock 只覆盖 save，不覆盖 save 之后的 runtime apply；跨入口并发与部分应用策略仍待决（ADR 0351）。MCP Tauri 命令负责
+coordinator 不复制 Router prepare/publish，也不为半失败状态增加 compensation/rollback。审计确认无第二份配置 owner、target mapping 或 Settings payload builder；durable-first 后的 compensation/rollback、显式 retry/restart recovery 与 Settings 失败文案仍未决。`SettingsView` 唯一的 `update_settings` payload builder 使用开放式 `SettingsPayload`，IPC script 校验 Rust `Settings` 参数和 UI 直接调用 owner，而完整字段 schema 仍由 Rust 所有（ADR 0372）。Tools admin 的 MCP/Skills/Logging/ToolSettings writers 与 Settings apply 不共用 config_apply_gate，而 ConfigService lock 只覆盖 save，不覆盖 save 之后的 runtime apply；跨入口并发与部分应用策略仍待决（ADR 0351）。MCP Tauri 命令负责
 持久化和连接/刷新动作，完成后请求 ToolsManager façade 重建 catalog；连接及其 `catalog_version` 仍由
 `McpManager` 持有。应用退出顺序由 `ApplicationRuntime` 负责，coordinator 不增加独立 shutdown 生命周期
 （ADR 0333、0337）。
@@ -600,7 +600,9 @@ Settings 的完整 wire shape 由 `haven_common::config::Settings` 所有；前�
 `ui/src/lib/contracts/settings.ts::parseSettingsPayload`。validator 只检查根对象，保留未知配置字段、
 未知枚举字符串和既有 snake_case 配置字段；null/非对象继续作为空结果，命令错误原样进入现有 catch。
 Settings 表单状态仍由 `SettingsView` 持有，`settingsSaveAction` 与 `settingsGuard` 只负责纯 UI 状态，
-没有额外的 settings store 或第二个 update serializer。`hotkey:rebind` 事件已由
+没有额外的 settings store 或第二个 update serializer。`update_settings` 的唯一 builder 复用开放式
+`SettingsPayload`，其 Rust 参数和直接调用 owner 由 IPC contract script 校验；前端不复制 Rust nested Settings schema
+（ADR 0372）。`hotkey:rebind` 事件已由
 `ui/src/lib/contracts/app.ts::mapAppEvent` 唯一映射 `old_binding` / `new_binding` 到 camelCase；
 设置页的 `get_log_info`、`read_log_tail`、`get_performance_metrics`、`check_shell_available` 与
 `get_api_key_status` 读取统一经 `ui/src/lib/diagnosticsCommands.ts`；`contracts/settings.ts` 的既有
@@ -709,6 +711,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 
 | 日期 | 内容 |
 |---|---|
+| 2026-09-26 | §2.5 App / §2.6 UI：审计配置单一 owner、target/phase mapping、atomic save 顺序、Settings/model/provider 写入与失败语义；为唯一 `update_settings` builder 复用开放式 `SettingsPayload` 并由 IPC script 校验 handler/registry/caller。保持 durable-first 和失败不补偿；retry/restart、`SkillsExec` phase 选择及 UI 失败文案继续待产品决策（ADR 0372）|
 | 2026-09-26 | §2.6 App / UI：审计五个 session control command，补齐 rollback/confirmation request DTO 并固定 Rust 参数映射与 UI direct invoke owner；ChatController orchestration 与 shell confirmation 顺序不变（ADR 0371）|
 | 2026-09-26 | §2.6 App / UI：Settings 诊断与日志只读命令统一经 `diagnosticsCommands.ts`，沿用 `contracts/settings.ts` 的唯一 parser；metrics 响应保留动态字段，renderer 计数 provider 与 UI 错误状态仍归调用方（ADR 0370）|
 | 2026-09-26 | §2.3/§2.5/§2.6：AgentStartup 将唯一 MemoryStartup 交给 ApplicationRuntime；typed PreparedMemoryRuntime 一次消费、注册成功才返回 MemoryReady，AppRuntime 注册/join prepare/live/schedule tasks，dispatcher 与 maintenance/manual/shutdown 顺序保持（ADR 0367）|
