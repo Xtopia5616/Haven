@@ -23,6 +23,9 @@ export interface ApiKeyStatus {
 	ocr_secret: boolean;
 }
 
+/** Open response shape for diagnostics so added metric fields remain available. */
+export type MetricsSnapshot = Record<string, unknown>;
+
 /** Open nested config shape owned by haven_common::config::Settings. */
 export type SettingsPayload = Record<string, any>;
 

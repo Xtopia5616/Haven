@@ -1,5 +1,6 @@
 import logger from './logger.ts';
 import type { AgentChunkPayload } from './contracts/agent.ts';
+import type { UiMetricsSnapshot } from './contracts/commands.ts';
 import type { AgentChunkBatchItem, SessionAction } from './sessionReducer.ts';
 
 export interface PendingChunk {
@@ -61,11 +62,7 @@ export interface StreamEventAggregator {
 	metricsSnapshot: () => StreamMetricsSnapshot;
 }
 
-export interface StreamMetricsSnapshot {
-	frames: number;
-	chunks: number;
-	drops: number;
-}
+export type StreamMetricsSnapshot = UiMetricsSnapshot;
 
 /**
  * Own the UI-side lifecycle of streamed thought/reasoning chunks.

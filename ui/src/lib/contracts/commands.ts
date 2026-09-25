@@ -114,6 +114,23 @@ export interface DeleteFactRequest {
 	factId: string;
 }
 
+/** Flat renderer arguments for a bounded log tail read. */
+export interface ReadLogTailRequest {
+	maxLines?: number;
+}
+
+/** Flat renderer arguments for checking one shell executable. */
+export interface CheckShellAvailableRequest {
+	shell: string;
+}
+
+/** Renderer-owned stream counters included in a performance snapshot. */
+export interface UiMetricsSnapshot {
+	frames: number;
+	chunks: number;
+	drops: number;
+}
+
 export const TAURI_COMMAND_CONTRACTS = {
 	list_actions: { request: '-', response: 'ActionEvent[]', boundary: 'read', security: 'projected task fields only' },
 	cancel_action: { request: 'CancelActionRequest', response: 'boolean', boundary: 'mutate', security: 'kind is enum; cancel only the selected task kind' },

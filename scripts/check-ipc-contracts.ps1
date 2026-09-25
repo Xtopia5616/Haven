@@ -813,3 +813,131 @@ if (-not [regex]::IsMatch($toolsContractUi, '(?ms)export\s+type\s+McpClientStatu
 
 Write-Host 'Tools catalog IPC contract verified: Rust DTO fields, typed helpers, open extensions, and UI call boundaries agree.'
 
+$diagnosticsCommandsUi = Get-Content (Join-Path $root 'ui/src/lib/diagnosticsCommands.ts') -Raw
+$settingsContractUi = Get-Content (Join-Path $root 'ui/src/lib/contracts/settings.ts') -Raw
+$metricsUi = Get-Content (Join-Path $root 'ui/src/lib/streamAggregator.ts') -Raw
+$metricsRs = Get-Content (Join-Path $root 'crates/agent/src/react/metrics.rs') -Raw
+$logCommandsRs = Get-Content (Join-Path $commandsRoot 'log.rs') -Raw
+$modelCommandsRs = Get-Content (Join-Path $commandsRoot 'model.rs') -Raw
+$settingsCommandsRs = Get-Content (Join-Path $commandsRoot 'settings.rs') -Raw
+
+$diagnosticsChecks = @(
+    @{ Command = 'get_log_info'; Request = '-'; RustResponse = 'LogInfo'; TsResponse = 'LogInfo' },
+    @{ Command = 'read_log_tail'; Request = 'ReadLogTailRequest'; RustResponse = 'LogTail'; TsResponse = 'LogTail' },
+    @{ Command = 'get_performance_metrics'; Request = 'UiMetricsSnapshot?'; RustResponse = 'MetricsSnapshot'; TsResponse = 'MetricsSnapshot' },
+    @{ Command = 'get_api_key_status'; Request = '-'; RustResponse = 'ApiKeyStatus'; TsResponse = 'ApiKeyStatus' },
+    @{ Command = 'check_shell_available'; Request = 'CheckShellAvailableRequest'; RustResponse = 'ShellAvailability'; TsResponse = 'ShellAvailability' }
+)
+foreach ($check in $diagnosticsChecks) {
+    $commandName = [regex]::Escape($check.Command)
+    $rustCommandContract = Get-RequiredMatch $rustContracts ('(?s)CommandContract\s*\{\s*name:\s*"' + $commandName + '"([^}]*)\}') "Rust contract for '$($check.Command)'"
+    $rustRequest = Get-RequiredMatch $rustCommandContract.Groups[1].Value 'request:\s*"([^"]+)"' "Rust request for '$($check.Command)'"
+    $rustResponse = Get-RequiredMatch $rustCommandContract.Groups[1].Value 'response:\s*"([^"]+)"' "Rust response for '$($check.Command)'"
+    $tsCommandContract = Get-RequiredMatch $tsContracts ('(?ms)^\s*' + $commandName + '\s*:\s*\{([^}]*)\}') "frontend contract for '$($check.Command)'"
+    $tsRequest = Get-RequiredMatch $tsCommandContract.Groups[1].Value "request:\s*'([^']+)'" "frontend request for '$($check.Command)'"
+    $tsResponse = Get-RequiredMatch $tsCommandContract.Groups[1].Value "response:\s*'([^']+)'" "frontend response for '$($check.Command)'"
+    if ($rustRequest.Groups[1].Value -ne $check.Request -or $tsRequest.Groups[1].Value -ne $check.Request -or
+        $rustResponse.Groups[1].Value -ne $check.RustResponse -or $tsResponse.Groups[1].Value -ne $check.TsResponse) {
+        throw "diagnostics command contract for '$($check.Command)' differs between Rust and TypeScript"
+    }
+}
+
+function Assert-DiagnosticsDto([string] $label, [string] $rustText, [string] $rustType, [string] $tsText, [string] $tsType) {
+    $rustDto = Get-RequiredMatch $rustText ('(?ms)pub\s+struct\s+' + [regex]::Escape($rustType) + '\s*\{(.*?)\n\}') "Rust $label"
+    $tsDto = Get-RequiredMatch $tsText ('(?ms)export\s+interface\s+' + [regex]::Escape($tsType) + '\s*\{(.*?)\n\}') "TypeScript $label"
+    $rustFields = Get-StructFields $rustDto.Groups[1].Value "Rust $label"
+    $tsFields = Get-StructFields $tsDto.Groups[1].Value "TypeScript $label"
+    Assert-SetEqual "$label fields" @($rustFields.Keys) @($tsFields.Keys)
+    foreach ($field in $rustFields.Keys) {
+        if ($label -eq 'ApiKeyStatus' -and $field -in @('models', 'providers')) {
+            continue
+        }
+        $expectedType = switch ($rustFields[$field].Type) {
+            'String' { 'string' }
+            'bool' { 'boolean' }
+            'Option<String>' { 'string|null' }
+            'u64' { 'number' }
+            default { throw "$label has unsupported Rust field type '$($rustFields[$field].Type)' for '$field'" }
+        }
+        if ($tsFields[$field].Type -ne $expectedType -or $tsFields[$field].Optional) {
+            throw "$label field '$field' differs from its Rust wire type"
+        }
+    }
+}
+
+Assert-DiagnosticsDto 'LogInfo' $logCommandsRs 'LogInfo' $settingsContractUi 'LogInfo'
+Assert-DiagnosticsDto 'LogTail' $logCommandsRs 'LogTail' $settingsContractUi 'LogTail'
+Assert-DiagnosticsDto 'ApiKeyStatus' $modelCommandsRs 'ApiKeyStatus' $settingsContractUi 'ApiKeyStatus'
+Assert-DiagnosticsDto 'ShellAvailability' $settingsCommandsRs 'ShellAvailability' $settingsContractUi 'ShellAvailability'
+Assert-DiagnosticsDto 'UiMetricsSnapshot' $metricsRs 'UiMetricsSnapshot' $tsContracts 'UiMetricsSnapshot'
+$apiKeyStatusRust = Get-RequiredMatch $modelCommandsRs '(?ms)pub\s+struct\s+ApiKeyStatus\s*\{(.*?)\n\}' 'Rust ApiKeyStatus map fields'
+$apiKeyStatusTs = Get-RequiredMatch $settingsContractUi '(?ms)export\s+interface\s+ApiKeyStatus\s*\{(.*?)\n\}' 'TypeScript ApiKeyStatus map fields'
+foreach ($field in @('models', 'providers')) {
+    if (-not [regex]::IsMatch($apiKeyStatusRust.Groups[1].Value, '(?m)^\s*pub\s+' + $field + ':\s*BTreeMap<String,\s*bool>,' ) -or
+        -not [regex]::IsMatch($apiKeyStatusTs.Groups[1].Value, '(?m)^\s*' + $field + ':\s*Record<string,\s*boolean>;')) {
+        throw "ApiKeyStatus '$field' map must retain dynamic string keys with boolean presence values"
+    }
+}
+
+$readLogTailSignature = Get-RequiredMatch $logCommandsRs '(?ms)pub\s+fn\s+read_log_tail\s*\((.*?)\)\s*->\s*Result\s*<\s*LogTail' 'read_log_tail Rust signature'
+$readLogTailRustFields = Get-RustCommandParameters $readLogTailSignature.Groups[1].Value 'read_log_tail Rust parameters'
+$readLogTailRustFields.Remove('state') | Out-Null
+$readLogTailTsRequest = Get-RequiredMatch $tsContracts '(?ms)export\s+interface\s+ReadLogTailRequest\s*\{(.*?)\n\}' 'TypeScript ReadLogTailRequest'
+$readLogTailTsFields = Get-StructFields $readLogTailTsRequest.Groups[1].Value 'TypeScript ReadLogTailRequest'
+Assert-SetEqual 'read_log_tail request fields' @('maxLines') @($readLogTailTsFields.Keys)
+if ($readLogTailRustFields['max_lines'].Type -ne 'Option<usize>' -or
+    $readLogTailTsFields['maxLines'].Type -ne 'number' -or -not $readLogTailTsFields['maxLines'].Optional) {
+    throw 'read_log_tail request must retain optional max_lines/maxLines numeric semantics'
+}
+
+$checkShellSignature = Get-RequiredMatch $settingsCommandsRs '(?ms)pub\s+async\s+fn\s+check_shell_available\s*\((.*?)\)\s*->\s*Result\s*<\s*ShellAvailability' 'check_shell_available Rust signature'
+$checkShellRustFields = Get-RustCommandParameters $checkShellSignature.Groups[1].Value 'check_shell_available Rust parameters'
+$checkShellTsRequest = Get-RequiredMatch $tsContracts '(?ms)export\s+interface\s+CheckShellAvailableRequest\s*\{(.*?)\n\}' 'TypeScript CheckShellAvailableRequest'
+$checkShellTsFields = Get-StructFields $checkShellTsRequest.Groups[1].Value 'TypeScript CheckShellAvailableRequest'
+Assert-SetEqual 'check_shell_available request fields' @('shell') @($checkShellRustFields.Keys)
+Assert-SetEqual 'check_shell_available renderer request fields' @('shell') @($checkShellTsFields.Keys)
+if ($checkShellRustFields['shell'].Type -ne 'String' -or
+    $checkShellTsFields['shell'].Type -ne 'string' -or $checkShellTsFields['shell'].Optional) {
+    throw 'check_shell_available request must retain its required shell string'
+}
+
+foreach ($helper in @(
+    @{ Function = 'getLogInfo'; Response = 'LogInfo'; Command = 'get_log_info'; Parser = 'parseLogInfo' },
+    @{ Function = 'readLogTail'; Response = 'LogTail'; Command = 'read_log_tail'; Parser = 'parseLogTail' },
+    @{ Function = 'checkShellAvailable'; Response = 'ShellAvailability'; Command = 'check_shell_available'; Parser = 'parseShellAvailability' },
+    @{ Function = 'getApiKeyStatus'; Response = 'ApiKeyStatus'; Command = 'get_api_key_status'; Parser = 'parseApiKeyStatus' }
+)) {
+    $functionName = [regex]::Escape($helper.Function)
+    $commandName = [regex]::Escape($helper.Command)
+    $requestType = switch ($helper.Command) {
+        'read_log_tail' { '\(\s*request:\s*ReadLogTailRequest\s*\)' }
+        'check_shell_available' { '\(\s*request:\s*CheckShellAvailableRequest\s*\)' }
+        default { '' }
+    }
+    $parameters = if ($requestType) { $requestType } else { '\(\s*\)' }
+    $forwardArgs = if ($requestType) { ',\s*request' } else { '' }
+    $pattern = '(?s)export\s+function\s+' + $functionName + '\s*' + $parameters + '\s*:\s*Promise<' + [regex]::Escape($helper.Response) + '>\s*\{\s*return\s+invoke\(''' + $commandName + '''' + $forwardArgs + '\)\.then\(' + [regex]::Escape($helper.Parser) + '\);\s*\}'
+    if (-not [regex]::IsMatch($diagnosticsCommandsUi, $pattern)) {
+        throw "$($helper.Command) must use its typed diagnostics helper and the existing response parser"
+    }
+}
+if (-not [regex]::IsMatch($diagnosticsCommandsUi, '(?s)export\s+function\s+getPerformanceMetrics\s*\(\s*ui\?:\s*UiMetricsSnapshot\s*\)\s*:\s*Promise<MetricsSnapshot>\s*\{\s*return\s+invoke\(''get_performance_metrics'',\s*ui\s*\?\s*\{\s*ui\s*\}\s*:\s*undefined\);\s*\}')) {
+    throw 'get_performance_metrics must preserve the optional UI snapshot and direct dynamic response'
+}
+if (-not [regex]::IsMatch($settingsContractUi, '(?m)^export\s+type\s+MetricsSnapshot\s*=\s*Record<string,\s*unknown>;')) {
+    throw 'MetricsSnapshot must remain open to dynamic diagnostic fields'
+}
+if (-not [regex]::IsMatch($metricsUi, '(?m)^export\s+type\s+StreamMetricsSnapshot\s*=\s*UiMetricsSnapshot;')) {
+    throw 'stream metrics must reuse the command contract UiMetricsSnapshot type'
+}
+
+$diagnosticsUiRoot = Join-Path $root 'ui/src'
+$diagnosticsDirectInvokePattern = 'invoke\s*(?:<[^>]+>)?\s*\(\s*''(?:get_log_info|read_log_tail|get_performance_metrics|check_shell_available|get_api_key_status)'''
+foreach ($sourceFile in (Get-ChildItem $diagnosticsUiRoot -Recurse -File | Where-Object { $_.Extension -in @('.ts', '.svelte') -and $_.FullName -ne (Join-Path $root 'ui/src/lib/diagnosticsCommands.ts') })) {
+    if ([regex]::IsMatch((Get-Content $sourceFile.FullName -Raw), $diagnosticsDirectInvokePattern)) {
+        throw "UI source '$($sourceFile.FullName)' bypasses diagnosticsCommands.ts"
+    }
+}
+
+Write-Host 'Diagnostics IPC contract verified: Rust request/response fields, existing parsers, dynamic metrics, and UI call boundaries agree.'
+

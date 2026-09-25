@@ -1,4 +1,5 @@
-import { invoke } from './tauri.ts';
+import { getPerformanceMetrics as readPerformanceMetrics } from './diagnosticsCommands.ts';
+import type { MetricsSnapshot } from './contracts/settings.ts';
 import type { StreamMetricsSnapshot } from './streamAggregator.ts';
 
 let uiMetricsProvider: (() => StreamMetricsSnapshot) | null = null;
@@ -14,7 +15,7 @@ export function registerPerformanceMetricsProvider(
 }
 
 /** Read backend and renderer metrics through one Tauri diagnostics boundary. */
-export function getPerformanceMetrics(): Promise<Record<string, unknown>> {
+export function getPerformanceMetrics(): Promise<MetricsSnapshot> {
 	const ui = uiMetricsProvider?.();
-	return invoke('get_performance_metrics', ui ? { ui } : undefined);
+	return readPerformanceMetrics(ui);
 }

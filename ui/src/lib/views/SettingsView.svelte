@@ -13,11 +13,11 @@
 	import { loadSettings } from '$lib/settingsCommand.ts';
 	import { getPerformanceMetrics } from '$lib/performanceMetrics.ts';
 	import {
-		parseApiKeyStatus,
-		parseLogInfo,
-		parseLogTail,
-		parseShellAvailability,
-	} from '$lib/contracts/settings.ts';
+		checkShellAvailable,
+		getApiKeyStatus,
+		getLogInfo,
+		readLogTail,
+	} from '$lib/diagnosticsCommands.ts';
 	import ModelSettings from './ModelSettings.svelte';
 	import SettingsGeneral from './SettingsGeneral.svelte';
 	import SettingsSecurity from './SettingsSecurity.svelte';
@@ -185,9 +185,7 @@
 	async function checkShells() {
 		for (const shell of ['cmd', 'powershell', 'pwsh']) {
 			try {
-				shellAvailable[shell] = !!parseShellAvailability(
-					await invoke('check_shell_available', { shell }),
-				)?.available;
+				shellAvailable[shell] = (await checkShellAvailable({ shell })).available;
 			} catch (e) {
 				shellAvailable[shell] = false;
 				logger.warn(
@@ -202,7 +200,7 @@
 	async function openLogViewer() {
 		logView.loading = true;
 		try {
-			const info = parseLogInfo(await invoke('get_log_info'));
+			const info = await getLogInfo();
 			if (!info?.enabled) {
 				addNotification('文件日志未启用，请先打开 File Logging', 'warning', 4000);
 				return;
@@ -218,7 +216,7 @@
 
 	async function refreshLogs() {
 		try {
-			const data = parseLogTail(await invoke('read_log_tail', { maxLines: 300 }));
+			const data = await readLogTail({ maxLines: 300 });
 			logView.path = data.path;
 			logView.content = data.content;
 		} catch (e) {
@@ -733,7 +731,7 @@
 		}
 	}
 	async function refreshApiKeyStatus() {
-		const { providers, ...flags } = parseApiKeyStatus(await invoke('get_api_key_status'));
+		const { providers, ...flags } = await getApiKeyStatus();
 		keyConfigured = { ...keyConfigured, ...flags };
 		keyConfiguredProviders = { ...providers };
 	}

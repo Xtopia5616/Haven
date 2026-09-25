@@ -1,6 +1,6 @@
 # Haven 架构与 crate 职责
 
-> 版本: v1.8 | 日期: 2026-09-26
+> 版本: v1.9 | 日期: 2026-09-26
 > 范围: `crates/` (Rust 后端, Tauri 2)
 > 原则: **依赖单向、叶子优先**。上层 crate 只依赖下层，绝不反向依赖；共享数据与类型放叶子（`haven-common`），
 > 组件职责按「谁拥有实现、谁只消费接口」划分。
@@ -602,7 +602,11 @@ Settings 的完整 wire shape 由 `haven_common::config::Settings` 所有；前�
 Settings 表单状态仍由 `SettingsView` 持有，`settingsSaveAction` 与 `settingsGuard` 只负责纯 UI 状态，
 没有额外的 settings store 或第二个 update serializer。`hotkey:rebind` 事件已由
 `ui/src/lib/contracts/app.ts::mapAppEvent` 唯一映射 `old_binding` / `new_binding` 到 camelCase；
-`settings.ts` 的诊断 command parsers 继续校验 ADR 0007 的命名响应 DTO。app-shell 事件的批量
+设置页的 `get_log_info`、`read_log_tail`、`get_performance_metrics`、`check_shell_available` 与
+`get_api_key_status` 读取统一经 `ui/src/lib/diagnosticsCommands.ts`；`contracts/settings.ts` 的既有
+parsers 继续校验 ADR 0007 的命名响应 DTO，并作为日志、shell 与 API-key 响应的唯一 validator/mapper；
+metrics 响应保持开放以保留动态诊断字段。
+`performanceMetrics.ts` 继续拥有 renderer 计数 provider（ADR 0370）。app-shell 事件的批量
 `appEventListeners` 与单条 `registerAppListener` 共用 `mapAppEvent` adapter；ToolsView 的 MCP/Skills
 刷新监听也经过该入口，布局只拥有 MCP 通知副作用，Skills 不再保留空 listener。Rust MCP status 使用
 serde 外部标记 enum，既有 pass-through mapper 不校验其变体，因此可保留未知变体和附加字段；明确投影的 hotkey/interaction 字段仍只输出
@@ -700,6 +704,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 
 | 日期 | 内容 |
 |---|---|
+| 2026-09-26 | §2.6 App / UI：Settings 诊断与日志只读命令统一经 `diagnosticsCommands.ts`，沿用 `contracts/settings.ts` 的唯一 parser；metrics 响应保留动态字段，renderer 计数 provider 与 UI 错误状态仍归调用方（ADR 0370）|
 | 2026-09-26 | §2.3/§2.5/§2.6：AgentStartup 将唯一 MemoryStartup 交给 ApplicationRuntime；typed PreparedMemoryRuntime 一次消费、注册成功才返回 MemoryReady，AppRuntime 注册/join prepare/live/schedule tasks，dispatcher 与 maintenance/manual/shutdown 顺序保持（ADR 0367）|
 | 2026-09-26 | §2.3/§2.5 Memory/Agent：删除 `SystemPromptBuilder::new` 的 raw Database public constructor；prompt 测试显式创建 `MemoryService` 并使用 typed constructor，生产共享 service/cache owner 和运行行为不变（ADR 0365）|
 | 2026-09-26 | §2.3/§2.5/§2.6：`AgentLayer::new` 改接组合根创建的共享 `MemoryService`；AppState 用同一 Router 与配置的 embedding chunk size 创建一次，AgentLayer 继续派生并共享 Worker、Runtime、PromptBuilder 与 typed stores，Runtime 所有权/readiness 不变（ADR 0364）|
