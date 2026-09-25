@@ -16,6 +16,22 @@ export interface CommandContract {
 	security: string;
 }
 
+/** Minimal renderer request shapes for the chat toolbar model commands. */
+export interface SwitchModelRequest {
+	role: string;
+	modelId: string;
+}
+
+export interface SetReasoningEffortRequest {
+	role: string;
+	effort: string | null;
+}
+
+export interface SetWebSearchRequest {
+	role: string;
+	mode: string;
+}
+
 export const TAURI_COMMAND_CONTRACTS = {
 	list_actions: { request: '-', response: 'ActionEvent[]', boundary: 'read', security: 'projected task fields only' },
 	cancel_action: { request: 'CancelActionRequest', response: 'boolean', boundary: 'mutate', security: 'kind is enum; cancel only the selected task kind' },

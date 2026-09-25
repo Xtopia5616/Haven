@@ -19,6 +19,7 @@
 	import { createAskInteractionController } from '$lib/chatAskInteraction.ts';
 	import { selectChatVisibleMessages } from '$lib/chatVisibleMessages.ts';
 	import { createChatModelSync } from '$lib/chatModelSync.ts';
+	import { createChatModelOperations } from '$lib/chatModelOperations.ts';
 	import { createStreamEventAggregator } from '$lib/streamAggregator.ts';
 	import { registerPerformanceMetricsProvider } from '$lib/performanceMetrics.ts';
 	import { createSessionRefreshScheduler } from '$lib/sessionRefresh.ts';
@@ -242,53 +243,6 @@
 			? webSearchOptionsAll.filter((o) => o.value !== 'always')
 			: webSearchOptionsAll,
 	);
-
-	/** @param {string} value */
-	async function handleWebSearchSelect(value) {
-		if (!webSearchSupported && value !== 'off') {
-			addNotification('当前模型线协议不支持内置联网搜索', 'info', 3000);
-			return;
-		}
-		const label = webSearchOptionsAll.find((o) => o.value === value)?.label || '关闭';
-		skipNextDefaultModelRefresh = true;
-		try {
-			await invoke('set_web_search', { role: 'chat', mode: value });
-			currentWebSearch = value;
-			addNotification(`联网搜索: ${label}`, 'success', 2500);
-		} catch (e) {
-			skipNextDefaultModelRefresh = false;
-			reportError(e, { context: '+page', message: '设置联网搜索失败', log: false });
-		}
-	}
-
-	/** @param {any} m */
-	async function handleModelSelect(m) {
-		modelMenuOpen = false;
-		skipNextDefaultModelRefresh = true;
-		try {
-			await invoke('switch_model', { role: 'chat', modelId: m.id });
-			currentModelId = m.id;
-			currentModelName = m.name || m.id;
-			addNotification(`已切换默认模型: ${currentModelName}`, 'success', 3000);
-		} catch (e) {
-			skipNextDefaultModelRefresh = false;
-			reportError(e, { context: '+page', message: '切换模型失败', log: false });
-		}
-	}
-
-	/** @param {string} value */
-	async function handleEffortSelect(value) {
-		const label = effortOptions.find((o) => o.value === value)?.label || '默认';
-		skipNextDefaultModelRefresh = true;
-		try {
-			await invoke('set_reasoning_effort', { role: 'chat', effort: value || null });
-			currentEffort = value || '';
-			addNotification(`思考强度: ${label}`, 'success', 2500);
-		} catch (e) {
-			skipNextDefaultModelRefresh = false;
-			reportError(e, { context: '+page', message: '设置思考强度失败', log: false });
-		}
-	}
 
 	// Right-click context menu state
 	let ctxMenu = $state({
@@ -627,6 +581,34 @@
 		},
 	});
 	const { applyDefaultModelFromSettings, refreshDefaultModelFromBackend } = modelSync;
+	const modelOperations = createChatModelOperations({
+		invoke,
+		setSkipNextDefaultModelRefresh: (skip) => {
+			skipNextDefaultModelRefresh = skip;
+		},
+		setCurrentModelId: (value) => {
+			currentModelId = value;
+		},
+		setCurrentModelName: (value) => {
+			currentModelName = value;
+		},
+		setCurrentEffort: (value) => {
+			currentEffort = value;
+		},
+		setCurrentWebSearch: (value) => {
+			currentWebSearch = value;
+		},
+		getEffortLabel: (value) =>
+			effortOptions.find((option) => option.value === value)?.label || '默认',
+		getWebSearchLabel: (value) =>
+			webSearchOptionsAll.find((option) => option.value === value)?.label || '关闭',
+		isWebSearchSupported: () => webSearchSupported,
+		closeModelMenu: () => {
+			modelMenuOpen = false;
+		},
+		notify: addNotification,
+		reportError,
+	});
 
 	// Open a reviewed conversation (from the history page). The chat view
 	// stays mounted while other tabs are open, so this runs both at mount and
@@ -1250,14 +1232,14 @@
 				{currentModelId}
 				{modelOptions}
 				onToggleMenu={() => (modelMenuOpen = !modelMenuOpen)}
-				onModelSelect={handleModelSelect}
+				onModelSelect={modelOperations.selectModel}
 				{effortOptions}
 				{currentEffort}
-				onEffortSelect={handleEffortSelect}
+				onEffortSelect={modelOperations.selectEffort}
 				{webSearchSupported}
 				{webSearchOptions}
 				{currentWebSearch}
-				onWebSearchSelect={handleWebSearchSelect}
+				onWebSearchSelect={modelOperations.selectWebSearch}
 			/>
 		{/snippet}
 	</Composer>

@@ -308,3 +308,4 @@
 - [0317：后台与定时任务共享终态内核](0317-action-terminal-lifecycle-kernel.md)
 - [0318：LLM Router 一次性调用执行器](0318-llm-call-executor.md)
 - [0319：LLM 请求用途与模型能力语义分离](0319-llm-request-capability-semantics.md)
+- [0320：聊天页模型操作归属到 ChatModelOperations](0320-chat-model-operations-controller.md)

@@ -363,7 +363,8 @@ Phase 7.1 验收与未决风险：见 ADR 0259、0261、0262、0263、0264、026
 - 命令数量不为减少复杂度而强行合并；事件按 `session/agent/action/recording/app` envelope 收敛；
 - 已完成（ADR 0313）：将 `+page.svelte` 的 session submit、resume reload、rollback、continue、switch/终态内存回收、end/interrupt 编排抽到 typed `ChatController`；
 - 已完成（ADR 0315）：聊天页 session/app/agent/usage handler map 与异步注册生命周期抽到 typed `chatEventController`；`events.ts` 仍是唯一 wire mapping 和共享 registration primitive；
-- 剩余：Rust DTO 到 TypeScript contract/mapper 的生成收口、model operation 归属与旧手写 contract 镜像清理；ask/input 决策、启动恢复与 view state 继续由页面编排；
+- 已完成（ADR 0320）：聊天页 model/effort/web-search 操作及 typed payload、成功状态更新、通知、失败处理与 refresh-suppression 收口到纯 TypeScript `chatModelOperations`；页面只注入 Svelte state callbacks 并传入 toolbar。`chatModelSync` 仍拥有 discovery/settings 同步。
+- 剩余：Rust DTO 到 TypeScript contract/mapper 的生成收口与旧手写 contract 镜像清理；ask/input 决策、启动恢复与 view state 继续由页面编排；
 - 已完成（ADR 0314）：将 `sessionReducer.ts` 按 lifecycle/transcript/interaction/usage/stream 拆成内部 reducer module；外部 API 和单一 `sessionStateStore` 订阅保持不变；
 - 后续：评估 reducer 的 session/selector subscriptions，减少每个 stream batch 对完整状态树的广播。
 
@@ -375,7 +376,9 @@ Phase 7.1 验收与未决风险：见 ADR 0259、0261、0262、0263、0264、026
 
 2026-09-25 切片进展（ADR 0314）：`SessionReducer` 内部实现已按 lifecycle、transcript、interaction、usage、Agent stream 与共享 replay/state helper 拆分；原 facade 继续拥有跨域 resume/clear 组合、observable wrapper 和唯一 writable store。回归覆盖 resume + pending interaction + usage restore/live、stream reset + chunk sequence、error + termination 刷新。
 
-2026-09-25 切片进展（ADR 0315）：`chatEventController` 拥有聊天页 handler map 组合及注册/释放生命周期；页面等待 listener ready 后才加载 settings 和恢复会话。wire payload mapping 与共享 listener registration 仍唯一位于 `events.ts`；测试通过注入 registration port 覆盖通道、ready 和释放竞态。Phase 8 余项为 contract/mapper generation、model operation 归属与旧镜像清理、session/selector subscriptions。
+2026-09-25 切片进展（ADR 0315）：`chatEventController` 拥有聊天页 handler map 组合及注册/释放生命周期；页面等待 listener ready 后才加载 settings 和恢复会话。wire payload mapping 与共享 listener registration 仍唯一位于 `events.ts`；测试通过注入 registration port 覆盖通道、ready 和释放竞态。
+
+2026-09-25 切片进展（ADR 0320）：`chatModelOperations` 拥有三个 toolbar model 操作的 typed payload、状态更新、通知、错误处理与 refresh suppression；页面仅接线，`chatModelSync` 继续拥有 settings/discovery。Rust DTO → TS contract/mapper generation 与旧手写 contract 镜像清理仍待后续；session/selector subscriptions 也仍待评估。
 
 ### 阶段 9：Common 收缩、性能剖析和发布验收（最后）
 
