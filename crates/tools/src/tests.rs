@@ -1367,14 +1367,18 @@ async fn test_build_mcp_index_filters_disabled() {
 
 #[test]
 fn mcp_search_detection_only_uses_cached_tool_names() {
-    assert!(mcp_index_entry_has_search_tool(&serde_json::json!({
-        "name": "research",
-        "description": "MCP server 'research'; tools: fetch, web_search",
-    })));
-    assert!(!mcp_index_entry_has_search_tool(&serde_json::json!({
-        "name": "search-like-server",
-        "description": "MCP server 'search-like-server'",
-    })));
+    assert!(
+        crate::runtime_capabilities::mcp_index_entry_has_search_tool(&serde_json::json!({
+            "name": "research",
+            "description": "MCP server 'research'; tools: fetch, web_search",
+        }))
+    );
+    assert!(
+        !crate::runtime_capabilities::mcp_index_entry_has_search_tool(&serde_json::json!({
+            "name": "search-like-server",
+            "description": "MCP server 'search-like-server'",
+        }))
+    );
 }
 
 #[tokio::test]

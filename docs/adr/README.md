@@ -314,3 +314,4 @@
 - [0323：模型配置完整应用归 RuntimeConfigCoordinator](0323-model-config-apply-coordinator-ownership.md)
 - [0324：Settings runtime apply 阶段与失败可观测性](0324-settings-apply-phase-failure-observability.md)
 - [0325：Action completion transport ownership](0325-action-completion-transport-ownership.md)
+- [0326：Tools runtime capability resolution boundary](0326-tools-runtime-capability-resolution.md)

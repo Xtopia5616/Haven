@@ -1,0 +1,185 @@
+//! Runtime capability resolution and projection for prompt-facing snapshots.
+//!
+//! The manager supplies one already-read platform snapshot and one built MCP
+//! index. This module resolves the snapshot's typed capability inputs and
+//! keeps the resulting policy separate from facade composition.
+
+use crate::builtin::{self, media::MediaCapabilities};
+use crate::tool_runtime::{PlatformRuntime, RuntimeCapabilities, WebSearchAvailability};
+use haven_common::config::{ModelEndpoint, RequestKind};
+use haven_llm::LlmRouter;
+use serde_json::Value;
+use std::sync::Arc;
+
+pub(crate) async fn resolve(
+    platform: &PlatformRuntime,
+    mcp_index: &[Value],
+) -> RuntimeCapabilities {
+    let media = resolve_media_capabilities(platform).await;
+    let chat_endpoint = configured_chat_endpoint(platform.router.as_ref()).await;
+    let provider_search_available = provider_search_available(chat_endpoint.as_ref());
+    assemble_runtime_capabilities(media, provider_search_available, mcp_index)
+}
+
+/// Resolve the media capability snapshot shared by prompt reporting and
+/// transcription ingress. Capture, generation, OCR, and TTS remain distinct
+/// from provider-backed vision and transcription capabilities.
+pub(crate) async fn resolve_media_capabilities(platform: &PlatformRuntime) -> MediaCapabilities {
+    let mut capabilities = builtin::resolve_media_capabilities(
+        platform.router.as_ref(),
+        platform.stt_client.is_some(),
+    )
+    .await;
+    capabilities.record = platform.audio_pipeline.is_some();
+    capabilities.ocr = platform.ocr_client.is_some();
+    capabilities.generate = platform.image_gen_client.is_some();
+    capabilities.speak = platform.tts_client.is_some();
+    capabilities
+}
+
+async fn configured_chat_endpoint(router: Option<&Arc<LlmRouter>>) -> Option<ModelEndpoint> {
+    let router = router?;
+    let config = router.config().await;
+    config
+        .route(RequestKind::Chat)
+        .map(|model| model.endpoint.clone())
+}
+
+fn provider_search_available(chat_endpoint: Option<&ModelEndpoint>) -> bool {
+    let Some(endpoint) = chat_endpoint else {
+        // A default endpoint is not evidence that a Chat route is configured.
+        return false;
+    };
+    let style = haven_llm::adapters::api_style_for(endpoint);
+    let mode = haven_llm::adapters::resolve_web_search_mode(endpoint);
+    !matches!(mode, haven_llm::WebSearchMode::Off) && haven_llm::supports_builtin_web_search(style)
+}
+
+fn assemble_runtime_capabilities(
+    media: MediaCapabilities,
+    provider_search_available: bool,
+    mcp_index: &[Value],
+) -> RuntimeCapabilities {
+    let mcp_search_available = mcp_index.iter().any(mcp_index_entry_has_search_tool);
+    RuntimeCapabilities {
+        vision: media.describe,
+        image_generation: media.generate,
+        transcription: media.transcribe,
+        recording: media.record,
+        tts: media.speak,
+        web_search: resolve_web_search_availability(
+            provider_search_available,
+            mcp_search_available,
+        ),
+    }
+}
+
+fn resolve_web_search_availability(
+    provider_search_available: bool,
+    mcp_search_available: bool,
+) -> WebSearchAvailability {
+    if provider_search_available {
+        WebSearchAvailability::Provider
+    } else if mcp_search_available {
+        WebSearchAvailability::Mcp
+    } else {
+        WebSearchAvailability::Unavailable
+    }
+}
+
+pub(crate) fn mcp_index_entry_has_search_tool(entry: &Value) -> bool {
+    let Some(description) = entry["description"].as_str() else {
+        return false;
+    };
+    description
+        .split_once("; tools:")
+        .is_some_and(|(_, tools)| {
+            tools
+                .split(',')
+                .any(|tool| tool.trim().to_ascii_lowercase().contains("search"))
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn provider_search_takes_priority_over_mcp_search() {
+        assert_eq!(
+            resolve_web_search_availability(true, true),
+            WebSearchAvailability::Provider
+        );
+        assert_eq!(
+            resolve_web_search_availability(true, false),
+            WebSearchAvailability::Provider
+        );
+        assert_eq!(
+            resolve_web_search_availability(false, true),
+            WebSearchAvailability::Mcp
+        );
+        assert_eq!(
+            resolve_web_search_availability(false, false),
+            WebSearchAvailability::Unavailable
+        );
+    }
+
+    #[test]
+    fn provider_search_requires_a_configured_chat_route() {
+        assert!(!provider_search_available(None));
+    }
+
+    #[test]
+    fn media_capabilities_map_to_prompt_runtime_capabilities() {
+        let capabilities = assemble_runtime_capabilities(
+            MediaCapabilities {
+                describe: true,
+                ocr: true,
+                transcribe: true,
+                generate: true,
+                record: false,
+                speak: true,
+            },
+            false,
+            &[],
+        );
+
+        assert!(capabilities.vision);
+        assert!(capabilities.image_generation);
+        assert!(capabilities.transcription);
+        assert!(!capabilities.recording);
+        assert!(capabilities.tts);
+        assert_eq!(capabilities.web_search, WebSearchAvailability::Unavailable);
+    }
+
+    #[test]
+    fn recording_remains_available_without_transcription() {
+        let capabilities = assemble_runtime_capabilities(
+            MediaCapabilities {
+                record: true,
+                ..MediaCapabilities::default()
+            },
+            false,
+            &[],
+        );
+
+        assert!(capabilities.recording);
+        assert!(!capabilities.transcription);
+    }
+
+    #[test]
+    fn mcp_search_detection_only_uses_cached_tool_names() {
+        assert!(mcp_index_entry_has_search_tool(&serde_json::json!({
+            "name": "research",
+            "description": "MCP server 'research'; tools: fetch, web_search",
+        })));
+        assert!(!mcp_index_entry_has_search_tool(&serde_json::json!({
+            "name": "search-like-server",
+            "description": "MCP server 'search-like-server'",
+        })));
+        assert!(!mcp_index_entry_has_search_tool(&serde_json::json!({
+            "name": "research",
+            "tool_names": ["web_search"],
+        })));
+    }
+}

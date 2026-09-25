@@ -19,6 +19,7 @@ mod output;
 mod process;
 mod prompts;
 pub(crate) mod registry;
+mod runtime_capabilities;
 pub(crate) mod security;
 mod shell_runtime;
 pub mod simulate;
@@ -33,7 +34,7 @@ pub mod util;
 
 use chrono::{DateTime, Utc};
 use haven_common::config::{
-    ContextLimitsConfig, McpServerConfig, RequestKind, SecurityConfig, SkillsExecConfig, ToolConfig,
+    ContextLimitsConfig, McpServerConfig, SecurityConfig, SkillsExecConfig, ToolConfig,
 };
 use haven_common::types::{MessageAttachment, RiskLevel, ShellChoice};
 use haven_llm::LlmRouter;
@@ -326,19 +327,6 @@ fn select_tool_defs_for_budget(
         omitted,
         omitted_core,
     }
-}
-
-fn mcp_index_entry_has_search_tool(entry: &Value) -> bool {
-    let Some(description) = entry["description"].as_str() else {
-        return false;
-    };
-    description
-        .split_once("; tools:")
-        .is_some_and(|(_, tools)| {
-            tools
-                .split(',')
-                .any(|tool| tool.trim().to_ascii_lowercase().contains("search"))
-        })
 }
 
 /// Put the concrete retry policy beside a terminal failure so the model can

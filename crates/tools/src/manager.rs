@@ -1,18 +1,5 @@
 use super::*;
 
-fn resolve_web_search_availability(
-    provider_search_available: bool,
-    mcp_search_available: bool,
-) -> WebSearchAvailability {
-    if provider_search_available {
-        WebSearchAvailability::Provider
-    } else if mcp_search_available {
-        WebSearchAvailability::Mcp
-    } else {
-        WebSearchAvailability::Unavailable
-    }
-}
-
 /// Process services shared outside the execution facade.
 ///
 /// MCP, skills and the asset registry clone as handles. Authorization,
@@ -523,9 +510,7 @@ impl ToolsManager {
     /// owned by `haven-input` and is intentionally not consulted here.
     pub async fn transcription_available(&self) -> bool {
         let platform = self.runtime.platform().await;
-        let router = platform.router.clone();
-        let stt_client = platform.stt_client.clone();
-        builtin::resolve_media_capabilities(router.as_ref(), stt_client.is_some())
+        runtime_capabilities::resolve_media_capabilities(&platform)
             .await
             .transcribe
     }
@@ -542,8 +527,7 @@ impl ToolsManager {
         let platform = self.runtime.platform().await;
         let router = platform.router.clone();
         let stt_client = platform.stt_client.clone();
-        let capabilities =
-            builtin::resolve_media_capabilities(router.as_ref(), stt_client.is_some()).await;
+        let capabilities = runtime_capabilities::resolve_media_capabilities(&platform).await;
         if !capabilities.transcribe {
             return builtin::MediaTranscriptionResult::unavailable(
                 "No speech-to-text provider is configured.",
@@ -567,57 +551,8 @@ impl ToolsManager {
     /// prompt snapshot from advertising a role that the tool schema removed.
     pub async fn runtime_capabilities(&self) -> RuntimeCapabilities {
         let platform = self.runtime.platform().await;
-        let router = platform.router.clone();
-        let stt_client = platform.stt_client.clone();
-        let media_capabilities =
-            builtin::resolve_media_capabilities(router.as_ref(), stt_client.is_some()).await;
-        let vision = media_capabilities.describe;
-        let transcription = media_capabilities.transcribe;
-        // Capturing and transcribing are separate capabilities: a recording
-        // must remain available even when STT is temporarily unconfigured so
-        // it can still produce an asset for a later `media.transcribe` call.
-        // Recording is a capture capability. It remains available without an
-        // STT provider so a managed audio asset can be retained for later
-        // derivation.
-        let recording = platform.audio_pipeline.is_some();
-        let image_generation = platform.image_gen_client.is_some();
-        let tts = platform.tts_client.is_some();
-        let mcp_search_available = self
-            .build_mcp_index()
-            .await
-            .iter()
-            .any(mcp_index_entry_has_search_tool);
-        let provider_search_available = match router.as_ref() {
-            Some(router) => {
-                let config = router.config().await;
-                let endpoint = config
-                    .route(RequestKind::Chat)
-                    .map(|model| &model.endpoint)
-                    .unwrap_or_else(|| {
-                        // No configured route means provider search is not
-                        // available; the default endpoint is never probed.
-                        static EMPTY: std::sync::OnceLock<haven_common::config::ModelEndpoint> =
-                            std::sync::OnceLock::new();
-                        EMPTY.get_or_init(Default::default)
-                    });
-                let style = haven_llm::adapters::api_style_for(endpoint);
-                let mode = haven_llm::adapters::resolve_web_search_mode(endpoint);
-                config.route(RequestKind::Chat).is_some()
-                    && !matches!(mode, haven_llm::WebSearchMode::Off)
-                    && haven_llm::supports_builtin_web_search(style)
-            }
-            None => false,
-        };
-        let web_search =
-            resolve_web_search_availability(provider_search_available, mcp_search_available);
-        RuntimeCapabilities {
-            vision,
-            image_generation,
-            transcription,
-            recording,
-            tts,
-            web_search,
-        }
+        let mcp_index = self.build_mcp_index().await;
+        runtime_capabilities::resolve(&platform, &mcp_index).await
     }
 }
 
@@ -647,30 +582,5 @@ impl ToolControlPort for ToolControlHandle {
 impl Default for ToolsManager {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-#[cfg(test)]
-mod runtime_capability_tests {
-    use super::*;
-
-    #[test]
-    fn provider_search_takes_priority_over_mcp_search() {
-        assert_eq!(
-            resolve_web_search_availability(true, true),
-            WebSearchAvailability::Provider
-        );
-        assert_eq!(
-            resolve_web_search_availability(true, false),
-            WebSearchAvailability::Provider
-        );
-        assert_eq!(
-            resolve_web_search_availability(false, true),
-            WebSearchAvailability::Mcp
-        );
-        assert_eq!(
-            resolve_web_search_availability(false, false),
-            WebSearchAvailability::Unavailable
-        );
     }
 }
