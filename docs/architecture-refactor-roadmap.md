@@ -318,6 +318,8 @@ SessionStore
 
 当前边界：model 命令的完整 apply 路径已统一；Settings 的 target/phase plan、执行顺序与失败观测已归 coordinator。security/MCP/context/logging/hotkey 等实际副作用仍由既有 owner 执行，并按原顺序半失败；失败记录不代表补偿成功。完整逐阶段逆操作、启动/重启恢复或接受半应用状态仍未决，本切片不新增 compensation、rollback 或 restart recovery（ADR 0324、0337）。
 
+2026-09-25 失败策略审计（ADR 0351）：`SettingsApplyOutcome` / `SettingsApplyObservation` 已提供 typed phase outcome 与诊断上下文；target 复用 `RuntimeConfigApplyPlan`，phase 顺序只有 `SETTINGS_APPLY_PHASE_ORDER` 一份，因此不再抽取通用 failure report/plan validator。新增回归固定 Settings/model apply 失败后 durable edit 保留、相同输入不隐式重试、每个可传播 fatal 的 Settings phase 停止后续调用；warning-only event 保持独立测试。审计发现 Tools admin 的 MCP、Skills、Logging、ToolSettings 写入另有 runtime apply/局部补偿路径，且不持有 `config_apply_gate`；ConfigService 锁不覆盖 save 后 runtime apply，跨入口可能并发。是否收敛这些 writer、是否允许部分应用、显式重试/重启与补偿边界仍需产品/架构决策；本切片保持现有行为。
+
 ### 阶段 6：LLM Router 请求对象化（P2）
 
 目的：减少 router 公共包装入口，不改变 provider adapter。

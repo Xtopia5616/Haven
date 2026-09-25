@@ -336,3 +336,6 @@
 - [0346：App event listener contract boundary](0346-app-event-listener-contract-boundary.md)
 - [0347：Agent event contract validation boundary](0347-agent-event-contract-validation-boundary.md)
 - [0348：Action command contract boundary](0348-action-command-contract-boundary.md)
+- [0349：Session terminal cleanup audit](0349-session-terminal-cleanup-audit.md)
+- [0350：Session UI field mapping audit](0350-session-ui-field-mapping-audit.md)
+- [0351：配置 runtime apply 失败语义审计](0351-config-runtime-apply-failure-policy-audit.md)

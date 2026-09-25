@@ -847,21 +847,37 @@ mod tests {
         );
 
         for (failed_index, failed_phase) in expected_phases.iter().copied().enumerate() {
+            if failed_phase == SettingsApplyPhase::HotkeyRebindEvent {
+                // This callback is warning-only in production; its warning
+                // behavior has a separate regression test below.
+                continue;
+            }
             let mut coordinator = settings_coordinator(19);
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let seen_by_callback = seen.clone();
             let result = coordinator
-                .apply(|phase| async move {
-                    if phase == failed_phase {
-                        SettingsApplyOutcome::failed_already_rendered(
-                            "settings_phase_test",
-                            "phase failed".into(),
-                        )
-                    } else {
-                        SettingsApplyOutcome::applied()
+                .apply(move |phase| {
+                    let seen = seen_by_callback.clone();
+                    async move {
+                        seen.lock().unwrap().push(phase);
+                        if phase == failed_phase {
+                            SettingsApplyOutcome::failed_already_rendered(
+                                "settings_phase_test",
+                                "phase failed".into(),
+                            )
+                        } else {
+                            SettingsApplyOutcome::applied()
+                        }
                     }
                 })
                 .await;
 
             assert!(result.is_err(), "{failed_phase:?} should fail the apply");
+            assert_eq!(
+                *seen.lock().unwrap(),
+                expected_phases[..=failed_index].to_vec(),
+                "later phases must not run after {failed_phase:?} fails"
+            );
             let failure = coordinator.current_observation().unwrap();
             assert_eq!(failure.config_version, 19);
             assert_eq!(failure.phase, failed_phase);
@@ -1079,6 +1095,95 @@ mod tests {
         assert_eq!(value, 7);
         assert_eq!(rebuilds.load(Ordering::SeqCst), 0);
         assert_eq!(service.snapshot().unwrap().version, 0);
+    }
+
+    #[tokio::test]
+    async fn failed_model_router_apply_keeps_durable_edit_and_same_edit_skips_retry() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let loader = ConfigLoader::load_from(&path).unwrap();
+        let service = ConfigService::new(loader);
+        let coordinator = RuntimeConfigCoordinator::default();
+        let apply_attempts = Arc::new(AtomicUsize::new(0));
+        let first_attempts = apply_attempts.clone();
+
+        let result = coordinator
+            .edit_model_and_apply_with(
+                &service,
+                "model_test",
+                |config| {
+                    if !config
+                        .llm
+                        .models
+                        .iter()
+                        .any(|model| model.id == "model_test")
+                    {
+                        config.llm.models.push(ModelConfig {
+                            id: "model_test".into(),
+                            ..Default::default()
+                        });
+                    }
+                    Ok(())
+                },
+                move |_| async move {
+                    first_attempts.fetch_add(1, Ordering::SeqCst);
+                    Err("router preparation failed".to_string())
+                },
+            )
+            .await;
+
+        assert_eq!(result, Err("router preparation failed".into()));
+        let snapshot = service.snapshot().unwrap();
+        assert_eq!(snapshot.version, 1);
+        assert!(
+            snapshot
+                .config
+                .llm
+                .models
+                .iter()
+                .any(|model| model.id == "model_test")
+        );
+        let persisted = ConfigLoader::load_from(&path).unwrap();
+        assert!(
+            persisted
+                .config()
+                .llm
+                .models
+                .iter()
+                .any(|model| model.id == "model_test")
+        );
+
+        let retry_attempts = apply_attempts.clone();
+        let retry_result = coordinator
+            .edit_model_and_apply_with(
+                &service,
+                "model_test",
+                |config| {
+                    if !config
+                        .llm
+                        .models
+                        .iter()
+                        .any(|model| model.id == "model_test")
+                    {
+                        config.llm.models.push(ModelConfig {
+                            id: "model_test".into(),
+                            ..Default::default()
+                        });
+                    }
+                    Ok(())
+                },
+                move |_| async move {
+                    retry_attempts.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                },
+            )
+            .await;
+
+        assert_eq!(retry_result, Ok(()));
+        assert_eq!(apply_attempts.load(Ordering::SeqCst), 1);
+        assert_eq!(service.snapshot().unwrap().version, 1);
     }
 
     struct ActiveModelOperation(Arc<std::sync::atomic::AtomicUsize>);

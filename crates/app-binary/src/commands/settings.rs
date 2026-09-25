@@ -455,8 +455,11 @@ pub async fn is_autostart_enabled() -> Result<bool, String> {
 #[cfg(test)]
 mod tests {
     use super::{ShellAvailability, apply_settings_edit};
+    use crate::config_runtime::{
+        SettingsApplyOutcome, SettingsApplyPhase, SettingsRuntimeApplyCoordinator,
+    };
     use haven_common::config::{
-        AppConfig, ConfigLoader, ConfigService, Settings, StoredPermission,
+        AppConfig, ConfigLoader, ConfigService, LogLevel, Settings, StoredPermission,
     };
     use haven_common::types::PermissionEffect;
 
@@ -515,5 +518,51 @@ mod tests {
         assert!(update.is_none());
         assert!(receiver.try_recv().is_err());
         assert_eq!(service.snapshot().unwrap().version, 0);
+    }
+
+    #[tokio::test]
+    async fn failed_settings_apply_keeps_persisted_config_and_identical_edit_skips_retry() {
+        use std::sync::{Arc, Mutex};
+
+        let (service, _dir) = config_service_with_config(AppConfig::default());
+        let mut settings = service.settings().unwrap();
+        settings.log.level = LogLevel::Debug;
+        let changes = service.subscribe().unwrap();
+        let update = apply_settings_edit(&service, &settings)
+            .unwrap()
+            .expect("log level change should persist");
+        let mut coordinator = SettingsRuntimeApplyCoordinator::new(
+            &update.change,
+            &update.snapshot,
+            &update.old_hotkey,
+        );
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let seen_by_callback = seen.clone();
+
+        let result = coordinator
+            .apply(move |phase| {
+                let seen = seen_by_callback.clone();
+                async move {
+                    seen.lock().unwrap().push(phase);
+                    if phase == SettingsApplyPhase::Logging {
+                        SettingsApplyOutcome::failed("settings_apply_test", "logging failed")
+                    } else {
+                        SettingsApplyOutcome::applied()
+                    }
+                }
+            })
+            .await;
+
+        assert_eq!(result, Err("logging failed".into()));
+        assert_eq!(*seen.lock().unwrap(), vec![SettingsApplyPhase::Logging]);
+        let snapshot = service.snapshot().unwrap();
+        assert_eq!(snapshot.version, 1);
+        assert_eq!(snapshot.config.log.level, LogLevel::Debug);
+        let persisted = ConfigLoader::load_from(&service.path().unwrap()).unwrap();
+        assert_eq!(persisted.config().log.level, LogLevel::Debug);
+        assert_eq!(changes.try_recv().unwrap().version, 1);
+
+        assert!(apply_settings_edit(&service, &settings).unwrap().is_none());
+        assert!(changes.try_recv().is_err());
     }
 }
