@@ -147,16 +147,22 @@ CI 以 `scripts/check-crate-dependencies.ps1` 对此表执行内部 crate 依赖
   选择、capability profile 和 endpoint/context-window metadata 查询；生产路由同时要求
   所需 `Capability` 与可用凭据，测试注入只跳过凭据过滤。metadata 借用 Router 的单一
   `RouterConfig` snapshot，不复制配置真源（ADR 0316）。
-- `router.rs`：`LlmRouter` 保留配置 snapshot 与请求执行状态，拥有 health/circuit、
-  rate-limit cooldown、semaphore、stream rules、retry/timeout、usage、cancellation 和
-  provider 调用编排。每个 request kind 仍只走唯一 primary；同一模型内重试耗尽后直接
+- `router.rs`：`LlmRouter` 保留配置 snapshot 与请求执行状态，拥有 route/client 选择、
+  health/circuit、rate-limit cooldown、semaphore、stream rules、usage 与 cancellation，
+  并编排 provider 调用。每个 request kind 仍只走唯一 primary；同一模型内重试耗尽后直接
   返回错误，不跨 provider/model 切换缓存命名空间（ADR 0192）。旧 `llm.roles` 仅在
-  配置加载时转换，不进入生产路由；`CallExecutor` / `StreamExecutor` 与 capability /
-  call-purpose split 尚未迁移。
+  配置加载时转换，不进入生产路由；`CallExecutor` 执行 complete/embedding，`StreamExecutor`
+  只执行 raw stream 建流与 permit 包装。aggregated streaming 编排仍在 Router/`streaming.rs`；
+  capability / call-purpose split 尚未全贯穿。
+- `call_executor.rs` / `stream_executor.rs`：接收 Router 已解析的 model/client 与单份
+  `RequestPolicy`，复用 request pipeline 执行 complete/embedding 或 raw stream 建流，并经
+  Router 注入的窄 outcome closure 投影健康状态。raw `PermitStream` 持有 permit 到 stream
+  drop；aggregated retry/guidance/cancellation/callback 生命周期不由 StreamExecutor 管理
+  （ADR 0318、0327）。
 - `request_pipeline.rs`：provider-neutral 的 `RequestPolicy`/`RetryPolicy`；
-  为普通聊天、工具聊天、embedding 和流式端点尝试提供同一份重试预算快照与
-  总超时执行语义。router 仍拥有熔断、限流和流式聚合，adapter 不实现第二套
-  重试。
+  为普通聊天、工具聊天、embedding、raw stream 建流和 aggregated streaming endpoint
+  尝试提供同一份重试预算快照与总超时执行语义。Router/执行器共用这些 helper；adapter
+  不实现第二套重试。
 - `adapters/transport.rs`：所有 provider 共用的 reqwest client、代理/归因与
   认证头、HTTP 状态错误、流式响应头超时和健康检查；不解析 provider payload，
   也不拥有 router 的重试与路由状态（ADR 0024）。

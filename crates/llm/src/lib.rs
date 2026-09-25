@@ -9,6 +9,7 @@ pub mod ocr;
 pub mod registry;
 mod request_pipeline;
 pub mod router;
+mod stream_executor;
 pub mod stream_rules;
 mod streaming;
 pub mod stt;

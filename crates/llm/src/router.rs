@@ -15,6 +15,7 @@ use crate::model_directory::{ModelDirectory, RouteMode};
 use crate::request_pipeline::{
     RequestOutcome, RequestPolicy, execute_with_retry, execute_with_timeout,
 };
+use crate::stream_executor::StreamExecutor;
 use haven_common::types::{CanonicalMessage, ContentPart};
 
 use crate::stream_rules::{StreamRule, StreamRuleMatch, check_stream_rules};
@@ -33,28 +34,6 @@ use haven_common::media::CapabilityProfile;
 // ---------------------------------------------------------------------------
 // §2.6: Circuit Breaker state
 // ---------------------------------------------------------------------------
-
-/// Stream wrapper that holds a model's concurrency permit until the stream is
-/// dropped, so a raw `chat_stream` result cannot bypass the per-endpoint
-/// in-flight cap once the caller starts consuming it.
-struct PermitStream<S> {
-    inner: S,
-    _permit: Option<tokio::sync::OwnedSemaphorePermit>,
-}
-
-impl<S> futures_util::Stream for PermitStream<S>
-where
-    S: futures_util::Stream + Unpin,
-{
-    type Item = S::Item;
-
-    fn poll_next(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
-        std::pin::Pin::new(&mut self.inner).poll_next(cx)
-    }
-}
 
 /// The mutable runtime state every `LlmRouter` constructor initializes the
 /// same way (health trackers, stream rules, semaphores, rate-limit cooldowns).
@@ -841,27 +820,11 @@ impl LlmRouter {
         // Raw stream callers own consumption. Once a stream is returned, its
         // later transport error must be handled by the caller without
         // replaying already-consumed deltas.
-        let result = execute_with_timeout(
-            primary_policy.total_timeout_secs,
-            "router stream",
-            || async {
-                candidate.validate_content(&messages)?;
-                let result = execute_with_retry(primary_policy.retry, None, || {
-                    candidate.chat_stream(messages.clone())
-                })
-                .await;
-                self.record_request_outcome(&model_id, &result).await;
-                result
-            },
-        )
-        .await;
-        match result {
-            Ok(stream) => Ok(Box::pin(PermitStream {
-                inner: stream,
-                _permit: Some(permit),
-            })),
-            Err(error) => Err(error),
-        }
+        StreamExecutor::new(model_id, candidate, primary_policy)
+            .chat_stream(messages, permit, |model_id, outcome| {
+                self.project_request_outcome(model_id, outcome)
+            })
+            .await
     }
 
     /// Stream-chat a tool-aware request to the primary endpoint, aggregating
@@ -1262,7 +1225,7 @@ mod tests {
     use crate::streaming::{IDLE_SCALE_CAP_SECS, estimate_prompt_tokens, scale_stream_idle};
     use crate::types::{FinishReason, LlmError::Unknown, PromptRequest, Usage};
     use async_trait::async_trait;
-    use futures_util::stream;
+    use futures_util::{StreamExt, stream};
     use haven_common::types::CanonicalToolCall;
     use std::pin::Pin;
 
@@ -2881,6 +2844,51 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    #[tokio::test]
+    async fn raw_chat_stream_keeps_request_kind_route_selection() {
+        struct NamedStreamClient(&'static str);
+
+        #[async_trait]
+        impl LlmClient for NamedStreamClient {
+            async fn chat(&self, _: Vec<CanonicalMessage>) -> Result<LlmResponse, LlmError> {
+                Ok(LlmResponse::default())
+            }
+
+            async fn chat_stream(
+                &self,
+                _: Vec<CanonicalMessage>,
+            ) -> Result<
+                Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+                LlmError,
+            > {
+                Ok(Box::pin(stream::iter([Ok(StreamChunk {
+                    text: Some(self.0.into()),
+                    ..StreamChunk::default()
+                })])))
+            }
+
+            async fn health_check(&self) -> Result<(), LlmError> {
+                Ok(())
+            }
+        }
+
+        let router = LlmRouter::new_with_clients(
+            Arc::new(NamedStreamClient("fast-chat route")),
+            Arc::new(NamedStreamClient("chat route")),
+            Arc::new(NamedStreamClient("vision route")),
+            Arc::new(NamedStreamClient("audio route")),
+        );
+
+        for (request, expected) in [
+            (RequestKind::FastChat, "fast-chat route"),
+            (RequestKind::Chat, "chat route"),
+        ] {
+            let mut stream = router.chat_stream(request, Vec::new()).await.unwrap();
+            let chunk = stream.next().await.unwrap().unwrap();
+            assert_eq!(chunk.text.as_deref(), Some(expected));
+        }
+    }
+
     /// Mock that tracks how many calls are in flight concurrently and stalls
     /// briefly, so the per-model semaphore's serialization is observable.
     struct ConcurrencyProbe {
@@ -3006,6 +3014,33 @@ mod tests {
         async fn health_check(&self) -> Result<(), LlmError> {
             Ok(())
         }
+    }
+
+    #[tokio::test]
+    async fn raw_chat_stream_projects_rate_limit_once_to_router_state() {
+        let client: Arc<dyn LlmClient> = Arc::new(AlwaysRateLimited);
+        let router =
+            LlmRouter::new_with_clients(client.clone(), client.clone(), client.clone(), client);
+        {
+            let mut config = router.config.write().await;
+            config.retry_max_retries = 0;
+        }
+
+        let result = router.chat_stream(RequestKind::Chat, Vec::new()).await;
+        let error = match result {
+            Ok(_) => panic!("rate-limited stream setup returns its provider error"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, LlmError::RateLimit { .. }));
+
+        let health = router.health.read().await;
+        assert_eq!(health["default_model"].consecutive_failures, 1);
+        drop(health);
+        let deadline = router
+            .rate_limit_deadline_for_test("default_model")
+            .await
+            .expect("raw stream 429 establishes the shared cooldown");
+        assert!(deadline > Instant::now());
     }
 
     #[tokio::test]
