@@ -321,3 +321,4 @@
 - [0330：Session lifecycle UI contract mapper](0330-session-lifecycle-ui-contract-mapper.md)
 - [0331：ToolsManager typed capability snapshot 与缓存失效边界](0331-tools-manager-capability-snapshot.md)
 - [0332：后台与定时任务共用 ActionLease claim core](0332-action-claim-lease-core.md)
+- [0333：Tools runtime composition 与更新编排归 coordinator](0333-tools-runtime-coordinator.md)

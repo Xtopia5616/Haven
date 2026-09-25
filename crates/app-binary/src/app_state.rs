@@ -651,6 +651,7 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use haven_common::config::McpServerConfig;
     use tempfile::tempdir;
 
     #[tokio::test]
@@ -698,12 +699,53 @@ mod tests {
             std::future::pending::<()>().await;
         }));
 
+        runtime
+            .tools
+            .load_mcp_from_config(&[McpServerConfig {
+                name: "disabled-shutdown-test".into(),
+                enabled: false,
+                ..McpServerConfig::default()
+            }])
+            .await;
+
+        let keep_reading = Arc::new(AtomicBool::new(true));
+        let read_started = Arc::new(tokio::sync::Notify::new());
+        let reader_tools = Arc::clone(&runtime.tools);
+        let reader_flag = Arc::clone(&keep_reading);
+        let reader_started = Arc::clone(&read_started);
+        let reader = tokio::spawn(async move {
+            let mut signalled = false;
+            loop {
+                let _ = reader_tools.runtime_capabilities().await;
+                assert!(reader_tools.build_mcp_index().await.is_empty());
+                if !signalled {
+                    reader_started.notify_one();
+                    signalled = true;
+                }
+                if !reader_flag.load(Ordering::Acquire) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        });
+
         tokio::task::yield_now().await;
+        read_started.notified().await;
         runtime.shutdown().await;
+        keep_reading.store(false, Ordering::Release);
+        reader
+            .await
+            .expect("capability reads must survive shutdown");
 
         assert!(runtime.cancellation_token().is_cancelled());
         assert!(dropped.load(Ordering::Acquire));
         assert!(!runtime.spawn("late-task", async {}));
+        let after_shutdown = runtime.tools.runtime_capabilities().await;
+        assert!(after_shutdown.recording);
+        assert!(matches!(
+            after_shutdown.web_search,
+            haven_tools::WebSearchAvailability::Unavailable
+        ));
 
         // The second call is intentionally a no-op: teardown is safe to call
         // from both an exit hook and an owning test fixture.

@@ -55,16 +55,23 @@ operation 与执行策略）、`registry.rs`（全局注册表、SessionCatalog�
 handler。`policy_for` 是一次调用的 `OperationPolicy`，`catalog_policy` 是目录上界。`ToolManifest`、
 `ToolPolicy`、`ToolPresentation` 只由 `project_tool_manifest` 投影，保留为 Tauri/UI 的 IPC 形状。`tool_core.rs`
 组合 registry 与 authorization。`tool_runtime.rs` 用一份不可变 `PlatformRuntime` 承载模型、媒体、
-tool settings、context limits、shell 与 security，热更新整份替换。messaging 与 memory recall
-是进程服务，在 `wire_startup` 里绑定一次，不放进这份快照；`admin_surfaces` 随成功的 catalog
-rebuild 写入 `BuiltinCatalog`。`tool_builtins.rs` 组合 MCP/Skills 与具体 builtin provider。
-MCP、skills、授权、媒体资产、action 与 live output 由构造时交出的 `ToolServices` 提供，调用方
-不再向 `ToolsManager` 逐个取服务。组合根仍是 `ApplicationRuntime`，不另建 `AppRuntime`。
-`ToolsManager` 保留执行、目录投影、启动装配和录音转写入口，不再充当这些进程服务的 service locator。
-能力判断由 ToolsManager 唯一构造的 crate-private `ToolCapabilitySnapshot` 收口：prompt runtime、
+tool settings、context limits、shell 与 security，热更新整份替换。crate-private
+`ToolRuntimeCoordinator` 是 `ToolCore`、`ToolRuntime`、`ToolBuiltins` 的组装 owner，并负责
+PlatformRuntime 发布、MCP discovery config/index 更新和 builtin catalog rebuild 的工具侧顺序。
+messaging 与 memory recall 是进程服务，在 `wire_startup` 里绑定一次，不放进这份快照；
+`admin_surfaces` 随成功的 catalog rebuild 写入 `BuiltinCatalog`。`tool_builtins.rs` 组合 MCP/Skills
+与具体 builtin provider。MCP、skills、授权、媒体资产、action 与 live output 由构造时交出的
+`ToolServices` 提供，调用方不再向 `ToolsManager` 逐个取服务。组合根仍是 `ApplicationRuntime`，
+不另建 `AppRuntime`。`ToolsManager` 是对外 façade，保留执行与授权入口、session overlay/asset
+lease 操作、目录投影、runtime capability 请求和录音转写入口；启动及 runtime/catalog 更新转发给 coordinator。
+能力判断由 tools crate 唯一构造的 crate-private `ToolCapabilitySnapshot` 收口：prompt runtime、
 媒体 operation catalog、TTS/STT 与录音 gate 使用同一 typed 能力值，搜索优先级由它统一投影。
 snapshot 每次从当前 `PlatformRuntime`、Router config 与 MCP index 重建；三者没有共同版本钟，故当前不缓存。
 该 snapshot 只含能力结果，不暴露 Router、MCP manager、Database 或授权执行 facade（ADR 0331）。
+配置侧仍由 app-binary 的 `RuntimeConfigCoordinator` 准备 Router 与媒体 client、持有 config apply gate；
+`update_settings` 仍负责 settings 的跨阶段顺序。MCP Tauri 命令负责持久化和连接/刷新动作，完成后请求
+ToolsManager façade 重建 catalog；连接及其 `catalog_version` 仍由 `McpManager` 持有。应用退出顺序由
+`ApplicationRuntime` 负责，coordinator 不增加独立 shutdown 生命周期（ADR 0333）。
 安全矩阵只有 `security.rs` 一个权威来源，五个 Admin surface 由 ADR 0070/0071 定义的 typed
 operation 实现。边界见 ADR 0162、ADR 0211、ADR 0212 与 ADR 0213。
 
@@ -581,6 +588,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 
 | 日期 | 内容 |
 |---|---|
+| 2026-09-25 | §2.5 Tools：由 crate-private `ToolRuntimeCoordinator` 持有 tool runtime composition、PlatformRuntime/config 更新顺序、MCP discovery index 与 builtin catalog rebuild；Tauri config gate、MCP 连接和应用 shutdown 仍留在原 owner（ADR 0333） |
 | 2026-09-25 | §2.5 Tools / §2.3 Memory：background outbox 与 scheduled fire claim 共用纯 typed `ActionLease<T>` 状态校验；30 秒/15 分钟 lease、SQLite CAS、ack 和 terminal invalidation 保持各自边界（ADR 0332） |
 | 2026-09-25 | §2.5 Tools：ToolsManager 唯一构造 typed `ToolCapabilitySnapshot` 并供媒体 catalog、prompt、TTS/STT 与录音 gate 共用；每次从当前 runtime/router/MCP 状态重建，暂缓无共同失效时钟的缓存（ADR 0331） |
 | 2026-09-25 | §2.2 LLM：将聚合 stream 的首次 `on_chunk` 交付前重试、guidance retry、总 timeout 与结果交接收口到 `AggregatedStreamExecutor`；Router 继续持路由、permit、规则和 health/cooldown 状态（ADR 0328） |

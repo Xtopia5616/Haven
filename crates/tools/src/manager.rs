@@ -18,20 +18,16 @@ pub struct ToolServices {
 }
 
 impl ToolServices {
-    fn from_parts(
-        core: &tool_core::ToolCore,
-        runtime: &tool_runtime::ToolRuntime,
-        builtins: &tool_builtins::ToolBuiltins,
-    ) -> Self {
+    fn from_parts(coordinator: &coordinator::ToolRuntimeCoordinator) -> Self {
         Self {
-            mcp: builtins.mcp_manager.clone(),
-            mcp_configs: builtins.mcp_server_configs.clone(),
-            skills: builtins.skills_engine.clone(),
-            skill_runner: builtins.skill_runner.clone(),
-            authorization: Arc::clone(&core.authorization),
-            assets: runtime.managed_assets.clone(),
-            actions: Arc::clone(&runtime.action_service),
-            live_outputs: Arc::clone(&runtime.live_outputs),
+            mcp: coordinator.builtins.mcp_manager.clone(),
+            mcp_configs: coordinator.builtins.mcp_server_configs.clone(),
+            skills: coordinator.builtins.skills_engine.clone(),
+            skill_runner: coordinator.builtins.skill_runner.clone(),
+            authorization: Arc::clone(&coordinator.core.authorization),
+            assets: coordinator.runtime.managed_assets.clone(),
+            actions: Arc::clone(&coordinator.runtime.action_service),
+            live_outputs: Arc::clone(&coordinator.runtime.live_outputs),
         }
     }
 }
@@ -44,9 +40,7 @@ impl ToolServices {
 /// `PlatformRuntime` snapshot owned by `ToolRuntime`. Installed, deferred and
 /// session operations live on [`OperationRegistry`].
 pub struct ToolsManager {
-    pub(crate) core: tool_core::ToolCore,
-    pub(crate) runtime: tool_runtime::ToolRuntime,
-    pub(crate) builtins: tool_builtins::ToolBuiltins,
+    pub(crate) coordinator: coordinator::ToolRuntimeCoordinator,
     services: ToolServices,
 }
 
@@ -56,14 +50,10 @@ impl ToolsManager {
     }
 
     pub fn new_with_exec_config(exec_config: SkillsExecConfig) -> Self {
-        let core = tool_core::ToolCore::new();
-        let runtime = tool_runtime::ToolRuntime::new();
-        let builtins = tool_builtins::ToolBuiltins::new(exec_config);
-        let services = ToolServices::from_parts(&core, &runtime, &builtins);
+        let coordinator = coordinator::ToolRuntimeCoordinator::new(exec_config);
+        let services = ToolServices::from_parts(&coordinator);
         Self {
-            core,
-            runtime,
-            builtins,
+            coordinator,
             services,
         }
     }
@@ -82,7 +72,7 @@ impl ToolsManager {
     /// Core catalog view. These accessors expose domain boundaries without
     /// exposing `ToolsManager`'s composition fields.
     pub fn operations(&self) -> &OperationRegistry {
-        &self.core.operations
+        &self.coordinator.core.operations
     }
 
     pub fn registry(&self) -> &ToolRegistry {
@@ -99,13 +89,18 @@ impl ToolsManager {
             let (Some(asset_id), Some(path)) = (&attachment.asset_id, &attachment.path) else {
                 continue;
             };
-            if !self.runtime.managed_assets.register_under_root_pending(
-                &uploads_root,
-                asset_id.clone(),
-                std::path::PathBuf::from(path),
-                attachment.filename.clone(),
-                attachment.media_type.clone(),
-            ) {
+            if !self
+                .coordinator
+                .runtime
+                .managed_assets
+                .register_under_root_pending(
+                    &uploads_root,
+                    asset_id.clone(),
+                    std::path::PathBuf::from(path),
+                    attachment.filename.clone(),
+                    attachment.media_type.clone(),
+                )
+            {
                 tracing::warn!(
                     asset_id = %asset_id,
                     "rejecting managed attachment outside the host uploads root"
@@ -129,14 +124,19 @@ impl ToolsManager {
                 continue;
             };
             let path = std::path::PathBuf::from(path);
-            if self.runtime.managed_assets.register_under_root_for_session(
-                session_id,
-                &uploads_root,
-                asset_id.clone(),
-                path.clone(),
-                attachment.filename.clone(),
-                attachment.media_type.clone(),
-            ) {
+            if self
+                .coordinator
+                .runtime
+                .managed_assets
+                .register_under_root_for_session(
+                    session_id,
+                    &uploads_root,
+                    asset_id.clone(),
+                    path.clone(),
+                    attachment.filename.clone(),
+                    attachment.media_type.clone(),
+                )
+            {
                 continue;
             }
             let expires_at = match attachment.expires_at.as_deref() {
@@ -155,6 +155,7 @@ impl ToolsManager {
                 None => None,
             };
             if !self
+                .coordinator
                 .runtime
                 .managed_assets
                 .register_under_root_for_session_with_metadata(
@@ -190,6 +191,7 @@ impl ToolsManager {
                 continue;
             };
             if !self
+                .coordinator
                 .runtime
                 .managed_assets
                 .bind_pending_to_session(session_id, asset_id)
@@ -208,34 +210,41 @@ impl ToolsManager {
     pub fn release_pending_managed_assets(&self, attachments: &[MessageAttachment]) {
         for attachment in attachments {
             if let Some(asset_id) = attachment.asset_id.as_deref() {
-                self.runtime.managed_assets.release_pending(asset_id);
+                self.coordinator
+                    .runtime
+                    .managed_assets
+                    .release_pending(asset_id);
             }
         }
     }
 
     /// Release the process-local asset lease held by a terminal session.
     pub fn release_managed_assets_for_session(&self, session_id: &str) {
-        self.runtime.managed_assets.release_session(session_id);
+        self.coordinator
+            .runtime
+            .managed_assets
+            .release_session(session_id);
     }
 
     /// Monotonic catalog version (see `catalog_version`). Consumers cache
     /// derived views (e.g. per-step LLM tool definitions) keyed by this
     /// value and rebuild only when it changes.
     pub fn catalog_version(&self) -> u64 {
-        self.core.operations.sessions.global_version()
+        self.coordinator.core.operations.sessions.global_version()
     }
 
     /// MCP has its own tools/list change clock and therefore must participate
     /// in prompt-index cache keys independently of the builtin registry.
     pub fn mcp_catalog_version(&self) -> u64 {
-        self.builtins.mcp_manager.catalog_version()
+        self.coordinator.builtins.mcp_manager.catalog_version()
     }
 
     /// Version pair for a session's complete tool-definition view. The first
     /// component covers global registry changes; the second covers only that
     /// session's progressive MCP overlay.
     pub async fn catalog_version_for_session(&self, session_id: &str) -> (u64, u64) {
-        self.core
+        self.coordinator
+            .core
             .operations
             .sessions
             .catalog_version_for_session(session_id)
@@ -269,19 +278,15 @@ impl ToolsManager {
         tts_client: Option<Arc<dyn haven_llm::TtsClient>>,
         media_config: haven_common::config::MediaConfig,
     ) {
-        self.runtime
-            .update_platform(|current| {
-                let mut next = current.clone();
-                next.router = Some(router);
-                next.stt_client = stt_client;
-                next.ocr_client = ocr_client;
-                next.image_gen_client = image_gen_client;
-                next.tts_client = tts_client;
-                next.media_config = media_config;
-                next
-            })
-            .await;
-        self.rebuild_catalog_scoped(CatalogRebuildScope::roots(["media", "files", "window"]))
+        self.coordinator
+            .set_router_and_media_clients(
+                router,
+                stt_client,
+                ocr_client,
+                image_gen_client,
+                tts_client,
+                media_config,
+            )
             .await;
     }
 
@@ -291,71 +296,7 @@ impl ToolsManager {
     /// security and tool settings are applied to their engines, then one
     /// `PlatformRuntime` snapshot is published with every field.
     pub async fn wire_startup(&self, wiring: StartupWiring) -> anyhow::Result<()> {
-        let StartupWiring {
-            action_store,
-            tool_settings,
-            default_shell,
-            context_limits,
-            security,
-            router,
-            media_config,
-            audio_pipeline,
-            stt_client,
-            ocr_client,
-            image_gen_client,
-            tts_client,
-            admin_context,
-            messaging_runtime,
-            memory_recall,
-        } = wiring;
-        self.runtime.bind_messaging_runtime(messaging_runtime)?;
-        self.runtime.bind_memory_recall(memory_recall)?;
-        self.builtins.mcp_manager.set_limits(&context_limits).await;
-        self.builtins
-            .skills_engine
-            .set_limits(&context_limits)
-            .await;
-        self.runtime
-            .action_service
-            .set_limits(&context_limits)
-            .await;
-        self.runtime.live_outputs.set_limits(&context_limits).await;
-        self.core.authorization.apply_security(&security).await;
-        self.builtins
-            .mcp_manager
-            .set_network_policy(security.network_policy)
-            .await;
-        self.core
-            .authorization
-            .set_tool_settings(tool_settings.clone())
-            .await;
-        self.runtime
-            .action_service
-            .set_action_store(action_store)
-            .await;
-        self.runtime
-            .replace_platform(crate::tool_runtime::PlatformRuntime {
-                router: Some(router),
-                admin_context: Some(admin_context),
-                audio_pipeline,
-                tts_client,
-                stt_client,
-                ocr_client,
-                image_gen_client,
-                media_config,
-                tool_settings,
-                context_limits,
-                default_shell,
-                security,
-            })
-            .await;
-        let applied = self.runtime.platform().await;
-        tracing::debug!(
-            network_policy = ?applied.security.network_policy,
-            "startup platform snapshot published"
-        );
-        self.rebuild_catalog_scoped(CatalogRebuildScope::All).await;
-        Ok(())
+        self.coordinator.wire_startup(wiring).await
     }
 
     /// Apply the security configuration to every runtime boundary that needs
@@ -363,23 +304,7 @@ impl ToolsManager {
     /// the MCP manager additionally protects startup, refresh, reconnect, and
     /// health-monitor connection paths.
     pub async fn apply_security(&self, security: &SecurityConfig) {
-        self.core.authorization.apply_security(security).await;
-        self.builtins
-            .mcp_manager
-            .set_network_policy(security.network_policy)
-            .await;
-        self.runtime
-            .update_platform(|current| {
-                let mut next = current.clone();
-                next.security = security.clone();
-                next
-            })
-            .await;
-        let applied = self.runtime.platform().await;
-        tracing::debug!(
-            network_policy = ?applied.security.network_policy,
-            "applied security configuration to the platform snapshot"
-        );
+        self.coordinator.apply_security(security).await;
     }
 
     /// Wire the app-level context for the five native admin surfaces. Called by the
@@ -387,45 +312,22 @@ impl ToolsManager {
     /// keep the capability-scoped adapters registered. Durable action storage
     /// is injected separately through startup wiring by the composition root.
     pub async fn set_admin_context(&self, ctx: builtin::AdminContext) {
-        self.runtime
-            .update_platform(|current| {
-                let mut next = current.clone();
-                next.admin_context = Some(ctx);
-                next
-            })
-            .await;
-        self.rebuild_catalog_scoped(CatalogRebuildScope::All).await;
+        self.coordinator.set_admin_context(ctx).await;
     }
 
     pub async fn set_tool_settings(&self, settings: HashMap<String, ToolConfig>) {
-        let affected = self
-            .runtime
-            .update_platform_with(|current| {
-                let affected = current
-                    .tool_settings
-                    .keys()
-                    .chain(settings.keys())
-                    .filter(|name| current.tool_settings.get(*name) != settings.get(*name))
-                    .map(|name| name.split('.').next().unwrap_or(name).to_string())
-                    .collect::<HashSet<_>>();
-                let mut next = current.clone();
-                next.tool_settings = settings.clone();
-                (next, affected)
-            })
-            .await;
-        // Settings are not a security-policy change. Replaying `apply_security`
-        // here would clear session grants.
-        self.core.authorization.set_tool_settings(settings).await;
-        if !affected.is_empty() {
-            self.rebuild_catalog_scoped(CatalogRebuildScope::Roots(affected))
-                .await;
-        }
+        self.coordinator.set_tool_settings(settings).await;
     }
 
     /// The five native admin surfaces, when the desktop shell wired the app
     /// context. The model sees the same operations through five typed adapters.
     pub async fn admin_surfaces(&self) -> Option<Arc<builtin::AdminSurfaces>> {
-        self.runtime.builtin_catalog().await.admin_surfaces.clone()
+        self.coordinator
+            .runtime
+            .builtin_catalog()
+            .await
+            .admin_surfaces
+            .clone()
     }
 
     /// Flip the `enabled` flag for one builtin tool in the in-memory
@@ -434,57 +336,25 @@ impl ToolsManager {
     /// caller (the admin surface's `tool_enable`/`tool_disable` operations,
     /// which call this after persisting).
     pub async fn set_tool_enabled(&self, name: &str, enabled: bool) {
-        self.runtime
-            .update_platform(|current| {
-                let mut next = current.clone();
-                next.tool_settings
-                    .entry(name.to_string())
-                    .or_insert_with(ToolConfig::default)
-                    .enabled = enabled;
-                next
-            })
-            .await;
-        self.rebuild_catalog_scoped(CatalogRebuildScope::roots([name
-            .split('.')
-            .next()
-            .unwrap_or(name)]))
-            .await;
+        self.coordinator.set_tool_enabled(name, enabled).await;
     }
 
     /// Replace the unified context limits (global tool output cap etc.) and
     /// rebuild the catalog so tools pick up the new values.
     pub async fn set_context_limits(&self, limits: ContextLimitsConfig) {
-        self.builtins.mcp_manager.set_limits(&limits).await;
-        self.builtins.skills_engine.set_limits(&limits).await;
-        self.runtime.action_service.set_limits(&limits).await;
-        self.runtime.live_outputs.set_limits(&limits).await;
-        self.runtime
-            .update_platform(|current| {
-                let mut next = current.clone();
-                next.context_limits = limits;
-                next
-            })
-            .await;
-        self.rebuild_catalog_scoped(CatalogRebuildScope::All).await;
+        self.coordinator.set_context_limits(limits).await;
     }
 
     /// Replace the default shell for the `shell` tool and rebuild the catalog
     /// so the running agent picks up the new value on its next step.
     pub async fn set_default_shell(&self, shell: ShellChoice) {
-        self.runtime
-            .update_platform(|current| {
-                let mut next = current.clone();
-                next.default_shell = shell;
-                next
-            })
-            .await;
-        self.rebuild_catalog_scoped(CatalogRebuildScope::roots(["shell"]))
-            .await;
+        self.coordinator.set_default_shell(shell).await;
     }
 
     /// Snapshot the shell default used by the model-facing `shell` tool.
     pub async fn default_shell_name(&self) -> String {
-        self.runtime
+        self.coordinator
+            .runtime
             .platform()
             .await
             .default_shell
@@ -495,14 +365,19 @@ impl ToolsManager {
     /// Snapshot the limits that shape model-visible tool and observation
     /// budgets. Prompt assembly uses this instead of duplicating defaults.
     pub async fn context_limits(&self) -> ContextLimitsConfig {
-        self.runtime.platform().await.context_limits.clone()
+        self.coordinator
+            .runtime
+            .platform()
+            .await
+            .context_limits
+            .clone()
     }
 
     /// Whether the model-facing `media.speak` operation has a live TTS
     /// backend. This is intentionally separate from the media tool's schema
     /// so prompt assembly can report the same capability state.
     pub async fn tts_configured(&self) -> bool {
-        let platform = self.runtime.platform().await;
+        let platform = self.coordinator.runtime.platform().await;
         self.tool_capability_snapshot(&platform).await.media.speak
     }
 
@@ -510,7 +385,7 @@ impl ToolsManager {
     /// route. This is the app-facing gate for voice ingress; capture itself is
     /// owned by `haven-input` and is intentionally not consulted here.
     pub async fn transcription_available(&self) -> bool {
-        let platform = self.runtime.platform().await;
+        let platform = self.coordinator.runtime.platform().await;
         self.tool_capability_snapshot(&platform)
             .await
             .media
@@ -526,7 +401,7 @@ impl ToolsManager {
         wav_data: &[u8],
         cancel: CancellationToken,
     ) -> builtin::MediaTranscriptionResult {
-        let platform = self.runtime.platform().await;
+        let platform = self.coordinator.runtime.platform().await;
         let router = platform.router.clone();
         let stt_client = platform.stt_client.clone();
         let capabilities = self.tool_capability_snapshot(&platform).await;
@@ -552,7 +427,7 @@ impl ToolsManager {
     /// builtin catalog. Keeping this at the manager boundary prevents the
     /// prompt snapshot from advertising a role that the tool schema removed.
     pub async fn runtime_capabilities(&self) -> RuntimeCapabilities {
-        let platform = self.runtime.platform().await;
+        let platform = self.coordinator.runtime.platform().await;
         self.tool_capability_snapshot(&platform)
             .await
             .runtime_capabilities()
@@ -566,8 +441,7 @@ impl ToolsManager {
         &self,
         platform: &crate::tool_runtime::PlatformRuntime,
     ) -> runtime_capabilities::ToolCapabilitySnapshot {
-        let mcp_index = self.build_mcp_index().await;
-        runtime_capabilities::resolve_snapshot(platform, &mcp_index).await
+        self.coordinator.tool_capability_snapshot(platform).await
     }
 }
 
@@ -680,6 +554,7 @@ mod capability_tests {
 
         let pipeline = Arc::new(haven_input::InputPipeline::new());
         tools
+            .coordinator
             .runtime
             .update_platform(|current| {
                 let mut next = current.clone();
@@ -689,12 +564,12 @@ mod capability_tests {
             .await;
         tools.rebuild_catalog().await;
 
-        let platform = tools.runtime.platform().await;
+        let platform = tools.coordinator.runtime.platform().await;
         let snapshot = tools.tool_capability_snapshot(&platform).await;
         assert!(snapshot.media.record);
         assert!(snapshot.media.transcribe);
         assert_eq!(snapshot.web_search, WebSearchAvailability::Provider);
-        let media_catalog = tools.runtime.builtin_catalog().await;
+        let media_catalog = tools.coordinator.runtime.builtin_catalog().await;
         assert!(
             media_catalog
                 .tools
@@ -735,7 +610,7 @@ mod capability_tests {
             builtin::MediaTranscriptionStatus::Unavailable
         );
         assert!(!tools.tts_configured().await);
-        let media_catalog = tools.runtime.builtin_catalog().await;
+        let media_catalog = tools.coordinator.runtime.builtin_catalog().await;
         assert!(
             media_catalog
                 .tools
@@ -753,24 +628,22 @@ mod capability_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_capability_reads_and_platform_replacements_do_not_panic() {
         let tools = Arc::new(ToolsManager::new());
-        let pipeline = Arc::new(haven_input::InputPipeline::new());
         let stt: Arc<dyn haven_llm::SttClient> = Arc::new(AvailableStt);
 
         let writer_tools = Arc::clone(&tools);
-        let writer_pipeline = Arc::clone(&pipeline);
         let writer_stt = Arc::clone(&stt);
         let writer = tokio::spawn(async move {
-            for generation in 0..32 {
-                let pipeline = (generation % 2 == 0).then(|| Arc::clone(&writer_pipeline));
+            for generation in 0..8 {
                 let stt = (generation % 2 == 0).then(|| Arc::clone(&writer_stt));
                 writer_tools
-                    .runtime
-                    .update_platform(|current| {
-                        let mut next = current.clone();
-                        next.audio_pipeline = pipeline;
-                        next.stt_client = stt;
-                        next
-                    })
+                    .set_router_and_media_clients(
+                        Arc::new(LlmRouter::new(RouterConfig::default())),
+                        stt,
+                        None,
+                        None,
+                        None,
+                        haven_common::config::MediaConfig::default(),
+                    )
                     .await;
             }
         });
@@ -789,6 +662,7 @@ mod capability_tests {
                     ));
                     let _ = tools.transcription_available().await;
                     let _ = tools.tts_configured().await;
+                    let _ = tools.tool_catalog_snapshot("ses-concurrent-reader").await;
                 }
             }));
         }

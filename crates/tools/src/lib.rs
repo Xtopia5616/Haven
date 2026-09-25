@@ -7,6 +7,7 @@ mod asset_registry;
 pub mod builtin;
 mod catalog;
 pub mod circuit;
+mod coordinator;
 mod document;
 mod execution;
 pub mod inbox;

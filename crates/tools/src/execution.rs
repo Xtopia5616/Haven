@@ -42,7 +42,7 @@ impl ToolsManager {
     }
 
     pub fn tool_circuits(&self) -> &ToolCircuitRegistry {
-        &self.core.tool_circuits
+        &self.coordinator.core.tool_circuits
     }
 
     pub async fn get_tool(&self, name: &str) -> Option<ToolBox> {
@@ -132,7 +132,13 @@ impl AuthorizedExecutor<'_> {
         cancel: CancellationToken,
         step_id: Option<&str>,
     ) -> anyhow::Result<ToolResult> {
-        if !self.tools.core.tool_circuits.allow_request(tool_name) {
+        if !self
+            .tools
+            .coordinator
+            .core
+            .tool_circuits
+            .allow_request(tool_name)
+        {
             tracing::warn!("tool '{}' circuit breaker open — fast-failing", tool_name);
             return Err(anyhow::Error::new(StructuredToolError::new(
                 format!(
@@ -191,7 +197,7 @@ impl AuthorizedExecutor<'_> {
                 obj.insert("_step_id".into(), serde_json::json!(sid));
             }
         }
-        let platform = self.tools.runtime.platform().await;
+        let platform = self.tools.coordinator.runtime.platform().await;
         let settings = &platform.tool_settings;
         let configured = settings
             .get(tool_name)
@@ -265,7 +271,11 @@ impl AuthorizedExecutor<'_> {
             };
             result.attempts = attempt + 1;
             if result.success {
-                self.tools.core.tool_circuits.record_success(tool_name);
+                self.tools
+                    .coordinator
+                    .core
+                    .tool_circuits
+                    .record_success(tool_name);
                 // Attach the tool's declared side-channel signals (ask
                 // question / notify toast) BEFORE returning.
                 result.signals = tool.signals(&result.output);
@@ -285,11 +295,19 @@ impl AuthorizedExecutor<'_> {
                 );
                 continue;
             }
-            self.tools.core.tool_circuits.record_failure(tool_name);
+            self.tools
+                .coordinator
+                .core
+                .tool_circuits
+                .record_failure(tool_name);
             annotate_retry_safety(&mut result, idempotency);
             return Ok(result);
         }
-        self.tools.core.tool_circuits.record_failure(tool_name);
+        self.tools
+            .coordinator
+            .core
+            .tool_circuits
+            .record_failure(tool_name);
         Ok(ToolResult::failed(
             Value::Null,
             format!("tool '{}' retries exhausted", tool_name),
@@ -297,10 +315,24 @@ impl AuthorizedExecutor<'_> {
     }
 
     pub async fn get_tool(&self, name: &str) -> Option<ToolBox> {
-        if let Some(tool) = self.tools.core.operations.installed.get(name).await {
+        if let Some(tool) = self
+            .tools
+            .coordinator
+            .core
+            .operations
+            .installed
+            .get(name)
+            .await
+        {
             return Some(tool);
         }
-        self.tools.core.operations.deferred.get(name).await
+        self.tools
+            .coordinator
+            .core
+            .operations
+            .deferred
+            .get(name)
+            .await
     }
 
     pub async fn get_risk_level(
@@ -316,6 +348,7 @@ impl AuthorizedExecutor<'_> {
             .map(|t| t.operation_policy(input).risk_level)
             .unwrap_or(RiskLevel::Safe);
         self.tools
+            .coordinator
             .core
             .authorization
             .effective_risk(tool_name, reported)
@@ -407,7 +440,7 @@ impl AuthorizedExecutor<'_> {
     /// ToolResult summary. Agent, step persistence and resume all consume this
     /// exact helper so an adapter cannot create a longer recovery observation.
     pub async fn observation_text(&self, tool_name: &str, result: &ToolResult) -> String {
-        let platform = self.tools.runtime.platform().await;
+        let platform = self.tools.coordinator.runtime.platform().await;
         let limits = &platform.context_limits;
         let settings = &platform.tool_settings;
         let cap = settings

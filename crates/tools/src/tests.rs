@@ -1484,7 +1484,8 @@ async fn test_list_defs_for_session_caps_at_max_tools() {
         max_tools_per_request: global + 2,
         ..Default::default()
     };
-    mgr.runtime
+    mgr.coordinator
+        .runtime
         .update_platform(|current| {
             let mut next = current.clone();
             next.context_limits = limits;
