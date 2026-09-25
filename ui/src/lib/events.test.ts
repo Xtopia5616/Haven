@@ -16,6 +16,7 @@ vi.mock('./logger.ts', () => ({
 
 import {
 	actionEventListeners,
+	recordingEventListeners,
 	registerListeners,
 	registerOne,
 	registerSessionListener,
@@ -64,7 +65,7 @@ describe('registerListeners', () => {
 		expect(mocks.error).toHaveBeenCalledWith(
 			'+page',
 			expect.stringContaining('session:created'),
-			expect.any(Error)
+			expect.any(Error),
 		);
 		// dispose after a failed registration is a no-op, not a throw.
 		expect(() => regs.dispose()).not.toThrow();
@@ -188,7 +189,9 @@ describe('registerOne', () => {
 		await registerOne('session:updated', handler);
 		const captured = mocks.listen.mock.calls[0][1];
 		captured(event({ status: 'paused' }));
-		expect(handler).toHaveBeenCalledWith(expect.objectContaining({ payload: { status: 'paused' } }));
+		expect(handler).toHaveBeenCalledWith(
+			expect.objectContaining({ payload: { status: 'paused' } }),
+		);
 	});
 });
 
@@ -241,5 +244,52 @@ describe('actionEventListeners', () => {
 			expect.stringContaining("Dropping malformed payload for 'action:finished'"),
 		);
 		expect(JSON.stringify(mocks.warn.mock.calls)).not.toContain(privateValue);
+	});
+});
+
+describe('recordingEventListeners', () => {
+	it('maps each received recording event before invoking handlers and keeps arrival order', () => {
+		const received: string[] = [];
+		const listeners = recordingEventListeners({
+			'recording:started': (event) => {
+				received.push(`${event.event}:${event.payload.sessionId}`);
+			},
+			'recording:stopped': (event) => {
+				received.push(`${event.event}:${event.payload.reason}`);
+			},
+			'transcription:started': (event) => {
+				received.push(`${event.event}:${event.payload.sessionId}`);
+			},
+			'transcription:result': (event) => {
+				received.push(`${event.event}:${event.payload.text}`);
+			},
+		});
+
+		const arrivals = [
+			{
+				event: 'recording:started',
+				payload: { is_recording: true, session_id: 'rec-1' },
+			},
+			{
+				event: 'recording:stopped',
+				payload: { is_recording: false, reason: 'silence' },
+			},
+			{ event: 'transcription:started', payload: { session_id: 'rec-1' } },
+			{
+				event: 'transcription:result',
+				payload: { session_id: 'rec-1', text: 'hello', duration_ms: 800 },
+			},
+		] as const;
+
+		arrivals.forEach((arrival, id) => {
+			listeners[arrival.event]({ ...arrival, id } as never);
+		});
+
+		expect(received).toEqual([
+			'recording:started:rec-1',
+			'recording:stopped:silence',
+			'transcription:started:rec-1',
+			'transcription:result:hello',
+		]);
 	});
 });

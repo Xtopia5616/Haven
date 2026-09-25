@@ -535,8 +535,14 @@ Action board 与 lifecycle event 共用 Rust `events.rs::ActionEvent` wire DTO�
 必需 `id`/`kind` 或已声明字段类型无效时丢弃整行/事件；未知附加字段忽略，未知 status 降级为
 `failed`，未知 kind fail closed。mapper 不接触 ActionService completion outbox；动态
 `tool_args` 仍是执行/完成边界上的 JSON 扩展字段，不进入 `ActionEvent` UI DTO（ADR 0335）。
-其它 agent/app/recording 事件、settings/command contract 镜像，以及 session mapper 内部
-camelCase 类型和字段映射仍待 Phase 8 收口到 Rust DTO 驱动的生成流程。
+录音与转写事件已完成镜像审计：Rust `events.rs` 的命名 DTO 是 wire shape 权威；
+`ui/src/lib/contracts/recording.ts` 只声明路由消费的 camelCase DTO，并由唯一的
+`mapRecordingEvent` 转换。没有第二份 snake_case wire interface，也没有布局内的字段映射；
+`recordingEventListeners` 是这组事件唯一进入该 mapper 的 listener 边界。转换保留既有可选字段
+省略、畸形值安全默认、未知附加字段忽略与 VAD 字符串透传行为，不拒绝未知 signal/state，
+因为 Rust DTO 将它们定义为字符串而非封闭枚举（ADR 0340）。
+其它 agent/app 事件、settings/command contract 镜像，以及 session mapper 内部 camelCase
+类型和字段映射仍待 Phase 8 收口到 Rust DTO 驱动的生成流程；本轮审计不引入 codegen。
 `+page.svelte` 保留 view/scroll 与 dialog/loading/menu 状态、输入路由与 ask 决策、model sync、
 resume target/auto-restore、新会话入口及非 chat-event teardown；在 mount 时创建 controller、等待
 listener ready 后再 settings/load/restore，并在 destroy 时 dispose。旧 `sessionMessages.ts`、
@@ -618,6 +624,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 
 | 日期 | 内容 |
 |---|---|
+| 2026-09-25 | §2.6 App / UI：录音与转写事件审计确认 Rust DTO 是 wire 权威，前端只保留 camelCase 消费 DTO 和单一 mapper；补充未知 VAD 字符串、扩展字段、畸形默认、channel 集合与到达顺序回归覆盖，无 DTO 或生产逻辑变化（ADR 0340） |
 | 2026-09-25 | §2.2 LLM：审计 health/native transcription descriptor 边界；两者已在 route/permit 前使用同一语义映射，metadata/config helpers 是只读 route 查询，新增 contract tests，无无效 wrapper（ADR 0339） |
 | 2026-09-25 | §2.5 Tools / UI：ActionService 持有唯一共享 tail 长度策略，foreground/background 消费 bounded typed snapshots；两条既有 event identity/wire 与 terminal/outbox 时序保持（ADR 0338） |
 | 2026-09-25 | §2.5 App 配置：Settings runtime apply 的有序阶段与 phase/failure 元数据归 `SettingsRuntimeApplyCoordinator`；现有副作用 owner、Router prepare/publish、no-op 与半失败语义保持，补偿/rollback 仍未决（ADR 0337） |
