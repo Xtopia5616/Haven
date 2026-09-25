@@ -42,6 +42,7 @@
 	import { loadSettings } from '$lib/settingsCommand.ts';
 	import { actionStatusLabel } from '$lib/taskTerminology.ts';
 	import { setToolManifests } from '$lib/toolManifest.ts';
+	import { getTools } from '$lib/toolsCommands.ts';
 	import { createChatInteractionEventHandlers } from '$lib/chatInteractionEventHandlers.ts';
 	import {
 		formatLlmConnectionFailure,
@@ -650,7 +651,7 @@
 	onMount(async () => {
 		runtime = isTauri() ? 'tauri' : 'browser';
 		if (isTauri()) {
-			invoke('get_tools')
+			getTools()
 				.then((result) => setToolManifests(result?.tools))
 				.catch((error) =>
 					logger.debug('+layout', 'tool manifest warmup unavailable', error),

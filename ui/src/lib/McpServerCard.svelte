@@ -1,4 +1,6 @@
 <script>
+	/** @typedef {import('$lib/contracts/tools.ts').McpClientStatus} McpClientStatus */
+	/** @typedef {import('$lib/contracts/tools.ts').McpServerSnapshot} McpServerSnapshot */
 	import MaterialIconButton from '$lib/MaterialIconButton.svelte';
 	import RefreshButton from '$lib/RefreshButton.svelte';
 	import MaterialSwitch from '$lib/MaterialSwitch.svelte';
@@ -7,6 +9,7 @@
 	import StatusBadge from '$lib/StatusBadge.svelte';
 	import { copyText } from '$lib/clipboard.ts';
 
+	/** @type {{ server: McpServerSnapshot; onToggle?: (name: string, enabled: boolean) => unknown; onEdit?: (server: McpServerSnapshot) => unknown; onRemove?: (name: string) => unknown; onReconnect?: (name: string) => unknown }} */
 	let { server, onToggle, onEdit, onRemove, onReconnect } = $props();
 	let refreshing = $state(false);
 
@@ -25,7 +28,7 @@
 		onToggle?.(server.name, checked);
 	}
 
-	/** @param {any} status */
+	/** @param {McpClientStatus} status */
 	function statusLabel(status) {
 		/** @type {Record<string, string>} */
 		const labels = {
@@ -41,7 +44,8 @@
 			if ('Connecting' in status) return '连接中';
 			if ('Disconnected' in status) return '已断开';
 			if ('Offline' in status) {
-				const err = status.Offline?.error || '';
+				const offline = /** @type {{ error?: unknown } | null | undefined} */ (status.Offline);
+				const err = /** @type {string} */ (offline?.error || '');
 				return err ? `离线：${err}` : '离线';
 			}
 		}

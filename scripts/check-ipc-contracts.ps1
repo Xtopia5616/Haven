@@ -685,3 +685,131 @@ foreach ($sourceFile in (Get-ChildItem $discoveryUiRoot -Recurse -File | Where-O
 
 Write-Host 'Model discovery IPC contract verified: Rust request/ModelInfo fields, typed helpers, and UI call boundaries agree.'
 
+$toolsCommandsUi = Get-Content (Join-Path $root 'ui/src/lib/toolsCommands.ts') -Raw
+$toolsContractUi = Get-Content (Join-Path $root 'ui/src/lib/contracts/tools.ts') -Raw
+$toolsManifestUi = Get-Content (Join-Path $root 'ui/src/lib/toolManifest.ts') -Raw
+$toolsPresentationUi = Get-Content (Join-Path $root 'ui/src/lib/builtinToolPresentation.ts') -Raw
+$toolsViewUi = Get-Content (Join-Path $root 'ui/src/lib/views/ToolsView.svelte') -Raw
+$toolsMcpCardUi = Get-Content (Join-Path $root 'ui/src/lib/McpServerCard.svelte') -Raw
+$toolsSkillCardUi = Get-Content (Join-Path $root 'ui/src/lib/SkillCard.svelte') -Raw
+
+$toolsCatalogChecks = @(
+    @{ Command = 'get_tools'; Request = '-'; RustResponse = 'ToolListResponse'; TsResponse = 'ToolListResponse' },
+    @{ Command = 'list_mcp_tools'; Request = '-'; RustResponse = 'McpServerSnapshot[]'; TsResponse = 'McpServerSnapshot[]' },
+    @{ Command = 'list_skills'; Request = '-'; RustResponse = 'SkillInfo[]'; TsResponse = 'SkillInfo[]' },
+    @{ Command = 'reset_tool_circuits'; Request = '-'; RustResponse = '()'; TsResponse = 'void' }
+)
+foreach ($check in $toolsCatalogChecks) {
+    $commandName = [regex]::Escape($check.Command)
+    $rustCommandContract = Get-RequiredMatch $rustContracts ('(?s)CommandContract\s*\{\s*name:\s*"' + $commandName + '"([^}]*)\}') "Rust contract for '$($check.Command)'"
+    $rustRequest = Get-RequiredMatch $rustCommandContract.Groups[1].Value 'request:\s*"([^"]+)"' "Rust request for '$($check.Command)'"
+    $rustResponse = Get-RequiredMatch $rustCommandContract.Groups[1].Value 'response:\s*"([^"]+)"' "Rust response for '$($check.Command)'"
+    $tsCommandContract = Get-RequiredMatch $tsContracts ('(?ms)^\s*' + $commandName + '\s*:\s*\{([^}]*)\}') "Frontend contract for '$($check.Command)'"
+    $tsRequest = Get-RequiredMatch $tsCommandContract.Groups[1].Value "request:\s*'([^']+)'" "Frontend request for '$($check.Command)'"
+    $tsResponse = Get-RequiredMatch $tsCommandContract.Groups[1].Value "response:\s*'([^']+)'" "Frontend response for '$($check.Command)'"
+    if ($rustRequest.Groups[1].Value -ne $check.Request -or $tsRequest.Groups[1].Value -ne $check.Request -or
+        $rustResponse.Groups[1].Value -ne $check.RustResponse -or $tsResponse.Groups[1].Value -ne $check.TsResponse) {
+        throw "ToolsView command contract for '$($check.Command)' differs between Rust and TypeScript"
+    }
+}
+
+foreach ($helper in @(
+    @{ Function = 'getTools'; Response = 'ToolListResponse'; Command = 'get_tools' },
+    @{ Function = 'listMcpTools'; Response = 'McpServerSnapshot[]'; Command = 'list_mcp_tools' },
+    @{ Function = 'listSkills'; Response = 'SkillInfo[]'; Command = 'list_skills' },
+    @{ Function = 'resetToolCircuits'; Response = 'void'; Command = 'reset_tool_circuits' }
+)) {
+    $functionName = [regex]::Escape($helper.Function)
+    $commandName = [regex]::Escape($helper.Command)
+    $pattern = '(?s)export\s+function\s+' + $functionName + '\s*\(\s*\)\s*:\s*Promise<' + [regex]::Escape($helper.Response) + '>\s*\{\s*return\s+invoke\(''' + $commandName + '''\);\s*\}'
+    if (-not [regex]::IsMatch($toolsCommandsUi, $pattern)) {
+        throw "$($helper.Command) must use its typed direct-forward tools command helper"
+    }
+}
+
+$toolsDirectInvokePattern = 'invoke\s*(?:<[^>]+>)?\s*\(\s*''(?:get_tools|list_mcp_tools|list_skills|reset_tool_circuits)'''
+$toolsUiRoot = Join-Path $root 'ui/src'
+foreach ($sourceFile in (Get-ChildItem $toolsUiRoot -Recurse -File | Where-Object { $_.Extension -in @('.ts', '.svelte') -and $_.FullName -ne (Join-Path $root 'ui/src/lib/toolsCommands.ts') })) {
+    if ([regex]::IsMatch((Get-Content $sourceFile.FullName -Raw), $toolsDirectInvokePattern)) {
+        throw "UI source '$($sourceFile.FullName)' bypasses toolsCommands.ts"
+    }
+}
+if ([regex]::IsMatch($toolsViewUi, '\bparseToolManifest\s*\(') -or
+    -not [regex]::IsMatch($toolsViewUi, '(?s)setToolManifests\s*\(\s*result\.tools\s*\).*?builtinToolEntryFromManifest')) {
+    throw 'ToolsView must consume the single parsed manifest snapshot instead of mapping rows twice'
+}
+if ([regex]::Matches($toolsManifestUi, '(?m)^export\s+function\s+parseToolManifest\s*\(\s*value:\s*unknown\s*\):\s*ToolManifest\s*\|\s*null').Count -ne 1 -or
+    [regex]::Matches($toolsManifestUi, 'parseToolManifest\s*\(\s*entry\s*\)').Count -ne 1) {
+    throw 'toolManifest.ts must retain one unknown-input parser and one snapshot parsing call site'
+}
+if ([regex]::IsMatch($toolsViewUi, '\b(?:McpServerSnapshot|SkillInfo)\[\][^\r\n]*\bany\b|Array<\s*any\s*>') -or
+    [regex]::IsMatch($toolsPresentationUi, '\[\s*key\s*:\s*string\s*\]\s*:\s*any') -or
+    [regex]::IsMatch($toolsMcpCardUi, '@param\s*\{\s*any\s*\}\s*status') -or
+    -not [regex]::IsMatch($toolsMcpCardUi, 'McpServerSnapshot') -or
+    -not [regex]::IsMatch($toolsSkillCardUi, 'SkillInfo')) {
+    throw 'ToolsView catalog rows and builtin presentation entries must not use raw any types'
+}
+
+function Assert-ToolsCatalogDto([string] $label, [string] $rustText, [string] $rustType, [string] $tsText, [string] $tsType) {
+    $rustDto = Get-RequiredMatch $rustText ('(?ms)pub\s+struct\s+' + [regex]::Escape($rustType) + '\s*\{(.*?)\n\}') "Rust $label"
+    $tsDto = Get-RequiredMatch $tsText ('(?ms)export\s+interface\s+' + [regex]::Escape($tsType) + '\s*\{(.*?)\n\}') "TypeScript $label"
+    $rustFields = Get-StructFields $rustDto.Groups[1].Value "Rust $label"
+    $tsFields = Get-StructFields $tsDto.Groups[1].Value "TypeScript $label"
+    Assert-SetEqual "$label fields" @($rustFields.Keys) @($tsFields.Keys)
+    foreach ($field in $rustFields.Keys) {
+        $rustTypeName = $rustFields[$field].Type
+        $expectedType = switch ($rustTypeName) {
+            'String' { 'string' }
+            'bool' { 'boolean' }
+            'i64' { 'number' }
+            'Option<String>' { 'string|null' }
+            'Option<i64>' { 'number|null' }
+            'Vec<String>' { 'string[]' }
+            'Vec<McpToolInfo>' { 'McpToolInfo[]' }
+            'Vec<haven_common::tools::ToolManifest>' { 'ToolManifestWire[]' }
+            'McpClientStatus' { 'McpClientStatus' }
+            'Value' { 'ToolSchema' }
+            'ToolIdentity' { 'ToolManifestIdentityWire' }
+            'ToolModel' { 'ToolModelWire' }
+            'ToolPolicy' { 'ToolPolicyWire' }
+            'ToolPresentation' { 'ToolPresentationWire' }
+            'ToolRootPresentation' { 'ToolRootPresentationWire' }
+            'ToolPrompt' { 'ToolPromptWire' }
+            'ToolAvailability' { 'ToolAvailabilityWire' }
+            'ToolSource' { 'string' }
+            'ToolCatalogGroup' { 'string' }
+            'crate::types::RiskLevel' { 'string' }
+            'RiskLevel' { 'string' }
+            default { throw "$label has unsupported Rust field type '$rustTypeName' for '$field'" }
+        }
+        $expectedOptional = $label -eq 'ToolAvailabilityWire' -and $field -eq 'availability_reason'
+        if ($tsFields[$field].Type -ne $expectedType -or $tsFields[$field].Optional -ne $expectedOptional) {
+            throw "$label field '$field' differs from its Rust wire type"
+        }
+    }
+    if (-not [regex]::IsMatch($tsDto.Groups[1].Value, '\[\s*field\s*:\s*string\s*\]\s*:\s*unknown\s*;')) {
+        throw "$label must retain unknown extension fields in the renderer contract"
+    }
+}
+
+$commonToolsRs = Get-Content (Join-Path $root 'crates/common/src/tools.rs') -Raw
+$skillsRs = Get-Content (Join-Path $root 'crates/skills/src/lib.rs') -Raw
+$mcpRs = Get-Content (Join-Path $root 'crates/mcp/src/protocol.rs') -Raw
+Assert-ToolsCatalogDto 'ToolListResponse' (Get-Content (Join-Path $commandsRoot 'contracts.rs') -Raw) 'ToolListResponse' $toolsContractUi 'ToolListResponse'
+Assert-ToolsCatalogDto 'SkillInfo' $skillsRs 'SkillInfo' $toolsContractUi 'SkillInfo'
+Assert-ToolsCatalogDto 'McpServerSnapshot' $mcpRs 'McpServerSnapshot' $toolsContractUi 'McpServerSnapshot'
+Assert-ToolsCatalogDto 'McpToolInfo' $mcpRs 'McpToolInfo' $toolsContractUi 'McpToolInfo'
+Assert-ToolsCatalogDto 'ToolManifestWire' $commonToolsRs 'ToolManifest' $toolsContractUi 'ToolManifestWire'
+Assert-ToolsCatalogDto 'ToolManifestIdentityWire' $commonToolsRs 'ToolIdentity' $toolsContractUi 'ToolManifestIdentityWire'
+Assert-ToolsCatalogDto 'ToolModelWire' $commonToolsRs 'ToolModel' $toolsContractUi 'ToolModelWire'
+Assert-ToolsCatalogDto 'ToolPolicyWire' $commonToolsRs 'ToolPolicy' $toolsContractUi 'ToolPolicyWire'
+Assert-ToolsCatalogDto 'ToolPresentationWire' $commonToolsRs 'ToolPresentation' $toolsContractUi 'ToolPresentationWire'
+Assert-ToolsCatalogDto 'ToolRootPresentationWire' $commonToolsRs 'ToolRootPresentation' $toolsContractUi 'ToolRootPresentationWire'
+Assert-ToolsCatalogDto 'ToolPromptWire' $commonToolsRs 'ToolPrompt' $toolsContractUi 'ToolPromptWire'
+Assert-ToolsCatalogDto 'ToolAvailabilityWire' $commonToolsRs 'ToolAvailability' $toolsContractUi 'ToolAvailabilityWire'
+if (-not [regex]::IsMatch($toolsContractUi, '(?ms)export\s+type\s+McpClientStatus\s*=\s*string\s*\|\s*\{\s*\[variant:\s*string\]\s*:\s*unknown\s*\}')) {
+    throw 'McpClientStatus must remain open to unknown serde-tagged variants and extension fields'
+}
+
+Write-Host 'Tools catalog IPC contract verified: Rust DTO fields, typed helpers, open extensions, and UI call boundaries agree.'
+

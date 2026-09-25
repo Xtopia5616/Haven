@@ -2,6 +2,7 @@ import type { ToolManifest } from './toolManifest.ts';
 
 export type BuiltinToolEntry = {
 	name: string;
+	label: string;
 	desc: string;
 	risk: string;
 	category: string;
@@ -12,7 +13,9 @@ export type BuiltinToolEntry = {
 	operation: string | null;
 	schema: Record<string, unknown>;
 	enabled: boolean;
-	[key: string]: any;
+	available: boolean;
+	availabilityReason: string | null;
+	manifest: ToolManifest;
 };
 
 export type BuiltinToolRootCard = {

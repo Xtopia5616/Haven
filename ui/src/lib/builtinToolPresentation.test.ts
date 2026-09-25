@@ -9,6 +9,7 @@ import {
 function tool(name: string, overrides: Partial<BuiltinToolEntry> = {}): BuiltinToolEntry {
 	return {
 		name,
+		label: name,
 		desc: `${name} description`,
 		risk: 'safe',
 		category: 'system',
@@ -19,6 +20,41 @@ function tool(name: string, overrides: Partial<BuiltinToolEntry> = {}): BuiltinT
 		operation: null,
 		schema: {},
 		enabled: true,
+		available: true,
+		availabilityReason: null,
+		manifest: {
+			identity: {
+				source: 'builtin',
+				catalogGroup: 'system',
+				root: name.split('.')[0],
+				operation: null,
+				stableName: name,
+			},
+			model: { name, description: `${name} description`, inputSchema: {} },
+			policy: {
+				riskLevel: 'safe',
+				permissionKey: name,
+				confirmation: 'none',
+				idempotency: 'idempotent',
+				scope: 'session',
+				concurrency: 'read_only',
+			},
+			presentation: {
+				label: name,
+				renderer: 'tools',
+				icon: 'tools',
+				representedSource: 'builtin',
+			},
+			rootPresentation: { label: name.split('.')[0], description: '', icon: 'tools' },
+			prompt: { whenToUse: '', whenNotToUse: '', keyOperations: [] },
+			availability: {
+				enabled: true,
+				available: true,
+				availabilityReason: null,
+				requiresConnection: false,
+				requiresPermission: false,
+			},
+		},
 		...overrides,
 	};
 }

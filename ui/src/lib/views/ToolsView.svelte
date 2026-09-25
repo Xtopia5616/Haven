@@ -1,10 +1,12 @@
 <script>
-	/** @typedef {{ name: string; enabled: boolean; [key: string]: any }} ToggleItem */
 	/** @typedef {import('$lib/builtinToolPresentation.ts').BuiltinToolEntry} BuiltinToolEntry */
+	/** @typedef {import('$lib/contracts/tools.ts').McpServerSnapshot} McpServerSnapshot */
+	/** @typedef {import('$lib/contracts/tools.ts').SkillInfo} SkillInfo */
+	/** @typedef {{ name: string; enabled: boolean; desc?: string; description?: string; url?: string; transport?: string }} ResourceFilterItem */
 
-	/** @type {ToggleItem[]} */
+	/** @type {McpServerSnapshot[]} */
 	let mcpServers = $state([]);
-	/** @type {ToggleItem[]} */
+	/** @type {SkillInfo[]} */
 	let skills = $state([]);
 	/** @type {BuiltinToolEntry[]} */
 	let builtinTools = $state([]);
@@ -16,6 +18,12 @@
 
 	import { onMount, onDestroy } from 'svelte';
 	import { invoke } from '$lib/tauri.ts';
+	import {
+		getTools,
+		listMcpTools,
+		listSkills,
+		resetToolCircuits as resetToolCircuitsCommand,
+	} from '$lib/toolsCommands.ts';
 	import { addNotification } from '$lib/notificationStore.ts';
 	import { reportError } from '$lib/errorHandling.ts';
 	import logger from '$lib/logger.ts';
@@ -37,7 +45,7 @@
 		filterBuiltinToolCard,
 		groupBuiltinTools,
 	} from '$lib/builtinToolPresentation.ts';
-	import { parseToolManifest, setToolManifests } from '$lib/toolManifest.ts';
+	import { setToolManifests } from '$lib/toolManifest.ts';
 
 	/** @type {{ dispose: () => void }} */
 	let unlistenSkills;
@@ -48,7 +56,7 @@
 	let mcpRefreshing = $state(false);
 	let skillsRefreshing = $state(false);
 
-	/** @param {Record<string, any>} item */
+	/** @param {ResourceFilterItem} item */
 	function matchesResource(item) {
 		const query = searchQuery.trim().toLocaleLowerCase();
 		if (enabledFilter === 'enabled' && item.enabled === false) return false;
@@ -100,13 +108,10 @@
 
 	onMount(async () => {
 		try {
-			const result = await invoke('get_tools');
+			const result = await getTools();
 			if (result && result.tools) {
-				const tools = /** @type {Array<any>} */ (result.tools);
-				setToolManifests(tools);
-				builtinTools = tools
-					.map(parseToolManifest)
-					.filter((manifest) => manifest !== null)
+				const manifests = setToolManifests(result.tools);
+				builtinTools = manifests
 					.map(builtinToolEntryFromManifest)
 					.sort((a, b) => a.name.localeCompare(b.name));
 			}
@@ -140,7 +145,7 @@
 
 	async function refreshMcpServers() {
 		try {
-			const result = await invoke('list_mcp_tools');
+			const result = await listMcpTools();
 			mcpServers = result || [];
 			return true;
 		} catch (e) {
@@ -151,7 +156,7 @@
 
 	async function resetToolCircuits() {
 		try {
-			await invoke('reset_tool_circuits');
+			await resetToolCircuitsCommand();
 			addNotification('工具熔断已重置', 'success', 2500);
 		} catch (e) {
 			reportError(e, { context: 'ToolsView', message: '重置工具熔断失败', log: false });
@@ -206,7 +211,7 @@
 
 	async function refreshSkillList() {
 		try {
-			const result = await invoke('list_skills');
+			const result = await listSkills();
 			skills = result || [];
 		} catch (e) {
 			logger.warn('tools', 'list_skills error', e);
@@ -218,13 +223,13 @@
 	// failure. `refresh` runs after a successful toggle. One implementation
 	// so the three handlers cannot drift (e.g. one forgetting the refresh).
 	/**
-	 * @template {ToggleItem} T
+	 * @template {{ name: string; enabled: boolean }} T
 	 * @param {T[]} list
 	 * @param {string} name
 	 * @param {boolean} enabled
 	 * @param {(v: T[]) => void} setList
 	 * @param {string} invokeCmd
-	 * @param {(() => void | Promise<any>) | null} refresh
+	 * @param {(() => void | Promise<unknown>) | null} refresh
 	 */
 	async function toggleItem(list, name, enabled, setList, invokeCmd, refresh) {
 		const prev = list.map((x) => ({ ...x }));
@@ -276,7 +281,7 @@
 	}
 
 	/**
-	 * @param {Record<string, any>} server
+	 * @param {McpServerSnapshot} server
 	 */
 	function openEditDialog(server) {
 		mcpEditServer = server;

@@ -185,9 +185,9 @@ export function parseToolManifest(value: unknown): ToolManifest | null {
 	};
 }
 
-function record(value: unknown): Record<string, any> | null {
+function record(value: unknown): Record<string, unknown> | null {
 	return typeof value === 'object' && value !== null && !Array.isArray(value)
-		? (value as Record<string, any>)
+		? (value as Record<string, unknown>)
 		: null;
 }
 
@@ -200,15 +200,20 @@ function booleanValue(value: unknown): boolean | null {
 }
 
 /** Replace the live catalog snapshot received from the backend. */
-export function setToolManifests(entries: unknown): void {
+export function setToolManifests(entries: unknown): ToolManifest[] {
 	const next = new Map<string, ToolManifest>();
+	const parsedEntries: ToolManifest[] = [];
 	if (Array.isArray(entries)) {
 		for (const entry of entries) {
 			const manifest = parseToolManifest(entry);
-			if (manifest) next.set(manifest.identity.stableName, manifest);
+			if (manifest) {
+				next.set(manifest.identity.stableName, manifest);
+				parsedEntries.push(manifest);
+			}
 		}
 	}
 	manifests = next;
+	return parsedEntries;
 }
 
 export function getToolManifest(toolName: string): ToolManifest | null {

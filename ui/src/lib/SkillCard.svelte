@@ -1,4 +1,5 @@
 <script>
+	/** @typedef {import('$lib/contracts/tools.ts').SkillInfo} SkillInfo */
 	import MaterialSwitch from '$lib/MaterialSwitch.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import StatusBadge from '$lib/StatusBadge.svelte';
@@ -6,6 +7,7 @@
 	import { copyText } from '$lib/clipboard.ts';
 	import { formatError } from '$lib/formatError.ts';
 
+	/** @type {{ skill: SkillInfo; onToggle?: (name: string, enabled: boolean) => unknown }} */
 	let { skill, onToggle } = $props();
 
 	/** @param {boolean} checked */
