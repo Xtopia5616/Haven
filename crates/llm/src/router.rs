@@ -6,6 +6,9 @@ use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
 use crate::adapters::adapter_for;
+use crate::aggregated_stream_executor::{
+    ActiveStreamHooks, AggregatedStreamExecutor, StreamContext,
+};
 use crate::call_executor::CallExecutor;
 use crate::client::{LlmClient, endpoint_host};
 #[cfg(test)]
@@ -19,7 +22,6 @@ use crate::stream_executor::StreamExecutor;
 use haven_common::types::{CanonicalMessage, ContentPart};
 
 use crate::stream_rules::{StreamRule, StreamRuleMatch, check_stream_rules};
-use crate::streaming;
 use crate::types::{
     CompleteRequest, Embedding, EmbeddingRequest, HealthCheckRequest, LlmConnectionReport,
     LlmConnectionStatus, LlmError, LlmResponse, PromptRequest, StreamChunk, StreamRequest,
@@ -99,23 +101,6 @@ impl StreamAttemptHooks {
             replace_output_on_start,
         }
     }
-}
-
-type ChunkCallback = Box<dyn FnMut(&StreamChunk) + Send + 'static>;
-type AttemptCallback = Box<dyn FnMut(bool) + Send + 'static>;
-
-struct ActiveStreamHooks {
-    on_chunk: Arc<StdMutex<ChunkCallback>>,
-    on_attempt_start: Arc<StdMutex<AttemptCallback>>,
-}
-
-struct RetryStreamRequest {
-    messages: Arc<[CanonicalMessage]>,
-    tools: Arc<[ToolDefinition]>,
-    max_output_tokens: Option<u32>,
-    cancel: CancellationToken,
-    error: LlmError,
-    replace_output: bool,
 }
 
 impl LlmRouter {
@@ -253,12 +238,6 @@ impl LlmRouter {
         let mut rl = self.rate_limited.write().await;
         if rl.get(model_id).is_none_or(|current| *current < until) {
             rl.insert(model_id.to_string(), until);
-        }
-    }
-
-    async fn record_rate_limit_result(&self, model_id: &str, error: &LlmError) {
-        if let LlmError::RateLimit { retry_after } = error {
-            self.record_rate_limit(model_id, *retry_after).await;
         }
     }
 
@@ -918,55 +897,6 @@ impl LlmRouter {
         }
     }
 
-    /// Re-run a stream on the primary endpoint after a stream rule aborted it,
-    /// injecting the rule's guidance as a trailing user message. Shared by the
-    /// primary streaming path. `err` must be a
-    /// `StreamAborted` variant.
-    async fn retry_stream_with_guidance(
-        &self,
-        primary: &Arc<dyn LlmClient>,
-        hooks: &ActiveStreamHooks,
-        request: RetryStreamRequest,
-    ) -> Result<LlmResponse, LlmError> {
-        let RetryStreamRequest {
-            messages,
-            tools,
-            max_output_tokens,
-            cancel,
-            error,
-            replace_output,
-        } = request;
-        let LlmError::StreamAborted(rule_name, inject) = error else {
-            return Err(error);
-        };
-        tracing::warn!(
-            "stream aborted by rule '{}', injecting guidance and retrying with primary",
-            rule_name
-        );
-        hooks.on_attempt_start.lock().unwrap()(replace_output);
-        // Clamp to >= 1s: a hand-edited 0 would make every stream.first() poll
-        // time out instantly, disabling all model replies.
-        let idle_dur =
-            Duration::from_secs(self.config.read().await.stream_idle_timeout_secs.max(1));
-        // The guidance is appended AFTER the assistant's partial
-        // turn. A trailing System message breaks OpenAI-compatible
-        // providers (system must lead the request) and is merged
-        // into the top-level system field by Anthropic/Gemini,
-        // losing its position. A User message is legal anywhere.
-        streaming::aggregate_stream_cancellable_shared_with_guidance(
-            primary.clone(),
-            messages,
-            tools,
-            Some(inject),
-            hooks.on_chunk.clone(),
-            cancel,
-            &self.stream_rules,
-            idle_dur,
-            max_output_tokens,
-        )
-        .await
-    }
-
     async fn chat_stream_with_tools_aggregated_cancellable_inner(
         &self,
         stream_request: StreamRequest<'_>,
@@ -974,28 +904,18 @@ impl LlmRouter {
         hooks: StreamAttemptHooks,
         cancel: CancellationToken,
     ) -> Result<LlmResponse, LlmError> {
-        let StreamRequest {
-            request,
-            messages,
-            tools,
-            max_output_tokens,
-        } = stream_request;
         tracing::debug!(
             "router streaming LLM call, request={:?} messages={} tools={}",
-            request,
-            messages.len(),
-            tools.len()
+            stream_request.request,
+            stream_request.messages.len(),
+            stream_request.tools.len()
         );
         let StreamAttemptHooks {
             on_chunk,
             on_attempt_start,
             replace_output_on_start,
         } = hooks;
-        let hooks = ActiveStreamHooks {
-            on_chunk: Arc::new(StdMutex::new(Box::new(on_chunk))),
-            on_attempt_start: Arc::new(StdMutex::new(on_attempt_start)),
-        };
-        hooks.on_attempt_start.lock().unwrap()(replace_output_on_start);
+        let hooks = ActiveStreamHooks::new(on_chunk, on_attempt_start, replace_output_on_start);
 
         let cfg = self.config.read().await;
         let primary_policy = RequestPolicy::primary(&cfg);
@@ -1003,64 +923,24 @@ impl LlmRouter {
         // time out instantly, disabling all model replies.
         let idle_dur = Duration::from_secs(cfg.stream_idle_timeout_secs.max(1));
         drop(cfg);
-        let stream_context = streaming::StreamContext {
-            messages: Arc::from(messages),
-            tools: Arc::from(tools),
-            max_output_tokens,
-        };
+        let stream_context = StreamContext::from_request(stream_request);
         let candidate = self.model_directory.client_for_model_id(&model_id)?;
-        candidate.validate_content(&stream_context.messages)?;
-
-        execute_with_timeout(
-            primary_policy.total_timeout_secs,
-            "router streaming",
-            || async {
-                let attempt_result = streaming::aggregate_stream_with_retry_before_output(
-                    candidate.clone(),
-                    stream_context.clone(),
-                    hooks.on_chunk.clone(),
-                    cancel.clone(),
-                    &self.stream_rules,
-                    idle_dur,
-                    primary_policy.retry,
-                )
-                .await;
-
-                let result = match attempt_result {
-                    Ok(response) => Ok(response),
-                    Err(error @ LlmError::StreamAborted(_, _)) => {
-                        self.retry_stream_with_guidance(
-                            &candidate,
-                            &hooks,
-                            RetryStreamRequest {
-                                messages: stream_context.messages.clone(),
-                                tools: stream_context.tools.clone(),
-                                max_output_tokens,
-                                cancel: cancel.clone(),
-                                error,
-                                replace_output: true,
-                            },
-                        )
-                        .await
-                    }
-                    Err(error) => Err(error),
-                };
-
-                match result {
-                    Ok(response) => {
-                        self.record_success(&model_id).await;
-                        Ok(response)
-                    }
-                    Err(LlmError::Cancelled) => Err(LlmError::Cancelled),
-                    Err(error) => {
-                        self.record_failure(&model_id).await;
-                        self.record_rate_limit_result(&model_id, &error).await;
-                        Err(error)
-                    }
-                }
-            },
-        )
-        .await
+        let model_id_for_projection = model_id.clone();
+        AggregatedStreamExecutor::new(candidate, primary_policy, &self.stream_rules, idle_dur)
+            .execute(
+                stream_context,
+                hooks,
+                cancel,
+                || async {
+                    Duration::from_secs(self.config.read().await.stream_idle_timeout_secs.max(1))
+                },
+                |result| async move {
+                    self.record_request_outcome(&model_id_for_projection, &result)
+                        .await;
+                    result
+                },
+            )
+            .await
     }
 
     /// §3.7: Set the active stream rules.
@@ -2982,6 +2862,126 @@ mod tests {
         assert_eq!(max_seen.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
+    struct AggregatedPermitProbe {
+        stream_calls: Arc<std::sync::atomic::AtomicUsize>,
+        first_stream_waiting: Arc<tokio::sync::Notify>,
+        first_chunk_gate: Arc<tokio::sync::Semaphore>,
+    }
+
+    #[async_trait]
+    impl LlmClient for AggregatedPermitProbe {
+        async fn chat(&self, _: Vec<CanonicalMessage>) -> Result<LlmResponse, LlmError> {
+            Err(Unknown("aggregated permit probe does not chat".into()))
+        }
+
+        async fn chat_stream(
+            &self,
+            _: Vec<CanonicalMessage>,
+        ) -> Result<
+            Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+            LlmError,
+        > {
+            Err(Unknown(
+                "aggregated permit probe does not raw-stream".into(),
+            ))
+        }
+
+        async fn chat_stream_with_tools_output_cap_shared(
+            &self,
+            _: Arc<[CanonicalMessage]>,
+            _: Arc<[ToolDefinition]>,
+            _: Option<u32>,
+        ) -> Result<
+            Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+            LlmError,
+        > {
+            let call = self
+                .stream_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if call == 0 {
+                let first_stream_waiting = self.first_stream_waiting.clone();
+                let first_chunk_gate = self.first_chunk_gate.clone();
+                let stream = stream::once(async move {
+                    first_stream_waiting.notify_one();
+                    first_chunk_gate
+                        .acquire_owned()
+                        .await
+                        .expect("test chunk gate remains open")
+                        .forget();
+                    Ok(StreamChunk {
+                        text: Some("first request".into()),
+                        ..StreamChunk::default()
+                    })
+                });
+                Ok(Box::pin(stream))
+            } else {
+                Ok(Box::pin(stream::empty()))
+            }
+        }
+
+        async fn health_check(&self) -> Result<(), LlmError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn aggregated_stream_holds_model_permit_through_stream_consumption() {
+        let probe = Arc::new(AggregatedPermitProbe {
+            stream_calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            first_stream_waiting: Arc::new(tokio::sync::Notify::new()),
+            first_chunk_gate: Arc::new(tokio::sync::Semaphore::new(0)),
+        });
+        let first_stream_waiting = probe.first_stream_waiting.clone();
+        let first_chunk_gate = probe.first_chunk_gate.clone();
+        let stream_calls = probe.stream_calls.clone();
+        let client: Arc<dyn LlmClient> = probe.clone();
+        let router = Arc::new(LlmRouter::new_with_clients(
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client,
+        ));
+        router.set_request_limit_for_test(1);
+
+        let first_router = router.clone();
+        let first = tokio::spawn(async move {
+            first_router
+                .chat_stream_with_tools_aggregated(RequestKind::Chat, &[], &[], |_| {})
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(1), first_stream_waiting.notified())
+            .await
+            .expect("the first provider stream should wait for its first chunk");
+        assert_eq!(router.model_permit("default_model").available_permits(), 0);
+
+        let second_router = router.clone();
+        let mut second = tokio::spawn(async move {
+            second_router
+                .chat_stream_with_tools_aggregated(RequestKind::Chat, &[], &[], |_| {})
+                .await
+        });
+        tokio::task::yield_now().await;
+        assert_eq!(
+            stream_calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the queued logical stream must not reach the provider while the first is aggregating"
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), &mut second)
+                .await
+                .is_err(),
+            "the second aggregate call stays queued until the first releases its permit"
+        );
+
+        first_chunk_gate.add_permits(1);
+        first.await.unwrap().expect("first stream completes");
+        second
+            .await
+            .unwrap()
+            .expect("queued stream runs after permit release");
+        assert_eq!(stream_calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
     /// Mock that ALWAYS returns RateLimit (with Retry-After), so the shared
     /// cooldown's effect on subsequent callers is observable.
     struct AlwaysRateLimited;
@@ -3003,6 +3003,19 @@ mod tests {
         async fn chat_stream(
             &self,
             _: Vec<CanonicalMessage>,
+        ) -> Result<
+            Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+            LlmError,
+        > {
+            Err(LlmError::RateLimit {
+                retry_after: Some(Duration::from_millis(300)),
+            })
+        }
+        async fn chat_stream_with_tools_output_cap_shared(
+            &self,
+            _: Arc<[CanonicalMessage]>,
+            _: Arc<[ToolDefinition]>,
+            _: Option<u32>,
         ) -> Result<
             Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
             LlmError,
@@ -3041,6 +3054,32 @@ mod tests {
             .await
             .expect("raw stream 429 establishes the shared cooldown");
         assert!(deadline > Instant::now());
+    }
+
+    #[tokio::test]
+    async fn aggregated_stream_projects_rate_limit_once_to_router_state() {
+        let client: Arc<dyn LlmClient> = Arc::new(AlwaysRateLimited);
+        let router =
+            LlmRouter::new_with_clients(client.clone(), client.clone(), client.clone(), client);
+        router.config.write().await.retry_max_retries = 0;
+
+        let error = router
+            .chat_stream_with_tools_aggregated(RequestKind::Chat, &[], &[], |_| {})
+            .await
+            .expect_err("aggregated stream setup preserves the provider rate-limit error");
+        assert!(matches!(error, LlmError::RateLimit { .. }));
+
+        assert_eq!(
+            router.health.read().await["default_model"].consecutive_failures,
+            1,
+            "one logical stream result is projected once"
+        );
+        assert!(
+            router
+                .rate_limit_deadline_for_test("default_model")
+                .await
+                .is_some_and(|deadline| deadline > Instant::now())
+        );
     }
 
     #[tokio::test]
@@ -3390,6 +3429,11 @@ mod tests {
             stream_task.await.unwrap(),
             Err(LlmError::Cancelled)
         ));
+        assert_eq!(
+            router.health.read().await["default_model"].consecutive_failures,
+            0,
+            "cancellation is not a provider health failure"
+        );
 
         // Cancellation wins even when the provider future is immediately ready.
         let ready_client = Arc::new(MockStreamClient {

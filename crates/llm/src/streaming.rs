@@ -1,6 +1,5 @@
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use futures_util::StreamExt;
@@ -9,8 +8,7 @@ use tokio::sync::RwLock;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::client::{LlmClient, retry_delay};
-use crate::request_pipeline::RetryPolicy;
+use crate::client::LlmClient;
 use crate::stream_rules::{StreamRule, StreamRuleMode, check_stream_rules};
 use crate::types::{FinishReason, LlmError, LlmResponse, StreamChunk, ToolDefinition};
 
@@ -33,14 +31,6 @@ const IDLE_EXTRA_SECS_PER_1K_TOKENS: u64 = 2;
 
 /// Hard cap on the scaled data-gap idle window (base + context extra).
 pub(crate) const IDLE_SCALE_CAP_SECS: u64 = 90;
-
-/// Conversation data shared by repeated streaming attempts.
-#[derive(Clone)]
-pub(crate) struct StreamContext {
-    pub(crate) messages: Arc<[CanonicalMessage]>,
-    pub(crate) tools: Arc<[ToolDefinition]>,
-    pub(crate) max_output_tokens: Option<u32>,
-}
 
 /// Rough prompt-size estimate in tokens (text chars / 4, ~1k per image or
 /// audio part, tool-call arguments and echoed reasoning included). Only
@@ -107,74 +97,6 @@ pub(crate) fn scale_stream_idle(base: Duration, messages: &[CanonicalMessage]) -
     let extra_secs = (est_tokens / 1_000).saturating_mul(IDLE_EXTRA_SECS_PER_1K_TOKENS);
     let cap_extra = IDLE_SCALE_CAP_SECS.saturating_sub(base_secs);
     Duration::from_secs(base_secs.saturating_add(extra_secs.min(cap_extra)).max(1))
-}
-
-pub(crate) async fn aggregate_stream_with_retry_before_output(
-    client: Arc<dyn LlmClient>,
-    context: StreamContext,
-    on_chunk: Arc<StdMutex<impl FnMut(&StreamChunk) + Send + 'static>>,
-    cancel: CancellationToken,
-    stream_rules: &RwLock<Vec<StreamRule>>,
-    idle_timeout: Duration,
-    retry: RetryPolicy,
-) -> Result<LlmResponse, LlmError> {
-    // Materialize the retry-invariant request once.  Each attempt below only
-    // clones these Arcs; the canonical message/tool graph is not deep-cloned
-    // by the retry loop.
-    let messages = context.messages;
-    let tools = context.tools;
-    for attempt in 0..=retry.max_retries {
-        if cancel.is_cancelled() {
-            return Err(LlmError::Cancelled);
-        }
-        let emitted = Arc::new(AtomicBool::new(false));
-        let callback = {
-            let on_chunk = on_chunk.clone();
-            let emitted = emitted.clone();
-            Arc::new(StdMutex::new(move |chunk: &StreamChunk| {
-                emitted.store(true, Ordering::SeqCst);
-                let mut callback = on_chunk.lock().unwrap();
-                callback(chunk);
-            }))
-        };
-        let result = aggregate_stream_cancellable_shared(
-            client.clone(),
-            messages.clone(),
-            tools.clone(),
-            callback,
-            cancel.clone(),
-            stream_rules,
-            idle_timeout,
-            context.max_output_tokens,
-        )
-        .await;
-        let Err(err) = result else {
-            return result;
-        };
-        if !err.is_retryable() || emitted.load(Ordering::SeqCst) || attempt == retry.max_retries {
-            return Err(err);
-        }
-        let delay = retry_delay(
-            retry.base_secs,
-            retry.factor,
-            retry.max_secs,
-            retry.jitter,
-            attempt,
-            err.retry_after(),
-        );
-        tracing::debug!(
-            "stream attempt {}/{} failed before output, retrying after {:?}: {}",
-            attempt + 1,
-            retry.max_retries + 1,
-            delay,
-            err
-        );
-        tokio::select! {
-            _ = tokio::time::sleep(delay) => {}
-            _ = cancel.cancelled() => return Err(LlmError::Cancelled),
-        }
-    }
-    Err(LlmError::Unknown("stream retry loop exhausted".into()))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -475,11 +397,13 @@ pub(crate) async fn aggregate_stream_cancellable_shared_with_guidance(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::aggregated_stream_executor::StreamContext;
     use crate::client::LlmClient;
+    use crate::request_pipeline::RetryPolicy;
     use crate::types::{Embedding, SttResult, ToolFunction};
     use async_trait::async_trait;
     use std::pin::Pin;
-    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct PendingStreamClient;
 
@@ -710,7 +634,7 @@ mod tests {
                 parameters: serde_json::json!({"type": "object"}),
             },
         }];
-        let result = aggregate_stream_with_retry_before_output(
+        let result = crate::aggregated_stream_executor::aggregate_stream_with_retry_before_output(
             client,
             StreamContext {
                 messages: Arc::from(messages),

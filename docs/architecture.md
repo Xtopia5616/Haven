@@ -148,17 +148,22 @@ CI 以 `scripts/check-crate-dependencies.ps1` 对此表执行内部 crate 依赖
   所需 `Capability` 与可用凭据，测试注入只跳过凭据过滤。metadata 借用 Router 的单一
   `RouterConfig` snapshot，不复制配置真源（ADR 0316）。
 - `router.rs`：`LlmRouter` 保留配置 snapshot 与请求执行状态，拥有 route/client 选择、
-  health/circuit、rate-limit cooldown、semaphore、stream rules、usage 与 cancellation，
-  并编排 provider 调用。每个 request kind 仍只走唯一 primary；同一模型内重试耗尽后直接
-  返回错误，不跨 provider/model 切换缓存命名空间（ADR 0192）。旧 `llm.roles` 仅在
+  health/circuit、rate-limit cooldown、semaphore 与 stream rules，并为执行器提供配置
+  snapshot 和 health/rate-limit outcome closure。每个 request kind 仍只走唯一 primary；
+  同一模型内重试耗尽后直接返回错误，不跨 provider/model 切换缓存命名空间（ADR 0192）。旧 `llm.roles` 仅在
   配置加载时转换，不进入生产路由；`CallExecutor` 执行 complete/embedding，`StreamExecutor`
-  只执行 raw stream 建流与 permit 包装。aggregated streaming 编排仍在 Router/`streaming.rs`；
+  只执行 raw stream 建流与 permit 包装；`AggregatedStreamExecutor` 执行聚合流状态机。
   capability / call-purpose split 尚未全贯穿。
-- `call_executor.rs` / `stream_executor.rs`：接收 Router 已解析的 model/client 与单份
-  `RequestPolicy`，复用 request pipeline 执行 complete/embedding 或 raw stream 建流，并经
-  Router 注入的窄 outcome closure 投影健康状态。raw `PermitStream` 持有 permit 到 stream
-  drop；aggregated retry/guidance/cancellation/callback 生命周期不由 StreamExecutor 管理
-  （ADR 0318、0327）。
+- `call_executor.rs` / `stream_executor.rs` / `aggregated_stream_executor.rs`：接收 Router
+  已解析的 model/client 与单份 `RequestPolicy`，复用 request pipeline 执行 complete/embedding、
+  raw stream 建流或聚合流执行，并经 Router 注入的窄 outcome closure 投影健康状态。raw
+  `PermitStream` 持有 permit 到 stream
+  drop；聚合执行器集中首次 `on_chunk` 交付前重试、规则触发后的 guidance 重试、取消、总 timeout、attempt
+  hooks 和最终结果交接。Router 的 permit 覆盖完整聚合执行；health/cooldown 状态仍由 Router
+  更新（ADR 0318、0327、0328）。
+- `streaming.rs`：只执行单条 provider stream 的创建后消费与聚合，负责 idle timeout、取消、
+  stream rule 检查、chunk 顺序与 `LlmResponse` usage/content 累积；逻辑请求的多 attempt 状态机归
+  `AggregatedStreamExecutor`（ADR 0328）。
 - `request_pipeline.rs`：provider-neutral 的 `RequestPolicy`/`RetryPolicy`；
   为普通聊天、工具聊天、embedding、raw stream 建流和 aggregated streaming endpoint
   尝试提供同一份重试预算快照与总超时执行语义。Router/执行器共用这些 helper；adapter
@@ -554,6 +559,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 
 | 日期 | 内容 |
 |---|---|
+| 2026-09-25 | §2.2 LLM：将聚合 stream 的首次 `on_chunk` 交付前重试、guidance retry、总 timeout 与结果交接收口到 `AggregatedStreamExecutor`；Router 继续持路由、permit、规则和 health/cooldown 状态（ADR 0328） |
 | 2026-09-25 | §2.6 LLM：`ModelDirectory` 接管 provider client map、primary routes、client/model 选择及 capability/endpoint metadata 查询；Router 继续拥有单一 config snapshot 与执行状态（ADR 0316） |
 | 2026-09-25 | §2.6 UI：聊天页 handler map 组合与 listener 生命周期由 typed `chatEventController` 持有；`events.ts` 保持唯一 wire mapper 和注册 primitive（ADR 0315） |
 | 2026-09-25 | §2.6 UI：将 `SessionReducer` 按 lifecycle、transcript、interaction、usage、Agent stream 拆为内部模块；原 facade、公共导出路径和单一 store 订阅保持不变（ADR 0314） |

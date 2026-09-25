@@ -1,4 +1,5 @@
 pub mod adapters;
+mod aggregated_stream_executor;
 mod call_executor;
 pub mod client;
 mod endpoint_health;
