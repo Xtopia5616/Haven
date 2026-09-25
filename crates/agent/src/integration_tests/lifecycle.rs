@@ -247,7 +247,8 @@ async fn build_system_prompt_excludes_sensitive_and_duplicate_facts() {
     .unwrap();
 
     let tools = Arc::new(ToolsManager::new());
-    let builder = SystemPromptBuilder::new(tools, db);
+    let builder =
+        SystemPromptBuilder::with_memory_service(tools, Arc::new(MemoryService::new(db, None, 64)));
     let prompt = builder.build("test session", &[]).await;
 
     assert!(prompt.contains("name=Xtopia"));

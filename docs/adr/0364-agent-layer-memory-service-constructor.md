@@ -42,3 +42,7 @@ UI 未修改，不运行 UI 门禁。没有数据库、wire 或持久化契约�
 ## 回滚
 
 回滚时恢复 `AgentLayer::new` 接收 Database 并在内部创建 MemoryService 的构造方式，同时回滚 AppState wiring、调用点、共享性测试与本 ADR/路线图/架构记录。无数据库或用户数据重置。
+
+## 后续修订
+
+ADR 0365 后续删除 `SystemPromptBuilder::new` 的 raw Database 公共入口，prompt 测试改为显式创建测试用 `MemoryService` 并调用 `with_memory_service`。本 ADR 第 5 项中“保留 `SystemPromptBuilder::new`”仅记录 ADR 0364 当时的范围，现由 ADR 0365 取代；MemoryService 共享关系与本 ADR 的其余决定不变。

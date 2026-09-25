@@ -283,7 +283,9 @@ embedding 生命周期读写和 LSH 维护，`memory_index.rs` 保留模型路�
 和 `ContextLimitsConfig` 后创建唯一 `MemoryService`，按配置中的 `embedding_chunk_size`
 初始化并注入 `AgentLayer::new`；AgentLayer 从同一实例派生 stores、`MemoryWorker`、
 `MemoryRuntime` 和 `SystemPromptBuilder`。因此 prompt-memory cache、embedding index 与
-worker memory capability 属于同一服务实例（ADR 0364）。`MemoryService` 构造并持有共享的
+worker memory capability 属于同一服务实例（ADR 0364）。`SystemPromptBuilder::with_memory_service`
+是唯一公开 builder 构造入口；它不从 Database 创建额外的 MemoryService，因此不产生独立的
+prompt-memory cache 或 embedding index（ADR 0365）。`MemoryService` 构造并持有共享的
 `MemoryFactStore`，`MemoryWorker::load_known_facts` 通过其有界读取端口取得抽取上下文；
 blocking 调度、事实有效置信度顺序、敏感事实过滤和 limit 属于 Memory，Agent 仍负责
 prompt 行格式、subject 前缀与字段清洗（ADR 0307）。
@@ -692,6 +694,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 
 | 日期 | 内容 |
 |---|---|
+| 2026-09-26 | §2.3/§2.5 Memory/Agent：删除 `SystemPromptBuilder::new` 的 raw Database public constructor；prompt 测试显式创建 `MemoryService` 并使用 typed constructor，生产共享 service/cache owner 和运行行为不变（ADR 0365）|
 | 2026-09-26 | §2.3/§2.5/§2.6：`AgentLayer::new` 改接组合根创建的共享 `MemoryService`；AppState 用同一 Router 与配置的 embedding chunk size 创建一次，AgentLayer 继续派生并共享 Worker、Runtime、PromptBuilder 与 typed stores，Runtime 所有权/readiness 不变（ADR 0364）|
 | 2026-09-26 | §2.3/§2.5/§2.6：审计 MemoryRuntime 对象仍由 AgentLayer 持有、ApplicationRuntime 持有其周期 task 生命周期；现有 AgentLayer startup barrier 缺少 app 可组合的 prepared-consumer/readiness API，迁移暂缓并记录最小后续接口步骤（ADR 0362）|
 | 2026-09-26 | §2.5 Agent：最终验收审计校准 actor 所有权说明；`SessionActor` 轮询 active-run future，ReActState 为 run-local scratch，SessionState 持有会话队列与元数据；整体完成条件及发布验收缺口见 ADR 0361 |
