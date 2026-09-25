@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex as StdMutex};
 
 use haven_common::config::{
-    ModelEndpoint, RequestKind, RoutedModel, RouterConfig, endpoint_credentials_ready,
+    Capability, ModelEndpoint, RequestKind, RoutedModel, RouterConfig, endpoint_credentials_ready,
 };
 use haven_common::media::CapabilityProfile;
 
@@ -26,7 +26,7 @@ pub(crate) enum RouteMode {
 
 #[derive(Clone)]
 struct PrimaryRoute {
-    descriptor: RequestDescriptor,
+    required_capability: Capability,
     model_id: String,
 }
 
@@ -86,18 +86,18 @@ impl ModelDirectory {
             .request_policies
             .iter()
             .filter_map(|policy| {
-                let request = RequestDescriptor::from(policy.request);
+                let descriptor = RequestDescriptor::from(policy.request);
                 let model_id = policy.primary.trim();
                 let model = config.model(model_id)?;
-                let supports_request = model.capabilities.contains(&request.required_capability);
+                let supports_request = model.capabilities.contains(&descriptor.required_capability);
                 let credentials_ready = match route_mode {
                     RouteMode::Production => endpoint_credentials_ready(&model.endpoint),
                     RouteMode::InjectedClients => true,
                 };
                 (supports_request && credentials_ready).then_some((
-                    request.purpose,
+                    descriptor.purpose,
                     PrimaryRoute {
-                        descriptor: request,
+                        required_capability: descriptor.required_capability,
                         model_id: model_id.to_string(),
                     },
                 ))
@@ -128,7 +128,7 @@ impl ModelDirectory {
             .unwrap()
             .get(&descriptor.purpose)
             .cloned()
-            .filter(|route| route.descriptor == descriptor)
+            .filter(|route| route.required_capability == descriptor.required_capability)
             .ok_or_else(|| {
                 LlmError::Configuration(format!(
                     "no configured model for {}",
@@ -336,7 +336,7 @@ mod tests {
     }
 
     #[test]
-    fn execution_route_rejects_a_descriptor_that_disagrees_with_its_purpose() {
+    fn execution_route_rejects_a_descriptor_with_the_wrong_capability() {
         let config = config(
             vec![model("chat", vec![Capability::Chat], "")],
             vec![policy(RequestKind::Chat, "chat")],

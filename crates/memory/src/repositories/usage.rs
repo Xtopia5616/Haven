@@ -1189,6 +1189,10 @@ mod tests {
             )
             .unwrap();
         assert_eq!(records.len(), 2);
+        assert_eq!(records[0].role, RequestKind::Chat);
+        assert_eq!(records[1].role, RequestKind::Chat);
+        assert_eq!(records[0].call_kind, "tool");
+        assert_eq!(records[1].call_kind, "media");
         assert_eq!(db.get_session_llm_usage(&session.id).unwrap().len(), 2);
         let totals = db.get_session_usage(&session.id).unwrap().unwrap();
         assert_eq!(totals.prompt_tokens, 0);

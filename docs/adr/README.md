@@ -341,3 +341,4 @@
 - [0351：配置 runtime apply 失败语义审计](0351-config-runtime-apply-failure-policy-audit.md)
 - [0352：Background/Scheduled action 生命周期转换内核审计](0352-action-lifecycle-transition-core-audit.md)
 - [0353：Scheduled admission 保留运行中的 action](0353-scheduled-admission-preserves-running-actions.md)
+- [0354：LLM request purpose 与 usage owner 契约审计](0354-llm-request-purpose-usage-role-contract-audit.md)
