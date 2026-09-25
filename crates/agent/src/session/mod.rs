@@ -311,7 +311,9 @@ impl SessionSupervisor {
         Self::new(SessionStore::new(db), tools, max_concurrent)
     }
 
-    pub fn services(&self) -> &ToolServices {
+    /// Internal agent wiring access; `SessionSupervisor` is not a cross-crate
+    /// service locator.
+    pub(crate) fn services(&self) -> &ToolServices {
         &self.services
     }
 

@@ -642,7 +642,9 @@ impl SessionSupervisor {
     pub async fn session_is_live(&self, session_id: &str) -> bool {
         self.get_active_session_status(session_id).await.is_some()
     }
-    pub fn get_tools(&self) -> Arc<ToolsManager> {
+    /// Internal agent wiring access; `SessionSupervisor` is not a cross-crate
+    /// tool-manager service locator.
+    pub(crate) fn get_tools(&self) -> Arc<ToolsManager> {
         self.tools.clone()
     }
 

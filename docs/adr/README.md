@@ -352,3 +352,4 @@
 - [0363：SessionSupervisor 构造使用 typed SessionStore](0363-session-supervisor-typed-store-constructor.md)
 - [0364：AgentLayer 构造注入共享 MemoryService](0364-agent-layer-memory-service-constructor.md)
 - [0365：SystemPromptBuilder 构造注入 MemoryService](0365-system-prompt-builder-memory-service-constructor.md)
+- [0366：收窄 SessionSupervisor 内部 wiring 可见性](0366-session-supervisor-internal-wiring-visibility.md)
