@@ -2,7 +2,11 @@ import { describe, expect, it, vi } from 'vitest';
 import { get } from 'svelte/store';
 import { createChatSessionEventHandlers } from './chatSessionEventHandlers.ts';
 import { initialSessionState, SessionReducer } from './sessionReducer.ts';
-import { setToolOutputPreview, toolOutputPreviewStore } from './toolOutputPreviewStore.ts';
+import {
+	getToolOutputPreviewStore,
+	setToolOutputPreview,
+	toolOutputPreviewStore,
+} from './toolOutputPreviewStore.ts';
 
 function handlers(options: {
 	fresh?: boolean;
@@ -179,4 +183,80 @@ describe('chat session lifecycle handlers', () => {
 			reason: '用户主动打断输出',
 		});
 	});
+
+	it.each(['completed', 'error'] as const)(
+		'keeps the terminal UI projection when the primary %s event is followed by session:updated',
+		(status) => {
+			const sessionId = `ses-terminal-${status}`;
+			const stepId = `step-terminal-${status}`;
+			const reason = status === 'completed' ? '用户主动结束会话' : '网络请求超时';
+			const reducer = new SessionReducer({
+				...initialSessionState,
+				sessions: [{ id: sessionId, status: 'running', title: '研究' }],
+				activeSessionId: sessionId,
+				messages: {
+					[sessionId]: [
+						{ id: stepId, role: 'assistant', content: '最后一段', streaming: true },
+					],
+				},
+			});
+			const eventHandlers = handlers({
+				activeSessionId: sessionId,
+				dispatchSession: (action) => reducer.dispatch(action),
+			});
+			setToolOutputPreview(stepId, '工具输出', sessionId);
+
+			if (status === 'completed') {
+				eventHandlers['session:completed']({
+					payload: { sessionId, status, title: '研究', reason },
+				} as never);
+			} else {
+				eventHandlers['session:error']({ payload: { sessionId, error: reason } } as never);
+			}
+			eventHandlers['session:updated']({
+				payload: { sessionId, status, title: '研究', reason },
+			} as never);
+
+			expect(reducer.getState().sessions[0].status).toBe(status);
+			expect(reducer.getState().termination).toEqual({ sessionId, status, reason });
+			expect(reducer.getMessages(sessionId)[0].streaming).toBe(false);
+			expect(get(getToolOutputPreviewStore(stepId))).toBeUndefined();
+			expect(reducer.getState().error).toEqual(
+				status === 'error' ? { sessionId, reason } : null,
+			);
+		},
+	);
+
+	it.each(['completed', 'error'] as const)(
+		'lets a standalone session:updated %s event clean up live messages',
+		(status) => {
+			const sessionId = `ses-standalone-${status}`;
+			const reducer = new SessionReducer({
+				...initialSessionState,
+				sessions: [{ id: sessionId, status: 'running' }],
+				activeSessionId: sessionId,
+				messages: {
+					[sessionId]: [
+						{ id: 'step-live', role: 'assistant', content: '处理中', streaming: true },
+					],
+				},
+			});
+			const eventHandlers = handlers({
+				activeSessionId: sessionId,
+				dispatchSession: (action) => reducer.dispatch(action),
+			});
+
+			eventHandlers['session:updated']({
+				payload: {
+					sessionId,
+					status,
+					title: null,
+					reason: '状态切换的解释',
+				},
+			} as never);
+
+			expect(reducer.getState().sessions[0].status).toBe(status);
+			expect(reducer.getMessages(sessionId)[0].streaming).toBe(false);
+		},
+	);
 });
