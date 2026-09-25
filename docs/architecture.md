@@ -474,7 +474,8 @@ limit、创建时间倒序和 errors 的 status 过滤顺序保持原样。组�
 interaction、usage、Agent stream，以及共享的 types 和 immutable replay/state helper。
 领域模块只接收显式 state/action，不互相导入；facade 保留跨域 resume/clear 组合，
 live event、resume、rollback 同步和 reconnect replay 都只通过 typed `SessionAction` 迁移。
-store 订阅粒度仍为单一 writable，session/selector 订阅留待后续 Phase 8 切片。
+`createSessionSelectorStore` 只读订阅同一 writable，按选择值引用门控通知；它不复制 reducer
+状态，selector 的最后一个订阅者离开时释放 root subscription（ADR 0322）。
 `ui/src/lib/chatController.ts` 负责会话命令的异步编排：
 权威 resume reload、interaction 保留、切换与终态会话内存回收、rollback、continue、end/interrupt 和
 `submitTranscript` 提交适配；它通过 typed dependency 接收 invoke、reducer dispatch、
@@ -482,14 +483,22 @@ session snapshot、通知/错误报告和页面回调，不持有 Svelte state �
 `ui/src/lib/chatEventController.ts` 只组合聊天页的 session/app/agent/usage handler map 并拥有
 异步注册/释放生命周期；它通过显式 typed dependencies 连接页面 reducer、错误/ask/stream 清理、
 session refresh、hotkey 与 model refresh 回调，不持有 Svelte state 或 DOM。`ui/src/lib/events.ts`
-仍是唯一 wire payload mapping 和共享 listener registration primitive，`chat*EventHandlers.ts`
-继续负责既有事件到页面状态/副作用的适配（ADR 0315）。
+是共享 listener registration 和领域 mapper 的调用入口，`chat*EventHandlers.ts` 继续负责既有
+事件到页面状态/副作用的适配（ADR 0315）。session lifecycle 的 Rust wire DTO 由
+`crates/app-binary/src/events.rs` 中的 `SessionLifecycleEvent`、`SessionErrorEvent`、
+`SessionTitleUpdatedEvent` 和 `SessionDeletedEvent` 定义；唯一前端转换位于
+`ui/src/lib/contracts/session.ts` 的 `mapSessionEvent`。它把 Rust/Tauri 的 snake_case 字段映射为
+handler/reducer 使用的 camelCase，忽略新增 wire 字段；缺失或类型错误的必需字段会 fail closed
+并由 listener 层记录。可选 `waiting_reason` / `reason` 缺省映射为 `null`，未知 status 降级为
+`error`，未知等待原因降级为 `null`。Rust DTO、channel、payload 与 reducer 语义不变（ADR 0330）。
+这条边界仍使用手写的内部 payload 类型和显式字段映射；其它 action/agent/app/recording 事件及
+settings/command contract 镜像仍待 Phase 8 收口到 Rust DTO 驱动的生成流程。
 `+page.svelte` 保留 view/scroll 与 dialog/loading/menu 状态、输入路由与 ask 决策、model sync、
 resume target/auto-restore、新会话入口及非 chat-event teardown；在 mount 时创建 controller、等待
 listener ready 后再 settings/load/restore，并在 destroy 时 dispose。旧 `sessionMessages.ts`、
 `sessionUsage.ts` 仅保留兼容投影，`streamAggregator.ts` 只负责排队后 dispatch chunk action
-（ADR 0160、0313、0315）。Phase 8 剩余 contract/mapper generation、model operation 归属及
-session/selector subscriptions。
+（ADR 0160、0313、0315、0320、0322）。Phase 8 剩余 Rust DTO 到 TypeScript contract/mapper
+generation、旧手写 mirror 清理，以及 ask/input 决策、复杂 view state 与启动恢复的编排边界。
 `ModelSettings.svelte` 当前保留命名模型、Provider CRUD 与 discovery 的页面编排，已补
 组件行为测试，后续再按 discovery / mutation 边界拆分。
 

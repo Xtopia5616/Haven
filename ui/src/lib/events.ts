@@ -58,6 +58,17 @@ function protectEventCallback(eventName: string, callback: () => unknown): void 
 	}
 }
 
+function adaptSessionEvent<K extends SessionEventName>(
+	eventName: K,
+	event: TauriEvent<unknown>,
+): TauriEvent<SessionEventPayloadMap[K]> | null {
+	const mapped = mapSessionEvent({ ...event, event: eventName });
+	if (!mapped) {
+		logger.warn('events', `Dropping malformed payload for '${eventName}'`);
+	}
+	return mapped;
+}
+
 /**
  * Register many Tauri event listeners from a single map and return a handle
  * that can dispose them all. Listener registration failures are logged and
@@ -127,7 +138,8 @@ export function sessionEventListeners(
 			(event: TauriEvent<unknown>) => {
 				protectEventCallback(eventName, () => {
 					const name = eventName as SessionEventName;
-					handler?.(mapSessionEvent({ ...event, event: name } as never) as never);
+					const mapped = adaptSessionEvent(name, event);
+					if (mapped) handler?.(mapped as never);
 				});
 			},
 		]),
@@ -240,8 +252,10 @@ export async function registerSessionListener<K extends SessionEventName>(
 ): Promise<{ dispose: () => void }> {
 	return registerOne(
 		event,
-		(rawEvent) =>
-			protectEventCallback(event, () => handler(mapSessionEvent({ ...rawEvent, event } as never))),
+		(rawEvent) => protectEventCallback(event, () => {
+			const mapped = adaptSessionEvent(event, rawEvent);
+			if (mapped) handler(mapped);
+		}),
 		{ tag },
 	);
 }

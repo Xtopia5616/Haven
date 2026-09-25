@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const mocks = vi.hoisted(() => ({
 	listen: vi.fn(),
 	error: vi.fn(),
+	warn: vi.fn(),
 }));
 
 vi.mock('./tauri.ts', () => ({
@@ -10,10 +11,16 @@ vi.mock('./tauri.ts', () => ({
 }));
 
 vi.mock('./logger.ts', () => ({
-	default: { error: mocks.error, warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
+	default: { error: mocks.error, warn: mocks.warn, info: vi.fn(), debug: vi.fn() },
 }));
 
-import { actionEventListeners, registerListeners, registerOne } from './events.ts';
+import {
+	actionEventListeners,
+	registerListeners,
+	registerOne,
+	registerSessionListener,
+	sessionEventListeners,
+} from './events.ts';
 
 const event = (payload: any) => ({ payload });
 
@@ -21,6 +28,7 @@ describe('registerListeners', () => {
 	beforeEach(() => {
 		mocks.listen.mockReset();
 		mocks.error.mockReset();
+		mocks.warn.mockReset();
 	});
 
 	it('registers every event and disposes in registration order', async () => {
@@ -75,6 +83,78 @@ describe('registerListeners', () => {
 
 		// The late-resolving unlisten is invoked immediately rather than leaked.
 		expect(unsub).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe('sessionEventListeners', () => {
+	beforeEach(() => {
+		mocks.listen.mockReset();
+		mocks.error.mockReset();
+		mocks.warn.mockReset();
+	});
+
+	it('maps the lifecycle wire DTO before calling chat event handlers', () => {
+		const handler = vi.fn();
+		const listeners = sessionEventListeners({ 'session:updated': handler });
+
+		listeners['session:updated']({
+			event: 'session:updated',
+			id: 4,
+			payload: {
+				session_id: 'ses-1',
+				status: 'paused',
+				title: null,
+				waiting_reason: 'user_input',
+			},
+		} as never);
+
+		expect(handler).toHaveBeenCalledWith({
+			event: 'session:updated',
+			id: 4,
+			payload: {
+				sessionId: 'ses-1',
+				status: 'paused',
+				waitingReason: 'user_input',
+				title: null,
+				reason: null,
+			},
+		});
+	});
+
+	it('drops malformed lifecycle events before they reach handlers', () => {
+		const handler = vi.fn();
+		const listeners = sessionEventListeners({ 'session:updated': handler });
+
+		listeners['session:updated']({
+			event: 'session:updated',
+			id: 5,
+			payload: { status: 'running', title: null },
+		} as never);
+
+		expect(handler).not.toHaveBeenCalled();
+		expect(mocks.warn).toHaveBeenCalledWith(
+			'events',
+			expect.stringContaining("Dropping malformed payload for 'session:updated'"),
+		);
+	});
+
+	it('uses the same mapper for one-off typed session listeners', async () => {
+		const handler = vi.fn();
+		mocks.listen.mockResolvedValueOnce(vi.fn());
+
+		await registerSessionListener('session:title-updated', handler);
+		const rawListener = mocks.listen.mock.calls[0][1];
+		rawListener({
+			event: 'session:title-updated',
+			id: 6,
+			payload: { session_id: 'ses-1', title: 'A title' },
+		});
+
+		expect(handler).toHaveBeenCalledWith({
+			event: 'session:title-updated',
+			id: 6,
+			payload: { sessionId: 'ses-1', title: 'A title' },
+		});
 	});
 });
 

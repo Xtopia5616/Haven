@@ -374,12 +374,13 @@ Phase 7.1 验收与未决风险：见 ADR 0259、0261、0262、0263、0264、026
 - Rust wire DTO 作为生成 TypeScript contract/字段映射的唯一来源；保留前端运行时校验；
 - 命令数量不为减少复杂度而强行合并；事件按 `session/agent/action/recording/app` envelope 收敛；
 - 已完成（ADR 0313）：将 `+page.svelte` 的 session submit、resume reload、rollback、continue、switch/终态内存回收、end/interrupt 编排抽到 typed `ChatController`；
-- 已完成（ADR 0315）：聊天页 session/app/agent/usage handler map 与异步注册生命周期抽到 typed `chatEventController`；`events.ts` 仍是唯一 wire mapping 和共享 registration primitive；
+- 已完成（ADR 0315）：聊天页 session/app/agent/usage handler map 与异步注册生命周期抽到 typed `chatEventController`；`events.ts` 是共享注册入口并调用各领域 mapper；
 - 已完成（ADR 0320）：聊天页 model/effort/web-search 操作及 typed payload、成功状态更新、通知、失败处理与 refresh-suppression 收口到纯 TypeScript `chatModelOperations`；页面只注入 Svelte state callbacks 并传入 toolbar。`chatModelSync` 仍拥有 discovery/settings 同步。
-- 剩余：Rust DTO 到 TypeScript contract/mapper 的生成收口与旧手写 contract 镜像清理；ask/input 决策、启动恢复与 view state 继续由页面编排；
+- 已完成（ADR 0330，本切片）：session lifecycle wire event 使用单一 `contracts/session.ts` mapper，删除重复的 TS wire-interface 镜像；mapper 校验必需字段、忽略未知扩展字段，并复用既有 optional/unknown-enum 降级。此处仍保留手写的内部 camelCase DTO 与映射代码，不代表 Rust DTO 到 TypeScript 的生成已完成。
+- 剩余：为其它事件域和 command/settings request/response 将 Rust DTO 收口为 TypeScript contract/mapper 的生成源，并清理 `contracts/agent.ts`、`action.ts`、`app.ts`、`recording.ts`、`settings.ts`、`commands.ts` 等手写镜像；session mapper 自身的内部 camelCase 类型与字段映射也待未来评估生成。`events.ts` 是共享注册/分发入口，各领域 mapper 只在对应 contract 模块定义一次。ask/input 决策、启动恢复与 view state 继续由页面/controller 编排；
 - 已完成（ADR 0314）：将 `sessionReducer.ts` 按 lifecycle/transcript/interaction/usage/stream 拆成内部 reducer module；外部 API 和单一 `sessionStateStore` 订阅保持不变；
 - 已完成（ADR 0322）：页面与布局不再把完整 `SessionReducerState` 镜像到 `$state`；通过相等性门控 selector 订阅同一个 `sessionStateStore` 的 sessions、active session ID、活动 transcript/usage、interactions 和必要的 error/termination 切片。selector 只缓存当前结果，引用不变时不通知，最后一个 listener 离开时释放 root subscription；reducer state ownership、dispatch、事件顺序均不变。
-- 剩余：Rust DTO 到 TypeScript contract/mapper 的生成收口与旧手写 contract 镜像清理；ask/input 决策、复杂 view state 与启动恢复仍由页面/controller 原路径编排，replay 继续由现有 reducer/event 路径管理。此次只让页面读取的 interactions 进入 selector，不迁移 ask/input 决策状态或 replay 状态。
+- 剩余：ask/input 决策、复杂 view state 与启动恢复仍由页面/controller 原路径编排，replay 继续由现有 reducer/event 路径管理。ADR 0322 只让页面读取的 interactions 进入 selector，不迁移 ask/input 决策状态或 replay 状态；contract generation 与剩余手写 mirror 范围见本阶段上方的 ADR 0330 条目。
 
 主要文件：`crates/app-binary/src/events.rs`、`ui/src/lib/contracts/`、`ui/src/lib/sessionReducer.ts`、`ui/src/lib/sessionReducer/`、`ui/src/routes/+page.svelte`、`+layout.svelte`、scripts。
 
@@ -389,11 +390,13 @@ Phase 7.1 验收与未决风险：见 ADR 0259、0261、0262、0263、0264、026
 
 2026-09-25 切片进展（ADR 0314）：`SessionReducer` 内部实现已按 lifecycle、transcript、interaction、usage、Agent stream 与共享 replay/state helper 拆分；原 facade 继续拥有跨域 resume/clear 组合、observable wrapper 和唯一 writable store。回归覆盖 resume + pending interaction + usage restore/live、stream reset + chunk sequence、error + termination 刷新。
 
-2026-09-25 切片进展（ADR 0315）：`chatEventController` 拥有聊天页 handler map 组合及注册/释放生命周期；页面等待 listener ready 后才加载 settings 和恢复会话。wire payload mapping 与共享 listener registration 仍唯一位于 `events.ts`；测试通过注入 registration port 覆盖通道、ready 和释放竞态。
+2026-09-25 切片进展（ADR 0315）：`chatEventController` 拥有聊天页 handler map 组合及注册/释放生命周期；页面等待 listener ready 后才加载 settings 和恢复会话。`events.ts` 拥有共享 listener registration 与领域 mapper 调用入口；测试通过注入 registration port 覆盖通道、ready 和释放竞态。
 
 2026-09-25 切片进展（ADR 0320）：`chatModelOperations` 拥有三个 toolbar model 操作的 typed payload、状态更新、通知、错误处理与 refresh suppression；页面仅接线，`chatModelSync` 继续拥有 settings/discovery。Rust DTO → TS contract/mapper generation 与旧手写 contract 镜像清理仍待后续。
 
 2026-09-25 切片进展（ADR 0322）：`createSessionSelectorStore` 只观察唯一 `sessionStateStore`，按 `Object.is` 对当前选择结果门控通知，并在 selector 最后一个订阅者释放时断开 root subscription。页面迁移 sessions、active session ID、活动消息、usage、interactions、error/termination；布局迁移 sessions、active session ID、interactions。活动消息按 reducer 当前 active ID 选取，缺失消息复用稳定空数组。完整 root state 不再广播到这两个路由的 `$state` 镜像；复杂 view state、ask/input 决策、启动恢复和 replay 仍走既有路径。无 reducer ownership、状态转换、事件顺序、IPC 或持久化变化。
+
+2026-09-25 切片进展（ADR 0330）：以 app-binary session event DTO 为 wire 权威，`contracts/session.ts` 是 session lifecycle snake_case→camelCase 的唯一前端 mapper；删除重复 TS wire interfaces，用运行时校验拒绝 malformed required fields、丢弃未知事件、忽略新增字段，并保留未知 status→`error`、未知 waiting reason→`null` 的降级。`events.ts` 的两个 session listener 路径共用该 mapper；chat controller/handler/reducer 仅接收已映射 DTO。channel、payload、顺序、幂等和 UI 行为不变。其余 event/command DTO mirror 及 session 内部类型/字段映射的生成收口仍待后续阶段。
 
 ### 阶段 9：Common 收缩、性能剖析和发布验收（最后）
 

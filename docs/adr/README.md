@@ -318,3 +318,4 @@
 - [0327：LLM Router raw stream 执行器第一刀](0327-llm-raw-stream-executor.md)
 - [0328：LLM 聚合流执行器](0328-llm-aggregated-stream-executor.md)
 - [0329：LLM 请求 descriptor 贯穿执行边界](0329-llm-request-descriptor-execution-boundary.md)
+- [0330：Session lifecycle UI contract mapper](0330-session-lifecycle-ui-contract-mapper.md)
