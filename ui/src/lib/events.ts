@@ -75,8 +75,12 @@ function adaptActionEvent<K extends ActionEventName>(
 function adaptAppEvent<K extends AppEventName>(
 	eventName: K,
 	event: TauriEvent<unknown>,
-): TauriEvent<AppEventPayloadMap[K]> {
-	return mapAppEvent({ ...event, event: eventName } as never);
+): TauriEvent<AppEventPayloadMap[K]> | null {
+	const mapped = mapAppEvent({ ...event, event: eventName });
+	if (!mapped) {
+		logger.warn('events', `Dropping malformed payload for '${eventName}'`);
+	}
+	return mapped;
 }
 
 function adaptAgentEvent<K extends AgentEventName>(
@@ -232,7 +236,8 @@ export function appEventListeners(
 			(event: TauriEvent<unknown>) => {
 				protectEventCallback(eventName, () => {
 					const name = eventName as AppEventName;
-					handler?.(adaptAppEvent(name, event) as never);
+					const mapped = adaptAppEvent(name, event);
+					if (mapped) handler?.(mapped as never);
 				});
 			},
 		]),
@@ -297,7 +302,8 @@ export async function registerAppListener<K extends AppEventName>(
 		event,
 		(rawEvent) =>
 			protectEventCallback(event, () => {
-				handler(adaptAppEvent(event, rawEvent as TauriEvent<unknown>));
+				const mapped = adaptAppEvent(event, rawEvent as TauriEvent<unknown>);
+				if (mapped) handler(mapped);
 			}),
 		{ tag },
 	);

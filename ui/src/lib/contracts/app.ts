@@ -90,57 +90,138 @@ interface AppWirePayloadMap {
 	'llm:config_changed': null;
 }
 
-/** Convert one known app-shell event from the Rust/Tauri wire shape. */
+type WireRecord = Record<string, unknown>;
+
+const APP_EVENT_NAME_SET = new Set<string>(APP_EVENT_NAMES);
+
+function isRecord(value: unknown): value is WireRecord {
+	return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function finiteNumber(value: unknown): value is number {
+	return typeof value === 'number' && Number.isFinite(value);
+}
+
+function requiredString(record: WireRecord, field: string): string | null {
+	return typeof record[field] === 'string' ? record[field] as string : null;
+}
+
+function optionalNullableStringIsValid(record: WireRecord, field: string): boolean {
+	const value = record[field];
+	return value === undefined || value === null || typeof value === 'string';
+}
+
+function stringArray(value: unknown): value is string[] {
+	return Array.isArray(value) && value.every((item) => typeof item === 'string');
+}
+
+/** Keep serde's externally-tagged MCP status value opaque for forward compatibility. */
+function isMcpStatus(value: unknown): boolean {
+	if (typeof value === 'string') return true;
+	return isRecord(value);
+}
+
+/** Convert one known app-shell event from an untrusted Rust/Tauri payload. */
 export function mapAppEvent<K extends AppEventName>(
-	event: TauriEvent<AppWirePayloadMap[K]> & { event: K },
-): TauriEvent<AppEventPayloadMap[K]> {
+	event: TauriEvent<unknown> & { event: K },
+): TauriEvent<AppEventPayloadMap[K]> | null;
+export function mapAppEvent(
+	event: unknown,
+): TauriEvent<AppEventPayloadMap[AppEventName]> | null;
+export function mapAppEvent(
+	event: unknown,
+): TauriEvent<AppEventPayloadMap[AppEventName]> | null {
+	if (
+		!isRecord(event) ||
+		typeof event.event !== 'string' ||
+		!APP_EVENT_NAME_SET.has(event.event) ||
+		!finiteNumber(event.id)
+	) {
+		return null;
+	}
+
+	const tauriEvent = event as unknown as TauriEvent<unknown>;
 	const p = event.payload;
+	if (event.event === 'llm:config_changed') {
+		// This unit event has always projected to null regardless of its wire payload.
+		return { ...tauriEvent, payload: null };
+	}
+	if (!isRecord(p)) return null;
+
 	switch (event.event) {
 		case 'app:bootstrap':
-			return { ...event, payload: p } as unknown as TauriEvent<AppEventPayloadMap[K]>;
+			if (typeof p.status !== 'string') return null;
+			return { ...tauriEvent, payload: p as AppWirePayloadMap['app:bootstrap'] };
 		case 'tray:status_changed':
-			return { ...event, payload: p } as unknown as TauriEvent<AppEventPayloadMap[K]>;
+			if (typeof p.status !== 'string' || typeof p.tooltip !== 'string') return null;
+			return { ...tauriEvent, payload: p as AppWirePayloadMap['tray:status_changed'] };
 		case 'mute:changed':
-			return { ...event, payload: p } as unknown as TauriEvent<AppEventPayloadMap[K]>;
+			if (typeof p.muted !== 'boolean') return null;
+			return { ...tauriEvent, payload: p as AppWirePayloadMap['mute:changed'] };
 		case 'mcp:status_change':
-			return { ...event, payload: p } as unknown as TauriEvent<AppEventPayloadMap[K]>;
+			if (typeof p.name !== 'string' || !isMcpStatus(p.status)) return null;
+			// Preserve the whole wrapper and status value, including additive fields.
+			return { ...tauriEvent, payload: p as AppWirePayloadMap['mcp:status_change'] };
 		case 'skills:status_change':
-			return { ...event, payload: p } as unknown as TauriEvent<AppEventPayloadMap[K]>;
+			if (typeof p.op !== 'string') return null;
+			return { ...tauriEvent, payload: p as AppWirePayloadMap['skills:status_change'] };
 		case 'interaction:requested': {
-			const payload = p as AppWirePayloadMap['interaction:requested'];
-			return { ...event, payload: {
-				id: payload.id,
-				sessionId: payload.session_id,
-				kind: payload.kind,
-				status: payload.status,
-				prompt: payload.prompt,
-				options: payload.options || [],
-				...(payload.tool_name ? { toolName: payload.tool_name } : {}),
-				...(payload.risk_level ? { riskLevel: payload.risk_level } : {}),
-				...(payload.summary ? { summary: payload.summary } : {}),
-				...(payload.permission_key ? { permissionKey: payload.permission_key } : {}),
-				...(payload.invocation_step_id ? { invocationStepId: payload.invocation_step_id } : {}),
-				...(payload.action_index != null ? { actionIndex: payload.action_index } : {}),
-				...(payload.tool_call_id ? { toolCallId: payload.tool_call_id } : {}),
-				createdAt: payload.created_at,
-				...(payload.expires_at ? { expiresAt: payload.expires_at } : {}),
-			} } as unknown as TauriEvent<AppEventPayloadMap[K]>;
+			const id = requiredString(p, 'id');
+			const sessionId = requiredString(p, 'session_id');
+			const kind = requiredString(p, 'kind');
+			const status = requiredString(p, 'status');
+			const prompt = requiredString(p, 'prompt');
+			const createdAt = requiredString(p, 'created_at');
+			const options = p.options === undefined ? [] : p.options;
+			const actionIndex = p.action_index;
+			if (
+				id === null || sessionId === null || kind === null || status === null ||
+				prompt === null || createdAt === null || !stringArray(options) ||
+				!optionalNullableStringIsValid(p, 'tool_name') ||
+				!optionalNullableStringIsValid(p, 'risk_level') ||
+				!optionalNullableStringIsValid(p, 'summary') ||
+				!optionalNullableStringIsValid(p, 'permission_key') ||
+				!optionalNullableStringIsValid(p, 'invocation_step_id') ||
+				!optionalNullableStringIsValid(p, 'tool_call_id') ||
+				!optionalNullableStringIsValid(p, 'expires_at') ||
+				(actionIndex !== undefined && actionIndex !== null &&
+					(!finiteNumber(actionIndex) || !Number.isInteger(actionIndex) ||
+						actionIndex < 0 || actionIndex > 4_294_967_295))
+			) return null;
+
+			const wire = p as AppWirePayloadMap['interaction:requested'];
+			return { ...tauriEvent, payload: {
+				id,
+				sessionId,
+				kind: kind as InteractionKind,
+				status: status as InteractionStatus,
+				prompt,
+				options,
+				...(wire.tool_name ? { toolName: wire.tool_name } : {}),
+				...(wire.risk_level ? { riskLevel: wire.risk_level } : {}),
+				...(wire.summary ? { summary: wire.summary } : {}),
+				...(wire.permission_key ? { permissionKey: wire.permission_key } : {}),
+				...(wire.invocation_step_id ? { invocationStepId: wire.invocation_step_id } : {}),
+				...(wire.action_index != null ? { actionIndex: wire.action_index } : {}),
+				...(wire.tool_call_id ? { toolCallId: wire.tool_call_id } : {}),
+				createdAt,
+				...(wire.expires_at ? { expiresAt: wire.expires_at } : {}),
+			} };
 		}
 		case 'hotkey:conflict': {
-			const payload = p as AppWirePayloadMap['hotkey:conflict'];
-			return { ...event, payload: {
-				binding: payload.binding,
-				error: payload.error,
-			} } as unknown as TauriEvent<AppEventPayloadMap[K]>;
+			const binding = requiredString(p, 'binding');
+			const error = requiredString(p, 'error');
+			if (binding === null || error === null) return null;
+			return { ...tauriEvent, payload: { binding, error } };
 		}
 		case 'hotkey:rebind': {
-			const payload = p as AppWirePayloadMap['hotkey:rebind'];
-			return { ...event, payload: {
-				oldBinding: payload.old_binding,
-				newBinding: payload.new_binding,
-			} } as unknown as TauriEvent<AppEventPayloadMap[K]>;
+			const oldBinding = requiredString(p, 'old_binding');
+			const newBinding = requiredString(p, 'new_binding');
+			if (oldBinding === null || newBinding === null) return null;
+			return { ...tauriEvent, payload: { oldBinding, newBinding } };
 		}
 		case 'llm:config_changed':
-			return { ...event, payload: null } as unknown as TauriEvent<AppEventPayloadMap[K]>;
+			return { ...tauriEvent, payload: null };
 	}
+	return null;
 }

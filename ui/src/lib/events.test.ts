@@ -199,6 +199,10 @@ describe('registerOne', () => {
 });
 
 describe('appEventListeners', () => {
+	beforeEach(() => {
+		mocks.warn.mockReset();
+	});
+
 	it('maps app events before calling shared shell handlers', () => {
 		const handler = vi.fn();
 		const listeners = appEventListeners({ 'hotkey:rebind': handler });
@@ -214,6 +218,29 @@ describe('appEventListeners', () => {
 			id: 7,
 			payload: { oldBinding: 'Ctrl+A', newBinding: 'Ctrl+B' },
 		});
+	});
+
+	it('drops malformed app payloads with a payload-free warning', () => {
+		const handler = vi.fn();
+		const listeners = appEventListeners({ 'hotkey:rebind': handler });
+		const payload = {
+			old_binding: 17,
+			new_binding: 'Ctrl+B',
+			private_value: 'must not be logged',
+		};
+
+		listeners['hotkey:rebind']({
+			event: 'hotkey:rebind',
+			id: 7,
+			payload,
+		} as never);
+
+		expect(handler).not.toHaveBeenCalled();
+		expect(mocks.warn).toHaveBeenCalledWith(
+			'events',
+			expect.stringContaining("Dropping malformed payload for 'hotkey:rebind'"),
+		);
+		expect(JSON.stringify(mocks.warn.mock.calls)).not.toContain('must not be logged');
 	});
 });
 
@@ -264,6 +291,25 @@ describe('registerAppListener', () => {
 		rawListener({ event: 'mcp:status_change', id: 9, payload });
 
 		expect(handler).toHaveBeenCalledWith({ event: 'mcp:status_change', id: 9, payload });
+	});
+
+	it('drops malformed one-off app events before invoking handlers', async () => {
+		const handler = vi.fn();
+		mocks.listen.mockResolvedValueOnce(vi.fn());
+
+		await registerAppListener('interaction:requested', handler, { tag: 'layout' });
+		const rawListener = mocks.listen.mock.calls[0][1];
+		rawListener({
+			event: 'interaction:requested',
+			id: 10,
+			payload: { id: 'conf-1', session_id: 'ses-1', kind: 'confirm' },
+		});
+
+		expect(handler).not.toHaveBeenCalled();
+		expect(mocks.warn).toHaveBeenCalledWith(
+			'events',
+			expect.stringContaining("Dropping malformed payload for 'interaction:requested'"),
+		);
 	});
 });
 

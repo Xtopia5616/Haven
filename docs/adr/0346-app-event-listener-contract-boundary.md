@@ -23,17 +23,28 @@ hotkey/interaction 事件只输出已知消费字段。Resume response 的
 `interactions` 仍由 `sessionReducer/interaction.ts` 做容错归一化；它还接受 camelCase 输入且拥有 session
 恢复行为，不在本次范围内提取或重写。
 
+后续运行时校验审计发现：现有 `mapAppEvent` 依赖 `AppWirePayloadMap` 类型断言，原生 Tauri payload
+没有经过 runtime validation。hotkey 与 interaction 会显式投影字段；MCP/Skills 则有 status wrapper，
+其中 MCP status 是 serde 外部标记 enum，不能以当前已知 variants 封闭校验。
+
 ## 决定
 
 1. 在 `events.ts` 用唯一的 `adaptAppEvent` 调用 `mapAppEvent`。批量 `appEventListeners` 和新增的单条
    `registerAppListener` 都复用它；route/store handler 只接收映射后的 app DTO。
 2. ToolsView 的 MCP 与 Skills refresh listener 改用 `registerAppListener`。布局移除无副作用的 Skills
    listener；布局继续拥有 MCP 通知，ToolsView 继续拥有 MCP 列表刷新和 Skills 列表刷新。
-3. 保持 Rust DTO、channel、payload、Tauri producer、注册顺序、到达顺序和通知行为不变。MCP 未知 status
-   variant 与 pass-through 附加字段继续原样保留；hotkey 显式映射继续忽略未知扩展字段。
-4. 不增加 app payload validator 或 enum/error fallback。当前 mapper/consumer 对 malformed payload 的既有
-   行为不变；新增入口仍用 `protectEventCallback` 隔离同步错误和异步 handler rejection。
-5. 不改 session/action/recording/settings contract、Rust 事件协议或全局 codegen。
+3. `mapAppEvent(unknown)` 校验 envelope、必需字段及 optional 字段类型，再执行唯一 snake_case → camelCase
+   interaction/hotkey 映射。畸形 payload 返回 `null`，adapter 丢弃并记录不含 payload 的通用 warning。
+   interaction 的 kind/status/risk 字段按 string 类型校验，不封闭 enum-like 值；options 缺省仍映射为空数组，
+   `action_index` 校验为 Rust `u32` 范围。interaction resume normalizer 保持原样。
+4. MCP/Skills wrapper 校验必需 name/status/op 类型。MCP 字符串状态及外部标记 object variant 保持开放；
+   不校验 status variant 的内部字段，避免改变原有 pass-through 语义。MCP 与 Skills wrapper 的附加字段、
+   状态对象及其附加字段原样透传。bootstrap、tray、mute 校验必需字段类型但继续开放字符串值；
+   `llm:config_changed` 继续映射为 `null`，不依赖 wire unit payload 的具体 JS 表示。
+5. 保持 Rust DTO、channel、payload、Tauri producer、注册顺序、到达顺序和通知行为不变。MCP layout toast、
+   ToolsView MCP/Skills refresh、settings/hotkey 顺序、interaction reducer 与各副作用 owner 不变；hotkey 显式
+   映射仍忽略未知扩展字段。
+6. 不改 session/action/recording/settings contract、Rust 事件协议或全局 codegen。
 
 ## 替代方案
 
@@ -46,10 +57,10 @@ hotkey/interaction 事件只输出已知消费字段。Resume response 的
 
 ## 影响与验证
 
-该切片只改 TypeScript event adapter、ToolsView listener wiring、空订阅清理、回归测试和文档。新增测试确认
-批量与单条 listener 都经同一 mapper、hotkey 映射忽略 wire 扩展字段、MCP 的未来 enum/扩展字段透传。
-MCP layout toast、ToolsView MCP refresh、ToolsView Skills refresh 与 `notification:show` 的通知顺序和副作用
-保持不变。无持久化、配置或数据迁移。
+该切片只改 TypeScript app contract mapper/adapter、ToolsView listener wiring、空订阅清理、回归测试和文档。
+新增测试确认 malformed envelope/必需字段被丢弃、hotkey/interaction 字段映射和 MCP 未知 enum/扩展字段透传；
+interaction enum-like 字符串仍接受。MCP layout toast、ToolsView MCP refresh、ToolsView Skills refresh、
+`notification:show`、settings/hotkey 的顺序与副作用 owner 保持不变。无 Rust、持久化、配置或数据迁移。
 
 验收命令：
 

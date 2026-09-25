@@ -21,10 +21,11 @@ describe('app-shell IPC contract', () => {
 				created_at: '2026-01-01T00:00:00Z',
 				summary: '将执行一条受保护的本机命令（命令内容不会显示在弹窗中）',
 				permission_key: 'tool.run_command',
+				future_field: 'not part of the renderer DTO',
 			},
 		});
 
-		expect(event.payload).toEqual({
+		expect(event?.payload).toEqual({
 			id: 'conf-1',
 			sessionId: 'ses-1',
 			kind: 'confirm',
@@ -40,37 +41,106 @@ describe('app-shell IPC contract', () => {
 			permissionKey: 'tool.run_command',
 			createdAt: '2026-01-01T00:00:00Z',
 		});
-		expect(event.payload).not.toHaveProperty('step_id');
+		expect(event?.payload).not.toHaveProperty('step_id');
+		expect(event?.payload).not.toHaveProperty('future_field');
 	});
 
-	it('keeps MCP status as a typed union', () => {
+	it('keeps interaction enum-like strings open and defaults omitted options', () => {
 		const event = mapAppEvent({
-			event: 'mcp:status_change',
+			event: 'interaction:requested',
 			id: 2,
-			payload: { name: 'filesystem', status: { Offline: { error: 'timeout' } } },
+			payload: {
+				id: 'interaction-1',
+				session_id: 'ses-1',
+				kind: 'future_kind',
+				status: 'future_status',
+				prompt: 'Prompt',
+				created_at: '2026-01-01T00:00:00Z',
+				risk_level: 'future_risk',
+			},
 		});
 
-		expect(event.payload).toEqual({
-			name: 'filesystem',
-			status: { Offline: { error: 'timeout' } },
+		expect(event?.payload).toMatchObject({
+			kind: 'future_kind',
+			status: 'future_status',
+			options: [],
+			riskLevel: 'future_risk',
 		});
+	});
+
+	it('preserves MCP externally-tagged unknown status variants and extension fields', () => {
+		const payload = {
+			name: 'filesystem',
+			status: { FutureStatus: { retry_after_ms: 500, detail: 'future' } },
+			future_field: 'preserved',
+		};
+		const event = mapAppEvent({ event: 'mcp:status_change', id: 3, payload });
+
+		expect(event?.payload).toEqual(payload);
+	});
+
+	it('preserves known MCP status extensions while validating its wrapper', () => {
+		const payload = {
+			name: 'filesystem',
+			status: { Offline: { error: 'timeout', retryable: true }, source: 'future' },
+			future_field: 'preserved',
+		};
+		const event = mapAppEvent({ event: 'mcp:status_change', id: 4, payload });
+
+		expect(event?.payload).toEqual(payload);
+	});
+
+	it('validates and preserves the Skills status wrapper', () => {
+		const payload = { op: 'auto_refresh', future_field: 'preserved' };
+		const event = mapAppEvent({ event: 'skills:status_change', id: 5, payload });
+
+		expect(event?.payload).toEqual(payload);
 	});
 
 	it('maps hotkey rebind fields once and ignores wire extensions', () => {
-		const payload = {
-			old_binding: 'Ctrl+Shift+Space',
-			new_binding: 'Ctrl+Alt+Space',
-			future_field: 'ignored',
-		} as { old_binding: string; new_binding: string };
 		const event = mapAppEvent({
 			event: 'hotkey:rebind',
-			id: 3,
-			payload,
+			id: 6,
+			payload: {
+				old_binding: 'Ctrl+Shift+Space',
+				new_binding: 'Ctrl+Alt+Space',
+				future_field: 'ignored',
+			},
 		});
 
-		expect(event.payload).toEqual({
+		expect(event?.payload).toEqual({
 			oldBinding: 'Ctrl+Shift+Space',
 			newBinding: 'Ctrl+Alt+Space',
 		});
+	});
+
+	it.each([
+		{ event: 'hotkey:rebind', payload: { old_binding: 1, new_binding: 'Ctrl+B' } },
+		{ event: 'hotkey:conflict', payload: { binding: 'Ctrl+A', error: null } },
+		{
+			event: 'interaction:requested',
+			payload: {
+				id: 'conf-1', session_id: 'ses-1', kind: 'confirm', status: 'pending',
+				prompt: 'Confirm', created_at: 'now', options: ['okay', 1],
+			},
+		},
+		{
+			event: 'interaction:requested',
+			payload: {
+				id: 'conf-1', session_id: 'ses-1', kind: 'confirm', status: 'pending',
+				prompt: 'Confirm', created_at: 'now', action_index: -1,
+			},
+		},
+		{ event: 'mcp:status_change', payload: { name: 'server', status: 42 } },
+		{ event: 'mcp:status_change', payload: { name: 'server', status: [] } },
+		{ event: 'skills:status_change', payload: { op: false } },
+	])('drops malformed required app payloads: $event', ({ event, payload }) => {
+		expect(mapAppEvent({ event, id: 7, payload })).toBeNull();
+	});
+
+	it('drops malformed Tauri app event envelopes', () => {
+		expect(mapAppEvent({ event: 'hotkey:rebind', id: Number.NaN, payload: {} })).toBeNull();
+		expect(mapAppEvent({ event: 'unknown:event', id: 1, payload: {} })).toBeNull();
+		expect(mapAppEvent({ event: 'hotkey:rebind', id: 1, payload: null })).toBeNull();
 	});
 });
