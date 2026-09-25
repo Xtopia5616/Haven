@@ -301,6 +301,188 @@ impl RuntimeConfigApplyPlan {
     }
 }
 
+/// A named point in the existing settings runtime-apply sequence. These
+/// phases describe observability only; they do not imply rollback boundaries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SettingsApplyPhase {
+    RouterPrepare,
+    InputPipeline,
+    Shell,
+    Security,
+    McpConfig,
+    McpMonitors,
+    RouterPublish,
+    ContextLimits,
+    SessionRuntime,
+    ToolSettings,
+    Skills,
+    Logging,
+    HotkeyMode,
+    HotkeyUnregister,
+    HotkeyRegister,
+    HotkeyRebindEvent,
+}
+
+impl SettingsApplyPhase {
+    fn target(self) -> RuntimeConfigTarget {
+        match self {
+            Self::RouterPrepare | Self::RouterPublish => RuntimeConfigTarget::LlmRouter,
+            Self::InputPipeline => RuntimeConfigTarget::InputPipeline,
+            Self::Shell => RuntimeConfigTarget::Shell,
+            Self::Security => RuntimeConfigTarget::Security,
+            Self::McpConfig | Self::McpMonitors => RuntimeConfigTarget::Mcp,
+            Self::ContextLimits => RuntimeConfigTarget::ContextLimits,
+            Self::SessionRuntime => RuntimeConfigTarget::SessionRuntime,
+            Self::ToolSettings => RuntimeConfigTarget::ToolSettings,
+            Self::Skills => RuntimeConfigTarget::Skills,
+            Self::Logging => RuntimeConfigTarget::Logging,
+            Self::HotkeyMode
+            | Self::HotkeyUnregister
+            | Self::HotkeyRegister
+            | Self::HotkeyRebindEvent => RuntimeConfigTarget::Hotkey,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::RouterPrepare => "router_prepare",
+            Self::InputPipeline => "input_pipeline",
+            Self::Shell => "shell",
+            Self::Security => "security",
+            Self::McpConfig => "mcp_config",
+            Self::McpMonitors => "mcp_monitors",
+            Self::RouterPublish => "router_publish",
+            Self::ContextLimits => "context_limits",
+            Self::SessionRuntime => "session_runtime",
+            Self::ToolSettings => "tool_settings",
+            Self::Skills => "skills",
+            Self::Logging => "logging",
+            Self::HotkeyMode => "hotkey_mode",
+            Self::HotkeyUnregister => "hotkey_unregister",
+            Self::HotkeyRegister => "hotkey_register",
+            Self::HotkeyRebindEvent => "hotkey_rebind_event",
+        }
+    }
+}
+
+/// Safe metadata for a settings runtime-apply failure after durable commit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SettingsApplyFailure {
+    pub(crate) config_version: u64,
+    pub(crate) phase: SettingsApplyPhase,
+    pub(crate) router_published: bool,
+    pub(crate) restart_required_targets: Vec<RuntimeConfigTarget>,
+}
+
+impl SettingsApplyFailure {
+    fn record(&self, command: &str, error: &dyn std::fmt::Display, warning: bool) {
+        let safe_error = crate::logging::sanitize_error_text(&error.to_string());
+        if warning {
+            tracing::warn!(
+                command,
+                config_version = self.config_version,
+                phase = self.phase.as_str(),
+                router_published = self.router_published,
+                restart_required = !self.restart_required_targets.is_empty(),
+                restart_required_targets = ?self.restart_required_targets,
+                error = %safe_error,
+                "settings runtime apply warning"
+            );
+        } else {
+            tracing::error!(
+                command,
+                config_version = self.config_version,
+                phase = self.phase.as_str(),
+                router_published = self.router_published,
+                restart_required = !self.restart_required_targets.is_empty(),
+                restart_required_targets = ?self.restart_required_targets,
+                error = %safe_error,
+                "settings runtime apply failed"
+            );
+        }
+    }
+}
+
+/// Tracks the phase currently executing and whether Router publication has
+/// completed. Entering a phase uses the same `contains` semantics as the
+/// previous settings command, including restart-required targets.
+pub(crate) struct SettingsApplyPhaseTracker {
+    config_version: u64,
+    restart_required_targets: Vec<RuntimeConfigTarget>,
+    phase: Option<SettingsApplyPhase>,
+    router_published: bool,
+}
+
+impl SettingsApplyPhaseTracker {
+    pub(crate) fn new(plan: &RuntimeConfigApplyPlan) -> Self {
+        Self {
+            config_version: plan.version,
+            restart_required_targets: plan.restart_required.clone(),
+            phase: None,
+            router_published: false,
+        }
+    }
+
+    /// Mark a phase as current only when its target is part of the plan.
+    pub(crate) fn enter(
+        &mut self,
+        plan: &RuntimeConfigApplyPlan,
+        phase: SettingsApplyPhase,
+    ) -> bool {
+        if !plan.contains(phase.target()) {
+            return false;
+        }
+        self.phase = Some(phase);
+        true
+    }
+
+    pub(crate) fn mark_router_published(&mut self) {
+        debug_assert_eq!(self.phase, Some(SettingsApplyPhase::RouterPublish));
+        self.router_published = true;
+    }
+
+    pub(crate) fn failure(&self, phase: SettingsApplyPhase) -> SettingsApplyFailure {
+        debug_assert_eq!(self.phase, Some(phase));
+        SettingsApplyFailure {
+            config_version: self.config_version,
+            phase,
+            router_published: self.router_published,
+            restart_required_targets: self.restart_required_targets.clone(),
+        }
+    }
+
+    pub(crate) fn record_failure(
+        &self,
+        phase: SettingsApplyPhase,
+        command: &str,
+        error: &dyn std::fmt::Display,
+    ) {
+        self.failure(phase).record(command, error, false);
+    }
+
+    /// Preserve the command error renderer while attaching phase metadata to
+    /// the same failure path.
+    pub(crate) fn render_failure(
+        &self,
+        phase: SettingsApplyPhase,
+        command: &str,
+        error: impl std::fmt::Display,
+    ) -> String {
+        let rendered = crate::logging::log_err(command, error);
+        self.record_failure(phase, command, &rendered);
+        rendered
+    }
+
+    pub(crate) fn record_warning(
+        &self,
+        phase: SettingsApplyPhase,
+        command: &str,
+        error: &dyn std::fmt::Display,
+    ) {
+        self.failure(phase).record(command, error, true);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -427,8 +609,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn failed_prepare_does_not_call_publish() {
+    async fn failed_settings_prepare_is_before_router_publish() {
         use std::sync::atomic::{AtomicBool, Ordering};
+
+        let plan = RuntimeConfigApplyPlan::from_change(&ConfigChanged {
+            version: 19,
+            domains: vec![ConfigDomain::Llm],
+        });
+        let mut phases = SettingsApplyPhaseTracker::new(&plan);
+        assert!(phases.enter(&plan, SettingsApplyPhase::RouterPrepare));
+
         let applied = std::sync::Arc::new(AtomicBool::new(false));
         let applied_in_closure = applied.clone();
         let result: Result<(), &str> = RuntimeConfigCoordinator::prepare_then_publish(
@@ -442,6 +632,98 @@ mod tests {
 
         assert_eq!(result, Err("client preparation failed"));
         assert!(!applied.load(Ordering::SeqCst));
+        let failure = phases.failure(SettingsApplyPhase::RouterPrepare);
+        assert_eq!(failure.config_version, 19);
+        assert_eq!(failure.phase, SettingsApplyPhase::RouterPrepare);
+        assert!(!failure.router_published);
+    }
+
+    #[test]
+    fn failure_after_router_publish_logs_version_phase_and_restart_metadata() {
+        use std::io::{self, Write};
+        use std::sync::{Arc, Mutex};
+        use tracing_subscriber::fmt::MakeWriter;
+
+        #[derive(Clone)]
+        struct BufferWriter(Arc<Mutex<Vec<u8>>>);
+
+        impl Write for BufferWriter {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        impl<'a> MakeWriter<'a> for BufferWriter {
+            type Writer = Self;
+
+            fn make_writer(&'a self) -> Self::Writer {
+                self.clone()
+            }
+        }
+
+        let plan = RuntimeConfigApplyPlan::from_change(&ConfigChanged {
+            version: 23,
+            domains: vec![
+                ConfigDomain::Llm,
+                ConfigDomain::SkillsExec,
+                ConfigDomain::Memory,
+            ],
+        });
+        let mut phases = SettingsApplyPhaseTracker::new(&plan);
+        assert!(phases.enter(&plan, SettingsApplyPhase::RouterPublish));
+        phases.mark_router_published();
+        assert!(phases.enter(&plan, SettingsApplyPhase::Skills));
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(BufferWriter(output.clone()))
+            .finish();
+        let rendered = tracing::subscriber::with_default(subscriber, || {
+            phases.render_failure(
+                SettingsApplyPhase::Skills,
+                "update_settings skills",
+                "request failed with api_key=never-log-this-secret",
+            )
+        });
+        let logs = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+
+        assert!(rendered.contains("request failed"));
+        assert!(!rendered.contains("never-log-this-secret"));
+        assert!(logs.contains("config_version=23"));
+        assert!(logs.contains("phase=\"skills\""));
+        assert!(logs.contains("router_published=true"));
+        assert!(logs.contains("restart_required=true"));
+        assert!(logs.contains("restart_required_targets=[Skills, MemoryRuntime]"));
+        assert!(!logs.contains("never-log-this-secret"));
+    }
+
+    #[test]
+    fn restart_required_targets_are_retained_in_settings_failure_metadata() {
+        let plan = RuntimeConfigApplyPlan::from_change(&ConfigChanged {
+            version: 24,
+            domains: vec![ConfigDomain::SkillsExec, ConfigDomain::Memory],
+        });
+        let mut phases = SettingsApplyPhaseTracker::new(&plan);
+
+        // This intentionally mirrors RuntimeConfigApplyPlan::contains: the
+        // existing settings path runs the skills phase for this target too.
+        assert!(phases.enter(&plan, SettingsApplyPhase::Skills));
+        let failure = phases.failure(SettingsApplyPhase::Skills);
+
+        assert_eq!(failure.config_version, 24);
+        assert_eq!(
+            failure.restart_required_targets,
+            vec![
+                RuntimeConfigTarget::Skills,
+                RuntimeConfigTarget::MemoryRuntime
+            ]
+        );
     }
 
     #[tokio::test]

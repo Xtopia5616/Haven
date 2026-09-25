@@ -1,7 +1,8 @@
 use crate::app_state::AppState;
 use crate::commands::log_err;
 use crate::config_runtime::{
-    RuntimeConfigApplyPlan, RuntimeConfigTarget, apply_log_level_to_handles,
+    RuntimeConfigApplyPlan, SettingsApplyPhase, SettingsApplyPhaseTracker,
+    apply_log_level_to_handles,
 };
 use crate::events::{HOTKEY_REBIND_EVENT, HotkeyRebindEvent};
 use std::sync::Arc;
@@ -13,6 +14,23 @@ struct SettingsApplyContext {
     old_hotkey: String,
     snapshot: haven_common::config::ConfigSnapshot,
     change: haven_common::config::ConfigChanged,
+}
+
+struct SettingsApplyRun {
+    context: SettingsApplyContext,
+    plan: RuntimeConfigApplyPlan,
+    phases: SettingsApplyPhaseTracker,
+}
+
+fn begin_settings_apply(update: Option<SettingsApplyContext>) -> Option<SettingsApplyRun> {
+    let context = update?;
+    let plan = RuntimeConfigApplyPlan::from_change(&context.change);
+    let phases = SettingsApplyPhaseTracker::new(&plan);
+    Some(SettingsApplyRun {
+        context,
+        plan,
+        phases,
+    })
 }
 
 fn apply_settings_edit(
@@ -67,18 +85,23 @@ pub async fn update_settings(
     };
     let state = app.state::<Arc<AppState>>();
     let _apply_guard = state.config_apply_gate.lock().await;
-    let Some(update) = apply_settings_edit(&state.config_service, &settings)
-        .map_err(|e| log_err("update_settings", e))?
-    else {
+    let Some(run) = begin_settings_apply(
+        apply_settings_edit(&state.config_service, &settings)
+            .map_err(|e| log_err("update_settings", e))?,
+    ) else {
         return Ok(());
     };
+    let SettingsApplyRun {
+        context: update,
+        plan,
+        mut phases,
+    } = run;
     let SettingsApplyContext {
         old_hotkey,
         snapshot,
         change,
     } = update;
     let config = &snapshot.config;
-    let plan = RuntimeConfigApplyPlan::from_change(&change);
     tracing::debug!(
         version = change.version,
         domains = ?change.domains,
@@ -97,19 +120,24 @@ pub async fn update_settings(
     // Build every fallible router/media dependency before the first live
     // runtime update. A preparation failure leaves those consumers on their
     // previous generation while the durable config snapshot remains saved.
-    let mut prepared_router = if plan.contains(RuntimeConfigTarget::LlmRouter) {
-        Some(state.config_apply_gate.prepare_router_runtime(
-            &state,
-            &snapshot,
-            "update_settings",
-        )?)
+    let mut prepared_router = if phases.enter(&plan, SettingsApplyPhase::RouterPrepare) {
+        match state
+            .config_apply_gate
+            .prepare_router_runtime(&state, &snapshot, "update_settings")
+        {
+            Ok(prepared) => Some(prepared),
+            Err(error) => {
+                phases.record_failure(SettingsApplyPhase::RouterPrepare, "update_settings", &error);
+                return Err(error);
+            }
+        }
     } else {
         None
     };
     tick("config apply");
 
     // Propagate audio config to running pipeline
-    if plan.contains(RuntimeConfigTarget::InputPipeline) {
+    if phases.enter(&plan, SettingsApplyPhase::InputPipeline) {
         state
             .pipeline
             .update_config(config.media.audio.clone())
@@ -120,7 +148,7 @@ pub async fn update_settings(
 
     // Propagate the default shell choice to the shell tool so the running
     // agent executes new commands in the selected shell.
-    if plan.contains(RuntimeConfigTarget::Shell) {
+    if phases.enter(&plan, SettingsApplyPhase::Shell) {
         state.tools.set_default_shell(config.default_shell).await;
         tick("set_default_shell");
     }
@@ -128,15 +156,16 @@ pub async fn update_settings(
     // Apply the new security boundary before any config reload can start a
     // connection. A single settings update may change both MCP definitions
     // and network policy; the stricter policy must win during that transition.
-    if plan.contains(RuntimeConfigTarget::Security) {
+    if phases.enter(&plan, SettingsApplyPhase::Security) {
         state.tools.apply_security(&config.security).await;
         tick("apply_security");
     }
 
     // Reload MCP servers from config
-    if plan.contains(RuntimeConfigTarget::Mcp) {
+    if phases.enter(&plan, SettingsApplyPhase::McpConfig) {
         state.tools.load_mcp_from_config(&config.mcp_servers).await;
         tick("load_mcp_from_config");
+        phases.enter(&plan, SettingsApplyPhase::McpMonitors);
         state
             .services
             .mcp
@@ -145,7 +174,7 @@ pub async fn update_settings(
         tick("mcp_manager.start_monitors");
     }
 
-    if plan.contains(RuntimeConfigTarget::LlmRouter) {
+    if phases.enter(&plan, SettingsApplyPhase::RouterPublish) {
         state
             .config_apply_gate
             .publish_router_runtime(
@@ -155,6 +184,7 @@ pub async fn update_settings(
                     .expect("router target always has a prepared runtime"),
             )
             .await;
+        phases.mark_router_published();
         tick("publish_router_runtime");
         crate::commands::emit_llm_config_changed(&app);
     }
@@ -162,7 +192,7 @@ pub async fn update_settings(
     // Apply context limits only after the router and its dependent clients
     // have been prepared successfully, so a preparation error leaves every
     // context-limit consumer on its previous runtime state.
-    if plan.contains(RuntimeConfigTarget::ContextLimits) {
+    if phases.enter(&plan, SettingsApplyPhase::ContextLimits) {
         state.pipeline.set_limits(&config.context_limits);
         state
             .tools
@@ -174,7 +204,7 @@ pub async fn update_settings(
         tick("set_context_limits");
     }
 
-    if plan.contains(RuntimeConfigTarget::SessionRuntime) {
+    if phases.enter(&plan, SettingsApplyPhase::SessionRuntime) {
         state.agent.set_max_steps(config.session.max_steps);
         state
             .agent
@@ -184,7 +214,7 @@ pub async fn update_settings(
             .set_max_concurrent(config.session.max_concurrent);
     }
 
-    if plan.contains(RuntimeConfigTarget::ToolSettings) {
+    if phases.enter(&plan, SettingsApplyPhase::ToolSettings) {
         state
             .services
             .authorization
@@ -192,41 +222,57 @@ pub async fn update_settings(
             .await;
     }
 
-    if plan.contains(RuntimeConfigTarget::Skills)
+    if phases.enter(&plan, SettingsApplyPhase::Skills)
         && let Err(error) = state
             .services
             .skills
             .set_config(config.skills.root.clone(), config.skills.enabled.clone())
             .await
     {
-        return Err(log_err("update_settings skills", error));
+        return Err(phases.render_failure(
+            SettingsApplyPhase::Skills,
+            "update_settings skills",
+            error,
+        ));
     }
 
     // Propagate log level to tracing subscriber (console + file)
-    if plan.contains(RuntimeConfigTarget::Logging) {
-        apply_log_level_to_handles(&state.log_filter_handles, &config.log.level)
-            .map_err(|e| log_err("update_settings logging", e))?;
+    if phases.enter(&plan, SettingsApplyPhase::Logging)
+        && let Err(error) = apply_log_level_to_handles(&state.log_filter_handles, &config.log.level)
+    {
+        return Err(phases.render_failure(
+            SettingsApplyPhase::Logging,
+            "update_settings logging",
+            error,
+        ));
     }
 
     // Propagate hotkey mode change (always)
     use haven_common::types::HotkeyMode;
-    if plan.contains(RuntimeConfigTarget::Hotkey) {
+    if phases.enter(&plan, SettingsApplyPhase::HotkeyMode) {
         state
             .shell
             .set_hold_mode(config.hotkey.mode == HotkeyMode::Hold)
             .await;
     }
 
-    if plan.contains(RuntimeConfigTarget::Hotkey) && config.hotkey.key_binding != old_hotkey {
+    if config.hotkey.key_binding != old_hotkey
+        && phases.enter(&plan, SettingsApplyPhase::HotkeyUnregister)
+    {
         use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
         if let Some(old_shortcut) = haven_input::hotkey::KeyCombo::parse(&old_hotkey)
             .and_then(|c| crate::to_tauri_shortcut(&c))
             && let Err(e) = app.global_shortcut().unregister(old_shortcut)
         {
-            return Err(log_err("update_settings unregister hotkey", e));
+            return Err(phases.render_failure(
+                SettingsApplyPhase::HotkeyUnregister,
+                "update_settings unregister hotkey",
+                e,
+            ));
         }
 
+        phases.enter(&plan, SettingsApplyPhase::HotkeyRegister);
         if let Some(new_shortcut) = haven_input::hotkey::KeyCombo::parse(&config.hotkey.key_binding)
             .and_then(|c| crate::to_tauri_shortcut(&c))
         {
@@ -264,11 +310,16 @@ pub async fn update_settings(
                     );
                 }
                 Err(e) => {
-                    return Err(log_err("update_settings register hotkey", e));
+                    return Err(phases.render_failure(
+                        SettingsApplyPhase::HotkeyRegister,
+                        "update_settings register hotkey",
+                        e,
+                    ));
                 }
             }
         }
 
+        phases.enter(&plan, SettingsApplyPhase::HotkeyRebindEvent);
         if let Err(e) = app.emit(
             HOTKEY_REBIND_EVENT,
             HotkeyRebindEvent {
@@ -276,7 +327,11 @@ pub async fn update_settings(
                 new_binding: config.hotkey.key_binding.clone(),
             },
         ) {
-            tracing::warn!(error = %e, "update_settings: hotkey rebind event emit failed");
+            phases.record_warning(
+                SettingsApplyPhase::HotkeyRebindEvent,
+                "update_settings hotkey rebind event",
+                &e,
+            );
         }
     }
     tick("hotkey section");
@@ -383,7 +438,7 @@ pub async fn is_autostart_enabled() -> Result<bool, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ShellAvailability, apply_settings_edit};
+    use super::{ShellAvailability, apply_settings_edit, begin_settings_apply};
     use haven_common::config::{
         AppConfig, ConfigLoader, ConfigService, Settings, StoredPermission,
     };
@@ -434,14 +489,14 @@ mod tests {
     }
 
     #[test]
-    fn no_op_settings_edit_returns_no_runtime_apply_context() {
+    fn no_op_settings_edit_does_not_enter_the_phase_runner() {
         let (service, _dir) = config_service_with_config(AppConfig::default());
         let settings = service.settings().unwrap();
         let receiver = service.subscribe().unwrap();
 
         let update = apply_settings_edit(&service, &settings).unwrap();
 
-        assert!(update.is_none());
+        assert!(begin_settings_apply(update).is_none());
         assert!(receiver.try_recv().is_err());
         assert_eq!(service.snapshot().unwrap().version, 0);
     }
