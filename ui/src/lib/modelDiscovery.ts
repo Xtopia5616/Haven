@@ -2,7 +2,8 @@ import logger from '$lib/logger.ts';
 import { reportError } from '$lib/errorHandling.ts';
 import { formatError } from '$lib/formatError.ts';
 import { addNotification } from '$lib/notificationStore.ts';
-import { invoke } from '$lib/tauri.ts';
+import { discoverAllModels, discoverModels } from '$lib/modelDiscoveryCommands.ts';
+import type { DiscoveredModelMap } from '$lib/contracts/model.ts';
 
 type Provider = {
 	name: string;
@@ -11,16 +12,7 @@ type Provider = {
 	[key: string]: unknown;
 };
 
-type Model = {
-	id: string;
-	name?: string;
-	context_window?: number;
-	cost_per_1k_input_tokens?: number;
-	cost_per_1k_output_tokens?: number;
-	[key: string]: unknown;
-};
-
-type ModelMap = Record<string, Model[]>;
+type ModelMap = DiscoveredModelMap;
 
 export interface ModelDiscoveryContext {
 	getProviders: () => Provider[];
@@ -113,7 +105,7 @@ export function createModelDiscovery(context: ModelDiscoveryContext) {
 		if (context.isProviderFetching?.(providerName)) return false;
 		context.setProviderFetching(providerName, true);
 		try {
-			const list = await invoke('discover_models', {
+			const list = await discoverModels({
 				baseUrl: provider.base_url,
 				apiKey: provider.api_key || '',
 				provider: providerName,
@@ -151,7 +143,7 @@ export function createModelDiscovery(context: ModelDiscoveryContext) {
 					.filter((result) => !result.ok)
 					.map((result) => result.name);
 			} else {
-				context.setModels((await invoke('discover_all_models')) || {});
+				context.setModels((await discoverAllModels()) || {});
 			}
 			backfillModelMetaFromDiscovery();
 			if (!silent && Date.now() - lastRefreshNotify > 2500) {

@@ -622,8 +622,8 @@ resume target/auto-restore、新会话入口及非 chat-event teardown；在 mou
 listener ready 后再 settings/load/restore，并在 destroy 时 dispose。旧 `sessionMessages.ts`、
 `sessionUsage.ts` 仅保留兼容投影，`streamAggregator.ts` 只负责排队后 dispatch chunk action
 （ADR 0160、0313、0315、0320、0322）。Phase 8 尚未完成的工作包括其他 command families 的逐域审计、是否引入跨域 Rust→TypeScript codegen 的决策，以及 ask/input 决策、复杂 view state 和启动恢复的编排边界；已审计域保留手写 contract/mapper，不视为生成产物。
-`ModelSettings.svelte` 当前保留命名模型、Provider CRUD 与 discovery 的页面编排，已补
-组件行为测试，后续再按 discovery / mutation 边界拆分。
+`ModelSettings.svelte` 仍拥有命名模型和 Provider CRUD 编排；活跃 discovery command 现统一经过
+`modelDiscoveryCommands.ts`（ADR 0368），页面仍负责缓存数据的 settings 投影与刷新交互。
 
 **判定标准**：唯一能同时看到所有 crate 的地方；负责把事件桥到前端、把前端命令调到后端，
 不承载业务逻辑。
@@ -703,6 +703,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 | 2026-09-26 | §2.3/§2.5/§2.6：审计 MemoryRuntime 对象仍由 AgentLayer 持有、ApplicationRuntime 持有其周期 task 生命周期；现有 AgentLayer startup barrier 缺少 app 可组合的 prepared-consumer/readiness API，迁移暂缓并记录最小后续接口步骤（ADR 0362）|
 | 2026-09-26 | §2.5 Agent：最终验收审计校准 actor 所有权说明；`SessionActor` 轮询 active-run future，ReActState 为 run-local scratch，SessionState 持有会话队列与元数据；整体完成条件及发布验收缺口见 ADR 0361 |
 | 2026-09-26 | §2.5 Agent：`SessionSupervisor` 构造改接收 `SessionStore`，AppState 显式创建并保持独立事件 sender；`AgentLayer::new` 与其他 raw Database 路径仍按 ADR 0363 记录范围保留 |
+| 2026-09-26 | §2.6 App / UI：`discover_models` 与 `discover_all_models` 经命名 request/result contract 和单一 typed helper；设置刷新、聊天默认模型同步、媒体 STT discovery 保留各自缓存/错误/通知语义，model metadata 扩展字段原样通过（ADR 0368）|
 | 2026-09-25 | §2.5 Tools / §2.6 UI：审计 background/scheduled action board 生命周期投影；复用既有 background terminal transcript finalizer，保留 scheduled 删除、Agent 通知、kind-specific display/cancel 和无 UI event dedup 边界（ADR 0344） |
 | 2026-09-25 | §2.5 Tools：穷举审计 background/scheduled ActionStatus 与 terminal claim；已有纯策略 owner 覆盖唯一共享判断，不新增完整 Job transition policy，记录 trigger/execution 与恢复语义的未决决策（ADR 0352） |
 | 2026-09-25 | §2.5 Tools：scheduled admission 只回收 terminal 内存 entry，保留 Running row 供 Agent terminal callback、取消与 no-consumer recovery 使用；Waiting 恢复、restart cleanup、CAS 和事件顺序保持（ADR 0353） |

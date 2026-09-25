@@ -1,6 +1,6 @@
 <script>
 	import { onDestroy } from 'svelte';
-	import { invoke } from '$lib/tauri.ts';
+	import { discoverModels } from '$lib/modelDiscoveryCommands.ts';
 	import { addNotification } from '$lib/notificationStore.ts';
 	import { reportError } from '$lib/errorHandling.ts';
 	import MaterialCard from '$lib/MaterialCard.svelte';
@@ -115,7 +115,7 @@
 		if (kind === 'gemini') return 'gemini-2.5-flash';
 		return 'whisper-1';
 	}
-	/** @type {any[]} */
+	/** @type {import('$lib/contracts/model.ts').ModelInfo[]} */
 	let sttModels = $state([]);
 	let sttFetching = $state(false);
 	/** @type {ReturnType<typeof setTimeout> | undefined} */
@@ -156,7 +156,7 @@
 		sttFetching = true;
 		try {
 			sttModels =
-				(await invoke('discover_models', {
+				(await discoverModels({
 					baseUrl: base,
 					apiKey: key,
 					provider: name,

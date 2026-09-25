@@ -75,6 +75,14 @@ export interface SetWebSearchRequest {
 	mode: string;
 }
 
+/** Flat renderer arguments for discovering one provider's models. */
+export interface DiscoverModelsRequest {
+	baseUrl: string;
+	apiKey: string;
+	provider?: string;
+	role?: string;
+}
+
 /** Flat renderer arguments for the `cancel_action` Tauri command. */
 export interface CancelActionRequest {
 	actionId: string;

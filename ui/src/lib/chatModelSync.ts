@@ -1,11 +1,13 @@
 import logger from '$lib/logger.ts';
 import { normalizeApiStyle, supportsBuiltinWebSearch } from '$lib/apiStyle.ts';
+import { discoverModels } from '$lib/modelDiscoveryCommands.ts';
 import { invoke } from '$lib/tauri.ts';
 import { loadSettings } from '$lib/settingsCommand.ts';
+import type { ModelInfo } from '$lib/contracts/model.ts';
 
 type ModelSyncOptions = {
 	isDead: () => boolean;
-	setModelOptions: (value: any[]) => void;
+	setModelOptions: (value: ModelInfo[]) => void;
 	setCurrentModelId: (value: string) => void;
 	setCurrentModelName: (value: string) => void;
 	setCurrentEffort: (value: string) => void;
@@ -16,8 +18,8 @@ type ModelSyncOptions = {
 
 const defaultModelsCache: {
 	baseUrl: string | null;
-	list: any[] | null;
-	inflight: Promise<any> | null;
+	list: ModelInfo[] | null;
+	inflight: Promise<ModelInfo[]> | null;
 	inflightUrl: string | null;
 } = {
 	baseUrl: null,
@@ -68,7 +70,7 @@ export function createChatModelSync(options: ModelSyncOptions) {
 		const requestedUrl = baseUrl;
 		defaultModelsCache.baseUrl = requestedUrl;
 		defaultModelsCache.inflightUrl = requestedUrl;
-		defaultModelsCache.inflight = invoke('discover_models', {
+		defaultModelsCache.inflight = discoverModels({
 			baseUrl: requestedUrl,
 			apiKey: '',
 			provider: providerName || '',

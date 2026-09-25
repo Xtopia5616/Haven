@@ -46,6 +46,17 @@ describe('Tauri command contract directory', () => {
 		});
 	});
 
+	it('keeps model discovery command contracts named', () => {
+		expect(TAURI_COMMAND_CONTRACTS.discover_models).toMatchObject({
+			request: 'DiscoverModelsRequest',
+			response: 'ModelInfo[]',
+		});
+		expect(TAURI_COMMAND_CONTRACTS.discover_all_models).toMatchObject({
+			request: '-',
+			response: 'Record<string, ModelInfo[]>',
+		});
+	});
+
 	it('keeps session history and resume command contracts named', () => {
 		for (const command of [
 			'get_history',

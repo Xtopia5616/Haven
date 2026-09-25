@@ -601,3 +601,87 @@ foreach ($field in $rustSessionRowFields.Keys) {
 
 Write-Host "Session history IPC contract verified: $($historyRequestChecks.Count) request shapes, $($historyContractChecks.Count) history registry entries, $($sessionHistoryChecks.Count) typed helpers, and Rust/UI command boundaries agree."
 
+$modelCommandsRs = Get-Content (Join-Path $commandsRoot 'model.rs') -Raw
+$modelRegistryRs = Get-Content (Join-Path $root 'crates/llm/src/registry.rs') -Raw
+$modelContractUi = Get-Content (Join-Path $root 'ui/src/lib/contracts/model.ts') -Raw
+$modelDiscoveryCommandsUi = Get-Content (Join-Path $root 'ui/src/lib/modelDiscoveryCommands.ts') -Raw
+
+$discoveryChecks = @(
+    @{ Command = 'discover_models'; Request = 'DiscoverModelsRequest'; Response = 'ModelInfo[]' },
+    @{ Command = 'discover_all_models'; Request = '-'; Response = 'Record<string, ModelInfo[]>' }
+)
+foreach ($check in $discoveryChecks) {
+    $commandName = [regex]::Escape($check.Command)
+    $rustCommandContract = Get-RequiredMatch $rustContracts ('(?s)CommandContract\s*\{\s*name:\s*"' + $commandName + '"([^}]*)\}') "Rust contract for '$($check.Command)'"
+    $rustRequest = Get-RequiredMatch $rustCommandContract.Groups[1].Value 'request:\s*"([^"]+)"' "Rust request for '$($check.Command)'"
+    $rustResponse = Get-RequiredMatch $rustCommandContract.Groups[1].Value 'response:\s*"([^"]+)"' "Rust response for '$($check.Command)'"
+    $tsCommandContract = Get-RequiredMatch $tsContracts ('(?ms)^\s*' + $commandName + '\s*:\s*\{([^}]*)\}') "Frontend contract for '$($check.Command)'"
+    $tsRequest = Get-RequiredMatch $tsCommandContract.Groups[1].Value "request:\s*'([^']+)'" "Frontend request for '$($check.Command)'"
+    $tsResponse = Get-RequiredMatch $tsCommandContract.Groups[1].Value "response:\s*'([^']+)'" "Frontend response for '$($check.Command)'"
+    if ($rustRequest.Groups[1].Value -ne $check.Request -or $tsRequest.Groups[1].Value -ne $check.Request -or
+        $rustResponse.Groups[1].Value -ne $check.Response -or $tsResponse.Groups[1].Value -ne $check.Response) {
+        throw "model discovery command contract for '$($check.Command)' differs between Rust and TypeScript"
+    }
+}
+
+$discoverModelsSignature = Get-RequiredMatch $modelCommandsRs '(?ms)pub\s+async\s+fn\s+discover_models\s*\((.*?)\)\s*->\s*Result\s*<\s*Vec\s*<\s*ModelInfo\s*>' 'discover_models Rust signature'
+$discoverModelsRustFields = Get-RustCommandParameters $discoverModelsSignature.Groups[1].Value 'Rust discover_models parameters'
+$discoverModelsRustFields.Remove('app') | Out-Null
+$discoverModelsTsRequest = Get-RequiredMatch $tsContracts '(?ms)export\s+interface\s+DiscoverModelsRequest\s*\{(.*?)\n\}' 'TypeScript DiscoverModelsRequest'
+$discoverModelsTsFields = Get-StructFields $discoverModelsTsRequest.Groups[1].Value 'TypeScript DiscoverModelsRequest'
+$discoverModelsCamelFields = @($discoverModelsRustFields.Keys | ForEach-Object { Convert-SnakeToCamel $_ })
+Assert-SetEqual 'discover_models request fields' $discoverModelsCamelFields @($discoverModelsTsFields.Keys)
+foreach ($field in $discoverModelsRustFields.Keys) {
+    $uiField = Convert-SnakeToCamel $field
+    $rustType = $discoverModelsRustFields[$field].Type
+    $expectedType = switch ($rustType) {
+        'String' { 'string' }
+        'Option<String>' { 'string' }
+        default { throw "discover_models has unsupported Rust request type '$rustType' for '$field'" }
+    }
+    if ($discoverModelsTsFields[$uiField].Type -ne $expectedType -or
+        $discoverModelsTsFields[$uiField].Optional -ne $rustType.StartsWith('Option<')) {
+        throw "discover_models request field '$field' differs between Rust and TypeScript"
+    }
+}
+
+$rustModelInfo = Get-RequiredMatch $modelRegistryRs '(?ms)pub\s+struct\s+ModelInfo\s*\{(.*?)\n\}' 'Rust ModelInfo response'
+$tsModelInfo = Get-RequiredMatch $modelContractUi '(?ms)export\s+interface\s+ModelInfo\s*\{(.*?)\n\}' 'TypeScript ModelInfo response'
+$rustModelInfoFields = Get-StructFields $rustModelInfo.Groups[1].Value 'Rust ModelInfo response'
+$tsModelInfoFields = Get-StructFields $tsModelInfo.Groups[1].Value 'TypeScript ModelInfo response'
+Assert-SetEqual 'ModelInfo response fields' @($rustModelInfoFields.Keys) @($tsModelInfoFields.Keys)
+foreach ($field in $rustModelInfoFields.Keys) {
+    $rustType = $rustModelInfoFields[$field].Type
+    $expectedType = switch ($rustType) {
+        'String' { 'string' }
+        'u32' { 'number' }
+        'bool' { 'boolean' }
+        'Option<f64>' { 'number' }
+        default { throw "ModelInfo has unsupported Rust field type '$rustType' for '$field'" }
+    }
+    if ($tsModelInfoFields[$field].Type -ne $expectedType -or
+        $tsModelInfoFields[$field].Optional -ne $rustType.StartsWith('Option<')) {
+        throw "ModelInfo response field '$field' differs between Rust and TypeScript"
+    }
+}
+if (-not [regex]::IsMatch($tsModelInfo.Groups[1].Value, '\[\s*key\s*:\s*string\s*\]\s*:\s*unknown\s*;')) {
+    throw 'ModelInfo must retain unknown provider metadata fields at the renderer boundary'
+}
+
+if (-not [regex]::IsMatch($modelDiscoveryCommandsUi, '(?s)export\s+function\s+discoverModels\s*\(\s*request:\s*DiscoverModelsRequest\s*\)\s*:\s*Promise<ModelInfo\[\]>\s*\{\s*return\s+invoke\(''discover_models'',\s*request\);\s*\}')) {
+    throw 'discover_models must use a typed direct-forward command helper'
+}
+if (-not [regex]::IsMatch($modelDiscoveryCommandsUi, '(?s)export\s+function\s+discoverAllModels\s*\(\s*\)\s*:\s*Promise<DiscoveredModelMap>\s*\{\s*return\s+invoke\(''discover_all_models''\);\s*\}')) {
+    throw 'discover_all_models must use a typed direct-forward command helper'
+}
+
+$discoveryUiRoot = Join-Path $root 'ui/src'
+$discoveryDirectInvokePattern = 'invoke\s*(?:<[^>]+>)?\s*\(\s*''(?:discover_models|discover_all_models)'''
+foreach ($sourceFile in (Get-ChildItem $discoveryUiRoot -Recurse -File | Where-Object { $_.Extension -in @('.ts', '.svelte') -and $_.Name -ne 'modelDiscoveryCommands.ts' })) {
+    if ([regex]::IsMatch((Get-Content $sourceFile.FullName -Raw), $discoveryDirectInvokePattern)) {
+        throw "UI source '$($sourceFile.FullName)' bypasses modelDiscoveryCommands.ts"
+    }
+}
+
+Write-Host 'Model discovery IPC contract verified: Rust request/ModelInfo fields, typed helpers, and UI call boundaries agree.'
+

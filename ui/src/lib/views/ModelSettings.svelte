@@ -209,7 +209,7 @@
 	}
 
 	/** provider name → fetched model list */
-	/** @type {Record<string, any[]>} */
+	/** @type {import('$lib/contracts/model.ts').DiscoveredModelMap} */
 	let modelsByProvider = $state({});
 	/** @type {Record<string, boolean>} */
 	let modelFetching = $state({});
