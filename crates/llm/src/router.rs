@@ -1377,6 +1377,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn complete_request_uses_logical_purpose_to_select_primary_model() {
+        let fast_seen = Arc::new(StdMutex::new(Vec::new()));
+        let chat_seen = Arc::new(StdMutex::new(Vec::new()));
+        let fast_client: Arc<dyn LlmClient> = Arc::new(PromptRequestProbe {
+            seen: fast_seen.clone(),
+            rate_limited: false,
+        });
+        let chat_client: Arc<dyn LlmClient> = Arc::new(PromptRequestProbe {
+            seen: chat_seen.clone(),
+            rate_limited: false,
+        });
+        let router = LlmRouter::new_with_clients(
+            fast_client,
+            chat_client.clone(),
+            chat_client.clone(),
+            chat_client,
+        );
+
+        router
+            .complete(CompleteRequest::new(RequestKind::FastChat, Vec::new()))
+            .await
+            .expect("fast_chat policy should route to its primary model");
+        assert_eq!(fast_seen.lock().unwrap().len(), 1);
+        assert!(chat_seen.lock().unwrap().is_empty());
+
+        router
+            .complete(CompleteRequest::new(RequestKind::Chat, Vec::new()))
+            .await
+            .expect("chat policy should route to its primary model");
+        assert_eq!(fast_seen.lock().unwrap().len(), 1);
+        assert_eq!(chat_seen.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
     async fn prompt_request_preserves_request_route_and_prompt_messages() {
         let fast_seen = Arc::new(StdMutex::new(Vec::new()));
         let chat_seen = Arc::new(StdMutex::new(Vec::new()));

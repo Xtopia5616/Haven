@@ -959,6 +959,27 @@ mod tests {
     }
 
     #[test]
+    fn request_kind_wire_strings_and_policy_shape_remain_stable() {
+        for request in RequestKind::ALL {
+            let encoded = serde_json::to_string(request).expect("serialize request kind");
+            assert_eq!(encoded, format!("\"{}\"", request.as_str()));
+            assert_eq!(RequestKind::from_str(request.as_str()), Some(*request));
+        }
+
+        let policy = RequestPolicy {
+            request: RequestKind::AudioChat,
+            primary: "audio-model".into(),
+        };
+        assert_eq!(
+            serde_json::to_value(policy).expect("serialize request policy"),
+            serde_json::json!({
+                "request": "audio_chat",
+                "primary": "audio-model"
+            })
+        );
+    }
+
+    #[test]
     fn request_policy_requires_the_configured_primary() {
         let llm = LlmConfig {
             providers: vec![ProviderConfig {

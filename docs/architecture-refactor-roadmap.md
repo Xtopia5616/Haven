@@ -316,10 +316,10 @@ SessionStore
 
 工作项：
 
-- 后续独立 slice：将 `RequestKind` 中混合的 capability、call purpose、UI usage role 分成 `Capability`、`CallPurpose`、`RequestPolicy`；
+- 已完成第一步（ADR 0319）：在 ModelDirectory route filtering 使用 crate-private `RequestDescriptor` 显式并列逻辑用途 `RequestKind` 与 provider/model `Capability`；`LlmCallKind` 继续作为独立 usage owner。`RequestKind` 仍保留原配置/route key 与序列化形式；完整 descriptor 尚未贯穿所有执行路径；
 - 已完成（ADR 0316）：crate-private `ModelDirectory` 拥有 provider client map、primary route 表、按 request 选择/解析 client 与 model id、configured route 判定及 capability/endpoint/context-window metadata lookup；Router 的 config snapshot 是唯一配置真源，health/circuit/rate-limit/semaphore、stream rules、retry/timeout/usage/cancellation 和执行编排继续由 Router 持有；
 - 已完成（ADR 0318）：crate-private CallExecutor 接管已解析 client/model 的 plain/tools complete 和非空 embedding 的内容校验、现有 retry/total timeout 与 Router outcome 投影调用；Router 仍决定路由并持有全部可变运行态，empty embedding 仍先于 route/permit 快返。
-- 后续独立 slice：streaming 仍由 Router/streaming.rs 按 permit、cancel、chunk callback 生命周期独立执行，是否提取 StreamExecutor 另行评估；RequestKind 的 capability、call purpose 与 UI usage role split 未迁移。
+- 后续独立 slice：streaming 仍由 Router/streaming.rs 按 permit、cancel、chunk callback 生命周期独立执行，是否提取 StreamExecutor 另行评估；完整 RequestDescriptor 尚未迁移到 CompleteRequest/PromptRequest/StreamRequest、embedding/health-check、metadata/config helpers 与仓库其他 RequestKind 调用点。
 - 删除只转发参数的 chat/chat_request/output_cap/stream wrapper；
 - provider adapter 只做 wire mapping，保持 golden fixture。
 
@@ -330,6 +330,8 @@ SessionStore
 2026-09-25 切片进展（ADR 0316）：ModelDirectory 已接管模型 client 与 primary route 目录，并按生产/注入构造保持对应 credential 与 capability 过滤；endpoint/context-window metadata 通过借用 Router 的单一 config snapshot 查询。Router 仍拥有所有执行状态和策略。
 
 2026-09-25 切片进展（ADR 0318）：crate-private CallExecutor 只接收 Router 已解析的 model identity/client 与单一 RequestPolicy，接管 plain/tools complete 和非空 embedding 的校验、retry、总 timeout 及通过 Router 闭包完成的 health/rate-limit outcome 投影；permit wrapper 只负责并发与 cooldown 等待，避免同一 429 cooldown 重复投影。embedding empty-input 仍在路由前快返。未完成：raw/aggregated streaming execution ownership，以及 RequestKind 的 capability/call-purpose/UI usage role split。无配置、持久化或 wire 重置要求。
+
+2026-09-25 切片进展（ADR 0319）：ModelDirectory 构造 primary routes 时以 `RequestDescriptor` 将逻辑用途/原 route key 与显式 `Capability` 分开；production 仍要求凭据及能力匹配，注入 route 仍要求能力匹配。完整请求继续通过原 `RequestKind` 选配置和模型；配置字符串与 `LlmCallKind` usage owner 不变。此为语义类型第一步；完整 descriptor 向其他 Router 请求 DTO、streaming、embedding/health-check、metadata/config helpers 和仓库调用点迁移仍待独立评估。
 
 ### 阶段 7：统一 Job 生命周期与 MemoryRuntime（P2）
 

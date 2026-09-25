@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex as StdMutex};
 
 use haven_common::config::{
-    ModelEndpoint, RequestKind, RoutedModel, RouterConfig, endpoint_credentials_ready,
+    Capability, ModelEndpoint, RequestKind, RoutedModel, RouterConfig, endpoint_credentials_ready,
 };
 use haven_common::media::CapabilityProfile;
 
@@ -21,6 +21,24 @@ use crate::types::LlmError;
 pub(crate) enum RouteMode {
     Production,
     InjectedClients,
+}
+
+/// The logical purpose used as the configured route key and the model
+/// capability required to serve that purpose are separate semantics. Keep
+/// both explicit while building ModelDirectory's dispatch table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RequestDescriptor {
+    pub(crate) purpose: RequestKind,
+    pub(crate) required_capability: Capability,
+}
+
+impl From<RequestKind> for RequestDescriptor {
+    fn from(purpose: RequestKind) -> Self {
+        Self {
+            purpose,
+            required_capability: purpose.required_capability(),
+        }
+    }
 }
 
 /// The clients and configured primary identities used by one router.
@@ -79,17 +97,16 @@ impl ModelDirectory {
             .request_policies
             .iter()
             .filter_map(|policy| {
+                let request = RequestDescriptor::from(policy.request);
                 let model_id = policy.primary.trim();
                 let model = config.model(model_id)?;
-                let supports_request = model
-                    .capabilities
-                    .contains(&policy.request.required_capability());
+                let supports_request = model.capabilities.contains(&request.required_capability);
                 let credentials_ready = match route_mode {
                     RouteMode::Production => endpoint_credentials_ready(&model.endpoint),
                     RouteMode::InjectedClients => true,
                 };
                 (supports_request && credentials_ready)
-                    .then_some((policy.request, model_id.to_string()))
+                    .then_some((request.purpose, model_id.to_string()))
             })
             .collect()
     }
@@ -219,7 +236,7 @@ impl ModelDirectory {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use haven_common::config::{Capability, RequestPolicy};
+    use haven_common::config::RequestPolicy;
 
     fn model(id: &str, capabilities: Vec<Capability>, api_key: &str) -> RoutedModel {
         RoutedModel {
@@ -251,6 +268,48 @@ mod tests {
 
     fn injected_client() -> Arc<dyn LlmClient> {
         Arc::from(adapter_for(&ModelEndpoint::default()))
+    }
+
+    #[test]
+    fn every_logical_request_purpose_maps_to_its_provider_capability() {
+        let expected = [
+            (RequestKind::Chat, Capability::Chat),
+            (RequestKind::FastChat, Capability::FastChat),
+            (RequestKind::Vision, Capability::Vision),
+            (RequestKind::AudioChat, Capability::AudioInput),
+            (RequestKind::Transcription, Capability::Transcription),
+            (RequestKind::Embedding, Capability::Embedding),
+            (RequestKind::ImageGeneration, Capability::ImageGeneration),
+            (RequestKind::SpeechSynthesis, Capability::SpeechSynthesis),
+        ];
+
+        for (purpose, capability) in expected {
+            let descriptor = RequestDescriptor::from(purpose);
+            assert_eq!(descriptor.purpose, purpose);
+            assert_eq!(descriptor.required_capability, capability);
+        }
+    }
+
+    #[test]
+    fn request_purpose_and_capability_remain_distinct_for_similar_calls() {
+        let chat = RequestDescriptor::from(RequestKind::Chat);
+        let fast_chat = RequestDescriptor::from(RequestKind::FastChat);
+        assert_eq!(chat.purpose, RequestKind::Chat);
+        assert_eq!(chat.required_capability, Capability::Chat);
+        assert_eq!(fast_chat.purpose, RequestKind::FastChat);
+        assert_eq!(fast_chat.required_capability, Capability::FastChat);
+
+        let audio_chat = RequestDescriptor::from(RequestKind::AudioChat);
+        let transcription = RequestDescriptor::from(RequestKind::Transcription);
+        assert_eq!(audio_chat.purpose, RequestKind::AudioChat);
+        assert_eq!(audio_chat.required_capability, Capability::AudioInput);
+        assert_eq!(transcription.purpose, RequestKind::Transcription);
+        assert_eq!(transcription.required_capability, Capability::Transcription);
+
+        let vision = RequestDescriptor::from(RequestKind::Vision);
+        assert_eq!(vision.purpose, RequestKind::Vision);
+        assert_eq!(vision.required_capability, Capability::Vision);
+        assert_ne!(vision.purpose, RequestKind::Chat);
     }
 
     #[test]
@@ -302,6 +361,35 @@ mod tests {
             Some("keyless-chat")
         );
         assert_eq!(directory.primary_model_id(RequestKind::Vision), None);
+    }
+
+    #[test]
+    fn injected_audio_chat_and_transcription_routes_require_their_own_capabilities() {
+        let config = config(
+            vec![
+                model("audio-input", vec![Capability::AudioInput], ""),
+                model("transcription", vec![Capability::Transcription], ""),
+            ],
+            vec![
+                policy(RequestKind::AudioChat, "audio-input"),
+                policy(RequestKind::Transcription, "audio-input"),
+            ],
+        );
+        let directory = ModelDirectory::with_injected_clients(
+            &config,
+            [
+                ("audio-input".into(), injected_client()),
+                ("transcription".into(), injected_client()),
+            ],
+        );
+
+        assert_eq!(
+            directory
+                .primary_model_id(RequestKind::AudioChat)
+                .as_deref(),
+            Some("audio-input")
+        );
+        assert_eq!(directory.primary_model_id(RequestKind::Transcription), None);
     }
 
     #[test]
