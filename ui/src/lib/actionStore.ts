@@ -80,9 +80,12 @@ export async function refreshActions() {
 		actionStore.update((current) => {
 			const next: Record<string, ActionEntry> = {};
 			for (const wireRow of rows) {
-				const row = mapActionPayload(wireRow as never);
+				const row = mapActionPayload(wireRow);
+				if (!row) {
+					logger.warn('actionStore', 'Dropping malformed action board row');
+					continue;
+				}
 				const key = row.id;
-				if (!key) continue;
 				const merged: ActionEntry = {
 					...(current[key] || {}),
 					...row,

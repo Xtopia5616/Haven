@@ -69,6 +69,17 @@ function adaptSessionEvent<K extends SessionEventName>(
 	return mapped;
 }
 
+function adaptActionEvent<K extends ActionEventName>(
+	eventName: K,
+	event: TauriEvent<unknown>,
+): TauriEvent<ActionPayload> | null {
+	const mapped = mapActionEvent({ ...event, event: eventName });
+	if (!mapped) {
+		logger.warn('events', `Dropping malformed payload for '${eventName}'`);
+	}
+	return mapped;
+}
+
 /**
  * Register many Tauri event listeners from a single map and return a handle
  * that can dispose them all. Listener registration failures are logged and
@@ -158,7 +169,9 @@ export function actionEventListeners(
 			eventName,
 			(event: TauriEvent<unknown>) => {
 				protectEventCallback(eventName, () => {
-					handler?.(mapActionEvent({ ...event, event: eventName } as never) as never);
+					const name = eventName as ActionEventName;
+					const mapped = adaptActionEvent(name, event);
+					if (mapped) handler?.(mapped as never);
 				});
 			},
 		]),

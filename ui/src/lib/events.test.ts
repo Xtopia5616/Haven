@@ -193,6 +193,10 @@ describe('registerOne', () => {
 });
 
 describe('actionEventListeners', () => {
+	beforeEach(() => {
+		mocks.warn.mockReset();
+	});
+
 	it('maps the Rust wire payload before invoking the handler', () => {
 		const handler = vi.fn();
 		const listeners = actionEventListeners({ 'action:finished': handler });
@@ -218,5 +222,24 @@ describe('actionEventListeners', () => {
 				exitCode: 0,
 			},
 		});
+	});
+
+	it('drops malformed action payloads with a warning that omits their contents', () => {
+		const handler = vi.fn();
+		const listeners = actionEventListeners({ 'action:finished': handler });
+		const privateValue = 'payload-secret-value';
+
+		listeners['action:finished']({
+			event: 'action:finished',
+			id: 4,
+			payload: { kind: 'background', error: privateValue },
+		} as never);
+
+		expect(handler).not.toHaveBeenCalled();
+		expect(mocks.warn).toHaveBeenCalledWith(
+			'events',
+			expect.stringContaining("Dropping malformed payload for 'action:finished'"),
+		);
+		expect(JSON.stringify(mocks.warn.mock.calls)).not.toContain(privateValue);
 	});
 });

@@ -511,8 +511,14 @@ session refresh、hotkey 与 model refresh 回调，不持有 Svelte state 或 D
 handler/reducer 使用的 camelCase，忽略新增 wire 字段；缺失或类型错误的必需字段会 fail closed
 并由 listener 层记录。可选 `waiting_reason` / `reason` 缺省映射为 `null`，未知 status 降级为
 `error`，未知等待原因降级为 `null`。Rust DTO、channel、payload 与 reducer 语义不变（ADR 0330）。
-这条边界仍使用手写的内部 payload 类型和显式字段映射；其它 action/agent/app/recording 事件及
-settings/command contract 镜像仍待 Phase 8 收口到 Rust DTO 驱动的生成流程。
+Action board 与 lifecycle event 共用 Rust `events.rs::ActionEvent` wire DTO：
+`ui/src/lib/contracts/action.ts::mapActionPayload` 是其唯一前端运行时 validator/mapper，
+`actionStore.refreshActions` 的 command rows 和 `events.ts` 的 action lifecycle listeners 都调用它。
+必需 `id`/`kind` 或已声明字段类型无效时丢弃整行/事件；未知附加字段忽略，未知 status 降级为
+`failed`，未知 kind fail closed。mapper 不接触 ActionService completion outbox；动态
+`tool_args` 仍是执行/完成边界上的 JSON 扩展字段，不进入 `ActionEvent` UI DTO（ADR 0335）。
+其它 agent/app/recording 事件、settings/command contract 镜像，以及 session mapper 内部
+camelCase 类型和字段映射仍待 Phase 8 收口到 Rust DTO 驱动的生成流程。
 `+page.svelte` 保留 view/scroll 与 dialog/loading/menu 状态、输入路由与 ask 决策、model sync、
 resume target/auto-restore、新会话入口及非 chat-event teardown；在 mount 时创建 controller、等待
 listener ready 后再 settings/load/restore，并在 destroy 时 dispose。旧 `sessionMessages.ts`、
