@@ -470,6 +470,11 @@ Phase 7.1 验收与未决风险：见 ADR 0259、0261、0262、0263、0264、026
 - 暂不拆分 config、media、types 或 prompts：这些模块仍跨多个独立 crate 共享稳定类型；`ConfigService` 由 app 与 Tools admin 共用，`MediaType` 同时参与 app ingress 与 MediaAsset 契约。拆分会增加服务层依赖或分散权威定义。
 - `cargo metadata` 未发现 feature 开关；只有 app-binary 有 build script。工作区没有 Cargo bench target 或 Criterion 等采样基准框架。现有 ADR 0178/ReAct metrics 提供固定内存 phase histogram、错误/重试计数、context queue gauge，以及 UI frames/chunks/drops 导出；它不观测 actor mailbox queue、reducer 广播成本、durable event replay 的分布或完整 Action/Memory outbox 延迟。已有 event replay 1k/10k/100k 单测基准和多域行为回归；ADR 0359 记录复跑命令、可观测字段和未覆盖指标，不据此做缓存、selector 或 batching 优化。
 
+#### 2026-09-26 第二轮性能基线切片（ADR 0360）
+
+- 扩充既有 session event replay 内存 SQLite fixture：1k/10k/100k 历史输入分别对 full read 与 compaction active suffix read 预热 2 次、交错测量 21 对，打印微秒 p50/p95；fixture 建立不计时。此输出只是 test profile、热内存数据库读取的局部观测，不表示磁盘、冷启动或生产延迟。
+- actor mailbox、UI reducer broadcast、Action completion outbox 与 Memory fact extraction outbox 继续只复跑行为测试并明确指标缺口。现有 fixture 尚不能隔离目标阶段成本，因此不加生产 timer、自制异步负载、依赖或性能阈值；不改变重试、取消、顺序、wire、UI 和 X12 语义。
+
 ## 5. Agent 委派策略
 
 - 只把有明确写集和退出条件的阶段交给一个 Agent；模型固定 `gpt-6-luna`、reasoning `xhigh`。

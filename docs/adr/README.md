@@ -346,3 +346,4 @@
 - [0357：Memory command contract boundary](0357-memory-command-contract-boundary.md)
 - [0358：Session history command contract boundary](0358-session-history-command-contract-boundary.md)
 - [0359：Common crate 边界与 profiling 基线审计](0359-common-boundary-and-profiling-baseline-audit.md)
+- [0360：核心流水线性能基线入口与测量边界](0360-core-pipeline-performance-baselines.md)

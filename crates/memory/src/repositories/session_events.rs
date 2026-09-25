@@ -5409,10 +5409,20 @@ mod tests {
     }
 
     /// Replay benchmark for the recovery boundary. Keep full-log and
-    /// active-log reads on the same database so the numbers expose the
-    /// compaction boundary rather than setup or filesystem noise.
+    /// active-log reads on the same database so the samples expose the
+    /// compaction boundary without including fixture setup or filesystem I/O.
     #[test]
     fn active_replay_boundary_benchmark_1k_10k_100k() {
+        const WARMUP_READS: usize = 2;
+        const MEASURED_PAIRS: usize = 21;
+
+        fn percentile(samples: &[u128], percentile: usize) -> u128 {
+            let mut sorted = samples.to_vec();
+            sorted.sort_unstable();
+            let rank = (percentile * sorted.len()).div_ceil(100);
+            sorted[rank - 1]
+        }
+
         for count in [1_000usize, 10_000, 100_000] {
             let (_db, store, session_id) = store();
             let mut events = Vec::with_capacity(count);
@@ -5439,27 +5449,50 @@ mod tests {
             store
                 .append_transcript(&session_id, r#"{"type":"new"}"#, 1, 3)
                 .unwrap();
-            let full_started = Instant::now();
-            let full = store.read_all(&session_id).unwrap();
-            let full_elapsed_ms = full_started.elapsed().as_millis();
-            let active_started = Instant::now();
-            let active = store.read_active(&session_id).unwrap();
-            let active_elapsed_ms = active_started.elapsed().as_millis();
-            tracing::info!(
-                count,
-                full_elapsed_ms,
-                active_elapsed_ms,
-                speedup = if active_elapsed_ms == 0 {
-                    0.0
+
+            for _ in 0..WARMUP_READS {
+                assert_eq!(store.read_all(&session_id).unwrap().len(), count + 2);
+                assert_eq!(store.read_active(&session_id).unwrap().len(), 2);
+            }
+
+            let mut full_samples_us = Vec::with_capacity(MEASURED_PAIRS);
+            let mut active_samples_us = Vec::with_capacity(MEASURED_PAIRS);
+            for pair in 0..MEASURED_PAIRS {
+                // Alternate which read goes first to reduce a fixed order
+                // bias after the shared in-memory fixture has been warmed.
+                let read_full = || {
+                    let started = Instant::now();
+                    let events = store.read_all(&session_id).unwrap();
+                    let elapsed_us = started.elapsed().as_micros();
+                    assert_eq!(events.len(), count + 2);
+                    elapsed_us
+                };
+                let read_active = || {
+                    let started = Instant::now();
+                    let events = store.read_active(&session_id).unwrap();
+                    let elapsed_us = started.elapsed().as_micros();
+                    assert_eq!(events.len(), 2);
+                    elapsed_us
+                };
+
+                let (full_elapsed_us, active_elapsed_us) = if pair % 2 == 0 {
+                    (read_full(), read_active())
                 } else {
-                    full_elapsed_ms as f64 / active_elapsed_ms as f64
-                },
-                full = full.len(),
-                active = active.len(),
-                "replay benchmark baseline"
+                    let active_elapsed_us = read_active();
+                    let full_elapsed_us = read_full();
+                    (full_elapsed_us, active_elapsed_us)
+                };
+                full_samples_us.push(full_elapsed_us);
+                active_samples_us.push(active_elapsed_us);
+            }
+
+            println!(
+                "PERF_BASELINE area=session_event_replay profile=test fixture=in_memory_sqlite history_events={count} active_events=2 warmup_reads_per_mode={WARMUP_READS} measured_pairs={MEASURED_PAIRS} unit=us full_p50_us={} full_p95_us={} active_p50_us={} active_p95_us={}",
+                percentile(&full_samples_us, 50),
+                percentile(&full_samples_us, 95),
+                percentile(&active_samples_us, 50),
+                percentile(&active_samples_us, 95),
             );
-            assert_eq!(full.len(), count + 2);
-            assert_eq!(active.len(), 2);
         }
     }
 
