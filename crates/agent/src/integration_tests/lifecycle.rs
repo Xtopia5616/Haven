@@ -546,6 +546,82 @@ async fn queued_action_result_is_reconciled_after_session_becomes_terminal() {
 }
 
 #[tokio::test]
+async fn unowned_terminal_completion_is_acknowledged_for_history_cleanup() {
+    let (agent, memory_startup, executor) = make_test_agent_with_startup();
+    let action_service = executor.action_service();
+    action_service
+        .set_action_store(Some(ActionStore::new(agent.db.clone())))
+        .await;
+
+    let action_id = "act-unowned-terminal";
+    agent
+        .db
+        .save_action(action_id, None, "echo unowned", "started")
+        .unwrap();
+    agent
+        .db
+        .finish_action(
+            action_id,
+            haven_common::ActionStatus::Completed,
+            Some("unowned output"),
+            None,
+            None,
+            None,
+            Some(0),
+            "finished",
+        )
+        .unwrap();
+
+    let cancellation = tokio_util::sync::CancellationToken::new();
+    let prepared = memory_startup.prepare_start(&cancellation).await.unwrap();
+    let live = memory_startup.start_prepared(prepared, cancellation.clone());
+    let mut live_task = None;
+    let readiness = live
+        .register_with(|live_future| {
+            live_task = Some(tokio::spawn(live_future));
+            Some(())
+        })
+        .expect("test registry accepted the prepared live consumer");
+    let live_task = live_task.expect("registry received the live future");
+    agent.clone().start_after_memory_ready(
+        readiness,
+        PendingSessionRecovery::DeferUntilCatalogReady,
+        cancellation.clone(),
+    );
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        let delivered: i64 = agent
+            .db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM action_completion_outbox
+                 WHERE action_id = ?1 AND delivered_at IS NOT NULL",
+                [action_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        if delivered == 1 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "unowned completion was not acknowledged"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    assert!(action_service.delete_terminal(action_id).await.unwrap());
+    assert!(agent.db.get_action(action_id).unwrap().is_none());
+
+    cancellation.cancel();
+    tokio::time::timeout(std::time::Duration::from_secs(1), live_task)
+        .await
+        .expect("memory live task did not stop after cancellation")
+        .unwrap();
+}
+
+#[tokio::test]
 async fn persist_message_with_attachments_roundtrips() {
     let (agent, _) = make_test_agent();
     let session = agent.db.create_session("input").unwrap();

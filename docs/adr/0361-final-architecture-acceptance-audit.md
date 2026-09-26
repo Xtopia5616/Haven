@@ -1,6 +1,7 @@
 # ADR 0361：全局架构完成定义最终验收审计
 
 - 状态：已采纳（2026-09-26）
+- 后续校准：[ADR 0374](0374-typed-session-cleanup-and-explicit-agent-tool-wiring.md) 已更新本文审计后的 raw Database/ToolsManager 边界与 terminal history completion guard；下表保留 0361 基线时点的验收证据。
 - 范围：路线图全局完成定义、运行时边界、测试隔离、IPC 校验与发布验收入口
 - 审查基准：HEAD `3a48213`；审查开始时工作区干净
 - 关联：ADR 0349、0351、0352、0356–0360

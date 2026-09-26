@@ -3,7 +3,7 @@
 - 状态：已采纳（2026-09-26）
 - 基线：HEAD `5bc13eb`；开始时工作区干净
 - 范围：background/scheduled action 的模型工具写入口、`ActionService`/`ActionStore` 状态写入边界及 Tauri action 命令
-- 关联：ADR 0305、0317、0325、0332、0334、0335、0338、0343、0344、0348、0352、0353、0361
+- 关联：ADR 0305、0317、0325、0332、0334、0335、0338、0343、0344、0348、0352、0353、0361、0374
 
 ## 背景
 
@@ -23,7 +23,7 @@
 ### 并发与待决边界
 
 - `ActionStatus::can_transition_to` 和 `action_terminal::can_claim_terminal` 是状态/终态仲裁的集中策略。持久化 status 变化由 kind/current-status 条件 CAS 竞争；scheduled fire、取消和终态提交仍由 ActionService 按各自路径管理。background terminal row 与 completion outbox 在同一事务提交。
-- admission 与部分 scheduled mutation 经 `spawn_gate` 串行；终态持久化 worker 使用 terminal-transition guard。terminal history 删除目前只取得 `spawn_gate`，不能与所有 background terminal commit/retry 和 scheduled terminal retry 形成完整的共同临界区。
+- admission 与部分 scheduled mutation 经 `spawn_gate` 串行；终态持久化 worker 使用 terminal-transition guard。terminal history 删除在本 ADR 审计时只取得 `spawn_gate`，不能与所有 background terminal commit/retry 和 scheduled terminal retry 形成完整的共同临界区；completion ack 前拒绝删除及 ack/delete writer race 随后由 ADR 0374 收口。
 - completion outbox 对 `actions.id` 有 `ON DELETE CASCADE` 外键。产品已确定：terminal history 在 completion ack 前拒绝删除；因此删除必须与 outbox ack 使用同一 SQLite writer 原子边界，不能仅靠应用层先读 pending 再删除。该 guard 与竞态回归见 ADR 0374。
 - 该决定不改变 completion 的 retry/delivery 语义，也不把 completion 从 action history 中拆成独立 owner；未确认结果仍保留 durable action/outbox，直到 Agent transcript projection 完成并 ack。
 

@@ -474,6 +474,19 @@ impl AgentLayer {
                         continue;
                     }
                     let Some(tid) = comp.session_id else {
+                        // A completion can be durable before the action is
+                        // attached to a session (or after a crash in that
+                        // handoff window). There is no transcript boundary
+                        // to project into, so acknowledge the terminal
+                        // outbox row instead of leaving history deletion
+                        // permanently blocked.
+                        tracing::warn!(
+                            action_id = %comp.action_id,
+                            "acknowledging background completion without an owning session"
+                        );
+                        action_service
+                            .acknowledge_background_completion(&comp.action_result_id)
+                            .await;
                         continue;
                     };
                     // Per-completion span so every log line in the consumer
