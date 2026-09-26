@@ -16,7 +16,7 @@
 - `AppState` 只保留 Tauri 瞬时状态，并通过 `runtime: Arc<ApplicationRuntime>` 访问应用服务。`ApplicationRuntime` 持有一份 `Arc<ConfigService>` 和一个 `RuntimeConfigCoordinator`；没有第二个 `ModelManager` 配置容器。
 - `ConfigService` 的 `Mutex<ConfigState>` 是进程内 live 配置 owner。`edit` 在锁内保存变更前快照、执行 mutation、计算 domain；变化时先调用 `ConfigLoader::save`，成功后才增加 version 并构造 `ConfigChanged`，释放配置锁后再发布通知。mutation 或 save 失败会恢复内存配置，不增加 version，也不发布通知。
 - `ConfigLoader::save` 写入同目录、带进程号和序号的临时文件，再 rename 到配置路径；这避免直接覆盖时暴露部分 TOML，并为 path replacement 提供原子替换边界。实现未对临时文件和父目录调用 `sync_all`，因此不承诺断电场景下的稳定介质持久性。
-- Settings 和 model commit-plus-apply 共用 `ApplicationRuntime::config_apply_gate`。`RuntimeConfigCoordinator` 拥有这个 gate、model edit 和 Router/media prepare/publish；`SettingsRuntimeApplyCoordinator` 仅拥有 Settings 有序 phase、phase 状态及失败/警告观测。Settings 的实际副作用仍交给各自 runtime owner。两个 coordinator 不持有重复的配置 snapshot 或 Router runtime。
+- Settings 和 model commit-plus-apply 共用 `ApplicationRuntime::config_apply_gate`。`RuntimeConfigCoordinator` 拥有这个 gate、model edit 和 Router/media prepare/publish；`SettingsRuntimeApplyCoordinator` 仅拥有 Settings 有序 phase、phase 状态及失败/警告观测。Settings 的实际副作用仍交给各自 runtime owner。两个 coordinator 不持有重复的配置 snapshot 或 Router runtime。产品已决定：Tools 管理操作若修改同一运行时配置域，必须与 Settings/model apply 共用串行运行时配置边界；不相关配置域仍保留各自 owner。
 - `ConfigService::changed_domains` 是字段到 config domain 的映射；`RuntimeConfigApplyPlan::from_change` 是唯一 config domain 到 runtime target 的映射；`SettingsApplyPlan` 从该 target plan 派生 phase 和诊断目标。Settings 复制的 `restart_required_targets` 只供同一事务的日志/观测，不是独立推断出的第二份策略。
 
 ### Model/provider 与前端请求
@@ -30,8 +30,8 @@
 
 - Settings 在共享 apply gate 内调用一次 `ConfigService::edit`。durable edit 与 `ConfigChanged` 先于 runtime apply；Router/media prepare 使用该次 immutable snapshot。prepare 失败时持久化配置保留、live Router/media 保持旧 generation，后续 phase 不运行。Skills、logging 或 hotkey 等后续 fatal phase 失败时，已保存配置和此前成功的 live side effects 保留，协调器停止后续 phase；没有补偿或 rollback。
 - Settings 对相同 payload 再提交是 no-op，不重跑 apply。model 对相同 mutation 再提交也不重建 Router；现有成功后的 UI event 不能作为 apply retry。当前没有针对已保存 snapshot 的显式 retry command，也没有 Settings 自动重启或启动恢复入口。
-- `restart_required_targets` 来自共享 target plan，在提交日志和 phase failure observation 中重用；它只记录需重启 consumer，不会主动重启应用。一个需单独厘清的现有边界是 `RuntimeConfigApplyPlan::contains` 同时包含 live 和 restart-required target，因此仅变更 `SkillsExec` 时仍会排入 `SettingsApplyPhase::Skills` 并调用 `Skills::set_config`。当前单测明确固定该行为；ADR 0068 只说明 `SkillsExec` 不支持热替换。此审计不擅自改变该 phase 语义。
-- Rust command 仍返回原错误字符串；`SettingsView` 将失败呈现为保存失败，但磁盘配置可能已保存且部分 runtime 已更新。用户是否应看到“配置已保存、运行时应用失败”，是否回滚 durable config、重试失败 phase 或要求/触发重启，以及 `SkillsExec` restart target 是否应筛掉 Skills live phase，都需要明确产品策略。
+- `restart_required_targets` 来自共享 target plan，在提交日志和 phase failure observation 中重用；它只记录需重启 consumer，不会主动重启应用。产品已决定仅变更 `SkillsExec` 时跳过 live Skills apply，只保存配置并标记重启后生效。ADR 0068 关于 `SkillsExec` 不支持热替换的约束保持；具体 phase/apply 实现留给独立 Settings 切片。
+- Rust command 仍返回原错误字符串；`SettingsView` 将失败呈现为保存失败，但磁盘配置可能已保存且部分 runtime 已更新。失败报告、重启恢复和同配置域 Tools 管理操作的串行实现留给独立 Settings/Tools 切片。
 
 ## 决定
 
@@ -46,6 +46,10 @@
 配置并报告“部分 apply 失败”；不自动重试，应用重启时从磁盘配置重新初始化。该决定不改变
 本审计记录的 owner、gate、phase 顺序或当前 Rust runtime；具体用户文案和实现仍由独立 Settings
 切片处理。
+
+另外确认两项运行时配置方向：仅修改 `SkillsExec` 时只保存并标记重启后生效，不执行 live
+Skills apply；Settings/model apply 与 Tools 管理操作若写入同一运行时配置域，必须统一串行。两项
+决定均不扩展本次 raw Database/ToolsManager 收口实现范围。
 
 ## 验证
 

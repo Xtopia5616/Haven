@@ -27,6 +27,12 @@
 - completion outbox 对 `actions.id` 有 `ON DELETE CASCADE` 外键。产品已确定：terminal history 在 completion ack 前拒绝删除；因此删除必须与 outbox ack 使用同一 SQLite writer 原子边界，不能仅靠应用层先读 pending 再删除。该 guard 与竞态回归见 ADR 0374。
 - 该决定不改变 completion 的 retry/delivery 语义，也不把 completion 从 action history 中拆成独立 owner；未确认结果仍保留 durable action/outbox，直到 Agent transcript projection 完成并 ack。
 
+## 后续产品决策（2026-09-26）
+
+后台任务与定时任务在完成记录、任务卡和 transcript 投影上采用统一格式；具体内容仍可保留
+background/scheduled 的类型细节。该决定只统一投影契约与用户可见结构，不改变现有状态机、completion
+delivery/retry、取消或 X12 语义，具体实现留给独立 action/UI 投影切片。
+
 ## 决定
 
 1. 保持一个共享 `ActionService` 为 action 的运行时 owner，保持 `ActionStore` 为持久化写边界；不引入第二个 Tauri/tool writer、通用状态 setter 或把 `ToolConcurrency` 当作跨入口锁。

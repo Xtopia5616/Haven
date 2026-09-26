@@ -85,7 +85,7 @@ client；model edit 的完整提交和应用也由它持有。`SettingsRuntimeAp
 Settings 有序阶段，驱动命令提供的执行回调，并唯一记录当前 phase、snapshot version、Router published、
 restart-required targets 与失败/警告。Security、MCP、context、logging、hotkey 等实际副作用仍由既有 owner
 执行；Settings edit/no-op 仍由命令按同一次 `ConfigService::edit` 保留旧 hotkey、snapshot 和 change。该
-coordinator 不复制 Router prepare/publish，也不为半失败状态增加 compensation/rollback。审计确认无第二份配置 owner、target mapping 或 Settings payload builder；durable-first 后的 compensation/rollback、显式 retry/restart recovery 与 Settings 失败文案仍未决。`SettingsView` 唯一的 `update_settings` payload builder 使用开放式 `SettingsPayload`，IPC script 校验 Rust `Settings` 参数和 UI 直接调用 owner，而完整字段 schema 仍由 Rust 所有（ADR 0372）。Tools admin 的 MCP/Skills/Logging/ToolSettings writers 与 Settings apply 不共用 config_apply_gate，而 ConfigService lock 只覆盖 save，不覆盖 save 之后的 runtime apply；跨入口并发与部分应用策略仍待决（ADR 0351）。MCP Tauri 命令负责
+coordinator 不复制 Router prepare/publish，也不为半失败状态增加 compensation/rollback。审计确认无第二份配置 owner、target mapping 或 Settings payload builder；durable-first 后的 compensation/rollback、显式 retry/restart recovery 与 Settings 失败文案仍未决。`SettingsView` 唯一的 `update_settings` payload builder 使用开放式 `SettingsPayload`，IPC script 校验 Rust `Settings` 参数和 UI 直接调用 owner，而完整字段 schema 仍由 Rust 所有（ADR 0372）。Tools admin 的 MCP/Skills/Logging/ToolSettings writers 若修改与 Settings/model 相同的运行时配置域，产品已决定必须进入统一串行配置边界；不相关域仍由原 owner 负责。具体 coordinator 接线与失败文案另行实现。MCP Tauri 命令负责
 持久化和连接/刷新动作，完成后请求 ToolsManager façade 重建 catalog；连接及其 `catalog_version` 仍由
 `McpManager` 持有。应用退出顺序由 `ApplicationRuntime` 负责，coordinator 不增加独立 shutdown 生命周期
 （ADR 0333、0337）。
@@ -437,7 +437,7 @@ schedule tool 对 LLM 输入的前置验证仍保留在工具边界，App comman
 `ActionStatus::can_transition_to` / `action_terminal::can_claim_terminal` 单点定义；background admission 直接进入
 `running`，`waiting → running` 只属于 scheduled fire。提交前后的重复检查跨越 durable CAS 与内存投影/回滚边界，保留为竞态校验。
 执行副作用、outbox、retry 与 UI finished 投影继续按 kind 分流；trigger/execution、deadline/claim identity 和 restart recovery
-语义需先决策，当前不引入新的 Job 状态或自动 replay（ADR 0352）。该审计还发现 `ActionService::set` 的 scheduled
+语义需先决策，当前不引入新的 Job 状态或自动 replay（ADR 0352）。产品已确认 background 与 scheduled 的完成记录、任务卡和 transcript 投影采用统一格式，但保留类型细节；具体 mapper/UI/wire 统一留给独立切片。该审计还发现 `ActionService::set` 的 scheduled
 admission cleanup 曾移除 Running row，导致 Agent terminal callback 找不到内存 entry；ADR 0353 已将清理条件限定为
 terminal scheduled entry，并通过 completion、cancel、no-consumer recovery 和 restart 回归固定边界。Waiting/Running
 entry 保持原路径；durable Waiting schedule 仍在启动时恢复，遗留 durable Running row 仍标为 failed 且不重放。
@@ -459,8 +459,7 @@ Rust bridge 只为 background 提供 `action:output`，scheduled action 不持�
 Action 管理写入口经 ADR 0373 审计：Tauri、`actions`/`schedule` 工具、timer worker 与 Agent completion 共用一个
 `ActionService`；`ActionStore` 仍是生产持久化写边界。`schedule.set` 只创建新 action，没有 update-existing 或手动
 trigger command，`ToolConcurrency` 也不是跨 Tauri/worker 的互斥机制。terminal history delete 只接受终态，但其
-`spawn_gate` 不覆盖所有 terminal CAS/retry；`actions` 到 completion outbox 的级联删除可能移除尚未确认的结果。
-删除历史是否应放弃 pending completion 仍需产品/架构决策，暂不改变 delete 或 recovery 语义。
+`spawn_gate` 不覆盖所有 terminal CAS/retry；现已由 ADR 0374 收口为 completion ack 前拒绝 history delete，并在同一 SQLite writer 边界协调 ack/delete，保留未确认结果及既有 recovery 语义。
 `InteractionRequest`（`haven-agent/src/interaction.rs`）
 是 ask、confirm 和 scheduled confirm 的共同生命周期投影，快照通过 `interactions` 保存当前
 请求；旧快照不做运行时兼容读取，新的交互状态以 `Pending → Resolved | Expired | Cancelled`
@@ -719,7 +718,8 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 | 日期 | 内容 |
 |---|---|
 | 2026-09-26 | §2.3/§2.5/§2.6：SessionStore 增加 session orphan/retention/managed-attachment typed ports，AppState 后台清理不再捕获 raw Database；AgentLayer 显式接收组合根 ToolsManager，SessionSupervisor 删除生产 service locator 并只保留窄 authorization/action wiring。执行 facade 与 prompt/catalog/observation adapter 依赖继续按 ADR 0224/0225 单独审计（ADR 0374）|
-| 2026-09-26 | §2.5 App / §2.6 UI：审计配置单一 owner、target/phase mapping、atomic save 顺序、Settings/model/provider 写入与失败语义；为唯一 `update_settings` builder 复用开放式 `SettingsPayload` 并由 IPC script 校验 handler/registry/caller。保持 durable-first 和失败不补偿；retry/restart、`SkillsExec` phase 选择及 UI 失败文案继续待产品决策（ADR 0372）|
+| 2026-09-26 | §2.5 App / §2.6 UI：审计配置单一 owner、target/phase mapping、atomic save 顺序、Settings/model/provider 写入与失败语义；为唯一 `update_settings` builder 复用开放式 `SettingsPayload` 并由 IPC script 校验 handler/registry/caller。保持 durable-first 和失败不补偿；产品确认仅变更 `SkillsExec` 时跳过 live apply、标记重启生效，并让同配置域的 Tools 管理操作与 Settings/model apply 统一串行，具体实现留后续切片（ADR 0372）|
+| 2026-09-26 | §2.5 Tools / §2.6 UI：产品确认 background/scheduled 的完成记录、任务卡和 transcript 投影统一格式，保留类型细节；通知 toast/Windows 开关继续分别可控且默认开启，具体 mapper、wire 与 UI 实现留后续 action/UI 切片（ADR 0373）|
 | 2026-09-26 | §2.6 App / UI：审计五个 session control command，补齐 rollback/confirmation request DTO 并固定 Rust 参数映射与 UI direct invoke owner；ChatController orchestration 与 shell confirmation 顺序不变（ADR 0371）|
 | 2026-09-26 | §2.6 App / UI：Settings 诊断与日志只读命令统一经 `diagnosticsCommands.ts`，沿用 `contracts/settings.ts` 的唯一 parser；metrics 响应保留动态字段，renderer 计数 provider 与 UI 错误状态仍归调用方（ADR 0370）|
 | 2026-09-26 | §2.3/§2.5/§2.6：AgentStartup 将唯一 MemoryStartup 交给 ApplicationRuntime；typed PreparedMemoryRuntime 一次消费、注册成功才返回 MemoryReady，AppRuntime 注册/join prepare/live/schedule tasks，dispatcher 与 maintenance/manual/shutdown 顺序保持（ADR 0367）|
