@@ -217,6 +217,7 @@ impl AppState {
         let agent_startup = AgentLayer::build(
             memory_service,
             executor.clone(),
+            tools.clone(),
             router.clone(),
             max_steps,
             conversation_window_size,
@@ -309,9 +310,9 @@ impl AppState {
         // interrupted state and can retry via the continue flow. This runs
         // before any UI fetches the session list.
         {
-            let db_finalize = db.clone();
+            let session_store = session_store.clone();
             runtime.spawn("finalize-orphaned-sessions", async move {
-                match db_finalize.finalize_orphaned_running_sessions() {
+                match session_store.finalize_orphaned_running_sessions().await {
                     Ok(n) if n > 0 => {
                         tracing::info!(
                             "finalized {} orphaned running session(s) from previous run",
@@ -329,10 +330,10 @@ impl AppState {
         // Retention-based cleanup: deferred to background (non-critical).
         let retention_days = cfg.memory.history_retention_days;
         if retention_days > 0 {
-            let db_retention = db.clone();
+            let retention_store = session_store.clone();
             let days = retention_days;
             runtime.spawn("retention-cleanup", async move {
-                match db_retention.delete_old_sessions(days) {
+                match retention_store.delete_old_sessions(days).await {
                     Ok(n) if n > 0 => {
                         tracing::info!("cleaned up {} session(s) older than {} days", n, days);
                     }
@@ -349,9 +350,12 @@ impl AppState {
                 u64::from(retention_days).saturating_mul(24 * 60 * 60),
             );
             let upload_registry = tools.share_services().assets.clone();
-            let db_upload_cleanup = db.clone();
+            let upload_session_store = session_store.clone();
             runtime.spawn("upload-retention-cleanup", async move {
-                let referenced_paths = match db_upload_cleanup.list_managed_attachment_paths() {
+                let referenced_paths = match upload_session_store
+                    .list_managed_attachment_paths()
+                    .await
+                {
                     Ok(paths) => paths,
                     Err(error) => {
                         tracing::warn!(
@@ -415,7 +419,7 @@ impl AppState {
         });
 
         // Spawn background cleanup every 24 hours
-        let db_clone = db.clone();
+        let daily_session_store = session_store.clone();
         let retention = retention_days;
         let upload_root = cleanup_roots.uploads.clone();
         let upload_ttl = std::time::Duration::from_secs(
@@ -432,7 +436,7 @@ impl AppState {
                     _ = interval.tick() => {}
                 }
                 if retention > 0 {
-                    match db_clone.delete_old_sessions(retention) {
+                    match daily_session_store.delete_old_sessions(retention).await {
                         Ok(n) if n > 0 => {
                             tracing::info!("background cleanup: removed {} old session(s)", n);
                         }
@@ -444,7 +448,7 @@ impl AppState {
                     }
                 }
                 if retention > 0 {
-                    match db_clone.list_managed_attachment_paths() {
+                    match daily_session_store.list_managed_attachment_paths().await {
                         Ok(referenced_paths) => {
                             match crate::commands::recording::cleanup_stale_upload_batches_with_references(
                                 upload_root.clone(),

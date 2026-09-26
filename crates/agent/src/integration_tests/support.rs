@@ -179,7 +179,11 @@ pub(super) fn make_test_agent_with_db_and_startup(
     tools: Arc<ToolsManager>,
     context_limits: ContextLimitsConfig,
 ) -> (Arc<AgentLayer>, MemoryStartup, Arc<SessionSupervisor>) {
-    let executor = Arc::new(SessionSupervisor::new_for_test(db.clone(), tools, 1));
+    let executor = Arc::new(SessionSupervisor::new_for_test(
+        db.clone(),
+        tools.clone(),
+        1,
+    ));
     let router = Arc::new(LlmRouter::new_with_clients(
         client.clone(),
         client.clone(),
@@ -190,6 +194,7 @@ pub(super) fn make_test_agent_with_db_and_startup(
     let startup = AgentLayer::build(
         memory_service,
         executor.clone(),
+        tools,
         router,
         30,
         50,

@@ -382,7 +382,9 @@ pub(super) enum StepCallOutcome {
 
 #[cfg(test)]
 pub(crate) fn test_tool_catalog_port(executor: &SessionSupervisor) -> Arc<dyn ToolCatalogPort> {
-    Arc::new(ToolsManagerToolCatalogAdapter::new(executor.get_tools()))
+    Arc::new(ToolsManagerToolCatalogAdapter::new(
+        executor.tools_for_test(),
+    ))
 }
 
 impl ReActEngine {

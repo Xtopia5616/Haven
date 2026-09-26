@@ -360,3 +360,4 @@
 - [0371：Session control command contract audit](0371-session-control-command-contract-audit.md)
 - [0372：Settings 配置应用边界审计](0372-settings-config-apply-boundary-audit.md)
 - [0373：Tools Action admin writers 并发边界审计](0373-tools-action-admin-writers-audit.md)
+- [0374：Session 清理 typed ports 与 Agent 工具显式 wiring](0374-typed-session-cleanup-and-explicit-agent-tool-wiring.md)

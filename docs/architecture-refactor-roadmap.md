@@ -29,11 +29,17 @@
 - `resume.rs` 负责组装 `RunReplay` 并向 actor 发起 run；`ReActState` 已在 actor 的 run 路径中创建，但仍是 run-local projection，尚未成为 `SessionState` 的字段；
 - actor mailbox 仍包含 messaging poll 等 actor-local 命令；usage 由 `UsageRuntime` 所有，stream identity 与 token estimate 已随单次 `ReActState` 收口，不再是跨 session engine sidecar；
 - resume 仍需协调 RAM 队列、ingress cursor、undelivered scan、partial promotion 和 interaction replay；
-- Agent、Tools、App 的部分 facade 仍较宽；已迁移路径通过 typed store/port 访问。`SessionSupervisor` 的生产构造现只接收组合根创建的 `SessionStore`（ADR 0363）；`AgentLayer::build` 接收组合根创建的 `MemoryService`，`SystemPromptBuilder` 也只接收该 typed service（ADR 0364、0365）。`MemoryService::new` 仍有 raw Database 构造入口；本切片不声称全局 raw Database 已清零，其余 facade 边界继续逐域审计；
+- Agent、Tools、App 的部分 facade 仍较宽；已迁移路径通过 typed store/port 访问。`SessionSupervisor` 的生产构造现只接收组合根创建的 `SessionStore`（ADR 0363）；`AgentLayer::build` 接收组合根创建的 `MemoryService` 与显式共享 `ToolsManager`，后台 session/media cleanup 也经 `SessionStore` typed ports（ADR 0364、0365、0374）。生产 Agent 不再通过 `get_tools()`/通用 `services()` 做 service locator 查找，但 supervisor 的执行 facade、prompt/catalog/observation adapters 仍保留 manager 依赖；`MemoryService::new` 与组合根仍有 raw Database 构造/持有边界。本切片不声称全局 raw Database 或 ToolsManager 依赖已清零，其余 facade 边界继续逐域审计；
 - ActionService 的终态仲裁、claim lease、持久化 retry、tail policy、scheduled trigger policy、UI 投影与 admin writer owner 已有各自审计边界（ADR 0317、0325、0332、0334、0338、0343、0344、0373）；完整跨 kind Job lifecycle 仍待 trigger/execution 分离、timeout、owner token/续租与 watcher recovery 决策；terminal history delete 与未确认 completion 的关系仍待产品/架构决策；LLM request descriptor 与 usage owner 契约已由 ADR 0354 收口；
 - Settings 的 typed target/phase plan、执行顺序与失败观测现由 `SettingsRuntimeApplyCoordinator` 持有；命令回调仍调用既有 runtime owner。`RuntimeConfigCoordinator` 持有 model edit 及 Router/media prepare/publish；settings 全量补偿/rollback 尚未决策；
 - 已完成配置 apply 边界审计（ADR 0372）：`ConfigService` 是唯一进程配置 owner，Settings/model 共用一个 config apply gate；domain→target 只有 `RuntimeConfigApplyPlan` 一份，Settings phases 是其派生计划。`update_settings` 唯一前端 builder 复用开放式 `SettingsPayload`，脚本校验 handler/registry/直接 caller，不复制 Rust nested schema。atomic temp-file + rename、durable-first/no-op 与当前失败行为已核对；rollback/retry/restart 和 `SkillsExec` 触发 Skills phase 的产品语义仍未决。
 - UI 页面和 reducer 已有边界，ask/input 决策、复杂 view state 与启动恢复编排仍在页面/controller；多个 IPC 域已完成手写 mapper/validator 审计，但全局 Rust→TypeScript codegen 未引入，其他 command families 仍待按域审计。
+
+产品决策状态更新（2026-09-26）：Settings apply 失败保留 durable config、报告部分失败、不自动重试，
+重启从磁盘配置重新初始化；terminal history 在 completion ack 前拒绝删除；不增加统一 action-level
+deadline，沿用工具自身 timeout 与用户取消；dependency-waiting task 保留 durable relation，重启时重建
+watcher 并在依赖满足后执行一次。后台/定时任务完成展示与通知统一的具体 wire/UI 映射仍需独立切片；
+本轮仅实现 terminal-history guard，不改 Settings、Job watcher 或 UI 投影。
 
 ### 2.1 已完成的降复杂度切片（截至 2026-09-25）
 
@@ -121,9 +127,15 @@
 - 当前 Phase 3/7 小切片：确定性维护及 LLM maintenance persistence 经 `MemoryMaintenanceStore` 的独立 typed 操作执行。Worker 保留确定性步骤顺序、日志、计数、best-effort 继续和最终聚合错误；LLM 路径由 Agent 保留配置门禁、提示词、解析、候选过滤、提案 gate 与失败策略，store 只执行 typed 查询/写入和 blocking 调度。每条 predicate rewrite 独立调用，不合并事务。周期确定性维护传递 cancellation token。ADR 0310/0311 时剩余的 summary cursor/throttle 路径后由 ADR 0312 收口到 MemoryFactExtractionStore；embedding catch-up 仍经 MemoryService。
 - 当前 Phase 5/6 小切片：LLM usage runtime input 的 `cache_accounting` 使用 `haven-common::CacheAccounting`；SQLite 与 IPC 仍在边界转换为既有字符串，外部文本恢复统一按 `Unknown` 处理（ADR 0270）。
 - 当前 Phase 4 切片：`AgentLayer` 在 composition root 只取得一次 `ToolsManager`，共享给 prompt builder 与 `ToolsManagerToolCatalogAdapter`，并显式注入 `ReActEngine`；engine 不再从 executor 查找 catalog port。目录 snapshot、session ID、工具执行和 live authorization 语义不变（ADR 0257）。
+- 当前 Phase 4 收口切片（ADR 0374）：`AgentLayer::build` 显式接收组合根的 `ToolsManager`；生产代码删除 `SessionSupervisor` 的通用 `get_tools()`/`services()` locator，改由内部窄 `AuthorizationEngine`/`ActionService` capability wiring。执行 runner、prompt/catalog/observation adapters 仍保留对 manager 的实现依赖，完整 `ToolExecutionContext` 仍是独立后续切片。
 - 当前 Phase 4 切片：ToolsManager façade 请求 crate-private `ToolRuntimeCoordinator` 构造并解析唯一的 `ToolCapabilitySnapshot`，同一个 platform generation 的媒体 operation catalog、prompt capability、TTS/STT 与录音 gate 都从该 snapshot 读取；搜索的 provider/MCP/unavailable 优先级也由它统一投影。每次读取从当前 `PlatformRuntime`、Router config 和 MCP index 重建。PlatformRuntime 替换、Router config 发布和 MCP tools/list 更新没有共同版本钟，因此暂不缓存；不引入第二套 capability mapping（ADR 0331，承接 ADR 0326）。ADR 0333 将 runtime composition、平台/config 更新顺序、MCP discovery config/index 与 catalog rebuild 移入 `ToolRuntimeCoordinator`。app-binary 的 Router 准备/config gate、`update_settings` 跨阶段编排、MCP 命令的持久化和连接动作、McpManager 连接/catalog-version owner，以及 `ApplicationRuntime` shutdown 顺序继续留在原边界。ADR 0345 将授权请求策略解析从执行器中拆出；审计确认 session overlay、asset lease 和 catalog snapshot 分别由 `SessionCatalog`、`ManagedAssetRegistry` 与 `OperationCatalog`/`ToolCatalogSnapshot` 提供单一状态或派生视图，不存在要迁移的第二份事实。`ToolsManager` 仍是这些操作的 public façade；更大拆分须先识别新的重复权威或独立生命周期边界。
 
 当前阶段判断：阶段 1 的 mailbox/运行态收口已基本完成；token estimate 与 stream identity 由单次 run 的 ReActState 所有（ADR 0276、0278）。阶段 2 已收口 rollback boundary、resume ports、session overlay 恢复边界和 continue recovery marker，但全局恢复/事件重放与崩溃窗口仍待验证。阶段 3 持续以 domain typed stores 替代局部 raw Database 读取；ReActEngine 已由 ADR 0299 移除 raw Database ownership，MemoryWorker 生产 raw Database 已清零，AgentLayer 不保留生产 Database 字段，MemoryService 只私有保留 backing handle 构造 stores/index（ADR 0299、0312）。ReAct live transcript 以 SessionCommitted 提交；ingress seed、error partial、terminal action-result、UI-only ask/confirm notice 及防御性 search-final fallback 的边界仍按 ADR 0336 跟踪。阶段 4 的目录、观察、资产租约、overlay、runtime capability、ToolRuntimeCoordinator 与授权请求策略已有窄边界（ADR 0257、0326、0331、0333、0345）；仍按域审计较宽执行 facade。阶段 5 的 model apply 与 Settings phase planning/observability 已收口（ADR 0323、0324、0337）；补偿/rollback、失败 retry/restart recovery 及 Settings 与 Tools admin writers 的并发边界仍未决（ADR 0351）。阶段 6 的 CompleteRequest、StreamRequest、EmbeddingRequest、HealthCheckRequest、PromptRequest 与执行器拆分已完成；RequestDescriptor 已贯穿 complete/embedding/raw+aggregated streaming/health/native transcription，RequestKind 与 descriptor purpose 的契约审计已由 ADR 0354 关闭；保留 RequestKind，不增加 public CallPurpose，LlmCallKind 由 Agent/Tools 显式设置。阶段 7 的 MemoryRuntime、MemoryStore/typed ports、ActionStore、ActionService 终态/claim/retry、tail policy、scheduled trigger policy 与 UI projection audit 已完成相应切片；ADR 0353 已修复 scheduled admission 误删 Running row。完整 Job lifecycle 仍待 trigger/execution 分离、execution timeout、owner token/续租、dependency watcher recovery 与 restart semantics 决策。阶段 8 的 session/action/recording/settings event、update_settings 外层 command contract、app/agent event、活跃 action command、memory fact/recall、session history、ToolsView catalog、diagnostics/logging command contract 与 session control command contract 已按域完成对应审计或边界收口（ADR 0330、0335、0340、0341、0346、0347、0348、0350、0357、0358、0369、0370、0371、0372）；SessionCompleted/SessionError 跨 channel 去重仍缺 shared occurrence identity（ADR 0349）。全局 Rust→TypeScript codegen 未引入；无 UI 调用者的 legacy history command 保持 registry contract、没有新增 wrapper，其余 command families 仍待审计。ask/input 决策、复杂 view state 与启动恢复仍由页面/controller 编排。阶段 9 已删除多个无调用 facade API 与被新 request object 取代的 Router wrapper；`SessionSupervisor::get_tools()` / `services()` 经 ADR 0366 收窄为 `pub(crate)`，仓库调用仅用于 agent 内部 wiring，剩余以 profiling 和更大范围公共面审查为主。
+
+状态校准（ADR 0374）：上方早期阶段汇总中关于 `get_tools()`/`services()` 的“仅收窄可见性”描述由本轮实际迁移 supersede；生产入口已删除，AgentLayer 改为组合根显式注入 manager。Settings durable-first/部分 apply failure/重启从磁盘配置恢复、terminal history 在 completion ack 前拒绝删除、无统一 action-level deadline，以及 dependency-waiting task 的 durable relation/watcher restart 语义均已由产品确认；实现分别留给独立切片，本轮只实现 terminal-history guard 与竞态回归，不改 Settings、Job watcher 或统一 UI 投影。
+
+Dependency-waiting 的已确认细则：producer `completed`/`failed`/`cancelled` 都满足等待条件并向 continuation 传递状态/结果；producer 缺失也只触发一次 continuation 并传递 `not_found`，避免永久 waiting。依赖关系 durable 保留，重启时重建 watcher；依赖满足后 continuation 只执行一次。若 continuation 对应 scheduled action 已进入 `running` 后进程崩溃，重启不自动 replay，而是恢复为 `failed`，由用户手动重试。任务 UI 仍只使用 `waiting`/`running`/terminal 三大状态，具体阶段可在卡片内展示；background/scheduled 完成展示与通知统一方向的具体映射另行设计。
+统一任务完成通知的已确认方向：新增独立的应用内 toast 与 Windows 通知开关，首次默认均开启，用户可分别关闭；background 与 scheduled 共用该规则。具体设置入口、wire 字段和统一映射仍留给独立 UI/Settings 切片。
 
 MemoryRuntime 应用对象所有权审计（2026-09-26，ADR 0362）：MemoryRuntime 的启动回放、live consumer 和周期 schedule policy 已有单一对象，但对象仍由 `AgentLayer` 构造/持有，`ApplicationRuntime` 只拥有周期 task 的 cancel/join。`AgentLayer::start_inner` 是当前唯一能保证 prepare/replay 成功后再启动 live consumer 和 SessionActor dispatcher 的入口；app-binary 没有 prepared-consumer API 或 dispatcher readiness handoff。为避免字段空迁移、第二份 runtime 或 Agent 长期强持有 runtime，本轮不改代码。后续先设计唯一 typed 构造交接与可证明的 readiness token/port，再一起迁移 app schedule/manual maintenance/shutdown 接线并保留 barrier 与 lifecycle 回归。
 
@@ -134,6 +146,8 @@ AgentLayer memory 构造边界切片（2026-09-26，ADR 0364）：`AppState` 在
 MemoryRuntime 应用所有权切片（2026-09-26，ADR 0367）：`AgentLayer::build` 返回唯一的 `AgentStartup { agent, memory_startup }`；AppState 将 `MemoryStartup` 交给 ApplicationRuntime 长期持有。AgentLayer 不再存储或启动 MemoryRuntime。不可 Clone 的 `PreparedMemoryRuntime` 隐藏 live receiver，`MemoryLiveTask::register_with` 只有在 app task 注册成功后才交出 `MemoryReady`，Agent dispatcher 仅通过该 token 和 typed recovery mode 开启。ApplicationRuntime 注册并 join prepare、live consumer 与 maintenance tasks；周期策略、手动单次 maintenance、worker shutdown 与 app exit 顺序不变。启动 retry/cancel、dispatcher not-before-ready、live join 和 manual maintenance 均有回归覆盖。
 
 SystemPromptBuilder 构造边界切片（2026-09-26，ADR 0365）：删除 public `SystemPromptBuilder::new(tools, Arc<Database>)`，使 `with_memory_service` 成为唯一公开构造入口。仓库内原调用只有 agent 测试；测试先以既有 `router=None`、chunk size `64` 创建 `MemoryService`，再调用 typed constructor。生产 AgentLayer、共享 service/cache owner 和 prompt/runtime 行为不变；未知外部下游调用需显式迁移。本切片不改变 `MemoryService::new` 的 raw Database API。
+
+Session 清理与 Agent wiring 收口（2026-09-26，ADR 0374）：`SessionStore` 提供 orphan finalization、retention delete 和 managed attachment reference 三个异步 typed port；AppState 的启动/保留期/上传/每日 cleanup task 不再捕获 raw Database。`AgentLayer::build` 显式接收组合根 `ToolsManager`，生产 `SessionSupervisor::get_tools()`/`services()` 删除，内部改持有窄 authorization/action capability；执行 runner 和 prompt/catalog/observation adapters 仍保留 manager 实现依赖。terminal history 在 completion ack 前的删除 guard 与 ack/delete writer race 也在本 ADR 独立收口。
 
 阶段 3 增量校准（2026-09-24）：历史查询命令、App resume read model、两个 resume command 的 session record 读取、`end_session` 展示标题 fallback、桌面通知会话标题 fallback、退出时暂停运行会话与 Agent 标题生成上下文现纳入 SessionStore typed-port 覆盖范围（ADR 0279、0282、0283、0284、0286、0287、0288）；fresh-run window 与 App session title write 路径分别见 ADR 0280、0281；上段阶段汇总记录的是此前已完成的覆盖项。
 
@@ -286,6 +300,11 @@ SessionStore
 - 将 ActionService 的 board/status/list 输出收敛为 `ActionView`、`ActionKind`、`ActionState`、`ActionOutput` 等 DTO；动态 tool args/MCP payload 仍保留 `Value`；
 - 保留 projection/cache invalidation/事务细节在 Memory 内部；
 - 为每个删除的旧 Database API 删除无调用测试和旧文档入口。
+
+本轮（ADR 0374）已完成：启动恢复、一次性 retention、上传引用和每日 cleanup task 不再捕获
+raw `Database`，而是使用 `SessionStore` typed ports；AgentLayer 从组合根显式接收 `ToolsManager`，
+SessionSupervisor 仅向 Agent 内部提供 authorization/action 窄 capability。保留的执行 facade、
+prompt/catalog adapters 和 MemoryService 私有 backing handle 不在本轮扩大迁移。
 
 主要文件：`crates/memory/src/` repositories/database、`crates/agent/src/` usage/session、`crates/tools/src/action_service.rs`、`crates/app-binary/src/commands/`。
 

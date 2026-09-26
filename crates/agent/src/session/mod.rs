@@ -8,7 +8,8 @@ use haven_memory::Database;
 use haven_memory::SessionStore;
 use haven_memory::repositories::sessions::Session as DbSession;
 use haven_tools::{
-    AuthorizationDecision, ToolResult, ToolServices, ToolsManager, is_silent_action,
+    ActionService, AuthorizationDecision, AuthorizationEngine, ToolResult, ToolsManager,
+    is_silent_action,
 };
 use serde_json::Value;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -166,10 +167,13 @@ pub struct SessionSupervisor {
     /// broadcast observe interaction/control events, not just transcript rows.
     store: SessionStore,
     tools: Arc<ToolsManager>,
-    /// Process services captured at construction. Hot paths use services()
-    /// instead of taking MCP, skills, authorization, actions or live output
-    /// back out of ToolsManager.
-    services: ToolServices,
+    /// Live authorization capability shared with the ToolsManager execution
+    /// boundary. Session lifecycle code accesses this narrow capability
+    /// directly instead of exposing a process-service bundle.
+    authorization: Arc<AuthorizationEngine>,
+    /// Action lifecycle capability used for session-owned cancellation and
+    /// terminal action reconciliation.
+    actions: Arc<ActionService>,
     /// Agent-owned boundary for restoring and clearing per-session tool
     /// registrations. Live loading remains owned by the tool execution path.
     session_tool_overlay_port: Arc<dyn SessionToolOverlayPort>,
@@ -279,7 +283,8 @@ impl SessionSupervisor {
             partials: Arc::new(crate::partial::PartialStore::new(store.clone())),
             store,
             tools,
-            services,
+            authorization: services.authorization,
+            actions: services.actions,
             session_tool_overlay_port,
             observation_port,
             managed_asset_lease_port,
@@ -309,12 +314,6 @@ impl SessionSupervisor {
         max_concurrent: usize,
     ) -> Self {
         Self::new(SessionStore::new(db), tools, max_concurrent)
-    }
-
-    /// Internal agent wiring access; `SessionSupervisor` is not a cross-crate
-    /// service locator.
-    pub(crate) fn services(&self) -> &ToolServices {
-        &self.services
     }
 
     pub(crate) fn register_managed_assets_for_session(

@@ -836,10 +836,7 @@ impl SessionSupervisor {
         // extracted once, before the guard.
         for reg in &registrations {
             if let haven_tools::ToolRegistration::Action(action_id) = reg {
-                self.services()
-                    .actions
-                    .attach_session(action_id, session_id)
-                    .await;
+                self.actions.attach_session(action_id, session_id).await;
             }
         }
         let obs = self
@@ -913,7 +910,6 @@ impl SessionSupervisor {
         let mut confirmed: Option<bool> = None;
         if let Some(receipt) = receipt.as_ref()
             && let Err(reason) = self
-                .services()
                 .authorization
                 .verify_receipt(&authorization_request, receipt)
                 .await
@@ -944,12 +940,7 @@ impl SessionSupervisor {
                 confirmed: Some(false),
             });
         }
-        match self
-            .services()
-            .authorization
-            .authorize(&authorization_request)
-            .await
-        {
+        match self.authorization.authorize(&authorization_request).await {
             AuthorizationDecision::AutoApproved => {}
             AuthorizationDecision::Blocked { reason, .. } => {
                 return Ok(ToolExecution {
@@ -1042,7 +1033,7 @@ impl SessionSupervisor {
         let request = self
             .scheduled_authorization_request(session_id, tool_name, input)
             .await;
-        self.services.authorization.authorize(&request).await
+        self.authorization.authorize(&request).await
     }
 
     /// Queue a scheduled-tool confirmation without blocking the fired-action
@@ -1248,7 +1239,7 @@ impl SessionSupervisor {
             ),
             _ => return,
         };
-        let action_service = self.services().actions.clone();
+        let action_service = self.actions.clone();
         if confirmed
             && let Some(session_id) = session_id.as_deref()
             && !self.session_is_live(session_id).await
@@ -1323,10 +1314,7 @@ impl SessionSupervisor {
             tool_name,
             input,
         );
-        self.services()
-            .authorization
-            .authorize(&authorization_request)
-            .await
+        self.authorization.authorize(&authorization_request).await
     }
 
     /// Resume decision for a gated tool after a confirm pause (Phase 5 / E3).
@@ -1477,7 +1465,6 @@ mod scheduled_authorization_tests {
         ));
 
         supervisor
-            .services()
             .authorization
             .set_permission_mode(PermissionMode::Plan)
             .await;

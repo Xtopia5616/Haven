@@ -438,8 +438,22 @@ impl Database {
 
     /// Remove a persisted action (background or scheduled) by id.
     pub fn delete_action(&self, id: &str) -> anyhow::Result<bool> {
+        // Rebuild a missing background completion row before deciding whether
+        // history is deletable. The delete predicate and acknowledgement both
+        // run as SQLite writer statements, so they cannot race into deleting
+        // an unacknowledged completion.
+        self.reconcile_action_completion_outbox()?;
         let conn = self.conn();
-        let changed = conn.execute("DELETE FROM actions WHERE id = ?1", rusqlite::params![id])?;
+        let changed = conn.execute(
+            "DELETE FROM actions
+             WHERE id = ?1
+               AND NOT EXISTS (
+                   SELECT 1
+                   FROM action_completion_outbox
+                   WHERE action_id = ?1 AND delivered_at IS NULL
+               )",
+            rusqlite::params![id],
+        )?;
         Ok(changed > 0)
     }
 

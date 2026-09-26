@@ -40,6 +40,13 @@
 3. 保持当前 durable-first、失败不补偿、相同输入不隐式重试和仅记录 restart-required 的运行行为。本 ADR 不定义 rollback、retry、自动 restart、跨 subsystem compensation 或 UI 失败文案。
 4. 将上述失败/recovery 与 `SkillsExec` phase 选择边界保留在 ADR 0351 的产品/架构决策范围内；不把 `restart_required` 推断成自动 restart，也不按相邻状态推断 apply 成功。
 
+## 后续产品决策（2026-09-26）
+
+产品已明确 Settings apply 失败语义：配置写盘成功后，运行时后续阶段失败时保留 durable
+配置并报告“部分 apply 失败”；不自动重试，应用重启时从磁盘配置重新初始化。该决定不改变
+本审计记录的 owner、gate、phase 顺序或当前 Rust runtime；具体用户文案和实现仍由独立 Settings
+切片处理。
+
 ## 验证
 
 - `corepack pnpm --dir ui run check`

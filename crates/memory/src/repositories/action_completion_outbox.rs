@@ -65,7 +65,7 @@ impl Database {
     /// Rebuild missing outbox rows from terminal action history. This is the
     /// crash-recovery half of the outbox: a process can die after the action
     /// row commits but before the completion record is inserted.
-    fn reconcile_action_completion_outbox(&self) -> anyhow::Result<()> {
+    pub(crate) fn reconcile_action_completion_outbox(&self) -> anyhow::Result<()> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT id, session_id, status, output, error, error_reason, log_path,

@@ -58,6 +58,7 @@ impl AgentLayer {
     pub fn build(
         memory_service: Arc<MemoryService>,
         executor: Arc<SessionSupervisor>,
+        tools: Arc<haven_tools::ToolsManager>,
         router: Arc<LlmRouter>,
         max_steps: u32,
         conversation_window_size: usize,
@@ -65,7 +66,6 @@ impl AgentLayer {
     ) -> AgentStartup {
         let events = Arc::new(EventDispatcher::new());
         let memory_store = memory_service.memory_store();
-        let tools = executor.get_tools();
         let prompt_builder = Arc::new(SystemPromptBuilder::with_memory_service(
             tools.clone(),
             memory_service.clone(),
@@ -450,7 +450,7 @@ impl AgentLayer {
         // based on subprocess output before the user has answered. The result
         // is still buffered and delivered as context once the user resumes.
         let agent = self.clone();
-        let action_service = self.executor.services().actions.clone();
+        let action_service = self.executor.action_service();
         if let Some(mut rx) = action_service.take_action_receiver() {
             let cancellation = cancellation.clone();
             tokio::spawn(async move {
@@ -672,7 +672,7 @@ impl AgentLayer {
         //   same ReAct loop without anyone speaking. A continue-mode action
         //   without a session id is an error (no fallback).
         let agent = self.clone();
-        let action_service = self.executor.services().actions.clone();
+        let action_service = self.executor.action_service();
         if let Some(mut rx) = action_service.take_action_receiver() {
             let cancellation = cancellation.clone();
             tokio::spawn(async move {
@@ -939,7 +939,7 @@ impl AgentLayer {
         // spawned above delivers the overdue fires. Also clean up action rows a
         // previous run left `running` (their child processes died with the
         // app), so persisted action history never shows stale live work.
-        let actions = self.executor.services().actions.clone();
+        let actions = self.executor.action_service();
         let cancellation = cancellation.clone();
         tokio::spawn(async move {
             let (overdue, interrupted) = tokio::select! {
@@ -1501,9 +1501,10 @@ mod tests {
     }
 
     fn make_agent(db: Arc<Database>) -> (AgentLayer, Arc<SessionSupervisor>) {
+        let tools = Arc::new(haven_tools::ToolsManager::new());
         let executor = Arc::new(SessionSupervisor::new_for_test(
             db.clone(),
-            Arc::new(haven_tools::ToolsManager::new()),
+            tools.clone(),
             1,
         ));
         let client = Arc::new(UnusedClient);
@@ -1522,6 +1523,7 @@ mod tests {
         let agent = AgentLayer::build(
             memory_service,
             executor.clone(),
+            tools,
             router,
             10,
             20,
@@ -1691,9 +1693,10 @@ mod tests {
         let mut db_path = std::env::temp_dir();
         db_path.push(format!("haven_agent_limits_{}.db", uuid::Uuid::new_v4()));
         let db = Arc::new(Database::open(&db_path).unwrap());
+        let tools = Arc::new(haven_tools::ToolsManager::new());
         let executor = Arc::new(SessionSupervisor::new_for_test(
             db.clone(),
-            Arc::new(haven_tools::ToolsManager::new()),
+            tools.clone(),
             1,
         ));
         let client = Arc::new(UnusedClient);
@@ -1709,8 +1712,16 @@ mod tests {
             Some(router.clone()),
             context_limits.embedding_chunk_size,
         ));
-        let agent =
-            AgentLayer::build(memory_service, executor, router, 10, 20, context_limits).agent;
+        let agent = AgentLayer::build(
+            memory_service,
+            executor,
+            tools,
+            router,
+            10,
+            20,
+            context_limits,
+        )
+        .agent;
 
         let limits = ContextLimitsConfig {
             notification_summary_chars: 137,
@@ -1725,9 +1736,10 @@ mod tests {
     #[test]
     fn agent_memory_consumers_share_the_injected_memory_service() {
         let db = Arc::new(Database::open_in_memory().unwrap());
+        let tools = Arc::new(haven_tools::ToolsManager::new());
         let executor = Arc::new(SessionSupervisor::new_for_test(
             db.clone(),
-            Arc::new(haven_tools::ToolsManager::new()),
+            tools.clone(),
             1,
         ));
         let client = Arc::new(UnusedClient);
@@ -1747,6 +1759,7 @@ mod tests {
         let startup = AgentLayer::build(
             memory_service.clone(),
             executor,
+            tools,
             router,
             10,
             20,
@@ -1775,9 +1788,10 @@ mod tests {
     #[tokio::test]
     async fn session_metadata_reads_fall_back_to_store_after_executor_miss() {
         let db = Arc::new(Database::open_in_memory().unwrap());
+        let tools = Arc::new(haven_tools::ToolsManager::new());
         let executor = Arc::new(SessionSupervisor::new_for_test(
             db.clone(),
-            Arc::new(haven_tools::ToolsManager::new()),
+            tools.clone(),
             1,
         ));
         let client = Arc::new(UnusedClient);
@@ -1796,6 +1810,7 @@ mod tests {
         let agent = AgentLayer::build(
             memory_service,
             executor.clone(),
+            tools,
             router,
             10,
             20,

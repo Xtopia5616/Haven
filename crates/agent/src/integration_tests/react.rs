@@ -1374,7 +1374,11 @@ async fn pause_snapshot_and_resume_keep_own_final_answer_in_canonical() {
     // it at the transcript head, out of order.
     let db = temp_db();
     let tools = Arc::new(ToolsManager::new());
-    let executor = Arc::new(SessionSupervisor::new_for_test(db.clone(), tools, 1));
+    let executor = Arc::new(SessionSupervisor::new_for_test(
+        db.clone(),
+        tools.clone(),
+        1,
+    ));
     let mock = Arc::new(ScriptedMock::new(vec![
         ScriptedResponse::Chunk(StreamChunk {
             text: Some("First answer.".into()),
@@ -1412,6 +1416,7 @@ async fn pause_snapshot_and_resume_keep_own_final_answer_in_canonical() {
         AgentLayer::build(
             memory_service,
             executor.clone(),
+            tools,
             router,
             30,
             50,

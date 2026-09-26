@@ -115,10 +115,7 @@ impl SessionSupervisor {
             Box::pin(self.cascade_end_children(session_id)).await;
         }
         self.clear_has_children(session_id).await;
-        self.services()
-            .authorization
-            .clear_session_trust(session_id)
-            .await;
+        self.authorization.clear_session_trust(session_id).await;
     }
 
     fn unregister_from_inbox(session_id: &str) {
@@ -220,10 +217,7 @@ impl SessionSupervisor {
         }
         self.dequeue_pending(session_id).await;
         self.unregister_session_tool_overlay(session_id).await;
-        self.services()
-            .authorization
-            .clear_session_trust(session_id)
-            .await;
+        self.authorization.clear_session_trust(session_id).await;
         self.scheduled_confirms
             .lock()
             .await
@@ -324,7 +318,7 @@ impl SessionSupervisor {
         for actor in &actors {
             actor.clear_runtime().await;
         }
-        self.services().authorization.clear_all_trust().await;
+        self.authorization.clear_all_trust().await;
         self.actors.lock().await.clear();
         self.pending_queue.lock().await.clear();
         self.scheduled_confirms.lock().await.clear();
@@ -547,7 +541,7 @@ impl SessionSupervisor {
             return Some(SessionWaitingReason::ScheduledConfirmation);
         }
 
-        for action in self.services().actions.list_for_session(session_id).await {
+        for action in self.actions.list_for_session(session_id).await {
             let live = matches!(action["status"].as_str(), Some("waiting" | "running"));
             if !live {
                 continue;
@@ -642,26 +636,27 @@ impl SessionSupervisor {
     pub async fn session_is_live(&self, session_id: &str) -> bool {
         self.get_active_session_status(session_id).await.is_some()
     }
-    /// Internal agent wiring access; `SessionSupervisor` is not a cross-crate
-    /// tool-manager service locator.
-    pub(crate) fn get_tools(&self) -> Arc<ToolsManager> {
-        self.tools.clone()
-    }
-
     pub(crate) fn session_store(&self) -> haven_memory::SessionStore {
         self.store.clone()
     }
 
+    /// Return the live action capability needed by Agent background
+    /// consumers. This is intentionally narrower than exposing ToolServices.
+    pub(crate) fn action_service(&self) -> Arc<ActionService> {
+        self.actions.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn tools_for_test(&self) -> Arc<ToolsManager> {
+        self.tools.clone()
+    }
+
     pub async fn cancel_session_actions(&self, session_id: &str) {
-        self.services()
-            .actions
-            .cancel_owned_by_session(session_id)
-            .await;
+        self.actions.cancel_owned_by_session(session_id).await;
     }
 
     pub async fn cancel_session_background_actions(&self, session_id: &str) {
-        self.services()
-            .actions
+        self.actions
             .cancel_owned_background_by_session(session_id)
             .await;
     }

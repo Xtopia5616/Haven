@@ -758,7 +758,9 @@ async fn test_background_completion_reconciles_after_broadcast_loss() {
     // completion from terminal action history and keep it pending until the
     // transcript consumer acknowledges it.
     let actions = Arc::new(ActionService::new());
-    actions.set_action_store(Some(ActionStore::new(db))).await;
+    actions
+        .set_action_store(Some(ActionStore::new(db.clone())))
+        .await;
     let mut rx = actions.take_action_receiver().unwrap();
     let completion = tokio::time::timeout(
         Duration::from_secs(2),
@@ -774,6 +776,11 @@ async fn test_background_completion_reconciles_after_broadcast_loss() {
     assert_eq!(completion.session_id.as_deref(), Some("ses-reconcile"));
     assert_eq!(completion.status_json["output"], "durable output");
 
+    // History deletion is rejected while the durable completion has not
+    // crossed the transcript boundary.
+    assert!(!actions.delete_terminal("act-reconcile").await.unwrap());
+    assert!(db.get_action("act-reconcile").unwrap().is_some());
+
     // A claimed row is not delivered twice before the transcript boundary is
     // durable. Once that boundary is acknowledged, recovery is quiescent.
     assert!(
@@ -787,6 +794,8 @@ async fn test_background_completion_reconciles_after_broadcast_loss() {
     actions
         .acknowledge_background_completion(&completion.action_result_id)
         .await;
+    assert!(actions.delete_terminal("act-reconcile").await.unwrap());
+    assert!(db.get_action("act-reconcile").unwrap().is_none());
     assert!(
         tokio::time::timeout(
             Duration::from_millis(100),
@@ -795,6 +804,50 @@ async fn test_background_completion_reconciles_after_broadcast_loss() {
         .await
         .is_err()
     );
+}
+
+#[tokio::test]
+async fn terminal_history_delete_and_completion_ack_are_atomic() {
+    let (service, db, action_id, _dir) = terminal_test_service().await;
+    service
+        .mark_finished(
+            &action_id,
+            "started",
+            "test",
+            "echo terminal-test",
+            "race output".into(),
+            true,
+            Some(0),
+            false,
+        )
+        .await;
+
+    let ack_store = ActionStore::new(db.clone());
+    let (delete_result, ack_result) = tokio::join!(
+        service.delete_terminal(&action_id),
+        ack_store.acknowledge_completion(action_id.clone()),
+    );
+    let deleted = delete_result.unwrap();
+    let acknowledged = ack_result.unwrap();
+
+    // If delete wins the SQLite writer race, acknowledgement must have won
+    // first; otherwise the action and its pending completion remain intact.
+    if deleted {
+        assert!(acknowledged);
+        assert!(db.get_action(&action_id).unwrap().is_none());
+    } else {
+        assert!(db.get_action(&action_id).unwrap().is_some());
+        let pending: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM action_completion_outbox
+                 WHERE action_id = ?1 AND delivered_at IS NULL",
+                [&action_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(pending, i64::from(!acknowledged));
+    }
 }
 
 #[cfg(windows)]

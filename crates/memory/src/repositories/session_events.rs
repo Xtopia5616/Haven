@@ -16,6 +16,7 @@ use haven_common::SessionStatus;
 use haven_common::media::MediaInput;
 use haven_common::types::MessageAttachment;
 use rusqlite::OptionalExtension;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -418,6 +419,32 @@ impl SessionStore {
     pub fn new(db: Arc<Database>) -> Self {
         let (live_tx, _) = tokio::sync::broadcast::channel(256);
         Self { db, live_tx }
+    }
+
+    /// Mark orphaned running sessions as errored through the typed session
+    /// persistence boundary. The underlying Database operation retains its
+    /// partial-message promotion and cache invalidation semantics.
+    pub async fn finalize_orphaned_running_sessions(&self) -> anyhow::Result<usize> {
+        self.db
+            .run_blocking(|db| db.finalize_orphaned_running_sessions())
+            .await
+    }
+
+    /// Delete sessions older than the supplied retention window through the
+    /// typed session boundary. The repository operation remains responsible
+    /// for session-scoped memory cleanup and cache invalidation.
+    pub async fn delete_old_sessions(&self, retention_days: u32) -> anyhow::Result<usize> {
+        self.db
+            .run_blocking(move |db| db.delete_old_sessions(retention_days))
+            .await
+    }
+
+    /// Return host-managed attachment paths still referenced by messages.
+    /// This is a read-only typed port used by media retention cleanup.
+    pub async fn list_managed_attachment_paths(&self) -> anyhow::Result<Vec<PathBuf>> {
+        self.db
+            .run_blocking(|db| db.list_managed_attachment_paths())
+            .await
     }
 
     /// Persist a session lifecycle status on SQLite's blocking pool.
@@ -3041,6 +3068,26 @@ mod tests {
         attachment.asset_id = Some(haven_common::types::new_id("asset"));
         attachment.filename = Some(filename.to_owned());
         attachment
+    }
+
+    #[tokio::test]
+    async fn session_store_cleanup_ports_preserve_session_semantics() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let store = SessionStore::new(db.clone());
+        let running = db.create_session("running").unwrap();
+        db.update_session_status(&running.id, SessionStatus::Running)
+            .unwrap();
+
+        assert_eq!(store.finalize_orphaned_running_sessions().await.unwrap(), 1);
+        assert_eq!(
+            db.get_session(&running.id).unwrap().unwrap().status,
+            SessionStatus::Error
+        );
+
+        let retained = db.create_session("retained before cleanup").unwrap();
+        assert_eq!(store.delete_old_sessions(0).await.unwrap(), 2);
+        assert_eq!(db.count_sessions().unwrap(), 0);
+        assert!(db.get_session(&retained.id).unwrap().is_none());
     }
 
     #[tokio::test]

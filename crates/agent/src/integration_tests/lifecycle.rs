@@ -185,7 +185,11 @@ fn agent_build_constructor_works() {
     p.push(format!("haven_agent_build_{}.db", uuid::Uuid::new_v4()));
     let db = Arc::new(Database::open(&p).unwrap());
     let tools = Arc::new(ToolsManager::new());
-    let executor = Arc::new(SessionSupervisor::new_for_test(db.clone(), tools, 1));
+    let executor = Arc::new(SessionSupervisor::new_for_test(
+        db.clone(),
+        tools.clone(),
+        1,
+    ));
     let client = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
     let router = Arc::new(LlmRouter::new_with_clients(
         client.clone(),
@@ -195,7 +199,16 @@ fn agent_build_constructor_works() {
     ));
     let context_limits = ContextLimitsConfig::default();
     let memory_service = memory_service_for_test(db.clone(), router.clone(), &context_limits);
-    let agent = AgentLayer::build(memory_service, executor, router, 10, 20, context_limits).agent;
+    let agent = AgentLayer::build(
+        memory_service,
+        executor,
+        tools,
+        router,
+        10,
+        20,
+        context_limits,
+    )
+    .agent;
     // Verify construction succeeded; no per-session indirection remains.
     assert!(agent.db.get_facts("user").unwrap().is_empty());
     let session = agent.db.create_session("input").unwrap();
@@ -231,7 +244,11 @@ async fn replace_router_and_router_work() {
     p.push(format!("haven_agent_router_{}.db", uuid::Uuid::new_v4()));
     let db = Arc::new(Database::open(&p).unwrap());
     let tools = Arc::new(ToolsManager::new());
-    let executor = Arc::new(SessionSupervisor::new_for_test(db.clone(), tools, 1));
+    let executor = Arc::new(SessionSupervisor::new_for_test(
+        db.clone(),
+        tools.clone(),
+        1,
+    ));
     let client_a = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
     let router_a = Arc::new(LlmRouter::new_with_clients(
         client_a.clone(),
@@ -242,7 +259,16 @@ async fn replace_router_and_router_work() {
     let context_limits = ContextLimitsConfig::default();
     let memory_service = memory_service_for_test(db.clone(), router_a.clone(), &context_limits);
     let agent = Arc::new(
-        AgentLayer::build(memory_service, executor, router_a, 10, 20, context_limits).agent,
+        AgentLayer::build(
+            memory_service,
+            executor,
+            tools,
+            router_a,
+            10,
+            20,
+            context_limits,
+        )
+        .agent,
     );
     // Create a new router via the same mock client factory
     let client_b = Arc::new(FinalAnswerMock) as Arc<dyn LlmClient>;
@@ -416,7 +442,7 @@ async fn terminal_action_result_projection_is_idempotent() {
 #[tokio::test]
 async fn queued_action_result_is_reconciled_after_session_becomes_terminal() {
     let (agent, memory_startup, executor) = make_test_agent_with_startup();
-    let action_service = executor.services().actions.clone();
+    let action_service = executor.action_service();
     action_service
         .set_action_store(Some(ActionStore::new(agent.db.clone())))
         .await;
