@@ -40,6 +40,17 @@ impl ActionStore {
             .await
     }
 
+    /// Acknowledge a completion that has no session owner only if it remains
+    /// unowned at the SQLite write boundary.
+    pub async fn acknowledge_unowned_completion(
+        &self,
+        action_result_id: String,
+    ) -> anyhow::Result<bool> {
+        self.db
+            .run_blocking(move |db| db.acknowledge_unowned_action_completion(&action_result_id))
+            .await
+    }
+
     /// Read persisted actions, newest first, optionally filtered by kind.
     pub async fn list_actions(&self, kind: Option<String>) -> anyhow::Result<Vec<ActionRow>> {
         self.db

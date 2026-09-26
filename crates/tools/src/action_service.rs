@@ -673,6 +673,24 @@ impl ActionService {
         }
     }
 
+    /// Acknowledge a completion with no owning session, guarded against a
+    /// concurrent or subsequent late session binding.
+    pub async fn acknowledge_unowned_background_completion(&self, action_result_id: &str) {
+        let Some(store) = self.action_store.read().await.clone() else {
+            return;
+        };
+        let action_result_id = action_result_id.to_string();
+        if let Err(error) = store
+            .acknowledge_unowned_completion(action_result_id.clone())
+            .await
+        {
+            tracing::warn!(
+                action_result_id = %action_result_id,
+                "failed to acknowledge unowned durable action completion: {error}"
+            );
+        }
+    }
+
     /// Install the UI event sink (called once by the desktop shell).
     pub fn set_event_sink(&self, sink: EventSink) {
         self.event_sink.set_event_sink(sink);
@@ -1706,8 +1724,9 @@ impl ActionService {
     /// after a background tool call so `cancel_for_session` can clean it up.
     ///
     /// If completion committed before binding, the transactional outbox owner
-    /// update makes the pending result recoverable for this session. Binding
-    /// never republishes a terminal completion.
+    /// update makes the pending result recoverable for this session, including
+    /// when the no-owner completion was already acknowledged. Binding never
+    /// republishes a terminal completion in persistent mode.
     pub async fn attach_session(&self, action_id: &str, session_id: &str) {
         let _mutation = self.spawn_gate.lock().await;
         {

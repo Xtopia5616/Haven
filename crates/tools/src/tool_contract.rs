@@ -1572,8 +1572,9 @@ pub trait Tool: Send + Sync {
     }
 
     /// Whether this tool streams live output to the chat card while running
-    /// (`agent:tool_output`). When true, `_session_id` and `_step_id` are
-    /// injected privately so the tool can key preview events to the card.
+    /// (`agent:tool_output`). When true, `_session_id` is injected privately
+    /// whenever the caller has a session, while `_step_id` is injected only
+    /// when the caller has a trusted step id.
     fn supports_live_output(&self) -> bool {
         false
     }

@@ -408,6 +408,41 @@ async fn persistent_late_attach_updates_outbox_without_republishing_completion()
 }
 
 #[tokio::test]
+async fn late_attach_reopens_completion_after_unowned_ack() {
+    let (service, db, action_id, _dir) = terminal_test_service().await;
+    let mut rx = service.take_action_receiver().unwrap();
+    service
+        .mark_finished(
+            &action_id,
+            "started",
+            "test",
+            "echo terminal-test",
+            "late owner output".into(),
+            true,
+            Some(0),
+            false,
+        )
+        .await;
+    let initial = tokio::time::timeout(Duration::from_secs(1), recv_background(&mut rx))
+        .await
+        .expect("committed completion published");
+    assert!(initial.session_id.is_none());
+
+    service
+        .acknowledge_unowned_background_completion(&initial.action_result_id)
+        .await;
+    service.attach_session(&action_id, "ses-late-owner").await;
+
+    let pending = service
+        .claim_pending_background_completion()
+        .await
+        .expect("late binding must reopen the durable completion");
+    assert_eq!(pending.session_id.as_deref(), Some("ses-late-owner"));
+    assert!(!service.delete_terminal(&action_id).await.unwrap());
+    assert!(db.get_action(&action_id).unwrap().is_some());
+}
+
+#[tokio::test]
 async fn session_cleanup_keeps_running_action_until_cancel_commit() {
     let (service, db, action_id, _dir) = terminal_test_service().await;
     let session_id = haven_common::types::new_id("ses");

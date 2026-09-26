@@ -25,7 +25,7 @@
 - `ActionStatus::can_transition_to` 和 `action_terminal::can_claim_terminal` 是状态/终态仲裁的集中策略。持久化 status 变化由 kind/current-status 条件 CAS 竞争；scheduled fire、取消和终态提交仍由 ActionService 按各自路径管理。background terminal row 与 completion outbox 在同一事务提交。
 - admission 与部分 scheduled mutation 经 `spawn_gate` 串行；终态持久化 worker 使用 terminal-transition guard。terminal history 删除在本 ADR 审计时只取得 `spawn_gate`，不能与所有 background terminal commit/retry 和 scheduled terminal retry 形成完整的共同临界区；completion ack 前拒绝删除及 ack/delete writer race 随后由 ADR 0374 收口。
 - completion outbox 对 `actions.id` 有 `ON DELETE CASCADE` 外键。产品已确定：terminal history 在 completion ack 前拒绝删除；因此删除必须与 outbox ack 使用同一 SQLite writer 原子边界，不能仅靠应用层先读 pending 再删除。该 guard 与竞态回归见 ADR 0374。
-- 该决定不改变 completion 的 retry/delivery 语义，也不把 completion 从 action history 中拆成独立 owner；未确认结果仍保留 durable action/outbox，直到 Agent transcript projection 完成并 ack。
+- completion delivery 仍以 transcript projection 后 ack 为主路径；无 owner 结果可由 Agent 收口，但须在同一 SQLite 写入中确认 action 与 outbox 都仍无 owner。迟到绑定会重新打开该 outbox，避免 stale 无 owner 事件吞掉 session 结果（ADR 0374）。该例外不把 completion 从 action history 中拆成独立 owner。
 
 ## 后续产品决策（2026-09-26）
 

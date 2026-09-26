@@ -273,8 +273,8 @@ impl Database {
             )?;
             conn.execute(
                 "UPDATE action_completion_outbox
-                 SET session_id = ?2, claimed_until = NULL
-                 WHERE action_id = ?1 AND delivered_at IS NULL",
+                 SET session_id = ?2, claimed_until = NULL, delivered_at = NULL
+                 WHERE action_id = ?1 AND session_id IS NULL",
                 rusqlite::params![id, session_id],
             )?;
             Ok::<_, anyhow::Error>(())

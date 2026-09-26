@@ -36,6 +36,11 @@ service locator 形状继续扩散到 Agent wiring。
 6. Terminal history 删除与 completion outbox 共用 SQLite writer 原子边界：删除前先补齐可能缺失的
    background completion outbox，并仅在所有关联 completion 已 ack（`delivered_at` 非空）时删除。
    未确认 completion 拒绝删除；ack 与 delete 并发时不允许出现“删除成功但 ack 失败”的结果。
+7. 无 owner completion 只能在 action row 与 outbox row 都仍为 `session_id IS NULL` 时确认。
+   迟到绑定与该确认在 SQLite writer 边界竞争：绑定先提交时无 owner ack 失败；ack 先提交时，绑定
+   会在同一事务中写入 owner、清除 claim 并重开 outbox，使 Agent 后续恢复投影。带 session 的
+   live-output 工具即使没有 step id 也在启动时收到私有 session id，避免定时工具调用等路径把
+   已知 owner 推迟到进程启动之后。
 
 ## 保留边界与明确不做
 
@@ -53,7 +58,8 @@ service locator 形状继续扩散到 Agent wiring。
 
 `SessionStore` 回归覆盖 typed cleanup port 保留孤儿运行会话转 `Error` 的语义，及 retention 删除
 的计数/最终空库结果。ActionService 回归覆盖未 ack completion 的拒绝删除、ack 后删除，以及
-ack/delete writer race。Agent 既有 catalog、授权、resume、action completion 和 tool execution
+ack/delete writer race、ownerless ack 与迟到绑定两个 writer 顺序。Tools 回归覆盖无 step id 时
+仍注入可信 session id。Agent 既有 catalog、授权、resume、action completion 和 tool execution
 测试继续通过显式 manager wiring 构造。验证命令：
 
 ```text

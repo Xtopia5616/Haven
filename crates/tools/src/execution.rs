@@ -131,8 +131,7 @@ impl AuthorizedExecutor<'_> {
             ));
         }
         if let Some(obj) = exec_input.as_object_mut() {
-            let want_session =
-                tool.requires_session_id() || (tool.supports_live_output() && step_id.is_some());
+            let want_session = tool.requires_session_id() || tool.supports_live_output();
             if want_session && let Some(tid) = session_id {
                 obj.insert("_session_id".into(), serde_json::json!(tid));
             }

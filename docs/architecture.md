@@ -459,7 +459,7 @@ Rust bridge 只为 background 提供 `action:output`，scheduled action 不持�
 Action 管理写入口经 ADR 0373 审计：Tauri、`actions`/`schedule` 工具、timer worker 与 Agent completion 共用一个
 `ActionService`；`ActionStore` 仍是生产持久化写边界。`schedule.set` 只创建新 action，没有 update-existing 或手动
 trigger command，`ToolConcurrency` 也不是跨 Tauri/worker 的互斥机制。terminal history delete 只接受终态，但其
-`spawn_gate` 不覆盖所有 terminal CAS/retry；现已由 ADR 0374 收口为 completion ack 前拒绝 history delete，并在同一 SQLite writer 边界协调 ack/delete，保留未确认结果及既有 recovery 语义。
+`spawn_gate` 不覆盖所有 terminal CAS/retry；现已由 ADR 0374 收口为 completion ack 前拒绝 history delete，并在同一 SQLite writer 边界协调 ack/delete。无 owner completion 的 ack 同时校验 action 与 outbox 均未绑定；迟到绑定会重开 outbox，带 session 的 live-output 工具则在无 step id 时也于 spawn 前绑定 owner。
 `InteractionRequest`（`haven-agent/src/interaction.rs`）
 是 ask、confirm 和 scheduled confirm 的共同生命周期投影，快照通过 `interactions` 保存当前
 请求；旧快照不做运行时兼容读取，新的交互状态以 `Pending → Resolved | Expired | Cancelled`

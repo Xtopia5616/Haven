@@ -485,7 +485,7 @@ impl AgentLayer {
                             "acknowledging background completion without an owning session"
                         );
                         action_service
-                            .acknowledge_background_completion(&comp.action_result_id)
+                            .acknowledge_unowned_background_completion(&comp.action_result_id)
                             .await;
                         continue;
                     };

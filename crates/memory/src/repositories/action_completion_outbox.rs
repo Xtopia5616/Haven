@@ -226,6 +226,32 @@ impl Database {
         )?;
         Ok(changed > 0)
     }
+
+    /// Acknowledge an unowned result only while both durable owner records are
+    /// still empty. A late session binding runs as a SQLite writer too, so it
+    /// either wins first and prevents this acknowledgement or reopens the row
+    /// after an unowned acknowledgement wins.
+    pub fn acknowledge_unowned_action_completion(
+        &self,
+        action_result_id: &str,
+    ) -> anyhow::Result<bool> {
+        let conn = self.conn();
+        let changed = conn.execute(
+            "UPDATE action_completion_outbox
+             SET delivered_at = datetime('now'), claimed_until = NULL
+             WHERE action_result_id = ?1
+               AND delivered_at IS NULL
+               AND session_id IS NULL
+               AND EXISTS (
+                   SELECT 1 FROM actions
+                   WHERE actions.id = action_completion_outbox.action_id
+                     AND actions.kind = 'background'
+                     AND actions.session_id IS NULL
+               )",
+            rusqlite::params![action_result_id],
+        )?;
+        Ok(changed > 0)
+    }
 }
 
 use rusqlite::OptionalExtension;
@@ -295,6 +321,71 @@ mod tests {
             .unwrap();
         let reclaimed = db.claim_action_completion().unwrap().unwrap();
         assert_eq!(reclaimed.action_result_id, first.action_result_id);
+    }
+
+    #[test]
+    fn late_owner_binding_reopens_an_acknowledged_unowned_completion() {
+        let db = Database::open_in_memory().unwrap();
+        db.save_action("act-late-owner", None, "echo late", "start")
+            .unwrap();
+        db.finish_action(
+            "act-late-owner",
+            ActionStatus::Completed,
+            Some("late output"),
+            None,
+            None,
+            None,
+            Some(0),
+            "finish",
+        )
+        .unwrap();
+
+        assert!(db.claim_action_completion().unwrap().is_some());
+        assert!(db.acknowledge_action_completion("act-late-owner").unwrap());
+        db.update_action_session("act-late-owner", "ses-late-owner")
+            .unwrap();
+
+        let completion = db
+            .claim_action_completion()
+            .unwrap()
+            .expect("late binding must make the completion pending again");
+        assert_eq!(completion.session_id.as_deref(), Some("ses-late-owner"));
+        assert_eq!(completion.status_json["output"], "late output");
+        assert!(!db.delete_action("act-late-owner").unwrap());
+    }
+
+    #[test]
+    fn unowned_ack_is_rejected_after_owner_binding() {
+        let db = Database::open_in_memory().unwrap();
+        db.save_action("act-owner-wins", None, "echo owner", "start")
+            .unwrap();
+        db.finish_action(
+            "act-owner-wins",
+            ActionStatus::Completed,
+            Some("owned output"),
+            None,
+            None,
+            None,
+            Some(0),
+            "finish",
+        )
+        .unwrap();
+        assert!(db.claim_action_completion().unwrap().is_some());
+
+        db.update_action_session("act-owner-wins", "ses-owner-wins")
+            .unwrap();
+        assert!(
+            !db.acknowledge_unowned_action_completion("act-owner-wins")
+                .unwrap()
+        );
+        assert_eq!(
+            db.claim_action_completion()
+                .unwrap()
+                .unwrap()
+                .session_id
+                .as_deref(),
+            Some("ses-owner-wins")
+        );
     }
 
     #[test]

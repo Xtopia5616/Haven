@@ -1419,6 +1419,56 @@ async fn test_session_catalog_version_does_not_invalidate_other_sessions() {
 }
 
 #[tokio::test]
+async fn live_output_tools_receive_session_without_step_id() {
+    use std::sync::Mutex;
+
+    struct CaptureInput(Arc<Mutex<Option<Value>>>);
+    #[async_trait::async_trait]
+    impl Tool for CaptureInput {
+        fn name(&self) -> String {
+            "capture_live_input".into()
+        }
+        fn description(&self) -> String {
+            "capture trusted execution metadata".into()
+        }
+        fn risk_level(&self, _: &Value) -> RiskLevel {
+            RiskLevel::Safe
+        }
+        fn input_schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+        fn supports_live_output(&self) -> bool {
+            true
+        }
+        async fn execute(&self, input: Value, _: CancellationToken) -> anyhow::Result<ToolResult> {
+            *self.0.lock().unwrap() = Some(input);
+            Ok(ToolResult::ok(json!({})))
+        }
+    }
+
+    let mgr = ToolsManager::new();
+    let captured = Arc::new(Mutex::new(None));
+    mgr.registry()
+        .register(Arc::new(CaptureInput(captured.clone())))
+        .await
+        .unwrap();
+
+    mgr.execute_tool_with_step(
+        Some("ses-live-output"),
+        "capture_live_input",
+        json!({"_session_id": "ses-forged", "_step_id": "step-forged"}),
+        CancellationToken::new(),
+        None,
+    )
+    .await
+    .unwrap();
+
+    let captured = captured.lock().unwrap().clone().unwrap();
+    assert_eq!(captured["_session_id"], "ses-live-output");
+    assert!(captured.get("_step_id").is_none());
+}
+
+#[tokio::test]
 async fn test_build_mcp_index_filters_disabled() {
     use haven_common::config::McpServerConfig;
 
