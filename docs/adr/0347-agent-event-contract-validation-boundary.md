@@ -1,5 +1,7 @@
 # ADR 0347：Agent event contract validation boundary
 
+> ADR 0380 supersedes this decision's acceptance of unknown tool outcome, retry, idempotency, and operation-scope values. Unknown additive fields and explicitly dynamic payloads remain ignored/preserved as described here.
+
 - 状态：已采纳（2026-09-25）
 - 范围：`events.rs` 的 Agent wire DTO、`event_bridge.rs::TauriEmitter`、`contracts/agent.ts` 与 `events.ts` listener adapter
 - 关联：[ADR 0330](0330-session-lifecycle-ui-contract-mapper.md)、[ADR 0335](0335-action-board-ui-contract-mapper.md)、[ADR 0346](0346-app-event-listener-contract-boundary.md)

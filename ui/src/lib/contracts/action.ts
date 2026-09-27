@@ -75,23 +75,16 @@ function isActionKind(value: unknown): value is ActionKind {
 	return value === 'background' || value === 'scheduled';
 }
 
-function mapActionStatus(value: string): ActionStatus {
-	if ((ACTION_STATUSES as readonly string[]).includes(value)) return value as ActionStatus;
-	// Keep the existing fail-closed downgrade for forward/unknown status values.
-	return 'failed';
+function isActionStatus(value: unknown): value is ActionStatus {
+	return (ACTION_STATUSES as readonly unknown[]).includes(value);
 }
 
 function hasValidOptionalFields(payload: WireRecord): boolean {
-	if (
-		payload.status !== undefined &&
-		payload.status !== null &&
-		typeof payload.status !== 'string'
-	) {
+	if (payload.status !== undefined && !isActionStatus(payload.status)) {
 		return false;
 	}
 	if (
 		payload.exit_code !== undefined &&
-		payload.exit_code !== null &&
 		(typeof payload.exit_code !== 'number' ||
 			!Number.isInteger(payload.exit_code) ||
 			payload.exit_code < -2_147_483_648 ||
@@ -101,7 +94,7 @@ function hasValidOptionalFields(payload: WireRecord): boolean {
 	}
 	return OPTIONAL_STRING_FIELDS.every((field) => {
 		const value = payload[field];
-		return value === undefined || value === null || typeof value === 'string';
+		return value === undefined || typeof value === 'string';
 	});
 }
 
@@ -117,7 +110,7 @@ export function mapActionPayload(payload: unknown): ActionPayload | null {
 	if (!hasValidOptionalFields(payload)) return null;
 
 	const mapped: ActionPayload = { id: payload.id, kind: payload.kind };
-	if (typeof payload.status === 'string') mapped.status = mapActionStatus(payload.status);
+	if (isActionStatus(payload.status)) mapped.status = payload.status;
 	if (typeof payload.session_id === 'string') mapped.sessionId = payload.session_id;
 	if (typeof payload.started_at === 'string') mapped.startedAt = payload.started_at;
 	if (typeof payload.finished_at === 'string') mapped.finishedAt = payload.finished_at;

@@ -18,8 +18,6 @@ function makeDependencies(): ChatEventControllerDependencies {
 		adoptDraftMessages: () => false,
 		dispatchSession: vi.fn(),
 		getSessionErrorId: () => null,
-		rememberSessionError: vi.fn(),
-		forgetSessionError: vi.fn(),
 		clearAskAwaiting: vi.fn(),
 		evictTerminalSessionMemory: vi.fn(),
 		clearStepBlockIds: vi.fn(),

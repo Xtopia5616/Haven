@@ -1416,10 +1416,8 @@ impl SessionStore {
     /// Commit an Agent transcript intent on the blocking pool, with optional
     /// cooperative cancellation for the SQLite operation.
     ///
-    /// A missing session row historically produced an empty result for live
-    /// Agent transcript writes. Keep that compatibility check inside this
-    /// boundary; all event and projection SQL remains owned by
-    /// [`Self::commit_transcript`].
+    /// The session foreign key rejects writes after session deletion; no
+    /// transcript is silently discarded for a missing session.
     pub async fn commit_transcript_cancellable(
         &self,
         session_id: &str,
@@ -1428,12 +1426,7 @@ impl SessionStore {
     ) -> anyhow::Result<SessionCommitResult> {
         let store = self.clone();
         let session_id = session_id.to_owned();
-        let write = move |db: &Database| {
-            if db.get_session(&session_id)?.is_none() {
-                return Ok(SessionCommitResult::default());
-            }
-            store.commit_transcript(&session_id, &committed)
-        };
+        let write = move |_db: &Database| store.commit_transcript(&session_id, &committed);
 
         match cancel {
             Some(cancel) => self.db.run_blocking_cancellable(cancel, write).await,
@@ -1679,8 +1672,8 @@ impl SessionStore {
     }
 
     /// Append one transcript event on SQLite's blocking pool and return its
-    /// durable sequence. Preserve the live-loop compatibility behavior for a
-    /// synthetic session without a database row: no write and sequence zero.
+    /// durable sequence. The session foreign key rejects writes for a missing
+    /// session instead of silently returning sequence zero.
     pub async fn append_transcript_async(
         &self,
         session_id: &str,
@@ -1692,10 +1685,7 @@ impl SessionStore {
         let session_id = session_id.to_owned();
         let payload = payload.to_owned();
         self.db
-            .run_blocking(move |db| {
-                if db.get_session(&session_id)?.is_none() {
-                    return Ok(0);
-                }
+            .run_blocking(move |_| {
                 Ok(store
                     .append_transcript(&session_id, &payload, run_id, step_number)?
                     .sequence)
@@ -3264,17 +3254,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn session_store_async_transcript_append_preserves_missing_session_compatibility() {
+    async fn session_store_async_transcript_append_errors_for_missing_session() {
         let (_db, store, _session_id) = store();
         let missing_session_id = haven_common::types::new_id("ses");
         let mut live = store.subscribe();
 
-        assert_eq!(
+        assert!(
             store
                 .append_transcript_async(&missing_session_id, r#"{"type":"synthetic"}"#, 1, 1,)
                 .await
-                .unwrap(),
-            0
+                .is_err()
         );
         assert!(store.read_all(&missing_session_id).unwrap().is_empty());
         assert!(matches!(
@@ -5652,7 +5641,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancellable_session_commit_port_returns_empty_for_missing_session() {
+    async fn cancellable_session_commit_port_errors_for_missing_session() {
         let (_db, store, _session_id) = store();
         let missing_session_id = haven_common::types::new_id("ses");
         let committed = SessionCommitted::transcript(r#"{"type":"missing-session"}"#, 1, 1);
@@ -5663,12 +5652,9 @@ mod tests {
                 committed,
                 Some(CancellationToken::new()),
             )
-            .await
-            .unwrap();
+            .await;
 
-        assert!(result.events.is_empty());
-        assert!(result.message_created_at.is_empty());
-        assert_eq!(result.cursor, SessionCursor::default());
+        assert!(result.is_err());
         assert!(store.read_all(&missing_session_id).unwrap().is_empty());
     }
 

@@ -807,7 +807,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn transcript_append_keeps_synthetic_missing_session_compatibility() {
+    async fn transcript_append_errors_for_missing_session() {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let engine = test_engine(db);
         let missing_session_id = haven_common::types::new_id("ses");
@@ -818,12 +818,11 @@ mod tests {
             message_id: haven_common::types::new_id("step"),
         };
 
-        assert_eq!(
+        assert!(
             engine
                 .append_transcript_record(&missing_session_id, &record, 1, 1)
                 .await
-                .unwrap(),
-            0
+                .is_err()
         );
         assert!(
             engine

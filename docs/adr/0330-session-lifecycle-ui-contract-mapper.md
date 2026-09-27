@@ -1,5 +1,7 @@
 # ADR 0330：Session lifecycle UI contract mapper
 
+> ADR 0380 supersedes this decision's unknown session status and waiting reason downgrades. Omitted optional waiting reasons still map to `null`; explicit null is rejected.
+
 - 状态：已采纳（2026-09-25）
 - 范围：`crates/app-binary/src/events.rs`、`ui/src/lib/contracts/session.ts`、`ui/src/lib/events.ts`
 
@@ -22,8 +24,8 @@ mapper 又依赖编译期类型断言；真实 Tauri payload 的字段缺失或�
   `events.ts` 的 `sessionEventListeners` 与 `registerSessionListener` 共用一个适配 helper，
   丢弃该事件并记录不含 payload 内容的 warning。handler/controller/reducer 只接收完整的
   camelCase DTO。
-- 忽略未知附加字段以容纳 wire 侧的兼容扩展；可选 `waiting_reason` 与 `reason` 缺省时仍规范化为
-  `null`。未知 status 继续降级为 `error`，未知 waiting reason 继续降级为 `null`。
+- 忽略未知附加字段；可选 `waiting_reason` 与 `reason` 缺省时仍规范化为 `null`。未知 status 与
+  waiting reason 的旧降级行为由 ADR 0380 删除，当前会使事件被丢弃。
 - 不做 codegen，也不引入新的事件登记点。这个 mapper 是 Phase 8 第一条显式验证的 UI contract
   边界；其余 action、agent、app、recording 事件与 command request/response 镜像仍待后续生成收口。
 
@@ -37,7 +39,7 @@ mapper 又依赖编译期类型断言；真实 Tauri payload 的字段缺失或�
 
 - Rust/Tauri event channel、payload 字段、生产者、消费者、顺序、幂等要求、session reducer 转换和
   Svelte 5 响应式行为均不变。
-- Mapper 测试覆盖已知 payload、未知附加字段/事件、可选字段、未知 enum 降级及 malformed 必需字段；
+- Mapper 测试覆盖已知 payload、未知附加字段/事件、可选字段、未知 enum 拒绝及 malformed 必需字段；
   listener 测试确认 malformed event 不进入 handler。
 - 验收：`cd ui; corepack pnpm run check`、`corepack pnpm run test:run`、
   `corepack pnpm run build`、`cargo check --workspace --locked`。

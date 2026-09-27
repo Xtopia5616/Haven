@@ -92,15 +92,24 @@ export function mapSessionEvent<K extends SessionEventName>(
 		case 'session:updated':
 		case 'session:completed': {
 			const sessionId = requiredSessionId(payload);
+			const status = mapSessionStatus(payload.status);
+			const waitingReason = mapWaitingReason(payload.waiting_reason);
 			const title = nullableString(payload, 'title');
-			const reason = optionalNullableString(payload, 'reason');
-			if (sessionId === null || title === undefined || reason === undefined) return null;
+			const reason = optionalString(payload, 'reason');
+			if (
+				sessionId === null ||
+				status === null ||
+				waitingReason === undefined ||
+				title === undefined ||
+				reason === undefined
+			)
+				return null;
 			return {
 				...event,
 				payload: {
 					sessionId,
-					status: mapSessionStatus(payload.status),
-					waitingReason: mapWaitingReason(payload.waiting_reason),
+					status,
+					waitingReason,
 					title,
 					reason,
 				},
@@ -137,16 +146,17 @@ export function mapSessionEvent<K extends SessionEventName>(
 	}
 }
 
-function mapSessionStatus(value: unknown): SessionStatus {
+function mapSessionStatus(value: unknown): SessionStatus | null {
 	return (SESSION_STATUSES as readonly string[]).includes(value as string)
 		? (value as SessionStatus)
-		: 'error';
+		: null;
 }
 
-function mapWaitingReason(value: unknown): SessionWaitingReason | null {
+function mapWaitingReason(value: unknown): SessionWaitingReason | null | undefined {
+	if (value === undefined) return null;
 	return (SESSION_WAITING_REASONS as readonly string[]).includes(value as string)
 		? (value as SessionWaitingReason)
-		: null;
+		: undefined;
 }
 
 function isRecord(value: unknown): value is SessionWireRecord {
@@ -169,7 +179,7 @@ function nullableString(payload: SessionWireRecord, field: string): string | nul
 	return value === null || typeof value === 'string' ? value : undefined;
 }
 
-function optionalNullableString(payload: SessionWireRecord, field: string): string | null | undefined {
+function optionalString(payload: SessionWireRecord, field: string): string | null | undefined {
 	if (!Object.prototype.hasOwnProperty.call(payload, field)) return null;
-	return nullableString(payload, field);
+	return typeof payload[field] === 'string' ? (payload[field] as string) : undefined;
 }

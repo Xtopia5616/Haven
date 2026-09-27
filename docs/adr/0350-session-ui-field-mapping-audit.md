@@ -1,5 +1,7 @@
 # ADR 0350: Session UI field mapping audit
 
+> Resume camelCase alias、coercion 与默认字段分支已由 [ADR 0376](0376-session-ui-obsolete-compatibility-removal.md) 删除；本 ADR 的 mapper 边界判断仍有效。
+
 - Status: accepted (2026-09-25)
 - Scope: session lifecycle event mapping, session reducer modules, resume projection helpers, and session command response consumers
 - Related: [ADR 0330](0330-session-lifecycle-ui-contract-mapper.md), [ADR 0346](0346-app-event-listener-contract-boundary.md), [ADR 0347](0347-agent-event-contract-validation-boundary.md), [ADR 0349](0349-session-terminal-cleanup-audit.md)

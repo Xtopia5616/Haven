@@ -54,11 +54,6 @@
 		NEW_ACTION_INTENT_KEY,
 		newSessionIntentStore,
 	} from '$lib/sessionIntentStore.ts';
-	import {
-		rememberSessionError,
-		forgetSessionError,
-		getSessionErrorReason,
-	} from '$lib/sessionErrorStore.ts';
 	import { refreshActions, actionStore } from '$lib/actionStore.ts';
 	import { mediaPlanStore } from '$lib/mediaPlanStore.ts';
 	import { syncStore } from '$lib/syncStore.ts';
@@ -705,7 +700,7 @@
 					sessionId: resumeTarget.sessionId,
 					reason:
 						resumeTarget.errorReason ||
-						getSessionErrorReason(resumeTarget.sessionId) ||
+						appSessionReducer.getSessionErrorReason(resumeTarget.sessionId) ||
 						'本次会话因错误停止，暂未收到更具体的原因。',
 				});
 				retainErroredSession(resumeTarget);
@@ -781,8 +776,6 @@
 			},
 			dispatchSession,
 			getSessionErrorId: () => sessionErrorId,
-			rememberSessionError,
-			forgetSessionError,
 			clearAskAwaiting: (sessionId) => {
 				clearAskAwaiting(sessionId);
 				dispatchSession({ type: 'session/interactions-cleared', sessionId });
@@ -1023,7 +1016,7 @@
 				type: 'session/error-shown',
 				sessionId: last.session.id,
 				reason:
-					getSessionErrorReason(last.session.id) ||
+					appSessionReducer.getSessionErrorReason(last.session.id) ||
 					'本次会话因错误停止，暂未收到更具体的原因。',
 			});
 			retainErroredSession({

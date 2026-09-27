@@ -11,7 +11,6 @@ describe('mapSessionEvent', () => {
 				status: 'paused',
 				waiting_reason: 'ask',
 				title: '',
-				reason: null,
 				future_field: 'ignored',
 			},
 		});
@@ -94,17 +93,17 @@ describe('mapSessionEvent', () => {
 		expect(event).toBeNull();
 	});
 
-	it('fails closed for unknown lifecycle statuses', () => {
+	it('rejects unknown lifecycle statuses', () => {
 		const event = mapSessionEvent({
 			event: 'session:updated',
 			id: 9,
-			payload: { session_id: 'ses-1', status: 'unknown', title: '', reason: null },
+			payload: { session_id: 'ses-1', status: 'unknown', title: '' },
 		});
 
-		expect(event?.payload.status).toBe('error');
+		expect(event).toBeNull();
 	});
 
-	it('degrades an unknown waiting reason to null', () => {
+	it('rejects unknown waiting reasons and accepts omitted values', () => {
 		const event = mapSessionEvent({
 			event: 'session:updated',
 			id: 12,
@@ -116,6 +115,40 @@ describe('mapSessionEvent', () => {
 			},
 		});
 
-		expect(event?.payload.waitingReason).toBeNull();
+		expect(event).toBeNull();
+		expect(
+			mapSessionEvent({
+				event: 'session:updated',
+				id: 13,
+				payload: { session_id: 'ses-1', status: 'paused', title: null },
+			})?.payload.waitingReason,
+		).toBeNull();
+		expect(
+			mapSessionEvent({
+				event: 'session:updated',
+				id: 14,
+				payload: {
+					session_id: 'ses-1',
+					status: 'paused',
+					waiting_reason: null,
+					title: null,
+				},
+			}),
+		).toBeNull();
+	});
+
+	it('rejects explicit null for an omitted optional reason field', () => {
+		expect(
+			mapSessionEvent({
+				event: 'session:updated',
+				id: 15,
+				payload: {
+					session_id: 'ses-1',
+					status: 'paused',
+					title: null,
+					reason: null,
+				},
+			}),
+		).toBeNull();
 	});
 });

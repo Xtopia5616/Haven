@@ -209,10 +209,10 @@ describe('agent IPC contract', () => {
 				idempotency: 'unknown',
 				operation_scope: 'global',
 				result: {
-					outcome: 'future_result_outcome',
-					error_class: 'future_error_class',
-					retry_safety: 'future_retry_safety',
-					retryability: 'future_retryability',
+					outcome: 'timed_out_unknown',
+					error_class: 'unknown_outcome',
+					retry_safety: 'non_idempotent',
+					retryability: 'unknown',
 					verification_hint: null,
 					next_action: 'inspect',
 					assets: ['asset-1'],
@@ -226,14 +226,42 @@ describe('agent IPC contract', () => {
 		expect(event.payload.operationScope).toBe('global');
 		expect(event.payload.eventSeq).toBe(17);
 		expect(event.payload.result).toEqual({
-			outcome: 'future_result_outcome',
-			errorClass: 'future_error_class',
-			retrySafety: 'future_retry_safety',
-			retryability: 'future_retryability',
+			outcome: 'timed_out_unknown',
+			errorClass: 'unknown_outcome',
+			retrySafety: 'non_idempotent',
+			retryability: 'unknown',
 			verificationHint: null,
 			nextAction: 'inspect',
 			assets: ['asset-1'],
 		});
+	});
+
+	it('rejects unknown observation and tool-result enum values', () => {
+		const payload = {
+			session_id: 'ses-1',
+			observation: 'result',
+			tool_name: 'files.read',
+			step_number: 1,
+			run_id: 1,
+			silent: false,
+			action_index: 0,
+			ask_options: [],
+			step_id: 'step-1',
+			outcome: 'future_outcome',
+			idempotency: 'unknown',
+			operation_scope: 'session',
+			result: {
+				outcome: 'succeeded',
+				retry_safety: 'idempotent',
+				retryability: 'retryable',
+				assets: [],
+			},
+		};
+
+		expect(mapAgentEventContract({ event: 'agent:observation', id: 8, payload })).toBeNull();
+		payload.outcome = 'succeeded';
+		payload.result.outcome = 'future_outcome';
+		expect(mapAgentEventContract({ event: 'agent:observation', id: 8, payload })).toBeNull();
 	});
 
 	it('maps the current compaction payload', () => {

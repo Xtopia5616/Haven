@@ -1,5 +1,7 @@
 # ADR 0245：会话错误原因缓存归 SessionReducer
 
+> `sessionErrorStore` 转发层已由 [ADR 0376](0376-session-ui-obsolete-compatibility-removal.md) 删除；本 ADR 中保留兼容 facade 的决定已被后续实现取代。
+
 - 状态：已采纳（2026-09-24）
 - 范围：UI 进程内的历史会话错误原因
 - 关联：架构降复杂度重构路线图阶段 8

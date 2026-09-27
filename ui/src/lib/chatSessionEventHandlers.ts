@@ -15,8 +15,6 @@ export interface ChatSessionEventContext {
 	adoptDraftMessages: (sessionId: string) => boolean;
 	dispatchSession: (action: SessionAction) => void;
 	getSessionErrorId: () => string | null;
-	rememberSessionError: (sessionId: string, reason: string) => void;
-	forgetSessionError: (sessionId: string) => void;
 	clearAskAwaiting: (sessionId: string) => void;
 	evictTerminalSessionMemory: (sessionId: string) => void;
 	clearStepBlockIds: (sessionId: string) => void;
@@ -43,8 +41,6 @@ export function createChatSessionEventHandlers({
 	adoptDraftMessages,
 	dispatchSession,
 	getSessionErrorId,
-	rememberSessionError,
-	forgetSessionError,
 	clearAskAwaiting,
 	evictTerminalSessionMemory,
 	clearStepBlockIds,
@@ -123,7 +119,10 @@ export function createChatSessionEventHandlers({
 				});
 			}
 			if (shouldForgetError) {
-				forgetSessionError(data.sessionId);
+				dispatchSession({
+					type: 'session/error-reason-forgotten',
+					sessionId: data.sessionId,
+				});
 			}
 			if (isPausedStatus(data.status)) {
 				// Pausing or interrupting preserves the partial text for resume, but
@@ -167,7 +166,11 @@ export function createChatSessionEventHandlers({
 		'session:error': (event) => {
 			const { sessionId, error } = event.payload;
 			dispatchSession({ type: 'session/error-shown', sessionId, reason: error });
-			rememberSessionError(sessionId, error);
+			dispatchSession({
+				type: 'session/error-reason-remembered',
+				sessionId,
+				reason: error,
+			});
 			if (sessionId === getActiveSessionId()) {
 				clearAskAwaiting(sessionId);
 				finalizeLiveMessages(sessionId);

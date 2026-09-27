@@ -140,20 +140,6 @@ impl Database {
         Ok(changed > 0)
     }
 
-    /// Compatibility helper for repository callers that complete a scheduled
-    /// row directly. The row must already be `running`; new runtime paths use
-    /// [`Database::finish_scheduled_action`] so the terminal status records
-    /// the actual trigger outcome.
-    pub fn complete_scheduled_action(&self, id: &str, finished_at: &str) -> anyhow::Result<bool> {
-        let conn = self.conn();
-        let changed = conn.execute(
-            "UPDATE actions SET status = 'completed', started_at = COALESCE(started_at, due_at), finished_at = ?2
-             WHERE id = ?1 AND kind = 'scheduled' AND status = 'running'",
-            rusqlite::params![id, finished_at],
-        )?;
-        Ok(changed > 0)
-    }
-
     /// Cancel a waiting or currently-running scheduled action while retaining
     /// its terminal history.
     pub fn cancel_scheduled_action(&self, id: &str, finished_at: &str) -> anyhow::Result<bool> {
@@ -557,8 +543,13 @@ mod tests {
         .unwrap();
         db.start_scheduled_action("action-1", "2026-08-04T02:00:00Z")
             .unwrap();
-        db.complete_scheduled_action("action-1", "2026-08-04T02:00:01Z")
-            .unwrap();
+        db.finish_scheduled_action(
+            "action-1",
+            ActionStatus::Completed,
+            None,
+            "2026-08-04T02:00:01Z",
+        )
+        .unwrap();
         assert!(db.list_pending_scheduled_actions().unwrap().is_empty());
     }
 
@@ -834,8 +825,13 @@ mod tests {
         .unwrap();
         db.start_scheduled_action("action-1", "2026-08-04T02:00:00Z")
             .unwrap();
-        db.complete_scheduled_action("action-1", "2026-08-04T02:00:01Z")
-            .unwrap();
+        db.finish_scheduled_action(
+            "action-1",
+            ActionStatus::Completed,
+            None,
+            "2026-08-04T02:00:01Z",
+        )
+        .unwrap();
         db.save_action("action-2", None, "echo", "2026-08-09T10:00:00Z")
             .unwrap();
 

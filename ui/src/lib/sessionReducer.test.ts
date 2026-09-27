@@ -16,7 +16,7 @@ const stateWith = (partial: Partial<SessionReducerState>): SessionReducerState =
 });
 
 describe('resume interaction normalization', () => {
-	it('keeps snake_case wire and camelCase compatibility rows on the resume path', () => {
+	it('maps the snake_case resume DTO and skips malformed rows', () => {
 		const requests = resumeInteractions({
 			interactions: [
 				{
@@ -35,8 +35,8 @@ describe('resume interaction normalization', () => {
 					expires_at: '2026-09-25T00:01:00Z',
 				},
 				{
-					id: 'ask-legacy',
-					sessionId: 'ses-legacy',
+					id: 'ask-camel-case',
+					sessionId: 'ses-camel-case',
 					kind: 'ask',
 					status: 'pending',
 					prompt: 'Choose one',
@@ -64,15 +64,6 @@ describe('resume interaction normalization', () => {
 				createdAt: '2026-09-25T00:00:00Z',
 				expiresAt: '2026-09-25T00:01:00Z',
 			},
-			{
-				id: 'ask-legacy',
-				sessionId: 'ses-legacy',
-				kind: 'ask',
-				status: 'pending',
-				prompt: 'Choose one',
-				options: ['A', 'B'],
-				createdAt: '2026-09-25T00:02:00Z',
-			},
 		]);
 	});
 
@@ -83,6 +74,41 @@ describe('resume interaction normalization', () => {
 });
 
 describe('SessionReducer', () => {
+	it('owns normalized per-session error reasons and ignores duplicate or blank updates', () => {
+		const reducer = new SessionReducer();
+		reducer.dispatch({
+			type: 'session/error-reason-remembered',
+			sessionId: 'ses-one',
+			reason: '  网络失败  ',
+		});
+		reducer.dispatch({
+			type: 'session/error-reason-remembered',
+			sessionId: 'ses-two',
+			reason: '超时',
+		});
+
+		const unchanged = reducer.dispatch({
+			type: 'session/error-reason-remembered',
+			sessionId: 'ses-one',
+			reason: '网络失败',
+		});
+		reducer.dispatch({
+			type: 'session/error-reason-remembered',
+			sessionId: 'ses-one',
+			reason: '   ',
+		});
+
+		expect(unchanged).toBe(reducer.getState());
+		expect(reducer.getSessionErrorReason('ses-one')).toBe('网络失败');
+		expect(reducer.getSessionErrorReason('ses-two')).toBe('超时');
+		expect(reducer.getSessionErrorReason('')).toBe('');
+
+		reducer.dispatch({ type: 'session/error-reason-forgotten', sessionId: 'ses-one' });
+		reducer.dispatch({ type: 'session/error-reason-forgotten', sessionId: 'ses-one' });
+		expect(reducer.getSessionErrorReason('ses-one')).toBe('');
+		expect(reducer.getSessionErrorReason('ses-two')).toBe('超时');
+	});
+
 	it('keeps usage projections scoped to their session', () => {
 		const otherStats = {
 			promptTokens: 90,

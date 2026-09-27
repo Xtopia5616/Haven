@@ -1,5 +1,7 @@
 # ADR 0335: Action board UI contract mapper
 
+> ADR 0380 supersedes this decision's unknown action status downgrade to `failed`; unknown status values now reject the row/event.
+
 - Status: Accepted
 - Date: 2026-09-25
 - Scope: `ActionEvent` rows returned by `list_actions` and the four action lifecycle events
@@ -29,10 +31,8 @@ execution data that are not the ActionEvent board projection.
   call it; delete the duplicate TypeScript wire interface and unchecked casts.
 - Require a non-empty string `id` and a known `kind`. A malformed required
   field or declared optional field with an invalid type drops the complete row
-  or event. Unknown additive fields are ignored. Preserve the existing
-  unknown-status downgrade to `failed`; an unknown `kind` fails closed because
-  it selects different board, cancellation, and completion behavior and has no
-  safe fallback.
+  or event. Unknown additive fields are ignored. Unknown `kind` and `status`
+  fail closed.
 - A dropped event/row may produce a generic warning that names only the
   channel or row category. It must not include the payload or user-controlled
   values.
@@ -48,8 +48,7 @@ The board hydration command and lifecycle events now share a runtime-checked
 wire boundary and one camelCase UI DTO. Action fields, ordering, pagination,
 running/terminal filtering, reducer updates, event ordering, idempotency,
 completion delivery, notification text, and UI behavior remain unchanged.
-Unknown status strings keep the prior failed-state fallback; unknown kinds and
-malformed rows/events are discarded before consumers see them. No codegen or
+Unknown kinds/statuses and malformed rows/events are discarded before consumers see them. No codegen or
 second event registration is added.
 
 Remaining handwritten UI contract mirrors include command request/response
@@ -59,7 +58,7 @@ future generation approach remain separate slices.
 
 ## Verification
 
-- Mapper tests cover ordinary and optional fields, unknown status/kind,
+- Mapper tests cover ordinary and optional fields, rejection of unknown status/kind,
   malformed required fields, and opaque JSON `tool_args` handling.
 - Listener tests verify malformed action events are dropped and the warning
   does not contain payload content.

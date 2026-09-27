@@ -31,21 +31,24 @@ describe('action IPC contract', () => {
 		});
 	});
 
-	it('keeps optional fields absent when they are omitted or null', () => {
+	it('keeps omitted optional fields absent and rejects explicit nulls', () => {
 		expect(mapActionPayload({ id: 'act-2', kind: 'scheduled' })).toEqual({
 			id: 'act-2',
 			kind: 'scheduled',
 		});
 		expect(
 			mapActionPayload({ id: 'act-2', kind: 'scheduled', session_id: null, status: null }),
-		).toEqual({ id: 'act-2', kind: 'scheduled' });
+		).toBeNull();
+		expect(mapActionPayload({ id: 'act-2', kind: 'scheduled', exit_code: null })).toBeNull();
 	});
 
-	it('maps unknown statuses to failed and rejects unknown action kinds', () => {
+	it('rejects unknown statuses and action kinds', () => {
 		expect(
 			mapActionPayload({ id: 'act-3', kind: 'background', status: 'unexpected' }),
-		).toEqual({ id: 'act-3', kind: 'background', status: 'failed' });
-		expect(mapActionPayload({ id: 'act-4', kind: 'future-kind', status: 'running' })).toBeNull();
+		).toBeNull();
+		expect(
+			mapActionPayload({ id: 'act-4', kind: 'future-kind', status: 'running' }),
+		).toBeNull();
 	});
 
 	it('fails closed when required fields are missing or malformed', () => {

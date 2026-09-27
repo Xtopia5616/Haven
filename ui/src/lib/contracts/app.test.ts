@@ -45,7 +45,7 @@ describe('app-shell IPC contract', () => {
 		expect(event?.payload).not.toHaveProperty('future_field');
 	});
 
-	it('keeps interaction enum-like strings open and defaults omitted options', () => {
+	it('rejects unknown interaction enum values while defaulting omitted options', () => {
 		const event = mapAppEvent({
 			event: 'interaction:requested',
 			id: 2,
@@ -60,15 +60,10 @@ describe('app-shell IPC contract', () => {
 			},
 		});
 
-		expect(event?.payload).toMatchObject({
-			kind: 'future_kind',
-			status: 'future_status',
-			options: [],
-			riskLevel: 'future_risk',
-		});
+		expect(event).toBeNull();
 	});
 
-	it('preserves MCP externally-tagged unknown status variants and extension fields', () => {
+	it('rejects MCP status variants outside the current enum', () => {
 		const payload = {
 			name: 'filesystem',
 			status: { FutureStatus: { retry_after_ms: 500, detail: 'future' } },
@@ -76,18 +71,21 @@ describe('app-shell IPC contract', () => {
 		};
 		const event = mapAppEvent({ event: 'mcp:status_change', id: 3, payload });
 
-		expect(event?.payload).toEqual(payload);
+		expect(event).toBeNull();
 	});
 
-	it('preserves known MCP status extensions while validating its wrapper', () => {
+	it('projects only the current MCP status DTO fields', () => {
 		const payload = {
 			name: 'filesystem',
-			status: { Offline: { error: 'timeout', retryable: true }, source: 'future' },
+			status: { Offline: { error: 'timeout' } },
 			future_field: 'preserved',
 		};
 		const event = mapAppEvent({ event: 'mcp:status_change', id: 4, payload });
 
-		expect(event?.payload).toEqual(payload);
+		expect(event?.payload).toEqual({
+			name: 'filesystem',
+			status: { Offline: { error: 'timeout' } },
+		});
 	});
 
 	it('preserves confirmed MCP refresh failures on the existing status channel', () => {
@@ -100,12 +98,15 @@ describe('app-shell IPC contract', () => {
 		expect(event?.payload).toEqual(payload);
 	});
 
-	it('validates and preserves the Skills status wrapper', () => {
-		const payload = { op: 'auto_refresh', future_field: 'preserved' };
-		const event = mapAppEvent({ event: 'skills:status_change', id: 5, payload });
+	it.each(['refresh', 'auto_refresh', 'toggle'] as const)(
+		'validates and preserves the Skills status wrapper for %s',
+		(op) => {
+			const payload = { op, future_field: 'preserved' };
+			const event = mapAppEvent({ event: 'skills:status_change', id: 5, payload });
 
-		expect(event?.payload).toEqual(payload);
-	});
+			expect(event?.payload).toEqual(payload);
+		},
+	);
 
 	it('maps hotkey rebind fields once and ignores wire extensions', () => {
 		const event = mapAppEvent({
@@ -148,12 +149,39 @@ describe('app-shell IPC contract', () => {
 				status: 'pending',
 				prompt: 'Confirm',
 				created_at: 'now',
+				summary: null,
+			},
+		},
+		{
+			event: 'interaction:requested',
+			payload: {
+				id: 'conf-1',
+				session_id: 'ses-1',
+				kind: 'confirm',
+				status: 'pending',
+				prompt: 'Confirm',
+				created_at: 'now',
+				action_index: null,
+			},
+		},
+		{
+			event: 'interaction:requested',
+			payload: {
+				id: 'conf-1',
+				session_id: 'ses-1',
+				kind: 'confirm',
+				status: 'pending',
+				prompt: 'Confirm',
+				created_at: 'now',
 				action_index: -1,
 			},
 		},
 		{ event: 'mcp:status_change', payload: { name: 'server', status: 42 } },
 		{ event: 'mcp:status_change', payload: { name: 'server', status: [] } },
 		{ event: 'skills:status_change', payload: { op: false } },
+		{ event: 'skills:status_change', payload: { op: 'future_op' } },
+		{ event: 'app:bootstrap', payload: { status: 'complete' } },
+		{ event: 'tray:status_changed', payload: { status: 'idle', tooltip: 'Haven' } },
 	])('drops malformed required app payloads: $event', ({ event, payload }) => {
 		expect(mapAppEvent({ event, id: 7, payload })).toBeNull();
 	});

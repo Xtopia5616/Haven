@@ -1,5 +1,7 @@
 # ADR-0203：删除 UI 全局 stores Facade，按领域收口状态入口
 
+> `sessionErrorStore` facade 后由 [ADR 0245](0245-session-error-cache-in-reducer.md) 并入 reducer，并最终按 [ADR 0376](0376-session-ui-obsolete-compatibility-removal.md) 删除。
+
 - Status: Accepted
 - Date: 2026-09-22
 - Owners: Haven maintainers

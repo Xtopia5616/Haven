@@ -61,16 +61,6 @@ impl MemoryStore {
             .await
     }
 
-    /// Synchronous compatibility path for construction-only callers that do
-    /// not have a Tokio runtime in which the async port could schedule work.
-    pub fn enqueue_fact_extraction_without_runtime(
-        &self,
-        session_id: &str,
-        bypass_throttle: bool,
-    ) -> anyhow::Result<()> {
-        self.db.enqueue_fact_extraction(session_id, bypass_throttle)
-    }
-
     /// Load durable fact-extraction jobs for live sessions.
     pub async fn pending_fact_extractions_cancellable(
         &self,

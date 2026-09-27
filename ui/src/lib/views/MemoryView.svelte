@@ -11,7 +11,6 @@
 	import { appSessionReducer, resumeInteractions } from '$lib/sessionReducer.ts';
 	import { formatMessageTime } from '$lib/messageFormat.ts';
 	import { addNotification } from '$lib/notificationStore.ts';
-	import { getSessionErrorReason } from '$lib/sessionErrorStore.ts';
 	import { resumeTargetStore } from '$lib/sessionIntentStore.ts';
 	import { isErrorStatus, statusVariant } from '$lib/sessionStatus.ts';
 	import { onMount, onDestroy } from 'svelte';
@@ -301,7 +300,7 @@
 				title: session.title,
 				status: result.session?.status || session.status,
 				wasError,
-				errorReason: wasError ? getSessionErrorReason(session.id) : '',
+				errorReason: wasError ? appSessionReducer.getSessionErrorReason(session.id) : '',
 			});
 			await goto('/');
 		} catch (e) {

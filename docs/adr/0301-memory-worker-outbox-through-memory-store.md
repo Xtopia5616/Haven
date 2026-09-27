@@ -1,5 +1,7 @@
 # ADR 0301：MemoryWorker outbox 持久化通过 MemoryStore
 
+> 第 2 项无 Tokio runtime 的同步 enqueue 入口已由 [ADR 0377](0377-memory-outbox-removes-sync-enqueue-fallback.md) 删除；durable-first 与 outbox marker 所有权决定仍有效。
+
 - 状态：Accepted
 - 日期：2026-09-25
 - 范围：`MemoryWorker` durable fact/summary outbox marker 的读写与 episode text 读取

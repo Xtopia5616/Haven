@@ -604,13 +604,13 @@ session refresh、hotkey 与 model refresh 回调，不持有 Svelte state 或 D
 `SessionTitleUpdatedEvent` 和 `SessionDeletedEvent` 定义；唯一前端转换位于
 `ui/src/lib/contracts/session.ts` 的 `mapSessionEvent`。它把 Rust/Tauri 的 snake_case 字段映射为
 handler/reducer 使用的 camelCase，忽略新增 wire 字段；缺失或类型错误的必需字段会 fail closed
-并由 listener 层记录。可选 `waiting_reason` / `reason` 缺省映射为 `null`，未知 status 降级为
-`error`，未知等待原因降级为 `null`。Rust DTO、channel、payload 与 reducer 语义不变（ADR 0330）。
+并由 listener 层记录。可选 `waiting_reason` / `reason` 缺省映射为 `null`；已提供但不属于当前值集的
+status 或等待原因会丢弃该事件（ADR 0380）。Rust DTO、channel、payload 与 reducer 语义不变（ADR 0330）。
 Action board 与 lifecycle event 共用 Rust `events.rs::ActionEvent` wire DTO：
 `ui/src/lib/contracts/action.ts::mapActionPayload` 是其唯一前端运行时 validator/mapper，
 `actionStore.refreshActions` 的 command rows 和 `events.ts` 的 action lifecycle listeners 都调用它。
-必需 `id`/`kind` 或已声明字段类型无效时丢弃整行/事件；未知附加字段忽略，未知 status 降级为
-`failed`，未知 kind fail closed。mapper 不接触 ActionService completion outbox；动态
+必需 `id`/`kind` 或已声明字段类型无效时丢弃整行/事件；未知附加字段忽略，未知 status 与 kind
+fail closed（ADR 0380）。mapper 不接触 ActionService completion outbox；动态
 `tool_args` 仍是执行/完成边界上的 JSON 扩展字段，不进入 `ActionEvent` UI DTO（ADR 0335）。
 录音与转写事件已完成镜像审计：Rust `events.rs` 的命名 DTO 是 wire shape 权威；
 `ui/src/lib/contracts/recording.ts` 只声明路由消费的 camelCase DTO，并由唯一的
@@ -634,15 +634,15 @@ metrics 响应保持开放以保留动态诊断字段。
 `performanceMetrics.ts` 继续拥有 renderer 计数 provider（ADR 0370）。app-shell 事件的批量
 `appEventListeners` 与单条 `registerAppListener` 共用 `mapAppEvent` adapter；ToolsView 的 MCP/Skills
 刷新监听也经过该入口，布局只拥有 MCP 通知副作用，Skills 不再保留空 listener。Rust MCP status 使用
-serde 外部标记 enum，既有 pass-through mapper 不校验其变体，因此可保留未知变体和附加字段；明确投影的 hotkey/interaction 字段仍只输出
+serde 外部标记 enum，MCP status 只接受当前 Rust DTO variants（ADR 0380）；明确投影的 hotkey/interaction 字段仍只输出
 已知 camelCase DTO 字段。布局通知与 ToolsView 刷新是不同副作用，不做 event dedup。`SessionResumeResponse`
 中的 interactions 仍由原 session resume normalizer 处理。Agent wire DTO 仍由 Rust `events.rs` 定义；
 `contracts/agent.ts::mapAgentEvent` 是唯一 runtime validator/mapper，删除重复的 TS snake_case wire
-interfaces，忽略未知附加字段并透传 enum-like 字符串与动态扩展值。`agentEventListeners` 对 malformed
+interfaces，忽略未知附加字段；工具 outcome、retry、idempotency 与 operation scope 必须匹配当前值集，动态扩展值仍只在显式字段保留（ADR 0380）。`agentEventListeners` 对 malformed
 payload 记录不含 payload 的 warning 并丢弃；聊天页与布局订阅互不重叠，共用同一 session reducer，通知、
 usage fallback 与 media plan 双副作用保持原 owner（ADR 0347）。另保留既有 SessionCompleted/SessionError
 主事件加 `session:updated` secondary fan-out；聊天页终态 handler 会重复执行部分 cleanup，跨 channel 没有共享
-event identity，本切片不修改 session contract/reducer。session、action、recording、settings read、app event 与 agent event contract 已完成对应 mapper/validator 或边界审计（ADR 0330、0335、0340、0341、0346、0347、0348、0350）；session live interaction 与 resume compatibility normalizer 保持各自策略，SessionCompleted/SessionError 跨 channel 仍缺共享 occurrence identity，当前不推断性去重（ADR 0349）。全局 Rust→TypeScript codegen 未引入，其余 command families 仍待按域审计；Settings update payload 仍由 SettingsView 的单一 builder 构造。Action board 的活跃
+event identity，本切片不修改 session contract/reducer。session、action、recording、settings read、app event 与 agent event contract 已完成对应 mapper/validator 或边界审计（ADR 0330、0335、0340、0341、0346、0347、0348、0350、0376）；live interaction event 与 resume snake_case DTO 保持各自 mapper，SessionCompleted/SessionError 跨 channel 仍缺共享 occurrence identity，当前不推断性去重（ADR 0349）。全局 Rust→TypeScript codegen 未引入，其余 command families 仍待按域审计；Settings update payload 仍由 SettingsView 的单一 builder 构造。Action board 的活跃
 `list_actions`/`cancel_action` 经 `actionCommands.ts`；list response 复用 `mapActionPayload`，cancel
 request/result 使用命名 TS contract，`actionStore` 不直接 invoke（ADR 0348）。其余命令仍按域审计，
 不引入全局 codegen。
@@ -756,8 +756,8 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 | 2026-09-25 | §2.5 Tools / §2.6 UI：审计 background/scheduled action board 生命周期投影；复用既有 background terminal transcript finalizer，保留 scheduled 删除、Agent 通知、kind-specific display/cancel 和无 UI event dedup 边界（ADR 0344） |
 | 2026-09-25 | §2.5 Tools：穷举审计 background/scheduled ActionStatus 与 terminal claim；已有纯策略 owner 覆盖唯一共享判断，不新增完整 Job transition policy，记录 trigger/execution 与恢复语义的未决决策（ADR 0352） |
 | 2026-09-25 | §2.5 Tools：scheduled admission 只回收 terminal 内存 entry，保留 Running row 供 Agent terminal callback、取消与 no-consumer recovery 使用；Waiting 恢复、restart cleanup、CAS 和事件顺序保持（ADR 0353） |
-| 2026-09-25 | §2.6 App / UI：ToolsView 的 MCP/Skills 单条订阅统一经过 `mapAppEvent`；保留 MCP 通知与刷新两个不同副作用、未知 status variant 与 pass-through 扩展字段，删除布局无效 Skills listener（ADR 0346） |
-| 2026-09-25 | §2.6 App / UI：Agent 事件删除重复的 snake_case TS wire interfaces，并由唯一 `mapAgentEvent` 校验/映射未知 payload；未知 enum 字符串、动态扩展、usage error fallback、空通知默认与各自副作用 owner 保持。记录 SessionCompleted/SessionError 双 channel fan-out 的既有终态 cleanup 重叠，本切片不改 session contract（ADR 0347） |
+| 2026-09-25 | §2.6 App / UI：ToolsView 的 MCP/Skills 单条订阅统一经过 `mapAppEvent`；保留 MCP 通知与刷新两个不同副作用、未知 status variant 与 pass-through 扩展字段，删除布局无效 Skills listener（unknown status 行为由 ADR 0380 superseded） |
+| 2026-09-25 | §2.6 App / UI：Agent 事件删除重复的 snake_case TS wire interfaces，并由唯一 `mapAgentEvent` 校验/映射未知 payload；未知 enum 字符串、动态扩展、usage error fallback、空通知默认与各自副作用 owner 保持（unknown enum 行为由 ADR 0380 superseded）。记录 SessionCompleted/SessionError 双 channel fan-out 的既有终态 cleanup 重叠，本切片不改 session contract（ADR 0347） |
 | 2026-09-25 | §2.6 App / UI：Action board 活跃 `list_actions`/`cancel_action` 统一经过 typed command boundary；list rows 复用 Action mapper，扁平 request 与 boolean result 有命名类型，wire/error/UI 行为保持（ADR 0348） |
 | 2026-09-25 | §2.6 App / UI：`get_settings` 读取统一经过唯一 `settingsCommand.ts` 入口与开放式根对象 validator；保留未知配置字段/枚举、原错误处理，hotkey event 继续走既有 camelCase mapper，不改 Rust DTO 与保存顺序（ADR 0341） |
 | 2026-09-25 | §2.6 App / UI：录音与转写事件审计确认 Rust DTO 是 wire 权威，前端只保留 camelCase 消费 DTO 和单一 mapper；补充未知 VAD 字符串、扩展字段、畸形默认、channel 集合与到达顺序回归覆盖，无 DTO 或生产逻辑变化（ADR 0340） |

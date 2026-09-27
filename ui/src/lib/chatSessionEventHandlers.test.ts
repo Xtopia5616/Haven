@@ -21,8 +21,6 @@ function handlers(options: {
 		adoptDraftMessages: () => options.adoptedDraft ?? false,
 		dispatchSession: options.dispatchSession,
 		getSessionErrorId: () => null,
-		rememberSessionError: vi.fn(),
-		forgetSessionError: vi.fn(),
 		clearAskAwaiting: vi.fn(),
 		evictTerminalSessionMemory: vi.fn(),
 		clearStepBlockIds: vi.fn(),
@@ -116,7 +114,10 @@ describe('chat session lifecycle handlers', () => {
 	});
 
 	it('passes the failure reason to the active-session error handler', () => {
-		const dispatchSession = vi.fn();
+		const reducer = new SessionReducer();
+		const dispatchSession = vi.fn((action: import('./sessionReducer.ts').SessionAction) =>
+			reducer.dispatch(action),
+		);
 		const eventHandlers = handlers({ activeSessionId: 'ses-error', dispatchSession });
 
 		eventHandlers['session:error']({
@@ -128,6 +129,7 @@ describe('chat session lifecycle handlers', () => {
 			sessionId: 'ses-error',
 			reason: '网络请求超时',
 		});
+		expect(reducer.getSessionErrorReason('ses-error')).toBe('网络请求超时');
 	});
 
 	it('shows the reason for a normally completed active session', () => {

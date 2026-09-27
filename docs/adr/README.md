@@ -362,3 +362,8 @@
 - [0373：Tools Action admin writers 并发边界审计](0373-tools-action-admin-writers-audit.md)
 - [0374：Session 清理 typed ports 与 Agent 工具显式 wiring](0374-typed-session-cleanup-and-explicit-agent-tool-wiring.md)
 - [0375：Dependency-waiting 定时任务的持久化与重启语义](0375-dependency-waiting-restart-policy.md)
+- [0376：删除会话 UI 的过期兼容层](0376-session-ui-obsolete-compatibility-removal.md)
+- [0377：Memory outbox 删除同步 enqueue 兼容入口](0377-memory-outbox-removes-sync-enqueue-fallback.md)
+- [0378：删除重复的定时任务完成 helper](0378-remove-scheduled-action-completion-helper.md)
+- [0379：缺失会话的 transcript 写入直接失败](0379-transcript-writes-fail-for-missing-sessions.md)
+- [0380：收紧前端 event 枚举校验](0380-strict-frontend-event-enum-validation.md)

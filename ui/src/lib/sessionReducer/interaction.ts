@@ -82,44 +82,60 @@ export function reduceInteraction(
 	return inputState;
 }
 
+const INTERACTION_KINDS = ['ask', 'confirm', 'scheduled_confirm'] as const;
+const INTERACTION_STATUSES = ['pending', 'resolved', 'expired', 'cancelled'] as const;
+const RISK_LEVELS = ['safe', 'low', 'medium', 'high', 'critical'] as const;
+
 function normalizeInteraction(raw: unknown): InteractionRequest | null {
 	if (!raw || typeof raw !== 'object') return null;
 	const value = raw as Record<string, unknown>;
 	const id = typeof value.id === 'string' ? value.id : '';
-	const sessionValue = value.sessionId ?? value.session_id;
-	const sessionId = typeof sessionValue === 'string' ? sessionValue : '';
-	if (!id || !sessionId) return null;
-	const riskValue = value.riskLevel ?? value.risk_level;
+	const sessionId = typeof value.session_id === 'string' ? value.session_id : '';
+	const kind = value.kind;
+	const status = value.status;
+	const prompt = value.prompt;
+	const options = value.options;
+	const createdAt = value.created_at;
+	if (
+		!id ||
+		!sessionId ||
+		typeof kind !== 'string' ||
+		!INTERACTION_KINDS.includes(kind as (typeof INTERACTION_KINDS)[number]) ||
+		typeof status !== 'string' ||
+		!INTERACTION_STATUSES.includes(status as (typeof INTERACTION_STATUSES)[number]) ||
+		typeof prompt !== 'string' ||
+		!Array.isArray(options) ||
+		!options.every((option) => typeof option === 'string') ||
+		typeof createdAt !== 'string'
+	)
+		return null;
+	const toolName = value.tool_name;
+	const riskLevel = value.risk_level;
+	const summary = value.summary;
+	const permissionKey = value.permission_key;
+	const invocationStepId = value.invocation_step_id;
+	const actionIndex = value.action_index;
+	const toolCallId = value.tool_call_id;
+	const expiresAt = value.expires_at;
 	return {
 		id,
 		sessionId,
-		kind: value.kind as InteractionRequest['kind'],
-		status: value.status as InteractionRequest['status'],
-		prompt: typeof value.prompt === 'string' ? value.prompt : '',
-		options: Array.isArray(value.options) ? value.options.map(String) : [],
-		...((value.toolName ?? value.tool_name)
-			? { toolName: String(value.toolName ?? value.tool_name) }
+		kind: kind as InteractionRequest['kind'],
+		status: status as InteractionRequest['status'],
+		prompt,
+		options,
+		...(typeof toolName === 'string' ? { toolName } : {}),
+		...(typeof riskLevel === 'string' &&
+		RISK_LEVELS.includes(riskLevel as (typeof RISK_LEVELS)[number])
+			? { riskLevel: riskLevel as InteractionRequest['riskLevel'] }
 			: {}),
-		...(typeof riskValue === 'string'
-			? { riskLevel: riskValue as InteractionRequest['riskLevel'] }
-			: {}),
-		...(value.summary != null ? { summary: String(value.summary) } : {}),
-		...((value.permissionKey ?? value.permission_key)
-			? { permissionKey: String(value.permissionKey ?? value.permission_key) }
-			: {}),
-		...((value.invocationStepId ?? value.invocation_step_id)
-			? { invocationStepId: String(value.invocationStepId ?? value.invocation_step_id) }
-			: {}),
-		...((value.actionIndex ?? value.action_index) != null
-			? { actionIndex: Number(value.actionIndex ?? value.action_index) }
-			: {}),
-		...((value.toolCallId ?? value.tool_call_id)
-			? { toolCallId: String(value.toolCallId ?? value.tool_call_id) }
-			: {}),
-		createdAt: String(value.createdAt ?? value.created_at ?? new Date().toISOString()),
-		...((value.expiresAt ?? value.expires_at)
-			? { expiresAt: String(value.expiresAt ?? value.expires_at) }
-			: {}),
+		...(typeof summary === 'string' ? { summary } : {}),
+		...(typeof permissionKey === 'string' ? { permissionKey } : {}),
+		...(typeof invocationStepId === 'string' ? { invocationStepId } : {}),
+		...(typeof actionIndex === 'number' && Number.isFinite(actionIndex) ? { actionIndex } : {}),
+		...(typeof toolCallId === 'string' ? { toolCallId } : {}),
+		createdAt,
+		...(typeof expiresAt === 'string' ? { expiresAt } : {}),
 	};
 }
 

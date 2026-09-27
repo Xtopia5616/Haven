@@ -1,5 +1,7 @@
 # ADR 0346：App event listener contract boundary
 
+> ADR 0380 supersedes this decision's acceptance of unknown interaction enum values and MCP status variants/fields. The single mapper and listener boundary remain.
+
 - 状态：已采纳（2026-09-25）
 - 范围：app-shell Tauri event listeners、`contracts/app.ts` mapper、布局与 ToolsView 的 app event effects
 - 关联：[ADR 0330](0330-session-lifecycle-ui-contract-mapper.md)、[ADR 0335](0335-action-board-ui-contract-mapper.md)、[ADR 0340](0340-recording-event-contract-audit.md)、[ADR 0341](0341-settings-command-contract-boundary.md)

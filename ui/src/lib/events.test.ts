@@ -277,7 +277,7 @@ describe('registerAppListener', () => {
 		});
 	});
 
-	it('preserves open status enums and additive fields for app events', async () => {
+	it('validates known app status variants and ignores additive fields', async () => {
 		const handler = vi.fn();
 		mocks.listen.mockResolvedValueOnce(vi.fn());
 
@@ -285,12 +285,16 @@ describe('registerAppListener', () => {
 		const rawListener = mocks.listen.mock.calls[0][1];
 		const payload = {
 			name: 'server',
-			status: { FutureStatus: { retry_after_ms: 500 } },
+			status: { Offline: { error: 'not available' } },
 			future_field: 'preserved',
 		};
 		rawListener({ event: 'mcp:status_change', id: 9, payload });
 
-		expect(handler).toHaveBeenCalledWith({ event: 'mcp:status_change', id: 9, payload });
+		expect(handler).toHaveBeenCalledWith({
+			event: 'mcp:status_change',
+			id: 9,
+			payload: { name: 'server', status: { Offline: { error: 'not available' } } },
+		});
 	});
 
 	it('drops malformed one-off app events before invoking handlers', async () => {
@@ -374,11 +378,24 @@ describe('agentEventListeners', () => {
 	it('maps each arrival before dispatch and preserves arrival order', () => {
 		const received: string[] = [];
 		const listeners = agentEventListeners({
-			'agent:thought': (event) => received.push(`${event.payload.sessionId}:${event.payload.thought}`),
+			'agent:thought': (event) =>
+				received.push(`${event.payload.sessionId}:${event.payload.thought}`),
 		});
 		const arrivals = [
-			{ session_id: 'ses-1', thought: 'first', step_number: 1, run_id: 1, message_id: 'step-1' },
-			{ session_id: 'ses-1', thought: 'second', step_number: 2, run_id: 1, message_id: 'step-2' },
+			{
+				session_id: 'ses-1',
+				thought: 'first',
+				step_number: 1,
+				run_id: 1,
+				message_id: 'step-1',
+			},
+			{
+				session_id: 'ses-1',
+				thought: 'second',
+				step_number: 2,
+				run_id: 1,
+				message_id: 'step-2',
+			},
 		];
 
 		arrivals.forEach((payload, id) => {
@@ -396,7 +413,13 @@ describe('agentEventListeners', () => {
 		listeners['agent:thought']({
 			event: 'agent:thought',
 			id: 4,
-			payload: { session_id: 'ses-1', thought: privateValue, step_number: 'bad', run_id: 2, message_id: 'step-1' },
+			payload: {
+				session_id: 'ses-1',
+				thought: privateValue,
+				step_number: 'bad',
+				run_id: 2,
+				message_id: 'step-1',
+			},
 		} as never);
 
 		expect(handler).not.toHaveBeenCalled();

@@ -21,6 +21,19 @@ export const AGENT_EVENT_NAMES = [
 ] as const;
 
 export type AgentEventName = (typeof AGENT_EVENT_NAMES)[number];
+export type ToolObservationOutcome = 'succeeded' | 'failed' | 'cancelled' | 'timed_out' | 'unknown';
+export type ToolResultOutcome =
+	'succeeded' | 'failed' | 'cancelled' | 'timed_out_and_terminated' | 'timed_out_unknown';
+export type ToolErrorClass =
+	| 'transient'
+	| 'unknown_outcome'
+	| 'validation'
+	| 'permission'
+	| 'side_effect_may_have_happened'
+	| 'other';
+export type ToolRetrySafety = 'idempotent' | 'non_idempotent' | 'unknown';
+export type ToolRetryability = 'retryable' | 'not_retryable' | 'unknown';
+export type ToolOperationScope = 'global' | 'session';
 
 export interface AgentThoughtPayload {
 	sessionId: string;
@@ -56,20 +69,19 @@ export interface AgentObservationPayload {
 	actionIndex: number;
 	askOptions: string[];
 	stepId: string;
-	/** Open string fields so future backend variants remain renderable. */
-	outcome: string;
-	idempotency: string;
-	operationScope: string;
+	outcome: ToolObservationOutcome;
+	idempotency: ToolRetrySafety;
+	operationScope: ToolOperationScope;
 	renderer?: string;
 	result?: AgentToolResultEnvelope;
 	eventSeq?: number;
 }
 
 export interface AgentToolResultEnvelope {
-	outcome: string;
-	errorClass?: string | null;
-	retrySafety: string;
-	retryability: string;
+	outcome: ToolResultOutcome;
+	errorClass?: ToolErrorClass | null;
+	retrySafety: ToolRetrySafety;
+	retryability: ToolRetryability;
 	verificationHint?: string | null;
 	nextAction?: string | null;
 	assets: string[];
@@ -258,17 +270,54 @@ function stringArray(value: unknown): value is string[] {
 	return Array.isArray(value) && value.every((item) => typeof item === 'string');
 }
 
+function isOneOf<const Values extends readonly string[]>(
+	value: unknown,
+	values: Values,
+): value is Values[number] {
+	return typeof value === 'string' && values.includes(value);
+}
+
+const TOOL_OBSERVATION_OUTCOMES = [
+	'succeeded',
+	'failed',
+	'cancelled',
+	'timed_out',
+	'unknown',
+] as const;
+const TOOL_RESULT_OUTCOMES = [
+	'succeeded',
+	'failed',
+	'cancelled',
+	'timed_out_and_terminated',
+	'timed_out_unknown',
+] as const;
+const TOOL_ERROR_CLASSES = [
+	'transient',
+	'unknown_outcome',
+	'validation',
+	'permission',
+	'side_effect_may_have_happened',
+	'other',
+] as const;
+const TOOL_RETRY_SAFETY = ['idempotent', 'non_idempotent', 'unknown'] as const;
+const TOOL_RETRYABILITY = ['retryable', 'not_retryable', 'unknown'] as const;
+const TOOL_OPERATION_SCOPES = ['global', 'session'] as const;
+
 function mapToolResult(value: unknown): AgentToolResultEnvelope | null {
 	if (!isRecord(value)) return null;
 	const outcome = requiredString(value, 'outcome');
 	const retrySafety = requiredString(value, 'retry_safety');
 	const retryability = requiredString(value, 'retryability');
+	const errorClass = value.error_class;
 	if (
-		outcome === null ||
-		retrySafety === null ||
-		retryability === null ||
+		!isOneOf(outcome, TOOL_RESULT_OUTCOMES) ||
+		!isOneOf(retrySafety, TOOL_RETRY_SAFETY) ||
+		!isOneOf(retryability, TOOL_RETRYABILITY) ||
+		(errorClass !== undefined &&
+			errorClass !== null &&
+			!isOneOf(errorClass, TOOL_ERROR_CLASSES)) ||
 		!stringArray(value.assets) ||
-		!['error_class', 'verification_hint', 'next_action'].every(
+		!['verification_hint', 'next_action'].every(
 			(field) => value[field] === undefined || nullableStringIsValid(value[field]),
 		)
 	) {
@@ -276,7 +325,7 @@ function mapToolResult(value: unknown): AgentToolResultEnvelope | null {
 	}
 	return {
 		outcome,
-		errorClass: value.error_class as string | null | undefined,
+		errorClass: errorClass as ToolErrorClass | null | undefined,
 		retrySafety,
 		retryability,
 		verificationHint: value.verification_hint as string | null | undefined,
@@ -288,7 +337,7 @@ function mapToolResult(value: unknown): AgentToolResultEnvelope | null {
 /**
  * Validate one Tauri agent event and map its Rust snake_case payload to the
  * route-facing camelCase DTO. Unknown additive payload fields are ignored;
- * enum-like wire values remain open strings for forward compatibility.
+ * enum-like fields must match the current Rust wire variants.
  */
 export function mapAgentEvent<K extends AgentEventName>(
 	event: TauriEvent<unknown> & { event: K },
@@ -397,9 +446,9 @@ export function mapAgentEvent(
 			const actionIndex = requiredNumber(payload, 'action_index');
 			const askOptions = stringArray(payload.ask_options) ? payload.ask_options : null;
 			const stepId = requiredString(payload, 'step_id');
-			const outcome = requiredString(payload, 'outcome');
-			const idempotency = requiredString(payload, 'idempotency');
-			const operationScope = requiredString(payload, 'operation_scope');
+			const outcome = payload.outcome;
+			const idempotency = payload.idempotency;
+			const operationScope = payload.operation_scope;
 			const toolCallId = payload.tool_call_id;
 			const result = payload.result == null ? undefined : mapToolResult(payload.result);
 			if (
@@ -412,9 +461,9 @@ export function mapAgentEvent(
 				actionIndex === null ||
 				askOptions === null ||
 				stepId === null ||
-				outcome === null ||
-				idempotency === null ||
-				operationScope === null ||
+				!isOneOf(outcome, TOOL_OBSERVATION_OUTCOMES) ||
+				!isOneOf(idempotency, TOOL_RETRY_SAFETY) ||
+				!isOneOf(operationScope, TOOL_OPERATION_SCOPES) ||
 				(toolCallId !== undefined &&
 					toolCallId !== null &&
 					typeof toolCallId !== 'string') ||

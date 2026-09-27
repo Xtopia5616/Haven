@@ -281,52 +281,6 @@ impl MemoryWorker {
         true
     }
 
-    /// Enqueue a session for extraction. ReAct only enqueues; a single worker
-    /// drains the outbox (L3 / P1-7). Duplicate session ids coalesce; any
-    /// `bypass_throttle=true` wins.
-    pub fn enqueue_infer(self: &Arc<Self>, session_id: &str, bypass_throttle: bool) {
-        if session_id.is_empty() {
-            return;
-        }
-        let session_id = session_id.to_string();
-        if tokio::runtime::Handle::try_current().is_ok() {
-            // ReAct invokes this callback from an async turn. SQLite must not
-            // run on that executor thread. Retain the legacy best-effort
-            // fallback on durable failure; committed-event consumers use the
-            // strict method below and advance only after its success.
-            let engine = self.clone();
-            tokio::spawn(async move {
-                let cancellation = CancellationToken::new();
-                if let Err(error) = engine
-                    .enqueue_infer_durable(&session_id, bypass_throttle, &cancellation)
-                    .await
-                {
-                    tracing::warn!(
-                        "fact extraction durable enqueue failed for session {}: {}",
-                        session_id,
-                        error
-                    );
-                    engine.enqueue_memory(session_id, bypass_throttle);
-                }
-            });
-        } else {
-            // Construction-only/unit-test callers may have no runtime. Keep
-            // the synchronous fallback for that API boundary; production
-            // ReAct callbacks always take the async branch above.
-            if let Err(error) = self
-                .memory_store
-                .enqueue_fact_extraction_without_runtime(&session_id, bypass_throttle)
-            {
-                tracing::warn!(
-                    "fact extraction durable enqueue failed for session {}: {}",
-                    session_id,
-                    error
-                );
-            }
-            self.enqueue_memory(session_id, bypass_throttle);
-        }
-    }
-
     /// Durably enqueue extraction before exposing it to the existing
     /// in-memory outbox and worker. Persistence failures are returned and do
     /// not enqueue an in-memory job.
@@ -3520,15 +3474,26 @@ mod tests {
         }
     }
 
-    #[test]
-    fn enqueue_infer_coalesces_bypass_flag() {
+    #[tokio::test]
+    async fn enqueue_infer_durable_coalesces_bypass_flag() {
         let db = temp_db();
         let first = db.create_session("a").unwrap();
         let second = db.create_session("b").unwrap();
         let engine = Arc::new(make_engine(db.clone()));
-        engine.enqueue_infer(&first.id, false);
-        engine.enqueue_infer(&first.id, true);
-        engine.enqueue_infer(&second.id, false);
+        engine.suspend_outbox_worker_for_test();
+        let cancellation = CancellationToken::new();
+        engine
+            .enqueue_infer_durable(&first.id, false, &cancellation)
+            .await
+            .unwrap();
+        engine
+            .enqueue_infer_durable(&first.id, true, &cancellation)
+            .await
+            .unwrap();
+        engine
+            .enqueue_infer_durable(&second.id, false, &cancellation)
+            .await
+            .unwrap();
         let pending = engine.outbox.lock().unwrap();
         assert_eq!(pending.get(&first.id), Some(&true));
         assert_eq!(pending.get(&second.id), Some(&false));
@@ -3539,31 +3504,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn enqueue_infer_offloads_durable_marker_before_memory_drain() {
+    async fn enqueue_infer_durable_writes_marker_before_memory_projection() {
         let db = temp_db();
         let session = db.create_session("async").unwrap();
         let engine = Arc::new(make_engine(db.clone()));
         // Keep this test focused on enqueue ordering; a real outbox worker
         // would immediately consume and clear the marker after success.
-        engine.outbox_worker_started.store(true, Ordering::Release);
+        engine.suspend_outbox_worker_for_test();
 
-        engine.enqueue_infer(&session.id, true);
+        engine
+            .enqueue_infer_durable(&session.id, true, &CancellationToken::new())
+            .await
+            .unwrap();
 
-        tokio::time::timeout(std::time::Duration::from_secs(1), async {
-            loop {
-                let db_for_check = db.clone();
-                let pending = db_for_check
-                    .run_blocking(|db| db.pending_fact_extractions())
-                    .await
-                    .unwrap();
-                let in_memory = engine.outbox.lock().unwrap().get(&session.id).copied();
-                if pending.contains(&(session.id.clone(), true)) && in_memory == Some(true) {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("durable enqueue should complete before memory enqueue");
+        let pending = db
+            .run_blocking(|db| db.pending_fact_extractions())
+            .await
+            .unwrap();
+        let in_memory = engine.outbox.lock().unwrap().get(&session.id).copied();
+        assert!(pending.contains(&(session.id.clone(), true)));
+        assert_eq!(in_memory, Some(true));
     }
 }
