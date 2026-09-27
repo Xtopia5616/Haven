@@ -437,7 +437,7 @@ schedule tool 对 LLM 输入的前置验证仍保留在工具边界，App comman
 `ActionStatus::can_transition_to` / `action_terminal::can_claim_terminal` 单点定义；background admission 直接进入
 `running`，`waiting → running` 只属于 scheduled fire。提交前后的重复检查跨越 durable CAS 与内存投影/回滚边界，保留为竞态校验。
 执行副作用、outbox、retry 与 UI finished 投影继续按 kind 分流；trigger/execution、deadline/claim identity 和 restart recovery
-语义需先决策，当前不引入新的 Job 状态或自动 replay（ADR 0352）。产品已确认 background 与 scheduled 的完成记录、任务卡和 transcript 投影采用统一格式，但保留类型细节；具体 mapper/UI/wire 统一留给独立切片。该审计还发现 `ActionService::set` 的 scheduled
+语义需先决策，当前不引入新的 Job 状态或自动 replay（ADR 0352）。产品已确认 background 与 scheduled 的完成记录、任务卡和 transcript 投影采用统一格式，但保留类型细节；TaskCenter 活动卡片已由 `projectActionCard` 统一投影，terminal completion record/transcript 的 scheduled outcome 映射仍待产品决策（ADR 0373）。该审计还发现 `ActionService::set` 的 scheduled
 admission cleanup 曾移除 Running row，导致 Agent terminal callback 找不到内存 entry；ADR 0353 已将清理条件限定为
 terminal scheduled entry，并通过 completion、cancel、no-consumer recovery 和 restart 回归固定边界。Waiting/Running
 entry 保持原路径；durable Waiting schedule 仍在启动时恢复，遗留 durable Running row 仍标为 failed 且不重放。
@@ -453,9 +453,15 @@ reactive mirror，不再维护第二份 action lifecycle reducer。`list_actions
 只阻止旧 hydration 覆盖较新状态，不是事件去重。Background finished 先 upsert 终态，再由
 `finalizeBackgroundActionMessages` 投影到仍绑定该 action 的工具卡；scheduled finished 则从 board 删除，
 通知由 Agent 的 `notification:show` 提供。列表刷新会移除 terminal background history，scheduled live row
-仍由 ActionService board 返回。`TaskCenter` 的状态文案、取消能力和 background result 投影继续按 kind 区分；
+仍由 ActionService board 返回。`TaskCenter` 使用 `projectActionCard` 将两种 kind 映射到共同卡片结构，并在
+kind-specific details 中保留 background command/output/error/exit code/preview 与 scheduled due time/title/body/mode；
+现有用户文案、排序、搜索、打开会话和取消行为不变。该 mapper 只收口活动卡片，尚未统一 terminal
+completion record 或 transcript 内容：scheduled finished payload 不含 execution result，continue 模式已有正常会话
+输入/对话记录，tool 模式当前只把结果发到通知，具体 scheduled transcript 映射需产品决定（ADR 0373）。
 Rust bridge 只为 background 提供 `action:output`，scheduled action 不持有 tail。没有 durable event identity，
-因此不新增 UI event dedup 或统一 Job reducer；本轮只复用已测试的 terminal background projection（ADR 0344）。
+因此不新增 UI event dedup 或统一 Job reducer；background 的终态工具卡和 transcript 投影仍按 ADR 0344 原路径。
+Action completion 的 in-app toast 与 Windows notification channels 当前都保持原有 always-on 产发路径；独立开关
+（默认均开启）及其 Settings/wire 投影属于后续 UI/Settings 切片。
 Action 管理写入口经 ADR 0373 审计：Tauri、`actions`/`schedule` 工具、timer worker 与 Agent completion 共用一个
 `ActionService`；`ActionStore` 仍是生产持久化写边界。`schedule.set` 只创建新 action，没有 update-existing 或手动
 trigger command，`ToolConcurrency` 也不是跨 Tauri/worker 的互斥机制。terminal history delete 只接受终态，但其
@@ -720,6 +726,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 
 | 日期 | 内容 |
 |---|---|
+| 2026-09-27 | §2.6 UI：TaskCenter background/scheduled 活动卡片经共同 `projectActionCard` model 投影，保留 kind details 与当前文案/交互；terminal completion record/transcript 统一尚待 scheduled outcome source 产品决策；通知开关留给独立 Settings/wire 切片（ADR 0373）|
 | 2026-09-27 | §2.5 App / Tools / §2.6 UI：Settings/model 与 Tools AdminServices 同配置域 writes 共用 composition-root gate；SkillsExec-only 跳过 live Skills phase，混合 Skills 变更保留 live phase 与 restart-required；durable-first apply failure 保留磁盘配置并向 Settings UI 报告部分 apply 失败及重启恢复方式。不引入 compensation/rollback/retry；更新 MCP Tauri/AdminServices catalog 和 monitor ownership 说明（ADR 0351、0372）|
 | 2026-09-26 | §2.3/§2.5/§2.6：SessionStore 增加 session orphan/retention/managed-attachment typed ports，AppState 后台清理不再捕获 raw Database；AgentLayer 显式接收组合根 ToolsManager，SessionSupervisor 删除生产 service locator 并只保留窄 authorization/action wiring。执行 facade 与 prompt/catalog/observation adapter 依赖继续按 ADR 0224/0225 单独审计（ADR 0374）|
 | 2026-09-26 | §2.5 App / §2.6 UI：审计配置单一 owner、target/phase mapping、atomic save 顺序、Settings/model/provider 写入与失败语义；为唯一 `update_settings` builder 复用开放式 `SettingsPayload` 并由 IPC script 校验 handler/registry/caller。保持 durable-first 和失败不补偿；产品确认仅变更 `SkillsExec` 时跳过 live apply、标记重启生效，并让同配置域的 Tools 管理操作与 Settings/model apply 统一串行，具体实现留后续切片（ADR 0372）|

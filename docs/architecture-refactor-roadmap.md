@@ -134,9 +134,9 @@ watcher 并在依赖满足后执行一次。后台/定时任务完成展示与�
 
 状态校准（ADR 0374、0372）：上方早期阶段汇总中关于 `get_tools()`/`services()` 的“仅收窄可见性”描述由本轮实际迁移 supersede；生产入口已删除，AgentLayer 改为组合根显式注入共享 `ToolsManager`，supervisor 仅保留窄 capability wiring。Settings durable-first/部分 apply failure/重启从磁盘配置恢复、仅变更 SkillsExec 时跳过 live Skills apply 并标记重启生效、Settings/model 与同配置域 Tools 管理操作统一串行均已由本轮实现并覆盖回归。terminal history guard 已实现；无统一 action-level deadline 与 dependency-waiting task 的 durable relation/watcher restart 语义仍待独立切片。
 
-Dependency-waiting 的已确认细则：producer `completed`/`failed`/`cancelled` 都满足等待条件并向 continuation 传递状态/结果；producer 缺失也只触发一次 continuation 并传递 `not_found`，避免永久 waiting。依赖关系 durable 保留，重启时重建 watcher；依赖满足后 continuation 只执行一次。若 continuation 对应 scheduled action 已进入 `running` 后进程崩溃，重启不自动 replay，而是恢复为 `failed`，由用户手动重试。任务 UI 仍只使用 `waiting`/`running`/terminal 三大状态，具体阶段可在卡片内展示；background/scheduled 完成展示与通知统一方向的具体映射另行设计。
-统一任务完成通知的已确认方向：新增独立的应用内 toast 与 Windows 通知开关，首次默认均开启，用户可分别关闭；background 与 scheduled 共用该规则。具体设置入口、wire 字段和统一映射仍留给独立 UI/Settings 切片。
-后台任务与定时任务的完成记录、任务卡和 transcript 投影格式也统一，内容保留类型细节；具体 mapper、UI 和 wire 实现留给独立 action/UI 投影切片。
+Dependency-waiting 的已确认细则：producer `completed`/`failed`/`cancelled` 都满足等待条件并向 continuation 传递状态/结果；producer 缺失也只触发一次 continuation 并传递 `not_found`，避免永久 waiting。依赖关系 durable 保留，重启时重建 watcher；依赖满足后 continuation 只执行一次。若 continuation 对应 scheduled action 已进入 `running` 后进程崩溃，重启不自动 replay，而是恢复为 `failed`，由用户手动重试。任务 UI 仍只使用 `waiting`/`running`/terminal 三大状态，具体阶段可在卡片内展示；TaskCenter 活动任务卡已共用 `projectActionCard` projection，保留 kind-specific details 与现有展示行为（ADR 0373）。
+统一任务完成通知的已确认方向：新增独立的应用内 toast 与 Windows 通知开关，首次默认均开启，用户可分别关闭；background 与 scheduled 共用该规则。action 专属开关尚未实现；当前通知产发保持既有 always-on 行为。具体设置入口与 wire 字段仍留给独立 UI/Settings 切片。
+后台任务与定时任务的完成记录、任务卡和 transcript 投影格式已确认统一，内容保留类型细节；当前只完成 TaskCenter 活动卡片 mapper。terminal completion record/transcript 尚未实现：scheduled finished payload 不包含 execution result，scheduled continue 已有正常对话 transcript，scheduled tool result 当前只进入通知；具体 transcript 内容映射待产品决定后由独立切片收口（ADR 0373）。
 
 MemoryRuntime 应用对象所有权审计（2026-09-26，ADR 0362）：MemoryRuntime 的启动回放、live consumer 和周期 schedule policy 已有单一对象，但对象仍由 `AgentLayer` 构造/持有，`ApplicationRuntime` 只拥有周期 task 的 cancel/join。`AgentLayer::start_inner` 是当前唯一能保证 prepare/replay 成功后再启动 live consumer 和 SessionActor dispatcher 的入口；app-binary 没有 prepared-consumer API 或 dispatcher readiness handoff。为避免字段空迁移、第二份 runtime 或 Agent 长期强持有 runtime，本轮不改代码。后续先设计唯一 typed 构造交接与可证明的 readiness token/port，再一起迁移 app schedule/manual maintenance/shutdown 接线并保留 barrier 与 lifecycle 回归。
 

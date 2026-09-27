@@ -8,7 +8,8 @@
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
 	import CountChip from '$lib/CountChip.svelte';
-	import { scheduleModeLabel, taskKindLabel, taskTitle } from '$lib/taskTerminology.ts';
+	import { projectActionCard } from '$lib/actionCardProjection.ts';
+	import { taskKindLabel } from '$lib/taskTerminology.ts';
 
 	let {
 		runningBackgroundActions = [],
@@ -26,33 +27,26 @@
 	let query = $state('');
 	let filter = $state('all');
 
-	const taskRows = $derived.by(() => [
-		...runningBackgroundActions.map((action) => ({
-			id: action.id,
-			kind: 'background',
-			title: taskTitle(action),
-			subtitle: sessionTitleFor(action) || '后台任务',
-			status: action.status,
-			sessionId: action.sessionId,
-			value: action,
-		})),
-		...pendingScheduledActions.map((action) => ({
-			id: action.id,
-			kind: 'scheduled',
-			title: taskTitle(action),
-			subtitle: scheduleModeLabel(action.mode),
-			status: action.status || 'waiting',
-			sessionId: action.sessionId,
-			value: action,
-		})),
-	]);
+	const taskRows = $derived.by(() => {
+		const options =
+			/** @type {import('$lib/actionCardProjection.ts').ActionCardProjectionOptions} */ ({
+				actionStatusLabel,
+				sessionTitleFor,
+				actionDuration,
+				scheduledActionCountdown,
+			});
+		return [
+			...runningBackgroundActions.map((action) => projectActionCard(action, options)),
+			...pendingScheduledActions.map((action) => projectActionCard(action, options)),
+		];
+	});
 
 	const filteredRows = $derived.by(() => {
 		const normalized = query.trim().toLocaleLowerCase();
 		return taskRows.filter((row) => {
 			if (filter !== 'all' && row.kind !== filter) return false;
 			if (!normalized) return true;
-			return `${row.title} ${row.subtitle} ${row.sessionId || ''} ${row.value?.command || ''} ${row.value?.body || ''} ${row.value?.preview || ''}`
+			return `${row.title} ${row.searchText} ${row.sessionId || ''} ${row.details.command || ''} ${row.details.body || ''} ${row.details.preview || ''}`
 				.toLocaleLowerCase()
 				.includes(normalized);
 		});
@@ -78,73 +72,6 @@
 			detailOpen = false;
 		}
 	});
-
-	/** @param {any} row */
-	function rowStatus(row) {
-		if (row.kind === 'scheduled') {
-			switch (row.status) {
-				case 'running':
-					return '执行中';
-				case 'completed':
-					return '已完成';
-				case 'failed':
-					return '失败';
-				case 'cancelled':
-					return '已取消';
-				default:
-					return '待执行';
-			}
-		}
-		return actionStatusLabel(row.status);
-	}
-
-	/** @param {any} row */
-	function rowTone(row) {
-		if (row.kind === 'scheduled') {
-			if (row.status === 'waiting') return 'scheduled';
-			if (row.status === 'running') return 'running';
-			if (row.status === 'failed') return 'error';
-			if (row.status === 'completed') return 'success';
-			return 'neutral';
-		}
-		if (row.status === 'failed') return 'error';
-		if (row.status === 'completed') return 'success';
-		return row.status === 'running' ? 'running' : 'neutral';
-	}
-
-	/** @param {any} row */
-	function rowSummary(row) {
-		const value = row.value || {};
-		const candidates = [value.command, value.preview, value.body];
-		for (const candidate of candidates) {
-			if (
-				typeof candidate === 'string' &&
-				candidate.trim() &&
-				candidate.trim().toLocaleLowerCase() !==
-					String(row.title).trim().toLocaleLowerCase()
-			) {
-				return candidate.trim();
-			}
-		}
-		if (row.kind === 'scheduled') {
-			if (row.status === 'running') return `已触发 · ${scheduleModeLabel(value.mode)}`;
-			return `将在${rowTiming(row)}执行 · ${scheduleModeLabel(value.mode)}`;
-		}
-		return '正在执行后台任务';
-	}
-
-	/** @param {any} row */
-	function rowContext(row) {
-		if (row.kind === 'scheduled') return scheduleModeLabel(row.value?.mode);
-		return sessionTitleFor(row.value) || '无关联会话';
-	}
-
-	/** @param {any} row */
-	function rowTiming(row) {
-		if (row.kind === 'background') return actionDuration(row.value) || '耗时未知';
-		if (row.status === 'running') return actionDuration(row.value) || '执行中';
-		return scheduledActionCountdown(row.value?.dueAt) || '时间未设置';
-	}
 
 	/** @param {any} row */
 	function selectRow(row) {
@@ -246,27 +173,27 @@
 										onclick={() => openRow(row)}
 									>
 										<span class="task-card-header workspace-item-card-header">
-											<span class="task-card-type" data-tone={rowTone(row)}>
+											<span class="task-card-type" data-tone={row.tone}>
 												<span
 													class="task-card-indicator"
-													data-tone={rowTone(row)}
+													data-tone={row.tone}
 													aria-hidden="true"
 												></span>
 												{taskKindLabel(row.kind)}
 											</span>
-											<span class="md-badge" data-variant={rowTone(row)}
-												>{rowStatus(row)}</span
+											<span class="md-badge" data-variant={row.tone}
+												>{row.statusLabel}</span
 											>
 										</span>
 										<strong class="task-card-title">{row.title}</strong>
-										<span class="task-card-summary">{rowSummary(row)}</span>
+										<span class="task-card-summary">{row.summary}</span>
 										<span class="task-card-meta workspace-item-card-meta">
-											<span>{rowContext(row)}</span>
+											<span>{row.context}</span>
 											<span
 												class="task-card-meta-separator"
 												aria-hidden="true">·</span
 											>
-											<span>{rowTiming(row)}</span>
+											<span>{row.timing}</span>
 										</span>
 										<span class="task-card-footer workspace-item-card-footer">
 											<span class="task-card-id workspace-item-card-id"
@@ -275,13 +202,13 @@
 										</span>
 									</button>
 									<div class="task-card-actions workspace-item-card-actions">
-										{#if row.kind === 'background' && row.value.status === 'running'}
+										{#if row.kind === 'background' && row.status === 'running'}
 											<MaterialButton
 												variant="danger"
 												label="停止后台任务"
 												onclick={() => onCancel?.(row.id, 'background')}
 											/>
-		{:else if row.kind === 'scheduled' && (row.status === 'waiting' || row.status === 'running')}
+										{:else if row.kind === 'scheduled' && (row.status === 'waiting' || row.status === 'running')}
 											<MaterialButton
 												variant="outlined"
 												label="取消此定时任务"
@@ -310,19 +237,19 @@
 			<div class="task-dialog-content">
 				<div class="task-dialog-overview">
 					<div class="task-dialog-type-row">
-						<span class="task-card-type" data-tone={rowTone(selectedRow)}>
+						<span class="task-card-type" data-tone={selectedRow.tone}>
 							<span
 								class="task-card-indicator"
-								data-tone={rowTone(selectedRow)}
+								data-tone={selectedRow.tone}
 								aria-hidden="true"
 							></span>
 							{taskKindLabel(selectedRow.kind)}
 						</span>
-						<span class="md-badge" data-variant={rowTone(selectedRow)}
-							>{rowStatus(selectedRow)}</span
+						<span class="md-badge" data-variant={selectedRow.tone}
+							>{selectedRow.statusLabel}</span
 						>
 					</div>
-					<p class="task-dialog-summary">{rowSummary(selectedRow)}</p>
+					<p class="task-dialog-summary">{selectedRow.summary}</p>
 				</div>
 
 				<dl class="task-facts">
@@ -346,31 +273,31 @@
 					{#if selectedRow.kind === 'background'}
 						<div>
 							<dt>耗时</dt>
-							<dd>{actionDuration(selectedRow.value) || '耗时未知'}</dd>
+							<dd>{selectedRow.timing}</dd>
 						</div>
 					{/if}
-					{#if selectedRow.kind === 'background' && selectedRow.value.command}
+					{#if selectedRow.kind === 'background' && selectedRow.details.command}
 						<div>
 							<dt>执行命令</dt>
-							<dd><code class="task-command">{selectedRow.value.command}</code></dd>
+							<dd><code class="task-command">{selectedRow.details.command}</code></dd>
 						</div>
 					{/if}
 					{#if selectedRow.kind === 'scheduled'}
 						<div>
 							<dt>执行时间</dt>
-							<dd>{rowTiming(selectedRow)}</dd>
+							<dd>{selectedRow.timing}</dd>
 						</div>
 					{/if}
 				</dl>
 
-				{#if selectedRow.value.body}
+				{#if selectedRow.details.body}
 					<section class="task-dialog-section">
 						<h4>任务内容</h4>
-						<p class="task-detail-copy">{selectedRow.value.body}</p>
+						<p class="task-detail-copy">{selectedRow.details.body}</p>
 					</section>
 				{/if}
 				<div class="task-actions">
-					{#if selectedRow.kind === 'background' && selectedRow.value.status === 'running'}
+					{#if selectedRow.kind === 'background' && selectedRow.status === 'running'}
 						<MaterialButton
 							variant="danger"
 							label="停止任务"

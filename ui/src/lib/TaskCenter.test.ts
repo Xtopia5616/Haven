@@ -79,6 +79,56 @@ describe('TaskCenter', () => {
 		expect(onCancel).toHaveBeenCalledWith('act-running-scheduled', 'scheduled');
 	});
 
+	it('uses one card structure for both kinds and preserves search and cancel behavior', async () => {
+		const onCancel = vi.fn();
+		const { container } = render(TaskCenter, {
+			...commonProps,
+			runningBackgroundActions: [
+				{
+					id: 'act-background',
+					kind: 'background',
+					status: 'running',
+					sessionId: 'ses-1',
+					command: '整理下载目录',
+				},
+			],
+			pendingScheduledActions: [
+				{
+					id: 'act-scheduled',
+					kind: 'scheduled',
+					status: 'waiting',
+					title: '稍后整理',
+					body: '整理下载目录',
+					mode: 'continue',
+					dueAt: '2026-09-27T12:00:00Z',
+				},
+			],
+			onCancel,
+		});
+
+		let cards = Array.from(container.querySelectorAll('.task-card'));
+		expect(cards).toHaveLength(2);
+		expect(cards[0].textContent).toContain('后台任务');
+		expect(cards[0].textContent).toContain('running');
+		expect(cards[0].textContent).toContain('整理下载目录');
+		expect(cards[0].textContent).toContain('研究会话');
+		expect(cards[0].textContent).toContain('3s');
+		expect(cards[1].textContent).toContain('定时任务');
+		expect(cards[1].textContent).toContain('待执行');
+		expect(cards[1].textContent).toContain('稍后整理');
+		expect(cards[1].textContent).toContain('继续会话');
+		expect(cards[1].textContent).toContain('2分后');
+
+		await fireEvent.input(screen.getByPlaceholderText('搜索任务标题、来源或命令'), {
+			target: { value: '继续会话' },
+		});
+		cards = Array.from(container.querySelectorAll('.task-card'));
+		expect(cards).toHaveLength(1);
+		expect(cards[0].textContent).toContain('act-scheduled');
+		await fireEvent.click(screen.getByRole('button', { name: '取消此定时任务' }));
+		expect(onCancel).toHaveBeenCalledWith('act-scheduled', 'scheduled');
+	});
+
 	it('uses shared count chips for the filtered total and lifecycle groups', () => {
 		render(TaskCenter, {
 			...commonProps,

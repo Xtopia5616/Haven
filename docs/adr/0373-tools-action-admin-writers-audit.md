@@ -33,6 +33,21 @@
 background/scheduled 的类型细节。该决定只统一投影契约与用户可见结构，不改变现有状态机、completion
 delivery/retry、取消或 X12 语义，具体实现留给独立 action/UI 投影切片。
 
+## Action/UI 投影进展（2026-09-27）
+
+- `ActionEvent` 已提供 background 与 scheduled 共用的 `id`、`kind`、`status`、会话和时间字段；
+  TaskCenter 现经纯 `projectActionCard` mapper 使用统一卡片模型，同时按 kind 保留 background
+  command/output/error/exit code/preview 与 scheduled due time/title/body/mode。现有卡片文案、列表顺序、
+  搜索字段、打开会话及取消动作保持不变。
+- 本次只收口 TaskCenter card projection。Rust event、terminal completion record、transcript 内容、
+  X12 写入顺序和通知产发路径均未改变。
+- scheduled `action:finished` 当前只有生命周期与 schedule 元数据，没有 tool execution result；
+  scheduled `continue` 已通过既有会话输入路径记录 prompt 和 Agent 对话，scheduled `tool` 的结果目前只
+  进入通知。是否再写 scheduled terminal transcript，以及用任务描述还是实际 outcome，仍需产品决策后实现。
+  因而 background/scheduled terminal completion 与 transcript 的统一投影尚未完成。
+- action completion 的 toast 与 Windows 通知开关尚未实现；现有两通道继续按当前路径显示。独立开关
+  （默认均开启）与 Settings/wire 归属后续 UI/Settings 切片。
+
 ## 决定
 
 1. 保持一个共享 `ActionService` 为 action 的运行时 owner，保持 `ActionStore` 为持久化写边界；不引入第二个 Tauri/tool writer、通用状态 setter 或把 `ToolConcurrency` 当作跨入口锁。
@@ -49,7 +64,8 @@ delivery/retry、取消或 X12 语义，具体实现留给独立 action/UI 投�
 - `pwsh -NoProfile -File scripts/check-ipc-contracts.ps1`
 - `git diff --check`
 
-无 UI 文件变化，因此不运行 UI gates。Rust gates 的实际结果以本提交记录为准。
+原 admin-writer 审计无 UI 文件变化，因此当时不运行 UI gates。当前 TaskCenter card projection 的验证
+结果记录在独立实现提交中。
 
 ## 回滚
 
