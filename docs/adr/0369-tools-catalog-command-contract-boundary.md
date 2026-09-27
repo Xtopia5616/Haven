@@ -2,7 +2,7 @@
 
 - 状态：已采纳（2026-09-26）
 - 基线：HEAD `3103a8f`；开始时工作区干净
-- 范围：ToolsView 的 `get_tools`、`list_mcp_tools`、`list_skills` 与 `reset_tool_circuits` renderer command boundary
+- 范围：ToolsView 的 catalog、MCP/Skills 管理与 refresh renderer command boundary
 - 关联：ADR 0346（app event listener contract）、ADR 0357（memory command contract）、ADR 0368（model discovery command contract）
 
 ## 背景与审计
@@ -43,3 +43,28 @@ git diff --check
 ## 回滚
 
 回滚本提交可恢复四处 ToolsView 直接 invoke、`get_tools` 的 raw cast 与重复 manifest parsing，并删除 typed contracts、helper、IPC assertions 和本 ADR/路线图记录。无 Rust 或数据回滚步骤。
+
+## 2026-09-27 后续：MCP/Skills 管理命令边界
+
+### 审计结果
+
+ToolsView 除 catalog/read/reset 外还直接调用 `refresh_mcp_servers`、`reconnect_mcp`、`add_mcp_server`、`update_mcp_server`、`remove_mcp_server`、`toggle_mcp_server`、`set_skill_enabled`、`set_tool_enabled`、`refresh_skills` 和 `open_skills_dir`。此前共用的 optimistic toggle 以运行时命令字符串调用 `invoke`，静态命令检查无法识别该绕行。所有活跃调用现通过 `toolsCommands.ts`；view 仍拥有 optimistic state、刷新顺序、通知与 catch/reportError/logger 行为。
+
+MCP status event 继续由 Rust command/admin owners 发出，ToolsView 的既有 listener 负责 debounced MCP snapshot refresh；Skills status event 仍触发 Skills list refresh。Refresh button、单服务器 reconnect、保存/删除/启停后的显式 snapshot refresh、Skills refresh 后的 list refresh 均保留原顺序。helper 不接管或重复这些副作用，也不转换响应或捕获 rejection。
+
+MCP add/update/remove/toggle 与 Skill/tool enable 通过 `authorize_admin_request` 和既有 native admin operations；`open_skills_dir` 在 handler 内走 AuthorizationEngine。`refresh_mcp_servers` 与 `reconnect_mcp` 会对已持久化的 MCP 配置发起连接副作用，但它们的 Tauri handlers 本身不请求 AuthorizationEngine；`refresh_skills` 扫描已配置的目录且不要求确认。此切片仅记录并保持这些现存授权边界，不增加或重排授权。针对 renderer 可调用的 refresh/reconnect 是否需要统一授权策略，留给单独安全决策与行为测试，避免藏在 typed IPC 迁移中。
+
+### 决定
+
+1. 为上述命令增加 typed direct-forward helper，request/response types 使用 Rust wire 的 snake_case 字段。`McpServerConfig` 对齐 Rust 固定 DTO 和 `stdio`/`http` enum；不接受任意 config 属性，也不另造 parser。动态 schema 仍只在既有 `ToolSchema = unknown` 扩展边界。
+2. `McpRefreshResult` 使用命名 response DTO，四个结果数组与未来附加字段透传；refresh helper 不发起额外调用。add/update 的 config 和 name 参数依 Rust handler 的 `config`、`name` 顶层参数传递。
+3. 将 optimistic toggle 改为接收命名 helper 回调，删除动态命令字符串 `invoke`。IPC contract script 对照 Rust registry、handler 参数、config/refresh DTO、helper 签名与响应类型，并禁止 ToolsView 直接或动态 `invoke` 绕行。
+4. `refresh_mcp_servers` contract 描述 renderer-triggered persisted-config reconcile，明确不接收 renderer 的 process arguments。它仍是活跃 ToolsView command，按既有 handler 行为运行，未被加入 AuthorizationEngine。
+
+### 兼容性、验证与回滚
+
+不改 Rust handler、wire payload、事件生产者、MCP connect/reconnect 时序、authorization owner、配置文件格式、数据库或数据重置要求。UI command failure 继续原样抛给现有 handler catch；通知文案和 refresh 顺序不变。回滚时恢复旧 command invocation 所在位置、删去新增 helper/contracts/script guards，并恢复本节前的历史边界描述；无需数据迁移或重置。
+
+验证覆盖 MCP config/refresh 响应透传、所有写命令参数、代表性 rejection 传播、contract drift 与 UI 绕行检查；门禁结果追加在提交记录和路线图。
+
+验证结果：`cargo fmt --all -- --check`、`cargo check --workspace --locked`、`cargo clippy --workspace --locked -- -D warnings` 与隔离配置下的 `cargo test --workspace --locked` 通过；UI `check` 无错误/警告，112 个 Vitest 文件的 836 项测试通过，生产 build 成功；`check-ipc-contracts.ps1` 的 registry、Tools DTO/helper 断言及 `check-ipc-events.ps1` 均通过。Rust 测试使用新建的 `target/test-data/tools-mutation-ipc-20260927-run02/APPDATA`，没有访问真实用户配置。修改过的常规 UI 文件 Prettier 检查通过；`contracts/commands.ts` 保留仓库既有的紧凑 registry 行布局。

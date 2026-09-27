@@ -165,7 +165,7 @@ export const TAURI_COMMAND_CONTRACTS = {
 	get_performance_metrics: { request: 'UiMetricsSnapshot?', response: 'MetricsSnapshot', boundary: 'read', security: 'bounded content-free backend counters plus renderer stream counters' },
 	list_mcp_tools: { request: '-', response: 'McpServerSnapshot[]', boundary: 'read', security: 'snapshot only; invocation remains gated' },
 	reconnect_mcp: { request: 'McpNameRequest', response: 'void', boundary: 'execute', security: 'server name selects an existing configured client' },
-	refresh_mcp_servers: { request: '-', response: 'McpRefreshResult', boundary: 'execute', security: 'reconcile configured clients; no renderer command' },
+	refresh_mcp_servers: { request: '-', response: 'McpRefreshResult', boundary: 'execute', security: 'renderer-triggered reconcile from persisted config; no client process arguments supplied' },
 	mcp_tool_call: { request: 'McpToolCallRequest', response: 'McpToolCallResponse', boundary: 'execute', security: 'AuthorizationEngine; direct confirmations are queued and renderer errors are safe' },
 	add_mcp_server: { request: 'McpServerConfig', response: 'void', boundary: 'execute', security: 'AuthorizationEngine; shared native admin operation validates and persists config' },
 	update_mcp_server: { request: 'UpdateMcpServerRequest', response: 'void', boundary: 'execute', security: 'AuthorizationEngine; shared native admin operation validates and reconnects safely' },

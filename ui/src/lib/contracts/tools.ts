@@ -127,3 +127,47 @@ export interface McpServerSnapshot {
 	last_seen_at: number | null;
 	[field: string]: unknown;
 }
+
+/** Rust `haven_common::config::McpServerConfig` wire shape. */
+export type McpTransport = 'stdio' | 'http';
+
+export interface McpServerConfig {
+	name: string;
+	transport: McpTransport;
+	command: string;
+	args: string[];
+	env: string[];
+	cwd: string | null;
+	url: string;
+	enabled: boolean;
+}
+
+/** Rust `commands::mcp::McpRefreshResult`; status is reconciled by the view. */
+export interface McpRefreshResult {
+	added: string[];
+	removed: string[];
+	updated: string[];
+	failed: string[];
+	[field: string]: unknown;
+}
+
+/** Tauri flat command arguments shared by server and toggle operations. */
+export interface McpNameRequest {
+	name: string;
+}
+
+export interface SetEnabledRequest {
+	name: string;
+	enabled: boolean;
+}
+
+export interface ToggleMcpServerRequest {
+	name: string;
+	enabled: boolean;
+}
+
+/** The Rust handler accepts these as the top-level `name` and `config` args. */
+export interface UpdateMcpServerRequest {
+	name: string;
+	config: McpServerConfig;
+}

@@ -1,5 +1,6 @@
 <script>
 	/** @typedef {import('$lib/builtinToolPresentation.ts').BuiltinToolEntry} BuiltinToolEntry */
+	/** @typedef {import('$lib/contracts/tools.ts').McpServerConfig} McpServerConfig */
 	/** @typedef {import('$lib/contracts/tools.ts').McpServerSnapshot} McpServerSnapshot */
 	/** @typedef {import('$lib/contracts/tools.ts').SkillInfo} SkillInfo */
 	/** @typedef {{ name: string; enabled: boolean; desc?: string; description?: string; url?: string; transport?: string }} ResourceFilterItem */
@@ -17,8 +18,17 @@
 	let mcpEditServer = /** @type {Record<string, any> | null} */ ($state(null));
 
 	import { onMount, onDestroy } from 'svelte';
-	import { invoke } from '$lib/tauri.ts';
 	import {
+		addMcpServer,
+		openSkillsDir,
+		reconnectMcp,
+		refreshMcpServers as refreshMcpServersCommand,
+		refreshSkills as refreshSkillsCommand,
+		removeMcpServer,
+		setSkillEnabled,
+		setToolEnabled,
+		toggleMcpServer,
+		updateMcpServer,
 		getTools,
 		listMcpTools,
 		listSkills,
@@ -172,7 +182,7 @@
 		// session (no restart — e.g. Ghidra is not relaunched). Reconnecting a
 		// specific server is the per-card Refresh button's job.
 		try {
-			const result = await invoke('refresh_mcp_servers');
+			const result = await refreshMcpServersCommand();
 			await refreshMcpServers();
 			const added = result?.added || [];
 			const removed = result?.removed || [];
@@ -228,14 +238,14 @@
 	 * @param {string} name
 	 * @param {boolean} enabled
 	 * @param {(v: T[]) => void} setList
-	 * @param {string} invokeCmd
+	 * @param {() => Promise<void>} update
 	 * @param {(() => void | Promise<unknown>) | null} refresh
 	 */
-	async function toggleItem(list, name, enabled, setList, invokeCmd, refresh) {
+	async function toggleItem(list, name, enabled, setList, update, refresh) {
 		const prev = list.map((x) => ({ ...x }));
 		setList(list.map((x) => (x.name === name ? { ...x, enabled } : x)));
 		try {
-			await invoke(invokeCmd, { name, enabled });
+			await update();
 			addNotification(`${name} 已${enabled ? '启用' : '禁用'}`, 'success', 2000);
 			if (refresh) await refresh();
 		} catch (e) {
@@ -249,14 +259,21 @@
 	 * @param {boolean} enabled
 	 */
 	async function handleToggle(name, enabled) {
-		await toggleItem(skills, name, enabled, (v) => (skills = v), 'set_skill_enabled', null);
+		await toggleItem(
+			skills,
+			name,
+			enabled,
+			(v) => (skills = v),
+			() => setSkillEnabled({ name, enabled }),
+			null,
+		);
 	}
 
 	async function refreshSkills() {
 		if (skillsRefreshing) return;
 		skillsRefreshing = true;
 		try {
-			await invoke('refresh_skills');
+			await refreshSkillsCommand();
 			await refreshSkillList();
 			addNotification('技能已刷新', 'success', 2000);
 		} catch (e) {
@@ -268,7 +285,7 @@
 
 	async function openFolder() {
 		try {
-			const path = await invoke('open_skills_dir');
+			const path = await openSkillsDir();
 			addNotification(`已打开: ${path}`, 'info', 3000);
 		} catch (e) {
 			reportError(e, { context: 'ToolsView', message: '打开技能文件夹失败', log: false });
@@ -294,15 +311,15 @@
 	}
 
 	/**
-	 * @param {Record<string, any>} config
+	 * @param {McpServerConfig} config
 	 */
 	async function handleSave(config) {
 		try {
 			if (mcpEditServer) {
-				await invoke('update_mcp_server', { name: mcpEditServer.name, config });
+				await updateMcpServer({ name: mcpEditServer.name, config });
 				addNotification(`已更新 ${config.name}`, 'success', 2000);
 			} else {
-				await invoke('add_mcp_server', { config });
+				await addMcpServer(config);
 				addNotification(`已添加 ${config.name}`, 'success', 2000);
 			}
 			closeDialog();
@@ -317,7 +334,7 @@
 	 */
 	async function handleRemove(name) {
 		try {
-			await invoke('remove_mcp_server', { name });
+			await removeMcpServer({ name });
 			addNotification(`已移除 ${name}`, 'success', 2000);
 			await refreshMcpServers();
 		} catch (e) {
@@ -331,7 +348,7 @@
 	async function handleReconnect(name) {
 		addNotification(`正在刷新 ${name}…`, 'info', 1500);
 		try {
-			await invoke('reconnect_mcp', { name });
+			await reconnectMcp({ name });
 			addNotification(`刷新成功：${name}`, 'success', 2000);
 			await refreshMcpServers();
 		} catch (e) {
@@ -349,7 +366,7 @@
 			name,
 			enabled,
 			(v) => (mcpServers = v),
-			'toggle_mcp_server',
+			() => toggleMcpServer({ name, enabled }),
 			refreshMcpServers,
 		);
 	}
@@ -364,7 +381,7 @@
 			name,
 			enabled,
 			(v) => (builtinTools = v),
-			'set_tool_enabled',
+			() => setToolEnabled({ name, enabled }),
 			null,
 		);
 	}

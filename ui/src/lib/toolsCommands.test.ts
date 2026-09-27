@@ -1,5 +1,20 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { getTools, listMcpTools, listSkills, resetToolCircuits } from './toolsCommands.ts';
+import {
+	addMcpServer,
+	getTools,
+	listMcpTools,
+	listSkills,
+	openSkillsDir,
+	reconnectMcp,
+	refreshMcpServers,
+	refreshSkills,
+	removeMcpServer,
+	resetToolCircuits,
+	setSkillEnabled,
+	setToolEnabled,
+	toggleMcpServer,
+	updateMcpServer,
+} from './toolsCommands.ts';
 
 const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
 
@@ -50,5 +65,74 @@ describe('ToolsView command boundary', () => {
 
 		await expect(resetToolCircuits()).rejects.toBe(failure);
 		expect(invoke).toHaveBeenCalledWith('reset_tool_circuits');
+	});
+
+	it('forwards every ToolsView MCP and Skills mutation with the Rust wire arguments', async () => {
+		const config = {
+			name: 'local-server',
+			transport: 'stdio' as const,
+			command: 'server.exe',
+			args: ['--quiet'],
+			env: ['TOKEN=kept-in-memory'],
+			cwd: null,
+			url: '',
+			enabled: true,
+		};
+		const nameRequest = { name: 'local-server' };
+		const enabledRequest = { name: 'files.read', enabled: false };
+		const updateRequest = { name: 'local-server', config };
+		invoke.mockResolvedValue(undefined);
+
+		await refreshMcpServers();
+		await setSkillEnabled({ name: 'example-skill', enabled: false });
+		await refreshSkills();
+		await openSkillsDir();
+		await addMcpServer(config);
+		await updateMcpServer(updateRequest);
+		await removeMcpServer(nameRequest);
+		await reconnectMcp(nameRequest);
+		await toggleMcpServer({ name: 'local-server', enabled: true });
+		await setToolEnabled(enabledRequest);
+
+		expect(invoke.mock.calls).toEqual([
+			['refresh_mcp_servers'],
+			['set_skill_enabled', { name: 'example-skill', enabled: false }],
+			['refresh_skills'],
+			['open_skills_dir'],
+			['add_mcp_server', { config }],
+			['update_mcp_server', updateRequest],
+			['remove_mcp_server', nameRequest],
+			['reconnect_mcp', nameRequest],
+			['toggle_mcp_server', { name: 'local-server', enabled: true }],
+			['set_tool_enabled', enabledRequest],
+		]);
+		expect(invoke.mock.calls[4][1].config).toBe(config);
+		expect(invoke.mock.calls[5][1]).toBe(updateRequest);
+	});
+
+	it('passes MCP refresh response extensions through and preserves invoke failures', async () => {
+		const response = {
+			added: ['new-server'],
+			removed: [],
+			updated: ['changed-server'],
+			failed: ['offline-server'],
+			future_field: { retained: true },
+		};
+		invoke.mockResolvedValueOnce(response);
+
+		expect(await refreshMcpServers()).toBe(response);
+		expect(invoke).toHaveBeenCalledWith('refresh_mcp_servers');
+		invoke.mockResolvedValueOnce('C:\\Users\\test\\skills');
+		expect(await openSkillsDir()).toBe('C:\\Users\\test\\skills');
+		expect(invoke).toHaveBeenLastCalledWith('open_skills_dir');
+
+		const failure = new Error('admin command rejected');
+		invoke.mockReset();
+		invoke.mockRejectedValueOnce(failure);
+		await expect(setToolEnabled({ name: 'files.read', enabled: true })).rejects.toBe(failure);
+		expect(invoke).toHaveBeenCalledWith('set_tool_enabled', {
+			name: 'files.read',
+			enabled: true,
+		});
 	});
 });

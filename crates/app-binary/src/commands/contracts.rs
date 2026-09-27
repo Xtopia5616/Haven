@@ -176,7 +176,7 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
         request: "-",
         response: "McpRefreshResult",
         boundary: CommandBoundary::Execute,
-        security: "reconcile configured clients; no renderer command",
+        security: "renderer-triggered reconcile from persisted config; no client process arguments supplied",
     },
     CommandContract {
         name: "mcp_tool_call",

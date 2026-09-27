@@ -35,7 +35,7 @@
 | `get_performance_metrics` | `UiMetricsSnapshot?` | `MetricsSnapshot` | read | 仅返回有界、无内容的后端与渲染器计数 |
 | `list_mcp_tools` | `-` | `McpServerSnapshot[]` | read | 快照不执行工具，env 值统一遮蔽 |
 | `reconnect_mcp` | `McpNameRequest` | `()` | execute | 只能选择已配置客户端 |
-| `refresh_mcp_servers` | `-` | `McpRefreshResult` | execute | 只重 reconcile 配置客户端 |
+| `refresh_mcp_servers` | `-` | `McpRefreshResult` | execute | renderer 触发的配置客户端 reconcile；不接收进程参数 |
 | `mcp_tool_call` | `McpToolCallRequest` | `McpToolCallResponse` | execute | 适配器调用经过 AuthorizationEngine |
 | `add_mcp_server` | `McpServerConfig` | `()` | execute | 共享 self 操作校验并持久化 |
 | `update_mcp_server` | `UpdateMcpServerRequest` | `()` | execute | 共享 self 操作安全重连 |

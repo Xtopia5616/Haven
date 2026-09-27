@@ -697,7 +697,17 @@ $toolsCatalogChecks = @(
     @{ Command = 'get_tools'; Request = '-'; RustResponse = 'ToolListResponse'; TsResponse = 'ToolListResponse' },
     @{ Command = 'list_mcp_tools'; Request = '-'; RustResponse = 'McpServerSnapshot[]'; TsResponse = 'McpServerSnapshot[]' },
     @{ Command = 'list_skills'; Request = '-'; RustResponse = 'SkillInfo[]'; TsResponse = 'SkillInfo[]' },
-    @{ Command = 'reset_tool_circuits'; Request = '-'; RustResponse = '()'; TsResponse = 'void' }
+    @{ Command = 'reset_tool_circuits'; Request = '-'; RustResponse = '()'; TsResponse = 'void' },
+    @{ Command = 'refresh_mcp_servers'; Request = '-'; RustResponse = 'McpRefreshResult'; TsResponse = 'McpRefreshResult' },
+    @{ Command = 'reconnect_mcp'; Request = 'McpNameRequest'; RustResponse = '()'; TsResponse = 'void' },
+    @{ Command = 'add_mcp_server'; Request = 'McpServerConfig'; RustResponse = '()'; TsResponse = 'void' },
+    @{ Command = 'update_mcp_server'; Request = 'UpdateMcpServerRequest'; RustResponse = '()'; TsResponse = 'void' },
+    @{ Command = 'remove_mcp_server'; Request = 'McpNameRequest'; RustResponse = '()'; TsResponse = 'void' },
+    @{ Command = 'toggle_mcp_server'; Request = 'ToggleMcpServerRequest'; RustResponse = '()'; TsResponse = 'void' },
+    @{ Command = 'refresh_skills'; Request = '-'; RustResponse = '()'; TsResponse = 'void' },
+    @{ Command = 'set_skill_enabled'; Request = 'SetEnabledRequest'; RustResponse = '()'; TsResponse = 'void' },
+    @{ Command = 'set_tool_enabled'; Request = 'SetEnabledRequest'; RustResponse = '()'; TsResponse = 'void' },
+    @{ Command = 'open_skills_dir'; Request = '-'; RustResponse = 'String'; TsResponse = 'string' }
 )
 foreach ($check in $toolsCatalogChecks) {
     $commandName = [regex]::Escape($check.Command)
@@ -713,26 +723,57 @@ foreach ($check in $toolsCatalogChecks) {
     }
 }
 
+$refreshMcpContract = Get-RequiredMatch $tsContracts '(?ms)^\s*refresh_mcp_servers\s*:\s*\{([^}]*)\}' 'frontend contract for refresh_mcp_servers'
+$refreshMcpSecurity = Get-RequiredMatch $refreshMcpContract.Groups[1].Value "security:\s*'([^']+)'" 'refresh_mcp_servers renderer security boundary'
+if ($refreshMcpSecurity.Groups[1].Value -match 'no renderer command|AuthorizationEngine' -or
+    $refreshMcpSecurity.Groups[1].Value -notmatch 'persisted config') {
+    throw 'refresh_mcp_servers must describe the renderer-triggered persisted-config reconcile without claiming AuthorizationEngine ownership'
+}
+
 foreach ($helper in @(
     @{ Function = 'getTools'; Response = 'ToolListResponse'; Command = 'get_tools' },
     @{ Function = 'listMcpTools'; Response = 'McpServerSnapshot[]'; Command = 'list_mcp_tools' },
     @{ Function = 'listSkills'; Response = 'SkillInfo[]'; Command = 'list_skills' },
-    @{ Function = 'resetToolCircuits'; Response = 'void'; Command = 'reset_tool_circuits' }
+    @{ Function = 'resetToolCircuits'; Response = 'void'; Command = 'reset_tool_circuits' },
+    @{ Function = 'refreshMcpServers'; Response = 'McpRefreshResult'; Command = 'refresh_mcp_servers' },
+    @{ Function = 'setSkillEnabled'; Response = 'void'; Command = 'set_skill_enabled'; Parameter = 'request'; ParameterType = 'SetEnabledRequest'; Forward = 'request' },
+    @{ Function = 'refreshSkills'; Response = 'void'; Command = 'refresh_skills' },
+    @{ Function = 'openSkillsDir'; Response = 'string'; Command = 'open_skills_dir' },
+    @{ Function = 'addMcpServer'; Response = 'void'; Command = 'add_mcp_server'; Parameter = 'config'; ParameterType = 'McpServerConfig'; Forward = '\{\s*config\s*\}' },
+    @{ Function = 'updateMcpServer'; Response = 'void'; Command = 'update_mcp_server'; Parameter = 'request'; ParameterType = 'UpdateMcpServerRequest'; Forward = 'request' },
+    @{ Function = 'removeMcpServer'; Response = 'void'; Command = 'remove_mcp_server'; Parameter = 'request'; ParameterType = 'McpNameRequest'; Forward = 'request' },
+    @{ Function = 'reconnectMcp'; Response = 'void'; Command = 'reconnect_mcp'; Parameter = 'request'; ParameterType = 'McpNameRequest'; Forward = 'request' },
+    @{ Function = 'toggleMcpServer'; Response = 'void'; Command = 'toggle_mcp_server'; Parameter = 'request'; ParameterType = 'ToggleMcpServerRequest'; Forward = 'request' },
+    @{ Function = 'setToolEnabled'; Response = 'void'; Command = 'set_tool_enabled'; Parameter = 'request'; ParameterType = 'SetEnabledRequest'; Forward = 'request' }
 )) {
     $functionName = [regex]::Escape($helper.Function)
     $commandName = [regex]::Escape($helper.Command)
-    $pattern = '(?s)export\s+function\s+' + $functionName + '\s*\(\s*\)\s*:\s*Promise<' + [regex]::Escape($helper.Response) + '>\s*\{\s*return\s+invoke\(''' + $commandName + '''\);\s*\}'
+    if ($helper.ContainsKey('Parameter')) {
+        $parameter = [regex]::Escape($helper.Parameter)
+        $parameterType = [regex]::Escape($helper.ParameterType)
+        $signature = '\s*\(\s*' + $parameter + '\s*:\s*' + $parameterType + '\s*\)'
+        $forward = $helper.Forward
+        $invoke = "invoke\('$commandName',\s*$forward\)"
+    } else {
+        $signature = '\s*\(\s*\)'
+        $invoke = "invoke\('$commandName'\)"
+    }
+    $pattern = '(?s)export\s+function\s+' + $functionName + $signature + '\s*:\s*Promise<' + [regex]::Escape($helper.Response) + '>\s*\{\s*return\s+' + $invoke + ';\s*\}'
     if (-not [regex]::IsMatch($toolsCommandsUi, $pattern)) {
         throw "$($helper.Command) must use its typed direct-forward tools command helper"
     }
 }
 
-$toolsDirectInvokePattern = 'invoke\s*(?:<[^>]+>)?\s*\(\s*''(?:get_tools|list_mcp_tools|list_skills|reset_tool_circuits)'''
+$toolsCommandNames = 'get_tools|list_mcp_tools|list_skills|reset_tool_circuits|refresh_mcp_servers|reconnect_mcp|add_mcp_server|update_mcp_server|remove_mcp_server|toggle_mcp_server|refresh_skills|set_skill_enabled|set_tool_enabled|open_skills_dir'
+$toolsDirectInvokePattern = 'invoke\s*(?:<[^>]+>)?\s*\(\s*''(?:' + $toolsCommandNames + ')'''
 $toolsUiRoot = Join-Path $root 'ui/src'
 foreach ($sourceFile in (Get-ChildItem $toolsUiRoot -Recurse -File | Where-Object { $_.Extension -in @('.ts', '.svelte') -and $_.FullName -ne (Join-Path $root 'ui/src/lib/toolsCommands.ts') })) {
     if ([regex]::IsMatch((Get-Content $sourceFile.FullName -Raw), $toolsDirectInvokePattern)) {
         throw "UI source '$($sourceFile.FullName)' bypasses toolsCommands.ts"
     }
+}
+if ([regex]::IsMatch($toolsViewUi, '\binvoke\s*\(')) {
+    throw 'ToolsView must not use raw or dynamically selected invoke commands; all commands belong in toolsCommands.ts'
 }
 if ([regex]::IsMatch($toolsViewUi, '\bparseToolManifest\s*\(') -or
     -not [regex]::IsMatch($toolsViewUi, '(?s)setToolManifests\s*\(\s*result\.tools\s*\).*?builtinToolEntryFromManifest')) {
@@ -750,7 +791,7 @@ if ([regex]::IsMatch($toolsViewUi, '\b(?:McpServerSnapshot|SkillInfo)\[\][^\r\n]
     throw 'ToolsView catalog rows and builtin presentation entries must not use raw any types'
 }
 
-function Assert-ToolsCatalogDto([string] $label, [string] $rustText, [string] $rustType, [string] $tsText, [string] $tsType) {
+function Assert-ToolsCatalogDto([string] $label, [string] $rustText, [string] $rustType, [string] $tsText, [string] $tsType, [bool] $allowExtensions = $true) {
     $rustDto = Get-RequiredMatch $rustText ('(?ms)pub\s+struct\s+' + [regex]::Escape($rustType) + '\s*\{(.*?)\n\}') "Rust $label"
     $tsDto = Get-RequiredMatch $tsText ('(?ms)export\s+interface\s+' + [regex]::Escape($tsType) + '\s*\{(.*?)\n\}') "TypeScript $label"
     $rustFields = Get-StructFields $rustDto.Groups[1].Value "Rust $label"
@@ -765,6 +806,7 @@ function Assert-ToolsCatalogDto([string] $label, [string] $rustText, [string] $r
             'Option<String>' { 'string|null' }
             'Option<i64>' { 'number|null' }
             'Vec<String>' { 'string[]' }
+            'McpTransportType' { 'McpTransport' }
             'Vec<McpToolInfo>' { 'McpToolInfo[]' }
             'Vec<haven_common::tools::ToolManifest>' { 'ToolManifestWire[]' }
             'McpClientStatus' { 'McpClientStatus' }
@@ -787,17 +829,27 @@ function Assert-ToolsCatalogDto([string] $label, [string] $rustText, [string] $r
             throw "$label field '$field' differs from its Rust wire type"
         }
     }
-    if (-not [regex]::IsMatch($tsDto.Groups[1].Value, '\[\s*field\s*:\s*string\s*\]\s*:\s*unknown\s*;')) {
+    $hasExtensionIndex = [regex]::IsMatch($tsDto.Groups[1].Value, '\[\s*field\s*:\s*string\s*\]\s*:\s*unknown\s*;')
+    if ($allowExtensions -and -not $hasExtensionIndex) {
         throw "$label must retain unknown extension fields in the renderer contract"
+    }
+    if (-not $allowExtensions -and $hasExtensionIndex) {
+        throw "$label must keep its fixed Rust config DTO fields instead of accepting arbitrary properties"
     }
 }
 
 $commonToolsRs = Get-Content (Join-Path $root 'crates/common/src/tools.rs') -Raw
 $skillsRs = Get-Content (Join-Path $root 'crates/skills/src/lib.rs') -Raw
 $mcpRs = Get-Content (Join-Path $root 'crates/mcp/src/protocol.rs') -Raw
+$mcpCommandsRs = Get-Content (Join-Path $commandsRoot 'mcp.rs') -Raw
+$skillsCommandsRs = Get-Content (Join-Path $commandsRoot 'skills.rs') -Raw
+$commonConfigRs = Get-Content (Join-Path $root 'crates/common/src/config/misc.rs') -Raw
+$commonTypesRs = Get-Content (Join-Path $root 'crates/common/src/types.rs') -Raw
 Assert-ToolsCatalogDto 'ToolListResponse' (Get-Content (Join-Path $commandsRoot 'contracts.rs') -Raw) 'ToolListResponse' $toolsContractUi 'ToolListResponse'
 Assert-ToolsCatalogDto 'SkillInfo' $skillsRs 'SkillInfo' $toolsContractUi 'SkillInfo'
 Assert-ToolsCatalogDto 'McpServerSnapshot' $mcpRs 'McpServerSnapshot' $toolsContractUi 'McpServerSnapshot'
+Assert-ToolsCatalogDto 'McpRefreshResult' $mcpCommandsRs 'McpRefreshResult' $toolsContractUi 'McpRefreshResult'
+Assert-ToolsCatalogDto 'McpServerConfig' $commonConfigRs 'McpServerConfig' $toolsContractUi 'McpServerConfig' $false
 Assert-ToolsCatalogDto 'McpToolInfo' $mcpRs 'McpToolInfo' $toolsContractUi 'McpToolInfo'
 Assert-ToolsCatalogDto 'ToolManifestWire' $commonToolsRs 'ToolManifest' $toolsContractUi 'ToolManifestWire'
 Assert-ToolsCatalogDto 'ToolManifestIdentityWire' $commonToolsRs 'ToolIdentity' $toolsContractUi 'ToolManifestIdentityWire'
@@ -811,7 +863,59 @@ if (-not [regex]::IsMatch($toolsContractUi, '(?ms)export\s+type\s+McpClientStatu
     throw 'McpClientStatus must remain open to unknown serde-tagged variants and extension fields'
 }
 
-Write-Host 'Tools catalog IPC contract verified: Rust DTO fields, typed helpers, open extensions, and UI call boundaries agree.'
+if (-not [regex]::IsMatch($commonTypesRs, '(?s)pub\s+enum\s+McpTransportType\s*\{\s*(?:#\[[^\]]+\]\s*)*Stdio\s*,\s*Http\s*,?\s*\}') -or
+    -not [regex]::IsMatch($toolsContractUi, "export\s+type\s+McpTransport\s*=\s*'stdio'\s*\|\s*'http'\s*;")) {
+    throw 'McpTransport must retain the Rust snake_case enum wire variants'
+}
+
+foreach ($check in @(
+    @{ File = $mcpCommandsRs; Command = 'refresh_mcp_servers'; Parameters = @{} },
+    @{ File = $mcpCommandsRs; Command = 'reconnect_mcp'; Parameters = @{ name = 'String' } },
+    @{ File = $mcpCommandsRs; Command = 'add_mcp_server'; Parameters = @{ config = 'McpServerConfig' } },
+    @{ File = $mcpCommandsRs; Command = 'update_mcp_server'; Parameters = @{ name = 'String'; config = 'McpServerConfig' } },
+    @{ File = $mcpCommandsRs; Command = 'remove_mcp_server'; Parameters = @{ name = 'String' } },
+    @{ File = $mcpCommandsRs; Command = 'toggle_mcp_server'; Parameters = @{ name = 'String'; enabled = 'bool' } },
+    @{ File = $skillsCommandsRs; Command = 'refresh_skills'; Parameters = @{} },
+    @{ File = $skillsCommandsRs; Command = 'set_skill_enabled'; Parameters = @{ name = 'String'; enabled = 'bool' } },
+    @{ File = $skillsCommandsRs; Command = 'set_tool_enabled'; Parameters = @{ name = 'String'; enabled = 'bool' } },
+    @{ File = $skillsCommandsRs; Command = 'open_skills_dir'; Parameters = @{} }
+)) {
+    $commandName = [regex]::Escape($check.Command)
+    $signature = Get-RequiredMatch $check.File ('(?s)pub\s+async\s+fn\s+' + $commandName + '\s*\((.*?)\)\s*->') "Rust signature for '$($check.Command)'"
+    $parameters = Get-RustCommandParameters $signature.Groups[1].Value "'$($check.Command)' parameters"
+    $parameters.Remove('state') | Out-Null
+    $parameters.Remove('app') | Out-Null
+    Assert-SetEqual "$($check.Command) Rust argument fields" @($check.Parameters.Keys) @($parameters.Keys)
+    foreach ($field in $check.Parameters.Keys) {
+        if ($parameters[$field].Type -ne $check.Parameters[$field]) {
+            throw "$($check.Command) argument '$field' differs from its typed helper request"
+        }
+    }
+}
+
+foreach ($requestCheck in @(
+    @{ Type = 'McpNameRequest'; Fields = @{ name = 'String' } },
+    @{ Type = 'SetEnabledRequest'; Fields = @{ name = 'String'; enabled = 'bool' } },
+    @{ Type = 'ToggleMcpServerRequest'; Fields = @{ name = 'String'; enabled = 'bool' } },
+    @{ Type = 'UpdateMcpServerRequest'; Fields = @{ name = 'String'; config = 'McpServerConfig' } }
+)) {
+    $requestDto = Get-RequiredMatch $toolsContractUi ('(?ms)export\s+interface\s+' + [regex]::Escape($requestCheck.Type) + '\s*\{(.*?)\n\}') "TypeScript $($requestCheck.Type)"
+    $requestFields = Get-StructFields $requestDto.Groups[1].Value "TypeScript $($requestCheck.Type)"
+    Assert-SetEqual "$($requestCheck.Type) fields" @($requestCheck.Fields.Keys) @($requestFields.Keys)
+    foreach ($field in $requestCheck.Fields.Keys) {
+        $expectedType = switch ($requestCheck.Fields[$field]) {
+            'String' { 'string' }
+            'bool' { 'boolean' }
+            'McpServerConfig' { 'McpServerConfig' }
+            default { throw "unsupported Rust request field type '$($requestCheck.Fields[$field])'" }
+        }
+        if ($requestFields[$field].Type -ne $expectedType -or $requestFields[$field].Optional) {
+            throw "$($requestCheck.Type) field '$field' differs from its Rust wire argument"
+        }
+    }
+}
+
+Write-Host 'Tools IPC contract verified: Rust DTO/argument fields, typed catalog and admin helpers, open extensions, and UI call boundaries agree.'
 
 $diagnosticsCommandsUi = Get-Content (Join-Path $root 'ui/src/lib/diagnosticsCommands.ts') -Raw
 $settingsContractUi = Get-Content (Join-Path $root 'ui/src/lib/contracts/settings.ts') -Raw

@@ -641,9 +641,12 @@ listener ready 后再 settings/load/restore，并在 destroy 时 dispose。旧 `
 （ADR 0160、0313、0315、0320、0322）。Phase 8 尚未完成的工作包括其他 command families 的逐域审计、是否引入跨域 Rust→TypeScript codegen 的决策，以及 ask/input 决策、复杂 view state 和启动恢复的编排边界；已审计域保留手写 contract/mapper，不视为生成产物。
 `ModelSettings.svelte` 仍拥有命名模型和 Provider CRUD 编排；活跃 discovery command 现统一经过
 `modelDiscoveryCommands.ts`（ADR 0368），页面仍负责缓存数据的 settings 投影与刷新交互。ToolsView 的
-`get_tools`、`list_mcp_tools`、`list_skills` 和本地 circuit reset 通过 `toolsCommands.ts`；MCP/Skill list DTO
-保留 snake_case 和扩展字段，builtin `ToolManifest` 仍由 `toolManifest.ts` 唯一投影，卡片列表复用同一批解析行
-（ADR 0369）。MCP/Skills 写入、连接与 refresh 仍由原页面编排。
+catalog、MCP/Skills 管理、连接和 refresh 命令均通过 `toolsCommands.ts`；命名 request/response DTO 保持
+Rust wire snake_case，MCP config 对齐固定 `McpServerConfig`，动态 schema 仍只在 `ToolSchema = unknown` 边界。
+ToolsView 继续拥有 optimistic state、通知、失败显示和 snapshot/event refresh 编排；Rust handler 继续拥有
+native admin authorization、连接副作用和 status event。`refresh_mcp_servers` 与 `reconnect_mcp` 的 handler
+当前未请求 AuthorizationEngine，策略审计是单独 follow-up，不由 typed helper 改变。MCP/Skill list DTO
+保留扩展字段，builtin `ToolManifest` 仍由 `toolManifest.ts` 唯一投影，卡片列表复用同一批解析行（ADR 0369）。
 
 **判定标准**：唯一能同时看到所有 crate 的地方；负责把事件桥到前端、把前端命令调到后端，
 不承载业务逻辑。
@@ -731,6 +734,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 | 2026-09-26 | §2.5 Agent：`SessionSupervisor` 构造改接收 `SessionStore`，AppState 显式创建并保持独立事件 sender；`AgentLayer::new` 与其他 raw Database 路径仍按 ADR 0363 记录范围保留 |
 | 2026-09-26 | §2.6 App / UI：`discover_models` 与 `discover_all_models` 经命名 request/result contract 和单一 typed helper；设置刷新、聊天默认模型同步、媒体 STT discovery 保留各自缓存/错误/通知语义，model metadata 扩展字段原样通过（ADR 0368）|
 | 2026-09-26 | §2.6 App / UI：ToolsView catalog reads 与 circuit reset 通过 typed `toolsCommands.ts`；Rust Skill/MCP/ToolManifest wire fields 有手写 contract 与 IPC drift check，builtin manifest 唯一 mapper 的解析行供 cache/card 共用，保持 snake_case、开放扩展、未知 MCP status、刷新/排序/错误行为（ADR 0369） |
+| 2026-09-27 | §2.6 App / UI：ToolsView 的 MCP/Skills 管理、连接与 refresh command 也通过 typed `toolsCommands.ts`，contract script 对照 Rust handler 参数/DTO 并阻止动态 invoke 绕行；保留 view 的 optimistic state、通知/错误和事件刷新顺序。refresh/reconnect 的 AuthorizationEngine 边界作为单独安全决策记录（ADR 0369） |
 | 2026-09-25 | §2.5 Tools / §2.6 UI：审计 background/scheduled action board 生命周期投影；复用既有 background terminal transcript finalizer，保留 scheduled 删除、Agent 通知、kind-specific display/cancel 和无 UI event dedup 边界（ADR 0344） |
 | 2026-09-25 | §2.5 Tools：穷举审计 background/scheduled ActionStatus 与 terminal claim；已有纯策略 owner 覆盖唯一共享判断，不新增完整 Job transition policy，记录 trigger/execution 与恢复语义的未决决策（ADR 0352） |
 | 2026-09-25 | §2.5 Tools：scheduled admission 只回收 terminal 内存 entry，保留 Running row 供 Agent terminal callback、取消与 no-consumer recovery 使用；Waiting 恢复、restart cleanup、CAS 和事件顺序保持（ADR 0353） |
