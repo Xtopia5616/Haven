@@ -86,8 +86,14 @@ Settings 有序阶段，驱动命令提供的执行回调，并唯一记录当�
 restart-required targets 与失败/警告。Security、MCP、context、logging、hotkey 等实际副作用仍由既有 owner
 执行；Settings edit/no-op 仍由命令按同一次 `ConfigService::edit` 保留旧 hotkey、snapshot 和 change。该
 coordinator 不复制 Router prepare/publish，也不为半失败状态增加 compensation/rollback。审计确认无第二份配置 owner、target mapping 或 Settings payload builder；durable edit 后不增加 compensation/rollback 或显式 retry/restart；失败保留磁盘配置并报告部分 apply failure，重启从磁盘初始化。`SettingsView` 唯一的 `update_settings` payload builder 使用开放式 `SettingsPayload`，IPC script 校验 Rust `Settings` 参数和 UI 直接调用 owner，而完整字段 schema 仍由 Rust 所有（ADR 0372）。Tools admin 的 MCP/Skills/Logging/ToolSettings writers 若修改与 Settings/model 相同的运行时配置域，必须进入统一串行配置边界；不相关域仍由原 owner 负责。实现跟进由组合根创建共享 gate，并经窄 AdminContext 注入 Tools AdminServices；gate 覆盖 durable edit 与 live apply/rebuild，Tauri wrapper 不重复 catalog rebuild。MCP Tauri 管理入口将写入委托给 AdminServices；
-add/update/toggle/remove 的持久化、live 连接和 catalog rebuild 均在 AdminServices 的共享 gate 内完成，Tauri 只发状态事件。refresh/reconnect 仍由命令协调各自的 live 路径；连接及其 `catalog_version` 仍由
-`McpManager` 持有。应用退出顺序由 `ApplicationRuntime` 负责，coordinator 不增加独立 shutdown 生命周期
+add/update/toggle/remove 的持久化、live 连接和 catalog rebuild 均在 AdminServices 的共享 gate 内完成。renderer 的
+refresh/reconnect 也先经 `AuthorizationEngine`；typed native request 不进入模型可见 MCP schema。Refresh 授权后仅在
+`AdminServices` 内按共享配置 gate 复核版本与完整 diff，reconnect 复核单个已启用 server 与 live client，再执行对应
+连接路径。Refresh 的 connect/disconnect status 经 manager channel 投影；直接 reconnect 成功后由 ToolsView 刷新快照，
+待确认 reconnect 则由 resolver finalizer 发布当前状态。待确认 refresh 的 partial failure 由 confirmed-only finalizer
+筛选本批授权 target 后，经现有 status channel 发布通用 Offline 状态；直接 refresh 继续通过原响应 DTO 返回批次结果，
+不会重复发失败事件。连接及其 `catalog_version` 仍由 `McpManager` 持有。
+应用退出顺序由 `ApplicationRuntime` 负责，coordinator 不增加独立 shutdown 生命周期
 （ADR 0333、0337）。
 安全矩阵只有 `security.rs` 一个权威来源，五个 Admin surface 由 ADR 0070/0071 定义的 typed
 operation 实现。边界见 ADR 0162、ADR 0211、ADR 0212 与 ADR 0213。

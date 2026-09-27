@@ -22,7 +22,7 @@
 | `agent.*` | `agent.list`, `agent.children`, `agent.history`, `agent.profile`, `agent.inbox`, `agent.ack`, `agent.reply`, `agent.request`, `agent.status`, `agent.join`, `agent.wait`, `agent.collect`, `agent.send` = safe | `agent.spawn` = medium；`agent.stop` = high | view 的完整名称；父级 `agent` 可作为 ToolConfig 家族设置 | peer bus 路径固定在受管 root；lifecycle/history target 只允许当前 session 或其后代 | inbox 默认 claim 不 ack，必须在 durable project/snapshot 后用 message id 或 claim token 显式 ack；request/join/wait 等待取消必须释放 waiter；stop 复用 SessionSupervisor / SessionActor 取消与清理 |
 | `load_mcp` | 加载元数据 = safe | 被加载 MCP 工具统一按 high gate | `load_mcp` | MCP 配置/env 不进入普通错误或 UI | 连接取消必须关闭 client |
 | `memory.*` | `memory.search`, `memory.list`, `memory.recall` = safe | `memory.remember`, `memory.forget` = medium | view 的完整名称；父级 `memory` 可作为 ToolConfig 家族设置 | 事实写入拒绝 credential-like 值 | maintenance/embedding 操作支持取消或有界执行 |
-| `haven.*`、`actions.*`、`schedule.*`、`preferences.*`、`checklist.*` | 诊断、配置读取、技能/工具/MCP 列表、`actions.list/inspect`、`schedule.list`、`preferences.get/list`、`checklist.list` = safe/low | `haven.config.logs_level`、技能/工具 enable/disable、MCP connect/disconnect/reload、`actions.cancel` = medium；skill_create、MCP add/update/toggle/remove = high；schedule/preferences/checklist 写操作沿用各自 view 风险 | view 的完整名称；各 family 父级可作为 ToolConfig 家族设置 | 每个 view 使用独立 schema、风险、并发资源和 session 归属；配置读取递归脱敏，MCP env 不返回，任务取消按 session 校验 | 聚合实现只转发子工具策略；保存失败不产生半更新状态，诊断失败不得暴露原始日志或会话正文 |
+| `haven.*`、`actions.*`、`schedule.*`、`preferences.*`、`checklist.*` | 诊断、配置读取、技能/工具/MCP 列表、`actions.list/inspect`、`schedule.list`、`preferences.get/list`、`checklist.list` = safe/low | `haven.config.logs_level`、技能/工具 enable/disable、MCP connect/disconnect/reload/reconnect/refresh、`actions.cancel` = medium；skill_create、MCP add/update/toggle/remove = high；schedule/preferences/checklist 写操作沿用各自 view 风险 | view 的完整名称；各 family 父级可作为 ToolConfig 家族设置 | 每个 view 使用独立 schema、风险、并发资源和 session 归属；配置读取递归脱敏，MCP env 不返回，任务取消按 session 校验 | 聚合实现只转发子工具策略；保存失败不产生半更新状态，诊断失败不得暴露原始日志或会话正文 |
 
 ### 入口一致性
 
@@ -32,7 +32,7 @@
 | 定时任务触发 | 设定时按 registry 风险检查，触发时再次经过 executor gate | 设定时的允许不能替代触发时的当前拒绝 |
 | MCP 适配器 | `mcp__server__tool` 使用 adapter 的 high 风险和同一授权 key | UI 预览与 Agent 调用共享 permanent grant；session grant 不泄漏到无 session 入口 |
 | skill 适配器 | `skill__name` 使用 adapter 的 high 风险和同一授权 key | skill 脚本不能由 `confirmed` 参数绕过 deny/path gate |
-| UI MCP/skill 命令 | `mcp_tool_call` / `execute_skill` 先检查 gateway | 被拒绝时不创建 client call/runner call |
+| UI MCP/skill 命令 | `mcp_tool_call` / `execute_skill` 先检查 gateway；`reconnect_mcp` 对一个已启用 server 授权；`refresh_mcp_servers` 对配置 diff 的 affected set 授权一次 | 未授权/待确认期间不创建、连接、重连或断开 client；`NetworkPolicy::Deny` 在连接前阻断，`Ask` 要求确认；确认后在共享配置 gate 内复核 config version 与完整 target set |
 | 自身设置入口 | Tauri 设置命令复用 native admin surface，并先经过 AuthorizationEngine | UI 与模型 capability 使用同一 typed 写路径；确认恢复仍绑定 receipt，native façade 为临时迁移边界 |
 
 ## 负向回归矩阵
@@ -52,6 +52,8 @@
 | 授权继承 | child deny + parent allow | `Blocked` |
 | 授权优先级 | permanent deny + session allow | `Blocked` |
 | 会话隔离 | session allow 在 `ses-a`，无 session 或 `ses-b` 调用 | 后两者不能自动批准 |
+| 确认后 MCP refresh 部分失败 | queued refresh 被批准，结果 `failed` 含本批 reconnect target | resolver 保留 `ToolResult`，只经既有 `mcp:status_change` 为失败 target 发通用 `Offline`；direct command 仍只用 response DTO 汇总，不重复发失败事件 |
+| MCP refresh 失败 payload | `failed` 为空、不是数组、包含非字符串/空项/计划外名称/重复名称 | 不发 Offline；只发布唯一且匹配授权 connect/reconnect target 的名称，不向 renderer 暴露底层连接错误 |
 | policy reset | 修改阈值、重新加载安全配置、clear history | 清除旧 session grants，不残留信任 |
 | disabled op | `disabled_operations` 命中 canonical capability 或工具设置名下的短写；即使原始 discriminator 不一致也按 capability 判断 | `Blocked`，优先于风险确认 |
 | operation view contract | view 的 schema、固定 operation/scope、风险、幂等性、并发、权限 key、renderer、icon、prompt 任一不一致 | catalog、AuthorizationEngine、UI parser/renderer 和 prompt 不得各自接受不同定义 |

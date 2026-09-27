@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatError } from './formatError.ts';
+import { formatError, isAuthorizationConfirmationPending } from './formatError.ts';
 
 describe('formatError', () => {
 	it('returns strings as-is', () => {
@@ -40,5 +40,15 @@ describe('formatError', () => {
 			'line one line two with spaces',
 		);
 		expect(formatError('x'.repeat(300))).toHaveLength(240);
+	});
+
+	it('recognizes queued authorization confirmations without matching ordinary errors', () => {
+		expect(
+			isAuthorizationConfirmationPending(
+				JSON.stringify({ requires_confirmation: true, request_id: 'conf-test' }),
+			),
+		).toBe(true);
+		expect(isAuthorizationConfirmationPending('refresh failed')).toBe(false);
+		expect(isAuthorizationConfirmationPending({ message: 'not json' })).toBe(false);
 	});
 });

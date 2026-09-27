@@ -102,15 +102,29 @@ describe('Tauri command contract directory', () => {
 		});
 	});
 
-	it('describes ToolsView MCP refresh as a renderer reconcile over persisted config', () => {
+	it('describes ToolsView MCP connection commands as AuthorizationEngine gated', () => {
+		expect(TAURI_COMMAND_CONTRACTS.reconnect_mcp).toMatchObject({
+			request: 'McpNameRequest',
+			response: 'void',
+			boundary: 'execute',
+		});
+		expect(TAURI_COMMAND_CONTRACTS.reconnect_mcp.security).toContain('AuthorizationEngine');
+		expect(TAURI_COMMAND_CONTRACTS.reconnect_mcp.security).toContain(
+			'one existing configured server',
+		);
+
 		expect(TAURI_COMMAND_CONTRACTS.refresh_mcp_servers).toMatchObject({
 			request: '-',
 			response: 'McpRefreshResult',
 			boundary: 'execute',
 		});
+		expect(TAURI_COMMAND_CONTRACTS.refresh_mcp_servers.security).toContain(
+			'AuthorizationEngine',
+		);
+		expect(TAURI_COMMAND_CONTRACTS.refresh_mcp_servers.security).toContain('one batch');
 		expect(TAURI_COMMAND_CONTRACTS.refresh_mcp_servers.security).toContain('persisted config');
-		expect(TAURI_COMMAND_CONTRACTS.refresh_mcp_servers.security).not.toMatch(
-			/no renderer command|AuthorizationEngine/,
+		expect(TAURI_COMMAND_CONTRACTS.refresh_mcp_servers.security).toContain(
+			'no renderer process arguments',
 		);
 	});
 });

@@ -90,6 +90,16 @@ describe('app-shell IPC contract', () => {
 		expect(event?.payload).toEqual(payload);
 	});
 
+	it('preserves confirmed MCP refresh failures on the existing status channel', () => {
+		const payload = {
+			name: 'new-server',
+			status: { Offline: { error: 'MCP 连接失败，请检查服务器状态或配置' } },
+		};
+		const event = mapAppEvent({ event: 'mcp:status_change', id: 5, payload });
+
+		expect(event?.payload).toEqual(payload);
+	});
+
 	it('validates and preserves the Skills status wrapper', () => {
 		const payload = { op: 'auto_refresh', future_field: 'preserved' };
 		const event = mapAppEvent({ event: 'skills:status_change', id: 5, payload });
@@ -120,15 +130,25 @@ describe('app-shell IPC contract', () => {
 		{
 			event: 'interaction:requested',
 			payload: {
-				id: 'conf-1', session_id: 'ses-1', kind: 'confirm', status: 'pending',
-				prompt: 'Confirm', created_at: 'now', options: ['okay', 1],
+				id: 'conf-1',
+				session_id: 'ses-1',
+				kind: 'confirm',
+				status: 'pending',
+				prompt: 'Confirm',
+				created_at: 'now',
+				options: ['okay', 1],
 			},
 		},
 		{
 			event: 'interaction:requested',
 			payload: {
-				id: 'conf-1', session_id: 'ses-1', kind: 'confirm', status: 'pending',
-				prompt: 'Confirm', created_at: 'now', action_index: -1,
+				id: 'conf-1',
+				session_id: 'ses-1',
+				kind: 'confirm',
+				status: 'pending',
+				prompt: 'Confirm',
+				created_at: 'now',
+				action_index: -1,
 			},
 		},
 		{ event: 'mcp:status_change', payload: { name: 'server', status: 42 } },

@@ -4,15 +4,15 @@
 //! accepts the fields for exactly one operation; the typed operation wrappers in
 //! `admin.rs` own selection, schema, policy, and error conversion.
 
-use super::{AdminContext, McpAddFields, McpUpdateFields};
+use super::{AdminContext, McpAddFields, McpRefreshPlan, McpUpdateFields};
 use crate::ToolRegistry;
-use anyhow::Result;
+use anyhow::{Error, Result};
 use haven_common::config::{
     AppConfig, ConfigLoader, ConfigPatch, LogConfig, LogLevel, McpServerConfig, RequestKind,
     Settings,
 };
 use haven_common::types::McpTransportType;
-use haven_mcp::McpClientStatus;
+use haven_mcp::{McpClientStatus, McpStatusChangeEvent};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -21,6 +21,12 @@ use tokio::sync::RwLock;
 
 use haven_mcp::McpManager;
 use haven_skills::SkillsEngine;
+
+pub(crate) enum NativeMcpServiceError {
+    Preflight(String),
+    BeforeSideEffect(Error),
+    SideEffect(Error),
+}
 
 /// Runtime implementation dependencies for the five capability-scoped admin
 /// surfaces. The context is app-level; the skills/MCP/catalog dependencies are
@@ -705,6 +711,159 @@ impl AdminServices {
         }
         self.rebuild_catalog().await?;
         Ok(serde_json::json!({"reloaded": true, "connected": connected}))
+    }
+
+    /// Execute one already-authorized renderer reconnect. Authorization waits
+    /// happen before this method; the shared config gate then protects the
+    /// final generation/target check and the complete reconnect + monitor
+    /// restart.
+    pub(crate) async fn mcp_reconnect(
+        &self,
+        name: &str,
+        authorized_version: u64,
+    ) -> std::result::Result<Value, NativeMcpServiceError> {
+        let _config_apply_guard = self.lock_config_apply().await;
+        let snapshot = self
+            .config_service()
+            .and_then(|service| service.snapshot())
+            .map_err(NativeMcpServiceError::BeforeSideEffect)?;
+        if snapshot.version != authorized_version {
+            return Err(NativeMcpServiceError::Preflight(
+                "MCP reconnect authorization is stale; refresh and try again".into(),
+            ));
+        }
+        let configured = snapshot
+            .config
+            .mcp_servers
+            .iter()
+            .find(|server| server.name == name)
+            .filter(|server| server.enabled)
+            .ok_or_else(|| {
+                NativeMcpServiceError::Preflight(format!(
+                    "MCP server '{}' is not enabled in config",
+                    name
+                ))
+            })?;
+        let Some(client) = self.mcp_manager.get_client(name).await else {
+            return Err(NativeMcpServiceError::Preflight(format!(
+                "MCP client '{}' is no longer connected",
+                name
+            )));
+        };
+
+        // Confirm that the live client still represents this configured
+        // server before reconnecting it. The config version check above also
+        // invalidates any pending confirmation after an edit.
+        if !client.matches_config(configured) {
+            return Err(NativeMcpServiceError::Preflight(format!(
+                "MCP server '{}' changed after authorization",
+                name
+            )));
+        }
+        self.mcp_manager
+            .reconnect(name)
+            .await
+            .map_err(NativeMcpServiceError::SideEffect)?;
+
+        let discovery = snapshot.config.mcp_discovery;
+        client.spawn_monitor(
+            std::time::Duration::from_secs(discovery.health_interval_secs),
+            std::time::Duration::from_millis(discovery.reconnect_initial_ms),
+            std::time::Duration::from_millis(discovery.reconnect_max_ms),
+            discovery.reconnect_max_retries,
+            self.mcp_manager.status_tx(),
+        );
+        Ok(serde_json::json!({"name": name, "connected": true}))
+    }
+
+    /// Reconcile only the target set captured in the authorization request.
+    /// A stale config version or changed live diff is rejected before any
+    /// client is connected or disconnected.
+    pub(crate) async fn mcp_refresh(
+        &self,
+        authorized_plan: &McpRefreshPlan,
+    ) -> std::result::Result<Value, NativeMcpServiceError> {
+        let _config_apply_guard = self.lock_config_apply().await;
+        let snapshot = self
+            .config_service()
+            .and_then(|service| service.snapshot())
+            .map_err(NativeMcpServiceError::BeforeSideEffect)?;
+        if snapshot.version != authorized_plan.config_version {
+            return Err(NativeMcpServiceError::Preflight(
+                "MCP refresh authorization is stale; refresh and try again".into(),
+            ));
+        }
+        let servers = snapshot.config.mcp_servers;
+        let reconcile = self.mcp_manager.reconcile_servers(&servers).await;
+        let current_plan = McpRefreshPlan::from_reconcile(snapshot.version, &reconcile);
+        if current_plan != *authorized_plan {
+            return Err(NativeMcpServiceError::Preflight(
+                "MCP refresh targets changed after authorization; refresh and try again".into(),
+            ));
+        }
+
+        // Keep the in-memory config index aligned even when the authorized
+        // diff contains no connection changes.
+        {
+            let mut map = self.server_configs.write().await;
+            map.clear();
+            for server in &servers {
+                map.insert(server.name.clone(), server.clone());
+            }
+        }
+
+        // Remove stale generations first, then connect new and changed
+        // servers in the same order as the prior renderer refresh path.
+        let changed = reconcile.to_connect_changed;
+        let mut updated = Vec::new();
+        for server in &changed {
+            tracing::info!(server = %server.name, "MCP config changed; reconnecting authorized target");
+            self.mcp_manager.remove_client(&server.name).await;
+            let _ = self.mcp_manager.status_tx().send(McpStatusChangeEvent {
+                name: server.name.clone(),
+                status: McpClientStatus::Disconnected,
+            });
+            updated.push(server.name.clone());
+        }
+
+        let mut added = Vec::new();
+        let mut failed = Vec::new();
+        for server in reconcile.to_connect_new.into_iter().chain(changed) {
+            match self.mcp_manager.connect_server(&server).await {
+                Ok(()) => {
+                    if !updated.iter().any(|name| name == &server.name) {
+                        added.push(server.name.clone());
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        server = %server.name,
+                        error = %sanitize_diagnostic(&error.to_string()),
+                        "authorized MCP refresh target failed to connect"
+                    );
+                    failed.push(server.name.clone());
+                }
+            }
+        }
+
+        let mut removed = Vec::new();
+        for name in reconcile.to_remove {
+            self.mcp_manager.remove_client(&name).await;
+            let _ = self.mcp_manager.status_tx().send(McpStatusChangeEvent {
+                name: name.clone(),
+                status: McpClientStatus::Disconnected,
+            });
+            removed.push(name);
+        }
+        self.rebuild_catalog()
+            .await
+            .map_err(NativeMcpServiceError::SideEffect)?;
+        Ok(serde_json::json!({
+            "added": added,
+            "removed": removed,
+            "updated": updated,
+            "failed": failed,
+        }))
     }
 
     async fn apply_mcp_config_update(

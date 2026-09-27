@@ -7,7 +7,10 @@ function redactSensitiveText(value: string): string {
 			'$1[REDACTED]',
 		)
 		.replace(/\bBearer\s+[^\s,;]+/gi, 'Bearer [REDACTED]')
-		.replace(/\b(?:sk-[A-Za-z0-9_-]{8,}|gsk_[A-Za-z0-9_-]{8,}|AIza[A-Za-z0-9_-]{20,}|xai-[A-Za-z0-9_-]{8,}|AKIA[A-Z0-9]{12,})\b/g, '[REDACTED]')
+		.replace(
+			/\b(?:sk-[A-Za-z0-9_-]{8,}|gsk_[A-Za-z0-9_-]{8,}|AIza[A-Za-z0-9_-]{20,}|xai-[A-Za-z0-9_-]{8,}|AKIA[A-Z0-9]{12,})\b/g,
+			'[REDACTED]',
+		)
 		.replace(/\b[A-Za-z]:[\\/][^\s,;"'()[\]{}]+/g, '[PATH]')
 		.replace(/\\\\[^\s,;"'()[\]{}]+/g, '[PATH]');
 }
@@ -37,4 +40,14 @@ export function formatError(error: unknown): string {
 		return '未知错误';
 	}
 	return trimMessage(String(error));
+}
+
+/** Detect the existing renderer IPC envelope for a confirmation queued by the backend. */
+export function isAuthorizationConfirmationPending(error: unknown): boolean {
+	try {
+		const parsed = JSON.parse(formatError(error)) as { requires_confirmation?: unknown };
+		return parsed?.requires_confirmation === true;
+	} catch {
+		return false;
+	}
 }

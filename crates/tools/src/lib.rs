@@ -120,8 +120,9 @@ pub use builtin::{
     AdminCapability, AdminContext, AdminOperationError, AdminRequest, AdminSurfaces, AgentTool,
     ConfigAdminContext, ConfigAdminOperation, ConfigAdminTool, ConfigOperationArgs,
     ConfigOperationError, ConfigOperationOutput, ConfigViewOutput, DiagnosticsOperationArgs,
-    LogLevelOutput, McpOperationArgs, MediaTranscriptionResult, MediaTranscriptionStatus,
-    ScheduleMode, SkillsOperationArgs, ToolsOperationArgs,
+    LogLevelOutput, McpOperationArgs, McpRefreshAction, McpRefreshPlan, McpRefreshTarget,
+    MediaTranscriptionResult, MediaTranscriptionStatus, NativeMcpOperationArgs, ScheduleMode,
+    SkillsOperationArgs, ToolsOperationArgs,
 };
 pub use circuit::ToolCircuitRegistry;
 pub use haven_common::types::CapabilityScope;

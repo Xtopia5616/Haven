@@ -110,7 +110,8 @@ pub use admin::{
     AdminCapability, AdminContext, AdminOperationError, AdminRequest, AdminSurfaces,
     ConfigAdminContext, ConfigAdminOperation, ConfigAdminTool, ConfigOperationArgs,
     ConfigOperationError, ConfigOperationOutput, ConfigViewOutput, DiagnosticsOperationArgs,
-    LogLevelOutput, McpOperationArgs, SkillsOperationArgs, ToolsOperationArgs,
+    LogLevelOutput, McpOperationArgs, McpRefreshAction, McpRefreshPlan, McpRefreshTarget,
+    NativeMcpOperationArgs, SkillsOperationArgs, ToolsOperationArgs,
 };
 pub use media::{MediaTranscriptionResult, MediaTranscriptionStatus};
 pub use memory::MemoryTool;

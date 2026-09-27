@@ -225,6 +225,30 @@ pub fn is_safe_local_path(path: &Path) -> bool {
 /// state. They can contain shell commands, URLs with credentials, file
 /// contents, or MCP/skill secrets and must never be sent to the renderer.
 pub fn permission_prompt_summary(tool_name: &str, params: &Value) -> String {
+    if tool_name == "haven.mcp.mcp_reconnect" {
+        return "将重新连接一个当前配置的 MCP 服务器（服务器配置详情已隐藏）".into();
+    }
+    if tool_name == "haven.mcp.mcp_refresh" {
+        let mut connect = 0;
+        let mut reconnect = 0;
+        let mut disconnect = 0;
+        if let Some(targets) = params.pointer("/plan/targets").and_then(Value::as_array) {
+            for target in targets {
+                match target.get("action").and_then(Value::as_str) {
+                    Some("connect") => connect += 1,
+                    Some("reconnect") => reconnect += 1,
+                    Some("disconnect") => disconnect += 1,
+                    _ => {}
+                }
+            }
+        }
+        if connect + reconnect + disconnect == 0 {
+            return "MCP 配置刷新：当前无需连接或断开服务器".into();
+        }
+        return format!(
+            "MCP 配置变更批次：连接 {connect} 台、重连 {reconnect} 台、断开 {disconnect} 台服务器（配置详情已隐藏）"
+        );
+    }
     let operation = registered_operation_label(tool_name, params);
     let family = tool_name
         .split(':')
@@ -1368,6 +1392,42 @@ mod tests {
         );
         assert!(summary.starts_with("媒体操作：media.speak"));
         assert!(!summary.contains("secret spoken content"));
+    }
+
+    #[test]
+    fn native_mcp_refresh_prompt_describes_one_bounded_batch_without_config_values() {
+        let summary = permission_prompt_summary(
+            "haven.mcp.mcp_refresh",
+            &serde_json::json!({
+                "operation": "mcp_refresh",
+                "plan": {
+                    "config_version": 4,
+                    "targets": [
+                        {"name": "alpha", "action": "connect"},
+                        {"name": "beta", "action": "reconnect"},
+                        {"name": "gamma", "action": "disconnect"}
+                    ]
+                },
+                "command": "secret command",
+                "url": "https://secret.invalid"
+            }),
+        );
+        assert_eq!(
+            summary,
+            "MCP 配置变更批次：连接 1 台、重连 1 台、断开 1 台服务器（配置详情已隐藏）"
+        );
+        assert!(!summary.contains("alpha"));
+        assert!(!summary.contains("secret"));
+    }
+
+    #[test]
+    fn native_mcp_reconnect_prompt_names_its_single_server_scope() {
+        let summary = permission_prompt_summary(
+            "haven.mcp.mcp_reconnect",
+            &serde_json::json!({"operation": "mcp_reconnect", "name": "private-server"}),
+        );
+        assert!(summary.contains("一个"));
+        assert!(!summary.contains("private-server"));
     }
 
     #[tokio::test]

@@ -6,6 +6,10 @@ const { invoke, registerAppListener } = vi.hoisted(() => ({
 	invoke: vi.fn(),
 	registerAppListener: vi.fn(async () => ({ dispose: vi.fn() })),
 }));
+const { addNotification, reportError } = vi.hoisted(() => ({
+	addNotification: vi.fn(),
+	reportError: vi.fn(),
+}));
 
 vi.mock('$lib/tauri.ts', () => ({
 	invoke,
@@ -13,6 +17,16 @@ vi.mock('$lib/tauri.ts', () => ({
 
 vi.mock('$lib/events.ts', () => ({
 	registerAppListener,
+}));
+
+vi.mock('$lib/notificationStore.ts', async (importOriginal) => ({
+	...(await importOriginal()),
+	addNotification,
+}));
+
+vi.mock('$lib/errorHandling.ts', async (importOriginal) => ({
+	...(await importOriginal()),
+	reportError,
 }));
 
 function manifest(name: string, root: string, label: string, enabled = true) {
@@ -52,6 +66,8 @@ function manifest(name: string, root: string, label: string, enabled = true) {
 describe('ToolsView toolbar actions', () => {
 	beforeEach(() => {
 		registerAppListener.mockClear();
+		addNotification.mockClear();
+		reportError.mockClear();
 		invoke.mockImplementation(async (command: string) => {
 			if (command === 'get_tools') return { tools: [] };
 			if (command === 'list_mcp_tools') return [];
@@ -212,6 +228,57 @@ describe('ToolsView toolbar actions', () => {
 		await waitFor(() =>
 			expect(screen.getByRole('button', { name: '刷新' })).toHaveProperty('disabled', false),
 		);
+	});
+
+	it('does not report a queued MCP refresh confirmation as success or failure', async () => {
+		invoke.mockImplementation(async (command: string) => {
+			if (command === 'get_tools') return { tools: [] };
+			if (command === 'list_mcp_tools') return [];
+			if (command === 'list_skills') return [];
+			if (command === 'refresh_mcp_servers') {
+				throw JSON.stringify({ requires_confirmation: true, confirmation_id: 'conf-test' });
+			}
+			return undefined;
+		});
+
+		render(ToolsView);
+		await fireEvent.click(await screen.findByRole('tab', { name: 'MCP' }));
+		await fireEvent.click(screen.getByRole('button', { name: '刷新' }));
+
+		await waitFor(() =>
+			expect(screen.getByRole('button', { name: '刷新' })).toHaveProperty('disabled', false),
+		);
+		expect(addNotification).not.toHaveBeenCalled();
+		expect(reportError).not.toHaveBeenCalled();
+	});
+
+	it('does not report a queued MCP reconnect confirmation as success or failure', async () => {
+		invoke.mockImplementation(async (command: string) => {
+			if (command === 'get_tools') return { tools: [] };
+			if (command === 'list_mcp_tools') {
+				return [{ name: 'docs-server', enabled: true, status: 'Connected', tools: [] }];
+			}
+			if (command === 'list_skills') return [];
+			if (command === 'reconnect_mcp') {
+				throw JSON.stringify({ requires_confirmation: true, confirmation_id: 'conf-test' });
+			}
+			return undefined;
+		});
+
+		render(ToolsView);
+		await fireEvent.click(await screen.findByRole('tab', { name: 'MCP' }));
+		await waitFor(() => expect(screen.getByText('docs-server')).toBeTruthy());
+		const refreshButtons = screen.getAllByRole('button', { name: '刷新' });
+		await fireEvent.click(refreshButtons[1]);
+
+		await waitFor(() =>
+			expect(screen.getAllByRole('button', { name: '刷新' })[1]).toHaveProperty(
+				'disabled',
+				false,
+			),
+		);
+		expect(addNotification).not.toHaveBeenCalled();
+		expect(reportError).not.toHaveBeenCalled();
 	});
 
 	it('uses the same loading contract for skill refreshes', async () => {

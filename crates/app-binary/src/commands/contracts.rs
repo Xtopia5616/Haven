@@ -169,14 +169,14 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
         request: "McpNameRequest",
         response: "()",
         boundary: CommandBoundary::Execute,
-        security: "server name selects an existing configured client",
+        security: "AuthorizationEngine; typed native operation reconnects one existing configured server after final version check",
     },
     CommandContract {
         name: "refresh_mcp_servers",
         request: "-",
         response: "McpRefreshResult",
         boundary: CommandBoundary::Execute,
-        security: "renderer-triggered reconcile from persisted config; no client process arguments supplied",
+        security: "AuthorizationEngine; one batch over persisted config diff and its affected targets; no renderer process arguments",
     },
     CommandContract {
         name: "mcp_tool_call",

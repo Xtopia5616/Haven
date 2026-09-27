@@ -1,5 +1,4 @@
 use crate::app_state::{AppState, UiConfirmationAction};
-use crate::commands::connect_and_monitor;
 use crate::commands::contracts::McpToolCallResponse;
 use crate::commands::log_err;
 use crate::commands::queue_ui_confirmation;
@@ -98,40 +97,35 @@ pub(crate) fn emit_mcp_status(
 }
 
 #[tauri::command]
-pub async fn reconnect_mcp(state: State<'_, Arc<AppState>>, name: String) -> Result<(), String> {
-    let _config_apply_guard = state.config_apply_gate.lock().await;
-    state
-        .services
-        .mcp
-        .reconnect(&name)
-        .await
-        .map_err(|e| log_err("reconnect_mcp", e))?;
-    // Restart health monitor for this client
-    if let Some(client) = state.services.mcp.get_client(&name).await {
-        let config = state
-            .config_service
-            .snapshot()
-            .map_err(|e| log_err("reconnect_mcp", e))?
-            .config
-            .mcp_discovery
-            .clone();
-        let health_interval = std::time::Duration::from_secs(config.health_interval_secs);
-        let initial_backoff = std::time::Duration::from_millis(config.reconnect_initial_ms);
-        let max_backoff = std::time::Duration::from_millis(config.reconnect_max_ms);
-        let max_retries = config.reconnect_max_retries;
-        let status_tx = state.services.mcp.status_tx();
-        client.spawn_monitor(
-            health_interval,
-            initial_backoff,
-            max_backoff,
-            max_retries,
-            status_tx,
-        );
+pub async fn reconnect_mcp(
+    state: State<'_, Arc<AppState>>,
+    app: AppHandle,
+    name: String,
+) -> Result<(), String> {
+    let snapshot = state
+        .config_service
+        .snapshot()
+        .map_err(|error| log_err("reconnect_mcp", error))?;
+    if !snapshot
+        .config
+        .mcp_servers
+        .iter()
+        .any(|server| server.name == name && server.enabled)
+        || state.services.mcp.get_client(&name).await.is_none()
+    {
+        return Err(format!("MCP server '{}' is not currently connected", name));
     }
+    let request =
+        haven_tools::AdminRequest::NativeMcp(haven_tools::NativeMcpOperationArgs::McpReconnect {
+            name,
+            config_version: snapshot.version,
+        });
+    crate::commands::authorize_admin_request(&state, &app, "reconnect_mcp", request.clone())
+        .await?;
     Ok(())
 }
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct McpRefreshResult {
     /// Servers configured (enabled) with no live client, connected by this
     /// refresh.
@@ -162,100 +156,29 @@ pub async fn refresh_mcp_servers(
     state: State<'_, Arc<AppState>>,
     app: tauri::AppHandle,
 ) -> Result<McpRefreshResult, String> {
-    let _config_apply_guard = state.config_apply_gate.lock().await;
-    let config = state
+    let snapshot = state
         .config_service
         .snapshot()
-        .map_err(|e| log_err("refresh_mcp_servers", e))?
-        .config;
-    let servers = config.mcp_servers;
-    let discovery = config.mcp_discovery;
-
-    // Re-sync the in-memory server config index with the persisted config so
-    // the UI snapshot and the MCP server index never diverge after an
-    // external config.toml edit.
-    {
-        let mut map = state.services.mcp_configs.write().await;
-        map.clear();
-        for server in &servers {
-            map.insert(server.name.clone(), server.clone());
-        }
-    }
-
-    // Single reconciliation rule shared with `McpManager::load_from_config`:
-    // diff the live clients against the persisted config.
-    let reconcile = state.services.mcp.reconcile_servers(&servers).await;
-
-    // 1) Enabled servers whose live client was spawned from a different
-    //    config → tear the old client down (its monitor must not keep a
-    //    stale child process alive), then reconnect below.
-    let changed = reconcile.to_connect_changed;
-    let mut updated = Vec::new();
-    for server in &changed {
-        tracing::info!(
-            "refresh_mcp_servers: config changed for '{}', reconnecting",
-            server.name
-        );
-        state.services.mcp.remove_client(&server.name).await;
-        updated.push(server.name.clone());
-        emit_mcp_status(
-            &app,
-            server.name.clone(),
-            McpClientStatus::Disconnected,
-            "refresh_mcp_servers",
-        );
-    }
-
-    // 2) Enabled servers without a live client (new, or torn down above) →
-    //    connect with a health monitor.
-    let mut added = Vec::new();
-    let mut failed = Vec::new();
-    for server in reconcile.to_connect_new.into_iter().chain(changed) {
-        match connect_and_monitor(&state, &discovery, &server, "refresh_mcp_servers").await {
-            Ok(client) => {
-                state.services.mcp.add_client(client).await;
-                if !updated.iter().any(|n| n == &server.name) {
-                    added.push(server.name.clone());
-                }
-                emit_mcp_status(
-                    &app,
-                    server.name.clone(),
-                    McpClientStatus::Connected,
-                    "refresh_mcp_servers",
-                );
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "refresh_mcp_servers: connect '{}' failed: {}",
-                    server.name,
-                    e
-                );
-                failed.push(server.name.clone());
-            }
-        }
-    }
-
-    // 3) Live clients whose server was removed from config or disabled →
-    //    shut them down.
-    let mut removed = Vec::new();
-    for name in reconcile.to_remove {
-        state.services.mcp.remove_client(&name).await;
-        removed.push(name.clone());
-        emit_mcp_status(
-            &app,
-            name,
-            McpClientStatus::Disconnected,
-            "refresh_mcp_servers",
-        );
-    }
-
-    state.tools.rebuild_catalog().await;
-    Ok(McpRefreshResult {
-        added,
-        removed,
-        updated,
-        failed,
-    })
+        .map_err(|error| log_err("refresh_mcp_servers", error))?;
+    let reconcile = state
+        .services
+        .mcp
+        .reconcile_servers(&snapshot.config.mcp_servers)
+        .await;
+    let plan = haven_tools::McpRefreshPlan::from_reconcile(snapshot.version, &reconcile);
+    let request =
+        haven_tools::AdminRequest::NativeMcp(haven_tools::NativeMcpOperationArgs::McpRefresh {
+            plan,
+        });
+    let result = crate::commands::authorize_admin_request(
+        &state,
+        &app,
+        "refresh_mcp_servers",
+        request.clone(),
+    )
+    .await?;
+    crate::commands::finalize_admin_ui_operation(&state, &app, &request).await?;
+    serde_json::from_value(result.output).map_err(|error| log_err("refresh_mcp_servers", error))
 }
 
 #[tauri::command]

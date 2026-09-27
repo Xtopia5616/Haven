@@ -25,9 +25,8 @@ pub mod skills;
 use crate::app_state::{AppState, UiConfirmationAction, UiConfirmationPending};
 use crate::events::{INTERACTION_REQUESTED_EVENT, LLM_CONFIG_CHANGED_EVENT};
 use crate::logging::sanitize_error_text;
-use haven_common::McpServerConfig;
 use serde::Serialize;
-use std::sync::Arc;
+use std::future::Future;
 use tauri::AppHandle;
 use tauri::Emitter;
 
@@ -123,11 +122,7 @@ pub(crate) async fn authorize_admin_request(
     let tool_name = operation_name.to_string();
     let risk_level = metadata.risk_level;
     let input = request.input();
-    let network_access = if tool_name.starts_with("haven.mcp.") {
-        haven_tools::NetworkAccess::Opaque
-    } else {
-        haven_tools::NetworkAccess::None
-    };
+    let network_access = request.network_access();
     let policy = haven_tools::OperationPolicy::native(
         &tool_name,
         tool_name.clone().into(),
@@ -136,17 +131,17 @@ pub(crate) async fn authorize_admin_request(
     );
     let authorization_request =
         haven_tools::AuthorizationRequest::new(Some("ui"), &tool_name, input, policy);
-    match state
+    let decision = state
         .services
         .authorization
         .authorize(&authorization_request)
-        .await
-    {
-        haven_tools::AuthorizationDecision::AutoApproved => {
-            execute_admin_surface(state, ctx, request).await
-        }
-        haven_tools::AuthorizationDecision::RequiresConfirmation { receipt, .. } => {
-            Err(queue_ui_confirmation(
+        .await;
+    let execute_request = request.clone();
+    dispatch_authorized_admin_request(
+        decision,
+        || execute_admin_surface(state, ctx, execute_request),
+        |receipt| async move {
+            queue_ui_confirmation(
                 state,
                 app,
                 authorization_request,
@@ -155,7 +150,27 @@ pub(crate) async fn authorize_admin_request(
                     request: Box::new(request),
                 },
             )
-            .await?)
+            .await
+        },
+    )
+    .await
+}
+
+async fn dispatch_authorized_admin_request<E, EFut, Q, QFut>(
+    decision: haven_tools::AuthorizationDecision,
+    execute: E,
+    queue_confirmation: Q,
+) -> Result<haven_tools::ToolResult, String>
+where
+    E: FnOnce() -> EFut,
+    EFut: Future<Output = Result<haven_tools::ToolResult, String>>,
+    Q: FnOnce(haven_tools::ConfirmationReceipt) -> QFut,
+    QFut: Future<Output = Result<String, String>>,
+{
+    match decision {
+        haven_tools::AuthorizationDecision::AutoApproved => execute().await,
+        haven_tools::AuthorizationDecision::RequiresConfirmation { receipt, .. } => {
+            Err(queue_confirmation(receipt).await?)
         }
         haven_tools::AuthorizationDecision::Blocked { reason, .. } => Err(format!(
             "native admin operation blocked by security policy ({reason})"
@@ -173,7 +188,9 @@ pub(crate) async fn finalize_admin_ui_operation(
     app: &AppHandle,
     request: &haven_tools::AdminRequest,
 ) -> Result<(), String> {
-    use haven_tools::{McpOperationArgs, SkillsOperationArgs, ToolsOperationArgs};
+    use haven_tools::{
+        McpOperationArgs, NativeMcpOperationArgs, SkillsOperationArgs, ToolsOperationArgs,
+    };
 
     match request {
         haven_tools::AdminRequest::Skills(
@@ -224,9 +241,89 @@ pub(crate) async fn finalize_admin_ui_operation(
             }
         }
         haven_tools::AdminRequest::Mcp(McpOperationArgs::McpReload) => {}
+        haven_tools::AdminRequest::NativeMcp(NativeMcpOperationArgs::McpReconnect {
+            name, ..
+        }) => {
+            let status = match state.services.mcp.get_client(name).await {
+                Some(client) => client.status().await,
+                None => haven_tools::McpClientStatus::Disconnected,
+            };
+            crate::commands::mcp::emit_mcp_status(
+                app,
+                name.clone(),
+                status,
+                "resolve_ui_confirmation mcp reconnect",
+            );
+        }
+        haven_tools::AdminRequest::NativeMcp(NativeMcpOperationArgs::McpRefresh { .. }) => {}
         _ => {}
     }
     Ok(())
+}
+
+const MCP_REFRESH_FAILURE_STATUS_SUMMARY: &str = "MCP 连接失败，请检查服务器状态或配置";
+
+/// Publish result details that are only relevant after a queued UI
+/// confirmation resumes an admin operation. Immediate refresh calls return
+/// their result DTO to ToolsView and keep their existing result notification.
+pub(crate) async fn finalize_confirmed_admin_ui_operation(
+    state: &AppState,
+    app: &AppHandle,
+    request: &haven_tools::AdminRequest,
+    result: &haven_tools::ToolResult,
+) -> Result<(), String> {
+    use haven_tools::{AdminRequest, NativeMcpOperationArgs};
+
+    finalize_admin_ui_operation(state, app, request).await?;
+    let AdminRequest::NativeMcp(NativeMcpOperationArgs::McpRefresh { plan }) = request else {
+        return Ok(());
+    };
+    if !result.success {
+        return Ok(());
+    }
+    for name in parse_mcp_refresh_failed_names(&result.output, plan) {
+        crate::commands::mcp::emit_mcp_status(
+            app,
+            name,
+            haven_tools::McpClientStatus::Offline {
+                error: MCP_REFRESH_FAILURE_STATUS_SUMMARY.into(),
+            },
+            "resolve_ui_confirmation mcp refresh",
+        );
+    }
+    Ok(())
+}
+
+fn parse_mcp_refresh_failed_names(
+    output: &serde_json::Value,
+    plan: &haven_tools::McpRefreshPlan,
+) -> Vec<String> {
+    use haven_tools::McpRefreshAction;
+    use std::collections::HashSet;
+
+    let Some(failed_names) = output.get("failed").and_then(serde_json::Value::as_array) else {
+        return Vec::new();
+    };
+    let authorized_names: HashSet<&str> = plan
+        .targets
+        .iter()
+        .filter(|target| {
+            matches!(
+                target.action,
+                McpRefreshAction::Connect | McpRefreshAction::Reconnect
+            )
+        })
+        .map(|target| target.name.as_str())
+        .collect();
+    let mut seen = HashSet::new();
+    failed_names
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .filter(|name| {
+            !name.trim().is_empty() && authorized_names.contains(name) && seen.insert(*name)
+        })
+        .map(str::to_owned)
+        .collect()
 }
 
 /// Register a renderer-triggered MCP/skill invocation as the same canonical
@@ -283,55 +380,127 @@ pub(crate) async fn queue_ui_confirmation(
     .map_err(|error| log_err("queue_ui_confirmation", error))
 }
 
-/// Build an `McpClient`, connect it (when `config.enabled`), and spawn the
-/// health monitor using the discovery settings from the supplied loader.
-/// Returns the constructed client either way so the caller can register it
-/// with the manager. The caller is responsible for persisting the config
-/// (before or after the call, depending on whether a failed connect should
-/// roll the change back — `toggle_mcp_server` connects first so a failure
-/// leaves the config unchanged). Used by `add_mcp_server`, `update_mcp_server`,
-/// and `toggle_mcp_server`.
-pub(crate) async fn connect_and_monitor(
-    state: &AppState,
-    discovery: &haven_common::config::McpDiscoveryConfig,
-    config: &McpServerConfig,
-    ctx: &str,
-) -> Result<Arc<haven_tools::McpClient>, String> {
-    if matches!(
-        state.services.mcp.network_policy().await,
-        haven_common::types::NetworkPolicy::Deny
-    ) && config.enabled
-    {
-        return Err("MCP connection blocked by network policy".into());
+#[cfg(test)]
+mod tests {
+    use super::{dispatch_authorized_admin_request, parse_mcp_refresh_failed_names};
+    use haven_common::types::{CapabilityScope, RiskLevel, new_id};
+    use haven_tools::{
+        AuthorizationDecision, AuthorizationReasonCode, ConfirmationReceipt, McpRefreshAction,
+        McpRefreshPlan, McpRefreshTarget, ToolResult,
+    };
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn receipt() -> ConfirmationReceipt {
+        ConfirmationReceipt {
+            confirmation_id: new_id("conf").into(),
+            capability: CapabilityScope::try_new("haven.mcp.mcp_refresh").unwrap(),
+            canonical_input_hash: "test-hash".into(),
+            effective_risk: RiskLevel::Medium,
+            policy_revision: 1,
+            expires_at: u64::MAX,
+        }
     }
-    let limits = state
-        .config_service
-        .snapshot()
-        .map_err(|e| log_err(ctx, e))?
-        .config
-        .context_limits
-        .clone();
-    let client = Arc::new(haven_tools::McpClient::new(
-        config,
-        limits.mcp_max_binary_payload_bytes,
-        limits.mcp_max_sse_buffer_bytes,
-    ));
-    client
-        .set_network_policy(state.services.mcp.network_policy().await)
-        .await;
-    if config.enabled {
-        client.connect().await.map_err(|e| log_err(ctx, e))?;
-        let health_interval = std::time::Duration::from_secs(discovery.health_interval_secs);
-        let initial_backoff = std::time::Duration::from_millis(discovery.reconnect_initial_ms);
-        let max_backoff = std::time::Duration::from_millis(discovery.reconnect_max_ms);
-        let status_tx = state.services.mcp.status_tx();
-        client.clone().spawn_monitor(
-            health_interval,
-            initial_backoff,
-            max_backoff,
-            discovery.reconnect_max_retries,
-            status_tx,
+
+    fn refresh_plan() -> McpRefreshPlan {
+        McpRefreshPlan {
+            config_version: 3,
+            targets: vec![
+                McpRefreshTarget {
+                    name: "new-server".into(),
+                    action: McpRefreshAction::Connect,
+                },
+                McpRefreshTarget {
+                    name: "changed-server".into(),
+                    action: McpRefreshAction::Reconnect,
+                },
+                McpRefreshTarget {
+                    name: "removed-server".into(),
+                    action: McpRefreshAction::Disconnect,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn confirmed_refresh_failure_parser_extracts_authorized_failed_targets() {
+        let names = parse_mcp_refresh_failed_names(
+            &serde_json::json!({"failed": ["new-server", "changed-server"]}),
+            &refresh_plan(),
+        );
+        assert_eq!(names, vec!["new-server", "changed-server"]);
+    }
+
+    #[test]
+    fn confirmed_refresh_failure_parser_handles_empty_results() {
+        let plan = refresh_plan();
+        assert!(
+            parse_mcp_refresh_failed_names(&serde_json::json!({"failed": []}), &plan).is_empty()
+        );
+        assert!(parse_mcp_refresh_failed_names(&serde_json::json!({}), &plan).is_empty());
+    }
+
+    #[test]
+    fn confirmed_refresh_failure_parser_ignores_malformed_and_unauthorized_values() {
+        let names = parse_mcp_refresh_failed_names(
+            &serde_json::json!({"failed": ["new-server", "removed-server", "unknown", "", 7, null]}),
+            &refresh_plan(),
+        );
+        assert_eq!(names, vec!["new-server"]);
+        assert!(
+            parse_mcp_refresh_failed_names(
+                &serde_json::json!({"failed": "new-server"}),
+                &refresh_plan()
+            )
+            .is_empty()
+        );
+        assert!(
+            parse_mcp_refresh_failed_names(&serde_json::Value::Null, &refresh_plan()).is_empty()
         );
     }
-    Ok(client)
+
+    #[tokio::test]
+    async fn pending_or_blocked_admin_authorization_never_runs_connection_effects() {
+        for decision in [
+            AuthorizationDecision::RequiresConfirmation {
+                capability: CapabilityScope::try_new("haven.mcp.mcp_refresh").unwrap(),
+                risk_level: RiskLevel::Medium,
+                receipt: receipt(),
+                reason_code: AuthorizationReasonCode::SensitiveData,
+            },
+            AuthorizationDecision::Blocked {
+                reason: "network disabled".into(),
+                reason_code: AuthorizationReasonCode::NetworkPolicy,
+            },
+        ] {
+            let should_queue = matches!(
+                &decision,
+                AuthorizationDecision::RequiresConfirmation { .. }
+            );
+            let executions = Arc::new(AtomicUsize::new(0));
+            let queues = Arc::new(AtomicUsize::new(0));
+            let executions_in_task = executions.clone();
+            let queues_in_task = queues.clone();
+            let result = dispatch_authorized_admin_request(
+                decision,
+                move || async move {
+                    executions_in_task.fetch_add(1, Ordering::SeqCst);
+                    Ok(ToolResult::ok(serde_json::json!({"connected": true})))
+                },
+                move |_receipt| async move {
+                    queues_in_task.fetch_add(1, Ordering::SeqCst);
+                    Ok("confirmation pending".into())
+                },
+            )
+            .await;
+
+            assert!(result.is_err());
+            assert_eq!(executions.load(Ordering::SeqCst), 0);
+            if should_queue {
+                assert_eq!(queues.load(Ordering::SeqCst), 1);
+            } else {
+                assert_eq!(queues.load(Ordering::SeqCst), 0);
+            }
+        }
+    }
 }

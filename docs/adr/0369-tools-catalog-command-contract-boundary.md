@@ -68,3 +68,17 @@ MCP add/update/remove/toggle 与 Skill/tool enable 通过 `authorize_admin_reque
 验证覆盖 MCP config/refresh 响应透传、所有写命令参数、代表性 rejection 传播、contract drift 与 UI 绕行检查；门禁结果追加在提交记录和路线图。
 
 验证结果：`cargo fmt --all -- --check`、`cargo check --workspace --locked`、`cargo clippy --workspace --locked -- -D warnings` 与隔离配置下的 `cargo test --workspace --locked` 通过；UI `check` 无错误/警告，112 个 Vitest 文件的 836 项测试通过，生产 build 成功；`check-ipc-contracts.ps1` 的 registry、Tools DTO/helper 断言及 `check-ipc-events.ps1` 均通过。Rust 测试使用新建的 `target/test-data/tools-mutation-ipc-20260927-run02/APPDATA`，没有访问真实用户配置。修改过的常规 UI 文件 Prettier 检查通过；`contracts/commands.ts` 保留仓库既有的紧凑 registry 行布局。
+
+### 2026-09-27 后续：renderer MCP 连接授权
+
+此前关于 `refresh_mcp_servers` / `reconnect_mcp` 未经过 `AuthorizationEngine` 的记录是审计时的历史状态，已由本切片收敛。两条 Tauri handler 现构造 renderer 专用 typed native admin request，并复用 `authorize_admin_request` 与已有 confirmation receipt 队列；Tauri 参数和返回 DTO 不变。未授权或等待确认期间不连接、不重连、不断开。
+
+`reconnect_mcp` 授权单个当前已启用且存在 live client 的 server，执行时在共享配置 gate 内复核 ConfigService version、enabled config 与 live client config。`refresh_mcp_servers` 依据当前持久化配置与 live-client diff 形成一个 batch plan，计划只含 config version、受影响 server 名称和 connect/reconnect/disconnect action；命令、URL、参数与环境变量不进入计划。确认后服务在共享 gate 内重算 diff 并要求 version 与完整 target set 匹配，再执行已有 diff-only 连接流程，不转用全量 `mcp_reload`。
+
+两个操作共用 `haven_mcp` typed risk/metadata 和 AuthorizationEngine 网络能力分类。需要建立连接的 reconnect/refresh 使用 opaque network capability，因此 `NetworkPolicy::Deny` 在授权阶段阻断，`Ask` 进入确认；仅断开目标不要求网络能力。确认摘要只显示单服务器范围或 batch 各 action 数量，不暴露服务器配置。安全回归矩阵覆盖拒绝/确认、计划隐藏 renderer schema、stale plan 在副作用前失败，以及 IPC contract 对 handler 授权和原有 wire DTO 的约束。
+
+### 2026-09-27 后续：确认后的 MCP refresh 部分失败
+
+直接调用 `refresh_mcp_servers` 时，命令把每个连接失败名称保留在原有 `McpRefreshResult.failed` 响应中；ToolsView 用该 DTO 展示批次结果。需要确认的调用先以既有 queued-confirmation IPC rejection 返回，因此原调用方已结束，resolver 不能依赖该 DTO 通知确认后的部分失败。
+
+确认 resolver 保留执行后的 `ToolResult` 并仅对该确认恢复路径调用 confirmed-only finalizer。finalizer 从授权 plan 与结果 `failed` 数组中提取唯一、非空且属于本批 connect/reconnect target 的名称，并通过已有 `mcp:status_change` 发布 `Offline` 状态；状态错误只使用固定通用连接失败摘要，不携带底层错误、命令或配置。既有布局监听器显示错误通知，ToolsView 的同一 channel listener刷新 MCP snapshot。空结果、畸形数组、未授权目标和直接 command 响应均不会触发此事件，因此直接调用继续由原结果 DTO 汇总，避免重复通知。无需新增 IPC channel 或改变 command DTO。

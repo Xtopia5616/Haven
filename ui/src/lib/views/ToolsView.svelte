@@ -36,6 +36,7 @@
 	} from '$lib/toolsCommands.ts';
 	import { addNotification } from '$lib/notificationStore.ts';
 	import { reportError } from '$lib/errorHandling.ts';
+	import { isAuthorizationConfirmationPending } from '$lib/formatError.ts';
 	import logger from '$lib/logger.ts';
 	import { registerAppListener } from '$lib/events.ts';
 	import SkillCard from '$lib/SkillCard.svelte';
@@ -213,6 +214,7 @@
 				);
 			}
 		} catch (e) {
+			if (isAuthorizationConfirmationPending(e)) return;
 			reportError(e, { context: 'ToolsView', message: '刷新 MCP 服务器失败', log: false });
 		} finally {
 			mcpRefreshing = false;
@@ -346,12 +348,12 @@
 	 * @param {string} name
 	 */
 	async function handleReconnect(name) {
-		addNotification(`正在刷新 ${name}…`, 'info', 1500);
 		try {
 			await reconnectMcp({ name });
 			addNotification(`刷新成功：${name}`, 'success', 2000);
 			await refreshMcpServers();
 		} catch (e) {
+			if (isAuthorizationConfirmationPending(e)) return;
 			reportError(e, { context: 'ToolsView', message: '刷新失败', log: false });
 		}
 	}

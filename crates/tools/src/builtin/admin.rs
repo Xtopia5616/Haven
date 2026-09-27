@@ -22,7 +22,7 @@ use async_trait::async_trait;
 use haven_common::config::{ConfigService, LogLevel, McpServerConfig};
 use haven_common::types::{McpTransportType, RiskLevel};
 use haven_llm::LlmRouter;
-use haven_mcp::McpManager;
+use haven_mcp::{McpManager, McpReconcile};
 use haven_memory::{MemoryFactStore, SessionStore};
 use haven_skills::SkillsEngine;
 use serde::{Deserialize, Serialize};
@@ -34,8 +34,8 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
-use admin_services::AdminServices;
 pub(crate) use admin_services::sanitize_diagnostic;
+use admin_services::{AdminServices, NativeMcpServiceError};
 
 /// App-provided dependencies shared by all five admin surfaces.
 #[derive(Clone)]
@@ -244,6 +244,85 @@ pub enum McpOperationArgs {
     McpReload,
 }
 
+/// A typed authorization payload used only by renderer-facing MCP management
+/// commands. These operations intentionally do not appear in
+/// [`McpOperationArgs`] or the model-visible `haven_mcp` JSON schema.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
+pub enum NativeMcpOperationArgs {
+    McpReconnect { name: String, config_version: u64 },
+    McpRefresh { plan: McpRefreshPlan },
+}
+
+/// The backend-derived set of connection changes shown to the user before a
+/// renderer-triggered diff refresh. It contains no commands, URLs, arguments,
+/// environment values, or other connection configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct McpRefreshPlan {
+    pub config_version: u64,
+    pub targets: Vec<McpRefreshTarget>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct McpRefreshTarget {
+    pub name: String,
+    pub action: McpRefreshAction,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum McpRefreshAction {
+    Connect,
+    Reconnect,
+    Disconnect,
+}
+
+impl McpRefreshPlan {
+    pub fn from_reconcile(config_version: u64, reconcile: &McpReconcile) -> Self {
+        let mut targets = Vec::new();
+        targets.extend(
+            reconcile
+                .to_connect_new
+                .iter()
+                .map(|server| McpRefreshTarget {
+                    name: server.name.clone(),
+                    action: McpRefreshAction::Connect,
+                }),
+        );
+        targets.extend(
+            reconcile
+                .to_connect_changed
+                .iter()
+                .map(|server| McpRefreshTarget {
+                    name: server.name.clone(),
+                    action: McpRefreshAction::Reconnect,
+                }),
+        );
+        targets.extend(reconcile.to_remove.iter().map(|name| McpRefreshTarget {
+            name: name.clone(),
+            action: McpRefreshAction::Disconnect,
+        }));
+        targets.sort_by(|left, right| {
+            left.name
+                .cmp(&right.name)
+                .then_with(|| left.action.cmp(&right.action))
+        });
+        Self {
+            config_version,
+            targets,
+        }
+    }
+
+    pub fn requires_network(&self) -> bool {
+        self.targets.iter().any(|target| {
+            matches!(
+                target.action,
+                McpRefreshAction::Connect | McpRefreshAction::Reconnect
+            )
+        })
+    }
+}
+
 fn default_enabled() -> bool {
     true
 }
@@ -294,6 +373,7 @@ pub enum AdminRequest {
     Skills(SkillsOperationArgs),
     Tools(ToolsOperationArgs),
     Mcp(McpOperationArgs),
+    NativeMcp(NativeMcpOperationArgs),
 }
 
 impl AdminRequest {
@@ -304,6 +384,7 @@ impl AdminRequest {
             Self::Skills(_) => "haven_skills",
             Self::Tools(_) => "haven_tools",
             Self::Mcp(_) => "haven_mcp",
+            Self::NativeMcp(_) => "haven_mcp",
         }
     }
 
@@ -335,6 +416,30 @@ impl AdminRequest {
             Self::Mcp(McpOperationArgs::McpToggle { .. }) => "haven.mcp.mcp_toggle",
             Self::Mcp(McpOperationArgs::McpRemove { .. }) => "haven.mcp.mcp_remove",
             Self::Mcp(McpOperationArgs::McpReload) => "haven.mcp.mcp_reload",
+            Self::NativeMcp(NativeMcpOperationArgs::McpReconnect { .. }) => {
+                "haven.mcp.mcp_reconnect"
+            }
+            Self::NativeMcp(NativeMcpOperationArgs::McpRefresh { .. }) => "haven.mcp.mcp_refresh",
+        }
+    }
+
+    /// Network metadata comes from the typed request. Existing model-facing
+    /// MCP operations retain their established opaque classification; native
+    /// refresh is opaque only when the backend-derived diff will connect.
+    pub fn network_access(&self) -> crate::NetworkAccess {
+        match self {
+            Self::NativeMcp(NativeMcpOperationArgs::McpReconnect { .. }) => {
+                crate::NetworkAccess::Opaque
+            }
+            Self::NativeMcp(NativeMcpOperationArgs::McpRefresh { plan }) => {
+                if plan.requires_network() {
+                    crate::NetworkAccess::Opaque
+                } else {
+                    crate::NetworkAccess::None
+                }
+            }
+            Self::Mcp(_) => crate::NetworkAccess::Opaque,
+            _ => crate::NetworkAccess::None,
         }
     }
 
@@ -355,6 +460,9 @@ impl AdminRequest {
             Self::Mcp(args) => {
                 serde_json::to_value(args).expect("admin request arguments are serializable")
             }
+            Self::NativeMcp(args) => {
+                serde_json::to_value(args).expect("native MCP request arguments are serializable")
+            }
         }
     }
 
@@ -366,6 +474,7 @@ impl AdminRequest {
             | Self::Mcp(McpOperationArgs::McpRemove { name })
             | Self::Mcp(McpOperationArgs::McpAdd { name, .. })
             | Self::Mcp(McpOperationArgs::McpUpdate { name, .. }) => Some(name),
+            Self::NativeMcp(NativeMcpOperationArgs::McpReconnect { name, .. }) => Some(name),
             _ => None,
         }
     }
@@ -443,6 +552,14 @@ fn service_error(error: anyhow::Error) -> AdminOperationError {
 
 fn side_effect_service_error(error: anyhow::Error) -> AdminOperationError {
     AdminOperationError::side_effect_may_have_happened(error.to_string())
+}
+
+fn native_mcp_service_error(error: NativeMcpServiceError) -> AdminOperationError {
+    match error {
+        NativeMcpServiceError::Preflight(message) => AdminOperationError::validation(message),
+        NativeMcpServiceError::BeforeSideEffect(error) => service_error(error),
+        NativeMcpServiceError::SideEffect(error) => side_effect_service_error(error),
+    }
 }
 
 fn metadata(
@@ -805,6 +922,46 @@ pub struct McpAdminOperation {
 impl McpAdminOperation {
     fn new(services: Arc<AdminServices>) -> Self {
         Self { services }
+    }
+
+    fn native_metadata(&self, args: &NativeMcpOperationArgs) -> ToolOperationMetadata {
+        let operation = match args {
+            NativeMcpOperationArgs::McpReconnect { .. } => "mcp_reconnect",
+            NativeMcpOperationArgs::McpRefresh { .. } => "mcp_refresh",
+        };
+        metadata(
+            "haven_mcp",
+            operation,
+            RiskLevel::Medium,
+            OperationIdempotency::Idempotent,
+            ToolConcurrency::Resource("mcp".into()),
+        )
+    }
+
+    async fn execute_native(
+        &self,
+        args: NativeMcpOperationArgs,
+        cancel: CancellationToken,
+    ) -> Result<AdminOperationOutput, AdminOperationError> {
+        if cancel.is_cancelled() {
+            return Err(AdminOperationError::cancelled());
+        }
+        let result = match args {
+            NativeMcpOperationArgs::McpReconnect {
+                name,
+                config_version,
+            } => self
+                .services
+                .mcp_reconnect(&name, config_version)
+                .await
+                .map_err(native_mcp_service_error),
+            NativeMcpOperationArgs::McpRefresh { plan } => self
+                .services
+                .mcp_refresh(&plan)
+                .await
+                .map_err(native_mcp_service_error),
+        }?;
+        Ok(AdminOperationOutput::new(result))
     }
 }
 
@@ -1293,6 +1450,7 @@ impl AdminSurfaces {
             AdminRequest::Skills(args) => self.skills.metadata(args),
             AdminRequest::Tools(args) => self.tools.metadata(args),
             AdminRequest::Mcp(args) => self.mcp.metadata(args),
+            AdminRequest::NativeMcp(args) => self.mcp.native_metadata(args),
         }
     }
 
@@ -1332,6 +1490,12 @@ impl AdminSurfaces {
             }
             AdminRequest::Mcp(args) => {
                 let output = self.mcp.execute_typed(args, cancel).await?;
+                Ok(ToolResult::ok(serde_json::to_value(output).map_err(
+                    |error| AdminOperationError::other(error.to_string()),
+                )?))
+            }
+            AdminRequest::NativeMcp(args) => {
+                let output = self.mcp.execute_native(args, cancel).await?;
                 Ok(ToolResult::ok(serde_json::to_value(output).map_err(
                     |error| AdminOperationError::other(error.to_string()),
                 )?))
@@ -1643,6 +1807,214 @@ mod tests {
                 "malformed input must use a conservative risk"
             );
         }
+    }
+
+    #[test]
+    fn renderer_mcp_operations_use_typed_metadata_without_entering_model_schema() {
+        let (surfaces, _dir) = test_surfaces();
+        let tools = surfaces.tools();
+        let mcp_tool = tool_for(&tools, "haven_mcp");
+        let mut reconcile = McpReconcile::default();
+        reconcile.to_connect_new.push(McpServerConfig {
+            name: "new-server".into(),
+            transport: McpTransportType::Stdio,
+            command: "private-command".into(),
+            args: vec!["private-arg".into()],
+            env: vec!["TOKEN=private-value".into()],
+            cwd: None,
+            url: String::new(),
+            enabled: true,
+        });
+        reconcile.to_connect_changed.push(McpServerConfig {
+            name: "changed-server".into(),
+            transport: McpTransportType::Stdio,
+            command: "private-command".into(),
+            args: vec![],
+            env: vec![],
+            cwd: None,
+            url: String::new(),
+            enabled: true,
+        });
+        reconcile.to_remove.push("removed-server".into());
+        let plan = McpRefreshPlan::from_reconcile(9, &reconcile);
+        assert_eq!(
+            plan.targets,
+            vec![
+                McpRefreshTarget {
+                    name: "changed-server".into(),
+                    action: McpRefreshAction::Reconnect,
+                },
+                McpRefreshTarget {
+                    name: "new-server".into(),
+                    action: McpRefreshAction::Connect,
+                },
+                McpRefreshTarget {
+                    name: "removed-server".into(),
+                    action: McpRefreshAction::Disconnect,
+                },
+            ]
+        );
+        let encoded_plan = serde_json::to_string(&plan).unwrap();
+        assert!(!encoded_plan.contains("private-command"));
+        assert!(!encoded_plan.contains("private-arg"));
+        assert!(!encoded_plan.contains("private-value"));
+
+        let reconnect = AdminRequest::NativeMcp(NativeMcpOperationArgs::McpReconnect {
+            name: "one-server".into(),
+            config_version: 9,
+        });
+        let reconnect_metadata = surfaces.metadata(&reconnect);
+        assert_eq!(reconnect.model_operation_name(), "haven.mcp.mcp_reconnect");
+        assert_eq!(reconnect_metadata.risk_level, RiskLevel::Medium);
+        assert_eq!(reconnect.network_access(), crate::NetworkAccess::Opaque);
+
+        let refresh = AdminRequest::NativeMcp(NativeMcpOperationArgs::McpRefresh { plan });
+        let refresh_metadata = surfaces.metadata(&refresh);
+        assert_eq!(refresh.model_operation_name(), "haven.mcp.mcp_refresh");
+        assert_eq!(refresh_metadata.risk_level, RiskLevel::Medium);
+        assert_eq!(refresh.network_access(), crate::NetworkAccess::Opaque);
+
+        let disconnect_only = AdminRequest::NativeMcp(NativeMcpOperationArgs::McpRefresh {
+            plan: McpRefreshPlan {
+                config_version: 9,
+                targets: vec![McpRefreshTarget {
+                    name: "removed-server".into(),
+                    action: McpRefreshAction::Disconnect,
+                }],
+            },
+        });
+        assert_eq!(disconnect_only.network_access(), crate::NetworkAccess::None);
+
+        for request in [reconnect, refresh] {
+            let input = request.input();
+            assert!(mcp_tool.validate_input(&input).is_err());
+            assert!(
+                mcp_tool.input_schema()["oneOf"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(
+                        |branch| branch["properties"]["operation"]["const"] != "mcp_reconnect"
+                            && branch["properties"]["operation"]["const"] != "mcp_refresh"
+                    )
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn native_mcp_connection_requests_are_asked_or_blocked_before_execution() {
+        let (surfaces, _dir) = test_surfaces();
+        let requests = [
+            AdminRequest::NativeMcp(NativeMcpOperationArgs::McpReconnect {
+                name: "server-a".into(),
+                config_version: 3,
+            }),
+            AdminRequest::NativeMcp(NativeMcpOperationArgs::McpRefresh {
+                plan: McpRefreshPlan {
+                    config_version: 3,
+                    targets: vec![McpRefreshTarget {
+                        name: "server-a".into(),
+                        action: McpRefreshAction::Connect,
+                    }],
+                },
+            }),
+        ];
+
+        for request in requests {
+            let metadata = surfaces.metadata(&request);
+            let tool_name = request.model_operation_name();
+            let authorization_request = crate::AuthorizationRequest::new(
+                Some("ui"),
+                tool_name,
+                request.input(),
+                crate::OperationPolicy::native(
+                    tool_name,
+                    tool_name.into(),
+                    metadata.risk_level,
+                    request.network_access(),
+                ),
+            );
+            let engine = crate::AuthorizationEngine::new();
+            assert!(matches!(
+                engine.authorize(&authorization_request).await,
+                crate::AuthorizationDecision::RequiresConfirmation { .. }
+            ));
+
+            engine
+                .set_boundaries(
+                    haven_common::types::SandboxMode::FullAccess,
+                    Vec::new(),
+                    haven_common::types::NetworkPolicy::Deny,
+                )
+                .await;
+            assert!(matches!(
+                engine.authorize(&authorization_request).await,
+                crate::AuthorizationDecision::Blocked {
+                    reason_code: crate::AuthorizationReasonCode::NetworkPolicy,
+                    ..
+                }
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn stale_native_mcp_refresh_plan_fails_before_connection_side_effects() {
+        let (surfaces, _dir) = test_surfaces();
+        let manager = surfaces.mcp.services.mcp_manager.clone();
+        let request = AdminRequest::NativeMcp(NativeMcpOperationArgs::McpRefresh {
+            plan: McpRefreshPlan {
+                config_version: 1,
+                targets: vec![McpRefreshTarget {
+                    name: "must-not-connect".into(),
+                    action: McpRefreshAction::Connect,
+                }],
+            },
+        });
+
+        let error = surfaces
+            .execute(request, CancellationToken::new())
+            .await
+            .expect_err("stale plan must be rejected before execution");
+        assert!(error.to_string().contains("authorization is stale"));
+        assert_eq!(
+            operation_error_metadata(&error).class,
+            crate::ToolErrorClass::Validation
+        );
+        assert!(manager.list_clients().await.is_empty());
+
+        let current_version = surfaces
+            .mcp
+            .services
+            .context
+            .config_service
+            .as_ref()
+            .unwrap()
+            .snapshot()
+            .unwrap()
+            .version;
+        let stale_targets = AdminRequest::NativeMcp(NativeMcpOperationArgs::McpRefresh {
+            plan: McpRefreshPlan {
+                config_version: current_version,
+                targets: vec![McpRefreshTarget {
+                    name: "must-not-connect".into(),
+                    action: McpRefreshAction::Connect,
+                }],
+            },
+        });
+        let error = surfaces
+            .execute(stale_targets, CancellationToken::new())
+            .await
+            .expect_err("a changed target set must be rejected before effects");
+        assert!(
+            error
+                .to_string()
+                .contains("targets changed after authorization")
+        );
+        assert_eq!(
+            operation_error_metadata(&error).class,
+            crate::ToolErrorClass::Validation
+        );
+        assert!(manager.list_clients().await.is_empty());
     }
 
     #[tokio::test]
