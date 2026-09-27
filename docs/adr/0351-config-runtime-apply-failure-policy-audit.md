@@ -30,15 +30,21 @@ Phase 5 的局部 target、phase 顺序和 Settings 失败观测没有第二份�
 
 因此只有尚未 publish 的 Router/media prepare 可作为“保留同一 snapshot 后重新构造”的安全候选；当前 command 没有保留该 retry context。live phase 没有 phase-level retry API。已保存配置可由用户后续修改覆盖，但这不等同于撤销已发的 `ConfigChanged`、已发布的 live runtime 或外部 MCP/hotkey 副作用。
 
-## 并行配置写入口与未决产品边界
+## 实现跟进（2026-09-27）
 
-`RuntimeConfigCoordinator` 的 gate 只覆盖 Settings 与 model edit+apply。Tools admin surface 还有直接修改同一配置域并调用 runtime port 的操作：`logs_level`（Log/Logging）、`tool_set`（Tools/ToolSettings）、`skill_set` / `skill_create`（Skills/Skills）和 MCP add/update/toggle/remove；`mcp_reload` 不改配置，但直接重建 live MCP state。`skill_set` 在持久化失败时恢复启用位，`skill_create` 在持久化失败时尝试删除新建目录并刷新 skill catalog；MCP update 在持久化前尝试新连接、失败时恢复旧连接，MCP update 保存失败后也尝试移除新连接并恢复旧连接。这些 operation-specific 局部补偿与 Settings 的先持久化、后 apply、失败不回滚语义不同。Logging/tool toggle 的 admin 路径也有自己的持久化与 runtime 顺序。永久权限写入口单独维护 permission grant；`AppConfig::apply_settings` 保留权限列表，避免 Settings 表单覆盖它。
+已按上节产品决定落实：Settings runtime phase 与 model Router apply 在 durable edit 后失败时返回“部分 apply 失败”，保留磁盘配置、停止后续 phase，且不自动 retry 或 compensation；SettingsView 告知用户配置已保存以及重启后从磁盘重新初始化。启动仍从 `ConfigLoader` 读取 durable 配置。
 
-`ConfigService` 的锁只串行化配置 edit/save，不覆盖 save 返回后的 runtime apply。Tools admin runtime mutations 不拿 `config_apply_gate`，因此它们可能与 Settings apply 并发，并对 MCP、Skills、Logging 或 ToolSettings 产生跨入口的运行时交错。是否把这些入口迁移到共同的 app-level apply gate、保留 operation-specific mini-transaction，或接受其当前并发边界，需要先作产品/架构决策；这不是增加通用 failure report 能解决的问题。
+Tools AdminServices 的 config writers 现在与 Settings/model 共用由 app composition root 创建的 gate，锁覆盖 edit 和其 live apply/rebuild。gate 经窄 `AdminContext` 注入，不改变 app→Tools 依赖方向。Settings/model 之间及 Tools admin writer 与 Tauri apply 之间的互斥由回归测试覆盖。SkillsExec-only 计划没有 live Skills phase；混合 Skills 与 SkillsExec 允许 Skills 同时出现在 live 和 restart-required 集合，既有 phase 顺序和 owner 不变。
 
-产品还需决定：用户提交后 durable config 已更新但 live apply 失败时，是否接受半应用状态；是否需要只重试失败 phase 的显式操作或要求重启；安全/MCP/hotkey 等不可逆副作用的补偿边界；以及 Settings 是否应向用户报告失败阶段和“配置已保存”。确定这些策略前，不新增 config rollback、restart recovery、跨 subsystem compensation 或新的错误/通知语义。
+## 并行配置写入口（审计时状态，2026-09-25）
 
-## 决定与验证
+在本 ADR 审计时，`RuntimeConfigCoordinator` 的 gate 只覆盖 Settings 与 model edit+apply。Tools admin surface 另有修改相同配置域并调用 runtime port 的操作：`logs_level`（Log/Logging）、`tool_set`（Tools/ToolSettings）、`skill_set` / `skill_create`（Skills/Skills）和 MCP add/update/toggle/remove；`mcp_reload` 不改配置，但直接重建 live MCP state。`skill_set` 在持久化失败时恢复启用位，`skill_create` 在持久化失败时尝试删除新建目录并刷新 skill catalog；MCP update 在持久化前尝试新连接、失败时恢复旧连接，MCP update 保存失败后也尝试移除新连接并恢复旧连接。这些 operation-specific 局部补偿与 Settings 的先持久化、后 apply、失败不回滚语义不同。Logging/tool toggle 的 admin 路径也有自己的持久化与 runtime 顺序。永久权限写入口单独维护 permission grant；`AppConfig::apply_settings` 保留权限列表，避免 Settings 表单覆盖它。2026-09-27 实现跟进已让这些 AdminServices writer、Settings/model 和永久权限 Tauri writer 共用组合根创建的 gate；AdminServices 在 service 内覆盖 durable edit 与 live side effect/catalog rebuild。
+
+在审计时，`ConfigService` 的锁只串行化配置 edit/save，不覆盖 save 返回后的 runtime apply；Tools admin runtime mutations 也没有拿 `config_apply_gate`，因此它们可能与 Settings apply 并发并对 MCP、Skills、Logging 或 ToolSettings 产生跨入口交错。产品随后确认应迁移到共同 app-level apply gate，同时保留各自 operation-specific mini-transaction；现已按该决策接线。此结论不是增加通用 failure report 解决的问题。
+
+在审计时，产品还需决定 durable config 已更新但 live apply 失败时的用户语义、是否提供显式 retry/restart、不可逆副作用补偿边界及 Settings 错误呈现。后续已确认并实现部分 apply failure、重启从磁盘恢复、无自动 retry/compensation 等语义；不增加 config rollback、显式 retry、跨 subsystem compensation。
+
+## 审计结论与验证（2026-09-25）
 
 本切片只增加审计回归测试并记录产品决策边界。测试固定：每个可传播 fatal 的 Settings phase 失败后后续 phase 不再调用；warning-only hotkey event 仍由单独测试验证；Settings 和 model 在 runtime apply 失败后保留已保存配置；相同 payload/mutation 再执行为 no-op，不会隐式重试 runtime apply。现有 phase 顺序、prepare→publish 与错误脱敏测试继续作为行为基线。
 

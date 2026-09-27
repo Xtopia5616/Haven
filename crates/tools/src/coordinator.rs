@@ -465,6 +465,7 @@ mod tests {
     fn empty_admin_context() -> builtin::AdminContext {
         builtin::AdminContext {
             config_service: None,
+            config_apply_gate: None,
             session_store: None,
             memory_facts: None,
             router: None,

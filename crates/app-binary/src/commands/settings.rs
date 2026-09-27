@@ -348,7 +348,8 @@ pub async fn update_settings(
                 apply_timing.clone(),
             )
         })
-        .await?;
+        .await
+        .map_err(crate::config_runtime::partial_config_apply_error)?;
 
     timing.tick("hotkey section");
     timing.log_total();
@@ -371,6 +372,7 @@ pub async fn revoke_permission(state: State<'_, Arc<AppState>>, key: String) -> 
     if key.is_empty() {
         return Err("permission key cannot be empty".into());
     }
+    let _config_apply_guard = state.config_apply_gate.lock().await;
     state
         .config_service
         .edit(|config| {
@@ -389,6 +391,7 @@ pub async fn revoke_permission(state: State<'_, Arc<AppState>>, key: String) -> 
 /// policy. This intentionally does not change the policy mode itself.
 #[tauri::command]
 pub async fn reset_permissions(state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    let _config_apply_guard = state.config_apply_gate.lock().await;
     state
         .config_service
         .edit(|config| {

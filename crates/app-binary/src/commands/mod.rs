@@ -179,7 +179,6 @@ pub(crate) async fn finalize_admin_ui_operation(
         haven_tools::AdminRequest::Skills(
             SkillsOperationArgs::SkillEnable { .. } | SkillsOperationArgs::SkillDisable { .. },
         ) => {
-            state.tools.rebuild_catalog().await;
             emit_event_logged(
                 app,
                 crate::events::SKILLS_STATUS_CHANGED_EVENT,
@@ -191,9 +190,7 @@ pub(crate) async fn finalize_admin_ui_operation(
         }
         haven_tools::AdminRequest::Tools(
             ToolsOperationArgs::ToolEnable { .. } | ToolsOperationArgs::ToolDisable { .. },
-        ) => {
-            state.tools.rebuild_catalog().await;
-        }
+        ) => {}
         haven_tools::AdminRequest::Mcp(
             McpOperationArgs::McpAdd { .. }
             | McpOperationArgs::McpUpdate { .. }
@@ -201,8 +198,6 @@ pub(crate) async fn finalize_admin_ui_operation(
             | McpOperationArgs::McpConnect { .. },
         ) => {
             if let Some(name) = request.server_name() {
-                crate::commands::mcp::spawn_monitor_if_client(state, name).await?;
-                state.tools.rebuild_catalog().await;
                 let connected = state.services.mcp.get_client(name).await.is_some();
                 crate::commands::mcp::emit_mcp_status(
                     app,
@@ -219,7 +214,6 @@ pub(crate) async fn finalize_admin_ui_operation(
         haven_tools::AdminRequest::Mcp(
             McpOperationArgs::McpDisconnect { .. } | McpOperationArgs::McpRemove { .. },
         ) => {
-            state.tools.rebuild_catalog().await;
             if let Some(name) = request.server_name() {
                 crate::commands::mcp::emit_mcp_status(
                     app,
@@ -229,9 +223,7 @@ pub(crate) async fn finalize_admin_ui_operation(
                 );
             }
         }
-        haven_tools::AdminRequest::Mcp(McpOperationArgs::McpReload) => {
-            state.tools.rebuild_catalog().await;
-        }
+        haven_tools::AdminRequest::Mcp(McpOperationArgs::McpReload) => {}
         _ => {}
     }
     Ok(())

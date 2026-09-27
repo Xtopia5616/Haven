@@ -21,6 +21,7 @@ pub async fn refresh_skills(
     state: State<'_, Arc<AppState>>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
+    let _config_apply_guard = state.config_apply_gate.lock().await;
     // Re-scan skills from the configured (or default) skills directory (M4-01).
     state
         .services
@@ -64,9 +65,6 @@ pub async fn set_skill_enabled(
         }),
     )
     .await?;
-
-    // Rebuild tool catalog so the enable/disable takes effect in the Reasoner.
-    state.tools.rebuild_catalog().await;
 
     Ok(())
 }

@@ -7,6 +7,10 @@
 	import MaterialTabs from '$lib/MaterialTabs.svelte';
 	import { addNotification } from '$lib/notificationStore.ts';
 	import { formatError } from '$lib/formatError.ts';
+	import {
+		isPartialConfigApplyError,
+		PARTIAL_APPLY_SAVE_MESSAGE,
+	} from '$lib/settingsSaveFailure.ts';
 	import { reportError } from '$lib/errorHandling.ts';
 	import { registerSettingsLeaveGuard } from '$lib/settingsGuard.ts';
 	import { resolveSettingsSaveAction } from '$lib/settingsSaveAction.ts';
@@ -893,8 +897,14 @@
 		} catch (e) {
 			skipNextDefaultModelSync = false;
 			saveState = 'error';
-			saveError = formatError(e);
-			reportError(e, { context: 'SettingsView', message: '保存设置失败', log: false });
+			const partialApplyFailure = isPartialConfigApplyError(e);
+			saveError = partialApplyFailure ? PARTIAL_APPLY_SAVE_MESSAGE : formatError(e);
+			if (partialApplyFailure && mounted) captureSnapshot();
+			reportError(e, {
+				context: 'SettingsView',
+				message: partialApplyFailure ? PARTIAL_APPLY_SAVE_MESSAGE : '保存设置失败',
+				log: false,
+			});
 			return false;
 		}
 	}
@@ -1002,29 +1012,34 @@
 			{/if}
 		</div>
 	{/key}
-	{#if settingsDirty}
+	{#if settingsDirty || saveState === 'error'}
 		<div class="save-bar md-toolbar motion-surface-enter">
-			<div class="save-actions">
-				<MaterialButton
-					variant="outlined"
-					label="放弃更改"
-					onclick={discardAndReset}
-					disabled={saveState === 'saving'}
-				/>
-				<div
-					class="save-button-status"
-					aria-live="polite"
-					aria-busy={saveState === 'saving'}
-				>
+			{#if saveState === 'error'}
+				<p class="save-error" role="alert">{saveError}</p>
+			{/if}
+			{#if settingsDirty}
+				<div class="save-actions">
 					<MaterialButton
-						variant="filled"
-						className="save-btn save-btn--dirty"
-						label={saveState === 'saving' ? '保存中…' : '保存设置'}
-						onclick={handleSaveClick}
+						variant="outlined"
+						label="放弃更改"
+						onclick={discardAndReset}
 						disabled={saveState === 'saving'}
 					/>
+					<div
+						class="save-button-status"
+						aria-live="polite"
+						aria-busy={saveState === 'saving'}
+					>
+						<MaterialButton
+							variant="filled"
+							className="save-btn save-btn--dirty"
+							label={saveState === 'saving' ? '保存中…' : '保存设置'}
+							onclick={handleSaveClick}
+							disabled={saveState === 'saving'}
+						/>
+					</div>
 				</div>
-			</div>
+			{/if}
 		</div>
 	{/if}
 </div>
@@ -1143,6 +1158,12 @@
 		background: transparent;
 		border-top: none;
 		z-index: 1;
+	}
+	.save-error {
+		margin: 0 auto 0 0;
+		color: var(--md-sys-color-error);
+		font-size: var(--md-sys-typescale-body-small-size);
+		line-height: var(--md-sys-typescale-body-small-line-height);
 	}
 	:global(.save-btn) {
 		width: 96px;

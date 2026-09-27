@@ -99,6 +99,7 @@ pub(crate) fn emit_mcp_status(
 
 #[tauri::command]
 pub async fn reconnect_mcp(state: State<'_, Arc<AppState>>, name: String) -> Result<(), String> {
+    let _config_apply_guard = state.config_apply_gate.lock().await;
     state
         .services
         .mcp
@@ -161,6 +162,7 @@ pub async fn refresh_mcp_servers(
     state: State<'_, Arc<AppState>>,
     app: tauri::AppHandle,
 ) -> Result<McpRefreshResult, String> {
+    let _config_apply_guard = state.config_apply_gate.lock().await;
     let config = state
         .config_service
         .snapshot()
@@ -319,34 +321,6 @@ pub async fn mcp_tool_call(
     })
 }
 
-/// Spawn the health monitor for a live MCP client. The native admin surface's
-/// mcp_add/update/toggle ops connect clients without a monitor (the LLM path
-/// does not need one), so the app commands re-attach it after routing through
-/// the tool — same wiring as `reconnect_mcp`.
-pub(crate) async fn spawn_monitor_if_client(state: &AppState, name: &str) -> Result<(), String> {
-    let Some(client) = state.services.mcp.get_client(name).await else {
-        return Ok(());
-    };
-    let discovery = state
-        .config_service
-        .snapshot()
-        .map(|snapshot| snapshot.config.mcp_discovery)
-        .map_err(|error| log_err("spawn_monitor_if_client", error))?;
-    let health_interval = std::time::Duration::from_secs(discovery.health_interval_secs);
-    let initial_backoff = std::time::Duration::from_millis(discovery.reconnect_initial_ms);
-    let max_backoff = std::time::Duration::from_millis(discovery.reconnect_max_ms);
-    let max_retries = discovery.reconnect_max_retries;
-    let status_tx = state.services.mcp.status_tx();
-    client.spawn_monitor(
-        health_interval,
-        initial_backoff,
-        max_backoff,
-        max_retries,
-        status_tx,
-    );
-    Ok(())
-}
-
 #[tauri::command]
 pub async fn add_mcp_server(
     state: State<'_, Arc<AppState>>,
@@ -375,9 +349,8 @@ pub async fn add_mcp_server(
     )
     .await?;
 
-    // App-level aftermath: health monitor + catalog rebuild + UI event.
-    spawn_monitor_if_client(&state, &config.name).await?;
-    state.tools.rebuild_catalog().await;
+    // McpManager::connect_server starts the monitor; the admin service already
+    // rebuilt the catalog while holding the shared config apply gate.
     let connected = state.services.mcp.get_client(&config.name).await.is_some();
     emit_mcp_status(
         &app,
@@ -420,9 +393,8 @@ pub async fn update_mcp_server(
     )
     .await?;
 
-    // App-level aftermath: health monitor + catalog rebuild + UI event.
-    spawn_monitor_if_client(&state, &name).await?;
-    state.tools.rebuild_catalog().await;
+    // McpManager::connect_server starts the monitor; the admin service already
+    // rebuilt the catalog while holding the shared config apply gate.
     let connected = state.services.mcp.get_client(&name).await.is_some();
     emit_mcp_status(
         &app,
@@ -456,9 +428,8 @@ pub async fn remove_mcp_server(
     )
     .await?;
 
-    // App-level aftermath: catalog rebuild so removed MCP tools disappear
-    // from the Reasoner, plus the UI status event.
-    state.tools.rebuild_catalog().await;
+    // The admin service removed the client and rebuilt the catalog while
+    // holding the shared config apply gate; only the UI status event remains.
     emit_mcp_status(
         &app,
         name,
@@ -489,9 +460,8 @@ pub async fn toggle_mcp_server(
     )
     .await?;
 
-    // App-level aftermath: health monitor + catalog rebuild + UI event.
-    spawn_monitor_if_client(&state, &name).await?;
-    state.tools.rebuild_catalog().await;
+    // McpManager::connect_server starts the monitor; the admin service already
+    // rebuilt the catalog while holding the shared config apply gate.
     let connected = state.services.mcp.get_client(&name).await.is_some();
     emit_mcp_status(
         &app,

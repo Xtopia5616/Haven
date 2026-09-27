@@ -66,11 +66,13 @@ pub(crate) struct RuntimeServices {
     pub(crate) shell: Arc<DesktopShell>,
     pub(crate) log_filter_handles: Vec<reload::Handle<EnvFilter, Registry>>,
     pub(crate) config_service: Arc<ConfigService>,
+    pub(crate) config_apply_gate: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl ApplicationRuntime {
     pub(crate) fn new(runtime_services: RuntimeServices) -> Self {
         let services = runtime_services.tools.share_services();
+        let config_apply_gate = runtime_services.config_apply_gate;
         Self {
             session_store: runtime_services.session_store,
             memory_fact_store: runtime_services.memory_fact_store,
@@ -83,7 +85,7 @@ impl ApplicationRuntime {
             shell: runtime_services.shell,
             log_filter_handles: runtime_services.log_filter_handles,
             config_service: runtime_services.config_service,
-            config_apply_gate: ConfigApplyGate::default(),
+            config_apply_gate: ConfigApplyGate::with_shared_gate(config_apply_gate),
             agent_startup_started: AtomicBool::new(false),
             shutdown_token: CancellationToken::new(),
             shutting_down: AtomicBool::new(false),

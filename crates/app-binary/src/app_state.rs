@@ -186,6 +186,7 @@ impl AppState {
         );
 
         let config_service = Arc::new(ConfigService::new(config_loader));
+        let config_apply_gate = Arc::new(tokio::sync::Mutex::new(()));
         let cfg = config_service.snapshot()?.config;
         let context_limits = cfg.context_limits.clone();
         let context_limits_clone = context_limits.clone();
@@ -242,6 +243,7 @@ impl AppState {
             shell: shell.clone(),
             log_filter_handles: filter_handles.clone(),
             config_service: config_service.clone(),
+            config_apply_gate: config_apply_gate.clone(),
         }));
 
         // ApplicationRuntime owns task registration, cancellation, and join;
@@ -548,6 +550,7 @@ impl AppState {
         }) as Arc<dyn haven_tools::LogLevelPort>);
         let admin_context = haven_tools::AdminContext {
             config_service: Some(config_service.clone()),
+            config_apply_gate: Some(config_apply_gate),
             session_store: Some(session_store),
             memory_facts: Some(memory_fact_store),
             router: Some(router.clone()),

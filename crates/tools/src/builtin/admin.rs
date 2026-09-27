@@ -41,6 +41,9 @@ pub(crate) use admin_services::sanitize_diagnostic;
 #[derive(Clone)]
 pub struct AdminContext {
     pub config_service: Option<Arc<ConfigService>>,
+    /// Shared with app-owned config apply so admin writes cannot publish a
+    /// stale runtime generation while a Settings/model apply is in progress.
+    pub config_apply_gate: Option<Arc<tokio::sync::Mutex<()>>>,
     pub session_store: Option<SessionStore>,
     pub memory_facts: Option<MemoryFactStore>,
     pub router: Option<Arc<LlmRouter>>,
@@ -54,6 +57,7 @@ pub struct AdminContext {
 #[derive(Clone)]
 pub struct ConfigAdminContext {
     pub config_service: Option<Arc<ConfigService>>,
+    pub config_apply_gate: Option<Arc<tokio::sync::Mutex<()>>>,
     pub log_level: Option<Arc<dyn LogLevelPort>>,
 }
 
@@ -61,6 +65,7 @@ impl From<ConfigAdminContext> for AdminContext {
     fn from(context: ConfigAdminContext) -> Self {
         Self {
             config_service: context.config_service,
+            config_apply_gate: context.config_apply_gate,
             session_store: None,
             memory_facts: None,
             router: None,
@@ -1580,6 +1585,7 @@ mod tests {
         let loader = ConfigLoader::load_from(&dir.path().join("config.toml")).unwrap();
         let context = AdminContext {
             config_service: Some(Arc::new(ConfigService::new(loader))),
+            config_apply_gate: Some(Arc::new(tokio::sync::Mutex::new(()))),
             session_store,
             memory_facts,
             router: None,
@@ -1607,6 +1613,7 @@ mod tests {
         let service = Arc::new(ConfigService::new(loader));
         let tool = new_config_admin_tool(ConfigAdminContext {
             config_service: Some(service.clone()),
+            config_apply_gate: None,
             log_level: None,
         });
         (tool, service, dir)
@@ -1912,6 +1919,7 @@ mod tests {
         let config_service = Arc::new(ConfigService::new(loader));
         let context = AdminContext {
             config_service: Some(config_service),
+            config_apply_gate: None,
             session_store: None,
             memory_facts: None,
             router: None,
@@ -2035,6 +2043,7 @@ mod tests {
         let service = Arc::new(ConfigService::new(loader));
         let tool = new_config_admin_tool(ConfigAdminContext {
             config_service: Some(service.clone()),
+            config_apply_gate: None,
             log_level: Some(Arc::new(FailingLogLevelPort)),
         });
 
@@ -2062,6 +2071,46 @@ mod tests {
             LogLevel::Debug
         );
         assert_eq!(service.snapshot().unwrap().version, 1);
+    }
+
+    #[tokio::test]
+    async fn config_admin_write_waits_for_the_shared_apply_gate() {
+        let (surfaces, service, _dir) = test_surfaces_with_service();
+        let gate = surfaces
+            .config
+            .services
+            .context
+            .config_apply_gate
+            .as_ref()
+            .unwrap()
+            .clone();
+        let apply_guard = gate.lock_owned().await;
+        let started = Arc::new(tokio::sync::Notify::new());
+        let started_in_task = started.clone();
+        let surfaces_in_task = surfaces.clone();
+
+        let operation = tokio::spawn(async move {
+            started_in_task.notify_one();
+            surfaces_in_task
+                .execute(
+                    AdminRequest::Config(ConfigOperationArgs::LogsLevel {
+                        level: LogLevel::Debug,
+                    }),
+                    CancellationToken::new(),
+                )
+                .await
+        });
+
+        started.notified().await;
+        tokio::task::yield_now().await;
+        assert_eq!(service.snapshot().unwrap().version, 0);
+        assert!(!operation.is_finished());
+
+        drop(apply_guard);
+        assert!(operation.await.unwrap().unwrap().success);
+        let snapshot = service.snapshot().unwrap();
+        assert_eq!(snapshot.version, 1);
+        assert_eq!(snapshot.config.log.level, LogLevel::Debug);
     }
 
     #[tokio::test]
@@ -2341,6 +2390,7 @@ mod tests {
         let service = Arc::new(ConfigService::new(loader));
         let context = AdminContext {
             config_service: Some(service.clone()),
+            config_apply_gate: Some(Arc::new(tokio::sync::Mutex::new(()))),
             session_store: None,
             memory_facts: None,
             router: None,

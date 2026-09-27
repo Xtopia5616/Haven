@@ -21,7 +21,7 @@ use tracing_subscriber::reload;
 /// rebuild and publish live runtime state.
 #[derive(Default)]
 pub(crate) struct RuntimeConfigCoordinator {
-    apply_gate: tokio::sync::Mutex<()>,
+    apply_gate: Arc<tokio::sync::Mutex<()>>,
 }
 
 // Keep the composition-root field name stable while its owner grows to include
@@ -29,8 +29,16 @@ pub(crate) struct RuntimeConfigCoordinator {
 pub(crate) type ConfigApplyGate = RuntimeConfigCoordinator;
 
 impl RuntimeConfigCoordinator {
+    pub(crate) fn with_shared_gate(apply_gate: Arc<tokio::sync::Mutex<()>>) -> Self {
+        Self { apply_gate }
+    }
+
     pub(crate) async fn lock(&self) -> tokio::sync::MutexGuard<'_, ()> {
         self.apply_gate.lock().await
+    }
+
+    pub(crate) async fn lock_owned(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        self.apply_gate.clone().lock_owned().await
     }
 
     /// Commit a model configuration mutation and apply the committed router
@@ -72,7 +80,9 @@ impl RuntimeConfigCoordinator {
             RuntimeConfigApplyPlan::from_change(change).contains(RuntimeConfigTarget::LlmRouter)
         });
         if should_apply_router {
-            apply_router(update.snapshot).await?;
+            apply_router(update.snapshot)
+                .await
+                .map_err(partial_config_apply_error)?;
         }
         Ok(update.value)
     }
@@ -192,6 +202,10 @@ impl RuntimeConfigCoordinator {
     }
 }
 
+pub(crate) fn partial_config_apply_error(error: impl std::fmt::Display) -> String {
+    format!("部分 apply 失败：配置已保存；重启应用后会从磁盘配置重新初始化。{error}")
+}
+
 /// Complete router and media runtime derived from one immutable snapshot.
 /// Construction may fail; publication only accepts this prepared value.
 pub(crate) struct PreparedRouterRuntime {
@@ -288,13 +302,12 @@ impl RuntimeConfigApplyPlan {
     }
 
     fn push_live(&mut self, target: RuntimeConfigTarget) {
-        if !self.live.contains(&target) && !self.restart_required.contains(&target) {
+        if !self.live.contains(&target) {
             self.live.push(target);
         }
     }
 
     fn push_restart(&mut self, target: RuntimeConfigTarget) {
-        self.live.retain(|existing| *existing != target);
         if !self.restart_required.contains(&target) {
             self.restart_required.push(target);
         }
@@ -413,7 +426,7 @@ impl SettingsApplyPlan {
         let phases = SETTINGS_APPLY_PHASE_ORDER
             .into_iter()
             .filter(|phase| {
-                runtime_plan.contains(phase.target())
+                runtime_plan.live.contains(&phase.target())
                     && (!phase.requires_hotkey_binding_change() || hotkey_binding_changed)
             })
             .collect();
@@ -605,6 +618,14 @@ mod tests {
     use tracing_subscriber::reload;
 
     #[test]
+    fn partial_apply_error_explains_durable_config_and_restart_recovery() {
+        let error = partial_config_apply_error("skills refresh failed");
+        assert!(error.starts_with("部分 apply 失败：配置已保存"));
+        assert!(error.contains("重启应用后会从磁盘配置重新初始化"));
+        assert!(error.ends_with("skills refresh failed"));
+    }
+
+    #[test]
     fn plan_deduplicates_targets_and_marks_restart_boundaries() {
         let plan = RuntimeConfigApplyPlan::from_change(&ConfigChanged {
             version: 7,
@@ -624,7 +645,8 @@ mod tests {
             vec![
                 RuntimeConfigTarget::InputPipeline,
                 RuntimeConfigTarget::LlmRouter,
-                RuntimeConfigTarget::ContextLimits
+                RuntimeConfigTarget::ContextLimits,
+                RuntimeConfigTarget::Skills,
             ]
         );
         assert_eq!(plan.restart_required, vec![RuntimeConfigTarget::Skills]);
@@ -807,6 +829,40 @@ mod tests {
                 .phases()
                 .contains(&SettingsApplyPhase::HotkeyRebindEvent)
         );
+    }
+
+    #[test]
+    fn skills_exec_requires_restart_without_running_live_skills_phase() {
+        let change = ConfigChanged {
+            version: 21,
+            domains: vec![ConfigDomain::SkillsExec],
+        };
+        let snapshot = settings_snapshot(21, "Ctrl+Alt+O");
+        let plan = SettingsApplyPlan::from_change(&change, &snapshot, "Ctrl+Alt+O");
+
+        assert!(plan.live_targets.is_empty());
+        assert_eq!(
+            plan.restart_required_targets,
+            vec![RuntimeConfigTarget::Skills]
+        );
+        assert!(plan.phases().is_empty());
+    }
+
+    #[test]
+    fn mixed_skills_and_skills_exec_runs_live_skills_and_marks_restart() {
+        let change = ConfigChanged {
+            version: 22,
+            domains: vec![ConfigDomain::SkillsExec, ConfigDomain::Skills],
+        };
+        let snapshot = settings_snapshot(22, "Ctrl+Alt+O");
+        let plan = SettingsApplyPlan::from_change(&change, &snapshot, "Ctrl+Alt+O");
+
+        assert_eq!(plan.live_targets, vec![RuntimeConfigTarget::Skills]);
+        assert_eq!(
+            plan.restart_required_targets,
+            vec![RuntimeConfigTarget::Skills]
+        );
+        assert_eq!(plan.phases(), &[SettingsApplyPhase::Skills]);
     }
 
     #[tokio::test]
@@ -1008,6 +1064,7 @@ mod tests {
             domains: vec![
                 ConfigDomain::Llm,
                 ConfigDomain::SkillsExec,
+                ConfigDomain::Skills,
                 ConfigDomain::Memory,
             ],
         };
@@ -1066,7 +1123,8 @@ mod tests {
                 RuntimeConfigTarget::MemoryRuntime
             ]
         );
-        assert_eq!(plan.phases(), &[SettingsApplyPhase::Skills]);
+        assert!(plan.live_targets.is_empty());
+        assert!(plan.phases().is_empty());
     }
     #[tokio::test]
     async fn model_edit_no_op_skips_router_rebuild() {
@@ -1134,7 +1192,10 @@ mod tests {
             )
             .await;
 
-        assert_eq!(result, Err("router preparation failed".into()));
+        let error = result.unwrap_err();
+        assert!(error.starts_with("部分 apply 失败：配置已保存"));
+        assert!(error.contains("重启应用后会从磁盘配置重新初始化"));
+        assert!(error.ends_with("router preparation failed"));
         let snapshot = service.snapshot().unwrap();
         assert_eq!(snapshot.version, 1);
         assert!(

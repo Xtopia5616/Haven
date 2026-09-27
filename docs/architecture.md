@@ -85,8 +85,8 @@ client；model edit 的完整提交和应用也由它持有。`SettingsRuntimeAp
 Settings 有序阶段，驱动命令提供的执行回调，并唯一记录当前 phase、snapshot version、Router published、
 restart-required targets 与失败/警告。Security、MCP、context、logging、hotkey 等实际副作用仍由既有 owner
 执行；Settings edit/no-op 仍由命令按同一次 `ConfigService::edit` 保留旧 hotkey、snapshot 和 change。该
-coordinator 不复制 Router prepare/publish，也不为半失败状态增加 compensation/rollback。审计确认无第二份配置 owner、target mapping 或 Settings payload builder；durable-first 后的 compensation/rollback、显式 retry/restart recovery 与 Settings 失败文案仍未决。`SettingsView` 唯一的 `update_settings` payload builder 使用开放式 `SettingsPayload`，IPC script 校验 Rust `Settings` 参数和 UI 直接调用 owner，而完整字段 schema 仍由 Rust 所有（ADR 0372）。Tools admin 的 MCP/Skills/Logging/ToolSettings writers 若修改与 Settings/model 相同的运行时配置域，产品已决定必须进入统一串行配置边界；不相关域仍由原 owner 负责。具体 coordinator 接线与失败文案另行实现。MCP Tauri 命令负责
-持久化和连接/刷新动作，完成后请求 ToolsManager façade 重建 catalog；连接及其 `catalog_version` 仍由
+coordinator 不复制 Router prepare/publish，也不为半失败状态增加 compensation/rollback。审计确认无第二份配置 owner、target mapping 或 Settings payload builder；durable edit 后不增加 compensation/rollback 或显式 retry/restart；失败保留磁盘配置并报告部分 apply failure，重启从磁盘初始化。`SettingsView` 唯一的 `update_settings` payload builder 使用开放式 `SettingsPayload`，IPC script 校验 Rust `Settings` 参数和 UI 直接调用 owner，而完整字段 schema 仍由 Rust 所有（ADR 0372）。Tools admin 的 MCP/Skills/Logging/ToolSettings writers 若修改与 Settings/model 相同的运行时配置域，必须进入统一串行配置边界；不相关域仍由原 owner 负责。实现跟进由组合根创建共享 gate，并经窄 AdminContext 注入 Tools AdminServices；gate 覆盖 durable edit 与 live apply/rebuild，Tauri wrapper 不重复 catalog rebuild。MCP Tauri 管理入口将写入委托给 AdminServices；
+add/update/toggle/remove 的持久化、live 连接和 catalog rebuild 均在 AdminServices 的共享 gate 内完成，Tauri 只发状态事件。refresh/reconnect 仍由命令协调各自的 live 路径；连接及其 `catalog_version` 仍由
 `McpManager` 持有。应用退出顺序由 `ApplicationRuntime` 负责，coordinator 不增加独立 shutdown 生命周期
 （ADR 0333、0337）。
 安全矩阵只有 `security.rs` 一个权威来源，五个 Admin surface 由 ADR 0070/0071 定义的 typed
@@ -717,6 +717,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 
 | 日期 | 内容 |
 |---|---|
+| 2026-09-27 | §2.5 App / Tools / §2.6 UI：Settings/model 与 Tools AdminServices 同配置域 writes 共用 composition-root gate；SkillsExec-only 跳过 live Skills phase，混合 Skills 变更保留 live phase 与 restart-required；durable-first apply failure 保留磁盘配置并向 Settings UI 报告部分 apply 失败及重启恢复方式。不引入 compensation/rollback/retry；更新 MCP Tauri/AdminServices catalog 和 monitor ownership 说明（ADR 0351、0372）|
 | 2026-09-26 | §2.3/§2.5/§2.6：SessionStore 增加 session orphan/retention/managed-attachment typed ports，AppState 后台清理不再捕获 raw Database；AgentLayer 显式接收组合根 ToolsManager，SessionSupervisor 删除生产 service locator 并只保留窄 authorization/action wiring。执行 facade 与 prompt/catalog/observation adapter 依赖继续按 ADR 0224/0225 单独审计（ADR 0374）|
 | 2026-09-26 | §2.5 App / §2.6 UI：审计配置单一 owner、target/phase mapping、atomic save 顺序、Settings/model/provider 写入与失败语义；为唯一 `update_settings` builder 复用开放式 `SettingsPayload` 并由 IPC script 校验 handler/registry/caller。保持 durable-first 和失败不补偿；产品确认仅变更 `SkillsExec` 时跳过 live apply、标记重启生效，并让同配置域的 Tools 管理操作与 Settings/model apply 统一串行，具体实现留后续切片（ADR 0372）|
 | 2026-09-26 | §2.5 Tools / §2.6 UI：产品确认 background/scheduled 的完成记录、任务卡和 transcript 投影统一格式，保留类型细节；通知 toast/Windows 开关继续分别可控且默认开启，具体 mapper、wire 与 UI 实现留后续 action/UI 切片（ADR 0373）|

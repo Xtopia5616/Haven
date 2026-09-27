@@ -77,6 +77,13 @@ impl AdminServices {
             .ok_or_else(|| anyhow::anyhow!("configuration administration is unavailable"))
     }
 
+    async fn lock_config_apply(&self) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+        match &self.context.config_apply_gate {
+            Some(gate) => Some(Arc::clone(gate).lock_owned().await),
+            None => None,
+        }
+    }
+
     async fn rebuild_catalog(&self) -> Result<()> {
         if let Some(tool_control) = &self.context.tool_control {
             tool_control.rebuild_catalog().await?;
@@ -99,6 +106,7 @@ impl AdminServices {
     }
 
     pub(crate) async fn logs_level(&self, level: LogLevel) -> Result<Value> {
+        let _config_apply_guard = self.lock_config_apply().await;
         let update = self
             .config_service()?
             .apply_patch(ConfigPatch::LogLevel(level.clone()))?;
@@ -113,6 +121,7 @@ impl AdminServices {
     }
 
     pub(crate) async fn tool_set(&self, name: &str, enabled: bool) -> Result<Value> {
+        let _config_apply_guard = self.lock_config_apply().await;
         let mut settings = self.config_service()?.snapshot()?.config.tool_settings;
         settings.entry(name.to_string()).or_default().enabled = enabled;
         self.config_service()?
@@ -327,6 +336,7 @@ impl AdminServices {
     }
 
     pub(crate) async fn skill_set(&self, name: &str, enabled: bool) -> Result<Value> {
+        let _config_apply_guard = self.lock_config_apply().await;
         let config_service = Arc::clone(
             self.context
                 .config_service
@@ -372,6 +382,7 @@ impl AdminServices {
         version: Option<&str>,
         script: Option<&str>,
     ) -> Result<Value> {
+        let _config_apply_guard = self.lock_config_apply().await;
         let config_service = Arc::clone(
             self.context
                 .config_service
@@ -506,6 +517,7 @@ impl AdminServices {
     }
 
     pub(crate) async fn mcp_connect(&self, name: &str) -> Result<Value> {
+        let _config_apply_guard = self.lock_config_apply().await;
         let config = self
             .server_configs
             .read()
@@ -522,11 +534,13 @@ impl AdminServices {
     }
 
     pub(crate) async fn mcp_disconnect(&self, name: &str) -> Result<Value> {
+        let _config_apply_guard = self.lock_config_apply().await;
         self.mcp_manager.remove_client(name).await;
         Ok(serde_json::json!({"name": name, "connected": false}))
     }
 
     pub(crate) async fn mcp_add(&self, fields: &McpAddFields) -> Result<Value> {
+        let _config_apply_guard = self.lock_config_apply().await;
         let command = fields.command.clone().filter(|value| !value.is_empty());
         let url = fields.url.clone().filter(|value| !value.is_empty());
         match fields.transport {
@@ -594,6 +608,7 @@ impl AdminServices {
     }
 
     pub(crate) async fn mcp_update(&self, fields: &McpUpdateFields) -> Result<Value> {
+        let _config_apply_guard = self.lock_config_apply().await;
         let existing = self
             .read_config()?
             .mcp_servers
@@ -628,6 +643,7 @@ impl AdminServices {
     }
 
     pub(crate) async fn mcp_toggle(&self, name: &str, enabled: bool) -> Result<Value> {
+        let _config_apply_guard = self.lock_config_apply().await;
         let existing = self
             .read_config()?
             .mcp_servers
@@ -642,6 +658,7 @@ impl AdminServices {
     }
 
     pub(crate) async fn mcp_remove(&self, name: &str) -> Result<Value> {
+        let _config_apply_guard = self.lock_config_apply().await;
         let mut servers = self.config_service()?.snapshot()?.config.mcp_servers;
         let before = servers.len();
         servers.retain(|server| server.name != name);
@@ -658,6 +675,7 @@ impl AdminServices {
     }
 
     pub(crate) async fn mcp_reload(&self) -> Result<Value> {
+        let _config_apply_guard = self.lock_config_apply().await;
         let servers = self.read_config()?.mcp_servers.clone();
         let mut map = self.server_configs.write().await;
         map.clear();

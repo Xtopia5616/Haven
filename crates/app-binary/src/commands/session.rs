@@ -198,9 +198,12 @@ pub async fn resolve_confirmation(
     // Persist Always before publishing it to the live authorization engine.
     // If the atomic config write fails, the process must not temporarily
     // behave as if a permanent grant exists when restart would forget it.
-    if matches!(perm_scope, haven_common::types::PermissionScope::Always) {
-        persist_permanent_permission(&state, key.as_str(), perm_effect).await?;
-    }
+    let _config_apply_guard = if matches!(perm_scope, haven_common::types::PermissionScope::Always)
+    {
+        Some(persist_permanent_permission(&state, key.as_str(), perm_effect).await?)
+    } else {
+        None
+    };
     state
         .services
         .authorization
@@ -296,9 +299,12 @@ async fn resolve_ui_confirmation(
     if matches!(perm_scope, haven_common::types::PermissionScope::Once) {
         return Ok(());
     }
-    if matches!(perm_scope, haven_common::types::PermissionScope::Always) {
-        persist_permanent_permission(state, grant_key.as_str(), perm_effect).await?;
-    }
+    let _config_apply_guard = if matches!(perm_scope, haven_common::types::PermissionScope::Always)
+    {
+        Some(persist_permanent_permission(state, grant_key.as_str(), perm_effect).await?)
+    } else {
+        None
+    };
     state
         .services
         .authorization
@@ -343,8 +349,9 @@ async fn persist_permanent_permission(
     state: &AppState,
     key: &str,
     effect: haven_common::types::PermissionEffect,
-) -> Result<(), String> {
+) -> Result<tokio::sync::OwnedMutexGuard<()>, String> {
     use haven_common::config::StoredPermission;
+    let guard = state.config_apply_gate.lock_owned().await;
     state
         .config_service
         .edit(|config| {
@@ -360,7 +367,7 @@ async fn persist_permanent_permission(
             Ok(())
         })
         .map_err(|e| log_err("persist_permanent_permission", e))?;
-    Ok(())
+    Ok(guard)
 }
 
 /// Manually update a session's display title.
