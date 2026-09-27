@@ -723,11 +723,46 @@ foreach ($check in $toolsCatalogChecks) {
     }
 }
 
+$reconnectMcpContract = Get-RequiredMatch $tsContracts '(?ms)^\s*reconnect_mcp\s*:\s*\{([^}]*)\}' 'frontend contract for reconnect_mcp'
+$reconnectMcpSecurity = Get-RequiredMatch $reconnectMcpContract.Groups[1].Value "security:\s*'([^']+)'" 'reconnect_mcp renderer security boundary'
+if ($reconnectMcpSecurity.Groups[1].Value -notmatch 'AuthorizationEngine' -or
+    $reconnectMcpSecurity.Groups[1].Value -notmatch 'one existing configured server') {
+    throw 'reconnect_mcp must describe AuthorizationEngine authorization for one existing configured server'
+}
 $refreshMcpContract = Get-RequiredMatch $tsContracts '(?ms)^\s*refresh_mcp_servers\s*:\s*\{([^}]*)\}' 'frontend contract for refresh_mcp_servers'
 $refreshMcpSecurity = Get-RequiredMatch $refreshMcpContract.Groups[1].Value "security:\s*'([^']+)'" 'refresh_mcp_servers renderer security boundary'
-if ($refreshMcpSecurity.Groups[1].Value -match 'no renderer command|AuthorizationEngine' -or
-    $refreshMcpSecurity.Groups[1].Value -notmatch 'persisted config') {
-    throw 'refresh_mcp_servers must describe the renderer-triggered persisted-config reconcile without claiming AuthorizationEngine ownership'
+if ($refreshMcpSecurity.Groups[1].Value -notmatch 'AuthorizationEngine' -or
+    $refreshMcpSecurity.Groups[1].Value -notmatch 'one batch' -or
+    $refreshMcpSecurity.Groups[1].Value -notmatch 'persisted config diff' -or
+    $refreshMcpSecurity.Groups[1].Value -notmatch 'no renderer process arguments') {
+    throw 'refresh_mcp_servers must describe one AuthorizationEngine-gated batch over the persisted config diff without renderer process arguments'
+}
+
+$mcpCommandSource = Get-Content (Join-Path $commandsRoot 'mcp.rs') -Raw
+$reconnectHandler = Get-RequiredMatch $mcpCommandSource '(?s)pub\s+async\s+fn\s+reconnect_mcp\s*\((.*?)\n}\s*\n\s*\#\[derive\(serde::Serialize' 'reconnect_mcp handler'
+if ($reconnectHandler.Groups[1].Value -notmatch 'authorize_admin_request' -or
+    $reconnectHandler.Groups[1].Value -notmatch 'NativeMcpOperationArgs::McpReconnect') {
+    throw 'reconnect_mcp must authorize its typed native reconnect before execution'
+}
+$refreshHandler = Get-RequiredMatch $mcpCommandSource '(?s)pub\s+async\s+fn\s+refresh_mcp_servers\s*\((.*?)\n}\s*\n\s*\#\[tauri::command\]' 'refresh_mcp_servers handler'
+if ($refreshHandler.Groups[1].Value -notmatch 'authorize_admin_request' -or
+    $refreshHandler.Groups[1].Value -notmatch 'NativeMcpOperationArgs::McpRefresh' -or
+    $refreshHandler.Groups[1].Value -match 'connect_and_monitor|\.remove_client\(|\.connect_server\(') {
+    throw 'refresh_mcp_servers must authorize a typed native diff plan and leave all live side effects inside the admin operation'
+}
+if ($refreshHandler.Groups[1].Value -match 'finalize_confirmed_admin_ui_operation') {
+    throw 'immediate refresh must report per-server failures through its result DTO without emitting duplicate status events'
+}
+$sessionCommandSource = Get-Content (Join-Path $commandsRoot 'session.rs') -Raw
+$confirmedAdminExecution = Get-RequiredMatch $sessionCommandSource '(?s)UiConfirmationAction::Admin\s*\{\s*request\s*\}\s*=>\s*\{\s*let result = crate::commands::execute_admin_surface\(.*?finalize_confirmed_admin_ui_operation\(.*?&result' 'confirmed admin result finalizer'
+if (-not $confirmedAdminExecution.Success) {
+    throw 'confirmed admin execution must retain its ToolResult for confirmed-only finalization'
+}
+$commandsModuleSource = Get-Content (Join-Path $commandsRoot 'mod.rs') -Raw
+if ($commandsModuleSource -notmatch 'fn parse_mcp_refresh_failed_names' -or
+    $commandsModuleSource -notmatch 'McpClientStatus::Offline' -or
+    $commandsModuleSource -notmatch 'finalize_confirmed_admin_ui_operation') {
+    throw 'confirmed MCP refresh failures must publish generic Offline status through the existing MCP channel'
 }
 
 foreach ($helper in @(
