@@ -515,29 +515,25 @@ async fn queued_action_result_is_reconciled_after_session_becomes_terminal() {
             .unwrap()
             .iter()
             .any(|message| message.id == message_id);
-        if has_message {
+        let pending: i64 = agent
+            .db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM action_completion_outbox
+                 WHERE action_id = ?1 AND delivered_at IS NULL",
+                [action_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        if has_message && pending == 0 {
             break;
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "outbox result was not projected"
+            "outbox result was not projected and acknowledged"
         );
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
-    let pending: i64 = agent
-        .db
-        .conn()
-        .query_row(
-            "SELECT COUNT(*) FROM action_completion_outbox
-             WHERE action_id = ?1 AND delivered_at IS NULL",
-            [action_id],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(
-        pending, 0,
-        "durable result must be acknowledged after projection"
-    );
     cancellation.cancel();
     tokio::time::timeout(std::time::Duration::from_secs(1), live_task)
         .await
