@@ -30,3 +30,7 @@
 ## 回滚
 
 回滚本次文档提交即可恢复原路线图、架构说明、开发标准命令数和 ADR 索引；不需要数据或运行时迁移。
+
+## 2026-09-27 后续校准
+
+本 ADR 的 Phase 7 watcher 条目记录的是 2026-09-26 当时尚未决定的状态。dependency-waiting 的产品语义随后已由 [ADR 0375](0375-dependency-waiting-restart-policy.md) 确认；durable relation、重启时 watcher 恢复与单次 continuation 仍是未完成的实现工作。该更新只关闭产品决策，不代表现有进程内 watcher 已支持跨重启恢复。
