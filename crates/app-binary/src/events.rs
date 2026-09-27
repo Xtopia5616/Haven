@@ -574,6 +574,20 @@ pub(crate) struct AgentNotificationEvent {
     pub session_id: String,
     pub title: String,
     pub body: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notification_kind: Option<AgentNotificationKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action_kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action_status: Option<String>,
+}
+
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum AgentNotificationKind {
+    ActionCompletion,
 }
 
 #[derive(Clone, Serialize)]

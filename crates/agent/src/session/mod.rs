@@ -146,11 +146,26 @@ pub struct ConfirmResolution {
 /// stream; no subsystem installs mutable one-shot callbacks on the runtime.
 #[derive(Debug, Clone)]
 pub enum SessionEvent {
-    InteractionRequested { request: Box<InteractionRequest> },
-    ScheduledConfirmOutcome { title: String, body: String },
-    SessionCleanup { session_id: String },
-    CascadeCompleted { session_id: String, title: String },
-    SessionError { session_id: String, reason: String },
+    InteractionRequested {
+        request: Box<InteractionRequest>,
+    },
+    ScheduledConfirmOutcome {
+        action_id: String,
+        session_id: Option<String>,
+        title: String,
+        body: String,
+    },
+    SessionCleanup {
+        session_id: String,
+    },
+    CascadeCompleted {
+        session_id: String,
+        title: String,
+    },
+    SessionError {
+        session_id: String,
+        reason: String,
+    },
 }
 
 /// Result of a safety-gated tool execution: the tool result plus the

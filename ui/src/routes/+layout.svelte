@@ -9,6 +9,14 @@
 	} from '$lib/runtimeStateStore.ts';
 	import { addNotification } from '$lib/notificationStore.ts';
 	import {
+		setActionCompletionNotificationChannels,
+		shouldShowActionCompletionInApp,
+	} from '$lib/actionCompletionNotificationSettings.ts';
+	import {
+		createActionCompletionNotificationGate,
+		projectActionCompletionToast,
+	} from '$lib/actionCompletionNotificationProjection.ts';
+	import {
 		upsertAction,
 		removeAction,
 		refreshActions,
@@ -376,6 +384,28 @@
 		session_error: { in_app: true },
 	});
 
+	/** @typedef {import('$lib/contracts/agent.ts').AgentNotificationPayload} AgentNotificationPayload */
+	/** @param {AgentNotificationPayload} data */
+	function showAgentNotification(data) {
+		if (data.notificationKind === 'action_completion') {
+			if (!shouldShowActionCompletionInApp()) return;
+			const toast = projectActionCompletionToast(
+				data,
+				appSessionReducer.getState().activeSessionId,
+			);
+			if (toast) addNotification(toast.message, toast.type, toast.durationMs);
+			return;
+		}
+		const title = data.title || 'Haven';
+		const body = data.body || '新通知';
+		// When the title is the default "Haven", showing "Haven: msg" is
+		// redundant — the toast itself already lives in the app.
+		addNotification(title === 'Haven' ? body : `${title}: ${body}`, 'info', 5000);
+	}
+
+	const actionCompletionNotificationGate =
+		createActionCompletionNotificationGate(showAgentNotification);
+
 	$effect(() => syncStore(recordingOverlay, (v) => (overlay = v)));
 
 	$effect(() => {
@@ -679,11 +709,17 @@
 				.then((settings) => {
 					if (settings?.notification) {
 						notifyCfg = { ...notifyCfg, ...settings.notification };
+						setActionCompletionNotificationChannels(
+							settings.notification.action_completed,
+						);
 					}
 				})
 				.catch((e) => {
 					logger.warn('+layout', 'get_settings error', e);
-				});
+				})
+				.finally(() => actionCompletionNotificationGate.settingsLoaded());
+		} else {
+			actionCompletionNotificationGate.settingsLoaded();
 		}
 
 		const registrations = registerListeners(
@@ -960,15 +996,11 @@
 				...agentEventListeners({
 					'notification:show': (event) => {
 						const data = event.payload;
-						const title = data.title || 'Haven';
-						const body = data.body || '新通知';
-						// When the title is the default "Haven", showing "Haven: msg" is
-						// redundant — the toast itself already lives in the app.
-						addNotification(
-							title === 'Haven' ? body : `${title}: ${body}`,
-							'info',
-							5000,
-						);
+						if (data.notificationKind === 'action_completion') {
+							actionCompletionNotificationGate.notify(data);
+							return;
+						}
+						showAgentNotification(data);
 					},
 				}),
 				...actionEventListeners({
@@ -989,20 +1021,6 @@
 						if (p.kind === 'background') {
 							upsertAction(p);
 							finalizeBackgroundActionMessages(p);
-							// A background action finishing is only worth a toast when the
-							// user is not already watching its owning session (the result
-							// also lands in the session's conversation).
-							if (p.status === 'completed' || p.status === 'failed') {
-								const activeId = appSessionReducer.getState().activeSessionId;
-								if (!p.sessionId || p.sessionId !== activeId) {
-									const label = p.status === 'completed' ? '完成' : '失败';
-									addNotification(
-										`后台任务${label}: ${p.id}`,
-										p.status === 'completed' ? 'success' : 'error',
-										4000,
-									);
-								}
-							}
 						} else {
 							// Scheduled action fired: drop from the pending list. The
 							// toast is surfaced by the agent's `notification:show` (the

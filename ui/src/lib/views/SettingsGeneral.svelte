@@ -278,7 +278,7 @@
 				class="switch-label">Windows 通知</span
 			>
 		</div>
-		{#each [{ key: 'session_created', label: '会话开始' }, { key: 'session_completed', label: '会话完成' }, { key: 'session_paused', label: '会话暂停' }, { key: 'session_resumed', label: '会话恢复' }, { key: 'session_error', label: '会话出错' }] as ev (ev.key)}
+		{#each [{ key: 'session_created', label: '会话开始' }, { key: 'session_completed', label: '会话完成' }, { key: 'session_paused', label: '会话暂停' }, { key: 'session_resumed', label: '会话恢复' }, { key: 'session_error', label: '会话出错' }, { key: 'action_completed', label: '任务完成' }] as ev (ev.key)}
 			<div class="notify-grid-row">
 				<span class="switch-label">{ev.label}</span>
 				<MaterialSwitch

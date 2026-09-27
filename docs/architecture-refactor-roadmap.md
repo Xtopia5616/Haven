@@ -35,11 +35,12 @@
 - 已完成配置 apply 边界审计及实现（ADR 0351、0372）：`ConfigService` 是唯一进程配置 owner，Settings/model 与同配置域 Tools AdminServices writer 共用 app composition root 创建的 gate；domain→target 只有 `RuntimeConfigApplyPlan` 一份，Settings phases 是其派生计划。纯 `SkillsExec` 仅持久化并标记 restart-required，跳过 live Skills phase；Skills 与 SkillsExec 混合变更照常执行 Skills live phase，同时保留 restart-required。durable-first 后 apply failure 保留磁盘配置、不自动 retry/compensate，UI 报告部分 apply 失败，重启从磁盘初始化。`update_settings` 唯一前端 builder 复用开放式 `SettingsPayload`，脚本校验 handler/registry/直接 caller，不复制 Rust nested schema。未改配置格式和数据库 schema，无需数据重置。
 - UI 页面和 reducer 已有边界，ask/input 决策、复杂 view state 与启动恢复编排仍在页面/controller；多个 IPC 域已完成手写 mapper/validator 审计，但全局 Rust→TypeScript codegen 未引入，其他 command families 仍待按域审计。
 
-产品决策状态更新（2026-09-26）：Settings apply 失败保留 durable config、报告部分失败、不自动重试，
-重启从磁盘配置重新初始化；terminal history 在 completion ack 前拒绝删除；不增加统一 action-level
-deadline，沿用工具自身 timeout 与用户取消；dependency-waiting task 保留 durable relation，重启时重建
-watcher 并在依赖满足后执行一次。后台/定时任务完成展示与通知统一的具体 wire/UI 映射仍需独立切片；
-本轮仅实现 terminal-history guard，不改 Settings、Job watcher 或 UI 投影。
+产品决策状态更新（2026-09-26，通知补充于 2026-09-27）：Settings apply 失败保留 durable config、报告部分失败、
+不自动重试，重启从磁盘配置重新初始化；terminal history 在 completion ack 前拒绝删除；不增加统一 action-level
+deadline，沿用工具自身 timeout 与用户取消；dependency-waiting task 保留 durable relation，重启时重建 watcher 并在依赖满足后执行一次。
+background/scheduled 的完成通知 wire 与 UI 入口已由 ADR 0373 后续切片统一，并提供默认开启、独立通道设置；
+Action lifecycle 不变。完成记录与 transcript 是否投影 scheduled execution outcome 仍待产品决策，尤其 scheduled `tool`
+结果目前只进入通知；此轮不改 Job watcher、取消/ack/retry 或 scheduled transcript。
 
 ### 2.1 已完成的降复杂度切片（截至 2026-09-25）
 
@@ -418,6 +419,8 @@ MemoryRuntime 启动所有权后续校准（ADR 0367）：当前不再使用 `ru
 2026-09-25 历史切片记录（ADR 0343；scheduled UI projection 后由 ADR 0344 审计）：调用图确认 ActionService 承担后台 shell child process 执行，同时拥有 scheduled admission/fire 与两类终态持久化；scheduled fire 实际执行仍由 AgentLayer/tool runner 负责并回报终态。ActionService 的 lifecycle sink 产生 task event，App bootstrap 投影为 ActionEvent；AgentLayer 的 background completion durable transcript/ack 是另一条 Agent 内部投影。`ScheduledTriggerRequest`/`ScheduledTriggerCandidate` 现作为纯 typed policy 独占定时输入归类、UTC due-time/剩余秒计算和配置 horizon 校验输入，ActionService 保留异步配置读取、ActionStore 顺序、内存注册、timer/watch、fire、事件及重试。后台 immediate trigger 尚未与执行器拆分；完整跨 kind lifecycle、timeout/claim identity/recovery 与 dependency watcher durable semantics 仍待独立契约决策。
 
 2026-09-25 Action UI projection 审计（ADR 0344）：`actionStore` 已用 action id 作为 background/scheduled 的共同索引；command rows 与 lifecycle events 通过 ADR 0335 的同一 runtime mapper，live-row 容量判定也共用 `waiting/running` 条件。`action:created/updated/output` 均作部分 upsert；refresh generation 与 state-version gate 只保护 hydration 竞态，不构成 event dedup。完成路径仍按 kind 分流：background finished 短暂 upsert terminal payload、调用既有 `finalizeBackgroundActionMessages` 更新绑定工具卡并按原条件 toast；scheduled finished 删除 pending row，Agent 的 `notification:show` 负责通知。Rust bridge 仅对 background 发布 bounded `action:output`；TaskCenter 的状态展示与取消仍依赖 kind。审计修复了 layout 中重复的 background transcript projection，继续复用 `actionStore.ts` 已测试 helper；没有可安全统一的跨 kind terminal reducer，也没有 durable event identity 可用于去重。
+
+2026-09-27 action completion 通知设置（ADR 0373）：`notification.action_completed` 提供默认开启的独立应用内/Windows 开关，background 与 scheduled 共用。Settings、旧配置加载、event marker、UI toast owner 与 DesktopNotifications gate 已贯通；通用 Agent `notification:show` 保持原语义。background toast 仍只在 completed/failed 且 owner session 非当前会话时出现；scheduled completion 按原 title/body 通知。没有改变 action lifecycle、cancel/ack/retry 或 scheduled transcript；scheduled outcome 内容映射仍待决定。
 
 2026-09-25 Action lifecycle transition-core 审计（ADR 0352）：完整 Job lifecycle 没有可安全抽取的另一层纯状态转换核。`ActionStatus::can_transition_to`、`can_claim_terminal`、`ActionLease<T>`、`ActionPersistenceRetryPolicy` 与 scheduled trigger policy 已分别收口。background 从 admission 直接进入 running；scheduled 才有 waiting→running fire。跨 family 的执行副作用、CAS/outbox、无 consumer rollback、terminal retry 和 UI projection 不等价；提交前后重复检查保留为不同边界的竞态校验。穷举状态图/终态准入表测试固定当前契约。完整 Job 模型须等待 trigger/execution、deadline/identity/recovery 与 dependency watcher 的显式决策；不增加 timeout、owner token/续租、自动 replay、跨重启 watcher 或状态语义。
 

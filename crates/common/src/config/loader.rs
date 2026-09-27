@@ -541,6 +541,8 @@ mod tests {
         );
         assert_eq!(cfg.media.audio.sample_rate, 16000);
         assert_eq!(cfg.hotkey.key_binding, "Ctrl+Shift+Space");
+        assert!(cfg.notification.action_completed.in_app);
+        assert!(cfg.notification.action_completed.windows);
         assert_eq!(cfg.session.max_concurrent, 3);
         assert_eq!(cfg.session.max_steps, 500);
         assert_eq!(cfg.context_limits.compaction_ratio, 0.65);
@@ -613,10 +615,29 @@ mod tests {
 
     #[test]
     fn config_roundtrip_through_toml() {
-        let cfg = AppConfig::default();
+        let mut cfg = AppConfig::default();
+        cfg.notification.action_completed = NotifyChannels {
+            in_app: false,
+            windows: true,
+        };
         let s = toml::to_string_pretty(&cfg).unwrap();
         let parsed: AppConfig = toml::from_str(&s).unwrap();
         assert_eq!(cfg, parsed);
+    }
+
+    #[test]
+    fn action_completion_notification_defaults_on_for_legacy_config() {
+        let parsed: NotificationConfig = toml::from_str(
+            r#"
+            [session_error]
+            in_app = true
+            windows = true
+            "#,
+        )
+        .unwrap();
+
+        assert!(parsed.action_completed.in_app);
+        assert!(parsed.action_completed.windows);
     }
 
     #[test]

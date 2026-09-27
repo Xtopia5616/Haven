@@ -1241,10 +1241,12 @@ impl SessionSupervisor {
         };
         let action_service = self.actions.clone();
         if confirmed
-            && let Some(session_id) = session_id.as_deref()
-            && !self.session_is_live(session_id).await
+            && let Some(live_session_id) = session_id.as_deref()
+            && !self.session_is_live(live_session_id).await
         {
             self.emit_event(SessionEvent::ScheduledConfirmOutcome {
+                action_id: action_id.clone(),
+                session_id: session_id.clone(),
                 title,
                 body: format!(
                     "Scheduled tool '{}' was NOT executed: its session is no longer active.",
@@ -1258,6 +1260,8 @@ impl SessionSupervisor {
         }
         if !confirmed {
             self.emit_event(SessionEvent::ScheduledConfirmOutcome {
+                action_id: action_id.clone(),
+                session_id: session_id.clone(),
                 title,
                 body: format!(
                     "Scheduled tool '{tool_name}' was NOT executed: \
@@ -1295,7 +1299,12 @@ impl SessionSupervisor {
         } else {
             let _ = action_service.fail_scheduled(&action_id, &body).await;
         }
-        self.emit_event(SessionEvent::ScheduledConfirmOutcome { title, body });
+        self.emit_event(SessionEvent::ScheduledConfirmOutcome {
+            action_id,
+            session_id,
+            title,
+            body,
+        });
     }
 
     /// Check authorization using the turn's immutable catalog snapshot. The

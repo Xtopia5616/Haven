@@ -226,6 +226,17 @@ pub enum AgentEvent {
         title: String,
         body: String,
     },
+    /// Action completion notification. Kept distinct from generic user/Agent
+    /// notifications so action-specific channel settings do not change the
+    /// `notify` tool's always-on behavior.
+    ActionCompletionNotification {
+        action_kind: ActionNotificationSource,
+        action_id: String,
+        session_id: String,
+        action_status: Option<ActionCompletionStatus>,
+        title: String,
+        body: String,
+    },
     /// Token-usage statistics for one LLM call (or aggregate). Surfaces
     /// prompt/completion/total tokens and the USD cost when the active
     /// endpoint has pricing configured. Emitted after every ReAct step so
@@ -282,6 +293,38 @@ pub enum AgentEvent {
         /// Whether `cost_usd` is a real priced value (vs absent pricing).
         has_cost: bool,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionNotificationSource {
+    Background,
+    Scheduled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionCompletionStatus {
+    Completed,
+    Failed,
+}
+
+impl ActionCompletionStatus {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+impl ActionNotificationSource {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Background => "background",
+            Self::Scheduled => "scheduled",
+        }
+    }
 }
 
 #[async_trait]
@@ -1027,14 +1070,41 @@ impl EventDispatcher {
         }
     }
 
-    /// Surface a user-facing notification (used by fired scheduled_actions, which are
-    /// not tied to a session). Same event the `notify` tool produces.
+    /// Surface a generic user-facing notification, preserving the always-on
+    /// behavior used by the `notify` tool and other Agent signals.
     pub async fn emit_notification(&self, title: &str, body: &str) {
         let emitter = lock_or_recover(&self.emitter, "event_emitter").clone();
         if let Some(emitter) = emitter {
             emitter
                 .emit(AgentEvent::Notification {
                     session_id: String::new(),
+                    title: title.into(),
+                    body: body.into(),
+                })
+                .await;
+        }
+    }
+
+    /// Surface a background or scheduled action completion through the
+    /// action-specific notification policy while retaining the notification
+    /// channel and visible title/body.
+    pub async fn emit_action_completion_notification(
+        &self,
+        action_kind: ActionNotificationSource,
+        action_id: &str,
+        session_id: Option<&str>,
+        action_status: Option<ActionCompletionStatus>,
+        title: &str,
+        body: &str,
+    ) {
+        let emitter = lock_or_recover(&self.emitter, "event_emitter").clone();
+        if let Some(emitter) = emitter {
+            emitter
+                .emit(AgentEvent::ActionCompletionNotification {
+                    action_kind,
+                    action_id: action_id.into(),
+                    session_id: session_id.unwrap_or_default().to_owned(),
+                    action_status,
                     title: title.into(),
                     body: body.into(),
                 })

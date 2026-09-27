@@ -7,10 +7,17 @@ const { invoke, listen } = vi.hoisted(() => ({
 	listen: vi.fn(),
 }));
 
+import {
+	DEFAULT_ACTION_COMPLETION_NOTIFICATION_CHANNELS,
+	setActionCompletionNotificationChannels,
+	shouldShowActionCompletionInApp,
+} from '$lib/actionCompletionNotificationSettings.ts';
+
 vi.mock('$lib/tauri.ts', () => ({ invoke, listen }));
 
 describe('SettingsView diagnostics export', () => {
 	beforeEach(() => {
+		setActionCompletionNotificationChannels(DEFAULT_ACTION_COMPLETION_NOTIFICATION_CHANNELS);
 		invoke.mockImplementation(async (command: string) => {
 			switch (command) {
 				case 'get_settings':
@@ -63,5 +70,38 @@ describe('SettingsView diagnostics export', () => {
 
 		await fireEvent.click(screen.getByRole('tab', { name: /权限/ }));
 		expect(screen.getByRole('heading', { name: '权限中心' })).toBeTruthy();
+	});
+
+	it('persists action completion channels independently and applies the toast switch', async () => {
+		render(SettingsView);
+		await waitFor(() => expect(invoke).toHaveBeenCalledWith('get_api_key_status'));
+		await waitFor(() => expect(invoke).toHaveBeenCalledWith('is_autostart_enabled'));
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		const inApp = await screen.findByRole('switch', { name: '任务完成应用内提示' });
+		const windows = screen.getByRole('switch', { name: '任务完成 Windows 通知' });
+		expect((inApp as HTMLInputElement).checked).toBe(true);
+		expect((windows as HTMLInputElement).checked).toBe(true);
+
+		await fireEvent.click(inApp);
+		await waitFor(() => expect(screen.getByRole('button', { name: '保存设置' })).toBeTruthy());
+		expect((windows as HTMLInputElement).checked).toBe(true);
+		await fireEvent.click(windows);
+		expect((windows as HTMLInputElement).checked).toBe(false);
+		await fireEvent.click(screen.getByRole('button', { name: '保存设置' }));
+
+		await waitFor(() => {
+			expect(invoke).toHaveBeenCalledWith(
+				'update_settings',
+				expect.objectContaining({
+					settings: expect.objectContaining({
+						notification: expect.objectContaining({
+							action_completed: { in_app: false, windows: false },
+						}),
+					}),
+				}),
+			);
+		});
+		expect(shouldShowActionCompletionInApp()).toBe(false);
 	});
 });

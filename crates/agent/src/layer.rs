@@ -420,8 +420,22 @@ impl AgentLayer {
                         }
                     };
                     match event {
-                        SessionEvent::ScheduledConfirmOutcome { title, body } => {
-                            events.emit_notification(&title, &body).await;
+                        SessionEvent::ScheduledConfirmOutcome {
+                            action_id,
+                            session_id,
+                            title,
+                            body,
+                        } => {
+                            events
+                                .emit_action_completion_notification(
+                                    ActionNotificationSource::Scheduled,
+                                    &action_id,
+                                    session_id.as_deref(),
+                                    None,
+                                    &title,
+                                    &body,
+                                )
+                                .await;
                         }
                         SessionEvent::SessionCleanup { session_id } => {
                             memory_worker.clear_session(&session_id);
@@ -646,16 +660,18 @@ impl AgentLayer {
                     // projected through the durable transcript path.
                     // Active push so the user never has to poll for status:
                     // a toast (in-app + Windows) announces the transition.
-                    let (title, status_label) = match comp.status {
-                        haven_common::ActionStatus::Completed => {
-                            ("后台任务已完成".to_string(), "已完成".to_string())
-                        }
-                        haven_common::ActionStatus::Cancelled => {
-                            ("后台任务已取消".to_string(), "已取消".to_string())
-                        }
-                        haven_common::ActionStatus::Failed => {
-                            ("后台任务失败".to_string(), "失败".to_string())
-                        }
+                    let (title, status_label, notification_status) = match comp.status {
+                        haven_common::ActionStatus::Completed => (
+                            "后台任务已完成".to_string(),
+                            "已完成".to_string(),
+                            ActionCompletionStatus::Completed,
+                        ),
+                        haven_common::ActionStatus::Failed => (
+                            "后台任务失败".to_string(),
+                            "失败".to_string(),
+                            ActionCompletionStatus::Failed,
+                        ),
+                        haven_common::ActionStatus::Cancelled => continue,
                         haven_common::ActionStatus::Waiting
                         | haven_common::ActionStatus::Running => {
                             tracing::warn!(action_id = %comp.action_id, "received non-terminal background action completion");
@@ -669,21 +685,31 @@ impl AgentLayer {
                     } else {
                         format!("{} {}\n{}", comp.action_id, status_label, summary)
                     };
-                    agent.events.emit_notification(&title, &body).await;
+                    agent
+                        .events
+                        .emit_action_completion_notification(
+                            ActionNotificationSource::Background,
+                            &comp.action_id,
+                            Some(&tid),
+                            Some(notification_status),
+                            &title,
+                            &body,
+                        )
+                        .await;
                 }
             });
         }
         // Spawn a consumer for fired scheduled_actions: the fire behavior is chosen
         // by the scheduled action's mode.
-        // - `notify`: surface it as a Notification event (in-app toast +
-        //   Windows notification), exactly like the `notify` tool's signal.
         // - `tool`: execute the scheduled tool with its stored arguments
-        //   (no LLM round-trip), then notify the user of the outcome.
-        // - `continue`: resume the session that scheduled the action ??the
+        //   (no LLM round-trip), then report its outcome through the dedicated
+        //   action-completion notification path.
+        // - `continue`: resume the session that scheduled the action; the
         //   scheduled action text is injected into that session's conversation and the
         //   session is woken, so a scheduled "keep going at 3pm" continues the
         //   same ReAct loop without anyone speaking. A continue-mode action
-        //   without a session id is an error (no fallback).
+        //   without a session id is an error (no fallback). Its outcome uses
+        //   the same action-completion notification path.
         let agent = self.clone();
         let action_service = self.executor.action_service();
         if let Some(mut rx) = action_service.take_action_receiver() {
@@ -715,7 +741,11 @@ impl AgentLayer {
                             {
                                 agent
                                     .events
-                                    .emit_notification(
+                                    .emit_action_completion_notification(
+                                        ActionNotificationSource::Scheduled,
+                                        &fired.action_id,
+                                        fired.session_id.as_deref(),
+                                        None,
                                         &fired.title,
                                         "定时任务未执行：关联会话已结束或不存在。",
                                     )
@@ -727,7 +757,11 @@ impl AgentLayer {
                                     None => {
                                         agent
                                             .events
-                                            .emit_notification(
+                                            .emit_action_completion_notification(
+                                                ActionNotificationSource::Scheduled,
+                                                &fired.action_id,
+                                                fired.session_id.as_deref(),
+                                                None,
                                                 &fired.title,
                                                 "定时任务未执行：缺少要调用的工具。",
                                             )
@@ -754,7 +788,7 @@ impl AgentLayer {
                                     haven_tools::AuthorizationDecision::Blocked {
                                         reason, ..
                                     } => {
-                                        agent.events.emit_notification(
+                                        agent.events.emit_action_completion_notification(ActionNotificationSource::Scheduled, &fired.action_id, fired.session_id.as_deref(), None,
                                             &fired.title,
                                             &format!("定时任务未执行：工具“{tool_name}”被安全策略拦截（{reason}）。"),
                                         ).await;
@@ -780,7 +814,7 @@ impl AgentLayer {
                                             deferred = true;
                                             Ok(())
                                         } else {
-                                            agent.events.emit_notification(
+                                            agent.events.emit_action_completion_notification(ActionNotificationSource::Scheduled, &fired.action_id, fired.session_id.as_deref(), None,
                                                 &fired.title,
                                                 &format!("定时任务未执行：工具“{tool_name}”的确认被拒绝或已超时。"),
                                             ).await;
@@ -800,7 +834,7 @@ impl AgentLayer {
                                         .await
                                     {
                                         Ok(g) if g.confirmed == Some(false) => {
-                                            agent.events.emit_notification(
+                                            agent.events.emit_action_completion_notification(ActionNotificationSource::Scheduled, &fired.action_id, fired.session_id.as_deref(), None,
                                                     &fired.title,
                                                     &format!("定时任务未执行：工具“{tool_name}”的确认被拒绝或已超时。"),
                                                 ).await;
@@ -811,7 +845,7 @@ impl AgentLayer {
                                                 &g.result.summary_text(),
                                                 agent.limits().notification_summary_chars,
                                             );
-                                            agent.events.emit_notification(
+                                            agent.events.emit_action_completion_notification(ActionNotificationSource::Scheduled, &fired.action_id, fired.session_id.as_deref(), None,
                                                     &fired.title,
                                                     &format!("定时任务调用工具“{tool_name}”的结果：\n{summary}"),
                                                 ).await;
@@ -819,7 +853,7 @@ impl AgentLayer {
                                         }
                                         Err(error) => {
                                             let reason = error.to_string();
-                                            agent.events.emit_notification(
+                                            agent.events.emit_action_completion_notification(ActionNotificationSource::Scheduled, &fired.action_id, fired.session_id.as_deref(), None,
                                                     &fired.title,
                                                     &format!("定时任务调用工具“{tool_name}”失败：{reason}"),
                                                 ).await;
@@ -840,7 +874,11 @@ impl AgentLayer {
                                 None => {
                                     agent
                                         .events
-                                        .emit_notification(
+                                        .emit_action_completion_notification(
+                                            ActionNotificationSource::Scheduled,
+                                            &fired.action_id,
+                                            fired.session_id.as_deref(),
+                                            None,
                                             &fired.title,
                                             "定时任务未执行：继续会话缺少 prompt。",
                                         )
@@ -859,7 +897,11 @@ impl AgentLayer {
                                 None => {
                                     agent
                                         .events
-                                        .emit_notification(
+                                        .emit_action_completion_notification(
+                                            ActionNotificationSource::Scheduled,
+                                            &fired.action_id,
+                                            fired.session_id.as_deref(),
+                                            None,
                                             &fired.title,
                                             "定时任务无法继续：未关联会话。",
                                         )
@@ -876,7 +918,11 @@ impl AgentLayer {
                             if !agent.executor.session_is_live(&session_id).await {
                                 agent
                                     .events
-                                    .emit_notification(
+                                    .emit_action_completion_notification(
+                                        ActionNotificationSource::Scheduled,
+                                        &fired.action_id,
+                                        fired.session_id.as_deref(),
+                                        None,
                                         &fired.title,
                                         "定时任务无法继续：关联会话已结束或不存在。",
                                     )
@@ -900,7 +946,14 @@ impl AgentLayer {
                                         );
                                         agent
                                             .events
-                                            .emit_notification(&fired.title, &fired.body)
+                                            .emit_action_completion_notification(
+                                                ActionNotificationSource::Scheduled,
+                                                &fired.action_id,
+                                                fired.session_id.as_deref(),
+                                                None,
+                                                &fired.title,
+                                                &fired.body,
+                                            )
                                             .await;
                                         Ok(())
                                     }
@@ -913,7 +966,11 @@ impl AgentLayer {
                                         );
                                         agent
                                             .events
-                                            .emit_notification(
+                                            .emit_action_completion_notification(
+                                                ActionNotificationSource::Scheduled,
+                                                &fired.action_id,
+                                                fired.session_id.as_deref(),
+                                                None,
                                                 &fired.title,
                                                 &format!("定时任务继续会话失败：{reason}"),
                                             )

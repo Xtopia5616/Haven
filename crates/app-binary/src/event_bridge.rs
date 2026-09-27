@@ -83,6 +83,7 @@ pub(crate) fn project_action_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use haven_agent::{ActionCompletionStatus, ActionNotificationSource};
 
     #[test]
     fn action_output_event_projects_only_the_bounded_preview_fields() {
@@ -119,6 +120,69 @@ mod tests {
         ] {
             assert!(!serialized.contains(private_value));
         }
+    }
+
+    #[test]
+    fn action_completion_notification_is_tagged_without_changing_generic_wire() {
+        let generic = AgentEvent::Notification {
+            session_id: "ses-generic".into(),
+            title: "Notice".into(),
+            body: "Generic notice".into(),
+        };
+        assert_eq!(TauriEmitter::channel(&generic), NOTIFICATION_SHOW_EVENT);
+        assert_eq!(
+            TauriEmitter::payload(&generic, None),
+            serde_json::json!({
+                "session_id": "ses-generic",
+                "title": "Notice",
+                "body": "Generic notice",
+            })
+        );
+
+        let action_completion = AgentEvent::ActionCompletionNotification {
+            action_kind: ActionNotificationSource::Scheduled,
+            action_id: "act-scheduled".into(),
+            session_id: String::new(),
+            action_status: None,
+            title: "任务完成".into(),
+            body: "结果".into(),
+        };
+        assert_eq!(
+            TauriEmitter::channel(&action_completion),
+            NOTIFICATION_SHOW_EVENT
+        );
+        assert_eq!(
+            TauriEmitter::payload(&action_completion, None),
+            serde_json::json!({
+                "session_id": "",
+                "title": "任务完成",
+                "body": "结果",
+                "notification_kind": "action_completion",
+                "action_kind": "scheduled",
+                "action_id": "act-scheduled",
+            })
+        );
+
+        let background_completion = AgentEvent::ActionCompletionNotification {
+            action_kind: ActionNotificationSource::Background,
+            action_id: "act-background".into(),
+            session_id: "ses-owner".into(),
+            action_status: Some(ActionCompletionStatus::Failed),
+            title: "后台任务失败".into(),
+            body: "错误摘要".into(),
+        };
+        assert_eq!(
+            TauriEmitter::payload(&background_completion, None),
+            serde_json::json!({
+                "session_id": "ses-owner",
+                "title": "后台任务失败",
+                "body": "错误摘要",
+                "notification_kind": "action_completion",
+                "action_kind": "background",
+                "action_id": "act-background",
+                "action_status": "failed",
+            })
+        );
     }
 }
 
@@ -167,6 +231,7 @@ impl TauriEmitter {
             AgentEvent::SessionUpdated { .. } => SESSION_UPDATED_EVENT,
             AgentEvent::SessionError { .. } => SESSION_ERROR_EVENT,
             AgentEvent::Notification { .. } => NOTIFICATION_SHOW_EVENT,
+            AgentEvent::ActionCompletionNotification { .. } => NOTIFICATION_SHOW_EVENT,
             AgentEvent::TitleUpdated { .. } => SESSION_TITLE_UPDATED_EVENT,
             AgentEvent::ThoughtChunk { .. } => AGENT_THOUGHT_CHUNK_EVENT,
             AgentEvent::ReasoningChunk { .. } => AGENT_REASONING_CHUNK_EVENT,
@@ -439,6 +504,26 @@ impl TauriEmitter {
                 session_id: session_id.clone(),
                 title: title.clone(),
                 body: body.clone(),
+                notification_kind: None,
+                action_kind: None,
+                action_id: None,
+                action_status: None,
+            }),
+            AgentEvent::ActionCompletionNotification {
+                action_kind,
+                action_id,
+                session_id,
+                action_status,
+                title,
+                body,
+            } => serialize(AgentNotificationEvent {
+                session_id: session_id.clone(),
+                title: title.clone(),
+                body: body.clone(),
+                notification_kind: Some(AgentNotificationKind::ActionCompletion),
+                action_kind: Some(action_kind.as_str().to_string()),
+                action_id: Some(action_id.clone()),
+                action_status: action_status.map(|status| status.as_str().to_string()),
             }),
             AgentEvent::Usage {
                 session_id,
@@ -586,6 +671,12 @@ impl TauriEmitter {
                 session_id,
                 title,
                 body,
+            }
+            | AgentEvent::ActionCompletionNotification {
+                session_id,
+                title,
+                body,
+                ..
             } => {
                 tracing::info!(
                     session_id = %session_id,

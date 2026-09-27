@@ -602,6 +602,7 @@ pub struct NotificationConfig {
     pub session_paused: NotifyChannels,
     pub session_resumed: NotifyChannels,
     pub session_error: NotifyChannels,
+    pub action_completed: NotifyChannels,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -640,6 +641,10 @@ impl Default for NotificationConfig {
                 windows: false,
             },
             session_error: NotifyChannels {
+                in_app: true,
+                windows: true,
+            },
+            action_completed: NotifyChannels {
                 in_app: true,
                 windows: true,
             },

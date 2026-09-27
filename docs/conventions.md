@@ -164,9 +164,10 @@ AgentEvent / 其它后端事件
 | 场景 | 入口 | 是否受 `notifyCfg` 控制 |
 |---|---|---|
 | 会话生命周期（创建/完成/暂停/恢复/出错） | `+layout` 事件 handler | 是（`in_app`） |
-| Agent 显式 `notify` / 定时任务通知 | `notification:show` | 否（始终 toast；Windows 亦默认开） |
+| Agent 通用通知（`notify`、预算提示等） | `notification:show`，无 `notification_kind` | 否（始终 toast；Windows 亦始终开启） |
+| 后台任务/定时任务完成通知 | `notification:show`，`notification_kind=action_completion` | 是（共享 `action_completed.in_app`）；后台任务保留非当前会话且 completed/failed 才 toast |
 | 录音 / 转写 / 静音 / 热键冲突 / MCP 状态 | `+layout` 事件 handler | 否（操作反馈，无独立配置项） |
-| 后台任务完成（非当前会话） | `+layout` `action:finished` | 否；当前会话内完成不弹（对话里已有结果） |
+| 后台任务完成（非当前会话） | `notification:show`（action completion projection） | 是；当前会话内完成不弹（对话里已有结果） |
 | 用户点击触发的命令结果 | 页面 / helper 直接 `addNotification` | 否 |
 
 ### 2.2.1 `notify` 与 `media.speak` 的边界
@@ -227,6 +228,7 @@ reportError(e, { context: 'SettingsView', message: '操作失败', log: false })
 | `SessionUpdated` status=`paused` | `session_paused.windows` | `false` | `会话已暂停: …` |
 | `SessionUpdated` status=`pending`（且上一状态为 paused/error） | `session_resumed.windows` | `false` | `会话已恢复: …` |
 | `AgentEvent::Notification` | **不读配置**，总是弹 | — | title/body 原样（设置页注明始终开启） |
+| `AgentEvent::ActionCompletionNotification` | `action_completed.windows` | `true` | title/body 原样；wire 仍走 `notification:show`，带 action kind/id/session/status 标记 |
 
 标题统一产品名 `Haven`。
 
@@ -235,18 +237,18 @@ reportError(e, { context: 'SettingsView', message: '操作失败', log: false })
 定义于 `crates/common/src/config/misc.rs`：
 
 ```text
-session_created / session_completed / session_paused / session_resumed / session_error
+session_created / session_completed / session_paused / session_resumed / session_error / action_completed
   └─ NotifyChannels { in_app: bool, windows: bool }
 ```
 
-默认值：`in_app` 全部 `true`；`windows` 仅 `session_completed` / `session_error` 为 `true`，其余 `false`。
+默认值：`in_app` 全部 `true`；`windows` 的 `session_completed`、`session_error`、`action_completed` 为 `true`，其余 `false`。旧配置缺少 `action_completed` 时按双通道开启加载。
 
-- 设置页「Notifications」网格与此五键一一对应。
+- 设置页「通知」网格与此六键一一对应；background/scheduled 共用 `action_completed`。
 - 新增可配置通知事件时：**结构体 Default + 设置页 + `maybe_show_toast` + `+layout` in_app 判断** 四步同步。
 
 ### 2.6 新增通知事件流程模板
 
-1. 若属 `AgentEvent`：加变体 → `TauriEmitter::channel` / `payload` /（可选）`maybe_show_toast` / `trace_event` → 补 `event_bridge.rs` 或对应模块单测。
+1. 若属 `AgentEvent`：加变体 → `TauriEmitter::channel` / `payload` /（可选）`maybe_show_toast` / `trace_event` → 补 `event_bridge.rs` 或对应模块单测。Action completion 使用 `notification:show` 的显式标记，不改变通用通知语义。
 2. 若属任务事件：在 `haven_tools` emit，前端 `actionStore` 归一化。
 3. 前端在 `+layout.svelte` 的 `registerListeners` 增加 handler；需要用户开关则接 `notifyCfg`。
 4. 需要设置项时扩展 `NotificationConfig` + Settings 网格。
@@ -300,17 +302,19 @@ try {
 | `session:error` | error：`会话出错: …`（5s） | `session_error.in_app` |
 | `session:updated` status=`paused` | warning：`会话已暂停: …`（3s） | `session_paused.in_app` |
 | `session:updated` status=`pending`（仅当上一状态为 paused/error） | info：`会话已恢复: …`（3s） | `session_resumed.in_app` |
+| `notification:show`（action completion，background） | completed/failed 且 owner session 非当前会话时显示原后台任务 toast | `action_completed.in_app` |
+| `notification:show`（action completion，scheduled） | info toast（原 title/body） | `action_completed.in_app` |
 
 ### 4.2 不受配置控制（操作 / 系统反馈）
 
 | 后端事件 | 前端表现 |
 |---|---|
-| `notification:show` | info toast（title 为默认 `Haven` 时只显示 body；5s）+ Windows 桌面通知 |
+| `notification:show`（无 `notification_kind`） | 通用 Agent info toast + Windows 桌面通知，始终开启 |
 | `media` operation=`speak` | 本机扬声器播放 WAV；不发 toast、不发 Windows 桌面通知 |
 | `mcp:status_change` | Connected→success（冷启动跳过）/ Disconnected→warning / Offline→error |
 | `hotkey:conflict` | error toast：`热键冲突: …`（5s） |
 | `recording:error` / `transcription:*` / `mute:changed` | 对应中文提示 + overlay |
-| `action:finished`（后台任务，非当前会话） | success/error：`后台任务完成/失败: {action_id}`（4s） |
+| `action:finished`（后台任务） | 更新 action/transcript；toast 由带 action completion 标记的 `notification:show` 统一负责 |
 | 命令 invoke 失败 | error toast（`e.message` 或兜底，4s） |
 | `check_llm_connection` 返回 disconnected | error toast：包含非敏感原因分类，并提示检查 API 地址、API Key 和代理（5s；仅状态首次变化时） |
 | `check_llm_connection` 从 disconnected 恢复 ready | success toast：`默认模型已恢复连接`（3s） |
@@ -334,7 +338,7 @@ try {
 - [ ] 通知：系统事件进 `+layout`；用户操作可页面直调 `addNotification`；新可配置事件按 §2.6 走完四步。
 - [ ] 错误：后端 `Result<T, String>` + 日志 + 用户可读摘要；前端 try/catch + toast，不重复记日志。
 - [ ] 文案：应用内中文；产品名 `Haven`；专有模型角色名按命名约定。
-- [ ] 桌面通知：走 `maybe_show_toast`，读对应 `*.windows`（`AgentEvent::Notification` 除外）。
+- [ ] 桌面通知：走 `maybe_show_toast`，读对应 `*.windows`；通用 `AgentEvent::Notification` 保持始终开启。
 - [ ] 更新本文 §4 映射表。
 
 ---

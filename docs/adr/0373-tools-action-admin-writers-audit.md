@@ -45,8 +45,9 @@ delivery/retry、取消或 X12 语义，具体实现留给独立 action/UI 投�
   scheduled `continue` 已通过既有会话输入路径记录 prompt 和 Agent 对话，scheduled `tool` 的结果目前只
   进入通知。是否再写 scheduled terminal transcript，以及用任务描述还是实际 outcome，仍需产品决策后实现。
   因而 background/scheduled terminal completion 与 transcript 的统一投影尚未完成。
-- action completion 的 toast 与 Windows 通知开关尚未实现；现有两通道继续按当前路径显示。独立开关
-  （默认均开启）与 Settings/wire 归属后续 UI/Settings 切片。
+- action completion 的 toast 与 Windows 通知现共用 `notification.action_completed`，两个通道独立控制且默认开启；旧配置缺少该字段时同样默认开启。SettingsView 将其纳入加载、discard snapshot 与 `update_settings`，运行时应用内 toast store 在加载/保存后同步。
+- background 与 scheduled completion 使用专属 Agent event variant，经原 `notification:show` channel 携带 `notification_kind=action_completion`、action kind/id/session 与必要的 background terminal status。UI 只在该标记下应用 `in_app` gate，并在单一 handler 中保留 background 的 completed/failed 与非当前会话条件；Windows sink 只对该 variant 读取 `action_completed.windows`。设置加载完成前的 UI pending FIFO 最多保留 128 条，超出时丢弃新到项；普通 `AgentEvent::Notification` 与用户 `notify`/预算提示不受新开关影响。
+- 通用通知 DTO 仍要求非空 `session_id`；显式 action completion DTO 可承载 scheduled 的空 session id。Action lifecycle、取消/ack/retry 与 scheduled transcript/outcome 均未改变；background consumer 原有 Cancelled early-ack 行为保留。
 
 ## 决定
 

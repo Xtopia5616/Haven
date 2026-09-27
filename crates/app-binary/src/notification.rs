@@ -226,9 +226,24 @@ impl DesktopNotifications {
                 //（设置页注明「Agent 通知始终开启」）。
                 self.show_windows_toast(if title.is_empty() { "Haven" } else { title }, body);
             }
+            AgentEvent::ActionCompletionNotification {
+                session_id: _,
+                title,
+                body,
+                ..
+            } => {
+                if !self.windows_enabled(action_completion_windows_enabled, true) {
+                    return;
+                }
+                self.show_windows_toast(if title.is_empty() { "Haven" } else { title }, body);
+            }
             _ => {}
         }
     }
+}
+
+fn action_completion_windows_enabled(config: &NotificationConfig) -> bool {
+    config.action_completed.windows
 }
 
 fn resolve_session_display_title_from_store(
@@ -258,7 +273,8 @@ fn resolve_session_display_title_from_store(
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_session_display_title_from_store;
+    use super::{action_completion_windows_enabled, resolve_session_display_title_from_store};
+    use haven_common::config::NotificationConfig;
     use haven_common::types::new_id;
     use haven_memory::{Database, SessionStore};
     use std::sync::Arc;
@@ -301,5 +317,17 @@ mod tests {
             resolve_session_display_title_from_store(&session_store, &query_error_id),
             query_error_id
         );
+    }
+
+    #[test]
+    fn action_completion_windows_channel_uses_its_independent_setting() {
+        let mut config = NotificationConfig::default();
+        assert!(action_completion_windows_enabled(&config));
+
+        config.action_completed.in_app = false;
+        assert!(action_completion_windows_enabled(&config));
+
+        config.action_completed.windows = false;
+        assert!(!action_completion_windows_enabled(&config));
     }
 }

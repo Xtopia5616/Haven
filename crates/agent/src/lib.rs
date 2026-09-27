@@ -31,7 +31,10 @@ mod types;
 pub(crate) use canonical::{is_dangling_boundary, sanitize_canonical};
 
 pub use compactor::ContextCompactor;
-pub use event::{AgentEvent, AgentEventEmitter, BufferedEmitter, EventBus, EventDispatcher};
+pub use event::{
+    ActionCompletionStatus, ActionNotificationSource, AgentEvent, AgentEventEmitter,
+    BufferedEmitter, EventBus, EventDispatcher,
+};
 pub use interaction::{InteractionDetails, InteractionKind, InteractionRequest, InteractionStatus};
 pub use layer::{AgentStartup, PendingSessionRecovery};
 pub use memory_runtime::{

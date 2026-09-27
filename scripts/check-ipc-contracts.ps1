@@ -947,6 +947,18 @@ if ($updateSettingsRustRequest.Groups[1].Value -ne 'Settings' -or
 
 $settingsViewPath = Join-Path $root 'ui/src/lib/views/SettingsView.svelte'
 $settingsView = Get-Content $settingsViewPath -Raw
+$notificationConfig = Get-Content (Join-Path $root 'crates/common/src/config/misc.rs') -Raw
+$notificationConfigStruct = Get-RequiredMatch $notificationConfig '(?s)pub\s+struct\s+NotificationConfig\s*\{([^}]*)\}' 'NotificationConfig definition'
+if (-not [regex]::IsMatch($notificationConfigStruct.Groups[1].Value, '(?m)pub\s+action_completed:\s+NotifyChannels')) {
+    throw 'NotificationConfig must own the persisted action_completed channel settings'
+}
+$settingsGeneral = Get-Content (Join-Path $root 'ui/src/lib/views/SettingsGeneral.svelte') -Raw
+if (-not [regex]::IsMatch($settingsGeneral, "key:\s*'action_completed',\s*label:\s*'任务完成'")) {
+    throw 'SettingsGeneral must expose the shared action completion notification row'
+}
+if ([regex]::Matches($settingsView, 'action_completed').Count -lt 3) {
+    throw 'SettingsView must include action_completed in its default, discard snapshot, and update_settings payload'
+}
 Get-RequiredMatch $settingsContractUi '(?m)^export\s+type\s+SettingsPayload\s*=\s*Record<string,\s*any>;' 'open SettingsPayload type' | Out-Null
 if (-not [regex]::IsMatch($settingsView, '(?s)invoke\(''update_settings'',\s*\{\s*settings:\s*/\*\*\s*@type\s+\{import\(''\$lib/contracts/settings\.ts''\)\.SettingsPayload\}\s*\*/\s*\(\s*\{')) {
     throw 'SettingsView update_settings builder must use the existing Rust-owned open SettingsPayload type'

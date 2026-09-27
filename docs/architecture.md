@@ -466,8 +466,13 @@ completion record 或 transcript 内容：scheduled finished payload 不含 exec
 输入/对话记录，tool 模式当前只把结果发到通知，具体 scheduled transcript 映射需产品决定（ADR 0373）。
 Rust bridge 只为 background 提供 `action:output`，scheduled action 不持有 tail。没有 durable event identity，
 因此不新增 UI event dedup 或统一 Job reducer；background 的终态工具卡和 transcript 投影仍按 ADR 0344 原路径。
-Action completion 的 in-app toast 与 Windows notification channels 当前都保持原有 always-on 产发路径；独立开关
-（默认均开启）及其 Settings/wire 投影属于后续 UI/Settings 切片。
+Action completion 经 `notification:show` 发布带 `notification_kind=action_completion` 标记的专用事件，
+并携带 `action_kind`、`action_id`，background 还携带终态 `action_status` 与 `session_id`。UI 只对该标记
+应用 `notification.action_completed.in_app` 开关；`DesktopNotifications` 只对同一类事件应用
+`notification.action_completed.windows` 开关。两项配置由 background 与 scheduled action 共用且默认开启，
+配置加载完成前 UI 暂存带标记的完成提示。通用 `AgentEvent::Notification` 不带该标记，仍保持原有通知语义与
+always-on 行为。此通知设置不定义 scheduled transcript 或 execution result 的投影；其内容映射仍待产品决策
+（ADR 0373）。
 Action 管理写入口经 ADR 0373 审计：Tauri、`actions`/`schedule` 工具、timer worker 与 Agent completion 共用一个
 `ActionService`；`ActionStore` 仍是生产持久化写边界。`schedule.set` 只创建新 action，没有 update-existing 或手动
 trigger command，`ToolConcurrency` 也不是跨 Tauri/worker 的互斥机制。terminal history delete 只接受终态，但其

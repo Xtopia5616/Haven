@@ -6,6 +6,7 @@
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import MaterialTabs from '$lib/MaterialTabs.svelte';
 	import { addNotification } from '$lib/notificationStore.ts';
+	import { setActionCompletionNotificationChannels } from '$lib/actionCompletionNotificationSettings.ts';
 	import { formatError } from '$lib/formatError.ts';
 	import {
 		isPartialConfigApplyError,
@@ -154,6 +155,7 @@
 		session_paused: { in_app: true, windows: false },
 		session_resumed: { in_app: true, windows: false },
 		session_error: { in_app: true, windows: true },
+		action_completed: { in_app: true, windows: true },
 	});
 	let log = $state({ level: 'info', file_enabled: true });
 
@@ -330,6 +332,7 @@
 				session_paused: { ...notification.session_paused },
 				session_resumed: { ...notification.session_resumed },
 				session_error: { ...notification.session_error },
+				action_completed: { ...notification.action_completed },
 			},
 			log: { level: log.level, file_enabled: log.file_enabled },
 			autostart_enabled: autostartEnabled,
@@ -684,7 +687,8 @@
 				mcpServerNames = (settings.mcp_servers || [])
 					.map((/** @type {any} */ server) => server.name || '')
 					.filter(Boolean);
-				notification = settings.notification || notification;
+				notification = { ...notification, ...(settings.notification || {}) };
+				setActionCompletionNotificationChannels(notification.action_completed);
 				log = settings.log || log;
 				defaultShell = settings.default_shell || 'powershell';
 				checkShells();
@@ -870,10 +874,15 @@
 							in_app: notification.session_error.in_app,
 							windows: notification.session_error.windows,
 						},
+						action_completed: {
+							in_app: notification.action_completed.in_app,
+							windows: notification.action_completed.windows,
+						},
 					},
 					log: { level: log.level, file_enabled: log.file_enabled, file_path: null },
 				}),
 			});
+			setActionCompletionNotificationChannels(notification.action_completed);
 			addNotification('设置已保存', 'success');
 			try {
 				await refreshApiKeyStatus();

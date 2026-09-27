@@ -147,6 +147,10 @@ export interface AgentNotificationPayload {
 	sessionId: string;
 	title: string;
 	body: string;
+	notificationKind?: 'action_completion';
+	actionKind?: 'background' | 'scheduled';
+	actionId?: string;
+	actionStatus?: 'completed' | 'failed';
 }
 
 export interface AgentUsagePayload {
@@ -316,13 +320,27 @@ export function mapAgentEvent(
 			const runId = requiredNumber(payload, 'run_id');
 			const messageId = requiredString(payload, 'message_id');
 			if (
-				sessionId === null || thought === null || stepNumber === null || runId === null ||
-				messageId === null || !optionalNumberIsValid(payload, 'event_seq')
-			) return null;
-			return { ...tauriEvent, payload: {
-				sessionId, thought, stepNumber, runId, messageId,
-				...(payload.event_seq !== undefined ? { eventSeq: payload.event_seq as number } : {}),
-			} };
+				sessionId === null ||
+				thought === null ||
+				stepNumber === null ||
+				runId === null ||
+				messageId === null ||
+				!optionalNumberIsValid(payload, 'event_seq')
+			)
+				return null;
+			return {
+				...tauriEvent,
+				payload: {
+					sessionId,
+					thought,
+					stepNumber,
+					runId,
+					messageId,
+					...(payload.event_seq !== undefined
+						? { eventSeq: payload.event_seq as number }
+						: {}),
+				},
+			};
 		}
 		case 'agent:action': {
 			const sessionId = requiredSessionId(payload);
@@ -335,18 +353,39 @@ export function mapAgentEvent(
 			const silent = requiredBoolean(payload, 'silent');
 			const toolCallId = payload.tool_call_id;
 			if (
-				sessionId === null || toolName === null || stepNumber === null || runId === null ||
-				actionIndex === null || stepId === null || suppressStreamedThought === null ||
-				silent === null || !hasOwn(payload, 'input') ||
-				(toolCallId !== undefined && toolCallId !== null && typeof toolCallId !== 'string') ||
+				sessionId === null ||
+				toolName === null ||
+				stepNumber === null ||
+				runId === null ||
+				actionIndex === null ||
+				stepId === null ||
+				suppressStreamedThought === null ||
+				silent === null ||
+				!hasOwn(payload, 'input') ||
+				(toolCallId !== undefined &&
+					toolCallId !== null &&
+					typeof toolCallId !== 'string') ||
 				!optionalNumberIsValid(payload, 'event_seq')
-			) return null;
-			return { ...tauriEvent, payload: {
-				sessionId, toolName, input: payload.input, stepNumber, runId,
-				toolCallId: typeof toolCallId === 'string' ? toolCallId : null,
-				actionIndex, stepId, suppressStreamedThought, silent,
-				...(payload.event_seq !== undefined ? { eventSeq: payload.event_seq as number } : {}),
-			} };
+			)
+				return null;
+			return {
+				...tauriEvent,
+				payload: {
+					sessionId,
+					toolName,
+					input: payload.input,
+					stepNumber,
+					runId,
+					toolCallId: typeof toolCallId === 'string' ? toolCallId : null,
+					actionIndex,
+					stepId,
+					suppressStreamedThought,
+					silent,
+					...(payload.event_seq !== undefined
+						? { eventSeq: payload.event_seq as number }
+						: {}),
+				},
+			};
 		}
 		case 'agent:observation': {
 			const sessionId = requiredSessionId(payload);
@@ -364,21 +403,49 @@ export function mapAgentEvent(
 			const toolCallId = payload.tool_call_id;
 			const result = payload.result == null ? undefined : mapToolResult(payload.result);
 			if (
-				sessionId === null || observation === null || toolName === null || stepNumber === null ||
-				runId === null || silent === null || actionIndex === null || askOptions === null ||
-				stepId === null || outcome === null || idempotency === null || operationScope === null ||
-				(toolCallId !== undefined && toolCallId !== null && typeof toolCallId !== 'string') ||
-				(payload.result != null && result === null) || !optionalStringIsValid(payload, 'renderer') ||
+				sessionId === null ||
+				observation === null ||
+				toolName === null ||
+				stepNumber === null ||
+				runId === null ||
+				silent === null ||
+				actionIndex === null ||
+				askOptions === null ||
+				stepId === null ||
+				outcome === null ||
+				idempotency === null ||
+				operationScope === null ||
+				(toolCallId !== undefined &&
+					toolCallId !== null &&
+					typeof toolCallId !== 'string') ||
+				(payload.result != null && result === null) ||
+				!optionalStringIsValid(payload, 'renderer') ||
 				!optionalNumberIsValid(payload, 'event_seq')
-			) return null;
-			return { ...tauriEvent, payload: {
-				sessionId, observation, toolName, stepNumber, runId, silent,
-				toolCallId: typeof toolCallId === 'string' ? toolCallId : null,
-				actionIndex, askOptions, stepId, outcome, idempotency, operationScope,
-				renderer: payload.renderer as string | undefined,
-				result: result ?? undefined,
-				...(payload.event_seq !== undefined ? { eventSeq: payload.event_seq as number } : {}),
-			} };
+			)
+				return null;
+			return {
+				...tauriEvent,
+				payload: {
+					sessionId,
+					observation,
+					toolName,
+					stepNumber,
+					runId,
+					silent,
+					toolCallId: typeof toolCallId === 'string' ? toolCallId : null,
+					actionIndex,
+					askOptions,
+					stepId,
+					outcome,
+					idempotency,
+					operationScope,
+					renderer: payload.renderer as string | undefined,
+					result: result ?? undefined,
+					...(payload.event_seq !== undefined
+						? { eventSeq: payload.event_seq as number }
+						: {}),
+				},
+			};
 		}
 		case 'agent:thought_chunk':
 		case 'agent:reasoning_chunk': {
@@ -389,10 +456,18 @@ export function mapAgentEvent(
 			const messageId = requiredString(payload, 'message_id');
 			const seq = requiredNumber(payload, 'seq');
 			if (
-				sessionId === null || delta === null || stepNumber === null || runId === null ||
-				messageId === null || seq === null
-			) return null;
-			return { ...tauriEvent, payload: { sessionId, delta, stepNumber, runId, messageId, seq } };
+				sessionId === null ||
+				delta === null ||
+				stepNumber === null ||
+				runId === null ||
+				messageId === null ||
+				seq === null
+			)
+				return null;
+			return {
+				...tauriEvent,
+				payload: { sessionId, delta, stepNumber, runId, messageId, seq },
+			};
 		}
 		case 'agent:stream_reset': {
 			const sessionId = requiredSessionId(payload);
@@ -401,10 +476,17 @@ export function mapAgentEvent(
 			const thoughtMessageId = requiredString(payload, 'thought_message_id');
 			const reasoningMessageId = requiredString(payload, 'reasoning_message_id');
 			if (
-				sessionId === null || stepNumber === null || runId === null ||
-				thoughtMessageId === null || reasoningMessageId === null
-			) return null;
-			return { ...tauriEvent, payload: { sessionId, stepNumber, runId, thoughtMessageId, reasoningMessageId } };
+				sessionId === null ||
+				stepNumber === null ||
+				runId === null ||
+				thoughtMessageId === null ||
+				reasoningMessageId === null
+			)
+				return null;
+			return {
+				...tauriEvent,
+				payload: { sessionId, stepNumber, runId, thoughtMessageId, reasoningMessageId },
+			};
 		}
 		case 'agent:web_search': {
 			const sessionId = requiredSessionId(payload);
@@ -412,15 +494,26 @@ export function mapAgentEvent(
 			const stepNumber = requiredNumber(payload, 'step_number');
 			const runId = requiredNumber(payload, 'run_id');
 			if (
-				sessionId === null || phase === null || stepNumber === null || runId === null ||
-				!optionalStringIsValid(payload, 'call_id') || !optionalStringIsValid(payload, 'action')
-			) return null;
-			return { ...tauriEvent, payload: {
-				sessionId, phase, stepNumber, runId,
-				...(payload.call_id !== undefined ? { callId: payload.call_id as string } : {}),
-				...(payload.action !== undefined ? { action: payload.action as string } : {}),
-				...(payload.result !== undefined ? { result: payload.result } : {}),
-			} };
+				sessionId === null ||
+				phase === null ||
+				stepNumber === null ||
+				runId === null ||
+				!optionalStringIsValid(payload, 'call_id') ||
+				!optionalStringIsValid(payload, 'action')
+			)
+				return null;
+			return {
+				...tauriEvent,
+				payload: {
+					sessionId,
+					phase,
+					stepNumber,
+					runId,
+					...(payload.call_id !== undefined ? { callId: payload.call_id as string } : {}),
+					...(payload.action !== undefined ? { action: payload.action as string } : {}),
+					...(payload.result !== undefined ? { result: payload.result } : {}),
+				},
+			};
 		}
 		case 'agent:stream_stalled': {
 			const sessionId = requiredSessionId(payload);
@@ -432,31 +525,60 @@ export function mapAgentEvent(
 			const runId = requiredNumber(payload, 'run_id');
 			const role = requiredString(payload, 'role');
 			const strategy = requiredString(payload, 'strategy');
-			const projections = Array.isArray(payload.projections) && payload.projections.every(
-				(item) => isRecord(item) &&
-					typeof item.asset_id === 'string' &&
-					typeof item.representation === 'string' &&
-					typeof item.mode === 'string',
-			) ? payload.projections.map((item) => ({
-				assetId: (item as WireRecord).asset_id as string,
-				representation: (item as WireRecord).representation as string,
-				mode: (item as WireRecord).mode as string,
-			})) : null;
-			const notices = Array.isArray(payload.notices) && payload.notices.every(
-				(item) => isRecord(item) && typeof item.asset_id === 'string' && typeof item.code === 'string',
-			) ? payload.notices.map((item) => ({
-				assetId: (item as WireRecord).asset_id as string,
-				code: (item as WireRecord).code as string,
-			})) : null;
+			const projections =
+				Array.isArray(payload.projections) &&
+				payload.projections.every(
+					(item) =>
+						isRecord(item) &&
+						typeof item.asset_id === 'string' &&
+						typeof item.representation === 'string' &&
+						typeof item.mode === 'string',
+				)
+					? payload.projections.map((item) => ({
+							assetId: (item as WireRecord).asset_id as string,
+							representation: (item as WireRecord).representation as string,
+							mode: (item as WireRecord).mode as string,
+						}))
+					: null;
+			const notices =
+				Array.isArray(payload.notices) &&
+				payload.notices.every(
+					(item) =>
+						isRecord(item) &&
+						typeof item.asset_id === 'string' &&
+						typeof item.code === 'string',
+				)
+					? payload.notices.map((item) => ({
+							assetId: (item as WireRecord).asset_id as string,
+							code: (item as WireRecord).code as string,
+						}))
+					: null;
 			if (
-				sessionId === null || stepNumber === null || runId === null || role === null ||
-				strategy === null || projections === null || notices === null ||
+				sessionId === null ||
+				stepNumber === null ||
+				runId === null ||
+				role === null ||
+				strategy === null ||
+				projections === null ||
+				notices === null ||
 				!optionalNumberIsValid(payload, 'event_seq')
-			) return null;
-			return { ...tauriEvent, payload: {
-				sessionId, stepNumber, runId, role: role as RequestKind, strategy, projections, notices,
-				...(payload.event_seq !== undefined ? { eventSeq: payload.event_seq as number } : {}),
-			} };
+			)
+				return null;
+			return {
+				...tauriEvent,
+				payload: {
+					sessionId,
+					stepNumber,
+					runId,
+					role: role as RequestKind,
+					strategy,
+					projections,
+					notices,
+					...(payload.event_seq !== undefined
+						? { eventSeq: payload.event_seq as number }
+						: {}),
+				},
+			};
 		}
 		case 'agent:supplement': {
 			const sessionId = requiredSessionId(payload);
@@ -465,17 +587,35 @@ export function mapAgentEvent(
 			const runId = requiredNumber(payload, 'run_id');
 			const supplementId = requiredString(payload, 'supplement_id');
 			if (
-				sessionId === null || additionalContext === null || stepNumber === null || runId === null ||
-				supplementId === null || !optionalStringIsValid(payload, 'message_id') ||
-				!optionalStringIsValid(payload, 'inject_source') || !optionalNumberIsValid(payload, 'event_seq')
-			) return null;
-			return { ...tauriEvent, payload: {
-				sessionId, additionalContext, stepNumber, runId,
-				...(payload.message_id !== undefined ? { messageId: payload.message_id as string } : {}),
-				supplementId,
-				...(payload.inject_source !== undefined ? { injectSource: payload.inject_source as string } : {}),
-				...(payload.event_seq !== undefined ? { eventSeq: payload.event_seq as number } : {}),
-			} };
+				sessionId === null ||
+				additionalContext === null ||
+				stepNumber === null ||
+				runId === null ||
+				supplementId === null ||
+				!optionalStringIsValid(payload, 'message_id') ||
+				!optionalStringIsValid(payload, 'inject_source') ||
+				!optionalNumberIsValid(payload, 'event_seq')
+			)
+				return null;
+			return {
+				...tauriEvent,
+				payload: {
+					sessionId,
+					additionalContext,
+					stepNumber,
+					runId,
+					...(payload.message_id !== undefined
+						? { messageId: payload.message_id as string }
+						: {}),
+					supplementId,
+					...(payload.inject_source !== undefined
+						? { injectSource: payload.inject_source as string }
+						: {}),
+					...(payload.event_seq !== undefined
+						? { eventSeq: payload.event_seq as number }
+						: {}),
+				},
+			};
 		}
 		case 'agent:compaction': {
 			const sessionId = requiredSessionId(payload);
@@ -484,23 +624,48 @@ export function mapAgentEvent(
 			const tokensAfter = requiredNumber(payload, 'tokens_after');
 			const degraded = requiredBoolean(payload, 'degraded');
 			if (
-				sessionId === null || summary === null || tokensBefore === null || tokensAfter === null ||
-				degraded === null || !optionalStringIsValid(payload, 'episode_id') ||
+				sessionId === null ||
+				summary === null ||
+				tokensBefore === null ||
+				tokensAfter === null ||
+				degraded === null ||
+				!optionalStringIsValid(payload, 'episode_id') ||
 				!optionalNumberIsValid(payload, 'event_seq')
-			) return null;
-			return { ...tauriEvent, payload: {
-				sessionId, summary, tokensBefore, tokensAfter, degraded,
-				...(payload.episode_id !== undefined ? { episodeId: payload.episode_id as string } : {}),
-				...(payload.event_seq !== undefined ? { eventSeq: payload.event_seq as number } : {}),
-			} };
+			)
+				return null;
+			return {
+				...tauriEvent,
+				payload: {
+					sessionId,
+					summary,
+					tokensBefore,
+					tokensAfter,
+					degraded,
+					...(payload.episode_id !== undefined
+						? { episodeId: payload.episode_id as string }
+						: {}),
+					...(payload.event_seq !== undefined
+						? { eventSeq: payload.event_seq as number }
+						: {}),
+				},
+			};
 		}
 		case 'agent:usage': {
 			const sessionId = requiredSessionId(payload);
 			const numberFields = [
-				'prompt_tokens', 'completion_tokens', 'total_tokens', 'cached_tokens',
-				'cache_creation_tokens', 'cache_miss_tokens', 'context_tokens',
-				'cumulative_prompt_tokens', 'cumulative_completion_tokens', 'cumulative_total_tokens',
-				'cumulative_cached_tokens', 'cumulative_cache_creation_tokens', 'cumulative_cache_miss_tokens',
+				'prompt_tokens',
+				'completion_tokens',
+				'total_tokens',
+				'cached_tokens',
+				'cache_creation_tokens',
+				'cache_miss_tokens',
+				'context_tokens',
+				'cumulative_prompt_tokens',
+				'cumulative_completion_tokens',
+				'cumulative_total_tokens',
+				'cumulative_cached_tokens',
+				'cumulative_cache_creation_tokens',
+				'cumulative_cache_miss_tokens',
 			] as const;
 			if (
 				sessionId === null ||
@@ -514,36 +679,48 @@ export function mapAgentEvent(
 				!optionalNumberIsValid(payload, 'step_number') ||
 				!optionalNumberIsValid(payload, 'duration_ms') ||
 				!optionalStringIsValid(payload, 'role') ||
-				typeof payload.call_kind !== 'string' || typeof payload.has_cost !== 'boolean'
-			) return null;
-			return { ...tauriEvent, payload: {
-				sessionId,
-				promptTokens: payload.prompt_tokens as number,
-				completionTokens: payload.completion_tokens as number,
-				totalTokens: payload.total_tokens as number,
-				cachedTokens: payload.cached_tokens as number,
-				cacheCreationTokens: payload.cache_creation_tokens as number,
-				cacheMissTokens: payload.cache_miss_tokens as number,
-				contextTokens: payload.context_tokens as number,
-				cacheExclusive: payload.cache_exclusive,
-				cacheAccounting: payload.cache_accounting,
-				costUsd: payload.cost_usd as number | null,
-				model: payload.model as string | null,
-				cumulativePromptTokens: payload.cumulative_prompt_tokens as number,
-				cumulativeCompletionTokens: payload.cumulative_completion_tokens as number,
-				cumulativeTotalTokens: payload.cumulative_total_tokens as number,
-				cumulativeCachedTokens: payload.cumulative_cached_tokens as number,
-				cumulativeCacheCreationTokens: payload.cumulative_cache_creation_tokens as number,
-				cumulativeCacheMissTokens: payload.cumulative_cache_miss_tokens as number,
-				...(payload.cache_diagnostics !== undefined ? { cacheDiagnostics: payload.cache_diagnostics } : {}),
-				cumulativeCostUsd: payload.cumulative_cost_usd as number | null,
-				contextWindow: payload.context_window as number | null,
-				...(payload.step_number !== undefined ? { stepNumber: payload.step_number as number } : {}),
-				...(payload.duration_ms !== undefined ? { durationMs: payload.duration_ms as number } : {}),
-				...(payload.role !== undefined ? { role: payload.role as RequestKind } : {}),
-				callKind: payload.call_kind as AgentUsagePayload['callKind'],
-				hasCost: payload.has_cost,
-			} };
+				typeof payload.call_kind !== 'string' ||
+				typeof payload.has_cost !== 'boolean'
+			)
+				return null;
+			return {
+				...tauriEvent,
+				payload: {
+					sessionId,
+					promptTokens: payload.prompt_tokens as number,
+					completionTokens: payload.completion_tokens as number,
+					totalTokens: payload.total_tokens as number,
+					cachedTokens: payload.cached_tokens as number,
+					cacheCreationTokens: payload.cache_creation_tokens as number,
+					cacheMissTokens: payload.cache_miss_tokens as number,
+					contextTokens: payload.context_tokens as number,
+					cacheExclusive: payload.cache_exclusive,
+					cacheAccounting: payload.cache_accounting,
+					costUsd: payload.cost_usd as number | null,
+					model: payload.model as string | null,
+					cumulativePromptTokens: payload.cumulative_prompt_tokens as number,
+					cumulativeCompletionTokens: payload.cumulative_completion_tokens as number,
+					cumulativeTotalTokens: payload.cumulative_total_tokens as number,
+					cumulativeCachedTokens: payload.cumulative_cached_tokens as number,
+					cumulativeCacheCreationTokens:
+						payload.cumulative_cache_creation_tokens as number,
+					cumulativeCacheMissTokens: payload.cumulative_cache_miss_tokens as number,
+					...(payload.cache_diagnostics !== undefined
+						? { cacheDiagnostics: payload.cache_diagnostics }
+						: {}),
+					cumulativeCostUsd: payload.cumulative_cost_usd as number | null,
+					contextWindow: payload.context_window as number | null,
+					...(payload.step_number !== undefined
+						? { stepNumber: payload.step_number as number }
+						: {}),
+					...(payload.duration_ms !== undefined
+						? { durationMs: payload.duration_ms as number }
+						: {}),
+					...(payload.role !== undefined ? { role: payload.role as RequestKind } : {}),
+					callKind: payload.call_kind as AgentUsagePayload['callKind'],
+					hasCost: payload.has_cost,
+				},
+			};
 		}
 		case 'agent:tool_output': {
 			const sessionId = requiredSessionId(payload);
@@ -554,6 +731,42 @@ export function mapAgentEvent(
 				: { ...tauriEvent, payload: { sessionId, stepId, output } };
 		}
 		case 'notification:show': {
+			const notificationKind = payload.notification_kind;
+			if (notificationKind === 'action_completion') {
+				const sessionId = requiredString(payload, 'session_id');
+				const title = requiredString(payload, 'title');
+				const body = requiredString(payload, 'body');
+				const actionKind = payload.action_kind;
+				const actionId = requiredString(payload, 'action_id');
+				const actionStatus = payload.action_status;
+				if (
+					sessionId === null ||
+					title === null ||
+					body === null ||
+					(actionKind !== 'background' && actionKind !== 'scheduled') ||
+					actionId === null ||
+					actionId.length === 0 ||
+					(actionKind === 'background' &&
+						(sessionId.length === 0 ||
+							(actionStatus !== 'completed' && actionStatus !== 'failed'))) ||
+					(actionKind === 'scheduled' && actionStatus !== undefined)
+				)
+					return null;
+				return {
+					...tauriEvent,
+					payload: {
+						sessionId,
+						title,
+						body,
+						notificationKind,
+						actionKind,
+						actionId,
+						...(actionStatus !== undefined ? { actionStatus } : {}),
+					},
+				};
+			}
+			if (notificationKind !== undefined) return null;
+
 			const sessionId = requiredSessionId(payload);
 			const title = requiredString(payload, 'title');
 			const body = requiredString(payload, 'body');

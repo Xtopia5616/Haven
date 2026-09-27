@@ -119,11 +119,13 @@ describe('agent IPC contract', () => {
 				run_id: 8,
 				role: 'vision',
 				strategy: 'auto',
-				projections: [{
-					asset_id: 'asset-1',
-					representation: 'ocr_text',
-					mode: 'derived',
-				}],
+				projections: [
+					{
+						asset_id: 'asset-1',
+						representation: 'ocr_text',
+						mode: 'derived',
+					},
+				],
 				notices: [{ asset_id: 'asset-1', code: 'raw_capability_unknown' }],
 			},
 		});
@@ -134,11 +136,13 @@ describe('agent IPC contract', () => {
 			runId: 8,
 			role: 'vision',
 			strategy: 'auto',
-			projections: [{
-				assetId: 'asset-1',
-				representation: 'ocr_text',
-				mode: 'derived',
-			}],
+			projections: [
+				{
+					assetId: 'asset-1',
+					representation: 'ocr_text',
+					mode: 'derived',
+				},
+			],
 			notices: [{ assetId: 'asset-1', code: 'raw_capability_unknown' }],
 		});
 	});
@@ -153,12 +157,14 @@ describe('agent IPC contract', () => {
 				run_id: 8,
 				role: 'future_request_kind',
 				strategy: 'future_strategy',
-				projections: [{
-					asset_id: 'asset-1',
-					representation: 'future_representation',
-					mode: 'future_mode',
-					provenance: 'added-wire-field',
-				}],
+				projections: [
+					{
+						asset_id: 'asset-1',
+						representation: 'future_representation',
+						mode: 'future_mode',
+						provenance: 'added-wire-field',
+					},
+				],
 				notices: [{ asset_id: 'asset-1', code: 'future_notice', added: true }],
 				event_seq: 9,
 				added_wire_field: 'ignored',
@@ -172,11 +178,13 @@ describe('agent IPC contract', () => {
 			runId: 8,
 			role: 'future_request_kind',
 			strategy: 'future_strategy',
-			projections: [{
-				assetId: 'asset-1',
-				representation: 'future_representation',
-				mode: 'future_mode',
-			}],
+			projections: [
+				{
+					assetId: 'asset-1',
+					representation: 'future_representation',
+					mode: 'future_mode',
+				},
+			],
 			notices: [{ assetId: 'asset-1', code: 'future_notice' }],
 			eventSeq: 9,
 		});
@@ -263,21 +271,38 @@ describe('agent IPC contract', () => {
 	});
 
 	it('rejects malformed agent envelopes and required fields without throwing', () => {
-		expect(mapAgentEventContract({
-			event: 'agent:thought', id: 1,
-			payload: {
-				session_id: 'ses-1', thought: 17, step_number: 2, run_id: 4, message_id: 'step-1',
-			},
-		})).toBeNull();
-		expect(mapAgentEventContract({
-			event: 'agent:media_plan', id: 1,
-			payload: {
-				session_id: 'ses-1', step_number: 2, run_id: 4, role: 'vision', strategy: 'auto',
-				projections: [{ asset_id: 'asset-1' }], notices: [],
-			},
-		})).toBeNull();
+		expect(
+			mapAgentEventContract({
+				event: 'agent:thought',
+				id: 1,
+				payload: {
+					session_id: 'ses-1',
+					thought: 17,
+					step_number: 2,
+					run_id: 4,
+					message_id: 'step-1',
+				},
+			}),
+		).toBeNull();
+		expect(
+			mapAgentEventContract({
+				event: 'agent:media_plan',
+				id: 1,
+				payload: {
+					session_id: 'ses-1',
+					step_number: 2,
+					run_id: 4,
+					role: 'vision',
+					strategy: 'auto',
+					projections: [{ asset_id: 'asset-1' }],
+					notices: [],
+				},
+			}),
+		).toBeNull();
 		expect(mapAgentEventContract({ event: 'agent:future', id: 1, payload: {} })).toBeNull();
-		expect(mapAgentEventContract({ event: 'agent:thought', id: Number.NaN, payload: {} })).toBeNull();
+		expect(
+			mapAgentEventContract({ event: 'agent:thought', id: Number.NaN, payload: {} }),
+		).toBeNull();
 	});
 
 	it('preserves empty notification text for the existing UI fallback', () => {
@@ -290,26 +315,148 @@ describe('agent IPC contract', () => {
 		expect(event.payload).toEqual({ sessionId: 'ses-1', title: '', body: '' });
 	});
 
+	it('maps marked action completions without relaxing generic session validation', () => {
+		const scheduled = mapAgentEvent({
+			event: 'notification:show',
+			id: 12,
+			payload: {
+				session_id: '',
+				title: '任务完成',
+				body: '结果',
+				notification_kind: 'action_completion',
+				action_kind: 'scheduled',
+				action_id: 'act-scheduled',
+			},
+		});
+		expect(scheduled.payload).toEqual({
+			sessionId: '',
+			title: '任务完成',
+			body: '结果',
+			notificationKind: 'action_completion',
+			actionKind: 'scheduled',
+			actionId: 'act-scheduled',
+		});
+
+		const background = mapAgentEvent({
+			event: 'notification:show',
+			id: 13,
+			payload: {
+				session_id: 'ses-background',
+				title: '后台任务失败',
+				body: '执行失败',
+				notification_kind: 'action_completion',
+				action_kind: 'background',
+				action_id: 'act-background',
+				action_status: 'failed',
+			},
+		});
+		expect(background.payload).toMatchObject({
+			sessionId: 'ses-background',
+			actionKind: 'background',
+			actionId: 'act-background',
+			actionStatus: 'failed',
+		});
+
+		for (const payload of [
+			{ session_id: '', title: 'generic', body: 'body' },
+			{
+				session_id: 'ses-1',
+				title: 'x',
+				body: 'y',
+				notification_kind: 'unknown',
+			},
+			{
+				session_id: '',
+				title: 'x',
+				body: 'y',
+				notification_kind: 'action_completion',
+				action_kind: 'background',
+				action_id: 'act-1',
+				action_status: 'failed',
+			},
+			{
+				session_id: 'ses-1',
+				title: 'x',
+				body: 'y',
+				notification_kind: 'action_completion',
+				action_kind: 'scheduled',
+				action_id: 'act-1',
+				action_status: 'failed',
+			},
+			{
+				session_id: 'ses-1',
+				title: 'x',
+				body: 'y',
+				notification_kind: 'action_completion',
+				action_kind: 'background',
+				action_id: 'act-1',
+				action_status: 'cancelled',
+			},
+		]) {
+			expect(
+				mapAgentEventContract({ event: 'notification:show', id: 14, payload }),
+			).toBeNull();
+		}
+	});
+
 	it.each([
 		{
 			event: 'agent:thought_chunk',
-			wire: { session_id: 'ses-1', delta: 't', step_number: 1, run_id: 2, message_id: 'msg-1', seq: 3 },
-			expected: { sessionId: 'ses-1', delta: 't', stepNumber: 1, runId: 2, messageId: 'msg-1', seq: 3 },
+			wire: {
+				session_id: 'ses-1',
+				delta: 't',
+				step_number: 1,
+				run_id: 2,
+				message_id: 'msg-1',
+				seq: 3,
+			},
+			expected: {
+				sessionId: 'ses-1',
+				delta: 't',
+				stepNumber: 1,
+				runId: 2,
+				messageId: 'msg-1',
+				seq: 3,
+			},
 		},
 		{
 			event: 'agent:reasoning_chunk',
-			wire: { session_id: 'ses-1', delta: 'r', step_number: 1, run_id: 2, message_id: 'msg-2', seq: 4 },
-			expected: { sessionId: 'ses-1', delta: 'r', stepNumber: 1, runId: 2, messageId: 'msg-2', seq: 4 },
+			wire: {
+				session_id: 'ses-1',
+				delta: 'r',
+				step_number: 1,
+				run_id: 2,
+				message_id: 'msg-2',
+				seq: 4,
+			},
+			expected: {
+				sessionId: 'ses-1',
+				delta: 'r',
+				stepNumber: 1,
+				runId: 2,
+				messageId: 'msg-2',
+				seq: 4,
+			},
 		},
 		{
 			event: 'agent:web_search',
 			wire: {
-				session_id: 'ses-1', phase: 'started', step_number: 2, run_id: 3,
-				call_id: 'call-1', action: 'search', result: { count: 1 },
+				session_id: 'ses-1',
+				phase: 'started',
+				step_number: 2,
+				run_id: 3,
+				call_id: 'call-1',
+				action: 'search',
+				result: { count: 1 },
 			},
 			expected: {
-				sessionId: 'ses-1', phase: 'started', stepNumber: 2, runId: 3,
-				callId: 'call-1', action: 'search', result: { count: 1 },
+				sessionId: 'ses-1',
+				phase: 'started',
+				stepNumber: 2,
+				runId: 3,
+				callId: 'call-1',
+				action: 'search',
+				result: { count: 1 },
 			},
 		},
 		{
@@ -320,12 +467,24 @@ describe('agent IPC contract', () => {
 		{
 			event: 'agent:supplement',
 			wire: {
-				session_id: 'ses-1', additional_context: 'continue', step_number: 2, run_id: 3,
-				message_id: 'msg-1', supplement_id: 'msg-1', inject_source: 'future_source', event_seq: 9,
+				session_id: 'ses-1',
+				additional_context: 'continue',
+				step_number: 2,
+				run_id: 3,
+				message_id: 'msg-1',
+				supplement_id: 'msg-1',
+				inject_source: 'future_source',
+				event_seq: 9,
 			},
 			expected: {
-				sessionId: 'ses-1', additionalContext: 'continue', stepNumber: 2, runId: 3,
-				messageId: 'msg-1', supplementId: 'msg-1', injectSource: 'future_source', eventSeq: 9,
+				sessionId: 'ses-1',
+				additionalContext: 'continue',
+				stepNumber: 2,
+				runId: 3,
+				messageId: 'msg-1',
+				supplementId: 'msg-1',
+				injectSource: 'future_source',
+				eventSeq: 9,
 			},
 		},
 		{
@@ -337,5 +496,4 @@ describe('agent IPC contract', () => {
 		const mapped = mapAgentEventContract({ event, id: 12, payload: wire });
 		expect(mapped?.payload).toEqual(expected);
 	});
-
 });
