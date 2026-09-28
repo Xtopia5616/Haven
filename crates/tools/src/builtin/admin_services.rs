@@ -737,7 +737,7 @@ impl AdminServices {
                 None => (false, 0, String::new(), None),
             };
             out.push(McpStatusOutput {
-                name: config.name,
+                name: config.name.clone(),
                 enabled: config.enabled,
                 connected,
                 tools: tool_count,
