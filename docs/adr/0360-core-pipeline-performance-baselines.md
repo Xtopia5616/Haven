@@ -2,7 +2,7 @@
 
 - 状态：已采纳（2026-09-26）
 - 范围：SessionActor mailbox、durable event replay、UI reducer broadcast、Action completion outbox、Memory fact extraction outbox
-- 关联：ADR 0178（ReAct 可观测性）、ADR 0359（profiling 基线审计）
+- 关联：ADR 0178（ReAct 可观测性）、ADR 0359（profiling 基线审计）、ADR 0389（事件保留与容量边界）
 
 ## 背景
 
@@ -35,6 +35,8 @@ ADR 0359 确认工作区没有 Criterion 等基准框架，并列出五条流水
 | Memory fact extraction outbox | `cargo test --locked -p haven-agent memory_worker` | durable marker、恢复、coalescing、retry/backoff 与 cancellation 行为 | pending depth、enqueue→claim→persist 时延、队列年龄和吞吐；provider 调用耗时也没有分离 |
 
 这些行为测试的总运行时不作为基线。已有 LLM/ReAct phase metrics 是固定桶估算，provider/network 等待不等于 crate-local 成本。读取/导出的计时结果必须继续附场景、样本数、输入规模、profile、单位和边界；没有合适夹具时应报告缺口，不推断延迟。
+
+本 ADR 的 100k 内存 SQLite replay 基线不定义事件保留期限或存储容量。当前 session 事件保留与尚未覆盖的磁盘增长、容量告警和低磁盘 durable append 行为见 ADR 0389。
 
 ## 影响与验证
 

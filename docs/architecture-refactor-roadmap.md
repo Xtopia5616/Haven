@@ -223,14 +223,14 @@ Session 清理与 Agent wiring 收口（2026-09-26，ADR 0374）：`SessionStore
 | 阶段 | 状态 | 完成范围与保留项 |
 |---|---|---|
 | 1：SessionActor 热运行态 owner | 已完成 | Actor task 单一拥有 `SessionState`；`SessionState::react_run` 持有 active run future，future 独占捕获 run-local `ReActState`，同一 actor loop select future 与 mailbox。pending provider/tool/storage await 不借用整份 `SessionState`；删除活动 session 的取消、run-exit join、durable row 删除顺序有 supervisor 集成回归（ADR 0214、0382）。 |
-| 2：恢复、回滚与事件/投影边界 | 已完成 | `session_events` 成为恢复权威，rollback/projection cutoff 与已知 ingress/recovery 例外有明确 owner 和回归覆盖；search-final messages projection 并入 owning ToolCall commit，不再有 ReAct 内容行的直接投影旁路（ADR 0385）。阶段内核心恢复/回滚验证已完成；全新 profile 下的完整应用恢复/发布验收仍归阶段 9。 |
+| 2：恢复、回滚与事件/投影边界 | 已完成 | `session_events` 成为恢复权威，rollback/projection cutoff 与已知 ingress/recovery 例外有明确 owner 和回归覆盖；search-final messages projection 并入 owning ToolCall commit，不再有 ReAct 内容行的直接投影旁路（ADR 0385）。阶段内核心恢复/回滚验证已完成；全新 profile 下的完整应用恢复/发布验收仍归阶段 9。事件保留和容量上限是阶段 9 的独立后续决策，不承诺永久保留（ADR 0389）。 |
 | 3：存储 domain ports 与 typed projection | 已完成 | Session/Memory/Usage/Action typed-store 迁移及 App cleanup 路径收口完成。App composition root 创建 typed memory stores；生产 Agent 路径不把 raw `Database` 传入 `MemoryService`。ActionService 稳定 status/list projection 由 typed views 暴露；该阶段列明的 JSON 边界按 ADR 0383 处理，全仓 typed-output 审计仍由全局验收跟踪。 |
 | 4：Tools capability runtime 与 Agent ports | 已完成 | `AgentLayer` 与 `SessionSupervisor` 接收显式端口 bundle；session runner 通过完整 `ToolExecutionPort` 与 `ToolExecutionContext` 提交 session/tool/input/cancel/step identity，`ToolAuthorizationPort` 单独准备 live policy request。prompt/catalog/execution/observation/overlay/asset 的 manager adapters 由 app composition root 创建；生产 Agent runtime 不依赖具体 `ToolsManager`。执行前授权与 turn catalog snapshot 语义不变（ADR 0374、0384、0388）。 |
 | 5：Runtime config apply ownership | 已完成 | ConfigService、Settings/model/Tools 同域写入 gate、phase planning 与 durable-first 部分失败语义已落地；显式 retry、补偿/rollback 与 auto-restart 不属于当前契约。 |
 | 6：LLM Router 请求对象化 | 已完成 | 请求对象、执行器拆分、descriptor/capability 映射与 usage owner 契约已由 ADR 0354 最终审计关闭。 |
 | 7：Job 生命周期与 MemoryRuntime | 进行中 | MemoryRuntime 应用级所有权已完成；完整 Job lifecycle、dependency-waiting 持久化实现和统一 terminal transcript 仍有后续。dependency-waiting 行为决策已确认，见 ADR 0375。 |
 | 8：IPC 单源生成与 UI 编排 | 进行中 | 多个命令域已有 typed helper/validator 或审计结果；其余 command families、UI 编排边界与是否引入全局 codegen 仍待处理。 |
-| 9：Common、性能与发布验收 | 未完成 | common 拆分和性能优化按数据决定；全新 Windows 用户 profile/VM 的 GUI、升级重置及卸载验收尚未执行。 |
+| 9：Common、性能与发布验收 | 未完成 | common 拆分和性能优化按数据决定；session event 磁盘容量、归档/告警及低磁盘 append 仍需设计（ADR 0389）；全新 Windows 用户 profile/VM 的 GUI、升级重置及卸载验收尚未执行。 |
 
 ### 阶段 0：基线、契约和观测（先行）
 
@@ -306,6 +306,8 @@ SessionStore
 验收：恢复不读取快照/steps/messages 作为 ReAct 真源；事件、messages、steps、usage、UI 的 sequence/clock 关系有测试覆盖。
 
 回滚：代码回退；若涉及 schema 版本，只能按 `docs/release-and-reset.md` 完整重置数据库，不运行部分迁移。
+
+事件存储增长是恢复契约之外的后续容量议题，不重开阶段 2 的完成状态：当前事件随 session 保留，不按 compaction root 裁剪；既有 whole-session retention 默认 90 天且可设为 0 禁用，不构成字节上限。阶段 9 的存储设计边界见 ADR 0389。
 
 ### 阶段 3（已完成）：存储 domain ports 与 typed projection（P1）
 
@@ -537,6 +539,7 @@ Phase 7.1 验收与未决风险：见 ADR 0259、0261、0262、0263、0264、026
 
 - 根据依赖图决定是否把 common 拆成 contracts/config/media/platform；若只是移动复杂度则不拆；
 - 对 actor mailbox、event replay、reducer broadcast、LLM request、Job/Memory outbox 做 profiling；
+- 为 `session_events` 与 SQLite/WAL 测量真实磁盘增长及清理后的文件行为，决定是否需要字节上限、归档/导出、容量告警，并验证低磁盘时 durable append 的失败观测和恢复策略（ADR 0389）；
 - 只根据数据加入 bounded cache、selector 或批处理；每个缓存写清容量、失效和取消；
 - 用全新数据目录完成启动、设置、会话、工具、媒体、任务、恢复、回滚、升级重置和卸载验收；
 - 更新 `architecture.md`、`stability-refactor-plan.md`、ADR 索引、发布/重置说明。

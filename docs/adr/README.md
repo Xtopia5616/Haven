@@ -375,3 +375,4 @@
 - [0386：Session terminal fan-out occurrence identity](0386-session-terminal-occurrence-identity.md)
 - [0387：Session deletion reclaims runtime state](0387-session-deletion-reclaims-runtime-state.md)
 - [0388：Agent Tools ports 与组合层适配器完整收口](0388-agent-tools-composition-adapters.md)
+- [0389：Session 事件保留与容量边界](0389-session-event-retention-and-capacity-boundary.md)
