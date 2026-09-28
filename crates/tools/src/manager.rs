@@ -277,7 +277,7 @@ impl ToolsManager {
         image_gen_client: Option<Arc<dyn haven_llm::ImageGenClient>>,
         tts_client: Option<Arc<dyn haven_llm::TtsClient>>,
         media_config: haven_common::config::MediaConfig,
-    ) {
+    ) -> Result<CatalogRebuildOutcome, CatalogRebuildError> {
         self.coordinator
             .set_router_and_media_clients(
                 router,
@@ -287,7 +287,7 @@ impl ToolsManager {
                 tts_client,
                 media_config,
             )
-            .await;
+            .await
     }
 
     /// Apply cold-start wiring in one pass and rebuild the catalog once.
@@ -311,12 +311,18 @@ impl ToolsManager {
     /// desktop shell after the config loader exists; later catalog rebuilds
     /// keep the capability-scoped adapters registered. Durable action storage
     /// is injected separately through startup wiring by the composition root.
-    pub async fn set_admin_context(&self, ctx: builtin::AdminContext) {
-        self.coordinator.set_admin_context(ctx).await;
+    pub async fn set_admin_context(
+        &self,
+        ctx: builtin::AdminContext,
+    ) -> Result<CatalogRebuildOutcome, CatalogRebuildError> {
+        self.coordinator.set_admin_context(ctx).await
     }
 
-    pub async fn set_tool_settings(&self, settings: HashMap<String, ToolConfig>) {
-        self.coordinator.set_tool_settings(settings).await;
+    pub async fn set_tool_settings(
+        &self,
+        settings: HashMap<String, ToolConfig>,
+    ) -> Result<CatalogRebuildOutcome, CatalogRebuildError> {
+        self.coordinator.set_tool_settings(settings).await
     }
 
     /// The five native admin surfaces, when the desktop shell wired the app
@@ -335,20 +341,30 @@ impl ToolsManager {
     /// the agent's next step. The config.toml persistence is done by the
     /// caller (the admin surface's `tool_enable`/`tool_disable` operations,
     /// which call this after persisting).
-    pub async fn set_tool_enabled(&self, name: &str, enabled: bool) {
-        self.coordinator.set_tool_enabled(name, enabled).await;
+    pub async fn set_tool_enabled(
+        &self,
+        name: &str,
+        enabled: bool,
+    ) -> Result<CatalogRebuildOutcome, CatalogRebuildError> {
+        self.coordinator.set_tool_enabled(name, enabled).await
     }
 
     /// Replace the unified context limits (global tool output cap etc.) and
     /// rebuild the catalog so tools pick up the new values.
-    pub async fn set_context_limits(&self, limits: ContextLimitsConfig) {
-        self.coordinator.set_context_limits(limits).await;
+    pub async fn set_context_limits(
+        &self,
+        limits: ContextLimitsConfig,
+    ) -> Result<CatalogRebuildOutcome, CatalogRebuildError> {
+        self.coordinator.set_context_limits(limits).await
     }
 
     /// Replace the default shell for the `shell` tool and rebuild the catalog
     /// so the running agent picks up the new value on its next step.
-    pub async fn set_default_shell(&self, shell: ShellChoice) {
-        self.coordinator.set_default_shell(shell).await;
+    pub async fn set_default_shell(
+        &self,
+        shell: ShellChoice,
+    ) -> Result<CatalogRebuildOutcome, CatalogRebuildError> {
+        self.coordinator.set_default_shell(shell).await
     }
 
     /// Snapshot the shell default used by the model-facing `shell` tool.
@@ -454,7 +470,7 @@ impl ToolControlPort for ToolControlHandle {
             .0
             .upgrade()
             .ok_or_else(|| anyhow::anyhow!("tool catalog is no longer available"))?;
-        tools.set_tool_enabled(name, enabled).await;
+        tools.set_tool_enabled(name, enabled).await?;
         Ok(())
     }
 
@@ -463,7 +479,7 @@ impl ToolControlPort for ToolControlHandle {
             .0
             .upgrade()
             .ok_or_else(|| anyhow::anyhow!("tool catalog is no longer available"))?;
-        tools.rebuild_catalog().await;
+        tools.rebuild_catalog().await?;
         Ok(())
     }
 }
@@ -539,7 +555,8 @@ mod capability_tests {
                 Some(Arc::new(AvailableTts)),
                 haven_common::config::MediaConfig::default(),
             )
-            .await;
+            .await
+            .unwrap();
 
         let after_config_publish = tools.runtime_capabilities().await;
         assert_eq!(
@@ -562,7 +579,7 @@ mod capability_tests {
                 next
             })
             .await;
-        tools.rebuild_catalog().await;
+        tools.rebuild_catalog().await.unwrap();
 
         let platform = tools.coordinator.runtime.platform().await;
         let snapshot = tools.tool_capability_snapshot(&platform).await;
@@ -592,7 +609,8 @@ mod capability_tests {
                 None,
                 haven_common::config::MediaConfig::default(),
             )
-            .await;
+            .await
+            .unwrap();
 
         let after_runtime_replacement = tools.runtime_capabilities().await;
         assert_eq!(
@@ -644,7 +662,8 @@ mod capability_tests {
                         None,
                         haven_common::config::MediaConfig::default(),
                     )
-                    .await;
+                    .await
+                    .unwrap();
             }
         });
 

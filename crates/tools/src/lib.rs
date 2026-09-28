@@ -51,6 +51,27 @@ use std::time::Duration;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
+/// Result of a tool catalog update requested by a runtime configuration
+/// change. `Unchanged` means the requested settings did not affect any catalog
+/// roots and no rebuild was needed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CatalogRebuildOutcome {
+    Published,
+    Unchanged,
+}
+
+/// A catalog rebuild can be rejected before its atomic registry snapshot is
+/// published. Callers that own durable configuration apply can propagate this
+/// failure without pretending the live catalog was updated.
+#[derive(Debug, thiserror::Error)]
+pub enum CatalogRebuildError {
+    #[error("tool catalog rebuild was rejected: {source}")]
+    RegistryRejected {
+        #[source]
+        source: anyhow::Error,
+    },
+}
+
 /// Whether a tool is enabled per `tool_settings`. Tools without a settings
 /// entry are enabled by default. Single source of truth shared by the
 /// registry filter, the execution gate, and the UI listing, so the three

@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::RwLock;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard};
 
 use crate::session::{SessionStatus, SessionSupervisor};
 use haven_common::config::{ContextLimitsConfig, RequestKind};
@@ -65,6 +65,14 @@ pub(crate) use state::{ReActState, RetryNudge};
 pub(crate) use tool_ports::{ToolCatalogPort, ToolsManagerToolCatalogAdapter};
 use transcript::{ObservationCard, TranscriptEvent};
 use usage::{UsageRuntime, UsageUpdate};
+
+fn runtime_setting_lock<'a, T>(
+    lock: &'a Mutex<T>,
+    setting: &'static str,
+) -> anyhow::Result<MutexGuard<'a, T>> {
+    lock.lock()
+        .map_err(|_| anyhow::anyhow!("{setting} runtime setting lock is poisoned"))
+}
 
 pub(crate) use event_boundary::DurableEventState;
 pub(crate) use event_boundary::set_status_and_emit;
@@ -462,8 +470,12 @@ impl ReActEngine {
         self
     }
 
-    pub fn replace_router(&self, new_router: Arc<LlmRouter>) {
-        *self.router.write().unwrap() = new_router;
+    pub fn replace_router(&self, new_router: Arc<LlmRouter>) -> anyhow::Result<()> {
+        *self
+            .router
+            .write()
+            .map_err(|_| anyhow::anyhow!("router runtime setting lock is poisoned"))? = new_router;
+        Ok(())
     }
 
     /// Snapshot of `[context_limits]` (cloned; safe across awaits).
@@ -473,27 +485,31 @@ impl ReActEngine {
 
     /// Hot-reload `[context_limits]` from settings save and drop cached windows
     /// so the next step re-resolves against the new default.
-    pub fn set_context_limits(&self, limits: ContextLimitsConfig) {
-        *self.context_limits.lock().unwrap() = limits;
+    pub fn set_context_limits(&self, limits: ContextLimitsConfig) -> anyhow::Result<()> {
+        *runtime_setting_lock(&self.context_limits, "context limits")? = limits;
         self.context_windows.clear();
+        Ok(())
     }
 
     /// Hot-reload the provider-facing media projection policy.
-    pub fn set_media_strategy(&self, strategy: MediaInputStrategy) {
-        *self.media_strategy.lock().unwrap() = strategy;
+    pub fn set_media_strategy(&self, strategy: MediaInputStrategy) -> anyhow::Result<()> {
+        *runtime_setting_lock(&self.media_strategy, "media strategy")? = strategy;
+        Ok(())
     }
 
     pub(crate) fn media_strategy(&self) -> MediaInputStrategy {
         *self.media_strategy.lock().unwrap()
     }
 
-    pub fn set_max_steps(&self, max_steps: u32) {
-        *self.max_steps.lock().unwrap() = max_steps;
+    pub fn set_max_steps(&self, max_steps: u32) -> anyhow::Result<()> {
+        *runtime_setting_lock(&self.max_steps, "max steps")? = max_steps;
+        Ok(())
     }
 
     /// Set optional session-lifetime step cap (`None` = unlimited).
-    pub fn set_session_max_steps(&self, session_max_steps: Option<u32>) {
-        *self.session_max_steps.lock().unwrap() = session_max_steps;
+    pub fn set_session_max_steps(&self, session_max_steps: Option<u32>) -> anyhow::Result<()> {
+        *runtime_setting_lock(&self.session_max_steps, "session max steps")? = session_max_steps;
+        Ok(())
     }
 
     pub fn next_run_id(&self) -> u64 {
@@ -1189,6 +1205,21 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use haven_common::types::{CanonicalRole, CanonicalToolCall, InjectSource, MessageAttachment};
+
+    #[test]
+    fn poisoned_runtime_setting_lock_returns_a_diagnostic() {
+        let lock = Arc::new(Mutex::new(()));
+        let lock_for_panic = Arc::clone(&lock);
+        let _ = std::thread::spawn(move || {
+            let _guard = lock_for_panic.lock().unwrap();
+            panic!("poison runtime setting lock for test");
+        })
+        .join();
+
+        let error = runtime_setting_lock(&lock, "session limits").unwrap_err();
+        assert!(error.to_string().contains("session limits"));
+        assert!(error.to_string().contains("poisoned"));
+    }
 
     #[test]
     fn loop_exit_variants_distinguish_pause_reasons() {

@@ -211,7 +211,7 @@ async fn enabled_skills_are_global_and_resume_does_not_rebuild_skill_sessions() 
         .set_config(Some(dir.clone()), None)
         .await
         .unwrap();
-    tools.rebuild_catalog().await;
+    tools.rebuild_catalog().await.unwrap();
     let executor = Arc::new(SessionSupervisor::new_for_test(
         db.clone(),
         tools.clone(),

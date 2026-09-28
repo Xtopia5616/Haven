@@ -2545,7 +2545,8 @@ mod tests {
                 log_level: None,
                 tool_control: None,
             })
-            .await;
+            .await
+            .unwrap();
 
         let mut tools = manager.registry().list().await;
         // Deferred builtins are intentionally absent from the model-facing
@@ -2873,7 +2874,8 @@ mod tests {
                 log_level: None,
                 tool_control: None,
             })
-            .await;
+            .await
+            .unwrap();
 
         let mut tools = manager.registry().list().await;
         let registry_names: HashSet<_> = tools.iter().map(|tool| tool.name()).collect();
@@ -2949,7 +2951,8 @@ mod tests {
                 log_level: None,
                 tool_control: None,
             })
-            .await;
+            .await
+            .unwrap();
 
         let mut tools = manager.registry().list().await;
         let registry_names: HashSet<_> = tools.iter().map(|tool| tool.name()).collect();

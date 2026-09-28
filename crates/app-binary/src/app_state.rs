@@ -240,8 +240,8 @@ impl AppState {
         );
         let agent = Arc::new(agent_startup.agent);
         let memory_startup = agent_startup.memory_startup;
-        agent.set_media_strategy(cfg.media.input_strategy);
-        agent.set_session_max_steps(session_max_steps);
+        agent.set_media_strategy(cfg.media.input_strategy)?;
+        agent.set_session_max_steps(session_max_steps)?;
 
         let pipeline = Arc::new(InputPipeline::new());
         pipeline.set_limits(&context_limits_clone);
@@ -681,7 +681,9 @@ impl AppState {
                         {
                             tracing::warn!("skills engine initial scan failed: {e}");
                         }
-                        tools.rebuild_catalog().await;
+                        if let Err(error) = tools.rebuild_catalog().await {
+                            tracing::warn!(error = %error, "initial tool catalog rebuild failed");
+                        }
                     }
                 ) => {
                     if result.is_err() {

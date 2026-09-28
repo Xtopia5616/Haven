@@ -278,14 +278,14 @@ async fn replace_router_and_router_work() {
         client_b.clone(),
         client_b,
     ));
-    agent.replace_router(router_b);
+    agent.replace_router(router_b).unwrap();
     // No panic == success
 }
 
 #[tokio::test]
 async fn set_max_steps_updates_field() {
     let (agent, executor) = make_test_agent();
-    agent.set_max_steps(5);
+    agent.set_max_steps(5).unwrap();
 
     let recorder = Arc::new(RecordingEmitter {
         thoughts: std::sync::Mutex::new(Vec::new()),

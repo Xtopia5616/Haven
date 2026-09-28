@@ -20,8 +20,10 @@ impl ToolsManager {
     /// tools are always advertised, while adapters are registered per-session
     /// only after an explicit load succeeds. Enabled Skills are rebuilt into
     /// the deferred catalog from the live skills index.
-    pub async fn rebuild_catalog(&self) {
-        self.coordinator.rebuild_catalog().await;
+    pub async fn rebuild_catalog(
+        &self,
+    ) -> Result<crate::CatalogRebuildOutcome, crate::CatalogRebuildError> {
+        self.coordinator.rebuild_catalog().await
     }
 
     /// Register a tool for a specific session (per-session skill overlay).
@@ -356,7 +358,9 @@ impl ToolsManager {
                         // the next poll retries instead of treating the
                         // failed change as already seen.
                         last_sig = Some(sig);
-                        self.rebuild_catalog().await;
+                        if let Err(error) = self.rebuild_catalog().await {
+                            tracing::warn!(error = %error, "skills changed but tool catalog rebuild failed");
+                        }
                         on_change();
                     }
                     Err(e) => {

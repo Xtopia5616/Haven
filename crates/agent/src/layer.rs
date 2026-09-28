@@ -166,13 +166,16 @@ impl AgentLayer {
     }
 
     /// Hot-reload `[context_limits]` into the ReAct engine (settings save).
-    pub fn set_context_limits(&self, limits: ContextLimitsConfig) {
-        self.react_engine.set_context_limits(limits);
+    pub fn set_context_limits(&self, limits: ContextLimitsConfig) -> anyhow::Result<()> {
+        self.react_engine.set_context_limits(limits)
     }
 
     /// Hot-reload the provider-facing media projection policy.
-    pub fn set_media_strategy(&self, strategy: haven_common::media::MediaInputStrategy) {
-        self.react_engine.set_media_strategy(strategy);
+    pub fn set_media_strategy(
+        &self,
+        strategy: haven_common::media::MediaInputStrategy,
+    ) -> anyhow::Result<()> {
+        self.react_engine.set_media_strategy(strategy)
     }
 
     pub(crate) fn limits(&self) -> ContextLimitsConfig {
@@ -314,7 +317,8 @@ impl AgentLayer {
         self.events.install_bus()
     }
 
-    pub fn replace_router(&self, new_router: Arc<LlmRouter>) {
+    pub fn replace_router(&self, new_router: Arc<LlmRouter>) -> anyhow::Result<()> {
+        self.react_engine.replace_router(new_router.clone())?;
         // Pre-warm the new router's HTTP connection pool so the next request
         // doesn't pay TCP+TLS handshake latency after a provider switch.
         let warm = new_router.clone();
@@ -329,7 +333,7 @@ impl AgentLayer {
                 Err(e) => tracing::warn!("LLM pre-warm after swap failed: {}", e),
             }
         });
-        self.react_engine.replace_router(new_router);
+        Ok(())
     }
 
     /// Run the full memory maintenance pass (fact dedup, sensitive purge,
@@ -348,12 +352,12 @@ impl AgentLayer {
         self.memory.recall(query).await
     }
 
-    pub fn set_max_steps(&self, max_steps: u32) {
-        self.react_engine.set_max_steps(max_steps);
+    pub fn set_max_steps(&self, max_steps: u32) -> anyhow::Result<()> {
+        self.react_engine.set_max_steps(max_steps)
     }
 
-    pub fn set_session_max_steps(&self, session_max_steps: Option<u32>) {
-        self.react_engine.set_session_max_steps(session_max_steps);
+    pub fn set_session_max_steps(&self, session_max_steps: Option<u32>) -> anyhow::Result<()> {
+        self.react_engine.set_session_max_steps(session_max_steps)
     }
 
     /// Live three-way connectivity probe to the default-model endpoint. Used
@@ -1797,7 +1801,7 @@ mod tests {
             notification_summary_chars: 137,
             ..ContextLimitsConfig::default()
         };
-        agent.set_context_limits(limits);
+        agent.set_context_limits(limits).unwrap();
 
         assert_eq!(agent.limits().notification_summary_chars, 137);
         assert_eq!(agent.limits(), agent.react_engine.limits());

@@ -105,12 +105,15 @@ impl RuntimeConfigCoordinator {
         &self,
         state: &AppState,
         prepared: PreparedRouterRuntime,
-    ) {
+    ) -> Result<(), RouterRuntimePublishError> {
         tracing::debug!(
             config_version = prepared.config_version,
             "publishing prepared router runtime"
         );
-        state.agent.replace_router(prepared.router.clone());
+        state
+            .agent
+            .replace_router(prepared.router.clone())
+            .map_err(RouterRuntimePublishError::Agent)?;
         state
             .tools
             .set_router_and_media_clients(
@@ -121,7 +124,9 @@ impl RuntimeConfigCoordinator {
                 prepared.tts_client,
                 prepared.media,
             )
-            .await;
+            .await
+            .map_err(RouterRuntimePublishError::ToolCatalog)?;
+        Ok(())
     }
 
     /// Model updates have no intervening live side effects, so use the complete
@@ -133,18 +138,17 @@ impl RuntimeConfigCoordinator {
         snapshot: &ConfigSnapshot,
         ctx: &str,
     ) -> Result<(), String> {
-        Self::prepare_then_publish(
-            || self.prepare_router_runtime(state, snapshot, ctx),
-            |prepared| async move {
-                self.publish_router_runtime(state, prepared).await;
-                Ok(())
-            },
-        )
-        .await
+        let prepared = self
+            .prepare_router_runtime(state, snapshot, ctx)
+            .map_err(|error| log_err(ctx, error))?;
+        self.publish_router_runtime(state, prepared)
+            .await
+            .map_err(|error| log_err(ctx, error))
     }
 
     /// Keep preparation and publication as one fallible boundary: `apply` is
     /// never invoked when constructing the replacement fails.
+    #[cfg(test)]
     async fn prepare_then_publish<T, E, Prepare, Apply, ApplyFuture>(
         prepare: Prepare,
         apply: Apply,
@@ -200,6 +204,14 @@ impl RuntimeConfigCoordinator {
             media,
         })
     }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum RouterRuntimePublishError {
+    #[error("Agent router publication failed: {0}")]
+    Agent(#[source] anyhow::Error),
+    #[error(transparent)]
+    ToolCatalog(#[from] haven_tools::CatalogRebuildError),
 }
 
 pub(crate) fn partial_config_apply_error(error: impl std::fmt::Display) -> String {
@@ -385,6 +397,23 @@ impl SettingsApplyPhase {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SettingsApplyFailureKind {
+    RouterPrepare,
+    RuntimeOwner,
+    ToolCatalogRebuild,
+}
+
+impl SettingsApplyFailureKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::RouterPrepare => "router_prepare",
+            Self::RuntimeOwner => "runtime_owner",
+            Self::ToolCatalogRebuild => "tool_catalog_rebuild",
+        }
+    }
+}
+
 const SETTINGS_APPLY_PHASE_ORDER: [SettingsApplyPhase; 16] = [
     SettingsApplyPhase::RouterPrepare,
     SettingsApplyPhase::InputPipeline,
@@ -449,14 +478,32 @@ impl SettingsApplyPlan {
 pub(crate) struct SettingsApplyObservation {
     pub(crate) config_version: u64,
     pub(crate) phase: SettingsApplyPhase,
+    pub(crate) failure_kind: Option<SettingsApplyFailureKind>,
     pub(crate) router_published: bool,
     pub(crate) restart_required_targets: Vec<RuntimeConfigTarget>,
 }
 
 impl SettingsApplyObservation {
-    fn record(&self, command: &str, error: &dyn std::fmt::Display, warning: bool) {
+    fn record(
+        &self,
+        command: &str,
+        error: &dyn std::fmt::Display,
+        failure_kind: Option<SettingsApplyFailureKind>,
+    ) {
         let safe_error = crate::logging::sanitize_error_text(&error.to_string());
-        if warning {
+        if let Some(failure_kind) = failure_kind {
+            tracing::error!(
+                command,
+                config_version = self.config_version,
+                phase = self.phase.as_str(),
+                failure_kind = failure_kind.as_str(),
+                router_published = self.router_published,
+                restart_required = !self.restart_required_targets.is_empty(),
+                restart_required_targets = ?self.restart_required_targets,
+                error = %safe_error,
+                "settings runtime apply failed"
+            );
+        } else {
             tracing::warn!(
                 command,
                 config_version = self.config_version,
@@ -466,17 +513,6 @@ impl SettingsApplyObservation {
                 restart_required_targets = ?self.restart_required_targets,
                 error = %safe_error,
                 "settings runtime apply warning"
-            );
-        } else {
-            tracing::error!(
-                command,
-                config_version = self.config_version,
-                phase = self.phase.as_str(),
-                router_published = self.router_published,
-                restart_required = !self.restart_required_targets.is_empty(),
-                restart_required_targets = ?self.restart_required_targets,
-                error = %safe_error,
-                "settings runtime apply failed"
             );
         }
     }
@@ -492,6 +528,8 @@ pub(crate) enum SettingsApplyOutcome {
         command: &'static str,
         error: String,
         already_rendered: bool,
+        failure_kind: SettingsApplyFailureKind,
+        router_published: bool,
     },
     Warning {
         command: &'static str,
@@ -509,6 +547,34 @@ impl SettingsApplyOutcome {
             command,
             error: error.to_string(),
             already_rendered: false,
+            failure_kind: SettingsApplyFailureKind::RuntimeOwner,
+            router_published: false,
+        }
+    }
+
+    pub(crate) fn failed_catalog_rebuild(
+        command: &'static str,
+        error: impl std::fmt::Display,
+    ) -> Self {
+        Self::Failed {
+            command,
+            error: error.to_string(),
+            already_rendered: false,
+            failure_kind: SettingsApplyFailureKind::ToolCatalogRebuild,
+            router_published: false,
+        }
+    }
+
+    pub(crate) fn failed_catalog_rebuild_after_router_publish(
+        command: &'static str,
+        error: impl std::fmt::Display,
+    ) -> Self {
+        Self::Failed {
+            command,
+            error: error.to_string(),
+            already_rendered: false,
+            failure_kind: SettingsApplyFailureKind::ToolCatalogRebuild,
+            router_published: true,
         }
     }
 
@@ -517,6 +583,8 @@ impl SettingsApplyOutcome {
             command,
             error,
             already_rendered: true,
+            failure_kind: SettingsApplyFailureKind::RouterPrepare,
+            router_published: false,
         }
     }
 
@@ -533,6 +601,7 @@ impl SettingsApplyOutcome {
 pub(crate) struct SettingsRuntimeApplyCoordinator {
     plan: SettingsApplyPlan,
     phase: Option<SettingsApplyPhase>,
+    failure_kind: Option<SettingsApplyFailureKind>,
     router_published: bool,
 }
 
@@ -541,6 +610,7 @@ impl SettingsRuntimeApplyCoordinator {
         Self {
             plan: SettingsApplyPlan::from_change(change, snapshot, old_hotkey),
             phase: None,
+            failure_kind: None,
             router_published: false,
         }
     }
@@ -558,6 +628,7 @@ impl SettingsRuntimeApplyCoordinator {
     {
         for phase in self.plan.phases().iter().copied() {
             self.phase = Some(phase);
+            self.failure_kind = None;
             match execute(phase).await {
                 SettingsApplyOutcome::Applied => {
                     if phase == SettingsApplyPhase::RouterPublish {
@@ -568,17 +639,22 @@ impl SettingsRuntimeApplyCoordinator {
                     command,
                     error,
                     already_rendered,
+                    failure_kind,
+                    router_published,
                 } => {
+                    self.router_published |= router_published;
+                    self.failure_kind = Some(failure_kind);
                     let rendered = if already_rendered {
                         error
                     } else {
                         log_err(command, error)
                     };
-                    self.observation(phase).record(command, &rendered, false);
+                    self.observation(phase)
+                        .record(command, &rendered, Some(failure_kind));
                     return Err(rendered);
                 }
                 SettingsApplyOutcome::Warning { command, error } => {
-                    self.observation(phase).record(command, &error, true);
+                    self.observation(phase).record(command, &error, None);
                 }
             }
         }
@@ -590,6 +666,7 @@ impl SettingsRuntimeApplyCoordinator {
         SettingsApplyObservation {
             config_version: self.plan.config_version,
             phase,
+            failure_kind: self.failure_kind,
             router_published: self.router_published,
             restart_required_targets: self.plan.restart_required_targets.clone(),
         }
@@ -917,10 +994,14 @@ mod tests {
                     async move {
                         seen.lock().unwrap().push(phase);
                         if phase == failed_phase {
-                            SettingsApplyOutcome::failed_already_rendered(
-                                "settings_phase_test",
-                                "phase failed".into(),
-                            )
+                            if phase == SettingsApplyPhase::RouterPrepare {
+                                SettingsApplyOutcome::failed_already_rendered(
+                                    "settings_phase_test",
+                                    "phase failed".into(),
+                                )
+                            } else {
+                                SettingsApplyOutcome::failed("settings_phase_test", "phase failed")
+                            }
                         } else {
                             SettingsApplyOutcome::applied()
                         }
@@ -938,6 +1019,14 @@ mod tests {
             assert_eq!(failure.config_version, 19);
             assert_eq!(failure.phase, failed_phase);
             assert_eq!(
+                failure.failure_kind,
+                Some(if failed_phase == SettingsApplyPhase::RouterPrepare {
+                    SettingsApplyFailureKind::RouterPrepare
+                } else {
+                    SettingsApplyFailureKind::RuntimeOwner
+                })
+            );
+            assert_eq!(
                 failure.router_published,
                 expected_phases[..failed_index].contains(&SettingsApplyPhase::RouterPublish)
             );
@@ -949,6 +1038,49 @@ mod tests {
                 ]
             );
         }
+    }
+
+    #[tokio::test]
+    async fn router_publish_catalog_failure_reports_partial_publish_and_stops_later_phases() {
+        let change = ConfigChanged {
+            version: 25,
+            domains: vec![ConfigDomain::Llm, ConfigDomain::ContextLimits],
+        };
+        let snapshot = settings_snapshot(25, "Ctrl+Alt+O");
+        let mut coordinator =
+            SettingsRuntimeApplyCoordinator::new(&change, &snapshot, "Ctrl+Alt+O");
+        let mut seen = Vec::new();
+
+        let result = coordinator
+            .apply(|phase| {
+                seen.push(phase);
+                let outcome = if phase == SettingsApplyPhase::RouterPublish {
+                    SettingsApplyOutcome::failed_catalog_rebuild_after_router_publish(
+                        "update_settings router publish",
+                        "catalog conflict",
+                    )
+                } else {
+                    SettingsApplyOutcome::applied()
+                };
+                async move { outcome }
+            })
+            .await;
+
+        assert!(result.is_err());
+        assert_eq!(
+            seen,
+            vec![
+                SettingsApplyPhase::RouterPrepare,
+                SettingsApplyPhase::RouterPublish,
+            ]
+        );
+        let failure = coordinator.current_observation().unwrap();
+        assert_eq!(failure.phase, SettingsApplyPhase::RouterPublish);
+        assert_eq!(
+            failure.failure_kind,
+            Some(SettingsApplyFailureKind::ToolCatalogRebuild)
+        );
+        assert!(failure.router_published);
     }
 
     #[tokio::test]
@@ -1100,6 +1232,7 @@ mod tests {
         assert!(!rendered.contains("never-log-this-secret"));
         assert!(logs.contains("config_version=23"));
         assert!(logs.contains("phase=\"skills\""));
+        assert!(logs.contains("failure_kind=\"runtime_owner\""));
         assert!(logs.contains("router_published=true"));
         assert!(logs.contains("restart_required=true"));
         assert!(logs.contains("restart_required_targets=[Skills, MemoryRuntime]"));

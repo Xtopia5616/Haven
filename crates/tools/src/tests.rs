@@ -126,11 +126,12 @@ async fn test_tools_manager_new() {
 #[tokio::test]
 async fn scoped_catalog_rebuild_reuses_unaffected_runtime_instances() {
     let mgr = ToolsManager::new();
-    mgr.rebuild_catalog().await;
+    mgr.rebuild_catalog().await.unwrap();
     let ask_before = mgr.registry().get("ask").await.unwrap();
     let shell_before = mgr.get_tool("shell").await.unwrap();
 
-    mgr.set_default_shell(ShellChoice::default()).await;
+    let outcome = mgr.set_default_shell(ShellChoice::default()).await.unwrap();
+    assert_eq!(outcome, CatalogRebuildOutcome::Published);
 
     let ask_after = mgr.registry().get("ask").await.unwrap();
     let shell_after = mgr.get_tool("shell").await.unwrap();
@@ -158,7 +159,8 @@ async fn manager_control_plane_errors_preserve_structured_metadata() {
             ..Default::default()
         },
     )]))
-    .await;
+    .await
+    .unwrap();
     let disabled = mgr
         .execute_tool(None, "ask", json!({}), CancellationToken::new())
         .await
@@ -190,7 +192,7 @@ async fn runtime_capabilities_report_unavailable_backends_explicitly() {
 #[tokio::test]
 async fn tool_catalog_snapshot_captures_lookup_policy_and_manifest() {
     let mgr = ToolsManager::new();
-    mgr.rebuild_catalog().await;
+    mgr.rebuild_catalog().await.unwrap();
 
     let snapshot = mgr.tool_catalog_snapshot("ses-snapshot").await;
     let tool = snapshot
@@ -246,7 +248,7 @@ impl Tool for SessionAuthorizationTool {
 #[tokio::test]
 async fn authorization_policy_matches_live_and_snapshot_session_overlay() {
     let mgr = ToolsManager::new();
-    mgr.rebuild_catalog().await;
+    mgr.rebuild_catalog().await.unwrap();
     let session_id = "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     let tool_name = "mcp__policy__invoke";
     let input = json!({"value": "payload"});
@@ -292,7 +294,7 @@ async fn authorization_policy_matches_live_and_snapshot_session_overlay() {
 #[tokio::test]
 async fn tool_catalog_snapshot_keeps_provider_surface_stable_after_drift() {
     let mgr = ToolsManager::new();
-    mgr.rebuild_catalog().await;
+    mgr.rebuild_catalog().await.unwrap();
     let before = mgr.tool_catalog_snapshot("ses-drift").await;
     assert!(
         before
@@ -446,7 +448,18 @@ async fn test_tools_manager_set_tool_settings() {
     let mgr = ToolsManager::new();
     let mut settings = HashMap::new();
     settings.insert("test_tool".into(), ToolConfig::default());
-    mgr.set_tool_settings(settings).await;
+    mgr.set_tool_settings(settings).await.unwrap();
+}
+
+#[tokio::test]
+async fn unchanged_tool_settings_report_that_catalog_rebuild_was_skipped() {
+    let mgr = ToolsManager::new();
+    let version_before = mgr.registry().version();
+
+    let outcome = mgr.set_tool_settings(HashMap::new()).await.unwrap();
+
+    assert_eq!(outcome, CatalogRebuildOutcome::Unchanged);
+    assert_eq!(mgr.registry().version(), version_before);
 }
 
 #[tokio::test]
@@ -457,7 +470,7 @@ async fn test_tools_manager_set_context_limits_stores_global_cap() {
         max_observation_chars: 5_000,
         ..Default::default()
     };
-    mgr.set_context_limits(limits).await;
+    mgr.set_context_limits(limits).await.unwrap();
     assert_eq!(mgr.context_limits().await.max_observation_chars, 5_000);
 }
 
@@ -468,7 +481,7 @@ async fn observation_text_uses_same_global_cap_for_adapters() {
         max_observation_chars: 4,
         ..Default::default()
     };
-    mgr.set_context_limits(limits).await;
+    mgr.set_context_limits(limits).await.unwrap();
     let result = ToolResult::ok(json!("123456"));
     assert_eq!(mgr.observation_text("adapter", &result).await, "1234");
 }
@@ -489,7 +502,7 @@ async fn test_tools_manager_get_tool_not_found() {
 #[tokio::test]
 async fn test_signal_declaring_tools_populate_result_signals() {
     let mgr = ToolsManager::new();
-    mgr.rebuild_catalog().await;
+    mgr.rebuild_catalog().await.unwrap();
 
     let ask = mgr
         .execute_tool(
@@ -530,7 +543,7 @@ async fn test_tools_manager_execute_tool_not_found() {
 #[tokio::test]
 async fn test_tools_manager_rebuild_catalog_registers_builtins() {
     let mgr = ToolsManager::new();
-    mgr.rebuild_catalog().await;
+    mgr.rebuild_catalog().await.unwrap();
 
     let builtin_tools = mgr.list_builtin_tools().await;
     let names: Vec<_> = builtin_tools
@@ -647,7 +660,7 @@ async fn test_tools_manager_rebuild_catalog_registers_builtins() {
 #[tokio::test]
 async fn stable_core_tools_are_registered_without_optional_providers() {
     let mgr = ToolsManager::new();
-    mgr.rebuild_catalog().await;
+    mgr.rebuild_catalog().await.unwrap();
 
     for name in CORE_MODEL_TOOLS {
         assert!(
@@ -668,7 +681,7 @@ async fn stable_core_tools_are_registered_without_optional_providers() {
 #[tokio::test]
 async fn test_tool_catalog_exposes_three_layers_without_loading_deferred_tools() {
     let mgr = ToolsManager::new();
-    mgr.rebuild_catalog().await;
+    mgr.rebuild_catalog().await.unwrap();
     let session_id = "ses-0123456789abcdef0123456789abcdef";
 
     let families = mgr
@@ -839,7 +852,7 @@ async fn test_tool_catalog_exposes_three_layers_without_loading_deferred_tools()
 #[tokio::test]
 async fn tool_catalog_describe_does_not_connect_or_execute_mcp() {
     let mgr = ToolsManager::new();
-    mgr.rebuild_catalog().await;
+    mgr.rebuild_catalog().await.unwrap();
     mgr.upsert_mcp_server_config(McpServerConfig {
         name: "unconnected-catalog-server".into(),
         command: "this-command-must-not-run".into(),
@@ -868,7 +881,7 @@ async fn tool_catalog_describe_does_not_connect_or_execute_mcp() {
 #[tokio::test]
 async fn test_tools_manager_disabled_tool_excluded_and_blocked() {
     let mgr = ToolsManager::new();
-    mgr.rebuild_catalog().await;
+    mgr.rebuild_catalog().await.unwrap();
 
     // Disable the `files` tool.
     let mut settings = HashMap::new();
@@ -879,7 +892,7 @@ async fn test_tools_manager_disabled_tool_excluded_and_blocked() {
             ..Default::default()
         },
     );
-    mgr.set_tool_settings(settings).await;
+    mgr.set_tool_settings(settings).await.unwrap();
 
     // Excluded from the agent-facing registry...
     assert!(mgr.get_tool("files").await.is_none());
@@ -912,7 +925,7 @@ async fn test_tools_manager_disabled_tool_excluded_and_blocked() {
 #[tokio::test]
 async fn test_tools_manager_execute_builtin_tool() {
     let mgr = ToolsManager::new();
-    mgr.rebuild_catalog().await;
+    mgr.rebuild_catalog().await.unwrap();
 
     let tmp = TempDir::new().unwrap();
     let file = tmp.path().join("hello.txt");
@@ -937,7 +950,7 @@ async fn test_tools_manager_execute_builtin_tool() {
 #[tokio::test]
 async fn operation_view_accepts_trusted_private_session_metadata() {
     let mgr = ToolsManager::new();
-    mgr.rebuild_catalog().await;
+    mgr.rebuild_catalog().await.unwrap();
 
     let tmp = TempDir::new().unwrap();
     let file = tmp.path().join("listed.txt");
@@ -1091,7 +1104,8 @@ async fn execute_tool_retries_transient_failure_by_default() {
             ..Default::default()
         },
     )]))
-    .await;
+    .await
+    .unwrap();
     mgr.registry()
         .register(Arc::new(FlakyTool {
             attempts: attempts.clone(),
@@ -1169,7 +1183,8 @@ async fn execute_tool_never_retries_when_side_effect_outcome_is_unknown() {
                 ..Default::default()
             },
         )]))
-        .await;
+        .await
+        .unwrap();
     manager
         .registry()
         .register(Arc::new(UnknownSideEffectTool {
@@ -1232,7 +1247,8 @@ async fn settings_without_timeout_preserve_intrinsic_timeout() {
             ..Default::default()
         },
     )]))
-    .await;
+    .await
+    .unwrap();
     mgr.registry()
         .register(Arc::new(SlowIntrinsicTool))
         .await
@@ -1297,7 +1313,8 @@ async fn settings_without_retry_fields_preserve_intrinsic_retry_policy() {
             ..Default::default()
         },
     )]))
-    .await;
+    .await
+    .unwrap();
     mgr.registry()
         .register(Arc::new(IntrinsicRetryTool {
             attempts: attempts.clone(),
@@ -1341,7 +1358,7 @@ async fn test_list_schemas_for_session_includes_per_session_tools() {
     use haven_skills::SkillManifest;
 
     let mgr = ToolsManager::new();
-    mgr.rebuild_catalog().await;
+    mgr.rebuild_catalog().await.unwrap();
 
     // Before registering a per-session tool, schemas come only from the
     // global registry.
@@ -1378,7 +1395,7 @@ async fn test_list_schemas_for_session_includes_per_session_tools() {
 #[tokio::test]
 async fn test_session_catalog_version_does_not_invalidate_other_sessions() {
     let mgr = ToolsManager::new();
-    mgr.rebuild_catalog().await;
+    mgr.rebuild_catalog().await.unwrap();
     let before_a = mgr.catalog_version_for_session("ses-a").await;
     let before_b = mgr.catalog_version_for_session("ses-b").await;
 
@@ -1410,7 +1427,7 @@ async fn test_session_catalog_version_does_not_invalidate_other_sessions() {
     assert_eq!(after_a.1, before_a.1 + 1);
     assert_eq!(after_b, before_b);
 
-    mgr.rebuild_catalog().await;
+    mgr.rebuild_catalog().await.unwrap();
     let after_global_a = mgr.catalog_version_for_session("ses-a").await;
     let after_global_b = mgr.catalog_version_for_session("ses-b").await;
     assert!(after_global_a.0 > after_a.0);
@@ -1551,7 +1568,7 @@ async fn test_rebuild_catalog_does_not_register_mcp_tools() {
     // Progressive loading: MCP tools must NOT be in the global registry.
     // They should only appear per-session after `load_mcp`.
     let mgr = ToolsManager::new();
-    mgr.rebuild_catalog().await;
+    mgr.rebuild_catalog().await.unwrap();
     let schemas = mgr.registry().list_schemas().await;
     assert!(
         !schemas
@@ -1564,7 +1581,7 @@ async fn test_rebuild_catalog_does_not_register_mcp_tools() {
 #[tokio::test]
 async fn test_builtin_loader_keeps_deferred_tools_out_of_provider_surface() {
     let mgr = ToolsManager::new();
-    mgr.rebuild_catalog().await;
+    mgr.rebuild_catalog().await.unwrap();
 
     assert!(mgr.registry().get("shell").await.is_none());
     assert!(mgr.get_tool("shell").await.is_some());
@@ -1601,7 +1618,7 @@ async fn test_list_defs_for_session_caps_at_max_tools() {
     use haven_common::config::ContextLimitsConfig;
 
     let mgr = ToolsManager::new();
-    mgr.rebuild_catalog().await;
+    mgr.rebuild_catalog().await.unwrap();
     let global = mgr.registry().list_defs().await.len();
     assert!(global > 0, "catalog should have builtins");
 
@@ -1663,7 +1680,7 @@ async fn private_live_output_ids_are_stripped_and_reinjected() {
     use std::sync::Mutex;
 
     let mgr = ToolsManager::new();
-    mgr.rebuild_catalog().await;
+    mgr.rebuild_catalog().await.unwrap();
     let hits: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let hits2 = hits.clone();
     mgr.share_services()
@@ -1725,7 +1742,7 @@ async fn private_live_output_ids_are_stripped_and_reinjected() {
 #[tokio::test]
 async fn registered_operation_manifest_matches_runtime_policy() {
     let mgr = ToolsManager::new();
-    mgr.rebuild_catalog().await;
+    mgr.rebuild_catalog().await.unwrap();
     let mut tools = mgr.registry().list().await;
     tools.extend(mgr.operations().deferred().list().await);
     let find = |name: &str| {

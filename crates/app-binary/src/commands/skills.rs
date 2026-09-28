@@ -30,7 +30,11 @@ pub async fn refresh_skills(
         .await
         .map_err(|e| log_err("refresh_skills", e))?;
     // Rebuild tool catalog so skills appear in the Reasoner's tool list.
-    state.tools.rebuild_catalog().await;
+    state
+        .tools
+        .rebuild_catalog()
+        .await
+        .map_err(|error| log_err("refresh_skills catalog", error))?;
     // Notify the frontend that the registry changed so views can refetch.
     emit_event_logged(
         &app,

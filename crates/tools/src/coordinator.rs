@@ -30,7 +30,7 @@ impl ToolRuntimeCoordinator {
         image_gen_client: Option<Arc<dyn haven_llm::ImageGenClient>>,
         tts_client: Option<Arc<dyn haven_llm::TtsClient>>,
         media_config: haven_common::config::MediaConfig,
-    ) {
+    ) -> Result<CatalogRebuildOutcome, CatalogRebuildError> {
         self.runtime
             .update_platform(|current| {
                 let mut next = current.clone();
@@ -44,7 +44,7 @@ impl ToolRuntimeCoordinator {
             })
             .await;
         self.rebuild_catalog_scoped(CatalogRebuildScope::roots(["media", "files", "window"]))
-            .await;
+            .await
     }
 
     pub(crate) async fn wire_startup(&self, wiring: StartupWiring) -> anyhow::Result<()> {
@@ -114,7 +114,8 @@ impl ToolRuntimeCoordinator {
             network_policy = ?applied.security.network_policy,
             "startup platform snapshot published"
         );
-        self.rebuild_catalog_scoped(CatalogRebuildScope::All).await;
+        self.rebuild_catalog_scoped(CatalogRebuildScope::All)
+            .await?;
         Ok(())
     }
 
@@ -138,7 +139,10 @@ impl ToolRuntimeCoordinator {
         );
     }
 
-    pub(crate) async fn set_admin_context(&self, ctx: builtin::AdminContext) {
+    pub(crate) async fn set_admin_context(
+        &self,
+        ctx: builtin::AdminContext,
+    ) -> Result<CatalogRebuildOutcome, CatalogRebuildError> {
         self.runtime
             .update_platform(|current| {
                 let mut next = current.clone();
@@ -146,10 +150,13 @@ impl ToolRuntimeCoordinator {
                 next
             })
             .await;
-        self.rebuild_catalog_scoped(CatalogRebuildScope::All).await;
+        self.rebuild_catalog_scoped(CatalogRebuildScope::All).await
     }
 
-    pub(crate) async fn set_tool_settings(&self, settings: HashMap<String, ToolConfig>) {
+    pub(crate) async fn set_tool_settings(
+        &self,
+        settings: HashMap<String, ToolConfig>,
+    ) -> Result<CatalogRebuildOutcome, CatalogRebuildError> {
         let affected = self
             .runtime
             .update_platform_with(|current| {
@@ -170,11 +177,17 @@ impl ToolRuntimeCoordinator {
         self.core.authorization.set_tool_settings(settings).await;
         if !affected.is_empty() {
             self.rebuild_catalog_scoped(CatalogRebuildScope::Roots(affected))
-                .await;
+                .await
+        } else {
+            Ok(CatalogRebuildOutcome::Unchanged)
         }
     }
 
-    pub(crate) async fn set_tool_enabled(&self, name: &str, enabled: bool) {
+    pub(crate) async fn set_tool_enabled(
+        &self,
+        name: &str,
+        enabled: bool,
+    ) -> Result<CatalogRebuildOutcome, CatalogRebuildError> {
         self.runtime
             .update_platform(|current| {
                 let mut next = current.clone();
@@ -189,10 +202,13 @@ impl ToolRuntimeCoordinator {
             .split('.')
             .next()
             .unwrap_or(name)]))
-            .await;
+            .await
     }
 
-    pub(crate) async fn set_context_limits(&self, limits: ContextLimitsConfig) {
+    pub(crate) async fn set_context_limits(
+        &self,
+        limits: ContextLimitsConfig,
+    ) -> Result<CatalogRebuildOutcome, CatalogRebuildError> {
         self.builtins.mcp_manager.set_limits(&limits).await;
         self.builtins.skills_engine.set_limits(&limits).await;
         self.runtime.action_service.set_limits(&limits).await;
@@ -204,10 +220,13 @@ impl ToolRuntimeCoordinator {
                 next
             })
             .await;
-        self.rebuild_catalog_scoped(CatalogRebuildScope::All).await;
+        self.rebuild_catalog_scoped(CatalogRebuildScope::All).await
     }
 
-    pub(crate) async fn set_default_shell(&self, shell: ShellChoice) {
+    pub(crate) async fn set_default_shell(
+        &self,
+        shell: ShellChoice,
+    ) -> Result<CatalogRebuildOutcome, CatalogRebuildError> {
         self.runtime
             .update_platform(|current| {
                 let mut next = current.clone();
@@ -216,7 +235,7 @@ impl ToolRuntimeCoordinator {
             })
             .await;
         self.rebuild_catalog_scoped(CatalogRebuildScope::roots(["shell"]))
-            .await;
+            .await
     }
 
     pub(crate) async fn load_mcp_from_config(&self, servers: &[McpServerConfig]) {
@@ -267,11 +286,16 @@ impl ToolRuntimeCoordinator {
         self.core.operations.sessions.bump_global_version();
     }
 
-    pub(crate) async fn rebuild_catalog(&self) {
-        self.rebuild_catalog_scoped(CatalogRebuildScope::All).await;
+    pub(crate) async fn rebuild_catalog(
+        &self,
+    ) -> Result<CatalogRebuildOutcome, CatalogRebuildError> {
+        self.rebuild_catalog_scoped(CatalogRebuildScope::All).await
     }
 
-    pub(crate) async fn rebuild_catalog_scoped(&self, scope: CatalogRebuildScope) {
+    pub(crate) async fn rebuild_catalog_scoped(
+        &self,
+        scope: CatalogRebuildScope,
+    ) -> Result<CatalogRebuildOutcome, CatalogRebuildError> {
         let mut all_tools: Vec<ToolBox> = Vec::new();
         let previous_catalog = self.runtime.builtin_catalog().await;
         let previous_by_name: HashMap<String, ToolBox> = previous_catalog
@@ -310,11 +334,10 @@ impl ToolRuntimeCoordinator {
             .iter()
             .cloned()
             .partition(|tool| is_core_model_tool(&tool.name()));
-        if let Err(error) = self.core.operations.installed.rebuild(active_tools).await {
+        if let Err(source) = self.core.operations.installed.rebuild(active_tools).await {
             // Keep the previous atomic snapshot on a construction conflict.
             // A partial catalog could make authorization and execution disagree.
-            tracing::error!(error = %error, "builtin catalog rebuild rejected");
-            return;
+            return Err(CatalogRebuildError::RegistryRejected { source });
         }
         self.core.operations.deferred.replace(deferred_tools).await;
         self.runtime
@@ -324,6 +347,7 @@ impl ToolRuntimeCoordinator {
             })
             .await;
         self.core.operations.sessions.bump_global_version();
+        Ok(CatalogRebuildOutcome::Published)
     }
 
     pub(crate) async fn build_mcp_index(&self) -> Vec<Value> {
@@ -510,7 +534,8 @@ mod tests {
                 None,
                 haven_common::config::MediaConfig::default(),
             )
-            .await;
+            .await
+            .unwrap();
 
         let after = coordinator.runtime.platform().await;
         assert!(!Arc::ptr_eq(&before, &after));
@@ -579,7 +604,7 @@ mod tests {
 
         let before_rebuild = coordinator.core.operations.sessions.global_version();
         let refreshed_mcp_version = coordinator.builtins.mcp_manager.catalog_version();
-        coordinator.rebuild_catalog().await;
+        coordinator.rebuild_catalog().await.unwrap();
         assert!(coordinator.core.operations.sessions.global_version() > before_rebuild);
         assert_eq!(
             coordinator.builtins.mcp_manager.catalog_version(),

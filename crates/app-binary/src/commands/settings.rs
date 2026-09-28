@@ -1,7 +1,7 @@
 use crate::app_state::AppState;
 use crate::commands::log_err;
 use crate::config_runtime::{
-    PreparedRouterRuntime, SettingsApplyOutcome, SettingsApplyPhase,
+    PreparedRouterRuntime, RouterRuntimePublishError, SettingsApplyOutcome, SettingsApplyPhase,
     SettingsRuntimeApplyCoordinator, apply_log_level_to_handles,
 };
 use crate::events::{HOTKEY_REBIND_EVENT, HotkeyRebindEvent};
@@ -113,14 +113,21 @@ async fn execute_settings_apply_phase(
                 .pipeline
                 .update_config(config.media.audio.clone())
                 .await;
-            state.agent.set_media_strategy(config.media.input_strategy);
             timing.tick("pipeline.update_config");
-            SettingsApplyOutcome::applied()
+            match state.agent.set_media_strategy(config.media.input_strategy) {
+                Ok(()) => SettingsApplyOutcome::applied(),
+                Err(error) => SettingsApplyOutcome::failed("update_settings media strategy", error),
+            }
         }
         SettingsApplyPhase::Shell => {
-            state.tools.set_default_shell(config.default_shell).await;
+            let result = state.tools.set_default_shell(config.default_shell).await;
             timing.tick("set_default_shell");
-            SettingsApplyOutcome::applied()
+            match result {
+                Ok(_) => SettingsApplyOutcome::applied(),
+                Err(error) => {
+                    SettingsApplyOutcome::failed_catalog_rebuild("update_settings shell", error)
+                }
+            }
         }
         SettingsApplyPhase::Security => {
             state.tools.apply_security(&config.security).await;
@@ -147,43 +154,78 @@ async fn execute_settings_apply_phase(
                 .expect("prepared router mutex poisoned")
                 .take()
                 .expect("router target always has a prepared runtime");
-            state
+            let result = state
                 .config_apply_gate
                 .publish_router_runtime(&state, prepared)
                 .await;
             timing.tick("publish_router_runtime");
-            crate::commands::emit_llm_config_changed(&app);
-            SettingsApplyOutcome::applied()
+            match result {
+                Ok(()) => {
+                    crate::commands::emit_llm_config_changed(&app);
+                    SettingsApplyOutcome::applied()
+                }
+                Err(RouterRuntimePublishError::ToolCatalog(error)) => {
+                    crate::commands::emit_llm_config_changed(&app);
+                    SettingsApplyOutcome::failed_catalog_rebuild_after_router_publish(
+                        "update_settings router publish",
+                        error,
+                    )
+                }
+                Err(error @ RouterRuntimePublishError::Agent(_)) => {
+                    SettingsApplyOutcome::failed("update_settings router publish", error)
+                }
+            }
         }
         SettingsApplyPhase::ContextLimits => {
             state.pipeline.set_limits(&config.context_limits);
-            state
+            let result = state
                 .tools
                 .set_context_limits(config.context_limits.clone())
                 .await;
-            state
-                .agent
-                .set_context_limits(config.context_limits.clone());
             timing.tick("set_context_limits");
-            SettingsApplyOutcome::applied()
+            match result {
+                Err(error) => SettingsApplyOutcome::failed_catalog_rebuild(
+                    "update_settings context limits",
+                    error,
+                ),
+                Ok(_) => match state
+                    .agent
+                    .set_context_limits(config.context_limits.clone())
+                {
+                    Ok(()) => SettingsApplyOutcome::applied(),
+                    Err(error) => {
+                        SettingsApplyOutcome::failed("update_settings agent context limits", error)
+                    }
+                },
+            }
         }
         SettingsApplyPhase::SessionRuntime => {
-            state.agent.set_max_steps(config.session.max_steps);
-            state
+            if let Err(error) = state.agent.set_max_steps(config.session.max_steps) {
+                return SettingsApplyOutcome::failed("update_settings max steps", error);
+            }
+            if let Err(error) = state
                 .agent
-                .set_session_max_steps(config.session.session_max_steps);
+                .set_session_max_steps(config.session.session_max_steps)
+            {
+                return SettingsApplyOutcome::failed("update_settings session max steps", error);
+            }
             state
                 .executor
                 .set_max_concurrent(config.session.max_concurrent);
             SettingsApplyOutcome::applied()
         }
         SettingsApplyPhase::ToolSettings => {
-            state
-                .services
-                .authorization
+            let result = state
+                .tools
                 .set_tool_settings(config.tool_settings.clone())
                 .await;
-            SettingsApplyOutcome::applied()
+            match result {
+                Ok(_) => SettingsApplyOutcome::applied(),
+                Err(error) => SettingsApplyOutcome::failed_catalog_rebuild(
+                    "update_settings tool settings",
+                    error,
+                ),
+            }
         }
         SettingsApplyPhase::Skills => match state
             .services

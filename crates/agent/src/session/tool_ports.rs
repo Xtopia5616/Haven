@@ -452,7 +452,7 @@ mod tests {
                 ..ToolConfig::default()
             },
         );
-        tools.set_tool_settings(settings).await;
+        tools.set_tool_settings(settings).await.unwrap();
         let result = ToolResult::ok(json!("012345"));
         let adapter = ToolsManagerToolObservationAdapter::new(Arc::clone(&tools));
 
@@ -479,7 +479,7 @@ mod tests {
             .set_config(Some(skills_root.path().to_path_buf()), None)
             .await
             .unwrap();
-        tools.rebuild_catalog().await;
+        tools.rebuild_catalog().await.unwrap();
         let adapter = ToolsManagerSessionToolOverlayAdapter::new(Arc::clone(&tools));
         let session_id = "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         let other_session_id = "ses-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";

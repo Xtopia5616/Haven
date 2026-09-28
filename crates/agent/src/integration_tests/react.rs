@@ -314,7 +314,7 @@ async fn budget_exhaustion_pauses_with_notification_and_no_chat_message() {
         },
     )]));
     let (agent, executor) = make_test_agent_with(client, Arc::new(ToolsManager::new()));
-    agent.set_max_steps(1);
+    agent.set_max_steps(1).unwrap();
     let recorder = make_recording_emitter();
     agent.set_emitter(recorder.clone());
     let session = executor.create_session("session").await.unwrap();
@@ -1865,7 +1865,7 @@ async fn pause_snapshot_includes_run_budget() {
     let (agent, executor) = make_test_agent_with(mock, tools);
     let collector = Arc::new(EventCollector::new());
     agent.set_emitter(collector);
-    agent.set_max_steps(12);
+    agent.set_max_steps(12).unwrap();
     let session = executor.create_session("budget on pause").await.unwrap();
     agent.run_session_from_id(&session.id).await.unwrap();
     assert_eq!(

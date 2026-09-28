@@ -22,10 +22,10 @@ Phase 5 的局部 target、phase 顺序和 Settings 失败观测没有第二份�
 
 - `ConfigService::edit` 保存新配置后递增内存 version 并发布 `ConfigChanged`，随后才进入 runtime apply。Settings 或 model 的 Router prepare 失败不会撤销配置。Settings 对同一 payload 再调用时是 no-op，不会重跑 apply；model 同一 mutation 再调用时 Router target 不再触发。model command 原有成功路径仍会发送 `llm:config_changed`，该事件不能重试 Router apply。当前没有针对已保存 snapshot 的显式 retry command。
 - Router/media prepare 在 publish 前构造替换对象；失败时 Settings 后续 phase 不运行，model 的 Router/media live generation 也保持旧值。准备对象可丢弃，按同一 snapshot 再构造是最清晰的局部重试候选，但现有命令没有暴露这个重试入口。
-- Router publish 先替换 Agent Router，再经 Tools runtime 更新 Router/media platform 并重建相关 catalog；它没有可传播的失败结果或共同原子交换。Settings 的 Router publish 之后还会继续 context、session、tool settings、skills、logging 和 hotkey phases。后续失败时不恢复旧 Router generation；`llm:config_changed` 已在 Router publish 后发出。
+- Router publish 先替换 Agent Router，再经 Tools runtime 更新 Router/media platform 并重建相关 catalog；它没有共同原子交换。Settings coordinator 现在能收到 Agent Router 锁失败和 catalog rebuild 拒绝：前者发生在 Agent Router 替换前，后者发生在替换后并记录 `router_published=true`。后者仍发送 `llm:config_changed`，随后停止 Settings 后续 phase；不恢复已替换的 Router generation。
 - Security apply 清除 session grants 并递增 policy revision。MCP config apply 会更新 server config index、catalog generation、连接/断开客户端并发布 status；MCP monitor phase 会为当前 client 启动 monitor task。重复执行整段 phase 可能清除临时授权、产生连接和事件副作用或启动重复 monitor，不能视为安全重试。MCP client 的断线重连由 MCP manager/client monitor 自己拥有。
 - Skills `set_config` 先替换 root/allowlist，再扫描目录；扫描失败时新 root 已保存到 engine，而旧 skill map 可能仍在。Logging 逐个修改 reload handle，失败时此前成功的 handle 不回滚。Hotkey unregister 成功而 register 失败会留下旧快捷键已移除的状态，不恢复旧绑定。它们都发生在 durable edit 之后，后续 Settings phase 停止，已完成状态保留。
-- pipeline、shell、context、session 和 tool settings 的接口当前不返回可传播 apply error；Settings failure tracker 无法宣称这些阶段的外部/内部失败已完整观测。Hotkey rebind event 仍是 warning-only，apply 命令成功语义不变。
+- Settings phase 的 apply 错误现在按 owner 传播：shell、context、tool settings 和 Router publish 的 builtin catalog rebuild 拒绝会到达 coordinator；Agent 的 media strategy、context limits、session step limit 与 router mutex poisoning 也会返回错误。InputPipeline 的配置替换、context pipeline limit 更新与 executor 并发上限更新没有内部失败分支，不制造虚假错误。Security 与 MCP config/monitor 接口仍由对应 owner 通过 MCP status/warning 表达连接和 monitor 结果，不把外部连接状态伪装成 Settings command 的 fatal apply error。Hotkey rebind event 仍是 warning-only。
 - 以上局部 setter 有些在相同输入下可重复写入，但各 phase 可能跨多个 runtime owner，且会重建 catalog、清理临时授权、启动任务或连接外部 MCP server；本 ADR 不把它们提升为可安全重试契约，也不新增补偿。
 
 因此只有尚未 publish 的 Router/media prepare 可作为“保留同一 snapshot 后重新构造”的安全候选；当前 command 没有保留该 retry context。live phase 没有 phase-level retry API。已保存配置可由用户后续修改覆盖，但这不等同于撤销已发的 `ConfigChanged`、已发布的 live runtime 或外部 MCP/hotkey 副作用。
@@ -44,8 +44,27 @@ Tools AdminServices 的 config writers 现在与 Settings/model 共用由 app co
 
 在审计时，产品还需决定 durable config 已更新但 live apply 失败时的用户语义、是否提供显式 retry/restart、不可逆副作用补偿边界及 Settings 错误呈现。后续已确认并实现部分 apply failure、重启从磁盘恢复、无自动 retry/compensation 等语义；不增加 config rollback、显式 retry、跨 subsystem compensation。
 
+## 实现跟进（2026-09-28）：Settings phase apply 失败观测
+
+逐项审计 Settings phase 后，`SettingsApplyOutcome` 增加 typed failure kind；`SettingsApplyObservation` 和结构化日志记录 `runtime_owner`、`tool_catalog_rebuild` 或 `router_prepare`。Settings 对同一 durable snapshot 仍不自动 retry、不 compensation、不 rollback，首个 fatal phase 仍停止后续执行。
+
+| Phase | 可传播失败与记录方式 | 当前无失败返回的操作 |
+|---|---|---|
+| Router prepare | 原有 builder error 经专用标记记录 `router_prepare` | — |
+| Input pipeline | Agent media strategy 的 poisoned mutex 错误记录 `runtime_owner` | Pipeline config 替换无失败分支 |
+| Shell | Tool catalog rebuild 拒绝记录 `tool_catalog_rebuild` | Platform snapshot 替换无失败分支 |
+| Security | 不产生 coordinator fatal | 授权/MCP policy 内存替换无失败分支 |
+| MCP config / monitors | 连接及 monitor 状态仍由 MCP manager status/warning 记录 | 配置接收和 monitor 启动接口无 fatal result |
+| Router publish | Agent router mutex 错误记录 `runtime_owner`；catalog 拒绝记录 `tool_catalog_rebuild` 且标记 Router 已发布 | Agent Router 替换后发生 catalog error 时仍发送 `llm:config_changed` |
+| Context limits | Tools catalog 拒绝及 Agent poisoned mutex 错误分别记录；pipeline limit 替换无失败分支 | — |
+| Session runtime | Agent max-step mutex 错误记录 `runtime_owner` | executor 并发上限调整无失败分支 |
+| Tool settings | Settings 现在经 `ToolsManager::set_tool_settings` 更新 platform、授权镜像和 catalog；catalog 拒绝记录 `tool_catalog_rebuild` | 授权镜像替换本身无失败分支 |
+| Skills / logging / hotkey | 延续原有可传播错误和 warning-only event 语义 | — |
+
+Tools catalog rebuild 返回 typed `CatalogRebuildOutcome` / `CatalogRebuildError`；Settings setters 不再吞掉 registry 对重复工具名的原子 rebuild 拒绝。部分 owner 已先更新 platform 或授权镜像时不做回滚，coordinator 按既定策略返回部分 apply 失败并保留 durable 配置。配置文件格式、数据库、Tauri IPC 和 phase 顺序不变；内部 Rust setter 改为 typed `Result`。新增回归覆盖 typed outcome、锁 poisoning 诊断、fatal 停止后续 phase，以及 Router 已发布时的准确观察状态。
+
 ## 审计结论与验证（2026-09-25）
 
 本切片只增加审计回归测试并记录产品决策边界。测试固定：每个可传播 fatal 的 Settings phase 失败后后续 phase 不再调用；warning-only hotkey event 仍由单独测试验证；Settings 和 model 在 runtime apply 失败后保留已保存配置；相同 payload/mutation 再执行为 no-op，不会隐式重试 runtime apply。现有 phase 顺序、prepare→publish 与错误脱敏测试继续作为行为基线。
 
-不改生产 apply 顺序、持久化、日志/通知、IPC、配置 schema 或 API。无需数据重置。完整逆操作、可重试 phase 和其他 config writer 的 gate/convergence 在产品决策后另行设计。
+无需数据重置。完整逆操作、可重试 phase 和其他 config writer 的 gate/convergence 不在本切片范围。
