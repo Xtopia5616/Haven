@@ -73,11 +73,6 @@ export function createChatSessionEventHandlers({
 	};
 
 	const finalizeLiveMessages = (sessionId: string) => {
-		clearToolOutputPreviewsForSession(sessionId);
-		// A lifecycle event can arrive while the last chunks are still queued for
-		// the next animation frame. Flush first, otherwise that frame can recreate
-		// a streaming bubble (and its blinking caret) after this cleanup.
-		flushChunksNow();
 		dispatchSession({ type: 'session/messages/finalized', sessionId });
 	};
 
@@ -146,12 +141,17 @@ export function createChatSessionEventHandlers({
 			}
 			if (isPausedStatus(data.status)) {
 				// Pausing or interrupting preserves the partial text for resume, but
-				// it is no longer live output in the UI, so its caret must stop.
+				// first flush queued chunks and stop its live preview/caret.
+				clearToolOutputPreviewsForSession(data.sessionId);
+				flushChunksNow();
 				finalizeLiveMessages(data.sessionId);
 			}
 			if (data.status === 'completed' || data.status === 'error') {
 				if (shouldRunTerminalCleanup) {
 					clearToolOutputPreviewsForSession(data.sessionId);
+					// Flush even for an inactive session: its queued RAF chunks must
+					// land before eviction, or a later frame can recreate its messages.
+					flushChunksNow();
 					evictTerminalSessionMemory(data.sessionId);
 					if (getActiveSessionId() === data.sessionId) {
 						finalizeLiveMessages(data.sessionId);
@@ -185,9 +185,13 @@ export function createChatSessionEventHandlers({
 			});
 			if (getActiveSessionId() === sessionId) {
 				clearAskAwaiting(sessionId);
-				if (shouldRunTerminalCleanup) finalizeLiveMessages(sessionId);
 			}
 			if (shouldRunTerminalCleanup) {
+				clearToolOutputPreviewsForSession(sessionId);
+				// Flush even for an inactive session before dropping its in-memory
+				// transcript so a queued frame cannot resurrect terminal messages.
+				flushChunksNow();
+				if (getActiveSessionId() === sessionId) finalizeLiveMessages(sessionId);
 				evictTerminalSessionMemory(sessionId);
 				clearStepBlockIds(sessionId);
 				scheduleLoadSessions();
@@ -204,9 +208,12 @@ export function createChatSessionEventHandlers({
 			});
 			if (sessionId === getActiveSessionId()) {
 				clearAskAwaiting(sessionId);
-				if (shouldRunTerminalCleanup) finalizeLiveMessages(sessionId);
 			}
 			if (shouldRunTerminalCleanup) {
+				clearToolOutputPreviewsForSession(sessionId);
+				// Drain background-session chunks before evicting the transcript.
+				flushChunksNow();
+				if (getActiveSessionId() === sessionId) finalizeLiveMessages(sessionId);
 				evictTerminalSessionMemory(sessionId);
 				clearStepBlockIds(sessionId);
 				scheduleLoadSessions();

@@ -261,6 +261,62 @@ describe('chat session lifecycle handlers', () => {
 	);
 
 	it.each(['completed', 'error'] as const)(
+		'clears tool previews for an inactive session on the primary terminal event',
+		(status) => {
+			const sessionId = `ses-background-terminal-${status}`;
+			const stepId = `step-background-terminal-${status}`;
+			const reducer = new SessionReducer({
+				...initialSessionState,
+				sessions: [
+					{ id: sessionId, status: 'running', title: '后台会话' },
+					{ id: 'ses-active', status: 'running', title: '当前会话' },
+				],
+				activeSessionId: 'ses-active',
+			});
+			const cleanupOrder: string[] = [];
+			const eventHandlers = handlers({
+				activeSessionId: 'ses-active',
+				flushChunksNow: () => cleanupOrder.push('flush'),
+				evictTerminalSessionMemory: () => cleanupOrder.push('evict'),
+				dispatchSession: (action) => reducer.dispatch(action),
+			});
+			setToolOutputPreview(stepId, '后台命令输出', sessionId);
+
+			if (status === 'completed') {
+				eventHandlers['session:completed']({
+					payload: {
+						sessionId,
+						status,
+						title: '后台会话',
+						reason: '已完成',
+						occurrenceId: 'occ-background-terminal',
+					},
+				} as never);
+			} else {
+				eventHandlers['session:error']({
+					payload: {
+						sessionId,
+						error: '请求失败',
+						occurrenceId: 'occ-background-terminal',
+					},
+				} as never);
+			}
+			eventHandlers['session:updated']({
+				payload: {
+					sessionId,
+					status,
+					title: '后台会话',
+					reason: status === 'completed' ? '已完成' : '请求失败',
+					occurrenceId: 'occ-background-terminal',
+				},
+			} as never);
+
+			expect(cleanupOrder).toEqual(['flush', 'evict']);
+			expect(get(getToolOutputPreviewStore(stepId))).toBeUndefined();
+		},
+	);
+
+	it.each(['completed', 'error'] as const)(
 		'lets a standalone session:updated %s event clean up live messages',
 		(status) => {
 			const sessionId = `ses-standalone-${status}`;

@@ -26,6 +26,6 @@ ADR 0349 found that one terminal occurrence is emitted on a primary channel and 
 
 The IPC DTO gains an optional field on `session:completed`, `session:error`, and paired terminal `session:updated` payloads. The frontend mapper validates and converts it to `occurrenceId`. No database, durable event, session storage, resume, or schema changes are made. Existing consumers may ignore the additive field.
 
-Regression coverage checks that Rust primary/secondary payload builders share an ID, the frontend mapper preserves it, paired chat cleanup and reducer notifications run once, identical reducer projections are no-ops, and standalone terminal `session:updated` still cleans up live messages. UI check/test/build and IPC event/contract scripts verify the frontend boundary; Rust app-binary tests verify the wire projection.
+Regression coverage checks that Rust primary/secondary payload builders share an ID, the frontend mapper preserves it, paired chat cleanup and reducer notifications run once, identical reducer projections are no-ops, standalone terminal `session:updated` still cleans up live messages, and inactive terminal sessions clear tool previews and flush queued chunks before memory eviction. UI check/test/build and IPC event/contract scripts verify the frontend boundary; Rust app-binary tests verify the wire projection.
 
 Rollback reverts the optional field, occurrence tracking, reducer equality guards, and tests/docs. No data reset is needed.
