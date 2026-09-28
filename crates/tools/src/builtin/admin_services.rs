@@ -13,8 +13,9 @@ use haven_common::config::{
 };
 use haven_common::types::McpTransportType;
 use haven_mcp::{McpClientStatus, McpStatusChangeEvent};
+use serde::Serialize;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -26,6 +27,223 @@ pub(crate) enum NativeMcpServiceError {
     Preflight(String),
     BeforeSideEffect(Error),
     SideEffect(Error),
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct LogsLevelResult {
+    pub(crate) level: LogLevel,
+    pub(crate) saved: bool,
+    pub(crate) version: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct ToolSetResult {
+    pub(crate) name: String,
+    pub(crate) enabled: bool,
+    pub(crate) saved: bool,
+    pub(crate) note: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct DiagnosticsStatus {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) config_path: Option<String>,
+    /// Masked configuration settings remain a dynamic config-tree payload.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) settings: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) config_error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) models: Option<BTreeMap<String, DiagnosticModelStatus>>,
+    pub(crate) tools: DiagnosticToolsStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) mcp: Option<Vec<McpStatusOutput>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) mcp_error: Option<String>,
+    pub(crate) skills: Vec<DiagnosticSkillOutput>,
+    pub(crate) sessions: DiagnosticSessionsOutput,
+    pub(crate) log: DiagnosticLogOutput,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct DiagnosticModelStatus {
+    pub(crate) configured: bool,
+    pub(crate) status: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct DiagnosticToolsStatus {
+    pub(crate) count: usize,
+    pub(crate) names: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct DiagnosticSkillOutput {
+    pub(crate) name: String,
+    pub(crate) enabled: bool,
+    pub(crate) description: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
+pub(crate) enum DiagnosticSessionsOutput {
+    Available {
+        total: i64,
+        recent_50_by_status: BTreeMap<String, usize>,
+    },
+    Unavailable {
+        unavailable: bool,
+    },
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct DiagnosticLogOutput {
+    pub(crate) path: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
+pub(crate) enum LogsTailOutput {
+    Read {
+        path: String,
+        total_lines: usize,
+        lines: Vec<String>,
+    },
+    Unavailable {
+        path: String,
+        error: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
+pub(crate) enum SessionsOutput {
+    Available { sessions: Vec<SessionSummaryOutput> },
+    Unavailable { unavailable: bool },
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct SessionSummaryOutput {
+    pub(crate) id: String,
+    pub(crate) status: haven_common::SessionStatus,
+    pub(crate) title: Option<String>,
+    pub(crate) input_chars: usize,
+    pub(crate) created_at: String,
+    pub(crate) updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
+pub(crate) enum ErrorsOutput {
+    Available { errors: Vec<SessionErrorOutput> },
+    Unavailable { unavailable: bool },
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct SessionErrorOutput {
+    pub(crate) id: String,
+    pub(crate) title: Option<String>,
+    pub(crate) input_chars: usize,
+    pub(crate) created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct SkillsListOutput {
+    pub(crate) skills: Vec<SkillSummaryOutput>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct SkillSummaryOutput {
+    pub(crate) name: String,
+    pub(crate) enabled: bool,
+    pub(crate) description: String,
+    pub(crate) root: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct SkillSetOutput {
+    pub(crate) name: String,
+    pub(crate) enabled: bool,
+    pub(crate) saved: bool,
+    pub(crate) note: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct SkillCreateOutput {
+    pub(crate) name: String,
+    pub(crate) created: bool,
+    pub(crate) root: String,
+    pub(crate) has_script: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct McpStatusOutput {
+    pub(crate) name: String,
+    pub(crate) enabled: bool,
+    pub(crate) connected: bool,
+    pub(crate) tools: usize,
+    pub(crate) last_error: String,
+    /// This field intentionally serializes as `null` when no diagnostic exists.
+    pub(crate) diagnostic: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct McpConnectionOutput {
+    pub(crate) name: String,
+    pub(crate) connected: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct McpAddOutput {
+    pub(crate) name: String,
+    pub(crate) enabled: bool,
+    pub(crate) saved: bool,
+    pub(crate) connected: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) warning: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct McpConfigUpdateOutput {
+    pub(crate) name: String,
+    pub(crate) enabled: bool,
+    pub(crate) saved: bool,
+    pub(crate) connected: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct McpRemoveOutput {
+    pub(crate) name: String,
+    pub(crate) removed: bool,
+    pub(crate) connected: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
+pub(crate) enum McpReloadConnectionOutput {
+    Connected {
+        name: String,
+        connected: bool,
+    },
+    Failed {
+        name: String,
+        connected: bool,
+        error: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct McpReloadOutput {
+    pub(crate) reloaded: bool,
+    pub(crate) connected: Vec<McpReloadConnectionOutput>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct McpRefreshOutput {
+    pub(crate) added: Vec<String>,
+    pub(crate) removed: Vec<String>,
+    pub(crate) updated: Vec<String>,
+    pub(crate) failed: Vec<String>,
 }
 
 /// Runtime implementation dependencies for the five capability-scoped admin
@@ -111,7 +329,7 @@ impl AdminServices {
             .ok_or_else(|| anyhow::anyhow!("config key '{}' not found", path))
     }
 
-    pub(crate) async fn logs_level(&self, level: LogLevel) -> Result<Value> {
+    pub(crate) async fn logs_level(&self, level: LogLevel) -> Result<LogsLevelResult> {
         let _config_apply_guard = self.lock_config_apply().await;
         let update = self
             .config_service()?
@@ -119,14 +337,14 @@ impl AdminServices {
         if let Some(log_level) = &self.context.log_level {
             log_level.set_level(&level)?;
         }
-        Ok(serde_json::json!({
-            "level": level,
-            "saved": true,
-            "version": update.snapshot.version,
-        }))
+        Ok(LogsLevelResult {
+            level,
+            saved: true,
+            version: update.snapshot.version,
+        })
     }
 
-    pub(crate) async fn tool_set(&self, name: &str, enabled: bool) -> Result<Value> {
+    pub(crate) async fn tool_set(&self, name: &str, enabled: bool) -> Result<ToolSetResult> {
         let _config_apply_guard = self.lock_config_apply().await;
         let mut settings = self.config_service()?.snapshot()?.config.tool_settings;
         settings.entry(name.to_string()).or_default().enabled = enabled;
@@ -135,30 +353,32 @@ impl AdminServices {
         if let Some(tool_control) = &self.context.tool_control {
             tool_control.set_tool_enabled(name, enabled).await?;
         }
-        Ok(serde_json::json!({
-            "name": name,
-            "enabled": enabled,
-            "saved": true,
-            "note": "take effect immediately",
-        }))
+        Ok(ToolSetResult {
+            name: name.to_string(),
+            enabled,
+            saved: true,
+            note: "take effect immediately",
+        })
     }
 
-    pub(crate) async fn diagnostics_status(&self) -> Result<Value> {
-        let mut out = serde_json::json!({});
+    pub(crate) async fn diagnostics_status(&self) -> Result<DiagnosticsStatus> {
+        let mut config_path = None;
+        let mut settings = None;
+        let mut config_error = None;
         match self.read_config() {
             Ok(config) => {
-                out["config_path"] = self.config_path()?.to_string_lossy().to_string().into();
-                let mut settings = serde_json::to_value(Settings::from(&config))?;
-                super::super::admin_support::mask_sensitive_config(&mut settings);
-                out["settings"] = settings;
+                config_path = Some(self.config_path()?.to_string_lossy().to_string());
+                let mut masked_settings = serde_json::to_value(Settings::from(&config))?;
+                super::super::admin_support::mask_sensitive_config(&mut masked_settings);
+                settings = Some(masked_settings);
             }
             Err(error) => {
-                out["config_error"] = sanitize_diagnostic(&error.to_string()).into();
+                config_error = Some(sanitize_diagnostic(&error.to_string()));
             }
         }
 
-        if let Some(router) = &self.context.router {
-            let mut health = serde_json::Map::new();
+        let models = if let Some(router) = &self.context.router {
+            let mut health = BTreeMap::new();
             for request in RequestKind::ALL {
                 let configured = router.is_request_configured(*request).await;
                 let status = if !configured {
@@ -176,41 +396,43 @@ impl AdminServices {
                 };
                 health.insert(
                     request.as_str().to_string(),
-                    serde_json::json!({"configured": configured, "status": status}),
+                    DiagnosticModelStatus { configured, status },
                 );
             }
-            out["models"] = Value::Object(health);
-        }
+            Some(health)
+        } else {
+            None
+        };
 
         let schemas = self.registry.list_schemas().await;
-        let names: Vec<Value> = schemas
+        let names: Vec<String> = schemas
             .iter()
-            .map(|schema| schema["name"].clone())
+            .filter_map(|schema| schema["name"].as_str().map(str::to_string))
             .collect();
-        out["tools"] = serde_json::json!({"count": schemas.len(), "names": names});
+        let tools = DiagnosticToolsStatus {
+            count: schemas.len(),
+            names,
+        };
 
-        match self.mcp_status().await {
-            Ok(mcp) => out["mcp"] = mcp,
-            Err(error) => out["mcp_error"] = sanitize_diagnostic(&error.to_string()).into(),
-        }
+        let (mcp, mcp_error) = match self.mcp_status().await {
+            Ok(mcp) => (Some(mcp), None),
+            Err(error) => (None, Some(sanitize_diagnostic(&error.to_string()))),
+        };
 
-        let skills: Vec<Value> = self
+        let skills: Vec<DiagnosticSkillOutput> = self
             .skills_engine
             .list()
             .await
             .into_iter()
-            .map(|skill| {
-                serde_json::json!({
-                    "name": skill.name,
-                    "enabled": skill.enabled,
-                    "description": skill.description,
-                })
+            .map(|skill| DiagnosticSkillOutput {
+                name: skill.name,
+                enabled: skill.enabled,
+                description: skill.description,
             })
             .collect();
-        out["skills"] = Value::Array(skills);
 
-        if let Some(session_store) = &self.context.session_store {
-            let mut counts: HashMap<String, usize> = HashMap::new();
+        let sessions = if let Some(session_store) = &self.context.session_store {
+            let mut counts: BTreeMap<String, usize> = BTreeMap::new();
             match session_store.list_history(50, 0).await {
                 Ok(sessions) => {
                     for session in &sessions {
@@ -230,13 +452,13 @@ impl AdminServices {
                     0
                 }
             };
-            out["sessions"] = serde_json::json!({
-                "total": total,
-                "recent_50_by_status": counts,
-            });
+            DiagnosticSessionsOutput::Available {
+                total,
+                recent_50_by_status: counts,
+            }
         } else {
-            out["sessions"] = serde_json::json!({"unavailable": true});
-        }
+            DiagnosticSessionsOutput::Unavailable { unavailable: true }
+        };
 
         let log_path = self
             .context
@@ -244,11 +466,21 @@ impl AdminServices {
             .as_ref()
             .map(|path| path.to_string_lossy().to_string())
             .unwrap_or_else(|| LogConfig::default_log_path().to_string_lossy().to_string());
-        out["log"] = serde_json::json!({"path": log_path});
-        Ok(out)
+        Ok(DiagnosticsStatus {
+            config_path,
+            settings,
+            config_error,
+            models,
+            tools,
+            mcp,
+            mcp_error,
+            skills,
+            sessions,
+            log: DiagnosticLogOutput { path: log_path },
+        })
     }
 
-    pub(crate) async fn logs_tail(&self, limit: Option<i64>) -> Result<Value> {
+    pub(crate) async fn logs_tail(&self, limit: Option<i64>) -> Result<LogsTailOutput> {
         let limit = limit.unwrap_or(50).clamp(1, 500) as usize;
         let path = self
             .context
@@ -258,10 +490,10 @@ impl AdminServices {
         let content = match tokio::fs::read(&path).await {
             Ok(bytes) => haven_common::encoding::decode_lossy(&bytes),
             Err(error) => {
-                return Ok(serde_json::json!({
-                    "path": path.to_string_lossy(),
-                    "error": format!("cannot read log file: {error}"),
-                }));
+                return Ok(LogsTailOutput::Unavailable {
+                    path: path.to_string_lossy().to_string(),
+                    error: format!("cannot read log file: {error}"),
+                });
             }
         };
         let lines: Vec<&str> = content.lines().collect();
@@ -271,77 +503,71 @@ impl AdminServices {
             .iter()
             .map(|line| sanitize_log_line(line))
             .collect();
-        Ok(serde_json::json!({
-            "path": path.to_string_lossy(),
-            "total_lines": total_lines,
-            "lines": lines,
-        }))
+        Ok(LogsTailOutput::Read {
+            path: path.to_string_lossy().to_string(),
+            total_lines,
+            lines,
+        })
     }
 
-    pub(crate) async fn sessions(&self, limit: Option<i64>) -> Result<Value> {
+    pub(crate) async fn sessions(&self, limit: Option<i64>) -> Result<SessionsOutput> {
         let Some(session_store) = &self.context.session_store else {
-            return Ok(serde_json::json!({"unavailable": true}));
+            return Ok(SessionsOutput::Unavailable { unavailable: true });
         };
         let sessions = session_store
             .list_history(limit.unwrap_or(10).clamp(1, 50), 0)
             .await?;
-        let rows: Vec<Value> = sessions
+        let rows: Vec<SessionSummaryOutput> = sessions
             .into_iter()
-            .map(|session| {
-                serde_json::json!({
-                    "id": session.id,
-                    "status": session.status,
-                    "title": session.title,
-                    "input_chars": session.input_text.chars().count(),
-                    "created_at": session.created_at,
-                    "updated_at": session.updated_at,
-                })
+            .map(|session| SessionSummaryOutput {
+                id: session.id,
+                status: session.status,
+                title: session.title,
+                input_chars: session.input_text.chars().count(),
+                created_at: session.created_at,
+                updated_at: session.updated_at,
             })
             .collect();
-        Ok(serde_json::json!({"sessions": rows}))
+        Ok(SessionsOutput::Available { sessions: rows })
     }
 
-    pub(crate) async fn errors(&self, limit: Option<i64>) -> Result<Value> {
+    pub(crate) async fn errors(&self, limit: Option<i64>) -> Result<ErrorsOutput> {
         let Some(session_store) = &self.context.session_store else {
-            return Ok(serde_json::json!({"unavailable": true}));
+            return Ok(ErrorsOutput::Unavailable { unavailable: true });
         };
         let sessions = session_store
             .list_history(limit.unwrap_or(10).clamp(1, 50), 0)
             .await?;
-        let rows: Vec<Value> = sessions
+        let rows: Vec<SessionErrorOutput> = sessions
             .into_iter()
             .filter(|session| session.status == haven_common::SessionStatus::Error)
-            .map(|session| {
-                serde_json::json!({
-                    "id": session.id,
-                    "title": session.title,
-                    "input_chars": session.input_text.chars().count(),
-                    "created_at": session.created_at,
-                })
+            .map(|session| SessionErrorOutput {
+                id: session.id,
+                title: session.title,
+                input_chars: session.input_text.chars().count(),
+                created_at: session.created_at,
             })
             .collect();
-        Ok(serde_json::json!({"errors": rows}))
+        Ok(ErrorsOutput::Available { errors: rows })
     }
 
-    pub(crate) async fn skills_list(&self) -> Result<Value> {
-        let skills: Vec<Value> = self
+    pub(crate) async fn skills_list(&self) -> Result<SkillsListOutput> {
+        let skills: Vec<SkillSummaryOutput> = self
             .skills_engine
             .list()
             .await
             .into_iter()
-            .map(|skill| {
-                serde_json::json!({
-                    "name": skill.name,
-                    "enabled": skill.enabled,
-                    "description": skill.description,
-                    "root": skill.root,
-                })
+            .map(|skill| SkillSummaryOutput {
+                name: skill.name,
+                enabled: skill.enabled,
+                description: skill.description,
+                root: skill.root,
             })
             .collect();
-        Ok(serde_json::json!({"skills": skills}))
+        Ok(SkillsListOutput { skills })
     }
 
-    pub(crate) async fn skill_set(&self, name: &str, enabled: bool) -> Result<Value> {
+    pub(crate) async fn skill_set(&self, name: &str, enabled: bool) -> Result<SkillSetOutput> {
         let _config_apply_guard = self.lock_config_apply().await;
         let config_service = Arc::clone(
             self.context
@@ -371,12 +597,12 @@ impl AdminServices {
             return Err(error);
         }
         self.rebuild_catalog().await?;
-        Ok(serde_json::json!({
-            "name": name,
-            "enabled": enabled,
-            "saved": true,
-            "note": "take effect immediately for new loads",
-        }))
+        Ok(SkillSetOutput {
+            name: name.to_string(),
+            enabled,
+            saved: true,
+            note: "take effect immediately for new loads",
+        })
     }
 
     pub(crate) async fn skill_create(
@@ -387,7 +613,7 @@ impl AdminServices {
         language: Option<&str>,
         version: Option<&str>,
         script: Option<&str>,
-    ) -> Result<Value> {
+    ) -> Result<SkillCreateOutput> {
         let _config_apply_guard = self.lock_config_apply().await;
         let config_service = Arc::clone(
             self.context
@@ -470,15 +696,15 @@ impl AdminServices {
             return Err(error);
         }
         self.rebuild_catalog().await?;
-        Ok(serde_json::json!({
-            "name": name,
-            "created": true,
-            "root": skill_dir.to_string_lossy(),
-            "has_script": has_script,
-        }))
+        Ok(SkillCreateOutput {
+            name: name.to_string(),
+            created: true,
+            root: skill_dir.to_string_lossy().to_string(),
+            has_script,
+        })
     }
 
-    pub(crate) async fn mcp_status(&self) -> Result<Value> {
+    pub(crate) async fn mcp_status(&self) -> Result<Vec<McpStatusOutput>> {
         let servers: Vec<McpServerConfig> = {
             let configs = self.server_configs.read().await;
             if !configs.is_empty() {
@@ -510,19 +736,19 @@ impl AdminServices {
                 }
                 None => (false, 0, String::new(), None),
             };
-            out.push(serde_json::json!({
-                "name": config.name,
-                "enabled": config.enabled,
-                "connected": connected,
-                "tools": tool_count,
-                "last_error": last_error,
-                "diagnostic": diagnostic,
-            }));
+            out.push(McpStatusOutput {
+                name: config.name,
+                enabled: config.enabled,
+                connected,
+                tools: tool_count,
+                last_error,
+                diagnostic,
+            });
         }
-        Ok(Value::Array(out))
+        Ok(out)
     }
 
-    pub(crate) async fn mcp_connect(&self, name: &str) -> Result<Value> {
+    pub(crate) async fn mcp_connect(&self, name: &str) -> Result<McpConnectionOutput> {
         let _config_apply_guard = self.lock_config_apply().await;
         let config = self
             .server_configs
@@ -536,16 +762,22 @@ impl AdminServices {
         }
         self.mcp_manager.remove_client(name).await;
         self.mcp_manager.connect_server(&config).await?;
-        Ok(serde_json::json!({"name": name, "connected": true}))
+        Ok(McpConnectionOutput {
+            name: name.to_string(),
+            connected: true,
+        })
     }
 
-    pub(crate) async fn mcp_disconnect(&self, name: &str) -> Result<Value> {
+    pub(crate) async fn mcp_disconnect(&self, name: &str) -> Result<McpConnectionOutput> {
         let _config_apply_guard = self.lock_config_apply().await;
         self.mcp_manager.remove_client(name).await;
-        Ok(serde_json::json!({"name": name, "connected": false}))
+        Ok(McpConnectionOutput {
+            name: name.to_string(),
+            connected: false,
+        })
     }
 
-    pub(crate) async fn mcp_add(&self, fields: &McpAddFields) -> Result<Value> {
+    pub(crate) async fn mcp_add(&self, fields: &McpAddFields) -> Result<McpAddOutput> {
         let _config_apply_guard = self.lock_config_apply().await;
         let command = fields.command.clone().filter(|value| !value.is_empty());
         let url = fields.url.clone().filter(|value| !value.is_empty());
@@ -577,7 +809,14 @@ impl AdminServices {
         {
             return self
                 .apply_mcp_config_update(&existing, &config, fields.auto_connect)
-                .await;
+                .await
+                .map(|updated| McpAddOutput {
+                    name: updated.name,
+                    enabled: updated.enabled,
+                    saved: updated.saved,
+                    connected: updated.connected,
+                    warning: None,
+                });
         }
         let mut servers = self.config_service()?.snapshot()?.config.mcp_servers;
         servers.push(config.clone());
@@ -589,31 +828,34 @@ impl AdminServices {
             .insert(config.name.clone(), config.clone());
         self.mcp_manager.invalidate_catalog();
 
-        let mut result = serde_json::json!({
-            "name": config.name,
-            "enabled": config.enabled,
-            "saved": true,
-        });
-        if config.enabled && fields.auto_connect {
+        let (connected, warning) = if config.enabled && fields.auto_connect {
             match self.mcp_manager.connect_server(&config).await {
-                Ok(()) => result["connected"] = serde_json::json!(true),
-                Err(error) => {
-                    result["connected"] = serde_json::json!(false);
-                    result["warning"] = format!(
+                Ok(()) => (true, None),
+                Err(error) => (
+                    false,
+                    Some(format!(
                         "config saved but connect failed: {}",
                         sanitize_diagnostic(&error.to_string())
-                    )
-                    .into();
-                }
+                    )),
+                ),
             }
         } else {
-            result["connected"] = serde_json::json!(false);
-        }
+            (false, None)
+        };
         self.rebuild_catalog().await?;
-        Ok(result)
+        Ok(McpAddOutput {
+            name: config.name,
+            enabled: config.enabled,
+            saved: true,
+            connected,
+            warning,
+        })
     }
 
-    pub(crate) async fn mcp_update(&self, fields: &McpUpdateFields) -> Result<Value> {
+    pub(crate) async fn mcp_update(
+        &self,
+        fields: &McpUpdateFields,
+    ) -> Result<McpConfigUpdateOutput> {
         let _config_apply_guard = self.lock_config_apply().await;
         let existing = self
             .read_config()?
@@ -648,7 +890,11 @@ impl AdminServices {
             .await
     }
 
-    pub(crate) async fn mcp_toggle(&self, name: &str, enabled: bool) -> Result<Value> {
+    pub(crate) async fn mcp_toggle(
+        &self,
+        name: &str,
+        enabled: bool,
+    ) -> Result<McpConfigUpdateOutput> {
         let _config_apply_guard = self.lock_config_apply().await;
         let existing = self
             .read_config()?
@@ -663,7 +909,7 @@ impl AdminServices {
             .await
     }
 
-    pub(crate) async fn mcp_remove(&self, name: &str) -> Result<Value> {
+    pub(crate) async fn mcp_remove(&self, name: &str) -> Result<McpRemoveOutput> {
         let _config_apply_guard = self.lock_config_apply().await;
         let mut servers = self.config_service()?.snapshot()?.config.mcp_servers;
         let before = servers.len();
@@ -677,10 +923,14 @@ impl AdminServices {
         self.server_configs.write().await.remove(name);
         self.mcp_manager.invalidate_catalog();
         self.rebuild_catalog().await?;
-        Ok(serde_json::json!({"name": name, "removed": true, "connected": false}))
+        Ok(McpRemoveOutput {
+            name: name.to_string(),
+            removed: true,
+            connected: false,
+        })
     }
 
-    pub(crate) async fn mcp_reload(&self) -> Result<Value> {
+    pub(crate) async fn mcp_reload(&self) -> Result<McpReloadOutput> {
         let _config_apply_guard = self.lock_config_apply().await;
         let servers = self.read_config()?.mcp_servers.clone();
         let mut map = self.server_configs.write().await;
@@ -699,18 +949,22 @@ impl AdminServices {
                 continue;
             }
             match self.mcp_manager.connect_server(server).await {
-                Ok(()) => {
-                    connected.push(serde_json::json!({"name": server.name, "connected": true}))
-                }
-                Err(error) => connected.push(serde_json::json!({
-                    "name": server.name,
-                    "connected": false,
-                    "error": sanitize_diagnostic(&error.to_string()),
-                })),
+                Ok(()) => connected.push(McpReloadConnectionOutput::Connected {
+                    name: server.name.clone(),
+                    connected: true,
+                }),
+                Err(error) => connected.push(McpReloadConnectionOutput::Failed {
+                    name: server.name.clone(),
+                    connected: false,
+                    error: sanitize_diagnostic(&error.to_string()),
+                }),
             }
         }
         self.rebuild_catalog().await?;
-        Ok(serde_json::json!({"reloaded": true, "connected": connected}))
+        Ok(McpReloadOutput {
+            reloaded: true,
+            connected,
+        })
     }
 
     /// Execute one already-authorized renderer reconnect. Authorization waits
@@ -721,7 +975,7 @@ impl AdminServices {
         &self,
         name: &str,
         authorized_version: u64,
-    ) -> std::result::Result<Value, NativeMcpServiceError> {
+    ) -> std::result::Result<McpConnectionOutput, NativeMcpServiceError> {
         let _config_apply_guard = self.lock_config_apply().await;
         let snapshot = self
             .config_service()
@@ -773,7 +1027,10 @@ impl AdminServices {
             discovery.reconnect_max_retries,
             self.mcp_manager.status_tx(),
         );
-        Ok(serde_json::json!({"name": name, "connected": true}))
+        Ok(McpConnectionOutput {
+            name: name.to_string(),
+            connected: true,
+        })
     }
 
     /// Reconcile only the target set captured in the authorization request.
@@ -782,7 +1039,7 @@ impl AdminServices {
     pub(crate) async fn mcp_refresh(
         &self,
         authorized_plan: &McpRefreshPlan,
-    ) -> std::result::Result<Value, NativeMcpServiceError> {
+    ) -> std::result::Result<McpRefreshOutput, NativeMcpServiceError> {
         let _config_apply_guard = self.lock_config_apply().await;
         let snapshot = self
             .config_service()
@@ -858,12 +1115,12 @@ impl AdminServices {
         self.rebuild_catalog()
             .await
             .map_err(NativeMcpServiceError::SideEffect)?;
-        Ok(serde_json::json!({
-            "added": added,
-            "removed": removed,
-            "updated": updated,
-            "failed": failed,
-        }))
+        Ok(McpRefreshOutput {
+            added,
+            removed,
+            updated,
+            failed,
+        })
     }
 
     async fn apply_mcp_config_update(
@@ -871,7 +1128,7 @@ impl AdminServices {
         old_config: &McpServerConfig,
         new_config: &McpServerConfig,
         connect_if_enabled: bool,
-    ) -> Result<Value> {
+    ) -> Result<McpConfigUpdateOutput> {
         let name = new_config.name.clone();
         let config_changed = old_config.transport != new_config.transport
             || old_config.command != new_config.command
@@ -930,12 +1187,12 @@ impl AdminServices {
             .insert(name.clone(), new_config.clone());
         self.mcp_manager.invalidate_catalog();
         self.rebuild_catalog().await?;
-        Ok(serde_json::json!({
-            "name": name,
-            "enabled": new_config.enabled,
-            "saved": true,
-            "connected": self.mcp_manager.get_client(&name).await.is_some(),
-        }))
+        Ok(McpConfigUpdateOutput {
+            name: name.clone(),
+            enabled: new_config.enabled,
+            saved: true,
+            connected: self.mcp_manager.get_client(&name).await.is_some(),
+        })
     }
 }
 

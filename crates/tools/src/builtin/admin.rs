@@ -35,7 +35,12 @@ use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
 pub(crate) use admin_services::sanitize_diagnostic;
-use admin_services::{AdminServices, NativeMcpServiceError};
+use admin_services::{
+    AdminServices, DiagnosticsStatus, ErrorsOutput, LogsTailOutput, McpAddOutput,
+    McpConfigUpdateOutput, McpConnectionOutput, McpRefreshOutput, McpReloadOutput, McpStatusOutput,
+    NativeMcpServiceError, SessionsOutput, SkillCreateOutput, SkillSetOutput, SkillsListOutput,
+    ToolSetResult,
+};
 
 /// App-provided dependencies shared by all five admin surfaces.
 #[derive(Clone)]
@@ -480,12 +485,76 @@ impl AdminRequest {
     }
 }
 
+/// Closed set of fixed-shape admin responses. The untagged representation
+/// keeps each operation's established JSON shape at the tool-output boundary.
 #[derive(Debug, Clone)]
-pub struct AdminOperationOutput(Value);
+pub struct AdminOperationOutput(AdminOperationOutputKind);
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
+enum AdminOperationOutputKind {
+    DiagnosticsStatus(DiagnosticsStatus),
+    LogsTail(LogsTailOutput),
+    Sessions(SessionsOutput),
+    Errors(ErrorsOutput),
+    SkillsList(SkillsListOutput),
+    SkillSet(SkillSetOutput),
+    SkillCreate(SkillCreateOutput),
+    ToolSet(ToolSetResult),
+    McpStatus(Vec<McpStatusOutput>),
+    McpConnection(McpConnectionOutput),
+    McpAdd(McpAddOutput),
+    McpConfigUpdate(McpConfigUpdateOutput),
+    McpRemove(admin_services::McpRemoveOutput),
+    McpReload(McpReloadOutput),
+    McpRefresh(McpRefreshOutput),
+}
 
 impl AdminOperationOutput {
-    fn new(value: Value) -> Self {
-        Self(value)
+    fn diagnostics_status(output: DiagnosticsStatus) -> Self {
+        Self(AdminOperationOutputKind::DiagnosticsStatus(output))
+    }
+    fn logs_tail(output: LogsTailOutput) -> Self {
+        Self(AdminOperationOutputKind::LogsTail(output))
+    }
+    fn sessions(output: SessionsOutput) -> Self {
+        Self(AdminOperationOutputKind::Sessions(output))
+    }
+    fn errors(output: ErrorsOutput) -> Self {
+        Self(AdminOperationOutputKind::Errors(output))
+    }
+    fn skills_list(output: SkillsListOutput) -> Self {
+        Self(AdminOperationOutputKind::SkillsList(output))
+    }
+    fn skill_set(output: SkillSetOutput) -> Self {
+        Self(AdminOperationOutputKind::SkillSet(output))
+    }
+    fn skill_create(output: SkillCreateOutput) -> Self {
+        Self(AdminOperationOutputKind::SkillCreate(output))
+    }
+    fn tool_set(output: ToolSetResult) -> Self {
+        Self(AdminOperationOutputKind::ToolSet(output))
+    }
+    fn mcp_status(output: Vec<McpStatusOutput>) -> Self {
+        Self(AdminOperationOutputKind::McpStatus(output))
+    }
+    fn mcp_connection(output: McpConnectionOutput) -> Self {
+        Self(AdminOperationOutputKind::McpConnection(output))
+    }
+    fn mcp_add(output: McpAddOutput) -> Self {
+        Self(AdminOperationOutputKind::McpAdd(output))
+    }
+    fn mcp_config_update(output: McpConfigUpdateOutput) -> Self {
+        Self(AdminOperationOutputKind::McpConfigUpdate(output))
+    }
+    fn mcp_remove(output: admin_services::McpRemoveOutput) -> Self {
+        Self(AdminOperationOutputKind::McpRemove(output))
+    }
+    fn mcp_reload(output: McpReloadOutput) -> Self {
+        Self(AdminOperationOutputKind::McpReload(output))
+    }
+    fn mcp_refresh(output: McpRefreshOutput) -> Self {
+        Self(AdminOperationOutputKind::McpRefresh(output))
     }
 }
 
@@ -698,14 +767,32 @@ impl TypedToolOperation for DiagnosticsAdminOperation {
         if cancel.is_cancelled() {
             return Err(AdminOperationError::cancelled());
         }
-        let value = match args {
-            DiagnosticsOperationArgs::Status => self.services.diagnostics_status().await,
-            DiagnosticsOperationArgs::LogsTail { limit } => self.services.logs_tail(limit).await,
-            DiagnosticsOperationArgs::Sessions { limit } => self.services.sessions(limit).await,
-            DiagnosticsOperationArgs::Errors { limit } => self.services.errors(limit).await,
+        match args {
+            DiagnosticsOperationArgs::Status => self
+                .services
+                .diagnostics_status()
+                .await
+                .map(AdminOperationOutput::diagnostics_status)
+                .map_err(service_error),
+            DiagnosticsOperationArgs::LogsTail { limit } => self
+                .services
+                .logs_tail(limit)
+                .await
+                .map(AdminOperationOutput::logs_tail)
+                .map_err(service_error),
+            DiagnosticsOperationArgs::Sessions { limit } => self
+                .services
+                .sessions(limit)
+                .await
+                .map(AdminOperationOutput::sessions)
+                .map_err(service_error),
+            DiagnosticsOperationArgs::Errors { limit } => self
+                .services
+                .errors(limit)
+                .await
+                .map(AdminOperationOutput::errors)
+                .map_err(service_error),
         }
-        .map_err(service_error)?;
-        Ok(AdminOperationOutput::new(value))
     }
 }
 
@@ -796,19 +883,24 @@ impl TypedToolOperation for SkillsAdminOperation {
         if cancel.is_cancelled() {
             return Err(AdminOperationError::cancelled());
         }
-        let value = match args {
-            SkillsOperationArgs::SkillsList => {
-                self.services.skills_list().await.map_err(service_error)
-            }
+        match args {
+            SkillsOperationArgs::SkillsList => self
+                .services
+                .skills_list()
+                .await
+                .map(AdminOperationOutput::skills_list)
+                .map_err(service_error),
             SkillsOperationArgs::SkillEnable { name } => self
                 .services
                 .skill_set(&name, true)
                 .await
+                .map(AdminOperationOutput::skill_set)
                 .map_err(side_effect_service_error),
             SkillsOperationArgs::SkillDisable { name } => self
                 .services
                 .skill_set(&name, false)
                 .await
+                .map(AdminOperationOutput::skill_set)
                 .map_err(side_effect_service_error),
             SkillsOperationArgs::SkillCreate {
                 name,
@@ -828,9 +920,9 @@ impl TypedToolOperation for SkillsAdminOperation {
                     script.as_deref(),
                 )
                 .await
+                .map(AdminOperationOutput::skill_create)
                 .map_err(side_effect_service_error),
-        }?;
-        Ok(AdminOperationOutput::new(value))
+        }
     }
 }
 
@@ -906,12 +998,11 @@ impl TypedToolOperation for ToolsAdminOperation {
                 name
             )));
         }
-        Ok(AdminOperationOutput::new(
-            self.services
-                .tool_set(&name, enabled)
-                .await
-                .map_err(side_effect_service_error)?,
-        ))
+        self.services
+            .tool_set(&name, enabled)
+            .await
+            .map(AdminOperationOutput::tool_set)
+            .map_err(side_effect_service_error)
     }
 }
 
@@ -946,7 +1037,7 @@ impl McpAdminOperation {
         if cancel.is_cancelled() {
             return Err(AdminOperationError::cancelled());
         }
-        let result = match args {
+        match args {
             NativeMcpOperationArgs::McpReconnect {
                 name,
                 config_version,
@@ -954,14 +1045,15 @@ impl McpAdminOperation {
                 .services
                 .mcp_reconnect(&name, config_version)
                 .await
+                .map(AdminOperationOutput::mcp_connection)
                 .map_err(native_mcp_service_error),
             NativeMcpOperationArgs::McpRefresh { plan } => self
                 .services
                 .mcp_refresh(&plan)
                 .await
+                .map(AdminOperationOutput::mcp_refresh)
                 .map_err(native_mcp_service_error),
-        }?;
-        Ok(AdminOperationOutput::new(result))
+        }
     }
 }
 
@@ -1084,17 +1176,24 @@ impl TypedToolOperation for McpAdminOperation {
         if cancel.is_cancelled() {
             return Err(AdminOperationError::cancelled());
         }
-        let value = match args {
-            McpOperationArgs::McpList => self.services.mcp_status().await.map_err(service_error),
+        match args {
+            McpOperationArgs::McpList => self
+                .services
+                .mcp_status()
+                .await
+                .map(AdminOperationOutput::mcp_status)
+                .map_err(service_error),
             McpOperationArgs::McpConnect { name } => self
                 .services
                 .mcp_connect(&name)
                 .await
+                .map(AdminOperationOutput::mcp_connection)
                 .map_err(side_effect_service_error),
             McpOperationArgs::McpDisconnect { name } => self
                 .services
                 .mcp_disconnect(&name)
                 .await
+                .map(AdminOperationOutput::mcp_connection)
                 .map_err(service_error),
             McpOperationArgs::McpAdd {
                 name,
@@ -1120,6 +1219,7 @@ impl TypedToolOperation for McpAdminOperation {
                     auto_connect,
                 })
                 .await
+                .map(AdminOperationOutput::mcp_add)
                 .map_err(side_effect_service_error),
             McpOperationArgs::McpUpdate {
                 name,
@@ -1143,22 +1243,27 @@ impl TypedToolOperation for McpAdminOperation {
                     enabled,
                 })
                 .await
+                .map(AdminOperationOutput::mcp_config_update)
                 .map_err(side_effect_service_error),
             McpOperationArgs::McpToggle { name, enabled } => self
                 .services
                 .mcp_toggle(&name, enabled)
                 .await
+                .map(AdminOperationOutput::mcp_config_update)
                 .map_err(side_effect_service_error),
-            McpOperationArgs::McpRemove { name } => {
-                self.services.mcp_remove(&name).await.map_err(service_error)
-            }
+            McpOperationArgs::McpRemove { name } => self
+                .services
+                .mcp_remove(&name)
+                .await
+                .map(AdminOperationOutput::mcp_remove)
+                .map_err(service_error),
             McpOperationArgs::McpReload => self
                 .services
                 .mcp_reload()
                 .await
+                .map(AdminOperationOutput::mcp_reload)
                 .map_err(side_effect_service_error),
-        }?;
-        Ok(AdminOperationOutput::new(value))
+        }
     }
 }
 
@@ -1348,15 +1453,15 @@ impl TypedToolOperation for ConfigAdminOperation {
                 Ok(ConfigOperationOutput::Config(ConfigViewOutput { value }))
             }
             ConfigOperationArgs::LogsLevel { level } => {
-                let value = self
+                let result = self
                     .services
                     .logs_level(level.clone())
                     .await
                     .map_err(|_| ConfigOperationError::SideEffectMayHaveHappened)?;
                 Ok(ConfigOperationOutput::LogsLevel(LogLevelOutput {
-                    level,
-                    saved: true,
-                    version: value["version"].as_u64().unwrap_or_default(),
+                    level: result.level,
+                    saved: result.saved,
+                    version: result.version,
                 }))
             }
         }
@@ -1509,7 +1614,7 @@ mod tests {
     use super::*;
     use crate::{StructuredToolError, Tool, ToolsManager};
     use haven_common::SessionStatus;
-    use haven_common::config::{ConfigLoader, ConfigService};
+    use haven_common::config::{ConfigLoader, ConfigPatch, ConfigService};
     use haven_memory::{Database, MemoryFactStore, SessionStore};
     use serde_json::json;
     use std::sync::Arc;
@@ -2146,6 +2251,731 @@ mod tests {
             .output;
         assert_eq!(errors["errors"].as_array().unwrap().len(), 1);
         assert_eq!(errors["errors"][0]["id"], newest_error.id);
+    }
+
+    #[tokio::test]
+    async fn admin_read_projections_keep_exact_wire_shapes_and_filter_private_content() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let transcript = "private-transcript-marker";
+        let session = db.create_session(transcript).unwrap();
+        db.update_session_title(&session.id, "safe title").unwrap();
+        db.update_session_status(&session.id, SessionStatus::Error)
+            .unwrap();
+        db.conn()
+            .execute(
+                "UPDATE sessions SET created_at = '2024-01-02T03:04:05Z', updated_at = '2024-01-03T04:05:06Z' WHERE id = ?1",
+                [session.id.as_str()],
+            )
+            .unwrap();
+        db.cache_invalidate_sessions();
+
+        let (surfaces, dir) = test_surfaces_with_db(db);
+        let skill_root = dir.path().join("skills");
+        let skill_dir = skill_root.join("sample");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "# Skill: sample\n\n## Metadata\n- name: sample\n- description: safe description\n\n## Instructions\nPrivate instructions are not part of this output.\n",
+        )
+        .unwrap();
+        surfaces
+            .skills
+            .services
+            .skills_engine
+            .set_config(Some(skill_root), None)
+            .await
+            .unwrap();
+
+        surfaces.mcp.services.server_configs.write().await.insert(
+            "private-server".into(),
+            McpServerConfig {
+                name: "private-server".into(),
+                transport: McpTransportType::Stdio,
+                command: "hidden-command".into(),
+                args: vec!["PRIVATE_ARG_MARKER".into()],
+                env: vec!["TOKEN=PRIVATE_ENV_MARKER".into()],
+                cwd: None,
+                url: String::new(),
+                enabled: true,
+            },
+        );
+
+        let session_wire = surfaces
+            .execute(
+                AdminRequest::Diagnostics(DiagnosticsOperationArgs::Sessions { limit: None }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap()
+            .output;
+        assert_eq!(
+            session_wire,
+            json!({
+                "sessions": [{
+                    "id": session.id,
+                    "status": "error",
+                    "title": "safe title",
+                    "input_chars": transcript.chars().count(),
+                    "created_at": "2024-01-02T03:04:05Z",
+                    "updated_at": "2024-01-03T04:05:06Z",
+                }]
+            })
+        );
+        let session_text = serde_json::to_string(&session_wire).unwrap();
+        assert!(!session_text.contains(transcript));
+
+        let errors_wire = surfaces
+            .execute(
+                AdminRequest::Diagnostics(DiagnosticsOperationArgs::Errors { limit: None }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap()
+            .output;
+        assert_eq!(
+            errors_wire,
+            json!({
+                "errors": [{
+                    "id": session.id,
+                    "title": "safe title",
+                    "input_chars": transcript.chars().count(),
+                    "created_at": "2024-01-02T03:04:05Z",
+                }]
+            })
+        );
+        assert!(
+            !serde_json::to_string(&errors_wire)
+                .unwrap()
+                .contains(transcript)
+        );
+
+        let skills_wire = surfaces
+            .execute(
+                AdminRequest::Skills(SkillsOperationArgs::SkillsList),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap()
+            .output;
+        assert_eq!(
+            skills_wire,
+            json!({
+                "skills": [{
+                    "name": "sample",
+                    "enabled": true,
+                    "description": "safe description",
+                    "root": skill_dir.to_string_lossy(),
+                }]
+            })
+        );
+        assert!(
+            !serde_json::to_string(&skills_wire)
+                .unwrap()
+                .contains("Private instructions")
+        );
+
+        let mcp_wire = surfaces
+            .execute(
+                AdminRequest::Mcp(McpOperationArgs::McpList),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap()
+            .output;
+        assert_eq!(
+            mcp_wire,
+            json!([{
+                "name": "private-server",
+                "enabled": true,
+                "connected": false,
+                "tools": 0,
+                "last_error": "",
+                "diagnostic": null,
+            }])
+        );
+        let mcp_text = serde_json::to_string(&mcp_wire).unwrap();
+        assert!(!mcp_text.contains("PRIVATE_ARG_MARKER"));
+        assert!(!mcp_text.contains("PRIVATE_ENV_MARKER"));
+        assert!(!mcp_text.contains("hidden-command"));
+
+        let log_path = dir.path().join("logs").join("haven.log");
+        std::fs::create_dir_all(log_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &log_path,
+            "safe line\napi_key=PRIVATE_LOG_MARKER\ntranscript: private words\nlast line\n",
+        )
+        .unwrap();
+        let logs_wire = surfaces
+            .execute(
+                AdminRequest::Diagnostics(DiagnosticsOperationArgs::LogsTail { limit: Some(3) }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap()
+            .output;
+        assert_eq!(
+            logs_wire,
+            json!({
+                "path": log_path.to_string_lossy(),
+                "total_lines": 4,
+                "lines": [
+                    "[redacted diagnostic line]",
+                    "[redacted diagnostic line]",
+                    "last line",
+                ],
+            })
+        );
+        assert!(
+            !serde_json::to_string(&logs_wire)
+                .unwrap()
+                .contains("PRIVATE_LOG_MARKER")
+        );
+    }
+
+    #[tokio::test]
+    async fn admin_mutation_acks_keep_wire_shape_and_mcp_duplicate_semantics() {
+        let (surfaces, dir) = test_surfaces();
+
+        let level = surfaces
+            .execute(
+                AdminRequest::Config(ConfigOperationArgs::LogsLevel {
+                    level: LogLevel::Warn,
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            level.output,
+            json!({"level": "warn", "saved": true, "version": 1})
+        );
+
+        let tool = surfaces
+            .execute(
+                AdminRequest::Tools(ToolsOperationArgs::ToolDisable {
+                    name: "shell".into(),
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            tool.output,
+            json!({
+                "name": "shell",
+                "enabled": false,
+                "saved": true,
+                "note": "take effect immediately",
+            })
+        );
+
+        let skills_root = dir.path().join("skills");
+        std::fs::create_dir_all(skills_root.join("demo")).unwrap();
+        std::fs::write(
+            skills_root.join("demo").join("SKILL.md"),
+            "# Skill: demo\n\n## Metadata\n- name: demo\n- description: demo skill\n\n## Instructions\nDo the demo.\n",
+        )
+        .unwrap();
+        surfaces
+            .skills
+            .services
+            .skills_engine
+            .set_config(Some(skills_root.clone()), None)
+            .await
+            .unwrap();
+        let skill_set = surfaces
+            .execute(
+                AdminRequest::Skills(SkillsOperationArgs::SkillDisable {
+                    name: "demo".into(),
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            skill_set.output,
+            json!({
+                "name": "demo",
+                "enabled": false,
+                "saved": true,
+                "note": "take effect immediately for new loads",
+            })
+        );
+
+        let skill_create = surfaces
+            .execute(
+                AdminRequest::Skills(SkillsOperationArgs::SkillCreate {
+                    name: "created".into(),
+                    description: "created skill".into(),
+                    instructions: "Do something useful.".into(),
+                    language: None,
+                    version: None,
+                    script: Some("print('not returned')".into()),
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            skill_create.output,
+            json!({
+                "name": "created",
+                "created": true,
+                "root": skills_root.join("created").to_string_lossy(),
+                "has_script": true,
+            })
+        );
+        assert!(
+            !serde_json::to_string(&skill_create.output)
+                .unwrap()
+                .contains("print('not returned')")
+        );
+
+        let initial = surfaces
+            .execute(
+                AdminRequest::Mcp(McpOperationArgs::McpAdd {
+                    name: "duplicate-server".into(),
+                    transport: McpTransportType::Stdio,
+                    command: Some("server-one".into()),
+                    url: None,
+                    args: vec!["PRIVATE_ARG_MARKER".into()],
+                    env: vec!["TOKEN=PRIVATE_ENV_MARKER".into()],
+                    cwd: None,
+                    enabled: false,
+                    auto_connect: false,
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            initial.output,
+            json!({
+                "name": "duplicate-server",
+                "enabled": false,
+                "saved": true,
+                "connected": false,
+            })
+        );
+        let duplicate = surfaces
+            .execute(
+                AdminRequest::Mcp(McpOperationArgs::McpAdd {
+                    name: "duplicate-server".into(),
+                    transport: McpTransportType::Stdio,
+                    command: Some("server-two".into()),
+                    url: None,
+                    args: vec!["DUPLICATE_PRIVATE_ARG".into()],
+                    env: vec!["TOKEN=DUPLICATE_PRIVATE_ENV".into()],
+                    cwd: None,
+                    enabled: false,
+                    auto_connect: false,
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            duplicate.output,
+            json!({
+                "name": "duplicate-server",
+                "enabled": false,
+                "saved": true,
+                "connected": false,
+            })
+        );
+        assert_eq!(
+            surfaces
+                .mcp
+                .services
+                .context
+                .config_service
+                .as_ref()
+                .unwrap()
+                .snapshot()
+                .unwrap()
+                .config
+                .mcp_servers
+                .iter()
+                .filter(|server| server.name == "duplicate-server")
+                .count(),
+            1
+        );
+        assert_eq!(
+            surfaces
+                .mcp
+                .services
+                .context
+                .config_service
+                .as_ref()
+                .unwrap()
+                .snapshot()
+                .unwrap()
+                .config
+                .mcp_servers[0]
+                .command,
+            "server-two"
+        );
+        let duplicate_text = serde_json::to_string(&duplicate.output).unwrap();
+        assert!(!duplicate_text.contains("PRIVATE_ARG_MARKER"));
+        assert!(!duplicate_text.contains("PRIVATE_ENV_MARKER"));
+        assert!(!duplicate_text.contains("DUPLICATE_PRIVATE_ARG"));
+        assert!(!duplicate_text.contains("DUPLICATE_PRIVATE_ENV"));
+
+        let updated = surfaces
+            .execute(
+                AdminRequest::Mcp(McpOperationArgs::McpUpdate {
+                    name: "duplicate-server".into(),
+                    transport: None,
+                    command: None,
+                    url: None,
+                    args: None,
+                    env: None,
+                    cwd: None,
+                    enabled: Some(false),
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            updated.output,
+            json!({
+                "name": "duplicate-server",
+                "enabled": false,
+                "saved": true,
+                "connected": false,
+            })
+        );
+        let toggled = surfaces
+            .execute(
+                AdminRequest::Mcp(McpOperationArgs::McpToggle {
+                    name: "duplicate-server".into(),
+                    enabled: false,
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            toggled.output,
+            json!({
+                "name": "duplicate-server",
+                "enabled": false,
+                "saved": true,
+                "connected": false,
+            })
+        );
+        let disconnected = surfaces
+            .execute(
+                AdminRequest::Mcp(McpOperationArgs::McpDisconnect {
+                    name: "duplicate-server".into(),
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            disconnected.output,
+            json!({"name": "duplicate-server", "connected": false})
+        );
+        let removed = surfaces
+            .execute(
+                AdminRequest::Mcp(McpOperationArgs::McpRemove {
+                    name: "duplicate-server".into(),
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            removed.output,
+            json!({"name": "duplicate-server", "removed": true, "connected": false})
+        );
+
+        let missing_command = dir
+            .path()
+            .join("missing-mcp-command.exe")
+            .to_string_lossy()
+            .to_string();
+        let partial_add = surfaces
+            .execute(
+                AdminRequest::Mcp(McpOperationArgs::McpAdd {
+                    name: "partial-server".into(),
+                    transport: McpTransportType::Stdio,
+                    command: Some(missing_command.clone()),
+                    url: None,
+                    args: vec!["PARTIAL_PRIVATE_ARG".into()],
+                    env: vec!["TOKEN=PARTIAL_PRIVATE_ENV".into()],
+                    cwd: None,
+                    enabled: true,
+                    auto_connect: true,
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(partial_add.output["name"], json!("partial-server"));
+        assert_eq!(partial_add.output["enabled"], json!(true));
+        assert_eq!(partial_add.output["saved"], json!(true));
+        assert_eq!(partial_add.output["connected"], json!(false));
+        assert!(
+            partial_add.output["warning"]
+                .as_str()
+                .is_some_and(|w| !w.is_empty())
+        );
+        assert_eq!(partial_add.output.as_object().unwrap().len(), 5);
+        let partial_text = serde_json::to_string(&partial_add.output).unwrap();
+        assert!(!partial_text.contains(&missing_command));
+        assert!(!partial_text.contains("PARTIAL_PRIVATE_ARG"));
+        assert!(!partial_text.contains("PARTIAL_PRIVATE_ENV"));
+    }
+
+    #[tokio::test]
+    async fn admin_empty_and_unavailable_projections_keep_distinct_wire_shapes() {
+        let empty_db = Arc::new(Database::open_in_memory().unwrap());
+        let (surfaces, dir) = test_surfaces_with_db(empty_db);
+
+        let sessions = surfaces
+            .execute(
+                AdminRequest::Diagnostics(DiagnosticsOperationArgs::Sessions { limit: None }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(sessions.output, json!({"sessions": []}));
+        let errors = surfaces
+            .execute(
+                AdminRequest::Diagnostics(DiagnosticsOperationArgs::Errors { limit: None }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(errors.output, json!({"errors": []}));
+
+        let skills = surfaces
+            .execute(
+                AdminRequest::Skills(SkillsOperationArgs::SkillsList),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(skills.output, json!({"skills": []}));
+        let mcp = surfaces
+            .execute(
+                AdminRequest::Mcp(McpOperationArgs::McpList),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(mcp.output, json!([]));
+
+        let log_path = dir.path().join("logs").join("haven.log");
+        std::fs::create_dir_all(log_path.parent().unwrap()).unwrap();
+        std::fs::write(&log_path, "").unwrap();
+        let empty_logs = surfaces
+            .execute(
+                AdminRequest::Diagnostics(DiagnosticsOperationArgs::LogsTail { limit: None }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            empty_logs.output,
+            json!({"path": log_path.to_string_lossy(), "total_lines": 0, "lines": []})
+        );
+
+        std::fs::remove_file(&log_path).unwrap();
+        let missing_logs = surfaces
+            .execute(
+                AdminRequest::Diagnostics(DiagnosticsOperationArgs::LogsTail { limit: None }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let missing_logs = missing_logs.output;
+        assert_eq!(missing_logs["path"], json!(log_path.to_string_lossy()));
+        assert_eq!(missing_logs.as_object().unwrap().len(), 2);
+        assert!(
+            missing_logs["error"]
+                .as_str()
+                .unwrap()
+                .starts_with("cannot read log file: ")
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_reload_and_native_refresh_keep_partial_failure_shapes_private() {
+        let (surfaces, dir) = test_surfaces();
+        let command = dir
+            .path()
+            .join("does-not-exist-mcp-server.exe")
+            .to_string_lossy()
+            .to_string();
+        let server = McpServerConfig {
+            name: "broken-server".into(),
+            transport: McpTransportType::Stdio,
+            command: command.clone(),
+            args: vec!["PRIVATE_MCP_ARG_MARKER".into()],
+            env: vec!["TOKEN=PRIVATE_MCP_ENV_MARKER".into()],
+            cwd: None,
+            url: String::new(),
+            enabled: true,
+        };
+        let config_service = surfaces
+            .mcp
+            .services
+            .context
+            .config_service
+            .as_ref()
+            .unwrap();
+        config_service
+            .apply_patch(ConfigPatch::McpServers(vec![server]))
+            .unwrap();
+
+        let reload = surfaces
+            .execute(
+                AdminRequest::Mcp(McpOperationArgs::McpReload),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(reload.output["reloaded"], json!(true));
+        assert_eq!(reload.output["connected"].as_array().unwrap().len(), 1);
+        let row = &reload.output["connected"][0];
+        assert_eq!(row["name"], json!("broken-server"));
+        assert_eq!(row["connected"], json!(false));
+        assert!(row["error"].as_str().is_some_and(|error| !error.is_empty()));
+        let mut row_keys: Vec<_> = row
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        row_keys.sort_unstable();
+        assert_eq!(row_keys, vec!["connected", "error", "name"]);
+        let reload_text = serde_json::to_string(&reload.output).unwrap();
+        assert!(!reload_text.contains(&command));
+        assert!(!reload_text.contains("PRIVATE_MCP_ARG_MARKER"));
+        assert!(!reload_text.contains("PRIVATE_MCP_ENV_MARKER"));
+
+        let snapshot = config_service.snapshot().unwrap();
+        let reconcile = surfaces
+            .mcp
+            .services
+            .mcp_manager
+            .reconcile_servers(&snapshot.config.mcp_servers)
+            .await;
+        let plan = McpRefreshPlan::from_reconcile(snapshot.version, &reconcile);
+        assert_eq!(plan.targets.len(), 1);
+        let refresh = surfaces
+            .execute(
+                AdminRequest::NativeMcp(NativeMcpOperationArgs::McpRefresh { plan }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            refresh.output,
+            json!({
+                "added": [],
+                "removed": [],
+                "updated": [],
+                "failed": ["broken-server"],
+            })
+        );
+        let refresh_text = serde_json::to_string(&refresh.output).unwrap();
+        assert!(!refresh_text.contains(&command));
+        assert!(!refresh_text.contains("PRIVATE_MCP_ARG_MARKER"));
+        assert!(!refresh_text.contains("PRIVATE_MCP_ENV_MARKER"));
+
+        let reconnect_error = surfaces
+            .execute(
+                AdminRequest::NativeMcp(NativeMcpOperationArgs::McpReconnect {
+                    name: "broken-server".into(),
+                    config_version: snapshot.version,
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .expect_err("failed refresh does not create a reconnectable client");
+        assert!(reconnect_error.to_string().contains("no longer connected"));
+        assert!(
+            !reconnect_error
+                .to_string()
+                .contains("PRIVATE_MCP_ENV_MARKER")
+        );
+    }
+
+    #[test]
+    fn admin_output_union_serializes_exact_untagged_acknowledgement_branches() {
+        let connected = AdminOperationOutput::mcp_connection(McpConnectionOutput {
+            name: "server".into(),
+            connected: true,
+        });
+        assert_eq!(
+            serde_json::to_value(connected).unwrap(),
+            json!({"name": "server", "connected": true})
+        );
+
+        let added_without_warning = AdminOperationOutput::mcp_add(McpAddOutput {
+            name: "server".into(),
+            enabled: true,
+            saved: true,
+            connected: true,
+            warning: None,
+        });
+        assert_eq!(
+            serde_json::to_value(added_without_warning).unwrap(),
+            json!({
+                "name": "server",
+                "enabled": true,
+                "saved": true,
+                "connected": true,
+            })
+        );
+
+        let added_with_warning = AdminOperationOutput::mcp_add(McpAddOutput {
+            name: "server".into(),
+            enabled: true,
+            saved: true,
+            connected: false,
+            warning: Some("config saved but connect failed: [redacted diagnostic line]".into()),
+        });
+        assert_eq!(
+            serde_json::to_value(added_with_warning).unwrap(),
+            json!({
+                "name": "server",
+                "enabled": true,
+                "saved": true,
+                "connected": false,
+                "warning": "config saved but connect failed: [redacted diagnostic line]",
+            })
+        );
+
+        let reload = AdminOperationOutput::mcp_reload(McpReloadOutput {
+            reloaded: true,
+            connected: vec![
+                admin_services::McpReloadConnectionOutput::Connected {
+                    name: "ok".into(),
+                    connected: true,
+                },
+                admin_services::McpReloadConnectionOutput::Failed {
+                    name: "failed".into(),
+                    connected: false,
+                    error: "[redacted diagnostic line]".into(),
+                },
+            ],
+        });
+        assert_eq!(
+            serde_json::to_value(reload).unwrap(),
+            json!({
+                "reloaded": true,
+                "connected": [
+                    {"name": "ok", "connected": true},
+                    {"name": "failed", "connected": false, "error": "[redacted diagnostic line]"},
+                ],
+            })
+        );
     }
 
     #[test]
