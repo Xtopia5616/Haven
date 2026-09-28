@@ -26,6 +26,8 @@ export type SessionEventName = (typeof SESSION_EVENT_NAMES)[number];
 export interface SessionLifecyclePayload {
 	sessionId: string;
 	status: SessionStatus;
+	/** Present only when this lifecycle event is paired with a primary terminal channel. */
+	occurrenceId?: string;
 	waitingReason: SessionWaitingReason | null;
 	title: string | null;
 	reason: string | null;
@@ -34,6 +36,8 @@ export interface SessionLifecyclePayload {
 export interface SessionErrorPayload {
 	sessionId: string;
 	error: string;
+	/** Shared with the matching terminal `session:updated` projection. */
+	occurrenceId?: string;
 }
 
 export interface SessionTitleUpdatedPayload {
@@ -96,12 +100,24 @@ export function mapSessionEvent<K extends SessionEventName>(
 			const waitingReason = mapWaitingReason(payload.waiting_reason);
 			const title = nullableString(payload, 'title');
 			const reason = optionalString(payload, 'reason');
+			const occurrenceId = optionalString(payload, 'occurrence_id');
 			if (
 				sessionId === null ||
 				status === null ||
 				waitingReason === undefined ||
 				title === undefined ||
-				reason === undefined
+				reason === undefined ||
+				occurrenceId === undefined ||
+				occurrenceId === ''
+			)
+				return null;
+			if (
+				occurrenceId !== null &&
+				!(
+					(event.event === 'session:completed' && status === 'completed') ||
+					(event.event === 'session:updated' &&
+						(status === 'completed' || status === 'error'))
+				)
 			)
 				return null;
 			return {
@@ -112,16 +128,24 @@ export function mapSessionEvent<K extends SessionEventName>(
 					waitingReason,
 					title,
 					reason,
+					...(occurrenceId !== null ? { occurrenceId } : {}),
 				},
 			};
 		}
 		case 'session:error': {
 			const sessionId = requiredSessionId(payload);
 			const error = requiredString(payload, 'error');
-			if (sessionId === null || error === null) return null;
+			const occurrenceId = optionalString(payload, 'occurrence_id');
+			if (
+				sessionId === null ||
+				error === null ||
+				occurrenceId === undefined ||
+				occurrenceId === ''
+			)
+				return null;
 			return {
 				...event,
-				payload: { sessionId, error },
+				payload: { sessionId, error, ...(occurrenceId !== null ? { occurrenceId } : {}) },
 			};
 		}
 		case 'session:title-updated': {

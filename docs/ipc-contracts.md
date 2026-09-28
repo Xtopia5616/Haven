@@ -113,9 +113,9 @@ Tauri 接收前端参数时采用其自动 camelCase → Rust snake_case 映射�
 | 事件 | Rust DTO（wire） | 生产者 | 消费者 | 顺序、幂等与敏感字段 |
 |---|---|---|---|---|
 | `session:created` | `SessionLifecycleEvent { session_id, status, waiting_reason?, title, reason? }` | Agent 创建会话 | 聊天页、根布局、记忆视图 | 在该会话首个流式事件前；按 `session_id` 幂等合并。`title` 可为 `null`，非终态不发送 `reason`；不得发送原始输入或摘要。 |
-| `session:updated` | `SessionLifecycleEvent { session_id, status, waiting_reason?, title, reason? }` | Agent 状态变迁；完成/错误的副发 | 聊天页、根布局、记忆视图 | `status` 只能是 `pending`、`running`、`paused`、`completed`、`error`；`waiting_reason` 只在 `paused` 时有值，消费方不得再组合 interaction/action 状态推断等待原因；允许重复。终态副发携带同一 `reason`，其它状态不发送。 |
-| `session:completed` | `SessionLifecycleEvent` | Agent 完成 / 用户结束 | 聊天页、根布局、记忆视图 | 终态，`waiting_reason` 缺省，`reason` 必填且为已净化的用户可见结束原因；随后无同 run 的流式事件；会同时副发 `session:updated`，消费者必须幂等。 |
-| `session:error` | `SessionErrorEvent { session_id, error }` | Agent 执行失败 | 聊天页、根布局、记忆视图 | 终态并副发 `session:updated(error)`；`error` 是面向用户的已净化错误，不得带密钥、完整命令输出或原始 provider 响应。 |
+| `session:updated` | `SessionLifecycleEvent { session_id, status, waiting_reason?, title, reason?, occurrence_id? }` | Agent 状态变迁；完成/错误的副发 | 聊天页、根布局、记忆视图 | `status` 只能是 `pending`、`running`、`paused`、`completed`、`error`；`waiting_reason` 只在 `paused` 时有值，消费方不得再组合 interaction/action 状态推断等待原因；允许重复。终态副发携带同一 `reason`。仅与主终态 channel 配对的副发携带共同 `occurrence_id`；独立终态更新不带该字段。 |
+| `session:completed` | `SessionLifecycleEvent` | Agent 完成 / 用户结束 | 聊天页、根布局、记忆视图 | 终态，`waiting_reason` 缺省，`reason` 必填且为已净化的用户可见结束原因；随后无同 run 的流式事件；会同时副发 `session:updated`，两个 payload 携带相同的短期 `occurrence_id`。 |
+| `session:error` | `SessionErrorEvent { session_id, error, occurrence_id? }` | Agent 执行失败 | 聊天页、根布局、记忆视图 | 终态并副发 `session:updated(error)`；两者携带相同的短期 `occurrence_id`。`error` 是面向用户的已净化错误，不得带密钥、完整命令输出或原始 provider 响应。 |
 | `session:title-updated` | `SessionTitleUpdatedEvent { session_id, title }` | Agent 自动标题 / `update_session_title` | 聊天页、记忆视图 | 可在任意非删除状态后出现；按 `session_id` 覆盖标题，重复安全。 |
 | `session:deleted` | `SessionDeletedEvent { session_id: Option<String> }` | `delete_session` / `clear_history` | 根布局 | `session_id = null` 表示全量清空；删除后不期待该会话的终态事件。payload 不含会话内容。 |
 

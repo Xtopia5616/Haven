@@ -55,6 +55,23 @@ export function createChatSessionEventHandlers({
 	'session:title-updated': (event: TitleUpdatedEvent) => void;
 	'session:deleted': (event: DeletedEvent) => void;
 } {
+	// The backend tags the two channels emitted for one terminal occurrence.
+	// The first channel handled owns cleanup; an independent session:updated
+	// without an identity continues to own its own cleanup.
+	const terminalOccurrences = new Set<string>();
+	const claimTerminalCleanup = (occurrenceId?: string) => {
+		if (!occurrenceId) return true;
+		const cleanupDone = terminalOccurrences.has(occurrenceId);
+		terminalOccurrences.add(occurrenceId);
+		// Keep only a bounded recent window for delayed duplicate deliveries.
+		while (terminalOccurrences.size > 64) {
+			const oldest = terminalOccurrences.values().next().value;
+			if (oldest === undefined) break;
+			terminalOccurrences.delete(oldest);
+		}
+		return !cleanupDone;
+	};
+
 	const finalizeLiveMessages = (sessionId: string) => {
 		clearToolOutputPreviewsForSession(sessionId);
 		// A lifecycle event can arrive while the last chunks are still queued for
@@ -89,6 +106,9 @@ export function createChatSessionEventHandlers({
 		},
 		'session:updated': (event) => {
 			const data = event.payload;
+			const shouldRunTerminalCleanup =
+				(data.status === 'completed' || data.status === 'error') &&
+				claimTerminalCleanup(data.occurrenceId);
 			const activeSessionId = getActiveSessionId();
 			const isActive = !!activeSessionId && data.sessionId === activeSessionId;
 			const shouldForgetError =
@@ -130,18 +150,26 @@ export function createChatSessionEventHandlers({
 				finalizeLiveMessages(data.sessionId);
 			}
 			if (data.status === 'completed' || data.status === 'error') {
-				clearToolOutputPreviewsForSession(data.sessionId);
-				evictTerminalSessionMemory(data.sessionId);
-				if (getActiveSessionId() === data.sessionId) {
-					finalizeLiveMessages(data.sessionId);
+				if (shouldRunTerminalCleanup) {
+					clearToolOutputPreviewsForSession(data.sessionId);
+					evictTerminalSessionMemory(data.sessionId);
+					if (getActiveSessionId() === data.sessionId) {
+						finalizeLiveMessages(data.sessionId);
+					}
+					clearStepBlockIds(data.sessionId);
 				}
-				clearStepBlockIds(data.sessionId);
 			}
-			scheduleLoadSessions();
+			if (
+				shouldRunTerminalCleanup ||
+				(data.status !== 'completed' && data.status !== 'error')
+			) {
+				scheduleLoadSessions();
+			}
 		},
 		'session:completed': (event) => {
 			const sessionId = event.payload.sessionId;
 			const reason = event.payload.reason?.trim() || '会话已正常结束。';
+			const shouldRunTerminalCleanup = claimTerminalCleanup(event.payload.occurrenceId);
 			dispatchSession({
 				type: 'session/status-updated',
 				sessionId,
@@ -157,14 +185,17 @@ export function createChatSessionEventHandlers({
 			});
 			if (getActiveSessionId() === sessionId) {
 				clearAskAwaiting(sessionId);
-				finalizeLiveMessages(sessionId);
+				if (shouldRunTerminalCleanup) finalizeLiveMessages(sessionId);
 			}
-			evictTerminalSessionMemory(sessionId);
-			clearStepBlockIds(sessionId);
-			scheduleLoadSessions();
+			if (shouldRunTerminalCleanup) {
+				evictTerminalSessionMemory(sessionId);
+				clearStepBlockIds(sessionId);
+				scheduleLoadSessions();
+			}
 		},
 		'session:error': (event) => {
 			const { sessionId, error } = event.payload;
+			const shouldRunTerminalCleanup = claimTerminalCleanup(event.payload.occurrenceId);
 			dispatchSession({ type: 'session/error-shown', sessionId, reason: error });
 			dispatchSession({
 				type: 'session/error-reason-remembered',
@@ -173,11 +204,13 @@ export function createChatSessionEventHandlers({
 			});
 			if (sessionId === getActiveSessionId()) {
 				clearAskAwaiting(sessionId);
-				finalizeLiveMessages(sessionId);
+				if (shouldRunTerminalCleanup) finalizeLiveMessages(sessionId);
 			}
-			evictTerminalSessionMemory(sessionId);
-			clearStepBlockIds(sessionId);
-			scheduleLoadSessions();
+			if (shouldRunTerminalCleanup) {
+				evictTerminalSessionMemory(sessionId);
+				clearStepBlockIds(sessionId);
+				scheduleLoadSessions();
+			}
 		},
 		'session:title-updated': (event) => {
 			const { sessionId, title } = event.payload;

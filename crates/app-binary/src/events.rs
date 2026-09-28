@@ -285,6 +285,9 @@ fn value_type(value: &Value) -> &'static str {
 pub(crate) struct SessionLifecycleEvent {
     pub session_id: String,
     pub status: SessionStatus,
+    /// Shared only by paired primary/secondary terminal event projections.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub occurrence_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub waiting_reason: Option<SessionWaitingReason>,
     /// A newly-created session may not have a generated title yet.
@@ -299,6 +302,9 @@ pub(crate) struct SessionLifecycleEvent {
 pub(crate) struct SessionErrorEvent {
     pub session_id: String,
     pub error: String,
+    /// Shared with the matching terminal `session:updated` projection.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub occurrence_id: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -654,6 +660,7 @@ mod tests {
         let event = SessionLifecycleEvent {
             session_id: "ses-1".into(),
             status: SessionStatus::Paused,
+            occurrence_id: None,
             waiting_reason: None,
             title: Some("Plan migration".into()),
             reason: None,

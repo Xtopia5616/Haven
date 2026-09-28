@@ -639,9 +639,10 @@ serde 外部标记 enum，MCP status 只接受当前 Rust DTO variants（ADR 038
 `contracts/agent.ts::mapAgentEvent` 是唯一 runtime validator/mapper，删除重复的 TS snake_case wire
 interfaces，忽略未知附加字段；工具 outcome、retry、idempotency 与 operation scope 必须匹配当前值集，动态扩展值仍只在显式字段保留（ADR 0380）。`agentEventListeners` 对 malformed
 payload 记录不含 payload 的 warning 并丢弃；聊天页与布局订阅互不重叠，共用同一 session reducer，通知、
-usage fallback 与 media plan 双副作用保持原 owner（ADR 0347）。另保留既有 SessionCompleted/SessionError
-主事件加 `session:updated` secondary fan-out；聊天页终态 handler 会重复执行部分 cleanup，跨 channel 没有共享
-event identity，本切片不修改 session contract/reducer。session、action、recording、settings read、app event 与 agent event contract 已完成对应 mapper/validator 或边界审计（ADR 0330、0335、0340、0341、0346、0347、0348、0350、0376）；live interaction event 与 resume snake_case DTO 保持各自 mapper，SessionCompleted/SessionError 跨 channel 仍缺共享 occurrence identity，当前不推断性去重（ADR 0349）。全局 Rust→TypeScript codegen 未引入，其余 command families 仍待按域审计；Settings update payload 仍由 SettingsView 的单一 builder 构造。Action board 的活跃
+usage fallback 与 media plan 双副作用保持原 owner（ADR 0347）。SessionCompleted/SessionError
+仍经 primary channel 与 `session:updated` secondary fan-out；同一终态 occurrence 现携带共享 `occurrence_id`，
+聊天页只对精确配对的 secondary 跳过重复 cleanup，独立终态 `session:updated` 仍执行清理；相同 reducer
+状态投影不再广播新引用（ADR 0349、0386）。session、action、recording、settings read、app event 与 agent event contract 已完成对应 mapper/validator 或边界审计（ADR 0330、0335、0340、0341、0346、0347、0348、0350、0376）；live interaction event 与 resume snake_case DTO 保持各自 mapper。全局 Rust→TypeScript codegen 未引入，其余 command families 仍待按域审计；Settings update payload 仍由 SettingsView 的单一 builder 构造。Action board 的活跃
 `list_actions`/`cancel_action` 经 `actionCommands.ts`；list response 复用 `mapActionPayload`，cancel
 request/result 使用命名 TS contract，`actionStore` 不直接 invoke（ADR 0348）。其余命令仍按域审计，
 不引入全局 codegen。
@@ -736,6 +737,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 
 | 日期 | 内容 |
 |---|---|
+| 2026-09-28 | §2.6 App/UI：SessionCompleted/SessionError 的 primary 与 secondary lifecycle payload 共享短期 occurrence identity；聊天页只执行一次 paired terminal cleanup，独立 `session:updated` 仍清理；相同 reducer lifecycle 投影返回原状态（ADR 0386）|
 | 2026-09-28 | §2.3/§2.5 Agent/Tools：AppState 在组合根创建 memory typed stores，生产 MemoryService 不再接收或持有 raw Database；ActionService 稳定 status/list 读取改由 typed projection 对外，JSON 留在工具/event/provider/MCP/Skill 边界（ADR 0383）|
 | 2026-09-28 | §2.5 Agent：SessionState 持有 `react_run` active future，future 独占 run-local ReActState；actor 同一 select loop 处理 run 与 mailbox，pending await 不借用整份 SessionState（ADR 0382）|
 | 2026-09-27 | §2.6 UI：TaskCenter background/scheduled 活动卡片经共同 `projectActionCard` model 投影，保留 kind details 与当前文案/交互；terminal completion record/transcript 统一尚待 scheduled outcome source 产品决策；通知开关留给独立 Settings/wire 切片（ADR 0373）|

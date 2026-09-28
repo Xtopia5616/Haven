@@ -91,6 +91,7 @@ corepack pnpm run check
 | `rec-` | 录音会话（一次录音一个 id，`recording:started`/`transcription:*` 事件共用） | `haven_app` |
 | `file-` | 临时文件名 | `haven_app` |
 | `call-` | provider 返回空 tool_call_id 时的本地兜底 | `haven_agent` |
+| `occ-` | 同一终态事件跨 channel 双发共用的短期 occurrence identity | `haven_app` |
 
 规则：
 - **生成一律用 `haven_common::types::new_id(prefix)`**，禁止手拼 UUID。

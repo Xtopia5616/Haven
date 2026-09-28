@@ -184,6 +184,38 @@ mod tests {
             })
         );
     }
+
+    #[test]
+    fn terminal_primary_and_secondary_payloads_share_the_occurrence_id() {
+        let cases = [
+            (
+                AgentEvent::SessionCompleted {
+                    session_id: "ses-completed".into(),
+                    title: "研究".into(),
+                    reason: "用户主动结束会话".into(),
+                },
+                None,
+            ),
+            (
+                AgentEvent::SessionError {
+                    session_id: "ses-error".into(),
+                    error: "网络请求超时".into(),
+                },
+                Some("研究".to_owned()),
+            ),
+        ];
+
+        for (event, secondary_title) in cases {
+            let occurrence_id = "occ-test";
+            let primary = TauriEmitter::payload_with_chunk_seq(&event, None, Some(occurrence_id));
+            let secondary =
+                TauriEmitter::secondary_payload(&event, Some(occurrence_id), secondary_title)
+                    .expect("terminal Agent events have a secondary lifecycle projection");
+
+            assert_eq!(primary["occurrence_id"], occurrence_id);
+            assert_eq!(secondary["occurrence_id"], occurrence_id);
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -197,10 +229,16 @@ impl AgentEventEmitter for TauriEmitter {
             }
             _ => None,
         };
+        let occurrence_id = match &event {
+            AgentEvent::SessionCompleted { .. } | AgentEvent::SessionError { .. } => {
+                Some(haven_common::types::new_id("occ"))
+            }
+            _ => None,
+        };
         // Cache titles from create/rename/complete before any path that may
         // resolve a display title (SessionUpdated fill, toasts, secondary).
         self.notifications.remember_session_status(&event);
-        let mut payload = Self::payload_with_chunk_seq(&event, chunk_seq);
+        let mut payload = Self::payload_with_chunk_seq(&event, chunk_seq, occurrence_id.as_deref());
         // Add a safe display title so in-app toast matches Windows (never raw
         // input).
         if let AgentEvent::SessionUpdated { session_id, .. } = &event {
@@ -214,7 +252,7 @@ impl AgentEventEmitter for TauriEmitter {
                 "failed to emit agent event"
             );
         }
-        self.emit_secondary(&event);
+        self.emit_secondary_with_occurrence_id(&event, occurrence_id.as_deref());
         self.notifications.maybe_show_toast(&event);
     }
 }
@@ -250,10 +288,14 @@ impl TauriEmitter {
     /// extension point: tool input, web-search result, and usage diagnostics.
     #[cfg(test)]
     pub(crate) fn payload(event: &AgentEvent, chunk_seq: Option<u64>) -> serde_json::Value {
-        Self::payload_with_chunk_seq(event, chunk_seq)
+        Self::payload_with_chunk_seq(event, chunk_seq, None)
     }
 
-    fn payload_with_chunk_seq(event: &AgentEvent, chunk_seq: Option<u64>) -> serde_json::Value {
+    fn payload_with_chunk_seq(
+        event: &AgentEvent,
+        chunk_seq: Option<u64>,
+        occurrence_id: Option<&str>,
+    ) -> serde_json::Value {
         fn serialize<T: serde::Serialize>(payload: T) -> serde_json::Value {
             match serde_json::to_value(payload) {
                 Ok(value) => value,
@@ -345,6 +387,7 @@ impl TauriEmitter {
             AgentEvent::SessionCreated(session) => serialize(SessionLifecycleEvent {
                 session_id: session.id.clone(),
                 status: session.status,
+                occurrence_id: None,
                 waiting_reason: session.waiting_reason,
                 title: session.title.clone(),
                 reason: None,
@@ -356,6 +399,7 @@ impl TauriEmitter {
             } => serialize(SessionLifecycleEvent {
                 session_id: session_id.clone(),
                 status: haven_common::SessionStatus::Completed,
+                occurrence_id: occurrence_id.map(str::to_owned),
                 waiting_reason: None,
                 title: Some(title.clone()),
                 reason: Some(sanitize_error_text(reason)),
@@ -368,6 +412,7 @@ impl TauriEmitter {
             } => serialize(SessionLifecycleEvent {
                 session_id: session_id.clone(),
                 status: *status,
+                occurrence_id: None,
                 waiting_reason: *waiting_reason,
                 title: Some(String::new()),
                 reason: reason.as_deref().map(sanitize_error_text),
@@ -375,6 +420,7 @@ impl TauriEmitter {
             AgentEvent::SessionError { session_id, error } => serialize(SessionErrorEvent {
                 session_id: session_id.clone(),
                 error: sanitize_error_text(error),
+                occurrence_id: occurrence_id.map(str::to_owned),
             }),
             AgentEvent::ThoughtChunk {
                 session_id,
@@ -702,34 +748,60 @@ impl TauriEmitter {
         }
     }
 
-    /// `SessionCompleted` / `SessionError` 在 `session:updated` 上的副发。三条形状统一为
-    /// `{session_id, status, title, reason}` —— `error` 字段只保留在 `session:error` 主通道。
-    fn emit_secondary(&self, event: &AgentEvent) {
+    /// `SessionCompleted` / `SessionError` 在 `session:updated` 上的副发。生命周期形状统一为
+    /// `{session_id, status, title, reason, occurrence_id?}` —— `error` 只保留在主通道。
+    fn emit_secondary_with_occurrence_id(&self, event: &AgentEvent, occurrence_id: Option<&str>) {
+        let title = match event {
+            AgentEvent::SessionError { session_id, .. } => {
+                Some(self.notifications.session_display_title(session_id))
+            }
+            _ => None,
+        };
+        let Some(payload) = Self::secondary_payload(event, occurrence_id, title) else {
+            return;
+        };
+        if let Err(error) = self.handle.emit(SESSION_UPDATED_EVENT, payload) {
+            tracing::warn!(
+                error = %sanitize_error_text(&error.to_string()),
+                "failed to emit secondary session lifecycle event"
+            );
+        }
+    }
+
+    fn secondary_payload(
+        event: &AgentEvent,
+        occurrence_id: Option<&str>,
+        title: Option<String>,
+    ) -> Option<serde_json::Value> {
         let payload = match event {
             AgentEvent::SessionCompleted {
                 session_id,
                 title,
                 reason,
-            } => serde_json::to_value(SessionLifecycleEvent {
-                session_id: session_id.clone(),
-                status: haven_common::SessionStatus::Completed,
-                waiting_reason: None,
-                title: Some(title.clone()),
-                reason: Some(sanitize_error_text(reason)),
-            })
-            .unwrap_or_else(|error| {
-                tracing::error!(
-                    error = %sanitize_error_text(&error.to_string()),
-                    "failed to serialize session lifecycle event"
-                );
-                serde_json::Value::Null
-            }),
-            AgentEvent::SessionError { session_id, error } => {
+            } => Some(
+                serde_json::to_value(SessionLifecycleEvent {
+                    session_id: session_id.clone(),
+                    status: haven_common::SessionStatus::Completed,
+                    occurrence_id: occurrence_id.map(str::to_owned),
+                    waiting_reason: None,
+                    title: Some(title.clone()),
+                    reason: Some(sanitize_error_text(reason)),
+                })
+                .unwrap_or_else(|error| {
+                    tracing::error!(
+                        error = %sanitize_error_text(&error.to_string()),
+                        "failed to serialize session lifecycle event"
+                    );
+                    serde_json::Value::Null
+                }),
+            ),
+            AgentEvent::SessionError { session_id, error } => Some(
                 serde_json::to_value(SessionLifecycleEvent {
                     session_id: session_id.clone(),
                     status: haven_common::SessionStatus::Error,
+                    occurrence_id: occurrence_id.map(str::to_owned),
                     waiting_reason: None,
-                    title: Some(self.notifications.session_display_title(session_id)),
+                    title,
                     reason: Some(sanitize_error_text(error)),
                 })
                 .unwrap_or_else(|error| {
@@ -738,15 +810,10 @@ impl TauriEmitter {
                         "failed to serialize session lifecycle event"
                     );
                     serde_json::Value::Null
-                })
-            }
-            _ => return,
+                }),
+            ),
+            _ => None,
         };
-        if let Err(error) = self.handle.emit(SESSION_UPDATED_EVENT, payload) {
-            tracing::warn!(
-                error = %sanitize_error_text(&error.to_string()),
-                "failed to emit secondary session lifecycle event"
-            );
-        }
+        payload
     }
 }

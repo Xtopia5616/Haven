@@ -14,6 +14,10 @@ function handlers(options: {
 	activeSessionId?: string | null;
 	dispatchSession: (action: import('./sessionReducer.ts').SessionAction) => void;
 	flushChunksNow?: () => void;
+	clearAskAwaiting?: (sessionId: string) => void;
+	evictTerminalSessionMemory?: (sessionId: string) => void;
+	clearStepBlockIds?: (sessionId: string) => void;
+	scheduleLoadSessions?: () => void;
 }) {
 	return createChatSessionEventHandlers({
 		getActiveSessionId: () => options.activeSessionId ?? null,
@@ -21,12 +25,12 @@ function handlers(options: {
 		adoptDraftMessages: () => options.adoptedDraft ?? false,
 		dispatchSession: options.dispatchSession,
 		getSessionErrorId: () => null,
-		clearAskAwaiting: vi.fn(),
-		evictTerminalSessionMemory: vi.fn(),
-		clearStepBlockIds: vi.fn(),
+		clearAskAwaiting: options.clearAskAwaiting ?? vi.fn(),
+		evictTerminalSessionMemory: options.evictTerminalSessionMemory ?? vi.fn(),
+		clearStepBlockIds: options.clearStepBlockIds ?? vi.fn(),
 		flushChunksNow: options.flushChunksNow ?? vi.fn(),
 		updateSessionTitle: vi.fn(),
-		scheduleLoadSessions: vi.fn(),
+		scheduleLoadSessions: options.scheduleLoadSessions ?? vi.fn(),
 	});
 }
 
@@ -202,23 +206,50 @@ describe('chat session lifecycle handlers', () => {
 					],
 				},
 			});
+			const clearAskAwaiting = vi.fn();
+			const evictTerminalSessionMemory = vi.fn();
+			const clearStepBlockIds = vi.fn();
+			const scheduleLoadSessions = vi.fn();
+			const flushChunksNow = vi.fn();
+			const notifications = vi.fn();
 			const eventHandlers = handlers({
 				activeSessionId: sessionId,
+				flushChunksNow,
+				clearAskAwaiting,
+				evictTerminalSessionMemory,
+				clearStepBlockIds,
+				scheduleLoadSessions,
 				dispatchSession: (action) => reducer.dispatch(action),
 			});
+			reducer.subscribe(notifications);
 			setToolOutputPreview(stepId, '工具输出', sessionId);
 
 			if (status === 'completed') {
 				eventHandlers['session:completed']({
-					payload: { sessionId, status, title: '研究', reason },
+					payload: {
+						sessionId,
+						status,
+						title: '研究',
+						reason,
+						occurrenceId: 'occ-paired',
+					},
 				} as never);
 			} else {
-				eventHandlers['session:error']({ payload: { sessionId, error: reason } } as never);
+				eventHandlers['session:error']({
+					payload: { sessionId, error: reason, occurrenceId: 'occ-paired' },
+				} as never);
 			}
+			const notificationsAfterPrimary = notifications.mock.calls.length;
 			eventHandlers['session:updated']({
-				payload: { sessionId, status, title: '研究', reason },
+				payload: { sessionId, status, title: '研究', reason, occurrenceId: 'occ-paired' },
 			} as never);
 
+			expect(flushChunksNow).toHaveBeenCalledOnce();
+			expect(clearAskAwaiting).toHaveBeenCalledOnce();
+			expect(evictTerminalSessionMemory).toHaveBeenCalledOnce();
+			expect(clearStepBlockIds).toHaveBeenCalledOnce();
+			expect(scheduleLoadSessions).toHaveBeenCalledOnce();
+			expect(notifications).toHaveBeenCalledTimes(notificationsAfterPrimary);
 			expect(reducer.getState().sessions[0].status).toBe(status);
 			expect(reducer.getState().termination).toEqual({ sessionId, status, reason });
 			expect(reducer.getMessages(sessionId)[0].streaming).toBe(false);
@@ -259,6 +290,86 @@ describe('chat session lifecycle handlers', () => {
 
 			expect(reducer.getState().sessions[0].status).toBe(status);
 			expect(reducer.getMessages(sessionId)[0].streaming).toBe(false);
+		},
+	);
+
+	it.each(['completed', 'error'] as const)(
+		'runs paired %s cleanup once when session:updated arrives first',
+		(status) => {
+			const sessionId = `ses-reordered-${status}`;
+			const reason = status === 'completed' ? '已结束' : '请求失败';
+			const reducer = new SessionReducer({
+				...initialSessionState,
+				sessions: [{ id: sessionId, status: 'running' }],
+				activeSessionId: sessionId,
+				messages: {
+					[sessionId]: [
+						{
+							id: 'step-reordered',
+							role: 'assistant',
+							content: '处理中',
+							streaming: true,
+						},
+					],
+				},
+			});
+			const clearAskAwaiting = vi.fn();
+			const evictTerminalSessionMemory = vi.fn();
+			const clearStepBlockIds = vi.fn();
+			const scheduleLoadSessions = vi.fn();
+			const flushChunksNow = vi.fn();
+			const notifications = vi.fn();
+			const eventHandlers = handlers({
+				activeSessionId: sessionId,
+				clearAskAwaiting,
+				evictTerminalSessionMemory,
+				clearStepBlockIds,
+				scheduleLoadSessions,
+				flushChunksNow,
+				dispatchSession: (action) => reducer.dispatch(action),
+			});
+			reducer.subscribe(notifications);
+
+			eventHandlers['session:updated']({
+				payload: {
+					sessionId,
+					status,
+					title: null,
+					reason,
+					waitingReason: null,
+					occurrenceId: 'occ-reordered',
+				},
+			} as never);
+			const notificationsAfterSecondary = notifications.mock.calls.length;
+			if (status === 'completed') {
+				eventHandlers['session:completed']({
+					payload: {
+						sessionId,
+						status,
+						title: null,
+						reason,
+						occurrenceId: 'occ-reordered',
+					},
+				} as never);
+			} else {
+				eventHandlers['session:error']({
+					payload: { sessionId, error: reason, occurrenceId: 'occ-reordered' },
+				} as never);
+			}
+
+			expect(flushChunksNow).toHaveBeenCalledOnce();
+			expect(evictTerminalSessionMemory).toHaveBeenCalledOnce();
+			expect(clearStepBlockIds).toHaveBeenCalledOnce();
+			expect(scheduleLoadSessions).toHaveBeenCalledOnce();
+			expect(clearAskAwaiting).toHaveBeenCalledOnce();
+			if (status === 'completed') {
+				expect(notifications).toHaveBeenCalledTimes(notificationsAfterSecondary);
+			} else {
+				// The primary adds its distinct per-session error-reason projection.
+				expect(notifications).toHaveBeenCalledTimes(notificationsAfterSecondary + 1);
+			}
+			expect(reducer.getMessages(sessionId)[0].streaming).toBe(false);
+			expect(reducer.getState().termination).toEqual({ sessionId, status, reason });
 		},
 	);
 });

@@ -115,47 +115,76 @@ export function reduceLifecycle(
 		case 'session/cleared':
 			return { ...state, activeSessionId: null, error: null, termination: null };
 		case 'session/status-updated': {
-			const sessions = state.sessions.map((session) =>
-				session.id === action.sessionId
-					? {
-							...session,
-							status: action.status,
-							...(action.waitingReason !== undefined
-								? { waitingReason: action.waitingReason }
-								: {}),
-							...(action.title != null ? { title: action.title } : {}),
-						}
-					: session,
-			);
+			const current = state.sessions.find((session) => session.id === action.sessionId);
+			if (!current) return state;
+			const waitingReason =
+				action.waitingReason !== undefined ? action.waitingReason : current.waitingReason;
+			const title = action.title != null ? action.title : current.title;
+			const sessionChanged =
+				current.status !== action.status ||
+				current.waitingReason !== waitingReason ||
+				current.title !== title;
 			const terminalStateChanged =
 				state.termination?.sessionId === action.sessionId &&
 				action.status !== 'completed' &&
 				action.status !== 'error';
+			const shouldClearError =
+				state.error?.sessionId === action.sessionId && isBusyStatus(action.status);
+			if (!sessionChanged && !terminalStateChanged && !shouldClearError) return state;
+			const sessions = sessionChanged
+				? state.sessions.map((session) =>
+						session.id === action.sessionId
+							? {
+									...session,
+									status: action.status,
+									...(action.waitingReason !== undefined
+										? { waitingReason: action.waitingReason }
+										: {}),
+									...(action.title != null ? { title: action.title } : {}),
+								}
+							: session,
+					)
+				: state.sessions;
 			return {
 				...state,
 				sessions,
-				...(state.error?.sessionId === action.sessionId && isBusyStatus(action.status)
-					? { error: null }
-					: {}),
+				...(shouldClearError ? { error: null } : {}),
 				...(terminalStateChanged ? { termination: null } : {}),
 			};
 		}
 		case 'session/error-shown': {
-			const sessions = state.sessions.map((session) =>
-				session.id === action.sessionId ? { ...session, status: 'error' } : session,
-			);
-			return state.activeSessionId === action.sessionId
-				? {
-						...state,
-						sessions,
-						error: { sessionId: action.sessionId, reason: action.reason },
-						termination: {
-							sessionId: action.sessionId,
-							status: 'error',
-							reason: action.reason,
-						},
-					}
-				: { ...state, sessions };
+			const current = state.sessions.find((session) => session.id === action.sessionId);
+			const isActive = state.activeSessionId === action.sessionId;
+			const sessionChanged = !!current && current.status !== 'error';
+			const errorChanged =
+				isActive &&
+				(state.error?.sessionId !== action.sessionId ||
+					state.error?.reason !== action.reason);
+			const terminationChanged =
+				isActive &&
+				(state.termination?.sessionId !== action.sessionId ||
+					state.termination?.status !== 'error' ||
+					state.termination?.reason !== action.reason);
+			if (!sessionChanged && !errorChanged && !terminationChanged) return state;
+			const sessions = sessionChanged
+				? state.sessions.map((session) =>
+						session.id === action.sessionId ? { ...session, status: 'error' } : session,
+					)
+				: state.sessions;
+			return {
+				...state,
+				sessions,
+				...(isActive
+					? {
+							error: { sessionId: action.sessionId, reason: action.reason },
+							termination: {
+								sessionId: action.sessionId,
+								status: 'error' as const,
+								reason: action.reason,
+							},
+						}
+					: {}),
+			};
 		}
 		case 'session/error-cleared':
 			return !action.sessionId || state.error?.sessionId === action.sessionId
@@ -194,6 +223,10 @@ export function reduceLifecycle(
 				state.termination.status === action.status &&
 				state.termination.reason === action.reason;
 			if (alreadyShown) return state;
+			const current = state.sessions.find((session) => session.id === action.sessionId);
+			if (!current) return state;
+			if (state.activeSessionId !== action.sessionId && current?.status === action.status)
+				return state;
 			const sessions = state.sessions.map((session) =>
 				session.id === action.sessionId ? { ...session, status: action.status } : session,
 			);

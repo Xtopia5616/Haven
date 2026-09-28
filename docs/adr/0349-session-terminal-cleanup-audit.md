@@ -1,6 +1,6 @@
 # ADR 0349：Session terminal event cleanup audit
 
-- Status: accepted (2026-09-25)
+- Status: accepted; implementation updated by [ADR 0386](0386-session-terminal-occurrence-identity.md)
 - Scope: `TauriEmitter` terminal fan-out, chat session event handlers, shared session reducer selectors, and lifecycle refresh consumers
 - Related: [ADR 0330](0330-session-lifecycle-ui-contract-mapper.md), [ADR 0336](0336-react-session-committed-submission.md), [ADR 0347](0347-agent-event-contract-validation-boundary.md)
 
@@ -51,13 +51,14 @@ This is a real repeated cleanup path with some value-idempotent operations and s
 
 ## Decision
 
-- Preserve the primary and secondary channels, payloads, producer order, and all existing UI projections.
-- Do not add event deduplication based on `session_id`, terminal status, payload equality, arrival adjacency, or Tauri envelope ids. There is no shared occurrence identity, and the same `session:updated` channel carries standalone terminal transitions. Suppressing a matching update could skip required cleanup; suppressing a later cleanup could also leave a newly queued stream chunk live.
-- Add regression coverage for both primary-plus-secondary terminal projections and standalone terminal `session:updated` cleanup. Keep the remaining duplicate cleanup visible as a documented risk until the producer contract provides a reliable shared identity or ownership boundary.
-- Do not alter Rust wire DTOs, database/session storage, resume interaction normalization, or durable event sequencing.
+- Keep both channels and their producer order because the primary channel and lifecycle projection have distinct consumers. The original audit intentionally deferred cleanup deduplication because no shared occurrence identity existed and `session:updated` also carries standalone terminal transitions.
+- Never infer pairing from `session_id`, terminal status, payload equality, arrival adjacency, or Tauri envelope ids. Such matching can suppress an independent transition or a later cleanup needed for newly queued stream output.
+- [ADR 0386](0386-session-terminal-occurrence-identity.md) resolves the repeated chat cleanup with an explicit optional `occurrence_id` shared only by a primary terminal event and its secondary `session:updated`. The first of those exact paired projections handled by chat owns cleanup; the other skips it. A standalone `session:updated` remains a cleanup owner.
+- Keep the terminal reason/error projections, layout busy/model state, toast owners, MemoryView refresh, channel order, and standalone lifecycle behavior. Reducer lifecycle actions also return the existing state when the requested projection is already equal, avoiding selector notifications for unchanged values.
+- No database/session storage, resume interaction normalization, or durable event sequencing changes.
 
 ## Verification and rollback
 
-UI tests cover completed/error primary-plus-secondary projection and standalone completed/error `session:updated` cleanup. Run `corepack pnpm run check`, `corepack pnpm run test:run`, `corepack pnpm run build`, `scripts/check-ipc-events.ps1`, and `scripts/check-ipc-contracts.ps1`.
+UI tests cover completed/error primary-plus-secondary projection with shared occurrence identity and standalone completed/error `session:updated` cleanup. ADR 0386 adds Rust payload, frontend mapper, and reducer no-op coverage. Run `corepack pnpm run check`, `corepack pnpm run test:run`, `corepack pnpm run build`, `scripts/check-ipc-events.ps1`, and `scripts/check-ipc-contracts.ps1`.
 
-The regression tests and this audit record can be reverted directly. No wire, schema, persisted state, or reset changes are involved.
+The 2026-09-25 audit itself introduced no wire or persisted-state changes. The additive optional field and its consumers can be reverted together as described in ADR 0386; no database schema, persisted state, or reset changes are involved.

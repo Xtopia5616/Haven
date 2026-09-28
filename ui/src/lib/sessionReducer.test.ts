@@ -74,6 +74,36 @@ describe('resume interaction normalization', () => {
 });
 
 describe('SessionReducer', () => {
+	it('keeps identical terminal lifecycle projections from notifying selectors again', () => {
+		const state = stateWith({
+			sessions: [{ ...session('ses-terminal', 'completed'), waitingReason: null }],
+			activeSessionId: 'ses-terminal',
+			termination: {
+				sessionId: 'ses-terminal',
+				status: 'completed',
+				reason: '已结束',
+			},
+		});
+
+		expect(
+			reduceSession(state, {
+				type: 'session/status-updated',
+				sessionId: 'ses-terminal',
+				status: 'completed',
+				title: null,
+				waitingReason: null,
+			}),
+		).toBe(state);
+		expect(
+			reduceSession(state, {
+				type: 'session/termination-shown',
+				sessionId: 'ses-terminal',
+				status: 'completed',
+				reason: '已结束',
+			}),
+		).toBe(state);
+	});
+
 	it('owns normalized per-session error reasons and ignores duplicate or blank updates', () => {
 		const reducer = new SessionReducer();
 		reducer.dispatch({

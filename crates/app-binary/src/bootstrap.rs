@@ -486,6 +486,8 @@ pub(crate) fn run() {
                                         session_id,
                                         reason,
                                     } => {
+                                        let occurrence_id =
+                                            haven_common::types::new_id("occ");
                                         log_ignored_result!(
                                             "event.session_error",
                                             app_h.emit(
@@ -493,6 +495,7 @@ pub(crate) fn run() {
                                                 SessionErrorEvent {
                                                     session_id: session_id.clone(),
                                                     error: sanitize_error_text(&reason),
+                                                    occurrence_id: Some(occurrence_id.clone()),
                                                 },
                                             )
                                         );
@@ -503,6 +506,7 @@ pub(crate) fn run() {
                                                 SessionLifecycleEvent {
                                                     session_id,
                                                     status: haven_common::SessionStatus::Error,
+                                                    occurrence_id: Some(occurrence_id),
                                                     waiting_reason: None,
                                                     title: Some(String::new()),
                                                     reason: Some(sanitize_error_text(&reason)),

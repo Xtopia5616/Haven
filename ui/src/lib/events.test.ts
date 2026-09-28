@@ -125,6 +125,39 @@ describe('sessionEventListeners', () => {
 		});
 	});
 
+	it('preserves explicit terminal occurrence identity across session event mappers', () => {
+		const updatedHandler = vi.fn();
+		const errorHandler = vi.fn();
+		const listeners = sessionEventListeners({
+			'session:updated': updatedHandler,
+			'session:error': errorHandler,
+		});
+
+		listeners['session:updated']({
+			event: 'session:updated',
+			id: 10,
+			payload: {
+				session_id: 'ses-paired',
+				status: 'error',
+				title: 'A title',
+				reason: 'Request failed',
+				occurrence_id: 'occ-shared',
+			},
+		} as never);
+		listeners['session:error']({
+			event: 'session:error',
+			id: 11,
+			payload: {
+				session_id: 'ses-paired',
+				error: 'Request failed',
+				occurrence_id: 'occ-shared',
+			},
+		} as never);
+
+		expect(updatedHandler.mock.calls[0][0].payload.occurrenceId).toBe('occ-shared');
+		expect(errorHandler.mock.calls[0][0].payload.occurrenceId).toBe('occ-shared');
+	});
+
 	it('drops malformed lifecycle events before they reach handlers', () => {
 		const handler = vi.fn();
 		const listeners = sessionEventListeners({ 'session:updated': handler });
