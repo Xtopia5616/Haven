@@ -753,6 +753,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 | 2026-09-26 | §2.3/§2.5/§2.6：`AgentLayer::new` 改接组合根创建的共享 `MemoryService`；AppState 用同一 Router 与配置的 embedding chunk size 创建一次，AgentLayer 继续派生并共享 Worker、Runtime、PromptBuilder 与 typed stores，Runtime 所有权/readiness 不变（ADR 0364）|
 | 2026-09-26 | §2.3/§2.5/§2.6：审计 MemoryRuntime 对象仍由 AgentLayer 持有、ApplicationRuntime 持有其周期 task 生命周期；现有 AgentLayer startup barrier 缺少 app 可组合的 prepared-consumer/readiness API，迁移暂缓并记录最小后续接口步骤（ADR 0362）|
 | 2026-09-26 | §2.5 Agent：最终验收审计校准 actor 所有权说明；当时 `SessionActor` 轮询 active-run future，ReActState 为 run-local scratch，SessionState 持有会话队列与元数据；字段所有权随后由 ADR 0382 完成校准，整体完成条件及发布验收缺口见 ADR 0361 |
+| 2026-09-28 | §2.5 Agent：SessionActor 默认公平调度 run/mailbox，direct-run release 改用容量 1 的合并信号；饱和负载验收见 ADR 0390 |
 | 2026-09-26 | §2.5 Agent：`SessionSupervisor` 构造改接收 `SessionStore`，AppState 显式创建并保持独立事件 sender；`AgentLayer::new` 与其他 raw Database 路径仍按 ADR 0363 记录范围保留 |
 | 2026-09-26 | §2.6 App / UI：`discover_models` 与 `discover_all_models` 经命名 request/result contract 和单一 typed helper；设置刷新、聊天默认模型同步、媒体 STT discovery 保留各自缓存/错误/通知语义，model metadata 扩展字段原样通过（ADR 0368）|
 | 2026-09-26 | §2.6 App / UI：ToolsView catalog reads 与 circuit reset 通过 typed `toolsCommands.ts`；Rust Skill/MCP/ToolManifest wire fields 有手写 contract 与 IPC drift check，builtin manifest 唯一 mapper 的解析行供 cache/card 共用，保持 snake_case、开放扩展、MCP status 固定变体、刷新/排序/错误行为（ADR 0369、0381） |

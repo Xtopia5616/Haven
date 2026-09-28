@@ -376,3 +376,4 @@
 - [0387：Session deletion reclaims runtime state](0387-session-deletion-reclaims-runtime-state.md)
 - [0388：Agent Tools ports 与组合层适配器完整收口](0388-agent-tools-composition-adapters.md)
 - [0389：Session 事件保留与容量边界](0389-session-event-retention-and-capacity-boundary.md)
+- [0390：SessionActor 饱和公平性与有界 run 释放](0390-session-actor-fairness-and-bounded-release.md)

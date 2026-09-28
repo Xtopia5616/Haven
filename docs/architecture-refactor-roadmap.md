@@ -555,6 +555,10 @@ Phase 7.1 验收与未决风险：见 ADR 0259、0261、0262、0263、0264、026
 - 扩充既有 session event replay 内存 SQLite fixture：1k/10k/100k 历史输入分别对 full read 与 compaction active suffix read 预热 2 次、交错测量 21 对，打印微秒 p50/p95；fixture 建立不计时。此输出只是 test profile、热内存数据库读取的局部观测，不表示磁盘、冷启动或生产延迟。
 - actor mailbox、UI reducer broadcast、Action completion outbox 与 Memory fact extraction outbox 继续只复跑行为测试并明确指标缺口。现有 fixture 尚不能隔离目标阶段成本，因此不加生产 timer、自制异步负载、依赖或性能阈值；不改变重试、取消、顺序、wire、UI 和 X12 语义。
 
+#### 2026-09-28 Actor 饱和公平性验收（ADR 0390）
+
+- 补齐 SessionActor 饱和 mailbox 下的行为验收：默认公平调度 run 与外部命令；持续负载时验证 run 继续推进、排队 sender 完成 Snapshot 往返、Cancel 能应答并结束 run。同步 direct-run release 使用独立容量 1 的信号通道，重复 release 合并且不创建发送 task。超时只约束测试活性，不构成生产延迟 SLA。
+
 #### 2026-09-26 最终验收审计（ADR 0361）
 
 - 总体验收仍未完成：durable transcript recovery、SessionActor 单 task 所有权与阶段 3 的 raw Database/Action typed projection 验收满足（ADR 0382、0383）；App composition root 可持有 raw `Database` 创建 typed stores。阶段 4 的执行 facade、prompt/catalog/observation adapters 在本次 2026-09-26 审计时仍依赖 `ToolsManager`，后由 ADR 0388 收口；runtime failure semantics、Rust→TypeScript codegen 等全局条件仍有未决项。

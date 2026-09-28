@@ -34,6 +34,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 
 const ACTOR_MAILBOX_CAPACITY: usize = 128;
+const ACTOR_RELEASE_CAPACITY: usize = 1;
 
 /// Hard limits for process-local context queues.  The ingress path persists a
 /// user message before it calls these queues, so rejecting an item is an
@@ -188,11 +189,6 @@ pub(crate) enum ActorCommand {
     FinishRun {
         reply: oneshot::Sender<RunFinished>,
     },
-    /// Release a direct-run slot from a synchronous guard drop. The follow-up
-    /// `FinishRun` command still performs Pending requeue bookkeeping, but
-    /// this command makes the run-finished edge observable immediately so an
-    /// async rollback cannot wait on the guard that is already unwinding.
-    ReleaseRun,
     IsRunning {
         reply: oneshot::Sender<bool>,
     },
@@ -284,6 +280,7 @@ pub(crate) struct SessionActorHandle {
     cancel: CancellationToken,
     status: watch::Sender<SessionStatus>,
     run_state: watch::Sender<bool>,
+    release_run: mpsc::Sender<()>,
 }
 
 impl SessionActorHandle {
@@ -380,17 +377,10 @@ impl SessionActorHandle {
     }
 
     pub(crate) fn release_run_now(&self) {
-        let command = ActorCommand::ReleaseRun;
-        match self.tx.try_send(command) {
-            Ok(()) => {}
-            Err(mpsc::error::TrySendError::Full(command)) => {
-                let tx = self.tx.clone();
-                tokio::spawn(async move {
-                    let _ = tx.send(command).await;
-                });
-            }
-            Err(mpsc::error::TrySendError::Closed(_)) => {}
-        }
+        // Releasing is idempotent. A one-slot side channel coalesces repeated
+        // synchronous guard drops without consuming mailbox capacity or
+        // creating a waiting Tokio task when the mailbox is full.
+        let _ = self.release_run.try_send(());
     }
 
     pub(crate) async fn is_running(&self) -> bool {
@@ -912,6 +902,7 @@ pub(crate) fn spawn(
     interactions: Vec<InteractionRequest>,
 ) -> SessionActorHandle {
     let (tx, mut rx) = mpsc::channel(ACTOR_MAILBOX_CAPACITY);
+    let (release_run, mut release_run_rx) = mpsc::channel(ACTOR_RELEASE_CAPACITY);
     let (status, _) = watch::channel(info.status);
     let (run_state, _) = watch::channel(false);
     let cancel = CancellationToken::new();
@@ -921,6 +912,7 @@ pub(crate) fn spawn(
         cancel: cancel.clone(),
         status: status.clone(),
         run_state: run_state.clone(),
+        release_run,
     };
     tokio::spawn(async move {
         let mut state = SessionState {
@@ -947,15 +939,17 @@ pub(crate) fn spawn(
         type ActiveRun = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>>;
         let mut active_run: Option<ActiveRun> = None;
         let mut active_run_reply: Option<oneshot::Sender<anyhow::Result<()>>> = None;
+        let mut release_run_open = true;
         loop {
             enum Wake {
                 Command(Option<ActorCommand>),
+                ReleaseRun(Option<()>),
                 Run(anyhow::Result<()>),
                 ReactLoop(anyhow::Result<ReactRunOutput>),
             }
             let wake = tokio::select! {
-                biased;
                 command = rx.recv() => Wake::Command(command),
+                released = release_run_rx.recv(), if release_run_open => Wake::ReleaseRun(released),
                 result = async {
                     match active_run.as_mut() {
                         Some(run) => run.as_mut().await,
@@ -970,6 +964,17 @@ pub(crate) fn spawn(
                     }
                 } => Wake::ReactLoop(result),
             };
+            // If both channels are ready, apply a queued release before a
+            // later mailbox command such as FinishRun can make the slot
+            // available for another direct run.
+            let release_requested = match &wake {
+                Wake::ReleaseRun(Some(())) => true,
+                Wake::ReleaseRun(None) => false,
+                _ => release_run_rx.try_recv().is_ok(),
+            };
+            if release_requested {
+                release_direct_run(&mut state, &run_state);
+            }
             let command = match wake {
                 Wake::Command(Some(command)) => command,
                 Wake::Command(None) => {
@@ -983,6 +988,11 @@ pub(crate) fn spawn(
                         )));
                     }
                     break;
+                }
+                Wake::ReleaseRun(Some(())) => continue,
+                Wake::ReleaseRun(None) => {
+                    release_run_open = false;
+                    continue;
                 }
                 Wake::Run(result) => {
                     active_run = None;
@@ -1229,15 +1239,6 @@ pub(crate) fn spawn(
                         pending: state.info.status == SessionStatus::Pending,
                         terminal: state.info.status.is_terminal(),
                     });
-                }
-                ActorCommand::ReleaseRun => {
-                    state.running = false;
-                    match state.react_run.as_mut() {
-                        Some(ActiveReactRun::Running { claimed, .. }) => *claimed = false,
-                        Some(ActiveReactRun::Claimed) => state.react_run = None,
-                        None => {}
-                    }
-                    let _ = run_state.send(false);
                 }
                 ActorCommand::IsRunning { reply } => {
                     let _ = reply.send(state.running);
@@ -1505,6 +1506,16 @@ pub(crate) fn spawn(
         let _ = run_state.send(false);
     });
     handle
+}
+
+fn release_direct_run(state: &mut SessionState, run_state: &watch::Sender<bool>) {
+    state.running = false;
+    match state.react_run.as_mut() {
+        Some(ActiveReactRun::Running { claimed, .. }) => *claimed = false,
+        Some(ActiveReactRun::Claimed) => state.react_run = None,
+        None => {}
+    }
+    let _ = run_state.send(false);
 }
 
 fn message_known(state: &SessionState, id: &str) -> bool {
@@ -2044,6 +2055,149 @@ mod queue_tests {
             .expect("run handler should complete");
         drop(actor);
         tokio::task::yield_now().await;
+    }
+
+    #[tokio::test]
+    async fn actor_makes_run_sender_and_cancel_progress_under_saturated_mailbox() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::time::Duration;
+
+        let directory = tempfile::tempdir().expect("temporary database directory");
+        let db = Arc::new(
+            Database::open(&directory.path().join("actor-saturated.db"))
+                .expect("temporary database"),
+        );
+        let actor = spawn(SessionStore::new(db), empty_state().info, Vec::new());
+        assert!(actor.begin_direct_run().await);
+
+        for index in 0..ACTOR_MAILBOX_CAPACITY {
+            actor
+                .tx
+                .try_send(ActorCommand::UpdateTitle {
+                    title: format!("queued-{index}"),
+                })
+                .expect("fill actor mailbox");
+        }
+        assert_eq!(actor.tx.capacity(), 0, "mailbox should start saturated");
+
+        let keep_flooding = Arc::new(AtomicBool::new(true));
+        let full_observations = Arc::new(AtomicUsize::new(0));
+        let flood_actor = actor.clone();
+        let flood_keep_flooding = keep_flooding.clone();
+        let flood_full_observations = full_observations.clone();
+        let flood = tokio::spawn(async move {
+            let mut index = 0usize;
+            while flood_keep_flooding.load(Ordering::Acquire) {
+                match flood_actor.tx.try_send(ActorCommand::UpdateTitle {
+                    title: format!("flood-{index}"),
+                }) {
+                    Ok(()) => index = index.wrapping_add(1),
+                    Err(mpsc::error::TrySendError::Full(_)) => {
+                        flood_full_observations.fetch_add(1, Ordering::Relaxed);
+                        tokio::task::yield_now().await;
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => break,
+                }
+            }
+        });
+
+        let run_polls = Arc::new(AtomicUsize::new(0));
+        let run_cancellation = actor.cancel();
+        let handler_polls = run_polls.clone();
+        let handler: crate::session::RunHandler = Arc::new(move |_session_id| {
+            let cancellation = run_cancellation.clone();
+            let polls = handler_polls.clone();
+            Box::pin(async move {
+                let mut tick = tokio::time::interval(Duration::from_millis(2));
+                tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    tokio::select! {
+                        _ = cancellation.cancelled() => return Ok(()),
+                        _ = tick.tick() => {
+                            polls.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                }
+            })
+        });
+        let run_actor = actor.clone();
+        let run = tokio::spawn(async move { run_actor.run(RunEngine::new(handler)).await });
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while full_observations.load(Ordering::Relaxed) == 0
+                || run_polls.load(Ordering::Relaxed) < 4
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("mailbox saturation and active-run progress should both be observed");
+
+        tokio::time::timeout(Duration::from_secs(2), actor.snapshot())
+            .await
+            .expect("a sender waiting on the saturated mailbox should make progress")
+            .expect("snapshot should be served");
+
+        tokio::time::timeout(Duration::from_secs(2), actor.cancel_session())
+            .await
+            .expect("cancel should be serviced under continuous mailbox traffic")
+            .expect("cancel should succeed");
+        tokio::time::timeout(Duration::from_secs(2), run)
+            .await
+            .expect("cancelled run should exit under continuous mailbox traffic")
+            .expect("run task should join")
+            .expect("run handler should complete");
+
+        keep_flooding.store(false, Ordering::Release);
+        tokio::time::timeout(Duration::from_secs(2), flood)
+            .await
+            .expect("mailbox flooder should stop")
+            .expect("flood task should join");
+    }
+
+    #[tokio::test]
+    async fn direct_run_release_is_coalesced_when_actor_mailbox_is_full() {
+        use std::time::Duration;
+
+        let directory = tempfile::tempdir().expect("temporary database directory");
+        let db = Arc::new(
+            Database::open(&directory.path().join("actor-release-overload.db"))
+                .expect("temporary database"),
+        );
+        let actor = spawn(SessionStore::new(db), empty_state().info, Vec::new());
+        let mut run_state = actor.run_state();
+        assert!(actor.begin_direct_run().await);
+        assert!(*run_state.borrow());
+
+        for index in 0..ACTOR_MAILBOX_CAPACITY {
+            actor
+                .tx
+                .try_send(ActorCommand::UpdateTitle {
+                    title: format!("queued-{index}"),
+                })
+                .expect("fill actor mailbox");
+        }
+        assert_eq!(actor.tx.capacity(), 0, "mailbox should be saturated");
+
+        for _ in 0..10_000 {
+            actor.release_run_now();
+        }
+        assert_eq!(
+            actor.release_run.capacity(),
+            0,
+            "repeated releases should occupy only the one-slot signal"
+        );
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while *run_state.borrow() {
+                run_state
+                    .changed()
+                    .await
+                    .expect("actor should retain the run-state sender");
+            }
+        })
+        .await
+        .expect("release should be observed while the main mailbox is saturated");
     }
 
     #[tokio::test]
