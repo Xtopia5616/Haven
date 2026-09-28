@@ -1463,6 +1463,84 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn delete_session_cancels_active_run_and_waits_for_its_exit() {
+        let (exec, db) = make_executor_with_db(1);
+        let session = exec.create_session("active delete").await.unwrap();
+        let started = Arc::new(AtomicUsize::new(0));
+        let cancellation_seen = Arc::new(AtomicUsize::new(0));
+        let allow_exit = Arc::new(AtomicUsize::new(0));
+        let exited = Arc::new(AtomicUsize::new(0));
+
+        let started_handler = started.clone();
+        let cancellation_seen_handler = cancellation_seen.clone();
+        let allow_exit_handler = allow_exit.clone();
+        let exited_handler = exited.clone();
+        let exec_handler = exec.clone();
+        let handler: RunHandler = Arc::new(move |session_id: String| {
+            let started = started_handler.clone();
+            let cancellation_seen = cancellation_seen_handler.clone();
+            let allow_exit = allow_exit_handler.clone();
+            let exited = exited_handler.clone();
+            let exec = exec_handler.clone();
+            Box::pin(async move {
+                started.store(1, Ordering::SeqCst);
+                exec.cancellation_token(&session_id).await.cancelled().await;
+                cancellation_seen.store(1, Ordering::SeqCst);
+                while allow_exit.load(Ordering::SeqCst) == 0 {
+                    tokio::task::yield_now().await;
+                }
+                exited.store(1, Ordering::SeqCst);
+                Ok(())
+            })
+        });
+        exec.clone().start_dispatcher(handler);
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while started.load(Ordering::SeqCst) == 0 || !exec.is_run_in_flight(&session.id).await {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("dispatcher should start the session run");
+
+        let mut delete = {
+            let exec = exec.clone();
+            let session_id = session.id.clone();
+            tokio::spawn(async move { exec.delete_session(&session_id).await })
+        };
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while cancellation_seen.load(Ordering::SeqCst) == 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("delete should cancel the active run");
+
+        assert!(exec.is_run_in_flight(&session.id).await);
+        assert!(db.get_session(&session.id).unwrap().is_some());
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), &mut delete,)
+                .await
+                .is_err(),
+            "delete must wait until the active run has unwound"
+        );
+        assert_eq!(exited.load(Ordering::SeqCst), 0);
+
+        allow_exit.store(1, Ordering::SeqCst);
+        tokio::time::timeout(std::time::Duration::from_secs(2), delete)
+            .await
+            .expect("delete should finish after the run exits")
+            .expect("delete task should join")
+            .expect("delete should succeed");
+
+        assert_eq!(exited.load(Ordering::SeqCst), 1);
+        assert!(!exec.is_run_in_flight(&session.id).await);
+        assert!(exec.actor_for(&session.id).await.is_none());
+        assert!(db.get_session(&session.id).unwrap().is_none());
+    }
+
+    #[tokio::test]
     async fn interrupt_session_pauses_and_cancels_without_removing() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());

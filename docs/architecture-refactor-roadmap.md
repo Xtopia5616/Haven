@@ -222,7 +222,7 @@ Session 清理与 Agent wiring 收口（2026-09-26，ADR 0374）：`SessionStore
 
 | 阶段 | 状态 | 完成范围与保留项 |
 |---|---|---|
-| 1：SessionActor 热运行态 owner | 已完成 | Actor task 单一拥有 `SessionState`；`SessionState::react_run` 持有 active run future，future 独占捕获 run-local `ReActState`，同一 actor loop select future 与 mailbox。pending provider/tool/storage await 不借用整份 `SessionState`（ADR 0214、0382）。 |
+| 1：SessionActor 热运行态 owner | 已完成 | Actor task 单一拥有 `SessionState`；`SessionState::react_run` 持有 active run future，future 独占捕获 run-local `ReActState`，同一 actor loop select future 与 mailbox。pending provider/tool/storage await 不借用整份 `SessionState`；删除活动 session 的取消、run-exit join、durable row 删除顺序有 supervisor 集成回归（ADR 0214、0382）。 |
 | 2：恢复、回滚与事件/投影边界 | 已完成 | `session_events` 成为恢复权威，rollback/projection cutoff 与已知 ingress/recovery 例外有明确 owner 和回归覆盖。阶段内核心恢复/回滚验证已完成；全新 profile 下的完整应用恢复/发布验收仍归阶段 9。 |
 | 3：存储 domain ports 与 typed projection | 已完成 | Session/Memory/Usage/Action typed-store 迁移及 App cleanup 路径收口完成。App composition root 创建 typed memory stores；生产 `MemoryService`、Agent 与 Tools 不持有 raw `Database`。ActionService 稳定 status/list projection 由 typed views 暴露，JSON 仅在 tool/event/provider/MCP/Skill 动态边界序列化（ADR 0383）。 |
 | 4：Tools capability runtime 与 Agent ports | 已完成 | 按 ADR 0374 的收口范围，生产 service locator 已删除，AgentLayer 显式接收组合根共享 `ToolsManager`，authorization/action 使用窄 capability wiring。完整 `ToolExecutionContext` 及剩余 manager adapter 依赖被明确保留为后续边界，不把它们记作已完成的拆分。 |

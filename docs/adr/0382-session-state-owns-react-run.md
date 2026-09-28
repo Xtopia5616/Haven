@@ -18,8 +18,11 @@
 
 没有数据库、配置、IPC、事件或用户数据变化。actor 回归覆盖 actor handler 等待期间仍可处理 submit/steer/cancel，以及 ReAct run 返回、重复启动拒绝和下一 run 恢复。
 
+2026-09-28 生命周期补充：新增 supervisor 集成回归，验证删除活动 session 时先向 active run 发出取消，run 未退出前保留持久 session 行且删除保持等待；run 退出后才移除 actor 并删除 durable row。该测试补齐 actor run ownership 与 destructive lifecycle join 的交界验证，不改变运行时契约。
+
 ```text
 cargo test --locked -p haven-agent session::actor::queue_tests --lib
+cargo test --locked -p haven-agent delete_session_cancels_active_run_and_waits_for_its_exit --lib
 ```
 
 ## 回滚
