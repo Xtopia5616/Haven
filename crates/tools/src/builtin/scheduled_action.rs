@@ -320,7 +320,13 @@ impl ScheduledActionTool {
                     .session_id
                     .as_deref()
                     .ok_or_else(|| anyhow::anyhow!("schedule list requires a session context"))?;
-                let rows = self.service.list_scheduled_for_session(session_id).await;
+                let rows = self
+                    .service
+                    .list_scheduled_for_session_views(session_id)
+                    .await
+                    .into_iter()
+                    .map(|view| view.to_json(true))
+                    .collect::<Vec<_>>();
                 Ok(ToolResult::ok(
                     serde_json::json!({ "operation": "list", "scheduled_actions": rows }),
                 ))

@@ -312,9 +312,8 @@ blocking pool；多条 rewrite 不合并事务，repository 内单条 rewrite �
 Agent 继续控制步骤顺序、日志、计数和部分失败后的聚合错误；确定性步骤仍是独立 blocking 操作，
 没有新增事务。周期路径把 cancellation token 传到确定性 SQLite 操作边界（ADR 0310）。
 生产 `MemoryWorker` 的 raw Database 使用现已清零：摘要 episode cursor 与共享节流戳也经
-`MemoryFactExtractionStore` 读写。`MemoryService` 私有保留 backing `Database` 作为实现细节，用于
-构造 typed stores 与 embedding index，不向 Agent Worker 暴露 raw handle。embedding catch-up 与
-LSH lagging 检查沿用 `MemoryService` 的 `MemoryEmbeddingStore` 边界。
+`MemoryFactExtractionStore` 读写。App composition root 创建 typed stores 后注入 `MemoryService`；生产 `MemoryService` 不接收或保留 backing `Database`，测试的 Database-backed 构造仅在 `cfg(test)`。embedding catch-up 与
+LSH lagging 检查沿用 `MemoryService` 的 `MemoryEmbeddingStore` 边界（ADR 0383）。
 `memory_worker.rs` 只编排事实抽取、durable outbox、维护、提案提交和索引 catch-up；
 `MemoryWorker` 是事实抽取和 maintenance pass 的后台执行编排入口。`prompt_context.rs`
 在 turn 边界取得一次工具/运行时/记忆快照，`prompt_renderer.rs` 以纯函数渲染 system
@@ -342,7 +341,7 @@ marker 持久化，不把 provider 网络调用下沉到 Memory；事实维护�
 - **X12 持久化契约**：ReAct 将 live transcript 作为 `SessionCommitted` domain intent 提交给 `SessionStore`；Agent 负责 ReAct 事件 payload 与消息/步骤语义，Memory 将 intent 翻译为物化行。Store 在同一 SQLite 事务中先追加 `session_events`，再写入 intent 指定的 `messages` / `session_steps` 投影；投影失败时整笔回滚，事务提交后才使 cache 失效并广播事件。Agent 随后由 `CommittedUiPublisher` 按 `session_events.sequence` 发布 Thought、Action、Observation、Supplement、ingress MediaPlan 与 Compaction，再更新进程内 canonical。assistant Thought 消息行与 durable event 同事务提交；共享 `step-*` 的 Thought 执行步骤作为可修复的后置 Store 投影写入，失败不会撤销已提交事件或重复发布。流式分片只用 `chunk_seq`；WebSearch、Usage，以及请求准备阶段的 MediaPlan（`event_seq` 为空）不占用这条 durable 序号。同一 sequence 的并行工具卡按 `(eventSeq, stepId)` 去重。交互请求也必须由 `SessionActor` 命令追加为 domain event，恢复只 replay 事件流；resume、rollback 和实时重放均从 event sequence 读取，事件流本身承载恢复游标。rollback 的 event cursor 用于 active transcript 投影，event sequence 用于 append-only timeline；`last_msg_at` 只用于截断物化消息投影，三者由 `SessionStore` 封装且不得互相推导或作为 transcript 真源。多模态输入在 ingress 接受 `MessageAttachment`，但事件/数据库 canonical 投影使用 `MediaAsset → MediaRepresentation → MediaPlan`，事件不保存 inline bytes；OCR/STT 成功追加派生表示且保留 raw asset。合法旁路限于 ingress seed、recovery partial、终态 action-result、UI-only ask/confirm notice；turn-end 防御性 search-final 仍可在既有 ToolCall event 后直接补 message projection，单独跟踪收口。
 - **工具调用身份契约**：同一 assistant tool batch 内，`action_index` 是 provider 调用数组的零基稳定位置，`step_id` 是该调用的持久执行行/卡片身份，`tool_call_id` 是 provider 调用身份；`session_steps` 与 ReAct events 同步保存三者。确认恢复必须按完整身份关联，禁止按工具名、参数或 observation 文本猜测；缺失事件流不再从步骤投影重建 ReAct transcript，旧数据按 reset 边界处理。
 - **工具参数验证契约**：执行前只验证，不用 schema default、首个 enum 或类型占位符改写输入；无效参数以包含 `action_index`、工具名和验证明细的失败 observation 返回给模型，避免改变副作用语义。
-- `session/`：`SessionSupervisor` 只负责 registry、并发 admission 和生命周期；其 `new` 与 overlay 构造入口接收由组合根创建的 `SessionStore`，不暴露 raw `Database`，AppState 为其保留独立 live broadcast sender（ADR 0363）。`AgentLayer::build` 从组合根显式接收共享 `ToolsManager`；supervisor 内部仅向 Agent wiring 提供 authorization/action 窄 capability，执行 runner 仍私有持有 manager（ADR 0374）。`SessionActor` 独占会话级可变状态，并在自己的 loop 中 select 外部 mailbox 命令与 active run future。`SessionState` 持有会话元数据、交互与 ingress/action/messaging 队列；当前 ReAct transcript 状态由该 actor 创建的 run-local `ReActState` 持有，随着 active-run future 一起由 actor 轮询，不会跨 session 共享。usage 由 `ReActEngine::UsageRuntime` 聚合和写入，stream identity 由 `ReActEngine` 的进程内 sidecar 管理。inbox 通知游标、轮询节拍和标题缓存已在 `SessionState`；进程级 heartbeat 合并仍留在 `MessagingPoller`；`TurnEngine` 只推进一次 turn 并产出 `EffectBatch`，`RunEngine` 负责应用批次和 run 边界；`dispatcher` / `queues` / `status` / `tool_runner` 只提供各层协作能力。
+- `session/`：`SessionSupervisor` 只负责 registry、并发 admission 和生命周期；其 `new` 与 overlay 构造入口接收由组合根创建的 `SessionStore`，不暴露 raw `Database`，AppState 为其保留独立 live broadcast sender（ADR 0363）。`AgentLayer::build` 从组合根显式接收共享 `ToolsManager`；supervisor 内部仅向 Agent wiring 提供 authorization/action 窄 capability，执行 runner 仍私有持有 manager（ADR 0374）。`SessionActor` 独占会话级可变状态，并在自己的 loop 中 select 外部 mailbox 命令与 `SessionState::react_run` active future。`SessionState` 持有会话元数据、交互与 ingress/action/messaging 队列；active future 独占 run-local `ReActState`，不会跨 session 共享，也不借用整份 `SessionState`。usage 由 `ReActEngine::UsageRuntime` 聚合和写入，stream identity 与 token estimate 由 run-local `ReActState` 持有。inbox 通知游标、轮询节拍和标题缓存已在 `SessionState`；进程级 heartbeat 合并仍留在 `MessagingPoller`；`TurnEngine` 只推进一次 turn 并产出 `EffectBatch`，`RunEngine` 负责应用批次和 run 边界；`dispatcher` / `queues` / `status` / `tool_runner` 只提供各层协作能力。
 - `layer.rs` + `ingress.rs` / `resume.rs` / `resume_support.rs`：对外入口与 resume 恢复；`resume_support` 只提供确定性的候选合并、悬空工具调用修复和运行时工具选择恢复。
 - `canonical.rs`：发送前 `sanitize_canonical` 闸门。
 - `memory_worker.rs` / `memory_service.rs` / `memory_index.rs` / `prompt_context.rs` / `prompt_renderer.rs` / `prompt.rs` / `compactor.rs` / `rollback.rs` / `rollback_support.rs` / `title.rs` / `event.rs` / `partial.rs`；`memory_service` 统一 typed memory/embedding/cache 边界，`prompt_context` 取得 bounded turn snapshot，`prompt_renderer` 纯渲染 bounded MEMORY fence；`rollback.rs` 编排生命周期与 DB 双时钟，`rollback_support` 只操作 events 和 branch cursor。
@@ -737,6 +736,8 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 
 | 日期 | 内容 |
 |---|---|
+| 2026-09-28 | §2.3/§2.5 Agent/Tools：AppState 在组合根创建 memory typed stores，生产 MemoryService 不再接收或持有 raw Database；ActionService 稳定 status/list 读取改由 typed projection 对外，JSON 留在工具/event/provider/MCP/Skill 边界（ADR 0383）|
+| 2026-09-28 | §2.5 Agent：SessionState 持有 `react_run` active future，future 独占 run-local ReActState；actor 同一 select loop 处理 run 与 mailbox，pending await 不借用整份 SessionState（ADR 0382）|
 | 2026-09-27 | §2.6 UI：TaskCenter background/scheduled 活动卡片经共同 `projectActionCard` model 投影，保留 kind details 与当前文案/交互；terminal completion record/transcript 统一尚待 scheduled outcome source 产品决策；通知开关留给独立 Settings/wire 切片（ADR 0373）|
 | 2026-09-27 | §2.5 App / Tools / §2.6 UI：Settings/model 与 Tools AdminServices 同配置域 writes 共用 composition-root gate；SkillsExec-only 跳过 live Skills phase，混合 Skills 变更保留 live phase 与 restart-required；durable-first apply failure 保留磁盘配置并向 Settings UI 报告部分 apply 失败及重启恢复方式。不引入 compensation/rollback/retry；更新 MCP Tauri/AdminServices catalog 和 monitor ownership 说明（ADR 0351、0372）|
 | 2026-09-26 | §2.3/§2.5/§2.6：SessionStore 增加 session orphan/retention/managed-attachment typed ports，AppState 后台清理不再捕获 raw Database；AgentLayer 显式接收组合根 ToolsManager，SessionSupervisor 删除生产 service locator 并只保留窄 authorization/action wiring。执行 facade 与 prompt/catalog/observation adapter 依赖继续按 ADR 0224/0225 单独审计（ADR 0374）|
@@ -748,7 +749,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 | 2026-09-26 | §2.3/§2.5 Memory/Agent：删除 `SystemPromptBuilder::new` 的 raw Database public constructor；prompt 测试显式创建 `MemoryService` 并使用 typed constructor，生产共享 service/cache owner 和运行行为不变（ADR 0365）|
 | 2026-09-26 | §2.3/§2.5/§2.6：`AgentLayer::new` 改接组合根创建的共享 `MemoryService`；AppState 用同一 Router 与配置的 embedding chunk size 创建一次，AgentLayer 继续派生并共享 Worker、Runtime、PromptBuilder 与 typed stores，Runtime 所有权/readiness 不变（ADR 0364）|
 | 2026-09-26 | §2.3/§2.5/§2.6：审计 MemoryRuntime 对象仍由 AgentLayer 持有、ApplicationRuntime 持有其周期 task 生命周期；现有 AgentLayer startup barrier 缺少 app 可组合的 prepared-consumer/readiness API，迁移暂缓并记录最小后续接口步骤（ADR 0362）|
-| 2026-09-26 | §2.5 Agent：最终验收审计校准 actor 所有权说明；`SessionActor` 轮询 active-run future，ReActState 为 run-local scratch，SessionState 持有会话队列与元数据；整体完成条件及发布验收缺口见 ADR 0361 |
+| 2026-09-26 | §2.5 Agent：最终验收审计校准 actor 所有权说明；当时 `SessionActor` 轮询 active-run future，ReActState 为 run-local scratch，SessionState 持有会话队列与元数据；字段所有权随后由 ADR 0382 完成校准，整体完成条件及发布验收缺口见 ADR 0361 |
 | 2026-09-26 | §2.5 Agent：`SessionSupervisor` 构造改接收 `SessionStore`，AppState 显式创建并保持独立事件 sender；`AgentLayer::new` 与其他 raw Database 路径仍按 ADR 0363 记录范围保留 |
 | 2026-09-26 | §2.6 App / UI：`discover_models` 与 `discover_all_models` 经命名 request/result contract 和单一 typed helper；设置刷新、聊天默认模型同步、媒体 STT discovery 保留各自缓存/错误/通知语义，model metadata 扩展字段原样通过（ADR 0368）|
 | 2026-09-26 | §2.6 App / UI：ToolsView catalog reads 与 circuit reset 通过 typed `toolsCommands.ts`；Rust Skill/MCP/ToolManifest wire fields 有手写 contract 与 IPC drift check，builtin manifest 唯一 mapper 的解析行供 cache/card 共用，保持 snake_case、开放扩展、MCP status 固定变体、刷新/排序/错误行为（ADR 0369、0381） |
@@ -787,7 +788,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 | 2026-09-25 | §2.3 Memory / §2.5 Agent：MemoryWorker 的已知事实 prompt 读取经 MemoryService 共享的 MemoryFactStore 有界端口；过滤、顺序和 limit 收口在 Memory，prompt 格式与字段清洗保持不变（ADR 0307） |
 | 2026-09-25 | §2.5 Tools：admin capability 通过 SessionStore / MemoryFactStore typed handles 注入；诊断行为与 provider wire contract 保持不变（ADR 0306） |
 | 2026-09-25 | §2.3 Memory / §2.5 Tools：ActionService 所有 action 持久化改经窄异步 ActionStore；保留 SQLite CAS/outbox 事务、内存生命周期和 headless 行为（ADR 0305） |
-| 2026-09-23 | §2.5 Agent：热 transcript 的主人定为 actor 内的 `SessionState`；一次 run 在 actor 任务内执行，只在 yield 点借用状态。usage、stream id、token estimate 是函数调用，不是 mailbox 命令。当前循环仍在 actor 外，迁移必须一次跨过这条边界（ADR 0214） |
+| 2026-09-23 | §2.5 Agent：原始设计记录热 transcript 归 actor 内 SessionState，run 在 yield 点借用状态，并要求将 usage、stream id、token estimate 改为函数调用；“当前循环仍在 actor 外”是迁移前快照，已由后续 ADR 0214/0382 的实现状态取代 |
 | 2026-09-23 | §1 Tools：`OperationSpec` 成为运行时策略与 manifest 的唯一来源；`OperationContract.read_only` 不再豁免确认，manifest 向运行时收紧（ADR 0213） |
 | 2026-09-23 | §1 Tools：进程服务改为 `ToolServices`，不再从 `ToolsManager` 取 MCP/skills/action；`OperationSpec` 只覆盖 builtin view，IPC 形状与交互式确认边界保持不变（ADR 0212） |
 | 2026-09-23 | §2.5 Tools：`ToolsManager` 收成执行 facade；operation 由 `OperationSpec` 投影 manifest，平台客户端按 `PlatformRuntime` 整份替换（ADR 0211） |

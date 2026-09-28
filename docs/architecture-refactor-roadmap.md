@@ -26,10 +26,10 @@
 
 当前仍可观测到的结构性差距：
 
-- `resume.rs` 负责组装 `RunReplay` 并向 actor 发起 run；`ReActState` 已在 actor 的 run 路径中创建，但仍是 run-local projection，尚未成为 `SessionState` 的字段；
+- `resume.rs` 负责组装 `RunReplay` 并向 actor 发起 run；active run future 存在 `SessionState::react_run`，并独占捕获 run-local `ReActState`（ADR 0382）；
 - actor mailbox 仍包含 messaging poll 等 actor-local 命令；usage 由 `UsageRuntime` 所有，stream identity 与 token estimate 已随单次 `ReActState` 收口，不再是跨 session engine sidecar；
 - resume 仍需协调 RAM 队列、ingress cursor、undelivered scan、partial promotion 和 interaction replay；
-- Agent、Tools、App 的部分 facade 仍较宽；已迁移路径通过 typed store/port 访问。`SessionSupervisor` 的生产构造现只接收组合根创建的 `SessionStore`（ADR 0363）；`AgentLayer::build` 接收组合根创建的 `MemoryService` 与显式共享 `ToolsManager`，后台 session/media cleanup 也经 `SessionStore` typed ports（ADR 0364、0365、0374）。生产 Agent 不再通过 `get_tools()`/通用 `services()` 做 service locator 查找，但 supervisor 的执行 facade、prompt/catalog/observation adapters 仍保留 manager 依赖；`MemoryService::new` 与组合根仍有 raw Database 构造/持有边界。本切片不声称全局 raw Database 或 ToolsManager 依赖已清零，其余 facade 边界继续逐域审计；
+- Agent、Tools、App 的部分 facade 仍较宽；已迁移路径通过 typed store/port 访问。`SessionSupervisor` 的生产构造现只接收组合根创建的 `SessionStore`（ADR 0363）；`AgentLayer::build` 接收组合根创建的 `MemoryService` 与显式共享 `ToolsManager`，后台 session/media cleanup 也经 `SessionStore` typed ports（ADR 0364、0365、0374）。生产 Agent 不再通过 `get_tools()`/通用 `services()` 做 service locator 查找；阶段 3 本轮将 `MemoryService` 改为只接收 typed stores，并完成 ActionService 稳定 status/list projection 的 typed 边界审计（ADR 0383）。supervisor 的执行 facade、prompt/catalog/observation adapters 仍保留 manager 依赖，属于阶段 4 后续边界；组合根仍可持有 raw `Database` 创建 typed stores。
 - ActionService 的终态仲裁、claim lease、持久化 retry、tail policy、scheduled trigger policy、UI 投影与 admin writer owner 已有各自审计边界（ADR 0317、0325、0332、0334、0338、0343、0344、0373）；完整跨 kind Job lifecycle 仍待 trigger/execution 分离、timeout、owner token/续租与 watcher recovery 决策；terminal history 在 completion ack 前拒绝删除，ack/delete 与无 owner completion/迟到绑定 writer race 已由 ADR 0374 收口；LLM request descriptor 与 usage owner 契约已由 ADR 0354 收口；
 - Settings 的 typed target/phase plan、执行顺序与失败观测现由 `SettingsRuntimeApplyCoordinator` 持有；命令回调仍调用既有 runtime owner。`RuntimeConfigCoordinator` 持有 model edit 及 Router/media prepare/publish；Settings 不做全量补偿/rollback 或显式 retry；
 - 已完成配置 apply 边界审计及实现（ADR 0351、0372）：`ConfigService` 是唯一进程配置 owner，Settings/model 与同配置域 Tools AdminServices writer 共用 app composition root 创建的 gate；domain→target 只有 `RuntimeConfigApplyPlan` 一份，Settings phases 是其派生计划。纯 `SkillsExec` 仅持久化并标记 restart-required，跳过 live Skills phase；Skills 与 SkillsExec 混合变更照常执行 Skills live phase，同时保留 restart-required。durable-first 后 apply failure 保留磁盘配置、不自动 retry/compensate，UI 报告部分 apply 失败，重启从磁盘初始化。`update_settings` 唯一前端 builder 复用开放式 `SettingsPayload`，脚本校验 handler/registry/直接 caller，不复制 Rust nested schema。未改配置格式和数据库 schema，无需数据重置。
@@ -131,7 +131,7 @@ Action lifecycle 不变。完成记录与 transcript 是否投影 scheduled exec
 - 当前 Phase 4 收口切片（ADR 0374）：`AgentLayer::build` 显式接收组合根的 `ToolsManager`；生产代码删除 `SessionSupervisor` 的通用 `get_tools()`/`services()` locator，改由内部窄 `AuthorizationEngine`/`ActionService` capability wiring。执行 runner、prompt/catalog/observation adapters 仍保留对 manager 的实现依赖，完整 `ToolExecutionContext` 仍是独立后续切片。
 - 当前 Phase 4 切片：ToolsManager façade 请求 crate-private `ToolRuntimeCoordinator` 构造并解析唯一的 `ToolCapabilitySnapshot`，同一个 platform generation 的媒体 operation catalog、prompt capability、TTS/STT 与录音 gate 都从该 snapshot 读取；搜索的 provider/MCP/unavailable 优先级也由它统一投影。每次读取从当前 `PlatformRuntime`、Router config 和 MCP index 重建。PlatformRuntime 替换、Router config 发布和 MCP tools/list 更新没有共同版本钟，因此暂不缓存；不引入第二套 capability mapping（ADR 0331，承接 ADR 0326）。ADR 0333 将 runtime composition、平台/config 更新顺序、MCP discovery config/index 与 catalog rebuild 移入 `ToolRuntimeCoordinator`。app-binary 的 Router 准备/config gate、`update_settings` 跨阶段编排、MCP 命令的持久化和连接动作、McpManager 连接/catalog-version owner，以及 `ApplicationRuntime` shutdown 顺序继续留在原边界。ADR 0345 将授权请求策略解析从执行器中拆出；审计确认 session overlay、asset lease 和 catalog snapshot 分别由 `SessionCatalog`、`ManagedAssetRegistry` 与 `OperationCatalog`/`ToolCatalogSnapshot` 提供单一状态或派生视图，不存在要迁移的第二份事实。`ToolsManager` 仍是这些操作的 public façade；更大拆分须先识别新的重复权威或独立生命周期边界。
 
-当前阶段判断：阶段 1–6 按本节 2026-09-27 状态复核均已完成；ReActState 字段布局、全局 typed-output 审计和完整 ToolExecutionContext 是已明确记录的后续项，不撤销阶段里程碑。阶段 2 的事件权威、resume/rollback 边界与恢复回归已完成，最终桌面 profile 验收留在阶段 9。阶段 3 的 typed-store 调用链已收口；MemoryService 私有 backing handle 和组合根构造边界继续保留。阶段 4 已删除生产 service locator 并显式注入共享 ToolsManager，执行 facade/adapter 依赖不再被误报为已拆除。阶段 5 的 Settings/model/Tools 同域写 gate、durable-first 部分 apply failure 与 SkillsExec restart-only 语义已完成（ADR 0351、0372）；不提供 compensation/rollback 或显式 retry。阶段 6 的请求对象、执行器与 purpose/capability/usage owner 契约已完成（ADR 0354）。阶段 7 的 MemoryRuntime 所有权与 ActionService 多项局部策略已完成，但完整 Job lifecycle、dependency-waiting 持久化实现和统一 terminal transcript 仍待推进；dependency-waiting 产品语义已由 ADR 0375 确认。阶段 8 多个事件和命令域已完成 mapper/validator 或审计；全局 Rust→TypeScript codegen 尚未决定，剩余 command families 与 ask/input、复杂 view state、启动恢复编排仍由后续切片处理。阶段 9 保持开放，需完成一次性 Windows profile/VM 的 GUI、升级重置和卸载验收。
+当前阶段判断：阶段 1–6 按本节 2026-09-28 状态复核均已完成；阶段 1 的 SessionState 所有权校准与阶段 3 的 raw Database/typed projection 全局验收由 ADR 0382、0383 关闭。完整 ToolExecutionContext 与剩余 ToolsManager adapter 依赖仍属阶段 4 后续项，不撤销已完成的核心里程碑。阶段 2 的事件权威、resume/rollback 边界与恢复回归已完成，最终桌面 profile 验收留在阶段 9。阶段 3 的 typed-store 调用链已收口；生产 MemoryService 改为仅持有 typed stores。阶段 4 已删除生产 service locator 并显式注入共享 ToolsManager，执行 facade/adapter 依赖不再被误报为已拆除。阶段 5 的 Settings/model/Tools 同域写 gate、durable-first 部分 apply failure 与 SkillsExec restart-only 语义已完成（ADR 0351、0372）；不提供 compensation/rollback 或显式 retry。阶段 6 的请求对象、执行器与 purpose/capability/usage owner 契约已完成（ADR 0354）。阶段 7 的 MemoryRuntime 所有权与 ActionService 多项局部策略已完成，但完整 Job lifecycle、dependency-waiting 持久化实现和统一 terminal transcript 仍待推进；dependency-waiting 产品语义已由 ADR 0375 确认。阶段 8 多个事件和命令域已完成 mapper/validator 或审计；全局 Rust→TypeScript codegen 尚未决定，剩余 command families 与 ask/input、复杂 view state、启动恢复编排仍由后续切片处理。阶段 9 保持开放，需完成一次性 Windows profile/VM 的 GUI、升级重置和卸载验收。
 
 状态校准（ADR 0374、0372、0375）：生产 `get_tools()`/`services()` service locator 已删除，AgentLayer 改为组合根显式注入共享 `ToolsManager`，supervisor 仅保留窄 capability wiring。Settings durable-first/部分 apply failure/重启从磁盘配置恢复、纯 SkillsExec 变更跳过 live Skills apply 并标记重启生效、Settings/model 与同配置域 Tools admin writer 串行均已实现。terminal history ack/delete guard 已实现。dependency-waiting 行为决策现已确认；代码中的 watcher 仍是进程内关系且不写 durable relation，跨重启恢复是阶段 7 的实现后续。统一 action-level deadline、owner token/续租仍不纳入当前契约。
 
@@ -177,7 +177,7 @@ Session 清理与 Agent wiring 收口（2026-09-26，ADR 0374）：`SessionStore
 
 阶段 3 历史切片补充（2026-09-25，ADR 0298；ReActEngine raw Database ownership 后由 ADR 0299 移除）：ReAct pause/continue/error 共用的只读 event-boundary cursor 检查经 `SessionStore` 异步端口调度，Memory 复用 `load_replay_state`，保留可选 cancellation 与原 `run_blocking_cancellable`/`run_blocking` 分支；Agent 保留 boundary 返回值、warning 与指标语义，无投影或事件写入。该切片当时记录 `ReActEngine.db` 仍由 compaction-summary episode 写入使用，并在 summary 达到既有长度阈值时写 extraction marker。
 
-阶段 3 历史切片补充（2026-09-25，ADR 0299、0300；MemoryWorker 生产 raw Database 路径后由 ADR 0312 收口）：compaction summary episode 与 pending extraction marker 通过 MemoryStore 调度既有原子事务；ReActEngine 继续拥有 trim/empty/长度门槛和持久化成功后的 wake 顺序，MemoryWorker 继续拥有 extraction live outbox。ReActEngine 的持久化边界改为只依赖 SessionStore + MemoryStore，AgentLayer 删除直接持有的 raw Database 字段；当时 MemoryService 和 MemoryWorker 其他既有 DB 路径不在该切片迁移。MemoryService 当前仍私有保留 backing Database，用于构造 typed stores 与 embedding index。
+阶段 3 历史切片补充（2026-09-25，ADR 0299、0300；MemoryWorker 生产 raw Database 路径后由 ADR 0312 收口）：compaction summary episode 与 pending extraction marker 通过 MemoryStore 调度既有原子事务；ReActEngine 继续拥有 trim/empty/长度门槛和持久化成功后的 wake 顺序，MemoryWorker 继续拥有 extraction live outbox。ReActEngine 的持久化边界改为只依赖 SessionStore + MemoryStore，AgentLayer 删除直接持有的 raw Database 字段；当时 MemoryService 和 MemoryWorker 其他既有 DB 路径不在该切片迁移。MemoryService 私有 backing Database 后续由 ADR 0383 删除，生产实例只接收 typed stores。
 
 阶段 3/7 小切片补充（2026-09-25）：fact/summary durable outbox marker 的 enqueue、pending restore、条件 ack 与 summary episode read 经 MemoryService 共享的 MemoryStore 执行；MemoryWorker 继续负责 live projection、inference 和逐 job 退避。ack 失败时 durable marker 保留并重试，停机取消不提前确认。fact extraction 算法和其他维护路径保持不变（ADR 0301）。
 
@@ -194,8 +194,8 @@ Session 清理与 Agent wiring 收口（2026-09-26，ADR 0374）：`SessionStore
 ### 3.1 不变量
 
 - session-local 可变运行态只能由 actor 任务修改；supervisor 只负责 registry、admission、生命周期和 handle。
-- 一次 run 在 actor 任务内执行；只有在外部等待之间的 yield 点短暂借用 `&mut SessionState`。
-- 工具/模型/数据库等待期间不能持有 `SessionState` 的可变借用；外部命令必须能在等待期间被处理。
+- 一次 run 在 actor 任务内执行；`SessionState::react_run` 持有 active future，future 独占 run-local `ReActState`，由 actor loop 与 mailbox 一起轮询（ADR 0214、0382）。
+- active run future 不借用整份 `SessionState`；工具/模型/数据库等待期间，外部命令仍可更新队列、交互和生命周期状态。
 - ReAct live transcript 的 Agent 提交 `SessionCommitted`；SessionStore 在同一事务内先追加 session events、再更新物化投影、提交后广播。Agent 再按已提交 sequence 发布 committed UI event，随后更新 in-memory canonical；assistant Thought 的共享 ID step projection 可在发布后单独写入并由 replay 修复。
 - 工具的外部副作用在事务外执行，并以稳定的 tool call/action result identity 做幂等和迟到结果丢弃。
 - 流式 chunk、实时工具输出、WebSearch、usage、请求准备阶段 MediaPlan 属于 ephemeral/live 通道，不占 durable event sequence。
@@ -216,15 +216,15 @@ Session 清理与 Agent wiring 收口（2026-09-26，ADR 0374）：`SessionStore
 
 阶段必须按顺序推进；同一阶段内部可以把不重叠的只读审查或测试任务交给独立 Agent，但不能同时修改同一写集。
 
-### 2026-09-27 阶段状态复核
+### 2026-09-28 阶段状态复核
 
-阶段 1–6 均标记为**已完成**。这里的阶段完成表示该阶段已采纳的核心所有权/契约边界已落地并有对应回归记录；表内列出的明确后续项继续由全局验收或后续阶段跟踪，不代表全局重构已经完成。阶段 7–8 仍在进行，阶段 9 的发布验收保持开放。
+阶段 1–6 均标记为**已完成**。这里的阶段完成表示该阶段已采纳的核心所有权/契约边界已落地并有对应回归记录；表内列出的明确后续项继续由全局验收或后续阶段跟踪，不代表全局重构已经完成。阶段 7–8 仍在进行，阶段 9 的发布验收保持开放。本次关闭阶段 1 的 `SessionState` 所有权校准与阶段 3 的 raw Database/typed projection 全局验收，见 ADR 0382、0383。
 
 | 阶段 | 状态 | 完成范围与保留项 |
 |---|---|---|
-| 1：SessionActor 热运行态 owner | 已完成 | Actor task 单一拥有 `SessionState` 与 active run future，mailbox 运行态往返已收口。run-local `ReActState` 仍在该 task 驱动的 future 内，未物理并入 `SessionState`；作为 ADR 0214 的字段布局后续项记录。 |
+| 1：SessionActor 热运行态 owner | 已完成 | Actor task 单一拥有 `SessionState`；`SessionState::react_run` 持有 active run future，future 独占捕获 run-local `ReActState`，同一 actor loop select future 与 mailbox。pending provider/tool/storage await 不借用整份 `SessionState`（ADR 0214、0382）。 |
 | 2：恢复、回滚与事件/投影边界 | 已完成 | `session_events` 成为恢复权威，rollback/projection cutoff 与已知 ingress/recovery 例外有明确 owner 和回归覆盖。阶段内核心恢复/回滚验证已完成；全新 profile 下的完整应用恢复/发布验收仍归阶段 9。 |
-| 3：存储 domain ports 与 typed projection | 已完成 | 本阶段列明的 Session/Memory/Usage/Action typed-store 迁移及 App cleanup 路径收口完成。组合根创建 typed owner、`MemoryService` 私有 backing handle 是保留边界；稳定跨层输出与动态 JSON 的全局逐域审计仍列在全局完成定义。 |
+| 3：存储 domain ports 与 typed projection | 已完成 | Session/Memory/Usage/Action typed-store 迁移及 App cleanup 路径收口完成。App composition root 创建 typed memory stores；生产 `MemoryService`、Agent 与 Tools 不持有 raw `Database`。ActionService 稳定 status/list projection 由 typed views 暴露，JSON 仅在 tool/event/provider/MCP/Skill 动态边界序列化（ADR 0383）。 |
 | 4：Tools capability runtime 与 Agent ports | 已完成 | 按 ADR 0374 的收口范围，生产 service locator 已删除，AgentLayer 显式接收组合根共享 `ToolsManager`，authorization/action 使用窄 capability wiring。完整 `ToolExecutionContext` 及剩余 manager adapter 依赖被明确保留为后续边界，不把它们记作已完成的拆分。 |
 | 5：Runtime config apply ownership | 已完成 | ConfigService、Settings/model/Tools 同域写入 gate、phase planning 与 durable-first 部分失败语义已落地；显式 retry、补偿/rollback 与 auto-restart 不属于当前契约。 |
 | 6：LLM Router 请求对象化 | 已完成 | 请求对象、执行器拆分、descriptor/capability 映射与 usage owner 契约已由 ADR 0354 最终审计关闭。 |
@@ -259,11 +259,12 @@ SessionSupervisor
   registry / admission / lifecycle / handles
 
 SessionActor
-  SessionState { queues, interaction, runtime, hot transcript, run }
-  actor task { mailbox select + run future }
+  SessionState { queues, interaction, runtime, react_run: Option<ActiveReactRun> }
+  ActiveReactRun future { owns run-local ReActState / hot transcript }
+  actor task { mailbox select + SessionState.react_run future }
 
 TurnEngine / ReAct loop
-  pure-ish turn progression, only at yield points borrows SessionState
+  run-local progression over captured ReActState; actor retains mailbox access while future awaits
 
 SessionStore
   event append + projection + committed publication boundary
@@ -272,17 +273,17 @@ SessionStore
 工作项：
 
 - 把一次 run 的启动、恢复和退出驱动迁入 actor task；
-- 将热 transcript、canonical、branch points、retry nudge、cancel state 收进 `SessionRuntimeState`；
+- 由 `SessionState::react_run` 持有 active run future；future 独占捕获热 transcript、canonical、branch points、retry nudge 与 cancel state；
 - 删除 `EnsureStreamId`、`RecordUsage`、`EstimateTokens`、`AppendTokenEstimate`、`ResetTokenEstimate` 等内部 mailbox 命令；
-- 将 `next_run_id`、usage 累计、stream identity、token estimate 改为 actor-owned 函数调用；
+- `next_run_id` 在 actor 内递增；usage 由 `UsageRuntime` 持有，stream identity 与 token estimate 由 run-local `ReActState` 持有；这些内部状态不通过 actor mailbox 往返（ADR 0219–0223、0276、0278）；
 - 将外部命令限制为 Submit、Steer、ResolveInteraction、Cancel、BackgroundResult、生命周期/快照/消息交互；
-- 让 actor 在 provider/tool/timer await 期间 `select!` 外部 mailbox，并在 yield 点重新取得短生命周期 mutable borrow；
+- 让 actor 在 provider/tool/timer await 期间 `select!` 外部 mailbox；active run future 不借用整个 `SessionState`，因此 mailbox 可在 future pending 时更新队列与生命周期字段；
 - 删除 `resume.rs` 中直接构造 `ReActState` 的生产路径，保留纯 replay/project helper；
 - 保持 X12、confirm/ask、tool order、LoopExit、partial generation 和 committed UI sequence 语义不变。
 
 主要文件：`crates/agent/src/session/actor.rs`、`dispatcher.rs`、`resume.rs`、`react/loop.rs`、`react/turn.rs`、`react/context.rs`、相关 integration tests。
 
-验收：actor 运行期间 submit/steer/cancel 不阻塞；两个 session 的热 transcript 不共享；resume/rollback/compaction 后不存在旧 generation 命中；`cargo test --locked -p haven-agent` 通过。
+验收：actor 运行期间 submit/steer/cancel 不阻塞；`SessionState::react_run` 独占持有 active run 与 run-local 热状态；两个 session 的热 transcript 不共享；resume/rollback/compaction 后不存在旧 generation 命中。对应 actor 回归见 ADR 0382。
 
 回滚：单提交回滚；不改变数据库 schema、IPC 或用户数据。若迁移不完整，必须整体回退 run 所在任务、SessionState 字段和 mailbox 命令，不能保留半套。
 
@@ -322,11 +323,11 @@ SessionStore
 本轮（ADR 0374）已完成：启动恢复、一次性 retention、上传引用和每日 cleanup task 不再捕获
 raw `Database`，而是使用 `SessionStore` typed ports；AgentLayer 从组合根显式接收 `ToolsManager`，
 SessionSupervisor 仅向 Agent 内部提供 authorization/action 窄 capability。保留的执行 facade、
-prompt/catalog adapters 和 MemoryService 私有 backing handle 不在本轮扩大迁移。
+prompt/catalog adapters 仍按阶段 4 跟踪。阶段 3 全局验收（ADR 0383）进一步将 memory typed stores 的创建移至 App composition root，使生产 `MemoryService` 不再接收或保留 raw `Database`；Agent/Tools 的生产路径不持有 raw `Database`。ActionService 的稳定 status/list 跨层 API 现为 typed projection，动态 JSON 保留在 tool/event/provider/MCP/Skill 边界。
 
 主要文件：`crates/memory/src/` repositories/database、`crates/agent/src/` usage/session、`crates/tools/src/action_service.rs`、`crates/app-binary/src/commands/`。
 
-验收：上层不再取得 raw connection；稳定跨层返回值无默认 `serde_json::Value`；内存数据库测试覆盖事务、回滚和空结果。
+验收：除 App composition root 创建 typed stores 外，上层生产业务路径不持有 raw `Database` 或取得 raw connection；稳定 Action status/list 跨层返回值为 typed projection；JSON 仅用于明确的 tool/event/provider/MCP/Skill wire 或动态 schema/payload 边界。内存数据库测试覆盖事务、回滚和空结果；最终全局验收见 ADR 0383。
 
 ### 阶段 4（已完成）：Tools capability runtime 与 Agent ports（P1）
 
@@ -549,7 +550,7 @@ Phase 7.1 验收与未决风险：见 ADR 0259、0261、0262、0263、0264、026
 
 #### 2026-09-26 最终验收审计（ADR 0361）
 
-- 总体验收仍未完成：durable transcript recovery 与 SessionActor 单 task 所有权满足；组合根和 `MemoryService` 仍保留明确的 raw `Database` 构造/持有边界，Agent 的生产 service locator 已删除但执行 facade、prompt/catalog/observation adapters 仍依赖 `ToolsManager`；稳定 outputs typed 与 runtime failure semantics 仅部分满足；Rust→TypeScript codegen 未引入且是否引入仍待决定。
+- 总体验收仍未完成：durable transcript recovery、SessionActor 单 task 所有权与阶段 3 的 raw Database/Action typed projection 验收满足（ADR 0382、0383）；App composition root 可持有 raw `Database` 创建 typed stores。阶段 4 的执行 facade、prompt/catalog/observation adapters 仍依赖 `ToolsManager`；runtime failure semantics、Rust→TypeScript codegen 等全局条件仍有未决项。
 - 本轮 Rust workspace 与 UI 的格式、测试、类型检查、clippy、生产构建及 IPC validators 全部通过。AppState 测试启动的媒体和上传清理根已改为显式临时目录；测试使用仓库 `target` 下的隔离 `APPDATA` 根。详见 ADR 0361 的命令与证据。
 - 全新用户配置下的 GUI 启动、模型设置、媒体/任务流程、升级重置和卸载未执行；仓库当前没有 disposable profile / VM 自动验收入口。阶段 9 在完成一次性 Windows profile 或 VM 中的发布验收前保持开放。
 - 本轮不拆分 `haven-common`、不引入新的 runtime 性能优化，也不实现已确认的 Settings 同域串行/SkillsExec 重启生效策略；仍不选择 Settings recovery/retry、完整 Job lifecycle、session occurrence identity、codegen 或剩余 UI command-family 策略；未决项继续由各自 ADR 跟踪。
@@ -566,18 +567,19 @@ Phase 7.1 验收与未决风险：见 ADR 0259、0261、0262、0263、0264、026
 
 ## 6. 全局完成定义
 
-全部阶段不等于文件变少；以下是截至 2026-09-27 的最终验收状态（基础审计见 ADR 0361，本轮 AgentLayer memory 构造更新见 ADR 0364，配置 apply 更新见 ADR 0351、0372）：
+全部阶段不等于文件变少；以下是截至 2026-09-28 的最终验收状态（基础审计见 ADR 0361，阶段 1/3 更新见 ADR 0382、0383，memory/runtime 与配置更新见 ADR 0364、0367、0351、0372）：
 
 | 条件 | 状态 | 审计结论 |
 |---|---|---|
 | durable session 恢复只依赖事件回放 | 满足 | `session_events` replay 是 transcript 恢复权威；未进入事件流的 ingress 用户输入按 cursor/message identity 重新排队是已记录例外。 |
 | MemoryRuntime 对象与 prepare/live task 由应用持有 | 满足 | AgentStartup 将唯一 `MemoryStartup` 交给 ApplicationRuntime；prepare/replay 后注册 live consumer，注册成功才将 typed MemoryReady 交给 dispatcher。周期维护、manual pass、worker shutdown 和任务 join 使用原顺序（ADR 0367）。 |
-| session-local mutable state 只有 actor owner | actor-task 单 owner 满足；ADR 0214 字段布局仍待对齐 | `SessionActor` task 拥有 `SessionState` 与 active run future；run-local `ReActState` 随该 future 由同一 actor loop 轮询，但尚不是 ADR 0214 所述的 `SessionState` 字段。 |
-| 上层没有 raw Database/ToolsManager service locator 穿透 | 未满足 | `SessionSupervisor` 构造已改用 `SessionStore`，AgentLayer/SystemPromptBuilder 使用组合根注入的 `MemoryService`，AppState cleanup 使用 `SessionStore` typed ports（ADR 0363、0364、0365、0374）。生产 `SessionSupervisor::get_tools()` / `services()` 已删除；supervisor 仍私有持有 manager 供执行 runner 和 adapters 使用，`MemoryService::new` 仍是组合根允许的 raw Database 构造入口。 |
-| stable domain outputs typed，动态 JSON 边界有明确注释 | 部分满足 | 多个 IPC 和 agent/action projections 已 typed；仍需逐域确认 ActionService 等稳定跨层输出与动态 JSON 扩展的边界。 |
+| session-local mutable state 只有 actor owner | 满足 | `SessionState::react_run` 持有 active future，future 独占捕获 run-local `ReActState`；actor loop 在同一个 select 中轮询 future 与 mailbox，pending await 不借用整份 state（ADR 0214、0382）。 |
+| raw Database 不穿透仓储边界 | 满足 | App composition root 创建 typed memory stores；生产 `MemoryService`、Agent 与 Tools 不持有 raw `Database`。测试构造的 Database 兼容入口仅在 `cfg(test)` 存在（ADR 0383）。 |
+| ToolsManager execution/adapters 不穿透 Agent 端口边界 | 未满足 | 生产 `get_tools()`/通用 `services()` service locator 已删除，AgentLayer 显式注入共享 manager；supervisor 执行 facade 与 prompt/catalog/observation adapters 仍依赖 manager，作为阶段 4 后续项（ADR 0374）。 |
+| stable domain outputs typed，动态 JSON 边界有明确注释 | 满足（阶段 3 范围） | ActionService 的稳定 status/list 查询暴露 typed views；JSON 转换停留在 actions/scheduled tool、event/provider 与 MCP/Skill schema/payload 边界。其他 JSON 用法属于工具 wire output 或开放扩展字段，不作为稳定 Action DTO（ADR 0383）。 |
 | 配置、工具、模型、任务、记忆的 runtime replacement/失败/取消语义有测试 | 部分满足 | 各域已有局部回归；Settings/model durable-first 部分 apply failure、无自动 retry、重启从磁盘恢复、SkillsExec restart-only 与同配置域串行已实现。更广范围的 phase compensation、显式 retry/recovery policy 与完整 Job lifecycle 仍待独立切片。 |
 | Rust/TS IPC 生成与校验一致 | 未满足 | IPC contract/event validators 通过；全局 codegen 未实现，且是否采用尚未决定。 |
-| Rust 与 UI 格式、测试、类型、lint/build 门禁通过 | 满足 | 本轮完整门禁通过；Rust 测试进程使用隔离 APPDATA。 |
+| Rust 与 UI 格式、测试、类型、lint/build 门禁通过 | 满足 | 本轮 Rust workspace `fmt --check`、`check`、`clippy -D warnings` 与 `test` 全部通过；本轮没有 UI 源码改动，既有 UI 门禁证据见 ADR 0361。 |
 | 文档、ADR、重置说明、Git 历史和工作区状态可审查 | 满足 | ADR 0361、0367、架构、路线图和发布/重置文档记录本次证据与限制；提交后复核 Git 状态。 |
 
 阶段 9 的全新数据根目录手动验收仍是单独的发布条件；本次 workspace checks 不证明桌面安装、升级重置或卸载流程。阶段状态以未决 ADR 及下方验收记录为准，不因质量门禁通过而宣告全局完成。

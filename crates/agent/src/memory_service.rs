@@ -10,13 +10,15 @@ use std::sync::{Arc, Mutex};
 use anyhow::Context as _;
 use haven_common::config::RequestKind;
 use haven_llm::LlmRouter;
+#[cfg(test)]
+use haven_memory::Database;
 use haven_memory::recall::{
     MAX_MEMORY_QUERY_CHARS, MAX_RECALL_LIMIT, MemoryKind, MemoryQuery, MemoryRecall,
     MemoryRetriever,
 };
 use haven_memory::{
-    Database, MemoryEmbeddingStore, MemoryFactExtractionStore, MemoryFactStore,
-    MemoryMaintenanceStore, MemoryRecallStore, MemoryStore,
+    MemoryEmbeddingStore, MemoryFactExtractionStore, MemoryFactStore, MemoryMaintenanceStore,
+    MemoryRecallStore, MemoryStore,
 };
 
 use crate::memory_index::MemoryEmbeddingIndex;
@@ -82,11 +84,37 @@ impl PromptMemoryCache {
 }
 
 /// Memory capability boundary shared by prompt context, tools, and the
-/// background memory worker.
+/// background memory worker. The composition root supplies only typed store
+/// capabilities; this service never receives or retains a raw Database.
+pub struct MemoryServiceStores {
+    pub memory: MemoryStore,
+    pub facts: MemoryFactStore,
+    pub fact_extraction: MemoryFactExtractionStore,
+    pub maintenance: MemoryMaintenanceStore,
+    pub recall: MemoryRecallStore,
+    pub embeddings: MemoryEmbeddingStore,
+    #[cfg(test)]
+    test_database: Option<Arc<Database>>,
+}
+
+#[cfg(test)]
+impl From<Arc<Database>> for MemoryServiceStores {
+    fn from(db: Arc<Database>) -> Self {
+        Self {
+            memory: MemoryStore::new(db.clone()),
+            facts: MemoryFactStore::new(db.clone()),
+            fact_extraction: MemoryFactExtractionStore::new(db.clone()),
+            maintenance: MemoryMaintenanceStore::new(db.clone()),
+            recall: MemoryRecallStore::new(db.clone()),
+            embeddings: MemoryEmbeddingStore::new(db.clone()),
+            test_database: Some(db),
+        }
+    }
+}
+
 pub struct MemoryService {
-    // The backing database stays private to this service and the typed stores
-    // it constructs; workers receive store capabilities only.
-    _db: Arc<Database>,
+    #[cfg(test)]
+    test_database: Option<Arc<Database>>,
     fact_store: MemoryFactStore,
     fact_extraction_store: MemoryFactExtractionStore,
     maintenance_store: MemoryMaintenanceStore,
@@ -98,26 +126,40 @@ pub struct MemoryService {
 }
 
 impl MemoryService {
-    pub fn new(db: Arc<Database>, router: Option<Arc<LlmRouter>>, embed_chunk_size: usize) -> Self {
-        let fact_store = MemoryFactStore::new(db.clone());
-        let fact_extraction_store = MemoryFactExtractionStore::new(db.clone());
-        let maintenance_store = MemoryMaintenanceStore::new(db.clone());
-        let recall_store = MemoryRecallStore::new(db.clone());
+    pub fn new(
+        stores: impl Into<MemoryServiceStores>,
+        router: Option<Arc<LlmRouter>>,
+        embed_chunk_size: usize,
+    ) -> Self {
+        let stores = stores.into();
+        #[cfg(test)]
+        let test_database = stores.test_database.clone();
+        let MemoryServiceStores {
+            memory,
+            facts: fact_store,
+            fact_extraction: fact_extraction_store,
+            maintenance: maintenance_store,
+            recall: recall_store,
+            embeddings,
+            #[cfg(test)]
+                test_database: _,
+        } = stores;
         let embedding_index = router.as_ref().map(|router| {
             MemoryEmbeddingIndex::new(
-                MemoryEmbeddingStore::new(db.clone()),
+                embeddings,
                 recall_store.clone(),
                 router.clone(),
                 embed_chunk_size.max(1),
             )
         });
         Self {
+            #[cfg(test)]
+            test_database,
             fact_store,
             fact_extraction_store,
             maintenance_store,
-            memory_store: MemoryStore::new(db.clone()),
+            memory_store: memory,
             recall_store,
-            _db: db,
             router,
             embedding_index,
             prompt_cache: Mutex::new(PromptMemoryCache::new()),
@@ -126,7 +168,10 @@ impl MemoryService {
 
     #[cfg(test)]
     pub(crate) fn database_handle_for_test(&self) -> Arc<Database> {
-        self._db.clone()
+        self.test_database
+            .as_ref()
+            .expect("Database-backed test construction preserves its fixture handle")
+            .clone()
     }
 
     /// Return the shared store used for memory-owned durable episode and

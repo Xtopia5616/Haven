@@ -5,10 +5,10 @@
 //! commands; they never acquire a lock around `SessionInfo` or one of the
 //! session's auxiliary queues.
 //!
-//! ADR 0214 的目标是让热 transcript 由这里的 `SessionState` 持有，并让一次 run
-//! 在本任务内只于 yield 点借用 `&mut SessionState`。stream identity 已按 ADR 0219
-//! 移为 ReActEngine 的进程内 sidecar；agent usage 已按 ADR 0223 移到
-//! `ReActEngine::UsageRuntime`，actor 只保留会话状态与队列。
+//! ADR 0214 的热 transcript 由 `SessionState::react_run` 持有的 actor-local
+//! run future 独占；actor task 在同一 select loop 中轮询它与外部 mailbox。
+//! ReActState 不跨 session 共享，stream identity 和 usage 仍由各自的 run/runtime
+//! owner 管理。
 
 use super::RunEngine;
 use super::{FollowUp, SessionInfo, SessionStatus, SessionWaitingReason, StepInfo};
@@ -816,6 +816,9 @@ pub(crate) struct SessionState {
     archive_message_ids: HashSet<String>,
     /// Process-local messaging poll cursor and title cache.
     messaging: SessionMessagingState,
+    /// The active ReAct run and its captured hot transcript are owned by this
+    /// session state and polled only by the actor task.
+    react_run: Option<ActiveReactRun>,
 }
 
 type ReactLoopFuture = Pin<Box<dyn Future<Output = anyhow::Result<ReactRunOutput>> + Send>>;
@@ -939,11 +942,11 @@ pub(crate) fn spawn(
             active_message_ids: HashSet::new(),
             archive_message_ids: HashSet::new(),
             messaging: SessionMessagingState::default(),
+            react_run: None,
         };
         type ActiveRun = Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>>;
         let mut active_run: Option<ActiveRun> = None;
         let mut active_run_reply: Option<oneshot::Sender<anyhow::Result<()>>> = None;
-        let mut active_react_run: Option<ActiveReactRun> = None;
         loop {
             enum Wake {
                 Command(Option<ActorCommand>),
@@ -960,7 +963,7 @@ pub(crate) fn spawn(
                     }
                 } => Wake::Run(result),
                 result = async {
-                    match active_react_run.as_mut() {
+                    match state.react_run.as_mut() {
                         Some(ActiveReactRun::Running { future, .. }) => future.as_mut().await,
                         None => std::future::pending().await,
                         Some(ActiveReactRun::Claimed) => std::future::pending().await,
@@ -974,7 +977,7 @@ pub(crate) fn spawn(
                         let _ =
                             reply.send(Err(anyhow::anyhow!("session actor stopped during run")));
                     }
-                    if let Some(ActiveReactRun::Running { reply, .. }) = active_react_run.take() {
+                    if let Some(ActiveReactRun::Running { reply, .. }) = state.react_run.take() {
                         let _ = reply.send(Err(anyhow::anyhow!(
                             "session actor stopped during ReAct loop"
                         )));
@@ -990,12 +993,12 @@ pub(crate) fn spawn(
                 }
                 Wake::ReactLoop(result) => {
                     let Some(ActiveReactRun::Running { reply, claimed, .. }) =
-                        active_react_run.take()
+                        state.react_run.take()
                     else {
                         unreachable!("only a running ReAct loop can complete")
                     };
                     if claimed {
-                        active_react_run = Some(ActiveReactRun::Claimed);
+                        state.react_run = Some(ActiveReactRun::Claimed);
                     }
                     let _ = reply.send(result);
                     continue;
@@ -1142,7 +1145,7 @@ pub(crate) fn spawn(
                     input,
                     reply,
                 } => {
-                    if !state.running || active_react_run.is_some() {
+                    if !state.running || state.react_run.is_some() {
                         let _ = reply.send(Err(anyhow::anyhow!(
                             "session actor '{}' cannot start another ReAct loop",
                             state.info.id
@@ -1168,7 +1171,7 @@ pub(crate) fn spawn(
                             events: react_state.events.clone(),
                         })
                     });
-                    active_react_run = Some(ActiveReactRun::Running {
+                    state.react_run = Some(ActiveReactRun::Running {
                         future,
                         reply,
                         claimed: true,
@@ -1216,9 +1219,9 @@ pub(crate) fn spawn(
                 }
                 ActorCommand::FinishRun { reply } => {
                     state.running = false;
-                    match active_react_run.as_mut() {
+                    match state.react_run.as_mut() {
                         Some(ActiveReactRun::Running { claimed, .. }) => *claimed = false,
-                        Some(ActiveReactRun::Claimed) => active_react_run = None,
+                        Some(ActiveReactRun::Claimed) => state.react_run = None,
                         None => {}
                     }
                     let _ = run_state.send(false);
@@ -1229,9 +1232,9 @@ pub(crate) fn spawn(
                 }
                 ActorCommand::ReleaseRun => {
                     state.running = false;
-                    match active_react_run.as_mut() {
+                    match state.react_run.as_mut() {
                         Some(ActiveReactRun::Running { claimed, .. }) => *claimed = false,
-                        Some(ActiveReactRun::Claimed) => active_react_run = None,
+                        Some(ActiveReactRun::Claimed) => state.react_run = None,
                         None => {}
                     }
                     let _ = run_state.send(false);
@@ -1980,6 +1983,7 @@ mod queue_tests {
             active_message_ids: HashSet::new(),
             archive_message_ids: HashSet::new(),
             messaging: SessionMessagingState::default(),
+            react_run: None,
         }
     }
 

@@ -1106,7 +1106,7 @@ mod tests {
         // Poll the action registry until the action completes.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         let status = loop {
-            let v = tool.actions.status(&action_id).await;
+            let v = tool.actions.status_view(&action_id).await.to_json(true);
             if v["status"] != "running" || std::time::Instant::now() > deadline {
                 break v;
             }

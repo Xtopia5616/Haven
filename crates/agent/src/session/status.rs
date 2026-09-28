@@ -541,15 +541,15 @@ impl SessionSupervisor {
             return Some(SessionWaitingReason::ScheduledConfirmation);
         }
 
-        for action in self.actions.list_for_session(session_id).await {
-            let live = matches!(action["status"].as_str(), Some("waiting" | "running"));
-            if !live {
+        for action in self.actions.list_for_session_views(session_id).await {
+            if !action.status.is_live() {
                 continue;
             }
-            return match action["kind"].as_str() {
-                Some("scheduled") => Some(SessionWaitingReason::ScheduledTask),
-                Some("background") => Some(SessionWaitingReason::BackgroundTask),
-                _ => None,
+            return match action.kind {
+                haven_tools::ActionViewKind::Scheduled => Some(SessionWaitingReason::ScheduledTask),
+                haven_tools::ActionViewKind::Background => {
+                    Some(SessionWaitingReason::BackgroundTask)
+                }
             };
         }
         Some(SessionWaitingReason::UserInput)

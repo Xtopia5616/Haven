@@ -3,12 +3,15 @@ use crate::desktop::DesktopShell;
 use crate::events::AppBootstrapEvent;
 use crate::runtime::{ApplicationRuntime, RuntimeServices};
 use haven_agent::SessionSupervisor;
-use haven_agent::{AgentLayer, MemoryService, PendingSessionRecovery};
+use haven_agent::{AgentLayer, MemoryService, MemoryServiceStores, PendingSessionRecovery};
 use haven_common::config::{ConfigLoader, ConfigService, LogLevel};
 use haven_input::InputPipeline;
 use haven_llm::LlmRouter;
 use haven_llm::stt::build_stt_client;
-use haven_memory::{ActionStore, Database, MemoryFactStore, SessionStore};
+use haven_memory::{
+    ActionStore, Database, MemoryEmbeddingStore, MemoryFactExtractionStore, MemoryFactStore,
+    MemoryMaintenanceStore, MemoryRecallStore, MemoryStore, SessionStore,
+};
 use haven_tools::ToolsManager;
 use std::collections::HashMap;
 use std::ops::Deref;
@@ -210,8 +213,16 @@ impl AppState {
             cfg.session.max_concurrent.max(1),
         ));
 
+        let memory_service_stores = MemoryServiceStores {
+            memory: MemoryStore::new(db.clone()),
+            facts: memory_fact_store.clone(),
+            fact_extraction: MemoryFactExtractionStore::new(db.clone()),
+            maintenance: MemoryMaintenanceStore::new(db.clone()),
+            recall: MemoryRecallStore::new(db.clone()),
+            embeddings: MemoryEmbeddingStore::new(db.clone()),
+        };
         let memory_service = Arc::new(MemoryService::new(
-            db.clone(),
+            memory_service_stores,
             Some(router.clone()),
             context_limits.embedding_chunk_size,
         ));

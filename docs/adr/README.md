@@ -368,3 +368,5 @@
 - [0379：缺失会话的 transcript 写入直接失败](0379-transcript-writes-fail-for-missing-sessions.md)
 - [0380：收紧前端 event 枚举校验](0380-strict-frontend-event-enum-validation.md)
 - [0381：删除工具结果渲染与 MCP 状态兼容分支](0381-remove-tool-ui-compatibility-fallbacks.md)
+- [0382：SessionState 持有 active ReAct run](0382-session-state-owns-react-run.md)
+- [0383：阶段 3 的 typed memory 与 Action 投影验收](0383-stage3-typed-memory-and-action-ports.md)

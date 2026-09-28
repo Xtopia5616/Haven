@@ -113,7 +113,10 @@ pub use action_service::{
     ActionCompletion, ActionCompletionReceiver, BackgroundActionCompletion, EventSink,
     ScheduledActionFired,
 };
-pub use action_service::{ActionService, ActionView, ActionViewKind};
+pub use action_service::{
+    ActionListView, ActionService, ActionStateView, ActionStatusView, ActionView, ActionViewKind,
+    ScheduledActionView,
+};
 pub use adapters::{McpToolAdapter, SkillToolAdapter};
 pub use asset_registry::{ManagedAsset, ManagedAssetRegistry};
 pub use builtin::{

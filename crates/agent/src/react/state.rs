@@ -5,10 +5,10 @@
 //! the type boundary: Run, Turn and ToolBatch all receive the same state
 //! object instead of independently borrowing three collections.
 //!
-//! ADR 0214：这份热状态（events、canonical、branch points、retry nudge、
-//! `turn_cancel`）还没有主人，当前由 actor 外的循环持有。目标是放进
-//! `SessionState`，由 actor 任务内的那一次 run 只在 yield 点借用。不要把
-//! token estimate 单独搬进 actor，否则这些字段旁边还会再长出缓存。
+//! ADR 0214：生产 run 的 `ReActState` 被 active run future 捕获；该 future
+//! 存在所属 session 的 `SessionState::react_run` 中，并由同一个 actor task
+//! 与 mailbox 一起轮询。它只在当前 run 内可变，不跨 session 共享，也不经
+//! mailbox 往返。单测可直接构造该 projection 验证纯状态转换。
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;

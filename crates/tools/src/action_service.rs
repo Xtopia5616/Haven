@@ -93,7 +93,7 @@ pub struct ActionView {
 /// and scheduled-action metadata. The final JSON conversion stays at the tool
 /// boundary (or in the legacy compatibility wrappers below).
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) enum ActionStatusView {
+pub enum ActionStatusView {
     NotFound {
         action_id: String,
     },
@@ -114,7 +114,7 @@ pub(crate) enum ActionStatusView {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) enum ActionStateView {
+pub enum ActionStateView {
     Waiting,
     Running {
         started_at: String,
@@ -145,7 +145,7 @@ pub(crate) enum ActionStateView {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct ScheduledActionView {
+pub struct ScheduledActionView {
     pub title: String,
     pub body: String,
     pub due_at: String,
@@ -159,7 +159,7 @@ pub(crate) struct ScheduledActionView {
 /// A scoped list row. Its status remains typed until the actions tool has
 /// applied filtering and built its final JSON result.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct ActionListView {
+pub struct ActionListView {
     pub status: ActionStatus,
     pub projection: ActionStatusView,
     pub kind: ActionViewKind,
@@ -220,7 +220,7 @@ impl ActionStateView {
         }
     }
 
-    fn status(&self) -> ActionStatus {
+    pub fn status(&self) -> ActionStatus {
         match self {
             Self::Waiting => ActionStatus::Waiting,
             Self::Running { .. } => ActionStatus::Running,
@@ -252,7 +252,7 @@ impl ActionStateView {
 }
 
 impl ActionStatusView {
-    pub(crate) fn status(&self) -> Option<ActionStatus> {
+    pub fn status(&self) -> Option<ActionStatus> {
         match self {
             Self::NotFound { .. } | Self::ScheduledTerminal { .. } => match self {
                 Self::ScheduledTerminal { status, .. } => Some(*status),
@@ -1311,7 +1311,8 @@ impl ActionService {
     /// status, timestamps, and a bounded output/error preview. Lets the model
     /// see all background work of a session in a single call instead of polling
     /// `status` action by action. Order: oldest first.
-    pub async fn list_for_session(&self, session_id: &str) -> Vec<Value> {
+    #[cfg(test)]
+    pub(crate) async fn list_for_session(&self, session_id: &str) -> Vec<Value> {
         self.list_for_session_views(session_id)
             .await
             .into_iter()
@@ -1321,7 +1322,7 @@ impl ActionService {
 
     /// Typed agent-facing board projection. JSON conversion is intentionally
     /// deferred until the actions tool has applied its status filter.
-    pub(crate) async fn list_for_session_views(&self, session_id: &str) -> Vec<ActionListView> {
+    pub async fn list_for_session_views(&self, session_id: &str) -> Vec<ActionListView> {
         let actions = self.actions.read().await;
         let mut rows = Vec::new();
         for (id, entry) in actions.iter() {
@@ -1613,7 +1614,16 @@ impl ActionService {
                     _ = shutdown_token.cancelled() => return,
                     _ = tokio::time::sleep(emit_interval) => {}
                 }
-                if emit_me.status(&emit_action_id).await["status"].as_str() != Some("running") {
+                if !matches!(
+                    emit_me.status_view(&emit_action_id).await,
+                    ActionStatusView::Background {
+                        state: ActionStateView::Running { .. },
+                        ..
+                    } | ActionStatusView::Scheduled {
+                        state: ActionStateView::Running { .. },
+                        ..
+                    }
+                ) {
                     return;
                 }
                 if emit_tail.snapshot_if_changed(&mut last_output) {
@@ -1633,13 +1643,14 @@ impl ActionService {
     }
 
     /// Report the current status of a action as JSON.
-    pub async fn status(&self, action_id: &str) -> Value {
+    #[cfg(test)]
+    pub(crate) async fn status(&self, action_id: &str) -> Value {
         self.status_view(action_id).await.to_json(true)
     }
 
     /// Typed unscoped status projection. The legacy `status` method is only a
     /// wire-compatibility serializer around this view.
-    pub(crate) async fn status_view(&self, action_id: &str) -> ActionStatusView {
+    pub async fn status_view(&self, action_id: &str) -> ActionStatusView {
         let actions = self.actions.read().await;
         let Some(entry) = actions.get(action_id) else {
             return ActionStatusView::NotFound {
@@ -1673,14 +1684,15 @@ impl ActionService {
 
     /// Status lookup scoped to the owning session. Agent-facing callers must
     /// never be able to enumerate another session's action by guessing its id.
-    pub async fn status_for_session(&self, action_id: &str, session_id: &str) -> Value {
+    #[cfg(test)]
+    pub(crate) async fn status_for_session(&self, action_id: &str, session_id: &str) -> Value {
         self.status_for_session_view(action_id, session_id)
             .await
             .to_json(true)
     }
 
     /// Typed status lookup scoped to the owning session.
-    pub(crate) async fn status_for_session_view(
+    pub async fn status_for_session_view(
         &self,
         action_id: &str,
         session_id: &str,
@@ -2236,15 +2248,10 @@ impl ActionService {
         Ok(id)
     }
 
-    pub async fn list(&self) -> Vec<Value> {
-        self.list_scheduled_scoped(None).await
-    }
-
-    pub async fn list_scheduled_for_session(&self, session_id: &str) -> Vec<Value> {
-        self.list_scheduled_scoped(Some(session_id)).await
-    }
-
-    async fn list_scheduled_scoped(&self, owner: Option<&str>) -> Vec<Value> {
+    pub async fn list_scheduled_for_session_views(
+        &self,
+        session_id: &str,
+    ) -> Vec<ActionStatusView> {
         let actions = self.actions.read().await;
         let mut rows: Vec<_> = actions
             .iter()
@@ -2252,20 +2259,38 @@ impl ActionService {
                 let schedule = entry.scheduled.as_ref()?;
                 if entry.kind != ActionKind::Scheduled
                     || !entry.state.status().is_live()
-                    || owner.is_some_and(|value| entry.session_id.as_deref() != Some(value))
+                    || entry.session_id.as_deref() != Some(session_id)
                 {
                     return None;
                 }
-                Some(scheduled_status_json(
-                    id,
-                    entry.session_id.as_deref(),
-                    schedule,
-                    &entry.state,
+                Some((
+                    schedule.due_at.clone(),
+                    ActionStatusView::Scheduled {
+                        action_id: id.clone(),
+                        session_id: entry.session_id.clone(),
+                        schedule: Box::new(scheduled_action_view(schedule)),
+                        state: ActionStateView::from_entry(entry),
+                    },
                 ))
             })
             .collect();
-        rows.sort_by(|left, right| right["due_at"].as_str().cmp(&left["due_at"].as_str()));
-        rows
+        rows.sort_by(|left, right| right.0.cmp(&left.0));
+        rows.into_iter().map(|(_, view)| view).collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn list(&self) -> Vec<Value> {
+        self.actions
+            .read()
+            .await
+            .iter()
+            .filter_map(|(id, entry)| {
+                let schedule = entry.scheduled.as_ref()?;
+                (entry.kind == ActionKind::Scheduled && entry.state.status().is_live()).then(|| {
+                    scheduled_status_json(id, entry.session_id.as_deref(), schedule, &entry.state)
+                })
+            })
+            .collect()
     }
 
     async fn fire_scheduled(self: &Arc<Self>, id: &str) {
@@ -2400,8 +2425,17 @@ impl ActionService {
     async fn watch_action_timer(self: &Arc<Self>, id: String, watched_id: String) {
         loop {
             tokio::time::sleep(Duration::from_millis(1000)).await;
-            let status = self.status(&watched_id).await;
-            if status["status"] == "running" {
+            let status = self.status_view(&watched_id).await;
+            if matches!(
+                &status,
+                ActionStatusView::Background {
+                    state: ActionStateView::Running { .. },
+                    ..
+                } | ActionStatusView::Scheduled {
+                    state: ActionStateView::Running { .. },
+                    ..
+                }
+            ) {
                 continue;
             }
             let prompt = action_finished_prompt(&watched_id, &status);
@@ -3175,16 +3209,34 @@ fn scheduled_finished_json(
     value
 }
 
-fn action_finished_prompt(action_id: &str, status: &Value) -> String {
-    let state = status["status"].as_str().unwrap_or("unknown");
-    if state == "not_found" {
+fn action_finished_prompt(action_id: &str, status: &ActionStatusView) -> String {
+    if matches!(status, ActionStatusView::NotFound { .. }) {
         return format!("Background action {action_id} not found.");
     }
-    let payload = status["output"]
-        .as_str()
-        .or_else(|| status["error_reason"].as_str())
-        .or_else(|| status["error"].as_str())
-        .unwrap_or_default();
+    let (state, payload) = match status {
+        ActionStatusView::Background { state, .. } | ActionStatusView::Scheduled { state, .. } => {
+            match state {
+                ActionStateView::Completed { output, .. } => ("completed", output.as_str()),
+                ActionStateView::Failed {
+                    error,
+                    error_reason,
+                    ..
+                } => (
+                    "failed",
+                    if error_reason.is_empty() {
+                        error.as_str()
+                    } else {
+                        error_reason.as_str()
+                    },
+                ),
+                ActionStateView::Waiting => ("waiting", ""),
+                ActionStateView::Running { .. } => ("running", ""),
+                ActionStateView::Cancelled { .. } => ("cancelled", ""),
+            }
+        }
+        ActionStatusView::ScheduledTerminal { status, .. } => (status.as_str(), ""),
+        ActionStatusView::NotFound { .. } => unreachable!("handled above"),
+    };
     format!("Background action {action_id} {state}.\nOutput:\n{payload}")
 }
 
