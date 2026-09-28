@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+mod agent_tool_ports;
 mod canonical;
 mod compactor;
 mod event;
@@ -30,6 +31,7 @@ mod types;
 
 pub(crate) use canonical::{is_dangling_boundary, sanitize_canonical};
 
+pub use agent_tool_ports::AgentToolPorts;
 pub use compactor::ContextCompactor;
 pub use event::{
     ActionCompletionStatus, ActionNotificationSource, AgentEvent, AgentEventEmitter,
@@ -43,12 +45,15 @@ pub use memory_runtime::{
 pub use memory_service::{MemoryService, MemoryServiceStores};
 pub use memory_worker::MemoryWorker;
 pub use prompt::SystemPromptBuilder;
-pub use prompt_context::PromptContextProvider;
+pub use prompt_context::{
+    PromptCatalogContent, PromptCatalogVersions, PromptContextProvider, PromptRuntimeContext,
+    PromptToolPort,
+};
 pub use prompt_renderer::{MemorySections, PromptRenderer};
 pub use react::{LoopExit, MetricsSnapshot, PauseReason, ReActEngine, UiMetricsSnapshot};
 pub use session::{
     ConfirmResolution, RunEngine, RunHandler, SessionEvent, SessionInfo, SessionStatus,
-    SessionSupervisor, SessionWaitingReason, StepInfo, ToolExecution,
+    SessionSupervisor, SessionToolPorts, SessionWaitingReason, StepInfo, ToolExecution,
 };
 
 pub use types::{

@@ -7,14 +7,18 @@ use haven_common::prompts::SESSION_CONTEXT_FENCE_START;
 use haven_common::tools::{ToolCatalogGroup, ToolDef, ToolPrompt};
 use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
 use haven_memory::recall::MemoryRetriever;
-use haven_tools::{ToolsManager, WebSearchAvailability};
+#[cfg(test)]
+use haven_tools::ToolsManager;
+use haven_tools::WebSearchAvailability;
 
 #[cfg(test)]
 use haven_memory::Database;
 
 use crate::compactor::estimate_tokens;
 use crate::memory_service::{MemoryService, PromptMemoryCandidates};
-use crate::prompt_context::PromptContextProvider;
+use crate::prompt_context::{
+    PromptCatalogContent, PromptCatalogVersions, PromptContextProvider, PromptToolPort,
+};
 use crate::prompt_renderer::{MemorySections, PromptRenderer};
 
 /// Builds the system prompt, including a **short** tools / MCP index.
@@ -403,7 +407,7 @@ fn render_mcp_index(entries: &[serde_json::Value]) -> String {
 }
 
 impl SystemPromptBuilder {
-    pub fn with_memory_service(tools: Arc<ToolsManager>, memory: Arc<MemoryService>) -> Self {
+    pub fn with_memory_service(tools: Arc<dyn PromptToolPort>, memory: Arc<MemoryService>) -> Self {
         Self {
             context_provider: Arc::new(PromptContextProvider::new(tools, memory)),
         }
@@ -458,25 +462,8 @@ impl SystemPromptBuilder {
         } else {
             workspace_root.clone()
         };
-        let tools = self.context_provider.tools();
-        let limits = tools.context_limits().await;
-        let shell = tools.default_shell_name().await;
-        let runtime_capabilities = tools.runtime_capabilities().await;
-        let permissions = tools.share_services().authorization.prompt_summary().await;
-        let mcp_count = tools
-            .list_mcp_server_configs()
-            .await
-            .into_iter()
-            .filter(|server| server.enabled)
-            .count();
-        let skill_count = tools
-            .share_services()
-            .skills
-            .list()
-            .await
-            .into_iter()
-            .filter(|skill| skill.enabled)
-            .count();
+        let runtime = self.context_provider.tools().runtime_context().await;
+        let limits = &runtime.context_limits;
 
         let context_window = self
             .context_provider
@@ -512,29 +499,29 @@ impl SystemPromptBuilder {
             runtime_value(workspace_root),
             runtime_value(tool_cwd),
             runtime_value(sandbox_cwd),
-            runtime_value(shell),
-            web_search_availability_prompt_value(runtime_capabilities.web_search),
-            if runtime_capabilities.vision {
+            runtime_value(runtime.default_shell),
+            web_search_availability_prompt_value(runtime.capabilities.web_search),
+            if runtime.capabilities.vision {
                 "available"
             } else {
                 "unavailable"
             },
-            if runtime_capabilities.image_generation {
+            if runtime.capabilities.image_generation {
                 "available"
             } else {
                 "unavailable"
             },
-            if runtime_capabilities.transcription {
+            if runtime.capabilities.transcription {
                 "available"
             } else {
                 "unavailable"
             },
-            if runtime_capabilities.recording {
+            if runtime.capabilities.recording {
                 "available"
             } else {
                 "unavailable"
             },
-            if runtime_capabilities.tts {
+            if runtime.capabilities.tts {
                 "available"
             } else {
                 "unavailable"
@@ -542,9 +529,9 @@ impl SystemPromptBuilder {
             context_window,
             limits.max_observation_chars,
             limits.max_tools_per_request.max(1),
-            mcp_count,
-            skill_count,
-            permissions,
+            runtime.enabled_mcp_servers,
+            runtime.enabled_skills,
+            runtime.permission_summary,
         )
     }
 
@@ -971,52 +958,33 @@ impl SystemPromptBuilder {
         // for this frozen global index. Per-session registrations do not enter
         // the index and therefore do not invalidate it.
         let tools = self.context_provider.tools();
-        let version = tools.registry().version();
-        let mcp_catalog_version = tools.mcp_catalog_version();
-        let skills_catalog_version = tools.share_services().skills.catalog_version();
-        if let Some(cache) = self.context_provider.cached_schema(
-            version,
-            mcp_catalog_version,
-            skills_catalog_version,
-        ) {
+        let versions = tools.catalog_versions();
+        if let Some(cache) =
+            self.context_provider
+                .cached_schema(versions.registry, versions.mcp, versions.skills)
+        {
             return cache;
         }
 
-        // Structured definitions from the complete enabled builtin catalog;
-        // no loose JSON re-parsing. The index intentionally includes deferred
-        // builtin names without embedding their schemas. Per-session
-        // skill__/mcp__ adapters are not listed here (they ship via API
-        // tools[] only after an explicit loader call).
-        let mut defs = tools.list_enabled_builtin_defs().await;
-        // A small embedding may build a prompt before the asynchronous builtin
-        // catalog initialization has run. In that case use the current eager
-        // registry as a narrow fallback so the prompt still reflects tools
-        // explicitly installed by the host.
-        if defs.is_empty() {
-            defs = tools.registry().list_defs().await;
-        }
-        let new_cache = self
-            .build_sections(version, mcp_catalog_version, skills_catalog_version, defs)
-            .await;
+        let content = tools.catalog_content().await;
+        let new_cache = self.build_sections(versions, content).await;
         self.context_provider.replace_schema(new_cache.clone());
         new_cache
     }
 
     async fn build_sections(
         &self,
-        version: u64,
-        mcp_catalog_version: u64,
-        skills_catalog_version: u64,
-        defs: Vec<ToolDef>,
+        versions: PromptCatalogVersions,
+        content: PromptCatalogContent,
     ) -> SchemaCache {
         // Per-session mcp__ tools are never in the global registry, so they
         // won't appear here — intentional: prompt holds a short orientation
         // index; schemas come from the API tools[] list after load_mcp.
-        let mut built_in = render_tool_index(&defs);
+        let mut built_in = render_tool_index(&content.builtin_defs);
         // Cross-session messaging guidance rides along with the tool index so
         // the agent knows when to poll its inbox and how to treat messages
         // from peers (low-trust, not user instructions).
-        if defs.iter().any(|def| {
+        if content.builtin_defs.iter().any(|def| {
             def.manifest
                 .as_ref()
                 .map(|manifest| manifest.identity.catalog_group)
@@ -1032,20 +1000,12 @@ impl SystemPromptBuilder {
             "use `tool_catalog` for the complete capability list",
         );
         let mcp_server_index = cap_capability_index(
-            render_mcp_index(&self.context_provider.tools().build_mcp_index().await),
+            render_mcp_index(&content.mcp_index),
             MCP_INDEX_CHAR_BUDGET,
             "use `load_mcp` or `tool_catalog` for details",
         );
         let skills_section = cap_capability_index(
-            render_skill_index(
-                &self
-                    .context_provider
-                    .tools()
-                    .share_services()
-                    .skills
-                    .list()
-                    .await,
-            ),
+            render_skill_index(&content.skills),
             SKILL_INDEX_CHAR_BUDGET,
             "use `load_skill` or `tool_catalog` for details",
         );
@@ -1059,9 +1019,9 @@ impl SystemPromptBuilder {
         );
 
         SchemaCache {
-            registry_version: version,
-            mcp_catalog_version,
-            skills_catalog_version,
+            registry_version: versions.registry,
+            mcp_catalog_version: versions.mcp,
+            skills_catalog_version: versions.skills,
             built_in_section: built_in,
             skills_section,
             mcp_server_index_section: mcp_server_index,

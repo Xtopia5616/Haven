@@ -3,7 +3,9 @@ use crate::desktop::DesktopShell;
 use crate::events::AppBootstrapEvent;
 use crate::runtime::{ApplicationRuntime, RuntimeServices};
 use haven_agent::SessionSupervisor;
-use haven_agent::{AgentLayer, MemoryService, MemoryServiceStores, PendingSessionRecovery};
+use haven_agent::{
+    AgentLayer, AgentToolPorts, MemoryService, MemoryServiceStores, PendingSessionRecovery,
+};
 use haven_common::config::{ConfigLoader, ConfigService, LogLevel};
 use haven_input::InputPipeline;
 use haven_llm::LlmRouter;
@@ -206,10 +208,11 @@ impl AppState {
         let conversation_window_size = cfg.memory.session_window_size;
 
         let tools = Arc::new(ToolsManager::new());
+        let agent_tool_ports = AgentToolPorts::from_tools_manager(Arc::clone(&tools));
 
         let executor = Arc::new(SessionSupervisor::new(
             supervisor_session_store,
-            tools.clone(),
+            agent_tool_ports.session_ports(),
             cfg.session.max_concurrent.max(1),
         ));
 
@@ -229,7 +232,7 @@ impl AppState {
         let agent_startup = AgentLayer::build(
             memory_service,
             executor.clone(),
-            tools.clone(),
+            agent_tool_ports,
             router.clone(),
             max_steps,
             conversation_window_size,

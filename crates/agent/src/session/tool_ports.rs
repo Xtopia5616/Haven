@@ -1,9 +1,173 @@
 //! Agent-owned ports for tool observations.
 
 use async_trait::async_trait;
-use haven_common::types::MessageAttachment;
-use haven_tools::{ToolResult, ToolsManager};
+use haven_common::types::{MessageAttachment, RiskLevel};
+use haven_tools::{
+    ActionService, AuthorizationEngine, AuthorizationRequest, ToolRegistration, ToolResult,
+    ToolsManager,
+};
+use serde_json::Value;
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
+
+/// One execution request crossing the Agent-to-Tools runtime boundary.
+#[derive(Clone)]
+pub(crate) struct ToolExecutionContext {
+    pub(crate) session_id: Option<String>,
+    pub(crate) tool_name: String,
+    pub(crate) input: Value,
+    pub(crate) cancel: CancellationToken,
+    pub(crate) step_id: Option<String>,
+}
+
+/// Minimal live capability needed by the session tool runner.
+#[async_trait]
+pub(crate) trait ToolExecutionPort: Send + Sync {
+    async fn risk_level(
+        &self,
+        session_id: Option<&str>,
+        tool_name: &str,
+        input: &Value,
+    ) -> RiskLevel;
+
+    async fn authorization_request(
+        &self,
+        session_id: Option<&str>,
+        tool_name: &str,
+        input: &Value,
+    ) -> AuthorizationRequest;
+
+    fn authorization_request_from_catalog(
+        &self,
+        catalog: &haven_tools::ToolCatalogSnapshot,
+        session_id: Option<&str>,
+        tool_name: &str,
+        input: &Value,
+    ) -> AuthorizationRequest;
+
+    async fn execute(&self, context: ToolExecutionContext) -> anyhow::Result<ToolResult>;
+
+    async fn registrations(
+        &self,
+        session_id: &str,
+        tool_name: &str,
+        output: &Value,
+    ) -> Vec<ToolRegistration>;
+}
+
+/// Production adapter keeps mutable tool lookup and execution in Tools.
+pub(crate) struct ToolsManagerToolExecutionAdapter {
+    tools: Arc<ToolsManager>,
+}
+
+impl ToolsManagerToolExecutionAdapter {
+    pub(crate) fn new(tools: Arc<ToolsManager>) -> Self {
+        Self { tools }
+    }
+}
+
+#[async_trait]
+impl ToolExecutionPort for ToolsManagerToolExecutionAdapter {
+    async fn risk_level(
+        &self,
+        session_id: Option<&str>,
+        tool_name: &str,
+        input: &Value,
+    ) -> RiskLevel {
+        self.tools
+            .get_risk_level(session_id, tool_name, input)
+            .await
+    }
+
+    async fn authorization_request(
+        &self,
+        session_id: Option<&str>,
+        tool_name: &str,
+        input: &Value,
+    ) -> AuthorizationRequest {
+        self.tools
+            .get_authorization_request(session_id, tool_name, input)
+            .await
+    }
+
+    fn authorization_request_from_catalog(
+        &self,
+        catalog: &haven_tools::ToolCatalogSnapshot,
+        session_id: Option<&str>,
+        tool_name: &str,
+        input: &Value,
+    ) -> AuthorizationRequest {
+        self.tools
+            .get_authorization_request_from_snapshot(catalog, session_id, tool_name, input)
+    }
+
+    async fn execute(&self, context: ToolExecutionContext) -> anyhow::Result<ToolResult> {
+        self.tools
+            .execute_tool_with_step(
+                context.session_id.as_deref(),
+                &context.tool_name,
+                context.input,
+                context.cancel,
+                context.step_id.as_deref(),
+            )
+            .await
+    }
+
+    async fn registrations(
+        &self,
+        session_id: &str,
+        tool_name: &str,
+        output: &Value,
+    ) -> Vec<ToolRegistration> {
+        self.tools
+            .get_tool_for_session(Some(session_id), tool_name)
+            .await
+            .map(|tool| tool.registrations(output))
+            .unwrap_or_default()
+    }
+}
+
+/// Explicit capabilities needed by one session supervisor.
+#[derive(Clone)]
+pub struct SessionToolPorts {
+    pub(super) execution: Arc<dyn ToolExecutionPort>,
+    pub(super) catalog: Arc<dyn crate::react::ToolCatalogPort>,
+    pub(super) authorization: Arc<AuthorizationEngine>,
+    pub(super) actions: Arc<ActionService>,
+    pub(super) session_tool_overlay: Arc<dyn SessionToolOverlayPort>,
+    pub(super) managed_asset_leases: Arc<dyn ManagedAssetLeasePort>,
+    pub(super) observations: Arc<dyn ToolObservationPort>,
+}
+
+impl SessionToolPorts {
+    pub(crate) fn from_tools_manager(tools: Arc<ToolsManager>) -> Self {
+        let services = tools.share_services();
+        Self {
+            execution: Arc::new(ToolsManagerToolExecutionAdapter::new(Arc::clone(&tools))),
+            catalog: Arc::new(crate::react::ToolsManagerToolCatalogAdapter::new(
+                Arc::clone(&tools),
+            )),
+            authorization: services.authorization,
+            actions: services.actions,
+            session_tool_overlay: Arc::new(ToolsManagerSessionToolOverlayAdapter::new(Arc::clone(
+                &tools,
+            ))),
+            managed_asset_leases: Arc::new(ToolsManagerManagedAssetLeaseAdapter::new(Arc::clone(
+                &tools,
+            ))),
+            observations: Arc::new(ToolsManagerToolObservationAdapter::new(tools)),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_session_tool_overlay(
+        mut self,
+        session_tool_overlay: Arc<dyn SessionToolOverlayPort>,
+    ) -> Self {
+        self.session_tool_overlay = session_tool_overlay;
+        self
+    }
+}
 
 /// Formats the bounded observation text for a completed tool result.
 #[async_trait]
@@ -168,6 +332,113 @@ mod tests {
     async fn register_overlay_tool(tools: &ToolsManager, session_id: &str) {
         let tool: ToolBox = Arc::new(OverlayProbeTool("overlay.probe"));
         tools.register_for_session(session_id, tool).await;
+    }
+
+    struct ExecutionContextProbe;
+
+    #[async_trait]
+    impl Tool for ExecutionContextProbe {
+        fn name(&self) -> String {
+            "execution.context_probe".into()
+        }
+
+        fn description(&self) -> String {
+            "records trusted execution context fields".into()
+        }
+
+        fn risk_level(&self, _: &Value) -> RiskLevel {
+            RiskLevel::Safe
+        }
+
+        fn input_schema(&self) -> Value {
+            json!({
+                "type": "object",
+                "properties": {"value": {"type": "string"}},
+                "additionalProperties": false
+            })
+        }
+
+        fn requires_session_id(&self) -> bool {
+            true
+        }
+
+        fn supports_live_output(&self) -> bool {
+            true
+        }
+
+        async fn execute(
+            &self,
+            input: Value,
+            cancel: CancellationToken,
+        ) -> anyhow::Result<ToolResult> {
+            Ok(ToolResult::ok(json!({
+                "input": input,
+                "cancelled": cancel.is_cancelled()
+            })))
+        }
+    }
+
+    #[tokio::test]
+    async fn execution_adapter_forwards_cancel_and_trusted_step_identity() {
+        let tools = Arc::new(ToolsManager::new());
+        let session_id = "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        tools
+            .register_for_session(session_id, Arc::new(ExecutionContextProbe))
+            .await;
+        let adapter = ToolsManagerToolExecutionAdapter::new(tools);
+        let cancel = CancellationToken::new();
+
+        let result = adapter
+            .execute(ToolExecutionContext {
+                session_id: Some(session_id.into()),
+                tool_name: "execution.context_probe".into(),
+                input: json!({
+                    "value": "kept",
+                    "_session_id": "ses-forged",
+                    "_step_id": "step-forged"
+                }),
+                cancel,
+                step_id: Some("step-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into()),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result.output,
+            json!({
+                "input": {
+                    "value": "kept",
+                    "_session_id": session_id,
+                    "_step_id": "step-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                },
+                "cancelled": false
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn execution_adapter_forwards_cancellation() {
+        let tools = Arc::new(ToolsManager::new());
+        let session_id = "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        tools
+            .register_for_session(session_id, Arc::new(ExecutionContextProbe))
+            .await;
+        let adapter = ToolsManagerToolExecutionAdapter::new(tools);
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        let result = adapter
+            .execute(ToolExecutionContext {
+                session_id: Some(session_id.into()),
+                tool_name: "execution.context_probe".into(),
+                input: json!({"value": "kept"}),
+                cancel,
+                step_id: None,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(result.outcome, haven_tools::ToolExecutionOutcome::Cancelled);
     }
 
     #[tokio::test]

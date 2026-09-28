@@ -1416,7 +1416,7 @@ async fn pause_snapshot_and_resume_keep_own_final_answer_in_canonical() {
         AgentLayer::build(
             memory_service,
             executor.clone(),
-            tools,
+            crate::AgentToolPorts::from_tools_manager(tools),
             router,
             30,
             50,

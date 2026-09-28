@@ -101,7 +101,7 @@ async fn resume_restores_tool_overlay_cleanly_in_round_order_and_best_effort() {
     let agent = AgentLayer::build(
         memory_service,
         executor,
-        tools,
+        crate::AgentToolPorts::from_tools_manager(tools),
         router,
         30,
         50,
@@ -230,7 +230,7 @@ async fn enabled_skills_are_global_and_resume_does_not_rebuild_skill_sessions() 
         AgentLayer::build(
             memory_service,
             executor,
-            tools.clone(),
+            crate::AgentToolPorts::from_tools_manager(tools.clone()),
             router,
             30,
             50,

@@ -194,7 +194,7 @@ pub(super) fn make_test_agent_with_db_and_startup(
     let startup = AgentLayer::build(
         memory_service,
         executor.clone(),
-        tools,
+        crate::AgentToolPorts::from_tools_manager(tools),
         router,
         30,
         50,

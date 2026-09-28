@@ -370,3 +370,4 @@
 - [0381：删除工具结果渲染与 MCP 状态兼容分支](0381-remove-tool-ui-compatibility-fallbacks.md)
 - [0382：SessionState 持有 active ReAct run](0382-session-state-owns-react-run.md)
 - [0383：阶段 3 的 typed memory 与 Action 投影验收](0383-stage3-typed-memory-and-action-ports.md)
+- [0384：Agent Tools 执行上下文与端口 bundle](0384-agent-tools-execution-context.md)

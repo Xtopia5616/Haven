@@ -7,9 +7,10 @@ use haven_common::types::RiskLevel;
 use haven_memory::Database;
 use haven_memory::SessionStore;
 use haven_memory::repositories::sessions::Session as DbSession;
+#[cfg(test)]
+use haven_tools::ToolsManager;
 use haven_tools::{
-    ActionService, AuthorizationDecision, AuthorizationEngine, ToolResult, ToolsManager,
-    is_silent_action,
+    ActionService, AuthorizationDecision, AuthorizationEngine, ToolResult, is_silent_action,
 };
 use serde_json::Value;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -181,7 +182,9 @@ pub struct SessionSupervisor {
     /// ReAct turn runner. Keeping one store instance also makes the live event
     /// broadcast observe interaction/control events, not just transcript rows.
     store: SessionStore,
-    tools: Arc<ToolsManager>,
+    execution: Arc<dyn tool_ports::ToolExecutionPort>,
+    #[cfg(test)]
+    tool_catalog: Arc<dyn crate::react::ToolCatalogPort>,
     /// Live authorization capability shared with the ToolsManager execution
     /// boundary. Session lifecycle code accesses this narrow capability
     /// directly instead of exposing a process-service bundle.
@@ -258,10 +261,8 @@ mod tool_ports;
 mod tool_runner;
 pub(crate) use dispatcher::DirectRunLease;
 pub(crate) use tool_ports::SessionToolOverlayPort;
-use tool_ports::{
-    ManagedAssetLeasePort, ToolObservationPort, ToolsManagerManagedAssetLeaseAdapter,
-    ToolsManagerSessionToolOverlayAdapter, ToolsManagerToolObservationAdapter,
-};
+pub use tool_ports::SessionToolPorts;
+use tool_ports::{ManagedAssetLeasePort, ToolExecutionContext, ToolObservationPort};
 pub(crate) use tool_runner::{ActionStepMetadata, ActionStepPersistenceError};
 
 pub(crate) use actor::{CONTEXT_BATCH_MAX_CHARS, CONTEXT_BATCH_MAX_ITEMS, MessagingTitle};
@@ -269,40 +270,28 @@ pub(crate) use queues::ReactContextBatch;
 pub use run_engine::RunEngine;
 
 impl SessionSupervisor {
-    pub fn new(store: SessionStore, tools: Arc<ToolsManager>, max_concurrent: usize) -> Self {
-        let session_tool_overlay_port = Arc::new(ToolsManagerSessionToolOverlayAdapter::new(
-            Arc::clone(&tools),
-        ));
-        Self::new_with_session_tool_overlay_port(
-            store,
-            tools,
-            max_concurrent,
-            session_tool_overlay_port,
-        )
-    }
-
-    pub(crate) fn new_with_session_tool_overlay_port(
-        store: SessionStore,
-        tools: Arc<ToolsManager>,
-        max_concurrent: usize,
-        session_tool_overlay_port: Arc<dyn SessionToolOverlayPort>,
-    ) -> Self {
-        let services = tools.share_services();
-        let observation_port =
-            Arc::new(ToolsManagerToolObservationAdapter::new(Arc::clone(&tools)));
-        let managed_asset_lease_port = Arc::new(ToolsManagerManagedAssetLeaseAdapter::new(
-            Arc::clone(&tools),
-        ));
+    pub fn new(store: SessionStore, ports: SessionToolPorts, max_concurrent: usize) -> Self {
+        let SessionToolPorts {
+            execution,
+            catalog: _catalog,
+            authorization,
+            actions,
+            session_tool_overlay,
+            managed_asset_leases,
+            observations,
+        } = ports;
         let (event_tx, _) = broadcast::channel(256);
         Self {
             partials: Arc::new(crate::partial::PartialStore::new(store.clone())),
             store,
-            tools,
-            authorization: services.authorization,
-            actions: services.actions,
-            session_tool_overlay_port,
-            observation_port,
-            managed_asset_lease_port,
+            execution,
+            #[cfg(test)]
+            tool_catalog: _catalog,
+            authorization,
+            actions,
+            session_tool_overlay_port: session_tool_overlay,
+            observation_port: observations,
+            managed_asset_lease_port: managed_asset_leases,
             actors: Arc::new(Mutex::new(HashMap::new())),
             admission: Arc::new(dispatcher::RunAdmission::new(max_concurrent.max(1))),
             lifecycle_gate: Arc::new(Mutex::new(())),
@@ -320,6 +309,18 @@ impl SessionSupervisor {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn new_with_session_tool_overlay_port(
+        store: SessionStore,
+        tools: Arc<ToolsManager>,
+        max_concurrent: usize,
+        session_tool_overlay_port: Arc<dyn SessionToolOverlayPort>,
+    ) -> Self {
+        let ports = tool_ports::SessionToolPorts::from_tools_manager(tools)
+            .with_session_tool_overlay(session_tool_overlay_port);
+        Self::new(store, ports, max_concurrent)
+    }
+
     /// Build an executor for unit tests while keeping the production
     /// constructor on the typed session persistence boundary.
     #[cfg(test)]
@@ -328,7 +329,11 @@ impl SessionSupervisor {
         tools: Arc<ToolsManager>,
         max_concurrent: usize,
     ) -> Self {
-        Self::new(SessionStore::new(db), tools, max_concurrent)
+        Self::new(
+            SessionStore::new(db),
+            tool_ports::SessionToolPorts::from_tools_manager(tools),
+            max_concurrent,
+        )
     }
 
     pub(crate) fn register_managed_assets_for_session(
@@ -641,7 +646,8 @@ mod tests {
     async fn constructor_uses_the_injected_session_store() {
         let db = Arc::new(Database::open(&temp_db_path()).unwrap());
         let store = SessionStore::new(db);
-        let exec = SessionSupervisor::new(store.clone(), Arc::new(ToolsManager::new()), 1);
+        let ports = tool_ports::SessionToolPorts::from_tools_manager(Arc::new(ToolsManager::new()));
+        let exec = SessionSupervisor::new(store.clone(), ports, 1);
 
         let session = exec.create_session("typed constructor").await.unwrap();
         let persisted = store

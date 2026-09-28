@@ -647,8 +647,8 @@ impl SessionSupervisor {
     }
 
     #[cfg(test)]
-    pub(crate) fn tools_for_test(&self) -> Arc<ToolsManager> {
-        self.tools.clone()
+    pub(crate) fn tool_catalog_for_test(&self) -> Arc<dyn crate::react::ToolCatalogPort> {
+        self.tool_catalog.clone()
     }
 
     pub async fn cancel_session_actions(&self, session_id: &str) {

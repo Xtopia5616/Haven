@@ -58,7 +58,7 @@ impl AgentLayer {
     pub fn build(
         memory_service: Arc<MemoryService>,
         executor: Arc<SessionSupervisor>,
-        tools: Arc<haven_tools::ToolsManager>,
+        tools: AgentToolPorts,
         router: Arc<LlmRouter>,
         max_steps: u32,
         conversation_window_size: usize,
@@ -67,10 +67,10 @@ impl AgentLayer {
         let events = Arc::new(EventDispatcher::new());
         let memory_store = memory_service.memory_store();
         let prompt_builder = Arc::new(SystemPromptBuilder::with_memory_service(
-            tools.clone(),
+            tools.prompt_port(),
             memory_service.clone(),
         ));
-        let tool_catalog = Arc::new(crate::react::ToolsManagerToolCatalogAdapter::new(tools));
+        let tool_catalog = tools.catalog_port();
         let memory_inference = Arc::new(RouterMemoryInferencePort::new(router.clone()));
         let memory_worker = Arc::new(MemoryWorker::new_with_inference(
             memory_service.clone(),
@@ -1593,7 +1593,7 @@ mod tests {
         let agent = AgentLayer::build(
             memory_service,
             executor.clone(),
-            tools,
+            AgentToolPorts::from_tools_manager(tools),
             router,
             10,
             20,
@@ -1785,7 +1785,7 @@ mod tests {
         let agent = AgentLayer::build(
             memory_service,
             executor,
-            tools,
+            AgentToolPorts::from_tools_manager(tools),
             router,
             10,
             20,
@@ -1829,7 +1829,7 @@ mod tests {
         let startup = AgentLayer::build(
             memory_service.clone(),
             executor,
-            tools,
+            AgentToolPorts::from_tools_manager(tools),
             router,
             10,
             20,
@@ -1880,7 +1880,7 @@ mod tests {
         let agent = AgentLayer::build(
             memory_service,
             executor.clone(),
-            tools,
+            AgentToolPorts::from_tools_manager(tools),
             router,
             10,
             20,

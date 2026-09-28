@@ -202,7 +202,7 @@ fn agent_build_constructor_works() {
     let agent = AgentLayer::build(
         memory_service,
         executor,
-        tools,
+        crate::AgentToolPorts::from_tools_manager(tools),
         router,
         10,
         20,
@@ -262,7 +262,7 @@ async fn replace_router_and_router_work() {
         AgentLayer::build(
             memory_service,
             executor,
-            tools,
+            crate::AgentToolPorts::from_tools_manager(tools),
             router_a,
             10,
             20,

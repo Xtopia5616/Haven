@@ -111,8 +111,8 @@ impl ActionStepContext {
 impl SessionSupervisor {
     async fn action_step_context(&self, request: ActionStepRequest<'_>) -> ActionStepContext {
         let risk_level = self
-            .tools
-            .get_risk_level(Some(request.session_id), request.tool_name, request.input)
+            .execution
+            .risk_level(Some(request.session_id), request.tool_name, request.input)
             .await;
         ActionStepContext::new(request, risk_level)
     }
@@ -796,11 +796,9 @@ impl SessionSupervisor {
         // twice could yield divergent results for stateful tools, and the
         // variant split below is explicit rather than silently partitioned.
         let registrations = if result.success {
-            self.tools
-                .get_tool_for_session(Some(session_id), tool_name)
+            self.execution
+                .registrations(session_id, tool_name, &result.output)
                 .await
-                .map(|t| t.registrations(&result.output))
-                .unwrap_or_default()
         } else {
             Vec::new()
         };
@@ -823,7 +821,7 @@ impl SessionSupervisor {
         for reg in &registrations {
             match reg {
                 haven_tools::ToolRegistration::McpServer(name) => {
-                    self.tools
+                    self.session_tool_overlay_port
                         .register_mcp_for_session(session_id, name, None)
                         .await;
                 }
@@ -900,12 +898,12 @@ impl SessionSupervisor {
         step_id: Option<&str>,
     ) -> anyhow::Result<ToolExecution> {
         let risk_level = self
-            .tools
-            .get_risk_level(session_id, tool_name, &input)
+            .execution
+            .risk_level(session_id, tool_name, &input)
             .await;
         let authorization_request = self
-            .tools
-            .get_authorization_request(session_id, tool_name, &input)
+            .execution
+            .authorization_request(session_id, tool_name, &input)
             .await;
         let mut confirmed: Option<bool> = None;
         if let Some(receipt) = receipt.as_ref()
@@ -1000,8 +998,14 @@ impl SessionSupervisor {
             }
         }
         let result = self
-            .tools
-            .execute_tool_with_step(session_id, tool_name, input, cancel, step_id)
+            .execution
+            .execute(ToolExecutionContext {
+                session_id: session_id.map(str::to_owned),
+                tool_name: tool_name.to_owned(),
+                input,
+                cancel,
+                step_id: step_id.map(str::to_owned),
+            })
             .await?;
         Ok(ToolExecution {
             result,
@@ -1016,8 +1020,8 @@ impl SessionSupervisor {
         tool_name: &str,
         input: &Value,
     ) -> haven_tools::AuthorizationRequest {
-        self.tools
-            .get_authorization_request(session_id, tool_name, input)
+        self.execution
+            .authorization_request(session_id, tool_name, input)
             .await
     }
 
@@ -1137,12 +1141,8 @@ impl SessionSupervisor {
                 return Some(receipt.capability.clone());
             }
             return Some(
-                self.tools
-                    .get_authorization_request(
-                        Some(request.session_id.as_str()),
-                        tool_name,
-                        tool_input,
-                    )
+                self.execution
+                    .authorization_request(Some(request.session_id.as_str()), tool_name, tool_input)
                     .await
                     .policy
                     .capability,
@@ -1317,7 +1317,7 @@ impl SessionSupervisor {
         input: &Value,
         catalog: &haven_tools::ToolCatalogSnapshot,
     ) -> haven_tools::AuthorizationDecision {
-        let authorization_request = self.tools.get_authorization_request_from_snapshot(
+        let authorization_request = self.execution.authorization_request_from_catalog(
             catalog,
             Some(session_id),
             tool_name,
