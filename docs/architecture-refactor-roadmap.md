@@ -594,3 +594,5 @@ Phase 7.1 验收与未决风险：见 ADR 0259、0261、0262、0263、0264、026
 | 文档、ADR、重置说明、Git 历史和工作区状态可审查 | 满足 | ADR 0361、0367、架构、路线图和发布/重置文档记录本次证据与限制；提交后复核 Git 状态。 |
 
 阶段 9 的全新数据根目录手动验收仍是单独的发布条件；本次 workspace checks 不证明桌面安装、升级重置或卸载流程。阶段状态以未决 ADR 及下方验收记录为准，不因质量门禁通过而宣告全局完成。
+
+2026-09-28 跨层输出审计收口：本节此前将 “stable domain outputs typed，动态 JSON 边界有明确注释” 标为部分满足；现按 [跨层输出契约清单](architecture-output-contract-inventory.md) 将该项关闭为满足。清单逐项记录已确认生产输出的 producer、consumer、稳定性、Serde/JSON 边界、结论与 owner，覆盖跨 crate ports/services、全部 71 个 Tauri 命令成功签名和 40 个事件 channel。AdminServices 固定形状由 ADR 0391 类型化并在既有 tool wire 边界序列化；任意配置 path、工具参数/结果、provider payload、MCP 协议载荷等保留有 owner 的动态 JSON。清单中的 further-review 项均已分类和具名 owner，作为后续切片跟踪，不阻止本项验收。本验收不要求穷举无生产消费者的每个 public helper，也不以仓库清零 `Value` 为目标。

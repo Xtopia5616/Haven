@@ -13,7 +13,7 @@
 - **typed**：命名类型或明确标量在内部边界保持类型化；若直接作为 Tauri/tool DTO，还可能有领域类型变更带动 wire 形状变化的风险。
 - **dynamic JSON**：输出本身允许调用方、配置路径、provider 或协议决定 JSON 形状；记录动态数据 owner 和最终序列化边界。
 - **local-only**：本地 Rust 生命周期、缓存、路径或 worker 数据，不进入外部序列化边界。
-- **further review**：当前形状和 owner 已分类，但有稳定语义经 tuple、字符串、`Value` 或领域对象传播，值得独立收口。
+- **further review**：当前输出仍已记录形状、消费者、序列化位置和 owner；有稳定语义经 tuple、字符串、`Value` 或领域对象传播，值得独立收口。它是已分类的后续类型化/投影工作，不表示存在未归属输出。
 
 ## 跨 crate 输出边界
 
@@ -28,33 +28,61 @@
 | Tools catalog/manager → Agent adapters、App、tool wire | 输出包括 `ToolCatalogSnapshot`、`Vec<ToolDef>`、`Vec<McpServerConfig>`、运行时/上下文具名 DTO、`RiskLevel`/`AuthorizationRequest`、`Option<ToolBox>`、`ToolResult`、`u64` 版本和 `(u64, u64)` 版本 tuple。`build_mcp_index`/session schema list 返回 `Vec<Value>`。 | 工具 schema 最终序列化到 provider/tool catalog；prompt index 在 Tools→App adapter→Agent 内部流转，固定含 `name/description/tool_names/tool_count`，不属于 MCP 远端 schema。Tools owner catalog/execution；App owner Tauri projection。 | Tool、runtime 外层 **typed**；Tool input/output 和 schema **dynamic JSON**；固定 prompt index `Vec<Value>` 是 **further review**。version tuple 是 **local-only cache state**。 |
 | Tools `ActionService` → Agent、App event mapper、tool wire | `board -> Vec<ActionView>`、session list/status/scheduled list 返回 `ActionListView`/`ActionStatusView` 等命名投影；cancel/delete 返回 `bool`/`Result<bool>`，restore 返回计数或内部组合结果。 | ADR 0383 已将稳定 status/list projection 类型化。App/tool owner 在各自输出边界序列化。`ScheduledActionView.tool_args: Option<Value>` 是动态工具参数。`EventSink = Fn(String, Value)` 的事件名/部分字段有约定，但签名未约束 payload；Tauri 由 App 事件桥承载。 | status/list **typed**；tool args **dynamic JSON**；Action `EventSink` 是 **further review**。Tools 拥有 Action projection，Tools/App 需明确 sink payload owner。 |
 | `ToolExecutionPort` / `ToolResult` → Agent ReAct、tool/provider output | 执行输入含 `Value`；结果 envelope 的 success/outcome/error/retry/usage 等有命名类型，`output: Value` 是逐工具异构结果。`ToolDef.input_schema: Value` 和 operation schema 同样动态。 | `TypedToolOperation::Output: Serialize` 由 `TypedToolAdapter` 序列化进 `ToolResult.output`；LLM/provider 或 Tauri 再序列化工具结果。Tools 拥有执行 envelope 和 adapter；Agent 拥有调用/观察。 | **dynamic JSON boundary**；内部已具名 envelope，不把异构 payload 强行改为统一 DTO。 |
+| Tools `AdminServices` → Admin operations → `ToolResult` | 固定输出现在使用 `LogsLevelResult`、`DiagnosticsStatus`、`LogsTailOutput`、`SessionsOutput`、`ErrorsOutput`、Skills/MCP DTO 和 mutation acks；`AdminOperationOutput` 是闭合 untagged union。 | 服务类型保留到 `AdminSurfaces.execute`/`TypedToolAdapter`，再进入既有 `ToolResult.output` JSON 序列化边界。只有 `config_get` 任意 path 和 `diagnostics_status.settings` 的 masked config tree 保留 `Value`。 | 固定输出 **typed**；配置树与最终工具 wire **dynamic JSON**。见 ADR 0391 和下表。 |
 | LLM client/router → Agent、Tools、App、Memory | completion 返回 `LlmResponse`，stream 返回具名 chunks，embedding 返回 `Embedding` 或 `Vec<f32>`，transcription/OCR/TTS/image generation 返回具名媒体类型或 `Vec<u8>`，health 返回 `()`，connection status 返回 `LlmConnectionReport`。 | 内部 provider-neutral ports 不直接作为 IPC DTO。`haven-llm` 拥有 provider wire mapping 与规范化；Agent/Tools/App 拥有调用或 UI projection。`CanonicalToolCall.arguments`、JSON schema、provider thinking/web-search extras 和原始 payload 保留 JSON。Memory usage 的 `cache_diagnostics: Option<Value>` 是另一存储边界。 | 主要 **typed**；provider/tool extension payload **dynamic JSON**；usage diagnostic 的持久化映射列为 **further review**。 |
 | MCP client/manager → Tools、App | 结果包括 `Vec<McpToolInfo>`、`McpServerSnapshot`/其向量、`McpReconcile`、`McpCallOutput`、状态/诊断具名类型、`Vec<String>` server names 和 `Result<()>` ack。 | MCP JSON-RPC 自己序列化远端请求/响应；Tauri snapshot 由 App 过滤/投影；Tools adapter 把 call output 映射到 `ToolResult`。`McpToolInfo.input_schema: Value`、`McpCallOutput.output: Value` 是远端 schema/content。MCP owner protocol/client，Tools owner adapter，App owner UI DTO。 | 快照/状态外层 **typed**；远端 schema/tool content **dynamic JSON**。`McpReconcile` 的全字段投影和敏感 URL/config 输出需 **further review**。 |
 | SkillsEngine → Tools、App | `list -> Vec<SkillInfo>`、`get -> Option<SkillInfo>`、enabled filter `Option<Vec<String>>`、resolved root `PathBuf`、folder signature `Vec<(PathBuf, SystemTime, u64)>`；execution 返回 `ToolResult`。 | `SkillInfo` 经 Tauri 序列化；领域 `Skill`/manifest、root 和 watcher signature 是本地对象。Skills 拥有元数据，Tools 拥有执行/catalog，App 拥有 IPC mapping。 | `SkillInfo` **typed**，但领域类型直接做 IPC DTO 有漂移风险；路径/watcher **local-only**；script/stdout tool payload **dynamic JSON**。 |
-| Common config/types → App、Agent、Tools、LLM | `new_id -> String`；config snapshot/settings 和 `ConfigUpdate<T>` 是具名类型；subscriber 返回 typed receiver；media planner 返回 `MediaPlan`/`MediaInput`。ID newtypes 按字符串 Serde。Common config 同时由 LLM/Agent/Tools/App 消费。 | Common 拥有共享 schema/ID 语义和配置持久化；各消费 crate 拥有自己的外部投影。动态配置路径只在 Admin `config_get` 处输出。Canonical tool arguments、JSON content、structured media extension 和 tool schemas 保留 JSON。 | 主要 **typed**；ID 字符串格式固定但未用 newtype 表达；provider/tool/config extension JSON 是 **dynamic boundary**。 |
+| Common config/types → App、Agent、Tools、LLM | `new_id -> String`；`ConfirmId`/`SessionId` Serde 为字符串；`ConfigSnapshot`、`Settings`、`ConfigUpdate<T>`、`ConfigChanged`、`ConfigVersion = u64` 和 media planner 类型均为具名/明确标量输出。Endpoint/provider config 含 `response_format: Option<Value>`；canonical message/tool types 含 `arguments: Value`、JSON content 和 provider extras。 | Common 拥有共享 schema、ID 规则和配置文件持久化；App 拥有 Settings/Tauri 投影，Tools/Admin 拥有 config edit/read 投影，LLM 拥有 routing/provider 映射。只有 Admin 任意配置路径会把子树输出为 JSON；凭据由 Settings/Admin 投影遮蔽。 | 主要 **typed**；provider extension、tool arguments、JSON content 和任意配置子树是有 owner 的 **dynamic JSON**。 |
 | Input pipeline → App recording commands | VAD/state 使用 `VadState`/`RecordingState`；capture/transcription 返回 `RecordingResult`/文本；WAV encode 返回 `Vec<u8>`，start/cancel/shutdown 返回 `()`。 | Input owns capture lifecycle; App maps results to command/event DTO at Tauri edge. Bytes/text are operation payloads, not shared stable DTOs. | 内部 **typed/local**，Tauri mapping owner 为 App。 |
+
+## Common 对外 crate 输出补充
+
+下表将公共 API 的生产消费者、返回形状和序列化责任落到具体 owner；没有外部生产调用的 helper 不作为生产输出计入（排除项见审计边界）。
+
+| Producer / API 输出 | 已确认生产消费者 | 稳定性、序列化边界与 owner | 结论 |
+|---|---|---|---|
+| `ConfigLoader::load/config/data_dir/default_path -> Self / &AppConfig / PathBuf` | App bootstrap、Tools `AdminServices` 和 inbox 配置路径 | Loader 由 Common 持有并读写 TOML；引用、路径和 loader handle 不直接进入 Tauri/tool wire。`ConfigLoader::path` 等未发现 crate 外生产调用的 helper 不纳入。 | loader/path **local-only**；`AppConfig` 是共享 typed config。 |
+| `ConfigService` snapshot/settings/path/apply → `ConfigSnapshot`、`Settings`、`ConfigUpdate<T>`、`ConfigChanged`、`PathBuf` | App configuration commands/runtime，Tools `AdminServices` | `ConfigVersion`（`u64`）进入 Snapshot/Update/Changed；配置编辑保存和 TOML 边界归 Common，App 将 Settings 映射到 IPC，Tools 仅在 admin output 边界序列化其结果。ConfigPatch 是内部 typed edit contract。未发现 crate 外生产调用的 `load/subscribe` 不计入此 API 输出清单。 | Snapshot/update/event **typed**；路径 **local-only**；`Settings` 的敏感字段过滤由 App/Admin projection owner。 |
+| Config structs：`AppConfig`、`Settings`、nested settings、`ModelEndpoint`、`ProviderConfig`、`LlmConfig`、`RouterConfig` 等 | App settings/model commands，Agent/Tools runtime，LLM router/providers | Serde/TOML 由 Common config schema 持有；LLM owns model routing 与 provider mapping。Settings IPC 会移除 LLM/OCR credentials；endpoint/provider 内 API key、headers、proxy 不直接透传。`response_format: Option<Value>` 是可扩展 provider format。 | 大部分是具名 **typed config**；凭据受控投影；`response_format` 是 LLM/provider owner 的 **dynamic JSON**。 |
+| `probe_media_with_hint -> MediaProbe`、`MediaType`/MIME 与 extension helpers | App attachment ingress、Tools media handling | Common 依据 bytes、hint 和 optional filename 产出 probe/type；App 再构造 attachment/resume/event DTO，Tools 使用媒体类型做工具行为。Probe 不是 Tauri wire payload。 | `MediaProbe`/`MediaType` **typed internal**；MIME、extension 是自由字符串；外部 wire owner 为 App/Tools 的具体 projection。 |
+| `MessageAttachment`、`FollowUp`、`MediaAsset`、`MediaInput/Plan/Result/Representation` | Agent transcript/committed events、App ingress/events、LLM media adapters | Common 定义共享语义；Agent 持有 transcript/event 序列化，App 持有 Tauri 映射，LLM adapter 持有 provider multipart/inline payload。附件可能含路径、base64、hash 和派生 representation。 | named media contract **typed**；base64/structured provider extension 是其 owner 明确的动态/大 payload 边界。 |
+| `CanonicalMessage`/`CanonicalToolCall`、`ContentPart`、wire parsing helpers | Agent 生成/消费 canonical message，LLM adapters 编解 provider wire | Common 定义 provider-neutral 内容模型，LLM 负责 API 请求/响应序列化。tool arguments、JSON content、thinking/search extras 保留 `Value`；外部 ID 保留 provider 格式。 | 外层 **typed**；异构内容与 provider extensions **dynamic JSON**，由 LLM adapter 在协议边界持有。 |
+| `ToolDef::json -> Value`、tool manifests、`background_wait_object -> Map<String, Value>` | Tools 构建 catalog/schema；Agent prompt 消费 background wait marker；LLM adapter 发送 tool definitions/results | `ToolDef`/manifest 是 typed source；`json()` 固定字段中嵌有调用方定义的 input schema，转 Value 是模型工具 schema 边界。background wait map 的 `next_step=end_turn` 是 Agent 消费的显式 marker。Tools owns catalog; Agent owns marker interpretation; LLM owns provider serialization. | schema 与 tool result **dynamic JSON**；固定 schema 外壳 typed source；background wait map 保持协议兼容并归 **dynamic tool output**。 |
+| Shared enums/values、ID/config helpers（`CapabilityScope`、permission enums、`RiskLevel`、`NetworkPolicy`、`LlmCallKind`、`CacheAccounting`、`new_id`、`permission_key` 等） | Agent/Tools/App/MCP/LLM 在权限、路由、usage 和实体 ID 路径中消费 | 具名 enum 经 Serde 时按 Common 定义的字符串语义传输；`new_id` 和 permission key 返回 `String`，不形成单独业务 DTO。Common owns 格式/计算规则，具体调用方 owns IPC/tool projection。 | 有约束的 enum **typed**；字符串 helper 是 **local/明确格式值**。未发现生产 consumer 的 permission helper 不算生产输出。 |
+
+## Tools 对外 crate 输出补充
+
+| Producer / API 输出 | 已确认生产消费者 | 稳定性、序列化边界与 owner | 结论 |
+|---|---|---|---|
+| `ToolsManager` catalog/authorization/execution ports：`ToolCatalogSnapshot`、`Vec<ToolDef>`、`AuthorizationRequest`、`RiskLevel`、`ToolResult`、`Option<ToolBox>`、observation `String` | App composition adapters → Agent ports/session runner；Tauri `get_tools` 消费 manifests | Catalog/authorization envelopes 是具名内部 contract；`ToolBox` 是 runtime handle。执行后经 ToolResult envelope 到 Agent/tool output，`ToolResult.output: Value` 为异构载荷。Tools owns catalog/execution；App owns adapter wiring/Tauri projection；Agent owns orchestration。 | 外层 **typed**；tool input/output/schema **dynamic JSON**；runtime handle **local-only**。 |
+| Tool catalog/schema outputs：`list_builtin_manifests -> Vec<ToolManifest>`、`list_schemas_for_session/build_mcp_index -> Vec<Value>`、`ToolDef::json -> Value` | App `get_tools` 与 Agent prompt/catalog adapters；LLM provider tool declaration | manifest 本身具名，但 `input_schema` 与 MCP prompt index 子对象是 JSON。prompt index 固定含 `name/description/tool_names/tool_count`，不属于 MCP 远端 schema。Tools defines catalog; App serializes manifest Tauri response; LLM maps provider schema. | manifest 外壳 **typed**；输入 schema/index **dynamic JSON**；已识别的固定 prompt-index `Vec<Value>` 归 Tools owner 后续 DTO 审查。 |
+| Skills engine/catalog：`list/get -> Vec<SkillInfo>/Option<SkillInfo>`、execution `ToolResult`、root/watcher/path values | App Skills Tauri commands、Tools skill adapters、Agent prompt/catalog | `SkillInfo` 经 App Tauri 边界；skill body/script/stdout 不随 list response 暴露。`PathBuf`/folder signature 是本地 watcher/runtime 数据。Tools adapter 将 execution 送入 ToolResult。 | catalog **typed**；script/tool execution payload **dynamic tool JSON**；paths/watch state **local-only**。 |
+| MCP client/manager：snapshots/status/reconcile/tool call/config list | Tools adapters 与 App commands/events；远端 MCP JSON-RPC peer | MCP 远端 request/response 在 MCP crate 序列化；App Tauri snapshot 会先做 renderer-safe projection/redaction。`input_schema`、tool arguments/results 是协议允许的 JSON；`McpReconcile` typed result 的完整 App projection 单列 follow-up。 | status/config projection **typed**；协议 payload **dynamic JSON**；App owns Tauri redaction/projection。 |
+| `MessagingService` / `MessageTransport`：`send/request/reply/receipt -> SentMessage`；`history/claim/take_matching_replies -> Vec<Envelope>`；`list_agents/list_children -> Vec<AgentInfo>`；`deliver -> SendOutcome`；`last_received/find_message -> Option<Envelope>` | Tools built-in `send/broadcast/request/reply/history/list/children`；Agent inbox poller/session cleanup；InboxBus 是生产 transport | `Envelope` 是 Serde JSONL mailbox 的稳定消息载体；`AgentInfo`/`SendOutcome` 是可序列化快照。Messaging built-ins 会筛选/转换结果到 `ToolResult.output`，history 附加 system note；无 Tauri 直接透传。`SentMessage` 是非 Serde service 组合结果；receipt 内部结果只由调用方取 outcome。 | mailbox envelope/status **typed transport**；模型可见 JSON 在 built-in ToolResult 边界动态序列化；`payload: Option<Value>` 保留为消息协议扩展。 |
+| Managed asset registry：register/lease/prune/list paths；`ManagedAsset`、路径与计数 | App recording ingress/resume cleanup 和 Tools media lifecycle | Asset lease 是进程内资源引用；`prune -> usize`、protected/expired paths `Vec<PathBuf>` 供 GC 使用，不进入 provider/Tauri 输出。附件业务 DTO 单独由 Common/App/Agent 拥有。 | lease/runtime/path results **local-only**；path 和 count 按本地 GC contract 分类。 |
+| Live output/circuit registry：`EventSink = Arc<dyn Fn(String, Value)>`、`reset_all -> ()` | App bootstrap 安装 sink 并将有限字段映射为 `AgentToolOutputEvent`；App Tauri reset command 转发 circuit reset ack | sink 内部 JSON 是 Tools runtime event；App adapter 只发 typed `{session_id,step_id,output}` 字符串 DTO，不直通 Value。reset command 的成功响应为 unit。 | sink **internal dynamic JSON**，Tools 产出、App owns narrowing/Tauri wire；reset **unit ack**。 |
 
 ## AdminServices 输出逐项清单
 
-Admin 操作最终由 `TypedToolAdapter` 或 `AdminSurfaces.execute` 序列化到通用 `ToolResult.output`。服务层不应因此先把所有固定形状擦成 `Value`。最终工具 payload 仍是动态 wire JSON；配置读取和 provider/tool 内容等动态结果继续保留 JSON。
+Admin 操作最终由 `TypedToolAdapter` 或 `AdminSurfaces.execute` 序列化到通用 `ToolResult.output`。ADR 0391 已将固定服务形状类型化到这一序列化边界；`config_get` 的任意配置路径和 `diagnostics_status.settings` 脱敏配置树保留 `Value`。模型可见工具 payload 仍是通用动态 JSON wire。
 
 | `AdminServices` producer | 当前输出分支 | 稳定性、序列化边界与 owner | 判定 |
 |---|---|---|---|
 | `config_get` | 无路径时为已脱敏 `Settings`；路径存在时为任意配置子树；缺失路径走 error。 | `ConfigService` 拥有配置；`AdminServices` 拥有敏感字段遮蔽；Admin tool output 边界输出 JSON。 | **保留动态 JSON**，任意 path 是设计能力。 |
-| `logs_level` | `{level, saved, version}`。 | LogLevel、版本值固定；Admin 只在 tool output 边界序列化。 | **typed DTO**。 |
-| `tool_set` | `{name, enabled, saved, note}`。 | 固定 ack；工具启停策略由 Admin/Tools 持有。 | **typed DTO**。 |
-| `diagnostics_status` | config/settings 或 config_error；可选 model-health map；tools count/names；MCP 或 mcp_error；skills；session counts 或 unavailable；log path。 | 外层字段固定。settings 经 mask；模型 map key 来自 `RequestKind::ALL`；诊断文本受 sanitizer；session read/count 可分别部分失败。Admin/Tools 持有聚合与安全过滤。 | **typed DTO**，保留可选字段和部分失败分支。 |
-| `logs_tail` | 成功 `{path,total_lines,lines}`；读取失败 `{path,error}`；行文本过滤敏感 marker 并截断。 | 文件路径/日志自由文本是动态 scalar；形状由 Admin 持有，最终输出在 tool edge。 | **typed DTO + string payload**，保留失败分支与 sanitizer。 |
-| `sessions` / `errors` | `{sessions:[rows...]}` 或 `{errors:[rows...]}`；无 SessionStore 时 `{unavailable:true}`；成功允许空数组。Session rows 含 id/status/title/input_chars/created_at/updated_at；error rows 含 id/title/input_chars/created_at。 | Admin 从 SessionStore 投影，不泄露 input_text；列表顺序/limit 由 SessionStore 和 Admin 共同决定。 | **typed DTO**，测试空值、unavailable、过滤和顺序。 |
-| `skills_list` | `{skills:[{name,enabled,description,root}]}`；允许空列表。 | SkillsEngine 拥有元数据；绝对 root 是既有 wire 输出，保留现有形状。 | **typed DTO**；回归不得扩出 script 内容。 |
-| `skill_set` / `skill_create` | toggle `{name,enabled,saved,note}`；create `{name,created,root,has_script}`。 | name/root 自由字符串；create 的 root 是既有绝对路径输出。durable config failure 及回滚日志由 Admin/Skills 持有。 | **typed DTO**，保留字段和值。 |
-| `mcp_status` | 数组行 `{name,enabled,connected,tools,last_error,diagnostic}`；diagnostic 不可用时当前 wire 是 `null`。 | `McpServerConfig`/McpManager 拥有运行状态；诊断/error 经 sanitizer；数组顺序来自当前 config map。 | **typed DTO**；保留 `diagnostic: null`。 |
-| `mcp_connect` / `mcp_disconnect` / `mcp_reconnect` | `{name,connected}`。 | 固定 ack；MCP 管连接、Admin 拥有 config gate；reconnect error 区分 preflight 和副作用失败。 | **typed DTO**。 |
-| `mcp_add` | 新增 ack `{name,enabled,saved,connected}`，自动连接失败时另含 `warning`；重复名称可走 config-update ack。 | 连接失败可能发生在 config durable save 之后；warning 需 sanitized，不能把 command/env 值输出。AdminServices 组装，tool edge 序列化。 | **typed DTO enum/可选字段**，覆盖 duplicate/partial failure。 |
-| `mcp_update` / `mcp_toggle` | `{name,enabled,saved,connected}`。 | 固定结果；连接或持久化失败保持现有副作用错误语义和 rollback 策略。 | **typed DTO**。 |
-| `mcp_remove` | `{name,removed,connected}`。 | 固定 ack，MCP config/client owner 为 AdminServices/McpManager。 | **typed DTO**。 |
-| `mcp_reload` | `{reloaded,connected:[{name,connected:true}|{name,connected:false,error}]}`。 | 每台 server 独立失败，错误经 sanitizer；既有成功行无 error 字段，失败行才有。 | **typed DTO enum**，保留 partial failure 和字段省略。 |
-| `mcp_refresh` | `{added,removed,updated,failed}`，每项是 server name 字符串。 | ToolResult generic output 后供 App command 构造 `McpRefreshResult`；确认完成时 `commands/mod.rs` 从 output 读取 failed 并与已授权 plan 交叉过滤。Tools/Admin 负责输出；App 负责 Tauri DTO 与 authorized-name filter。 | **typed service result → tool JSON boundary**；保留 App 当前 plan filter 回归。 |
+| `logs_level` | `LogsLevelResult` / tool `{level,saved,version}`。 | LogLevel、版本值固定；Config operation 保持 typed ack 到 tool output 边界。 | **typed DTO**。 |
+| `tool_set` | `ToolSetResult` / `{name,enabled,saved,note}`。 | 固定 ack；工具启停策略由 Admin/Tools 持有。 | **typed DTO**。 |
+| `diagnostics_status` | `DiagnosticsStatus`，包含可选 config/settings 或 config_error、可选 model-health map、tools count/names、MCP 或 mcp_error、skills、session counts/unavailable 与 log path。 | 外层字段固定。`settings: Option<Value>` 是 mask 后动态配置树；模型 map 使用 `BTreeMap`；诊断文本受 sanitizer；session read/count 可分别部分失败。Admin/Tools 持有聚合与安全过滤。 | **typed DTO + 明确动态配置子树**，保留可选字段和部分失败分支。 |
+| `logs_tail` | `LogsTailOutput` untagged 分支：成功 `{path,total_lines,lines}`；读取失败 `{path,error}`。 | 文件路径/日志自由文本是 string payload；日志行过滤敏感 marker 并截断，最终输出在 tool edge。 | **typed DTO + string payload**，保留失败分支与 sanitizer。 |
+| `sessions` / `errors` | `SessionsOutput`/`ErrorsOutput`；available 分支分别包装 SessionSummaryOutput/Error rows；无 SessionStore 时 `{unavailable:true}`；成功允许空数组。 | Admin 从 SessionStore 投影，不泄露 input_text；列表顺序/limit 由 SessionStore 和 Admin 共同决定。 | **typed DTO**，测试空值、unavailable、过滤和顺序。 |
+| `skills_list` | `SkillsListOutput { skills: Vec<SkillSummaryOutput> }`；允许空列表。 | SkillsEngine 拥有元数据；绝对 root 是既有 wire 输出，保留现有形状。 | **typed DTO**；回归不得扩出 script 内容。 |
+| `skill_set` / `skill_create` | `SkillSetOutput` `{name,enabled,saved,note}`；`SkillCreateOutput` `{name,created,root,has_script}`。 | name/root 自由字符串；create 的 root 是既有绝对路径输出。durable config failure 及回滚日志由 Admin/Skills 持有。 | **typed DTO**，保留字段和值。 |
+| `mcp_status` | `Vec<McpStatusOutput>` 行 `{name,enabled,connected,tools,last_error,diagnostic}`；diagnostic 不可用时当前 wire 是 `null`。 | `McpServerConfig`/McpManager 拥有运行状态；诊断/error 经 sanitizer；数组顺序来自当前 config map。 | **typed DTO**；保留 `diagnostic: null`。 |
+| `mcp_connect` / `mcp_disconnect` / `mcp_reconnect` | `McpConnectionOutput` / `{name,connected}`。 | 固定 ack；MCP 管连接、Admin 拥有 config gate；reconnect error 区分 preflight 和副作用失败。 | **typed DTO**。 |
+| `mcp_add` | `McpAddOutput`；新增 ack `{name,enabled,saved,connected}`，自动连接失败时另含可选 `warning`；重复名称走 config-update ack。 | 连接失败可能发生在 config durable save 之后；warning 需 sanitized，不能把 command/env 值输出。AdminServices 组装，tool edge 序列化。 | **typed DTO**，覆盖 duplicate/partial failure。 |
+| `mcp_update` / `mcp_toggle` | `McpConfigUpdateOutput` / `{name,enabled,saved,connected}`。 | 固定结果；连接或持久化失败保持现有副作用错误语义和 rollback 策略。 | **typed DTO**。 |
+| `mcp_remove` | `McpRemoveOutput` / `{name,removed,connected}`。 | 固定 ack，MCP config/client owner 为 AdminServices/McpManager。 | **typed DTO**。 |
+| `mcp_reload` | `McpReloadOutput`；每行是 `McpReloadConnectionOutput` 的 untagged success/error 分支。 | 每台 server 独立失败，错误经 sanitizer；既有成功行无 error 字段，失败行才有。 | **typed DTO enum**，保留 partial failure 和字段省略。 |
+| `mcp_refresh` | `McpRefreshOutput` / `{added,removed,updated,failed}`，每项是 server name 字符串。 | tool JSON 后供 App command 构造 `McpRefreshResult`；确认完成时 `commands/mod.rs` 从 output 读取 failed 并与已授权 plan 交叉过滤。Tools/Admin 负责输出；App 负责 Tauri DTO 与 authorized-name filter。 | **typed service result → tool JSON boundary**；保留 App 当前 plan filter 回归。 |
 
 ## Tauri 命令成功响应（71 个）
 
@@ -80,6 +108,39 @@ Admin 操作最终由 `TypedToolAdapter` 或 `AdminSurfaces.execute` 序列化�
 
 `commands/contracts.rs` and `ui/src/lib/contracts/commands.ts` inventory request/response names, while `check-ipc-contracts.ps1` checks registry/handler/docs names and count and selected field/type groups. It does not generically compare all 71 Rust handler return signatures against response labels. `invoke` currently exposes `Promise<any>`. Events are a separate 40-channel output path: Rust DTO registration plus App `event_bridge` mapping and TS event mappers are the owners. The mapped event DTOs are the wire contract; `AgentEvent` alone is not.
 
+## Tauri 事件输出（40 个 channel）
+
+生产者包括 Agent `AgentEvent`、ActionService/MCP/Skills/runtime 状态发送端和 recording/settings commands；App `event_bridge`/command adapter 将它们映射到 `events.rs` 的 payload DTO，再由 Tauri emit 序列化。前端由 event contract registry/mapper 消费。DTO 字段、`snake_case`、省略/null 规则和最终 JSON wire 由 App adapter owner；领域状态与事件时序由相应生产 crate owner。
+
+| Channel | payload DTO / 输出形状 | 稳定性、安全与 JSON 结论 |
+|---|---|---|
+| `session:created`, `session:updated`, `session:completed` | `SessionLifecycleEvent { session_id, status, title, occurrence_id?, waiting_reason?, reason? }` | 固定字段集；配对终态共用 occurrence identity；status 映射与顺序由 Agent/App event bridge 管理。 |
+| `session:error` | `SessionErrorEvent { session_id, error, occurrence_id? }` | typed envelope + 自由 error string；终态 occurrence 与 session:updated 对齐。 |
+| `session:title-updated` | `SessionTitleUpdatedEvent { session_id, title }` | 固定 typed DTO。 |
+| `session:deleted` | `SessionDeletedEvent { session_id: Option<String> }` | null 表示清空全部会话；固定 typed DTO。 |
+| `recording:started`, `recording:stopped` | `RecordingEvent { is_recording, session_id?, reason?, duration_ms? }` | optional 字段按已有 Serde 规则省略；ID newtype 以字符串序列化。 |
+| `recording:vad_status` | `VadStatusEvent { signal, state }` | 固定字段，值域以 Input/VAD producer 的字符串语义为准。 |
+| `recording:error`, `transcription:error` | `RecordingErrorEvent` / `TranscriptionErrorEvent { session_id, error }` | typed envelope + 自由错误文本；App/recording owner 需继续保证错误不含凭据或完整私密内容。 |
+| `transcription:started`, `transcription:result` | `TranscriptionStartedEvent { session_id }` / `TranscriptionResultEvent { session_id, text, duration_ms, confidence? }` | 固定 typed DTO；转写文本是用户内容 string，由 UI 内容展示路径消费。 |
+| `action:created`, `action:updated`, `action:finished`, `action:output` | `ActionEvent` 投影：id/kind 必填；状态、session、时间、标题/正文、命令/输出/错误、退出码/preview 按 channel 可选 | 固定且安全裁剪的 projection；不带内部动态 tool args、continuation prompt、output-log path。`action:output` 只投影输出 preview。Action owner 提供来源，App mapper 控制字段。 |
+| `app:bootstrap` | `AppBootstrapEvent { status: String }` | 字段固定，status 当前是 String（Loading/Ready 两态），建议后续改名类型；bootstrap/App owner。 |
+| `tray:status_changed`, `mute:changed` | `TrayStatusChangedEvent { status, tooltip }` / `MuteChangedEvent { muted }` | typed UI status；status/tooltip 自由文本但字段集固定，App owner。 |
+| `mcp:status_change`, `skills:status_change` | `McpStatusChangedEvent { name, status: McpClientStatus }` / `SkillsStatusChangedEvent { op }` | MCP status 是具名 enum；skills op 是受限但 String 表示的操作名。各 runtime owner producer，App 定義 payload。 |
+| `interaction:requested` | renderer-safe `InteractionRequestedEvent`，包含 id/session/kind/status/prompt/options、可選 tool/risk/summary/permission/step/call/index 与 created/expiry | 固定的展示 DTO；不含原始工具 input、receipt 或内部授权对象。producer 由 Agent/Memory 状态映射，App owner UI projection。 |
+| `hotkey:conflict`, `hotkey:rebind` | `HotkeyConflictEvent { binding, error }` / `HotkeyRebindEvent { old_binding, new_binding }` | fixed typed DTO + String values，由 App hotkey adapter 拥有。 |
+| `llm:config_changed` | unit payload `()` | 无 JSON body；App settings command 是 producer，UI listener 收到后重新探测。 |
+| `agent:thought`, `agent:action`, `agent:observation` | typed envelopes，包含 session/step/run/message/tool identity、文本/operation/result metadata；`AgentActionEvent.input: Value`、`AgentObservationEvent.result: ToolResultEnvelope`（内含 `output: Value`） | envelope typed；tool args/results 保持异构动态 JSON。App event bridge 负责 mapper 与外层 wire，Tools/Agent 持有工具语义。 |
+| `agent:thought_chunk`, `agent:reasoning_chunk` | `AgentThoughtChunkEvent` / `AgentReasoningChunkEvent { session_id, delta, step_number, run_id, message_id, seq }` | 稳定 typed chunk；`seq` 给流内分片排序。App/Agent 共同维护 stream generation 与序号语义。 |
+| `agent:stream_reset`, `agent:stream_stalled` | reset 含 session/step/run 与 thought/reasoning message IDs；stalled 含 `session_id` | 固定 typed lifecycle DTO；stream identity owner 为 Agent。 |
+| `agent:media_plan` | `AgentMediaPlanEvent` 含 session/step/run、`role`、strategy、projections/notices、optional event_seq | typed media projection；提交后序号由 Agent committed UI publisher 分配，App owns serialized wire mapping。 |
+| `agent:web_search` | `AgentWebSearchEvent { session_id, phase, step_number, run_id, call_id?, action?, result?: Value }` | envelope typed，provider/search result 为动态 JSON；Agent/provider owner 结果形状，App mapper owner wire。 |
+| `agent:supplement`, `agent:compaction` | `AgentSupplementEvent` 含上下文/step/run/message/source/id/event_seq；`AgentCompactionEvent` 含 summary/token counts/degraded/episode/event_seq | 固定 typed DTO + 用户内容字符串；sequence 与 producer policy 由 Agent owner。 |
+| `agent:usage` | `AgentUsageEvent` 含 token/cost/model/cache/context/step/duration/call-kind，diagnostics 为 `Option<CacheDiagnostics>` | typed DTO；cache diagnostics 不再是裸 Value，provider call kind 的 string 语义由 LLM/Agent 投影 owner。 |
+| `agent:tool_output` | `AgentToolOutputEvent { session_id, step_id, output: String }` | 固定 typed string payload；工具 output 展示语义由 Agent/Tools 提供，App mapper 负责 wire。 |
+| `notification:show` | `AgentNotificationEvent { session_id, title, body, notification_kind?, action_kind?, action_id?, action_status? }` | 固定 typed notification envelope；正文自由字符串，由 Agent producer 和 App notification/UI adapter 管理。 |
+
+40 个 channel 名称定义于 `crates/app-binary/src/events.rs`；AgentEvent mapping、chunk `seq` 补齐和终态事件投影位于 `crates/app-binary/src/event_bridge.rs`。事件字段级自动 checker 仍未像命令名那样全覆盖；事件 DTO 测试与 event contract registry 是当前校验 owner。
+
 ## 明确保留的动态 JSON 边界
 
 这些 `Value` 或动态 map 是有 owner 的扩展载荷，不是 typed-output 验收的清零目标：
@@ -88,6 +149,8 @@ Admin 操作最终由 `TypedToolAdapter` 或 `AdminSurfaces.execute` 序列化�
 - Tool arguments、逐工具 `ToolResult.output`、tool input schema / JSON Schema、Skill/MCP 动态工具注册；Tools/operation adapter owns wire projection。
 - MCP `input_schema`、`tools/call` arguments/results 和 JSON-RPC payload；MCP crate owns protocol serialization。
 - LLM provider raw extensions（thinking、web-search、opaque provider payload）和动态工具 arguments；LLM adapter owns provider wire mapping。
+- `CanonicalToolCall.arguments`、`ContentPart::Json`、provider search/thinking extras、provider `response_format`；Common owns shared shape，LLM adapter owns provider serialization。
+- Messaging `Envelope.payload: Option<Value>`；Tools messaging owns mailbox contract，built-in tool adapter owns model-visible `ToolResult` projection。
 - Action `tool_args`、Agent WebSearch result 等上游 tool/provider 扩展字段；Tools/Agent own semantics，App mapper controls Tauri projection。
 - 按配置 provider 名索引的模型结果 map；Model config/provider inventory owns keys，App owns Tauri result type。
 
@@ -95,16 +158,16 @@ Admin 操作最终由 `TypedToolAdapter` 或 `AdminSurfaces.execute` 序列化�
 
 下列输出已记录生产者、消费者和当前序列化边界；后续可以按独立切片决定是否补 DTO，不阻止本清单标明其 owner：
 
-1. Memory extraction/replay positional tuples；Memory owns durable representation，Agent owns interpretation。
-2. `ActionCompletionOutboxRow.status_json`；Memory owns persisted record production，Tools/Agent own completion interpretation。
-3. 固定字段 MCP prompt index 的 `Vec<Value>`；Tools produces、Agent prompt port consumes。
-4. Action `EventSink(String, Value)` payload owner/shape；Tools event producer 与 App Tauri mapper 共同维护。
-5. `LlmCallUsage.cache_diagnostics: Option<Value>` durable serialization；LLM produces diagnostic, Memory persists it.
-6. Tauri 直接返回的 `Session`/`Fact`/`SkillInfo` domain types，`ProcessResult` TS shape，bootstrap status String enum，provider-keyed maps 与少量 command families；App/owning domain must keep response shape synchronized.
-7. MCP `McpReconcile` full field projection and renderer-safe config fields; MCP produces, App owns IPC projection.
+1. `StoredBranchPoint` 与 Memory extraction/replay positional tuples；Memory owns durable representation，Agent owns interpretation。
+2. `ActionCompletionOutboxRow.status_json` 的持久化形状；Memory owns row production，Tools/Agent own completion interpretation。
+3. 固定字段 MCP prompt index 的 `Vec<Value>`；Tools produces、Agent prompt port consumes，可决定是否替换为具名 catalog projection。
+4. Action `EventSink(String, Value)` payload shape；Tools owns event production，App owns narrowing and Tauri mapping。
+5. `LlmCallUsage.cache_diagnostics: Option<Value>` persistence projection；LLM produces diagnostic，Memory persists it。
+6. Tauri 直接返回 `Session`/`Fact`/`SkillInfo` 的 DTO 漂移风险、`ProcessResult` TS shape、bootstrap status string enum、provider-keyed model map 与少数 command-family contract；App 与对应领域 owner 维护响应一致性。
+7. MCP `McpReconcile` full field projection and renderer-safe config fields；MCP produces，App owns IPC projection。
 
 ## 审计边界
 
-本清单按有证据的 production cross-crate ports/stores/services 与已注册 IPC 输出分类；没有把 `rg` 命中当成生产调用证据，也没有逐项列出所有 crate-private helper、未消费 public helper、测试接口、本地缓存/watch tuple。Tauri 的 71 个命令按静态成功签名归类，但 contract checker 只做全量命令名/计数以及部分响应字段校验；未重放 71 个命令的全部运行时分支。LLM/provider wire 内部类型和少数 Common/Tools public helpers 也未逐个列出。未展开的方法面归其定义 crate 所有，并属于 future audit；本清单不声称是 workspace 所有 Rust `pub fn` 的字面穷举。
+本清单按 crate 根导出、实际生产调用点和已注册 IPC 输出审计；先核实生产消费者，再分类返回值、别名、tuple/map/string/scalar/`Value`，没有把 `rg` 命中当作生产调用证据。已确认的生产输出均有稳定性、消费者、Serde/JSON 位置及 owner。无 crate 外生产消费者的公开 helper、crate-private 实现、测试接口和本地缓存/watch tuple 不作为生产输出；不得据此声称逐字穷举 workspace 所有 Rust `pub fn`。Tauri 71 个命令按静态成功签名分类，contract checker 做全量命令名/计数和部分字段校验；未重放全部运行时分支。LLM provider 内部具体字段仍由 provider adapter 持有，opaque payload 已明确归为 dynamic JSON。
 
-该边界让输出分类可复核：对每个已确认生产输出记录其稳定性、消费者、序列化位置、owner，以及 typed/dynamic/local/further-review 结论。动态 JSON 的存在本身不阻止验收；仍需逐项维护本表中的 owner 和动态边界说明。
+验收目标是每个有生产消费者的输出都有上述记录，且动态 JSON 明确其生产者、消费方和序列化 owner；不是消灭 `Value`，也不要求把无生产消费的辅助方法收入输出清单。上列 **further review** 项已分类并具名 owner，可作为后续工作独立推进。
