@@ -490,7 +490,8 @@ mod tests {
         loop {
             match rx.recv().await {
                 Some(ActionCompletion::Scheduled(fired)) => return fired,
-                Some(ActionCompletion::Background(_)) => continue,
+                Some(ActionCompletion::Background(_))
+                | Some(ActionCompletion::ScheduledResult(_)) => continue,
                 None => panic!("action completion channel closed"),
             }
         }

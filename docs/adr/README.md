@@ -378,3 +378,5 @@
 - [0389：Session 事件保留与容量边界](0389-session-event-retention-and-capacity-boundary.md)
 - [0390：SessionActor 饱和公平性与有界 run 释放](0390-session-actor-fairness-and-bounded-release.md)
 - [0391：AdminServices 固定输出的 typed projections](0391-admin-services-typed-output-projections.md)
+- [0392：持久化定时任务依赖与重启恢复实现](0392-durable-scheduled-dependency-recovery.md)
+- [0393：阶段 7 Action 生命周期与终态投影边界](0393-phase-7-action-lifecycle-boundary.md)

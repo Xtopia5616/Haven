@@ -19,9 +19,8 @@ const ACTION_COMPLETION_RECONCILE_INTERVAL: Duration = Duration::from_secs(1);
 const SCHEDULED_FIRE_LEASE: Duration = Duration::from_secs(15 * 60);
 const ACTION_COMPLETION_CHANNEL_CAPACITY: usize = 256;
 
-/// A background action that has reached a terminal state, surfaced to a consumer
-/// (the agent layer) so the owning session can be auto-notified of the result
-/// instead of the model having to poll `status`.
+/// A background action that has reached a terminal state, surfaced to a
+/// consumer so the owning session receives it without status polling.
 #[derive(Clone, Debug)]
 pub struct BackgroundActionCompletion {
     pub action_id: String,
@@ -33,6 +32,18 @@ pub struct BackgroundActionCompletion {
     pub status: ActionStatus,
     /// The action's status JSON (same shape `status()` returns for terminal
     /// states), carrying the output/error payload.
+    pub status_json: Value,
+}
+
+/// A scheduled tool action that has reached a completed or failed state.
+/// Scheduled firing/execution stays on its own owner path; only the terminal
+/// result delivery is shared with background action results.
+#[derive(Clone, Debug)]
+pub struct ScheduledActionResultCompletion {
+    pub action_id: String,
+    pub action_result_id: String,
+    pub session_id: Option<String>,
+    pub status: ActionStatus,
     pub status_json: Value,
 }
 
@@ -55,14 +66,15 @@ pub struct ScheduledActionFired {
 #[derive(Clone, Debug)]
 pub enum ActionCompletion {
     Background(BackgroundActionCompletion),
+    ScheduledResult(ScheduledActionResultCompletion),
     Scheduled(ScheduledActionFired),
 }
 
 /// Receiver for the unified action completion stream.
 pub struct ActionCompletionReceiver {
     rx: broadcast::Receiver<ActionCompletion>,
-    /// Scheduled fire claims are shared by all receivers. Background
-    /// completion claims remain durable in the ActionStore outbox.
+    /// Scheduled fire claims are shared by all receivers. Terminal result
+    /// claims remain durable in the ActionStore outbox.
     pending_scheduled_fires: Arc<RwLock<HashMap<String, ScheduledActionFired>>>,
     action_leases: Arc<RwLock<HashMap<String, ActionLease<Instant>>>>,
 }
@@ -219,16 +231,16 @@ impl ActionCompletionReceiver {
         }
     }
 
-    /// Receive background completions without claiming scheduled fires. The
-    /// agent's background consumer uses this so a second receiver cannot steal
-    /// a scheduled trigger before the dedicated scheduled consumer sees it.
+    /// Receive background completions without claiming scheduled fires. This
+    /// narrow receiver remains useful to callers that do not consume scheduled
+    /// tool results.
     pub async fn recv_background(&mut self) -> Option<ActionCompletion> {
         loop {
             match self.rx.recv().await {
                 Ok(ActionCompletion::Background(completion)) => {
                     return Some(ActionCompletion::Background(completion));
                 }
-                Ok(ActionCompletion::Scheduled(_)) => {}
+                Ok(ActionCompletion::ScheduledResult(_) | ActionCompletion::Scheduled(_)) => {}
                 Err(broadcast::error::RecvError::Lagged(skipped)) => {
                     tracing::warn!(skipped, "action completion receiver lagged")
                 }
@@ -237,11 +249,11 @@ impl ActionCompletionReceiver {
         }
     }
 
-    /// Receive a background completion from either the transient broadcast or
+    /// Receive an action result from either the transient broadcast or
     /// the durable outbox. The outbox is checked after every broadcast lag and
     /// on a bounded interval so a completion that was never published still
     /// wakes the owning session. Delivery claims expire if the consumer dies.
-    pub async fn recv_background_with_recovery(
+    pub async fn recv_action_result_with_recovery(
         &mut self,
         service: &ActionService,
     ) -> Option<ActionCompletion> {
@@ -252,8 +264,8 @@ impl ActionCompletionReceiver {
         // fast path for newly completed actions.
         reconcile.tick().await;
         loop {
-            if let Some(completion) = service.claim_pending_background_completion().await {
-                return Some(ActionCompletion::Background(completion));
+            if let Some(completion) = service.claim_pending_action_result().await {
+                return Some(completion);
             }
             match tokio::select! {
                 result = self.rx.recv() => result,
@@ -262,18 +274,18 @@ impl ActionCompletionReceiver {
                 Ok(ActionCompletion::Background(completion)) => {
                     return Some(ActionCompletion::Background(completion));
                 }
+                Ok(ActionCompletion::ScheduledResult(completion)) => {
+                    return Some(ActionCompletion::ScheduledResult(completion));
+                }
                 Ok(ActionCompletion::Scheduled(_)) => {}
                 Err(broadcast::error::RecvError::Lagged(skipped)) => {
                     tracing::warn!(
                         skipped,
-                        "action completion receiver lagged; reconciling durable outbox"
+                        "action result receiver lagged; reconciling durable outbox"
                     );
                 }
                 Err(broadcast::error::RecvError::Closed) => {
-                    return service
-                        .claim_pending_background_completion()
-                        .await
-                        .map(ActionCompletion::Background);
+                    return service.claim_pending_action_result().await;
                 }
             }
         }
@@ -306,7 +318,7 @@ impl ActionCompletionReceiver {
                         return Some(ActionCompletion::Scheduled(fired));
                     }
                 }
-                Ok(event) => return Some(event),
+                Ok(ActionCompletion::Background(_)) | Ok(ActionCompletion::ScheduledResult(_)) => {}
                 Err(broadcast::error::RecvError::Lagged(skipped)) => {
                     tracing::warn!(skipped, "action completion receiver lagged");
                 }

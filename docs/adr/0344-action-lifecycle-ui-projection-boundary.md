@@ -4,6 +4,7 @@
 - Date: 2026-09-25
 - Scope: Frontend board refresh and `action:finished` projection for background and scheduled actions
 - Related: [ADR 0335](0335-action-board-ui-contract-mapper.md), [ADR 0338](0338-action-tail-output-policy-and-snapshot.md), [ADR 0343](0343-action-trigger-policy-boundary.md)
+- Follow-up: [ADR 0393](0393-phase-7-action-lifecycle-boundary.md) records scheduled tool results using the shared terminal transcript projection; this audit remains the record of the frontend board and lifecycle-event projection boundary.
 
 ## Context
 

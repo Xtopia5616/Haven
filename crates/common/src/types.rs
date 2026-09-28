@@ -618,8 +618,8 @@ impl std::fmt::Display for CanonicalRole {
 pub const PEER_KICKOFF_PREFIX: &str = "[Delegated task from agent ";
 
 /// `"{prefix}: "` at the wire boundary via [`Self::render_prefix`] (Phase 8
-/// wire-only). `ActionResult` is producer-labelled and must not get a second
-/// adapter prefix.
+/// wire-only). `ActionResult` already carries a shared action-result envelope
+/// and must not get a second adapter prefix.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InjectSource {
@@ -637,14 +637,14 @@ impl InjectSource {
             Self::Steering => "Steering",
             Self::FollowUp => "Additional context from user",
             Self::Answer => "Answer to your previous question",
-            Self::ActionResult => "Background action result",
+            Self::ActionResult => "Action result",
             Self::CrossSession => "Cross-session message",
         }
     }
 
     /// Inject sources that receive an adapter wire prefix.
-    /// ActionResult is excluded: its body is producer-labelled
-    /// (`[Background action result]…`) without the colon prefix.
+    /// ActionResult is excluded: its body carries the shared action-result
+    /// envelope without the colon prefix.
     pub fn prefixed() -> &'static [InjectSource] {
         &[
             Self::Steering,

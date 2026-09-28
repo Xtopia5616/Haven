@@ -3,6 +3,7 @@
 - 状态：已采纳（2026-09-25）
 - 范围：Phase 7 的 background/scheduled action trigger、admission、claim、execution、observation、terminal、retry、cancel 与 cleanup
 - 关联：[ADR 0259](0259-memory-runtime-committed-event-consumer.md)、[ADR 0305](0305-action-service-action-store-port.md)、[ADR 0317](0317-action-terminal-lifecycle-kernel.md)、[ADR 0321](0321-action-owned-session-cancellation-traversal.md)、[ADR 0325](0325-action-completion-transport-ownership.md)、[ADR 0332](0332-action-claim-lease-core.md)、[ADR 0334](0334-action-terminal-persistence-retry-policy.md)、[ADR 0338](0338-action-tail-output-policy-and-snapshot.md)、[ADR 0343](0343-action-trigger-policy-boundary.md)、[ADR 0344](0344-action-lifecycle-ui-projection-boundary.md)
+- 后续：dependency-waiting 的持久化与重启恢复见 [ADR 0392](0392-durable-scheduled-dependency-recovery.md)；阶段 7 的 Action owner 与终态投影边界见 [ADR 0393](0393-phase-7-action-lifecycle-boundary.md)。
 
 ## 审计结论
 

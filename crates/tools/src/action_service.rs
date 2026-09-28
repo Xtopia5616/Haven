@@ -13,6 +13,7 @@ use crate::ActionLifecycle;
 use crate::action_completion::ActionCompletionBus;
 pub use crate::action_completion::{
     ActionCompletion, ActionCompletionReceiver, BackgroundActionCompletion, ScheduledActionFired,
+    ScheduledActionResultCompletion,
 };
 use crate::action_output::{
     ActionOutputPort, ActionOutputTail, ActionTailFactory, ActionTailSnapshot,
@@ -500,20 +501,20 @@ struct ScheduledTerminalRetry {
     schedule: ScheduledActionEntry,
     started_at: String,
     status: ActionStatus,
-    dependency_result: Option<String>,
+    result_summary: Option<String>,
     error_reason: Option<String>,
     finished_at: String,
 }
 
 fn scheduled_terminal_state(
     status: ActionStatus,
-    dependency_result: Option<&str>,
+    result_summary: Option<&str>,
     error_reason: Option<&str>,
     timestamps: TerminalTimestamps,
 ) -> Option<ActionState> {
     let payload = match status {
         ActionStatus::Completed => TerminalPayload::Completed {
-            output: dependency_result.unwrap_or_default().to_string(),
+            output: result_summary.unwrap_or_default().to_string(),
             exit_code: None,
             truncated: false,
             log_path: None,
@@ -689,24 +690,38 @@ impl ActionService {
         self.completion_bus.pending_scheduled_fire().await
     }
 
-    pub(crate) async fn claim_pending_background_completion(
-        &self,
-    ) -> Option<BackgroundActionCompletion> {
+    pub(crate) async fn claim_pending_action_result(&self) -> Option<ActionCompletion> {
         let store = self.action_store.read().await.clone()?;
         match store.claim_pending_completion().await {
             Ok(Some(ActionCompletionOutboxRow {
                 action_id,
                 action_result_id,
+                kind,
                 session_id,
                 status,
                 status_json,
-            })) => Some(BackgroundActionCompletion {
-                action_id,
-                action_result_id,
-                session_id,
-                status,
-                status_json,
-            }),
+            })) => match kind.as_str() {
+                "background" => Some(ActionCompletion::Background(BackgroundActionCompletion {
+                    action_id,
+                    action_result_id,
+                    session_id,
+                    status,
+                    status_json,
+                })),
+                "scheduled" => Some(ActionCompletion::ScheduledResult(
+                    ScheduledActionResultCompletion {
+                        action_id,
+                        action_result_id,
+                        session_id,
+                        status,
+                        status_json,
+                    },
+                )),
+                _ => {
+                    tracing::warn!(action_id, kind, "ignoring action result with unknown kind");
+                    None
+                }
+            },
             Ok(None) => None,
             Err(error) => {
                 tracing::debug!("action completion outbox reconcile failed: {error}");
@@ -715,11 +730,11 @@ impl ActionService {
         }
     }
 
-    /// Acknowledge a completion after the agent's transcript/event projection
+    /// Acknowledge an action result after the agent's transcript/event projection
     /// is durable. Queue admission alone is deliberately insufficient: a
     /// session may become terminal and clear its actor queue immediately after
     /// admission.
-    pub async fn acknowledge_background_completion(&self, action_result_id: &str) {
+    pub async fn acknowledge_action_completion(&self, action_result_id: &str) {
         let Some(store) = self.action_store.read().await.clone() else {
             return;
         };
@@ -735,7 +750,7 @@ impl ActionService {
 
     /// Acknowledge a completion with no owning session, guarded against a
     /// concurrent or subsequent late session binding.
-    pub async fn acknowledge_unowned_background_completion(&self, action_result_id: &str) {
+    pub async fn acknowledge_unowned_action_completion(&self, action_result_id: &str) {
         let Some(store) = self.action_store.read().await.clone() else {
             return;
         };
@@ -2612,15 +2627,47 @@ impl ActionService {
             action.session_id.clone()
         };
         self.clear_scheduled_fire_claim(id).await;
+        if schedule.mode == crate::builtin::scheduled_action::ScheduleMode::Tool {
+            self.publish_scheduled_tool_result(id, state.clone(), session_id.clone());
+        }
         self.emit_scheduled_finished(id, session_id.as_deref(), schedule, &state);
         true
+    }
+
+    fn publish_scheduled_tool_result(
+        &self,
+        action_id: &str,
+        state: ActionState,
+        session_id: Option<String>,
+    ) {
+        let status = state.status();
+        if !matches!(status, ActionStatus::Completed | ActionStatus::Failed) {
+            return;
+        }
+        let completion = ScheduledActionResultCompletion {
+            action_id: action_id.to_string(),
+            action_result_id: action_id.to_string(),
+            session_id,
+            status,
+            status_json: render_status_json(action_id, &state),
+        };
+        if let Err(error) = self
+            .completion_bus
+            .send(ActionCompletion::ScheduledResult(completion))
+        {
+            tracing::debug!(
+                action_id = %action_id,
+                error = %error,
+                "no action result subscriber is currently attached"
+            );
+        }
     }
 
     async fn persist_scheduled_terminal(
         &self,
         id: &str,
         status: ActionStatus,
-        dependency_result: Option<&str>,
+        result_summary: Option<&str>,
         error_reason: Option<&str>,
         finished_at: &str,
     ) -> anyhow::Result<bool> {
@@ -2633,7 +2680,7 @@ impl ActionService {
                 .finish_scheduled_action(
                     id.to_string(),
                     status,
-                    dependency_result.map(str::to_owned),
+                    result_summary.map(str::to_owned),
                     error_reason.map(str::to_owned),
                     finished_at.to_string(),
                 )
@@ -2657,7 +2704,7 @@ impl ActionService {
             schedule,
             started_at,
             status,
-            dependency_result,
+            result_summary,
             error_reason,
             finished_at,
         } = retry;
@@ -2698,7 +2745,7 @@ impl ActionService {
                     .persist_scheduled_terminal(
                         &id,
                         status,
-                        dependency_result.as_deref(),
+                        result_summary.as_deref(),
                         error_reason.as_deref(),
                         &finished_at,
                     )
@@ -2707,7 +2754,7 @@ impl ActionService {
                     Ok(true) => {
                         let Some(state) = scheduled_terminal_state(
                             status,
-                            dependency_result.as_deref(),
+                            result_summary.as_deref(),
                             error_reason.as_deref(),
                             TerminalTimestamps::new(&started_at, &finished_at),
                         ) else {
@@ -2755,7 +2802,7 @@ impl ActionService {
         self: &Arc<Self>,
         id: &str,
         status: ActionStatus,
-        dependency_result: Option<&str>,
+        result_summary: Option<&str>,
         error_reason: Option<&str>,
     ) -> anyhow::Result<bool> {
         let _mutation = self.spawn_gate.lock().await;
@@ -2778,7 +2825,7 @@ impl ActionService {
         };
         let timestamps = TerminalTimestamps::now(started_at);
         let Some(state) =
-            scheduled_terminal_state(status, dependency_result, error_reason, timestamps.clone())
+            scheduled_terminal_state(status, result_summary, error_reason, timestamps.clone())
         else {
             return Ok(false);
         };
@@ -2786,7 +2833,7 @@ impl ActionService {
             .persist_scheduled_terminal(
                 id,
                 status,
-                dependency_result,
+                result_summary,
                 error_reason,
                 &timestamps.finished_at,
             )
@@ -2800,7 +2847,7 @@ impl ActionService {
                     schedule: schedule.clone(),
                     started_at: timestamps.started_at.clone(),
                     status,
-                    dependency_result: dependency_result.map(str::to_owned),
+                    result_summary: result_summary.map(str::to_owned),
                     error_reason: error_reason.map(str::to_owned),
                     finished_at: timestamps.finished_at.clone(),
                 })

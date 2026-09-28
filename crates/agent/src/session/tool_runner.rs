@@ -1287,17 +1287,17 @@ impl SessionSupervisor {
             .notification_summary_chars
             .load(std::sync::atomic::Ordering::Relaxed);
         let succeeded = outcome.is_ok();
-        let mut dependency_result = None;
+        let mut result_summary = None;
         let body = match outcome {
             Ok(g) => {
                 let summary = crate::truncate_notification(&g.result.summary_text(), summary_chars);
-                dependency_result = Some(summary.clone());
+                result_summary = Some(summary.clone());
                 format!("schedule tool '{tool_name}':\n{summary}")
             }
             Err(e) => format!("schedule tool '{tool_name}' failed: {e}"),
         };
         if succeeded {
-            if let Some(result) = dependency_result.as_deref() {
+            if let Some(result) = result_summary.as_deref() {
                 let _ = action_service
                     .complete_scheduled_with_result(&action_id, result)
                     .await;
@@ -1305,7 +1305,10 @@ impl SessionSupervisor {
                 let _ = action_service.complete_scheduled(&action_id).await;
             }
         } else {
-            let _ = action_service.fail_scheduled(&action_id, &body).await;
+            let failure_summary = crate::truncate_notification(&body, summary_chars);
+            let _ = action_service
+                .fail_scheduled(&action_id, &failure_summary)
+                .await;
         }
         self.emit_event(SessionEvent::ScheduledConfirmOutcome {
             action_id,

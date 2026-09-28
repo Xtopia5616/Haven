@@ -3,7 +3,7 @@
 //! ActionService owns action admission, live state, retry policy, and event
 //! publication. This store owns SQLite blocking-pool scheduling and delegates
 //! each operation to the existing action repositories, including the atomic
-//! terminal-row plus completion-outbox transaction.
+//! terminal-row plus completion-outbox transaction for action results.
 
 use std::sync::Arc;
 
@@ -266,12 +266,13 @@ impl ActionStore {
             .await
     }
 
-    /// Persist a running scheduled action's terminal transition.
+    /// Persist a running scheduled action's terminal transition and, for
+    /// completed/failed tool mode, its durable action-result delivery record.
     pub async fn finish_scheduled_action(
         &self,
         action_id: String,
         status: ActionStatus,
-        dependency_result: Option<String>,
+        result_summary: Option<String>,
         error_reason: Option<String>,
         finished_at: String,
     ) -> anyhow::Result<bool> {
@@ -280,7 +281,7 @@ impl ActionStore {
                 db.finish_scheduled_action(
                     &action_id,
                     status,
-                    dependency_result.as_deref(),
+                    result_summary.as_deref(),
                     error_reason.as_deref(),
                     &finished_at,
                 )

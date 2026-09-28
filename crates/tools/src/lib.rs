@@ -132,7 +132,7 @@ impl CatalogRebuildScope {
 pub(crate) use action_lifecycle::{ActionLifecycle, EventSinkState};
 pub use action_service::{
     ActionCompletion, ActionCompletionReceiver, BackgroundActionCompletion, EventSink,
-    ScheduledActionFired,
+    ScheduledActionFired, ScheduledActionResultCompletion,
 };
 pub use action_service::{
     ActionListView, ActionService, ActionStateView, ActionStatusView, ActionView, ActionViewKind,

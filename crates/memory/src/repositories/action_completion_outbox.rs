@@ -1,9 +1,10 @@
-//! Durable delivery records for terminal background-action results.
+//! Durable delivery records for terminal action results.
 //!
 //! The action row remains the source of the result payload. This repository
 //! only records the delivery lifecycle so a transient completion broadcast can
 //! be rebuilt and acknowledged after the owning session has durably projected
-//! the result.
+//! the result. Background actions and scheduled tool actions share this
+//! delivery contract; scheduled firing and execution remain owned separately.
 
 use crate::db::Database;
 use haven_common::ActionStatus;
@@ -16,6 +17,7 @@ const CLAIM_LEASE_SECS: i64 = 30;
 pub struct ActionCompletionOutboxRow {
     pub action_id: String,
     pub action_result_id: String,
+    pub kind: String,
     pub session_id: Option<String>,
     pub status: ActionStatus,
     pub status_json: Value,
@@ -68,24 +70,28 @@ impl Database {
     pub(crate) fn reconcile_action_completion_outbox(&self) -> anyhow::Result<()> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, session_id, status, output, error, error_reason, log_path,
-                    exit_code, started_at, finished_at
+            "SELECT id, kind, mode, session_id, status, output, result_summary,
+                    error, error_reason, log_path, exit_code, started_at, finished_at
              FROM actions
-             WHERE kind = 'background' AND status IN ('completed', 'failed')
+             WHERE (kind = 'background' OR (kind = 'scheduled' AND mode = 'tool'))
+               AND status IN ('completed', 'failed')
              ORDER BY created_at ASC, id ASC",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
-                row.get::<_, Option<String>>(1)?,
+                row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
                 row.get::<_, Option<String>>(3)?,
-                row.get::<_, Option<String>>(4)?,
+                row.get::<_, String>(4)?,
                 row.get::<_, Option<String>>(5)?,
                 row.get::<_, Option<String>>(6)?,
-                row.get::<_, Option<i32>>(7)?,
+                row.get::<_, Option<String>>(7)?,
                 row.get::<_, Option<String>>(8)?,
                 row.get::<_, Option<String>>(9)?,
+                row.get::<_, Option<i32>>(10)?,
+                row.get::<_, Option<String>>(11)?,
+                row.get::<_, Option<String>>(12)?,
             ))
         })?;
         let mut terminal = Vec::new();
@@ -98,9 +104,12 @@ impl Database {
         let result = (|| {
             for (
                 action_id,
+                kind,
+                mode,
                 session_id,
                 status,
                 output,
+                result_summary,
                 error,
                 error_reason,
                 log_path,
@@ -110,10 +119,15 @@ impl Database {
             ) in terminal
             {
                 let status = ActionStatus::from_status_str(&status);
+                let output = if kind == "scheduled" {
+                    result_summary.as_deref()
+                } else {
+                    output.as_deref()
+                };
                 let status_json = serde_json::to_string(&status_json(
                     &action_id,
                     status,
-                    output.as_deref(),
+                    output,
                     error.as_deref(),
                     error_reason.as_deref(),
                     log_path.as_deref(),
@@ -121,6 +135,7 @@ impl Database {
                     started_at.as_deref(),
                     finished_at.as_deref(),
                 ))?;
+                debug_assert!(kind != "scheduled" || mode == "tool");
                 conn.execute(
                     "INSERT OR IGNORE INTO action_completion_outbox
                          (action_id, action_result_id, session_id, status, status_json)
@@ -151,23 +166,26 @@ impl Database {
         let result = (|| {
             let row = conn
                 .query_row(
-                    "SELECT action_id, action_result_id, session_id, status, status_json,
+                    "SELECT outbox.action_id, outbox.action_result_id, actions.kind,
+                            outbox.session_id, outbox.status, outbox.status_json,
                             claimed_until, datetime('now')
-                     FROM action_completion_outbox
-                     WHERE delivered_at IS NULL
-                       AND (claimed_until IS NULL OR claimed_until <= datetime('now'))
-                     ORDER BY created_at ASC, action_id ASC
+                     FROM action_completion_outbox AS outbox
+                     JOIN actions ON actions.id = outbox.action_id
+                     WHERE outbox.delivered_at IS NULL
+                       AND (outbox.claimed_until IS NULL OR outbox.claimed_until <= datetime('now'))
+                     ORDER BY outbox.created_at ASC, outbox.action_id ASC
                      LIMIT 1",
                     [],
                     |row| {
                         Ok((
                             row.get::<_, String>(0)?,
                             row.get::<_, String>(1)?,
-                            row.get::<_, Option<String>>(2)?,
-                            row.get::<_, String>(3)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, Option<String>>(3)?,
                             row.get::<_, String>(4)?,
-                            row.get::<_, Option<String>>(5)?,
-                            row.get::<_, String>(6)?,
+                            row.get::<_, String>(5)?,
+                            row.get::<_, Option<String>>(6)?,
+                            row.get::<_, String>(7)?,
                         ))
                     },
                 )
@@ -175,6 +193,7 @@ impl Database {
             let Some((
                 action_id,
                 action_result_id,
+                kind,
                 session_id,
                 status,
                 status_json,
@@ -198,6 +217,7 @@ impl Database {
             Ok(Some(ActionCompletionOutboxRow {
                 action_id,
                 action_result_id,
+                kind,
                 session_id,
                 status: ActionStatus::from_status_str(&status),
                 status_json: serde_json::from_str(&status_json)?,
@@ -245,7 +265,10 @@ impl Database {
                AND EXISTS (
                    SELECT 1 FROM actions
                    WHERE actions.id = action_completion_outbox.action_id
-                     AND actions.kind = 'background'
+                     AND (
+                         actions.kind = 'background'
+                         OR (actions.kind = 'scheduled' AND actions.mode = 'tool')
+                     )
                      AND actions.session_id IS NULL
                )",
             rusqlite::params![action_result_id],
@@ -260,6 +283,23 @@ use rusqlite::OptionalExtension;
 mod tests {
     use super::*;
     use crate::Database;
+
+    fn save_scheduled_tool(db: &Database, id: &str, session_id: Option<&str>) {
+        db.save_scheduled_action(
+            id,
+            "2026-09-29T12:00:00Z",
+            "Scheduled tool",
+            "Call the tool",
+            "tool",
+            session_id,
+            Some("notify"),
+            Some(r#"{"title":"hello","body":"world"}"#),
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(db.start_scheduled_action(id, "started").unwrap());
+    }
 
     #[test]
     fn terminal_action_is_reconciled_and_acknowledged() {
@@ -280,6 +320,7 @@ mod tests {
 
         let row = db.claim_action_completion().unwrap().unwrap();
         assert_eq!(row.action_id, "act-outbox");
+        assert_eq!(row.kind, "background");
         assert_eq!(row.session_id.as_deref(), Some("ses-1"));
         assert_eq!(row.status_json["output"], "ok");
         assert!(db.acknowledge_action_completion("act-outbox").unwrap());
@@ -441,5 +482,161 @@ mod tests {
             action.finished_at.as_deref().unwrap()
         );
         assert!(completion.status_json.get("error").is_none());
+    }
+
+    #[test]
+    fn scheduled_tool_completed_and_failed_rows_use_the_same_outbox() {
+        for (id, status, summary, error_reason) in [
+            (
+                "act-scheduled-completed",
+                ActionStatus::Completed,
+                Some("bounded success summary"),
+                None,
+            ),
+            (
+                "act-scheduled-failed",
+                ActionStatus::Failed,
+                None,
+                Some("bounded failure summary"),
+            ),
+        ] {
+            let db = Database::open_in_memory().unwrap();
+            save_scheduled_tool(&db, id, Some("ses-scheduled"));
+            assert!(
+                db.finish_scheduled_action(id, status, summary, error_reason, "finished")
+                    .unwrap()
+            );
+
+            let result = db.claim_action_completion().unwrap().unwrap();
+            assert_eq!(result.action_id, id);
+            assert_eq!(result.action_result_id, id);
+            assert_eq!(result.kind, "scheduled");
+            assert_eq!(result.session_id.as_deref(), Some("ses-scheduled"));
+            assert_eq!(result.status, status);
+            match status {
+                ActionStatus::Completed => {
+                    assert_eq!(result.status_json["output"], "bounded success summary");
+                    assert!(result.status_json.get("error").is_none());
+                }
+                ActionStatus::Failed => {
+                    assert_eq!(
+                        result.status_json["error_reason"],
+                        "bounded failure summary"
+                    );
+                    assert!(result.status_json.get("output").is_none());
+                }
+                ActionStatus::Waiting | ActionStatus::Running | ActionStatus::Cancelled => {
+                    unreachable!()
+                }
+            }
+            assert!(!db.delete_action(id).unwrap());
+            assert!(db.acknowledge_action_completion(id).unwrap());
+            assert!(db.claim_action_completion().unwrap().is_none());
+        }
+    }
+
+    #[test]
+    fn scheduled_tool_terminal_row_reconciles_after_a_lost_publish_or_restart() {
+        let db = Database::open_in_memory().unwrap();
+        save_scheduled_tool(&db, "act-scheduled-reconcile", Some("ses-reconcile"));
+        // Simulate a terminal row written by an older writer or a crash window
+        // before the completion outbox was populated.
+        db.conn()
+            .execute(
+                "UPDATE actions SET status = 'failed', error_reason = ?2,
+                    finished_at = 'finished' WHERE id = ?1",
+                rusqlite::params!["act-scheduled-reconcile", "bounded failure summary"],
+            )
+            .unwrap();
+
+        let first = db.claim_action_completion().unwrap().unwrap();
+        assert_eq!(first.kind, "scheduled");
+        assert_eq!(first.action_result_id, "act-scheduled-reconcile");
+        assert_eq!(first.status, ActionStatus::Failed);
+        assert_eq!(first.status_json["error_reason"], "bounded failure summary");
+        assert!(db.claim_action_completion().unwrap().is_none());
+        assert!(
+            db.acknowledge_action_completion(&first.action_result_id)
+                .unwrap()
+        );
+        assert!(db.claim_action_completion().unwrap().is_none());
+    }
+
+    #[test]
+    fn unowned_scheduled_tool_is_ackable_and_cancelled_or_continue_rows_do_not_enqueue() {
+        let db = Database::open_in_memory().unwrap();
+        save_scheduled_tool(&db, "act-scheduled-unowned", None);
+        assert!(
+            db.finish_scheduled_action(
+                "act-scheduled-unowned",
+                ActionStatus::Completed,
+                Some("summary"),
+                None,
+                "finished",
+            )
+            .unwrap()
+        );
+        let unowned = db.claim_action_completion().unwrap().unwrap();
+        assert!(unowned.session_id.is_none());
+        assert!(
+            db.acknowledge_unowned_action_completion(&unowned.action_result_id)
+                .unwrap()
+        );
+        assert!(db.claim_action_completion().unwrap().is_none());
+
+        let cancelled = Database::open_in_memory().unwrap();
+        cancelled
+            .save_scheduled_action(
+                "act-scheduled-cancelled",
+                "2026-09-29T12:00:00Z",
+                "Scheduled tool",
+                "Call the tool",
+                "tool",
+                Some("ses-cancelled"),
+                Some("notify"),
+                Some("{}"),
+                None,
+                None,
+            )
+            .unwrap();
+        assert!(
+            cancelled
+                .cancel_scheduled_action("act-scheduled-cancelled", "cancelled")
+                .unwrap()
+        );
+        assert!(cancelled.claim_action_completion().unwrap().is_none());
+
+        let continue_mode = Database::open_in_memory().unwrap();
+        continue_mode
+            .save_scheduled_action(
+                "act-scheduled-continue",
+                "2026-09-29T12:00:00Z",
+                "Scheduled continue",
+                "Continue the session",
+                "continue",
+                Some("ses-continue"),
+                None,
+                None,
+                Some("continue"),
+                None,
+            )
+            .unwrap();
+        assert!(
+            continue_mode
+                .start_scheduled_action("act-scheduled-continue", "started")
+                .unwrap()
+        );
+        assert!(
+            continue_mode
+                .finish_scheduled_action(
+                    "act-scheduled-continue",
+                    ActionStatus::Completed,
+                    None,
+                    None,
+                    "finished",
+                )
+                .unwrap()
+        );
+        assert!(continue_mode.claim_action_completion().unwrap().is_none());
     }
 }

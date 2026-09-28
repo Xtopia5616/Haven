@@ -8,7 +8,7 @@
 //! version stamp rejects both older and newer database contracts.
 
 /// Current database contract. Any schema change requires a fresh database.
-pub const SCHEMA_VERSION: i32 = 29;
+pub const SCHEMA_VERSION: i32 = 30;
 /// Current schema, created idempotently on every open.
 const SCHEMA_SQL: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS sessions (
@@ -141,7 +141,7 @@ const SCHEMA_SQL: &[&str] = &[
         tool_args TEXT,
         prompt TEXT,
         watch_action_id TEXT,
-        dependency_result TEXT,
+        result_summary TEXT,
         status TEXT NOT NULL DEFAULT 'waiting'
             CHECK(status IN ('waiting','running','completed','failed','cancelled')),
         command TEXT,
@@ -468,7 +468,7 @@ const REQUIRED_COLUMNS: &[(&str, &str)] = &[
     ("facts", "durability"),
     ("actions", "kind"),
     ("actions", "watch_action_id"),
-    ("actions", "dependency_result"),
+    ("actions", "result_summary"),
     ("llm_usage", "call_kind"),
 ];
 
@@ -660,11 +660,11 @@ mod tests {
     fn init_schema_rejects_incomplete_current_action_contract() {
         let conn = create_test_conn();
         init_schema(&conn).unwrap();
-        conn.execute("ALTER TABLE actions DROP COLUMN dependency_result", [])
+        conn.execute("ALTER TABLE actions DROP COLUMN result_summary", [])
             .unwrap();
 
         let error = init_schema(&conn).unwrap_err().to_string();
-        assert!(error.contains("actions.dependency_result"));
+        assert!(error.contains("actions.result_summary"));
     }
 
     #[test]

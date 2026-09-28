@@ -1,5 +1,6 @@
 use crate::db::Database;
 use haven_common::ActionStatus;
+use serde_json::json;
 
 /// A persisted scheduled-action row. Scheduled actions survive app restarts:
 /// `due_at` is stored in RFC3339, and the app re-arms pending ones on startup
@@ -123,13 +124,14 @@ impl Database {
     }
 
     /// Finish a scheduled action after the actual trigger work has completed.
-    /// The caller supplies the single timestamp used by both persistence and
-    /// the in-memory/UI event projection.
+    /// Scheduled tool results share the durable action-result outbox with
+    /// background actions; `continue` mode keeps its existing input/transcript
+    /// path and does not create a second completion result.
     pub fn finish_scheduled_action(
         &self,
         id: &str,
         status: ActionStatus,
-        dependency_result: Option<&str>,
+        result_summary: Option<&str>,
         error_reason: Option<&str>,
         finished_at: &str,
     ) -> anyhow::Result<bool> {
@@ -140,19 +142,63 @@ impl Database {
             anyhow::bail!("scheduled action terminal status must be terminal");
         }
         let conn = self.conn();
-        let changed = conn.execute(
-            "UPDATE actions SET status = ?2, started_at = COALESCE(started_at, due_at),
-                 dependency_result = ?3, error_reason = ?4, finished_at = ?5
-             WHERE id = ?1 AND kind = 'scheduled' AND status = 'running'",
-            rusqlite::params![
-                id,
-                status.as_str(),
-                dependency_result,
-                error_reason,
-                finished_at
-            ],
-        )?;
-        Ok(changed > 0)
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| {
+            let changed = conn.execute(
+                "UPDATE actions SET status = ?2, started_at = COALESCE(started_at, due_at),
+                     result_summary = ?3, error_reason = ?4, finished_at = ?5
+                 WHERE id = ?1 AND kind = 'scheduled' AND status = 'running'",
+                rusqlite::params![
+                    id,
+                    status.as_str(),
+                    result_summary,
+                    error_reason,
+                    finished_at
+                ],
+            )?;
+            if changed == 0 {
+                return Ok(false);
+            }
+            if matches!(status, ActionStatus::Completed | ActionStatus::Failed) {
+                let mut status_json = json!({
+                    "action_id": id,
+                    "status": status.as_str(),
+                    "finished_at": finished_at,
+                });
+                match status {
+                    ActionStatus::Completed => {
+                        status_json["output"] = json!(result_summary.unwrap_or_default());
+                    }
+                    ActionStatus::Failed => {
+                        let error = error_reason.unwrap_or_default();
+                        status_json["error"] = json!(error);
+                        status_json["error_reason"] = json!(error);
+                    }
+                    ActionStatus::Waiting | ActionStatus::Running | ActionStatus::Cancelled => {
+                        unreachable!("only completed/failed results are enqueued")
+                    }
+                }
+                conn.execute(
+                    "INSERT OR IGNORE INTO action_completion_outbox
+                         (action_id, action_result_id, session_id, status, status_json)
+                     SELECT id, id, session_id, ?2, ?3
+                     FROM actions
+                     WHERE id = ?1 AND kind = 'scheduled' AND mode = 'tool' AND status = ?2",
+                    rusqlite::params![id, status.as_str(), status_json.to_string()],
+                )?;
+            }
+            Ok::<_, anyhow::Error>(true)
+        })();
+        match result {
+            Ok(changed) => {
+                conn.execute_batch("COMMIT")?;
+                Ok(changed)
+            }
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(error)
+            }
+        }
     }
 
     /// Read the durable status and model-facing result for one dependency
@@ -162,7 +208,7 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT status,
                     CASE
-                        WHEN kind = 'scheduled' AND status = 'completed' THEN dependency_result
+                        WHEN kind = 'scheduled' AND status = 'completed' THEN result_summary
                         WHEN status = 'completed' THEN output
                         WHEN status = 'failed' THEN COALESCE(NULLIF(error_reason, ''), NULLIF(error, ''))
                         ELSE NULL

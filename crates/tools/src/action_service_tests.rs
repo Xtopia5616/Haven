@@ -29,7 +29,7 @@ async fn recv_background(rx: &mut ActionCompletionReceiver) -> BackgroundActionC
     loop {
         match rx.recv_background().await {
             Some(ActionCompletion::Background(completion)) => return completion,
-            Some(ActionCompletion::Scheduled(_)) => continue,
+            Some(ActionCompletion::ScheduledResult(_) | ActionCompletion::Scheduled(_)) => continue,
             None => panic!("action completion channel closed"),
         }
     }
@@ -438,14 +438,17 @@ async fn late_attach_reopens_completion_after_unowned_ack() {
     assert!(initial.session_id.is_none());
 
     service
-        .acknowledge_unowned_background_completion(&initial.action_result_id)
+        .acknowledge_unowned_action_completion(&initial.action_result_id)
         .await;
     service.attach_session(&action_id, "ses-late-owner").await;
 
     let pending = service
-        .claim_pending_background_completion()
+        .claim_pending_action_result()
         .await
         .expect("late binding must reopen the durable completion");
+    let ActionCompletion::Background(pending) = pending else {
+        panic!("late-bound background result must use the background result variant");
+    };
     assert_eq!(pending.session_id.as_deref(), Some("ses-late-owner"));
     assert!(!service.delete_terminal(&action_id).await.unwrap());
     assert!(db.get_action(&action_id).unwrap().is_some());
@@ -809,7 +812,7 @@ async fn test_background_completion_reconciles_after_broadcast_loss() {
     let mut rx = actions.take_action_receiver().unwrap();
     let completion = tokio::time::timeout(
         Duration::from_secs(2),
-        rx.recv_background_with_recovery(actions.as_ref()),
+        rx.recv_action_result_with_recovery(actions.as_ref()),
     )
     .await
     .expect("durable completion should be reconciled")
@@ -831,20 +834,20 @@ async fn test_background_completion_reconciles_after_broadcast_loss() {
     assert!(
         tokio::time::timeout(
             Duration::from_millis(100),
-            rx.recv_background_with_recovery(actions.as_ref())
+            rx.recv_action_result_with_recovery(actions.as_ref())
         )
         .await
         .is_err()
     );
     actions
-        .acknowledge_background_completion(&completion.action_result_id)
+        .acknowledge_action_completion(&completion.action_result_id)
         .await;
     assert!(actions.delete_terminal("act-reconcile").await.unwrap());
     assert!(db.get_action("act-reconcile").unwrap().is_none());
     assert!(
         tokio::time::timeout(
             Duration::from_millis(100),
-            rx.recv_background_with_recovery(actions.as_ref())
+            rx.recv_action_result_with_recovery(actions.as_ref())
         )
         .await
         .is_err()
@@ -2348,7 +2351,9 @@ async fn test_unified_completion_bus_emits_scheduled_transition() {
             assert_eq!(fired.action_id, id);
             assert_eq!(fired.session_id.as_deref(), Some("ses-bus"));
         }
-        ActionCompletion::Background(_) => panic!("scheduled fire used the background variant"),
+        ActionCompletion::Background(_) | ActionCompletion::ScheduledResult(_) => {
+            panic!("scheduled fire used an action-result variant")
+        }
     }
     assert_eq!(service.status(&id).await["status"], "running");
     let updated = events
@@ -2368,6 +2373,103 @@ async fn test_unified_completion_bus_emits_scheduled_transition() {
     assert_eq!(service.status(&id).await["status"], "completed");
     assert!(!service.completion_bus.has_pending_scheduled_fire(&id).await);
     assert!(!service.completion_bus.has_scheduled_fire_claim(&id).await);
+}
+
+#[tokio::test]
+async fn scheduled_tool_results_use_shared_action_result_transport() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let db = Arc::new(Database::open(&dir.path().join("scheduled-results.db")).unwrap());
+    let service = Arc::new(ActionService::new());
+    service.set_action_store(Some(ActionStore::new(db))).await;
+    let mut receiver = service.take_action_receiver().expect("receiver available");
+
+    let completed_id = service
+        .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+            due_at: None,
+            delay_secs: Some(3600),
+            watch_action_id: None,
+            title: "Completed result".into(),
+            body: "run tool".into(),
+            mode: crate::builtin::scheduled_action::ScheduleMode::Tool,
+            session_id: Some("ses-completed-result".into()),
+            tool_name: Some("notify".into()),
+            tool_args: None,
+            prompt: None,
+        })
+        .await
+        .unwrap();
+    service.fire_scheduled(&completed_id).await;
+    assert!(matches!(
+        receiver.recv().await,
+        Some(ActionCompletion::Scheduled(_))
+    ));
+    assert!(
+        service
+            .complete_scheduled_with_result(&completed_id, "bounded tool summary")
+            .await
+            .unwrap()
+    );
+    let Some(ActionCompletion::ScheduledResult(completed)) = receiver.recv().await else {
+        panic!("scheduled tool completion must use the shared result transport");
+    };
+    assert_eq!(completed.action_id, completed_id);
+    assert_eq!(completed.action_result_id, completed_id);
+    assert_eq!(
+        completed.session_id.as_deref(),
+        Some("ses-completed-result")
+    );
+    assert_eq!(completed.status, ActionStatus::Completed);
+    assert_eq!(completed.status_json["output"], "bounded tool summary");
+    service
+        .acknowledge_action_completion(&completed.action_result_id)
+        .await;
+
+    let failed_id = service
+        .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+            due_at: None,
+            delay_secs: Some(3600),
+            watch_action_id: None,
+            title: "Failed result".into(),
+            body: "run tool".into(),
+            mode: crate::builtin::scheduled_action::ScheduleMode::Tool,
+            session_id: Some("ses-failed-result".into()),
+            tool_name: Some("notify".into()),
+            tool_args: None,
+            prompt: None,
+        })
+        .await
+        .unwrap();
+    service.fire_scheduled(&failed_id).await;
+    assert!(matches!(
+        receiver.recv().await,
+        Some(ActionCompletion::Scheduled(_))
+    ));
+    drop(receiver);
+    assert!(
+        service
+            .fail_scheduled(&failed_id, "bounded failure reason")
+            .await
+            .unwrap()
+    );
+    // A newly attached receiver recovers the durable result after the transient
+    // publish had no subscriber.
+    let mut recovery_receiver = service
+        .take_action_receiver()
+        .expect("recovery receiver available");
+    let Some(ActionCompletion::ScheduledResult(failed)) = recovery_receiver
+        .recv_action_result_with_recovery(&service)
+        .await
+    else {
+        panic!("scheduled failure must recover from the durable result outbox");
+    };
+    assert_eq!(failed.action_id, failed_id);
+    assert_eq!(failed.action_result_id, failed_id);
+    assert_eq!(failed.session_id.as_deref(), Some("ses-failed-result"));
+    assert_eq!(failed.status, ActionStatus::Failed);
+    assert_eq!(failed.status_json["error_reason"], "bounded failure reason");
+    service
+        .acknowledge_action_completion(&failed.action_result_id)
+        .await;
 }
 
 #[tokio::test]
@@ -2725,7 +2827,9 @@ async fn test_scheduled_fire_recovers_after_completion_bus_lag() {
     .expect("completion bus open");
     match event {
         ActionCompletion::Scheduled(fired) => assert_eq!(fired.action_id, id),
-        ActionCompletion::Background(_) => panic!("lag recovery returned a background event"),
+        ActionCompletion::Background(_) | ActionCompletion::ScheduledResult(_) => {
+            panic!("lag recovery returned an action-result event")
+        }
     }
     assert_eq!(service.status(&id).await["status"], "running");
     service.complete_scheduled(&id).await.unwrap();

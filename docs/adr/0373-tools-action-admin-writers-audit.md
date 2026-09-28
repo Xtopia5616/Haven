@@ -4,6 +4,7 @@
 - 基线：HEAD `5bc13eb`；开始时工作区干净
 - 范围：background/scheduled action 的模型工具写入口、`ActionService`/`ActionStore` 状态写入边界及 Tauri action 命令
 - 关联：ADR 0305、0317、0325、0332、0334、0335、0338、0343、0344、0348、0352、0353、0361、0374
+- 后续：ADR 0393 落地本 ADR 的跨 kind terminal transcript 格式；scheduled tool 的有界成功摘要或失败原因复用 ActionCompletion outbox 与 Agent ActionResult 投影路径，Continue 保留既有 session input transcript。
 
 ## 背景
 
@@ -32,6 +33,9 @@
 后台任务与定时任务在完成记录、任务卡和 transcript 投影上采用统一格式；具体内容仍可保留
 background/scheduled 的类型细节。该决定只统一投影契约与用户可见结构，不改变现有状态机、completion
 delivery/retry、取消或 X12 语义，具体实现留给独立 action/UI 投影切片。
+
+后续实现（ADR 0393）：共用 Action card/DTO 表达保持有效；scheduled tool 的有界 outcome 同时供
+依赖 continuation 与 terminal transcript 使用，不新增 IPC 字段或 UI event。
 
 ## Action/UI 投影进展（2026-09-27）
 
