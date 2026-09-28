@@ -95,7 +95,9 @@ describe('ChatBubble', () => {
 			base({
 				role: 'user',
 				content: '看视频',
-				attachments: [{ media_type: 'video/mp4', data: 'bXA0LWJ5dGVz', filename: 'clip.mp4' }],
+				attachments: [
+					{ media_type: 'video/mp4', data: 'bXA0LWJ5dGVz', filename: 'clip.mp4' },
+				],
 			}),
 		);
 		const video = container.querySelector('.attachment-video')!;
@@ -335,6 +337,7 @@ describe('ChatBubble', () => {
 				}),
 				type: 'tool',
 				toolName: 'files',
+				renderer: 'files',
 			}),
 		);
 		await expandToolCard(container);

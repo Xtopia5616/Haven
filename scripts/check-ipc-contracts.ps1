@@ -783,6 +783,18 @@ foreach ($helper in @(
 )) {
     $functionName = [regex]::Escape($helper.Function)
     $commandName = [regex]::Escape($helper.Command)
+    if ($helper.Command -eq 'list_mcp_tools') {
+        $pattern = '(?s)export\s+function\s+listMcpTools\s*\(\s*\)\s*:\s*Promise<McpServerSnapshot\[\]>\s*\{\s*return\s+invoke\(''list_mcp_tools''\)\.then\(\(value:\s*unknown\)\s*=>\s*validateMcpServerSnapshots\(value\)\);\s*\}'
+        if (-not [regex]::IsMatch($toolsCommandsUi, $pattern) -or
+            -not $toolsContractUi.Contains("'Disconnected'") -or
+            -not $toolsContractUi.Contains("'Connecting'") -or
+            -not $toolsContractUi.Contains("'Connected'") -or
+            -not $toolsContractUi.Contains('{ Offline: { error: string } }') -or
+            -not [regex]::IsMatch($toolsCommandsUi, 'Object\.keys\(value\)\.length\s*!==\s*1')) {
+            throw 'list_mcp_tools must validate the current Rust status enum and reject unknown variants'
+        }
+        continue
+    }
     if ($helper.ContainsKey('Parameter')) {
         $parameter = [regex]::Escape($helper.Parameter)
         $parameterType = [regex]::Escape($helper.ParameterType)
@@ -894,8 +906,9 @@ Assert-ToolsCatalogDto 'ToolPresentationWire' $commonToolsRs 'ToolPresentation' 
 Assert-ToolsCatalogDto 'ToolRootPresentationWire' $commonToolsRs 'ToolRootPresentation' $toolsContractUi 'ToolRootPresentationWire'
 Assert-ToolsCatalogDto 'ToolPromptWire' $commonToolsRs 'ToolPrompt' $toolsContractUi 'ToolPromptWire'
 Assert-ToolsCatalogDto 'ToolAvailabilityWire' $commonToolsRs 'ToolAvailability' $toolsContractUi 'ToolAvailabilityWire'
-if (-not [regex]::IsMatch($toolsContractUi, '(?ms)export\s+type\s+McpClientStatus\s*=\s*string\s*\|\s*\{\s*\[variant:\s*string\]\s*:\s*unknown\s*\}')) {
-    throw 'McpClientStatus must remain open to unknown serde-tagged variants and extension fields'
+if (-not [regex]::IsMatch($mcpRs, '(?s)pub\s+enum\s+McpClientStatus\s*\{\s*Disconnected\s*,\s*Connecting\s*,\s*Connected\s*,\s*Offline\s*\{\s*error:\s*String\s*,?\s*\}\s*,?\s*\}') -or
+    -not [regex]::IsMatch($toolsContractUi, '(?s)export\s+type\s+McpClientStatus\s*=\s*''Disconnected''\s*\|\s*''Connecting''\s*\|\s*''Connected''\s*\|\s*\{\s*Offline:\s*\{\s*error:\s*string\s*\}\s*\}\s*;')) {
+    throw 'McpClientStatus frontend contract must match the current Rust enum variants exactly'
 }
 
 if (-not [regex]::IsMatch($commonTypesRs, '(?s)pub\s+enum\s+McpTransportType\s*\{\s*(?:#\[[^\]]+\]\s*)*Stdio\s*,\s*Http\s*,?\s*\}') -or

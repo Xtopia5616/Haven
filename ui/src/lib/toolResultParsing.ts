@@ -36,11 +36,9 @@ export function parseToolResult(
 	content: string,
 	resultRenderer: string | null = null,
 ): ParsedToolResult | null {
-	// Root identifies the tool family and stays independent from the renderer
-	// component. A renderer such as `files.search` or `settings` must never
-	// change the family used for result-shape detection. The renderer argument
-	// remains part of this API for event compatibility; component selection is
-	// handled by `toolResultRenderers.ts`.
+	// Root identifies the family for special terminal/notification handling.
+	// Custom result cards are selected only by the backend renderer contract or
+	// the current tool manifest; payload shape does not infer a legacy renderer.
 	const rootToolName = toolRootName(toolName);
 	// Empty content is still a shell card while streaming / waiting for the
 	// first live-output chunk (or a background action bind).
@@ -72,127 +70,8 @@ export function parseToolResult(
 		// JSON arrays / primitives — pretty-printed in the raw card.
 		return { kind: 'raw', data };
 	}
-	// A hydrated manifest/event renderer is authoritative for new tool calls.
-	// Shape detection below exists only for legacy or resumed messages that do
-	// not carry the backend renderer contract.
 	if (resultRenderer || toolRendererName(toolName)) {
 		return { kind: 'custom', data };
 	}
-	return customShape(rootToolName, data) ? { kind: 'custom', data } : { kind: 'generic', data };
-}
-
-/** Match a JSON observation against a dedicated renderer shape. */
-function customShape(toolName: string, data: ToolResultObject): ToolResultObject | null {
-	switch (toolName) {
-		case 'files':
-			// Every current files operation is annotated at the backend boundary.
-			// Prefer that stable discriminator so new operations (create_dir,
-			// summary, binary reads, and operation-specific warnings) do not fall
-			// back to the generic JSON renderer merely because their payload has a
-			// different shape.
-			if (typeof data.operation === 'string' || Array.isArray(data.results)) return data;
-			if (
-				data.written ||
-				data.created ||
-				data.edited ||
-				data.copied ||
-				data.moved ||
-				data.deleted ||
-				data.image ||
-				data.binary ||
-				data.too_large ||
-				data.summary ||
-				data.summary_unavailable ||
-				data.summary_error ||
-				'error' in data ||
-				'warning' in data ||
-				Array.isArray(data.entries) ||
-				'content' in data ||
-				'size' in data
-			)
-				return data;
-			return null;
-		case 'system':
-			// `scope` is added to every system result, including network/user/
-			// locale/registry/power results that do not carry the overview fields.
-			return typeof data.scope === 'string' ||
-				data.cpu ||
-				data.memory ||
-				data.os ||
-				data.disks ||
-				Array.isArray(data.displays) ||
-				Array.isArray(data.variables) ||
-				data.name ||
-				'battery_percent' in data ||
-				data.locked ||
-				data.sleep ||
-				data.hibernate
-				? data
-				: null;
-		case 'memory':
-			return typeof data.operation === 'string' ||
-				Array.isArray(data.facts) ||
-				Array.isArray(data.hits)
-				? data
-				: null;
-		case 'process':
-		case 'clipboard':
-		case 'input':
-		case 'window':
-		case 'actions':
-		case 'schedule':
-		case 'haven_diagnostics':
-		case 'haven_config':
-		case 'haven_skills':
-		case 'haven_tools':
-		case 'haven_mcp':
-			return data;
-		case 'media':
-			return typeof data.operation === 'string' &&
-				([
-					'inspect',
-					'describe',
-					'ocr',
-					'transcribe',
-					'extract',
-					'generate',
-					'record',
-					'play',
-					'speak',
-					'volume_get',
-					'volume_set',
-					'mute_get',
-					'mute_set',
-				].includes(data.operation) ||
-					typeof data.asset_id === 'string' ||
-					isObject(data.media))
-				? data
-				: null;
-		case 'haven':
-			return data;
-		case 'http':
-			return typeof data.status === 'number' ? data : null;
-		case 'web_search':
-			// Provider built-in web search tool return: `{label, queries,
-			// results:[{title,url,snippet}]}` composed by the page handler.
-			return (Array.isArray(data.results) || Array.isArray(data.queries)) &&
-				typeof data.label === 'string'
-				? data
-				: null;
-		case 'agent':
-			return data.operation ||
-				data.ok === true ||
-				data.ok === false ||
-				Array.isArray(data.agents) ||
-				data.session_id ||
-				data.timed_out === true ||
-				data.auto === true ||
-				typeof data.text === 'string' ||
-				data.reply ||
-				data.message_id
-				? data
-				: null;
-		default:
-			return null;
-	}
+	return { kind: 'generic', data };
 }

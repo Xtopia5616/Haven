@@ -128,7 +128,7 @@ describe('ToolsView toolbar actions', () => {
 				};
 			}
 			if (command === 'list_mcp_tools') {
-				return [{ name: 'docs-server', enabled: true, tools: [] }];
+				return [{ name: 'docs-server', enabled: true, status: 'Disconnected', tools: [] }];
 			}
 			if (command === 'list_skills') {
 				return [

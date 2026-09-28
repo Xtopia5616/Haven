@@ -30,41 +30,22 @@
 
 	/** @param {McpClientStatus} status */
 	function statusLabel(status) {
-		/** @type {Record<string, string>} */
-		const labels = {
-			Connected: '已连接',
-			Connecting: '连接中',
-			Disconnected: '已断开',
-			Offline: '离线',
-			Unknown: '未知',
-		};
-		if (typeof status === 'string') return labels[status] || status;
-		if (status && typeof status === 'object') {
-			if ('Connected' in status) return '已连接';
-			if ('Connecting' in status) return '连接中';
-			if ('Disconnected' in status) return '已断开';
-			if ('Offline' in status) {
-				const offline = /** @type {{ error?: unknown } | null | undefined} */ (status.Offline);
-				const err = /** @type {string} */ (offline?.error || '');
-				return err ? `离线：${err}` : '离线';
-			}
-		}
-		return '未知';
+		if (status === 'Connected') return '已连接';
+		if (status === 'Connecting') return '连接中';
+		if (status === 'Disconnected') return '已断开';
+		return status.Offline.error ? `离线：${status.Offline.error}` : '离线';
 	}
 
 	function isConnected() {
-		const s = server.status;
-		return s === 'Connected' || (typeof s === 'object' && 'Connected' in s);
+		return server.status === 'Connected';
 	}
 
 	function isOffline() {
-		const s = server.status;
-		return s === 'Offline' || (typeof s === 'object' && 'Offline' in s);
+		return typeof server.status === 'object';
 	}
 
 	function isConnecting() {
-		const s = server.status;
-		return s === 'Connecting' || (typeof s === 'object' && 'Connecting' in s);
+		return server.status === 'Connecting';
 	}
 
 	function statusTone() {

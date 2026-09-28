@@ -99,8 +99,9 @@ export interface SkillInfo {
 	[field: string]: unknown;
 }
 
-/** Open serde externally tagged status; future variants and fields pass through. */
-export type McpClientStatus = string | { [variant: string]: unknown };
+/** Rust `haven_mcp::McpClientStatus` wire enum. */
+export type McpClientStatus =
+	'Disconnected' | 'Connecting' | 'Connected' | { Offline: { error: string } };
 
 /** Rust `haven_mcp::McpToolInfo` wire projection. */
 export interface McpToolInfo {

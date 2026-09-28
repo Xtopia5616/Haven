@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/svelte';
+import { render as testingLibraryRender, screen, fireEvent } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import ToolResultCard from './ToolResultCard.svelte';
 import GlobalContextMenu from './GlobalContextMenu.svelte';
@@ -10,6 +10,27 @@ import { getToolResultRenderer } from './toolResultRenderers.ts';
 
 const searchJson = (results: any[], extra: any = {}) =>
 	JSON.stringify({ results, count: results.length, mode: 'filename', ...extra });
+
+function render(component: any, props: Record<string, any> = {}) {
+	if (component !== ToolResultCard) return testingLibraryRender(component, props);
+	const renderers: Record<string, string> = {
+		files: 'files',
+		haven: 'haven',
+		http: 'http',
+		load_mcp: 'load_mcp',
+		mcp__filesystem__read: 'filesystem',
+		media: 'media',
+		memory: 'memory',
+		messaging: 'messaging',
+		notify: 'notify',
+		shell: 'shell',
+		skill__weather: 'weather',
+		system: 'system',
+		window: 'window',
+	};
+	const renderer = props.renderer ?? renderers[props.toolName];
+	return testingLibraryRender(component, { ...props, ...(renderer ? { renderer } : {}) });
+}
 
 async function expandToolCard(container: HTMLElement) {
 	const header = container.querySelector('.md-collapsible-header');
@@ -130,71 +151,12 @@ describe('canRenderToolResult', () => {
 		expect(canRenderToolResult('media', 'plain text')).toBe(true);
 		expect(canRenderToolResult('notify', 'Some other text')).toBe(true);
 	});
-	it('keeps operation-scoped builtin results on their dedicated renderer path', () => {
-		expect(
-			parseToolResult('files', JSON.stringify({ operation: 'create_dir', created: true })),
-		).toMatchObject({ kind: 'custom' });
-		expect(
-			parseToolResult('system', JSON.stringify({ scope: 'info', networks: [] })),
-		).toMatchObject({ kind: 'custom' });
-		expect(
-			parseToolResult(
-				'system',
-				JSON.stringify({ scope: 'process', operation: 'kill', killed: 42 }),
-			),
-		).toMatchObject({ kind: 'custom' });
-		expect(
-			parseToolResult(
-				'system',
-				JSON.stringify({ scope: 'window', operation: 'screenshot', asset_id: 'asset-1' }),
-			),
-		).toMatchObject({ kind: 'custom' });
-		expect(
-			parseToolResult(
-				'media',
-				JSON.stringify({ operation: 'describe', asset_id: 'asset-1', text: 'a screen' }),
-			),
-		).toMatchObject({ kind: 'custom' });
-		expect(
-			parseToolResult(
-				'haven',
-				JSON.stringify({ operation: 'actions_cancel', action_id: 'act-1' }),
-			),
-		).toMatchObject({ kind: 'custom' });
-		expect(
-			parseToolResult(
-				'system',
-				JSON.stringify({ scope: 'window', available: false, note: 'Windows only' }),
-			),
-		).toMatchObject({ kind: 'custom' });
-		expect(
-			parseToolResult('memory', JSON.stringify({ operation: 'search', facts: [] })),
-		).toMatchObject({ kind: 'custom' });
-		expect(
-			parseToolResult(
-				'haven',
-				JSON.stringify({ operation: 'tool_disable', name: 'files', enabled: true }),
-			),
-		).toMatchObject({ kind: 'custom' });
-	});
-	it('routes independent operation views through their root renderer', () => {
-		expect(
-			parseToolResult(
-				'files.read',
-				JSON.stringify({ operation: 'read', path: 'a.rs', content: 'x' }),
-			),
-		).toMatchObject({ kind: 'custom' });
-		expect(
-			parseToolResult('files.search', searchJson([{ path: 'a.rs', line: 2 }])),
-		).toMatchObject({
+	it('uses the renderer contract instead of inferring a renderer from result shape', () => {
+		const result = JSON.stringify({ operation: 'create_dir', created: true });
+		expect(parseToolResult('files.create_dir', result, 'files')).toMatchObject({
 			kind: 'custom',
 		});
-		expect(
-			parseToolResult(
-				'system.info',
-				JSON.stringify({ scope: 'info', os: { name: 'Windows' } }),
-			),
-		).toMatchObject({ kind: 'custom' });
+		expect(parseToolResult('files.create_dir', result)).toMatchObject({ kind: 'generic' });
 	});
 	it('rejects empty content', () => {
 		expect(canRenderToolResult('', '')).toBe(false);
@@ -237,7 +199,7 @@ describe('parseToolResult', () => {
 				},
 			],
 		});
-		expect(parseToolResult('web_search', payload)).toEqual({
+		expect(parseToolResult('web_search', payload, 'web_search')).toEqual({
 			kind: 'custom',
 			data: {
 				label: '已联网搜索',
@@ -259,11 +221,11 @@ describe('parseToolResult', () => {
 			data: null,
 		});
 	});
-	it('classifies a query-only web_search return (no results) as custom', () => {
+	it('uses the web_search renderer for query-only results', () => {
 		const payload = JSON.stringify({ label: '已联网搜索', queries: ['foo'], results: [] });
-		expect(parseToolResult('web_search', payload)?.kind).toBe('custom');
+		expect(parseToolResult('web_search', payload, 'web_search')?.kind).toBe('custom');
 	});
-	it('rejects a web_search payload without a label', () => {
+	it('uses the generic renderer when a result has no renderer contract', () => {
 		const payload = JSON.stringify({ queries: ['foo'], results: [] });
 		expect(parseToolResult('web_search', payload)?.kind).toBe('generic');
 	});
@@ -1081,11 +1043,11 @@ describe('ToolResultCard window', () => {
 		expect(screen.getByText('1920×1080 · PNG')).toBeTruthy();
 	});
 
-	it('renders OCR through the canonical media result shape', async () => {
+	it('renders window OCR through the operation renderer', async () => {
 		const { container } = render(ToolResultCard, {
-			toolName: 'system',
+			toolName: 'window.ocr',
+			renderer: 'window',
 			content: JSON.stringify({
-				scope: 'window',
 				operation: 'ocr',
 				asset_id: 'asset-0123456789abcdef0123456789abcdef',
 				media: {
@@ -1097,7 +1059,7 @@ describe('ToolResultCard window', () => {
 			}),
 		});
 		await expandToolCard(container);
-		expect(screen.getByText('ocr')).toBeTruthy();
+		expect(screen.getByText('OCR 完成')).toBeTruthy();
 		expect(screen.getByText('asset-0123456789abcdef0123456789abcdef')).toBeTruthy();
 		expect(screen.getByText('窗口中的文字')).toBeTruthy();
 	});

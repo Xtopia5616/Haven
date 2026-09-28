@@ -1,5 +1,7 @@
 # ADR 0369：Tools catalog command contract boundary
 
+> ADR 0381 supersedes the open MCP status variant decision below. Additive snapshot fields and dynamic tool schemas remain pass-through.
+
 - 状态：已采纳（2026-09-26）
 - 基线：HEAD `3103a8f`；开始时工作区干净
 - 范围：ToolsView 的 catalog、MCP/Skills 管理与 refresh renderer command boundary

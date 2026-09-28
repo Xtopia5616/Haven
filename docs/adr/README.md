@@ -367,3 +367,4 @@
 - [0378：删除重复的定时任务完成 helper](0378-remove-scheduled-action-completion-helper.md)
 - [0379：缺失会话的 transcript 写入直接失败](0379-transcript-writes-fail-for-missing-sessions.md)
 - [0380：收紧前端 event 枚举校验](0380-strict-frontend-event-enum-validation.md)
+- [0381：删除工具结果渲染与 MCP 状态兼容分支](0381-remove-tool-ui-compatibility-fallbacks.md)

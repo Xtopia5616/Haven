@@ -25,7 +25,7 @@ describe('ToolsView command boundary', () => {
 		invoke.mockReset();
 	});
 
-	it('forwards tool manifests, empty catalog lists, and unknown MCP fields unchanged', async () => {
+	it('forwards tool manifests, empty catalog lists, and additive MCP fields unchanged', async () => {
 		const manifestResponse = {
 			tools: [{ identity: { stable_name: 'files.read', extension: { source: 'future' } } }],
 			extension_response: true,
@@ -33,7 +33,7 @@ describe('ToolsView command boundary', () => {
 		const mcpResponse = [
 			{
 				name: 'future-server',
-				status: { FutureStatus: { note: 'retained' } },
+				status: { Offline: { error: 'server unavailable' } },
 				tools: [{ name: 'future-tool', input_schema: { type: 'object', extra: true } }],
 				future_field: ['retained'],
 			},
@@ -53,10 +53,19 @@ describe('ToolsView command boundary', () => {
 		expect(invoke).toHaveBeenNthCalledWith(3, 'list_skills');
 		expect(manifests).toBe(manifestResponse);
 		expect(servers).toBe(mcpResponse);
-		expect(servers[0].status).toEqual({ FutureStatus: { note: 'retained' } });
+		expect(servers[0].status).toEqual({ Offline: { error: 'server unavailable' } });
 		expect(servers[0].future_field).toEqual(['retained']);
 		expect(servers[0].tools[0].input_schema).toEqual({ type: 'object', extra: true });
 		expect(skills).toBe(emptySkills);
+	});
+
+	it('rejects MCP server snapshots with a status outside the current Rust enum', async () => {
+		invoke.mockResolvedValueOnce([
+			{ name: 'future-server', status: { FutureStatus: { note: 'unsupported' } } },
+		]);
+
+		await expect(listMcpTools()).rejects.toThrow('Invalid MCP server snapshot status');
+		expect(invoke).toHaveBeenCalledWith('list_mcp_tools');
 	});
 
 	it('keeps circuit reset as a void command and propagates its rejection', async () => {

@@ -208,6 +208,7 @@ describe('agent IPC contract', () => {
 				outcome: 'unknown',
 				idempotency: 'unknown',
 				operation_scope: 'global',
+				renderer: 'messaging',
 				result: {
 					outcome: 'timed_out_unknown',
 					error_class: 'unknown_outcome',
@@ -236,6 +237,65 @@ describe('agent IPC contract', () => {
 		});
 	});
 
+	it('requires nullable tool_call_id and the observation result envelope', () => {
+		const payload: Record<string, unknown> = {
+			session_id: 'ses-1',
+			observation: 'done',
+			tool_name: 'files.read',
+			step_number: 1,
+			run_id: 1,
+			silent: false,
+			tool_call_id: null,
+			action_index: 0,
+			ask_options: [],
+			step_id: 'step-1',
+			outcome: 'succeeded',
+			idempotency: 'idempotent',
+			operation_scope: 'session',
+			renderer: 'files',
+			result: {
+				outcome: 'succeeded',
+				retry_safety: 'idempotent',
+				retryability: 'not_retryable',
+				assets: [],
+			},
+		};
+		expect(
+			mapAgentEventContract({ event: 'agent:observation', id: 1, payload }),
+		).not.toBeNull();
+
+		const missingCallId = { ...payload };
+		delete missingCallId.tool_call_id;
+		expect(
+			mapAgentEventContract({ event: 'agent:observation', id: 1, payload: missingCallId }),
+		).toBeNull();
+
+		const missingResult = { ...payload };
+		delete missingResult.result;
+		expect(
+			mapAgentEventContract({ event: 'agent:observation', id: 1, payload: missingResult }),
+		).toBeNull();
+
+		const actionPayload: Record<string, unknown> = {
+			session_id: 'ses-1',
+			tool_name: 'files.read',
+			input: {},
+			step_number: 1,
+			run_id: 1,
+			action_index: 0,
+			step_id: 'step-1',
+			suppress_streamed_thought: false,
+			silent: false,
+		};
+		expect(
+			mapAgentEventContract({ event: 'agent:action', id: 1, payload: actionPayload }),
+		).toBeNull();
+		actionPayload.tool_call_id = null;
+		expect(
+			mapAgentEventContract({ event: 'agent:action', id: 1, payload: actionPayload }),
+		).not.toBeNull();
+	});
+
 	it('rejects unknown observation and tool-result enum values', () => {
 		const payload = {
 			session_id: 'ses-1',
@@ -250,6 +310,7 @@ describe('agent IPC contract', () => {
 			outcome: 'future_outcome',
 			idempotency: 'unknown',
 			operation_scope: 'session',
+			renderer: 'files',
 			result: {
 				outcome: 'succeeded',
 				retry_safety: 'idempotent',
@@ -258,6 +319,11 @@ describe('agent IPC contract', () => {
 			},
 		};
 
+		const withoutRenderer: Record<string, unknown> = { ...payload };
+		delete withoutRenderer.renderer;
+		expect(
+			mapAgentEventContract({ event: 'agent:observation', id: 8, payload: withoutRenderer }),
+		).toBeNull();
 		expect(mapAgentEventContract({ event: 'agent:observation', id: 8, payload })).toBeNull();
 		payload.outcome = 'succeeded';
 		payload.result.outcome = 'future_outcome';

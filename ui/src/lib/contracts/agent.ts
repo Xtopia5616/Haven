@@ -72,8 +72,8 @@ export interface AgentObservationPayload {
 	outcome: ToolObservationOutcome;
 	idempotency: ToolRetrySafety;
 	operationScope: ToolOperationScope;
-	renderer?: string;
-	result?: AgentToolResultEnvelope;
+	renderer: string;
+	result: AgentToolResultEnvelope;
 	eventSeq?: number;
 }
 
@@ -411,9 +411,7 @@ export function mapAgentEvent(
 				suppressStreamedThought === null ||
 				silent === null ||
 				!hasOwn(payload, 'input') ||
-				(toolCallId !== undefined &&
-					toolCallId !== null &&
-					typeof toolCallId !== 'string') ||
+				(toolCallId !== null && typeof toolCallId !== 'string') ||
 				!optionalNumberIsValid(payload, 'event_seq')
 			)
 				return null;
@@ -425,7 +423,7 @@ export function mapAgentEvent(
 					input: payload.input,
 					stepNumber,
 					runId,
-					toolCallId: typeof toolCallId === 'string' ? toolCallId : null,
+					toolCallId,
 					actionIndex,
 					stepId,
 					suppressStreamedThought,
@@ -449,8 +447,9 @@ export function mapAgentEvent(
 			const outcome = payload.outcome;
 			const idempotency = payload.idempotency;
 			const operationScope = payload.operation_scope;
+			const renderer = requiredString(payload, 'renderer');
 			const toolCallId = payload.tool_call_id;
-			const result = payload.result == null ? undefined : mapToolResult(payload.result);
+			const result = mapToolResult(payload.result);
 			if (
 				sessionId === null ||
 				observation === null ||
@@ -461,14 +460,12 @@ export function mapAgentEvent(
 				actionIndex === null ||
 				askOptions === null ||
 				stepId === null ||
+				renderer === null ||
 				!isOneOf(outcome, TOOL_OBSERVATION_OUTCOMES) ||
 				!isOneOf(idempotency, TOOL_RETRY_SAFETY) ||
 				!isOneOf(operationScope, TOOL_OPERATION_SCOPES) ||
-				(toolCallId !== undefined &&
-					toolCallId !== null &&
-					typeof toolCallId !== 'string') ||
-				(payload.result != null && result === null) ||
-				!optionalStringIsValid(payload, 'renderer') ||
+				(toolCallId !== null && typeof toolCallId !== 'string') ||
+				result === null ||
 				!optionalNumberIsValid(payload, 'event_seq')
 			)
 				return null;
@@ -481,15 +478,15 @@ export function mapAgentEvent(
 					stepNumber,
 					runId,
 					silent,
-					toolCallId: typeof toolCallId === 'string' ? toolCallId : null,
+					toolCallId,
 					actionIndex,
 					askOptions,
 					stepId,
 					outcome,
 					idempotency,
 					operationScope,
-					renderer: payload.renderer as string | undefined,
-					result: result ?? undefined,
+					renderer,
+					result,
 					...(payload.event_seq !== undefined
 						? { eventSeq: payload.event_seq as number }
 						: {}),

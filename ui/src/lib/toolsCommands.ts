@@ -11,14 +11,37 @@ import type {
 	UpdateMcpServerRequest,
 } from './contracts/tools.ts';
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isMcpClientStatus(value: unknown): value is McpServerSnapshot['status'] {
+	if (value === 'Disconnected' || value === 'Connecting' || value === 'Connected') return true;
+	if (!isRecord(value) || Object.keys(value).length !== 1 || !('Offline' in value)) return false;
+	const offline = value.Offline;
+	return (
+		isRecord(offline) && Object.keys(offline).length === 1 && typeof offline.error === 'string'
+	);
+}
+
+function validateMcpServerSnapshots(value: unknown): McpServerSnapshot[] {
+	if (
+		!Array.isArray(value) ||
+		!value.every((snapshot) => isRecord(snapshot) && isMcpClientStatus(snapshot.status))
+	) {
+		throw new Error('Invalid MCP server snapshot status');
+	}
+	return value as McpServerSnapshot[];
+}
+
 /** Read builtin tool manifests using their existing Rust wire shape. */
 export function getTools(): Promise<ToolListResponse> {
 	return invoke('get_tools');
 }
 
-/** Read MCP catalog snapshots without interpreting open status variants. */
+/** Read MCP catalog snapshots using the current Rust status variants. */
 export function listMcpTools(): Promise<McpServerSnapshot[]> {
-	return invoke('list_mcp_tools');
+	return invoke('list_mcp_tools').then((value: unknown) => validateMcpServerSnapshots(value));
 }
 
 /** Read the current Skill metadata projection. */
