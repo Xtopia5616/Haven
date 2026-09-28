@@ -6,6 +6,8 @@
 
 Haven 处于测试阶段。数据库 schema、`config.toml`、ReAct snapshot 与内部 IPC 契约可以进行破坏性调整；发布说明会明确本次是否需要重置。没有明确写出兼容承诺的旧数据不得假定可继续使用。
 
+截至 2026-09-29，当前数据库契约为 schema v30（ADR 0392、0393）：scheduled dependency relation/result 持久化在 `actions.watch_action_id` / `actions.result_summary`，scheduled tool 的 completed/failed result 使用 `action_completion_outbox`。不提供旧 schema 的运行时迁移；从旧版本升级前，完全退出 Haven 后删除 `%APPDATA%\haven\haven.db`、`haven.db-wal` 与 `haven.db-shm`（非 Windows 开发环境为 `~/.local/share/haven` 下的同名文件），再启动应用。删除数据库会清除会话、记忆、任务和用量；保留 `config.toml` 时无需删除整个数据根目录。
+
 本版本将安全策略重构为互相独立的确认、文件沙箱和网络策略；`security.permission_mode` 有效值为
 `plan`、`default`、`auto_edit`、`autonomous`，另有 `sandbox_mode = "read_only" | "workspace_write" | "full_access"`、
 可选的绝对路径数组 `writable_roots` 和 `network_policy = "deny" | "ask" | "restricted" | "open"`（默认 `ask`）。旧的
