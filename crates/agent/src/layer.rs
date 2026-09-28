@@ -738,6 +738,7 @@ impl AgentLayer {
                     );
                     let _fire_guard = fire_span.enter();
                     let mut deferred = false;
+                    let mut dependency_result = None;
                     let outcome: Result<(), String> = match fired.mode {
                         ScheduleMode::Tool => {
                             if let Some(session_id) = fired.session_id.as_deref()
@@ -849,6 +850,7 @@ impl AgentLayer {
                                                 &g.result.summary_text(),
                                                 agent.limits().notification_summary_chars,
                                             );
+                                            dependency_result = Some(summary.clone());
                                             agent.events.emit_action_completion_notification(ActionNotificationSource::Scheduled, &fired.action_id, fired.session_id.as_deref(), None,
                                                     &fired.title,
                                                     &format!("定时任务调用工具“{tool_name}”的结果：\n{summary}"),
@@ -987,7 +989,13 @@ impl AgentLayer {
                     };
                     if !deferred {
                         let result = if outcome.is_ok() {
-                            action_service.complete_scheduled(&fired.action_id).await
+                            if let Some(result) = dependency_result.as_deref() {
+                                action_service
+                                    .complete_scheduled_with_result(&fired.action_id, result)
+                                    .await
+                            } else {
+                                action_service.complete_scheduled(&fired.action_id).await
+                            }
                         } else {
                             action_service
                                 .fail_scheduled(

@@ -19,6 +19,7 @@ pub struct ScheduledActionRow {
     pub tool_name: Option<String>,
     pub tool_args: Option<String>,
     pub prompt: Option<String>,
+    pub watch_action_id: Option<String>,
     pub status: ActionStatus,
     pub created_at: String,
 }
@@ -39,11 +40,16 @@ impl Database {
         tool_name: Option<&str>,
         tool_args: Option<&str>,
         prompt: Option<&str>,
+        watch_action_id: Option<&str>,
     ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            (!due_at.trim().is_empty()) != watch_action_id.is_some(),
+            "scheduled action requires exactly one of due_at or watch_action_id"
+        );
         let conn = self.conn();
         conn.execute(
-            "INSERT INTO actions (id, kind, due_at, title, body, mode, session_id, tool_name, tool_args, prompt, status, created_at)
-             VALUES (?1, 'scheduled', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'waiting', datetime('now'))",
+            "INSERT INTO actions (id, kind, due_at, title, body, mode, session_id, tool_name, tool_args, prompt, watch_action_id, status, created_at)
+             VALUES (?1, 'scheduled', ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 'waiting', datetime('now'))",
             rusqlite::params![
                 id,
                 due_at,
@@ -53,7 +59,8 @@ impl Database {
                 session_id,
                 tool_name,
                 tool_args,
-                prompt
+                prompt,
+                watch_action_id
             ],
         )?;
         Ok(())
@@ -65,7 +72,7 @@ impl Database {
     pub fn list_pending_scheduled_actions(&self) -> anyhow::Result<Vec<ScheduledActionRow>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, due_at, title, body, mode, session_id, tool_name, tool_args, prompt, status, created_at
+            "SELECT id, due_at, title, body, mode, session_id, tool_name, tool_args, prompt, watch_action_id, status, created_at
              FROM actions WHERE kind = 'scheduled' AND status = 'waiting' ORDER BY due_at ASC",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -79,8 +86,9 @@ impl Database {
                 tool_name: row.get(6)?,
                 tool_args: row.get(7)?,
                 prompt: row.get(8)?,
-                status: ActionStatus::from_status_str(&row.get::<_, String>(9)?),
-                created_at: row.get(10)?,
+                watch_action_id: row.get(9)?,
+                status: ActionStatus::from_status_str(&row.get::<_, String>(10)?),
+                created_at: row.get(11)?,
             })
         })?;
         let mut out = Vec::new();
@@ -121,6 +129,7 @@ impl Database {
         &self,
         id: &str,
         status: ActionStatus,
+        dependency_result: Option<&str>,
         error_reason: Option<&str>,
         finished_at: &str,
     ) -> anyhow::Result<bool> {
@@ -133,11 +142,40 @@ impl Database {
         let conn = self.conn();
         let changed = conn.execute(
             "UPDATE actions SET status = ?2, started_at = COALESCE(started_at, due_at),
-                 error_reason = ?3, finished_at = ?4
+                 dependency_result = ?3, error_reason = ?4, finished_at = ?5
              WHERE id = ?1 AND kind = 'scheduled' AND status = 'running'",
-            rusqlite::params![id, status.as_str(), error_reason, finished_at],
+            rusqlite::params![
+                id,
+                status.as_str(),
+                dependency_result,
+                error_reason,
+                finished_at
+            ],
         )?;
         Ok(changed > 0)
+    }
+
+    /// Read the durable status and model-facing result for one dependency
+    /// producer. This projection is intentionally separate from UI/history.
+    pub fn get_action_dependency(&self, id: &str) -> anyhow::Result<Option<ActionDependencyRow>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT status,
+                    CASE
+                        WHEN kind = 'scheduled' AND status = 'completed' THEN dependency_result
+                        WHEN status = 'completed' THEN output
+                        WHEN status = 'failed' THEN COALESCE(NULLIF(error_reason, ''), NULLIF(error, ''))
+                        ELSE NULL
+                    END
+             FROM actions WHERE id = ?1",
+        )?;
+        let mut rows = stmt.query_map([id], |row| {
+            Ok(ActionDependencyRow {
+                status: ActionStatus::from_status_str(&row.get::<_, String>(0)?),
+                result: row.get(1)?,
+            })
+        })?;
+        rows.next().transpose().map_err(Into::into)
     }
 
     /// Cancel a waiting or currently-running scheduled action while retaining
@@ -197,6 +235,14 @@ pub struct ActionRow {
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
     pub created_at: String,
+}
+
+/// Minimal persisted producer state used by scheduled dependency watchers.
+/// The result is never included in action board or history projections.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ActionDependencyRow {
+    pub status: ActionStatus,
+    pub result: Option<String>,
 }
 
 const ACTION_COLUMNS: &str = "id, kind, due_at, title, body, mode, session_id, tool_name, tool_args, prompt, status, command, output, error, error_reason, log_path, exit_code, started_at, finished_at, created_at";
@@ -463,6 +509,7 @@ impl Database {
 mod tests {
     use crate::db::Database;
     use haven_common::ActionStatus;
+    use haven_common::types::new_id;
 
     fn test_db() -> Database {
         Database::open_in_memory().expect("create in-memory db")
@@ -481,6 +528,7 @@ mod tests {
             Some("notify"),
             Some(r#"{"title":"Haven","body":"drink water"}"#),
             None,
+            None,
         )
         .unwrap();
         db.save_scheduled_action(
@@ -493,6 +541,7 @@ mod tests {
             None,
             None,
             Some("check the weather"),
+            None,
         )
         .unwrap();
         db.save_scheduled_action(
@@ -504,6 +553,7 @@ mod tests {
             Some("ses-7"),
             Some("files"),
             Some(r#"{"operation":"read","path":"C:\\x"}"#),
+            None,
             None,
         )
         .unwrap();
@@ -527,6 +577,111 @@ mod tests {
     }
 
     #[test]
+    fn dependency_trigger_and_result_survive_without_entering_action_projection() {
+        let db = test_db();
+        let producer_id = new_id("act");
+        let continuation_id = new_id("act");
+        db.save_action(&producer_id, None, "echo result", "started")
+            .unwrap();
+        db.finish_action(
+            &producer_id,
+            ActionStatus::Completed,
+            Some("producer output"),
+            None,
+            None,
+            None,
+            Some(0),
+            "finished",
+        )
+        .unwrap();
+        db.save_scheduled_action(
+            &continuation_id,
+            "",
+            "After producer",
+            "continue with result",
+            "continue",
+            Some("ses-owner"),
+            None,
+            None,
+            None,
+            Some(&producer_id),
+        )
+        .unwrap();
+
+        let pending = db.list_pending_scheduled_actions().unwrap();
+        let continuation = pending.first().unwrap();
+        assert_eq!(continuation.id, continuation_id);
+        assert!(continuation.due_at.is_empty());
+        assert_eq!(
+            continuation.watch_action_id.as_deref(),
+            Some(producer_id.as_str())
+        );
+        assert_eq!(
+            db.get_action_dependency(&producer_id)
+                .unwrap()
+                .unwrap()
+                .result
+                .as_deref(),
+            Some("producer output")
+        );
+        let projected = db.get_action(&continuation_id).unwrap().unwrap();
+        assert!(projected.output.is_none());
+
+        db.start_scheduled_action(&continuation_id, "fired")
+            .unwrap();
+        db.finish_scheduled_action(
+            &continuation_id,
+            ActionStatus::Completed,
+            Some("scheduled tool result"),
+            None,
+            "finished",
+        )
+        .unwrap();
+        let dependency = db.get_action_dependency(&continuation_id).unwrap().unwrap();
+        assert_eq!(dependency.status, ActionStatus::Completed);
+        assert_eq!(dependency.result.as_deref(), Some("scheduled tool result"));
+        assert!(
+            db.get_action(&continuation_id)
+                .unwrap()
+                .unwrap()
+                .output
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn scheduled_trigger_requires_exactly_one_timer_or_dependency() {
+        let db = test_db();
+        let timer_and_dependency = db.save_scheduled_action(
+            &new_id("act"),
+            "2026-08-04T02:00:00Z",
+            "Invalid",
+            "both triggers",
+            "continue",
+            Some("ses-owner"),
+            None,
+            None,
+            Some("prompt"),
+            Some("act-producer"),
+        );
+        assert!(timer_and_dependency.is_err());
+
+        let no_trigger = db.save_scheduled_action(
+            &new_id("act"),
+            "",
+            "Invalid",
+            "no trigger",
+            "continue",
+            Some("ses-owner"),
+            None,
+            None,
+            Some("prompt"),
+            None,
+        );
+        assert!(no_trigger.is_err());
+    }
+
+    #[test]
     fn completed_scheduled_actions_are_hidden_from_pending() {
         let db = test_db();
         db.save_scheduled_action(
@@ -539,6 +694,7 @@ mod tests {
             Some("notify"),
             None,
             None,
+            None,
         )
         .unwrap();
         db.start_scheduled_action("action-1", "2026-08-04T02:00:00Z")
@@ -546,6 +702,7 @@ mod tests {
         db.finish_scheduled_action(
             "action-1",
             ActionStatus::Completed,
+            None,
             None,
             "2026-08-04T02:00:01Z",
         )
@@ -566,6 +723,7 @@ mod tests {
             Some("notify"),
             None,
             None,
+            None,
         )
         .unwrap();
         db.cancel_scheduled_action("action-1", "2026-08-04T02:00:01Z")
@@ -584,6 +742,7 @@ mod tests {
             "tool",
             None,
             Some("notify"),
+            None,
             None,
             None,
         )
@@ -821,6 +980,7 @@ mod tests {
             Some("notify"),
             None,
             None,
+            None,
         )
         .unwrap();
         db.start_scheduled_action("action-1", "2026-08-04T02:00:00Z")
@@ -828,6 +988,7 @@ mod tests {
         db.finish_scheduled_action(
             "action-1",
             ActionStatus::Completed,
+            None,
             None,
             "2026-08-04T02:00:01Z",
         )
@@ -860,6 +1021,7 @@ mod tests {
             "tool",
             None,
             Some("notify"),
+            None,
             None,
             None,
         )

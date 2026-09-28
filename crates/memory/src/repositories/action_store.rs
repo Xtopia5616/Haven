@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use crate::Database;
 use crate::repositories::action_completion_outbox::ActionCompletionOutboxRow;
-use crate::repositories::scheduled_actions::{ActionRow, ScheduledActionRow};
+use crate::repositories::scheduled_actions::{ActionDependencyRow, ActionRow, ScheduledActionRow};
 use haven_common::ActionStatus;
 use serde_json::Value;
 
@@ -62,6 +62,17 @@ impl ActionStore {
     pub async fn get_action(&self, action_id: String) -> anyhow::Result<Option<ActionRow>> {
         self.db
             .run_blocking(move |db| db.get_action(&action_id))
+            .await
+    }
+
+    /// Read only the producer status/result needed by a dependent scheduled
+    /// action. This private projection is not used by UI/history commands.
+    pub async fn get_action_dependency(
+        &self,
+        action_id: String,
+    ) -> anyhow::Result<Option<ActionDependencyRow>> {
+        self.db
+            .run_blocking(move |db| db.get_action_dependency(&action_id))
             .await
     }
 
@@ -196,8 +207,8 @@ impl ActionStore {
             .await
     }
 
-    /// Persist a newly scheduled action. Process-local action dependencies are
-    /// intentionally not represented in this durable request.
+    /// Persist a newly scheduled action and its durable timer or dependency
+    /// trigger relation.
     #[allow(clippy::too_many_arguments)]
     pub async fn save_scheduled_action(
         &self,
@@ -210,6 +221,7 @@ impl ActionStore {
         tool_name: Option<String>,
         tool_args: Option<String>,
         prompt: Option<String>,
+        watch_action_id: Option<String>,
     ) -> anyhow::Result<()> {
         self.db
             .run_blocking(move |db| {
@@ -223,6 +235,7 @@ impl ActionStore {
                     tool_name.as_deref(),
                     tool_args.as_deref(),
                     prompt.as_deref(),
+                    watch_action_id.as_deref(),
                 )
             })
             .await
@@ -258,6 +271,7 @@ impl ActionStore {
         &self,
         action_id: String,
         status: ActionStatus,
+        dependency_result: Option<String>,
         error_reason: Option<String>,
         finished_at: String,
     ) -> anyhow::Result<bool> {
@@ -266,6 +280,7 @@ impl ActionStore {
                 db.finish_scheduled_action(
                     &action_id,
                     status,
+                    dependency_result.as_deref(),
                     error_reason.as_deref(),
                     &finished_at,
                 )
@@ -415,6 +430,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
             )
             .await
             .unwrap();
@@ -435,6 +451,7 @@ mod tests {
                 .finish_scheduled_action(
                     action_id.clone(),
                     ActionStatus::Completed,
+                    Some("tool result".into()),
                     None,
                     "finished".into(),
                 )
@@ -446,6 +463,7 @@ mod tests {
                 .finish_scheduled_action(
                     action_id.clone(),
                     ActionStatus::Failed,
+                    None,
                     Some("late".into()),
                     "late finish".into(),
                 )
@@ -460,9 +478,21 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(
-            store.get_action(action_id).await.unwrap().unwrap().status,
+            store
+                .get_action(action_id.clone())
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
             ActionStatus::Completed
         );
+        let dependency = store
+            .get_action_dependency(action_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(dependency.status, ActionStatus::Completed);
+        assert_eq!(dependency.result.as_deref(), Some("tool result"));
 
         let invalid_action_id = new_id("act");
         store
@@ -472,6 +502,7 @@ mod tests {
                 "Reminder".into(),
                 "bad".into(),
                 "notify".into(),
+                None,
                 None,
                 None,
                 None,

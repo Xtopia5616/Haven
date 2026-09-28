@@ -53,11 +53,11 @@ pub struct ScheduledActionSpec {
     /// Delay in seconds before the scheduled_action fires. Use this OR `due_at` OR
     /// `watch_action_id`.
     pub delay_secs: Option<u64>,
-    /// Background action to wait for: the scheduled_action fires when the action reaches a
-    /// terminal state (completed/failed/cancelled) instead of on a timer,
-    /// resuming the session with the action's result. Use this OR `due_at` OR
-    /// `delay_secs`; in-memory only (the watched action cannot survive a
-    /// restart, so these scheduled_actions are not persisted).
+    /// Action to wait for: the scheduled action fires when the producer reaches
+    /// a terminal state (completed/failed/cancelled) instead of on a timer,
+    /// resuming the session with its terminal status and available result. The
+    /// dependency relation is persisted and its watcher is restored on restart.
+    /// Use this OR `due_at` OR `delay_secs`.
     pub watch_action_id: Option<String>,
     pub title: String,
     pub body: String,
@@ -112,7 +112,7 @@ pub struct ScheduledActionParams {
     /// Absolute fire time, ISO 8601 (set only).
     #[serde(default)]
     pub due_at: Option<String>,
-    /// Set only: fire when this background action finishes or fails.
+    /// Set only: fire when this action reaches a terminal state.
     #[serde(default)]
     pub watch_action_id: Option<String>,
     /// Action when it fires (set only): tool or continue.
@@ -849,13 +849,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_watch_action_not_persisted_to_db() {
+    async fn test_watch_action_persists_dependency_relation() {
         let (db, _dir) = test_db();
         let center = Arc::new(ActionService::new());
         center
             .set_action_store(Some(ActionStore::new(db.clone())))
             .await;
-        center
+        let id = center
             .set(ScheduledActionSpec {
                 due_at: None,
                 delay_secs: None,
@@ -870,12 +870,11 @@ mod tests {
             })
             .await
             .unwrap();
-        // The watched action cannot survive a restart: nothing in the DB.
-        assert!(db.list_pending_scheduled_actions().unwrap().is_empty());
-        // Listed in memory (with the watched action id).
-        let rows = center.list().await;
+        let rows = db.list_pending_scheduled_actions().unwrap();
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0]["watch_action_id"], json!("action-nope"));
+        assert_eq!(rows[0].id, id);
+        assert!(rows[0].due_at.is_empty());
+        assert_eq!(rows[0].watch_action_id.as_deref(), Some("action-nope"));
     }
     /// Minimal tool stub for registry-backed validation tests.
     struct DummyTool {
@@ -1270,6 +1269,7 @@ mod tests {
             Some("notify"),
             None,
             None,
+            None,
         )
         .unwrap();
         let overdue_id = haven_common::types::new_id("act");
@@ -1283,6 +1283,7 @@ mod tests {
             None,
             None,
             Some("keep going"),
+            None,
         )
         .unwrap();
 
@@ -1335,6 +1336,7 @@ mod tests {
             None,
             None,
             Some("prompt"),
+            None,
         )
         .unwrap();
         db.save_scheduled_action(
@@ -1343,6 +1345,7 @@ mod tests {
             "Bad mode",
             "must not run",
             "unknown-mode",
+            None,
             None,
             None,
             None,
@@ -1358,6 +1361,7 @@ mod tests {
             None,
             Some("notify"),
             Some("{not-json"),
+            None,
             None,
         )
         .unwrap();
