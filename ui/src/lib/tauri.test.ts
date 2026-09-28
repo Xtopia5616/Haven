@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { invoke, listen, isTauri } from './tauri.ts';
+import type { TauriCommandName } from './contracts/generatedCommands.ts';
 
 describe('tauri.ts in a non-Tauri environment', () => {
 	beforeEach(() => {
@@ -13,7 +14,7 @@ describe('tauri.ts in a non-Tauri environment', () => {
 	});
 
 	it('invoke rejects with a helpful error', async () => {
-		await expect(invoke('some_command', { a: 1 })).rejects.toThrow(
+		await expect(invoke('some_command' as TauriCommandName, { a: 1 } as never)).rejects.toThrow(
 			"Tauri not available, cannot invoke 'some_command'",
 		);
 	});

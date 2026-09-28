@@ -17,7 +17,7 @@ describe('model discovery command boundary', () => {
 			provider: 'custom-provider',
 			role: 'transcription',
 		};
-		const models: ModelInfo[] = [
+		const models: Array<ModelInfo & { provider_metadata: { tier: string } }> = [
 			{
 				id: 'audio-model',
 				provider: 'custom-provider',

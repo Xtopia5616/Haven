@@ -2,7 +2,7 @@
 	import logger from '$lib/logger.ts';
 	import { reportError } from '$lib/errorHandling.ts';
 	import { formatError } from '$lib/formatError.ts';
-	import { buildResumeMessages, isDisplayOnlyMessageId } from '$lib/resumeMessages.ts';
+	import { isDisplayOnlyMessageId } from '$lib/resumeMessages.ts';
 	import {
 		shouldShowContinueButton,
 	} from '$lib/continueSession.ts';
@@ -17,13 +17,14 @@
 	import { createChatController } from '$lib/chatController.ts';
 	import { createChatEventController } from '$lib/chatEventController.ts';
 	import { createAskInteractionController } from '$lib/chatAskInteraction.ts';
+	import { createChatSessionStartup } from '$lib/chatSessionStartup.ts';
+	import { createChatViewController } from '$lib/chatViewController.ts';
 	import { projectChatVisibleMessages } from '$lib/chatVisibleMessages.ts';
 	import { createChatModelSync } from '$lib/chatModelSync.ts';
 	import { loadSettings } from '$lib/settingsCommand.ts';
 	import { createChatModelOperations } from '$lib/chatModelOperations.ts';
 	import { createStreamEventAggregator } from '$lib/streamAggregator.ts';
 	import { registerPerformanceMetricsProvider } from '$lib/performanceMetrics.ts';
-	import { createSessionRefreshScheduler } from '$lib/sessionRefresh.ts';
 	import {
 		getLastConversation,
 		getSessions,
@@ -33,7 +34,6 @@
 		appSessionReducer,
 		createSessionSelectorStore,
 		DRAFT_SESSION_ID,
-		resumeInteractions,
 	} from '$lib/sessionReducer.ts';
 	import {
 		buildTokenUsageDetails,
@@ -58,12 +58,6 @@
 	import { mediaPlanStore } from '$lib/mediaPlanStore.ts';
 	import { syncStore } from '$lib/syncStore.ts';
 	import { dragScroll } from '$lib/dragScroll.ts';
-	import {
-		CHAT_SCROLL_SETTLED_THRESHOLD,
-		chatBottomOverlayClearance,
-		isChatNearBottom,
-		shouldFollowChatScroll,
-	} from '$lib/chatScroll.ts';
 	import RollbackDialog from '$lib/RollbackDialog.svelte';
 	import {
 		closeContextMenu as closeGlobalContextMenu,
@@ -452,14 +446,13 @@
 	);
 	let messagesEl = /** @type {HTMLElement | null | undefined} */ (undefined);
 	let autoFollow = $state(true);
-	let scrollRafPending = false;
-	let jumpingToBottom = false;
-	let jumpBottomTimer = /** @type {ReturnType<typeof setTimeout> | null} */ (null);
 	let dead = false;
-	// Guards concurrent loadSessions() calls so a stale response can't overwrite
-	// a newer one.
-	let loadSessionsSeq = 0;
-
+	const chatViewController = createChatViewController({
+		getMessagesElement: () => messagesEl,
+		getAutoFollow: () => autoFollow,
+		setAutoFollow: (follow) => (autoFollow = follow),
+		isDisposed: () => dead,
+	});
 	const messages = $derived(projectChatVisibleMessages(activeSessionMessages, interactionDict));
 
 	const activeSessionError = $derived(
@@ -487,7 +480,7 @@
 	$effect(() => {
 		const _ = messages;
 		if (messages.length > 0) {
-			scrollToBottom();
+			chatViewController.scrollToBottom();
 		}
 	});
 
@@ -495,90 +488,9 @@
 	// creating a new session), re-enable follow and scroll to the bottom.
 	$effect(() => {
 		const _ = activeSessionId;
-		autoFollow = true;
-		scrollToBottom();
+		chatViewController.setAutoFollow(true);
+		chatViewController.scrollToBottom();
 	});
-
-	function scrollToBottom() {
-		if (!messagesEl || dead || scrollRafPending) return;
-		scrollRafPending = true;
-		requestAnimationFrame(() => {
-			scrollRafPending = false;
-			// Re-check autoFollow here so a user scroll-up between the call
-			// and the rAF callback is respected (not overridden).
-			if (dead || !messagesEl || !autoFollow) return;
-			messagesEl.scrollTop = messagesEl.scrollHeight;
-		});
-	}
-
-	// Cold-mount scroll for conversations opened as a bulk snapshot (history
-	// resume, app-start auto-restore): at that moment every bubble is
-	// content-visibility-skipped and reports only its contain-intrinsic-size
-	// estimate (~120px), so the first scrollToBottom lands above the real
-	// bottom. Force one full render pass — the real sizes are then remembered
-	// by `contain-intrinsic-size: auto` — scroll, and restore lazy rendering.
-	function scrollToBottomAfterOpen() {
-		if (dead || !messagesEl) return;
-		const list = messagesEl.querySelector('.message-list');
-		if (!list) return;
-		const bubbles = /** @type {NodeListOf<HTMLElement>} */ (list.querySelectorAll('.bubble'));
-		bubbles.forEach((b) => b.style.setProperty('content-visibility', 'visible'));
-		messagesEl.scrollTop = messagesEl.scrollHeight;
-		let frames = 2;
-		const finish = () => {
-			frames -= 1;
-			if (frames > 0) {
-				requestAnimationFrame(finish);
-				return;
-			}
-			if (dead || !messagesEl) return;
-			if (autoFollow) messagesEl.scrollTop = messagesEl.scrollHeight;
-			bubbles.forEach((b) => b.style.removeProperty('content-visibility'));
-		};
-		requestAnimationFrame(finish);
-	}
-
-	function onScroll() {
-		if (!messagesEl) return;
-		const settledAtBottom = isChatNearBottom(messagesEl, CHAT_SCROLL_SETTLED_THRESHOLD);
-		// Keep the button hidden while the requested smooth scroll is settling.
-		// Otherwise each intermediate scroll event briefly marks the view as
-		// detached and makes the button flicker back in.
-		if (jumpingToBottom) {
-			if (settledAtBottom) stopJumpToBottom();
-			return;
-		}
-		autoFollow = shouldFollowChatScroll(messagesEl, autoFollow);
-	}
-
-	function stopJumpToBottom() {
-		jumpingToBottom = false;
-		if (jumpBottomTimer) {
-			clearTimeout(jumpBottomTimer);
-			jumpBottomTimer = null;
-		}
-	}
-
-	function cancelJumpToBottom() {
-		if (!jumpingToBottom) return;
-		stopJumpToBottom();
-		if (messagesEl) autoFollow = isChatNearBottom(messagesEl);
-	}
-
-	function jumpToBottom() {
-		if (!messagesEl) return;
-		stopJumpToBottom();
-		autoFollow = true;
-		jumpingToBottom = true;
-		messagesEl.scrollTo({ top: messagesEl.scrollHeight, behavior: 'smooth' });
-		// WebViews normally emit a final scroll event, but the timeout also
-		// releases the guard if the target is already at the end or events are
-		// coalesced by the platform.
-		jumpBottomTimer = setTimeout(() => {
-			stopJumpToBottom();
-			if (messagesEl) autoFollow = isChatNearBottom(messagesEl);
-		}, 700);
-	}
 
 	const streamEvents = createStreamEventAggregator({
 		getActiveSessionId: () => activeSessionId,
@@ -648,105 +560,16 @@
 		reportError,
 	});
 
-	// Open a reviewed conversation (from the history page). The chat view
-	// stays mounted while other tabs are open, so this runs both at mount and
-	// whenever the store changes afterwards.
-	/** @param {any} resumeTarget */
-	function retainErroredSession(resumeTarget) {
-		if (!resumeTarget?.sessionId) return;
-		dispatchSession({
-			type: 'session/retained-error',
-			session: {
-				id: resumeTarget.sessionId,
-				input: resumeTarget.summary || '',
-				input_text: resumeTarget.summary || '',
-				title: resumeTarget.title || null,
-				status: 'error',
-			},
-		});
-	}
-
-	/** @param {any} resumeTarget */
-	function processResumeTarget(resumeTarget) {
-		if (resumeTarget && resumeTarget.sessionId) {
-			// Opening a reviewed conversation abandons any pending fresh-start
-			// intent (the user chose this conversation explicitly).
-			newSessionIntentStore.set(false);
-			if (browser) localStorage.removeItem(NEW_ACTION_INTENT_KEY);
-			const prevActive = activeSessionId;
-			dispatchSession({ type: 'session/selected', sessionId: resumeTarget.sessionId });
-			// The session being left: if it is terminal (or has dropped out of
-			// the executor's working set, which only happens for terminal
-			// sessions), reclaim its in-memory messages/token stats — they are
-			// reloaded from the DB if the user returns. Runs AFTER the switch
-			// because evictTerminalSessionMemory skips the active session.
-			// Same rule as switchToSession; without it every reviewed session
-			// would keep its full message list in memory for the whole app run.
-			if (prevActive && prevActive !== resumeTarget.sessionId) {
-				const prevSession = sessions.find((x) => x.id === prevActive);
-				if (
-					!prevSession ||
-					prevSession.status === 'completed' ||
-					prevSession.status === 'error'
-				) {
-					evictTerminalSessionMemory(prevActive);
-				}
-			}
-			// Opening an errored session is read-only. Preserve the error state and
-			// show the reason instead of silently converting it to Paused.
-			if (resumeTarget.wasError) {
-				dispatchSession({
-					type: 'session/error-shown',
-					sessionId: resumeTarget.sessionId,
-					reason:
-						resumeTarget.errorReason ||
-						appSessionReducer.getSessionErrorReason(resumeTarget.sessionId) ||
-						'本次会话因错误停止，暂未收到更具体的原因。',
-				});
-				retainErroredSession(resumeTarget);
-			}
-			// Defer clearing so it survives rapid remounts during init.
-			setTimeout(() => resumeTargetStore.set(null), 0);
-		}
-	}
-
 	// The resume target set by the history page's "open session" flow must be
 	// handled while the chat view is already mounted. `$effect` does NOT track
 	// `get(store)` (svelte/store wraps the read in `untrack`), so a plain
 	// `get(resumeTargetStore)` here would only see the initial value and never
 	// react to later history clicks. Subscribing via syncStore runs the callback
 	// on every store change (and synchronously once with the current value).
-	$effect(() => syncStore(resumeTargetStore, (v) => processResumeTarget(v)));
+	$effect(() => syncStore(resumeTargetStore, (v) => sessionStartup.processResumeTarget(v)));
 
-	// The composer is a bottom overlay so messages can continue underneath its
-	// transparent outer area. Measure the actual distance from the page bottom to
-	// the composer's top instead of deriving it from height + a duplicated CSS
-	// offset. This keeps the last message above the opaque inner surface even
-	// after a resize, attachment change, or narrow-window reflow.
-	$effect(() => {
-		const page = chatPageEl;
-		if (!browser || !page || typeof ResizeObserver === 'undefined') return;
-		const composer = page.querySelector('.input-area');
-		if (!(composer instanceof HTMLElement)) return;
-
-		const updateComposerClearance = () => {
-			const pageRect = page.getBoundingClientRect();
-			const composerRect = composer.getBoundingClientRect();
-			const clearance = chatBottomOverlayClearance(pageRect.bottom, composerRect.top);
-			page.style.setProperty('--chat-composer-clearance', `${clearance}px`);
-			// A composer resize changes scrollHeight via the padding below. Preserve
-			// the user's follow-to-bottom intent after that layout update.
-			if (autoFollow) scrollToBottom();
-		};
-		const observer = new ResizeObserver(updateComposerClearance);
-		observer.observe(composer);
-		observer.observe(page);
-		updateComposerClearance();
-		return () => {
-			observer.disconnect();
-			page.style.removeProperty('--chat-composer-clearance');
-		};
-	});
+	// Measure the composer overlay and reserve the same clearance under messages.
+	$effect(() => chatViewController.observeComposerClearance(chatPageEl, browser));
 
 	onMount(async () => {
 		// Hydrate the fresh-start intent from localStorage BEFORE any data
@@ -755,14 +578,12 @@
 		// auto-assign would re-select the old conversation on restart and the
 		// persisted intent would be silently defeated. The resumeTarget
 		// branch below (an explicit user choice) clears it again if needed.
-		if (browser && localStorage.getItem(NEW_ACTION_INTENT_KEY)) {
-			newSessionIntentStore.set(true);
-		}
+		sessionStartup.hydrateFreshSessionIntent();
 
 		// Process resume target first so loadSessions won't overwrite
 		// activeSessionId with a stale paused session whose messages are gone.
 		const initialResumeTarget = get(resumeTargetStore);
-		processResumeTarget(initialResumeTarget);
+		sessionStartup.processResumeTarget(initialResumeTarget);
 
 		// Register listeners BEFORE any async data load so session/streaming
 		// events arriving while the page initializes are never missed.
@@ -848,21 +669,16 @@
 		// parallel; the conversation renders as soon as its data arrives,
 		// without waiting for `reopen_session` (a second IPC round-trip that
 		// only makes the session resumable for follow-up messages).
-		const sessionsP = loadSessions();
-		const restoreP = restoreLastConversation(initialResumeTarget);
-
-		try {
-			await Promise.all([sessionsP, restoreP]);
-		} finally {
-			initialLoading = false;
-		}
+		await sessionStartup.loadInitialSessions(initialResumeTarget);
+		if (dead) return;
 
 		// Conversation just opened (history resume or auto-restore): scroll to
 		// the real bottom, forcing the estimated content-visibility heights to
 		// render first (see scrollToBottomAfterOpen).
 		if (activeSessionId) {
 			await tick();
-			scrollToBottomAfterOpen();
+			if (dead) return;
+			chatViewController.scrollToBottomAfterOpen();
 		}
 
 		if (browser) {
@@ -878,160 +694,35 @@
 		// merges the store with the DB copy).
 		flushChunksNow();
 		chatEventController?.dispose();
-		loadSessionsRefresh.dispose();
-		stopJumpToBottom();
+		sessionStartup.dispose();
+		chatViewController.dispose();
 		if (browser) {
 			window.removeEventListener('click', handleWindowClick);
 		}
 	});
 
-	// Tracks the most recent loadSessions() invocation so the auto-restore can
-	// order its decision after the session list without duplicating the
-	// stale-pointer cleanup. Never rejects (errors are handled in loadSessions).
-	let loadSessionsSettled = Promise.resolve();
-	const loadSessionsRefresh = createSessionRefreshScheduler(() => loadSessionsNow());
-
-	async function loadSessionsNow() {
-		const seq = ++loadSessionsSeq;
-		const run = (async () => {
-			const result = await getSessions();
-			// Stale response guard: a newer loadSessions call superseded this one.
-			if (seq !== loadSessionsSeq) return;
-			if (result && result.sessions) {
-				const before = sessionReducer.getState();
-				dispatchSession({
-					type: 'sessions/loaded',
-					sessions: result.sessions.map((/** @type {any} */ session) => ({
-						...session,
-						waitingReason: session.waiting_reason ?? null,
-					})),
-					autoSelect: !before.activeSessionId && !get(newSessionIntentStore),
-				});
-				const after = sessionReducer.getState();
-				// The active session can be ended (removed from the executor) while
-				// this page is open — e.g. a follow-up message targeting a
-				// terminal session is dropped server-side. Drop the stale pointer
-				// so the next message starts a new session instead of hitting the
-				// same terminal branch again.
-				if (
-					after.activeSessionId &&
-					!after.sessions.some((t) => t.id === after.activeSessionId) &&
-					!after.error &&
-					!after.termination
-				) {
-					dispatchSession({ type: 'session/cleared' });
-				}
-			}
-			// Session lifecycle changes may have reaped background actions (a session
-			// ending cancels its actions without terminal events): re-sync the
-			// action board so the panel drops entries that no longer exist.
-			// Same for scheduled actions: fired ones are gone from the pending list.
-			refreshActions();
-		})().catch((e) => {
-			reportError(e, { context: '+page', message: '加载会话列表失败', log: false });
-		});
-		loadSessionsSettled = run;
-		return run;
-	}
-
-	/**
-	 * Refresh immediately for explicit user actions and initial hydration. The
-	 * lifecycle event handlers use scheduleLoadSessions so a burst of status
-	 * events produces at most one trailing get_sessions call.
-	 */
-	async function loadSessions() {
-		const run = loadSessionsRefresh.refresh();
-		loadSessionsSettled = run;
-		return run;
-	}
-
-	function scheduleLoadSessions() {
-		loadSessionsRefresh.schedule();
-	}
-
-	// Auto-restore the last conversation from a previous run so reopening
-	// the app shows where you left off. Skipped when a resume target is
-	// pending, a session is already active, or the user explicitly started a
-	// fresh conversation (新对话) and no new session has been created since.
-	// Messages render as soon as `get_last_conversation` returns. Non-error
-	// sessions still use `reopen_session` afterwards so follow-up messages can
-	// continue; errored sessions remain read-only until Continue is requested.
-	/** @param {unknown} resumeTarget */
-	async function restoreLastConversation(resumeTarget) {
-		if (
-			resumeTarget ||
-			get(newSessionIntentStore) ||
-			(browser && localStorage.getItem(NEW_ACTION_INTENT_KEY))
-		) {
-			return;
-		}
-		// Wait for the session list first so the stale-activeSessionId check below
-		// sees the real list (matches the previous sequential ordering) and a
-		// running/paused session auto-assigned by loadSessions wins over the restore.
-		await loadSessionsSettled;
-		const current = sessionReducer.getState();
-		if (
-			current.activeSessionId &&
-			!current.sessions.some((t) => t.id === current.activeSessionId)
-		) {
-			dispatchSession({ type: 'session/cleared' });
-		}
-		if (sessionReducer.getState().activeSessionId) return;
-		/** @type {import('$lib/contracts/sessionHistory.ts').SessionResumeResponse | null} */
-		let last = null;
-		try {
-			last = await getLastConversation();
-		} catch (e) {
-			logger.warn('+page', 'auto-restore conversation error', e);
-			return;
-		}
-		// A session event or a later loadSessions auto-assigned one meanwhile — or
-		// the user clicked the new-session button while the lookup was in flight
-		// — don't clobber the live session (or the fresh draft) with the restored
-		// conversation.
-		if (
-			!last?.session ||
-			sessionReducer.getState().activeSessionId ||
-			get(newSessionIntentStore)
-		)
-			return;
-		// A completed conversation is history: the user already ended it, so
-		// restoring it into the window adds nothing (and reopens it as
-		// Paused, resurrecting an ended session). It stays reachable via the
-		// history page; the window starts blank instead.
-		if (last.session.status === 'completed') return;
-		const wasError = isErrorStatus(last.session.status);
-		dispatchSession({
-			type: 'session/messages/resume-loaded',
-			sessionId: last.session.id,
-			messages: buildResumeMessages(last),
-			interactions: resumeInteractions(last),
-			preserveInteractionIds: pendingInteractionIdsForSession(last.session.id),
-			usage: last.usage,
-			llmUsage: last.llm_usage,
-		});
-		dispatchSession({ type: 'session/selected', sessionId: last.session.id });
-		if (wasError) {
-			dispatchSession({
-				type: 'session/error-shown',
-				sessionId: last.session.id,
-				reason:
-					appSessionReducer.getSessionErrorReason(last.session.id) ||
-					'本次会话因错误停止，暂未收到更具体的原因。',
-			});
-			retainErroredSession({
-				sessionId: last.session.id,
-				summary: last.session.input_text,
-				title: last.session.title,
-			});
-		}
-		try {
-			if (!wasError) await reopenSession({ sessionId: last.session.id });
-		} catch (e) {
-			logger.warn('+page', 'reopen_session error', e);
-		}
-		await loadSessions();
-	}
+	const sessionStartup = createChatSessionStartup({
+		reducer: sessionReducer,
+		dispatch: dispatchSession,
+		getSessions,
+		getLastConversation,
+		reopenSession,
+		refreshActions,
+		getFreshSessionIntent: () => get(newSessionIntentStore),
+		setFreshSessionIntent: (value) => newSessionIntentStore.set(value),
+		hasPersistedFreshSessionIntent: () =>
+			browser && Boolean(localStorage.getItem(NEW_ACTION_INTENT_KEY)),
+		clearPersistedFreshSessionIntent: () => {
+			if (browser) localStorage.removeItem(NEW_ACTION_INTENT_KEY);
+		},
+		getPendingInteractionIds: (sessionId) => pendingInteractionIdsForSession(sessionId),
+		evictTerminalSessionMemory,
+		setInitialLoading: (loading) => (initialLoading = loading),
+		deferResumeTargetClear: () => setTimeout(() => resumeTargetStore.set(null), 0),
+		warn: (message, error) => logger.warn('+page', message, error),
+		reportError,
+	});
+	const { loadSessions, scheduleLoadSessions } = sessionStartup;
 
 	const chatController = createChatController({
 		invoke,
@@ -1056,7 +747,7 @@
 		closeSessionMenu: () => (sessionMenuOpen = false),
 		setContinuePending: (pending) => (continuePending = pending),
 		setInterruptPending: (pending) => (interruptPending = pending),
-		setAutoFollow: (follow) => (autoFollow = follow),
+		setAutoFollow: (follow) => chatViewController.setAutoFollow(follow),
 	});
 
 	/** @param {string} text @param {any} [images] @param {any} [files] */
@@ -1098,7 +789,7 @@
 	const askInteraction = createAskInteractionController({
 		getActiveSessionId: () => activeSessionId,
 		setAutoFollow: () => {
-			autoFollow = true;
+			chatViewController.setAutoFollow(true);
 		},
 		setSelectionsReady: (ready) => {
 			askSelectionsReady = ready;
@@ -1109,10 +800,10 @@
 	const {
 		clearAskAwaiting,
 		computeAskSelectionsReady,
+		handleInputSubmit: routeInputSubmission,
 		handleAskSelectionChange,
 		handleAskSubmit,
 		handleIgnoreAsk,
-		trySubmitAskSelections,
 	} = askInteraction;
 
 	$effect(() => {
@@ -1129,11 +820,7 @@
 	// message bypasses the ask batch and resumes immediately.
 	/** @param {{ text: string, images: any, files: any }} payload */
 	function handleInputSubmit({ text, images, files }) {
-		autoFollow = true;
-		if (activeSessionId && trySubmitAskSelections(activeSessionId, text, images, files)) {
-			return;
-		}
-		submitMessage(text, images, files);
+		routeInputSubmission({ text, images, files });
 	}
 
 	/** @param {any} session */
@@ -1191,9 +878,9 @@
 			bind:this={messagesEl}
 			role="region"
 			aria-label="会话消息"
-			onscroll={onScroll}
-			onpointerdown={cancelJumpToBottom}
-			onwheel={cancelJumpToBottom}
+			onscroll={chatViewController.onScroll}
+			onpointerdown={chatViewController.cancelJumpToBottom}
+			onwheel={chatViewController.cancelJumpToBottom}
 			use:dragScroll={{ axis: 'y' }}
 		>
 			<ConversationTimeline
@@ -1226,7 +913,7 @@
 					label="返回底部"
 					title="返回底部"
 					icon="arrowDown"
-					onclick={jumpToBottom}
+					onclick={chatViewController.jumpToBottom}
 				></MaterialIconButton>
 			</div>
 		{/if}

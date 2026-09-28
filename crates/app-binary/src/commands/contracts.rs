@@ -1,12 +1,9 @@
 //! The single registry for the Tauri command wire contract.
 //!
 //! Command arguments intentionally remain flat because Tauri maps the
-//! renderer's camelCase object onto the Rust function arguments.  The
-//! registry records the named request/response DTO at that boundary without
-//! introducing a second `{ request: ... }` wire shape.  The strings are
-//! documentation identifiers, not runtime JSON parsers; the Rust command
-//! signatures and the frontend contract modules remain the executable side of
-//! the contract.
+//! renderer's camelCase object onto the Rust function arguments. This registry
+//! stores only command names and reviewed boundary/security metadata; handler
+//! signatures and Serde DTOs are the IPC shape authority.
 
 /// Version of the public Tauri command directory.
 pub const IPC_CONTRACT_VERSION: u16 = 1;
@@ -25,10 +22,6 @@ pub enum CommandBoundary {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CommandContract {
     pub name: &'static str,
-    /// Named DTO for the flat request fields, or `-` when there are no fields.
-    pub request: &'static str,
-    /// Named DTO, scalar, or `()` returned on success.
-    pub response: &'static str,
     pub boundary: CommandBoundary,
     /// Short security invariant; detailed negative cases live in the tools
     /// security regression matrix.
@@ -42,509 +35,367 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
     // action
     CommandContract {
         name: "list_actions",
-        request: "-",
-        response: "ActionEvent[]",
         boundary: CommandBoundary::Read,
         security: "projected task fields only",
     },
     CommandContract {
         name: "cancel_action",
-        request: "CancelActionRequest",
-        response: "bool",
         boundary: CommandBoundary::Mutate,
         security: "kind is enum; cancel only the selected task kind",
     },
     CommandContract {
         name: "list_action_history",
-        request: "ListActionHistoryRequest",
-        response: "ActionEvent[]",
         boundary: CommandBoundary::Read,
         security: "limit capped at 200; internal tool args excluded",
     },
     CommandContract {
         name: "delete_action",
-        request: "DeleteActionRequest",
-        response: "bool",
         boundary: CommandBoundary::Mutate,
         security: "delete one persisted task row by id",
     },
     // external
     CommandContract {
         name: "open_external",
-        request: "OpenExternalRequest",
-        response: "()",
         boundary: CommandBoundary::Execute,
         security: "http(s) or validated absolute local path only",
     },
     // history
     CommandContract {
         name: "get_history",
-        request: "HistoryPageRequest",
-        response: "SessionHistoryRow[]",
         boundary: CommandBoundary::Read,
         security: "read-only session projection",
     },
     CommandContract {
         name: "count_history",
-        request: "-",
-        response: "i64",
         boundary: CommandBoundary::Read,
         security: "read-only aggregate",
     },
     CommandContract {
         name: "search_history_paginated",
-        request: "HistorySearchPageRequest",
-        response: "SessionHistoryRow[]",
         boundary: CommandBoundary::Read,
         security: "parameterized read-only search",
     },
     CommandContract {
         name: "count_history_search",
-        request: "HistorySearchRequest",
-        response: "i64",
         boundary: CommandBoundary::Read,
         security: "parameterized read-only search",
     },
     CommandContract {
         name: "search_history",
-        request: "HistorySearchRequest",
-        response: "SessionHistoryRow[]",
         boundary: CommandBoundary::Read,
         security: "parameterized read-only search",
     },
     CommandContract {
         name: "search_history_filtered",
-        request: "HistoryFilterRequest",
-        response: "SessionHistoryRow[]",
         boundary: CommandBoundary::Read,
         security: "bounded page and date-filtered projection",
     },
     CommandContract {
         name: "export_history",
-        request: "HistoryExportRequest",
-        response: "string",
         boundary: CommandBoundary::Read,
         security: "export contains persisted history only",
     },
     // log
     CommandContract {
         name: "get_log_info",
-        request: "-",
-        response: "LogInfo",
         boundary: CommandBoundary::Read,
         security: "path is optional; no environment details",
     },
     CommandContract {
         name: "read_log_tail",
-        request: "ReadLogTailRequest",
-        response: "LogTail",
         boundary: CommandBoundary::Read,
         security: "bounded tail; file logging must be enabled",
     },
     CommandContract {
         name: "log_frontend_error",
-        request: "FrontendErrorRequest",
-        response: "()",
         boundary: CommandBoundary::Mutate,
         security: "sanitized user-visible error mirrored into the backend log",
     },
     // diagnostics
     CommandContract {
         name: "get_performance_metrics",
-        request: "UiMetricsSnapshot?",
-        response: "MetricsSnapshot",
         boundary: CommandBoundary::Read,
         security: "bounded content-free backend counters plus renderer stream counters",
     },
     // mcp
     CommandContract {
         name: "list_mcp_tools",
-        request: "-",
-        response: "McpServerSnapshot[]",
         boundary: CommandBoundary::Read,
         security: "snapshot only; env values redacted; invocation remains gated",
     },
     CommandContract {
         name: "reconnect_mcp",
-        request: "McpNameRequest",
-        response: "()",
         boundary: CommandBoundary::Execute,
         security: "AuthorizationEngine; typed native operation reconnects one existing configured server after final version check",
     },
     CommandContract {
         name: "refresh_mcp_servers",
-        request: "-",
-        response: "McpRefreshResult",
         boundary: CommandBoundary::Execute,
         security: "AuthorizationEngine; one batch over persisted config diff and its affected targets; no renderer process arguments",
     },
     CommandContract {
         name: "mcp_tool_call",
-        request: "McpToolCallRequest",
-        response: "McpToolCallResponse",
         boundary: CommandBoundary::Execute,
         security: "AuthorizationEngine; confirmation queues direct calls and errors are renderer-safe",
     },
     CommandContract {
         name: "add_mcp_server",
-        request: "McpServerConfig",
-        response: "()",
         boundary: CommandBoundary::Execute,
         security: "AuthorizationEngine; typed native admin operation validates and persists config",
     },
     CommandContract {
         name: "update_mcp_server",
-        request: "UpdateMcpServerRequest",
-        response: "()",
         boundary: CommandBoundary::Execute,
         security: "AuthorizationEngine; typed native admin operation validates and reconnects safely",
     },
     CommandContract {
         name: "remove_mcp_server",
-        request: "McpNameRequest",
-        response: "()",
         boundary: CommandBoundary::Execute,
         security: "AuthorizationEngine; typed native admin operation removes client and config",
     },
     CommandContract {
         name: "toggle_mcp_server",
-        request: "ToggleMcpServerRequest",
-        response: "()",
         boundary: CommandBoundary::Execute,
         security: "AuthorizationEngine; typed native admin operation connects before enabling",
     },
     // memory
     CommandContract {
         name: "run_memory_maintenance",
-        request: "-",
-        response: "u64",
         boundary: CommandBoundary::Mutate,
         security: "maintenance path owns purge and embedding cleanup",
     },
     CommandContract {
         name: "recall_memory",
-        request: "RecallMemoryRequest",
-        response: "MemoryRecallItem[]",
         boundary: CommandBoundary::Read,
         security: "bounded and credential-filtered recall",
     },
     CommandContract {
         name: "list_facts",
-        request: "ListFactsRequest",
-        response: "Fact[]",
         boundary: CommandBoundary::Read,
         security: "read-only fact projection",
     },
     CommandContract {
         name: "add_fact",
-        request: "AddFactRequest",
-        response: "Fact",
         boundary: CommandBoundary::Mutate,
         security: "credential-like predicates and values rejected",
     },
     CommandContract {
         name: "delete_fact",
-        request: "DeleteFactRequest",
-        response: "()",
         boundary: CommandBoundary::Mutate,
         security: "delete one fact by id",
     },
     // model
     CommandContract {
         name: "get_api_key_status",
-        request: "-",
-        response: "ApiKeyStatus",
         boundary: CommandBoundary::Read,
         security: "boolean presence only; credentials excluded",
     },
     CommandContract {
         name: "check_llm_connection",
-        request: "-",
-        response: "LlmConnectionReport",
         boundary: CommandBoundary::Read,
         security: "status and non-sensitive reason only; no endpoint or provider payload",
     },
     CommandContract {
         name: "discover_models",
-        request: "DiscoverModelsRequest",
-        response: "ModelInfo[]",
         boundary: CommandBoundary::Execute,
         security: "http(s) endpoint plus stored-key host match",
     },
     CommandContract {
         name: "discover_all_models",
-        request: "-",
-        response: "Record<string, ModelInfo[]>",
         boundary: CommandBoundary::Execute,
         security: "only configured providers are queried",
     },
     CommandContract {
         name: "switch_model",
-        request: "SwitchModelRequest",
-        response: "()",
         boundary: CommandBoundary::Mutate,
         security: "model id or RequestKind selector validated before config save",
     },
     CommandContract {
         name: "set_reasoning_effort",
-        request: "SetReasoningEffortRequest",
-        response: "()",
         boundary: CommandBoundary::Mutate,
         security: "model id or RequestKind selector validated before config save",
     },
     CommandContract {
         name: "set_web_search",
-        request: "SetWebSearchRequest",
-        response: "()",
         boundary: CommandBoundary::Mutate,
         security: "provider capability checked before config save",
     },
     // recording
     CommandContract {
         name: "get_recording_state",
-        request: "-",
-        response: "RecordingState",
         boundary: CommandBoundary::Read,
         security: "state only; no device or provider detail",
     },
     CommandContract {
         name: "start_recording",
-        request: "-",
-        response: "()",
         boundary: CommandBoundary::Execute,
         security: "input pipeline owns capture lifecycle",
     },
     CommandContract {
         name: "stop_recording",
-        request: "-",
-        response: "string",
         boundary: CommandBoundary::Execute,
         security: "capture stops before asynchronous transcription",
     },
     CommandContract {
         name: "cancel_recording",
-        request: "-",
-        response: "()",
         boundary: CommandBoundary::Execute,
         security: "cancel clears the in-flight recording id",
     },
     CommandContract {
         name: "process_transcript",
-        request: "ProcessTranscriptRequest",
-        response: "ProcessResult",
         boundary: CommandBoundary::Execute,
         security: "attachment limits and file persistence are enforced",
     },
     // session
     CommandContract {
         name: "reopen_session",
-        request: "SessionIdRequest",
-        response: "()",
         boundary: CommandBoundary::Mutate,
         security: "session id selects persisted session",
     },
     CommandContract {
         name: "get_sessions",
-        request: "-",
-        response: "SessionListResponse",
         boundary: CommandBoundary::Read,
         security: "active session projection",
     },
     CommandContract {
         name: "end_session",
-        request: "SessionIdRequest",
-        response: "()",
         boundary: CommandBoundary::Mutate,
         security: "explicit user termination",
     },
     CommandContract {
         name: "interrupt_session",
-        request: "SessionIdRequest",
-        response: "()",
         boundary: CommandBoundary::Mutate,
         security: "pauses the selected active session without deleting it",
     },
     CommandContract {
         name: "resolve_confirmation",
-        request: "ResolveConfirmationRequest",
-        response: "()",
         boundary: CommandBoundary::Mutate,
         security: "effect/scope/target must match confirmation; deny wins",
     },
     CommandContract {
         name: "update_session_title",
-        request: "UpdateSessionTitleRequest",
-        response: "()",
         boundary: CommandBoundary::Mutate,
         security: "trimmed non-empty title only",
     },
     CommandContract {
         name: "delete_session",
-        request: "SessionIdRequest",
-        response: "()",
         boundary: CommandBoundary::Mutate,
         security: "delete by session id and release runtime state",
     },
     CommandContract {
         name: "clear_history",
-        request: "-",
-        response: "u64",
         boundary: CommandBoundary::Mutate,
         security: "clears persisted sessions and session trust",
     },
     CommandContract {
         name: "rollback_session",
-        request: "RollbackSessionRequest",
-        response: "()",
         boundary: CommandBoundary::Mutate,
         security: "event cursor and projection clock rollback",
     },
     CommandContract {
         name: "continue_session",
-        request: "SessionIdRequest",
-        response: "()",
         boundary: CommandBoundary::Mutate,
         security: "resume from saved error snapshot",
     },
     CommandContract {
         name: "get_session_for_resume",
-        request: "SessionIdRequest",
-        response: "SessionResumeResponse",
         boundary: CommandBoundary::Read,
         security: "session-scoped persisted projection",
     },
     CommandContract {
         name: "get_last_conversation",
-        request: "-",
-        response: "Option<SessionResumeResponse>",
         boundary: CommandBoundary::Read,
         security: "most recent persisted session only",
     },
     // settings
     CommandContract {
         name: "get_settings",
-        request: "-",
-        response: "Settings",
         boundary: CommandBoundary::Read,
         security: "config response masks credentials",
     },
     CommandContract {
         name: "get_bootstrap_status",
-        request: "-",
-        response: "string",
         boundary: CommandBoundary::Read,
         security: "status enum only",
     },
     CommandContract {
         name: "update_settings",
-        request: "Settings",
-        response: "()",
         boundary: CommandBoundary::Mutate,
         security: "shared loader preserves masked secrets, tool sections, and permission rules",
     },
     CommandContract {
         name: "list_permissions",
-        request: "-",
-        response: "StoredPermission[]",
         boundary: CommandBoundary::Read,
         security: "permission keys/effects only",
     },
     CommandContract {
         name: "revoke_permission",
-        request: "RevokePermissionRequest",
-        response: "()",
         boundary: CommandBoundary::Mutate,
         security: "non-empty exact key; persisted atomically",
     },
     CommandContract {
         name: "reset_permissions",
-        request: "-",
-        response: "()",
         boundary: CommandBoundary::Mutate,
         security: "clears permanent and session rules atomically; keeps selected default policy",
     },
     CommandContract {
         name: "check_shell_available",
-        request: "CheckShellAvailableRequest",
-        response: "ShellAvailability",
         boundary: CommandBoundary::Read,
         security: "availability boolean only",
     },
     CommandContract {
         name: "enable_autostart",
-        request: "-",
-        response: "()",
         boundary: CommandBoundary::Execute,
         security: "release build only",
     },
     CommandContract {
         name: "disable_autostart",
-        request: "-",
-        response: "()",
         boundary: CommandBoundary::Execute,
         security: "managed autostart entry only",
     },
     CommandContract {
         name: "is_autostart_enabled",
-        request: "-",
-        response: "bool",
         boundary: CommandBoundary::Read,
         security: "state boolean only",
     },
     // skills/tools
     CommandContract {
         name: "list_skills",
-        request: "-",
-        response: "SkillInfo[]",
         boundary: CommandBoundary::Read,
         security: "metadata projection",
     },
     CommandContract {
         name: "refresh_skills",
-        request: "-",
-        response: "()",
         boundary: CommandBoundary::Execute,
         security: "configured skills root scan",
     },
     CommandContract {
         name: "set_skill_enabled",
-        request: "SetEnabledRequest",
-        response: "()",
         boundary: CommandBoundary::Mutate,
         security: "AuthorizationEngine; typed native admin operation persists the toggle",
     },
     CommandContract {
         name: "set_tool_enabled",
-        request: "SetEnabledRequest",
-        response: "()",
         boundary: CommandBoundary::Mutate,
         security: "AuthorizationEngine; typed native admin operation persists the toggle",
     },
     CommandContract {
         name: "open_skills_dir",
-        request: "-",
-        response: "string",
         boundary: CommandBoundary::Execute,
         security: "configured skills root only",
     },
     CommandContract {
         name: "execute_skill",
-        request: "ExecuteSkillRequest",
-        response: "SkillExecutionResponse",
         boundary: CommandBoundary::Execute,
         security: "AuthorizationEngine; confirmation queues direct calls and errors are renderer-safe",
     },
     CommandContract {
         name: "get_tools",
-        request: "-",
-        response: "ToolListResponse",
         boundary: CommandBoundary::Read,
         security: "tool definition projection; schemas are dynamic extension data",
     },
     CommandContract {
         name: "reset_tool_circuits",
-        request: "-",
-        response: "()",
         boundary: CommandBoundary::Mutate,
         security: "clears local circuit state only",
     },

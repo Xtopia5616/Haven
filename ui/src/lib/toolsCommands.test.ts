@@ -54,7 +54,7 @@ describe('ToolsView command boundary', () => {
 		expect(manifests).toBe(manifestResponse);
 		expect(servers).toBe(mcpResponse);
 		expect(servers[0].status).toEqual({ Offline: { error: 'server unavailable' } });
-		expect(servers[0].future_field).toEqual(['retained']);
+		expect((servers[0] as unknown as Record<string, unknown>).future_field).toEqual(['retained']);
 		expect(servers[0].tools[0].input_schema).toEqual({ type: 'object', extra: true });
 		expect(skills).toBe(emptySkills);
 	});

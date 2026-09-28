@@ -91,8 +91,8 @@ describe('upsertAction', () => {
 		});
 		vi.mocked(invoke)
 			.mockReset()
-			.mockImplementationOnce(() => older)
-			.mockImplementationOnce(() => newer);
+			.mockImplementationOnce(() => older as never)
+			.mockImplementationOnce(() => newer as never);
 
 		const olderRefresh = refreshActions();
 		const newerRefresh = refreshActions();
@@ -111,7 +111,7 @@ describe('upsertAction', () => {
 		const refreshResponse = new Promise((resolve) => {
 			resolveRefresh = resolve;
 		});
-		vi.mocked(invoke).mockReset().mockReturnValueOnce(refreshResponse);
+		vi.mocked(invoke).mockReset().mockReturnValueOnce(refreshResponse as never);
 
 		const refresh = refreshActions();
 		upsertAction({ id: 'act-race', kind: 'scheduled', status: 'running' });

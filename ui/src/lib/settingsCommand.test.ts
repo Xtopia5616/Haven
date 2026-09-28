@@ -16,7 +16,7 @@ describe('loadSettings', () => {
 			llm: { models: [], future_llm_field: { enabled: true } },
 			future_settings_field: 'kept',
 		};
-		invokeMock.mockResolvedValue(payload);
+		invokeMock.mockResolvedValue(payload as never);
 
 		await expect(loadSettings()).resolves.toBe(payload);
 		expect(invokeMock).toHaveBeenCalledOnce();
@@ -27,7 +27,7 @@ describe('loadSettings', () => {
 		invokeMock.mockResolvedValue(null);
 		await expect(loadSettings()).resolves.toBeNull();
 
-		invokeMock.mockResolvedValue(['not', 'settings']);
+		invokeMock.mockResolvedValue(['not', 'settings'] as never);
 		await expect(loadSettings()).resolves.toBeNull();
 	});
 });

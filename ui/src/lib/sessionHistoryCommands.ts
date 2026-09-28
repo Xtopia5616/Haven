@@ -9,8 +9,9 @@ import type {
 	SessionListResponse,
 	SessionResumeResponse,
 } from './contracts/sessionHistory.ts';
+import type { TauriCommandInvoke } from './contracts/generatedCommands.ts';
 
-export type SessionHistoryInvoker = <T = unknown>(command: string, args?: unknown) => Promise<T>;
+export type SessionHistoryInvoker = TauriCommandInvoke;
 
 /** Load the current in-memory session summaries for the chat shell. */
 export function getSessions(): Promise<SessionListResponse> {
@@ -29,7 +30,7 @@ export function getSessionForResume(
 	request: SessionIdRequest,
 	invokeCommand: SessionHistoryInvoker = invoke,
 ): Promise<SessionResumeResponse> {
-	return invokeCommand<SessionResumeResponse>('get_session_for_resume', request);
+	return invokeCommand('get_session_for_resume', request);
 }
 
 /** Load the most recent persisted conversation for startup restore. */

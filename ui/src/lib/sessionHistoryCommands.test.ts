@@ -23,7 +23,7 @@ describe('session history command boundary', () => {
 		const response = {
 			sessions: [{ id: 'ses-1', waiting_reason: 'interaction', future_field: true }],
 		};
-		invokeMock.mockResolvedValue(response);
+		invokeMock.mockResolvedValue(response as never);
 
 		await expect(getSessions()).resolves.toBe(response);
 		expect(invokeMock).toHaveBeenCalledOnce();
@@ -40,7 +40,7 @@ describe('session history command boundary', () => {
 			offset: 0,
 		};
 		const response = [{ id: 'ses-2', input_text: 'hello', future_field: 'kept' }];
-		invokeMock.mockResolvedValue(response);
+		invokeMock.mockResolvedValue(response as never);
 
 		await expect(searchHistoryFiltered(request)).resolves.toBe(response);
 		expect(invokeMock).toHaveBeenCalledOnce();
@@ -50,7 +50,7 @@ describe('session history command boundary', () => {
 	it('forwards resume reads and startup restore without response mapping', async () => {
 		const request = { sessionId: 'ses-3' };
 		const resume = { session: { id: 'ses-3' }, future_field: { retained: true } };
-		invokeMock.mockResolvedValueOnce(resume).mockResolvedValueOnce(null);
+		invokeMock.mockResolvedValueOnce(resume as never).mockResolvedValueOnce(null);
 
 		await expect(getSessionForResume(request)).resolves.toBe(resume);
 		await expect(getLastConversation()).resolves.toBeNull();
@@ -89,7 +89,7 @@ describe('session history command boundary', () => {
 
 	it('returns the underlying invoke promise unchanged', () => {
 		const pending = Promise.resolve({ session: { id: 'ses-5' } });
-		invokeMock.mockReturnValue(pending);
+		invokeMock.mockReturnValue(pending as never);
 
 		expect(getSessionForResume({ sessionId: 'ses-5' })).toBe(pending);
 	});

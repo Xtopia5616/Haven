@@ -20,7 +20,7 @@ describe('Action command contract boundary', () => {
 				future_wire_field: 'ignored',
 			},
 			{ id: 'act-2', kind: 'future-kind' },
-		]);
+		] as never);
 
 		await expect(listActionRows()).resolves.toEqual([
 			{ id: 'act-1', kind: 'background', status: 'running', sessionId: 'ses-1' },
@@ -31,7 +31,7 @@ describe('Action command contract boundary', () => {
 	});
 
 	it('keeps malformed top-level list responses as a no-op', async () => {
-		invokeMock.mockResolvedValue({ rows: [] });
+		invokeMock.mockResolvedValue({ rows: [] } as never);
 
 		await expect(listActionRows()).resolves.toBeNull();
 	});

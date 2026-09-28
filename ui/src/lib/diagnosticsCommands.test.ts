@@ -37,7 +37,7 @@ describe('diagnostics command boundary', () => {
 
 	it('keeps shell and API-key status validation at the same read boundary', async () => {
 		vi.mocked(invoke)
-			.mockResolvedValueOnce({ available: true })
+			.mockResolvedValueOnce({ available: true } as never)
 			.mockResolvedValueOnce({
 				models: { 'model-a': true, 'model-b': false },
 				providers: { cloud: true },
@@ -45,7 +45,7 @@ describe('diagnostics command boundary', () => {
 				ocr: true,
 				ocr_secret: false,
 				credential: 'must not escape the existing projection',
-			});
+			} as never);
 
 		await expect(checkShellAvailable({ shell: 'pwsh' })).resolves.toEqual({ available: true });
 		await expect(getApiKeyStatus()).resolves.toEqual({
@@ -66,7 +66,9 @@ describe('diagnostics command boundary', () => {
 			future_diagnostic: { sample: 'retained' },
 		};
 		const ui = { frames: 3, chunks: 8, drops: 1 };
-		vi.mocked(invoke).mockResolvedValueOnce(snapshot).mockResolvedValueOnce(snapshot);
+		vi.mocked(invoke)
+			.mockResolvedValueOnce(snapshot as never)
+			.mockResolvedValueOnce(snapshot as never);
 
 		await expect(getPerformanceMetrics(ui)).resolves.toBe(snapshot);
 		await expect(getPerformanceMetrics()).resolves.toBe(snapshot);

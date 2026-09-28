@@ -7,6 +7,14 @@ edition = "2024"
 name = "haven_app_binary_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[[bin]]
+name = "generate_ipc_contracts"
+path = "src/bin/generate_ipc_contracts.rs"
+required-features = ["ipc-codegen"]
+
+[features]
+ipc-codegen = ["dep:syn", "dep:quote", "dep:proc-macro2"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -16,6 +24,9 @@ tempfile.workspace = true
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
+syn = { workspace = true, optional = true }
+quote = { workspace = true, optional = true }
+proc-macro2 = { workspace = true, optional = true }
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

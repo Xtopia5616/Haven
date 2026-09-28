@@ -25,14 +25,15 @@ describe('createAskInteractionController', () => {
 
 	function createController(submitMessage = vi.fn()) {
 		const ready = vi.fn();
+		const setAutoFollow = vi.fn();
 		const controller = createAskInteractionController({
 			getActiveSessionId: () => SESSION_ID,
-			setAutoFollow: vi.fn(),
+			setAutoFollow,
 			setSelectionsReady: ready,
 			submitMessage,
 			reducer,
 		});
-		return { controller, ready, submitMessage };
+		return { controller, ready, submitMessage, setAutoFollow };
 	}
 
 	function loadAskMessages(...requests: ReturnType<typeof createRequest>[]) {
@@ -84,6 +85,45 @@ describe('createAskInteractionController', () => {
 
 		expect(submitMessage).toHaveBeenCalledOnce();
 		expect(submitMessage).toHaveBeenCalledWith('忽略', [], []);
+	});
+
+	it('routes composer input through a fully selected ask batch and appends typed text', () => {
+		loadAskMessages(
+			createRequest('ask-1', '第一个问题', ['A']),
+			createRequest('ask-2', '第二个问题', ['B']),
+		);
+		const { controller, submitMessage, setAutoFollow } = createController();
+		const images = [{ data: 'image' }];
+		const files = [{ filename: 'notes.txt' }];
+		controller.handleAskSelectionChange('ask-1', ['A']);
+		controller.handleAskSelectionChange('ask-2', ['B']);
+
+		controller.handleInputSubmit({ text: '请解释', images, files });
+
+		expect(submitMessage).toHaveBeenCalledOnce();
+		expect(submitMessage).toHaveBeenCalledWith(
+			'关于「第一个问题」：A\n关于「第二个问题」：B 请解释',
+			images,
+			files,
+		);
+		expect(setAutoFollow).toHaveBeenCalled();
+		expect(reducer.getState().interactions).toMatchObject({
+			'ask-1': expect.objectContaining({ status: 'resolved' }),
+			'ask-2': expect.objectContaining({ status: 'resolved' }),
+		});
+	});
+
+	it('keeps ordinary composer input separate when the pending ask batch is incomplete', () => {
+		loadAskMessages(createRequest('ask-1', '问题', ['A']));
+		const { controller, submitMessage, setAutoFollow } = createController();
+		controller.handleAskSelectionChange('ask-1', []);
+
+		controller.handleInputSubmit({ text: '直接回复', images: [], files: [] });
+
+		expect(submitMessage).toHaveBeenCalledOnce();
+		expect(submitMessage).toHaveBeenCalledWith('直接回复', [], []);
+		expect(reducer.getState().interactions?.['ask-1']).toMatchObject({ status: 'pending' });
+		expect(setAutoFollow).toHaveBeenCalledOnce();
 	});
 
 	it('clears awaiting and locally resolved ask state when a session resumes', () => {

@@ -20,6 +20,12 @@ interface ResolveAskOptions {
 	deferSubmit?: boolean;
 }
 
+interface InputSubmitPayload {
+	text: string;
+	images: unknown;
+	files: unknown;
+}
+
 /**
  * Own the chat-side ask batching state. The route supplies the active-session
  * and submission callbacks, while this controller keeps option selections,
@@ -185,6 +191,14 @@ export function createAskInteractionController({
 		trySubmitAskSelections(sessionId, '', [], []);
 	}
 
+	/** Route composer submissions through the pending ask batch when it is ready. */
+	function handleInputSubmit({ text, images, files }: InputSubmitPayload) {
+		setAutoFollow();
+		const sessionId = getActiveSessionId();
+		if (sessionId && trySubmitAskSelections(sessionId, text, images, files)) return;
+		submitMessage(text, images, files);
+	}
+
 	function handleIgnoreAsk(msgId: string) {
 		if (!getActiveSessionId()) return;
 		resolveAsk(msgId, { ignored: true });
@@ -195,6 +209,7 @@ export function createAskInteractionController({
 		computeAskSelectionsReady,
 		handleAskSelectionChange,
 		handleAskSubmit,
+		handleInputSubmit,
 		handleIgnoreAsk,
 		trySubmitAskSelections,
 	};

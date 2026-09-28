@@ -1,33 +1,28 @@
 /** Stable command responses used by the settings diagnostics UI. */
 
-export interface LogInfo {
-	enabled: boolean;
-	level: string;
-	path: string | null;
-}
+import type {
+  ApiKeyStatus as GeneratedApiKeyStatus,
+  LogInfo as GeneratedLogInfo,
+  LogTail as GeneratedLogTail,
+  ShellAvailability as GeneratedShellAvailability,
+  Settings as GeneratedSettings,
+  TauriCommandRequest,
+} from './generatedCommands.ts';
 
-export interface LogTail {
-	path: string;
-	content: string;
-}
-
-export interface ShellAvailability {
-	available: boolean;
-}
-
-export interface ApiKeyStatus {
-	models: Record<string, boolean>;
-	providers: Record<string, boolean>;
-	stt: boolean;
-	ocr: boolean;
-	ocr_secret: boolean;
-}
+export type LogInfo = GeneratedLogInfo;
+export type LogTail = GeneratedLogTail;
+export type ShellAvailability = GeneratedShellAvailability;
+export type ApiKeyStatus = GeneratedApiKeyStatus;
 
 /** Open response shape for diagnostics so added metric fields remain available. */
 export type MetricsSnapshot = Record<string, unknown>;
 
-/** Open nested config shape owned by haven_common::config::Settings. */
-export type SettingsPayload = Record<string, any>;
+/** Rust-owned config shape with room for forward-compatible extra fields. */
+export type SettingsPayload = GeneratedSettings & Record<string, unknown>;
+
+/** Rust-owned settings input shape, including Serde defaults for omitted fields. */
+export type SettingsUpdatePayload =
+	TauriCommandRequest<'update_settings'>['settings'] & Record<string, unknown>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -39,7 +34,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * while malformed root values keep the existing no-op behavior.
  */
 export function parseSettingsPayload(value: unknown): SettingsPayload | null {
-	return isRecord(value) ? value : null;
+	return isRecord(value) ? (value as SettingsPayload) : null;
 }
 
 export function parseLogInfo(value: unknown): LogInfo {

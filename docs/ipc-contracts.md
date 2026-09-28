@@ -5,102 +5,99 @@
 路由深处重复转换字段。
 
 版本 1 的全量命令目录由 `crates/app-binary/src/commands/contracts.rs` 唯一登记；
-前端镜像位于 `ui/src/lib/contracts/commands.ts`，CI 会校验两者与
-`generate_handler!`、本文目录的命令集合完全一致。请求 DTO 名称描述稳定 schema，
-实际 Tauri wire 仍保持扁平字段（例如 `{ sessionId }`），不额外包裹 `{ request: ... }`。
+前端目录 `ui/src/lib/contracts/commands.ts` 只维护经审阅的边界与安全说明；`scripts/generate-ipc-contracts.ps1` 从 Rust Tauri handler 参数和 Serde DTO 生成前端 request/response 类型。CI 检查生成物 drift，并核对 handler、注册表和本文命令名集合。wire 字段仍保持扁平（例如 `{ sessionId }`），不额外包裹 `{ request: ... }`。
 版本 1 不保留旧字段或旧事件别名。
 
 ## 全量命令登记（v1）
 
-以下表格是机器可校验的完整目录；响应中的 `Value` 只允许出现在明确的 provider、
-动态工具 schema 或工具输出扩展点，不能作为稳定业务外壳。
+以下表格列出完整命令集合及人工审阅的边界、安全不变量。wire shape 由 Rust handler 与 Serde DTO 生成；响应中的 `Value` 仅用于明确的 provider、动态工具 schema 或工具输出扩展点。
 
-| 命令 | 请求 DTO | 响应 | 边界 | 安全不变量 |
-|---|---|---|---|---|
-| `list_actions` | `-` | `ActionEvent[]` | read | 仅任务投影字段 |
-| `cancel_action` | `CancelActionRequest` | `bool` | mutate | kind 枚举校验 |
-| `list_action_history` | `ListActionHistoryRequest` | `ActionEvent[]` | read | limit ≤ 200 |
-| `delete_action` | `DeleteActionRequest` | `bool` | mutate | 按 id 删除单条任务 |
-| `open_external` | `OpenExternalRequest` | `()` | execute | 仅 http(s) 或校验后的本地绝对路径 |
-| `get_history` | `HistoryPageRequest` | `SessionHistoryRow[]` | read | 只读会话投影 |
-| `count_history` | `-` | `i64` | read | 只读聚合 |
-| `search_history_paginated` | `HistorySearchPageRequest` | `SessionHistoryRow[]` | read | 参数化查询 |
-| `count_history_search` | `HistorySearchRequest` | `i64` | read | 参数化查询 |
-| `search_history` | `HistorySearchRequest` | `SessionHistoryRow[]` | read | 参数化查询 |
-| `search_history_filtered` | `HistoryFilterRequest` | `SessionHistoryRow[]` | read | 分页和日期边界 |
-| `export_history` | `HistoryExportRequest` | `string` | read | 仅导出持久化历史 |
-| `get_log_info` | `-` | `LogInfo` | read | 不返回环境详情 |
-| `read_log_tail` | `ReadLogTailRequest` | `LogTail` | read | 尾部长度受限 |
-| `log_frontend_error` | `FrontendErrorRequest` | `()` | mutate | 脱敏后写入后端日志 |
-| `get_performance_metrics` | `UiMetricsSnapshot?` | `MetricsSnapshot` | read | 仅返回有界、无内容的后端与渲染器计数 |
-| `list_mcp_tools` | `-` | `McpServerSnapshot[]` | read | 快照不执行工具，env 值统一遮蔽 |
-| `reconnect_mcp` | `McpNameRequest` | `()` | execute | 只能选择已配置客户端 |
-| `refresh_mcp_servers` | `-` | `McpRefreshResult` | execute | renderer 触发的配置客户端 reconcile；不接收进程参数 |
-| `mcp_tool_call` | `McpToolCallRequest` | `McpToolCallResponse` | execute | 适配器调用经过 AuthorizationEngine |
-| `add_mcp_server` | `McpServerConfig` | `()` | execute | 共享 self 操作校验并持久化 |
-| `update_mcp_server` | `UpdateMcpServerRequest` | `()` | execute | 共享 self 操作安全重连 |
-| `remove_mcp_server` | `McpNameRequest` | `()` | execute | 共享 self 操作删除 |
-| `toggle_mcp_server` | `ToggleMcpServerRequest` | `()` | execute | 启用前先连接 |
-| `run_memory_maintenance` | `-` | `u64` | mutate | 维护路径统一清理 |
-| `recall_memory` | `RecallMemoryRequest` | `MemoryRecallItem[]` | read | limit 受限且凭据过滤 |
-| `list_facts` | `ListFactsRequest` | `Fact[]` | read | 只读事实投影 |
-| `add_fact` | `AddFactRequest` | `Fact` | mutate | 拒绝凭据样式内容 |
-| `delete_fact` | `DeleteFactRequest` | `()` | mutate | 按 fact id 删除 |
-| `get_api_key_status` | `-` | `ApiKeyStatus` | read | 只返回 presence，不返回凭据 |
-| `check_llm_connection` | `-` | `LlmConnectionReport` | read | 返回状态与非敏感原因分类，不返回 endpoint 或 provider 响应 |
-| `discover_models` | `DiscoverModelsRequest` | `ModelInfo[]` | execute | endpoint 与已保存 key 主机匹配 |
-| `discover_all_models` | `-` | `Record<string, ModelInfo[]>` | execute | 只查询已配置 provider |
-| `switch_model` | `SwitchModelRequest` | `()` | mutate | `role` 接收模型 ID 或 `RequestKind`，先校验再保存 |
-| `set_reasoning_effort` | `SetReasoningEffortRequest` | `()` | mutate | `role` 接收模型 ID 或 `RequestKind`，先校验再保存 |
-| `set_web_search` | `SetWebSearchRequest` | `()` | mutate | provider capability 先校验 |
-| `get_recording_state` | `-` | `RecordingState` | read | 只返回采集状态 |
-| `start_recording` | `-` | `()` | execute | 采集生命周期由 input 管线控制 |
-| `stop_recording` | `-` | `string` | execute | 先停止采集再异步转写 |
-| `cancel_recording` | `-` | `()` | execute | 清除 in-flight recording id |
-| `process_transcript` | `ProcessTranscriptRequest` | `ProcessResult` | execute | 附件限制和文件持久化校验 |
-| `reopen_session` | `SessionIdRequest` | `()` | mutate | session id 选择持久化会话 |
-| `get_sessions` | `-` | `SessionListResponse` | read | 活跃会话投影 |
-| `end_session` | `SessionIdRequest` | `()` | mutate | 仅显式结束 |
-| `interrupt_session` | `SessionIdRequest` | `()` | mutate | 停止当前输出但保留会话，可继续 |
-| `resolve_confirmation` | `ResolveConfirmationRequest` | `()` | mutate | effect/scope/target 后端校验，deny 优先 |
-| `update_session_title` | `UpdateSessionTitleRequest` | `()` | mutate | trim 后不得为空 |
-| `delete_session` | `SessionIdRequest` | `()` | mutate | 删除并释放运行态 |
-| `clear_history` | `-` | `u64` | mutate | 同时清除会话授权 |
-| `rollback_session` | `RollbackSessionRequest` | `()` | mutate | event cursor 与 projection clock 一起回退 |
-| `continue_session` | `SessionIdRequest` | `()` | mutate | 从错误 snapshot 恢复 |
-| `get_session_for_resume` | `SessionIdRequest` | `SessionResumeResponse` | read | 会话范围投影 |
-| `get_last_conversation` | `-` | `Option<SessionResumeResponse>` | read | 只取最近持久化会话 |
-| `get_settings` | `-` | `Settings` | read | 响应遮蔽凭据 |
-| `get_bootstrap_status` | `-` | `string` | read | 仅状态枚举 |
-| `update_settings` | `Settings` | `()` | mutate | shared loader 保留遮蔽密钥和工具段 |
-| `list_permissions` | `-` | `StoredPermission[]` | read | 只返回 key/effect |
-| `revoke_permission` | `RevokePermissionRequest` | `()` | mutate | 非空 key，原子保存 |
-| `reset_permissions` | `-` | `()` | mutate | 清除永久/会话规则，保留当前默认策略 |
-| `check_shell_available` | `CheckShellAvailableRequest` | `ShellAvailability` | read | 只返回 available |
-| `enable_autostart` | `-` | `()` | execute | 仅 release 构建 |
-| `disable_autostart` | `-` | `()` | execute | 只能删除受管条目 |
-| `is_autostart_enabled` | `-` | `bool` | read | 只返回状态布尔值 |
-| `list_skills` | `-` | `SkillInfo[]` | read | 仅元数据投影 |
-| `refresh_skills` | `-` | `()` | execute | 只扫描配置 skills root |
-| `set_skill_enabled` | `SetEnabledRequest` | `()` | mutate | 共享 self 操作持久化切换 |
-| `set_tool_enabled` | `SetEnabledRequest` | `()` | mutate | 共享 self 操作持久化切换 |
-| `open_skills_dir` | `-` | `string` | execute | 只能打开配置 skills root |
-| `execute_skill` | `ExecuteSkillRequest` | `SkillExecutionResponse` | execute | 限定 skill 名并经过 AuthorizationEngine |
-| `get_tools` | `-` | `ToolListResponse` | read | 返回全量 `ToolManifest[]`；UI 只在边界把 manifest 转为 camelCase |
-| `reset_tool_circuits` | `-` | `()` | mutate | 只清本地 circuit 状态 |
+| 命令 | 边界 | 安全不变量 |
+|---|---|---|
+| `list_actions` | read | 仅任务投影字段 |
+| `cancel_action` | mutate | kind 枚举校验 |
+| `list_action_history` | read | limit ≤ 200 |
+| `delete_action` | mutate | 按 id 删除单条任务 |
+| `open_external` | execute | 仅 http(s) 或校验后的本地绝对路径 |
+| `get_history` | read | 只读会话投影 |
+| `count_history` | read | 只读聚合 |
+| `search_history_paginated` | read | 参数化查询 |
+| `count_history_search` | read | 参数化查询 |
+| `search_history` | read | 参数化查询 |
+| `search_history_filtered` | read | 分页和日期边界 |
+| `export_history` | read | 仅导出持久化历史 |
+| `get_log_info` | read | 不返回环境详情 |
+| `read_log_tail` | read | 尾部长度受限 |
+| `log_frontend_error` | mutate | 脱敏后写入后端日志 |
+| `get_performance_metrics` | read | 仅返回有界、无内容的后端与渲染器计数 |
+| `list_mcp_tools` | read | 快照不执行工具，env 值统一遮蔽 |
+| `reconnect_mcp` | execute | 只能选择已配置客户端 |
+| `refresh_mcp_servers` | execute | renderer 触发的配置客户端 reconcile；不接收进程参数 |
+| `mcp_tool_call` | execute | 适配器调用经过 AuthorizationEngine |
+| `add_mcp_server` | execute | 共享 self 操作校验并持久化 |
+| `update_mcp_server` | execute | 共享 self 操作安全重连 |
+| `remove_mcp_server` | execute | 共享 self 操作删除 |
+| `toggle_mcp_server` | execute | 启用前先连接 |
+| `run_memory_maintenance` | mutate | 维护路径统一清理 |
+| `recall_memory` | read | limit 受限且凭据过滤 |
+| `list_facts` | read | 只读事实投影 |
+| `add_fact` | mutate | 拒绝凭据样式内容 |
+| `delete_fact` | mutate | 按 fact id 删除 |
+| `get_api_key_status` | read | 只返回 presence，不返回凭据 |
+| `check_llm_connection` | read | 返回状态与非敏感原因分类，不返回 endpoint 或 provider 响应 |
+| `discover_models` | execute | endpoint 与已保存 key 主机匹配 |
+| `discover_all_models` | execute | 只查询已配置 provider |
+| `switch_model` | mutate | `role` 接收模型 ID 或 `RequestKind`，先校验再保存 |
+| `set_reasoning_effort` | mutate | `role` 接收模型 ID 或 `RequestKind`，先校验再保存 |
+| `set_web_search` | mutate | provider capability 先校验 |
+| `get_recording_state` | read | 只返回采集状态 |
+| `start_recording` | execute | 采集生命周期由 input 管线控制 |
+| `stop_recording` | execute | 先停止采集再异步转写 |
+| `cancel_recording` | execute | 清除 in-flight recording id |
+| `process_transcript` | execute | 附件限制和文件持久化校验 |
+| `reopen_session` | mutate | session id 选择持久化会话 |
+| `get_sessions` | read | 活跃会话投影 |
+| `end_session` | mutate | 仅显式结束 |
+| `interrupt_session` | mutate | 停止当前输出但保留会话，可继续 |
+| `resolve_confirmation` | mutate | effect/scope/target 后端校验，deny 优先 |
+| `update_session_title` | mutate | trim 后不得为空 |
+| `delete_session` | mutate | 删除并释放运行态 |
+| `clear_history` | mutate | 同时清除会话授权 |
+| `rollback_session` | mutate | event cursor 与 projection clock 一起回退 |
+| `continue_session` | mutate | 从错误 snapshot 恢复 |
+| `get_session_for_resume` | read | 会话范围投影 |
+| `get_last_conversation` | read | 只取最近持久化会话 |
+| `get_settings` | read | 响应遮蔽凭据 |
+| `get_bootstrap_status` | read | 仅状态枚举 |
+| `update_settings` | mutate | shared loader 保留遮蔽密钥和工具段 |
+| `list_permissions` | read | 只返回 key/effect |
+| `revoke_permission` | mutate | 非空 key，原子保存 |
+| `reset_permissions` | mutate | 清除永久/会话规则，保留当前默认策略 |
+| `check_shell_available` | read | 只返回 available |
+| `enable_autostart` | execute | 仅 release 构建 |
+| `disable_autostart` | execute | 只能删除受管条目 |
+| `is_autostart_enabled` | read | 只返回状态布尔值 |
+| `list_skills` | read | 仅元数据投影 |
+| `refresh_skills` | execute | 只扫描配置 skills root |
+| `set_skill_enabled` | mutate | 共享 self 操作持久化切换 |
+| `set_tool_enabled` | mutate | 共享 self 操作持久化切换 |
+| `open_skills_dir` | execute | 只能打开配置 skills root |
+| `execute_skill` | execute | 限定 skill 名并经过 AuthorizationEngine |
+| `get_tools` | read | 返回全量 `ToolManifest[]`；UI 只在边界把 manifest 转为 camelCase |
+| `reset_tool_circuits` | mutate | 只清本地 circuit 状态 |
 
 ## 会话命令（v1）
 
-| 命令 | 请求 | 响应 | 说明 |
-|---|---|---|---|
-| `get_sessions` | 无 | `SessionListResponse` | 运行中会话列表 |
-| `get_session_for_resume` | `{ session_id }` | `SessionResumeResponse` | 加载持久化会话、消息、步骤与用量 |
-| `get_last_conversation` | 无 | `Option<SessionResumeResponse>` | 应用启动时恢复最近会话 |
-| `reopen_session` / `continue_session` / `end_session` / `interrupt_session` | `{ session_id }` | `()` | 生命周期控制；中断保留会话 |
-| `rollback_session` | `{ session_id, target_step, pause, target_message_id }` | `()` | 按事件游标与投影时钟回滚 |
-| `update_session_title` | `{ session_id, title }` | `()` | 保存并广播新标题 |
-| `delete_session` / `clear_history` | `{ session_id }` / 无 | `()` / 删除数量 | 删除后广播 `session:deleted` |
-| `resolve_confirmation` | `{ step_id, effect, scope, target }` | `()` | 仅确认流程使用；effect/scope/target 必填且由后端按 typed permission decision 校验，target 只能选择当前 capability 的操作、功能组或工具父级 |
+| 命令 | 边界 | 说明 |
+|---|---|---|
+| `get_sessions` | read | 活跃会话列表 |
+| `get_session_for_resume` | read | 恢复指定会话所需的持久化投影 |
+| `get_last_conversation` | read | 最近持久化会话 |
+| `reopen_session` / `continue_session` / `end_session` / `interrupt_session` | mutate | 会话生命周期控制；中断保留会话 |
+| `rollback_session` | mutate | 回滚分支并同步截断事件和投影 |
+| `update_session_title` | mutate | 更新非空标题 |
+| `delete_session` / `clear_history` | mutate | 删除会话或清空历史，并广播 `session:deleted` |
+| `resolve_confirmation` | mutate | 解决一个待确认请求 |
 
 Tauri 接收前端参数时采用其自动 camelCase → Rust snake_case 映射；页面调用处使用 camelCase。
 
@@ -123,12 +120,12 @@ Tauri 接收前端参数时采用其自动 camelCase → Rust snake_case 映射�
 
 ## 任务命令（v1）
 
-| 命令 | 请求 | 响应 | 说明 |
-|---|---|---|---|
-| `list_actions` | 无 | `ActionEvent[]` | 运行中后台任务、等待中或运行中的定时任务和尚在内存板上的终态任务。 |
-| `cancel_action` | `{ action_id, kind }` | `bool` | `kind` 仅为 `background` 或 `scheduled`；未知值由 Tauri 反序列化拒绝。 |
-| `list_action_history` | `{ kind?, limit? }` | `ActionEvent[]` | 持久化终态历史；定时任务返回已触发或已取消记录，`limit` 最大为 200。 |
-| `delete_action` | `{ action_id }` | `bool` | 删除一条已持久化的任务历史。 |
+| 命令 | 边界 | 说明 |
+|---|---|---|
+| `list_actions` | read | 当前任务投影 |
+| `cancel_action` | mutate | 取消指定任务 |
+| `list_action_history` | read | 有界终态历史 |
+| `delete_action` | mutate | 删除指定历史任务 |
 
 `ActionEvent` 是任务面板的唯一公开记录：`{ id, kind, status?, session_id?, started_at?,
 finished_at?, due_at?, title?, body?, mode?, command?, output?, error?, error_reason?,
@@ -154,21 +151,21 @@ exit_code?, preview? }`。`status` 只能是 `waiting`、`running`、`completed`
 
 ## 设置诊断命令（v1）
 
-| 命令 | 请求 | 响应 | 说明 |
-|---|---|---|---|
-| `get_log_info` | 无 | `LogInfo` | 返回文件日志开关、级别和当前日志路径；路径可能为 `null`。 |
-| `read_log_tail` | `{ max_lines? }` | `LogTail` | 返回当前日志文件路径和受上限约束的尾部文本。文件日志关闭或文件不存在时返回命令错误。 |
-| `log_frontend_error` | `{ message }` | `()` | 将脱敏后的用户可见前端错误写入后端文件日志；失败不影响前端 toast。 |
-| `check_shell_available` | `{ shell }` | `ShellAvailability` | 返回指定 shell 是否可用；不会返回 PATH 或进程探测细节。 |
+| 命令 | 边界 | 说明 |
+|---|---|---|
+| `get_log_info` | read | 日志状态与路径信息 |
+| `read_log_tail` | read | 有界日志尾部 |
+| `log_frontend_error` | mutate | 记录已净化的前端错误 |
+| `check_shell_available` | read | 查询 shell 是否可用 |
 
 上述命令的 Rust 响应均为命名 DTO，前端由 `ui/src/lib/contracts/settings.ts` 在消费前校验。
 日志内容仍按日志查看器用途返回，不能复用于普通错误提示或其它 IPC 事件。
 
 ## 模型设置命令（v1）
 
-| 命令 | 请求 | 响应 | 说明 |
-|---|---|---|---|
-| `get_api_key_status` | 无 | `ApiKeyStatus` | 返回各命名模型、媒体能力和已配置 provider 的布尔状态；不返回任何凭据。 |
+| 命令 | 边界 | 说明 |
+|---|---|---|
+| `get_api_key_status` | read | 凭据存在性，不返回密钥 |
 
 `ApiKeyStatus.models` 的 key 是用户配置的 model id，`providers` 的 key 是用户配置的
 provider 名称；两者都是明确扩展点，value 始终为布尔值。其它状态字段由 Rust DTO
@@ -176,11 +173,11 @@ provider 名称；两者都是明确扩展点，value 始终为布尔值。其�
 
 ## 录音与转写命令、事件（v1）
 
-| 命令 | 请求 | 响应 | 说明 |
-|---|---|---|---|
-| `get_recording_state` | 无 | `RecordingState { is_recording, is_toggle }` | 当前采集状态；不会暴露设备或 provider 细节。 |
-| `start_recording` / `stop_recording` / `cancel_recording` | 无 | `()` | 采集与转写生命周期由下列事件报告。 |
-| `process_transcript` | `{ text, session_id?, recording_session_id? }` | `()` | 将已确认的纯文本提交为会话输入；语音转写的 `rec-*` 仅用于把入口侧媒体 usage 绑定到最终 `ses-*` 会话。 |
+| 命令 | 边界 | 说明 |
+|---|---|---|
+| `get_recording_state` | read | 当前采集状态 |
+| `start_recording` / `stop_recording` / `cancel_recording` | execute | 采集与转写生命周期由下列事件报告。 |
+| `process_transcript` | execute | 提交文本与附件进入会话 |
 
 Rust DTO 定义在 `crates/app-binary/src/events.rs`，前端唯一转换边界是
 `ui/src/lib/contracts/recording.ts` 与 `recordingEventListeners`。`rec-*` 为单次录音 ID，

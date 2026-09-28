@@ -17,7 +17,7 @@ describe('performance metrics export boundary', () => {
 
 	it('exports backend and renderer metrics through one invoke with the live UI snapshot', async () => {
 		const ui: StreamMetricsSnapshot = { frames: 3, chunks: 8, drops: 1 };
-		vi.mocked(invoke).mockResolvedValue({ counters: {}, ui });
+		vi.mocked(invoke).mockResolvedValue({ counters: {}, ui } as never);
 		const unregister = registerPerformanceMetricsProvider(() => ui);
 
 		await expect(getPerformanceMetrics()).resolves.toEqual({ counters: {}, ui });

@@ -7,35 +7,15 @@
  * the current memory views consume those names and command responses are
  * passed through without normalization.
  */
-export interface FactSourceRef {
-	message_id: string;
-	snippet: string;
-	[field: string]: unknown;
-}
+import type {
+	Fact as GeneratedFact,
+	FactSourceRef as GeneratedFactSourceRef,
+	MemoryRecallItem as GeneratedMemoryRecallItem,
+} from './generatedCommands.ts';
 
-export interface Fact {
-	id: string;
-	subject: string;
-	predicate: string;
-	object: string;
-	source: string;
-	confidence: number;
-	tags: string[];
-	created_at: string;
-	mention_count: number;
-	last_seen_at: string | null;
-	source_ref: FactSourceRef | null;
-	durability: number;
-	[field: string]: unknown;
-}
-
-export interface MemoryRecallItem {
-	entity_id: string;
-	text: string;
-	score: number;
-	model: string;
-	[field: string]: unknown;
-}
+export type FactSourceRef = GeneratedFactSourceRef;
+export type Fact = GeneratedFact;
+export type MemoryRecallItem = GeneratedMemoryRecallItem;
 
 /** Recall item with the requested kind attached by the existing UI projection. */
 export type MemoryRecallResult = MemoryRecallItem & { kind: string };

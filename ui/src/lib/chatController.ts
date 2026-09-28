@@ -11,6 +11,7 @@ import { isErrorStatus } from './sessionStatus.ts';
 import { processResultSessionId } from './submit.ts';
 import type { InteractionRequest } from './contracts/app.ts';
 import type { RollbackSessionRequest, SessionIdRequest } from './contracts/commands.ts';
+import type { TauriCommandInvoke } from './contracts/generatedCommands.ts';
 import { resumeInteractions as resumeInteractionsFromProjection } from './sessionReducer.ts';
 import type {
 	SessionAction,
@@ -18,7 +19,7 @@ import type {
 	SessionSummary,
 } from './sessionReducer.ts';
 
-export type ChatInvoke = <T = unknown>(command: string, args?: unknown) => Promise<T>;
+export type ChatInvoke = TauriCommandInvoke;
 
 export interface ChatImageAttachment {
 	media_type: string;

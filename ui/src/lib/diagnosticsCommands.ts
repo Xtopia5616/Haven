@@ -38,5 +38,7 @@ export function getApiKeyStatus(): Promise<ApiKeyStatus> {
 
 /** Read content-free performance metrics without filtering dynamic diagnostic fields. */
 export function getPerformanceMetrics(ui?: UiMetricsSnapshot): Promise<MetricsSnapshot> {
-	return invoke('get_performance_metrics', ui ? { ui } : undefined);
+	return invoke('get_performance_metrics', ui ? { ui } : undefined).then(
+		(value: unknown) => value as MetricsSnapshot,
+	);
 }

@@ -58,7 +58,7 @@
 		vad_threshold: 0.5,
 	});
 	let session = $state({ max_concurrent: 3, max_steps: 30 });
-	/** @type {Record<string, number>} */
+	/** @type {Partial<import('$lib/contracts/generatedCommands.ts').ContextLimitsConfig>} */
 	let contextLimits = $state({
 		compaction_ratio: 0.65,
 		compaction_reserve_tokens: 8192,
@@ -121,6 +121,7 @@
 		max_tools_per_request: 64,
 	});
 	let memory = $state({ session_window_size: 50, history_retention_days: 90 });
+	/** @type {{ running: boolean, lastCount: number | null }} */
 	let memoryMaintenance = $state({ running: false, lastCount: null });
 	/** @type {{ permission_mode: string, sandbox_mode: string, network_policy: string, writable_roots: string[], permissions: any[] }} */
 	let security = $state({
@@ -796,7 +797,7 @@
 			await reconcileDefaultModelBeforeSave();
 			skipNextDefaultModelSync = true;
 			await invoke('update_settings', {
-				settings: /** @type {import('$lib/contracts/settings.ts').SettingsPayload} */ ({
+				settings: /** @type {import('$lib/contracts/settings.ts').SettingsUpdatePayload} */ ({
 					default_shell: defaultShell,
 					llm: llmConfig,
 					hotkey: { key_binding: hotkeyBinding, mode: hotkeyMode, mute_hotkey: null },

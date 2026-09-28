@@ -77,7 +77,7 @@ describe('chat model discovery sync', () => {
 		const sync = createSync(modelOptions);
 		const oldUrl = 'https://old.example/v1';
 		const newUrl = 'https://new.example/v1';
-		const currentModels: ModelInfo[] = [
+		const currentModels: Array<ModelInfo & { provider_metadata: { source: string } }> = [
 			{
 				id: 'new-model',
 				provider: 'new-provider',
