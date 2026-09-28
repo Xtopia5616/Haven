@@ -1,26 +1,31 @@
 //! Agent-owned ports for reading immutable tool catalog views.
 
 use async_trait::async_trait;
-use haven_tools::{ToolCatalogSnapshot, ToolsManager};
+use haven_tools::ToolCatalogSnapshot;
+#[cfg(test)]
+use haven_tools::ToolsManager;
 use std::sync::Arc;
 
 /// Reads the immutable tool catalog view for one session.
 #[async_trait]
-pub(crate) trait ToolCatalogPort: Send + Sync {
+pub trait ToolCatalogPort: Send + Sync {
     async fn catalog_snapshot(&self, session_id: &str) -> Arc<ToolCatalogSnapshot>;
 }
 
-/// Production adapter that delegates catalog snapshot creation to tools.
+/// Test adapter that delegates catalog snapshot creation to tools.
+#[cfg(test)]
 pub(crate) struct ToolsManagerToolCatalogAdapter {
     tools: Arc<ToolsManager>,
 }
 
+#[cfg(test)]
 impl ToolsManagerToolCatalogAdapter {
     pub(crate) fn new(tools: Arc<ToolsManager>) -> Self {
         Self { tools }
     }
 }
 
+#[cfg(test)]
 #[async_trait]
 impl ToolCatalogPort for ToolsManagerToolCatalogAdapter {
     async fn catalog_snapshot(&self, session_id: &str) -> Arc<ToolCatalogSnapshot> {

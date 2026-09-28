@@ -225,7 +225,7 @@ Session 清理与 Agent wiring 收口（2026-09-26，ADR 0374）：`SessionStore
 | 1：SessionActor 热运行态 owner | 已完成 | Actor task 单一拥有 `SessionState`；`SessionState::react_run` 持有 active run future，future 独占捕获 run-local `ReActState`，同一 actor loop select future 与 mailbox。pending provider/tool/storage await 不借用整份 `SessionState`；删除活动 session 的取消、run-exit join、durable row 删除顺序有 supervisor 集成回归（ADR 0214、0382）。 |
 | 2：恢复、回滚与事件/投影边界 | 已完成 | `session_events` 成为恢复权威，rollback/projection cutoff 与已知 ingress/recovery 例外有明确 owner 和回归覆盖；search-final messages projection 并入 owning ToolCall commit，不再有 ReAct 内容行的直接投影旁路（ADR 0385）。阶段内核心恢复/回滚验证已完成；全新 profile 下的完整应用恢复/发布验收仍归阶段 9。 |
 | 3：存储 domain ports 与 typed projection | 已完成 | Session/Memory/Usage/Action typed-store 迁移及 App cleanup 路径收口完成。App composition root 创建 typed memory stores；生产 Agent 路径不把 raw `Database` 传入 `MemoryService`。ActionService 稳定 status/list projection 由 typed views 暴露；该阶段列明的 JSON 边界按 ADR 0383 处理，全仓 typed-output 审计仍由全局验收跟踪。 |
-| 4：Tools capability runtime 与 Agent ports | 已完成 | `AgentLayer` 与 `SessionSupervisor` 接收组合根组装的端口 bundle；session runner 通过 `ToolExecutionContext` 提交 session/tool/input/cancel/step identity。live authorization 仍在执行前决策，tool execution 使用当前 turn 的 immutable catalog snapshot；ToolsManager 仅由 composition adapters 持有（ADR 0384）。 |
+| 4：Tools capability runtime 与 Agent ports | 已完成 | `AgentLayer` 与 `SessionSupervisor` 接收显式端口 bundle；session runner 通过完整 `ToolExecutionPort` 与 `ToolExecutionContext` 提交 session/tool/input/cancel/step identity，`ToolAuthorizationPort` 单独准备 live policy request。prompt/catalog/execution/observation/overlay/asset 的 manager adapters 由 app composition root 创建；生产 Agent runtime 不依赖具体 `ToolsManager`。执行前授权与 turn catalog snapshot 语义不变（ADR 0374、0384、0388）。 |
 | 5：Runtime config apply ownership | 已完成 | ConfigService、Settings/model/Tools 同域写入 gate、phase planning 与 durable-first 部分失败语义已落地；显式 retry、补偿/rollback 与 auto-restart 不属于当前契约。 |
 | 6：LLM Router 请求对象化 | 已完成 | 请求对象、执行器拆分、descriptor/capability 映射与 usage owner 契约已由 ADR 0354 最终审计关闭。 |
 | 7：Job 生命周期与 MemoryRuntime | 进行中 | MemoryRuntime 应用级所有权已完成；完整 Job lifecycle、dependency-waiting 持久化实现和统一 terminal transcript 仍有后续。dependency-waiting 行为决策已确认，见 ADR 0375。 |
@@ -323,7 +323,7 @@ SessionStore
 本轮（ADR 0374）已完成：启动恢复、一次性 retention、上传引用和每日 cleanup task 不再捕获
 raw `Database`，而是使用 `SessionStore` typed ports；AgentLayer 从组合根显式接收 `ToolsManager`，
 SessionSupervisor 仅向 Agent 内部提供 authorization/action 窄 capability。保留的执行 facade、
-prompt/catalog adapters 仍按阶段 4 跟踪。阶段 3 已列范围验收（ADR 0383）进一步将 memory typed stores 的创建移至 App composition root；生产 `MemoryService` 不接收 raw `Database`，Agent/Tools 的生产路径不持有上层 raw `Database`。ActionService 的稳定 status/list API 现为 typed projection。以上不代表全仓 stable-output DTO 与 JSON 边界审计完成；该审计状态见全局验收表。
+prompt/catalog adapters 在 ADR 0374 时仍按阶段 4 跟踪，后由 ADR 0388 收口。阶段 3 已列范围验收（ADR 0383）进一步将 memory typed stores 的创建移至 App composition root；生产 `MemoryService` 不接收 raw `Database`，Agent/Tools 的生产路径不持有上层 raw `Database`。ActionService 的稳定 status/list API 现为 typed projection。以上不代表全仓 stable-output DTO 与 JSON 边界审计完成；该审计状态见全局验收表。
 
 主要文件：`crates/memory/src/` repositories/database、`crates/agent/src/` usage/session、`crates/tools/src/action_service.rs`、`crates/app-binary/src/commands/`。
 
@@ -344,9 +344,9 @@ prompt/catalog adapters 仍按阶段 4 跟踪。阶段 3 已列范围验收（AD
 
 主要文件：`crates/tools/src/manager.rs`、`tool_runtime.rs`、`execution.rs`、`registry.rs`、`crates/agent/src/layer.rs`、`session/`、`crates/app-binary/src/runtime.rs`。
 
-验收：Agent runtime owners 不依赖 ToolsManager 或其 service container；只在 composition boundary 创建 manager adapters；启动后执行能力 bundle 完整注入；工具目录 snapshot、执行前授权、取消、step identity 和 timeout 行为不变。落实见 ADR 0384。
+验收：Agent runtime owners 不依赖 ToolsManager 或其 service container；只在 composition boundary 创建 manager adapters；启动后执行能力 bundle 完整注入；工具目录 snapshot、执行前授权、取消、step identity 和 timeout 行为不变。执行/授权、prompt/catalog/observation、overlay 与 asset lease adapters 现由 app composition root 创建；落实见 ADR 0384、0388。
 
-2026-09-25 ToolsManager façade 审计（ADR 0345）：当前源码入口是 `manager.rs`、`execution.rs` 与 `catalog.rs`。授权请求构造曾与 `AuthorizedExecutor` 共处，且 live 与 snapshot lookup 各自维护未知工具策略 fallback；现由 crate-private `ToolAuthorizationPolicy` 准备 typed request，`AuthorizationEngine` 仍由调用方实时评估，交互确认仍先于执行。session overlay 的 mutable registrations/version 仅由 `SessionCatalog` 持有；catalog snapshot 是其不可变 turn 投影。asset metadata/pending/session leases 由同一个 `ManagedAssetRegistry` 状态持有，`ToolServices` 与 builtin/manager 克隆共享其内部状态。故不把 overlay、lease 或 projection 再拆为并列 owner。此审计提出的 `ToolExecutionContext` 后续边界已由 ADR 0384 收口。
+2026-09-25 ToolsManager façade 审计（ADR 0345）：当前源码入口是 `manager.rs`、`execution.rs` 与 `catalog.rs`。授权请求构造曾与 `AuthorizedExecutor` 共处，且 live 与 snapshot lookup 各自维护未知工具策略 fallback；现由 crate-private `ToolAuthorizationPolicy` 准备 typed request，`AuthorizationEngine` 仍由调用方实时评估，交互确认仍先于执行。session overlay 的 mutable registrations/version 仅由 `SessionCatalog` 持有；catalog snapshot 是其不可变 turn 投影。asset metadata/pending/session leases 由同一个 `ManagedAssetRegistry` 状态持有，`ToolServices` 与 builtin/manager 克隆共享其内部状态。故不把 overlay、lease 或 projection 再拆为并列 owner。该审计提出的 context/Agent ports 由 ADR 0384、0388 分阶段收口。
 
 ### 阶段 5（已完成）：Runtime config apply ownership（P1）
 
@@ -554,7 +554,7 @@ Phase 7.1 验收与未决风险：见 ADR 0259、0261、0262、0263、0264、026
 
 #### 2026-09-26 最终验收审计（ADR 0361）
 
-- 总体验收仍未完成：durable transcript recovery、SessionActor 单 task 所有权与阶段 3 的 raw Database/Action typed projection 验收满足（ADR 0382、0383）；App composition root 可持有 raw `Database` 创建 typed stores。阶段 4 的执行 facade、prompt/catalog/observation adapters 仍依赖 `ToolsManager`；runtime failure semantics、Rust→TypeScript codegen 等全局条件仍有未决项。
+- 总体验收仍未完成：durable transcript recovery、SessionActor 单 task 所有权与阶段 3 的 raw Database/Action typed projection 验收满足（ADR 0382、0383）；App composition root 可持有 raw `Database` 创建 typed stores。阶段 4 的执行 facade、prompt/catalog/observation adapters 在本次 2026-09-26 审计时仍依赖 `ToolsManager`，后由 ADR 0388 收口；runtime failure semantics、Rust→TypeScript codegen 等全局条件仍有未决项。
 - 本轮 Rust workspace 与 UI 的格式、测试、类型检查、clippy、生产构建及 IPC validators 全部通过。AppState 测试启动的媒体和上传清理根已改为显式临时目录；测试使用仓库 `target` 下的隔离 `APPDATA` 根。详见 ADR 0361 的命令与证据。
 - 全新用户配置下的 GUI 启动、模型设置、媒体/任务流程、升级重置和卸载未执行；仓库当前没有 disposable profile / VM 自动验收入口。阶段 9 在完成一次性 Windows profile 或 VM 中的发布验收前保持开放。
 - 本轮不拆分 `haven-common`、不引入新的 runtime 性能优化，也不实现已确认的 Settings 同域串行/SkillsExec 重启生效策略；审计当时仍未选择 Settings recovery/retry、完整 Job lifecycle、session occurrence identity、codegen 或剩余 UI command-family 策略。session occurrence identity 已由 ADR 0386 解决；其余未决项继续由各自 ADR 跟踪。

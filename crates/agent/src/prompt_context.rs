@@ -9,7 +9,9 @@ use std::sync::{Arc, RwLock};
 use async_trait::async_trait;
 use haven_common::config::ContextLimitsConfig;
 use haven_common::tools::ToolDef;
-use haven_tools::{RuntimeCapabilities, SkillInfo, ToolsManager};
+#[cfg(test)]
+use haven_tools::ToolsManager;
+use haven_tools::{RuntimeCapabilities, SkillInfo};
 use serde_json::Value;
 
 use crate::memory_service::MemoryService;
@@ -53,6 +55,7 @@ pub trait PromptToolPort: Send + Sync {
 }
 
 #[async_trait]
+#[cfg(test)]
 impl PromptToolPort for ToolsManager {
     fn catalog_versions(&self) -> PromptCatalogVersions {
         let services = self.share_services();

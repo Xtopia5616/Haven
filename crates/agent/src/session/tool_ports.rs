@@ -2,9 +2,10 @@
 
 use async_trait::async_trait;
 use haven_common::types::{MessageAttachment, RiskLevel};
+#[cfg(test)]
+use haven_tools::ToolsManager;
 use haven_tools::{
     ActionService, AuthorizationEngine, AuthorizationRequest, ToolRegistration, ToolResult,
-    ToolsManager,
 };
 use serde_json::Value;
 use std::sync::Arc;
@@ -12,17 +13,34 @@ use tokio_util::sync::CancellationToken;
 
 /// One execution request crossing the Agent-to-Tools runtime boundary.
 #[derive(Clone)]
-pub(crate) struct ToolExecutionContext {
-    pub(crate) session_id: Option<String>,
-    pub(crate) tool_name: String,
-    pub(crate) input: Value,
-    pub(crate) cancel: CancellationToken,
-    pub(crate) step_id: Option<String>,
+pub struct ToolExecutionContext {
+    /// Trusted session identity. It is never read from model-supplied input.
+    pub session_id: Option<String>,
+    pub tool_name: String,
+    pub input: Value,
+    /// Cancellation authority for the owning run or action.
+    pub cancel: CancellationToken,
+    /// Stable step identity, separate from the provider's input payload.
+    pub step_id: Option<String>,
 }
 
-/// Minimal live capability needed by the session tool runner.
+/// Executes an already-authorized tool request and resolves its registrations.
 #[async_trait]
-pub(crate) trait ToolExecutionPort: Send + Sync {
+pub trait ToolExecutionPort: Send + Sync {
+    async fn execute(&self, context: ToolExecutionContext) -> anyhow::Result<ToolResult>;
+
+    async fn registrations(
+        &self,
+        session_id: &str,
+        tool_name: &str,
+        output: &Value,
+    ) -> Vec<ToolRegistration>;
+}
+
+/// Prepares authorization requests from live policy or a turn's catalog view.
+/// Decisions and confirmation receipts remain owned by `AuthorizationEngine`.
+#[async_trait]
+pub trait ToolAuthorizationPort: Send + Sync {
     async fn risk_level(
         &self,
         session_id: Option<&str>,
@@ -44,30 +62,66 @@ pub(crate) trait ToolExecutionPort: Send + Sync {
         tool_name: &str,
         input: &Value,
     ) -> AuthorizationRequest;
-
-    async fn execute(&self, context: ToolExecutionContext) -> anyhow::Result<ToolResult>;
-
-    async fn registrations(
-        &self,
-        session_id: &str,
-        tool_name: &str,
-        output: &Value,
-    ) -> Vec<ToolRegistration>;
 }
 
-/// Production adapter keeps mutable tool lookup and execution in Tools.
+/// Test adapter mirrors the app composition adapter's execution calls.
+#[cfg(test)]
 pub(crate) struct ToolsManagerToolExecutionAdapter {
     tools: Arc<ToolsManager>,
 }
 
+#[cfg(test)]
 impl ToolsManagerToolExecutionAdapter {
     pub(crate) fn new(tools: Arc<ToolsManager>) -> Self {
         Self { tools }
     }
 }
 
+#[cfg(test)]
 #[async_trait]
 impl ToolExecutionPort for ToolsManagerToolExecutionAdapter {
+    async fn execute(&self, context: ToolExecutionContext) -> anyhow::Result<ToolResult> {
+        self.tools
+            .execute_tool_with_step(
+                context.session_id.as_deref(),
+                &context.tool_name,
+                context.input,
+                context.cancel,
+                context.step_id.as_deref(),
+            )
+            .await
+    }
+
+    async fn registrations(
+        &self,
+        session_id: &str,
+        tool_name: &str,
+        output: &Value,
+    ) -> Vec<ToolRegistration> {
+        self.tools
+            .get_tool_for_session(Some(session_id), tool_name)
+            .await
+            .map(|tool| tool.registrations(output))
+            .unwrap_or_default()
+    }
+}
+
+/// Test adapter for live authorization request preparation.
+#[cfg(test)]
+pub(crate) struct ToolsManagerToolAuthorizationAdapter {
+    tools: Arc<ToolsManager>,
+}
+
+#[cfg(test)]
+impl ToolsManagerToolAuthorizationAdapter {
+    pub(crate) fn new(tools: Arc<ToolsManager>) -> Self {
+        Self { tools }
+    }
+}
+
+#[cfg(test)]
+#[async_trait]
+impl ToolAuthorizationPort for ToolsManagerToolAuthorizationAdapter {
     async fn risk_level(
         &self,
         session_id: Option<&str>,
@@ -100,38 +154,14 @@ impl ToolExecutionPort for ToolsManagerToolExecutionAdapter {
         self.tools
             .get_authorization_request_from_snapshot(catalog, session_id, tool_name, input)
     }
-
-    async fn execute(&self, context: ToolExecutionContext) -> anyhow::Result<ToolResult> {
-        self.tools
-            .execute_tool_with_step(
-                context.session_id.as_deref(),
-                &context.tool_name,
-                context.input,
-                context.cancel,
-                context.step_id.as_deref(),
-            )
-            .await
-    }
-
-    async fn registrations(
-        &self,
-        session_id: &str,
-        tool_name: &str,
-        output: &Value,
-    ) -> Vec<ToolRegistration> {
-        self.tools
-            .get_tool_for_session(Some(session_id), tool_name)
-            .await
-            .map(|tool| tool.registrations(output))
-            .unwrap_or_default()
-    }
 }
 
 /// Explicit capabilities needed by one session supervisor.
 #[derive(Clone)]
 pub struct SessionToolPorts {
     pub(super) execution: Arc<dyn ToolExecutionPort>,
-    pub(super) catalog: Arc<dyn crate::react::ToolCatalogPort>,
+    pub(super) tool_authorization: Arc<dyn ToolAuthorizationPort>,
+    pub(super) catalog: Arc<dyn crate::ToolCatalogPort>,
     pub(super) authorization: Arc<AuthorizationEngine>,
     pub(super) actions: Arc<ActionService>,
     pub(super) session_tool_overlay: Arc<dyn SessionToolOverlayPort>,
@@ -140,23 +170,52 @@ pub struct SessionToolPorts {
 }
 
 impl SessionToolPorts {
+    /// Build one session's runtime capabilities from explicit typed ports.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        execution: Arc<dyn ToolExecutionPort>,
+        tool_authorization: Arc<dyn ToolAuthorizationPort>,
+        catalog: Arc<dyn crate::ToolCatalogPort>,
+        authorization: Arc<AuthorizationEngine>,
+        actions: Arc<ActionService>,
+        session_tool_overlay: Arc<dyn SessionToolOverlayPort>,
+        managed_asset_leases: Arc<dyn ManagedAssetLeasePort>,
+        observations: Arc<dyn ToolObservationPort>,
+    ) -> Self {
+        Self {
+            execution,
+            tool_authorization,
+            catalog,
+            authorization,
+            actions,
+            session_tool_overlay,
+            managed_asset_leases,
+            observations,
+        }
+    }
+
+    #[cfg(test)]
     pub(crate) fn from_tools_manager(tools: Arc<ToolsManager>) -> Self {
         let services = tools.share_services();
-        Self {
-            execution: Arc::new(ToolsManagerToolExecutionAdapter::new(Arc::clone(&tools))),
-            catalog: Arc::new(crate::react::ToolsManagerToolCatalogAdapter::new(
-                Arc::clone(&tools),
-            )),
-            authorization: services.authorization,
-            actions: services.actions,
-            session_tool_overlay: Arc::new(ToolsManagerSessionToolOverlayAdapter::new(Arc::clone(
+        let catalog: Arc<dyn crate::ToolCatalogPort> = Arc::new(
+            crate::react::ToolsManagerToolCatalogAdapter::new(Arc::clone(&tools)),
+        );
+        Self::new(
+            Arc::new(ToolsManagerToolExecutionAdapter::new(Arc::clone(&tools))),
+            Arc::new(ToolsManagerToolAuthorizationAdapter::new(Arc::clone(
                 &tools,
             ))),
-            managed_asset_leases: Arc::new(ToolsManagerManagedAssetLeaseAdapter::new(Arc::clone(
+            catalog,
+            services.authorization,
+            services.actions,
+            Arc::new(ToolsManagerSessionToolOverlayAdapter::new(Arc::clone(
                 &tools,
             ))),
-            observations: Arc::new(ToolsManagerToolObservationAdapter::new(tools)),
-        }
+            Arc::new(ToolsManagerManagedAssetLeaseAdapter::new(Arc::clone(
+                &tools,
+            ))),
+            Arc::new(ToolsManagerToolObservationAdapter::new(tools)),
+        )
     }
 
     #[cfg(test)]
@@ -171,21 +230,24 @@ impl SessionToolPorts {
 
 /// Formats the bounded observation text for a completed tool result.
 #[async_trait]
-pub(super) trait ToolObservationPort: Send + Sync {
+pub trait ToolObservationPort: Send + Sync {
     async fn observation_text(&self, tool_name: &str, result: &ToolResult) -> String;
 }
 
-/// Production adapter delegating observation formatting to the shared manager.
+/// Test adapter delegating observation formatting to a shared manager.
+#[cfg(test)]
 pub(super) struct ToolsManagerToolObservationAdapter {
     tools: Arc<ToolsManager>,
 }
 
+#[cfg(test)]
 impl ToolsManagerToolObservationAdapter {
     pub(super) fn new(tools: Arc<ToolsManager>) -> Self {
         Self { tools }
     }
 }
 
+#[cfg(test)]
 #[async_trait]
 impl ToolObservationPort for ToolsManagerToolObservationAdapter {
     async fn observation_text(&self, tool_name: &str, result: &ToolResult) -> String {
@@ -194,23 +256,25 @@ impl ToolObservationPort for ToolsManagerToolObservationAdapter {
 }
 
 /// Agent-owned boundary for registering and releasing session asset leases.
-pub(super) trait ManagedAssetLeasePort: Send + Sync {
+pub trait ManagedAssetLeasePort: Send + Sync {
     fn register_for_session(&self, session_id: &str, attachments: &[MessageAttachment]);
     fn release_for_session(&self, session_id: &str);
 }
 
-/// Adapter that keeps managed-asset path validation and registry ownership in
-/// `ToolsManager` while exposing only session lease operations to the agent.
+/// Test adapter mirroring the managed-asset session lease boundary.
+#[cfg(test)]
 pub(super) struct ToolsManagerManagedAssetLeaseAdapter {
     tools: Arc<ToolsManager>,
 }
 
+#[cfg(test)]
 impl ToolsManagerManagedAssetLeaseAdapter {
     pub(super) fn new(tools: Arc<ToolsManager>) -> Self {
         Self { tools }
     }
 }
 
+#[cfg(test)]
 impl ManagedAssetLeasePort for ToolsManagerManagedAssetLeaseAdapter {
     fn register_for_session(&self, session_id: &str, attachments: &[MessageAttachment]) {
         self.tools
@@ -225,7 +289,7 @@ impl ManagedAssetLeasePort for ToolsManagerManagedAssetLeaseAdapter {
 /// Agent-owned boundary for restoring and clearing a session's deferred tool
 /// overlay. Live tool loading remains on the existing tool execution path.
 #[async_trait]
-pub(crate) trait SessionToolOverlayPort: Send + Sync {
+pub trait SessionToolOverlayPort: Send + Sync {
     async fn unregister_session(&self, session_id: &str);
 
     async fn register_mcp_for_session(
@@ -245,17 +309,20 @@ pub(crate) trait SessionToolOverlayPort: Send + Sync {
     ) -> bool;
 }
 
-/// Production adapter keeps all tool catalog mutations in `ToolsManager`.
+/// Test adapter mirroring session overlay operations in the composition layer.
+#[cfg(test)]
 pub(crate) struct ToolsManagerSessionToolOverlayAdapter {
     tools: Arc<ToolsManager>,
 }
 
+#[cfg(test)]
 impl ToolsManagerSessionToolOverlayAdapter {
     pub(crate) fn new(tools: Arc<ToolsManager>) -> Self {
         Self { tools }
     }
 }
 
+#[cfg(test)]
 #[async_trait]
 impl SessionToolOverlayPort for ToolsManagerSessionToolOverlayAdapter {
     async fn unregister_session(&self, session_id: &str) {

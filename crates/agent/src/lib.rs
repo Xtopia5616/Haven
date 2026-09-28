@@ -50,10 +50,14 @@ pub use prompt_context::{
     PromptToolPort,
 };
 pub use prompt_renderer::{MemorySections, PromptRenderer};
-pub use react::{LoopExit, MetricsSnapshot, PauseReason, ReActEngine, UiMetricsSnapshot};
+pub use react::{
+    LoopExit, MetricsSnapshot, PauseReason, ReActEngine, ToolCatalogPort, UiMetricsSnapshot,
+};
 pub use session::{
-    ConfirmResolution, RunEngine, RunHandler, SessionEvent, SessionInfo, SessionStatus,
-    SessionSupervisor, SessionToolPorts, SessionWaitingReason, StepInfo, ToolExecution,
+    ConfirmResolution, ManagedAssetLeasePort, RunEngine, RunHandler, SessionEvent, SessionInfo,
+    SessionStatus, SessionSupervisor, SessionToolOverlayPort, SessionToolPorts,
+    SessionWaitingReason, StepInfo, ToolAuthorizationPort, ToolExecution, ToolExecutionContext,
+    ToolExecutionPort, ToolObservationPort,
 };
 
 pub use types::{

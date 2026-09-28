@@ -374,3 +374,4 @@
 - [0385：search-final 消息投影归属 owning commit](0385-search-final-owned-projection.md)
 - [0386：Session terminal fan-out occurrence identity](0386-session-terminal-occurrence-identity.md)
 - [0387：Session deletion reclaims runtime state](0387-session-deletion-reclaims-runtime-state.md)
+- [0388：Agent Tools ports 与组合层适配器完整收口](0388-agent-tools-composition-adapters.md)

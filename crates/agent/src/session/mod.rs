@@ -183,6 +183,7 @@ pub struct SessionSupervisor {
     /// broadcast observe interaction/control events, not just transcript rows.
     store: SessionStore,
     execution: Arc<dyn tool_ports::ToolExecutionPort>,
+    tool_authorization: Arc<dyn tool_ports::ToolAuthorizationPort>,
     #[cfg(test)]
     tool_catalog: Arc<dyn crate::react::ToolCatalogPort>,
     /// Live authorization capability shared with the ToolsManager execution
@@ -260,9 +261,11 @@ mod status;
 mod tool_ports;
 mod tool_runner;
 pub(crate) use dispatcher::DirectRunLease;
-pub(crate) use tool_ports::SessionToolOverlayPort;
 pub use tool_ports::SessionToolPorts;
-use tool_ports::{ManagedAssetLeasePort, ToolExecutionContext, ToolObservationPort};
+pub use tool_ports::{
+    ManagedAssetLeasePort, SessionToolOverlayPort, ToolAuthorizationPort, ToolExecutionContext,
+    ToolExecutionPort, ToolObservationPort,
+};
 pub(crate) use tool_runner::{ActionStepMetadata, ActionStepPersistenceError};
 
 pub(crate) use actor::{CONTEXT_BATCH_MAX_CHARS, CONTEXT_BATCH_MAX_ITEMS, MessagingTitle};
@@ -273,6 +276,7 @@ impl SessionSupervisor {
     pub fn new(store: SessionStore, ports: SessionToolPorts, max_concurrent: usize) -> Self {
         let SessionToolPorts {
             execution,
+            tool_authorization,
             catalog: _catalog,
             authorization,
             actions,
@@ -285,6 +289,7 @@ impl SessionSupervisor {
             partials: Arc::new(crate::partial::PartialStore::new(store.clone())),
             store,
             execution,
+            tool_authorization,
             #[cfg(test)]
             tool_catalog: _catalog,
             authorization,

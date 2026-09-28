@@ -111,7 +111,7 @@ impl ActionStepContext {
 impl SessionSupervisor {
     async fn action_step_context(&self, request: ActionStepRequest<'_>) -> ActionStepContext {
         let risk_level = self
-            .execution
+            .tool_authorization
             .risk_level(Some(request.session_id), request.tool_name, request.input)
             .await;
         ActionStepContext::new(request, risk_level)
@@ -898,11 +898,11 @@ impl SessionSupervisor {
         step_id: Option<&str>,
     ) -> anyhow::Result<ToolExecution> {
         let risk_level = self
-            .execution
+            .tool_authorization
             .risk_level(session_id, tool_name, &input)
             .await;
         let authorization_request = self
-            .execution
+            .tool_authorization
             .authorization_request(session_id, tool_name, &input)
             .await;
         let mut confirmed: Option<bool> = None;
@@ -1020,7 +1020,7 @@ impl SessionSupervisor {
         tool_name: &str,
         input: &Value,
     ) -> haven_tools::AuthorizationRequest {
-        self.execution
+        self.tool_authorization
             .authorization_request(session_id, tool_name, input)
             .await
     }
@@ -1141,7 +1141,7 @@ impl SessionSupervisor {
                 return Some(receipt.capability.clone());
             }
             return Some(
-                self.execution
+                self.tool_authorization
                     .authorization_request(Some(request.session_id.as_str()), tool_name, tool_input)
                     .await
                     .policy
@@ -1317,7 +1317,7 @@ impl SessionSupervisor {
         input: &Value,
         catalog: &haven_tools::ToolCatalogSnapshot,
     ) -> haven_tools::AuthorizationDecision {
-        let authorization_request = self.execution.authorization_request_from_catalog(
+        let authorization_request = self.tool_authorization.authorization_request_from_catalog(
             catalog,
             Some(session_id),
             tool_name,

@@ -62,7 +62,9 @@ pub use metrics::{MetricsSnapshot, UiMetricsSnapshot};
 pub(crate) use request_context::RequestContext;
 use sidecars::ContextWindowCache;
 pub(crate) use state::{ReActState, RetryNudge};
-pub(crate) use tool_ports::{ToolCatalogPort, ToolsManagerToolCatalogAdapter};
+pub use tool_ports::ToolCatalogPort;
+#[cfg(test)]
+pub(crate) use tool_ports::ToolsManagerToolCatalogAdapter;
 use transcript::{ObservationCard, TranscriptEvent};
 use usage::{UsageRuntime, UsageUpdate};
 

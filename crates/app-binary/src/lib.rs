@@ -2,6 +2,7 @@
 // `linker_messages` warning even though the link succeeds.
 #![allow(linker_messages)]
 
+mod agent_tool_adapters;
 mod app_state;
 mod autostart;
 mod bootstrap;
