@@ -2,8 +2,7 @@ use crate::app_state::{AppState, UiConfirmationAction, UiConfirmationPending};
 use crate::commands::log_err;
 use crate::commands::{SessionListResponse, emit_event_logged};
 use crate::events::{
-    InteractionRequestedEvent, SESSION_DELETED_EVENT, SESSION_TITLE_UPDATED_EVENT,
-    SessionDeletedEvent, SessionTitleUpdatedEvent,
+    InteractionRequestedEvent, SESSION_TITLE_UPDATED_EVENT, SessionTitleUpdatedEvent,
 };
 use crate::logging::sanitize_error_text;
 use haven_agent::{InteractionRequest, InteractionStatus};
@@ -406,53 +405,24 @@ pub async fn update_session_title(
 #[tauri::command]
 pub async fn delete_session(
     state: State<'_, Arc<AppState>>,
-    app: tauri::AppHandle,
     session_id: String,
 ) -> Result<(), String> {
-    // Quiesce the actor and delete its durable row under one supervisor-owned
-    // lifecycle gate. This prevents a concurrent resume/load from reinstalling
-    // a stale actor between the in-memory removal and SQL delete.
     state
-        .executor
+        .agent
         .delete_session(&session_id)
         .await
         .map_err(|e| log_err("delete_session", e))?;
-    // The session is gone, so no `session:updated` terminal transition will ever
-    // fire for it; a dedicated `session:deleted` lets listeners (busy-session
-    // tracking, per-session state) release the id immediately.
-    emit_event_logged(
-        &app,
-        SESSION_DELETED_EVENT,
-        SessionDeletedEvent {
-            session_id: Some(session_id),
-        },
-        "session_deleted",
-    );
     Ok(())
 }
 
 #[tauri::command]
-pub async fn clear_history(
-    state: State<'_, Arc<AppState>>,
-    app: tauri::AppHandle,
-) -> Result<u64, String> {
-    // Stop all in-memory work and delete durable rows under one lifecycle
-    // gate; no concurrent create/load can cross the purge boundary.
+pub async fn clear_history(state: State<'_, Arc<AppState>>) -> Result<u64, String> {
     let count = state
-        .executor
-        .clear_sessions_and_delete()
+        .agent
+        .clear_history()
         .await
         .map(|n| n as u64)
         .map_err(|e| log_err("clear_history", e))?;
-    // `session_id: null` signals "every session was removed" so listeners clear
-    // per-session state (e.g. the busy set) in one shot instead of one event
-    // per deleted session.
-    emit_event_logged(
-        &app,
-        SESSION_DELETED_EVENT,
-        SessionDeletedEvent { session_id: None },
-        "history_cleared",
-    );
     Ok(count)
 }
 

@@ -143,6 +143,11 @@ impl DesktopNotifications {
             AgentEvent::TitleUpdated { session_id, title } if !title.is_empty() => {
                 self.cache_title(session_id, title.clone());
             }
+            AgentEvent::SessionDeleted { session_id } => {
+                let mut statuses = self.lock_session_statuses();
+                let mut titles = self.lock_session_titles();
+                forget_session_cache(&mut statuses, &mut titles, session_id.as_deref());
+            }
             _ => {}
         }
     }
@@ -242,6 +247,20 @@ impl DesktopNotifications {
     }
 }
 
+fn forget_session_cache(
+    statuses: &mut HashMap<String, String>,
+    titles: &mut HashMap<String, String>,
+    session_id: Option<&str>,
+) {
+    if let Some(session_id) = session_id {
+        statuses.remove(session_id);
+        titles.remove(session_id);
+    } else {
+        statuses.clear();
+        titles.clear();
+    }
+}
+
 fn action_completion_windows_enabled(config: &NotificationConfig) -> bool {
     config.action_completed.windows
 }
@@ -273,7 +292,10 @@ fn resolve_session_display_title_from_store(
 
 #[cfg(test)]
 mod tests {
-    use super::{action_completion_windows_enabled, resolve_session_display_title_from_store};
+    use super::{
+        action_completion_windows_enabled, forget_session_cache,
+        resolve_session_display_title_from_store,
+    };
     use haven_common::config::NotificationConfig;
     use haven_common::types::new_id;
     use haven_memory::{Database, SessionStore};
@@ -329,5 +351,27 @@ mod tests {
 
         config.action_completed.windows = false;
         assert!(!action_completion_windows_enabled(&config));
+    }
+
+    #[test]
+    fn deleted_sessions_are_removed_from_notification_caches() {
+        let mut statuses = std::collections::HashMap::from([
+            ("ses-a".to_string(), "running".to_string()),
+            ("ses-b".to_string(), "completed".to_string()),
+        ]);
+        let mut titles = std::collections::HashMap::from([
+            ("ses-a".to_string(), "A".to_string()),
+            ("ses-b".to_string(), "B".to_string()),
+        ]);
+
+        forget_session_cache(&mut statuses, &mut titles, Some("ses-a"));
+        assert_eq!(statuses.len(), 1);
+        assert_eq!(titles.len(), 1);
+        assert!(statuses.contains_key("ses-b"));
+        assert!(titles.contains_key("ses-b"));
+
+        forget_session_cache(&mut statuses, &mut titles, None);
+        assert!(statuses.is_empty());
+        assert!(titles.is_empty());
     }
 }

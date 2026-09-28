@@ -373,3 +373,4 @@
 - [0384：Agent Tools 执行上下文与端口 bundle](0384-agent-tools-execution-context.md)
 - [0385：search-final 消息投影归属 owning commit](0385-search-final-owned-projection.md)
 - [0386：Session terminal fan-out occurrence identity](0386-session-terminal-occurrence-identity.md)
+- [0387：Session deletion reclaims runtime state](0387-session-deletion-reclaims-runtime-state.md)

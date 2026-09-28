@@ -212,6 +212,40 @@ impl PartialStore {
         self.release_session_lock(session_id, &guard).await;
     }
 
+    /// Reclaim process-local checkpoint state after the session run has been
+    /// quiesced. Callers must join the stream checkpoint writer first so no
+    /// old generation can race the removal and recreate these entries.
+    pub async fn forget_session(&self, session_id: &str) {
+        let guard = self.session_lock(session_id).await;
+        self.bump_generation(session_id);
+        let already_empty = self.known_empty.lock().unwrap().contains(session_id);
+        if !already_empty && let Err(error) = self.store.discard_partial_stream(session_id).await {
+            tracing::warn!(
+                session_id,
+                error = %error,
+                "failed to discard partial stream while forgetting session"
+            );
+        }
+        self.last_written.lock().unwrap().remove(session_id);
+        self.known_empty.lock().unwrap().remove(session_id);
+        // Quiesced callers leave only the map, this method's local Arc, and
+        // its guard. If an unexpected waiter remains, retain the bumped
+        // generation so that waiter cannot recreate stale checkpoint text.
+        if Arc::strong_count(&guard.lock) == 3 {
+            self.generation.lock().unwrap().remove(session_id);
+        }
+        self.release_session_lock(session_id, &guard).await;
+    }
+
+    /// Reclaim every process-local checkpoint entry after all actors have
+    /// stopped and joined their stream writers.
+    pub async fn forget_all_sessions(&self) {
+        self.locks.lock().await.clear();
+        self.generation.lock().unwrap().clear();
+        self.last_written.lock().unwrap().clear();
+        self.known_empty.lock().unwrap().clear();
+    }
+
     fn mark_known_empty(&self, session_id: &str) {
         let mut known_empty = self.known_empty.lock().unwrap();
         if known_empty.len() >= KNOWN_EMPTY_MAX_SESSIONS
@@ -372,6 +406,32 @@ mod tests {
                 .contains("failed to checkpoint stream text")
         );
         assert!(format!("{error:#}").contains("injected checkpoint failure"));
+    }
+
+    #[tokio::test]
+    async fn forget_session_discards_partial_and_reclaims_checkpoint_caches() {
+        let (store, db, _dir, session_id) = test_store();
+        store
+            .checkpoint(&session_id, store.generation(&session_id), "partial text")
+            .await
+            .unwrap();
+        assert!(store.last_written.lock().unwrap().contains_key(&session_id));
+
+        store.forget_session(&session_id).await;
+
+        let tid = session_id.clone();
+        let row = db
+            .run_blocking(move |db| Ok(db.get_partial_message(&tid)))
+            .await
+            .unwrap();
+        assert!(
+            row.is_none(),
+            "deleted session partial text must be removed"
+        );
+        assert!(!store.generation.lock().unwrap().contains_key(&session_id));
+        assert!(!store.last_written.lock().unwrap().contains_key(&session_id));
+        assert!(!store.known_empty.lock().unwrap().contains(&session_id));
+        assert!(!store.locks.lock().await.contains_key(&session_id));
     }
 
     #[tokio::test]

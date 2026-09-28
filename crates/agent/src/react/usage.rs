@@ -177,8 +177,8 @@ struct SessionUsageState {
 #[derive(Clone)]
 struct SessionUsageHandle {
     tx: mpsc::Sender<UsageOperation>,
-    // Retain state alongside the sender. Entries are intentionally not
-    // removed while detached blocking workers may still observe its epoch map.
+    // Retain state alongside the sender while this session worker is active;
+    // persistence closures share its epoch map across blocking DB work.
     _state: Arc<SessionUsageState>,
 }
 
@@ -189,6 +189,7 @@ enum UsageOperation {
     },
     Reset,
     Invalidate,
+    Shutdown,
 }
 
 /// Owns the complete Agent usage path independently of the session actor.
@@ -196,7 +197,12 @@ enum UsageOperation {
 /// async operation gate protects each complete seed-to-persist interval.
 pub(crate) struct UsageRuntime {
     store: SessionStore,
-    sessions: StdMutex<HashMap<String, SessionUsageHandle>>,
+    sessions: StdMutex<HashMap<String, SessionUsageEntry>>,
+}
+
+struct SessionUsageEntry {
+    handle: SessionUsageHandle,
+    worker: tokio::task::JoinHandle<()>,
 }
 
 impl UsageRuntime {
@@ -254,8 +260,31 @@ impl UsageRuntime {
         self.enqueue_control(session_id, UsageOperation::Invalidate);
     }
 
+    /// Stop and join a deleted session's usage worker after the session actor
+    /// has quiesced. Closing the worker also drops its process-local tracker
+    /// and rollback epoch map.
+    pub(crate) async fn remove_session(&self, session_id: &str) {
+        let entry = self.sessions.lock().unwrap().remove(session_id);
+        if let Some(entry) = entry {
+            stop_session_usage_entry(entry).await;
+        }
+    }
+
+    /// Stop every session worker after history deletion has quiesced all
+    /// actors. Joining them keeps the worker and tracker lifetime bounded by
+    /// the sessions that still exist.
+    pub(crate) async fn remove_all_sessions(&self) {
+        let entries = std::mem::take(&mut *self.sessions.lock().unwrap());
+        futures_util::future::join_all(entries.into_values().map(stop_session_usage_entry)).await;
+    }
+
     fn enqueue_control(&self, session_id: &str, operation: UsageOperation) {
-        let session = self.sessions.lock().unwrap().get(session_id).cloned();
+        let session = self
+            .sessions
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .map(|entry| entry.handle.clone());
         let Some(session) = session else { return };
         // Preserve the prior fire-and-forget bounded-mailbox behavior if the
         // queue is full or the runtime has shut down.
@@ -266,7 +295,7 @@ impl UsageRuntime {
         let runtime = tokio::runtime::Handle::try_current()?;
         let mut sessions = self.sessions.lock().unwrap();
         if let Some(session) = sessions.get(session_id) {
-            return Ok(session.clone());
+            return Ok(session.handle.clone());
         }
 
         let state = Arc::new(SessionUsageState {
@@ -281,11 +310,24 @@ impl UsageRuntime {
         let store = self.store.clone();
         let session_id = session_id.to_string();
         let worker_session_id = session_id.clone();
-        runtime.spawn(async move {
+        let worker = runtime.spawn(async move {
             run_session_usage_operations(rx, store, worker_session_id, state).await;
         });
-        sessions.insert(session_id, session.clone());
+        sessions.insert(
+            session_id,
+            SessionUsageEntry {
+                handle: session.clone(),
+                worker,
+            },
+        );
         Ok(session)
+    }
+}
+
+async fn stop_session_usage_entry(entry: SessionUsageEntry) {
+    let _ = entry.handle.tx.send(UsageOperation::Shutdown).await;
+    if let Err(error) = entry.worker.await {
+        tracing::warn!(error = %error, "usage session worker failed while stopping");
     }
 }
 
@@ -304,6 +346,10 @@ async fn run_session_usage_operations(
             }
             UsageOperation::Reset => state.tracker.reset(&session_id),
             UsageOperation::Invalidate => state.tracker.invalidate_after_truncate(&session_id),
+            UsageOperation::Shutdown => {
+                rx.close();
+                return;
+            }
         }
     }
 }
@@ -551,11 +597,38 @@ mod tests {
         assert_eq!(after_invalidate.prompt_tokens, 7);
         assert_eq!(after_invalidate.total_tokens, 7);
 
-        // Keep the tracker and epoch registry alive for the runtime lifetime;
-        // in particular, invalidation never removes/recreates session state.
+        // Keep the tracker and epoch registry alive while this session worker
+        // is registered; invalidation never removes/recreates live state.
         assert_eq!(runtime.sessions.lock().unwrap().len(), 1);
-        let session_state = runtime.sessions.lock().unwrap()[&session.id]._state.clone();
+        let session_state = runtime.sessions.lock().unwrap()[&session.id]
+            .handle
+            ._state
+            .clone();
         assert_eq!(session_state.tracker.epoch(&session.id), 1);
+    }
+
+    #[tokio::test]
+    async fn deleting_session_joins_worker_and_releases_tracker_state() {
+        let directory = tempfile::tempdir().expect("temporary DB directory");
+        let db = Arc::new(Database::open(&directory.path().join("usage-delete.db")).unwrap());
+        let session = db.create_session("usage worker deletion").unwrap();
+        let runtime = UsageRuntime::new(SessionStore::new(Arc::clone(&db)));
+
+        runtime.record(&session.id, update(3)).await.unwrap();
+        let state = runtime.sessions.lock().unwrap()[&session.id]
+            .handle
+            ._state
+            .clone();
+        let weak_state = Arc::downgrade(&state);
+        drop(state);
+
+        runtime.remove_session(&session.id).await;
+
+        assert!(runtime.sessions.lock().unwrap().is_empty());
+        assert!(
+            weak_state.upgrade().is_none(),
+            "worker tracker must be freed"
+        );
     }
 
     #[tokio::test]

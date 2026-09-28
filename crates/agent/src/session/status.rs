@@ -335,6 +335,7 @@ impl SessionSupervisor {
         async {
             self.quiesce_session(session_id).await?;
             let _lifecycle = self.lifecycle_guard().await;
+            self.partials.forget_session(session_id).await;
             self.remove_session_locked(session_id).await?;
             self.store.delete_session(session_id).await
         }
@@ -343,13 +344,19 @@ impl SessionSupervisor {
 
     /// Quiesce the working set and clear durable history while holding the
     /// same gate used by session creation/loading/deletion.
-    pub async fn clear_sessions_and_delete(&self) -> anyhow::Result<usize> {
+    pub async fn clear_sessions_and_delete(&self) -> anyhow::Result<Vec<String>> {
         let _block = self.begin_lifecycle_block()?;
         async {
             self.quiesce_all_sessions(false).await?;
             let _lifecycle = self.lifecycle_guard().await;
+            let session_ids = self
+                .store
+                .all_session_ids_cancellable(tokio_util::sync::CancellationToken::new())
+                .await?;
             self.clear_all_sessions_locked().await?;
-            self.store.clear_sessions().await
+            self.partials.forget_all_sessions().await;
+            self.store.clear_sessions().await?;
+            Ok(session_ids)
         }
         .await
     }
@@ -475,6 +482,7 @@ impl SessionSupervisor {
                 if let Err(error) = self.partials.promote(session_id).await {
                     tracing::warn!(session_id, error = %error, "failed to promote session partial");
                 }
+                self.partials.forget_session(session_id).await;
                 self.finish_ended_session(session_id, true).await;
                 // Completed sessions are explicitly ended and leave the
                 // working set. Error is retryable: keep an idle actor when the
@@ -490,6 +498,7 @@ impl SessionSupervisor {
     }
 
     pub async fn cleanup_session_maps(&self, session_id: &str) {
+        self.partials.forget_session(session_id).await;
         self.emit_event(SessionEvent::SessionCleanup {
             session_id: session_id.to_string(),
         });

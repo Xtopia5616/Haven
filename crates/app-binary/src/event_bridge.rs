@@ -216,6 +216,24 @@ mod tests {
             assert_eq!(secondary["occurrence_id"], occurrence_id);
         }
     }
+
+    #[test]
+    fn session_deletion_uses_the_existing_wire_contract() {
+        let single = AgentEvent::SessionDeleted {
+            session_id: Some("ses-deleted".into()),
+        };
+        assert_eq!(TauriEmitter::channel(&single), SESSION_DELETED_EVENT);
+        assert_eq!(
+            TauriEmitter::payload(&single, None),
+            serde_json::json!({ "session_id": "ses-deleted" })
+        );
+
+        let all = AgentEvent::SessionDeleted { session_id: None };
+        assert_eq!(
+            TauriEmitter::payload(&all, None),
+            serde_json::json!({ "session_id": null })
+        );
+    }
 }
 
 #[async_trait::async_trait]
@@ -268,6 +286,7 @@ impl TauriEmitter {
             AgentEvent::SessionCompleted { .. } => SESSION_COMPLETED_EVENT,
             AgentEvent::SessionUpdated { .. } => SESSION_UPDATED_EVENT,
             AgentEvent::SessionError { .. } => SESSION_ERROR_EVENT,
+            AgentEvent::SessionDeleted { .. } => SESSION_DELETED_EVENT,
             AgentEvent::Notification { .. } => NOTIFICATION_SHOW_EVENT,
             AgentEvent::ActionCompletionNotification { .. } => NOTIFICATION_SHOW_EVENT,
             AgentEvent::TitleUpdated { .. } => SESSION_TITLE_UPDATED_EVENT,
@@ -421,6 +440,9 @@ impl TauriEmitter {
                 session_id: session_id.clone(),
                 error: sanitize_error_text(error),
                 occurrence_id: occurrence_id.map(str::to_owned),
+            }),
+            AgentEvent::SessionDeleted { session_id } => serialize(SessionDeletedEvent {
+                session_id: session_id.clone(),
             }),
             AgentEvent::ThoughtChunk {
                 session_id,
@@ -698,6 +720,12 @@ impl TauriEmitter {
                     "TauriEmitter::on_session_completed"
                 );
             }
+            AgentEvent::SessionDeleted { session_id } => {
+                tracing::info!(
+                    session_id = session_id.as_deref().unwrap_or("*"),
+                    "TauriEmitter::on_session_deleted"
+                );
+            }
             AgentEvent::SessionUpdated {
                 session_id, status, ..
             } => {
@@ -773,7 +801,7 @@ impl TauriEmitter {
         occurrence_id: Option<&str>,
         title: Option<String>,
     ) -> Option<serde_json::Value> {
-        let payload = match event {
+        match event {
             AgentEvent::SessionCompleted {
                 session_id,
                 title,
@@ -813,7 +841,6 @@ impl TauriEmitter {
                 }),
             ),
             _ => None,
-        };
-        payload
+        }
     }
 }

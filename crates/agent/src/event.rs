@@ -95,6 +95,13 @@ pub enum AgentEvent {
         session_id: String,
         error: String,
     },
+    /// Ordered tombstone emitted only after the session actor has quiesced.
+    /// Keeping this on the Agent event path makes deletion follow any older
+    /// buffered Agent events at the Tauri boundary.
+    SessionDeleted {
+        /// `None` means every persisted session was removed.
+        session_id: Option<String>,
+    },
     ThoughtChunk {
         session_id: String,
         delta: String,
@@ -399,6 +406,10 @@ fn is_chunk_event(event: &AgentEvent) -> bool {
     )
 }
 
+fn is_session_deleted_event(event: &AgentEvent) -> bool {
+    matches!(event, AgentEvent::SessionDeleted { .. })
+}
+
 #[async_trait]
 impl AgentEventEmitter for BufferedEmitter {
     async fn emit(&self, event: AgentEvent) {
@@ -414,6 +425,12 @@ impl AgentEventEmitter for BufferedEmitter {
                 queue.remove(pos);
                 tracing::warn!(
                     "event buffer full (capacity {}), evicting ordinary event to preserve stream reset",
+                    self.capacity
+                );
+            } else if is_session_deleted_event(&event) {
+                queue.pop_front();
+                tracing::warn!(
+                    "event buffer full (capacity {}), evicting oldest stream reset to preserve session deletion",
                     self.capacity
                 );
             } else if is_stream_reset(&event) {
@@ -999,6 +1016,17 @@ impl EventDispatcher {
         if let Some(emitter) = emitter {
             emitter
                 .emit(AgentEvent::SessionCreated(session.clone()))
+                .await;
+        }
+    }
+
+    /// Publish session deletion on the same ordered path as buffered Agent
+    /// events so a delayed stream event cannot recreate deleted UI state.
+    pub async fn emit_session_deleted(&self, session_id: Option<String>) {
+        let emitter = lock_or_recover(&self.emitter, "event_emitter").clone();
+        if let Some(emitter) = emitter {
+            emitter
+                .emit(AgentEvent::SessionDeleted { session_id })
                 .await;
         }
     }
@@ -1851,5 +1879,88 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
         panic!("full-text ReasoningChunk never delivered after overflow");
+    }
+
+    #[tokio::test]
+    async fn buffered_emitter_delivers_session_deletion_after_older_agent_events() {
+        let collector = Arc::new(SlowCollector {
+            events: Mutex::new(Vec::new()),
+        });
+        let buffered = BufferedEmitter::new(8, collector.clone() as Arc<dyn AgentEventEmitter>);
+
+        buffered
+            .emit(AgentEvent::ThoughtChunk {
+                session_id: "ses-delete-order".into(),
+                message_id: "msg-delete-order".into(),
+                delta: "old output".into(),
+                step_number: 1,
+                run_id: 1,
+            })
+            .await;
+        buffered
+            .emit(AgentEvent::SessionDeleted {
+                session_id: Some("ses-delete-order".into()),
+            })
+            .await;
+
+        for _ in 0..100 {
+            if collector
+                .events
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|event| matches!(event, AgentEvent::SessionDeleted { .. }))
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let events = collector.events.lock().unwrap();
+        let thought_index = events
+            .iter()
+            .position(|event| matches!(event, AgentEvent::ThoughtChunk { .. }))
+            .expect("queued Agent event must be delivered");
+        let deleted_index = events
+            .iter()
+            .position(|event| matches!(event, AgentEvent::SessionDeleted { .. }))
+            .expect("session deletion marker must be delivered");
+        assert!(thought_index < deleted_index);
+    }
+
+    #[tokio::test]
+    async fn buffered_emitter_preserves_deletion_when_only_stream_resets_are_queued() {
+        let collector = Arc::new(SlowCollector {
+            events: Mutex::new(Vec::new()),
+        });
+        let buffered = BufferedEmitter::new(1, collector.clone() as Arc<dyn AgentEventEmitter>);
+        let reset = || AgentEvent::StreamReset {
+            session_id: "ses-delete-overflow".into(),
+            step_number: 1,
+            run_id: 1,
+            thought_message_id: "msg-thought".into(),
+            reasoning_message_id: "msg-reasoning".into(),
+        };
+
+        buffered.emit(reset()).await;
+        buffered.emit(reset()).await;
+        buffered
+            .emit(AgentEvent::SessionDeleted {
+                session_id: Some("ses-delete-overflow".into()),
+            })
+            .await;
+
+        for _ in 0..100 {
+            if collector
+                .events
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|event| matches!(event, AgentEvent::SessionDeleted { .. }))
+            {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("buffer overflow must not drop the session deletion marker");
     }
 }

@@ -1037,7 +1037,10 @@ mod tests {
         let kv_key = format!("fact_extraction_pending.{}", first.id);
         db.set_kv(&kv_key, "1").unwrap();
 
-        assert_eq!(exec.clear_sessions_and_delete().await.unwrap(), 2);
+        let deleted = exec.clear_sessions_and_delete().await.unwrap();
+        assert_eq!(deleted.len(), 2);
+        assert!(deleted.contains(&first.id));
+        assert!(deleted.contains(&second.id));
 
         assert!(exec.actors.lock().await.is_empty());
         assert!(exec.pending_queue.lock().await.is_empty());
@@ -1048,7 +1051,7 @@ mod tests {
         assert!(db.get_session_messages(&first.id).unwrap().is_empty());
         assert!(db.get_session_messages(&second.id).unwrap().is_empty());
         assert!(db.get_kv(&kv_key).unwrap().is_none());
-        assert_eq!(exec.clear_sessions_and_delete().await.unwrap(), 0);
+        assert!(exec.clear_sessions_and_delete().await.unwrap().is_empty());
     }
 
     #[tokio::test]

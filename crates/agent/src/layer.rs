@@ -1043,6 +1043,32 @@ impl AgentLayer {
         self.react_engine.reset_cumulative_usage(session_id);
     }
 
+    /// Quiesce and delete one session, then reclaim every process-local cache
+    /// owned by that session before publishing its ordered UI tombstone.
+    pub async fn delete_session(&self, session_id: &str) -> anyhow::Result<()> {
+        self.executor.delete_session(session_id).await?;
+        self.memory_worker.clear_session(session_id);
+        self.react_engine.forget_deleted_session(session_id).await;
+        self.events
+            .emit_session_deleted(Some(session_id.to_string()))
+            .await;
+        Ok(())
+    }
+
+    /// Quiesce all actors and delete session history, then reclaim in-memory
+    /// session state and publish one ordered tombstone for the cleared list.
+    pub async fn clear_history(&self) -> anyhow::Result<usize> {
+        let session_ids = self.executor.clear_sessions_and_delete().await?;
+        for session_id in &session_ids {
+            self.memory_worker.clear_session(session_id);
+        }
+        self.react_engine
+            .forget_deleted_sessions(&session_ids)
+            .await;
+        self.events.emit_session_deleted(None).await;
+        Ok(session_ids.len())
+    }
+
     /// Schedule short-title generation using small_model. The normal ingress
     /// path calls this immediately after the first user message is persisted,
     /// before the ReAct dispatcher is woken, so the title can appear while the

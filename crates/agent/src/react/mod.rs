@@ -1035,11 +1035,25 @@ impl ReActEngine {
     }
 
     /// Drop cumulative counters and process-local turn caches for a finished
-    /// session. UsageRuntime retains its session entry until a safe detached
-    /// worker reclamation protocol exists.
+    /// session. Deletion later closes and joins the UsageRuntime worker.
     pub fn reset_cumulative_usage(&self, session_id: &str) {
         self.context_source.clear_session(session_id);
         self.usage_runtime.reset(session_id);
+    }
+
+    /// Reclaim transient session caches and join the detached usage worker
+    /// after deletion has quiesced the owning actor.
+    pub(crate) async fn forget_deleted_session(&self, session_id: &str) {
+        self.context_source.clear_session(session_id);
+        self.usage_runtime.remove_session(session_id).await;
+    }
+
+    /// Reclaim every known session cache after the history-clear barrier.
+    pub(crate) async fn forget_deleted_sessions(&self, session_ids: &[String]) {
+        for session_id in session_ids {
+            self.context_source.clear_session(session_id);
+        }
+        self.usage_runtime.remove_all_sessions().await;
     }
 
     /// After rollback/truncate rebuilt `session_usage` from remaining
