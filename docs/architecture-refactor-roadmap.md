@@ -218,13 +218,13 @@ Session 清理与 Agent wiring 收口（2026-09-26，ADR 0374）：`SessionStore
 
 ### 2026-09-28 阶段状态复核
 
-阶段 1–6 均标记为**已完成**。这里的阶段完成表示该阶段已采纳的核心所有权/契约边界已落地并有对应回归记录；表内列出的明确后续项继续由全局验收或后续阶段跟踪，不代表全局重构已经完成。阶段 7–8 仍在进行，阶段 9 的发布验收保持开放。本次关闭阶段 1 的 `SessionState` 所有权校准与阶段 3 的 raw Database/typed projection 全局验收，见 ADR 0382、0383。
+阶段 1–6 均标记为**已完成**。这里的阶段完成表示该阶段已采纳的核心所有权/契约边界已落地并有对应回归记录；表内列出的明确后续项继续由全局验收或后续阶段跟踪，不代表全局重构已经完成。阶段 7–8 仍在进行，阶段 9 的发布验收保持开放。本次关闭阶段 1 的 `SessionState` 所有权校准，以及阶段 3 所列 raw Database 边界和 Action typed projection 范围的验收，见 ADR 0382、0383；全仓 typed-output 审计仍未完成。
 
 | 阶段 | 状态 | 完成范围与保留项 |
 |---|---|---|
 | 1：SessionActor 热运行态 owner | 已完成 | Actor task 单一拥有 `SessionState`；`SessionState::react_run` 持有 active run future，future 独占捕获 run-local `ReActState`，同一 actor loop select future 与 mailbox。pending provider/tool/storage await 不借用整份 `SessionState`；删除活动 session 的取消、run-exit join、durable row 删除顺序有 supervisor 集成回归（ADR 0214、0382）。 |
 | 2：恢复、回滚与事件/投影边界 | 已完成 | `session_events` 成为恢复权威，rollback/projection cutoff 与已知 ingress/recovery 例外有明确 owner 和回归覆盖；search-final messages projection 并入 owning ToolCall commit，不再有 ReAct 内容行的直接投影旁路（ADR 0385）。阶段内核心恢复/回滚验证已完成；全新 profile 下的完整应用恢复/发布验收仍归阶段 9。 |
-| 3：存储 domain ports 与 typed projection | 已完成 | Session/Memory/Usage/Action typed-store 迁移及 App cleanup 路径收口完成。App composition root 创建 typed memory stores；生产 `MemoryService`、Agent 与 Tools 不持有 raw `Database`。ActionService 稳定 status/list projection 由 typed views 暴露，JSON 仅在 tool/event/provider/MCP/Skill 动态边界序列化（ADR 0383）。 |
+| 3：存储 domain ports 与 typed projection | 已完成 | Session/Memory/Usage/Action typed-store 迁移及 App cleanup 路径收口完成。App composition root 创建 typed memory stores；生产 Agent 路径不把 raw `Database` 传入 `MemoryService`。ActionService 稳定 status/list projection 由 typed views 暴露；该阶段列明的 JSON 边界按 ADR 0383 处理，全仓 typed-output 审计仍由全局验收跟踪。 |
 | 4：Tools capability runtime 与 Agent ports | 已完成 | `AgentLayer` 与 `SessionSupervisor` 接收组合根组装的端口 bundle；session runner 通过 `ToolExecutionContext` 提交 session/tool/input/cancel/step identity。live authorization 仍在执行前决策，tool execution 使用当前 turn 的 immutable catalog snapshot；ToolsManager 仅由 composition adapters 持有（ADR 0384）。 |
 | 5：Runtime config apply ownership | 已完成 | ConfigService、Settings/model/Tools 同域写入 gate、phase planning 与 durable-first 部分失败语义已落地；显式 retry、补偿/rollback 与 auto-restart 不属于当前契约。 |
 | 6：LLM Router 请求对象化 | 已完成 | 请求对象、执行器拆分、descriptor/capability 映射与 usage owner 契约已由 ADR 0354 最终审计关闭。 |
@@ -323,11 +323,11 @@ SessionStore
 本轮（ADR 0374）已完成：启动恢复、一次性 retention、上传引用和每日 cleanup task 不再捕获
 raw `Database`，而是使用 `SessionStore` typed ports；AgentLayer 从组合根显式接收 `ToolsManager`，
 SessionSupervisor 仅向 Agent 内部提供 authorization/action 窄 capability。保留的执行 facade、
-prompt/catalog adapters 仍按阶段 4 跟踪。阶段 3 全局验收（ADR 0383）进一步将 memory typed stores 的创建移至 App composition root，使生产 `MemoryService` 不再接收或保留 raw `Database`；Agent/Tools 的生产路径不持有 raw `Database`。ActionService 的稳定 status/list 跨层 API 现为 typed projection，动态 JSON 保留在 tool/event/provider/MCP/Skill 边界。
+prompt/catalog adapters 仍按阶段 4 跟踪。阶段 3 已列范围验收（ADR 0383）进一步将 memory typed stores 的创建移至 App composition root；生产 `MemoryService` 不接收 raw `Database`，Agent/Tools 的生产路径不持有上层 raw `Database`。ActionService 的稳定 status/list API 现为 typed projection。以上不代表全仓 stable-output DTO 与 JSON 边界审计完成；该审计状态见全局验收表。
 
 主要文件：`crates/memory/src/` repositories/database、`crates/agent/src/` usage/session、`crates/tools/src/action_service.rs`、`crates/app-binary/src/commands/`。
 
-验收：除 App composition root 创建 typed stores 外，上层生产业务路径不持有 raw `Database` 或取得 raw connection；稳定 Action status/list 跨层返回值为 typed projection；JSON 仅用于明确的 tool/event/provider/MCP/Skill wire 或动态 schema/payload 边界。内存数据库测试覆盖事务、回滚和空结果；最终全局验收见 ADR 0383。
+验收：除 App composition root 创建 typed stores 外，上层生产业务路径不持有 raw `Database` 或取得 raw connection；稳定 Action status/list 跨层返回值为 typed projection；本阶段涉及的 JSON 仅用于明确的 tool/event/provider/MCP/Skill wire 或动态 schema/payload 边界。内存数据库测试覆盖事务、回滚和空结果；阶段 3 范围验收见 ADR 0383，全仓 typed-output 审计状态见全局验收表。
 
 ### 阶段 4（已完成）：Tools capability runtime 与 Agent ports（P1）
 
@@ -578,9 +578,9 @@ Phase 7.1 验收与未决风险：见 ADR 0259、0261、0262、0263、0264、026
 | durable session 恢复只依赖事件回放 | 满足 | `session_events` replay 是 transcript 恢复权威；未进入事件流的 ingress 用户输入按 cursor/message identity 重新排队是已记录例外。 |
 | MemoryRuntime 对象与 prepare/live task 由应用持有 | 满足 | AgentStartup 将唯一 `MemoryStartup` 交给 ApplicationRuntime；prepare/replay 后注册 live consumer，注册成功才将 typed MemoryReady 交给 dispatcher。周期维护、manual pass、worker shutdown 和任务 join 使用原顺序（ADR 0367）。 |
 | session-local mutable state 只有 actor owner | 满足 | `SessionState::react_run` 持有 active future，future 独占捕获 run-local `ReActState`；actor loop 在同一个 select 中轮询 future 与 mailbox，pending await 不借用整份 state（ADR 0214、0382）。 |
-| raw Database 不穿透仓储边界 | 满足 | App composition root 创建 typed memory stores；生产 `MemoryService`、Agent 与 Tools 不持有 raw `Database`。测试构造的 Database 兼容入口仅在 `cfg(test)` 存在（ADR 0383）。 |
+| raw Database 不穿透仓储边界 | 满足（生产边界） | App composition root 持有 `Database` 并创建 typed stores；生产 Agent 路径不把 raw `Database` 传入 `MemoryService`。`MemoryService` 仍有 `#[cfg(test)]` 私有 `test_database` fixture handle 和仅供测试的 `From<Arc<Database>>` 转换；`MemoryService::new(MemoryServiceStores, …)` 仍是组合根构造入口，接收 typed capabilities。repository stores 自身仍封装其 backing Database（ADR 0383）。 |
 | ToolsManager execution/adapters 不穿透 Agent 端口边界 | 满足 | 组合根创建共享 manager adapters 并注入 `AgentToolPorts`；prompt/catalog/execution/observation/overlay/asset adapters 是唯一 manager 依赖边界，Agent runtime owners 只持有窄 ports（ADR 0384）。 |
-| stable domain outputs typed，动态 JSON 边界有明确注释 | 满足（阶段 3 范围） | ActionService 的稳定 status/list 查询暴露 typed views；JSON 转换停留在 actions/scheduled tool、event/provider 与 MCP/Skill schema/payload 边界。其他 JSON 用法属于工具 wire output 或开放扩展字段，不作为稳定 Action DTO（ADR 0383）。 |
+| stable domain outputs typed，动态 JSON 边界有明确注释 | 部分满足 | ADR 0383 已覆盖 ActionService 稳定 status/list projections 及所列 Action/tool/event/provider/MCP/Skill JSON 边界；这不是全仓 typed-output 审计。跨 crate 稳定输出的完整清点与分类仍未完成；例如 Tools `AdminServices` 多个 `Result<Value>` 返回值仍需逐一确认属于稳定 DTO 还是工具 wire output。在清点完成前不宣告全局满足。 |
 | 配置、工具、模型、任务、记忆的 runtime replacement/失败/取消语义有测试 | 部分满足 | 各域已有局部回归；Settings/model durable-first 部分 apply failure、无自动 retry、重启从磁盘恢复、SkillsExec restart-only 与同配置域串行已实现。更广范围的 phase compensation、显式 retry/recovery policy 与完整 Job lifecycle 仍待独立切片。 |
 | Rust/TS IPC 生成与校验一致 | 未满足 | IPC contract/event validators 通过；全局 codegen 未实现，且是否采用尚未决定。 |
 | Rust 与 UI 格式、测试、类型、lint/build 门禁通过 | 满足 | 本轮 Rust workspace `fmt --check`、`check`、`clippy -D warnings` 与 `test` 全部通过；本轮没有 UI 源码改动，既有 UI 门禁证据见 ADR 0361。 |

@@ -14,6 +14,12 @@ MemoryWorker 与 ReActEngine 的生产持久化已通过 typed stores 收口，�
 3. Action 与 scheduled tool 的 JSON 序列化留在 ActionsTool、ScheduledActionTool、shell/tool result 或 event wire 边界。MCP/Skill schema、动态 tool args/output、provider payload、通用工具 observation 仍是明确的动态 JSON 扩展点，不作为稳定业务 DTO 的默认形式。
 4. App composition root 可以持有 `Database` 来创建 typed stores；`haven-agent` 与 `haven-tools` 的生产业务路径不持有 raw Database。ToolsManager execution/adapters 仍按 ADR 0374 作为阶段 4 边界跟踪，不把它算作阶段 3 的 Database 穿透。
 
+## 审计范围与保留边界
+
+本 ADR 的 typed-output 验收只覆盖 ActionService 的稳定 status/list projections 及本 ADR 明确列出的 JSON 序列化边界，不代表全仓跨层（含跨 crate）stable-output 审计完成。全局验收表继续将该条件标记为部分满足；其余 `Value` 返回值需要逐项判定是稳定业务 DTO 还是工具/wire 扩展点后再关闭。
+
+`MemoryService` 的生产构造接收组合根创建的 `MemoryServiceStores`；`MemoryService::new` 是仍保留的 typed composition-root entry。测试构建保留 `#[cfg(test)]` 私有 `test_database` handle、`database_handle_for_test` 和 `From<Arc<Database>>` fixture 转换。各 typed repository store 内部继续封装 backing `Database`；本 ADR 不声称移除这些底层持有关系，也不改变测试夹具便利入口。
+
 ## 影响与验证
 
 此项只收窄 Rust 内部构造与 DTO 边界，不改 schema、IPC、模型可见工具 JSON、Action event payload 或数据库重置要求。memory store 事务/回滚/空结果回归继续使用内存 Database；typed Action 投影与工具 JSON 兼容测试覆盖字段和序列。
