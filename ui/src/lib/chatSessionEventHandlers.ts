@@ -7,6 +7,7 @@ import type {
 import type { TauriEvent } from './contracts/session.ts';
 import { isBusyStatus, isPausedStatus } from './sessionStatus.ts';
 import type { SessionAction } from './sessionReducer.ts';
+import { clearMediaPlans } from './mediaPlanStore.ts';
 import { clearToolOutputPreviewsForSession } from './toolOutputPreviewStore.ts';
 
 export interface ChatSessionEventContext {
@@ -15,9 +16,9 @@ export interface ChatSessionEventContext {
 	adoptDraftMessages: (sessionId: string) => boolean;
 	dispatchSession: (action: SessionAction) => void;
 	getSessionErrorId: () => string | null;
-	clearAskAwaiting: (sessionId: string) => void;
+	clearAskAwaiting: (sessionId: string | null) => void;
 	evictTerminalSessionMemory: (sessionId: string) => void;
-	clearStepBlockIds: (sessionId: string) => void;
+	clearStepBlockIds: (sessionId: string | null) => void;
 	/** Flush the RAF-batched stream before lifecycle cleanup changes its state. */
 	flushChunksNow: () => void;
 	updateSessionTitle: (sessionId: string, title: string) => void;
@@ -224,10 +225,15 @@ export function createChatSessionEventHandlers({
 			updateSessionTitle(sessionId, title);
 		},
 		'session:deleted': (event) => {
-			if (event.payload.sessionId) {
-				clearToolOutputPreviewsForSession(event.payload.sessionId);
-			}
-			dispatchSession({ type: 'session/deleted', sessionId: event.payload.sessionId });
+			const sessionId = event.payload.sessionId;
+			// Drain and cancel the renderer frame before deleting projected state;
+			// otherwise the queued callback can recreate the messages afterward.
+			flushChunksNow();
+			clearAskAwaiting(sessionId);
+			clearToolOutputPreviewsForSession(sessionId);
+			clearMediaPlans(sessionId);
+			clearStepBlockIds(sessionId);
+			dispatchSession({ type: 'session/deleted', sessionId });
 			scheduleLoadSessions();
 		},
 	};

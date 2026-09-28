@@ -97,7 +97,11 @@ export function createStreamEventAggregator({
 	}
 
 	function clearStepBlockIds(sessionId: string | null) {
-		if (!sessionId) return;
+		if (!sessionId) {
+			firstChunkPainted.clear();
+			firstChunkPaintedOrder.length = 0;
+			return;
+		}
 		const sessionPrefix = `${sessionId}:`;
 		for (const key of firstChunkPainted) {
 			if (key.startsWith(sessionPrefix)) firstChunkPainted.delete(key);

@@ -38,7 +38,13 @@ function clearSessionMessages(state: SessionReducerState, sessionId: string): Se
 		type: 'session/messages/cleared',
 		sessionId,
 	});
-	const withoutInteractions = reduceInteraction(withoutMessages, {
+	const optimistic = Object.fromEntries(
+		Object.entries(withoutMessages.optimistic).filter(
+			([, message]) => message.sessionId !== sessionId,
+		),
+	);
+	const withoutOptimistic = { ...withoutMessages, optimistic };
+	const withoutInteractions = reduceInteraction(withoutOptimistic, {
 		type: 'session/interactions-cleared',
 		sessionId,
 	});

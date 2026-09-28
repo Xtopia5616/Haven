@@ -778,7 +778,7 @@
 			getSessionErrorId: () => sessionErrorId,
 			clearAskAwaiting: (sessionId) => {
 				clearAskAwaiting(sessionId);
-				dispatchSession({ type: 'session/interactions-cleared', sessionId });
+				if (sessionId) dispatchSession({ type: 'session/interactions-cleared', sessionId });
 			},
 			evictTerminalSessionMemory,
 			clearStepBlockIds,

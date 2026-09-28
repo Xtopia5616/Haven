@@ -14,9 +14,9 @@ function handlers(options: {
 	activeSessionId?: string | null;
 	dispatchSession: (action: import('./sessionReducer.ts').SessionAction) => void;
 	flushChunksNow?: () => void;
-	clearAskAwaiting?: (sessionId: string) => void;
+	clearAskAwaiting?: (sessionId: string | null) => void;
 	evictTerminalSessionMemory?: (sessionId: string) => void;
-	clearStepBlockIds?: (sessionId: string) => void;
+	clearStepBlockIds?: (sessionId: string | null) => void;
 	scheduleLoadSessions?: () => void;
 }) {
 	return createChatSessionEventHandlers({

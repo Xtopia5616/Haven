@@ -25,9 +25,9 @@ export function rememberMediaPlan(payload: AgentMediaPlanPayload) {
 	});
 }
 
-export function clearMediaPlans(sessionId: string) {
-	if (!sessionId) return;
+export function clearMediaPlans(sessionId: string | null) {
 	mediaPlanStore.update((all) => {
+		if (!sessionId) return Object.keys(all).length ? {} : all;
 		if (!(sessionId in all)) return all;
 		const next = { ...all };
 		delete next[sessionId];

@@ -70,6 +70,7 @@ export function reduceLifecycle(
 				activeSessionId: null,
 				error: null,
 				termination: null,
+				sessionErrorReasons: {},
 			};
 		}
 		case 'session/created': {
@@ -264,9 +265,12 @@ export function reduceLifecycle(
 			};
 		case 'session/deleted': {
 			if (!action.sessionId) return state;
+			const sessionErrorReasons = { ...state.sessionErrorReasons };
+			delete sessionErrorReasons[action.sessionId];
 			return {
 				...state,
 				sessions: state.sessions.filter((session) => session.id !== action.sessionId),
+				sessionErrorReasons,
 				activeSessionId:
 					state.activeSessionId === action.sessionId ? null : state.activeSessionId,
 				error: state.error?.sessionId === action.sessionId ? null : state.error,

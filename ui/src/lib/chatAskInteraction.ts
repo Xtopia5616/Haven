@@ -69,7 +69,14 @@ export function createAskInteractionController({
 		refreshSelectionsReady();
 	}
 
-	function clearAskAwaiting(sessionId: string) {
+	function clearAskAwaiting(sessionId: string | null) {
+		if (!sessionId) {
+			askSelections.clear();
+			resolvedAskIds.clear();
+			resolvedAskResponses.clear();
+			setSelectionsReady(false);
+			return;
+		}
 		reducer.dispatch({ type: 'session/interactions-cleared', sessionId, kind: 'ask' });
 		// A resume/end invalidates quick-reply answers for the pending batch.
 		resolvedAskIds.delete(sessionId);

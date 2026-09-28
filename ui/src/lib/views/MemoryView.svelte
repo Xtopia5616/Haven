@@ -12,6 +12,8 @@
 	import { formatMessageTime } from '$lib/messageFormat.ts';
 	import { addNotification } from '$lib/notificationStore.ts';
 	import { resumeTargetStore } from '$lib/sessionIntentStore.ts';
+	import { clearMediaPlans } from '$lib/mediaPlanStore.ts';
+	import { clearToolOutputPreviewsForSession } from '$lib/toolOutputPreviewStore.ts';
 	import { isErrorStatus, statusVariant } from '$lib/sessionStatus.ts';
 	import { onMount, onDestroy } from 'svelte';
 	import { get } from 'svelte/store';
@@ -313,9 +315,9 @@
 			await deleteSessionCommand({ sessionId });
 			sessions = sessions.filter((session) => session.id !== sessionId);
 			totalCount = sessions.length;
-			appSessionReducer.dispatch({ type: 'session/memory-cleared', sessionId });
-			if (appSessionReducer.getState().activeSessionId === sessionId)
-				appSessionReducer.dispatch({ type: 'session/cleared' });
+			clearMediaPlans(sessionId);
+			clearToolOutputPreviewsForSession(sessionId);
+			appSessionReducer.dispatch({ type: 'session/deleted', sessionId });
 			addNotification('会话已删除', 'success', 2000);
 		} catch (e) {
 			reportError(e, { context: 'MemoryView', message: '删除失败', log: false });
@@ -328,6 +330,8 @@
 			sessions = [];
 			totalCount = 0;
 			hasMore = false;
+			clearMediaPlans(null);
+			clearToolOutputPreviewsForSession(null);
 			appSessionReducer.dispatch({ type: 'sessions/cleared' });
 			addNotification(`已清空 ${count} 条会话`, 'success', 3000);
 		} catch {

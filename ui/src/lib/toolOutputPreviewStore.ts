@@ -54,6 +54,7 @@ export function clearToolOutputPreview(stepId: string) {
 	if (!stepId) return;
 	toolOutputPreviewSessions.delete(stepId);
 	toolOutputPreviewStores.get(stepId)?.set(undefined);
+	toolOutputPreviewStores.delete(stepId);
 	toolOutputPreviewStore.update((current) => {
 		if (!(stepId in current)) return current;
 		const next = { ...current };
@@ -62,17 +63,21 @@ export function clearToolOutputPreview(stepId: string) {
 	});
 }
 
-export function clearToolOutputPreviewsForSession(sessionId: string) {
-	if (!sessionId) return;
-	const stepIds = [...toolOutputPreviewSessions.entries()]
-		.filter(([, owner]) => owner === sessionId)
-		.map(([stepId]) => stepId);
-	if (!stepIds.length) return;
+export function clearToolOutputPreviewsForSession(sessionId: string | null) {
+	const stepIds = sessionId
+		? [...toolOutputPreviewSessions.entries()]
+				.filter(([, owner]) => owner === sessionId)
+				.map(([stepId]) => stepId)
+		: [...toolOutputPreviewStores.keys()];
+	if (sessionId && stepIds.length === 0) return;
 	for (const stepId of stepIds) {
 		toolOutputPreviewSessions.delete(stepId);
 		toolOutputPreviewStores.get(stepId)?.set(undefined);
+		toolOutputPreviewStores.delete(stepId);
 	}
+	if (!sessionId) toolOutputPreviewSessions.clear();
 	toolOutputPreviewStore.update((current) => {
+		if (!sessionId) return {};
 		const next = { ...current };
 		for (const stepId of stepIds) delete next[stepId];
 		return next;

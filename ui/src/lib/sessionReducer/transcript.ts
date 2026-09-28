@@ -123,8 +123,10 @@ export function reduceTranscript(
 			return { ...next, optimistic };
 		}
 		case 'session/messages/cleared': {
-			const next = withMessages(state, action.sessionId, () => []);
-			return clearReplayForSession(next, action.sessionId);
+			const next = clearReplayForSession(state, action.sessionId);
+			const messages = { ...next.messages };
+			delete messages[action.sessionId];
+			return { ...next, messages };
 		}
 		case 'session/messages/finalized':
 			return withMessages(state, action.sessionId, (messages) => {
