@@ -28,9 +28,6 @@
 //! - **Terminal action-result**: no live loop left — history-only persist.
 //! - **UI-only ask/confirm notices**: waiting prompts are materialized for the
 //!   UI but are not LLM transcript events.
-//! - **Defensive search final**: when a search round already committed its
-//!   ToolCall and no Thought message exists, turn-end may materialize the
-//!   synthetic final through `project_chat_message`; it has no separate event.
 
 use super::committed_ui::{
     CommittedUi, StoredActionUi, StoredObservationUi, encode_transcript_payload,

@@ -371,3 +371,4 @@
 - [0382：SessionState 持有 active ReAct run](0382-session-state-owns-react-run.md)
 - [0383：阶段 3 的 typed memory 与 Action 投影验收](0383-stage3-typed-memory-and-action-ports.md)
 - [0384：Agent Tools 执行上下文与端口 bundle](0384-agent-tools-execution-context.md)
+- [0385：search-final 消息投影归属 owning commit](0385-search-final-owned-projection.md)

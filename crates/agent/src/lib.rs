@@ -84,9 +84,8 @@ use crate::title::TitleGenerator;
 /// X12: recoverable ReAct assistant/thought/ask/reasoning content must be
 /// submitted through `ReActEngine::apply_transcript` as `SessionCommitted`.
 /// Direct callers are limited to ingress user seeds, terminal action-result
-/// history, recovery partials, and the documented waiting-notice and
-/// search-final `project_chat_message` exceptions. Do not reintroduce parallel
-/// transcript writers.
+/// history, recovery partials, and documented UI-only waiting notices. Do not
+/// reintroduce parallel transcript writers.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn persist_session_message(
     executor: &crate::session::SessionSupervisor,

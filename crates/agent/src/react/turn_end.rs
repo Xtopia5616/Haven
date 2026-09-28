@@ -60,7 +60,7 @@ impl ReActEngine {
         };
         // Thought apply already projected under the thought id — only project
         // again when there was no Thought for this step (synthetic finals).
-        let persist_text_id = if thought_projected {
+        let persist_text_id = if thought_projected || already_pushed {
             None
         } else {
             Some(state.block_msg_id(ctx.step_num, ctx.run_id, "thought"))
@@ -76,16 +76,6 @@ impl ReActEngine {
                 thinking_blocks,
                 action_cards: Vec::new(),
                 persist_text_id,
-            });
-        } else if let Some(ref mid) = persist_text_id {
-            // Search context already pushed the ToolCall event; still need the
-            // messages projection when Thought did not land one.
-            effects.push(super::effects::TurnEffect::ProjectChatMessage {
-                role: "assistant".into(),
-                content: final_text.to_string(),
-                message_type: Some("text".into()),
-                tool_call_id: None,
-                message_id: Some(mid.clone()),
             });
         }
 

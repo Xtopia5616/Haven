@@ -352,10 +352,14 @@ impl ReActEngine {
             effects.transcript(TranscriptEvent::Thought { text, message_id });
         }
 
-        let search_pushed = match self
-            .prepare_search_context(&ctx, &response, &thought, &actions, &mut effects)
-            .await?
-        {
+        let search_pushed = match Self::prepare_search_context(
+            &ctx,
+            state,
+            &response,
+            &thought,
+            &actions,
+            &mut effects,
+        )? {
             SearchContextOutcome::ContinueWithoutTools => return Ok(effects),
             SearchContextOutcome::Proceed {
                 assistant_already_pushed,

@@ -26,7 +26,7 @@ X12 要求 `session_events` 为 append-only 恢复权威，消息/步骤是物�
 - error partial 有意不进入 transcript event stream，由 recovery marker、branch point 和 `last_msg_at` 控制继续/回滚。
 - terminal action-result 在没有 live loop 时只保存历史消息。
 - ask/confirm waiting notice 只服务 UI，不进入 LLM transcript 或 durable event stream。
-- turn-end 的防御性 search-final 路径在此前的 ToolCall event 已提交、但没有 Thought 消息时，仍可能直接物化 final message 且不新增 transcript event。后续应核实它与既有 ToolCall 的 owner 关系：若路径可达，将消息投影并入该事件的 `SessionCommitted`；若证明不可达，则删除 fallback。
+- 当时 turn-end 的防御性 search-final 路径在此前的 ToolCall event 已提交、但没有 Thought 消息时，仍可能直接物化 final message 且不新增 transcript event。该路径已由 ADR 0385 收口：消息投影现在并入承载搜索上下文的 ToolCall `SessionCommitted`。
 
 后续新增可恢复的 ReAct 内容必须进入 `SessionCommitted` 并能从 event replay 修复；新增直接 `messages` 写入必须注明其恢复/裁剪 owner。其他 session lifecycle 和非 transcript 写入继续由对应 typed SessionStore port 承接。
 
