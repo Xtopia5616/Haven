@@ -52,7 +52,7 @@
 			onclick={onRefreshAll}
 			disabled={providers.length === 0}
 		/>
-		<MaterialButton variant="filled" label="添加 Provider" onclick={onEditProvider} />
+		<MaterialButton variant="filled" label="添加 Provider" onclick={() => onEditProvider()} />
 	</div>
 </div>
 
@@ -63,7 +63,11 @@
 			<strong>连接一个模型 Provider</strong>
 			<p>添加 API 地址和凭据后，可以刷新服务目录并配置模型。</p>
 		</div>
-		<MaterialButton variant="outlined" label="添加第一个 Provider" onclick={onEditProvider} />
+		<MaterialButton
+			variant="outlined"
+			label="添加第一个 Provider"
+			onclick={() => onEditProvider()}
+		/>
 	</div>
 {/if}
 

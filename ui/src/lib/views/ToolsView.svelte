@@ -1,21 +1,12 @@
-<script>
-	/** @typedef {import('$lib/builtinToolPresentation.ts').BuiltinToolEntry} BuiltinToolEntry */
-	/** @typedef {import('$lib/contracts/tools.ts').McpServerConfig} McpServerConfig */
-	/** @typedef {import('$lib/contracts/tools.ts').McpServerSnapshot} McpServerSnapshot */
-	/** @typedef {import('$lib/contracts/tools.ts').SkillInfo} SkillInfo */
-	/** @typedef {{ name: string; enabled: boolean; desc?: string; description?: string; url?: string; transport?: string }} ResourceFilterItem */
-
-	/** @type {McpServerSnapshot[]} */
-	let mcpServers = $state([]);
-	/** @type {SkillInfo[]} */
-	let skills = $state([]);
-	/** @type {BuiltinToolEntry[]} */
-	let builtinTools = $state([]);
-	let activeTab = $state('builtin');
+<script lang="ts">
+	let mcpServers = $state<McpServerSnapshot[]>([]);
+	let skills = $state<SkillInfo[]>([]);
+	let builtinTools = $state<BuiltinToolEntry[]>([]);
+	let activeTab = $state<'builtin' | 'mcp' | 'skills'>('builtin');
 	let searchQuery = $state('');
-	let enabledFilter = $state('all');
+	let enabledFilter = $state<'all' | 'enabled' | 'disabled'>('all');
 	let mcpDialogOpen = $state(false);
-	let mcpEditServer = /** @type {Record<string, any> | null} */ ($state(null));
+	let mcpEditServer = $state<McpServerSnapshot | null>(null);
 
 	import { onMount, onDestroy } from 'svelte';
 	import {
@@ -57,18 +48,29 @@
 		groupBuiltinTools,
 	} from '$lib/builtinToolPresentation.ts';
 	import { setToolManifests } from '$lib/toolManifest.ts';
+	import type { BuiltinToolEntry } from '$lib/builtinToolPresentation.ts';
+	import type {
+		McpServerConfigInput,
+		McpServerSnapshot,
+	} from '$lib/contracts/generatedCommands.ts';
+	import type { SkillInfo } from '$lib/contracts/tools.ts';
 
-	/** @type {{ dispose: () => void }} */
-	let unlistenSkills;
-	/** @type {{ dispose: () => void }} */
-	let unlistenMcp;
-	/** @type {ReturnType<typeof setTimeout> | null} */
-	let mcpRefreshTimer = null;
+	interface ResourceFilterItem {
+		name: string;
+		enabled: boolean;
+		desc?: string;
+		description?: string;
+		url?: string;
+		transport?: string;
+	}
+
+	let unlistenSkills: { dispose: () => void } | undefined;
+	let unlistenMcp: { dispose: () => void } | undefined;
+	let mcpRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 	let mcpRefreshing = $state(false);
 	let skillsRefreshing = $state(false);
 
-	/** @param {ResourceFilterItem} item */
-	function matchesResource(item) {
+	function matchesResource(item: ResourceFilterItem) {
 		const query = searchQuery.trim().toLocaleLowerCase();
 		if (enabledFilter === 'enabled' && item.enabled === false) return false;
 		if (enabledFilter === 'disabled' && item.enabled !== false) return false;
@@ -80,9 +82,8 @@
 		return text.includes(query);
 	}
 
-	/** @param {string} value */
-	function handleEnabledFilterChange(value) {
-		enabledFilter = value;
+	function handleEnabledFilterChange(value: string) {
+		if (value === 'all' || value === 'enabled' || value === 'disabled') enabledFilter = value;
 	}
 
 	function clearFilters() {
@@ -389,165 +390,194 @@
 	}
 
 	const tabs = [
-		{ id: 'builtin', label: '内置工具' },
-		{ id: 'mcp', label: 'MCP' },
-		{ id: 'skills', label: '技能' },
+		{ id: 'builtin', label: '内置工具', icon: 'tools' },
+		{ id: 'mcp', label: 'MCP', icon: 'briefcase' },
+		{ id: 'skills', label: '技能', icon: 'sparkles' },
 	];
-	/** @param {string} tabId */
-	function selectToolTab(tabId) {
-		activeTab = tabId;
+	function selectToolTab(tabId: string) {
+		if (tabId === 'builtin' || tabId === 'mcp' || tabId === 'skills') activeTab = tabId;
 	}
 </script>
 
 <div class="tools-page">
 	<WorkspacePageHeader title="工具" description="管理 Haven 可调用的工具、MCP 服务与技能。" />
 
-	<MaterialTabs
-		{tabs}
-		{activeTab}
-		onNavigate={selectToolTab}
-		ariaLabel="工具分类"
-		idPrefix="tools-tab"
-		panelIdPrefix=""
-		className="workspace-secondary-tabs"
-	/>
-
-	{#snippet resourceToolbar()}
-		<div class="resource-toolbar workspace-filter-bar" role="search" aria-label="筛选工具资源">
-			<label class="resource-search">
-				<span class="sr-only">搜索工具资源</span>
-				<input
-					class="md-input"
-					type="search"
-					bind:value={searchQuery}
-					placeholder="搜索名称、描述或地址"
-				/>
-			</label>
-			<div class="resource-filter-controls">
-				<MaterialSelect
-					id="resource-enabled-filter"
-					value={enabledFilter}
-					ariaLabel="启用状态"
-					options={[
-						{ value: 'all', label: '全部状态' },
-						{ value: 'enabled', label: '仅启用' },
-						{ value: 'disabled', label: '仅禁用' },
-					]}
-					onChange={handleEnabledFilterChange}
-				/>
-				{#if hasFilters}
-					<MaterialButton variant="text" label="清除" onclick={clearFilters} />
-				{/if}
+	<div class="tools-workspace">
+		<nav class="tools-sidebar" aria-label="资源分类导航">
+			<div class="tools-sidebar-heading">
+				<h2>资源分类</h2>
+				<p>浏览并管理可用能力</p>
 			</div>
-			<CountChip count={activeResourceCount} label="项" className="resource-count" live />
-		</div>
-	{/snippet}
+			<MaterialTabs
+				{tabs}
+				{activeTab}
+				onNavigate={selectToolTab}
+				ariaLabel="工具分类"
+				idPrefix="tools-tab"
+				panelIdPrefix=""
+				showIcons
+				className="workspace-secondary-tabs tools-resource-tabs"
+			/>
+		</nav>
 
-	{#if activeTab === 'builtin'}
-		<section class="resource-panel motion-surface-enter" aria-label="内置工具">
-			<WorkspaceSectionHeader
-				title="内置工具"
-				description="Haven 自带的可调用能力；按能力族、根能力和具体操作三级收纳，可展开后分别启停。"
-			>
-				{#snippet children()}
-					<div class="toolbar-actions toolbar-actions--paired">
-						<MaterialButton
-							variant="outlined"
-							label="重置熔断"
-							onclick={resetToolCircuits}
+		<div class="tools-workspace-main">
+			{#snippet resourceToolbar()}
+				<div
+					class="resource-toolbar workspace-filter-bar"
+					role="search"
+					aria-label="筛选工具资源"
+				>
+					<label class="resource-search">
+						<span class="sr-only">搜索工具资源</span>
+						<input
+							class="md-input"
+							type="search"
+							bind:value={searchQuery}
+							placeholder="搜索名称、描述或地址"
 						/>
-					</div>
-				{/snippet}
-			</WorkspaceSectionHeader>
-			{@render resourceToolbar()}
-			{#if builtinTools.length === 0}
-				<AsyncState
-					title="暂无可用的内置工具"
-					message="工具列表加载后，可在此查看详情与启用状态。"
-				/>
-			{:else if visibleBuiltinTools.length === 0}
-				<AsyncState title="没有匹配的内置工具" message="换一个关键词或清除状态筛选。" />
-			{:else}
-				<div class="resource-list">
-					{#each visibleBuiltinTools as tool (tool.name)}
-						<BuiltinToolCard {tool} onToggle={handleToolToggle} />
-					{/each}
-				</div>
-			{/if}
-		</section>
-	{:else if activeTab === 'mcp'}
-		<section class="resource-panel motion-surface-enter" aria-label="MCP 服务器">
-			<WorkspaceSectionHeader
-				title="MCP 服务器"
-				description="连接外部工具服务，并查看当前连接状态。"
-			>
-				{#snippet children()}
-					<div class="toolbar-actions toolbar-actions--paired">
-						<RefreshButton loading={mcpRefreshing} onclick={refreshMcpList} />
-						<MaterialButton variant="outlined" label="添加" onclick={openAddDialog} />
-					</div>
-				{/snippet}
-			</WorkspaceSectionHeader>
-			{@render resourceToolbar()}
-			{#if mcpServers.length === 0}
-				<AsyncState
-					title="尚未配置 MCP 服务器"
-					message="添加 MCP 服务器，为 Agent 扩展外部工具与资源。"
-					actionLabel="添加 MCP 服务器"
-					onAction={openAddDialog}
-				/>
-			{:else if visibleMcpServers.length === 0}
-				<AsyncState title="没有匹配的 MCP 服务器" message="换一个关键词或清除状态筛选。" />
-			{:else}
-				<div class="resource-list">
-					{#each visibleMcpServers as server (server.name)}
-						<McpServerCard
-							{server}
-							onEdit={openEditDialog}
-							onRemove={handleRemove}
-							onReconnect={handleReconnect}
-							onToggle={handleMcpToggle}
+					</label>
+					<div class="resource-filter-controls">
+						<MaterialSelect
+							id="resource-enabled-filter"
+							value={enabledFilter}
+							ariaLabel="启用状态"
+							options={[
+								{ value: 'all', label: '全部状态' },
+								{ value: 'enabled', label: '仅启用' },
+								{ value: 'disabled', label: '仅禁用' },
+							]}
+							onChange={handleEnabledFilterChange}
 						/>
-					{/each}
-				</div>
-			{/if}
-		</section>
-	{:else}
-		<section class="resource-panel motion-surface-enter" aria-label="技能">
-			<WorkspaceSectionHeader
-				title="技能"
-				description="管理可被 Agent 调用的技能和执行脚本。"
-			>
-				{#snippet children()}
-					<div class="toolbar-actions toolbar-actions--paired">
-						<RefreshButton loading={skillsRefreshing} onclick={refreshSkills} />
-						<MaterialButton
-							variant="outlined"
-							label="打开文件夹"
-							onclick={openFolder}
-						/>
+						{#if hasFilters}
+							<MaterialButton variant="text" label="清除" onclick={clearFilters} />
+						{/if}
 					</div>
-				{/snippet}
-			</WorkspaceSectionHeader>
-			{@render resourceToolbar()}
-			{#if skills.length === 0}
-				<AsyncState
-					title="暂无技能"
-					message="将 SKILL.md 文件放入技能文件夹，然后点击刷新。"
-					actionLabel="打开技能文件夹"
-					onAction={openFolder}
-				/>
-			{:else if visibleSkills.length === 0}
-				<AsyncState title="没有匹配的技能" message="换一个关键词或清除状态筛选。" />
-			{:else}
-				<div class="resource-list">
-					{#each visibleSkills as skill (skill.name)}
-						<SkillCard {skill} onToggle={handleToggle} />
-					{/each}
+					<CountChip
+						count={activeResourceCount}
+						label="项"
+						className="resource-count"
+						live
+					/>
 				</div>
+			{/snippet}
+
+			{#if activeTab === 'builtin'}
+				<section class="resource-panel motion-surface-enter" aria-label="内置工具">
+					<WorkspaceSectionHeader
+						title="内置工具"
+						description="Haven 自带的可调用能力；按能力族、根能力和具体操作三级收纳，可展开后分别启停。"
+					>
+						{#snippet children()}
+							<div class="toolbar-actions toolbar-actions--paired">
+								<MaterialButton
+									variant="outlined"
+									label="重置熔断"
+									onclick={resetToolCircuits}
+								/>
+							</div>
+						{/snippet}
+					</WorkspaceSectionHeader>
+					{@render resourceToolbar()}
+					{#if builtinTools.length === 0}
+						<AsyncState
+							title="暂无可用的内置工具"
+							message="工具列表加载后，可在此查看详情与启用状态。"
+						/>
+					{:else if visibleBuiltinTools.length === 0}
+						<AsyncState
+							title="没有匹配的内置工具"
+							message="换一个关键词或清除状态筛选。"
+						/>
+					{:else}
+						<div class="resource-list resource-list--builtin">
+							{#each visibleBuiltinTools as tool (tool.name)}
+								<BuiltinToolCard {tool} onToggle={handleToolToggle} />
+							{/each}
+						</div>
+					{/if}
+				</section>
+			{:else if activeTab === 'mcp'}
+				<section class="resource-panel motion-surface-enter" aria-label="MCP 服务器">
+					<WorkspaceSectionHeader
+						title="MCP 服务器"
+						description="连接外部工具服务，并查看当前连接状态。"
+					>
+						{#snippet children()}
+							<div class="toolbar-actions toolbar-actions--paired">
+								<RefreshButton loading={mcpRefreshing} onclick={refreshMcpList} />
+								<MaterialButton
+									variant="outlined"
+									label="添加"
+									onclick={openAddDialog}
+								/>
+							</div>
+						{/snippet}
+					</WorkspaceSectionHeader>
+					{@render resourceToolbar()}
+					{#if mcpServers.length === 0}
+						<AsyncState
+							title="尚未配置 MCP 服务器"
+							message="添加 MCP 服务器，为 Agent 扩展外部工具与资源。"
+							actionLabel="添加 MCP 服务器"
+							onAction={openAddDialog}
+						/>
+					{:else if visibleMcpServers.length === 0}
+						<AsyncState
+							title="没有匹配的 MCP 服务器"
+							message="换一个关键词或清除状态筛选。"
+						/>
+					{:else}
+						<div class="resource-list resource-list--managed">
+							{#each visibleMcpServers as server (server.name)}
+								<McpServerCard
+									{server}
+									onEdit={openEditDialog}
+									onRemove={handleRemove}
+									onReconnect={handleReconnect}
+									onToggle={handleMcpToggle}
+								/>
+							{/each}
+						</div>
+					{/if}
+				</section>
+			{:else}
+				<section class="resource-panel motion-surface-enter" aria-label="技能">
+					<WorkspaceSectionHeader
+						title="技能"
+						description="管理可被 Agent 调用的技能和执行脚本。"
+					>
+						{#snippet children()}
+							<div class="toolbar-actions toolbar-actions--paired">
+								<RefreshButton loading={skillsRefreshing} onclick={refreshSkills} />
+								<MaterialButton
+									variant="outlined"
+									label="打开文件夹"
+									onclick={openFolder}
+								/>
+							</div>
+						{/snippet}
+					</WorkspaceSectionHeader>
+					{@render resourceToolbar()}
+					{#if skills.length === 0}
+						<AsyncState
+							title="暂无技能"
+							message="将 SKILL.md 文件放入技能文件夹，然后点击刷新。"
+							actionLabel="打开技能文件夹"
+							onAction={openFolder}
+						/>
+					{:else if visibleSkills.length === 0}
+						<AsyncState title="没有匹配的技能" message="换一个关键词或清除状态筛选。" />
+					{:else}
+						<div class="resource-list resource-list--managed">
+							{#each visibleSkills as skill (skill.name)}
+								<SkillCard {skill} onToggle={handleToggle} />
+							{/each}
+						</div>
+					{/if}
+				</section>
 			{/if}
-		</section>
-	{/if}
+		</div>
+	</div>
 </div>
 
 {#if mcpDialogOpen}
@@ -564,6 +594,20 @@
 		width: 100%;
 		min-width: 0;
 		max-width: var(--md-sys-content-max-width);
+	}
+	.tools-workspace {
+		display: flex;
+		flex-direction: column;
+		min-width: 0;
+	}
+	.tools-sidebar-heading {
+		display: none;
+	}
+	.tools-workspace-main {
+		min-width: 0;
+	}
+	:global(.tools-resource-tabs .md-tab__icon) {
+		display: none;
 	}
 	.resource-toolbar {
 		margin-bottom: var(--md-sys-space-lg);
@@ -671,6 +715,104 @@
 		}
 		.toolbar-actions--paired {
 			width: 100%;
+		}
+	}
+	@media (min-width: 1280px) and (orientation: landscape) {
+		.tools-page {
+			max-width: none;
+		}
+		.tools-workspace {
+			display: grid;
+			grid-template-columns: minmax(190px, 224px) minmax(0, 1fr);
+			align-items: start;
+			gap: var(--md-sys-space-2xl);
+		}
+		.tools-sidebar {
+			position: sticky;
+			top: var(--md-sys-space-lg);
+			align-self: start;
+			min-width: 0;
+			padding-right: var(--md-sys-space-lg);
+			border-right: 1px solid var(--md-sys-color-outline-variant);
+		}
+		.tools-sidebar-heading {
+			display: block;
+			margin: 0 0 var(--md-sys-space-md) var(--md-sys-space-sm);
+		}
+		.tools-sidebar-heading h2 {
+			margin: 0;
+			color: var(--md-sys-color-on-surface);
+			font-size: var(--md-sys-typescale-title-medium-size);
+			font-weight: 650;
+			line-height: var(--md-sys-typescale-title-medium-line-height);
+		}
+		.tools-sidebar-heading p {
+			margin: var(--md-sys-space-2xs) 0 0;
+			color: var(--md-sys-color-on-surface-variant);
+			font-size: var(--md-sys-typescale-label-medium-size);
+			line-height: var(--md-sys-typescale-label-medium-line-height);
+		}
+		:global(.tools-resource-tabs) {
+			align-items: stretch;
+			flex-direction: column;
+			height: auto;
+			gap: var(--md-sys-space-2xs);
+			padding: var(--md-sys-space-xs);
+			border: 1px solid var(--md-sys-color-outline-variant);
+			border-radius: var(--md-sys-shape-large);
+			background: var(--md-sys-color-surface-container-low);
+		}
+		:global(.tools-resource-tabs .md-tab) {
+			flex: 0 0 auto;
+			justify-content: flex-start;
+			width: 100%;
+			min-height: var(--md-comp-button-touch-height);
+			padding: 0 var(--md-sys-space-lg) 0 var(--md-sys-space-2xl);
+			text-align: left;
+		}
+		:global(.tools-resource-tabs .md-tab.active) {
+			background: var(--md-sys-color-secondary-container);
+			color: var(--md-sys-color-on-secondary-container);
+		}
+		:global(.tools-resource-tabs .md-tab.active::before) {
+			left: var(--md-sys-space-sm);
+			top: 50%;
+			bottom: auto;
+			width: var(--md-comp-tab-indicator-height);
+			max-width: var(--md-comp-tab-indicator-height);
+			height: var(--md-comp-tab-indicator-min-width);
+			transform: translateY(-50%);
+			animation: none;
+		}
+		:global(.tools-resource-tabs .md-tab.active::after) {
+			background: var(--md-sys-color-on-secondary-container);
+		}
+		:global(.tools-resource-tabs .md-tab:not(.active):hover) {
+			background: var(--md-sys-color-surface-container-high);
+		}
+		:global(.tools-resource-tabs .md-tab:not(.active)::before) {
+			display: none;
+		}
+		:global(.tools-resource-tabs .md-tab__icon) {
+			display: inline-flex;
+			width: var(--md-sys-icon-size);
+			height: var(--md-sys-icon-size);
+		}
+		.resource-list--builtin {
+			grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+			align-items: start;
+			gap: var(--md-sys-space-md);
+		}
+		.resource-list--managed {
+			grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr));
+			align-items: start;
+			gap: var(--md-sys-space-md);
+		}
+		.resource-toolbar {
+			position: sticky;
+			top: var(--md-sys-space-lg);
+			z-index: 2;
+			box-shadow: var(--md-sys-elevation-1);
 		}
 	}
 </style>

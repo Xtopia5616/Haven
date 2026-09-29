@@ -856,91 +856,92 @@
 			await stageSettingsCredentials();
 			skipNextDefaultModelSync = true;
 			await invoke('update_settings', {
-				settings: /** @type {import('$lib/contracts/settings.ts').SettingsUpdatePayload} */ ({
-					default_shell: defaultShell,
-					llm: llmConfig,
-					hotkey: { key_binding: hotkeyBinding, mode: hotkeyMode, mute_hotkey: null },
-					session: {
-						max_concurrent: session.max_concurrent,
-						max_steps: session.max_steps,
-						history_retention_days: session.history_retention_days,
+				settings:
+					/** @type {import('$lib/contracts/settings.ts').SettingsUpdatePayload} */ {
+						default_shell: defaultShell,
+						llm: llmConfig,
+						hotkey: { key_binding: hotkeyBinding, mode: hotkeyMode, mute_hotkey: null },
+						session: {
+							max_concurrent: session.max_concurrent,
+							max_steps: session.max_steps,
+							history_retention_days: session.history_retention_days,
+						},
+						memory: {
+							session_window_size: memory.session_window_size,
+						},
+						security: {
+							permission_mode: security.permission_mode,
+							sandbox_mode: security.sandbox_mode,
+							network_policy: security.network_policy,
+							writable_roots: security.writable_roots,
+							permissions: security.permissions,
+						},
+						context_limits: contextLimits,
+						media: {
+							input_strategy: mediaInputStrategy,
+							audio: {
+								sample_rate: audio.sample_rate,
+								channels: audio.channels,
+								bits_per_sample: audio.bits_per_sample,
+								max_duration_secs: audio.max_duration_secs,
+								silence_timeout_ms: audio.silence_timeout_ms,
+								vad_threshold: audio.vad_threshold,
+							},
+							stt: {
+								provider: stt.provider,
+								mcp_server: stt.mcp_server || null,
+								model: stt.model,
+								timeout_secs: stt.timeout_secs,
+								min_confidence: stt.min_confidence,
+							},
+							ocr: {
+								provider: ocr.provider,
+								api_key_ref: ocr.api_key_ref,
+								api_secret_ref: ocr.api_secret_ref,
+								base_url: ocr.base_url,
+								timeout_secs: ocr.timeout_secs,
+								min_confidence: ocr.min_confidence,
+							},
+							tts: {
+								provider: tts.provider,
+								model: tts.model,
+								voice: tts.voice,
+								timeout_secs: tts.timeout_secs,
+							},
+							image_gen: {
+								provider: imageGen.provider,
+								model: imageGen.model,
+								timeout_secs: imageGen.timeout_secs,
+							},
+						},
+						notification: {
+							session_created: {
+								in_app: notification.session_created.in_app,
+								windows: notification.session_created.windows,
+							},
+							session_completed: {
+								in_app: notification.session_completed.in_app,
+								windows: notification.session_completed.windows,
+							},
+							session_paused: {
+								in_app: notification.session_paused.in_app,
+								windows: notification.session_paused.windows,
+							},
+							session_resumed: {
+								in_app: notification.session_resumed.in_app,
+								windows: notification.session_resumed.windows,
+							},
+							session_error: {
+								in_app: notification.session_error.in_app,
+								windows: notification.session_error.windows,
+							},
+							action_completed: {
+								in_app: notification.action_completed.in_app,
+								windows: notification.action_completed.windows,
+							},
+						},
+						log: { level: log.level, file_enabled: log.file_enabled, file_path: null },
 					},
-					memory: {
-						session_window_size: memory.session_window_size,
-					},
-					security: {
-						permission_mode: security.permission_mode,
-						sandbox_mode: security.sandbox_mode,
-						network_policy: security.network_policy,
-						writable_roots: security.writable_roots,
-						permissions: security.permissions,
-					},
-					context_limits: contextLimits,
-					media: {
-						input_strategy: mediaInputStrategy,
-						audio: {
-							sample_rate: audio.sample_rate,
-							channels: audio.channels,
-							bits_per_sample: audio.bits_per_sample,
-							max_duration_secs: audio.max_duration_secs,
-							silence_timeout_ms: audio.silence_timeout_ms,
-							vad_threshold: audio.vad_threshold,
-						},
-						stt: {
-							provider: stt.provider,
-							mcp_server: stt.mcp_server || null,
-							model: stt.model,
-							timeout_secs: stt.timeout_secs,
-							min_confidence: stt.min_confidence,
-						},
-						ocr: {
-							provider: ocr.provider,
-							api_key_ref: ocr.api_key_ref,
-							api_secret_ref: ocr.api_secret_ref,
-							base_url: ocr.base_url,
-							timeout_secs: ocr.timeout_secs,
-							min_confidence: ocr.min_confidence,
-						},
-						tts: {
-							provider: tts.provider,
-							model: tts.model,
-							voice: tts.voice,
-							timeout_secs: tts.timeout_secs,
-						},
-						image_gen: {
-							provider: imageGen.provider,
-							model: imageGen.model,
-							timeout_secs: imageGen.timeout_secs,
-						},
-					},
-					notification: {
-						session_created: {
-							in_app: notification.session_created.in_app,
-							windows: notification.session_created.windows,
-						},
-						session_completed: {
-							in_app: notification.session_completed.in_app,
-							windows: notification.session_completed.windows,
-						},
-						session_paused: {
-							in_app: notification.session_paused.in_app,
-							windows: notification.session_paused.windows,
-						},
-						session_resumed: {
-							in_app: notification.session_resumed.in_app,
-							windows: notification.session_resumed.windows,
-						},
-						session_error: {
-							in_app: notification.session_error.in_app,
-							windows: notification.session_error.windows,
-						},
-						action_completed: {
-							in_app: notification.action_completed.in_app,
-							windows: notification.action_completed.windows,
-						},
-					},
-					log: { level: log.level, file_enabled: log.file_enabled, file_path: null },
-				}),
 			});
 			setActionCompletionNotificationChannels(notification.action_completed);
 			addNotification('设置已写入配置', 'success');
@@ -1014,109 +1015,115 @@
 			/>
 		</div>
 	{/if}
-	<MaterialTabs
-		tabs={settingsTabs}
-		activeTab={settingsTab}
-		onNavigate={changeSettingsTab}
-		ariaLabel="设置分类"
-		idPrefix="settings-tab"
-		panelId="settings-panel"
-		className="settings-tabs"
-	/>
-	{#key settingsTab}
-		<div
-			id="settings-panel"
-			class="motion-surface-enter"
-			role="tabpanel"
-			aria-label={settingsTabs.find((tab) => tab.id === settingsTab)?.label || '设置'}
-		>
-			{#if settingsTab === 'general'}
-				<SettingsGeneral
-					{hotkeyMode}
-					{hotkeyBinding}
-					{llmConfig}
-					{session}
-					{defaultShell}
-					{shellAvailable}
-					{memory}
-					{memoryMaintenance}
-					{notification}
-					{log}
-					{logView}
-					{performanceMetricsLoading}
-					{autostartEnabled}
-					onHotkeyModeChange={setHotkeyMode}
-					onHotkeyBindingChange={setHotkeyBinding}
-					onDefaultShellChange={setDefaultShell}
-					onAutostartChange={setAutostart}
-					onRunMaintenance={runMaintenance}
-					onOpenLogViewer={openLogViewer}
-					onExportPerformanceMetrics={exportPerformanceSnapshot}
-				/>
-			{:else if settingsTab === 'models' || settingsTab === 'media'}
-				{#if settingsLoaded}<ModelSettings
-						section={settingsTab}
-						{llmConfig}
-						{audio}
-						{stt}
-						{ocr}
-						{tts}
-						{imageGen}
-						{mediaInputStrategy}
-						{contextLimits}
-						{keyConfigured}
-						{keyConfiguredProviders}
-						{mcpServerNames}
-						loaded={true}
-						onDiscoverySettled={reBaselineAfterDiscovery}
-						onProviderDiscoveryFailure={(
-							/** @type {string} */ providerName,
-							/** @type {boolean} */ staticCatalog,
-						) => {
-							providerDiscoveryAlert = { providerName, staticCatalog };
-						}}
-					/>{:else}<p class="model-hint">正在加载模型与 API Key 状态…</p>{/if}
-			{:else if settingsTab === 'security'}
-				<SettingsSecurity
-					{security}
-					onRevokePermission={revokePermission}
-					onResetPermissions={resetPermissions}
-				/>
-			{:else}
-				<SettingsLimits {contextLimits} />
-			{/if}
-		</div>
-	{/key}
-	{#if settingsDirty || saveState === 'error'}
-		<div class="save-bar md-toolbar motion-surface-enter">
-			{#if saveState === 'error'}
-				<p class="save-error" role="alert">{saveError}</p>
-			{/if}
-			{#if settingsDirty}
-				<div class="save-actions">
-					<MaterialButton
-						variant="outlined"
-						label="放弃更改"
-						onclick={discardAndReset}
-						disabled={saveState === 'saving'}
-					/>
-					<div
-						class="save-button-status"
-						aria-live="polite"
-						aria-busy={saveState === 'saving'}
-					>
-						<MaterialButton
-							variant="filled"
-							className="save-btn save-btn--dirty"
-							label={saveState === 'saving' ? '保存中…' : '保存设置'}
-							onclick={handleSaveClick}
-							disabled={saveState === 'saving'}
+	<div class="settings-layout">
+		<aside class="settings-sidebar">
+			<MaterialTabs
+				tabs={settingsTabs}
+				activeTab={settingsTab}
+				onNavigate={changeSettingsTab}
+				ariaLabel="设置分类"
+				idPrefix="settings-tab"
+				panelId="settings-panel"
+				className="settings-tabs"
+			/>
+		</aside>
+		<div class="settings-main">
+			{#key settingsTab}
+				<div
+					id="settings-panel"
+					class="motion-surface-enter"
+					role="tabpanel"
+					aria-label={settingsTabs.find((tab) => tab.id === settingsTab)?.label || '设置'}
+				>
+					{#if settingsTab === 'general'}
+						<SettingsGeneral
+							{hotkeyMode}
+							{hotkeyBinding}
+							{llmConfig}
+							{session}
+							{defaultShell}
+							{shellAvailable}
+							{memory}
+							{memoryMaintenance}
+							{notification}
+							{log}
+							{logView}
+							{performanceMetricsLoading}
+							{autostartEnabled}
+							onHotkeyModeChange={setHotkeyMode}
+							onHotkeyBindingChange={setHotkeyBinding}
+							onDefaultShellChange={setDefaultShell}
+							onAutostartChange={setAutostart}
+							onRunMaintenance={runMaintenance}
+							onOpenLogViewer={openLogViewer}
+							onExportPerformanceMetrics={exportPerformanceSnapshot}
 						/>
-					</div>
+					{:else if settingsTab === 'models' || settingsTab === 'media'}
+						{#if settingsLoaded}<ModelSettings
+								section={settingsTab}
+								{llmConfig}
+								{audio}
+								{stt}
+								{ocr}
+								{tts}
+								{imageGen}
+								{mediaInputStrategy}
+								{contextLimits}
+								{keyConfigured}
+								{keyConfiguredProviders}
+								{mcpServerNames}
+								loaded={true}
+								onDiscoverySettled={reBaselineAfterDiscovery}
+								onProviderDiscoveryFailure={(
+									/** @type {string} */ providerName,
+									/** @type {boolean} */ staticCatalog,
+								) => {
+									providerDiscoveryAlert = { providerName, staticCatalog };
+								}}
+							/>{:else}<p class="model-hint">正在加载模型与 API Key 状态…</p>{/if}
+					{:else if settingsTab === 'security'}
+						<SettingsSecurity
+							{security}
+							onRevokePermission={revokePermission}
+							onResetPermissions={resetPermissions}
+						/>
+					{:else}
+						<SettingsLimits {contextLimits} />
+					{/if}
+				</div>
+			{/key}
+			{#if settingsDirty || saveState === 'error'}
+				<div class="save-bar md-toolbar motion-surface-enter">
+					{#if saveState === 'error'}
+						<p class="save-error" role="alert">{saveError}</p>
+					{/if}
+					{#if settingsDirty}
+						<div class="save-actions">
+							<MaterialButton
+								variant="outlined"
+								label="放弃更改"
+								onclick={discardAndReset}
+								disabled={saveState === 'saving'}
+							/>
+							<div
+								class="save-button-status"
+								aria-live="polite"
+								aria-busy={saveState === 'saving'}
+							>
+								<MaterialButton
+									variant="filled"
+									className="save-btn save-btn--dirty"
+									label={saveState === 'saving' ? '保存中…' : '保存设置'}
+									onclick={handleSaveClick}
+									disabled={saveState === 'saving'}
+								/>
+							</div>
+						</div>
+					{/if}
 				</div>
 			{/if}
 		</div>
-	{/if}
+	</div>
 </div>
 
 {#if logView.open}
@@ -1209,6 +1216,10 @@
 		min-width: 0;
 		max-width: var(--md-sys-content-max-width);
 		padding-bottom: var(--md-sys-space-xl);
+	}
+	.settings-layout,
+	.settings-main {
+		min-width: 0;
 	}
 	:global(.settings-tabs) {
 		margin-bottom: var(--md-sys-space-2xl);
@@ -1333,6 +1344,40 @@
 		border: 1px solid var(--md-sys-color-outline-variant);
 		margin: 0;
 		white-space: pre;
+	}
+	@media screen and (min-width: 1280px) and (orientation: landscape) {
+		.settings-page {
+			max-width: none;
+		}
+		.settings-layout {
+			display: grid;
+			grid-template-columns: clamp(216px, 20vw, 272px) minmax(0, 1fr);
+			align-items: start;
+			column-gap: var(--md-sys-space-3xl);
+		}
+		.settings-sidebar {
+			position: sticky;
+			top: var(--md-sys-space-xl);
+			min-width: 0;
+		}
+		:global(.settings-tabs) {
+			flex-direction: column;
+			align-items: stretch;
+			height: auto;
+			gap: var(--md-sys-space-xs);
+			margin: 0;
+			padding: var(--md-sys-space-sm) var(--md-sys-space-md) var(--md-sys-space-sm) 0;
+			border-right: 1px solid var(--md-sys-color-outline-variant);
+			border-bottom: 0;
+		}
+		:global(.settings-tabs .md-tab) {
+			flex: 0 0 auto;
+			width: 100%;
+			min-width: 0;
+		}
+		:global(.settings-tabs .md-tab small) {
+			max-width: none;
+		}
 	}
 	@media (max-width: 640px) {
 		:global(.settings-tabs .md-tab) {

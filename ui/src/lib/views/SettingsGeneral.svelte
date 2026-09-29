@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 	import { onDestroy } from 'svelte';
 	import { themeStore } from '$lib/themeStore.ts';
 	import MaterialSwitch from '$lib/MaterialSwitch.svelte';

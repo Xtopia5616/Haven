@@ -1,10 +1,53 @@
-<script>
+<script lang="ts">
+	import { onMount } from 'svelte';
 	import MaterialBadge from '$lib/MaterialBadge.svelte';
 	import Icon from '$lib/Icon.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
 	import AsyncState from '$lib/AsyncState.svelte';
 	import CountChip from '$lib/CountChip.svelte';
+	import type { SessionHistoryRow } from '$lib/contracts/sessionHistory.ts';
+
+	interface Props {
+		sessions?: SessionHistoryRow[];
+		searchQuery?: string;
+		totalCount?: number;
+		statusFilter?: string;
+		statusOptions?: Array<{ value: string; label: string }>;
+		startDate?: string;
+		endDate?: string;
+		selectMode?: boolean;
+		selectedIds?: Set<string>;
+		loading?: boolean;
+		hasMore?: boolean;
+		editingTitle?: string | null;
+		renameValue?: string;
+		onSearchQueryChange?: (value: string) => void;
+		onSearchInput?: () => void;
+		onClearFilters?: () => void;
+		onStatusFilterChange?: (value: string) => void;
+		onOpenDateFilter?: () => void;
+		onToggleSelectAll?: () => void;
+		onToggleSelect?: (sessionId: string) => void;
+		onEnterSelectMode?: () => void;
+		onCancelSelectMode?: () => void;
+		onExportSelected?: () => void;
+		onOpenClearDialog?: () => void;
+		onResume?: (session: SessionHistoryRow) => void;
+		onNewSession?: () => void;
+		onStartEdit?: (session: SessionHistoryRow) => void;
+		onRenameValueChange?: (value: string) => void;
+		onRenameKeydown?: (event: KeyboardEvent, sessionId: string) => void;
+		onSaveTitle?: (sessionId: string) => void;
+		onContextMenu?: (event: MouseEvent, session: SessionHistoryRow) => void;
+		onDeleteRequest?: (session: SessionHistoryRow) => void;
+		onLoadMore?: () => void;
+		displayTitle?: (session: SessionHistoryRow) => string;
+		statusVariant?: (
+			status: string,
+		) => 'default' | 'primary' | 'secondary' | 'success' | 'warning' | 'error';
+		formatMessageTime?: (value: string) => string;
+	}
 
 	/** Session history tab. Loading, resume and store updates remain in the parent. */
 	let {
@@ -42,35 +85,62 @@
 		onDeleteRequest = () => {},
 		onLoadMore = () => {},
 		displayTitle = () => '未命名会话',
-		statusVariant = () => 'neutral',
-		formatMessageTime = (/** @type {string} */ value) => value,
-	} = $props();
-	/** @type {Record<string, string>} */
-	const statusLabels = {
+		statusVariant = () => 'default',
+		formatMessageTime = (value) => value,
+	}: Props = $props();
+	const WIDE_LANDSCAPE_QUERY = '(orientation: landscape) and (min-width: 1280px)';
+	let wideLandscape = $state(false);
+	let previewSessionId = $state('');
+	const previewSession = $derived.by(
+		() => sessions.find((session) => session.id === previewSessionId) || sessions[0] || null,
+	);
+	onMount(() => {
+		if (typeof window.matchMedia !== 'function') {
+			const syncFallbackLayout = () =>
+				(wideLandscape =
+					window.innerWidth >= 1280 && window.innerWidth > window.innerHeight);
+			syncFallbackLayout();
+			window.addEventListener('resize', syncFallbackLayout);
+			return () => window.removeEventListener('resize', syncFallbackLayout);
+		}
+		const mediaQuery = window.matchMedia(WIDE_LANDSCAPE_QUERY);
+		const syncLayout = () => (wideLandscape = mediaQuery.matches);
+		syncLayout();
+		mediaQuery.addEventListener('change', syncLayout);
+		return () => mediaQuery.removeEventListener('change', syncLayout);
+	});
+	const statusLabels: Record<string, string> = {
 		pending: '排队中',
 		running: '运行中',
 		paused: '已暂停',
 		completed: '已完成',
 		error: '错误',
 	};
-	/** @param {string} status */
-	function sessionStatusLabel(status) {
+	function sessionStatusLabel(status: string) {
 		return statusLabels[status] || status;
 	}
-	/** @param {string} value */
-	function handleStatusChange(value) {
+	function handleStatusChange(value: string) {
 		onStatusFilterChange(value);
 	}
-	/** @param {KeyboardEvent} event @param {any} session */
-	function handleSessionKeydown(event, session) {
+	function handleSessionKeydown(event: KeyboardEvent, session: SessionHistoryRow) {
 		if (event.target !== event.currentTarget) return;
 		if (event.key === 'Enter' || event.key === ' ') {
 			event.preventDefault();
-			onResume(session);
+			handleSessionOpen(session);
 		}
 	}
-	/** @param {MouseEvent} event @param {any} session */
-	function handleSessionContextMenu(event, session) {
+	function handleSessionOpen(session: SessionHistoryRow) {
+		if (selectMode) {
+			onToggleSelect(session.id);
+			return;
+		}
+		if (wideLandscape) {
+			previewSessionId = session.id;
+			return;
+		}
+		onResume(session);
+	}
+	function handleSessionContextMenu(event: MouseEvent, session: SessionHistoryRow) {
 		const target = event.target instanceof Element ? event.target : null;
 		if (target?.closest('input, textarea, select, [contenteditable="true"]')) return;
 		onContextMenu(event, session);
@@ -80,7 +150,11 @@
 	);
 </script>
 
-<div class="history-view">
+<div
+	class="history-view"
+	class:history-view--wide={wideLandscape}
+	class:history-view--selecting={selectMode}
+>
 	<div class="filter-bar workspace-filter-bar" role="search" aria-label="筛选会话">
 		<input
 			class="md-input"
@@ -169,125 +243,186 @@
 			onAction={onNewSession}
 		/>
 	{:else}
-		<div class="session-list">
-			{#each sessions as session (session.id)}
-				{#if selectMode}
-					<button
-						class="session-item session-item-btn workspace-item-card motion-list-item"
-						class:selected={selectedIds.has(session.id)}
-						onclick={() => onToggleSelect(session.id)}
-					>
-						<div class="session-item-main workspace-item-card-main">
-							<div class="session-top-row">
-								<div class="select-checkbox">
-									<div
-										class="md-checkbox-static"
-										class:checked={selectedIds.has(session.id)}
-									></div>
+		<div class="history-results">
+			<div class="history-list-column">
+				<div class="session-list">
+					{#each sessions as session (session.id)}
+						{#if selectMode}
+							<button
+								class="session-item session-item-btn workspace-item-card motion-list-item"
+								class:selected={selectedIds.has(session.id)}
+								aria-pressed={selectedIds.has(session.id)}
+								onclick={() => onToggleSelect(session.id)}
+							>
+								<div class="session-item-main workspace-item-card-main">
+									<div class="session-top-row">
+										<div class="select-checkbox">
+											<div
+												class="md-checkbox-static"
+												class:checked={selectedIds.has(session.id)}
+											></div>
+										</div>
+										<div class="session-title-row">
+											<span class="session-title"
+												>{displayTitle(session)}</span
+											><MaterialBadge
+												variant={statusVariant(session.status)}
+												text={sessionStatusLabel(session.status)}
+											/>
+										</div>
+									</div>
+									{#if session.input_text}<div class="session-message">
+											"{session.input_text}"
+										</div>{/if}
+									<div class="session-meta workspace-item-card-meta">
+										<span class="meta-date"
+											>{formatMessageTime(session.created_at)}</span
+										>
+									</div>
 								</div>
-								<div class="session-title-row">
-									<span class="session-title">{displayTitle(session)}</span
-									><MaterialBadge
-										variant={statusVariant(session.status)}
-										text={sessionStatusLabel(session.status)}
-									/>
+							</button>
+						{:else}
+							<!-- svelte-ignore a11y_no_noninteractive_element_to_interactive_role -->
+							<article
+								class="session-item workspace-item-card motion-list-item"
+								class:selected={wideLandscape && previewSession?.id === session.id}
+								aria-label={wideLandscape
+									? `预览会话：${displayTitle(session)}`
+									: `打开并继续会话：${displayTitle(session)}`}
+								aria-pressed={wideLandscape
+									? previewSession?.id === session.id
+									: undefined}
+								role="button"
+								tabindex="0"
+								onclick={() => handleSessionOpen(session)}
+								onkeydown={(event) => handleSessionKeydown(event, session)}
+								oncontextmenu={(event) => handleSessionContextMenu(event, session)}
+							>
+								<div class="session-item-main workspace-item-card-main">
+									<div class="session-title-row workspace-item-card-header">
+										{#if editingTitle === session.id}
+											<!-- svelte-ignore a11y_autofocus -->
+											<input
+												type="text"
+												class="md-input title-input"
+												value={renameValue}
+												oninput={(event) =>
+													onRenameValueChange(event.currentTarget.value)}
+												onkeydown={(event) =>
+													onRenameKeydown(event, session.id)}
+												onclick={(event) => event.stopPropagation()}
+												onblur={() => onSaveTitle(session.id)}
+												autofocus
+												autocomplete="off"
+											/>
+										{:else}
+											<MaterialButton
+												variant="text"
+												className="session-title"
+												ariaLabel={`重命名${displayTitle(session)}`}
+												onclick={(event) => {
+													event.stopPropagation();
+													onStartEdit(session);
+												}}
+											>
+												{#snippet children()}
+													{displayTitle(session)}<Icon
+														name="edit"
+														size={14}
+														className="title-edit-icon"
+													/>
+												{/snippet}
+											</MaterialButton>
+										{/if}
+										<MaterialBadge
+											variant={statusVariant(session.status)}
+											text={sessionStatusLabel(session.status)}
+										/>
+									</div>
+									{#if session.input_text}<div class="session-message">
+											"{session.input_text}"
+										</div>{/if}
+									<div class="session-footer workspace-item-card-footer">
+										<span class="meta-date"
+											>{formatMessageTime(session.created_at)}</span
+										>
+										<span
+											class="session-open-hint workspace-item-card-open"
+											aria-hidden="true"
+											>{wideLandscape ? '预览' : '打开'}</span
+										>
+									</div>
 								</div>
-							</div>
-							{#if session.input_text}<div class="session-message">
-									"{session.input_text}"
-								</div>{/if}
-							<div class="session-meta workspace-item-card-meta">
-								<span class="meta-date"
-									>{formatMessageTime(session.created_at)}</span
-								>
-							</div>
-						</div>
-					</button>
-				{:else}
-					<!-- svelte-ignore a11y_no_noninteractive_element_to_interactive_role -->
-					<article
-						class="session-item workspace-item-card motion-list-item"
-						class:selected={selectedIds.has(session.id)}
-						aria-label={`打开会话：${displayTitle(session)}`}
-						role="button"
-						tabindex="0"
-						onclick={() => onResume(session)}
-						onkeydown={(event) => handleSessionKeydown(event, session)}
-						oncontextmenu={(event) => handleSessionContextMenu(event, session)}
-					>
-						<div class="session-item-main workspace-item-card-main">
-							<div class="session-title-row workspace-item-card-header">
-								{#if editingTitle === session.id}
-									<!-- svelte-ignore a11y_autofocus -->
-									<input
-										type="text"
-										class="md-input title-input"
-										value={renameValue}
-										oninput={(event) =>
-											onRenameValueChange(event.currentTarget.value)}
-										onkeydown={(event) => onRenameKeydown(event, session.id)}
-										onclick={(event) => event.stopPropagation()}
-										onblur={() => onSaveTitle(session.id)}
-										autofocus
-										autocomplete="off"
-									/>
-								{:else}
+								<div class="session-actions workspace-item-card-actions">
 									<MaterialButton
 										variant="text"
-										className="session-title"
-										ariaLabel={`重命名${displayTitle(session)}`}
-										onclick={() => onStartEdit(session)}
-									>
-										{#snippet children()}
-											{displayTitle(session)}<Icon
-												name="edit"
-												size={14}
-												className="title-edit-icon"
-											/>
-										{/snippet}
-									</MaterialButton>
-								{/if}
-								<MaterialBadge
-									variant={statusVariant(session.status)}
-									text={sessionStatusLabel(session.status)}
-								/>
-							</div>
-							{#if session.input_text}<div class="session-message">
-									"{session.input_text}"
-								</div>{/if}
-							<div class="session-footer workspace-item-card-footer">
-								<span class="meta-date"
-									>{formatMessageTime(session.created_at)}</span
-								>
-								<span class="session-open-hint workspace-item-card-open" aria-hidden="true"
-									>打开</span
-								>
-							</div>
+										className="delete-btn-meta"
+										label="删除"
+										onclick={(event) => {
+											event.stopPropagation();
+											onDeleteRequest(session);
+										}}
+									/>
+								</div>
+							</article>
+						{/if}
+					{/each}
+				</div>
+				{#if hasMore}<div class="load-more-row">
+						<MaterialButton
+							variant="outlined"
+							label={loading ? '加载中…' : '加载更多'}
+							onclick={() => onLoadMore()}
+							disabled={loading}
+						/>
+					</div>{/if}
+			</div>
+			{#if wideLandscape && previewSession && !selectMode}
+				<aside class="session-preview" aria-label="会话预览">
+					<div class="session-preview-header">
+						<div class="session-preview-title-group">
+							<span class="session-preview-eyebrow">会话预览</span>
+							<h3>{displayTitle(previewSession)}</h3>
 						</div>
-						<div class="session-actions workspace-item-card-actions">
-							<MaterialButton
-								variant="text"
-								className="delete-btn-meta"
-								label="删除"
-								onclick={() => onDeleteRequest(session)}
-							/>
-						</div>
-					</article>
-				{/if}
-			{/each}
+						<MaterialBadge
+							variant={statusVariant(previewSession.status)}
+							text={sessionStatusLabel(previewSession.status)}
+						/>
+					</div>
+					<div class="session-preview-meta">
+						<span>创建时间</span>
+						<time datetime={previewSession.created_at}>
+							{formatMessageTime(previewSession.created_at)}
+						</time>
+					</div>
+					<div class="session-preview-content">
+						<span class="session-preview-eyebrow">首条消息</span>
+						<p>{previewSession.input_text || '这条会话没有可展示的摘要。'}</p>
+					</div>
+					<div class="session-preview-actions">
+						<MaterialButton
+							variant="filled"
+							label="打开并继续"
+							onclick={() => onResume(previewSession)}
+						/>
+					</div>
+				</aside>
+			{/if}
 		</div>
-		{#if hasMore}<div class="load-more-row">
-				<MaterialButton
-					variant="outlined"
-					label={loading ? '加载中…' : '加载更多'}
-					onclick={() => onLoadMore()}
-					disabled={loading}
-				/>
-			</div>{/if}
 	{/if}
 </div>
 
 <style>
+	.history-view {
+		min-width: 0;
+	}
+	.history-results,
+	.history-list-column {
+		display: contents;
+	}
+	.session-preview {
+		display: none;
+	}
 	.filter-bar {
 		margin-bottom: var(--md-sys-space-lg);
 	}
@@ -464,6 +599,110 @@
 		display: flex;
 		justify-content: center;
 		padding: var(--md-sys-space-lg) 0;
+	}
+	@media (orientation: landscape) and (min-width: 1280px) {
+		.history-view--wide .history-results {
+			display: grid;
+			grid-template-columns: minmax(18rem, 0.85fr) minmax(0, 1.35fr);
+			align-items: start;
+			gap: var(--md-sys-space-lg);
+		}
+		.history-view--wide .history-list-column {
+			display: flex;
+			flex-direction: column;
+			min-width: 0;
+			max-height: min(72vh, 54rem);
+			overflow-y: auto;
+			overscroll-behavior-y: contain;
+			scrollbar-gutter: stable;
+		}
+		.history-view--wide .session-list {
+			grid-template-columns: minmax(0, 1fr);
+			align-content: start;
+		}
+		.history-view--selecting.history-view--wide .history-results {
+			grid-template-columns: minmax(0, 1fr);
+		}
+		.history-view--selecting.history-view--wide .history-list-column {
+			max-height: none;
+			overflow: visible;
+		}
+		.history-view--selecting.history-view--wide .session-list {
+			grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr));
+		}
+		.history-view--wide .session-preview {
+			display: flex;
+			flex-direction: column;
+			gap: var(--md-sys-space-xl);
+			min-width: 0;
+			min-height: 18rem;
+			padding: var(--md-sys-space-2xl);
+			border: 1px solid var(--md-sys-color-outline-variant);
+			border-radius: var(--md-sys-shape-large);
+			background: var(--md-sys-color-surface-container-low);
+		}
+		.session-preview-header {
+			display: flex;
+			align-items: flex-start;
+			justify-content: space-between;
+			gap: var(--md-sys-space-lg);
+			min-width: 0;
+		}
+		.session-preview-title-group {
+			min-width: 0;
+		}
+		.session-preview-eyebrow {
+			display: block;
+			margin-bottom: var(--md-sys-space-xs);
+			color: var(--md-sys-color-on-surface-variant);
+			font-size: var(--md-sys-typescale-label-medium-size);
+			font-weight: 600;
+			line-height: var(--md-sys-typescale-label-medium-line-height);
+		}
+		.session-preview h3 {
+			margin: 0;
+			overflow-wrap: anywhere;
+			color: var(--md-sys-color-on-surface);
+			font-size: var(--md-sys-typescale-headline-medium-size);
+			line-height: var(--md-sys-typescale-headline-medium-line-height);
+		}
+		.session-preview-meta {
+			display: flex;
+			align-items: baseline;
+			gap: var(--md-sys-space-md);
+			padding-bottom: var(--md-sys-space-md);
+			border-bottom: 1px solid var(--md-sys-color-outline-variant);
+			color: var(--md-sys-color-on-surface-variant);
+			font-size: var(--md-sys-typescale-body-small-size);
+			line-height: var(--md-sys-typescale-body-small-line-height);
+		}
+		.session-preview-meta time {
+			color: var(--md-sys-color-on-surface);
+			font-family: var(--md-sys-typescale-mono);
+		}
+		.session-preview-content {
+			min-width: 0;
+			flex: 1 1 auto;
+		}
+		.session-preview-content p {
+			max-height: 34vh;
+			margin: 0;
+			overflow: auto;
+			white-space: pre-wrap;
+			overflow-wrap: anywhere;
+			color: var(--md-sys-color-on-surface);
+			font-size: var(--md-sys-typescale-body-medium-size);
+			line-height: var(--md-sys-typescale-body-medium-line-height);
+		}
+		.session-preview-actions {
+			display: flex;
+			justify-content: flex-end;
+			padding-top: var(--md-sys-space-sm);
+			border-top: 1px solid var(--md-sys-color-outline-variant);
+		}
+		.history-view--wide .session-open-hint {
+			color: var(--md-sys-color-primary);
+		}
 	}
 	@media (max-width: 700px) {
 		.filter-bar,

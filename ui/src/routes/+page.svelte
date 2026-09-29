@@ -61,6 +61,7 @@
 		openContextMenuAt,
 	} from '$lib/contextMenu.ts';
 	import SessionToolbar from '$lib/SessionToolbar.svelte';
+	import SessionRail from '$lib/SessionRail.svelte';
 	import ModelToolbar from '$lib/ModelToolbar.svelte';
 	import MaterialIconButton from '$lib/MaterialIconButton.svelte';
 	import SessionHeader from '$lib/SessionHeader.svelte';
@@ -866,110 +867,122 @@
 		}}
 	/>
 
-	<SessionHeader
-		title={sessionHeaderTitle}
-		hasSession={!!activeSessionId && !activeSessionTermination}
-		onNew={newSession}
-		onEnd={endSession}
-	/>
-
-	<div class="messages-wrap">
-		<div
-			class="messages-area"
-			bind:this={messagesEl}
-			role="region"
-			aria-label="会话消息"
-			onscroll={chatViewController.onScroll}
-			onpointerdown={chatViewController.cancelJumpToBottom}
-			onwheel={chatViewController.cancelJumpToBottom}
-			use:dragScroll={{ axis: 'y' }}
-		>
-			<ConversationTimeline
-				{messages}
-				mediaPlans={activeSessionId ? mediaPlansBySession[activeSessionId] || [] : []}
-				loading={initialLoading}
-				{hotkeyBinding}
-				{awaitingBackground}
-				{awaitingBackgroundCount}
-				{activeSessionError}
-				{sessionErrorReason}
-				terminationStatus={activeSessionTermination?.status || null}
-				terminationReason={activeSessionTermination?.reason || ''}
-				{showContinueButton}
-				{continueDisabled}
-				continueBusy={continuePending}
-				onContextMenu={handleContextMenu}
-				onAskSelectionChange={handleAskSelectionChange}
-				onIgnore={handleIgnoreAsk}
-				onAskSubmit={handleAskSubmit}
-				onContinue={handleContinue}
-			/>
-		</div>
-		{#if !autoFollow && messages.length > 0}
-			<div class="jump-bottom-anchor">
-				<MaterialIconButton
-					size="toolbar"
-					variant="tonal"
-					className="jump-bottom"
-					label="返回底部"
-					title="返回底部"
-					icon="arrowDown"
-					onclick={chatViewController.jumpToBottom}
-				></MaterialIconButton>
-			</div>
-		{/if}
+	<div class="desktop-session-rail">
+		<SessionRail
+			{sessions}
+			{activeSessionId}
+			statusLabel={sessionStatusLabel}
+			onNew={newSession}
+			onSelect={switchToSession}
+		/>
 	</div>
 
-	<Composer
-		bind:this={inputRouterRef}
-		{activeSessionId}
-		{hotkeyBinding}
-		{isGenerating}
-		{sessionRunning}
-		interrupting={interruptPending}
-		{askAwaiting}
-		{askHasOptions}
-		allowEmptySubmit={askSelectionsReady}
-		{...inputLimits}
-		onsubmit={handleInputSubmit}
-		onstop={interruptOutput}
-	>
-		{#snippet toolbarLeft()}
-			<SessionToolbar
-				{activeSessionId}
-				{showSessionMenu}
-				{sessionMenuOpen}
-				{menuSessions}
-				onToggleSessionMenu={() => {
-					if (showSessionMenu) sessionMenuOpen = !sessionMenuOpen;
-					else newSession();
-				}}
-				onSwitchSession={switchToSession}
-				{sessionStatusLabel}
-				{tokenStats}
-				{tokenUsageDetails}
-				{tokenStatsHint}
-				{buildTokenTooltip}
-			/>
-		{/snippet}
-		{#snippet toolbarRight()}
-			<ModelToolbar
-				{modelMenuOpen}
-				{currentModelName}
-				{currentModelId}
-				{modelOptions}
-				onToggleMenu={() => (modelMenuOpen = !modelMenuOpen)}
-				onModelSelect={modelOperations.selectModel}
-				{effortOptions}
-				{currentEffort}
-				onEffortSelect={modelOperations.selectEffort}
-				{webSearchSupported}
-				{webSearchOptions}
-				{currentWebSearch}
-				onWebSearchSelect={modelOperations.selectWebSearch}
-			/>
-		{/snippet}
-	</Composer>
+	<div class="conversation-column">
+		<SessionHeader
+			title={sessionHeaderTitle}
+			hasSession={!!activeSessionId && !activeSessionTermination}
+			onNew={newSession}
+			onEnd={endSession}
+		/>
+
+		<div class="messages-wrap">
+			<div
+				class="messages-area"
+				bind:this={messagesEl}
+				role="region"
+				aria-label="会话消息"
+				onscroll={chatViewController.onScroll}
+				onpointerdown={chatViewController.cancelJumpToBottom}
+				onwheel={chatViewController.cancelJumpToBottom}
+				use:dragScroll={{ axis: 'y' }}
+			>
+				<ConversationTimeline
+					{messages}
+					mediaPlans={activeSessionId ? mediaPlansBySession[activeSessionId] || [] : []}
+					loading={initialLoading}
+					{hotkeyBinding}
+					{awaitingBackground}
+					{awaitingBackgroundCount}
+					{activeSessionError}
+					{sessionErrorReason}
+					terminationStatus={activeSessionTermination?.status || null}
+					terminationReason={activeSessionTermination?.reason || ''}
+					{showContinueButton}
+					{continueDisabled}
+					continueBusy={continuePending}
+					onContextMenu={handleContextMenu}
+					onAskSelectionChange={handleAskSelectionChange}
+					onIgnore={handleIgnoreAsk}
+					onAskSubmit={handleAskSubmit}
+					onContinue={handleContinue}
+				/>
+			</div>
+			{#if !autoFollow && messages.length > 0}
+				<div class="jump-bottom-anchor">
+					<MaterialIconButton
+						size="toolbar"
+						variant="tonal"
+						className="jump-bottom"
+						label="返回底部"
+						title="返回底部"
+						icon="arrowDown"
+						onclick={chatViewController.jumpToBottom}
+					></MaterialIconButton>
+				</div>
+			{/if}
+		</div>
+
+		<Composer
+			bind:this={inputRouterRef}
+			{activeSessionId}
+			{hotkeyBinding}
+			{isGenerating}
+			{sessionRunning}
+			interrupting={interruptPending}
+			{askAwaiting}
+			{askHasOptions}
+			allowEmptySubmit={askSelectionsReady}
+			{...inputLimits}
+			onsubmit={handleInputSubmit}
+			onstop={interruptOutput}
+		>
+			{#snippet toolbarLeft()}
+				<SessionToolbar
+					{activeSessionId}
+					{showSessionMenu}
+					{sessionMenuOpen}
+					{menuSessions}
+					onToggleSessionMenu={() => {
+						if (showSessionMenu) sessionMenuOpen = !sessionMenuOpen;
+						else newSession();
+					}}
+					onSwitchSession={switchToSession}
+					{sessionStatusLabel}
+					{tokenStats}
+					{tokenUsageDetails}
+					{tokenStatsHint}
+					{buildTokenTooltip}
+				/>
+			{/snippet}
+			{#snippet toolbarRight()}
+				<ModelToolbar
+					{modelMenuOpen}
+					{currentModelName}
+					{currentModelId}
+					{modelOptions}
+					onToggleMenu={() => (modelMenuOpen = !modelMenuOpen)}
+					onModelSelect={modelOperations.selectModel}
+					{effortOptions}
+					{currentEffort}
+					onEffortSelect={modelOperations.selectEffort}
+					{webSearchSupported}
+					{webSearchOptions}
+					{currentWebSearch}
+					onWebSearchSelect={modelOperations.selectWebSearch}
+				/>
+			{/snippet}
+		</Composer>
+	</div>
 </div>
 
 <style>
@@ -979,6 +992,17 @@
 		flex-direction: column;
 		flex: 1;
 		width: 100%;
+		min-width: 0;
+		min-height: 0;
+	}
+	.desktop-session-rail {
+		display: none;
+	}
+	.conversation-column {
+		position: relative;
+		display: flex;
+		flex: 1;
+		flex-direction: column;
 		min-width: 0;
 		min-height: 0;
 	}
@@ -1028,5 +1052,37 @@
 	}
 	:global(.jump-bottom:hover > svg) {
 		transform: translateY(var(--md-sys-space-2xs));
+	}
+
+	@media screen and (min-width: 1280px) and (orientation: landscape) {
+		.chat-page {
+			display: grid;
+			grid-template-columns: 272px minmax(0, 1fr);
+			grid-template-rows: minmax(0, 1fr);
+			--md-sys-chat-max-width: 1080px;
+		}
+		.desktop-session-rail {
+			grid-column: 1;
+			grid-row: 1;
+			display: flex;
+			min-width: 0;
+			min-height: 0;
+			border-right: 1px solid var(--md-sys-color-outline-variant);
+		}
+		.conversation-column {
+			grid-column: 2;
+			grid-row: 1;
+		}
+		.messages-wrap {
+			max-width: min(100%, var(--md-sys-chat-max-width));
+		}
+		.messages-area {
+			padding: var(--md-sys-space-2xl) var(--md-sys-space-2xl)
+				calc(var(--chat-composer-clearance, 0px) + var(--md-sys-space-xl));
+		}
+		:global(.chat-page .session-switch),
+		:global(.chat-page .session-header__new) {
+			display: none;
+		}
 	}
 </style>

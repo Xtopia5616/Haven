@@ -824,6 +824,15 @@
 		font-size: var(--md-sys-typescale-body-medium-size);
 		line-height: var(--md-sys-typescale-body-medium-line-height);
 	}
+	@media (orientation: landscape) and (min-width: 1280px) {
+		.memory-page {
+			max-width: none;
+		}
+		.memory-panel,
+		.memory-tools-view {
+			width: 100%;
+		}
+	}
 	@media (max-width: 700px) {
 		.date-input-row {
 			flex-direction: column;
