@@ -15,7 +15,7 @@
 
 - `AppState` 只保留 Tauri 瞬时状态，并通过 `runtime: Arc<ApplicationRuntime>` 访问应用服务。`ApplicationRuntime` 持有一份 `Arc<ConfigService>` 和一个 `RuntimeConfigCoordinator`；没有第二个 `ModelManager` 配置容器。
 - `ConfigService` 的 `Mutex<ConfigState>` 是进程内 live 配置 owner。`edit` 在锁内保存变更前快照、执行 mutation、计算 domain；变化时先调用 `ConfigLoader::save`，成功后才增加 version 并构造 `ConfigChanged`，释放配置锁后再发布通知。mutation 或 save 失败会恢复内存配置，不增加 version，也不发布通知。
-- `ConfigLoader::save` 写入同目录、带进程号和序号的临时文件，再 rename 到配置路径；这避免直接覆盖时暴露部分 TOML，并为 path replacement 提供原子替换边界。实现未对临时文件和父目录调用 `sync_all`，因此不承诺断电场景下的稳定介质持久性。
+- `ConfigLoader::save` 写入同目录、带进程号和序号的临时文件，再 rename 到配置路径；这避免直接覆盖时暴露部分 TOML，并为 path replacement 提供原子替换边界。实现未对临时文件和父目录调用 `sync_all`，因此不承诺断电场景下的稳定介质持久性。保存成功的含义是序列化、临时文件写入和路径替换均成功，不代表配置已经获得断电持久性。
 - Settings 和 model commit-plus-apply 共用 `ApplicationRuntime::config_apply_gate`。`RuntimeConfigCoordinator` 拥有这个 gate、model edit 和 Router/media prepare/publish；`SettingsRuntimeApplyCoordinator` 仅拥有 Settings 有序 phase、phase 状态及失败/警告观测。Settings 的实际副作用仍交给各自 runtime owner。两个 coordinator 不持有重复的配置 snapshot 或 Router runtime。实现跟进由组合根创建唯一 `Arc<tokio::sync::Mutex<()>>`，同时传给 ApplicationRuntime 与 `AdminContext`；Tools admin 在 mutation service 内取得 gate，覆盖 durable edit 与 runtime side effect/catalog rebuild。授权与确认继续发生在 service 入口之前。Security 永久权限的 Tauri writers 也在保存和更新 live AuthorizationEngine 的临界区持有同一 gate。
 - `ConfigService::changed_domains` 是字段到 config domain 的映射；`RuntimeConfigApplyPlan::from_change` 是唯一 config domain 到 runtime target 的映射；`SettingsApplyPlan` 从该 target plan 派生 phase 和诊断目标。Settings 复制的 `restart_required_targets` 只供同一事务的日志/观测，不是独立推断出的第二份策略。
 
@@ -31,19 +31,27 @@
 - Settings 在共享 apply gate 内调用一次 `ConfigService::edit`。durable edit 与 `ConfigChanged` 先于 runtime apply；Router/media prepare 使用该次 immutable snapshot。prepare 失败时持久化配置保留、live Router/media 保持旧 generation，后续 phase 不运行。Skills、logging 或 hotkey 等后续 fatal phase 失败时，已保存配置和此前成功的 live side effects 保留，协调器停止后续 phase；没有补偿或 rollback。
 - Settings 对相同 payload 再提交是 no-op，不重跑 apply。model 对相同 mutation 再提交也不重建 Router；现有成功后的 UI event 不能作为 apply retry。当前没有针对已保存 snapshot 的显式 retry command，也没有 Settings 自动重启或启动恢复入口。
 - `restart_required_targets` 来自共享 target plan，在提交日志和 phase failure observation 中重用；它只记录需重启 consumer，不会主动重启应用。仅变更 `SkillsExec` 时 Skills 只进入 restart-required，不执行 live Skills phase；若同时变更 `Skills` 与 `SkillsExec`，Skills 同时进入 live 与 restart-required，正常执行既有 Skills phase 并标记执行配置需重启生效。
-- Settings durable edit 后的 runtime phase 失败保留磁盘配置，停止后续 phase，不增加 compensation/rollback 或自动 retry。命令错误以“部分 apply 失败”说明配置已保存和重启后从磁盘重新初始化；`SettingsView` 显示该状态并将表单基线更新为已保存值，避免把已持久化配置当作待重试写入。启动时仍由磁盘 `ConfigLoader` 初始化 runtime。model Router apply 失败同样保留 durable edit 并报告部分 apply 失败。
+- Settings durable edit 后的 runtime phase 失败保留已写入配置，停止后续 phase，不增加 compensation/rollback 或自动 retry。命令错误以“部分 apply 失败”说明配置已写入和重启后重新初始化；`SettingsView` 显示该状态并将表单基线更新为已写入值，避免把已写入配置当作待重试写入。启动时仍由 `ConfigLoader` 读取配置初始化 runtime。model Router apply 失败同样保留已写入配置并报告部分 apply 失败。
+- 失败到用户重启之间，应用保持可用：Settings/model 命令返回失败并释放共享 apply gate，普通会话与普通工具调用不等待重启，也不因该失败被全局拒绝。durable config 可以领先于 live runtime；已成功的 phase 副作用保留，失败 phase 按各 owner 的实际结果保留（可能已有局部副作用），未执行的后续 phase 保持原 runtime。没有跨 consumer 的原子版本切换或统一 generation 保证，因此一次会话/工具调用可能同时经过不同 config revision 的 live consumers；这是接受的部分 apply 运行状态，直到用户重启后按已写入配置重新初始化。
+- 会话/工具在这段窗口仍遵循各 runtime owner 的既有边界：一次 turn 使用创建时取得的不可变 tool catalog snapshot；新 turn 读取当时已发布的 catalog；tool authorization 与执行仍分别由 live authorization/runtime owner 决定。catalog snapshot 不会因配置失败而自动替换，执行前授权也不会绕过。不得把磁盘配置版本当作 live authorization 或 tool runtime 已更新的证明。
 - Tools admin 的 MCP/Skills/Logging/ToolSettings 变更在实际 `AdminServices` mutation service 内共用该 gate。AdminServices 已完成 catalog rebuild，Tauri wrappers 删除重复 rebuild；`McpManager::connect_server` 已启动 monitor，因此删除重复 monitor start；Tauri 的 refresh/reconnect 保留其不同的手工 monitor 路径并在 gate 内完成。MCP update 仍维持 connect-before-persist 与既有失败恢复顺序。
 
 ## 实现跟进（2026-09-27）
 
 产品决策已落地于 app composition root、Tools AdminServices 和 Settings UI。共享 gate 仍由 app-binary 所有，通过窄 `AdminContext` 注入 Tools，不下沉到 common，也没有反向依赖或全局 service locator。回归覆盖 Tools Admin durable write 等待共享 gate、Settings/model apply 互斥，以及纯 SkillsExec 与 Skills+SkillsExec 的 phase/restart 组合。配置格式、持久化顺序和 IPC 字段未变，无需配置或数据库重置。
 
+## 实现跟进（2026-09-28）
+
+配置保存成功定义为 TOML 序列化、同目录临时文件写入和配置路径替换均成功。该保证避免将部分 TOML 暴露为正式配置，不承诺操作系统崩溃或突然断电后稳定介质持久性；本次不增加 Windows 专用 flush。Settings 成功提示改为“设置已写入配置”，部分运行时应用失败提示也使用“已写入配置”，并保留重启后从配置重新初始化的说明。
+
 ## 决定
 
 1. 保持 `ConfigService`、共享 apply gate、target mapper、Settings phase coordinator 和具体 runtime owner 的现有边界；没有发现需迁移的第二份配置真源或重复 target mapping。
-2. 为 SettingsView 的唯一 payload builder 复用既有开放式 `SettingsPayload` 类型；扩展 IPC contract script 验证 `update_settings` 的 Rust 参数、registry 和直接 caller owner。command name、wire fields、错误文本及 UI 行为不变，也不增加 serializer 或 nested Settings 镜像。
+2. 为 SettingsView 的唯一 payload builder 复用既有开放式 `SettingsPayload` 类型；扩展 IPC contract script 验证 `update_settings` 的 Rust 参数、registry 和直接 caller owner。该实现跟进没有更改 command name、wire fields、错误文本及 UI 行为，也不增加 serializer 或 nested Settings 镜像；后续保存语义文案按第 5 项调整。
 3. 保持 durable-first、失败不补偿、相同输入不隐式重试；runtime apply 失败时保留磁盘配置、停止后续 phase，并在应用重启时从磁盘配置初始化。无自动 restart 或显式 retry。
-4. 仅 `SkillsExec` 变更产生 Skills restart-required 并跳过 live Skills phase；Skills 与 SkillsExec 混合变更同时保留 live Skills phase 和 restart-required。UI 报告配置已保存但部分 runtime 未应用；不把 `restart_required` 推断为自动 restart，也不按相邻状态推断 apply 成功。
+4. 仅 `SkillsExec` 变更产生 Skills restart-required 并跳过 live Skills phase；Skills 与 SkillsExec 混合变更同时保留 live Skills phase 和 restart-required。UI 报告配置已写入但部分 runtime 未应用；不把 `restart_required` 推断为自动 restart，也不按相邻状态推断 apply 成功。
+5. `ConfigLoader::save` 返回成功表示配置序列化、临时文件写入和同目录路径替换成功；不承诺 OS 崩溃或突然断电后的稳定介质持久性。未有更强产品要求前不增加 Windows 专用 flush；用户文案使用“设置已写入配置”，避免暗示更强持久性。
+6. Settings/model apply 失败后的重启前窗口允许普通会话和工具调用继续，且允许不同 live consumer 暂时处于不同配置 revision；不加全局 fail-closed、restart wait 或自动 runtime replacement。durable config、已成功及失败 phase 的实际副作用、后续 phase 停止规则均按本 ADR 前述定义。
 
 ## 后续产品决策（2026-09-26）
 
@@ -58,6 +66,7 @@ Skills apply；Settings/model apply 与 Tools 管理操作若写入同一运行�
 ## 验证
 
 - 本实现跟进的完整 Rust/UI/IPC 门禁结果记录在提交摘要；本次变更涉及 Rust runtime 与 UI，须执行两个 workspace 的适用门禁。
+- 回归验收必须覆盖：在 `RouterPrepare` 失败以及至少一个前序 phase 已成功、后续 phase 再失败的场景中，确认配置保持已写入、后续 phase 停止、相同 payload 不隐式重试；失败返回后共享 apply gate 可再次获取，普通会话与普通工具操作在重启前可继续。对 turn/catalog 边界，确认已有 turn 保留其不可变 snapshot、新 turn 取当前 live catalog，授权和执行仍由各自 live owner 决定；不得断言所有 consumer 已切到同一配置 revision。重启恢复仍验证从已写入配置初始化。
 
 ## 回滚
 

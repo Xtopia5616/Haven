@@ -396,9 +396,10 @@ impl ConfigLoader {
         Self::load_from(&Self::default_path())
     }
 
-    /// Persist current config to disk atomically.
-    /// Writes to a temporary file first, then renames to prevent partial writes
-    /// from concurrent save() calls or process crashes from corrupting the file.
+    /// Write the current config through a same-directory temporary file and
+    /// replace the configured path only after the complete TOML write succeeds.
+    /// A successful return confirms the replacement call succeeded; it does
+    /// not guarantee survival across an OS crash or sudden power loss.
     pub fn save(&self) -> anyhow::Result<()> {
         let toml_str = toml::to_string_pretty(&self.config)?;
         static SAVE_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);

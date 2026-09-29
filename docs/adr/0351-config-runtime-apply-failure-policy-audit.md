@@ -32,7 +32,7 @@ Phase 5 的局部 target、phase 顺序和 Settings 失败观测没有第二份�
 
 ## 实现跟进（2026-09-27）
 
-已按上节产品决定落实：Settings runtime phase 与 model Router apply 在 durable edit 后失败时返回“部分 apply 失败”，保留磁盘配置、停止后续 phase，且不自动 retry 或 compensation；SettingsView 告知用户配置已保存以及重启后从磁盘重新初始化。启动仍从 `ConfigLoader` 读取 durable 配置。
+已按上节产品决定落实：Settings runtime phase 与 model Router apply 在 durable edit 后失败时返回“部分 apply 失败”，保留已写入的配置、停止后续 phase，且不自动 retry 或 compensation；SettingsView 告知用户配置已写入以及重启后重新初始化。启动仍从 `ConfigLoader` 读取配置。保存成功的保证范围及断电持久性限制见 ADR 0372。
 
 Tools AdminServices 的 config writers 现在与 Settings/model 共用由 app composition root 创建的 gate，锁覆盖 edit 和其 live apply/rebuild。gate 经窄 `AdminContext` 注入，不改变 app→Tools 依赖方向。Settings/model 之间及 Tools admin writer 与 Tauri apply 之间的互斥由回归测试覆盖。SkillsExec-only 计划没有 live Skills phase；混合 Skills 与 SkillsExec 允许 Skills 同时出现在 live 和 restart-required 集合，既有 phase 顺序和 owner 不变。
 

@@ -215,7 +215,7 @@ pub(crate) enum RouterRuntimePublishError {
 }
 
 pub(crate) fn partial_config_apply_error(error: impl std::fmt::Display) -> String {
-    format!("部分 apply 失败：配置已保存；重启应用后会从磁盘配置重新初始化。{error}")
+    format!("部分 apply 失败：配置已写入；重启应用后会从配置重新初始化。{error}")
 }
 
 /// Complete router and media runtime derived from one immutable snapshot.
@@ -695,10 +695,10 @@ mod tests {
     use tracing_subscriber::reload;
 
     #[test]
-    fn partial_apply_error_explains_durable_config_and_restart_recovery() {
+    fn partial_apply_error_explains_config_write_and_restart_recovery() {
         let error = partial_config_apply_error("skills refresh failed");
-        assert!(error.starts_with("部分 apply 失败：配置已保存"));
-        assert!(error.contains("重启应用后会从磁盘配置重新初始化"));
+        assert!(error.starts_with("部分 apply 失败：配置已写入"));
+        assert!(error.contains("重启应用后会从配置重新初始化"));
         assert!(error.ends_with("skills refresh failed"));
     }
 
@@ -1326,8 +1326,8 @@ mod tests {
             .await;
 
         let error = result.unwrap_err();
-        assert!(error.starts_with("部分 apply 失败：配置已保存"));
-        assert!(error.contains("重启应用后会从磁盘配置重新初始化"));
+        assert!(error.starts_with("部分 apply 失败：配置已写入"));
+        assert!(error.contains("重启应用后会从配置重新初始化"));
         assert!(error.ends_with("router preparation failed"));
         let snapshot = service.snapshot().unwrap();
         assert_eq!(snapshot.version, 1);

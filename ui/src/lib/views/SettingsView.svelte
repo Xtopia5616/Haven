@@ -884,7 +884,7 @@
 				}),
 			});
 			setActionCompletionNotificationChannels(notification.action_completed);
-			addNotification('设置已保存', 'success');
+			addNotification('设置已写入配置', 'success');
 			try {
 				await refreshApiKeyStatus();
 			} catch (e) {
