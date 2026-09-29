@@ -5,73 +5,11 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 use crate::ActionService;
+#[cfg(test)]
+use crate::action_types::ScheduledActionFired;
+use crate::action_types::{ScheduleMode, ScheduledActionSpec};
 use crate::registry::RegistryProbe;
 use crate::{Tool, ToolConcurrency, ToolResult};
-
-/// What happens when a scheduled_action fires.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ScheduleMode {
-    /// Call the tool in `tool_name` with `tool_args` (no LLM involved).
-    /// To send a message at fire time, call the `notify` tool here.
-    #[default]
-    Tool,
-    /// Resume the session that scheduled the scheduled_action: the session continues with
-    /// the scheduled_action text as a new instruction in the same conversation.
-    /// Only works while the scheduling session is still alive (running/paused):
-    /// scheduled_actions are cancelled automatically when their session ends or is
-    /// removed, so a `continue` scheduled_action cannot resurrect a completed session.
-    Continue,
-}
-
-impl ScheduleMode {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            ScheduleMode::Tool => "tool",
-            ScheduleMode::Continue => "continue",
-        }
-    }
-
-    pub fn parse(s: &str) -> Option<Self> {
-        match s {
-            "tool" => Some(ScheduleMode::Tool),
-            "continue" => Some(ScheduleMode::Continue),
-            _ => None,
-        }
-    }
-}
-
-/// Typed payload published by the unified [`crate::ActionService`] completion
-/// bus when a scheduled action enters its fire transition.
-pub use crate::action_service::ScheduledActionFired;
-
-/// Everything needed to schedule one scheduled_action.
-pub struct ScheduledActionSpec {
-    /// Absolute fire time (RFC3339, local time accepted). Use this OR
-    /// `delay_secs` OR `watch_action_id`; exactly one is required.
-    pub due_at: Option<String>,
-    /// Delay in seconds before the scheduled_action fires. Use this OR `due_at` OR
-    /// `watch_action_id`.
-    pub delay_secs: Option<u64>,
-    /// Action to wait for: the scheduled action fires when the producer reaches
-    /// a terminal state (completed/failed/cancelled) instead of on a timer,
-    /// resuming the session with its terminal status and available result. The
-    /// dependency relation is persisted and its watcher is restored on restart.
-    /// Use this OR `due_at` OR `delay_secs`.
-    pub watch_action_id: Option<String>,
-    pub title: String,
-    pub body: String,
-    pub mode: ScheduleMode,
-    /// The session that schedules the scheduled_action (injected by the tool manager,
-    /// not visible to the LLM). Resume target for `Continue`.
-    pub session_id: Option<String>,
-    /// `Tool` mode: tool to call when the scheduled_action fires.
-    pub tool_name: Option<String>,
-    /// `Tool` mode: arguments for the tool call.
-    pub tool_args: Option<Value>,
-    /// `Continue` mode: continuation message delivered to the session.
-    pub prompt: Option<String>,
-}
 
 /// Schedule in-app scheduled_actions: set a timer that fires an action after a
 /// delay, list pending ones, or cancel one. Timers run detached from the

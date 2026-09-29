@@ -5,6 +5,7 @@ mod action_retry_policy;
 mod action_service;
 mod action_terminal;
 mod action_trigger_policy;
+pub mod action_types;
 pub mod adapters;
 mod asset_registry;
 mod authorization_policy;
@@ -130,12 +131,13 @@ impl CatalogRebuildScope {
 pub(crate) use action_lifecycle::{ActionLifecycle, EventSinkState};
 pub use action_service::{
     ActionCompletion, ActionCompletionReceiver, BackgroundActionCompletion, EventSink,
-    ScheduledActionFired, ScheduledActionResultCompletion,
+    ScheduledActionResultCompletion,
 };
 pub use action_service::{
     ActionListView, ActionService, ActionStateView, ActionStatusView, ActionView, ActionViewKind,
     ScheduledActionView,
 };
+pub use action_types::{ScheduleMode, ScheduledActionFired, ScheduledActionSpec};
 pub use adapters::{McpToolAdapter, SkillToolAdapter};
 pub use asset_registry::{ManagedAsset, ManagedAssetRegistry};
 pub use builtin::{
@@ -143,7 +145,7 @@ pub use builtin::{
     ConfigAdminContext, ConfigAdminOperation, ConfigAdminTool, ConfigOperationArgs,
     ConfigOperationError, ConfigOperationOutput, ConfigViewOutput, DiagnosticsOperationArgs,
     LogLevelOutput, McpOperationArgs, McpRefreshAction, McpRefreshPlan, McpRefreshTarget,
-    MediaTranscriptionResult, MediaTranscriptionStatus, NativeMcpOperationArgs, ScheduleMode,
+    MediaTranscriptionResult, MediaTranscriptionStatus, NativeMcpOperationArgs,
     SkillsOperationArgs, ToolsOperationArgs,
 };
 pub use circuit::ToolCircuitRegistry;

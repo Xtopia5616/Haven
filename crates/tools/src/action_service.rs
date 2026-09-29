@@ -12,7 +12,7 @@ use tracing::Instrument;
 use crate::ActionLifecycle;
 use crate::action_completion::ActionCompletionBus;
 pub use crate::action_completion::{
-    ActionCompletion, ActionCompletionReceiver, BackgroundActionCompletion, ScheduledActionFired,
+    ActionCompletion, ActionCompletionReceiver, BackgroundActionCompletion,
     ScheduledActionResultCompletion,
 };
 use crate::action_output::{
@@ -24,6 +24,7 @@ use crate::action_terminal::{
     can_claim_terminal,
 };
 use crate::action_trigger_policy::{ScheduledTrigger, ScheduledTriggerRequest};
+use crate::action_types::{ScheduleMode, ScheduledActionFired, ScheduledActionSpec};
 use haven_memory::{ActionCompletionOutboxRow, ActionRow, ActionStore};
 
 use crate::output::{append_windows_diagnostics, sanitize_shell_output, summarize_error};
@@ -489,7 +490,7 @@ pub(crate) struct ScheduledActionEntry {
     pub(crate) title: String,
     pub(crate) body: String,
     pub(crate) due_at: String,
-    pub(crate) mode: crate::builtin::scheduled_action::ScheduleMode,
+    pub(crate) mode: ScheduleMode,
     pub(crate) tool_name: Option<String>,
     pub(crate) tool_args: Option<Value>,
     pub(crate) prompt: Option<String>,
@@ -2166,13 +2167,8 @@ impl ActionService {
     /// is one idempotent transition that publishes the work item. The consumer
     /// owns the terminal acknowledgement so tool/session failures remain
     /// durable as `failed`.
-    pub async fn set(
-        self: &Arc<Self>,
-        spec: crate::builtin::scheduled_action::ScheduledActionSpec,
-    ) -> anyhow::Result<String> {
-        use crate::builtin::scheduled_action::ScheduleMode;
-
-        let crate::builtin::scheduled_action::ScheduledActionSpec {
+    pub async fn set(self: &Arc<Self>, spec: ScheduledActionSpec) -> anyhow::Result<String> {
+        let ScheduledActionSpec {
             due_at,
             delay_secs,
             watch_action_id,
@@ -2627,7 +2623,7 @@ impl ActionService {
             action.session_id.clone()
         };
         self.clear_scheduled_fire_claim(id).await;
-        if schedule.mode == crate::builtin::scheduled_action::ScheduleMode::Tool {
+        if schedule.mode == ScheduleMode::Tool {
             self.publish_scheduled_tool_result(id, state.clone(), session_id.clone());
         }
         self.emit_scheduled_finished(id, session_id.as_deref(), schedule, &state);
@@ -3133,8 +3129,7 @@ impl ActionService {
                     }
                 }
             };
-            let Some(mode) = crate::builtin::scheduled_action::ScheduleMode::parse(&row.mode)
-            else {
+            let Some(mode) = ScheduleMode::parse(&row.mode) else {
                 tracing::warn!(action_id = %row.id, "skipping scheduled action with invalid mode");
                 self.quarantine_invalid_scheduled_row(&row.id, "定时任务 mode 无效，已隔离为失败")
                     .await;
@@ -3156,14 +3151,14 @@ impl ActionService {
                 None => None,
             };
             let valid_payload = match mode {
-                crate::builtin::scheduled_action::ScheduleMode::Tool => {
+                ScheduleMode::Tool => {
                     watch_action_id.is_none()
                         && row
                             .tool_name
                             .as_deref()
                             .is_some_and(|value| !value.trim().is_empty())
                 }
-                crate::builtin::scheduled_action::ScheduleMode::Continue => {
+                ScheduleMode::Continue => {
                     row.session_id
                         .as_deref()
                         .is_some_and(|value| !value.trim().is_empty())

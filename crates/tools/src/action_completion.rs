@@ -14,6 +14,7 @@ use serde_json::Value;
 use tokio::sync::{RwLock, broadcast};
 
 use crate::action_service::ActionService;
+use crate::action_types::ScheduledActionFired;
 
 const ACTION_COMPLETION_RECONCILE_INTERVAL: Duration = Duration::from_secs(1);
 const SCHEDULED_FIRE_LEASE: Duration = Duration::from_secs(15 * 60);
@@ -45,21 +46,6 @@ pub struct ScheduledActionResultCompletion {
     pub session_id: Option<String>,
     pub status: ActionStatus,
     pub status_json: Value,
-}
-
-/// A scheduled action that reached its durable `Waiting -> Running` trigger
-/// transition. The agent must acknowledge the actual work with
-/// [`ActionService::complete_scheduled`] or [`ActionService::fail_scheduled`].
-#[derive(Clone, Debug, serde::Serialize)]
-pub struct ScheduledActionFired {
-    pub action_id: String,
-    pub title: String,
-    pub body: String,
-    pub mode: crate::builtin::scheduled_action::ScheduleMode,
-    pub session_id: Option<String>,
-    pub tool_name: Option<String>,
-    pub tool_args: Option<Value>,
-    pub prompt: Option<String>,
 }
 
 /// One completion stream for every action kind.
@@ -337,7 +323,7 @@ mod tests {
             action_id: action_id.into(),
             title: "Scheduled".into(),
             body: "fire".into(),
-            mode: crate::builtin::scheduled_action::ScheduleMode::Tool,
+            mode: crate::action_types::ScheduleMode::Tool,
             session_id: None,
             tool_name: Some("notify".into()),
             tool_args: None,

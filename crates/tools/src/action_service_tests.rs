@@ -1351,7 +1351,7 @@ async fn board_returns_typed_safe_views_in_started_order() {
             title: "Safe title".into(),
             body: "Safe body".into(),
             due_at: due_at.into(),
-            mode: crate::builtin::scheduled_action::ScheduleMode::Continue,
+            mode: crate::action_types::ScheduleMode::Continue,
             tool_name: Some("private-tool-name".into()),
             tool_args: Some(json!({"token": "private-tool-args"})),
             prompt: Some("private-prompt".into()),
@@ -1546,13 +1546,13 @@ async fn test_failed_action_reports_exit_code_and_reason() {
 async fn test_unified_service_owns_scheduled_state_and_cancel() {
     let service = Arc::new(ActionService::new());
     let id = service
-        .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+        .set(crate::action_types::ScheduledActionSpec {
             due_at: None,
             delay_secs: Some(3600),
             watch_action_id: None,
             title: "Unified".into(),
             body: "still waiting".into(),
-            mode: crate::builtin::scheduled_action::ScheduleMode::Continue,
+            mode: crate::action_types::ScheduleMode::Continue,
             session_id: Some("ses-unified".into()),
             tool_name: None,
             tool_args: None,
@@ -1610,7 +1610,7 @@ async fn owned_live_cancellation_selection_is_typed_sequential_and_non_short_cir
         title: "Scheduled".into(),
         body: "belongs to another kind".into(),
         due_at: "2099-01-01T00:00:00Z".into(),
-        mode: crate::builtin::scheduled_action::ScheduleMode::Tool,
+        mode: crate::action_types::ScheduleMode::Tool,
         tool_name: Some("notify".into()),
         tool_args: None,
         prompt: None,
@@ -1693,13 +1693,13 @@ async fn background_only_session_cleanup_leaves_owned_scheduled_action_waiting()
     let service = Arc::new(ActionService::new());
     let session_id = "ses-background-only";
     let scheduled_id = service
-        .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+        .set(crate::action_types::ScheduledActionSpec {
             due_at: None,
             delay_secs: Some(3600),
             watch_action_id: None,
             title: "Background only".into(),
             body: "must remain waiting".into(),
-            mode: crate::builtin::scheduled_action::ScheduleMode::Tool,
+            mode: crate::action_types::ScheduleMode::Tool,
             session_id: Some(session_id.into()),
             tool_name: Some("notify".into()),
             tool_args: None,
@@ -1718,13 +1718,13 @@ async fn full_session_cleanup_cancels_background_before_scheduled() {
     let service = Arc::new(ActionService::new());
     let session_id = "ses-full-cancel";
     let scheduled_id = service
-        .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+        .set(crate::action_types::ScheduledActionSpec {
             due_at: None,
             delay_secs: Some(3600),
             watch_action_id: None,
             title: "Full cleanup".into(),
             body: "cancel me".into(),
-            mode: crate::builtin::scheduled_action::ScheduleMode::Tool,
+            mode: crate::action_types::ScheduleMode::Tool,
             session_id: Some(session_id.into()),
             tool_name: Some("notify".into()),
             tool_args: None,
@@ -1850,13 +1850,13 @@ async fn session_cleanup_continues_after_scheduled_cancel_failure() {
         .await;
     let session_id = "ses-cancel-fold";
     let blocked_id = service
-        .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+        .set(crate::action_types::ScheduledActionSpec {
             due_at: None,
             delay_secs: Some(3600),
             watch_action_id: None,
             title: "Blocked cancellation".into(),
             body: "remains waiting".into(),
-            mode: crate::builtin::scheduled_action::ScheduleMode::Tool,
+            mode: crate::action_types::ScheduleMode::Tool,
             session_id: Some(session_id.into()),
             tool_name: Some("notify".into()),
             tool_args: None,
@@ -1865,13 +1865,13 @@ async fn session_cleanup_continues_after_scheduled_cancel_failure() {
         .await
         .unwrap();
     let other_id = service
-        .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+        .set(crate::action_types::ScheduledActionSpec {
             due_at: None,
             delay_secs: Some(3600),
             watch_action_id: None,
             title: "Independent cancellation".into(),
             body: "still cancels".into(),
-            mode: crate::builtin::scheduled_action::ScheduleMode::Tool,
+            mode: crate::action_types::ScheduleMode::Tool,
             session_id: Some(session_id.into()),
             tool_name: Some("notify".into()),
             tool_args: None,
@@ -1911,13 +1911,13 @@ async fn session_cleanup_continues_after_scheduled_cancel_failure() {
 async fn typed_agent_views_match_legacy_json_boundary() {
     let service = Arc::new(ActionService::new());
     let id = service
-        .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+        .set(crate::action_types::ScheduledActionSpec {
             due_at: None,
             delay_secs: Some(3600),
             watch_action_id: None,
             title: "Typed view".into(),
             body: "boundary compatibility".into(),
-            mode: crate::builtin::scheduled_action::ScheduleMode::Continue,
+            mode: crate::action_types::ScheduleMode::Continue,
             session_id: Some("ses-typed-view".into()),
             tool_name: None,
             tool_args: None,
@@ -2044,13 +2044,13 @@ async fn restored_dependency_uses_durable_producer_result_and_claims_once() {
         .set_action_store(Some(ActionStore::new(db.clone())))
         .await;
     let admitted_id = original
-        .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+        .set(crate::action_types::ScheduledActionSpec {
             due_at: None,
             delay_secs: None,
             watch_action_id: Some(producer_id.clone()),
             title: "Continue after producer".into(),
             body: "continue with its result".into(),
-            mode: crate::builtin::scheduled_action::ScheduleMode::Continue,
+            mode: crate::action_types::ScheduleMode::Continue,
             session_id: Some("ses-owner".into()),
             tool_name: None,
             tool_args: None,
@@ -2151,13 +2151,13 @@ async fn restart_fails_running_producer_before_recovering_dependency() {
         .set_action_store(Some(ActionStore::new(db.clone())))
         .await;
     let dependency_id = original
-        .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+        .set(crate::action_types::ScheduledActionSpec {
             due_at: None,
             delay_secs: None,
             watch_action_id: Some(producer_id.clone()),
             title: "Continue after restart".into(),
             body: "include producer failure".into(),
-            mode: crate::builtin::scheduled_action::ScheduleMode::Continue,
+            mode: crate::action_types::ScheduleMode::Continue,
             session_id: Some("ses-owner".into()),
             tool_name: None,
             tool_args: None,
@@ -2212,13 +2212,13 @@ async fn missing_dependency_producer_fires_once_with_not_found_status() {
         .set_action_store(Some(ActionStore::new(db.clone())))
         .await;
     let dependency_id = original
-        .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+        .set(crate::action_types::ScheduledActionSpec {
             due_at: None,
             delay_secs: None,
             watch_action_id: Some(missing_id.clone()),
             title: "Continue without producer".into(),
             body: "producer was deleted".into(),
-            mode: crate::builtin::scheduled_action::ScheduleMode::Continue,
+            mode: crate::action_types::ScheduleMode::Continue,
             session_id: Some("ses-owner".into()),
             tool_name: None,
             tool_args: None,
@@ -2263,13 +2263,13 @@ async fn dependency_waits_while_producer_is_waiting_then_accepts_cancelled_termi
         .await;
     let mut rx = service.take_action_receiver().expect("receiver available");
     let producer_id = service
-        .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+        .set(crate::action_types::ScheduledActionSpec {
             due_at: None,
             delay_secs: Some(3600),
             watch_action_id: None,
             title: "Future producer".into(),
             body: "still waiting".into(),
-            mode: crate::builtin::scheduled_action::ScheduleMode::Tool,
+            mode: crate::action_types::ScheduleMode::Tool,
             session_id: None,
             tool_name: Some("notify".into()),
             tool_args: None,
@@ -2278,13 +2278,13 @@ async fn dependency_waits_while_producer_is_waiting_then_accepts_cancelled_termi
         .await
         .unwrap();
     let dependency_id = service
-        .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+        .set(crate::action_types::ScheduledActionSpec {
             due_at: None,
             delay_secs: None,
             watch_action_id: Some(producer_id.clone()),
             title: "Continue after producer".into(),
             body: "wait for producer terminal".into(),
-            mode: crate::builtin::scheduled_action::ScheduleMode::Continue,
+            mode: crate::action_types::ScheduleMode::Continue,
             session_id: Some("ses-owner".into()),
             tool_name: None,
             tool_args: None,
@@ -2327,13 +2327,13 @@ async fn test_unified_completion_bus_emits_scheduled_transition() {
         .take_action_receiver()
         .expect("unified receiver available");
     let id = service
-        .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+        .set(crate::action_types::ScheduledActionSpec {
             due_at: None,
             delay_secs: Some(1),
             watch_action_id: None,
             title: "Bus".into(),
             body: "fire".into(),
-            mode: crate::builtin::scheduled_action::ScheduleMode::Tool,
+            mode: crate::action_types::ScheduleMode::Tool,
             session_id: Some("ses-bus".into()),
             tool_name: Some("notify".into()),
             tool_args: None,
@@ -2384,13 +2384,13 @@ async fn scheduled_tool_results_use_shared_action_result_transport() {
     let mut receiver = service.take_action_receiver().expect("receiver available");
 
     let completed_id = service
-        .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+        .set(crate::action_types::ScheduledActionSpec {
             due_at: None,
             delay_secs: Some(3600),
             watch_action_id: None,
             title: "Completed result".into(),
             body: "run tool".into(),
-            mode: crate::builtin::scheduled_action::ScheduleMode::Tool,
+            mode: crate::action_types::ScheduleMode::Tool,
             session_id: Some("ses-completed-result".into()),
             tool_name: Some("notify".into()),
             tool_args: None,
@@ -2425,13 +2425,13 @@ async fn scheduled_tool_results_use_shared_action_result_transport() {
         .await;
 
     let failed_id = service
-        .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+        .set(crate::action_types::ScheduledActionSpec {
             due_at: None,
             delay_secs: Some(3600),
             watch_action_id: None,
             title: "Failed result".into(),
             body: "run tool".into(),
-            mode: crate::builtin::scheduled_action::ScheduleMode::Tool,
+            mode: crate::action_types::ScheduleMode::Tool,
             session_id: Some("ses-failed-result".into()),
             tool_name: Some("notify".into()),
             tool_args: None,
@@ -2482,13 +2482,13 @@ async fn scheduled_admission_keeps_running_row_until_completion_then_reaps_termi
         .await;
     let mut rx = service.take_action_receiver().expect("receiver available");
     let id = service
-        .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+        .set(crate::action_types::ScheduledActionSpec {
             due_at: None,
             delay_secs: Some(3600),
             watch_action_id: None,
             title: "Running retention".into(),
             body: "complete after another admission".into(),
-            mode: crate::builtin::scheduled_action::ScheduleMode::Tool,
+            mode: crate::action_types::ScheduleMode::Tool,
             session_id: None,
             tool_name: Some("notify".into()),
             tool_args: None,
@@ -2505,13 +2505,13 @@ async fn scheduled_admission_keeps_running_row_until_completion_then_reaps_termi
     assert_eq!(service.status(&id).await["status"], "running");
 
     service
-        .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+        .set(crate::action_types::ScheduledActionSpec {
             due_at: None,
             delay_secs: Some(3600),
             watch_action_id: None,
             title: "Another schedule".into(),
             body: "admission must preserve active work".into(),
-            mode: crate::builtin::scheduled_action::ScheduleMode::Tool,
+            mode: crate::action_types::ScheduleMode::Tool,
             session_id: None,
             tool_name: Some("notify".into()),
             tool_args: None,
@@ -2529,13 +2529,13 @@ async fn scheduled_admission_keeps_running_row_until_completion_then_reaps_termi
     assert_eq!(service.status(&id).await["status"], "completed");
 
     service
-        .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+        .set(crate::action_types::ScheduledActionSpec {
             due_at: None,
             delay_secs: Some(3600),
             watch_action_id: None,
             title: "Terminal cleanup".into(),
             body: "reap completed board entry".into(),
-            mode: crate::builtin::scheduled_action::ScheduleMode::Tool,
+            mode: crate::action_types::ScheduleMode::Tool,
             session_id: None,
             tool_name: Some("notify".into()),
             tool_args: None,
@@ -2562,13 +2562,13 @@ async fn scheduled_admission_keeps_running_row_available_for_cancellation() {
         .await;
     let mut rx = service.take_action_receiver().expect("receiver available");
     let id = service
-        .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+        .set(crate::action_types::ScheduledActionSpec {
             due_at: None,
             delay_secs: Some(3600),
             watch_action_id: None,
             title: "Running cancellation".into(),
             body: "cancel after another admission".into(),
-            mode: crate::builtin::scheduled_action::ScheduleMode::Tool,
+            mode: crate::action_types::ScheduleMode::Tool,
             session_id: None,
             tool_name: Some("notify".into()),
             tool_args: None,
@@ -2583,13 +2583,13 @@ async fn scheduled_admission_keeps_running_row_available_for_cancellation() {
     ));
 
     service
-        .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+        .set(crate::action_types::ScheduledActionSpec {
             due_at: None,
             delay_secs: Some(3600),
             watch_action_id: None,
             title: "Another schedule".into(),
             body: "admission must preserve active work".into(),
-            mode: crate::builtin::scheduled_action::ScheduleMode::Tool,
+            mode: crate::action_types::ScheduleMode::Tool,
             session_id: None,
             tool_name: Some("notify".into()),
             tool_args: None,
@@ -2617,13 +2617,13 @@ async fn restore_marks_running_scheduled_action_failed_without_replaying_it() {
         .await;
     let mut rx = service.take_action_receiver().expect("receiver available");
     let id = service
-        .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+        .set(crate::action_types::ScheduledActionSpec {
             due_at: None,
             delay_secs: Some(3600),
             watch_action_id: None,
             title: "Restart handling".into(),
             body: "a running fire is not replayed".into(),
-            mode: crate::builtin::scheduled_action::ScheduleMode::Tool,
+            mode: crate::action_types::ScheduleMode::Tool,
             session_id: None,
             tool_name: Some("notify".into()),
             tool_args: None,
@@ -2664,13 +2664,13 @@ async fn test_scheduled_fire_without_receiver_is_requeued_durably() {
         .set_action_store(Some(ActionStore::new(db.clone())))
         .await;
     let id = service
-        .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+        .set(crate::action_types::ScheduledActionSpec {
             due_at: None,
             delay_secs: Some(1),
             watch_action_id: None,
             title: "No receiver".into(),
             body: "keep waiting".into(),
-            mode: crate::builtin::scheduled_action::ScheduleMode::Continue,
+            mode: crate::action_types::ScheduleMode::Continue,
             session_id: Some("ses-no-receiver".into()),
             tool_name: None,
             tool_args: None,
@@ -2721,13 +2721,13 @@ async fn test_scheduled_fire_recovery_survives_requeue_failure_for_late_receiver
         .set_action_store(Some(ActionStore::new(db.clone())))
         .await;
     let id = service
-        .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+        .set(crate::action_types::ScheduledActionSpec {
             due_at: None,
             delay_secs: Some(1),
             watch_action_id: None,
             title: "Recovery map".into(),
             body: "late consumer".into(),
-            mode: crate::builtin::scheduled_action::ScheduleMode::Tool,
+            mode: crate::action_types::ScheduleMode::Tool,
             session_id: None,
             tool_name: Some("notify".into()),
             tool_args: None,
@@ -2748,13 +2748,13 @@ async fn test_scheduled_fire_recovery_survives_requeue_failure_for_late_receiver
     assert_eq!(service.status(&id).await["status"], "running");
 
     service
-        .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+        .set(crate::action_types::ScheduledActionSpec {
             due_at: None,
             delay_secs: Some(3600),
             watch_action_id: None,
             title: "Admission during recovery".into(),
             body: "keep the retained running fire visible".into(),
-            mode: crate::builtin::scheduled_action::ScheduleMode::Tool,
+            mode: crate::action_types::ScheduleMode::Tool,
             session_id: None,
             tool_name: Some("notify".into()),
             tool_args: None,
@@ -2789,13 +2789,13 @@ async fn test_scheduled_fire_recovers_after_completion_bus_lag() {
     let service = Arc::new(ActionService::new());
     let mut rx = service.take_action_receiver().expect("receiver available");
     let id = service
-        .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+        .set(crate::action_types::ScheduledActionSpec {
             due_at: None,
             delay_secs: Some(1),
             watch_action_id: None,
             title: "Lag recovery".into(),
             body: "replay me".into(),
-            mode: crate::builtin::scheduled_action::ScheduleMode::Tool,
+            mode: crate::action_types::ScheduleMode::Tool,
             session_id: None,
             tool_name: Some("notify".into()),
             tool_args: None,
@@ -2846,13 +2846,13 @@ async fn test_scheduled_trigger_db_failure_rearms_timer() {
         .await;
     let mut rx = service.take_action_receiver().expect("receiver available");
     let id = service
-        .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+        .set(crate::action_types::ScheduledActionSpec {
             due_at: None,
             delay_secs: Some(1),
             watch_action_id: None,
             title: "Retry trigger".into(),
             body: "retry".into(),
-            mode: crate::builtin::scheduled_action::ScheduleMode::Tool,
+            mode: crate::action_types::ScheduleMode::Tool,
             session_id: None,
             tool_name: Some("notify".into()),
             tool_args: None,
@@ -2893,13 +2893,13 @@ async fn test_scheduled_cancel_db_failure_keeps_live_state_until_retry() {
         .set_action_store(Some(ActionStore::new(db.clone())))
         .await;
     let id = service
-        .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+        .set(crate::action_types::ScheduledActionSpec {
             due_at: None,
             delay_secs: Some(3600),
             watch_action_id: None,
             title: "Retry cancel".into(),
             body: "still live".into(),
-            mode: crate::builtin::scheduled_action::ScheduleMode::Tool,
+            mode: crate::action_types::ScheduleMode::Tool,
             session_id: None,
             tool_name: Some("notify".into()),
             tool_args: None,
@@ -2944,13 +2944,13 @@ async fn test_scheduled_terminal_db_failure_retries_before_memory_transition() {
         .await;
     let mut rx = service.take_action_receiver().expect("receiver available");
     let id = service
-        .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+        .set(crate::action_types::ScheduledActionSpec {
             due_at: None,
             delay_secs: Some(1),
             watch_action_id: None,
             title: "Retry terminal".into(),
             body: "persist".into(),
-            mode: crate::builtin::scheduled_action::ScheduleMode::Tool,
+            mode: crate::action_types::ScheduleMode::Tool,
             session_id: None,
             tool_name: Some("notify".into()),
             tool_args: None,
@@ -3004,7 +3004,7 @@ async fn test_scheduled_recovery_is_available_to_late_receivers_and_deduplicated
         action_id: "act-recovery".into(),
         title: "Recovery".into(),
         body: "once".into(),
-        mode: crate::builtin::scheduled_action::ScheduleMode::Tool,
+        mode: crate::action_types::ScheduleMode::Tool,
         session_id: None,
         tool_name: Some("notify".into()),
         tool_args: None,
@@ -3060,7 +3060,7 @@ async fn test_scheduled_fire_claim_is_shared_across_receivers() {
         action_id: "act-shared-claim".into(),
         title: "Shared claim".into(),
         body: "once".into(),
-        mode: crate::builtin::scheduled_action::ScheduleMode::Tool,
+        mode: crate::action_types::ScheduleMode::Tool,
         session_id: None,
         tool_name: Some("notify".into()),
         tool_args: None,
@@ -3160,13 +3160,13 @@ async fn test_scheduled_terminal_event_reuses_persisted_timestamps() {
     }));
     let mut rx = service.take_action_receiver().expect("receiver available");
     let id = service
-        .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+        .set(crate::action_types::ScheduledActionSpec {
             due_at: None,
             delay_secs: Some(1),
             watch_action_id: None,
             title: "Timestamp".into(),
             body: "same clock".into(),
-            mode: crate::builtin::scheduled_action::ScheduleMode::Tool,
+            mode: crate::action_types::ScheduleMode::Tool,
             session_id: None,
             tool_name: Some("notify".into()),
             tool_args: None,
@@ -3193,13 +3193,13 @@ async fn test_scheduled_terminal_event_reuses_persisted_timestamps() {
     assert_eq!(event["finished_at"].as_str(), row.finished_at.as_deref());
 
     let cancel_id = service
-        .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+        .set(crate::action_types::ScheduledActionSpec {
             due_at: None,
             delay_secs: Some(3600),
             watch_action_id: None,
             title: "Cancel timestamp".into(),
             body: "same clock".into(),
-            mode: crate::builtin::scheduled_action::ScheduleMode::Tool,
+            mode: crate::action_types::ScheduleMode::Tool,
             session_id: None,
             tool_name: Some("notify".into()),
             tool_args: None,
@@ -3270,13 +3270,13 @@ async fn test_restore_quarantines_corrupt_waiting_scheduled_rows() {
 async fn test_action_kind_and_terminal_delete_guards() {
     let service = Arc::new(ActionService::new());
     let id = service
-        .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+        .set(crate::action_types::ScheduledActionSpec {
             due_at: None,
             delay_secs: Some(3600),
             watch_action_id: None,
             title: "Delete guard".into(),
             body: "pending".into(),
-            mode: crate::builtin::scheduled_action::ScheduleMode::Tool,
+            mode: crate::action_types::ScheduleMode::Tool,
             session_id: None,
             tool_name: Some("notify".into()),
             tool_args: None,
@@ -3338,13 +3338,13 @@ async fn test_shutdown_stops_scheduled_timers_and_rejects_new_work() {
         .take_action_receiver()
         .expect("unified receiver available");
     let id = service
-        .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+        .set(crate::action_types::ScheduledActionSpec {
             due_at: None,
             delay_secs: Some(1),
             watch_action_id: None,
             title: "Shutdown".into(),
             body: "must not fire after teardown".into(),
-            mode: crate::builtin::scheduled_action::ScheduleMode::Tool,
+            mode: crate::action_types::ScheduleMode::Tool,
             session_id: None,
             tool_name: Some("notify".into()),
             tool_args: Some(serde_json::json!({})),
@@ -3365,13 +3365,13 @@ async fn test_shutdown_stops_scheduled_timers_and_rejects_new_work() {
     );
     assert!(
         service
-            .set(crate::builtin::scheduled_action::ScheduledActionSpec {
+            .set(crate::action_types::ScheduledActionSpec {
                 due_at: None,
                 delay_secs: Some(1),
                 watch_action_id: None,
                 title: "Rejected".into(),
                 body: "not admitted".into(),
-                mode: crate::builtin::scheduled_action::ScheduleMode::Tool,
+                mode: crate::action_types::ScheduleMode::Tool,
                 session_id: None,
                 tool_name: Some("notify".into()),
                 tool_args: Some(serde_json::json!({})),

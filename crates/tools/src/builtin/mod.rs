@@ -116,7 +116,7 @@ pub use admin::{
 pub use media::{MediaTranscriptionResult, MediaTranscriptionStatus};
 pub use memory::MemoryTool;
 pub use messaging::AgentTool;
-pub use scheduled_action::{ScheduleMode, ScheduledActionFired, ScheduledActionTool};
+pub use scheduled_action::ScheduledActionTool;
 
 /// Effective output cap for a tool: the per-tool `tool_settings` override
 /// when set, else the global observation budget

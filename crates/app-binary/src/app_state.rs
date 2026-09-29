@@ -908,20 +908,18 @@ mod tests {
             .runtime
             .services
             .actions
-            .set(
-                haven_tools::builtin::scheduled_action::ScheduledActionSpec {
-                    due_at: None,
-                    delay_secs: Some(3600),
-                    watch_action_id: None,
-                    title: "Keep after exit".into(),
-                    body: "restore me".into(),
-                    mode: haven_tools::builtin::scheduled_action::ScheduleMode::Continue,
-                    session_id: Some(session.id.clone()),
-                    tool_name: None,
-                    tool_args: None,
-                    prompt: Some("continue later".into()),
-                },
-            )
+            .set(haven_tools::ScheduledActionSpec {
+                due_at: None,
+                delay_secs: Some(3600),
+                watch_action_id: None,
+                title: "Keep after exit".into(),
+                body: "restore me".into(),
+                mode: haven_tools::ScheduleMode::Continue,
+                session_id: Some(session.id.clone()),
+                tool_name: None,
+                tool_args: None,
+                prompt: Some("continue later".into()),
+            })
             .await
             .unwrap();
 

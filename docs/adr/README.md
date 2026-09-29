@@ -383,3 +383,4 @@
 - [0394：阶段 8 IPC 类型生成与聊天编排收口](0394-phase-8-ipc-codegen-chat-orchestration.md)
 - [0395：阶段 9 容量验证与 Windows profile 验收状态](0395-phase-9-capacity-and-windows-profile-audit.md)
 - [0396：将消息服务收口到 haven-messaging](0396-messaging-domain-crate.md)
+- [0397：定时任务类型归入 Action 域](0397-action-domain-type-boundary.md)
