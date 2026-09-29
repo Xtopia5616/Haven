@@ -4,7 +4,9 @@ use crate::events::AppBootstrapEvent;
 use crate::runtime::{ApplicationRuntime, RuntimeServices};
 use haven_agent::SessionSupervisor;
 use haven_agent::{AgentLayer, MemoryService, MemoryServiceStores, PendingSessionRecovery};
-use haven_common::config::{ConfigLoader, ConfigService, LogLevel};
+#[cfg(test)]
+use haven_common::config::InMemoryCredentialStore;
+use haven_common::config::{ConfigLoader, ConfigService, CredentialStore, LogLevel};
 use haven_input::InputPipeline;
 use haven_llm::LlmRouter;
 use haven_llm::stt::build_stt_client;
@@ -12,6 +14,7 @@ use haven_memory::{
     ActionStore, Database, MemoryEmbeddingStore, MemoryFactExtractionStore, MemoryFactStore,
     MemoryMaintenanceStore, MemoryRecallStore, MemoryStore, SessionStore,
 };
+use haven_platform::credentials::PlatformCredentialStore;
 use haven_tools::ToolsManager;
 use std::collections::HashMap;
 use std::ops::Deref;
@@ -150,6 +153,7 @@ impl AppState {
             filter_handles,
             config_loader,
             CleanupRoots::production(),
+            Arc::new(PlatformCredentialStore),
         )
         .await
     }
@@ -166,6 +170,7 @@ impl AppState {
             filter_handles,
             config_loader,
             CleanupRoots::isolated(test_data_root),
+            Arc::new(InMemoryCredentialStore::default()),
         )
         .await
     }
@@ -175,6 +180,7 @@ impl AppState {
         filter_handles: Vec<reload::Handle<EnvFilter, Registry>>,
         config_loader: ConfigLoader,
         cleanup_roots: CleanupRoots,
+        credential_store: Arc<dyn CredentialStore>,
     ) -> anyhow::Result<Self> {
         let t0 = std::time::Instant::now();
         let db = Arc::new(Database::open(db_path)?);
@@ -188,7 +194,10 @@ impl AppState {
             t0.elapsed().as_millis()
         );
 
-        let config_service = Arc::new(ConfigService::new(config_loader));
+        let config_service = Arc::new(ConfigService::new_with_credential_store(
+            config_loader,
+            credential_store,
+        )?);
         let config_apply_gate = Arc::new(tokio::sync::Mutex::new(()));
         let cfg = config_service.snapshot()?.config;
         let context_limits = cfg.context_limits.clone();
@@ -342,69 +351,65 @@ impl AppState {
             });
         }
 
-        // Retention-based cleanup: deferred to background (non-critical).
-        let retention_days = cfg.memory.history_retention_days;
-        if retention_days > 0 {
-            let retention_store = session_store.clone();
-            let days = retention_days;
-            runtime.spawn("retention-cleanup", async move {
-                match retention_store.delete_old_sessions(days).await {
-                    Ok(n) if n > 0 => {
-                        tracing::info!("cleaned up {} session(s) older than {} days", n, days);
-                    }
+        // Sessions own committed attachment lifetime. Expire sessions first,
+        // then reconcile both upload and generated media against the surviving
+        // durable references and active leases. Even with retention disabled,
+        // orphan sweeping reclaims files left by explicit deletes or crashes.
+        let retention_days = cfg.session.history_retention_days;
+        let startup_executor = executor.clone();
+        let startup_store = session_store.clone();
+        let startup_uploads = cleanup_roots.uploads.clone();
+        let startup_generated = cleanup_roots.generated_media.clone();
+        let startup_registry = tools.share_services().assets.clone();
+        runtime.spawn("session-media-retention-cleanup", async move {
+            if retention_days > 0 {
+                match startup_executor.delete_old_sessions(retention_days).await {
+                    Ok(n) if n > 0 => tracing::info!(
+                        "cleaned up {} session(s) older than {} days",
+                        n,
+                        retention_days
+                    ),
                     Ok(_) => {}
                     Err(error) => tracing::warn!(
                         error = %haven_common::error::sanitize_error_text(&error.to_string()),
                         "deferred session retention cleanup failed"
                     ),
                 }
-            });
-
-            let upload_root = cleanup_roots.uploads.clone();
-            let upload_ttl = std::time::Duration::from_secs(
-                u64::from(retention_days).saturating_mul(24 * 60 * 60),
-            );
-            let upload_registry = tools.share_services().assets.clone();
-            let upload_session_store = session_store.clone();
-            runtime.spawn("upload-retention-cleanup", async move {
-                let referenced_paths = match upload_session_store
-                    .list_managed_attachment_paths()
-                    .await
-                {
-                    Ok(paths) => paths,
-                    Err(error) => {
-                        tracing::warn!(
-                            error = %haven_common::error::sanitize_error_text(&error.to_string()),
-                            "deferred upload cleanup skipped: could not read attachment references"
-                        );
-                        return;
-                    }
-                };
-                match crate::commands::recording::cleanup_stale_upload_batches_with_references(
-                    upload_root,
-                    upload_ttl,
-                    upload_registry,
-                    Some(referenced_paths),
-                )
-                .await
-                {
-                    Ok(n) if n > 0 => {
-                        tracing::info!("cleaned up {} stale upload batch(es)", n);
-                    }
-                    Ok(_) => {}
-                    Err(error) => tracing::warn!(
-                        error = %haven_common::error::sanitize_error_text(&error),
-                        "deferred upload retention cleanup failed"
-                    ),
+            }
+            let referenced_paths = match startup_store.list_managed_attachment_paths().await {
+                Ok(paths) => paths,
+                Err(error) => {
+                    tracing::warn!(
+                        error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                        "deferred managed media cleanup skipped: could not read attachment references"
+                    );
+                    return;
                 }
-            });
-        }
+            };
+            match crate::commands::recording::cleanup_unreferenced_managed_media(
+                startup_uploads,
+                startup_generated,
+                startup_registry,
+                referenced_paths,
+            )
+            .await
+            {
+                Ok((uploads, generated)) if uploads + generated > 0 => tracing::info!(
+                    "cleaned up {} unreferenced upload batch(es) and {} generated media file(s)",
+                    uploads,
+                    generated
+                ),
+                Ok(_) => {}
+                Err(error) => tracing::warn!(
+                    error = %haven_common::error::sanitize_error_text(&error),
+                    "deferred managed media cleanup failed"
+                ),
+            }
+        });
 
         // Crash leftovers in private upload staging directories are temporary
-        // state, so their cleanup is independent from history retention.
+        // state, so their cleanup is independent from session retention.
         let staging_root = cleanup_roots.uploads.clone();
-        let generated_root = cleanup_roots.generated_media.clone();
-        let generated_registry = tools.share_services().assets.clone();
         runtime.spawn("stale-upload-cleanup", async move {
             match crate::commands::recording::cleanup_stale_upload_staging(staging_root).await {
                 Ok(n) if n > 0 => {
@@ -416,33 +421,16 @@ impl AppState {
                     "deferred upload staging cleanup failed"
                 ),
             }
-            match crate::commands::recording::cleanup_stale_generated_media(
-                generated_root,
-                generated_registry,
-            )
-            .await
-            {
-                Ok(n) if n > 0 => {
-                    tracing::info!("cleaned up {} expired generated media file(s)", n);
-                }
-                Ok(_) => {}
-                Err(error) => tracing::warn!(
-                    error = %haven_common::error::sanitize_error_text(&error),
-                    "deferred generated media cleanup failed"
-                ),
-            }
         });
 
-        // Spawn background cleanup every 24 hours
+        // Reconcile session retention and the two managed media roots every
+        // 24 hours. Staging is temporary and retains its independent 24-hour TTL.
+        let daily_executor = executor.clone();
         let daily_session_store = session_store.clone();
         let retention = retention_days;
         let upload_root = cleanup_roots.uploads.clone();
-        let upload_ttl = std::time::Duration::from_secs(
-            u64::from(retention_days.max(1)).saturating_mul(24 * 60 * 60),
-        );
-        let upload_registry = tools.share_services().assets.clone();
         let generated_root = cleanup_roots.generated_media.clone();
-        let generated_registry = tools.share_services().assets.clone();
+        let daily_registry = tools.share_services().assets.clone();
         runtime.spawn_with_child_token("daily-cleanup", move |cancel| async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(86400));
             loop {
@@ -451,7 +439,7 @@ impl AppState {
                     _ = interval.tick() => {}
                 }
                 if retention > 0 {
-                    match daily_session_store.delete_old_sessions(retention).await {
+                    match daily_executor.delete_old_sessions(retention).await {
                         Ok(n) if n > 0 => {
                             tracing::info!("background cleanup: removed {} old session(s)", n);
                         }
@@ -462,35 +450,32 @@ impl AppState {
                         ),
                     }
                 }
-                if retention > 0 {
-                    match daily_session_store.list_managed_attachment_paths().await {
-                        Ok(referenced_paths) => {
-                            match crate::commands::recording::cleanup_stale_upload_batches_with_references(
-                                upload_root.clone(),
-                                upload_ttl,
-                                upload_registry.clone(),
-                                Some(referenced_paths),
-                            )
-                            .await
-                            {
-                                Ok(n) if n > 0 => {
-                                    tracing::info!(
-                                        "background cleanup: removed {} stale upload batch(es)",
-                                        n
-                                    );
-                                }
-                                Ok(_) => {}
-                                Err(error) => tracing::warn!(
-                                    error = %haven_common::error::sanitize_error_text(&error),
-                                    "background upload retention cleanup failed"
-                                ),
-                            }
+                match daily_session_store.list_managed_attachment_paths().await {
+                    Ok(referenced_paths) => {
+                        match crate::commands::recording::cleanup_unreferenced_managed_media(
+                            upload_root.clone(),
+                            generated_root.clone(),
+                            daily_registry.clone(),
+                            referenced_paths,
+                        )
+                        .await
+                        {
+                            Ok((uploads, generated)) if uploads + generated > 0 => tracing::info!(
+                                "background cleanup: removed {} upload batch(es) and {} generated media file(s)",
+                                uploads,
+                                generated
+                            ),
+                            Ok(_) => {}
+                            Err(error) => tracing::warn!(
+                                error = %haven_common::error::sanitize_error_text(&error),
+                                "background managed media cleanup failed"
+                            ),
                         }
-                        Err(error) => tracing::warn!(
-                            error = %haven_common::error::sanitize_error_text(&error.to_string()),
-                            "background upload cleanup skipped: could not read attachment references"
-                        ),
                     }
+                    Err(error) => tracing::warn!(
+                        error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                        "background managed media cleanup skipped: could not read attachment references"
+                    ),
                 }
                 match crate::commands::recording::cleanup_stale_upload_staging(upload_root.clone())
                     .await
@@ -505,24 +490,6 @@ impl AppState {
                     Err(error) => tracing::warn!(
                         error = %haven_common::error::sanitize_error_text(&error),
                         "background upload staging cleanup failed"
-                    ),
-                }
-                match crate::commands::recording::cleanup_stale_generated_media(
-                    generated_root.clone(),
-                    generated_registry.clone(),
-                )
-                .await
-                {
-                    Ok(n) if n > 0 => {
-                        tracing::info!(
-                            "background cleanup: removed {} expired generated media file(s)",
-                            n
-                        );
-                    }
-                    Ok(_) => {}
-                    Err(error) => tracing::warn!(
-                        error = %haven_common::error::sanitize_error_text(&error),
-                        "background generated media cleanup failed"
                     ),
                 }
             }

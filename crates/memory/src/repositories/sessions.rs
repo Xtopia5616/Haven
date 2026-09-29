@@ -418,6 +418,18 @@ impl Database {
         Ok(count)
     }
 
+    /// Return session ids that would be removed by the retention pass. The
+    /// supervisor uses this snapshot to quiesce live actors and release their
+    /// process-local grants and asset leases before deleting each row.
+    pub fn old_session_ids(&self, retention_days: u32) -> anyhow::Result<Vec<String>> {
+        let cutoff = (Utc::now() - chrono::Duration::days(retention_days as i64)).to_rfc3339();
+        let conn = self.conn();
+        let mut statement =
+            conn.prepare("SELECT id FROM sessions WHERE created_at < ?1 ORDER BY created_at, id")?;
+        let rows = statement.query_map(rusqlite::params![cutoff], |row| row.get(0))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn search_sessions_filtered(
         &self,

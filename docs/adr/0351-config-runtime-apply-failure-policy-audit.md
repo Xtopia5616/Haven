@@ -24,6 +24,10 @@ Phase 5 的局部 target、phase 顺序和 Settings 失败观测没有第二份�
 - Router/media prepare 在 publish 前构造替换对象；失败时 Settings 后续 phase 不运行，model 的 Router/media live generation 也保持旧值。准备对象可丢弃，按同一 snapshot 再构造是最清晰的局部重试候选，但现有命令没有暴露这个重试入口。
 - Router publish 先替换 Agent Router，再经 Tools runtime 更新 Router/media platform 并重建相关 catalog；它没有共同原子交换。Settings coordinator 现在能收到 Agent Router 锁失败和 catalog rebuild 拒绝：前者发生在 Agent Router 替换前，后者发生在替换后并记录 `router_published=true`。后者仍发送 `llm:config_changed`，随后停止 Settings 后续 phase；不恢复已替换的 Router generation。
 - Security apply 清除 session grants 并递增 policy revision。MCP config apply 会更新 server config index、catalog generation、连接/断开客户端并发布 status；MCP monitor phase 会为当前 client 启动 monitor task。重复执行整段 phase 可能清除临时授权、产生连接和事件副作用或启动重复 monitor，不能视为安全重试。MCP client 的断线重连由 MCP manager/client monitor 自己拥有。
+
+### 持久会话授权跟进（ADR 0402）
+
+上述 Security apply 清除的是 `AuthorizationEngine` 的进程内 map，不再表示撤销用户的“本对话允许”。会话授权现在由 schema v31 的 `session_authorization_grants` 持久化；普通 Security apply 后，Agent 从 `SessionStore` 重新装载仍归属有效会话的授权。显式权限撤销、权限重置、会话删除和 retention cleanup 仍清除相应授权；数据库读写失败时授权恢复/授予失败关闭。旧 schema 重置要求见 `docs/release-and-reset.md`。
 - Skills `set_config` 先替换 root/allowlist，再扫描目录；扫描失败时新 root 已保存到 engine，而旧 skill map 可能仍在。Logging 逐个修改 reload handle，失败时此前成功的 handle 不回滚。Hotkey unregister 成功而 register 失败会留下旧快捷键已移除的状态，不恢复旧绑定。它们都发生在 durable edit 之后，后续 Settings phase 停止，已完成状态保留。
 - Settings phase 的 apply 错误现在按 owner 传播：shell、context、tool settings 和 Router publish 的 builtin catalog rebuild 拒绝会到达 coordinator；Agent 的 media strategy、context limits、session step limit 与 router mutex poisoning 也会返回错误。InputPipeline 的配置替换、context pipeline limit 更新与 executor 并发上限更新没有内部失败分支，不制造虚假错误。Security 与 MCP config/monitor 接口仍由对应 owner 通过 MCP status/warning 表达连接和 monitor 结果，不把外部连接状态伪装成 Settings command 的 fatal apply error。Hotkey rebind event 仍是 warning-only。
 - 以上局部 setter 有些在相同输入下可重复写入，但各 phase 可能跨多个 runtime owner，且会重建 catalog、清理临时授权、启动任务或连接外部 MCP server；本 ADR 不把它们提升为可安全重试契约，也不新增补偿。

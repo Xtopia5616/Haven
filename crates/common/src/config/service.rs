@@ -5,9 +5,14 @@
 //! typed patches, and change notifications so callers do not coordinate a
 //! shared loader mutex themselves.
 
+use super::credentials::{
+    CredentialSlot, UnavailableCredentialStore, credential_references, hydrate_from_store,
+    prepare_after_edit,
+};
 use super::{
-    AppConfig, ConfigLoader, LlmConfig, LogLevel, McpDiscoveryConfig, McpServerConfig, ModelConfig,
-    SecurityConfig, Settings, SkillsConfig, SkillsExecConfig, ToolConfig,
+    AppConfig, ConfigLoader, CredentialStore, LlmConfig, LogLevel, McpDiscoveryConfig,
+    McpServerConfig, ModelConfig, SecurityConfig, Settings, SkillsConfig, SkillsExecConfig,
+    ToolConfig,
 };
 use crate::types::ShellChoice;
 use serde::{Deserialize, Serialize};
@@ -141,6 +146,8 @@ impl ConfigPatch {
 struct ConfigState {
     loader: ConfigLoader,
     version: ConfigVersion,
+    credential_store: std::sync::Arc<dyn CredentialStore>,
+    staged_credentials: HashMap<CredentialSlot, String>,
 }
 
 /// The single live configuration owner for an application process.
@@ -158,15 +165,106 @@ impl std::fmt::Debug for ConfigService {
 }
 
 impl ConfigService {
-    pub fn new(loader: ConfigLoader) -> Self {
-        Self {
-            state: Mutex::new(ConfigState { loader, version: 0 }),
+    /// Fail-closed constructor for callers without a persistent platform
+    /// credential adapter. Configurations without credential references can
+    /// load; configured references and credential writes return an error.
+    /// Tests that need credentials must inject an explicit test store.
+    pub fn new(loader: ConfigLoader) -> anyhow::Result<Self> {
+        Self::new_with_credential_store(loader, std::sync::Arc::new(UnavailableCredentialStore))
+    }
+
+    /// Create the live config owner with an explicit secure-store backend.
+    pub fn new_with_credential_store(
+        mut loader: ConfigLoader,
+        credential_store: std::sync::Arc<dyn CredentialStore>,
+    ) -> anyhow::Result<Self> {
+        let mut config = loader.config().clone();
+        hydrate_from_store(&mut config, credential_store.as_ref())?;
+        *loader.config_mut() = config;
+        Ok(Self {
+            state: Mutex::new(ConfigState {
+                loader,
+                version: 0,
+                credential_store,
+                staged_credentials: HashMap::new(),
+            }),
             subscribers: Mutex::new(Vec::new()),
-        }
+        })
     }
 
     pub fn load() -> anyhow::Result<Self> {
-        Ok(Self::new(ConfigLoader::load()?))
+        Self::new(ConfigLoader::load()?)
+    }
+
+    /// Stage an API-key update without exposing the secret through the
+    /// Settings payload. The returned opaque reference may be sent back with
+    /// Settings; the actual value remains in the credential store.
+    pub fn stage_provider_credential(
+        &self,
+        provider_name: &str,
+        value: &str,
+    ) -> anyhow::Result<String> {
+        if provider_name.trim().is_empty() || value.is_empty() {
+            anyhow::bail!("provider name and API key are required");
+        }
+        self.stage_credential(
+            CredentialSlot::ProviderApiKey(provider_name.to_string()),
+            value,
+        )
+    }
+
+    /// Stage one of the dedicated OCR credentials.
+    pub fn stage_ocr_credential(&self, api_secret: bool, value: &str) -> anyhow::Result<String> {
+        if value.is_empty() {
+            anyhow::bail!("OCR credential cannot be empty");
+        }
+        self.stage_credential(
+            if api_secret {
+                CredentialSlot::OcrApiSecret
+            } else {
+                CredentialSlot::OcrApiKey
+            },
+            value,
+        )
+    }
+
+    fn stage_credential(&self, slot: CredentialSlot, value: &str) -> anyhow::Result<String> {
+        let reference = crate::types::new_id("cred");
+        let mut state = self.lock_state_mut()?;
+        state
+            .credential_store
+            .write(&reference, value)
+            .map_err(|_| anyhow::anyhow!("failed to write credential to secure storage"))?;
+        if let Some(previous) = state.staged_credentials.insert(slot, reference.clone())
+            && let Err(error) = state.credential_store.delete(&previous)
+        {
+            tracing::warn!(
+                error = %crate::error::sanitize_error_text(&error.to_string()),
+                "failed to remove superseded staged credential"
+            );
+        }
+        Ok(reference)
+    }
+
+    /// Remove staged values if a user discards an unsaved Settings edit.
+    pub fn discard_staged_credentials(&self) -> anyhow::Result<()> {
+        let mut state = self.lock_state_mut()?;
+        let staged = std::mem::take(&mut state.staged_credentials);
+        let mut first_error = None;
+        for reference in staged.into_values() {
+            if let Err(error) = state.credential_store.delete(&reference)
+                && first_error.is_none()
+            {
+                first_error = Some(error);
+            }
+        }
+        if let Some(error) = first_error {
+            return Err(anyhow::anyhow!(
+                "failed to remove an unsaved credential from secure storage: {}",
+                crate::error::sanitize_error_text(&error.to_string())
+            ));
+        }
+        Ok(())
     }
 
     pub fn snapshot(&self) -> anyhow::Result<ConfigSnapshot> {
@@ -217,6 +315,27 @@ impl ConfigService {
                     return Err(error);
                 }
             };
+            let prepared = {
+                let ConfigState {
+                    loader,
+                    credential_store,
+                    staged_credentials,
+                    ..
+                } = &mut *state;
+                prepare_after_edit(
+                    &before,
+                    loader.config_mut(),
+                    credential_store.as_ref(),
+                    staged_credentials,
+                )
+            };
+            let consumed_staged = match prepared {
+                Ok(consumed) => consumed,
+                Err(error) => {
+                    *state.loader.config_mut() = before;
+                    return Err(error);
+                }
+            };
             let after = state.loader.config().clone();
 
             if before == after {
@@ -236,6 +355,18 @@ impl ConfigService {
                 if let Err(error) = state.loader.save() {
                     *state.loader.config_mut() = before;
                     return Err(error);
+                }
+                for slot in consumed_staged {
+                    state.staged_credentials.remove(&slot);
+                }
+                let active_references = credential_references(&after);
+                for stale in credential_references(&before).difference(&active_references) {
+                    if let Err(error) = state.credential_store.delete(stale) {
+                        tracing::warn!(
+                            error = %crate::error::sanitize_error_text(&error.to_string()),
+                            "failed to remove a superseded credential"
+                        );
+                    }
                 }
                 state.version = state.version.saturating_add(1);
                 let change = ConfigChanged {
@@ -312,13 +443,95 @@ fn changed_domains(before: &AppConfig, after: &AppConfig) -> Vec<ConfigDomain> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{CredentialStore, InMemoryCredentialStore};
     use tempfile::tempdir;
 
     fn service() -> (ConfigService, tempfile::TempDir) {
         let dir = tempdir().unwrap();
         let path = dir.path().join("config.toml");
         let loader = ConfigLoader::load_from(&path).unwrap();
-        (ConfigService::new(loader), dir)
+        (
+            ConfigService::new_with_credential_store(
+                loader,
+                std::sync::Arc::new(InMemoryCredentialStore::default()),
+            )
+            .unwrap(),
+            dir,
+        )
+    }
+
+    #[test]
+    fn default_constructor_fails_closed_for_credential_references_and_writes() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let mut loader = ConfigLoader::load_from(&path).unwrap();
+        loader
+            .config_mut()
+            .llm
+            .providers
+            .push(crate::config::ProviderConfig {
+                name: "primary".into(),
+                api_key_ref: Some(crate::types::new_id("cred")),
+                ..Default::default()
+            });
+        assert!(ConfigService::new(loader).is_err());
+
+        let loader = ConfigLoader::load_from(&path).unwrap();
+        let before = std::fs::read_to_string(&path).unwrap();
+        let service = ConfigService::new(loader).unwrap();
+        assert!(
+            service
+                .stage_provider_credential("primary", "secret")
+                .is_err()
+        );
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(after, before);
+        assert!(!after.contains("secret"));
+    }
+
+    #[test]
+    fn startup_hydrates_current_references_without_rewriting_config() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let store = std::sync::Arc::new(InMemoryCredentialStore::default());
+        let provider_ref = crate::types::new_id("cred");
+        let ocr_ref = crate::types::new_id("cred");
+        let mcp_ref = crate::types::new_id("cred");
+        store.write(&provider_ref, "provider-secret").unwrap();
+        store.write(&ocr_ref, "ocr-secret").unwrap();
+        store.write(&mcp_ref, "mcp-secret").unwrap();
+
+        let mut config = AppConfig::default();
+        config.llm.providers.push(crate::config::ProviderConfig {
+            name: "primary".into(),
+            api_key_ref: Some(provider_ref),
+            ..Default::default()
+        });
+        config.media.ocr.api_key_ref = Some(ocr_ref);
+        config.mcp_servers.push(McpServerConfig {
+            name: "example".into(),
+            env_refs: vec![crate::config::McpEnvironmentCredentialRef {
+                name: "TOKEN".into(),
+                credential_ref: Some(mcp_ref),
+                has_value: true,
+            }],
+            ..Default::default()
+        });
+        let original = toml::to_string_pretty(&config).unwrap();
+        std::fs::write(&path, &original).unwrap();
+
+        let loader = ConfigLoader::load_from(&path).unwrap();
+        let service = ConfigService::new_with_credential_store(loader, store).unwrap();
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        let snapshot = service.snapshot().unwrap();
+        assert_eq!(snapshot.config.llm.providers[0].api_key, "provider-secret");
+        assert_eq!(snapshot.config.media.ocr.api_key, "ocr-secret");
+        assert_eq!(snapshot.config.mcp_servers[0].env, ["TOKEN=mcp-secret"]);
+        let settings_wire = serde_json::to_string(&service.settings().unwrap()).unwrap();
+        for marker in ["provider-secret", "ocr-secret", "mcp-secret"] {
+            assert!(!settings_wire.contains(marker));
+        }
     }
 
     #[test]

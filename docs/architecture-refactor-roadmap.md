@@ -580,7 +580,7 @@ MemoryRuntime 启动所有权后续校准（ADR 0367）：当前不再使用 `ru
 
 ## 6. 全局完成定义
 
-全部阶段不等于文件变少；以下是截至 2026-09-29 的最终验收状态（基础审计见 ADR 0361，阶段 1/3 更新见 ADR 0382、0383，阶段 4/7/8 与阶段 9 容量更新见 ADR 0388、0392–0395，memory/runtime 与配置更新见 ADR 0364、0367、0351、0372）：
+全部阶段不等于文件变少；以下是截至 2026-09-29 的最终验收状态（基础审计见 ADR 0361，阶段 1/3 更新见 ADR 0382、0383，阶段 4/7/8 与阶段 9 容量更新见 ADR 0388、0392–0395、0404，memory/runtime 与配置更新见 ADR 0364、0367、0351、0372）：
 
 | 条件 | 状态 | 审计结论 |
 |---|---|---|
@@ -602,3 +602,7 @@ MemoryRuntime 启动所有权后续校准（ADR 0367）：当前不再使用 `ru
 2026-09-29 阶段 8 收口（ADR 0394）：Rust handlers 与 Serde DTO 生成 request/response command types，输入按 Deserialize/default/Option/skip 语义独立生成，输出保持 Serialize shape；运行时 validators 继续校验 IPC payload。Generator 16 项测试、feature Clippy、71 command/40 event drift checks、Rust fmt/check/clippy/workspace tests、UI check/874 tests/build 均通过。阶段 9 Windows profile/VM 发布验收仍开放。
 
 2026-09-29 阶段 9 验收进展（ADR 0395）：完成文件型 SQLite/WAL 容量曲线、retention/WAL/VACUUM 行为及 `SQLITE_FULL` 原子失败/重试。最新 workspace release app 在独立 APPDATA profile 首启成功，schema v30、integrity check 与外键检查通过；将 `user_version` 设为 29 的旧版本号 fixture 被明确拒绝，按重置步骤删除 DB/WAL/SHM 后配置保留、新库重建成功。`tauri_plugin_single_instance` 要求同一 Windows 用户下顺序运行 profile。真实 UI 交互受 CUA auth token unavailable 阻断；机器缺 `makensis.exe`，当前用户 winget 安装未找到适用 NSIS，尚未构建当前安装包或测试安装升级/卸载。旧 MSI/NSIS 仍是 2026-09-14 产物；上述 smoke 不等同物理盘 ENOSPC 或 GUI 发布验收。
+
+2026-09-29 Session 存储容量策略收口（ADR 0404）：保留按 `created_at` 清理整场会话的 90 天默认与 `0` 禁用语义，不裁剪保留期内的 `session_events`，不做自动 `VACUUM`，不宣称每会话/数据库字节上限或最低磁盘需求。容量探针补充按生产 TranscriptRecord 字段形状构造的合成混合事件分布；比例和文本长度只是工程场景，不代表真实用户数据，Windows 文件型 SQLite 观测值见 ADR 0395。event store 的事务体和 `COMMIT` 失败均尝试回滚，且只广播已成功提交的事件；SQLite `SQLITE_FULL` 与 disk I/O failure 在会话错误界面给出不同恢复提示。Windows 物理盘 ENOSPC 和真实桌面恢复体验仍待 disposable profile/VM 验收。
+
+2026-09-29 配置契约清理（ADR 0405）：删除旧 `[memory].history_retention_days` 搬迁、旧配置名/权限 detector 与明文凭据导入；当前配置直接反序列化，未知字段及磁盘上的明文凭据会备份原文件并以默认值启动。安全凭据引用仍在启动时 hydrate；不匹配版本时只重建 `config.toml`，数据库、媒体和其它数据可以保留。

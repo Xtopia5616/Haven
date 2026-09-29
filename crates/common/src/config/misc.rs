@@ -5,7 +5,7 @@
 use super::*;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct HotkeyConfig {
     pub mode: HotkeyMode,
     pub key_binding: String,
@@ -23,9 +23,12 @@ impl Default for HotkeyConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct SessionConfig {
     pub max_concurrent: usize,
+    /// Age in days before an entire session and its owned history are removed.
+    /// Zero disables automatic session retention cleanup.
+    pub history_retention_days: u32,
     /// Per-run ReAct step budget. Each `run` (including pause→resume) grants a
     /// fresh budget via `effective_max` (see `docs/architecture.md` §2.4).
     pub max_steps: u32,
@@ -40,6 +43,7 @@ impl Default for SessionConfig {
     fn default() -> Self {
         Self {
             max_concurrent: 3,
+            history_retention_days: 90,
             // Per-run ReAct step budget (raised 30 → 200 so long multi-tool
             // sessions don't hit the cap mid-run; see refactor-dedup.md A9
             // review note). Resumes grant a fresh budget, so a session can run
@@ -58,7 +62,7 @@ impl Default for SessionConfig {
 /// hard-coded per tool. Per-endpoint `ModelEndpoint.context_window` still
 /// overrides `default_context_window` when configured.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ContextLimitsConfig {
     /// Fraction of the context window at which auto-compaction starts
     /// (clamped to 0.1–0.95 at use sites). Lower = more aggressive.
@@ -312,10 +316,9 @@ impl Default for ContextLimitsConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct MemoryConfig {
     pub session_window_size: usize,
-    pub history_retention_days: u32,
     pub fact_inference_enabled: bool,
 }
 
@@ -323,7 +326,6 @@ impl Default for MemoryConfig {
     fn default() -> Self {
         Self {
             session_window_size: 50,
-            history_retention_days: 90,
             fact_inference_enabled: true,
         }
     }
@@ -331,10 +333,10 @@ impl Default for MemoryConfig {
 
 /// One permanent (Always-scope) permission grant stored in config.toml.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct StoredPermission {
     /// Permission key: a dotted operation view such as `files.search`, or a
-    /// root aggregate key for broad grants. Legacy colon keys are accepted
-    /// only at the matching boundary and trigger config reset on load.
+    /// root aggregate key for broad grants. Colon-separated keys are invalid.
     pub key: String,
     pub effect: crate::types::PermissionEffect,
 }
@@ -353,8 +355,8 @@ pub struct SecurityConfig {
     /// Network boundary evaluated before a network-capable tool executes.
     pub network_policy: NetworkPolicy,
     pub encrypt_sensitive: bool,
-    /// Permanent allow/deny grants (Always scope). Session grants live only
-    /// in the in-memory AuthorizationEngine.
+    /// Permanent allow/deny grants (Always scope). Session-scoped grants are
+    /// stored separately with their owning session and expire with it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub permissions: Vec<StoredPermission>,
 }
@@ -384,7 +386,7 @@ impl Default for SecurityConfig {
 ///   `None` to `Some` happens automatically the first time the user toggles
 ///   a skill, so the lone-disable edge case survives app restart.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct SkillsConfig {
     pub root: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -393,7 +395,7 @@ pub struct SkillsConfig {
 
 /// Sandbox execution configuration for skill scripts (M4-02).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct SkillsExecConfig {
     /// Root directory for per-skill virtual environments.
     pub venv_root: PathBuf,
@@ -457,7 +459,7 @@ pub const GENERATED_MEDIA_RETENTION_SECS: u64 = 7 * 24 * 60 * 60;
 
 /// Per-tool settings (refine §4.8).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ToolConfig {
     /// Whether the tool is available to the agent. Disabled tools are
     /// excluded from the tool catalog (and thus the model's schema list) and
@@ -515,7 +517,7 @@ impl Default for ToolConfig {
 
 /// MCP discovery and health monitoring configuration (M4-03).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct McpDiscoveryConfig {
     pub health_interval_secs: u64,
     pub reconnect_initial_ms: u64,
@@ -566,7 +568,7 @@ impl LogLevel {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct LogConfig {
     pub level: LogLevel,
     pub file_enabled: bool,
@@ -595,7 +597,7 @@ impl LogConfig {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct NotificationConfig {
     pub session_created: NotifyChannels,
     pub session_completed: NotifyChannels,
@@ -606,7 +608,7 @@ pub struct NotificationConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct NotifyChannels {
     pub in_app: bool,
     pub windows: bool,
@@ -656,14 +658,21 @@ impl Default for NotificationConfig {
 // Aggregated application config
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
 pub struct McpServerConfig {
     pub name: String,
     pub transport: McpTransportType,
     pub command: String,
     pub args: Vec<String>,
+    /// Runtime-only `NAME=VALUE` entries supplied through MCP management IPC.
+    /// The config loader rejects inline environment values from config.toml;
+    /// serialization always omits runtime values.
+    #[serde(default, skip_serializing)]
     pub env: Vec<String>,
+    /// Environment-variable names and opaque secure-store references.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub env_refs: Vec<McpEnvironmentCredentialRef>,
     /// Working directory to spawn the stdio server process from. When set,
     /// relative paths in `command`/`args` resolve against it; when absent the
     /// server spawns from the app's working directory.
@@ -671,6 +680,23 @@ pub struct McpServerConfig {
     /// Endpoint URL for HTTP transports (e.g. `http://localhost:3001/mcp`).
     pub url: String,
     pub enabled: bool,
+}
+
+impl std::fmt::Debug for McpServerConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("McpServerConfig")
+            .field("name", &self.name)
+            .field("transport", &self.transport)
+            .field("command", &self.command)
+            .field("args", &self.args)
+            .field("env", &"[REDACTED]")
+            .field("env_refs", &self.env_refs)
+            .field("cwd", &self.cwd)
+            .field("url", &self.url)
+            .field("enabled", &self.enabled)
+            .finish()
+    }
 }
 
 impl Default for McpServerConfig {
@@ -681,10 +707,45 @@ impl Default for McpServerConfig {
             command: String::new(),
             args: Vec::new(),
             env: Vec::new(),
+            env_refs: Vec::new(),
             cwd: None,
             url: String::new(),
             enabled: true,
         }
+    }
+}
+
+/// Persistent reference for one MCP environment variable. `has_value` keeps
+/// the distinction between an unset variable (`NAME`) and an explicitly empty
+/// value (`NAME=`) without putting values in TOML. Variables with values
+/// always use the secure credential store, even when their names do not look
+/// sensitive.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct McpEnvironmentCredentialRef {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_ref: Option<String>,
+    #[serde(default)]
+    pub has_value: bool,
+}
+
+#[cfg(test)]
+mod credential_debug_tests {
+    use super::McpServerConfig;
+
+    #[test]
+    fn mcp_environment_values_are_absent_from_serialization_and_debug() {
+        let config = McpServerConfig {
+            env: vec!["TOKEN=server-secret".into()],
+            ..Default::default()
+        };
+
+        let serialized = serde_json::to_string(&config).expect("serialize MCP config");
+        let debug = format!("{config:?}");
+        assert!(!serialized.contains("server-secret"));
+        assert!(!debug.contains("server-secret"));
+        assert!(debug.contains("[REDACTED]"));
     }
 }
 

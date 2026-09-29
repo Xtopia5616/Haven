@@ -16,9 +16,10 @@ haven-app-binary（组合根 / 宿主边界）
 ├── haven-tools（工具执行）
 ├── haven-memory（持久化）
 ├── haven-llm（模型与媒体 provider）
-└── haven-common（跨层契约）
+├── haven-common（跨层契约）
+└── haven-platform（操作系统适配）
 
-haven-platform（操作系统进程适配；无内部依赖）
+haven-platform ──► haven-common（credential store 端口）
 
 haven-agent ──► haven-tools, haven-memory, haven-llm, haven-common
 haven-tools ──► haven-input, haven-mcp, haven-memory, haven-skills, haven-llm, haven-common, haven-platform
@@ -31,7 +32,7 @@ haven-input / haven-llm / haven-memory / haven-skills ──► haven-common
 | crate | 依赖 | 说明 |
 |---|---|---|
 | `haven-common` | 无内部依赖 | 纯叶子，全 workspace 共享 |
-| `haven-platform` | 无内部依赖 | 子进程 adapter 共用的操作系统边界 |
+| `haven-platform` | common | CredentialStore 端口与引用校验；Windows 凭据管理器和子进程适配 |
 | `haven-llm` | common | 只依赖共享层，不依赖任何业务 crate |
 | `haven-memory` | common | 持久化（当前 SQLite schema、历史迁移、仓库） |
 | `haven-skills` | common | 技能目录解析 |
@@ -39,15 +40,17 @@ haven-input / haven-llm / haven-memory / haven-skills ──► haven-common
 | `haven-tools` | common, memory, skills, mcp, llm, input, platform | 工具注册表 + 各内置工具 |
 | `haven-input` | common | 录音 / VAD / PCM/WAV 采集（不实现 provider 或转写） |
 | `haven-agent` | common, llm, memory, tools | ReAct 循环 + 会话执行 |
-| `haven-app-binary` | agent, common, input, llm, memory, tools + tauri | 装配 + Tauri 命令 + 事件桥 |
+| `haven-app-binary` | agent, common, input, llm, memory, tools, platform + tauri | 装配 + Tauri 命令 + 事件桥 |
 
 > 依据 `crates/*/Cargo.toml` 实际 workspace 依赖整理。`haven-agent` 与 `haven-app-binary` 是最上层，
 > 其余全部是它们的底层依赖。`haven-llm` 不允许被业务 crate 反向依赖。
 > 语音转写的运行时调用路径是 app → tools → llm；`haven-input` 只产出采集结果，不直接依赖 `haven-llm`。
 
-`haven-platform` 不依赖 common、Tools、MCP 或 Tauri。它拥有 MCP stdio、Shell、Skill 和后台
-Action 子进程共用的 `ProcessContainment`：Windows 使用 kill-on-close Job Object，其他平台保持
-原有 no-op 行为。进程创建和取消时机仍由各自 adapter 所有；此 crate 只封装 OS handle 生命周期。
+`haven-platform` 只依赖 common 中稳定的 `CredentialStore` 端口与 credential reference validator，
+不依赖 Tools、MCP 或 Tauri。Windows adapter 用 Credential Manager 保存密钥；其他平台对带凭据配置
+明确失败，不退回明文或进程内持久化。该 crate 还拥有 MCP stdio、Shell、Skill 和后台 Action
+子进程共用的 `ProcessContainment`：Windows 使用 kill-on-close Job Object，其他平台保持原有 no-op
+行为。进程创建和取消时机仍由各自 adapter 所有；此 crate 只封装 OS handle 生命周期。
 
 `haven-mcp` 内部按职责分为 `protocol.rs`（MCP/JSON-RPC DTO 与内容归一化）、
 `transport.rs`（stdio、Streamable HTTP、SSE 和进程边界）、`client.rs`（单服务器连接、
@@ -526,7 +529,7 @@ Windows 子进程通过 Job Object 回收进程树；受限网络只允许经过
 目的地，禁止跨源重定向。`ask` 与 `restricted` 共用可验证目的地边界，但默认将网络操作交给确认流程，
 不会因为默认配置而静默拒绝普通公网请求。
 
-确认 UI：拒绝 / 仅本次 / 本对话允许此操作 / 更多允许选项；更多选项按“本对话或永久”与“当前操作、功能组、工具”组合展示，永久授权和扩大范围需要二次确认。拒绝菜单同样支持操作、功能组、工具层级。后端只接受当前 capability 的合法父级，不能由 renderer 发明任意权限键。永久授权写入 `config.toml`，安全设置子视图可按工具查看、撤销或一键清除。确认收据绑定规范化输入 hash、权限 key、策略 revision、风险和过期时间，执行前再次验证；原始 shell、网络、文件和扩展参数不进入 renderer。普通全量设置保存不拥有权限规则，避免 stale form 清空授权。授权结果另带稳定 `AuthorizationReasonCode`，调用方不得解析错误文案。
+确认 UI：拒绝 / 仅本次 / 本对话允许此操作 / 更多允许选项；更多选项按“本对话或永久”与“当前操作、功能组、工具”组合展示，永久授权和扩大范围需要二次确认。拒绝菜单同样支持操作、功能组、工具层级。后端只接受当前 capability 的合法父级，不能由 renderer 发明任意权限键。永久授权写入 `config.toml`；会话授权写入 `session_authorization_grants`，由 `SessionStore` 读取并恢复，且通过 `session_id` 外键随会话删除和历史保留清理。普通会话结束只清进程内 map，授权在重新载入会话时恢复；普通 Security 配置 apply 清进程内 map 后也从数据库恢复。显式撤销某个权限会清除所有会话中的同一 capability，重置权限会清除全部会话授权。回滚 transcript 不改变授权。安全设置子视图可按工具查看、撤销或一键清除永久权限。确认收据绑定规范化输入 hash、权限 key、策略 revision、风险和过期时间，执行前再次验证；原始 shell、网络、文件和扩展参数不进入 renderer。普通全量设置保存不拥有权限规则，避免 stale form 清空授权。授权结果另带稳定 `AuthorizationReasonCode`，调用方不得解析错误文案。
 
 ### 2.5.4 Admin Surface
 

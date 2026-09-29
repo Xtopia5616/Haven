@@ -101,6 +101,21 @@ pub(crate) fn log_err<E: std::fmt::Display>(ctx: &str, e: E) -> String {
     safe
 }
 
+/// Format SQLite capacity/I/O failures with recovery guidance at the user
+/// input boundary. Other failures retain the standard sanitized command path.
+pub(crate) fn log_storage_err(ctx: &str, error: anyhow::Error) -> String {
+    let Some(message) = haven_agent::sqlite_storage_failure_message(&error) else {
+        return log_err(ctx, error);
+    };
+    let failure = haven_memory::SessionStore::sqlite_storage_write_failure(&error);
+    tracing::error!(
+        command = ctx,
+        ?failure,
+        "command failed while writing SQLite storage"
+    );
+    message.to_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,7 +1,9 @@
 # ADR 0115：受管上传资产生命周期与清理
 
+> **已被 ADR 0403 替代。** 本文保留历史背景；当前提交附件按会话消息引用与活动 lease 清理，session retention 配置位于 `[session]`。
+
 日期：2026-09-10
-状态：已采纳（阶段 3 生命周期切片）
+状态：已采纳（历史决定，已被 ADR 0403 替代）
 关联：[ADR 0113：统一多模态资产、表示与请求投影](0113-unified-media-asset-representation-projection.md)
 
 ## 背景

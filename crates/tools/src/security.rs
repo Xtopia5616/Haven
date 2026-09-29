@@ -456,8 +456,9 @@ impl AuthorizationEngine {
         }
     }
 
-    /// Replace the policy and permanent rules atomically. Clears session
-    /// grants so a policy change cannot leave stale trusts.
+    /// Replace the policy and permanent rules atomically. Clears the
+    /// process-local session map; the Agent restores grants whose owning
+    /// persisted sessions still exist after a live security apply.
     pub async fn apply_security(&self, security: &SecurityConfig) {
         let mut cfg = self.config.write().await;
         cfg.permission_mode = security.permission_mode;
@@ -471,10 +472,9 @@ impl AuthorizationEngine {
                     cfg.permanent.insert(capability, p.effect);
                 }
                 Err(error) => {
-                    // Config loading already rejects known legacy formats. A
-                    // second validation here keeps runtime policy fail-closed
-                    // if a caller constructs SecurityConfig in memory or if a
-                    // future wire boundary bypasses the loader.
+                    // Keep runtime policy fail-closed if a caller constructs
+                    // SecurityConfig in memory or a future wire boundary
+                    // bypasses the loader.
                     tracing::warn!(key = %p.key, %error, "ignoring invalid persisted capability rule");
                 }
             }
@@ -806,10 +806,26 @@ impl AuthorizationEngine {
         out
     }
 
-    /// Remove one permanent grant from memory. App layer persists the change.
+    /// Remove one permanent grant and every in-memory session copy of that
+    /// exact capability. The app layer persists both changes.
     pub async fn revoke_permanent(&self, key: &str) -> bool {
         let mut cfg = self.config.write().await;
-        let removed = cfg.permanent.remove(&CapabilityScope::from(key)).is_some();
+        let capability = CapabilityScope::from(key);
+        let removed_permanent = cfg.permanent.remove(&capability).is_some();
+        let removed_session =
+            remove_session_capability_grants(&mut cfg.session_grants, &capability);
+        if removed_permanent || removed_session {
+            bump_policy_revision(&mut cfg);
+        }
+        removed_permanent || removed_session
+    }
+
+    /// Remove one exact capability from every in-memory session grant. This
+    /// supports the conservative partial-failure path after durable revocation
+    /// succeeds but the separate config-file edit fails.
+    pub async fn revoke_session_permission(&self, capability: &CapabilityScope) -> bool {
+        let mut cfg = self.config.write().await;
+        let removed = remove_session_capability_grants(&mut cfg.session_grants, capability);
         if removed {
             bump_policy_revision(&mut cfg);
         }
@@ -830,7 +846,8 @@ impl AuthorizationEngine {
         removed
     }
 
-    /// Drop one session's grants (conversation ended / deleted).
+    /// Drop one session's process-local grants when its actor ends or is
+    /// removed. Durable rows remain until session deletion or retention.
     pub async fn clear_session_trust(&self, session_id: &str) {
         let mut cfg = self.config.write().await;
         if cfg.session_grants.remove(session_id).is_some() {
@@ -838,7 +855,8 @@ impl AuthorizationEngine {
         }
     }
 
-    /// Drop every session grant (history cleared / app reset).
+    /// Drop every process-local session grant. Durable cleanup belongs to the
+    /// SessionStore and follows explicit reset/deletion/retention operations.
     pub async fn clear_all_trust(&self) {
         let mut cfg = self.config.write().await;
         if !cfg.session_grants.is_empty() {
@@ -846,6 +864,19 @@ impl AuthorizationEngine {
             bump_policy_revision(&mut cfg);
         }
     }
+}
+
+fn remove_session_capability_grants(
+    session_grants: &mut HashMap<String, SessionGrants>,
+    capability: &CapabilityScope,
+) -> bool {
+    let mut removed = false;
+    session_grants.retain(|_, grants| {
+        removed |= grants.allow.remove(capability);
+        removed |= grants.deny.remove(capability);
+        !grants.allow.is_empty() || !grants.deny.is_empty()
+    });
+    removed
 }
 
 impl Default for AuthorizationEngine {
@@ -1249,6 +1280,16 @@ mod tests {
     use serde_json::json;
     use std::collections::{HashMap, HashSet};
     use tokio_util::sync::CancellationToken;
+
+    fn test_config_service(
+        loader: haven_common::config::ConfigLoader,
+    ) -> haven_common::config::ConfigService {
+        haven_common::config::ConfigService::new_with_credential_store(
+            loader,
+            std::sync::Arc::new(haven_common::config::InMemoryCredentialStore::default()),
+        )
+        .unwrap()
+    }
 
     type ConfirmationResult = AuthorizationDecision;
 
@@ -2024,6 +2065,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn explicit_permission_revoke_clears_exact_session_capability() {
+        let gw = ThresholdFixture::new(RiskLevel::Medium);
+        gw.grant(
+            Some("ses-a"),
+            "tool1",
+            PermissionEffect::Allow,
+            PermissionScope::Session,
+        )
+        .await;
+        assert!(matches!(
+            gw.check(Some("ses-a"), "tool1", &json!({}), RiskLevel::Medium)
+                .await,
+            ConfirmationResult::AutoApproved
+        ));
+
+        assert!(gw.revoke_permanent("tool1").await);
+        assert!(matches!(
+            gw.check(Some("ses-a"), "tool1", &json!({}), RiskLevel::Medium)
+                .await,
+            ConfirmationResult::RequiresConfirmation { .. }
+        ));
+    }
+
+    #[tokio::test]
     async fn clear_permanent_resets_permanent_and_session_rules() {
         let gw = ThresholdFixture::new(RiskLevel::Safe);
         gw.grant(
@@ -2527,7 +2592,7 @@ mod tests {
     async fn test_builtin_registry_security_contract_covers_every_route() {
         use crate::ToolsManager;
         use crate::builtin::AdminContext;
-        use haven_common::config::{ConfigLoader, ConfigService};
+        use haven_common::config::ConfigLoader;
         use std::sync::Arc;
         use tempfile::TempDir;
 
@@ -2536,7 +2601,7 @@ mod tests {
         let manager = ToolsManager::new();
         manager
             .set_admin_context(AdminContext {
-                config_service: Some(Arc::new(ConfigService::new(loader))),
+                config_service: Some(Arc::new(test_config_service(loader))),
                 config_apply_gate: None,
                 session_store: None,
                 memory_facts: None,
@@ -2856,7 +2921,7 @@ mod tests {
     async fn every_registered_operation_view_rejects_missing_and_unknown_fields() {
         use crate::ToolsManager;
         use crate::builtin::AdminContext;
-        use haven_common::config::{ConfigLoader, ConfigService};
+        use haven_common::config::ConfigLoader;
         use std::sync::Arc;
         use tempfile::TempDir;
 
@@ -2865,7 +2930,7 @@ mod tests {
         let manager = ToolsManager::new();
         manager
             .set_admin_context(AdminContext {
-                config_service: Some(Arc::new(ConfigService::new(loader))),
+                config_service: Some(Arc::new(test_config_service(loader))),
                 config_apply_gate: None,
                 session_store: None,
                 memory_facts: None,
@@ -2933,7 +2998,7 @@ mod tests {
     async fn every_registered_operation_view_declares_replay_timeout_and_cancel_contract() {
         use crate::ToolsManager;
         use crate::builtin::AdminContext;
-        use haven_common::config::{ConfigLoader, ConfigService};
+        use haven_common::config::ConfigLoader;
         use std::sync::Arc;
         use tempfile::TempDir;
 
@@ -2942,7 +3007,7 @@ mod tests {
         let manager = ToolsManager::new();
         manager
             .set_admin_context(AdminContext {
-                config_service: Some(Arc::new(ConfigService::new(loader))),
+                config_service: Some(Arc::new(test_config_service(loader))),
                 config_apply_gate: None,
                 session_store: None,
                 memory_facts: None,

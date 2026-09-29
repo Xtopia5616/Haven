@@ -57,7 +57,7 @@
 		silence_timeout_ms: 1500,
 		vad_threshold: 0.5,
 	});
-	let session = $state({ max_concurrent: 3, max_steps: 30 });
+	let session = $state({ max_concurrent: 3, max_steps: 30, history_retention_days: 90 });
 	/** @type {Partial<import('$lib/contracts/generatedCommands.ts').ContextLimitsConfig>} */
 	let contextLimits = $state({
 		compaction_ratio: 0.65,
@@ -120,7 +120,7 @@
 		embedding_chunk_size: 64,
 		max_tools_per_request: 64,
 	});
-	let memory = $state({ session_window_size: 50, history_retention_days: 90 });
+	let memory = $state({ session_window_size: 50 });
 	/** @type {{ running: boolean, lastCount: number | null }} */
 	let memoryMaintenance = $state({ running: false, lastCount: null });
 	/** @type {{ permission_mode: string, sandbox_mode: string, network_policy: string, writable_roots: string[], permissions: any[] }} */
@@ -138,10 +138,13 @@
 		timeout_secs: 30,
 		min_confidence: 0.7,
 	});
+	/** @type {{ provider: string, api_key: string, api_key_ref: string | null, api_secret: string, api_secret_ref: string | null, base_url: string, timeout_secs: number, min_confidence: number }} */
 	let ocr = $state({
 		provider: 'llm',
 		api_key: '',
+		api_key_ref: null,
 		api_secret: '',
+		api_secret_ref: null,
 		base_url: '',
 		timeout_secs: 20,
 		min_confidence: 0.7,
@@ -280,10 +283,10 @@
 			session: {
 				max_concurrent: asNumber(session.max_concurrent),
 				max_steps: asNumber(session.max_steps),
+				history_retention_days: asNumber(session.history_retention_days),
 			},
 			memory: {
 				session_window_size: asNumber(memory.session_window_size),
-				history_retention_days: asNumber(memory.history_retention_days),
 			},
 			security: {
 				permission_mode: security.permission_mode,
@@ -496,6 +499,7 @@
 	}
 
 	function discardChanges() {
+		requestDiscardStagedCredentials();
 		if (!savedSnapshot) return;
 		try {
 			const snapshot = JSON.parse(savedSnapshot);
@@ -565,6 +569,16 @@
 		}
 	}
 
+	function requestDiscardStagedCredentials() {
+		void invoke('discard_staged_credentials').catch((error) =>
+			reportError(error, {
+				context: 'SettingsView',
+				message: '清理未保存的凭据失败',
+				log: false,
+			}),
+		);
+	}
+
 	function confirmLeave() {
 		if (leaveDialogOpen)
 			return new Promise((resolve) => {
@@ -602,6 +616,7 @@
 
 	onDestroy(() => {
 		mounted = false;
+		requestDiscardStagedCredentials();
 		eventRegistrations?.dispose();
 		eventRegistrations = null;
 		registerSettingsLeaveGuard(null);
@@ -668,8 +683,10 @@
 				};
 				ocr = {
 					provider: media.ocr?.provider || 'llm',
-					api_key: media.ocr?.api_key || '',
-					api_secret: media.ocr?.api_secret || '',
+					api_key: '',
+					api_key_ref: media.ocr?.api_key_ref || null,
+					api_secret: '',
+					api_secret_ref: media.ocr?.api_secret_ref || null,
 					base_url: media.ocr?.base_url || '',
 					timeout_secs: media.ocr?.timeout_secs || 20,
 					min_confidence: media.ocr?.min_confidence ?? 0.7,
@@ -788,6 +805,33 @@
 		autostartEnabled = value;
 	}
 
+	/** @returns {Promise<void>} */
+	async function stageSettingsCredentials() {
+		for (const provider of llmConfig.providers || []) {
+			if (provider.api_key) {
+				provider.api_key_ref = await invoke('stage_provider_credential', {
+					providerName: provider.name,
+					apiKey: provider.api_key,
+				});
+			}
+			delete provider.api_key;
+		}
+		if (ocr.api_key) {
+			ocr.api_key_ref = await invoke('stage_ocr_credential', {
+				apiSecret: false,
+				value: ocr.api_key,
+			});
+			ocr.api_key = '';
+		}
+		if (ocr.api_secret) {
+			ocr.api_secret_ref = await invoke('stage_ocr_credential', {
+				apiSecret: true,
+				value: ocr.api_secret,
+			});
+			ocr.api_secret = '';
+		}
+	}
+
 	/** @returns {Promise<boolean>} */
 	async function saveSettings() {
 		if (saveState === 'saving') return false;
@@ -795,6 +839,7 @@
 		saveError = '';
 		try {
 			await reconcileDefaultModelBeforeSave();
+			await stageSettingsCredentials();
 			skipNextDefaultModelSync = true;
 			await invoke('update_settings', {
 				settings: /** @type {import('$lib/contracts/settings.ts').SettingsUpdatePayload} */ ({
@@ -804,10 +849,10 @@
 					session: {
 						max_concurrent: session.max_concurrent,
 						max_steps: session.max_steps,
+						history_retention_days: session.history_retention_days,
 					},
 					memory: {
 						session_window_size: memory.session_window_size,
-						history_retention_days: memory.history_retention_days,
 					},
 					security: {
 						permission_mode: security.permission_mode,
@@ -836,8 +881,8 @@
 						},
 						ocr: {
 							provider: ocr.provider,
-							api_key: ocr.api_key,
-							api_secret: ocr.api_secret,
+							api_key_ref: ocr.api_key_ref,
+							api_secret_ref: ocr.api_secret_ref,
 							base_url: ocr.base_url,
 							timeout_secs: ocr.timeout_secs,
 							min_confidence: ocr.min_confidence,

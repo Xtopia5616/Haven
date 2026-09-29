@@ -1,12 +1,13 @@
 use crate::interaction::InteractionRequest;
 pub use haven_common::lifecycle::SessionStatus;
 pub use haven_common::lifecycle::SessionWaitingReason;
-use haven_common::types::MessageAttachment;
-use haven_common::types::RiskLevel;
+use haven_common::types::{
+    CapabilityScope, MessageAttachment, PermissionEffect, PermissionTarget, RiskLevel,
+};
 #[cfg(test)]
 use haven_memory::Database;
-use haven_memory::SessionStore;
 use haven_memory::repositories::sessions::Session as DbSession;
+use haven_memory::{SessionAuthorizationGrant, SessionStore};
 #[cfg(test)]
 use haven_tools::ToolsManager;
 use haven_tools::{
@@ -242,6 +243,10 @@ pub struct SessionSupervisor {
     /// Scheduled confirmations are not session state (some are headless), so
     /// they use a small owner-local list rather than another session map.
     scheduled_confirms: Arc<Mutex<Vec<InteractionRequest>>>,
+    /// Serializes one-shot, permanent, and session-scoped resolution paths so
+    /// a stale concurrent click cannot commit trust after another decision
+    /// already removed and woke the pending confirmation.
+    confirmation_resolution_gate: Arc<Mutex<()>>,
     /// Coordinated lifecycle for checkpointed stream text (checkpoint /
     /// promote / discard), shared with the agent loop and the end/rollback
     /// paths.
@@ -308,6 +313,7 @@ impl SessionSupervisor {
             pending_queue: Arc::new(Mutex::new(VecDeque::new())),
             dispatch_tx: watch::channel(0).0,
             scheduled_confirms: Arc::new(Mutex::new(Vec::new())),
+            confirmation_resolution_gate: Arc::new(Mutex::new(())),
             event_tx,
             message_tx: watch::channel(0).0,
             notification_summary_chars: AtomicUsize::new(800),
@@ -359,6 +365,97 @@ impl SessionSupervisor {
         self.session_tool_overlay_port
             .unregister_session(session_id)
             .await;
+    }
+
+    /// Persist a session grant before adding it to the live authorization
+    /// engine. If SQLite rejects the write, the decision is not applied in
+    /// memory and cannot silently disappear on restart.
+    pub async fn grant_session_permission(
+        &self,
+        session_id: &str,
+        capability: CapabilityScope,
+        target: PermissionTarget,
+        effect: PermissionEffect,
+    ) -> anyhow::Result<()> {
+        let _lifecycle = self.lifecycle_guard().await;
+        self.ensure_lifecycle_open()?;
+        if self.is_session_closing(session_id) {
+            anyhow::bail!("session '{}' is closing; retry after deletion", session_id);
+        }
+        let grant = SessionAuthorizationGrant::session(capability, target, effect);
+        self.store
+            .save_session_authorization_grant(session_id, grant.clone())
+            .await?;
+        self.authorization
+            .grant(
+                Some(session_id),
+                grant.capability,
+                grant.effect,
+                grant.scope,
+            )
+            .await;
+        Ok(())
+    }
+
+    /// Reconcile the process-local session map with all durable grants. This
+    /// replaces stale grants after a live security-policy update or retention
+    /// cleanup while preserving grants for sessions that still exist.
+    pub async fn restore_session_authorization_grants(&self) -> anyhow::Result<usize> {
+        let _lifecycle = self.lifecycle_guard().await;
+        self.ensure_lifecycle_open()?;
+        // Clear first so a failed read cannot leave stale or partially
+        // restored trust active. Callers surface the error and remain
+        // fail-closed until reconciliation succeeds.
+        self.authorization.clear_all_trust().await;
+        let grants = self.store.all_session_authorization_grants().await?;
+        let count = grants.len();
+        for stored in grants {
+            self.authorization
+                .grant(
+                    Some(&stored.session_id),
+                    stored.grant.capability,
+                    stored.grant.effect,
+                    stored.grant.scope,
+                )
+                .await;
+        }
+        Ok(count)
+    }
+
+    /// Reload one session's durable grants when a terminal session is reopened
+    /// in the same process and still has an idle actor. A failed read clears
+    /// that session's live trust first, preserving fail-closed behavior.
+    pub async fn restore_session_authorization_grants_for(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<usize> {
+        let _lifecycle = self.lifecycle_guard().await;
+        self.restore_session_authorization_grants_for_locked(session_id)
+            .await
+    }
+
+    async fn restore_session_authorization_grants_for_locked(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<usize> {
+        self.ensure_lifecycle_open()?;
+        if self.is_session_closing(session_id) {
+            anyhow::bail!("session '{}' is closing; retry after deletion", session_id);
+        }
+        self.authorization.clear_session_trust(session_id).await;
+        let grants = self.store.session_authorization_grants(session_id).await?;
+        let count = grants.len();
+        for grant in grants {
+            self.authorization
+                .grant(
+                    Some(session_id),
+                    grant.capability,
+                    grant.effect,
+                    grant.scope,
+                )
+                .await;
+        }
+        Ok(count)
     }
 
     pub(crate) async fn register_mcp_tool_overlay(
@@ -460,7 +557,13 @@ impl SessionSupervisor {
         }
     }
 
-    async fn install_actor(&self, info: SessionInfo) -> actor::SessionActorHandle {
+    async fn install_actor(&self, info: SessionInfo) -> anyhow::Result<actor::SessionActorHandle> {
+        let grants = self.store.session_authorization_grants(&info.id).await?;
+        for grant in grants {
+            self.authorization
+                .grant(Some(&info.id), grant.capability, grant.effect, grant.scope)
+                .await;
+        }
         let interactions = match actor::load_interactions(&self.store, &info.id).await {
             Ok(interactions) => interactions,
             Err(error) => {
@@ -477,7 +580,7 @@ impl SessionSupervisor {
             .lock()
             .await
             .insert(handle.id.clone(), handle.clone());
-        handle
+        Ok(handle)
     }
 
     /// Remove an actor when the caller already owns [`lifecycle_guard`].
@@ -666,6 +769,142 @@ mod tests {
 
         assert_eq!(persisted.id, session.id);
         assert_eq!(persisted.input_text, "typed constructor");
+    }
+
+    fn high_risk_session_request(session_id: &str) -> haven_tools::AuthorizationRequest {
+        let capability = CapabilityScope::try_new("files.write").unwrap();
+        haven_tools::AuthorizationRequest::new(
+            Some(session_id),
+            "files.write",
+            serde_json::json!({}),
+            haven_tools::OperationPolicy::native(
+                "files.write",
+                capability,
+                RiskLevel::High,
+                haven_tools::NetworkAccess::None,
+            ),
+        )
+    }
+
+    #[tokio::test]
+    async fn session_grant_persists_and_restores_when_session_actor_is_reloaded() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let record = db.create_session("durable session permission").unwrap();
+        let first = SessionSupervisor::new_for_test(db.clone(), Arc::new(ToolsManager::new()), 1);
+        first.ensure_session_loaded(&record.id).await.unwrap();
+        first
+            .grant_session_permission(
+                &record.id,
+                CapabilityScope::try_new("files.write").unwrap(),
+                PermissionTarget::Operation,
+                PermissionEffect::Allow,
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            first
+                .authorization
+                .authorize(&high_risk_session_request(&record.id))
+                .await,
+            AuthorizationDecision::AutoApproved
+        ));
+        assert!(matches!(
+            first
+                .authorization
+                .authorize(&high_risk_session_request(
+                    "ses-11111111111111111111111111111111"
+                ))
+                .await,
+            AuthorizationDecision::RequiresConfirmation { .. }
+        ));
+
+        // Security settings apply invalidates in-memory trust first, then the
+        // supervisor restores the durable per-session set without widening it
+        // to a global grant.
+        let mut changed_security = haven_common::config::SecurityConfig::default();
+        changed_security.network_policy = haven_common::types::NetworkPolicy::Open;
+        first.authorization.apply_security(&changed_security).await;
+        first.restore_session_authorization_grants().await.unwrap();
+        assert!(matches!(
+            first
+                .authorization
+                .authorize(&high_risk_session_request(&record.id))
+                .await,
+            AuthorizationDecision::AutoApproved
+        ));
+
+        // Simulate process shutdown: runtime actors and in-memory grants go
+        // away while the persisted session and its grant remain available.
+        first.clear_all_sessions_for_shutdown().await.unwrap();
+        let restarted = SessionSupervisor::new_for_test(db, Arc::new(ToolsManager::new()), 1);
+        restarted.ensure_session_loaded(&record.id).await.unwrap();
+        assert!(matches!(
+            restarted
+                .authorization
+                .authorize(&high_risk_session_request(&record.id))
+                .await,
+            AuthorizationDecision::AutoApproved
+        ));
+    }
+
+    #[tokio::test]
+    async fn failed_session_grant_persistence_does_not_change_live_authorization() {
+        let exec = make_executor(1);
+        let missing_session = "ses-00000000000000000000000000000000";
+        let error = exec
+            .grant_session_permission(
+                missing_session,
+                CapabilityScope::try_new("files.write").unwrap(),
+                PermissionTarget::Operation,
+                PermissionEffect::Allow,
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("FOREIGN KEY"));
+        assert!(matches!(
+            exec.authorization
+                .authorize(&high_risk_session_request(missing_session))
+                .await,
+            AuthorizationDecision::RequiresConfirmation { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn terminal_error_actor_reloads_durable_grants_before_continue() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let record = db
+            .create_session("continue durable session permission")
+            .unwrap();
+        let exec = SessionSupervisor::new_for_test(db, Arc::new(ToolsManager::new()), 1);
+        exec.ensure_session_loaded(&record.id).await.unwrap();
+        exec.grant_session_permission(
+            &record.id,
+            CapabilityScope::try_new("files.write").unwrap(),
+            PermissionTarget::Operation,
+            PermissionEffect::Allow,
+        )
+        .await
+        .unwrap();
+
+        // Error keeps an idle actor for Continue, while finish_ended_session
+        // clears its process-local grant map. ensure_session_loaded must reload
+        // the durable decision even though it does not need to respawn actor.
+        exec.update_session_status(&record.id, SessionStatus::Error)
+            .await
+            .unwrap();
+        assert!(matches!(
+            exec.authorization
+                .authorize(&high_risk_session_request(&record.id))
+                .await,
+            AuthorizationDecision::RequiresConfirmation { .. }
+        ));
+        exec.ensure_session_loaded(&record.id).await.unwrap();
+        assert!(matches!(
+            exec.authorization
+                .authorize(&high_risk_session_request(&record.id))
+                .await,
+            AuthorizationDecision::AutoApproved
+        ));
     }
 
     /// A handler that panics must still release the running slot and mark the
@@ -1031,6 +1270,104 @@ mod tests {
             error.to_string(),
             format!("session '{}' not found in database", session.id)
         );
+    }
+
+    #[tokio::test]
+    async fn explicit_history_deletion_releases_managed_asset_leases() {
+        let path = temp_db_path();
+        let db = Arc::new(Database::open(&path).unwrap());
+        let tools = Arc::new(ToolsManager::new());
+        let registry = tools.share_services().assets;
+        let exec = Arc::new(SessionSupervisor::new_for_test(db, tools, 1));
+        let assets_root = tempfile::TempDir::new().unwrap();
+
+        let deleted = exec
+            .create_session("delete leased attachment")
+            .await
+            .unwrap();
+        let deleted_path = assets_root.path().join("deleted.pdf");
+        std::fs::write(&deleted_path, b"deleted").unwrap();
+        assert!(registry.register_under_root_for_session(
+            &deleted.id,
+            assets_root.path(),
+            "asset-deleted",
+            deleted_path,
+            Some("deleted.pdf".into()),
+            "application/pdf",
+        ));
+        assert_eq!(registry.leased_paths().len(), 1);
+
+        exec.delete_session(&deleted.id).await.unwrap();
+        assert!(registry.leased_paths().is_empty());
+
+        let cleared = exec
+            .create_session("clear leased attachment")
+            .await
+            .unwrap();
+        let cleared_path = assets_root.path().join("cleared.pdf");
+        std::fs::write(&cleared_path, b"cleared").unwrap();
+        assert!(registry.register_under_root_for_session(
+            &cleared.id,
+            assets_root.path(),
+            "asset-cleared",
+            cleared_path,
+            Some("cleared.pdf".into()),
+            "application/pdf",
+        ));
+        assert_eq!(registry.leased_paths().len(), 1);
+
+        exec.clear_sessions_and_delete().await.unwrap();
+        assert!(registry.leased_paths().is_empty());
+    }
+
+    #[tokio::test]
+    async fn retention_deletion_releases_runtime_grants_and_asset_leases() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let tools = Arc::new(ToolsManager::new());
+        let registry = tools.share_services().assets;
+        let exec = SessionSupervisor::new_for_test(db.clone(), tools, 1);
+        let session = exec
+            .create_session("expire session-owned state")
+            .await
+            .unwrap();
+        exec.grant_session_permission(
+            &session.id,
+            CapabilityScope::try_new("files.write").unwrap(),
+            PermissionTarget::Operation,
+            PermissionEffect::Allow,
+        )
+        .await
+        .unwrap();
+
+        let assets_root = tempfile::TempDir::new().unwrap();
+        let asset_path = assets_root.path().join("expired.pdf");
+        std::fs::write(&asset_path, b"expired").unwrap();
+        assert!(registry.register_under_root_for_session(
+            &session.id,
+            assets_root.path(),
+            "asset-expired",
+            asset_path,
+            Some("expired.pdf".into()),
+            "application/pdf",
+        ));
+
+        let conn = db.conn();
+        conn.execute(
+            "UPDATE sessions SET created_at = '2000-01-01T00:00:00Z' WHERE id = ?1",
+            [&session.id],
+        )
+        .unwrap();
+        drop(conn);
+
+        assert_eq!(exec.delete_old_sessions(1).await.unwrap(), 1);
+        assert!(db.get_session(&session.id).unwrap().is_none());
+        assert!(
+            db.session_authorization_grants(&session.id)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(exec.actor_for(&session.id).await.is_none());
+        assert!(registry.leased_paths().is_empty());
     }
 
     #[tokio::test]

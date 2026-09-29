@@ -5,6 +5,12 @@ use std::sync::Mutex as StdMutex;
 use tokio::sync::Notify;
 use tracing::Instrument;
 
+fn session_run_error_reason(error: &anyhow::Error) -> String {
+    crate::sqlite_storage_failure_message(error)
+        .map(str::to_owned)
+        .unwrap_or_else(|| error.to_string())
+}
+
 /// Explicit run admission state. A Tokio semaphore cannot safely represent a
 /// limit that is lowered while all permits are held: permits returned by old
 /// runs can make the later limit larger than configured. Tracking active runs
@@ -221,8 +227,22 @@ impl SessionSupervisor {
                     .instrument(span)
                     .await;
                     if let Err(error) = result {
-                        let reason = error.to_string();
-                        tracing::error!(session_id = %session_id, %reason, "session run failed");
+                        let failure =
+                            haven_memory::SessionStore::sqlite_storage_write_failure(&error);
+                        let reason = session_run_error_reason(&error);
+                        if let Some(failure) = failure {
+                            tracing::error!(
+                                session_id = %session_id,
+                                ?failure,
+                                "session run failed while writing SQLite storage"
+                            );
+                        } else {
+                            tracing::error!(
+                                session_id = %session_id,
+                                error = %reason,
+                                "session run failed"
+                            );
+                        }
                         let _ = supervisor
                             .update_session_status(&session_id, SessionStatus::Error)
                             .await;
@@ -445,5 +465,43 @@ impl SessionSupervisor {
             .await
             .map(|actor| actor.cancel())
             .unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod storage_error_tests {
+    use super::session_run_error_reason;
+    use haven_memory::{Database, SessionCommitted, SessionEventStore};
+    use std::sync::Arc;
+
+    #[test]
+    fn full_database_error_gives_recovery_guidance_without_database_details() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let session = db.create_session("storage-full-feedback").unwrap();
+        let store = SessionEventStore::new(db.clone());
+        let page_count: i64 = db
+            .conn()
+            .query_row("PRAGMA page_count", [], |row| row.get(0))
+            .unwrap();
+        db.conn()
+            .pragma_update(None, "max_page_count", page_count)
+            .unwrap();
+
+        let payload = format!(
+            r#"{{"type":"transcript","text":"{}"}}"#,
+            "x".repeat(1024 * 1024)
+        );
+        let mut committed = SessionCommitted::transcript(payload, 1, 1);
+        committed.project_assistant_message(haven_common::types::new_id("msg"), "saved", None);
+        let error = store
+            .commit_transcript(&session.id, &committed)
+            .unwrap_err();
+
+        let reason = session_run_error_reason(&error);
+        assert!(reason.contains("数据库所在磁盘空间不足"));
+        assert!(reason.contains("释放该磁盘空间"));
+        assert!(reason.contains("继续生成"));
+        assert!(reason.contains("删除会话不保证缩小 SQLite 文件"));
+        assert!(!reason.contains("storage-full-feedback"));
     }
 }

@@ -1614,11 +1614,19 @@ mod tests {
     use super::*;
     use crate::{StructuredToolError, Tool, ToolsManager};
     use haven_common::SessionStatus;
-    use haven_common::config::{ConfigLoader, ConfigPatch, ConfigService};
+    use haven_common::config::{ConfigLoader, ConfigPatch, ConfigService, InMemoryCredentialStore};
     use haven_memory::{Database, MemoryFactStore, SessionStore};
     use serde_json::json;
     use std::sync::Arc;
     use tempfile::TempDir;
+
+    fn test_config_service(loader: ConfigLoader) -> ConfigService {
+        ConfigService::new_with_credential_store(
+            loader,
+            Arc::new(InMemoryCredentialStore::default()),
+        )
+        .unwrap()
+    }
 
     struct AdminOperationCase {
         surface: &'static str,
@@ -1853,7 +1861,7 @@ mod tests {
         let dir = TempDir::new().expect("temporary config directory");
         let loader = ConfigLoader::load_from(&dir.path().join("config.toml")).unwrap();
         let context = AdminContext {
-            config_service: Some(Arc::new(ConfigService::new(loader))),
+            config_service: Some(Arc::new(test_config_service(loader))),
             config_apply_gate: Some(Arc::new(tokio::sync::Mutex::new(()))),
             session_store,
             memory_facts,
@@ -1879,7 +1887,7 @@ mod tests {
     fn config_tool() -> (ConfigAdminTool, Arc<ConfigService>, TempDir) {
         let dir = TempDir::new().expect("temporary config directory");
         let loader = ConfigLoader::load_from(&dir.path().join("config.toml")).unwrap();
-        let service = Arc::new(ConfigService::new(loader));
+        let service = Arc::new(test_config_service(loader));
         let tool = new_config_admin_tool(ConfigAdminContext {
             config_service: Some(service.clone()),
             config_apply_gate: None,
@@ -1926,6 +1934,7 @@ mod tests {
             command: "private-command".into(),
             args: vec!["private-arg".into()],
             env: vec!["TOKEN=private-value".into()],
+            env_refs: vec![],
             cwd: None,
             url: String::new(),
             enabled: true,
@@ -1936,6 +1945,7 @@ mod tests {
             command: "private-command".into(),
             args: vec![],
             env: vec![],
+            env_refs: vec![],
             cwd: None,
             url: String::new(),
             enabled: true,
@@ -2294,6 +2304,7 @@ mod tests {
                 command: "hidden-command".into(),
                 args: vec!["PRIVATE_ARG_MARKER".into()],
                 env: vec!["TOKEN=PRIVATE_ENV_MARKER".into()],
+                env_refs: vec![],
                 cwd: None,
                 url: String::new(),
                 enabled: true,
@@ -2817,6 +2828,7 @@ mod tests {
             command: command.clone(),
             args: vec!["PRIVATE_MCP_ARG_MARKER".into()],
             env: vec!["TOKEN=PRIVATE_MCP_ENV_MARKER".into()],
+            env_refs: vec![],
             cwd: None,
             url: String::new(),
             enabled: true,
@@ -3118,7 +3130,7 @@ mod tests {
 
         let config_dir = TempDir::new().unwrap();
         let loader = ConfigLoader::load_from(&config_dir.path().join("config.toml")).unwrap();
-        let config_service = Arc::new(ConfigService::new(loader));
+        let config_service = Arc::new(test_config_service(loader));
         let context = AdminContext {
             config_service: Some(config_service),
             config_apply_gate: None,
@@ -3242,7 +3254,7 @@ mod tests {
 
         let dir = TempDir::new().unwrap();
         let loader = ConfigLoader::load_from(&dir.path().join("config.toml")).unwrap();
-        let service = Arc::new(ConfigService::new(loader));
+        let service = Arc::new(test_config_service(loader));
         let tool = new_config_admin_tool(ConfigAdminContext {
             config_service: Some(service.clone()),
             config_apply_gate: None,
@@ -3589,7 +3601,7 @@ mod tests {
     fn test_surfaces_with_service() -> (AdminSurfaces, Arc<ConfigService>, TempDir) {
         let dir = TempDir::new().expect("temporary config directory");
         let loader = ConfigLoader::load_from(&dir.path().join("config.toml")).unwrap();
-        let service = Arc::new(ConfigService::new(loader));
+        let service = Arc::new(test_config_service(loader));
         let context = AdminContext {
             config_service: Some(service.clone()),
             config_apply_gate: Some(Arc::new(tokio::sync::Mutex::new(()))),

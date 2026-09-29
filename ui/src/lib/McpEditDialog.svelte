@@ -63,9 +63,12 @@
 			.split('\n')
 			.map((l) => l.trim())
 			.filter(Boolean);
-		const badEnv = envLines.findIndex((l) => !l.includes('='));
+		const badEnv = envLines.findIndex((l) => {
+			const separator = l.indexOf('=');
+			return separator === 0;
+		});
 		if (badEnv >= 0) {
-			errors.env = `Line ${badEnv + 1}: expected KEY=VALUE`;
+			errors.env = `Line ${badEnv + 1}: environment variable name cannot be empty`;
 		}
 
 		return errors;
@@ -223,8 +226,9 @@
 				{/snippet}
 			</MaterialField>
 			<MaterialField
-				label="Env (KEY=VALUE, one per line)"
+				label="Env (KEY=VALUE or KEY, one per line)"
 				forId="mcp-env"
+				hint="Existing values appear as KEY=&lt;redacted&gt;; keep the marker to preserve the saved value. KEY leaves the value unset."
 				error={fieldErrors.env}
 			>
 				{#snippet children()}

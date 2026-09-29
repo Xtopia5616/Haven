@@ -1,49 +1,24 @@
 # 发布与数据重置
 
-配置运行时 apply 失败时，已通过同目录临时文件和路径替换写入的配置会保留，Settings 会说明部分运行时未应用；用户重启应用后，运行时从配置重新初始化。保存成功不承诺操作系统崩溃或突然断电后的稳定介质持久性。本次行为不更改 `config.toml` 格式或数据库 schema，无需清除配置、数据库或其他用户数据。
+配置运行时 apply 失败时，已通过同目录临时文件和路径替换写入的配置会保留，Settings 会说明部分运行时未应用；用户重启应用后，运行时从配置重新初始化。保存成功不承诺操作系统崩溃或突然断电后的稳定介质持久性。此 apply-failure 语义本身不更改 `config.toml` 格式或数据库 schema；本版本授权变更的 schema 重置要求见下文。
 
 ## 当前版本的兼容性政策
 
 Haven 处于测试阶段。数据库 schema、`config.toml`、ReAct snapshot 与内部 IPC 契约可以进行破坏性调整；发布说明会明确本次是否需要重置。没有明确写出兼容承诺的旧数据不得假定可继续使用。
 
-截至 2026-09-29，当前数据库契约为 schema v30（ADR 0392、0393）：scheduled dependency relation/result 持久化在 `actions.watch_action_id` / `actions.result_summary`，scheduled tool 的 completed/failed result 使用 `action_completion_outbox`。不提供旧 schema 的运行时迁移；从旧版本升级前，完全退出 Haven 后删除 `%APPDATA%\haven\haven.db`、`haven.db-wal` 与 `haven.db-shm`（非 Windows 开发环境为 `~/.local/share/haven` 下的同名文件），再启动应用。删除数据库会清除会话、记忆、任务和用量；保留 `config.toml` 时无需删除整个数据根目录。
+截至 2026-09-29，当前数据库契约为 schema v31（ADR 0392、0393、0402）：scheduled dependency relation/result 持久化在 `actions.watch_action_id` / `actions.result_summary`，scheduled tool 的 completed/failed result 使用 `action_completion_outbox`，session authorization grants 由会话外键级联管理。不提供旧 schema 的运行时迁移；从旧版本升级前，完全退出 Haven 后删除 `%APPDATA%\haven\haven.db`、`haven.db-wal` 与 `haven.db-shm`（非 Windows 开发环境为 `~/.local/share/haven` 下的同名文件），再启动应用。删除数据库会清除会话、记忆、任务和用量；保留 `config.toml` 时无需删除整个数据根目录。
 
-本版本将安全策略重构为互相独立的确认、文件沙箱和网络策略；`security.permission_mode` 有效值为
-`plan`、`default`、`auto_edit`、`autonomous`，另有 `sandbox_mode = "read_only" | "workspace_write" | "full_access"`、
-可选的绝对路径数组 `writable_roots` 和 `network_policy = "deny" | "ask" | "restricted" | "open"`（默认 `ask`）。旧的
-`balanced`、`careful`、`manual` 以及
-`confirmation_mode` / `min_risk_level` 组合不再自动解释，`[security]` 中的未知字段会使配置解析失败；
-原配置会被备份为 `config.toml.*.bak` 并以默认配置启动。请按下文完整重置或仅手工重建新的 `[security]` 段。
+## 当前配置契约
 
-权限规则的 canonical key 统一为点号层级（例如 `files.read`、`system.power.lock`）。含冒号
-operation key 的旧规则不会被猜测迁移，会触发同样的备份/重置边界；运行时也会再次校验
-外部规则，非法 key 不会获得授权。
+`config.toml` 只接受当前配置结构，不执行旧字段搬迁、旧名称映射、凭据导入或静默兼容。配置表启用未知字段拒绝；当前结构允许缺省的字段仍使用安全默认值。旧字段（例如 `[memory].history_retention_days`、`llm.balanced_model`、旧安全策略字段和已删除的顶层 `[audio]`）会导致整份配置解析失败。
 
-本版本同样不再迁移顶层 `[audio]`、旧的 `[tool_settings.audio]` 或已删除的 `[tool_settings.*]` 名称；这几类配置会备份后以默认值启动。
-旧工具名称不再迁移或兼容：`[tool_settings.file]`、`file[:operation]`、
-`file_search[:operation]`、`scheduled_action[:operation]`、旧的聚合根权限和旧的 `haven_*`
-capability 入口会触发备份并以默认配置启动。当前模型入口统一为点号 operation view：
-`files.*`、`system.*`、`process.*`、`clipboard.*`、`input.*`、`window.*`、`media.*`、
-`actions.*`、`schedule.*`、`preferences.*`、`checklist.*` 和 `haven.*`；这些名称同时作为
-权限 key 与 UI renderer 的正式名称。聚合实现仍可供 native/Tauri 使用，但不再作为模型入口。
-启用 Skill 只出现在紧凑能力索引中，由模型调用 `load_skill` 按名称加载为当前 session 的
-`skill__...`；内置 operation 由 `tool_catalog` 的 `action=load` 按 operation/root 加载，MCP
-继续使用 `load_mcp` 按服务器加载。完整工具 schema 只在加载成功后的后续 provider 请求中出现。
-旧 `load_builtin` action 不做快照兼容或配置迁移；检测到仍在进行的旧会话时，结束会话或按本节
-的数据重置边界重新开始。
-已删除的 `haven_session_diagnostics` 及其 operation 权限也不再迁移；升级时会触发同样的备份与配置重置。
-Provider 的 `api_style` 现在只接受 canonical wire protocol id；旧的 vendor/preset 值
-（例如 `deepseek-responses`）不会再作为 wire style 解释，检测到后同样备份并重置配置。
-数据库中待执行定时任务若仍引用已经删除的旧工具名不会自动改写，需取消并重新创建，或按下文完整重置。
+解析失败时，Haven 将原文件复制到带时间戳的 `config.toml.*.bak`，并在当前进程使用默认配置；原文件不会在启动时自动转换或覆盖。需要继续使用时，按下文“仅重建配置”删除当前 `config.toml`，再在应用中重新配置。
 
-旧 Phase-7 ReAct 快照（包括未压缩的旧 `react_state` 行）以及直接在 `[media.stt]`、`[media.tts]`、`[media.image_gen]` 中使用
-旧 provider 名和本地凭据的配置也不再兼容。加载器会为检测到的旧媒体 provider 名或凭据生成
-`config.toml.*.bak`，并以默认值启动；请删除整个数据根目录后重新配置命名 provider，不要
-手工混用新数据库与旧 `react_state`。
+当前会话保留期配置位于 `[session].history_retention_days`，默认 90 天，设为 `0` 可禁用自动删除；旧 `[memory]` 位置不迁移。`security.permission_mode` 支持 `plan`、`default`、`auto_edit`、`autonomous`，文件沙箱和网络策略分别使用 `sandbox_mode` 与 `network_policy`；旧确认模式字段不再解释。权限 key 使用点号 operation 名（如 `files.read`）；旧冒号 key 不转换，无法解析的持久权限规则在运行时被忽略并 fail-closed。
 
-本版本删除 `balanced_model` 角色及默认模型失败后的模型级 fallback；旧配置中的该角色和
-`fallback_retry_max_retries` 会被忽略，保存配置后不再写回。若需要清理旧配置残留，按下文
-完整重置数据根目录后重新配置模型。
+API 密钥、OCR 密钥与 MCP 环境变量只通过安全凭据存储的 opaque reference 持久化。TOML 中的明文凭据会使配置加载失败并备份原文件；启动只从现有引用读取凭据，不再导入旧明文值。若引用在操作系统凭据存储中不存在，需要重新输入对应凭据。当前 provider `api_style` 仅接受 canonical wire protocol id；无效值和指向不存在 provider 的媒体配置会走同一备份与默认配置恢复。
+
+模型工具使用点号 operation view，例如 `files.*`、`system.*`、`process.*`、`clipboard.*`、`input.*`、`window.*`、`media.*`、`actions.*`、`schedule.*`、`preferences.*`、`checklist.*` 和 `haven.*`。启用 Skill 由 `load_skill` 按名称加载为当前 session 的 `skill__...`；内置 operation 由 `tool_catalog` 的 `action=load` 加载，MCP 由 `load_mcp` 按服务器加载。配置和未完成会话都没有旧工具名的转换保证。
 
 本次 Agent 版本将数据库 schema 收敛为 v28 当前契约：删除 `sessions.transcript` 快照列、`react_checkpoints` 和 `sessions.react_state`，
 会话正文只从 `session_events` 恢复并由 `messages` 物化；新增 `session_events` append-only
@@ -101,12 +76,21 @@ Windows 的唯一数据根目录是 `%APPDATA%\haven`。其中包括：
 
 ## 重置步骤
 
+### 仅重建配置
+
+1. 完全退出 Haven，并确认没有 `Haven.exe` 进程仍在运行。
+2. 如需检查旧配置，先在 `%APPDATA%\haven` 之外复制 `config.toml`；旧文件或自动备份可能包含明文密钥，必须妥善保管。
+3. 删除 `%APPDATA%\haven\config.toml`（非 Windows 开发环境为 `~/.local/share/haven/config.toml`）。
+4. 重新启动 Haven，再配置模型、OCR 与 MCP 凭据。数据库、日志、技能和媒体目录会保留。
+
+### 完整重置数据根目录
+
 1. 完全退出 Haven，并确认没有 `Haven.exe` 进程仍在运行。
 2. 如需保留配置或诊断资料，先在数据根目录之外复制所需文件；备份内容可能含密钥、对话和本机路径，必须妥善保管。
 3. 删除 `%APPDATA%\haven`（非 Windows 为 `~/.local/share/haven`）。
 4. 重新启动 Haven；应用会创建新的默认配置和数据库。
 
-此操作会永久删除本机会话、记忆、后台/定时任务、授权决定、日志、技能和媒体缓存；除非先自行备份，否则无法恢复。若仅需要清除会话与记忆，可删除 `haven.db`、`haven.db-wal`、`haven.db-shm`，但在 schema 或配置不兼容的版本升级时应删除整个数据根目录。
+完整重置会永久删除本机会话、记忆、后台/定时任务、授权决定、日志、技能和媒体缓存；除非先自行备份，否则无法恢复。若仅需要清除会话与记忆，可删除 `haven.db`、`haven.db-wal`、`haven.db-shm`，但在 schema 不兼容的版本升级时应删除这三个数据库文件。配置不兼容时只需按上面的步骤删除 `config.toml`。
 
 ## 发布前验证
 

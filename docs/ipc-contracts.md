@@ -67,7 +67,10 @@
 | `continue_session` | mutate | 从错误 snapshot 恢复 |
 | `get_session_for_resume` | read | 会话范围投影 |
 | `get_last_conversation` | read | 只取最近持久化会话 |
-| `get_settings` | read | 响应遮蔽凭据 |
+| `get_settings` | read | 响应遮蔽凭据和 MCP 环境变量 |
+| `stage_provider_credential` | mutate | provider 密钥只写入安全凭据存储，返回不透明引用 |
+| `stage_ocr_credential` | mutate | OCR 密钥只写入安全凭据存储，返回不透明引用 |
+| `discard_staged_credentials` | mutate | 删除未由 Settings 保存提交的暂存凭据 |
 | `get_bootstrap_status` | read | 仅状态枚举 |
 | `update_settings` | mutate | shared loader 保留遮蔽密钥和工具段 |
 | `list_permissions` | read | 只返回 key/effect |

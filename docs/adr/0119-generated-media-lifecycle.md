@@ -1,7 +1,9 @@
 # ADR 0119：生成媒体生命周期与受管根目录
 
+> **session-attached media retention 已被 ADR 0403 替代。** 本文保留媒体生成格式和根目录边界；当前会话附件生命周期与重启后的孤儿清理以 ADR 0403 为准。
+
 日期：2026-09-10
-状态：已采纳（阶段 3 生成媒体补强切片）
+状态：已采纳（历史决定；session-attached media retention 已被 ADR 0403 替代）
 关联：[ADR 0113：统一多模态资产、表示与请求投影](0113-unified-media-asset-representation-projection.md)、
 [ADR 0118：活动会话资产租约与上传暂存清理](0118-active-session-asset-leases.md)
 

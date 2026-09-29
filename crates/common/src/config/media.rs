@@ -8,7 +8,7 @@ use crate::media::MediaInputStrategy;
 
 /// Microphone capture / VAD parameters. Lives under `[media.audio]`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct AudioConfig {
     pub sample_rate: u32,
     pub channels: u16,
@@ -36,7 +36,7 @@ impl Default for AudioConfig {
 /// the same `adapter_for` / `LlmClient::transcribe` path as chat requests;
 /// `llm` uses the router's `transcription` request policy.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct SttConfig {
     /// Speech-to-text provider. Prefer a name from `llm.providers` (reuses
     /// that provider's base URL + API key). Also accepts:
@@ -72,8 +72,8 @@ impl Default for SttConfig {
 }
 
 /// OCR (image text extraction) configuration. Lives under `[media.ocr]`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
 pub struct OcrConfig {
     /// OCR provider. One of:
     /// - `llm`: extract via the configured `vision` request policy
@@ -82,10 +82,21 @@ pub struct OcrConfig {
     /// - `tencent`: Tencent Cloud 通用印刷体识别
     /// - `none`: no OCR client (extract intent passes the image through)
     pub provider: String,
-    /// API key / access token for cloud OCR providers.
+    /// Runtime-only API key / access token for cloud OCR providers. Settings
+    /// writes stage it first; plaintext TOML/Settings values are rejected.
+    #[serde(default, skip_serializing)]
     pub api_key: String,
-    /// Secondary secret where a provider requires one (Baidu secret key).
+    /// Opaque credential reference persisted in TOML.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key_ref: Option<String>,
+    /// Runtime-only secondary secret where a provider requires one (Baidu
+    /// secret key). Settings writes stage it first; plaintext values are
+    /// rejected.
+    #[serde(default, skip_serializing)]
     pub api_secret: String,
+    /// Opaque credential reference persisted in TOML.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_secret_ref: Option<String>,
     /// Base URL override. Overrides the provider's default host when
     /// non-empty.
     pub base_url: String,
@@ -99,12 +110,30 @@ pub struct OcrConfig {
     pub min_confidence: f32,
 }
 
+impl std::fmt::Debug for OcrConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("OcrConfig")
+            .field("provider", &self.provider)
+            .field("api_key", &"[REDACTED]")
+            .field("api_key_ref", &self.api_key_ref)
+            .field("api_secret", &"[REDACTED]")
+            .field("api_secret_ref", &self.api_secret_ref)
+            .field("base_url", &self.base_url)
+            .field("timeout_secs", &self.timeout_secs)
+            .field("min_confidence", &self.min_confidence)
+            .finish()
+    }
+}
+
 impl Default for OcrConfig {
     fn default() -> Self {
         Self {
             provider: "llm".into(),
             api_key: String::new(),
+            api_key_ref: None,
             api_secret: String::new(),
+            api_secret_ref: None,
             base_url: String::new(),
             timeout_secs: 20,
             min_confidence: 0.7,
@@ -114,7 +143,7 @@ impl Default for OcrConfig {
 
 /// Text-to-speech configuration. Lives under `[media.tts]`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct TtsConfig {
     /// TTS provider. Prefer a name from `llm.providers` (reuses that
     /// provider's base URL + API key). Also accepts:
@@ -143,7 +172,7 @@ impl Default for TtsConfig {
 
 /// Text-to-image generation configuration. Lives under `[media.image_gen]`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ImageGenConfig {
     /// Image generation provider. A name from `llm.providers` reuses that
     /// provider's base URL and API key. `none` / empty disables the client.
@@ -167,7 +196,7 @@ impl Default for ImageGenConfig {
 
 /// Unified media configuration: capture + extract + generate capabilities.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct MediaConfig {
     /// Provider-facing input selection policy for user attachments.
     pub input_strategy: MediaInputStrategy,
@@ -181,4 +210,23 @@ pub struct MediaConfig {
     pub tts: TtsConfig,
     /// Text-to-image generation.
     pub image_gen: ImageGenConfig,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::OcrConfig;
+
+    #[test]
+    fn ocr_config_accepts_staged_secrets_and_redacts_debug() {
+        let config: OcrConfig = serde_json::from_value(serde_json::json!({
+            "api_key": "ocr-key",
+            "api_secret": "ocr-secret"
+        }))
+        .expect("settings DTO accepts values before command validation");
+
+        let debug = format!("{config:?}");
+        assert!(!debug.contains("ocr-key"));
+        assert!(!debug.contains("ocr-secret"));
+        assert_eq!(debug.matches("[REDACTED]").count(), 2);
+    }
 }

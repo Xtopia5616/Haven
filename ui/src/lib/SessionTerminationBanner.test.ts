@@ -3,13 +3,14 @@ import { describe, expect, it } from 'vitest';
 import SessionTerminationBanner from './SessionTerminationBanner.svelte';
 
 describe('SessionTerminationBanner', () => {
-	it('shows the error reason and explains that the conversation is retained', () => {
+	it('shows the error reason and distinguishes saved content from the failed part', () => {
 		render(SessionTerminationBanner, { status: 'error', reason: '响应头等待超过 60 秒' });
 
 		expect(screen.getByRole('alert')).toBeTruthy();
 		expect(screen.getByText('错误')).toBeTruthy();
 		expect(screen.getByText('响应头等待超过 60 秒')).toBeTruthy();
-		expect(screen.getByText(/内容已保留/)).toBeTruthy();
+		expect(screen.getByText(/已提交的内容仍可恢复/)).toBeTruthy();
+		expect(screen.getByText(/失败的这一步可以使用下方“继续生成”重试/)).toBeTruthy();
 	});
 
 	it('shows the reason for a normally completed conversation', () => {

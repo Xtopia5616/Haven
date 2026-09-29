@@ -8,6 +8,9 @@
 
 use crate::Database;
 use crate::repositories::messages::{Message, now_rfc3339_millis, undelivered_recovery_since};
+use crate::repositories::session_authorization::{
+    SessionAuthorizationGrant, StoredSessionAuthorizationGrant,
+};
 use crate::repositories::session_steps::{ActionStepOutcome, ActionStepWrite, SessionStep};
 use crate::repositories::sessions::Session;
 use crate::repositories::usage::{LlmCallUsage, LlmCallUsageInput, SessionUsage};
@@ -387,6 +390,16 @@ pub struct SessionTitleGenerationContext {
 
 const TITLE_GENERATION_MESSAGE_LIMIT: usize = 10;
 
+/// SQLite failures that indicate writes could not reach the local database
+/// storage. `DiskFull` is the precise `SQLITE_FULL` signal; an I/O failure is
+/// deliberately broader because the operating system may not identify its
+/// underlying cause as exhausted space.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SqliteStorageWriteFailure {
+    DiskFull,
+    IoFailure,
+}
+
 /// Existing read models needed to build the App's session-resume response.
 ///
 /// The projection groups the current queries behind one SessionStore port;
@@ -403,6 +416,30 @@ pub struct SessionResumeProjection {
 /// Transitional name for code that only consumes the append-only event API.
 /// New ownership code should use [`SessionStore`].
 pub type SessionEventStore = SessionStore;
+
+fn rollback_after_sqlite_failure(conn: &rusqlite::Connection, operation: &'static str) {
+    if conn.is_autocommit() {
+        return;
+    }
+    if let Err(error) = conn.execute_batch("ROLLBACK") {
+        tracing::error!(
+            operation,
+            error = %haven_common::error::sanitize_error_text(&error.to_string()),
+            "failed to roll back SQLite transaction after an operation failure"
+        );
+    }
+}
+
+fn commit_sqlite_transaction(
+    conn: &rusqlite::Connection,
+    operation: &'static str,
+) -> anyhow::Result<()> {
+    if let Err(error) = conn.execute_batch("COMMIT") {
+        rollback_after_sqlite_failure(conn, operation);
+        return Err(error.into());
+    }
+    Ok(())
+}
 
 /// A race-safe handoff from durable replay to live events.
 ///
@@ -421,6 +458,25 @@ impl SessionStore {
         Self { db, live_tx }
     }
 
+    /// Classify an SQLite error preserved in an `anyhow` source chain so the
+    /// session boundary can give users storage-specific recovery guidance.
+    /// The I/O class does not claim that free space is the cause.
+    pub fn sqlite_storage_write_failure(
+        error: &anyhow::Error,
+    ) -> Option<SqliteStorageWriteFailure> {
+        error.chain().find_map(|cause| {
+            let sqlite_error = cause.downcast_ref::<rusqlite::Error>()?;
+            let rusqlite::Error::SqliteFailure(code, _) = sqlite_error else {
+                return None;
+            };
+            match code.code {
+                rusqlite::ErrorCode::DiskFull => Some(SqliteStorageWriteFailure::DiskFull),
+                rusqlite::ErrorCode::SystemIoFailure => Some(SqliteStorageWriteFailure::IoFailure),
+                _ => None,
+            }
+        })
+    }
+
     /// Mark orphaned running sessions as errored through the typed session
     /// persistence boundary. The underlying Database operation retains its
     /// partial-message promotion and cache invalidation semantics.
@@ -436,6 +492,14 @@ impl SessionStore {
     pub async fn delete_old_sessions(&self, retention_days: u32) -> anyhow::Result<usize> {
         self.db
             .run_blocking(move |db| db.delete_old_sessions(retention_days))
+            .await
+    }
+
+    /// Return sessions past the supplied retention age so the owning
+    /// supervisor can quiesce runtime state before it deletes their rows.
+    pub async fn old_session_ids(&self, retention_days: u32) -> anyhow::Result<Vec<String>> {
+        self.db
+            .run_blocking(move |db| db.old_session_ids(retention_days))
             .await
     }
 
@@ -552,6 +616,61 @@ impl SessionStore {
         let session_id = session_id.to_owned();
         self.db
             .run_blocking(move |db| db.delete_session(&session_id))
+            .await
+    }
+
+    /// Persist one session-scoped authorization decision. This typed session
+    /// boundary ensures grants share the session row's deletion and retention
+    /// lifecycle rather than becoming global config.
+    pub async fn save_session_authorization_grant(
+        &self,
+        session_id: &str,
+        grant: SessionAuthorizationGrant,
+    ) -> anyhow::Result<()> {
+        let session_id = session_id.to_owned();
+        self.db
+            .run_blocking(move |db| db.save_session_authorization_grant(&session_id, &grant))
+            .await
+    }
+
+    /// Load the complete typed authorization set for one persisted session.
+    /// Invalid rows are reported so the Agent can refuse to install a session
+    /// with a partially restored trust set.
+    pub async fn session_authorization_grants(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Vec<SessionAuthorizationGrant>> {
+        let session_id = session_id.to_owned();
+        self.db
+            .run_blocking(move |db| db.session_authorization_grants(&session_id))
+            .await
+    }
+
+    /// Load every stored grant with its owning session for a live security
+    /// policy reapply that invalidates process-local authorization state.
+    pub async fn all_session_authorization_grants(
+        &self,
+    ) -> anyhow::Result<Vec<StoredSessionAuthorizationGrant>> {
+        self.db
+            .run_blocking(|db| db.all_session_authorization_grants())
+            .await
+    }
+
+    /// Remove one exact capability grant across every session when the user
+    /// explicitly revokes that permission key.
+    pub async fn revoke_session_authorization_grants(
+        &self,
+        capability: haven_common::types::CapabilityScope,
+    ) -> anyhow::Result<usize> {
+        self.db
+            .run_blocking(move |db| db.revoke_session_authorization_grants(&capability))
+            .await
+    }
+
+    /// Clear all session authorization rules after an explicit global reset.
+    pub async fn clear_session_authorization_grants(&self) -> anyhow::Result<usize> {
+        self.db
+            .run_blocking(|db| db.clear_session_authorization_grants())
             .await
     }
 
@@ -1400,14 +1519,14 @@ impl SessionStore {
         let result = Self::append_batch_in_transaction(&conn, session_id, events);
         match result {
             Ok(stored) => {
-                conn.execute_batch("COMMIT")?;
+                commit_sqlite_transaction(&conn, "append batch")?;
                 for event in &stored {
                     let _ = self.live_tx.send(event.clone());
                 }
                 Ok(stored)
             }
             Err(error) => {
-                let _ = conn.execute_batch("ROLLBACK");
+                rollback_after_sqlite_failure(&conn, "append batch");
                 Err(error)
             }
         }
@@ -1491,7 +1610,7 @@ impl SessionStore {
         })();
         match result {
             Ok(result) => {
-                conn.execute_batch("COMMIT")?;
+                commit_sqlite_transaction(&conn, "transcript commit")?;
                 if !result.message_created_at.is_empty() {
                     self.db.cache_invalidate_messages(session_id);
                 }
@@ -1501,7 +1620,7 @@ impl SessionStore {
                 Ok(result)
             }
             Err(error) => {
-                let _ = conn.execute_batch("ROLLBACK");
+                rollback_after_sqlite_failure(&conn, "transcript transaction");
                 Err(error)
             }
         }
@@ -1874,7 +1993,7 @@ impl SessionStore {
         })();
         match result {
             Ok(result) => {
-                conn.execute_batch("COMMIT")?;
+                commit_sqlite_transaction(&conn, "session rollback")?;
                 self.db.cache_invalidate_messages(session_id);
                 let _ = self.live_tx.send(result.marker.clone());
                 for event in &result.replacement_events {
@@ -1883,7 +2002,7 @@ impl SessionStore {
                 Ok(result)
             }
             Err(error) => {
-                let _ = conn.execute_batch("ROLLBACK");
+                rollback_after_sqlite_failure(&conn, "session rollback");
                 Err(error)
             }
         }
@@ -1927,7 +2046,7 @@ impl SessionStore {
             Self::truncate_projection_after_step_in_transaction(&conn, session_id, step_number);
         match result {
             Ok(events) => {
-                conn.execute_batch("COMMIT")?;
+                commit_sqlite_transaction(&conn, "truncate transcript projection")?;
                 if let Some(events) = events {
                     self.db.cache_invalidate_messages(session_id);
                     for event in events {
@@ -1937,7 +2056,7 @@ impl SessionStore {
                 Ok(())
             }
             Err(error) => {
-                let _ = conn.execute_batch("ROLLBACK");
+                rollback_after_sqlite_failure(&conn, "truncate transcript projection");
                 Err(error)
             }
         }
@@ -1977,7 +2096,7 @@ impl SessionStore {
         })();
         match result {
             Ok(events) => {
-                conn.execute_batch("COMMIT")?;
+                commit_sqlite_transaction(&conn, "truncate committed recovery projection")?;
                 if let Some(events) = events {
                     self.db.cache_invalidate_messages(session_id);
                     for event in events {
@@ -1987,7 +2106,7 @@ impl SessionStore {
                 Ok(())
             }
             Err(error) => {
-                let _ = conn.execute_batch("ROLLBACK");
+                rollback_after_sqlite_failure(&conn, "truncate committed recovery projection");
                 Err(error)
             }
         }
@@ -2094,7 +2213,7 @@ impl SessionStore {
         })();
         match result {
             Ok(events) => {
-                conn.execute_batch("COMMIT")?;
+                commit_sqlite_transaction(&conn, "discard rolled back usage")?;
                 self.db.cache_invalidate_messages(session_id);
                 for event in events {
                     let _ = self.live_tx.send(event);
@@ -2102,7 +2221,7 @@ impl SessionStore {
                 Ok(())
             }
             Err(error) => {
-                let _ = conn.execute_batch("ROLLBACK");
+                rollback_after_sqlite_failure(&conn, "discard rolled back usage");
                 Err(error)
             }
         }
@@ -2194,14 +2313,14 @@ impl SessionStore {
         })();
         match result {
             Ok((records, stored_events)) => {
-                conn.execute_batch("COMMIT")?;
+                commit_sqlite_transaction(&conn, "append usage batch")?;
                 for event in stored_events {
                     let _ = self.live_tx.send(event);
                 }
                 Ok(records)
             }
             Err(error) => {
-                let _ = conn.execute_batch("ROLLBACK");
+                rollback_after_sqlite_failure(&conn, "append usage batch");
                 Err(error)
             }
         }
@@ -2246,12 +2365,12 @@ impl SessionStore {
         })();
         match result {
             Ok(event) => {
-                conn.execute_batch("COMMIT")?;
+                commit_sqlite_transaction(&conn, "discard usage")?;
                 let _ = self.live_tx.send(event.clone());
                 Ok(())
             }
             Err(error) => {
-                let _ = conn.execute_batch("ROLLBACK");
+                rollback_after_sqlite_failure(&conn, "discard usage");
                 Err(error)
             }
         }
@@ -2329,12 +2448,12 @@ impl SessionStore {
         })();
         match result {
             Ok(result) => {
-                conn.execute_batch("COMMIT")?;
+                commit_sqlite_transaction(&conn, "append branch point")?;
                 let _ = self.live_tx.send(result.0.clone());
                 Ok(result)
             }
             Err(error) => {
-                let _ = conn.execute_batch("ROLLBACK");
+                rollback_after_sqlite_failure(&conn, "append branch point");
                 Err(error)
             }
         }
@@ -2814,19 +2933,19 @@ impl SessionStore {
         })();
         match result {
             Ok(Some(stored)) => {
-                conn.execute_batch("COMMIT")?;
+                commit_sqlite_transaction(&conn, "seed session events")?;
                 for event in &stored {
                     let _ = self.live_tx.send(event.clone());
                 }
                 Ok(stored)
             }
             Ok(None) => {
-                conn.execute_batch("COMMIT")?;
+                commit_sqlite_transaction(&conn, "seed session events")?;
                 drop(conn);
                 self.read_active(session_id)
             }
             Err(error) => {
-                let _ = conn.execute_batch("ROLLBACK");
+                rollback_after_sqlite_failure(&conn, "seed session events");
                 Err(error)
             }
         }

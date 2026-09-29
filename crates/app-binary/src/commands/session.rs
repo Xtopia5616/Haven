@@ -14,6 +14,45 @@ use std::sync::Arc;
 use tauri::AppHandle;
 use tauri::State;
 
+/// Reconcile host-managed media after a successful explicit history deletion.
+/// A failed reference query must leave every file untouched.
+async fn cleanup_unreferenced_session_media(state: &AppState, context: &str) {
+    let referenced_paths = match state.session_store.list_managed_attachment_paths().await {
+        Ok(paths) => paths,
+        Err(error) => {
+            tracing::warn!(
+                context,
+                error = %sanitize_error_text(&error.to_string()),
+                "media cleanup skipped because session references could not be read"
+            );
+            return;
+        }
+    };
+    let cleanup = crate::commands::recording::cleanup_unreferenced_managed_media(
+        haven_common::default_work_dir().join("uploads"),
+        haven_common::config::default_generated_media_dir(),
+        state.tools.share_services().assets,
+        referenced_paths,
+    )
+    .await;
+    match cleanup {
+        Ok((uploads, generated)) if uploads > 0 || generated > 0 => {
+            tracing::info!(
+                context,
+                uploads,
+                generated,
+                "removed unreferenced session media"
+            );
+        }
+        Ok(_) => {}
+        Err(error) => tracing::warn!(
+            context,
+            error = %sanitize_error_text(&error),
+            "unreferenced session media cleanup failed"
+        ),
+    }
+}
+
 #[tauri::command]
 pub async fn reopen_session(
     state: State<'_, Arc<AppState>>,
@@ -142,14 +181,20 @@ pub async fn resolve_confirmation(
         })?;
     }
     // Resolve the confirmation and capture tool/session context atomically
-    // (under the executor's sessions lock). This avoids the previous race where
-    // the resolution and a separate `list_sessions()` lookup could observe a
-    // step that a concurrent `end_session`/rollback had already removed.
-    let resolution = state
-        .executor
-        .resolve_confirmation(&confirmation_id, confirmed)
-        .await
-        .map_err(|e| log_err("resolve_confirmation", e))?;
+    // (under the executor's sessions lock). Session scope uses the executor's
+    // grant-aware path, which commits before resolving can wake the actor.
+    let resolution = if matches!(perm_scope, haven_common::types::PermissionScope::Session) {
+        state
+            .executor
+            .resolve_confirmation_with_session_grant(&confirmation_id, perm_target, perm_effect)
+            .await
+    } else {
+        state
+            .executor
+            .resolve_confirmation(&confirmation_id, confirmed)
+            .await
+    }
+    .map_err(|e| log_err("resolve_confirmation", e))?;
 
     let Some(resolution) = resolution else {
         let pending = state.ui_confirmations.lock().await.remove(&step_id);
@@ -167,8 +212,12 @@ pub async fn resolve_confirmation(
         .await;
     };
 
-    // Once-scope (or no grant) — nothing to record beyond the one-shot resolve.
-    if matches!(perm_scope, haven_common::types::PermissionScope::Once) {
+    // Once is only this invocation. Session scope was durably committed by the
+    // grant-aware resolver before it woke the operation.
+    if matches!(
+        perm_scope,
+        haven_common::types::PermissionScope::Once | haven_common::types::PermissionScope::Session
+    ) {
         return Ok(());
     }
 
@@ -208,7 +257,7 @@ pub async fn resolve_confirmation(
         .authorization
         .grant(
             authorization_request.session_id.as_deref(),
-            key.clone(),
+            key,
             perm_effect,
             perm_scope,
         )
@@ -252,6 +301,22 @@ async fn resolve_ui_confirmation(
             .verify_receipt(authorization_request, &pending.receipt)
             .await
             .map_err(|reason| format!("confirmation is no longer valid: {reason}"))?;
+
+        // Direct UI confirmations execute their typed action in this command
+        // instead of waking the ReAct actor. Persist a requested session grant
+        // before that action can produce an external side effect.
+        if matches!(perm_scope, haven_common::types::PermissionScope::Session) {
+            state
+                .executor
+                .grant_session_permission(
+                    &pending.session_id,
+                    grant_key.clone(),
+                    perm_target,
+                    perm_effect,
+                )
+                .await
+                .map_err(|error| log_err("persist_session_permission", error))?;
+        }
 
         match &pending.action {
             UiConfirmationAction::Mcp { client, tool, args } => {
@@ -307,16 +372,26 @@ async fn resolve_ui_confirmation(
     } else {
         None
     };
-    state
-        .services
-        .authorization
-        .grant(
-            Some(&pending.session_id),
-            grant_key.clone(),
-            perm_effect,
-            perm_scope,
-        )
-        .await;
+    if matches!(perm_scope, haven_common::types::PermissionScope::Session) {
+        if matches!(perm_effect, haven_common::types::PermissionEffect::Deny) {
+            state
+                .executor
+                .grant_session_permission(&pending.session_id, grant_key, perm_target, perm_effect)
+                .await
+                .map_err(|error| log_err("persist_session_permission", error))?;
+        }
+    } else {
+        state
+            .services
+            .authorization
+            .grant(
+                Some(&pending.session_id),
+                grant_key,
+                perm_effect,
+                perm_scope,
+            )
+            .await;
+    }
     Ok(())
 }
 
@@ -412,6 +487,7 @@ pub async fn delete_session(
         .delete_session(&session_id)
         .await
         .map_err(|e| log_err("delete_session", e))?;
+    cleanup_unreferenced_session_media(state.inner().as_ref(), "delete_session").await;
     Ok(())
 }
 
@@ -423,6 +499,7 @@ pub async fn clear_history(state: State<'_, Arc<AppState>>) -> Result<u64, Strin
         .await
         .map(|n| n as u64)
         .map_err(|e| log_err("clear_history", e))?;
+    cleanup_unreferenced_session_media(state.inner().as_ref(), "clear_history").await;
     Ok(count)
 }
 

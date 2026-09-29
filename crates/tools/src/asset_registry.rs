@@ -141,8 +141,10 @@ impl ManagedAssetRegistry {
         self.bind_pending_to_session(session_id, &asset_id)
     }
 
-    /// Register generated media with its integrity and expiry metadata and
-    /// hold it for the lifetime of a session.
+    /// Register generated media with its integrity metadata and hold it for
+    /// the lifetime of a session. Session-owned assets follow their session's
+    /// durable attachment references; the independent transient-asset TTL
+    /// only applies when no session owns the asset.
     #[allow(clippy::too_many_arguments)]
     pub fn register_under_root_for_session_with_metadata(
         &self,
@@ -154,7 +156,7 @@ impl ManagedAssetRegistry {
         media_type: impl Into<String>,
         sha256: Option<String>,
         size_bytes: Option<u64>,
-        expires_at: Option<DateTime<Utc>>,
+        _expires_at: Option<DateTime<Utc>>,
     ) -> bool {
         if session_id.trim().is_empty() {
             return false;
@@ -172,7 +174,10 @@ impl ManagedAssetRegistry {
             media_type.into(),
             sha256,
             size_bytes,
-            expires_at,
+            // Once an asset belongs to a session, expiry is governed by the
+            // session's retention/deletion lifecycle. `expires_at` remains
+            // available for detached, runtime-only media registrations.
+            None,
         ) {
             self.release_pending(&asset_id);
             return false;
@@ -228,6 +233,44 @@ impl ManagedAssetRegistry {
         true
     }
 
+    /// Move one already leased asset when ingress replaces a stale active
+    /// session id with the actual newly-created session id.
+    pub fn transfer_session_lease(
+        &self,
+        from_session_id: &str,
+        to_session_id: &str,
+        asset_id: &str,
+    ) -> bool {
+        if from_session_id.trim().is_empty()
+            || to_session_id.trim().is_empty()
+            || asset_id.trim().is_empty()
+            || !self.contains(asset_id)
+        {
+            return false;
+        }
+        if from_session_id == to_session_id {
+            return self.lease_for_session(to_session_id, asset_id);
+        }
+        let mut leases = self
+            .session_leases
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(from_assets) = leases.get_mut(from_session_id) else {
+            return false;
+        };
+        if !from_assets.remove(asset_id) {
+            return false;
+        }
+        if from_assets.is_empty() {
+            leases.remove(from_session_id);
+        }
+        leases
+            .entry(to_session_id.to_string())
+            .or_default()
+            .insert(asset_id.to_string());
+        true
+    }
+
     /// Release a pending ingress lease after session creation failed.
     pub fn release_pending(&self, asset_id: &str) -> bool {
         self.pending_assets
@@ -254,6 +297,34 @@ impl ManagedAssetRegistry {
             .values()
             .flat_map(|assets| assets.iter().cloned())
             .collect();
+        let assets = self
+            .assets
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        leased_ids
+            .iter()
+            .filter_map(|asset_id| assets.get(asset_id).map(|asset| asset.path.clone()))
+            .collect()
+    }
+
+    /// Return paths protected by either a live session lease or a pending
+    /// ingress lease. Cleanup must include pending uploads while their new
+    /// session id is being allocated.
+    pub fn leased_or_pending_paths(&self) -> Vec<PathBuf> {
+        let mut leased_ids: HashSet<String> = self
+            .session_leases
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .values()
+            .flat_map(|assets| assets.iter().cloned())
+            .collect();
+        leased_ids.extend(
+            self.pending_assets
+                .read()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .iter()
+                .cloned(),
+        );
         let assets = self
             .assets
             .read()
@@ -341,15 +412,27 @@ impl ManagedAssetRegistry {
             .collect()
     }
 
-    /// Return generated-media paths whose persisted expiry has elapsed.
-    pub fn expired_paths(&self) -> Vec<PathBuf> {
+    /// Return unleased runtime-only assets whose explicit TTL is still live.
+    /// Session-owned assets have no TTL and are retained by their durable
+    /// message reference or active lease instead.
+    pub fn unexpired_transient_paths(&self) -> Vec<PathBuf> {
         let now = Utc::now();
-        self.assets
+        let leased_ids: HashSet<String> = self
+            .session_leases
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .values()
-            .filter(|asset| asset.expires_at.is_some_and(|expires_at| expires_at <= now))
-            .map(|asset| asset.path.clone())
+            .flat_map(|assets| assets.iter().cloned())
+            .collect();
+        self.assets
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .filter(|(asset_id, asset)| {
+                !leased_ids.contains(*asset_id)
+                    && asset.expires_at.is_some_and(|expires_at| expires_at > now)
+            })
+            .map(|(_, asset)| asset.path.clone())
             .collect()
     }
 
@@ -416,9 +499,8 @@ impl ManagedAssetRegistry {
     }
 
     /// Remove registry entries that are no longer referenced by persisted
-    /// messages or an active session lease. This lets retention GC distinguish
-    /// active/event-backed assets from old rows that were already deleted from
-    /// the database.
+    /// messages or an active/pending lease. This lets retention GC distinguish
+    /// in-flight assets from entries whose durable owners were deleted.
     pub fn prune_unreferenced(&self, referenced_paths: &[PathBuf]) -> usize {
         let mut leased_ids: HashSet<String> = self
             .session_leases

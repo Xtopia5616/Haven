@@ -691,8 +691,16 @@ impl SettingsRuntimeApplyCoordinator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use haven_common::config::{ConfigLoader, ModelConfig};
+    use haven_common::config::{ConfigLoader, InMemoryCredentialStore, ModelConfig};
     use tracing_subscriber::reload;
+
+    fn test_config_service(loader: ConfigLoader) -> ConfigService {
+        ConfigService::new_with_credential_store(
+            loader,
+            std::sync::Arc::new(InMemoryCredentialStore::default()),
+        )
+        .unwrap()
+    }
 
     #[test]
     fn partial_apply_error_explains_config_write_and_restart_recovery() {
@@ -1265,7 +1273,7 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let loader = ConfigLoader::load_from(&dir.path().join("config.toml")).unwrap();
-        let service = Arc::new(ConfigService::new(loader));
+        let service = Arc::new(test_config_service(loader));
         let coordinator = Arc::new(RuntimeConfigCoordinator::default());
         let rebuilds = Arc::new(AtomicUsize::new(0));
         let rebuilds_in_apply = rebuilds.clone();
@@ -1295,7 +1303,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
         let loader = ConfigLoader::load_from(&path).unwrap();
-        let service = ConfigService::new(loader);
+        let service = test_config_service(loader);
         let coordinator = RuntimeConfigCoordinator::default();
         let apply_attempts = Arc::new(AtomicUsize::new(0));
         let first_attempts = apply_attempts.clone();
@@ -1394,7 +1402,7 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let loader = ConfigLoader::load_from(&dir.path().join("config.toml")).unwrap();
-        let service = Arc::new(ConfigService::new(loader));
+        let service = Arc::new(test_config_service(loader));
         let coordinator = Arc::new(RuntimeConfigCoordinator::default());
         let active = Arc::new(AtomicUsize::new(0));
         let max_active = Arc::new(AtomicUsize::new(0));

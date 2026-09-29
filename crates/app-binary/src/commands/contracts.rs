@@ -311,7 +311,22 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
     CommandContract {
         name: "get_settings",
         boundary: CommandBoundary::Read,
-        security: "config response masks credentials",
+        security: "config response redacts credentials and MCP environment values",
+    },
+    CommandContract {
+        name: "stage_provider_credential",
+        boundary: CommandBoundary::Mutate,
+        security: "writes provider secret to secure storage and returns only an opaque reference",
+    },
+    CommandContract {
+        name: "stage_ocr_credential",
+        boundary: CommandBoundary::Mutate,
+        security: "writes OCR secret to secure storage and returns only an opaque reference",
+    },
+    CommandContract {
+        name: "discard_staged_credentials",
+        boundary: CommandBoundary::Mutate,
+        security: "deletes staged values not committed by a Settings save",
     },
     CommandContract {
         name: "get_bootstrap_status",
@@ -321,7 +336,7 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
     CommandContract {
         name: "update_settings",
         boundary: CommandBoundary::Mutate,
-        security: "shared loader preserves masked secrets, tool sections, and permission rules",
+        security: "rejects inline secrets; shared loader preserves credential refs, tool sections, and permission rules",
     },
     CommandContract {
         name: "list_permissions",
@@ -452,7 +467,7 @@ mod tests {
     #[test]
     fn command_registry_is_unique_and_covers_the_current_handler_set() {
         assert_eq!(IPC_CONTRACT_VERSION, 1);
-        assert_eq!(COMMAND_CONTRACTS.len(), 71);
+        assert_eq!(COMMAND_CONTRACTS.len(), 74);
         let names: HashSet<_> = COMMAND_CONTRACTS
             .iter()
             .map(|contract| contract.name)

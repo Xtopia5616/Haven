@@ -81,6 +81,7 @@ corepack pnpm run check
 | `node-` | 记忆节点 memory_nodes.id | `haven_memory` |
 | `act-` | 工作单元 actions.id（后台任务 kind=`background` + 定时任务 kind=`scheduled`） | `haven_tools` |
 | `asset-` | 受管媒体资产 MediaAsset.asset_id | `haven_common` |
+| `cred-` | Credential Manager 凭据引用（仅引用，不是密钥值） | `haven_common` / `haven_platform` |
 | `usage-` | 单次 LLM 调用用量明细 llm_usage.id | `haven_memory` |
 
 以下前缀均为**进程内** ID，不落库：

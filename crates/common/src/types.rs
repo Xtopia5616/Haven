@@ -297,7 +297,7 @@ pub enum PermissionEffect {
 pub enum PermissionScope {
     /// This invocation only — not recorded.
     Once,
-    /// Remainder of the owning session.
+    /// Until the owning persisted session is deleted or expires.
     Session,
     /// Persisted across restarts (`SecurityConfig.permissions`).
     Always,
@@ -517,8 +517,8 @@ pub fn permission_tool_root(key: &str) -> &str {
 /// `files.delete` → `["files.delete", "files"]`
 /// `system.power.lock` → `["system.power.lock", "system.power", "system"]`
 ///
-/// Legacy colon keys are deliberately not interpreted here. The config loader
-/// treats them as a reset boundary instead of guessing their old meaning.
+/// Legacy colon keys are deliberately not interpreted here. The authorization
+/// engine ignores persisted keys that fail current capability validation.
 pub fn permission_key_candidates(key: &str) -> Vec<&str> {
     let mut out = Vec::new();
     let mut end = key.len();

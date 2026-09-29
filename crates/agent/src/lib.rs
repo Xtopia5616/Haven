@@ -26,6 +26,7 @@ mod resume_support;
 mod rollback;
 mod rollback_support;
 mod session;
+mod storage_error;
 mod title;
 mod types;
 
@@ -59,6 +60,7 @@ pub use session::{
     SessionWaitingReason, StepInfo, ToolAuthorizationPort, ToolExecution, ToolExecutionContext,
     ToolExecutionPort, ToolObservationPort,
 };
+pub use storage_error::sqlite_storage_failure_message;
 
 pub use types::{
     Action, BranchPoint, ProcessResult, ReActRound, RunBudget, ToolRecord, TranscriptRecord,

@@ -136,6 +136,18 @@
 				})}
 			/>
 		</SettingsField>
+		<SettingsField label="会话保留天数" id="session-history-retention">
+			<MaterialNumberField
+				id="session-history-retention"
+				value={session.history_retention_days}
+				min={0}
+				max={365}
+				onChange={withNumberValue((v) => {
+					session.history_retention_days = v;
+				})}
+			/>
+		</SettingsField>
+		<p class="model-hint">按会话创建时间自动清理会话及其历史；设为 0 表示不自动清理。</p>
 	</SettingsSection>
 
 	<SettingsSection title="命令行工具">
@@ -168,17 +180,6 @@
 				max={500}
 				onChange={withNumberValue((v) => {
 					memory.session_window_size = v;
-				})}
-			/>
-		</SettingsField>
-		<SettingsField label="保留天数" id="memory-retention">
-			<MaterialNumberField
-				id="memory-retention"
-				value={memory.history_retention_days}
-				min={1}
-				max={365}
-				onChange={withNumberValue((v) => {
-					memory.history_retention_days = v;
 				})}
 			/>
 		</SettingsField>

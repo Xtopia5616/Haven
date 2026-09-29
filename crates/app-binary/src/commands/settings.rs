@@ -71,6 +71,66 @@ pub async fn get_settings(app: tauri::AppHandle) -> Result<haven_common::config:
         .map_err(|e| log_err("get_settings", e))
 }
 
+/// Write a replacement provider key to secure storage first. The returned
+/// value is an opaque `cred-*` reference; secret values never enter the
+/// Settings update payload.
+#[tauri::command]
+pub async fn stage_provider_credential(
+    state: State<'_, Arc<AppState>>,
+    provider_name: String,
+    api_key: String,
+) -> Result<String, String> {
+    state
+        .config_service
+        .stage_provider_credential(&provider_name, &api_key)
+        .map_err(|error| log_err("stage_provider_credential", error))
+}
+
+/// Write one OCR credential to secure storage and return its opaque reference.
+#[tauri::command]
+pub async fn stage_ocr_credential(
+    state: State<'_, Arc<AppState>>,
+    api_secret: bool,
+    value: String,
+) -> Result<String, String> {
+    state
+        .config_service
+        .stage_ocr_credential(api_secret, &value)
+        .map_err(|error| log_err("stage_ocr_credential", error))
+}
+
+/// Remove secure values staged by an unsaved Settings edit.
+#[tauri::command]
+pub async fn discard_staged_credentials(state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    state
+        .config_service
+        .discard_staged_credentials()
+        .map_err(|error| log_err("discard_staged_credentials", error))
+}
+
+fn validate_settings_payload(settings: &haven_common::config::Settings) -> anyhow::Result<()> {
+    if settings
+        .llm
+        .providers
+        .iter()
+        .any(|provider| !provider.api_key.is_empty())
+        || !settings.media.ocr.api_key.is_empty()
+        || !settings.media.ocr.api_secret.is_empty()
+    {
+        anyhow::bail!(
+            "credential values must be staged in secure storage before Settings can be saved"
+        );
+    }
+    if settings
+        .mcp_servers
+        .iter()
+        .any(|server| !server.env.is_empty())
+    {
+        anyhow::bail!("MCP environment values must be changed through the MCP settings commands");
+    }
+    Ok(())
+}
+
 /// Cold-start progress for the titlebar status chip (`loading` | `ready`).
 /// The frontend also listens for `app:bootstrap`; this command covers the
 /// race where the UI mounts after the ready event already fired.
@@ -131,8 +191,16 @@ async fn execute_settings_apply_phase(
         }
         SettingsApplyPhase::Security => {
             state.tools.apply_security(&config.security).await;
-            timing.tick("apply_security");
-            SettingsApplyOutcome::applied()
+            match state.executor.restore_session_authorization_grants().await {
+                Ok(_) => {
+                    timing.tick("apply_security");
+                    SettingsApplyOutcome::applied()
+                }
+                Err(error) => SettingsApplyOutcome::failed(
+                    "update_settings restore session authorization grants",
+                    error,
+                ),
+            }
         }
         SettingsApplyPhase::McpConfig => {
             state.tools.load_mcp_from_config(&config.mcp_servers).await;
@@ -324,6 +392,7 @@ pub async fn update_settings(
     settings: haven_common::config::Settings,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
+    validate_settings_payload(&settings).map_err(|error| log_err("update_settings", error))?;
     let timing = Arc::new(SettingsApplyTiming::new());
     let state = app.state::<Arc<AppState>>();
     let state = Arc::clone(&*state);
@@ -415,16 +484,27 @@ pub async fn revoke_permission(state: State<'_, Arc<AppState>>, key: String) -> 
         return Err("permission key cannot be empty".into());
     }
     let _config_apply_guard = state.config_apply_gate.lock().await;
+    let capability = haven_common::types::CapabilityScope::new(key.clone());
     state
-        .config_service
-        .edit(|config| {
-            config
-                .security
-                .permissions
-                .retain(|permission| permission.key != key);
-            Ok(())
-        })
-        .map_err(|e| log_err("revoke_permission", e))?;
+        .session_store
+        .revoke_session_authorization_grants(capability.clone())
+        .await
+        .map_err(|e| log_err("revoke_permission session grants", e))?;
+    let edit = state.config_service.edit(|config| {
+        config
+            .security
+            .permissions
+            .retain(|permission| permission.key != key);
+        Ok(())
+    });
+    if let Err(error) = edit {
+        state
+            .services
+            .authorization
+            .revoke_session_permission(&capability)
+            .await;
+        return Err(log_err("revoke_permission", error));
+    }
     state.services.authorization.revoke_permanent(&key).await;
     Ok(())
 }
@@ -434,6 +514,12 @@ pub async fn revoke_permission(state: State<'_, Arc<AppState>>, key: String) -> 
 #[tauri::command]
 pub async fn reset_permissions(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     let _config_apply_guard = state.config_apply_gate.lock().await;
+    state
+        .session_store
+        .clear_session_authorization_grants()
+        .await
+        .map_err(|e| log_err("reset_permissions session grants", e))?;
+    state.services.authorization.clear_all_trust().await;
     state
         .config_service
         .edit(|config| {
@@ -499,12 +585,13 @@ pub async fn is_autostart_enabled() -> Result<bool, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ShellAvailability, apply_settings_edit};
+    use super::{ShellAvailability, apply_settings_edit, validate_settings_payload};
     use crate::config_runtime::{
         SettingsApplyOutcome, SettingsApplyPhase, SettingsRuntimeApplyCoordinator,
     };
     use haven_common::config::{
-        AppConfig, ConfigLoader, ConfigService, LogLevel, Settings, StoredPermission,
+        AppConfig, ConfigLoader, ConfigService, InMemoryCredentialStore, LogLevel, Settings,
+        StoredPermission,
     };
     use haven_common::types::PermissionEffect;
 
@@ -514,7 +601,14 @@ mod tests {
         let mut loader = ConfigLoader::load_from(&path).unwrap();
         *loader.config_mut() = config;
         loader.save().unwrap();
-        (ConfigService::new(loader), dir)
+        (
+            ConfigService::new_with_credential_store(
+                loader,
+                std::sync::Arc::new(InMemoryCredentialStore::default()),
+            )
+            .unwrap(),
+            dir,
+        )
     }
 
     #[test]
@@ -523,6 +617,32 @@ mod tests {
             serde_json::to_value(ShellAvailability { available: true }).unwrap(),
             serde_json::json!({"available": true})
         );
+    }
+
+    #[test]
+    fn settings_boundary_rejects_inline_provider_ocr_and_mcp_values() {
+        for payload in [
+            serde_json::json!({
+                "llm": { "providers": [{ "name": "primary", "api_key": "provider-secret-marker" }] }
+            }),
+            serde_json::json!({
+                "media": { "ocr": { "api_key": "ocr-key-marker", "api_secret": "ocr-secret-marker" } }
+            }),
+            serde_json::json!({
+                "mcp_servers": [{ "name": "server", "env": ["TOKEN=mcp-secret-marker"] }]
+            }),
+        ] {
+            let settings: Settings = serde_json::from_value(payload).unwrap();
+            let error = validate_settings_payload(&settings).unwrap_err();
+            for marker in [
+                "provider-secret-marker",
+                "ocr-key-marker",
+                "ocr-secret-marker",
+                "mcp-secret-marker",
+            ] {
+                assert!(!error.to_string().contains(marker));
+            }
+        }
     }
 
     #[test]

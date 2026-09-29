@@ -34,8 +34,8 @@ export interface LlmConfigInput { providers?: ProviderConfigInput[]; models?: Mo
 export interface LlmConfig { providers: ProviderConfig[]; models: ModelConfig[]; request_policies: RequestPolicy[]; max_total_duration_secs: number; stream_idle_timeout_secs: number; retry_max_retries: number; retry_base_secs: number; retry_factor: number; retry_max_secs: number; retry_jitter: number; max_concurrent_requests: number }
 export interface ModelConfigInput { id?: string; provider?: string; model?: string; capabilities?: CapabilityInput[]; temperature?: number | null; context_window?: number | null; cost_per_1k_input_tokens?: number | null; cost_per_1k_output_tokens?: number | null; cost_per_1k_cache_read_tokens?: number | null; cost_per_1k_cache_write_tokens?: number | null; max_tokens?: number | null; reasoning_effort?: string | null; web_search?: string | null; reasoning_echo_max_chars?: number | null }
 export interface ModelConfig { id: string; provider: string; model: string; capabilities: Capability[]; temperature?: number; context_window?: number; cost_per_1k_input_tokens?: number; cost_per_1k_output_tokens?: number; cost_per_1k_cache_read_tokens?: number; cost_per_1k_cache_write_tokens?: number; max_tokens?: number; reasoning_effort?: string; web_search?: string; reasoning_echo_max_chars?: number }
-export interface ProviderConfigInput { name?: string; provider?: string; api_style?: string | null; base_url?: string; api_key?: string; auth_header_name?: string; auth_header_prefix?: string; proxy_url?: string | null; no_proxy?: string | null; default_max_tokens?: number | null; default_temperature?: number | null; default_timeout_secs?: number | null; default_timeout_streaming_secs?: number | null; default_web_search?: string | null }
-export interface ProviderConfig { name: string; provider: string; api_style: string | null; base_url: string; api_key: string; auth_header_name: string; auth_header_prefix: string; proxy_url: string | null; no_proxy: string | null; default_max_tokens?: number; default_temperature?: number; default_timeout_secs?: number; default_timeout_streaming_secs?: number; default_web_search?: string }
+export interface ProviderConfigInput { name?: string; provider?: string; api_style?: string | null; base_url?: string; api_key?: string; api_key_ref?: string | null; auth_header_name?: string; auth_header_prefix?: string; proxy_url?: string | null; no_proxy?: string | null; default_max_tokens?: number | null; default_temperature?: number | null; default_timeout_secs?: number | null; default_timeout_streaming_secs?: number | null; default_web_search?: string | null }
+export interface ProviderConfig { name: string; provider: string; api_style: string | null; base_url: string; api_key_ref?: string; auth_header_name: string; auth_header_prefix: string; proxy_url: string | null; no_proxy: string | null; default_max_tokens?: number; default_temperature?: number; default_timeout_secs?: number; default_timeout_streaming_secs?: number; default_web_search?: string }
 export type RequestKindInput = 'chat' | 'fast_chat' | 'vision' | 'audio_chat' | 'transcription' | 'embedding' | 'image_generation' | 'speech_synthesis';
 export type RequestKind = 'chat' | 'fast_chat' | 'vision' | 'audio_chat' | 'transcription' | 'embedding' | 'image_generation' | 'speech_synthesis';
 export interface RequestPolicyInput { request?: RequestKindInput; primary?: string }
@@ -48,8 +48,8 @@ export interface ImageGenConfigInput { provider?: string; model?: string; timeou
 export interface ImageGenConfig { provider: string; model: string; timeout_secs: number }
 export interface MediaConfigInput { input_strategy?: MediaInputStrategyInput; audio?: AudioConfigInput; stt?: SttConfigInput; ocr?: OcrConfigInput; tts?: TtsConfigInput; image_gen?: ImageGenConfigInput }
 export interface MediaConfig { input_strategy: MediaInputStrategy; audio: AudioConfig; stt: SttConfig; ocr: OcrConfig; tts: TtsConfig; image_gen: ImageGenConfig }
-export interface OcrConfigInput { provider?: string; api_key?: string; api_secret?: string; base_url?: string; timeout_secs?: number; min_confidence?: number }
-export interface OcrConfig { provider: string; api_key: string; api_secret: string; base_url: string; timeout_secs: number; min_confidence: number }
+export interface OcrConfigInput { provider?: string; api_key?: string; api_key_ref?: string | null; api_secret?: string; api_secret_ref?: string | null; base_url?: string; timeout_secs?: number; min_confidence?: number }
+export interface OcrConfig { provider: string; api_key_ref?: string; api_secret_ref?: string; base_url: string; timeout_secs: number; min_confidence: number }
 export interface SttConfigInput { provider?: string; mcp_server?: string | null; model?: string; timeout_secs?: number; min_confidence?: number }
 export interface SttConfig { provider: string; mcp_server: string | null; model: string; timeout_secs: number; min_confidence: number }
 export interface TtsConfigInput { provider?: string; model?: string; voice?: string; timeout_secs?: number }
@@ -64,18 +64,20 @@ export type LogLevelInput = 'trace' | 'debug' | 'info' | 'warn' | 'error';
 export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error';
 export interface McpDiscoveryConfigInput { health_interval_secs?: number; reconnect_initial_ms?: number; reconnect_max_ms?: number; reconnect_max_retries?: number }
 export interface McpDiscoveryConfig { health_interval_secs: number; reconnect_initial_ms: number; reconnect_max_ms: number; reconnect_max_retries: number }
-export interface McpServerConfigInput { name?: string; transport?: McpTransportTypeInput; command?: string; args?: string[]; env?: string[]; cwd?: string | null; url?: string; enabled?: boolean }
-export interface McpServerConfig { name: string; transport: McpTransportType; command: string; args: string[]; env: string[]; cwd: string | null; url: string; enabled: boolean }
-export interface MemoryConfigInput { session_window_size?: number; history_retention_days?: number; fact_inference_enabled?: boolean }
-export interface MemoryConfig { session_window_size: number; history_retention_days: number; fact_inference_enabled: boolean }
+export interface McpEnvironmentCredentialRefInput { name: string; credential_ref?: string | null; has_value?: boolean }
+export interface McpEnvironmentCredentialRef { name: string; credential_ref?: string; has_value: boolean }
+export interface McpServerConfigInput { name?: string; transport?: McpTransportTypeInput; command?: string; args?: string[]; env?: string[]; env_refs?: McpEnvironmentCredentialRefInput[]; cwd?: string | null; url?: string; enabled?: boolean }
+export interface McpServerConfig { name: string; transport: McpTransportType; command: string; args: string[]; env_refs?: McpEnvironmentCredentialRef[]; cwd: string | null; url: string; enabled: boolean }
+export interface MemoryConfigInput { session_window_size?: number; fact_inference_enabled?: boolean }
+export interface MemoryConfig { session_window_size: number; fact_inference_enabled: boolean }
 export interface NotificationConfigInput { session_created?: NotifyChannelsInput; session_completed?: NotifyChannelsInput; session_paused?: NotifyChannelsInput; session_resumed?: NotifyChannelsInput; session_error?: NotifyChannelsInput; action_completed?: NotifyChannelsInput }
 export interface NotificationConfig { session_created: NotifyChannels; session_completed: NotifyChannels; session_paused: NotifyChannels; session_resumed: NotifyChannels; session_error: NotifyChannels; action_completed: NotifyChannels }
 export interface NotifyChannelsInput { in_app?: boolean; windows?: boolean }
 export interface NotifyChannels { in_app: boolean; windows: boolean }
 export interface SecurityConfigInput { permission_mode?: PermissionModeInput; sandbox_mode?: SandboxModeInput; writable_roots?: string[]; network_policy?: NetworkPolicyInput; encrypt_sensitive?: boolean; permissions?: StoredPermissionInput[] }
 export interface SecurityConfig { permission_mode: PermissionMode; sandbox_mode: SandboxMode; writable_roots?: string[]; network_policy: NetworkPolicy; encrypt_sensitive: boolean; permissions?: StoredPermission[] }
-export interface SessionConfigInput { max_concurrent?: number; max_steps?: number; session_max_steps?: number | null }
-export interface SessionConfig { max_concurrent: number; max_steps: number; session_max_steps?: number }
+export interface SessionConfigInput { max_concurrent?: number; history_retention_days?: number; max_steps?: number; session_max_steps?: number | null }
+export interface SessionConfig { max_concurrent: number; history_retention_days: number; max_steps: number; session_max_steps?: number }
 export interface SkillsConfigInput { root?: string | null; enabled?: string[] | null }
 export interface SkillsConfig { root: string | null; enabled?: string[] }
 export interface SkillsExecConfigInput { venv_root?: string; work_dir?: string; timeout_secs?: number; max_output_lines?: number; cpu_time_secs?: number | null; max_memory_mb?: number | null }
@@ -166,6 +168,7 @@ export interface TauriCommandMap {
 	delete_fact: { request: { factId: string }; response: void };
 	delete_session: { request: { sessionId: string }; response: void };
 	disable_autostart: { request: undefined; response: void };
+	discard_staged_credentials: { request: undefined; response: void };
 	discover_all_models: { request: undefined; response: Record<string, ModelInfo[]> };
 	discover_models: { request: { baseUrl: string; apiKey: string; provider?: string | null; role?: string | null }; response: ModelInfo[] };
 	enable_autostart: { request: undefined; response: void };
@@ -216,6 +219,8 @@ export interface TauriCommandMap {
 	set_skill_enabled: { request: { name: string; enabled: boolean }; response: void };
 	set_tool_enabled: { request: { name: string; enabled: boolean }; response: void };
 	set_web_search: { request: { role: string; mode?: string | null }; response: void };
+	stage_ocr_credential: { request: { apiSecret: boolean; value: string }; response: string };
+	stage_provider_credential: { request: { providerName: string; apiKey: string }; response: string };
 	start_recording: { request: undefined; response: void };
 	stop_recording: { request: undefined; response: string };
 	switch_model: { request: { role: string; modelId: string }; response: void };

@@ -10,13 +10,13 @@ macro_rules! settings_pair {
         $field:ident: $ty:ty
     ),* $(,)?; $($sanitize:tt)*) => {
         #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-        #[serde(default)]
+        #[serde(default, deny_unknown_fields)]
         pub struct AppConfig {
             $( $(#[$field_doc])* pub $field: $ty, )*
         }
 
         #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-        #[serde(default)]
+        #[serde(default, deny_unknown_fields)]
         pub struct Settings {
             $( $(#[$field_doc])* pub $field: $ty, )*
         }
@@ -59,6 +59,9 @@ settings_pair! {
     }
     settings.media.ocr.api_key = String::new();
     settings.media.ocr.api_secret = String::new();
+    for server in settings.mcp_servers.iter_mut() {
+        server.env.clear();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -168,152 +171,57 @@ fn backup_unparsable_config(path: &Path, err: &str) {
     }
 }
 
-/// Removed settings are a hard reset boundary. A backup preserves the source
-/// file, but the running process must never silently reinterpret old tool or
-/// media semantics.
-fn removed_config_entry(value: &toml::Value) -> Option<&'static str> {
-    if value.get("audio").is_some() {
-        return Some("top-level [audio]");
-    }
-    let has_invalid_provider_style = value
-        .get("llm")
-        .and_then(toml::Value::as_table)
-        .and_then(|llm| llm.get("providers"))
-        .and_then(toml::Value::as_array)
-        .is_some_and(|providers| {
-            providers.iter().any(|provider| {
-                provider
-                    .get("api_style")
-                    .and_then(toml::Value::as_str)
-                    .is_some_and(|style| !style.trim().is_empty() && !is_known_api_style(style))
-            })
-        });
-    if has_invalid_provider_style {
-        return Some("unsupported llm provider api_style");
-    }
-    if let Some(media) = value.get("media").and_then(toml::Value::as_table) {
-        for section in ["stt", "tts", "image_gen"] {
-            if let Some(table) = media.get(section).and_then(toml::Value::as_table)
-                && (table.contains_key("api_key") || table.contains_key("base_url"))
-            {
-                return Some("removed media provider credentials");
-            }
-        }
-        let named_provider_exists = |name: &str| {
-            value
-                .get("llm")
-                .and_then(toml::Value::as_table)
-                .and_then(|llm| llm.get("providers"))
-                .and_then(toml::Value::as_array)
-                .is_some_and(|providers| {
-                    providers.iter().any(|provider| {
-                        provider
-                            .get("name")
-                            .and_then(toml::Value::as_str)
-                            .is_some_and(|configured| configured == name)
-                    })
-                })
-        };
-        let is_removed_capability_name = |section: &str, names: &[&str]| {
-            media
-                .get(section)
-                .and_then(toml::Value::as_table)
-                .and_then(|table| table.get("provider"))
-                .and_then(toml::Value::as_str)
-                .map(str::trim)
-                .is_some_and(|name| names.contains(&name) && !named_provider_exists(name))
-        };
-        if is_removed_capability_name(
-            "stt",
-            &["openai", "groq", "gemini", "deepgram", "assemblyai"],
-        ) || is_removed_capability_name("tts", &["openai", "elevenlabs"])
-            || is_removed_capability_name("image_gen", &["openai", "gemini"])
-        {
-            return Some("removed media provider name");
-        }
-    }
-    const REMOVED_TOOL_SETTINGS: &[&str] = &[
-        "file",
-        "facts",
-        "network",
-        "self",
-        "action_status",
-        "env",
-        "power",
-        "registry",
-        "agents_list",
-        "message_send",
-        "message_inbox",
-        "message_reply",
-        "message_request",
-        "agent_profile",
-        "agent_spawn",
-        "audio",
-        "haven",
-        "load_skill",
-    ];
-    if let Some(settings) = value.get("tool_settings").and_then(toml::Value::as_table)
-        && let Some(name) = REMOVED_TOOL_SETTINGS
-            .iter()
-            .find(|name| settings.contains_key(**name))
-            .copied()
+/// Provider API styles are persisted strings for the UI, but only current
+/// wire protocol ids are valid configuration values.
+fn invalid_config_entry(config: &AppConfig) -> Option<&'static str> {
+    if config
+        .llm
+        .providers
+        .iter()
+        .any(|provider| !provider.api_key.is_empty())
     {
-        return Some(if name == "file" {
-            "removed legacy [tool_settings] entry"
-        } else {
-            "removed [tool_settings] entry"
-        });
+        return Some("plaintext provider credential in config.toml");
+    }
+    if !config.media.ocr.api_key.is_empty() || !config.media.ocr.api_secret.is_empty() {
+        return Some("plaintext OCR credential in config.toml");
+    }
+    if config
+        .mcp_servers
+        .iter()
+        .any(|server| !server.env.is_empty())
+    {
+        return Some("plaintext MCP environment in config.toml");
     }
 
-    let permissions = value
-        .get("security")
-        .and_then(toml::Value::as_table)
-        .and_then(|security| security.get("permissions"))
-        .and_then(toml::Value::as_array)?;
-    // Operation-view permissions are dotted (`files.search`,
-    // `system.env.list`). A colon inside one of these roots is the old
-    // aggregate-tool spelling and cannot safely be reinterpreted: the old
-    // key may have a different scope or operation meaning. Treat it as a
-    // reset boundary and preserve the source in an automatic backup.
-    let legacy_roots = [
-        "file",
-        "file_search",
-        "audio",
-        "scheduled_action",
-        "haven_session_diagnostics",
-        "haven",
-        "load_skill",
-    ];
-    let operation_view_roots = [
-        "files",
-        "system",
-        "process",
-        "clipboard",
-        "input",
-        "window",
-        "media",
-        "memory",
-        "agent",
-        "actions",
-        "schedule",
-        "preferences",
-        "checklist",
-        "mcp",
-        "skill",
-    ];
-    permissions.iter().find_map(|permission| {
-        let key = permission.get("key").and_then(toml::Value::as_str)?;
-        let root = key.split_once(':').map_or(key, |(root, _)| root);
-        legacy_roots
-            .contains(&root)
-            .then_some("removed legacy tool permission key")
-            .or_else(|| {
-                key.contains(':')
-                    .then_some(root)
-                    .filter(|root| operation_view_roots.contains(root))
-                    .map(|_| "legacy aggregate permission key; use dotted operation-view name")
-            })
-    })
+    if config.llm.providers.iter().any(|provider| {
+        provider
+            .api_style
+            .as_deref()
+            .is_some_and(|style| !style.trim().is_empty() && !is_known_api_style(style))
+    }) {
+        return Some("unsupported llm provider api_style");
+    }
+
+    let has_provider = |name: &str| {
+        config
+            .llm
+            .providers
+            .iter()
+            .any(|provider| provider.name == name)
+    };
+    if !matches!(config.media.stt.provider.as_str(), "llm" | "mcp" | "none")
+        && !has_provider(&config.media.stt.provider)
+    {
+        return Some("unknown media.stt provider reference");
+    }
+    if config.media.tts.provider != "none" && !has_provider(&config.media.tts.provider) {
+        return Some("unknown media.tts provider reference");
+    }
+    if config.media.image_gen.provider != "none" && !has_provider(&config.media.image_gen.provider)
+    {
+        return Some("unknown media.image_gen provider reference");
+    }
+    None
 }
 
 impl ConfigLoader {
@@ -364,24 +272,17 @@ impl ConfigLoader {
         }
         tracing::info!("loading config from {}", path.display());
         let content = std::fs::read_to_string(path)?;
-        let config: AppConfig = match toml::from_str::<toml::Value>(&content) {
-            Ok(value) => {
-                if let Some(entry) = removed_config_entry(&value) {
-                    backup_unparsable_config(path, &format!("removed configuration: {entry}"));
+        let config = match toml::from_str::<AppConfig>(&content) {
+            Ok(config) => {
+                if let Some(entry) = invalid_config_entry(&config) {
+                    backup_unparsable_config(path, entry);
                     AppConfig::default()
                 } else {
-                    let cfg: AppConfig = match value.try_into() {
-                        Ok(c) => c,
-                        Err(e) => {
-                            backup_unparsable_config(path, &e.to_string());
-                            AppConfig::default()
-                        }
-                    };
-                    cfg
+                    config
                 }
             }
-            Err(e) => {
-                backup_unparsable_config(path, &e.to_string());
+            Err(error) => {
+                backup_unparsable_config(path, &error.to_string());
                 AppConfig::default()
             }
         };
@@ -400,7 +301,8 @@ impl ConfigLoader {
     /// replace the configured path only after the complete TOML write succeeds.
     /// A successful return confirms the replacement call succeeded; it does
     /// not guarantee survival across an OS crash or sudden power loss.
-    pub fn save(&self) -> anyhow::Result<()> {
+    pub fn save(&mut self) -> anyhow::Result<()> {
+        super::credentials::validate_config_references(&self.config)?;
         let toml_str = toml::to_string_pretty(&self.config)?;
         static SAVE_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let file_name = self
@@ -485,7 +387,7 @@ impl AppConfig {
         // frontend keeps the loaded copy intact and only edits exposed
         // fields), so applying it here cannot wipe fields the UI does not
         // render. `#[serde(default)]` fills any genuinely missing field with
-        // its default, which is the expected upgrade behavior for new keys.
+        // its default, which is the current schema's partial-settings contract.
         self.context_limits = settings.context_limits.clone();
         self.memory = settings.memory.clone();
         // Permanent permissions are mutated by resolve_confirmation /
@@ -589,7 +491,7 @@ mod tests {
         assert_eq!(cfg.context_limits.max_tools_per_request, 64);
         assert_eq!(cfg.context_limits.partial_checkpoint_interval_secs, 2);
         assert_eq!(cfg.context_limits.fact_infer_interval_steps, 25);
-        assert_eq!(cfg.memory.history_retention_days, 90);
+        assert_eq!(cfg.session.history_retention_days, 90);
         assert!(cfg.security.encrypt_sensitive);
         assert!(cfg.mcp_servers.is_empty());
         assert_eq!(cfg.media.stt.provider, "llm");
@@ -627,18 +529,19 @@ mod tests {
     }
 
     #[test]
-    fn action_completion_notification_defaults_on_for_legacy_config() {
-        let parsed: NotificationConfig = toml::from_str(
+    fn notification_config_rejects_removed_fields() {
+        let parsed = toml::from_str::<NotificationConfig>(
             r#"
-            [session_error]
+            [removed_channel]
             in_app = true
             windows = true
             "#,
-        )
-        .unwrap();
+        );
 
-        assert!(parsed.action_completed.in_app);
-        assert!(parsed.action_completed.windows);
+        assert!(
+            parsed.is_err(),
+            "removed notification fields must be rejected"
+        );
     }
 
     #[test]
@@ -1071,7 +974,6 @@ name = "deepseek"
 provider = "deepseek"
 api_style = "deepseek-responses"
 base_url = "https://api.deepseek.com"
-api_key = "test-key"
 "#,
         )
         .unwrap();
@@ -1092,203 +994,60 @@ api_key = "test-key"
     }
 
     #[test]
-    fn load_backs_up_removed_tool_names_without_migrating_them() {
-        let dir = std::env::temp_dir().join(format!("haven_test_{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("config.toml");
-        std::fs::write(
-            &path,
-            r#"
-[tool_settings.file]
-timeout_secs = 60
+    fn load_rejects_old_fields_and_plaintext_credentials() {
+        let cases = [
+            ("removed root section", "[audio]\nmax_duration_secs = 20\n"),
+            (
+                "old retention location",
+                "[memory]\nhistory_retention_days = 42\n",
+            ),
+            (
+                "removed model role",
+                "[llm]\nbalanced_model = \"old-model\"\n",
+            ),
+            (
+                "plaintext provider credential",
+                "[[llm.providers]]\nname = \"primary\"\napi_key = \"old-secret\"\n",
+            ),
+            (
+                "plaintext OCR credential",
+                "[media.ocr]\napi_key = \"old-secret\"\n",
+            ),
+            (
+                "plaintext MCP environment",
+                "[[mcp_servers]]\nname = \"example\"\nenv = [\"TOKEN=old-secret\"]\n",
+            ),
+            (
+                "removed media provider credential",
+                "[media.stt]\napi_key = \"old-secret\"\n",
+            ),
+        ];
 
-[[security.permissions]]
-key = "scheduled_action:set"
-effect = "allow"
-"#,
-        )
-        .unwrap();
+        for (case, source) in cases {
+            let dir = std::env::temp_dir().join(format!("haven_test_{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("config.toml");
+            std::fs::write(&path, source).unwrap();
 
-        let loader = ConfigLoader::load_from(&path).unwrap();
-        assert_eq!(loader.config(), &AppConfig::default());
-        let backups = dir
-            .read_dir()
-            .unwrap()
-            .filter_map(Result::ok)
-            .filter(|entry| {
-                let name = entry.file_name().into_string().unwrap();
-                name.starts_with("config.toml.") && name.ends_with(".bak")
-            })
-            .count();
-        assert_eq!(backups, 1, "removed tool names must require reset");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn load_backs_up_removed_legacy_permission_names() {
-        let dir = std::env::temp_dir().join(format!("haven_test_{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("config.toml");
-        std::fs::write(
-            &path,
-            r#"
-[[security.permissions]]
-key = "file_search:content"
-effect = "allow"
-"#,
-        )
-        .unwrap();
-
-        let loader = ConfigLoader::load_from(&path).unwrap();
-        assert_eq!(loader.config(), &AppConfig::default());
-        let backups = dir
-            .read_dir()
-            .unwrap()
-            .filter_map(Result::ok)
-            .filter(|entry| {
-                let name = entry.file_name().into_string().unwrap();
-                name.starts_with("config.toml.") && name.ends_with(".bak")
-            })
-            .count();
-        assert_eq!(backups, 1, "removed permission names must require reset");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn load_backs_up_removed_session_diagnostics_permission_name() {
-        let dir = std::env::temp_dir().join(format!("haven_test_{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("config.toml");
-        std::fs::write(
-            &path,
-            r#"
-[[security.permissions]]
-key = "haven_session_diagnostics:sessions"
-effect = "allow"
-"#,
-        )
-        .unwrap();
-
-        let loader = ConfigLoader::load_from(&path).unwrap();
-        assert_eq!(loader.config(), &AppConfig::default());
-        let backups = dir
-            .read_dir()
-            .unwrap()
-            .filter_map(Result::ok)
-            .filter(|entry| {
-                let name = entry.file_name().into_string().unwrap();
-                name.starts_with("config.toml.") && name.ends_with(".bak")
-            })
-            .count();
-        assert_eq!(backups, 1, "removed permission names must require reset");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn load_backs_up_removed_top_level_audio_configuration() {
-        let dir = std::env::temp_dir().join(format!("haven_test_{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("config.toml");
-        std::fs::write(
-            &path,
-            r#"
-[audio]
-sample_rate = 22050
-vad_threshold = 0.25
-"#,
-        )
-        .unwrap();
-        let loader = ConfigLoader::load_from(&path).unwrap();
-        assert_eq!(loader.config(), &AppConfig::default());
-        let backups = dir
-            .read_dir()
-            .unwrap()
-            .filter_map(Result::ok)
-            .filter(|entry| {
-                let name = entry.file_name().into_string().unwrap();
-                name.starts_with("config.toml.") && name.ends_with(".bak")
-            })
-            .count();
-        assert_eq!(backups, 1, "removed configuration must require reset");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn load_backs_up_removed_tool_settings() {
-        let dir = std::env::temp_dir().join(format!("haven_test_{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("config.toml");
-        std::fs::write(&path, "[tool_settings.power]\ntimeout_secs = 60\n").unwrap();
-
-        let loader = ConfigLoader::load_from(&path).unwrap();
-        assert_eq!(loader.config(), &AppConfig::default());
-        let backups = dir
-            .read_dir()
-            .unwrap()
-            .filter_map(Result::ok)
-            .filter(|entry| {
-                let name = entry.file_name().into_string().unwrap();
-                name.starts_with("config.toml.") && name.ends_with(".bak")
-            })
-            .count();
-        assert_eq!(backups, 1);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn load_backs_up_colon_operation_permission_names_without_migrating_them() {
-        let dir = std::env::temp_dir().join(format!("haven_test_{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("config.toml");
-        std::fs::write(
-            &path,
-            r#"
-[[security.permissions]]
-key = "files:search"
-effect = "allow"
-
-[[security.permissions]]
-key = "system:env:list"
-effect = "allow"
-"#,
-        )
-        .unwrap();
-
-        let loader = ConfigLoader::load_from(&path).unwrap();
-        assert_eq!(loader.config(), &AppConfig::default());
-        let backups = dir
-            .read_dir()
-            .unwrap()
-            .filter_map(Result::ok)
-            .filter(|entry| {
-                let name = entry.file_name().into_string().unwrap();
-                automatic_backup_timestamp(&entry.path(), &path).is_some() && name.ends_with(".bak")
-            })
-            .count();
-        assert_eq!(backups, 1, "colon operation keys must require reset");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn load_backs_up_removed_audio_tool_settings() {
-        let dir = std::env::temp_dir().join(format!("haven_test_{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("config.toml");
-        std::fs::write(&path, "[tool_settings.audio]\nenabled = true\n").unwrap();
-
-        let loader = ConfigLoader::load_from(&path).unwrap();
-        assert_eq!(loader.config(), &AppConfig::default());
-        let backups = dir
-            .read_dir()
-            .unwrap()
-            .filter_map(Result::ok)
-            .filter(|entry| {
-                let name = entry.file_name().into_string().unwrap();
-                name.starts_with("config.toml.") && name.ends_with(".bak")
-            })
-            .count();
-        assert_eq!(backups, 1);
-        let _ = std::fs::remove_dir_all(&dir);
+            let loader = ConfigLoader::load_from(&path).unwrap();
+            assert_eq!(loader.config(), &AppConfig::default(), "{case}");
+            let backup_count = dir
+                .read_dir()
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| {
+                    entry.file_name().to_str().is_some_and(|name| {
+                        name.starts_with("config.toml.") && name.ends_with(".bak")
+                    })
+                })
+                .count();
+            assert_eq!(
+                backup_count, 1,
+                "{case} must be preserved for manual recovery"
+            );
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), source);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     #[test]
@@ -1325,7 +1084,7 @@ confirmation_mode = "always"
     }
 
     #[test]
-    fn load_backs_up_removed_media_provider_credentials() {
+    fn load_backs_up_unknown_media_fields() {
         let dir = std::env::temp_dir().join(format!("haven_test_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.toml");
@@ -1360,7 +1119,7 @@ api_key = "old-secret"
     }
 
     #[test]
-    fn load_backs_up_removed_media_provider_name() {
+    fn load_backs_up_unknown_media_provider_reference() {
         let dir = std::env::temp_dir().join(format!("haven_test_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.toml");
@@ -1387,7 +1146,7 @@ model = "nova-3"
             .count();
         assert_eq!(
             backups, 1,
-            "removed media provider names must require reset"
+            "unknown media provider references must require reset"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1406,7 +1165,6 @@ provider = "deepgram"
 [[llm.providers]]
 name = "deepgram"
 provider = "deepgram"
-api_key = "named-secret"
 base_url = "https://api.deepgram.com"
 "#,
         )
@@ -1472,7 +1230,7 @@ base_url = "https://api.deepgram.com"
             )
             .unwrap();
         }
-        let manual = dir.join("config.toml.manual-migration-20260914.bak");
+        let manual = dir.join("config.toml.manual.bak");
         std::fs::write(&manual, "manual recovery copy").unwrap();
 
         prune_timestamped_backups(&path);
@@ -1487,7 +1245,7 @@ base_url = "https://api.deepgram.com"
         assert!(dir.join("config.toml.12.1.0.bak").exists());
         assert!(dir.join("config.toml.3.1.0.bak").exists());
         assert!(!dir.join("config.toml.2.1.0.bak").exists());
-        assert!(manual.exists(), "manual migration backup must be preserved");
+        assert!(manual.exists(), "manual backup must be preserved");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

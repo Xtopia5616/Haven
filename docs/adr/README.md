@@ -384,3 +384,8 @@
 - [0395：阶段 9 容量验证与 Windows profile 验收状态](0395-phase-9-capacity-and-windows-profile-audit.md)
 - [0396：将消息服务收口到 haven-messaging](0396-messaging-domain-crate.md)
 - [0397：定时任务类型归入 Action 域](0397-action-domain-type-boundary.md)
+- [0401：Windows Credential Manager 凭据存储](0401-windows-credential-manager-credentials.md)
+- [0402：会话授权持久化与生命周期](0402-durable-session-authorization-grants.md)
+- [0403：Session-Owned Attachment Retention](0403-session-owned-attachment-retention.md)
+- [0404：Session 事件容量、保留与写入失败恢复](0404-session-event-capacity-retention-and-recovery.md)
+- [0405：当前配置契约不执行迁移](0405-current-config-contract-without-migration.md)

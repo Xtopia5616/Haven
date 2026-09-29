@@ -796,6 +796,7 @@ impl AdminServices {
             command: command.unwrap_or_default(),
             args: fields.args.clone(),
             env: fields.env.clone(),
+            env_refs: Vec::new(),
             cwd: fields.cwd.clone().filter(|value| !value.is_empty()),
             url: url.unwrap_or_default(),
             enabled: fields.enabled,

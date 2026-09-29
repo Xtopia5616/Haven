@@ -2288,6 +2288,7 @@ dependencies = [
  "haven-input",
  "haven-llm",
  "haven-memory",
+ "haven-platform",
  "haven-tools",
  "proc-macro2",
  "quote",
@@ -2424,6 +2425,8 @@ dependencies = [
 name = "haven-platform"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "haven-common",
  "windows-sys 0.61.2",
 ]
 

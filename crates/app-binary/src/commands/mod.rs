@@ -73,6 +73,7 @@ pub struct SessionListResponse {
 
 /// Re-export: command error logging lives in `crate::logging` (conventions §1).
 pub(crate) use crate::logging::log_err;
+pub(crate) use crate::logging::log_storage_err;
 
 /// Execute one native admin request through the typed operation that owns its
 /// capability. This helper is intentionally separate from authorization so a
@@ -338,12 +339,14 @@ pub(crate) async fn queue_ui_confirmation(
     action: UiConfirmationAction,
 ) -> Result<String, String> {
     let tool_name = authorization_request.tool_name.clone();
-    let summary = haven_tools::permission_prompt_summary(&tool_name, &authorization_request.input);
+    let display_input =
+        redact_mcp_admin_confirmation_input(&tool_name, authorization_request.input.clone());
+    let summary = haven_tools::permission_prompt_summary(&tool_name, &display_input);
     let permission_key = authorization_request.policy.capability.to_string();
     let risk_level = receipt.effective_risk;
     let request = haven_agent::InteractionRequest::ui_confirm(
         tool_name,
-        authorization_request.input.clone(),
+        display_input,
         summary.clone(),
         receipt.clone(),
     );
@@ -380,9 +383,41 @@ pub(crate) async fn queue_ui_confirmation(
     .map_err(|error| log_err("queue_ui_confirmation", error))
 }
 
+/// MCP environment values stay in the typed pending action so the approved
+/// operation can execute, but confirmation summaries and interaction payloads
+/// expose only variable names. Keep this at the renderer boundary so the
+/// authorization receipt still binds the original input internally.
+fn redact_mcp_admin_confirmation_input(
+    tool_name: &str,
+    mut input: serde_json::Value,
+) -> serde_json::Value {
+    if !matches!(tool_name, "haven.mcp.mcp_add" | "haven.mcp.mcp_update") {
+        return input;
+    }
+    let Some(environment) = input
+        .get_mut("env")
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return input;
+    };
+    for entry in environment {
+        let Some(raw) = entry.as_str() else {
+            continue;
+        };
+        let Some((name, _)) = raw.split_once('=') else {
+            continue;
+        };
+        *entry = serde_json::Value::String(format!("{name}=<redacted>"));
+    }
+    input
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{dispatch_authorized_admin_request, parse_mcp_refresh_failed_names};
+    use super::{
+        dispatch_authorized_admin_request, parse_mcp_refresh_failed_names,
+        redact_mcp_admin_confirmation_input,
+    };
     use haven_common::types::{CapabilityScope, RiskLevel, new_id};
     use haven_tools::{
         AuthorizationDecision, AuthorizationReasonCode, ConfirmationReceipt, McpRefreshAction,
@@ -456,6 +491,30 @@ mod tests {
         );
         assert!(
             parse_mcp_refresh_failed_names(&serde_json::Value::Null, &refresh_plan()).is_empty()
+        );
+    }
+
+    #[test]
+    fn mcp_confirmation_input_redacts_values_but_keeps_names() {
+        let input = serde_json::json!({
+            "operation": "mcp_add",
+            "name": "server",
+            "env": ["TOKEN=secret-value", "EMPTY=", "INHERITED"]
+        });
+        let redacted = redact_mcp_admin_confirmation_input("haven.mcp.mcp_add", input);
+        assert_eq!(
+            redacted["env"],
+            serde_json::json!(["TOKEN=<redacted>", "EMPTY=<redacted>", "INHERITED"])
+        );
+        assert!(!redacted.to_string().contains("secret-value"));
+    }
+
+    #[test]
+    fn non_mcp_confirmation_input_is_unchanged() {
+        let input = serde_json::json!({"env": ["TOKEN=secret-value"]});
+        assert_eq!(
+            redact_mcp_admin_confirmation_input("haven.skills.run", input.clone()),
+            input
         );
     }
 

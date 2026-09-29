@@ -139,21 +139,6 @@ impl ToolsManager {
             {
                 continue;
             }
-            let expires_at = match attachment.expires_at.as_deref() {
-                Some(value) => match DateTime::parse_from_rfc3339(value) {
-                    Ok(value) => Some(value.with_timezone(&Utc)),
-                    Err(error) => {
-                        tracing::warn!(
-                            asset_id = %asset_id,
-                            session_id = %session_id,
-                            error = %error,
-                            "rejecting generated attachment with invalid expiry metadata"
-                        );
-                        continue;
-                    }
-                },
-                None => None,
-            };
             if !self
                 .coordinator
                 .runtime
@@ -167,7 +152,10 @@ impl ToolsManager {
                     attachment.media_type.clone(),
                     attachment.sha256.clone(),
                     attachment.size_bytes,
-                    expires_at,
+                    // Persisted attachment expiry is superseded by session
+                    // ownership. Runtime-only generated assets retain their
+                    // explicit TTL through the non-session registration API.
+                    None,
                 )
             {
                 tracing::warn!(
@@ -200,6 +188,35 @@ impl ToolsManager {
                     asset_id = %asset_id,
                     session_id = %session_id,
                     "failed to bind pending managed attachment to session lease"
+                );
+            }
+        }
+    }
+
+    /// Reassign only the uploaded assets from a stale ingress session id to
+    /// the actual session returned by the agent. Other assets already leased
+    /// by the stale session remain protected.
+    pub fn transfer_managed_assets_to_session(
+        &self,
+        from_session_id: &str,
+        to_session_id: &str,
+        attachments: &[MessageAttachment],
+    ) {
+        for attachment in attachments {
+            let Some(asset_id) = attachment.asset_id.as_deref() else {
+                continue;
+            };
+            if !self
+                .coordinator
+                .runtime
+                .managed_assets
+                .transfer_session_lease(from_session_id, to_session_id, asset_id)
+            {
+                tracing::warn!(
+                    asset_id = %asset_id,
+                    from_session_id = %from_session_id,
+                    to_session_id = %to_session_id,
+                    "failed to transfer managed attachment session lease"
                 );
             }
         }

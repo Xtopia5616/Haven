@@ -1151,12 +1151,136 @@ impl SessionSupervisor {
         None
     }
 
+    async fn pending_confirmation_request(
+        &self,
+        step_id: &haven_common::types::ConfirmId,
+    ) -> Option<crate::interaction::InteractionRequest> {
+        if let Some(request) = self.scheduled_confirms.lock().await.iter().find(|request| {
+            request.id == step_id.as_str()
+                && request.status == crate::interaction::InteractionStatus::Pending
+        }) {
+            return Some(request.clone());
+        }
+
+        let actors = self
+            .actors
+            .lock()
+            .await
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for actor in actors {
+            if let Some(request) = actor
+                .interactions(Some(crate::interaction::InteractionKind::Confirm), true)
+                .await
+                .into_iter()
+                .find(|request| request.id == step_id.as_str())
+            {
+                return Some(request);
+            }
+        }
+        None
+    }
+
+    /// Persist an explicit session grant before resolving a pending
+    /// confirmation. Resolving the interaction can wake a paused ReAct actor
+    /// (or spawn a scheduled operation), so the durable decision must exist
+    /// before that wake edge. UI-only confirmations are handled by the app
+    /// command because their typed action payload is app-owned.
+    pub async fn resolve_confirmation_with_session_grant(
+        self: &Arc<Self>,
+        step_id: &haven_common::types::ConfirmId,
+        target: haven_common::types::PermissionTarget,
+        effect: haven_common::types::PermissionEffect,
+    ) -> anyhow::Result<Option<crate::session::ConfirmResolution>> {
+        let _resolution = self.confirmation_resolution_gate.lock().await;
+        let Some(request) = self.pending_confirmation_request(step_id).await else {
+            // Let the app command check its separately-owned UI confirmation
+            // registry. Do not resolve a request that appeared after this
+            // preflight; the caller can retry it and no trust is widened.
+            return Ok(None);
+        };
+
+        let (session_id, tool_name, tool_input, receipt) = match &request.details {
+            crate::interaction::InteractionDetails::Confirm {
+                tool_name,
+                tool_input,
+                receipt,
+                ..
+            } => (
+                request.session_id.clone(),
+                tool_name,
+                tool_input,
+                receipt.as_ref(),
+            ),
+            crate::interaction::InteractionDetails::ScheduledConfirm {
+                tool_name,
+                tool_input,
+                receipt,
+                ..
+            } => (
+                request.session_id.clone(),
+                tool_name,
+                tool_input,
+                Some(receipt),
+            ),
+            _ => return Ok(None),
+        };
+        anyhow::ensure!(
+            session_id != "action",
+            "session scope requires an owning conversation"
+        );
+
+        let authorization_request = self
+            .tool_authorization
+            .authorization_request(Some(&session_id), tool_name, tool_input)
+            .await;
+        let capability = receipt
+            .map(|receipt| receipt.capability.clone())
+            .unwrap_or_else(|| authorization_request.policy.capability.clone());
+        let key = capability.target(target).ok_or_else(|| {
+            anyhow::anyhow!("permission target is broader than the pending capability")
+        })?;
+
+        // For an allow, verify the exact receipt before making a durable trust
+        // change. Denials do not execute the operation, but persist before the
+        // wake so a retry cannot race past the user's session-scoped denial.
+        if matches!(effect, haven_common::types::PermissionEffect::Allow) {
+            let receipt = receipt.ok_or_else(|| {
+                anyhow::anyhow!("confirmation is missing its authorization receipt")
+            })?;
+            self.authorization
+                .verify_receipt(&authorization_request, receipt)
+                .await
+                .map_err(anyhow::Error::msg)?;
+        }
+        self.grant_session_permission(&session_id, key, target, effect)
+            .await?;
+
+        self.resolve_confirmation_locked(
+            step_id,
+            matches!(effect, haven_common::types::PermissionEffect::Allow),
+        )
+        .await
+    }
+
     /// Resolve a pending safety-gateway confirmation and return enough context
-    /// for the app layer to record a permission grant (tool + session).
+    /// for the app layer to persist an Always grant. Session grants use
+    /// [`Self::resolve_confirmation_with_session_grant`] so they commit before
+    /// resolving can wake the operation.
     ///
     /// Handles (1) scheduled-tool pending (R2 — execute/skip asynchronously)
     /// and (2) ReAct pause-confirm. An unknown id is stale.
     pub async fn resolve_confirmation(
+        self: &Arc<Self>,
+        step_id: &haven_common::types::ConfirmId,
+        confirmed: bool,
+    ) -> anyhow::Result<Option<crate::session::ConfirmResolution>> {
+        let _resolution = self.confirmation_resolution_gate.lock().await;
+        self.resolve_confirmation_locked(step_id, confirmed).await
+    }
+
+    async fn resolve_confirmation_locked(
         self: &Arc<Self>,
         step_id: &haven_common::types::ConfirmId,
         confirmed: bool,
@@ -1386,6 +1510,7 @@ mod scheduled_authorization_tests {
     struct PolicyTestTool {
         name: String,
         risk_level: RiskLevel,
+        on_execute: Option<Arc<dyn Fn() + Send + Sync>>,
     }
 
     #[async_trait::async_trait]
@@ -1407,6 +1532,10 @@ mod scheduled_authorization_tests {
             _input: Value,
             _cancel: CancellationToken,
         ) -> anyhow::Result<haven_tools::ToolResult> {
+            if let Some(on_execute) = &self.on_execute {
+                on_execute();
+                return Ok(haven_tools::ToolResult::ok(json!({"ok": true})));
+            }
             unreachable!("scheduled authorization tests never execute a tool")
         }
 
@@ -1418,19 +1547,24 @@ mod scheduled_authorization_tests {
     fn test_supervisor() -> (
         Arc<SessionSupervisor>,
         Arc<haven_tools::ToolsManager>,
+        Arc<Database>,
         tempfile::TempDir,
     ) {
         let tools = Arc::new(haven_tools::ToolsManager::new());
         let directory = tempfile::tempdir().unwrap();
         let database =
             Arc::new(Database::open(&directory.path().join("authorization.db")).unwrap());
-        let supervisor = Arc::new(SessionSupervisor::new_for_test(database, tools.clone(), 1));
-        (supervisor, tools, directory)
+        let supervisor = Arc::new(SessionSupervisor::new_for_test(
+            database.clone(),
+            tools.clone(),
+            1,
+        ));
+        (supervisor, tools, database, directory)
     }
 
     #[tokio::test]
     async fn scheduled_authorization_preserves_request_and_decision_behavior() {
-        let (supervisor, tools, _directory) = test_supervisor();
+        let (supervisor, tools, _database, _directory) = test_supervisor();
         let session_id = "ses-00000000000000000000000000000001";
         let tool_name = "scheduled.critical";
         let input = json!({"target": "recording"});
@@ -1440,6 +1574,7 @@ mod scheduled_authorization_tests {
                 Arc::new(PolicyTestTool {
                     name: tool_name.into(),
                     risk_level: RiskLevel::Critical,
+                    on_execute: None,
                 }),
             )
             .await;
@@ -1474,6 +1609,7 @@ mod scheduled_authorization_tests {
                 Arc::new(PolicyTestTool {
                     name: safe_tool_name.into(),
                     risk_level: RiskLevel::Safe,
+                    on_execute: None,
                 }),
             )
             .await;
@@ -1497,6 +1633,160 @@ mod scheduled_authorization_tests {
                 ..
             }
         ));
+    }
+
+    #[tokio::test]
+    async fn session_grant_is_durable_before_scheduled_confirmation_wakes_tool() {
+        let (supervisor, tools, database, _directory) = test_supervisor();
+        let session = supervisor
+            .create_session("grant before confirm wake")
+            .await
+            .unwrap();
+        let tool_name = "scheduled.high";
+        let input = json!({"target": "recording"});
+        let observed_durable_grant = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = observed_durable_grant.clone();
+        let db = database.clone();
+        let session_id = session.id.clone();
+        let observed_session_id = session_id.clone();
+        let expected_capability = haven_common::types::CapabilityScope::try_new(
+            haven_common::types::permission_key(tool_name, &input),
+        )
+        .unwrap();
+        tools
+            .register_for_session(
+                &session_id,
+                Arc::new(PolicyTestTool {
+                    name: tool_name.into(),
+                    risk_level: RiskLevel::High,
+                    on_execute: Some(Arc::new(move || {
+                        let grants = db
+                            .session_authorization_grants(&observed_session_id)
+                            .unwrap();
+                        observed.store(
+                            grants.iter().any(|grant| {
+                                grant.capability == expected_capability
+                                    && grant.effect == PermissionEffect::Allow
+                            }),
+                            std::sync::atomic::Ordering::SeqCst,
+                        );
+                    })),
+                }),
+            )
+            .await;
+
+        let authorization_request = supervisor
+            .scheduled_authorization_request(Some(&session_id), tool_name, &input)
+            .await;
+        let receipt = match supervisor
+            .authorization
+            .authorize(&authorization_request)
+            .await
+        {
+            AuthorizationDecision::RequiresConfirmation { receipt, .. } => receipt,
+            decision => panic!("expected confirmation, got {decision:?}"),
+        };
+        let confirmation_id = supervisor
+            .request_scheduled_confirm(
+                "act-00000000000000000000000000000001",
+                Some(&session_id),
+                tool_name,
+                input,
+                receipt,
+                "scheduled confirmation",
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            supervisor
+                .resolve_confirmation_with_session_grant(
+                    &confirmation_id,
+                    haven_common::types::PermissionTarget::Operation,
+                    PermissionEffect::Allow,
+                )
+                .await
+                .unwrap()
+                .is_some()
+        );
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !observed_durable_grant.load(std::sync::atomic::Ordering::SeqCst) {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("scheduled tool should observe its durable grant before execution");
+    }
+
+    #[tokio::test]
+    async fn session_grant_loses_to_an_already_queued_once_rejection_without_stale_row() {
+        let (supervisor, _tools, database, _directory) = test_supervisor();
+        let session = supervisor
+            .create_session("serialized confirmation decisions")
+            .await
+            .unwrap();
+        let confirmation_id: haven_common::types::ConfirmId =
+            haven_common::types::new_id("conf").into();
+        let capability = haven_common::types::CapabilityScope::try_new("files.write").unwrap();
+        supervisor
+            .request_scheduled_confirm(
+                "act-00000000000000000000000000000002",
+                Some(&session.id),
+                "files.write",
+                json!({"path": "notes.txt"}),
+                haven_tools::ConfirmationReceipt {
+                    confirmation_id: confirmation_id.clone(),
+                    capability,
+                    canonical_input_hash: String::new(),
+                    effective_risk: RiskLevel::High,
+                    policy_revision: 0,
+                    expires_at: u64::MAX,
+                },
+                "scheduled confirmation",
+            )
+            .await
+            .unwrap();
+
+        // Hold the shared resolver gate, then queue a one-shot rejection
+        // before a duplicate Session-Allow click. FIFO serialization must let
+        // the rejection consume the pending request before the grant path can
+        // inspect or persist it.
+        let gate = supervisor.confirmation_resolution_gate.clone();
+        let held_gate = gate.lock().await;
+        let once_supervisor = supervisor.clone();
+        let once_id = confirmation_id.clone();
+        let (once_started_tx, once_started_rx) = tokio::sync::oneshot::channel();
+        let once = tokio::spawn(async move {
+            let _ = once_started_tx.send(());
+            once_supervisor.resolve_confirmation(&once_id, false).await
+        });
+        once_started_rx.await.unwrap();
+
+        let session_supervisor = supervisor.clone();
+        let session_id_for_call = confirmation_id.clone();
+        let (session_started_tx, session_started_rx) = tokio::sync::oneshot::channel();
+        let session_grant = tokio::spawn(async move {
+            let _ = session_started_tx.send(());
+            session_supervisor
+                .resolve_confirmation_with_session_grant(
+                    &session_id_for_call,
+                    haven_common::types::PermissionTarget::Operation,
+                    PermissionEffect::Allow,
+                )
+                .await
+        });
+        session_started_rx.await.unwrap();
+        drop(held_gate);
+
+        assert!(once.await.unwrap().unwrap().is_some());
+        assert!(session_grant.await.unwrap().unwrap().is_none());
+        assert!(
+            database
+                .session_authorization_grants(&session.id)
+                .unwrap()
+                .is_empty()
+        );
     }
 }
 

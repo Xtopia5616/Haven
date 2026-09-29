@@ -1,5 +1,5 @@
 use crate::app_state::AppState;
-use crate::commands::{emit_event_logged, log_err};
+use crate::commands::{emit_event_logged, log_err, log_storage_err};
 use crate::events::{
     RECORDING_ERROR_EVENT, RECORDING_STARTED_EVENT, RECORDING_STOPPED_EVENT, RecordingErrorEvent,
     RecordingEvent, TRANSCRIPTION_ERROR_EVENT, TRANSCRIPTION_RESULT_EVENT,
@@ -409,19 +409,15 @@ pub async fn process_transcript(
         .clone();
     let attachments = validate_attachments(attachments.unwrap_or_default(), &limits)
         .map_err(|e| log_err("process_transcript", e))?;
-    let attachments = persist_file_attachments(attachments, limits.max_upload_total_bytes)
-        .await
-        .map_err(|e| log_err("process_transcript", e))?;
-    if let Some(session_id) = active_session_id.as_deref() {
-        state
-            .tools
-            .register_managed_assets_for_session(session_id, &attachments);
-    } else {
-        // The new session id is allocated only after ingress persists the
-        // first message. Keep the registry entry protected across that small
-        // pre-session window, then bind it to the returned session lease.
-        state.tools.register_managed_assets(&attachments);
-    }
+    let assets = state.tools.share_services().assets;
+    let attachments = persist_file_attachments(
+        attachments,
+        limits.max_upload_total_bytes,
+        assets,
+        active_session_id.clone(),
+    )
+    .await
+    .map_err(|e| log_err("process_transcript", e))?;
     let voice = voice.unwrap_or(false);
     tracing::debug!(
         "process_transcript called: text={:?} active_session_id={:?} attachments={} voice={}",
@@ -440,15 +436,22 @@ pub async fn process_transcript(
             if active_session_id.is_none() {
                 state.tools.release_pending_managed_assets(&attachments);
             }
-            return Err(log_err("process_transcript", error));
+            return Err(log_storage_err("process_transcript", error));
         }
     };
-    if active_session_id.is_none()
-        && let haven_agent::ProcessResult::SessionCreated { session_id, .. } = &result
-    {
-        state
+    match (&result, active_session_id.as_deref()) {
+        (haven_agent::ProcessResult::SessionCreated { session_id, .. }, Some(previous_id)) => {
+            state
+                .tools
+                .transfer_managed_assets_to_session(previous_id, session_id, &attachments);
+        }
+        (haven_agent::ProcessResult::SessionCreated { session_id, .. }, None) => state
             .tools
-            .bind_pending_managed_assets_to_session(session_id, &attachments);
+            .bind_pending_managed_assets_to_session(session_id, &attachments),
+        (haven_agent::ProcessResult::Supplemented { .. }, Some(_)) => {}
+        (haven_agent::ProcessResult::Supplemented { .. }, None) => {
+            state.tools.release_pending_managed_assets(&attachments);
+        }
     }
     let pending_recording_usage = recording_session_id.as_deref().and_then(|id| {
         state
@@ -540,14 +543,20 @@ fn sanitize_filename(name: &str) -> String {
 async fn persist_file_attachments(
     attachments: Vec<haven_common::types::MessageAttachment>,
     max_total_bytes: u64,
+    registry: haven_tools::ManagedAssetRegistry,
+    session_id: Option<String>,
 ) -> Result<Vec<haven_common::types::MessageAttachment>, String> {
-    persist_file_attachments_to_with_limit(uploads_root(), attachments, max_total_bytes).await
+    persist_file_attachments_to_with_limit_and_registry(
+        uploads_root(),
+        attachments,
+        max_total_bytes,
+        Some((registry, session_id)),
+    )
+    .await
 }
 
-/// Remove only generated upload batches/staging directories that have
-/// outlived the session history retention window. This is a host-maintenance
-/// operation, never a model-facing file operation: the target is constrained
-/// to the dedicated uploads root and the `file-{uuid32}` naming contract.
+/// Test helper for deleting unreferenced generated upload batches. Production
+/// cleanup uses the same reference-driven path after reading SessionStore.
 #[cfg(test)]
 pub(crate) async fn cleanup_stale_upload_batches(
     root: std::path::PathBuf,
@@ -564,24 +573,51 @@ pub(crate) async fn cleanup_stale_upload_batches(
 #[cfg(test)]
 pub(crate) async fn cleanup_stale_upload_batches_with_registry(
     root: std::path::PathBuf,
-    max_age: std::time::Duration,
+    _max_age: std::time::Duration,
     registry: haven_tools::ManagedAssetRegistry,
 ) -> Result<usize, String> {
-    cleanup_stale_upload_batches_with_references(root, max_age, registry, None).await
+    cleanup_unreferenced_upload_batches(root, registry, Vec::new()).await
 }
 
-pub(crate) async fn cleanup_stale_upload_batches_with_references(
+/// Delete committed upload batches once no durable message or active ingress /
+/// session lease references any file in the batch. A known reference set is
+/// mandatory: failure to read session metadata must fail closed.
+#[cfg(test)]
+pub(crate) async fn cleanup_unreferenced_upload_batches(
     root: std::path::PathBuf,
-    max_age: std::time::Duration,
     registry: haven_tools::ManagedAssetRegistry,
-    referenced_paths: Option<Vec<std::path::PathBuf>>,
+    referenced_paths: Vec<std::path::PathBuf>,
 ) -> Result<usize, String> {
     let _write_guard = upload_write_lock().lock().await;
     tokio::task::spawn_blocking(move || {
-        cleanup_stale_upload_batches_sync(&root, max_age, &registry, referenced_paths.as_deref())
+        cleanup_unreferenced_upload_batches_sync(&root, &registry, &referenced_paths)
     })
     .await
     .map_err(|error| format!("上传目录清理任务失败: {error}"))?
+}
+
+/// Reconcile both managed media roots against durable session attachment
+/// references. `referenced_paths` must come from SessionStore; callers must not
+/// turn a failed reference read into an empty set.
+pub(crate) async fn cleanup_unreferenced_managed_media(
+    uploads_root: std::path::PathBuf,
+    generated_root: std::path::PathBuf,
+    registry: haven_tools::ManagedAssetRegistry,
+    referenced_paths: Vec<std::path::PathBuf>,
+) -> Result<(usize, usize), String> {
+    let _write_guard = upload_write_lock().lock().await;
+    tokio::task::spawn_blocking(move || {
+        let generated_count = cleanup_unreferenced_generated_media_sync(
+            &generated_root,
+            &registry,
+            &referenced_paths,
+        )?;
+        let upload_count =
+            cleanup_unreferenced_upload_batches_sync(&uploads_root, &registry, &referenced_paths)?;
+        Ok((upload_count, generated_count))
+    })
+    .await
+    .map_err(|error| format!("受管媒体清理任务失败: {error}"))?
 }
 
 /// Staging directories are crash leftovers, not durable session history. They
@@ -612,21 +648,27 @@ fn upload_write_lock() -> &'static tokio::sync::Mutex<()> {
     UPLOAD_WRITE_LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
-fn cleanup_stale_upload_batches_sync(
+fn cleanup_unreferenced_upload_batches_sync(
     root: &std::path::Path,
-    max_age: std::time::Duration,
     registry: &haven_tools::ManagedAssetRegistry,
-    referenced_paths: Option<&[std::path::PathBuf]>,
+    referenced_paths: &[std::path::PathBuf],
 ) -> Result<usize, String> {
-    if let Some(referenced_paths) = referenced_paths {
-        registry.prune_unreferenced(referenced_paths);
-    }
-    let entries = match std::fs::read_dir(root) {
-        Ok(entries) => entries,
+    let root_metadata = match std::fs::symlink_metadata(root) {
+        Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            registry.prune_unreferenced(referenced_paths);
             registry.prune_missing();
             return Ok(0);
         }
+        Err(error) => return Err(format!("读取上传目录失败: {error}")),
+    };
+    if !root_metadata.is_dir() || is_link_or_reparse(&root_metadata) {
+        return Ok(0);
+    }
+    let leased_paths = registry.leased_or_pending_paths();
+    registry.prune_unreferenced(referenced_paths);
+    let entries = match std::fs::read_dir(root) {
+        Ok(entries) => entries,
         Err(error) => return Err(format!("读取上传目录失败: {error}")),
     };
     let mut removed = 0;
@@ -646,34 +688,25 @@ fn cleanup_stale_upload_batches_sync(
             }
         };
         let name = entry.file_name().to_string_lossy().into_owned();
-        let is_batch = is_generated_upload_batch(&name);
-        let is_staging = is_generated_upload_staging(&name);
-        if !metadata.is_dir() || is_link_or_reparse(&metadata) || (!is_batch && !is_staging) {
-            continue;
-        }
-        let modified = match metadata.modified() {
-            Ok(modified) => modified,
-            Err(error) => {
-                tracing::debug!(batch = %name, error = %error, "跳过没有修改时间的上传批次");
-                continue;
-            }
-        };
-        if modified.elapsed().map_or(true, |age| age <= max_age) {
-            continue;
-        }
-        if is_batch
-            && registry
-                .protected_paths()
-                .iter()
-                .any(|path| path_is_equal_or_child(&entry.path(), path))
+        if !metadata.is_dir() || is_link_or_reparse(&metadata) || !is_generated_upload_batch(&name)
         {
-            tracing::debug!(batch = %name, "保留仍被活动会话引用的上传批次");
             continue;
         }
-        match std::fs::remove_dir_all(entry.path()) {
+        let batch_path = entry.path();
+        let has_message_reference = referenced_paths
+            .iter()
+            .any(|path| path_is_equal_or_child(&batch_path, path));
+        let has_live_lease = leased_paths
+            .iter()
+            .any(|path| path_is_equal_or_child(&batch_path, path));
+        if has_message_reference || has_live_lease {
+            tracing::debug!(batch = %name, "保留仍被消息引用或持有活动租约的上传批次");
+            continue;
+        }
+        match std::fs::remove_dir_all(&batch_path) {
             Ok(()) => {
                 removed += 1;
-                registry.prune_paths_under(&entry.path());
+                registry.prune_paths_under(&batch_path);
             }
             Err(error) => tracing::debug!(batch = %name, error = %error, "上传批次清理失败"),
         }
@@ -734,36 +767,26 @@ fn cleanup_stale_upload_staging_sync(
     Ok(removed)
 }
 
-/// Remove expired generated-media files from the dedicated generated root.
-/// Active session leases override expiry so a running session can finish using
-/// its generated attachment; durable history alone does not extend this
-/// artifact's independent lifetime.
-pub(crate) async fn cleanup_stale_generated_media(
-    root: std::path::PathBuf,
-    registry: haven_tools::ManagedAssetRegistry,
-) -> Result<usize, String> {
-    let _write_guard = upload_write_lock().lock().await;
-    tokio::task::spawn_blocking(move || cleanup_stale_generated_media_sync(&root, &registry))
-        .await
-        .map_err(|error| format!("生成媒体清理任务失败: {error}"))?
-}
-
-fn cleanup_stale_generated_media_sync(
+fn cleanup_unreferenced_generated_media_sync(
     root: &std::path::Path,
     registry: &haven_tools::ManagedAssetRegistry,
+    referenced_paths: &[std::path::PathBuf],
 ) -> Result<usize, String> {
     let root_metadata = match std::fs::symlink_metadata(root) {
         Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            registry.prune_unreferenced(referenced_paths);
+            registry.prune_missing();
+            return Ok(0);
+        }
         Err(error) => return Err(format!("读取生成媒体根目录失败: {error}")),
     };
     if !root_metadata.is_dir() || is_link_or_reparse(&root_metadata) {
         return Ok(0);
     }
-    let expired_paths = registry.expired_paths();
     let leased_paths = registry.leased_paths();
-    let fallback_max_age =
-        std::time::Duration::from_secs(haven_common::config::GENERATED_MEDIA_RETENTION_SECS);
+    let transient_paths = registry.unexpired_transient_paths();
+    registry.prune_unreferenced(referenced_paths);
     let entries =
         std::fs::read_dir(root).map_err(|error| format!("读取生成媒体目录失败: {error}"))?;
     let mut removed = 0;
@@ -787,22 +810,17 @@ fn cleanup_stale_generated_media_sync(
         if !metadata.is_file() || is_link_or_reparse(&metadata) || !is_generated_media_file(&name) {
             continue;
         }
-        if leased_paths
-            .iter()
-            .any(|candidate| path_is_equal(candidate, &path))
-        {
-            tracing::debug!(file = %name, "保留仍被活动会话引用的生成媒体");
-            continue;
-        }
-        let expired = expired_paths
+        let path_is_referenced = referenced_paths
             .iter()
             .any(|candidate| path_is_equal(candidate, &path));
-        let old_enough = metadata
-            .modified()
-            .ok()
-            .and_then(|modified| modified.elapsed().ok())
-            .is_some_and(|age| age > fallback_max_age);
-        if !expired && !old_enough {
+        let has_live_lease = leased_paths
+            .iter()
+            .any(|candidate| path_is_equal(candidate, &path));
+        let has_transient_ttl = transient_paths
+            .iter()
+            .any(|candidate| path_is_equal(candidate, &path));
+        if path_is_referenced || has_live_lease || has_transient_ttl {
+            tracing::debug!(file = %name, "保留仍被会话、租约或临时资产 TTL 引用的生成媒体");
             continue;
         }
         match std::fs::remove_file(&path) {
@@ -871,10 +889,21 @@ impl Drop for UploadBatchGuard {
     }
 }
 
+#[cfg(test)]
 async fn persist_file_attachments_to_with_limit(
     root: std::path::PathBuf,
     attachments: Vec<haven_common::types::MessageAttachment>,
     max_total_bytes: u64,
+) -> Result<Vec<haven_common::types::MessageAttachment>, String> {
+    persist_file_attachments_to_with_limit_and_registry(root, attachments, max_total_bytes, None)
+        .await
+}
+
+async fn persist_file_attachments_to_with_limit_and_registry(
+    root: std::path::PathBuf,
+    attachments: Vec<haven_common::types::MessageAttachment>,
+    max_total_bytes: u64,
+    registry: Option<(haven_tools::ManagedAssetRegistry, Option<String>)>,
 ) -> Result<Vec<haven_common::types::MessageAttachment>, String> {
     use base64::Engine as _;
 
@@ -981,6 +1010,40 @@ async fn persist_file_attachments_to_with_limit(
     tokio::fs::rename(&staging_dir, &batch_dir)
         .await
         .map_err(|e| format!("提交上传批次失败: {e}"))?;
+    // Register every committed file while still holding the upload write lock.
+    // A session lease (or pending ingress lease before a new session gets its
+    // id) closes the interval between atomic batch rename and transcript
+    // projection.
+    if let Some((registry, session_id)) = registry {
+        for attachment in &persisted {
+            let (Some(asset_id), Some(path)) = (&attachment.asset_id, &attachment.path) else {
+                continue;
+            };
+            let registered = if let Some(session_id) = session_id.as_deref() {
+                registry.register_under_root_for_session(
+                    session_id,
+                    &root,
+                    asset_id.clone(),
+                    std::path::PathBuf::from(path),
+                    attachment.filename.clone(),
+                    attachment.media_type.clone(),
+                )
+            } else {
+                registry.register_under_root_pending(
+                    &root,
+                    asset_id.clone(),
+                    std::path::PathBuf::from(path),
+                    attachment.filename.clone(),
+                    attachment.media_type.clone(),
+                )
+            };
+            if !registered {
+                let _ = std::fs::remove_dir_all(&batch_dir);
+                registry.prune_missing();
+                return Err("无法注册受管附件".into());
+            }
+        }
+    }
     guard.committed = true;
     Ok(persisted)
 }
@@ -1221,16 +1284,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_generated_media_expiry_respects_active_session_lease() {
-        let root = tempfile::TempDir::new().unwrap();
-        let file = root
+    async fn test_generated_media_follows_session_reference_and_lease() {
+        let upload_root = tempfile::TempDir::new().unwrap();
+        let generated_root = tempfile::TempDir::new().unwrap();
+        let file = generated_root
             .path()
             .join("file-0123456789abcdef0123456789abcdef.png");
         tokio::fs::write(&file, b"png-bytes").await.unwrap();
         let registry = haven_tools::ManagedAssetRegistry::default();
         assert!(registry.register_under_root_for_session_with_metadata(
             "ses-active",
-            root.path(),
+            generated_root.path(),
             "asset-generated",
             file.clone(),
             Some("generated.png".into()),
@@ -1239,23 +1303,93 @@ mod tests {
             Some(9),
             Some(chrono::Utc::now() - chrono::Duration::seconds(1)),
         ));
+        assert!(registry.resolve("asset-generated").is_some());
+        assert!(
+            registry
+                .resolve("asset-generated")
+                .unwrap()
+                .expires_at
+                .is_none()
+        );
 
         assert_eq!(
-            cleanup_stale_generated_media(root.path().to_path_buf(), registry.clone())
-                .await
-                .unwrap(),
-            0
+            cleanup_unreferenced_managed_media(
+                upload_root.path().to_path_buf(),
+                generated_root.path().to_path_buf(),
+                registry.clone(),
+                vec![file.clone()],
+            )
+            .await
+            .unwrap(),
+            (0, 0)
         );
         assert!(file.exists());
 
         registry.release_session("ses-active");
         assert_eq!(
-            cleanup_stale_generated_media(root.path().to_path_buf(), registry)
-                .await
-                .unwrap(),
-            1
+            cleanup_unreferenced_managed_media(
+                upload_root.path().to_path_buf(),
+                generated_root.path().to_path_buf(),
+                registry.clone(),
+                vec![file.clone()],
+            )
+            .await
+            .unwrap(),
+            (0, 0)
+        );
+        assert!(file.exists(), "durable shared reference outlives the lease");
+
+        assert_eq!(
+            cleanup_unreferenced_managed_media(
+                upload_root.path().to_path_buf(),
+                generated_root.path().to_path_buf(),
+                registry,
+                Vec::new(),
+            )
+            .await
+            .unwrap(),
+            (0, 1)
         );
         assert!(!file.exists());
+    }
+
+    #[tokio::test]
+    async fn test_generated_cleanup_keeps_live_transient_ttl_and_removes_unowned_files() {
+        let upload_root = tempfile::TempDir::new().unwrap();
+        let generated_root = tempfile::TempDir::new().unwrap();
+        let transient = generated_root
+            .path()
+            .join("file-0123456789abcdef0123456789abcdef.png");
+        let orphan = generated_root
+            .path()
+            .join("file-fedcba9876543210fedcba9876543210.png");
+        tokio::fs::write(&transient, b"transient").await.unwrap();
+        tokio::fs::write(&orphan, b"orphan").await.unwrap();
+        let registry = haven_tools::ManagedAssetRegistry::default();
+        assert!(registry.register_under_root_with_metadata(
+            generated_root.path(),
+            "asset-transient".to_string(),
+            transient.clone(),
+            Some("transient.png".into()),
+            "image/png".to_string(),
+            None,
+            Some(9),
+            Some(chrono::Utc::now() + chrono::Duration::hours(1)),
+        ));
+
+        assert_eq!(
+            cleanup_unreferenced_managed_media(
+                upload_root.path().to_path_buf(),
+                generated_root.path().to_path_buf(),
+                registry,
+                Vec::new(),
+            )
+            .await
+            .unwrap(),
+            (0, 1)
+        );
+        assert!(transient.exists());
+        assert!(!orphan.exists());
     }
 
     #[tokio::test]
@@ -1310,6 +1444,53 @@ mod tests {
         assert!(image.asset_id.as_deref().unwrap().starts_with("asset-"));
         assert_eq!(image.data, "aGVsbG8=", "gateway keeps a transient payload");
         assert!(image.path.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_upload_pending_lease_closes_commit_to_session_binding_window() {
+        use base64::Engine as _;
+        use tempfile::TempDir;
+
+        let root = TempDir::new().unwrap();
+        let registry = haven_tools::ManagedAssetRegistry::default();
+        let mut attachment = att(
+            "text/plain",
+            &base64::engine::general_purpose::STANDARD.encode(b"pending"),
+        );
+        attachment.filename = Some("pending.txt".into());
+        let persisted = persist_file_attachments_to_with_limit_and_registry(
+            root.path().to_path_buf(),
+            vec![attachment],
+            1024,
+            Some((registry.clone(), None)),
+        )
+        .await
+        .unwrap();
+        let asset_id = persisted[0].asset_id.as_deref().unwrap();
+        let path = std::path::PathBuf::from(persisted[0].path.as_deref().unwrap());
+        let batch = path.parent().unwrap().to_path_buf();
+
+        assert!(registry.protected_paths().contains(&path));
+        assert_eq!(
+            cleanup_unreferenced_upload_batches(
+                root.path().to_path_buf(),
+                registry.clone(),
+                Vec::new(),
+            )
+            .await
+            .unwrap(),
+            0
+        );
+        assert!(path.exists());
+
+        registry.release_pending(asset_id);
+        assert_eq!(
+            cleanup_unreferenced_upload_batches(root.path().to_path_buf(), registry, Vec::new(),)
+                .await
+                .unwrap(),
+            1
+        );
+        assert!(!batch.exists());
     }
 
     #[tokio::test]
@@ -1400,7 +1581,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_cleanup_preserves_registered_asset_and_prunes_deleted_entry() {
+    async fn test_cleanup_preserves_durable_reference_and_prunes_deleted_entry() {
         use tempfile::TempDir;
 
         let root = TempDir::new().unwrap();
@@ -1417,10 +1598,10 @@ mod tests {
             "text/plain",
         ));
 
-        let removed = cleanup_stale_upload_batches_with_registry(
+        let removed = cleanup_unreferenced_upload_batches(
             root.path().to_path_buf(),
-            std::time::Duration::ZERO,
             registry.clone(),
+            vec![file.clone()],
         )
         .await
         .unwrap();
@@ -1452,11 +1633,10 @@ mod tests {
             "text/plain",
         ));
 
-        let removed = cleanup_stale_upload_batches_with_references(
+        let removed = cleanup_unreferenced_upload_batches(
             root.path().to_path_buf(),
-            std::time::Duration::ZERO,
             registry.clone(),
-            Some(Vec::new()),
+            Vec::new(),
         )
         .await
         .unwrap();
@@ -1464,14 +1644,10 @@ mod tests {
         assert!(file.exists());
 
         registry.release_session("ses-active");
-        let removed = cleanup_stale_upload_batches_with_references(
-            root.path().to_path_buf(),
-            std::time::Duration::ZERO,
-            registry,
-            Some(Vec::new()),
-        )
-        .await
-        .unwrap();
+        let removed =
+            cleanup_unreferenced_upload_batches(root.path().to_path_buf(), registry, Vec::new())
+                .await
+                .unwrap();
         assert_eq!(removed, 1);
         assert!(!batch.exists());
     }
@@ -1506,11 +1682,10 @@ mod tests {
             "text/plain",
         ));
 
-        let removed = cleanup_stale_upload_batches_with_references(
+        let removed = cleanup_unreferenced_upload_batches(
             root.path().to_path_buf(),
-            std::time::Duration::ZERO,
             registry.clone(),
-            Some(vec![keep_file]),
+            vec![keep_file],
         )
         .await
         .unwrap();

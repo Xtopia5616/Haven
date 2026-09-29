@@ -26,6 +26,9 @@ pub use repositories::memory_maintenance_store::{MemoryMaintenanceStore, Predica
 pub use repositories::memory_recall_store::MemoryRecallStore;
 pub use repositories::memory_store::MemoryStore;
 pub use repositories::scheduled_actions::{ActionDependencyRow, ActionRow, ScheduledActionRow};
+pub use repositories::session_authorization::{
+    SessionAuthorizationGrant, StoredSessionAuthorizationGrant,
+};
 pub use repositories::session_events::{
     BRANCH_POINT_EVENT_TYPE, CURRENT_EVENT_VERSION, INTERACTION_CLEARED_EVENT_TYPE,
     INTERACTION_REQUESTED_EVENT_TYPE, INTERACTION_RESOLVED_EVENT_TYPE,

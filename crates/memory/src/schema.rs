@@ -8,7 +8,7 @@
 //! version stamp rejects both older and newer database contracts.
 
 /// Current database contract. Any schema change requires a fresh database.
-pub const SCHEMA_VERSION: i32 = 30;
+pub const SCHEMA_VERSION: i32 = 31;
 /// Current schema, created idempotently on every open.
 const SCHEMA_SQL: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS sessions (
@@ -79,6 +79,14 @@ const SCHEMA_SQL: &[&str] = &[
         action_input TEXT,
         tool_call_id TEXT,
         observation TEXT
+    )",
+    "CREATE TABLE IF NOT EXISTS session_authorization_grants (
+        session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        capability_key TEXT NOT NULL CHECK(length(trim(capability_key)) > 0),
+        permission_scope TEXT NOT NULL CHECK(permission_scope = 'session'),
+        permission_target TEXT NOT NULL CHECK(permission_target IN ('operation','group','tool')),
+        effect TEXT NOT NULL CHECK(effect IN ('allow','deny')),
+        PRIMARY KEY(session_id, capability_key)
     )",
     // Internal key-value store (fact-extraction cursors, etc.).
     "CREATE TABLE IF NOT EXISTS kv_store (
@@ -462,6 +470,11 @@ const REQUIRED_COLUMNS: &[(&str, &str)] = &[
     ("messages", "media_inputs"),
     ("session_events", "payload"),
     ("session_events", "event_version"),
+    ("session_authorization_grants", "permission_target"),
+    ("session_authorization_grants", "session_id"),
+    ("session_authorization_grants", "capability_key"),
+    ("session_authorization_grants", "permission_scope"),
+    ("session_authorization_grants", "effect"),
     ("session_steps", "thought"),
     ("memory_nodes", "kind"),
     ("memory_items", "content"),
@@ -603,6 +616,7 @@ mod tests {
             "partial_messages",
             "session_steps",
             "session_events",
+            "session_authorization_grants",
             "session_step_cursors",
             "session_usage",
             "sessions",

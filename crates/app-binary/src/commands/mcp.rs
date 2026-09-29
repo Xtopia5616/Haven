@@ -73,9 +73,39 @@ fn redact_mcp_snapshot(snapshot: &mut McpServerSnapshot) {
             entry
                 .split_once('=')
                 .map(|(name, _)| format!("{name}=<redacted>"))
-                .unwrap_or_else(|| "<redacted>".into())
+                .unwrap_or_else(|| entry.clone())
         })
         .collect();
+}
+
+/// Replace the renderer's redaction marker with the already configured value
+/// for that variable. This lets users edit the rest of an MCP profile without
+/// returning the real value through read IPC or persisting `<redacted>`.
+fn resolve_redacted_mcp_environment(
+    existing: Option<&[String]>,
+    submitted: &[String],
+) -> anyhow::Result<Vec<String>> {
+    submitted
+        .iter()
+        .map(|entry| {
+            let Some((name, value)) = entry.split_once('=') else {
+                return Ok(entry.clone());
+            };
+            if value != "<redacted>" {
+                return Ok(entry.clone());
+            }
+            let preserved = existing
+                .into_iter()
+                .flatten()
+                .filter_map(|previous| previous.split_once('='))
+                .find(|(previous_name, _)| *previous_name == name)
+                .map(|(_, previous_value)| previous_value)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("redacted MCP value has no existing value to preserve")
+                })?;
+            Ok(format!("{name}={preserved}"))
+        })
+        .collect()
 }
 
 pub(crate) fn emit_mcp_status(
@@ -250,6 +280,8 @@ pub async fn add_mcp_server(
     config: McpServerConfig,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
+    let env = resolve_redacted_mcp_environment(None, &config.env)
+        .map_err(|error| log_err("add_mcp_server", error))?;
     // Route the config mutation through the native admin surface
     // (mcp_add): one implementation for the UI dialog and the LLM. The op
     // persists through ConfigService, keeps the in-memory index in sync, and
@@ -264,7 +296,7 @@ pub async fn add_mcp_server(
             command: Some(config.command.clone()),
             url: Some(config.url.clone()),
             args: config.args.clone(),
-            env: config.env.clone(),
+            env,
             cwd: config.cwd.clone(),
             enabled: config.enabled,
             auto_connect: config.enabled,
@@ -295,6 +327,18 @@ pub async fn update_mcp_server(
     config: McpServerConfig,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
+    let snapshot = state
+        .config_service
+        .snapshot()
+        .map_err(|error| log_err("update_mcp_server", error))?;
+    let existing_env = snapshot
+        .config
+        .mcp_servers
+        .iter()
+        .find(|server| server.name == name)
+        .map(|server| server.env.as_slice());
+    let env = resolve_redacted_mcp_environment(existing_env, &config.env)
+        .map_err(|error| log_err("update_mcp_server", error))?;
     // Route through the native admin surface (mcp_update). The op
     // reconnects before persisting when the connection profile changed and
     // rolls the config back on a failed connect (stricter than the old
@@ -309,7 +353,7 @@ pub async fn update_mcp_server(
             command: Some(config.command.clone()),
             url: Some(config.url.clone()),
             args: Some(config.args.clone()),
-            env: Some(config.env.clone()),
+            env: Some(env),
             cwd: config.cwd.clone(),
             enabled: Some(config.enabled),
         }),
@@ -401,7 +445,7 @@ pub async fn toggle_mcp_server(
 
 #[cfg(test)]
 mod tests {
-    use super::redact_mcp_snapshot;
+    use super::{redact_mcp_snapshot, resolve_redacted_mcp_environment};
     use haven_tools::{McpClientStatus, McpServerSnapshot};
 
     #[test]
@@ -424,6 +468,22 @@ mod tests {
 
         redact_mcp_snapshot(&mut snapshot);
 
-        assert_eq!(snapshot.env, vec!["API_KEY=<redacted>", "<redacted>"]);
+        assert_eq!(snapshot.env, vec!["API_KEY=<redacted>", "NO_VALUE"]);
+    }
+
+    #[test]
+    fn mcp_edit_preserves_redacted_values_without_returning_them() {
+        let existing = vec!["TOKEN=stored-secret-marker".to_string(), "FLAG".into()];
+        let submitted = vec![
+            "TOKEN=<redacted>".to_string(),
+            "FLAG".into(),
+            "NEW=visible".into(),
+        ];
+        let resolved = resolve_redacted_mcp_environment(Some(&existing), &submitted).unwrap();
+        assert_eq!(
+            resolved,
+            ["TOKEN=stored-secret-marker", "FLAG", "NEW=visible"]
+        );
+        assert!(resolve_redacted_mcp_environment(None, &["TOKEN=<redacted>".into()]).is_err());
     }
 }

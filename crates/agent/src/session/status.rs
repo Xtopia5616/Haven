@@ -17,7 +17,7 @@ impl SessionSupervisor {
         let record = self.store.create_session(input).await?;
         let mut info = SessionInfo::from_db_record(&record);
         info.summary = summary.to_string();
-        self.install_actor(info.clone()).await;
+        self.install_actor(info.clone()).await?;
         self.enqueue_pending(&info.id).await;
         self.wake_dispatcher();
         Ok(info)
@@ -337,9 +337,53 @@ impl SessionSupervisor {
             let _lifecycle = self.lifecycle_guard().await;
             self.partials.forget_session(session_id).await;
             self.remove_session_locked(session_id).await?;
-            self.store.delete_session(session_id).await
+            self.store.delete_session(session_id).await?;
+            // Once the durable owner is gone, release its process-local asset
+            // lease so reference-based media cleanup can reclaim unshared
+            // files. The deletion must succeed first; a failed DB delete keeps
+            // the lease intact.
+            self.release_managed_assets_for_session(session_id);
+            Ok(())
         }
         .await
+    }
+
+    /// Expire sessions through the same quiesce/delete path as an explicit
+    /// user deletion. This releases live actors, session grants, MCP overlays,
+    /// and managed-asset leases before the host reconciles attachment files.
+    pub async fn delete_old_sessions(&self, retention_days: u32) -> anyhow::Result<usize> {
+        if retention_days == 0 {
+            return Ok(0);
+        }
+        self.ensure_lifecycle_open()?;
+        let candidates = self.store.old_session_ids(retention_days).await?;
+        let mut deleted = 0;
+        for session_id in candidates {
+            match self.delete_session(&session_id).await {
+                Ok(()) => deleted += 1,
+                Err(error) => {
+                    // A separate explicit delete may have won after the
+                    // candidate snapshot. Treat a now-absent row as already
+                    // expired, but do not hide a live-session failure.
+                    match self.store.load_session_record(&session_id).await {
+                        Ok(None) => {
+                            self.release_managed_assets_for_session(&session_id);
+                        }
+                        Ok(Some(_)) => {
+                            return Err(
+                                error.context(format!("failed to expire session {session_id}"))
+                            );
+                        }
+                        Err(read_error) => {
+                            return Err(error.context(format!(
+                                "failed to expire session {session_id}; checking whether it still exists also failed: {read_error}"
+                            )));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(deleted)
     }
 
     /// Quiesce the working set and clear durable history while holding the
@@ -356,6 +400,12 @@ impl SessionSupervisor {
             self.clear_all_sessions_locked().await?;
             self.partials.forget_all_sessions().await;
             self.store.clear_sessions().await?;
+            // Release only after the durable purge succeeds. Shared paths are
+            // still protected by any remaining message reference and can be
+            // reclaimed by the host cleanup pass.
+            for session_id in &session_ids {
+                self.release_managed_assets_for_session(session_id);
+            }
             Ok(session_ids)
         }
         .await
@@ -592,6 +642,17 @@ impl SessionSupervisor {
             anyhow::bail!("session '{}' is closing; retry after deletion", session_id);
         }
         if self.actor_for(session_id).await.is_some() {
+            if self
+                .get_session_status(session_id)
+                .await
+                .is_some_and(SessionStatus::is_terminal)
+            {
+                // Error sessions can retain an idle actor for Continue. The
+                // terminal edge cleared its process-local grants, so restore
+                // the durable per-session set before reopening or continuing.
+                self.restore_session_authorization_grants_for_locked(session_id)
+                    .await?;
+            }
             return Ok(());
         }
         let record = self
@@ -599,7 +660,7 @@ impl SessionSupervisor {
             .session_record(session_id)?
             .ok_or_else(|| anyhow::anyhow!("session '{}' not found in database", session_id))?;
         self.install_actor(SessionInfo::from_db_record(&record))
-            .await;
+            .await?;
         Ok(())
     }
 
@@ -614,7 +675,7 @@ impl SessionSupervisor {
             }
             if self.actor_for(&record.id).await.is_none() {
                 self.install_actor(SessionInfo::from_db_record(&record))
-                    .await;
+                    .await?;
                 self.enqueue_pending(&record.id).await;
                 loaded += 1;
             }

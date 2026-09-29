@@ -41,6 +41,7 @@ haven-tools = { path = "../tools" }
 haven-agent = { path = "../agent" }
 haven-input = { path = "../input" }
 haven-common = { path = "../common" }
+haven-platform = { path = "../platform" }
 haven-llm = { path = "../llm" }
 async-trait.workspace = true
 tokio-util.workspace = true

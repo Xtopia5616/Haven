@@ -4,8 +4,8 @@
 
 use super::*;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
 pub struct ModelEndpoint {
     pub provider: String,
     /// Wire protocol style for this endpoint. One of:
@@ -23,6 +23,13 @@ pub struct ModelEndpoint {
     #[serde(default)]
     pub api_style: Option<String>,
     pub base_url: String,
+    /// Runtime-only API key. It is accepted only from secure credential
+    /// storage or a staged settings edit, never from config.toml.
+    #[serde(
+        default,
+        skip_serializing,
+        deserialize_with = "super::deserialize_runtime_secret"
+    )]
     pub api_key: String,
     pub model_name: String,
     pub max_tokens: u32,
@@ -80,6 +87,48 @@ pub struct ModelEndpoint {
     /// config when unset so the global default stays the single knob.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_echo_max_chars: Option<usize>,
+}
+
+impl std::fmt::Debug for ModelEndpoint {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ModelEndpoint")
+            .field("provider", &self.provider)
+            .field("api_style", &self.api_style)
+            .field("base_url", &self.base_url)
+            .field("api_key", &"[REDACTED]")
+            .field("model_name", &self.model_name)
+            .field("max_tokens", &self.max_tokens)
+            .field("temperature", &self.temperature)
+            .field("timeout_secs", &self.timeout_secs)
+            .field("top_p", &self.top_p)
+            .field("top_k", &self.top_k)
+            .field("frequency_penalty", &self.frequency_penalty)
+            .field("presence_penalty", &self.presence_penalty)
+            .field("stop", &self.stop)
+            .field("seed", &self.seed)
+            .field("response_format", &self.response_format)
+            .field("proxy_url", &self.proxy_url)
+            .field("no_proxy", &self.no_proxy)
+            .field("auth_header_name", &self.auth_header_name)
+            .field("auth_header_prefix", &self.auth_header_prefix)
+            .field("timeout_streaming_secs", &self.timeout_streaming_secs)
+            .field("reasoning_effort", &self.reasoning_effort)
+            .field("web_search", &self.web_search)
+            .field("cost_per_1k_input_tokens", &self.cost_per_1k_input_tokens)
+            .field("cost_per_1k_output_tokens", &self.cost_per_1k_output_tokens)
+            .field(
+                "cost_per_1k_cache_read_tokens",
+                &self.cost_per_1k_cache_read_tokens,
+            )
+            .field(
+                "cost_per_1k_cache_write_tokens",
+                &self.cost_per_1k_cache_write_tokens,
+            )
+            .field("context_window", &self.context_window)
+            .field("reasoning_echo_max_chars", &self.reasoning_echo_max_chars)
+            .finish()
+    }
 }
 
 fn default_auth_header_name() -> String {
@@ -159,8 +208,8 @@ impl Default for ModelEndpoint {
 /// is the union of each provider's `/models` fetch. Named model assignments
 /// reference a provider by name and pick a model id from that provider's
 /// fetched list; request policies select among those assignments.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
 pub struct ProviderConfig {
     /// Unique id referenced by [`ModelConfig::provider`] and the settings UI.
     pub name: String,
@@ -173,7 +222,13 @@ pub struct ProviderConfig {
     #[serde(default)]
     pub api_style: Option<String>,
     pub base_url: String,
+    /// Runtime-only API key. Settings writes stage it first and send only its
+    /// reference; plaintext values received through TOML/Settings are rejected.
+    #[serde(default, skip_serializing)]
     pub api_key: String,
+    /// Opaque Windows Credential Manager reference persisted in TOML.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key_ref: Option<String>,
     // §2.15: auth header customization
     #[serde(default = "default_auth_header_name")]
     pub auth_header_name: String,
@@ -203,6 +258,32 @@ pub struct ProviderConfig {
     pub default_web_search: Option<String>,
 }
 
+impl std::fmt::Debug for ProviderConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ProviderConfig")
+            .field("name", &self.name)
+            .field("provider", &self.provider)
+            .field("api_style", &self.api_style)
+            .field("base_url", &self.base_url)
+            .field("api_key", &"[REDACTED]")
+            .field("api_key_ref", &self.api_key_ref)
+            .field("auth_header_name", &self.auth_header_name)
+            .field("auth_header_prefix", &self.auth_header_prefix)
+            .field("proxy_url", &self.proxy_url)
+            .field("no_proxy", &self.no_proxy)
+            .field("default_max_tokens", &self.default_max_tokens)
+            .field("default_temperature", &self.default_temperature)
+            .field("default_timeout_secs", &self.default_timeout_secs)
+            .field(
+                "default_timeout_streaming_secs",
+                &self.default_timeout_streaming_secs,
+            )
+            .field("default_web_search", &self.default_web_search)
+            .finish()
+    }
+}
+
 impl Default for ProviderConfig {
     fn default() -> Self {
         Self {
@@ -211,6 +292,7 @@ impl Default for ProviderConfig {
             api_style: None,
             base_url: "https://api.openai.com/v1".into(),
             api_key: String::new(),
+            api_key_ref: None,
             auth_header_name: default_auth_header_name(),
             auth_header_prefix: default_auth_header_prefix(),
             proxy_url: None,
@@ -331,7 +413,7 @@ impl RequestKind {
 /// request and its cache namespace; transient failures are retried by the
 /// router on this same endpoint instead.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct RequestPolicy {
     pub request: RequestKind,
     pub primary: String,
@@ -349,7 +431,7 @@ impl Default for RequestPolicy {
 /// Named model assignment. A model may advertise multiple capabilities and
 /// can therefore serve several request kinds without being copied into slots.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct ModelConfig {
     /// Stable user-chosen identity referenced by [`RequestPolicy`].
     pub id: String,
@@ -398,7 +480,7 @@ impl ModelConfig {
 /// `context_limits.default_context_window` / [`ModelEndpoint`] built-ins.
 /// A materialized model plus its declared request capabilities.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct RoutedModel {
     pub id: String,
     pub endpoint: ModelEndpoint,
@@ -406,7 +488,7 @@ pub struct RoutedModel {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct LlmConfig {
     /// Configured providers — connection-level endpoint definitions.
     #[serde(default)]
@@ -756,7 +838,7 @@ pub fn is_stt_only_style(style: &str) -> bool {
 /// The materialized router configuration. Models and request policies remain
 /// dynamic; only router-wide execution limits are fixed fields.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct RouterConfig {
     pub models: Vec<RoutedModel>,
     pub request_policies: Vec<RequestPolicy>,
@@ -848,6 +930,19 @@ impl RouterConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_config_accepts_staged_secret_and_redacts_debug() {
+        let config: ProviderConfig = serde_json::from_value(serde_json::json!({
+            "api_key": "provider-secret"
+        }))
+        .expect("the command validates staged secrets before applying settings");
+        assert_eq!(config.api_key, "provider-secret");
+
+        let debug = format!("{config:?}");
+        assert!(!debug.contains("provider-secret"));
+        assert!(debug.contains("[REDACTED]"));
+    }
 
     #[test]
     fn materialize_clears_web_search_for_unsupported_style() {

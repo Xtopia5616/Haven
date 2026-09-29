@@ -104,4 +104,49 @@ describe('SettingsView diagnostics export', () => {
 		});
 		expect(shouldShowActionCompletionInApp()).toBe(false);
 	});
+
+	it('stages provider keys separately and omits values from Settings updates', async () => {
+		invoke.mockClear();
+		listen.mockClear();
+		invoke.mockImplementation(async (command: string) => {
+			switch (command) {
+				case 'get_settings':
+					return { llm: { providers: [], models: [], request_policies: [] } };
+				case 'stage_provider_credential':
+					return 'cred-0123456789abcdef0123456789abcdef';
+				case 'get_api_key_status':
+					return { models: {}, providers: {}, stt: false, ocr: false, ocr_secret: false };
+				case 'is_autostart_enabled':
+					return false;
+				case 'check_shell_available':
+					return { available: true };
+				default:
+					return [];
+			}
+		});
+
+		render(SettingsView);
+		await waitFor(() => expect(invoke).toHaveBeenCalledWith('get_api_key_status'));
+		await fireEvent.click(screen.getByRole('tab', { name: /模型/ }));
+		await fireEvent.click(await screen.findByRole('button', { name: '添加 Provider' }));
+		await fireEvent.input(screen.getByPlaceholderText('唯一名称，角色据此选择'), {
+			target: { value: 'primary' },
+		});
+		await fireEvent.input(screen.getByPlaceholderText('sk-...'), {
+			target: { value: 'provider-secret-marker' },
+		});
+		await fireEvent.click(screen.getByRole('button', { name: '保存' }));
+		await fireEvent.click(await screen.findByRole('button', { name: '保存设置' }));
+
+		await waitFor(() => expect(invoke).toHaveBeenCalledWith('update_settings', expect.anything()));
+		expect(invoke).toHaveBeenCalledWith('stage_provider_credential', {
+			providerName: 'primary',
+			apiKey: 'provider-secret-marker',
+		});
+		const update = invoke.mock.calls.find(([command]) => command === 'update_settings');
+		const settings = update?.[1]?.settings;
+		expect(settings.llm.providers[0].api_key).toBeUndefined();
+		expect(settings.llm.providers[0].api_key_ref).toBe('cred-0123456789abcdef0123456789abcdef');
+		expect(JSON.stringify(settings)).not.toContain('provider-secret-marker');
+	});
 });
