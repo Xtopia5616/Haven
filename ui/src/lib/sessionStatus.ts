@@ -33,7 +33,7 @@ const WAITING_REASON_LABELS: Record<SessionWaitingReason, string> = {
 	scheduled_confirmation: '等待操作',
 	background_task: '等待任务',
 	scheduled_task: '等待定时任务',
-	step_budget: '等待继续',
+	step_budget: '等待操作',
 };
 
 const COLOR_MAP: Record<string, string> = {

@@ -78,7 +78,7 @@
 		if (statusLabel === '生成中') return 'info';
 		if (['等待结果', '等待任务', '等待定时任务', '后台任务'].includes(statusLabel))
 			return 'tool';
-		if (['已暂停', '等待操作', '等待继续'].includes(statusLabel)) return 'warning';
+		if (['已暂停', '等待操作'].includes(statusLabel)) return 'warning';
 		if (
 			['录音中', '转写中', '排队中', '请求中', '等待响应', '运行中', '加载中'].includes(
 				statusLabel,
@@ -100,7 +100,6 @@
 				'等待操作',
 				'等待任务',
 				'等待定时任务',
-				'等待继续',
 			].includes(statusLabel),
 	);
 

@@ -41,6 +41,7 @@ describe('session waiting reasons', () => {
 		expect(waitingReasonLabel('ask')).toBe('等待操作');
 		expect(waitingReasonLabel('confirmation')).toBe('等待操作');
 		expect(waitingReasonLabel('scheduled_confirmation')).toBe('等待操作');
+		expect(waitingReasonLabel('step_budget')).toBe('等待操作');
 		expect(waitingReasonLabel('background_task')).toBe('等待任务');
 		expect(waitingReasonLabel('unknown')).toBeNull();
 	});
