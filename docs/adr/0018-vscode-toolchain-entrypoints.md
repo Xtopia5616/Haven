@@ -18,6 +18,9 @@ pnpm 会在执行任何 UI 命令前直接退出。Tauri 的 `beforeDevCommand` 
   `ui` 工作目录执行 hook，避免重复拼接 `ui` 路径。
 - `.vscode/tasks.json` 提供 UI、Rust 和 Tauri 的可发现任务；Rust 任务仍由
   `rust-toolchain.toml` 选择 Rust 1.98.0，VS Code 工作区补充用户级 Cargo 路径。
+- `haven-app-binary` 在 Cargo manifest 中将 `haven-app-binary` 设为默认运行目标；
+  这样 `cargo tauri dev` 添加 `--no-default-features` 后，Cargo 仍能在应用程序与
+  `generate_ipc_contracts` 两个 binary target 间确定应用程序。
 - VS Code 的 TypeScript 服务使用 UI 工作区中的 TypeScript 6 兼容层；UI 的显式
   `check` 脚本继续使用 TypeScript 7 原生检查入口。
 

@@ -2,6 +2,7 @@
 name = "haven-app-binary"
 version = "0.1.0"
 edition = "2024"
+default-run = "haven-app-binary"
 
 [lib]
 name = "haven_app_binary_lib"
