@@ -3,9 +3,7 @@
 	import { reportError } from '$lib/errorHandling.ts';
 	import { formatError } from '$lib/formatError.ts';
 	import { isDisplayOnlyMessageId } from '$lib/resumeMessages.ts';
-	import {
-		shouldShowContinueButton,
-	} from '$lib/continueSession.ts';
+	import { shouldShowContinueButton } from '$lib/continueSession.ts';
 	import {
 		isBusyStatus,
 		isErrorStatus,
@@ -45,8 +43,8 @@
 	import { invoke } from '$lib/tauri.ts';
 	import {
 		activeConversationStatusStore,
-		modelStateStore,
-		updateModelState,
+		reactExecutionPhaseStore,
+		updateReactExecutionPhase,
 	} from '$lib/runtimeStateStore.ts';
 	import { addNotification } from '$lib/notificationStore.ts';
 	import {
@@ -199,15 +197,17 @@
 	// Send/interrupt merged button: text takes priority (always send); with no
 	// text and the agent actively generating output the button interrupts the
 	// current output while keeping the session resumable.
-	let modelState = $state('ready');
+	let reactExecutionPhase = $state('idle');
 	let interruptPending = $state(false);
 	$effect(() =>
-		syncStore(modelStateStore, (v) => {
-			modelState = v;
+		syncStore(reactExecutionPhaseStore, (v) => {
+			reactExecutionPhase = v;
 		}),
 	);
 	const isGenerating = $derived(
-		modelState === 'streaming' || modelState === 'tool' || modelState === 'stalled',
+		reactExecutionPhase === 'generating' ||
+			reactExecutionPhase === 'waiting_result' ||
+			reactExecutionPhase === 'waiting_response',
 	);
 	const sessionRunning = $derived(
 		!!activeSessionId &&
@@ -494,7 +494,7 @@
 
 	const streamEvents = createStreamEventAggregator({
 		getActiveSessionId: () => activeSessionId,
-		onActiveStream: () => updateModelState('streaming'),
+		onActiveStream: () => updateReactExecutionPhase('generating'),
 		dispatch: dispatchSession,
 		getBlockIds: (sessionId, stepNumber, runId) =>
 			sessionReducer.getBlockIds(sessionId, stepNumber, runId),
@@ -825,11 +825,14 @@
 
 	/** @param {any} session */
 	function sessionStatusLabel(session) {
-		if (session.status === 'running') return '运行中';
 		if (isErrorStatus(session.status)) return '错误';
+		if (session.status === 'completed') return '空闲';
 		const waitingLabel = waitingReasonLabel(sessionWaitingReason(session));
 		if (waitingLabel) return waitingLabel;
-		return isPausedStatus(session.status) ? '已暂停' : '等待中';
+		if (isPausedStatus(session.status)) return '已暂停';
+		if (session.status === 'pending') return '排队中';
+		if (session.status === 'running') return '运行中';
+		return '空闲';
 	}
 
 	const activeSession = $derived(
@@ -839,7 +842,7 @@
 		String(activeSession?.title || activeSession?.input || '新会话'),
 	);
 	const activeConversationStatus = $derived(
-		activeSession ? sessionStatusLabel(activeSession) : '就绪',
+		activeSession ? sessionStatusLabel(activeSession) : '空闲',
 	);
 	$effect(() => {
 		activeConversationStatusStore.set(activeConversationStatus);

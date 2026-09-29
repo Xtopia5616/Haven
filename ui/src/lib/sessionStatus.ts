@@ -26,12 +26,12 @@ export const SESSION_WAITING_REASONS = [
 export type SessionWaitingReason = (typeof SESSION_WAITING_REASONS)[number];
 
 const WAITING_REASON_LABELS: Record<SessionWaitingReason, string> = {
-	user_input: '等待输入',
+	user_input: '等待操作',
 	user_interrupt: '已暂停',
-	ask: '等待回答',
-	confirmation: '等待确认',
-	scheduled_confirmation: '等待定时任务确认',
-	background_task: '等待后台任务',
+	ask: '等待操作',
+	confirmation: '等待操作',
+	scheduled_confirmation: '等待操作',
+	background_task: '等待任务',
 	scheduled_task: '等待定时任务',
 	step_budget: '等待继续',
 };

@@ -2,8 +2,34 @@ import { describe, expect, it, vi } from 'vitest';
 import { get } from 'svelte/store';
 import { createChatAgentEventHandlers } from './chatAgentEventHandlers.ts';
 import { toolOutputPreviewStore } from './toolOutputPreviewStore.ts';
+import { reactExecutionPhaseStore } from './runtimeStateStore.ts';
 
 describe('chat agent live tool output', () => {
+	it('shows waiting for a tool result, then generation after the observation', () => {
+		const handlers = createChatAgentEventHandlers({
+			chunkHandler: vi.fn(),
+			flushChunksNow: vi.fn(),
+			dispatchSession: vi.fn(),
+		});
+
+		reactExecutionPhaseStore.set('idle');
+		handlers['agent:action']({ payload: { sessionId: 'ses-live' } } as never);
+		expect(get(reactExecutionPhaseStore)).toBe('waiting_result');
+
+		handlers['agent:observation']({
+			payload: {
+				sessionId: 'ses-live',
+				stepId: 'step-shell',
+				stepNumber: 1,
+				runId: 1,
+				eventSeq: 2,
+				toolName: 'shell',
+				observation: 'done',
+			},
+		} as never);
+		expect(get(reactExecutionPhaseStore)).toBe('generating');
+	});
+
 	it('keeps preview ticks out of the session reducer hot path', () => {
 		const dispatchSession = vi.fn();
 		const handlers = createChatAgentEventHandlers({

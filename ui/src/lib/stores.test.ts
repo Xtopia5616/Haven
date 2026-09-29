@@ -15,7 +15,7 @@ import {
 import { appSessionReducer } from './sessionReducer.ts';
 import { notificationStore, addNotification } from './notificationStore.ts';
 import { newMessage } from './messageFactory.ts';
-import { modelStateStore, updateModelState, clearModelStateTimer } from './runtimeStateStore.ts';
+import { reactExecutionPhaseStore, updateReactExecutionPhase } from './runtimeStateStore.ts';
 import {
 	actionStore,
 	upsertAction,
@@ -111,7 +111,9 @@ describe('upsertAction', () => {
 		const refreshResponse = new Promise((resolve) => {
 			resolveRefresh = resolve;
 		});
-		vi.mocked(invoke).mockReset().mockReturnValueOnce(refreshResponse as never);
+		vi.mocked(invoke)
+			.mockReset()
+			.mockReturnValueOnce(refreshResponse as never);
 
 		const refresh = refreshActions();
 		upsertAction({ id: 'act-race', kind: 'scheduled', status: 'running' });
@@ -124,12 +126,14 @@ describe('upsertAction', () => {
 
 	it('reconciles live rows across kinds while excluding terminal background history', async () => {
 		actionStore.set({});
-		vi.mocked(invoke).mockReset().mockResolvedValue([
-			{ id: 'act-background-live', kind: 'background', status: 'running' },
-			{ id: 'act-background-history', kind: 'background', status: 'completed' },
-			{ id: 'act-scheduled-waiting', kind: 'scheduled', status: 'waiting' },
-			{ id: 'act-scheduled-running', kind: 'scheduled', status: 'running' },
-		]);
+		vi.mocked(invoke)
+			.mockReset()
+			.mockResolvedValue([
+				{ id: 'act-background-live', kind: 'background', status: 'running' },
+				{ id: 'act-background-history', kind: 'background', status: 'completed' },
+				{ id: 'act-scheduled-waiting', kind: 'scheduled', status: 'waiting' },
+				{ id: 'act-scheduled-running', kind: 'scheduled', status: 'running' },
+			]);
 
 		await refreshActions();
 
@@ -314,59 +318,20 @@ describe('newMessage', () => {
 	});
 });
 
-describe('updateModelState', () => {
+describe('ReAct execution phase', () => {
 	beforeEach(() => {
-		vi.useFakeTimers();
-		clearModelStateTimer();
-		modelStateStore.set('ready');
-	});
-	afterEach(() => {
-		vi.useRealTimers();
+		reactExecutionPhaseStore.set('idle');
 	});
 
-	it('falls back from waiting to ready after the default delay', () => {
-		updateModelState('waiting');
-		expect(get(modelStateStore)).toBe('waiting');
-		vi.advanceTimersByTime(5000);
-		expect(get(modelStateStore)).toBe('ready');
-	});
+	it('keeps each phase until a lifecycle event advances or clears it', () => {
+		updateReactExecutionPhase('requesting');
+		expect(get(reactExecutionPhaseStore)).toBe('requesting');
 
-	it('falls back from streaming to ready after 2s', () => {
-		updateModelState('streaming');
-		vi.advanceTimersByTime(2000);
-		expect(get(modelStateStore)).toBe('ready');
-	});
+		updateReactExecutionPhase('waiting_response');
+		expect(get(reactExecutionPhaseStore)).toBe('waiting_response');
 
-	it('honours a custom idle timeout', () => {
-		updateModelState('waiting', { idleTimeoutMs: 100 });
-		vi.advanceTimersByTime(100);
-		expect(get(modelStateStore)).toBe('ready');
-	});
-
-	it('a new state supersedes the pending idle timer', () => {
-		updateModelState('waiting');
-		updateModelState('streaming');
-		vi.advanceTimersByTime(2000);
-		// Only the 2s streaming idle timer applies; the waiting timer was cleared.
-		expect(get(modelStateStore)).toBe('ready');
-	});
-
-	it('clearModelStateTimer cancels a pending idle timer', () => {
-		updateModelState('waiting');
-		clearModelStateTimer();
-		vi.advanceTimersByTime(10000);
-		expect(get(modelStateStore)).toBe('waiting');
-	});
-
-	it('stalled persists until a later state supersedes it', () => {
-		// Stall is a factual waiting state and must NOT auto-revert: the
-		// provider may stay silent for the whole idle-timeout window; only
-		// the next chunk (streaming) or a terminal session event clears it.
-		updateModelState('stalled');
-		vi.advanceTimersByTime(60000);
-		expect(get(modelStateStore)).toBe('stalled');
-		updateModelState('streaming');
-		expect(get(modelStateStore)).toBe('streaming');
+		updateReactExecutionPhase('idle');
+		expect(get(reactExecutionPhaseStore)).toBe('idle');
 	});
 });
 

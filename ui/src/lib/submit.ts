@@ -1,7 +1,7 @@
 import { get } from 'svelte/store';
 import { browser } from '$app/environment';
 import { DRAFT_SESSION_ID, type SessionReducer } from './sessionReducer.ts';
-import { modelStateStore } from './runtimeStateStore.ts';
+import { reactExecutionPhaseStore } from './runtimeStateStore.ts';
 import { newMessage } from './messageFactory.ts';
 import { newSessionIntentStore, NEW_ACTION_INTENT_KEY } from './sessionIntentStore.ts';
 import { isBusyStatus, isPausedStatus } from './sessionStatus.ts';
@@ -11,7 +11,7 @@ import { invoke } from './tauri.ts';
 function isMidTurnSubmit(sessionId: string, reducer: SessionReducer): boolean {
 	const list = reducer.getMessages(sessionId);
 	if (list.some((m) => m.streaming || m.steering)) return true;
-	// Prior user still awaiting first agent bubble (race before modelState flips).
+	// Prior user still awaiting first agent bubble (race before the phase flips).
 	for (let i = list.length - 1; i >= 0; i--) {
 		const m = list[i];
 		if (m.role === 'assistant' || m.type === 'tool' || m.type === 'ask') return false;
@@ -20,14 +20,15 @@ function isMidTurnSubmit(sessionId: string, reducer: SessionReducer): boolean {
 	// This session's own status — never borrow another session's busy chip.
 	const st = reducer.getState().sessions.find((t) => t.id === sessionId)?.status;
 	if (isBusyStatus(st) || isPausedStatus(st)) return true;
-	// Global modelState only applies to the active session.
+	// Global execution phase only applies to the active session.
 	if (reducer.getState().activeSessionId === sessionId) {
-		const state = get(modelStateStore);
+		const state = get(reactExecutionPhaseStore);
 		if (
-			state === 'streaming' ||
-			state === 'tool' ||
-			state === 'stalled' ||
-			state === 'waiting'
+			state === 'queued' ||
+			state === 'requesting' ||
+			state === 'generating' ||
+			state === 'waiting_result' ||
+			state === 'waiting_response'
 		) {
 			return true;
 		}

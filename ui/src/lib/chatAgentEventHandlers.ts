@@ -1,5 +1,5 @@
 import { clearToolOutputPreview, setToolOutputPreview } from './toolOutputPreviewStore.ts';
-import { updateModelState } from './runtimeStateStore.ts';
+import { updateReactExecutionPhase } from './runtimeStateStore.ts';
 import type { SessionAction } from './sessionReducer.ts';
 
 export interface ChatAgentEventContext {
@@ -51,7 +51,7 @@ export function createChatAgentEventHandlers({
 		'agent:action': (event) => {
 			const data = event.payload;
 			flushChunksNow();
-			updateModelState('tool');
+			updateReactExecutionPhase('waiting_result');
 			dispatchSession({ type: 'agent/action', payload: data });
 		},
 		'agent:tool_output': (event) => {
@@ -66,7 +66,7 @@ export function createChatAgentEventHandlers({
 		'agent:observation': (event) => {
 			const data = event.payload;
 			flushChunksNow();
-			updateModelState('streaming');
+			updateReactExecutionPhase('generating');
 			if (data?.stepId) clearToolOutputPreview(data.stepId);
 			dispatchSession({ type: 'agent/observation', payload: data });
 		},

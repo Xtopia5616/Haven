@@ -2,10 +2,9 @@
 	import '../app.css';
 	import {
 		recordingOverlay,
-		modelStateStore,
+		reactExecutionPhaseStore,
 		activeConversationStatusStore,
-		updateModelState,
-		clearModelStateTimer,
+		updateReactExecutionPhase,
 	} from '$lib/runtimeStateStore.ts';
 	import { addNotification } from '$lib/notificationStore.ts';
 	import {
@@ -222,8 +221,8 @@
 	let duration = $state(0);
 	let durationTimer = /** @type {ReturnType<typeof setInterval> | null} */ (null);
 	let processingTimer = /** @type {ReturnType<typeof setTimeout> | null} */ (null);
-	let modelState = $state('ready'); // synced from modelStateStore on mount
-	let conversationStatus = $state('就绪');
+	let reactExecutionPhase = $state('idle'); // synced from reactExecutionPhaseStore on mount
+	let conversationStatus = $state('空闲');
 	$effect(() => syncStore(activeConversationStatusStore, (v) => (conversationStatus = v)));
 	// Runtime mode is intentionally separate from backend bootstrap state:
 	// browser Vite preview has no Tauri backend at all, while a Tauri webview
@@ -236,13 +235,7 @@
 	let bootstrapProbeTimer = /** @type {ReturnType<typeof setTimeout> | undefined} */ (undefined);
 	let bootstrapProbeInFlight = false;
 	let bootstrapProbeFailureStreak = 0;
-	// Whether ANY session is busy (pending/running). The model-state events only
-	// fire while chunks flow; a session whose LLM call is stuck (idle timeout,
-	// empty-response retries, provider hang) emits nothing, and the 5s idle
-	// timer would flip the chip back to "就绪" mid-hang. sessionBusy keeps the
-	// chip truthful: driven by session:created / session:updated transitions, which
-	// the backend emits on every status change (pending/running on submission,
-	// paused/completed/error on termination). Tracked per session id so a
+	// Whether ANY session is busy (pending/running). Tracked per session id so a
 	// parallel session completing does not clear the busy state of another.
 	let busySessions = $state(new Set());
 	/** @type {Map<string, string>} */
@@ -267,16 +260,14 @@
 	// `subscribe` fires synchronously (SSR/mount) with the current value, and
 	// `probeLlmConnection` reads these bindings without awaiting first, so
 	// they must be initialized already.
-	// `llmConnected` is the status projection from the backend's typed
-	// `check_llm_connection` report. The full report is kept for the status-chip
-	// title and transition notifications.
-	// `null` = probe in-flight / never completed (show 检测中, never a false
-	// 就绪).
+	// `llmConnected` is independent from ReAct execution. `null` means the first
+	// probe has not completed or the configuration changed and is being checked.
 	let llmConnected = /** @type {string | null} */ ($state(null));
 	let llmConnectionReport =
 		/** @type {import('$lib/llmConnection.ts').LlmConnectionReport | null} */ ($state(null));
 	let llmProbeTimer = /** @type {ReturnType<typeof setTimeout> | undefined} */ (undefined);
 	let llmProbeInFlight = false;
+	let llmProbeGeneration = 0;
 	let llmProbeFailureStreak = 0;
 	const LLM_PROBE_INTERVAL_MS = 15000;
 	const LLM_PROBE_MAX_INTERVAL_MS = 120000;
@@ -317,9 +308,9 @@
 			scheduleBootstrapProbe();
 		}
 	}
-	modelStateStore.subscribe((v) => {
-		modelState = v;
-		if (v === 'ready') probeLlmConnection();
+	reactExecutionPhaseStore.subscribe((v) => {
+		reactExecutionPhase = v;
+		if (v === 'idle') probeLlmConnection();
 	});
 	/** @param {unknown} value */
 	function applyLlmConnectionReport(value) {
@@ -345,20 +336,24 @@
 		}
 	}
 	async function probeLlmConnection() {
-		if (modelState !== 'ready' || llmProbeInFlight) return;
+		if (reactExecutionPhase !== 'idle' || llmProbeInFlight) return;
 		// Browser / SSR / tests have no backend — skip without WARN spam or
 		// treating the missing IPC as a real disconnect.
 		if (!isTauri()) return;
 		llmProbeInFlight = true;
+		const generation = llmProbeGeneration;
 		try {
-			applyLlmConnectionReport(await invoke('check_llm_connection'));
+			const report = await invoke('check_llm_connection');
+			if (generation === llmProbeGeneration) applyLlmConnectionReport(report);
 		} catch (e) {
+			if (generation !== llmProbeGeneration) return;
 			reportError(e, { context: '+layout', message: '检查模型连接失败', log: false });
 			llmConnectionReport = { status: 'disconnected', reason: 'unknown' };
 			llmConnected = 'disconnected';
 			llmProbeFailureStreak = Math.min(llmProbeFailureStreak + 1, 4);
 		} finally {
 			llmProbeInFlight = false;
+			if (generation !== llmProbeGeneration) void probeLlmConnection();
 		}
 	}
 
@@ -386,7 +381,10 @@
 	// Force an immediate re-probe (config changed via settings / model switch):
 	// reset the failure backoff, probe now, then resume from the base cadence.
 	function refreshLlmConnection() {
+		llmProbeGeneration += 1;
 		llmProbeFailureStreak = 0;
+		llmConnectionReport = null;
+		llmConnected = null;
 		probeLlmConnection();
 		scheduleLlmProbe();
 	}
@@ -533,8 +531,8 @@
 	// Session lifecycle events expose the derived pause reason directly. The
 	// action registry remains available for the task panel and counts, but it
 	// no longer determines why a paused conversation is waiting.
-	// Active chat is plain-paused while its own background action(s) still run
-	// — titlebar should say "等待后台任务" so it does not look idle/ready.
+	// Active chat is paused while its own background action(s) still run —
+	// the selected conversation supplies the titlebar's "等待任务" state.
 	const awaitingBackgroundActive = $derived.by(() => {
 		if (!activeSessionId) return false;
 		const session = sessions.find((t) => t.id === activeSessionId);
@@ -873,7 +871,9 @@
 						}
 						lastSessionStatus.set(data.sessionId, data.status);
 						addBusySession(data.sessionId);
-						updateModelState('waiting', { idleTimeoutMs: 5000 });
+						updateReactExecutionPhase(
+							data.status === 'running' ? 'requesting' : 'queued',
+						);
 					},
 					'session:completed': (event) => {
 						const data = event.payload;
@@ -887,7 +887,7 @@
 								'success',
 							);
 						}
-						updateModelState('ready');
+						updateReactExecutionPhase('idle');
 					},
 					'session:deleted': (event) => {
 						// delete_session / clear_history remove sessions without any terminal
@@ -904,8 +904,7 @@
 							clearBusySessions();
 						}
 						if (busySessions.size === 0) {
-							clearModelStateTimer();
-							updateModelState('ready');
+							updateReactExecutionPhase('idle');
 						}
 					},
 					'session:error': (event) => {
@@ -914,8 +913,7 @@
 						if (notifyCfg?.session_error?.in_app !== false) {
 							addNotification(`会话出错: ${errMsg}`, 'error', 5000);
 						}
-						clearModelStateTimer();
-						updateModelState('ready');
+						updateReactExecutionPhase('idle');
 					},
 					'session:updated': (event) => {
 						const data = event.payload;
@@ -932,8 +930,7 @@
 							if (notifyCfg?.session_paused?.in_app !== false) {
 								addNotification(`会话已暂停: ${title || '未知'}`, 'warning', 3000);
 							}
-							clearModelStateTimer();
-							updateModelState('ready');
+							updateReactExecutionPhase('idle');
 						}
 						if (data.status === 'pending') {
 							// Only paused/error → pending is a real resume; Running→Pending
@@ -944,17 +941,18 @@
 							) {
 								addNotification(`会话已恢复: ${title || '未知'}`, 'info', 3000);
 							}
-							updateModelState('waiting', { idleTimeoutMs: 5000 });
+							updateReactExecutionPhase('queued');
+						}
+						if (data.status === 'running' && prev !== 'running') {
+							updateReactExecutionPhase('requesting');
 						}
 						if (data.status === 'completed') {
 							removeBusySession(tid);
-							clearModelStateTimer();
-							updateModelState('ready');
+							updateReactExecutionPhase('idle');
 						}
 						if (data.status === 'error') {
 							removeBusySession(tid);
-							clearModelStateTimer();
-							updateModelState('ready');
+							updateReactExecutionPhase('idle');
 						}
 						if (tid && data.status) {
 							lastSessionStatus.set(tid, data.status);
@@ -993,7 +991,7 @@
 						const data = event.payload;
 						const activeId = appSessionReducer.getState().activeSessionId;
 						if (data.sessionId && activeId && data.sessionId !== activeId) return;
-						updateModelState('stalled');
+						updateReactExecutionPhase('waiting_response');
 					},
 				}),
 				// Router rebuilt (settings saved / model switched): re-probe LLM
@@ -1060,8 +1058,8 @@
 		// fired/cancelled while the UI was away are already gone).
 		refreshActions();
 
-		// The modelStateStore subscribe above fires synchronously on mount
-		// (modelState is 'ready') and triggers the first probe; here we just
+		// The execution-phase store subscribe above fires synchronously on mount
+		// (phase is 'idle') and triggers the first probe; here we just
 		// start the cadence for all subsequent probes (Tauri only).
 		if (isTauri()) scheduleLlmProbe();
 	});
@@ -1072,7 +1070,6 @@
 		if (processingTimer) clearTimeout(processingTimer);
 		if (llmProbeTimer) clearTimeout(llmProbeTimer);
 		if (bootstrapProbeTimer) clearTimeout(bootstrapProbeTimer);
-		clearModelStateTimer();
 		eventRegistrations?.dispose();
 	});
 
@@ -1097,7 +1094,7 @@
 	{#snippet status()}
 		<WorkspaceStatus
 			{overlay}
-			{modelState}
+			executionPhase={reactExecutionPhase}
 			{busySessions}
 			{conversationStatus}
 			{runtime}

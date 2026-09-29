@@ -6,22 +6,46 @@ describe('WorkspaceStatus', () => {
 	it('explains that browser preview has no Tauri backend', () => {
 		render(WorkspaceStatus, { runtime: 'browser' });
 
-		const status = screen.getByRole('status', { name: /浏览器预览/ });
+		const status = screen.getByRole('status', { name: /执行状态：浏览器预览/ });
 		expect(status).toBeTruthy();
 		expect(status.getAttribute('title')).toContain('Rust/Tauri 后端未启动');
+		expect(screen.queryByRole('status', { name: /模型状态/ })).toBeNull();
 	});
 
-	it('shows readiness once backend bootstrap has completed', () => {
+	it('shows an idle execution phase and hides a healthy model probe', () => {
 		render(WorkspaceStatus, {
 			runtime: 'tauri',
 			bootstrapReady: true,
 			llmConnected: 'ready',
 		});
 
-		expect(screen.getByRole('status', { name: /就绪/ })).toBeTruthy();
+		expect(screen.getByRole('status', { name: '执行状态：空闲' })).toBeTruthy();
+		expect(screen.queryByRole('status', { name: /模型状态/ })).toBeNull();
 	});
 
-	it('shows the connection reason in the disconnected status title', () => {
+	it('shows only the checking label before the first model probe completes', () => {
+		render(WorkspaceStatus, {
+			runtime: 'tauri',
+			bootstrapReady: true,
+			llmConnected: null,
+		});
+
+		expect(screen.getByRole('status', { name: '模型状态：检测中' })).toBeTruthy();
+		expect(screen.queryByText('已配置')).toBeNull();
+	});
+
+	it('shows an unconfigured model separately from the idle execution phase', () => {
+		render(WorkspaceStatus, {
+			runtime: 'tauri',
+			bootstrapReady: true,
+			llmConnected: 'unconfigured',
+		});
+
+		expect(screen.getByRole('status', { name: '模型状态：未配置' })).toBeTruthy();
+		expect(screen.getByRole('status', { name: '执行状态：空闲' })).toBeTruthy();
+	});
+
+	it('shows network error independently and keeps the probe reason in its title', () => {
 		render(WorkspaceStatus, {
 			runtime: 'tauri',
 			bootstrapReady: true,
@@ -29,22 +53,57 @@ describe('WorkspaceStatus', () => {
 			llmConnectionDetail: '网络请求失败，可能与网络、代理、DNS 或 TLS 有关',
 		});
 
-		const status = screen.getByRole('status', { name: /已断开/ });
+		const status = screen.getByRole('status', { name: '模型状态：网络错误' });
 		expect(status.getAttribute('title')).toContain('网络请求失败');
 		expect(status.getAttribute('title')).toContain('检查 API 地址、API Key 和代理');
 	});
 
-	it('mirrors the active conversation and keeps the status dot moving', () => {
+	it('shows the ReAct phase beside model availability', () => {
 		render(WorkspaceStatus, {
 			runtime: 'tauri',
 			bootstrapReady: true,
-			llmConnected: 'ready',
+			llmConnected: 'disconnected',
+			executionPhase: 'generating',
 			conversationStatus: '运行中',
 			busySessions: new Set(['ses-1']),
 		});
 
-		expect(screen.getByRole('status', { name: /运行中/ })).toBeTruthy();
+		expect(screen.getByRole('status', { name: '执行状态：生成中' })).toBeTruthy();
+		expect(screen.getByRole('status', { name: '模型状态：网络错误' })).toBeTruthy();
 		expect(document.querySelector('.status-dot.animate')).toBeTruthy();
+	});
+
+	it('uses the selected text for the request, response, and tool-result phases', () => {
+		const labels = [
+			['requesting', '请求中'],
+			['waiting_response', '等待响应'],
+			['waiting_result', '等待结果'],
+		];
+		for (const [executionPhase, label] of labels) {
+			const { unmount } = render(WorkspaceStatus, {
+				runtime: 'tauri',
+				bootstrapReady: true,
+				executionPhase,
+				busySessions: new Set(['ses-1']),
+			});
+			expect(screen.getByRole('status', { name: `执行状态：${label}` })).toBeTruthy();
+			unmount();
+		}
+	});
+
+	it('uses unified waiting-operation and task labels from the active session', () => {
+		for (const conversationStatus of ['等待操作', '等待任务']) {
+			const { unmount } = render(WorkspaceStatus, {
+				runtime: 'tauri',
+				bootstrapReady: true,
+				conversationStatus,
+				busySessions: new Set(),
+			});
+			expect(
+				screen.getByRole('status', { name: `执行状态：${conversationStatus}` }),
+			).toBeTruthy();
+			unmount();
+		}
 	});
 
 	it('shows a paused conversation without animating it', () => {
@@ -55,7 +114,7 @@ describe('WorkspaceStatus', () => {
 			conversationStatus: '已暂停',
 		});
 
-		expect(screen.getByRole('status', { name: /已暂停/ })).toBeTruthy();
+		expect(screen.getByRole('status', { name: '执行状态：已暂停' })).toBeTruthy();
 		expect(document.querySelector('.status-dot.animate')).toBeNull();
 	});
 
@@ -67,7 +126,7 @@ describe('WorkspaceStatus', () => {
 			runningActionCount: 2,
 		});
 
-		expect(screen.getByRole('status', { name: /后台任务/ })).toBeTruthy();
+		expect(screen.getByRole('status', { name: '执行状态：后台任务' })).toBeTruthy();
 		expect(screen.getByRole('button', { name: '打开任务' })).toBeTruthy();
 		expect(document.querySelector('.status-badge')?.textContent).toBe('2');
 	});

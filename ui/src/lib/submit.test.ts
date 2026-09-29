@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { get } from 'svelte/store';
-import { modelStateStore } from './runtimeStateStore.ts';
+import { reactExecutionPhaseStore } from './runtimeStateStore.ts';
 import { newSessionIntentStore } from './sessionIntentStore.ts';
 import { SessionReducer } from './sessionReducer.ts';
 
@@ -29,7 +29,7 @@ describe('submitTranscript', () => {
 		invokeMock.mockReset();
 		reducer = new SessionReducer();
 		newSessionIntentStore.set(false);
-		modelStateStore.set('ready');
+		reactExecutionPhaseStore.set('idle');
 	});
 
 	it('appends an optimistic user message under the active session id', async () => {
@@ -217,7 +217,7 @@ describe('submitTranscript', () => {
 			{ id: 'msg-1', role: 'user', content: 'hi', received: true },
 			{ id: 'msg-2', role: 'assistant', content: '想', streaming: true },
 		]);
-		modelStateStore.set('streaming');
+		reactExecutionPhaseStore.set('generating');
 		await submitTranscript('补充', { voice: false });
 		const list = messagesFor('session-a');
 		expect(list).toHaveLength(3);
@@ -235,7 +235,7 @@ describe('submitTranscript', () => {
 			{ id: 'msg-1', role: 'user', content: 'hi', received: true },
 			{ id: 'msg-2', role: 'assistant', content: '好的', streaming: false },
 		]);
-		modelStateStore.set('ready');
+		reactExecutionPhaseStore.set('idle');
 		await submitTranscript('下一题', { voice: false });
 		const list = messagesFor('session-a');
 		expect(list[2].content).toBe('下一题');
@@ -247,23 +247,23 @@ describe('submitTranscript', () => {
 			Supplemented: { message_id: 'msg-steer2' },
 		});
 		select('session-a');
-		// First message accepted, modelState not flipped yet, no assistant bubble.
+		// First message accepted, execution phase not flipped yet, no assistant bubble.
 		loadMessages('session-a', [{ id: 'msg-1', role: 'user', content: 'hi' }]);
-		modelStateStore.set('ready');
+		reactExecutionPhaseStore.set('idle');
 		await submitTranscript('再加一句', { voice: false });
 		const list = messagesFor('session-a');
 		expect(list[1]).toMatchObject({ id: 'msg-steer2', steering: true });
 	});
 
-	it('does not steal steering from a parallel busy session via global modelState', async () => {
+	it('does not steal steering from a parallel busy session via the global execution phase', async () => {
 		invokeMock.mockResolvedValue({});
-		// Active session B is idle; global modelState still reflects busy session A.
+		// Active session B is idle; the global execution phase reflects busy session A.
 		select('session-b');
 		loadMessages('session-b', [
 			{ id: 'msg-b1', role: 'user', content: 'hi', received: true },
 			{ id: 'msg-b2', role: 'assistant', content: '好的', streaming: false },
 		]);
-		modelStateStore.set('streaming');
+		reactExecutionPhaseStore.set('generating');
 		await submitTranscript('下一题', { voice: false });
 		const list = messagesFor('session-b');
 		expect(list[2].content).toBe('下一题');

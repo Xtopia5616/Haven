@@ -21,35 +21,16 @@ export const recordingOverlay = writable<RecordingOverlayState>({
 	vadState: 'silent',
 });
 
-export type ModelState = 'ready' | 'waiting' | 'streaming' | 'tool' | 'stalled';
+export type ReactExecutionPhase =
+	'idle' | 'queued' | 'requesting' | 'generating' | 'waiting_result' | 'waiting_response';
 
-// Runtime status for the titlebar model chip.
-export const modelStateStore = writable<ModelState>('ready');
+// ReAct execution phase for the titlebar. Model connectivity is tracked
+// separately by the shell's LLM connection probe.
+export const reactExecutionPhaseStore = writable<ReactExecutionPhase>('idle');
 
 // Presentation status for the selected conversation, consumed by the shell.
-export const activeConversationStatusStore = writable('就绪');
+export const activeConversationStatusStore = writable('空闲');
 
-let modelStateTimer: ReturnType<typeof setTimeout> | null = null;
-
-export function updateModelState(state: ModelState, opts: { idleTimeoutMs?: number } = {}) {
-	const { idleTimeoutMs } = opts;
-	if (modelStateTimer) clearTimeout(modelStateTimer);
-	modelStateTimer = null;
-	modelStateStore.set(state);
-	if (state === 'waiting') {
-		modelStateTimer = setTimeout(() => {
-			modelStateTimer = null;
-			modelStateStore.update((current) => (current === 'waiting' ? 'ready' : current));
-		}, idleTimeoutMs ?? 5000);
-	} else if (state === 'streaming') {
-		modelStateTimer = setTimeout(() => {
-			modelStateTimer = null;
-			modelStateStore.update((current) => (current === 'streaming' ? 'ready' : current));
-		}, idleTimeoutMs ?? 2000);
-	}
-}
-
-export function clearModelStateTimer() {
-	if (modelStateTimer) clearTimeout(modelStateTimer);
-	modelStateTimer = null;
+export function updateReactExecutionPhase(phase: ReactExecutionPhase) {
+	reactExecutionPhaseStore.set(phase);
 }
