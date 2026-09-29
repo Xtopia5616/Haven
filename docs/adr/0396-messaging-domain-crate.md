@@ -34,8 +34,8 @@ haven-tools ─┘
 
 ## 替代方案
 
-- 保持服务在 `haven-tools` 并让 Agent 依赖 Tools：拒绝，消息契约的 owner 与 session adapter
-  实现方分别处在工具能力层和会话编排层，继续扩大 Agent 对 Tools 的依赖。
+- 继续让 Agent 从 `haven-tools` 引入 `MessagingService` 等消息 API：拒绝，这会把消息服务和
+  协作契约继续挂在工具能力 crate 上，并进一步耦合 Agent 与该实现层。
 - 将接口放入 `haven-common`：拒绝。消息传输、claim lease、文件总线与 peer lifecycle 是一个
   有行为的领域服务，不是跨域稳定数据类型或纯函数。
 - 让 Agent 或 Tools 单独拥有服务：拒绝。前者会把工具能力入口放入会话编排层，后者则保留
