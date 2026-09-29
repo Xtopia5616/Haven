@@ -47,8 +47,21 @@ profile test 写入三个临时数据库和约 20 MiB 的合成 event 数据，�
 
 ## Windows profile/GUI 验收
 
-本轮未完成阶段 9 的真实桌面流程。Computer Use 的 `getState()` 返回没有可操作的 Windows app/window；进一步调用 `listApps()`、`listWindows()` 时，当前绑定未提供这些接口。workspace 下现有 `target/release` executable 和 MSI/NSIS bundle 的时间戳为 2026-09-14，早于 schema v30 与本 ADR，未用它们做升级测试。当前用户的 `%APPDATA%\Haven` 含真实配置和数据库，本轮没有启动应用到该数据根目录，也没有安装、重置或卸载它。
+本轮在当前 Windows 用户下配置了独立数据根（不是单独 Windows 账户或 VM）：`target/test-data/phase9-windows-profile-current-20260929`。用进程级 `APPDATA`、`LOCALAPPDATA`、`TEMP`、`TMP` 重定向路径；该目录内的 `README.md` 保存了可复跑启动命令。项目锁定的 Rust 1.98.0、Node 24.20.0、pnpm 11.24.0 均用于当前 release 构建，命令为 `cargo tauri build --no-bundle --ci`。
 
-剩余发布验收需在一次性 Windows 用户配置或 VM 快照中完成：从全新数据根目录启动并检查默认配置与 schema v30；覆盖 Settings、会话、确认工具、媒体、任务、恢复和回滚；按 `docs/release-and-reset.md` 执行旧数据库重置并确认 config 保留、数据库重建；安装新 bundle 后验证卸载结果和数据根目录行为。应使用隔离的模型/媒体 fixture，不把真实凭据或用户数据带入该 profile。验收结果须记录 OS、bundle 版本、临时数据根路径、schema 版本和每项通过/失败。
+当前 release app 在全新 profile 首次启动后保持响应，窗口标题为 Haven。默认 `config.toml`、数据库、WAL/SHM 与日志均写入隔离数据根；日志记录 `AppState ready` 和 `Haven Tauri app initialized`。数据库 `user_version=30`、23 张用户表，`integrity_check=ok`、外键违规为 0。默认 profile 未配置模型 endpoint。该检查证明进程可创建首启数据并完成 bootstrap，但没有验证画面内容或交互流程。
 
-因此阶段 9 仍开放；本 ADR 不把 SQLite fault injection 冒充为物理盘满验收，也不把单元测试冒充为首次启动、升级重置或卸载验收。
+Computer Use 的 `getState()` 仍因 Codex auth token unavailable 无法列出/操作窗口；当前窗口已留在隔离 profile，供后续手动反馈。当前账户不是管理员，Windows Sandbox executable 不存在，查询 Windows optional feature 也要求提权。机器已有 MSI/NSIS bundle 时间戳为 2026-09-14，早于 schema v30；主机没有 `makensis.exe`，winget 当前用户范围安装未找到适用安装器，因此没有构建或运行新 installer。真实 `%APPDATA%\Haven` 未被本轮应用访问或改动。
+
+### 本轮自动化门禁
+
+- `cargo fmt --all -- --check`、`cargo check --workspace --locked`、`cargo clippy --workspace --locked -- -D warnings` 通过。
+- `cargo test --workspace --locked` 在最新工作树通过；包含 `haven-llm` 471 tests、`haven-memory` 369 个测试用例（1 ignored）、`haven-tools` 806 passed / 2 ignored、MCP integration 7 passed，以及其他 workspace crate suites。早先运行时遇到的 `RequestProfileClient::health_check` 编译错误在本次最终全量运行前已不再出现。
+- UI `check` 通过，0 errors / 0 warnings；`test:run` 通过，874 tests；release UI build 通过。
+- `scripts/check-ipc-contracts.ps1` 与 `scripts/check-ipc-events.ps1` 通过，覆盖 71 个 commands 和 40 个 event channels。
+
+剩余发布验收包括：在可操作的 Windows profile/VM 中目视检查首启界面和 Settings、会话、确认工具、媒体、任务、恢复/回滚交互；取得当前 NSIS/MSI bundle 后覆盖真实安装、升级、卸载及卸载后的数据保留。物理盘 ENOSPC 和桌面错误/恢复文案也仍未验证。当前隔离 APPDATA smoke 不能代替这些检查。应使用隔离的模型/媒体 fixture，不把真实凭据或用户数据带入该 profile；记录 OS、bundle 版本、临时数据根路径、schema 版本和每项通过/失败。
+
+另在 `target/test-data/phase9-reset-profile-20260929` 顺序验证了数据库重置：人为设置 `user_version=29` 后，启动日志明确拒绝该库并提示删除数据库；按发布文档仅删除 `haven.db`、`haven.db-wal`、`haven.db-shm` 后重启，配置文件 SHA-256 保持不变，新库为 v30 且 integrity check 通过。测试发现 `tauri_plugin_single_instance` 按 Windows 用户限制同时运行一个 Haven 实例；profile smoke 必须先完全退出既有实例，再启动另一组 APPDATA。
+
+因此阶段 9 仍开放；本 ADR 不把 SQLite fault injection 冒充为物理盘满验收，也不把 bootstrap smoke 或单元测试冒充为 UI 安装、升级和卸载验收。
