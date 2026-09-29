@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 	import Icon from './Icon.svelte';
 	import { untrack } from 'svelte';
 	import JsonView from './JsonView.svelte';
@@ -6,6 +6,15 @@
 	import ToolResultList from './ToolResultList.svelte';
 	import logger from './logger.ts';
 	import { formatError } from './formatError.ts';
+
+	interface Props {
+		value?: unknown;
+		key?: string;
+		indexed?: boolean;
+		depth?: number;
+		defaultDepth?: number;
+		copyable?: boolean;
+	}
 
 	// Recursive, collapsible JSON tree viewer with syntax coloring and a
 	// copy-to-clipboard button at the root. Used by ToolResultCard for tool
@@ -19,11 +28,17 @@
 		depth = 0,
 		defaultDepth = 2,
 		copyable = true,
-	} = $props();
+	}: Props = $props();
 
 	let isArray = $derived(Array.isArray(value));
 	let isContainer = $derived(isArray || (value !== null && typeof value === 'object'));
-	let count = $derived(isArray ? value.length : isContainer ? Object.keys(value).length : 0);
+	let arrayValue = $derived(Array.isArray(value) ? value : []);
+	let objectEntries = $derived(
+		value !== null && typeof value === 'object' && !Array.isArray(value)
+			? Object.entries(value)
+			: [],
+	);
+	let count = $derived(isArray ? arrayValue.length : isContainer ? objectEntries.length : 0);
 
 	// Root always starts expanded; nested containers expand until
 	// `defaultDepth` so deep payloads don't explode on first paint. Captured
@@ -31,28 +46,29 @@
 	// change for a live node.
 	let expanded = $state(untrack(() => depth === 0 || depth < defaultDepth));
 	let copied = $state(false);
-	/** @type {ReturnType<typeof setTimeout> | null} */
-	let copyTimer = null;
+	let copyTimer: ReturnType<typeof setTimeout> | null = null;
 
 	function summaryOf() {
 		if (count === 0) return isArray ? '[ ]' : '{ }';
 		return isArray ? `[ ${count} 项 ]` : `{ ${count} 个键 }`;
 	}
 
-	/** @param {string} k */
-	function keyLabel(k) {
+	function keyLabel(k: string) {
 		return indexed ? k : JSON.stringify(k);
 	}
 
-	/** @param {unknown} v */
-	function valInfo(v) {
+	function valInfo(v: unknown) {
 		if (v === null) return { cls: 'jv-null', text: 'null' };
 		const t = typeof v;
 		if (t === 'boolean') return { cls: 'jv-bool', text: String(v) };
 		if (t === 'number') return { cls: 'jv-num', text: String(v) };
 		if (t === 'string') {
 			const full = JSON.stringify(v);
-			return { cls: 'jv-str', text: full.length > 160 ? `${full.slice(0, 157)}…"` : full, full };
+			return {
+				cls: 'jv-str',
+				text: full.length > 160 ? `${full.slice(0, 157)}…"` : full,
+				full,
+			};
 		}
 		return { cls: '', text: String(v), full: String(v) };
 	}
@@ -63,7 +79,7 @@
 
 	async function copyJson() {
 		try {
-			await navigator.clipboard.writeText(JSON.stringify(value, null, 2));
+			await navigator.clipboard.writeText(JSON.stringify(value, null, 2) ?? String(value));
 			copied = true;
 			if (copyTimer) clearTimeout(copyTimer);
 			copyTimer = setTimeout(() => (copied = false), 1500);
@@ -115,7 +131,9 @@
 					<Icon name="chevronDown" size={12} strokeWidth={2.5} />
 				</span>
 				{#if key}
-					<span class={indexed ? 'jv-index' : 'jv-key'}>{keyLabel(key)}</span><span class="jv-punct">:&nbsp;</span>
+					<span class={indexed ? 'jv-index' : 'jv-key'}>{keyLabel(key)}</span><span
+						class="jv-punct">:&nbsp;</span
+					>
 				{/if}
 				{#if expanded}
 					<span class="jv-punct">{isArray ? '[' : '{'}</span>
@@ -129,18 +147,31 @@
 			{#if expanded && count > 0}
 				<div class="jv-children">
 					{#if isArray}
-						<ToolResultList items={value}>
-							{#snippet children(visibleItems = /** @type {any[]} */ ([]))}
+						<ToolResultList items={arrayValue}>
+							{#snippet children(visibleItems = [])}
 								{#each visibleItems as item, i (i)}
-									<JsonView value={item} key={String(i)} indexed depth={depth + 1} {defaultDepth} copyable={false} />
+									<JsonView
+										value={item}
+										key={String(i)}
+										indexed
+										depth={depth + 1}
+										{defaultDepth}
+										copyable={false}
+									/>
 								{/each}
 							{/snippet}
 						</ToolResultList>
 					{:else}
-						<ToolResultList items={Object.entries(value)}>
-							{#snippet children(visibleEntries = /** @type {any[]} */ ([]))}
+						<ToolResultList items={objectEntries}>
+							{#snippet children(visibleEntries = [])}
 								{#each visibleEntries as [k, v] (k)}
-									<JsonView value={v} key={k} depth={depth + 1} {defaultDepth} copyable={false} />
+									<JsonView
+										value={v}
+										key={k}
+										depth={depth + 1}
+										{defaultDepth}
+										copyable={false}
+									/>
 								{/each}
 							{/snippet}
 						</ToolResultList>
@@ -156,7 +187,9 @@
 			<div class="jv-row jv-leaf">
 				<span class="jv-caret-spacer"></span>
 				{#if key}
-					<span class={indexed ? 'jv-index' : 'jv-key'}>{keyLabel(key)}</span><span class="jv-punct">:&nbsp;</span>
+					<span class={indexed ? 'jv-index' : 'jv-key'}>{keyLabel(key)}</span><span
+						class="jv-punct">:&nbsp;</span
+					>
 				{/if}
 				{#if info.cls}
 					<span class="jv-value {info.cls}" title={info.full ?? ''}>{info.text}</span>
@@ -290,7 +323,8 @@
 	.jv-children {
 		margin: 0 0 0 6px;
 		padding: 0 0 0 10px;
-		border-left: 1px solid color-mix(in srgb, var(--md-sys-color-outline-variant) 80%, transparent);
+		border-left: 1px solid
+			color-mix(in srgb, var(--md-sys-color-outline-variant) 80%, transparent);
 	}
 	.jv-close {
 		color: var(--md-sys-color-on-surface-variant);

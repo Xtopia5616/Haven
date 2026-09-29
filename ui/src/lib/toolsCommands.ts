@@ -3,6 +3,7 @@ import type {
 	McpNameRequest,
 	McpRefreshResult,
 	McpServerConfig,
+	McpServerConfigInput,
 	McpServerSnapshot,
 	SetEnabledRequest,
 	SkillInfo,
@@ -75,7 +76,7 @@ export function openSkillsDir(): Promise<string> {
 }
 
 /** Add an MCP server using the Rust config DTO without parsing it again. */
-export function addMcpServer(config: McpServerConfig): Promise<void> {
+export function addMcpServer(config: McpServerConfigInput): Promise<void> {
 	return invoke('add_mcp_server', { config });
 }
 

@@ -1,23 +1,24 @@
-<script>
+<script lang="ts">
 	import StatusBadge from '$lib/StatusBadge.svelte';
 	import ExpandableContextCard from '$lib/ExpandableContextCard.svelte';
 	import { copyText } from '$lib/clipboard.ts';
 	import BuiltinToolRootCard from '$lib/BuiltinToolRootCard.svelte';
+	import type {
+		BuiltinToolCard as BuiltinToolCardModel,
+		BuiltinToolEntry,
+	} from './builtinToolPresentation.ts';
 
-	/** @typedef {import('./builtinToolPresentation.ts').BuiltinToolCard} BuiltinToolCard */
-	/** @typedef {import('./builtinToolPresentation.ts').BuiltinToolEntry} BuiltinToolEntry */
-	/** @type {{ tool: BuiltinToolCard; onToggle?: (name: string, checked: boolean) => void }} */
-	let { tool: card, onToggle } = $props();
-	/** @type {BuiltinToolEntry[]} */
+	interface Props {
+		tool: BuiltinToolCardModel;
+		onToggle?: (name: string, checked: boolean) => void;
+	}
+
+	let { tool: card, onToggle }: Props = $props();
 	let operations = $derived(card.roots.flatMap((root) => root.operations));
 	let enabledCount = $derived(operations.filter((operation) => operation.enabled).length);
 	let statusLabel = $derived(`${enabledCount}/${operations.length} 个操作已启用`);
-	let statusTone = $derived(
-		enabledCount === 0
-			? 'error'
-			: enabledCount === operations.length
-				? 'success'
-				: 'warning',
+	let statusTone: 'error' | 'success' | 'warning' = $derived(
+		enabledCount === 0 ? 'error' : enabledCount === operations.length ? 'success' : 'warning',
 	);
 
 	function copyFamilySchema() {
@@ -47,8 +48,8 @@
 	{#snippet header()}
 		<div class="card-name">{card.label}</div>
 		<div class="card-meta">
-			<StatusBadge label={`${card.roots.length} 个根能力`} tone="neutral" />
-			<StatusBadge label={`${operations.length} 个操作`} tone="neutral" />
+			<StatusBadge label={`${card.roots.length} 个根能力`} tone={'neutral' as const} />
+			<StatusBadge label={`${operations.length} 个操作`} tone={'neutral' as const} />
 			<StatusBadge label={statusLabel} tone={statusTone} />
 		</div>
 	{/snippet}
@@ -95,13 +96,30 @@
 	:global(.expandable-context-card[data-card-kind='builtin-family'] .card-body) {
 		padding-bottom: var(--md-sys-space-md);
 	}
-	:global(.expandable-context-card[data-card-kind='builtin-family'] .card-body > .root-list > .expandable-context-card) {
+	:global(
+		.expandable-context-card[data-card-kind='builtin-family']
+			.card-body
+			> .root-list
+			> .expandable-context-card
+	) {
 		background: var(--md-sys-color-surface-container-lowest);
 	}
-	:global(.expandable-context-card[data-card-kind='builtin-family'] .card-body > .root-list > .expandable-context-card .card-header) {
+	:global(
+		.expandable-context-card[data-card-kind='builtin-family']
+			.card-body
+			> .root-list
+			> .expandable-context-card
+			.card-header
+	) {
 		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
 	}
-	:global(.expandable-context-card[data-card-kind='builtin-family'] .card-body > .root-list > .expandable-context-card .card-body) {
+	:global(
+		.expandable-context-card[data-card-kind='builtin-family']
+			.card-body
+			> .root-list
+			> .expandable-context-card
+			.card-body
+	) {
 		padding-left: var(--md-sys-space-md);
 		padding-right: var(--md-sys-space-md);
 	}

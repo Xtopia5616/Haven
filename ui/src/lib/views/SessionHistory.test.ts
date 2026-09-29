@@ -1,12 +1,13 @@
 import { fireEvent, render, screen } from '@testing-library/svelte';
 import { describe, expect, it, vi } from 'vitest';
 import SessionHistory from './SessionHistory.svelte';
+import type { SessionHistoryRow } from '$lib/contracts/sessionHistory.ts';
 
 const commonProps = {
 	statusOptions: [{ value: '', label: '全部状态' }],
-	displayTitle: () => '研究会话',
-	statusVariant: () => 'success',
-	formatMessageTime: () => '刚刚',
+	displayTitle: (_session: SessionHistoryRow) => '研究会话',
+	statusVariant: (_status: string): 'success' => 'success',
+	formatMessageTime: (_value: string) => '刚刚',
 };
 
 describe('SessionHistory actions', () => {
@@ -28,10 +29,12 @@ describe('SessionHistory actions', () => {
 	it('opens a session by clicking its row and keeps delete available', async () => {
 		const onResume = vi.fn();
 		const onDeleteRequest = vi.fn();
-		const session = {
+		const session: SessionHistoryRow = {
 			id: 'ses-1',
 			status: 'completed',
 			created_at: '2026-09-06T03:00:00Z',
+			updated_at: '2026-09-06T03:00:00Z',
+			title: null,
 			input_text: '整理研究资料',
 		};
 		render(SessionHistory, {
@@ -57,7 +60,16 @@ describe('SessionHistory actions', () => {
 		const onOpenClearDialog = vi.fn();
 		render(SessionHistory, {
 			...commonProps,
-			sessions: [{ id: 'ses-1', status: 'completed', created_at: '2026-09-06T03:00:00Z' }],
+			sessions: [
+				{
+					id: 'ses-1',
+					status: 'completed',
+					created_at: '2026-09-06T03:00:00Z',
+					updated_at: '2026-09-06T03:00:00Z',
+					title: null,
+					input_text: '',
+				},
+			],
 			onEnterSelectMode,
 			onOpenClearDialog,
 		});
@@ -73,10 +85,13 @@ describe('SessionHistory actions', () => {
 
 	it('keeps the native context menu available while renaming', () => {
 		const onContextMenu = vi.fn();
-		const session = {
+		const session: SessionHistoryRow = {
 			id: 'ses-1',
 			status: 'completed',
 			created_at: '2026-09-06T03:00:00Z',
+			updated_at: '2026-09-06T03:00:00Z',
+			title: null,
+			input_text: '',
 		};
 		render(SessionHistory, {
 			...commonProps,

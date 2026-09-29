@@ -235,16 +235,14 @@
 	// flip the item locally, invoke the backend command, and roll back on
 	// failure. `refresh` runs after a successful toggle. One implementation
 	// so the three handlers cannot drift (e.g. one forgetting the refresh).
-	/**
-	 * @template {{ name: string; enabled: boolean }} T
-	 * @param {T[]} list
-	 * @param {string} name
-	 * @param {boolean} enabled
-	 * @param {(v: T[]) => void} setList
-	 * @param {() => Promise<void>} update
-	 * @param {(() => void | Promise<unknown>) | null} refresh
-	 */
-	async function toggleItem(list, name, enabled, setList, update, refresh) {
+	async function toggleItem<T extends { name: string; enabled: boolean }>(
+		list: T[],
+		name: string,
+		enabled: boolean,
+		setList: (items: T[]) => void,
+		update: () => Promise<void>,
+		refresh: (() => void | Promise<unknown>) | null,
+	) {
 		const prev = list.map((x) => ({ ...x }));
 		setList(list.map((x) => (x.name === name ? { ...x, enabled } : x)));
 		try {
@@ -257,11 +255,7 @@
 		}
 	}
 
-	/**
-	 * @param {string} name
-	 * @param {boolean} enabled
-	 */
-	async function handleToggle(name, enabled) {
+	async function handleToggle(name: string, enabled: boolean) {
 		await toggleItem(
 			skills,
 			name,
@@ -300,10 +294,7 @@
 		mcpDialogOpen = true;
 	}
 
-	/**
-	 * @param {McpServerSnapshot} server
-	 */
-	function openEditDialog(server) {
+	function openEditDialog(server: McpServerSnapshot) {
 		mcpEditServer = server;
 		mcpDialogOpen = true;
 	}
@@ -313,10 +304,7 @@
 		mcpEditServer = null;
 	}
 
-	/**
-	 * @param {McpServerConfig} config
-	 */
-	async function handleSave(config) {
+	async function handleSave(config: McpServerConfigInput) {
 		try {
 			if (mcpEditServer) {
 				await updateMcpServer({ name: mcpEditServer.name, config });
@@ -332,10 +320,7 @@
 		}
 	}
 
-	/**
-	 * @param {string} name
-	 */
-	async function handleRemove(name) {
+	async function handleRemove(name: string) {
 		try {
 			await removeMcpServer({ name });
 			addNotification(`已移除 ${name}`, 'success', 2000);
@@ -345,10 +330,7 @@
 		}
 	}
 
-	/**
-	 * @param {string} name
-	 */
-	async function handleReconnect(name) {
+	async function handleReconnect(name: string) {
 		try {
 			await reconnectMcp({ name });
 			addNotification(`刷新成功：${name}`, 'success', 2000);
@@ -359,11 +341,7 @@
 		}
 	}
 
-	/**
-	 * @param {string} name
-	 * @param {boolean} enabled
-	 */
-	async function handleMcpToggle(name, enabled) {
+	async function handleMcpToggle(name: string, enabled: boolean) {
 		await toggleItem(
 			mcpServers,
 			name,
@@ -374,11 +352,7 @@
 		);
 	}
 
-	/**
-	 * @param {string} name
-	 * @param {boolean} enabled
-	 */
-	async function handleToolToggle(name, enabled) {
+	async function handleToolToggle(name: string, enabled: boolean) {
 		await toggleItem(
 			builtinTools,
 			name,

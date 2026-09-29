@@ -1,9 +1,22 @@
-<script>
+<script lang="ts">
+	import type { StatusTone } from './statusColors.ts';
+
+	type WorkspaceMetric = {
+		id?: string;
+		value: string | number;
+		label: string;
+		detail?: string;
+		tone?: StatusTone;
+	};
+
+	interface Props {
+		items?: WorkspaceMetric[];
+	}
+
 	/**
 	 * WorkspaceMetricStrip — compact, shared overview metrics for workspace pages.
-	 * @prop {Array<{ id?: string; value: string | number; label: string; detail?: string; tone?: string }>} items — metrics to display
 	 */
-	let { items = [] } = $props();
+	let { items = [] }: Props = $props();
 </script>
 
 {#if items.length > 0}

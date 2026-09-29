@@ -1,13 +1,16 @@
-<script>
+<script lang="ts">
 	import Icon from './Icon.svelte';
 	import StatusBadge from './StatusBadge.svelte';
 
+	interface Props {
+		status?: 'paused' | 'completed' | 'error';
+		reason?: string;
+	}
+
 	/**
 	 * SessionTerminationBanner — shows why a conversation stopped or paused.
-	 * @prop {'paused'|'completed'|'error'} status — session lifecycle status
-	 * @prop {string} reason — sanitized user-visible termination reason
 	 */
-	let { status = 'error', reason = '' } = $props();
+	let { status = 'error', reason = '' }: Props = $props();
 	let isError = $derived(status === 'error');
 	let isPaused = $derived(status === 'paused');
 	let displayReason = $derived(
@@ -18,7 +21,9 @@
 					? '本次会话已暂停，暂未收到更具体的原因。'
 					: '会话已结束。'),
 	);
-	let heading = $derived(isError ? '本次会话已停止' : isPaused ? '本次会话已暂停' : '本次会话已结束');
+	let heading = $derived(
+		isError ? '本次会话已停止' : isPaused ? '本次会话已暂停' : '本次会话已结束',
+	);
 	let badge = $derived(isError ? '错误' : isPaused ? '已暂停' : '已结束');
 	let hint = $derived(
 		isError
@@ -41,7 +46,10 @@
 	<div class="session-termination-banner__body">
 		<div class="session-termination-banner__heading">
 			<strong>{heading}</strong>
-			<StatusBadge label={badge} tone={isError ? 'error' : isPaused ? 'warning' : 'success'} />
+			<StatusBadge
+				label={badge}
+				tone={isError ? 'error' : isPaused ? 'warning' : 'success'}
+			/>
 		</div>
 		<div class="session-termination-banner__label">终止原因</div>
 		<p class="session-termination-banner__reason">{displayReason}</p>

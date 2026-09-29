@@ -1,12 +1,23 @@
-<script>
+<script lang="ts">
 	import MaterialDialog from './MaterialDialog.svelte';
 	import Icon from './Icon.svelte';
 	import MaterialButton from './MaterialButton.svelte';
 
-	let { value = '', onChange, id = undefined, min = '', max = '' } = $props();
+	interface Props {
+		value?: string;
+		onChange?: (value: string) => void;
+		id?: string;
+		min?: string;
+		max?: string;
+	}
+
+	type DateParts = { y: number; m: number; d: number };
+	type CalendarCell = number | null;
+
+	let { value = '', onChange, id = undefined, min = '', max = '' }: Props = $props();
 
 	let open = $state(false);
-	let view = $state('calendar');
+	let view = $state<'calendar' | 'year'>('calendar');
 	let viewMonth = $state(0);
 	let viewYear = $state(0);
 	let tempValue = $state('');
@@ -29,16 +40,13 @@
 
 	let displayValue = $derived(value ? formatDisplay(value) : '');
 
-	/**
-	 * @param {string} iso
-	 */
-	function formatDisplay(iso) {
+	function formatDisplay(iso: string): string {
 		const d = new Date(iso + 'T00:00:00');
 		if (isNaN(d.getTime())) return '';
 		return `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}`;
 	}
 
-	function openPicker() {
+	function openPicker(): void {
 		if (value) {
 			const d = new Date(value + 'T00:00:00');
 			if (!isNaN(d.getTime())) {
@@ -55,46 +63,38 @@
 		open = true;
 	}
 
-	function initToToday() {
+	function initToToday(): void {
 		const now = new Date();
 		viewMonth = now.getMonth();
 		viewYear = now.getFullYear();
 		tempValue = '';
 	}
 
-	/**
-	 * @param {number} y
-	 * @param {number} m
-	 */
-	function daysInMonth(y, m) {
+	function daysInMonth(y: number, m: number): number {
 		return new Date(y, m + 1, 0).getDate();
 	}
 
-	/**
-	 * @param {number} y
-	 * @param {number} m
-	 */
-	function firstDayOfMonth(y, m) {
+	function firstDayOfMonth(y: number, m: number): number {
 		return new Date(y, m, 1).getDay();
 	}
 
-	function todayDate() {
+	function todayDate(): DateParts {
 		const n = new Date();
 		return { y: n.getFullYear(), m: n.getMonth(), d: n.getDate() };
 	}
 
-	function tempDateObj() {
+	function tempDateObj(): DateParts | null {
 		if (!tempValue) return null;
 		const d = new Date(tempValue + 'T00:00:00');
 		if (isNaN(d.getTime())) return null;
 		return { y: d.getFullYear(), m: d.getMonth(), d: d.getDate() };
 	}
 
-	let weeks = $derived.by(() => {
+	let weeks = $derived.by((): CalendarCell[][] => {
 		const dim = daysInMonth(viewYear, viewMonth);
 		const fd = firstDayOfMonth(viewYear, viewMonth);
-		const w = [];
-		let row = [];
+		const w: CalendarCell[][] = [];
+		let row: CalendarCell[] = [];
 		for (let i = 0; i < fd; i++) row.push(null);
 		for (let d = 1; d <= dim; d++) {
 			row.push(d);
@@ -110,66 +110,60 @@
 		return w;
 	});
 
-	function prevMonth() {
+	function prevMonth(): void {
 		if (viewMonth === 0) {
 			viewMonth = 11;
 			viewYear--;
 		} else viewMonth--;
 	}
 
-	function nextMonth() {
+	function nextMonth(): void {
 		if (viewMonth === 11) {
 			viewMonth = 0;
 			viewYear++;
 		} else viewMonth++;
 	}
 
-	/**
-	 * @param {number} day
-	 */
-	function selectDay(day) {
+	function selectDay(day: number): void {
 		const m = String(viewMonth + 1).padStart(2, '0');
 		const d = String(day).padStart(2, '0');
 		tempValue = `${viewYear}-${m}-${d}`;
 	}
 
-	function confirm() {
+	function confirm(): void {
 		onChange?.(tempValue);
 		open = false;
 	}
 
-	function cancel() {
+	function cancel(): void {
 		open = false;
 	}
 
-	function goToYearView() {
+	function goToYearView(): void {
 		view = 'year';
 	}
 
-	/**
-	 * @param {number} year
-	 */
-	function selectYear(year) {
+	function selectYear(year: number): void {
 		viewYear = year;
 		view = 'calendar';
 	}
 
 	let yearGrid = $derived.by(() => {
 		const start = Math.floor(viewYear / 12) * 12;
-		const years = [];
+		const years: number[] = [];
 		for (let i = 0; i < 12; i++) years.push(start + i);
 		return { years, start };
 	});
 
-	function prevYearPage() {
+	function prevYearPage(): void {
 		viewYear -= 12;
 	}
 
-	function nextYearPage() {
+	function nextYearPage(): void {
 		viewYear += 12;
 	}
 
-	function headerLabel() {
+	function headerLabel(): string {
 		if (tempValue) {
 			const d = new Date(tempValue + 'T00:00:00');
 			const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -178,32 +172,24 @@
 		return 'Select date';
 	}
 
-	function headerYear() {
+	function headerYear(): number {
 		if (tempValue) {
 			return new Date(tempValue + 'T00:00:00').getFullYear();
 		}
 		return viewYear;
 	}
 
-	function handleEscape() {
+	function handleEscape(): void {
 		if (view === 'year') {
 			view = 'calendar';
 		} else cancel();
 	}
 
-	/**
-	 * @param {KeyboardEvent} e
-	 */
-	function handleNonInteractiveKeydown(e) {
-		if (e.key === 'Enter' || e.key === ' ') e.preventDefault();
+	function handleNonInteractiveKeydown(event: KeyboardEvent): void {
+		if (event.key === 'Enter' || event.key === ' ') event.preventDefault();
 	}
 
-	/**
-	 * @param {number} year
-	 * @param {number} month
-	 * @param {number} day
-	 */
-	function isDateDisabled(year, month, day) {
+	function isDateDisabled(year: number, month: number, day: number): boolean {
 		const date = new Date(year, month, day);
 		if (min) {
 			const minDate = new Date(min + 'T00:00:00');

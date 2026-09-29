@@ -1,5 +1,6 @@
-<script>
+<script lang="ts">
 	import { tick } from 'svelte';
+	import type { Snippet } from 'svelte';
 	import logger from '$lib/logger.ts';
 	import { browser } from '$app/environment';
 	import { invoke } from '$lib/tauri.ts';
@@ -12,6 +13,50 @@
 	import MaterialIconButton from '$lib/MaterialIconButton.svelte';
 	import Icon from '$lib/Icon.svelte';
 	import { copyText } from '$lib/clipboard.ts';
+	import type { ContextMenuItem } from '$lib/contextMenu.ts';
+
+	interface ImageAttachment {
+		media_type: string;
+		data: string;
+	}
+
+	interface FileAttachment extends ImageAttachment {
+		filename: string;
+		size: number;
+	}
+
+	interface InputPayload {
+		text: string;
+		images: ImageAttachment[];
+		files: FileAttachment[];
+	}
+
+	interface TextSelection {
+		start: number;
+		end: number;
+		text: string;
+	}
+
+	interface Props {
+		activeSessionId?: string | null;
+		hotkeyBinding?: string;
+		isGenerating?: boolean;
+		sessionRunning?: boolean;
+		interrupting?: boolean;
+		askAwaiting?: boolean;
+		askHasOptions?: boolean;
+		allowEmptySubmit?: boolean;
+		onsubmit?: (payload: InputPayload) => void;
+		onstop?: () => void;
+		toolbarLeft?: Snippet;
+		toolbarRight?: Snippet;
+		maxImages?: number;
+		maxImageBytes?: number;
+		maxImageDim?: number;
+		jpegQuality?: number;
+		maxFiles?: number;
+		maxFileBytes?: number;
+	}
 
 	let {
 		activeSessionId = null,
@@ -37,22 +82,20 @@
 		jpegQuality = 0.85,
 		maxFiles = 5,
 		maxFileBytes = 20 * 1024 * 1024,
-	} = $props();
+	}: Props = $props();
 
 	// Pending image attachments (multimodal): [{ mediaType, data }] with data
 	// holding base64 bytes (no data: prefix). Filled by paste / file picker,
 	// sent along with the next message, cleared on submit.
-	/** @type {any[]} */
-	let pendingImages = $state([]);
+	let pendingImages = $state<ImageAttachment[]>([]);
 
 	// Pending non-image attachments: [{ media_type, data, filename, size }].
 	// Ordinary files are persisted by the backend and handed to the agent as a
 	// managed asset; audio/video keep their base64 payload for multimodal chat.
-	/** @type {any[]} */
-	let pendingFiles = $state([]);
+	let pendingFiles = $state<FileAttachment[]>([]);
 	// Single hidden picker for both images and files; the picked items are
 	// split by type on selection (images -> pendingImages, rest -> pendingFiles).
-	let attachFileInput = /** @type {HTMLInputElement | null} */ ($state(null));
+	let attachFileInput = $state<HTMLInputElement | null>(null);
 
 	// Recording state (mirror of the global recordingOverlay store) so the
 	// toolbar mic button can toggle start/stop inline.
@@ -64,7 +107,7 @@
 	);
 
 	let transcriptInput = $state('');
-	let transcriptTextarea = /** @type {HTMLTextAreaElement | null} */ ($state(null));
+	let transcriptTextarea = $state<HTMLTextAreaElement | null>(null);
 
 	const hasDraft = $derived(
 		transcriptInput.trim().length > 0 || pendingImages.length > 0 || pendingFiles.length > 0,
@@ -93,8 +136,7 @@
 
 	// Allow the host page to populate the draft box programmatically (e.g.
 	// restoring a message after rollback) via `bind:this`.
-	/** @param {string} text */
-	export function setDraft(text) {
+	export function setDraft(text: string) {
 		transcriptInput = text ?? '';
 	}
 
@@ -131,9 +173,8 @@
 	}
 
 	/** Read a File as a { media_type, data } attachment without re-encoding. */
-	/** @param {File} file */
-	function readAsAttachment(file) {
-		return new Promise((resolve, reject) => {
+	function readAsAttachment(file: File): Promise<ImageAttachment> {
+		return new Promise<ImageAttachment>((resolve, reject) => {
 			const reader = new FileReader();
 			reader.onload = () => {
 				const dataUrl = String(reader.result || '');
@@ -150,8 +191,7 @@
 	 * Downscale and re-encode an image File to JPEG to reduce payload size.
 	 * Returns null if compression isn't possible (e.g. browser lacks the API).
 	 */
-	/** @param {File} file */
-	async function tryCompressImage(file) {
+	async function tryCompressImage(file: File): Promise<ImageAttachment | null> {
 		if (typeof createImageBitmap !== 'function' || typeof document === 'undefined') return null;
 		try {
 			const bitmap = await createImageBitmap(file);
@@ -186,8 +226,7 @@
 	 * Compresses to JPEG when the result is smaller than the original;
 	 * otherwise keeps the original encoding.
 	 */
-	/** @param {File} file */
-	async function fileToAttachment(file) {
+	async function fileToAttachment(file: File): Promise<ImageAttachment> {
 		if (file.size > maxImageBytes) {
 			throw new Error(`图片超过 ${Math.round(maxImageBytes / 1024 / 1024)}MB 上限`);
 		}
@@ -216,22 +255,20 @@
 	 * generic file (disk path) by MIME type first, then extension — so a
 	 * `.png` with a missing/odd MIME still routes to the image logic.
 	 */
-	/** @param {File} file */
-	function isImageFile(file) {
+	function isImageFile(file: File): boolean {
 		if (file.type && file.type.startsWith('image/')) return true;
 		const ext = (file.name.split('.').pop() || '').toLowerCase();
 		return IMAGE_EXTENSIONS.has(ext);
 	}
 
-	/** @param {FileList | File[]} files */
-	async function addPendingImages(files) {
+	async function addPendingImages(files: FileList | File[]) {
 		if (!files || files.length === 0) return;
 		const room = maxImages - pendingImages.length;
 		if (room <= 0) {
 			addNotification(`最多支持 ${maxImages} 张图片`, 'error', 3000);
 			return;
 		}
-		const list = Array.from(files).slice(0, room);
+		const list: File[] = Array.from(files).slice(0, room);
 		for (const f of list) {
 			if (!isImageFile(f)) {
 				addNotification(`不支持的文件类型: ${f.name}`, 'error', 3000);
@@ -245,11 +282,10 @@
 		}
 	}
 
-	/** @param {ClipboardEvent} e */
-	function handlePaste(e) {
+	function handlePaste(e: ClipboardEvent) {
 		const items = e.clipboardData?.items;
 		if (!items) return;
-		const images = [];
+		const images: File[] = [];
 		for (const item of items) {
 			if (item.type.startsWith('image/')) {
 				const file = item.getAsFile();
@@ -262,13 +298,11 @@
 		}
 	}
 
-	/** @param {number} index */
-	function removePendingImage(index) {
+	function removePendingImage(index: number) {
 		pendingImages = pendingImages.filter((_, i) => i !== index);
 	}
 
-	/** @param {number} bytes */
-	function formatFileSize(bytes) {
+	function formatFileSize(bytes: number): string {
 		if (bytes < 1024) return `${bytes} B`;
 		if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
 		return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
@@ -277,15 +311,14 @@
 	// Read non-image files as base64 attachments (with the original name) so
 	// the backend can persist them to disk and hand the agent a path. Files
 	// are capped at maxFiles / maxFileBytes, mirroring server validation.
-	/** @param {FileList | File[]} files */
-	async function addPendingFiles(files) {
+	async function addPendingFiles(files: FileList | File[]) {
 		if (!files || files.length === 0) return;
 		const room = maxFiles - pendingFiles.length;
 		if (room <= 0) {
 			addNotification(`最多支持 ${maxFiles} 个文件`, 'error', 3000);
 			return;
 		}
-		const list = Array.from(files).slice(0, room);
+		const list: File[] = Array.from(files).slice(0, room);
 		for (const f of list) {
 			if (f.size > maxFileBytes) {
 				addNotification(
@@ -309,18 +342,18 @@
 
 	// Single entry point for the attachment picker: images (by MIME/extension)
 	// go to the vision preview row, everything else to the file/audio row.
-	/** @param {any} e */
-	function handleAttachSelect(e) {
-		const files = Array.from(e.target.files || []);
+	function handleAttachSelect(e: Event) {
+		const input = e.currentTarget;
+		if (!(input instanceof HTMLInputElement)) return;
+		const files: File[] = Array.from(input.files ?? []);
 		const images = files.filter(isImageFile);
 		const others = files.filter((f) => !isImageFile(f));
 		if (images.length > 0) addPendingImages(images);
 		if (others.length > 0) addPendingFiles(others);
-		e.target.value = '';
+		input.value = '';
 	}
 
-	/** @param {number} index */
-	function removePendingFile(index) {
+	function removePendingFile(index: number) {
 		pendingFiles = pendingFiles.filter((_, i) => i !== index);
 	}
 
@@ -338,8 +371,7 @@
 		onsubmit?.({ text, images, files });
 	}
 
-	/** @param {KeyboardEvent} e */
-	function handleKeydown(e) {
+	function handleKeydown(e: KeyboardEvent) {
 		if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
 			e.preventDefault();
 			handleSubmit();
@@ -402,8 +434,7 @@
 		return { start, end, text: transcriptInput.slice(start, end) };
 	}
 
-	/** @param {string} next @param {number} caret */
-	function setDraftAndCaret(next, caret) {
+	function setDraftAndCaret(next: string, caret: number) {
 		transcriptInput = next;
 		tick().then(() => {
 			const el = transcriptTextarea;
@@ -413,26 +444,22 @@
 		});
 	}
 
-	/** @param {MouseEvent} e */
-	function handleContextMenu(e) {
+	function handleContextMenu(e: MouseEvent) {
 		openContextMenu(e, buildContextMenuItems(selectedRange()));
 	}
 
-	/** @param {{ text: string }} range */
-	async function handleCtxCopy({ text: selected }) {
+	async function handleCtxCopy({ text: selected }: Pick<TextSelection, 'text'>) {
 		await copyText(selected || transcriptInput, selected ? '选中' : '输入');
 	}
 
-	/** @param {{ start: number; end: number; text: string }} range */
-	async function handleCtxCut({ start, end, text: selText }) {
+	async function handleCtxCut({ start, end, text: selText }: TextSelection) {
 		if (!selText) return;
 		const ok = await copyText(selText, '选中');
 		if (!ok) return;
 		setDraftAndCaret(transcriptInput.slice(0, start) + transcriptInput.slice(end), start);
 	}
 
-	/** @param {{ start: number; end: number }} range */
-	async function handleCtxPaste({ start, end }) {
+	async function handleCtxPaste({ start, end }: Pick<TextSelection, 'start' | 'end'>) {
 		try {
 			const text = await navigator.clipboard.readText();
 			setDraftAndCaret(
@@ -456,8 +483,7 @@
 		tick().then(() => transcriptTextarea?.focus());
 	}
 
-	/** @param {{ start: number; end: number; text: string }} range */
-	function buildContextMenuItems(range) {
+	function buildContextMenuItems(range: TextSelection): ContextMenuItem[] {
 		const hasSel = range.text.length > 0;
 		const hasText = transcriptInput.length > 0;
 		return [

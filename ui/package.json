@@ -8,14 +8,14 @@
     "pnpm": "11.24.0"
   },
   "scripts": {
-    "dev": "node ../scripts/dev-vite.mjs",
+    "dev": "node ../scripts/dev-vite.ts",
     "build": "vite build",
     "preview": "vite preview",
     "check": "svelte-check --tsgo",
     "test": "vitest",
     "test:run": "vitest run",
     "test:coverage": "vitest run --coverage",
-    "profile:session-reducer": "node scripts/profile-session-reducer.mjs"
+    "profile:session-reducer": "node scripts/profile-session-reducer.ts"
   },
   "devDependencies": {
     "@sveltejs/adapter-static": "^3.0.10",

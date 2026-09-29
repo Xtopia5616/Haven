@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 	import logger from './logger.ts';
 	import { formatError } from './formatError.ts';
 	import JsonView from '$lib/JsonView.svelte';
@@ -8,15 +8,13 @@
 
 	let { data = {} } = $props();
 
-	/** @param {unknown} value */
-	function clampPct(value) {
+	function clampPct(value: unknown) {
 		const n = Number(value);
 		if (!Number.isFinite(n)) return 0;
 		return Math.max(0, Math.min(100, n));
 	}
 
-	/** @param {unknown} value */
-	function fmtBytes(value) {
+	function fmtBytes(value: unknown) {
 		const n = Number(value);
 		if (!Number.isFinite(n) || n < 0) return '—';
 		if (n < 1024) return `${n} B`;
@@ -30,8 +28,7 @@
 		return `${unit >= 100 ? unit.toFixed(0) : unit.toFixed(1)} ${units[index]}`;
 	}
 
-	/** @param {unknown} value */
-	function fmtUptime(value) {
+	function fmtUptime(value: unknown) {
 		const secs = Number(value);
 		if (!Number.isFinite(secs) || secs < 0) return null;
 		const days = Math.floor(secs / 86400);
@@ -42,28 +39,30 @@
 		return `${minutes} 分钟`;
 	}
 
-	/** @param {unknown} value */
-	function networkStateLabel(value) {
+	function networkStateLabel(value: unknown) {
 		return (
-			{
-				up: '已连接',
-				down: '已断开',
-				dormant: '待机',
-				unknown: '未知',
-			}[String(value ?? '').toLowerCase()] ?? String(value ?? '未知')
+			(
+				{
+					up: '已连接',
+					down: '已断开',
+					dormant: '待机',
+					unknown: '未知',
+				} as Record<string, string>
+			)[String(value ?? '').toLowerCase()] ?? String(value ?? '未知')
 		);
 	}
 
-	/** @param {unknown} value */
-	function batteryStatusLabel(value) {
+	function batteryStatusLabel(value: unknown) {
 		return (
-			{
-				high: '电量充足',
-				low: '电量较低',
-				critical: '电量严重不足',
-				charging: '充电中',
-				unknown: '状态未知',
-			}[String(value ?? '').toLowerCase()] ?? String(value ?? '状态未知')
+			(
+				{
+					high: '电量充足',
+					low: '电量较低',
+					critical: '电量严重不足',
+					charging: '充电中',
+					unknown: '状态未知',
+				} as Record<string, string>
+			)[String(value ?? '').toLowerCase()] ?? String(value ?? '状态未知')
 		);
 	}
 
@@ -86,37 +85,35 @@
 	);
 	let hasStructuredView = $derived(
 		!!data.os ||
-		!!data.cpu ||
-		!!data.memory ||
-		!!data.disks ||
-		Array.isArray(data.displays) ||
-		Array.isArray(data.variables) ||
-		Array.isArray(data.networks) ||
-		!!data.network_summary ||
-		!!data.user ||
-		!!data.locale ||
-		Array.isArray(data.values) ||
-		Array.isArray(data.subkeys) ||
-		!!data.name ||
-		data.battery_percent != null ||
-		data.ac_power ||
-		data.battery_present != null ||
-		data.battery_saver ||
-		data.locked ||
-		data.sleep ||
-		data.hibernate ||
-		data.available === false,
+			!!data.cpu ||
+			!!data.memory ||
+			!!data.disks ||
+			Array.isArray(data.displays) ||
+			Array.isArray(data.variables) ||
+			Array.isArray(data.networks) ||
+			!!data.network_summary ||
+			!!data.user ||
+			!!data.locale ||
+			Array.isArray(data.values) ||
+			Array.isArray(data.subkeys) ||
+			!!data.name ||
+			data.battery_percent != null ||
+			data.ac_power ||
+			data.battery_present != null ||
+			data.battery_saver ||
+			data.locked ||
+			data.sleep ||
+			data.hibernate ||
+			data.available === false,
 	);
-	/** @param {string} text */
-	async function copyEnvValue(text) {
+	async function copyEnvValue(text: string) {
 		try {
 			await navigator.clipboard.writeText(text);
 		} catch (error) {
 			logger.warn('ToolSystemResult', 'environment value copy failed', formatError(error));
 		}
 	}
-	/** @param {string} value */
-	function setEnvFilter(value) {
+	function setEnvFilter(value: string) {
 		envFilter = value;
 	}
 </script>
@@ -130,19 +127,30 @@
 {#if data.user}
 	<div class="tool-card-count">用户信息</div>
 	<div class="info-grid">
-		{#if data.user.username}<div class="info-label">用户</div><div class="info-value">{data.user.username}</div>{/if}
-		{#if data.user.computer_name}<div class="info-label">计算机</div><div class="info-value">{data.user.computer_name}</div>{/if}
-		{#if data.user.home}<div class="info-label">主目录</div><div class="info-value" title={data.user.home}>{data.user.home}</div>{/if}
-		{#if data.user.cwd}<div class="info-label">当前目录</div><div class="info-value" title={data.user.cwd}>{data.user.cwd}</div>{/if}
+		{#if data.user.username}<div class="info-label">用户</div>
+			<div class="info-value">{data.user.username}</div>{/if}
+		{#if data.user.computer_name}<div class="info-label">计算机</div>
+			<div class="info-value">{data.user.computer_name}</div>{/if}
+		{#if data.user.home}<div class="info-label">主目录</div>
+			<div class="info-value" title={data.user.home}>{data.user.home}</div>{/if}
+		{#if data.user.cwd}<div class="info-label">当前目录</div>
+			<div class="info-value" title={data.user.cwd}>{data.user.cwd}</div>{/if}
 	</div>
 {/if}
 {#if data.locale}
 	<div class="tool-card-count">时间与区域</div>
 	<div class="info-grid">
-		{#if data.locale.locale_name}<div class="info-label">区域</div><div class="info-value">{data.locale.locale_name}</div>{/if}
-		{#if data.locale.ui_language}<div class="info-label">界面语言</div><div class="info-value">{data.locale.ui_language}</div>{/if}
-		{#if data.locale.local_time}<div class="info-label">本地时间</div><div class="info-value">{data.locale.local_time}</div>{/if}
-		{#if data.locale.timezone_offset_hours != null}<div class="info-label">时区</div><div class="info-value">UTC{data.locale.timezone_offset_hours >= 0 ? '+' : ''}{data.locale.timezone_offset_hours}</div>{/if}
+		{#if data.locale.locale_name}<div class="info-label">区域</div>
+			<div class="info-value">{data.locale.locale_name}</div>{/if}
+		{#if data.locale.ui_language}<div class="info-label">界面语言</div>
+			<div class="info-value">{data.locale.ui_language}</div>{/if}
+		{#if data.locale.local_time}<div class="info-label">本地时间</div>
+			<div class="info-value">{data.locale.local_time}</div>{/if}
+		{#if data.locale.timezone_offset_hours != null}<div class="info-label">时区</div>
+			<div class="info-value">
+				UTC{data.locale.timezone_offset_hours >= 0 ? '+' : ''}{data.locale
+					.timezone_offset_hours}
+			</div>{/if}
 	</div>
 {/if}
 {#if Array.isArray(data.networks)}
@@ -156,7 +164,11 @@
 							<span class="network-name">{network.name || '未命名接口'}</span>
 							<span class="network-state">{networkStateLabel(network.state)}</span>
 						</div>
-						{#if Array.isArray(network.ips) && network.ips.length > 0}<div class="network-ips">{network.ips.join(' · ')}</div>{/if}
+						{#if Array.isArray(network.ips) && network.ips.length > 0}<div
+								class="network-ips"
+							>
+								{network.ips.join(' · ')}
+							</div>{/if}
 					</div>
 				{/each}
 			</div>
@@ -166,9 +178,12 @@
 {#if data.network_summary}
 	<div class="tool-card-count">网络概况</div>
 	<div class="info-grid">
-		<div class="info-label">接口</div><div class="info-value">{data.network_summary.interface_count ?? 0}</div>
-		<div class="info-label">可用或未知</div><div class="info-value">{data.network_summary.up_or_unknown ?? 0}</div>
-		<div class="info-label">已断开</div><div class="info-value">{data.network_summary.down ?? 0}</div>
+		<div class="info-label">接口</div>
+		<div class="info-value">{data.network_summary.interface_count ?? 0}</div>
+		<div class="info-label">可用或未知</div>
+		<div class="info-value">{data.network_summary.up_or_unknown ?? 0}</div>
+		<div class="info-label">已断开</div>
+		<div class="info-value">{data.network_summary.down ?? 0}</div>
 	</div>
 {/if}
 {#if Array.isArray(data.values) || Array.isArray(data.subkeys)}
@@ -177,7 +192,9 @@
 		<ToolResultList items={data.values}>
 			{#snippet children(visibleValues = /** @type {any[]} */ ([]))}
 				<div class="tool-card-list">
-					{#each visibleValues as value (value)}<div class="env-row"><span class="env-name">{value}</span></div>{/each}
+					{#each visibleValues as value (value)}<div class="env-row">
+							<span class="env-name">{value}</span>
+						</div>{/each}
 				</div>
 			{/snippet}
 		</ToolResultList>
@@ -185,7 +202,9 @@
 		<ToolResultList items={data.subkeys}>
 			{#snippet children(visibleSubkeys = /** @type {any[]} */ ([]))}
 				<div class="tool-card-list">
-					{#each visibleSubkeys as key (key)}<div class="env-row"><span class="env-name">{key}</span></div>{/each}
+					{#each visibleSubkeys as key (key)}<div class="env-row">
+							<span class="env-name">{key}</span>
+						</div>{/each}
 				</div>
 			{/snippet}
 		</ToolResultList>
@@ -204,9 +223,18 @@
 {/if}
 {#if data.ac_power || data.battery_present != null || data.battery_saver}
 	<div class="info-grid power-info">
-		{#if data.ac_power}<div class="info-label">电源</div><div class="info-value">{data.ac_power === 'online' ? '接通电源' : data.ac_power === 'offline' ? '使用电池' : data.ac_power}</div>{/if}
-		{#if data.battery_present === false}<div class="info-label">电池</div><div class="info-value">未检测到电池</div>{/if}
-		{#if data.battery_saver}<div class="info-label">省电模式</div><div class="info-value">已开启</div>{/if}
+		{#if data.ac_power}<div class="info-label">电源</div>
+			<div class="info-value">
+				{data.ac_power === 'online'
+					? '接通电源'
+					: data.ac_power === 'offline'
+						? '使用电池'
+						: data.ac_power}
+			</div>{/if}
+		{#if data.battery_present === false}<div class="info-label">电池</div>
+			<div class="info-value">未检测到电池</div>{/if}
+		{#if data.battery_saver}<div class="info-label">省电模式</div>
+			<div class="info-value">已开启</div>{/if}
 	</div>
 {/if}
 {#if data.cpu}
@@ -229,7 +257,9 @@
 			><span
 				class="meter-fill"
 				style="width: {clampPct(
-					(Number(data.memory.used_bytes) / Math.max(Number(data.memory.total_bytes), 1)) * 100,
+					(Number(data.memory.used_bytes) /
+						Math.max(Number(data.memory.total_bytes), 1)) *
+						100,
 				)}%"
 			></span></span
 		>
@@ -249,7 +279,10 @@
 						><span
 							class="meter-fill"
 							style="width: {clampPct(
-								(1 - Number(disk.available_bytes) / Math.max(Number(disk.total_bytes), 1)) * 100,
+								(1 -
+									Number(disk.available_bytes) /
+										Math.max(Number(disk.total_bytes), 1)) *
+									100,
 							)}%"
 						></span></span
 					>
@@ -268,7 +301,9 @@
 			<div class="tool-card-list">
 				{#each visibleDisplays as display (display.name ?? display.left)}
 					<div class="window-row">
-						<span class="window-title">{display.name || 'Display'}{display.primary ? ' · 主屏' : ''}</span>
+						<span class="window-title"
+							>{display.name || 'Display'}{display.primary ? ' · 主屏' : ''}</span
+						>
 						<span class="window-pid">{display.width}×{display.height}</span>
 					</div>
 				{/each}
@@ -280,7 +315,12 @@
 	<div class="tool-card-count">
 		{#if envFilter}{filteredEnv.length} / {envList.length} 个变量{:else}{envList.length} 个变量{/if}
 	</div>
-	<ToolSearch value={envFilter} onInput={setEnvFilter} placeholder="筛选变量..." ariaLabel="筛选变量" />
+	<ToolSearch
+		value={envFilter}
+		onInput={setEnvFilter}
+		placeholder="筛选变量..."
+		ariaLabel="筛选变量"
+	/>
 	{#if filteredEnv.length > 0}
 		<ToolResultList items={filteredEnv}>
 			{#snippet children(visibleEnv = /** @type {any[]} */ ([]))}
@@ -289,7 +329,9 @@
 						<div class="env-row">
 							<span class="env-name" title={variable.name}>{variable.name}</span>
 							<span class="env-value" title={variable.value ?? ''}
-								>{variable.value != null ? variable.value : '仅名称（未读取）'}</span
+								>{variable.value != null
+									? variable.value
+									: '仅名称（未读取）'}</span
 							>
 							{#if typeof variable.value === 'string' && variable.value}
 								<MaterialIconButton
@@ -311,7 +353,15 @@
 {:else if data.name && ('value' in data || data.set || data.removed)}
 	<div class="env-row">
 		<span class="env-name">{data.name}</span>
-		<span class="env-value" title={data.value ?? ''}>{data.value != null ? data.value : data.removed ? '已移除' : 'value' in data ? '未设置' : '仅名称（未读取）'}</span>
+		<span class="env-value" title={data.value ?? ''}
+			>{data.value != null
+				? data.value
+				: data.removed
+					? '已移除'
+					: 'value' in data
+						? '未设置'
+						: '仅名称（未读取）'}</span
+		>
 	</div>
 {/if}
 {#if data.battery_percent != null}
@@ -322,7 +372,9 @@
 			><span class="meter-fill" style="width: {clampPct(data.battery_percent)}%"></span></span
 		>
 		<span class="meter-sub"
-			>{batteryStatusLabel(data.battery_status)}{data.ac_power === 'online' ? ' · 已接电源' : ''}</span
+			>{batteryStatusLabel(data.battery_status)}{data.ac_power === 'online'
+				? ' · 已接电源'
+				: ''}</span
 		>
 	</div>
 {:else if data.locked || data.sleep || data.hibernate}

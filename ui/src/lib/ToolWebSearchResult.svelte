@@ -1,8 +1,16 @@
-<script>
+<script lang="ts">
 	import ExternalRef from '$lib/ExternalRef.svelte';
 	import ToolResultList from '$lib/ToolResultList.svelte';
 
-	let { data = {} } = $props();
+	interface Props {
+		data?: {
+			label?: string;
+			queries?: string[];
+			results?: Array<{ url: string; title: string; snippet?: string }>;
+		};
+	}
+
+	let { data = {} }: Props = $props();
 </script>
 
 <div class="tool-card-count">{data.label}</div>

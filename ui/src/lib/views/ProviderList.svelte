@@ -1,10 +1,43 @@
-<script>
+<script lang="ts">
 	import ApiKeyField from '$lib/ApiKeyField.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import MaterialIconButton from '$lib/MaterialIconButton.svelte';
 	import RefreshButton from '$lib/RefreshButton.svelte';
 	import StatusBadge from '$lib/StatusBadge.svelte';
+	import type { CapabilityInput } from '$lib/contracts/generatedCommands.ts';
+	import type { DiscoveredModelMap } from '$lib/contracts/model.ts';
+	import type { ModelDraft, ProviderDraft } from '$lib/settingsModelTypes.ts';
 	import ModelConfigCard from './ModelConfigCard.svelte';
+
+	type OverrideField =
+		| 'temperature'
+		| 'context_window'
+		| 'cost_per_1k_input_tokens'
+		| 'cost_per_1k_output_tokens'
+		| 'cost_per_1k_cache_read_tokens'
+		| 'cost_per_1k_cache_write_tokens';
+
+	interface Props {
+		providers?: ProviderDraft[];
+		models?: ModelDraft[];
+		modelsByProvider?: DiscoveredModelMap;
+		modelFetching?: Record<string, boolean>;
+		refreshingAll?: boolean;
+		modelOptions: (providerName: string) => Array<{ value: string; label: string }>;
+		isProviderKeyConfigured: (provider: ProviderDraft) => boolean;
+		apiStyleLabel: (provider: ProviderDraft) => string;
+		onRefreshAll?: () => void;
+		onRefreshProvider: (providerName: string) => void;
+		onAddModel: (providerName: string) => void;
+		onRenameModel: (model: ModelDraft, nextId: string) => void;
+		onSetModel: (model: ModelDraft, modelId: string) => void;
+		onSetModelProvider: (model: ModelDraft, provider: string) => void;
+		onSetCapability: (model: ModelDraft, capability: CapabilityInput, checked: boolean) => void;
+		onUpdateOverride: (model: ModelDraft, field: OverrideField, value: number | null) => void;
+		onRemoveModel: (model: ModelDraft) => void;
+		onEditProvider: (index?: number) => void;
+		onDeleteProvider: (index: number) => void;
+	}
 
 	let {
 		providers = [],
@@ -26,17 +59,14 @@
 		onRemoveModel,
 		onEditProvider,
 		onDeleteProvider,
-	} = $props();
+	}: Props = $props();
 
-	/** @param {string} providerName */
-	function modelsForProvider(providerName) {
-		return models.filter((/** @type {any} */ model) => model.provider === providerName);
+	function modelsForProvider(providerName: string) {
+		return models.filter((model) => model.provider === providerName);
 	}
 	const unboundModels = $derived.by(() => {
-		const providerNames = new Set(
-			providers.map((/** @type {any} */ provider) => provider.name),
-		);
-		return models.filter((/** @type {any} */ model) => !providerNames.has(model.provider));
+		const providerNames = new Set(providers.map((provider) => provider.name));
+		return models.filter((model) => !providerNames.has(model.provider));
 	});
 </script>
 

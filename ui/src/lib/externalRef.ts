@@ -45,7 +45,12 @@ export async function openExternal(target: string): Promise<boolean> {
  * - Ctrl/Meta + click → open in browser / file manager
  * Returns true when the event targeted an ext-ref (caller should stop bubble menus).
  */
-export function handleExtRefEvent(e: MouseEvent): boolean {
+export function handleExtRefEvent(
+	e: Pick<
+		MouseEvent,
+		'type' | 'ctrlKey' | 'metaKey' | 'target' | 'preventDefault' | 'stopPropagation'
+	>,
+): boolean {
 	const el = e.target instanceof Element ? e.target.closest(`.${EXT_REF_CLASS}`) : null;
 	if (!el) return false;
 

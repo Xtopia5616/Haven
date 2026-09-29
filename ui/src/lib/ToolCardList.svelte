@@ -1,9 +1,15 @@
-<script>
+<script lang="ts">
+	import type { Snippet } from 'svelte';
+
+	interface Props {
+		className?: string;
+		children?: Snippet;
+	}
+
 	/**
 	 * Tool Card List — shared scrollable list surface for structured tool results.
-	 * @prop {string} className
 	 */
-	let { className = '', children } = $props();
+	let { className = '', children }: Props = $props();
 </script>
 
 <div class="tool-card-list {className}">

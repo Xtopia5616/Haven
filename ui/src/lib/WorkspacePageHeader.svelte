@@ -1,12 +1,22 @@
-<script>
+<script lang="ts">
+	import type { Snippet } from 'svelte';
+
+	interface Props {
+		title?: string;
+		description?: string;
+		headingId?: string;
+		children?: Snippet;
+	}
+
 	/**
 	 * WorkspacePageHeader — shared page title rhythm for secondary workspaces.
-	 * @prop {string} title — page title
-	 * @prop {string} description — short explanation of the workspace
-	 * @prop {string | undefined} headingId — optional id for the page heading
-	 * @prop {import('svelte').Snippet | undefined} children — optional page actions
 	 */
-	let { title = '', description = '', headingId = undefined, children = undefined } = $props();
+	let {
+		title = '',
+		description = '',
+		headingId = undefined,
+		children = undefined,
+	}: Props = $props();
 </script>
 
 <header class="workspace-page-header page-heading">

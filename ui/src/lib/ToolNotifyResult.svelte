@@ -1,5 +1,9 @@
-<script>
-	let { parts = { title: '', body: '' } } = $props();
+<script lang="ts">
+	interface Props {
+		parts?: { title: string; body: string };
+	}
+
+	let { parts = { title: '', body: '' } }: Props = $props();
 </script>
 
 {#if parts.title}

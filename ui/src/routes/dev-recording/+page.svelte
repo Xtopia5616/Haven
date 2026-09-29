@@ -1,8 +1,8 @@
-<script>
+<script lang="ts">
 	import RecordingIndicator from '$lib/RecordingIndicator.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
 
-	let mode = $state('recording');
+	let mode = $state<'recording' | 'speaking' | 'processing'>('recording');
 	let duration = $state(7);
 	$effect(() => {
 		const t = setInterval(() => {
@@ -35,10 +35,20 @@
 	/>
 
 	{#if mode === 'recording'}
-		<RecordingIndicator isRecording={true} vadState="silent" duration={duration} onCancel={async () => {}} />
+		<RecordingIndicator
+			isRecording={true}
+			vadState="silent"
+			{duration}
+			onCancel={async () => {}}
+		/>
 	{:else if mode === 'speaking'}
-		<RecordingIndicator isRecording={true} vadState="speech" duration={duration} onCancel={async () => {}} />
+		<RecordingIndicator
+			isRecording={true}
+			vadState="speech"
+			{duration}
+			onCancel={async () => {}}
+		/>
 	{:else}
-		<RecordingIndicator processing={true} duration={duration} onCancel={async () => {}} />
+		<RecordingIndicator processing={true} {duration} onCancel={async () => {}} />
 	{/if}
 </div>

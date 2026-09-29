@@ -59,6 +59,9 @@
 
 ### 模块（`.ts`）
 - 工具 / 状态模块 → **camelCase**：`streaming.ts`、`voiceSubmit.ts`、`markdownRenderer.ts`、`sessionStatus.ts`、`modelRoles.ts`。
+- 前端逻辑模块、测试、Vite/Svelte 配置和 Node 工具脚本统一使用 TypeScript；Node 工具脚本使用 `.ts` 并由固定 Node 工具链直接运行。
+- Svelte 组件脚本的目标形式为 `<script lang="ts">`；存量组件按域分批迁移，迁移时补齐参数、状态和 DOM 引用类型。
+- UI 源码不新增 `.js` / `.mjs` 独立实现模块；迁移完成后，Svelte 组件也不再保留普通 `<script>`。
 - 主要导出 Svelte store 的模块 → `xxxStore.ts`：`themeStore.ts`、`syncStore.ts`（`syncStore.ts` 导出同名的 `syncStore` 辅助函数，名随主导出）。
 - 聚合 store 桶文件保留 `stores.ts` 命名（导出 `sessionStore`/`actionStore` 等命名导出）。
 - 常量 → **UPPER_SNAKE_CASE**：`SESSION_STATUSES`、`COLOR_MAP`、`ROLE_KEYS`。
@@ -106,8 +109,8 @@
 - [ ] Rust 文件 / 模块 snake_case，类型 PascalCase，常量 UPPER_SNAKE
 - [ ] 缩写整词统一（`stt`/`ocr`/`tts`），不混用别名
 - [ ] 实体 ID 用 `{prefix}-{uuid32}`，经 `new_id` 生成
-- [ ] Svelte 组件文件名 = 组件名（PascalCase）；JS 模块 camelCase，store 尾缀 `Store`
-- [ ] JS 局部变量 camelCase，常量 UPPER_SNAKE
+- [ ] Svelte 组件文件名 = 组件名（PascalCase）；已迁移组件脚本使用 TypeScript，模块 camelCase，store 尾缀 `Store`
+- [ ] TypeScript 局部变量 camelCase，常量 UPPER_SNAKE
 - [ ] 跨层只在边界转换 snake↔camel
 - [ ] 会话恢复用语统一 `resume`，不用 `review`
 - [ ] 工具调用、会话、工作单元、任务、后台任务、定时任务按本节口径使用

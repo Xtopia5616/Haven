@@ -1,31 +1,45 @@
-<script>
+<script lang="ts">
 	import { actionStatusLabel } from '$lib/taskTerminology.ts';
 	import JsonView from '$lib/JsonView.svelte';
 	import StatusBadge from '$lib/StatusBadge.svelte';
 	import ToolCardList from '$lib/ToolCardList.svelte';
 	import ToolResultList from '$lib/ToolResultList.svelte';
 
-	let { data = {} } = $props();
+	type ActionSummary = { action_id?: string; status?: string };
+
+	interface Props {
+		data?: {
+			operation?: string;
+			action_id?: string;
+			status?: string;
+			cancelled?: boolean;
+			actions?: ActionSummary[];
+			exit_code?: number | null;
+		};
+	}
+
+	let { data = {} }: Props = $props();
 	let operation = $derived(
 		typeof data.operation === 'string'
 			? data.operation.replace(/^actions_/, '')
 			: data.operation,
 	);
 
-	/** @param {unknown} status */
-	function statusTone(status) {
+	function statusTone(status: unknown): 'error' | 'info' | 'warning' | 'success' | 'neutral' {
 		const value = String(status ?? '').toLowerCase();
 		if (value.includes('error') || value.includes('fail')) return 'error';
 		if (value.includes('run') || value.includes('progress')) return 'info';
 		if (value.includes('cancel') || value.includes('pause')) return 'warning';
-		if (value.includes('complete') || value.includes('success') || value === 'done') return 'success';
+		if (value.includes('complete') || value.includes('success') || value === 'done')
+			return 'success';
 		return 'neutral';
 	}
 </script>
 
 {#if operation === 'result_injected'}
 	<div class="tool-card-count">
-		后台任务结果已回灌，正在继续{#if data.action_id} · {data.action_id}{/if}
+		后台任务结果已回灌，正在继续{#if data.action_id}
+			· {data.action_id}{/if}
 	</div>
 	{#if data.status}
 		<div class="action-row">
@@ -35,7 +49,10 @@
 	{/if}
 {:else if operation === 'cancel'}
 	<div class="action-row">
-		<StatusBadge label={data.cancelled ? '已取消' : '未找到任务'} tone={data.cancelled ? 'success' : 'neutral'} />
+		<StatusBadge
+			label={data.cancelled ? '已取消' : '未找到任务'}
+			tone={data.cancelled ? 'success' : 'neutral'}
+		/>
 		<span class="action-id">{data.action_id || '—'}</span>
 	</div>
 {:else if Array.isArray(data.actions)}
@@ -47,7 +64,10 @@
 					{#each visibleActions as action (action.action_id)}
 						<div class="action-row">
 							<span class="action-id">{action.action_id}</span>
-							<StatusBadge label={actionStatusLabel(action.status)} tone={statusTone(action.status)} />
+							<StatusBadge
+								label={actionStatusLabel(action.status)}
+								tone={statusTone(action.status)}
+							/>
 						</div>
 					{/each}
 				</ToolCardList>

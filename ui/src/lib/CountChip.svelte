@@ -1,13 +1,17 @@
-<script>
+<script lang="ts">
+	interface Props {
+		count?: number | string;
+		label?: string;
+		prefix?: string;
+		live?: boolean;
+		className?: string;
+	}
+
 	/**
 	 * Shared count chip for workspace filter bars and resource lists.
-	 * @prop {number} count
-	 * @prop {string} label
-	 * @prop {string} prefix
-	 * @prop {boolean} live — announce count changes to assistive technology
-	 * @prop {string} className — optional host-specific class
+	 * Announces count changes when requested for assistive technology.
 	 */
-	let { count = 0, label = '项', prefix = '共', live = false, className = '' } = $props();
+	let { count = 0, label = '项', prefix = '共', live = false, className = '' }: Props = $props();
 
 	const displayCount = $derived(
 		Number.isFinite(Number(count)) ? Math.max(0, Math.floor(Number(count))) : 0,

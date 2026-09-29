@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 	import MaterialAutocomplete from '$lib/MaterialAutocomplete.svelte';
 	import MaterialCollapsible from '$lib/MaterialCollapsible.svelte';
 	import MaterialIconButton from '$lib/MaterialIconButton.svelte';
@@ -7,7 +7,32 @@
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
 	import StatusBadge from '$lib/StatusBadge.svelte';
 	import { capabilityOptions } from '$lib/modelRoles.ts';
-	import { withNumberValue, withStringValue } from '$lib/typedCallbacks.js';
+	import { withNumberValue, withStringValue } from '$lib/typedCallbacks.ts';
+	import type { CapabilityInput } from '$lib/contracts/generatedCommands.ts';
+	import type { ModelDraft } from '$lib/settingsModelTypes.ts';
+
+	type OverrideField =
+		| 'temperature'
+		| 'context_window'
+		| 'cost_per_1k_input_tokens'
+		| 'cost_per_1k_output_tokens'
+		| 'cost_per_1k_cache_read_tokens'
+		| 'cost_per_1k_cache_write_tokens';
+
+	interface Props {
+		model: ModelDraft;
+		providers?: Array<{ name: string }>;
+		options?: Array<{ value: string; label: string }>;
+		loading?: boolean;
+		hasDiscoveredModels?: boolean;
+		onRefreshProvider: (provider: string) => void;
+		onRenameModel: (model: ModelDraft, nextId: string) => void;
+		onSetModel: (model: ModelDraft, modelId: string) => void;
+		onSetModelProvider: (model: ModelDraft, provider: string) => void;
+		onSetCapability: (model: ModelDraft, capability: CapabilityInput, checked: boolean) => void;
+		onUpdateOverride: (model: ModelDraft, field: OverrideField, value: number | null) => void;
+		onRemoveModel: (model: ModelDraft) => void;
+	}
 
 	/**
 	 * One provider-bound model entry. The owning settings view supplies every
@@ -26,7 +51,7 @@
 		onSetCapability,
 		onUpdateOverride,
 		onRemoveModel,
-	} = $props();
+	}: Props = $props();
 
 	const componentId = $props.id();
 	const fieldId = `model-config-${componentId}`;

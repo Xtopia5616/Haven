@@ -1,21 +1,27 @@
-<script>
+<script lang="ts">
+	import type { Snippet } from 'svelte';
+
+	interface Props {
+		variant?: 'filled' | 'tonal' | 'elevated' | 'outlined' | 'text' | 'danger';
+		label?: string;
+		onclick?: (event: MouseEvent) => void;
+		disabled?: boolean;
+		title?: string;
+		ariaLabel?: string;
+		ariaBusy?: boolean;
+		ariaExpanded?: boolean;
+		ariaChecked?: boolean;
+		ariaPressed?: boolean;
+		role?: string;
+		style?: string;
+		ariaHaspopup?: 'menu' | 'listbox' | 'tree' | 'grid' | 'dialog' | boolean;
+		id?: string;
+		className?: string;
+		children?: Snippet;
+	}
+
 	/**
 	 * Material Button — the shared text/action button primitive.
-	 * @prop {'filled'|'tonal'|'elevated'|'outlined'|'text'|'danger'} variant
-	 * @prop {string} label — optional text content for simple buttons
-	 * @prop {function} onclick
-	 * @prop {boolean} disabled
-	 * @prop {string} title — optional native tooltip
-	 * @prop {string} ariaLabel — optional accessible name when content is not enough
-	 * @prop {boolean | undefined} ariaBusy — optional busy state for async actions
-	 * @prop {boolean | undefined} ariaExpanded — optional expanded state for disclosure actions
-	 * @prop {boolean | undefined} ariaChecked — optional checked state for radio-like controls
-	 * @prop {boolean | undefined} ariaPressed — optional pressed state for toggle controls
-	 * @prop {string | undefined} role — optional semantic role for specialized controls
-	 * @prop {string} style — optional inline style for semantic color variants
-	 * @prop {string | undefined} ariaHaspopup — optional popup relationship
-	 * @prop {string | undefined} id — optional DOM id
-	 * @prop {string} className — additional class names for layout/state styling
 	 */
 	let {
 		variant = 'outlined',
@@ -34,7 +40,7 @@
 		id = undefined,
 		className = '',
 		children = undefined,
-	} = $props();
+	}: Props = $props();
 </script>
 
 <button
@@ -53,7 +59,7 @@
 	type="button"
 	onclick={(event) => {
 		event.stopPropagation();
-		onclick?.();
+		onclick?.(event);
 	}}
 >
 	{#if label}

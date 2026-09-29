@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 	import { onMount, onDestroy, tick } from 'svelte';
 	import { invoke } from '$lib/tauri.ts';
 	import { registerListeners } from '$lib/events.ts';
@@ -28,28 +28,79 @@
 	import SettingsSecurity from './SettingsSecurity.svelte';
 	import SettingsLimits from './SettingsLimits.svelte';
 	import logger from '$lib/logger.ts';
+	import type {
+		ApiKeyStatus,
+		AudioConfigInput,
+		AudioConfig,
+		ContextLimitsConfigInput,
+		HotkeyModeInput,
+		ImageGenConfigInput,
+		LogConfigInput,
+		MediaInputStrategyInput,
+		MemoryConfigInput,
+		NotificationConfigInput,
+		OcrConfigInput,
+		PermissionModeInput,
+		SandboxModeInput,
+		SecurityConfigInput,
+		SessionConfigInput,
+		ShellChoiceInput,
+		SttConfigInput,
+		TtsConfigInput,
+	} from '$lib/contracts/generatedCommands.ts';
+	import type { SessionTokenStats } from '$lib/sessionUsagePresentation.ts';
+	import type { SessionLlmUsage } from '$lib/contracts/sessionHistory.ts';
+	import type { StoredPermission } from '$lib/contracts/generatedCommands.ts';
+	import type { DiscoveredModelMap } from '$lib/contracts/model.ts';
+	import type { ModelDraft, ProviderDraft, SettingsLlmState } from '$lib/settingsModelTypes.ts';
 
-	/** @type {{ providers: any[], models: any[], request_policies: any[], [key: string]: any }} */
-	let llmConfig = $state({
+	type SettingsSnapshot = {
+		default_shell?: ShellChoiceInput;
+		llm?: SettingsLlmState;
+		hotkey?: { key_binding?: string; mode?: HotkeyModeInput };
+		session?: Partial<
+			Required<
+				Pick<SessionConfigInput, 'max_concurrent' | 'max_steps' | 'history_retention_days'>
+			>
+		>;
+		memory?: Partial<Required<Pick<MemoryConfigInput, 'session_window_size'>>>;
+		security?: Omit<SecurityConfigInput, 'permissions'> & { permissions?: StoredPermission[] };
+		context_limits?: Partial<ContextLimitsConfigInput>;
+		media?: {
+			input_strategy?: MediaInputStrategyInput;
+			audio?: Partial<AudioConfigInput>;
+			stt?: Partial<SttConfigInput>;
+			ocr?: Partial<OcrConfigInput>;
+			tts?: Partial<TtsConfigInput>;
+			image_gen?: Partial<ImageGenConfigInput>;
+		};
+		notification?: Partial<Required<NotificationConfigInput>>;
+		log?: Partial<Required<LogConfigInput>>;
+		autostart_enabled?: boolean;
+		key_configured?: Partial<ApiKeyStatus>;
+		key_configured_providers?: Record<string, boolean>;
+	};
+
+	let llmConfig = $state<SettingsLlmState>({
 		providers: [],
 		models: [],
 		request_policies: [],
 		max_concurrent_requests: 2,
 	});
-	/** @type {{ [key: string]: any }} */
-	let keyConfigured = $state({
+	let keyConfigured = $state<ApiKeyStatus>({
+		models: {},
+		providers: {},
 		stt: false,
 		ocr: false,
 		ocr_secret: false,
 	});
-	let keyConfiguredProviders = $state({});
-	let hotkeyMode = $state('toggle');
+	let keyConfiguredProviders = $state<Record<string, boolean>>({});
+	let hotkeyMode = $state<HotkeyModeInput>('toggle');
 	let hotkeyBinding = $state('Ctrl+Shift+Space');
 	let autostartEnabled = $state(false);
-	let defaultShell = $state('powershell');
-	/** @type {Record<string, boolean>} */
+	let defaultShell = $state<ShellChoiceInput>('powershell');
 	let shellAvailable = $state({ cmd: false, powershell: false, pwsh: false });
-	let audio = $state({
+	let audio = $state<AudioConfig>({
 		sample_rate: 16000,
 		channels: 1,
 		bits_per_sample: 16,
@@ -57,9 +108,12 @@
 		silence_timeout_ms: 1500,
 		vad_threshold: 0.5,
 	});
-	let session = $state({ max_concurrent: 3, max_steps: 30, history_retention_days: 90 });
-	/** @type {Partial<import('$lib/contracts/generatedCommands.ts').ContextLimitsConfig>} */
-	let contextLimits = $state({
+	let session = $state<
+		Required<
+			Pick<SessionConfigInput, 'max_concurrent' | 'max_steps' | 'history_retention_days'>
+		>
+	>({ max_concurrent: 3, max_steps: 30, history_retention_days: 90 });
+	let contextLimits = $state<Partial<ContextLimitsConfigInput>>({
 		compaction_ratio: 0.65,
 		compaction_reserve_tokens: 8192,
 		default_context_window: 64000,
@@ -113,33 +167,34 @@
 		clipboard_history_max_entries: 100,
 		clipboard_entry_max_chars: 2000,
 		scheduled_actions_max: 32,
-		reminders_due_horizon_secs: 365 * 24 * 3600,
 		background_max_actions: 64,
 		event_chunk_batch_max_bytes: 8 * 1024,
 		input_ring_buffer_secs: 20,
 		embedding_chunk_size: 64,
 		max_tools_per_request: 64,
 	});
-	let memory = $state({ session_window_size: 50 });
-	/** @type {{ running: boolean, lastCount: number | null }} */
-	let memoryMaintenance = $state({ running: false, lastCount: null });
-	/** @type {{ permission_mode: string, sandbox_mode: string, network_policy: string, writable_roots: string[], permissions: any[] }} */
-	let security = $state({
+	let memory = $state<Required<Pick<MemoryConfigInput, 'session_window_size'>>>({
+		session_window_size: 50,
+	});
+	let memoryMaintenance = $state<{ running: boolean; lastCount: number | null }>({
+		running: false,
+		lastCount: null,
+	});
+	let security = $state<SecurityConfigInput & { permissions: StoredPermission[] }>({
 		permission_mode: 'default',
 		sandbox_mode: 'workspace_write',
 		network_policy: 'ask',
 		writable_roots: [],
 		permissions: [],
 	});
-	let stt = $state({
+	let stt = $state<Required<SttConfigInput>>({
 		provider: 'llm',
 		mcp_server: '',
 		model: '',
 		timeout_secs: 30,
 		min_confidence: 0.7,
 	});
-	/** @type {{ provider: string, api_key: string, api_key_ref: string | null, api_secret: string, api_secret_ref: string | null, base_url: string, timeout_secs: number, min_confidence: number }} */
-	let ocr = $state({
+	let ocr = $state<Required<OcrConfigInput>>({
 		provider: 'llm',
 		api_key: '',
 		api_key_ref: null,
@@ -149,11 +204,19 @@
 		timeout_secs: 20,
 		min_confidence: 0.7,
 	});
-	let tts = $state({ provider: 'none', model: '', voice: '', timeout_secs: 60 });
-	let imageGen = $state({ provider: 'none', model: '', timeout_secs: 120 });
-	let mediaInputStrategy = $state('auto');
-	/** @type {Record<string, any>} */
-	let notification = $state({
+	let tts = $state<Required<TtsConfigInput>>({
+		provider: 'none',
+		model: '',
+		voice: '',
+		timeout_secs: 60,
+	});
+	let imageGen = $state<Required<ImageGenConfigInput>>({
+		provider: 'none',
+		model: '',
+		timeout_secs: 120,
+	});
+	let mediaInputStrategy = $state<MediaInputStrategyInput>('auto');
+	let notification = $state<Required<NotificationConfigInput>>({
 		session_created: { in_app: true, windows: false },
 		session_completed: { in_app: true, windows: true },
 		session_paused: { in_app: true, windows: false },
@@ -161,10 +224,17 @@
 		session_error: { in_app: true, windows: true },
 		action_completed: { in_app: true, windows: true },
 	});
-	let log = $state({ level: 'info', file_enabled: true });
+	let log = $state<Required<LogConfigInput>>({
+		level: 'info',
+		file_enabled: true,
+		file_path: null,
+	});
 
 	let settingsTab = $state('general');
-	let providerDiscoveryAlert = $state({ providerName: '', staticCatalog: false });
+	let providerDiscoveryAlert = $state<{ providerName: string; staticCatalog: boolean }>({
+		providerName: '',
+		staticCatalog: false,
+	});
 	const settingsTabs = [
 		{ id: 'general', label: '常规', hint: '快捷键、会话、记忆与外观' },
 		{ id: 'models', label: '模型', hint: 'Provider、能力与请求策略' },
@@ -172,29 +242,31 @@
 		{ id: 'security', label: '权限', hint: '行为策略与安全边界' },
 		{ id: 'limits', label: '限制', hint: '上下文、文件与容量' },
 	];
-	/** @type {string[]} */
-	let mcpServerNames = $state([]);
+	let mcpServerNames = $state<string[]>([]);
 	let settingsLoaded = $state(false);
-	let logView = $state({ open: false, path: '', content: '', loading: false });
+	let logView = $state<{ open: boolean; path: string; content: string; loading: boolean }>({
+		open: false,
+		path: '',
+		content: '',
+		loading: false,
+	});
 	let performanceMetricsLoading = $state(false);
-	let logPreEl = /** @type {HTMLPreElement | null} */ ($state(null));
+	let logPreEl = $state<HTMLPreElement | null>(null);
 	let savedSnapshot = $state('');
 	let leaveDialogOpen = $state(false);
-	/** @type {((ok: boolean) => void) | null} */
-	let leaveDialogResolve = null;
+	let leaveDialogResolve: ((ok: boolean) => void) | null = null;
 	let leaveSaving = $state(false);
 	let saveState = $state('idle');
 	let saveError = $state('');
 	let mounted = true;
-	/** @type {{ ready: Promise<void>, dispose: () => void } | null} */
-	let eventRegistrations = null;
+	let eventRegistrations: ReturnType<typeof registerListeners> | null = null;
 	let defaultModelSyncGen = 0;
 	let skipNextDefaultModelSync = false;
 	/** @type {{ model: string, reasoning_effort: string, web_search: string }} */
 	let lastSyncedDefaultModel = { model: '', reasoning_effort: '', web_search: 'off' };
 
 	async function checkShells() {
-		for (const shell of ['cmd', 'powershell', 'pwsh']) {
+		for (const shell of ['cmd', 'powershell', 'pwsh'] as const) {
 			try {
 				shellAvailable[shell] = (await checkShellAvailable({ shell })).available;
 			} catch (e) {
@@ -262,16 +334,19 @@
 		if (logView.open && logPreEl) logPreEl.scrollTop = logPreEl.scrollHeight;
 	});
 
-	/** @param {any} remote */
-	function rememberSyncedDefaultModel(remote) {
+	function rememberSyncedDefaultModel(
+		remote:
+			| Partial<Pick<ModelDraft, 'model' | 'reasoning_effort' | 'web_search'>>
+			| null
+			| undefined,
+	) {
 		lastSyncedDefaultModel = {
 			model: remote?.model || '',
 			reasoning_effort: remote?.reasoning_effort || '',
 			web_search: remote?.web_search || 'off',
 		};
 	}
-	/** @param {unknown} value */
-	function asNumber(value) {
+	function asNumber(value: unknown) {
 		const number = Number(value);
 		return Number.isFinite(number) ? number : 0;
 	}
@@ -363,15 +438,13 @@
 		saveError = '';
 	}
 
-	/** @param {string} id */
-	async function changeSettingsTab(id) {
+	async function changeSettingsTab(id: string) {
 		if (id === settingsTab) return;
 		if (isDirty() && !(await confirmLeave())) return;
 		settingsTab = id;
 	}
 
-	/** @param {any[]} fills */
-	function reBaselineAfterDiscovery(fills) {
+	function reBaselineAfterDiscovery(fills: Array<Record<string, unknown>>) {
 		if (
 			!mounted ||
 			!settingsLoaded ||
@@ -381,35 +454,38 @@
 		)
 			return;
 		try {
-			const snapshot = JSON.parse(savedSnapshot);
-			const models = Array.isArray(snapshot?.llm?.models) ? snapshot.llm.models : [];
+			const snapshot = JSON.parse(savedSnapshot) as SettingsSnapshot;
+			const llmSnapshot = snapshot.llm ?? llmConfig;
+			const models = llmSnapshot.models;
 			for (const fill of fills) {
-				const model = models.find((/** @type {any} */ item) => item.id === fill.id);
+				const model = models.find((item) => item.id === fill.id);
 				if (!model) continue;
-				if ('context_window' in fill) model.context_window = fill.context_window;
-				if ('cost_per_1k_input_tokens' in fill)
-					model.cost_per_1k_input_tokens = fill.cost_per_1k_input_tokens;
-				if ('cost_per_1k_output_tokens' in fill)
-					model.cost_per_1k_output_tokens = fill.cost_per_1k_output_tokens;
+				const contextWindow = fill.context_window;
+				if (contextWindow === null || typeof contextWindow === 'number')
+					model.context_window = contextWindow;
+				const inputCost = fill.cost_per_1k_input_tokens;
+				if (inputCost === null || typeof inputCost === 'number')
+					model.cost_per_1k_input_tokens = inputCost;
+				const outputCost = fill.cost_per_1k_output_tokens;
+				if (outputCost === null || typeof outputCost === 'number')
+					model.cost_per_1k_output_tokens = outputCost;
 			}
-			snapshot.llm = { ...(snapshot.llm || {}), models };
+			snapshot.llm = { ...llmSnapshot, models };
 			savedSnapshot = JSON.stringify(snapshot);
 		} catch (e) {
 			logger.warn('SettingsView', 're-baseline after discovery failed', e);
 		}
 	}
 
-	/** @param {any} remote */
-	function patchSnapshotDefaultModel(remote) {
+	function patchSnapshotDefaultModel(remote: ModelDraft) {
 		if (!savedSnapshot || !remote) return;
 		try {
-			const snapshot = JSON.parse(savedSnapshot);
-			const models = Array.isArray(snapshot?.llm?.models) ? snapshot.llm.models : [];
-			const index = models.findIndex(
-				(/** @type {any} */ model) => model.id === 'default_model',
-			);
+			const snapshot = JSON.parse(savedSnapshot) as SettingsSnapshot;
+			const llmSnapshot = snapshot.llm ?? llmConfig;
+			const models = llmSnapshot.models;
+			const index = models.findIndex((model) => model.id === 'default_model');
 			const patched = {
-				...(index >= 0 ? models[index] : { id: 'default_model' }),
+				...(index >= 0 ? models[index] : { ...remote, id: 'default_model' }),
 				provider: remote.provider,
 				model: remote.model,
 				reasoning_effort: remote.reasoning_effort,
@@ -417,7 +493,7 @@
 			};
 			if (index >= 0) models[index] = patched;
 			else models.push(patched);
-			snapshot.llm = { ...(snapshot.llm || {}), models };
+			snapshot.llm = { ...llmSnapshot, models };
 			savedSnapshot = JSON.stringify(snapshot);
 		} catch (e) {
 			logger.warn('SettingsView', 'patch snapshot default_model failed', e);
@@ -429,14 +505,13 @@
 	 * the settings form is saved in one batch. Update only the permission part
 	 * of the baseline so unrelated unsaved edits remain dirty and discard does
 	 * not resurrect a rule that was already revoked on disk.
-	 * @param {any[]} permissions
 	 */
-	function patchSnapshotSecurityPermissions(permissions) {
+	function patchSnapshotSecurityPermissions(permissions: StoredPermission[]) {
 		if (!savedSnapshot) return;
 		try {
-			const snapshot = JSON.parse(savedSnapshot);
+			const snapshot = JSON.parse(savedSnapshot) as SettingsSnapshot;
 			snapshot.security = {
-				...(snapshot.security || {}),
+				...snapshot.security,
 				permissions: Array.isArray(permissions) ? permissions : [],
 			};
 			savedSnapshot = JSON.stringify(snapshot);
@@ -445,12 +520,9 @@
 		}
 	}
 
-	/** @param {any} remote */
-	function applyRemoteDefaultModelFields(remote) {
+	function applyRemoteDefaultModelFields(remote: ModelDraft) {
 		if (!remote) return;
-		const local = /** @type {any[]} */ (
-			Array.isArray(llmConfig.models) ? llmConfig.models : []
-		).find((/** @type {any} */ model) => model.id === 'default_model');
+		const local = llmConfig.models.find((model) => model.id === 'default_model');
 		if (local)
 			Object.assign(local, {
 				provider: remote.provider,
@@ -458,7 +530,7 @@
 				reasoning_effort: remote.reasoning_effort,
 				web_search: remote.web_search,
 			});
-		else if (Array.isArray(llmConfig.models)) llmConfig.models.push(remote);
+		else llmConfig.models.push({ ...remote });
 		rememberSyncedDefaultModel(remote);
 		patchSnapshotDefaultModel(remote);
 	}
@@ -468,9 +540,7 @@
 		try {
 			const settings = await loadSettings();
 			if (!mounted || generation !== defaultModelSyncGen || !settings?.llm) return;
-			const remote = /** @type {any[]} */ (
-				Array.isArray(settings.llm.models) ? settings.llm.models : []
-			).find((/** @type {any} */ model) => model.id === 'default_model');
+			const remote = settings.llm.models.find((model) => model.id === 'default_model');
 			if (remote) applyRemoteDefaultModelFields(remote);
 		} catch (e) {
 			logger.warn('SettingsView', 'sync default_model role error', e);
@@ -481,12 +551,8 @@
 		try {
 			const settings = await loadSettings();
 			if (!mounted || !settings?.llm) return;
-			const remote = /** @type {any[]} */ (
-				Array.isArray(settings.llm.models) ? settings.llm.models : []
-			).find((/** @type {any} */ model) => model.id === 'default_model');
-			const local = /** @type {any[]} */ (
-				Array.isArray(llmConfig.models) ? llmConfig.models : []
-			).find((/** @type {any} */ model) => model.id === 'default_model');
+			const remote = settings.llm.models.find((model) => model.id === 'default_model');
+			const local = llmConfig.models.find((model) => model.id === 'default_model');
 			if (!remote || !local) return;
 			if ((local.model || '') === lastSyncedDefaultModel.model) local.model = remote.model;
 			if ((local.reasoning_effort || '') === lastSyncedDefaultModel.reasoning_effort)
@@ -503,7 +569,7 @@
 		requestDiscardStagedCredentials();
 		if (!savedSnapshot) return;
 		try {
-			const snapshot = JSON.parse(savedSnapshot);
+			const snapshot = JSON.parse(savedSnapshot) as SettingsSnapshot;
 			defaultShell = snapshot.default_shell || defaultShell;
 			if (snapshot.llm) {
 				llmConfig = {
@@ -580,9 +646,9 @@
 		);
 	}
 
-	function confirmLeave() {
+	function confirmLeave(): Promise<boolean> {
 		if (leaveDialogOpen)
-			return new Promise((resolve) => {
+			return new Promise<boolean>((resolve) => {
 				const previous = leaveDialogResolve;
 				leaveDialogResolve = (ok) => {
 					previous?.(false);
@@ -590,12 +656,11 @@
 				};
 			});
 		leaveDialogOpen = true;
-		return new Promise((resolve) => {
+		return new Promise<boolean>((resolve) => {
 			leaveDialogResolve = resolve;
 		});
 	}
-	/** @param {boolean} ok */
-	function finishLeaveDialog(ok) {
+	function finishLeaveDialog(ok: boolean) {
 		leaveDialogOpen = false;
 		leaveSaving = false;
 		const resolve = leaveDialogResolve;
@@ -762,12 +827,11 @@
 		keyConfigured = { ...keyConfigured, ...flags };
 		keyConfiguredProviders = { ...providers };
 	}
-	/** @param {string} key */
-	async function revokePermission(key) {
+	async function revokePermission(key: string) {
 		try {
 			await invoke('revoke_permission', { key });
 			security.permissions = security.permissions.filter(
-				(/** @type {any} */ permission) => permission.key !== key,
+				(permission) => permission.key !== key,
 			);
 			patchSnapshotSecurityPermissions(security.permissions);
 			return true;
@@ -789,20 +853,16 @@
 			return false;
 		}
 	}
-	/** @param {string} value */
-	function setHotkeyMode(value) {
+	function setHotkeyMode(value: HotkeyModeInput) {
 		hotkeyMode = value;
 	}
-	/** @param {string} value */
-	function setHotkeyBinding(value) {
+	function setHotkeyBinding(value: string) {
 		hotkeyBinding = value;
 	}
-	/** @param {string} value */
-	function setDefaultShell(value) {
+	function setDefaultShell(value: ShellChoiceInput) {
 		defaultShell = value;
 	}
-	/** @param {boolean} value */
-	function setAutostart(value) {
+	function setAutostart(value: boolean) {
 		autostartEnabled = value;
 	}
 
@@ -1192,11 +1252,12 @@
 				<p>请确认 API Key 可用；也可在「模型」设置中添加模型并手动输入模型 ID。</p>
 			{:else}
 				<p>
-					Provider「{providerDiscoveryAlert.providerName}」已添加，但无法验证 API Key 或获取模型列表。请检查 API
-					Key、Base URL 和 Provider 预设。
+					Provider「{providerDiscoveryAlert.providerName}」已添加，但无法验证 API Key
+					或获取模型列表。请检查 API Key、Base URL 和 Provider 预设。
 				</p>
 				<p>
-					部分服务不开放 <code>/models</code> 接口；你仍可在「模型」设置中添加模型并手动输入模型 ID。
+					部分服务不开放 <code>/models</code> 接口；你仍可在「模型」设置中添加模型并手动输入模型
+					ID。
 				</p>
 			{/if}
 		</div>

@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 	import '../app.css';
 	import {
 		recordingOverlay,
@@ -62,6 +62,11 @@
 		isBootstrapReady,
 		nextBootstrapProbeInterval,
 	} from '$lib/bootstrapStatus.ts';
+	import type { RecordingOverlayState, ReactExecutionPhase } from '$lib/runtimeStateStore.ts';
+	import type { ActionKind, ActionPayload } from '$lib/contracts/action.ts';
+	import type { AgentNotificationPayload } from '$lib/contracts/agent.ts';
+	import type { NotificationConfigInput } from '$lib/contracts/generatedCommands.ts';
+	import type { LlmConnectionReport, LlmConnectionStatus } from '$lib/llmConnection.ts';
 
 	import AppShell from '$lib/AppShell.svelte';
 	import ConfirmationDialog from '$lib/ConfirmationDialog.svelte';
@@ -77,36 +82,75 @@
 	// keeping them out of the initial module graph makes the first conversation
 	// paint independent of settings/tools/memory code. TaskCenter is nested in
 	// the history workspace and is loaded with MemoryView.
-	/** @type {Record<string, () => Promise<{ default: any }>>} */
-	const LAZY_VIEW_LOADERS = {
+	type TabId = 'chat' | 'tools' | 'memory' | 'settings';
+	type LazyViewId = Exclude<TabId, 'chat'>;
+	type LazyViewComponents = {
+		tools: (typeof import('$lib/views/ToolsView.svelte'))['default'];
+		memory: (typeof import('$lib/views/MemoryView.svelte'))['default'];
+		settings: (typeof import('$lib/views/SettingsView.svelte'))['default'];
+	};
+	type LazyViewState = 'loading' | 'ready' | 'error';
+	type ConfirmationDecision = {
+		stepId: string;
+		approved: boolean;
+		effect?: string;
+		scope?: string;
+		target?: string;
+	};
+
+	const LAZY_VIEW_LOADERS: {
+		[K in LazyViewId]: () => Promise<{ default: LazyViewComponents[K] }>;
+	} = {
 		tools: () => import('$lib/views/ToolsView.svelte'),
 		memory: () => import('$lib/views/MemoryView.svelte'),
 		settings: () => import('$lib/views/SettingsView.svelte'),
 	};
-	/** @type {Record<string, any>} */
-	let lazyViewComponents = $state({});
-	/** @type {Record<string, 'loading'|'ready'|'error'|undefined>} */
-	let lazyViewStates = $state({});
+	let lazyViewComponents = $state<Partial<LazyViewComponents>>({});
+	let lazyViewStates = $state<Partial<Record<LazyViewId, LazyViewState>>>({});
 
-	/** @param {string} id */
-	function loadTabView(id) {
-		if (id === 'chat' || lazyViewComponents[id] || lazyViewStates[id] === 'loading') return;
-		const loader = LAZY_VIEW_LOADERS[id];
-		if (!loader) return;
+	function isTabId(value: string | null): value is TabId {
+		return (
+			value !== null &&
+			(['chat', 'tools', 'memory', 'settings'] as const).includes(value as TabId)
+		);
+	}
+	function isLazyViewId(value: string): value is LazyViewId {
+		return value === 'tools' || value === 'memory' || value === 'settings';
+	}
+
+	function loadTypedTabView<K extends LazyViewId>(
+		id: K,
+		loader: () => Promise<{ default: LazyViewComponents[K] }>,
+	) {
+		if (lazyViewComponents[id] || lazyViewStates[id] === 'loading') return;
 		lazyViewStates[id] = 'loading';
 		void loader()
 			.then((module) => {
 				lazyViewComponents[id] = module.default;
 				lazyViewStates[id] = 'ready';
 			})
-			.catch((/** @type {unknown} */ error) => {
+			.catch((error: unknown) => {
 				lazyViewStates[id] = 'error';
 				logger.warn('+layout', `load ${id} view error`, error);
 			});
 	}
 
-	/** @param {string} id */
-	function retryTabView(id) {
+	function loadTabView(value: string) {
+		if (!isLazyViewId(value)) return;
+		switch (value) {
+			case 'tools':
+				loadTypedTabView('tools', LAZY_VIEW_LOADERS.tools);
+				break;
+			case 'memory':
+				loadTypedTabView('memory', LAZY_VIEW_LOADERS.memory);
+				break;
+			case 'settings':
+				loadTypedTabView('settings', LAZY_VIEW_LOADERS.settings);
+				break;
+		}
+	}
+
+	function retryTabView(id: LazyViewId) {
 		lazyViewStates[id] = undefined;
 		loadTabView(id);
 	}
@@ -115,20 +159,19 @@
 	// instead of being destroyed/re-created on every switch, so switching is
 	// instant and rapid tab clicks never tear down a view that is being
 	// revisited. The URL is kept in sync via `?tab=<id>` (replaceState).
-	const TAB_IDS = ['chat', 'tools', 'memory', 'settings'];
-	function initialTabFromUrl() {
+	const TAB_IDS: readonly TabId[] = ['chat', 'tools', 'memory', 'settings'];
+	function initialTabFromUrl(): TabId {
 		if (typeof window === 'undefined') return 'chat';
 		const url = get(page).url;
 		const tabParam = url.searchParams.get('tab');
-		if (tabParam && TAB_IDS.includes(tabParam)) return tabParam;
+		if (isTabId(tabParam)) return tabParam;
 		return 'chat';
 	}
 	const initialTab = initialTabFromUrl();
-	let activeTab = $state(initialTab);
+	let activeTab = $state<TabId>(initialTab);
 	// `visited` gates the first mount of each view so the app boots with only
 	// the chat view; once a tab has been opened its view is kept alive.
-	/** @type {Record<string, boolean>} */
-	let visited = $state({
+	let visited = $state<Record<TabId, boolean>>({
 		chat: true,
 		tools: initialTab === 'tools',
 		memory: initialTab === 'memory',
@@ -144,24 +187,21 @@
 	let applyingTab = false;
 	// Keep-alive views remain mounted, so this separate state replays the short
 	// entry motion each time a workspace is shown without resetting its data.
-	let enteringTab = /** @type {string | null} */ ($state(null));
+	let enteringTab = $state<string | null>(null);
 
-	/** @param {string} id */
-	function activateTab(id) {
+	function activateTab(id: TabId) {
 		activeTab = id;
 		visited[id] = true;
 		enteringTab = id;
 		loadTabView(id);
 	}
 
-	/** @param {string} id @param {Event} event */
-	function finishTabEntry(id, event) {
+	function finishTabEntry(id: TabId, event: AnimationEvent) {
 		if (event.target !== event.currentTarget || enteringTab !== id) return;
 		enteringTab = null;
 	}
 
-	/** @param {string} id */
-	function applyTab(id, section = '') {
+	function applyTab(id: TabId, section = '') {
 		applyingTab = true;
 		activateTab(id);
 		const params = new URLSearchParams({ tab: id });
@@ -171,8 +211,8 @@
 		});
 	}
 
-	/** @param {string} id @param {string} [section] */
-	async function switchTab(id, section = '') {
+	async function switchTab(id: string, section = ''): Promise<boolean> {
+		if (!isTabId(id)) return false;
 		if ((id === activeTab && !section) || leaveSettingsPending) return false;
 		if (activeTab === 'settings' && id !== 'settings') {
 			leaveSettingsPending = true;
@@ -187,8 +227,7 @@
 		return true;
 	}
 
-	/** @param {string} sessionId */
-	function openTaskSession(sessionId) {
+	function openTaskSession(sessionId: string) {
 		if (!sessionId) return;
 		resumeTargetStore.set({ sessionId, wasError: false });
 		appSessionReducer.dispatch({ type: 'session/selected', sessionId });
@@ -208,8 +247,7 @@
 	let theme = $state(themeStore.currentTheme);
 	$effect(() => syncStore(themeStore, (v) => (theme = v.theme)));
 
-	/** @type {import('$lib/runtimeStateStore.ts').RecordingOverlayState} */
-	let overlay = $state({
+	let overlay = $state<RecordingOverlayState>({
 		visible: false,
 		isRecording: false,
 		processing: false,
@@ -219,34 +257,31 @@
 		vadState: 'silent',
 	});
 	let duration = $state(0);
-	let durationTimer = /** @type {ReturnType<typeof setInterval> | null} */ (null);
-	let processingTimer = /** @type {ReturnType<typeof setTimeout> | null} */ (null);
-	let reactExecutionPhase = $state('idle'); // synced from reactExecutionPhaseStore on mount
+	let durationTimer: ReturnType<typeof setInterval> | null = null;
+	let processingTimer: ReturnType<typeof setTimeout> | null = null;
+	let reactExecutionPhase = $state<ReactExecutionPhase>('idle'); // synced from reactExecutionPhaseStore on mount
 	let conversationStatus = $state('空闲');
 	$effect(() => syncStore(activeConversationStatusStore, (v) => (conversationStatus = v)));
 	// Runtime mode is intentionally separate from backend bootstrap state:
 	// browser Vite preview has no Tauri backend at all, while a Tauri webview
 	// can still be waiting for Rust startup.
-	let runtime = $state('unknown');
+	let runtime = $state<'unknown' | 'tauri' | 'browser'>('unknown');
 	// Cold-start gate: false until MCP/skills/audio prewarm is ready. The event
 	// is best-effort, so get_bootstrap_status is retried when startup races with
 	// a reused Vite/Tauri development process.
 	let bootstrapReady = $state(false);
-	let bootstrapProbeTimer = /** @type {ReturnType<typeof setTimeout> | undefined} */ (undefined);
+	let bootstrapProbeTimer: ReturnType<typeof setTimeout> | undefined;
 	let bootstrapProbeInFlight = false;
 	let bootstrapProbeFailureStreak = 0;
 	// Whether ANY session is busy (pending/running). Tracked per session id so a
 	// parallel session completing does not clear the busy state of another.
-	let busySessions = $state(new Set());
-	/** @type {Map<string, string>} */
-	let lastSessionStatus = new Map();
-	/** @param {string} sessionId */
-	function addBusySession(sessionId) {
+	let busySessions = $state(new Set<string>());
+	let lastSessionStatus = new Map<string, string>();
+	function addBusySession(sessionId: string | undefined) {
 		if (!sessionId || busySessions.has(sessionId)) return;
 		busySessions = new Set(busySessions).add(sessionId);
 	}
-	/** @param {string} sessionId */
-	function removeBusySession(sessionId) {
+	function removeBusySession(sessionId: string | undefined) {
 		if (!sessionId || !busySessions.has(sessionId)) return;
 		const nextBusySessions = new Set(busySessions);
 		nextBusySessions.delete(sessionId);
@@ -262,10 +297,9 @@
 	// they must be initialized already.
 	// `llmConnected` is independent from ReAct execution. `null` means the first
 	// probe has not completed or the configuration changed and is being checked.
-	let llmConnected = /** @type {string | null} */ ($state(null));
-	let llmConnectionReport =
-		/** @type {import('$lib/llmConnection.ts').LlmConnectionReport | null} */ ($state(null));
-	let llmProbeTimer = /** @type {ReturnType<typeof setTimeout> | undefined} */ (undefined);
+	let llmConnected = $state<LlmConnectionStatus | null>(null);
+	let llmConnectionReport = $state<LlmConnectionReport | null>(null);
+	let llmProbeTimer: ReturnType<typeof setTimeout> | undefined;
 	let llmProbeInFlight = false;
 	let llmProbeGeneration = 0;
 	let llmProbeFailureStreak = 0;
@@ -313,7 +347,7 @@
 		if (v === 'idle') probeLlmConnection();
 	});
 	/** @param {unknown} value */
-	function applyLlmConnectionReport(value) {
+	function applyLlmConnectionReport(value: unknown) {
 		const report = normalizeLlmConnectionReport(value);
 		const previous = llmConnected;
 		llmConnectionReport = report;
@@ -389,7 +423,7 @@
 		scheduleLlmProbe();
 	}
 
-	let notifyCfg = $state({
+	let notifyCfg = $state<NotificationConfigInput>({
 		session_created: { in_app: true },
 		session_completed: { in_app: true },
 		session_paused: { in_app: true },
@@ -397,9 +431,7 @@
 		session_error: { in_app: true },
 	});
 
-	/** @typedef {import('$lib/contracts/agent.ts').AgentNotificationPayload} AgentNotificationPayload */
-	/** @param {AgentNotificationPayload} data */
-	function showAgentNotification(data) {
+	function showAgentNotification(data: AgentNotificationPayload) {
 		if (data.notificationKind === 'action_completion') {
 			if (!shouldShowActionCompletionInApp()) return;
 			const toast = projectActionCompletionToast(
@@ -427,7 +459,7 @@
 		if (url.pathname !== '/') return;
 		const rawTab = url.searchParams.get('tab');
 		const tabParam = rawTab;
-		const t = TAB_IDS.includes(tabParam || '') ? tabParam || 'chat' : 'chat';
+		const t: TabId = isTabId(tabParam) ? tabParam : 'chat';
 		if (t === activeTab) {
 			visited[t] = true;
 			loadTabView(t);
@@ -451,8 +483,7 @@
 		activateTab(t);
 	});
 
-	/** @param {object} patch */
-	function setOverlay(patch) {
+	function setOverlay(patch: Partial<RecordingOverlayState>) {
 		recordingOverlay.update((v) => ({ ...v, ...patch }));
 	}
 
@@ -472,7 +503,7 @@
 	// Reset the recording overlay to its "hidden" state. Use after the user
 	// finishes a session, errors out, or is force-stopped by mute/tray.
 	/** @param {string | null} [reason] */
-	function resetOverlay(reason = null) {
+	function resetOverlay(reason: string | null = null) {
 		setOverlay({ visible: false, isRecording: false, processing: false, reason });
 		stopTimer();
 	}
@@ -502,7 +533,7 @@
 	// actionStore (kept live by the `action:*` listeners above). Background
 	// actions sort newest-first; scheduled actions sort soonest-first; both
 	// derive from one store keyed by the normalized action id.
-	let activities = $state({});
+	let activities = $state<Record<string, ActionPayload>>({});
 	$effect(() => syncStore(actionStore, (v) => (activities = v)));
 	const actionEntries = $derived(Object.values(activities));
 	const backgroundActionEntries = $derived(
@@ -575,11 +606,15 @@
 				})()
 			: null,
 	);
-	/** @type {Set<string>} */
-	const confirmationRequestsInFlight = new Set();
+	const confirmationRequestsInFlight = new Set<string>();
 
-	/** @param {{ stepId: string, approved: boolean, effect?: string, scope?: string, target?: string }} payload */
-	async function handleConfirm({ stepId, approved, effect, scope, target }) {
+	async function handleConfirm({
+		stepId,
+		approved,
+		effect,
+		scope,
+		target,
+	}: ConfirmationDecision) {
 		// Resolve the shared request synchronously before awaiting IPC. The next
 		// queued request is then derived immediately from the reducer.
 		const resolvedStep = stepId;
@@ -626,21 +661,20 @@
 		};
 	});
 
-	/** @param {any} action */
-	function sessionTitleFor(action) {
+	function sessionTitleFor(action: Pick<ActionPayload, 'sessionId'>) {
 		if (!action.sessionId) return '';
 		const t = sessions.find((x) => x.id === action.sessionId);
-		return t?.title || t?.input || action.sessionId;
+		const title = t?.title || t?.input;
+		return typeof title === 'string' ? title : action.sessionId;
 	}
 
-	/** @param {any} action */
-	function actionDuration(action) {
-		const start = new Date(action.startedAt).getTime();
+	function actionDuration(action: ActionPayload) {
+		const start = new Date(action.startedAt ?? '').getTime();
 		if (isNaN(start)) return '';
 		const end =
 			action.status === 'running'
 				? Date.now()
-				: new Date(action.finishedAt || action.startedAt).getTime();
+				: new Date(action.finishedAt || action.startedAt || '').getTime();
 		if (isNaN(end)) return '';
 		const secs = Math.floor((end - start) / 1000);
 		if (secs < 60) return `${secs}s`;
@@ -648,8 +682,7 @@
 		return `${mins}m ${secs % 60}s`;
 	}
 
-	/** @param {string} actionId @param {'background'|'scheduled'} [kind] */
-	async function handleCancelAction(actionId, kind = 'background') {
+	async function handleCancelAction(actionId: string, kind: ActionKind = 'background') {
 		try {
 			const ok = await cancelAction(actionId, kind);
 			if (!ok) {
@@ -674,9 +707,8 @@
 		}
 	}
 
-	/** @param {string} dueAt */
-	function scheduledActionCountdown(dueAt) {
-		const due = new Date(dueAt).getTime();
+	function scheduledActionCountdown(dueAt?: string) {
+		const due = new Date(dueAt ?? '').getTime();
 		if (isNaN(due)) return '';
 		const diff = due - Date.now();
 		if (diff <= 0) return '已到时间';
@@ -689,10 +721,8 @@
 		return `${Math.floor(hrs / 24)}天后`;
 	}
 
-	let eventRegistrations = /** @type {{ ready: Promise<void>; dispose: () => void } | null} */ (
-		null
-	);
-	let removeGlobalErrorHandlers = () => {};
+	let eventRegistrations: { ready: Promise<void>; dispose: () => void } | null = null;
+	let removeGlobalErrorHandlers: () => void = () => {};
 
 	onMount(async () => {
 		runtime = isTauri() ? 'tauri' : 'browser';
@@ -1073,7 +1103,7 @@
 		eventRegistrations?.dispose();
 	});
 
-	const tabs = [
+	const tabs: Array<{ id: TabId; label: string; icon: string }> = [
 		{ id: 'chat', label: '对话', icon: 'chat' },
 		{ id: 'tools', label: '工具', icon: 'briefcase' },
 		{ id: 'memory', label: '历史', icon: 'history' },
@@ -1120,7 +1150,8 @@
 				aria-hidden={activeTab !== tab.id}
 			>
 				{#if visited[tab.id]}
-					{@const TabComponent = lazyViewComponents[tab.id]}
+					{@const TabComponent =
+						tab.id === 'chat' ? undefined : lazyViewComponents[tab.id]}
 					{#if tab.id === 'chat'}
 						<div
 							class="page-shell"
@@ -1161,12 +1192,13 @@
 					{:else if tab.id === 'memory'}
 						<div class="page-shell">
 							{#if lazyViewComponents.memory}
+								{@const MemoryViewComponent = lazyViewComponents.memory}
 								<WorkspaceSurface
 									entering={enteringTab === tab.id}
 									onAnimationEnd={(/** @type {AnimationEvent} */ event) =>
 										finishTabEntry(tab.id, event)}
 								>
-									<TabComponent
+									<MemoryViewComponent
 										onNewSession={startNewSessionFromTasks}
 										{runningBackgroundActions}
 										{pendingScheduledActions}

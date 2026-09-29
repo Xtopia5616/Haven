@@ -1,10 +1,13 @@
-<script>
+<script lang="ts">
+	interface Props {
+		text: string;
+		variant?: 'default' | 'primary' | 'secondary' | 'success' | 'warning' | 'error';
+	}
+
 	/**
 	 * Material Badge — small status / category label.
-	 * @prop {string} text
-	 * @prop {'default'|'primary'|'secondary'|'success'|'warning'|'error'} variant
 	 */
-	let { text, variant = 'default' } = $props();
+	let { text, variant = 'default' }: Props = $props();
 </script>
 
 <span class="md-badge" data-variant={variant}>

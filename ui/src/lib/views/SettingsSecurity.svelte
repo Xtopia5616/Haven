@@ -1,10 +1,17 @@
-<script>
+<script lang="ts">
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
 	import SettingsField from '$lib/SettingsField.svelte';
 	import SettingsSection from '$lib/SettingsSection.svelte';
-	import { inputElementValue, withStringValue } from '$lib/typedCallbacks.js';
+	import { inputElementValue, withStringValue } from '$lib/typedCallbacks.ts';
+	import type { SecurityConfigInput } from '$lib/contracts/generatedCommands.ts';
+
+	interface Props {
+		security: SecurityConfigInput & { permissions: Array<{ key: string; effect: string }> };
+		onRevokePermission?: (key: string) => boolean | Promise<boolean>;
+		onResetPermissions?: () => boolean | Promise<boolean>;
+	}
 
 	/**
 	 * Permission settings presentation. The route owns persistence and command
@@ -15,7 +22,7 @@
 		security,
 		onRevokePermission = async () => true,
 		onResetPermissions = async () => true,
-	} = $props();
+	}: Props = $props();
 
 	const PERMISSION_MODES = [
 		{
@@ -42,7 +49,7 @@
 			shortLabel: '少打断',
 			detail: '非关键操作自动执行，高风险与关键操作仍需确认。',
 		},
-	];
+	] as const;
 
 	const SANDBOX_MODES = [
 		{
@@ -60,7 +67,7 @@
 			label: '完全访问',
 			detail: '不限制文件访问范围，但确认策略和关键操作底线仍然有效。',
 		},
-	];
+	] as const;
 
 	const NETWORK_POLICIES = [
 		{
@@ -83,10 +90,10 @@
 			label: '开放网络',
 			detail: '不添加全局网络限制，但每个工具自己的安全检查仍会执行。',
 		},
-	];
+	] as const;
 
 	/** @type {Record<string, string>} */
-	const RULE_LABELS = {
+	const RULE_LABELS: Record<string, string> = {
 		shell: '执行本机命令',
 		files: '文件操作',
 		process: '进程管理',
@@ -103,7 +110,7 @@
 	};
 
 	/** @type {Record<string, string>} */
-	const OPERATION_LABELS = {
+	const OPERATION_LABELS: Record<string, string> = {
 		read: '读取',
 		list: '查看',
 		search: '搜索',
@@ -145,9 +152,14 @@
 		NETWORK_POLICIES.find((policy) => policy.value === security?.network_policy) ||
 			NETWORK_POLICIES[1],
 	);
+	function isOptionValue<T extends string>(
+		options: readonly { value: T }[],
+		value: string,
+	): value is T {
+		return options.some((option) => option.value === value);
+	}
 
-	/** @param {string} key */
-	function permissionRuleMeta(key) {
+	function permissionRuleMeta(key: string) {
 		const parts = String(key || '')
 			.split('.')
 			.filter(Boolean);
@@ -178,8 +190,7 @@
 		if (!resetPending) resetDialogOpen = false;
 	}
 
-	/** @param {string} key */
-	async function revokePermission(key) {
+	async function revokePermission(key: string) {
 		pendingRule = key;
 		try {
 			await onRevokePermission?.(key);
@@ -261,7 +272,7 @@
 							label: mode.label,
 						}))}
 						onChange={withStringValue((value) => {
-							security.sandbox_mode = value;
+							if (isOptionValue(SANDBOX_MODES, value)) security.sandbox_mode = value;
 						})}
 					/>
 				</SettingsField>
@@ -277,7 +288,8 @@
 							label: policy.label,
 						}))}
 						onChange={withStringValue((value) => {
-							security.network_policy = value;
+							if (isOptionValue(NETWORK_POLICIES, value))
+								security.network_policy = value;
 						})}
 					/>
 				</SettingsField>
@@ -285,7 +297,7 @@
 			</div>
 		</div>
 
-		<details class="advanced-boundary" open={security.writable_roots?.length > 0}>
+		<details class="advanced-boundary" open={(security.writable_roots?.length ?? 0) > 0}>
 			<summary>
 				<span>高级：自定义可写目录</span>
 				<small>{security.writable_roots?.length || 0} 个目录</small>

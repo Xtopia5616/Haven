@@ -1,12 +1,19 @@
-<script>
+<script lang="ts">
 	import Icon from './Icon.svelte';
 	import { cubicOut } from 'svelte/easing';
+	import type { Snippet } from 'svelte';
+
+	interface Props {
+		open?: boolean;
+		variant?: 'default' | 'error';
+		lazy?: boolean;
+		header?: Snippet;
+		children?: Snippet;
+	}
+
 	/**
 	 * Material Collapsible — header with a rotating caret.
 	 * Same expand/collapse chrome as the settings Limits danger groups.
-	 * @prop {boolean} open — bindable; true while expanded
-	 * @prop {'default'|'error'} variant
-	 * @prop {boolean} lazy — when true, unmount body while collapsed (chat cards)
 	 */
 	let {
 		open = $bindable(false),
@@ -14,9 +21,9 @@
 		lazy = false,
 		header = undefined,
 		children = undefined,
-	} = $props();
+	}: Props = $props();
 
-	function toggle() {
+	function toggle(): void {
 		open = !open;
 	}
 
@@ -30,16 +37,21 @@
 	 * Keeping the transition to a measured height and opacity leaves the
 	 * inline geometry stable while the body is being revealed.
 	 *
-	 * @param {HTMLElement} node
-	 * @param {{ delay?: number, duration?: number, easing?: (t: number) => number }} options
 	 */
-	function stableReveal(node, { delay = 0, duration = 400, easing = cubicOut } = {}) {
+	function stableReveal(
+		node: HTMLElement,
+		{
+			delay = 0,
+			duration = 400,
+			easing = cubicOut,
+		}: { delay?: number; duration?: number; easing?: (t: number) => number } = {},
+	) {
 		const height = node.scrollHeight;
 		return {
 			delay,
 			duration,
 			easing,
-			css: /** @param {number} t */ (t) =>
+			css: (t: number) =>
 				`overflow: hidden; height: ${t * height}px; min-height: 0; opacity: ${Math.min(t * 20, 1)};`,
 		};
 	}

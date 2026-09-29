@@ -1,19 +1,21 @@
-<script>
+<script lang="ts">
 	import Icon from './Icon.svelte';
-	/**
-	 * Material Switch — standardised toggle switch.
-	 * @prop {boolean} checked
-	 * @prop {function} onChange — (checked: boolean) => void
-	 * @prop {string} ariaLabel — accessible name for the switch
-	 * @prop {boolean} disabled — prevents changes while the control is unavailable
-	 */
-	let { checked = false, onChange, ariaLabel = '', disabled = false } = $props();
+
+	interface Props {
+		checked?: boolean;
+		onChange?: (checked: boolean) => void;
+		ariaLabel?: string;
+		disabled?: boolean;
+	}
 
 	/**
-	 * @param {any} e
+	 * Material Switch — standardised toggle switch.
 	 */
-	function handleChange(e) {
-		onChange?.(e.target.checked);
+	let { checked = false, onChange, ariaLabel = '', disabled = false }: Props = $props();
+
+	function handleChange(event: Event): void {
+		if (!(event.currentTarget instanceof HTMLInputElement)) return;
+		onChange?.(event.currentTarget.checked);
 	}
 </script>
 

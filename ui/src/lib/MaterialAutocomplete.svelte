@@ -1,6 +1,18 @@
-<script>
+<script lang="ts">
 	import { fly } from 'svelte/transition';
 	import { cubicOut } from 'svelte/easing';
+
+	type AutocompleteOption = { value: string; label?: string };
+
+	interface Props {
+		value?: string;
+		options?: AutocompleteOption[];
+		placeholder?: string;
+		id?: string;
+		loading?: boolean;
+		onChange?: (value: string) => void;
+		onFocus?: () => void;
+	}
 
 	let {
 		value = '',
@@ -10,15 +22,13 @@
 		loading = false,
 		onChange = undefined,
 		onFocus = undefined,
-	} = $props();
+	}: Props = $props();
 
 	let text = $state('');
 	let open = $state(false);
 	let menuId = $state('ma-menu-' + Math.random().toString(36).slice(2, 8));
-	/** @type {HTMLDivElement | null} */
-	let rootRef = null;
-	/** @type {HTMLInputElement | null} */
-	let inputRef = null;
+	let rootRef: HTMLDivElement | null = null;
+	let inputRef: HTMLInputElement | null = null;
 
 	// Sync when the parent changes the value from outside (settings load,
 	// external selection). Parent-driven updates converge with typing since
@@ -29,38 +39,30 @@
 
 	let filtered = $derived(
 		(text
-			? options.filter((o) =>
-					(o.label || o.value).toLowerCase().includes(text.toLowerCase())
-				)
+			? options.filter((o) => (o.label || o.value).toLowerCase().includes(text.toLowerCase()))
 			: options
-		).slice(0, 100)
+		).slice(0, 100),
 	);
 
-	function onInput() {
+	function onInput(): void {
 		open = true;
 		onChange?.(text);
 	}
 
-	/**
-	 * @param {any} opt
-	 */
-	function pick(opt) {
-		text = opt.value;
-		onChange?.(opt.value);
+	function pick(option: AutocompleteOption): void {
+		text = option.value;
+		onChange?.(option.value);
 		open = false;
 		inputRef?.focus();
 	}
 
-	/**
-	 * @param {KeyboardEvent} e
-	 */
-	function handleKeydown(e) {
-		if (e.key === 'Escape') {
+	function handleKeydown(event: KeyboardEvent): void {
+		if (event.key === 'Escape') {
 			open = false;
 		}
 	}
 
-	function handleBlur() {
+	function handleBlur(): void {
 		// Let option mousedowns register before closing.
 		setTimeout(() => {
 			if (!rootRef?.contains(document.activeElement)) open = false;
@@ -93,7 +95,12 @@
 	/>
 
 	{#if open && (options.length > 0 || loading)}
-		<div class="ma-menu" id={menuId} role="listbox" in:fly={{ y: -4, duration: 300, easing: cubicOut }}>
+		<div
+			class="ma-menu"
+			id={menuId}
+			role="listbox"
+			in:fly={{ y: -4, duration: 300, easing: cubicOut }}
+		>
 			{#if filtered.length > 0}
 				{#each filtered as opt}
 					<button

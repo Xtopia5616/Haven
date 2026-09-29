@@ -1,7 +1,26 @@
-<script>
+<script lang="ts">
+	import type { ChatModelOption } from '$lib/chatModelOperations.ts';
+	import type { ModelInfo } from '$lib/contracts/model.ts';
 	import MaterialButton from './MaterialButton.svelte';
 	import Icon from './Icon.svelte';
 	import MenuItem from './MenuItem.svelte';
+
+	type MenuOption = { value: string; label: string };
+	interface Props {
+		modelMenuOpen?: boolean;
+		currentModelName?: string;
+		currentModelId?: string;
+		modelOptions?: ModelInfo[];
+		onToggleMenu?: () => void;
+		onModelSelect?: (model: ChatModelOption) => void | Promise<void>;
+		effortOptions?: MenuOption[];
+		currentEffort?: string;
+		onEffortSelect?: (value: string) => void | Promise<void>;
+		webSearchSupported?: boolean;
+		webSearchOptions?: MenuOption[];
+		currentWebSearch?: string;
+		onWebSearchSelect?: (value: string) => void | Promise<void>;
+	}
 
 	let {
 		modelMenuOpen = false,
@@ -17,7 +36,7 @@
 		webSearchOptions = [],
 		currentWebSearch = 'off',
 		onWebSearchSelect = () => {},
-	} = $props();
+	}: Props = $props();
 </script>
 
 <div class="model-switch">

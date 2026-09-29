@@ -13,7 +13,7 @@ export interface ConversationMessage {
 	time?: string | null;
 	toolName?: string | null;
 	toolArgs?: unknown;
-	attachments?: unknown[];
+	attachments?: ConversationAttachment[];
 	options?: string[];
 	awaiting?: boolean;
 	received?: boolean;
@@ -26,6 +26,30 @@ export interface ConversationMessage {
 	stepNumber?: number | null;
 	[key: string]: any;
 }
+
+export interface ConversationAttachment {
+	media_type?: string;
+	data?: string;
+	filename?: string;
+	path?: string;
+}
+
+export interface ConversationContextMenuRequest {
+	x: number;
+	y: number;
+	messageId: string;
+	stepNumber: number | null;
+	role: string;
+	content: string;
+	type: string | null;
+	selectedContent: string;
+}
+
+export type AskSelectionChangeHandler = (
+	messageId: string,
+	selected: string[] | null | undefined,
+) => void;
+export type AskMessageHandler = (messageId: string) => void;
 
 export interface TimelineMessageItem {
 	kind: 'message';

@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 	import { onMount } from 'svelte';
 	import ContextMenu from './ContextMenu.svelte';
 	import { copyText } from '$lib/clipboard.ts';
@@ -8,24 +8,22 @@
 		getSelectedText,
 		openContextMenu,
 	} from '$lib/contextMenu.ts';
+	import type { ContextMenuState } from '$lib/contextMenu.ts';
 
 	// This is the single rendered menu host. Components submit domain-specific
 	// actions through contextMenuStore; the document-level handler below only
 	// supplies the default copy action for otherwise unclaimed text selections.
-	let contextMenu = $state(
-		/** @type {import('$lib/contextMenu.ts').ContextMenuState} */ ({
-			open: false,
-			x: 0,
-			y: 0,
-			items: [],
-		}),
-	);
+	let contextMenu = $state<ContextMenuState>({
+		open: false,
+		x: 0,
+		y: 0,
+		items: [],
+	});
 
 	const NON_TEXT_CONTEXT_TARGETS =
 		'button, input, textarea, select, option, [contenteditable="true"], .ctx-menu';
 
-	/** @param {MouseEvent} event */
-	function handleGlobalContextMenu(event) {
+	function handleGlobalContextMenu(event: MouseEvent) {
 		if (event.defaultPrevented) return;
 		const target = event.target instanceof Element ? event.target : null;
 		if (target?.closest(NON_TEXT_CONTEXT_TARGETS)) return;

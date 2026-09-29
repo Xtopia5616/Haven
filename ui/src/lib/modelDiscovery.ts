@@ -10,9 +10,8 @@ type Provider = {
 	name: string;
 	base_url: string;
 	api_key?: string;
-	api_style?: string;
-	provider?: string;
-	[key: string]: unknown;
+	api_style?: string | null;
+	provider?: string | null;
 };
 
 type ModelMap = DiscoveredModelMap;

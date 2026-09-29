@@ -1,14 +1,17 @@
-<script>
+<script lang="ts">
 	import { getIconDefinition, getIconTransform } from './icons.ts';
+
+	interface Props {
+		name?: string;
+		size?: number | string;
+		strokeWidth?: number;
+		className?: string;
+		label?: string;
+	}
 
 	/**
 	 * Shared icon primitive. All icons use the same 24×24 viewBox and inherit
 	 * currentColor; only the semantic name and rendered size vary at call sites.
-	 * @prop {string} name — key from the shared icon registry
-	 * @prop {number|string} size — rendered square size, default 20px
-	 * @prop {number|undefined} strokeWidth — optional override for outline icons
-	 * @prop {string} className — additional class names
-	 * @prop {string} label — accessible label for standalone icons
 	 */
 	let {
 		name = 'help',
@@ -16,7 +19,7 @@
 		strokeWidth = undefined,
 		className = '',
 		label = '',
-	} = $props();
+	}: Props = $props();
 
 	let definition = $derived(getIconDefinition(name));
 	let renderedSize = $derived(typeof size === 'number' ? `${size}px` : size);

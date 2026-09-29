@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 	import { onDestroy, untrack } from 'svelte';
 	import { fly } from 'svelte/transition';
 	import { cubicOut } from 'svelte/easing';
@@ -12,6 +12,41 @@
 	import ToolResultCard from '$lib/ToolResultCard.svelte';
 	import MaterialCollapsible from '$lib/MaterialCollapsible.svelte';
 	import Icon from '$lib/Icon.svelte';
+	import type { AgentToolResultEnvelope } from '$lib/contracts/agent.ts';
+	import type {
+		AskMessageHandler,
+		AskSelectionChangeHandler,
+		ConversationAttachment,
+		ConversationContextMenuRequest,
+	} from '$lib/conversationTimeline.ts';
+
+	interface Props {
+		role: string;
+		content: string;
+		type?: string | null;
+		time?: string | null;
+		voice?: boolean;
+		streaming?: boolean;
+		toolName?: string;
+		outcome?: string | null;
+		renderer?: string | null;
+		result?: AgentToolResultEnvelope | null;
+		messageId?: string;
+		stepNumber?: number | null;
+		toolArgs?: unknown;
+		attachments?: ConversationAttachment[];
+		options?: string[];
+		awaiting?: boolean;
+		received?: boolean;
+		resolved?: { answer?: string; ignored?: boolean } | null;
+		actionId?: string | null;
+		compact?: boolean;
+		showFallbackIntent?: boolean;
+		onContextMenu?: ((request: ConversationContextMenuRequest) => void) | null;
+		onAskSelectionChange?: AskSelectionChangeHandler | null;
+		onIgnore?: AskMessageHandler | null;
+		onAskSubmit?: AskMessageHandler | null;
+	}
 
 	let {
 		role,
@@ -39,7 +74,7 @@
 		onAskSelectionChange = null,
 		onIgnore = null,
 		onAskSubmit = null,
-	} = $props();
+	}: Props = $props();
 
 	// Local open state for the collapsible reasoning block. The block
 	// expands while streaming so live output is visible, and auto-collapses
@@ -84,12 +119,13 @@
 		mounted = false;
 	});
 
-	/** @param {any} e */
-	function handleContextMenu(e) {
+	function handleContextMenu(e: MouseEvent) {
 		if (onContextMenu) {
 			e.preventDefault();
 			e.stopPropagation();
-			const selectedContent = getSelectedTextWithin(e.currentTarget);
+			const selectedContent = getSelectedTextWithin(
+				e.currentTarget instanceof Element ? e.currentTarget : null,
+			);
 			onContextMenu({
 				x: e.clientX,
 				y: e.clientY,
@@ -97,7 +133,7 @@
 				stepNumber,
 				role,
 				content,
-				type: msgType,
+				type: msgType ?? null,
 				selectedContent,
 			});
 		}
@@ -108,10 +144,10 @@
 	// delegation survives re-renders of {@html} content and works during
 	// streaming. The whole text of the code block is copied, matching what is
 	// highlighted, without any trailing newline.
-	/** @param {any} e */
-	function handleMdContentClick(e) {
+	function handleMdContentClick(e: MouseEvent) {
 		if (handleExtRefEvent(e)) return;
-		const btn = e.target.closest?.('.md-code-copy');
+		const eventTarget = e.target instanceof Element ? e.target : null;
+		const btn = eventTarget?.closest('.md-code-copy');
 		if (!btn) return;
 		const wrap = btn.closest('.md-code-wrap');
 		const codeEl = wrap?.querySelector('code');
@@ -135,8 +171,7 @@
 			});
 	}
 
-	/** @param {any} e */
-	function handleMdContentContextMenu(e) {
+	function handleMdContentContextMenu(e: MouseEvent) {
 		handleExtRefEvent(e);
 	}
 
@@ -157,8 +192,7 @@
 	//   3. A thin visible scrollbar, because scrollbars are hidden globally.
 	// The CSS vars are written to the fade-hosting wrapper (or the element
 	// itself for plain <pre> that never scrolls, e.g. streaming fences).
-	/** @param {HTMLElement} el */
-	function hintTarget(el) {
+	function hintTarget(el: HTMLElement): HTMLElement {
 		const wrap = el.parentElement;
 		if (
 			wrap &&
@@ -168,8 +202,7 @@
 		}
 		return el;
 	}
-	/** @param {any} el */
-	function refreshScrollHint(el) {
+	function refreshScrollHint(el: HTMLElement) {
 		const target = hintTarget(el);
 		const atLeft = el.scrollLeft <= 0;
 		const atRight = el.scrollLeft + el.clientWidth >= el.scrollWidth - 1;
@@ -177,17 +210,16 @@
 		target.style.setProperty('--sh-r', atRight ? '0' : '1');
 	}
 
-	/** @param {Event} e */
-	function handleMdScrollCapture(e) {
+	function handleMdScrollCapture(e: Event) {
 		const el = e.target;
 		if (el instanceof HTMLElement && (el.tagName === 'PRE' || el.tagName === 'TABLE')) {
 			refreshScrollHint(el);
 		}
 	}
 
-	/** @param {any} e */
-	function handleMdWheel(e) {
-		const el = e.target.closest?.('pre, table');
+	function handleMdWheel(e: WheelEvent) {
+		const eventTarget = e.target instanceof Element ? e.target : null;
+		const el = eventTarget?.closest('pre, table');
 		if (!el) return;
 		if (el.scrollWidth <= el.clientWidth + 1) return;
 		if (el.scrollHeight > el.clientHeight + 1) return;
@@ -196,8 +228,7 @@
 		el.scrollLeft += e.deltaY;
 	}
 
-	/** @param {HTMLElement} node */
-	function mdContent(node) {
+	function mdContent(node: HTMLElement) {
 		let hintRaf = 0;
 		const dragController = createDragScrollController(node, {
 			axis: 'x',
@@ -215,7 +246,9 @@
 				hintRaf = 0;
 				if (!mounted) return;
 				if (node.classList.contains('streaming')) return;
-				node.querySelectorAll('pre, table').forEach(refreshScrollHint);
+				node.querySelectorAll('pre, table').forEach((element) => {
+					if (element instanceof HTMLElement) refreshScrollHint(element);
+				});
 			});
 		}
 		node.addEventListener('click', handleMdContentClick);
@@ -256,7 +289,7 @@
 	let rendersMarkdown = $derived(
 		role === 'assistant' &&
 			!isPeerKickoff &&
-			!['thought', 'reasoning', 'tool', 'ask', 'supplement'].includes(msgType),
+			!['thought', 'reasoning', 'tool', 'ask', 'supplement'].includes(msgType ?? ''),
 	);
 
 	// L11: guard the render effect against unmount mid-import. mdHtml stays ''

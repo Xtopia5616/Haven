@@ -33,7 +33,7 @@ export interface ActionCardProjection {
 
 export interface ActionCardProjectionOptions {
 	actionStatusLabel: (status: string) => string;
-	sessionTitleFor: (action: ActionPayload) => string;
+	sessionTitleFor: (action: Pick<ActionPayload, 'sessionId'>) => string;
 	actionDuration: (action: ActionPayload) => string;
 	scheduledActionCountdown: (dueAt?: string) => string;
 }

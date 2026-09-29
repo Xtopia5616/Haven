@@ -1,11 +1,16 @@
-<script>
+<script lang="ts">
+	type StatusBadgeTone = 'neutral' | 'info' | 'success' | 'warning' | 'error';
+
+	interface Props {
+		label?: string;
+		tone?: StatusBadgeTone;
+		className?: string;
+	}
+
 	/**
 	 * Status Badge — shared compact semantic status indicator.
-	 * @prop {string} label
-	 * @prop {'neutral'|'info'|'success'|'warning'|'error'} tone
-	 * @prop {string} className
 	 */
-	let { label = '', tone = 'neutral', className = '' } = $props();
+	let { label = '', tone = 'neutral', className = '' }: Props = $props();
 </script>
 
 <span class="status-badge {className}" data-tone={tone}>{label}</span>

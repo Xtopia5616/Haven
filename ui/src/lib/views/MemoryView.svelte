@@ -1,10 +1,4 @@
-<script>
-	/** @typedef {import('$lib/contracts/sessionHistory.ts').SessionHistoryRow} MemorySession */
-	/** @typedef {import('$lib/contracts/commands.ts').HistoryFilterRequest} HistoryFilterRequest */
-	/** @typedef {import('$lib/contracts/memory.ts').Fact} Fact */
-	/** @typedef {import('$lib/contracts/memory.ts').MemoryRecallResult} MemoryRecallResult */
-	/** @typedef {import('$lib/contracts/memory.ts').MemoryRecallState} MemoryRecallState */
-	/** @typedef {import('$lib/contracts/action.ts').ActionPayload} TaskAction */
+<script lang="ts">
 	import logger from '$lib/logger.ts';
 	import { reportError } from '$lib/errorHandling.ts';
 	import { buildResumeMessages } from '$lib/resumeMessages.ts';
@@ -46,28 +40,47 @@
 	import TaskCenter from '$lib/TaskCenter.svelte';
 	import WorkspacePageHeader from '$lib/WorkspacePageHeader.svelte';
 	import WorkspaceSectionHeader from '$lib/WorkspaceSectionHeader.svelte';
+	import type { HistoryFilterRequest } from '$lib/contracts/commands.ts';
+	import type { Fact, MemoryRecallState } from '$lib/contracts/memory.ts';
+	import type { ActionKind, ActionPayload } from '$lib/contracts/action.ts';
+	import type { SessionHistoryRow } from '$lib/contracts/sessionHistory.ts';
+	import type { ContextMenuItem } from '$lib/contextMenu.ts';
+
+	type MemorySession = SessionHistoryRow;
+	type MemoryTabId = 'sessions' | 'tasks' | 'memory';
+	type TaskAction = ActionPayload;
+
+	interface Props {
+		onNewSession?: () => void;
+		runningBackgroundActions?: ActionPayload[];
+		pendingScheduledActions?: ActionPayload[];
+		actionStatusLabel?: (status: string) => string;
+		sessionTitleFor?: (action: Pick<ActionPayload, 'sessionId'>) => string;
+		actionDuration?: (action: ActionPayload) => string;
+		scheduledActionCountdown?: (dueAt?: string) => string;
+		onOpenSession?: (sessionId: string) => void;
+		onCancel?: (actionId: string, kind?: ActionKind) => void;
+	}
 
 	let {
 		onNewSession = () => {},
 		runningBackgroundActions = [],
 		pendingScheduledActions = [],
-		actionStatusLabel = /** @type {(status: string) => string} */ ((status) => status || ''),
+		actionStatusLabel = (status) => status || '',
 		sessionTitleFor = () => '',
 		actionDuration = () => '',
 		scheduledActionCountdown = () => '',
 		onOpenSession = () => {},
 		onCancel = () => {},
-	} = $props();
+	}: Props = $props();
 
-	/** @type {MemorySession[]} */
-	let sessions = $state([]);
+	let sessions = $state<MemorySession[]>([]);
 	let searchQuery = $state('');
-	/** @type {ReturnType<typeof setTimeout> | null} */
-	let searchTimer = null;
-	let deleteTarget = /** @type {MemorySession | null} */ ($state(null));
+	let searchTimer: ReturnType<typeof setTimeout> | null = null;
+	let deleteTarget = $state<MemorySession | null>(null);
 	let showClearDialog = $state(false);
 	let selectMode = $state(false);
-	let selectedIds = $state(new Set());
+	let selectedIds = $state(new Set<string>());
 	let offset = $state(0);
 	let totalCount = $state(0);
 	let loading = $state(false);
@@ -80,38 +93,41 @@
 	let startDate = $state('');
 	let endDate = $state('');
 	let showDateFilter = $state(false);
-	/** @type {string | null} */
-	let editingTitle = $state(null);
+	let editingTitle = $state<string | null>(null);
 	let renameValue = $state('');
-	const MEMORY_TAB_IDS = ['sessions', 'tasks', 'memory'];
-	function memoryTabFromUrl() {
-		const section = get(page).url.searchParams.get('section');
-		return MEMORY_TAB_IDS.includes(section || '') ? section : 'sessions';
+	const MEMORY_TAB_IDS: readonly MemoryTabId[] = ['sessions', 'tasks', 'memory'];
+	function isMemoryTabId(value: string | null): value is MemoryTabId {
+		return value !== null && MEMORY_TAB_IDS.includes(value as MemoryTabId);
 	}
-	let activeTab = $state(memoryTabFromUrl());
+	function memoryTabFromUrl(): MemoryTabId {
+		const section = get(page).url.searchParams.get('section');
+		return isMemoryTabId(section) ? section : 'sessions';
+	}
+	let activeTab = $state<MemoryTabId>(memoryTabFromUrl());
 	const memoryTabs = [
 		{ id: 'sessions', label: '会话历史' },
 		{ id: 'tasks', label: '任务历史' },
 		{ id: 'memory', label: '长期记忆' },
 	];
-	/** @type {TaskAction[]} */
-	let taskHistory = $state([]);
+	let taskHistory = $state<TaskAction[]>([]);
 	let taskHistoryLoading = $state(false);
 	let taskHistoryFailed = $state(false);
-	/** @type {MemoryRecallState} */
-	let memoryRecall = $state({
+	let memoryRecall = $state<MemoryRecallState>({
 		query: '',
 		kind: 'all',
 		results: [],
 		loading: false,
 		searched: false,
 	});
-	/** @type {Fact[]} */
-	let facts = $state([]);
+	let facts = $state<Fact[]>([]);
 	let factsLoaded = $state(false);
 	/** @type {'' | 'user' | 'inferred'} */
-	let factSourceFilter = $state('');
-	let newFact = $state({ predicate: '', object: '', tags: '' });
+	let factSourceFilter = $state<'' | 'user' | 'inferred'>('');
+	let newFact = $state<{ predicate: string; object: string; tags: string }>({
+		predicate: '',
+		object: '',
+		tags: '',
+	});
 	let addingFact = $state(false);
 	const statusOptions = [
 		{ value: '', label: '全部状态' },
@@ -128,10 +144,8 @@
 		const now = new Date();
 		return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 	});
-	/** @type {{ dispose: () => void } | null} */
-	let unlistenTitleUpdate = null;
-	/** @type {Array<{ dispose: () => void }>} */
-	let unlistenLifecycle = [];
+	let unlistenTitleUpdate: { dispose: () => void } | null = null;
+	let unlistenLifecycle: Array<{ dispose: () => void }> = [];
 	const sessionsRefresh = createSessionRefreshScheduler(() => loadSessionsNow());
 
 	onMount(async () => {
@@ -165,7 +179,7 @@
 	});
 	$effect(() => {
 		const section = $page.url.searchParams.get('section');
-		const nextTab = MEMORY_TAB_IDS.includes(section || '') ? section : 'sessions';
+		const nextTab = isMemoryTabId(section) ? section : 'sessions';
 		if (activeTab !== nextTab) activeTab = nextTab;
 	});
 	$effect(() => {
@@ -196,9 +210,8 @@
 		}
 	}
 
-	/** @param {string} tabId */
-	function selectMemoryTab(tabId) {
-		if (!MEMORY_TAB_IDS.includes(tabId)) return;
+	function selectMemoryTab(tabId: string) {
+		if (!isMemoryTabId(tabId)) return;
 		activeTab = tabId;
 		const params = new URLSearchParams(get(page).url.searchParams);
 		params.set('tab', 'memory');
@@ -207,8 +220,7 @@
 		void goto('/?' + params.toString(), { replaceState: true });
 	}
 
-	/** @param {Pick<HistoryFilterRequest, 'limit' | 'offset'>} extra */
-	function filterParams(extra) {
+	function filterParams(extra: Pick<HistoryFilterRequest, 'limit' | 'offset'>) {
 		return {
 			query: searchQuery || null,
 			status: statusFilter || null,
@@ -217,12 +229,10 @@
 			...extra,
 		};
 	}
-	/** @param {string} value */
-	function setSearchQuery(value) {
+	function setSearchQuery(value: string) {
 		searchQuery = value;
 	}
-	/** @param {MemorySession} session */
-	function requestDelete(session) {
+	function requestDelete(session: MemorySession) {
 		deleteTarget = session;
 	}
 	async function loadSessionsNow() {
@@ -291,30 +301,25 @@
 		endDate = '';
 		void sessionsRefresh.refresh();
 	}
-	/** @param {string} value */
-	function handleStatusFilterChange(value) {
+	function handleStatusFilterChange(value: string) {
 		statusFilter = value;
 		handleFilterChange();
 	}
-	/** @param {string} value */
-	function handleRecallKindChange(value) {
+	function handleRecallKindChange(value: string) {
 		memoryRecall.kind = value;
 		memoryRecall.results = [];
 		memoryRecall.searched = false;
 	}
-	/** @param {string} value */
-	function handleStartDateChange(value) {
+	function handleStartDateChange(value: string) {
 		startDate = value;
 		if (endDate && endDate < startDate) endDate = '';
 		handleFilterChange();
 	}
-	/** @param {string} value */
-	function handleEndDateChange(value) {
+	function handleEndDateChange(value: string) {
 		endDate = value;
 		handleFilterChange();
 	}
-	/** @param {MemorySession} session */
-	async function resumeSession(session) {
+	async function resumeSession(session: MemorySession) {
 		try {
 			const wasError = isErrorStatus(session.status);
 			// Opening an errored conversation is read-only. Reopening it here used
@@ -344,8 +349,7 @@
 			reportError(e, { context: 'MemoryView', message: '加载会话详情失败', log: false });
 		}
 	}
-	/** @param {string} sessionId */
-	async function deleteSession(sessionId) {
+	async function deleteSession(sessionId: string) {
 		try {
 			await deleteSessionCommand({ sessionId });
 			sessions = sessions.filter((session) => session.id !== sessionId);
@@ -386,8 +390,7 @@
 		selectMode = false;
 		selectedIds = new Set();
 	}
-	/** @param {string} sessionId */
-	function toggleSelect(sessionId) {
+	function toggleSelect(sessionId: string) {
 		const next = new Set(selectedIds);
 		if (next.has(sessionId)) next.delete(sessionId);
 		else next.add(sessionId);
@@ -399,15 +402,13 @@
 				? new Set()
 				: new Set(sessions.map((session) => session.id));
 	}
-	/** @param {MemorySession} session */
-	function displayTitle(session) {
+	function displayTitle(session: MemorySession) {
 		if (session.title) return session.title;
 		const text = session.input_text || '';
 		const match = text.match(/^[^。！？\n.!?]+[。！？.!?]?/);
 		return (match ? match[0].trim() : text.trim()) || '未命名会话';
 	}
-	/** @param {MemorySession} session */
-	function startEdit(session) {
+	function startEdit(session: MemorySession) {
 		editingTitle = session.id;
 		const text = session.input_text || '';
 		const match = text.match(/^[^。！？\n.!?]+[。！？.!?]?/);
@@ -417,8 +418,7 @@
 		editingTitle = null;
 		renameValue = '';
 	}
-	/** @param {string} sessionId */
-	async function saveTitle(sessionId) {
+	async function saveTitle(sessionId: string) {
 		const value = renameValue.trim();
 		if (!value) {
 			cancelEdit();
@@ -433,19 +433,16 @@
 		}
 		cancelEdit();
 	}
-	/** @param {KeyboardEvent} event @param {string} sessionId */
-	function handleRenameKeydown(event, sessionId) {
+	function handleRenameKeydown(event: KeyboardEvent, sessionId: string) {
 		if (event.key === 'Enter') {
 			event.preventDefault();
 			saveTitle(sessionId);
 		} else if (event.key === 'Escape') cancelEdit();
 	}
-	/** @param {string} value */
-	function handleRenameValueChange(value) {
+	function handleRenameValueChange(value: string) {
 		renameValue = value;
 	}
-	/** @param {MemorySession[]} sessionsToExport */
-	function downloadSessions(sessionsToExport) {
+	function downloadSessions(sessionsToExport: MemorySession[]) {
 		const json = JSON.stringify(
 			{
 				exported_at: new Date().toISOString(),
@@ -463,12 +460,10 @@
 		anchor.click();
 		URL.revokeObjectURL(url);
 	}
-	/** @param {MouseEvent} event @param {MemorySession} session */
-	function openCtxMenu(event, session) {
+	function openCtxMenu(event: MouseEvent, session: MemorySession) {
 		openContextMenu(event, buildContextMenuItems(session));
 	}
-	/** @param {MemorySession} session */
-	function buildContextMenuItems(session) {
+	function buildContextMenuItems(session: MemorySession): ContextMenuItem[] {
 		return [
 			{ id: 'open', label: '打开', icon: 'open', action: () => resumeSession(session) },
 			{ id: 'rename', label: '重命名', icon: 'edit', action: () => startEdit(session) },
@@ -508,9 +503,8 @@
 			logger.warn('memory', 'load facts error');
 		}
 	}
-	/** @param {string} value */
-	function handleFactSourceFilterChange(value) {
-		factSourceFilter = /** @type {'' | 'user' | 'inferred'} */ (value);
+	function handleFactSourceFilterChange(value: string) {
+		if (value === '' || value === 'user' || value === 'inferred') factSourceFilter = value;
 	}
 	async function addFact() {
 		const predicate = newFact.predicate.trim();
@@ -542,8 +536,7 @@
 			addingFact = false;
 		}
 	}
-	/** @param {string} factId */
-	async function deleteFact(factId) {
+	async function deleteFact(factId: string) {
 		try {
 			await deleteFactCommand({ factId });
 			facts = facts.filter((fact) => fact.id !== factId);
@@ -556,7 +549,10 @@
 		if (!query) return;
 		memoryRecall.loading = true;
 		try {
-			const kinds = memoryRecall.kind === 'all' ? ['fact', 'episode'] : [memoryRecall.kind];
+			const kinds: Array<'fact' | 'episode'> =
+				memoryRecall.kind === 'all'
+					? ['fact', 'episode']
+					: [memoryRecall.kind as 'fact' | 'episode'];
 			const limit = memoryRecall.kind === 'all' ? 5 : 10;
 			const resultGroups = await Promise.all(
 				kinds.map(async (kind) => {

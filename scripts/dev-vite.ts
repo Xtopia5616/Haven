@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { createConnection } from 'node:net';
 import { dirname, resolve } from 'node:path';
+import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
@@ -12,11 +13,11 @@ const ORIGINS = [`http://localhost:${PORT}`, `http://127.0.0.1:${PORT}`];
 const PROBE_TIMEOUT_MS = 800;
 const SERVER_FAILURE_LIMIT = 3;
 
-function wait(milliseconds) {
+function wait(milliseconds: number): Promise<void> {
 	return new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds));
 }
 
-async function fetchText(url) {
+async function fetchText(url: string): Promise<string | null> {
 	const controller = new AbortController();
 	const timeout = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
 	try {
@@ -29,7 +30,7 @@ async function fetchText(url) {
 	}
 }
 
-async function isHavenViteServer(origin) {
+async function isHavenViteServer(origin: string): Promise<boolean> {
 	const html = await fetchText(`${origin}/`);
 	if (
 		!html ||
@@ -42,7 +43,7 @@ async function isHavenViteServer(origin) {
 	return (await fetchText(`${origin}/@vite/client`)) !== null;
 }
 
-function isPortOpen(host, port) {
+function isPortOpen(host: string, port: number): Promise<boolean> {
 	return new Promise((resolvePromise) => {
 		const socket = createConnection({ host, port });
 		let finished = false;
@@ -58,17 +59,18 @@ function isPortOpen(host, port) {
 	});
 }
 
-async function findExistingServer() {
+async function findExistingServer(): Promise<
+	{ kind: 'haven'; origin: string } | { kind: 'other' } | null
+> {
 	for (const origin of ORIGINS) {
 		if (await isHavenViteServer(origin)) return { kind: 'haven', origin };
 	}
 
-	const portOpen =
-		(await isPortOpen('127.0.0.1', PORT)) || (await isPortOpen('::1', PORT));
+	const portOpen = (await isPortOpen('127.0.0.1', PORT)) || (await isPortOpen('::1', PORT));
 	return portOpen ? { kind: 'other' } : null;
 }
 
-async function waitForExistingServer(origin) {
+async function waitForExistingServer(origin: string): Promise<void> {
 	let failures = 0;
 	console.log(`Reusing the existing Haven Vite server at ${origin}.`);
 	while (failures < SERVER_FAILURE_LIMIT) {
@@ -83,7 +85,7 @@ async function waitForExistingServer(origin) {
 	process.exitCode = 1;
 }
 
-function forwardedViteArgs() {
+function forwardedViteArgs(): string[] {
 	const args = process.argv.slice(2);
 	return args[0] === '--' ? args.slice(1) : args;
 }
@@ -113,16 +115,17 @@ async function main() {
 	};
 	process.once('SIGINT', () => forwardSignal('SIGINT'));
 	process.once('SIGTERM', () => forwardSignal('SIGTERM'));
-	vite.once('error', (error) => {
+	vite.once('error', (error: Error) => {
 		console.error(`Could not start Vite: ${error.message}`);
 		process.exitCode = 1;
 	});
-	vite.once('exit', (code, signal) => {
+	vite.once('exit', (code: number | null, signal: NodeJS.Signals | null) => {
 		process.exitCode = code ?? (signal ? 1 : 0);
 	});
 }
 
-main().catch((error) => {
-	console.error(`Could not prepare the Vite dev server: ${error.message}`);
+main().catch((error: unknown) => {
+	const message = error instanceof Error ? error.message : String(error);
+	console.error(`Could not prepare the Vite dev server: ${message}`);
 	process.exitCode = 1;
 });

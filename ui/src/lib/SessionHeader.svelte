@@ -1,15 +1,18 @@
-<script>
+<script lang="ts">
 	import MaterialIconButton from './MaterialIconButton.svelte';
+
+	interface Props {
+		title?: string;
+		hasSession?: boolean;
+		onNew?: () => void;
+		onEnd?: () => void;
+	}
 
 	/**
 	 * SessionHeader — keeps the active conversation identity and lifecycle
 	 * state visible above the message timeline.
-	 * @prop {string} title — active session title
-	 * @prop {boolean} hasSession — whether a persisted session is active
-	 * @prop {() => void} onNew — create a fresh conversation
-	 * @prop {() => void} onEnd — complete the active conversation
 	 */
-	let { title = '新会话', hasSession = false, onNew, onEnd } = $props();
+	let { title = '新会话', hasSession = false, onNew, onEnd }: Props = $props();
 </script>
 
 <header class="session-header">

@@ -1,11 +1,17 @@
-<script>
+<script lang="ts">
+	import type { Snippet } from 'svelte';
+
+	interface Props {
+		label?: string;
+		id?: string;
+		description?: string;
+		stacked?: boolean;
+		className?: string;
+		children?: Snippet;
+	}
+
 	/**
 	 * Settings Field — shared label/control row for settings forms.
-	 * @prop {string} label
-	 * @prop {string | undefined} id
-	 * @prop {string} description
-	 * @prop {boolean} stacked
-	 * @prop {string} className
 	 */
 	let {
 		label = '',
@@ -14,7 +20,7 @@
 		stacked = false,
 		className = '',
 		children,
-	} = $props();
+	}: Props = $props();
 </script>
 
 <div class="settings-field {className}" class:settings-field--stacked={stacked}>

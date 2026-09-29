@@ -1,10 +1,27 @@
-<script>
+<script lang="ts">
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
 	import LongTermFacts from './LongTermFacts.svelte';
 	import MemoryRecall from './MemoryRecall.svelte';
 	import CountChip from '$lib/CountChip.svelte';
+	import type { Fact, MemoryRecallState } from '$lib/contracts/memory.ts';
+
+	interface Props {
+		facts?: Fact[];
+		factsLoaded?: boolean;
+		factSourceFilter?: string;
+		factSourceOptions?: Array<{ value: string; label: string }>;
+		newFact?: { predicate: string; object: string; tags: string };
+		addingFact?: boolean;
+		memoryRecall: MemoryRecallState;
+		onRecallKindChange?: (value: string) => void;
+		onRunRecall?: () => void;
+		onClearRecall?: () => void;
+		onFactSourceFilterChange?: (value: string) => void;
+		onAddFact?: () => boolean | Promise<boolean>;
+		onDeleteFact?: (factId: string) => void;
+	}
 
 	let {
 		facts = [],
@@ -18,9 +35,9 @@
 		onRunRecall = () => {},
 		onClearRecall = () => {},
 		onFactSourceFilterChange = () => {},
-		onAddFact = () => {},
+		onAddFact = () => false,
 		onDeleteFact = () => {},
-	} = $props();
+	}: Props = $props();
 
 	let addFactDialogOpen = $state(false);
 
@@ -30,14 +47,12 @@
 		{ value: 'episode', label: '过去的对话' },
 	];
 
-	/** @param {string} value */
-	function handleScopeChange(value) {
+	function handleScopeChange(value: string) {
 		onRecallKindChange(value);
 		onRunRecall();
 	}
 
-	/** @param {KeyboardEvent} event */
-	function handleKeydown(event) {
+	function handleKeydown(event: KeyboardEvent) {
 		if (event.key === 'Enter') onRunRecall();
 	}
 

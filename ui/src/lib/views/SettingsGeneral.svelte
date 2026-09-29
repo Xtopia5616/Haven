@@ -13,7 +13,7 @@
 		withBooleanValue,
 		withNumberValue,
 		withStringValue,
-	} from '$lib/typedCallbacks.js';
+	} from '$lib/typedCallbacks.ts';
 
 	/**
 	 * General settings presentation. The settings page owns the mutable
@@ -66,8 +66,7 @@
 
 	onDestroy(() => unsubscribeTheme());
 
-	/** @param {string} hex */
-	function contrastText(hex) {
+	function contrastText(hex: string) {
 		const r = parseInt(hex.slice(1, 3), 16);
 		const g = parseInt(hex.slice(3, 5), 16);
 		const b = parseInt(hex.slice(5, 7), 16);

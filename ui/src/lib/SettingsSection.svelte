@@ -1,10 +1,17 @@
-<script>
+<script lang="ts">
+	import type { Snippet } from 'svelte';
+
+	interface Props {
+		title?: string;
+		description?: string;
+		className?: string;
+		ariaLabel?: string;
+		children?: Snippet;
+		header?: Snippet;
+	}
+
 	/**
 	 * Settings Section — consistent grouped settings surface and heading rhythm.
-	 * @prop {string} title
-	 * @prop {string} description
-	 * @prop {string} className
-	 * @prop {string | undefined} ariaLabel — accessible name when the visible title is omitted
 	 */
 	let {
 		title = '',
@@ -13,7 +20,7 @@
 		ariaLabel = undefined,
 		children,
 		header = undefined,
-	} = $props();
+	}: Props = $props();
 </script>
 
 <section class="settings-section {className}" aria-label={ariaLabel}>

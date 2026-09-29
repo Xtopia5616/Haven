@@ -1,8 +1,13 @@
-<script>
+<script lang="ts">
 	import { getStatusDotColor } from './statusColors.ts';
+	import type { StatusTone } from './statusColors.ts';
 
-	/** @type {{ color?: string; animate?: boolean }} */
-	let { color = 'success', animate = false } = $props();
+	interface Props {
+		color?: StatusTone;
+		animate?: boolean;
+	}
+
+	let { color = 'success', animate = false }: Props = $props();
 	const dotColor = $derived(getStatusDotColor(color));
 </script>
 
@@ -25,7 +30,14 @@
 		animation: pulse 1.2s var(--md-sys-motion-easing-emphasized) infinite;
 	}
 	@keyframes pulse {
-		0%, 100% { opacity: 1; transform: scale(1); }
-		50% { opacity: 0.35; transform: scale(0.85); }
+		0%,
+		100% {
+			opacity: 1;
+			transform: scale(1);
+		}
+		50% {
+			opacity: 0.35;
+			transform: scale(0.85);
+		}
 	}
 </style>

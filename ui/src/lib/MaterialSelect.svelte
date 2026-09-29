@@ -1,20 +1,30 @@
-<script>
+<script lang="ts">
 	import { fly } from 'svelte/transition';
 	import { cubicOut } from 'svelte/easing';
 	import Icon from './Icon.svelte';
 
-	let { value = '', options = [], onChange, id = undefined, ariaLabel = '' } = $props();
+	type SelectOption = { value: string; label: string; group?: string };
+	type MenuRow =
+		{ kind: 'group'; label: string } | { kind: 'option'; label: string; value: string };
+
+	interface Props {
+		value?: string;
+		options?: SelectOption[];
+		onChange?: (value: string) => void;
+		id?: string;
+		ariaLabel?: string;
+	}
+
+	let { value = '', options = [], onChange, id = undefined, ariaLabel = '' }: Props = $props();
 
 	let open = $state(false);
 	let selectedLabel = $derived(options.find((o) => o.value === value)?.label || value);
-	/** @type {HTMLDivElement | null} */
-	let dropdownRef = null;
+	let dropdownRef: HTMLDivElement | null = null;
 
 	/** Flatten options into rows with optional group headers. */
 	let menuRows = $derived.by(() => {
-		/** @type {{ kind: 'group' | 'option', label: string, value?: string }[]} */
-		const rows = [];
-		let lastGroup = null;
+		const rows: MenuRow[] = [];
+		let lastGroup: string | null = null;
 		for (const opt of options) {
 			const group = opt.group || null;
 			if (group && group !== lastGroup) {
@@ -26,38 +36,33 @@
 		return rows;
 	});
 
-	function toggle() {
+	function toggle(): void {
 		open = !open;
 	}
 
-	/**
-	 * @param {any} val
-	 */
-	function select(val) {
+	function select(selectedValue: string): void {
 		open = false;
-		onChange?.(val);
+		onChange?.(selectedValue);
 	}
 
-	/**
-	 * @param {KeyboardEvent} e
-	 */
-	function handleKeydown(e) {
-		if (e.key === 'Escape') open = false;
+	function handleKeydown(event: KeyboardEvent): void {
+		if (event.key === 'Escape') open = false;
 	}
 
-	/** @param {FocusEvent} e */
-	function handleBlur(e) {
+	function handleBlur(event: FocusEvent): void {
 		// The option is inside the same control. Defer the close until focus has
 		// settled so a pointer click cannot lose its target between blur and click.
-		if (e.relatedTarget && dropdownRef?.contains(/** @type {Node} */ (e.relatedTarget))) return;
+		if (event.relatedTarget instanceof Node && dropdownRef?.contains(event.relatedTarget))
+			return;
 		setTimeout(() => {
 			if (!dropdownRef?.contains(document.activeElement)) open = false;
 		}, 0);
 	}
 
-	/** @param {PointerEvent} e */
-	function handleWindowPointerdown(e) {
-		if (open && !dropdownRef?.contains(/** @type {Node} */ (e.target))) open = false;
+	function handleWindowPointerdown(event: PointerEvent): void {
+		if (open && !(event.target instanceof Node && dropdownRef?.contains(event.target))) {
+			open = false;
+		}
 	}
 </script>
 

@@ -1,16 +1,19 @@
-<script>
+<script lang="ts">
 	import MaterialNumberField from './MaterialNumberField.svelte';
+
+	interface Props {
+		value?: number;
+		unit?: string;
+		onChange?: (value: number) => void;
+		id?: string;
+		min?: number;
+		max?: number;
+		step?: number;
+		className?: string;
+	}
 
 	/**
 	 * Number input with a consistently aligned unit label.
-	 * @prop {number} value
-	 * @prop {string} unit
-	 * @prop {function} onChange
-	 * @prop {string | undefined} id
-	 * @prop {number | undefined} min
-	 * @prop {number | undefined} max
-	 * @prop {number} step
-	 * @prop {string} className
 	 */
 	let {
 		value = 0,
@@ -21,7 +24,7 @@
 		max = undefined,
 		step = 1,
 		className = '',
-	} = $props();
+	}: Props = $props();
 </script>
 
 <div class="md-number-field-with-unit {className}">

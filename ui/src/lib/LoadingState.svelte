@@ -1,14 +1,17 @@
-<script>
+<script lang="ts">
 	import VoiceBars from './VoiceBars.svelte';
+
+	interface Props {
+		label?: string;
+		detail?: string;
+		variant?: 'page' | 'inline';
+	}
 
 	/**
 	 * Shared loading surface for workspace views and the conversation shell.
 	 * The three bars are the small voice pattern from Haven's mark.
-	 * @prop {string} label — accessible loading message
-	 * @prop {string} detail — optional accessible supporting message
-	 * @prop {'page'|'inline'} variant — content-area or compact inline layout
 	 */
-	let { label = '正在加载…', detail = '', variant = 'page' } = $props();
+	let { label = '正在加载…', detail = '', variant = 'page' }: Props = $props();
 	let accessibleLabel = $derived(detail ? `${label}，${detail}` : label);
 </script>
 

@@ -1,25 +1,26 @@
-<script>
+<script lang="ts">
+	import type { Snippet } from 'svelte';
+
+	interface Props {
+		children?: Snippet;
+		entering?: boolean;
+		onAnimationEnd?: (event: AnimationEvent) => void;
+	}
+
 	/**
 	 * WorkspaceSurface — shared outer surface for secondary workspaces.
 	 *
 	 * The surface owns the visual frame only. Each workspace keeps its own
 	 * heading, controls and content inside the shared shell.
-	 * @prop {import('svelte').Snippet} children — workspace content
-	 * @prop {boolean} entering — replay the standard workspace entry motion
-	 * @prop {(event: AnimationEvent) => void} onAnimationEnd — entry motion callback
 	 */
-	let {
-		children,
-		entering = false,
-		onAnimationEnd = () => {},
-	} = $props();
+	let { children, entering = false, onAnimationEnd = () => {} }: Props = $props();
 </script>
 
 <div
-		class="workspace-surface"
-		class:workspace-surface--entering={entering}
-		onanimationend={(event) => onAnimationEnd?.(event)}
-	>
+	class="workspace-surface"
+	class:workspace-surface--entering={entering}
+	onanimationend={(event) => onAnimationEnd?.(event)}
+>
 	{@render children?.()}
 </div>
 
@@ -45,10 +46,8 @@
 		transition:
 			background-color var(--md-sys-motion-duration-medium)
 				var(--md-sys-motion-easing-standard),
-			border-color var(--md-sys-motion-duration-short)
-				var(--md-sys-motion-easing-standard),
-			box-shadow var(--md-sys-motion-duration-short)
-				var(--md-sys-motion-easing-standard);
+			border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
+			box-shadow var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
 	}
 	.workspace-surface--entering {
 		animation: haven-workspace-surface-enter var(--md-sys-motion-duration-short)

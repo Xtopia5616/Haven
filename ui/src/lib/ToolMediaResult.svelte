@@ -1,7 +1,35 @@
-<script>
+<script lang="ts">
 	import JsonView from '$lib/JsonView.svelte';
 
-	let { data = {} } = $props();
+	interface Props {
+		data?: {
+			operation?: string;
+			media?: {
+				asset_id?: string;
+				filename?: string;
+				representation?: string;
+				available_representations?: string[];
+				recommended_next?: string;
+				content?: unknown;
+			};
+			asset_id?: string;
+			representation?: string;
+			duration_ms?: number;
+			available?: boolean;
+			reason?: string;
+			error?: string;
+			capture_error?: string;
+			transcript?: string;
+			played?: boolean;
+			characters?: number;
+			volume?: number;
+			muted?: boolean;
+			modality?: string;
+			file_kind?: string;
+		};
+	}
+
+	let { data = {} }: Props = $props();
 	let media = $derived(data.media ?? {});
 	let assetId = $derived(data.asset_id ?? media.asset_id ?? '');
 	let filename = $derived(media.filename ?? '');
@@ -13,8 +41,7 @@
 		typeof media.recommended_next === 'string' ? media.recommended_next : '',
 	);
 	let text = $derived(typeof media.content === 'string' ? media.content : '');
-	/** @type {Record<string, string>} */
-	const operationLabels = {
+	const operationLabels: Record<string, string> = {
 		record: '录音完成',
 		play: '播放完成',
 		speak: '朗读完成',
@@ -23,20 +50,26 @@
 		mute_get: '当前静音状态',
 		mute_set: '静音状态已设置',
 	};
-	let operationLabel = $derived(operationLabels[data.operation] || '媒体操作');
+	let operationLabel = $derived(operationLabels[data.operation ?? ''] || '媒体操作');
 </script>
 
 <div class="media-detail">
-		<span class="media-op">{data.operation || '媒体操作'}</span>
-		{#if assetId}<span class="media-asset">{assetId}</span>{/if}
-		{#if filename}<span class="media-name">{filename}</span>{/if}
+	<span class="media-op">{data.operation || '媒体操作'}</span>
+	{#if assetId}<span class="media-asset">{assetId}</span>{/if}
+	{#if filename}<span class="media-name">{filename}</span>{/if}
 </div>
 
 {#if data.operation === 'record'}
-	<div class="media-action"><span class="media-badge">{operationLabel}</span><span>{data.duration_ms != null ? `${data.duration_ms} ms` : ''}</span></div>
+	<div class="media-action">
+		<span class="media-badge">{operationLabel}</span><span
+			>{data.duration_ms != null ? `${data.duration_ms} ms` : ''}</span
+		>
+	</div>
 	{#if assetId}<div class="tool-card-meta">资产：{assetId}</div>{/if}
 	{#if representation}<div class="tool-card-meta">表示：{representation}</div>{/if}
-	{#if availableRepresentations.length}<div class="tool-card-meta">可用表示：{availableRepresentations.join('、')}</div>{/if}
+	{#if availableRepresentations.length}<div class="tool-card-meta">
+			可用表示：{availableRepresentations.join('、')}
+		</div>{/if}
 	{#if recommendedNext}<div class="tool-card-meta">建议下一步：{recommendedNext}</div>{/if}
 	{#if data.available === false}
 		<p class="tool-card-empty">{data.reason || '录音能力当前不可用'}</p>
@@ -46,13 +79,28 @@
 		<pre class="media-text">{data.transcript}</pre>
 	{/if}
 {:else if data.operation === 'play'}
-	<div class="media-action"><span class="media-badge">{operationLabel}</span>{#if data.played}<span>已发送到扬声器</span>{/if}</div>
+	<div class="media-action">
+		<span class="media-badge">{operationLabel}</span>{#if data.played}<span>已发送到扬声器</span
+			>{/if}
+	</div>
 {:else if data.operation === 'speak'}
-	<div class="media-action"><span class="media-badge">{operationLabel}</span><span>{data.characters != null ? `${data.characters} 字` : ''}</span></div>
+	<div class="media-action">
+		<span class="media-badge">{operationLabel}</span><span
+			>{data.characters != null ? `${data.characters} 字` : ''}</span
+		>
+	</div>
 {:else if data.operation === 'volume_get' || data.operation === 'volume_set'}
-	<div class="media-action"><span class="media-badge">{operationLabel}</span><span>{Math.round(Number(data.volume ?? 0) * 100)}%</span></div>
+	<div class="media-action">
+		<span class="media-badge">{operationLabel}</span><span
+			>{Math.round(Number(data.volume ?? 0) * 100)}%</span
+		>
+	</div>
 {:else if data.operation === 'mute_get' || data.operation === 'mute_set'}
-	<div class="media-action"><span class="media-badge">{operationLabel}</span><span>{data.muted ? '已静音' : '未静音'}</span></div>
+	<div class="media-action">
+		<span class="media-badge">{operationLabel}</span><span
+			>{data.muted ? '已静音' : '未静音'}</span
+		>
+	</div>
 {:else}
 	{#if representation}<div class="tool-card-meta">表示：{representation}</div>{/if}
 	{#if availableRepresentations.length}
@@ -64,7 +112,9 @@
 	{:else if text}
 		<pre class="media-text">{text}</pre>
 	{:else if data.operation === 'inspect'}
-		<div class="tool-card-meta">{data.modality || data.file_kind || '媒体资产'} · 可继续交给 media 工具处理</div>
+		<div class="tool-card-meta">
+			{data.modality || data.file_kind || '媒体资产'} · 可继续交给 media 工具处理
+		</div>
 	{:else}
 		<JsonView value={data} defaultDepth={1} />
 	{/if}
@@ -86,8 +136,22 @@
 		background: var(--md-sys-color-secondary-container);
 		color: var(--md-sys-color-on-secondary-container);
 	}
-	.media-action { display: flex; align-items: baseline; gap: var(--md-sys-space-xs); min-width: 0; color: var(--md-sys-color-on-surface); }
-	.media-badge { flex: none; padding: 1px 6px; border-radius: var(--md-sys-shape-full); background: var(--md-sys-color-secondary-container); color: var(--md-sys-color-on-secondary-container); font-size: var(--md-sys-typescale-label-small-size); font-weight: 700; }
+	.media-action {
+		display: flex;
+		align-items: baseline;
+		gap: var(--md-sys-space-xs);
+		min-width: 0;
+		color: var(--md-sys-color-on-surface);
+	}
+	.media-badge {
+		flex: none;
+		padding: 1px 6px;
+		border-radius: var(--md-sys-shape-full);
+		background: var(--md-sys-color-secondary-container);
+		color: var(--md-sys-color-on-secondary-container);
+		font-size: var(--md-sys-typescale-label-small-size);
+		font-weight: 700;
+	}
 	.media-asset,
 	.media-name {
 		min-width: 0;

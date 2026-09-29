@@ -44,7 +44,10 @@ const COLOR_MAP: Record<string, string> = {
 	error: '#ff4444',
 };
 
-const VARIANT_MAP: Record<string, string> = {
+const VARIANT_MAP: Record<
+	string,
+	'default' | 'primary' | 'secondary' | 'success' | 'warning' | 'error'
+> = {
 	pending: 'default',
 	running: 'primary',
 	paused: 'warning',
@@ -92,6 +95,8 @@ export function statusColor(status: string) {
 	return COLOR_MAP[status] || '#666';
 }
 
-export function statusVariant(status: string) {
+export function statusVariant(
+	status: string,
+): 'default' | 'primary' | 'secondary' | 'success' | 'warning' | 'error' {
 	return VARIANT_MAP[status] || 'default';
 }

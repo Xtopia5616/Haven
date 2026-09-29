@@ -1,8 +1,28 @@
-<script>
+<script lang="ts">
 	import StatusBadge from '$lib/StatusBadge.svelte';
 	import ToolCardList from '$lib/ToolCardList.svelte';
 	import ToolResultList from '$lib/ToolResultList.svelte';
-	let { data = {} } = $props();
+
+	interface Props {
+		data?: {
+			auto?: boolean;
+			text?: string;
+			agents?: Array<{ name: string; title?: string; role?: string; status?: string }>;
+			timed_out?: boolean;
+			message_id?: string;
+			timeout_secs?: number;
+			session_id?: string;
+			ok?: boolean;
+			parent?: string;
+			role?: string;
+			queued?: boolean;
+			running_sessions?: number;
+			max_concurrent?: number;
+			reply?: unknown;
+		};
+	}
+
+	let { data = {} }: Props = $props();
 </script>
 
 {#if data.auto && typeof data.text === 'string'}
@@ -18,7 +38,10 @@
 						<div class="action-row">
 							<span class="action-id">{agent.title || agent.name}</span>
 							{#if agent.role}<span class="scheduled-mode">{agent.role}</span>{/if}
-							{#if agent.status}<StatusBadge label={agent.status} tone={agent.status === 'online' ? 'success' : 'neutral'} />{/if}
+							{#if agent.status}<StatusBadge
+									label={agent.status}
+									tone={agent.status === 'online' ? 'success' : 'neutral'}
+								/>{/if}
 						</div>
 					{/each}
 				</ToolCardList>
@@ -35,15 +58,22 @@
 	<div class="tool-card-meta">等待同伴回复超时（{data.timeout_secs ?? '?'}s）</div>
 {:else if data.session_id}
 	<div class="action-row">
-		<StatusBadge label={data.ok === false ? '失败' : '已创建'} tone={data.ok === false ? 'error' : 'success'} />
+		<StatusBadge
+			label={data.ok === false ? '失败' : '已创建'}
+			tone={data.ok === false ? 'error' : 'success'}
+		/>
 		<span class="action-id">{data.session_id}</span>
 	</div>
 	{#if data.parent}<div class="tool-card-meta">父会话 {data.parent}</div>{/if}
 	{#if data.role}<div class="tool-card-meta">角色 {data.role}</div>{/if}
-	{#if data.queued}<div class="tool-card-meta">子会话已排队（运行中 {data.running_sessions ?? '?'}/{data.max_concurrent ?? '?'}）</div>{/if}
+	{#if data.queued}<div class="tool-card-meta">
+			子会话已排队（运行中 {data.running_sessions ?? '?'}/{data.max_concurrent ?? '?'}）
+		</div>{/if}
 {:else if data.reply}
 	<div class="tool-card-count">收到回复</div>
-	<pre class="content-preview">{typeof data.reply === 'string' ? data.reply : JSON.stringify(data.reply, null, 2)}</pre>
+	<pre class="content-preview">{typeof data.reply === 'string'
+			? data.reply
+			: JSON.stringify(data.reply, null, 2)}</pre>
 {:else if typeof data.text === 'string' && data.text}
 	<pre class="content-preview">{data.text}</pre>
 {:else}

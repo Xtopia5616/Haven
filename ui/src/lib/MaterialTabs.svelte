@@ -1,19 +1,24 @@
-<script>
+<script lang="ts">
 	import { onMount, tick } from 'svelte';
 	import Icon from './Icon.svelte';
 
+	type TabItem = { id: string; label: string; hint?: string; icon?: string };
+
+	interface Props {
+		tabs?: TabItem[];
+		activeTab?: string;
+		onNavigate?: (tabId: string) => void;
+		ariaLabel?: string;
+		idPrefix?: string;
+		panelIdPrefix?: string;
+		panelId?: string;
+		showIcons?: boolean;
+		indicator?: 'css' | 'measured';
+		className?: string;
+	}
+
 	/**
 	 * Material Tabs — the shared tablist primitive for workspace and page tabs.
-	 * @prop {Array<{id: string, label: string, hint?: string, icon?: string}>} tabs
-	 * @prop {string} activeTab
-	 * @prop {function} onNavigate
-	 * @prop {string} ariaLabel
-	 * @prop {string} idPrefix
-	 * @prop {string} panelIdPrefix — set to an empty string when no tabpanel is owned here
-	 * @prop {string | undefined} panelId — explicit shared panel id
-	 * @prop {boolean} showIcons
-	 * @prop {'css'|'measured'} indicator
-	 * @prop {string} className
 	 */
 	let {
 		tabs = [],
@@ -26,21 +31,22 @@
 		showIcons = false,
 		indicator = 'css',
 		className = '',
-	} = $props();
+	}: Props = $props();
 
-	/** @type {HTMLDivElement | undefined} */
-	let tabsElement;
-	/** @type {Record<string, HTMLButtonElement>} */
-	let tabElements = $state({});
-	let measuredIndicator = $state({ x: 0, width: 24, visible: false });
+	let tabsElement: HTMLDivElement | undefined;
+	let tabElements = $state<Record<string, HTMLButtonElement>>({});
+	let measuredIndicator = $state<{ x: number; width: number; visible: boolean }>({
+		x: 0,
+		width: 24,
+		visible: false,
+	});
 
-	/** @param {string} tabId */
-	function controlsId(tabId) {
+	function controlsId(tabId: string): string | undefined {
 		if (panelId) return panelId;
 		return panelIdPrefix ? `${panelIdPrefix}-${tabId}` : undefined;
 	}
 
-	function updateMeasuredIndicator() {
+	function updateMeasuredIndicator(): void {
 		if (indicator !== 'measured') return;
 		const activeElement = tabElements[activeTab];
 		if (!tabsElement || !activeElement) return;
@@ -75,8 +81,7 @@
 		if (indicator !== 'measured') return;
 		const handleResize = () => updateMeasuredIndicator();
 		window.addEventListener('resize', handleResize);
-		/** @type {ResizeObserver | undefined} */
-		let resizeObserver;
+		let resizeObserver: ResizeObserver | undefined;
 		if (typeof ResizeObserver !== 'undefined' && tabsElement) {
 			const observer = new ResizeObserver(handleResize);
 			resizeObserver = observer;
@@ -157,5 +162,4 @@
 		font-size: var(--md-sys-typescale-label-small-size);
 		color: var(--md-sys-color-on-surface-variant);
 	}
-
 </style>

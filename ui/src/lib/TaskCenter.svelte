@@ -1,5 +1,4 @@
-<script>
-	/** @typedef {import('./contracts/action.ts').ActionPayload} TaskAction */
+<script lang="ts">
 	/**
 	 * Unified task list/detail view. The route owns loading, event merging and
 	 * IPC; this component only presents task lifecycle and emits user intent.
@@ -11,46 +10,59 @@
 	import CountChip from '$lib/CountChip.svelte';
 	import { projectActionCard } from '$lib/actionCardProjection.ts';
 	import { taskKindLabel } from '$lib/taskTerminology.ts';
+	import type { ActionKind, ActionPayload } from '$lib/contracts/action.ts';
+	import type {
+		ActionCardProjection,
+		ActionCardProjectionOptions,
+	} from '$lib/actionCardProjection.ts';
+
+	interface Props {
+		runningBackgroundActions?: ActionPayload[];
+		pendingScheduledActions?: ActionPayload[];
+		taskHistory?: ActionPayload[];
+		taskHistoryLoading?: boolean;
+		taskHistoryFailed?: boolean;
+		actionStatusLabel?: (status: string) => string;
+		sessionTitleFor?: (action: Pick<ActionPayload, 'sessionId'>) => string;
+		actionDuration?: (action: ActionPayload) => string;
+		scheduledActionCountdown?: (dueAt?: string) => string;
+		onOpenSession?: (sessionId: string) => void;
+		onCancel?: (actionId: string, kind?: ActionKind) => void;
+		onRefreshTaskHistory?: () => void;
+	}
 
 	let {
-		runningBackgroundActions = /** @type {TaskAction[]} */ ([]),
-		pendingScheduledActions = /** @type {TaskAction[]} */ ([]),
-		taskHistory = /** @type {TaskAction[]} */ ([]),
+		runningBackgroundActions = [],
+		pendingScheduledActions = [],
+		taskHistory = [],
 		taskHistoryLoading = false,
 		taskHistoryFailed = false,
-		actionStatusLabel = /** @type {(status: string) => string} */ ((status) => status || ''),
+		actionStatusLabel = (status) => status || '',
 		sessionTitleFor = () => '',
 		actionDuration = () => '',
 		scheduledActionCountdown = () => '',
 		onOpenSession = () => {},
 		onCancel = () => {},
 		onRefreshTaskHistory = () => {},
-	} = $props();
+	}: Props = $props();
 
-	let selectedTaskId = $state(null);
+	let selectedTaskId = $state<string | null>(null);
 	let detailOpen = $state(false);
 	let query = $state('');
 	let filter = $state('all');
 
 	const taskRows = $derived.by(() => {
-		const options =
-			/** @type {import('$lib/actionCardProjection.ts').ActionCardProjectionOptions} */ ({
-				actionStatusLabel,
-				sessionTitleFor,
-				actionDuration,
-				scheduledActionCountdown,
-			});
-		const seenIds = new Set();
+		const options: ActionCardProjectionOptions = {
+			actionStatusLabel,
+			sessionTitleFor,
+			actionDuration,
+			scheduledActionCountdown,
+		};
+		const seenIds = new Set<string>();
 		const actions = [
-			...runningBackgroundActions.map((/** @type {TaskAction} */ action) =>
-				projectActionCard(action, options),
-			),
-			...pendingScheduledActions.map((/** @type {TaskAction} */ action) =>
-				projectActionCard(action, options),
-			),
-			...taskHistory.map((/** @type {TaskAction} */ action) =>
-				projectActionCard(action, options),
-			),
+			...runningBackgroundActions.map((action) => projectActionCard(action, options)),
+			...pendingScheduledActions.map((action) => projectActionCard(action, options)),
+			...taskHistory.map((action) => projectActionCard(action, options)),
 		];
 		return actions.filter((row) => {
 			if (seenIds.has(row.id)) return false;
@@ -101,14 +113,12 @@
 		}
 	});
 
-	/** @param {any} row */
-	function selectRow(row) {
+	function selectRow(row: ActionCardProjection) {
 		selectedTaskId = row.id;
 		detailOpen = true;
 	}
 
-	/** @param {any} row */
-	function openRow(row) {
+	function openRow(row: ActionCardProjection) {
 		if (row.sessionId && !['completed', 'failed', 'cancelled'].includes(row.status || '')) {
 			onOpenSession?.(row.sessionId);
 			return;
@@ -120,8 +130,7 @@
 		detailOpen = false;
 	}
 
-	/** @param {string} value */
-	function handleFilterChange(value) {
+	function handleFilterChange(value: string) {
 		filter = value;
 	}
 
@@ -369,7 +378,10 @@
 						<MaterialButton
 							variant="outlined"
 							label="打开来源会话"
-							onclick={() => onOpenSession?.(selectedRow.sessionId)}
+							onclick={() => {
+								const sessionId = selectedRow.sessionId;
+								if (sessionId) onOpenSession?.(sessionId);
+							}}
 						/>
 					{/if}
 				</div>

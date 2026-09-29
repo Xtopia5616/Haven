@@ -1,6 +1,11 @@
-<script>
+<script lang="ts">
+	interface Props {
+		title?: string;
+		message?: string;
+	}
+
 	/** A compact explanation of the responsibility of the current workspace. */
-	let { title = '', message = '' } = $props();
+	let { title = '', message = '' }: Props = $props();
 </script>
 
 <aside class="workspace-scope-note" role="note">

@@ -1,5 +1,7 @@
 /** Capability/request policy metadata shared by the model settings view. */
 
+import type { CapabilityInput } from './contracts/generatedCommands.ts';
+
 export const requestKindValues = [
 	'chat',
 	'fast_chat',
@@ -13,7 +15,7 @@ export const requestKindValues = [
 
 export type RequestKind = (typeof requestKindValues)[number];
 
-export const capabilityOptions = [
+export const capabilityOptions: Array<{ value: CapabilityInput; label: string }> = [
 	{ value: 'chat', label: '对话' },
 	{ value: 'fast_chat', label: '快速对话' },
 	{ value: 'vision', label: '视觉' },

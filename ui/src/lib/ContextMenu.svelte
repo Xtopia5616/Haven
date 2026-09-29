@@ -1,15 +1,24 @@
-<script>
+<script lang="ts">
 	import { tick } from 'svelte';
 	import MenuItem from './MenuItem.svelte';
 	import Icon from './Icon.svelte';
 	import { hasIcon } from './icons.ts';
+	import type { ContextMenuItem } from '$lib/contextMenu.ts';
+
+	interface Props {
+		open?: boolean;
+		x?: number;
+		y?: number;
+		items?: ContextMenuItem[];
+		onClose?: () => void;
+	}
 
 	// Reusable right-click menu (constraint context_menu_edge_flipping).
 	// items: [{ id?, label, icon?, danger?, disabled?, separator?, action? }]
 	// icon is a key from the shared icon registry.
-	let { open = false, x = 0, y = 0, items = [], onClose = () => {} } = $props();
+	let { open = false, x = 0, y = 0, items = [], onClose = () => {} }: Props = $props();
 
-	let menuEl = /** @type {HTMLDivElement | null} */ ($state(null));
+	let menuEl = $state<HTMLDivElement | null>(null);
 	let pos = $state({ x: 0, y: 0 });
 
 	// Flip to the other side of the cursor when the menu would overflow the
@@ -37,13 +46,14 @@
 	// stacked under it.
 	$effect(() => {
 		if (!open) return;
-		function onPointerDown(/** @type {PointerEvent} */ e) {
-			if (menuEl && !menuEl.contains(/** @type {Node | null} */ (e.target))) onClose();
+		function onPointerDown(e: PointerEvent) {
+			const target = e.target;
+			if (menuEl && target instanceof Node && !menuEl.contains(target)) onClose();
 		}
 		function onContextMenu() {
 			onClose();
 		}
-		function onKeyDown(/** @type {KeyboardEvent} */ e) {
+		function onKeyDown(e: KeyboardEvent) {
 			if (e.key === 'Escape') onClose();
 		}
 		window.addEventListener('pointerdown', onPointerDown);
@@ -56,8 +66,7 @@
 		};
 	});
 
-	/** @param {any} item */
-	function run(item) {
+	function run(item: ContextMenuItem) {
 		item.action?.();
 		onClose();
 	}
@@ -86,10 +95,10 @@
 					onSelect={() => run(item)}
 				>
 					{#snippet children()}
-					{#if hasIcon(item.icon)}
-						<Icon name={item.icon} size={16} />
-					{/if}
-					<span class="ctx-label">{item.label}</span>
+						{#if hasIcon(item.icon)}
+							<Icon name={item.icon} size={16} />
+						{/if}
+						<span class="ctx-label">{item.label}</span>
 					{/snippet}
 				</MenuItem>
 			{/if}

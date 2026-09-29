@@ -1,9 +1,17 @@
-<script>
+<script lang="ts">
 	import { cubicOut } from 'svelte/easing';
 	import VoiceBars from './VoiceBars.svelte';
 	import Icon from './Icon.svelte';
 
-	/** @type {{ isRecording?: boolean; processing?: boolean; duration?: number; vadState?: string; reason?: string | null; onCancel?: (() => Promise<void>) | null }} */
+	interface Props {
+		isRecording?: boolean;
+		processing?: boolean;
+		duration?: number;
+		vadState?: string;
+		reason?: string | null;
+		onCancel?: (() => Promise<void>) | null;
+	}
+
 	let {
 		isRecording = false,
 		processing = false,
@@ -11,19 +19,17 @@
 		vadState = 'silent',
 		reason = null,
 		onCancel = null,
-	} = $props();
+	}: Props = $props();
 
 	// Entrance transition replacing the old CSS dropIn keyframes. The overlay
 	// is centered with a static `transform: translateX(-50%)`, so the inline
 	// transform must keep that offset during the animation or the overlay
 	// would jump off-center.
-	/** @param {Element} node @param {{ duration?: number }} [params] */
-	function dropIn(node, { duration = 300 } = {}) {
+	function dropIn(_node: Element, { duration = 300 }: { duration?: number } = {}) {
 		return {
 			duration,
 			easing: cubicOut,
-			/** @param {number} t */
-			css: (t) => `transform: translate(-50%, ${-10 * (1 - t)}px); opacity: ${t}`,
+			css: (t: number) => `transform: translate(-50%, ${-10 * (1 - t)}px); opacity: ${t}`,
 		};
 	}
 
@@ -36,8 +42,7 @@
 	// Waveform energy scales with VAD state: speech active => taller/faster.
 	const speaking = $derived(vadState === 'speech' && isRecording && !processing);
 
-	/** @param {KeyboardEvent} e */
-	function handleEsc(e) {
+	function handleEsc(e: KeyboardEvent) {
 		// Cancel whenever the overlay is visible (recording or processing):
 		// cancel_recording is a no-op when the pipeline is idle, so an extra
 		// ESC press can't break anything.

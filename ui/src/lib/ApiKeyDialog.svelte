@@ -1,17 +1,20 @@
-<script>
+<script lang="ts">
 	import MaterialDialog from './MaterialDialog.svelte';
 	import MaterialButton from './MaterialButton.svelte';
 	import ApiKeyField from './ApiKeyField.svelte';
 
+	interface Props {
+		open?: boolean;
+		label?: string;
+		configured?: boolean;
+		onConfirm?: (key: string) => void;
+		onClose?: () => void;
+	}
+
 	/**
 	 * Shared API-key change dialog (Set / Change API Key).
-	 * @prop {boolean} open
-	 * @prop {string} label — what the key belongs to (shown in the hint)
-	 * @prop {boolean} configured — drives the Set/Change title
-	 * @prop {function(string): void} onConfirm — called with the non-empty key
-	 * @prop {function(): void} onClose
 	 */
-	let { open = false, label = '', configured = false, onConfirm, onClose } = $props();
+	let { open = false, label = '', configured = false, onConfirm, onClose }: Props = $props();
 
 	let newKeyValue = $state('');
 
@@ -21,11 +24,11 @@
 		}
 	});
 
-	function close() {
+	function close(): void {
 		onClose?.();
 	}
 
-	function confirm() {
+	function confirm(): void {
 		if (newKeyValue.trim()) onConfirm?.(newKeyValue.trim());
 	}
 </script>

@@ -1,17 +1,22 @@
-<script>
+<script lang="ts">
 	import MaterialButton from './MaterialButton.svelte';
 	import MaterialIconButton from './MaterialIconButton.svelte';
+	import type { Snippet } from 'svelte';
+
+	interface Props {
+		label?: string;
+		variant?: 'filled' | 'tonal' | 'elevated' | 'outlined' | 'text' | 'danger';
+		open?: boolean;
+		disabled?: boolean;
+		onclick?: (event: MouseEvent) => void;
+		onToggle?: () => void;
+		ariaLabel?: string;
+		className?: string;
+		children?: Snippet;
+	}
 
 	/**
 	 * Material Split Button — main action paired with a disclosure action.
-	 * @prop {string} label
-	 * @prop {'filled'|'tonal'|'elevated'|'outlined'|'text'|'danger'} variant
-	 * @prop {boolean} open
-	 * @prop {boolean} disabled
-	 * @prop {function} onclick
-	 * @prop {function} onToggle
-	 * @prop {string} ariaLabel
-	 * @prop {string} className
 	 */
 	let {
 		label = '',
@@ -23,7 +28,7 @@
 		ariaLabel = '打开更多操作',
 		className = '',
 		children = undefined,
-	} = $props();
+	}: Props = $props();
 </script>
 
 <div class="md-split-button {className}" class:open>
@@ -32,12 +37,11 @@
 		variant={variant === 'danger' ? 'danger' : 'default'}
 		label={ariaLabel}
 		ariaExpanded={open}
-		disabled={disabled}
+		{disabled}
 		onclick={onToggle}
 		className="md-split-button__toggle"
 		icon="chevronDown"
-	>
-	</MaterialIconButton>
+	></MaterialIconButton>
 	{#if children}{@render children()}{/if}
 </div>
 
@@ -63,7 +67,8 @@
 	.md-split-button :global(.md-icon-btn.md-split-button__toggle svg) {
 		width: 16px;
 		height: 16px;
-		transition: transform var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard);
+		transition: transform var(--md-sys-motion-duration-fast)
+			var(--md-sys-motion-easing-standard);
 	}
 
 	.md-split-button.open :global(.md-icon-btn.md-split-button__toggle svg) {

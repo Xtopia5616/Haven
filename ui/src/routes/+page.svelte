@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 	import logger from '$lib/logger.ts';
 	import { reportError } from '$lib/errorHandling.ts';
 	import { isDisplayOnlyMessageId } from '$lib/resumeMessages.ts';
@@ -67,9 +67,24 @@
 	import SessionHeader from '$lib/SessionHeader.svelte';
 	import ConversationTimeline from '$lib/ConversationTimeline.svelte';
 	import Composer from '$lib/Composer.svelte';
+	import type {
+		SessionAction,
+		SessionMessage,
+		SessionSummary,
+		SessionTermination,
+		SessionTokenStats,
+	} from '$lib/sessionReducer.ts';
+	import type { SessionTokenStats as PresentationSessionTokenStats } from '$lib/sessionUsagePresentation.ts';
+	import type { LlmUsage } from '$lib/sessionUsage.ts';
+	import type { ModelInfo } from '$lib/contracts/model.ts';
+	import type { ActionPayload, ActionStatus } from '$lib/contracts/action.ts';
+	import type { AgentMediaPlanPayload } from '$lib/contracts/agent.ts';
+	import type { ChatFileAttachment, ChatImageAttachment } from '$lib/chatController.ts';
+	import type { ConversationContextMenuRequest } from '$lib/conversationTimeline.ts';
+	import type { ReactExecutionPhase } from '$lib/runtimeStateStore.ts';
 
-	let chatPageEl = /** @type {HTMLElement | null} */ ($state(null));
-	let inputRouterRef = /** @type {any} */ ($state(null));
+	let chatPageEl = $state<HTMLElement | null>(null);
+	let inputRouterRef = $state<{ setDraft: (text: string) => void } | null>(null);
 
 	// Attachment & compression limits for the input router, loaded from the
 	// persisted [context_limits] config (editable on the settings "媒体"
@@ -85,10 +100,8 @@
 	let initialLoading = $state(true);
 	const sessionReducer = appSessionReducer;
 	const currentReducerState = sessionReducer.getState();
-	/** @type {import('$lib/sessionReducer.ts').SessionMessage[]} */
-	const emptySessionMessages = [];
-	/** @type {import('$lib/sessionUsage.ts').LlmUsage[]} */
-	const emptyLlmUsage = [];
+	const emptySessionMessages: SessionMessage[] = [];
+	const emptyLlmUsage: LlmUsage[] = [];
 	const sessionsStore = createSessionSelectorStore((state) => state.sessions);
 	const activeSessionIdStore = createSessionSelectorStore((state) => state.activeSessionId);
 	const interactionsStore = createSessionSelectorStore((state) => state.interactions);
@@ -116,8 +129,7 @@
 	let sessionError = $state(currentReducerState.error);
 	let sessionTermination = $state(currentReducerState.termination);
 
-	/** @param {import('$lib/sessionReducer.ts').SessionAction} action */
-	function dispatchSession(action) {
+	function dispatchSession(action: SessionAction) {
 		sessionReducer.dispatch(action);
 	}
 
@@ -140,23 +152,26 @@
 	const askHasOptions = $derived(
 		pendingAskInteractions.some((request) => request.options.length > 0),
 	);
-	let rollbackDialog =
-		/** @type {{ open: boolean, stepNumber: number | null, role: string, content: string, msgId: string }} */ (
-			$state({
-				open: false,
-				stepNumber: null,
-				role: '',
-				content: '',
-				msgId: '',
-			})
-		);
+	let rollbackDialog = $state<{
+		open: boolean;
+		stepNumber: number | null;
+		role: string;
+		content: string;
+		msgId: string;
+	}>({
+		open: false,
+		stepNumber: null,
+		role: '',
+		content: '',
+		msgId: '',
+	});
 	let rollbackLoading = $state(false);
 
 	// Model switcher state: the registry catalog plus the current default
 	// model name, displayed on the toolbar button and filtered in the menu.
 	let modelMenuOpen = $state(false);
 	let sessionMenuOpen = $state(false);
-	let modelOptions = /** @type {Array<any>} */ ($state([]));
+	let modelOptions = $state<ModelInfo[]>([]);
 	let currentModelName = $state('');
 	let currentModelId = $state('');
 	let currentEffort = $state('');
@@ -172,7 +187,7 @@
 	let hotkeyBinding = $state('Ctrl+Shift+Space');
 
 	// Read usage for the active session directly from the reducer-owned state.
-	let tokenStats = $state(
+	let tokenStats = $state<SessionTokenStats | null>(
 		currentReducerState.activeSessionId
 			? (currentReducerState.tokenStats[currentReducerState.activeSessionId] ?? null)
 			: null,
@@ -182,22 +197,21 @@
 	// Per-LLM-call usage detail for the active session (restored from the
 	// persisted `llm_usage` when a resume conversation opens). Used by the
 	// session-level token tooltip and call count.
-	let llmUsage = $state(
+	let llmUsage = $state<LlmUsage[]>(
 		currentReducerState.activeSessionId
 			? (currentReducerState.llmUsage[currentReducerState.activeSessionId] ?? emptyLlmUsage)
 			: emptyLlmUsage,
 	);
 	$effect(() => syncStore(activeSessionLlmUsageStore, (next) => (llmUsage = next)));
 
-	/** @param {any} stats */
-	function buildTokenTooltip(stats) {
+	function buildTokenTooltip(stats: PresentationSessionTokenStats) {
 		return buildTokenUsageTooltip(stats, llmUsage);
 	}
 
 	// Send/interrupt merged button: text takes priority (always send); with no
 	// text and the agent actively generating output the button interrupts the
 	// current output while keeping the session resumable.
-	let reactExecutionPhase = $state('idle');
+	let reactExecutionPhase = $state<ReactExecutionPhase>('idle');
 	let interruptPending = $state(false);
 	$effect(() =>
 		syncStore(reactExecutionPhaseStore, (v) => {
@@ -230,9 +244,9 @@
 
 	// Live action registry (for "waiting on background" banner). Synced from
 	// the global actionStore kept by +layout.
-	let actionsById = $state(/** @type {Record<string, any>} */ ({}));
+	let actionsById = $state<Record<string, ActionPayload>>({});
 	$effect(() => syncStore(actionStore, (v) => (actionsById = v || {})));
-	let mediaPlansBySession = $state(/** @type {Record<string, any[]>} */ ({}));
+	let mediaPlansBySession = $state<Record<string, AgentMediaPlanPayload[]>>({});
 	$effect(() => syncStore(mediaPlanStore, (v) => (mediaPlansBySession = v || {})));
 	const activeSessionStatus = $derived(
 		activeSessionId ? sessions.find((t) => t.id === activeSessionId)?.status : undefined,
@@ -277,7 +291,13 @@
 	);
 
 	// Right-click context menu state
-	let ctxMenu = $state({
+	let ctxMenu = $state<{
+		stepNumber: number | null;
+		content: string;
+		role: string;
+		msgId: string;
+		selectedContent: string;
+	}>({
 		stepNumber: null,
 		content: '',
 		role: '',
@@ -285,8 +305,7 @@
 		selectedContent: '',
 	});
 
-	/** @param {any} ev */
-	function handleContextMenu(ev) {
+	function handleContextMenu(ev: ConversationContextMenuRequest) {
 		const next = {
 			stepNumber: ev.stepNumber,
 			content: ev.content,
@@ -380,16 +399,16 @@
 		closeGlobalContextMenu();
 	}
 
-	/** @param {MouseEvent} e */
-	function handleWindowClick(e) {
+	function handleWindowClick(e: MouseEvent) {
+		const target = e.target instanceof Node ? e.target : null;
 		if (modelMenuOpen) {
 			const menu = document.querySelector('.model-menu');
 			const btn = document.querySelector('.model-switch-btn');
 			if (
 				menu &&
 				btn &&
-				!menu.contains(/** @type {Node} */ (e.target)) &&
-				!btn.contains(/** @type {Node} */ (e.target))
+				!(target && menu.contains(target)) &&
+				!(target && btn.contains(target))
 			) {
 				modelMenuOpen = false;
 			}
@@ -400,8 +419,8 @@
 			if (
 				menu &&
 				btn &&
-				!menu.contains(/** @type {Node} */ (e.target)) &&
-				!btn.contains(/** @type {Node} */ (e.target))
+				!(target && menu.contains(target)) &&
+				!(target && btn.contains(target))
 			) {
 				sessionMenuOpen = false;
 			}
@@ -434,16 +453,13 @@
 
 	// Terminal sessions are not in get_sessions, so drop their cached messages
 	// when they are deactivated. A later switch reloads them from the database.
-	/** @param {string | null} sessionId */
-	function evictTerminalSessionMemory(sessionId) {
+	function evictTerminalSessionMemory(sessionId: string | null) {
 		chatController.evictTerminalSessionMemory(sessionId);
 	}
 
 	// Owns chat-page event composition and listener registration lifetime.
-	let chatEventController = /** @type {ReturnType<typeof createChatEventController> | null} */ (
-		null
-	);
-	let messagesEl = /** @type {HTMLElement | null | undefined} */ (undefined);
+	let chatEventController: ReturnType<typeof createChatEventController> | null = null;
+	let messagesEl: HTMLElement | null | undefined = undefined;
 	let autoFollow = $state(true);
 	let dead = false;
 	const chatViewController = createChatViewController({
@@ -749,8 +765,11 @@
 		setAutoFollow: (follow) => chatViewController.setAutoFollow(follow),
 	});
 
-	/** @param {string} text @param {any} [images] @param {any} [files] */
-	function submitMessage(text, images, files) {
+	function submitMessage(
+		text: string,
+		images?: ChatImageAttachment[] | null,
+		files?: ChatFileAttachment[] | null,
+	) {
 		return chatController.submitMessage(text, images, files);
 	}
 
@@ -760,13 +779,11 @@
 		return chatController.confirmRollbackAction({ ...rollbackDialog, stepNumber });
 	}
 
-	/** @param {string} sessionId */
-	function pendingInteractionIdsForSession(sessionId) {
+	function pendingInteractionIdsForSession(sessionId: string) {
 		return chatController.pendingInteractionIdsForSession(sessionId);
 	}
 
-	/** @param {string} sessionId */
-	function switchToSession(sessionId) {
+	function switchToSession(sessionId: string) {
 		return chatController.switchToSession(sessionId);
 	}
 
@@ -793,7 +810,13 @@
 		setSelectionsReady: (ready) => {
 			askSelectionsReady = ready;
 		},
-		submitMessage,
+		submitMessage: (text, images, files) => {
+			void submitMessage(
+				text,
+				images as ChatImageAttachment[] | null | undefined,
+				files as ChatFileAttachment[] | null | undefined,
+			);
+		},
 		reducer: sessionReducer,
 	});
 	const {
@@ -817,13 +840,19 @@
 	// When every pending ask has selected options, Enter composes those
 	// answers (space-joined) and appends any typed text; otherwise a typed
 	// message bypasses the ask batch and resumes immediately.
-	/** @param {{ text: string, images: any, files: any }} payload */
-	function handleInputSubmit({ text, images, files }) {
+	function handleInputSubmit({
+		text,
+		images,
+		files,
+	}: {
+		text: string;
+		images: ChatImageAttachment[];
+		files: ChatFileAttachment[];
+	}) {
 		routeInputSubmission({ text, images, files });
 	}
 
-	/** @param {any} session */
-	function sessionStatusLabel(session) {
+	function sessionStatusLabel(session: SessionSummary) {
 		if (isErrorStatus(session.status)) return '错误';
 		if (session.status === 'completed') return '空闲';
 		const waitingLabel = waitingReasonLabel(sessionWaitingReason(session));

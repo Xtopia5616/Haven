@@ -1,19 +1,22 @@
-<script>
+<script lang="ts">
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import MaterialIconButton from '$lib/MaterialIconButton.svelte';
 
+	interface Props {
+		label?: string;
+		loadingLabel?: string;
+		loading?: boolean;
+		compact?: boolean;
+		iconOnly?: boolean;
+		size?: 'default' | 'toolbar' | 'dense';
+		onclick?: () => void;
+		disabled?: boolean;
+		title?: string;
+		className?: string;
+	}
+
 	/**
 	 * RefreshButton — shared loading and sizing contract for refresh actions.
-	 * @prop {string} label — idle button label
-	 * @prop {string} loadingLabel — label announced while the action is running
-	 * @prop {boolean} loading — whether the refresh is in flight
-	 * @prop {boolean} compact — use the 32dp compact action size
-	 * @prop {boolean} iconOnly — use the shared compact icon action style
-	 * @prop {'default'|'toolbar'|'dense'} size — icon-only visual size
-	 * @prop {function} onclick — refresh callback
-	 * @prop {boolean} disabled — disables the action independently of loading
-	 * @prop {string} title — optional tooltip for icon-only mode
-	 * @prop {string} className — additional layout classes
 	 */
 	let {
 		label = '刷新',
@@ -26,7 +29,7 @@
 		disabled = false,
 		title = '',
 		className = '',
-	} = $props();
+	}: Props = $props();
 
 	let buttonClass = $derived(
 		[

@@ -1,21 +1,25 @@
-<script>
-	/** @typedef {import('$lib/contracts/tools.ts').SkillInfo} SkillInfo */
+<script lang="ts">
 	import MaterialSwitch from '$lib/MaterialSwitch.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import StatusBadge from '$lib/StatusBadge.svelte';
 	import ExpandableContextCard from '$lib/ExpandableContextCard.svelte';
 	import { copyText } from '$lib/clipboard.ts';
 	import { formatError } from '$lib/formatError.ts';
+	import type { SkillInfo } from '$lib/contracts/tools.ts';
+	import type { ContextMenuItem } from '$lib/contextMenu.ts';
 
-	/** @type {{ skill: SkillInfo; onToggle?: (name: string, enabled: boolean) => unknown }} */
-	let { skill, onToggle } = $props();
+	interface Props {
+		skill: SkillInfo;
+		onToggle?: (name: string, enabled: boolean) => void | Promise<void>;
+	}
 
-	/** @param {boolean} checked */
-	function handleToggle(checked) {
+	let { skill, onToggle }: Props = $props();
+
+	function handleToggle(checked: boolean) {
 		onToggle?.(skill.name, checked);
 	}
 
-	let contextMenuItems = $derived([
+	let contextMenuItems: ContextMenuItem[] = $derived([
 		{
 			id: 'copyName',
 			label: '复制名称',
@@ -44,14 +48,14 @@
 	]);
 
 	let previewParams = $state('{}');
-	let previewResult = /** @type {string | null} */ ($state(null));
+	let previewResult = $state<string | null>(null);
 	let running = $state(false);
 
 	async function runPreview() {
 		if (running) return;
 		running = true;
 		previewResult = null;
-		let params;
+		let params: unknown;
 		try {
 			params = JSON.parse(previewParams);
 		} catch {

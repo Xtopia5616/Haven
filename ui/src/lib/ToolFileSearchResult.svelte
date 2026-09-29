@@ -1,8 +1,16 @@
-<script>
+<script lang="ts">
 	import ExternalRef from '$lib/ExternalRef.svelte';
 	import ToolResultList from '$lib/ToolResultList.svelte';
 
-	let { data = {} } = $props();
+	interface Props {
+		data?: {
+			results?: Array<{ path: string; line?: number | null; snippet?: string }>;
+			count?: number;
+			mode?: string;
+		};
+	}
+
+	let { data = {} }: Props = $props();
 
 	let resultList = $derived(Array.isArray(data.results) ? data.results : []);
 	let resultCount = $derived(

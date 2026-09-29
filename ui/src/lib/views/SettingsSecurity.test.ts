@@ -1,8 +1,11 @@
 import { fireEvent, render, screen } from '@testing-library/svelte';
 import { describe, expect, it, vi } from 'vitest';
 import SettingsSecurity from './SettingsSecurity.svelte';
+import type { SecurityConfigInput } from '$lib/contracts/generatedCommands.ts';
 
-function createSecurity() {
+function createSecurity(): SecurityConfigInput & {
+	permissions: Array<{ key: string; effect: string }>;
+} {
 	return {
 		permission_mode: 'default',
 		sandbox_mode: 'workspace_write',

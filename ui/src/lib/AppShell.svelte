@@ -1,4 +1,5 @@
-<script>
+<script lang="ts">
+	import type { Snippet } from 'svelte';
 	import Logo from './Logo.svelte';
 	import RecordingIndicator from './RecordingIndicator.svelte';
 	import NotificationToast from './NotificationToast.svelte';
@@ -9,6 +10,27 @@
 	import GlobalContextMenu from './GlobalContextMenu.svelte';
 	import LandscapeWorkspaceNav from './LandscapeWorkspaceNav.svelte';
 	import { dragScroll } from '$lib/dragScroll.ts';
+	import type { RecordingOverlayState } from '$lib/runtimeStateStore.ts';
+
+	interface WorkspaceTab {
+		id: string;
+		label: string;
+		hint?: string;
+		icon?: string;
+	}
+
+	interface Props {
+		activeTab?: string;
+		tabs?: WorkspaceTab[];
+		theme?: string;
+		onToggleTheme?: () => void;
+		onNavigate?: (tabId: string) => void;
+		overlay?: RecordingOverlayState;
+		duration?: number;
+		onCancelRecording?: (() => Promise<void>) | null;
+		status?: Snippet;
+		content?: Snippet;
+	}
 
 	/**
 	 * The shell owns chrome and layout only. Domain state stays in the route and
@@ -20,12 +42,21 @@
 		theme = 'dark',
 		onToggleTheme = () => {},
 		onNavigate = () => {},
-		overlay = {},
+		overlay = {
+			visible: false,
+			isRecording: false,
+			processing: false,
+			sessionId: null,
+			startedAt: null,
+			reason: null,
+			vadState: 'silent',
+		},
 		duration = 0,
 		onCancelRecording = null,
 		status,
 		content,
-	} = $props();
+	}: Props = $props();
+
 </script>
 
 <div class="app-shell">

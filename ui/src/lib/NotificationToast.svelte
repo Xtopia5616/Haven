@@ -1,19 +1,18 @@
-<script>
+<script lang="ts">
 	import { onMount, onDestroy, tick } from 'svelte';
 	import { fly } from 'svelte/transition';
 	import { cubicOut } from 'svelte/easing';
 	import { notificationStore } from './notificationStore.ts';
+	import type { Notification } from './notificationStore.ts';
 	import { getStatusColorTokens } from './statusColors.ts';
 	import Icon from './Icon.svelte';
 	// The container stays mounted (empty when idle) and items are only
 	// populated after its first render: toasts inserted into a freshly
 	// created each block play no intro transition (the block effect has not
 	// run a reaction yet), which made the first toast appear instantly.
-	/** @type {any[]} */
-	let items = $state([]);
+	let items = $state<Notification[]>([]);
 	let mounted = $state(false);
-	/** @type {(() => void) | null} */
-	let unsub = null;
+	let unsub: (() => void) | null = null;
 	onMount(async () => {
 		mounted = true;
 		await tick();
@@ -21,8 +20,7 @@
 	});
 	onDestroy(() => unsub?.());
 
-	/** @param {string | undefined} type */
-	function getToastStyle(type) {
+	function getToastStyle(type: Notification['type'] | undefined) {
 		const { dot, background, foreground } = getStatusColorTokens(type || 'info');
 		return `--toast-accent: ${dot}; --toast-background: ${background}; --toast-foreground: ${foreground};`;
 	}

@@ -1,22 +1,21 @@
-<script>
-	/** @typedef {import('$lib/contracts/memory.ts').Fact} Fact */
+<script lang="ts">
 	import AsyncState from '$lib/AsyncState.svelte';
 	import MaterialBadge from '$lib/MaterialBadge.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
+	import type { Fact } from '$lib/contracts/memory.ts';
 
-	let {
-		facts = /** @type {Fact[]} */ ([]),
-		factsLoaded = false,
-		onDeleteFact = () => {},
-	} = $props();
+	interface Props {
+		facts?: Fact[];
+		factsLoaded?: boolean;
+		onDeleteFact?: (factId: string) => void;
+	}
 
-	/** @type {string | null} */
-	let selectedFactId = $state(null);
+	let { facts = [], factsLoaded = false, onDeleteFact = () => {} }: Props = $props();
+
+	let selectedFactId = $state<string | null>(null);
 	let detailOpen = $state(false);
-	const selectedFact = $derived(
-		/** @type {Fact[]} */ (facts).find((fact) => fact.id === selectedFactId) || null,
-	);
+	const selectedFact = $derived(facts.find((fact) => fact.id === selectedFactId) || null);
 
 	$effect(() => {
 		if (selectedFactId && !selectedFact) {
@@ -25,46 +24,38 @@
 		}
 	});
 
-	/** @param {Fact} fact */
-	function factSourceLabel(fact) {
+	function factSourceLabel(fact: Fact) {
 		return fact.source === 'inferred' ? '推断' : '手动';
 	}
 
-	/** @param {Fact} fact */
-	function factSourceTone(fact) {
+	function factSourceTone(fact: Fact) {
 		return fact.source === 'inferred' ? 'secondary' : 'primary';
 	}
 
-	/** @param {Fact} fact */
-	function factSubjectLabel(fact) {
+	function factSubjectLabel(fact: Fact) {
 		return fact.subject && fact.subject !== 'user' ? `关于 ${fact.subject}` : '关于你';
 	}
 
-	/** @param {Fact} fact */
-	function factTitle(fact) {
+	function factTitle(fact: Fact) {
 		return fact.predicate || '未命名记忆';
 	}
 
-	/** @param {Fact} fact */
-	function factSentence(fact) {
+	function factSentence(fact: Fact) {
 		const subject = fact.subject && fact.subject !== 'user' ? fact.subject : '你';
 		return `${subject} · ${fact.predicate || '未命名'} · ${fact.object || '暂无内容'}`;
 	}
 
-	/** @param {number | undefined} confidence */
-	function confidenceLabel(confidence) {
+	function confidenceLabel(confidence: number | undefined) {
 		if (typeof confidence !== 'number' || Number.isNaN(confidence)) return '置信度未知';
 		return `置信度 ${Math.round(Math.max(0, Math.min(1, confidence)) * 100)}%`;
 	}
 
-	/** @param {Fact} fact */
-	function reinforcementLabel(fact) {
+	function reinforcementLabel(fact: Fact) {
 		const count = Number(fact.mention_count || 0);
 		return count > 0 ? `已复核 ${count} 次` : '尚未复核';
 	}
 
-	/** @param {string | undefined | null} value */
-	function formatDate(value) {
+	function formatDate(value: string | undefined | null) {
 		if (!value) return '未知';
 		const date = new Date(value);
 		if (Number.isNaN(date.getTime())) return value;
@@ -74,13 +65,11 @@
 		}).format(date);
 	}
 
-	/** @param {Fact} fact */
-	function tagsLabel(fact) {
+	function tagsLabel(fact: Fact) {
 		return Array.isArray(fact.tags) && fact.tags.length > 0 ? fact.tags.join('、') : '无';
 	}
 
-	/** @param {Fact} fact */
-	function selectFact(fact) {
+	function selectFact(fact: Fact) {
 		selectedFactId = fact.id;
 		detailOpen = true;
 	}

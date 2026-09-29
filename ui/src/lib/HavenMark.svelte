@@ -1,9 +1,13 @@
-<script>
+<script lang="ts">
+	interface Props {
+		size?: number;
+	}
+
 	/**
 	 * Shared Haven mark. The shape and fixed brand colors match
 	 * assets/branding/haven-mark.svg and the generated app icons.
 	 */
-	let { size = 24 } = $props();
+	let { size = 24 }: Props = $props();
 </script>
 
 <svg

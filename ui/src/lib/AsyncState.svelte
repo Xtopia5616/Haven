@@ -1,6 +1,16 @@
-<script>
+<script lang="ts">
 	import LoadingState from './LoadingState.svelte';
 	import MaterialButton from './MaterialButton.svelte';
+
+	type AsyncStateName = 'loading' | 'empty' | 'error' | 'unconfigured';
+
+	interface Props {
+		state?: AsyncStateName;
+		title?: string;
+		message?: string;
+		actionLabel?: string;
+		onAction?: () => void;
+	}
 
 	let {
 		state = 'empty',
@@ -8,10 +18,14 @@
 		message = '',
 		actionLabel = '',
 		onAction = () => {},
-	} = $props();
+	}: Props = $props();
 
-	/** @type {Record<string, string>} */
-	const icons = { loading: '…', empty: '✓', error: '!', unconfigured: '!' };
+	const icons: Record<AsyncStateName, string> = {
+		loading: '…',
+		empty: '✓',
+		error: '!',
+		unconfigured: '!',
+	};
 </script>
 
 {#if state === 'loading'}

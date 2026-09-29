@@ -1,13 +1,15 @@
-<script>
+<script lang="ts">
+	interface Props {
+		pattern?: 'float' | 'equalizer';
+		count?: number;
+		tone?: 'primary' | 'error';
+		state?: 'idle' | 'active' | 'processing';
+	}
+
 	/**
 	 * VoiceBars — shared animated voice-bar visual primitive.
-	 *
-	 * @prop {'float'|'equalizer'} pattern — loading float or recording equalizer
-	 * @prop {number} count — number of bars to render
-	 * @prop {'primary'|'error'} tone — semantic bar color
-	 * @prop {'idle'|'active'|'processing'} state — equalizer energy state
 	 */
-	let { pattern = 'float', count = 3, tone = 'primary', state = 'idle' } = $props();
+	let { pattern = 'float', count = 3, tone = 'primary', state = 'idle' }: Props = $props();
 	let indexes = $derived.by(() =>
 		Array.from({ length: Math.max(0, Math.floor(count)) }, (_, index) => index),
 	);
@@ -122,5 +124,4 @@
 			transform: scaleY(1);
 		}
 	}
-
 </style>

@@ -1,11 +1,14 @@
-<script>
+<script lang="ts">
+	interface Props {
+		value?: string;
+		onInput?: (value: string) => void;
+		placeholder?: string;
+		ariaLabel?: string;
+		className?: string;
+	}
+
 	/**
 	 * Tool Search — shared compact search field for structured tool results.
-	 * @prop {string} value
-	 * @prop {function} onInput
-	 * @prop {string} placeholder
-	 * @prop {string} ariaLabel
-	 * @prop {string} className
 	 */
 	let {
 		value = '',
@@ -13,7 +16,7 @@
 		placeholder = '筛选…',
 		ariaLabel = '筛选',
 		className = '',
-	} = $props();
+	}: Props = $props();
 </script>
 
 <input

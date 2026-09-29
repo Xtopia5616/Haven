@@ -1,15 +1,36 @@
-<script>
+<script lang="ts">
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import MaterialField from '$lib/MaterialField.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
-	import { withStringValue } from '$lib/typedCallbacks.js';
+	import { withStringValue } from '$lib/typedCallbacks.ts';
+	import type { McpTransportTypeInput } from '$lib/contracts/generatedCommands.ts';
+	import type { McpServerConfigInput } from '$lib/contracts/tools.ts';
+	import type { McpServerSnapshot } from '$lib/contracts/tools.ts';
 
-	let { server = null, onClose, onSave, existingNames = [] } = $props();
+	interface EditorConfig extends McpServerConfigInput {
+		name: string;
+		transport: McpTransportTypeInput;
+		command: string;
+		cwd: string | null;
+		args: string[];
+		env: string[];
+		url: string;
+		enabled: boolean;
+	}
+
+	interface Props {
+		server?: McpServerSnapshot | null;
+		onClose: () => void;
+		onSave: (config: EditorConfig) => Promise<void> | void;
+		existingNames?: string[];
+	}
+
+	let { server = null, onClose, onSave, existingNames = [] }: Props = $props();
 
 	let isEdit = $derived(server !== null);
 	let name = $state('');
-	let transport = $state('stdio');
+	let transport = $state<McpTransportTypeInput>('stdio');
 	let command = $state('');
 	let cwd = $state('');
 	let argsText = $state('');
@@ -29,7 +50,7 @@
 
 	$effect(() => {
 		name = server?.name || '';
-		transport = server?.transport || 'stdio';
+		transport = server?.transport === 'http' ? 'http' : 'stdio';
 		command = server?.command || '';
 		cwd = server?.cwd || '';
 		argsText = (server?.args || []).join('\n');
@@ -102,22 +123,23 @@
 		saving = false;
 	}
 
-	/** @param {MouseEvent} e */
-	function handleOverlayClick(e) {
+	function handleOverlayClick(e: MouseEvent) {
 		if (e.target === e.currentTarget) onClose();
 	}
 
-	/** @param {KeyboardEvent} e */
-	function handleKeydown(e) {
-		if (e.key === 'Enter' && /** @type {HTMLElement} */ (e.target).tagName !== 'TEXTAREA') {
+	function handleKeydown(e: KeyboardEvent) {
+		if (
+			e.key === 'Enter' &&
+			e.target instanceof HTMLElement &&
+			e.target.tagName !== 'TEXTAREA'
+		) {
 			e.preventDefault();
 			handleSave();
 		}
 	}
 
-	/** @param {any} v */
-	function handleTransportChange(v) {
-		transport = v;
+	function handleTransportChange(value: string) {
+		if (value === 'stdio' || value === 'http') transport = value;
 	}
 </script>
 
@@ -152,7 +174,7 @@
 					value={transport}
 					options={transportOptions}
 					onChange={withStringValue(function handleTransportChange(v) {
-						transport = v;
+						transport = v === 'http' ? 'http' : 'stdio';
 					})}
 				/>
 			{/snippet}

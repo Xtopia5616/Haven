@@ -1,14 +1,34 @@
-<script>
+<script lang="ts">
 	import { tick } from 'svelte';
 	import MaterialDialog from './MaterialDialog.svelte';
 	import Icon from './Icon.svelte';
 	import MenuItem from './MenuItem.svelte';
 	import MaterialButton from './MaterialButton.svelte';
 	import MaterialSplitButton from './MaterialSplitButton.svelte';
+	import type { RiskLevel } from '$lib/contracts/app.ts';
+
+	interface ConfirmationDecision {
+		stepId: string;
+		approved: boolean;
+		effect?: string;
+		scope?: string;
+		target?: string;
+	}
+
+	interface Props {
+		stepId?: string | null;
+		toolName?: string;
+		sessionId?: string;
+		sessionTitle?: string;
+		riskLevel?: RiskLevel;
+		summary?: string;
+		permissionKey?: string;
+		deadlineAt?: number | null;
+		onConfirm?: (decision: ConfirmationDecision) => void;
+	}
 
 	const TIMEOUT_SECONDS = 120;
-	/** @type {Record<string, string>} */
-	const RISK_LABELS = {
+	const RISK_LABELS: Record<string, string> = {
 		safe: '安全',
 		low: '低风险',
 		medium: '中风险',
@@ -26,20 +46,19 @@
 		permissionKey,
 		deadlineAt,
 		onConfirm,
-	} = $props();
+	}: Props = $props();
 	let remaining = $state(TIMEOUT_SECONDS);
 	let showDenyMenu = $state(false);
 	let showAllowMenu = $state(false);
-	let pendingPersistentTarget = /** @type {string | null} */ ($state(null));
-	let submittedStepId = /** @type {string | null} */ ($state(null));
-	let dialogEl = /** @type {HTMLDivElement | null} */ ($state(null));
+	let pendingPersistentTarget = $state<string | null>(null);
+	let submittedStepId = $state<string | null>(null);
+	let dialogEl = $state<HTMLDivElement | null>(null);
 
 	let normalizedRisk = $derived(String(riskLevel || 'medium').toLowerCase());
 	let riskLabel = $derived(RISK_LABELS[normalizedRisk] || '中风险');
 	let timeoutPercent = $derived(Math.min(100, Math.max(0, (remaining / TIMEOUT_SECONDS) * 100)));
 
-	/** @param {string} key */
-	function buildTargetOptions(key) {
+	function buildTargetOptions(key: string) {
 		const segments = String(key || '')
 			.split('.')
 			.map((segment) => segment.trim())
@@ -63,7 +82,7 @@
 		return options;
 	}
 
-	let targetOptions = $derived(buildTargetOptions(permissionKey));
+	let targetOptions = $derived(buildTargetOptions(permissionKey ?? ''));
 	let pendingTargetLabel = $derived(
 		targetOptions.find((option) => option.target === pendingPersistentTarget)?.label ||
 			'此操作',
@@ -87,7 +106,7 @@
 		pendingPersistentTarget = null;
 		let disposed = false;
 		const deadline = deadlineAt || Date.now() + TIMEOUT_SECONDS * 1000;
-		let id = /** @type {ReturnType<typeof setInterval> | undefined} */ (undefined);
+		let id: ReturnType<typeof setInterval> | undefined;
 		const tickCountdown = () => {
 			remaining = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
 			if (remaining <= 0) {
@@ -108,11 +127,7 @@
 		};
 	});
 
-	function decide(
-		/** @type {string} */ effect,
-		/** @type {string} */ scope,
-		/** @type {string} */ target = 'operation',
-	) {
+	function decide(effect: string, scope: string, target = 'operation') {
 		const sid = stepId;
 		if (!sid || submittedStepId === sid) return;
 		submittedStepId = sid;
@@ -128,8 +143,7 @@
 		});
 	}
 
-	/** @param {string} target */
-	function requestPersistentAllow(target) {
+	function requestPersistentAllow(target: string) {
 		const needsWarning =
 			target !== 'operation' ||
 			normalizedRisk === 'high' ||
@@ -839,5 +853,4 @@
 			grid-column: auto;
 		}
 	}
-
 </style>

@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 	// A key-binding capture field. Instead of typing the combo as text, the
 	// user clicks the field and presses the desired key combination; the
 	// formatted string (matching the backend `parse_shortcut` format, e.g.
@@ -9,7 +9,20 @@
 	// shared formatting lives in `hotkeyFormat.ts` so it can be unit-tested
 	// for parity with the backend; see `hotkeyFormat.test.ts`.
 	import { formatCombo } from './hotkeyFormat.ts';
-	let { value = '', onChange, id = undefined, placeholder = '点击并按下快捷键' } = $props();
+
+	interface Props {
+		value?: string;
+		onChange?: (value: string) => void;
+		id?: string;
+		placeholder?: string;
+	}
+
+	let {
+		value = '',
+		onChange,
+		id = undefined,
+		placeholder = '点击并按下快捷键',
+	}: Props = $props();
 
 	let listening = $state(false);
 
@@ -21,10 +34,7 @@
 		listening = false;
 	}
 
-	/**
-	 * @param {KeyboardEvent} e
-	 */
-	function handleKeydown(e) {
+	function handleKeydown(e: KeyboardEvent) {
 		if (!listening) return;
 		// Prevent the browser from acting on the combo while capturing.
 		e.preventDefault();

@@ -1,18 +1,30 @@
-<script>
+<script lang="ts">
 	import Icon from './Icon.svelte';
+	import type { Snippet } from 'svelte';
+
+	interface Props {
+		label?: string;
+		variant?:
+			| 'default'
+			| 'ghost'
+			| 'danger'
+			| 'danger-outline'
+			| 'primary'
+			| 'success-outline'
+			| 'tonal';
+		size?: 'default' | 'toolbar' | 'dense';
+		icon?: string;
+		onclick?: () => void;
+		disabled?: boolean;
+		ariaExpanded?: boolean;
+		ariaBusy?: boolean;
+		title?: string;
+		className?: string;
+		children?: Snippet;
+	}
 
 	/**
 	 * Material Icon Button — reusable icon button with compact and toolbar sizes.
-	 * @prop {string} label — aria-label
-	 * @prop {'default'|'ghost'|'danger'|'danger-outline'|'primary'|'success-outline'|'tonal'} variant
-	 * @prop {'default'|'toolbar'|'dense'} size — visual size used by the surrounding layout
-	 * @prop {string|undefined} icon — optional shared icon name
-	 * @prop {function} onclick
-	 * @prop {boolean} disabled
-	 * @prop {boolean | undefined} ariaExpanded — optional disclosure state
-	 * @prop {boolean | undefined} ariaBusy — optional busy state for async actions
-	 * @prop {string} title — optional native tooltip
-	 * @prop {string} className — additional class names for layout positioning
 	 */
 	let {
 		label = '',
@@ -26,7 +38,7 @@
 		title = '',
 		className = '',
 		children = undefined,
-	} = $props();
+	}: Props = $props();
 </script>
 
 <button

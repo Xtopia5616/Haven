@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 	import { onDestroy } from 'svelte';
 	import { discoverModels } from '$lib/modelDiscoveryCommands.ts';
 	import { addNotification } from '$lib/notificationStore.ts';
@@ -16,8 +16,41 @@
 		withEventValue,
 		withNumberValue,
 		withStringValue,
-	} from '$lib/typedCallbacks.js';
+	} from '$lib/typedCallbacks.ts';
 	import { mediaCapabilityBackend, sttCapabilityBackend } from '$lib/apiStyle.ts';
+	import type {
+		ApiKeyStatus,
+		AudioConfig,
+		ContextLimitsConfigInput,
+		ImageGenConfigInput,
+		LlmConfigInput,
+		MediaInputStrategyInput,
+		OcrConfigInput,
+		ProviderConfigInput,
+		SttConfigInput,
+		TtsConfigInput,
+	} from '$lib/contracts/generatedCommands.ts';
+	import type { ModelInfo } from '$lib/contracts/model.ts';
+
+	type NamedProvider = Pick<
+		ProviderConfigInput,
+		'name' | 'provider' | 'api_style' | 'base_url' | 'api_key'
+	>;
+	type MediaInputStrategy = MediaInputStrategyInput;
+	type MediaKeyName = 'ocr' | 'ocr_secret' | '';
+	interface Props {
+		llmConfig: LlmConfigInput & { providers: ProviderConfigInput[] };
+		audio: AudioConfig;
+		stt: Required<SttConfigInput>;
+		ocr: Required<OcrConfigInput>;
+		tts: Required<TtsConfigInput>;
+		imageGen: Required<ImageGenConfigInput>;
+		mediaInputStrategy: MediaInputStrategy;
+		contextLimits: Partial<ContextLimitsConfigInput>;
+		keyConfigured: ApiKeyStatus;
+		keyConfiguredProviders?: Record<string, boolean>;
+		mcpServerNames?: string[];
+	}
 
 	/** Media configuration owns the channel-specific UI and discovery state.
 	 * The settings page still owns the shared mutable config and persistence. */
@@ -33,7 +66,7 @@
 		keyConfigured,
 		keyConfiguredProviders = {},
 		mcpServerNames = [],
-	} = $props();
+	}: Props = $props();
 
 	const STT_SPECIAL = new Set(['llm', 'mcp', 'none']);
 	const OCR_PROVIDER_OPTIONS = [
@@ -49,31 +82,27 @@
 		{ value: 'extracted_preferred', label: '优先 OCR / STT / 描述' },
 		{ value: 'text_only_safe', label: '仅安全文本' },
 	];
-	/** @type {Record<string, string>} */
-	const MEDIA_INPUT_STRATEGY_HINTS = {
+	const MEDIA_INPUT_STRATEGY_HINTS: Record<MediaInputStrategy, string> = {
 		auto: '支持时发送原始图片/音频；模型能力不足时自动改用 OCR、转写或其他安全表示。',
 		raw_preferred: '尽量保留原始媒体，但不会绕过模型能力检查；发生降级时会显示原因。',
 		extracted_preferred: '优先使用 OCR、STT 和图片描述，适合希望减少原始媒体输入的场景。',
 		text_only_safe: '只发送用户文字和安全派生文本，不发送原始媒体或仅路径引用。',
 	};
 
-	/** @param {string} name */
-	function providerByName(name) {
-		return (llmConfig.providers || []).find(
-			(/** @type {any} */ provider) => provider.name === name,
-		);
+	function providerByName(name: string): NamedProvider | undefined {
+		return llmConfig.providers.find((provider) => provider.name === name);
 	}
-	/** @param {string} current */
-	function mediaProviderOptions(current) {
-		const options = [{ value: 'none', label: '未配置' }];
-		for (const provider of /** @type {any[]} */ (llmConfig.providers || []))
+	function mediaProviderOptions(current: string): Array<{ value: string; label: string }> {
+		const options: Array<{ value: string; label: string }> = [
+			{ value: 'none', label: '未配置' },
+		];
+		for (const provider of llmConfig.providers)
 			if (provider?.name) options.push({ value: provider.name, label: provider.name });
 		if (current && current !== 'none' && !options.some((option) => option.value === current))
 			options.push({ value: current, label: `${current}（需重选「模型」页 Provider）` });
 		return options;
 	}
-	/** @param {string} name @param {'tts' | 'image_gen'} capability */
-	function mediaProviderKind(name, capability) {
+	function mediaProviderKind(name: string, capability: 'tts' | 'image_gen') {
 		if (!name || name === 'none') return '';
 		const provider = providerByName(name);
 		return provider ? mediaCapabilityBackend(provider, capability) : '';
@@ -84,7 +113,7 @@
 			{ value: 'mcp', label: 'MCP Server' },
 			{ value: 'none', label: '未配置' },
 		];
-		for (const provider of /** @type {any[]} */ (llmConfig.providers || []))
+		for (const provider of llmConfig.providers)
 			if (provider?.name) options.push({ value: provider.name, label: provider.name });
 		if (
 			stt.provider &&
@@ -97,31 +126,25 @@
 			});
 		return options;
 	}
-	/** @param {string} name */
-	function sttBackendKind(name) {
+	function sttBackendKind(name: string) {
 		if (!name || STT_SPECIAL.has(name)) return '';
 		const provider = providerByName(name);
 		return provider ? sttCapabilityBackend(provider) : '';
 	}
-	/** @param {string} provider */
-	function isNamedSttProvider(provider) {
+	function isNamedSttProvider(provider: string | undefined) {
 		return !!provider && !STT_SPECIAL.has(provider);
 	}
-	/** @param {string} kind */
-	function sttModelPlaceholder(kind) {
+	function sttModelPlaceholder(kind: string) {
 		if (kind === 'deepgram') return 'nova-3';
 		if (kind === 'assemblyai') return 'assemblyai_default';
 		if (kind === 'groq') return 'whisper-large-v3-turbo';
 		if (kind === 'gemini') return 'gemini-2.5-flash';
 		return 'whisper-1';
 	}
-	/** @type {import('$lib/contracts/model.ts').ModelInfo[]} */
-	let sttModels = $state([]);
+	let sttModels = $state<ModelInfo[]>([]);
 	let sttFetching = $state(false);
-	/** @type {ReturnType<typeof setTimeout> | undefined} */
-	let sttFetchTimer = undefined;
-	/** @param {string} kind */
-	function sttModelOptions(kind) {
+	let sttFetchTimer: ReturnType<typeof setTimeout> | undefined;
+	function sttModelOptions(kind: string) {
 		if (kind === 'deepgram')
 			return [
 				{ value: 'nova-3', label: 'nova-3' },
@@ -174,20 +197,21 @@
 		sttFetchTimer = setTimeout(fetchSttModels, 500);
 	}
 
-	let keyDlg = $state({ open: false, model: '', label: '' });
-	/** @param {string} model @param {string} label */
-	function openKeyDialog(model, label) {
+	let keyDlg = $state<{ open: boolean; model: MediaKeyName; label: string }>({
+		open: false,
+		model: '',
+		label: '',
+	});
+	function openKeyDialog(model: Exclude<MediaKeyName, ''>, label: string) {
 		keyDlg = { open: true, model, label };
 	}
-	/** @param {string} value */
-	function confirmMediaKey(value) {
+	function confirmMediaKey(value: string) {
 		if (keyDlg.model === 'ocr') ocr.api_key = value;
 		else if (keyDlg.model === 'ocr_secret') ocr.api_secret = value;
-		keyConfigured[keyDlg.model] = true;
+		if (keyDlg.model) keyConfigured[keyDlg.model] = true;
 		keyDlg = { open: false, model: '', label: '' };
 	}
-	/** @param {string} value */
-	function setSttProvider(value) {
+	function setSttProvider(value: string) {
 		stt.provider = value;
 		if (!isNamedSttProvider(value)) sttModels = [];
 	}
@@ -214,7 +238,9 @@
 				options={MEDIA_INPUT_STRATEGY_OPTIONS}
 				ariaLabel="附件输入策略"
 				onChange={withStringValue((v) => {
-					mediaInputStrategy = v;
+					if (Object.hasOwn(MEDIA_INPUT_STRATEGY_HINTS, v)) {
+						mediaInputStrategy = v as MediaInputStrategy;
+					}
 				})}
 			/>
 			<p class="strategy-hint">
@@ -316,7 +342,7 @@
 								<div class="model-field">
 									<span class="field-label">MCP Server</span><MaterialAutocomplete
 										id="voice-stt-mcp"
-										value={stt.mcp_server}
+										value={stt.mcp_server ?? ''}
 										options={mcpServerNames.map((name) => ({
 											value: name,
 											label: name,
@@ -460,7 +486,7 @@
 						<h4>输入 · 附件与理解</h4>
 						<p class="model-hint">
 							当前压缩：最长边 ≤{contextLimits.max_attachment_image_dim_px}px、质量 {Math.round(
-								contextLimits.attachment_image_jpeg_quality * 100,
+								(contextLimits.attachment_image_jpeg_quality ?? 0.85) * 100,
 							)}%。
 						</p>
 						<p class="model-hint">
@@ -471,7 +497,7 @@
 							<label for="max-attachment-images">单条消息最多图片数</label
 							><MaterialNumberField
 								id="max-attachment-images"
-								value={contextLimits.max_attachment_images}
+								value={contextLimits.max_attachment_images ?? 4}
 								min={1}
 								max={20}
 								step={1}
@@ -485,7 +511,10 @@
 							><MaterialNumberField
 								id="max-attachment-image-mb"
 								value={Math.round(
-									(contextLimits.max_attachment_image_bytes / 1048576) * 10,
+									((contextLimits.max_attachment_image_bytes ??
+										10 * 1024 * 1024) /
+										1048576) *
+										10,
 								) / 10}
 								min={1}
 								max={50}
@@ -501,7 +530,7 @@
 							<label for="max-attachment-image-dim">压缩最长边 (px)</label
 							><MaterialNumberField
 								id="max-attachment-image-dim"
-								value={contextLimits.max_attachment_image_dim_px}
+								value={contextLimits.max_attachment_image_dim_px ?? 1568}
 								min={512}
 								max={4096}
 								step={64}
@@ -514,7 +543,7 @@
 							<label for="attachment-image-quality">JPEG 压缩质量</label
 							><MaterialNumberField
 								id="attachment-image-quality"
-								value={contextLimits.attachment_image_jpeg_quality}
+								value={contextLimits.attachment_image_jpeg_quality ?? 0.85}
 								min={0.1}
 								max={1}
 								step={0.05}
@@ -653,7 +682,7 @@
 						<label for="max-attachment-files">单条消息最多文件数</label
 						><MaterialNumberField
 							id="max-attachment-files"
-							value={contextLimits.max_attachment_files}
+							value={contextLimits.max_attachment_files ?? 5}
 							min={1}
 							max={20}
 							step={1}
@@ -667,7 +696,9 @@
 						><MaterialNumberField
 							id="max-attachment-file-mb"
 							value={Math.round(
-								(contextLimits.max_attachment_file_bytes / 1048576) * 10,
+								((contextLimits.max_attachment_file_bytes ?? 20 * 1024 * 1024) /
+									1048576) *
+									10,
 							) / 10}
 							min={1}
 							max={100}

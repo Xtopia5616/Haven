@@ -1,21 +1,27 @@
-<script>
+<script lang="ts">
 	import JsonView from '$lib/JsonView.svelte';
 	import StatusBadge from '$lib/StatusBadge.svelte';
 	import ToolCardList from '$lib/ToolCardList.svelte';
 	import ToolResultList from '$lib/ToolResultList.svelte';
 	import ToolSearch from '$lib/ToolSearch.svelte';
 
+	interface ProcessEntry {
+		name?: string;
+		pid?: string | number;
+		cpu?: unknown;
+		memory?: unknown;
+		status?: unknown;
+	}
+
 	let { data = {} } = $props();
 
-	/** @param {unknown} value */
-	function clampPct(value) {
+	function clampPct(value: unknown) {
 		const n = Number(value);
 		if (!Number.isFinite(n)) return 0;
 		return Math.max(0, Math.min(100, n));
 	}
 
-	/** @param {unknown} value */
-	function fmtBytes(value) {
+	function fmtBytes(value: unknown) {
 		const n = Number(value);
 		if (!Number.isFinite(n) || n < 0) return '—';
 		if (n < 1024) return `${n} B`;
@@ -30,7 +36,7 @@
 	}
 
 	let processFilter = $state('');
-	let processList = $derived(/** @type {any[]} */ (Array.isArray(data.processes) ? data.processes : []));
+	let processList: ProcessEntry[] = $derived(Array.isArray(data.processes) ? data.processes : []);
 	let filteredProcesses = $derived(
 		processFilter
 			? processList.filter((process) =>
@@ -43,13 +49,11 @@
 	let maxProcMem = $derived(
 		processList.reduce((max, process) => Math.max(max, Number(process.memory) || 0), 0),
 	);
-	/** @param {any} process */
-	function memPct(process) {
+	function memPct(process: ProcessEntry) {
 		if (!maxProcMem) return 0;
 		return Math.min(100, ((Number(process.memory) || 0) / maxProcMem) * 100);
 	}
-	/** @type {Record<string, string>} */
-	const processStatusLabels = {
+	const processStatusLabels: Record<string, string> = {
 		Run: '运行中',
 		Sleep: '休眠',
 		Idle: '空闲',
@@ -59,12 +63,10 @@
 		Tracing: '跟踪',
 		Unknown: '未知',
 	};
-	/** @param {any} status */
-	function procStatusLabel(status) {
+	function procStatusLabel(status: unknown) {
 		return processStatusLabels[String(status ?? '')] ?? String(status ?? '未知');
 	}
-	/** @param {any} status */
-	function procStatusTone(status) {
+	function procStatusTone(status: unknown) {
 		const normalized = String(status ?? '').toLowerCase();
 		if (normalized.includes('run')) return 'success';
 		if (normalized.includes('zombie') || normalized.includes('dead')) return 'error';
@@ -76,7 +78,8 @@
 
 {#if Array.isArray(data.processes)}
 	<div class="tool-card-count">
-		{#if processFilter}{filteredProcesses.length} / {processList.length} 个进程{:else}{processList.length} 个进程{/if}
+		{#if processFilter}{filteredProcesses.length} / {processList.length} 个进程{:else}{processList.length}
+			个进程{/if}
 	</div>
 	<ToolSearch
 		value={processFilter}
@@ -113,13 +116,18 @@
 									>{fmtBytes(process.memory)}
 								</td>
 								<td class="proc-status">
-									<StatusBadge label={procStatusLabel(process.status)} tone={procStatusTone(process.status)} />
+									<StatusBadge
+										label={procStatusLabel(process.status)}
+										tone={procStatusTone(process.status)}
+									/>
 								</td>
 							</tr>
 						{/each}
 					</tbody>
 				</table>
-				{#if visibleProcesses.length === 0}<p class="tool-card-empty">没有匹配的进程</p>{/if}
+				{#if visibleProcesses.length === 0}<p class="tool-card-empty">
+						没有匹配的进程
+					</p>{/if}
 			</ToolCardList>
 		{/snippet}
 	</ToolResultList>

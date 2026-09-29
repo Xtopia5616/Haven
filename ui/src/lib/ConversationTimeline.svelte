@@ -1,24 +1,28 @@
-<script>
+<script lang="ts">
+	import type { ComponentProps } from 'svelte';
+	import ChatMessageTimeline from '$lib/ChatMessageTimeline.svelte';
+	import ConversationEmptyState from './ConversationEmptyState.svelte';
+	import LoadingState from './LoadingState.svelte';
+	import SessionTerminationBanner from './SessionTerminationBanner.svelte';
+
+	type MessageTimelineProps = ComponentProps<typeof ChatMessageTimeline>;
+	type Props = MessageTimelineProps & { loading?: boolean };
+
 	/**
-	 * ConversationTimeline — semantic conversation boundary for streamed
+	 * ConversationTimeline is the semantic boundary for streamed
 	 * messages, tool results and ask/confirm interactions.
 	 *
 	 * The empty state is deliberately kept separate from the message renderer.
 	 * ChatMessageTimeline pulls in markdown, syntax highlighting and tool-card
 	 * components, none of which are needed for the first blank conversation.
 	 */
-	import ConversationEmptyState from './ConversationEmptyState.svelte';
-	import LoadingState from './LoadingState.svelte';
-	import ChatMessageTimeline from './ChatMessageTimeline.svelte';
-	import SessionTerminationBanner from './SessionTerminationBanner.svelte';
-
 	let {
 		messages = [],
 		loading = false,
 		terminationStatus = null,
 		terminationReason = '',
 		...restProps
-	} = $props();
+	}: Props = $props();
 </script>
 
 {#if loading}

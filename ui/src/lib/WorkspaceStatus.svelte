@@ -1,7 +1,22 @@
-<script>
+<script lang="ts">
 	import MaterialIconButton from './MaterialIconButton.svelte';
 	import StatusDot from './StatusDot.svelte';
 	import { taskKindLabel } from '$lib/taskTerminology.ts';
+
+	interface Props {
+		overlay?: { isRecording?: boolean; processing?: boolean };
+		executionPhase?: string;
+		busySessions?: ReadonlySet<unknown>;
+		conversationStatus?: string;
+		runtime?: string;
+		bootstrapReady?: boolean;
+		llmConnected?: string | null;
+		llmConnectionDetail?: string | null;
+		awaitingBackgroundActive?: boolean;
+		runningActionCount?: number;
+		pendingScheduledActions?: unknown[];
+		onOpenTasks?: () => void;
+	}
 
 	let {
 		overlay = {},
@@ -16,7 +31,7 @@
 		runningActionCount = 0,
 		pendingScheduledActions = [],
 		onOpenTasks = () => {},
-	} = $props();
+	}: Props = $props();
 
 	const executionStatusLabel = $derived.by(() => {
 		if (runtime === 'browser') return '浏览器预览';
@@ -89,9 +104,7 @@
 			return 'tool';
 		if (['已暂停', '等待操作', '模型未配置'].includes(statusLabel)) return 'warning';
 		if (
-			['检测中', '排队中', '请求中', '等待响应', '运行中', '加载中'].includes(
-				statusLabel,
-			) ||
+			['检测中', '排队中', '请求中', '等待响应', '运行中', '加载中'].includes(statusLabel) ||
 			busySessions.size > 0
 		)
 			return 'warning';
@@ -149,12 +162,7 @@
 </script>
 
 <div class="status-switch">
-	<div
-		class="status-chip"
-		role="status"
-		aria-label={`状态：${statusLabel}`}
-		title={statusTitle}
-	>
+	<div class="status-chip" role="status" aria-label={`状态：${statusLabel}`} title={statusTitle}>
 		<StatusDot color={statusColor} animate={statusAnimating} />
 		<span class:recording-text={overlay.isRecording} class="status-text">{statusLabel}</span>
 	</div>

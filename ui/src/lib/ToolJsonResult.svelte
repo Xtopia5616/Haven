@@ -1,7 +1,13 @@
-<script>
+<script lang="ts">
 	import JsonView from '$lib/JsonView.svelte';
 
-	let { kind = 'generic', data = {}, rawText = '' } = $props();
+	interface Props {
+		kind?: string;
+		data?: unknown;
+		rawText?: string;
+	}
+
+	let { kind = 'generic', data = {}, rawText = '' }: Props = $props();
 </script>
 
 {#if kind === 'raw'}

@@ -1,14 +1,20 @@
-<script>
+<script lang="ts">
+	import type { Snippet } from 'svelte';
+
+	interface Props {
+		selected?: boolean;
+		disabled?: boolean;
+		danger?: boolean;
+		role?: string;
+		ariaChecked?: boolean;
+		label?: string;
+		className?: string;
+		onSelect?: (event: MouseEvent) => void;
+		children?: Snippet;
+	}
+
 	/**
 	 * Menu Item — shared row primitive for popup and context menus.
-	 * @prop {boolean} selected
-	 * @prop {boolean} disabled
-	 * @prop {boolean} danger
-	 * @prop {string | undefined} role
-	 * @prop {boolean | undefined} ariaChecked
-	 * @prop {string} label
-	 * @prop {string} className
-	 * @prop {function} onSelect
 	 */
 	let {
 		selected = false,
@@ -20,7 +26,7 @@
 		className = '',
 		onSelect = () => {},
 		children = undefined,
-	} = $props();
+	}: Props = $props();
 </script>
 
 <button

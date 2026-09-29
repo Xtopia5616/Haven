@@ -1,15 +1,40 @@
-<script>
+<script lang="ts">
 	import MaterialCollapsible from '$lib/MaterialCollapsible.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import Icon from '$lib/Icon.svelte';
 	import MaterialCard from '$lib/MaterialCard.svelte';
 	import MaterialNumberFieldWithUnit from '$lib/MaterialNumberFieldWithUnit.svelte';
-	import { withNumberValue } from '$lib/typedCallbacks.js';
+	import { withNumberValue } from '$lib/typedCallbacks.ts';
+	import type { ContextLimitsConfigInput } from '$lib/contracts/generatedCommands.ts';
 
-	let { contextLimits } = $props();
+	type LimitKey = keyof ContextLimitsConfigInput;
+	interface LimitField {
+		key: LimitKey;
+		label: string;
+		unit: string;
+		kTokens?: boolean;
+		mb?: boolean;
+		kb?: boolean;
+		days?: boolean;
+		step?: number;
+		min?: number;
+		max?: number;
+		danger: boolean;
+		hint?: string;
+	}
+	interface LimitGroup {
+		id: string;
+		title: string;
+		hint: string;
+		fields: LimitField[];
+	}
+	interface Props {
+		contextLimits: Partial<ContextLimitsConfigInput>;
+	}
 
-	/** @type {any[]} */
-	const LIMIT_GROUPS = [
+	let { contextLimits }: Props = $props();
+
+	const LIMIT_GROUPS: LimitGroup[] = [
 		{
 			id: 'context',
 			title: '上下文与压缩',
@@ -390,25 +415,25 @@
 		},
 	];
 
-	const limitViews = LIMIT_GROUPS.map((/** @type {any} */ g) => ({
+	const limitViews = LIMIT_GROUPS.map((g) => ({
 		...g,
-		normal: g.fields.filter((/** @type {any} */ f) => !f.danger),
-		danger: g.fields.filter((/** @type {any} */ f) => f.danger),
+		normal: g.fields.filter((f) => !f.danger),
+		danger: g.fields.filter((f) => f.danger),
 	}));
-	let limitDangerOpen = $state(Object.fromEntries(limitViews.map((g) => [g.id, true])));
+	let limitDangerOpen = $state<Record<string, boolean>>(
+		Object.fromEntries(limitViews.map((g) => [g.id, true])),
+	);
 	let allLimitDangerOpen = $derived(
 		limitViews.every((g) => !g.danger.length || (limitDangerOpen[g.id] ?? true)),
 	);
 
-	/** @param {boolean} open */
-	function setAllLimitDanger(open) {
+	function setAllLimitDanger(open: boolean) {
 		for (const group of limitViews) limitDangerOpen[group.id] = open;
 	}
 
-	/** @param {string} key @param {number} value */
-	function limitDisplay(key, value) {
+	function limitDisplay(key: LimitKey, value: number | undefined) {
 		const field = LIMIT_GROUPS.flatMap((g) => g.fields).find((x) => x.key === key);
-		if (!field) return value;
+		if (!field || value === undefined) return value ?? 0;
 		if (field.mb) return Math.round((value / 1048576) * 10) / 10;
 		if (field.kb) return Math.round((value / 1024) * 10) / 10;
 		if (field.kTokens) return Math.round(value / 1000);
@@ -416,8 +441,7 @@
 		return value;
 	}
 
-	/** @param {string} key @param {number} value */
-	function limitCommit(key, value) {
+	function limitCommit(key: LimitKey, value: number) {
 		const field = LIMIT_GROUPS.flatMap((g) => g.fields).find((x) => x.key === key);
 		if (!field) return value;
 		if (field.mb) return Math.round(value * 1048576);

@@ -1,14 +1,32 @@
-<script>
-	let { data = {}, shellText = '', liveStreaming = false } = $props();
+<script lang="ts">
+	interface Props {
+		data?: {
+			truncated?: boolean;
+			background?: boolean;
+			status?: string;
+			action_id?: string;
+			exit_code?: number | null;
+		};
+		shellText?: string;
+		liveStreaming?: boolean;
+	}
+
+	let { data = {}, shellText = '', liveStreaming = false }: Props = $props();
 </script>
 
 {#if data.truncated}
 	<div class="tool-card-count">输出过长已截断</div>
 {/if}
 {#if data.background && data.status === 'running'}
-	<div class="tool-card-count">后台任务运行中{#if data.action_id} · {data.action_id}{/if}</div>
+	<div class="tool-card-count">
+		后台任务运行中{#if data.action_id}
+			· {data.action_id}{/if}
+	</div>
 {:else if data.background && data.status === 'cancelled'}
-	<div class="tool-card-count">后台任务已取消{#if data.action_id} · {data.action_id}{/if}</div>
+	<div class="tool-card-count">
+		后台任务已取消{#if data.action_id}
+			· {data.action_id}{/if}
+	</div>
 {:else if data.background && (data.status === 'completed' || data.status === 'failed')}
 	<div class="tool-card-count">
 		后台任务{data.status === 'completed' ? '已完成' : '失败'}{#if data.action_id}

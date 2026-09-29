@@ -1,7 +1,19 @@
-<script>
+<script lang="ts">
 	import MaterialButton from './MaterialButton.svelte';
 	import MaterialIconButton from './MaterialIconButton.svelte';
 	import Icon from './Icon.svelte';
+
+	interface Props {
+		mode?: 'stored' | 'edit' | 'badge';
+		configured?: boolean;
+		badgePrefix?: string;
+		value?: string;
+		id?: string;
+		placeholder?: string;
+		keepHint?: string;
+		disabled?: boolean;
+		onEdit?: () => void;
+	}
 
 	/**
 	 * Unified API-key control (same chrome as md-input).
@@ -11,15 +23,6 @@
 	 * - `edit` — password input + visibility toggle; empty+configured keeps previous
 	 * - `badge` — compact status chip for provider list rows
 	 *
-	 * @prop {'stored'|'edit'|'badge'} [mode='stored']
-	 * @prop {boolean} [configured=false]
-	 * @prop {string} [badgePrefix=''] — optional leading label in badge mode
-	 * @prop {string} [value=''] — bindable in edit mode
-	 * @prop {string} [id]
-	 * @prop {string} [placeholder='sk-...']
-	 * @prop {string} [keepHint='已配置，留空保持不变']
-	 * @prop {boolean} [disabled=false]
-	 * @prop {function(): void} [onEdit]
 	 */
 	let {
 		mode = 'stored',
@@ -31,16 +34,15 @@
 		keepHint = '已配置，留空保持不变',
 		disabled = false,
 		onEdit = undefined,
-	} = $props();
+	}: Props = $props();
 
 	const MASK = '••••••••••••••••';
 
 	let showKey = $state(false);
 
-	/** @type {string} */
 	let editPlaceholder = $derived(configured && !value ? MASK : placeholder);
 
-	function handleEdit() {
+	function handleEdit(): void {
 		if (disabled) return;
 		onEdit?.();
 	}

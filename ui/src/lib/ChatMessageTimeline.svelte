@@ -1,4 +1,5 @@
-<script>
+<script lang="ts">
+	import type { AgentMediaPlanPayload } from '$lib/contracts/agent.ts';
 	import { fly } from 'svelte/transition';
 	import ChatBubble from '$lib/ChatBubble.svelte';
 	import Logo from '$lib/Logo.svelte';
@@ -6,7 +7,33 @@
 	import SessionTerminationBanner from '$lib/SessionTerminationBanner.svelte';
 	import { hasToolPreambleBefore } from '$lib/toolIntent.ts';
 	import ConversationActivityGroup from '$lib/ConversationActivityGroup.svelte';
-	import { groupConversationMessages } from '$lib/conversationTimeline.ts';
+	import {
+		groupConversationMessages,
+		type AskMessageHandler,
+		type AskSelectionChangeHandler,
+		type ConversationContextMenuRequest,
+		type ConversationMessage,
+	} from '$lib/conversationTimeline.ts';
+
+	interface Props {
+		messages?: ConversationMessage[];
+		hotkeyBinding?: string;
+		awaitingBackground?: boolean;
+		awaitingBackgroundCount?: number;
+		activeSessionError?: boolean;
+		sessionErrorReason?: string;
+		terminationStatus?: 'paused' | 'completed' | 'error' | null;
+		terminationReason?: string;
+		showContinueButton?: boolean;
+		continueDisabled?: boolean;
+		continueBusy?: boolean;
+		onContextMenu?: (request: ConversationContextMenuRequest) => void;
+		onAskSelectionChange?: AskSelectionChangeHandler;
+		onIgnore?: AskMessageHandler;
+		onAskSubmit?: AskMessageHandler;
+		onContinue?: () => void;
+		mediaPlans?: AgentMediaPlanPayload[];
+	}
 
 	let {
 		messages = [],
@@ -26,7 +53,7 @@
 		onAskSubmit = () => {},
 		onContinue = () => {},
 		mediaPlans = [],
-	} = $props();
+	}: Props = $props();
 
 	let timelineItems = $derived(groupConversationMessages(messages));
 </script>
@@ -65,8 +92,8 @@
 					msg.type === 'tool' &&
 					(msg.showFallbackIntent ?? !hasToolPreambleBefore(messages, item.index))}
 				<ChatBubble
-					role={msg.role}
-					content={msg.content}
+					role={msg.role ?? 'assistant'}
+					content={msg.content ?? ''}
 					type={msg.type}
 					voice={msg.voice}
 					time={msg.time}

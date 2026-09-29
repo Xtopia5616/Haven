@@ -3,23 +3,23 @@
  * Tool manifest projections and runtime MCP status validation remain at the renderer boundary.
  */
 import type {
-  McpClientStatus as GeneratedMcpClientStatus,
-  McpRefreshResult as GeneratedMcpRefreshResult,
-  McpServerConfig as GeneratedMcpServerConfig,
-  McpServerSnapshot as GeneratedMcpServerSnapshot,
-  McpToolInfo as GeneratedMcpToolInfo,
-  McpTransportType,
-  SkillInfo as GeneratedSkillInfo,
-  ToolAvailability as GeneratedToolAvailability,
-  ToolIdentity as GeneratedToolIdentity,
-  ToolListResponse as GeneratedToolListResponse,
-  ToolManifest as GeneratedToolManifest,
-  ToolModel as GeneratedToolModel,
-  ToolPolicy as GeneratedToolPolicy,
-  ToolPresentation as GeneratedToolPresentation,
-  ToolPrompt as GeneratedToolPrompt,
-  ToolRootPresentation as GeneratedToolRootPresentation,
-  TauriCommandRequest,
+	McpClientStatus as GeneratedMcpClientStatus,
+	McpRefreshResult as GeneratedMcpRefreshResult,
+	McpServerConfig as GeneratedMcpServerConfig,
+	McpServerSnapshot as GeneratedMcpServerSnapshot,
+	McpToolInfo as GeneratedMcpToolInfo,
+	McpTransportType,
+	SkillInfo as GeneratedSkillInfo,
+	ToolAvailability as GeneratedToolAvailability,
+	ToolIdentity as GeneratedToolIdentity,
+	ToolListResponse as GeneratedToolListResponse,
+	ToolManifest as GeneratedToolManifest,
+	ToolModel as GeneratedToolModel,
+	ToolPolicy as GeneratedToolPolicy,
+	ToolPresentation as GeneratedToolPresentation,
+	ToolPrompt as GeneratedToolPrompt,
+	ToolRootPresentation as GeneratedToolRootPresentation,
+	TauriCommandRequest,
 } from './generatedCommands.ts';
 
 /** Dynamic JSON schema supplied by a builtin, Skill, or MCP tool. */
@@ -39,6 +39,7 @@ export type McpToolInfo = GeneratedMcpToolInfo;
 export type McpServerSnapshot = GeneratedMcpServerSnapshot;
 export type McpTransport = McpTransportType;
 export type McpServerConfig = GeneratedMcpServerConfig;
+export type McpServerConfigInput = TauriCommandRequest<'add_mcp_server'>['config'];
 export type McpRefreshResult = GeneratedMcpRefreshResult;
 
 /** Flat command arguments are aliases of the generated Rust handler shapes. */

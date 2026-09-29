@@ -1,13 +1,24 @@
-<script>
+<script lang="ts">
 	import StatusBadge from '$lib/StatusBadge.svelte';
-	let { data = {} } = $props();
+
+	interface Props {
+		data?: {
+			status?: number;
+			truncated?: boolean;
+			body?: unknown;
+		};
+	}
+
+	let { data = {} }: Props = $props();
 </script>
 
 <div class="action-row">
 	<StatusBadge
 		label={String(data.status)}
-		tone={data.status >= 200 && data.status < 300 ? 'success' : 'error'}
-		className={data.status >= 200 && data.status < 300 ? 'status-completed' : 'status-failed'}
+		tone={Number(data.status) >= 200 && Number(data.status) < 300 ? 'success' : 'error'}
+		className={Number(data.status) >= 200 && Number(data.status) < 300
+			? 'status-completed'
+			: 'status-failed'}
 	/>
 	{#if data.truncated}<span class="tool-card-meta">（响应过长已截断）</span>{/if}
 </div>

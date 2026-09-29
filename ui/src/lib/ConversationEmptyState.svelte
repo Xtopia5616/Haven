@@ -1,11 +1,12 @@
-<script>
+<script lang="ts">
 	import Logo from './Logo.svelte';
 
-	/**
-	 * ConversationEmptyState — lightweight welcome surface for the first paint.
-	 * @prop {string} hotkeyBinding — configured voice-recording shortcut
-	 */
-	let { hotkeyBinding = 'Ctrl+Shift+Space' } = $props();
+	interface Props {
+		hotkeyBinding?: string;
+	}
+
+	/** ConversationEmptyState is the lightweight first-paint welcome surface. */
+	let { hotkeyBinding = 'Ctrl+Shift+Space' }: Props = $props();
 </script>
 
 <div class="welcome">

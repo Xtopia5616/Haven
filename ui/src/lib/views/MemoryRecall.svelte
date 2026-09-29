@@ -1,9 +1,17 @@
-<script>
-	/** @typedef {import('$lib/contracts/memory.ts').MemoryRecallResult} MemoryRecallResult */
+<script lang="ts">
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import LoadingState from '$lib/LoadingState.svelte';
 	import CountChip from '$lib/CountChip.svelte';
+	import type { MemoryRecallState, MemoryRecallResult } from '$lib/contracts/memory.ts';
+
+	interface Props {
+		memoryRecall: MemoryRecallState;
+		onRecallKindChange?: (kind: string) => void;
+		onRunRecall?: () => void;
+		showToolbar?: boolean;
+		showHeading?: boolean;
+	}
 
 	let {
 		memoryRecall,
@@ -11,12 +19,11 @@
 		onRunRecall = () => {},
 		showToolbar = true,
 		showHeading = true,
-	} = $props();
-	/** @param {string} value */
-	function handleKindChange(value) {
+	}: Props = $props();
+	function handleKindChange(value: string) {
 		onRecallKindChange(value);
 	}
-	let recallResults = $derived(/** @type {MemoryRecallResult[]} */ (memoryRecall.results));
+	let recallResults = $derived<MemoryRecallResult[]>(memoryRecall.results);
 	let factResults = $derived(recallResults.filter((result) => result.kind === 'fact'));
 	let episodeResults = $derived(recallResults.filter((result) => result.kind === 'episode'));
 </script>

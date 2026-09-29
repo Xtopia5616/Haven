@@ -1,13 +1,39 @@
-<script>
+<script lang="ts">
 	import JsonView from '$lib/JsonView.svelte';
 	import ToolResultList from '$lib/ToolResultList.svelte';
 
-	let { data = {} } = $props();
-	let facts = $derived(Array.isArray(data.facts) ? data.facts : []);
-	let hits = $derived(Array.isArray(data.hits) ? data.hits : []);
+	type MemoryFact = {
+		id?: string;
+		subject?: string;
+		predicate?: string;
+		object?: string;
+		confidence?: unknown;
+		tags?: string[];
+		source_snippet?: string;
+	};
+	type MemoryHit = {
+		entity_id?: string;
+		text?: string;
+		score?: unknown;
+		model?: string;
+	};
 
-	/** @param {unknown} value */
-	function scoreLabel(value) {
+	interface Props {
+		data?: {
+			facts?: MemoryFact[];
+			hits?: MemoryHit[];
+			mode?: string;
+			operation?: string;
+			stored?: { predicate?: string; object?: string };
+			deleted?: number;
+		};
+	}
+
+	let { data = {} }: Props = $props();
+	let facts = $derived(data.facts ?? []);
+	let hits = $derived(data.hits ?? []);
+
+	function scoreLabel(value: unknown): string {
 		const score = Number(value);
 		return Number.isFinite(score) ? score.toFixed(2) : '—';
 	}
@@ -24,13 +50,21 @@
 							<div class="memory-triple">
 								<span class="memory-subject">{fact.subject || '用户'}</span>
 								<span class="memory-predicate">{fact.predicate || '事实'}</span>
-								<span class="memory-object" title={fact.object}>{fact.object || '—'}</span>
+								<span class="memory-object" title={fact.object}
+									>{fact.object || '—'}</span
+								>
 							</div>
 							<div class="memory-meta">
-								{#if fact.confidence != null}<span>置信度 {scoreLabel(fact.confidence)}</span>{/if}
-								{#if Array.isArray(fact.tags) && fact.tags.length > 0}<span>{fact.tags.join(' · ')}</span>{/if}
+								{#if fact.confidence != null}<span
+										>置信度 {scoreLabel(fact.confidence)}</span
+									>{/if}
+								{#if Array.isArray(fact.tags) && fact.tags.length > 0}<span
+										>{fact.tags.join(' · ')}</span
+									>{/if}
 							</div>
-							{#if fact.source_snippet}<div class="memory-snippet">{fact.source_snippet}</div>{/if}
+							{#if fact.source_snippet}<div class="memory-snippet">
+									{fact.source_snippet}
+								</div>{/if}
 						</div>
 					{/each}
 				</div>
@@ -49,7 +83,8 @@
 						<div class="memory-row">
 							<div class="memory-hit-text">{hit.text || '—'}</div>
 							<div class="memory-meta">
-								{#if hit.score != null}<span>相关度 {scoreLabel(hit.score)}</span>{/if}
+								{#if hit.score != null}<span>相关度 {scoreLabel(hit.score)}</span
+									>{/if}
 								{#if hit.model}<span>{hit.model}</span>{/if}
 							</div>
 						</div>
@@ -61,9 +96,15 @@
 		<p class="tool-card-empty">没有找到相关记忆</p>
 	{/if}
 {:else if data.operation === 'remember' && data.stored}
-	<div class="memory-action"><span class="memory-badge">已记住</span><span>{data.stored.predicate}: {data.stored.object}</span></div>
+	<div class="memory-action">
+		<span class="memory-badge">已记住</span><span
+			>{data.stored.predicate}: {data.stored.object}</span
+		>
+	</div>
 {:else if data.operation === 'forget'}
-	<div class="memory-action"><span class="memory-badge">已删除</span><span>{data.deleted ?? 0} 条事实</span></div>
+	<div class="memory-action">
+		<span class="memory-badge">已删除</span><span>{data.deleted ?? 0} 条事实</span>
+	</div>
 {:else}
 	<div class="tool-card-meta">记忆操作：{data.operation || '结果'}</div>
 	<JsonView value={data} defaultDepth={1} />
@@ -77,21 +118,86 @@
 		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 	}
-	.tool-card-count { font-weight: 600; margin-bottom: var(--md-sys-space-xs); }
-	.tool-card-meta { margin-bottom: var(--md-sys-space-xs); }
-	.tool-card-empty { margin: 0; }
-	.memory-list { max-height: 240px; overflow-y: auto; border-radius: var(--md-sys-shape-extra-small); }
-	.memory-row { padding: var(--md-sys-space-2xs) var(--md-sys-space-xs); border-radius: 4px; }
-	.memory-row:nth-child(odd) { background: color-mix(in srgb, var(--md-sys-color-on-surface) 4%, transparent); }
-	.memory-triple { display: flex; align-items: baseline; gap: var(--md-sys-space-2xs); min-width: 0; }
+	.tool-card-count {
+		font-weight: 600;
+		margin-bottom: var(--md-sys-space-xs);
+	}
+	.tool-card-meta {
+		margin-bottom: var(--md-sys-space-xs);
+	}
+	.tool-card-empty {
+		margin: 0;
+	}
+	.memory-list {
+		max-height: 240px;
+		overflow-y: auto;
+		border-radius: var(--md-sys-shape-extra-small);
+	}
+	.memory-row {
+		padding: var(--md-sys-space-2xs) var(--md-sys-space-xs);
+		border-radius: 4px;
+	}
+	.memory-row:nth-child(odd) {
+		background: color-mix(in srgb, var(--md-sys-color-on-surface) 4%, transparent);
+	}
+	.memory-triple {
+		display: flex;
+		align-items: baseline;
+		gap: var(--md-sys-space-2xs);
+		min-width: 0;
+	}
 	.memory-subject,
-	.memory-predicate { flex: none; color: var(--md-sys-color-on-surface-variant); font-size: var(--md-sys-typescale-label-small-size); }
-	.memory-predicate::before { content: '·'; margin-right: var(--md-sys-space-2xs); }
+	.memory-predicate {
+		flex: none;
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: var(--md-sys-typescale-label-small-size);
+	}
+	.memory-predicate::before {
+		content: '·';
+		margin-right: var(--md-sys-space-2xs);
+	}
 	.memory-object,
-	.memory-hit-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--md-sys-color-on-surface); font-family: var(--md-sys-typescale-mono); font-size: var(--md-sys-typescale-code-size); }
-	.memory-hit-text { white-space: pre-wrap; word-break: break-word; }
-	.memory-meta { display: flex; gap: var(--md-sys-space-xs); margin-top: 2px; color: var(--md-sys-color-on-surface-variant); font-size: var(--md-sys-typescale-label-small-size); }
-	.memory-snippet { margin-top: 2px; color: var(--md-sys-color-on-surface-variant); font-size: var(--md-sys-typescale-label-small-size); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-	.memory-action { display: flex; align-items: baseline; gap: var(--md-sys-space-xs); color: var(--md-sys-color-on-surface); }
-	.memory-badge { flex: none; padding: 1px 6px; border-radius: var(--md-sys-shape-full); background: var(--md-sys-color-secondary-container); color: var(--md-sys-color-on-secondary-container); font-size: var(--md-sys-typescale-label-small-size); font-weight: 700; }
+	.memory-hit-text {
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		color: var(--md-sys-color-on-surface);
+		font-family: var(--md-sys-typescale-mono);
+		font-size: var(--md-sys-typescale-code-size);
+	}
+	.memory-hit-text {
+		white-space: pre-wrap;
+		word-break: break-word;
+	}
+	.memory-meta {
+		display: flex;
+		gap: var(--md-sys-space-xs);
+		margin-top: 2px;
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: var(--md-sys-typescale-label-small-size);
+	}
+	.memory-snippet {
+		margin-top: 2px;
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: var(--md-sys-typescale-label-small-size);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.memory-action {
+		display: flex;
+		align-items: baseline;
+		gap: var(--md-sys-space-xs);
+		color: var(--md-sys-color-on-surface);
+	}
+	.memory-badge {
+		flex: none;
+		padding: 1px 6px;
+		border-radius: var(--md-sys-shape-full);
+		background: var(--md-sys-color-secondary-container);
+		color: var(--md-sys-color-on-secondary-container);
+		font-size: var(--md-sys-typescale-label-small-size);
+		font-weight: 700;
+	}
 </style>

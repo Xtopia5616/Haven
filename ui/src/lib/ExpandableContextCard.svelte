@@ -1,17 +1,22 @@
-<script>
+<script lang="ts">
+	import type { Snippet } from 'svelte';
 	import { openContextMenu } from '$lib/contextMenu.ts';
+	import type { ContextMenuItem } from '$lib/contextMenu.ts';
 	import { slide } from 'svelte/transition';
 	import { cubicOut } from 'svelte/easing';
+
+	interface Props {
+		cardKind?: string;
+		contextMenuItems?: ContextMenuItem[];
+		header?: Snippet;
+		actions?: Snippet;
+		showActions?: boolean;
+		children?: Snippet;
+	}
 
 	/**
 	 * Shared expandable card shell for resource cards with a context menu.
 	 *
-	 * @prop {string} cardKind — optional stable marker for card-specific styles
-	 * @prop {any[]} contextMenuItems — action objects consumed by the global menu host
-	 * @prop {any} header — header snippet
-	 * @prop {any} actions — optional header actions snippet
-	 * @prop {boolean} showActions — whether to render the optional actions snippet
-	 * @prop {any} children — expanded body snippet
 	 */
 	let {
 		cardKind = '',
@@ -20,15 +25,14 @@
 		actions = undefined,
 		showActions = true,
 		children,
-	} = $props();
+	}: Props = $props();
 	let expanded = $state(false);
 
 	function toggleExpand() {
 		expanded = !expanded;
 	}
 
-	/** @param {MouseEvent} event */
-	function handleContextMenu(event) {
+	function handleContextMenu(event: MouseEvent) {
 		// Cards can be nested (e.g. builtin family -> root). The nearest card
 		// owns the context menu for the point that was clicked; do not let the
 		// event bubble and open the outer card's menu as well.
@@ -36,8 +40,7 @@
 		openContextMenu(event, contextMenuItems);
 	}
 
-	/** @param {KeyboardEvent} event */
-	function handleHeaderKeydown(event) {
+	function handleHeaderKeydown(event: KeyboardEvent) {
 		if (event.key !== 'Enter' && event.key !== ' ') return;
 		event.preventDefault();
 		toggleExpand();
@@ -74,10 +77,7 @@
 		{/if}
 	</div>
 	{#if expanded}
-		<div
-			class="card-body"
-			transition:slide={{ duration: 180, easing: cubicOut }}
-		>
+		<div class="card-body" transition:slide={{ duration: 180, easing: cubicOut }}>
 			{@render children?.()}
 		</div>
 	{/if}

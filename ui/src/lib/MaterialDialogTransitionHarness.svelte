@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 	import MaterialDialog from './MaterialDialog.svelte';
 
 	let visible = $state(true);

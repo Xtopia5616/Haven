@@ -1,5 +1,10 @@
-<script>
+<script lang="ts">
 	import HavenMark from './HavenMark.svelte';
+
+	interface Props {
+		size?: number;
+		withText?: boolean;
+	}
 
 	/**
 	 * Haven — unified app logo. A rounded conversation bubble with three thick
@@ -8,12 +13,12 @@
 	 *   size  — px (default 24)
 	 *   withText  — render the Haven wordmark beside the mark
 	 */
-	let { size = 24, withText = false } = $props();
+	let { size = 24, withText = false }: Props = $props();
 </script>
 
 <span class="logo" class:with-text={withText} style="--logo-size: {size}px;">
-		<span class="glyph">
-			<HavenMark size={size} />
+	<span class="glyph">
+		<HavenMark {size} />
 	</span>
 	{#if withText}
 		<span class="wordmark">Haven</span>

@@ -1,7 +1,13 @@
 import { performance } from 'node:perf_hooks';
 import { writable } from 'svelte/store';
 
-import { initialSessionState, SessionReducer } from '../src/lib/sessionReducer.ts';
+import {
+	initialSessionState,
+	SessionReducer,
+	type SessionAction,
+	type SessionMessage,
+	type SessionReducerState,
+} from '../src/lib/sessionReducer.ts';
 import { createEqualityGatedSessionSelectorStore } from '../src/lib/sessionReducer/selectorStore.ts';
 
 const SAMPLE_COUNT = 513;
@@ -9,15 +15,15 @@ const REPEAT_COUNT = 3;
 const WARMUP_COUNT = 16;
 const SESSION_ID = 'ses-performance-profile';
 const MESSAGE_ID = 'step-performance-profile';
-const EMPTY_MESSAGES = [];
+const EMPTY_MESSAGES: SessionMessage[] = [];
 
-function percentile(samples, numerator) {
+function percentile(samples: readonly number[], numerator: number): number {
 	const ordered = [...samples].sort((left, right) => left - right);
 	const rank = Math.ceil((ordered.length * numerator) / 100);
 	return ordered[Math.max(0, rank - 1)];
 }
 
-function action(seq) {
+function action(seq: number): SessionAction {
 	return {
 		type: 'agent/chunks',
 		chunks: [
@@ -37,8 +43,8 @@ function action(seq) {
 	};
 }
 
-function profile(messageCount, selectorSubscribers) {
-	const messages = Array.from({ length: messageCount }, (_, index) => ({
+function profile(messageCount: number, selectorSubscribers: number) {
+	const messages = Array.from({ length: messageCount }, (_, index): SessionMessage => ({
 		id: index === messageCount - 1 ? MESSAGE_ID : `msg-profile-${index}`,
 		role: index === messageCount - 1 ? 'assistant' : 'user',
 		content: 'profile fixture',
@@ -46,7 +52,7 @@ function profile(messageCount, selectorSubscribers) {
 		stepNumber: index === messageCount - 1 ? 1 : undefined,
 		runId: index === messageCount - 1 ? 1 : undefined,
 	}));
-	const initialState = {
+	const initialState: SessionReducerState = {
 		...initialSessionState,
 		activeSessionId: SESSION_ID,
 		messages: { [SESSION_ID]: messages },

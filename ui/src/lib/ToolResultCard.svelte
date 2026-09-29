@@ -1,5 +1,6 @@
-<script>
+<script lang="ts">
 	import { untrack } from 'svelte';
+	import type { Snippet } from 'svelte';
 	import JsonView from '$lib/JsonView.svelte';
 	import { getSelectedTextWithin, openContextMenu } from '$lib/contextMenu.ts';
 	import MaterialCollapsible from '$lib/MaterialCollapsible.svelte';
@@ -21,6 +22,30 @@
 	} from '$lib/toolIdentity.ts';
 	import { TOOL_INTENT_FALLBACK } from '$lib/toolIntent.ts';
 	import { toolIconName, toolRendererName, toolRootName } from '$lib/toolManifest.ts';
+	import type { AgentToolResultEnvelope } from '$lib/contracts/agent.ts';
+	import type { ActionPayload } from '$lib/contracts/action.ts';
+	import type { ContextMenuItem } from '$lib/contextMenu.ts';
+
+	interface Props {
+		type?: string;
+		embedded?: boolean;
+		toolName?: string;
+		outcome?: string | null;
+		renderer?: string | null;
+		result?: AgentToolResultEnvelope | null;
+		content?: string;
+		options?: string[];
+		awaiting?: boolean;
+		messageId?: string;
+		onAskSelectionChange?: ((messageId: string, selected: string[]) => void) | null;
+		onIgnore?: ((messageId: string) => void) | null;
+		onAskSubmit?: ((messageId: string) => void) | null;
+		resolved?: { answer?: string; ignored?: boolean } | null;
+		streaming?: boolean;
+		actionId?: string | null;
+		toolArgs?: unknown;
+		showFallbackIntent?: boolean;
+	}
 
 	let {
 		type = 'tool',
@@ -41,7 +66,7 @@
 		actionId = null,
 		toolArgs = null,
 		showFallbackIntent = false,
-	} = $props();
+	}: Props = $props();
 
 	let toolSource = $derived(classifyToolSource(toolName));
 	let sourceBadge = $derived(toolSourceLabel(toolSource));
@@ -51,11 +76,9 @@
 
 	// Local multi-select for ask option chips. Click toggles; Enter in the
 	// chat input submits (page composes selected options + any typed text).
-	/** @type {string[]} */
-	let selectedOptions = $state([]);
+	let selectedOptions = $state<string[]>([]);
 
-	/** @param {string} opt */
-	function toggleAskOption(opt) {
+	function toggleAskOption(opt: string) {
 		if (!awaiting) return;
 		selectedOptions = selectedOptions.includes(opt)
 			? selectedOptions.filter((x) => x !== opt)
@@ -66,8 +89,7 @@
 	// Enter on a focused option chip submits the composed answers (native
 	// button Enter would re-trigger the click and toggle the selection off,
 	// which swallowed the submit). Space still toggles the chip.
-	/** @param {KeyboardEvent} e */
-	function handleAskKeydown(e) {
+	function handleAskKeydown(e: KeyboardEvent) {
 		if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
 			e.preventDefault();
 			onAskSubmit?.(messageId);
@@ -82,37 +104,35 @@
 		}
 	});
 
-	const TERMINAL_ACTION = new Set(['completed', 'failed', 'cancelled']);
-	const TOOL_STATE_ALIASES = /** @type {Record<string, string>} */ ({
+	const TERMINAL_ACTION = new Set<string>(['completed', 'failed', 'cancelled']);
+	const TOOL_STATE_ALIASES: Record<string, string> = {
 		succeeded: 'completed',
-	});
-	const TOOL_STATE_LABELS = /** @type {Record<string, string>} */ ({
+	};
+	const TOOL_STATE_LABELS: Record<string, string> = {
 		running: '执行中',
 		completed: '执行成功',
 		failed: '调用失败',
 		cancelled: '已取消',
 		timed_out: '执行超时',
 		unknown: '结果未知，可能已执行',
-	});
+	};
 
 	// Foreground live tail (side-channel; not written into the message list).
 	let toolPreviewStore = $derived.by(() => getToolOutputPreviewStore(messageId));
 	let livePreview = $derived(
-		messageId ? /** @type {string|undefined} */ ($toolPreviewStore) : undefined,
+		messageId ? /** @type {string|undefined} */ $toolPreviewStore : undefined,
 	);
 	// Background actions keep streaming via actionStore after the tool call
 	// itself returns `{ background: true, action_id }`. Parent clears actionId
 	// once finished output is persisted onto the message.
-	let boundAction = $derived(
-		actionId ? /** @type {any} */ ($actionStore[actionId] || null) : null,
-	);
+	let boundAction = $derived(actionId ? $actionStore[actionId] || null : null);
 	let actionRunning = $derived(!!boundAction && boundAction.status === 'running');
 	let liveStreaming = $derived(streaming || actionRunning || !!livePreview);
 	let actionOutcome = $derived(
-		boundAction && TERMINAL_ACTION.has(boundAction.status) ? boundAction.status : null,
+		boundAction && TERMINAL_ACTION.has(boundAction.status ?? '') ? boundAction.status : null,
 	);
 	let effectiveOutcome = $derived(outcome || result?.outcome || actionOutcome || null);
-	let toolState = $derived.by(() => {
+	let toolState: string = $derived.by(() => {
 		const rawState = effectiveOutcome || (liveStreaming ? 'running' : 'completed');
 		return TOOL_STATE_ALIASES[rawState] || rawState;
 	});
@@ -123,7 +143,7 @@
 	// lifecycle is the stable execution signal.
 	let executionActive = $derived(streaming || actionRunning);
 	let displayContent = $derived.by(() => {
-		if (actionRunning) {
+		if (actionRunning && boundAction) {
 			const out =
 				typeof boundAction.output === 'string' ? boundAction.output : livePreview || '';
 			return JSON.stringify({
@@ -133,7 +153,7 @@
 				status: 'running',
 			});
 		}
-		if (boundAction && TERMINAL_ACTION.has(boundAction.status)) {
+		if (boundAction && TERMINAL_ACTION.has(boundAction.status ?? '')) {
 			const rawOut =
 				typeof boundAction.output === 'string'
 					? boundAction.output
@@ -177,7 +197,11 @@
 		lastExecutionActive = executionActive;
 	});
 	let kind = $derived(parsed?.kind ?? null);
-	let data = $derived(/** @type {any} */ (parsed?.data ?? {}));
+	let data: Record<string, unknown> = $derived(
+		parsed?.data !== null && typeof parsed?.data === 'object' && !Array.isArray(parsed.data)
+			? (parsed.data as Record<string, unknown>)
+			: {},
+	);
 	let emptyOutputLabel = $derived.by(() => {
 		if (effectiveOutcome === 'failed') return '调用失败';
 		if (effectiveOutcome === 'cancelled') return '调用已取消';
@@ -273,17 +297,16 @@
 		}
 		return displayContent || content || '';
 	});
-	/** @param {any} e */
-	function handleContextMenu(e) {
-		const selected = getSelectedTextWithin(e.currentTarget);
+	function handleContextMenu(e: MouseEvent) {
+		const selected = getSelectedTextWithin(
+			e.currentTarget instanceof Element ? e.currentTarget : null,
+		);
 		openContextMenu(e, buildContextMenuItems(selected));
 	}
 
-	/** @param {string} selected */
-	function buildContextMenuItems(selected) {
+	function buildContextMenuItems(selected: string): ContextMenuItem[] {
 		const copyAllLabel = type === 'ask' ? '复制问题' : '复制输出';
-		/** @type {any[]} */
-		const items = [];
+		const items: ContextMenuItem[] = [];
 		if (selected) {
 			items.push({
 				id: 'copySel',

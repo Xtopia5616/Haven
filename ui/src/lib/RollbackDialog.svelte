@@ -1,6 +1,15 @@
-<script>
+<script lang="ts">
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
+
+	interface Props {
+		open?: boolean;
+		stepNumber?: number | null;
+		isUserMessage?: boolean;
+		loading?: boolean;
+		onConfirm?: () => void;
+		onClose?: () => void;
+	}
 
 	let {
 		open = false,
@@ -9,7 +18,7 @@
 		loading = false,
 		onConfirm,
 		onClose,
-	} = $props();
+	}: Props = $props();
 
 	let title = $derived(isUserMessage ? '回退并覆盖当前时间线' : '回退并覆盖当前时间线');
 	let message = $derived(

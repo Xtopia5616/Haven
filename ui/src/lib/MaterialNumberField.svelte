@@ -1,5 +1,15 @@
-<script>
+<script lang="ts">
 	import Icon from './Icon.svelte';
+
+	interface Props {
+		value?: number;
+		min?: number;
+		max?: number;
+		step?: number;
+		onChange?: (value: number) => void;
+		id?: string;
+	}
+
 	let {
 		value = 0,
 		min = undefined,
@@ -7,35 +17,30 @@
 		step = 1,
 		onChange,
 		id = undefined,
-	} = $props();
+	}: Props = $props();
 
 	let stepDecimals = $derived(String(step).split('.')[1]?.length ?? 0);
 
-	/**
-	 * @param {number} v
-	 */
-	function roundToStep(v) {
+	function roundToStep(v: number): number {
 		let factor = 10 ** stepDecimals;
 		return Math.round(v * factor) / factor;
 	}
 
-	function increment() {
+	function increment(): void {
 		let next = roundToStep(Number(value) + step);
 		if (max !== undefined) next = Math.min(next, Number(max));
 		onChange?.(next);
 	}
 
-	function decrement() {
+	function decrement(): void {
 		let next = roundToStep(Number(value) - step);
 		if (min !== undefined) next = Math.max(next, Number(min));
 		onChange?.(next);
 	}
 
-	/**
-	 * @param {any} e
-	 */
-	function handleInput(e) {
-		let val = e.target.value === '' ? 0 : Number(e.target.value);
+	function handleInput(event: Event): void {
+		if (!(event.currentTarget instanceof HTMLInputElement)) return;
+		let val = event.currentTarget.value === '' ? 0 : Number(event.currentTarget.value);
 		if (min !== undefined) val = Math.max(val, Number(min));
 		if (max !== undefined) val = Math.min(val, Number(max));
 		onChange?.(roundToStep(val));

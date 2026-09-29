@@ -1,6 +1,4 @@
-<script>
-	/** @typedef {import('$lib/contracts/tools.ts').McpClientStatus} McpClientStatus */
-	/** @typedef {import('$lib/contracts/tools.ts').McpServerSnapshot} McpServerSnapshot */
+<script lang="ts">
 	import MaterialIconButton from '$lib/MaterialIconButton.svelte';
 	import RefreshButton from '$lib/RefreshButton.svelte';
 	import MaterialSwitch from '$lib/MaterialSwitch.svelte';
@@ -8,9 +6,18 @@
 	import ExpandableContextCard from '$lib/ExpandableContextCard.svelte';
 	import StatusBadge from '$lib/StatusBadge.svelte';
 	import { copyText } from '$lib/clipboard.ts';
+	import type { McpClientStatus, McpServerSnapshot } from '$lib/contracts/tools.ts';
+	import type { ContextMenuItem } from '$lib/contextMenu.ts';
 
-	/** @type {{ server: McpServerSnapshot; onToggle?: (name: string, enabled: boolean) => unknown; onEdit?: (server: McpServerSnapshot) => unknown; onRemove?: (name: string) => unknown; onReconnect?: (name: string) => unknown }} */
-	let { server, onToggle, onEdit, onRemove, onReconnect } = $props();
+	interface Props {
+		server: McpServerSnapshot;
+		onToggle?: (name: string, enabled: boolean) => void | Promise<void>;
+		onEdit?: (server: McpServerSnapshot) => void | Promise<void>;
+		onRemove?: (name: string) => void | Promise<void>;
+		onReconnect?: (name: string) => void | Promise<void>;
+	}
+
+	let { server, onToggle, onEdit, onRemove, onReconnect }: Props = $props();
 	let refreshing = $state(false);
 
 	async function handleReconnect() {
@@ -23,13 +30,11 @@
 		}
 	}
 
-	/** @param {boolean} checked */
-	function handleToggle(checked) {
+	function handleToggle(checked: boolean) {
 		onToggle?.(server.name, checked);
 	}
 
-	/** @param {McpClientStatus} status */
-	function statusLabel(status) {
+	function statusLabel(status: McpClientStatus) {
 		if (status === 'Connected') return '已连接';
 		if (status === 'Connecting') return '连接中';
 		if (status === 'Disconnected') return '已断开';
@@ -55,8 +60,8 @@
 		return 'neutral';
 	}
 
-	let contextMenuItems = $derived.by(() => {
-		const items = [];
+	let contextMenuItems: ContextMenuItem[] = $derived.by(() => {
+		const items: ContextMenuItem[] = [];
 		items.push(
 			server.enabled
 				? {

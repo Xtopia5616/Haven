@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 	import { untrack } from 'svelte';
 	import ChatBubble from '$lib/ChatBubble.svelte';
 	import Icon from '$lib/Icon.svelte';
@@ -6,6 +6,27 @@
 	import MediaPlanCard from '$lib/MediaPlanCard.svelte';
 	import { hasToolPreambleBefore } from '$lib/toolIntent.ts';
 	import { toolDisplayName } from '$lib/toolIdentity.ts';
+	import type { AgentMediaPlanPayload } from '$lib/contracts/agent.ts';
+	import type {
+		AskMessageHandler,
+		AskSelectionChangeHandler,
+		ConversationContextMenuRequest,
+		ConversationMessage,
+		TimelineActivityItem,
+	} from '$lib/conversationTimeline.ts';
+
+	interface Props {
+		entries?: TimelineActivityItem['entries'];
+		streaming?: boolean;
+		toolCount?: number;
+		stepCount?: number;
+		allMessages?: ConversationMessage[];
+		onContextMenu?: (request: ConversationContextMenuRequest) => void;
+		onAskSelectionChange?: AskSelectionChangeHandler;
+		onIgnore?: AskMessageHandler;
+		onAskSubmit?: AskMessageHandler;
+		mediaPlans?: AgentMediaPlanPayload[];
+	}
 
 	let {
 		entries = [],
@@ -18,7 +39,7 @@
 		onIgnore = () => {},
 		onAskSubmit = () => {},
 		mediaPlans = [],
-	} = $props();
+	}: Props = $props();
 
 	// A work process is visible while it is active, then becomes a compact
 	// summary. Manual expansion after completion is preserved across updates.

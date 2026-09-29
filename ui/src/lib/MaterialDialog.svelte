@@ -1,22 +1,26 @@
-<script>
+<script lang="ts">
 	import { cubicOut } from 'svelte/easing';
 	import { fade, scale } from 'svelte/transition';
 	import MaterialIconButton from './MaterialIconButton.svelte';
+	import type { Snippet } from 'svelte';
+
+	interface Props {
+		open?: boolean;
+		onClose?: () => void;
+		onEscape?: () => void;
+		title?: string;
+		header?: Snippet;
+		children?: Snippet;
+		footer?: Snippet;
+		dialogClass?: string;
+		overlayClass?: string;
+		ariaLabelledby?: string;
+		ariaDescribedby?: string;
+		dialogElement?: HTMLDivElement | null;
+	}
 
 	/**
 	 * Material Dialog — overlay + dialog container.
-	 * @prop {boolean} open
-	 * @prop {function} onClose
-	 * @prop {function} [onEscape] — optional Escape-key behavior; defaults to onClose
-	 * @prop {string} title
-	 * @prop {any} header — optional custom header snippet
-	 * @prop {any} children — dialog body snippet
-	 * @prop {any} footer — optional footer snippet
-	 * @prop {string} dialogClass — extra class for the dialog container
-	 * @prop {string} overlayClass — extra class for the overlay
-	 * @prop {string} ariaLabelledby — id for a custom heading
-	 * @prop {string} ariaDescribedby — id for descriptive dialog content
-	 * @prop {HTMLDivElement | null} dialogElement — bindable panel element for focus management
 	 */
 	let {
 		open = false,
@@ -31,32 +35,23 @@
 		ariaLabelledby = undefined,
 		ariaDescribedby = undefined,
 		dialogElement = $bindable(null),
-	} = $props();
+	}: Props = $props();
 
-	/**
-	 * @param {MouseEvent} e
-	 */
-	function handleOverlayClick(e) {
-		if (e.target === e.currentTarget) onClose?.();
+	function handleOverlayClick(event: MouseEvent): void {
+		if (event.target === event.currentTarget) onClose?.();
 	}
 
-	/**
-	 * @param {KeyboardEvent} e
-	 */
-	function handleKeydown(e) {
-		if (open && e.key === 'Escape') {
-			e.preventDefault();
+	function handleKeydown(event: KeyboardEvent): void {
+		if (open && event.key === 'Escape') {
+			event.preventDefault();
 			(onEscape || onClose)?.();
 		}
 	}
 
-	/**
-	 * @param {KeyboardEvent} e
-	 */
-	function handleOverlayKeydown(e) {
-		if (e.key === 'Escape') {
-			e.preventDefault();
-			e.stopPropagation();
+	function handleOverlayKeydown(event: KeyboardEvent): void {
+		if (event.key === 'Escape') {
+			event.preventDefault();
+			event.stopPropagation();
 			(onEscape || onClose)?.();
 		}
 	}

@@ -1,13 +1,18 @@
-<script>
+<script lang="ts">
+	import type { Snippet } from 'svelte';
+
+	interface Props {
+		label?: string;
+		forId?: string;
+		hint?: string;
+		error?: string;
+		children?: Snippet;
+	}
+
 	/**
 	 * Shared form-field layout for a label, control, hint, and validation error.
-	 * @prop {string} label — visible field label
-	 * @prop {string | undefined} forId — id of the associated native control
-	 * @prop {string} hint — optional supporting text
-	 * @prop {string} error — optional validation message
-	 * @prop {import('svelte').Snippet} children — field control content
 	 */
-	let { label = '', forId = undefined, hint = '', error = '', children } = $props();
+	let { label = '', forId = undefined, hint = '', error = '', children }: Props = $props();
 </script>
 
 <div class="md-field">

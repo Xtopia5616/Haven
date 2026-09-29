@@ -1,12 +1,15 @@
-<script>
+<script lang="ts">
+	interface Props {
+		label?: string;
+		selected?: boolean;
+		onSelect?: () => void;
+		onKeydown?: (event: KeyboardEvent) => void;
+		disabled?: boolean;
+		className?: string;
+	}
+
 	/**
 	 * Material Choice Chip — compact single-select control.
-	 * @prop {string} label
-	 * @prop {boolean} selected
-	 * @prop {function} onSelect
-	 * @prop {function} onKeydown
-	 * @prop {boolean} disabled
-	 * @prop {string} className
 	 */
 	let {
 		label = '',
@@ -15,10 +18,9 @@
 		onKeydown = undefined,
 		disabled = false,
 		className = '',
-	} = $props();
+	}: Props = $props();
 
-	/** @param {MouseEvent} event */
-	function handleClick(event) {
+	function handleClick(event: MouseEvent): void {
 		event.stopPropagation();
 		onSelect?.();
 	}

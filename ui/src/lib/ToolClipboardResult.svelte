@@ -1,7 +1,16 @@
-<script>
+<script lang="ts">
 	import ToolResultList from '$lib/ToolResultList.svelte';
 
-	let { data = {} } = $props();
+	interface Props {
+		data?: {
+			written?: boolean;
+			entries?: Array<{ content: string }>;
+			total?: number;
+			content?: string;
+		};
+	}
+
+	let { data = {} }: Props = $props();
 </script>
 
 {#if data.written}

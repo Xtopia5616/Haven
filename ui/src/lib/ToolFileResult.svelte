@@ -1,12 +1,11 @@
-<script>
+<script lang="ts">
 	import ExternalRef from '$lib/ExternalRef.svelte';
 	import JsonView from '$lib/JsonView.svelte';
 	import ToolResultList from '$lib/ToolResultList.svelte';
 
 	let { data = {}, rawText = '' } = $props();
 
-	/** @type {Record<string, string>} */
-	const operationLabels = {
+	const operationLabels: Record<string, string> = {
 		read: '读取完成',
 		write: '写入完成',
 		create_dir: '目录创建完成',
@@ -21,8 +20,7 @@
 	};
 	let operationLabel = $derived(operationLabels[data.operation] || '文件结果');
 
-	/** @param {unknown} value */
-	function fmtBytes(value) {
+	function fmtBytes(value: unknown) {
 		const n = Number(value);
 		if (!Number.isFinite(n) || n < 0) return '—';
 		if (n < 1024) return `${n} B`;
@@ -43,7 +41,10 @@
 	</div>
 {:else if data.edited}
 	<div class="file-row">
-		<span class="file-op">已编辑</span><ExternalRef class="file-path" target={data.path} />{#if data.line != null}<span class="file-line">L{data.line}</span>{/if}
+		<span class="file-op">已编辑</span><ExternalRef
+			class="file-path"
+			target={data.path}
+		/>{#if data.line != null}<span class="file-line">L{data.line}</span>{/if}
 	</div>
 {:else if data.copied}
 	<div class="file-row">
@@ -69,7 +70,13 @@
 	</div>
 {:else if data.image}
 	<div class="file-row">
-		<span class="file-op">{data.understand_error ? '图像分析失败' : data.understand_unavailable ? '图像分析不可用' : '图像读取完成'}</span>
+		<span class="file-op"
+			>{data.understand_error
+				? '图像分析失败'
+				: data.understand_unavailable
+					? '图像分析不可用'
+					: '图像读取完成'}</span
+		>
 		{#if data.path}<ExternalRef class="file-path" target={data.path} />{/if}
 	</div>
 	{#if data.description}<pre class="content-preview">{data.description}</pre>{/if}
@@ -80,11 +87,15 @@
 		{#if data.path}<ExternalRef class="file-path" target={data.path} />{/if}
 	</div>
 	<div class="tool-card-meta">
-		{data.file_type || data.mime || '无法作为文本读取'}{data.size != null ? ` · ${fmtBytes(data.size)}` : ''}
+		{data.file_type || data.mime || '无法作为文本读取'}{data.size != null
+			? ` · ${fmtBytes(data.size)}`
+			: ''}
 	</div>
 {:else if data.summary || data.summary_unavailable || data.summary_error}
 	<div class="file-row">
-		<span class="file-op">{data.summary ? '摘要完成' : data.summary_error ? '摘要失败' : '摘要不可用'}</span>
+		<span class="file-op"
+			>{data.summary ? '摘要完成' : data.summary_error ? '摘要失败' : '摘要不可用'}</span
+		>
 		{#if data.path}<ExternalRef class="file-path" target={data.path} />{/if}
 	</div>
 	{#if data.summary}<pre class="content-preview">{data.summary}</pre>{/if}

@@ -1,15 +1,31 @@
-<script>
+<script lang="ts">
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
 	import ApiKeyField from '$lib/ApiKeyField.svelte';
-	import { withStringValue } from '$lib/typedCallbacks.js';
+	import { withStringValue } from '$lib/typedCallbacks.ts';
 	import {
 		API_STYLE_OPTIONS,
 		apiStylePreset,
 		isSttOnlyStyle,
 		isTtsOnlyStyle,
 	} from '$lib/apiStyle.ts';
+
+	type ProviderDraft = { name: string; api_style: string; base_url: string; api_key: string };
+	type ProviderKeyStatus = {
+		name: string;
+		api_key?: string;
+		api_key_ref?: string | null;
+	};
+
+	interface Props {
+		dialog: { idx: number | null; form: ProviderDraft | null };
+		providers?: ProviderKeyStatus[];
+		isProviderKeyConfigured: (provider: ProviderKeyStatus | undefined) => boolean;
+		onClose: () => void;
+		onSave: () => void | Promise<void>;
+		onApplyApiStylePreset: (style: string) => void;
+	}
 
 	let {
 		dialog = { idx: null, form: null },
@@ -18,7 +34,7 @@
 		onClose,
 		onSave,
 		onApplyApiStylePreset,
-	} = $props();
+	}: Props = $props();
 </script>
 
 {#if dialog.form}
@@ -104,18 +120,15 @@
 				</div>
 				{#if dialog.idx === null}
 					<p class="model-hint">
-						添加后会立即尝试验证 API Key 并获取模型列表；失败时 Provider 仍会添加，并提示后续处理方式。
+						添加后会立即尝试验证 API Key 并获取模型列表；失败时 Provider
+						仍会添加，并提示后续处理方式。
 					</p>
 				{/if}
 			</div>
 		{/snippet}
 		{#snippet footer()}
 			<MaterialButton variant="text" label="取消" onclick={onClose} />
-			<MaterialButton
-				variant="filled"
-				label="保存"
-				onclick={onSave}
-			/>
+			<MaterialButton variant="filled" label="保存" onclick={onSave} />
 		{/snippet}
 	</MaterialDialog>
 {/if}

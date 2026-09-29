@@ -1,12 +1,22 @@
-<script>
+<script lang="ts">
+	import type { Snippet } from 'svelte';
+
+	interface Props {
+		title?: string;
+		description?: string;
+		headingId?: string;
+		children?: Snippet;
+	}
+
 	/**
 	 * WorkspaceSectionHeader — shared section title rhythm inside secondary tabs.
-	 * @prop {string} title — section title
-	 * @prop {string} description — short explanation of the section
-	 * @prop {string | undefined} headingId — optional id for the section heading
-	 * @prop {import('svelte').Snippet | undefined} children — optional section actions
 	 */
-	let { title = '', description = '', headingId = undefined, children = undefined } = $props();
+	let {
+		title = '',
+		description = '',
+		headingId = undefined,
+		children = undefined,
+	}: Props = $props();
 </script>
 
 <header class="workspace-section-header">

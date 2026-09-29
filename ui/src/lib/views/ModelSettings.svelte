@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 	import { addNotification } from '$lib/notificationStore.ts';
 	import MaterialCard from '$lib/MaterialCard.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
@@ -10,7 +10,57 @@
 	import SettingsSection from '$lib/SettingsSection.svelte';
 	import { createModelDiscovery } from '$lib/modelDiscovery.ts';
 	import { emptyModel, capabilityOptions, requestPolicyOptions } from '$lib/modelRoles.ts';
-	import { withStringValue } from '$lib/typedCallbacks.js';
+	import { withStringValue } from '$lib/typedCallbacks.ts';
+	import type {
+		ApiKeyStatus,
+		AudioConfig,
+		CapabilityInput,
+		ContextLimitsConfigInput,
+		ImageGenConfigInput,
+		MediaInputStrategyInput,
+		OcrConfigInput,
+		RequestKindInput,
+		SttConfigInput,
+		TtsConfigInput,
+	} from '$lib/contracts/generatedCommands.ts';
+	import type { DiscoveredModelMap } from '$lib/contracts/model.ts';
+	import type {
+		ModelDraft,
+		ProviderDraft,
+		RequestPolicyDraft,
+		SettingsLlmState,
+	} from '$lib/settingsModelTypes.ts';
+	type ProviderDialogForm = {
+		name: string;
+		api_style: string;
+		base_url: string;
+		api_key: string;
+	};
+	type OverrideField =
+		| 'temperature'
+		| 'context_window'
+		| 'cost_per_1k_input_tokens'
+		| 'cost_per_1k_output_tokens'
+		| 'cost_per_1k_cache_read_tokens'
+		| 'cost_per_1k_cache_write_tokens';
+
+	interface Props {
+		section?: 'models' | 'media';
+		llmConfig: SettingsLlmState;
+		audio: AudioConfig;
+		stt: Required<SttConfigInput>;
+		ocr: Required<OcrConfigInput>;
+		tts: Required<TtsConfigInput>;
+		imageGen: Required<ImageGenConfigInput>;
+		mediaInputStrategy: MediaInputStrategyInput;
+		contextLimits: Partial<ContextLimitsConfigInput>;
+		keyConfigured: ApiKeyStatus;
+		keyConfiguredProviders?: Record<string, boolean>;
+		mcpServerNames?: string[];
+		loaded?: boolean;
+		onDiscoverySettled?: (fills: Array<Record<string, unknown>>) => void;
+		onProviderDiscoveryFailure?: (providerName: string, staticCatalog: boolean) => void;
+	}
 	import {
 		API_STYLE_OPTIONS,
 		apiStylePreset,
@@ -40,22 +90,13 @@
 		mcpServerNames = [],
 		loaded = false,
 		onDiscoverySettled = () => {},
-		onProviderDiscoveryFailure = (
-			/** @type {string} */ _providerName,
-			/** @type {boolean} */ _staticCatalog,
-		) => {},
-	} = $props();
+		onProviderDiscoveryFailure = (_providerName, _staticCatalog) => {},
+	}: Props = $props();
 
-	/** @param {string} id */
-	function modelFor(id) {
-		return (
-			/** @type {any[]} */ (llmConfig.models || []).find(
-				(/** @type {any} */ model) => model.id === id,
-			) || null
-		);
+	function modelFor(id: string): ModelDraft | null {
+		return llmConfig.models.find((model) => model.id === id) || null;
 	}
-	/** @param {string} providerName */
-	function addModel(providerName) {
+	function addModel(providerName: string) {
 		const base = 'model';
 		let index = 1;
 		while (modelFor(`${base}-${index}`)) index += 1;
@@ -64,22 +105,17 @@
 		llmConfig.models.push(model);
 		return model;
 	}
-	/** @param {any} model */
-	function removeModel(model) {
-		llmConfig.models = (llmConfig.models || []).filter(
-			(/** @type {any} */ item) => item !== model,
-		);
-		for (const policy of llmConfig.request_policies || []) {
+	function removeModel(model: ModelDraft) {
+		llmConfig.models = llmConfig.models.filter((item) => item !== model);
+		for (const policy of llmConfig.request_policies) {
 			if (policy.primary === model.id) policy.primary = '';
 		}
 	}
-	/** @param {any} model @param {string} modelId */
-	function setModel(model, modelId) {
+	function setModel(model: ModelDraft, modelId: string) {
 		model.model = modelId;
 		discovery.applyDiscoveredModelMeta(model, model.provider, modelId, { overwrite: true });
 	}
-	/** @param {any} model @param {string} providerName */
-	function setModelProvider(model, providerName) {
+	function setModelProvider(model: ModelDraft, providerName: string) {
 		model.provider = providerName;
 		model.model = '';
 		model.context_window = null;
@@ -89,16 +125,13 @@
 		model.cost_per_1k_cache_write_tokens = null;
 		if (providerName) discovery.refreshProviderModels(providerName);
 	}
-	/** @param {any} model @param {string} capability @param {boolean} checked */
-	function setCapability(model, capability, checked) {
+	function setCapability(model: ModelDraft, capability: CapabilityInput, checked: boolean) {
 		const capabilities = Array.isArray(model.capabilities) ? model.capabilities : [];
 		model.capabilities = checked
 			? [...new Set([...capabilities, capability])]
-			: capabilities.filter((/** @type {string} */ item) => item !== capability);
+			: capabilities.filter((item) => item !== capability);
 	}
-	/** @param {any} policy */
-	/** @type {Record<string, string>} */
-	const requestCapability = {
+	const requestCapability: Record<RequestKindInput, CapabilityInput> = {
 		chat: 'chat',
 		fast_chat: 'fast_chat',
 		vision: 'vision',
@@ -110,20 +143,15 @@
 	};
 	function addPolicy() {
 		const request = requestPolicyOptions.find(
-			(item) =>
-				!(llmConfig.request_policies || []).some(
-					(/** @type {any} */ policy) => policy.request === item.value,
-				),
+			(item) => !llmConfig.request_policies.some((policy) => policy.request === item.value),
 		)?.value;
 		if (!request) return;
 		llmConfig.request_policies.push({ request, primary: '' });
 	}
-	/** @param {any} policy @param {string} request */
-	function setPolicyRequest(policy, request) {
+	function setPolicyRequest(policy: RequestPolicyDraft, request: RequestKindInput) {
 		if (
-			(llmConfig.request_policies || []).some(
-				(/** @type {any} */ candidate) =>
-					candidate !== policy && candidate.request === request,
+			llmConfig.request_policies.some(
+				(candidate) => candidate !== policy && candidate.request === request,
 			)
 		) {
 			addNotification('每种 RequestKind 只能有一条策略', 'error', 3000);
@@ -132,59 +160,52 @@
 		policy.request = request;
 		policy.primary = '';
 	}
-	/** @param {any} policy */
-	function removePolicy(policy) {
-		llmConfig.request_policies = (llmConfig.request_policies || []).filter(
-			(/** @type {any} */ item) => item !== policy,
-		);
+	function removePolicy(policy: RequestPolicyDraft) {
+		llmConfig.request_policies = llmConfig.request_policies.filter((item) => item !== policy);
 	}
-	/** @param {any} model */
-	function modelLabel(model) {
+	function modelLabel(model: ModelDraft) {
 		const serviceModel = model.model || '尚未选择服务模型';
 		return `${model.id} · ${model.provider || '未绑定 Provider'} / ${serviceModel}`;
 	}
-	/** @param {any} model */
-	function modelOptionsForPolicy(model) {
-		const capability = requestCapability[model?.request] || requestCapability[model];
+	function modelOptionsForPolicy(policy: RequestPolicyDraft) {
+		const capability = requestCapability[policy.request];
 		return [
 			{ value: '', label: '未配置' },
-			.../** @type {any[]} */ (llmConfig.models || [])
+			...llmConfig.models
 				.filter(
 					(candidate) =>
-						candidate !== model &&
-						(!capability || (candidate.capabilities || []).includes(capability)),
+						!capability || (candidate.capabilities || []).includes(capability),
 				)
 				.map((candidate) => ({ value: candidate.id, label: modelLabel(candidate) })),
 		];
 	}
-	/** @param {string} providerName */
-	function modelOptions(providerName) {
+	function modelOptions(providerName: string) {
 		return providerName ? discovery.modelOptions(providerName) : [];
 	}
-	/** @param {any} model @param {string} nextId */
-	function renameModel(model, nextId) {
+	function renameModel(model: ModelDraft, nextId: string) {
 		const id = nextId.trim();
 		if (!id || id === model.id) return;
-		if (
-			(llmConfig.models || []).some(
-				(/** @type {any} */ candidate) => candidate !== model && candidate.id === id,
-			)
-		) {
+		if (llmConfig.models.some((candidate) => candidate !== model && candidate.id === id)) {
 			addNotification('Model ID 已存在', 'error', 3000);
 			return;
 		}
 		const previousId = model.id;
 		model.id = id;
-		for (const policy of llmConfig.request_policies || []) {
+		for (const policy of llmConfig.request_policies) {
 			if (policy.primary === previousId) policy.primary = id;
 		}
 	}
-	/** @param {any} model @param {string} field @param {number | null} value */
-	function updateModelOverride(model, field, value) {
+	function updateModelOverride(model: ModelDraft, field: OverrideField, value: number | null) {
 		model[field] = value;
 	}
-	/** @param {any} provider */
-	function isProviderKeyConfigured(provider) {
+	type ProviderKeyStatus = {
+		name: string;
+		api_key?: string;
+		api_key_ref?: string | null;
+		api_style?: string | null;
+		provider?: string | null;
+	};
+	function isProviderKeyConfigured(provider: ProviderKeyStatus | undefined) {
 		return (
 			!!provider &&
 			(!!provider.api_key ||
@@ -193,16 +214,12 @@
 				isKeylessProvider(provider))
 		);
 	}
-	/** @param {any} provider */
-	function providerDisplayStyle(provider) {
+	function providerDisplayStyle(provider: ProviderDraft) {
 		return displayApiStyle(provider);
 	}
 
-	/** provider name → fetched model list */
-	/** @type {import('$lib/contracts/model.ts').DiscoveredModelMap} */
-	let modelsByProvider = $state({});
-	/** @type {Record<string, boolean>} */
-	let modelFetching = $state({});
+	let modelsByProvider = $state<DiscoveredModelMap>({});
+	let modelFetching = $state<Record<string, boolean>>({});
 	let refreshingAll = $state(false);
 	const discovery = createModelDiscovery({
 		getProviders: () => llmConfig.providers || [],
@@ -225,14 +242,14 @@
 		}
 	});
 
-	/** @type {{ idx: number | null, form: { name: string, api_style: string, base_url: string, api_key: string } | null }} */
-	let providerDialog = $state({ idx: null, form: null });
-	/** @param {string} providerName */
-	function refreshProvider(providerName) {
+	let providerDialog = $state<{ idx: number | null; form: ProviderDialogForm | null }>({
+		idx: null,
+		form: null,
+	});
+	function refreshProvider(providerName: string) {
 		return discovery.refreshProviderModels(providerName);
 	}
-	/** @param {number | null | undefined} idx */
-	function editProvider(idx) {
+	function editProvider(idx: number | null | undefined) {
 		if (idx == null) startAddProvider();
 		else startEditProvider(idx);
 	}
@@ -247,8 +264,7 @@
 			},
 		};
 	}
-	/** @param {number} idx */
-	function startEditProvider(idx) {
+	function startEditProvider(idx: number) {
 		const provider = llmConfig.providers[idx];
 		providerDialog = {
 			idx,
@@ -268,10 +284,8 @@
 			addNotification('请填写 Provider 名称', 'error', 3000);
 			return;
 		}
-		const others = /** @type {any[]} */ (llmConfig.providers || []).filter(
-			(/** @type {any} */ _, index) => index !== idx,
-		);
-		if (others.some((/** @type {any} */ provider) => provider.name === name)) {
+		const others = llmConfig.providers.filter((_, index) => index !== idx);
+		if (others.some((provider) => provider.name === name)) {
 			addNotification('Provider 名称已存在', 'error', 3000);
 			return;
 		}
@@ -336,11 +350,10 @@
 		addNotification('Provider 已保存', 'success', 2000);
 		discovery.refreshAllModels(true);
 	}
-	/** @param {number} idx */
-	function deleteProvider(idx) {
+	function deleteProvider(idx: number) {
 		const provider = llmConfig.providers[idx];
 		if (!provider) return;
-		if (llmConfig.models.some((/** @type {any} */ model) => model.provider === provider.name)) {
+		if (llmConfig.models.some((model) => model.provider === provider.name)) {
 			addNotification(
 				`请先移除 Provider「${provider.name}」下的模型，再删除该 Provider`,
 				'error',
@@ -357,17 +370,19 @@
 		modelsByProvider = nextModels;
 		addNotification(`已删除 Provider ${provider.name}`, 'success', 2000);
 	}
-	/** @param {string} style */
-	function applyApiStylePreset(style) {
+	function applyApiStylePreset(style: string) {
 		if (providerDialog?.form) applyProviderPreset(providerDialog.form, style);
 	}
-	/** @param {any} providerOrStyle */
-	function apiStyleLabel(providerOrStyle) {
+	function apiStyleLabel(providerOrStyle: ProviderDraft | string) {
 		const style =
 			typeof providerOrStyle === 'string'
 				? providerOrStyle
 				: providerDisplayStyle(providerOrStyle);
 		return API_STYLE_OPTIONS.find((option) => option.value === style)?.label || style || '自动';
+	}
+	function setPolicyRequestFromInput(policy: RequestPolicyDraft, value: string) {
+		const request = requestPolicyOptions.find((option) => option.value === value)?.value;
+		if (request) setPolicyRequest(policy, request);
 	}
 </script>
 
@@ -429,7 +444,9 @@
 							value={policy.request}
 							options={requestPolicyOptions}
 							ariaLabel={`请求路由类型：${policy.request}`}
-							onChange={withStringValue((value) => setPolicyRequest(policy, value))}
+							onChange={withStringValue((value) =>
+								setPolicyRequestFromInput(policy, value),
+							)}
 						/>
 					</div>
 					<div class="model-field">

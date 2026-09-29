@@ -1,8 +1,27 @@
-<script>
+<script lang="ts">
 	import { scheduleModeLabel, taskTitle } from '$lib/taskTerminology.ts';
 	import ToolResultList from '$lib/ToolResultList.svelte';
 
-	let { data = {} } = $props();
+	interface Props {
+		data?: {
+			operation?: string;
+			cancelled?: string | number | boolean;
+			scheduled_actions?: Array<{
+				id: string;
+				title?: string;
+				body?: string;
+				mode?: string;
+				fires_at?: string;
+			}>;
+			id?: string;
+			mode?: string;
+			fires_at?: string;
+			title?: string;
+			body?: string;
+		};
+	}
+
+	let { data = {} }: Props = $props();
 	let operation = $derived(
 		typeof data.operation === 'string'
 			? data.operation.replace(/^schedule_/, '')
@@ -23,9 +42,17 @@
 				<div class="tool-card-list">
 					{#each visibleActions as action (action.id)}
 						<div class="scheduled-row">
-							<span class="scheduled-title">{taskTitle({ kind: 'scheduled', title: action.title, body: action.body })}</span>
+							<span class="scheduled-title"
+								>{taskTitle({
+									kind: 'scheduled',
+									title: action.title,
+									body: action.body,
+								})}</span
+							>
 							<span class="scheduled-mode">{scheduleModeLabel(action.mode)}</span>
-							{#if action.fires_at}<span class="scheduled-time">{action.fires_at}</span>{/if}
+							{#if action.fires_at}<span class="scheduled-time"
+									>{action.fires_at}</span
+								>{/if}
 						</div>
 					{/each}
 				</div>

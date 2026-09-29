@@ -1,51 +1,48 @@
-<script>
+<script lang="ts">
 	import MaterialSwitch from '$lib/MaterialSwitch.svelte';
 	import StatusBadge from '$lib/StatusBadge.svelte';
 	import ExpandableContextCard from '$lib/ExpandableContextCard.svelte';
 	import MaterialIconButton from '$lib/MaterialIconButton.svelte';
 	import Icon from '$lib/Icon.svelte';
 	import { copyText } from '$lib/clipboard.ts';
+	import type {
+		BuiltinToolEntry,
+		BuiltinToolRootCard as BuiltinToolRootCardModel,
+	} from './builtinToolPresentation.ts';
 
-	/** @typedef {import('./builtinToolPresentation.ts').BuiltinToolRootCard} BuiltinToolRootCard */
-	/** @typedef {import('./builtinToolPresentation.ts').BuiltinToolEntry} BuiltinToolEntry */
-	/** @type {{ root: BuiltinToolRootCard; onToggle?: (name: string, checked: boolean) => void }} */
-	let { root, onToggle } = $props();
-	/** @type {BuiltinToolEntry[]} */
+	interface Props {
+		root: BuiltinToolRootCardModel;
+		onToggle?: (name: string, checked: boolean) => void;
+	}
+
+	let { root, onToggle }: Props = $props();
 	let operations = $derived(root.operations);
 	let enabledCount = $derived(operations.filter((operation) => operation.enabled).length);
 	let statusLabel = $derived(`${enabledCount}/${operations.length} 个操作已启用`);
-	let statusTone = $derived(
-		enabledCount === 0
-			? 'error'
-			: enabledCount === operations.length
-				? 'success'
-				: 'warning',
+	let statusTone: 'error' | 'success' | 'warning' = $derived(
+		enabledCount === 0 ? 'error' : enabledCount === operations.length ? 'success' : 'warning',
 	);
 
-	/** @param {string} risk */
-	function riskLabel(risk) {
-		return (
-			{
-				safe: '安全',
-				low: '低风险',
-				medium: '中风险',
-				high: '高风险',
-				critical: '严重风险',
-				unknown: '风险未知',
-			}[risk] || risk
-		);
+	function riskLabel(risk: string): string {
+		const labels: Record<string, string> = {
+			safe: '安全',
+			low: '低风险',
+			medium: '中风险',
+			high: '高风险',
+			critical: '严重风险',
+			unknown: '风险未知',
+		};
+		return labels[risk] ?? risk;
 	}
 
-	/** @param {string} risk */
-	function riskTone(risk) {
+	function riskTone(risk: string): 'success' | 'warning' | 'error' | 'neutral' {
 		if (risk === 'safe' || risk === 'low') return 'success';
 		if (risk === 'medium') return 'warning';
 		if (risk === 'high' || risk === 'critical') return 'error';
 		return 'neutral';
 	}
 
-	/** @param {string} name @param {boolean} checked */
-	function handleToggle(name, checked) {
+	function handleToggle(name: string, checked: boolean): void {
 		onToggle?.(name, checked);
 	}
 
@@ -82,7 +79,7 @@
 			</div>
 		</div>
 		<div class="card-meta">
-			<StatusBadge label={`${operations.length} 个操作`} tone="neutral" />
+			<StatusBadge label={`${operations.length} 个操作`} tone={'neutral' as const} />
 			<StatusBadge label={statusLabel} tone={statusTone} />
 		</div>
 	{/snippet}

@@ -1,7 +1,20 @@
-<script>
+<script lang="ts">
 	import MaterialTabs from './MaterialTabs.svelte';
 
-	let { tabs = [], activeTab = 'chat', onNavigate = () => {} } = $props();
+	interface TabItem {
+		id: string;
+		label: string;
+		hint?: string;
+		icon?: string;
+	}
+
+	interface Props {
+		tabs?: TabItem[];
+		activeTab?: string;
+		onNavigate?: (tabId: string) => void;
+	}
+
+	let { tabs = [], activeTab = 'chat', onNavigate = () => {} }: Props = $props();
 </script>
 
 <nav aria-label="工作区导航">

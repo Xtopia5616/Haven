@@ -1,8 +1,34 @@
-<script>
+<script lang="ts">
 	import JsonView from '$lib/JsonView.svelte';
 	import ToolResultList from '$lib/ToolResultList.svelte';
 
-	let { data = {} } = $props();
+	interface Props {
+		data?: {
+			media?: { asset_id?: string; content?: unknown };
+			asset_id?: string;
+			windows?: Array<{ hwnd?: number | string; title?: string; pid?: number }>;
+			elements?: Array<{ name?: string; control_type?: string }>;
+			count?: number;
+			available?: boolean;
+			note?: string;
+			operation?: string;
+			title?: string;
+			pid?: number;
+			focused?: string;
+			closed?: string;
+			width?: number;
+			height?: number;
+			format?: string;
+			success?: boolean;
+			reason?: string;
+			matched?: boolean;
+			timed_out?: boolean;
+			condition?: string;
+			text?: string;
+		};
+	}
+
+	let { data = {} }: Props = $props();
 	let media = $derived(data.media ?? {});
 	let mediaAssetId = $derived(data.asset_id ?? media.asset_id ?? '');
 	let mediaText = $derived(typeof media.content === 'string' ? media.content : '');
@@ -16,7 +42,9 @@
 				<div class="tool-card-list">
 					{#each visibleWindows as window (window.hwnd ?? window.title)}
 						<div class="window-row">
-							<span class="window-title" title={window.title}>{window.title || '(无标题)'}</span>
+							<span class="window-title" title={window.title}
+								>{window.title || '(无标题)'}</span
+							>
 							{#if window.pid}<span class="window-pid">PID {window.pid}</span>{/if}
 						</div>
 					{/each}
@@ -37,7 +65,9 @@
 {:else if data.operation === 'focus' || data.operation === 'close'}
 	<div class="window-detail">
 		<span class="window-op">{data.operation === 'focus' ? '已聚焦' : '已关闭'}</span>
-		{#if data.focused || data.closed}<span class="window-title">{data.focused || data.closed}</span>{/if}
+		{#if data.focused || data.closed}<span class="window-title"
+				>{data.focused || data.closed}</span
+			>{/if}
 		{#if data.pid}<span class="window-pid">PID {data.pid}</span>{/if}
 	</div>
 {:else if data.operation === 'screenshot'}
@@ -45,13 +75,24 @@
 		<span class="window-op">截图已生成</span>
 		{#if data.asset_id}<span class="window-asset">{data.asset_id}</span>{/if}
 	</div>
-	{#if data.width != null && data.height != null}<div class="tool-card-meta">{data.width}×{data.height}{data.format ? ` · ${data.format.toUpperCase()}` : ''}</div>{/if}
+	{#if data.width != null && data.height != null}<div class="tool-card-meta">
+			{data.width}×{data.height}{data.format ? ` · ${data.format.toUpperCase()}` : ''}
+		</div>{/if}
 {:else if data.operation === 'ocr'}
-	<div class="window-detail"><span class="window-op">{data.available === false ? 'OCR 不可用' : data.success === false ? 'OCR 失败' : 'OCR 完成'}</span>{#if mediaAssetId}<span class="window-asset">{mediaAssetId}</span>{/if}</div>
-	{#if mediaText}<pre class="content-preview">{mediaText}</pre>{:else if data.reason}<p class="tool-card-empty">{data.reason}</p>{/if}
+	<div class="window-detail">
+		<span class="window-op">{data.success === false ? 'OCR 失败' : 'OCR 完成'}</span
+		>{#if mediaAssetId}<span class="window-asset">{mediaAssetId}</span>{/if}
+	</div>
+	{#if mediaText}<pre class="content-preview">{mediaText}</pre>{:else if data.reason}<p
+			class="tool-card-empty"
+		>
+			{data.reason}
+		</p>{/if}
 {:else if data.operation === 'wait'}
 	<div class="window-detail">
-		<span class="window-op">{data.matched ? '已匹配' : data.timed_out ? '等待超时' : '等待结束'}</span>
+		<span class="window-op"
+			>{data.matched ? '已匹配' : data.timed_out ? '等待超时' : '等待结束'}</span
+		>
 		{#if data.condition}<span class="window-pid">{data.condition}</span>{/if}
 	</div>
 	{#if data.text}<div class="tool-card-meta">{data.text}</div>{/if}
@@ -62,8 +103,12 @@
 			<div class="tool-card-list">
 				{#each visibleElements as element, index (element.name ?? index)}
 					<div class="window-row">
-						<span class="window-title" title={element.name}>{element.name || '(未命名元素)'}</span>
-						{#if element.control_type}<span class="window-pid">{element.control_type}</span>{/if}
+						<span class="window-title" title={element.name}
+							>{element.name || '(未命名元素)'}</span
+						>
+						{#if element.control_type}<span class="window-pid"
+								>{element.control_type}</span
+							>{/if}
 					</div>
 				{/each}
 			</div>

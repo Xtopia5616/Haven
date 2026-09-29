@@ -1,29 +1,44 @@
-<script>
+<script lang="ts">
 	import MaterialButton from './MaterialButton.svelte';
 	import MenuItem from './MenuItem.svelte';
 	import Icon from './Icon.svelte';
+	import type { SessionSummary } from '$lib/sessionReducer/types.ts';
+	import type { SessionTokenStats, TokenUsageDetails } from '$lib/sessionUsagePresentation.ts';
+
+	interface Props {
+		activeSessionId?: string | null;
+		showSessionMenu?: boolean;
+		sessionMenuOpen?: boolean;
+		menuSessions?: SessionSummary[];
+		sessionStatusLabel?: (session: SessionSummary) => string;
+		onToggleSessionMenu?: () => void;
+		onSwitchSession?: (sessionId: string) => void;
+		tokenStats?: SessionTokenStats | null;
+		tokenUsageDetails?: TokenUsageDetails | null;
+		tokenStatsHint?: string;
+		buildTokenTooltip?: (stats: SessionTokenStats) => string;
+		formatTokenCount?: (value: number) => string;
+	}
 
 	let {
 		activeSessionId = null,
 		showSessionMenu = false,
 		sessionMenuOpen = false,
 		menuSessions = [],
-		sessionStatusLabel = /** @type {(session: any) => string} */ ((session) => session.status),
+		sessionStatusLabel = (session) => session.status,
 		onToggleSessionMenu = () => {},
 		onSwitchSession = () => {},
 		tokenStats = null,
 		tokenUsageDetails = null,
 		tokenStatsHint = '暂无统计',
 		buildTokenTooltip = () => '',
-		formatTokenCount = /** @type {(value: any) => string} */ ((value) => String(value)),
-	} = $props();
+		formatTokenCount = (value) => String(value),
+	}: Props = $props();
 
 	let tokenDetailsOpen = $state(false);
-	/** @type {HTMLElement | null} */
-	let tokenStatsWrap = $state(null);
+	let tokenStatsWrap = $state<HTMLElement | null>(null);
 
-	/** @param {MouseEvent} event */
-	function closeTokenDetails(event) {
+	function closeTokenDetails(event: MouseEvent) {
 		if (tokenStatsWrap && !event.composedPath().includes(tokenStatsWrap)) {
 			tokenDetailsOpen = false;
 		}
@@ -33,13 +48,11 @@
 		if (tokenStats) tokenDetailsOpen = !tokenDetailsOpen;
 	}
 
-	/** @param {number | null | undefined} value */
-	function percentage(value) {
+	function percentage(value: number | null | undefined): string {
 		return value == null ? '—' : `${value.toFixed(0)}%`;
 	}
 
-	/** @param {number | null | undefined} value */
-	function cacheTone(value) {
+	function cacheTone(value: number | null | undefined) {
 		if (value == null) return 'none';
 		if (value >= 80) return 'high';
 		if (value >= 50) return 'medium';
@@ -82,23 +95,28 @@
 						onSelect={() => onSwitchSession(session.id)}
 					>
 						{#snippet children()}
-						<span
-							class="session-menu-status-dot"
-							class:running={session.status === 'running'}
-							class:paused={session.status !== 'running'}
-							aria-hidden="true"
-						></span>
-						<span class="session-menu-item-main">
-							<span class="session-menu-item-title"
-								>{session.title || '未命名会话'}</span
-							>
-							<span class="session-menu-item-status"
-								>{sessionStatusLabel(session)}</span
-							>
-						</span>
-						{#if session.id === activeSessionId}
-							<Icon name="check" size={16} className="session-menu-check" label="当前会话" />
-						{/if}
+							<span
+								class="session-menu-status-dot"
+								class:running={session.status === 'running'}
+								class:paused={session.status !== 'running'}
+								aria-hidden="true"
+							></span>
+							<span class="session-menu-item-main">
+								<span class="session-menu-item-title"
+									>{session.title || '未命名会话'}</span
+								>
+								<span class="session-menu-item-status"
+									>{sessionStatusLabel(session)}</span
+								>
+							</span>
+							{#if session.id === activeSessionId}
+								<Icon
+									name="check"
+									size={16}
+									className="session-menu-check"
+									label="当前会话"
+								/>
+							{/if}
 						{/snippet}
 					</MenuItem>
 				{/each}
@@ -271,7 +289,6 @@
 					{/if}
 				</div>
 			{/if}
-
 		</div>
 	{/if}
 </div>
