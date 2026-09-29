@@ -7,6 +7,7 @@
 
 /// Version of the public Tauri command directory.
 pub const IPC_CONTRACT_VERSION: u16 = 1;
+pub const EXPECTED_COMMAND_COUNT: usize = 74;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandBoundary {
@@ -467,7 +468,7 @@ mod tests {
     #[test]
     fn command_registry_is_unique_and_covers_the_current_handler_set() {
         assert_eq!(IPC_CONTRACT_VERSION, 1);
-        assert_eq!(COMMAND_CONTRACTS.len(), 74);
+        assert_eq!(COMMAND_CONTRACTS.len(), EXPECTED_COMMAND_COUNT);
         let names: HashSet<_> = COMMAND_CONTRACTS
             .iter()
             .map(|contract| contract.name)

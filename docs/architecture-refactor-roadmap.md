@@ -475,7 +475,7 @@ MemoryRuntime 启动所有权后续校准（ADR 0367）：当前不再使用 `ru
 
 主要文件：`crates/app-binary/src/events.rs`、`ui/src/lib/contracts/`、`ui/src/lib/sessionReducer.ts`、`ui/src/lib/sessionReducer/`、`ui/src/routes/+page.svelte`、`+layout.svelte`、scripts。
 
-验收：`scripts/check-ipc-contracts.ps1` 从 Rust handlers、`Serialize`/`Deserialize` DTO 与 Serde 属性生成 command map，并验证无漂移；同时核对 71 个 command name 在 handler、注册表、前端边界和文档之间一致。`scripts/check-ipc-events.ps1` 核对 40 个 event channels。生成器对不支持的 Rust/Serde wire shape fail closed；生成的静态类型不替代前端 runtime validators。最终验收记录见 2026-09-29 阶段 8 收口。
+验收：`scripts/check-ipc-contracts.ps1` 从 Rust handlers、`Serialize`/`Deserialize` DTO 与 Serde 属性生成 command map，并验证无漂移；同时核对 74 个 command name 在 handler、注册表、前端边界和文档之间一致。`scripts/check-ipc-events.ps1` 核对 40 个 event channels。生成器对不支持的 Rust/Serde wire shape fail closed；生成的静态类型不替代前端 runtime validators。最终验收记录见 2026-09-29 阶段 8 收口。
 
 2026-09-25 切片进展（ADR 0313）：Controller 只通过 typed invoke/submit/reducer/session-snapshot/通知与 UI callback dependencies 执行会话异步流程；`continueSession.ts` 与 `resumeMessages.ts` 保持纯策略/message projection 边界。页面保留 input-router/ask 决策、传入 `chatEventController` 的 typed callback wiring、model sync、resume target/auto-restore、新会话入口及 dialog/loading/menu/scroll 状态。纯 Vitest 覆盖 rollback 两分支、continue 两种策略、interaction preservation、created-session selection 和失败/重复请求保护。其余 Phase 8 工作仍按上列范围推进。
 
@@ -591,7 +591,7 @@ MemoryRuntime 启动所有权后续校准（ADR 0367）：当前不再使用 `ru
 | ToolsManager execution/adapters 不穿透 Agent 端口边界 | 满足 | App composition root 用唯一共享 `ToolsManager` 创建 manager-backed prompt/catalog/execution/authorization/observation/overlay/asset adapters 并注入 typed bundles；`haven-agent` 生产 runtime owners 只持有端口和共享的 typed authorization/action capabilities。完整 execution context、live authorization request 准备和 manager adapter 映射由 ADR 0384、0388 收口。 |
 | stable domain outputs typed，动态 JSON 边界有明确注释 | 满足 | 跨 crate ports/services、已注册 Tauri command responses 与 40 个 event channels 已逐项分类并记录 owner；明确保留动态 JSON 的 tool/provider/MCP/config 扩展边界（`architecture-output-contract-inventory.md`、ADR 0391）。 |
 | 配置、工具、模型、任务、记忆的 runtime replacement/失败/取消语义有测试 | 部分满足 | 各域已有局部回归；Settings/model durable-first 部分 apply failure、无自动 retry、重启从磁盘恢复、SkillsExec restart-only 与同配置域串行已实现（ADR 0351、0372）；scheduled dependency restart recovery 与结果投影已有专门回归（ADR 0392、0393）。不承诺跨所有 runtime owners 的统一替换矩阵，也不引入通用 Job executor、deadline、owner token/续租或自动 replay。 |
-| Rust/TS IPC 生成与校验一致 | 满足 | Rust handler 与 Serde DTO 生成 command request/response contracts；静态类型、运行时 validators 和 71 command/40 event drift checks 均有门禁（ADR 0394）。 |
+| Rust/TS IPC 生成与校验一致 | 满足 | Rust handler 与 Serde DTO 生成 command request/response contracts；静态类型、运行时 validators 和 74 command/40 event drift checks 均有门禁（ADR 0394）。 |
 | Rust 与 UI 格式、测试、类型、lint/build 门禁通过 | 满足 | 阶段 8 门禁由 ADR 0394 记录：Rust fmt/check/clippy/workspace tests 与 UI check/874 tests/build 均通过。本轮阶段 9 容量探针另通过 `haven-memory` 全量测试、check 与 Clippy。 |
 | 文档、ADR、重置说明、Git 历史和工作区状态可审查 | 满足 | ADR 0361、0367、架构、路线图和发布/重置文档记录本次证据与限制；提交后复核 Git 状态。 |
 
