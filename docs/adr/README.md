@@ -389,3 +389,4 @@
 - [0403：Session-Owned Attachment Retention](0403-session-owned-attachment-retention.md)
 - [0404：Session 事件容量、保留与写入失败恢复](0404-session-event-capacity-retention-and-recovery.md)
 - [0405：当前配置契约不执行迁移](0405-current-config-contract-without-migration.md)
+- [0406：Provider 添加时即时发现模型](0406-provider-add-model-discovery.md)

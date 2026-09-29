@@ -102,11 +102,20 @@
 						placeholder={dialog.idx === null ? 'sk-...' : ''}
 					/>
 				</div>
+				{#if dialog.idx === null}
+					<p class="model-hint">
+						添加后会立即尝试验证 API Key 并获取模型列表；失败时 Provider 仍会添加，并提示后续处理方式。
+					</p>
+				{/if}
 			</div>
 		{/snippet}
 		{#snippet footer()}
 			<MaterialButton variant="text" label="取消" onclick={onClose} />
-			<MaterialButton variant="filled" label="保存" onclick={onSave} />
+			<MaterialButton
+				variant="filled"
+				label="保存"
+				onclick={onSave}
+			/>
 		{/snippet}
 	</MaterialDialog>
 {/if}

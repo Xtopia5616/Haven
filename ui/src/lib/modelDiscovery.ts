@@ -2,6 +2,7 @@ import logger from '$lib/logger.ts';
 import { reportError } from '$lib/errorHandling.ts';
 import { formatError } from '$lib/formatError.ts';
 import { addNotification } from '$lib/notificationStore.ts';
+import { isKeylessProvider } from '$lib/apiStyle.ts';
 import { discoverAllModels, discoverModels } from '$lib/modelDiscoveryCommands.ts';
 import type { DiscoveredModelMap } from '$lib/contracts/model.ts';
 
@@ -9,6 +10,8 @@ type Provider = {
 	name: string;
 	base_url: string;
 	api_key?: string;
+	api_style?: string;
+	provider?: string;
 	[key: string]: unknown;
 };
 
@@ -99,7 +102,10 @@ export function createModelDiscovery(context: ModelDiscoveryContext) {
 		context.onDiscoverySettled?.(fills);
 	}
 
-	async function refreshProviderModels(providerName: string): Promise<boolean> {
+	async function refreshProviderModels(
+		providerName: string,
+		auth?: { authHeaderName?: string; authHeaderPrefix?: string; skipAuth?: boolean },
+	): Promise<boolean> {
 		const provider = context.getProviders().find((item) => item.name === providerName);
 		if (!provider || !provider.base_url.trim()) return false;
 		if (context.isProviderFetching?.(providerName)) return false;
@@ -109,9 +115,15 @@ export function createModelDiscovery(context: ModelDiscoveryContext) {
 				baseUrl: provider.base_url,
 				apiKey: provider.api_key || '',
 				provider: providerName,
+				...(auth?.authHeaderName ? { authHeaderName: auth.authHeaderName } : {}),
+				...(auth?.authHeaderPrefix !== undefined
+					? { authHeaderPrefix: auth.authHeaderPrefix }
+					: {}),
+				...(auth?.skipAuth || isKeylessProvider(provider) ? { skipAuth: true } : {}),
 			});
 			context.setModels({ ...context.getDiscoveredModels(), [providerName]: list || [] });
 			backfillModelMetaFromDiscovery();
+			return Array.isArray(list) && list.length > 0;
 		} catch (error) {
 			logger.warn(
 				'modelDiscovery',
@@ -122,7 +134,6 @@ export function createModelDiscovery(context: ModelDiscoveryContext) {
 		} finally {
 			context.setProviderFetching(providerName, false);
 		}
-		return true;
 	}
 
 	async function refreshAllModels(silent = false) {

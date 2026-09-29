@@ -199,7 +199,7 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
     CommandContract {
         name: "discover_models",
         boundary: CommandBoundary::Execute,
-        security: "http(s) endpoint plus stored-key host match",
+        security: "http(s) endpoint; typed auth scheme for an explicitly entered key; stored keys require a matching configured endpoint",
     },
     CommandContract {
         name: "discover_all_models",

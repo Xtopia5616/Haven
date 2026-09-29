@@ -42,6 +42,10 @@
 		mcpServerNames = [],
 		loaded = false,
 		onDiscoverySettled = () => {},
+		onProviderDiscoveryFailure = (
+			/** @type {string} */ _providerName,
+			/** @type {boolean} */ _staticCatalog,
+		) => {},
 	} = $props();
 
 	/** @param {string} id */
@@ -272,7 +276,7 @@
 			},
 		};
 	}
-	function saveProvider() {
+	async function saveProvider() {
 		if (!providerDialog?.form) return;
 		const { idx, form } = providerDialog;
 		const name = form.name.trim();
@@ -295,7 +299,7 @@
 			provider: preset.provider,
 			api_style: preset.api_style,
 			base_url: form.base_url.trim(),
-			api_key: form.api_key || previous?.api_key || '',
+			api_key: form.api_key.trim() || previous?.api_key || '',
 			auth_header_name: preset.auth_header_name,
 			auth_header_prefix: preset.auth_header_prefix,
 			proxy_url: previous?.proxy_url ?? null,
@@ -307,8 +311,31 @@
 			default_timeout_streaming_secs: previous?.default_timeout_streaming_secs ?? null,
 			default_web_search: previous?.default_web_search ?? null,
 		};
-		if (idx === null) llmConfig.providers.push(provider);
-		else {
+		if (idx === null) {
+			llmConfig.providers.push(provider);
+			if (provider.api_key || isKeylessProvider(provider))
+				keyConfiguredProviders[name] = true;
+			providerDialog = { idx: null, form: null };
+
+			const hasCredential = !!provider.api_key || isKeylessProvider(provider);
+			const fetched = hasCredential
+				? await discovery.refreshProviderModels(name, {
+						authHeaderName: provider.auth_header_name,
+						authHeaderPrefix: provider.auth_header_prefix,
+						skipAuth: isKeylessProvider(provider),
+					})
+				: false;
+			if (fetched && !isSttOnlyStyle(provider.api_style)) {
+				const count = modelsByProvider[name]?.length || 0;
+				addNotification(`Provider 已添加并获取 ${count} 个模型`, 'success', 2500);
+			} else {
+				onProviderDiscoveryFailure?.(
+					name,
+					fetched && isSttOnlyStyle(provider.api_style),
+				);
+			}
+			return;
+		} else {
 			const oldName = llmConfig.providers[idx].name;
 			llmConfig.providers[idx] = provider;
 			if (oldName !== name) {

@@ -133,9 +133,9 @@ fn auth_value(prefix: &str, key: &str) -> String {
 
 /// Resolve the api key and auth scheme for a model-list fetch.
 ///
-/// - An explicit `api_key` wins; the auth scheme comes from the matching
-///   configured provider (when the URL matches), falling back to OpenAI-style
-///   `Authorization: Bearer`.
+/// - An explicit `api_key` wins; a request may provide the auth header scheme
+///   from a selected, user-entered provider preset. Without that override, the
+///   matching configured provider is used, falling back to OpenAI-style Bearer.
 /// - An empty `api_key` falls back to the named provider's stored key, guarded
 ///   by URL: the provider is only used when its configured base URL matches
 ///   the requested one, so a stored key can never be sent to an arbitrary
@@ -145,15 +145,24 @@ fn resolve_discovery_auth(
     base_url: &str,
     api_key: &str,
     provider: Option<&str>,
+    auth_header_name: Option<&str>,
+    auth_header_prefix: Option<&str>,
 ) -> Option<(String, (String, String))> {
     let requested = normalize_endpoint_url(base_url);
     let provider_cfg = provider.and_then(|name| cfg.llm.provider(name));
 
     if !api_key.is_empty() {
-        let (h, pfx) = provider_cfg
-            .filter(|p| normalize_endpoint_url(&p.base_url) == requested)
-            .map(provider_auth_scheme)
-            .unwrap_or_else(|| ("Authorization".to_string(), "Bearer".to_string()));
+        let (h, pfx) = if let Some(header_name) = auth_header_name.filter(|name| !name.is_empty()) {
+            (
+                header_name.to_string(),
+                auth_header_prefix.unwrap_or_default().to_string(),
+            )
+        } else {
+            provider_cfg
+                .filter(|p| normalize_endpoint_url(&p.base_url) == requested)
+                .map(provider_auth_scheme)
+                .unwrap_or_else(|| ("Authorization".to_string(), "Bearer".to_string()))
+        };
         let value = auth_value(&pfx, api_key);
         return Some((api_key.to_string(), (h, value)));
     }
@@ -263,16 +272,23 @@ fn stt_auth_scheme(provider: &str) -> (String, String) {
 ///
 /// When `api_key` is empty (masked) and `provider` names a configured provider
 /// whose base URL matches `base_url`, the stored key is used — never sent to
-/// an arbitrary renderer-supplied host. `role = "transcription"` resolves
+/// an arbitrary renderer-supplied host. `skip_auth` is reserved for explicit
+/// keyless provider presets. `role = "transcription"` resolves
 /// through the `media.stt` config instead (STT model discovery). The IPC key
 /// remains `role` for the existing UI, but its value is a model id or a
 /// [`RequestKind`] string.
+// Tauri derives the typed flat camelCase IPC request from this signature; keep
+// the optional auth scheme fields explicit at that boundary.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn discover_models(
     base_url: String,
     api_key: String,
     provider: Option<String>,
     role: Option<String>,
+    auth_header_name: Option<String>,
+    auth_header_prefix: Option<String>,
+    skip_auth: Option<bool>,
     app: tauri::AppHandle,
 ) -> Result<Vec<ModelInfo>, String> {
     if !base_url.starts_with("http://") && !base_url.starts_with("https://") {
@@ -299,56 +315,65 @@ pub async fn discover_models(
         return Ok(list);
     }
 
-    let key_and_auth =
-        if role.as_deref().and_then(RequestKind::from_str) == Some(RequestKind::Transcription) {
-            // STT discovery: prefer an explicit key, otherwise use only the named
-            // `llm.providers` entry selected by the request or media settings.
-            let stt = &cfg.media.stt;
-            let requested = normalize_endpoint_url(&base_url);
-            if !api_key.is_empty() {
-                let scheme_name = provider
-                    .as_deref()
-                    .filter(|n| !n.is_empty())
-                    .unwrap_or(stt.provider.as_str());
-                let backend = cfg
-                    .llm
-                    .provider(scheme_name)
-                    .map(|p| p.provider.as_str())
-                    .unwrap_or(scheme_name);
-                let (h, pfx) = stt_auth_scheme(backend);
-                let value = auth_value(&pfx, &api_key);
-                Some((api_key.clone(), (h, value)))
-            } else if let Some(name) = provider
+    let key_and_auth = if api_key.is_empty() && skip_auth.unwrap_or(false) {
+        Some((String::new(), None))
+    } else if role.as_deref().and_then(RequestKind::from_str) == Some(RequestKind::Transcription) {
+        // STT discovery: prefer an explicit key, otherwise use only the named
+        // `llm.providers` entry selected by the request or media settings.
+        let stt = &cfg.media.stt;
+        let requested = normalize_endpoint_url(&base_url);
+        if !api_key.is_empty() {
+            let scheme_name = provider
                 .as_deref()
                 .filter(|n| !n.is_empty())
-                .or(Some(stt.provider.as_str()))
-                .filter(|n| {
-                    !matches!(
-                        *n,
-                        "none"
-                            | "llm"
-                            | "mcp"
-                            | "openai"
-                            | "groq"
-                            | "gemini"
-                            | "deepgram"
-                            | "assemblyai"
-                    )
-                })
-                && let Some(p) = cfg.llm.provider(name)
-                && normalize_endpoint_url(&p.base_url) == requested
-            {
-                let (h, pfx) = stt_auth_scheme(&p.provider);
-                let value = auth_value(&pfx, &p.api_key);
-                Some((p.api_key.clone(), (h, value)))
-            } else {
-                None
-            }
+                .unwrap_or(stt.provider.as_str());
+            let backend = cfg
+                .llm
+                .provider(scheme_name)
+                .map(|p| p.provider.as_str())
+                .unwrap_or(scheme_name);
+            let (h, pfx) = stt_auth_scheme(backend);
+            let value = auth_value(&pfx, &api_key);
+            Some((api_key.clone(), Some((h, value))))
+        } else if let Some(name) = provider
+            .as_deref()
+            .filter(|n| !n.is_empty())
+            .or(Some(stt.provider.as_str()))
+            .filter(|n| {
+                !matches!(
+                    *n,
+                    "none"
+                        | "llm"
+                        | "mcp"
+                        | "openai"
+                        | "groq"
+                        | "gemini"
+                        | "deepgram"
+                        | "assemblyai"
+                )
+            })
+            && let Some(p) = cfg.llm.provider(name)
+            && normalize_endpoint_url(&p.base_url) == requested
+        {
+            let (h, pfx) = stt_auth_scheme(&p.provider);
+            let value = auth_value(&pfx, &p.api_key);
+            Some((p.api_key.clone(), Some((h, value))))
         } else {
-            resolve_discovery_auth(&cfg, &base_url, &api_key, provider.as_deref())
-        };
+            None
+        }
+    } else {
+        resolve_discovery_auth(
+            &cfg,
+            &base_url,
+            &api_key,
+            provider.as_deref(),
+            auth_header_name.as_deref(),
+            auth_header_prefix.as_deref(),
+        )
+        .map(|(key, auth)| (key, Some(auth)))
+    };
 
-    let (key, (header, value)) = key_and_auth.ok_or_else(|| {
+    let (key, auth) = key_and_auth.ok_or_else(|| {
         "未找到可用的 API Key：请填写 API Key，或先保存 Provider 配置（其 Base URL 需与请求地址一致）"
             .to_string()
     })?;
@@ -360,7 +385,12 @@ pub async fn discover_models(
         "discovering models"
     );
     let models = reg
-        .discover_from(&base_url, &key, Some((header.as_str(), value.as_str())))
+        .discover_from(
+            &base_url,
+            &key,
+            auth.as_ref()
+                .map(|(header, value)| (header.as_str(), value.as_str())),
+        )
         .await
         .map_err(|e| {
             tracing::warn!(
@@ -602,6 +632,63 @@ mod tests {
         let mut cfg = AppConfig::default();
         cfg.llm.providers = providers;
         cfg
+    }
+
+    #[test]
+    fn explicit_discovery_key_uses_the_supplied_provider_auth_scheme() {
+        let cfg = cfg_with_providers(Vec::new());
+
+        let auth = resolve_discovery_auth(
+            &cfg,
+            "https://provider.example/v1",
+            "entered-key",
+            Some("not-yet-saved"),
+            Some("x-api-key"),
+            Some(""),
+        );
+
+        assert_eq!(
+            auth,
+            Some((
+                "entered-key".into(),
+                ("x-api-key".into(), "entered-key".into())
+            ))
+        );
+    }
+
+    #[test]
+    fn stored_discovery_key_stays_bound_to_its_configured_endpoint() {
+        let mut stored = provider("primary", "stored-key", Some("anthropic"));
+        stored.base_url = "https://provider.example/v1".into();
+        stored.auth_header_name = "x-api-key".into();
+        stored.auth_header_prefix.clear();
+        let cfg = cfg_with_providers(vec![stored]);
+
+        let matching = resolve_discovery_auth(
+            &cfg,
+            "https://provider.example/v1",
+            "",
+            Some("primary"),
+            None,
+            None,
+        );
+        assert_eq!(
+            matching,
+            Some((
+                "stored-key".into(),
+                ("x-api-key".into(), "stored-key".into())
+            ))
+        );
+
+        let mismatched = resolve_discovery_auth(
+            &cfg,
+            "https://other.example/v1",
+            "",
+            Some("primary"),
+            Some("Authorization"),
+            Some("Bearer"),
+        );
+        assert_eq!(mismatched, None);
     }
 
     #[test]

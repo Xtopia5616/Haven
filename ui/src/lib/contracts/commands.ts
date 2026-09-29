@@ -71,7 +71,7 @@ export const TAURI_COMMAND_CONTRACTS = {
 	delete_fact: { boundary: 'mutate', security: 'delete one fact by id' },
 	get_api_key_status: { boundary: 'read', security: 'boolean presence only; credentials excluded' },
 	check_llm_connection: { boundary: 'read', security: 'status and non-sensitive reason only; no endpoint or provider payload' },
-	discover_models: { boundary: 'execute', security: 'http(s) endpoint plus stored-key host match' },
+	discover_models: { boundary: 'execute', security: 'http(s) endpoint; typed auth scheme for an explicitly entered key; stored keys require a matching configured endpoint' },
 	discover_all_models: { boundary: 'execute', security: 'only configured providers are queried' },
 	switch_model: { boundary: 'mutate', security: 'role carries a model id or RequestKind and is validated before config save' },
 	set_reasoning_effort: { boundary: 'mutate', security: 'role carries a model id or RequestKind and is validated before config save' },

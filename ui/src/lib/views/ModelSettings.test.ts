@@ -76,6 +76,60 @@ describe('ModelSettings provider surface', () => {
 		expect(screen.queryByText('secret-value')).toBeNull();
 	});
 
+	it('fetches models immediately with the selected auth scheme when adding a provider', async () => {
+		invoke.mockResolvedValue([{ id: 'gpt-added', name: 'GPT Added' }]);
+		const onProviderDiscoveryFailure = vi.fn();
+		const config = { providers: [], models: [], request_policies: [] };
+		renderSettings({
+			...props(config.providers, config.models),
+			llmConfig: config,
+			onProviderDiscoveryFailure,
+		});
+
+		await fireEvent.click(screen.getByRole('button', { name: '添加 Provider' }));
+		await fireEvent.input(screen.getByPlaceholderText('唯一名称，角色据此选择'), {
+			target: { value: 'primary' },
+		});
+		await fireEvent.input(screen.getByPlaceholderText('sk-...'), {
+			target: { value: 'new-key' },
+		});
+		await fireEvent.click(screen.getByRole('button', { name: '保存' }));
+
+		await waitFor(() =>
+			expect(invoke).toHaveBeenCalledWith('discover_models', {
+				baseUrl: 'https://api.openai.com/v1',
+				apiKey: 'new-key',
+				provider: 'primary',
+				authHeaderName: 'Authorization',
+				authHeaderPrefix: 'Bearer',
+			}),
+		);
+		expect(onProviderDiscoveryFailure).not.toHaveBeenCalled();
+	});
+
+	it('keeps the provider and opens failure feedback when model discovery fails', async () => {
+		invoke.mockRejectedValue(new Error('provider unavailable'));
+		const onProviderDiscoveryFailure = vi.fn();
+		const config = { providers: [], models: [], request_policies: [] };
+		renderSettings({
+			...props(config.providers, config.models),
+			llmConfig: config,
+			onProviderDiscoveryFailure,
+		});
+
+		await fireEvent.click(screen.getByRole('button', { name: '添加 Provider' }));
+		await fireEvent.input(screen.getByPlaceholderText('唯一名称，角色据此选择'), {
+			target: { value: 'primary' },
+		});
+		await fireEvent.input(screen.getByPlaceholderText('sk-...'), {
+			target: { value: 'new-key' },
+		});
+		await fireEvent.click(screen.getByRole('button', { name: '保存' }));
+
+		await waitFor(() => expect(onProviderDiscoveryFailure).toHaveBeenCalledWith('primary', false));
+		expect(config.providers).toHaveLength(1);
+	});
+
 	it('clears role bindings when deleting their provider', async () => {
 		const provider = {
 			name: 'local',

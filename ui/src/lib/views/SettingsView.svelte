@@ -164,6 +164,7 @@
 	let log = $state({ level: 'info', file_enabled: true });
 
 	let settingsTab = $state('general');
+	let providerDiscoveryAlert = $state({ providerName: '', staticCatalog: false });
 	const settingsTabs = [
 		{ id: 'general', label: '常规', hint: '快捷键、会话、记忆与外观' },
 		{ id: 'models', label: '模型', hint: 'Provider、能力与请求策略' },
@@ -1055,6 +1056,12 @@
 						{mcpServerNames}
 						loaded={true}
 						onDiscoverySettled={reBaselineAfterDiscovery}
+						onProviderDiscoveryFailure={(
+							/** @type {string} */ providerName,
+							/** @type {boolean} */ staticCatalog,
+						) => {
+							providerDiscoveryAlert = { providerName, staticCatalog };
+						}}
 					/>{:else}<p class="model-hint">正在加载模型与 API Key 状态…</p>{/if}
 			{:else if settingsTab === 'security'}
 				<SettingsSecurity
@@ -1150,6 +1157,39 @@
 	{/snippet}
 </MaterialDialog>
 
+<MaterialDialog
+	open={!!providerDiscoveryAlert.providerName}
+	title={providerDiscoveryAlert.staticCatalog ? '无法在线验证 API Key' : '模型列表获取失败'}
+	onClose={() => (providerDiscoveryAlert = { providerName: '', staticCatalog: false })}
+>
+	{#snippet children()}
+		<div class="provider-discovery-notice" role="alert">
+			{#if providerDiscoveryAlert.staticCatalog}
+				<p>
+					Provider「{providerDiscoveryAlert.providerName}」已添加。该协议没有在线模型列表接口，当前显示内置模型目录，因此无法验证
+					API Key。
+				</p>
+				<p>请确认 API Key 可用；也可在「模型」设置中添加模型并手动输入模型 ID。</p>
+			{:else}
+				<p>
+					Provider「{providerDiscoveryAlert.providerName}」已添加，但无法验证 API Key 或获取模型列表。请检查 API
+					Key、Base URL 和 Provider 预设。
+				</p>
+				<p>
+					部分服务不开放 <code>/models</code> 接口；你仍可在「模型」设置中添加模型并手动输入模型 ID。
+				</p>
+			{/if}
+		</div>
+	{/snippet}
+	{#snippet footer()}
+		<MaterialButton
+			variant="filled"
+			label="知道了"
+			onclick={() => (providerDiscoveryAlert = { providerName: '', staticCatalog: false })}
+		/>
+	{/snippet}
+</MaterialDialog>
+
 <style>
 	.settings-page {
 		width: 100%;
@@ -1200,6 +1240,26 @@
 		margin-top: 0;
 		margin-bottom: var(--md-sys-space-md);
 		line-height: var(--md-sys-typescale-label-small-line-height);
+	}
+	.provider-discovery-notice {
+		display: flex;
+		flex-direction: column;
+		gap: var(--md-sys-space-sm);
+		padding: var(--md-sys-space-md);
+		border: 1px solid var(--md-sys-color-error);
+		border-radius: var(--md-sys-shape-medium);
+		background: var(--md-sys-color-error-container);
+		color: var(--md-sys-color-on-error-container);
+		font-size: var(--md-sys-typescale-body-small-size);
+		line-height: var(--md-sys-typescale-body-small-line-height);
+	}
+	.provider-discovery-notice p {
+		margin: 0;
+	}
+	.provider-discovery-notice code {
+		padding: 1px 4px;
+		border-radius: var(--md-sys-shape-extra-small);
+		background: color-mix(in srgb, var(--md-sys-color-on-error-container) 8%, transparent);
 	}
 	.save-bar {
 		position: sticky;
