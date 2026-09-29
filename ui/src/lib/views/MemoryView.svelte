@@ -4,6 +4,7 @@
 	/** @typedef {import('$lib/contracts/memory.ts').Fact} Fact */
 	/** @typedef {import('$lib/contracts/memory.ts').MemoryRecallResult} MemoryRecallResult */
 	/** @typedef {import('$lib/contracts/memory.ts').MemoryRecallState} MemoryRecallState */
+	/** @typedef {import('$lib/contracts/action.ts').ActionPayload} TaskAction */
 	import logger from '$lib/logger.ts';
 	import { reportError } from '$lib/errorHandling.ts';
 	import { buildResumeMessages } from '$lib/resumeMessages.ts';
@@ -34,6 +35,7 @@
 		updateSessionTitle as updateSessionTitleCommand,
 	} from '$lib/sessionHistoryCommands.ts';
 	import { registerSessionListener } from '$lib/events.ts';
+	import { listActionHistory } from '$lib/actionCommands.ts';
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import MaterialTabs from '$lib/MaterialTabs.svelte';
@@ -72,6 +74,7 @@
 	let hasMore = $state(true);
 	let loadSessionsSeq = 0;
 	let loadFactsSeq = 0;
+	let loadTaskHistorySeq = 0;
 	const PAGE_SIZE = 50;
 	let statusFilter = $state('');
 	let startDate = $state('');
@@ -88,9 +91,13 @@
 	let activeTab = $state(memoryTabFromUrl());
 	const memoryTabs = [
 		{ id: 'sessions', label: '会话历史' },
-		{ id: 'tasks', label: '任务' },
-		{ id: 'memory', label: '记忆' },
+		{ id: 'tasks', label: '任务历史' },
+		{ id: 'memory', label: '长期记忆' },
 	];
+	/** @type {TaskAction[]} */
+	let taskHistory = $state([]);
+	let taskHistoryLoading = $state(false);
+	let taskHistoryFailed = $state(false);
 	/** @type {MemoryRecallState} */
 	let memoryRecall = $state({
 		query: '',
@@ -166,6 +173,28 @@
 		factSourceFilter;
 		loadFacts();
 	});
+	$effect(() => {
+		if (activeTab !== 'tasks') return;
+		loadTaskHistory();
+	});
+
+	async function loadTaskHistory() {
+		const sequence = ++loadTaskHistorySeq;
+		taskHistoryLoading = true;
+		taskHistoryFailed = false;
+		try {
+			const rows = await listActionHistory(undefined, 100);
+			if (sequence !== loadTaskHistorySeq) return;
+			taskHistory = rows;
+		} catch (e) {
+			if (sequence !== loadTaskHistorySeq) return;
+			taskHistory = [];
+			taskHistoryFailed = true;
+			reportError(e, { context: 'MemoryView', message: '加载任务历史失败', log: false });
+		} finally {
+			if (sequence === loadTaskHistorySeq) taskHistoryLoading = false;
+		}
+	}
 
 	/** @param {string} tabId */
 	function selectMemoryTab(tabId) {
@@ -222,9 +251,7 @@
 		const sequence = loadSessionsSeq;
 		loading = true;
 		try {
-			const more = await searchHistoryFiltered(
-				filterParams({ limit: PAGE_SIZE, offset }),
-			);
+			const more = await searchHistoryFiltered(filterParams({ limit: PAGE_SIZE, offset }));
 			if (sequence !== loadSessionsSeq) return;
 			if (more && more.length > 0) {
 				sessions = [...sessions, ...more];
@@ -477,8 +504,8 @@
 		const predicate = newFact.predicate.trim();
 		const object = newFact.object.trim();
 		if (!predicate || !object) {
-			addNotification('请输入 predicate 和 object', 'error', 3000);
-			return;
+			addNotification('请输入谓词和对象', 'error', 3000);
+			return false;
 		}
 		addingFact = true;
 		try {
@@ -495,8 +522,10 @@
 			newFact = { predicate: '', object: '', tags: '' };
 			await loadFacts();
 			addNotification('事实已保存', 'success', 2500);
+			return true;
 		} catch (e) {
 			reportError(e, { context: 'MemoryView', message: '添加事实失败', log: false });
+			return false;
 		} finally {
 			addingFact = false;
 		}
@@ -541,7 +570,7 @@
 </script>
 
 <div class="memory-page">
-	<WorkspacePageHeader title="历史" description="回顾会话、任务和记忆。" />
+	<WorkspacePageHeader title="历史" description="回顾会话、任务和长期记忆。" />
 	<MaterialTabs
 		tabs={memoryTabs}
 		activeTab={activeTab ?? 'sessions'}
@@ -602,12 +631,16 @@
 				/>
 			{:else if activeTab === 'tasks'}
 				<WorkspaceSectionHeader
-					title="任务"
-					description="查看后台任务和定时任务的当前状态。"
+					title="任务历史"
+					description="查看后台任务和定时任务的当前状态及最近历史。"
 				/>
 				<TaskCenter
 					{runningBackgroundActions}
 					{pendingScheduledActions}
+					{taskHistory}
+					{taskHistoryLoading}
+					{taskHistoryFailed}
+					onRefreshTaskHistory={loadTaskHistory}
 					{actionStatusLabel}
 					{sessionTitleFor}
 					{actionDuration}
@@ -616,10 +649,10 @@
 					{onCancel}
 				/>
 			{:else}
-				<div class="memory-tools-view" aria-label="记忆中心">
+				<div class="memory-tools-view" aria-label="长期记忆">
 					<WorkspaceSectionHeader
-						title="记忆"
-						description="浏览、搜索和管理关于你的事实与过去的对话。"
+						title="长期记忆"
+						description="管理已保存的长期事实，或检索过去的对话。"
 					/>
 					<MemoryCenter
 						{facts}

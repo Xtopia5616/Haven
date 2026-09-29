@@ -5,6 +5,7 @@
 	import WorkspaceNav from './WorkspaceNav.svelte';
 	import MaterialButton from './MaterialButton.svelte';
 	import MaterialIconButton from './MaterialIconButton.svelte';
+	import Icon from './Icon.svelte';
 	import GlobalContextMenu from './GlobalContextMenu.svelte';
 	import { dragScroll } from '$lib/dragScroll.ts';
 
@@ -49,8 +50,12 @@
 				onclick={() => onToggleTheme?.()}
 				label="切换主题"
 				title={theme === 'dark' ? '切换到亮色模式' : '切换到暗色模式'}
-				icon={theme === 'dark' ? 'sun' : 'moon'}
-			></MaterialIconButton>
+			>
+				{#snippet children()}
+					<Icon name="sun" size={18} className="theme-icon theme-icon--to-light" />
+					<Icon name="moon" size={18} className="theme-icon theme-icon--to-dark" />
+				{/snippet}
+			</MaterialIconButton>
 		</div>
 	</header>
 
@@ -127,9 +132,13 @@
 		-webkit-app-region: no-drag;
 	}
 	:global(.theme-icon) {
-		display: block;
+		display: none;
 		width: 18px;
 		height: 18px;
+	}
+	:global(html[data-theme='dark'] .theme-icon--to-light),
+	:global(html[data-theme='light'] .theme-icon--to-dark) {
+		display: block;
 	}
 	.content {
 		flex: 1;

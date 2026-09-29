@@ -1,4 +1,5 @@
 <script>
+	/** @typedef {import('./contracts/action.ts').ActionPayload} TaskAction */
 	/**
 	 * Unified task list/detail view. The route owns loading, event merging and
 	 * IPC; this component only presents task lifecycle and emits user intent.
@@ -12,14 +13,18 @@
 	import { taskKindLabel } from '$lib/taskTerminology.ts';
 
 	let {
-		runningBackgroundActions = [],
-		pendingScheduledActions = [],
+		runningBackgroundActions = /** @type {TaskAction[]} */ ([]),
+		pendingScheduledActions = /** @type {TaskAction[]} */ ([]),
+		taskHistory = /** @type {TaskAction[]} */ ([]),
+		taskHistoryLoading = false,
+		taskHistoryFailed = false,
 		actionStatusLabel = /** @type {(status: string) => string} */ ((status) => status || ''),
 		sessionTitleFor = () => '',
 		actionDuration = () => '',
 		scheduledActionCountdown = () => '',
 		onOpenSession = () => {},
 		onCancel = () => {},
+		onRefreshTaskHistory = () => {},
 	} = $props();
 
 	let selectedTaskId = $state(null);
@@ -35,10 +40,23 @@
 				actionDuration,
 				scheduledActionCountdown,
 			});
-		return [
-			...runningBackgroundActions.map((action) => projectActionCard(action, options)),
-			...pendingScheduledActions.map((action) => projectActionCard(action, options)),
+		const seenIds = new Set();
+		const actions = [
+			...runningBackgroundActions.map((/** @type {TaskAction} */ action) =>
+				projectActionCard(action, options),
+			),
+			...pendingScheduledActions.map((/** @type {TaskAction} */ action) =>
+				projectActionCard(action, options),
+			),
+			...taskHistory.map((/** @type {TaskAction} */ action) =>
+				projectActionCard(action, options),
+			),
 		];
+		return actions.filter((row) => {
+			if (seenIds.has(row.id)) return false;
+			seenIds.add(row.id);
+			return true;
+		});
 	});
 
 	const filteredRows = $derived.by(() => {
@@ -46,7 +64,7 @@
 		return taskRows.filter((row) => {
 			if (filter !== 'all' && row.kind !== filter) return false;
 			if (!normalized) return true;
-			return `${row.title} ${row.searchText} ${row.sessionId || ''} ${row.details.command || ''} ${row.details.body || ''} ${row.details.preview || ''}`
+			return `${row.title} ${row.searchText} ${row.sessionId || ''} ${row.details.command || ''} ${row.details.body || ''} ${row.details.preview || ''} ${row.details.output || ''} ${row.details.error || ''}`
 				.toLocaleLowerCase()
 				.includes(normalized);
 		});
@@ -61,7 +79,17 @@
 				id: 'actions',
 				label: '进行中与待执行',
 				description: '可取消的后台执行，以及等待中或已触发的定时任务。',
-				rows: filteredRows,
+				rows: filteredRows.filter(
+					(row) => !['completed', 'failed', 'cancelled'].includes(row.status || ''),
+				),
+			},
+			{
+				id: 'history',
+				label: '已结束的任务',
+				description: '最近完成、失败或取消的后台任务和定时任务。',
+				rows: filteredRows.filter((row) =>
+					['completed', 'failed', 'cancelled'].includes(row.status || ''),
+				),
 			},
 		].filter((group) => group.rows.length > 0);
 	});
@@ -81,7 +109,7 @@
 
 	/** @param {any} row */
 	function openRow(row) {
-		if (row.sessionId) {
+		if (row.sessionId && !['completed', 'failed', 'cancelled'].includes(row.status || '')) {
 			onOpenSession?.(row.sessionId);
 			return;
 		}
@@ -103,7 +131,7 @@
 	}
 </script>
 
-<section class="task-center" aria-label="任务">
+<section class="task-center" aria-label="任务历史">
 	<div class="task-toolbar workspace-filter-bar" role="search">
 		<label class="task-search">
 			<span class="sr-only">搜索任务</span>
@@ -133,7 +161,21 @@
 		<CountChip count={filteredRows.length} label="项任务" className="task-count" live />
 	</div>
 
-	{#if taskRows.length === 0}
+	{#if taskRows.length === 0 && taskHistoryLoading}
+		<AsyncState
+			state="loading"
+			title="正在加载任务历史"
+			message="正在读取已结束的后台任务和定时任务。"
+		/>
+	{:else if taskRows.length === 0 && taskHistoryFailed}
+		<AsyncState
+			state="error"
+			title="任务历史加载失败"
+			message="检查应用连接后重试。"
+			actionLabel="重试"
+			onAction={onRefreshTaskHistory}
+		/>
+	{:else if taskRows.length === 0}
 		<AsyncState title="暂无任务" message="安排后台或定时任务后，执行状态和结果会显示在这里。" />
 	{:else if filteredRows.length === 0}
 		<AsyncState
@@ -296,6 +338,18 @@
 						<p class="task-detail-copy">{selectedRow.details.body}</p>
 					</section>
 				{/if}
+				{#if selectedRow.details.output}
+					<section class="task-dialog-section">
+						<h4>任务输出</h4>
+						<p class="task-detail-copy">{selectedRow.details.output}</p>
+					</section>
+				{/if}
+				{#if selectedRow.details.error}
+					<section class="task-dialog-section">
+						<h4>错误详情</h4>
+						<p class="task-detail-copy">{selectedRow.details.error}</p>
+					</section>
+				{/if}
 				<div class="task-actions">
 					{#if selectedRow.kind === 'background' && selectedRow.status === 'running'}
 						<MaterialButton
@@ -309,6 +363,13 @@
 							variant="danger"
 							label="取消定时任务"
 							onclick={() => onCancel?.(selectedRow.id, 'scheduled')}
+						/>
+					{/if}
+					{#if selectedRow.sessionId}
+						<MaterialButton
+							variant="outlined"
+							label="打开来源会话"
+							onclick={() => onOpenSession?.(selectedRow.sessionId)}
 						/>
 					{/if}
 				</div>
@@ -386,12 +447,9 @@
 	}
 	.task-list {
 		display: grid;
-		grid-template-columns: repeat(2, minmax(0, 1fr));
+		grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
 		gap: var(--md-sys-space-sm);
 		min-width: 0;
-		max-height: min(620px, calc(100vh - 280px));
-		overflow-y: auto;
-		scrollbar-gutter: stable;
 		padding: var(--md-sys-space-xs);
 	}
 	.task-card-main:focus-visible,
@@ -572,9 +630,7 @@
 	}
 	@container (max-width: 800px) {
 		.task-list {
-			grid-template-columns: 1fr;
-			max-height: none;
-			overflow: visible;
+			grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
 			padding-right: 0;
 		}
 	}

@@ -3,19 +3,10 @@
 	import MaterialBadge from '$lib/MaterialBadge.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
-	import MaterialSelect from '$lib/MaterialSelect.svelte';
-	import CountChip from '$lib/CountChip.svelte';
 
 	let {
 		facts = /** @type {Fact[]} */ ([]),
 		factsLoaded = false,
-		factSourceFilter = '',
-		factSourceOptions = [],
-		newFact = { predicate: '', object: '', tags: '' },
-		addingFact = false,
-		showHeader = true,
-		onFactSourceFilterChange = () => {},
-		onAddFact = () => {},
 		onDeleteFact = () => {},
 	} = $props();
 
@@ -104,156 +95,79 @@
 		selectedFactId = null;
 		onDeleteFact?.(factId);
 	}
-
-	/** @param {string} value */
-	function handleSourceChange(value) {
-		onFactSourceFilterChange(value);
-	}
 </script>
 
 <div class="facts-view">
-	{#if showHeader}
-		<div class="facts-toolbar workspace-filter-bar">
-			<div class="section-heading">
-				<h2>已保存事实</h2>
-				<CountChip count={facts.length} label="条" />
-			</div>
-			<div class="facts-filter">
-				<MaterialSelect
-					value={factSourceFilter}
-					ariaLabel="事实来源"
-					options={factSourceOptions}
-					onChange={handleSourceChange}
-				/>
-			</div>
-		</div>
-		<p class="section-hint">
-			跨会话保存的结构化事实（身份、偏好、工作区等）。点击条目查看完整来源和记忆状态。
-		</p>
-	{/if}
-
-	<div class="facts-layout">
-		<section class="fact-browser" aria-label="已保存事实">
-			{#if factsLoaded && facts.length > 0}
-				<div class="fact-list" role="list" aria-label="已保存事实列表">
-					{#each facts as fact (fact.id)}
-						<article
-							class="fact-card workspace-item-card motion-list-item"
-							class:selected={selectedFactId === fact.id && detailOpen}
+	<section class="fact-browser" aria-label="已保存事实">
+		{#if factsLoaded && facts.length > 0}
+			<div class="fact-list" role="list" aria-label="已保存事实列表">
+				{#each facts as fact (fact.id)}
+					<article
+						class="fact-card workspace-item-card motion-list-item"
+						class:selected={selectedFactId === fact.id && detailOpen}
+					>
+						<button
+							class="fact-card-main workspace-item-card-main"
+							type="button"
+							aria-label={`查看${factTitle(fact)}详情`}
+							onclick={() => selectFact(fact)}
 						>
-							<button
-								class="fact-card-main workspace-item-card-main"
-								type="button"
-								aria-label={`查看${factTitle(fact)}详情`}
+							<span class="fact-card-header workspace-item-card-header">
+								<span class="fact-card-type" data-tone={factSourceTone(fact)}>
+									<span
+										class="fact-card-indicator"
+										data-tone={factSourceTone(fact)}
+										aria-hidden="true"
+									></span>
+									长期事实
+								</span>
+								<MaterialBadge
+									text={factSourceLabel(fact)}
+									variant={factSourceTone(fact)}
+								/>
+							</span>
+							<strong class="fact-card-title">{factTitle(fact)}</strong>
+							<span class="fact-card-summary">{fact.object || '暂无内容'}</span>
+							<span class="fact-card-meta workspace-item-card-meta">
+								<span>{factSubjectLabel(fact)}</span>
+								<span class="fact-card-meta-separator" aria-hidden="true">·</span>
+								<span>{confidenceLabel(fact.confidence)}</span>
+							</span>
+							<span class="fact-card-footer workspace-item-card-footer">
+								<span class="fact-card-id workspace-item-card-id"
+									>{reinforcementLabel(fact)}</span
+								>
+							</span>
+						</button>
+						<div class="fact-card-actions workspace-item-card-actions">
+							<MaterialButton
+								variant="text"
+								label="查看详情"
 								onclick={() => selectFact(fact)}
-							>
-								<span class="fact-card-header workspace-item-card-header">
-									<span class="fact-card-type" data-tone={factSourceTone(fact)}>
-										<span
-											class="fact-card-indicator"
-											data-tone={factSourceTone(fact)}
-											aria-hidden="true"
-										></span>
-										长期事实
-									</span>
-									<MaterialBadge
-										text={factSourceLabel(fact)}
-										variant={factSourceTone(fact)}
-									/>
-								</span>
-								<strong class="fact-card-title">{factTitle(fact)}</strong>
-								<span class="fact-card-summary">{fact.object || '暂无内容'}</span>
-								<span class="fact-card-meta workspace-item-card-meta">
-									<span>{factSubjectLabel(fact)}</span>
-									<span class="fact-card-meta-separator" aria-hidden="true"
-										>·</span
-									>
-									<span>{confidenceLabel(fact.confidence)}</span>
-								</span>
-								<span class="fact-card-footer workspace-item-card-footer">
-									<span class="fact-card-id workspace-item-card-id"
-										>{reinforcementLabel(fact)}</span
-									>
-								</span>
-							</button>
-							<div class="fact-card-actions workspace-item-card-actions">
-								<MaterialButton
-									variant="text"
-									label="查看详情"
-									onclick={() => selectFact(fact)}
-								/>
-								<MaterialButton
-									variant="text"
-									className="fact-delete"
-									label="删除"
-									onclick={() => onDeleteFact?.(fact.id)}
-								/>
-							</div>
-						</article>
-					{/each}
-				</div>
-			{:else if factsLoaded}
-				<div class="empty-inline">
-					<span class="empty-inline-mark" aria-hidden="true">＋</span>
-					<strong>还没有已保存的事实</strong>
-					<p>从右侧添加一条，或继续使用 Haven 让它自动抽取。</p>
-				</div>
-			{:else}
-				<div class="empty-inline" role="status" aria-live="polite">
-					<span class="empty-inline-mark" aria-hidden="true">…</span>
-					<strong>正在加载已保存事实</strong>
-				</div>
-			{/if}
-		</section>
-
-		<aside class="fact-side">
-			<section class="fact-editor md-card md-card--outlined" aria-labelledby="add-fact-title">
-				<div class="section-head section-head--compact">
-					<div>
-						<h3 id="add-fact-title">添加一条记忆</h3>
-						<p>用主语、谓词和对象描述一个事实。</p>
-					</div>
-				</div>
-				<div class="fact-form">
-					<label for="fact-predicate">谓词</label>
-					<input
-						id="fact-predicate"
-						type="text"
-						class="md-input"
-						placeholder="例如：喜欢、email"
-						bind:value={newFact.predicate}
-						autocomplete="off"
-					/>
-					<label for="fact-object">对象</label>
-					<input
-						id="fact-object"
-						type="text"
-						class="md-input"
-						placeholder="例如：深色主题"
-						bind:value={newFact.object}
-						autocomplete="off"
-					/>
-					<label for="fact-tags">标签 <span>可选</span></label>
-					<input
-						id="fact-tags"
-						type="text"
-						class="md-input"
-						placeholder="逗号分隔"
-						bind:value={newFact.tags}
-						autocomplete="off"
-					/>
-				</div>
-				<div class="fact-editor-actions">
-					<MaterialButton
-						variant="filled"
-						label={addingFact ? '保存中…' : '保存记忆'}
-						onclick={() => onAddFact()}
-						disabled={addingFact}
-					/>
-				</div>
-			</section>
-		</aside>
-	</div>
+							/>
+							<MaterialButton
+								variant="text"
+								className="fact-delete"
+								label="删除"
+								onclick={() => onDeleteFact?.(fact.id)}
+							/>
+						</div>
+					</article>
+				{/each}
+			</div>
+		{:else if factsLoaded}
+			<div class="empty-inline">
+				<span class="empty-inline-mark" aria-hidden="true">＋</span>
+				<strong>还没有已保存的事实</strong>
+				<p>可以手动添加，也可以继续使用 Haven 让它自动抽取。</p>
+			</div>
+		{:else}
+			<div class="empty-inline" role="status" aria-live="polite">
+				<span class="empty-inline-mark" aria-hidden="true">…</span>
+				<strong>正在加载已保存事实</strong>
+			</div>
+		{/if}
+	</section>
 </div>
 
 <MaterialDialog
@@ -353,15 +267,8 @@
 	.facts-view {
 		display: flex;
 		flex-direction: column;
-		gap: var(--md-sys-space-md);
 		min-width: 0;
 	}
-	.facts-toolbar {
-		justify-content: space-between;
-		margin-bottom: 0;
-	}
-	.section-heading,
-	.section-head,
 	.fact-dialog-type-row {
 		display: flex;
 		align-items: center;
@@ -369,51 +276,14 @@
 		gap: var(--md-sys-space-md);
 		min-width: 0;
 	}
-	.section-heading h2,
-	.section-head h3 {
-		margin: 0;
-		font-size: var(--md-sys-typescale-title-large-size);
-		font-weight: 650;
-		line-height: var(--md-sys-typescale-title-large-line-height);
-		color: var(--md-sys-color-on-surface);
-	}
-	.section-head h3 {
-		font-size: var(--md-sys-typescale-title-medium-size);
-		line-height: var(--md-sys-typescale-title-medium-line-height);
-	}
-	.section-head p,
-	.section-hint {
-		margin: var(--md-sys-space-xs) 0 0;
-		color: var(--md-sys-color-on-surface-variant);
-		font-size: var(--md-sys-typescale-label-medium-size);
-		line-height: var(--md-sys-typescale-label-medium-line-height);
-	}
-	.section-hint {
-		margin: 0 0 var(--md-sys-space-sm);
-	}
-	.facts-filter {
-		width: 140px;
-		flex: 0 0 auto;
-	}
-	.facts-layout {
-		display: grid;
-		grid-template-columns: minmax(0, 1.15fr) minmax(280px, 0.85fr);
-		align-items: start;
-		gap: var(--md-sys-space-lg);
-		min-width: 0;
-	}
-	.fact-browser,
-	.fact-editor {
+	.fact-browser {
 		min-width: 0;
 	}
 	.fact-list {
 		display: grid;
-		grid-template-columns: repeat(2, minmax(0, 1fr));
-		gap: var(--md-sys-space-md);
+		grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+		gap: var(--md-sys-space-sm);
 		min-width: 0;
-		max-height: min(620px, calc(100vh - 280px));
-		overflow-y: auto;
-		scrollbar-gutter: stable;
 		padding: var(--md-sys-space-xs);
 	}
 	.fact-card-type {
@@ -478,34 +348,6 @@
 	}
 	.fact-card-actions :global(.fact-delete) {
 		color: var(--md-sys-color-error);
-	}
-	.fact-side {
-		display: flex;
-		flex-direction: column;
-		gap: var(--md-sys-space-lg);
-		min-width: 0;
-	}
-	.section-head--compact {
-		align-items: flex-start;
-	}
-	.fact-form {
-		display: grid;
-		gap: var(--md-sys-space-xs);
-		margin-top: var(--md-sys-space-lg);
-	}
-	.fact-form label {
-		color: var(--md-sys-color-on-surface-variant);
-		font-size: var(--md-sys-typescale-label-medium-size);
-		font-weight: 650;
-		line-height: var(--md-sys-typescale-label-medium-line-height);
-	}
-	.fact-form label span {
-		font-weight: 400;
-	}
-	.fact-editor-actions {
-		display: flex;
-		justify-content: flex-end;
-		margin-top: var(--md-sys-space-lg);
 	}
 	.empty-inline {
 		display: grid;
@@ -604,28 +446,7 @@
 	:global(.fact-dialog .md-dialog-body) {
 		overflow-y: auto;
 	}
-	@media (max-width: 800px) {
-		.facts-layout {
-			grid-template-columns: 1fr;
-		}
-		.fact-list {
-			max-height: none;
-			overflow: visible;
-		}
-	}
-	@media (max-width: 640px) {
-		.facts-toolbar {
-			align-items: stretch;
-			flex-direction: column;
-		}
-		.facts-filter {
-			width: 100%;
-		}
-	}
 	@media (max-width: 540px) {
-		.fact-list {
-			grid-template-columns: 1fr;
-		}
 		.fact-facts {
 			grid-template-columns: 1fr;
 		}
@@ -635,8 +456,6 @@
 		}
 	}
 	@media (max-width: 455px) {
-		.fact-editor-actions,
-		.fact-editor-actions :global(.md-btn),
 		.fact-actions :global(.md-btn) {
 			width: 100%;
 		}

@@ -73,7 +73,15 @@ function rowSummary(
 	status: ActionStatus | undefined,
 	options: ActionCardProjectionOptions,
 ): string {
-	for (const candidate of [action.command, action.preview, action.body]) {
+	const terminalDetail = status === 'failed' ? action.error : action.output;
+	for (const candidate of [
+		action.command,
+		terminalDetail,
+		action.preview,
+		action.error,
+		action.output,
+		action.body,
+	]) {
 		if (
 			typeof candidate === 'string' &&
 			candidate.trim() &&

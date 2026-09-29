@@ -1,5 +1,6 @@
 <script>
 	import MaterialButton from '$lib/MaterialButton.svelte';
+	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
 	import LongTermFacts from './LongTermFacts.svelte';
 	import MemoryRecall from './MemoryRecall.svelte';
@@ -21,6 +22,8 @@
 		onDeleteFact = () => {},
 	} = $props();
 
+	let addFactDialogOpen = $state(false);
+
 	const memoryScopeOptions = [
 		{ value: 'all', label: '全部记忆' },
 		{ value: 'fact', label: '关于你的事实' },
@@ -36,6 +39,11 @@
 	/** @param {KeyboardEvent} event */
 	function handleKeydown(event) {
 		if (event.key === 'Enter') onRunRecall();
+	}
+
+	async function saveNewFact() {
+		const saved = await onAddFact();
+		if (saved) addFactDialogOpen = false;
 	}
 </script>
 
@@ -76,6 +84,11 @@
 		{#if memoryRecall.searched}
 			<MaterialButton variant="text" label="清除" onclick={() => onClearRecall()} />
 		{/if}
+		<MaterialButton
+			variant="outlined"
+			label="添加记忆"
+			onclick={() => (addFactDialogOpen = true)}
+		/>
 		{#if memoryRecall.searched && !memoryRecall.loading}
 			<CountChip count={memoryRecall.results.length} label="条结果" />
 		{:else if factsLoaded}
@@ -92,17 +105,62 @@
 			{onRunRecall}
 		/>
 	{:else}
-		<LongTermFacts
-			{facts}
-			{factsLoaded}
-			showHeader={false}
-			{newFact}
-			{addingFact}
-			{onAddFact}
-			{onDeleteFact}
-		/>
+		<LongTermFacts {facts} {factsLoaded} {onDeleteFact} />
 	{/if}
 </div>
+
+<MaterialDialog
+	open={addFactDialogOpen}
+	title="添加长期记忆"
+	dialogClass="memory-add-dialog"
+	onClose={() => (addFactDialogOpen = false)}
+>
+	{#snippet children()}
+		<div class="memory-fact-form">
+			<label for="memory-fact-predicate">谓词</label>
+			<input
+				id="memory-fact-predicate"
+				type="text"
+				class="md-input"
+				placeholder="例如：喜欢、email"
+				bind:value={newFact.predicate}
+				autocomplete="off"
+			/>
+			<label for="memory-fact-object">对象</label>
+			<input
+				id="memory-fact-object"
+				type="text"
+				class="md-input"
+				placeholder="例如：深色主题"
+				bind:value={newFact.object}
+				autocomplete="off"
+			/>
+			<label for="memory-fact-tags">标签 <span>可选</span></label>
+			<input
+				id="memory-fact-tags"
+				type="text"
+				class="md-input"
+				placeholder="逗号分隔"
+				bind:value={newFact.tags}
+				autocomplete="off"
+			/>
+		</div>
+	{/snippet}
+	{#snippet footer()}
+		<MaterialButton
+			variant="text"
+			label="取消"
+			disabled={addingFact}
+			onclick={() => (addFactDialogOpen = false)}
+		/>
+		<MaterialButton
+			variant="filled"
+			label={addingFact ? '保存中…' : '保存记忆'}
+			disabled={addingFact || !newFact.predicate.trim() || !newFact.object.trim()}
+			onclick={saveNewFact}
+		/>
+	{/snippet}
+</MaterialDialog>
 
 <style>
 	.memory-center {
@@ -126,6 +184,23 @@
 	.memory-center-source {
 		width: 125px;
 		flex: 0 0 auto;
+	}
+	.memory-fact-form {
+		display: grid;
+		gap: var(--md-sys-space-xs);
+	}
+	.memory-fact-form label {
+		margin-top: var(--md-sys-space-sm);
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: var(--md-sys-typescale-label-medium-size);
+		font-weight: 650;
+		line-height: var(--md-sys-typescale-label-medium-line-height);
+	}
+	.memory-fact-form label span {
+		font-weight: 400;
+	}
+	:global(.memory-add-dialog) {
+		width: min(480px, calc(100vw - var(--md-sys-space-2xl)));
 	}
 	@media (max-width: 760px) {
 		.memory-center-toolbar {
