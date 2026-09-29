@@ -247,6 +247,21 @@
 	let busySessions = $state(new Set());
 	/** @type {Map<string, string>} */
 	let lastSessionStatus = new Map();
+	/** @param {string} sessionId */
+	function addBusySession(sessionId) {
+		if (!sessionId || busySessions.has(sessionId)) return;
+		busySessions = new Set(busySessions).add(sessionId);
+	}
+	/** @param {string} sessionId */
+	function removeBusySession(sessionId) {
+		if (!sessionId || !busySessions.has(sessionId)) return;
+		const nextBusySessions = new Set(busySessions);
+		nextBusySessions.delete(sessionId);
+		busySessions = nextBusySessions;
+	}
+	function clearBusySessions() {
+		if (busySessions.size > 0) busySessions = new Set();
+	}
 	const sessionBusy = $derived(busySessions.size > 0);
 	// Probe state is declared BEFORE the subscribe below: the store's
 	// `subscribe` fires synchronously (SSR/mount) with the current value, and
@@ -857,7 +872,7 @@
 							addNotification(`新会话: ${title}`, 'info', 4000);
 						}
 						lastSessionStatus.set(data.sessionId, data.status);
-						busySessions = new Set(busySessions).add(data.sessionId);
+						addBusySession(data.sessionId);
 						updateModelState('waiting', { idleTimeoutMs: 5000 });
 					},
 					'session:completed': (event) => {
@@ -882,11 +897,11 @@
 						// sessions were removed (clear_history).
 						const data = event.payload;
 						if (data.sessionId) {
-							busySessions = new Set(
-								[...busySessions].filter((t) => t !== data.sessionId),
-							);
+							lastSessionStatus.delete(data.sessionId);
+							removeBusySession(data.sessionId);
 						} else {
-							busySessions = new Set();
+							lastSessionStatus.clear();
+							clearBusySessions();
 						}
 						if (busySessions.size === 0) {
 							clearModelStateTimer();
@@ -910,11 +925,10 @@
 						if (isBusyStatus(data.status)) {
 							// pending = queued; running = claimed (handler now emits
 							// running on claim). Both keep the session in the busy set.
-							if (tid) busySessions = new Set(busySessions).add(tid);
+							addBusySession(tid);
 						}
 						if (isPausedStatus(data.status)) {
-							if (tid)
-								busySessions = new Set([...busySessions].filter((t) => t !== tid));
+							removeBusySession(tid);
 							if (notifyCfg?.session_paused?.in_app !== false) {
 								addNotification(`会话已暂停: ${title || '未知'}`, 'warning', 3000);
 							}
@@ -933,14 +947,12 @@
 							updateModelState('waiting', { idleTimeoutMs: 5000 });
 						}
 						if (data.status === 'completed') {
-							if (tid)
-								busySessions = new Set([...busySessions].filter((t) => t !== tid));
+							removeBusySession(tid);
 							clearModelStateTimer();
 							updateModelState('ready');
 						}
 						if (data.status === 'error') {
-							if (tid)
-								busySessions = new Set([...busySessions].filter((t) => t !== tid));
+							removeBusySession(tid);
 							clearModelStateTimer();
 							updateModelState('ready');
 						}
