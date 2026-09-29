@@ -1156,6 +1156,58 @@ mod tests {
         }
     }
 
+    struct RequestProfileClient {
+        service_delay: Duration,
+    }
+
+    #[async_trait]
+    impl LlmClient for RequestProfileClient {
+        async fn chat(&self, _messages: Vec<CanonicalMessage>) -> Result<LlmResponse, LlmError> {
+            if !self.service_delay.is_zero() {
+                tokio::time::sleep(self.service_delay).await;
+            }
+            Ok(LlmResponse::default())
+        }
+
+        async fn chat_with_output_cap(
+            &self,
+            messages: Vec<CanonicalMessage>,
+            _max_output_tokens: Option<u32>,
+        ) -> Result<LlmResponse, LlmError> {
+            self.chat(messages).await
+        }
+
+        async fn chat_stream(
+            &self,
+            _: Vec<CanonicalMessage>,
+        ) -> Result<
+            Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
+            LlmError,
+        > {
+            Err(LlmError::UnsupportedCapability(
+                "request profile is non-streaming".into(),
+            ))
+        }
+
+        async fn health_check(&self) -> Result<(), LlmError> {
+            Ok(())
+        }
+    }
+
+    fn request_profile_distribution(samples_ns: &[u128], numerator: usize) -> f64 {
+        let mut ordered = samples_ns.to_vec();
+        ordered.sort_unstable();
+        let rank = ordered.len().saturating_mul(numerator).div_ceil(100);
+        ordered[rank.saturating_sub(1)] as f64 / 1_000.0
+    }
+
+    fn request_profile_request() -> CompleteRequest {
+        CompleteRequest::new(
+            RequestKind::Chat,
+            vec![llm_message(vec![ContentPart::text("profile")])],
+        )
+    }
+
     #[async_trait]
     impl LlmClient for RouterRequestProbe {
         async fn chat(&self, _messages: Vec<CanonicalMessage>) -> Result<LlmResponse, LlmError> {
@@ -3713,5 +3765,89 @@ mod tests {
             .chat_messages_cancellable(RequestKind::Chat, Vec::new(), None, already_cancelled)
             .await;
         assert!(matches!(result, Err(LlmError::Cancelled)));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "manual performance profile; run with --ignored --nocapture"]
+    async fn llm_request_latency_and_concurrency_profile_with_mock_provider() {
+        const WARMUP_COUNT: usize = 16;
+        const IMMEDIATE_SAMPLE_COUNT: usize = 513;
+        const QUEUED_BATCHES: usize = 16;
+        const BATCH_SIZE: usize = 32;
+        const PER_MODEL_LIMIT: usize = 8;
+
+        let immediate: Arc<dyn LlmClient> = Arc::new(RequestProfileClient {
+            service_delay: Duration::ZERO,
+        });
+        let router = LlmRouter::new_with_clients(
+            immediate.clone(),
+            immediate.clone(),
+            immediate.clone(),
+            immediate,
+        );
+        for _ in 0..WARMUP_COUNT {
+            router
+                .complete(request_profile_request())
+                .await
+                .expect("immediate mock request");
+        }
+
+        let immediate_wall_started = Instant::now();
+        let mut immediate_samples_ns = Vec::with_capacity(IMMEDIATE_SAMPLE_COUNT);
+        for _ in 0..IMMEDIATE_SAMPLE_COUNT {
+            let started = Instant::now();
+            router
+                .complete(request_profile_request())
+                .await
+                .expect("immediate mock request");
+            immediate_samples_ns.push(started.elapsed().as_nanos());
+        }
+        let immediate_wall = immediate_wall_started.elapsed();
+        let immediate_p50 = request_profile_distribution(&immediate_samples_ns, 50);
+        let immediate_p95 = request_profile_distribution(&immediate_samples_ns, 95);
+        println!(
+            "profile llm_request provider=mock_immediate samples={IMMEDIATE_SAMPLE_COUNT} warmup={WARMUP_COUNT} boundary=router_complete_to_response p50_us={immediate_p50:.2} p95_us={immediate_p95:.2} throughput_per_s={:.1}",
+            IMMEDIATE_SAMPLE_COUNT as f64 / immediate_wall.as_secs_f64(),
+        );
+
+        let delayed: Arc<dyn LlmClient> = Arc::new(RequestProfileClient {
+            service_delay: Duration::from_millis(2),
+        });
+        let queued_router = Arc::new(LlmRouter::new_with_clients(
+            delayed.clone(),
+            delayed.clone(),
+            delayed.clone(),
+            delayed,
+        ));
+        queued_router.semaphores.lock().unwrap().insert(
+            "default_model".into(),
+            Arc::new(tokio::sync::Semaphore::new(PER_MODEL_LIMIT)),
+        );
+
+        let mut queued_samples_ns = Vec::with_capacity(QUEUED_BATCHES * BATCH_SIZE);
+        let mut queued_wall = Duration::ZERO;
+        for _ in 0..QUEUED_BATCHES {
+            let futures = (0..BATCH_SIZE).map(|_| {
+                let router = queued_router.clone();
+                async move {
+                    let started = Instant::now();
+                    router
+                        .complete(request_profile_request())
+                        .await
+                        .expect("delayed mock request");
+                    started.elapsed().as_nanos()
+                }
+            });
+            let batch_started = Instant::now();
+            queued_samples_ns.extend(futures_util::future::join_all(futures).await);
+            queued_wall += batch_started.elapsed();
+        }
+        let queued_p50 = request_profile_distribution(&queued_samples_ns, 50);
+        let queued_p95 = request_profile_distribution(&queued_samples_ns, 95);
+        let queued_total = QUEUED_BATCHES * BATCH_SIZE;
+        println!(
+            "profile llm_request provider=mock_fixed_delay service_delay_ms=2 samples={queued_total} batches={QUEUED_BATCHES} concurrency_per_model={PER_MODEL_LIMIT} requests_per_batch={BATCH_SIZE} p50_us={queued_p50:.2} p95_us={queued_p95:.2} throughput_per_s={:.1}",
+            queued_total as f64 / queued_wall.as_secs_f64(),
+        );
     }
 }

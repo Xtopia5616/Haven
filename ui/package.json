@@ -14,7 +14,8 @@
     "check": "svelte-check --tsgo",
     "test": "vitest",
     "test:run": "vitest run",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "profile:session-reducer": "node scripts/profile-session-reducer.mjs"
   },
   "devDependencies": {
     "@sveltejs/adapter-static": "^3.0.10",

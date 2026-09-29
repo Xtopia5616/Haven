@@ -2201,6 +2201,71 @@ mod queue_tests {
     }
 
     #[tokio::test]
+    #[ignore = "manual performance profile; run with --ignored --nocapture"]
+    async fn actor_mailbox_latency_profile_by_prefilled_depth() {
+        use std::time::Instant;
+
+        fn percentile(samples: &mut [u128], numerator: usize) -> u128 {
+            samples.sort_unstable();
+            let rank = samples.len().saturating_mul(numerator).div_ceil(100);
+            samples[rank.saturating_sub(1)]
+        }
+
+        let directory = tempfile::tempdir().expect("temporary database directory");
+        let db = Arc::new(
+            Database::open(&directory.path().join("actor-mailbox-profile.db"))
+                .expect("temporary database"),
+        );
+        let actor = spawn(SessionStore::new(db), empty_state().info, Vec::new());
+        const SAMPLE_COUNT: usize = 129;
+        const WARMUP_COUNT: usize = 8;
+
+        for depth in [0, 32, 64, ACTOR_MAILBOX_CAPACITY] {
+            for sample in 0..WARMUP_COUNT {
+                for index in 0..depth {
+                    actor
+                        .tx
+                        .try_send(ActorCommand::UpdateTitle {
+                            title: format!("profile-{depth}-{sample}-{index}"),
+                        })
+                        .expect("prefill mailbox before actor task is polled");
+                }
+                let observed_depth = ACTOR_MAILBOX_CAPACITY - actor.tx.capacity();
+                assert_eq!(observed_depth, depth, "prefilled queue depth");
+                actor.snapshot().await.expect("snapshot should roundtrip");
+            }
+
+            let mut samples_ns = Vec::with_capacity(SAMPLE_COUNT);
+            for sample in 0..SAMPLE_COUNT {
+                for index in 0..depth {
+                    actor
+                        .tx
+                        .try_send(ActorCommand::UpdateTitle {
+                            title: format!("measure-{depth}-{sample}-{index}"),
+                        })
+                        .expect("prefill mailbox before measuring roundtrip");
+                }
+                let observed_depth = ACTOR_MAILBOX_CAPACITY - actor.tx.capacity();
+                assert_eq!(observed_depth, depth, "measured queue depth");
+                let started = Instant::now();
+                actor.snapshot().await.expect("snapshot should roundtrip");
+                samples_ns.push(started.elapsed().as_nanos());
+            }
+
+            let total_ns: u128 = samples_ns.iter().sum();
+            let throughput = SAMPLE_COUNT as f64 * 1_000_000_000.0 / total_ns as f64;
+            let p50_us = percentile(&mut samples_ns.clone(), 50) as f64 / 1_000.0;
+            let p95_us = percentile(&mut samples_ns, 95) as f64 / 1_000.0;
+            println!(
+                "profile actor_mailbox depth={depth} high_water={depth} capacity={ACTOR_MAILBOX_CAPACITY} samples={SAMPLE_COUNT} command=snapshot_roundtrip p50_us={p50_us:.2} p95_us={p95_us:.2} throughput_per_s={throughput:.1}"
+            );
+        }
+
+        drop(actor);
+        tokio::task::yield_now().await;
+    }
+
+    #[tokio::test]
     async fn completed_react_loop_returns_events_and_next_run_can_start() {
         struct NoopEmitter;
 

@@ -560,6 +560,8 @@ Phase 7.1 验收与未决风险：见 ADR 0259、0261、0262、0263、0264、026
 
 - 补齐 SessionActor 饱和 mailbox 下的行为验收：默认公平调度 run 与外部命令；持续负载时验证 run 继续推进、排队 sender 完成 Snapshot 往返、Cancel 能应答并结束 run。同步 direct-run release 使用独立容量 1 的信号通道，重复 release 合并且不创建发送 task。超时只约束测试活性，不构成生产延迟 SLA。
 
+2026-09-29 阶段 9 核心流水线性能剖析补齐（ADR 0360）：增加可手动复跑的 actor mailbox、UI reducer、LLM router 与 Action/Memory outbox profile；记录命令往返/dispatch/request/outbox 阶段的 p50/p95、队列深度/订阅通知数和吞吐。Rust outbox 使用临时磁盘 SQLite，LLM 仅用无网络 mock；profile 不加生产 timer、阈值或 runtime policy。单机数据与 mock/fixture 限制见 ADR 0360；Windows GUI profile、安装升级/数据库重置与卸载验收仍开放。
+
 #### 2026-09-26 最终验收审计（ADR 0361）
 
 - 总体验收仍未完成：durable transcript recovery、SessionActor 单 task 所有权与阶段 3 的 raw Database/Action typed projection 验收满足（ADR 0382、0383）；App composition root 可持有 raw `Database` 创建 typed stores。阶段 4 的执行 facade、prompt/catalog/observation adapters 在本次 2026-09-26 审计时仍依赖 `ToolsManager`，后由 ADR 0388 收口；runtime failure semantics、Rust→TypeScript codegen 等全局条件仍有未决项。
