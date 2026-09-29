@@ -10,9 +10,9 @@ $allowed = @{
     'haven-memory' = @('haven-common')
     'haven-skills' = @('haven-common')
     'haven-mcp' = @('haven-common', 'haven-platform', 'haven-llm')
-    'haven-tools' = @('haven-common', 'haven-memory', 'haven-skills', 'haven-mcp', 'haven-llm', 'haven-input', 'haven-platform')
+    'haven-tools' = @('haven-common', 'haven-memory', 'haven-skills', 'haven-mcp', 'haven-messaging', 'haven-llm', 'haven-input', 'haven-platform')
     'haven-input' = @('haven-common', 'haven-llm')
-    'haven-agent' = @('haven-common', 'haven-llm', 'haven-memory', 'haven-tools')
+    'haven-agent' = @('haven-common', 'haven-llm', 'haven-memory', 'haven-tools', 'haven-messaging')
     'haven-app-binary' = @('haven-common', 'haven-llm', 'haven-memory', 'haven-skills', 'haven-mcp', 'haven-tools', 'haven-input', 'haven-agent')
 }
 
