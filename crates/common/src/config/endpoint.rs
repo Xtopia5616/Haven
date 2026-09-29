@@ -435,7 +435,7 @@ impl Default for RequestPolicy {
 pub struct ModelConfig {
     /// Stable user-chosen identity referenced by [`RequestPolicy`].
     pub id: String,
-    /// Referenced provider name (empty = model unconfigured).
+    /// Name of the configured provider that owns this model assignment.
     pub provider: String,
     /// Model id on that provider.
     pub model: String,

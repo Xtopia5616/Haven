@@ -128,6 +128,17 @@ fn validate_settings_payload(settings: &haven_common::config::Settings) -> anyho
     {
         anyhow::bail!("MCP environment values must be changed through the MCP settings commands");
     }
+    for model in &settings.llm.models {
+        if model.provider.trim().is_empty()
+            || !settings
+                .llm
+                .providers
+                .iter()
+                .any(|provider| provider.name == model.provider)
+        {
+            anyhow::bail!("every configured model must reference a configured Provider");
+        }
+    }
     Ok(())
 }
 
@@ -643,6 +654,37 @@ mod tests {
                 assert!(!error.to_string().contains(marker));
             }
         }
+    }
+
+    #[test]
+    fn settings_boundary_requires_each_model_to_reference_a_configured_provider() {
+        for llm in [
+            serde_json::json!({
+                "models": [{ "id": "assistant", "provider": "", "model": "model-a" }]
+            }),
+            serde_json::json!({
+                "providers": [{ "name": "primary" }],
+                "models": [{ "id": "assistant", "provider": "removed", "model": "model-a" }]
+            }),
+        ] {
+            let settings: Settings =
+                serde_json::from_value(serde_json::json!({ "llm": llm })).unwrap();
+            assert_eq!(
+                validate_settings_payload(&settings)
+                    .unwrap_err()
+                    .to_string(),
+                "every configured model must reference a configured Provider"
+            );
+        }
+
+        let settings: Settings = serde_json::from_value(serde_json::json!({
+            "llm": {
+                "providers": [{ "name": "primary" }],
+                "models": [{ "id": "assistant", "provider": "primary", "model": "model-a" }]
+            }
+        }))
+        .unwrap();
+        validate_settings_payload(&settings).unwrap();
     }
 
     #[test]
