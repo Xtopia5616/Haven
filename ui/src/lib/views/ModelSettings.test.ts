@@ -46,7 +46,7 @@ describe('ModelSettings provider surface', () => {
 		renderSettings({ ...props([provider]), loaded: true });
 
 		expect(screen.getByText('openai-main')).toBeTruthy();
-		await waitFor(() => expect(screen.getByText('1 个模型')).toBeTruthy());
+		await waitFor(() => expect(screen.getByText('服务目录 1 个')).toBeTruthy());
 		expect(invoke).toHaveBeenCalledWith('discover_models', {
 			baseUrl: provider.base_url,
 			apiKey: provider.api_key,
@@ -126,11 +126,13 @@ describe('ModelSettings provider surface', () => {
 		});
 		await fireEvent.click(screen.getByRole('button', { name: '保存' }));
 
-		await waitFor(() => expect(onProviderDiscoveryFailure).toHaveBeenCalledWith('primary', false));
+		await waitFor(() =>
+			expect(onProviderDiscoveryFailure).toHaveBeenCalledWith('primary', false),
+		);
 		expect(config.providers).toHaveLength(1);
 	});
 
-	it('clears role bindings when deleting their provider', async () => {
+	it('keeps a provider while model configurations still reference it', async () => {
 		const provider = {
 			name: 'local',
 			provider: 'ollama',
@@ -145,9 +147,81 @@ describe('ModelSettings provider surface', () => {
 		};
 		renderSettings({ ...props(config.providers, config.models), llmConfig: config });
 
-		await fireEvent.click(screen.getByRole('button', { name: '删除' }));
+		await fireEvent.click(screen.getByRole('button', { name: '删除 Provider local' }));
 
-		expect(config.providers).toHaveLength(0);
-		expect(config.models[0]).toMatchObject({ provider: '', model: '' });
+		expect(config.providers).toHaveLength(1);
+		expect(config.models[0]).toMatchObject({ provider: 'local', model: 'llama3' });
+	});
+
+	it('shows unbound models in a repair section and lets the user choose a provider', async () => {
+		const config = {
+			providers: [
+				{
+					name: 'local',
+					provider: 'ollama',
+					api_style: 'openai-chat',
+					base_url: 'http://127.0.0.1:11434/v1',
+					api_key: '',
+				},
+			],
+			models: [
+				{
+					id: 'assistant',
+					provider: 'removed-provider',
+					model: 'old-model',
+					capabilities: ['chat'],
+				},
+			],
+			request_policies: [],
+		};
+		renderSettings({ ...props(config.providers, config.models), llmConfig: config });
+
+		expect(screen.getByText('需要修复的模型')).toBeTruthy();
+		await fireEvent.click(screen.getByRole('button', { name: /assistant Provider 不存在/ }));
+		const providerSelect = screen.getByRole('button', {
+			name: '为模型 assistant 选择 Provider',
+		});
+		await fireEvent.click(providerSelect);
+		await fireEvent.click(screen.getByRole('option', { name: 'local' }));
+
+		expect(config.models[0]).toMatchObject({ provider: 'local', model: '' });
+	});
+
+	it('moves a model to another provider and clears provider-specific metadata', async () => {
+		const provider = (name: string) => ({
+			name,
+			provider: 'openai',
+			api_style: 'openai-chat',
+			base_url: 'https://example.test/v1',
+			api_key: '',
+		});
+		const config = {
+			providers: [provider('primary'), provider('backup')],
+			models: [
+				{
+					id: 'assistant',
+					provider: 'primary',
+					model: 'model-a',
+					capabilities: ['chat'],
+					context_window: 128000,
+					cost_per_1k_input_tokens: 0.1,
+				},
+			],
+			request_policies: [],
+		};
+		renderSettings({ ...props(config.providers, config.models), llmConfig: config });
+
+		await fireEvent.click(screen.getByRole('button', { name: /assistant primary/ }));
+		await fireEvent.click(
+			screen.getByRole('button', { name: '为模型 assistant 选择 Provider' }),
+		);
+		await fireEvent.click(screen.getByRole('option', { name: 'backup' }));
+
+		expect(config.models[0]).toMatchObject({
+			provider: 'backup',
+			model: '',
+			context_window: null,
+			cost_per_1k_input_tokens: null,
+		});
 	});
 });

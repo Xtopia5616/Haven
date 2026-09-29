@@ -14,25 +14,25 @@ export const requestKindValues = [
 export type RequestKind = (typeof requestKindValues)[number];
 
 export const capabilityOptions = [
-	{ value: 'chat', label: 'Chat' },
-	{ value: 'fast_chat', label: 'Fast chat' },
-	{ value: 'vision', label: 'Vision' },
-	{ value: 'audio_input', label: 'Audio input' },
-	{ value: 'transcription', label: 'Transcription' },
-	{ value: 'embedding', label: 'Embedding' },
-	{ value: 'image_generation', label: 'Image generation' },
-	{ value: 'speech_synthesis', label: 'Speech synthesis' },
+	{ value: 'chat', label: '对话' },
+	{ value: 'fast_chat', label: '快速对话' },
+	{ value: 'vision', label: '视觉' },
+	{ value: 'audio_input', label: '音频输入' },
+	{ value: 'transcription', label: '语音转写' },
+	{ value: 'embedding', label: '向量嵌入' },
+	{ value: 'image_generation', label: '图像生成' },
+	{ value: 'speech_synthesis', label: '语音合成' },
 ];
 
 export const requestPolicyOptions: Array<{ value: RequestKind; label: string }> = [
-	{ value: 'chat', label: 'Chat' },
-	{ value: 'fast_chat', label: 'Fast chat' },
-	{ value: 'vision', label: 'Vision' },
-	{ value: 'audio_chat', label: 'Audio chat' },
-	{ value: 'transcription', label: 'Transcription' },
-	{ value: 'embedding', label: 'Embedding' },
-	{ value: 'image_generation', label: 'Image generation' },
-	{ value: 'speech_synthesis', label: 'Speech synthesis' },
+	{ value: 'chat', label: '对话' },
+	{ value: 'fast_chat', label: '快速对话' },
+	{ value: 'vision', label: '视觉理解' },
+	{ value: 'audio_chat', label: '音频对话' },
+	{ value: 'transcription', label: '语音转写' },
+	{ value: 'embedding', label: '向量嵌入' },
+	{ value: 'image_generation', label: '图像生成' },
+	{ value: 'speech_synthesis', label: '语音合成' },
 ];
 
 export function emptyModel(id: string) {
