@@ -19,7 +19,7 @@
 //! `.processing` file until transcript projection and its snapshot are durable;
 //! a crash therefore causes at-least-once redelivery, which the agent
 //! de-duplicates by envelope id. Application callers use
-//! `haven_tools::MessagingService`; transport lifecycle primitives remain
+//! `haven_messaging::MessagingService`; transport lifecycle primitives remain
 //! crate-internal so wire storage cannot become a second application protocol.
 //!
 //! Envelopes are single-line JSON per the interop format; ids are canonical

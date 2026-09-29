@@ -1275,18 +1275,18 @@ impl AgentLayer {
     /// terminal cleanup.
     pub async fn control_peer_session(
         &self,
-        request: haven_tools::AgentControlRequest,
-    ) -> anyhow::Result<haven_tools::AgentControlResult> {
+        request: haven_messaging::AgentControlRequest,
+    ) -> anyhow::Result<haven_messaging::AgentControlResult> {
         self.authorize_peer_control(&request).await?;
         match request.operation {
-            haven_tools::AgentControlOperation::Status => {
+            haven_messaging::AgentControlOperation::Status => {
                 self.inspect_peer_session(&request.target_session_id).await
             }
-            haven_tools::AgentControlOperation::Wait => {
+            haven_messaging::AgentControlOperation::Wait => {
                 self.wait_for_peer_session(&request.target_session_id, request.timeout_secs)
                     .await
             }
-            haven_tools::AgentControlOperation::Stop => {
+            haven_messaging::AgentControlOperation::Stop => {
                 let before = self
                     .inspect_peer_session(&request.target_session_id)
                     .await?;
@@ -1303,7 +1303,7 @@ impl AgentLayer {
                     "由上级会话请求结束",
                 )
                 .await;
-                Ok(haven_tools::AgentControlResult {
+                Ok(haven_messaging::AgentControlResult {
                     session_id: request.target_session_id,
                     status: SessionStatus::Completed.as_str().into(),
                     terminal: true,
@@ -1319,10 +1319,10 @@ impl AgentLayer {
     /// stopped; sibling and unrelated sessions are never controllable.
     async fn authorize_peer_control(
         &self,
-        request: &haven_tools::AgentControlRequest,
+        request: &haven_messaging::AgentControlRequest,
     ) -> anyhow::Result<()> {
         if request.target_session_id == request.requester_session_id {
-            if request.operation == haven_tools::AgentControlOperation::Status {
+            if request.operation == haven_messaging::AgentControlOperation::Status {
                 return Ok(());
             }
             anyhow::bail!("a peer lifecycle operation cannot target the current session");
@@ -1330,7 +1330,7 @@ impl AgentLayer {
         let requester = request.requester_session_id.clone();
         let target = request.target_session_id.clone();
         let related = tokio::task::spawn_blocking(move || {
-            let messaging = haven_tools::MessagingService::default_root();
+            let messaging = haven_messaging::MessagingService::default_root();
             Ok::<_, anyhow::Error>(
                 messaging
                     .list_descendants(&requester)?
@@ -1348,9 +1348,9 @@ impl AgentLayer {
     async fn inspect_peer_session(
         &self,
         session_id: &str,
-    ) -> anyhow::Result<haven_tools::AgentControlResult> {
+    ) -> anyhow::Result<haven_messaging::AgentControlResult> {
         if let Some(session) = self.executor.get_session(session_id).await {
-            return Ok(haven_tools::AgentControlResult {
+            return Ok(haven_messaging::AgentControlResult {
                 session_id: session.id,
                 status: session.status.as_str().into(),
                 terminal: session.status.is_terminal(),
@@ -1365,7 +1365,7 @@ impl AgentLayer {
             .await?
             .ok_or_else(|| anyhow::anyhow!("session '{}' not found", session_id))?;
         let status = record.status;
-        Ok(haven_tools::AgentControlResult {
+        Ok(haven_messaging::AgentControlResult {
             session_id: record.id,
             status: status.as_str().into(),
             terminal: status.is_terminal(),
@@ -1378,7 +1378,7 @@ impl AgentLayer {
         &self,
         session_id: &str,
         timeout_secs: u64,
-    ) -> anyhow::Result<haven_tools::AgentControlResult> {
+    ) -> anyhow::Result<haven_messaging::AgentControlResult> {
         let timeout_secs = timeout_secs.clamp(1, 300);
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
         let mut status_rx = self.executor.subscribe_status(session_id).await;
@@ -1389,7 +1389,7 @@ impl AgentLayer {
             }
             let now = tokio::time::Instant::now();
             if now >= deadline {
-                return Ok(haven_tools::AgentControlResult {
+                return Ok(haven_messaging::AgentControlResult {
                     timed_out: true,
                     ..current
                 });
@@ -1405,7 +1405,7 @@ impl AgentLayer {
                 }
                 _ = tokio::time::sleep(remaining) => {
                     let current = self.inspect_peer_session(session_id).await?;
-                    return Ok(haven_tools::AgentControlResult {
+                    return Ok(haven_messaging::AgentControlResult {
                         timed_out: !current.terminal,
                         ..current
                     });
@@ -1421,17 +1421,20 @@ impl AgentLayer {
     /// `SessionCreated` so the UI lists it like any other session.
     pub async fn spawn_peer_session(
         &self,
-        req: haven_tools::AgentSpawnRequest,
-    ) -> anyhow::Result<haven_tools::AgentSpawnResult> {
-        self.spawn_peer_session_with_messaging(req, haven_tools::MessagingService::default_root())
-            .await
+        req: haven_messaging::AgentSpawnRequest,
+    ) -> anyhow::Result<haven_messaging::AgentSpawnResult> {
+        self.spawn_peer_session_with_messaging(
+            req,
+            haven_messaging::MessagingService::default_root(),
+        )
+        .await
     }
 
     async fn spawn_peer_session_with_messaging(
         &self,
-        req: haven_tools::AgentSpawnRequest,
-        messaging: haven_tools::MessagingService,
-    ) -> anyhow::Result<haven_tools::AgentSpawnResult> {
+        req: haven_messaging::AgentSpawnRequest,
+        messaging: haven_messaging::MessagingService,
+    ) -> anyhow::Result<haven_messaging::AgentSpawnResult> {
         let role_line = req
             .role
             .as_deref()
@@ -1552,7 +1555,7 @@ impl AgentLayer {
             .await?;
         // Emit after title is on the SessionInfo so toast/wire never use the brief.
         self.events.emit_session_created(&session).await;
-        Ok(haven_tools::AgentSpawnResult {
+        Ok(haven_messaging::AgentSpawnResult {
             session_id: session.id,
             title: session.title,
             role: req.role,
@@ -1564,22 +1567,22 @@ impl AgentLayer {
 }
 
 #[async_trait::async_trait]
-impl haven_tools::MessagingRuntime for AgentLayer {
-    fn mailbox(&self) -> Arc<dyn haven_tools::SessionMailbox> {
+impl haven_messaging::MessagingRuntime for AgentLayer {
+    fn mailbox(&self) -> Arc<dyn haven_messaging::SessionMailbox> {
         self.executor.messaging_mailbox()
     }
 
     async fn spawn_peer_session(
         &self,
-        request: haven_tools::AgentSpawnRequest,
-    ) -> anyhow::Result<haven_tools::AgentSpawnResult> {
+        request: haven_messaging::AgentSpawnRequest,
+    ) -> anyhow::Result<haven_messaging::AgentSpawnResult> {
         AgentLayer::spawn_peer_session(self, request).await
     }
 
     async fn control_peer_session(
         &self,
-        request: haven_tools::AgentControlRequest,
-    ) -> anyhow::Result<haven_tools::AgentControlResult> {
+        request: haven_messaging::AgentControlRequest,
+    ) -> anyhow::Result<haven_messaging::AgentControlResult> {
         AgentLayer::control_peer_session(self, request).await
     }
 }
@@ -1711,8 +1714,8 @@ mod tests {
         parent_session_id: &str,
         task: &str,
         title: Option<&str>,
-    ) -> haven_tools::AgentSpawnRequest {
-        haven_tools::AgentSpawnRequest {
+    ) -> haven_messaging::AgentSpawnRequest {
+        haven_messaging::AgentSpawnRequest {
             parent_session_id: parent_session_id.to_string(),
             task: task.to_string(),
             title: title.map(str::to_string),
@@ -1748,8 +1751,8 @@ mod tests {
         let events = Arc::new(EventCollector::default());
         agent.events.set_emitter(events.clone());
         let inbox_dir = tempfile::tempdir().unwrap();
-        let messaging = haven_tools::MessagingService::new(Arc::new(
-            haven_tools::inbox::InboxBus::new(inbox_dir.path()),
+        let messaging = haven_messaging::MessagingService::new(Arc::new(
+            haven_messaging::inbox::InboxBus::new(inbox_dir.path()),
         ));
         let scenarios = [
             ("explicit-success", Some("Explicit title"), false),

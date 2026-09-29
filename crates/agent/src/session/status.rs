@@ -122,7 +122,7 @@ impl SessionSupervisor {
         let session_id = session_id.to_string();
         let log_id = session_id.clone();
         tokio::spawn(async move {
-            let messaging = haven_tools::MessagingService::default_root();
+            let messaging = haven_messaging::MessagingService::default_root();
             let result = tokio::task::spawn_blocking(move || {
                 let entry = messaging
                     .list_agents()?
@@ -146,7 +146,7 @@ impl SessionSupervisor {
         let descendants = match tokio::task::spawn_blocking({
             let parent = parent.clone();
             move || -> anyhow::Result<Vec<String>> {
-                let messaging = haven_tools::MessagingService::default_root();
+                let messaging = haven_messaging::MessagingService::default_root();
                 let children = messaging.list_descendants(&parent)?;
                 for child in &children {
                     let _ = messaging.deliver_system_notice(

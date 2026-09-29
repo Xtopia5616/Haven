@@ -17,6 +17,7 @@ tokio-util.workspace = true
 haven-memory = { path = "../memory" }
 haven-llm = { path = "../llm" }
 haven-tools = { path = "../tools" }
+haven-messaging = { path = "../messaging" }
 haven-common = { path = "../common" }
 base64.workspace = true
 sha2.workspace = true

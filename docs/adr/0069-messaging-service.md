@@ -1,5 +1,8 @@
 # ADR 0069：跨 session MessagingService 与统一消息生命周期
 
+> crate 所有权已由 [ADR 0396](0396-messaging-domain-crate.md) 收口到 `haven-messaging`；本文定义的
+> 消息生命周期和传输行为仍然有效。
+
 ## 背景
 
 跨 session 消息原本由 `haven-tools::inbox::InboxBus` 直接暴露给两个消费方：工具和 ReAct

@@ -5,6 +5,7 @@ members = [
     "crates/platform",
     "crates/memory",
     "crates/mcp",
+    "crates/messaging",
     "crates/skills",
     "crates/tools",
     "crates/input",

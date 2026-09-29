@@ -373,11 +373,11 @@ Parent session                    Child session(s)
 
 | 层 | 位置 | 职责 |
 |---|---|---|
-| 工具 | `haven-tools` `builtin/messaging.rs` | 统一工具名 `agent`；`operation=` list / children / history / send / inbox / ack / reply / profile / request / spawn / status / join / wait / stop / collect；通过 `MessagingService` 调用 |
-| 服务 | `haven-tools` `messaging_service.rs` | 唯一应用层消息 port：校验 Envelope identity、claim/complete/retry/expiry、request/reply selective wait 与 receipt 生命周期 |
-| 传输 | `haven-tools` `inbox.rs` | JSONL file transport adapter：`%APPDATA%/haven/inbox` 的 registry / mailbox / archive / lock；不向应用暴露同步 drain 语义 |
+| 工具 | `haven-tools` `builtin/messaging.rs` | 统一工具名 `agent`；`operation=` list / children / history / send / inbox / ack / reply / profile / request / spawn / status / join / wait / stop / collect；通过 `haven-messaging::MessagingService` 调用 |
+| 服务 | `haven-messaging` `messaging_service.rs` | 唯一应用层消息 port：校验 Envelope identity、claim/complete/retry/expiry、request/reply selective wait 与 receipt 生命周期 |
+| 传输 | `haven-messaging` `inbox.rs` | JSONL file transport adapter：`%APPDATA%/haven/inbox` 的 registry / mailbox / archive / lock；不向应用暴露同步 drain 语义 |
 | 编排 | `haven-agent` `layer::spawn_peer_session` | 先落库 `peer_kickoff` 并 inbox 注册 parent，再 Pending 调度；返回 `queued`（相对 `session.max_concurrent`） |
-| 接线 | `haven-app-binary` `app_state` | 安装一个 typed `MessagingRuntime`，同时提供 SessionActor mailbox 与 peer 生命周期（tools 不依赖 agent） |
+| 接线 | `haven-app-binary` `app_state` | 将 Agent 提供的 typed `MessagingRuntime` 接入 Tools runtime；Agent 与 Tools 都依赖 `haven-messaging`，不互相依赖 |
 | 运行时 | `react/context.rs` + `react/inject.rs` | `context` 负责每步 heartbeat、通知或每 3 步通过 `MessagingService::claim` poll inbox（receiver、节拍和标题缓存在 `SessionState`，heartbeat 合并仍是进程级）；每个 envelope 保留为独立上下文项，投影 durable 后由 `MessageClaim::complete` ack 并发 receipt；`inject` 经 `apply_transcript` 注入带消毒后的 `id`/`in_reply_to`/`subject`；`InjectSource::CrossSession` |
 | 生命周期 | `session/status.rs` | `interrupt_session`/`end_session` 先取消并立即返回控制结果；若 run 仍在收尾，terminal cleanup、partial promote 与 actor 移除延迟到 dispatcher 的 run-exit 边界；终端态继续 BFS 子孙 system notice + 无嵌套 cascade 结束；`type=system` 仅运行时 |
 | 信任 / 记忆 | `memory_worker.rs` | 跳过 `peer_kickoff` 与跨会话注入文本的 fact 抽取 |
@@ -741,6 +741,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 | 2026-09-28 | §2.6 App/UI：SessionCompleted/SessionError 的 primary 与 secondary lifecycle payload 共享短期 occurrence identity；聊天页只执行一次 paired terminal cleanup，独立 `session:updated` 仍清理；相同 reducer lifecycle 投影返回原状态（ADR 0386）|
 | 2026-09-28 | §2.3/§2.5 Agent/Tools：AppState 在组合根创建 memory typed stores，生产 MemoryService 不再接收或持有 raw Database；ActionService 稳定 status/list 读取改由 typed projection 对外，JSON 留在工具/event/provider/MCP/Skill 边界（ADR 0383）|
 | 2026-09-28 | §2.5 Agent：SessionState 持有 `react_run` active future，future 独占 run-local ReActState；actor 同一 select loop 处理 run 与 mailbox，pending await 不借用整份 SessionState（ADR 0382）|
+| 2026-09-29 | §2.5 Agent/Tools：将消息领域服务、JSONL `InboxBus`、协作 ports 与 peer DTO 移入 `haven-messaging`；Agent 提供 SessionSupervisor adapter，Tools 保留模型可见 `agent` 工具入口，消息行为和 JSONL 契约不变（ADR 0396）|
 | 2026-09-27 | §2.6 UI：TaskCenter background/scheduled 活动卡片经共同 `projectActionCard` model 投影，保留 kind details 与当前文案/交互；terminal completion record/transcript 统一尚待 scheduled outcome source 产品决策；通知开关留给独立 Settings/wire 切片（ADR 0373）|
 | 2026-09-27 | §2.5 App / Tools / §2.6 UI：Settings/model 与 Tools AdminServices 同配置域 writes 共用 composition-root gate；SkillsExec-only 跳过 live Skills phase，混合 Skills 变更保留 live phase 与 restart-required；durable-first apply failure 保留磁盘配置并向 Settings UI 报告部分 apply 失败及重启恢复方式。不引入 compensation/rollback/retry；更新 MCP Tauri/AdminServices catalog 和 monitor ownership 说明（ADR 0351、0372）|
 | 2026-09-26 | §2.3/§2.5/§2.6：SessionStore 增加 session orphan/retention/managed-attachment typed ports，AppState 后台清理不再捕获 raw Database；AgentLayer 显式接收组合根 ToolsManager，SessionSupervisor 删除生产 service locator 并只保留窄 authorization/action wiring。执行 facade 与 prompt/catalog/observation adapter 依赖继续按 ADR 0224/0225 单独审计（ADR 0374）|

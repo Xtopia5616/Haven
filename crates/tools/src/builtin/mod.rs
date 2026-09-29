@@ -173,7 +173,7 @@ pub struct BuiltinContext {
     pub default_shell: haven_common::types::ShellChoice,
     pub clipboard_history: Arc<clipboard::ClipboardHistory>,
     pub admin_context: Option<AdminContext>,
-    pub messaging_service: Arc<crate::MessagingService>,
+    pub messaging_service: Arc<haven_messaging::MessagingService>,
     pub memory_recall: MemoryRecallSlot,
     pub managed_assets: crate::ManagedAssetRegistry,
     pub media: MediaDeps,

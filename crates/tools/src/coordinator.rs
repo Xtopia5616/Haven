@@ -401,13 +401,13 @@ impl ToolRuntimeCoordinator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::inbox::{Envelope, SendOutcome};
-    use crate::messaging_service::{
-        AgentControlRequest, AgentControlResult, AgentSpawnRequest, AgentSpawnResult,
-        SessionMailbox,
-    };
     use haven_common::config::{McpServerConfig, RouterConfig};
     use haven_memory::recall::{MemoryQuery, MemoryRecall};
+    use haven_messaging::inbox::{Envelope, SendOutcome};
+    use haven_messaging::messaging_service::{
+        AgentControlRequest, AgentControlResult, AgentSpawnRequest, AgentSpawnResult,
+        MessagingRuntime, SessionMailbox,
+    };
 
     struct UnusedMailbox;
 

@@ -13,8 +13,8 @@ use crate::session::{
 };
 use haven_common::types::{InjectSource, MessageAttachment};
 use haven_memory::SessionStore;
-use haven_tools::MessageClaim;
-use haven_tools::inbox::{Envelope, MessageType};
+use haven_messaging::MessageClaim;
+use haven_messaging::inbox::{Envelope, MessageType};
 use sha2::{Digest, Sha256};
 
 /// Fallback interval (in ReAct steps) for the automatic cross-session inbox
@@ -445,7 +445,7 @@ pub(crate) fn format_cross_session_inject(env: &Envelope) -> String {
 #[cfg(test)]
 mod format_tests {
     use super::{action_result_message_id, format_cross_session_inject};
-    use haven_tools::inbox::{Envelope, MessageType};
+    use haven_messaging::inbox::{Envelope, MessageType};
 
     #[test]
     fn one_envelope_has_one_stable_context_item() {
@@ -482,8 +482,8 @@ mod format_tests {
 #[cfg(test)]
 mod assembly_tests {
     use super::*;
-    use haven_tools::inbox::{AgentInfo, Envelope, InboxBus, SendOutcome};
-    use haven_tools::{MessageClaim, MessageTransport, MessagingService};
+    use haven_messaging::inbox::{AgentInfo, Envelope, InboxBus, SendOutcome};
+    use haven_messaging::{MessageClaim, MessageTransport, MessagingService};
     use std::sync::atomic::{AtomicBool, Ordering};
     use tokio::sync::watch;
 

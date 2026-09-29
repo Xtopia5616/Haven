@@ -2262,6 +2262,7 @@ dependencies = [
  "haven-common",
  "haven-llm",
  "haven-memory",
+ "haven-messaging",
  "haven-tools",
  "serde",
  "serde_json",
@@ -2404,6 +2405,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "haven-messaging"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "haven-common",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "haven-platform"
 version = "0.1.0"
 dependencies = [
@@ -2444,6 +2461,7 @@ dependencies = [
  "haven-llm",
  "haven-mcp",
  "haven-memory",
+ "haven-messaging",
  "haven-platform",
  "haven-skills",
  "ignore",

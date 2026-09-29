@@ -22,6 +22,7 @@ flate2.workspace = true
 quick-xml = "0.38"
 zip = { version = "6", default-features = false, features = ["deflate"] }
 haven-memory = { path = "../memory" }
+haven-messaging = { path = "../messaging" }
 haven-common = { path = "../common" }
 haven-platform = { path = "../platform" }
 haven-mcp = { path = "../mcp" }

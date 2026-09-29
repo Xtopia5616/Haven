@@ -13,7 +13,7 @@ use std::sync::Mutex;
 
 use haven_common::config::RequestKind;
 use haven_llm::ToolDefinition;
-use haven_tools::MessagingService;
+use haven_messaging::MessagingService;
 
 /// Process-wide inbox transport for cross-session polling.
 ///

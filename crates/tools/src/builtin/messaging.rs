@@ -1,7 +1,7 @@
 //! Cross-session messaging / peer-collab: single builtin tool `agent` with
 //! `operation` ∈ list | children | history | send | inbox | ack | reply |
 //! profile | request | spawn | status | join | wait | stop | collect.
-//! Thin tool layer over [`crate::MessagingService`].
+//! Thin tool layer over [`haven_messaging::MessagingService`].
 //!
 //! The agent name is the owning session id (injected privately as
 //! `_session_id`, never visible to the LLM). Every call lazily registers the
@@ -28,15 +28,18 @@ use std::time::Duration;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-#[cfg(test)]
-use crate::inbox::InboxBus;
-use crate::inbox::{AgentStatus, Envelope, MessageType, SendOutcome, validate_agent_name};
-pub use crate::messaging_service::{
-    AgentControlOperation, AgentControlRequest, AgentControlResult, AgentSpawnRequest,
-    AgentSpawnResult, MessagingRuntime,
-};
-use crate::messaging_service::{MessageClaim, MessagingService};
 use crate::{OperationIdempotency, Tool, ToolResult};
+#[cfg(test)]
+use haven_messaging::inbox::InboxBus;
+use haven_messaging::inbox::{
+    AgentStatus, Envelope, MessageType, SendOutcome, validate_agent_name,
+};
+use haven_messaging::messaging_service::{
+    AgentControlOperation, AgentControlRequest, AgentSpawnRequest,
+};
+#[cfg(test)]
+use haven_messaging::messaging_service::{AgentControlResult, AgentSpawnResult, MessagingRuntime};
+use haven_messaging::messaging_service::{MessageClaim, MessagingService};
 
 /// Max envelope field sizes (defensive caps; the bus is append-only JSONL).
 const MAX_TEXT_BYTES: usize = 16 * 1024;
@@ -1324,8 +1327,8 @@ impl Tool for AgentTool {
 mod tests {
     use super::*;
     use crate::Tool;
-    use crate::inbox::AgentStatus;
-    use crate::messaging_service::SessionMailbox;
+    use haven_messaging::inbox::AgentStatus;
+    use haven_messaging::messaging_service::SessionMailbox;
 
     fn test_tools() -> (tempfile::TempDir, Arc<InboxBus>, AgentTool) {
         let dir = tempfile::tempdir().unwrap();
@@ -1433,12 +1436,10 @@ mod tests {
     }
 
     fn claim_and_ack(bus: &InboxBus, name: &str) -> Vec<Envelope> {
-        let messages = bus.claim_and_archive(name).unwrap();
-        let ids = messages
-            .iter()
-            .map(|message| message.id.clone())
-            .collect::<Vec<_>>();
-        bus.ack_claimed(name, &ids).unwrap();
+        let service = MessagingService::new(Arc::new(bus.clone()));
+        let claim = service.claim(name).unwrap();
+        let messages = claim.envelopes().to_vec();
+        claim.complete().unwrap();
         messages
     }
 
@@ -1688,28 +1689,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn send_to_stale_agent_delivers_but_reports_offline() {
+    async fn send_to_offline_agent_delivers_but_reports_offline() {
         let (_dir, bus, tool) = test_tools();
-        // B registers, then goes stale (heartbeat rewritten into the past).
+        // B remains registered but is marked offline.
         bus.register("ses-b", &[]).unwrap();
-        let old = (chrono::Local::now()
-            - chrono::Duration::from_std(crate::inbox::OFFLINE_AFTER).unwrap()
-            - chrono::Duration::seconds(10))
-        .to_rfc3339_opts(chrono::SecondsFormat::Secs, false);
-        let mut reg = std::collections::HashMap::new();
-        reg.insert(
-            "ses-b".into(),
-            crate::inbox::AgentEntry {
-                name: "ses-b".into(),
-                last_seen: old,
-                started_at: "2026-01-01T00:00:00+08:00".into(),
-                title: None,
-                role: None,
-                parent: None,
-                capabilities: vec![],
-            },
-        );
-        bus.write_registry_unlocked(&reg).unwrap();
+        MessagingService::new(bus.clone())
+            .mark_offline("ses-b")
+            .unwrap();
 
         let result = tool
             .execute(
@@ -2260,7 +2246,6 @@ mod tests {
                 .await
                 .unwrap();
                 if let Some(req) = msgs.into_iter().next() {
-                    let _ = bus_for_peer.send_receipts("ses-b", std::slice::from_ref(&req));
                     tool_for_peer
                         .execute(
                             with_sid(

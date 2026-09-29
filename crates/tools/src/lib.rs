@@ -14,10 +14,8 @@ pub mod circuit;
 mod coordinator;
 mod document;
 mod execution;
-pub mod inbox;
 pub mod live_output;
 mod manager;
-pub mod messaging_service;
 #[doc(hidden)]
 pub mod operation_view;
 mod output;
@@ -155,11 +153,6 @@ pub use haven_mcp::{
 };
 pub use haven_skills::{Language, Skill, SkillInfo, SkillManifest, SkillsEngine, VenvManager};
 pub use live_output::LiveOutputHub;
-pub use messaging_service::{
-    AgentControlOperation, AgentControlRequest, AgentControlResult, AgentSpawnRequest,
-    AgentSpawnResult, MessageClaim, MessageTransport, MessagingRuntime, MessagingService,
-    SentMessage, SessionMailbox, is_expired,
-};
 pub use output::{
     OutputBudget, ToolOutput, append_windows_diagnostics, is_progress_clixml,
     sanitize_shell_output, summarize_error,

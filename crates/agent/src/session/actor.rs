@@ -22,7 +22,7 @@ use haven_memory::{
     INTERACTION_CLEARED_EVENT_TYPE, INTERACTION_REQUESTED_EVENT_TYPE,
     INTERACTION_RESOLVED_EVENT_TYPE, SessionStore,
 };
-use haven_tools::inbox::{Envelope, MessageType};
+use haven_messaging::inbox::{Envelope, MessageType};
 use serde_json::Value;
 use std::any::Any;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -1483,7 +1483,7 @@ pub(crate) fn spawn(
                     while let Some(envelope) = state.inbox.pop_front() {
                         if is_matching_reply(&envelope, &in_reply_to, &expected_from) {
                             let message_id = envelope.id.clone();
-                            if haven_tools::is_expired(&envelope) {
+                            if haven_messaging::is_expired(&envelope) {
                                 archive_once(&mut state, envelope);
                             } else {
                                 archive_once(&mut state, envelope.clone());
@@ -1546,7 +1546,7 @@ fn claim_messages(state: &mut SessionState) -> Vec<Envelope> {
             continue;
         }
         archive_once(state, envelope.clone());
-        if haven_tools::is_expired(&envelope) {
+        if haven_messaging::is_expired(&envelope) {
             continue;
         }
         envelope.delivery_attempt = envelope.delivery_attempt.saturating_add(1);
