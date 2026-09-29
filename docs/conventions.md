@@ -1,6 +1,6 @@
 # Haven 通知 / 日志 / 错误处理规范
 
-> 版本: v1.5 | 日期: 2026-09-09
+> 版本: v1.6 | 日期: 2026-09-29
 
 本文档统一 Haven 项目中**通知（Notification）**、**日志（Logging）**、**错误处理（Error Handling）** 三套规范，覆盖 Rust 后端（Tauri 2）与 Svelte 5 前端。
 
@@ -14,7 +14,7 @@
 | 通知配置 | `crates/common/src/config/misc.rs`（`NotificationConfig` / `NotifyChannels`） |
 | 前端日志 | `ui/src/lib/logger.ts` + `ui/src/lib/errorHandling.ts` |
 | 错误文案归一 / 统一上报 | `ui/src/lib/formatError.ts`（`formatError`）+ `ui/src/lib/errorHandling.ts`（`reportError`） |
-| 应用内 toast | `ui/src/lib/stores.ts`（`addNotification`）+ `ui/src/lib/NotificationToast.svelte` |
+| 应用内 toast | `ui/src/lib/notificationStore.ts`（`addNotification`）+ `ui/src/lib/NotificationToast.svelte` |
 | 事件监听注册 | `ui/src/lib/events.ts`（`registerListeners` / `registerOne`） |
 | 事件 → toast 映射 | `ui/src/routes/+layout.svelte` |
 | invoke 错误日志 | `ui/src/lib/tauri.ts` |
@@ -51,11 +51,11 @@
 
 **唯一入口**：`logger.debug / logger.info / logger.warn / logger.error(context, msg, ...args)`。
 
-可恢复错误的组合入口是 `reportError(error, { context, message })`：它负责把错误归一成单行、限长的用户文案，同时写一条带 UI 上下文的 ERROR 日志并投递 error toast；`addNotification(..., 'error')` 还会将同一条脱敏文案镜像到 Rust 文件日志。底层边界（当前是 `tauri.ts::invoke`）已经记录过的错误，页面 catch 传 `log: false`，避免同一失败重复记日志。
+可恢复异常的组合入口是 `reportError(error, { context, message })`：它负责把错误归一成单行、限长的用户文案，同时写一条带 UI 上下文的 ERROR 日志、投递 error toast，并尽力把同一条安全文案镜像到 Rust 文件日志。底层边界（当前是 `tauri.ts::invoke`）已经记录过的错误，页面 catch 传 `log: false`，避免同一失败重复记前端日志。普通 `addNotification(..., 'error')` 只负责展示；校验提示和后端状态事件不得借 toast 隐式写成前端异常日志。
 
 - **`context`**：模块短名，小驼峰。常用：`stores`、`events`、`invoke`、`notification`、`tauri`、`+layout`、页面/组件短名。
 - **级别门控**：`currentLevel` 在 DEV 为 `debug`，生产为 `info`；`debug` 只在开发环境输出。
-- **与 toast 的关系**：普通 `addNotification(..., 'error')` 仍会自动 `logger.error('notification', msg)`，并通过 `log_frontend_error` 镜像到 Rust 文件日志；统一异常走 `reportError`，由 `reportError` 负责日志，toast 通过内部 `logError: false` 选项避免重复记录。
+- **与 toast 的关系**：`addNotification` 只更新应用内 toast store，不产生日志副作用。真实异常走 `reportError`，由它统一负责前端日志、error toast 和 `log_frontend_error` 后端镜像；状态提示和输入校验只调用 `addNotification`。
 - **invoke 失败**：`tauri.ts::invoke` 已在抛出前 `logger.error('invoke', ...)`；页面 `catch` 只负责用户提示，不再记日志。
 
 ```ts
@@ -200,12 +200,12 @@ AgentEvent / 其它后端事件
 | `error` | 4000–5000 | 上限 5s；需长时间阅读也不超过 5s |
 
 - **文案语言**：与 UI 一致使用**中文**；变量用模板字符串拼接。专有名词（`MCP`、产品名 `Haven`）可保留英文。
-- `error` 类型自动 `logger.error('notification', msg)`，并通过 `log_frontend_error` 镜像到 Rust 文件日志；调用方不再重复记日志。
+- `addNotification` 只负责队列去重、时长和展示，不写日志，也不调用后端。异常反馈统一走 `reportError`，由该入口协调日志、toast 和 Rust 文件日志镜像；调用方不再重复记日志。
 - 默认时长固定为 info 3s、success 3s、warning 4s、error 5s；错误上报统一使用 error 5s。
 - `NotificationToast` 统一使用语义色板、错误 `alert` 语义、内容驱动高度和可换行文本；单行通知不额外占用多行通知的高度。
 
 ```ts
-import { addNotification } from '$lib/stores.ts';
+import { addNotification } from '$lib/notificationStore.ts';
 import { reportError } from '$lib/errorHandling.ts';
 
 addNotification(`会话已完成: ${title}`, 'success');
@@ -285,6 +285,7 @@ try {
 - 失败文案统一由 `reportError` 调用 `formatError(e)` 生成；`formatError` 会处理 `unknown`、折叠换行并限制长度，禁止页面自行 `${e}` 拼接。
 - `+layout.svelte` 注册 `error` / `unhandledrejection` 最后防线：记录 `global` 上下文并显示通用错误提示。已被低层记录的对象错误不会再次记 ERROR。
 - 页面级重复逻辑可收敛为局部 helper（先例：settings 的 `notifyFetch`，带 per-key 节流）。
+- 仅展示的 error toast（例如输入校验、会话/MCP/录音状态事件）调用 `addNotification`；捕获到的异常使用 `reportError`，不得再以 `logger.*` + error toast 拼装两套路径。
 - 事件监听注册失败：只走 `events.ts`（内部 `logger.error` 后吞掉，不阻塞 mount）；页面不得裸 `listen`。
 - catch 后禁止仅打日志而无用户提示（除非确认无需用户感知，则只用 `logger.*`，不弹 toast）。
 - 禁止 `` `${e}` `` 直接拼 toast（对象会变成 `[object Object]`）。
@@ -315,7 +316,7 @@ try {
 | `hotkey:conflict` | error toast：`热键冲突: …`（5s） |
 | `recording:error` / `transcription:*` / `mute:changed` | 对应中文提示 + overlay |
 | `action:finished`（后台任务） | 更新 action/transcript；toast 由带 action completion 标记的 `notification:show` 统一负责 |
-| 命令 invoke 失败 | error toast（`e.message` 或兜底，4s） |
+| 命令 invoke 失败 | `reportError` error toast（归一化文案，5s） |
 | `check_llm_connection` 返回 disconnected | error toast：包含非敏感原因分类，并提示检查 API 地址、API Key 和代理（5s；仅状态首次变化时） |
 | `check_llm_connection` 从 disconnected 恢复 ready | success toast：`默认模型已恢复连接`（3s） |
 
@@ -369,6 +370,12 @@ try {
 | ID | 变更 |
 |---|---|
 | E2 | 前端错误统一经 `reportError` 组合日志与 toast；`formatError` 限制文案并处理 unknown；根布局接住未处理异常；后端 `log_err` 增加结构化 command/error 字段 |
+
+### 已完成（v1.6）
+
+| ID | 变更 |
+|---|---|
+| E3 | `addNotification` 收敛为纯展示；`reportError` 成为异常的唯一组合入口，统一前端日志、错误 toast 与 Rust 文件日志镜像；剪贴板、外链和历史页 catch 路径迁移 |
 
 落地时：改代码须同步更新 §2 / §4。
 

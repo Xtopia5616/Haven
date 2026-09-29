@@ -253,29 +253,17 @@ describe('addNotification', () => {
 		expect(items[0].msg).toBe('b');
 	});
 
-	it('logs error notifications via logger.error', () => {
+	it('keeps error toasts presentational', () => {
 		const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
 		addNotification('boom', 'error');
 		addNotification('ok', 'info');
 		addNotification('oops', 'warning');
-		const errorCalls = spy.mock.calls.filter(
-			(args) => typeof args[0] === 'string' && args[0].includes('[ERROR]'),
-		);
-		expect(errorCalls).toHaveLength(1);
-		expect(errorCalls[0][0]).toContain('notification');
-		expect(errorCalls[0][0]).toContain('boom');
+		expect(spy).not.toHaveBeenCalled();
+		expect(invoke).not.toHaveBeenCalled();
 		spy.mockRestore();
 	});
 
-	it('mirrors error notifications to the backend log', () => {
-		addNotification('回退失败: target message not found', 'error');
-
-		expect(invoke).toHaveBeenCalledWith('log_frontend_error', {
-			message: '回退失败: target message not found',
-		});
-	});
-
-	it('does not mirror non-error notifications to the backend log', () => {
+	it('does not log or mirror informational notifications', () => {
 		addNotification('正在加载…', 'info');
 
 		expect(invoke).not.toHaveBeenCalled();

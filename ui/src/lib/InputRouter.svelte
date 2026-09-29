@@ -7,7 +7,6 @@
 	import { recordingOverlay } from '$lib/runtimeStateStore.ts';
 	import { mediaDataUrl } from '$lib/mediaData.ts';
 	import { reportError } from '$lib/errorHandling.ts';
-	import { formatError } from '$lib/formatError.ts';
 	import { syncStore } from '$lib/syncStore.ts';
 	import { openContextMenu } from '$lib/contextMenu.ts';
 	import MaterialIconButton from '$lib/MaterialIconButton.svelte';
@@ -441,8 +440,7 @@
 				start + (text ?? '').length,
 			);
 		} catch (error) {
-			logger.warn('InputRouter', 'clipboard paste failed', formatError(error));
-			addNotification('粘贴失败', 'error', 2000);
+			reportError(error, { context: 'InputRouter', message: '粘贴失败' });
 		}
 	}
 

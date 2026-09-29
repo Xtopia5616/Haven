@@ -237,12 +237,16 @@
 			totalCount = sessions.length;
 			offset = PAGE_SIZE;
 			hasMore = sessions.length >= PAGE_SIZE;
-		} catch {
+		} catch (error) {
 			if (sequence !== loadSessionsSeq) return;
 			sessions = [];
 			totalCount = 0;
 			hasMore = false;
-			addNotification('加载会话列表失败', 'error', 3000);
+			reportError(error, {
+				context: 'MemoryView',
+				message: '加载会话列表失败',
+				log: false,
+			});
 		}
 		if (sequence === loadSessionsSeq) loading = false;
 	}
@@ -259,10 +263,14 @@
 				hasMore = more.length >= PAGE_SIZE;
 				totalCount = sessions.length;
 			} else hasMore = false;
-		} catch {
+		} catch (error) {
 			if (sequence !== loadSessionsSeq) return;
 			hasMore = false;
-			addNotification('加载更多会话失败', 'error', 3000);
+			reportError(error, {
+				context: 'MemoryView',
+				message: '加载更多会话失败',
+				log: false,
+			});
 		}
 		if (sequence === loadSessionsSeq) loading = false;
 	}
@@ -361,8 +369,12 @@
 			clearToolOutputPreviewsForSession(null);
 			appSessionReducer.dispatch({ type: 'sessions/cleared' });
 			addNotification(`已清空 ${count} 条会话`, 'success', 3000);
-		} catch {
-			addNotification('清空会话失败', 'error', 4000);
+		} catch (error) {
+			reportError(error, {
+				context: 'MemoryView',
+				message: '清空会话失败',
+				log: false,
+			});
 		}
 		showClearDialog = false;
 	}

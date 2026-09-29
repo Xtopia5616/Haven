@@ -1,6 +1,7 @@
 import { addNotification, NOTIFICATION_DURATIONS } from './notificationStore.ts';
 import { formatError } from './formatError.ts';
 import logger from './logger.ts';
+import { invoke } from './tauri.ts';
 
 const LOGGED_ERROR = Symbol('haven.loggedError');
 
@@ -15,6 +16,10 @@ export type ErrorReportOptions = {
 	log?: boolean;
 	/** Suppress the toast for background/diagnostic failures. */
 	notify?: boolean;
+	/** Hide technical details from the toast while retaining them in the log. */
+	includeDetail?: boolean;
+	/** Exact user-facing toast text for global errors. */
+	notificationMessage?: string;
 };
 
 function markLogged(error: unknown) {
@@ -45,27 +50,38 @@ export function logError(context: string, message: string, error: unknown): void
  */
 export function reportError(error: unknown, options: ErrorReportOptions): string {
 	const detail = formatError(error);
-	const message = detail === '未知错误' ? options.message : `${options.message}: ${detail}`;
+	const message =
+		options.includeDetail === false || detail === '未知错误'
+			? options.message
+			: `${options.message}: ${detail}`;
+	const notificationMessage = options.notificationMessage ?? message;
 	if (options.log !== false) logError(options.context, `${options.message} failed`, error);
 	if (options.notify !== false) {
-		addNotification(message, 'error', NOTIFICATION_DURATIONS.error, { logError: false });
+		addNotification(notificationMessage, 'error', NOTIFICATION_DURATIONS.error);
+		// Keep the renderer log and persistent Rust log correlated to this same
+		// reported failure. The message is already normalized and bounded.
+		void invoke('log_frontend_error', { message: notificationMessage }).catch(() => {});
 	}
-	return message;
+	return notificationMessage;
 }
 
 /** Install the last-resort handlers for errors which escaped component code. */
 export function installGlobalErrorHandlers() {
 	if (typeof window === 'undefined') return () => {};
 	const onError = (event: ErrorEvent) => {
-		logError('global', 'Unhandled UI error', event.error || event.message);
-		addNotification('应用发生未处理错误，请重试', 'error', NOTIFICATION_DURATIONS.error, {
-			logError: false,
+		reportError(event.error || event.message, {
+			context: 'global',
+			message: 'Unhandled UI error',
+			includeDetail: false,
+			notificationMessage: '应用发生未处理错误，请重试',
 		});
 	};
 	const onUnhandledRejection = (event: PromiseRejectionEvent) => {
-		logError('global', 'Unhandled promise rejection', event.reason);
-		addNotification('应用操作未完成，请重试', 'error', NOTIFICATION_DURATIONS.error, {
-			logError: false,
+		reportError(event.reason, {
+			context: 'global',
+			message: 'Unhandled promise rejection',
+			includeDetail: false,
+			notificationMessage: '应用操作未完成，请重试',
 		});
 	};
 	window.addEventListener('error', onError);

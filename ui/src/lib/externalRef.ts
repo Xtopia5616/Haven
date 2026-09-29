@@ -1,7 +1,7 @@
 import { copyText } from '$lib/clipboard.ts';
 import { invoke } from '$lib/tauri.ts';
-import logger from '$lib/logger.ts';
 import { addNotification } from '$lib/notificationStore.ts';
+import { reportError } from '$lib/errorHandling.ts';
 
 /** Native tooltip shown on every external ref (URL or filesystem path). */
 export const EXT_REF_TITLE = '单击复制 · 按住 Ctrl 再点击打开';
@@ -30,8 +30,11 @@ export async function openExternal(target: string): Promise<boolean> {
 		await invoke('open_external', { target: value });
 		return true;
 	} catch (e) {
-		logger.warn('externalRef', 'open_external failed', e);
-		addNotification('打开失败', 'error', 2000);
+		reportError(e, {
+			context: 'externalRef',
+			message: '打开失败',
+			includeDetail: false,
+		});
 		return false;
 	}
 }

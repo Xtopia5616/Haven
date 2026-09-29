@@ -1,7 +1,6 @@
 <script>
 	import logger from '$lib/logger.ts';
 	import { reportError } from '$lib/errorHandling.ts';
-	import { formatError } from '$lib/formatError.ts';
 	import { isDisplayOnlyMessageId } from '$lib/resumeMessages.ts';
 	import { shouldShowContinueButton } from '$lib/continueSession.ts';
 	import {
@@ -363,8 +362,7 @@
 				await navigator.clipboard.writeText(text);
 				addNotification('已复制', 'info', 1500);
 			} catch (error) {
-				logger.warn('+page', 'context menu copy failed', formatError(error));
-				addNotification('复制失败', 'error', 2000);
+				reportError(error, { context: '+page', message: '复制失败' });
 			}
 		}
 		closeCtxMenu();
