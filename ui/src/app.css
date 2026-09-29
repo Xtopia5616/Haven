@@ -581,7 +581,7 @@ samp {
 
 /* Short, one-shot motion for surfaces that enter because the user changed a
  * filter, selected a row, or moved between async states. Keeping these
- * utilities global makes the timing and reduced-motion behavior consistent
+ * utilities global makes the timing consistent
  * across workspace views. */
 /* Surface entry animations stay transform-free because fixed overlays and
  * context menus can be rendered inside these surfaces. A transformed
@@ -629,14 +629,6 @@ samp {
 	animation: haven-menu-enter var(--md-sys-motion-duration-fast)
 		var(--md-sys-motion-easing-emphasized) both;
 	transform-origin: top left;
-}
-
-@media (prefers-reduced-motion: reduce) {
-	.motion-surface-enter,
-	.motion-list-item,
-	.motion-menu-enter {
-		animation: none;
-	}
 }
 
 /* Scrollbars — hidden globally */
@@ -1245,14 +1237,6 @@ select.md-select {
 	to {
 		opacity: 1;
 		transform: translateX(-50%) scaleX(1);
-	}
-}
-
-@media (prefers-reduced-motion: reduce) {
-	.md-tab.active::before,
-	.md-tabs--measured .workspace-nav__indicator {
-		animation: none;
-		transition: none;
 	}
 }
 

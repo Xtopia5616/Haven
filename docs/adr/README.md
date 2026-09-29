@@ -391,3 +391,4 @@
 - [0405：当前配置契约不执行迁移](0405-current-config-contract-without-migration.md)
 - [0406：Provider 添加时即时发现模型](0406-provider-add-model-discovery.md)
 - [0407：ReAct 执行阶段与模型可用性分开展示](0407-react-execution-and-model-availability-status.md)
+- [0408：UI 统一动画方案](0408-ui-single-motion-profile.md)

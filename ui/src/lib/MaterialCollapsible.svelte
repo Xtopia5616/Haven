@@ -20,14 +20,6 @@
 		open = !open;
 	}
 
-	/** @param {number} duration Keep disclosure motion respectful of the user's system preference. */
-	function motionDuration(duration) {
-		if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
-			return duration;
-		}
-		return window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : duration;
-	}
-
 	/**
 	 * Reveal only the block-axis size of the body.
 	 *
@@ -66,7 +58,7 @@
 		{#if open}
 			<div
 				class="md-collapsible-body"
-				transition:stableReveal={{ duration: motionDuration(240), easing: cubicOut }}
+				transition:stableReveal={{ duration: 240, easing: cubicOut }}
 			>
 				{@render children?.()}
 			</div>

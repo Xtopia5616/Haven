@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/svelte';
+import { fireEvent, render, screen, waitForElementToBeRemoved } from '@testing-library/svelte';
 import MaterialDialog from './MaterialDialog.svelte';
+import MaterialDialogTransitionHarness from './MaterialDialogTransitionHarness.svelte';
 
 describe('MaterialDialog', () => {
 	it('keeps the overlay in the component tree for delegated events and cleanup', () => {
@@ -22,5 +23,16 @@ describe('MaterialDialog', () => {
 		await fireEvent.click(dialogs.at(-1)!.querySelector('.md-dialog-close')!);
 
 		expect(onClose).toHaveBeenCalledTimes(1);
+	});
+
+	it('plays its outro when a parent condition removes the dialog component', async () => {
+		render(MaterialDialogTransitionHarness);
+		const dialog = screen.getByRole('dialog');
+		const removed = waitForElementToBeRemoved(dialog);
+
+		await fireEvent.click(screen.getByRole('button', { name: 'Hide parent' }));
+
+		expect(screen.getByRole('dialog')).toBe(dialog);
+		await removed;
 	});
 });

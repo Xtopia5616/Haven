@@ -18,7 +18,7 @@
 		onOpenTasks = () => {},
 	} = $props();
 
-	const statusLabel = $derived.by(() => {
+	const executionStatusLabel = $derived.by(() => {
 		if (runtime === 'browser') return '浏览器预览';
 		if (overlay.isRecording) return '录音中';
 		if (overlay.processing) return '转写中';
@@ -45,42 +45,51 @@
 		return '空闲';
 	});
 	const modelStatusLabel = $derived.by(() => {
-		if (llmConnected === 'unconfigured') return '未配置';
-		if (llmConnected === 'disconnected') return '网络错误';
+		if (llmConnected === 'unconfigured') return '模型未配置';
+		if (llmConnected === 'disconnected') return '模型不可用';
 		if (llmConnected === null) return '检测中';
 		return null;
 	});
 	const modelStatusTitle = $derived.by(() => {
 		if (llmConnected === 'disconnected') {
-			return `模型不可用：${llmConnectionDetail || '暂时无法确定具体原因'}。请到模型设置检查 API 地址、API Key 和代理`;
+			return `默认模型不可用：${llmConnectionDetail || '暂时无法确定具体原因'}。请到模型设置检查 API 地址、API Key 和代理`;
 		}
 		if (llmConnected === 'unconfigured') {
 			return '默认模型未配置，请到模型设置填写 Provider、模型和 API Key';
 		}
 		return '正在检测默认模型连接';
 	});
-	const modelStatusTone = $derived(
-		llmConnected === 'disconnected'
-			? 'error'
-			: llmConnected === 'unconfigured'
-				? 'neutral'
-				: 'warning',
-	);
-	const modelStatusAnimating = $derived(llmConnected === null);
+	const statusLabel = $derived.by(() => {
+		if (runtime === 'browser' || overlay.isRecording || overlay.processing) {
+			return executionStatusLabel;
+		}
+		// Persistent failures outrank routine loop progress. The tooltip keeps
+		// the execution context visible while the single chip shows the priority.
+		if (executionStatusLabel === '错误') return executionStatusLabel;
+		if (modelStatusLabel === '模型不可用') return modelStatusLabel;
+		if (['已暂停', '等待操作', '等待任务', '等待定时任务'].includes(executionStatusLabel)) {
+			return executionStatusLabel;
+		}
+		if (modelStatusLabel === '模型未配置') return modelStatusLabel;
+		if (executionStatusLabel !== '空闲' && executionStatusLabel !== '加载中') {
+			return executionStatusLabel;
+		}
+		if (modelStatusLabel === '检测中') return modelStatusLabel;
+		return executionStatusLabel;
+	});
 
 	const taskCount = $derived(runningActionCount + pendingScheduledActions.length);
 	const hasTaskActivity = $derived(taskCount > 0 || awaitingBackgroundActive);
 
 	const statusColor = $derived.by(() => {
 		if (runtime === 'browser') return 'neutral';
-		if (overlay.isRecording) return 'error';
-		if (statusLabel === '错误') return 'error';
-		if (statusLabel === '生成中') return 'info';
+		if (['录音中', '错误', '模型不可用'].includes(statusLabel)) return 'error';
+		if (['生成中', '转写中'].includes(statusLabel)) return 'info';
 		if (['等待结果', '等待任务', '等待定时任务', '后台任务'].includes(statusLabel))
 			return 'tool';
-		if (['已暂停', '等待操作'].includes(statusLabel)) return 'warning';
+		if (['已暂停', '等待操作', '模型未配置'].includes(statusLabel)) return 'warning';
 		if (
-			['录音中', '转写中', '排队中', '请求中', '等待响应', '运行中', '加载中'].includes(
+			['检测中', '排队中', '请求中', '等待响应', '运行中', '加载中'].includes(
 				statusLabel,
 			) ||
 			busySessions.size > 0
@@ -89,18 +98,20 @@
 		return 'neutral';
 	});
 
-	const statusAnimating = $derived.by(
-		() =>
-			![
-				'浏览器预览',
-				'空闲',
-				'错误',
-				'已完成',
-				'已暂停',
-				'等待操作',
-				'等待任务',
-				'等待定时任务',
-			].includes(statusLabel),
+	const statusAnimating = $derived(
+		[
+			'录音中',
+			'转写中',
+			'生成中',
+			'等待结果',
+			'请求中',
+			'等待响应',
+			'排队中',
+			'运行中',
+			'后台任务',
+			'加载中',
+			'检测中',
+		].includes(statusLabel),
 	);
 
 	const statusTitle = $derived.by(() => {
@@ -108,13 +119,23 @@
 			return '当前是浏览器预览，Rust/Tauri 后端未启动；运行 cargo tauri dev 启动桌面应用';
 		}
 		const parts = [];
+		if (executionStatusLabel !== statusLabel) {
+			parts.push(`执行状态：${executionStatusLabel}`);
+		}
+		if (modelStatusLabel && modelStatusLabel !== statusLabel) {
+			parts.push(`模型状态：${modelStatusLabel}（${modelStatusTitle}）`);
+		} else if (modelStatusLabel === statusLabel) {
+			parts.push(modelStatusTitle);
+		}
 		if (runningActionCount > 0) {
 			parts.push(`${runningActionCount} 个${taskKindLabel('background')}运行中`);
 		}
 		if (pendingScheduledActions.length > 0) {
 			parts.push(`${pendingScheduledActions.length} 条${taskKindLabel('scheduled')}`);
 		}
-		return parts.length > 0 ? `任务：${parts.join('，')}` : `执行状态：${statusLabel}`;
+		return parts.length > 0
+			? `状态：${statusLabel}；${parts.join('；')}`
+			: `状态：${statusLabel}`;
 	});
 
 	const taskTitle = $derived.by(() => {
@@ -131,24 +152,12 @@
 	<div
 		class="status-chip"
 		role="status"
-		aria-label={`执行状态：${statusLabel}`}
+		aria-label={`状态：${statusLabel}`}
 		title={statusTitle}
 	>
 		<StatusDot color={statusColor} animate={statusAnimating} />
 		<span class:recording-text={overlay.isRecording} class="status-text">{statusLabel}</span>
 	</div>
-	{#if runtime !== 'browser' && modelStatusLabel}
-		<div
-			class="model-chip"
-			data-state={modelStatusTone}
-			role="status"
-			aria-label={`模型状态：${modelStatusLabel}`}
-			title={modelStatusTitle}
-		>
-			<StatusDot color={modelStatusTone} animate={modelStatusAnimating} />
-			<span>{modelStatusLabel}</span>
-		</div>
-	{/if}
 	{#if hasTaskActivity}
 		<div class="task-action">
 			<MaterialIconButton
@@ -188,27 +197,6 @@
 		font-weight: 600;
 		line-height: var(--md-sys-typescale-label-medium-line-height);
 		font-family: inherit;
-	}
-	.model-chip {
-		display: inline-flex;
-		align-items: center;
-		gap: var(--md-sys-space-sm);
-		height: var(--md-comp-status-height);
-		padding: 0 var(--md-comp-status-padding-inline);
-		border: 1px solid var(--md-sys-color-outline-variant);
-		border-radius: var(--md-comp-status-radius);
-		background: var(--md-sys-color-surface-container-high);
-		color: var(--md-sys-color-on-surface-variant);
-		font-size: var(--md-sys-typescale-label-medium-size);
-		font-weight: 600;
-		line-height: var(--md-sys-typescale-label-medium-line-height);
-		font-family: inherit;
-	}
-	.model-chip[data-state='warning'] {
-		color: var(--md-sys-color-warning);
-	}
-	.model-chip[data-state='error'] {
-		color: var(--md-sys-color-error);
 	}
 	.task-action {
 		position: relative;

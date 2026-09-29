@@ -23,13 +23,6 @@
 	} = $props();
 	let expanded = $state(false);
 
-	/** @param {number} duration */
-	function motionDuration(duration) {
-		if (typeof window === 'undefined' || typeof window.matchMedia !== 'function')
-			return duration;
-		return window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : duration;
-	}
-
 	function toggleExpand() {
 		expanded = !expanded;
 	}
@@ -83,7 +76,7 @@
 	{#if expanded}
 		<div
 			class="card-body"
-			transition:slide={{ duration: motionDuration(180), easing: cubicOut }}
+			transition:slide={{ duration: 180, easing: cubicOut }}
 		>
 			{@render children?.()}
 		</div>

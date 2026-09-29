@@ -123,13 +123,4 @@
 		}
 	}
 
-	@media (prefers-reduced-motion: reduce) {
-		.voice-bars__bar {
-			animation: none;
-		}
-		.voice-bars--float .voice-bars__bar {
-			opacity: 0.8;
-			transform: none;
-		}
-	}
 </style>

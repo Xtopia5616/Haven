@@ -1,5 +1,6 @@
 <script>
 	/** @typedef {import('$lib/contracts/memory.ts').Fact} Fact */
+	import AsyncState from '$lib/AsyncState.svelte';
 	import MaterialBadge from '$lib/MaterialBadge.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
@@ -156,16 +157,16 @@
 				{/each}
 			</div>
 		{:else if factsLoaded}
-			<div class="empty-inline">
-				<span class="empty-inline-mark" aria-hidden="true">＋</span>
-				<strong>还没有已保存的事实</strong>
-				<p>可以手动添加，也可以继续使用 Haven 让它自动抽取。</p>
-			</div>
+			<AsyncState
+				title="暂无长期记忆"
+				message="可以手动添加，也可以继续使用 Haven 让它自动抽取。"
+			/>
 		{:else}
-			<div class="empty-inline" role="status" aria-live="polite">
-				<span class="empty-inline-mark" aria-hidden="true">…</span>
-				<strong>正在加载已保存事实</strong>
-			</div>
+			<AsyncState
+				state="loading"
+				title="正在加载长期记忆"
+				message="正在读取已保存的长期记忆。"
+			/>
 		{/if}
 	</section>
 </div>
@@ -348,30 +349,6 @@
 	}
 	.fact-card-actions :global(.fact-delete) {
 		color: var(--md-sys-color-error);
-	}
-	.empty-inline {
-		display: grid;
-		justify-items: center;
-		gap: var(--md-sys-space-sm);
-		padding: var(--md-sys-space-3xl) var(--md-sys-space-lg);
-		text-align: center;
-	}
-	.empty-inline-mark {
-		display: grid;
-		place-items: center;
-		width: var(--md-comp-button-touch-height);
-		height: var(--md-comp-button-touch-height);
-		border-radius: var(--md-sys-shape-full);
-		background: var(--md-sys-color-primary-container);
-		color: var(--md-sys-color-on-primary-container);
-		font-size: var(--md-sys-typescale-headline-medium-size);
-	}
-	.empty-inline p {
-		max-width: 320px;
-		margin: 0;
-		color: var(--md-sys-color-on-surface-variant);
-		font-size: var(--md-sys-typescale-body-small-size);
-		line-height: var(--md-sys-typescale-body-small-line-height);
 	}
 	.fact-dialog-content {
 		min-width: 0;

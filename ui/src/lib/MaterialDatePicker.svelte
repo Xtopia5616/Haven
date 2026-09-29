@@ -1,7 +1,6 @@
 <script>
+	import MaterialDialog from './MaterialDialog.svelte';
 	import Icon from './Icon.svelte';
-	import { fade, scale } from 'svelte/transition';
-	import { cubicOut } from 'svelte/easing';
 	import MaterialButton from './MaterialButton.svelte';
 
 	let { value = '', onChange, id = undefined, min = '', max = '' } = $props();
@@ -186,22 +185,10 @@
 		return viewYear;
 	}
 
-	/**
-	 * @param {KeyboardEvent} e
-	 */
-	function handleKeydown(e) {
-		if (e.key === 'Escape') {
-			if (view === 'year') {
-				view = 'calendar';
-			} else cancel();
-		}
-	}
-
-	/**
-	 * @param {MouseEvent} e
-	 */
-	function handleOverlayClick(e) {
-		if (e.target === e.currentTarget) cancel();
+	function handleEscape() {
+		if (view === 'year') {
+			view = 'calendar';
+		} else cancel();
 	}
 
 	/**
@@ -230,8 +217,6 @@
 	}
 </script>
 
-<svelte:window onkeydown={handleKeydown} />
-
 <div class="md-datepicker-container">
 	<button {id} class="md-datepicker-trigger" onclick={openPicker} type="button">
 		<span class="md-datepicker-value" class:placeholder={!value}>
@@ -241,22 +226,24 @@
 	</button>
 </div>
 
-{#if open}
-	<div
-		class="md-datepicker-overlay"
-		onclick={handleOverlayClick}
-		role="dialog"
-		aria-modal="true"
-		tabindex="-1"
-		onkeydown={handleNonInteractiveKeydown}
-		in:fade={{ duration: 300, easing: cubicOut }}
-	>
+<MaterialDialog
+	{open}
+	onClose={cancel}
+	onEscape={handleEscape}
+	overlayClass="md-datepicker-overlay"
+	dialogClass="md-datepicker-dialog"
+	ariaLabelledby="md-datepicker-header-label"
+>
+	{#snippet children()}
 		<div
-			class="md-datepicker-dialog"
-			in:scale={{ start: 0.92, duration: 450, easing: cubicOut }}
+			class="md-datepicker-content"
+			onkeydown={handleNonInteractiveKeydown}
+			role="presentation"
 		>
 			<div class="md-datepicker-header">
-				<span class="md-datepicker-header-label">{headerLabel()}</span>
+				<span class="md-datepicker-header-label" id="md-datepicker-header-label"
+					>{headerLabel()}</span
+				>
 				<button
 					class="md-datepicker-header-year"
 					onclick={goToYearView}
@@ -388,8 +375,8 @@
 				/>
 			</div>
 		</div>
-	</div>
-{/if}
+	{/snippet}
+</MaterialDialog>
 
 <style>
 	.md-datepicker-container {
@@ -442,23 +429,24 @@
 	}
 
 	/* ---------- Overlay & Dialog ---------- */
-	.md-datepicker-overlay {
-		position: fixed;
-		inset: 0;
+	:global(.md-dialog-overlay.md-datepicker-overlay) {
 		background: color-mix(in srgb, var(--md-sys-color-scrim) 60%, transparent);
 		backdrop-filter: blur(6px);
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		z-index: var(--md-sys-z-dialog);
 	}
-	.md-datepicker-dialog {
+	:global(.md-dialog.md-datepicker-dialog) {
 		background: var(--md-sys-color-surface-container-high);
 		border-radius: var(--md-sys-shape-large);
 		box-shadow: var(--md-sys-elevation-4);
 		width: 360px;
 		max-width: 90vw;
 		overflow: hidden;
+		border: 0;
+	}
+	:global(.md-dialog.md-datepicker-dialog .md-dialog-body) {
+		padding: 0;
+	}
+	.md-datepicker-content {
+		display: contents;
 	}
 
 	/* ---------- Header ---------- */

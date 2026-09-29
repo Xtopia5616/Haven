@@ -1,23 +1,36 @@
 <script>
-	import { fade, scale } from 'svelte/transition';
 	import { cubicOut } from 'svelte/easing';
+	import { fade, scale } from 'svelte/transition';
 	import MaterialIconButton from './MaterialIconButton.svelte';
 
 	/**
 	 * Material Dialog — overlay + dialog container.
 	 * @prop {boolean} open
 	 * @prop {function} onClose
+	 * @prop {function} [onEscape] — optional Escape-key behavior; defaults to onClose
 	 * @prop {string} title
-	 * @prop {function} onConfirm — optional confirm callback
+	 * @prop {any} header — optional custom header snippet
+	 * @prop {any} children — dialog body snippet
+	 * @prop {any} footer — optional footer snippet
 	 * @prop {string} dialogClass — extra class for the dialog container
+	 * @prop {string} overlayClass — extra class for the overlay
+	 * @prop {string} ariaLabelledby — id for a custom heading
+	 * @prop {string} ariaDescribedby — id for descriptive dialog content
+	 * @prop {HTMLDivElement | null} dialogElement — bindable panel element for focus management
 	 */
 	let {
 		open = false,
 		onClose,
+		onEscape = undefined,
 		title = '',
+		header = undefined,
 		children,
 		footer = undefined,
 		dialogClass = '',
+		overlayClass = '',
+		ariaLabelledby = undefined,
+		ariaDescribedby = undefined,
+		dialogElement = $bindable(null),
 	} = $props();
 
 	/**
@@ -31,14 +44,21 @@
 	 * @param {KeyboardEvent} e
 	 */
 	function handleKeydown(e) {
-		if (open && e.key === 'Escape') onClose?.();
+		if (open && e.key === 'Escape') {
+			e.preventDefault();
+			(onEscape || onClose)?.();
+		}
 	}
 
 	/**
 	 * @param {KeyboardEvent} e
 	 */
 	function handleOverlayKeydown(e) {
-		if (e.key === 'Escape') onClose?.();
+		if (e.key === 'Escape') {
+			e.preventDefault();
+			e.stopPropagation();
+			(onEscape || onClose)?.();
+		}
 	}
 </script>
 
@@ -48,22 +68,31 @@
 	 teardown must continue to follow the component that owns the dialog. -->
 {#if open}
 	<div
-		class="md-dialog-overlay"
+		class="md-dialog-overlay {overlayClass}"
 		onclick={handleOverlayClick}
 		onkeydown={handleOverlayKeydown}
 		role="dialog"
 		aria-modal="true"
-		aria-labelledby={title ? 'md-dialog-title' : undefined}
+		aria-labelledby={ariaLabelledby || (title ? 'md-dialog-title' : undefined)}
+		aria-describedby={ariaDescribedby}
 		tabindex={-1}
-		in:fade={{ duration: 300, easing: cubicOut }}
+		transition:fade|global={{ duration: 300, easing: cubicOut }}
 	>
 		<div
 			class="md-dialog {dialogClass}"
 			role="presentation"
+			tabindex="-1"
+			bind:this={dialogElement}
 			onclick={(e) => e.stopPropagation()}
-			in:scale={{ start: 0.92, duration: 450, easing: cubicOut }}
+			transition:scale|global={{
+				start: 0.92,
+				duration: 300,
+				easing: cubicOut,
+			}}
 		>
-			{#if title}
+			{#if header}
+				{@render header()}
+			{:else if title}
 				<div class="md-dialog-header">
 					<h3 id="md-dialog-title">{title}</h3>
 					<MaterialIconButton

@@ -1,5 +1,7 @@
 # ADR 0081：UI 共享声波条动画原语
 
+> 关于 `prefers-reduced-motion` 的降级规则已由 [ADR 0408](0408-ui-single-motion-profile.md) 替代。
+
 ## 背景
 
 `LoadingState` 和 `RecordingIndicator` 都渲染声波条动画，但各自维护 bar DOM、动画关键帧、节奏、颜色和 reduced-motion 规则。两者的业务语义不同，不能直接合并成同一个加载或录音组件；重复的视觉实现则容易发生漂移。

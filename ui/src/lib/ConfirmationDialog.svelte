@@ -1,7 +1,6 @@
 <script>
 	import { tick } from 'svelte';
-	import { fade, scale } from 'svelte/transition';
-	import { cubicOut } from 'svelte/easing';
+	import MaterialDialog from './MaterialDialog.svelte';
 	import Icon from './Icon.svelte';
 	import MenuItem from './MenuItem.svelte';
 	import MaterialButton from './MaterialButton.svelte';
@@ -144,252 +143,229 @@
 		decide('allow', 'always', target);
 	}
 
-	/** @param {MouseEvent} event */
-	function handleOverlayClick(event) {
-		// Preserve the fail-closed behavior of the old modal: dismissing the
-		// backdrop is an explicit one-shot denial, never an approval.
-		if (event.target === event.currentTarget) decide('deny', 'once', 'operation');
-	}
-
-	/** @param {KeyboardEvent} event */
-	function handleWindowKeydown(event) {
-		if (stepId && event.key === 'Escape') {
-			event.preventDefault();
-			decide('deny', 'once', 'operation');
-		}
+	function dismiss() {
+		// Dismissing the backdrop or pressing Escape is a one-shot denial.
+		decide('deny', 'once', 'operation');
 	}
 </script>
 
-<svelte:window onkeydown={handleWindowKeydown} />
-
-{#if stepId}
-	<div
-		class="overlay"
-		role="presentation"
-		onclick={handleOverlayClick}
-		in:fade={{ duration: 220, easing: cubicOut }}
-	>
-		<div
-			class="dialog"
-			role="dialog"
-			aria-modal="true"
-			aria-labelledby="permission-dialog-title"
-			aria-describedby="permission-dialog-summary"
-			tabindex="-1"
-			bind:this={dialogEl}
-			onclick={(event) => event.stopPropagation()}
-			onkeydown={() => {}}
-			in:scale={{ start: 0.96, duration: 260, easing: cubicOut }}
-		>
-			<header class="dialog-header">
-				<div class="header-main">
-					<div class="security-icon" aria-hidden="true">
-						<Icon name="alertTriangle" size={22} />
-					</div>
-					<div class="header-copy">
-						<div class="eyebrow">权限确认</div>
-						<h2 id="permission-dialog-title">需要你的许可</h2>
-						<p>Haven 会在执行前等待你的决定</p>
-					</div>
+<MaterialDialog
+	open={Boolean(stepId)}
+	onClose={dismiss}
+	dialogClass="permission-confirmation-dialog"
+	overlayClass="permission-confirmation-overlay"
+	ariaLabelledby="permission-dialog-title"
+	ariaDescribedby="permission-dialog-summary"
+	bind:dialogElement={dialogEl}
+>
+	{#snippet header()}
+		<header class="dialog-header">
+			<div class="header-main">
+				<div class="security-icon" aria-hidden="true">
+					<Icon name="alertTriangle" size={22} />
 				</div>
-				<div
-					class="risk-badge"
-					class:risk-safe={normalizedRisk === 'safe' || normalizedRisk === 'low'}
-					class:risk-medium={normalizedRisk === 'medium'}
-					class:risk-high={normalizedRisk === 'high' || normalizedRisk === 'critical'}
-				>
-					<span class="risk-dot" aria-hidden="true"></span>
-					{riskLabel}
-				</div>
-			</header>
-
-			<div class="dialog-body">
-				<section class="operation-card" aria-label="待执行操作">
-					<div class="section-label">待执行操作</div>
-					<div class="operation-name">{toolName || '未命名操作'}</div>
-					{#if sessionTitle}
-						<div class="operation-context">
-							<Icon name="chat" size={15} />
-							<span>{sessionTitle}</span>
-						</div>
-					{:else if sessionId}
-						<div class="operation-context">
-							<Icon name="chat" size={15} />
-							<span>{sessionId}</span>
-						</div>
-					{/if}
-					{#if permissionKey}
-						<div class="permission-key">
-							<Icon name="key" size={14} />
-							<span>授权范围</span>
-							<code>{permissionKey}</code>
-						</div>
-					{/if}
-				</section>
-
-				<section class="summary" id="permission-dialog-summary">
-					<div class="section-label">操作说明</div>
-					<p>{summary || '此操作需要你的许可。'}</p>
-				</section>
-
-				<div
-					class="timeout"
-					class:warn={remaining <= 15}
-					class:danger={remaining <= 5}
-					role="status"
-					aria-live="polite"
-				>
-					<div class="timeout-head">
-						<span class="timeout-label"
-							><Icon name="clock" size={15} />自动拒绝倒计时</span
-						>
-						<strong>{remaining}s</strong>
-					</div>
-					<div class="timeout-track" aria-hidden="true">
-						<span class="timeout-bar" style={`width: ${timeoutPercent}%`}></span>
-					</div>
+				<div class="header-copy">
+					<div class="eyebrow">权限确认</div>
+					<h2 id="permission-dialog-title">需要你的许可</h2>
+					<p>Haven 会在执行前等待你的决定</p>
 				</div>
 			</div>
-
-			<footer class="dialog-footer">
-				<div class="action-heading">
-					<span>选择允许范围和期限</span>
-					<span class="action-hint">范围越大、期限越长，后续询问越少</span>
-				</div>
-				{#if pendingPersistentTarget}
-					<div class="always-warning" role="alert">
-						<Icon name="alertTriangle" size={16} />
-						<div class="warning-copy">
-							<span
-								>即将永久允许{pendingTargetLabel}。这会跨会话生效；关键操作仍可能继续要求确认。</span
-							>
-							{#if persistentNeedsWarning}
-								<small>请确认你确实希望扩大授权范围或减少高风险操作的询问。</small>
-							{/if}
-						</div>
-						<MaterialButton
-							variant="danger"
-							label="确认永久允许"
-							onclick={() =>
-								decide('allow', 'always', pendingPersistentTarget || 'operation')}
-						/>
+			<div
+				class="risk-badge"
+				class:risk-safe={normalizedRisk === 'safe' || normalizedRisk === 'low'}
+				class:risk-medium={normalizedRisk === 'medium'}
+				class:risk-high={normalizedRisk === 'high' || normalizedRisk === 'critical'}
+			>
+				<span class="risk-dot" aria-hidden="true"></span>
+				{riskLabel}
+			</div>
+		</header>
+	{/snippet}
+	{#snippet children()}
+		<div class="dialog-body">
+			<section class="operation-card" aria-label="待执行操作">
+				<div class="section-label">待执行操作</div>
+				<div class="operation-name">{toolName || '未命名操作'}</div>
+				{#if sessionTitle}
+					<div class="operation-context">
+						<Icon name="chat" size={15} />
+						<span>{sessionTitle}</span>
+					</div>
+				{:else if sessionId}
+					<div class="operation-context">
+						<Icon name="chat" size={15} />
+						<span>{sessionId}</span>
 					</div>
 				{/if}
-				<div class="actions">
-					<div class="allow-group">
-						<MaterialButton
-							variant="filled"
-							className="btn-once"
-							label="本次允许"
-							onclick={() => decide('allow', 'once', 'operation')}
-						/>
-						<MaterialButton
-							variant="tonal"
-							className="btn-session"
-							label="本对话允许此操作"
-							onclick={() => decide('allow', 'session', 'operation')}
-						/>
-						<div class="more-allow">
-							<MaterialButton
-								variant="text"
-								className="more-allow-trigger"
-								label="更多允许"
-								ariaExpanded={showAllowMenu}
-								ariaHaspopup="menu"
-								onclick={() => (showAllowMenu = !showAllowMenu)}
-							/>
-							{#if showAllowMenu}
-								<div class="allow-menu" role="menu">
-									<div class="menu-section-label">本对话</div>
-									{#each targetOptions.slice(1) as option (option.target)}
-										<MenuItem
-											label={`本对话允许${option.label}`}
-											onSelect={() =>
-												decide('allow', 'session', option.target)}
-										/>
-									{/each}
-									<div class="menu-section-label">永久</div>
-									{#each targetOptions as option (option.target)}
-										<MenuItem
-											label={`永久允许${option.label}`}
-											onSelect={() => requestPersistentAllow(option.target)}
-										/>
-									{/each}
-								</div>
-							{/if}
-						</div>
+				{#if permissionKey}
+					<div class="permission-key">
+						<Icon name="key" size={14} />
+						<span>授权范围</span>
+						<code>{permissionKey}</code>
 					</div>
-					<MaterialSplitButton
-						label="拒绝"
-						variant="tonal"
-						className="deny-split"
-						open={showDenyMenu}
-						onclick={() => decide('deny', 'once')}
-						onToggle={() => (showDenyMenu = !showDenyMenu)}
-						ariaLabel="更多拒绝选项"
-					>
-						{#snippet children()}
-							{#if showDenyMenu}
-								<div class="deny-menu" role="menu">
-									<MenuItem
-										label="本对话拒绝此操作"
-										danger
-										onSelect={() => decide('deny', 'session', 'operation')}
-									/>
-									{#each targetOptions.slice(1) as option (option.target)}
-										<MenuItem
-											label={`本对话拒绝${option.label}`}
-											danger
-											onSelect={() =>
-												decide('deny', 'session', option.target)}
-										/>
-									{/each}
-									<MenuItem
-										label="始终拒绝此操作"
-										danger
-										onSelect={() => decide('deny', 'always', 'operation')}
-									/>
-									{#each targetOptions.slice(1) as option (option.target)}
-										<MenuItem
-											label={`始终拒绝${option.label}`}
-											danger
-											onSelect={() => decide('deny', 'always', option.target)}
-										/>
-									{/each}
-								</div>
-							{/if}
-						{/snippet}
-					</MaterialSplitButton>
+				{/if}
+			</section>
+
+			<section class="summary" id="permission-dialog-summary">
+				<div class="section-label">操作说明</div>
+				<p>{summary || '此操作需要你的许可。'}</p>
+			</section>
+
+			<div
+				class="timeout"
+				class:warn={remaining <= 15}
+				class:danger={remaining <= 5}
+				role="status"
+				aria-live="polite"
+			>
+				<div class="timeout-head">
+					<span class="timeout-label"><Icon name="clock" size={15} />自动拒绝倒计时</span>
+					<strong>{remaining}s</strong>
 				</div>
-			</footer>
+				<div class="timeout-track" aria-hidden="true">
+					<span class="timeout-bar" style={`width: ${timeoutPercent}%`}></span>
+				</div>
+			</div>
 		</div>
-	</div>
-{/if}
+	{/snippet}
+	{#snippet footer()}
+		<footer class="dialog-footer">
+			<div class="action-heading">
+				<span>选择允许范围和期限</span>
+				<span class="action-hint">范围越大、期限越长，后续询问越少</span>
+			</div>
+			{#if pendingPersistentTarget}
+				<div class="always-warning" role="alert">
+					<Icon name="alertTriangle" size={16} />
+					<div class="warning-copy">
+						<span
+							>即将永久允许{pendingTargetLabel}。这会跨会话生效；关键操作仍可能继续要求确认。</span
+						>
+						{#if persistentNeedsWarning}
+							<small>请确认你确实希望扩大授权范围或减少高风险操作的询问。</small>
+						{/if}
+					</div>
+					<MaterialButton
+						variant="danger"
+						label="确认永久允许"
+						onclick={() =>
+							decide('allow', 'always', pendingPersistentTarget || 'operation')}
+					/>
+				</div>
+			{/if}
+			<div class="actions">
+				<div class="allow-group">
+					<MaterialButton
+						variant="filled"
+						className="btn-once"
+						label="本次允许"
+						onclick={() => decide('allow', 'once', 'operation')}
+					/>
+					<MaterialButton
+						variant="tonal"
+						className="btn-session"
+						label="本对话允许此操作"
+						onclick={() => decide('allow', 'session', 'operation')}
+					/>
+					<div class="more-allow">
+						<MaterialButton
+							variant="text"
+							className="more-allow-trigger"
+							label="更多允许"
+							ariaExpanded={showAllowMenu}
+							ariaHaspopup="menu"
+							onclick={() => (showAllowMenu = !showAllowMenu)}
+						/>
+						{#if showAllowMenu}
+							<div class="allow-menu" role="menu">
+								<div class="menu-section-label">本对话</div>
+								{#each targetOptions.slice(1) as option (option.target)}
+									<MenuItem
+										label={`本对话允许${option.label}`}
+										onSelect={() => decide('allow', 'session', option.target)}
+									/>
+								{/each}
+								<div class="menu-section-label">永久</div>
+								{#each targetOptions as option (option.target)}
+									<MenuItem
+										label={`永久允许${option.label}`}
+										onSelect={() => requestPersistentAllow(option.target)}
+									/>
+								{/each}
+							</div>
+						{/if}
+					</div>
+				</div>
+				<MaterialSplitButton
+					label="拒绝"
+					variant="tonal"
+					className="deny-split"
+					open={showDenyMenu}
+					onclick={() => decide('deny', 'once')}
+					onToggle={() => (showDenyMenu = !showDenyMenu)}
+					ariaLabel="更多拒绝选项"
+				>
+					{#snippet children()}
+						{#if showDenyMenu}
+							<div class="deny-menu" role="menu">
+								<MenuItem
+									label="本对话拒绝此操作"
+									danger
+									onSelect={() => decide('deny', 'session', 'operation')}
+								/>
+								{#each targetOptions.slice(1) as option (option.target)}
+									<MenuItem
+										label={`本对话拒绝${option.label}`}
+										danger
+										onSelect={() => decide('deny', 'session', option.target)}
+									/>
+								{/each}
+								<MenuItem
+									label="始终拒绝此操作"
+									danger
+									onSelect={() => decide('deny', 'always', 'operation')}
+								/>
+								{#each targetOptions.slice(1) as option (option.target)}
+									<MenuItem
+										label={`始终拒绝${option.label}`}
+										danger
+										onSelect={() => decide('deny', 'always', option.target)}
+									/>
+								{/each}
+							</div>
+						{/if}
+					{/snippet}
+				</MaterialSplitButton>
+			</div>
+		</footer>
+	{/snippet}
+</MaterialDialog>
 
 <style>
-	.overlay {
-		position: fixed;
-		inset: 0;
-		display: flex;
-		align-items: center;
-		justify-content: center;
+	:global(.md-dialog-overlay.permission-confirmation-overlay) {
 		padding: var(--md-sys-space-xl);
 		background: color-mix(in srgb, var(--md-sys-color-scrim) 62%, transparent);
 		backdrop-filter: blur(8px);
-		z-index: var(--md-sys-z-dialog);
-		isolation: isolate;
 	}
 
-	.dialog {
+	:global(.md-dialog.permission-confirmation-dialog) {
 		--confirmation-action-width: 100px;
 		width: min(560px, 100%);
 		max-height: min(720px, calc(100vh - 2 * var(--md-sys-space-xl)));
 		overflow: auto;
-		background: var(--md-sys-color-surface-container-lowest);
-		border: 1px solid var(--md-sys-color-outline-variant);
 		border-radius: var(--md-sys-shape-extra-large);
 		box-shadow: var(--md-sys-elevation-5);
 		outline: none;
+	}
+
+	:global(.md-dialog.permission-confirmation-dialog .md-dialog-body) {
+		padding: 0;
+	}
+
+	:global(.md-dialog.permission-confirmation-dialog .md-dialog-footer) {
+		display: block;
+		padding: 0;
+		border: 0;
 	}
 
 	.dialog-header {
@@ -762,12 +738,12 @@
 	}
 
 	@media (max-width: 620px) {
-		.overlay {
+		:global(.md-dialog-overlay.permission-confirmation-overlay) {
 			align-items: flex-end;
 			padding: var(--md-sys-space-sm);
 		}
 
-		.dialog {
+		:global(.md-dialog.permission-confirmation-dialog) {
 			max-height: calc(100vh - var(--md-sys-space-md));
 			border-radius: var(--md-sys-shape-extra-large) var(--md-sys-shape-extra-large)
 				var(--md-sys-shape-large) var(--md-sys-shape-large);
@@ -864,9 +840,4 @@
 		}
 	}
 
-	@media (prefers-reduced-motion: reduce) {
-		.timeout-bar {
-			transition: none;
-		}
-	}
 </style>

@@ -52,8 +52,11 @@
 				title={theme === 'dark' ? '切换到亮色模式' : '切换到暗色模式'}
 			>
 				{#snippet children()}
-					<Icon name="sun" size={18} className="theme-icon theme-icon--to-light" />
-					<Icon name="moon" size={18} className="theme-icon theme-icon--to-dark" />
+					{#if theme === 'dark'}
+						<Icon name="sun" size={18} className="theme-icon" />
+					{:else}
+						<Icon name="moon" size={18} className="theme-icon" />
+					{/if}
 				{/snippet}
 			</MaterialIconButton>
 		</div>
@@ -132,13 +135,9 @@
 		-webkit-app-region: no-drag;
 	}
 	:global(.theme-icon) {
-		display: none;
+		display: block;
 		width: 18px;
 		height: 18px;
-	}
-	:global(html[data-theme='dark'] .theme-icon--to-light),
-	:global(html[data-theme='light'] .theme-icon--to-dark) {
-		display: block;
 	}
 	.content {
 		flex: 1;

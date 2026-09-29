@@ -194,13 +194,4 @@
 		opacity: 0.38;
 		cursor: default;
 	}
-	@media (prefers-reduced-motion: reduce) {
-		.md-switch-track,
-		.md-switch-track::before,
-		.md-switch-state-layer,
-		.md-switch-track::after,
-		:global(.md-switch-icon) {
-			transition-duration: 1ms;
-		}
-	}
 </style>

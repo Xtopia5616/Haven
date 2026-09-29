@@ -999,15 +999,6 @@
 		border-top: 1px dashed var(--md-sys-color-outline-variant);
 		padding-top: var(--md-sys-space-xs);
 	}
-	@media (prefers-reduced-motion: reduce) {
-		.tool-state[data-state='running'] .tool-state-dot,
-		.tool-state[data-state='waiting'] .tool-state-dot {
-			animation: none;
-		}
-		:global(.md-choice-chip.ask-option) {
-			transition: none;
-		}
-	}
 	@media (max-width: 520px) {
 		.tool-card {
 			padding: var(--md-sys-space-sm) var(--md-sys-space-md);
