@@ -3,7 +3,7 @@
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import Icon from '$lib/Icon.svelte';
 	import MaterialCard from '$lib/MaterialCard.svelte';
-	import MaterialNumberField from '$lib/MaterialNumberField.svelte';
+	import MaterialNumberFieldWithUnit from '$lib/MaterialNumberFieldWithUnit.svelte';
 	import { withNumberValue } from '$lib/typedCallbacks.js';
 
 	let { contextLimits } = $props();
@@ -53,7 +53,7 @@
 					label: '工具观察字符上限',
 					unit: 'chars',
 					danger: true,
-				hint: '工具结果进入对话的最大字符数，也是 shell/files/process 等工具的默认输出截断上限（per-tool 可覆盖）。调大直接推高 token 成本。',
+					hint: '工具结果进入对话的最大字符数，也是 shell/files/process 等工具的默认输出截断上限（per-tool 可覆盖）。调大直接推高 token 成本。',
 				},
 				{
 					key: 'max_tools_per_request',
@@ -460,18 +460,18 @@
 									>⚠ 危险</span
 								>{/if}{#if f.hint}<p class="limit-hint">{f.hint}</p>{/if}
 						</div>
-						<div class="limit-input">
-							<MaterialNumberField
-								id="limit-{f.key}"
-								value={limitDisplay(f.key, contextLimits[f.key])}
-								step={f.step ?? 1}
-								min={f.min ?? 0}
-								max={f.max ?? 100000000}
-								onChange={withNumberValue((v) => {
-									contextLimits[f.key] = limitCommit(f.key, v);
-								})}
-							/><span class="limit-unit">{f.unit}</span>
-						</div>
+						<MaterialNumberFieldWithUnit
+							className="md-number-field-with-unit--limit"
+							id="limit-{f.key}"
+							value={limitDisplay(f.key, contextLimits[f.key])}
+							step={f.step ?? 1}
+							min={f.min ?? 0}
+							max={f.max ?? 100000000}
+							unit={f.unit}
+							onChange={withNumberValue((v) => {
+								contextLimits[f.key] = limitCommit(f.key, v);
+							})}
+						/>
 					</div>
 				{/each}
 				{#if group.danger.length}
@@ -487,18 +487,18 @@
 											<label for="limit-{f.key}">{f.label}</label
 											>{#if f.hint}<p class="limit-hint">{f.hint}</p>{/if}
 										</div>
-										<div class="limit-input">
-											<MaterialNumberField
-												id="limit-{f.key}"
-												value={limitDisplay(f.key, contextLimits[f.key])}
-												step={f.step ?? 1}
-												min={f.min ?? 0}
-												max={f.max ?? 100000000}
-												onChange={withNumberValue((v) => {
-													contextLimits[f.key] = limitCommit(f.key, v);
-												})}
-											/><span class="limit-unit">{f.unit}</span>
-										</div>
+										<MaterialNumberFieldWithUnit
+											className="md-number-field-with-unit--limit"
+											id="limit-{f.key}"
+											value={limitDisplay(f.key, contextLimits[f.key])}
+											step={f.step ?? 1}
+											min={f.min ?? 0}
+											max={f.max ?? 100000000}
+											unit={f.unit}
+											onChange={withNumberValue((v) => {
+												contextLimits[f.key] = limitCommit(f.key, v);
+											})}
+										/>
 									</div>
 								{/each}
 							</div>
@@ -621,24 +621,6 @@
 		background: var(--md-sys-color-error, #ba1a1a);
 		vertical-align: 1px;
 	}
-	.limit-input {
-		display: flex;
-		align-items: center;
-		gap: var(--md-sys-space-sm);
-		width: min(100%, var(--md-comp-settings-control-width));
-		flex: 0 1 var(--md-comp-settings-control-width);
-		min-width: 0;
-	}
-	.limit-input :global(.md-number-field) {
-		min-width: 0;
-		flex: 1 1 auto;
-	}
-	.limit-unit {
-		font-size: var(--md-sys-typescale-label-small-size);
-		color: var(--md-sys-color-on-surface-variant);
-		line-height: var(--md-sys-typescale-label-small-line-height);
-		min-width: 42px;
-	}
 	.model-hint {
 		font-size: var(--md-sys-typescale-label-small-size);
 		color: var(--md-sys-color-on-surface-variant);
@@ -664,7 +646,7 @@
 			align-items: stretch;
 			gap: var(--md-sys-space-xs);
 		}
-		.limit-input {
+		:global(.md-number-field-with-unit--limit) {
 			justify-content: space-between;
 			width: min(100%, var(--md-comp-settings-control-width));
 			flex: 0 1 auto;

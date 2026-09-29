@@ -2,6 +2,7 @@
 	import { addNotification } from '$lib/notificationStore.ts';
 	import MaterialCard from '$lib/MaterialCard.svelte';
 	import MaterialNumberField from '$lib/MaterialNumberField.svelte';
+	import MaterialNumberFieldWithUnit from '$lib/MaterialNumberFieldWithUnit.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
 	import MaterialAutocomplete from '$lib/MaterialAutocomplete.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
@@ -198,7 +199,8 @@
 	function isProviderKeyConfigured(provider) {
 		return (
 			!!provider &&
-			(provider.api_key ||
+			(!!provider.api_key ||
+				!!provider.api_key_ref ||
 				keyConfiguredProviders[provider.name] ||
 				isKeylessProvider(provider))
 		);
@@ -511,11 +513,12 @@
 				/>
 			</div>
 			<div class="model-field">
-				<span class="field-label">Context K（可选）</span><MaterialNumberField
+				<span class="field-label">上下文窗口（可选）</span><MaterialNumberFieldWithUnit
 					id="model-{index}-context-window"
 					value={model.context_window != null && model.context_window > 0
 						? Math.round(model.context_window / 1000)
 						: 0}
+					unit="K"
 					step={1}
 					min={0}
 					onChange={withNumberValue((v) => {
@@ -641,6 +644,7 @@
 		gap: var(--md-sys-space-xs);
 	}
 	.model-field :global(.md-number-field),
+	.model-field :global(.md-number-field-with-unit),
 	.model-field :global(.md-select-container),
 	.model-field :global(.ma-root) {
 		width: 100%;

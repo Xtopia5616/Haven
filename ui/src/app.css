@@ -297,6 +297,13 @@
 	--md-sys-z-toast: 1200;
 }
 
+/* Provider dialogs render inside the animated settings panel. Raise that
+ * panel above the sticky save bar while its dialog overlay is present. */
+.settings-page:has(#settings-panel .md-dialog-overlay) #settings-panel {
+	position: relative;
+	z-index: var(--md-sys-z-dialog);
+}
+
 /* ============================================================================
  * LIGHT THEME (Material 3 expressive light scheme)
  * ========================================================================== */

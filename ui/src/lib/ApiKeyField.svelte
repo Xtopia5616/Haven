@@ -78,6 +78,7 @@
 		/>
 		<MaterialIconButton
 			icon={showKey ? 'eyeOff' : 'eye'}
+			variant="ghost"
 			className="api-key-icon-btn"
 			label={showKey ? 'Hide API key' : 'Show API key'}
 			title={showKey ? 'Hide API key' : 'Show API key'}
@@ -112,7 +113,7 @@
 <style>
 	.api-key-field {
 		display: flex;
-		align-items: stretch;
+		align-items: center;
 		width: 100%;
 		height: var(--md-comp-textfield-container-height);
 		border: 1px solid var(--md-sys-color-outline);
@@ -213,6 +214,7 @@
 	:global(.md-icon-btn.api-key-icon-btn) {
 		flex-shrink: 0;
 		width: var(--md-comp-textfield-container-height);
+		height: var(--md-comp-icon-button-compact-size);
 		border: none;
 		border-left: 1px solid var(--md-sys-color-outline-variant);
 		background: transparent;
@@ -226,7 +228,7 @@
 			color var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard);
 	}
 	:global(.md-icon-btn.api-key-icon-btn:hover:not(:disabled)) {
-		background: var(--md-sys-color-surface-container-high);
+		background: transparent;
 		color: var(--md-sys-color-on-surface);
 	}
 
