@@ -16,6 +16,8 @@ pub mod messages;
 pub mod nodes;
 pub mod partials;
 pub mod scheduled_actions;
+#[cfg(test)]
+mod session_event_capacity_tests;
 pub mod session_events;
 pub mod session_steps;
 pub mod sessions;

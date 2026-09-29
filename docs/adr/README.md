@@ -380,3 +380,5 @@
 - [0391：AdminServices 固定输出的 typed projections](0391-admin-services-typed-output-projections.md)
 - [0392：持久化定时任务依赖与重启恢复实现](0392-durable-scheduled-dependency-recovery.md)
 - [0393：阶段 7 Action 生命周期与终态投影边界](0393-phase-7-action-lifecycle-boundary.md)
+- [0394：阶段 8 IPC 类型生成与聊天编排收口](0394-phase-8-ipc-codegen-chat-orchestration.md)
+- [0395：阶段 9 容量验证与 Windows profile 验收状态](0395-phase-9-capacity-and-windows-profile-audit.md)

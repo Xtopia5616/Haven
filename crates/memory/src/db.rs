@@ -230,6 +230,15 @@ pub struct Database {
 
 impl Database {
     pub fn open(path: &Path) -> anyhow::Result<Self> {
+        Self::open_with_pool_size(path, FILE_POOL_MAX_CONNECTIONS)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn open_single_connection_for_test(path: &Path) -> anyhow::Result<Self> {
+        Self::open_with_pool_size(path, 1)
+    }
+
+    fn open_with_pool_size(path: &Path, pool_size: usize) -> anyhow::Result<Self> {
         tracing::info!("opening database at {}", path.display());
         // Bootstrap connection: set WAL and create the current schema exactly
         // once (every pooled connection later sees an already-initialized
@@ -242,7 +251,7 @@ impl Database {
         crate::schema::init_schema(&bootstrap)?;
         let path = path.to_path_buf();
         let pool = ConnectionPool::with_initial(
-            FILE_POOL_MAX_CONNECTIONS,
+            pool_size,
             Box::new(move || {
                 let conn = Connection::open(&path)?;
                 conn.busy_timeout(Duration::from_secs(30))?;
