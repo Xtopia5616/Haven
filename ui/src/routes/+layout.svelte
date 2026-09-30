@@ -38,7 +38,7 @@
 		registerListeners,
 		sessionEventListeners,
 	} from '$lib/events.ts';
-	import { onMount, onDestroy } from 'svelte';
+	import { onMount, onDestroy, tick } from 'svelte';
 	import { get } from 'svelte/store';
 	import { page } from '$app/stores';
 	import { goto } from '$app/navigation';
@@ -191,17 +191,81 @@
 	// Keep-alive views remain mounted, so this separate state replays the short
 	// entry motion each time a workspace is shown without resetting its data.
 	let enteringTab = $state<string | null>(null);
+	// Keep the chat panel mounted through its exit motion before hiding it.
+	let leavingTab = $state<TabId | null>(null);
+	let tabActivationSequence = 0;
+	const tabEntryAnimations = new WeakMap<Element, Animation>();
+
+	function playEntryAnimation(element: HTMLElement, keyframes: Keyframe[]) {
+		if (typeof element.animate !== 'function') return;
+		tabEntryAnimations.get(element)?.cancel();
+		const animation = element.animate(keyframes, {
+			duration: 300,
+			easing: 'cubic-bezier(0, 0, 0, 1)',
+			fill: 'none',
+		});
+		tabEntryAnimations.set(element, animation);
+		animation.onfinish = () => {
+			if (tabEntryAnimations.get(element) === animation) tabEntryAnimations.delete(element);
+		};
+	}
+
+	function playTabEntryAnimations(id: TabId) {
+		const panel = document.getElementById(`workspace-tabpanel-${id}`);
+		if (
+			!panel ||
+			(typeof window.matchMedia === 'function' &&
+				window.matchMedia('(prefers-reduced-motion: reduce)').matches)
+		)
+			return;
+
+		// Give the whole retained tab a fresh animation on every visit. This does
+		// not depend on CSS animationend or on the one-shot child animations.
+		playEntryAnimation(panel, [{ opacity: 0 }, { opacity: 1 }]);
+
+		const animatedElements = panel.querySelectorAll<HTMLElement>(
+			'.motion-surface-enter, .responsive-layout-panel',
+		);
+		for (const element of animatedElements) {
+			if (element.getClientRects().length === 0) continue;
+			const keyframes = element.matches('.responsive-layout-panel')
+				? [
+						{ opacity: 0, transform: 'translateX(-8px)' },
+						{ opacity: 1, transform: 'translateX(0)' },
+					]
+				: [{ opacity: 0 }, { opacity: 1 }];
+			playEntryAnimation(element, keyframes);
+		}
+	}
 
 	function activateTab(id: TabId) {
+		const activationSequence = ++tabActivationSequence;
+		// Force the previous entry class to be removed even when an earlier
+		// animation was interrupted before its animationend event could clear it.
+		enteringTab = null;
+		leavingTab = activeTab === 'chat' && id !== 'chat' ? 'chat' : null;
 		activeTab = id;
 		visited[id] = true;
-		enteringTab = id;
 		loadTabView(id);
+		void tick().then(async () => {
+			if (activeTab !== id || tabActivationSequence !== activationSequence) return;
+			const panel = document.getElementById(`workspace-tabpanel-${id}`);
+			if (panel) void panel.offsetWidth;
+			enteringTab = id;
+			await tick();
+			if (activeTab !== id || tabActivationSequence !== activationSequence) return;
+			playTabEntryAnimations(id);
+		});
 	}
 
 	function finishTabEntry(id: TabId, event: AnimationEvent) {
 		if (event.target !== event.currentTarget || enteringTab !== id) return;
 		enteringTab = null;
+	}
+
+	function finishTabLeave(id: TabId, event: AnimationEvent) {
+		if (event.target !== event.currentTarget || leavingTab !== id) return;
+		leavingTab = null;
 	}
 
 	function applyTab(id: TabId, section = '') {
@@ -1158,11 +1222,14 @@
 		{#each tabs as tab (tab.id)}
 			<div
 				class="tab-panel"
+				class:tab-panel--leaving={leavingTab === tab.id}
 				id="workspace-tabpanel-{tab.id}"
-				hidden={activeTab !== tab.id}
+				hidden={activeTab !== tab.id && leavingTab !== tab.id}
+				inert={activeTab !== tab.id}
 				role="tabpanel"
 				aria-labelledby="workspace-tab-{tab.id}"
 				aria-hidden={activeTab !== tab.id}
+				onanimationend={(event) => finishTabLeave(tab.id, event)}
 			>
 				{#if visited[tab.id]}
 					{@const TabComponent =
@@ -1170,7 +1237,7 @@
 					{#if tab.id === 'chat'}
 						<div
 							class="page-shell"
-							class:motion-surface-enter={enteringTab === tab.id}
+							class:chat-tab-enter={enteringTab === tab.id}
 							onanimationend={(event) => finishTabEntry(tab.id, event)}
 						>
 							{@render children()}

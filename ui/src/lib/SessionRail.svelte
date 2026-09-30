@@ -119,11 +119,6 @@
 			</div>
 		{/if}
 	</div>
-
-	<div class="session-rail__footer">
-		<span class="session-rail__footer-dot" aria-hidden="true"></span>
-		<span>会话状态会实时更新</span>
-	</div>
 </aside>
 
 <style>
@@ -343,21 +338,5 @@
 	}
 	.session-rail__empty span {
 		font-size: var(--md-sys-typescale-label-small-size);
-	}
-	.session-rail__footer {
-		display: flex;
-		align-items: center;
-		gap: var(--md-sys-space-sm);
-		padding: var(--md-sys-space-md) var(--md-sys-space-xs) 0;
-		border-top: 1px solid var(--md-sys-color-outline-variant);
-		color: var(--md-sys-color-on-surface-variant);
-		font-size: var(--md-sys-typescale-label-small-size);
-	}
-	.session-rail__footer-dot {
-		width: 7px;
-		height: 7px;
-		flex: 0 0 7px;
-		border-radius: var(--md-sys-shape-full);
-		background: var(--md-sys-color-success);
 	}
 </style>

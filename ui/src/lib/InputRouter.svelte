@@ -420,10 +420,27 @@
 		// Recalculate when the composer width changes. A draft can switch between
 		// one and multiple visual lines without its value changing, otherwise the
 		// old vertical padding would make the text appear intermittently off-center.
+		// Observe width only: autoGrowInput writes the textarea height, and reacting
+		// to that same height change during ResizeObserver delivery can cause a
+		// resize-loop error when the window is being resized.
 		if (typeof ResizeObserver !== 'function') return;
-		const observer = new ResizeObserver(() => autoGrowInput());
+		let lastWidth = transcriptTextarea.clientWidth;
+		let pendingResizeFrame: number | undefined;
+		const observer = new ResizeObserver((entries) => {
+			const width = entries[0]?.contentRect.width;
+			if (width === undefined || width === lastWidth) return;
+			lastWidth = width;
+			if (pendingResizeFrame !== undefined) cancelAnimationFrame(pendingResizeFrame);
+			pendingResizeFrame = requestAnimationFrame(() => {
+				pendingResizeFrame = undefined;
+				autoGrowInput();
+			});
+		});
 		observer.observe(transcriptTextarea);
-		return () => observer.disconnect();
+		return () => {
+			observer.disconnect();
+			if (pendingResizeFrame !== undefined) cancelAnimationFrame(pendingResizeFrame);
+		};
 	});
 
 	function selectedRange() {

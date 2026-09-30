@@ -16,7 +16,7 @@
         "title": "Haven",
         "width": 1280,
         "height": 720,
-        "minWidth": 360,
+        "minWidth": 480,
         "minHeight": 480,
         "resizable": true,
         "decorations": true,

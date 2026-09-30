@@ -1025,8 +1025,27 @@
 		min-width: 0;
 		min-height: 0;
 	}
+	.chat-page.responsive-layout-transition {
+		transition:
+			grid-template-columns var(--md-sys-motion-duration-short)
+				var(--md-sys-motion-easing-standard),
+			column-gap var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+	}
 	.desktop-session-rail {
-		display: none;
+		display: flex;
+		grid-column: 1;
+		grid-row: 1;
+		min-width: 0;
+		min-height: 0;
+		overflow: hidden;
+		visibility: hidden;
+		opacity: 0;
+		transform: translateX(-8px);
+		pointer-events: none;
+		transition:
+			opacity var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
+			transform var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
+			visibility 0s linear var(--md-sys-motion-duration-short);
 	}
 	.conversation-column {
 		position: relative;
@@ -1095,11 +1114,25 @@
 			grid-column: 1;
 			grid-row: 1;
 			display: flex;
-			animation: responsive-layout-panel-in var(--md-sys-motion-duration-short)
-				var(--md-sys-motion-easing-standard) both;
+			visibility: visible;
+			opacity: 1;
+			transform: translateX(0);
+			pointer-events: auto;
+			transition:
+				opacity var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
+				transform var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
+				visibility 0s linear 0s;
 			min-width: 0;
 			min-height: 0;
 			border-right: 1px solid var(--md-sys-color-outline-variant);
+		}
+		:global(.tab-panel--entering) .desktop-session-rail {
+			animation: responsive-layout-panel-in var(--md-sys-motion-duration-short)
+				var(--md-sys-motion-easing-standard) both;
+		}
+		:global(.tab-panel--leaving) .desktop-session-rail {
+			animation: conversation-rail-exit var(--md-sys-motion-duration-short)
+				var(--md-sys-motion-easing-standard) both;
 		}
 		.conversation-column {
 			grid-column: 2;
@@ -1115,6 +1148,31 @@
 		:global(.chat-page .session-switch),
 		:global(.chat-page .session-header__new) {
 			display: none;
+		}
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.chat-page.responsive-layout-transition {
+			transition: none;
+		}
+		.desktop-session-rail {
+			transition-duration: 1ms;
+			transition-delay: 0s;
+		}
+		:global(.tab-panel--entering) .desktop-session-rail,
+		:global(.tab-panel--leaving) .desktop-session-rail {
+			animation-duration: 1ms;
+		}
+	}
+
+	@keyframes conversation-rail-exit {
+		from {
+			opacity: 1;
+			transform: translateX(0);
+		}
+		to {
+			opacity: 0;
+			transform: translateX(-8px);
 		}
 	}
 </style>

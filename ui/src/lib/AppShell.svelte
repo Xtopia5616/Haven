@@ -226,6 +226,7 @@
 		height: 18px;
 	}
 	.content {
+		position: relative;
 		flex: 1;
 		min-width: 0;
 		min-height: 0;
@@ -284,6 +285,55 @@
 		min-height: 0;
 		display: flex;
 		flex-direction: column;
+	}
+	:global(.chat-tab-enter) {
+		animation: haven-chat-tab-enter var(--md-sys-motion-duration-short)
+			var(--md-sys-motion-easing-standard) both;
+	}
+	:global(.tab-panel--leaving) {
+		position: absolute;
+		inset: 0;
+		z-index: 1;
+		display: flex;
+		flex: 1;
+		flex-direction: column;
+		min-width: 0;
+		min-height: 0;
+		pointer-events: none;
+		animation: haven-tab-panel-exit var(--md-sys-motion-duration-short)
+			var(--md-sys-motion-easing-standard) both;
+	}
+	:global(.content:not(.content--chat) .tab-panel--leaving .page-shell) {
+		display: flex;
+		flex: 1;
+		flex-direction: column;
+		width: 100%;
+		max-width: none;
+		min-height: 0;
+	}
+	@keyframes haven-chat-tab-enter {
+		from {
+			opacity: 0;
+		}
+		to {
+			opacity: 1;
+		}
+	}
+	@keyframes haven-tab-panel-exit {
+		from {
+			opacity: 1;
+		}
+		to {
+			opacity: 0;
+		}
+	}
+	@media (prefers-reduced-motion: reduce) {
+		:global(.chat-tab-enter) {
+			animation-duration: 1ms;
+		}
+		:global(.tab-panel--leaving) {
+			animation-duration: 1ms;
+		}
 	}
 	@media (max-width: 640px) {
 		.titlebar {
@@ -365,13 +415,9 @@
 			border-radius: var(--md-sys-shape-medium);
 		}
 		.workspace-rail :global(.workspace-link__copy) {
-			display: flex;
-			flex: 0 1 0;
-			max-width: 0;
-			overflow: hidden;
-			opacity: 0;
-			transform: translateX(-4px);
-			pointer-events: none;
+			/* A zero-width flex item still leaves the button gap behind, which
+			 * nudges the icon off center in the compact landscape rail. */
+			display: none;
 		}
 		.workspace-rail :global(.workspace-link.active) {
 			border-color: transparent;
