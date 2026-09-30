@@ -15,6 +15,8 @@ mod handlers;
 mod logging;
 mod notification;
 mod runtime;
+#[cfg(windows)]
+mod window_resize;
 
 pub(crate) use bootstrap::to_tauri_shortcut;
 

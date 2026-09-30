@@ -176,6 +176,22 @@ pub(crate) fn run() {
             }
         })
         .setup(move |app| {
+            #[cfg(windows)]
+            if let Some(window) = app.get_webview_window("main")
+                && let Err(error) = crate::window_resize::install(&window)
+            {
+                tracing::error!(
+                    error = %error,
+                    "failed to install the window aspect-ratio constraint; disabling manual resizing"
+                );
+                if let Err(fallback_error) = window.set_resizable(false) {
+                    tracing::error!(
+                        error = %fallback_error,
+                        "failed to disable window resizing after constraint installation failed"
+                    );
+                }
+            }
+
             let handle = app.handle().clone();
 
             // Window from tauri.conf already exists here. Init backend now so
