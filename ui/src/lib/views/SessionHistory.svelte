@@ -435,6 +435,7 @@
 	.filter-controls {
 		display: flex;
 		align-items: center;
+		flex: 0 0 auto;
 		gap: var(--md-sys-space-md);
 		min-width: 0;
 	}

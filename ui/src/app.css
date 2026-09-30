@@ -1119,6 +1119,7 @@ select.md-select {
 
 .workspace-filter-bar > .count-chip {
 	flex: 0 0 auto;
+	height: var(--md-comp-toolbar-height);
 	white-space: nowrap;
 }
 
