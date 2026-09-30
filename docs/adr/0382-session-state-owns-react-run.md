@@ -9,7 +9,7 @@
 
 ## 决定
 
-1. 将 active ReAct run slot 移入 `SessionState::react_run`。该 slot 的 future 独占捕获 `ReActState`，包含当前 run 的 events、canonical、branch points、identity map、retry nudge 与 cancellation state。
+1. 将 active ReAct run slot 移入 `SessionState::react_run`。该 slot 的 future 独占捕获 `ReActState`，包含当前 run 的 events、canonical、branch points、identity map 与 retry nudge。Cancellation token 的父子生命周期由 ADR 0410 明确，不属于 `ReActState`。
 2. actor task 在同一个 `select!` loop 中轮询 `SessionState::react_run` 和外部 mailbox。run future 不借用 `SessionState`，所以 pending provider/tool/storage await 不会阻止 actor 更新输入队列、交互或生命周期字段。
 3. `ReActState` 保持 run-local 类型，不再把它留在 actor loop 局部 active-run slot，也不增加共享锁或 mailbox 往返。future 捕获状态是 `SessionState` 的运行槽所有权；无需为了字面字段布局，让 pending future 长期借用整个 `SessionState`。
 4. run 完成后 future 与热状态一起释放；返回的 transcript event 投影和现有 durable/replay 契约不变。
@@ -28,3 +28,5 @@ cargo test --locked -p haven-agent delete_session_cancels_active_run_and_waits_f
 ## 回滚
 
 回退 `SessionState::react_run` 字段及其 actor loop 使用即可；不需要数据重置。
+
+2026-09-30 生命周期校准见 [ADR 0410](0410-session-actor-per-run-cancellation.md)：Actor lifetime token 只负责 teardown，每次接受新的 run 都派生新的 run token，防止中断后的 Continue 继承已取消状态。

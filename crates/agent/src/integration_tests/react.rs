@@ -134,6 +134,99 @@ async fn empty_retry_emits_stream_reset_before_replacement_output() {
 }
 
 #[tokio::test]
+async fn interrupt_then_continue_on_same_actor_uses_a_fresh_run_token() {
+    let final_answer = |id: &str, text: &str| StreamChunk {
+        text: Some(text.into()),
+        tool_calls: vec![CanonicalToolCall {
+            id: id.into(),
+            name: "final_answer".into(),
+            arguments: serde_json::json!({}),
+        }],
+        finish_reason: Some(FinishReason::Stop),
+        usage: None,
+        model: None,
+        reasoning: None,
+        web_search: None,
+        web_search_calls: Vec::new(),
+        thinking_blocks: Vec::new(),
+    };
+    let mock = Arc::new(ScriptedMock::new(vec![
+        ScriptedResponse::ChunkDelayed(final_answer("interrupted", "Interrupted run."), 30_000),
+        ScriptedResponse::Chunk(final_answer("continued", "Continued run.")),
+    ]));
+    let (agent, executor) = make_test_agent_with(mock.clone(), Arc::new(ToolsManager::new()));
+    agent.set_emitter(make_recording_emitter());
+    let session = executor
+        .create_session("interrupt and continue")
+        .await
+        .unwrap();
+    let original_actor = executor
+        .actor_for(&session.id)
+        .await
+        .expect("session actor should be installed");
+
+    let first_run = tokio::spawn({
+        let agent = agent.clone();
+        let session_id = session.id.clone();
+        async move { agent.run_session_from_id(&session_id).await }
+    });
+    let request_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while mock.seen.lock().unwrap().is_empty() {
+        if std::time::Instant::now() >= request_deadline {
+            let status = executor.get_session_status(&session.id).await;
+            let in_flight = executor.is_run_in_flight(&session.id).await;
+            let result = first_run.await;
+            panic!(
+                "first provider request never started (status: {status:?}, in_flight: {in_flight}, run: {result:?})"
+            );
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let interrupted_token = executor.cancellation_token(&session.id).await;
+
+    agent.interrupt_session(&session.id).await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), first_run)
+        .await
+        .expect("interrupted run should stop promptly")
+        .expect("first run task should join")
+        .expect("interruption is a normal run exit");
+    assert!(interrupted_token.is_cancelled());
+
+    agent.continue_session(&session.id).await.unwrap();
+    let continued_actor = executor
+        .actor_for(&session.id)
+        .await
+        .expect("paused session should retain its actor for Continue");
+    assert!(
+        original_actor.is_same_actor(&continued_actor),
+        "Continue should reuse the actor from the interrupted run"
+    );
+    assert_eq!(
+        executor.try_claim_pending().await.as_deref(),
+        Some(session.id.as_str()),
+        "dispatcher should claim the continued session"
+    );
+
+    let history = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        agent.run_session_from_id(&session.id),
+    )
+    .await
+    .expect("continued run should not inherit the previous cancellation")
+    .unwrap();
+    assert!(!history.is_empty());
+    continued_actor
+        .finish_run()
+        .await
+        .expect("finish dispatched continued run");
+    assert_eq!(mock.seen.lock().unwrap().len(), 2);
+    assert_eq!(
+        executor.get_active_session_status(&session.id).await,
+        Some(SessionStatus::Paused)
+    );
+}
+
+#[tokio::test]
 async fn turn_deadline_cancels_provider_retry_before_second_attempt() {
     let mock = Arc::new(ScriptedMock::new(vec![ScriptedResponse::Err(
         LlmError::Timeout("transient provider timeout".into()),

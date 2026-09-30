@@ -277,7 +277,8 @@ pub(crate) enum ActorCommand {
 pub(crate) struct SessionActorHandle {
     pub(crate) id: String,
     tx: mpsc::Sender<ActorCommand>,
-    cancel: CancellationToken,
+    actor_lifetime: CancellationToken,
+    run_cancellation: watch::Receiver<CancellationToken>,
     status: watch::Sender<SessionStatus>,
     run_state: watch::Sender<bool>,
     release_run: mpsc::Sender<()>,
@@ -292,8 +293,19 @@ impl SessionActorHandle {
         self.run_state.subscribe()
     }
 
-    pub(crate) fn cancel(&self) -> CancellationToken {
-        self.cancel.clone()
+    pub(crate) fn run_cancellation_token(&self) -> CancellationToken {
+        self.run_cancellation.borrow().clone()
+    }
+
+    /// Cancel all current and future run tokens because this actor is being
+    /// torn down. Interrupting a single run must use its child token instead.
+    pub(crate) fn cancel_actor(&self) {
+        self.actor_lifetime.cancel();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_same_actor(&self, other: &Self) -> bool {
+        self.tx.same_channel(&other.tx)
     }
 
     pub(crate) async fn send(&self, command: ActorCommand) -> anyhow::Result<()> {
@@ -905,16 +917,20 @@ pub(crate) fn spawn(
     let (release_run, mut release_run_rx) = mpsc::channel(ACTOR_RELEASE_CAPACITY);
     let (status, _) = watch::channel(info.status);
     let (run_state, _) = watch::channel(false);
-    let cancel = CancellationToken::new();
+    let actor_lifetime = CancellationToken::new();
+    let initial_run_cancellation = actor_lifetime.child_token();
+    let (run_cancellation, run_cancellation_rx) = watch::channel(initial_run_cancellation.clone());
     let handle = SessionActorHandle {
         id: info.id.clone(),
         tx,
-        cancel: cancel.clone(),
+        actor_lifetime: actor_lifetime.clone(),
+        run_cancellation: run_cancellation_rx,
         status: status.clone(),
         run_state: run_state.clone(),
         release_run,
     };
     tokio::spawn(async move {
+        let mut current_run_cancellation = initial_run_cancellation;
         let mut state = SessionState {
             info,
             action_completions: Vec::new(),
@@ -1104,7 +1120,7 @@ pub(crate) fn spawn(
                             state.steering_chars = 0;
                             state.steering_attachment_bytes = 0;
                             state.interactions.clear();
-                            cancel.cancel();
+                            current_run_cancellation.cancel();
                         }
                         let _ = reply.send(result);
                     }
@@ -1217,11 +1233,17 @@ pub(crate) fn spawn(
                 }
                 ActorCommand::ClaimRun { reply } => {
                     let result = claim_run(&store, &mut state, &status, &run_state).await;
+                    if result.as_ref().is_ok_and(|claim| claim.accepted) {
+                        current_run_cancellation = actor_lifetime.child_token();
+                        run_cancellation.send_replace(current_run_cancellation.clone());
+                    }
                     let _ = reply.send(result);
                 }
                 ActorCommand::BeginDirectRun { reply } => {
                     let accepted = !state.running && !state.info.status.is_terminal();
                     if accepted {
+                        current_run_cancellation = actor_lifetime.child_token();
+                        run_cancellation.send_replace(current_run_cancellation.clone());
                         state.running = true;
                         let _ = run_state.send(true);
                     }
@@ -1502,7 +1524,7 @@ pub(crate) fn spawn(
                 }
             }
         }
-        cancel.cancel();
+        actor_lifetime.cancel();
         let _ = run_state.send(false);
     });
     handle
@@ -2009,7 +2031,7 @@ mod queue_tests {
         assert!(actor.begin_direct_run().await);
 
         let (started_tx, mut started_rx) = watch::channel(false);
-        let cancellation = actor.cancel();
+        let cancellation = actor.run_cancellation_token();
         let handler: crate::session::RunHandler = Arc::new(move |_session_id| {
             let cancellation = cancellation.clone();
             let started_tx = started_tx.clone();
@@ -2102,7 +2124,7 @@ mod queue_tests {
         });
 
         let run_polls = Arc::new(AtomicUsize::new(0));
-        let run_cancellation = actor.cancel();
+        let run_cancellation = actor.run_cancellation_token();
         let handler_polls = run_polls.clone();
         let handler: crate::session::RunHandler = Arc::new(move |_session_id| {
             let cancellation = run_cancellation.clone();

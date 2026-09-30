@@ -93,7 +93,7 @@ impl SessionSupervisor {
             return Ok(SessionStatus::Completed);
         };
         self.cancel_direct_waiters(session_id).await;
-        actor.cancel().cancel();
+        actor.cancel_actor();
         self.cancel_session_actions(session_id).await;
         // Marking the session terminal is immediate. If the run is still
         // active, terminal cleanup and partial promotion are deferred to the
@@ -203,7 +203,7 @@ impl SessionSupervisor {
     async fn quiesce_session(&self, session_id: &str) -> anyhow::Result<()> {
         self.cancel_direct_waiters(session_id).await;
         if let Some(actor) = self.actor_for(session_id).await {
-            actor.cancel().cancel();
+            actor.cancel_actor();
             self.cancel_session_actions(session_id).await;
             self.dequeue_pending(session_id).await;
             self.await_run_finished(session_id).await?;
@@ -293,7 +293,7 @@ impl SessionSupervisor {
             .collect::<Vec<_>>();
         for actor in &actors {
             self.cancel_direct_waiters(&actor.id).await;
-            actor.cancel().cancel();
+            actor.cancel_actor();
             if preserve_scheduled {
                 self.cancel_session_background_actions(&actor.id).await;
             } else {

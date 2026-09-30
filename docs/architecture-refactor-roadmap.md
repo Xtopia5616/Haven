@@ -268,7 +268,7 @@ SessionStore
 工作项：
 
 - 把一次 run 的启动、恢复和退出驱动迁入 actor task；
-- 由 `SessionState::react_run` 持有 active run future；future 独占捕获热 transcript、canonical、branch points、retry nudge 与 cancel state；
+- 由 `SessionState::react_run` 持有 active run future；future 独占捕获热 transcript、canonical、branch points 与 retry nudge；Actor 生命周期 token 与逐 run 的 cancellation token 分开，dispatcher claim / direct run admission 时创建新的 run token；
 - 删除 `EnsureStreamId`、`RecordUsage`、`EstimateTokens`、`AppendTokenEstimate`、`ResetTokenEstimate` 等内部 mailbox 命令；
 - `next_run_id` 在 actor 内递增；usage 由 `UsageRuntime` 持有，stream identity 与 token estimate 由 run-local `ReActState` 持有；这些内部状态不通过 actor mailbox 往返（ADR 0219–0223、0276、0278）；
 - 将外部命令限制为 Submit、Steer、ResolveInteraction、Cancel、BackgroundResult、生命周期/快照/消息交互；

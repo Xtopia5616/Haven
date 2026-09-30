@@ -463,7 +463,7 @@ impl SessionSupervisor {
     pub async fn cancellation_token(&self, session_id: &str) -> CancellationToken {
         self.actor_for(session_id)
             .await
-            .map(|actor| actor.cancel())
+            .map(|actor| actor.run_cancellation_token())
             .unwrap_or_default()
     }
 }
