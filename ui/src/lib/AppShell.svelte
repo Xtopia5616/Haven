@@ -466,8 +466,8 @@
 			grid-column: 2;
 			grid-row: 1;
 			justify-self: center;
-			width: var(--md-comp-icon-button-dense-size);
-			min-width: var(--md-comp-icon-button-dense-size);
+			width: var(--rail-footer-control-height);
+			min-width: var(--rail-footer-control-height);
 			height: var(--rail-footer-control-height);
 			min-height: var(--rail-footer-control-height);
 			border: 1px solid var(--md-sys-color-outline-variant);
@@ -592,8 +592,8 @@
 		.rail-footer :global(.rail-theme-button) {
 			align-self: center;
 			margin-inline-start: auto;
-			width: var(--md-comp-icon-button-size);
-			min-width: var(--md-comp-icon-button-size);
+			width: var(--rail-footer-control-height);
+			min-width: var(--rail-footer-control-height);
 			height: var(--rail-footer-control-height);
 			min-height: var(--rail-footer-control-height);
 		}
