@@ -579,108 +579,114 @@
 
 <div class="memory-page">
 	<WorkspacePageHeader title="历史" description="回顾会话、任务和长期记忆。" />
-	<MaterialTabs
-		tabs={memoryTabs}
-		activeTab={activeTab ?? 'sessions'}
-		onNavigate={selectMemoryTab}
-		ariaLabel="历史分区"
-		idPrefix="memory-tab"
-		panelId="memory-panel"
-		className="workspace-secondary-tabs"
-	/>
-	{#key activeTab}
-		<div
-			id="memory-panel"
-			class="memory-panel motion-surface-enter"
-			role="tabpanel"
-			aria-label={memoryTabs.find((tab) => tab.id === activeTab)?.label || '历史'}
-		>
-			{#if activeTab === 'sessions'}
-				<WorkspaceSectionHeader title="会话历史" description="查看并继续过去的对话。" />
-				<SessionHistory
-					{sessions}
-					{searchQuery}
-					{totalCount}
-					{statusFilter}
-					{statusOptions}
-					{startDate}
-					{endDate}
-					{selectMode}
-					{selectedIds}
-					{loading}
-					{hasMore}
-					{editingTitle}
-					{renameValue}
-					onSearchQueryChange={setSearchQuery}
-					onSearchInput={handleSearchInput}
-					onClearFilters={clearHistoryFilters}
-					onStatusFilterChange={handleStatusFilterChange}
-					onOpenDateFilter={() => {
-						showDateFilter = true;
-					}}
-					onToggleSelectAll={toggleSelectAll}
-					onToggleSelect={toggleSelect}
-					onEnterSelectMode={enterSelectMode}
-					onCancelSelectMode={cancelSelectMode}
-					onExportSelected={exportSelected}
-					onOpenClearDialog={() => (showClearDialog = true)}
-					onResume={resumeSession}
-					{onNewSession}
-					onStartEdit={startEdit}
-					onRenameValueChange={handleRenameValueChange}
-					onRenameKeydown={handleRenameKeydown}
-					onSaveTitle={saveTitle}
-					onContextMenu={openCtxMenu}
-					onDeleteRequest={requestDelete}
-					onLoadMore={loadMore}
-					{displayTitle}
-					{statusVariant}
-					{formatMessageTime}
-				/>
-			{:else if activeTab === 'tasks'}
-				<WorkspaceSectionHeader
-					title="任务历史"
-					description="查看后台任务和定时任务的当前状态及最近历史。"
-				/>
-				<TaskCenter
-					{runningBackgroundActions}
-					{pendingScheduledActions}
-					{taskHistory}
-					{taskHistoryLoading}
-					{taskHistoryFailed}
-					onRefreshTaskHistory={loadTaskHistory}
-					{actionStatusLabel}
-					{sessionTitleFor}
-					{actionDuration}
-					{scheduledActionCountdown}
-					{onOpenSession}
-					{onCancel}
-				/>
-			{:else}
-				<div class="memory-tools-view" aria-label="长期记忆">
-					<WorkspaceSectionHeader
-						title="长期记忆"
-						description="管理已保存的长期事实，或检索过去的对话。"
-					/>
-					<MemoryCenter
-						{facts}
-						{factsLoaded}
-						{factSourceFilter}
-						{factSourceOptions}
-						{newFact}
-						{addingFact}
-						{memoryRecall}
-						onRecallKindChange={handleRecallKindChange}
-						onRunRecall={runRecall}
-						onClearRecall={clearMemoryRecall}
-						onFactSourceFilterChange={handleFactSourceFilterChange}
-						onAddFact={addFact}
-						onDeleteFact={deleteFact}
-					/>
+	<div class="memory-layout">
+		<aside class="memory-sidebar" aria-label="历史分类">
+			<MaterialTabs
+				tabs={memoryTabs}
+				activeTab={activeTab ?? 'sessions'}
+				onNavigate={selectMemoryTab}
+				ariaLabel="历史分区"
+				idPrefix="memory-tab"
+				panelId="memory-panel"
+				className="workspace-secondary-tabs workspace-secondary-tabs--sidebar"
+			/>
+		</aside>
+		<div class="memory-main">
+			{#key activeTab}
+				<div
+					id="memory-panel"
+					class="memory-panel motion-surface-enter"
+					role="tabpanel"
+					aria-label={memoryTabs.find((tab) => tab.id === activeTab)?.label || '历史'}
+				>
+					{#if activeTab === 'sessions'}
+						<WorkspaceSectionHeader title="会话历史" description="查看并继续过去的对话。" />
+						<SessionHistory
+							{sessions}
+							{searchQuery}
+							{totalCount}
+							{statusFilter}
+							{statusOptions}
+							{startDate}
+							{endDate}
+							{selectMode}
+							{selectedIds}
+							{loading}
+							{hasMore}
+							{editingTitle}
+							{renameValue}
+							onSearchQueryChange={setSearchQuery}
+							onSearchInput={handleSearchInput}
+							onClearFilters={clearHistoryFilters}
+							onStatusFilterChange={handleStatusFilterChange}
+							onOpenDateFilter={() => {
+								showDateFilter = true;
+							}}
+							onToggleSelectAll={toggleSelectAll}
+							onToggleSelect={toggleSelect}
+							onEnterSelectMode={enterSelectMode}
+							onCancelSelectMode={cancelSelectMode}
+							onExportSelected={exportSelected}
+							onOpenClearDialog={() => (showClearDialog = true)}
+							onResume={resumeSession}
+							{onNewSession}
+							onStartEdit={startEdit}
+							onRenameValueChange={handleRenameValueChange}
+							onRenameKeydown={handleRenameKeydown}
+							onSaveTitle={saveTitle}
+							onContextMenu={openCtxMenu}
+							onDeleteRequest={requestDelete}
+							onLoadMore={loadMore}
+							{displayTitle}
+							{statusVariant}
+							{formatMessageTime}
+						/>
+					{:else if activeTab === 'tasks'}
+						<WorkspaceSectionHeader
+							title="任务历史"
+							description="查看后台任务和定时任务的当前状态及最近历史。"
+						/>
+						<TaskCenter
+							{runningBackgroundActions}
+							{pendingScheduledActions}
+							{taskHistory}
+							{taskHistoryLoading}
+							{taskHistoryFailed}
+							onRefreshTaskHistory={loadTaskHistory}
+							{actionStatusLabel}
+							{sessionTitleFor}
+							{actionDuration}
+							{scheduledActionCountdown}
+							{onOpenSession}
+							{onCancel}
+						/>
+					{:else}
+						<div class="memory-tools-view" aria-label="长期记忆">
+							<WorkspaceSectionHeader
+								title="长期记忆"
+								description="管理已保存的长期事实，或检索过去的对话。"
+							/>
+							<MemoryCenter
+								{facts}
+								{factsLoaded}
+								{factSourceFilter}
+								{factSourceOptions}
+								{newFact}
+								{addingFact}
+								{memoryRecall}
+								onRecallKindChange={handleRecallKindChange}
+								onRunRecall={runRecall}
+								onClearRecall={clearMemoryRecall}
+								onFactSourceFilterChange={handleFactSourceFilterChange}
+								onAddFact={addFact}
+								onDeleteFact={deleteFact}
+							/>
+						</div>
+					{/if}
 				</div>
-			{/if}
+			{/key}
 		</div>
-	{/key}
+	</div>
 </div>
 
 <MaterialDialog open={showDateFilter} onClose={() => (showDateFilter = false)} title="日期筛选">
@@ -765,6 +771,10 @@
 	.memory-panel {
 		min-width: 0;
 	}
+	.memory-main,
+	.memory-sidebar {
+		min-width: 0;
+	}
 	.memory-tools-view {
 		display: flex;
 		flex-direction: column;
@@ -823,6 +833,19 @@
 	@media (orientation: landscape) and (min-width: 1280px) {
 		.memory-page {
 			max-width: none;
+		}
+		.memory-layout {
+			display: grid;
+			grid-template-columns: minmax(190px, 224px) minmax(0, 1fr);
+			align-items: start;
+			gap: var(--md-sys-space-2xl);
+		}
+		.memory-sidebar {
+			position: sticky;
+			top: var(--md-sys-space-lg);
+			align-self: start;
+			padding-right: var(--md-sys-space-lg);
+			border-right: 1px solid var(--md-sys-color-outline-variant);
 		}
 		.memory-panel,
 		.memory-tools-view {

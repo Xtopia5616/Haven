@@ -1276,7 +1276,7 @@ select.md-select {
 		bottom: auto;
 		width: var(--md-comp-tab-indicator-height);
 		max-width: var(--md-comp-tab-indicator-height);
-		height: var(--md-comp-tab-indicator-min-width);
+		height: var(--md-sys-space-xl);
 		transform: translateY(-50%);
 		animation: none;
 	}

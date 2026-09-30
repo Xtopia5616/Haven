@@ -89,7 +89,7 @@
 		left: var(--md-sys-space-xs);
 		top: 50%;
 		width: var(--md-comp-tab-indicator-height);
-		height: var(--md-comp-tab-indicator-min-width);
+		height: var(--md-sys-space-xl);
 		border-radius: var(--md-sys-shape-full);
 		background: var(--md-sys-color-primary);
 		transform: translateY(-50%);

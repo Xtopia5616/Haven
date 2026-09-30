@@ -369,33 +369,39 @@
 		}
 		.rail-footer {
 			display: flex;
-			flex-direction: column;
+			flex-direction: row;
 			align-items: center;
-			gap: var(--md-sys-space-sm);
-			width: 52px;
+			justify-content: center;
+			gap: var(--md-sys-space-xs);
+			width: 100%;
 			margin-top: auto;
 			padding-top: var(--md-sys-space-md);
 			border-top: 1px solid var(--md-sys-color-outline-variant);
 		}
 		.rail-footer :global(.status-switch) {
-			flex-direction: column;
-			width: 100%;
+			flex-direction: row;
+			width: auto;
+			gap: 0;
 		}
 		.rail-footer :global(.status-chip) {
 			justify-content: center;
-			width: 36px;
-			min-width: 36px;
-			height: 36px;
+			width: var(--md-comp-icon-button-dense-size);
+			min-width: var(--md-comp-icon-button-dense-size);
+			height: var(--md-comp-icon-button-dense-size);
 			padding: 0;
 		}
 		.rail-footer :global(.status-text) {
 			display: none;
 		}
 		.rail-footer :global(.task-action) {
-			justify-content: center;
+			display: none;
 		}
-		.rail-footer :global(.rail-theme-button) {
+		.rail-footer :global(.rail-theme-button[data-size='toolbar']) {
 			align-self: center;
+			width: var(--md-comp-icon-button-dense-size);
+			min-width: var(--md-comp-icon-button-dense-size);
+			height: var(--md-comp-icon-button-dense-size);
+			min-height: var(--md-comp-icon-button-dense-size);
 		}
 		.compact-workspace-nav {
 			display: none;
@@ -466,19 +472,25 @@
 			display: flex;
 		}
 		.rail-footer {
-			align-items: stretch;
+			flex-direction: row;
+			align-items: center;
 			width: 100%;
 			padding-inline: var(--md-sys-space-sm);
 		}
 		.rail-footer :global(.status-switch) {
 			flex-direction: row;
 			align-items: center;
+			gap: var(--md-sys-space-xs);
+			width: calc(100% - var(--md-comp-icon-button-size) - var(--md-sys-space-xs));
+			min-width: 0;
 		}
 		.rail-footer :global(.status-chip) {
 			justify-content: flex-start;
 			width: auto;
 			min-width: 0;
+			height: var(--md-comp-status-height);
 			flex: 1 1 auto;
+			max-width: 100%;
 			padding-inline: var(--md-sys-space-sm);
 		}
 		.rail-footer :global(.status-text) {
@@ -489,7 +501,11 @@
 			white-space: nowrap;
 		}
 		.rail-footer :global(.rail-theme-button) {
-			align-self: flex-end;
+			align-self: center;
+			width: var(--md-comp-icon-button-size);
+			min-width: var(--md-comp-icon-button-size);
+			height: var(--md-comp-icon-button-size);
+			min-height: var(--md-comp-icon-button-size);
 		}
 	}
 </style>
