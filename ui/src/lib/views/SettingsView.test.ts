@@ -50,6 +50,7 @@ describe('SettingsView diagnostics export', () => {
 
 		render(SettingsView);
 		await waitFor(() => expect(invoke).toHaveBeenCalledWith('get_api_key_status'));
+		await fireEvent.click(screen.getByRole('tab', { name: /日志与诊断/ }));
 		await fireEvent.click(screen.getByRole('button', { name: '导出性能指标' }));
 
 		expect(invoke).toHaveBeenCalledWith('get_performance_metrics', undefined);
@@ -68,7 +69,7 @@ describe('SettingsView diagnostics export', () => {
 		render(SettingsView);
 		await waitFor(() => expect(invoke).toHaveBeenCalledWith('get_api_key_status'));
 
-		await fireEvent.click(screen.getByRole('tab', { name: /权限/ }));
+		await fireEvent.click(screen.getByRole('tab', { name: /安全与权限/ }));
 		expect(screen.getByRole('heading', { name: '权限中心' })).toBeTruthy();
 	});
 
@@ -77,6 +78,7 @@ describe('SettingsView diagnostics export', () => {
 		await waitFor(() => expect(invoke).toHaveBeenCalledWith('get_api_key_status'));
 		await waitFor(() => expect(invoke).toHaveBeenCalledWith('is_autostart_enabled'));
 		await new Promise((resolve) => setTimeout(resolve, 0));
+		await fireEvent.click(screen.getByRole('tab', { name: /界面与通知/ }));
 
 		const inApp = await screen.findByRole('switch', { name: '任务完成应用内提示' });
 		const windows = screen.getByRole('switch', { name: '任务完成 Windows 通知' });
@@ -84,11 +86,13 @@ describe('SettingsView diagnostics export', () => {
 		expect((windows as HTMLInputElement).checked).toBe(true);
 
 		await fireEvent.click(inApp);
-		await waitFor(() => expect(screen.getByRole('button', { name: '保存设置' })).toBeTruthy());
+		await waitFor(() =>
+			expect(screen.getByRole('button', { name: '保存全部更改' })).toBeTruthy(),
+		);
 		expect((windows as HTMLInputElement).checked).toBe(true);
 		await fireEvent.click(windows);
 		expect((windows as HTMLInputElement).checked).toBe(false);
-		await fireEvent.click(screen.getByRole('button', { name: '保存设置' }));
+		await fireEvent.click(screen.getByRole('button', { name: '保存全部更改' }));
 
 		await waitFor(() => {
 			expect(invoke).toHaveBeenCalledWith(
@@ -104,6 +108,105 @@ describe('SettingsView diagnostics export', () => {
 		});
 		expect(shouldShowActionCompletionInApp()).toBe(false);
 	});
+
+	it('preserves backend settings that are outside the visible category during a full save', async () => {
+		invoke.mockClear();
+		const settings = {
+			default_shell: 'powershell',
+			llm: { providers: [], models: [], request_policies: [], max_concurrent_requests: 2 },
+			hotkey: { mode: 'toggle', key_binding: 'Ctrl+Shift+Space', mute_hotkey: 'Ctrl+M' },
+			session: {
+				max_concurrent: 3,
+				max_steps: 500,
+				history_retention_days: 90,
+				session_max_steps: 750,
+			},
+			context_limits: {
+				compaction_ratio: 0.65,
+				action_result_context_chars: 4321,
+				fact_extraction_min_interval_secs: 77,
+				turn_deadline_secs: 901,
+				max_attachment_images: 4,
+				max_attachment_files: 5,
+				max_attachment_image_bytes: 10 * 1024 * 1024,
+				max_attachment_file_bytes: 20 * 1024 * 1024,
+				max_upload_total_bytes: 512 * 1024 * 1024,
+				max_attachment_image_dim_px: 1568,
+				attachment_image_jpeg_quality: 0.85,
+			},
+			memory: { session_window_size: 50, fact_inference_enabled: false },
+			security: {
+				permission_mode: 'default',
+				sandbox_mode: 'workspace_write',
+				network_policy: 'ask',
+				writable_roots: [],
+				permissions: [],
+			},
+			media: {},
+			notification: {
+				session_created: { in_app: true, windows: false },
+				session_completed: { in_app: true, windows: true },
+				session_paused: { in_app: true, windows: false },
+				session_resumed: { in_app: true, windows: false },
+				session_error: { in_app: true, windows: true },
+				action_completed: { in_app: true, windows: true },
+			},
+			log: { level: 'info', file_enabled: true, file_path: 'C:\\Haven\\logs\\custom.log' },
+			mcp_servers: [],
+		};
+		invoke.mockImplementation(async (command: string) => {
+			switch (command) {
+				case 'get_settings':
+					return settings;
+				case 'get_api_key_status':
+					return { models: {}, providers: {}, stt: false, ocr: false, ocr_secret: false };
+				case 'is_autostart_enabled':
+					return false;
+				case 'check_shell_available':
+					return { available: true };
+				default:
+					return [];
+			}
+		});
+
+		const { container } = render(SettingsView);
+		await waitFor(() => expect(invoke).toHaveBeenCalledWith('get_api_key_status'));
+		await waitFor(() => expect(invoke).toHaveBeenCalledWith('is_autostart_enabled'));
+		await fireEvent.click(screen.getByRole('tab', { name: /对话与行为/ }));
+		expect(((await screen.findByLabelText('会话累计步骤上限')) as HTMLInputElement).value).toBe(
+			'750',
+		);
+		await fireEvent.click(screen.getByRole('tab', { name: /语音与媒体/ }));
+		expect(
+			((await screen.findByLabelText('托管上传总量上限（MiB）')) as HTMLInputElement).value,
+		).toBe('512');
+		await fireEvent.click(screen.getByRole('tab', { name: /性能与限制/ }));
+		expect(((await screen.findByLabelText('事实提取最短间隔')) as HTMLInputElement).value).toBe(
+			'77',
+		);
+		await fireEvent.click(screen.getByRole('tab', { name: /界面与通知/ }));
+		await fireEvent.click(await screen.findByRole('switch', { name: '会话开始 Windows 通知' }));
+		expect(screen.getByRole('tab', { name: /界面与通知.*已修改/ })).toBeTruthy();
+		expect(
+			(container.querySelector('#session-lifetime-max-steps') as HTMLInputElement).value,
+		).toBe('750');
+		await fireEvent.click(await screen.findByRole('button', { name: '保存全部更改' }));
+
+		await waitFor(() =>
+			expect(invoke).toHaveBeenCalledWith('update_settings', expect.anything()),
+		);
+		const update = invoke.mock.calls.find(([command]) => command === 'update_settings');
+		const saved = update?.[1]?.settings;
+		expect(saved.session.session_max_steps).toBe(750);
+		expect(saved.memory.fact_inference_enabled).toBe(false);
+		expect(saved.hotkey.mute_hotkey).toBe('Ctrl+M');
+		expect(saved.log.file_path).toBe('C:\\Haven\\logs\\custom.log');
+		expect(saved.context_limits).toMatchObject({
+			action_result_context_chars: 4321,
+			fact_extraction_min_interval_secs: 77,
+			turn_deadline_secs: 901,
+		});
+	}, 15_000);
 
 	it('stages provider keys separately and omits values from Settings updates', async () => {
 		invoke.mockClear();
@@ -127,7 +230,7 @@ describe('SettingsView diagnostics export', () => {
 
 		render(SettingsView);
 		await waitFor(() => expect(invoke).toHaveBeenCalledWith('get_api_key_status'));
-		await fireEvent.click(screen.getByRole('tab', { name: /模型/ }));
+		await fireEvent.click(screen.getByRole('tab', { name: /模型与连接/ }));
 		await fireEvent.click(await screen.findByRole('button', { name: '添加 Provider' }));
 		await fireEvent.input(screen.getByPlaceholderText('唯一名称，角色据此选择'), {
 			target: { value: 'primary' },
@@ -136,9 +239,14 @@ describe('SettingsView diagnostics export', () => {
 			target: { value: 'provider-secret-marker' },
 		});
 		await fireEvent.click(screen.getByRole('button', { name: '保存' }));
-		await fireEvent.click(await screen.findByRole('button', { name: '保存设置' }));
+		await fireEvent.click(screen.getByRole('tab', { name: /对话与行为/ }));
+		expect(screen.queryByRole('dialog', { name: '未保存的更改' })).toBeNull();
+		await fireEvent.click(screen.getByRole('tab', { name: /模型与连接/ }));
+		await fireEvent.click(await screen.findByRole('button', { name: '保存全部更改' }));
 
-		await waitFor(() => expect(invoke).toHaveBeenCalledWith('update_settings', expect.anything()));
+		await waitFor(() =>
+			expect(invoke).toHaveBeenCalledWith('update_settings', expect.anything()),
+		);
 		expect(invoke).toHaveBeenCalledWith('stage_provider_credential', {
 			providerName: 'primary',
 			apiKey: 'provider-secret-marker',

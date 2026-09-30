@@ -95,6 +95,13 @@
 					hint: '事实提取时发送给模型的转录长度。',
 				},
 				{
+					key: 'action_result_context_chars',
+					label: '任务结果进入对话的上限',
+					unit: 'chars',
+					danger: true,
+					hint: '后台任务完成后放入所属会话的结果字符数；完整输出仍保存在日志中。',
+				},
+				{
 					key: 'notification_summary_chars',
 					label: '通知摘要字符上限',
 					unit: 'chars',
@@ -119,6 +126,13 @@
 					unit: 'steps',
 					danger: false,
 					hint: '长会话每多少步重新做一次事实提取。调小增加调用成本。',
+				},
+				{
+					key: 'fact_extraction_min_interval_secs',
+					label: '事实提取最短间隔',
+					unit: 'secs',
+					danger: false,
+					hint: '限制短时间内重复调用模型提取事实的频率。',
 				},
 				{ key: 'max_known_facts', label: '提示中已知事实数', unit: 'count', danger: false },
 				{
@@ -318,6 +332,13 @@
 					hint: '流式输出停顿多久后向界面提示“仍在生成”。调大 = 更晚提示。',
 				},
 				{
+					key: 'turn_deadline_secs',
+					label: '单轮执行时限',
+					unit: 'secs',
+					danger: false,
+					hint: '单次 Agent 运行允许持续的最长时间。',
+				},
+				{
 					key: 'reasoning_echo_max_chars',
 					label: '推理回显上限',
 					unit: 'chars',
@@ -421,7 +442,7 @@
 		danger: g.fields.filter((f) => f.danger),
 	}));
 	let limitDangerOpen = $state<Record<string, boolean>>(
-		Object.fromEntries(limitViews.map((g) => [g.id, true])),
+		Object.fromEntries(limitViews.map((g) => [g.id, false])),
 	);
 	let allLimitDangerOpen = $derived(
 		limitViews.every((g) => !g.danger.length || (limitDangerOpen[g.id] ?? true)),
@@ -455,19 +476,19 @@
 <div class="limits-view">
 	<div class="limits-toolbar md-toolbar">
 		<p class="limits-legend">
-			红色边框为<b>危险项</b>：调大会扩大内存 / 成本 / 攻击面，默认排在每组底部，可折叠。
+			标记为<b>高影响</b>的项目会扩大内存、成本或安全边界，默认收起；需要时可按分类展开。
 		</p>
 		<MaterialButton
 			variant="text"
 			className="limit-toggle-all"
-			ariaLabel={allLimitDangerOpen ? '折叠全部危险项' : '展开全部危险项'}
+			ariaLabel={allLimitDangerOpen ? '折叠全部高影响项目' : '展开全部高影响项目'}
 			ariaExpanded={allLimitDangerOpen}
 			onclick={() => setAllLimitDanger(!allLimitDangerOpen)}
 		>
 			<span class="limit-danger-caret" aria-hidden="true">
 				<Icon name="chevronDown" size={12} strokeWidth={2.5} />
 			</span>
-			<span>{allLimitDangerOpen ? '折叠全部危险项' : '展开全部危险项'}</span>
+			<span>{allLimitDangerOpen ? '折叠全部高影响项目' : '展开全部高影响项目'}</span>
 		</MaterialButton>
 	</div>
 	<div class="limits-grid">
@@ -501,7 +522,7 @@
 				{#if group.danger.length}
 					<div class="limit-danger-box">
 						<MaterialCollapsible variant="error" bind:open={limitDangerOpen[group.id]}>
-							{#snippet header()}<span class="danger-badge">⚠ 危险项</span><span
+							{#snippet header()}<span class="danger-badge">高影响项目</span><span
 									class="limit-danger-count">{group.danger.length} 项</span
 								>{/snippet}
 							<div class="limit-danger-items">

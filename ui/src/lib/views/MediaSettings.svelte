@@ -232,7 +232,7 @@
 			</p>
 		</div>
 		<div class="model-field strategy-field">
-			<span class="field-label">Provider-facing projection</span><MaterialSelect
+			<span class="field-label">附件进入模型的方式</span><MaterialSelect
 				id="media-input-strategy"
 				value={mediaInputStrategy}
 				options={MEDIA_INPUT_STRATEGY_OPTIONS}
@@ -263,7 +263,7 @@
 							与 fallback。
 						</p>
 						<div class="form-row">
-							<label for="audio-sample-rate">Sample Rate</label><MaterialNumberField
+							<label for="audio-sample-rate">采样率（Hz）</label><MaterialNumberField
 								id="audio-sample-rate"
 								value={audio.sample_rate}
 								onChange={withNumberValue((v) => {
@@ -272,7 +272,7 @@
 							/>
 						</div>
 						<div class="form-row">
-							<label for="audio-channels">Channels</label><MaterialNumberField
+							<label for="audio-channels">声道数</label><MaterialNumberField
 								id="audio-channels"
 								value={audio.channels}
 								min={1}
@@ -283,7 +283,7 @@
 							/>
 						</div>
 						<div class="form-row">
-							<label for="audio-max-duration">Max Duration (sec)</label
+							<label for="audio-max-duration">最长录音时长（秒）</label
 							><MaterialNumberField
 								id="audio-max-duration"
 								value={audio.max_duration_secs}
@@ -295,7 +295,7 @@
 							/>
 						</div>
 						<div class="form-row">
-							<label for="audio-silence-timeout">Silence Timeout (ms)</label
+							<label for="audio-silence-timeout">静音结束等待（毫秒）</label
 							><MaterialNumberField
 								id="audio-silence-timeout"
 								value={audio.silence_timeout_ms}
@@ -308,7 +308,7 @@
 							/>
 						</div>
 						<div class="form-row">
-							<label for="audio-vad-threshold">VAD Threshold</label><input
+							<label for="audio-vad-threshold">语音检测阈值</label><input
 								id="audio-vad-threshold"
 								type="range"
 								class="md-slider"
@@ -331,7 +331,7 @@
 						</p>
 						<div class="stt-grid">
 							<div class="model-field">
-								<span class="field-label">STT Provider</span><MaterialSelect
+								<span class="field-label">转写服务</span><MaterialSelect
 									id="voice-stt-provider"
 									value={stt.provider}
 									options={sttProviderOptions()}
@@ -340,7 +340,7 @@
 							</div>
 							{#if stt.provider === 'mcp'}
 								<div class="model-field">
-									<span class="field-label">MCP Server</span><MaterialAutocomplete
+									<span class="field-label">MCP 服务器</span><MaterialAutocomplete
 										id="voice-stt-mcp"
 										value={stt.mcp_server ?? ''}
 										options={mcpServerNames.map((name) => ({
@@ -357,7 +357,8 @@
 							{:else if isNamedSttProvider(stt.provider)}
 								{#if sttBackendKind(stt.provider)}
 									<div class="model-field">
-										<span class="field-label">Model</span><MaterialAutocomplete
+										<span class="field-label">模型 ID</span
+										><MaterialAutocomplete
 											id="voice-stt-model"
 											value={stt.model}
 											options={sttModelOptions(sttBackendKind(stt.provider))}
@@ -378,7 +379,7 @@
 							{/if}
 							{#if stt.provider !== 'none'}
 								<div class="model-field">
-									<span class="field-label">Timeout (sec)</span
+									<span class="field-label">超时时间（秒）</span
 									><MaterialNumberField
 										id="voice-stt-timeout"
 										value={stt.timeout_secs}
@@ -390,7 +391,7 @@
 									/>
 								</div>
 								<div class="model-field">
-									<span class="field-label">Min Confidence</span><input
+									<span class="field-label">最低置信度</span><input
 										id="voice-stt-min-confidence"
 										type="range"
 										class="md-slider"
@@ -419,7 +420,7 @@
 						</p>
 						<div class="stt-grid">
 							<div class="model-field">
-								<span class="field-label">Provider</span><MaterialSelect
+								<span class="field-label">语音合成服务</span><MaterialSelect
 									id="tts-provider"
 									value={tts.provider}
 									options={mediaProviderOptions(tts.provider)}
@@ -432,7 +433,7 @@
 								{#if mediaProviderKind(tts.provider, 'tts') === 'elevenlabs'}<div
 										class="model-field"
 									>
-										<span class="field-label">Voice ID</span><input
+										<span class="field-label">音色 ID</span><input
 											id="tts-voice"
 											type="text"
 											class="md-input"
@@ -444,7 +445,7 @@
 								{:else if mediaProviderKind(tts.provider, 'tts') === 'openai'}<div
 										class="model-field"
 									>
-										<span class="field-label">Model</span><input
+										<span class="field-label">模型 ID</span><input
 											id="tts-model"
 											type="text"
 											class="md-input"
@@ -454,7 +455,7 @@
 										/>
 									</div>
 									<div class="model-field">
-										<span class="field-label">Voice</span><input
+										<span class="field-label">音色</span><input
 											id="tts-voice"
 											type="text"
 											class="md-input"
@@ -467,7 +468,7 @@
 										该 Provider 不支持 TTS（需 OpenAI 兼容）。
 									</p>{/if}
 								<div class="model-field">
-									<span class="field-label">Timeout (sec)</span
+									<span class="field-label">超时时间（秒）</span
 									><MaterialNumberField
 										id="tts-timeout"
 										value={tts.timeout_secs}
@@ -561,7 +562,7 @@
 						</p>
 						<div class="stt-grid">
 							<div class="model-field">
-								<span class="field-label">OCR Provider</span><MaterialSelect
+								<span class="field-label">OCR 服务</span><MaterialSelect
 									id="img-ocr-provider"
 									value={ocr.provider}
 									options={OCR_PROVIDER_OPTIONS}
@@ -573,7 +574,7 @@
 							{#if ocr.provider === 'baidu' || ocr.provider === 'tencent' || ocr.provider === 'azure'}<div
 									class="model-field"
 								>
-									<span class="field-label">API Key</span><ApiKeyField
+									<span class="field-label">API 密钥</span><ApiKeyField
 										id="img-ocr-api-key"
 										configured={keyConfigured.ocr}
 										onEdit={() => openKeyDialog('ocr', 'OCR API Key')}
@@ -582,14 +583,14 @@
 							{#if ocr.provider === 'baidu' || ocr.provider === 'tencent'}<div
 									class="model-field"
 								>
-									<span class="field-label">Secret Key</span><ApiKeyField
+									<span class="field-label">Secret 密钥</span><ApiKeyField
 										id="img-ocr-secret"
 										configured={keyConfigured.ocr_secret}
 										onEdit={() => openKeyDialog('ocr_secret', 'OCR Secret Key')}
 									/>
 								</div>{/if}
 							{#if ocr.provider === 'azure'}<div class="model-field">
-									<span class="field-label">Base URL</span><input
+									<span class="field-label">服务地址</span><input
 										id="img-ocr-base-url"
 										type="text"
 										class="md-input"
@@ -599,7 +600,7 @@
 									/>
 								</div>{/if}
 							{#if ocr.provider !== 'none'}<div class="model-field">
-									<span class="field-label">Timeout (sec)</span
+									<span class="field-label">超时时间（秒）</span
 									><MaterialNumberField
 										id="img-ocr-timeout"
 										value={ocr.timeout_secs}
@@ -611,7 +612,7 @@
 									/>
 								</div>
 								<div class="model-field">
-									<span class="field-label">Min Confidence</span><input
+									<span class="field-label">最低置信度</span><input
 										id="img-ocr-min-confidence"
 										type="range"
 										class="md-slider"
@@ -635,7 +636,7 @@
 						</p>
 						<div class="stt-grid">
 							<div class="model-field">
-								<span class="field-label">Provider</span><MaterialSelect
+								<span class="field-label">图像生成服务</span><MaterialSelect
 									id="ig-provider"
 									value={imageGen.provider}
 									options={mediaProviderOptions(imageGen.provider)}
@@ -647,7 +648,7 @@
 							{#if imageGen.provider !== 'none'}{#if mediaProviderKind(imageGen.provider, 'image_gen')}<div
 										class="model-field"
 									>
-										<span class="field-label">Model</span><input
+										<span class="field-label">模型 ID</span><input
 											id="ig-model"
 											type="text"
 											class="md-input"
@@ -662,7 +663,7 @@
 										/>
 									</div>
 									<div class="model-field">
-										<span class="field-label">Timeout (sec)</span
+										<span class="field-label">超时时间（秒）</span
 										><MaterialNumberField
 											id="ig-timeout"
 											value={imageGen.timeout_secs}
@@ -706,6 +707,25 @@
 							onChange={withNumberValue((v) => {
 								contextLimits.max_attachment_file_bytes = Math.round(
 									v * 1024 * 1024,
+								);
+							})}
+						/>
+					</div>
+					<div class="form-row">
+						<label for="max-upload-total-mb">托管上传总量上限（MiB）</label
+						><MaterialNumberField
+							id="max-upload-total-mb"
+							value={Math.round(
+								((contextLimits.max_upload_total_bytes ?? 512 * 1024 * 1024) /
+									1048576) *
+									10,
+							) / 10}
+							min={16}
+							max={10240}
+							step={16}
+							onChange={withNumberValue((value) => {
+								contextLimits.max_upload_total_bytes = Math.round(
+									value * 1024 * 1024,
 								);
 							})}
 						/>

@@ -1,4 +1,9 @@
 <script lang="ts">
+	/**
+	 * Owns the single full-Settings draft, save baseline, and leave guard.
+	 * The Rust update command accepts one full Settings snapshot, so persistence
+	 * and dirty comparison stay centralized while each intent group owns its UI.
+	 */
 	let { isVisible = true }: { isVisible?: boolean } = $props();
 	import { onMount, onDestroy, tick } from 'svelte';
 	import { invoke } from '$lib/tauri.ts';
@@ -18,15 +23,11 @@
 	import { registerSettingsLeaveGuard } from '$lib/settingsGuard.ts';
 	import { resolveSettingsSaveAction } from '$lib/settingsSaveAction.ts';
 	import { loadSettings } from '$lib/settingsCommand.ts';
-	import { getPerformanceMetrics } from '$lib/performanceMetrics.ts';
-	import {
-		checkShellAvailable,
-		getApiKeyStatus,
-		getLogInfo,
-		readLogTail,
-	} from '$lib/diagnosticsCommands.ts';
+	import { checkShellAvailable, getApiKeyStatus } from '$lib/diagnosticsCommands.ts';
 	import ModelSettings from './ModelSettings.svelte';
-	import SettingsGeneral from './SettingsGeneral.svelte';
+	import SettingsBehavior from './SettingsBehavior.svelte';
+	import SettingsAppearance from './SettingsAppearance.svelte';
+	import SettingsDiagnostics from './SettingsDiagnostics.svelte';
 	import SettingsSecurity from './SettingsSecurity.svelte';
 	import SettingsLimits from './SettingsLimits.svelte';
 	import WorkspacePageHeader from '$lib/WorkspacePageHeader.svelte';
@@ -59,13 +60,18 @@
 	type SettingsSnapshot = {
 		default_shell?: ShellChoiceInput;
 		llm?: SettingsLlmState;
-		hotkey?: { key_binding?: string; mode?: HotkeyModeInput };
+		hotkey?: { key_binding?: string; mode?: HotkeyModeInput; mute_hotkey?: string | null };
 		session?: Partial<
 			Required<
-				Pick<SessionConfigInput, 'max_concurrent' | 'max_steps' | 'history_retention_days'>
+				Pick<
+					SessionConfigInput,
+					'max_concurrent' | 'max_steps' | 'history_retention_days' | 'session_max_steps'
+				>
 			>
 		>;
-		memory?: Partial<Required<Pick<MemoryConfigInput, 'session_window_size'>>>;
+		memory?: Partial<
+			Required<Pick<MemoryConfigInput, 'session_window_size' | 'fact_inference_enabled'>>
+		>;
 		security?: Omit<SecurityConfigInput, 'permissions'> & { permissions?: StoredPermission[] };
 		context_limits?: Partial<ContextLimitsConfigInput>;
 		media?: {
@@ -99,6 +105,7 @@
 	let keyConfiguredProviders = $state<Record<string, boolean>>({});
 	let hotkeyMode = $state<HotkeyModeInput>('toggle');
 	let hotkeyBinding = $state('Ctrl+Shift+Space');
+	let muteHotkey = $state<string | null>(null);
 	let autostartEnabled = $state(false);
 	let defaultShell = $state<ShellChoiceInput>('powershell');
 	let shellAvailable = $state({ cmd: false, powershell: false, pwsh: false });
@@ -112,9 +119,17 @@
 	});
 	let session = $state<
 		Required<
-			Pick<SessionConfigInput, 'max_concurrent' | 'max_steps' | 'history_retention_days'>
+			Pick<
+				SessionConfigInput,
+				'max_concurrent' | 'max_steps' | 'history_retention_days' | 'session_max_steps'
+			>
 		>
-	>({ max_concurrent: 3, max_steps: 30, history_retention_days: 90 });
+	>({
+		max_concurrent: 3,
+		max_steps: 500,
+		history_retention_days: 90,
+		session_max_steps: null,
+	});
 	let contextLimits = $state<Partial<ContextLimitsConfigInput>>({
 		compaction_ratio: 0.65,
 		compaction_reserve_tokens: 8192,
@@ -144,9 +159,12 @@
 		partial_checkpoint_min_chars: 1000,
 		partial_checkpoint_interval_secs: 2,
 		fact_infer_interval_steps: 25,
+		fact_extraction_min_interval_secs: 60,
 		max_known_facts: 40,
 		sanitize_field_max_chars: 256,
 		file_summary_timeout_secs: 120,
+		action_result_context_chars: 4000,
+		turn_deadline_secs: 300,
 		cut_off_retries: 2,
 		empty_response_max_retries: 3,
 		empty_response_retry_delay_ms: 1500,
@@ -172,11 +190,14 @@
 		background_max_actions: 64,
 		event_chunk_batch_max_bytes: 8 * 1024,
 		input_ring_buffer_secs: 20,
-		embedding_chunk_size: 64,
+		embedding_chunk_size: 10,
 		max_tools_per_request: 64,
 	});
-	let memory = $state<Required<Pick<MemoryConfigInput, 'session_window_size'>>>({
+	let memory = $state<
+		Required<Pick<MemoryConfigInput, 'session_window_size' | 'fact_inference_enabled'>>
+	>({
 		session_window_size: 50,
+		fact_inference_enabled: true,
 	});
 	let memoryMaintenance = $state<{ running: boolean; lastCount: number | null }>({
 		running: false,
@@ -232,28 +253,96 @@
 		file_path: null,
 	});
 
-	let settingsTab = $state('general');
+	const SETTINGS_SECTIONS = [
+		{
+			id: 'behavior',
+			label: '对话与行为',
+			description: '配置语音快捷键、会话执行、命令行工具和记忆。',
+			icon: 'chat',
+			keys: ['hotkey', 'session', 'memory', 'default_shell'],
+		},
+		{
+			id: 'models',
+			label: '模型与连接',
+			description: '管理 Provider、模型目录、请求能力和模型路由。',
+			icon: 'network',
+			keys: ['llm'],
+		},
+		{
+			id: 'media',
+			label: '语音与媒体',
+			description: '配置录音、转写、OCR、语音合成和图像生成。',
+			icon: 'mic',
+			keys: ['media'],
+		},
+		{
+			id: 'appearance',
+			label: '界面与通知',
+			description: '调整显示风格、事件通知和 Windows 启动行为。',
+			icon: 'sun',
+			keys: ['notification', 'autostart_enabled'],
+		},
+		{
+			id: 'security',
+			label: '安全与权限',
+			description: '设置授权方式、文件沙箱、网络策略和永久规则。',
+			icon: 'settings',
+			keys: ['security'],
+		},
+		{
+			id: 'limits',
+			label: '性能与限制',
+			description: '调整上下文、工具、文件、并发和资源保护上限。',
+			icon: 'cpu',
+			keys: ['context_limits'],
+		},
+		{
+			id: 'diagnostics',
+			label: '日志与诊断',
+			description: '管理后端日志并导出性能诊断数据。',
+			icon: 'activity',
+			keys: ['log'],
+		},
+	] as const;
+	let settingsTab = $state('behavior');
+	let visitedSettingsTabs = $state<string[]>(['behavior']);
+	let modelSection = $state<'models' | 'media'>('models');
+	let activeSettingsSection = $derived(
+		SETTINGS_SECTIONS.find((section) => section.id === settingsTab) ?? SETTINGS_SECTIONS[0],
+	);
+	let dirtySettingsSectionIds = $derived.by(() => {
+		if (!settingsLoaded || !savedSnapshot) return [] as string[];
+		try {
+			const current = buildPersistableSettings() as Record<string, unknown>;
+			const baseline = JSON.parse(savedSnapshot) as Record<string, unknown>;
+			return SETTINGS_SECTIONS.filter((section) =>
+				section.keys.some(
+					(key) => JSON.stringify(current[key]) !== JSON.stringify(baseline[key]),
+				),
+			).map((section) => section.id);
+		} catch {
+			return [] as string[];
+		}
+	});
+	let settingsTabs = $derived(
+		SETTINGS_SECTIONS.map((section) => ({
+			id: section.id,
+			label: section.label,
+			icon: section.icon,
+			hint: dirtySettingsSectionIds.includes(section.id) ? '已修改' : undefined,
+		})),
+	);
+	let dirtySettingsSectionLabels = $derived(
+		SETTINGS_SECTIONS.filter((section) => dirtySettingsSectionIds.includes(section.id)).map(
+			(section) => section.label,
+		),
+	);
 	let providerDiscoveryAlert = $state<{ providerName: string; staticCatalog: boolean }>({
 		providerName: '',
 		staticCatalog: false,
 	});
-	const settingsTabs = [
-		{ id: 'general', label: '常规' },
-		{ id: 'models', label: '模型' },
-		{ id: 'media', label: '媒体' },
-		{ id: 'security', label: '权限' },
-		{ id: 'limits', label: '限制' },
-	];
 	let mcpServerNames = $state<string[]>([]);
 	let settingsLoaded = $state(false);
-	let logView = $state<{ open: boolean; path: string; content: string; loading: boolean }>({
-		open: false,
-		path: '',
-		content: '',
-		loading: false,
-	});
-	let performanceMetricsLoading = $state(false);
-	let logPreEl = $state<HTMLPreElement | null>(null);
 	let savedSnapshot = $state('');
 	let leaveDialogOpen = $state(false);
 	let leaveDialogResolve: ((ok: boolean) => void) | null = null;
@@ -282,60 +371,6 @@
 		}
 	}
 
-	async function openLogViewer() {
-		logView.loading = true;
-		try {
-			const info = await getLogInfo();
-			if (!info?.enabled) {
-				addNotification('文件日志未启用，请先打开 File Logging', 'warning', 4000);
-				return;
-			}
-			await refreshLogs();
-			logView.open = true;
-		} catch (e) {
-			reportError(e, { context: 'SettingsView', message: '无法读取日志', log: false });
-		} finally {
-			logView.loading = false;
-		}
-	}
-
-	async function refreshLogs() {
-		try {
-			const data = await readLogTail({ maxLines: 300 });
-			logView.path = data.path;
-			logView.content = data.content;
-		} catch (e) {
-			reportError(e, { context: 'SettingsView', message: '无法读取日志', log: false });
-		}
-	}
-
-	async function exportPerformanceSnapshot() {
-		performanceMetricsLoading = true;
-		try {
-			const snapshot = await getPerformanceMetrics();
-			const blob = new Blob([JSON.stringify(snapshot, null, 2)], {
-				type: 'application/json',
-			});
-			const url = URL.createObjectURL(blob);
-			const link = document.createElement('a');
-			link.href = url;
-			link.download = `haven-performance-metrics-${new Date().toISOString().replaceAll(':', '-')}.json`;
-			document.body.appendChild(link);
-			link.click();
-			link.remove();
-			URL.revokeObjectURL(url);
-			addNotification('性能指标已导出', 'success');
-		} catch (e) {
-			reportError(e, { context: 'SettingsView', message: '导出性能指标失败', log: false });
-		} finally {
-			performanceMetricsLoading = false;
-		}
-	}
-
-	$effect(() => {
-		if (logView.open && logPreEl) logPreEl.scrollTop = logPreEl.scrollHeight;
-	});
-
 	function rememberSyncedDefaultModel(
 		remote:
 			| Partial<Pick<ModelDraft, 'model' | 'reasoning_effort' | 'web_search'>>
@@ -357,14 +392,16 @@
 		return {
 			default_shell: defaultShell,
 			llm: llmConfig,
-			hotkey: { key_binding: hotkeyBinding, mode: hotkeyMode },
+			hotkey: { key_binding: hotkeyBinding, mode: hotkeyMode, mute_hotkey: muteHotkey },
 			session: {
 				max_concurrent: asNumber(session.max_concurrent),
 				max_steps: asNumber(session.max_steps),
 				history_retention_days: asNumber(session.history_retention_days),
+				session_max_steps: session.session_max_steps ?? null,
 			},
 			memory: {
 				session_window_size: asNumber(memory.session_window_size),
+				fact_inference_enabled: memory.fact_inference_enabled,
 			},
 			security: {
 				permission_mode: security.permission_mode,
@@ -416,7 +453,11 @@
 				session_error: { ...notification.session_error },
 				action_completed: { ...notification.action_completed },
 			},
-			log: { level: log.level, file_enabled: log.file_enabled },
+			log: {
+				level: log.level,
+				file_enabled: log.file_enabled,
+				file_path: log.file_path ?? null,
+			},
 			autostart_enabled: autostartEnabled,
 			key_configured: { ...keyConfigured },
 			key_configured_providers: { ...keyConfiguredProviders },
@@ -440,9 +481,10 @@
 		saveError = '';
 	}
 
-	async function changeSettingsTab(id: string) {
+	function changeSettingsTab(id: string) {
 		if (id === settingsTab) return;
-		if (isDirty() && !(await confirmLeave())) return;
+		if (id === 'models' || id === 'media') modelSection = id;
+		if (!visitedSettingsTabs.includes(id)) visitedSettingsTabs = [...visitedSettingsTabs, id];
 		settingsTab = id;
 	}
 
@@ -593,6 +635,8 @@
 		try {
 			const snapshot = JSON.parse(savedSnapshot) as SettingsSnapshot;
 			defaultShell = snapshot.default_shell || defaultShell;
+			if (snapshot.hotkey?.mute_hotkey !== undefined)
+				muteHotkey = snapshot.hotkey.mute_hotkey ?? null;
 			if (snapshot.llm) {
 				llmConfig = {
 					...llmConfig,
@@ -749,9 +793,14 @@
 				);
 				hotkeyBinding = settings.hotkey?.key_binding || hotkeyBinding;
 				hotkeyMode = settings.hotkey?.mode || 'toggle';
-				session = settings.session || session;
+				muteHotkey = settings.hotkey?.mute_hotkey ?? null;
+				session = {
+					...session,
+					...(settings.session || {}),
+					session_max_steps: settings.session?.session_max_steps ?? null,
+				};
 				contextLimits = settings.context_limits || contextLimits;
-				memory = settings.memory || memory;
+				memory = { ...memory, ...(settings.memory || {}) };
 				security = {
 					permission_mode: settings.security?.permission_mode || 'default',
 					sandbox_mode: settings.security?.sandbox_mode || 'workspace_write',
@@ -799,7 +848,7 @@
 					.filter(Boolean);
 				notification = { ...notification, ...(settings.notification || {}) };
 				setActionCompletionNotificationChannels(notification.action_completed);
-				log = settings.log || log;
+				log = { ...log, ...(settings.log || {}) };
 				defaultShell = settings.default_shell || 'powershell';
 				checkShells();
 			}
@@ -946,14 +995,20 @@
 					/** @type {import('$lib/contracts/settings.ts').SettingsUpdatePayload} */ {
 						default_shell: defaultShell,
 						llm: llmConfig,
-						hotkey: { key_binding: hotkeyBinding, mode: hotkeyMode, mute_hotkey: null },
+						hotkey: {
+							key_binding: hotkeyBinding,
+							mode: hotkeyMode,
+							mute_hotkey: muteHotkey,
+						},
 						session: {
 							max_concurrent: session.max_concurrent,
 							max_steps: session.max_steps,
 							history_retention_days: session.history_retention_days,
+							session_max_steps: session.session_max_steps ?? null,
 						},
 						memory: {
 							session_window_size: memory.session_window_size,
+							fact_inference_enabled: memory.fact_inference_enabled,
 						},
 						security: {
 							permission_mode: security.permission_mode,
@@ -1026,7 +1081,11 @@
 								windows: notification.action_completed.windows,
 							},
 						},
-						log: { level: log.level, file_enabled: log.file_enabled, file_path: null },
+						log: {
+							level: log.level,
+							file_enabled: log.file_enabled,
+							file_path: log.file_path ?? null,
+						},
 					},
 			});
 			setActionCompletionNotificationChannels(notification.action_completed);
@@ -1084,8 +1143,11 @@
 </script>
 
 <div class="settings-page">
-	<WorkspacePageHeader title="设置" description="调整 Haven 的模型、语音、性能与安全行为。" />
-	{#if settingsLoaded && settingsTab !== 'models' && llmConfig.providers.length === 0}
+	<WorkspacePageHeader
+		title="设置"
+		description="按用途分组管理 Haven 配置；修改分类后可以继续浏览，离开页面时会提醒保存。"
+	/>
+	{#if settingsLoaded && settingsTab === 'behavior' && llmConfig.providers.length === 0}
 		<AsyncState
 			state="unconfigured"
 			layout="compact"
@@ -1104,44 +1166,59 @@
 				ariaLabel="设置分类"
 				idPrefix="settings-tab"
 				panelId="settings-panel"
-				className="workspace-secondary-tabs workspace-secondary-tabs--sidebar"
+				className="workspace-secondary-tabs workspace-secondary-tabs--sidebar settings-tabs"
+				showIcons={true}
 				{isVisible}
 			/>
 		</aside>
 		<div class="settings-main workspace-secondary-main">
-			{#key settingsTab}
-				<div
-					id="settings-panel"
-					class="motion-surface-enter"
-					role="tabpanel"
-					aria-label={settingsTabs.find((tab) => tab.id === settingsTab)?.label || '设置'}
-				>
-					{#if settingsTab === 'general'}
-						<SettingsGeneral
+			<div id="settings-panel" role="tabpanel" aria-label={activeSettingsSection.label}>
+				<div class="settings-panel-heading">
+					<div>
+						<h2>{activeSettingsSection.label}</h2>
+						<p>{activeSettingsSection.description}</p>
+					</div>
+					{#if dirtySettingsSectionIds.includes(settingsTab)}
+						<span class="settings-dirty-badge">有未保存修改</span>
+					{/if}
+				</div>
+				{#if visitedSettingsTabs.includes('behavior')}
+					<div hidden={settingsTab !== 'behavior'}>
+						<SettingsBehavior
 							{hotkeyMode}
 							{hotkeyBinding}
-							{llmConfig}
 							{session}
 							{defaultShell}
 							{shellAvailable}
 							{memory}
 							{memoryMaintenance}
-							{notification}
-							{log}
-							{logView}
-							{performanceMetricsLoading}
-							{autostartEnabled}
 							onHotkeyModeChange={setHotkeyMode}
 							onHotkeyBindingChange={setHotkeyBinding}
 							onDefaultShellChange={setDefaultShell}
-							onAutostartChange={setAutostart}
 							onRunMaintenance={runMaintenance}
-							onOpenLogViewer={openLogViewer}
-							onExportPerformanceMetrics={exportPerformanceSnapshot}
 						/>
-					{:else if settingsTab === 'models' || settingsTab === 'media'}
-						{#if settingsLoaded}<ModelSettings
-								section={settingsTab}
+					</div>
+				{/if}
+				{#if visitedSettingsTabs.includes('appearance')}
+					<div hidden={settingsTab !== 'appearance'}>
+						<SettingsAppearance
+							{notification}
+							{autostartEnabled}
+							onAutostartChange={setAutostart}
+						/>
+					</div>
+				{/if}
+				{#if visitedSettingsTabs.includes('diagnostics')}
+					<div hidden={settingsTab !== 'diagnostics'}>
+						<SettingsDiagnostics {log} />
+					</div>
+				{/if}
+				{#if visitedSettingsTabs.includes('models') || visitedSettingsTabs.includes('media')}
+					<div hidden={settingsTab !== 'models' && settingsTab !== 'media'}>
+						{#if settingsLoaded}
+							<ModelSettings
+								section={modelSection}
+								active={settingsTab === 'models' || settingsTab === 'media'}
 								{llmConfig}
 								{audio}
 								{stt}
@@ -1161,28 +1238,45 @@
 								) => {
 									providerDiscoveryAlert = { providerName, staticCatalog };
 								}}
-							/>{:else}<p class="model-hint">正在加载模型与 API Key 状态…</p>{/if}
-					{:else if settingsTab === 'security'}
+							/>
+						{:else}
+							<p class="model-hint">正在加载模型与 API Key 状态…</p>
+						{/if}
+					</div>
+				{/if}
+				{#if visitedSettingsTabs.includes('security')}
+					<div hidden={settingsTab !== 'security'}>
 						<SettingsSecurity
 							{security}
 							onRevokePermission={revokePermission}
 							onResetPermissions={resetPermissions}
 						/>
-					{:else}
+					</div>
+				{/if}
+				{#if visitedSettingsTabs.includes('limits')}
+					<div hidden={settingsTab !== 'limits'}>
 						<SettingsLimits {contextLimits} />
-					{/if}
-				</div>
-			{/key}
+					</div>
+				{/if}
+			</div>
 			{#if settingsDirty || saveState === 'error'}
 				<div class="save-bar md-toolbar motion-surface-enter">
 					{#if saveState === 'error'}
 						<p class="save-error" role="alert">{saveError}</p>
 					{/if}
 					{#if settingsDirty}
+						<div class="save-summary" aria-live="polite">
+							<strong>有未保存更改</strong>
+							<span>
+								{dirtySettingsSectionLabels.length
+									? dirtySettingsSectionLabels.join('、')
+									: '设置'}
+							</span>
+						</div>
 						<div class="save-actions">
 							<MaterialButton
 								variant="outlined"
-								label="放弃更改"
+								label="放弃全部"
 								onclick={discardAndReset}
 								disabled={saveState === 'saving'}
 							/>
@@ -1194,7 +1288,7 @@
 								<MaterialButton
 									variant="filled"
 									className="save-btn save-btn--dirty"
-									label={saveState === 'saving' ? '保存中…' : '保存设置'}
+									label={saveState === 'saving' ? '保存中…' : '保存全部更改'}
 									onclick={handleSaveClick}
 									disabled={saveState === 'saving'}
 								/>
@@ -1207,45 +1301,14 @@
 	</div>
 </div>
 
-{#if logView.open}
-	<MaterialDialog
-		open={true}
-		title="日志查看"
-		dialogClass="md-dialog--wide"
-		onClose={() => {
-			logView.open = false;
-		}}
-	>
-		{#snippet children()}{#if logView.path}<p class="log-path" title={logView.path}>
-					{logView.path}
-				</p>{/if}
-			<pre class="log-viewer" bind:this={logPreEl}>{logView.content ||
-					'（暂无日志内容）'}</pre>{/snippet}
-		{#snippet footer()}
-			<MaterialButton
-				variant="outlined"
-				label="刷新"
-				onclick={refreshLogs}
-				disabled={logView.loading}
-			/>
-			<MaterialButton
-				variant="text"
-				label="关闭"
-				onclick={() => {
-					logView.open = false;
-				}}
-			/>
-		{/snippet}
-	</MaterialDialog>
-{/if}
 <MaterialDialog open={leaveDialogOpen} title="未保存的更改" onClose={stayOnSettings}>
 	{#snippet children()}<p>
-			设置已修改但尚未保存。选择「取消」将放弃更改并离开；或先保存再离开。
+			设置已修改但尚未保存。你可以放弃更改并离开，或先保存再离开。
 		</p>{/snippet}
 	{#snippet footer()}
 		<MaterialButton
 			variant="text"
-			label="取消"
+			label="放弃并离开"
 			onclick={leaveWithoutSaving}
 			disabled={leaveSaving}
 		/>
@@ -1303,6 +1366,36 @@
 	.settings-main {
 		min-width: 0;
 	}
+	.settings-panel-heading {
+		display: flex;
+		align-items: flex-start;
+		justify-content: space-between;
+		gap: var(--md-sys-space-lg);
+		margin: 0 0 var(--md-sys-space-xl);
+		padding-bottom: var(--md-sys-space-md);
+		border-bottom: 1px solid var(--md-sys-color-outline-variant);
+	}
+	.settings-panel-heading h2 {
+		margin: 0;
+		color: var(--md-sys-color-on-surface);
+		font-size: var(--md-sys-typescale-headline-medium-size);
+		line-height: var(--md-sys-typescale-headline-medium-line-height);
+	}
+	.settings-panel-heading p {
+		margin: var(--md-sys-space-xs) 0 0;
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: var(--md-sys-typescale-body-small-size);
+		line-height: var(--md-sys-typescale-body-small-line-height);
+	}
+	.settings-dirty-badge {
+		flex: 0 0 auto;
+		padding: var(--md-sys-space-xs) var(--md-sys-space-sm);
+		border-radius: var(--md-sys-shape-full);
+		background: var(--md-sys-color-tertiary-container);
+		color: var(--md-sys-color-on-tertiary-container);
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
+	}
 	.model-hint {
 		font-size: var(--md-sys-typescale-label-small-size);
 		color: var(--md-sys-color-on-surface-variant);
@@ -1349,6 +1442,32 @@
 		font-size: var(--md-sys-typescale-body-small-size);
 		line-height: var(--md-sys-typescale-body-small-line-height);
 	}
+	.save-summary {
+		display: flex;
+		flex-direction: column;
+		gap: var(--md-sys-space-2xs);
+		margin-right: auto;
+		min-width: 0;
+	}
+	.save-summary strong {
+		color: var(--md-sys-color-on-surface);
+		font-size: var(--md-sys-typescale-body-small-size);
+		line-height: var(--md-sys-typescale-body-small-line-height);
+	}
+	.save-summary span {
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: var(--md-sys-typescale-label-small-size);
+		line-height: var(--md-sys-typescale-label-small-line-height);
+	}
+	:global(.settings-tabs) {
+		max-width: 100%;
+		overflow-x: auto;
+		overscroll-behavior-x: contain;
+		scrollbar-width: thin;
+	}
+	:global(.settings-tabs .md-tab) {
+		flex: 0 0 auto;
+	}
 	:global(.save-btn) {
 		width: 96px;
 		min-width: 96px;
@@ -1365,37 +1484,15 @@
 		gap: var(--md-sys-space-sm);
 		flex: 0 0 auto;
 	}
-	:global(.md-dialog--wide) {
-		width: min(760px, 92vw);
-	}
-	.log-path {
-		font-size: var(--md-sys-typescale-label-small-size);
-		line-height: var(--md-sys-typescale-label-small-line-height);
-		color: var(--md-sys-color-on-surface-variant);
-		margin: 0 0 var(--md-sys-space-sm);
-		word-break: break-all;
-	}
-	.log-viewer {
-		box-sizing: border-box;
-		max-height: 60vh;
-		overflow: auto;
-		background: var(--md-sys-color-surface-container-high);
-		color: var(--md-sys-color-on-surface);
-		font-family: var(--md-sys-typescale-mono);
-		font-size: var(--md-sys-typescale-code-size);
-		line-height: var(--md-sys-typescale-code-line-height);
-		padding: var(--md-sys-space-md);
-		border-radius: var(--md-sys-shape-small);
-		border: 1px solid var(--md-sys-color-outline-variant);
-		margin: 0;
-		white-space: pre;
-	}
 	@media screen and (min-width: 840px) {
 		.settings-page {
 			max-width: none;
 		}
 	}
 	@media (max-width: 640px) {
+		.settings-panel-heading {
+			flex-direction: column;
+		}
 		.save-bar {
 			align-items: stretch;
 			flex-direction: column;

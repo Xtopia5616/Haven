@@ -3,14 +3,16 @@
 	import MaterialCard from '$lib/MaterialCard.svelte';
 	import MaterialSelect from '$lib/MaterialSelect.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
+	import MaterialNumberField from '$lib/MaterialNumberField.svelte';
 	import MediaSettings from './MediaSettings.svelte';
 	import ProviderDialog from './ProviderDialog.svelte';
 	import ProviderList from './ProviderList.svelte';
 	import StatusBadge from '$lib/StatusBadge.svelte';
 	import SettingsSection from '$lib/SettingsSection.svelte';
+	import SettingsField from '$lib/SettingsField.svelte';
 	import { createModelDiscovery } from '$lib/modelDiscovery.ts';
 	import { emptyModel, capabilityOptions, requestPolicyOptions } from '$lib/modelRoles.ts';
-	import { withStringValue } from '$lib/typedCallbacks.ts';
+	import { withNumberValue, withStringValue } from '$lib/typedCallbacks.ts';
 	import type {
 		ApiKeyStatus,
 		AudioConfig,
@@ -46,6 +48,7 @@
 
 	interface Props {
 		section?: 'models' | 'media';
+		active?: boolean;
 		llmConfig: SettingsLlmState;
 		audio: AudioConfig;
 		stt: Required<SttConfigInput>;
@@ -77,6 +80,7 @@
 	 */
 	let {
 		section = 'models',
+		active = true,
 		llmConfig,
 		audio,
 		stt,
@@ -235,8 +239,12 @@
 		onDiscoverySettled: (fills) => onDiscoverySettled?.(fills),
 	});
 	let autoRefreshed = $state(false);
+	let visitedModels = $state(false);
+	let visitedMedia = $state(false);
 	$effect(() => {
-		if (loaded && !autoRefreshed && (llmConfig.providers || []).length > 0) {
+		if (section === 'models') visitedModels = true;
+		if (section === 'media') visitedMedia = true;
+		if (active && loaded && !autoRefreshed && (llmConfig.providers || []).length > 0) {
 			autoRefreshed = true;
 			discovery.refreshAllModels(true);
 		}
@@ -390,101 +398,123 @@
 	}
 </script>
 
-{#if section === 'media'}
-	<MediaSettings
-		{llmConfig}
-		{audio}
-		{stt}
-		{ocr}
-		{tts}
-		{imageGen}
-		{mediaInputStrategy}
-		{contextLimits}
-		{keyConfigured}
-		{keyConfiguredProviders}
-		{mcpServerNames}
-	/>
+{#if visitedMedia}
+	<div hidden={section !== 'media'}>
+		<MediaSettings
+			{llmConfig}
+			{audio}
+			{stt}
+			{ocr}
+			{tts}
+			{imageGen}
+			{mediaInputStrategy}
+			{contextLimits}
+			{keyConfigured}
+			{keyConfiguredProviders}
+			{mcpServerNames}
+		/>
+	</div>
 {/if}
 
-{#if section === 'models'}
-	<SettingsSection className="model-section" ariaLabel="模型配置">
-		<ProviderList
-			providers={llmConfig.providers || []}
-			models={llmConfig.models || []}
-			{modelsByProvider}
-			{modelFetching}
-			{refreshingAll}
-			{modelOptions}
-			{isProviderKeyConfigured}
-			{apiStyleLabel}
-			onRefreshAll={() => discovery.refreshAllModels()}
-			onRefreshProvider={refreshProvider}
-			onAddModel={addModel}
-			onRenameModel={renameModel}
-			onSetModel={setModel}
-			onSetModelProvider={setModelProvider}
-			onSetCapability={setCapability}
-			onUpdateOverride={updateModelOverride}
-			onRemoveModel={removeModel}
-			onEditProvider={editProvider}
-			onDeleteProvider={deleteProvider}
-		/>
-		<div class="policy-section-heading">
-			<div>
-				<h3>请求路由</h3>
-				<p>
-					每种请求类型使用一条策略，选择声明了对应能力的模型配置。音频与媒体服务另在「媒体」页设置。
-				</p>
-			</div>
-			<StatusBadge label={`${llmConfig.request_policies?.length || 0} 条策略`} tone="info" />
-		</div>
-		<div class="card-list policy-list">
-			{#each llmConfig.request_policies || [] as policy (policy.request)}
-				<MaterialCard variant="outlined" className="settings-card policy-card">
-					<div class="model-field">
-						<span class="field-label">请求类型</span>
-						<MaterialSelect
-							id="policy-{policy.request}"
-							value={policy.request}
-							options={requestPolicyOptions}
-							ariaLabel={`请求路由类型：${policy.request}`}
-							onChange={withStringValue((value) =>
-								setPolicyRequestFromInput(policy, value),
-							)}
-						/>
-					</div>
-					<div class="model-field">
-						<span class="field-label">首选模型</span>
-						<MaterialSelect
-							id="policy-{policy.request}-primary"
-							value={policy.primary || ''}
-							options={modelOptionsForPolicy(policy)}
-							ariaLabel={`${policy.request} 的首选模型`}
-							onChange={withStringValue((value) => (policy.primary = value))}
-						/>
-					</div>
-					<MaterialButton
-						variant="text"
-						label="移除策略"
-						onclick={() => removePolicy(policy)}
-					/>
-				</MaterialCard>
-			{/each}
-			{#if !(llmConfig.request_policies || []).length}
-				<div class="policy-empty">
-					<strong>还没有请求路由</strong>
-					<span>添加策略后，Haven 才能按请求类型选择已配置的模型。</span>
+{#if visitedModels}
+	<div hidden={section !== 'models'}>
+		<SettingsSection className="model-section" ariaLabel="模型配置">
+			<ProviderList
+				providers={llmConfig.providers || []}
+				models={llmConfig.models || []}
+				{modelsByProvider}
+				{modelFetching}
+				{refreshingAll}
+				{modelOptions}
+				{isProviderKeyConfigured}
+				{apiStyleLabel}
+				onRefreshAll={() => discovery.refreshAllModels()}
+				onRefreshProvider={refreshProvider}
+				onAddModel={addModel}
+				onRenameModel={renameModel}
+				onSetModel={setModel}
+				onSetModelProvider={setModelProvider}
+				onSetCapability={setCapability}
+				onUpdateOverride={updateModelOverride}
+				onRemoveModel={removeModel}
+				onEditProvider={editProvider}
+				onDeleteProvider={deleteProvider}
+			/>
+			<SettingsField
+				label="每个模型端点的并发请求"
+				id="llm-max-concurrent-requests"
+				description="超过上限的请求会排队，减少同一服务商的限流错误。"
+			>
+				<MaterialNumberField
+					id="llm-max-concurrent-requests"
+					value={llmConfig.max_concurrent_requests}
+					min={1}
+					max={16}
+					onChange={withNumberValue(
+						(value) => (llmConfig.max_concurrent_requests = value),
+					)}
+				/>
+			</SettingsField>
+			<div class="policy-section-heading">
+				<div>
+					<h3>请求路由</h3>
+					<p>
+						每种请求类型使用一条策略，选择声明了对应能力的模型配置。音频与媒体服务另在「媒体」页设置。
+					</p>
 				</div>
-			{/if}
-			<div class="section-actions">
-				<MaterialButton variant="outlined" label="添加请求路由" onclick={addPolicy} />
+				<StatusBadge
+					label={`${llmConfig.request_policies?.length || 0} 条策略`}
+					tone="info"
+				/>
 			</div>
-		</div>
-		<p class="cost-hint">
-			模型上下文和成本默认读取 Provider
-			目录元数据；没有元数据时可在模型的高级参数中填写。未配置上下文时回退到「限制」页的默认值。
-		</p>
-	</SettingsSection>
+			<div class="card-list policy-list">
+				{#each llmConfig.request_policies || [] as policy (policy.request)}
+					<MaterialCard variant="outlined" className="settings-card policy-card">
+						<div class="model-field">
+							<span class="field-label">请求类型</span>
+							<MaterialSelect
+								id="policy-{policy.request}"
+								value={policy.request}
+								options={requestPolicyOptions}
+								ariaLabel={`请求路由类型：${policy.request}`}
+								onChange={withStringValue((value) =>
+									setPolicyRequestFromInput(policy, value),
+								)}
+							/>
+						</div>
+						<div class="model-field">
+							<span class="field-label">首选模型</span>
+							<MaterialSelect
+								id="policy-{policy.request}-primary"
+								value={policy.primary || ''}
+								options={modelOptionsForPolicy(policy)}
+								ariaLabel={`${policy.request} 的首选模型`}
+								onChange={withStringValue((value) => (policy.primary = value))}
+							/>
+						</div>
+						<MaterialButton
+							variant="text"
+							label="移除策略"
+							onclick={() => removePolicy(policy)}
+						/>
+					</MaterialCard>
+				{/each}
+				{#if !(llmConfig.request_policies || []).length}
+					<div class="policy-empty">
+						<strong>还没有请求路由</strong>
+						<span>添加策略后，Haven 才能按请求类型选择已配置的模型。</span>
+					</div>
+				{/if}
+				<div class="section-actions">
+					<MaterialButton variant="outlined" label="添加请求路由" onclick={addPolicy} />
+				</div>
+			</div>
+			<p class="cost-hint">
+				模型上下文和成本默认读取 Provider
+				目录元数据；没有元数据时可在模型的高级参数中填写。未配置上下文时回退到「限制」页的默认值。
+			</p>
+		</SettingsSection>
+	</div>
 {/if}
 
 <ProviderDialog
