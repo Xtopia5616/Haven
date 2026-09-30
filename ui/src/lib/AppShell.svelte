@@ -471,24 +471,15 @@
 			border: 1px solid var(--md-sys-color-outline-variant);
 			border-radius: var(--md-comp-status-radius);
 			background: var(--md-sys-color-surface-container-high);
-			box-shadow: var(--md-sys-elevation-0);
 			transition:
 				background-color var(--md-sys-motion-duration-fast)
 					var(--md-sys-motion-easing-standard),
 				border-color var(--md-sys-motion-duration-fast)
-					var(--md-sys-motion-easing-standard),
-				box-shadow var(--md-sys-motion-duration-fast)
-					var(--md-sys-motion-easing-standard),
-				transform var(--md-sys-motion-duration-fast)
 					var(--md-sys-motion-easing-standard);
 		}
 		.rail-footer :global(.rail-theme-button[data-size='toolbar']:hover) {
 			border-color: var(--md-sys-color-outline);
 			background: var(--md-sys-color-surface-container-highest);
-			box-shadow: var(--md-sys-elevation-1);
-		}
-		.rail-footer :global(.rail-theme-button[data-size='toolbar']:active) {
-			box-shadow: var(--md-sys-elevation-0);
 		}
 		.compact-workspace-nav {
 			display: none;
