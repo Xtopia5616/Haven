@@ -447,7 +447,7 @@
 		}
 	}
 
-	@media screen and (min-width: 1280px) and (orientation: landscape) {
+	@media screen and (min-width: 1440px) and (orientation: landscape) {
 		.app-shell {
 			grid-template-columns: 232px minmax(0, 1fr);
 		}
