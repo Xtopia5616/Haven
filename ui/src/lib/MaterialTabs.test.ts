@@ -55,5 +55,11 @@ describe('MaterialTabs', () => {
 		await rerender({ tabs, activeTab: 'general', isVisible: true } as any);
 		await waitFor(() => expect(tablist.classList.contains('md-tabs--indicator-ready')).toBe(true));
 		expect(tablist.style.getPropertyValue('--md-tab-indicator-x')).toBe('68px');
+
+		await rerender({ tabs, activeTab: 'general', isVisible: false } as any);
+		expect(tablist.classList.contains('md-tabs--indicator-ready')).toBe(false);
+
+		await rerender({ tabs, activeTab: 'general', isVisible: true } as any);
+		await waitFor(() => expect(tablist.classList.contains('md-tabs--indicator-ready')).toBe(true));
 	});
 });

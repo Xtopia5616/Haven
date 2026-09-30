@@ -159,7 +159,7 @@
 <div
 	bind:this={tabsElement}
 	class="md-tabs {className}"
-	class:md-tabs--indicator-ready={measuredIndicator.visible}
+	class:md-tabs--indicator-ready={measuredIndicator.visible && isVisible}
 	style={`--md-tab-indicator-x: ${measuredIndicator.x}px; --md-tab-indicator-y: ${measuredIndicator.y}px; --md-tab-indicator-width: ${measuredIndicator.width}px; --md-tab-indicator-height: ${measuredIndicator.height}px;`}
 	role="tablist"
 	aria-label={ariaLabel}
