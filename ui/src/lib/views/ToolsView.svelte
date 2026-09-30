@@ -376,7 +376,7 @@
 <div class="tools-page">
 	<WorkspacePageHeader title="工具" description="管理 Haven 可调用的工具、MCP 服务与技能。" />
 
-	<div class="tools-workspace">
+	<div class="tools-workspace responsive-layout-transition">
 		<nav class="tools-sidebar" aria-label="资源分类导航">
 			<div class="tools-sidebar-heading">
 				<h2>资源分类</h2>
@@ -570,15 +570,22 @@
 		max-width: var(--md-sys-content-max-width);
 	}
 	.tools-workspace {
-		display: flex;
-		flex-direction: column;
+		display: grid;
+		grid-template-columns: minmax(0, 0px) minmax(0, 1fr);
+		grid-template-rows: auto auto;
 		min-width: 0;
+	}
+	.tools-sidebar {
+		grid-column: 1 / -1;
+		grid-row: 1;
 	}
 	.tools-sidebar-heading {
 		display: none;
 	}
 	.tools-workspace-main {
 		min-width: 0;
+		grid-column: 1 / -1;
+		grid-row: 2;
 	}
 	:global(.tools-resource-tabs .md-tab__icon) {
 		display: none;
@@ -696,18 +703,23 @@
 			max-width: none;
 		}
 		.tools-workspace {
-			display: grid;
 			grid-template-columns: minmax(190px, 224px) minmax(0, 1fr);
 			align-items: start;
 			gap: var(--md-sys-space-2xl);
 		}
 		.tools-sidebar {
+			grid-column: 1;
+			grid-row: 1;
 			position: sticky;
 			top: var(--md-sys-space-lg);
 			align-self: start;
 			min-width: 0;
 			padding-right: var(--md-sys-space-lg);
 			border-right: 1px solid var(--md-sys-color-outline-variant);
+		}
+		.tools-workspace-main {
+			grid-column: 2;
+			grid-row: 1;
 		}
 		.tools-sidebar-heading {
 			display: block;

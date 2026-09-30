@@ -1075,7 +1075,7 @@
 			/>
 		</div>
 	{/if}
-	<div class="settings-layout">
+	<div class="settings-layout responsive-layout-transition">
 		<aside class="settings-sidebar">
 			<MaterialTabs
 				tabs={settingsTabs}
@@ -1282,6 +1282,19 @@
 	.settings-main {
 		min-width: 0;
 	}
+	.settings-layout {
+		display: grid;
+		grid-template-columns: minmax(0, 0px) minmax(0, 1fr);
+		grid-template-rows: auto auto;
+	}
+	.settings-sidebar {
+		grid-column: 1 / -1;
+		grid-row: 1;
+	}
+	.settings-main {
+		grid-column: 1 / -1;
+		grid-row: 2;
+	}
 	:global(.settings-tabs .md-tab small) {
 		max-width: 180px;
 		color: var(--md-sys-color-on-surface-variant);
@@ -1399,15 +1412,22 @@
 			max-width: none;
 		}
 		.settings-layout {
-			display: grid;
-			grid-template-columns: clamp(216px, 20vw, 272px) minmax(0, 1fr);
+			grid-template-columns:
+				minmax(clamp(216px, 20vw, 272px), clamp(216px, 20vw, 272px))
+				minmax(0, 1fr);
 			align-items: start;
 			column-gap: var(--md-sys-space-3xl);
 		}
 		.settings-sidebar {
+			grid-column: 1;
+			grid-row: 1;
 			position: sticky;
 			top: var(--md-sys-space-xl);
 			min-width: 0;
+		}
+		.settings-main {
+			grid-column: 2;
+			grid-row: 1;
 		}
 		:global(.settings-tabs .md-tab) {
 			min-width: 0;

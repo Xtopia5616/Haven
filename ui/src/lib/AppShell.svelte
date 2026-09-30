@@ -82,7 +82,7 @@
 	{@render themeControl()}
 {/snippet}
 
-<div class="app-shell">
+<div class="app-shell responsive-layout-transition">
 	<header class="titlebar md-toolbar">
 		<div class="titlebar-left">
 			<MaterialButton
@@ -146,6 +146,7 @@
 	.app-shell {
 		display: flex;
 		flex-direction: column;
+		grid-template-columns: 0px minmax(0, 1fr);
 		height: 100vh;
 		min-width: 0;
 		min-height: 0;
@@ -188,6 +189,7 @@
 	}
 	.workspace-rail {
 		display: none;
+		transition: padding var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard);
 	}
 	.compact-workspace-nav {
 		flex: 0 0 auto;
@@ -232,6 +234,7 @@
 		overscroll-behavior-x: none;
 		touch-action: pan-y;
 		padding: var(--md-sys-content-gutter);
+		transition: padding var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard);
 		background: var(--md-sys-color-surface);
 		background-image: linear-gradient(
 			180deg,
@@ -362,7 +365,13 @@
 			border-radius: var(--md-sys-shape-medium);
 		}
 		.workspace-rail :global(.workspace-link__copy) {
-			display: none;
+			display: flex;
+			flex: 0 1 0;
+			max-width: 0;
+			overflow: hidden;
+			opacity: 0;
+			transform: translateX(-4px);
+			pointer-events: none;
 		}
 		.workspace-rail :global(.workspace-link.active) {
 			border-color: transparent;
@@ -480,6 +489,11 @@
 		}
 		.workspace-rail :global(.workspace-link__copy) {
 			display: flex;
+			flex: 1 1 auto;
+			max-width: 14rem;
+			opacity: 1;
+			transform: none;
+			pointer-events: auto;
 		}
 		.rail-footer {
 			display: flex;

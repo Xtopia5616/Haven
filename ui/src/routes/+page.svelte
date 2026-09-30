@@ -877,7 +877,7 @@
 	});
 </script>
 
-<div class="chat-page" bind:this={chatPageEl}>
+<div class="chat-page responsive-layout-transition" bind:this={chatPageEl}>
 	<RollbackDialog
 		open={rollbackDialog.open}
 		stepNumber={rollbackDialog.stepNumber}
@@ -1017,8 +1017,9 @@
 <style>
 	.chat-page {
 		position: relative;
-		display: flex;
-		flex-direction: column;
+		display: grid;
+		grid-template-columns: minmax(0, 0px) minmax(0, 1fr);
+		grid-template-rows: minmax(0, 1fr);
 		flex: 1;
 		width: 100%;
 		min-width: 0;
@@ -1030,6 +1031,8 @@
 	.conversation-column {
 		position: relative;
 		display: flex;
+		grid-column: 1 / -1;
+		grid-row: 1;
 		flex: 1;
 		flex-direction: column;
 		min-width: 0;
@@ -1085,9 +1088,7 @@
 
 	@media screen and (min-width: 1280px) and (orientation: landscape) {
 		.chat-page {
-			display: grid;
 			grid-template-columns: 272px minmax(0, 1fr);
-			grid-template-rows: minmax(0, 1fr);
 			--md-sys-chat-max-width: 1080px;
 		}
 		.desktop-session-rail {

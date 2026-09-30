@@ -1040,6 +1040,24 @@ select.md-select {
 	border-radius: var(--md-sys-shape-extra-small);
 }
 
+.responsive-layout-transition {
+	transition:
+		grid-template-columns var(--md-sys-motion-duration-fast)
+			var(--md-sys-motion-easing-standard),
+		column-gap var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard);
+}
+.responsive-layout-transition .workspace-link__copy {
+	transition:
+		max-width var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard),
+		opacity var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard),
+		transform var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard);
+}
+@media (prefers-reduced-motion: reduce) {
+	.responsive-layout-transition,
+	.responsive-layout-transition .workspace-link__copy {
+		transition: none;
+	}
+}
 /* Shared route heading rhythm. Pages can opt in without duplicating layout
  * rules, while the actual content and actions remain route-owned. */
 .page-heading {

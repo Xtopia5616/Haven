@@ -579,7 +579,7 @@
 
 <div class="memory-page">
 	<WorkspacePageHeader title="历史" description="回顾会话、任务和长期记忆。" />
-	<div class="memory-layout">
+	<div class="memory-layout responsive-layout-transition">
 		<aside class="memory-sidebar" aria-label="历史分类">
 			<MaterialTabs
 				tabs={memoryTabs}
@@ -775,6 +775,19 @@
 	.memory-sidebar {
 		min-width: 0;
 	}
+	.memory-layout {
+		display: grid;
+		grid-template-columns: minmax(0, 0px) minmax(0, 1fr);
+		grid-template-rows: auto auto;
+	}
+	.memory-sidebar {
+		grid-column: 1 / -1;
+		grid-row: 1;
+	}
+	.memory-main {
+		grid-column: 1 / -1;
+		grid-row: 2;
+	}
 	.memory-tools-view {
 		display: flex;
 		flex-direction: column;
@@ -835,12 +848,13 @@
 			max-width: none;
 		}
 		.memory-layout {
-			display: grid;
 			grid-template-columns: minmax(190px, 224px) minmax(0, 1fr);
 			align-items: start;
 			gap: var(--md-sys-space-2xl);
 		}
 		.memory-sidebar {
+			grid-column: 1;
+			grid-row: 1;
 			position: sticky;
 			top: var(--md-sys-space-lg);
 			align-self: start;
@@ -850,6 +864,10 @@
 		.memory-panel,
 		.memory-tools-view {
 			width: 100%;
+		}
+		.memory-main {
+			grid-column: 2;
+			grid-row: 1;
 		}
 	}
 	@media (max-width: 700px) {
