@@ -13,7 +13,6 @@
 		panelIdPrefix?: string;
 		panelId?: string;
 		showIcons?: boolean;
-		indicator?: 'css' | 'measured';
 		className?: string;
 	}
 
@@ -29,15 +28,22 @@
 		panelIdPrefix = 'tabpanel',
 		panelId = undefined,
 		showIcons = false,
-		indicator = 'css',
 		className = '',
 	}: Props = $props();
 
 	let tabsElement: HTMLDivElement | undefined;
 	let tabElements = $state<Record<string, HTMLButtonElement>>({});
-	let measuredIndicator = $state<{ x: number; width: number; visible: boolean }>({
+	let measuredIndicator = $state<{
+		x: number;
+		y: number;
+		width: number;
+		height: number;
+		visible: boolean;
+	}>({
 		x: 0,
-		width: 24,
+		y: 0,
+		width: 0,
+		height: 0,
 		visible: false,
 	});
 
@@ -47,25 +53,51 @@
 	}
 
 	function updateMeasuredIndicator(): void {
-		if (indicator !== 'measured') return;
 		const activeElement = tabElements[activeTab];
 		if (!tabsElement || !activeElement) return;
 
 		const tabsRect = tabsElement.getBoundingClientRect();
 		const tabRect = activeElement.getBoundingClientRect();
-		const width =
-			Number.parseFloat(
-				getComputedStyle(tabsElement).getPropertyValue('--md-comp-tab-indicator-min-width'),
-			) || 24;
+		const tabsStyle = getComputedStyle(tabsElement);
+		const originLeft = tabsRect.left + tabsElement.clientLeft;
+		const originTop = tabsRect.top + tabsElement.clientTop;
+		const vertical = tabsStyle.flexDirection === 'column';
+		const indicatorHeight =
+			Number.parseFloat(tabsStyle.getPropertyValue('--md-comp-tab-indicator-height')) || 3;
+		const width = vertical
+			? indicatorHeight
+			: Number.parseFloat(tabsStyle.getPropertyValue('--md-comp-tab-indicator-min-width')) ||
+				24;
+		const height = vertical
+			? Number.parseFloat(tabsStyle.getPropertyValue('--md-sys-space-xl')) || 20
+			: indicatorHeight;
 
-		if (tabRect.width <= 0) {
+		if (
+			tabsRect.width <= 0 ||
+			tabsRect.height <= 0 ||
+			tabRect.width <= 0 ||
+			tabRect.height <= 0
+		) {
 			measuredIndicator.visible = false;
 			return;
 		}
 
 		measuredIndicator = {
-			x: tabRect.left - tabsRect.left + (tabRect.width - width) / 2,
+			x: vertical
+				? tabRect.left -
+					originLeft +
+					(Number.parseFloat(tabsStyle.getPropertyValue('--md-sys-space-sm')) || 8)
+				: tabRect.left - originLeft + (tabRect.width - width) / 2,
+			y: vertical
+				? tabRect.top - originTop + (tabRect.height - height) / 2
+				: tabRect.bottom -
+					originTop -
+					(Number.parseFloat(
+						tabsStyle.getPropertyValue('--md-comp-tab-indicator-bottom'),
+					) || 3) -
+					height,
 			width,
+			height,
 			visible: true,
 		};
 	}
@@ -73,12 +105,10 @@
 	$effect(() => {
 		activeTab;
 		tabs;
-		indicator;
-		if (indicator === 'measured') void tick().then(updateMeasuredIndicator);
+		void tick().then(updateMeasuredIndicator);
 	});
 
 	onMount(() => {
-		if (indicator !== 'measured') return;
 		const handleResize = () => updateMeasuredIndicator();
 		window.addEventListener('resize', handleResize);
 		let resizeObserver: ResizeObserver | undefined;
@@ -100,9 +130,8 @@
 <div
 	bind:this={tabsElement}
 	class="md-tabs {className}"
-	class:md-tabs--measured={indicator === 'measured'}
 	class:md-tabs--indicator-ready={measuredIndicator.visible}
-	style={`--md-tab-indicator-x: ${measuredIndicator.x}px; --md-tab-indicator-width: ${measuredIndicator.width}px;`}
+	style={`--md-tab-indicator-x: ${measuredIndicator.x}px; --md-tab-indicator-y: ${measuredIndicator.y}px; --md-tab-indicator-width: ${measuredIndicator.width}px; --md-tab-indicator-height: ${measuredIndicator.height}px;`}
 	role="tablist"
 	aria-label={ariaLabel}
 >
@@ -128,25 +157,24 @@
 			{#if tab.hint}<small>{tab.hint}</small>{/if}
 		</button>
 	{/each}
-	{#if indicator === 'measured'}
-		<span class="workspace-nav__indicator" aria-hidden="true"></span>
-	{/if}
+	<span class="md-tabs__indicator" aria-hidden="true"></span>
 </div>
 
 <style>
-	.md-tabs--measured {
+	.md-tabs {
 		position: relative;
 	}
 
-	.md-tabs--measured .workspace-nav__indicator {
+	.md-tabs .md-tabs__indicator {
 		position: absolute;
-		bottom: 0;
+		z-index: 1;
 		left: 0;
+		top: 0;
 		width: var(--md-tab-indicator-width);
-		height: var(--md-comp-tab-indicator-height);
+		height: var(--md-tab-indicator-height);
 		border-radius: var(--md-sys-shape-full);
 		background: var(--md-sys-color-primary);
-		transform: translateX(var(--md-tab-indicator-x));
+		transform: translate(var(--md-tab-indicator-x), var(--md-tab-indicator-y));
 		opacity: 0;
 		transition:
 			transform var(--md-sys-motion-duration-medium) var(--md-sys-motion-easing-emphasized),
@@ -154,7 +182,7 @@
 		pointer-events: none;
 	}
 
-	.md-tabs--measured.md-tabs--indicator-ready .workspace-nav__indicator {
+	.md-tabs--indicator-ready .md-tabs__indicator {
 		opacity: 1;
 	}
 
@@ -164,7 +192,7 @@
 	}
 
 	@media (prefers-reduced-motion: reduce) {
-		.md-tabs--measured .workspace-nav__indicator {
+		.md-tabs .md-tabs__indicator {
 			transition: none;
 		}
 	}
