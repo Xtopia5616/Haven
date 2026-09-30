@@ -35,6 +35,10 @@
 
 	let tabsElement: HTMLDivElement | undefined;
 	let tabElements = $state<Record<string, HTMLButtonElement>>({});
+	let animateIndicator = $state(false);
+	let tablistWasVisible = false;
+	let previousActiveTab: string | undefined;
+	let hasMeasuredIndicator = false;
 	let measuredIndicator = $state<{
 		x: number;
 		y: number;
@@ -57,11 +61,18 @@
 	function updateMeasuredIndicator(): void {
 		if (!isVisible) {
 			measuredIndicator.visible = false;
+			hasMeasuredIndicator = false;
+			animateIndicator = false;
 			return;
 		}
 
 		const activeElement = tabElements[activeTab];
-		if (!tabsElement || !activeElement) return;
+		if (!tabsElement || !activeElement) {
+			measuredIndicator.visible = false;
+			hasMeasuredIndicator = false;
+			animateIndicator = false;
+			return;
+		}
 
 		const tabsRect = tabsElement.getBoundingClientRect();
 		const tabRect = activeElement.getBoundingClientRect();
@@ -86,6 +97,8 @@
 			tabRect.height <= 0
 		) {
 			measuredIndicator.visible = false;
+			hasMeasuredIndicator = false;
+			animateIndicator = false;
 			return;
 		}
 
@@ -107,13 +120,32 @@
 			height,
 			visible: true,
 		};
+		hasMeasuredIndicator = true;
 	}
 
 	$effect(() => {
-		activeTab;
+		const nextActiveTab = activeTab;
 		tabs;
-		isVisible;
-		if (!isVisible) return;
+		const visible = isVisible;
+		if (!visible) {
+			measuredIndicator.visible = false;
+			hasMeasuredIndicator = false;
+			animateIndicator = false;
+			previousActiveTab = nextActiveTab;
+			tablistWasVisible = false;
+			return;
+		}
+
+		// Only a selection change within an already visible tablist should move
+		// the indicator. Initial layout and keep-alive re-entry must snap to the
+		// freshly measured position instead of animating from stale coordinates.
+		const shouldAnimate =
+			tablistWasVisible &&
+			hasMeasuredIndicator &&
+			previousActiveTab !== undefined &&
+			previousActiveTab !== nextActiveTab;
+		previousActiveTab = nextActiveTab;
+		tablistWasVisible = true;
 
 		let cancelled = false;
 		let cancelPendingMeasurement: (() => void) | undefined;
@@ -124,9 +156,21 @@
 				if (!cancelled) updateMeasuredIndicator();
 			};
 			if (typeof requestAnimationFrame === 'function') {
-				const frame = requestAnimationFrame(measure);
-				cancelPendingMeasurement = () => cancelAnimationFrame(frame);
+				if (shouldAnimate) {
+					animateIndicator = true;
+					const prepareFrame = requestAnimationFrame(() => {
+						if (cancelled) return;
+						const measureFrame = requestAnimationFrame(measure);
+						cancelPendingMeasurement = () => cancelAnimationFrame(measureFrame);
+					});
+					cancelPendingMeasurement = () => cancelAnimationFrame(prepareFrame);
+				} else {
+					animateIndicator = false;
+					const frame = requestAnimationFrame(measure);
+					cancelPendingMeasurement = () => cancelAnimationFrame(frame);
+				}
 			} else {
+				animateIndicator = false;
 				const timeout = window.setTimeout(measure, 0);
 				cancelPendingMeasurement = () => window.clearTimeout(timeout);
 			}
@@ -136,6 +180,11 @@
 			cancelPendingMeasurement?.();
 		};
 	});
+
+	function finishIndicatorTransition(event: TransitionEvent): void {
+		if (event.target !== event.currentTarget || event.propertyName !== 'transform') return;
+		animateIndicator = false;
+	}
 
 	onMount(() => {
 		const handleResize = () => updateMeasuredIndicator();
@@ -160,6 +209,7 @@
 	bind:this={tabsElement}
 	class="md-tabs {className}"
 	class:md-tabs--indicator-ready={measuredIndicator.visible && isVisible}
+	class:md-tabs--indicator-animating={animateIndicator}
 	style={`--md-tab-indicator-x: ${measuredIndicator.x}px; --md-tab-indicator-y: ${measuredIndicator.y}px; --md-tab-indicator-width: ${measuredIndicator.width}px; --md-tab-indicator-height: ${measuredIndicator.height}px;`}
 	role="tablist"
 	aria-label={ariaLabel}
@@ -186,7 +236,11 @@
 			{#if tab.hint}<small>{tab.hint}</small>{/if}
 		</button>
 	{/each}
-	<span class="md-tabs__indicator" aria-hidden="true"></span>
+	<span
+		class="md-tabs__indicator"
+		aria-hidden="true"
+		ontransitionend={finishIndicatorTransition}
+	></span>
 </div>
 
 <style>
@@ -205,10 +259,14 @@
 		background: var(--md-sys-color-primary);
 		transform: translate(var(--md-tab-indicator-x), var(--md-tab-indicator-y));
 		opacity: 0;
+		transition: none;
+		pointer-events: none;
+	}
+
+	.md-tabs--indicator-animating .md-tabs__indicator {
 		transition:
 			transform var(--md-sys-motion-duration-medium) var(--md-sys-motion-easing-emphasized),
 			opacity var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard);
-		pointer-events: none;
 	}
 
 	.md-tabs--indicator-ready .md-tabs__indicator {
