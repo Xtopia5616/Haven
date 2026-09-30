@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { onMount, tick } from 'svelte';
 	import Icon from './Icon.svelte';
 
 	interface WorkspaceTab {
@@ -15,14 +16,101 @@
 	}
 
 	let { tabs = [], activeTab = 'chat', onNavigate = () => {} }: Props = $props();
+	let navElement: HTMLElement | undefined;
+	let linkElements = $state<Record<string, HTMLButtonElement>>({});
+	let measuredIndicator = $state({ x: 0, y: 0, visible: false });
+
+	function updateMeasuredIndicator(): void {
+		const activeElement = linkElements[activeTab];
+		if (!navElement || !activeElement) {
+			measuredIndicator.visible = false;
+			return;
+		}
+
+		const navRect = navElement.getBoundingClientRect();
+		const linkRect = activeElement.getBoundingClientRect();
+		const navStyle = getComputedStyle(navElement);
+		const indicatorHeight =
+			Number.parseFloat(navStyle.getPropertyValue('--md-sys-space-xl')) || 20;
+		const indicatorInset =
+			Number.parseFloat(navStyle.getPropertyValue('--md-sys-space-xs')) || 4;
+
+		if (
+			navRect.width <= 0 ||
+			navRect.height <= 0 ||
+			linkRect.width <= 0 ||
+			linkRect.height <= 0
+		) {
+			measuredIndicator.visible = false;
+			return;
+		}
+
+		measuredIndicator = {
+			x: linkRect.left - navRect.left + indicatorInset,
+			y: linkRect.top - navRect.top + (linkRect.height - indicatorHeight) / 2,
+			visible: true,
+		};
+	}
+
+	$effect(() => {
+		activeTab;
+		tabs;
+		let cancelled = false;
+		let cancelPendingMeasurement: (() => void) | undefined;
+
+		void tick().then(() => {
+			if (cancelled) return;
+			const measure = () => {
+				cancelPendingMeasurement = undefined;
+				if (!cancelled) updateMeasuredIndicator();
+			};
+			if (typeof requestAnimationFrame === 'function') {
+				const frame = requestAnimationFrame(measure);
+				cancelPendingMeasurement = () => cancelAnimationFrame(frame);
+			} else {
+				const timeout = window.setTimeout(measure, 0);
+				cancelPendingMeasurement = () => window.clearTimeout(timeout);
+			}
+		});
+
+		return () => {
+			cancelled = true;
+			cancelPendingMeasurement?.();
+		};
+	});
+
+	onMount(() => {
+		const handleResize = () => updateMeasuredIndicator();
+		window.addEventListener('resize', handleResize);
+		let resizeObserver: ResizeObserver | undefined;
+		if (typeof ResizeObserver !== 'undefined' && navElement) {
+			const observer = new ResizeObserver(handleResize);
+			resizeObserver = observer;
+			observer.observe(navElement);
+			Object.values(linkElements).forEach((element) => observer.observe(element));
+		}
+		updateMeasuredIndicator();
+
+		return () => {
+			window.removeEventListener('resize', handleResize);
+			resizeObserver?.disconnect();
+		};
+	});
 </script>
 
-<nav class="landscape-workspace-nav" aria-label="工作区">
+<nav
+	bind:this={navElement}
+	class="landscape-workspace-nav"
+	class:landscape-workspace-nav--indicator-ready={measuredIndicator.visible}
+	style={`--workspace-indicator-x: ${measuredIndicator.x}px; --workspace-indicator-y: ${measuredIndicator.y}px;`}
+	aria-label="工作区"
+>
 	{#each tabs as tab (tab.id)}
 		<button
 			type="button"
 			class="workspace-link"
 			class:active={activeTab === tab.id}
+			bind:this={linkElements[tab.id]}
 			aria-current={activeTab === tab.id ? 'page' : undefined}
 			aria-label={tab.label}
 			title={tab.hint ? `${tab.label} · ${tab.hint}` : tab.label}
@@ -37,10 +125,12 @@
 			</span>
 		</button>
 	{/each}
+	<span class="landscape-workspace-nav__indicator" aria-hidden="true"></span>
 </nav>
 
 <style>
 	.landscape-workspace-nav {
+		position: relative;
 		display: flex;
 		flex-direction: column;
 		gap: var(--md-sys-space-xs);
@@ -85,16 +175,24 @@
 		background: var(--md-sys-color-secondary-container);
 		color: var(--md-sys-color-on-secondary-container);
 	}
-	.workspace-link.active::before {
-		content: '';
+	.landscape-workspace-nav__indicator {
 		position: absolute;
-		left: var(--md-sys-space-xs);
-		top: 50%;
+		z-index: 1;
+		left: 0;
+		top: 0;
 		width: var(--md-comp-tab-indicator-height);
 		height: var(--md-sys-space-xl);
 		border-radius: var(--md-sys-shape-full);
 		background: var(--md-sys-color-primary);
-		transform: translateY(-50%);
+		transform: translate(var(--workspace-indicator-x), var(--workspace-indicator-y));
+		opacity: 0;
+		transition:
+			transform var(--md-sys-motion-duration-medium) var(--md-sys-motion-easing-emphasized),
+			opacity var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard);
+		pointer-events: none;
+	}
+	.landscape-workspace-nav--indicator-ready .landscape-workspace-nav__indicator {
+		opacity: 1;
 	}
 	.workspace-link__icon {
 		display: grid;
@@ -104,10 +202,6 @@
 		flex: 0 0 32px;
 		border-radius: var(--md-sys-shape-small);
 		color: inherit;
-	}
-	.workspace-link.active .workspace-link__icon {
-		background: transparent;
-		color: var(--md-sys-color-primary);
 	}
 	.workspace-link__copy {
 		display: flex;
@@ -128,5 +222,10 @@
 		line-height: var(--md-sys-typescale-label-small-line-height);
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.landscape-workspace-nav__indicator {
+			transition: none;
+		}
 	}
 </style>
