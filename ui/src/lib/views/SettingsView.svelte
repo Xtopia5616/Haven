@@ -1,7 +1,9 @@
 <script lang="ts">
+	let { isVisible = true }: { isVisible?: boolean } = $props();
 	import { onMount, onDestroy, tick } from 'svelte';
 	import { invoke } from '$lib/tauri.ts';
 	import { registerListeners } from '$lib/events.ts';
+	import AsyncState from '$lib/AsyncState.svelte';
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import MaterialTabs from '$lib/MaterialTabs.svelte';
@@ -27,6 +29,7 @@
 	import SettingsGeneral from './SettingsGeneral.svelte';
 	import SettingsSecurity from './SettingsSecurity.svelte';
 	import SettingsLimits from './SettingsLimits.svelte';
+	import WorkspacePageHeader from '$lib/WorkspacePageHeader.svelte';
 	import type {
 		ApiKeyStatus,
 		AudioConfigInput,
@@ -235,11 +238,11 @@
 		staticCatalog: false,
 	});
 	const settingsTabs = [
-		{ id: 'general', label: '常规', hint: '快捷键、会话、记忆与外观' },
-		{ id: 'models', label: '模型', hint: 'Provider、能力与请求策略' },
-		{ id: 'media', label: '媒体', hint: '语音、图片、朗读与生成' },
-		{ id: 'security', label: '权限', hint: '行为策略与安全边界' },
-		{ id: 'limits', label: '限制', hint: '上下文、文件与容量' },
+		{ id: 'general', label: '常规' },
+		{ id: 'models', label: '模型' },
+		{ id: 'media', label: '媒体' },
+		{ id: 'security', label: '权限' },
+		{ id: 'limits', label: '限制' },
 	];
 	let mcpServerNames = $state<string[]>([]);
 	let settingsLoaded = $state(false);
@@ -1081,29 +1084,19 @@
 </script>
 
 <div class="settings-page">
-	<div class="page-heading">
-		<div class="page-heading-content">
-			<h1>设置</h1>
-			<p>调整 Haven 的模型、语音、性能与安全行为。</p>
-		</div>
-	</div>
+	<WorkspacePageHeader title="设置" description="调整 Haven 的模型、语音、性能与安全行为。" />
 	{#if settingsLoaded && settingsTab !== 'models' && llmConfig.providers.length === 0}
-		<div class="settings-callout motion-surface-enter" data-state="unconfigured" role="status">
-			<div>
-				<strong>模型尚未配置</strong>
-				<p>
-					添加 Provider 后，Haven 才能生成回复。你可以先完成模型配置，再回来调整其他选项。
-				</p>
-			</div>
-			<MaterialButton
-				variant="outlined"
-				label="去配置模型"
-				onclick={() => changeSettingsTab('models')}
-			/>
-		</div>
+		<AsyncState
+			state="unconfigured"
+			layout="compact"
+			title="模型尚未配置"
+			message="添加 Provider 后，Haven 才能生成回复。你可以先完成模型配置，再回来调整其他选项。"
+			actionLabel="去配置模型"
+			onAction={() => changeSettingsTab('models')}
+		/>
 	{/if}
-	<div class="settings-layout responsive-layout-transition">
-		<aside class="settings-sidebar responsive-layout-panel">
+	<div class="settings-layout workspace-secondary-layout responsive-layout-transition">
+		<aside class="settings-sidebar workspace-secondary-sidebar responsive-layout-panel">
 			<MaterialTabs
 				tabs={settingsTabs}
 				activeTab={settingsTab}
@@ -1111,10 +1104,11 @@
 				ariaLabel="设置分类"
 				idPrefix="settings-tab"
 				panelId="settings-panel"
-				className="workspace-secondary-tabs workspace-secondary-tabs--sidebar settings-tabs"
+				className="workspace-secondary-tabs workspace-secondary-tabs--sidebar"
+				{isVisible}
 			/>
 		</aside>
-		<div class="settings-main">
+		<div class="settings-main workspace-secondary-main">
 			{#key settingsTab}
 				<div
 					id="settings-panel"
@@ -1309,44 +1303,6 @@
 	.settings-main {
 		min-width: 0;
 	}
-	.settings-layout {
-		display: grid;
-		grid-template-columns: minmax(0, 0px) minmax(0, 1fr);
-		grid-template-rows: auto auto;
-	}
-	.settings-sidebar {
-		grid-column: 1 / -1;
-		grid-row: 1;
-	}
-	.settings-main {
-		grid-column: 1 / -1;
-		grid-row: 2;
-	}
-	:global(.settings-tabs .md-tab small) {
-		max-width: 180px;
-		color: var(--md-sys-color-on-surface-variant);
-		font-size: var(--md-sys-typescale-label-small-size);
-		font-weight: 400;
-		line-height: var(--md-sys-typescale-label-small-line-height);
-	}
-	.settings-callout {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: var(--md-sys-space-lg);
-		margin-bottom: var(--md-sys-space-xl);
-		padding: var(--md-sys-space-lg);
-		border: 1px solid var(--md-sys-color-tertiary);
-		border-radius: var(--md-sys-shape-medium);
-		background: var(--md-sys-color-tertiary-container);
-		color: var(--md-sys-color-on-tertiary-container);
-	}
-	.settings-callout p {
-		margin-top: var(--md-sys-space-xs);
-		color: var(--md-sys-color-on-tertiary-container);
-		font-size: var(--md-sys-typescale-body-small-size);
-		line-height: var(--md-sys-typescale-body-small-line-height);
-	}
 	.model-hint {
 		font-size: var(--md-sys-typescale-label-small-size);
 		color: var(--md-sys-color-on-surface-variant);
@@ -1434,57 +1390,16 @@
 		margin: 0;
 		white-space: pre;
 	}
-	@media screen and (min-aspect-ratio: 4/3) and (orientation: landscape) {
+	@media screen and (min-width: 840px) {
 		.settings-page {
 			max-width: none;
 		}
-		.settings-layout {
-			grid-template-columns:
-				minmax(clamp(216px, 20vw, 272px), clamp(216px, 20vw, 272px))
-				minmax(0, 1fr);
-			align-items: start;
-			column-gap: var(--md-sys-space-3xl);
-		}
-		.settings-sidebar {
-			grid-column: 1;
-			grid-row: 1;
-			animation: responsive-layout-panel-in var(--md-sys-motion-duration-short)
-				var(--md-sys-motion-easing-standard) both;
-			position: sticky;
-			top: var(--md-sys-space-xl);
-			min-width: 0;
-		}
-		.settings-main {
-			grid-column: 2;
-			grid-row: 1;
-		}
-		:global(.settings-tabs .md-tab) {
-			min-width: 0;
-		}
-		:global(.settings-tabs .md-tab small) {
-			max-width: none;
-		}
-	}
-	@media screen and (orientation: landscape) and (max-width: 1100px) {
-		:global(.settings-tabs .md-tab small) {
-			display: none;
-		}
 	}
 	@media (max-width: 640px) {
-		:global(.settings-tabs .md-tab) {
-			min-width: 0;
-			flex: 1 1 50%;
-			padding-inline: var(--md-sys-space-md);
-		}
-		:global(.settings-tabs .md-tab small) {
-			display: none;
-		}
-		.settings-callout,
 		.save-bar {
 			align-items: stretch;
 			flex-direction: column;
 		}
-		.settings-callout :global(.md-btn),
 		.save-actions,
 		.save-actions :global(.md-btn),
 		.save-button-status {

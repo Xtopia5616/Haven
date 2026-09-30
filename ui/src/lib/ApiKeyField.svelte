@@ -261,6 +261,19 @@
 		);
 		color: var(--md-sys-color-on-surface);
 	}
+	.api-key-badge.empty {
+		border-color: color-mix(
+			in srgb,
+			var(--md-sys-color-warning) 55%,
+			var(--md-sys-color-outline-variant)
+		);
+		background: color-mix(
+			in srgb,
+			var(--md-sys-color-warning) 12%,
+			var(--md-sys-color-surface-container)
+		);
+		color: var(--md-sys-color-on-surface);
+	}
 	:global(.api-key-badge-icon) {
 		width: 14px;
 		height: 14px;

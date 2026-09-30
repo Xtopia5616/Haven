@@ -32,17 +32,18 @@
 		min-height: calc(var(--md-sys-space-4xl) * 5);
 		padding: var(--md-sys-space-4xl) var(--md-sys-space-2xl);
 	}
-	/* Page-level loaders cover the workspace content only. Keeping the chrome
-	 * outside this layer lets the titlebar and workspace navigation remain
-	 * visible and usable while the first view or a lazy view is loading. */
+	/* Page-level loading blocks the whole app until the requested workspace is
+	 * ready, so the shell and its navigation cannot show stale content or accept
+	 * input behind the loading indicator. */
 	.loading-state--page {
 		position: fixed;
-		inset: calc(var(--md-comp-titlebar-height) + var(--md-comp-tab-container-height)) 0 0;
+		inset: 0;
 		box-sizing: border-box;
 		z-index: var(--md-sys-z-drawer);
 		min-height: 0;
 		padding: 0;
-		pointer-events: none;
+		background: var(--md-sys-color-background);
+		pointer-events: auto;
 	}
 	.loading-state--inline {
 		min-height: var(--md-sys-space-4xl);

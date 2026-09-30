@@ -1250,7 +1250,7 @@
 									onAnimationEnd={(/** @type {AnimationEvent} */ event) =>
 										finishTabEntry(tab.id, event)}
 								>
-									<TabComponent />
+									<TabComponent isVisible={activeTab === 'tools'} />
 								</WorkspaceSurface>
 							{:else if lazyViewStates.tools === 'error'}
 								<WorkspaceSurface
@@ -1281,6 +1281,7 @@
 										finishTabEntry(tab.id, event)}
 								>
 									<MemoryViewComponent
+										isVisible={activeTab === 'memory'}
 										onNewSession={startNewSessionFromTasks}
 										{runningBackgroundActions}
 										{pendingScheduledActions}
@@ -1319,7 +1320,7 @@
 									onAnimationEnd={(/** @type {AnimationEvent} */ event) =>
 										finishTabEntry(tab.id, event)}
 								>
-									<TabComponent />
+									<TabComponent isVisible={activeTab === 'settings'} />
 								</WorkspaceSurface>
 							{:else if lazyViewStates.settings === 'error'}
 								<WorkspaceSurface

@@ -1117,6 +1117,11 @@ select.md-select {
 	min-width: 0;
 }
 
+.workspace-filter-bar > .count-chip {
+	flex: 0 0 auto;
+	white-space: nowrap;
+}
+
 @media (max-width: 640px) {
 	.page-heading {
 		align-items: flex-start;
@@ -1169,6 +1174,22 @@ select.md-select {
    and a short indicator. Vertical tab lists move the indicator to the leading
    edge while keeping the same selected treatment.
 */
+.workspace-secondary-layout {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr);
+	grid-template-rows: auto auto;
+	min-width: 0;
+}
+.workspace-secondary-sidebar {
+	grid-column: 1;
+	grid-row: 1;
+	min-width: 0;
+}
+.workspace-secondary-main {
+	grid-column: 1;
+	grid-row: 2;
+	min-width: 0;
+}
 .md-tabs {
 	display: flex;
 	align-items: stretch;
@@ -1255,7 +1276,28 @@ select.md-select {
 	}
 }
 
-@media screen and (min-aspect-ratio: 4/3) and (orientation: landscape) {
+@media screen and (min-width: 840px) {
+	.workspace-secondary-layout {
+		grid-template-columns: minmax(190px, 224px) minmax(0, 1fr);
+		grid-template-rows: auto;
+		align-items: start;
+		gap: var(--md-sys-space-2xl);
+	}
+	.workspace-secondary-sidebar {
+		grid-column: 1;
+		grid-row: 1;
+		position: sticky;
+		top: var(--md-sys-space-lg);
+		align-self: start;
+		padding-right: var(--md-sys-space-lg);
+		border-right: 1px solid var(--md-sys-color-outline-variant);
+		animation: responsive-layout-panel-in var(--md-sys-motion-duration-short)
+			var(--md-sys-motion-easing-standard) both;
+	}
+	.workspace-secondary-main {
+		grid-column: 2;
+		grid-row: 1;
+	}
 	.md-tabs.workspace-secondary-tabs--sidebar {
 		align-items: stretch;
 		flex-direction: column;

@@ -21,7 +21,8 @@ describe('SessionHistory actions', () => {
 	it('shows the history count in the shared filter bar', () => {
 		render(SessionHistory, { ...commonProps, totalCount: 3 });
 
-		expect(document.querySelector('.filter-bar .count-chip')?.textContent).toBe('共 3 条历史');
+		const count = document.querySelector('.filter-bar > .count-chip');
+		expect(count?.textContent).toBe('共 3 条历史');
 	});
 
 	it('offers a direct next step when there is no history', async () => {
@@ -34,7 +35,7 @@ describe('SessionHistory actions', () => {
 	});
 
 	it('opens a session by clicking its row and keeps delete available', async () => {
-		setViewport(1024, 769);
+		setViewport(839, 769);
 		const onResume = vi.fn();
 		const onDeleteRequest = vi.fn();
 		const session: SessionHistoryRow = {
@@ -63,7 +64,8 @@ describe('SessionHistory actions', () => {
 		expect(onResume).toHaveBeenCalledTimes(1);
 	});
 
-	it('shows the session preview when the viewport reaches 4:3', async () => {
+	it('shows the session preview at the expanded-width breakpoint', async () => {
+		setViewport(840, 900);
 		const onResume = vi.fn();
 		const session: SessionHistoryRow = {
 			id: 'ses-1',

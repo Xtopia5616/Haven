@@ -50,6 +50,7 @@
 	type TaskAction = ActionPayload;
 
 	interface Props {
+		isVisible?: boolean;
 		onNewSession?: () => void;
 		runningBackgroundActions?: ActionPayload[];
 		pendingScheduledActions?: ActionPayload[];
@@ -62,6 +63,7 @@
 	}
 
 	let {
+		isVisible = true,
 		onNewSession = () => {},
 		runningBackgroundActions = [],
 		pendingScheduledActions = [],
@@ -578,8 +580,11 @@
 
 <div class="memory-page">
 	<WorkspacePageHeader title="历史" description="回顾会话、任务和长期记忆。" />
-	<div class="memory-layout responsive-layout-transition">
-		<aside class="memory-sidebar responsive-layout-panel" aria-label="历史分类">
+	<div class="memory-layout workspace-secondary-layout responsive-layout-transition">
+		<aside
+			class="memory-sidebar workspace-secondary-sidebar responsive-layout-panel"
+			aria-label="历史分类"
+		>
 			<MaterialTabs
 				tabs={memoryTabs}
 				activeTab={activeTab ?? 'sessions'}
@@ -588,9 +593,10 @@
 				idPrefix="memory-tab"
 				panelId="memory-panel"
 				className="workspace-secondary-tabs workspace-secondary-tabs--sidebar"
+				{isVisible}
 			/>
 		</aside>
-		<div class="memory-main">
+		<div class="memory-main workspace-secondary-main">
 			{#key activeTab}
 				<div
 					id="memory-panel"
@@ -777,19 +783,6 @@
 	.memory-sidebar {
 		min-width: 0;
 	}
-	.memory-layout {
-		display: grid;
-		grid-template-columns: minmax(0, 0px) minmax(0, 1fr);
-		grid-template-rows: auto auto;
-	}
-	.memory-sidebar {
-		grid-column: 1 / -1;
-		grid-row: 1;
-	}
-	.memory-main {
-		grid-column: 1 / -1;
-		grid-row: 2;
-	}
 	.memory-tools-view {
 		display: flex;
 		flex-direction: column;
@@ -845,33 +838,13 @@
 		font-size: var(--md-sys-typescale-body-medium-size);
 		line-height: var(--md-sys-typescale-body-medium-line-height);
 	}
-	@media (orientation: landscape) and (min-aspect-ratio: 4/3) {
+	@media (min-width: 840px) {
 		.memory-page {
 			max-width: none;
-		}
-		.memory-layout {
-			grid-template-columns: minmax(190px, 224px) minmax(0, 1fr);
-			align-items: start;
-			gap: var(--md-sys-space-2xl);
-		}
-		.memory-sidebar {
-			grid-column: 1;
-			grid-row: 1;
-			animation: responsive-layout-panel-in var(--md-sys-motion-duration-short)
-				var(--md-sys-motion-easing-standard) both;
-			position: sticky;
-			top: var(--md-sys-space-lg);
-			align-self: start;
-			padding-right: var(--md-sys-space-lg);
-			border-right: 1px solid var(--md-sys-color-outline-variant);
 		}
 		.memory-panel,
 		.memory-tools-view {
 			width: 100%;
-		}
-		.memory-main {
-			grid-column: 2;
-			grid-row: 1;
 		}
 	}
 	@media (max-width: 700px) {

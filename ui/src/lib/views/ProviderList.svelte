@@ -1,4 +1,5 @@
 <script lang="ts">
+	import AsyncState from '$lib/AsyncState.svelte';
 	import ApiKeyField from '$lib/ApiKeyField.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import MaterialIconButton from '$lib/MaterialIconButton.svelte';
@@ -87,18 +88,13 @@
 </div>
 
 {#if providers.length === 0}
-	<div class="providers-empty">
-		<StatusBadge label="尚未连接" tone="info" />
-		<div>
-			<strong>连接一个模型 Provider</strong>
-			<p>添加 API 地址和凭据后，可以刷新服务目录并配置模型。</p>
-		</div>
-		<MaterialButton
-			variant="outlined"
-			label="添加第一个 Provider"
-			onclick={() => onEditProvider()}
-		/>
-	</div>
+	<AsyncState
+		state="unconfigured"
+		title="尚未配置 Provider"
+		message="添加 API 地址和凭据后，可以刷新服务目录并配置模型。"
+		actionLabel="添加第一个 Provider"
+		onAction={() => onEditProvider()}
+	/>
 {/if}
 
 {#if providers.length > 0}
@@ -273,25 +269,6 @@
 		gap: var(--md-sys-space-sm);
 		flex: 0 0 auto;
 	}
-	.providers-empty {
-		display: grid;
-		grid-template-columns: auto minmax(0, 1fr) auto;
-		align-items: center;
-		gap: var(--md-sys-space-lg);
-		padding: var(--md-sys-space-xl);
-		border: 1px dashed var(--md-sys-color-outline);
-		border-radius: var(--md-sys-shape-large);
-		background: var(--md-sys-color-surface-container-low);
-	}
-	.providers-empty strong {
-		font-size: var(--md-sys-typescale-body-medium-size);
-		color: var(--md-sys-color-on-surface);
-	}
-	.providers-empty p {
-		margin: var(--md-sys-space-xs) 0 0;
-		font-size: var(--md-sys-typescale-body-small-size);
-		color: var(--md-sys-color-on-surface-variant);
-	}
 	.providers-list {
 		display: flex;
 		flex-direction: column;
@@ -432,13 +409,6 @@
 		.provider-actions {
 			justify-content: flex-end;
 		}
-		.providers-empty {
-			grid-template-columns: auto minmax(0, 1fr);
-		}
-		.providers-empty :global(.md-btn) {
-			grid-column: 2;
-			justify-self: start;
-		}
 	}
 	@media (max-width: 455px) {
 		.provider-toolbar-actions {
@@ -463,14 +433,6 @@
 			flex-direction: column;
 		}
 		.provider-models-heading :global(.md-btn) {
-			width: 100%;
-		}
-		.providers-empty {
-			grid-template-columns: minmax(0, 1fr);
-			padding: var(--md-sys-space-lg);
-		}
-		.providers-empty :global(.md-btn) {
-			grid-column: 1;
 			width: 100%;
 		}
 		.unbound-heading {

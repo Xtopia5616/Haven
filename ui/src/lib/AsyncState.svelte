@@ -3,9 +3,11 @@
 	import MaterialButton from './MaterialButton.svelte';
 
 	type AsyncStateName = 'loading' | 'empty' | 'error' | 'unconfigured';
+	type AsyncStateLayout = 'centered' | 'compact';
 
 	interface Props {
 		state?: AsyncStateName;
+		layout?: AsyncStateLayout;
 		title?: string;
 		message?: string;
 		actionLabel?: string;
@@ -14,6 +16,7 @@
 
 	let {
 		state = 'empty',
+		layout = 'centered',
 		title = '',
 		message = '',
 		actionLabel = '',
@@ -34,6 +37,8 @@
 	<section
 		class="async-state md-card motion-surface-enter"
 		data-state={state}
+		data-layout={layout}
+		role={state === 'error' ? 'alert' : 'status'}
 		aria-live={state === 'error' ? 'assertive' : 'polite'}
 	>
 		<span class="async-state__icon" aria-hidden="true">{icons[state] || '•'}</span>
@@ -68,18 +73,70 @@
 		font-size: 24px;
 		font-weight: 700;
 	}
-	.async-state[data-state='error'] .async-state__icon,
-	.async-state[data-state='unconfigured'] .async-state__icon {
+	.async-state[data-state='error'] .async-state__icon {
 		background: var(--md-sys-color-error-container);
 		color: var(--md-sys-color-on-error-container);
+	}
+	.async-state[data-state='unconfigured'] .async-state__icon {
+		background: var(--md-sys-color-warning-container);
+		color: var(--md-sys-color-on-warning-container);
+	}
+	.async-state[data-layout='compact'] {
+		grid-template-columns: auto minmax(0, 1fr) auto;
+		justify-items: stretch;
+		align-items: center;
+		gap: var(--md-sys-space-lg);
+		margin-bottom: var(--md-sys-space-xl);
+		padding: var(--md-sys-space-lg);
+		text-align: left;
+	}
+	.async-state[data-state='unconfigured'][data-layout='compact'] {
+		border-color: var(--md-sys-color-warning);
+		background: var(--md-sys-color-warning-container);
+		color: var(--md-sys-color-on-warning-container);
+	}
+	.async-state[data-layout='compact'] h2,
+	.async-state[data-layout='compact'] p {
+		grid-column: 2;
+		margin: 0;
+	}
+	.async-state[data-layout='compact'] h2 {
+		font-size: var(--md-sys-typescale-body-medium-size);
+		line-height: var(--md-sys-typescale-body-medium-line-height);
+	}
+	.async-state[data-state='unconfigured'][data-layout='compact'] p {
+		color: var(--md-sys-color-on-warning-container);
+	}
+	.async-state[data-layout='compact'] h2 {
+		align-self: end;
+	}
+	.async-state[data-layout='compact'] p {
+		align-self: start;
+	}
+	.async-state[data-layout='compact'] .async-state__icon {
+		grid-column: 1;
+		grid-row: 1 / span 2;
+	}
+	.async-state[data-layout='compact'] :global(.md-btn) {
+		grid-column: 3;
+		grid-row: 1 / span 2;
 	}
 	.async-state p {
 		max-width: 420px;
 		color: var(--md-sys-color-on-surface-variant);
 	}
-	@media (max-width: 455px) {
+	@media (max-width: 640px) {
 		.async-state {
 			padding-inline: var(--md-sys-space-lg);
+		}
+		.async-state[data-layout='compact'] {
+			grid-template-columns: auto minmax(0, 1fr);
+			align-items: start;
+		}
+		.async-state[data-layout='compact'] :global(.md-btn) {
+			grid-column: 2;
+			grid-row: auto;
+			width: 100%;
 		}
 	}
 </style>

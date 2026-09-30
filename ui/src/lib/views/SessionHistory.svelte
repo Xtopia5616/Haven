@@ -88,23 +88,21 @@
 		statusVariant = () => 'default',
 		formatMessageTime = (value) => value,
 	}: Props = $props();
-	const WIDE_LANDSCAPE_QUERY = '(orientation: landscape) and (min-aspect-ratio: 4/3)';
-	let wideLandscape = $state(false);
+	const EXPANDED_WIDTH_QUERY = '(min-width: 840px)';
+	let expandedWidth = $state(false);
 	let previewSessionId = $state('');
 	const previewSession = $derived.by(
 		() => sessions.find((session) => session.id === previewSessionId) || sessions[0] || null,
 	);
 	onMount(() => {
 		if (typeof window.matchMedia !== 'function') {
-			const syncFallbackLayout = () =>
-				(wideLandscape =
-					window.innerHeight > 0 && window.innerWidth / window.innerHeight >= 4 / 3);
+			const syncFallbackLayout = () => (expandedWidth = window.innerWidth >= 840);
 			syncFallbackLayout();
 			window.addEventListener('resize', syncFallbackLayout);
 			return () => window.removeEventListener('resize', syncFallbackLayout);
 		}
-		const mediaQuery = window.matchMedia(WIDE_LANDSCAPE_QUERY);
-		const syncLayout = () => (wideLandscape = mediaQuery.matches);
+		const mediaQuery = window.matchMedia(EXPANDED_WIDTH_QUERY);
+		const syncLayout = () => (expandedWidth = mediaQuery.matches);
 		syncLayout();
 		mediaQuery.addEventListener('change', syncLayout);
 		return () => mediaQuery.removeEventListener('change', syncLayout);
@@ -134,7 +132,7 @@
 			onToggleSelect(session.id);
 			return;
 		}
-		if (wideLandscape) {
+		if (expandedWidth) {
 			previewSessionId = session.id;
 			return;
 		}
@@ -152,7 +150,7 @@
 
 <div
 	class="history-view"
-	class:history-view--wide={wideLandscape}
+	class:history-view--wide={expandedWidth}
 	class:history-view--selecting={selectMode}
 >
 	<div class="filter-bar workspace-filter-bar" role="search" aria-label="筛选会话">
@@ -285,11 +283,11 @@
 							<!-- svelte-ignore a11y_no_noninteractive_element_to_interactive_role -->
 							<article
 								class="session-item workspace-item-card motion-list-item"
-								class:selected={wideLandscape && previewSession?.id === session.id}
-								aria-label={wideLandscape
+								class:selected={expandedWidth && previewSession?.id === session.id}
+								aria-label={expandedWidth
 									? `预览会话：${displayTitle(session)}`
 									: `打开并继续会话：${displayTitle(session)}`}
-								aria-pressed={wideLandscape
+								aria-pressed={expandedWidth
 									? previewSession?.id === session.id
 									: undefined}
 								role="button"
@@ -349,7 +347,7 @@
 										<span
 											class="session-open-hint workspace-item-card-open"
 											aria-hidden="true"
-											>{wideLandscape ? '预览' : '打开'}</span
+											>{expandedWidth ? '预览' : '打开'}</span
 										>
 									</div>
 								</div>
@@ -377,7 +375,7 @@
 						/>
 					</div>{/if}
 			</div>
-			{#if wideLandscape && previewSession && !selectMode}
+			{#if expandedWidth && previewSession && !selectMode}
 				<aside class="session-preview" aria-label="会话预览">
 					<div class="session-preview-header">
 						<div class="session-preview-title-group">
@@ -415,6 +413,7 @@
 <style>
 	.history-view {
 		min-width: 0;
+		container: session-history / inline-size;
 	}
 	.history-results,
 	.history-list-column {
@@ -600,7 +599,7 @@
 		justify-content: center;
 		padding: var(--md-sys-space-lg) 0;
 	}
-	@media (orientation: landscape) and (min-aspect-ratio: 4/3) {
+	@media (min-width: 840px) {
 		.history-view--wide .history-results {
 			display: grid;
 			grid-template-columns: minmax(18rem, 0.85fr) minmax(0, 1.35fr);
@@ -705,18 +704,6 @@
 		}
 	}
 	@media (max-width: 700px) {
-		.filter-bar,
-		.filter-controls {
-			align-items: stretch;
-			flex-direction: column;
-		}
-		.filter-bar > .md-input {
-			flex: none;
-		}
-		.filter-controls :global(.md-select-container),
-		.filter-controls :global(.md-btn--outlined) {
-			width: 100%;
-		}
 		.history-actions {
 			justify-content: stretch;
 		}
@@ -729,6 +716,23 @@
 		}
 		.session-meta {
 			flex-wrap: wrap;
+		}
+	}
+	@container session-history (max-width: 700px) {
+		.filter-bar,
+		.filter-controls {
+			align-items: stretch;
+			flex-direction: column;
+		}
+		.filter-bar > .md-input {
+			flex: none;
+		}
+		.filter-controls :global(.md-select-container),
+		.filter-controls :global(.md-btn--outlined) {
+			width: 100%;
+		}
+		.filter-bar > :global(.count-chip) {
+			align-self: flex-start;
 		}
 	}
 </style>

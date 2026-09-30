@@ -14,6 +14,7 @@
 		panelId?: string;
 		showIcons?: boolean;
 		className?: string;
+		isVisible?: boolean;
 	}
 
 	/**
@@ -29,6 +30,7 @@
 		panelId = undefined,
 		showIcons = false,
 		className = '',
+		isVisible = true,
 	}: Props = $props();
 
 	let tabsElement: HTMLDivElement | undefined;
@@ -53,6 +55,11 @@
 	}
 
 	function updateMeasuredIndicator(): void {
+		if (!isVisible) {
+			measuredIndicator.visible = false;
+			return;
+		}
+
 		const activeElement = tabElements[activeTab];
 		if (!tabsElement || !activeElement) return;
 
@@ -105,7 +112,29 @@
 	$effect(() => {
 		activeTab;
 		tabs;
-		void tick().then(updateMeasuredIndicator);
+		isVisible;
+		if (!isVisible) return;
+
+		let cancelled = false;
+		let cancelPendingMeasurement: (() => void) | undefined;
+		void tick().then(() => {
+			if (cancelled) return;
+			const measure = () => {
+				cancelPendingMeasurement = undefined;
+				if (!cancelled) updateMeasuredIndicator();
+			};
+			if (typeof requestAnimationFrame === 'function') {
+				const frame = requestAnimationFrame(measure);
+				cancelPendingMeasurement = () => cancelAnimationFrame(frame);
+			} else {
+				const timeout = window.setTimeout(measure, 0);
+				cancelPendingMeasurement = () => window.clearTimeout(timeout);
+			}
+		});
+		return () => {
+			cancelled = true;
+			cancelPendingMeasurement?.();
+		};
 	});
 
 	onMount(() => {

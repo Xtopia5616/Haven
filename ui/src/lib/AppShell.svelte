@@ -144,9 +144,10 @@
 
 <style>
 	.app-shell {
+		--workspace-rail-width: 0px;
 		display: flex;
 		flex-direction: column;
-		grid-template-columns: 0px minmax(0, 1fr);
+		grid-template-columns: var(--workspace-rail-width) minmax(0, 1fr);
 		height: 100vh;
 		min-width: 0;
 		min-height: 0;
@@ -341,10 +342,11 @@
 		}
 	}
 
-	@media screen and (min-aspect-ratio: 1/1) and (orientation: landscape) {
+	@media screen and (min-width: 600px) {
 		.app-shell {
+			--workspace-rail-width: 76px;
 			display: grid;
-			grid-template-columns: 76px minmax(0, 1fr);
+			grid-template-columns: var(--workspace-rail-width) minmax(0, 1fr);
 			grid-template-rows: var(--md-comp-titlebar-height) minmax(0, 1fr);
 			background: var(--md-sys-color-background);
 		}
@@ -366,6 +368,8 @@
 			display: none;
 		}
 		.workspace-rail {
+			--rail-control-size: 52px;
+			--rail-item-gap: var(--md-sys-space-sm);
 			grid-column: 1;
 			grid-row: 1 / span 2;
 			display: flex;
@@ -380,8 +384,8 @@
 		.rail-brand {
 			display: grid;
 			place-items: center;
-			width: 52px;
-			height: 52px;
+			width: var(--rail-control-size);
+			height: var(--rail-control-size);
 			padding: 0;
 			border: 0;
 			border-radius: var(--md-sys-shape-medium);
@@ -405,12 +409,12 @@
 		.workspace-rail :global(.landscape-workspace-nav) {
 			align-items: center;
 			width: 100%;
-			gap: var(--md-sys-space-sm);
+			gap: var(--rail-item-gap);
 		}
 		.workspace-rail :global(.workspace-link) {
 			justify-content: center;
-			width: 52px;
-			min-height: 52px;
+			width: var(--rail-control-size);
+			min-height: var(--rail-control-size);
 			padding: 0;
 			border-radius: var(--md-sys-shape-medium);
 		}
@@ -423,13 +427,13 @@
 			border-color: transparent;
 		}
 		.rail-footer {
-			--rail-footer-control-height: var(--md-comp-icon-button-dense-size);
+			--rail-footer-control-height: var(--rail-control-size);
 			display: grid;
-			grid-template-columns: repeat(2, var(--md-comp-icon-button-dense-size));
-			grid-template-rows: var(--rail-footer-control-height) auto;
+			grid-template-columns: var(--rail-control-size);
+			grid-template-rows: repeat(2, var(--rail-footer-control-height));
 			align-items: center;
 			justify-content: center;
-			gap: var(--md-sys-space-2xs);
+			gap: var(--rail-item-gap);
 			width: 100%;
 			margin-top: auto;
 			padding-top: var(--md-sys-space-md);
@@ -442,8 +446,8 @@
 			grid-column: 1;
 			grid-row: 1;
 			justify-content: center;
-			width: var(--md-comp-icon-button-dense-size);
-			min-width: var(--md-comp-icon-button-dense-size);
+			width: var(--rail-control-size);
+			min-width: var(--rail-control-size);
 			height: var(--rail-footer-control-height);
 			min-height: var(--rail-footer-control-height);
 			padding: 0;
@@ -452,19 +456,19 @@
 			display: none;
 		}
 		.rail-footer :global(.task-action) {
-			grid-column: 1 / span 2;
-			grid-row: 2;
+			grid-column: 1;
+			grid-row: 3;
 			justify-content: center;
 		}
 		.rail-footer :global(.task-action .md-icon-btn[data-size='toolbar']) {
-			width: var(--md-comp-icon-button-dense-size);
-			min-width: var(--md-comp-icon-button-dense-size);
+			width: var(--rail-footer-control-height);
+			min-width: var(--rail-footer-control-height);
 			height: var(--rail-footer-control-height);
 			min-height: var(--rail-footer-control-height);
 		}
 		.rail-footer :global(.rail-theme-button[data-size='toolbar']) {
-			grid-column: 2;
-			grid-row: 1;
+			grid-column: 1;
+			grid-row: 2;
 			justify-self: center;
 			width: var(--rail-footer-control-height);
 			min-width: var(--rail-footer-control-height);
@@ -517,9 +521,10 @@
 		}
 	}
 
-	@media screen and (min-aspect-ratio: 8/5) and (orientation: landscape) {
+	@media screen and (min-width: 1200px) {
 		.app-shell {
-			grid-template-columns: 232px minmax(0, 1fr);
+			--workspace-rail-width: 200px;
+			grid-template-columns: var(--workspace-rail-width) minmax(0, 1fr);
 		}
 		.workspace-rail {
 			align-items: stretch;
@@ -597,11 +602,20 @@
 			height: var(--rail-footer-control-height);
 			min-height: var(--rail-footer-control-height);
 		}
+		.rail-footer :global(.task-action .md-icon-btn[data-size='toolbar']) {
+			width: var(--rail-footer-control-height);
+			min-width: var(--rail-footer-control-height);
+			height: var(--rail-footer-control-height);
+			min-height: var(--rail-footer-control-height);
+		}
 	}
 
 	@media screen and (min-aspect-ratio: 21/9) {
 		.app-shell {
-			grid-template-columns: 232px minmax(0, calc(233.333vh - 232px));
+			grid-template-columns: var(--workspace-rail-width) minmax(
+				0,
+				calc(233.333vh - var(--workspace-rail-width))
+			);
 			justify-content: center;
 		}
 	}

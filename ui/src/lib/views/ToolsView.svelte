@@ -1,4 +1,5 @@
 <script lang="ts">
+	let { isVisible = true }: { isVisible?: boolean } = $props();
 	let mcpServers = $state<McpServerSnapshot[]>([]);
 	let skills = $state<SkillInfo[]>([]);
 	let builtinTools = $state<BuiltinToolEntry[]>([]);
@@ -375,9 +376,9 @@
 	}
 
 	const tabs = [
-		{ id: 'builtin', label: '内置工具', icon: 'tools' },
-		{ id: 'mcp', label: 'MCP', icon: 'briefcase' },
-		{ id: 'skills', label: '技能', icon: 'sparkles' },
+		{ id: 'builtin', label: '内置工具' },
+		{ id: 'mcp', label: 'MCP' },
+		{ id: 'skills', label: '技能' },
 	];
 	function selectToolTab(tabId: string) {
 		if (tabId === 'builtin' || tabId === 'mcp' || tabId === 'skills') activeTab = tabId;
@@ -387,12 +388,11 @@
 <div class="tools-page">
 	<WorkspacePageHeader title="工具" description="管理 Haven 可调用的工具、MCP 服务与技能。" />
 
-	<div class="tools-workspace responsive-layout-transition">
-		<nav class="tools-sidebar responsive-layout-panel" aria-label="资源分类导航">
-			<div class="tools-sidebar-heading">
-				<h2>资源分类</h2>
-				<p>浏览并管理可用能力</p>
-			</div>
+	<div class="tools-workspace workspace-secondary-layout responsive-layout-transition">
+		<nav
+			class="tools-sidebar workspace-secondary-sidebar responsive-layout-panel"
+			aria-label="资源分类导航"
+		>
 			<MaterialTabs
 				{tabs}
 				{activeTab}
@@ -400,12 +400,12 @@
 				ariaLabel="工具分类"
 				idPrefix="tools-tab"
 				panelIdPrefix=""
-				showIcons
-				className="workspace-secondary-tabs workspace-secondary-tabs--sidebar tools-resource-tabs"
+				className="workspace-secondary-tabs workspace-secondary-tabs--sidebar"
+				{isVisible}
 			/>
 		</nav>
 
-		<div class="tools-workspace-main">
+		<div class="tools-workspace-main workspace-secondary-main">
 			{#snippet resourceToolbar()}
 				<div
 					class="resource-toolbar workspace-filter-bar"
@@ -501,6 +501,7 @@
 					{@render resourceToolbar()}
 					{#if mcpServers.length === 0}
 						<AsyncState
+							state="unconfigured"
 							title="尚未配置 MCP 服务器"
 							message="添加 MCP 服务器，为 Agent 扩展外部工具与资源。"
 							actionLabel="添加 MCP 服务器"
@@ -545,6 +546,7 @@
 					{@render resourceToolbar()}
 					{#if skills.length === 0}
 						<AsyncState
+							state="unconfigured"
 							title="暂无技能"
 							message="将 SKILL.md 文件放入技能文件夹，然后点击刷新。"
 							actionLabel="打开技能文件夹"
@@ -579,27 +581,6 @@
 		width: 100%;
 		min-width: 0;
 		max-width: var(--md-sys-content-max-width);
-	}
-	.tools-workspace {
-		display: grid;
-		grid-template-columns: minmax(0, 0px) minmax(0, 1fr);
-		grid-template-rows: auto auto;
-		min-width: 0;
-	}
-	.tools-sidebar {
-		grid-column: 1 / -1;
-		grid-row: 1;
-	}
-	.tools-sidebar-heading {
-		display: none;
-	}
-	.tools-workspace-main {
-		min-width: 0;
-		grid-column: 1 / -1;
-		grid-row: 2;
-	}
-	:global(.tools-resource-tabs .md-tab__icon) {
-		display: none;
 	}
 	.resource-toolbar {
 		margin-bottom: var(--md-sys-space-lg);
@@ -709,47 +690,9 @@
 			width: 100%;
 		}
 	}
-	@media (min-aspect-ratio: 4/3) and (orientation: landscape) {
+	@media (min-width: 840px) {
 		.tools-page {
 			max-width: none;
-		}
-		.tools-workspace {
-			grid-template-columns: minmax(190px, 224px) minmax(0, 1fr);
-			align-items: start;
-			gap: var(--md-sys-space-2xl);
-		}
-		.tools-sidebar {
-			grid-column: 1;
-			grid-row: 1;
-			animation: responsive-layout-panel-in var(--md-sys-motion-duration-short)
-				var(--md-sys-motion-easing-standard) both;
-			position: sticky;
-			top: var(--md-sys-space-lg);
-			align-self: start;
-			min-width: 0;
-			padding-right: var(--md-sys-space-lg);
-			border-right: 1px solid var(--md-sys-color-outline-variant);
-		}
-		.tools-workspace-main {
-			grid-column: 2;
-			grid-row: 1;
-		}
-		.tools-sidebar-heading {
-			display: block;
-			margin: 0 0 var(--md-sys-space-md) var(--md-sys-space-sm);
-		}
-		.tools-sidebar-heading h2 {
-			margin: 0;
-			color: var(--md-sys-color-on-surface);
-			font-size: var(--md-sys-typescale-title-medium-size);
-			font-weight: 650;
-			line-height: var(--md-sys-typescale-title-medium-line-height);
-		}
-		.tools-sidebar-heading p {
-			margin: var(--md-sys-space-2xs) 0 0;
-			color: var(--md-sys-color-on-surface-variant);
-			font-size: var(--md-sys-typescale-label-medium-size);
-			line-height: var(--md-sys-typescale-label-medium-line-height);
 		}
 		.resource-list--builtin {
 			grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
