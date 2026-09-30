@@ -399,3 +399,4 @@
 - [0413：Thought 原子投影与 Compaction 步骤恢复](0413-session-transcript-projection-recovery.md)
 - [0415：事实抽取结果与完成状态原子提交](0415-atomic-fact-extraction-completion.md)
 - [0416：持久跟踪待投递的会话输入](0416-durable-pending-session-inputs.md)
+- [0417：Gemini explicit cache 使用有界 LRU](0417-gemini-explicit-cache-lru.md)

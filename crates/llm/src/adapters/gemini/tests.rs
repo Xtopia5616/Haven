@@ -851,6 +851,180 @@ async fn explicit_cache_replaces_system_and_tools_and_reuses_resource() {
 }
 
 #[tokio::test]
+async fn explicit_cache_tracks_alternating_sessions_and_memory_content() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let mut requests = Vec::new();
+        for index in 0..3 {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut bytes = Vec::new();
+            let mut chunk = [0u8; 1024];
+            loop {
+                let count = socket.read(&mut chunk).await.unwrap();
+                if count == 0 {
+                    break;
+                }
+                bytes.extend_from_slice(&chunk[..count]);
+                let Some(header_end) = bytes.windows(4).position(|w| w == b"\r\n\r\n") else {
+                    continue;
+                };
+                let headers = String::from_utf8_lossy(&bytes[..header_end]).to_ascii_lowercase();
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| {
+                        line.strip_prefix("content-length:")
+                            .and_then(|value| value.trim().parse::<usize>().ok())
+                    })
+                    .unwrap_or(0);
+                if bytes.len() >= header_end + 4 + content_length {
+                    break;
+                }
+            }
+            let header_end = bytes.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
+            let headers = String::from_utf8_lossy(&bytes[..header_end]).to_ascii_lowercase();
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    line.strip_prefix("content-length:")
+                        .and_then(|value| value.trim().parse::<usize>().ok())
+                })
+                .unwrap_or(0);
+            let body_start = header_end + 4;
+            let body: Value =
+                serde_json::from_slice(&bytes[body_start..body_start + content_length]).unwrap();
+            requests.push(body);
+            let response = format!(r#"{{"name":"cachedContents/{index}"}}"#);
+            let wire = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",
+                response.len()
+            );
+            socket.write_all(wire.as_bytes()).await.unwrap();
+        }
+        requests
+    });
+
+    let client = GeminiAdapter::new(ModelEndpoint {
+        base_url: format!("http://{addr}"),
+        api_key: "test-key".into(),
+        model_name: "gemini-test".into(),
+        ..Default::default()
+    });
+    let memory_fence = haven_common::prompts::MEMORY_FENCE_START;
+    let prompts = [
+        format!("stable{SESSION_CONTEXT_FENCE_START}session-one{memory_fence}memory-one"),
+        format!("stable{SESSION_CONTEXT_FENCE_START}session-two{memory_fence}memory-one"),
+        format!("stable{SESSION_CONTEXT_FENCE_START}session-one{memory_fence}memory-two"),
+        format!("stable{SESSION_CONTEXT_FENCE_START}session-one{memory_fence}memory-one"),
+        format!("stable{SESSION_CONTEXT_FENCE_START}session-two{memory_fence}memory-one"),
+    ];
+    let expected_names = [
+        "cachedContents/0",
+        "cachedContents/1",
+        "cachedContents/2",
+        "cachedContents/0",
+        "cachedContents/1",
+    ];
+    for (index, prompt) in prompts.iter().enumerate() {
+        let mut body = client.build_request_body(
+            vec![CanonicalMessage::system(vec![ContentPart::text(prompt)])],
+            Vec::new(),
+            false,
+        );
+        client.prepare_cached_content(&mut body).await;
+        assert_eq!(body.cached_content.as_deref(), Some(expected_names[index]));
+        assert_eq!(body.cache_diagnostics.mode, "explicit");
+    }
+
+    let requests = server.await.unwrap();
+    let fingerprints = requests
+        .iter()
+        .map(|request| request["displayName"].as_str().unwrap())
+        .collect::<std::collections::HashSet<_>>();
+    assert_eq!(fingerprints.len(), 3);
+    for (request, expected) in requests
+        .iter()
+        .zip(["session-one", "session-two", "session-one"])
+    {
+        let dynamic = request["systemInstruction"]["parts"][1]["text"]
+            .as_str()
+            .unwrap();
+        assert!(dynamic.contains(expected));
+    }
+    for (request, expected) in requests
+        .iter()
+        .zip(["memory-one", "memory-one", "memory-two"])
+    {
+        let dynamic = request["systemInstruction"]["parts"][1]["text"]
+            .as_str()
+            .unwrap();
+        assert!(dynamic.contains(expected));
+    }
+}
+
+#[test]
+fn explicit_cache_lru_is_bounded_and_refreshes_recency() {
+    let mut state = GeminiCacheState::default();
+    for index in 0..4 {
+        state.remember_cached(
+            format!("fingerprint-{index}"),
+            format!("cache-{index}"),
+            100,
+        );
+    }
+
+    assert_eq!(
+        state.lookup("fingerprint-0", 1),
+        GeminiCacheLookup::Hit("cache-0".into())
+    );
+    state.remember_cached("fingerprint-4".into(), "cache-4".into(), 100);
+
+    assert_eq!(state.entries.len(), GEMINI_CACHE_ENTRY_CAPACITY);
+    assert_eq!(state.lookup("fingerprint-1", 1), GeminiCacheLookup::Miss);
+    assert_eq!(
+        state.lookup("fingerprint-0", 1),
+        GeminiCacheLookup::Hit("cache-0".into())
+    );
+}
+
+#[test]
+fn explicit_cache_backoff_and_invalidation_are_fingerprint_scoped() {
+    let mut state = GeminiCacheState::default();
+    state.remember_cached("first".into(), "cache-first".into(), 100);
+    state.remember_cached("second".into(), "cache-second".into(), 100);
+    state.remember_unavailable("failed".into(), 20);
+    state.mark_name_unavailable("cache-first", 50);
+
+    assert_eq!(state.lookup("first", 10), GeminiCacheLookup::Unavailable);
+    assert_eq!(
+        state.lookup("second", 10),
+        GeminiCacheLookup::Hit("cache-second".into())
+    );
+    assert_eq!(state.lookup("first", 50), GeminiCacheLookup::Miss);
+    assert_eq!(state.lookup("failed", 10), GeminiCacheLookup::Unavailable);
+    assert_eq!(state.lookup("failed", 20), GeminiCacheLookup::Miss);
+    assert_eq!(
+        state.lookup("second", 10),
+        GeminiCacheLookup::Hit("cache-second".into())
+    );
+}
+
+#[test]
+fn explicit_cache_entries_expire_before_recreation() {
+    let mut state = GeminiCacheState::default();
+    state.remember_cached("fingerprint".into(), "cache".into(), 10);
+
+    assert_eq!(
+        state.lookup("fingerprint", 9),
+        GeminiCacheLookup::Hit("cache".into())
+    );
+    assert_eq!(state.lookup("fingerprint", 10), GeminiCacheLookup::Miss);
+    assert!(state.entries.is_empty());
+}
+
+#[tokio::test]
 async fn stream_eof_without_finish_reason_rejects_complete_tool_call() {
     let body = "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"file\",\"args\":{}}}]}}]}\n\n";
     let (base_url, server) = crate::test_support::serve_sse(body).await;

@@ -4,6 +4,7 @@ use futures_util::StreamExt;
 use reqwest::header::HeaderMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::collections::VecDeque;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
@@ -57,19 +58,99 @@ pub struct GeminiAdapter {
 }
 
 /// Gemini explicit caches are provider resources, not a local prompt key.
-/// Keep only one active fingerprint per adapter and a bounded negative result;
-/// this bounds local state while provider-side entries are bounded by their
-/// TTL and still allows a later capability change to recover.
+/// Retain a small LRU set of fingerprints to reuse cache resources when
+/// sessions alternate. Provider-side resources expire through their TTL.
+const GEMINI_CACHE_ENTRY_CAPACITY: usize = 4;
+
 #[derive(Debug, Default)]
 pub(super) struct GeminiCacheState {
-    pub(super) entry: Option<GeminiCacheEntry>,
-    pub(super) unavailable: Option<(String, u64)>,
+    pub(super) entries: VecDeque<GeminiCacheEntry>,
 }
 
 #[derive(Debug, Clone)]
 pub(super) struct GeminiCacheEntry {
     pub(super) fingerprint: String,
-    pub(super) name: String,
+    pub(super) state: GeminiCacheEntryState,
+}
+
+#[derive(Debug, Clone)]
+pub(super) enum GeminiCacheEntryState {
+    Cached { name: String, expires_at: u64 },
+    Unavailable { retry_at: u64 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum GeminiCacheLookup {
+    Miss,
+    Hit(String),
+    Unavailable,
+}
+
+impl GeminiCacheState {
+    pub(super) fn lookup(&mut self, fingerprint: &str, now: u64) -> GeminiCacheLookup {
+        let Some(index) = self
+            .entries
+            .iter()
+            .position(|entry| entry.fingerprint == fingerprint)
+        else {
+            return GeminiCacheLookup::Miss;
+        };
+        let Some(entry) = self.entries.remove(index) else {
+            return GeminiCacheLookup::Miss;
+        };
+        let (lookup, keep) = match &entry.state {
+            GeminiCacheEntryState::Cached { name, expires_at } if now < *expires_at => {
+                (GeminiCacheLookup::Hit(name.clone()), true)
+            }
+            GeminiCacheEntryState::Unavailable { retry_at } if now < *retry_at => {
+                (GeminiCacheLookup::Unavailable, true)
+            }
+            _ => (GeminiCacheLookup::Miss, false),
+        };
+        if keep {
+            self.entries.push_front(entry);
+        }
+        lookup
+    }
+
+    pub(super) fn remember_cached(&mut self, fingerprint: String, name: String, expires_at: u64) {
+        self.remember(GeminiCacheEntry {
+            fingerprint,
+            state: GeminiCacheEntryState::Cached { name, expires_at },
+        });
+    }
+
+    pub(super) fn remember_unavailable(&mut self, fingerprint: String, retry_at: u64) {
+        self.remember(GeminiCacheEntry {
+            fingerprint,
+            state: GeminiCacheEntryState::Unavailable { retry_at },
+        });
+    }
+
+    pub(super) fn mark_name_unavailable(&mut self, name: &str, retry_at: u64) {
+        let Some(index) = self.entries.iter().position(|entry| {
+            matches!(&entry.state, GeminiCacheEntryState::Cached { name: cached, .. } if cached == name)
+        }) else {
+            return;
+        };
+        let Some(mut entry) = self.entries.remove(index) else {
+            return;
+        };
+        entry.state = GeminiCacheEntryState::Unavailable { retry_at };
+        self.entries.push_front(entry);
+    }
+
+    fn remember(&mut self, entry: GeminiCacheEntry) {
+        if let Some(index) = self
+            .entries
+            .iter()
+            .position(|existing| existing.fingerprint == entry.fingerprint)
+        {
+            self.entries.remove(index);
+        }
+        self.entries.push_front(entry);
+        self.entries.truncate(GEMINI_CACHE_ENTRY_CAPACITY);
+    }
 }
 
 impl GeminiAdapter {

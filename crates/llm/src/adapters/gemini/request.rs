@@ -138,18 +138,13 @@ impl GeminiAdapter {
         let fingerprint = self.cached_content_fingerprint(&system_instruction, body.tools.as_ref());
         let mut state = self.cached_content.lock().await;
         let now = current_epoch_seconds();
-        if let Some(entry) = state.entry.as_ref()
-            && entry.fingerprint == fingerprint
-        {
-            Self::apply_cached_content(body, &entry.name);
-            return;
-        }
-        if state
-            .unavailable
-            .as_ref()
-            .is_some_and(|(key, retry_at)| key == &fingerprint && now < *retry_at)
-        {
-            return;
+        match state.lookup(&fingerprint, now) {
+            GeminiCacheLookup::Hit(name) => {
+                Self::apply_cached_content(body, &name);
+                return;
+            }
+            GeminiCacheLookup::Unavailable => return,
+            GeminiCacheLookup::Miss => {}
         }
 
         match self
@@ -157,16 +152,18 @@ impl GeminiAdapter {
             .await
         {
             Ok(name) => {
-                state.entry = Some(GeminiCacheEntry {
+                state.remember_cached(
                     fingerprint,
-                    name: name.clone(),
-                });
-                state.unavailable = None;
+                    name.clone(),
+                    now.saturating_add(GEMINI_CACHE_TTL_SECS),
+                );
                 Self::apply_cached_content(body, &name);
             }
             Err(error) => {
-                state.unavailable =
-                    Some((fingerprint, now.saturating_add(GEMINI_CACHE_RETRY_SECS)));
+                state.remember_unavailable(
+                    fingerprint,
+                    current_epoch_seconds().saturating_add(GEMINI_CACHE_RETRY_SECS),
+                );
                 tracing::debug!(
                     endpoint = %crate::client::endpoint_log_location(&self.cached_contents_url()),
                     error = %error,
@@ -275,16 +272,11 @@ impl GeminiAdapter {
 
     async fn invalidate_cached_content(&self, name: Option<&str>) {
         let mut state = self.cached_content.lock().await;
-        let Some(entry) = state.entry.take() else {
-            return;
-        };
-        if name == Some(entry.name.as_str()) {
-            state.unavailable = Some((
-                entry.fingerprint,
+        if let Some(name) = name {
+            state.mark_name_unavailable(
+                name,
                 current_epoch_seconds().saturating_add(GEMINI_CACHE_RETRY_SECS),
-            ));
-        } else {
-            state.entry = Some(entry);
+            );
         }
     }
 
