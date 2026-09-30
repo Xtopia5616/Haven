@@ -946,6 +946,45 @@ fn system_with_cache_control_splits_memory_fence() {
 }
 
 #[test]
+fn dynamic_system_sections_change_without_moving_cache_breakpoint() {
+    let stable = "stable instructions";
+    let first =
+        format!("{stable}{SESSION_CONTEXT_FENCE_START}session one{MEMORY_FENCE_START}memory alpha");
+    let second =
+        format!("{stable}{SESSION_CONTEXT_FENCE_START}session two{MEMORY_FENCE_START}memory beta");
+
+    let first = AnthropicAdapter::system_with_cache_control(Some(first)).unwrap();
+    let second = AnthropicAdapter::system_with_cache_control(Some(second)).unwrap();
+    let first = first.as_array().unwrap();
+    let second = second.as_array().unwrap();
+
+    assert_eq!(first[0]["text"], stable);
+    assert_eq!(second[0]["text"], stable);
+    assert_eq!(first[0]["cache_control"], json!({"type": "ephemeral"}));
+    assert_eq!(second[0]["cache_control"], json!({"type": "ephemeral"}));
+    assert_eq!(
+        first[1]["text"],
+        format!("{SESSION_CONTEXT_FENCE_START}session one")
+    );
+    assert_eq!(
+        second[1]["text"],
+        format!("{SESSION_CONTEXT_FENCE_START}session two")
+    );
+    assert_eq!(
+        first[2]["text"],
+        format!("{MEMORY_FENCE_START}memory alpha")
+    );
+    assert_eq!(
+        second[2]["text"],
+        format!("{MEMORY_FENCE_START}memory beta")
+    );
+    assert!(first[1].get("cache_control").is_none());
+    assert!(first[2].get("cache_control").is_none());
+    assert!(second[1].get("cache_control").is_none());
+    assert!(second[2].get("cache_control").is_none());
+}
+
+#[test]
 fn system_with_cache_control_caches_only_stable_prompt_prefix() {
     let full = format!(
         "stable guidelines{SESSION_CONTEXT_FENCE_START}runtime snapshot{MEMORY_FENCE_START}volatile facts"
