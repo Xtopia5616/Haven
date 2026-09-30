@@ -26,24 +26,13 @@
 </div>
 
 <style>
+	/* Route and workspace loading stays inside its owning content area. The
+	 * one-time full-window first-paint loader lives in app.html. */
 	.loading-state {
 		display: grid;
 		place-items: center;
 		min-height: calc(var(--md-sys-space-4xl) * 5);
 		padding: var(--md-sys-space-4xl) var(--md-sys-space-2xl);
-	}
-	/* Page-level loading blocks the whole app until the requested workspace is
-	 * ready, so the shell and its navigation cannot show stale content or accept
-	 * input behind the loading indicator. */
-	.loading-state--page {
-		position: fixed;
-		inset: 0;
-		box-sizing: border-box;
-		z-index: var(--md-sys-z-drawer);
-		min-height: 0;
-		padding: 0;
-		background: var(--md-sys-color-background);
-		pointer-events: auto;
 	}
 	.loading-state--inline {
 		min-height: var(--md-sys-space-4xl);

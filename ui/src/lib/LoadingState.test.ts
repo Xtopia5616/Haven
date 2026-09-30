@@ -2,6 +2,7 @@ import { render, screen } from '@testing-library/svelte';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import LoadingState from './LoadingState.svelte';
 import loadingStateSource from './LoadingState.svelte?raw';
+import appHtmlSource from '../app.html?raw';
 
 const componentStyles = loadingStateSource.match(/<style>([\s\S]*?)<\/style>/)?.[1];
 const testStyleElement = document.createElement('style');
@@ -31,9 +32,15 @@ describe('LoadingState', () => {
 		const pageLoader = document.querySelector<HTMLElement>('.loading-state--page');
 		expect(pageLoader).toBeTruthy();
 		const pageLoaderStyle = getComputedStyle(pageLoader!);
-		expect(pageLoaderStyle.position).toBe('fixed');
-		expect(pageLoaderStyle.getPropertyValue('inset')).toBe('0px');
+		expect(pageLoaderStyle.position).toBe('static');
 		expect(pageLoaderStyle.pointerEvents).toBe('auto');
+	});
+
+	it('covers the full window only for the initial app boot loader', () => {
+		const bootLoaderStyles = appHtmlSource.match(/#haven-boot\s*\{([^}]*)\}/)?.[1];
+		expect(bootLoaderStyles).toBeTruthy();
+		expect(bootLoaderStyles).toMatch(/position:\s*fixed\s*;/);
+		expect(bootLoaderStyles).toMatch(/inset:\s*0\s*;/);
 	});
 
 	it('supports the compact inline layout for opt-in embedded surfaces', () => {

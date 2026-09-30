@@ -83,10 +83,9 @@
 			}
 			#haven-boot {
 				position: fixed;
-				/* Keep the server-rendered titlebar and workspace tabs visible while
-				   the hydrated app is still completing its first load. */
-				inset: calc(var(--md-comp-titlebar-height) + var(--md-comp-tab-container-height)) 0
-					0;
+				/* The first-paint loader covers the whole window; later page loading
+				   states stay inside their own workspace. */
+				inset: 0;
 				z-index: 9999;
 				display: grid;
 				place-items: center;
