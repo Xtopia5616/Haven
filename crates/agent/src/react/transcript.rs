@@ -406,6 +406,9 @@ impl ReActEngine {
                 source, message_id, ..
             } => {
                 if *source != InjectSource::ActionResult {
+                    if let Some(message_id) = message_id {
+                        committed.acknowledge_pending_user_input(message_id.clone());
+                    }
                     committed.project_thought_step(
                         message_id
                             .clone()

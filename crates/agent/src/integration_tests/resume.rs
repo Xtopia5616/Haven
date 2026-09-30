@@ -271,9 +271,8 @@ async fn reopen_session_requeues_undelivered_inputs_stays_paused() {
         .persist_message_parts(&session.id, "user", "input text", Some("text"), &[], false)
         .await
         .unwrap();
-    // A steering input that WAS delivered carries a step anchor under its
-    // own id (created by `push_user_context`).
-    let delivered = agent
+    // An ordinary historical user row has no pending recovery marker.
+    agent
         .persist_message_parts(
             &session.id,
             "user",
@@ -284,19 +283,18 @@ async fn reopen_session_requeues_undelivered_inputs_stays_paused() {
         )
         .await
         .unwrap();
+    // A steering input lost before injection keeps a durable pending marker.
     agent
-        .db
-        .create_thought_step(&session.id, 2, &delivered.id)
-        .unwrap();
-    // A steering input lost before injection has no anchor.
-    agent
-        .persist_message_parts(
+        .react_engine
+        .event_store
+        .persist_pending_user_input(
             &session.id,
-            "user",
             "steering lost",
             Some("text"),
             &[],
             false,
+            None,
+            None,
         )
         .await
         .unwrap();
@@ -326,17 +324,29 @@ async fn reopen_session_marks_only_first_recovered_input_as_ask_answer() {
     let (agent, executor) = make_test_agent();
     let session = executor.create_session("input text").await.unwrap();
     // The initial user seed is not a recoverable supplement. Reproduce the
-    // normal transcript shape so both later unanchored inputs are candidates.
+    // normal transcript shape so both later inputs are pending candidates.
     agent
         .persist_message_parts(&session.id, "user", "input text", Some("text"), &[], false)
         .await
         .unwrap();
     agent
-        .persist_message_parts(&session.id, "user", "answer", Some("text"), &[], false)
+        .react_engine
+        .event_store
+        .persist_pending_user_input(&session.id, "answer", Some("text"), &[], false, None, None)
         .await
         .unwrap();
     agent
-        .persist_message_parts(&session.id, "user", "follow-up", Some("text"), &[], false)
+        .react_engine
+        .event_store
+        .persist_pending_user_input(
+            &session.id,
+            "follow-up",
+            Some("text"),
+            &[],
+            false,
+            None,
+            None,
+        )
         .await
         .unwrap();
     executor
@@ -388,9 +398,8 @@ async fn reopen_session_without_pending_inputs_stays_paused() {
 async fn resume_dedups_supplement_inputs_against_prefixed_canonical() {
     // Follow-up/steering inputs are pushed into the canonical with a
     // text prefix ("Additional context from user: —, "Steering: —)
-    // while the DB stores the raw text. The snapshot cursor is already at the
-    // current ingress boundary, so the already-prefixed inputs are not
-    // re-injected as fresh user turns.
+    // while the DB stores the raw text. This historical fixture has no
+    // pending marker, so it is not re-injected as a fresh user turn.
     let (agent, executor) = make_test_agent();
     agent.set_emitter(make_recording_emitter());
     let session = executor.create_session("hello").await.unwrap();
@@ -449,8 +458,8 @@ async fn resume_dedups_supplement_inputs_against_prefixed_canonical() {
 async fn resume_keeps_repeated_same_text_turns() {
     // Two distinct turns with identical text (user said "好的" twice) are
     // both legitimate history. The durable event stream is the authority for
-    // everything it contains; a message persisted AFTER the checkpoint's
-    // ingress cursor is recovered by id — identical text is recovered too.
+    // everything it contains; the second input remains pending by message id,
+    // so identical text is recovered too.
     let (agent, executor) = make_test_agent();
     agent.set_emitter(make_recording_emitter());
     let session = executor.create_session("hello").await.unwrap();
@@ -463,7 +472,7 @@ async fn resume_keeps_repeated_same_text_turns() {
         .await
         .unwrap();
     // The first pair is already in the event log. The second identical user
-    // turn is persisted after that seed and must be recovered by id.
+    // turn is persisted afterward and remains pending by id.
     let canonical = vec![
         CanonicalMessage::system(vec![ContentPart::text("sys")]),
         CanonicalMessage::user_text("好的"),
@@ -482,13 +491,25 @@ async fn resume_keeps_repeated_same_text_turns() {
         interactions: Vec::new(),
     };
     seed_event_projection(&agent, &session.id, &snapshot).await;
-    // The second identical user turn lands after the snapshot.
+    // The second identical user turn remains explicitly pending after the
+    // snapshot, even though its text matches the earlier turn.
     agent
-        .persist_message_parts(&session.id, "user", "好的", Some("text"), &[], false)
+        .react_engine
+        .event_store
+        .persist_pending_user_input(&session.id, "好的", Some("text"), &[], false, None, None)
         .await
         .unwrap();
 
     agent.run_session_from_id(&session.id).await.unwrap();
+    assert!(
+        agent
+            .react_engine
+            .event_store
+            .pending_session_inputs(&session.id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
 
     let saved = load_event_projection(&agent, &session.id).await;
     let (canonical, _) = saved.project();
@@ -528,10 +549,9 @@ async fn resume_keeps_repeated_same_text_turns() {
 }
 
 #[tokio::test]
-async fn resume_does_not_recover_messages_before_ingress_cursor() {
-    // Ingress recovery is bounded by the snapshot cursor: rows persisted
-    // before it are already represented in the canonical and must not be
-    // re-queued, even when the canonical never carried them as user turns.
+async fn resume_does_not_recover_unmarked_historical_user_messages() {
+    // Historical message rows that do not carry a pending-input marker are
+    // already represented by the event authority and must not be re-queued.
     let (agent, executor) = make_test_agent();
     agent.set_emitter(make_recording_emitter());
     let session = executor.create_session("hello").await.unwrap();
@@ -557,8 +577,7 @@ async fn resume_does_not_recover_messages_before_ingress_cursor() {
         interactions: Vec::new(),
     };
     seed_event_projection(&agent, &session.id, &snapshot).await;
-    // Assistant rows after the cursor are not user inputs and are not
-    // recovered either.
+    // Assistant rows are not pending inputs and are never recovered.
     agent
         .persist_message_parts(
             &session.id,
@@ -588,26 +607,24 @@ async fn resume_does_not_recover_messages_before_ingress_cursor() {
     assert_eq!(
         user_texts.iter().filter(|t| t.as_str() == "hello").count(),
         1,
-        "no user input after the cursor may be recovered: {:?}",
+        "unmarked historical user input must not be recovered: {:?}",
         user_texts
     );
     assert!(
         user_texts
             .iter()
             .all(|t| !t.starts_with("Additional context from user:")),
-        "no post-checkpoint supplement may appear: {:?}",
+        "no unmarked supplement may appear: {:?}",
         user_texts
     );
 }
 
 #[tokio::test]
 async fn resume_skips_conversation_reseed_when_canonical_is_compacted() {
-    // Compaction replaces the old turns with a summary inside the
-    // canonical but leaves the DB message stream untouched. Recovery is
-    // cursor-bounded (only rows newer than the snapshot's ingress cursor are
-    // re-queued), so the summarized-away turns — all older than the
-    // snapshot — are never resurrected; a compacted canonical stays
-    // compacted across resume.
+    // Compaction replaces the old turns with a summary inside the canonical
+    // but leaves the DB message stream untouched. Those historical rows have
+    // no pending markers, so they are never resurrected and the compacted
+    // canonical stays compacted across resume.
     let (agent, executor) = make_test_agent();
     agent.set_emitter(make_recording_emitter());
     let session = executor.create_session("hello").await.unwrap();
@@ -692,6 +709,57 @@ async fn run_session_from_id_keeps_first_user_media_out_of_snapshot_bytes() {
         ContentPart::Text(text) if text.contains("managed image omitted from snapshot")
     )));
     let _ = std::fs::remove_dir_all(asset_dir);
+}
+
+#[tokio::test]
+async fn run_session_from_id_recovers_pending_input_without_event_log() {
+    let (agent, executor) = make_test_agent();
+    agent.set_emitter(make_recording_emitter());
+    let session = executor
+        .create_session_with_summary("initial", "initial")
+        .await
+        .unwrap();
+    agent
+        .persist_message_parts(&session.id, "user", "initial", Some("text"), &[], false)
+        .await
+        .unwrap();
+    agent
+        .react_engine
+        .event_store
+        .persist_pending_user_input(
+            &session.id,
+            "accepted before first run",
+            Some("text"),
+            &[],
+            false,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // No event log exists yet, so startup takes the fresh-run path. The
+    // durable marker must still restore the accepted supplement.
+    agent.run_session_from_id(&session.id).await.unwrap();
+
+    assert!(
+        agent
+            .react_engine
+            .event_store
+            .pending_session_inputs(&session.id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let saved = load_event_projection(&agent, &session.id).await;
+    let (canonical, _) = saved.project();
+    assert!(canonical.iter().any(|message| {
+        message.role == CanonicalRole::User
+            && message.source == Some(InjectSource::FollowUp)
+            && message.content.iter().any(|part| {
+                matches!(part, ContentPart::Text(text) if text == "accepted before first run")
+            })
+    }));
 }
 
 #[tokio::test]

@@ -7,7 +7,6 @@
 
 use std::collections::HashSet;
 
-use haven_memory::repositories::messages::Message;
 use serde_json::Value;
 
 #[cfg(test)]
@@ -45,30 +44,6 @@ pub(crate) fn infer_resume_step(events: &[TranscriptRecord]) -> u32 {
         Some(TranscriptRecord::UserInject { step_number, .. }) => (*step_number).max(1),
         _ => max_step.max(1),
     }
-}
-
-/// Merge the two durable recovery scans in their read order and deduplicate by
-/// the persisted message id.
-///
-/// The first scan contains rows newer than the snapshot's ingress cursor; the
-/// second contains recent anchor-less rows. A row can occur in both scans, so
-/// resume must enqueue it once without comparing message text. Non-user rows
-/// are intentionally ignored here because only user input can be re-queued.
-pub(crate) fn merge_recovery_candidates(
-    post_snapshot: Vec<Message>,
-    undelivered: Vec<Message>,
-) -> Vec<Message> {
-    let mut candidates: Vec<_> = post_snapshot.into_iter().chain(undelivered).collect();
-    candidates.sort_by(|left, right| {
-        left.ingress_seq
-            .cmp(&right.ingress_seq)
-            .then_with(|| left.id.cmp(&right.id))
-    });
-    let mut seen = HashSet::new();
-    candidates
-        .into_iter()
-        .filter(|message| message.role == "user" && seen.insert(message.id.clone()))
-        .collect()
 }
 
 /// Decode the optional tool subset recorded by a `load_mcp` action.
@@ -137,35 +112,6 @@ pub(crate) fn load_skill_names(input: &Value) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn message(id: &str, role: &str) -> Message {
-        Message {
-            id: id.into(),
-            session_id: "ses-test".into(),
-            role: role.into(),
-            content: id.into(),
-            message_type: Some("text".into()),
-            created_at: "2026-08-27T00:00:00.000Z".into(),
-            tool_call_id: None,
-            attachments: Vec::new(),
-            media_inputs: Vec::new(),
-            voice: false,
-            ingress_seq: 0,
-        }
-    }
-
-    #[test]
-    fn recovery_candidates_deduplicate_by_id_without_content_matching() {
-        let candidates = merge_recovery_candidates(
-            vec![
-                message("msg-first", "user"),
-                message("msg-assistant", "assistant"),
-            ],
-            vec![message("msg-first", "user"), message("msg-second", "user")],
-        );
-        let ids: Vec<_> = candidates.into_iter().map(|message| message.id).collect();
-        assert_eq!(ids, ["msg-first", "msg-second"]);
-    }
-
     #[test]
     fn infer_resume_step_uses_the_durable_tail() {
         let events = vec![

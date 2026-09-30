@@ -124,6 +124,32 @@ pub(crate) async fn persist_session_message(
     .await
 }
 
+/// Persist an accepted input routed into an existing session. The durable
+/// pending marker is inserted atomically with the user message and is cleared
+/// only by the matching committed `UserInject` event.
+pub(crate) async fn persist_pending_user_input(
+    executor: &crate::session::SessionSupervisor,
+    session_id: &str,
+    content: &str,
+    message_type: Option<&str>,
+    attachments: &[MessageAttachment],
+    voice: bool,
+) -> anyhow::Result<Message> {
+    executor.partials.discard(session_id).await;
+    executor
+        .session_store()
+        .persist_pending_user_input(
+            session_id,
+            content,
+            message_type,
+            attachments,
+            voice,
+            None,
+            None,
+        )
+        .await
+}
+
 /// Recovery-only message insert. It deliberately leaves the in-flight scratch
 /// partial untouched until branch point, message projection, and recovery
 /// snapshot have all succeeded; the caller owns the final discard decision.

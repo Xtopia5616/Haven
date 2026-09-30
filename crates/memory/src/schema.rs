@@ -8,7 +8,7 @@
 //! version stamp rejects both older and newer database contracts.
 
 /// Current database contract. Any schema change requires a fresh database.
-pub const SCHEMA_VERSION: i32 = 31;
+pub const SCHEMA_VERSION: i32 = 32;
 /// Current schema, created idempotently on every open.
 const SCHEMA_SQL: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS sessions (
@@ -39,6 +39,13 @@ const SCHEMA_SQL: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS message_ingress_cursors (
         session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
         last_ingress_seq INTEGER NOT NULL DEFAULT 0
+    )",
+    // User inputs accepted into an existing session remain recoverable until
+    // the matching UserInject event and this acknowledgement commit together.
+    "CREATE TABLE IF NOT EXISTS pending_session_inputs (
+        session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        message_id TEXT NOT NULL UNIQUE REFERENCES messages(id) ON DELETE CASCADE,
+        PRIMARY KEY(session_id, message_id)
     )",
     // Durable session event authority. Rows are never updated or deleted by
     // the repository; rollback is represented by a timeline_rollback marker.
@@ -612,6 +619,7 @@ mod tests {
             "memory_items",
             "memory_nodes",
             "message_ingress_cursors",
+            "pending_session_inputs",
             "messages",
             "partial_messages",
             "session_steps",

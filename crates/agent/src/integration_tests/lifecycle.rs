@@ -807,6 +807,15 @@ async fn process_input_continues_when_terminal_ghost_delete_fails() {
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].role, "user");
     assert_eq!(messages[0].content, "more context");
+    assert!(
+        agent
+            .react_engine
+            .event_store
+            .pending_session_inputs(&session.id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(
         db.get_session(&session.id).unwrap().unwrap().status,
         terminal_status
@@ -949,6 +958,14 @@ async fn process_input_with_attachments_queues_and_persists_attachments() {
         .expect("user message persisted");
     assert_eq!(user_msg.attachments.len(), 1);
     assert_eq!(user_msg.attachments[0].media_type, "image/png");
+    let pending = agent
+        .react_engine
+        .event_store
+        .pending_session_inputs(&session.id)
+        .await
+        .unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].id, user_msg.id);
 }
 
 #[tokio::test]

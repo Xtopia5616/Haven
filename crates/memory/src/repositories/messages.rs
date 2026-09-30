@@ -14,16 +14,6 @@ pub(crate) fn now_rfc3339_millis() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
-/// Lower bound for undelivered-input recovery scans. Older unanchored rows are
-/// treated as historical noise (legacy id formats / failed thought-step writes)
-/// and must not re-enter the ReAct loop on history resume or crash resume.
-pub const UNDELIVERED_RECOVERY_MAX_AGE: chrono::Duration = chrono::Duration::days(2);
-
-/// RFC3339 timestamp `now - UNDELIVERED_RECOVERY_MAX_AGE` for recovery scans.
-pub fn undelivered_recovery_since() -> String {
-    (Utc::now() - UNDELIVERED_RECOVERY_MAX_AGE).to_rfc3339_opts(SecondsFormat::Millis, true)
-}
-
 /// Map a `messages` row (11 columns: id, session_id, role, content, message_type,
 /// created_at, tool_call_id, ui_metadata, voice, ingress_seq, media_inputs) into a `Message`. Shared by
 /// every read query so column order cannot drift between them.
@@ -175,6 +165,39 @@ impl Database {
             voice,
             id,
             &media_inputs,
+            false,
+        )
+    }
+
+    /// Persist a newly submitted user input and its recovery marker atomically.
+    /// The marker remains until the owning `UserInject` transcript commit
+    /// acknowledges delivery; both rows are in the same SQLite transaction.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_pending_user_input(
+        &self,
+        session_id: &str,
+        content: &str,
+        message_type: Option<&str>,
+        attachments: &[MessageAttachment],
+        voice: bool,
+        id: Option<&str>,
+    ) -> anyhow::Result<Message> {
+        let media_inputs: Vec<MediaInput> = attachments
+            .iter()
+            .map(message_attachment_to_media_input)
+            .map(|input| input.for_snapshot())
+            .collect();
+        self.add_message_full_with_media(
+            session_id,
+            "user",
+            content,
+            message_type,
+            None,
+            attachments,
+            voice,
+            id,
+            &media_inputs,
+            true,
         )
     }
 
@@ -190,6 +213,7 @@ impl Database {
         voice: bool,
         id: Option<&str>,
         media_inputs: &[MediaInput],
+        track_pending_delivery: bool,
     ) -> anyhow::Result<Message> {
         let id = id
             .map(String::from)
@@ -235,6 +259,13 @@ impl Database {
                     Self::serialize_media_inputs(media_inputs),
                 ],
             )?;
+            if track_pending_delivery {
+                conn.execute(
+                    "INSERT INTO pending_session_inputs (session_id, message_id)
+                     VALUES (?1, ?2)",
+                    rusqlite::params![session_id, id],
+                )?;
+            }
             Ok(ingress_seq)
         })();
         let ingress_seq = match result {
@@ -420,22 +451,20 @@ impl Database {
         Ok(msgs)
     }
 
-    /// Return every message persisted after a durable ingress cursor.
-    /// Unlike timestamp recovery, this remains correct when the wall clock
-    /// moves backwards or multiple writes share the same millisecond.
-    pub fn get_session_messages_since_ingress_seq(
-        &self,
-        session_id: &str,
-        since: i64,
-    ) -> anyhow::Result<Vec<Message>> {
+    /// Return all user inputs whose durable delivery marker has not been
+    /// acknowledged by a committed `UserInject` event. Recovery state is
+    /// explicit and has no age cutoff.
+    pub fn get_pending_session_inputs(&self, session_id: &str) -> anyhow::Result<Vec<Message>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, session_id, role, content, message_type, created_at, tool_call_id,
-                    ui_metadata, voice, ingress_seq, media_inputs
-             FROM messages WHERE session_id = ?1 AND ingress_seq > ?2
-             ORDER BY ingress_seq ASC, rowid ASC",
+            "SELECT m.id, m.session_id, m.role, m.content, m.message_type, m.created_at,
+                    m.tool_call_id, m.ui_metadata, m.voice, m.ingress_seq, m.media_inputs
+             FROM pending_session_inputs p
+             JOIN messages m ON m.session_id = p.session_id AND m.id = p.message_id
+             WHERE p.session_id = ?1
+             ORDER BY m.ingress_seq ASC, m.rowid ASC",
         )?;
-        let rows = stmt.query_map(rusqlite::params![session_id, since], map_message_row)?;
+        let rows = stmt.query_map(rusqlite::params![session_id], map_message_row)?;
         let mut msgs = Vec::new();
         for row in rows {
             msgs.push(row?);
@@ -443,55 +472,17 @@ impl Database {
         Ok(msgs)
     }
 
-    /// Return every user message that was persisted but never injected into the
-    /// agent's context. A submitted input is "delivered" when the ReAct loop
-    /// injects it via `push_user_context`, which anchors it with a
-    /// `session_steps` row under the message's own id (see
-    /// `create_thought_step`). A `msg-*` user row without that anchor was
-    /// queued as steering/supplement and then lost — the session errored,
-    /// completed, or was cancelled mid-batch before the loop drained the queue.
-    /// Reopen/resume re-delivers these so history resume never leaves a user
-    /// message stranded in a "pending / not delivered" state.
-    ///
-    /// The session's FIRST user message is the session input seeded into the
-    /// canonical directly (it never carries an anchor), so it is excluded here.
-    /// Only rows with `created_at > since_created_at` are returned. Callers
-    /// must provide a recovery window so ancient false positives from missing
-    /// anchors never re-enter the ReAct loop.
-    pub fn get_undelivered_user_messages_since(
-        &self,
+    /// Acknowledge an input only after its `UserInject` event commits.
+    pub(crate) fn acknowledge_pending_session_input(
+        conn: &rusqlite::Connection,
         session_id: &str,
-        since_created_at: &str,
-    ) -> anyhow::Result<Vec<Message>> {
-        let conn = self.conn();
-        let mut stmt = conn.prepare(
-            "SELECT m.id, m.session_id, m.role, m.content, m.message_type, m.created_at,
-                    m.tool_call_id, m.ui_metadata, m.voice, m.ingress_seq, m.media_inputs
-             FROM messages m
-             WHERE m.session_id = ?1
-               AND m.role = 'user'
-               AND m.id LIKE 'msg-%'
-               AND m.created_at > ?2
-               AND m.id <> (
-                   SELECT id FROM messages
-                   WHERE session_id = ?1 AND role = 'user'
-                   ORDER BY created_at ASC, rowid ASC LIMIT 1
-               )
-               AND NOT EXISTS (
-                   SELECT 1 FROM session_steps st
-                   WHERE st.session_id = m.session_id AND st.id = m.id
-               )
-             ORDER BY m.ingress_seq ASC, m.rowid ASC",
+        message_id: &str,
+    ) -> anyhow::Result<()> {
+        conn.execute(
+            "DELETE FROM pending_session_inputs WHERE session_id = ?1 AND message_id = ?2",
+            rusqlite::params![session_id, message_id],
         )?;
-        let rows = stmt.query_map(
-            rusqlite::params![session_id, since_created_at],
-            map_message_row,
-        )?;
-        let mut msgs = Vec::new();
-        for row in rows {
-            msgs.push(row?);
-        }
-        Ok(msgs)
+        Ok(())
     }
 
     /// Return the `created_at` of the most recent message in a session, or
@@ -725,24 +716,6 @@ mod tests {
     }
 
     #[test]
-    fn ingress_cursor_recovers_rows_without_timestamp_comparison() {
-        let db = test_db();
-        let tid = test_session(&db);
-        let first = db.add_message(&tid, "user", "first", None, None).unwrap();
-        let second = db.add_message(&tid, "user", "second", None, None).unwrap();
-
-        assert_eq!(first.ingress_seq, 1);
-        assert_eq!(second.ingress_seq, 2);
-        let recovered = db
-            .get_session_messages_since_ingress_seq(&tid, first.ingress_seq)
-            .unwrap();
-        assert_eq!(
-            recovered.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
-            [second.id.as_str()]
-        );
-    }
-
-    #[test]
     fn ingress_cursor_does_not_reuse_sequence_after_message_delete() {
         let db = test_db();
         let tid = test_session(&db);
@@ -785,77 +758,81 @@ mod tests {
     }
 
     #[test]
-    fn get_undelivered_user_messages_excludes_first_and_anchored() {
+    fn pending_session_inputs_only_include_explicitly_tracked_rows() {
         let db = test_db();
         let tid = test_session(&db);
-        // The session input (first user message) is seeded into the canonical
-        // directly and never carries a step anchor — must be excluded.
-        let first = db.add_message(&tid, "user", "开场", None, None).unwrap();
-        // A steering input delivered via push_user_context gets a step anchor.
+        db.add_message(&tid, "user", "开场", None, None).unwrap();
         let delivered = db.add_message(&tid, "user", "继续", None, None).unwrap();
         db.create_thought_step(&tid, 2, &delivered.id).unwrap();
-        // A queued steering lost before injection has no anchor.
-        let lost = db
-            .add_message(&tid, "user", "C:\\照片目录", None, None)
+        let pending = db
+            .add_pending_user_input(&tid, "C:\\照片目录", Some("text"), &[], false, None)
             .unwrap();
 
-        let undelivered = db.get_undelivered_user_messages_since(&tid, "").unwrap();
+        let pending_rows = db.get_pending_session_inputs(&tid).unwrap();
         assert_eq!(
-            undelivered.len(),
+            pending_rows.len(),
             1,
-            "only the never-injected input is pending"
+            "only an explicit pending marker is returned"
         );
-        assert_eq!(undelivered[0].id, lost.id);
-        assert_ne!(undelivered[0].id, first.id);
-        assert_ne!(undelivered[0].id, delivered.id);
+        assert_eq!(pending_rows[0].id, pending.id);
         // Attachment payloads survive the scan (images travel with the input).
-        assert!(undelivered[0].attachments.is_empty());
+        assert!(pending_rows[0].attachments.is_empty());
     }
 
     #[test]
-    fn get_undelivered_user_messages_skips_legacy_and_empty_sessions() {
+    fn pending_session_inputs_skips_untracked_rows_and_empty_sessions() {
         let db = test_db();
         let tid = test_session(&db);
         // No messages at all: nothing to recover.
-        assert!(
-            db.get_undelivered_user_messages_since(&tid, "")
-                .unwrap()
-                .is_empty()
-        );
-        // Assistant rows are never user inputs.
+        assert!(db.get_pending_session_inputs(&tid).unwrap().is_empty());
+        // Ordinary historical user and assistant rows are never pending.
+        db.add_message(&tid, "user", "history", Some("text"), None)
+            .unwrap();
         db.add_message(&tid, "assistant", "hi", Some("text"), None)
             .unwrap();
-        assert!(
-            db.get_undelivered_user_messages_since(&tid, "")
-                .unwrap()
-                .is_empty()
-        );
+        assert!(db.get_pending_session_inputs(&tid).unwrap().is_empty());
     }
 
     #[test]
-    fn get_undelivered_user_messages_since_filters_by_created_at() {
+    fn pending_session_inputs_survive_arbitrary_message_age() {
         let db = test_db();
         let tid = test_session(&db);
-        let _first = db.add_message(&tid, "user", "开场", None, None).unwrap();
-        let lost = db
-            .add_message(&tid, "user", "丢失输入", None, None)
+        let pending = db
+            .add_pending_user_input(&tid, "丢失输入", Some("text"), &[], false, None)
             .unwrap();
-        // A cutoff newer than the lost row excludes it.
-        let after = (Utc::now() + chrono::Duration::seconds(1))
-            .to_rfc3339_opts(SecondsFormat::Millis, true);
+        let old =
+            (Utc::now() - chrono::Duration::days(30)).to_rfc3339_opts(SecondsFormat::Millis, true);
+        let conn = db.conn();
+        conn.execute(
+            "UPDATE messages SET created_at = ?1 WHERE id = ?2",
+            rusqlite::params![old, pending.id],
+        )
+        .unwrap();
+        drop(conn);
+
+        let recovered = db.get_pending_session_inputs(&tid).unwrap();
+        assert_eq!(recovered.len(), 1);
+        assert_eq!(recovered[0].id, pending.id);
+    }
+
+    #[test]
+    fn pending_input_and_recovery_marker_persist_atomically() {
+        let db = test_db();
+        let tid = test_session(&db);
+        db.conn()
+            .execute_batch(
+                "CREATE TRIGGER reject_pending_marker
+                 BEFORE INSERT ON pending_session_inputs
+                 BEGIN SELECT RAISE(ABORT, 'forced marker failure'); END;",
+            )
+            .unwrap();
+
         assert!(
-            db.get_undelivered_user_messages_since(&tid, after.as_str())
-                .unwrap()
-                .is_empty()
+            db.add_pending_user_input(&tid, "input", Some("text"), &[], false, None)
+                .is_err()
         );
-        // A cutoff older than the lost row still returns it.
-        let before =
-            (Utc::now() - chrono::Duration::days(1)).to_rfc3339_opts(SecondsFormat::Millis, true);
-        let undelivered = db
-            .get_undelivered_user_messages_since(&tid, before.as_str())
-            .unwrap();
-        assert_eq!(undelivered.len(), 1);
-        assert_eq!(undelivered[0].id, lost.id);
+        assert!(db.get_session_messages(&tid).unwrap().is_empty());
+        assert_eq!(db.get_last_message_ingress_seq(&tid), 0);
     }
 
     #[test]

@@ -61,16 +61,15 @@ impl AgentLayer {
             None
         };
         let mut persisted_msg = if let Some(session_id) = active_session_id.as_ref() {
-            let msg = match self
-                .persist_message_parts_locked(
-                    session_id,
-                    "user",
-                    transcript,
-                    Some("text"),
-                    attachments,
-                    voice,
-                )
-                .await
+            let msg = match crate::persist_pending_user_input(
+                &self.executor,
+                session_id,
+                transcript,
+                Some("text"),
+                attachments,
+                voice,
+            )
+            .await
             {
                 Ok(msg) => msg,
                 Err(e) => {
@@ -227,6 +226,19 @@ impl AgentLayer {
                                     tid,
                                     e
                                 );
+                                if let Err(marker_error) = self
+                                    .executor
+                                    .session_store()
+                                    .discard_pending_user_input(&tid, &msg_id)
+                                    .await
+                                {
+                                    tracing::warn!(
+                                        "process_input: failed to clear recovery marker for rejected user message {} in session {}: {}",
+                                        msg_id,
+                                        tid,
+                                        marker_error
+                                    );
+                                }
                             }
                         }
                         // Notify the frontend so it can drop the stale

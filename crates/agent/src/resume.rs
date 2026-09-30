@@ -17,17 +17,15 @@
 //! ## Queue durability (Phase 7 / D2)
 //!
 //! RAM follow-up / steering queues are a same-process cache. Durability is
-//! DB messages + checkpoint ingress cursor + undelivered scan. Resume
-//! re-queues by `message_id` and is idempotent (duplicate id is skipped); the
-//! durable event sequence, rather than snapshot contents, decides transcript
-//! recovery.
+//! DB messages plus explicit pending-input markers, acknowledged atomically
+//! with `UserInject`. Resume re-queues by `message_id`; the durable event
+//! sequence, rather than snapshot contents, decides transcript recovery.
 
 use crate::AgentLayer;
 use crate::react::DurableEventState;
 use crate::react::{RunInput, RunReplay};
 use crate::resume_support::{
     builtin_selection, infer_resume_step, load_mcp_tool_names, load_skill_names,
-    merge_recovery_candidates,
 };
 
 use crate::session::SessionStatus;
@@ -41,8 +39,8 @@ use haven_common::types::{CanonicalMessage, ContentPart};
 /// system-prompt path. **S1 authority:** canonical is the LLM truth; this
 /// window may feed Additional context only for turns not already represented
 /// as the first canonical user message. Resume does not use this type: the
-/// durable event stream is the authority and post-checkpoint inputs are
-/// recovered by ingress sequence, not by content comparison.
+/// durable event stream is the authority and pending inputs are recovered by
+/// durable message identity, not by content comparison.
 #[derive(Debug, Clone)]
 pub(crate) struct ConversationMessage {
     role: String,
@@ -56,11 +54,80 @@ pub(crate) struct InitialUserInput<'a> {
 }
 
 impl AgentLayer {
+    /// Re-queue inputs that were durably accepted but have not yet committed
+    /// their `UserInject` event. The marker is cleared in the same DB
+    /// transaction as that event, so a process restart can safely retry this
+    /// scan without a time limit.
+    async fn restore_pending_user_inputs(
+        &self,
+        session_id: &str,
+        mut answer_pending: bool,
+    ) -> anyhow::Result<usize> {
+        // A live executor queue is authoritative within this process. Avoid
+        // re-enqueuing it from the durable copy.
+        if self.executor.has_pending_context(session_id).await {
+            return Ok(0);
+        }
+
+        let pending_inputs = self
+            .react_engine
+            .event_store
+            .pending_session_inputs(session_id)
+            .await
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "failed to recover pending inputs for session {session_id}: {error}"
+                )
+            })?;
+        let mut restored = 0usize;
+        for message in pending_inputs {
+            self.executor
+                .register_managed_assets_for_session(session_id, &message.attachments);
+            let is_answer = answer_pending;
+            let queued = if is_answer {
+                self.executor
+                    .add_answer_with_attachments(
+                        session_id,
+                        &message.content,
+                        &message.attachments,
+                        Some(message.id.clone()),
+                    )
+                    .await
+            } else {
+                self.executor
+                    .add_follow_up_with_attachments(
+                        session_id,
+                        &message.content,
+                        &message.attachments,
+                        Some(message.id.clone()),
+                    )
+                    .await
+            };
+            match queued {
+                Ok(()) => {
+                    restored += 1;
+                    if is_answer {
+                        // Only the first recovered message answers the
+                        // outstanding question; later ones are follow-ups.
+                        answer_pending = false;
+                    }
+                }
+                Err(error) => tracing::warn!(
+                    "failed to re-queue pending input {} for session {}: {}",
+                    message.id,
+                    session_id,
+                    error
+                ),
+            }
+        }
+        Ok(restored)
+    }
+
     /// Load the most recent conversation messages for a session as (role,
     /// content) pairs, for the FRESH-run system-prompt path
     /// (`prompt_builder.build`). Resume does not consume this: the restored
-    /// event stream is the authority, and post-checkpoint inputs are recovered
-    /// by ingress sequence in `run_session_resumed`.
+    /// event stream is the authority, and explicitly pending inputs are
+    /// recovered by message identity in `run_session_resumed`.
     async fn load_conversation_history(
         &self,
         session_id: &str,
@@ -245,6 +312,17 @@ impl AgentLayer {
                     .await
             }
             None => {
+                let answer_pending = self.executor.is_ask_gated(session_id).await;
+                let restored = self
+                    .restore_pending_user_inputs(session_id, answer_pending)
+                    .await?;
+                if restored > 0 {
+                    tracing::info!(
+                        "run_session_from_id: recovered {} pending input(s) for fresh session {}",
+                        restored,
+                        session_id
+                    );
+                }
                 self.run_session(
                     &session.id,
                     &description,
@@ -265,12 +343,13 @@ impl AgentLayer {
     ///
     /// Reopening is a resume concern, but it is deliberately not a run: the
     /// session remains `Paused` until a real follow-up or Continue request.
-    /// Recent user rows without a session-step anchor are re-queued by id so a
-    /// restart cannot strand an input that never reached the event log.
+    /// Persistently pending user inputs are re-queued by id so a restart
+    /// cannot strand an input that never reached the event log, regardless of
+    /// how long the process was down.
     pub async fn reopen_session(&self, session_id: &str) -> anyhow::Result<()> {
         self.executor.ensure_session_loaded(session_id).await?;
         let state = self.executor.get_session_status(session_id).await;
-        let mut answer_pending = self
+        let answer_pending = self
             .executor
             .has_pending_interaction(session_id, crate::interaction::InteractionKind::Ask)
             .await;
@@ -282,57 +361,15 @@ impl AgentLayer {
                 .update_session_status_memory_only(session_id, SessionStatus::Paused)
                 .await?;
         }
-        // A live queue is authoritative for the current process. Scanning the
-        // DB while it still owns inputs would enqueue a second copy.
-        if self.executor.has_pending_context(session_id).await {
-            return Ok(());
-        }
-        let undelivered = self
-            .react_engine
-            .event_store
-            .recent_unanchored_user_messages(session_id)
-            .await
-            .map_err(|e| anyhow::anyhow!("failed to scan pending inputs: {e}"))?;
-        if undelivered.is_empty() {
-            return Ok(());
-        }
-        tracing::info!(
-            "reopen_session: re-queueing {} recent undelivered user input(s) for session {} (staying Paused until Continue)",
-            undelivered.len(),
-            session_id
-        );
-        for message in undelivered {
-            let result = if answer_pending {
-                self.executor
-                    .add_answer_with_attachments(
-                        session_id,
-                        &message.content,
-                        &message.attachments,
-                        Some(message.id.clone()),
-                    )
-                    .await
-            } else {
-                self.executor
-                    .add_follow_up_with_attachments(
-                        session_id,
-                        &message.content,
-                        &message.attachments,
-                        Some(message.id.clone()),
-                    )
-                    .await
-            };
-            if let Err(error) = result {
-                tracing::warn!(
-                    "reopen_session: failed to re-queue input {} for session {}: {}",
-                    message.id,
-                    session_id,
-                    error
-                );
-            } else if answer_pending {
-                // Only the first recovered message answers the outstanding
-                // question; later messages are ordinary follow-ups.
-                answer_pending = false;
-            }
+        let restored = self
+            .restore_pending_user_inputs(session_id, answer_pending)
+            .await?;
+        if restored > 0 {
+            tracing::info!(
+                "reopen_session: re-queued {} pending user input(s) for session {} (staying Paused until Continue)",
+                restored,
+                session_id
+            );
         }
         Ok(())
     }
@@ -359,88 +396,29 @@ impl AgentLayer {
             .rebuild_canonical_system_without_memory(description, &mut canonical)
             .await;
 
-        // Phase 7 / D2 — post-checkpoint recovery (durability ≠ RAM queues):
+        // Phase 7 / D2 — pending-input recovery (durability ≠ RAM queues):
         //
         // RAM follow-up / steering queues are a same-process cache only.
-        // Durability = DB user messages + the SessionStore ingress cursor + undelivered
-        // (anchor-less) scan. Replay is idempotent by `message_id`
+        // Durability = DB user messages + explicit pending-input state.
+        // Replay is idempotent by `message_id`
         // (`push_follow_up` / steering skip duplicates).
         //
-        // By ingress sequence instead of timestamps or content matching: any
-        // message persisted after the ingress cursor cannot be in the
-        // restored events, even when the wall clock moves backwards or two
-        // writes share a millisecond. The durable event stream is the single
-        // authority for the transcript; the checkpoint only supplies the
-        // ingress cursor for messages that have not been applied yet.
-        //
-        // This alone misses inputs that PREDATE the checkpoint yet were never
-        // injected: a steering/supplement queued after the loop's last
-        // per-step drain is not in the events. Those rows carry no step
-        // anchor (see `push_user_context`), so they are recovered by the
-        // undelivered scan below.
+        // The durable event stream is the single transcript authority.
+        // Pending markers cover accepted ingress that has not committed its
+        // UserInject event yet, independent of downtime and timestamp.
         //
         // When the in-memory queues still hold the inputs (pause → answer in
         // the same process), the ReAct loop injects them and the DB copy
         // must NOT be re-queued — that would double-inject.
-        if !self.executor.has_pending_context(session_id).await {
-            let ingress_cursor = replay.cursor.message_ingress_seq;
-            let store = &self.react_engine.event_store;
-            let pending = store
-                .messages_after_ingress_cursor(session_id, ingress_cursor)
-                .await
-                .map_err(|error| {
-                    anyhow::anyhow!(
-                        "failed to recover post-checkpoint inputs for session {session_id}: {error}"
-                    )
-                })?;
-            let undelivered = store
-                .recent_unanchored_user_messages(session_id)
-                .await
-                .map_err(|error| {
-                    anyhow::anyhow!(
-                        "failed to recover post-checkpoint inputs for session {session_id}: {error}"
-                    )
-                })?;
-            let mut restored = 0usize;
-            let mut answer_pending = self.executor.is_ask_gated(session_id).await;
-            for msg in merge_recovery_candidates(pending, undelivered) {
-                self.executor
-                    .register_managed_assets_for_session(session_id, &msg.attachments);
-                let is_answer = answer_pending;
-                let queued = if is_answer {
-                    self.executor
-                        .add_answer_with_attachments(
-                            session_id,
-                            &msg.content,
-                            &msg.attachments,
-                            Some(msg.id.clone()),
-                        )
-                        .await
-                } else {
-                    self.executor
-                        .add_follow_up_with_attachments(
-                            session_id,
-                            &msg.content,
-                            &msg.attachments,
-                            Some(msg.id.clone()),
-                        )
-                        .await
-                };
-                if queued.is_ok() {
-                    restored += 1;
-                    if is_answer {
-                        answer_pending = false;
-                    }
-                }
-            }
-            if restored > 0 {
-                tracing::info!(
-                    "run_session_resumed: recovered {} post-checkpoint input(s) for session {} (ingress_seq {})",
-                    restored,
-                    session_id,
-                    ingress_cursor
-                );
-            }
+        let restored = self
+            .restore_pending_user_inputs(session_id, self.executor.is_ask_gated(session_id).await)
+            .await?;
+        if restored > 0 {
+            tracing::info!(
+                "run_session_resumed: recovered {} pending input(s) for session {}",
+                restored,
+                session_id
+            );
         }
 
         let emitter_arc = match self.events.emitter_arc() {

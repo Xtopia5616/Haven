@@ -7,7 +7,7 @@
 //! timeline from the complete log.
 
 use crate::Database;
-use crate::repositories::messages::{Message, now_rfc3339_millis, undelivered_recovery_since};
+use crate::repositories::messages::{Message, now_rfc3339_millis};
 use crate::repositories::session_authorization::{
     SessionAuthorizationGrant, StoredSessionAuthorizationGrant,
 };
@@ -186,6 +186,9 @@ impl SessionCommittedEvent {
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SessionProjectionIntent {
+    AcknowledgePendingUserInput {
+        message_id: String,
+    },
     AssistantMessage {
         message_id: String,
         content: String,
@@ -229,6 +232,15 @@ impl SessionCommitted {
     pub fn push_transcript(&mut self, payload: impl Into<String>, run_id: u64, step_number: u32) {
         self.events
             .push(SessionCommittedEvent::new(payload, run_id, step_number));
+    }
+
+    /// Clear durable ingress recovery state in the same transaction as the
+    /// `UserInject` event that proves delivery.
+    pub fn acknowledge_pending_user_input(&mut self, message_id: impl Into<String>) {
+        self.projections
+            .push(SessionProjectionIntent::AcknowledgePendingUserInput {
+                message_id: message_id.into(),
+            });
     }
 
     pub fn project_assistant_message(
@@ -1290,37 +1302,83 @@ impl SessionStore {
         Self::cursor_in_connection(&conn, session_id)
     }
 
-    /// Read messages whose durable ingress sequence is newer than the
-    /// checkpoint cursor. This query intentionally returns all message roles
-    /// and types; callers apply the same recovery filtering as before.
-    pub async fn messages_after_ingress_cursor(
-        &self,
-        session_id: &str,
-        ingress_cursor: i64,
-    ) -> anyhow::Result<Vec<Message>> {
+    /// Read every persisted input that has not yet been acknowledged by a
+    /// committed `UserInject` event. The durable marker, not message age or
+    /// step-row shape, determines whether it is recoverable.
+    pub async fn pending_session_inputs(&self, session_id: &str) -> anyhow::Result<Vec<Message>> {
         let session_id = session_id.to_owned();
         self.db
+            .run_blocking(move |db| db.get_pending_session_inputs(&session_id))
+            .await
+    }
+
+    /// Drop recovery state for an input explicitly rejected by ingress, such
+    /// as a message routed to a terminal session whose history row cannot be
+    /// deleted. Normal delivery uses the atomic transcript acknowledgement.
+    pub async fn discard_pending_user_input(
+        &self,
+        session_id: &str,
+        message_id: &str,
+    ) -> anyhow::Result<()> {
+        let session_id = session_id.to_owned();
+        let message_id = message_id.to_owned();
+        self.db
             .run_blocking(move |db| {
-                db.get_session_messages_since_ingress_seq(&session_id, ingress_cursor)
+                let conn = db.conn();
+                Database::acknowledge_pending_session_input(&conn, &session_id, &message_id)
             })
             .await
     }
 
-    /// Read recent user messages that have no session-step anchor. The
-    /// existing two-day recovery window, first-user exclusion, ID filtering,
-    /// ingress ordering and message projections are owned by the messages
-    /// repository query.
-    pub async fn recent_unanchored_user_messages(
+    /// Persist a newly accepted follow-up input together with its durable
+    /// recovery marker. Repeating a supplied message id is idempotent and
+    /// does not recreate a marker already acknowledged by a transcript event.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn persist_pending_user_input(
         &self,
         session_id: &str,
-    ) -> anyhow::Result<Vec<Message>> {
+        content: &str,
+        message_type: Option<&str>,
+        attachments: &[MessageAttachment],
+        voice: bool,
+        message_id: Option<&str>,
+        cancel: Option<CancellationToken>,
+    ) -> anyhow::Result<Message> {
         let session_id = session_id.to_owned();
-        let since_created_at = undelivered_recovery_since();
-        self.db
-            .run_blocking(move |db| {
-                db.get_undelivered_user_messages_since(&session_id, &since_created_at)
-            })
-            .await
+        let content = content.to_owned();
+        let message_type = message_type.map(str::to_owned);
+        let attachments = attachments.to_vec();
+        let message_id = message_id.map(str::to_owned);
+        let persist = move |db: &Database| {
+            if let Some(message_id) = message_id.as_deref()
+                && let Some(existing) = db.get_message_by_id(&session_id, message_id)?
+            {
+                if existing.role != "user"
+                    || existing.content != content
+                    || existing.message_type.as_deref() != message_type.as_deref()
+                {
+                    anyhow::bail!(
+                        "message idempotency conflict for session {} message {}",
+                        session_id,
+                        message_id
+                    );
+                }
+                return Ok(existing);
+            }
+            db.add_pending_user_input(
+                &session_id,
+                &content,
+                message_type.as_deref(),
+                &attachments,
+                voice,
+                message_id.as_deref(),
+            )
+        };
+
+        match cancel {
+            Some(cancel) => self.db.run_blocking_cancellable(cancel, persist).await,
+            None => self.db.run_blocking(persist).await,
+        }
     }
 
     /// Load the active transcript, branch points and all projection clocks
@@ -3013,6 +3071,13 @@ impl Database {
         // steps, then action steps. Branch-point `last_msg_at` and the UI
         // timeline rely on this established projection order.
         for projection in &committed.projections {
+            if let SessionProjectionIntent::AcknowledgePendingUserInput { message_id } = projection
+            {
+                Database::acknowledge_pending_session_input(conn, session_id, message_id)?;
+            }
+        }
+
+        for projection in &committed.projections {
             let SessionProjectionIntent::AssistantMessage {
                 message_id,
                 content,
@@ -4410,49 +4475,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn session_store_reads_messages_after_ingress_cursor_with_projection() {
-        let (db, store, session_id) = store();
-        let first = db
-            .add_message(&session_id, "user", "first", None, None)
-            .unwrap();
-        let attachment = haven_common::types::MessageAttachment::new("image/png", "aGVsbG8=");
-        let second = db
-            .add_message_full(
-                &session_id,
-                "user",
-                "second",
-                None,
-                None,
-                std::slice::from_ref(&attachment),
-                false,
-                None,
-            )
-            .unwrap();
-        let third = db
-            .add_message(&session_id, "assistant", "third", None, None)
-            .unwrap();
-
-        let messages = store
-            .messages_after_ingress_cursor(&session_id, first.ingress_seq)
-            .await
-            .unwrap();
-        assert_eq!(
-            messages
-                .iter()
-                .map(|message| message.id.as_str())
-                .collect::<Vec<_>>(),
-            [second.id.as_str(), third.id.as_str()]
-        );
-        assert_eq!(messages[0].attachments[0].media_type, "image/png");
-        assert_eq!(messages[0].media_inputs.len(), 1);
-        assert!(matches!(
-            messages[0].media_inputs[0].representations[0].payload,
-            haven_common::media::MediaRepresentationPayload::ManagedFileRef { .. }
-        ));
-    }
-
-    #[tokio::test]
-    async fn session_store_reads_recent_unanchored_users_with_existing_window() {
+    async fn session_store_reads_pending_inputs_without_an_age_cutoff() {
         let (db, store, session_id) = store();
         db.add_message(&session_id, "user", "seed", None, None)
             .unwrap();
@@ -4463,11 +4486,9 @@ mod tests {
             .unwrap();
         let attachment = haven_common::types::MessageAttachment::new("image/png", "aGVsbG8=");
         let pending = db
-            .add_message_full(
+            .add_pending_user_input(
                 &session_id,
-                "user",
                 "pending",
-                None,
                 None,
                 std::slice::from_ref(&attachment),
                 false,
@@ -4477,43 +4498,50 @@ mod tests {
         db.add_message(&session_id, "assistant", "ignored", None, None)
             .unwrap();
 
-        let messages = store
-            .recent_unanchored_user_messages(&session_id)
-            .await
-            .unwrap();
+        let messages = store.pending_session_inputs(&session_id).await.unwrap();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].id, pending.id);
         assert_eq!(messages[0].attachments[0].media_type, "image/png");
         assert_eq!(messages[0].media_inputs.len(), 1);
 
         let old_session = db.create_session("old input").unwrap();
-        let old_seed = db
-            .add_message(&old_session.id, "user", "old seed", None, None)
+        db.add_message(&old_session.id, "user", "old seed", None, None)
             .unwrap();
         let old_pending = db
-            .add_message(&old_session.id, "user", "old pending", None, None)
+            .add_pending_user_input(&old_session.id, "old pending", None, &[], false, None)
             .unwrap();
-        let old_cutoff = (chrono::Utc::now() - chrono::Duration::days(3))
+        let old_cutoff = (chrono::Utc::now() - chrono::Duration::days(30))
             .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-        let seed_cutoff =
-            (chrono::Utc::now() - chrono::Duration::days(3) - chrono::Duration::seconds(1))
-                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         let conn = db.conn();
-        conn.execute(
-            "UPDATE messages SET created_at = ?1 WHERE id = ?2",
-            rusqlite::params![seed_cutoff, old_seed.id],
-        )
-        .unwrap();
         conn.execute(
             "UPDATE messages SET created_at = ?1 WHERE id = ?2",
             rusqlite::params![old_cutoff, old_pending.id],
         )
         .unwrap();
         drop(conn);
+        let old_recovered = store.pending_session_inputs(&old_session.id).await.unwrap();
+        assert_eq!(old_recovered.len(), 1);
+        assert_eq!(old_recovered[0].id, old_pending.id);
+    }
+
+    #[tokio::test]
+    async fn user_input_ack_is_atomic_with_transcript_commit() {
+        let (db, store, session_id) = store();
+        let pending = db
+            .add_pending_user_input(&session_id, "pending", Some("text"), &[], false, None)
+            .unwrap();
+
+        let mut failed = SessionCommitted::transcript("{}", 1, 1);
+        failed.acknowledge_pending_user_input(pending.id.clone());
+        failed.project_assistant_message(pending.id.clone(), "conflict", Some("text".into()));
+        assert!(store.commit_transcript(&session_id, &failed).is_err());
+        assert_eq!(db.get_pending_session_inputs(&session_id).unwrap().len(), 1);
+
+        let mut committed = SessionCommitted::transcript("{}", 1, 1);
+        committed.acknowledge_pending_user_input(pending.id.clone());
+        store.commit_transcript(&session_id, &committed).unwrap();
         assert!(
-            store
-                .recent_unanchored_user_messages(&old_session.id)
-                .await
+            db.get_pending_session_inputs(&session_id)
                 .unwrap()
                 .is_empty()
         );
