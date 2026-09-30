@@ -189,7 +189,7 @@
 	}
 	.workspace-rail {
 		display: none;
-		transition: padding var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard);
+		transition: padding var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
 	}
 	.compact-workspace-nav {
 		flex: 0 0 auto;
@@ -234,7 +234,7 @@
 		overscroll-behavior-x: none;
 		touch-action: pan-y;
 		padding: var(--md-sys-content-gutter);
-		transition: padding var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard);
+		transition: padding var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
 		background: var(--md-sys-color-surface);
 		background-image: linear-gradient(
 			180deg,
@@ -291,7 +291,7 @@
 		}
 	}
 
-	@media screen and (min-width: 900px) and (orientation: landscape) {
+	@media screen and (min-aspect-ratio: 4/3) and (orientation: landscape) {
 		.app-shell {
 			display: grid;
 			grid-template-columns: 76px minmax(0, 1fr);
@@ -456,7 +456,7 @@
 		}
 	}
 
-	@media screen and (min-width: 1440px) and (orientation: landscape) {
+	@media screen and (min-aspect-ratio: 16/9) and (orientation: landscape) {
 		.app-shell {
 			grid-template-columns: 232px minmax(0, 1fr);
 		}

@@ -66,8 +66,8 @@
 			color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
 			border-color var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
 			transform var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard),
-			width var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard),
-			padding var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard);
+			width var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
+			padding var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
 	}
 	.workspace-link:hover {
 		background: var(--md-sys-color-surface-container-high);

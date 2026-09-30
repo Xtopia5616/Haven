@@ -843,7 +843,7 @@
 		font-size: var(--md-sys-typescale-body-medium-size);
 		line-height: var(--md-sys-typescale-body-medium-line-height);
 	}
-	@media (orientation: landscape) and (min-width: 1280px) {
+	@media (orientation: landscape) and (min-aspect-ratio: 8/5) {
 		.memory-page {
 			max-width: none;
 		}
@@ -855,7 +855,7 @@
 		.memory-sidebar {
 			grid-column: 1;
 			grid-row: 1;
-			animation: responsive-layout-panel-in var(--md-sys-motion-duration-fast)
+			animation: responsive-layout-panel-in var(--md-sys-motion-duration-short)
 				var(--md-sys-motion-easing-standard) both;
 			position: sticky;
 			top: var(--md-sys-space-lg);

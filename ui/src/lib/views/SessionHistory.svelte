@@ -88,7 +88,7 @@
 		statusVariant = () => 'default',
 		formatMessageTime = (value) => value,
 	}: Props = $props();
-	const WIDE_LANDSCAPE_QUERY = '(orientation: landscape) and (min-width: 1280px)';
+	const WIDE_LANDSCAPE_QUERY = '(orientation: landscape) and (min-aspect-ratio: 8/5)';
 	let wideLandscape = $state(false);
 	let previewSessionId = $state('');
 	const previewSession = $derived.by(
@@ -98,7 +98,7 @@
 		if (typeof window.matchMedia !== 'function') {
 			const syncFallbackLayout = () =>
 				(wideLandscape =
-					window.innerWidth >= 1280 && window.innerWidth > window.innerHeight);
+					window.innerHeight > 0 && window.innerWidth / window.innerHeight >= 8 / 5);
 			syncFallbackLayout();
 			window.addEventListener('resize', syncFallbackLayout);
 			return () => window.removeEventListener('resize', syncFallbackLayout);
@@ -600,7 +600,7 @@
 		justify-content: center;
 		padding: var(--md-sys-space-lg) 0;
 	}
-	@media (orientation: landscape) and (min-width: 1280px) {
+	@media (orientation: landscape) and (min-aspect-ratio: 8/5) {
 		.history-view--wide .history-results {
 			display: grid;
 			grid-template-columns: minmax(18rem, 0.85fr) minmax(0, 1.35fr);

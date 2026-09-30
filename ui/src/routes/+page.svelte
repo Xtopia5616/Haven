@@ -1086,7 +1086,7 @@
 		transform: translateY(var(--md-sys-space-2xs));
 	}
 
-	@media screen and (min-width: 1280px) and (orientation: landscape) {
+	@media screen and (min-aspect-ratio: 8/5) and (orientation: landscape) {
 		.chat-page {
 			grid-template-columns: 272px minmax(0, 1fr);
 			--md-sys-chat-max-width: 1080px;
@@ -1095,7 +1095,7 @@
 			grid-column: 1;
 			grid-row: 1;
 			display: flex;
-			animation: responsive-layout-panel-in var(--md-sys-motion-duration-fast)
+			animation: responsive-layout-panel-in var(--md-sys-motion-duration-short)
 				var(--md-sys-motion-easing-standard) both;
 			min-width: 0;
 			min-height: 0;

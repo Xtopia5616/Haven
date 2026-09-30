@@ -1042,33 +1042,24 @@ select.md-select {
 
 .responsive-layout-transition {
 	transition:
-		grid-template-columns var(--md-sys-motion-duration-fast)
+		grid-template-columns var(--md-sys-motion-duration-short)
 			var(--md-sys-motion-easing-standard),
-		column-gap var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard);
+		column-gap var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
 }
 .responsive-layout-transition .workspace-link__copy {
 	transition:
-		max-width var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard),
-		opacity var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard),
-		transform var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard);
+		max-width var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
+		opacity var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard),
+		transform var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
 }
 @keyframes responsive-layout-panel-in {
 	from {
 		opacity: 0;
-		transform: translateX(-4px);
+		transform: translateX(-8px);
 	}
 	to {
 		opacity: 1;
 		transform: translateX(0);
-	}
-}
-@media (prefers-reduced-motion: reduce) {
-	.responsive-layout-transition,
-	.responsive-layout-transition .workspace-link__copy {
-		transition: none;
-	}
-	.responsive-layout-transition .responsive-layout-panel {
-		animation: none !important;
 	}
 }
 /* Shared route heading rhythm. Pages can opt in without duplicating layout
@@ -1281,7 +1272,7 @@ select.md-select {
 	height: 100%;
 }
 
-@media screen and (min-width: 1280px) and (orientation: landscape) {
+@media screen and (min-aspect-ratio: 8/5) and (orientation: landscape) {
 	.md-tabs.workspace-secondary-tabs--sidebar {
 		align-items: stretch;
 		flex-direction: column;

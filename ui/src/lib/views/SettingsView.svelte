@@ -1407,7 +1407,7 @@
 		margin: 0;
 		white-space: pre;
 	}
-	@media screen and (min-width: 1280px) and (orientation: landscape) {
+	@media screen and (min-aspect-ratio: 8/5) and (orientation: landscape) {
 		.settings-page {
 			max-width: none;
 		}
@@ -1421,7 +1421,7 @@
 		.settings-sidebar {
 			grid-column: 1;
 			grid-row: 1;
-			animation: responsive-layout-panel-in var(--md-sys-motion-duration-fast)
+			animation: responsive-layout-panel-in var(--md-sys-motion-duration-short)
 				var(--md-sys-motion-easing-standard) both;
 			position: sticky;
 			top: var(--md-sys-space-xl);
