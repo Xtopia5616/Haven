@@ -1272,7 +1272,7 @@ select.md-select {
 	height: 100%;
 }
 
-@media screen and (min-aspect-ratio: 8/5) and (orientation: landscape) {
+@media screen and (min-aspect-ratio: 4/3) and (orientation: landscape) {
 	.md-tabs.workspace-secondary-tabs--sidebar {
 		align-items: stretch;
 		flex-direction: column;

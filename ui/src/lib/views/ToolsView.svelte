@@ -698,7 +698,7 @@
 			width: 100%;
 		}
 	}
-	@media (min-aspect-ratio: 8/5) and (orientation: landscape) {
+	@media (min-aspect-ratio: 4/3) and (orientation: landscape) {
 		.tools-page {
 			max-width: none;
 		}

@@ -291,7 +291,7 @@
 		}
 	}
 
-	@media screen and (min-aspect-ratio: 4/3) and (orientation: landscape) {
+	@media screen and (min-aspect-ratio: 1/1) and (orientation: landscape) {
 		.app-shell {
 			display: grid;
 			grid-template-columns: 76px minmax(0, 1fr);
@@ -456,7 +456,7 @@
 		}
 	}
 
-	@media screen and (min-aspect-ratio: 16/9) and (orientation: landscape) {
+	@media screen and (min-aspect-ratio: 8/5) and (orientation: landscape) {
 		.app-shell {
 			grid-template-columns: 232px minmax(0, 1fr);
 		}
@@ -532,6 +532,13 @@
 			min-width: var(--md-comp-icon-button-size);
 			height: var(--md-comp-icon-button-size);
 			min-height: var(--md-comp-icon-button-size);
+		}
+	}
+
+	@media screen and (min-aspect-ratio: 21/9) {
+		.app-shell {
+			grid-template-columns: 232px minmax(0, calc(233.333vh - 232px));
+			justify-content: center;
 		}
 	}
 </style>

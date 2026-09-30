@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/svelte';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import SessionHistory from './SessionHistory.svelte';
 import type { SessionHistoryRow } from '$lib/contracts/sessionHistory.ts';
 
@@ -10,7 +10,14 @@ const commonProps = {
 	formatMessageTime: (_value: string) => '刚刚',
 };
 
+function setViewport(width: number, height: number) {
+	Object.defineProperty(window, 'innerWidth', { configurable: true, value: width });
+	Object.defineProperty(window, 'innerHeight', { configurable: true, value: height });
+}
+
 describe('SessionHistory actions', () => {
+	beforeEach(() => setViewport(1024, 768));
+
 	it('shows the history count in the shared filter bar', () => {
 		render(SessionHistory, { ...commonProps, totalCount: 3 });
 
@@ -27,6 +34,7 @@ describe('SessionHistory actions', () => {
 	});
 
 	it('opens a session by clicking its row and keeps delete available', async () => {
+		setViewport(1024, 769);
 		const onResume = vi.fn();
 		const onDeleteRequest = vi.fn();
 		const session: SessionHistoryRow = {
@@ -53,6 +61,26 @@ describe('SessionHistory actions', () => {
 		await fireEvent.click(screen.getByRole('button', { name: '删除' }));
 		expect(onDeleteRequest).toHaveBeenCalledWith(session);
 		expect(onResume).toHaveBeenCalledTimes(1);
+	});
+
+	it('shows the session preview when the viewport reaches 4:3', async () => {
+		const onResume = vi.fn();
+		const session: SessionHistoryRow = {
+			id: 'ses-1',
+			status: 'completed',
+			created_at: '2026-09-06T03:00:00Z',
+			updated_at: '2026-09-06T03:00:00Z',
+			title: null,
+			input_text: '整理研究资料',
+		};
+		render(SessionHistory, { ...commonProps, sessions: [session], onResume });
+
+		expect(document.querySelector('.history-view--wide')).toBeTruthy();
+		expect(screen.getByRole('complementary', { name: '会话预览' })).toBeTruthy();
+		await fireEvent.click(document.querySelector('.session-item')!);
+		expect(onResume).not.toHaveBeenCalled();
+		await fireEvent.click(screen.getByRole('button', { name: '打开并继续' }));
+		expect(onResume).toHaveBeenCalledWith(session);
 	});
 
 	it('places bulk history actions below the filter bar', async () => {

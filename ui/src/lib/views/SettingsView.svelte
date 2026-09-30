@@ -1407,7 +1407,7 @@
 		margin: 0;
 		white-space: pre;
 	}
-	@media screen and (min-aspect-ratio: 8/5) and (orientation: landscape) {
+	@media screen and (min-aspect-ratio: 4/3) and (orientation: landscape) {
 		.settings-page {
 			max-width: none;
 		}

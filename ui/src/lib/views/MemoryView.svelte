@@ -843,7 +843,7 @@
 		font-size: var(--md-sys-typescale-body-medium-size);
 		line-height: var(--md-sys-typescale-body-medium-line-height);
 	}
-	@media (orientation: landscape) and (min-aspect-ratio: 8/5) {
+	@media (orientation: landscape) and (min-aspect-ratio: 4/3) {
 		.memory-page {
 			max-width: none;
 		}

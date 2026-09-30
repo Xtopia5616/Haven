@@ -1086,7 +1086,7 @@
 		transform: translateY(var(--md-sys-space-2xs));
 	}
 
-	@media screen and (min-aspect-ratio: 8/5) and (orientation: landscape) {
+	@media screen and (min-aspect-ratio: 4/3) and (orientation: landscape) {
 		.chat-page {
 			grid-template-columns: 272px minmax(0, 1fr);
 			--md-sys-chat-max-width: 1080px;
