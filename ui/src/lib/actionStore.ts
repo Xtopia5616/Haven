@@ -1,5 +1,6 @@
 import { writable } from 'svelte/store';
 import logger from '$lib/logger.ts';
+import { reportError } from '$lib/errorHandling.ts';
 import { cancelActionCommand, listActionRows } from './actionCommands.ts';
 import { type ActionKind, type ActionPayload } from './contracts/action.ts';
 import { appSessionReducer, backgroundActionResultContent } from './sessionReducer.ts';
@@ -99,7 +100,11 @@ export async function refreshActions() {
 			return trimActionStore(next);
 		});
 	} catch (error) {
-		logger.warn('actionStore', 'refreshActions failed', error);
+		reportError(error, {
+			context: 'actionStore',
+			message: '刷新任务列表失败',
+			notify: false,
+		});
 	}
 }
 

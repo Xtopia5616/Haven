@@ -27,7 +27,6 @@
 	import SettingsGeneral from './SettingsGeneral.svelte';
 	import SettingsSecurity from './SettingsSecurity.svelte';
 	import SettingsLimits from './SettingsLimits.svelte';
-	import logger from '$lib/logger.ts';
 	import type {
 		ApiKeyStatus,
 		AudioConfigInput,
@@ -269,13 +268,13 @@
 		for (const shell of ['cmd', 'powershell', 'pwsh'] as const) {
 			try {
 				shellAvailable[shell] = (await checkShellAvailable({ shell })).available;
-			} catch (e) {
+			} catch (error) {
 				shellAvailable[shell] = false;
-				logger.warn(
-					'SettingsView',
-					`check_shell_available ${shell} failed`,
-					formatError(e),
-				);
+				reportError(error, {
+					context: 'SettingsView',
+					message: `检测 ${shell} 可用性失败`,
+					notify: false,
+				});
 			}
 		}
 	}
@@ -472,8 +471,12 @@
 			}
 			snapshot.llm = { ...llmSnapshot, models };
 			savedSnapshot = JSON.stringify(snapshot);
-		} catch (e) {
-			logger.warn('SettingsView', 're-baseline after discovery failed', e);
+		} catch (error) {
+			reportError(error, {
+				context: 'SettingsView',
+				message: '更新模型发现基线失败',
+				notify: false,
+			});
 		}
 	}
 
@@ -495,8 +498,12 @@
 			else models.push(patched);
 			snapshot.llm = { ...llmSnapshot, models };
 			savedSnapshot = JSON.stringify(snapshot);
-		} catch (e) {
-			logger.warn('SettingsView', 'patch snapshot default_model failed', e);
+		} catch (error) {
+			reportError(error, {
+				context: 'SettingsView',
+				message: '更新默认模型快照失败',
+				notify: false,
+			});
 		}
 	}
 
@@ -515,8 +522,12 @@
 				permissions: Array.isArray(permissions) ? permissions : [],
 			};
 			savedSnapshot = JSON.stringify(snapshot);
-		} catch (e) {
-			logger.warn('SettingsView', 'patch snapshot permissions failed', e);
+		} catch (error) {
+			reportError(error, {
+				context: 'SettingsView',
+				message: '更新权限快照失败',
+				notify: false,
+			});
 		}
 	}
 
@@ -542,8 +553,12 @@
 			if (!mounted || generation !== defaultModelSyncGen || !settings?.llm) return;
 			const remote = settings.llm.models.find((model) => model.id === 'default_model');
 			if (remote) applyRemoteDefaultModelFields(remote);
-		} catch (e) {
-			logger.warn('SettingsView', 'sync default_model role error', e);
+		} catch (error) {
+			reportError(error, {
+				context: 'SettingsView',
+				message: '同步默认模型失败',
+				notify: false,
+			});
 		}
 	}
 
@@ -560,8 +575,12 @@
 			if ((local.web_search || 'off') === lastSyncedDefaultModel.web_search)
 				local.web_search = remote.web_search;
 			rememberSyncedDefaultModel(local);
-		} catch (e) {
-			logger.warn('SettingsView', 'reconcile default_model before save failed', e);
+		} catch (error) {
+			reportError(error, {
+				context: 'SettingsView',
+				message: '保存前同步默认模型失败',
+				notify: false,
+			});
 		}
 	}
 
@@ -631,8 +650,12 @@
 			if (snapshot.key_configured_providers)
 				keyConfiguredProviders = { ...snapshot.key_configured_providers };
 			captureSnapshot();
-		} catch (e) {
-			logger.warn('SettingsView', 'discard changes failed', e);
+		} catch (error) {
+			reportError(error, {
+				context: 'SettingsView',
+				message: '恢复设置失败',
+				notify: false,
+			});
 		}
 	}
 
@@ -1019,7 +1042,11 @@
 				else await invoke('disable_autostart');
 			} catch (e) {
 				autostartEnabled = !autostartEnabled;
-				addNotification(`自动启动：${formatError(e)}`, 'warning');
+				reportError(e, {
+					context: 'SettingsView',
+					message: '自动启动设置失败',
+					log: false,
+				});
 			}
 			if (mounted) captureSnapshot();
 			saveState = 'saved';
@@ -1436,6 +1463,11 @@
 		}
 		:global(.settings-tabs .md-tab small) {
 			max-width: none;
+		}
+	}
+	@media screen and (orientation: landscape) and (max-width: 1100px) {
+		:global(.settings-tabs .md-tab small) {
+			display: none;
 		}
 	}
 	@media (max-width: 640px) {

@@ -677,7 +677,7 @@
 				}
 			})
 			.catch((e) => {
-				logger.warn('+page', 'get_settings error', e);
+				reportError(e, { context: '+page', message: '加载设置失败', log: false });
 			});
 
 		// Load the session list and auto-restore the last conversation in

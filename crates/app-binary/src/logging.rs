@@ -48,9 +48,8 @@ pub(crate) fn init_tracing(
             // cannot be created. Logging must never prevent the desktop
             // app from starting, so keep the console layer and degrade.
             eprintln!(
-                "file logging disabled: cannot create {}: {}",
-                parent.display(),
-                e
+                "file logging disabled: cannot create log directory: {}",
+                sanitize_error_text(&e.to_string())
             );
             let _ = tracing::subscriber::set_global_default(subscriber);
             let mut effective_cfg = log_cfg.clone();

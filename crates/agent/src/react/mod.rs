@@ -1210,7 +1210,11 @@ impl ReActEngine {
         session_id: &str,
         error: &str,
     ) {
-        tracing::error!("ReAct session {} error: {}", session_id, error);
+        tracing::error!(
+            session_id = %session_id,
+            error = %haven_common::error::sanitize_error_text(error),
+            "ReAct session failed"
+        );
         EventDispatcher::emit_session_error_from(emitter, session_id, error).await;
         self.reset_cumulative_usage(session_id);
     }

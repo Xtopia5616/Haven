@@ -1184,7 +1184,11 @@ impl AgentLayer {
         executor.update_session_title(&session_id, &title).await;
         // Notify frontend
         events.emit_title_updated(&session_id, &title).await;
-        tracing::info!("generated title for session {}: {}", session_id, title);
+        tracing::info!(
+            session_id = %session_id,
+            title_chars = title.chars().count(),
+            "generated session title"
+        );
     }
 
     /// Create a new session and persist the triggering user message into it,

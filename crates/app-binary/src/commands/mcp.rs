@@ -143,7 +143,10 @@ pub async fn reconnect_mcp(
         .any(|server| server.name == name && server.enabled)
         || state.services.mcp.get_client(&name).await.is_none()
     {
-        return Err(format!("MCP server '{}' is not currently connected", name));
+        return Err(log_err(
+            "reconnect_mcp",
+            format!("MCP server '{}' is not currently connected", name),
+        ));
     }
     let request =
         haven_tools::AdminRequest::NativeMcp(haven_tools::NativeMcpOperationArgs::McpReconnect {
@@ -254,8 +257,9 @@ pub async fn mcp_tool_call(
             .await?);
         }
         AuthorizationDecision::Blocked { reason, .. } => {
-            return Err(format!(
-                "MCP tool call blocked by security policy ({reason})"
+            return Err(log_err(
+                "mcp_tool_call",
+                format!("MCP tool call blocked by security policy ({reason})"),
             ));
         }
     }

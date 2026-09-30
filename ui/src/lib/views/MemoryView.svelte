@@ -1,5 +1,4 @@
 <script lang="ts">
-	import logger from '$lib/logger.ts';
 	import { reportError } from '$lib/errorHandling.ts';
 	import { buildResumeMessages } from '$lib/resumeMessages.ts';
 	import { createSessionRefreshScheduler } from '$lib/sessionRefresh.ts';
@@ -496,11 +495,11 @@
 			if (sequence !== loadFactsSeq) return;
 			facts = rows;
 			factsLoaded = true;
-		} catch {
+		} catch (error) {
 			if (sequence !== loadFactsSeq) return;
 			facts = [];
 			factsLoaded = true;
-			logger.warn('memory', 'load facts error');
+			reportError(error, { context: 'MemoryView', message: '加载事实失败', log: false });
 		}
 	}
 	function handleFactSourceFilterChange(value: string) {
@@ -600,7 +599,10 @@
 					aria-label={memoryTabs.find((tab) => tab.id === activeTab)?.label || '历史'}
 				>
 					{#if activeTab === 'sessions'}
-						<WorkspaceSectionHeader title="会话历史" description="查看并继续过去的对话。" />
+						<WorkspaceSectionHeader
+							title="会话历史"
+							description="查看并继续过去的对话。"
+						/>
 						<SessionHistory
 							{sessions}
 							{searchQuery}

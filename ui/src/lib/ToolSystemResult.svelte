@@ -1,6 +1,6 @@
 <script lang="ts">
-	import logger from './logger.ts';
-	import { formatError } from './formatError.ts';
+	import { reportError } from './errorHandling.ts';
+	import { addNotification } from './notificationStore.ts';
 	import JsonView from '$lib/JsonView.svelte';
 	import MaterialIconButton from '$lib/MaterialIconButton.svelte';
 	import ToolResultList from '$lib/ToolResultList.svelte';
@@ -109,8 +109,9 @@
 	async function copyEnvValue(text: string) {
 		try {
 			await navigator.clipboard.writeText(text);
+			addNotification('已复制', 'info', 1500);
 		} catch (error) {
-			logger.warn('ToolSystemResult', 'environment value copy failed', formatError(error));
+			reportError(error, { context: 'ToolSystemResult', message: '复制环境变量失败' });
 		}
 	}
 	function setEnvFilter(value: string) {

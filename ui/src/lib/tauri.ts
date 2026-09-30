@@ -1,6 +1,6 @@
 import logger from './logger.ts';
 import { logError } from './errorHandling.ts';
-import { formatError } from './formatError.ts';
+import { formatError, isAuthorizationConfirmationPending } from './formatError.ts';
 import type {
 	TauriCommandName,
 	TauriCommandRequestArgs,
@@ -58,15 +58,24 @@ export async function invoke<K extends TauriCommandName>(
 
 async function invokeUnknown(cmd: string, args?: unknown): Promise<unknown> {
 	await init();
-	if (isTauri() && _tauriInvoke) {
-		try {
-			return await _tauriInvoke(cmd, args);
-		} catch (e) {
-			logError('invoke', `command '${cmd}' failed`, e);
-			throw e;
-		}
+	if (!isTauri() || !_tauriInvoke) {
+		const error = new Error(`Tauri not available, cannot invoke '${cmd}'`);
+		logError('invoke', `command '${cmd}' failed`, error);
+		throw error;
 	}
-	throw new Error(`Tauri not available, cannot invoke '${cmd}'`);
+	try {
+		return await _tauriInvoke(cmd, args);
+	} catch (error) {
+		if (isAuthorizationConfirmationPending(error)) {
+			// The confirmation request is already represented by the interaction
+			// event; this rejected invoke is only a control-flow signal.
+		} else if (formatError(error) === 'Confirmation request is stale or already resolved') {
+			logger.warn('invoke', `command '${cmd}' ended with a stale confirmation`, error);
+		} else {
+			logError('invoke', `command '${cmd}' failed`, error);
+		}
+		throw error;
+	}
 }
 
 export async function listen(

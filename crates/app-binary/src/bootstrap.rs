@@ -122,9 +122,17 @@ pub(crate) fn run() {
     let config_loader = match haven_common::config::ConfigLoader::load() {
         Ok(loader) => loader,
         Err(error) => {
-            eprintln!(
-                "Haven cannot start because configuration is unavailable: {}",
-                sanitize_error_text(&error.to_string())
+            // Configuration may be unavailable before its logging settings
+            // can be read. Install a console-only fallback so this startup
+            // failure still uses the normal structured logging path.
+            let fallback_log_cfg = LogConfig {
+                file_enabled: false,
+                ..LogConfig::default()
+            };
+            let _ = init_tracing(&fallback_log_cfg);
+            tracing::error!(
+                error = %sanitize_error_text(&error.to_string()),
+                "Haven cannot start because configuration is unavailable"
             );
             return;
         }
@@ -135,7 +143,6 @@ pub(crate) fn run() {
     let (filter_handles, log_config) = init_tracing(&log_cfg);
 
     // Set global panic hook to capture and log panics (M6-06)
-    let prev_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
         let msg = if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
             s.to_string()
@@ -146,11 +153,22 @@ pub(crate) fn run() {
         };
         let location = panic_info
             .location()
-            .map(|l| format!("{}:{}", l.file(), l.line()))
+            .map(|l| {
+                let file = std::path::Path::new(l.file())
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("?");
+                format!("{file}:{}", l.line())
+            })
             .unwrap_or_else(|| "?".to_string());
         let backtrace = std::backtrace::Backtrace::force_capture();
-        tracing::error!("PANIC at {}: {}\n{}", location, msg, backtrace);
-        prev_hook(panic_info);
+        let safe_msg = sanitize_error_text(&msg);
+        tracing::error!(
+            location = %location,
+            panic = %safe_msg,
+            backtrace = %backtrace,
+            "PANIC"
+        );
     }));
 
     // Build the window first, then finish AppState inside setup. That lets the

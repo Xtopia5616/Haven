@@ -28,7 +28,6 @@
 	import { submitVoiceTranscript } from '$lib/voiceSubmit.ts';
 	import { themeStore } from '$lib/themeStore.ts';
 	import { invoke, isTauri } from '$lib/tauri.ts';
-	import logger from '$lib/logger.ts';
 	import { formatError } from '$lib/formatError.ts';
 	import { installGlobalErrorHandlers, reportError } from '$lib/errorHandling.ts';
 	import {
@@ -131,7 +130,11 @@
 			})
 			.catch((error: unknown) => {
 				lazyViewStates[id] = 'error';
-				logger.warn('+layout', `load ${id} view error`, error);
+				reportError(error, {
+					context: '+layout',
+					message: `加载 ${id} 页面失败`,
+					notify: false,
+				});
 			});
 	}
 
@@ -336,7 +339,11 @@
 			}
 		} catch (e) {
 			bootstrapProbeFailureStreak = Math.min(bootstrapProbeFailureStreak + 1, 4);
-			logger.warn('+layout', 'get_bootstrap_status error; retrying', e);
+			reportError(e, {
+				context: '+layout',
+				message: '读取启动状态失败',
+				notify: false,
+			});
 		} finally {
 			bootstrapProbeInFlight = false;
 			scheduleBootstrapProbe();
@@ -730,7 +737,11 @@
 			getTools()
 				.then((result) => setToolManifests(result?.tools))
 				.catch((error) =>
-					logger.debug('+layout', 'tool manifest warmup unavailable', error),
+					reportError(error, {
+						context: '+layout',
+						message: '预热工具清单不可用',
+						notify: false,
+					}),
 				);
 		}
 		removeGlobalErrorHandlers = installGlobalErrorHandlers();
@@ -758,7 +769,11 @@
 					}
 				})
 				.catch((e) => {
-					logger.warn('+layout', 'get_settings error', e);
+					reportError(e, {
+						context: '+layout',
+						message: '读取通知设置失败',
+						notify: false,
+					});
 				})
 				.finally(() => actionCompletionNotificationGate.settingsLoaded());
 		} else {

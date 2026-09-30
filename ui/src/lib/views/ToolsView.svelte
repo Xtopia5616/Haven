@@ -28,7 +28,6 @@
 	import { addNotification } from '$lib/notificationStore.ts';
 	import { reportError } from '$lib/errorHandling.ts';
 	import { isAuthorizationConfirmationPending } from '$lib/formatError.ts';
-	import logger from '$lib/logger.ts';
 	import { registerAppListener } from '$lib/events.ts';
 	import SkillCard from '$lib/SkillCard.svelte';
 	import McpServerCard from '$lib/McpServerCard.svelte';
@@ -114,7 +113,7 @@
 		if (mcpRefreshTimer) clearTimeout(mcpRefreshTimer);
 		mcpRefreshTimer = setTimeout(() => {
 			mcpRefreshTimer = null;
-			refreshMcpServers();
+			refreshMcpServers(false);
 		}, 120);
 	}
 
@@ -136,7 +135,7 @@
 		unlistenSkills = await registerAppListener(
 			'skills:status_change',
 			async () => {
-				await refreshSkillList();
+				await refreshSkillList(false);
 			},
 			{ tag: 'tools' },
 		);
@@ -155,13 +154,18 @@
 		unlistenMcp?.dispose();
 	});
 
-	async function refreshMcpServers() {
+	async function refreshMcpServers(notifyOnError = true) {
 		try {
 			const result = await listMcpTools();
 			mcpServers = result || [];
 			return true;
-		} catch (e) {
-			logger.warn('tools', 'list_mcp_tools error', e);
+		} catch (error) {
+			reportError(error, {
+				context: 'ToolsView',
+				message: '加载 MCP 服务器失败',
+				log: false,
+				notify: notifyOnError,
+			});
 			return false;
 		}
 	}
@@ -185,7 +189,7 @@
 		// specific server is the per-card Refresh button's job.
 		try {
 			const result = await refreshMcpServersCommand();
-			await refreshMcpServers();
+			if (!(await refreshMcpServers())) return;
 			const added = result?.added || [];
 			const removed = result?.removed || [];
 			const updated = result?.updated || [];
@@ -222,12 +226,19 @@
 		}
 	}
 
-	async function refreshSkillList() {
+	async function refreshSkillList(notifyOnError = true) {
 		try {
 			const result = await listSkills();
 			skills = result || [];
-		} catch (e) {
-			logger.warn('tools', 'list_skills error', e);
+			return true;
+		} catch (error) {
+			reportError(error, {
+				context: 'ToolsView',
+				message: '加载技能列表失败',
+				log: false,
+				notify: notifyOnError,
+			});
+			return false;
 		}
 	}
 
@@ -271,7 +282,7 @@
 		skillsRefreshing = true;
 		try {
 			await refreshSkillsCommand();
-			await refreshSkillList();
+			if (!(await refreshSkillList())) return;
 			addNotification('技能已刷新', 'success', 2000);
 		} catch (e) {
 			reportError(e, { context: 'ToolsView', message: '刷新技能失败', log: false });

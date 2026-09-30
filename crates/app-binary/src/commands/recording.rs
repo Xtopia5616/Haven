@@ -420,11 +420,11 @@ pub async fn process_transcript(
     .map_err(|e| log_err("process_transcript", e))?;
     let voice = voice.unwrap_or(false);
     tracing::debug!(
-        "process_transcript called: text={:?} active_session_id={:?} attachments={} voice={}",
-        transcript,
-        active_session_id,
-        attachments.len(),
-        voice
+        transcript_chars = transcript.chars().count(),
+        active_session_id = active_session_id.as_deref().unwrap_or("new"),
+        attachments = attachments.len(),
+        voice,
+        "process_transcript called"
     );
     let result = match state
         .agent
@@ -482,7 +482,18 @@ pub async fn process_transcript(
             );
         }
     }
-    tracing::debug!("process_transcript result: {:?}", result);
+    match &result {
+        haven_agent::ProcessResult::SessionCreated { session_id, .. } => {
+            tracing::debug!(
+                session_id,
+                outcome = "session_created",
+                "process_transcript completed"
+            );
+        }
+        haven_agent::ProcessResult::Supplemented { .. } => {
+            tracing::debug!(outcome = "supplemented", "process_transcript completed");
+        }
+    }
     Ok(result)
 }
 

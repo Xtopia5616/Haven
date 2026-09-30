@@ -163,8 +163,10 @@ pub async fn resolve_confirmation(
     scope: String,
     target: String,
 ) -> Result<(), String> {
-    let (perm_effect, perm_scope) = parse_permission_decision(&effect, &scope)?;
-    let perm_target = haven_common::types::PermissionTarget::parse(&target)?;
+    let (perm_effect, perm_scope) = parse_permission_decision(&effect, &scope)
+        .map_err(|error| log_err("resolve_confirmation", error))?;
+    let perm_target = haven_common::types::PermissionTarget::parse(&target)
+        .map_err(|error| log_err("resolve_confirmation", error))?;
     let confirmed = matches!(perm_effect, haven_common::types::PermissionEffect::Allow);
     let confirmation_id: haven_common::types::ConfirmId = step_id.clone().into();
     if let Some(capability) = state
@@ -172,13 +174,16 @@ pub async fn resolve_confirmation(
         .pending_confirmation_capability(&confirmation_id)
         .await
     {
-        capability.target(perm_target).ok_or_else(|| {
-            format!(
-                "permission target '{}' is broader than capability '{}'",
-                perm_target.as_str(),
-                capability
-            )
-        })?;
+        capability
+            .target(perm_target)
+            .ok_or_else(|| {
+                format!(
+                    "permission target '{}' is broader than capability '{}'",
+                    perm_target.as_str(),
+                    capability
+                )
+            })
+            .map_err(|error| log_err("resolve_confirmation", error))?;
     }
     // Resolve the confirmation and capture tool/session context atomically
     // (under the executor's sessions lock). Session scope uses the executor's
@@ -199,6 +204,7 @@ pub async fn resolve_confirmation(
     let Some(resolution) = resolution else {
         let pending = state.ui_confirmations.lock().await.remove(&step_id);
         let Some(pending) = pending else {
+            tracing::warn!(step_id, "confirmation request is stale or already resolved");
             return Err("Confirmation request is stale or already resolved".into());
         };
         return resolve_ui_confirmation(
@@ -242,7 +248,8 @@ pub async fn resolve_confirmation(
                 perm_target.as_str(),
                 authorization_request.policy.capability
             )
-        })?;
+        })
+        .map_err(|error| log_err("resolve_confirmation", error))?;
     // Persist Always before publishing it to the live authorization engine.
     // If the atomic config write fails, the process must not temporarily
     // behave as if a permanent grant exists when restart would forget it.
@@ -284,7 +291,8 @@ async fn resolve_ui_confirmation(
                 perm_target.as_str(),
                 pending.authorization_request.policy.capability
             )
-        })?;
+        })
+        .map_err(|error| log_err("resolve_ui_confirmation", error))?;
     tracing::debug!(
         interaction_id = %pending.request.id,
         interaction_kind = ?pending.request.kind,
@@ -300,7 +308,12 @@ async fn resolve_ui_confirmation(
             .authorization
             .verify_receipt(authorization_request, &pending.receipt)
             .await
-            .map_err(|reason| format!("confirmation is no longer valid: {reason}"))?;
+            .map_err(|reason| {
+                log_err(
+                    "resolve_ui_confirmation",
+                    format!("confirmation is no longer valid: {reason}"),
+                )
+            })?;
 
         // Direct UI confirmations execute their typed action in this command
         // instead of waking the ReAct actor. Persist a requested session grant
@@ -333,12 +346,12 @@ async fn resolve_ui_confirmation(
                     .map_err(|error| log_err("resolve_ui_confirmation mcp", error))?;
             }
             UiConfirmationAction::Skill { name, params } => {
-                let skill = state
-                    .services
-                    .skills
-                    .get_skill(name)
-                    .await
-                    .ok_or_else(|| format!("skill '{}' not found", name))?;
+                let skill = state.services.skills.get_skill(name).await.ok_or_else(|| {
+                    log_err(
+                        "resolve_ui_confirmation skill",
+                        format!("skill '{}' not found", name),
+                    )
+                })?;
                 state
                     .services
                     .skill_runner
@@ -457,7 +470,7 @@ pub async fn update_session_title(
 ) -> Result<(), String> {
     let title = title.trim().to_string();
     if title.is_empty() {
-        return Err("Title cannot be empty".into());
+        return Err(log_err("update_session_title", "Title cannot be empty"));
     }
     state
         .session_store

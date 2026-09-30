@@ -113,7 +113,8 @@ pub async fn add_fact(
     object: String,
     tags: Option<Vec<String>>,
 ) -> Result<haven_memory::repositories::facts::Fact, String> {
-    let input = validate_add_fact_input(subject, predicate, object, tags)?;
+    let input = validate_add_fact_input(subject, predicate, object, tags)
+        .map_err(|error| log_err("add_fact", error))?;
     state
         .memory_fact_store
         .set_user_fact(input.subject, input.predicate, input.object, input.tags)

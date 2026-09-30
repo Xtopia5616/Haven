@@ -104,9 +104,10 @@ pub async fn set_tool_enabled(
 pub async fn open_skills_dir(state: State<'_, Arc<AppState>>) -> Result<String, String> {
     let root = state.services.skills.resolved_root().await;
     if !haven_tools::is_safe_local_path(&root) {
-        return Err(
-            "skills directory contains an unsafe reparse point or cannot be resolved".into(),
-        );
+        return Err(log_err(
+            "open_skills_dir",
+            "skills directory contains an unsafe reparse point or cannot be resolved",
+        ));
     }
     let params = serde_json::json!({"target": root});
     let policy = OperationPolicy::native(
@@ -125,17 +126,26 @@ pub async fn open_skills_dir(state: State<'_, Arc<AppState>>) -> Result<String, 
     {
         AuthorizationDecision::AutoApproved => {}
         AuthorizationDecision::Blocked { .. } => {
-            return Err("opening skills directory blocked by security policy".into());
+            return Err(log_err(
+                "open_skills_dir",
+                "opening skills directory blocked by security policy",
+            ));
         }
         AuthorizationDecision::RequiresConfirmation { .. } => {
-            return Err("opening skills directory requires confirmation".into());
+            return Err(log_err(
+                "open_skills_dir",
+                "opening skills directory requires confirmation",
+            ));
         }
     }
     // Ensure the directory exists so the file manager opens something sensible
     // instead of erroring; users may have an empty skills root on first run.
     std::fs::create_dir_all(&root).map_err(|e| log_err("open_skills_dir", e))?;
     if !haven_tools::is_safe_local_path(&root) {
-        return Err("skills directory changed to an unsafe reparse point".into());
+        return Err(log_err(
+            "open_skills_dir",
+            "skills directory changed to an unsafe reparse point",
+        ));
     }
     #[cfg(target_os = "windows")]
     {
@@ -173,10 +183,13 @@ pub async fn execute_skill(
         .skills
         .get(&name)
         .await
-        .ok_or_else(|| format!("skill '{}' not found", name))?;
+        .ok_or_else(|| log_err("execute_skill", format!("skill '{}' not found", name)))?;
 
     if !skill_info.enabled {
-        return Err(format!("skill '{}' is not enabled", name));
+        return Err(log_err(
+            "execute_skill",
+            format!("skill '{}' is not enabled", name),
+        ));
     }
 
     // Always run AuthorizationEngine — UI input must not bypass permanent deny /
@@ -210,8 +223,9 @@ pub async fn execute_skill(
             .await?);
         }
         AuthorizationDecision::Blocked { reason, .. } => {
-            return Err(format!(
-                "skill execution blocked by security policy ({reason})"
+            return Err(log_err(
+                "execute_skill",
+                format!("skill execution blocked by security policy ({reason})"),
             ));
         }
     }
@@ -221,7 +235,7 @@ pub async fn execute_skill(
         .skills
         .get_skill(&name)
         .await
-        .ok_or_else(|| format!("skill '{}' not found", name))?;
+        .ok_or_else(|| log_err("execute_skill", format!("skill '{}' not found", name)))?;
 
     let cancel = tokio_util::sync::CancellationToken::new();
     let result = state

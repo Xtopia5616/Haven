@@ -199,11 +199,19 @@ pub fn write_output_log(kind: &str, id: &str, text: &str) -> std::path::PathBuf 
     let dir = output_log_dir(kind);
     let path = dir.join(format!("{id}.log"));
     if let Err(e) = std::fs::create_dir_all(&dir) {
-        tracing::warn!(action_id = %id, "failed to create output-log dir {}: {e}", dir.display());
+        tracing::warn!(
+            action_id = %id,
+            error = %haven_common::error::sanitize_error_text(&e.to_string()),
+            "failed to create output-log dir"
+        );
         return path;
     }
     if let Err(e) = std::fs::write(&path, text) {
-        tracing::warn!(action_id = %id, "failed to write output log {}: {e}", path.display());
+        tracing::warn!(
+            action_id = %id,
+            error = %haven_common::error::sanitize_error_text(&e.to_string()),
+            "failed to write output log"
+        );
     }
     path
 }

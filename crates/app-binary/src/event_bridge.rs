@@ -715,8 +715,8 @@ impl TauriEmitter {
             } => {
                 tracing::info!(
                     session_id = %session_id,
-                    title = %title,
-                    reason = %reason,
+                    title_len = title.chars().count(),
+                    reason_len = reason.chars().count(),
                     "TauriEmitter::on_session_completed"
                 );
             }
@@ -754,8 +754,8 @@ impl TauriEmitter {
             } => {
                 tracing::info!(
                     session_id = %session_id,
-                    title = %title,
-                    body = %body,
+                    title_len = title.chars().count(),
+                    body_len = body.chars().count(),
                     "TauriEmitter::on_notification"
                 );
             }

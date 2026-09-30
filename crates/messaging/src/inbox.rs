@@ -1326,14 +1326,16 @@ impl Drop for LockGuard {
         match std::fs::read_to_string(&self.path) {
             Ok(mine) if mine.trim() == format!("pid={}", std::process::id()) => {
                 if let Err(error) = remove_lock_file(&self.path) {
-                    tracing::error!(path = ?self.path, error = %error, "failed to remove inbox lock");
+                    tracing::error!(
+                        error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                        "failed to remove inbox lock"
+                    );
                 }
             }
             Ok(_) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => tracing::error!(
-                path = ?self.path,
-                error = %error,
+                error = %haven_common::error::sanitize_error_text(&error.to_string()),
                 "failed to verify inbox lock owner; leaving lock in place"
             ),
         }

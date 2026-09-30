@@ -292,7 +292,10 @@ pub async fn discover_models(
     app: tauri::AppHandle,
 ) -> Result<Vec<ModelInfo>, String> {
     if !base_url.starts_with("http://") && !base_url.starts_with("https://") {
-        return Err("base_url must be an http(s) URL".to_string());
+        return Err(log_err(
+            "discover_models",
+            "base_url must be an http(s) URL",
+        ));
     }
     let state = app.state::<Arc<AppState>>();
     let cfg = state
@@ -580,9 +583,12 @@ pub async fn set_web_search(
     match normalized.as_deref() {
         Some("off") | Some("auto") | Some("always") | None => {}
         _ => {
-            return Err(format!(
-                "invalid web search mode: {:?} (expected off|auto|always)",
-                mode
+            return Err(log_err(
+                "set_web_search",
+                format!(
+                    "invalid web search mode: {:?} (expected off|auto|always)",
+                    mode
+                ),
             ));
         }
     }

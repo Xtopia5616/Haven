@@ -4,8 +4,7 @@
 	import JsonView from './JsonView.svelte';
 	import MaterialButton from './MaterialButton.svelte';
 	import ToolResultList from './ToolResultList.svelte';
-	import logger from './logger.ts';
-	import { formatError } from './formatError.ts';
+	import { reportError } from './errorHandling.ts';
 
 	interface Props {
 		value?: unknown;
@@ -84,7 +83,7 @@
 			if (copyTimer) clearTimeout(copyTimer);
 			copyTimer = setTimeout(() => (copied = false), 1500);
 		} catch (error) {
-			logger.warn('JsonView', 'JSON copy failed', formatError(error));
+			reportError(error, { context: 'JsonView', message: '复制 JSON 失败' });
 		}
 	}
 </script>

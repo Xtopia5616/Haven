@@ -1,6 +1,4 @@
-import logger from '$lib/logger.ts';
 import { reportError } from '$lib/errorHandling.ts';
-import { formatError } from '$lib/formatError.ts';
 import { addNotification } from '$lib/notificationStore.ts';
 import { isKeylessProvider } from '$lib/apiStyle.ts';
 import { discoverAllModels, discoverModels } from '$lib/modelDiscoveryCommands.ts';
@@ -104,6 +102,7 @@ export function createModelDiscovery(context: ModelDiscoveryContext) {
 	async function refreshProviderModels(
 		providerName: string,
 		auth?: { authHeaderName?: string; authHeaderPrefix?: string; skipAuth?: boolean },
+		notifyOnError = true,
 	): Promise<boolean> {
 		const provider = context.getProviders().find((item) => item.name === providerName);
 		if (!provider || !provider.base_url.trim()) return false;
@@ -124,11 +123,13 @@ export function createModelDiscovery(context: ModelDiscoveryContext) {
 			backfillModelMetaFromDiscovery();
 			return Array.isArray(list) && list.length > 0;
 		} catch (error) {
-			logger.warn(
-				'modelDiscovery',
-				`discover_models ${providerName} error`,
-				formatError(error),
-			);
+			// Bulk refreshes own one aggregate toast; individual provider refreshes
+			// report their own error unless the caller has another visible status.
+			reportError(error, {
+				context: 'modelDiscovery',
+				message: `获取 ${providerName} 模型列表失败`,
+				notify: notifyOnError,
+			});
 			return false;
 		} finally {
 			context.setProviderFetching(providerName, false);
@@ -146,7 +147,7 @@ export function createModelDiscovery(context: ModelDiscoveryContext) {
 				const results = await Promise.all(
 					providers.map(async (provider) => ({
 						name: provider.name,
-						ok: await refreshProviderModels(provider.name),
+						ok: await refreshProviderModels(provider.name, undefined, false),
 					})),
 				);
 				failedProviders = results
@@ -175,7 +176,7 @@ export function createModelDiscovery(context: ModelDiscoveryContext) {
 			reportError(error, {
 				context: 'modelDiscovery',
 				message: '刷新模型列表失败',
-				log: false,
+				notify: !silent,
 			});
 		} finally {
 			context.setRefreshingAll(false);

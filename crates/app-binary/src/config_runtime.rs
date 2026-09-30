@@ -82,7 +82,8 @@ impl RuntimeConfigCoordinator {
         if should_apply_router {
             apply_router(update.snapshot)
                 .await
-                .map_err(partial_config_apply_error)?;
+                .map_err(partial_config_apply_error)
+                .map_err(|error| log_err(ctx, error))?;
         }
         Ok(update.value)
     }

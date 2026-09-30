@@ -52,7 +52,6 @@ fn resolve_current_log_file(
             Ok(mtime) => mtime,
             Err(error) => {
                 tracing::debug!(
-                    path = %entry.path().display(),
                     error = %crate::logging::sanitize_error_text(&error.to_string()),
                     "failed to read log file metadata"
                 );

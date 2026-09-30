@@ -1,4 +1,4 @@
-import logger from '$lib/logger.ts';
+import { reportError } from '$lib/errorHandling.ts';
 import { normalizeApiStyle, supportsBuiltinWebSearch } from '$lib/apiStyle.ts';
 import { discoverModels } from '$lib/modelDiscoveryCommands.ts';
 import { invoke } from '$lib/tauri.ts';
@@ -85,7 +85,11 @@ export function createChatModelSync(options: ModelSyncOptions) {
 				return next;
 			})
 			.catch((e) => {
-				logger.warn('+page', 'discover_models error', e);
+				reportError(e, {
+					context: '+page',
+					message: '获取默认模型列表失败',
+					notify: false,
+				});
 				if (!isDead() && defaultModelsCache.baseUrl === requestedUrl) setModelOptions([]);
 				throw e;
 			})
@@ -103,13 +107,15 @@ export function createChatModelSync(options: ModelSyncOptions) {
 
 	/** Apply the chat policy's primary model from a get_settings payload. */
 	function applyDefaultModelFromSettings(s: any) {
-		const policies = /** @type {any[]} */ (s?.llm?.request_policies || []);
+		const policies = /** @type {any[]} */ s?.llm?.request_policies || [];
 		const chatPolicy = policies.find((policy: any) => policy.request === 'chat');
-		const dmRole = (/** @type {any[]} */ (s?.llm?.models || [])).find(
+		const dmRole = /** @type {any[]} */ (s?.llm?.models || []).find(
 			(model: any) => model.id === chatPolicy?.primary,
 		);
 		const dmProvider = dmRole?.provider
-			? (/** @type {any[]} */ (s?.llm?.providers || [])).find((p: any) => p.name === dmRole.provider)
+			? /** @type {any[]} */ (s?.llm?.providers || []).find(
+					(p: any) => p.name === dmRole.provider,
+				)
 			: null;
 		const dmModel = dmRole?.model || '';
 		setCurrentModelId(dmModel);
@@ -126,13 +132,23 @@ export function createChatModelSync(options: ModelSyncOptions) {
 		if (!webSearchSupported && webSearch !== 'off') {
 			setCurrentWebSearch('off');
 			invoke('set_web_search', { role: 'chat', mode: 'off' }).catch((e) => {
-				logger.warn('+page', 'clear unsupported web_search failed', e);
+				reportError(e, {
+					context: '+page',
+					message: '关闭不支持的网页搜索失败',
+					log: false,
+					notify: false,
+				});
 			});
 		} else if (webSearchSupported && apiStyle === 'gemini' && webSearch === 'always') {
 			// Gemini Always ≡ Auto; normalize stored value.
 			setCurrentWebSearch('auto');
 			invoke('set_web_search', { role: 'chat', mode: 'auto' }).catch((e) => {
-				logger.warn('+page', 'normalize gemini web_search always→auto failed', e);
+				reportError(e, {
+					context: '+page',
+					message: '同步 Gemini 网页搜索设置失败',
+					log: false,
+					notify: false,
+				});
 			});
 		}
 		if (dmProvider?.base_url) {
@@ -153,7 +169,11 @@ export function createChatModelSync(options: ModelSyncOptions) {
 				applyDefaultModelFromSettings(s);
 			})
 			.catch((e) => {
-				logger.warn('+page', 'refresh default model error', e);
+				reportError(e, {
+					context: '+page',
+					message: '刷新默认模型失败',
+					notify: false,
+				});
 			});
 	}
 

@@ -317,11 +317,15 @@
 
 			const hasCredential = !!provider.api_key || isKeylessProvider(provider);
 			const fetched = hasCredential
-				? await discovery.refreshProviderModels(name, {
-						authHeaderName: provider.auth_header_name,
-						authHeaderPrefix: provider.auth_header_prefix,
-						skipAuth: isKeylessProvider(provider),
-					})
+				? await discovery.refreshProviderModels(
+						name,
+						{
+							authHeaderName: provider.auth_header_name,
+							authHeaderPrefix: provider.auth_header_prefix,
+							skipAuth: isKeylessProvider(provider),
+						},
+						false,
+					)
 				: false;
 			if (fetched && !isSttOnlyStyle(provider.api_style)) {
 				const count = modelsByProvider[name]?.length || 0;

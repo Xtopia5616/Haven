@@ -471,7 +471,8 @@ pub async fn update_settings(
             )
         })
         .await
-        .map_err(crate::config_runtime::partial_config_apply_error)?;
+        .map_err(crate::config_runtime::partial_config_apply_error)
+        .map_err(|error| log_err("update_settings", error))?;
 
     timing.tick("hotkey section");
     timing.log_total();
@@ -492,7 +493,10 @@ pub async fn list_permissions(
 pub async fn revoke_permission(state: State<'_, Arc<AppState>>, key: String) -> Result<(), String> {
     let key = key.trim().to_string();
     if key.is_empty() {
-        return Err("permission key cannot be empty".into());
+        return Err(log_err(
+            "revoke_permission",
+            "permission key cannot be empty",
+        ));
     }
     let _config_apply_guard = state.config_apply_gate.lock().await;
     let capability = haven_common::types::CapabilityScope::new(key.clone());
@@ -579,19 +583,22 @@ pub async fn enable_autostart() -> Result<(), String> {
     // connection-error page.  Only release builds embed the frontend
     // and can be safely autostarted.
     if cfg!(debug_assertions) {
-        return Err("自动启动仅支持生产版本（cargo tauri build）。开发模式下请手动运行。".into());
+        return Err(log_err(
+            "enable_autostart",
+            "自动启动仅支持生产版本（cargo tauri build）。开发模式下请手动运行。",
+        ));
     }
-    crate::autostart::enable()
+    crate::autostart::enable().map_err(|error| log_err("enable_autostart", error))
 }
 
 #[tauri::command]
 pub async fn disable_autostart() -> Result<(), String> {
-    crate::autostart::disable()
+    crate::autostart::disable().map_err(|error| log_err("disable_autostart", error))
 }
 
 #[tauri::command]
 pub async fn is_autostart_enabled() -> Result<bool, String> {
-    crate::autostart::is_enabled()
+    crate::autostart::is_enabled().map_err(|error| log_err("is_autostart_enabled", error))
 }
 
 #[cfg(test)]

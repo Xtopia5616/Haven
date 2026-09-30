@@ -915,7 +915,7 @@ impl SessionSupervisor {
             tracing::warn!(
                 tool = %tool_name,
                 session = %session_id.unwrap_or("action"),
-                reason = %reason,
+                reason_len = reason.chars().count(),
                 "confirmation receipt rejected; refusing to execute"
             );
             return Ok(ToolExecution {

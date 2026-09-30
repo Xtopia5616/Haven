@@ -688,7 +688,10 @@ impl AdminServices {
             exec: snapshot.config.skills_exec,
         }) {
             if let Err(rollback) = tokio::fs::remove_dir_all(&skill_dir).await {
-                tracing::warn!(path = %skill_dir.display(), error = %rollback, "skill creation rollback failed");
+                tracing::warn!(
+                    error = %haven_common::error::sanitize_error_text(&rollback.to_string()),
+                    "skill creation rollback failed"
+                );
             }
             if let Err(refresh_error) = self.skills_engine.refresh_from_disk().await {
                 tracing::warn!(error = %haven_common::error::sanitize_error_text(&refresh_error.to_string()), "skill catalog refresh failed while rolling back");

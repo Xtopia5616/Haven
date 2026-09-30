@@ -16,7 +16,7 @@ use tauri::State;
 pub async fn open_external(state: State<'_, Arc<AppState>>, target: String) -> Result<(), String> {
     let value = target.trim();
     if value.is_empty() {
-        return Err("empty target".into());
+        return Err(log_err("open_external", "empty target"));
     }
 
     let params = serde_json::json!({"target": value});
@@ -44,20 +44,29 @@ pub async fn open_external(state: State<'_, Arc<AppState>>, target: String) -> R
     {
         AuthorizationDecision::AutoApproved => {}
         AuthorizationDecision::Blocked { .. } => {
-            return Err("external open blocked by security policy".into());
+            return Err(log_err(
+                "open_external",
+                "external open blocked by security policy",
+            ));
         }
         AuthorizationDecision::RequiresConfirmation { .. } => {
-            return Err("external open requires confirmation".into());
+            return Err(log_err(
+                "open_external",
+                "external open requires confirmation",
+            ));
         }
     }
 
     if looks_like_http_url(value) {
-        validate_http_url(value)?;
+        validate_http_url(value).map_err(|error| log_err("open_external", error))?;
         open_url(value).map_err(|e| log_err("open_external", e))
     } else {
-        let path = validate_local_path(value)?;
+        let path = validate_local_path(value).map_err(|error| log_err("open_external", error))?;
         if !haven_tools::is_safe_local_path(&path) {
-            return Err("local path contains an unsafe reparse point or cannot be resolved".into());
+            return Err(log_err(
+                "open_external",
+                "local path contains an unsafe reparse point or cannot be resolved",
+            ));
         }
         open_path(&path).map_err(|e| log_err("open_external", e))
     }

@@ -1,6 +1,6 @@
 # Haven 通知 / 日志 / 错误处理规范
 
-> 版本: v1.6 | 日期: 2026-09-29
+> 版本: v1.7 | 日期: 2026-09-30
 
 本文档统一 Haven 项目中**通知（Notification）**、**日志（Logging）**、**错误处理（Error Handling）** 三套规范，覆盖 Rust 后端（Tauri 2）与 Svelte 5 前端。
 
@@ -45,13 +45,13 @@
 | 后端运行日志 | 生命周期、错误、并发上下文 | `tracing::{error,warn,info,debug,trace}!` | `println!` / `eprintln!` / `dbg!`（`init_tracing` 创建日志目录失败的一次 `eprintln!` 除外） |
 | 用户可见反馈 | toast / Windows 通知 | `addNotification` / `maybe_show_toast` | 用日志代替用户提示，或用 toast 代替调试日志 |
 
-**原则**：日志给开发者看；通知给用户看。二者可同时发生（例如命令失败：`log_err` 记全量 + 前端 `addNotification` 摘要），但职责不互换。
+**原则**：日志给开发者看；通知给用户看。二者可同时发生（例如命令失败：`log_err` 记录脱敏错误摘要 + 前端 `addNotification` 显示用户文案），但职责不互换。
 
 ### 1.2 前端（`ui/src/lib/logger.ts`）
 
 **唯一入口**：`logger.debug / logger.info / logger.warn / logger.error(context, msg, ...args)`。
 
-可恢复异常的组合入口是 `reportError(error, { context, message })`：它负责把错误归一成单行、限长的用户文案，同时写一条带 UI 上下文的 ERROR 日志、投递 error toast，并尽力把同一条安全文案镜像到 Rust 文件日志。底层边界（当前是 `tauri.ts::invoke`）已经记录过的错误，页面 catch 传 `log: false`，避免同一失败重复记前端日志。普通 `addNotification(..., 'error')` 只负责展示；校验提示和后端状态事件不得借 toast 隐式写成前端异常日志。
+可恢复异常的组合入口是 `reportError(error, { context, message })`：它负责把错误归一成单行、限长的用户文案，同时写一条带 UI 上下文的 ERROR 日志；默认投递 error toast，并尽力把同一条安全文案镜像到 Rust 文件日志。静默后台报告可设 `notify: false`，避免 toast 和重复镜像。底层边界（当前是 `tauri.ts::invoke`）已经记录过的错误，页面 catch 传 `log: false`，避免同一失败重复记前端日志。普通 `addNotification(..., 'error')` 只负责展示；校验提示和后端状态事件不得借 toast 隐式写成前端异常日志。
 
 - **`context`**：模块短名，小驼峰。常用：`stores`、`events`、`invoke`、`notification`、`tauri`、`+layout`、页面/组件短名。
 - **级别门控**：`currentLevel` 在 DEV 为 `debug`，生产为 `info`；`debug` 只在开发环境输出。
@@ -92,13 +92,14 @@ checkpoint pending 计数。延迟快照可计算 p50/p95，更新不等待消�
 本阶段的 `event_append`、`projection` 与 `snapshot` 是数据库边界的 wall-clock 指标，包含 blocking 调度与
 SQLite 等待，但不伪装成 SQLite 内部 lock wait；队列长度与 UI frame 计数留待拥有对应队列/渲染生命周期的后续批次。
 
-**格式约定**：
+**格式与内容约定**：
 
 - 事件消息优先 `模块::方法: 描述`（与 `TauriEmitter::trace_event` 一致）。
 - 上下文优先用 **tracing 结构化字段**（`session_id = %id`），便于 grep；存量文本内联 ID（`session {}`）保留，新增/修改优先结构化字段。
+- 不记录用户输入、模型正文、通知正文、凭据、本机路径或完整工具输出；错误文本经 `sanitize_error_text` 后再写日志。需要观测内容时只记长度、计数、分类或稳定实体 ID。
 - 禁止为打日志而改变函数签名；拿不到 ID 时依赖所在并发边界的 span。
 
-**命令错误日志**：Tauri 命令失败必须走 `log_err(ctx, e)`（`logging.rs`，经 `commands` 再导出），固定输出两行。`{safe_message}` 是单行、限长、已脱敏的公开/日志文本，原始 `Display` 字符串不得跨过该边界：
+**命令错误日志**：Tauri 命令失败必须走 `log_err(ctx, e)`（`logging.rs`，经 `commands` 再导出），固定输出两行。`{safe_message}` 是单行、限长、已脱敏的公开/日志摘要；原始 `Display` 字符串不得进入日志、事件或命令返回值：
 
 ```text
 command `{ctx}` failed
@@ -107,7 +108,7 @@ command error: {safe_message}
 
 保留 `command error:` 前缀行是为了让日志采集可稳定 grep。禁止手写 `map_err(|e| e.to_string())` 而不记录日志，也禁止在事件、通知或命令返回值中绕过脱敏辅助函数。
 
-**Panic**：全局 panic hook 已设置，自动输出 `PANIC at {file}:{line}: {msg}` + backtrace；业务代码无需自行处理 panic。
+**Panic**：全局 hook 走 `tracing::error!`，记录位置、已脱敏的 panic 摘要和 backtrace；不再调用默认 stderr hook，避免重复输出未脱敏的 panic 文本。业务代码无需自行处理 panic。
 
 ### 1.4 ID 上下文（多会话 / 多任务并行可区分）
 
@@ -184,7 +185,7 @@ AgentEvent / 其它后端事件
 播放提示音，但那是操作系统行为，不属于 Haven 的 TTS，也不应把 `notify` 当作语音通道。
 用户输入不会再由媒体网关的关键词规则自动触发 TTS。
 
-### 2.3 应用内 toast API（`ui/src/lib/stores.ts`）
+### 2.3 应用内 toast API（`ui/src/lib/notificationStore.ts`）
 
 **唯一入口**：`addNotification(msg, type = 'info', duration = 按 type 默认值, options?)`。
 
@@ -200,7 +201,7 @@ AgentEvent / 其它后端事件
 | `error` | 4000–5000 | 上限 5s；需长时间阅读也不超过 5s |
 
 - **文案语言**：与 UI 一致使用**中文**；变量用模板字符串拼接。专有名词（`MCP`、产品名 `Haven`）可保留英文。
-- `addNotification` 只负责队列去重、时长和展示，不写日志，也不调用后端。异常反馈统一走 `reportError`，由该入口协调日志、toast 和 Rust 文件日志镜像；调用方不再重复记日志。
+- `addNotification` 只负责队列去重、时长和展示，不写日志，也不调用后端。异常反馈统一走 `reportError`，默认协调日志、toast 和 Rust 文件日志镜像；静默后台错误可关闭通知与镜像，调用方不再重复记日志。
 - 默认时长固定为 info 3s、success 3s、warning 4s、error 5s；错误上报统一使用 error 5s。
 - `NotificationToast` 统一使用语义色板、错误 `alert` 语义、内容驱动高度和可换行文本；单行通知不额外占用多行通知的高度。
 
@@ -261,14 +262,15 @@ session_created / session_completed / session_paused / session_resumed / session
 ### 3.1 Rust 后端
 
 - **crate 内部**：`thiserror` 领域错误，或 `anyhow::Result`。
-- **Tauri 命令层**：统一 `Result<T, String>`；失败经 `log_err(ctx, e)` 记 ERROR 后再把 `e.to_string()` 返回前端。
+- **Tauri 命令层**：统一 `Result<T, String>`；失败经 `log_err(ctx, e)` 记 ERROR 并返回同一条限长、脱敏的安全摘要。SQLite 存储失败可经 `log_storage_err` 返回带恢复指引的安全摘要。
+- 唯一控制流例外是 `queue_ui_confirmation` 返回的 `{ "requires_confirmation": true, ... }` JSON：它表示确认对话框已排队，不是操作失败；`invoke` 识别该哨兵后不记 ERROR，由交互事件接管。
 - **结构化错误**：需携带结构（如 `requires_confirmation`）时用 JSON 字符串，仍走 `Result<T, String>`。
 - **降级**：可恢复的初始化失败走降级启动（`degraded_app_state`），`tracing::error!` 后返回降级实例，绝不静默。
 
 禁止：
 
-- 命令 `Err` 不经 `log_err` 直接 `e.to_string()`；
-- 把 API key、内部路径等细节原样返回前端（日志记全量，前端拿摘要）；
+- 命令 `Err` 不经 `log_err` 直接 `e.to_string()`（`queue_ui_confirmation` 的结构化控制流哨兵除外）；
+- 把 API key、内部路径等细节原样返回前端或写入普通日志；前后端边界都使用安全摘要。
 - 用 `panic!` / `unwrap()` 处理预期内失败（`expect` 仅限初始化等不可恢复场景）。
 
 ### 3.2 前端
@@ -282,10 +284,14 @@ try {
 ```
 
 - `invoke` 已记日志 → catch 只做用户提示，传 `log: false`。
-- 失败文案统一由 `reportError` 调用 `formatError(e)` 生成；`formatError` 会处理 `unknown`、折叠换行并限制长度，禁止页面自行 `${e}` 拼接。
+- `invoke` 对 `{ "requires_confirmation": true, ... }` 不记 ERROR；调用点只继续确认交互，不调用 `reportError`。
+- `invoke` 在 Tauri 不可用等本地边界失败时也先写前端日志；调用方仍通过 `reportError` 给出用户反馈。
+- 失败文案统一由 `reportError` 生成；错误详情、文案前缀和最终 toast 都经过 `formatError`，处理 `unknown`、脱敏、折叠换行并限制长度，禁止页面自行 `${e}` 拼接。
 - `+layout.svelte` 注册 `error` / `unhandledrejection` 最后防线：记录 `global` 上下文并显示通用错误提示。已被低层记录的对象错误不会再次记 ERROR。
 - 页面级重复逻辑可收敛为局部 helper（先例：settings 的 `notifyFetch`，带 per-key 节流）。
 - 仅展示的 error toast（例如输入校验、会话/MCP/录音状态事件）调用 `addNotification`；捕获到的异常使用 `reportError`，不得再以 `logger.*` + error toast 拼装两套路径。
+- 可静默的后台刷新、清理与状态同步异常仍走 `reportError(..., { notify: false })`；若底层（如 `invoke`）已经记录，则再传 `log: false`。聚合操作逐项静默上报，再由操作汇总结果显示一次状态 toast。
+- `logger.*` 只用于非异常诊断和明确的可恢复降级（例如语法高亮失败后回退为纯文本、图片压缩失败后继续用原图）；用户触发的失败不得只写日志。
 - 事件监听注册失败：只走 `events.ts`（内部 `logger.error` 后吞掉，不阻塞 mount）；页面不得裸 `listen`。
 - catch 后禁止仅打日志而无用户提示（除非确认无需用户感知，则只用 `logger.*`，不弹 toast）。
 - 禁止 `` `${e}` `` 直接拼 toast（对象会变成 `[object Object]`）。
@@ -317,6 +323,7 @@ try {
 | `recording:error` / `transcription:*` / `mute:changed` | 对应中文提示 + overlay |
 | `action:finished`（后台任务） | 更新 action/transcript；toast 由带 action completion 标记的 `notification:show` 统一负责 |
 | 命令 invoke 失败 | `reportError` error toast（归一化文案，5s） |
+| 过期 / 已处理的确认请求 | `invoke` 记录 warning；`+layout` 显示 warning toast，不作为命令错误 |
 | `check_llm_connection` 返回 disconnected | error toast：包含非敏感原因分类，并提示检查 API 地址、API Key 和代理（5s；仅状态首次变化时） |
 | `check_llm_connection` 从 disconnected 恢复 ready | success toast：`默认模型已恢复连接`（3s） |
 
@@ -359,12 +366,6 @@ try {
 | L3 | 设置页 Logging 注明级别仅作用于后端 tracing |
 | E1 | 新增 `ui/src/lib/formatError.ts`，toast 错误文案统一经 `formatError(e)` |
 
-### 仍待渐进
-
-| ID | 问题 | 建议 | 优先级 |
-|---|---|---|---|
-| L2 | `TauriEmitter::trace_event` 仍多用文本内联 ID | 新增/改动时改为结构化字段 `session_id = %id`，存量渐进 | P3 |
-
 ### 已完成（v1.4）
 
 | ID | 变更 |
@@ -376,6 +377,15 @@ try {
 | ID | 变更 |
 |---|---|
 | E3 | `addNotification` 收敛为纯展示；`reportError` 成为异常的唯一组合入口，统一前端日志、错误 toast 与 Rust 文件日志镜像；剪贴板、外链和历史页 catch 路径迁移 |
+
+### 已完成（v1.7）
+
+| ID | 变更 |
+|---|---|
+| L2 | `TauriEmitter::trace_event` 改用结构化 ID 字段；通知与会话完成日志只记长度，不记录正文 |
+| E4 | UI 复制、列表加载、聚合模型发现与自动启动异常按 `reportError` 处理；Tauri 不可用时 invoke 也会先记前端日志 |
+| L4 | 配置加载失败时启用 console-only tracing 后再报告启动错误，移除 tracing 初始化前的裸 `eprintln!` |
+| L5 | 转录、标题、配置内容、本机路径不进入普通日志；错误摘要统一脱敏 |
 
 落地时：改代码须同步更新 §2 / §4。
 

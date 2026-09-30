@@ -239,7 +239,7 @@ impl Database {
     }
 
     fn open_with_pool_size(path: &Path, pool_size: usize) -> anyhow::Result<Self> {
-        tracing::info!("opening database at {}", path.display());
+        tracing::info!("opening database");
         // Bootstrap connection: set WAL and create the current schema exactly
         // once (every pooled connection later sees an already-initialized
         // database). The bootstrap is seeded into the pool and is its

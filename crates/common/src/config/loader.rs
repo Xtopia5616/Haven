@@ -140,8 +140,7 @@ fn prune_timestamped_backups(config_path: &Path) {
     for (_, backup) in backups.into_iter().skip(MAX_AUTOMATIC_CONFIG_BACKUPS) {
         if let Err(error) = std::fs::remove_file(&backup) {
             tracing::warn!(
-                path = %backup.display(),
-                error = %error,
+                error = %crate::error::sanitize_error_text(&error.to_string()),
                 "failed to prune old automatic config backup"
             );
         }
@@ -157,16 +156,14 @@ fn backup_unparsable_config(path: &Path, err: &str) {
         Ok(_) => {
             prune_timestamped_backups(path);
             tracing::error!(
-                "config parse error at {}; original backed up to {}: {err}",
-                path.display(),
-                backup.display()
+                error = %crate::error::sanitize_error_text(err),
+                "config parse failed; original config backup created"
             )
         }
-        Err(be) => tracing::error!(
-            "config parse error at {} (backup to {} failed: {}): {err}",
-            path.display(),
-            backup.display(),
-            be
+        Err(backup_error) => tracing::error!(
+            error = %crate::error::sanitize_error_text(err),
+            backup_error = %crate::error::sanitize_error_text(&backup_error.to_string()),
+            "config parse failed and backup could not be created"
         ),
     }
 }
@@ -261,7 +258,7 @@ impl ConfigLoader {
             std::fs::create_dir_all(parent)?;
         }
         if !path.exists() {
-            tracing::info!("config not found, creating default at {}", path.display());
+            tracing::info!("config not found; creating default config");
             let default_cfg = AppConfig::default();
             let toml_str = toml::to_string_pretty(&default_cfg)?;
             std::fs::write(path, toml_str)?;
@@ -270,7 +267,7 @@ impl ConfigLoader {
                 config: default_cfg,
             });
         }
-        tracing::info!("loading config from {}", path.display());
+        tracing::info!("loading config");
         let content = std::fs::read_to_string(path)?;
         let config = match toml::from_str::<AppConfig>(&content) {
             Ok(config) => {

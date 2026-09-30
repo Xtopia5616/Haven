@@ -49,7 +49,10 @@ impl TitleGenerator {
                 }
             }
             Err(e) => {
-                tracing::warn!("title generation failed: {}", e);
+                tracing::warn!(
+                    error = %haven_common::error::sanitize_error_text(&e.to_string()),
+                    "title generation failed"
+                );
                 None
             }
         }

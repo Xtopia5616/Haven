@@ -7,8 +7,7 @@
 	import { handleExtRefEvent } from '$lib/externalRef.ts';
 	import { createDragScrollController } from '$lib/dragScroll.ts';
 	import { getSelectedTextWithin } from '$lib/contextMenu.ts';
-	import logger from '$lib/logger.ts';
-	import { formatError } from '$lib/formatError.ts';
+	import { reportError } from '$lib/errorHandling.ts';
 	import ToolResultCard from '$lib/ToolResultCard.svelte';
 	import MaterialCollapsible from '$lib/MaterialCollapsible.svelte';
 	import Icon from '$lib/Icon.svelte';
@@ -155,20 +154,29 @@
 		e.preventDefault();
 		e.stopPropagation();
 		const text = codeEl.textContent ?? '';
-		navigator.clipboard
-			?.writeText(text)
-			.then(() => {
-				const label = btn.querySelector('.md-code-copy-text');
-				if (!label) return;
-				const original = label.textContent;
-				label.textContent = '已复制';
-				setTimeout(() => {
-					label.textContent = original;
-				}, 1500);
-			})
-			.catch((error) => {
-				logger.warn('ChatBubble', 'markdown copy failed', formatError(error));
+		void copyMarkdownCode(btn, text);
+	}
+
+	async function copyMarkdownCode(btn: Element, text: string) {
+		try {
+			if (typeof navigator.clipboard?.writeText !== 'function') {
+				throw new Error('Clipboard API unavailable');
+			}
+			await navigator.clipboard.writeText(text);
+			const label = btn.querySelector('.md-code-copy-text');
+			if (!label) return;
+			const original = label.textContent;
+			label.textContent = '已复制';
+			setTimeout(() => {
+				label.textContent = original;
+			}, 1500);
+		} catch (error) {
+			reportError(error, {
+				context: 'ChatBubble',
+				message: '复制代码失败',
+				includeDetail: false,
 			});
+		}
 	}
 
 	function handleMdContentContextMenu(e: MouseEvent) {

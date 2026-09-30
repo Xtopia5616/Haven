@@ -39,7 +39,7 @@ function wasLogged(error: unknown): boolean {
 /** Log an error once at the UI boundary using the shared context format. */
 export function logError(context: string, message: string, error: unknown): void {
 	if (wasLogged(error)) return;
-	logger.error(context, message, formatError(error));
+	logger.error(context, formatError(message), formatError(error));
 	markLogged(error);
 }
 
@@ -50,12 +50,14 @@ export function logError(context: string, message: string, error: unknown): void
  */
 export function reportError(error: unknown, options: ErrorReportOptions): string {
 	const detail = formatError(error);
-	const message =
+	const safeMessage = formatError(options.message);
+	const message = formatError(
 		options.includeDetail === false || detail === '未知错误'
-			? options.message
-			: `${options.message}: ${detail}`;
-	const notificationMessage = options.notificationMessage ?? message;
-	if (options.log !== false) logError(options.context, `${options.message} failed`, error);
+			? safeMessage
+			: `${safeMessage}: ${detail}`,
+	);
+	const notificationMessage = formatError(options.notificationMessage ?? message);
+	if (options.log !== false) logError(options.context, `${safeMessage} failed`, error);
 	if (options.notify !== false) {
 		addNotification(notificationMessage, 'error', NOTIFICATION_DURATIONS.error);
 		// Keep the renderer log and persistent Rust log correlated to this same

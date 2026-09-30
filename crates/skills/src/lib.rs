@@ -352,16 +352,18 @@ pub fn scan_dir(
         let md_len = match std::fs::metadata(&skill_md) {
             Ok(m) => m.len(),
             Err(e) => {
-                tracing::warn!("cannot stat SKILL.md at {}: {e}", skill_md.display());
+                tracing::warn!(
+                    error = %haven_common::error::sanitize_error_text(&e.to_string()),
+                    "cannot stat SKILL.md"
+                );
                 continue;
             }
         };
         if md_len > limits.skills_max_md_bytes {
             tracing::warn!(
-                "skipping oversized SKILL.md ({} bytes > {} cap): {}",
+                "skipping oversized SKILL.md ({} bytes > {} cap)",
                 md_len,
-                limits.skills_max_md_bytes,
-                skill_md.display()
+                limits.skills_max_md_bytes
             );
             continue;
         }
@@ -369,7 +371,10 @@ pub fn scan_dir(
         let content = match std::fs::read(&skill_md) {
             Ok(bytes) => haven_common::encoding::decode_lossy(&bytes),
             Err(e) => {
-                tracing::warn!("Skipping unreadable SKILL.md at {}: {e}", p.display());
+                tracing::warn!(
+                    error = %haven_common::error::sanitize_error_text(&e.to_string()),
+                    "skipping unreadable SKILL.md"
+                );
                 continue;
             }
         };
@@ -386,7 +391,10 @@ pub fn scan_dir(
                     enabled,
                 });
             }
-            Err(e) => tracing::warn!("Skipping invalid SKILL.md at {}: {e}", skill_md.display()),
+            Err(e) => tracing::warn!(
+                error = %haven_common::error::sanitize_error_text(&e.to_string()),
+                "skipping invalid SKILL.md"
+            ),
         }
     }
     Ok(out)
