@@ -1,5 +1,18 @@
 use super::*;
 
+fn checked_tool_call_index(index: Option<i32>) -> Result<usize, LlmError> {
+    let index = index.unwrap_or_default();
+    let index = usize::try_from(index).map_err(|_| {
+        LlmError::InvalidResponse("OpenAI stream tool call index must be non-negative".into())
+    })?;
+    if index >= MAX_STREAM_TOOL_CALLS {
+        return Err(LlmError::InvalidResponse(format!(
+            "OpenAI stream exceeds the {MAX_STREAM_TOOL_CALLS} tool-call limit"
+        )));
+    }
+    Ok(index)
+}
+
 impl OpenAiAdapter {
     pub(super) async fn chat_stream_inner(
         &self,
@@ -75,7 +88,7 @@ impl OpenAiAdapter {
 
         use tokio::sync::mpsc;
 
-        let (chunk_tx, chunk_rx) = mpsc::unbounded_channel();
+        let (chunk_tx, chunk_rx) = line_payload_channel();
         spawn_line_reader(resp.bytes_stream(), chunk_tx, LineMode::SseOrRaw);
 
         // Merge streaming tool-call deltas by index. Arguments arrive as
@@ -113,7 +126,7 @@ impl OpenAiAdapter {
         }
 
         struct UnfoldState {
-            rx: tokio::sync::mpsc::UnboundedReceiver<Result<String, LlmError>>,
+            rx: mpsc::Receiver<Result<String, LlmError>>,
             done: bool,
             accumulated_text: String,
             tool_calls_acc: Vec<(String, String, String)>,
@@ -222,7 +235,13 @@ impl OpenAiAdapter {
                                 && let Some(calls) = &delta.tool_calls
                             {
                                 for c in calls {
-                                    let idx = c.index.unwrap_or(0) as usize;
+                                    let idx = match checked_tool_call_index(c.index) {
+                                        Ok(index) => index,
+                                        Err(error) => {
+                                            state.done = true;
+                                            return Some((Err(error), state));
+                                        }
+                                    };
                                     merge_tool_call(
                                         &mut state.tool_calls_acc,
                                         idx,
@@ -291,6 +310,32 @@ impl OpenAiAdapter {
         .fuse();
 
         Ok(Box::pin(mapped))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn checked_tool_call_index_rejects_negative_values() {
+        assert!(matches!(
+            checked_tool_call_index(Some(-1)),
+            Err(LlmError::InvalidResponse(message)) if message.contains("non-negative")
+        ));
+    }
+
+    #[test]
+    fn checked_tool_call_index_enforces_the_response_limit() {
+        assert_eq!(
+            checked_tool_call_index(Some((MAX_STREAM_TOOL_CALLS - 1) as i32)).unwrap(),
+            MAX_STREAM_TOOL_CALLS - 1
+        );
+        assert!(matches!(
+            checked_tool_call_index(Some(MAX_STREAM_TOOL_CALLS as i32)),
+            Err(LlmError::InvalidResponse(message)) if message.contains("tool-call limit")
+        ));
+        assert_eq!(checked_tool_call_index(None).unwrap(), 0);
     }
 }
 pub(super) fn append_stream_text(accumulated: &mut String, content: &str) -> Option<String> {

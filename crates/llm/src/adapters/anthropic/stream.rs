@@ -1,5 +1,28 @@
 use super::*;
 
+fn checked_content_block_start(index: usize, started_count: usize) -> Result<usize, LlmError> {
+    if index >= MAX_STREAM_CONTENT_BLOCKS {
+        return Err(LlmError::InvalidResponse(format!(
+            "Anthropic stream content block index exceeds the {MAX_STREAM_CONTENT_BLOCKS} block limit"
+        )));
+    }
+    if started_count >= MAX_STREAM_CONTENT_BLOCKS {
+        return Err(LlmError::InvalidResponse(format!(
+            "Anthropic stream exceeds the {MAX_STREAM_CONTENT_BLOCKS} content-block limit"
+        )));
+    }
+    Ok(index)
+}
+
+fn checked_content_block_index(index: usize) -> Result<usize, LlmError> {
+    if index >= MAX_STREAM_CONTENT_BLOCKS {
+        return Err(LlmError::InvalidResponse(format!(
+            "Anthropic stream content block index exceeds the {MAX_STREAM_CONTENT_BLOCKS} block limit"
+        )));
+    }
+    Ok(index)
+}
+
 impl AnthropicAdapter {
     pub(super) async fn chat_stream_inner(
         &self,
@@ -82,7 +105,7 @@ impl AnthropicAdapter {
 
         use tokio::sync::mpsc;
 
-        let (chunk_tx, chunk_rx) = mpsc::unbounded_channel();
+        let (chunk_tx, chunk_rx) = line_payload_channel();
         spawn_line_reader(resp.bytes_stream(), chunk_tx, LineMode::SseDataOnly);
 
         struct BlockState {
@@ -92,6 +115,8 @@ impl AnthropicAdapter {
             tool_input: String,
             thinking: String,
             thinking_signature: String,
+            started: bool,
+            stopped: bool,
             /// Original content-block index (for the echo layout marker).
             pos: usize,
             /// Char count of accumulated visible text when this block started
@@ -108,10 +133,11 @@ impl AnthropicAdapter {
         }
 
         struct UnfoldState {
-            rx: mpsc::UnboundedReceiver<Result<String, LlmError>>,
+            rx: mpsc::Receiver<Result<String, LlmError>>,
             done: bool,
             /// Per-content-block streaming state, indexed by Anthropic block index.
             blocks: Vec<BlockState>,
+            started_block_count: usize,
             accumulated_text: String,
             /// Capture-time layout: `(kind, pos, text_before)` per content
             /// block, in order. Emitted as the trailing `__layout` marker on
@@ -132,6 +158,7 @@ impl AnthropicAdapter {
                 rx: chunk_rx,
                 done: false,
                 blocks: Vec::new(),
+                started_block_count: 0,
                 accumulated_text: String::new(),
                 layout: Vec::new(),
                 last_model: None,
@@ -225,6 +252,16 @@ impl AnthropicAdapter {
                         index,
                         content_block,
                     }) => {
+                        let index = match checked_content_block_start(
+                            index,
+                            state.started_block_count,
+                        ) {
+                            Ok(index) => index,
+                            Err(error) => {
+                                state.done = true;
+                                return Some((Err(error), state));
+                            }
+                        };
                         while state.blocks.len() <= index {
                             state.blocks.push(BlockState {
                                 kind: BlockKind::Text,
@@ -233,12 +270,24 @@ impl AnthropicAdapter {
                                 tool_input: String::new(),
                                 thinking: String::new(),
                                 thinking_signature: String::new(),
+                                started: false,
+                                stopped: false,
                                 pos: 0,
                                 text_before: 0,
                             });
                         }
+                        if state.blocks[index].started {
+                            state.done = true;
+                            return Some((
+                                Err(LlmError::InvalidResponse(format!(
+                                    "Anthropic stream repeated content block index {index}"
+                                ))),
+                                state,
+                            ));
+                        }
                         {
                             let block = &mut state.blocks[index];
+                            block.started = true;
                             block.pos = index;
                             block.text_before = state.accumulated_text.chars().count();
                             match content_block.block_type.as_deref() {
@@ -274,6 +323,7 @@ impl AnthropicAdapter {
                                 _ => block.kind = BlockKind::Text,
                             }
                         }
+                        state.started_block_count += 1;
                         match content_block.block_type.as_deref() {
                             Some("server_tool_use")
                                 if content_block.name.as_deref() == Some("web_search") =>
@@ -323,6 +373,13 @@ impl AnthropicAdapter {
                         Some((Ok(chunk), state))
                     }
                     Ok(AnthropicStreamEvent::ContentBlockDelta { index, delta }) => {
+                        let index = match checked_content_block_index(index) {
+                            Ok(index) => index,
+                            Err(error) => {
+                                state.done = true;
+                                return Some((Err(error), state));
+                            }
+                        };
                         let mut chunk = empty_chunk();
                         chunk.model = state.last_model.clone();
                         match delta {
@@ -346,9 +403,20 @@ impl AnthropicAdapter {
                         Some((Ok(chunk), state))
                     }
                     Ok(AnthropicStreamEvent::ContentBlockStop { index }) => {
+                        let index = match checked_content_block_index(index) {
+                            Ok(index) => index,
+                            Err(error) => {
+                                state.done = true;
+                                return Some((Err(error), state));
+                            }
+                        };
                         let mut chunk = empty_chunk();
                         chunk.model = state.last_model.clone();
-                        if let Some(block) = state.blocks.get(index) {
+                        if let Some(block) = state.blocks.get_mut(index)
+                            && block.started
+                            && !block.stopped
+                        {
+                            block.stopped = true;
                             match block.kind {
                                 BlockKind::ToolUse => {
                                     chunk.tool_calls.push(CanonicalToolCall {
@@ -477,5 +545,35 @@ impl AnthropicAdapter {
         .fuse();
 
         Ok(Box::pin(mapped))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn checked_content_block_start_enforces_index_and_count_limits() {
+        assert_eq!(
+            checked_content_block_start(MAX_STREAM_CONTENT_BLOCKS - 1, 0).unwrap(),
+            MAX_STREAM_CONTENT_BLOCKS - 1
+        );
+        assert!(matches!(
+            checked_content_block_start(MAX_STREAM_CONTENT_BLOCKS, 0),
+            Err(LlmError::InvalidResponse(message)) if message.contains("index")
+        ));
+        assert!(matches!(
+            checked_content_block_start(0, MAX_STREAM_CONTENT_BLOCKS),
+            Err(LlmError::InvalidResponse(message)) if message.contains("content-block limit")
+        ));
+    }
+
+    #[test]
+    fn checked_content_block_index_rejects_out_of_range_events() {
+        assert_eq!(checked_content_block_index(0).unwrap(), 0);
+        assert!(matches!(
+            checked_content_block_index(MAX_STREAM_CONTENT_BLOCKS),
+            Err(LlmError::InvalidResponse(message)) if message.contains("index")
+        ));
     }
 }

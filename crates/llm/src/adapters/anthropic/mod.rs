@@ -9,9 +9,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::adapters::{
-    LineMode, MAX_JSON_RESPONSE_BYTES, WebSearchMode, build_client, build_headers, empty_chunk,
-    health_check_request, normalize_web_search_call_item, read_text_bounded,
-    resolve_web_search_mode, send_request, spawn_line_reader, stream_header_timeout,
+    LineMode, MAX_JSON_RESPONSE_BYTES, MAX_STREAM_CONTENT_BLOCKS, WebSearchMode, build_client,
+    build_headers, empty_chunk, health_check_request, line_payload_channel,
+    normalize_web_search_call_item, read_text_bounded, resolve_web_search_mode, send_request,
+    spawn_line_reader, stream_header_timeout,
 };
 use crate::client::LlmClient;
 use haven_common::CapabilityProfile;

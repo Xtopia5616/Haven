@@ -19,6 +19,11 @@ pub use capabilities::{
 };
 pub use openai::OpenAiAdapter;
 
+/// Bound provider-controlled tool-call indices before streaming aggregation.
+pub(crate) const MAX_STREAM_TOOL_CALLS: usize = 128;
+/// Bound provider-controlled Anthropic content-block indices and response size.
+pub(crate) const MAX_STREAM_CONTENT_BLOCKS: usize = 128;
+
 use crate::client::LlmClient;
 use crate::types::LlmError;
 use haven_common::config::ModelEndpoint;
@@ -32,7 +37,7 @@ pub(crate) use provider_features::{
     reasoning_text_from_thinking_blocks, requires_reasoning_echo, responses_output_config,
     responses_reasoning_config,
 };
-pub(crate) use stream::{LineMode, empty_chunk, spawn_line_reader};
+pub(crate) use stream::{LineMode, empty_chunk, line_payload_channel, spawn_line_reader};
 pub(crate) use transport::{
     MAX_AUDIO_RESPONSE_BYTES, MAX_JSON_RESPONSE_BYTES, MAX_OCR_RESPONSE_BYTES, build_client,
     build_headers, health_check_request, read_bytes_bounded, read_json_bounded, read_text_bounded,

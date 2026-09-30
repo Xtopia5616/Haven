@@ -72,13 +72,13 @@ impl GeminiAdapter {
 
         use tokio::sync::mpsc;
 
-        let (chunk_tx, chunk_rx) = mpsc::unbounded_channel();
+        let (chunk_tx, chunk_rx) = line_payload_channel();
         // `:streamGenerateContent?alt=sse` returns SSE frames; gateways that
         // ignore `alt=sse` fall back to raw JSON lines — both are handled.
         spawn_line_reader(resp.bytes_stream(), chunk_tx, LineMode::SseOrRaw);
 
         struct UnfoldState {
-            rx: mpsc::UnboundedReceiver<Result<String, LlmError>>,
+            rx: mpsc::Receiver<Result<String, LlmError>>,
             done: bool,
             /// Accumulated text per part index (deltas are emitted as suffixes).
             /// Tracks EVERY part (including `thought: true` reasoning parts) so

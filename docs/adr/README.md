@@ -392,4 +392,6 @@
 - [0406：Provider 添加时即时发现模型](0406-provider-add-model-discovery.md)
 - [0407：ReAct 执行阶段与模型可用性分开展示](0407-react-execution-and-model-availability-status.md)
 - [0408：UI 统一动画方案](0408-ui-single-motion-profile.md)
+- [0409：限制 Provider 流索引与响应项数量](0409-bounded-provider-stream-indices.md)
 - [0410：SessionActor 按 run 管理 cancellation token](0410-session-actor-per-run-cancellation.md)
+- [0411：限制 Provider 流帧与事件队列](0411-bounded-provider-stream-framing.md)

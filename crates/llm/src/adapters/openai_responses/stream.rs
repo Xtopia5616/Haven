@@ -69,11 +69,11 @@ impl OpenAiResponsesAdapter {
 
         use tokio::sync::mpsc;
 
-        let (chunk_tx, chunk_rx) = mpsc::unbounded_channel();
+        let (chunk_tx, chunk_rx) = line_payload_channel();
         spawn_line_reader(resp.bytes_stream(), chunk_tx, LineMode::SseDataOnly);
 
         struct UnfoldState {
-            rx: mpsc::UnboundedReceiver<Result<String, LlmError>>,
+            rx: mpsc::Receiver<Result<String, LlmError>>,
             done: bool,
             /// Function calls accumulated per item id; flushed in the final
             /// chunk. Tuple: (lookup key for argument deltas, resolved call

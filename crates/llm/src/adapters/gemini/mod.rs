@@ -11,7 +11,7 @@ use tokio::sync::Mutex;
 
 use crate::adapters::{
     LineMode, MAX_JSON_RESPONSE_BYTES, WebSearchMode, build_client, build_headers, empty_chunk,
-    health_check_request, normalize_web_search_call_item, read_text_bounded,
+    health_check_request, line_payload_channel, normalize_web_search_call_item, read_text_bounded,
     resolve_web_search_mode, send_request, spawn_line_reader, stream_header_timeout,
 };
 use crate::client::LlmClient;
