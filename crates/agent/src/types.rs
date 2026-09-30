@@ -86,6 +86,10 @@ pub enum TranscriptRecord {
         notices: Vec<haven_common::media::MediaPlanNotice>,
     },
     CompactSummary {
+        /// Step at which compaction replaced the active transcript. Older
+        /// event payloads recover this from the enclosing session event row.
+        #[serde(default)]
+        step_number: u32,
         #[serde(serialize_with = "serialize_snapshot_canonical")]
         compacted: Vec<CanonicalMessage>,
         /// Snapshot-safe media metadata for raw parts represented by the
@@ -464,6 +468,7 @@ pub(crate) fn media_inputs_from_events(events: &[TranscriptRecord]) -> Vec<Media
 /// seed event so snapshots can be constructed without replaying applies.
 pub fn seed_events_from_canonical(canonical: Vec<CanonicalMessage>) -> Vec<TranscriptRecord> {
     vec![TranscriptRecord::CompactSummary {
+        step_number: 1,
         compacted: canonical,
         media_inputs: Vec::new(),
         summary: String::new(),

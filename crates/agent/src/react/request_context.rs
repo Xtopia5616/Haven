@@ -868,6 +868,7 @@ mod tests {
         );
         let state = ReActState::new(
             vec![TranscriptRecord::CompactSummary {
+                step_number: 1,
                 compacted: snapshot_message.clone(),
                 media_inputs: vec![input.for_snapshot()],
                 summary: "older context".into(),

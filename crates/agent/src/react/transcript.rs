@@ -12,10 +12,8 @@
 //!
 //! The committed rows are then published by
 //! [`super::committed_ui::CommittedUiPublisher`] in sequence order, before
-//! Agent updates in-memory canonical state. The assistant Thought message is
-//! in the commit transaction; its shared-id thought step is a separate
-//! post-commit store operation, and resume repairs it from the event if that
-//! projection fails.
+//! Agent updates in-memory canonical state. The assistant Thought message and
+//! its shared-id thought step are both included in the commit transaction.
 //!
 //! Exceptions (documented, not parallel authorities):
 //! - **Ingress user seed**: `layer`/`ingress` may insert the user `messages`
@@ -200,6 +198,7 @@ impl TranscriptEvent {
                 episode_id,
                 degraded,
             } => TranscriptRecord::CompactSummary {
+                step_number,
                 compacted: canonical_for_snapshot_with_media_inputs(compacted, media_inputs),
                 media_inputs: media_inputs
                     .iter()
@@ -341,6 +340,7 @@ impl ReActEngine {
             SessionCommitted::transcript(serde_json::to_string(record)?, ctx.run_id, ctx.step_num);
         match event {
             TranscriptEvent::Thought { text, message_id } => {
+                committed.project_thought_step(message_id.clone(), ctx.step_num);
                 if !text.trim().is_empty() {
                     committed.project_assistant_message(
                         message_id.clone(),
@@ -556,17 +556,7 @@ impl ReActEngine {
             ctx.step_num,
         );
         match event {
-            TranscriptEvent::Thought { message_id, .. } => {
-                // The sequenced Thought UI event was already published from
-                // the committed row. This step write can still fail; resume
-                // repairs the materialized row from the durable event.
-                EventDispatcher::persist_thought_step(
-                    &ctx.session_id,
-                    ctx.step_num,
-                    &message_id,
-                    &self.event_store,
-                )
-                .await?;
+            TranscriptEvent::Thought { .. } => {
                 state.push_event(record);
             }
             TranscriptEvent::Reasoning { .. } => {
@@ -888,6 +878,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn legacy_compaction_payload_recovers_step_from_event_envelope() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let session = db.create_session("legacy compact root").unwrap();
+        let engine = test_engine(db);
+        engine
+            .event_store
+            .append(
+                &session.id,
+                haven_memory::TRANSCRIPT_EVENT_TYPE,
+                r#"{"type":"compact_summary","compacted":[],"summary":"summary","tokens_before":100,"tokens_after":20,"episode_id":"msg-summary","degraded":false}"#,
+                Some(3),
+                Some(17),
+            )
+            .unwrap();
+
+        let replay = engine
+            .load_durable_event_state(&session.id)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert!(matches!(
+            replay.events.as_slice(),
+            [TranscriptRecord::CompactSummary {
+                step_number: 17,
+                ..
+            }]
+        ));
+        assert_eq!(crate::resume_support::infer_resume_step(&replay.events), 17);
+    }
+
+    #[tokio::test]
     async fn apply_user_inject_sets_source_raw_text() {
         let dir = std::env::temp_dir().join(format!(
             "haven_transcript_inject_{}.db",
@@ -1165,13 +1187,19 @@ mod tests {
         assert!(state.branch_points.is_empty());
         let (_, rounds) = project_transcript(&state.events);
         assert!(rounds.is_empty());
-        let durable_sequence = engine
+        let durable_events = engine
             .event_store
             .read_active_transcript(&session.id)
-            .unwrap()
+            .unwrap();
+        let durable_summary = durable_events
             .first()
-            .expect("committed compact summary event")
-            .sequence as u64;
+            .expect("committed compact summary event");
+        assert_eq!(durable_summary.step_number, Some(2));
+        assert!(matches!(
+            serde_json::from_str::<TranscriptRecord>(&durable_summary.payload).unwrap(),
+            TranscriptRecord::CompactSummary { step_number: 2, .. }
+        ));
+        let durable_sequence = durable_summary.sequence as u64;
         let ev = ui_events.lock().unwrap();
         assert!(
             ev.iter().any(|e| matches!(
@@ -1464,7 +1492,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn thought_ui_is_published_when_step_projection_fails() {
+    async fn thought_commit_rolls_back_event_and_message_when_step_projection_fails() {
         let dir = std::env::temp_dir().join(format!(
             "haven_transcript_thought_fail_{}.db",
             uuid::Uuid::new_v4()
@@ -1474,15 +1502,16 @@ mod tests {
         let message_id = haven_common::types::new_id("step");
         db.create_thought_step(&session.id, 1, &message_id).unwrap();
         let recorded = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let engine = test_engine(db);
+        let engine = test_engine(db.clone());
         let mut ctx = step_ctx(&session.id);
         ctx.emitter = Arc::new(RecordingEmitter {
             events: recorded.clone(),
         });
         let dispatcher = Arc::new(EventDispatcher::new());
         dispatcher.set_emitter(ctx.emitter.clone());
-        let committed_events = engine.event_store.subscribe();
-        engine.start_committed_ui_bridge(dispatcher, committed_events);
+        let mut committed_events = engine.event_store.subscribe();
+        let ui_events = engine.event_store.subscribe();
+        engine.start_committed_ui_bridge(dispatcher, ui_events);
         let mut state = ReActState::new(Vec::new(), Vec::new(), std::collections::HashMap::new());
         let error = engine
             .apply_transcript(
@@ -1494,37 +1523,20 @@ mod tests {
                 &mut state,
             )
             .await;
-        assert!(error.is_err(), "step collision must fail the projection");
-        for _ in 0..50 {
-            if recorded.lock().unwrap().len() == 1 {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
+        assert!(error.is_err(), "step collision must fail the transaction");
         let durable = engine
             .event_store
             .read_active_transcript(&session.id)
             .unwrap();
-        assert_eq!(durable.len(), 1, "the thought row is already committed");
-        let sequence = durable[0].sequence as u64;
-        let events = recorded.lock().unwrap().clone();
-        assert_eq!(
-            events.len(),
-            1,
-            "projection failure and the committed-event bridge must still publish once"
-        );
-        assert!(
-            matches!(
-                &events[0],
-                crate::event::AgentEvent::Thought {
-                    thought,
-                    message_id: id,
-                    event_seq: Some(event_seq),
-                    ..
-                } if thought == "keep" && id == &message_id && *event_seq == sequence
-            ),
-            "expected the committed Thought sequence, got {events:?}"
-        );
+        assert!(durable.is_empty(), "the event must roll back with its step");
+        assert!(db.get_session_messages(&session.id).unwrap().is_empty());
+        assert_eq!(db.get_session_steps(&session.id).unwrap().len(), 1);
+        assert!(recorded.lock().unwrap().is_empty());
+        assert!(matches!(
+            committed_events.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
+        assert!(state.events.is_empty());
     }
 
     #[tokio::test]

@@ -271,6 +271,7 @@ mod tests {
         );
 
         let record = TranscriptRecord::CompactSummary {
+            step_number: 1,
             compacted: Vec::new(),
             media_inputs: Vec::new(),
             summary: "summary".into(),
@@ -355,6 +356,7 @@ mod tests {
         );
         let _ = state.estimate_canonical_tokens();
         let record = TranscriptRecord::CompactSummary {
+            step_number: 1,
             compacted: Vec::new(),
             media_inputs: Vec::new(),
             summary: "summary".into(),

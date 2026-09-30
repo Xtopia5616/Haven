@@ -34,7 +34,8 @@ pub(crate) fn infer_resume_step(events: &[TranscriptRecord]) -> u32 {
                     last = Some(event);
                 }
             }
-            TranscriptRecord::CompactSummary { .. } => {
+            TranscriptRecord::CompactSummary { step_number, .. } => {
+                max_step = max_step.max(*step_number);
                 last = Some(event);
             }
         }
@@ -169,6 +170,7 @@ mod tests {
     fn infer_resume_step_uses_the_durable_tail() {
         let events = vec![
             TranscriptRecord::CompactSummary {
+                step_number: 1,
                 compacted: Vec::new(),
                 media_inputs: Vec::new(),
                 summary: String::new(),
@@ -193,6 +195,22 @@ mod tests {
             },
         ];
         assert_eq!(infer_resume_step(&events), 5);
+    }
+
+    #[test]
+    fn infer_resume_step_preserves_the_compaction_root_step() {
+        let events = vec![TranscriptRecord::CompactSummary {
+            step_number: 17,
+            compacted: Vec::new(),
+            media_inputs: Vec::new(),
+            summary: "summary".into(),
+            tokens_before: 100,
+            tokens_after: 20,
+            episode_id: "msg-summary".into(),
+            degraded: false,
+        }];
+
+        assert_eq!(infer_resume_step(&events), 17);
     }
 
     #[test]
