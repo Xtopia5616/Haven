@@ -463,10 +463,34 @@
 		.rail-footer :global(.rail-theme-button[data-size='toolbar']) {
 			grid-column: 2;
 			grid-row: 1;
+			justify-self: center;
 			width: var(--md-comp-icon-button-dense-size);
 			min-width: var(--md-comp-icon-button-dense-size);
 			height: var(--md-comp-icon-button-dense-size);
 			min-height: var(--md-comp-icon-button-dense-size);
+			border: 1px solid var(--md-sys-color-outline-variant);
+			border-radius: var(--md-sys-shape-small);
+			background: var(--md-sys-color-surface-container-high);
+			box-shadow: var(--md-sys-elevation-1);
+			transition:
+				background-color var(--md-sys-motion-duration-fast)
+					var(--md-sys-motion-easing-standard),
+				border-color var(--md-sys-motion-duration-fast)
+					var(--md-sys-motion-easing-standard),
+				box-shadow var(--md-sys-motion-duration-fast)
+					var(--md-sys-motion-easing-standard),
+				transform var(--md-sys-motion-duration-fast)
+					var(--md-sys-motion-easing-standard);
+		}
+		.rail-footer :global(.rail-theme-button[data-size='toolbar']:hover) {
+			border-color: var(--md-sys-color-outline);
+			background: var(--md-sys-color-surface-container-highest);
+			box-shadow: var(--md-sys-elevation-2);
+			transform: translateY(-1px);
+		}
+		.rail-footer :global(.rail-theme-button[data-size='toolbar']:active) {
+			box-shadow: var(--md-sys-elevation-1);
+			transform: translateY(0);
 		}
 		.compact-workspace-nav {
 			display: none;
@@ -574,6 +598,7 @@
 		}
 		.rail-footer :global(.rail-theme-button) {
 			align-self: center;
+			margin-inline-start: auto;
 			width: var(--md-comp-icon-button-size);
 			min-width: var(--md-comp-icon-button-size);
 			height: var(--md-comp-icon-button-size);
