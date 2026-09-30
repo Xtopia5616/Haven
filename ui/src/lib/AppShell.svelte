@@ -469,9 +469,9 @@
 			height: var(--md-comp-icon-button-dense-size);
 			min-height: var(--md-comp-icon-button-dense-size);
 			border: 1px solid var(--md-sys-color-outline-variant);
-			border-radius: var(--md-sys-shape-small);
+			border-radius: var(--md-comp-status-radius);
 			background: var(--md-sys-color-surface-container-high);
-			box-shadow: var(--md-sys-elevation-1);
+			box-shadow: var(--md-sys-elevation-0);
 			transition:
 				background-color var(--md-sys-motion-duration-fast)
 					var(--md-sys-motion-easing-standard),
@@ -485,12 +485,10 @@
 		.rail-footer :global(.rail-theme-button[data-size='toolbar']:hover) {
 			border-color: var(--md-sys-color-outline);
 			background: var(--md-sys-color-surface-container-highest);
-			box-shadow: var(--md-sys-elevation-2);
-			transform: translateY(-1px);
+			box-shadow: var(--md-sys-elevation-1);
 		}
 		.rail-footer :global(.rail-theme-button[data-size='toolbar']:active) {
-			box-shadow: var(--md-sys-elevation-1);
-			transform: translateY(0);
+			box-shadow: var(--md-sys-elevation-0);
 		}
 		.compact-workspace-nav {
 			display: none;
