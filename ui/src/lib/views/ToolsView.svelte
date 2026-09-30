@@ -377,7 +377,7 @@
 	<WorkspacePageHeader title="工具" description="管理 Haven 可调用的工具、MCP 服务与技能。" />
 
 	<div class="tools-workspace responsive-layout-transition">
-		<nav class="tools-sidebar" aria-label="资源分类导航">
+		<nav class="tools-sidebar responsive-layout-panel" aria-label="资源分类导航">
 			<div class="tools-sidebar-heading">
 				<h2>资源分类</h2>
 				<p>浏览并管理可用能力</p>
@@ -710,6 +710,8 @@
 		.tools-sidebar {
 			grid-column: 1;
 			grid-row: 1;
+			animation: responsive-layout-panel-in var(--md-sys-motion-duration-fast)
+				var(--md-sys-motion-easing-standard) both;
 			position: sticky;
 			top: var(--md-sys-space-lg);
 			align-self: start;

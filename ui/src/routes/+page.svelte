@@ -896,7 +896,7 @@
 		}}
 	/>
 
-	<div class="desktop-session-rail">
+	<div class="desktop-session-rail responsive-layout-panel">
 		<SessionRail
 			{sessions}
 			{activeSessionId}
@@ -1095,6 +1095,8 @@
 			grid-column: 1;
 			grid-row: 1;
 			display: flex;
+			animation: responsive-layout-panel-in var(--md-sys-motion-duration-fast)
+				var(--md-sys-motion-easing-standard) both;
 			min-width: 0;
 			min-height: 0;
 			border-right: 1px solid var(--md-sys-color-outline-variant);

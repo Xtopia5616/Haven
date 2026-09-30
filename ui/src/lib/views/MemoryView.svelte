@@ -580,7 +580,7 @@
 <div class="memory-page">
 	<WorkspacePageHeader title="历史" description="回顾会话、任务和长期记忆。" />
 	<div class="memory-layout responsive-layout-transition">
-		<aside class="memory-sidebar" aria-label="历史分类">
+		<aside class="memory-sidebar responsive-layout-panel" aria-label="历史分类">
 			<MaterialTabs
 				tabs={memoryTabs}
 				activeTab={activeTab ?? 'sessions'}
@@ -855,6 +855,8 @@
 		.memory-sidebar {
 			grid-column: 1;
 			grid-row: 1;
+			animation: responsive-layout-panel-in var(--md-sys-motion-duration-fast)
+				var(--md-sys-motion-easing-standard) both;
 			position: sticky;
 			top: var(--md-sys-space-lg);
 			align-self: start;

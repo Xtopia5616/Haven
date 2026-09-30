@@ -1076,7 +1076,7 @@
 		</div>
 	{/if}
 	<div class="settings-layout responsive-layout-transition">
-		<aside class="settings-sidebar">
+		<aside class="settings-sidebar responsive-layout-panel">
 			<MaterialTabs
 				tabs={settingsTabs}
 				activeTab={settingsTab}
@@ -1421,6 +1421,8 @@
 		.settings-sidebar {
 			grid-column: 1;
 			grid-row: 1;
+			animation: responsive-layout-panel-in var(--md-sys-motion-duration-fast)
+				var(--md-sys-motion-easing-standard) both;
 			position: sticky;
 			top: var(--md-sys-space-xl);
 			min-width: 0;
