@@ -26,7 +26,7 @@
 		idPrefix="workspace-tab"
 		panelIdPrefix="workspace-tabpanel"
 		showIcons
-		indicator="css"
+		indicator="measured"
 		className="workspace-nav"
 	/>
 </nav>

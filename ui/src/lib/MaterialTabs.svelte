@@ -162,4 +162,10 @@
 		font-size: var(--md-sys-typescale-label-small-size);
 		color: var(--md-sys-color-on-surface-variant);
 	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.md-tabs--measured .workspace-nav__indicator {
+			transition: none;
+		}
+	}
 </style>

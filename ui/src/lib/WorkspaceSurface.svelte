@@ -50,16 +50,22 @@
 			box-shadow var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
 	}
 	.workspace-surface--entering {
-		animation: haven-workspace-surface-enter var(--md-sys-motion-duration-short)
+		animation: haven-workspace-surface-enter var(--md-sys-motion-duration-medium)
 			var(--md-sys-motion-easing-decelerated) both;
 	}
 
 	@keyframes haven-workspace-surface-enter {
 		from {
-			opacity: 0;
+			opacity: 0.72;
 		}
 		to {
 			opacity: 1;
+		}
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.workspace-surface--entering {
+			animation-duration: 1ms;
 		}
 	}
 
