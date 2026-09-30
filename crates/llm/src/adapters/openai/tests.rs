@@ -812,6 +812,31 @@ async fn rejected_prompt_cache_key_retries_without_key_and_disables_it() {
     assert_eq!(*seen_keys.lock().unwrap(), vec![true, false]);
 }
 
+#[tokio::test]
+async fn stream_eof_without_finish_reason_rejects_complete_tool_call() {
+    let body = "data: {\"model\":\"gpt-test\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"file\",\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\n";
+    let (base_url, server) = crate::test_support::serve_sse(body).await;
+    let client = OpenAiAdapter::new(ModelEndpoint {
+        base_url: format!("{base_url}/v1"),
+        model_name: "gpt-test".into(),
+        ..Default::default()
+    });
+    let mut stream = client
+        .chat_stream_with_tools(Vec::new(), Vec::new())
+        .await
+        .unwrap();
+    let mut truncated = false;
+    while let Some(item) = stream.next().await {
+        match item {
+            Ok(chunk) => assert!(chunk.tool_calls.is_empty()),
+            Err(LlmError::StreamTruncated) => truncated = true,
+            Err(error) => panic!("unexpected stream error: {error}"),
+        }
+    }
+    server.await.unwrap();
+    assert!(truncated, "EOF without finish_reason must be truncated");
+}
+
 #[test]
 fn rejected_prompt_cache_key_is_reprobed_after_cooldown() {
     let client = OpenAiAdapter::new(ModelEndpoint::default());

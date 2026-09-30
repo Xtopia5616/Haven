@@ -1512,6 +1512,37 @@ async fn stream_completed_output_recovers_text_before_tool_call() {
     server.await.unwrap();
 }
 
+#[tokio::test]
+async fn stream_eof_without_response_terminal_event_rejects_complete_tool_call() {
+    let body = concat!(
+        "data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"function_call\",\"id\":\"fc_1\",\"call_id\":\"call_1\",\"name\":\"file\",\"arguments\":\"{}\"}}\n\n",
+        "data: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_1\",\"delta\":\"{}\"}\n\n",
+    );
+    let (base_url, server) = crate::test_support::serve_sse(body).await;
+    let client = OpenAiResponsesAdapter::new(ModelEndpoint {
+        base_url: format!("{base_url}/v1"),
+        model_name: "gpt-test".into(),
+        ..Default::default()
+    });
+    let mut stream = client
+        .chat_stream_with_tools(Vec::new(), Vec::new())
+        .await
+        .unwrap();
+    let mut truncated = false;
+    while let Some(item) = stream.next().await {
+        match item {
+            Ok(chunk) => assert!(chunk.tool_calls.is_empty()),
+            Err(LlmError::StreamTruncated) => truncated = true,
+            Err(error) => panic!("unexpected stream error: {error}"),
+        }
+    }
+    server.await.unwrap();
+    assert!(
+        truncated,
+        "EOF without response terminal event must be truncated"
+    );
+}
+
 #[test]
 fn usage_parses_input_tokens_details_cached_tokens() {
     let json = r#"{"input_tokens":100,"output_tokens":5,"total_tokens":105,"input_tokens_details":{"cached_tokens":80}}"#;

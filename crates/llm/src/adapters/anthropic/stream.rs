@@ -138,6 +138,7 @@ impl AnthropicAdapter {
             /// Per-content-block streaming state, indexed by Anthropic block index.
             blocks: Vec<BlockState>,
             started_block_count: usize,
+            pending_tool_calls: Vec<CanonicalToolCall>,
             accumulated_text: String,
             /// Capture-time layout: `(kind, pos, text_before)` per content
             /// block, in order. Emitted as the trailing `__layout` marker on
@@ -159,6 +160,7 @@ impl AnthropicAdapter {
                 done: false,
                 blocks: Vec::new(),
                 started_block_count: 0,
+                pending_tool_calls: Vec::new(),
                 accumulated_text: String::new(),
                 layout: Vec::new(),
                 last_model: None,
@@ -179,25 +181,12 @@ impl AnthropicAdapter {
                         return Some((Err(error), state));
                     }
                     None => {
-                        // Open / unfinished tool_use blocks mean the stream
-                        // died mid-arguments — treat as truncated.
-                        let unfinished_tools = state.blocks.iter().any(|b| {
-                            matches!(b.kind, BlockKind::ToolUse)
-                                && (CanonicalToolCall::stream_tool_args_unfinished(
-                                    &b.tool_name,
-                                    &b.tool_input,
-                                ) || !state.layout.iter().any(|(k, pos, _)| {
-                                    *k == Self::LAYOUT_KIND_TOOL_USE && *pos == b.pos
-                                }))
-                        });
-                        let chunk = if !state.saw_message_stop
-                            && (!state.accumulated_text.is_empty() || unfinished_tools)
-                        {
+                        let chunk = if !state.saw_message_stop {
                             Err(LlmError::StreamTruncated)
                         } else {
                             let mut final_chunk = StreamChunk {
                                 text: None,
-                                tool_calls: Vec::new(),
+                                tool_calls: std::mem::take(&mut state.pending_tool_calls),
                                 finish_reason: state.stop_reason,
                                 usage: state.usage.take(),
                                 model: state.last_model.clone(),
@@ -419,7 +408,7 @@ impl AnthropicAdapter {
                             block.stopped = true;
                             match block.kind {
                                 BlockKind::ToolUse => {
-                                    chunk.tool_calls.push(CanonicalToolCall {
+                                    state.pending_tool_calls.push(CanonicalToolCall {
                                         id: block.tool_id.clone(),
                                         name: block.tool_name.clone(),
                                         arguments: CanonicalToolCall::from_wire_args(
@@ -502,7 +491,7 @@ impl AnthropicAdapter {
                         state.done = true;
                         let mut final_chunk = StreamChunk {
                             text: None,
-                            tool_calls: Vec::new(),
+                            tool_calls: std::mem::take(&mut state.pending_tool_calls),
                             finish_reason: state.stop_reason,
                             usage: state.usage.take(),
                             model: state.last_model.clone(),

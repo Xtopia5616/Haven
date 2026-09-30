@@ -231,7 +231,9 @@ pub(crate) async fn aggregate_stream_with_retry_before_output(
             let on_chunk = on_chunk.clone();
             let emitted = emitted.clone();
             Arc::new(StdMutex::new(move |chunk: &StreamChunk| {
-                emitted.store(true, Ordering::SeqCst);
+                if stream_chunk_has_retry_barrier_output(chunk) {
+                    emitted.store(true, Ordering::SeqCst);
+                }
                 let mut callback = on_chunk.lock().unwrap();
                 callback(chunk);
             }))
@@ -276,6 +278,17 @@ pub(crate) async fn aggregate_stream_with_retry_before_output(
     Err(LlmError::Unknown("stream retry loop exhausted".into()))
 }
 
+fn stream_chunk_has_retry_barrier_output(chunk: &StreamChunk) -> bool {
+    chunk.text.as_ref().is_some_and(|text| !text.is_empty())
+        || chunk
+            .reasoning
+            .as_ref()
+            .is_some_and(|reasoning| !reasoning.is_empty())
+        || !chunk.tool_calls.is_empty()
+        || chunk.web_search.is_some()
+        || !chunk.web_search_calls.is_empty()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -300,6 +313,7 @@ mod tests {
     #[derive(Clone, Copy)]
     enum ProbeMode {
         RetryThenSuccess,
+        MetadataThenFailure,
         RuleAbortThenGuidance,
         Pending,
     }
@@ -357,6 +371,21 @@ mod tests {
                 ProbeMode::Pending => {
                     self.started.notify_one();
                     std::future::pending().await
+                }
+                ProbeMode::MetadataThenFailure if attempt == 0 => Ok(Box::pin(stream::iter(vec![
+                    Ok(StreamChunk {
+                        model: Some("metadata-only".into()),
+                        usage: Some(Usage::default()),
+                        finish_reason: Some(crate::types::FinishReason::Stop),
+                        ..StreamChunk::default()
+                    }),
+                    Err(LlmError::ServerError("failure after metadata".into())),
+                ]))),
+                ProbeMode::MetadataThenFailure => {
+                    Ok(Box::pin(stream::iter(vec![Ok(StreamChunk {
+                        text: Some("completed after retry".into()),
+                        ..StreamChunk::default()
+                    })])))
                 }
                 ProbeMode::RuleAbortThenGuidance => {
                     Ok(Box::pin(stream::iter(vec![Ok(StreamChunk {
@@ -475,6 +504,65 @@ mod tests {
         assert_eq!(result.text, "completed");
         assert_eq!(result.usage.total_tokens, 13);
         assert_eq!(projection_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn metadata_only_chunk_does_not_suppress_retry() {
+        let probe = Arc::new(ExecutorProbe::new(ProbeMode::MetadataThenFailure));
+        let client: Arc<dyn LlmClient> = probe.clone();
+        let rules = RwLock::new(Vec::new());
+        let result = aggregate_stream_with_retry_before_output(
+            client,
+            context(),
+            Arc::new(StdMutex::new(|_chunk: &StreamChunk| {})),
+            CancellationToken::new(),
+            &rules,
+            Duration::from_secs(1),
+            RetryPolicy {
+                max_retries: 1,
+                base_secs: 0,
+                factor: 1,
+                max_secs: 0,
+                jitter: 0.0,
+            },
+        )
+        .await
+        .expect("metadata-only output must leave the stream retryable");
+
+        assert_eq!(probe.attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(result.text, "completed after retry");
+    }
+
+    #[test]
+    fn retry_barrier_ignores_metadata_and_counts_delivered_content() {
+        let metadata_only = StreamChunk {
+            model: Some("model-name".into()),
+            usage: Some(Usage::default()),
+            finish_reason: Some(crate::types::FinishReason::Stop),
+            ..StreamChunk::default()
+        };
+        assert!(!stream_chunk_has_retry_barrier_output(&metadata_only));
+
+        for content in [
+            StreamChunk {
+                text: Some("answer".into()),
+                ..StreamChunk::default()
+            },
+            StreamChunk {
+                reasoning: Some("reasoning".into()),
+                ..StreamChunk::default()
+            },
+            StreamChunk {
+                tool_calls: vec![haven_common::types::CanonicalToolCall {
+                    id: "call-1".into(),
+                    name: "file".into(),
+                    arguments: serde_json::json!({}),
+                }],
+                ..StreamChunk::default()
+            },
+        ] {
+            assert!(stream_chunk_has_retry_barrier_output(&content));
+        }
     }
 
     #[tokio::test]

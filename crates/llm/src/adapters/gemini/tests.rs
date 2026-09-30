@@ -850,6 +850,32 @@ async fn explicit_cache_replaces_system_and_tools_and_reuses_resource() {
     server.await.unwrap();
 }
 
+#[tokio::test]
+async fn stream_eof_without_finish_reason_rejects_complete_tool_call() {
+    let body = "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"functionCall\":{\"name\":\"file\",\"args\":{}}}]}}]}\n\n";
+    let (base_url, server) = crate::test_support::serve_sse(body).await;
+    let client = GeminiAdapter::new(ModelEndpoint {
+        base_url: format!("{base_url}/v1beta"),
+        api_key: "test-key".into(),
+        model_name: "gemini-test".into(),
+        ..Default::default()
+    });
+    let mut stream = client
+        .chat_stream_with_tools(Vec::new(), Vec::new())
+        .await
+        .unwrap();
+    let mut truncated = false;
+    while let Some(item) = stream.next().await {
+        match item {
+            Ok(chunk) => assert!(chunk.tool_calls.is_empty()),
+            Err(LlmError::StreamTruncated) => truncated = true,
+            Err(error) => panic!("unexpected stream error: {error}"),
+        }
+    }
+    server.await.unwrap();
+    assert!(truncated, "EOF without finishReason must be truncated");
+}
+
 #[test]
 fn generate_url_strips_models_prefix() {
     let client = GeminiAdapter::new(ModelEndpoint {

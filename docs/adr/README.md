@@ -395,4 +395,5 @@
 - [0409：限制 Provider 流索引与响应项数量](0409-bounded-provider-stream-indices.md)
 - [0410：SessionActor 按 run 管理 cancellation token](0410-session-actor-per-run-cancellation.md)
 - [0411：限制 Provider 流帧与事件队列](0411-bounded-provider-stream-framing.md)
+- [0412：Provider 流终止事件与重试边界](0412-provider-stream-terminal-and-retry-boundary.md)
 - [0413：Thought 原子投影与 Compaction 步骤恢复](0413-session-transcript-projection-recovery.md)

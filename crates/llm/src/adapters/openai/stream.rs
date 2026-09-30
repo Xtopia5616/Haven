@@ -160,16 +160,9 @@ impl OpenAiAdapter {
                         return Some((Err(error), state));
                     }
                     None => {
-                        // Interrupted mid-tool-call (no finish_reason): empty
-                        // args after a name, structural-only repair, or
-                        // mid-string JSON must not flush as executable calls.
-                        let unfinished_tools =
-                            state.tool_calls_acc.iter().any(|(_, name, args)| {
-                                CanonicalToolCall::stream_tool_args_unfinished(name, args)
-                            });
-                        let chunk = if !state.has_finish_reason
-                            && (!state.accumulated_text.is_empty() || unfinished_tools)
-                        {
+                        // A complete-looking payload is not authoritative until
+                        // the protocol's finish_reason arrives.
+                        let chunk = if !state.has_finish_reason {
                             Err(LlmError::StreamTruncated)
                         } else {
                             Ok(StreamChunk {

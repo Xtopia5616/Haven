@@ -15,6 +15,8 @@ mod stream_executor;
 pub mod stream_rules;
 mod streaming;
 pub mod stt;
+#[cfg(test)]
+mod test_support;
 pub mod tts;
 pub mod types;
 

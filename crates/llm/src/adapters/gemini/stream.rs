@@ -130,17 +130,7 @@ impl GeminiAdapter {
                         return Some((Err(error), state));
                     }
                     None => {
-                        // Gemini delivers args as already-parsed JSON; a name
-                        // with Null args and no finish means the stream died
-                        // before arguments arrived. On a clean finish, omitted
-                        // args mean `{}` (empty-parameter tools) — not Null.
-                        let unfinished_tools = state
-                            .tool_calls_acc
-                            .iter()
-                            .any(|tc| !tc.name.is_empty() && tc.arguments.is_null());
-                        let chunk = if !state.saw_finish
-                            && (!state.accumulated_text.is_empty() || unfinished_tools)
-                        {
+                        let chunk = if !state.saw_finish {
                             Err(LlmError::StreamTruncated)
                         } else {
                             let tool_calls = std::mem::take(&mut state.tool_calls_acc)

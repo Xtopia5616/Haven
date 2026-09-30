@@ -24,6 +24,64 @@ fn build_headers_uses_x_api_key_by_default() {
     );
 }
 
+#[tokio::test]
+async fn stream_eof_without_message_stop_rejects_complete_tool_call() {
+    let body = concat!(
+        "data: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-test\"}}\n\n",
+        "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"file\",\"input\":{}}}\n\n",
+        "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+    );
+    let (base_url, server) = crate::test_support::serve_sse(body).await;
+    let client = AnthropicAdapter::new(ModelEndpoint {
+        base_url: format!("{base_url}/v1"),
+        model_name: "claude-test".into(),
+        ..Default::default()
+    });
+    let mut stream = client
+        .chat_stream_with_tools(Vec::new(), Vec::new())
+        .await
+        .unwrap();
+    let mut truncated = false;
+    while let Some(item) = stream.next().await {
+        match item {
+            Ok(chunk) => assert!(chunk.tool_calls.is_empty()),
+            Err(LlmError::StreamTruncated) => truncated = true,
+            Err(error) => panic!("unexpected stream error: {error}"),
+        }
+    }
+    server.await.unwrap();
+    assert!(truncated, "EOF without message_stop must be truncated");
+}
+
+#[tokio::test]
+async fn stream_message_stop_releases_completed_tool_call() {
+    let body = concat!(
+        "data: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-test\"}}\n\n",
+        "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"file\",\"input\":{\"operation\":\"read\"}}}\n\n",
+        "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+        "data: {\"type\":\"message_stop\"}\n\n",
+    );
+    let (base_url, server) = crate::test_support::serve_sse(body).await;
+    let client = AnthropicAdapter::new(ModelEndpoint {
+        base_url: format!("{base_url}/v1"),
+        model_name: "claude-test".into(),
+        ..Default::default()
+    });
+    let mut stream = client
+        .chat_stream_with_tools(Vec::new(), Vec::new())
+        .await
+        .unwrap();
+    let mut tool_calls = Vec::new();
+    while let Some(item) = stream.next().await {
+        tool_calls.extend(item.unwrap().tool_calls);
+    }
+    server.await.unwrap();
+    assert_eq!(tool_calls.len(), 1);
+    assert_eq!(tool_calls[0].id, "toolu_1");
+    assert_eq!(tool_calls[0].name, "file");
+    assert_eq!(tool_calls[0].arguments["operation"], "read");
+}
+
 #[test]
 fn build_headers_respects_custom_auth_scheme() {
     let ep = ModelEndpoint {

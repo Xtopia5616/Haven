@@ -120,12 +120,7 @@ impl OpenAiResponsesAdapter {
                         return Some((Err(error), state));
                     }
                     None => {
-                        let unfinished_tools = state.tool_calls.iter().any(|(_, _, name, args)| {
-                            CanonicalToolCall::stream_tool_args_unfinished(name, args)
-                        });
-                        let chunk = if !state.saw_completed
-                            && (!state.accumulated_text.is_empty() || unfinished_tools)
-                        {
+                        let chunk = if !state.saw_completed {
                             Err(LlmError::StreamTruncated)
                         } else {
                             Ok(StreamChunk {
