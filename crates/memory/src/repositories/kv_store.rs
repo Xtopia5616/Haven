@@ -8,8 +8,10 @@ use rusqlite::OptionalExtension;
 /// this table holds only internal state such as the fact-extraction cursor
 /// (`fact_extraction.<session_id>`), the durable extraction outbox
 /// (`fact_extraction_pending.<session_id>` and
-/// `fact_extraction_episode_pending.<session_id>.<episode_id>`), and the committed-event cursor
-/// (`memory_event_cursor.<session_id>`). Exposed as `kv_store` in the schema.
+/// `fact_extraction_episode_pending.<session_id>.<episode_id>`), per-episode
+/// completion markers (`fact_extraction_episode_done.<session_id>.<episode_id>`),
+/// and the committed-event cursor (`memory_event_cursor.<session_id>`). Exposed
+/// as `kv_store` in the schema.
 impl Database {
     pub fn set_kv(&self, key: &str, value: &str) -> anyhow::Result<()> {
         let now = Utc::now().to_rfc3339();
@@ -283,8 +285,9 @@ impl Database {
     /// Remove session-scoped internal cursors whose session no longer exists
     /// (session rows are deleted without going through `delete_session`, e.g.
     /// history purge or older deletions before cursor cleanup was added). This
-    /// also purges extraction throttle stamps, episode cursors, pending markers,
-    /// and `memory_event_cursor.<session_id>` checkpoints of dead sessions.
+    /// also purges extraction throttle stamps, legacy episode cursors,
+    /// per-episode completion markers, pending markers, and
+    /// `memory_event_cursor.<session_id>` checkpoints of dead sessions.
     /// Called during memory maintenance so the kv table does not grow without
     /// bound.
     pub fn cleanup_orphan_extraction_cursors(&self) -> anyhow::Result<u64> {
@@ -294,6 +297,7 @@ impl Database {
              WHERE (key LIKE 'fact_extraction.%'
                     OR key LIKE 'fact_extraction_last_run.%'
                     OR key LIKE 'fact_extraction_episode.%'
+                    OR key LIKE 'fact_extraction_episode_done.%'
                     OR key LIKE 'fact_extraction_pending.%'
                     OR key LIKE 'fact_extraction_episode_pending.%'
                     OR key GLOB 'memory_event_cursor.*')
@@ -308,6 +312,8 @@ impl Database {
                                    WHEN key LIKE 'fact_extraction_pending.%'
                                    THEN substr(key, 25)
                                    WHEN key LIKE 'fact_extraction_episode_pending.%'
+                                   THEN value
+                                   WHEN key LIKE 'fact_extraction_episode_done.%'
                                    THEN value
                                    ELSE substr(key, 17)
                                END)",
@@ -439,13 +445,15 @@ mod tests {
         db.set_kv("fact_extraction_last_run.gone", "2026-08-15T00:00:00Z")
             .unwrap();
         db.set_kv("fact_extraction_episode.gone", "msg-10").unwrap();
+        db.set_kv("fact_extraction_episode_done.gone.msg-11", "gone")
+            .unwrap();
         db.set_kv("fact_extraction_pending.gone", "1").unwrap();
         db.set_kv("memory_event_cursor.gone", "8").unwrap();
         db.set_kv("memoryXeventYcursor.gone", "keep").unwrap();
         db.set_kv("other.state", "keep").unwrap();
 
         let removed = db.cleanup_orphan_extraction_cursors().unwrap();
-        assert_eq!(removed, 5);
+        assert_eq!(removed, 6);
         assert!(
             db.get_kv(&format!("fact_extraction.{}", session.id))
                 .unwrap()
@@ -464,6 +472,11 @@ mod tests {
                 .is_none()
         );
         assert!(db.get_kv("fact_extraction_episode.gone").unwrap().is_none());
+        assert!(
+            db.get_kv("fact_extraction_episode_done.gone.msg-11")
+                .unwrap()
+                .is_none()
+        );
         assert!(db.get_kv("fact_extraction_pending.gone").unwrap().is_none());
         assert!(db.get_kv("memory_event_cursor.gone").unwrap().is_none());
         assert_eq!(
@@ -522,6 +535,11 @@ mod tests {
         .unwrap();
         db.set_kv(&format!("fact_extraction_episode.{}", session.id), "msg-2")
             .unwrap();
+        db.set_kv(
+            &format!("fact_extraction_episode_done.{}.msg-3", session.id),
+            &session.id,
+        )
+        .unwrap();
         db.set_kv(&format!("fact_extraction_pending.{}", session.id), "1")
             .unwrap();
         db.enqueue_summary_extraction(&session.id, "msg-3").unwrap();
@@ -541,6 +559,14 @@ mod tests {
             db.get_kv(&format!("fact_extraction_episode.{}", session.id))
                 .unwrap()
                 .is_none()
+        );
+        assert!(
+            db.get_kv(&format!(
+                "fact_extraction_episode_done.{}.msg-3",
+                session.id
+            ))
+            .unwrap()
+            .is_none()
         );
         assert!(
             db.get_kv(&format!("fact_extraction_pending.{}", session.id))

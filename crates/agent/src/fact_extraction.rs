@@ -6,6 +6,7 @@
 
 use serde::Deserialize;
 
+#[cfg(test)]
 use haven_memory::repositories::facts::FactSourceRef;
 
 /// A fact extracted by the LLM, deserialized from the model's JSON response.
@@ -72,6 +73,7 @@ fn default_confidence() -> f64 {
 
 /// One extracted fact ready for the shared persistence path:
 /// (subject, predicate, object, confidence, tags, source reference, durability).
+#[cfg(test)]
 pub(crate) type FactDraft = (
     String,
     String,

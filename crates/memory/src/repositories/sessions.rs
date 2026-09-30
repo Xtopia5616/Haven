@@ -223,14 +223,15 @@ impl Database {
         conn.execute(
             "DELETE FROM kv_store
              WHERE key = ?1 OR key = ?2 OR key = ?3 OR key = ?4 OR key = ?5
-                OR key LIKE ?6",
+                OR key LIKE ?6 OR key LIKE ?7",
             rusqlite::params![
                 format!("fact_extraction.{}", id),
                 format!("fact_extraction_last_run.{}", id),
                 format!("fact_extraction_episode.{}", id),
                 format!("fact_extraction_pending.{}", id),
                 format!("memory_event_cursor.{}", id),
-                format!("fact_extraction_episode_pending.{}.%", id)
+                format!("fact_extraction_episode_pending.{}.%", id),
+                format!("fact_extraction_episode_done.{}.%", id)
             ],
         )?;
         drop(conn);
@@ -266,6 +267,7 @@ impl Database {
                  WHERE key LIKE 'fact_extraction.%'
                     OR key LIKE 'fact_extraction_last_run.%'
                     OR key LIKE 'fact_extraction_episode.%'
+                    OR key LIKE 'fact_extraction_episode_done.%'
                     OR key LIKE 'fact_extraction_pending.%'
                     OR key LIKE 'fact_extraction_episode_pending.%'
                     OR key GLOB 'memory_event_cursor.*'",
@@ -386,6 +388,7 @@ impl Database {
              WHERE (key LIKE 'fact_extraction.%'
                     OR key LIKE 'fact_extraction_last_run.%'
                     OR key LIKE 'fact_extraction_episode.%'
+                    OR key LIKE 'fact_extraction_episode_done.%'
                     OR key LIKE 'fact_extraction_pending.%'
                     OR key LIKE 'fact_extraction_episode_pending.%'
                     OR key GLOB 'memory_event_cursor.*')
@@ -400,6 +403,8 @@ impl Database {
                                    WHEN key LIKE 'fact_extraction_pending.%'
                                    THEN substr(key, 25)
                                    WHEN key LIKE 'fact_extraction_episode_pending.%'
+                                   THEN value
+                                   WHEN key LIKE 'fact_extraction_episode_done.%'
                                    THEN value
                                    ELSE substr(key, 17)
                                END)",
@@ -768,6 +773,11 @@ mod tests {
         .unwrap();
         db.set_kv(&format!("fact_extraction_episode.{}", first.id), "msg-2")
             .unwrap();
+        db.set_kv(
+            &format!("fact_extraction_episode_done.{}.msg-3", first.id),
+            &first.id,
+        )
+        .unwrap();
         db.set_kv(&format!("fact_extraction_pending.{}", first.id), "1")
             .unwrap();
         db.checkpoint_memory_event_cursor(&first.id, 12).unwrap();
@@ -787,6 +797,11 @@ mod tests {
         );
         assert!(
             db.get_kv(&format!("fact_extraction_episode.{}", first.id))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            db.get_kv(&format!("fact_extraction_episode_done.{}.msg-3", first.id))
                 .unwrap()
                 .is_none()
         );
@@ -855,6 +870,11 @@ mod tests {
         .unwrap();
         db.set_kv(&format!("fact_extraction_episode.{}", first.id), "msg-2")
             .unwrap();
+        db.set_kv(
+            &format!("fact_extraction_episode_done.{}.msg-3", first.id),
+            &first.id,
+        )
+        .unwrap();
         db.set_kv(&format!("fact_extraction_pending.{}", first.id), "1")
             .unwrap();
         db.checkpoint_memory_event_cursor(&first.id, 15).unwrap();
@@ -874,6 +894,11 @@ mod tests {
         );
         assert!(
             db.get_kv(&format!("fact_extraction_episode.{}", first.id))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            db.get_kv(&format!("fact_extraction_episode_done.{}.msg-3", first.id))
                 .unwrap()
                 .is_none()
         );

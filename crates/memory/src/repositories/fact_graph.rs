@@ -461,93 +461,129 @@ impl<'db> FactGraph<'db> {
         writes: &[MemoryFactWrite],
         new_fact_confidence_floor: f64,
     ) -> anyhow::Result<bool> {
+        if writes.is_empty() {
+            return Ok(false);
+        }
+        self.upsert_inferred_batch_with_transaction_hook(
+            writes,
+            new_fact_confidence_floor,
+            |_| Ok(true),
+            |_| Ok(()),
+        )
+    }
+
+    /// Persist one inferred batch and its caller-owned completion state in the
+    /// same transaction. The hooks are deliberately synchronous so they can
+    /// inspect/update rows on the transaction's connection.
+    pub(crate) fn upsert_inferred_batch_with_transaction_hook(
+        &self,
+        writes: &[MemoryFactWrite],
+        new_fact_confidence_floor: f64,
+        should_apply: impl FnOnce(&Connection) -> anyhow::Result<bool>,
+        finalize: impl FnOnce(&Connection) -> anyhow::Result<()>,
+    ) -> anyhow::Result<bool> {
         anyhow::ensure!(
             new_fact_confidence_floor.is_finite()
                 && (0.0..=1.0).contains(&new_fact_confidence_floor),
             "new fact confidence floor must be finite and between 0 and 1"
         );
-        if writes.is_empty() {
-            return Ok(false);
-        }
 
         let conn = self.db.conn();
         in_immediate_transaction(&conn, |conn| {
-            let subjects = writes
-                .iter()
-                .map(|write| write.subject.as_str())
-                .collect::<HashSet<_>>();
-            let placeholders = vec!["?"; subjects.len()].join(",");
-            let mut stmt = conn.prepare(&format!(
-                "SELECT subject, predicate, object FROM facts WHERE subject IN ({placeholders})"
-            ))?;
-            let rows = stmt.query_map(
-                rusqlite::params_from_iter(subjects.iter().copied()),
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                    ))
-                },
-            )?;
-            let mut existing_triples = HashSet::new();
-            let mut existing_pairs = HashSet::new();
-            for row in rows {
-                let (subject, predicate, object) = row?;
-                existing_triples.insert((subject.clone(), predicate.clone(), object));
-                existing_pairs.insert((subject, predicate));
+            if !should_apply(conn)? {
+                return Ok(false);
             }
-            drop(stmt);
-
-            let mut wrote = false;
-            for write in writes {
-                let is_new_fact = !existing_triples.contains(&(
-                    write.subject.clone(),
-                    write.predicate.clone(),
-                    write.object.clone(),
-                ));
-                let is_single_valued_update = write.is_single_valued_predicate
-                    && existing_pairs.contains(&(write.subject.clone(), write.predicate.clone()));
-                if is_new_fact
-                    && !is_single_valued_update
-                    && write.confidence < new_fact_confidence_floor
-                {
-                    tracing::debug!(
-                        "fact inference: dropping low-confidence fact '{}' (confidence {})",
-                        write.predicate,
-                        write.confidence
-                    );
-                    continue;
-                }
-
-                let tags: Vec<&str> = write.tags.iter().map(String::as_str).collect();
-                let outcome = self
-                    .upsert_on_connection(
-                        conn,
-                        &write.subject,
-                        &write.predicate,
-                        &write.object,
-                        "inferred",
-                        write.confidence,
-                        &tags,
-                        write.source_ref.as_ref(),
-                        write.durability,
-                    )
-                    .with_context(|| {
-                        format!(
-                            "failed to persist fact '{} {} {}'",
-                            write.subject, write.predicate, write.object
-                        )
-                    })?;
-                if matches!(
-                    outcome,
-                    UpsertOutcome::Inserted | UpsertOutcome::Reinforced | UpsertOutcome::Corrected
-                ) {
-                    wrote = true;
-                }
-            }
+            let wrote =
+                self.upsert_inferred_batch_on_connection(conn, writes, new_fact_confidence_floor)?;
+            finalize(conn)?;
             Ok(wrote)
         })
+    }
+
+    fn upsert_inferred_batch_on_connection(
+        &self,
+        conn: &Connection,
+        writes: &[MemoryFactWrite],
+        new_fact_confidence_floor: f64,
+    ) -> anyhow::Result<bool> {
+        if writes.is_empty() {
+            return Ok(false);
+        }
+        let subjects = writes
+            .iter()
+            .map(|write| write.subject.as_str())
+            .collect::<HashSet<_>>();
+        let placeholders = vec!["?"; subjects.len()].join(",");
+        let mut stmt = conn.prepare(&format!(
+            "SELECT subject, predicate, object FROM facts WHERE subject IN ({placeholders})"
+        ))?;
+        let rows = stmt.query_map(
+            rusqlite::params_from_iter(subjects.iter().copied()),
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )?;
+        let mut existing_triples = HashSet::new();
+        let mut existing_pairs = HashSet::new();
+        for row in rows {
+            let (subject, predicate, object) = row?;
+            existing_triples.insert((subject.clone(), predicate.clone(), object));
+            existing_pairs.insert((subject, predicate));
+        }
+        drop(stmt);
+
+        let mut wrote = false;
+        for write in writes {
+            let is_new_fact = !existing_triples.contains(&(
+                write.subject.clone(),
+                write.predicate.clone(),
+                write.object.clone(),
+            ));
+            let is_single_valued_update = write.is_single_valued_predicate
+                && existing_pairs.contains(&(write.subject.clone(), write.predicate.clone()));
+            if is_new_fact
+                && !is_single_valued_update
+                && write.confidence < new_fact_confidence_floor
+            {
+                tracing::debug!(
+                    "fact inference: dropping low-confidence fact '{}' (confidence {})",
+                    write.predicate,
+                    write.confidence
+                );
+                continue;
+            }
+
+            let tags: Vec<&str> = write.tags.iter().map(String::as_str).collect();
+            let outcome = self
+                .upsert_on_connection(
+                    conn,
+                    &write.subject,
+                    &write.predicate,
+                    &write.object,
+                    "inferred",
+                    write.confidence,
+                    &tags,
+                    write.source_ref.as_ref(),
+                    write.durability,
+                )
+                .with_context(|| {
+                    format!(
+                        "failed to persist fact '{} {} {}'",
+                        write.subject, write.predicate, write.object
+                    )
+                })?;
+            if matches!(
+                outcome,
+                UpsertOutcome::Inserted | UpsertOutcome::Reinforced | UpsertOutcome::Corrected
+            ) {
+                wrote = true;
+            }
+        }
+        Ok(wrote)
     }
 
     #[allow(clippy::too_many_arguments)]

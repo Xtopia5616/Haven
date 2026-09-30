@@ -23,8 +23,10 @@ use haven_memory::{
 use tokio::sync::{Notify, Semaphore};
 use tokio_util::sync::CancellationToken;
 
+#[cfg(test)]
+use crate::fact_extraction::FactDraft;
 use crate::fact_extraction::{
-    FactDraft, LlmFact, extract_json_array, normalize_predicate, sanitize_fact_field, sanitize_tags,
+    LlmFact, extract_json_array, normalize_predicate, sanitize_fact_field, sanitize_tags,
 };
 use crate::fact_inference::{
     ContradictionDemoteProposal, PredicateMergeProposal, build_extraction_window,
@@ -37,6 +39,7 @@ use crate::memory_inference::RouterMemoryInferencePort;
 use crate::memory_service::MemoryService;
 
 const OUTBOX_RETRY_MAX_SECS: u64 = 30;
+const PERSIST_CONFIDENCE_FLOOR: f64 = 0.55;
 
 /// Background memory worker: fact extraction, maintenance, outbox draining,
 /// and embedding catch-up. Prompt assembly does not depend on this type.
@@ -757,9 +760,9 @@ impl MemoryWorker {
         // Time throttle: at most one LLM extraction per interval per session.
         // kv_store key `fact_extraction_last_run.<session_id>` = RFC3339 of
         // the last run that actually called the model. The cleanup routine
-        // treats the cursor, throttle stamp, and summary cursor as one
-        // session-scoped state family and removes all of them with dead
-        // sessions.
+        // treats the ordinary cursor, throttle stamp, and summary completion
+        // markers as one session-scoped state family and removes them with
+        // dead sessions.
         if !bypass_throttle && self.fact_extraction_min_interval_secs > 0 {
             let last_run = match self
                 .fact_extraction_store
@@ -838,12 +841,17 @@ impl MemoryWorker {
             // kickoff / cross-session) so extraction does not stall forever.
             if let Some(last) = window.cursor_last
                 && let Err(error) = self
-                    .fact_extraction_store
-                    .advance_ordinary_extraction_cursor(session_id, &last)
+                    .fact_store
+                    .commit_ordinary_extraction(
+                        Vec::new(),
+                        PERSIST_CONFIDENCE_FLOOR,
+                        session_id,
+                        &last,
+                    )
                     .await
             {
                 tracing::warn!(
-                    "fact inference cursor advance failed for session {}: {}",
+                    "fact inference cursor commit failed for session {}: {}",
                     session_id,
                     error
                 );
@@ -872,56 +880,46 @@ impl MemoryWorker {
             }
         }
 
-        let extraction_succeeded = match self.infer_facts_with_llm(&window.messages).await {
-            Ok(facts) if !facts.is_empty() => {
-                match self.persist_facts(&facts, &window.messages).await {
-                    Ok(wrote) => {
-                        if wrote {
-                            self.mark_memory_dirty(session_id);
-                        }
-                        true
-                    }
-                    Err(error) => {
+        let wrote = match self.infer_facts_with_llm(&window.messages).await {
+            Ok(facts) => {
+                if facts.is_empty() {
+                    tracing::debug!("LLM found no facts in session {}", session_id);
+                }
+                let writes = self.prepare_fact_writes(&facts, &window.messages);
+                let Some(last_message_id) = window.cursor_last.as_deref() else {
+                    return true;
+                };
+                match self
+                    .fact_store
+                    .commit_ordinary_extraction(
+                        writes,
+                        PERSIST_CONFIDENCE_FLOOR,
+                        session_id,
+                        last_message_id,
+                    )
+                    .await
+                {
+                    Ok(wrote) => wrote,
+                    Err(_) => {
                         tracing::warn!(
-                            "fact persistence failed for session {}, keeping extraction cursor unchanged: {}",
-                            session_id,
-                            error
+                            session_id = %session_id,
+                            fact_count = facts.len(),
+                            "ordinary fact extraction commit failed; keeping extraction cursor unchanged"
                         );
-                        false
+                        return false;
                     }
                 }
             }
-            Ok(_) => {
-                tracing::debug!("LLM found no facts in session {}", session_id);
-                true
-            }
-            Err(e) => {
+            Err(_) => {
                 tracing::warn!(
-                    "LLM fact extraction failed for session {}, keeping extraction cursor unchanged: {}",
-                    session_id,
-                    e
+                    session_id = %session_id,
+                    "LLM fact extraction failed; keeping extraction cursor unchanged"
                 );
-                false
+                return false;
             }
         };
-
-        if !extraction_succeeded {
-            return false;
-        }
-
-        // Advance the cursor so the next run only sees brand-new user messages.
-        if let Some(last) = window.cursor_last
-            && let Err(e) = self
-                .fact_extraction_store
-                .advance_ordinary_extraction_cursor(session_id, &last)
-                .await
-        {
-            tracing::warn!(
-                "fact extraction cursor advance failed for session {}: {}",
-                session_id,
-                e
-            );
-            return false;
+        if wrote {
+            self.mark_memory_dirty(session_id);
         }
         true
     }
@@ -1309,68 +1307,19 @@ impl MemoryWorker {
         total
     }
 
-    /// Persist a batch of LLM-extracted facts. `messages` is the extraction
-    /// window (may include assistant+user pairs); `message_index` resolves to
-    /// a user line when possible for `FactSourceRef` (M1).
-    /// Returns whether persistence completed and whether it changed memory.
-    async fn persist_facts(
+    /// Apply extraction policy and prepare facts for one atomic extraction
+    /// commit. `message_index` resolves to a user line when possible for the
+    /// persisted provenance reference (M1).
+    fn prepare_fact_writes(
         &self,
         facts: &[LlmFact],
         messages: &[haven_memory::repositories::messages::Message],
-    ) -> anyhow::Result<bool> {
-        let batch: Vec<FactDraft> = facts
-            .iter()
-            .map(|f| {
-                let src_ref = f
-                    .message_index
-                    .and_then(|idx| resolve_source_message(messages, idx))
-                    .map(|m| FactSourceRef::from_message(&m.id, &m.content));
-                (
-                    f.subject.clone(),
-                    f.predicate.clone(),
-                    f.object.clone(),
-                    f.confidence,
-                    f.tags.clone(),
-                    src_ref,
-                    f.durability.unwrap_or(0.6),
-                )
-            })
-            .collect();
-        self.persist_fact_batch(batch).await
-    }
-
-    /// Shared persistence policy for a batch of extracted facts: sensitivity
-    /// filter, degenerate rejection, confidence floor for brand-new facts,
-    /// field sanitization / predicate normalization / tag whitelist.
-    /// Maintenance (dedup, sensitive purge, low-confidence flush) is NOT
-    /// inlined here — it runs on the app scheduler via
-    /// `run_memory_maintenance`, so the ReAct hot path never pays for a
-    /// full-table sweep after every extract.
-    async fn persist_fact_batch(&self, facts: Vec<FactDraft>) -> anyhow::Result<bool> {
-        // Hard floor for NEW facts entering long-term memory. The extraction
-        // prompt already asks for durable, generalizable facts; this rejects
-        // whatever slips through with a borderline confidence so one-off
-        // trivia does not linger for a year (the 365-day decay half-life
-        // would otherwise keep a 0.5-confidence fact around for ~450 days).
-        // Re-confirmations of an ALREADY-STORED triple must bypass the floor:
-        // dropping them would skip the reinforcement (mention_count bump,
-        // last_seen_at refresh, confidence boost) and let genuinely
-        // re-confirmed facts keep decaying.
-        const PERSIST_CONFIDENCE_FLOOR: f64 = 0.55;
+    ) -> Vec<MemoryFactWrite> {
         let mut writes = Vec::with_capacity(facts.len());
-        for (
-            subject_raw,
-            predicate_raw,
-            object_raw,
-            confidence_raw,
-            tags_raw,
-            src_ref,
-            durability_raw,
-        ) in facts
-        {
-            let subject = sanitize_fact_field(&subject_raw, self.sanitize_max_chars);
-            let predicate = normalize_predicate(&predicate_raw);
-            let object = sanitize_fact_field(&object_raw, self.sanitize_max_chars);
+        for fact in facts {
+            let subject = sanitize_fact_field(&fact.subject, self.sanitize_max_chars);
+            let predicate = normalize_predicate(&fact.predicate);
+            let object = sanitize_fact_field(&fact.object, self.sanitize_max_chars);
             if predicate.is_empty() || subject.is_empty() || object.is_empty() {
                 tracing::debug!(
                     "fact inference: dropping degenerate fact (empty subject/predicate/object)"
@@ -1378,13 +1327,17 @@ impl MemoryWorker {
                 continue;
             }
             if is_sensitive_predicate(&predicate) || is_sensitive_object(&object) {
-                tracing::debug!("fact inference: dropping sensitive fact '{}'", predicate);
+                tracing::debug!("fact inference: dropping sensitive fact");
                 continue;
             }
             // Clamp to the documented range so an over-eager model
             // (e.g. 1.2) does not skew decay/ordering.
-            let confidence = confidence_raw.clamp(0.5, 1.0);
-            let tags = sanitize_tags(&tags_raw);
+            let confidence = fact.confidence.clamp(0.5, 1.0);
+            let tags = sanitize_tags(&fact.tags);
+            let source_ref = fact
+                .message_index
+                .and_then(|idx| resolve_source_message(messages, idx))
+                .map(|message| FactSourceRef::from_message(&message.id, &message.content));
             writes.push(MemoryFactWrite {
                 subject,
                 is_single_valued_predicate: is_single_valued_predicate(&predicate),
@@ -1392,14 +1345,42 @@ impl MemoryWorker {
                 object,
                 confidence,
                 tags,
-                source_ref: src_ref,
-                durability: durability_raw.clamp(0.1, 1.0),
+                source_ref,
+                durability: fact.durability.unwrap_or(0.6).clamp(0.1, 1.0),
+            });
+        }
+        writes
+    }
+
+    #[cfg(test)]
+    async fn persist_fact_batch(&self, facts: Vec<FactDraft>) -> anyhow::Result<bool> {
+        let mut writes = Vec::with_capacity(facts.len());
+        for (subject, predicate, object, confidence, tags, source_ref, durability) in facts {
+            let subject = sanitize_fact_field(&subject, self.sanitize_max_chars);
+            let predicate = normalize_predicate(&predicate);
+            let object = sanitize_fact_field(&object, self.sanitize_max_chars);
+            if subject.is_empty()
+                || predicate.is_empty()
+                || object.is_empty()
+                || is_sensitive_predicate(&predicate)
+                || is_sensitive_object(&object)
+            {
+                continue;
+            }
+            writes.push(MemoryFactWrite {
+                subject,
+                is_single_valued_predicate: is_single_valued_predicate(&predicate),
+                predicate,
+                object,
+                confidence: confidence.clamp(0.5, 1.0),
+                tags: sanitize_tags(&tags),
+                source_ref,
+                durability: durability.clamp(0.1, 1.0),
             });
         }
         self.fact_store
             .persist_inferred_batch(writes, PERSIST_CONFIDENCE_FLOOR)
             .await
-            .map_err(|error| anyhow::anyhow!("fact batch persistence failed: {error}"))
     }
 
     /// Send the conversation transcript to the SmallModel and ask it to
@@ -1432,7 +1413,7 @@ impl MemoryWorker {
             .inference
             .fast_chat(FACT_EXTRACTION_SYSTEM_PROMPT, &user_content)
             .await
-            .map_err(|e| anyhow::anyhow!("small model chat failed: {}", e))?;
+            .map_err(|_| anyhow::anyhow!("small model chat failed"))?;
 
         if response.trim().is_empty() {
             tracing::debug!("LLM fact extraction: empty model response, treating as no facts");
@@ -1440,10 +1421,8 @@ impl MemoryWorker {
         }
 
         let json_str = extract_json_array(&response);
-        let facts: Vec<LlmFact> = serde_json::from_str(&json_str).map_err(|e| {
-            let preview: String = response.chars().take(200).collect();
-            anyhow::anyhow!("failed to parse LLM fact JSON: {} —raw: {}", e, preview)
-        })?;
+        let facts: Vec<LlmFact> = serde_json::from_str(&json_str)
+            .map_err(|_| anyhow::anyhow!("failed to parse LLM fact JSON"))?;
 
         tracing::info!("LLM fact extraction: {} facts extracted", facts.len());
         Ok(facts)
@@ -1545,10 +1524,9 @@ impl MemoryWorker {
     }
 
     /// Light extraction from a CompactSummary episode (M3). Respects the
-    /// shared extraction time throttle and an episode cursor
-    /// (`fact_extraction_episode.{session_id}`); never touches the user
-    /// message cursor. Throttle and transient failures return without advancing
-    /// the episode cursor so the caller can retry.
+    /// shared extraction time throttle and a per-episode completion marker;
+    /// never touches the user-message cursor. Facts and the completion marker
+    /// commit together so an outbox-ack retry cannot reinforce them again.
     pub async fn infer_facts_from_summary(
         &self,
         session_id: &str,
@@ -1567,22 +1545,23 @@ impl MemoryWorker {
             );
             return SummaryExtractOutcome::Done;
         }
-        let last_episode = match self
-            .fact_extraction_store
-            .summary_extraction_cursor(session_id)
+        let already_completed = match self
+            .fact_store
+            .summary_extraction_completed(session_id, episode_id)
             .await
         {
             Ok(value) => value,
             Err(error) => {
                 tracing::warn!(
-                    "summary fact extraction cursor read failed for session {}: {}",
+                    "summary fact extraction completion read failed for session {} episode {}: {}",
                     session_id,
+                    episode_id,
                     error
                 );
                 return SummaryExtractOutcome::Retryable { wait_secs: 1 };
             }
         };
-        if last_episode.as_deref() == Some(episode_id) {
+        if already_completed {
             return SummaryExtractOutcome::Done;
         }
         // Share the wall-clock throttle with normal extraction so compaction
@@ -1646,56 +1625,48 @@ impl MemoryWorker {
             ingress_seq: 0,
         };
 
-        match self
+        let writes = match self
             .infer_facts_with_llm(std::slice::from_ref(&synthetic))
             .await
         {
-            Ok(facts) if !facts.is_empty() => {
-                let wrote = match self
-                    .persist_facts(&facts, std::slice::from_ref(&synthetic))
-                    .await
-                {
-                    Ok(wrote) => wrote,
-                    Err(error) => {
-                        tracing::warn!(
-                            "summary fact persistence failed for session {}, keeping episode cursor unchanged: {}",
-                            session_id,
-                            error
-                        );
-                        return SummaryExtractOutcome::Retryable { wait_secs: 1 };
-                    }
-                };
+            Ok(facts) => {
+                if facts.is_empty() {
+                    tracing::debug!(
+                        "LLM found no facts in compaction summary for session {}",
+                        session_id
+                    );
+                }
+                self.prepare_fact_writes(&facts, std::slice::from_ref(&synthetic))
+            }
+            Err(_) => {
+                tracing::warn!(
+                    session_id = %session_id,
+                    episode_id = %episode_id,
+                    "LLM summary fact extraction failed; leaving episode retryable"
+                );
+                return SummaryExtractOutcome::Retryable { wait_secs: 1 };
+            }
+        };
+
+        match self
+            .fact_store
+            .commit_summary_extraction(writes, PERSIST_CONFIDENCE_FLOOR, session_id, episode_id)
+            .await
+        {
+            Ok(wrote) => {
                 if wrote {
                     self.mark_memory_dirty(session_id);
                 }
             }
-            Ok(_) => {
-                tracing::debug!(
-                    "LLM found no facts in compaction summary for session {}",
-                    session_id
-                );
-            }
-            Err(e) => {
+            Err(error) => {
                 tracing::warn!(
-                    "LLM summary fact extraction failed for session {}, keeping episode cursor unchanged: {}",
-                    session_id,
-                    e
+                    session_id = %session_id,
+                    episode_id = %episode_id,
+                    error = %error,
+                    "summary fact extraction commit failed; leaving episode retryable"
                 );
                 return SummaryExtractOutcome::Retryable { wait_secs: 1 };
             }
-        }
-
-        if let Err(e) = self
-            .fact_extraction_store
-            .advance_summary_extraction_cursor(session_id, episode_id)
-            .await
-        {
-            tracing::warn!(
-                "summary fact extraction cursor advance failed for session {}: {}",
-                session_id,
-                e
-            );
-            return SummaryExtractOutcome::Retryable { wait_secs: 1 };
         }
         SummaryExtractOutcome::Done
     }
@@ -2954,6 +2925,8 @@ mod tests {
     async fn failed_summary_marker_ack_keeps_marker_and_requeues_live_job() {
         let db = temp_db();
         let session = db.create_session("outbox summary retry").unwrap();
+        db.insert_fact("user", "likes", "Rust", "inferred", 0.7, &[])
+            .unwrap();
         let episode_id = "msg-summary-ack-retry";
         db.add_episode_with_pending_extraction(
             &session.id,
@@ -2965,22 +2938,39 @@ mod tests {
         db.conn()
             .execute_batch(
                 "CREATE TABLE marker_ack_attempts (kind TEXT NOT NULL);
-                 CREATE TRIGGER reject_summary_marker_ack
+                 CREATE TRIGGER reject_first_summary_marker_ack
                  BEFORE DELETE ON kv_store
                  WHEN old.key LIKE 'fact_extraction_episode_pending.%'
                  BEGIN
                     INSERT INTO marker_ack_attempts (kind) VALUES ('summary');
-                    SELECT RAISE(FAIL, 'summary marker acknowledgement unavailable');
+                    SELECT RAISE(FAIL, 'summary marker acknowledgement unavailable')
+                    WHERE (SELECT COUNT(*) FROM marker_ack_attempts WHERE kind = 'summary') = 1;
                  END;",
             )
             .unwrap();
-        let worker = Arc::new(make_engine(db.clone()));
+        let inference = Arc::new(FixedMemoryInference {
+            fast_chat_configured: true,
+            response:
+                r#"[{"subject":"user","predicate":"likes","object":"Rust","confidence":0.9}]"#
+                    .into(),
+            calls: AtomicUsize::new(0),
+        });
+        let memory = Arc::new(MemoryService::new(db.clone(), None, 64));
+        let worker = Arc::new(MemoryWorker::new_with_inference(
+            memory.clone(),
+            memory.memory_fact_store(),
+            inference.clone(),
+            4_000,
+            64,
+            256,
+            0,
+        ));
 
         worker
             .restore_pending_outbox(&CancellationToken::new())
             .await
             .unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
                 let attempts: i64 = db
                     .conn()
@@ -2990,9 +2980,11 @@ mod tests {
                         |row| row.get(0),
                     )
                     .unwrap();
-                if attempts > 0
-                    && worker.pending_summary_outbox_value_for_test(episode_id)
-                        == Some(session.id.clone())
+                if attempts >= 2
+                    && db.pending_summary_extractions().unwrap().is_empty()
+                    && worker
+                        .pending_summary_outbox_value_for_test(episode_id)
+                        .is_none()
                 {
                     break;
                 }
@@ -3000,12 +2992,12 @@ mod tests {
             }
         })
         .await
-        .expect("failed acknowledgement should requeue the summary job");
+        .expect("the summary job should retry acknowledgement after inference commit");
 
-        assert_eq!(
-            db.pending_summary_extractions().unwrap(),
-            vec![(session.id.clone(), episode_id.to_owned())]
-        );
+        assert_eq!(inference.calls.load(Ordering::Relaxed), 1);
+        let facts = db.get_facts("user").unwrap();
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].mention_count, 1);
         worker.shutdown();
     }
 
@@ -3116,6 +3108,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ordinary_fact_writes_roll_back_when_cursor_commit_fails() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let session = db.create_session("ordinary atomic extraction").unwrap();
+        db.insert_fact("user", "likes", "Rust", "inferred", 0.7, &[])
+            .unwrap();
+        let message = db
+            .add_message(&session.id, "user", "I prefer Rust.", Some("text"), None)
+            .unwrap();
+        let inference = Arc::new(FixedMemoryInference {
+            fast_chat_configured: true,
+            response:
+                r#"[{"subject":"user","predicate":"likes","object":"Rust","confidence":0.9}]"#
+                    .into(),
+            calls: AtomicUsize::new(0),
+        });
+        let worker = make_engine_with_inference(db.clone(), inference.clone());
+        db.conn()
+            .execute_batch(&format!(
+                "CREATE TRIGGER fail_ordinary_cursor
+                 BEFORE INSERT ON kv_store
+                 WHEN NEW.key = 'fact_extraction.{}'
+                 BEGIN SELECT RAISE(ABORT, 'injected ordinary cursor failure'); END;",
+                session.id
+            ))
+            .unwrap();
+
+        assert!(!worker.infer_facts(&session.id).await);
+        assert_eq!(db.get_facts("user").unwrap()[0].mention_count, 0);
+        assert_eq!(
+            db.get_kv(&format!("fact_extraction.{}", session.id))
+                .unwrap(),
+            None
+        );
+
+        db.conn()
+            .execute_batch("DROP TRIGGER fail_ordinary_cursor")
+            .unwrap();
+        assert!(worker.infer_facts(&session.id).await);
+        assert_eq!(
+            db.get_kv(&format!("fact_extraction.{}", session.id))
+                .unwrap()
+                .as_deref(),
+            Some(message.id.as_str())
+        );
+        let facts = db.get_facts("user").unwrap();
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].mention_count, 1);
+        assert_eq!(inference.calls.load(Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test]
     async fn prepared_fact_batch_keeps_agent_confidence_policy_and_source_reference() {
         let db = Arc::new(Database::open_in_memory().unwrap());
         db.insert_fact("user", "likes", "Rust", "inferred", 0.65, &[])
@@ -3210,12 +3253,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn summary_extraction_skips_an_episode_already_in_its_cursor() {
+    async fn summary_extraction_skips_an_episode_with_its_completion_marker() {
         let db = Arc::new(Database::open_in_memory().unwrap());
-        let session = db.create_session("summary cursor duplicate").unwrap();
+        let session = db.create_session("summary completion duplicate").unwrap();
         db.set_kv(
-            &format!("fact_extraction_episode.{}", session.id),
-            "msg-summary-already-processed",
+            &format!(
+                "fact_extraction_episode_done.{}.msg-summary-already-processed",
+                session.id
+            ),
+            &session.id,
         )
         .unwrap();
         let inference = Arc::new(FixedMemoryInference {
@@ -3238,14 +3284,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn summary_cursor_advances_only_after_fact_persistence_succeeds() {
+    async fn summary_facts_and_completion_marker_commit_atomically() {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let session = db.create_session("summary persistence retry").unwrap();
+        db.insert_fact("user", "likes", "Rust", "inferred", 0.7, &[])
+            .unwrap();
         db.conn()
             .execute_batch(
-                "CREATE TRIGGER fail_summary_fact_insert
-                 BEFORE INSERT ON facts
-                 BEGIN SELECT RAISE(ABORT, 'injected summary fact write failure'); END;",
+                "CREATE TRIGGER fail_summary_completion_marker
+                 BEFORE INSERT ON kv_store
+                 WHEN NEW.key LIKE 'fact_extraction_episode_done.%'
+                 BEGIN SELECT RAISE(ABORT, 'injected summary completion marker failure'); END;",
             )
             .unwrap();
         let inference = Arc::new(FixedMemoryInference {
@@ -3266,15 +3315,18 @@ mod tests {
             SummaryExtractOutcome::Retryable { .. }
         ));
         assert_eq!(
-            db.get_kv(&format!("fact_extraction_episode.{}", session.id))
-                .unwrap(),
+            db.get_kv(&format!(
+                "fact_extraction_episode_done.{}.{}",
+                session.id, episode_id
+            ))
+            .unwrap(),
             None,
-            "a failed fact transaction must leave the summary cursor behind"
+            "a failed fact transaction must leave the episode retryable"
         );
-        assert!(db.get_facts("user").unwrap().is_empty());
+        assert_eq!(db.get_facts("user").unwrap()[0].mention_count, 0);
 
         db.conn()
-            .execute_batch("DROP TRIGGER fail_summary_fact_insert")
+            .execute_batch("DROP TRIGGER fail_summary_completion_marker")
             .unwrap();
         assert_eq!(
             worker
@@ -3283,10 +3335,13 @@ mod tests {
             SummaryExtractOutcome::Done
         );
         assert_eq!(
-            db.get_kv(&format!("fact_extraction_episode.{}", session.id))
-                .unwrap()
-                .as_deref(),
-            Some(episode_id)
+            db.get_kv(&format!(
+                "fact_extraction_episode_done.{}.{}",
+                session.id, episode_id
+            ))
+            .unwrap()
+            .as_deref(),
+            Some(session.id.as_str())
         );
         assert!(
             db.get_facts("user")
@@ -3294,6 +3349,53 @@ mod tests {
                 .iter()
                 .any(|fact| fact.predicate == "likes" && fact.object == "Rust")
         );
+        assert_eq!(inference.calls.load(Ordering::Relaxed), 2);
+
+        assert_eq!(
+            worker
+                .infer_facts_from_summary(&session.id, episode_id, summary)
+                .await,
+            SummaryExtractOutcome::Done
+        );
+        assert_eq!(inference.calls.load(Ordering::Relaxed), 2);
+        assert_eq!(db.get_facts("user").unwrap()[0].mention_count, 1);
+    }
+
+    #[tokio::test]
+    async fn older_summary_retry_after_newer_episode_does_not_reinforce_twice() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let session = db.create_session("summary out of order retry").unwrap();
+        let inference = Arc::new(FixedMemoryInference {
+            fast_chat_configured: true,
+            response:
+                r#"[{"subject":"user","predicate":"likes","object":"Rust","confidence":0.9}]"#
+                    .into(),
+            calls: AtomicUsize::new(0),
+        });
+        let worker = make_engine_with_inference(db.clone(), inference.clone());
+        let summary = "The user prefers Rust for personal projects and tooling.";
+
+        assert_eq!(
+            worker
+                .infer_facts_from_summary(&session.id, "msg-newer-episode", summary)
+                .await,
+            SummaryExtractOutcome::Done
+        );
+        assert_eq!(
+            worker
+                .infer_facts_from_summary(&session.id, "msg-older-episode", summary)
+                .await,
+            SummaryExtractOutcome::Done
+        );
+        assert_eq!(db.get_facts("user").unwrap()[0].mention_count, 1);
+
+        assert_eq!(
+            worker
+                .infer_facts_from_summary(&session.id, "msg-older-episode", summary)
+                .await,
+            SummaryExtractOutcome::Done
+        );
+        assert_eq!(db.get_facts("user").unwrap()[0].mention_count, 1);
         assert_eq!(inference.calls.load(Ordering::Relaxed), 2);
     }
 
@@ -3326,8 +3428,11 @@ mod tests {
         ));
         assert_eq!(inference.calls.load(Ordering::Relaxed), 0);
         assert_eq!(
-            db.get_kv(&format!("fact_extraction_episode.{}", session.id))
-                .unwrap(),
+            db.get_kv(&format!(
+                "fact_extraction_episode_done.{}.{}",
+                session.id, episode_id
+            ))
+            .unwrap(),
             None
         );
 
@@ -3342,10 +3447,13 @@ mod tests {
         );
         assert_eq!(inference.calls.load(Ordering::Relaxed), 1);
         assert_eq!(
-            db.get_kv(&format!("fact_extraction_episode.{}", session.id))
-                .unwrap()
-                .as_deref(),
-            Some(episode_id)
+            db.get_kv(&format!(
+                "fact_extraction_episode_done.{}.{}",
+                session.id, episode_id
+            ))
+            .unwrap()
+            .as_deref(),
+            Some(session.id.as_str())
         );
     }
 

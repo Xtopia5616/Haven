@@ -397,3 +397,4 @@
 - [0411：限制 Provider 流帧与事件队列](0411-bounded-provider-stream-framing.md)
 - [0412：Provider 流终止事件与重试边界](0412-provider-stream-terminal-and-retry-boundary.md)
 - [0413：Thought 原子投影与 Compaction 步骤恢复](0413-session-transcript-projection-recovery.md)
+- [0415：事实抽取结果与完成状态原子提交](0415-atomic-fact-extraction-completion.md)

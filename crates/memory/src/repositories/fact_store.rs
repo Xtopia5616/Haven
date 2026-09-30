@@ -2,6 +2,8 @@ use crate::db::Database;
 use crate::recall::{MemoryQuery, MemoryRecall, MemoryRetriever, normalize_memory_query};
 use crate::repositories::fact_graph::FactGraph;
 use crate::repositories::facts::{Fact, FactSourceRef};
+use chrono::Utc;
+use rusqlite::{Connection, OptionalExtension};
 use std::sync::Arc;
 
 /// A fact already parsed, normalized, and sanitized by its owning caller,
@@ -21,7 +23,7 @@ pub struct MemoryFactWrite {
     pub is_single_valued_predicate: bool,
 }
 
-/// Async application-facing boundary for user-managed memory facts.
+/// Async application-facing boundary for durable memory-fact operations.
 ///
 /// This keeps SQLite blocking-pool scheduling and fact visibility policy in
 /// `haven-memory`, while leaving IPC input validation with the app adapter.
@@ -49,6 +51,93 @@ impl MemoryFactStore {
             .run_blocking(move |db| {
                 db.with_fact_write(|| {
                     FactGraph::new(db).upsert_inferred_batch(&writes, new_fact_confidence_floor)
+                })
+            })
+            .await
+    }
+
+    /// Commit inferred facts and the ordinary extraction cursor atomically.
+    /// A failed cursor write rolls the fact mutations back with it, so a retry
+    /// cannot reinforce the same observation twice.
+    pub async fn commit_ordinary_extraction(
+        &self,
+        writes: Vec<MemoryFactWrite>,
+        new_fact_confidence_floor: f64,
+        session_id: &str,
+        last_message_id: &str,
+    ) -> anyhow::Result<bool> {
+        anyhow::ensure!(!session_id.trim().is_empty(), "session id is required");
+        anyhow::ensure!(!last_message_id.trim().is_empty(), "message id is required");
+        let session_id = session_id.to_owned();
+        let last_message_id = last_message_id.to_owned();
+        self.db
+            .run_blocking(move |db| {
+                let cursor_key = format!("fact_extraction.{session_id}");
+                db.with_fact_write(|| {
+                    FactGraph::new(db).upsert_inferred_batch_with_transaction_hook(
+                        &writes,
+                        new_fact_confidence_floor,
+                        |_| Ok(true),
+                        |conn| set_kv_on_connection(conn, &cursor_key, &last_message_id),
+                    )
+                })
+            })
+            .await
+    }
+
+    /// Read the per-episode completion ledger used to avoid repeating summary
+    /// inference when durable outbox acknowledgement fails.
+    pub async fn summary_extraction_completed(
+        &self,
+        session_id: &str,
+        episode_id: &str,
+    ) -> anyhow::Result<bool> {
+        let key = summary_extraction_done_key(session_id, episode_id)?;
+        self.db
+            .run_blocking(move |db| {
+                let conn = db.conn();
+                Ok(conn
+                    .query_row(
+                        "SELECT 1 FROM kv_store WHERE key = ?1",
+                        rusqlite::params![key],
+                        |row| row.get::<_, i32>(0),
+                    )
+                    .optional()?
+                    .is_some())
+            })
+            .await
+    }
+
+    /// Commit one summary's facts and its durable completion marker together.
+    /// The marker is keyed by session and episode, so out-of-order retries of
+    /// older episodes remain independently idempotent.
+    pub async fn commit_summary_extraction(
+        &self,
+        writes: Vec<MemoryFactWrite>,
+        new_fact_confidence_floor: f64,
+        session_id: &str,
+        episode_id: &str,
+    ) -> anyhow::Result<bool> {
+        let marker_key = summary_extraction_done_key(session_id, episode_id)?;
+        let session_id = session_id.to_owned();
+        self.db
+            .run_blocking(move |db| {
+                db.with_fact_write(|| {
+                    FactGraph::new(db).upsert_inferred_batch_with_transaction_hook(
+                        &writes,
+                        new_fact_confidence_floor,
+                        |conn| {
+                            Ok(conn
+                                .query_row(
+                                    "SELECT 1 FROM kv_store WHERE key = ?1",
+                                    rusqlite::params![marker_key],
+                                    |row| row.get::<_, i32>(0),
+                                )
+                                .optional()?
+                                .is_none())
+                        },
+                        |conn| set_kv_on_connection(conn, &marker_key, &session_id),
+                    )
                 })
             })
             .await
@@ -175,6 +264,25 @@ impl MemoryFactStore {
             .run_blocking(move |db| MemoryRetriever::new(db).retrieve(&query, None))
             .await
     }
+}
+
+fn summary_extraction_done_key(session_id: &str, episode_id: &str) -> anyhow::Result<String> {
+    anyhow::ensure!(!session_id.trim().is_empty(), "session id is required");
+    anyhow::ensure!(!episode_id.trim().is_empty(), "episode id is required");
+    Ok(format!(
+        "fact_extraction_episode_done.{session_id}.{episode_id}"
+    ))
+}
+
+fn set_kv_on_connection(conn: &Connection, key: &str, value: &str) -> anyhow::Result<()> {
+    let now = Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT INTO kv_store (key, value, updated_at)
+         VALUES (?1, ?2, ?3)
+         ON CONFLICT(key) DO UPDATE SET value = ?2, updated_at = ?3",
+        rusqlite::params![key, value, now],
+    )?;
+    Ok(())
 }
 
 #[cfg(test)]
