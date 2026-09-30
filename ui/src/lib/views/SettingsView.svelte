@@ -1084,7 +1084,7 @@
 				ariaLabel="设置分类"
 				idPrefix="settings-tab"
 				panelId="settings-panel"
-				className="settings-tabs"
+				className="workspace-secondary-tabs workspace-secondary-tabs--sidebar settings-tabs"
 			/>
 		</aside>
 		<div class="settings-main">
@@ -1282,18 +1282,6 @@
 	.settings-main {
 		min-width: 0;
 	}
-	:global(.settings-tabs) {
-		margin-bottom: var(--md-sys-space-2xl);
-	}
-	:global(.settings-tabs .md-tab) {
-		display: grid;
-		justify-items: start;
-		gap: var(--md-sys-space-xs);
-		min-width: 132px;
-		min-height: var(--md-comp-button-small-height);
-		padding: var(--md-sys-space-sm) var(--md-sys-space-lg);
-		text-align: left;
-	}
 	:global(.settings-tabs .md-tab small) {
 		max-width: 180px;
 		color: var(--md-sys-color-on-surface-variant);
@@ -1421,19 +1409,7 @@
 			top: var(--md-sys-space-xl);
 			min-width: 0;
 		}
-		:global(.settings-tabs) {
-			flex-direction: column;
-			align-items: stretch;
-			height: auto;
-			gap: var(--md-sys-space-xs);
-			margin: 0;
-			padding: var(--md-sys-space-sm) var(--md-sys-space-md) var(--md-sys-space-sm) 0;
-			border-right: 1px solid var(--md-sys-color-outline-variant);
-			border-bottom: 0;
-		}
 		:global(.settings-tabs .md-tab) {
-			flex: 0 0 auto;
-			width: 100%;
 			min-width: 0;
 		}
 		:global(.settings-tabs .md-tab small) {

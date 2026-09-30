@@ -390,7 +390,7 @@
 				idPrefix="tools-tab"
 				panelIdPrefix=""
 				showIcons
-				className="workspace-secondary-tabs tools-resource-tabs"
+				className="workspace-secondary-tabs workspace-secondary-tabs--sidebar tools-resource-tabs"
 			/>
 		</nav>
 
@@ -725,52 +725,6 @@
 			color: var(--md-sys-color-on-surface-variant);
 			font-size: var(--md-sys-typescale-label-medium-size);
 			line-height: var(--md-sys-typescale-label-medium-line-height);
-		}
-		:global(.tools-resource-tabs) {
-			align-items: stretch;
-			flex-direction: column;
-			height: auto;
-			gap: var(--md-sys-space-2xs);
-			padding: var(--md-sys-space-xs);
-			border: 1px solid var(--md-sys-color-outline-variant);
-			border-radius: var(--md-sys-shape-large);
-			background: var(--md-sys-color-surface-container-low);
-		}
-		:global(.tools-resource-tabs .md-tab) {
-			flex: 0 0 auto;
-			justify-content: flex-start;
-			width: 100%;
-			min-height: var(--md-comp-button-touch-height);
-			padding: 0 var(--md-sys-space-lg) 0 var(--md-sys-space-2xl);
-			text-align: left;
-		}
-		:global(.tools-resource-tabs .md-tab.active) {
-			background: var(--md-sys-color-secondary-container);
-			color: var(--md-sys-color-on-secondary-container);
-		}
-		:global(.tools-resource-tabs .md-tab.active::before) {
-			left: var(--md-sys-space-sm);
-			top: 50%;
-			bottom: auto;
-			width: var(--md-comp-tab-indicator-height);
-			max-width: var(--md-comp-tab-indicator-height);
-			height: var(--md-comp-tab-indicator-min-width);
-			transform: translateY(-50%);
-			animation: none;
-		}
-		:global(.tools-resource-tabs .md-tab.active::after) {
-			background: var(--md-sys-color-on-secondary-container);
-		}
-		:global(.tools-resource-tabs .md-tab:not(.active):hover) {
-			background: var(--md-sys-color-surface-container-high);
-		}
-		:global(.tools-resource-tabs .md-tab:not(.active)::before) {
-			display: none;
-		}
-		:global(.tools-resource-tabs .md-tab__icon) {
-			display: inline-flex;
-			width: var(--md-sys-icon-size);
-			height: var(--md-sys-icon-size);
 		}
 		.resource-list--builtin {
 			grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));

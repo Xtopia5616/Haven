@@ -1143,10 +1143,9 @@ select.md-select {
 }
 
 /* ---------- Shared tab row ----------
-   First- and second-level tabs use one geometry: a 56dp row with padded,
-   rounded tab items and a short centered indicator. Color follows the
-   second-level treatment: inactive labels use `on-surface-variant`, while
-   the active label and indicator use `primary` without a filled background.
+   First- and second-level tabs share rounded items, a selected container,
+   and a short indicator. Vertical tab lists move the indicator to the leading
+   edge while keeping the same selected treatment.
 */
 .md-tabs {
 	display: flex;
@@ -1209,8 +1208,8 @@ select.md-select {
 	opacity: var(--md-sys-state-focus-opacity);
 }
 .md-tab.active {
-	color: var(--md-sys-color-primary);
-	background: transparent;
+	color: var(--md-sys-color-on-secondary-container);
+	background: var(--md-sys-color-secondary-container);
 }
 .md-tab.active::before {
 	/* Short centered active indicator shared by both tab levels. */
@@ -1249,6 +1248,43 @@ select.md-select {
 .md-tab__icon svg {
 	width: 100%;
 	height: 100%;
+}
+
+@media screen and (min-width: 1280px) and (orientation: landscape) {
+	.md-tabs.workspace-secondary-tabs--sidebar {
+		align-items: stretch;
+		flex-direction: column;
+		height: auto;
+		gap: var(--md-sys-space-2xs);
+		margin-bottom: 0;
+		padding: var(--md-sys-space-xs);
+		border: 1px solid var(--md-sys-color-outline-variant);
+		border-radius: var(--md-sys-shape-large);
+		background: var(--md-sys-color-surface-container-low);
+	}
+	.md-tabs.workspace-secondary-tabs--sidebar .md-tab {
+		flex: 0 0 auto;
+		justify-content: flex-start;
+		width: 100%;
+		min-height: var(--md-comp-button-touch-height);
+		padding: 0 var(--md-sys-space-lg) 0 var(--md-sys-space-2xl);
+		text-align: left;
+	}
+	.md-tabs.workspace-secondary-tabs--sidebar .md-tab.active::before {
+		left: var(--md-sys-space-sm);
+		top: 50%;
+		bottom: auto;
+		width: var(--md-comp-tab-indicator-height);
+		max-width: var(--md-comp-tab-indicator-height);
+		height: var(--md-comp-tab-indicator-min-width);
+		transform: translateY(-50%);
+		animation: none;
+	}
+	.md-tabs.workspace-secondary-tabs--sidebar .md-tab__icon {
+		display: inline-flex;
+		width: var(--md-sys-icon-size);
+		height: var(--md-sys-icon-size);
+	}
 }
 
 @media (max-width: 640px) {

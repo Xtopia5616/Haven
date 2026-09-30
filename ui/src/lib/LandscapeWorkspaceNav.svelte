@@ -35,8 +35,6 @@
 				<span class="workspace-link__label">{tab.label}</span>
 				{#if tab.hint}<span class="workspace-link__hint">{tab.hint}</span>{/if}
 			</span>
-			{#if activeTab === tab.id}<span class="workspace-link__current" aria-hidden="true"
-				></span>{/if}
 		</button>
 	{/each}
 </nav>
@@ -81,17 +79,20 @@
 		outline-offset: 2px;
 	}
 	.workspace-link.active {
-		border-color: color-mix(
-			in srgb,
-			var(--md-sys-color-primary) 18%,
-			var(--md-sys-color-outline-variant)
-		);
-		background: color-mix(
-			in srgb,
-			var(--md-sys-color-primary-container) 74%,
-			var(--md-sys-color-surface-container-low) 26%
-		);
-		color: var(--md-sys-color-on-primary-container);
+		border-color: transparent;
+		background: var(--md-sys-color-secondary-container);
+		color: var(--md-sys-color-on-secondary-container);
+	}
+	.workspace-link.active::before {
+		content: '';
+		position: absolute;
+		left: var(--md-sys-space-xs);
+		top: 50%;
+		width: var(--md-comp-tab-indicator-height);
+		height: var(--md-comp-tab-indicator-min-width);
+		border-radius: var(--md-sys-shape-full);
+		background: var(--md-sys-color-primary);
+		transform: translateY(-50%);
 	}
 	.workspace-link__icon {
 		display: grid;
@@ -103,7 +104,7 @@
 		color: inherit;
 	}
 	.workspace-link.active .workspace-link__icon {
-		background: color-mix(in srgb, var(--md-sys-color-primary) 12%, transparent);
+		background: transparent;
 		color: var(--md-sys-color-primary);
 	}
 	.workspace-link__copy {
@@ -125,12 +126,5 @@
 		line-height: var(--md-sys-typescale-label-small-line-height);
 		text-overflow: ellipsis;
 		white-space: nowrap;
-	}
-	.workspace-link__current {
-		width: 5px;
-		height: 5px;
-		flex: 0 0 5px;
-		border-radius: var(--md-sys-shape-full);
-		background: var(--md-sys-color-primary);
 	}
 </style>

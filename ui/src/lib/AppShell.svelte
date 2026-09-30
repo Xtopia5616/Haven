@@ -59,6 +59,29 @@
 
 </script>
 
+{#snippet themeControl()}
+	<MaterialIconButton
+		className="rail-theme-button"
+		size="toolbar"
+		variant="ghost"
+		onclick={() => onToggleTheme?.()}
+		label="切换主题"
+		title={theme === 'dark' ? '切换到亮色模式' : '切换到暗色模式'}
+	>
+		{#snippet children()}
+			{#if theme === 'dark'}
+				<Icon name="sun" size={18} className="theme-icon" />
+			{:else}
+				<Icon name="moon" size={18} className="theme-icon" />
+			{/if}
+		{/snippet}
+	</MaterialIconButton>
+{/snippet}
+{#snippet shellControls()}
+	{@render status?.()}
+	{@render themeControl()}
+{/snippet}
+
 <div class="app-shell">
 	<header class="titlebar md-toolbar">
 		<div class="titlebar-left">
@@ -75,26 +98,10 @@
 			</MaterialButton>
 		</div>
 		<div class="titlebar-heading" aria-live="polite">
-			<span>HAVEN · WORKSPACE</span>
 			<strong>{tabs.find((tab) => tab.id === activeTab)?.label || '工作区'}</strong>
 		</div>
 		<div class="titlebar-right">
-			{@render status?.()}
-			<MaterialIconButton
-				size="toolbar"
-				variant="ghost"
-				onclick={() => onToggleTheme?.()}
-				label="切换主题"
-				title={theme === 'dark' ? '切换到亮色模式' : '切换到暗色模式'}
-			>
-				{#snippet children()}
-					{#if theme === 'dark'}
-						<Icon name="sun" size={18} className="theme-icon" />
-					{:else}
-						<Icon name="moon" size={18} className="theme-icon" />
-					{/if}
-				{/snippet}
-			</MaterialIconButton>
+			{@render shellControls()}
 		</div>
 	</header>
 
@@ -111,10 +118,7 @@
 		<div class="rail-section-label">工作区</div>
 		<LandscapeWorkspaceNav {tabs} {activeTab} {onNavigate} />
 		<div class="rail-footer">
-			<span class="rail-footer__mark" aria-hidden="true"
-				><Icon name="sparkles" size={16} /></span
-			>
-			<span><strong>Haven</strong><small>语音工作台</small></span>
+			{@render shellControls()}
 		</div>
 	</aside>
 
@@ -175,13 +179,6 @@
 		gap: 2px;
 		padding-left: var(--md-sys-space-lg);
 		-webkit-app-region: no-drag;
-	}
-	.titlebar-heading > span {
-		color: var(--md-sys-color-on-surface-variant);
-		font-size: var(--md-sys-typescale-label-small-size);
-		font-weight: 700;
-		letter-spacing: var(--md-sys-typescale-overline-letter-spacing);
-		line-height: var(--md-sys-typescale-label-small-line-height);
 	}
 	.titlebar-heading > strong {
 		color: var(--md-sys-color-on-surface);
@@ -312,6 +309,9 @@
 		.titlebar-heading {
 			display: flex;
 		}
+		.titlebar-right {
+			display: none;
+		}
 		.workspace-rail {
 			grid-column: 1;
 			grid-row: 1 / span 2;
@@ -340,8 +340,7 @@
 			background: var(--md-sys-color-surface-container-high);
 		}
 		.rail-brand :global(.wordmark),
-		.rail-section-label,
-		.rail-footer > span:last-child {
+		.rail-section-label {
 			display: none;
 		}
 		.rail-section-label {
@@ -362,29 +361,41 @@
 			padding: 0;
 			border-radius: var(--md-sys-shape-medium);
 		}
-		.workspace-rail :global(.workspace-link__copy),
-		.workspace-rail :global(.workspace-link__current) {
+		.workspace-rail :global(.workspace-link__copy) {
 			display: none;
 		}
 		.workspace-rail :global(.workspace-link.active) {
 			border-color: transparent;
 		}
 		.rail-footer {
-			display: grid;
-			place-items: center;
+			display: flex;
+			flex-direction: column;
+			align-items: center;
+			gap: var(--md-sys-space-sm);
 			width: 52px;
 			margin-top: auto;
 			padding-top: var(--md-sys-space-md);
 			border-top: 1px solid var(--md-sys-color-outline-variant);
-			color: var(--md-sys-color-primary);
 		}
-		.rail-footer__mark {
-			display: grid;
-			place-items: center;
-			width: 34px;
-			height: 34px;
-			border-radius: var(--md-sys-shape-small);
-			background: var(--md-sys-color-surface-container);
+		.rail-footer :global(.status-switch) {
+			flex-direction: column;
+			width: 100%;
+		}
+		.rail-footer :global(.status-chip) {
+			justify-content: center;
+			width: 36px;
+			min-width: 36px;
+			height: 36px;
+			padding: 0;
+		}
+		.rail-footer :global(.status-text) {
+			display: none;
+		}
+		.rail-footer :global(.task-action) {
+			justify-content: center;
+		}
+		.rail-footer :global(.rail-theme-button) {
+			align-self: center;
 		}
 		.compact-workspace-nav {
 			display: none;
@@ -435,8 +446,7 @@
 			padding-inline: var(--md-sys-space-sm);
 		}
 		.rail-brand :global(.wordmark),
-		.rail-section-label,
-		.rail-footer > span:last-child {
+		.rail-section-label {
 			display: initial;
 		}
 		.rail-section-label {
@@ -455,28 +465,31 @@
 		.workspace-rail :global(.workspace-link__copy) {
 			display: flex;
 		}
-		.workspace-rail :global(.workspace-link__current) {
-			display: block;
-		}
 		.rail-footer {
-			grid-template-columns: 34px minmax(0, 1fr);
-			justify-content: flex-start;
+			align-items: stretch;
 			width: 100%;
-			gap: var(--md-sys-space-sm);
 			padding-inline: var(--md-sys-space-sm);
 		}
-		.rail-footer > span:last-child {
-			display: flex;
-			flex-direction: column;
-			gap: 2px;
+		.rail-footer :global(.status-switch) {
+			flex-direction: row;
+			align-items: center;
 		}
-		.rail-footer strong {
-			color: var(--md-sys-color-on-surface);
-			font-size: var(--md-sys-typescale-label-medium-size);
+		.rail-footer :global(.status-chip) {
+			justify-content: flex-start;
+			width: auto;
+			min-width: 0;
+			flex: 1 1 auto;
+			padding-inline: var(--md-sys-space-sm);
 		}
-		.rail-footer small {
-			color: var(--md-sys-color-on-surface-variant);
-			font-size: var(--md-sys-typescale-label-small-size);
+		.rail-footer :global(.status-text) {
+			display: inline;
+			min-width: 0;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
+		}
+		.rail-footer :global(.rail-theme-button) {
+			align-self: flex-end;
 		}
 	}
 </style>
