@@ -802,6 +802,13 @@ async fn rejected_prompt_cache_key_retries_without_key_and_disables_it() {
     ];
     let response = client.chat(messages.clone()).await.unwrap();
     assert_eq!(response.text, "ok");
+    let diagnostics = response.usage.cache_diagnostics.unwrap();
+    assert_eq!(diagnostics.provider, "openai");
+    assert_eq!(diagnostics.mode, "off");
+    assert!(!diagnostics.key_requested);
+    assert!(diagnostics.downgraded);
+    assert_eq!(diagnostics.outcome, "unknown");
+    assert_eq!(diagnostics.usage_source, "unavailable");
     assert!(
         client
             .build_request_body(messages, Vec::new(), false)
@@ -1605,6 +1612,39 @@ fn usage_parses_prompt_tokens_details_cached_tokens() {
     let json = r#"{"prompt_tokens":100,"completion_tokens":5,"total_tokens":105,"prompt_tokens_details":{"cached_tokens":80}}"#;
     let usage: OpenAiUsage = serde_json::from_str(json).unwrap();
     assert_eq!(usage.cached(), 80);
+}
+
+#[test]
+fn cache_usage_fields_distinguish_omitted_from_explicit_zero() {
+    let missing: OpenAiUsage = serde_json::from_str(r#"{"prompt_tokens":100}"#).unwrap();
+    assert!(!missing.cache_usage_reported());
+    let unavailable = CacheDiagnostics::for_request(true, false).with_provider_usage(
+        missing.cached_tokens_reported(),
+        missing.cache_usage_reported(),
+    );
+    assert_eq!(unavailable.outcome, "unknown");
+    assert_eq!(unavailable.usage_source, "unavailable");
+
+    let zero: OpenAiUsage = serde_json::from_str(
+        r#"{"prompt_tokens":100,"prompt_tokens_details":{"cached_tokens":0}}"#,
+    )
+    .unwrap();
+    assert!(zero.cache_usage_reported());
+    let reported_zero = CacheDiagnostics::for_request(true, false)
+        .with_provider_usage(zero.cached_tokens_reported(), zero.cache_usage_reported());
+    assert_eq!(reported_zero.outcome, "miss");
+    assert_eq!(reported_zero.usage_source, "provider");
+
+    let write_only: OpenAiUsage = serde_json::from_str(
+        r#"{"prompt_tokens":100,"prompt_tokens_details":{"cache_write_tokens":10}}"#,
+    )
+    .unwrap();
+    let missing_read = CacheDiagnostics::for_request(true, false).with_provider_usage(
+        write_only.cached_tokens_reported(),
+        write_only.cache_usage_reported(),
+    );
+    assert_eq!(missing_read.outcome, "unknown");
+    assert_eq!(missing_read.usage_source, "provider");
 }
 
 #[test]

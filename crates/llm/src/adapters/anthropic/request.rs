@@ -62,7 +62,8 @@ impl AnthropicAdapter {
     ) -> AnthropicRequest {
         let messages = messages.as_ref();
         let tools = tools.as_ref();
-        let cache_diagnostics = Self::cache_diagnostics(messages);
+        let cache_diagnostics =
+            Self::cache_diagnostics(messages).with_provider(self.endpoint.provider.clone());
         let (messages, system) = Self::convert_messages(messages);
         let mut tools_json = Self::convert_tools(tools);
         let had_client_tools = !tools_json.is_empty();

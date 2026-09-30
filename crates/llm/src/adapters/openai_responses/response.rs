@@ -83,7 +83,7 @@ impl OpenAiResponsesAdapter {
                 usage.cache_diagnostics = Some(
                     cache_diagnostics
                         .clone()
-                        .with_provider_usage(usage.cached_tokens),
+                        .with_provider_usage(u.cached_tokens_reported(), u.cache_usage_reported()),
                 );
                 usage
             })

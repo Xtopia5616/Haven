@@ -105,32 +105,31 @@ impl AnthropicAdapter {
         if !layout.is_empty() {
             thinking_blocks.push(json!({Self::LAYOUT_KEY: layout}));
         }
-        let usage = json
-            .usage
-            .map(|u| {
-                let mut usage = Usage::from_counts_with_accounting(
-                    u.input_tokens,
-                    u.output_tokens,
-                    u.input_tokens
-                        .saturating_add(u.cache_read_input_tokens)
-                        .saturating_add(u.cache_creation_input_tokens)
-                        .saturating_add(u.output_tokens),
-                    u.cache_read_input_tokens,
-                    u.cache_creation_input_tokens,
-                    CacheAccounting::Exclusive,
-                    model.clone(),
-                );
-                usage.cache_diagnostics = Some(
-                    cache_diagnostics
-                        .clone()
-                        .with_provider_usage(usage.cached_tokens),
-                );
-                usage
-            })
-            .unwrap_or_else(|| Usage {
-                cache_diagnostics: Some(cache_diagnostics),
-                ..Default::default()
-            });
+        let usage =
+            json.usage
+                .map(|u| {
+                    let mut usage = Usage::from_counts_with_accounting(
+                        u.input_tokens,
+                        u.output_tokens,
+                        u.input_tokens
+                            .saturating_add(u.cache_read_tokens())
+                            .saturating_add(u.cache_creation_tokens())
+                            .saturating_add(u.output_tokens),
+                        u.cache_read_tokens(),
+                        u.cache_creation_tokens(),
+                        CacheAccounting::Exclusive,
+                        model.clone(),
+                    );
+                    usage.cache_diagnostics = Some(cache_diagnostics.clone().with_provider_usage(
+                        u.cache_read_tokens_reported(),
+                        u.cache_usage_reported(),
+                    ));
+                    usage
+                })
+                .unwrap_or_else(|| Usage {
+                    cache_diagnostics: Some(cache_diagnostics),
+                    ..Default::default()
+                });
         Ok(LlmResponse {
             text,
             tool_calls,

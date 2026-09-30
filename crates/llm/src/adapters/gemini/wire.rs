@@ -159,7 +159,7 @@ pub(super) struct GeminiUsage {
     #[serde(default, alias = "totalTokenCount")]
     pub(super) total_tokens: u32,
     #[serde(default, alias = "cachedContentTokenCount")]
-    pub(super) cached_tokens: u32,
+    pub(super) cached_tokens: Option<u32>,
     #[serde(default, alias = "thoughtsTokenCount")]
     pub(super) thoughts_tokens: u32,
     #[serde(default, alias = "toolUsePromptTokenCount")]
@@ -181,7 +181,7 @@ impl GeminiUsage {
             prompt,
             completion,
             self.total_tokens,
-            self.cached_tokens,
+            self.cached_tokens.unwrap_or_default(),
             0,
             CacheAccounting::Inclusive,
             model_name,

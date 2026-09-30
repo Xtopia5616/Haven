@@ -94,6 +94,58 @@ describe('SessionToolbar', () => {
 		expect(tokenButton.classList.contains('selected')).toBe(false);
 	});
 
+	it('shows cache diagnostics and unknown counts in usage details', async () => {
+		render(SessionToolbar, {
+			tokenStats: { cumulativeTotalTokens: 100 },
+			tokenUsageDetails: {
+				currentPromptTokens: 100,
+				currentCompletionTokens: 0,
+				currentTotalTokens: 100,
+				currentCachedTokens: 0,
+				currentCacheCreationTokens: 0,
+				currentCacheMissTokens: 0,
+				currentCacheRatePercent: null,
+				currentCacheKnown: false,
+				currentCacheDiagnostics: {
+					mode: 'key',
+					provider: 'openai-compatible',
+					outcome: 'unknown',
+					downgraded: true,
+					usageSource: 'unavailable',
+				},
+				contextTokens: 100,
+				contextWindow: 1000,
+				contextRatePercent: 10,
+				cumulativePromptTokens: 100,
+				cumulativeCompletionTokens: 0,
+				cumulativeTotalTokens: 100,
+				cumulativeCachedTokens: 0,
+				cumulativeCacheCreationTokens: 0,
+				cumulativeCacheMissTokens: 0,
+				cumulativeCacheRatePercent: null,
+				cumulativeCacheKnown: false,
+				callCount: 1,
+				mediaCallCount: 0,
+				mediaTotalTokens: 0,
+				mediaCostUsd: null,
+				toolCallCount: 0,
+				toolTotalTokens: 0,
+				toolCostUsd: null,
+				model: 'gateway-model',
+				costUsd: null,
+			},
+		});
+
+		await fireEvent.click(screen.getByRole('button', { name: '打开 token 使用明细' }));
+		expect(screen.getByText('策略 / 结果')).toBeTruthy();
+		expect(screen.getByText('缓存 key / 未知')).toBeTruthy();
+		expect(screen.getByText('openai-compatible')).toBeTruthy();
+		expect(screen.getByText('未提供')).toBeTruthy();
+		expect(screen.getByText('是')).toBeTruthy();
+		expect(screen.getByText('本次缓存 token 用量未知')).toBeTruthy();
+		expect(screen.getByText('累计缓存统计未知')).toBeTruthy();
+	});
+
 	it('shows media inference separately from Agent totals', async () => {
 		render(SessionToolbar, {
 			tokenStats: { cumulativeTotalTokens: 100 },

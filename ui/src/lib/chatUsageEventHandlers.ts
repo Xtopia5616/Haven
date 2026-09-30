@@ -86,6 +86,7 @@ export function createChatUsageEventHandlers({
 							cacheCreationTokens: creation,
 							cacheMissTokens: miss,
 							cacheAccounting: d.cacheAccounting || 'unknown',
+							cacheDiagnostics: d.cacheDiagnostics,
 							contextTokens: d.contextTokens || 0,
 							cacheExclusive: !!d.cacheExclusive,
 							cumulativePromptTokens: d.cumulativePromptTokens || 0,

@@ -52,11 +52,10 @@ impl OpenAiAdapter {
             .usage
             .map(|u| {
                 let mut usage = u.to_usage(model.clone());
-                usage.cache_miss_tokens = usage.cache_miss_tokens();
                 usage.cache_diagnostics = Some(
                     cache_diagnostics
                         .clone()
-                        .with_provider_usage(usage.cached_tokens),
+                        .with_provider_usage(u.cached_tokens_reported(), u.cache_usage_reported()),
                 );
                 usage
             })

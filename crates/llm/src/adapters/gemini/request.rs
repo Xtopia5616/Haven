@@ -121,7 +121,8 @@ impl GeminiAdapter {
                 top_k: self.endpoint.top_k,
                 stop_sequences: self.endpoint.stop.clone(),
             }),
-            cache_diagnostics: CacheDiagnostics::for_provider_cache(system_split),
+            cache_diagnostics: CacheDiagnostics::for_provider_cache(system_split)
+                .with_provider(self.endpoint.provider.clone()),
         }
     }
 
@@ -140,7 +141,7 @@ impl GeminiAdapter {
         let now = current_epoch_seconds();
         match state.lookup(&fingerprint, now) {
             GeminiCacheLookup::Hit(name) => {
-                Self::apply_cached_content(body, &name);
+                self.apply_cached_content(body, &name);
                 return;
             }
             GeminiCacheLookup::Unavailable => return,
@@ -157,7 +158,7 @@ impl GeminiAdapter {
                     name.clone(),
                     now.saturating_add(GEMINI_CACHE_TTL_SECS),
                 );
-                Self::apply_cached_content(body, &name);
+                self.apply_cached_content(body, &name);
             }
             Err(error) => {
                 state.remember_unavailable(
@@ -173,12 +174,13 @@ impl GeminiAdapter {
         }
     }
 
-    fn apply_cached_content(body: &mut GeminiRequest, name: &str) {
+    fn apply_cached_content(&self, body: &mut GeminiRequest, name: &str) {
         body.cached_content = Some(name.to_string());
         body.system_instruction = None;
         body.tools = None;
         body.cache_diagnostics =
-            CacheDiagnostics::for_explicit_provider_cache(body.cache_diagnostics.system_split);
+            CacheDiagnostics::for_explicit_provider_cache(body.cache_diagnostics.system_split)
+                .with_provider(self.endpoint.provider.clone());
     }
 
     async fn create_cached_content(

@@ -1114,8 +1114,8 @@ fn parse_response_usage_includes_cache_tokens_in_total() {
         usage: Some(AnthropicUsage {
             input_tokens: 100,
             output_tokens: 5,
-            cache_read_input_tokens: 400,
-            cache_creation_input_tokens: 50,
+            cache_read_input_tokens: Some(400),
+            cache_creation_input_tokens: Some(50),
         }),
         model: Some("claude-3".into()),
     };
@@ -1132,6 +1132,37 @@ fn parse_response_usage_includes_cache_tokens_in_total() {
     assert_eq!(resp.usage.cache_creation_tokens, 50);
     assert_eq!(resp.usage.total_tokens, 555);
     assert_eq!(resp.usage.context_tokens(), 550);
+}
+
+#[test]
+fn anthropic_cache_usage_fields_distinguish_omitted_from_explicit_zero() {
+    let missing: AnthropicUsage = serde_json::from_str(r#"{"input_tokens":100}"#).unwrap();
+    assert!(!missing.cache_usage_reported());
+    let unavailable = CacheDiagnostics::for_provider_cache(false).with_provider_usage(
+        missing.cache_read_tokens_reported(),
+        missing.cache_usage_reported(),
+    );
+    assert_eq!(unavailable.outcome, "unknown");
+    assert_eq!(unavailable.usage_source, "unavailable");
+
+    let zero: AnthropicUsage =
+        serde_json::from_str(r#"{"input_tokens":100,"cache_read_input_tokens":0}"#).unwrap();
+    assert!(zero.cache_usage_reported());
+    let reported_zero = CacheDiagnostics::for_provider_cache(false).with_provider_usage(
+        zero.cache_read_tokens_reported(),
+        zero.cache_usage_reported(),
+    );
+    assert_eq!(reported_zero.outcome, "miss");
+    assert_eq!(reported_zero.usage_source, "provider");
+
+    let write_only: AnthropicUsage =
+        serde_json::from_str(r#"{"input_tokens":100,"cache_creation_input_tokens":50}"#).unwrap();
+    let missing_read = CacheDiagnostics::for_provider_cache(false).with_provider_usage(
+        write_only.cache_read_tokens_reported(),
+        write_only.cache_usage_reported(),
+    );
+    assert_eq!(missing_read.outcome, "unknown");
+    assert_eq!(missing_read.usage_source, "provider");
 }
 
 #[test]

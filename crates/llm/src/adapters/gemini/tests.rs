@@ -813,6 +813,7 @@ async fn explicit_cache_replaces_system_and_tools_and_reuses_resource() {
     let client = GeminiAdapter::new(ModelEndpoint {
         base_url: format!("http://{addr}"),
         api_key: "test-key".into(),
+        provider: "gemini".into(),
         ..Default::default()
     });
     let messages = vec![CanonicalMessage::system(vec![ContentPart::text(format!(
@@ -835,6 +836,7 @@ async fn explicit_cache_replaces_system_and_tools_and_reuses_resource() {
     assert!(body.system_instruction.is_none());
     assert!(body.tools.is_none());
     assert_eq!(body.cache_diagnostics.mode, "explicit");
+    assert_eq!(body.cache_diagnostics.provider, "gemini");
     assert!(body.cache_diagnostics.system_split);
     let wire = serde_json::to_value(&body).unwrap();
     assert_eq!(wire["cachedContent"], "cachedContents/haven-test");
@@ -1071,7 +1073,7 @@ fn usage_folds_thoughts_and_tool_use_into_counts() {
         thoughts_tokens: 80,
         tool_use_prompt_tokens: 15,
         total_tokens: 215,
-        cached_tokens: 40,
+        cached_tokens: Some(40),
     };
     let usage = u.to_usage(None);
     assert_eq!(usage.prompt_tokens, 115);
@@ -1080,4 +1082,22 @@ fn usage_folds_thoughts_and_tool_use_into_counts() {
     assert_eq!(usage.cached_tokens, 40);
     assert!(!usage.cache_exclusive_of_prompt());
     assert_eq!(usage.context_tokens(), 115);
+}
+
+#[test]
+fn cache_usage_fields_distinguish_omitted_from_explicit_zero() {
+    let missing: GeminiUsage = serde_json::from_str(r#"{"promptTokenCount":100}"#).unwrap();
+    assert!(missing.cached_tokens.is_none());
+    let unavailable = CacheDiagnostics::for_explicit_provider_cache(false)
+        .with_provider_usage(missing.cached_tokens, false);
+    assert_eq!(unavailable.outcome, "unknown");
+    assert_eq!(unavailable.usage_source, "unavailable");
+
+    let zero: GeminiUsage =
+        serde_json::from_str(r#"{"promptTokenCount":100,"cachedContentTokenCount":0}"#).unwrap();
+    assert_eq!(zero.cached_tokens, Some(0));
+    let reported_zero = CacheDiagnostics::for_explicit_provider_cache(false)
+        .with_provider_usage(zero.cached_tokens, true);
+    assert_eq!(reported_zero.outcome, "miss");
+    assert_eq!(reported_zero.usage_source, "provider");
 }

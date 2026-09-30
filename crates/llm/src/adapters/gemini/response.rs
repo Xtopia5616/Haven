@@ -82,7 +82,7 @@ impl GeminiAdapter {
                 usage.cache_diagnostics = Some(
                     cache_diagnostics
                         .clone()
-                        .with_provider_usage(usage.cached_tokens),
+                        .with_provider_usage(u.cached_tokens, u.cached_tokens.is_some()),
                 );
                 usage
             })

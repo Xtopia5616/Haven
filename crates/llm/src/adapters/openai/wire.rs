@@ -153,11 +153,11 @@ pub(super) struct OpenAiFunctionOut {
 #[derive(Debug, Deserialize, Default)]
 pub(super) struct OpenAiPromptTokensDetails {
     #[serde(default)]
-    pub(super) cached_tokens: u32,
+    pub(super) cached_tokens: Option<u32>,
     #[serde(default)]
-    pub(super) cache_write_tokens: u32,
+    pub(super) cache_write_tokens: Option<u32>,
     #[serde(default)]
-    pub(super) cache_creation_tokens: u32,
+    pub(super) cache_creation_tokens: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -178,15 +178,15 @@ pub(super) struct OpenAiUsage {
     pub(super) prompt_tokens_details: Option<OpenAiPromptTokensDetails>,
     /// DeepSeek Chat Completions flat alias for cache hits.
     #[serde(default)]
-    pub(super) prompt_cache_hit_tokens: u32,
+    pub(super) prompt_cache_hit_tokens: Option<u32>,
     /// Kimi / Moonshot top-level cache hit count.
     #[serde(default)]
-    pub(super) cached_tokens: u32,
+    pub(super) cached_tokens: Option<u32>,
     /// DeepSeek's reported normal (non-cache) input tokens.
     #[serde(default)]
-    pub(super) prompt_cache_miss_tokens: u32,
+    pub(super) prompt_cache_miss_tokens: Option<u32>,
     #[serde(default)]
-    pub(super) cache_write_tokens: u32,
+    pub(super) cache_write_tokens: Option<u32>,
 }
 
 impl OpenAiUsage {
@@ -200,9 +200,22 @@ impl OpenAiUsage {
 
     pub(super) fn cached(&self) -> u32 {
         crate::adapters::resolve_cached_tokens(
-            self.prompt_tokens_details.as_ref().map(|d| d.cached_tokens),
-            self.prompt_cache_hit_tokens.max(self.cached_tokens),
+            self.prompt_tokens_details
+                .as_ref()
+                .and_then(|details| details.cached_tokens),
+            self.prompt_cache_hit_tokens
+                .unwrap_or_default()
+                .max(self.cached_tokens.unwrap_or_default()),
         )
+    }
+
+    pub(super) fn cached_tokens_reported(&self) -> Option<u32> {
+        let nested = self
+            .prompt_tokens_details
+            .as_ref()
+            .and_then(|details| details.cached_tokens);
+        let flat = self.prompt_cache_hit_tokens.or(self.cached_tokens);
+        nested.or(flat).map(|_| self.cached())
     }
 
     pub(super) fn cache_created(&self) -> u32 {
@@ -211,10 +224,22 @@ impl OpenAiUsage {
             .map(|details| {
                 details
                     .cache_write_tokens
-                    .max(details.cache_creation_tokens)
+                    .unwrap_or_default()
+                    .max(details.cache_creation_tokens.unwrap_or_default())
             })
             .unwrap_or(0)
-            .max(self.cache_write_tokens)
+            .max(self.cache_write_tokens.unwrap_or_default())
+    }
+
+    pub(super) fn cache_usage_reported(&self) -> bool {
+        self.prompt_tokens_details.as_ref().is_some_and(|details| {
+            details.cached_tokens.is_some()
+                || details.cache_write_tokens.is_some()
+                || details.cache_creation_tokens.is_some()
+        }) || self.prompt_cache_hit_tokens.is_some()
+            || self.cached_tokens.is_some()
+            || self.prompt_cache_miss_tokens.is_some()
+            || self.cache_write_tokens.is_some()
     }
 
     pub(super) fn to_usage(&self, model_name: Option<String>) -> Usage {
@@ -227,7 +252,15 @@ impl OpenAiUsage {
             CacheAccounting::Inclusive,
             model_name,
         );
-        usage.cache_miss_tokens = self.prompt_cache_miss_tokens.max(usage.cache_miss_tokens());
+        let derived_misses = if self.cached_tokens_reported().is_some() {
+            usage.cache_miss_tokens()
+        } else {
+            0
+        };
+        usage.cache_miss_tokens = self
+            .prompt_cache_miss_tokens
+            .unwrap_or_default()
+            .max(derived_misses);
         usage
     }
 }

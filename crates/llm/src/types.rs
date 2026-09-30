@@ -9,12 +9,16 @@ pub use haven_common::types::CacheAccounting;
 
 /// Non-sensitive prompt-cache request and provider outcome metadata. This is
 /// persisted per call for diagnostics, never with the cache key or prompt.
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CacheDiagnostics {
     /// `off`, `key`, `split`, `implicit`, or `explicit` describes the effective
     /// wire strategy.
     #[serde(default)]
     pub mode: String,
+    /// Configured provider identity for the request, independent of its wire
+    /// protocol adapter (for example a named OpenAI-compatible gateway).
+    #[serde(default)]
+    pub provider: String,
     #[serde(default)]
     pub key_requested: bool,
     #[serde(default)]
@@ -26,6 +30,28 @@ pub struct CacheDiagnostics {
     /// deliberately kept as `unknown`, never guessed as a cache miss.
     #[serde(default)]
     pub outcome: String,
+    /// `provider` means a cache usage field was present, including an
+    /// explicit zero. `unavailable` means the response omitted cache usage.
+    #[serde(default = "cache_usage_unavailable")]
+    pub usage_source: String,
+}
+
+fn cache_usage_unavailable() -> String {
+    "unavailable".into()
+}
+
+impl Default for CacheDiagnostics {
+    fn default() -> Self {
+        Self {
+            mode: "off".into(),
+            provider: String::new(),
+            key_requested: false,
+            system_split: false,
+            downgraded: false,
+            outcome: "unknown".into(),
+            usage_source: cache_usage_unavailable(),
+        }
+    }
 }
 
 impl CacheDiagnostics {
@@ -38,6 +64,7 @@ impl CacheDiagnostics {
             } else {
                 "off".into()
             },
+            provider: String::new(),
             key_requested,
             system_split,
             downgraded: false,
@@ -46,7 +73,13 @@ impl CacheDiagnostics {
             } else {
                 "disabled".into()
             },
+            usage_source: cache_usage_unavailable(),
         }
+    }
+
+    pub fn with_provider(mut self, provider: impl Into<String>) -> Self {
+        self.provider = provider.into();
+        self
     }
 
     /// Use for providers with cache controls or automatic prefix caching but
@@ -59,10 +92,12 @@ impl CacheDiagnostics {
             } else {
                 "implicit".into()
             },
+            provider: String::new(),
             key_requested: false,
             system_split,
             downgraded: false,
             outcome: "unknown".into(),
+            usage_source: cache_usage_unavailable(),
         }
     }
 
@@ -71,20 +106,29 @@ impl CacheDiagnostics {
     pub fn for_explicit_provider_cache(system_split: bool) -> Self {
         Self {
             mode: "explicit".into(),
+            provider: String::new(),
             key_requested: false,
             system_split,
             downgraded: false,
             outcome: "unknown".into(),
+            usage_source: cache_usage_unavailable(),
         }
     }
 
-    pub fn with_provider_usage(mut self, cached_tokens: u32) -> Self {
-        if self.outcome != "disabled" {
-            self.outcome = if cached_tokens > 0 {
-                "hit".into()
-            } else {
-                "miss".into()
+    pub fn with_provider_usage(mut self, cached_tokens: Option<u32>, usage_reported: bool) -> Self {
+        self.usage_source = if usage_reported {
+            "provider".into()
+        } else {
+            cache_usage_unavailable()
+        };
+        if usage_reported {
+            self.outcome = match cached_tokens {
+                Some(tokens) if tokens > 0 => "hit".into(),
+                Some(_) => "miss".into(),
+                None => "unknown".into(),
             };
+        } else if self.outcome != "disabled" {
+            self.outcome = "unknown".into();
         }
         self
     }
@@ -1391,6 +1435,41 @@ pub struct StreamChunk {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cache_diagnostics_distinguish_missing_usage_from_explicit_zero() {
+        let base = CacheDiagnostics::for_request(true, false);
+        let unavailable = base.clone().with_provider_usage(None, false);
+        assert_eq!(unavailable.outcome, "unknown");
+        assert_eq!(unavailable.usage_source, "unavailable");
+
+        let zero = base.with_provider_usage(Some(0), true);
+        assert_eq!(zero.outcome, "miss");
+        assert_eq!(zero.usage_source, "provider");
+
+        let hit = CacheDiagnostics::for_provider_cache(false).with_provider_usage(Some(8), true);
+        assert_eq!(hit.outcome, "hit");
+        assert_eq!(hit.usage_source, "provider");
+
+        let off_but_reported =
+            CacheDiagnostics::for_request(false, false).with_provider_usage(Some(8), true);
+        assert_eq!(off_but_reported.outcome, "hit");
+        assert_eq!(off_but_reported.usage_source, "provider");
+
+        let disabled_without_usage =
+            CacheDiagnostics::for_request(false, false).with_provider_usage(None, false);
+        assert_eq!(disabled_without_usage.outcome, "disabled");
+    }
+
+    #[test]
+    fn old_cache_diagnostics_deserialize_with_missing_metadata() {
+        let diagnostics: CacheDiagnostics = serde_json::from_str(
+            r#"{"mode":"key","key_requested":true,"system_split":false,"downgraded":false,"outcome":"unknown"}"#,
+        )
+        .unwrap();
+        assert_eq!(diagnostics.provider, "");
+        assert_eq!(diagnostics.usage_source, "unavailable");
+    }
     use std::time::Duration;
 
     #[test]

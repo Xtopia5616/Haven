@@ -170,12 +170,11 @@ impl GeminiAdapter {
                         }
                         if let Some(u) = resp.usage_metadata {
                             let mut usage = u.to_usage(state.last_model.clone());
-                            usage.cache_diagnostics = Some(
-                                state
-                                    .cache_diagnostics
-                                    .clone()
-                                    .with_provider_usage(usage.cached_tokens),
-                            );
+                            usage.cache_diagnostics =
+                                Some(state.cache_diagnostics.clone().with_provider_usage(
+                                    u.cached_tokens,
+                                    u.cached_tokens.is_some(),
+                                ));
                             state.usage = Some(usage);
                         }
                         let mut chunk = empty_chunk();

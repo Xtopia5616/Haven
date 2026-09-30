@@ -217,11 +217,11 @@ impl AnthropicAdapter {
                                 u.input_tokens,
                                 u.output_tokens,
                                 u.input_tokens
-                                    .saturating_add(u.cache_read_input_tokens)
-                                    .saturating_add(u.cache_creation_input_tokens)
+                                    .saturating_add(u.cache_read_tokens())
+                                    .saturating_add(u.cache_creation_tokens())
                                     .saturating_add(u.output_tokens),
-                                u.cache_read_input_tokens,
-                                u.cache_creation_input_tokens,
+                                u.cache_read_tokens(),
+                                u.cache_creation_tokens(),
                                 CacheAccounting::Exclusive,
                                 state.last_model.clone(),
                             );
@@ -229,7 +229,10 @@ impl AnthropicAdapter {
                                 state
                                     .cache_diagnostics
                                     .clone()
-                                    .with_provider_usage(usage.cached_tokens),
+                                    .with_provider_usage(
+                                        u.cache_read_tokens_reported(),
+                                        u.cache_usage_reported(),
+                                    ),
                             );
                             state.usage = Some(usage);
                         }
@@ -471,11 +474,22 @@ impl AnthropicAdapter {
                             if u.input_tokens > 0 {
                                 existing.prompt_tokens = u.input_tokens;
                             }
-                            if u.cache_read_input_tokens > 0 {
-                                existing.cached_tokens = u.cache_read_input_tokens;
+                            if let Some(cached_tokens) = u.cache_read_input_tokens {
+                                existing.cached_tokens = cached_tokens;
                             }
-                            if u.cache_creation_input_tokens > 0 {
-                                existing.cache_creation_tokens = u.cache_creation_input_tokens;
+                            if let Some(cache_creation_tokens) = u.cache_creation_input_tokens {
+                                existing.cache_creation_tokens = cache_creation_tokens;
+                            }
+                            if u.cache_usage_reported() {
+                                existing.cache_diagnostics = Some(
+                                    state
+                                        .cache_diagnostics
+                                        .clone()
+                                        .with_provider_usage(
+                                            u.cache_read_tokens_reported(),
+                                            true,
+                                        ),
+                                );
                             }
                             existing.total_tokens = existing.prompt_tokens
                                 + existing.cached_tokens

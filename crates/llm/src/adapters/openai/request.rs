@@ -69,7 +69,8 @@ impl OpenAiAdapter {
                 .unwrap_or(Self::MAX_REASONING_ECHO_CHARS),
         );
         let cache_diagnostics =
-            CacheDiagnostics::for_request(prompt_cache_key.is_some(), system_split);
+            CacheDiagnostics::for_request(prompt_cache_key.is_some(), system_split)
+                .with_provider(self.endpoint.provider.clone());
         let (thinking, reasoning_effort) = chat_thinking_extras(&self.endpoint);
         let omit_temperature = reasoning_effort.is_some() || thinking.is_some();
         // DeepSeek explicitly documents these sampling parameters as

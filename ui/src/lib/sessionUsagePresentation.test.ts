@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { buildTokenUsageDetails, estimateToolDataTokens } from './sessionUsagePresentation.ts';
+import {
+	buildTokenUsageDetails,
+	buildTokenUsageTooltip,
+	estimateToolDataTokens,
+} from './sessionUsagePresentation.ts';
 
 describe('estimateToolDataTokens', () => {
 	it('keeps each tool payload separate from model-step usage', () => {
@@ -86,6 +90,56 @@ describe('buildTokenUsageDetails', () => {
 		);
 
 		expect(details.currentCacheRatePercent).toBe(0);
+	});
+
+	it('shows complete cache diagnostics in the usage tooltip', () => {
+		const stats = {
+			model: 'gpt-test',
+			promptTokens: 100,
+			totalTokens: 100,
+			cacheDiagnostics: {
+				provider: 'openai',
+				mode: 'key',
+				downgraded: false,
+				outcome: 'unknown',
+				usage_source: 'unavailable',
+			},
+		};
+		const tooltip = buildTokenUsageTooltip(stats, []);
+		const details = buildTokenUsageDetails(stats, []);
+
+		expect(tooltip).toContain('模型 gpt-test');
+		expect(tooltip).toContain('提供方 openai');
+		expect(tooltip).toContain('缓存策略 缓存 key');
+		expect(tooltip).toContain('结果 未知');
+		expect(tooltip).toContain('用量来源未提供');
+		expect(tooltip).toContain('未降级');
+		expect(tooltip).toContain('本次缓存计数未知');
+		expect(details.currentCacheKnown).toBe(false);
+		expect(details.currentCacheRatePercent).toBeNull();
+		expect(details.cumulativeCacheKnown).toBe(false);
+		expect(details.cumulativeCacheRatePercent).toBeNull();
+	});
+
+	it('shows provider reported zero as a miss after downgrade', () => {
+		const tooltip = buildTokenUsageTooltip(
+			{
+				model: 'gateway-model',
+				cacheDiagnostics: {
+					provider: 'openai-compatible',
+					mode: 'off',
+					downgraded: true,
+					outcome: 'miss',
+					usage_source: 'provider',
+				},
+			},
+			[],
+		);
+
+		expect(tooltip).toContain('提供方 openai-compatible');
+		expect(tooltip).toContain('结果 未命中');
+		expect(tooltip).toContain('用量来源 provider');
+		expect(tooltip).toContain('已降级');
 	});
 
 	it('reports media inference separately without changing Agent totals', () => {

@@ -66,6 +66,7 @@ export interface SessionTokenStats {
 	contextWindow: number | null;
 	model: string | null;
 	cacheAccounting?: string;
+	cacheDiagnostics?: unknown;
 	restored?: boolean;
 	lastUpdated?: number;
 }

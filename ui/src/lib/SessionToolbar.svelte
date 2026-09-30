@@ -3,7 +3,12 @@
 	import MenuItem from './MenuItem.svelte';
 	import Icon from './Icon.svelte';
 	import type { SessionSummary } from '$lib/sessionReducer/types.ts';
-	import type { SessionTokenStats, TokenUsageDetails } from '$lib/sessionUsagePresentation.ts';
+	import {
+		cacheModeLabel,
+		cacheOutcomeLabel,
+		type SessionTokenStats,
+		type TokenUsageDetails,
+	} from '$lib/sessionUsagePresentation.ts';
 
 	interface Props {
 		activeSessionId?: string | null;
@@ -211,19 +216,61 @@
 				<div class="token-detail-section-title">缓存</div>
 				<div class="token-detail-line">
 					<span>命中率</span><strong
-						>{percentage(tokenUsageDetails.currentCacheRatePercent)}</strong
+						>{tokenUsageDetails.currentCacheKnown === false
+							? '未知'
+							: percentage(tokenUsageDetails.currentCacheRatePercent)}</strong
 					>
 				</div>
+				{#if tokenUsageDetails.currentCacheDiagnostics}
+					<div class="token-detail-line">
+						<span>策略 / 结果</span><strong
+							>{cacheModeLabel(tokenUsageDetails.currentCacheDiagnostics.mode)} /
+							{cacheOutcomeLabel(
+								tokenUsageDetails.currentCacheDiagnostics.outcome,
+							)}</strong
+						>
+					</div>
+					{#if tokenUsageDetails.currentCacheDiagnostics.provider}
+						<div class="token-detail-line">
+							<span>提供方</span><strong
+								>{tokenUsageDetails.currentCacheDiagnostics.provider}</strong
+							>
+						</div>
+					{/if}
+					<div class="token-detail-line">
+						<span>用量来源</span><strong
+							>{tokenUsageDetails.currentCacheDiagnostics.usageSource === 'provider'
+								? '提供方返回'
+								: tokenUsageDetails.currentCacheDiagnostics.usageSource ===
+									  'unavailable'
+									? '未提供'
+									: '未知'}</strong
+						>
+					</div>
+					<div class="token-detail-line">
+						<span>请求降级</span><strong
+							>{tokenUsageDetails.currentCacheDiagnostics.downgraded
+								? '是'
+								: '否'}</strong
+						>
+					</div>
+				{/if}
 				<div class="token-detail-muted">
-					本次命中 {formatTokenCount(tokenUsageDetails.currentCachedTokens)} · 未命中
-					{formatTokenCount(tokenUsageDetails.currentCacheMissTokens)} · 写入
-					{formatTokenCount(tokenUsageDetails.currentCacheCreationTokens)}
+					{#if tokenUsageDetails.currentCacheKnown === false}
+						本次缓存 token 用量未知
+					{:else}
+						本次命中 {formatTokenCount(tokenUsageDetails.currentCachedTokens)} · 未命中
+						{formatTokenCount(tokenUsageDetails.currentCacheMissTokens)} · 写入
+						{formatTokenCount(tokenUsageDetails.currentCacheCreationTokens)}
+					{/if}
 				</div>
 				{#if tokenUsageDetails.cumulativeCacheRatePercent != null}
 					<div class="token-detail-muted">
 						累计命中率 {percentage(tokenUsageDetails.cumulativeCacheRatePercent)}
 						· 命中 {formatTokenCount(tokenUsageDetails.cumulativeCachedTokens)}
 					</div>
+				{:else if tokenUsageDetails.cumulativeCacheKnown === false}
+					<div class="token-detail-muted">累计缓存统计未知</div>
 				{/if}
 			</div>
 

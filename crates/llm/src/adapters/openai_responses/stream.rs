@@ -387,12 +387,11 @@ impl OpenAiResponsesAdapter {
                             }
                             if let Some(u) = resp.usage {
                                 let mut usage = u.to_usage(state.last_model.clone());
-                                usage.cache_diagnostics = Some(
-                                    state
-                                        .cache_diagnostics
-                                        .clone()
-                                        .with_provider_usage(usage.cached_tokens),
-                                );
+                                usage.cache_diagnostics =
+                                    Some(state.cache_diagnostics.clone().with_provider_usage(
+                                        u.cached_tokens_reported(),
+                                        u.cache_usage_reported(),
+                                    ));
                                 state.usage = Some(usage);
                             }
                             if let Some(status) = resp.status.as_deref() {

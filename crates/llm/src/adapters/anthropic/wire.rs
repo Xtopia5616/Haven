@@ -86,9 +86,27 @@ pub(super) struct AnthropicUsage {
     #[serde(default)]
     pub(super) output_tokens: u32,
     #[serde(default)]
-    pub(super) cache_read_input_tokens: u32,
+    pub(super) cache_read_input_tokens: Option<u32>,
     #[serde(default)]
-    pub(super) cache_creation_input_tokens: u32,
+    pub(super) cache_creation_input_tokens: Option<u32>,
+}
+
+impl AnthropicUsage {
+    pub(super) fn cache_read_tokens_reported(&self) -> Option<u32> {
+        self.cache_read_input_tokens
+    }
+
+    pub(super) fn cache_read_tokens(&self) -> u32 {
+        self.cache_read_input_tokens.unwrap_or_default()
+    }
+
+    pub(super) fn cache_creation_tokens(&self) -> u32 {
+        self.cache_creation_input_tokens.unwrap_or_default()
+    }
+
+    pub(super) fn cache_usage_reported(&self) -> bool {
+        self.cache_read_input_tokens.is_some() || self.cache_creation_input_tokens.is_some()
+    }
 }
 
 // Streaming SSE events (https://docs.anthropic.com/en/api/messages-streaming)

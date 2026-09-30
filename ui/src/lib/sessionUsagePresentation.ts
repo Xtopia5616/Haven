@@ -25,7 +25,16 @@ export interface SessionTokenStats {
 	cumulativeCostUsd?: number | null;
 	contextWindow?: number | null;
 	model?: string | null;
+	cacheDiagnostics?: unknown;
 	restored?: boolean;
+}
+
+export interface CacheDiagnosticsSummary {
+	mode: string | null;
+	provider: string | null;
+	outcome: string | null;
+	downgraded: boolean;
+	usageSource: string | null;
 }
 
 export interface TokenUsageDetails {
@@ -36,6 +45,8 @@ export interface TokenUsageDetails {
 	currentCacheCreationTokens: number;
 	currentCacheMissTokens: number;
 	currentCacheRatePercent: number | null;
+	currentCacheKnown?: boolean;
+	currentCacheDiagnostics?: CacheDiagnosticsSummary | null;
 	contextTokens: number;
 	contextWindow: number | null;
 	contextRatePercent: number | null;
@@ -46,6 +57,7 @@ export interface TokenUsageDetails {
 	cumulativeCacheCreationTokens: number;
 	cumulativeCacheMissTokens: number;
 	cumulativeCacheRatePercent: number | null;
+	cumulativeCacheKnown?: boolean;
 	callCount: number;
 	mediaCallCount: number;
 	mediaTotalTokens: number;
@@ -127,6 +139,56 @@ function cacheHitRatePercent(
 	return Math.min(100, Math.max(0, (cached / denominator) * 100));
 }
 
+function summarizeCacheDiagnostics(value: unknown): CacheDiagnosticsSummary | null {
+	if (value == null || typeof value !== 'object' || Array.isArray(value)) return null;
+	const raw = value as Record<string, unknown>;
+	return {
+		mode: typeof raw.mode === 'string' ? raw.mode : null,
+		provider: typeof raw.provider === 'string' && raw.provider ? raw.provider : null,
+		outcome: typeof raw.outcome === 'string' ? raw.outcome : null,
+		downgraded: raw.downgraded === true,
+		usageSource: typeof raw.usage_source === 'string' ? raw.usage_source : null,
+	};
+}
+
+function cacheUsageIsKnown(diagnostics: CacheDiagnosticsSummary | null): boolean {
+	if (!diagnostics) return true;
+	if (diagnostics.outcome === 'disabled') return true;
+	if (diagnostics.outcome === 'unknown' || diagnostics.usageSource === 'unavailable')
+		return false;
+	return true;
+}
+
+export function cacheModeLabel(mode: string | null | undefined): string {
+	switch (mode) {
+		case 'off':
+			return '已关闭';
+		case 'key':
+			return '缓存 key';
+		case 'split':
+			return '分离系统提示词';
+		case 'implicit':
+			return '自动前缀缓存';
+		case 'explicit':
+			return '显式缓存';
+		default:
+			return '未知';
+	}
+}
+
+export function cacheOutcomeLabel(outcome: string | null | undefined): string {
+	switch (outcome) {
+		case 'disabled':
+			return '未启用';
+		case 'hit':
+			return '命中';
+		case 'miss':
+			return '未命中';
+		default:
+			return '未知';
+	}
+}
+
 /**
  * Project raw session usage into the fields needed by the detail popover.
  * Restored sessions use the last persisted call for "current" values because
@@ -159,6 +221,12 @@ export function buildTokenUsageDetails(
 	const currentAccounting = useLastCall
 		? lastCall?.cache_accounting || 'unknown'
 		: stats.cacheAccounting || (stats.cacheExclusive ? 'exclusive' : 'unknown');
+	const currentCacheDiagnostics = summarizeCacheDiagnostics(
+		useLastCall
+			? lastCall?.cache_diagnostics
+			: (stats.cacheDiagnostics ?? lastCall?.cache_diagnostics),
+	);
+	const currentCacheKnown = cacheUsageIsKnown(currentCacheDiagnostics);
 	const currentTotalTokens = coalesceTokenTotal(
 		currentPromptTokens,
 		currentCompletionTokens,
@@ -178,6 +246,12 @@ export function buildTokenUsageDetails(
 	const cumulativeCachedTokens = stats.cumulativeCachedTokens || 0;
 	const cumulativeCacheCreationTokens = stats.cumulativeCacheCreationTokens || 0;
 	const cumulativeCacheMissTokens = stats.cumulativeCacheMissTokens || 0;
+	const cumulativeCacheKnown =
+		agentCalls.length > 0
+			? agentCalls.every((call) =>
+					cacheUsageIsKnown(summarizeCacheDiagnostics(call.cache_diagnostics)),
+				)
+			: currentCacheKnown;
 
 	return {
 		currentPromptTokens,
@@ -186,14 +260,17 @@ export function buildTokenUsageDetails(
 		currentCachedTokens,
 		currentCacheCreationTokens,
 		currentCacheMissTokens,
-		currentCacheRatePercent: ['inclusive', 'exclusive'].includes(currentAccounting)
-			? cacheHitRatePercent(
-					currentPromptTokens,
-					currentCachedTokens,
-					currentCacheCreationTokens,
-					currentAccounting === 'exclusive',
-				)
-			: null,
+		currentCacheRatePercent:
+			currentCacheKnown && ['inclusive', 'exclusive'].includes(currentAccounting)
+				? cacheHitRatePercent(
+						currentPromptTokens,
+						currentCachedTokens,
+						currentCacheCreationTokens,
+						currentAccounting === 'exclusive',
+					)
+				: null,
+		currentCacheKnown,
+		currentCacheDiagnostics,
 		contextTokens,
 		contextWindow,
 		contextRatePercent,
@@ -209,7 +286,10 @@ export function buildTokenUsageDetails(
 		cumulativeCachedTokens,
 		cumulativeCacheCreationTokens,
 		cumulativeCacheMissTokens,
-		cumulativeCacheRatePercent: cumulativeCacheHitRatePercent(llmUsage),
+		cumulativeCacheRatePercent: cumulativeCacheKnown
+			? cumulativeCacheHitRatePercent(llmUsage)
+			: null,
+		cumulativeCacheKnown,
 		callCount: agentCalls.length || (stats.totalTokens ? 1 : 0),
 		mediaCallCount: mediaCalls.length,
 		mediaTotalTokens: mediaCalls.reduce(
@@ -226,7 +306,10 @@ export function buildTokenUsageDetails(
 			0,
 		),
 		mediaCostUsd: mediaCalls.some((call) => call.has_cost)
-			? mediaCalls.reduce((total, call) => total + (call.has_cost ? call.cost_usd || 0 : 0), 0)
+			? mediaCalls.reduce(
+					(total, call) => total + (call.has_cost ? call.cost_usd || 0 : 0),
+					0,
+				)
 			: null,
 		toolCallCount: toolCalls.length,
 		toolTotalTokens: toolCalls.reduce(
@@ -274,7 +357,26 @@ export function buildTokenUsageTooltip(stats: SessionTokenStats, llmUsage: LlmUs
 	const liveCached = details.currentCachedTokens;
 	const liveCreation = details.currentCacheCreationTokens;
 	const liveMiss = details.currentCacheMissTokens;
-	if (!stats.restored && (liveCached > 0 || liveCreation > 0)) {
+	if (details.currentCacheDiagnostics) {
+		const diagnostics = details.currentCacheDiagnostics;
+		const diagnosticLine = [
+			`缓存策略 ${cacheModeLabel(diagnostics.mode)}`,
+			`结果 ${cacheOutcomeLabel(diagnostics.outcome)}`,
+			diagnostics.provider ? `提供方 ${diagnostics.provider}` : null,
+			diagnostics.usageSource === 'provider'
+				? '用量来源 provider'
+				: diagnostics.usageSource === 'unavailable'
+					? '用量来源未提供'
+					: '用量来源未知',
+			diagnostics.downgraded ? '已降级' : '未降级',
+		]
+			.filter(Boolean)
+			.join(' · ');
+		parts.push(diagnosticLine);
+	}
+	if (!details.currentCacheKnown) {
+		parts.push('本次缓存计数未知');
+	} else if (!stats.restored && (liveCached > 0 || liveCreation > 0)) {
 		const rate = details.currentCacheRatePercent;
 		let line = `本次缓存命中 ${formatTokenCount(liveCached)}`;
 		if (rate != null) line += `（${rate.toFixed(0)}%）`;
@@ -282,7 +384,9 @@ export function buildTokenUsageTooltip(stats: SessionTokenStats, llmUsage: LlmUs
 		if (liveMiss > 0) line += ` / 未命中 ${formatTokenCount(liveMiss)}`;
 		parts.push(line);
 	}
-	if (cumulativeCached > 0 || cumulativeCreation > 0) {
+	if (!details.cumulativeCacheKnown) {
+		parts.push('累计缓存统计未知');
+	} else if (cumulativeCached > 0 || cumulativeCreation > 0) {
 		const rate = cumulativeCacheHitRatePercent(llmUsage);
 		let line = `累计缓存命中 ${formatTokenCount(cumulativeCached)}`;
 		if (rate != null) line += `（${rate.toFixed(0)}%）`;

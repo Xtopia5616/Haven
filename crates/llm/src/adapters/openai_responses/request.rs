@@ -58,7 +58,8 @@ impl OpenAiResponsesAdapter {
         let prompt_cache_key = (!is_deepseek(&self.endpoint))
             .then(|| self.prompt_cache_key(messages, tools, web_search_mode))
             .flatten();
-        let cache_diagnostics = Self::cache_diagnostics(messages, prompt_cache_key.is_some());
+        let cache_diagnostics = Self::cache_diagnostics(messages, prompt_cache_key.is_some())
+            .with_provider(self.endpoint.provider.clone());
         let max_reasoning_echo_chars = self
             .endpoint
             .reasoning_echo_max_chars
