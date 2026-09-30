@@ -1,6 +1,6 @@
 # ADR 0087：工作区 Tab 切换动效
 
-> 关于 `prefers-reduced-motion` 的降级规则已由 [ADR 0408](0408-ui-single-motion-profile.md) 替代。
+> 动效策略已由 [ADR 0408](0408-ui-single-motion-profile.md) 统一；本 ADR 保留工作区 Tab 的转场设计决策。
 
 ## 背景
 
@@ -11,7 +11,7 @@
 - 顶部工作区导航使用一个公共活动短线，通过测量当前 Tab 的位置，以标准曲线平移到新 Tab；页面内复用的 `.md-tab` 短线保留同一原语，并以短暂缩放淡入反馈选中变化。
 - 当前工作区内容的可见 surface 在每次切换时以 `opacity + translateY(6px)` 轻量入场，不使用缩放，不改变布局尺寸，不销毁 keep-alive 页面。
 - 懒加载等待继续使用现有 `LoadingState` / Haven 语音柱，并限制在所属页面内容区内，不覆盖整个窗口。只有首次绘制使用 `app.html` 中的全窗口启动动画。
-- 加载态不套 transform，避免改变其局部布局；`prefers-reduced-motion: reduce` 下禁用 Tab 平移、淡入和位移，只保留颜色、可见性和加载状态。
+- 加载态不套 transform，避免改变其局部布局。
 
 ## 替代方案
 

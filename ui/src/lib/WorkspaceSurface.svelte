@@ -63,12 +63,6 @@
 		}
 	}
 
-	@media (prefers-reduced-motion: reduce) {
-		.workspace-surface--entering {
-			animation-duration: 1ms;
-		}
-	}
-
 	@media (max-width: 640px) {
 		.workspace-surface {
 			padding: var(--md-sys-space-lg);

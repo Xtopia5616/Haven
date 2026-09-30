@@ -1151,20 +1151,6 @@
 		}
 	}
 
-	@media (prefers-reduced-motion: reduce) {
-		.chat-page.responsive-layout-transition {
-			transition: none;
-		}
-		.desktop-session-rail {
-			transition-duration: 1ms;
-			transition-delay: 0s;
-		}
-		:global(.tab-panel--entering) .desktop-session-rail,
-		:global(.tab-panel--leaving) .desktop-session-rail {
-			animation-duration: 1ms;
-		}
-	}
-
 	@keyframes conversation-rail-exit {
 		from {
 			opacity: 1;

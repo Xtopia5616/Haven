@@ -1,17 +1,17 @@
 # ADR 0081：UI 共享声波条动画原语
 
-> 关于 `prefers-reduced-motion` 的降级规则已由 [ADR 0408](0408-ui-single-motion-profile.md) 替代。
+> 动效策略已由 [ADR 0408](0408-ui-single-motion-profile.md) 统一；本 ADR 保留声波条组件边界与模式决策。
 
 ## 背景
 
-`LoadingState` 和 `RecordingIndicator` 都渲染声波条动画，但各自维护 bar DOM、动画关键帧、节奏、颜色和 reduced-motion 规则。两者的业务语义不同，不能直接合并成同一个加载或录音组件；重复的视觉实现则容易发生漂移。
+`LoadingState` 和 `RecordingIndicator` 都渲染声波条动画，但各自维护 bar DOM、动画关键帧、节奏和颜色。两者的业务语义不同，不能直接合并成同一个加载或录音组件；重复的视觉实现则容易发生漂移。
 
 ## 决定
 
 - 新增无业务状态的 `VoiceBars` 视觉原语，统一声波条数量、动画模式、语义颜色和状态数据属性。
 - `LoadingState` 使用 `float` 模式；`RecordingIndicator` 使用 `equalizer` 模式，并继续由自身决定录音静默、说话和转写状态。
 - `VoiceBars` 不读取 store、不调用 Tauri、不处理录音或加载生命周期，只负责可访问性隐藏的装饰性动画。
-- 动画降级统一在 `VoiceBars` 内处理，`prefers-reduced-motion` 时停止动画。
+- 声波动画始终采用组件定义的模式和节奏。
 
 ## 替代方案
 

@@ -212,12 +212,7 @@
 
 	function playTabEntryAnimations(id: TabId) {
 		const panel = document.getElementById(`workspace-tabpanel-${id}`);
-		if (
-			!panel ||
-			(typeof window.matchMedia === 'function' &&
-				window.matchMedia('(prefers-reduced-motion: reduce)').matches)
-		)
-			return;
+		if (!panel) return;
 
 		// Give the whole retained tab a fresh animation on every visit. This does
 		// not depend on CSS animationend or on the one-shot child animations.

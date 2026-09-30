@@ -1268,15 +1268,6 @@ select.md-select {
 	height: 100%;
 }
 
-@media (prefers-reduced-motion: reduce) {
-	.md-tab,
-	.md-tab::after,
-	.md-tabs .md-tabs__indicator {
-		transition: none;
-		animation: none;
-	}
-}
-
 @media screen and (min-width: 840px) {
 	.workspace-secondary-layout {
 		grid-template-columns: minmax(190px, 224px) minmax(0, 1fr);

@@ -220,9 +220,4 @@
 		color: var(--md-sys-color-on-surface-variant);
 	}
 
-	@media (prefers-reduced-motion: reduce) {
-		.md-tabs .md-tabs__indicator {
-			transition: none;
-		}
-	}
 </style>

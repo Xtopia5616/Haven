@@ -328,14 +328,6 @@
 			opacity: 0;
 		}
 	}
-	@media (prefers-reduced-motion: reduce) {
-		:global(.chat-tab-enter) {
-			animation-duration: 1ms;
-		}
-		:global(.tab-panel--leaving) {
-			animation-duration: 1ms;
-		}
-	}
 	@media (max-width: 640px) {
 		.titlebar {
 			padding: 0 var(--md-sys-space-md);
