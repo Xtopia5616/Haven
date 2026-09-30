@@ -423,9 +423,10 @@
 			border-color: transparent;
 		}
 		.rail-footer {
+			--rail-footer-control-height: var(--md-comp-icon-button-dense-size);
 			display: grid;
 			grid-template-columns: repeat(2, var(--md-comp-icon-button-dense-size));
-			grid-template-rows: var(--md-comp-icon-button-dense-size) auto;
+			grid-template-rows: var(--rail-footer-control-height) auto;
 			align-items: center;
 			justify-content: center;
 			gap: var(--md-sys-space-2xs);
@@ -443,7 +444,8 @@
 			justify-content: center;
 			width: var(--md-comp-icon-button-dense-size);
 			min-width: var(--md-comp-icon-button-dense-size);
-			height: var(--md-comp-icon-button-dense-size);
+			height: var(--rail-footer-control-height);
+			min-height: var(--rail-footer-control-height);
 			padding: 0;
 		}
 		.rail-footer :global(.status-text) {
@@ -457,8 +459,8 @@
 		.rail-footer :global(.task-action .md-icon-btn[data-size='toolbar']) {
 			width: var(--md-comp-icon-button-dense-size);
 			min-width: var(--md-comp-icon-button-dense-size);
-			height: var(--md-comp-icon-button-dense-size);
-			min-height: var(--md-comp-icon-button-dense-size);
+			height: var(--rail-footer-control-height);
+			min-height: var(--rail-footer-control-height);
 		}
 		.rail-footer :global(.rail-theme-button[data-size='toolbar']) {
 			grid-column: 2;
@@ -466,8 +468,8 @@
 			justify-self: center;
 			width: var(--md-comp-icon-button-dense-size);
 			min-width: var(--md-comp-icon-button-dense-size);
-			height: var(--md-comp-icon-button-dense-size);
-			min-height: var(--md-comp-icon-button-dense-size);
+			height: var(--rail-footer-control-height);
+			min-height: var(--rail-footer-control-height);
 			border: 1px solid var(--md-sys-color-outline-variant);
 			border-radius: var(--md-comp-status-radius);
 			background: var(--md-sys-color-surface-container-high);
@@ -555,6 +557,7 @@
 			pointer-events: auto;
 		}
 		.rail-footer {
+			--rail-footer-control-height: var(--md-comp-status-height);
 			display: flex;
 			flex-direction: row;
 			align-items: center;
@@ -573,7 +576,8 @@
 			justify-content: flex-start;
 			width: auto;
 			min-width: 0;
-			height: var(--md-comp-status-height);
+			height: var(--rail-footer-control-height);
+			min-height: var(--rail-footer-control-height);
 			flex: 1 1 auto;
 			max-width: 100%;
 			padding-inline: var(--md-sys-space-sm);
@@ -590,8 +594,8 @@
 			margin-inline-start: auto;
 			width: var(--md-comp-icon-button-size);
 			min-width: var(--md-comp-icon-button-size);
-			height: var(--md-comp-icon-button-size);
-			min-height: var(--md-comp-icon-button-size);
+			height: var(--rail-footer-control-height);
+			min-height: var(--rail-footer-control-height);
 		}
 	}
 
