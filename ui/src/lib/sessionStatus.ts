@@ -1,7 +1,7 @@
 // Canonical session status vocabulary + UI style mapping. The backend
 // emits these strings via SessionStatus::as_str(); see crates/agent/src/session.rs.
 //
-// statusColor() returns a hex color for inline badges (SessionCard dot).
+// statusColor() returns a theme token for inline badges (SessionCard dot).
 // statusVariant() returns a MaterialBadge variant for the memory/sessions page.
 // Paused sessions carry a derived waitingReason so views do not infer the
 // cause by combining status, interactions, and action state.
@@ -37,11 +37,11 @@ const WAITING_REASON_LABELS: Record<SessionWaitingReason, string> = {
 };
 
 const COLOR_MAP: Record<string, string> = {
-	pending: '#666',
-	running: 'var(--md-sys-color-success)',
-	paused: '#ccaa44',
-	completed: '#4488ff',
-	error: '#ff4444',
+	pending: 'var(--md-sys-color-outline)',
+	running: 'var(--md-sys-color-primary)',
+	paused: 'var(--md-sys-color-warning)',
+	completed: 'var(--md-sys-color-success)',
+	error: 'var(--md-sys-color-error)',
 };
 
 const VARIANT_MAP: Record<
@@ -92,7 +92,7 @@ export function isErrorStatus(status: string | undefined | null): boolean {
 }
 
 export function statusColor(status: string) {
-	return COLOR_MAP[status] || '#666';
+	return COLOR_MAP[status] || 'var(--md-sys-color-outline)';
 }
 
 export function statusVariant(

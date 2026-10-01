@@ -135,11 +135,10 @@
 
 :root {
 	/* ---------- Haven brand mark ---------- */
-	/* Fixed across light/dark themes so the UI mark matches the EXE, tray,
-	 * favicon and Store assets generated from assets/branding/haven-mark.svg. */
-	--haven-mark-background: #2c5090;
-	--haven-mark-bubble: #d7e3ff;
-	--haven-mark-ink: #2c5090;
+	/* The in-app mark follows the active color scheme; packaged app icons keep
+	 * their stable brand colors from assets/branding/haven-mark.svg. */
+	--haven-mark-bubble: var(--md-sys-color-primary-container);
+	--haven-mark-ink: var(--md-sys-color-on-primary-container);
 
 	/* ---------- Typography ---------- */
 	/* Material Design 3 Latin = Roboto (bundled). CJK is intentionally
@@ -463,6 +462,165 @@
 	--md-sys-color-inverse-primary: #3378d6;
 
 	color-scheme: dark;
+}
+
+/* Non-blue accents seed the complete expressive palette. The blue preset keeps
+ * its hand-tuned scheme above; other accents tint semantic roles and neutral
+ * surfaces together so old blue/purple colors do not leak into those themes. */
+[data-theme='light'][data-accent]:not([data-accent='blue']) {
+	--md-sys-color-primary: var(--md-accent-hex, #2c5090);
+	--md-sys-color-on-primary: var(--md-accent-on-primary, #ffffff);
+	--md-sys-color-primary-container: color-mix(
+		in srgb,
+		var(--md-accent-hex, #2c5090) 20%,
+		#ffffff
+	);
+	--md-sys-color-on-primary-container: var(--md-accent-on-primary-container, #000000);
+	--md-sys-color-primary-fixed: var(--md-sys-color-primary-container);
+	--md-sys-color-on-primary-fixed: var(--md-sys-color-on-primary-container);
+
+	--md-sys-color-secondary: color-mix(
+		in srgb,
+		var(--md-accent-hex, #2c5090) 68%,
+		#545f70
+	);
+	--md-sys-color-on-secondary: var(--md-accent-on-secondary, #ffffff);
+	--md-sys-color-secondary-container: color-mix(
+		in srgb,
+		var(--md-accent-hex, #2c5090) 15%,
+		#e9edf2
+	);
+	--md-sys-color-on-secondary-container: var(--md-accent-on-secondary-container, #000000);
+
+	--md-sys-color-tertiary: color-mix(
+		in srgb,
+		var(--md-accent-hex, #2c5090) 60%,
+		#735b6c
+	);
+	--md-sys-color-on-tertiary: var(--md-accent-on-tertiary, #ffffff);
+	--md-sys-color-tertiary-container: color-mix(
+		in srgb,
+		var(--md-accent-hex, #2c5090) 14%,
+		#f0edf0
+	);
+	--md-sys-color-on-tertiary-container: var(--md-accent-on-tertiary-container, #000000);
+
+	--md-sys-color-background: color-mix(in srgb, var(--md-accent-hex, #2c5090) 2%, #f7f8fc);
+	--md-sys-color-surface: var(--md-sys-color-background);
+	--md-sys-color-surface-variant: color-mix(
+		in srgb,
+		var(--md-accent-hex, #2c5090) 7%,
+		#e3e1ec
+	);
+	--md-sys-color-surface-container-low: color-mix(
+		in srgb,
+		var(--md-accent-hex, #2c5090) 3%,
+		#f1f3f8
+	);
+	--md-sys-color-surface-container: color-mix(
+		in srgb,
+		var(--md-accent-hex, #2c5090) 4%,
+		#e9edf4
+	);
+	--md-sys-color-surface-container-high: color-mix(
+		in srgb,
+		var(--md-accent-hex, #2c5090) 5%,
+		#e1e6ef
+	);
+	--md-sys-color-surface-container-highest: color-mix(
+		in srgb,
+		var(--md-accent-hex, #2c5090) 6%,
+		#d9dfe9
+	);
+	--md-sys-color-outline: color-mix(in srgb, var(--md-accent-hex, #2c5090) 5%, #777680);
+	--md-sys-color-outline-variant: color-mix(
+		in srgb,
+		var(--md-accent-hex, #2c5090) 16%,
+		#c3c9d5
+	);
+	--md-sys-color-inverse-primary: var(--md-accent-hex, #2c5090);
+}
+
+[data-theme='dark'][data-accent]:not([data-accent='blue']) {
+	--md-sys-color-primary: color-mix(
+		in srgb,
+		var(--md-accent-hex, #2c5090) 55%,
+		#ffffff
+	);
+	--md-sys-color-on-primary: var(--md-accent-on-primary, #000000);
+	--md-sys-color-primary-container: color-mix(
+		in srgb,
+		var(--md-accent-hex, #2c5090) 22%,
+		#222631
+	);
+	--md-sys-color-on-primary-container: var(--md-accent-on-primary-container, #ffffff);
+	--md-sys-color-primary-fixed: var(--md-sys-color-primary);
+	--md-sys-color-on-primary-fixed: color-mix(
+		in srgb,
+		var(--md-accent-hex, #2c5090) 80%,
+		#000000
+	);
+
+	--md-sys-color-secondary: color-mix(
+		in srgb,
+		var(--md-accent-hex, #2c5090) 42%,
+		#bec6dc
+	);
+	--md-sys-color-on-secondary: var(--md-accent-on-secondary, #000000);
+	--md-sys-color-secondary-container: color-mix(
+		in srgb,
+		var(--md-accent-hex, #2c5090) 32%,
+		#3e424c
+	);
+	--md-sys-color-on-secondary-container: var(--md-accent-on-secondary-container, #ffffff);
+
+	--md-sys-color-tertiary: color-mix(
+		in srgb,
+		var(--md-accent-hex, #2c5090) 50%,
+		#e7b9d1
+	);
+	--md-sys-color-on-tertiary: var(--md-accent-on-tertiary, #000000);
+	--md-sys-color-tertiary-container: color-mix(
+		in srgb,
+		var(--md-accent-hex, #2c5090) 26%,
+		#443c46
+	);
+	--md-sys-color-on-tertiary-container: var(--md-accent-on-tertiary-container, #ffffff);
+
+	--md-sys-color-background: color-mix(in srgb, var(--md-accent-hex, #2c5090) 3%, #181b24);
+	--md-sys-color-surface: var(--md-sys-color-background);
+	--md-sys-color-surface-variant: color-mix(
+		in srgb,
+		var(--md-accent-hex, #2c5090) 8%,
+		#4c5160
+	);
+	--md-sys-color-surface-container-low: color-mix(
+		in srgb,
+		var(--md-accent-hex, #2c5090) 4%,
+		#1d2029
+	);
+	--md-sys-color-surface-container: color-mix(
+		in srgb,
+		var(--md-accent-hex, #2c5090) 5%,
+		#222631
+	);
+	--md-sys-color-surface-container-high: color-mix(
+		in srgb,
+		var(--md-accent-hex, #2c5090) 6%,
+		#292e3b
+	);
+	--md-sys-color-surface-container-highest: color-mix(
+		in srgb,
+		var(--md-accent-hex, #2c5090) 7%,
+		#303646
+	);
+	--md-sys-color-outline: color-mix(in srgb, var(--md-accent-hex, #2c5090) 10%, #9b9ba6);
+	--md-sys-color-outline-variant: color-mix(
+		in srgb,
+		var(--md-accent-hex, #2c5090) 18%,
+		#414754
+	);
+	--md-sys-color-inverse-primary: var(--md-accent-hex, #2c5090);
 }
 
 /* ============================================================================

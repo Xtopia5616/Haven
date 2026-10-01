@@ -63,18 +63,18 @@ describe('isBusyStatus', () => {
 });
 
 describe('statusColor', () => {
-	it('maps every status to its hex color', () => {
-		expect(statusColor('pending')).toBe('#666');
-		expect(statusColor('running')).toBe('var(--md-sys-color-success)');
-		expect(statusColor('paused')).toBe('#ccaa44');
-		expect(statusColor('completed')).toBe('#4488ff');
-		expect(statusColor('error')).toBe('#ff4444');
+	it('maps every status to a semantic theme color token', () => {
+		expect(statusColor('pending')).toBe('var(--md-sys-color-outline)');
+		expect(statusColor('running')).toBe('var(--md-sys-color-primary)');
+		expect(statusColor('paused')).toBe('var(--md-sys-color-warning)');
+		expect(statusColor('completed')).toBe('var(--md-sys-color-success)');
+		expect(statusColor('error')).toBe('var(--md-sys-color-error)');
 	});
 
-	it('falls back to the pending gray for unknown statuses', () => {
-		expect(statusColor('paused_pending')).toBe('#666');
-		expect(statusColor('')).toBe('#666');
-		expect(statusColor(undefined as any)).toBe('#666');
+	it('falls back to the neutral theme color for unknown statuses', () => {
+		expect(statusColor('paused_pending')).toBe('var(--md-sys-color-outline)');
+		expect(statusColor('')).toBe('var(--md-sys-color-outline)');
+		expect(statusColor(undefined as any)).toBe('var(--md-sys-color-outline)');
 	});
 });
 

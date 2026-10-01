@@ -47,11 +47,12 @@
 				else if (accent && accent.indexOf('custom:') === 0) {
 					var c = accent.slice(7);
 					if (/^#[0-9a-f]{6}$/i.test(c)) hex = c;
+					else accent = 'blue';
+				} else if (accent !== 'blue') {
+					accent = 'blue';
 				}
 				document.documentElement.setAttribute('data-accent', accent || 'blue');
 				document.documentElement.style.setProperty('--md-accent-hex', hex);
-				document.documentElement.style.background =
-					theme === 'light' ? '#f7f8fc' : '#181b24';
 			})();
 		</script>
 		<style>

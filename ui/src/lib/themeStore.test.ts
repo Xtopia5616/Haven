@@ -12,6 +12,12 @@ describe('themeStore', () => {
 		document.documentElement.removeAttribute('data-theme');
 		document.documentElement.removeAttribute('data-accent');
 		document.documentElement.style.removeProperty('--md-accent-hex');
+		document.documentElement.style.removeProperty('--md-accent-on-primary');
+		document.documentElement.style.removeProperty('--md-accent-on-secondary');
+		document.documentElement.style.removeProperty('--md-accent-on-tertiary');
+		document.documentElement.style.removeProperty('--md-accent-on-primary-container');
+		document.documentElement.style.removeProperty('--md-accent-on-secondary-container');
+		document.documentElement.style.removeProperty('--md-accent-on-tertiary-container');
 		// jsdom has no matchMedia by default; default to dark via a stub.
 		window.matchMedia = vi.fn().mockReturnValue({ matches: true });
 	});
@@ -40,6 +46,13 @@ describe('themeStore', () => {
 		const { themeStore } = await loadThemeStore();
 		expect(themeStore.currentTheme).toBe('light');
 		expect(themeStore.currentAccent).toBe('green');
+	});
+
+	it('falls back to blue for an invalid persisted custom accent', async () => {
+		localStorage.setItem('haven.accent', 'custom:not-a-color');
+		const { themeStore } = await loadThemeStore();
+		expect(themeStore.currentAccent).toBe('blue');
+		expect(themeStore.accentColor).toBe('#2C5090');
 	});
 
 	it('persists theme and accent to localStorage on set', async () => {
@@ -94,6 +107,28 @@ describe('themeStore', () => {
 		expect(themeStore.currentAccent).toBe('custom:#ff0000');
 		expect(themeStore.accentColor).toBe('#ff0000');
 		expect(themeStore.isPreset).toBe(false);
+	});
+
+	it('updates accent contrast tokens for custom colors and both themes', async () => {
+		const { themeStore } = await loadThemeStore();
+		themeStore.setAccent('#ffff00');
+		expect(document.documentElement.style.getPropertyValue('--md-accent-on-primary')).toBe('#000000');
+		expect(document.documentElement.style.getPropertyValue('--md-accent-on-secondary')).toBe('#000000');
+		expect(document.documentElement.style.getPropertyValue('--md-accent-on-tertiary')).toBe('#000000');
+		expect(
+			document.documentElement.style.getPropertyValue('--md-accent-on-primary-container'),
+		).toBe('#ffffff');
+
+		themeStore.setTheme('light');
+		expect(
+			document.documentElement.style.getPropertyValue('--md-accent-on-primary-container'),
+		).toBe('#000000');
+		expect(
+			document.documentElement.style.getPropertyValue('--md-accent-on-secondary-container'),
+		).toBe('#000000');
+		expect(
+			document.documentElement.style.getPropertyValue('--md-accent-on-tertiary-container'),
+		).toBe('#000000');
 	});
 
 	it('ignores invalid accents', async () => {

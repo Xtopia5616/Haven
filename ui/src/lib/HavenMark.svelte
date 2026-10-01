@@ -4,8 +4,8 @@
 	}
 
 	/**
-	 * Shared Haven mark. The shape and fixed brand colors match
-	 * assets/branding/haven-mark.svg and the generated app icons.
+	 * Shared in-app Haven mark. Its colors follow the active theme tokens; the
+	 * packaged app icons keep the stable brand colors from haven-mark.svg.
 	 */
 	let { size = 24 }: Props = $props();
 </script>
@@ -28,3 +28,20 @@
 		<rect x="35" y="24.5" width="5" height="12" rx="2.5" />
 	</g>
 </svg>
+
+<style>
+	.haven-mark path,
+	.haven-mark g,
+	.haven-mark rect {
+		transition:
+			fill var(--md-sys-motion-duration-short) var(--md-sys-motion-easing-standard);
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.haven-mark path,
+		.haven-mark g,
+		.haven-mark rect {
+			transition: none;
+		}
+	}
+</style>
