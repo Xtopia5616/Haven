@@ -6,6 +6,7 @@ export type LlmConnectionFailureReason =
 	| 'timeout'
 	| 'authentication'
 	| 'rate_limited'
+	| 'circuit_open'
 	| 'server'
 	| 'request_rejected'
 	| 'invalid_response'
@@ -24,6 +25,7 @@ const REASONS: Record<LlmConnectionFailureReason, string> = {
 	timeout: '请求超时，请检查网络或服务是否可用',
 	authentication: 'API Key 无效或没有访问权限',
 	rate_limited: '模型服务限流，请稍后重试',
+	circuit_open: '连续请求失败后，模型调用暂时进入保护状态',
 	server: '模型服务返回了服务器错误',
 	request_rejected: '模型服务拒绝了请求，请检查地址和模型配置',
 	invalid_response: '模型服务返回了无法识别的响应',
@@ -62,6 +64,9 @@ export function formatLlmConnectionFailure(report: LlmConnectionReport): string 
 	const identity = report.provider && report.model
 		? `（${report.provider} / ${report.model}）`
 		: '';
+	if (report.reason === 'circuit_open') {
+		return `默认模型${identity}处于保护状态，点击“继续生成”可立即重试`;
+	}
 	return `默认模型${identity}连接失败：${llmConnectionReasonText(report.reason)}。请到模型设置检查 API 地址、API Key 和代理`;
 }
 

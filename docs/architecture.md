@@ -195,7 +195,10 @@ OS 句柄和进程生命周期适配不属于该共享契约面，统一归 `hav
   `RouterConfig` snapshot，不复制配置真源。配置/metadata helper 继续接收 `RequestKind` 并
   经 `RouterConfig::route` 校验 route，不调用 provider 或投影 usage/health；`capability_profile`
   只读取已选 adapter 的本地 wire profile。`connection_status` 与 `prewarm_all` 是明确的健康
-  probe，会调用 health check 并按既有规则投影 outcome（ADR 0316、0329、0339）。
+  probe，会调用 health check 并按既有规则投影 outcome（ADR 0316、0329、0339）。探测遇到
+  open circuit 时返回 `circuit_open` 分类并以 debug 记录，因为该路径没有访问 provider；
+  用户对错误/暂停会话执行 Continue 时，仅清除所选聊天模型的连续失败熔断门槛，保留
+  rate-limit cooldown 与历史调用计数（ADR 0421）。
 - `router.rs`：`LlmRouter` 保留配置 snapshot 与请求执行状态，拥有 route/client 选择、
   health/circuit、rate-limit cooldown、semaphore 与 stream rules，并为执行器提供配置
   snapshot 和 health/rate-limit outcome closure。每个 request kind 仍只走唯一 primary；

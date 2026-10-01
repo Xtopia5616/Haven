@@ -618,12 +618,30 @@ impl LlmRouter {
             .entry(model_id.to_string())
             .or_insert_with(EndpointHealth::new);
         if !endpoint.allow_request() {
-            return Err(LlmError::ServerError(format!(
-                "circuit breaker open for model {}",
-                model_id
-            )));
+            return Err(LlmError::CircuitOpen {
+                model_id: model_id.to_string(),
+            });
         }
         Ok(())
+    }
+
+    /// Clear the selected endpoint's consecutive-failure gate before an
+    /// explicit user retry (for example, Continue on an errored session).
+    /// This is process-local health state; provider rate-limit cooldowns and
+    /// lifetime call counters are intentionally preserved.
+    pub async fn prepare_manual_retry(&self, request: RequestKind) {
+        let Ok((model_id, _client)) = self
+            .model_directory
+            .resolve_client(RequestDescriptor::from(request))
+        else {
+            return;
+        };
+        self.health
+            .write()
+            .await
+            .entry(model_id)
+            .or_insert_with(EndpointHealth::new)
+            .reset_for_manual_retry();
     }
 
     async fn record_success(&self, model_id: &str) {
@@ -1031,15 +1049,25 @@ impl LlmRouter {
             },
             Err(e) => {
                 let reason = e.connection_failure_reason();
-                tracing::warn!(
-                    request = request.as_str(),
-                    provider = %endpoint.provider,
-                    model = %endpoint.model_name,
-                    endpoint_host = %endpoint_host(&endpoint.base_url),
-                    reason = reason.as_str(),
-                    error = %haven_common::error::sanitize_error_text(&e.to_string()),
-                    "LLM connection probe failed"
-                );
+                if matches!(&e, LlmError::CircuitOpen { .. }) {
+                    tracing::debug!(
+                        request = request.as_str(),
+                        provider = %endpoint.provider,
+                        model = %endpoint.model_name,
+                        reason = reason.as_str(),
+                        "LLM connection probe deferred by open circuit"
+                    );
+                } else {
+                    tracing::warn!(
+                        request = request.as_str(),
+                        provider = %endpoint.provider,
+                        model = %endpoint.model_name,
+                        endpoint_host = %endpoint_host(&endpoint.base_url),
+                        reason = reason.as_str(),
+                        error = %haven_common::error::sanitize_error_text(&e.to_string()),
+                        "LLM connection probe failed"
+                    );
+                }
                 LlmConnectionReport {
                     status: LlmConnectionStatus::Disconnected,
                     reason: Some(reason),
@@ -1945,9 +1973,7 @@ mod tests {
             .complete(CompleteRequest::new(RequestKind::Chat, Vec::new()))
             .await
             .expect_err("an open circuit must fail instead of changing namespace");
-        assert!(
-            matches!(error, LlmError::ServerError(message) if message.contains("circuit breaker"))
-        );
+        assert!(matches!(error, LlmError::CircuitOpen { .. }));
         let after = router.health.read().await;
         assert_eq!(after["default_model"].consecutive_failures, 3);
         assert_eq!(after["small_model"].consecutive_failures, 0);
@@ -2732,6 +2758,30 @@ mod tests {
     }
 
     #[test]
+    fn endpoint_health_manual_retry_resets_streak_and_preserves_lifetime_counts() {
+        let mut health = EndpointHealth::new();
+        health.consecutive_failures = 3;
+        health.last_failure_time = Some(Instant::now());
+        health.is_healthy = false;
+        health.circuit_breaker.state = CircuitState::Open;
+        health.circuit_breaker.consecutive_failures = 3;
+        health.circuit_breaker.failure_count = 3;
+        health.circuit_breaker.total_calls = 7;
+        health.circuit_breaker.opened_at = Some(Instant::now());
+
+        health.reset_for_manual_retry();
+
+        assert!(health.is_healthy);
+        assert_eq!(health.consecutive_failures, 0);
+        assert!(health.last_failure_time.is_none());
+        assert_eq!(health.circuit_breaker.state, CircuitState::Closed);
+        assert_eq!(health.circuit_breaker.consecutive_failures, 0);
+        assert_eq!(health.circuit_breaker.failure_count, 3);
+        assert_eq!(health.circuit_breaker.total_calls, 7);
+        assert!(health.circuit_breaker.opened_at.is_none());
+    }
+
+    #[test]
     fn endpoint_health_allow_request_delegates_to_circuit_breaker() {
         let mut health = EndpointHealth::new();
         assert!(health.allow_request());
@@ -2788,6 +2838,50 @@ mod tests {
 
         let report = router.connection_status(RequestKind::Chat).await;
         assert_eq!(report.status, LlmConnectionStatus::Unconfigured);
+    }
+
+    #[tokio::test]
+    async fn open_circuit_probe_is_classified_and_manual_retry_can_probe_again() {
+        let probe = Arc::new(RouterRequestProbe::default());
+        let client: Arc<dyn LlmClient> = probe.clone();
+        let router = LlmRouter::new_with_clients_full(
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client,
+        );
+        router
+            .force_request_configured(RequestKind::Chat, true)
+            .await;
+        {
+            let mut health = router.health.write().await;
+            let endpoint = health.get_mut("default_model").unwrap();
+            endpoint.circuit_breaker.state = CircuitState::Open;
+            endpoint.circuit_breaker.consecutive_failures = 3;
+            endpoint.circuit_breaker.opened_at = Some(Instant::now());
+        }
+
+        let blocked = router.connection_status(RequestKind::Chat).await;
+        assert_eq!(blocked.status, LlmConnectionStatus::Disconnected);
+        assert_eq!(
+            blocked.reason,
+            Some(crate::types::LlmConnectionFailureReason::CircuitOpen)
+        );
+        assert_eq!(
+            probe.health_calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "an open-circuit status result must not claim a provider probe ran"
+        );
+
+        router.prepare_manual_retry(RequestKind::Chat).await;
+        let recovered = router.connection_status(RequestKind::Chat).await;
+        assert_eq!(recovered.status, LlmConnectionStatus::Ready);
+        assert_eq!(
+            probe.health_calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "manual retry must clear the open gate so the next request reaches the provider"
+        );
     }
 
     #[tokio::test]

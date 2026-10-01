@@ -41,4 +41,17 @@ describe('llm connection report', () => {
 
 		expect(text).toBe('默认模型（PackyAPI / grok-4.6）已恢复连接');
 	});
+
+	it('explains that Continue can retry through an open circuit', () => {
+		const report = normalizeLlmConnectionReport({
+			status: 'disconnected',
+			reason: 'circuit_open',
+			provider: 'OpenAI',
+			model: 'deepseek-v4-flash',
+		});
+
+		expect(formatLlmConnectionFailure(report)).toBe(
+			'默认模型（OpenAI / deepseek-v4-flash）处于保护状态，点击“继续生成”可立即重试',
+		);
+	});
 });

@@ -383,6 +383,11 @@ impl AgentLayer {
                 .await?;
         }
 
+        // An explicit Continue is the user's decision to try the provider
+        // again. Clear only the chat route's consecutive-failure gate so the
+        // queued run can make one fresh attempt without waiting for cooldown.
+        self.react_engine.prepare_manual_retry().await;
+
         // Set to Pending for the dispatcher to pick up.
         self.set_session_status(session_id, SessionStatus::Pending)
             .await?;

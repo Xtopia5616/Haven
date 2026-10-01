@@ -305,6 +305,7 @@ pub enum LlmConnectionFailureReason {
     Timeout,
     Authentication,
     RateLimited,
+    CircuitOpen,
     Server,
     RequestRejected,
     InvalidResponse,
@@ -319,6 +320,7 @@ impl LlmConnectionFailureReason {
             Self::Timeout => "timeout",
             Self::Authentication => "authentication",
             Self::RateLimited => "rate_limited",
+            Self::CircuitOpen => "circuit_open",
             Self::Server => "server",
             Self::RequestRejected => "request_rejected",
             Self::InvalidResponse => "invalid_response",
@@ -1282,6 +1284,9 @@ pub enum LlmError {
     #[error("server error: {0}")]
     ServerError(String),
 
+    #[error("server error: circuit breaker open for model {model_id}")]
+    CircuitOpen { model_id: String },
+
     #[error("invalid response: {0}")]
     InvalidResponse(String),
 
@@ -1346,6 +1351,7 @@ impl LlmError {
             Self::Network(_) => LlmConnectionFailureReason::Network,
             Self::Auth(_) => LlmConnectionFailureReason::Authentication,
             Self::RateLimit { .. } => LlmConnectionFailureReason::RateLimited,
+            Self::CircuitOpen { .. } => LlmConnectionFailureReason::CircuitOpen,
             Self::ServerError(_) => LlmConnectionFailureReason::Server,
             Self::RequestFailed(_) => LlmConnectionFailureReason::RequestRejected,
             Self::InvalidResponse(_) => LlmConnectionFailureReason::InvalidResponse,
@@ -1658,6 +1664,14 @@ mod tests {
             LlmError::RequestFailed("bad request".into()).connection_failure_reason(),
             LlmConnectionFailureReason::RequestRejected
         );
+        let circuit_open = LlmError::CircuitOpen {
+            model_id: "default_model".into(),
+        };
+        assert_eq!(
+            circuit_open.connection_failure_reason(),
+            LlmConnectionFailureReason::CircuitOpen
+        );
+        assert!(!circuit_open.is_retryable());
     }
 
     #[test]

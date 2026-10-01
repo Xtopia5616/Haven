@@ -138,7 +138,7 @@ export type SandboxMode = 'read_only' | 'workspace_write' | 'full_access';
 export type ShellChoiceInput = 'powershell' | 'cmd' | 'pwsh';
 export type ShellChoice = 'powershell' | 'cmd' | 'pwsh';
 export interface ModelInfo { id: string; provider: string; name: string; context_window: number; supports_streaming: boolean; supports_tools: boolean; supports_vision: boolean; cost_per_1k_input_tokens?: number; cost_per_1k_output_tokens?: number }
-export type LlmConnectionFailureReason = 'network' | 'timeout' | 'authentication' | 'rate_limited' | 'server' | 'request_rejected' | 'invalid_response' | 'configuration' | 'unknown';
+export type LlmConnectionFailureReason = 'network' | 'timeout' | 'authentication' | 'rate_limited' | 'circuit_open' | 'server' | 'request_rejected' | 'invalid_response' | 'configuration' | 'unknown';
 export interface LlmConnectionReport { status: LlmConnectionStatus; reason?: LlmConnectionFailureReason; provider: string; model: string }
 export type LlmConnectionStatus = 'ready' | 'disconnected' | 'unconfigured';
 export type McpClientStatus = 'Disconnected' | 'Connecting' | 'Connected' | { 'Offline': { error: string } };

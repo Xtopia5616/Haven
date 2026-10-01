@@ -75,6 +75,17 @@ impl CircuitBreaker {
         }
     }
 
+    /// Let an explicit user retry bypass the current open window once the
+    /// session's next request reaches the router. Historical call counters
+    /// remain intact; only the consecutive-failure gate is cleared.
+    pub(crate) fn reset_for_manual_retry(&mut self) {
+        self.state = CircuitState::Closed;
+        self.consecutive_failures = 0;
+        self.last_failure_time = None;
+        self.opened_at = None;
+        self.half_open_probe_in_flight = false;
+    }
+
     pub(crate) fn allow_request(&mut self) -> bool {
         match self.state {
             CircuitState::Closed => true,
@@ -141,6 +152,13 @@ impl EndpointHealth {
         if self.consecutive_failures >= 3 {
             self.is_healthy = false;
         }
+    }
+
+    pub(crate) fn reset_for_manual_retry(&mut self) {
+        self.consecutive_failures = 0;
+        self.last_failure_time = None;
+        self.is_healthy = true;
+        self.circuit_breaker.reset_for_manual_retry();
     }
 
     pub(crate) fn allow_request(&mut self) -> bool {

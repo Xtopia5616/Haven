@@ -1670,7 +1670,8 @@ async fn run_session_context_exceeded_compaction_fails() {
 
 #[tokio::test]
 async fn continue_session_resumes_errored_session() {
-    let (agent, executor) = make_test_agent();
+    let mock = Arc::new(ScriptedMock::new(Vec::new()));
+    let (agent, executor) = make_test_agent_with(mock, Arc::new(ToolsManager::new()));
     let session = executor.create_session("test continue").await.unwrap();
     // Simulate an errored session with a saved snapshot.
     agent
@@ -1681,6 +1682,29 @@ async fn continue_session_resumes_errored_session() {
         .update_session_status(&session.id, SessionStatus::Error)
         .await
         .unwrap();
+    let router = agent.react_engine.router();
+    for _ in 0..3 {
+        router
+            .chat_stream_with_tools_aggregated(
+                haven_common::config::RequestKind::Chat,
+                &[],
+                &[],
+                |_| {},
+            )
+            .await
+            .expect_err("the scripted provider failure should count toward the circuit");
+    }
+    assert!(matches!(
+        router
+            .chat_stream_with_tools_aggregated(
+                haven_common::config::RequestKind::Chat,
+                &[],
+                &[],
+                |_| {},
+            )
+            .await,
+        Err(LlmError::CircuitOpen { .. })
+    ));
     let snapshot = EventProjection {
         events: seed_events_from_canonical(vec![CanonicalMessage {
             role: CanonicalRole::User,
@@ -1805,6 +1829,18 @@ async fn continue_session_resumes_errored_session() {
         .await
         .unwrap();
     agent.continue_session(&session.id).await.unwrap();
+    let after_continue = router
+        .chat_stream_with_tools_aggregated(
+            haven_common::config::RequestKind::Chat,
+            &[],
+            &[],
+            |_| {},
+        )
+        .await;
+    assert!(
+        matches!(&after_continue, Err(LlmError::Unknown(message)) if message == "scripted responses exhausted"),
+        "Continue must clear the open circuit so the provider request can run: {after_continue:?}"
+    );
     assert_eq!(
         executor.get_active_session_status(&session.id).await,
         Some(SessionStatus::Pending)

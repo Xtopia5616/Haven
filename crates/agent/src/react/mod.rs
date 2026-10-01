@@ -538,6 +538,12 @@ impl ReActEngine {
         router.connection_status(RequestKind::Chat).await
     }
 
+    /// Allow the chat request launched by an explicit Continue action to try
+    /// again immediately after an endpoint circuit has opened.
+    pub(crate) async fn prepare_manual_retry(&self) {
+        self.router().prepare_manual_retry(RequestKind::Chat).await;
+    }
+
     pub(super) fn router(&self) -> Arc<LlmRouter> {
         self.router.read().unwrap().clone()
     }
