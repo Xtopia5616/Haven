@@ -131,6 +131,9 @@ pub struct AppState {
     /// prewarm) has finished. The UI polls / listens so the status chip can
     /// show 加载中 → 就绪 without blocking window creation.
     bootstrap_ready: Arc<AtomicBool>,
+    /// Suppresses the global recording shortcut while the renderer is
+    /// capturing a replacement key binding.
+    pub(crate) hotkey_capture_active: Arc<AtomicBool>,
     pub(crate) ui_confirmations: Arc<tokio::sync::Mutex<HashMap<String, UiConfirmationPending>>>,
 }
 
@@ -159,7 +162,7 @@ impl AppState {
     }
 
     #[cfg(test)]
-    async fn new_for_test(
+    pub(crate) async fn new_for_test(
         db_path: &Path,
         filter_handles: Vec<reload::Handle<EnvFilter, Registry>>,
         config_loader: ConfigLoader,
@@ -574,6 +577,7 @@ impl AppState {
             recording_session: Arc::new(std::sync::Mutex::new(None)),
             pending_recording_usage: Arc::new(std::sync::Mutex::new(HashMap::new())),
             bootstrap_ready: Arc::new(AtomicBool::new(false)),
+            hotkey_capture_active: Arc::new(AtomicBool::new(false)),
             ui_confirmations: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         })
     }

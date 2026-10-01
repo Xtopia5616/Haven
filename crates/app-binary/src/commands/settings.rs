@@ -5,6 +5,8 @@ use crate::config_runtime::{
     SettingsRuntimeApplyCoordinator, apply_log_level_to_handles,
 };
 use crate::events::{HOTKEY_REBIND_EVENT, HotkeyRebindEvent};
+use crate::runtime::ApplicationRuntime;
+use std::future::Future;
 use std::sync::Arc;
 use tauri::Emitter;
 use tauri::Manager;
@@ -19,6 +21,13 @@ struct SettingsApplyContext {
 struct SettingsApplyTiming {
     started: std::time::Instant,
     last: std::sync::Mutex<std::time::Instant>,
+}
+
+fn spawn_settings_hotkey_task<F>(runtime: &ApplicationRuntime, task: F) -> bool
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    runtime.spawn("global-hotkey", task)
 }
 
 impl SettingsApplyTiming {
@@ -349,23 +358,59 @@ async fn execute_settings_apply_phase(
                     new_shortcut,
                     move |_app, _shortcut, event| {
                         let state = _app.state::<Arc<AppState>>();
-                        let shell = &state.shell;
-                        tokio::task::block_in_place(|| {
-                            let rt = tokio::runtime::Handle::current();
-                            let shell_state = rt.block_on(shell.get_state());
+                        if state
+                            .hotkey_capture_active
+                            .load(std::sync::atomic::Ordering::Acquire)
+                        {
+                            return;
+                        }
+                        let runtime = state.runtime.clone();
+                        let shell = state.shell.clone();
+                        let tools = state.tools.clone();
+                        let hotkey_capture_active = state.hotkey_capture_active.clone();
+                        let app_h = _app.clone();
+                        let pressed = event.state == ShortcutState::Pressed;
+                        let accepted = spawn_settings_hotkey_task(&runtime, async move {
+                            if hotkey_capture_active
+                                .load(std::sync::atomic::Ordering::Acquire)
+                            {
+                                return;
+                            }
+                            let shell_state = shell.get_state().await;
                             if shell_state.is_muted {
                                 return;
                             }
-                            if shell_state.hold_mode {
-                                if event.state == ShortcutState::Pressed {
-                                    rt.block_on(shell.hold_press());
-                                } else {
-                                    rt.block_on(shell.hold_release());
+
+                            if pressed && let Some(window) = app_h.get_webview_window("main") {
+                                if let Err(error) = window.show() {
+                                    tracing::debug!(
+                                        error = %crate::logging::sanitize_error_text(&error.to_string()),
+                                        "failed to show main window for global hotkey"
+                                    );
                                 }
-                            } else if event.state == ShortcutState::Pressed {
-                                rt.block_on(shell.toggle_recording());
+                                if let Err(error) = window.set_focus() {
+                                    tracing::debug!(
+                                        error = %crate::logging::sanitize_error_text(&error.to_string()),
+                                        "failed to focus main window for global hotkey"
+                                    );
+                                }
+                            }
+                            if !tools.transcription_available().await {
+                                return;
+                            }
+                            if shell_state.hold_mode {
+                                if pressed {
+                                    shell.hold_press().await;
+                                } else {
+                                    shell.hold_release().await;
+                                }
+                            } else if pressed {
+                                shell.toggle_recording().await;
                             }
                         });
+                        if !accepted {
+                            tracing::debug!("dropping global hotkey event after app shutdown");
+                        }
                     },
                 ) {
                     Ok(()) => tracing::info!(
@@ -603,7 +648,11 @@ pub async fn is_autostart_enabled() -> Result<bool, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ShellAvailability, apply_settings_edit, validate_settings_payload};
+    use super::{
+        ShellAvailability, apply_settings_edit, spawn_settings_hotkey_task,
+        validate_settings_payload,
+    };
+    use crate::app_state::AppState;
     use crate::config_runtime::{
         SettingsApplyOutcome, SettingsApplyPhase, SettingsRuntimeApplyCoordinator,
     };
@@ -627,6 +676,32 @@ mod tests {
             .unwrap(),
             dir,
         )
+    }
+
+    #[tokio::test]
+    async fn settings_hotkey_task_can_be_submitted_from_callback_thread() {
+        let dir = tempfile::tempdir().unwrap();
+        let loader = ConfigLoader::load_from(&dir.path().join("config.toml")).unwrap();
+        let state = AppState::new_for_test(&dir.path().join("test.db"), vec![], loader, dir.path())
+            .await
+            .unwrap();
+        let runtime = state.runtime.clone();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+
+        let accepted = std::thread::spawn(move || {
+            spawn_settings_hotkey_task(&runtime, async move {
+                let _ = tx.send(());
+            })
+        })
+        .join()
+        .unwrap();
+
+        assert!(accepted);
+        tokio::time::timeout(std::time::Duration::from_secs(1), rx)
+            .await
+            .expect("hotkey task should run on the app runtime")
+            .expect("hotkey task should complete");
+        state.runtime.shutdown().await;
     }
 
     #[test]
