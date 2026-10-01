@@ -39,6 +39,7 @@ use haven_tools::{
     OperationIdempotency, ToolExecutionOutcome, ToolOperationScope, ToolResultEnvelope,
 };
 use serde_json::Value;
+use std::sync::Arc;
 
 struct TranscriptProjection {
     record: TranscriptRecord,
@@ -575,7 +576,7 @@ impl ReActEngine {
                 persist_text_id: _,
             } => {
                 state.push_event(record);
-                state.canonical.push(CanonicalMessage::assistant(
+                Arc::make_mut(&mut state.canonical).push(CanonicalMessage::assistant(
                     vec![ContentPart::text(text)],
                     if tool_calls.is_empty() {
                         None
@@ -600,7 +601,7 @@ impl ReActEngine {
                 state.push_event(record);
                 let is_final = action.is_final || action.tool_name == "final_answer";
                 if !is_final {
-                    state.canonical.push(CanonicalMessage::tool(
+                    Arc::make_mut(&mut state.canonical).push(CanonicalMessage::tool(
                         vec![ContentPart::text(canonical_observation)],
                         tool_call_id,
                     ));
@@ -659,8 +660,7 @@ impl ReActEngine {
                     let input = haven_common::media::message_attachment_to_media_input(attachment);
                     crate::types::append_media_projection(&mut content, &input, strategy);
                 }
-                state
-                    .canonical
+                Arc::make_mut(&mut state.canonical)
                     .push(CanonicalMessage::user_with_source(content, source));
                 state.mark_canonical_append();
             }

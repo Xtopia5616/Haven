@@ -7,7 +7,7 @@
 //! projection in one type makes it impossible for Turn, retry, and compaction
 //! paths to each invent their own clone/append/sanitize sequence.
 
-use super::{MediaRequirements, ReActEngine, ReActState, RetryNudge, canonical_media_requirements};
+use super::{MediaRequirements, ReActEngine, ReActState, RetryNudge, canonical_media_summary};
 use crate::compactor::estimate_message_tokens;
 use crate::types::TranscriptRecord;
 use haven_common::media::{
@@ -50,15 +50,31 @@ impl RequestContext {
         Self::from_state_with_estimate(state, retry_nudge, None)
     }
 
-    /// Build from state while reusing the state-owned estimate when no
-    /// request-only mutation was needed. The canonical vector is still copied
-    /// once to preserve the durable projection's ownership boundary.
+    /// Build from state while reusing cached request metadata. Healthy
+    /// canonical content is shared; request-only mutations use an owned copy.
     pub(super) fn from_state_with_estimate(
         state: &ReActState,
         retry_nudge: Option<&RetryNudge>,
         cached_message_tokens: Option<u32>,
     ) -> Self {
-        let mut messages = state.canonical.clone();
+        // The normal run projection is already pairing-valid. Share its Arc
+        // directly so request preparation does not clone every message.
+        // Malformed/retry-only views still take the isolated sanitize path.
+        if retry_nudge.is_none() && crate::canonical::canonical_pairing_healthy(&state.canonical) {
+            let messages = Arc::clone(&state.canonical);
+            let media_inputs = media_inputs_for_state(state, &messages);
+            return Self {
+                messages,
+                media_inputs: Arc::new(media_inputs),
+                message_tokens: cached_message_tokens
+                    .unwrap_or_else(|| estimate_message_tokens(&state.canonical)),
+                media_requirements: state.media_requirements(),
+                media_part_count: state.media_part_count(),
+                repairs: 0,
+            };
+        }
+
+        let mut messages = state.canonical.as_ref().clone();
         let mut request_changed = false;
         if let Some(nudge) = retry_nudge {
             request_changed = ReActEngine::attach_failure_nudge(
@@ -86,15 +102,15 @@ impl RequestContext {
         let instruction = CanonicalMessage::user_text(instruction);
         let instruction_tokens = estimate_message_tokens(std::slice::from_ref(&instruction));
         messages.push(instruction);
-        media_inputs.push(vec![None]);
-        let media_requirements = canonical_media_requirements(&messages);
-        let media_part_count = media_part_count(&messages);
+        if !media_inputs.is_empty() {
+            media_inputs.push(vec![None]);
+        }
         Self {
             messages: Arc::new(messages),
             media_inputs: Arc::new(media_inputs),
             message_tokens: self.message_tokens.saturating_add(instruction_tokens),
-            media_requirements,
-            media_part_count,
+            media_requirements: self.media_requirements,
+            media_part_count: self.media_part_count,
             repairs: self.repairs,
         }
     }
@@ -189,8 +205,7 @@ impl RequestContext {
             message.content = content;
         }
         let repairs = crate::sanitize_canonical(&mut messages);
-        let media_requirements = canonical_media_requirements(&messages);
-        let media_part_count = media_part_count(&messages);
+        let (media_requirements, media_part_count) = canonical_media_summary(&messages);
         (
             Self {
                 message_tokens: estimate_message_tokens(&messages),
@@ -274,9 +289,14 @@ impl RequestContext {
         cached_message_tokens: Option<u32>,
     ) -> Self {
         let repairs = crate::sanitize_canonical(&mut messages);
-        media_inputs.resize_with(messages.len(), Vec::new);
-        for (parts, message) in media_inputs.iter_mut().zip(&messages) {
-            parts.resize(message.content.len(), None);
+        let (media_requirements, media_part_count) = canonical_media_summary(&messages);
+        if media_part_count == 0 {
+            media_inputs.clear();
+        } else {
+            media_inputs.resize_with(messages.len(), Vec::new);
+            for (parts, message) in media_inputs.iter_mut().zip(&messages) {
+                parts.resize(message.content.len(), None);
+            }
         }
         Self {
             message_tokens: if repairs == 0 {
@@ -284,8 +304,8 @@ impl RequestContext {
             } else {
                 estimate_message_tokens(&messages)
             },
-            media_requirements: canonical_media_requirements(&messages),
-            media_part_count: media_part_count(&messages),
+            media_requirements,
+            media_part_count,
             messages: Arc::new(messages),
             media_inputs: Arc::new(media_inputs),
             repairs,
@@ -303,18 +323,19 @@ fn media_inputs_for_state(
 ) -> Vec<Vec<Option<MediaInput>>> {
     // Text/tool-only requests have no durable media association to rebuild.
     // Avoid replaying the entire event log on the dominant prompt path.
-    if !messages.iter().any(|message| {
-        message.content.iter().any(|part| {
-            matches!(
-                part,
-                ContentPart::Image { .. } | ContentPart::Audio { .. } | ContentPart::Video { .. }
-            )
+    if state.media_part_count() == 0
+        || !messages.iter().any(|message| {
+            message.content.iter().any(|part| {
+                matches!(
+                    part,
+                    ContentPart::Image { .. }
+                        | ContentPart::Audio { .. }
+                        | ContentPart::Video { .. }
+                )
+            })
         })
-    }) {
-        return messages
-            .iter()
-            .map(|message| vec![None; message.content.len()])
-            .collect();
+    {
+        return Vec::new();
     }
 
     let mut compact_inputs: Option<Vec<MediaInput>> = None;
@@ -407,19 +428,6 @@ fn media_inputs_for_state(
                 .collect()
         })
         .collect()
-}
-
-fn media_part_count(messages: &[CanonicalMessage]) -> usize {
-    messages
-        .iter()
-        .flat_map(|message| &message.content)
-        .filter(|part| {
-            matches!(
-                part,
-                ContentPart::Image { .. } | ContentPart::Audio { .. } | ContentPart::Video { .. }
-            )
-        })
-        .count()
 }
 
 fn snapshot_media_inputs_for_message(

@@ -5,7 +5,7 @@
 //! result commit. Result slots and observation projection live in
 //! `tool_batch.rs`; failure policy lives in `tool_batch_policy.rs`.
 
-use super::hooks::{BeforeToolAction, ToolCallIdentity};
+use super::hooks::{BeforeToolAction, BeforeToolRequest, ToolCallIdentity};
 use super::tool_batch::{
     CompletedTool, MAX_CONCURRENT_TOOL_CALLS, MAX_RUNTIME_TOOL_CALLS_PER_BATCH, ToolActionRequest,
     ToolBatchGate, ToolBatchOutcome, ToolBatchResults, ToolBatchState, action_step_metadata,
@@ -19,6 +19,7 @@ use futures_util::StreamExt;
 use haven_memory::repositories::session_steps::ActionStepOutcome;
 use haven_tools::{ToolConcurrency, ToolExecutionOutcome};
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{Mutex as AsyncMutex, RwLock};
@@ -86,6 +87,30 @@ struct AdmittedToolExecutionRequest<'a> {
     cancel_res: &'a tokio_util::sync::CancellationToken,
 }
 
+async fn collect_bounded_admission_checks<I, Fut, Output>(checks: I) -> Vec<Output>
+where
+    I: IntoIterator<Item = Fut>,
+    Fut: Future<Output = Output>,
+{
+    futures_util::stream::iter(checks)
+        .buffered(MAX_CONCURRENT_TOOL_CALLS)
+        .collect()
+        .await
+}
+
+#[cfg(test)]
+async fn execute_after_admission<Admission, Execute, Execution>(
+    admission: Admission,
+    execute: Execute,
+) -> Execution::Output
+where
+    Admission: Future,
+    Execute: FnOnce(Admission::Output) -> Execution,
+    Execution: Future,
+{
+    execute(admission.await).await
+}
+
 impl ReActEngine {
     /// Perform all pre-execution decisions against one immutable plan. Failed
     /// admission is normalized into the same observation type as a tool
@@ -106,43 +131,68 @@ impl ReActEngine {
             results: ToolBatchResults::new(plan.len()),
         };
 
-        for (plan_index, planned) in plan.iter().enumerate() {
-            if plan_index >= MAX_RUNTIME_TOOL_CALLS_PER_BATCH {
-                let error = format!(
-                    "runtime tool-call limit ({MAX_RUNTIME_TOOL_CALLS_PER_BATCH}) exceeded; call was not executed"
-                );
-                admission
-                    .failures
-                    .push(DeferredAdmissionFailure { plan_index, error });
-                continue;
-            }
-            if let Some(failure) = validation_failures
+        // The production pre-tool hook only reads the pending interaction and
+        // evaluates the current authorization policy. Bound these independent
+        // checks like execution, while `buffered` keeps their outputs in plan
+        // order. Collect every decision before returning: the caller starts no
+        // tool execution until this whole admission barrier has completed.
+        type AdmissionCheck = Result<(usize, BeforeToolAction), (usize, String)>;
+        type AdmissionCheckFuture = futures_util::future::BoxFuture<'static, AdmissionCheck>;
+        let checks: Vec<AdmissionCheckFuture> =
+            plan.iter().enumerate().map(|(plan_index, planned)| {
+            let step_id = planned.step_id.clone();
+            let action_index = planned.action_index;
+            let tool_call_id = planned.action.tool_call_id.clone();
+            let tool_name = planned.action.tool_name.clone();
+            let tool_input = planned.action.tool_input.clone();
+            let validation_failure = validation_failures
                 .iter()
-                .find(|failure| failure.action_index == planned.action_index)
-            {
-                admission.failures.push(DeferredAdmissionFailure {
-                    plan_index,
-                    error: failure.render(),
-                });
-                continue;
+                .find(|failure| failure.action_index == action_index)
+                .map(|failure| failure.render());
+            if plan_index >= MAX_RUNTIME_TOOL_CALLS_PER_BATCH {
+                return Box::pin(async move {
+                    Err((
+                        plan_index,
+                        format!(
+                            "runtime tool-call limit ({MAX_RUNTIME_TOOL_CALLS_PER_BATCH}) exceeded; call was not executed"
+                        ),
+                    ))
+                }) as AdmissionCheckFuture;
+            }
+            if let Some(error) = validation_failure {
+                return Box::pin(async move { Err((plan_index, error)) }) as AdmissionCheckFuture;
             }
 
-            match self
-                .hooks
-                .before_tool(
-                    self,
-                    gate_ctx,
-                    catalog,
-                    ToolCallIdentity {
-                        step_id: &planned.step_id,
-                        action_index: planned.action_index,
-                        tool_call_id: planned.action.tool_call_id.as_deref(),
-                    },
-                    &planned.action.tool_name,
-                    &planned.action.tool_input,
-                )
-                .await
-            {
+            let gate = self.hooks.before_tool(BeforeToolRequest {
+                executor: Arc::clone(&self.executor),
+                session_id: gate_ctx.session_id.clone(),
+                catalog: catalog.clone(),
+                identity: ToolCallIdentity {
+                    step_id,
+                    action_index,
+                    tool_call_id,
+                },
+                tool_name,
+                input: tool_input,
+            });
+            Box::pin(async move { Ok((plan_index, gate.await)) }) as AdmissionCheckFuture
+        }).collect();
+        let checks = collect_bounded_admission_checks(checks).await;
+
+        for check in checks {
+            let (plan_index, decision) = match check {
+                Ok(decision) => decision,
+                Err((plan_index, error)) => {
+                    admission
+                        .failures
+                        .push(DeferredAdmissionFailure { plan_index, error });
+                    continue;
+                }
+            };
+            let planned = plan
+                .get(plan_index)
+                .expect("admission decision must reference a plan entry");
+            match decision {
                 BeforeToolAction::Proceed { receipt } => {
                     let concurrency = catalog
                         .operation_policy(&planned.action.tool_name, &planned.action.tool_input)
@@ -956,6 +1006,8 @@ impl ReActEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicUsize;
+    use tokio::sync::{mpsc, oneshot};
 
     fn planned_tool() -> super::super::tool_batch_plan::PlannedTool {
         super::super::tool_batch_plan::PlannedTool {
@@ -987,5 +1039,114 @@ mod tests {
 
         assert!(error.contains("shell"));
         assert!(error.contains("Do NOT retry it"));
+    }
+
+    #[tokio::test]
+    async fn admission_checks_overlap_with_a_limit_and_keep_plan_order() {
+        let count = MAX_CONCURRENT_TOOL_CALLS * 2;
+        let (started_tx, mut started_rx) = mpsc::unbounded_channel();
+        let (finished_tx, mut finished_rx) = mpsc::unbounded_channel();
+        let active = Arc::new(AtomicUsize::new(0));
+        let max_active = Arc::new(AtomicUsize::new(0));
+        let mut releases = Vec::with_capacity(count);
+
+        let checks = (0..count)
+            .map(|plan_index| {
+                let (release_tx, release_rx) = oneshot::channel();
+                releases.push(Some(release_tx));
+                let started_tx = started_tx.clone();
+                let finished_tx = finished_tx.clone();
+                let active = active.clone();
+                let max_active = max_active.clone();
+                async move {
+                    let now_active = active.fetch_add(1, Ordering::SeqCst) + 1;
+                    max_active.fetch_max(now_active, Ordering::SeqCst);
+                    started_tx.send(plan_index).unwrap();
+                    release_rx.await.unwrap();
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    finished_tx.send(plan_index).unwrap();
+                    plan_index
+                }
+            })
+            .collect::<Vec<_>>();
+        drop(started_tx);
+        drop(finished_tx);
+
+        let collection = tokio::spawn(collect_bounded_admission_checks(checks));
+        for expected in 0..MAX_CONCURRENT_TOOL_CALLS {
+            assert_eq!(started_rx.recv().await, Some(expected));
+        }
+        assert!(matches!(
+            started_rx.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+
+        // Complete each window backwards. The second window must not start
+        // until the first has drained, and collection must still be ordered.
+        for plan_index in (1..MAX_CONCURRENT_TOOL_CALLS).rev() {
+            releases[plan_index].take().unwrap().send(()).unwrap();
+            assert_eq!(finished_rx.recv().await, Some(plan_index));
+        }
+        releases[0].take().unwrap().send(()).unwrap();
+        assert_eq!(finished_rx.recv().await, Some(0));
+
+        for expected in MAX_CONCURRENT_TOOL_CALLS..count {
+            assert_eq!(started_rx.recv().await, Some(expected));
+        }
+        for plan_index in (MAX_CONCURRENT_TOOL_CALLS..count).rev() {
+            releases[plan_index].take().unwrap().send(()).unwrap();
+            assert_eq!(finished_rx.recv().await, Some(plan_index));
+        }
+
+        assert_eq!(collection.await.unwrap(), (0..count).collect::<Vec<_>>());
+        assert_eq!(max_active.load(Ordering::SeqCst), MAX_CONCURRENT_TOOL_CALLS);
+    }
+
+    #[tokio::test]
+    async fn execution_starts_only_after_every_admission_decision_resolves() {
+        let count = 3;
+        let (started_tx, mut started_rx) = mpsc::unbounded_channel();
+        let (finished_tx, mut finished_rx) = mpsc::unbounded_channel();
+        let mut releases = Vec::with_capacity(count);
+        let checks = (0..count)
+            .map(|plan_index| {
+                let (release_tx, release_rx) = oneshot::channel();
+                releases.push(Some(release_tx));
+                let started_tx = started_tx.clone();
+                let finished_tx = finished_tx.clone();
+                async move {
+                    started_tx.send(plan_index).unwrap();
+                    release_rx.await.unwrap();
+                    finished_tx.send(plan_index).unwrap();
+                    plan_index
+                }
+            })
+            .collect::<Vec<_>>();
+        drop(started_tx);
+        drop(finished_tx);
+
+        let execution_started = Arc::new(AtomicBool::new(false));
+        let execution_marker = execution_started.clone();
+        let execution = tokio::spawn(execute_after_admission(
+            collect_bounded_admission_checks(checks),
+            move |decisions| {
+                execution_marker.store(true, Ordering::SeqCst);
+                async move { decisions }
+            },
+        ));
+
+        for expected in 0..count {
+            assert_eq!(started_rx.recv().await, Some(expected));
+        }
+        for plan_index in (1..count).rev() {
+            releases[plan_index].take().unwrap().send(()).unwrap();
+            assert_eq!(finished_rx.recv().await, Some(plan_index));
+            assert!(!execution_started.load(Ordering::SeqCst));
+        }
+
+        releases[0].take().unwrap().send(()).unwrap();
+        assert_eq!(finished_rx.recv().await, Some(0));
+        assert_eq!(execution.await.unwrap(), vec![0, 1, 2]);
+        assert!(execution_started.load(Ordering::SeqCst));
     }
 }

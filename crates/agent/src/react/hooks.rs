@@ -13,6 +13,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use futures_util::future::BoxFuture;
 use haven_common::types::CanonicalMessage;
 use haven_llm::{LlmResponse, ToolDefinition};
 use serde_json::Value;
@@ -49,11 +50,22 @@ pub(crate) enum BeforeToolAction {
 
 /// Stable identity of one tool call within a ReAct step. Gate decisions must
 /// use this identity; tool names and JSON arguments are not unique.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct ToolCallIdentity<'a> {
-    pub step_id: &'a str,
+#[derive(Debug, Clone)]
+pub(crate) struct ToolCallIdentity {
+    pub step_id: String,
     pub action_index: u32,
-    pub tool_call_id: Option<&'a str>,
+    pub tool_call_id: Option<String>,
+}
+
+/// Owned inputs let pre-tool gates run concurrently without retaining borrows
+/// across async trait calls.
+pub(crate) struct BeforeToolRequest {
+    pub executor: Arc<crate::session::SessionSupervisor>,
+    pub session_id: String,
+    pub catalog: haven_tools::ToolCatalogSnapshot,
+    pub identity: ToolCallIdentity,
+    pub tool_name: String,
+    pub input: Value,
 }
 
 /// Inputs needed to classify a completed LLM response. Grouping these
@@ -75,6 +87,7 @@ pub(crate) struct AfterLlmInput<'a> {
 #[derive(Default)]
 pub(crate) struct BeforeStepOutput {
     pub(crate) tool_definitions: Option<Arc<Vec<ToolDefinition>>>,
+    pub(crate) tool_token_estimate: Option<u32>,
     pub(crate) tool_catalog: Option<Arc<haven_tools::ToolCatalogSnapshot>>,
     pub(crate) memory_trigger: Option<crate::memory_trigger::MemoryTriggerPayload>,
 }
@@ -106,16 +119,8 @@ pub(crate) trait LoopHooks: Send + Sync {
     }
 
     /// Pre-tool safety gate (Phase 5 / E3). Default always proceeds.
-    async fn before_tool(
-        &self,
-        _engine: &ReActEngine,
-        _ctx: &StepCtx,
-        _catalog: &haven_tools::ToolCatalogSnapshot,
-        _identity: ToolCallIdentity<'_>,
-        _tool_name: &str,
-        _input: &Value,
-    ) -> BeforeToolAction {
-        BeforeToolAction::Proceed { receipt: None }
+    fn before_tool(&self, _request: BeforeToolRequest) -> BoxFuture<'static, BeforeToolAction> {
+        Box::pin(async { BeforeToolAction::Proceed { receipt: None } })
     }
 
     /// Called after status is set to a pause flavor. The returned intent is

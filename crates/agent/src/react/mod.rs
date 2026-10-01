@@ -17,7 +17,7 @@ use haven_llm::{FinishReason, LlmResponse, LlmRouter, ToolDefinition};
 use haven_memory::Database;
 use haven_memory::{MemoryStore, SessionStore};
 
-use crate::compactor::{ContextCompactor, estimate_provider_request_tokens_with_message_estimate};
+use crate::compactor::ContextCompactor;
 use crate::event::{AgentEvent, AgentEventEmitter, EventDispatcher, UsagePayload};
 #[cfg(test)]
 use crate::types::TranscriptRecord;
@@ -60,7 +60,7 @@ pub(crate) use r#loop::{RunInput, RunReplay};
 use metrics::{Counter as MetricsCounter, Phase as MetricsPhase, ReActMetrics};
 pub use metrics::{MetricsSnapshot, UiMetricsSnapshot};
 pub(crate) use request_context::RequestContext;
-use sidecars::ContextWindowCache;
+use sidecars::{ContextWindowCache, PreparedToolDefinitions, ToolDefCache};
 pub(crate) use state::{ReActState, RetryNudge};
 pub use tool_ports::ToolCatalogPort;
 #[cfg(test)]
@@ -248,20 +248,29 @@ pub(crate) struct MediaRequirements {
     pub(crate) video: bool,
 }
 
-/// Scan canonical content once per step. The result is shared by compaction,
-/// request selection and stream retry so those paths cannot disagree about the
-/// media carried by the request.
-pub(crate) fn canonical_media_requirements(messages: &[CanonicalMessage]) -> MediaRequirements {
+/// Summarize canonical media in one pass. Run state updates this summary on
+/// append and replacement so turn preparation does not rescan long histories.
+pub(crate) fn canonical_media_summary(messages: &[CanonicalMessage]) -> (MediaRequirements, usize) {
     let mut requirements = MediaRequirements::default();
+    let mut media_part_count = 0;
     for part in messages.iter().flat_map(|message| &message.content) {
         match part {
-            ContentPart::Image { .. } => requirements.image = true,
-            ContentPart::Audio { .. } => requirements.audio = true,
-            ContentPart::Video { .. } => requirements.video = true,
+            ContentPart::Image { .. } => {
+                requirements.image = true;
+                media_part_count += 1;
+            }
+            ContentPart::Audio { .. } => {
+                requirements.audio = true;
+                media_part_count += 1;
+            }
+            ContentPart::Video { .. } => {
+                requirements.video = true;
+                media_part_count += 1;
+            }
             ContentPart::Text(_) => {}
         }
     }
-    requirements
+    (requirements, media_part_count)
 }
 
 /// Pick the request kind for an agent step. Image content routes through the
@@ -354,6 +363,9 @@ pub struct ReActEngine {
     context_source: ContextSource,
     /// Per-request context-window cache keyed by router instance pointer.
     context_windows: ContextWindowCache,
+    /// Per-session provider definitions and serialized schema cost, keyed by
+    /// the immutable global/session catalog version.
+    tool_definitions: ToolDefCache,
     /// Domain side effects (inbox / compact / infer). Thin loop only calls
     /// `hooks.before_step` / `on_pause` (Phase 3 / G1).
     hooks: LoopHooksHandle,
@@ -424,6 +436,7 @@ impl ReActEngine {
             run_counter: AtomicU64::new(0),
             context_source,
             context_windows: ContextWindowCache::new(),
+            tool_definitions: ToolDefCache::new(),
             hooks: default_hooks(),
             memory_worker: None,
             metrics,
@@ -539,6 +552,35 @@ impl ReActEngine {
         session_id: &str,
     ) -> Arc<haven_tools::ToolCatalogSnapshot> {
         self.tool_catalog.catalog_snapshot(session_id).await
+    }
+
+    /// Reuse provider-facing schemas and their serialized token estimate while
+    /// the immutable session catalog version is unchanged.
+    pub(super) fn prepare_tool_definitions(
+        &self,
+        session_id: &str,
+        catalog: &haven_tools::ToolCatalogSnapshot,
+    ) -> PreparedToolDefinitions {
+        let version = catalog.version();
+        if let Some(prepared) = self.tool_definitions.get_if_version(session_id, version) {
+            return prepared;
+        }
+        let definitions = Arc::new(
+            catalog
+                .provider_definitions()
+                .iter()
+                .cloned()
+                .map(Into::into)
+                .collect::<Vec<ToolDefinition>>(),
+        );
+        let token_estimate = crate::compactor::estimate_tool_tokens(&definitions);
+        let prepared = PreparedToolDefinitions {
+            definitions,
+            token_estimate,
+        };
+        self.tool_definitions
+            .insert(session_id, version, prepared.clone());
+        prepared
     }
 
     /// Validate every non-final tool call without altering its arguments.
@@ -1133,7 +1175,7 @@ impl ReActEngine {
         ctx: &StepCtx,
         state: &mut ReActState,
         requirements: MediaRequirements,
-        tool_defs: &[ToolDefinition],
+        tool_token_estimate: u32,
         cancel: tokio_util::sync::CancellationToken,
     ) -> anyhow::Result<bool> {
         if state.canonical.len() < 4 {
@@ -1154,16 +1196,21 @@ impl ReActEngine {
         // `needs_compaction` would re-estimate the whole canonical and undo
         // the incremental cache.
         let cached_message_tokens = state.estimate_canonical_tokens();
-        let request_tokens = estimate_provider_request_tokens_with_message_estimate(
+        let request_tokens = crate::compactor::estimate_provider_request_tokens_with_estimates(
             &state.canonical,
-            tool_defs,
             cached_message_tokens,
+            tool_token_estimate,
         );
         if request_tokens <= compactor.threshold_tokens() {
             return Ok(false);
         }
         match compactor
-            .compact(&state.canonical, tool_defs, &router, cancel)
+            .compact_with_tool_token_estimate(
+                &state.canonical,
+                tool_token_estimate,
+                &router,
+                cancel,
+            )
             .await
         {
             Ok(Some(result)) => {
@@ -1289,8 +1336,7 @@ mod tests {
             state.estimate_canonical_tokens(),
             crate::compactor::estimate_message_tokens(&state.canonical),
         );
-        state
-            .canonical
+        Arc::make_mut(&mut state.canonical)
             .push(text_msg(CanonicalRole::Assistant, "appended message"));
         state.mark_canonical_append();
         assert_eq!(

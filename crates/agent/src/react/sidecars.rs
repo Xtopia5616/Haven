@@ -70,28 +70,30 @@ impl Default for MessagingPoller {
     }
 }
 
+/// Provider definitions and their serialized schema cost, both derived from
+/// one immutable catalog version.
+#[derive(Clone)]
+pub(crate) struct PreparedToolDefinitions {
+    pub(crate) definitions: Arc<Vec<ToolDefinition>>,
+    pub(crate) token_estimate: u32,
+}
+
 /// Per-session tool-definition cache keyed by the global catalog and the
-/// session-local registration overlay version.
-/// Values are `Arc` so cache hits share one schema vec across steps. It is
-/// bounded because ended sessions are normally removed eagerly, but a burst
-/// of short-lived sessions must not grow this sidecar without limit.
-#[allow(dead_code)]
-type ToolDefCacheEntry = ((u64, u64), Arc<Vec<ToolDefinition>>);
-#[allow(dead_code)]
+/// session-local registration overlay version. Values share one schema vec
+/// across steps, and the schema token estimate is computed only on a miss.
+/// It is bounded so short-lived sessions cannot grow this sidecar indefinitely.
+type ToolDefCacheEntry = ((u64, u64), PreparedToolDefinitions);
 type ToolDefCacheMap = HashMap<String, ToolDefCacheEntry>;
 
-#[allow(dead_code)]
 struct ToolDefCacheState {
     entries: ToolDefCacheMap,
     order: VecDeque<String>,
 }
 
-#[allow(dead_code)]
 pub(crate) struct ToolDefCache {
     cache: Mutex<ToolDefCacheState>,
 }
 
-#[allow(dead_code)]
 impl ToolDefCache {
     pub(crate) const CAPACITY: usize = 128;
 
@@ -108,13 +110,13 @@ impl ToolDefCache {
         &self,
         session_id: &str,
         version: (u64, u64),
-    ) -> Option<Arc<Vec<ToolDefinition>>> {
+    ) -> Option<PreparedToolDefinitions> {
         let mut state = self.cache.lock().unwrap();
         let result = state
             .entries
             .get(session_id)
             .filter(|(v, _)| *v == version)
-            .map(|(_, defs)| Arc::clone(defs));
+            .map(|(_, prepared)| prepared.clone());
         if result.is_some() {
             state.order.retain(|cached| cached != session_id);
             state.order.push_back(session_id.to_string());
@@ -126,7 +128,7 @@ impl ToolDefCache {
         &self,
         session_id: &str,
         version: (u64, u64),
-        defs: Arc<Vec<ToolDefinition>>,
+        prepared: PreparedToolDefinitions,
     ) {
         let mut state = self.cache.lock().unwrap();
         state.order.retain(|cached| cached != session_id);
@@ -138,14 +140,8 @@ impl ToolDefCache {
         }
         state
             .entries
-            .insert(session_id.to_string(), (version, defs));
+            .insert(session_id.to_string(), (version, prepared));
         state.order.push_back(session_id.to_string());
-    }
-
-    pub(crate) fn remove(&self, session_id: &str) {
-        let mut state = self.cache.lock().unwrap();
-        state.entries.remove(session_id);
-        state.order.retain(|cached| cached != session_id);
     }
 }
 
@@ -215,15 +211,42 @@ mod tests {
     #[test]
     fn tool_definition_cache_is_bounded_and_evicts_least_recently_used() {
         let cache = ToolDefCache::new();
+        let prepared = || PreparedToolDefinitions {
+            definitions: Arc::new(Vec::new()),
+            token_estimate: 7,
+        };
         for index in 0..ToolDefCache::CAPACITY {
-            cache.insert(&format!("ses-{index}"), (0, 0), Arc::new(Vec::new()));
+            cache.insert(&format!("ses-{index}"), (0, 0), prepared());
         }
-        assert!(cache.get_if_version("ses-0", (0, 0)).is_some());
+        assert_eq!(
+            cache
+                .get_if_version("ses-0", (0, 0))
+                .unwrap()
+                .token_estimate,
+            7
+        );
 
-        cache.insert("ses-overflow", (0, 0), Arc::new(Vec::new()));
+        cache.insert("ses-overflow", (0, 0), prepared());
 
         assert!(cache.get_if_version("ses-0", (0, 0)).is_some());
         assert!(cache.get_if_version("ses-overflow", (0, 0)).is_some());
         assert!(cache.get_if_version("ses-1", (0, 0)).is_none());
+    }
+
+    #[test]
+    fn tool_definition_cache_misses_after_catalog_version_changes() {
+        let cache = ToolDefCache::new();
+        cache.insert(
+            "ses-a",
+            (4, 9),
+            PreparedToolDefinitions {
+                definitions: Arc::new(Vec::new()),
+                token_estimate: 17,
+            },
+        );
+
+        assert!(cache.get_if_version("ses-a", (4, 9)).is_some());
+        assert!(cache.get_if_version("ses-a", (5, 9)).is_none());
+        assert!(cache.get_if_version("ses-a", (4, 10)).is_none());
     }
 }

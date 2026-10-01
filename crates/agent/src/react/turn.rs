@@ -167,17 +167,17 @@ impl ReActEngine {
             Some(catalog) => catalog,
             None => self.build_tool_catalog_for_session(session_id).await,
         };
-        let tools = match before_step.tool_definitions {
-            Some(tools) => tools,
-            None => Arc::new(
-                catalog
-                    .provider_definitions()
-                    .iter()
-                    .cloned()
-                    .map(Into::into)
-                    .collect(),
-            ),
+        let prepared_tools = match before_step.tool_definitions {
+            Some(definitions) => super::sidecars::PreparedToolDefinitions {
+                token_estimate: before_step
+                    .tool_token_estimate
+                    .unwrap_or_else(|| crate::compactor::estimate_tool_tokens(&definitions)),
+                definitions,
+            },
+            None => self.prepare_tool_definitions(session_id, &catalog),
         };
+        let tools = prepared_tools.definitions;
+        let tool_token_estimate = prepared_tools.token_estimate;
         let router = self.router();
         let request = choose_agent_request(&router, &request_context).await;
         let (request_context, media_plan) = request_context.with_capabilities(
@@ -213,6 +213,7 @@ impl ReActEngine {
             router,
             request,
             tools.as_slice(),
+            tool_token_estimate,
             state.identity_map.clone(),
             cancel.clone(),
             &partial_thought,
@@ -308,6 +309,10 @@ impl ReActEngine {
                 return Ok(effects.fail_session(message, false));
             }
         };
+        // Release the immutable request Arc before transcript projection. The
+        // next canonical append can then mutate the run vector in place
+        // instead of triggering an avoidable COW copy of the full history.
+        drop(request_context);
 
         if let Some(reasoning) = response.reasoning.clone() {
             let reasoning_id = state.block_msg_id(step_num, ctx.run_id, "reasoning");

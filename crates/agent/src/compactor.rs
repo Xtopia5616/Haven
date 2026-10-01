@@ -126,6 +126,20 @@ pub fn estimate_provider_request_tokens_with_message_estimate(
     tools: &[ToolDefinition],
     cached_message_tokens: u32,
 ) -> u32 {
+    estimate_provider_request_tokens_with_estimates(
+        messages,
+        cached_message_tokens,
+        estimate_tool_tokens(tools),
+    )
+}
+
+/// Cache-friendly request estimator when both transcript and tool schemas
+/// already have version-scoped token estimates.
+pub fn estimate_provider_request_tokens_with_estimates(
+    messages: &[CanonicalMessage],
+    cached_message_tokens: u32,
+    tool_token_estimate: u32,
+) -> u32 {
     let message_tokens = if crate::canonical::canonical_pairing_healthy(messages) {
         cached_message_tokens
     } else {
@@ -134,7 +148,7 @@ pub fn estimate_provider_request_tokens_with_message_estimate(
         estimate_message_tokens(&provider_messages)
     };
     message_tokens
-        .saturating_add(estimate_tool_tokens(tools))
+        .saturating_add(tool_token_estimate)
         .saturating_add(PROVIDER_REQUEST_OVERHEAD_TOKENS)
 }
 
@@ -612,6 +626,19 @@ impl ContextCompactor {
         router: &Arc<LlmRouter>,
         cancel: CancellationToken,
     ) -> Result<Option<CompactionResult>, LlmError> {
+        self.compact_with_tool_token_estimate(messages, estimate_tool_tokens(tools), router, cancel)
+            .await
+    }
+
+    /// Compaction using the schema estimate cached for the exact catalog
+    /// version advertised to the model.
+    pub async fn compact_with_tool_token_estimate(
+        &self,
+        messages: &[CanonicalMessage],
+        tool_token_estimate: u32,
+        router: &Arc<LlmRouter>,
+        cancel: CancellationToken,
+    ) -> Result<Option<CompactionResult>, LlmError> {
         // A user -> assistant tool-call -> tool-result round is the minimum
         // recoverable shape after a context-length failure.
         if messages.len() < 3 {
@@ -619,8 +646,7 @@ impl ContextCompactor {
         }
 
         let token_prefixes = message_token_prefixes(messages);
-        let extra_tokens =
-            estimate_tool_tokens(tools).saturating_add(PROVIDER_REQUEST_OVERHEAD_TOKENS);
+        let extra_tokens = tool_token_estimate.saturating_add(PROVIDER_REQUEST_OVERHEAD_TOKENS);
         let Some((system_count, start_idx, end_idx)) =
             self.compaction_range_with_extra_tokens(messages, &token_prefixes, extra_tokens)
         else {
@@ -630,7 +656,12 @@ impl ContextCompactor {
         let suffix = &messages[end_idx..];
         let summarized_count = end_idx - start_idx;
 
-        let tokens_before = estimate_provider_request_tokens(messages, tools);
+        let cached_message_tokens = token_prefixes.last().copied().unwrap_or_default();
+        let tokens_before = estimate_provider_request_tokens_with_estimates(
+            messages,
+            cached_message_tokens,
+            tool_token_estimate,
+        );
         let summary_request = if middle.iter().any(|message| {
             message
                 .content
@@ -713,7 +744,11 @@ impl ContextCompactor {
         compacted.push(summary_msg);
         compacted.extend_from_slice(suffix);
 
-        let tokens_after = estimate_provider_request_tokens(&compacted, tools);
+        let tokens_after = estimate_provider_request_tokens_with_estimates(
+            &compacted,
+            estimate_message_tokens(&compacted),
+            tool_token_estimate,
+        );
 
         Ok(Some(CompactionResult {
             compacted,

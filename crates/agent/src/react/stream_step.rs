@@ -269,6 +269,7 @@ pub(super) struct StreamSession<'a> {
     router: Arc<LlmRouter>,
     request: RequestKind,
     tools: &'a [ToolDefinition],
+    tool_token_estimate: u32,
     identity_map: Arc<IdentityMap>,
     cancel: tokio_util::sync::CancellationToken,
     partial_thought: &'a Arc<std::sync::Mutex<String>>,
@@ -283,6 +284,7 @@ impl<'a> StreamSession<'a> {
         router: Arc<LlmRouter>,
         request: RequestKind,
         tools: &'a [ToolDefinition],
+        tool_token_estimate: u32,
         identity_map: Arc<IdentityMap>,
         cancel: tokio_util::sync::CancellationToken,
         partial_thought: &'a Arc<std::sync::Mutex<String>>,
@@ -294,6 +296,7 @@ impl<'a> StreamSession<'a> {
             router,
             request,
             tools,
+            tool_token_estimate,
             identity_map,
             cancel,
             partial_thought,
@@ -317,6 +320,7 @@ impl<'a> StreamSession<'a> {
                 self.router.clone(),
                 &mut self.request,
                 self.tools,
+                self.tool_token_estimate,
                 self.cancel.clone(),
                 state,
                 request_context,
@@ -341,6 +345,7 @@ impl<'a> StreamSession<'a> {
                 &self.identity_map,
                 true,
                 self.tools,
+                self.tool_token_estimate,
                 self.cancel.clone(),
                 self.partial_thought,
                 self.partial_reasoning,
@@ -743,6 +748,7 @@ impl ReActEngine {
         identity_map: &IdentityMap,
         replace_output_on_start: bool,
         tools: &[ToolDefinition],
+        tool_token_estimate: u32,
         cancel: tokio_util::sync::CancellationToken,
         partial_thought: &Arc<std::sync::Mutex<String>>,
         partial_reasoning: &Arc<std::sync::Mutex<String>>,
@@ -779,10 +785,10 @@ impl ReActEngine {
         // during stream setup; retries create a new context with its own
         // precise estimate.
         let estimated_input_tokens =
-            crate::compactor::estimate_provider_request_tokens_with_message_estimate(
+            crate::compactor::estimate_provider_request_tokens_with_estimates(
                 request_context.messages(),
-                tools,
                 request_context.message_tokens(),
+                tool_token_estimate,
             );
         let max_output_tokens = router
             .effective_output_tokens(request, estimated_input_tokens)
@@ -857,6 +863,7 @@ impl ReActEngine {
         router: Arc<LlmRouter>,
         request: &mut RequestKind,
         tools: &[ToolDefinition],
+        tool_token_estimate: u32,
         cancel: tokio_util::sync::CancellationToken,
         state: &mut ReActState,
         request_context: &RequestContext,
@@ -873,6 +880,7 @@ impl ReActEngine {
                 state.identity_map.as_ref(),
                 false,
                 tools,
+                tool_token_estimate,
                 cancel.clone(),
                 partial_thought,
                 partial_reasoning,
@@ -892,7 +900,12 @@ impl ReActEngine {
                 let compaction = {
                     let compactor = self.context_compactor(*request).await;
                     compactor
-                        .compact(&state.canonical, tools, &self.router(), cancel.clone())
+                        .compact_with_tool_token_estimate(
+                            &state.canonical,
+                            tool_token_estimate,
+                            &self.router(),
+                            cancel.clone(),
+                        )
                         .await
                 };
                 match compaction {
@@ -985,6 +998,7 @@ impl ReActEngine {
                                 state.identity_map.as_ref(),
                                 true,
                                 tools,
+                                tool_token_estimate,
                                 cancel.clone(),
                                 partial_thought,
                                 partial_reasoning,
@@ -1492,6 +1506,7 @@ mod tests {
             router,
             RequestKind::Vision,
             &[],
+            crate::compactor::estimate_tool_tokens(&[]),
             state.identity_map.clone(),
             CancellationToken::new(),
             &partial_thought,

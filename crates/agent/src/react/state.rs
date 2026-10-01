@@ -15,6 +15,7 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 use super::identity::IdentityMap;
+use super::{MediaRequirements, canonical_media_summary};
 use crate::compactor::estimate_message_tokens;
 use crate::types::{BranchPoint, TranscriptRecord};
 use haven_common::types::CanonicalMessage;
@@ -47,7 +48,12 @@ pub(crate) struct ReActState {
     /// reconstruction walks this compact index instead of scanning every
     /// thought/tool event in a long session.
     pub(crate) media_event_indices: Vec<usize>,
-    pub(crate) canonical: Vec<CanonicalMessage>,
+    /// Shared immutable request snapshots avoid copying the complete
+    /// transcript at every turn head. Transcript writers use `Arc::make_mut`
+    /// so a still-live request snapshot remains isolated from durable state.
+    pub(crate) canonical: Arc<Vec<CanonicalMessage>>,
+    media_requirements: MediaRequirements,
+    media_part_count: usize,
     pub(crate) branch_points: HashMap<u32, BranchPoint>,
     /// Stable ids of already projected user injections.  This index is built
     /// once when the durable state is loaded and updated on append, so an
@@ -74,6 +80,7 @@ impl ReActState {
         canonical: Vec<CanonicalMessage>,
         branch_points: HashMap<u32, BranchPoint>,
     ) -> Self {
+        let (media_requirements, media_part_count) = canonical_media_summary(&canonical);
         let mut media_event_indices = Vec::new();
         for (index, event) in events.iter().enumerate() {
             if matches!(
@@ -101,7 +108,9 @@ impl ReActState {
                 .collect(),
             events,
             media_event_indices,
-            canonical,
+            canonical: Arc::new(canonical),
+            media_requirements,
+            media_part_count,
             branch_points,
             token_estimate: None,
             identity_map: Arc::new(IdentityMap::default()),
@@ -119,6 +128,7 @@ impl ReActState {
     /// prior append delta can no longer be trusted.
     pub(crate) fn mark_canonical_changed(&mut self) {
         self.token_estimate = None;
+        (self.media_requirements, self.media_part_count) = canonical_media_summary(&self.canonical);
     }
 
     /// Mark one message appended to the canonical projection.
@@ -127,6 +137,12 @@ impl ReActState {
             self.token_estimate = None;
             return;
         };
+        let (requirements, media_part_count) =
+            canonical_media_summary(std::slice::from_ref(message));
+        self.media_requirements.image |= requirements.image;
+        self.media_requirements.audio |= requirements.audio;
+        self.media_requirements.video |= requirements.video;
+        self.media_part_count = self.media_part_count.saturating_add(media_part_count);
         let Some(estimate) = &mut self.token_estimate else {
             return;
         };
@@ -152,6 +168,14 @@ impl ReActState {
             tokens,
         });
         tokens
+    }
+
+    pub(crate) fn media_requirements(&self) -> MediaRequirements {
+        self.media_requirements
+    }
+
+    pub(crate) fn media_part_count(&self) -> usize {
+        self.media_part_count
     }
 
     pub(crate) fn stage_retry_nudge(&mut self, tool_call_id: String, text: String) {
@@ -214,7 +238,8 @@ impl ReActState {
                 _ => None,
             })
             .collect();
-        self.canonical = compacted;
+        self.canonical = Arc::new(compacted);
+        (self.media_requirements, self.media_part_count) = canonical_media_summary(&self.canonical);
         self.branch_points.clear();
         // Compaction creates a new canonical root. Any prior incremental
         // estimate described the discarded projection and must be rebuilt.
@@ -260,7 +285,19 @@ mod tests {
 
     #[test]
     fn compaction_replaces_transcript_and_invalidates_branch_points() {
-        let mut state = ReActState::new(Vec::new(), Vec::new(), HashMap::new());
+        let mut state = ReActState::new(
+            Vec::new(),
+            vec![CanonicalMessage::user(vec![
+                haven_common::types::ContentPart::Image {
+                    content_type: "image".into(),
+                    media_type: "image/png".into(),
+                    data: "aGVsbG8=".into(),
+                },
+            ])],
+            HashMap::new(),
+        );
+        assert_eq!(state.media_part_count(), 1);
+        assert!(state.media_requirements().image);
         state.branch_points.insert(
             1,
             BranchPoint {
@@ -284,7 +321,32 @@ mod tests {
 
         assert_eq!(state.events.len(), 1);
         assert_eq!(state.canonical.len(), 1);
+        assert_eq!(state.media_part_count(), 0);
+        assert_eq!(state.media_requirements(), MediaRequirements::default());
         assert!(state.branch_points.is_empty());
+    }
+
+    #[test]
+    fn media_summary_updates_on_canonical_append() {
+        let mut state = ReActState::new(
+            Vec::new(),
+            vec![CanonicalMessage::user_text("hello")],
+            HashMap::new(),
+        );
+        assert_eq!(state.media_part_count(), 0);
+
+        Arc::make_mut(&mut state.canonical).push(CanonicalMessage::user(vec![
+            haven_common::types::ContentPart::Audio {
+                content_type: "audio".into(),
+                media_type: "audio/wav".into(),
+                data: "YXVkaW8=".into(),
+            },
+        ]));
+        state.mark_canonical_append();
+
+        assert_eq!(state.media_part_count(), 1);
+        assert!(state.media_requirements().audio);
+        assert!(!state.media_requirements().image);
     }
 
     #[test]
@@ -317,16 +379,14 @@ mod tests {
         let first_tokens = first.estimate_canonical_tokens();
         assert_eq!(first_tokens, estimate_message_tokens(&first.canonical));
 
-        first
-            .canonical
-            .push(CanonicalMessage::user_text("appended"));
+        Arc::make_mut(&mut first.canonical).push(CanonicalMessage::user_text("appended"));
         first.mark_canonical_append();
         assert_eq!(
             first.estimate_canonical_tokens(),
             estimate_message_tokens(&first.canonical)
         );
 
-        first.canonical[0] = CanonicalMessage::user_text(
+        Arc::make_mut(&mut first.canonical)[0] = CanonicalMessage::user_text(
             "a substantially longer replacement with a different token cost",
         );
         first.mark_canonical_changed();

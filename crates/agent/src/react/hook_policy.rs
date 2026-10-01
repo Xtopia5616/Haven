@@ -9,17 +9,16 @@
 
 use async_trait::async_trait;
 use haven_tools::AuthorizationDecision;
-use serde_json::Value;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
 use super::hooks::{
-    AfterLlmInput, BeforeStepOutput, BeforeToolAction, LoopHooks, MemoryPatchHandle,
-    ToolCallIdentity,
+    AfterLlmInput, BeforeStepOutput, BeforeToolAction, BeforeToolRequest, LoopHooks,
+    MemoryPatchHandle,
 };
 use super::retries::{AfterLlmAction, ResponsePolicy};
-use super::{PauseReason, ReActEngine, ReActState, StepCtx, canonical_media_requirements};
+use super::{PauseReason, ReActEngine, ReActState, StepCtx};
 use crate::memory_trigger::MemoryTriggerPayload;
 
 /// Production hooks: context compaction, interval + pause trigger intent, throttled
@@ -65,31 +64,34 @@ impl LoopHooks for DefaultHooks {
             };
             let changed = patch
                 .prompt_builder
-                .patch_canonical_memory_fence(&ctx.session_id, &description, &mut state.canonical)
+                .patch_canonical_memory_fence(
+                    &ctx.session_id,
+                    &description,
+                    Arc::make_mut(&mut state.canonical).as_mut_slice(),
+                )
                 .await;
             if changed {
                 state.mark_canonical_changed();
             }
         }
-        let media_requirements = canonical_media_requirements(&state.canonical);
+        let media_requirements = state.media_requirements();
         // Resolve the exact per-session tool projection before compaction so
         // schema tokens participate in the context decision. The turn reuses
         // the same cached Arc immediately afterwards.
         let tool_catalog = engine.build_tool_catalog_for_session(&ctx.session_id).await;
-        let tool_defs: Arc<Vec<haven_llm::ToolDefinition>> = Arc::new(
-            tool_catalog
-                .provider_definitions()
-                .iter()
-                .cloned()
-                .map(Into::into)
-                .collect(),
-        );
+        let prepared_tools = engine.prepare_tool_definitions(&ctx.session_id, &tool_catalog);
         // Phase 7 / I2: compact is a nested phase under before_step. It is
         // deliberately after all context sources and prompt patches have
         // settled, so compaction and the following RequestContext snapshot
         // observe one coherent canonical projection.
         engine
-            .maybe_compact(ctx, state, media_requirements, &tool_defs, cancel)
+            .maybe_compact(
+                ctx,
+                state,
+                media_requirements,
+                prepared_tools.token_estimate,
+                cancel,
+            )
             .instrument(tracing::info_span!(
                 "compact",
                 session_id = %ctx.session_id,
@@ -101,7 +103,8 @@ impl LoopHooks for DefaultHooks {
             (ctx.step_num > 0 && interval > 0 && ctx.step_num.is_multiple_of(interval))
                 .then(|| MemoryTriggerPayload::step_interval(ctx.run_id, ctx.step_num));
         Ok(BeforeStepOutput {
-            tool_definitions: Some(tool_defs),
+            tool_definitions: Some(prepared_tools.definitions),
+            tool_token_estimate: Some(prepared_tools.token_estimate),
             tool_catalog: Some(tool_catalog),
             memory_trigger,
         })
@@ -122,54 +125,56 @@ impl LoopHooks for DefaultHooks {
         )
     }
 
-    async fn before_tool(
+    fn before_tool(
         &self,
-        engine: &ReActEngine,
-        ctx: &StepCtx,
-        catalog: &haven_tools::ToolCatalogSnapshot,
-        identity: ToolCallIdentity<'_>,
-        tool_name: &str,
-        input: &Value,
-    ) -> BeforeToolAction {
-        // Resume path: a prior confirm pause already recorded a decision.
-        if let Some((decision, receipt)) = engine
-            .executor
-            .confirm_decision_for(
-                &ctx.session_id,
-                identity.step_id,
-                identity.action_index,
-                identity.tool_call_id,
-            )
-            .await
-        {
-            return if decision {
-                BeforeToolAction::Proceed { receipt }
-            } else {
-                BeforeToolAction::Block {
-                    error: format!(
-                        "The user REJECTED the operation '{}' (confirmation declined). Do NOT retry it — ask the user what to do instead or choose a different approach.",
-                        tool_name
-                    ),
-                }
-            };
-        }
-
-        match engine
-            .executor
-            .check_tool_gate_with_catalog(&ctx.session_id, tool_name, input, catalog)
-            .await
-        {
-            AuthorizationDecision::AutoApproved => BeforeToolAction::Proceed { receipt: None },
-            AuthorizationDecision::Blocked { reason, .. } => BeforeToolAction::Block {
-                error: format!(
-                    "operation '{}' is blocked by the security policy ({reason}). Do NOT retry it — ask the user what to do instead or choose a different approach.",
-                    tool_name
-                ),
-            },
-            AuthorizationDecision::RequiresConfirmation { receipt, .. } => {
-                BeforeToolAction::NeedConfirm { receipt }
+        request: BeforeToolRequest,
+    ) -> futures_util::future::BoxFuture<'static, BeforeToolAction> {
+        Box::pin(async move {
+            // Resume path: a prior confirm pause already recorded a decision.
+            if let Some((decision, receipt)) = request
+                .executor
+                .confirm_decision_for(
+                    &request.session_id,
+                    &request.identity.step_id,
+                    request.identity.action_index,
+                    request.identity.tool_call_id.as_deref(),
+                )
+                .await
+            {
+                return if decision {
+                    BeforeToolAction::Proceed { receipt }
+                } else {
+                    BeforeToolAction::Block {
+                        error: format!(
+                            "The user REJECTED the operation '{}' (confirmation declined). Do NOT retry it — ask the user what to do instead or choose a different approach.",
+                            request.tool_name
+                        ),
+                    }
+                };
             }
-        }
+
+            match request
+                .executor
+                .check_tool_gate_with_catalog(
+                    &request.session_id,
+                    &request.tool_name,
+                    &request.input,
+                    &request.catalog,
+                )
+                .await
+            {
+                AuthorizationDecision::AutoApproved => BeforeToolAction::Proceed { receipt: None },
+                AuthorizationDecision::Blocked { reason, .. } => BeforeToolAction::Block {
+                    error: format!(
+                        "operation '{}' is blocked by the security policy ({reason}). Do NOT retry it — ask the user what to do instead or choose a different approach.",
+                        request.tool_name
+                    ),
+                },
+                AuthorizationDecision::RequiresConfirmation { receipt, .. } => {
+                    BeforeToolAction::NeedConfirm { receipt }
+                }
+            }
+        })
     }
 
     async fn on_pause(
