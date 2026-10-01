@@ -257,49 +257,42 @@
 			id: 'behavior',
 			label: '对话与行为',
 			description: '配置语音快捷键、会话执行、命令行工具和记忆。',
-			icon: 'chat',
 			keys: ['hotkey', 'session', 'memory', 'default_shell'],
 		},
 		{
 			id: 'models',
 			label: '模型与连接',
 			description: '管理 Provider、模型目录、请求能力和模型路由。',
-			icon: 'network',
 			keys: ['llm'],
 		},
 		{
 			id: 'media',
 			label: '语音与媒体',
 			description: '配置录音、转写、OCR、语音合成和图像生成。',
-			icon: 'mic',
 			keys: ['media'],
 		},
 		{
 			id: 'appearance',
 			label: '界面与通知',
 			description: '调整显示风格、事件通知和 Windows 启动行为。',
-			icon: 'sun',
 			keys: ['notification', 'autostart_enabled'],
 		},
 		{
 			id: 'security',
 			label: '安全与权限',
 			description: '设置授权方式、文件沙箱、网络策略和永久规则。',
-			icon: 'settings',
 			keys: ['security'],
 		},
 		{
 			id: 'limits',
 			label: '性能与限制',
 			description: '调整上下文、工具、文件、并发和资源保护上限。',
-			icon: 'cpu',
 			keys: ['context_limits'],
 		},
 		{
 			id: 'diagnostics',
 			label: '日志与诊断',
 			description: '管理后端日志并导出性能诊断数据。',
-			icon: 'activity',
 			keys: ['log'],
 		},
 	] as const;
@@ -327,7 +320,6 @@
 		SETTINGS_SECTIONS.map((section) => ({
 			id: section.id,
 			label: section.label,
-			icon: section.icon,
 			hint: dirtySettingsSectionIds.includes(section.id) ? '已修改' : undefined,
 		})),
 	);
@@ -1155,8 +1147,7 @@
 				ariaLabel="设置分类"
 				idPrefix="settings-tab"
 				panelId="settings-panel"
-				className="workspace-secondary-tabs workspace-secondary-tabs--sidebar settings-tabs"
-				showIcons={true}
+				className="workspace-secondary-tabs workspace-secondary-tabs--sidebar"
 				{isVisible}
 			/>
 		</aside>
@@ -1447,15 +1438,6 @@
 		color: var(--md-sys-color-on-surface-variant);
 		font-size: var(--md-sys-typescale-label-small-size);
 		line-height: var(--md-sys-typescale-label-small-line-height);
-	}
-	:global(.settings-tabs) {
-		max-width: 100%;
-		overflow-x: auto;
-		overscroll-behavior-x: contain;
-		scrollbar-width: thin;
-	}
-	:global(.settings-tabs .md-tab) {
-		flex: 0 0 auto;
 	}
 	:global(.save-btn) {
 		width: 96px;

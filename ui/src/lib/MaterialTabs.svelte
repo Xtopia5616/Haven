@@ -107,7 +107,10 @@
 				? tabRect.left -
 					originLeft +
 					(Number.parseFloat(tabsStyle.getPropertyValue('--md-sys-space-sm')) || 8)
-				: tabRect.left - originLeft + (tabRect.width - width) / 2,
+				: tabRect.left -
+					originLeft +
+					tabsElement.scrollLeft +
+					(tabRect.width - width) / 2,
 			y: vertical
 				? tabRect.top - originTop + (tabRect.height - height) / 2
 				: tabRect.bottom -

@@ -1268,6 +1268,20 @@ select.md-select {
 	height: 100%;
 }
 
+@media screen and (max-width: 839.99px) {
+	/* Secondary tab rows share one density rule: fill spare width when labels
+	 * fit, then keep intrinsic label widths and scroll instead of squeezing. */
+	.md-tabs.workspace-secondary-tabs--sidebar {
+		max-width: 100%;
+		overflow-x: auto;
+		overscroll-behavior-x: contain;
+		scrollbar-width: thin;
+	}
+	.md-tabs.workspace-secondary-tabs--sidebar .md-tab {
+		flex: 1 0 max-content;
+	}
+}
+
 @media screen and (min-width: 840px) {
 	.workspace-secondary-layout {
 		grid-template-columns: minmax(190px, 224px) minmax(0, 1fr);
