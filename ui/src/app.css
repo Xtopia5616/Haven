@@ -1295,8 +1295,21 @@ select.md-select {
 			transparent 100%
 		);
 	}
+	.md-tabs.workspace-secondary-tabs--sidebar.md-tabs--scrollable {
+		cursor: grab;
+		touch-action: pan-x;
+		user-select: none;
+	}
+	.md-tabs.workspace-secondary-tabs--sidebar.md-tabs--scrollable .md-tab {
+		cursor: grab;
+	}
+	.md-tabs.workspace-secondary-tabs--sidebar.md-tabs--dragging,
+	.md-tabs.workspace-secondary-tabs--sidebar.md-tabs--dragging .md-tab {
+		cursor: grabbing;
+	}
 	.md-tabs.workspace-secondary-tabs--sidebar .md-tab {
 		flex: 1 0 max-content;
+		padding-inline: var(--md-sys-space-lg);
 	}
 }
 

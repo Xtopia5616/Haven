@@ -36,8 +36,18 @@
 	let tabsElement: HTMLDivElement | undefined;
 	let tabElements = $state<Record<string, HTMLButtonElement>>({});
 	let animateIndicator = $state(false);
+	let isDraggingTabs = $state(false);
 	let canScrollTabsLeft = $state(false);
 	let canScrollTabsRight = $state(false);
+	let tabDrag: {
+		pointerId: number;
+		startX: number;
+		startY: number;
+		startScrollLeft: number;
+		moved: boolean;
+	} | null = null;
+	let suppressDraggedTabClick = false;
+	let suppressClickResetTimer: number | undefined;
 	let tablistWasVisible = false;
 	let previousActiveTab: string | undefined;
 	let hasMeasuredIndicator = false;
@@ -70,6 +80,86 @@
 		const maxScrollLeft = tabsElement.scrollWidth - tabsElement.clientWidth;
 		canScrollTabsLeft = tabsElement.scrollLeft > 1;
 		canScrollTabsRight = maxScrollLeft - tabsElement.scrollLeft > 1;
+	}
+
+	function canScrollHorizontally(): boolean {
+		if (!tabsElement) return false;
+		if (!tabsElement.classList.contains('workspace-secondary-tabs--sidebar')) return false;
+		if (getComputedStyle(tabsElement).flexDirection === 'column') return false;
+		return tabsElement.scrollWidth > tabsElement.clientWidth + 1;
+	}
+
+	function handleTabsWheel(event: WheelEvent): void {
+		if (!tabsElement || event.ctrlKey || !canScrollHorizontally()) return;
+		if (tabsElement.scrollHeight > tabsElement.clientHeight + 1) return;
+		if (Math.abs(event.deltaY) < Math.abs(event.deltaX)) return;
+		const maxScrollLeft = tabsElement.scrollWidth - tabsElement.clientWidth;
+		if (event.deltaY < 0 && tabsElement.scrollLeft <= 1) return;
+		if (event.deltaY > 0 && tabsElement.scrollLeft >= maxScrollLeft - 1) return;
+
+		event.preventDefault();
+		tabsElement.scrollLeft += event.deltaY;
+	}
+
+	function handleTabsPointerDown(event: PointerEvent): void {
+		if (event.pointerType !== 'mouse' || event.button !== 0 || !event.isPrimary) return;
+		if (!canScrollHorizontally()) return;
+		tabDrag = {
+			pointerId: event.pointerId,
+			startX: event.clientX,
+			startY: event.clientY,
+			startScrollLeft: tabsElement?.scrollLeft ?? 0,
+			moved: false,
+		};
+	}
+
+	function handleTabsPointerMove(event: PointerEvent): void {
+		if (!tabDrag || event.pointerId !== tabDrag.pointerId || !tabsElement) return;
+
+		const deltaX = event.clientX - tabDrag.startX;
+		const deltaY = event.clientY - tabDrag.startY;
+		if (!tabDrag.moved) {
+			if (Math.hypot(deltaX, deltaY) < 4) return;
+			if (Math.abs(deltaX) <= Math.abs(deltaY)) {
+				tabDrag = null;
+				return;
+			}
+
+			tabDrag.moved = true;
+			isDraggingTabs = true;
+			tabsElement.setPointerCapture?.(event.pointerId);
+		}
+
+		event.preventDefault();
+		tabsElement.scrollLeft = tabDrag.startScrollLeft - deltaX;
+	}
+
+	function handleTabsPointerEnd(event: PointerEvent): void {
+		if (!tabDrag || event.pointerId !== tabDrag.pointerId) return;
+		const dragged = tabDrag.moved;
+		tabDrag = null;
+		isDraggingTabs = false;
+		if (!dragged) return;
+
+		suppressDraggedTabClick = true;
+		if (suppressClickResetTimer !== undefined) {
+			window.clearTimeout(suppressClickResetTimer);
+		}
+		suppressClickResetTimer = window.setTimeout(() => {
+			suppressDraggedTabClick = false;
+			suppressClickResetTimer = undefined;
+		}, 0);
+	}
+
+	function handleDraggedTabClick(event: MouseEvent): void {
+		if (!suppressDraggedTabClick) return;
+		event.preventDefault();
+		event.stopImmediatePropagation();
+		suppressDraggedTabClick = false;
+		if (suppressClickResetTimer !== undefined) {
+			window.clearTimeout(suppressClickResetTimer);
+			suppressClickResetTimer = undefined;
+		}
 	}
 
 	function updateMeasuredIndicator(): void {
@@ -149,6 +239,8 @@
 			measuredIndicator.visible = false;
 			hasMeasuredIndicator = false;
 			animateIndicator = false;
+			isDraggingTabs = false;
+			tabDrag = null;
 			canScrollTabsLeft = false;
 			canScrollTabsRight = false;
 			previousActiveTab = nextActiveTab;
@@ -209,6 +301,12 @@
 	onMount(() => {
 		const handleResize = () => updateMeasuredIndicator();
 		window.addEventListener('resize', handleResize);
+		tabsElement?.addEventListener('wheel', handleTabsWheel, { passive: false });
+		tabsElement?.addEventListener('pointerdown', handleTabsPointerDown);
+		tabsElement?.addEventListener('click', handleDraggedTabClick, true);
+		window.addEventListener('pointermove', handleTabsPointerMove);
+		window.addEventListener('pointerup', handleTabsPointerEnd);
+		window.addEventListener('pointercancel', handleTabsPointerEnd);
 		let resizeObserver: ResizeObserver | undefined;
 		if (typeof ResizeObserver !== 'undefined' && tabsElement) {
 			const observer = new ResizeObserver(handleResize);
@@ -220,6 +318,15 @@
 
 		return () => {
 			window.removeEventListener('resize', handleResize);
+			tabsElement?.removeEventListener('wheel', handleTabsWheel);
+			tabsElement?.removeEventListener('pointerdown', handleTabsPointerDown);
+			tabsElement?.removeEventListener('click', handleDraggedTabClick, true);
+			window.removeEventListener('pointermove', handleTabsPointerMove);
+			window.removeEventListener('pointerup', handleTabsPointerEnd);
+			window.removeEventListener('pointercancel', handleTabsPointerEnd);
+			if (suppressClickResetTimer !== undefined) {
+				window.clearTimeout(suppressClickResetTimer);
+			}
 			resizeObserver?.disconnect();
 		};
 	});
@@ -230,6 +337,8 @@
 	class="md-tabs {className}"
 	class:md-tabs--indicator-ready={measuredIndicator.visible && isVisible}
 	class:md-tabs--indicator-animating={animateIndicator}
+	class:md-tabs--scrollable={canScrollTabsLeft || canScrollTabsRight}
+	class:md-tabs--dragging={isDraggingTabs}
 	class:md-tabs--scroll-hint-left={canScrollTabsLeft}
 	class:md-tabs--scroll-hint-right={canScrollTabsRight}
 	style={`--md-tab-indicator-x: ${measuredIndicator.x}px; --md-tab-indicator-y: ${measuredIndicator.y}px; --md-tab-indicator-width: ${measuredIndicator.width}px; --md-tab-indicator-height: ${measuredIndicator.height}px;`}
