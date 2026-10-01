@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, fireEvent } from '@testing-library/svelte';
 import ApiKeyField from './ApiKeyField.svelte';
+import apiKeyFieldSource from './ApiKeyField.svelte?raw';
 
 describe('ApiKeyField', () => {
 	it('shows Set when unconfigured in stored mode', () => {
@@ -41,5 +42,12 @@ describe('ApiKeyField', () => {
 		expect(input).toBeTruthy();
 		expect(input.type).toBe('password');
 		expect(input.placeholder).toBe('••••••••••••••••');
+	});
+
+	it('hides the browser-provided password reveal controls', () => {
+		const componentStyles = apiKeyFieldSource.match(/<style>([\s\S]*?)<\/style>/)?.[1];
+		expect(componentStyles).toMatch(
+			/\.api-key-input::-ms-reveal,\s*\.api-key-input::-ms-clear\s*\{\s*display:\s*none;\s*\}/,
+		);
 	});
 });

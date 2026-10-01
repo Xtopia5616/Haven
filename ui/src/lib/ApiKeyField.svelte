@@ -184,6 +184,10 @@
 		letter-spacing: 0.04em;
 		color: var(--md-sys-color-on-surface);
 	}
+	.api-key-input::-ms-reveal,
+	.api-key-input::-ms-clear {
+		display: none;
+	}
 	.api-key-input::placeholder {
 		color: var(--md-sys-color-on-surface-variant);
 		letter-spacing: 0.12em;
