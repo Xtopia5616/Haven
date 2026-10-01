@@ -36,6 +36,20 @@ pub async fn get_recording_state(
     })
 }
 
+/// Temporarily suppress the global recording shortcut while the renderer
+/// captures a new key binding. This state is in-memory and is cleared when
+/// the capture field stops listening.
+#[tauri::command]
+pub fn set_hotkey_capture_active(
+    active: bool,
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    state
+        .hotkey_capture_active
+        .store(active, std::sync::atomic::Ordering::Release);
+    Ok(())
+}
+
 pub(crate) fn recording_reason_str(reason: RecordingReason) -> &'static str {
     match reason {
         RecordingReason::Manual => "manual",

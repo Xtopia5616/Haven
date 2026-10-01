@@ -616,7 +616,7 @@
 		margin-bottom: 0;
 		line-height: var(--md-sys-typescale-label-small-line-height);
 	}
-	@media (max-width: 700px) {
+	@container settings-content (max-width: 640px) {
 		.policy-section-heading {
 			align-items: flex-start;
 			flex-direction: column;

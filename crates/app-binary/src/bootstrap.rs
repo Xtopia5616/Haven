@@ -13,7 +13,7 @@ use haven_common::config::LogConfig;
 use haven_common::error::sanitize_error_text;
 use haven_memory::SessionStore;
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tauri::Emitter;
 use tauri::Manager;
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
@@ -579,9 +579,13 @@ pub(crate) fn run() {
                 .global_shortcut()
                 .on_shortcut(shortcut, move |app, _sc, event| {
                     let state = app.state::<Arc<AppState>>();
+                    if state.hotkey_capture_active.load(Ordering::Acquire) {
+                        return;
+                    }
                     let runtime = state.runtime.clone();
                     let shell = state.shell.clone();
                     let tools = state.tools.clone();
+                    let hotkey_capture_active = state.hotkey_capture_active.clone();
                     let app_h = app.clone();
                     let pressed = event.state == ShortcutState::Pressed;
                     // `spawn` (unlike `block_on`) is safe from any thread, so a
@@ -589,6 +593,9 @@ pub(crate) fn run() {
                     // can't panic with "Cannot start a runtime from within a
                     // runtime".
                     runtime.spawn("global-hotkey", async move {
+                        if hotkey_capture_active.load(Ordering::Acquire) {
+                            return;
+                        }
                         let shell_state = shell.get_state().await;
                         if shell_state.is_muted {
                             return;
@@ -657,6 +664,7 @@ pub(crate) fn run() {
             commands::skills::get_tools,
             commands::skills::reset_tool_circuits,
             commands::recording::get_recording_state,
+            commands::recording::set_hotkey_capture_active,
             commands::history::get_history,
             commands::history::count_history,
             commands::history::search_history,

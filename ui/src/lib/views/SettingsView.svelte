@@ -925,6 +925,15 @@
 	function setHotkeyBinding(value: string) {
 		hotkeyBinding = value;
 	}
+	function setHotkeyCaptureActive(active: boolean) {
+		void invoke('set_hotkey_capture_active', { active }).catch((error) => {
+			reportError(error, {
+				context: 'SettingsView',
+				message: active ? '暂停录音快捷键失败' : '恢复录音快捷键失败',
+				log: false,
+			});
+		});
+	}
 	function setDefaultShell(value: ShellChoiceInput) {
 		defaultShell = value;
 	}
@@ -1174,6 +1183,7 @@
 							{memoryMaintenance}
 							onHotkeyModeChange={setHotkeyMode}
 							onHotkeyBindingChange={setHotkeyBinding}
+							onHotkeyCaptureChange={setHotkeyCaptureActive}
 							onDefaultShellChange={setDefaultShell}
 							onRunMaintenance={runMaintenance}
 						/>
@@ -1348,18 +1358,21 @@
 	:global(.content:not(.content--chat) .page-shell:has(.settings-page)) {
 		min-height: 100%;
 	}
-	.settings-layout,
-	.settings-main {
-		min-width: 0;
-	}
 	.settings-layout {
 		flex: 1;
+		min-width: 0;
 		grid-template-rows: auto minmax(0, 1fr);
 		align-items: stretch;
 	}
 	.settings-main {
 		display: flex;
 		flex-direction: column;
+		min-width: 0;
+		width: 100%;
+		max-width: var(--md-sys-content-max-width);
+		margin-inline: auto;
+		container-name: settings-content;
+		container-type: inline-size;
 	}
 	.settings-panel-heading {
 		display: flex;
@@ -1487,7 +1500,7 @@
 			grid-template-rows: minmax(0, 1fr);
 		}
 	}
-	@media (max-width: 640px) {
+	@container settings-content (max-width: 640px) {
 		.settings-panel-heading {
 			flex-direction: column;
 		}

@@ -218,7 +218,7 @@
 	onDestroy(() => clearTimeout(sttFetchTimer));
 </script>
 
-<SettingsSection ariaLabel="媒体" className="media-section">
+<SettingsSection ariaLabel="媒体">
 	<p class="model-hint">
 		按模态配置输入与输出。STT / OCR 可走专用通道或「模型」页的 transcription / vision 策略；TTS
 		/ 文生图复用「模型」页已添加的 Provider（Base URL + API Key）。
@@ -262,7 +262,7 @@
 							录音转写由「transcription」请求策略选择模型；请在模型页配置 capability
 							与 fallback。
 						</p>
-						<div class="form-row">
+						<div class="form-row settings-field-layout">
 							<label for="audio-sample-rate">采样率（Hz）</label><MaterialNumberField
 								id="audio-sample-rate"
 								value={audio.sample_rate}
@@ -271,7 +271,7 @@
 								})}
 							/>
 						</div>
-						<div class="form-row">
+						<div class="form-row settings-field-layout">
 							<label for="audio-channels">声道数</label><MaterialNumberField
 								id="audio-channels"
 								value={audio.channels}
@@ -282,7 +282,7 @@
 								})}
 							/>
 						</div>
-						<div class="form-row">
+						<div class="form-row settings-field-layout">
 							<label for="audio-max-duration">最长录音时长（秒）</label
 							><MaterialNumberField
 								id="audio-max-duration"
@@ -294,7 +294,7 @@
 								})}
 							/>
 						</div>
-						<div class="form-row">
+						<div class="form-row settings-field-layout">
 							<label for="audio-silence-timeout">静音结束等待（毫秒）</label
 							><MaterialNumberField
 								id="audio-silence-timeout"
@@ -307,20 +307,24 @@
 								})}
 							/>
 						</div>
-						<div class="form-row">
-							<label for="audio-vad-threshold">语音检测阈值</label><input
-								id="audio-vad-threshold"
-								type="range"
-								class="md-slider"
-								value={audio.vad_threshold}
-								min="0"
-								max="1"
-								step="0.05"
-								style="--vad-fill: {audio.vad_threshold * 100}%"
-								oninput={withEventValue((e) => {
-									audio.vad_threshold = Number(inputElementValue(e));
-								})}
-							/><span class="range-value">{audio.vad_threshold}</span>
+						<div class="form-row settings-field-layout">
+							<label for="audio-vad-threshold">语音检测阈值</label>
+							<div class="range-control">
+								<input
+									id="audio-vad-threshold"
+									type="range"
+									class="md-slider"
+									value={audio.vad_threshold}
+									min="0"
+									max="1"
+									step="0.05"
+									style="--vad-fill: {audio.vad_threshold * 100}%"
+									oninput={withEventValue((e) => {
+										audio.vad_threshold = Number(inputElementValue(e));
+									})}
+								/>
+								<span class="range-value">{audio.vad_threshold}</span>
+							</div>
 						</div>
 					</div>
 					<div class="capability-block">
@@ -494,7 +498,7 @@
 							图片理解由「vision」请求策略选择模型；请在模型页配置 capability 与
 							fallback。
 						</p>
-						<div class="form-row">
+						<div class="form-row settings-field-layout">
 							<label for="max-attachment-images">单条消息最多图片数</label
 							><MaterialNumberField
 								id="max-attachment-images"
@@ -507,7 +511,7 @@
 								})}
 							/>
 						</div>
-						<div class="form-row">
+						<div class="form-row settings-field-layout">
 							<label for="max-attachment-image-mb">单张图片大小上限 (MiB)</label
 							><MaterialNumberField
 								id="max-attachment-image-mb"
@@ -527,7 +531,7 @@
 								})}
 							/>
 						</div>
-						<div class="form-row">
+						<div class="form-row settings-field-layout">
 							<label for="max-attachment-image-dim">压缩最长边 (px)</label
 							><MaterialNumberField
 								id="max-attachment-image-dim"
@@ -540,7 +544,7 @@
 								})}
 							/>
 						</div>
-						<div class="form-row">
+						<div class="form-row settings-field-layout">
 							<label for="attachment-image-quality">JPEG 压缩质量</label
 							><MaterialNumberField
 								id="attachment-image-quality"
@@ -679,7 +683,7 @@
 						</div>
 					</div>
 				{:else if format.id === 'file'}
-					<div class="form-row">
+					<div class="form-row settings-field-layout">
 						<label for="max-attachment-files">单条消息最多文件数</label
 						><MaterialNumberField
 							id="max-attachment-files"
@@ -692,7 +696,7 @@
 							})}
 						/>
 					</div>
-					<div class="form-row">
+					<div class="form-row settings-field-layout">
 						<label for="max-attachment-file-mb">单个文件大小上限 (MiB)</label
 						><MaterialNumberField
 							id="max-attachment-file-mb"
@@ -711,7 +715,7 @@
 							})}
 						/>
 					</div>
-					<div class="form-row">
+					<div class="form-row settings-field-layout">
 						<label for="max-upload-total-mb">托管上传总量上限（MiB）</label
 						><MaterialNumberField
 							id="max-upload-total-mb"
@@ -747,12 +751,9 @@
 />
 
 <style>
-	:global(.media-section) {
-		max-width: 760px;
-	}
-	:global(.media-section) .form-row :global(.md-number-field) {
+	.form-row :global(.md-number-field) {
 		width: min(100%, var(--md-comp-settings-control-width));
-		flex: 0 1 var(--md-comp-settings-control-width);
+		justify-self: start;
 	}
 	.card-list {
 		display: flex;
@@ -791,17 +792,19 @@
 		line-height: var(--md-sys-typescale-label-small-line-height);
 	}
 	.form-row {
-		display: flex;
-		align-items: center;
 		margin-bottom: var(--md-sys-space-sm);
-		gap: var(--md-sys-space-md);
 	}
 	.form-row label {
-		width: var(--md-comp-settings-label-width);
+		min-width: 0;
 		color: var(--md-sys-color-on-surface-variant);
 		font-size: var(--md-sys-typescale-body-small-size);
 		line-height: var(--md-sys-typescale-body-small-line-height);
-		flex-shrink: 0;
+	}
+	.range-control {
+		display: flex;
+		align-items: center;
+		gap: var(--md-sys-space-sm);
+		width: min(100%, var(--md-comp-settings-control-width));
 	}
 	.capability-block {
 		margin-top: var(--md-sys-space-md);
@@ -915,20 +918,5 @@
 		color: var(--md-sys-color-on-surface-variant);
 		font-size: var(--md-sys-typescale-body-medium-size);
 		line-height: var(--md-sys-typescale-body-medium-line-height);
-	}
-	@media (max-width: 700px) {
-		.form-row {
-			flex-direction: column;
-			align-items: stretch;
-			gap: var(--md-sys-space-xs);
-		}
-		:global(.media-section) .form-row :global(.md-number-field) {
-			width: min(100%, var(--md-comp-settings-control-width));
-			flex: 0 1 auto;
-		}
-		.form-row label {
-			width: auto;
-			flex-shrink: 1;
-		}
 	}
 </style>

@@ -497,7 +497,10 @@
 				<h3>{group.title}</h3>
 				<p class="model-hint">{group.hint}</p>
 				{#each group.normal as f}
-					<div class="form-row limit-row" class:danger-row={f.danger}>
+					<div
+						class="form-row limit-row settings-field-layout"
+						class:danger-row={f.danger}
+					>
 						<div class="limit-label">
 							<label for="limit-{f.key}">{f.label}</label>{#if f.danger}<span
 									class="danger-badge"
@@ -527,7 +530,7 @@
 								>{/snippet}
 							<div class="limit-danger-items">
 								{#each group.danger as f}
-									<div class="form-row limit-row">
+									<div class="form-row limit-row settings-field-layout">
 										<div class="limit-label">
 											<label for="limit-{f.key}">{f.label}</label
 											>{#if f.hint}<p class="limit-hint">{f.hint}</p>{/if}
@@ -561,7 +564,6 @@
 		border: 1px solid var(--md-sys-color-outline-variant);
 		border-radius: var(--md-sys-shape-medium);
 		padding: var(--md-sys-space-md);
-		margin-bottom: var(--md-sys-space-md);
 	}
 	:global(.format-card h3) {
 		font-size: var(--md-sys-typescale-body-large-size);
@@ -576,7 +578,7 @@
 	}
 	.limits-grid {
 		display: grid;
-		grid-template-columns: 1fr 1fr;
+		grid-template-columns: minmax(0, 1fr);
 		gap: var(--md-sys-space-md);
 	}
 	:global(.limit-card) {
@@ -601,10 +603,7 @@
 		font-weight: 600;
 	}
 	.limit-row {
-		display: flex;
-		justify-content: space-between;
-		align-items: flex-start;
-		gap: var(--md-sys-space-md);
+		min-width: 0;
 	}
 	.limit-danger-box {
 		border: 1px solid var(--md-sys-color-error, #ba1a1a);
@@ -640,7 +639,6 @@
 		margin-left: auto;
 	}
 	.limit-label {
-		flex: 1;
 		min-width: 0;
 	}
 	.limit-label label {
@@ -674,30 +672,6 @@
 		line-height: var(--md-sys-typescale-label-small-line-height);
 	}
 	.form-row {
-		display: flex;
-		align-items: center;
 		margin-bottom: var(--md-sys-space-sm);
-		gap: var(--md-sys-space-md);
-	}
-	@media (max-width: 900px) {
-		.limits-grid {
-			grid-template-columns: 1fr;
-		}
-	}
-	@media (max-width: 700px) {
-		.limit-row,
-		.form-row {
-			flex-direction: column;
-			align-items: stretch;
-			gap: var(--md-sys-space-xs);
-		}
-		:global(.md-number-field-with-unit--limit) {
-			justify-content: space-between;
-			width: min(100%, var(--md-comp-settings-control-width));
-			flex: 0 1 auto;
-		}
-		:global(.format-card) {
-			padding: var(--md-sys-space-sm);
-		}
 	}
 </style>

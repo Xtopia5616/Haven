@@ -402,3 +402,4 @@
 - [0417：Gemini explicit cache 使用有界 LRU](0417-gemini-explicit-cache-lru.md)
 - [0418：Provider 缓存 usage 诊断与 UI 展示](0418-provider-cache-usage-diagnostics.md)
 - [0419：ReAct 请求准备与工具准入性能](0419-react-loop-preparation-and-admission-performance.md)
+- [0420：设置页自适应表单与快捷键录入](0420-settings-responsive-layout-and-hotkey-capture.md)

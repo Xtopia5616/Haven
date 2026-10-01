@@ -77,6 +77,10 @@ export const TAURI_COMMAND_CONTRACTS = {
 	set_reasoning_effort: { boundary: 'mutate', security: 'role carries a model id or RequestKind and is validated before config save' },
 	set_web_search: { boundary: 'mutate', security: 'provider capability checked before config save' },
 	get_recording_state: { boundary: 'read', security: 'state only; no device or provider detail' },
+	set_hotkey_capture_active: {
+		boundary: 'mutate',
+		security: 'transient renderer key-capture state only; not persisted',
+	},
 	start_recording: { boundary: 'execute', security: 'input pipeline owns capture lifecycle' },
 	stop_recording: { boundary: 'execute', security: 'capture stops before asynchronous transcription' },
 	cancel_recording: { boundary: 'execute', security: 'cancel clears the in-flight recording id' },

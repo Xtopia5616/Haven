@@ -23,7 +23,10 @@
 	}: Props = $props();
 </script>
 
-<div class="settings-field {className}" class:settings-field--stacked={stacked}>
+<div
+	class="settings-field settings-field-layout {className}"
+	class:settings-field--stacked={stacked}
+>
 	<div class="settings-field__label">
 		{#if id}<label for={id}>{label}</label>{:else}<span>{label}</span>{/if}
 		{#if description}<small>{description}</small>{/if}
@@ -33,10 +36,6 @@
 
 <style>
 	.settings-field {
-		display: grid;
-		grid-template-columns: minmax(180px, 0.8fr) minmax(220px, 1.2fr);
-		align-items: center;
-		gap: var(--md-sys-space-md);
 		min-height: var(--md-comp-list-item-one-line-height);
 		padding-block: var(--md-sys-space-xs);
 		border-bottom: 1px solid var(--md-sys-color-outline-variant);
@@ -81,13 +80,5 @@
 	.settings-field--stacked {
 		grid-template-columns: 1fr;
 		align-items: start;
-	}
-
-	@media (max-width: 640px) {
-		.settings-field {
-			grid-template-columns: 1fr;
-			gap: var(--md-sys-space-xs);
-			align-items: start;
-		}
 	}
 </style>

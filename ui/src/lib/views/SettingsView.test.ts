@@ -43,6 +43,18 @@ describe('SettingsView diagnostics export', () => {
 		expect(screen.queryByText('模型尚未配置')).toBeNull();
 	});
 
+	it('suppresses the recording shortcut while capturing a replacement hotkey', async () => {
+		render(SettingsView);
+		await waitFor(() => expect(invoke).toHaveBeenCalledWith('get_api_key_status'));
+		await fireEvent.click(await screen.findByRole('tab', { name: /对话与行为/ }));
+
+		await fireEvent.click(screen.getByRole('button', { name: '快捷键绑定' }));
+		expect(invoke).toHaveBeenCalledWith('set_hotkey_capture_active', { active: true });
+
+		await fireEvent.keyDown(window, { key: 'k', code: 'KeyK', ctrlKey: true });
+		expect(invoke).toHaveBeenCalledWith('set_hotkey_capture_active', { active: false });
+	});
+
 	it('creates and clicks a JSON download when the export button is pressed', async () => {
 		const createObjectURL = vi.fn<(blob: Blob) => string>(() => 'blob:performance-metrics');
 		const revokeObjectURL = vi.fn();

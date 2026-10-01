@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { onDestroy } from 'svelte';
 	// A key-binding capture field. Instead of typing the combo as text, the
 	// user clicks the field and presses the desired key combination; the
 	// formatted string (matching the backend `parse_shortcut` format, e.g.
@@ -15,6 +16,7 @@
 		onChange?: (value: string) => void;
 		id?: string;
 		placeholder?: string;
+		onListeningChange?: (listening: boolean) => void;
 	}
 
 	let {
@@ -22,16 +24,21 @@
 		onChange,
 		id = undefined,
 		placeholder = '点击并按下快捷键',
+		onListeningChange = undefined,
 	}: Props = $props();
 
 	let listening = $state(false);
 
 	function startListening() {
+		if (listening) return;
 		listening = true;
+		onListeningChange?.(true);
 	}
 
 	function stopListening() {
+		if (!listening) return;
 		listening = false;
+		onListeningChange?.(false);
 	}
 
 	function handleKeydown(e: KeyboardEvent) {
@@ -54,6 +61,8 @@
 	function handleBlur() {
 		stopListening();
 	}
+
+	onDestroy(stopListening);
 </script>
 
 <svelte:window onkeydown={handleKeydown} />

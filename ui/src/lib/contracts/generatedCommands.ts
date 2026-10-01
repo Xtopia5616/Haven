@@ -215,6 +215,7 @@ export interface TauriCommandMap {
 	search_history: { request: { query: string }; response: Session[] };
 	search_history_filtered: { request: { query?: string | null; status?: string | null; startDate?: string | null; endDate?: string | null; limit?: number | null; offset?: number | null }; response: Session[] };
 	search_history_paginated: { request: { query: string; limit: number; offset: number }; response: Session[] };
+	set_hotkey_capture_active: { request: { active: boolean }; response: void };
 	set_reasoning_effort: { request: { role: string; effort?: string | null }; response: void };
 	set_skill_enabled: { request: { name: string; enabled: boolean }; response: void };
 	set_tool_enabled: { request: { name: string; enabled: boolean }; response: void };

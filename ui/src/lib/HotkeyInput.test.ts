@@ -15,12 +15,15 @@ describe('HotkeyInput', () => {
 
 	it('enters listening mode on click and emits a formatted combo', async () => {
 		const onChange = vi.fn();
-		render(HotkeyInput, { value: '', onChange });
+		const onListeningChange = vi.fn();
+		render(HotkeyInput, { value: '', onChange, onListeningChange });
 		await fireEvent.click(screen.getByRole('button'));
 		expect(screen.getByText('按下快捷键组合…')).toBeTruthy();
+		expect(onListeningChange).toHaveBeenLastCalledWith(true);
 
 		await fireEvent.keyDown(window, { key: 'k', code: 'KeyK', ctrlKey: true, shiftKey: true });
 		expect(onChange).toHaveBeenCalledWith('Ctrl+Shift+K');
+		expect(onListeningChange).toHaveBeenNthCalledWith(2, false);
 	});
 
 	it('accepts a plain function key without modifiers', async () => {
@@ -68,10 +71,13 @@ describe('HotkeyInput', () => {
 
 	it('escape cancels capture without emitting', async () => {
 		const onChange = vi.fn();
-		render(HotkeyInput, { value: 'Ctrl+Shift+Space', onChange });
+		const onListeningChange = vi.fn();
+		render(HotkeyInput, { value: 'Ctrl+Shift+Space', onChange, onListeningChange });
 		await fireEvent.click(screen.getByRole('button'));
 		await fireEvent.keyDown(window, { key: 'Escape', code: 'Escape' });
 		expect(onChange).not.toHaveBeenCalled();
+		expect(onListeningChange).toHaveBeenNthCalledWith(1, true);
+		expect(onListeningChange).toHaveBeenNthCalledWith(2, false);
 		expect(screen.getByText('Ctrl+Shift+Space')).toBeTruthy();
 	});
 
@@ -89,10 +95,23 @@ describe('HotkeyInput', () => {
 
 	it('blur stops listening', async () => {
 		const onChange = vi.fn();
-		render(HotkeyInput, { value: '', onChange });
+		const onListeningChange = vi.fn();
+		render(HotkeyInput, { value: '', onChange, onListeningChange });
 		await fireEvent.click(screen.getByRole('button'));
 		await fireEvent.blur(screen.getByRole('button'));
 		await fireEvent.keyDown(window, { key: 'h', code: 'KeyH', ctrlKey: true });
 		expect(onChange).not.toHaveBeenCalled();
+		expect(onListeningChange).toHaveBeenNthCalledWith(1, true);
+		expect(onListeningChange).toHaveBeenNthCalledWith(2, false);
+	});
+
+	it('restores the recording shortcut when capture is unmounted', async () => {
+		const onListeningChange = vi.fn();
+		const { unmount } = render(HotkeyInput, { value: '', onListeningChange });
+		await fireEvent.click(screen.getByRole('button'));
+
+		unmount();
+		expect(onListeningChange).toHaveBeenNthCalledWith(1, true);
+		expect(onListeningChange).toHaveBeenNthCalledWith(2, false);
 	});
 });

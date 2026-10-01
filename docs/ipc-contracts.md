@@ -51,6 +51,7 @@
 | `set_reasoning_effort` | mutate | `role` 接收模型 ID 或 `RequestKind`，先校验再保存 |
 | `set_web_search` | mutate | provider capability 先校验 |
 | `get_recording_state` | read | 只返回采集状态 |
+| `set_hotkey_capture_active` | mutate | 仅控制快捷键录入期间的临时抑制状态 |
 | `start_recording` | execute | 采集生命周期由 input 管线控制 |
 | `stop_recording` | execute | 先停止采集再异步转写 |
 | `cancel_recording` | execute | 清除 in-flight recording id |
@@ -179,6 +180,7 @@ provider 名称；两者都是明确扩展点，value 始终为布尔值。其�
 | 命令 | 边界 | 说明 |
 |---|---|---|
 | `get_recording_state` | read | 当前采集状态 |
+| `set_hotkey_capture_active` | mutate | 快捷键录入期间抑制录音触发，结束录入时恢复。 |
 | `start_recording` / `stop_recording` / `cancel_recording` | execute | 采集与转写生命周期由下列事件报告。 |
 | `process_transcript` | execute | 提交文本与附件进入会话 |
 

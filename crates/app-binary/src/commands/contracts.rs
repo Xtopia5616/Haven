@@ -7,7 +7,7 @@
 
 /// Version of the public Tauri command directory.
 pub const IPC_CONTRACT_VERSION: u16 = 1;
-pub const EXPECTED_COMMAND_COUNT: usize = 74;
+pub const EXPECTED_COMMAND_COUNT: usize = 75;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandBoundary {
@@ -226,6 +226,11 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
         name: "get_recording_state",
         boundary: CommandBoundary::Read,
         security: "state only; no device or provider detail",
+    },
+    CommandContract {
+        name: "set_hotkey_capture_active",
+        boundary: CommandBoundary::Mutate,
+        security: "transient renderer key-capture state only; not persisted",
     },
     CommandContract {
         name: "start_recording",

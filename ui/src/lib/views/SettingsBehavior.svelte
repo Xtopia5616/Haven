@@ -33,6 +33,7 @@
 		memoryMaintenance: { running: boolean; lastCount: number | null };
 		onHotkeyModeChange?: (value: HotkeyModeInput) => void;
 		onHotkeyBindingChange?: (value: string) => void;
+		onHotkeyCaptureChange?: (active: boolean) => void;
 		onDefaultShellChange?: (value: ShellChoiceInput) => void;
 		onRunMaintenance?: () => void;
 	}
@@ -47,6 +48,7 @@
 		memoryMaintenance,
 		onHotkeyModeChange = () => {},
 		onHotkeyBindingChange = () => {},
+		onHotkeyCaptureChange = () => {},
 		onDefaultShellChange = () => {},
 		onRunMaintenance = () => {},
 	}: Props = $props();
@@ -73,6 +75,7 @@
 				id="hotkey-binding"
 				value={hotkeyBinding}
 				onChange={withStringValue((value) => onHotkeyBindingChange(value))}
+				onListeningChange={onHotkeyCaptureChange}
 			/>
 		</SettingsField>
 		<SettingsField label="录音模式" id="hotkey-mode">

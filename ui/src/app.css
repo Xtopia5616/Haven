@@ -303,6 +303,24 @@
 	z-index: var(--md-sys-z-dialog);
 }
 
+/* Settings forms share one label/control grid and switch to a stacked layout
+ * based on the width of the settings content column, not the app viewport. */
+.settings-field-layout {
+	display: grid;
+	grid-template-columns:
+		minmax(0, var(--md-comp-settings-label-width))
+		minmax(0, 1fr);
+	align-items: center;
+	gap: var(--md-sys-space-md);
+}
+@container settings-content (max-width: 640px) {
+	.settings-field-layout {
+		grid-template-columns: 1fr;
+		align-items: start;
+		gap: var(--md-sys-space-xs);
+	}
+}
+
 /* ============================================================================
  * LIGHT THEME (Material 3 expressive light scheme)
  * ========================================================================== */

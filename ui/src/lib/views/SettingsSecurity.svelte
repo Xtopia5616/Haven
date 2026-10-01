@@ -474,7 +474,7 @@
 	}
 	.policy-grid {
 		display: grid;
-		grid-template-columns: repeat(4, minmax(0, 1fr));
+		grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));
 		gap: var(--md-sys-space-sm);
 	}
 	.policy-option {
@@ -519,7 +519,7 @@
 	}
 	.boundary-grid {
 		display: grid;
-		grid-template-columns: repeat(2, minmax(0, 1fr));
+		grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
 		gap: var(--md-sys-space-md);
 	}
 	.boundary-card {
@@ -664,12 +664,7 @@
 		font-size: var(--md-sys-typescale-body-small-size);
 	}
 
-	@media (max-width: 820px) {
-		.policy-grid {
-			grid-template-columns: repeat(2, minmax(0, 1fr));
-		}
-	}
-	@media (max-width: 640px) {
+	@container settings-content (max-width: 640px) {
 		.security-summary,
 		.perm-row {
 			align-items: stretch;
@@ -678,10 +673,6 @@
 		.summary-status,
 		.rules-count {
 			align-self: flex-start;
-		}
-		.policy-grid,
-		.boundary-grid {
-			grid-template-columns: 1fr;
 		}
 		.perm-effect,
 		:global(.md-btn.perm-revoke) {
