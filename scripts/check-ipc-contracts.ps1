@@ -109,7 +109,7 @@ foreach ($parser in @('parseLogInfo', 'parseLogTail', 'parseShellAvailability', 
 }
 
 $layout = Get-Source 'ui/src/routes/+layout.svelte'
-Assert-Contains $layout 'applyLlmConnectionReport\(await invoke\(''check_llm_connection''\)\)' 'LLM connection response uses the report normalizer'
+Assert-Contains $layout '(?s)const report = await invoke\(''check_llm_connection''\);\s*if \(generation === llmProbeGeneration\) applyLlmConnectionReport\(report\);' 'LLM connection report is normalized only for the current probe'
 
 # Keep existing command-family ownership boundaries. Helpers are the only
 # direct invoke owners for these audited command families.
