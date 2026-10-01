@@ -8,7 +8,6 @@
 	import { onMount, onDestroy, tick } from 'svelte';
 	import { invoke } from '$lib/tauri.ts';
 	import { registerListeners } from '$lib/events.ts';
-	import AsyncState from '$lib/AsyncState.svelte';
 	import MaterialDialog from '$lib/MaterialDialog.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import MaterialTabs from '$lib/MaterialTabs.svelte';
@@ -1147,16 +1146,6 @@
 		title="设置"
 		description="按用途分组管理 Haven 配置；修改分类后可以继续浏览，离开页面时会提醒保存。"
 	/>
-	{#if settingsLoaded && settingsTab === 'behavior' && llmConfig.providers.length === 0}
-		<AsyncState
-			state="unconfigured"
-			layout="compact"
-			title="模型尚未配置"
-			message="添加 Provider 后，Haven 才能生成回复。你可以先完成模型配置，再回来调整其他选项。"
-			actionLabel="去配置模型"
-			onAction={() => changeSettingsTab('models')}
-		/>
-	{/if}
 	<div class="settings-layout workspace-secondary-layout responsive-layout-transition">
 		<aside class="settings-sidebar workspace-secondary-sidebar responsive-layout-panel">
 			<MaterialTabs

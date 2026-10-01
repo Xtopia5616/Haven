@@ -35,6 +35,14 @@ describe('SettingsView diagnostics export', () => {
 		listen.mockResolvedValue(() => {});
 	});
 
+	it('keeps the settings page clear when no model provider is configured', async () => {
+		render(SettingsView);
+		await waitFor(() => expect(invoke).toHaveBeenCalledWith('get_api_key_status'));
+		await waitFor(() => expect(invoke).toHaveBeenCalledWith('is_autostart_enabled'));
+
+		expect(screen.queryByText('模型尚未配置')).toBeNull();
+	});
+
 	it('creates and clicks a JSON download when the export button is pressed', async () => {
 		const createObjectURL = vi.fn<(blob: Blob) => string>(() => 'blob:performance-metrics');
 		const revokeObjectURL = vi.fn();
