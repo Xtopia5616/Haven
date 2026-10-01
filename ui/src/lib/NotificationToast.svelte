@@ -57,13 +57,36 @@
 
 <style>
 	.toast-container {
+		--toast-viewport-height: 100vh;
+		--toast-bottom-offset: min(
+			80px,
+			max(
+				var(--md-sys-space-lg),
+				calc(
+					var(--toast-viewport-height) - 80px - var(--md-sys-space-lg)
+				)
+			)
+		);
 		position: fixed;
-		bottom: 80px;
+		bottom: var(--toast-bottom-offset);
 		right: var(--md-sys-content-gutter);
 		z-index: var(--md-sys-z-toast);
 		display: flex;
 		flex-direction: column;
 		gap: var(--md-sys-space-sm);
+		max-height: max(
+			0px,
+			calc(
+				var(--toast-viewport-height) - var(--toast-bottom-offset) - var(--md-sys-space-lg)
+			)
+		);
+		overflow-y: auto;
+		overscroll-behavior: contain;
+	}
+	@supports (height: 100dvh) {
+		.toast-container {
+			--toast-viewport-height: 100dvh;
+		}
 	}
 	.toast {
 		padding: var(--md-sys-space-sm) var(--md-sys-space-lg);
