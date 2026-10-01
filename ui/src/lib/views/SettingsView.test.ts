@@ -43,6 +43,74 @@ describe('SettingsView diagnostics export', () => {
 		expect(screen.queryByText('模型尚未配置')).toBeNull();
 	});
 
+	it('syncs the selected chat model into the matching model settings card', async () => {
+		const settings = {
+			llm: {
+				providers: [
+					{
+						name: 'primary',
+						provider: 'openai',
+						api_style: 'openai-chat',
+						base_url: 'https://example.test/v1',
+						api_key_ref: null,
+						auth_header_name: 'Authorization',
+						auth_header_prefix: 'Bearer',
+						proxy_url: null,
+						no_proxy: null,
+					},
+				],
+				models: [
+					{
+						id: 'chat-slot',
+						provider: 'primary',
+						model: 'before-switch',
+						capabilities: ['chat'],
+					},
+				],
+				request_policies: [{ request: 'chat', primary: 'chat-slot' }],
+				max_concurrent_requests: 2,
+			},
+		};
+		const handlers = new Map<string, (event: unknown) => void>();
+		listen.mockImplementation(async (event: string, handler: (event: unknown) => void) => {
+			handlers.set(event, handler);
+			return () => {};
+		});
+		invoke.mockImplementation(async (command: string) => {
+			switch (command) {
+				case 'get_settings':
+					return settings;
+				case 'get_api_key_status':
+					return { models: {}, providers: {}, stt: false, ocr: false, ocr_secret: false };
+				case 'is_autostart_enabled':
+					return false;
+				default:
+					return [];
+			}
+		});
+
+		const { container } = render(SettingsView);
+		await waitFor(() => expect(handlers.has('llm:config_changed')).toBe(true));
+		await fireEvent.click(screen.getByRole('tab', { name: /模型与连接/ }));
+		await waitFor(() =>
+			expect(container.querySelector('.model-provider-name')?.textContent).toContain(
+				'before-switch',
+			),
+		);
+
+		settings.llm.models[0].model = 'after-switch';
+		handlers.get('llm:config_changed')?.({
+			event: 'llm:config_changed',
+			id: 1,
+			payload: null,
+		});
+		await waitFor(() =>
+			expect(container.querySelector('.model-provider-name')?.textContent).toContain(
+				'after-switch',
+			),
+		);
+	});
+
 	it('suppresses the recording shortcut while capturing a replacement hotkey', async () => {
 		render(SettingsView);
 		await waitFor(() => expect(invoke).toHaveBeenCalledWith('get_api_key_status'));

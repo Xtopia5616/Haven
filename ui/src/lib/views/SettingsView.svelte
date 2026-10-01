@@ -342,10 +342,8 @@
 	let saveError = $state('');
 	let mounted = true;
 	let eventRegistrations: ReturnType<typeof registerListeners> | null = null;
-	let defaultModelSyncGen = 0;
-	let skipNextDefaultModelSync = false;
-	/** @type {{ model: string, reasoning_effort: string, web_search: string }} */
-	let lastSyncedDefaultModel = { model: '', reasoning_effort: '', web_search: 'off' };
+	let chatModelSyncGen = 0;
+	let skipNextChatModelSync = false;
 
 	async function checkShells() {
 		for (const shell of ['cmd', 'powershell', 'pwsh'] as const) {
@@ -362,17 +360,21 @@
 		}
 	}
 
-	function rememberSyncedDefaultModel(
-		remote:
-			| Partial<Pick<ModelDraft, 'model' | 'reasoning_effort' | 'web_search'>>
-			| null
-			| undefined,
+	function runtimeModelFieldValue(
+		model: Pick<ModelDraft, 'model' | 'reasoning_effort' | 'web_search'>,
+		field: 'model' | 'reasoning_effort' | 'web_search',
 	) {
-		lastSyncedDefaultModel = {
-			model: remote?.model || '',
-			reasoning_effort: remote?.reasoning_effort || '',
-			web_search: remote?.web_search || 'off',
-		};
+		if (field === 'web_search') return model.web_search || 'off';
+		return model[field] || '';
+	}
+	function copyRuntimeModelField(
+		target: ModelDraft,
+		source: ModelDraft,
+		field: 'model' | 'reasoning_effort' | 'web_search',
+	) {
+		if (field === 'model') target.model = source.model;
+		else if (field === 'reasoning_effort') target.reasoning_effort = source.reasoning_effort;
+		else target.web_search = source.web_search;
 	}
 	function asNumber(value: unknown) {
 		const number = Number(value);
@@ -516,33 +518,6 @@
 		}
 	}
 
-	function patchSnapshotDefaultModel(remote: ModelDraft) {
-		if (!savedSnapshot || !remote) return;
-		try {
-			const snapshot = JSON.parse(savedSnapshot) as SettingsSnapshot;
-			const llmSnapshot = snapshot.llm ?? llmConfig;
-			const models = llmSnapshot.models;
-			const index = models.findIndex((model) => model.id === 'default_model');
-			const patched = {
-				...(index >= 0 ? models[index] : { ...remote, id: 'default_model' }),
-				provider: remote.provider,
-				model: remote.model,
-				reasoning_effort: remote.reasoning_effort,
-				web_search: remote.web_search,
-			};
-			if (index >= 0) models[index] = patched;
-			else models.push(patched);
-			snapshot.llm = { ...llmSnapshot, models };
-			savedSnapshot = JSON.stringify(snapshot);
-		} catch (error) {
-			reportError(error, {
-				context: 'SettingsView',
-				message: '更新默认模型快照失败',
-				notify: false,
-			});
-		}
-	}
-
 	/**
 	 * Permission rules have an immediate command lifecycle, while the rest of
 	 * the settings form is saved in one batch. Update only the permission part
@@ -567,54 +542,70 @@
 		}
 	}
 
-	function applyRemoteDefaultModelFields(remote: ModelDraft) {
-		if (!remote) return;
-		const local = llmConfig.models.find((model) => model.id === 'default_model');
-		if (local)
-			Object.assign(local, {
-				provider: remote.provider,
-				model: remote.model,
-				reasoning_effort: remote.reasoning_effort,
-				web_search: remote.web_search,
-			});
-		else llmConfig.models.push({ ...remote });
-		rememberSyncedDefaultModel(remote);
-		patchSnapshotDefaultModel(remote);
+	function applyRemoteChatModelFields(remote: ModelDraft) {
+		const local = llmConfig.models.find((model) => model.id === remote.id);
+		const fields = ['model', 'reasoning_effort', 'web_search'] as const;
+		let snapshot: SettingsSnapshot | null = null;
+		let snapshotModel: ModelDraft | undefined;
+		if (savedSnapshot) {
+			try {
+				snapshot = JSON.parse(savedSnapshot) as SettingsSnapshot;
+				snapshotModel = snapshot.llm?.models.find((model) => model.id === remote.id);
+			} catch (error) {
+				reportError(error, {
+					context: 'SettingsView',
+					message: '读取聊天模型设置快照失败',
+					notify: false,
+				});
+			}
+		}
+
+		if (local) {
+			for (const field of fields) {
+				const hasLocalEdit =
+					snapshotModel &&
+					runtimeModelFieldValue(local, field) !==
+						runtimeModelFieldValue(snapshotModel, field);
+				if (!hasLocalEdit) copyRuntimeModelField(local, remote, field);
+				if (snapshotModel) copyRuntimeModelField(snapshotModel, remote, field);
+			}
+		} else {
+			llmConfig.models.push({ ...remote });
+			if (snapshot?.llm) snapshot.llm.models.push({ ...remote });
+		}
+		if (snapshot) savedSnapshot = JSON.stringify(snapshot);
 	}
 
-	async function syncDefaultModelRoleFromBackend() {
-		const generation = ++defaultModelSyncGen;
+	async function syncChatModelFromBackend() {
+		const generation = ++chatModelSyncGen;
 		try {
 			const settings = await loadSettings();
-			if (!mounted || generation !== defaultModelSyncGen || !settings?.llm) return;
-			const remote = settings.llm.models.find((model) => model.id === 'default_model');
-			if (remote) applyRemoteDefaultModelFields(remote);
+			if (!mounted || generation !== chatModelSyncGen || !settings?.llm) return;
+			const chatPolicy = settings.llm.request_policies.find((policy) => policy.request === 'chat');
+			const chatModelId = chatPolicy?.primary || 'default_model';
+			const remote = settings.llm.models.find((model) => model.id === chatModelId);
+			if (remote) applyRemoteChatModelFields(remote);
 		} catch (error) {
 			reportError(error, {
 				context: 'SettingsView',
-				message: '同步默认模型失败',
+				message: '同步聊天模型设置失败',
 				notify: false,
 			});
 		}
 	}
 
-	async function reconcileDefaultModelBeforeSave() {
+	async function reconcileChatModelBeforeSave() {
 		try {
 			const settings = await loadSettings();
 			if (!mounted || !settings?.llm) return;
-			const remote = settings.llm.models.find((model) => model.id === 'default_model');
-			const local = llmConfig.models.find((model) => model.id === 'default_model');
-			if (!remote || !local) return;
-			if ((local.model || '') === lastSyncedDefaultModel.model) local.model = remote.model;
-			if ((local.reasoning_effort || '') === lastSyncedDefaultModel.reasoning_effort)
-				local.reasoning_effort = remote.reasoning_effort;
-			if ((local.web_search || 'off') === lastSyncedDefaultModel.web_search)
-				local.web_search = remote.web_search;
-			rememberSyncedDefaultModel(local);
+			const chatPolicy = settings.llm.request_policies.find((policy) => policy.request === 'chat');
+			const chatModelId = chatPolicy?.primary || 'default_model';
+			const remote = settings.llm.models.find((model) => model.id === chatModelId);
+			if (remote) applyRemoteChatModelFields(remote);
 		} catch (error) {
 			reportError(error, {
 				context: 'SettingsView',
-				message: '保存前同步默认模型失败',
+				message: '保存前同步聊天模型设置失败',
 				notify: false,
 			});
 		}
@@ -635,9 +626,6 @@
 					providers: Array.isArray(snapshot.llm.providers) ? snapshot.llm.providers : [],
 					models: Array.isArray(snapshot.llm.models) ? snapshot.llm.models : [],
 				};
-				rememberSyncedDefaultModel(
-					llmConfig.models.find((model) => model.id === 'default_model'),
-				);
 			}
 			if (snapshot.hotkey) {
 				hotkeyBinding = snapshot.hotkey.key_binding || hotkeyBinding;
@@ -758,11 +746,11 @@
 		eventRegistrations = registerListeners(
 			{
 				'llm:config_changed': () => {
-					if (skipNextDefaultModelSync) {
-						skipNextDefaultModelSync = false;
+					if (skipNextChatModelSync) {
+						skipNextChatModelSync = false;
 						return;
 					}
-					syncDefaultModelRoleFromBackend();
+					syncChatModelFromBackend();
 				},
 			},
 			{ tag: 'SettingsView' },
@@ -777,11 +765,6 @@
 				llmConfig.request_policies = Array.isArray(llmConfig.request_policies)
 					? llmConfig.request_policies
 					: [];
-				rememberSyncedDefaultModel(
-					llmConfig.models.find(
-						(/** @type {any} */ model) => model.id === 'default_model',
-					),
-				);
 				hotkeyBinding = settings.hotkey?.key_binding || hotkeyBinding;
 				hotkeyMode = settings.hotkey?.mode || 'toggle';
 				muteHotkey = settings.hotkey?.mute_hotkey ?? null;
@@ -987,9 +970,9 @@
 		saveError = '';
 		try {
 			validateModelProviderBindings();
-			await reconcileDefaultModelBeforeSave();
+			await reconcileChatModelBeforeSave();
 			await stageSettingsCredentials();
-			skipNextDefaultModelSync = true;
+			skipNextChatModelSync = true;
 			await invoke('update_settings', {
 				settings:
 					/** @type {import('$lib/contracts/settings.ts').SettingsUpdatePayload} */ {
@@ -1114,7 +1097,7 @@
 			saveState = 'saved';
 			return true;
 		} catch (e) {
-			skipNextDefaultModelSync = false;
+			skipNextChatModelSync = false;
 			saveState = 'error';
 			const partialApplyFailure = isPartialConfigApplyError(e);
 			saveError = partialApplyFailure ? PARTIAL_APPLY_SAVE_MESSAGE : formatError(e);
