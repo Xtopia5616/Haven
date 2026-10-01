@@ -1275,7 +1275,25 @@ select.md-select {
 		max-width: 100%;
 		overflow-x: auto;
 		overscroll-behavior-x: contain;
-		scrollbar-width: thin;
+		scrollbar-width: none;
+	}
+	.md-tabs.workspace-secondary-tabs--sidebar::-webkit-scrollbar {
+		display: none;
+	}
+	.md-tabs.workspace-secondary-tabs--sidebar.md-tabs--scroll-hint-left {
+		mask-image: linear-gradient(90deg, transparent, currentColor 18px, currentColor 100%);
+	}
+	.md-tabs.workspace-secondary-tabs--sidebar.md-tabs--scroll-hint-right {
+		mask-image: linear-gradient(90deg, currentColor 0, currentColor calc(100% - 18px), transparent);
+	}
+	.md-tabs.workspace-secondary-tabs--sidebar.md-tabs--scroll-hint-left.md-tabs--scroll-hint-right {
+		mask-image: linear-gradient(
+			90deg,
+			transparent 0,
+			currentColor 18px,
+			currentColor calc(100% - 18px),
+			transparent 100%
+		);
 	}
 	.md-tabs.workspace-secondary-tabs--sidebar .md-tab {
 		flex: 1 0 max-content;

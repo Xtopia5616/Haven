@@ -36,6 +36,8 @@
 	let tabsElement: HTMLDivElement | undefined;
 	let tabElements = $state<Record<string, HTMLButtonElement>>({});
 	let animateIndicator = $state(false);
+	let canScrollTabsLeft = $state(false);
+	let canScrollTabsRight = $state(false);
 	let tablistWasVisible = false;
 	let previousActiveTab: string | undefined;
 	let hasMeasuredIndicator = false;
@@ -58,7 +60,20 @@
 		return panelIdPrefix ? `${panelIdPrefix}-${tabId}` : undefined;
 	}
 
+	function updateScrollAffordance(): void {
+		if (!isVisible || !tabsElement) {
+			canScrollTabsLeft = false;
+			canScrollTabsRight = false;
+			return;
+		}
+
+		const maxScrollLeft = tabsElement.scrollWidth - tabsElement.clientWidth;
+		canScrollTabsLeft = tabsElement.scrollLeft > 1;
+		canScrollTabsRight = maxScrollLeft - tabsElement.scrollLeft > 1;
+	}
+
 	function updateMeasuredIndicator(): void {
+		updateScrollAffordance();
 		if (!isVisible) {
 			measuredIndicator.visible = false;
 			hasMeasuredIndicator = false;
@@ -134,6 +149,8 @@
 			measuredIndicator.visible = false;
 			hasMeasuredIndicator = false;
 			animateIndicator = false;
+			canScrollTabsLeft = false;
+			canScrollTabsRight = false;
 			previousActiveTab = nextActiveTab;
 			tablistWasVisible = false;
 			return;
@@ -213,9 +230,12 @@
 	class="md-tabs {className}"
 	class:md-tabs--indicator-ready={measuredIndicator.visible && isVisible}
 	class:md-tabs--indicator-animating={animateIndicator}
+	class:md-tabs--scroll-hint-left={canScrollTabsLeft}
+	class:md-tabs--scroll-hint-right={canScrollTabsRight}
 	style={`--md-tab-indicator-x: ${measuredIndicator.x}px; --md-tab-indicator-y: ${measuredIndicator.y}px; --md-tab-indicator-width: ${measuredIndicator.width}px; --md-tab-indicator-height: ${measuredIndicator.height}px;`}
 	role="tablist"
 	aria-label={ariaLabel}
+	onscroll={updateScrollAffordance}
 >
 	{#each tabs as tab (tab.id)}
 		<button
