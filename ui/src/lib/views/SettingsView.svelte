@@ -1337,14 +1337,29 @@
 
 <style>
 	.settings-page {
+		display: flex;
+		flex: 1;
+		flex-direction: column;
 		width: 100%;
 		min-width: 0;
 		max-width: var(--md-sys-content-max-width);
 		padding-bottom: var(--md-sys-space-xl);
 	}
+	:global(.content:not(.content--chat) .page-shell:has(.settings-page)) {
+		min-height: 100%;
+	}
 	.settings-layout,
 	.settings-main {
 		min-width: 0;
+	}
+	.settings-layout {
+		flex: 1;
+		grid-template-rows: auto minmax(0, 1fr);
+		align-items: stretch;
+	}
+	.settings-main {
+		display: flex;
+		flex-direction: column;
 	}
 	.settings-panel-heading {
 		display: flex;
@@ -1410,10 +1425,19 @@
 		align-items: center;
 		justify-content: flex-end;
 		gap: var(--md-comp-toolbar-gap);
-		margin-top: var(--md-sys-space-xl);
-		padding: var(--md-sys-space-sm) 0;
-		background: transparent;
-		border-top: none;
+		margin-top: auto;
+		padding: var(--md-sys-space-md) 0 var(--md-sys-space-sm);
+		border-top: 1px solid
+			color-mix(in srgb, var(--md-sys-color-outline-variant) 72%, transparent);
+		background: linear-gradient(
+			180deg,
+			color-mix(in srgb, var(--md-sys-color-surface-container-lowest) 68%, transparent),
+			color-mix(in srgb, var(--md-sys-color-surface-container-lowest) 94%, transparent)
+		);
+		backdrop-filter: blur(10px);
+		-webkit-backdrop-filter: blur(10px);
+		box-shadow:
+			0 -8px 20px color-mix(in srgb, var(--md-sys-color-shadow) 8%, transparent);
 		z-index: 1;
 	}
 	.save-error {
@@ -1459,6 +1483,9 @@
 		.settings-page {
 			max-width: none;
 		}
+		.settings-layout {
+			grid-template-rows: minmax(0, 1fr);
+		}
 	}
 	@media (max-width: 640px) {
 		.settings-panel-heading {
@@ -1471,6 +1498,17 @@
 		.save-actions,
 		.save-actions :global(.md-btn),
 		.save-button-status {
+			width: 100%;
+		}
+		.save-actions > :global(.md-btn),
+		.save-actions > .save-button-status {
+			flex: 1 1 0;
+			min-width: 0;
+		}
+		.save-actions :global(.md-btn) {
+			min-width: 0;
+		}
+		:global(.save-btn) {
 			width: 100%;
 		}
 		.save-actions {
