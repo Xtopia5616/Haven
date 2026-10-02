@@ -5,6 +5,7 @@
 	import { getSelectedTextWithin, openContextMenu } from '$lib/contextMenu.ts';
 	import MaterialCollapsible from '$lib/MaterialCollapsible.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
+	import MaterialIconButton from '$lib/MaterialIconButton.svelte';
 	import MaterialChoiceChip from '$lib/MaterialChoiceChip.svelte';
 	import Icon from '$lib/Icon.svelte';
 	import { getToolResultRenderer } from '$lib/toolResultRenderers.ts';
@@ -37,9 +38,11 @@
 		options?: string[];
 		awaiting?: boolean;
 		messageId?: string;
+		selectedAskOptions?: string[];
 		onAskSelectionChange?: ((messageId: string, selected: string[]) => void) | null;
 		onIgnore?: ((messageId: string) => void) | null;
 		onAskSubmit?: ((messageId: string) => void) | null;
+		onAskDismiss?: ((messageId: string) => void) | null;
 		resolved?: { answer?: string; ignored?: boolean } | null;
 		streaming?: boolean;
 		actionId?: string | null;
@@ -58,9 +61,11 @@
 		options = [],
 		awaiting = false,
 		messageId = '',
+		selectedAskOptions = [],
 		onAskSelectionChange = null,
 		onIgnore = null,
 		onAskSubmit = null,
+		onAskDismiss = null,
 		resolved = null,
 		streaming = false,
 		actionId = null,
@@ -76,7 +81,7 @@
 
 	// Local multi-select for ask option chips. Click toggles; Enter in the
 	// chat input submits (page composes selected options + any typed text).
-	let selectedOptions = $state<string[]>([]);
+	let selectedOptions = $state<string[]>(untrack(() => [...selectedAskOptions]));
 
 	function toggleAskOption(opt: string) {
 		if (!awaiting) return;
@@ -99,9 +104,7 @@
 	// Drop stale selections when the card leaves the awaiting state (answered,
 	// ignored, or session resumed) so a later ask never inherits them.
 	$effect(() => {
-		if (!awaiting && selectedOptions.length > 0) {
-			selectedOptions = [];
-		}
+		selectedOptions = awaiting ? [...selectedAskOptions] : [];
 	});
 
 	const TERMINAL_ACTION = new Set<string>(['completed', 'failed', 'cancelled']);
@@ -351,6 +354,7 @@
 	<div
 		class="tool-card tool-card--ask"
 		class:embedded
+		data-interaction-id={messageId}
 		data-state={awaiting ? 'waiting' : resolved ? 'resolved' : 'completed'}
 		role="status"
 		oncontextmenu={handleContextMenu}
@@ -363,10 +367,21 @@
 				<span class="ask-eyebrow">需要你的决定</span>
 				<strong class="ask-title">Haven 需要你的回答</strong>
 			</div>
-			<span class="tool-state" data-state={awaiting ? 'waiting' : 'completed'}>
-				<span class="tool-state-dot" aria-hidden="true"></span>
-				{awaiting ? '等待回答' : '已处理'}
-			</span>
+			<div class="ask-header-actions">
+				<span class="tool-state" data-state={awaiting ? 'waiting' : 'completed'}>
+					<span class="tool-state-dot" aria-hidden="true"></span>
+					{awaiting ? '等待回答' : '已处理'}
+				</span>
+				{#if awaiting}
+					<MaterialIconButton
+						icon="close"
+						label="收起问题"
+						title="收起问题，之后可从待操作中重新打开"
+						className="ask-dismiss"
+						onclick={() => onAskDismiss?.(messageId)}
+					/>
+				{/if}
+			</div>
 		</div>
 		{#if content}
 			<div class="ask-question-block">
@@ -672,6 +687,20 @@
 		align-items: center;
 		gap: var(--md-sys-space-md);
 		min-width: 0;
+	}
+	.ask-header-actions {
+		display: flex;
+		align-items: center;
+		gap: var(--md-sys-space-xs);
+		flex: 0 0 auto;
+	}
+	:global(.md-icon-btn.ask-dismiss) {
+		width: var(--md-comp-icon-button-dense-size);
+		height: var(--md-comp-icon-button-dense-size);
+		min-width: var(--md-comp-icon-button-dense-size);
+		min-height: var(--md-comp-icon-button-dense-size);
+		background: transparent;
+		border-color: transparent;
 	}
 	.ask-mark {
 		display: inline-flex;

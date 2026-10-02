@@ -29,8 +29,10 @@
 		continueBusy?: boolean;
 		onContextMenu?: (request: ConversationContextMenuRequest) => void;
 		onAskSelectionChange?: AskSelectionChangeHandler;
+		getAskSelection?: (messageId: string) => string[];
 		onIgnore?: AskMessageHandler;
 		onAskSubmit?: AskMessageHandler;
+		onAskDismiss?: AskMessageHandler;
 		onContinue?: () => void;
 		mediaPlans?: AgentMediaPlanPayload[];
 	}
@@ -49,8 +51,10 @@
 		continueBusy = false,
 		onContextMenu = () => {},
 		onAskSelectionChange = () => {},
+		getAskSelection = () => [],
 		onIgnore = () => {},
 		onAskSubmit = () => {},
+		onAskDismiss = () => {},
 		onContinue = () => {},
 		mediaPlans = [],
 	}: Props = $props();
@@ -83,8 +87,10 @@
 					{mediaPlans}
 					{onContextMenu}
 					{onAskSelectionChange}
+					{getAskSelection}
 					{onIgnore}
 					{onAskSubmit}
+					{onAskDismiss}
 				/>
 			{:else}
 				{@const msg = item.message}
@@ -108,6 +114,7 @@
 					attachments={msg.attachments}
 					{showFallbackIntent}
 					options={msg.options ?? []}
+					selectedAskOptions={getAskSelection(msg.id)}
 					awaiting={msg.awaiting ?? false}
 					received={msg.received ?? false}
 					resolved={msg.resolved ?? null}
@@ -116,6 +123,7 @@
 					{onAskSelectionChange}
 					{onIgnore}
 					{onAskSubmit}
+					{onAskDismiss}
 				/>
 			{/if}
 		{/each}

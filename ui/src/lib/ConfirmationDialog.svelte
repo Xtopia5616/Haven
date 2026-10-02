@@ -5,6 +5,7 @@
 	import MenuItem from './MenuItem.svelte';
 	import MaterialButton from './MaterialButton.svelte';
 	import MaterialSplitButton from './MaterialSplitButton.svelte';
+	import MaterialIconButton from './MaterialIconButton.svelte';
 	import type { RiskLevel } from '$lib/contracts/app.ts';
 
 	interface ConfirmationDecision {
@@ -17,6 +18,7 @@
 	}
 
 	interface Props {
+		open?: boolean;
 		stepId?: string | null;
 		toolName?: string;
 		sessionId?: string;
@@ -26,6 +28,7 @@
 		summary?: string;
 		permissionKey?: string;
 		deadlineAt?: number | null;
+		onDismiss?: (stepId: string) => void;
 		onConfirm?: (decision: ConfirmationDecision) => void | boolean | Promise<void | boolean>;
 	}
 
@@ -39,6 +42,7 @@
 	};
 
 	let {
+		open = true,
 		stepId,
 		toolName,
 		sessionId,
@@ -48,6 +52,7 @@
 		summary,
 		permissionKey,
 		deadlineAt,
+		onDismiss,
 		onConfirm,
 	}: Props = $props();
 	let remaining = $state(TIMEOUT_SECONDS);
@@ -166,13 +171,16 @@
 	}
 
 	function dismiss() {
-		// Dismissing the backdrop or pressing Escape is a one-shot denial.
-		decide('deny', 'once', 'operation');
+		if (!stepId) return;
+		showDenyMenu = false;
+		showAllowMenu = false;
+		pendingPersistentTarget = null;
+		onDismiss?.(stepId);
 	}
 </script>
 
 <MaterialDialog
-	open={Boolean(stepId)}
+	open={open && Boolean(stepId)}
 	onClose={dismiss}
 	dialogClass="permission-confirmation-dialog"
 	overlayClass="permission-confirmation-overlay"
@@ -201,6 +209,13 @@
 				<span class="risk-dot" aria-hidden="true"></span>
 				{riskLabel}
 			</div>
+			<MaterialIconButton
+				icon="close"
+				label="关闭权限确认"
+				title="关闭弹窗，确认请求仍保留在待操作中"
+				className="confirmation-close"
+				onclick={dismiss}
+			/>
 		</header>
 	{/snippet}
 	{#snippet children()}
@@ -324,7 +339,7 @@
 				</div>
 				<MaterialSplitButton
 					label="拒绝"
-					variant="tonal"
+					variant="danger"
 					className="deny-split"
 					open={showDenyMenu}
 					onclick={() => decide('deny', 'once')}
@@ -415,6 +430,17 @@
 		align-items: flex-start;
 		gap: var(--md-sys-space-md);
 		min-width: 0;
+	}
+
+	:global(.md-icon-btn.confirmation-close) {
+		background: transparent;
+		border-color: transparent;
+		color: var(--md-sys-color-on-surface-variant);
+	}
+
+	:global(.md-icon-btn.confirmation-close:hover) {
+		background: var(--md-sys-color-error-container);
+		color: var(--md-sys-color-on-error-container);
 	}
 
 	.security-icon {
@@ -715,6 +741,17 @@
 		--_btn-bg: var(--md-sys-color-error-container);
 		--_btn-fg: var(--md-sys-color-on-error-container);
 		--_btn-state: var(--md-sys-color-on-error-container);
+	}
+
+	:global(.md-split-button.deny-split .md-icon-btn.md-split-button__toggle) {
+		background: var(--md-sys-color-error-container);
+		border-color: var(--md-sys-color-error);
+		color: var(--md-sys-color-on-error-container);
+	}
+
+	:global(.md-split-button.deny-split .md-icon-btn.md-split-button__toggle:hover) {
+		background: var(--md-sys-color-error);
+		color: var(--md-sys-color-on-error);
 	}
 
 	.deny-menu {

@@ -51,6 +51,10 @@
 	import { getTools } from '$lib/toolsCommands.ts';
 	import { createChatInteractionEventHandlers } from '$lib/chatInteractionEventHandlers.ts';
 	import {
+		clearRequestedConfirmation,
+		requestedConfirmationIdStore,
+	} from '$lib/interactionPresentationStore.ts';
+	import {
 		formatLlmConnectionFailure,
 		formatLlmConnectionRecovery,
 		llmConnectionReasonText,
@@ -652,7 +656,35 @@
 				(request.kind === 'confirm' || request.kind === 'scheduled_confirm'),
 		),
 	);
-	const activeConfirmRequest = $derived(pendingConfirmInteractions[0] || null);
+	let dismissedConfirmationIds = $state(new Set<string>());
+	let requestedConfirmationId = $state<string | null>(null);
+	$effect(() =>
+		syncStore(requestedConfirmationIdStore, (id) => (requestedConfirmationId = id)),
+	);
+	const activeConfirmRequest = $derived.by(() => {
+		if (requestedConfirmationId) {
+			const requested = pendingConfirmInteractions.find(
+				(request) => request.id === requestedConfirmationId,
+			);
+			if (requested) return requested;
+		}
+		return (
+			pendingConfirmInteractions.find(
+				(request) => !dismissedConfirmationIds.has(request.id),
+			) ||
+			pendingConfirmInteractions[0] ||
+			null
+		);
+	});
+	const activeConfirmOpen = $derived(
+		!!activeConfirmRequest &&
+			(requestedConfirmationId === activeConfirmRequest.id ||
+				!dismissedConfirmationIds.has(activeConfirmRequest.id)),
+	);
+	function dismissConfirmation(id: string) {
+		dismissedConfirmationIds = new Set(dismissedConfirmationIds).add(id);
+		if (requestedConfirmationId === id) clearRequestedConfirmation();
+	}
 	const activeConfirmSessionTitle = $derived(
 		activeConfirmRequest
 			? activeConfirmRequest.sessionId === 'ui'
@@ -670,8 +702,11 @@
 					const parsed = activeConfirmRequest.expiresAt
 						? Date.parse(activeConfirmRequest.expiresAt)
 						: Number.NaN;
-					const visibleDeadline = Date.now() + CONFIRM_TIMEOUT_MS;
-					return Number.isFinite(parsed) ? Math.min(parsed, visibleDeadline) : visibleDeadline;
+					const createdAt = Date.parse(activeConfirmRequest.createdAt);
+					const fallbackDeadline = Number.isFinite(createdAt)
+						? createdAt + CONFIRM_TIMEOUT_MS
+						: Date.now() + CONFIRM_TIMEOUT_MS;
+					return Number.isFinite(parsed) ? Math.min(parsed, fallbackDeadline) : fallbackDeadline;
 				})()
 			: null,
 	);
@@ -1380,6 +1415,7 @@
 			</div>
 		{/each}
 		<ConfirmationDialog
+			open={activeConfirmOpen}
 			stepId={activeConfirmRequest?.id || null}
 			toolName={activeConfirmRequest?.toolName || ''}
 			sessionId={activeConfirmRequest?.sessionId || ''}
@@ -1394,6 +1430,7 @@
 				activeConfirmRequest?.toolName ||
 				''}
 			deadlineAt={activeConfirmDeadlineAt}
+			onDismiss={dismissConfirmation}
 			onConfirm={handleConfirm}
 		/>
 	{/snippet}

@@ -9,6 +9,7 @@
 	import type { AgentMediaPlanPayload } from '$lib/contracts/agent.ts';
 	import type {
 		AskMessageHandler,
+		AskSelectionGetter,
 		AskSelectionChangeHandler,
 		ConversationContextMenuRequest,
 		ConversationMessage,
@@ -23,8 +24,10 @@
 		allMessages?: ConversationMessage[];
 		onContextMenu?: (request: ConversationContextMenuRequest) => void;
 		onAskSelectionChange?: AskSelectionChangeHandler;
+		getAskSelection?: AskSelectionGetter;
 		onIgnore?: AskMessageHandler;
 		onAskSubmit?: AskMessageHandler;
+		onAskDismiss?: AskMessageHandler;
 		mediaPlans?: AgentMediaPlanPayload[];
 	}
 
@@ -36,8 +39,10 @@
 		allMessages = [],
 		onContextMenu = () => {},
 		onAskSelectionChange = () => {},
+		getAskSelection = () => [],
 		onIgnore = () => {},
 		onAskSubmit = () => {},
+		onAskDismiss = () => {},
 		mediaPlans = [],
 	}: Props = $props();
 
@@ -143,8 +148,10 @@
 					compact
 					{onContextMenu}
 					{onAskSelectionChange}
+					selectedAskOptions={getAskSelection(msg.id)}
 					{onIgnore}
 					{onAskSubmit}
+					{onAskDismiss}
 				/>
 			{/each}
 		</div>

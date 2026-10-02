@@ -324,6 +324,28 @@ describe('ToolResultCard ask', () => {
 		expect(onIgnore).toHaveBeenCalledWith('ask-7');
 	});
 
+	it('lets a pending ask be hidden without resolving or ignoring it', async () => {
+		const onAskDismiss = vi.fn();
+		const onIgnore = vi.fn();
+		const onAskSubmit = vi.fn();
+		const { container } = render(ToolResultCard, {
+			type: 'ask',
+			content: '选择？',
+			options: ['方案 A'],
+			awaiting: true,
+			messageId: 'ask-dismiss',
+			onAskDismiss,
+			onIgnore,
+			onAskSubmit,
+		});
+
+		expect(container.querySelector('[data-interaction-id="ask-dismiss"]')).toBeTruthy();
+		await fireEvent.click(screen.getByRole('button', { name: '收起问题' }));
+		expect(onAskDismiss).toHaveBeenCalledWith('ask-dismiss');
+		expect(onIgnore).not.toHaveBeenCalled();
+		expect(onAskSubmit).not.toHaveBeenCalled();
+	});
+
 	it('shows the chosen answer and hides buttons once resolved', () => {
 		const { container } = render(ToolResultCard, {
 			type: 'ask',

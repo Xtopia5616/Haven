@@ -72,6 +72,8 @@
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import ConversationTimeline from '$lib/ConversationTimeline.svelte';
 	import Composer from '$lib/Composer.svelte';
+	import PendingInteractionsMenu from '$lib/PendingInteractionsMenu.svelte';
+	import { requestConfirmationOpen } from '$lib/interactionPresentationStore.ts';
 	import type {
 		SessionAction,
 		SessionMessage,
@@ -132,6 +134,7 @@
 	let sessions = $state(currentReducerState.sessions);
 	let activeSessionId = $state(currentReducerState.activeSessionId);
 	let interactionDict = $state(currentReducerState.interactions);
+	let dismissedAskIds = $state(new Set<string>());
 	let activeSessionMessages = $state(
 		currentReducerState.messages[currentReducerState.activeSessionId || DRAFT_SESSION_ID] ??
 			emptySessionMessages,
@@ -157,6 +160,32 @@
 	);
 	const pendingAskInteractions = $derived(
 		pendingInteractions.filter((request) => request.kind === 'ask'),
+	);
+	const pendingInteractionItems = $derived.by(() =>
+		[...pendingInteractions]
+			.sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+			.map((request) => {
+				const sessionTitle =
+					sessions.find((session) => session.id === request.sessionId)?.title ||
+					request.sessionId;
+				if (request.kind === 'ask') {
+					const question = sessionReducer
+						.getMessages(request.sessionId)
+						.find((message) => message.id === request.id)?.content;
+					return {
+						id: request.id,
+						kind: request.kind,
+						title: `待回答 · ${sessionTitle}`,
+						detail: question || 'Haven 正在等待你的回答',
+					};
+				}
+				return {
+					id: request.id,
+					kind: request.kind,
+					title: `${request.kind === 'scheduled_confirm' ? '定时任务' : '权限'}确认 · ${sessionTitle}`,
+					detail: request.summary || request.toolName || '等待你的许可',
+				};
+			}),
 	);
 	const askAwaiting = $derived(pendingAskInteractions.length > 0);
 	const askHasOptions = $derived(
@@ -493,7 +522,12 @@
 		setAutoFollow: (follow) => (autoFollow = follow),
 		isDisposed: () => dead,
 	});
-	const messages = $derived(projectChatVisibleMessages(activeSessionMessages, interactionDict));
+	const messages = $derived.by(() =>
+		projectChatVisibleMessages(activeSessionMessages, interactionDict).filter(
+			(message) =>
+				message.type !== 'ask' || !message.awaiting || !dismissedAskIds.has(message.id),
+		),
+	);
 
 	const activeSessionError = $derived(
 		!!activeSessionId && sessionError?.sessionId === activeSessionId,
@@ -851,6 +885,29 @@
 		}
 	}
 
+	function dismissAsk(messageId: string) {
+		if (!messageId) return;
+		dismissedAskIds = new Set(dismissedAskIds).add(messageId);
+	}
+
+	async function openPendingInteraction(id: string) {
+		const request = interactionDict[id];
+		if (!request || request.status !== 'pending') return;
+		if (request.kind !== 'ask') {
+			requestConfirmationOpen(request.id);
+			return;
+		}
+		if (request.sessionId !== activeSessionId) await switchToSession(request.sessionId);
+		if (sessionReducer.getState().activeSessionId !== request.sessionId) return;
+		dismissedAskIds = new Set([...dismissedAskIds].filter((dismissedId) => dismissedId !== id));
+		chatViewController.setAutoFollow(false);
+		await tick();
+		const askCard = Array.from(messagesEl?.querySelectorAll('[data-interaction-id]') || []).find(
+			(element) => element.getAttribute('data-interaction-id') === id,
+		);
+		if (askCard instanceof HTMLElement) askCard.scrollIntoView?.({ behavior: 'smooth', block: 'center' });
+	}
+
 	function endSession() {
 		return chatController.endSession();
 	}
@@ -908,6 +965,7 @@
 		computeAskSelectionsReady,
 		handleInputSubmit: routeInputSubmission,
 		handleAskSelectionChange,
+		getAskSelection,
 		handleAskSubmit,
 		handleIgnoreAsk,
 	} = askInteraction;
@@ -1070,8 +1128,10 @@
 					continueBusy={continuePending}
 					onContextMenu={handleContextMenu}
 					onAskSelectionChange={handleAskSelectionChange}
+					getAskSelection={getAskSelection}
 					onIgnore={handleIgnoreAsk}
 					onAskSubmit={handleAskSubmit}
+					onAskDismiss={dismissAsk}
 					onContinue={handleContinue}
 				/>
 			</div>
@@ -1104,6 +1164,12 @@
 			onsubmit={handleInputSubmit}
 			onstop={interruptOutput}
 		>
+			{#snippet toolbarLeft()}
+				<PendingInteractionsMenu
+					items={pendingInteractionItems}
+					onSelect={openPendingInteraction}
+				/>
+			{/snippet}
 			{#snippet toolbarRight()}
 				<ModelToolbar
 					{modelMenuOpen}

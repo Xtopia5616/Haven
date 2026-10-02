@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/svelte';
+import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import ConfirmationDialog from './ConfirmationDialog.svelte';
 
 describe('ConfirmationDialog', () => {
@@ -21,6 +21,9 @@ describe('ConfirmationDialog', () => {
 		expect(onceButton.classList.contains('md-btn--filled')).toBe(true);
 		expect(moreAllowButton.classList.contains('md-btn--text')).toBe(true);
 		expect(moreAllowButton.getAttribute('aria-haspopup')).toBe('menu');
+		expect(
+			screen.getByRole('button', { name: '更多拒绝选项' }).getAttribute('data-variant'),
+		).toBe('danger');
 
 		const allowButtonLabels = Array.from(container.querySelectorAll('.allow-group button')).map(
 			(button) => button.textContent?.trim() || button.getAttribute('aria-label'),
@@ -57,6 +60,41 @@ describe('ConfirmationDialog', () => {
 		});
 	});
 
+	it('closes without deciding and can be shown again while the request stays pending', async () => {
+		const onDismiss = vi.fn();
+		const onConfirm = vi.fn();
+		const { rerender } = render(ConfirmationDialog as any, {
+			open: true,
+			stepId: 'step-close',
+			toolName: 'files.write',
+			onDismiss,
+			onConfirm,
+		});
+
+		await fireEvent.click(screen.getByRole('button', { name: '关闭权限确认' }));
+		expect(onDismiss).toHaveBeenCalledWith('step-close');
+		expect(onConfirm).not.toHaveBeenCalled();
+
+		await rerender({
+			open: false,
+			stepId: 'step-close',
+			toolName: 'files.write',
+			onDismiss,
+			onConfirm,
+		});
+		await waitFor(() => expect(screen.queryByRole('button', { name: '本次允许' })).toBeNull());
+
+		await rerender({
+			open: true,
+			stepId: 'step-close',
+			toolName: 'files.write',
+			onDismiss,
+			onConfirm,
+		});
+		await waitFor(() => expect(screen.getByRole('button', { name: '本次允许' })).toBeTruthy());
+		expect(onConfirm).not.toHaveBeenCalled();
+	});
+
 	it('submits an automatic denial only once when the dialog reaches its deadline', async () => {
 		vi.useFakeTimers();
 		try {
@@ -87,7 +125,7 @@ describe('ConfirmationDialog', () => {
 			toolName: 'mcp__server__write',
 			sessionId: 'ui',
 			permissionKey: 'mcp.server.write',
-		onConfirm: vi.fn(),
+			onConfirm: vi.fn(),
 		});
 
 		expect(screen.queryByRole('button', { name: '本对话允许此操作' })).toBeNull();

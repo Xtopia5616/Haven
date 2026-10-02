@@ -101,6 +101,11 @@ export function createAskInteractionController({
 		refreshSelectionsReady();
 	}
 
+	function getAskSelection(msgId: string) {
+		const sessionId = getActiveSessionId();
+		return sessionId ? [...(askSelections.get(sessionId)?.get(msgId) || [])] : [];
+	}
+
 	function submitActionAnswers(
 		sessionId: string,
 		resolvedIds: Set<string> | undefined,
@@ -208,6 +213,7 @@ export function createAskInteractionController({
 		clearAskAwaiting,
 		computeAskSelectionsReady,
 		handleAskSelectionChange,
+		getAskSelection,
 		handleAskSubmit,
 		handleInputSubmit,
 		handleIgnoreAsk,

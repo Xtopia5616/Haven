@@ -45,6 +45,8 @@
 		onAskSelectionChange?: AskSelectionChangeHandler | null;
 		onIgnore?: AskMessageHandler | null;
 		onAskSubmit?: AskMessageHandler | null;
+		onAskDismiss?: AskMessageHandler | null;
+		selectedAskOptions?: string[];
 	}
 
 	let {
@@ -73,6 +75,8 @@
 		onAskSelectionChange = null,
 		onIgnore = null,
 		onAskSubmit = null,
+		onAskDismiss = null,
+		selectedAskOptions = [],
 	}: Props = $props();
 
 	// Local open state for the collapsible reasoning block. The block
@@ -416,10 +420,12 @@
 				{options}
 				{awaiting}
 				{messageId}
+				{selectedAskOptions}
 				{resolved}
 				{onAskSelectionChange}
 				{onIgnore}
 				{onAskSubmit}
+				{onAskDismiss}
 			/>
 		{:else if msgType === 'supplement'}
 			<div class="supplement-badge">&#10100; {content}</div>

@@ -78,6 +78,15 @@ describe('createAskInteractionController', () => {
 		});
 	});
 
+	it('keeps selected options available when a pending question is reopened', () => {
+		loadAskMessages(createRequest('ask-restored', '选择一个选项', ['A', 'B']));
+		const { controller } = createController();
+
+		controller.handleAskSelectionChange('ask-restored', ['B']);
+
+		expect(controller.getAskSelection('ask-restored')).toEqual(['B']);
+	});
+
 	it('submits an ignored ask once and rejects duplicate resolution', () => {
 		loadAskMessages(createRequest('ask-1', '要继续吗？'));
 		const { controller, submitMessage } = createController();

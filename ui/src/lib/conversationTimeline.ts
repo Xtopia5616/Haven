@@ -50,6 +50,7 @@ export type AskSelectionChangeHandler = (
 	selected: string[] | null | undefined,
 ) => void;
 export type AskMessageHandler = (messageId: string) => void;
+export type AskSelectionGetter = (messageId: string) => string[];
 
 export interface TimelineMessageItem {
 	kind: 'message';

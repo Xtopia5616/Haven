@@ -411,3 +411,5 @@
 - [0426：按会话缓存输入框草稿](0426-per-session-composer-drafts.md)
 - [0427：从对话页删除当前会话](0427-delete-session-from-conversation.md)
 - [0428：会话确认结束时发布恢复状态](0428-session-confirmation-resume-projection.md)
+- [0429：剪贴板写入使用显式格式和载荷](0429-explicit-clipboard-write-payloads.md)
+- [0430：待决交互可以收起并重新打开](0430-reopenable-pending-interactions.md)
