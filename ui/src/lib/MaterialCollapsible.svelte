@@ -27,35 +27,23 @@
 		open = !open;
 	}
 
-	/**
-	 * Reveal only the block-axis size of the body.
-	 *
-	 * Svelte's generic slide transition also interpolates padding, margins and
-	 * border widths. Tool bodies can contain content-visibility based chat
-	 * bubbles, so those extra interpolations may briefly use an intrinsic
-	 * placeholder size and then snap back when the transition is released.
-	 * Keep the transition to measured geometry and opacity. Animate the body
-	 * margin with its height so the spacing does not remain after the body has
-	 * reached zero height, and use the fractional rendered size to avoid a
-	 * one-pixel snap when the transition is released.
-	 *
-	 */
+	/** Animate the intrinsic grid track so live content changes do not snap to
+	 * a height measured only once at the start of the transition. */
 	function stableReveal(
 		node: HTMLElement,
 		{
 			delay = 0,
-			duration = 400,
+			duration = 240,
 			easing = cubicOut,
 		}: { delay?: number; duration?: number; easing?: (t: number) => number } = {},
 	) {
-		const height = node.getBoundingClientRect().height;
 		const marginTop = Number.parseFloat(getComputedStyle(node).marginTop) || 0;
 		return {
 			delay,
 			duration,
 			easing,
 			css: (t: number) =>
-				`overflow: hidden; box-sizing: border-box; height: ${t * height}px; min-height: 0; margin-top: ${t * marginTop}px; opacity: ${Math.min(t * 20, 1)};`,
+				`grid-template-rows: minmax(0, ${t}fr); margin-top: ${t * marginTop}px; opacity: ${Math.min(t * 20, 1)};`,
 		};
 	}
 </script>
@@ -73,14 +61,22 @@
 		{#if open}
 			<div
 				class="md-collapsible-body"
-				transition:stableReveal={{ duration: 240, easing: cubicOut }}
+				transition:stableReveal
 			>
-				{@render children?.()}
+				<div class="md-collapsible-body-content">
+					{@render children?.()}
+				</div>
 			</div>
 		{/if}
 	{:else}
-		<div class="md-collapsible-body" hidden={!open}>
-			{@render children?.()}
+		<div
+			class="md-collapsible-body md-collapsible-body--retained"
+			aria-hidden={!open}
+			inert={!open}
+		>
+			<div class="md-collapsible-body-content">
+				{@render children?.()}
+			</div>
 		</div>
 	{/if}
 </div>
@@ -132,12 +128,36 @@
 		min-width: 0;
 	}
 	.md-collapsible-body {
-		display: block;
+		display: grid;
+		grid-template-rows: minmax(0, 1fr);
 		width: 100%;
 		min-width: 0;
 		margin-top: var(--md-sys-space-xs);
+		overflow-anchor: none;
 	}
-	.md-collapsible-body[hidden] {
-		display: none;
+	.md-collapsible-body-content {
+		min-height: 0;
+		overflow: hidden;
+	}
+	.md-collapsible-body--retained {
+		grid-template-rows: minmax(0, 0fr);
+		margin-top: 0;
+		opacity: 0;
+		pointer-events: none;
+		transition:
+			grid-template-rows 240ms var(--md-sys-motion-easing-emphasized),
+			margin-top 240ms var(--md-sys-motion-easing-emphasized),
+			opacity 120ms linear;
+	}
+	.md-collapsible[data-open='true'] > .md-collapsible-body--retained {
+		grid-template-rows: minmax(0, 1fr);
+		margin-top: var(--md-sys-space-xs);
+		opacity: 1;
+		pointer-events: auto;
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.md-collapsible-body--retained {
+			transition: none;
+		}
 	}
 </style>
