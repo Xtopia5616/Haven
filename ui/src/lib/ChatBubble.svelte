@@ -308,13 +308,14 @@
 	// off this path while still rendering the rest of the Markdown live.
 	$effect(() => {
 		if (!mounted || !rendersMarkdown) return;
-		// Read the prop in the effect itself so the streaming → final transition
-		// always schedules the upgraded render, even though the actual work lives
-		// in renderNow().
+		// Read content synchronously even while the renderer is loading. That
+		// keeps every streamed prop update as an effect dependency; the async
+		// import callback itself cannot establish reactive dependencies.
+		const text = content || '';
 		const isStreaming = !!streaming;
 		if (!rendererReady) {
 			// Renderer still loading — show plain text with the caret, then render
-			// the current content once the shared instance resolves.
+			// the current content once the shared renderer resolves.
 			if (!rendererLoading) {
 				rendererLoading = true;
 				getMarkdownRenderer().then(() => {
@@ -326,13 +327,12 @@
 			mdHtml = '';
 			return;
 		}
-		renderNow(isStreaming);
+		renderNow(isStreaming, text);
 	});
 
 	// Reads the current props, so it is safe to call from the renderer-load
 	// completion.
-	function renderNow(isStreaming = !!streaming) {
-		const text = content || '';
+	function renderNow(isStreaming = !!streaming, text = content || '') {
 		mdHtml = text ? renderMarkdown(text, isStreaming) : '';
 	}
 </script>
