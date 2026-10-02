@@ -475,6 +475,11 @@ impl AgentLayer {
                                 .emit_session_completed(&session_id, &title, "父会话已结束")
                                 .await;
                         }
+                        SessionEvent::SessionResumed { session_id } => {
+                            events
+                                .emit_session_updated(&session_id, SessionStatus::Pending)
+                                .await;
+                        }
                         SessionEvent::InteractionRequested { .. }
                         | SessionEvent::SessionError { .. } => {}
                     }

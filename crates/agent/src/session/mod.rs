@@ -151,6 +151,11 @@ pub enum SessionEvent {
     InteractionRequested {
         request: Box<InteractionRequest>,
     },
+    /// The final pending confirmation woke a paused conversation.
+    /// `AgentLayer` projects this through the existing session lifecycle event.
+    SessionResumed {
+        session_id: String,
+    },
     ScheduledConfirmOutcome {
         action_id: String,
         session_id: Option<String>,

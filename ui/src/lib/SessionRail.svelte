@@ -20,10 +20,17 @@
 	}: Props = $props();
 	let query = $state('');
 
+	// The reducer may retain the active completed session briefly so the
+	// conversation can show its termination message. It is no longer switchable
+	// from the live-session rail; persisted history remains available separately.
+	const switchableSessions = $derived(
+		sessions.filter((session) => session.status !== 'completed'),
+	);
+
 	const filteredSessions = $derived.by(() => {
 		const normalized = query.trim().toLocaleLowerCase();
-		if (!normalized) return sessions;
-		return sessions.filter((session) => {
+		if (!normalized) return switchableSessions;
+		return switchableSessions.filter((session) => {
 			const input = typeof session.input === 'string' ? session.input : '';
 			return `${sessionTitle(session)} ${input} ${session.id}`
 				.toLocaleLowerCase()
@@ -50,8 +57,8 @@
 			<p class="session-rail__eyebrow">对话空间</p>
 			<h2>会话</h2>
 		</div>
-		<span class="session-rail__count" aria-label={`${sessions.length} 个会话`}
-			>{sessions.length}</span
+		<span class="session-rail__count" aria-label={`${switchableSessions.length} 个会话`}
+			>{switchableSessions.length}</span
 		>
 	</div>
 

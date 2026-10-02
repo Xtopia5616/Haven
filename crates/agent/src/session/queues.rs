@@ -275,12 +275,8 @@ impl SessionSupervisor {
             {
                 let request = decision.request.clone();
                 if decision.wake_session {
-                    self.update_session_status_if(
-                        &request.session_id,
-                        SessionStatus::Paused,
-                        SessionStatus::Pending,
-                    )
-                    .await?;
+                    self.resume_paused_session_after_confirmation(&request.session_id)
+                        .await?;
                 }
                 self.emit_event(SessionEvent::InteractionRequested {
                     request: Box::new(request.clone()),
@@ -289,6 +285,31 @@ impl SessionSupervisor {
             }
         }
         Ok(None)
+    }
+
+    async fn resume_paused_session_after_confirmation(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<()> {
+        let Some(actor) = self.actor_for(session_id).await else {
+            return Ok(());
+        };
+        let transition = actor
+            .transition_if(SessionStatus::Paused, SessionStatus::Pending, true)
+            .await?;
+        if !transition.changed {
+            return Ok(());
+        }
+
+        // Publish the lifecycle transition before waking the dispatcher. The
+        // UI can clear the confirmation waiting reason as soon as the accepted
+        // batch is eligible to continue.
+        self.emit_event(SessionEvent::SessionResumed {
+            session_id: session_id.to_string(),
+        });
+        self.enqueue_pending(session_id).await;
+        self.wake_dispatcher();
+        Ok(())
     }
 
     pub async fn is_confirm_gated_with(
