@@ -382,26 +382,18 @@ impl ReActEngine {
 
         if actions.is_empty() {
             if pending_ask {
-                let pending = self
+                let has_pending_ask = self
                     .executor
                     .pending_interactions(session_id, crate::interaction::InteractionKind::Ask)
                     .await
                     .into_iter()
                     .next()
-                    .ok_or_else(|| anyhow::anyhow!("ask state changed before resume"))?;
-                let question = pending.prompt.clone();
-                effects.push(crate::react::effects::TurnEffect::ProjectChatMessage {
-                    role: "assistant".into(),
-                    content: question.clone(),
-                    message_type: Some("text".into()),
-                    tool_call_id: None,
-                    message_id: None,
-                });
+                    .is_some();
+                anyhow::ensure!(has_pending_ask, "ask state changed before resume");
                 effects.pause(
                     step_num + 1,
                     SessionStatus::Paused,
                     Some(haven_common::SessionWaitingReason::Ask),
-                    question,
                     None,
                     PauseReason::Ask,
                 );

@@ -4,15 +4,17 @@ import { SessionReducer } from './sessionReducer.ts';
 
 const SESSION_ID = 'ses-ask';
 
-function createRequest(id: string, prompt: string, options: string[] = []) {
+function createRequest(id: string, question: string, options: string[] = []) {
 	return {
-		id,
-		sessionId: SESSION_ID,
-		kind: 'ask' as const,
-		status: 'pending' as const,
-		prompt,
-		options,
-		createdAt: '',
+		question,
+		request: {
+			id,
+			sessionId: SESSION_ID,
+			kind: 'ask' as const,
+			status: 'pending' as const,
+			options,
+			createdAt: '',
+		},
 	};
 }
 
@@ -40,13 +42,13 @@ describe('createAskInteractionController', () => {
 		reducer.dispatch({
 			type: 'session/messages/resume-loaded',
 			sessionId: SESSION_ID,
-			messages: requests.map((request) => ({
+			messages: requests.map(({ question, request }) => ({
 				id: request.id,
 				type: 'ask',
-				content: request.prompt,
+				content: question,
 				awaiting: true,
 			})),
-			interactions: requests,
+			interactions: requests.map(({ request }) => request),
 		});
 	}
 

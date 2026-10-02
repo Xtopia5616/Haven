@@ -19,6 +19,7 @@ pub struct SessionAuthorizationGrant {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredSessionAuthorizationGrant {
     pub session_id: String,
+    pub session_title: Option<String>,
     pub grant: SessionAuthorizationGrant,
 }
 
@@ -106,38 +107,44 @@ impl Database {
     ) -> anyhow::Result<Vec<StoredSessionAuthorizationGrant>> {
         let conn = self.conn();
         let mut statement = conn.prepare(
-            "SELECT session_id, capability_key, permission_scope, permission_target, effect
-             FROM session_authorization_grants
-             ORDER BY session_id, capability_key",
+            "SELECT grants.session_id, sessions.title, grants.capability_key,
+                    grants.permission_scope, grants.permission_target, grants.effect
+             FROM session_authorization_grants AS grants
+             JOIN sessions ON sessions.id = grants.session_id
+             ORDER BY grants.session_id, grants.capability_key",
         )?;
         let rows = statement.query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(1)?,
                 row.get::<_, String>(2)?,
                 row.get::<_, String>(3)?,
                 row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
             ))
         })?;
         rows.map(|row| {
-            let (session_id, capability_key, scope, target, effect) = row?;
+            let (session_id, session_title, capability_key, scope, target, effect) = row?;
             Ok(StoredSessionAuthorizationGrant {
                 session_id,
+                session_title,
                 grant: parse_grant_row((capability_key, scope, target, effect))?,
             })
         })
         .collect()
     }
 
-    /// Remove all session-local copies of an explicitly revoked capability.
-    pub fn revoke_session_authorization_grants(
+    /// Remove one exact capability decision from its owning session.
+    pub fn revoke_session_authorization_grant(
         &self,
+        session_id: &str,
         capability: &CapabilityScope,
     ) -> anyhow::Result<usize> {
         let conn = self.conn();
         Ok(conn.execute(
-            "DELETE FROM session_authorization_grants WHERE capability_key = ?1",
-            [capability.as_str()],
+            "DELETE FROM session_authorization_grants
+             WHERE session_id = ?1 AND capability_key = ?2",
+            rusqlite::params![session_id, capability.as_str()],
         )?)
     }
 
@@ -297,11 +304,15 @@ mod tests {
         db.save_session_authorization_grant(&retained.id, &system)
             .unwrap();
 
-        db.revoke_session_authorization_grants(&files.capability)
+        db.revoke_session_authorization_grant(&retained.id, &files.capability)
             .unwrap();
         assert_eq!(
             db.session_authorization_grants(&retained.id).unwrap(),
-            vec![system]
+            vec![system.clone()]
+        );
+        assert_eq!(
+            db.session_authorization_grants(&old.id).unwrap(),
+            vec![files.clone()]
         );
 
         db.delete_session(&retained.id).unwrap();
@@ -316,7 +327,9 @@ mod tests {
         let reset = db.create_session("reset authorization session").unwrap();
         db.save_session_authorization_grant(&reset.id, &files)
             .unwrap();
-        assert_eq!(db.clear_session_authorization_grants().unwrap(), 1);
+        db.save_session_authorization_grant(&reset.id, &system)
+            .unwrap();
+        assert_eq!(db.clear_session_authorization_grants().unwrap(), 2);
         assert!(
             db.session_authorization_grants(&reset.id)
                 .unwrap()

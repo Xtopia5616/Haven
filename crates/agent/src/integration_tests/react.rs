@@ -356,7 +356,6 @@ async fn loop_pauses_on_pending_ask_instead_of_heuristic_final() {
         branch_points: HashMap::new(),
         interactions: vec![crate::interaction::InteractionRequest::ask(
             &session.id,
-            "which file?",
             Vec::new(),
             vec!["step-ask".into()],
         )],
@@ -376,12 +375,6 @@ async fn loop_pauses_on_pending_ask_instead_of_heuristic_final() {
             .len(),
         1,
         "pause must retain the pending ask interaction"
-    );
-    let msgs = agent.db.get_session_messages(&session.id).unwrap();
-    assert_eq!(
-        msgs.last().unwrap().content,
-        "which file?",
-        "the pending question must be surfaced as the pause message"
     );
 }
 
@@ -1115,7 +1108,6 @@ async fn ask_interaction_survives_executor_restart_from_durable_snapshot() {
         1,
         "Ask must be restored after a process restart"
     );
-    assert_eq!(pending[0].prompt, "Which path?");
 }
 
 #[tokio::test]

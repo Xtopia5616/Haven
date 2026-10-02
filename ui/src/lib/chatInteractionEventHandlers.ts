@@ -7,14 +7,23 @@ type InteractionEvent = TauriEvent<InteractionRequest>;
 /** Route every human decision request into the shared interaction store. */
 export function createChatInteractionEventHandlers({
 	dispatchSession,
+	onPendingPermission,
 }: {
 	dispatchSession: (action: SessionAction) => void;
+	onPendingPermission?: (request: InteractionRequest) => void;
 }): {
 	'interaction:requested': (event: InteractionEvent) => void;
 } {
 	return {
 		'interaction:requested': (event) => {
-			dispatchSession({ type: 'session/interaction-upserted', request: event.payload });
+			const request = event.payload;
+			dispatchSession({ type: 'session/interaction-upserted', request });
+			if (
+				request.status === 'pending' &&
+				(request.kind === 'confirm' || request.kind === 'scheduled_confirm')
+			) {
+				onPendingPermission?.(request);
+			}
 		},
 	};
 }

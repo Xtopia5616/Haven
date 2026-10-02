@@ -93,7 +93,6 @@ function normalizeInteraction(raw: unknown): InteractionRequest | null {
 	const sessionId = typeof value.session_id === 'string' ? value.session_id : '';
 	const kind = value.kind;
 	const status = value.status;
-	const prompt = value.prompt;
 	const options = value.options;
 	const createdAt = value.created_at;
 	if (
@@ -103,7 +102,6 @@ function normalizeInteraction(raw: unknown): InteractionRequest | null {
 		!INTERACTION_KINDS.includes(kind as (typeof INTERACTION_KINDS)[number]) ||
 		typeof status !== 'string' ||
 		!INTERACTION_STATUSES.includes(status as (typeof INTERACTION_STATUSES)[number]) ||
-		typeof prompt !== 'string' ||
 		!Array.isArray(options) ||
 		!options.every((option) => typeof option === 'string') ||
 		typeof createdAt !== 'string'
@@ -122,7 +120,6 @@ function normalizeInteraction(raw: unknown): InteractionRequest | null {
 		sessionId,
 		kind: kind as InteractionRequest['kind'],
 		status: status as InteractionRequest['status'],
-		prompt,
 		options,
 		...(typeof toolName === 'string' ? { toolName } : {}),
 		...(typeof riskLevel === 'string' &&

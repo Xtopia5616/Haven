@@ -29,6 +29,7 @@ use serde::Serialize;
 use std::future::Future;
 use tauri::AppHandle;
 use tauri::Emitter;
+use tauri::Manager;
 
 /// Event name for "the LlmRouter was rebuilt / model config changed". The
 /// frontend +layout listens to this to re-probe LLM connectivity immediately
@@ -344,20 +345,14 @@ pub(crate) async fn queue_ui_confirmation(
     let summary = haven_tools::permission_prompt_summary(&tool_name, &display_input);
     let permission_key = authorization_request.policy.capability.to_string();
     let risk_level = receipt.effective_risk;
-    let request = haven_agent::InteractionRequest::ui_confirm(
-        tool_name,
-        display_input,
-        summary.clone(),
-        receipt.clone(),
-    );
+    let request =
+        haven_agent::InteractionRequest::ui_confirm(tool_name, display_input, receipt.clone());
     let request_id = request.id.clone();
     state.ui_confirmations.lock().await.insert(
         request_id.to_string(),
         UiConfirmationPending {
             request: request.clone(),
-            session_id: "ui".into(),
             authorization_request,
-            summary: summary.clone(),
             receipt: receipt.clone(),
             action,
         },
@@ -372,6 +367,57 @@ pub(crate) async fn queue_ui_confirmation(
             .await
             .remove(&request_id.to_string());
         return Err(log_err("queue_ui_confirmation", error));
+    }
+    tracing::info!(
+        session_id = %request.session_id,
+        interaction_id = %request.id,
+        interaction_kind = ?request.kind,
+        status = ?request.status,
+        "renderer permission request queued"
+    );
+    app.state::<std::sync::Arc<crate::notification::DesktopNotifications>>()
+        .maybe_show_interaction_request(&request);
+    let expiry_delay = std::time::Duration::from_secs(
+        receipt
+            .expires_at
+            .saturating_sub(chrono::Utc::now().timestamp().max(0) as u64),
+    );
+    let expiry_app = app.clone();
+    let expiry_request_id = request_id.to_string();
+    if !state.runtime.spawn("ui-confirmation-expiry", async move {
+        tokio::time::sleep(expiry_delay).await;
+        let state = expiry_app.state::<std::sync::Arc<AppState>>();
+        let expired_request = {
+            let mut pending = state.ui_confirmations.lock().await;
+            let Some(mut pending) = pending.remove(&expiry_request_id) else {
+                return;
+            };
+            if !pending.request.expire() {
+                return;
+            }
+            pending.request
+        };
+        tracing::info!(
+            session_id = %expired_request.session_id,
+            interaction_id = %expired_request.id,
+            interaction_kind = ?expired_request.kind,
+            status = ?expired_request.status,
+            "renderer permission request expired"
+        );
+        expiry_app
+            .state::<std::sync::Arc<crate::notification::DesktopNotifications>>()
+            .maybe_show_interaction_request(&expired_request);
+        emit_event_logged(
+            &expiry_app,
+            INTERACTION_REQUESTED_EVENT,
+            crate::bootstrap::project_interaction(&expired_request),
+            "ui_interaction_expired",
+        );
+    }) {
+        tracing::warn!(
+            interaction_id = %request.id,
+            "could not schedule renderer permission expiry because application is shutting down"
+        );
     }
     serde_json::to_string(&serde_json::json!({
         "requires_confirmation": true,

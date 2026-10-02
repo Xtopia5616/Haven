@@ -6,6 +6,7 @@ use crate::config_runtime::{
 };
 use crate::events::{HOTKEY_REBIND_EVENT, HotkeyRebindEvent};
 use crate::runtime::ApplicationRuntime;
+use serde::Serialize;
 use std::future::Future;
 use std::sync::Arc;
 use tauri::Emitter;
@@ -213,6 +214,9 @@ async fn execute_settings_apply_phase(
             state.tools.apply_security(&config.security).await;
             match state.executor.restore_session_authorization_grants().await {
                 Ok(_) => {
+                    state
+                        .last_fully_applied_security_config_version
+                        .store(snapshot.version, std::sync::atomic::Ordering::Release);
                     timing.tick("apply_security");
                     SettingsApplyOutcome::applied()
                 }
@@ -503,7 +507,7 @@ pub async fn update_settings(
     let apply_prepared_router = prepared_router.clone();
     let apply_timing = timing.clone();
 
-    apply
+    if let Err(error) = apply
         .apply(move |phase| {
             execute_settings_apply_phase(
                 phase,
@@ -516,8 +520,21 @@ pub async fn update_settings(
             )
         })
         .await
-        .map_err(crate::config_runtime::partial_config_apply_error)
-        .map_err(|error| log_err("update_settings", error))?;
+    {
+        let phase = apply.failed_phase_name().unwrap_or("unknown");
+        let security_runtime = apply.security_runtime_disposition();
+        let security_base_version = state
+            .last_fully_applied_security_config_version
+            .load(std::sync::atomic::Ordering::Acquire);
+        let error = crate::config_runtime::partial_config_apply_error(
+            error,
+            version,
+            phase,
+            security_runtime,
+            security_base_version,
+        );
+        return Err(log_err("update_settings", error));
+    }
 
     timing.tick("hotkey section");
     timing.log_total();
@@ -534,6 +551,41 @@ pub async fn list_permissions(
     Ok(state.services.authorization.list_permanent().await)
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct SessionPermissionGrant {
+    pub session_id: String,
+    pub session_title: Option<String>,
+    pub capability: String,
+    pub target: String,
+    pub effect: &'static str,
+}
+
+#[tauri::command]
+pub async fn list_session_permissions(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<SessionPermissionGrant>, String> {
+    state
+        .session_store
+        .all_session_authorization_grants()
+        .await
+        .map(|grants| {
+            grants
+                .into_iter()
+                .map(|stored| SessionPermissionGrant {
+                    session_id: stored.session_id,
+                    session_title: stored.session_title,
+                    capability: stored.grant.capability.to_string(),
+                    target: stored.grant.target.as_str().to_string(),
+                    effect: match stored.grant.effect {
+                        haven_common::types::PermissionEffect::Allow => "allow",
+                        haven_common::types::PermissionEffect::Deny => "deny",
+                    },
+                })
+                .collect()
+        })
+        .map_err(|error| log_err("list_session_permissions", error))
+}
+
 #[tauri::command]
 pub async fn revoke_permission(state: State<'_, Arc<AppState>>, key: String) -> Result<(), String> {
     let key = key.trim().to_string();
@@ -544,12 +596,16 @@ pub async fn revoke_permission(state: State<'_, Arc<AppState>>, key: String) -> 
         ));
     }
     let _config_apply_guard = state.config_apply_gate.lock().await;
-    let capability = haven_common::types::CapabilityScope::new(key.clone());
-    state
-        .session_store
-        .revoke_session_authorization_grants(capability.clone())
-        .await
-        .map_err(|e| log_err("revoke_permission session grants", e))?;
+    let previous = state
+        .config_service
+        .snapshot()
+        .map_err(|error| log_err("revoke_permission", error))?
+        .config
+        .security
+        .permissions
+        .into_iter()
+        .find(|permission| permission.key == key);
+    state.services.authorization.revoke_permanent(&key).await;
     let edit = state.config_service.edit(|config| {
         config
             .security
@@ -558,37 +614,147 @@ pub async fn revoke_permission(state: State<'_, Arc<AppState>>, key: String) -> 
         Ok(())
     });
     if let Err(error) = edit {
-        state
-            .services
-            .authorization
-            .revoke_session_permission(&capability)
-            .await;
+        if let Some(permission) = previous {
+            state
+                .services
+                .authorization
+                .grant(
+                    None,
+                    permission.key,
+                    permission.effect,
+                    haven_common::types::PermissionScope::Always,
+                )
+                .await;
+        }
         return Err(log_err("revoke_permission", error));
     }
-    state.services.authorization.revoke_permanent(&key).await;
     Ok(())
 }
 
-/// Remove all user-created permission rules and restore the selected default
-/// policy. This intentionally does not change the policy mode itself.
+/// Remove all permanent permission rules and restore the selected default
+/// policy. Session-scoped decisions and the policy mode remain unchanged.
 #[tauri::command]
 pub async fn reset_permissions(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     let _config_apply_guard = state.config_apply_gate.lock().await;
+    let previous = state
+        .config_service
+        .snapshot()
+        .map_err(|error| log_err("reset_permissions", error))?
+        .config
+        .security
+        .permissions;
+    state.services.authorization.clear_permanent().await;
+    if let Err(error) = state.config_service.edit(|config| {
+        config.security.permissions.clear();
+        Ok(())
+    }) {
+        for permission in previous {
+            state
+                .services
+                .authorization
+                .grant(
+                    None,
+                    permission.key,
+                    permission.effect,
+                    haven_common::types::PermissionScope::Always,
+                )
+                .await;
+        }
+        return Err(log_err("reset_permissions", error));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn revoke_session_permission(
+    state: State<'_, Arc<AppState>>,
+    session_id: String,
+    capability: String,
+) -> Result<(), String> {
+    let _config_apply_guard = state.config_apply_gate.lock().await;
+    let session_id = session_id.trim().to_string();
+    let capability = capability.trim().to_string();
+    if session_id.is_empty() {
+        return Err(log_err(
+            "revoke_session_permission",
+            "session id cannot be empty",
+        ));
+    }
+    if capability.is_empty() {
+        return Err(log_err(
+            "revoke_session_permission",
+            "permission capability cannot be empty",
+        ));
+    }
+    let capability = haven_common::types::CapabilityScope::try_new(capability)
+        .map_err(|error| log_err("revoke_session_permission", error))?;
+    let existing = state
+        .session_store
+        .session_authorization_grants(&session_id)
+        .await
+        .map_err(|error| log_err("revoke_session_permission", error))?
+        .into_iter()
+        .find(|grant| grant.capability == capability);
+    let Some(existing) = existing else {
+        return Ok(());
+    };
     state
+        .services
+        .authorization
+        .revoke_session_grant(&session_id, &capability)
+        .await;
+    if let Err(error) = state
+        .session_store
+        .revoke_session_authorization_grant(&session_id, capability.clone())
+        .await
+    {
+        state
+            .services
+            .authorization
+            .grant(
+                Some(&session_id),
+                existing.capability,
+                existing.effect,
+                existing.scope,
+            )
+            .await;
+        return Err(log_err("revoke_session_permission", error));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn reset_session_permissions(state: State<'_, Arc<AppState>>) -> Result<usize, String> {
+    let _config_apply_guard = state.config_apply_gate.lock().await;
+    let previous = state
+        .session_store
+        .all_session_authorization_grants()
+        .await
+        .map_err(|error| log_err("reset_session_permissions", error))?;
+    state.services.authorization.clear_all_trust().await;
+    let removed = match state
         .session_store
         .clear_session_authorization_grants()
         .await
-        .map_err(|e| log_err("reset_permissions session grants", e))?;
-    state.services.authorization.clear_all_trust().await;
-    state
-        .config_service
-        .edit(|config| {
-            config.security.permissions.clear();
-            Ok(())
-        })
-        .map_err(|e| log_err("reset_permissions", e))?;
-    state.services.authorization.clear_permanent().await;
-    Ok(())
+    {
+        Ok(removed) => removed,
+        Err(error) => {
+            for stored in previous {
+                state
+                    .services
+                    .authorization
+                    .grant(
+                        Some(&stored.session_id),
+                        stored.grant.capability,
+                        stored.grant.effect,
+                        stored.grant.scope,
+                    )
+                    .await;
+            }
+            return Err(log_err("reset_session_permissions", error));
+        }
+    };
+    Ok(removed)
 }
 
 #[tauri::command]

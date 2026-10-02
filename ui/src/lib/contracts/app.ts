@@ -45,7 +45,6 @@ export interface InteractionRequest {
 	sessionId: string;
 	kind: InteractionKind;
 	status: InteractionStatus;
-	prompt: string;
 	options: string[];
 	toolName?: string;
 	riskLevel?: RiskLevel;
@@ -90,7 +89,6 @@ interface AppWirePayloadMap {
 		session_id: string;
 		kind: InteractionKind;
 		status: InteractionStatus;
-		prompt: string;
 		options?: string[];
 		tool_name?: string;
 		risk_level?: RiskLevel;
@@ -206,7 +204,6 @@ export function mapAppEvent(event: unknown): TauriEvent<AppEventPayloadMap[AppEv
 			const sessionId = requiredString(p, 'session_id');
 			const kind = p.kind;
 			const status = p.status;
-			const prompt = requiredString(p, 'prompt');
 			const createdAt = requiredString(p, 'created_at');
 			const options = p.options === undefined ? [] : p.options;
 			const actionIndex = p.action_index;
@@ -215,7 +212,6 @@ export function mapAppEvent(event: unknown): TauriEvent<AppEventPayloadMap[AppEv
 				sessionId === null ||
 				!isOneOf(kind, INTERACTION_KINDS) ||
 				!isOneOf(status, INTERACTION_STATUSES) ||
-				prompt === null ||
 				createdAt === null ||
 				!stringArray(options) ||
 				!optionalStringIsValid(p, 'tool_name') ||
@@ -241,7 +237,6 @@ export function mapAppEvent(event: unknown): TauriEvent<AppEventPayloadMap[AppEv
 					sessionId,
 					kind,
 					status,
-					prompt,
 					options,
 					...(wire.tool_name ? { toolName: wire.tool_name } : {}),
 					...(wire.risk_level ? { riskLevel: wire.risk_level } : {}),

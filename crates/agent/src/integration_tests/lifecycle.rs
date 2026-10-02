@@ -865,7 +865,6 @@ async fn process_input_marks_reply_as_answer_when_awaiting() {
     executor
         .request_interaction(crate::interaction::InteractionRequest::ask(
             &session.id,
-            "the answer",
             Vec::new(),
             vec!["step-0123456789abcdef0123456789abcdef".into()],
         ))

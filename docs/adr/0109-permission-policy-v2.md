@@ -48,7 +48,7 @@
 - `config.toml` 的 `[security]` 段发生破坏性变化，必须重建旧权限策略；数据库 schema
   不变。
 - 前端确认交互不再显示原始命令/路径/请求参数，改为后端摘要，降低秘密泄漏和误操作风险。
-- `reset_permissions` 会清除永久规则与会话信任，但保留当前默认策略。
+- 历史 `reset_permissions` 的永久/会话混合清除行为由 ADR 0425 取代：当前该命令只清除永久规则，持久会话 grant 由 `reset_session_permissions` 单独管理。
 
 ## 验证
 

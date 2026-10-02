@@ -13,18 +13,20 @@
 		effect?: string;
 		scope?: string;
 		target?: string;
+		timedOut?: boolean;
 	}
 
 	interface Props {
 		stepId?: string | null;
 		toolName?: string;
 		sessionId?: string;
+		allowSessionScope?: boolean;
 		sessionTitle?: string;
 		riskLevel?: RiskLevel;
 		summary?: string;
 		permissionKey?: string;
 		deadlineAt?: number | null;
-		onConfirm?: (decision: ConfirmationDecision) => void;
+		onConfirm?: (decision: ConfirmationDecision) => void | boolean | Promise<void | boolean>;
 	}
 
 	const TIMEOUT_SECONDS = 120;
@@ -40,6 +42,7 @@
 		stepId,
 		toolName,
 		sessionId,
+		allowSessionScope = sessionId !== 'ui' && sessionId !== 'action',
 		sessionTitle,
 		riskLevel,
 		summary,
@@ -112,8 +115,7 @@
 			if (remaining <= 0) {
 				if (id) clearInterval(id);
 				if (submittedStepId === sid) return;
-				submittedStepId = sid;
-				onConfirm?.({ stepId: sid, approved: false, effect: 'deny', scope: 'once' });
+				void decide('deny', 'once', 'operation', true);
 			}
 		};
 		void tick().then(() => {
@@ -127,20 +129,26 @@
 		};
 	});
 
-	function decide(effect: string, scope: string, target = 'operation') {
+	async function decide(effect: string, scope: string, target = 'operation', timedOut = false) {
 		const sid = stepId;
 		if (!sid || submittedStepId === sid) return;
 		submittedStepId = sid;
 		showDenyMenu = false;
 		showAllowMenu = false;
 		pendingPersistentTarget = null;
-		onConfirm?.({
-			stepId: sid,
-			approved: effect === 'allow',
-			effect,
-			scope,
-			target,
-		});
+		try {
+			const accepted = await onConfirm?.({
+				stepId: sid,
+				approved: effect === 'allow',
+				effect,
+				scope,
+				target,
+				timedOut,
+			});
+			if (accepted === false && stepId === sid) submittedStepId = null;
+		} catch {
+			if (stepId === sid) submittedStepId = null;
+		}
 	}
 
 	function requestPersistentAllow(target: string) {
@@ -275,12 +283,14 @@
 						label="本次允许"
 						onclick={() => decide('allow', 'once', 'operation')}
 					/>
-					<MaterialButton
-						variant="tonal"
-						className="btn-session"
-						label="本对话允许此操作"
-						onclick={() => decide('allow', 'session', 'operation')}
-					/>
+					{#if allowSessionScope}
+						<MaterialButton
+							variant="tonal"
+							className="btn-session"
+							label="本对话允许此操作"
+							onclick={() => decide('allow', 'session', 'operation')}
+						/>
+					{/if}
 					<div class="more-allow">
 						<MaterialButton
 							variant="text"
@@ -292,13 +302,15 @@
 						/>
 						{#if showAllowMenu}
 							<div class="allow-menu" role="menu">
-								<div class="menu-section-label">本对话</div>
-								{#each targetOptions.slice(1) as option (option.target)}
-									<MenuItem
+								{#if allowSessionScope}
+									<div class="menu-section-label">本对话</div>
+									{#each targetOptions.slice(1) as option (option.target)}
+										<MenuItem
 										label={`本对话允许${option.label}`}
 										onSelect={() => decide('allow', 'session', option.target)}
 									/>
-								{/each}
+									{/each}
+								{/if}
 								<div class="menu-section-label">永久</div>
 								{#each targetOptions as option (option.target)}
 									<MenuItem
@@ -322,18 +334,20 @@
 					{#snippet children()}
 						{#if showDenyMenu}
 							<div class="deny-menu" role="menu">
-								<MenuItem
-									label="本对话拒绝此操作"
-									danger
-									onSelect={() => decide('deny', 'session', 'operation')}
-								/>
-								{#each targetOptions.slice(1) as option (option.target)}
+								{#if allowSessionScope}
 									<MenuItem
-										label={`本对话拒绝${option.label}`}
+										label="本对话拒绝此操作"
 										danger
-										onSelect={() => decide('deny', 'session', option.target)}
+										onSelect={() => decide('deny', 'session', 'operation')}
 									/>
-								{/each}
+									{#each targetOptions.slice(1) as option (option.target)}
+										<MenuItem
+											label={`本对话拒绝${option.label}`}
+											danger
+											onSelect={() => decide('deny', 'session', option.target)}
+										/>
+									{/each}
+								{/if}
 								<MenuItem
 									label="始终拒绝此操作"
 									danger

@@ -3,12 +3,12 @@
 use super::*;
 
 impl SessionSupervisor {
-    pub async fn create_session(&self, input: &str) -> anyhow::Result<SessionInfo> {
+    pub async fn create_session(self: &Arc<Self>, input: &str) -> anyhow::Result<SessionInfo> {
         self.create_session_with_summary(input, input).await
     }
 
     pub async fn create_session_with_summary(
-        &self,
+        self: &Arc<Self>,
         input: &str,
         summary: &str,
     ) -> anyhow::Result<SessionInfo> {
@@ -628,13 +628,13 @@ impl SessionSupervisor {
         Ok(())
     }
 
-    pub async fn ensure_session_loaded(&self, session_id: &str) -> anyhow::Result<()> {
+    pub async fn ensure_session_loaded(self: &Arc<Self>, session_id: &str) -> anyhow::Result<()> {
         let _lifecycle = self.lifecycle_guard().await;
         self.ensure_session_loaded_locked(session_id).await
     }
 
     pub(crate) async fn ensure_session_loaded_locked(
-        &self,
+        self: &Arc<Self>,
         session_id: &str,
     ) -> anyhow::Result<()> {
         self.ensure_lifecycle_open()?;
@@ -664,7 +664,7 @@ impl SessionSupervisor {
         Ok(())
     }
 
-    pub async fn load_pending_sessions(&self) -> anyhow::Result<usize> {
+    pub async fn load_pending_sessions(self: &Arc<Self>) -> anyhow::Result<usize> {
         let _lifecycle = self.lifecycle_guard().await;
         self.ensure_lifecycle_open()?;
         let pending = self.store.pending_session_records()?;

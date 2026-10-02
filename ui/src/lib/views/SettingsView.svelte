@@ -52,7 +52,10 @@
 	} from '$lib/contracts/generatedCommands.ts';
 	import type { SessionTokenStats } from '$lib/sessionUsagePresentation.ts';
 	import type { SessionLlmUsage } from '$lib/contracts/sessionHistory.ts';
-	import type { StoredPermission } from '$lib/contracts/generatedCommands.ts';
+	import type {
+		SessionPermissionGrant,
+		StoredPermission,
+	} from '$lib/contracts/generatedCommands.ts';
 	import type { DiscoveredModelMap } from '$lib/contracts/model.ts';
 	import type { ModelDraft, ProviderDraft, SettingsLlmState } from '$lib/settingsModelTypes.ts';
 
@@ -209,6 +212,7 @@
 		writable_roots: [],
 		permissions: [],
 	});
+	let sessionPermissions = $state<SessionPermissionGrant[]>([]);
 	let stt = $state<Required<SttConfigInput>>({
 		provider: 'llm',
 		mcp_server: '',
@@ -244,6 +248,7 @@
 		session_paused: { in_app: true, windows: false },
 		session_resumed: { in_app: true, windows: false },
 		session_error: { in_app: true, windows: true },
+		permission_requested: { in_app: true, windows: true },
 		action_completed: { in_app: true, windows: true },
 	});
 	let log = $state<Required<LogConfigInput>>({
@@ -340,6 +345,8 @@
 	let leaveSaving = $state(false);
 	let saveState = $state('idle');
 	let saveError = $state('');
+	let securityRuntimeStatus = $state<'current' | 'unchanged' | 'incomplete'>('current');
+	let securityRuntimeNotice = $state('安全策略已按当前配置完成运行时应用。');
 	let mounted = true;
 	let eventRegistrations: ReturnType<typeof registerListeners> | null = null;
 	let chatModelSyncGen = 0;
@@ -444,6 +451,7 @@
 				session_paused: { ...notification.session_paused },
 				session_resumed: { ...notification.session_resumed },
 				session_error: { ...notification.session_error },
+				permission_requested: { ...notification.permission_requested },
 				action_completed: { ...notification.action_completed },
 			},
 			log: {
@@ -830,6 +838,16 @@
 			reportError(e, { context: 'SettingsView', message: '加载设置失败', log: false });
 		}
 		try {
+			sessionPermissions = await invoke('list_session_permissions');
+			if (!mounted) return;
+		} catch (e) {
+			reportError(e, {
+				context: 'SettingsView',
+				message: '加载会话授权失败',
+				log: false,
+			});
+		}
+		try {
 			await refreshApiKeyStatus();
 			if (!mounted) return;
 		} catch (e) {
@@ -889,6 +907,23 @@
 			return false;
 		}
 	}
+	async function revokeSessionPermission(grant: SessionPermissionGrant) {
+		try {
+			await invoke('revoke_session_permission', {
+				sessionId: grant.session_id,
+				capability: grant.capability,
+			});
+			sessionPermissions = sessionPermissions.filter(
+				(current) =>
+					current.session_id !== grant.session_id ||
+					current.capability !== grant.capability,
+			);
+			return true;
+		} catch (e) {
+			reportError(e, { context: 'SettingsView', message: '撤销会话授权失败', log: false });
+			return false;
+		}
+	}
 
 	async function resetPermissions() {
 		try {
@@ -899,6 +934,17 @@
 			return true;
 		} catch (e) {
 			reportError(e, { context: 'SettingsView', message: '清除权限规则失败', log: false });
+			return false;
+		}
+	}
+	async function resetSessionPermissions() {
+		try {
+			const removed = await invoke('reset_session_permissions');
+			sessionPermissions = [];
+			addNotification(`已清除 ${removed} 条会话授权`, 'success');
+			return true;
+		} catch (e) {
+			reportError(e, { context: 'SettingsView', message: '清除会话授权失败', log: false });
 			return false;
 		}
 	}
@@ -966,6 +1012,7 @@
 	/** @returns {Promise<boolean>} */
 	async function saveSettings() {
 		if (saveState === 'saving') return false;
+		const securityChanged = dirtySettingsSectionIds.includes('security');
 		saveState = 'saving';
 		saveError = '';
 		try {
@@ -1059,6 +1106,10 @@
 								in_app: notification.session_error.in_app,
 								windows: notification.session_error.windows,
 							},
+							permission_requested: {
+								in_app: notification.permission_requested.in_app,
+								windows: notification.permission_requested.windows,
+							},
 							action_completed: {
 								in_app: notification.action_completed.in_app,
 								windows: notification.action_completed.windows,
@@ -1071,6 +1122,10 @@
 						},
 					},
 			});
+			if (securityChanged) {
+				securityRuntimeStatus = 'current';
+				securityRuntimeNotice = '安全策略已按当前配置完成运行时应用。';
+			}
 			setActionCompletionNotificationChannels(notification.action_completed);
 			addNotification('设置已写入配置', 'success');
 			try {
@@ -1101,6 +1156,21 @@
 			saveState = 'error';
 			const partialApplyFailure = isPartialConfigApplyError(e);
 			saveError = partialApplyFailure ? PARTIAL_APPLY_SAVE_MESSAGE : formatError(e);
+			if (partialApplyFailure && securityChanged) {
+				const detail = formatError(e);
+				const configVersion = detail.match(/config_version=(\d+)/)?.[1];
+				const activeVersion = detail.match(/security_base_version=(\d+)/)?.[1];
+				if (detail.includes('security_runtime=unchanged')) {
+					securityRuntimeStatus = 'unchanged';
+					securityRuntimeNotice = `磁盘配置版本 ${configVersion || '未知'} 已写入，但当前进程仍以最后完整应用的安全配置${activeVersion ? `（版本 ${activeVersion}）` : ''}为基础；重启前实际采用该旧策略，之后单独确认的权限规则仍即时生效。`;
+				} else if (detail.includes('security_runtime=incomplete_fail_closed')) {
+					securityRuntimeStatus = 'incomplete';
+					securityRuntimeNotice = `磁盘配置版本 ${configVersion || '未知'} 已写入；当前进程已更新安全边界，但会话授权恢复失败并保持 fail-closed。重启后会按已保存配置重新初始化并恢复持久授权。`;
+				} else {
+					securityRuntimeStatus = 'current';
+					securityRuntimeNotice = `安全策略已在配置版本 ${configVersion || '未知'} 完成运行时应用；其他运行时更新未完成。`;
+				}
+			}
 			if (partialApplyFailure && mounted) captureSnapshot();
 			reportError(e, {
 				context: 'SettingsView',
@@ -1221,9 +1291,15 @@
 					<div hidden={settingsTab !== 'security'}>
 						<SettingsSecurity
 							{security}
-							onRevokePermission={revokePermission}
-							onResetPermissions={resetPermissions}
-						/>
+							{sessionPermissions}
+							securityDirty={dirtySettingsSectionIds.includes('security')}
+							{securityRuntimeStatus}
+							{securityRuntimeNotice}
+			onRevokePermission={revokePermission}
+			onRevokeSessionPermission={revokeSessionPermission}
+			onResetPermissions={resetPermissions}
+			onResetSessionPermissions={resetSessionPermissions}
+		/>
 					</div>
 				{/if}
 				{#if visitedSettingsTabs.includes('limits')}

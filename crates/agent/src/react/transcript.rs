@@ -24,8 +24,9 @@
 //!   intentionally *outside* the event log so continue/rollback can truncate
 //!   them via `last_msg_at` without replaying a failed step.
 //! - **Terminal action-result**: no live loop left — history-only persist.
-//! - **UI-only ask/confirm notices**: waiting prompts are materialized for the
-//!   UI but are not LLM transcript events.
+//! - Interaction lifecycle and waiting state are not transcript content. Ask
+//!   text exists once in the transcript; confirmation details live in the
+//!   renderer-safe interaction projection.
 
 use super::committed_ui::{
     CommittedUi, StoredActionUi, StoredObservationUi, encode_transcript_payload,

@@ -55,7 +55,6 @@ pub(super) struct PauseTurnInput<'a> {
     pub(super) emitter: &'a Arc<dyn AgentEventEmitter>,
     pub(super) status: SessionStatus,
     pub(super) waiting_reason: Option<haven_common::SessionWaitingReason>,
-    pub(super) final_text: &'a str,
     pub(super) branch_point_step: Option<u32>,
     pub(super) run_id: u64,
     pub(super) reason: PauseReason,
@@ -233,38 +232,6 @@ impl ReActEngine {
             .await
     }
 
-    /// Project a chat row into `messages` and refresh `last_msg_at`.
-    ///
-    /// X12: recoverable ReAct content goes through [`Self::apply_transcript`]
-    /// as a `SessionCommitted`. This helper remains for documented UI-only
-    /// waiting rows; ingress user seeds go through
-    /// `crate::persist_session_message` directly so the queue has a durable id
-    /// before `UserInject` lands.
-    pub(super) async fn project_chat_message(
-        &self,
-        session_id: &str,
-        role: &str,
-        content: &str,
-        message_type: Option<&str>,
-        tool_call_id: Option<&str>,
-        message_id: Option<&str>,
-    ) -> anyhow::Result<()> {
-        crate::persist_session_message(
-            &self.executor,
-            session_id,
-            role,
-            content,
-            message_type,
-            &[],
-            false,
-            message_id,
-            tool_call_id,
-        )
-        .instrument(tracing::info_span!("project", session_id, role))
-        .await?;
-        Ok(())
-    }
-
     /// Recovery-only alias used by `persist_partial_on_error` (intentionally
     /// outside the event log — see transcript module docs).
     pub(super) async fn persist_session_message(
@@ -344,7 +311,6 @@ impl ReActEngine {
             emitter,
             status,
             waiting_reason,
-            final_text,
             branch_point_step,
             run_id,
             reason,
@@ -352,11 +318,10 @@ impl ReActEngine {
         let status_label = status.as_str();
         async {
             tracing::info!(
-                "ReAct turn finished: session={} step={} status={} final={} chars",
+                "ReAct turn finished: session={} step={} status={}",
                 session_id,
                 boundary_step,
-                status_label,
-                final_text.chars().count()
+                status_label
             );
             if let Some(step) = branch_point_step {
                 self.save_branch_point(session_id, state, step, false)

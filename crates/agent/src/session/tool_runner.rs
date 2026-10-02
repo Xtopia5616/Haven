@@ -7,6 +7,19 @@
 use super::*;
 use haven_memory::repositories::session_steps::{ActionStepOutcome, ActionStepWrite};
 
+pub(super) fn confirmation_expiry_delay(expires_at: Option<&str>) -> Option<std::time::Duration> {
+    let expires_at = chrono::DateTime::parse_from_rfc3339(expires_at?)
+        .ok()?
+        .with_timezone(&chrono::Utc);
+    let remaining = expires_at.signed_duration_since(chrono::Utc::now());
+    Some(
+        remaining
+            .to_std()
+            .unwrap_or_default()
+            .min(SCHEDULED_CONFIRM_ABSOLUTE_TIMEOUT),
+    )
+}
+
 /// The tool may already have produced an external side effect when its final
 /// action-step projection fails. Callers must surface this as an unknown
 /// outcome, never as an ordinary retryable failure.
@@ -1063,17 +1076,19 @@ impl SessionSupervisor {
             receipt,
             title.to_string(),
         );
+        let expiry_delay = confirmation_expiry_delay(request.expires_at.as_deref())
+            .unwrap_or(SCHEDULED_CONFIRM_ABSOLUTE_TIMEOUT);
         self.scheduled_confirms.lock().await.push(request.clone());
         self.emit_event(SessionEvent::InteractionRequested {
             request: Box::new(request),
         });
-        // Absolute fail-closed timer for closed/crashed UI. Interactive
-        // countdown starts when the dialog is shown (frontend), so queued
-        // confirms are not starved by arrival-time deadlines.
+        // The receipt expiry is the hard lifetime for this approval. The UI
+        // may reject it sooner after its visible countdown, while this timer
+        // covers a closed or crashed renderer.
         let executor = Arc::clone(self);
         let timeout_id = step_id.clone();
         tokio::spawn(async move {
-            tokio::time::sleep(SCHEDULED_CONFIRM_ABSOLUTE_TIMEOUT).await;
+            tokio::time::sleep(expiry_delay).await;
             if executor
                 .scheduled_confirms
                 .lock()
@@ -1084,9 +1099,9 @@ impl SessionSupervisor {
                 tracing::warn!(
                     "scheduled confirmation {} timed out after {:?}; treating as rejected",
                     timeout_id,
-                    SCHEDULED_CONFIRM_ABSOLUTE_TIMEOUT
+                    expiry_delay
                 );
-                let _ = executor.resolve_confirmation(&timeout_id, false).await;
+                let _ = executor.expire_confirmation(&timeout_id).await;
             }
         });
         Some(step_id)
@@ -1151,7 +1166,7 @@ impl SessionSupervisor {
         None
     }
 
-    async fn pending_confirmation_request(
+    pub(super) async fn pending_confirmation_request(
         &self,
         step_id: &haven_common::types::ConfirmId,
     ) -> Option<crate::interaction::InteractionRequest> {
@@ -1249,10 +1264,18 @@ impl SessionSupervisor {
             let receipt = receipt.ok_or_else(|| {
                 anyhow::anyhow!("confirmation is missing its authorization receipt")
             })?;
-            self.authorization
+            if let Err(reason) = self
+                .authorization
                 .verify_receipt(&authorization_request, receipt)
                 .await
-                .map_err(anyhow::Error::msg)?;
+            {
+                // A stale approval must not leave its session paused forever.
+                // Consume the request as a denial (without installing a grant)
+                // before returning the validation error to the renderer.
+                self.resolve_confirmation_locked(step_id, false, true)
+                    .await?;
+                anyhow::bail!("confirmation request can no longer be executed: {reason}");
+            }
         }
         self.grant_session_permission(&session_id, key, target, effect)
             .await?;
@@ -1260,6 +1283,7 @@ impl SessionSupervisor {
         self.resolve_confirmation_locked(
             step_id,
             matches!(effect, haven_common::types::PermissionEffect::Allow),
+            false,
         )
         .await
     }
@@ -1277,13 +1301,26 @@ impl SessionSupervisor {
         confirmed: bool,
     ) -> anyhow::Result<Option<crate::session::ConfirmResolution>> {
         let _resolution = self.confirmation_resolution_gate.lock().await;
-        self.resolve_confirmation_locked(step_id, confirmed).await
+        self.resolve_confirmation_locked(step_id, confirmed, false)
+            .await
+    }
+
+    /// Expire a pending approval and resume its owner with an explicit
+    /// non-execution result. Timeout is a distinct terminal interaction state
+    /// so the agent does not mistake it for a deliberate user rejection.
+    pub async fn expire_confirmation(
+        self: &Arc<Self>,
+        step_id: &haven_common::types::ConfirmId,
+    ) -> anyhow::Result<Option<crate::session::ConfirmResolution>> {
+        let _resolution = self.confirmation_resolution_gate.lock().await;
+        self.resolve_confirmation_locked(step_id, false, true).await
     }
 
     async fn resolve_confirmation_locked(
         self: &Arc<Self>,
         step_id: &haven_common::types::ConfirmId,
         confirmed: bool,
+        timed_out: bool,
     ) -> anyhow::Result<Option<crate::session::ConfirmResolution>> {
         // Scheduled tool path: non-blocking request → resolve later.
         let scheduled = {
@@ -1306,7 +1343,14 @@ impl SessionSupervisor {
                 ),
                 _ => return Ok(None),
             };
-            let _ = request.resolve(Value::Bool(confirmed));
+            if timed_out {
+                let _ = request.expire();
+            } else {
+                let _ = request.resolve(Value::Bool(confirmed));
+            }
+            self.emit_event(crate::session::SessionEvent::InteractionRequested {
+                request: Box::new(request.clone()),
+            });
             let resolution = crate::session::ConfirmResolution {
                 session_id,
                 tool_name,
@@ -1314,14 +1358,16 @@ impl SessionSupervisor {
             };
             let executor = Arc::clone(self);
             tokio::spawn(async move {
-                executor.finish_scheduled_confirm(request, confirmed).await;
+                executor
+                    .finish_scheduled_confirm(request, confirmed, timed_out)
+                    .await;
             });
             return Ok(Some(resolution));
         }
         // Phase 5 / E3: pause-based confirm — record decision and wake when
         // every pending gated tool in the batch has been answered.
         if let Some(request) = self
-            .resolve_interaction(step_id.as_str(), Value::Bool(confirmed))
+            .resolve_interaction(step_id.as_str(), Value::Bool(confirmed), timed_out)
             .await?
         {
             let (session_id, tool_name, tool_input) = match request.details {
@@ -1345,6 +1391,7 @@ impl SessionSupervisor {
         &self,
         request: crate::interaction::InteractionRequest,
         confirmed: bool,
+        timed_out: bool,
     ) {
         let (action_id, session_id, tool_name, tool_args, receipt, title) = match request.details {
             crate::interaction::InteractionDetails::ScheduledConfirm {
@@ -1383,17 +1430,26 @@ impl SessionSupervisor {
             return;
         }
         if !confirmed {
+            let reason = if timed_out {
+                "confirmation timed out"
+            } else {
+                "confirmation was declined"
+            };
             self.emit_event(SessionEvent::ScheduledConfirmOutcome {
                 action_id: action_id.clone(),
                 session_id: session_id.clone(),
                 title,
-                body: format!(
-                    "Scheduled tool '{tool_name}' was NOT executed: \
-                     confirmation was declined or timed out."
-                ),
+                body: format!("Scheduled tool '{tool_name}' was NOT executed: {reason}."),
             });
             let _ = action_service
-                .fail_scheduled(&action_id, "确认被拒绝或已超时")
+                .fail_scheduled(
+                    &action_id,
+                    if timed_out {
+                        "确认超时"
+                    } else {
+                        "确认被拒绝"
+                    },
+                )
                 .await;
             return;
         }
@@ -1799,8 +1855,11 @@ mod action_step_persistence_tests {
     #[tokio::test]
     async fn action_step_lifecycle_persists_identity_through_session_store() {
         let db = Arc::new(Database::open_in_memory().unwrap());
-        let supervisor =
-            SessionSupervisor::new_for_test(db.clone(), Arc::new(ToolsManager::new()), 1);
+        let supervisor = Arc::new(SessionSupervisor::new_for_test(
+            db.clone(),
+            Arc::new(ToolsManager::new()),
+            1,
+        ));
         let session = supervisor
             .create_session("action step store port")
             .await

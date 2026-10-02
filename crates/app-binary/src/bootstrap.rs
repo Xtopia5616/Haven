@@ -53,7 +53,6 @@ pub(crate) fn project_interaction(
             haven_agent::InteractionStatus::Cancelled => "cancelled",
         }
         .into(),
-        prompt: request.prompt.clone(),
         options: Vec::new(),
         tool_name: None,
         risk_level: None,
@@ -217,6 +216,8 @@ pub(crate) fn run() {
             let t_setup = std::time::Instant::now();
             let app_state = init_app_state(filter_handles, log_config, config_loader);
             app.manage(Arc::new(app_state));
+            let notifications = Arc::new(DesktopNotifications::new(handle.clone()));
+            app.manage(notifications.clone());
             tracing::info!(
                 "setup AppState ready in {}ms",
                 t_setup.elapsed().as_millis()
@@ -304,7 +305,7 @@ pub(crate) fn run() {
             let emitter = Arc::new(TauriEmitter {
                 handle: handle.clone(),
                 chunk_seq: AtomicU64::new(0),
-                notifications: DesktopNotifications::new(handle.clone()),
+                notifications: notifications.clone(),
             });
             // Decouple the agent loops from the Tauri IPC subscriber chain:
             // emits become bounded-channel sends drained by a consumer session,
@@ -497,6 +498,7 @@ pub(crate) fn run() {
                 {
                     let app_h = handle.clone();
                     let st_arc = state.inner().clone();
+                    let interaction_notifications = notifications.clone();
                     state.runtime.spawn_with_child_token(
                         "session-event-forwarder",
                         move |cancel| async move {
@@ -511,6 +513,15 @@ pub(crate) fn run() {
                                 };
                                 match event {
                                     haven_agent::SessionEvent::InteractionRequested { request } => {
+                                        tracing::info!(
+                                            session_id = %request.session_id,
+                                            interaction_id = %request.id,
+                                            interaction_kind = ?request.kind,
+                                            status = ?request.status,
+                                            "interaction request lifecycle changed"
+                                        );
+                                        interaction_notifications
+                                            .maybe_show_interaction_request(&request);
                                         log_ignored_result!(
                                             "event.interaction_requested",
                                             app_h.emit(
@@ -707,8 +718,11 @@ pub(crate) fn run() {
             commands::settings::discard_staged_credentials,
             commands::settings::update_settings,
             commands::settings::list_permissions,
+            commands::settings::list_session_permissions,
             commands::settings::revoke_permission,
+            commands::settings::revoke_session_permission,
             commands::settings::reset_permissions,
+            commands::settings::reset_session_permissions,
             commands::settings::check_shell_available,
             commands::history::export_history,
             commands::settings::enable_autostart,

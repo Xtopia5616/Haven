@@ -60,7 +60,7 @@
 | `get_sessions` | read | 活跃会话投影 |
 | `end_session` | mutate | 仅显式结束 |
 | `interrupt_session` | mutate | 停止当前输出但保留会话，可继续 |
-| `resolve_confirmation` | mutate | effect/scope/target 后端校验，deny 优先 |
+| `resolve_confirmation` | mutate | effect/scope/target 后端校验，deny 优先；超时按过期拒绝收尾 |
 | `update_session_title` | mutate | trim 后不得为空 |
 | `delete_session` | mutate | 删除并释放运行态 |
 | `clear_history` | mutate | 同时清除会话授权 |
@@ -74,9 +74,12 @@
 | `discard_staged_credentials` | mutate | 删除未由 Settings 保存提交的暂存凭据 |
 | `get_bootstrap_status` | read | 仅状态枚举 |
 | `update_settings` | mutate | shared loader 保留遮蔽密钥和工具段 |
-| `list_permissions` | read | 只返回 key/effect |
-| `revoke_permission` | mutate | 非空 key，原子保存 |
-| `reset_permissions` | mutate | 清除永久/会话规则，保留当前默认策略 |
+| `list_permissions` | read | 只返回永久规则 key/effect |
+| `list_session_permissions` | read | 返回会话 id/title、capability、target、allow/deny |
+| `revoke_permission` | mutate | 精确撤销永久规则 key，不影响会话 grant |
+| `revoke_session_permission` | mutate | 按 session id 与 capability 撤销单条会话 grant |
+| `reset_permissions` | mutate | 只清除永久规则，保留会话 grant 与当前默认策略 |
+| `reset_session_permissions` | mutate | 只清除持久会话授权，保留永久规则 |
 | `check_shell_available` | read | 只返回 available |
 | `enable_autostart` | execute | 仅 release 构建 |
 | `disable_autostart` | execute | 只能删除受管条目 |
@@ -101,7 +104,7 @@
 | `rollback_session` | mutate | 回滚分支并同步截断事件和投影 |
 | `update_session_title` | mutate | 更新非空标题 |
 | `delete_session` / `clear_history` | mutate | 删除会话或清空历史，并广播 `session:deleted` |
-| `resolve_confirmation` | mutate | 解决一个待确认请求 |
+| `resolve_confirmation` | mutate | 解决或超时收尾一个待确认请求 |
 
 Tauri 接收前端参数时采用其自动 camelCase → Rust snake_case 映射；页面调用处使用 camelCase。
 
@@ -213,7 +216,7 @@ DTO 位于 `crates/app-binary/src/events.rs`；前端镜像分别位于
 | `mute:changed` | `MuteChangedEvent { muted }` | 根布局、设置页 | 最新值覆盖；只含布尔状态。 |
 | `mcp:status_change` | `McpStatusChangedEvent { name, status }` | 工具视图、根布局 | 按 server name 合并；`Offline.error` 为净化错误，不含 env。 |
 | `skills:status_change` | `SkillsStatusChangedEvent { op }` | 技能视图 | refresh 通知可丢失，消费者重新读取受管 skills root。 |
-| `interaction:requested` | `InteractionRequestedEvent { id, session_id, kind, status, prompt, options, tool_name, risk_level, summary, permission_key, invocation_step_id, action_index, tool_call_id, created_at, expires_at }` | 聊天页 | ask、confirm、scheduled confirm 共用 request id 和生命周期；confirm 的原始参数、receipt 不跨边界，renderer 只收到安全摘要，决策仍由后端校验；前端按 `id` 幂等覆盖并交给统一 `interactionStore`。 |
+| `interaction:requested` | `InteractionRequestedEvent { id, session_id, kind, status, options, tool_name, risk_level, summary, permission_key, invocation_step_id, action_index, tool_call_id, created_at, expires_at }` | 聊天页 | ask、confirm、scheduled confirm 共用 request id 和生命周期；Ask 正文只存在 transcript，事件按 id 关联状态/选项，不重复携带正文或占位 prompt。confirm 的原始参数、receipt 不跨边界，renderer 只收到安全摘要，决策仍由后端校验；前端按 `id` 幂等覆盖并交给统一 `interactionStore`。 |
 | `hotkey:conflict` / `hotkey:rebind` | `HotkeyConflictEvent` / `HotkeyRebindEvent` | 根布局、设置页 | 仅报告绑定状态；不执行 renderer 传入的快捷键。 |
 | `llm:config_changed` | `()` | 设置页、模型页 | 无 payload；通知页面重新读取脱敏配置。 |
 | `agent:thought` | `AgentThoughtEvent` | 聊天页 | 按 `message_id` 归并；可选 `event_seq` 是已提交的 `session_events.sequence`，缺失表示没有 durable 行的 snap。文本不得重复写入普通日志。 |

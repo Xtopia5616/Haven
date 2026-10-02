@@ -31,7 +31,6 @@ const askInteraction = (
 	sessionId: 'ses-1',
 	kind: 'ask',
 	status,
-	prompt: '请选择',
 	options,
 	createdAt: '2026-09-24T00:00:00.000Z',
 	...(response === undefined ? {} : { response }),

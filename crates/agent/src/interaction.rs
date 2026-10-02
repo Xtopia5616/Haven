@@ -8,6 +8,11 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+fn confirmation_expires_at(receipt: &haven_tools::ConfirmationReceipt) -> Option<String> {
+    let timestamp = i64::try_from(receipt.expires_at).ok()?;
+    chrono::DateTime::<chrono::Utc>::from_timestamp(timestamp, 0).map(|value| value.to_rfc3339())
+}
+
 /// Typed data carried by an interaction request.
 ///
 /// This is deliberately separate from the renderer event projection. The
@@ -68,7 +73,12 @@ pub struct InteractionRequest {
     pub session_id: String,
     pub kind: InteractionKind,
     pub status: InteractionStatus,
-    pub prompt: String,
+    /// Old event payloads included prompt text here. Keep reading that field
+    /// so existing session_events can replay, but never serialize it again:
+    /// transcript content and interaction lifecycle state now have one owner.
+    #[allow(dead_code)]
+    #[serde(default, rename = "prompt", skip_serializing)]
+    legacy_prompt: Option<String>,
     pub details: InteractionDetails,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub correlation_ids: Vec<String>,
@@ -83,7 +93,6 @@ impl InteractionRequest {
     pub fn new(
         session_id: impl Into<String>,
         kind: InteractionKind,
-        prompt: impl Into<String>,
         correlation_ids: Vec<String>,
     ) -> Self {
         let id_prefix = match kind {
@@ -95,7 +104,7 @@ impl InteractionRequest {
             session_id: session_id.into(),
             kind,
             status: InteractionStatus::Pending,
-            prompt: prompt.into(),
+            legacy_prompt: None,
             details: InteractionDetails::Generic,
             correlation_ids,
             response: None,
@@ -104,12 +113,7 @@ impl InteractionRequest {
         }
     }
 
-    pub fn ask(
-        session_id: &str,
-        question: impl Into<String>,
-        options: Vec<String>,
-        step_ids: Vec<String>,
-    ) -> Self {
+    pub fn ask(session_id: &str, options: Vec<String>, step_ids: Vec<String>) -> Self {
         let step_id = step_ids
             .first()
             .cloned()
@@ -119,7 +123,7 @@ impl InteractionRequest {
             session_id: session_id.to_string(),
             kind: InteractionKind::Ask,
             status: InteractionStatus::Pending,
-            prompt: question.into(),
+            legacy_prompt: None,
             details: InteractionDetails::Ask {
                 options,
                 step_ids: step_ids.clone(),
@@ -143,6 +147,7 @@ impl InteractionRequest {
         risk_level: haven_common::types::RiskLevel,
         receipt: Option<haven_tools::ConfirmationReceipt>,
     ) -> Self {
+        let expires_at = receipt.as_ref().and_then(confirmation_expires_at);
         let id = receipt
             .as_ref()
             .map(|receipt| receipt.confirmation_id.to_string())
@@ -152,7 +157,7 @@ impl InteractionRequest {
             session_id: session_id.to_string(),
             kind: InteractionKind::Confirm,
             status: InteractionStatus::Pending,
-            prompt: "Waiting for confirmation".into(),
+            legacy_prompt: None,
             details: InteractionDetails::Confirm {
                 step_number,
                 tool_name,
@@ -166,7 +171,7 @@ impl InteractionRequest {
             correlation_ids: vec![step_id],
             response: None,
             created_at: chrono::Utc::now().to_rfc3339(),
-            expires_at: None,
+            expires_at,
         }
     }
 
@@ -179,16 +184,16 @@ impl InteractionRequest {
     pub fn ui_confirm(
         tool_name: String,
         tool_input: Value,
-        prompt: String,
         receipt: haven_tools::ConfirmationReceipt,
     ) -> Self {
         let confirmation_id = receipt.confirmation_id.to_string();
+        let expires_at = confirmation_expires_at(&receipt);
         Self {
             id: confirmation_id.clone(),
             session_id: "ui".into(),
             kind: InteractionKind::Confirm,
             status: InteractionStatus::Pending,
-            prompt,
+            legacy_prompt: None,
             details: InteractionDetails::Confirm {
                 step_number: 0,
                 tool_name,
@@ -202,7 +207,7 @@ impl InteractionRequest {
             correlation_ids: Vec::new(),
             response: None,
             created_at: chrono::Utc::now().to_rfc3339(),
-            expires_at: None,
+            expires_at,
         }
     }
 
@@ -214,12 +219,13 @@ impl InteractionRequest {
         receipt: haven_tools::ConfirmationReceipt,
         title: String,
     ) -> Self {
+        let expires_at = confirmation_expires_at(&receipt);
         Self {
             id: receipt.confirmation_id.to_string(),
             session_id: session_id.to_string(),
             kind: InteractionKind::ScheduledConfirm,
             status: InteractionStatus::Pending,
-            prompt: title.clone(),
+            legacy_prompt: None,
             details: InteractionDetails::ScheduledConfirm {
                 action_id,
                 tool_name,
@@ -230,7 +236,7 @@ impl InteractionRequest {
             correlation_ids: Vec::new(),
             response: None,
             created_at: chrono::Utc::now().to_rfc3339(),
-            expires_at: None,
+            expires_at,
         }
     }
 
@@ -260,7 +266,12 @@ impl InteractionRequest {
     }
 
     pub fn decision(&self) -> Option<bool> {
-        self.response.as_ref().and_then(Value::as_bool)
+        match self.status {
+            InteractionStatus::Expired => Some(false),
+            InteractionStatus::Pending
+            | InteractionStatus::Resolved
+            | InteractionStatus::Cancelled => self.response.as_ref().and_then(Value::as_bool),
+        }
     }
 }
 
@@ -273,7 +284,6 @@ mod tests {
         let mut request = InteractionRequest::new(
             "ses-0123456789abcdef0123456789abcdef",
             InteractionKind::Ask,
-            "Which file should I use?",
             vec!["step-0123456789abcdef0123456789abcdef".into()],
         );
         assert!(request.id.starts_with("step-"));
@@ -294,7 +304,6 @@ mod tests {
         let mut cancelled = InteractionRequest::new(
             "ses-0123456789abcdef0123456789abcdef",
             InteractionKind::Confirm,
-            "Allow the operation?",
             Vec::new(),
         );
         assert!(cancelled.cancel());
@@ -303,7 +312,6 @@ mod tests {
         let mut expired = InteractionRequest::new(
             "ses-0123456789abcdef0123456789abcdef",
             InteractionKind::ScheduledConfirm,
-            "Allow the scheduled operation?",
             Vec::new(),
         );
         assert!(expired.expire());
@@ -323,7 +331,6 @@ mod tests {
         let request = InteractionRequest::ui_confirm(
             "haven.test".into(),
             serde_json::json!({"value": 1}),
-            "Allow the test operation?".into(),
             receipt.clone(),
         );
 

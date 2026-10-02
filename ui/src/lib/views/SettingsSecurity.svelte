@@ -5,12 +5,21 @@
 	import SettingsField from '$lib/SettingsField.svelte';
 	import SettingsSection from '$lib/SettingsSection.svelte';
 	import { inputElementValue, withStringValue } from '$lib/typedCallbacks.ts';
-	import type { SecurityConfigInput } from '$lib/contracts/generatedCommands.ts';
+	import type {
+		SecurityConfigInput,
+		SessionPermissionGrant,
+	} from '$lib/contracts/generatedCommands.ts';
 
 	interface Props {
 		security: SecurityConfigInput & { permissions: Array<{ key: string; effect: string }> };
+		sessionPermissions?: SessionPermissionGrant[];
+		securityDirty?: boolean;
+		securityRuntimeStatus?: 'current' | 'unchanged' | 'incomplete';
+		securityRuntimeNotice?: string;
 		onRevokePermission?: (key: string) => boolean | Promise<boolean>;
+		onRevokeSessionPermission?: (grant: SessionPermissionGrant) => boolean | Promise<boolean>;
 		onResetPermissions?: () => boolean | Promise<boolean>;
+		onResetSessionPermissions?: () => boolean | Promise<boolean>;
 	}
 
 	/**
@@ -20,8 +29,14 @@
 	 */
 	let {
 		security,
+		sessionPermissions = [],
+		securityDirty = false,
+		securityRuntimeStatus = 'current',
+		securityRuntimeNotice = '安全策略已按当前配置完成运行时应用。',
 		onRevokePermission = async () => true,
+		onRevokeSessionPermission = async () => true,
 		onResetPermissions = async () => true,
+		onResetSessionPermissions = async () => true,
 	}: Props = $props();
 
 	const PERMISSION_MODES = [
@@ -140,7 +155,18 @@
 	let resetDialogOpen = $state(false);
 	let resetPending = $state(false);
 	let pendingRule = $state('');
+	let resetScope = $state<'permanent' | 'session'>('permanent');
 	let permissions = $derived(Array.isArray(security?.permissions) ? security.permissions : []);
+	let storedSessionPermissions = $derived(Array.isArray(sessionPermissions) ? sessionPermissions : []);
+	let securitySummaryStatus = $derived(
+		securityDirty
+			? '未保存'
+			: securityRuntimeStatus === 'unchanged'
+				? '仍按旧策略运行'
+				: securityRuntimeStatus === 'incomplete'
+					? '安全更新未完成'
+					: '已应用',
+	);
 	let selectedPermissionMode = $derived(
 		PERMISSION_MODES.find((mode) => mode.value === security?.permission_mode) ||
 			PERMISSION_MODES[0],
@@ -182,8 +208,11 @@
 		};
 	}
 
-	function openResetDialog() {
-		if (!resetPending) resetDialogOpen = true;
+	function openResetDialog(scope: 'permanent' | 'session') {
+		if (!resetPending) {
+			resetScope = scope;
+			resetDialogOpen = true;
+		}
 	}
 
 	function closeResetDialog() {
@@ -202,7 +231,9 @@
 	async function confirmResetPermissions() {
 		resetPending = true;
 		try {
-			const result = await onResetPermissions?.();
+			const result = await (resetScope === 'permanent'
+				? onResetPermissions?.()
+				: onResetSessionPermissions?.());
 			if (result !== false) resetDialogOpen = false;
 		} finally {
 			resetPending = false;
@@ -212,7 +243,7 @@
 
 <SettingsSection
 	title="权限中心"
-	description="把 Haven 能做什么、什么时候询问，以及永久规则的影响范围放在一起管理。"
+	description="管理默认安全边界、跨会话永久规则和仅对指定会话生效的授权。"
 >
 	<div class="security-summary">
 		<div>
@@ -220,7 +251,20 @@
 			<strong>{selectedPermissionMode.label} · {selectedPermissionMode.shortLabel}</strong>
 			<p>{selectedPermissionMode.detail}</p>
 		</div>
-		<span class="summary-status">正在生效</span>
+		<div class="summary-runtime-wrap">
+			<span
+				class="summary-status"
+				class:summary-status--warning={!securityDirty && securityRuntimeStatus !== 'current'}
+			>{securitySummaryStatus}</span>
+			<p
+				class="summary-runtime"
+				class:summary-runtime--warning={!securityDirty && securityRuntimeStatus !== 'current'}
+			>
+				{securityDirty
+					? '这些安全设置尚未保存；当前进程继续使用已经加载的策略。'
+					: securityRuntimeNotice}
+			</p>
+		</div>
 	</div>
 
 	<div class="settings-subsection">
@@ -364,8 +408,8 @@
 			<MaterialButton
 				variant="text"
 				className="permission-reset"
-				label="清除所有规则"
-				onclick={openResetDialog}
+				label={`清除 ${permissions.length} 条永久规则`}
+				onclick={() => openResetDialog('permanent')}
 				disabled={pendingRule !== '' || resetPending}
 			/>
 		{:else}
@@ -375,13 +419,81 @@
 			</div>
 		{/if}
 	</div>
+
+	<div class="rules-section">
+		<div class="subsection-heading rules-heading">
+			<div>
+				<h3>会话授权</h3>
+				<p>只对列出的会话生效。允许和拒绝决定都保存在本机，可逐条或整组撤销。</p>
+			</div>
+			{#if storedSessionPermissions.length > 0}
+				<span class="rules-count">{storedSessionPermissions.length} 条</span>
+			{/if}
+		</div>
+		{#if storedSessionPermissions.length > 0}
+			<div class="perm-list" role="list" aria-label="已保存的会话授权">
+				{#each storedSessionPermissions as grant (`${grant.session_id}:${grant.capability}`)}
+					{@const meta = permissionRuleMeta(grant.capability)}
+					{@const grantId = `${grant.session_id}:${grant.capability}`}
+					<div class="perm-row" role="listitem">
+						<div class="perm-indicator" class:deny={grant.effect === 'deny'} aria-hidden="true">
+							{grant.effect === 'deny' ? '!' : '✓'}
+						</div>
+						<div class="perm-copy">
+							<strong>{meta.label}</strong>
+							<span class="perm-scope">{meta.scope} · {grant.target}</span>
+							<span class="perm-scope">{grant.session_title || grant.session_id}</span>
+							<code class="perm-key">{grant.session_id} · {grant.capability}</code>
+						</div>
+						<span class="perm-effect" class:deny={grant.effect === 'deny'}>
+							{grant.effect === 'deny' ? '本对话拒绝' : '本对话允许'}
+						</span>
+						<MaterialButton
+							variant="text"
+							className="perm-revoke"
+							label={pendingRule === grantId ? '撤销中…' : '撤销'}
+							disabled={pendingRule !== ''}
+							ariaBusy={pendingRule === grantId}
+							onclick={async () => {
+							pendingRule = grantId;
+							try {
+								await onRevokeSessionPermission?.(grant);
+							} finally {
+								if (pendingRule === grantId) pendingRule = '';
+							}
+						}}
+						/>
+					</div>
+				{/each}
+			</div>
+			<MaterialButton
+				variant="text"
+				className="permission-reset"
+				label={`清除 ${storedSessionPermissions.length} 条会话授权`}
+				onclick={() => openResetDialog('session')}
+				disabled={pendingRule !== '' || resetPending}
+			/>
+		{:else}
+			<div class="empty-rules">
+				<strong>还没有会话授权</strong>
+				<p>在会话确认中选择“本对话允许”或“本对话拒绝”后，授权会显示在这里。</p>
+			</div>
+		{/if}
+	</div>
 </SettingsSection>
 
-<MaterialDialog open={resetDialogOpen} title="清除永久规则" onClose={closeResetDialog}>
+<MaterialDialog
+	open={resetDialogOpen}
+	title={resetScope === 'permanent' ? '清除永久规则' : '清除会话授权'}
+	onClose={closeResetDialog}
+>
 	{#snippet children()}
 		<p class="reset-dialog-copy">
-			这会清除所有“始终允许”和“始终拒绝”规则。之后 Haven
-			会按当前默认策略重新询问，正在使用的安全边界不会改变。
+			{#if resetScope === 'permanent'}
+				这会清除 {permissions.length} 条“始终允许”和“始终拒绝”规则，保留所有会话授权和默认安全策略。
+			{:else}
+				这会清除 {storedSessionPermissions.length} 条会话允许与拒绝决定，保留永久规则和默认安全策略。
+			{/if}
 		</p>
 	{/snippet}
 	{#snippet footer()}
@@ -444,6 +556,19 @@
 		font-size: var(--md-sys-typescale-label-small-size);
 		font-weight: 700;
 		white-space: nowrap;
+	}
+	.summary-runtime-wrap {
+		flex: 0 1 340px;
+		text-align: right;
+	}
+	.summary-status--warning {
+		color: var(--md-sys-color-error);
+	}
+	.security-summary .summary-runtime {
+		margin-top: var(--md-sys-space-xs);
+	}
+	.security-summary .summary-runtime--warning {
+		color: var(--md-sys-color-error);
 	}
 	.settings-subsection,
 	.rules-section {
@@ -669,6 +794,9 @@
 		.perm-row {
 			align-items: stretch;
 			flex-direction: column;
+		}
+		.summary-runtime-wrap {
+			text-align: left;
 		}
 		.summary-status,
 		.rules-count {

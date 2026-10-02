@@ -698,11 +698,9 @@ impl ReActEngine {
         if !need_confirm.is_empty() {
             if !batch_state.asked_questions.is_empty() {
                 // Ask question rows were projected inside apply(ToolResult).
-                let question = batch_state.asked_questions.join("\n\n");
                 self.executor
                     .request_interaction(crate::interaction::InteractionRequest::ask(
                         session_id,
-                        question,
                         Vec::new(),
                         batch_state.ask_step_ids.clone(),
                     ))
@@ -711,22 +709,11 @@ impl ReActEngine {
             self.executor
                 .request_confirm_batch(session_id, need_confirm)
                 .await?;
-            // UI-only waiting notice in `messages` (not an LLM event — must
-            // not enter the durable event stream or resume would re-feed it).
-            let notice = "Waiting for confirmation…";
             let mut pause = super::effects::EffectBatch::continue_batch();
-            pause.push(super::effects::TurnEffect::ProjectChatMessage {
-                role: "assistant".into(),
-                content: notice.into(),
-                message_type: Some("text".into()),
-                tool_call_id: None,
-                message_id: None,
-            });
             pause.pause(
                 step_num + 1,
                 SessionStatus::Paused,
                 Some(haven_common::SessionWaitingReason::Confirmation),
-                notice,
                 None,
                 PauseReason::Confirm,
             );
@@ -741,7 +728,6 @@ impl ReActEngine {
         // (Paused —Pending —dispatcher re-enters the loop, injecting the
         // answer as context at the top of the next step).
         if !batch_state.asked_questions.is_empty() {
-            let question = batch_state.asked_questions.join("\n\n");
             return self
                 .pause_for_ask(
                     session_id,
@@ -751,7 +737,6 @@ impl ReActEngine {
                     run_id,
                     crate::interaction::InteractionRequest::ask(
                         session_id,
-                        question,
                         Vec::new(),
                         batch_state.ask_step_ids.clone(),
                     ),
@@ -900,7 +885,16 @@ impl ReActEngine {
                     concurrency,
                 });
             } else {
-                let error = rejection_observation(&planned.action.tool_name);
+                let error = if pending_request.status
+                    == crate::interaction::InteractionStatus::Expired
+                {
+                    format!(
+                        "The operation '{}' was not executed because confirmation timed out. Do not retry it; ask the user to confirm again if it is still needed.",
+                        planned.action.tool_name
+                    )
+                } else {
+                    rejection_observation(&planned.action.tool_name)
+                };
                 self.executor
                     .finish_step_with_outcome_and_metadata(
                         session_id,
@@ -980,7 +974,6 @@ impl ReActEngine {
         let pending_ask = if !batch_state.asked_questions.is_empty() {
             Some(crate::interaction::InteractionRequest::ask(
                 session_id,
-                batch_state.asked_questions.join("\n\n"),
                 Vec::new(),
                 batch_state.ask_step_ids.clone(),
             ))

@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tracing_subscriber::Registry;
 use tracing_subscriber::filter::EnvFilter;
 use tracing_subscriber::reload;
@@ -75,9 +75,7 @@ pub(crate) struct UiConfirmationPending {
     /// Canonical interaction lifecycle used by the renderer projection and
     /// shared with agent/scheduled confirmations.
     pub request: haven_agent::InteractionRequest,
-    pub session_id: String,
     pub authorization_request: haven_tools::AuthorizationRequest,
-    pub summary: String,
     pub receipt: haven_tools::ConfirmationReceipt,
     pub action: UiConfirmationAction,
 }
@@ -135,6 +133,9 @@ pub struct AppState {
     /// capturing a replacement key binding.
     pub(crate) hotkey_capture_active: Arc<AtomicBool>,
     pub(crate) ui_confirmations: Arc<tokio::sync::Mutex<HashMap<String, UiConfirmationPending>>>,
+    /// Last config version whose complete Security settings phase succeeded.
+    /// One-off permission edits layer on top of this baseline.
+    pub(crate) last_fully_applied_security_config_version: AtomicU64,
 }
 
 impl Deref for AppState {
@@ -202,7 +203,9 @@ impl AppState {
             credential_store,
         )?);
         let config_apply_gate = Arc::new(tokio::sync::Mutex::new(()));
-        let cfg = config_service.snapshot()?.config;
+        let initial_config = config_service.snapshot()?;
+        let last_fully_applied_security_config_version = initial_config.version;
+        let cfg = initial_config.config;
         let context_limits = cfg.context_limits.clone();
         let context_limits_clone = context_limits.clone();
         let llm_config = cfg.llm.materialize(
@@ -579,6 +582,9 @@ impl AppState {
             bootstrap_ready: Arc::new(AtomicBool::new(false)),
             hotkey_capture_active: Arc::new(AtomicBool::new(false)),
             ui_confirmations: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            last_fully_applied_security_config_version: AtomicU64::new(
+                last_fully_applied_security_config_version,
+            ),
         })
     }
 

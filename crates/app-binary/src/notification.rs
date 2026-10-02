@@ -1,4 +1,5 @@
-//! Windows desktop notifications for AgentEvent lifecycle + agent `notify`.
+//! Windows desktop notifications for AgentEvent lifecycle, permission requests,
+//! and agent `notify`.
 //!
 //! In-app toasts stay on the frontend (`addNotification`); this module only
 //! drives the Windows channel via `tauri_plugin_notification`.
@@ -6,20 +7,23 @@
 
 use crate::app_state::AppState;
 use crate::logging::sanitize_error_text;
-use haven_agent::AgentEvent;
+use haven_agent::{AgentEvent, InteractionKind, InteractionRequest, InteractionStatus};
 use haven_common::config::NotificationConfig;
 use haven_memory::SessionStore;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard};
 use tauri::Manager;
 use tauri_plugin_notification::NotificationExt;
 
-/// Desktop (Windows) notification sink keyed off `AgentEvent`.
+/// Desktop (Windows) notification sink for AgentEvent and permission request lifecycles.
 pub(crate) struct DesktopNotifications {
     handle: tauri::AppHandle,
     /// Last observed session status per id — used so "会话已恢复" only fires on
     /// paused/error → pending, not Running→Pending (ask-answer same turn).
     last_session_status: Mutex<HashMap<String, String>>,
+    /// Pending permission request IDs grouped by owner session, so a batch
+    /// produces one desktop reminder and terminal transitions release it.
+    pending_permission_requests: Mutex<HashMap<String, HashSet<String>>>,
     /// Cached display titles so `SessionUpdated` / toast paths do not sync
     /// `SessionStore::session_record` on every status churn. Seeded from
     /// `SessionCreated` / `TitleUpdated` / `SessionCompleted`; SessionStore is
@@ -32,6 +36,7 @@ impl DesktopNotifications {
         Self {
             handle,
             last_session_status: Mutex::new(HashMap::new()),
+            pending_permission_requests: Mutex::new(HashMap::new()),
             session_titles: Mutex::new(HashMap::new()),
         }
     }
@@ -199,8 +204,20 @@ impl DesktopNotifications {
                 );
             }
             AgentEvent::SessionUpdated {
-                session_id, status, ..
+                session_id,
+                status,
+                waiting_reason,
+                ..
             } if *status == haven_common::SessionStatus::Paused => {
+                if matches!(
+                    *waiting_reason,
+                    Some(
+                        haven_common::SessionWaitingReason::Confirmation
+                            | haven_common::SessionWaitingReason::ScheduledConfirmation
+                    )
+                ) {
+                    return;
+                }
                 if !self.windows_enabled(|n| n.session_paused.windows, false) {
                     return;
                 }
@@ -244,6 +261,48 @@ impl DesktopNotifications {
             }
             _ => {}
         }
+    }
+
+    /// Notify the user that a permission request is waiting. The body is
+    /// intentionally generic so tool input and user-authored Ask text never
+    /// leave the in-app permission surface.
+    pub(crate) fn maybe_show_interaction_request(&self, request: &InteractionRequest) {
+        if !matches!(
+            request.kind,
+            InteractionKind::Confirm | InteractionKind::ScheduledConfirm
+        ) {
+            return;
+        }
+        let should_notify = {
+            let mut pending = self
+                .pending_permission_requests
+                .lock()
+                .unwrap_or_else(|poisoned| {
+                    tracing::error!("permission notification state lock was poisoned; recovering");
+                    poisoned.into_inner()
+                });
+            match request.status {
+                InteractionStatus::Pending => {
+                    let requests = pending.entry(request.session_id.clone()).or_default();
+                    requests.insert(request.id.clone()) && requests.len() == 1
+                }
+                InteractionStatus::Resolved
+                | InteractionStatus::Expired
+                | InteractionStatus::Cancelled => {
+                    if let Some(requests) = pending.get_mut(&request.session_id) {
+                        requests.remove(&request.id);
+                        if requests.is_empty() {
+                            pending.remove(&request.session_id);
+                        }
+                    }
+                    false
+                }
+            }
+        };
+        if !should_notify || !self.windows_enabled(|n| n.permission_requested.windows, true) {
+            return;
+        }
+        self.show_windows_toast("Haven", "有一项操作等待权限确认，请打开 Haven 处理。");
     }
 }
 

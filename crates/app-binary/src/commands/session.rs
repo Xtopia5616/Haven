@@ -2,7 +2,8 @@ use crate::app_state::{AppState, UiConfirmationAction, UiConfirmationPending};
 use crate::commands::log_err;
 use crate::commands::{SessionListResponse, emit_event_logged};
 use crate::events::{
-    InteractionRequestedEvent, SESSION_TITLE_UPDATED_EVENT, SessionTitleUpdatedEvent,
+    INTERACTION_REQUESTED_EVENT, InteractionRequestedEvent, NOTIFICATION_SHOW_EVENT,
+    SESSION_TITLE_UPDATED_EVENT, SessionTitleUpdatedEvent,
 };
 use crate::logging::sanitize_error_text;
 use haven_agent::{InteractionRequest, InteractionStatus};
@@ -12,6 +13,7 @@ use haven_memory::repositories::sessions::Session;
 use serde::Serialize;
 use std::sync::Arc;
 use tauri::AppHandle;
+use tauri::Manager;
 use tauri::State;
 
 /// Reconcile host-managed media after a successful explicit history deletion.
@@ -162,9 +164,17 @@ pub async fn resolve_confirmation(
     effect: String,
     scope: String,
     target: String,
+    timed_out: bool,
 ) -> Result<(), String> {
-    let (perm_effect, perm_scope) = parse_permission_decision(&effect, &scope)
-        .map_err(|error| log_err("resolve_confirmation", error))?;
+    let (perm_effect, perm_scope) = if timed_out {
+        (
+            haven_common::types::PermissionEffect::Deny,
+            haven_common::types::PermissionScope::Once,
+        )
+    } else {
+        parse_permission_decision(&effect, &scope)
+            .map_err(|error| log_err("resolve_confirmation", error))?
+    };
     let perm_target = haven_common::types::PermissionTarget::parse(&target)
         .map_err(|error| log_err("resolve_confirmation", error))?;
     let confirmed = matches!(perm_effect, haven_common::types::PermissionEffect::Allow);
@@ -188,7 +198,9 @@ pub async fn resolve_confirmation(
     // Resolve the confirmation and capture tool/session context atomically
     // (under the executor's sessions lock). Session scope uses the executor's
     // grant-aware path, which commits before resolving can wake the actor.
-    let resolution = if matches!(perm_scope, haven_common::types::PermissionScope::Session) {
+    let resolution = if timed_out {
+        state.executor.expire_confirmation(&confirmation_id).await
+    } else if matches!(perm_scope, haven_common::types::PermissionScope::Session) {
         state
             .executor
             .resolve_confirmation_with_session_grant(&confirmation_id, perm_target, perm_effect)
@@ -202,21 +214,154 @@ pub async fn resolve_confirmation(
     .map_err(|e| log_err("resolve_confirmation", e))?;
 
     let Some(resolution) = resolution else {
-        let pending = state.ui_confirmations.lock().await.remove(&step_id);
-        let Some(pending) = pending else {
+        let mut ui_pending = state.ui_confirmations.lock().await;
+        let Some(pending) = ui_pending.get_mut(&step_id) else {
+            drop(ui_pending);
             tracing::warn!(step_id, "confirmation request is stale or already resolved");
             return Err("Confirmation request is stale or already resolved".into());
         };
-        return resolve_ui_confirmation(
-            &state,
+        if timed_out {
+            let mut pending = ui_pending
+                .remove(&step_id)
+                .expect("checked pending UI confirmation");
+            let _ = pending.request.expire();
+            drop(ui_pending);
+            app.state::<Arc<crate::notification::DesktopNotifications>>()
+                .maybe_show_interaction_request(&pending.request);
+            tracing::info!(
+                session_id = %pending.request.session_id,
+                interaction_id = %pending.request.id,
+                outcome = "expired",
+                "renderer permission request resolved"
+            );
+            emit_event_logged(
+                &app,
+                INTERACTION_REQUESTED_EVENT,
+                crate::bootstrap::project_interaction(&pending.request),
+                "interaction_expired",
+            );
+            return Ok(());
+        }
+        if matches!(perm_scope, haven_common::types::PermissionScope::Session) {
+            return Err(log_err(
+                "resolve_confirmation",
+                "session-scoped authorization requires a persisted conversation; choose once or permanent",
+            ));
+        }
+        if pending.receipt.expires_at <= chrono::Utc::now().timestamp().max(0) as u64 {
+            let mut pending = ui_pending
+                .remove(&step_id)
+                .expect("checked pending UI confirmation");
+            let _ = pending.request.expire();
+            drop(ui_pending);
+            app.state::<Arc<crate::notification::DesktopNotifications>>()
+                .maybe_show_interaction_request(&pending.request);
+            emit_event_logged(
+                &app,
+                INTERACTION_REQUESTED_EVENT,
+                crate::bootstrap::project_interaction(&pending.request),
+                "ui_interaction_expired",
+            );
+            return Err(log_err(
+                "resolve_confirmation",
+                "confirmation request can no longer be executed: expired",
+            ));
+        }
+        let session_id = pending.request.session_id.clone();
+        let interaction_id = pending.request.id.clone();
+        let decision = if confirmed { "approved" } else { "denied" };
+        tracing::info!(
+            session_id = %session_id,
+            interaction_id = %interaction_id,
+            decision,
+            "renderer permission decision submitted"
+        );
+        let result =
+            accept_ui_confirmation(&state, pending, perm_effect, perm_scope, perm_target).await;
+        result?;
+        let pending = ui_pending
+            .remove(&step_id)
+            .expect("accepted UI confirmation remains registered");
+        drop(ui_pending);
+        app.state::<Arc<crate::notification::DesktopNotifications>>()
+            .maybe_show_interaction_request(&pending.request);
+        emit_event_logged(
             &app,
-            pending,
-            perm_effect,
-            perm_scope,
-            perm_target,
-        )
-        .await;
+            INTERACTION_REQUESTED_EVENT,
+            crate::bootstrap::project_interaction(&pending.request),
+            "ui_interaction_decision_accepted",
+        );
+        tracing::info!(
+            session_id = %session_id,
+            interaction_id = %interaction_id,
+            decision,
+            status = "accepted",
+            "renderer permission decision accepted"
+        );
+        if confirmed {
+            let task_app = app.clone();
+            let task_state = state.inner().clone();
+            let spawn_state = task_state.clone();
+            let interaction_id = interaction_id.clone();
+            let task = async move {
+                let result = execute_ui_confirmation_action(&task_state, &task_app, pending).await;
+                let (title, body) = match result {
+                    Ok(()) => ("操作已完成", "已授权的操作已经完成。"),
+                    Err(error) => {
+                        tracing::error!(
+                            interaction_id,
+                            error = %sanitize_error_text(&error),
+                            "renderer permission continuation failed"
+                        );
+                        (
+                            "操作未完成",
+                            "授权已接受，但操作执行失败。你可以重新发起该操作。",
+                        )
+                    }
+                };
+                emit_event_logged(
+                    &task_app,
+                    NOTIFICATION_SHOW_EVENT,
+                    crate::events::AgentNotificationEvent {
+                        session_id: "ui".into(),
+                        title: title.into(),
+                        body: body.into(),
+                        notification_kind: None,
+                        action_kind: None,
+                        action_id: None,
+                        action_status: None,
+                    },
+                    "ui_confirmation_continuation_result",
+                );
+            };
+            if !spawn_state
+                .runtime
+                .spawn("ui-confirmation-continuation", task)
+            {
+                emit_event_logged(
+                    &app,
+                    NOTIFICATION_SHOW_EVENT,
+                    crate::events::AgentNotificationEvent {
+                        session_id: "ui".into(),
+                        title: "操作未启动".into(),
+                        body: "授权已接受，但应用正在关闭，操作没有启动。请重新发起该操作。".into(),
+                        notification_kind: None,
+                        action_kind: None,
+                        action_id: None,
+                        action_status: None,
+                    },
+                    "ui_confirmation_continuation_rejected",
+                );
+            }
+        }
+        return Ok(());
     };
+
+    tracing::info!(
+        interaction_id = %confirmation_id,
+        outcome = if timed_out { "expired" } else if confirmed { "approved" } else { "denied" },
+        "permission request resolved"
+    );
 
     // Once is only this invocation. Session scope was durably committed by the
     // grant-aware resolver before it woke the operation.
@@ -272,14 +417,19 @@ pub async fn resolve_confirmation(
     Ok(())
 }
 
-async fn resolve_ui_confirmation(
+async fn accept_ui_confirmation(
     state: &AppState,
-    app: &AppHandle,
-    pending: UiConfirmationPending,
+    pending: &mut UiConfirmationPending,
     perm_effect: haven_common::types::PermissionEffect,
     perm_scope: haven_common::types::PermissionScope,
     perm_target: haven_common::types::PermissionTarget,
 ) -> Result<(), String> {
+    if matches!(perm_scope, haven_common::types::PermissionScope::Session) {
+        return Err(log_err(
+            "resolve_ui_confirmation",
+            "session-scoped authorization requires a persisted conversation",
+        ));
+    }
     let grant_key = pending
         .authorization_request
         .policy
@@ -295,13 +445,14 @@ async fn resolve_ui_confirmation(
         .map_err(|error| log_err("resolve_ui_confirmation", error))?;
     tracing::debug!(
         interaction_id = %pending.request.id,
+        session_id = %pending.request.session_id,
         interaction_kind = ?pending.request.kind,
         tool = %pending.authorization_request.tool_name,
         risk = ?pending.receipt.effective_risk,
-        summary = %pending.summary,
         "resolving renderer-triggered confirmation"
     );
-    if matches!(perm_effect, haven_common::types::PermissionEffect::Allow) {
+    let allowed = matches!(perm_effect, haven_common::types::PermissionEffect::Allow);
+    if allowed {
         let authorization_request = &pending.authorization_request;
         state
             .services
@@ -314,96 +465,82 @@ async fn resolve_ui_confirmation(
                     format!("confirmation is no longer valid: {reason}"),
                 )
             })?;
+    }
 
-        // Direct UI confirmations execute their typed action in this command
-        // instead of waking the ReAct actor. Persist a requested session grant
-        // before that action can produce an external side effect.
-        if matches!(perm_scope, haven_common::types::PermissionScope::Session) {
-            state
-                .executor
-                .grant_session_permission(
-                    &pending.session_id,
-                    grant_key.clone(),
-                    perm_target,
-                    perm_effect,
-                )
-                .await
-                .map_err(|error| log_err("persist_session_permission", error))?;
+    match perm_scope {
+        haven_common::types::PermissionScope::Once => {}
+        haven_common::types::PermissionScope::Session => {
+            return Err(log_err(
+                "resolve_ui_confirmation",
+                "session-scoped authorization requires a persisted conversation",
+            ));
         }
-
-        match &pending.action {
-            UiConfirmationAction::Mcp { client, tool, args } => {
-                state
-                    .services
-                    .mcp
-                    .call_tool(
-                        client,
-                        tool,
-                        args.clone(),
-                        tokio_util::sync::CancellationToken::new(),
-                    )
-                    .await
-                    .map_err(|error| log_err("resolve_ui_confirmation mcp", error))?;
-            }
-            UiConfirmationAction::Skill { name, params } => {
-                let skill = state.services.skills.get_skill(name).await.ok_or_else(|| {
-                    log_err(
-                        "resolve_ui_confirmation skill",
-                        format!("skill '{}' not found", name),
-                    )
-                })?;
-                state
-                    .services
-                    .skill_runner
-                    .read()
-                    .await
-                    .execute(&skill, params, tokio_util::sync::CancellationToken::new())
-                    .await
-                    .map_err(|error| log_err("resolve_ui_confirmation skill", error))?;
-            }
-            UiConfirmationAction::Admin { request } => {
-                let result = crate::commands::execute_admin_surface(
-                    state,
-                    "resolve_ui_confirmation admin",
-                    request.as_ref().clone(),
-                )
-                .await?;
-                crate::commands::finalize_confirmed_admin_ui_operation(
-                    state, app, request, &result,
-                )
-                .await?;
-            }
+        haven_common::types::PermissionScope::Always => {
+            let config_apply_guard =
+                persist_permanent_permission(state, grant_key.as_str(), perm_effect).await?;
+            state
+                .services
+                .authorization
+                .grant(None, grant_key, perm_effect, perm_scope)
+                .await;
+            drop(config_apply_guard);
         }
     }
 
-    if matches!(perm_scope, haven_common::types::PermissionScope::Once) {
-        return Ok(());
+    if !pending.request.resolve(serde_json::Value::Bool(allowed)) {
+        return Err(log_err(
+            "resolve_ui_confirmation",
+            "UI confirmation request is no longer pending",
+        ));
     }
-    let _config_apply_guard = if matches!(perm_scope, haven_common::types::PermissionScope::Always)
-    {
-        Some(persist_permanent_permission(state, grant_key.as_str(), perm_effect).await?)
-    } else {
-        None
-    };
-    if matches!(perm_scope, haven_common::types::PermissionScope::Session) {
-        if matches!(perm_effect, haven_common::types::PermissionEffect::Deny) {
+    Ok(())
+}
+
+async fn execute_ui_confirmation_action(
+    state: &AppState,
+    app: &AppHandle,
+    pending: UiConfirmationPending,
+) -> Result<(), String> {
+    match &pending.action {
+        UiConfirmationAction::Mcp { client, tool, args } => {
             state
-                .executor
-                .grant_session_permission(&pending.session_id, grant_key, perm_target, perm_effect)
+                .services
+                .mcp
+                .call_tool(
+                    client,
+                    tool,
+                    args.clone(),
+                    tokio_util::sync::CancellationToken::new(),
+                )
                 .await
-                .map_err(|error| log_err("persist_session_permission", error))?;
+                .map_err(|error| log_err("resolve_ui_confirmation mcp", error))?;
         }
-    } else {
-        state
-            .services
-            .authorization
-            .grant(
-                Some(&pending.session_id),
-                grant_key,
-                perm_effect,
-                perm_scope,
+        UiConfirmationAction::Skill { name, params } => {
+            let skill = state.services.skills.get_skill(name).await.ok_or_else(|| {
+                log_err(
+                    "resolve_ui_confirmation skill",
+                    format!("skill '{}' not found", name),
+                )
+            })?;
+            state
+                .services
+                .skill_runner
+                .read()
+                .await
+                .execute(&skill, params, tokio_util::sync::CancellationToken::new())
+                .await
+                .map_err(|error| log_err("resolve_ui_confirmation skill", error))?;
+        }
+        UiConfirmationAction::Admin { request } => {
+            let result = crate::commands::execute_admin_surface(
+                state,
+                "resolve_ui_confirmation admin",
+                request.as_ref().clone(),
             )
-            .await;
+            .await?;
+            crate::commands::finalize_confirmed_admin_ui_operation(state, app, request, &result)
+                .await?;
+        }
     }
     Ok(())
 }
@@ -675,10 +812,13 @@ pub async fn get_last_conversation(
 #[cfg(test)]
 mod tests {
     use super::{
-        ExecutorSessionDisplay, end_session_display_title, last_conversation_from_store,
-        resume_session_from_store,
+        ExecutorSessionDisplay, InteractionRequest, InteractionStatus, accept_ui_confirmation,
+        end_session_display_title, last_conversation_from_store, resume_session_from_store,
     };
+    use crate::app_state::{AppState, UiConfirmationAction, UiConfirmationPending};
     use crate::commands::SessionListResponse;
+    use haven_common::types::{PermissionEffect, PermissionScope, PermissionTarget, RiskLevel};
+    use haven_tools::ConfirmationReceipt;
 
     #[test]
     fn test_session_list_response_serde() {
@@ -811,5 +951,79 @@ mod tests {
             end_session_display_title(&session.id, None, &session_store).await,
             ""
         );
+    }
+
+    #[tokio::test]
+    async fn renderer_confirmation_rejects_fake_session_scope_and_remains_resolvable() {
+        let directory = tempfile::tempdir().unwrap();
+        let loader =
+            haven_common::config::ConfigLoader::load_from(&directory.path().join("config.toml"))
+                .unwrap();
+        let state = AppState::new_for_test(
+            &directory.path().join("test.db"),
+            vec![],
+            loader,
+            directory.path(),
+        )
+        .await
+        .unwrap();
+        let tool_name = "mcp__test__write";
+        let tool_input = serde_json::json!({});
+        let authorization_request = state
+            .tools
+            .get_authorization_request(None, tool_name, &tool_input)
+            .await;
+        let receipt = ConfirmationReceipt {
+            confirmation_id: haven_common::types::new_id("conf").into(),
+            capability: authorization_request.policy.capability.clone(),
+            canonical_input_hash: String::new(),
+            effective_risk: RiskLevel::Medium,
+            policy_revision: 0,
+            expires_at: chrono::Utc::now().timestamp().max(0) as u64 + 60,
+        };
+        let request =
+            InteractionRequest::ui_confirm(tool_name.into(), tool_input.clone(), receipt.clone());
+        let mut pending = UiConfirmationPending {
+            request,
+            authorization_request,
+            receipt,
+            action: UiConfirmationAction::Mcp {
+                client: "test".into(),
+                tool: "write".into(),
+                args: tool_input,
+            },
+        };
+
+        let error = accept_ui_confirmation(
+            &state,
+            &mut pending,
+            PermissionEffect::Allow,
+            PermissionScope::Session,
+            PermissionTarget::Operation,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("persisted conversation"));
+        assert_eq!(pending.request.status, InteractionStatus::Pending);
+        assert!(
+            state
+                .session_store
+                .session_authorization_grants("ui")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        accept_ui_confirmation(
+            &state,
+            &mut pending,
+            PermissionEffect::Deny,
+            PermissionScope::Once,
+            PermissionTarget::Operation,
+        )
+        .await
+        .unwrap();
+        assert_eq!(pending.request.status, InteractionStatus::Resolved);
+        state.runtime.shutdown().await;
     }
 }

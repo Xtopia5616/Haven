@@ -14,7 +14,7 @@
 2. `session_id` 外键引用 `sessions(id) ON DELETE CASCADE`。单会话删除、清空历史和 retention 删除会话时同步删除授权；授权不放进全局 `config.toml`，不使用 `kv_store` 或 transcript event 作为第二真源。
 3. `SessionStore` 是读写该表的 typed persistence boundary。确认命令解析 renderer 提交的目标类型后，仍由后端从当前 capability 的祖先计算规范 key。Agent 先成功持久化会话授权，再更新共享 `AuthorizationEngine`；数据库写失败时不应用授权并返回错误。
 4. 新建或重载 session actor 前，Agent 读取并完整校验该会话的授权集，再恢复进 `AuthorizationEngine`。读取或校验失败时不安装 actor，防止带部分或缺失授权的状态继续运行。Security 配置 apply 仍会让 AuthorizationEngine 清空进程内 map 并递增 policy revision；apply 完成后 Agent 从 `SessionStore` 重新恢复所有仍有效会话的 grants。新的 policy、hard boundary、deny-first 规则和 receipt 校验仍在每次授权中生效。
-5. 正常结束会话和应用关闭只清进程内 grant，数据库行继续有效；会话重开或应用重启后恢复。Error session 若保留 idle actor 供 `Continue` 使用，`ensure_session_loaded` 在继续前也会从 DB 重新加载该会话授权。显式 `revoke_permission(key)` 清除该精确 capability 的永久规则及所有会话副本；`reset_permissions` 清空永久规则和所有持久会话 grant。删除会话、清空历史和历史 retention 通过外键清理。X12 transcript rollback 只截断事件/投影 timeline，不撤销授权。
+5. 正常结束会话和应用关闭只清进程内 grant，数据库行继续有效；会话重开或应用重启后恢复。Error session 若保留 idle actor 供 `Continue` 使用，`ensure_session_loaded` 在继续前也会从 DB 重新加载该会话授权。永久规则与会话 grant 的撤销、重置范围见 ADR 0425：`revoke_permission` 不改变 session grants，`revoke_session_permission` 只删除给定 session+capability；永久与会话规则分别通过 `reset_permissions` 和 `reset_session_permissions` 管理。删除会话、清空历史和历史 retention 通过外键清理。X12 transcript rollback 只截断事件/投影 timeline，不撤销授权。
 
 ## 安全与替代方案
 

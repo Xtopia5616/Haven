@@ -153,7 +153,6 @@ describe('createChatSessionStartup', () => {
 				sessionId: SESSION_ID,
 				kind: 'ask',
 				status: 'pending',
-				prompt: '继续吗？',
 				options: [],
 				createdAt: '',
 			},

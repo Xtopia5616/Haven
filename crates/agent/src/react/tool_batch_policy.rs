@@ -119,26 +119,11 @@ impl ReActEngine {
         let has_logic = failures
             .iter()
             .any(|(_, class)| failure_kind(*class) == FailureKind::Logic);
-        let has_permission = failures
-            .iter()
-            .any(|(_, class)| *class == ToolErrorClass::Permission);
-        let has_unknown = failures.iter().any(|(_, class)| {
-            matches!(
-                class,
-                ToolErrorClass::UnknownOutcome | ToolErrorClass::SideEffectMayHaveHappened
-            )
-        });
         if has_env {
             "The tool failures look ENVIRONMENTAL (missing command / wrong shell syntax / network / path), not logic errors. Do NOT abandon your approach. Diagnose the environment first: verify the command exists in the shell you chose (cmd vs PowerShell syntax differs; `&&` only works in cmd), check network/proxy/endpoints, fix paths and prerequisites. Switching tools (e.g. curl -> aria2) or shells is an environment fix, not a change of approach — keep the same approach and retry."
                 .into()
         } else if has_logic {
             "The previous approach failed with logic errors. Analyze the exact error, fix the specific mistake, and retry. Only consider a completely different approach if the same method fails again after you fixed it."
-                .into()
-        } else if has_permission {
-            "The tool call was blocked by a permission or safety policy. Do not retry it blindly; ask the user for authorization or choose a permitted read-only path."
-                .into()
-        } else if has_unknown {
-            "The previous operation has an unknown outcome and may still have produced a side effect. Do not replay it automatically; verify the current state or ask the user."
                 .into()
         } else {
             format!(

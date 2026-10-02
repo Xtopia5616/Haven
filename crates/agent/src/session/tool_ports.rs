@@ -617,7 +617,11 @@ mod tests {
         let db =
             Arc::new(haven_memory::Database::open(&db_dir.path().join("lifecycle.db")).unwrap());
         let tools = Arc::new(ToolsManager::new());
-        let supervisor = crate::session::SessionSupervisor::new_for_test(db, tools.clone(), 1);
+        let supervisor = Arc::new(crate::session::SessionSupervisor::new_for_test(
+            db,
+            tools.clone(),
+            1,
+        ));
         let ended = supervisor.create_session("ended overlay").await.unwrap();
         let removed = supervisor.create_session("removed overlay").await.unwrap();
         let neighbor = supervisor.create_session("neighbor overlay").await.unwrap();

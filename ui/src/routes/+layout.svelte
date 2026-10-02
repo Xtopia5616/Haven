@@ -95,6 +95,7 @@
 		effect?: string;
 		scope?: string;
 		target?: string;
+		timedOut?: boolean;
 	};
 
 	const LAZY_VIEW_LOADERS: {
@@ -495,6 +496,7 @@
 		session_paused: { in_app: true },
 		session_resumed: { in_app: true },
 		session_error: { in_app: true },
+		permission_requested: { in_app: true },
 	});
 
 	function showAgentNotification(data: AgentNotificationPayload) {
@@ -668,7 +670,8 @@
 					const parsed = activeConfirmRequest.expiresAt
 						? Date.parse(activeConfirmRequest.expiresAt)
 						: Number.NaN;
-					return Number.isFinite(parsed) ? parsed : Date.now() + CONFIRM_TIMEOUT_MS;
+					const visibleDeadline = Date.now() + CONFIRM_TIMEOUT_MS;
+					return Number.isFinite(parsed) ? Math.min(parsed, visibleDeadline) : visibleDeadline;
 				})()
 			: null,
 	);
@@ -680,17 +683,12 @@
 		effect,
 		scope,
 		target,
+		timedOut = false,
 	}: ConfirmationDecision) {
-		// Resolve the shared request synchronously before awaiting IPC. The next
-		// queued request is then derived immediately from the reducer.
 		const resolvedStep = stepId;
-		if (!resolvedStep || confirmationRequestsInFlight.has(resolvedStep)) return;
+		if (!resolvedStep || confirmationRequestsInFlight.has(resolvedStep)) return false;
+		const currentRequest = appSessionReducer.getState().interactions[resolvedStep];
 		confirmationRequestsInFlight.add(resolvedStep);
-		appSessionReducer.dispatch({
-			type: 'session/interaction-resolved',
-			id: resolvedStep,
-			response: { approved, effect, scope },
-		});
 		const resolvedEffect = effect || (approved ? 'allow' : 'deny');
 		const resolvedScope = scope || 'once';
 		const resolvedTarget = target || 'operation';
@@ -700,15 +698,47 @@
 			effect: resolvedEffect,
 			scope: resolvedScope,
 			target: resolvedTarget,
+			timedOut,
 		};
 		try {
 			await invoke('resolve_confirmation', confirmationRequest);
+			appSessionReducer.dispatch({
+				type: 'session/interaction-resolved',
+				id: resolvedStep,
+				response: { approved, effect: resolvedEffect, scope: resolvedScope },
+			});
+			if (timedOut) addNotification('确认超时，操作未执行', 'warning', 4000);
+			else if (approved && currentRequest?.sessionId === 'ui') {
+				addNotification('权限已确认，操作正在执行', 'info', 4000);
+			}
+			return true;
 		} catch (e) {
 			if (formatError(e) === 'Confirmation request is stale or already resolved') {
-				addNotification('确认请求已过期或已处理，操作未执行', 'warning', 4000);
-			} else {
-				reportError(e, { context: '+layout', message: '确认失败', log: false });
+				appSessionReducer.dispatch({
+					type: 'session/interaction-resolved',
+					id: resolvedStep,
+					response: { approved, effect: resolvedEffect, scope: resolvedScope },
+				});
+				addNotification(
+					timedOut ? '确认超时，操作未执行' : '确认请求已失效或已处理，请查看会话结果',
+					'warning',
+					4000,
+				);
+				return true;
 			}
+			if (formatError(e).includes('confirmation request can no longer be executed')) {
+				appSessionReducer.dispatch({
+					type: 'session/interaction-resolved',
+					id: resolvedStep,
+					response: { approved: false, effect: 'deny', scope: 'once' },
+				});
+				addNotification('确认已失效，操作未执行', 'warning', 5000);
+				return true;
+			}
+			reportError(e, { context: '+layout', message: '确认失败', log: false });
+			// A rejected command remains retryable until the owner reports an
+			// accepted terminal transition (or the request becomes stale).
+			return false;
 		} finally {
 			confirmationRequestsInFlight.delete(resolvedStep);
 		}
@@ -844,6 +874,11 @@
 				...appEventListeners(
 					createChatInteractionEventHandlers({
 						dispatchSession: (action) => appSessionReducer.dispatch(action),
+						onPendingPermission: () => {
+							if (notifyCfg?.permission_requested?.in_app !== false) {
+								addNotification('有一项操作等待权限确认', 'warning', 5000);
+							}
+						},
 					}),
 				),
 				...appEventListeners({
@@ -1029,11 +1064,15 @@
 							// running on claim). Both keep the session in the busy set.
 							addBusySession(tid);
 						}
-						if (isPausedStatus(data.status)) {
-							removeBusySession(tid);
-							if (notifyCfg?.session_paused?.in_app !== false) {
-								addNotification(`会话已暂停: ${title || '未知'}`, 'warning', 3000);
-							}
+		if (isPausedStatus(data.status)) {
+			removeBusySession(tid);
+			if (
+				data.waitingReason !== 'confirmation' &&
+				data.waitingReason !== 'scheduled_confirmation' &&
+				notifyCfg?.session_paused?.in_app !== false
+			) {
+				addNotification(`会话已暂停: ${title || '未知'}`, 'warning', 3000);
+			}
 							updateReactExecutionPhase('idle');
 						}
 						if (data.status === 'pending') {
@@ -1344,11 +1383,13 @@
 			stepId={activeConfirmRequest?.id || null}
 			toolName={activeConfirmRequest?.toolName || ''}
 			sessionId={activeConfirmRequest?.sessionId || ''}
+			allowSessionScope={
+				activeConfirmRequest?.sessionId !== 'ui' &&
+				activeConfirmRequest?.sessionId !== 'action'
+			}
 			sessionTitle={activeConfirmSessionTitle}
 			riskLevel={activeConfirmRequest?.riskLevel || 'medium'}
-			summary={activeConfirmRequest?.summary ||
-				activeConfirmRequest?.prompt ||
-				'此操作需要你的许可。'}
+			summary={activeConfirmRequest?.summary || '此操作需要你的许可。'}
 			permissionKey={activeConfirmRequest?.permissionKey ||
 				activeConfirmRequest?.toolName ||
 				''}

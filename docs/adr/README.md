@@ -405,4 +405,7 @@
 - [0420：设置页自适应表单与快捷键录入](0420-settings-responsive-layout-and-hotkey-capture.md)
 - [0421：LLM 手动重试与熔断状态探测](0421-llm-manual-retry-and-open-circuit-probes.md)
 - [0422：Provider 级代理设置](0422-provider-scoped-proxy-settings.md)
+- [0423：权限确认等待期限与完成确认](0423-confirmation-wait-expiry-and-acknowledgement.md)
+- [0424：人工交互生命周期所有权审计](0424-interaction-lifecycle-ownership.md)
+- [0425：权限规则管理与界面直调续体](0425-permission-grant-management-and-ui-continuation.md)
 - [0426：按会话缓存输入框草稿](0426-per-session-composer-drafts.md)

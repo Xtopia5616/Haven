@@ -463,7 +463,6 @@ pub(crate) struct InteractionRequestedEvent {
     pub session_id: String,
     pub kind: String,
     pub status: String,
-    pub prompt: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub options: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

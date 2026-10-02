@@ -143,7 +143,6 @@ function pendingInteraction(sessionId = SESSION_ID): InteractionRequest {
 		sessionId,
 		kind: 'ask',
 		status: 'pending',
-		prompt: '选择一个选项',
 		options: ['是', '否'],
 		createdAt: '2026-09-25T00:00:00Z',
 	};

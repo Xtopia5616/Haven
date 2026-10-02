@@ -806,41 +806,49 @@ impl AuthorizationEngine {
         out
     }
 
-    /// Remove one permanent grant and every in-memory session copy of that
-    /// exact capability. The app layer persists both changes.
+    /// Remove one permanent grant. Session grants have independent lifetimes
+    /// and are removed only by their owning session-level controls.
     pub async fn revoke_permanent(&self, key: &str) -> bool {
         let mut cfg = self.config.write().await;
         let capability = CapabilityScope::from(key);
         let removed_permanent = cfg.permanent.remove(&capability).is_some();
-        let removed_session =
-            remove_session_capability_grants(&mut cfg.session_grants, &capability);
-        if removed_permanent || removed_session {
+        if removed_permanent {
             bump_policy_revision(&mut cfg);
         }
-        removed_permanent || removed_session
+        removed_permanent
     }
 
-    /// Remove one exact capability from every in-memory session grant. This
-    /// supports the conservative partial-failure path after durable revocation
-    /// succeeds but the separate config-file edit fails.
-    pub async fn revoke_session_permission(&self, capability: &CapabilityScope) -> bool {
+    /// Remove one exact capability grant from one session in memory.
+    pub async fn revoke_session_grant(
+        &self,
+        session_id: &str,
+        capability: &CapabilityScope,
+    ) -> bool {
         let mut cfg = self.config.write().await;
-        let removed = remove_session_capability_grants(&mut cfg.session_grants, capability);
+        let mut removed = false;
+        let keep_session = if let Some(grants) = cfg.session_grants.get_mut(session_id) {
+            removed |= grants.allow.remove(capability);
+            removed |= grants.deny.remove(capability);
+            !grants.allow.is_empty() || !grants.deny.is_empty()
+        } else {
+            true
+        };
+        if !keep_session {
+            cfg.session_grants.remove(session_id);
+        }
         if removed {
             bump_policy_revision(&mut cfg);
         }
         removed
     }
 
-    /// Remove every persisted rule. Session grants are also cleared because a
-    /// reset is an explicit request to return to the selected default policy.
+    /// Remove every permanent rule. Durable session grants have their own
+    /// explicit reset command and remain in effect.
     pub async fn clear_permanent(&self) -> usize {
         let mut cfg = self.config.write().await;
         let removed = cfg.permanent.len();
-        let had_session_grants = !cfg.session_grants.is_empty();
         cfg.permanent.clear();
-        cfg.session_grants.clear();
-        if removed > 0 || had_session_grants {
+        if removed > 0 {
             bump_policy_revision(&mut cfg);
         }
         removed
@@ -864,19 +872,6 @@ impl AuthorizationEngine {
             bump_policy_revision(&mut cfg);
         }
     }
-}
-
-fn remove_session_capability_grants(
-    session_grants: &mut HashMap<String, SessionGrants>,
-    capability: &CapabilityScope,
-) -> bool {
-    let mut removed = false;
-    session_grants.retain(|_, grants| {
-        removed |= grants.allow.remove(capability);
-        removed |= grants.deny.remove(capability);
-        !grants.allow.is_empty() || !grants.deny.is_empty()
-    });
-    removed
 }
 
 impl Default for AuthorizationEngine {
@@ -2065,12 +2060,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn explicit_permission_revoke_clears_exact_session_capability() {
+    async fn permanent_permission_revoke_preserves_session_capability() {
         let gw = ThresholdFixture::new(RiskLevel::Medium);
         gw.grant(
             Some("ses-a"),
             "tool1",
             PermissionEffect::Allow,
+            PermissionScope::Session,
+        )
+        .await;
+        gw.grant(
+            Some("ses-b"),
+            "tool1",
+            PermissionEffect::Deny,
             PermissionScope::Session,
         )
         .await;
@@ -2080,16 +2082,30 @@ mod tests {
             ConfirmationResult::AutoApproved
         ));
 
-        assert!(gw.revoke_permanent("tool1").await);
+        assert!(!gw.revoke_permanent("tool1").await);
+        assert!(matches!(
+            gw.check(Some("ses-a"), "tool1", &json!({}), RiskLevel::Medium)
+                .await,
+            ConfirmationResult::AutoApproved
+        ));
+        assert!(
+            gw.revoke_session_grant("ses-a", &CapabilityScope::from("tool1"))
+                .await
+        );
         assert!(matches!(
             gw.check(Some("ses-a"), "tool1", &json!({}), RiskLevel::Medium)
                 .await,
             ConfirmationResult::RequiresConfirmation { .. }
         ));
+        assert!(matches!(
+            gw.check(Some("ses-b"), "tool1", &json!({}), RiskLevel::Medium)
+                .await,
+            ConfirmationResult::Blocked { .. }
+        ));
     }
 
     #[tokio::test]
-    async fn clear_permanent_resets_permanent_and_session_rules() {
+    async fn clear_permanent_preserves_session_rules() {
         let gw = ThresholdFixture::new(RiskLevel::Safe);
         gw.grant(
             None,
@@ -2108,6 +2124,15 @@ mod tests {
 
         assert_eq!(gw.clear_permanent().await, 1);
         assert!(gw.list_permanent().await.is_empty());
+        assert!(matches!(
+            gw.check(Some("ses-a"), "files", &json!({}), RiskLevel::Medium)
+                .await,
+            ConfirmationResult::AutoApproved
+        ));
+        assert!(
+            gw.revoke_session_grant("ses-a", &CapabilityScope::from("files"))
+                .await
+        );
         assert!(matches!(
             gw.check(Some("ses-a"), "files", &json!({}), RiskLevel::Medium)
                 .await,

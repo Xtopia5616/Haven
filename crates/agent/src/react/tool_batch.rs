@@ -630,7 +630,6 @@ impl ReActEngine {
             step_num + 1,
             status,
             Some(haven_common::SessionWaitingReason::Ask),
-            pending.prompt.clone(),
             None,
             PauseReason::Ask,
         );

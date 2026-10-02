@@ -165,6 +165,7 @@ AgentEvent / 其它后端事件
 | 场景 | 入口 | 是否受 `notifyCfg` 控制 |
 |---|---|---|
 | 会话生命周期（创建/完成/暂停/恢复/出错） | `+layout` 事件 handler | 是（`in_app`） |
+| permission 请求（confirm / scheduled confirm） | `interaction:requested` → `+layout` + DesktopNotifications | 是（`permission_requested` 双通道） |
 | Agent 通用通知（`notify`、预算提示等） | `notification:show`，无 `notification_kind` | 否（始终 toast；Windows 亦始终开启） |
 | 后台任务/定时任务完成通知 | `notification:show`，`notification_kind=action_completion` | 是（共享 `action_completed.in_app`）；后台任务保留非当前会话且 completed/failed 才 toast |
 | 录音 / 转写 / 静音 / 热键冲突 / MCP 状态 | `+layout` 事件 handler | 否（操作反馈，无独立配置项） |
@@ -226,7 +227,8 @@ reportError(e, { context: 'SettingsView', message: '操作失败', log: false })
 | `SessionCreated` | `session_created.windows` | `false` | `新会话: {title\|\|id}`（禁止用 `input`） |
 | `SessionCompleted` | `session_completed.windows` | `true` | `会话已完成: …` |
 | `SessionError` | `session_error.windows` | `true` | `会话出错: …` |
-| `SessionUpdated` status=`paused` | `session_paused.windows` | `false` | `会话已暂停: …` |
+| `InteractionRequested` kind=`confirm` / `scheduled_confirm` status=`pending` | `permission_requested.windows` | `true` | `有一项操作等待权限确认，请打开 Haven 处理。`（通用文案） |
+| `SessionUpdated` status=`paused`（waiting reason 非 confirmation） | `session_paused.windows` | `false` | `会话已暂停: …` |
 | `SessionUpdated` status=`pending`（且上一状态为 paused/error） | `session_resumed.windows` | `false` | `会话已恢复: …` |
 | `AgentEvent::Notification` | **不读配置**，总是弹 | — | title/body 原样（设置页注明始终开启） |
 | `AgentEvent::ActionCompletionNotification` | `action_completed.windows` | `true` | title/body 原样；wire 仍走 `notification:show`，带 action kind/id/session/status 标记 |
@@ -238,13 +240,13 @@ reportError(e, { context: 'SettingsView', message: '操作失败', log: false })
 定义于 `crates/common/src/config/misc.rs`：
 
 ```text
-session_created / session_completed / session_paused / session_resumed / session_error / action_completed
+session_created / session_completed / session_paused / session_resumed / session_error / permission_requested / action_completed
   └─ NotifyChannels { in_app: bool, windows: bool }
 ```
 
-默认值：`in_app` 全部 `true`；`windows` 的 `session_completed`、`session_error`、`action_completed` 为 `true`，其余 `false`。旧配置缺少 `action_completed` 时按双通道开启加载。
+默认值：`in_app` 全部 `true`；`windows` 的 `session_completed`、`session_error`、`permission_requested`、`action_completed` 为 `true`，其余 `false`。旧配置缺少字段时按该字段默认值加载。
 
-- 设置页「通知」网格与此六键一一对应；background/scheduled 共用 `action_completed`。
+- 设置页「通知」网格与此七键一一对应；background/scheduled 共用 `action_completed`。
 - 新增可配置通知事件时：**结构体 Default + 设置页 + `maybe_show_toast` + `+layout` in_app 判断** 四步同步。
 
 ### 2.6 新增通知事件流程模板
@@ -307,7 +309,8 @@ try {
 | `session:created` | info：`新会话: …`（4s） | `session_created.in_app` |
 | `session:completed` | success：`会话已完成: …` | `session_completed.in_app` |
 | `session:error` | error：`会话出错: …`（5s） | `session_error.in_app` |
-| `session:updated` status=`paused` | warning：`会话已暂停: …`（3s） | `session_paused.in_app` |
+| `interaction:requested`（confirm/scheduled confirm pending） | warning：`有一项操作等待权限确认`（5s） | `permission_requested.in_app` |
+| `session:updated` status=`paused`（waiting reason 非 confirmation） | warning：`会话已暂停: …`（3s） | `session_paused.in_app` |
 | `session:updated` status=`pending`（仅当上一状态为 paused/error） | info：`会话已恢复: …`（3s） | `session_resumed.in_app` |
 | `notification:show`（action completion，background） | completed/failed 且 owner session 非当前会话时显示原后台任务 toast | `action_completed.in_app` |
 | `notification:show`（action completion，scheduled） | info toast（原 title/body） | `action_completed.in_app` |

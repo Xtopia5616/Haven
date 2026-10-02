@@ -26,6 +26,8 @@
 
 当前仍可观测到的结构性差距：
 
+- 人工交互仍是统一 renderer DTO 下的多 owner 实现：session request 由 `session_events` / actor 恢复，scheduled confirm 与 UI 直调各有进程内 registry；ADR 0156 的 snapshot 来源已被 ADR 0196 取代。typed owner 路由、统一后端 expiry、授权与动作完成分离、通知消费 lifecycle event 的目标见 ADR 0424；
+- 权限管理已分别列示、撤销和重置永久规则与 session grants；没有持久 session owner 的界面/调度确认不能写 session grant。ADR 0425 收口设置范围，交互 owner registry/fallback 迁移仍按 ADR 0424 后续切片处理；
 - `resume.rs` 负责组装 `RunReplay` 并向 actor 发起 run；active run future 存在 `SessionState::react_run`，并独占捕获 run-local `ReActState`（ADR 0382）；
 - actor mailbox 仍包含 messaging poll 等 actor-local 命令；usage 由 `UsageRuntime` 所有，stream identity 与 token estimate 已随单次 `ReActState` 收口，不再是跨 session engine sidecar；
 - resume 仍需协调 RAM 队列、持久 pending-input 状态、partial promotion 和 interaction replay；
@@ -182,7 +184,7 @@ Session 清理与 Agent wiring 收口（2026-09-26，ADR 0374）：`SessionStore
 
 阶段 3/2 历史切片补充（2026-09-25，ADR 0300；MemoryWorker 生产 raw Database 路径后由 ADR 0312 收口）：resume 的初始消息 id、attachments、`media_inputs` 与 session 全量 attachments 由 `SessionStore::session_resume_media` 在一个 blocking closure 中读取；保留消息顺序、首个 user 选择、空媒体与错误映射。Agent 继续负责 canonical initial input、fresh-run/resume 分界和 managed asset lease/register，事件流仍是恢复 authority；该切片当时未迁移 memory_index/MemoryWorker 其他 Database 路径，后者现经 typed stores，embedding index 由 MemoryService 持有 MemoryEmbeddingStore。
 
-阶段 3/1 小切片补充（2026-09-25，search-final 后续收口见 ADR 0385）：ReAct 不再经 Agent `TranscriptBatchWriter` 提交 storage-shaped batch；`SessionCommitted` 承载事件和领域投影意图，SessionStore 在同一事务内事件优先、投影失败整体回滚，提交后才广播及按 sequence 发布 UI（ADR 0336）。保留的直接消息路径是 ingress seed、error partial、terminal action-result 和 UI-only ask/confirm notice。搜索合成 final 的消息投影现与 owning ToolCall event 同事务提交；其他新增可恢复 transcript 文本必须使用 `SessionCommitted`。
+阶段 3/1 小切片补充（2026-09-25，search-final 后续收口见 ADR 0385）：ReAct 不再经 Agent `TranscriptBatchWriter` 提交 storage-shaped batch；`SessionCommitted` 承载事件和领域投影意图，SessionStore 在同一事务内事件优先、投影失败整体回滚，提交后才广播及按 sequence 发布 UI（ADR 0336）。保留的直接消息路径是 ingress seed、error partial、terminal action-result 和当时存在的 UI-only ask/confirm notice；该旁路已于 2026-10-02 移除。搜索合成 final 的消息投影现与 owning ToolCall event 同事务提交；其他新增可恢复 transcript 文本必须使用 `SessionCommitted`。
 
 ## 3. 不变量与禁止事项
 

@@ -668,14 +668,15 @@ impl SessionStore {
             .await
     }
 
-    /// Remove one exact capability grant across every session when the user
-    /// explicitly revokes that permission key.
-    pub async fn revoke_session_authorization_grants(
+    /// Remove one exact capability grant from its owning session.
+    pub async fn revoke_session_authorization_grant(
         &self,
+        session_id: &str,
         capability: haven_common::types::CapabilityScope,
     ) -> anyhow::Result<usize> {
+        let session_id = session_id.to_owned();
         self.db
-            .run_blocking(move |db| db.revoke_session_authorization_grants(&capability))
+            .run_blocking(move |db| db.revoke_session_authorization_grant(&session_id, &capability))
             .await
     }
 

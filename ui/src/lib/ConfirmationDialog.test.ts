@@ -53,6 +53,7 @@ describe('ConfirmationDialog', () => {
 			effect: 'allow',
 			scope: 'once',
 			target: 'operation',
+			timedOut: false,
 		});
 	});
 
@@ -78,5 +79,36 @@ describe('ConfirmationDialog', () => {
 		} finally {
 			vi.useRealTimers();
 		}
+	});
+
+	it('does not offer session grants to confirmations without a persisted session', async () => {
+		render(ConfirmationDialog as any, {
+			stepId: 'conf-ui-only',
+			toolName: 'mcp__server__write',
+			sessionId: 'ui',
+			permissionKey: 'mcp.server.write',
+		onConfirm: vi.fn(),
+		});
+
+		expect(screen.queryByRole('button', { name: '本对话允许此操作' })).toBeNull();
+		await fireEvent.click(screen.getByRole('button', { name: '更多允许' }));
+		expect(screen.queryByText('本对话')).toBeNull();
+		expect(screen.getByRole('menuitem', { name: '永久允许此操作' })).toBeTruthy();
+		await fireEvent.click(screen.getByRole('button', { name: '更多拒绝选项' }));
+		expect(screen.queryByRole('menuitem', { name: '本对话拒绝此操作' })).toBeNull();
+	});
+
+	it('keeps a rejected pre-execution confirmation submission retryable', async () => {
+		const onConfirm = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+		render(ConfirmationDialog as any, {
+			stepId: 'conf-retry',
+			toolName: 'mcp__server__write',
+			sessionId: 'ui',
+			onConfirm,
+		});
+
+		await fireEvent.click(screen.getByRole('button', { name: '本次允许' }));
+		await fireEvent.click(screen.getByRole('button', { name: '本次允许' }));
+		expect(onConfirm).toHaveBeenCalledTimes(2);
 	});
 });

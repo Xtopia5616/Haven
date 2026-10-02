@@ -4,6 +4,14 @@
 
 已接受（2026-09-14）
 
+## 后续状态（2026-10-02）
+
+ADR 0196（2026-09-22）删除 `ReActSnapshot` 后，本文关于
+`ReActSnapshot.interactions` 是持久来源的决定已被取代。当前普通会话交互由
+`SessionActor` 持有，并从 `session_events` 中的 interaction domain event 恢复。
+本文只记录 `InteractionRequest` DTO 与前端统一投影的历史决定；它不代表定时任务
+和界面直调也由同一个运行时 owner 持有。当前 owner 差异与待收敛项见 ADR 0424。
+
 ## 背景
 
 ask、工具安全确认和定时任务确认都会暂停执行，等待外部主体按稳定 ID 作出决定。此前它们分别由快照字段、session 状态、定时确认列表和前端 ask/confirm 状态表示，恢复、清理和 UI 投影容易出现分叉。

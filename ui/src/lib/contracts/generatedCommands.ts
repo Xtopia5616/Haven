@@ -23,11 +23,12 @@ export interface McpRefreshResult { added: string[]; removed: string[]; updated:
 export interface ApiKeyStatus { models: Record<string, boolean>; providers: Record<string, boolean>; stt: boolean; ocr: boolean; ocr_secret: boolean }
 export interface RecordingState { is_recording: boolean; is_toggle: boolean }
 export interface SessionResumeResponse { session: Session; messages: Message[]; steps: SessionStep[]; usage: SessionUsage | null; llm_usage: LlmCallUsage[]; interactions: InteractionRequestedEvent[] }
+export interface SessionPermissionGrant { session_id: string; session_title: string | null; capability: string; target: string; effect: string }
 export interface ShellAvailability { available: boolean }
 export interface ActionEvent { id: string; kind: ActionKind; status?: ActionStatus; session_id?: string; started_at?: string; finished_at?: string; due_at?: string; title?: string; body?: string; mode?: string; command?: string; output?: string; error?: string; error_reason?: string; exit_code?: number; preview?: string }
 export type ActionKindInput = 'background' | 'scheduled';
 export type ActionKind = 'background' | 'scheduled';
-export interface InteractionRequestedEvent { id: string; session_id: string; kind: string; status: string; prompt: string; options?: string[]; tool_name?: string; risk_level?: RiskLevel; summary?: string; permission_key?: string; invocation_step_id?: string; action_index?: number; tool_call_id?: string; created_at: string; expires_at?: string }
+export interface InteractionRequestedEvent { id: string; session_id: string; kind: string; status: string; options?: string[]; tool_name?: string; risk_level?: RiskLevel; summary?: string; permission_key?: string; invocation_step_id?: string; action_index?: number; tool_call_id?: string; created_at: string; expires_at?: string }
 export type CapabilityInput = 'chat' | 'fast_chat' | 'vision' | 'audio_input' | 'transcription' | 'embedding' | 'image_generation' | 'speech_synthesis';
 export type Capability = 'chat' | 'fast_chat' | 'vision' | 'audio_input' | 'transcription' | 'embedding' | 'image_generation' | 'speech_synthesis';
 export interface LlmConfigInput { providers?: ProviderConfigInput[]; models?: ModelConfigInput[]; request_policies?: RequestPolicyInput[]; max_total_duration_secs?: number; stream_idle_timeout_secs?: number; retry_max_retries?: number; retry_base_secs?: number; retry_factor?: number; retry_max_secs?: number; retry_jitter?: number; max_concurrent_requests?: number }
@@ -70,8 +71,8 @@ export interface McpServerConfigInput { name?: string; transport?: McpTransportT
 export interface McpServerConfig { name: string; transport: McpTransportType; command: string; args: string[]; env_refs?: McpEnvironmentCredentialRef[]; cwd: string | null; url: string; enabled: boolean }
 export interface MemoryConfigInput { session_window_size?: number; fact_inference_enabled?: boolean }
 export interface MemoryConfig { session_window_size: number; fact_inference_enabled: boolean }
-export interface NotificationConfigInput { session_created?: NotifyChannelsInput; session_completed?: NotifyChannelsInput; session_paused?: NotifyChannelsInput; session_resumed?: NotifyChannelsInput; session_error?: NotifyChannelsInput; action_completed?: NotifyChannelsInput }
-export interface NotificationConfig { session_created: NotifyChannels; session_completed: NotifyChannels; session_paused: NotifyChannels; session_resumed: NotifyChannels; session_error: NotifyChannels; action_completed: NotifyChannels }
+export interface NotificationConfigInput { session_created?: NotifyChannelsInput; session_completed?: NotifyChannelsInput; session_paused?: NotifyChannelsInput; session_resumed?: NotifyChannelsInput; session_error?: NotifyChannelsInput; permission_requested?: NotifyChannelsInput; action_completed?: NotifyChannelsInput }
+export interface NotificationConfig { session_created: NotifyChannels; session_completed: NotifyChannels; session_paused: NotifyChannels; session_resumed: NotifyChannels; session_error: NotifyChannels; permission_requested: NotifyChannels; action_completed: NotifyChannels }
 export interface NotifyChannelsInput { in_app?: boolean; windows?: boolean }
 export interface NotifyChannels { in_app: boolean; windows: boolean }
 export interface SecurityConfigInput { permission_mode?: PermissionModeInput; sandbox_mode?: SandboxModeInput; writable_roots?: string[]; network_policy?: NetworkPolicyInput; encrypt_sensitive?: boolean; permissions?: StoredPermissionInput[] }
@@ -193,6 +194,7 @@ export interface TauriCommandMap {
 	list_facts: { request: { source?: string | null }; response: Fact[] };
 	list_mcp_tools: { request: undefined; response: McpServerSnapshot[] };
 	list_permissions: { request: undefined; response: StoredPermission[] };
+	list_session_permissions: { request: undefined; response: SessionPermissionGrant[] };
 	list_skills: { request: undefined; response: SkillInfo[] };
 	log_frontend_error: { request: { message: string }; response: void };
 	mcp_tool_call: { request: { client: string; tool: string; args: unknown }; response: McpToolCallResponse };
@@ -207,9 +209,11 @@ export interface TauriCommandMap {
 	remove_mcp_server: { request: { name: string }; response: void };
 	reopen_session: { request: { sessionId: string }; response: void };
 	reset_permissions: { request: undefined; response: void };
+	reset_session_permissions: { request: undefined; response: number };
 	reset_tool_circuits: { request: undefined; response: void };
-	resolve_confirmation: { request: { stepId: string; effect: string; scope: string; target: string }; response: void };
+	resolve_confirmation: { request: { stepId: string; effect: string; scope: string; target: string; timedOut: boolean }; response: void };
 	revoke_permission: { request: { key: string }; response: void };
+	revoke_session_permission: { request: { sessionId: string; capability: string }; response: void };
 	rollback_session: { request: { sessionId: string; targetStep: number; pause?: boolean | null; targetMessageId?: string | null }; response: void };
 	run_memory_maintenance: { request: undefined; response: number };
 	search_history: { request: { query: string }; response: Session[] };

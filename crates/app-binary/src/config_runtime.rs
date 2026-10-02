@@ -82,7 +82,7 @@ impl RuntimeConfigCoordinator {
         if should_apply_router {
             apply_router(update.snapshot)
                 .await
-                .map_err(partial_config_apply_error)
+                .map_err(partial_router_config_apply_error)
                 .map_err(|error| log_err(ctx, error))?;
         }
         Ok(update.value)
@@ -215,7 +215,19 @@ pub(crate) enum RouterRuntimePublishError {
     ToolCatalog(#[from] haven_tools::CatalogRebuildError),
 }
 
-pub(crate) fn partial_config_apply_error(error: impl std::fmt::Display) -> String {
+pub(crate) fn partial_config_apply_error(
+    error: impl std::fmt::Display,
+    config_version: u64,
+    phase: &str,
+    security_runtime: &str,
+    security_base_version: u64,
+) -> String {
+    format!(
+        "部分 apply 失败：配置已写入（config_version={config_version}; phase={phase}; security_runtime={security_runtime}; security_base_version={security_base_version}）；重启应用后会从配置重新初始化。{error}"
+    )
+}
+
+fn partial_router_config_apply_error(error: impl std::fmt::Display) -> String {
     format!("部分 apply 失败：配置已写入；重启应用后会从配置重新初始化。{error}")
 }
 
@@ -620,6 +632,38 @@ impl SettingsRuntimeApplyCoordinator {
         &self.plan
     }
 
+    pub(crate) fn failed_phase_name(&self) -> Option<&'static str> {
+        self.phase.map(SettingsApplyPhase::as_str)
+    }
+
+    /// State of the security consumer after the most recent failed phase.
+    /// A failure in the Security phase happens after static config publication
+    /// but before all durable session grants have been restored, so it is
+    /// reported separately from a failure before or after that phase.
+    pub(crate) fn security_runtime_disposition(&self) -> &'static str {
+        let Some(failed_phase) = self.phase else {
+            return "unknown";
+        };
+        if failed_phase == SettingsApplyPhase::Security {
+            return "incomplete_fail_closed";
+        }
+        let phases = self.plan.phases();
+        let Some(security_index) = phases
+            .iter()
+            .position(|phase| *phase == SettingsApplyPhase::Security)
+        else {
+            return "unchanged";
+        };
+        let Some(failed_index) = phases.iter().position(|phase| *phase == failed_phase) else {
+            return "unknown";
+        };
+        if failed_index < security_index {
+            "unchanged"
+        } else {
+            "applied"
+        }
+    }
+
     /// Execute callbacks in the typed plan order. A failure stops later stages,
     /// preserving the existing partial-apply behavior.
     pub(crate) async fn apply<F, Fut>(&mut self, mut execute: F) -> Result<(), String>
@@ -705,10 +749,71 @@ mod tests {
 
     #[test]
     fn partial_apply_error_explains_config_write_and_restart_recovery() {
-        let error = partial_config_apply_error("skills refresh failed");
+        let error = partial_config_apply_error("skills refresh failed", 9, "skills", "applied", 9);
         assert!(error.starts_with("部分 apply 失败：配置已写入"));
+        assert!(error.contains("config_version=9; phase=skills; security_runtime=applied"));
         assert!(error.contains("重启应用后会从配置重新初始化"));
         assert!(error.ends_with("skills refresh failed"));
+    }
+
+    #[tokio::test]
+    async fn security_runtime_disposition_identifies_the_effective_state_after_failure() {
+        let snapshot = ConfigSnapshot {
+            version: 9,
+            config: AppConfig::default(),
+        };
+
+        let before_security = ConfigChanged {
+            version: 9,
+            domains: vec![ConfigDomain::Media, ConfigDomain::Security],
+        };
+        let mut coordinator = SettingsRuntimeApplyCoordinator::new(&before_security, &snapshot, "");
+        let _ = coordinator
+            .apply(|phase| async move {
+                if phase == SettingsApplyPhase::InputPipeline {
+                    SettingsApplyOutcome::failed("settings_test", "input pipeline failed")
+                } else {
+                    SettingsApplyOutcome::applied()
+                }
+            })
+            .await;
+        assert_eq!(coordinator.security_runtime_disposition(), "unchanged");
+
+        let security_failure = ConfigChanged {
+            version: 9,
+            domains: vec![ConfigDomain::Security],
+        };
+        let mut coordinator =
+            SettingsRuntimeApplyCoordinator::new(&security_failure, &snapshot, "");
+        let _ = coordinator
+            .apply(|phase| async move {
+                if phase == SettingsApplyPhase::Security {
+                    SettingsApplyOutcome::failed("settings_test", "grant restore failed")
+                } else {
+                    SettingsApplyOutcome::applied()
+                }
+            })
+            .await;
+        assert_eq!(
+            coordinator.security_runtime_disposition(),
+            "incomplete_fail_closed"
+        );
+
+        let after_security = ConfigChanged {
+            version: 9,
+            domains: vec![ConfigDomain::Security, ConfigDomain::Tools],
+        };
+        let mut coordinator = SettingsRuntimeApplyCoordinator::new(&after_security, &snapshot, "");
+        let _ = coordinator
+            .apply(|phase| async move {
+                if phase == SettingsApplyPhase::ToolSettings {
+                    SettingsApplyOutcome::failed("settings_test", "tool settings failed")
+                } else {
+                    SettingsApplyOutcome::applied()
+                }
+            })
+            .await;
+        assert_eq!(coordinator.security_runtime_disposition(), "applied");
     }
 
     #[test]

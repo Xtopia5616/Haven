@@ -12,7 +12,6 @@ describe('createChatInteractionEventHandlers', () => {
 				sessionId: 'ses-1',
 				kind,
 				status: 'pending',
-				prompt: '需要用户决定',
 				options: [],
 				createdAt: '2026-09-14T00:00:00Z',
 			};

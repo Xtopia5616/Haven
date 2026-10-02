@@ -4,13 +4,14 @@ use crate::events::*;
 use crate::logging::sanitize_error_text;
 use crate::notification::DesktopNotifications;
 use haven_agent::{AgentEvent, AgentEventEmitter};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tauri::Emitter;
 
 pub(crate) struct TauriEmitter {
     pub(crate) handle: tauri::AppHandle,
     pub(crate) chunk_seq: AtomicU64,
-    pub(crate) notifications: DesktopNotifications,
+    pub(crate) notifications: Arc<DesktopNotifications>,
 }
 
 /// Adapt one task lifecycle message from `haven-tools` to the public Tauri

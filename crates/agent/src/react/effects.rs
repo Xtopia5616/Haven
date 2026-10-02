@@ -20,15 +20,6 @@ use tokio_util::sync::CancellationToken;
 pub(super) enum TurnEffect {
     /// Append and project one canonical transcript event.
     Transcript(TranscriptEvent),
-    /// Materialize an assistant row without adding a transcript event in this
-    /// effect (for example a UI-only waiting notice).
-    ProjectChatMessage {
-        role: String,
-        content: String,
-        message_type: Option<String>,
-        tool_call_id: Option<String>,
-        message_id: Option<String>,
-    },
     /// Persist the branch marker after a search-only round. The marker is a
     /// durable effect because it must be ordered after the transcript event.
     SaveBranchPoint { step_number: u32 },
@@ -52,7 +43,6 @@ pub(super) enum TurnEffect {
         boundary_step: u32,
         status: SessionStatus,
         waiting_reason: Option<haven_common::SessionWaitingReason>,
-        final_text: String,
         branch_point_step: Option<u32>,
         reason: PauseReason,
     },
@@ -124,7 +114,6 @@ impl EffectBatch {
         boundary_step: u32,
         status: SessionStatus,
         waiting_reason: Option<haven_common::SessionWaitingReason>,
-        final_text: impl Into<String>,
         branch_point_step: Option<u32>,
         reason: PauseReason,
     ) {
@@ -132,7 +121,6 @@ impl EffectBatch {
             boundary_step,
             status,
             waiting_reason,
-            final_text: final_text.into(),
             branch_point_step,
             reason,
         });
@@ -234,24 +222,6 @@ async fn apply_projection_effect(
         TurnEffect::Transcript(event) => {
             engine.apply_transcript(ctx, event, state).await?;
         }
-        TurnEffect::ProjectChatMessage {
-            role,
-            content,
-            message_type,
-            tool_call_id,
-            message_id,
-        } => {
-            engine
-                .project_chat_message(
-                    &ctx.session_id,
-                    &role,
-                    &content,
-                    message_type.as_deref(),
-                    tool_call_id.as_deref(),
-                    message_id.as_deref(),
-                )
-                .await?;
-        }
         TurnEffect::SaveBranchPoint { step_number } => {
             engine
                 .save_branch_point(&ctx.session_id, state, step_number, false)
@@ -264,7 +234,6 @@ async fn apply_projection_effect(
             boundary_step,
             status,
             waiting_reason,
-            final_text,
             branch_point_step,
             reason,
         } => {
@@ -276,7 +245,6 @@ async fn apply_projection_effect(
                     emitter: &ctx.emitter,
                     status,
                     waiting_reason,
-                    final_text: &final_text,
                     branch_point_step,
                     run_id: ctx.run_id,
                     reason,
@@ -397,7 +365,6 @@ mod tests {
             2,
             SessionStatus::Paused,
             None,
-            "final",
             Some(1),
             PauseReason::TurnEnd,
         );

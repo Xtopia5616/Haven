@@ -356,7 +356,6 @@ async fn reopen_session_marks_only_first_recovered_input_as_ask_answer() {
     executor
         .request_interaction(crate::interaction::InteractionRequest::ask(
             &session.id,
-            "the answer",
             Vec::new(),
             vec!["step-0123456789abcdef0123456789abcdef".into()],
         ))

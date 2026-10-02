@@ -7,7 +7,7 @@
 
 /// Version of the public Tauri command directory.
 pub const IPC_CONTRACT_VERSION: u16 = 1;
-pub const EXPECTED_COMMAND_COUNT: usize = 75;
+pub const EXPECTED_COMMAND_COUNT: usize = 78;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandBoundary {
@@ -276,7 +276,7 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
     CommandContract {
         name: "resolve_confirmation",
         boundary: CommandBoundary::Mutate,
-        security: "effect/scope/target must match confirmation; deny wins",
+        security: "effect/scope/target must match confirmation; deny wins; timed out requests expire fail-closed",
     },
     CommandContract {
         name: "update_session_title",
@@ -350,14 +350,29 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
         security: "permission keys/effects only",
     },
     CommandContract {
+        name: "list_session_permissions",
+        boundary: CommandBoundary::Read,
+        security: "typed session grants with exact session, capability, target, and effect",
+    },
+    CommandContract {
         name: "revoke_permission",
         boundary: CommandBoundary::Mutate,
-        security: "non-empty exact key; persisted atomically",
+        security: "non-empty exact permanent key; session grants are retained",
+    },
+    CommandContract {
+        name: "revoke_session_permission",
+        boundary: CommandBoundary::Mutate,
+        security: "non-empty session id and capability; removes one session grant",
     },
     CommandContract {
         name: "reset_permissions",
         boundary: CommandBoundary::Mutate,
-        security: "clears permanent and session rules atomically; keeps selected default policy",
+        security: "clears permanent rules only; keeps session grants and selected default policy",
+    },
+    CommandContract {
+        name: "reset_session_permissions",
+        boundary: CommandBoundary::Mutate,
+        security: "clears durable session grants only; keeps permanent rules",
     },
     CommandContract {
         name: "check_shell_available",
@@ -483,6 +498,9 @@ mod tests {
         assert!(names.contains(&"execute_skill"));
         assert!(names.contains(&"resolve_confirmation"));
         assert!(names.contains(&"reset_permissions"));
+        assert!(names.contains(&"list_session_permissions"));
+        assert!(names.contains(&"revoke_session_permission"));
+        assert!(names.contains(&"reset_session_permissions"));
     }
 
     #[test]

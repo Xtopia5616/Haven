@@ -23,6 +23,7 @@
 		{ key: 'session_paused', label: '会话暂停' },
 		{ key: 'session_resumed', label: '会话恢复' },
 		{ key: 'session_error', label: '会话出错' },
+		{ key: 'permission_requested', label: '权限请求' },
 		{ key: 'action_completed', label: '任务完成' },
 	];
 

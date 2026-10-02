@@ -75,14 +75,13 @@
 		} catch (err) {
 			const msg = formatError(err);
 			try {
-				const parsed = JSON.parse(msg);
-				if (parsed?.requires_confirmation) {
-					previewResult =
-						`${parsed.summary || '此技能执行需要确认'}（风险: ${parsed.risk_level || 'high'}）。` +
-						'确认弹窗已打开，请在弹窗中选择执行范围。';
-				} else {
-					previewResult = `Error: ${msg}`;
-				}
+			const parsed = JSON.parse(msg);
+			// The app-shell confirmation dialog owns this request. Repeating its
+			// summary and instructions inside the skill card creates a second,
+			// stale-looking permission prompt.
+			if (!parsed?.requires_confirmation) {
+				previewResult = `Error: ${msg}`;
+			}
 			} catch {
 				previewResult = `Error: ${msg}`;
 			}

@@ -131,6 +131,7 @@ pub(crate) enum SessionCommand {
     ResolveInteraction {
         request_id: String,
         response: Value,
+        expired: bool,
         reply: oneshot::Sender<anyhow::Result<Option<ConfirmDecision>>>,
     },
     Cancel {
@@ -610,11 +611,13 @@ impl SessionActorHandle {
         &self,
         request_id: String,
         response: Value,
+        expired: bool,
     ) -> anyhow::Result<Option<ConfirmDecision>> {
         let (reply, rx) = oneshot::channel();
         self.send(ActorCommand::Session(SessionCommand::ResolveInteraction {
             request_id,
             response,
+            expired,
             reply,
         }))
         .await?;
@@ -837,9 +840,12 @@ enum ActiveReactRun {
     Claimed,
 }
 
-/// Replay only the interaction domain events needed to initialize a fresh
-/// actor.  The transcript, messages and steps are intentionally absent from
-/// this reducer: they are projections for UI/history and never recovery input.
+/// Replay the interaction domain events needed to initialize a fresh actor.
+/// Resolved confirmation gates stay until the corresponding tool batch commits
+/// and appends an interaction-clear event; dropping them here would strand an
+/// interrupted run with an advertised tool call but no recoverable decision.
+/// The transcript, messages and steps remain projections and are not recovery
+/// input to this reducer.
 pub(crate) async fn load_interactions(
     store: &SessionStore,
     session_id: &str,
@@ -856,7 +862,9 @@ pub(crate) async fn load_interactions(
                         )
                     })?;
                 interactions.retain(|existing| existing.id != request.id);
-                if request.status == InteractionStatus::Pending {
+                if request.status == InteractionStatus::Pending
+                    || request.kind == InteractionKind::Confirm
+                {
                     interactions.push(request);
                 }
             }
@@ -1055,9 +1063,10 @@ pub(crate) fn spawn(
                     SessionCommand::ResolveInteraction {
                         request_id,
                         response,
+                        expired,
                         reply,
                     } => {
-                        let result = resolve_interaction(&state, &request_id, response);
+                        let result = resolve_interaction(&state, &request_id, response, expired);
                         let result = match result {
                             Some(decision) => {
                                 let payload = match serde_json::to_string(&decision.request) {
@@ -1896,17 +1905,22 @@ fn resolve_interaction(
     state: &SessionState,
     request_id: &str,
     response: Value,
+    expired: bool,
 ) -> Option<ConfirmDecision> {
     let request = state
         .interactions
         .iter()
         .find(|request| request.id == request_id)?;
     let mut resolved = request.clone();
-    if resolved.status != InteractionStatus::Pending
-        || resolved.kind != InteractionKind::Confirm
-        || !response.is_boolean()
-        || !resolved.resolve(response)
-    {
+    if resolved.status != InteractionStatus::Pending || resolved.kind != InteractionKind::Confirm {
+        return None;
+    }
+    let resolved_ok = if expired {
+        resolved.expire()
+    } else {
+        response.is_boolean() && resolved.resolve(response)
+    };
+    if !resolved_ok {
         return None;
     }
     let wake_session = state

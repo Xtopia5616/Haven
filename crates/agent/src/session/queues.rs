@@ -187,7 +187,7 @@ impl SessionSupervisor {
     }
 
     pub async fn request_interaction(
-        &self,
+        self: &Arc<Self>,
         request: crate::interaction::InteractionRequest,
     ) -> anyhow::Result<()> {
         let actor = self
@@ -197,10 +197,39 @@ impl SessionSupervisor {
         actor.request_interaction(request.clone()).await?;
         if request.status == crate::interaction::InteractionStatus::Pending {
             self.emit_event(SessionEvent::InteractionRequested {
-                request: Box::new(request),
+                request: Box::new(request.clone()),
             });
+            self.schedule_confirmation_expiry(&request);
         }
         Ok(())
+    }
+
+    pub(super) fn schedule_confirmation_expiry(
+        self: &Arc<Self>,
+        request: &crate::interaction::InteractionRequest,
+    ) {
+        if request.status != crate::interaction::InteractionStatus::Pending
+            || request.kind != crate::interaction::InteractionKind::Confirm
+        {
+            return;
+        }
+        let Some(delay) =
+            super::tool_runner::confirmation_expiry_delay(request.expires_at.as_deref())
+        else {
+            return;
+        };
+        let executor = Arc::clone(self);
+        let timeout_id: haven_common::types::ConfirmId = request.id.clone().into();
+        tokio::spawn(async move {
+            tokio::time::sleep(delay).await;
+            if executor
+                .pending_confirmation_request(&timeout_id)
+                .await
+                .is_some()
+            {
+                let _ = executor.expire_confirmation(&timeout_id).await;
+            }
+        });
     }
 
     pub async fn clear_interactions(
@@ -230,6 +259,7 @@ impl SessionSupervisor {
         &self,
         request_id: &str,
         response: serde_json::Value,
+        expired: bool,
     ) -> anyhow::Result<Option<crate::interaction::InteractionRequest>> {
         let actors = self
             .actors
@@ -240,7 +270,7 @@ impl SessionSupervisor {
             .collect::<Vec<_>>();
         for actor in actors {
             if let Some(decision) = actor
-                .resolve_interaction(request_id.to_string(), response.clone())
+                .resolve_interaction(request_id.to_string(), response.clone(), expired)
                 .await?
             {
                 let request = decision.request.clone();
@@ -252,6 +282,9 @@ impl SessionSupervisor {
                     )
                     .await?;
                 }
+                self.emit_event(SessionEvent::InteractionRequested {
+                    request: Box::new(request.clone()),
+                });
                 return Ok(Some(request));
             }
         }
@@ -303,7 +336,7 @@ impl SessionSupervisor {
     }
 
     pub async fn request_confirm_batch(
-        &self,
+        self: &Arc<Self>,
         session_id: &str,
         requests: Vec<crate::interaction::InteractionRequest>,
     ) -> anyhow::Result<()> {

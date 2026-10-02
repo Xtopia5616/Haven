@@ -91,7 +91,6 @@ impl ReActEngine {
             ctx.step_num + 1,
             SessionStatus::Paused,
             None,
-            final_text,
             Some(ctx.step_num),
             PauseReason::TurnEnd,
         );

@@ -237,6 +237,7 @@ describe('SettingsView diagnostics export', () => {
 				session_paused: { in_app: true, windows: false },
 				session_resumed: { in_app: true, windows: false },
 				session_error: { in_app: true, windows: true },
+				permission_requested: { in_app: true, windows: true },
 				action_completed: { in_app: true, windows: true },
 			},
 			log: { level: 'info', file_enabled: true, file_path: 'C:\\Haven\\logs\\custom.log' },

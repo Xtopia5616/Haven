@@ -54,7 +54,7 @@
 | 会话隔离 | session allow 在 `ses-a`，无 session 或 `ses-b` 调用 | 后两者不能自动批准 |
 | 确认后 MCP refresh 部分失败 | queued refresh 被批准，结果 `failed` 含本批 reconnect target | resolver 保留 `ToolResult`，只经既有 `mcp:status_change` 为失败 target 发通用 `Offline`；direct command 仍只用 response DTO 汇总，不重复发失败事件 |
 | MCP refresh 失败 payload | `failed` 为空、不是数组、包含非字符串/空项/计划外名称/重复名称 | 不发 Offline；只发布唯一且匹配授权 connect/reconnect target 的名称，不向 renderer 暴露底层连接错误 |
-| policy reset / session grants | live Security 配置 apply、显式 `reset_permissions`、精确 `revoke_permission`、history clear、retention cleanup | Security apply 清空 RAM map 后从 durable session rows 恢复；精确撤销删除各 session 的同一 capability；显式 reset/会话删除/保留期清理删除对应持久 rows；rollback 不影响授权 |
+| policy reset / session grants | live Security 配置 apply、`reset_permissions`、`reset_session_permissions`、永久与会话逐项撤销、history clear、retention cleanup | Security apply 清空 RAM map 后从 durable session rows 恢复；永久撤销不影响 session grants；会话撤销精确到 session+capability；两个 reset 分别保留另一类规则；会话删除/retention 由外键清理；rollback 不影响授权 |
 | disabled op | `disabled_operations` 命中 canonical capability 或工具设置名下的短写；即使原始 discriminator 不一致也按 capability 判断 | `Blocked`，优先于风险确认 |
 | operation view contract | view 的 schema、固定 operation/scope、风险、幂等性、并发、权限 key、renderer、icon、prompt 任一不一致 | catalog、AuthorizationEngine、UI parser/renderer 和 prompt 不得各自接受不同定义 |
 | HTTP destination | `http://localhost`, loopback、RFC1918/ULA、link-local、`169.254.169.254`、metadata hostname | `Blocked`，不能依赖代理或 DNS 结果把本地目标变成可访问目标 |
