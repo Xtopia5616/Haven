@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { tick } from 'svelte';
+	import { tick, untrack } from 'svelte';
 	import type { Snippet } from 'svelte';
 	import logger from '$lib/logger.ts';
 	import { browser } from '$app/environment';
@@ -14,6 +14,7 @@
 	import Icon from '$lib/Icon.svelte';
 	import { copyText } from '$lib/clipboard.ts';
 	import type { ContextMenuItem } from '$lib/contextMenu.ts';
+	import { DRAFT_SESSION_ID } from '$lib/sessionReducer.ts';
 
 	interface ImageAttachment {
 		media_type: string;
@@ -107,6 +108,37 @@
 	);
 
 	let transcriptInput = $state('');
+	let transcriptDraftSessionId = activeSessionId || DRAFT_SESSION_ID;
+	const cachedDrafts = new Map<string, string>();
+	const MAX_CACHED_DRAFTS = 100;
+
+	function cacheDraft(sessionId: string, text: string) {
+		cachedDrafts.delete(sessionId);
+		if (!text) return;
+		cachedDrafts.set(sessionId, text);
+		while (cachedDrafts.size > MAX_CACHED_DRAFTS) {
+			const oldestSessionId = cachedDrafts.keys().next().value;
+			if (oldestSessionId === undefined) break;
+			cachedDrafts.delete(oldestSessionId);
+		}
+	}
+
+	// Keep one text draft per conversation while this composer stays mounted.
+	// The fresh-conversation slot is separate from every persisted session.
+	$effect(() => {
+		const nextSessionId = activeSessionId || DRAFT_SESSION_ID;
+		const previous = untrack(() => ({
+			sessionId: transcriptDraftSessionId,
+			text: transcriptInput,
+		}));
+		if (nextSessionId === previous.sessionId) return;
+
+		cacheDraft(previous.sessionId, previous.text);
+		transcriptDraftSessionId = nextSessionId;
+		transcriptInput = cachedDrafts.get(nextSessionId) ?? '';
+		cachedDrafts.delete(nextSessionId);
+	});
+
 	let transcriptTextarea = $state<HTMLTextAreaElement | null>(null);
 
 	const hasDraft = $derived(
@@ -365,6 +397,7 @@
 		const images = pendingImages;
 		const files = pendingFiles;
 		if (!text && images.length === 0 && files.length === 0 && !allowEmptySubmit) return;
+		cachedDrafts.delete(transcriptDraftSessionId);
 		transcriptInput = '';
 		pendingImages = [];
 		pendingFiles = [];
