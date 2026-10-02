@@ -34,8 +34,10 @@
 	 * border widths. Tool bodies can contain content-visibility based chat
 	 * bubbles, so those extra interpolations may briefly use an intrinsic
 	 * placeholder size and then snap back when the transition is released.
-	 * Keeping the transition to a measured height and opacity leaves the
-	 * inline geometry stable while the body is being revealed.
+	 * Keep the transition to measured geometry and opacity. Animate the body
+	 * margin with its height so the spacing does not remain after the body has
+	 * reached zero height, and use the fractional rendered size to avoid a
+	 * one-pixel snap when the transition is released.
 	 *
 	 */
 	function stableReveal(
@@ -46,13 +48,14 @@
 			easing = cubicOut,
 		}: { delay?: number; duration?: number; easing?: (t: number) => number } = {},
 	) {
-		const height = node.scrollHeight;
+		const height = node.getBoundingClientRect().height;
+		const marginTop = Number.parseFloat(getComputedStyle(node).marginTop) || 0;
 		return {
 			delay,
 			duration,
 			easing,
 			css: (t: number) =>
-				`overflow: hidden; height: ${t * height}px; min-height: 0; opacity: ${Math.min(t * 20, 1)};`,
+				`overflow: hidden; box-sizing: border-box; height: ${t * height}px; min-height: 0; margin-top: ${t * marginTop}px; opacity: ${Math.min(t * 20, 1)};`,
 		};
 	}
 </script>
@@ -133,5 +136,8 @@
 		width: 100%;
 		min-width: 0;
 		margin-top: var(--md-sys-space-xs);
+	}
+	.md-collapsible-body[hidden] {
+		display: none;
 	}
 </style>

@@ -6,10 +6,12 @@ describe('MaterialCollapsible', () => {
 	it('keeps the body mounted but hidden when collapsed (default)', () => {
 		const { container } = render(MaterialCollapsible, { open: false });
 		const header = container.querySelector('.md-collapsible-header') as HTMLButtonElement;
+		const body = container.querySelector('.md-collapsible-body') as HTMLElement;
 		expect(header).toBeTruthy();
 		expect(header.getAttribute('aria-expanded')).toBe('false');
 		expect(container.querySelector('.md-collapsible-caret')).toBeTruthy();
-		expect(container.querySelector('.md-collapsible-body')?.hasAttribute('hidden')).toBe(true);
+		expect(body.hasAttribute('hidden')).toBe(true);
+		expect(getComputedStyle(body).display).toBe('none');
 	});
 
 	it('toggles open when the header is clicked', async () => {
