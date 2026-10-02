@@ -1,8 +1,28 @@
 import { fireEvent, render, screen } from '@testing-library/svelte';
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import ConversationTimeline from './ConversationTimeline.svelte';
+import emptyStateSource from './ConversationEmptyState.svelte?raw';
+
+const emptyStateStyles = emptyStateSource.match(/<style>([\s\S]*?)<\/style>/)?.[1];
+const testStyleElement = document.createElement('style');
+
+beforeAll(() => {
+	if (!emptyStateStyles) throw new Error('ConversationEmptyState component styles are missing');
+	testStyleElement.textContent = emptyStateStyles;
+	document.head.append(testStyleElement);
+});
+
+afterAll(() => testStyleElement.remove());
 
 describe('ConversationTimeline', () => {
+	it('keeps the empty-state welcome content centered in the full message viewport', () => {
+		render(ConversationTimeline, { messages: [] });
+
+		const welcome = document.querySelector('.welcome');
+		expect(welcome).toBeTruthy();
+		expect(getComputedStyle(welcome!).minHeight).toBe('100%');
+	});
+
 	it('renders the message timeline immediately when the first message arrives', () => {
 		render(ConversationTimeline, {
 			messages: [{ id: 'msg-1', role: 'user', content: '你好', type: 'user' }],

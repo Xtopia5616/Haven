@@ -24,7 +24,7 @@
 <style>
 	.welcome {
 		text-align: center;
-		min-height: min(420px, 100%);
+		min-height: 100%;
 		padding: var(--md-sys-space-3xl) var(--md-sys-space-lg);
 		display: flex;
 		flex-direction: column;
