@@ -32,6 +32,45 @@ pub fn http_client_builder() -> reqwest::ClientBuilder {
         .connect_timeout(Duration::from_secs(10))
 }
 
+/// Apply the proxy choice for one configured provider.
+///
+/// `None` keeps reqwest's normal environment-proxy behavior, an empty string
+/// explicitly disables environment proxies for this provider, and a non-empty
+/// value selects a provider-specific proxy. The bypass list applies only to a
+/// provider-specific proxy.
+pub(crate) fn configure_proxy(
+    builder: reqwest::ClientBuilder,
+    proxy_url: Option<&str>,
+    no_proxy: Option<&str>,
+) -> Result<reqwest::ClientBuilder, crate::types::LlmError> {
+    match proxy_url {
+        None => Ok(builder),
+        Some(proxy_url) if proxy_url.trim().is_empty() => Ok(builder.no_proxy()),
+        Some(proxy_url) => {
+            let parsed_proxy_url = url::Url::parse(proxy_url).map_err(|_| {
+                crate::types::LlmError::Configuration("invalid provider proxy URL".into())
+            })?;
+            if !matches!(parsed_proxy_url.scheme(), "http" | "https") {
+                return Err(crate::types::LlmError::Configuration(
+                    "provider proxy URL must use HTTP(S)".into(),
+                ));
+            }
+            if !parsed_proxy_url.username().is_empty() || parsed_proxy_url.password().is_some() {
+                return Err(crate::types::LlmError::Configuration(
+                    "provider proxy credentials must not be stored in the proxy URL".into(),
+                ));
+            }
+            let mut proxy = reqwest::Proxy::all(proxy_url).map_err(|_| {
+                crate::types::LlmError::Configuration("invalid provider proxy URL".into())
+            })?;
+            if let Some(no_proxy) = no_proxy.filter(|value| !value.trim().is_empty()) {
+                proxy = proxy.no_proxy(reqwest::NoProxy::from_string(no_proxy));
+            }
+            Ok(builder.proxy(proxy))
+        }
+    }
+}
+
 /// Return only the host (and optional port) from an endpoint URL for
 /// diagnostics. Provider base URLs may contain paths or query parameters, so
 /// logging the raw URL would unnecessarily widen the sensitive-data surface.

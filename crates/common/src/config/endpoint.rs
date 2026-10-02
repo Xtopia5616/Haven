@@ -43,8 +43,10 @@ pub struct ModelEndpoint {
     pub stop: Option<Vec<String>>,
     pub seed: Option<u64>,
     pub response_format: Option<serde_json::Value>,
-    // §2.5: proxy support
+    // §2.5: proxy support. None follows environment proxies, Some("") forces
+    // a direct connection, and a non-empty value selects an explicit proxy.
     pub proxy_url: Option<String>,
+    /// Comma-separated hosts excluded from an explicit provider proxy.
     pub no_proxy: Option<String>,
     // §2.15: auth header customization
     #[serde(default = "default_auth_header_name")]
@@ -108,7 +110,10 @@ impl std::fmt::Debug for ModelEndpoint {
             .field("stop", &self.stop)
             .field("seed", &self.seed)
             .field("response_format", &self.response_format)
-            .field("proxy_url", &self.proxy_url)
+            .field(
+                "proxy_url",
+                &self.proxy_url.as_ref().map(|_| "[CONFIGURED]"),
+            )
             .field("no_proxy", &self.no_proxy)
             .field("auth_header_name", &self.auth_header_name)
             .field("auth_header_prefix", &self.auth_header_prefix)
@@ -234,9 +239,11 @@ pub struct ProviderConfig {
     pub auth_header_name: String,
     #[serde(default = "default_auth_header_prefix")]
     pub auth_header_prefix: String,
-    // §2.5: proxy support
+    // §2.5: proxy support. None follows environment proxies, Some("") forces
+    // a direct connection, and a non-empty value selects an explicit proxy.
     #[serde(default)]
     pub proxy_url: Option<String>,
+    /// Comma-separated hosts excluded from an explicit provider proxy.
     #[serde(default)]
     pub no_proxy: Option<String>,
     // —— optional per-provider defaults adopted by models without overrides ——
@@ -270,7 +277,10 @@ impl std::fmt::Debug for ProviderConfig {
             .field("api_key_ref", &self.api_key_ref)
             .field("auth_header_name", &self.auth_header_name)
             .field("auth_header_prefix", &self.auth_header_prefix)
-            .field("proxy_url", &self.proxy_url)
+            .field(
+                "proxy_url",
+                &self.proxy_url.as_ref().map(|_| "[CONFIGURED]"),
+            )
             .field("no_proxy", &self.no_proxy)
             .field("default_max_tokens", &self.default_max_tokens)
             .field("default_temperature", &self.default_temperature)
@@ -934,14 +944,24 @@ mod tests {
     #[test]
     fn provider_config_accepts_staged_secret_and_redacts_debug() {
         let config: ProviderConfig = serde_json::from_value(serde_json::json!({
-            "api_key": "provider-secret"
+            "api_key": "provider-secret",
+            "proxy_url": "http://user:proxy-secret@proxy.example:7890"
         }))
         .expect("the command validates staged secrets before applying settings");
         assert_eq!(config.api_key, "provider-secret");
 
         let debug = format!("{config:?}");
         assert!(!debug.contains("provider-secret"));
+        assert!(!debug.contains("proxy-secret"));
         assert!(debug.contains("[REDACTED]"));
+
+        let endpoint = ModelEndpoint {
+            proxy_url: config.proxy_url.clone(),
+            ..Default::default()
+        };
+        let endpoint_debug = format!("{endpoint:?}");
+        assert!(!endpoint_debug.contains("proxy-secret"));
+        assert!(endpoint_debug.contains("[CONFIGURED]"));
     }
 
     #[test]

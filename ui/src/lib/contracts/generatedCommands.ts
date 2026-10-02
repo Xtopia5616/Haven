@@ -170,7 +170,7 @@ export interface TauriCommandMap {
 	disable_autostart: { request: undefined; response: void };
 	discard_staged_credentials: { request: undefined; response: void };
 	discover_all_models: { request: undefined; response: Record<string, ModelInfo[]> };
-	discover_models: { request: { baseUrl: string; apiKey: string; provider?: string | null; role?: string | null; authHeaderName?: string | null; authHeaderPrefix?: string | null; skipAuth?: boolean | null }; response: ModelInfo[] };
+	discover_models: { request: { baseUrl: string; apiKey: string; provider?: string | null; role?: string | null; authHeaderName?: string | null; authHeaderPrefix?: string | null; skipAuth?: boolean | null; proxyUrl?: string | null; noProxy?: string | null }; response: ModelInfo[] };
 	enable_autostart: { request: undefined; response: void };
 	end_session: { request: { sessionId: string }; response: void };
 	execute_skill: { request: { name: string; params: unknown }; response: SkillExecutionResponse };

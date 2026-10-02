@@ -254,10 +254,29 @@ impl ModelRegistry {
         api_key: &str,
         auth_header: Option<(&str, &str)>,
     ) -> Result<Vec<ModelInfo>, crate::LlmError> {
-        let client = crate::client::http_client_builder()
-            .timeout(std::time::Duration::from_secs(10))
-            .build()
-            .map_err(|e| crate::LlmError::Unknown(e.to_string()))?;
+        self.discover_from_with_proxy(base_url, api_key, auth_header, None, None)
+            .await
+    }
+
+    /// Fetch models using the provider's proxy choice as well as its auth
+    /// scheme. The default method above remains for callers without a named
+    /// provider configuration.
+    pub async fn discover_from_with_proxy(
+        &mut self,
+        base_url: &str,
+        api_key: &str,
+        auth_header: Option<(&str, &str)>,
+        proxy_url: Option<&str>,
+        no_proxy: Option<&str>,
+    ) -> Result<Vec<ModelInfo>, crate::LlmError> {
+        let client = crate::client::configure_proxy(
+            crate::client::http_client_builder(),
+            proxy_url,
+            no_proxy,
+        )?
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| crate::LlmError::Unknown(e.to_string()))?;
 
         let base = base_url.trim_end_matches('/');
         let mut urls = vec![format!("{base}/models")];
@@ -366,6 +385,8 @@ impl Default for ModelRegistry {
 mod tests {
     use super::*;
     use serde_json::json;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
 
     fn ep(model_name: &str) -> ModelEndpoint {
         ModelEndpoint {
@@ -483,5 +504,39 @@ mod tests {
         let reg = ModelRegistry::new();
         assert!(reg.all().is_empty());
         assert!(reg.search("gpt").is_empty());
+    }
+
+    #[tokio::test]
+    async fn provider_proxy_bypass_hosts_are_applied_during_discovery() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0; 1024];
+            let _ = stream.read(&mut request).await;
+            let body = r#"{"data":[{"id":"local-model"}]}"#;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+
+        let mut registry = ModelRegistry::new();
+        let models = registry
+            .discover_from_with_proxy(
+                &format!("http://{address}/v1"),
+                "",
+                None,
+                Some("http://127.0.0.1:1"),
+                Some("127.0.0.1"),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "local-model");
+        server.await.unwrap();
     }
 }

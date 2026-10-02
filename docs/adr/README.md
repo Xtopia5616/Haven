@@ -404,3 +404,4 @@
 - [0419：ReAct 请求准备与工具准入性能](0419-react-loop-preparation-and-admission-performance.md)
 - [0420：设置页自适应表单与快捷键录入](0420-settings-responsive-layout-and-hotkey-capture.md)
 - [0421：LLM 手动重试与熔断状态探测](0421-llm-manual-retry-and-open-circuit-probes.md)
+- [0422：Provider 级代理设置](0422-provider-scoped-proxy-settings.md)

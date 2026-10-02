@@ -400,6 +400,21 @@ mod tests {
             Err(LlmError::Configuration(_))
         ));
 
+        let direct = ModelEndpoint {
+            proxy_url: Some(String::new()),
+            ..Default::default()
+        };
+        assert!(build_client(&direct).is_ok());
+
+        let proxy_credentials = ModelEndpoint {
+            proxy_url: Some("http://user:password@127.0.0.1:7890".into()),
+            ..Default::default()
+        };
+        assert!(matches!(
+            build_client(&proxy_credentials),
+            Err(LlmError::Configuration(_))
+        ));
+
         let invalid_header = ModelEndpoint {
             api_key: "key\nwith-control".into(),
             ..Default::default()

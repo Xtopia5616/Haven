@@ -11,7 +11,7 @@ function settingsFor(baseUrl: string, providerName: string) {
 		llm: {
 			request_policies: [{ request: 'chat', primary: 'chat-slot' }],
 			models: [{ id: 'chat-slot', provider: providerName, model: 'default-model' }],
-			providers: [{ name: providerName, base_url: baseUrl }],
+			providers: [{ name: providerName, base_url: baseUrl, proxy_url: null, no_proxy: null }],
 		},
 	};
 }
@@ -53,6 +53,8 @@ describe('chat model discovery sync', () => {
 			apiKey: '',
 			provider: 'first',
 			role: 'chat',
+			proxyUrl: null,
+			noProxy: null,
 		});
 
 		pending.resolve([]);

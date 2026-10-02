@@ -17,15 +17,15 @@ type ModelSyncOptions = {
 };
 
 const defaultModelsCache: {
-	baseUrl: string | null;
+	cacheKey: string | null;
 	list: ModelInfo[] | null;
 	inflight: Promise<ModelInfo[]> | null;
-	inflightUrl: string | null;
+	inflightKey: string | null;
 } = {
-	baseUrl: null,
+	cacheKey: null,
 	list: null,
 	inflight: null,
-	inflightUrl: null,
+	inflightKey: null,
 };
 
 /**
@@ -45,41 +45,55 @@ export function createChatModelSync(options: ModelSyncOptions) {
 		setCurrentApiStyle,
 	} = options;
 
-	function ensureDefaultModelOptions(baseUrl: string, providerName: string) {
-		if (defaultModelsCache.baseUrl === baseUrl && defaultModelsCache.list) {
+	function ensureDefaultModelOptions(provider: {
+		name: string;
+		base_url: string;
+		proxy_url?: string | null;
+		no_proxy?: string | null;
+	}) {
+		const { name: providerName, base_url: baseUrl } = provider;
+		const cacheKey = JSON.stringify([
+			baseUrl,
+			provider.proxy_url ?? null,
+			provider.no_proxy ?? null,
+		]);
+		if (defaultModelsCache.cacheKey === cacheKey && defaultModelsCache.list) {
 			setModelOptions(defaultModelsCache.list);
 			return;
 		}
 		// Settings can swap the default provider while this view stays mounted
 		// (keep-alive). Drop the previous endpoint's list; an in-flight fetch
 		// for a different URL is abandoned (its .then is stamped and no-ops).
-		if (defaultModelsCache.baseUrl !== baseUrl) {
+		if (defaultModelsCache.cacheKey !== cacheKey) {
 			defaultModelsCache.list = null;
-			defaultModelsCache.baseUrl = baseUrl;
+			defaultModelsCache.cacheKey = cacheKey;
 		}
-		if (defaultModelsCache.inflight && defaultModelsCache.inflightUrl === baseUrl) {
+		if (defaultModelsCache.inflight && defaultModelsCache.inflightKey === cacheKey) {
 			defaultModelsCache.inflight
 				.then((list) => {
-					if (!isDead() && defaultModelsCache.baseUrl === baseUrl) setModelOptions(list);
+					if (!isDead() && defaultModelsCache.cacheKey === cacheKey)
+						setModelOptions(list);
 				})
 				.catch(() => {
-					if (!isDead() && defaultModelsCache.baseUrl === baseUrl) setModelOptions([]);
+					if (!isDead() && defaultModelsCache.cacheKey === cacheKey) setModelOptions([]);
 				});
 			return;
 		}
 		const requestedUrl = baseUrl;
-		defaultModelsCache.baseUrl = requestedUrl;
-		defaultModelsCache.inflightUrl = requestedUrl;
+		defaultModelsCache.cacheKey = cacheKey;
+		defaultModelsCache.inflightKey = cacheKey;
 		defaultModelsCache.inflight = discoverModels({
 			baseUrl: requestedUrl,
 			apiKey: '',
 			provider: providerName || '',
 			role: 'chat',
+			proxyUrl: provider.proxy_url ?? null,
+			noProxy: provider.no_proxy ?? null,
 		})
 			.then((list) => {
 				const next = list || [];
 				// Stale response after a provider swap: ignore.
-				if (defaultModelsCache.baseUrl !== requestedUrl) return next;
+				if (defaultModelsCache.cacheKey !== cacheKey) return next;
 				defaultModelsCache.list = next;
 				if (!isDead()) setModelOptions(next);
 				return next;
@@ -90,14 +104,14 @@ export function createChatModelSync(options: ModelSyncOptions) {
 					message: '获取默认模型列表失败',
 					notify: false,
 				});
-				if (!isDead() && defaultModelsCache.baseUrl === requestedUrl) setModelOptions([]);
+				if (!isDead() && defaultModelsCache.cacheKey === cacheKey) setModelOptions([]);
 				throw e;
 			})
 			.finally(() => {
 				// Only clear the coalescing slot when we still own it.
-				if (defaultModelsCache.inflightUrl === requestedUrl) {
+				if (defaultModelsCache.inflightKey === cacheKey) {
 					defaultModelsCache.inflight = null;
-					defaultModelsCache.inflightUrl = null;
+					defaultModelsCache.inflightKey = null;
 				}
 			});
 		// Swallow the rethrown rejection for the shared in-flight promise;
@@ -152,7 +166,7 @@ export function createChatModelSync(options: ModelSyncOptions) {
 			});
 		}
 		if (dmProvider?.base_url) {
-			ensureDefaultModelOptions(dmProvider.base_url, dmProvider.name);
+			ensureDefaultModelOptions(dmProvider);
 		} else {
 			setModelOptions([]);
 		}

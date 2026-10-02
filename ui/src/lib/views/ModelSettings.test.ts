@@ -51,6 +51,8 @@ describe('ModelSettings provider surface', () => {
 			baseUrl: provider.base_url,
 			apiKey: provider.api_key,
 			provider: provider.name,
+			proxyUrl: null,
+			noProxy: null,
 		});
 	});
 
@@ -72,8 +74,64 @@ describe('ModelSettings provider surface', () => {
 			name: 'local',
 			api_key: 'secret-value',
 			api_style: 'openai-chat',
+			proxy_url: null,
+			no_proxy: null,
 		});
 		expect(screen.queryByText('secret-value')).toBeNull();
+	});
+
+	it('saves a provider with environment proxies bypassed for direct routing', async () => {
+		const config = { providers: [], models: [], request_policies: [] };
+		renderSettings({ ...props(config.providers, config.models), llmConfig: config });
+
+		await fireEvent.click(screen.getByRole('button', { name: '添加 Provider' }));
+		await fireEvent.input(screen.getByPlaceholderText('唯一名称，角色据此选择'), {
+			target: { value: 'direct' },
+		});
+		await fireEvent.click(screen.getByRole('button', { name: '代理路由' }));
+		await fireEvent.click(screen.getByRole('option', { name: '直连（忽略环境代理）' }));
+		await fireEvent.click(screen.getByRole('button', { name: '保存' }));
+
+		expect(config.providers[0]).toMatchObject({ proxy_url: '', no_proxy: null });
+	});
+
+	it('applies custom proxy and bypass hosts to model discovery', async () => {
+		invoke.mockResolvedValue([{ id: 'gpt-added', name: 'GPT Added' }]);
+		const config = { providers: [], models: [], request_policies: [] };
+		renderSettings({ ...props(config.providers, config.models), llmConfig: config });
+
+		await fireEvent.click(screen.getByRole('button', { name: '添加 Provider' }));
+		await fireEvent.input(screen.getByPlaceholderText('唯一名称，角色据此选择'), {
+			target: { value: 'proxied' },
+		});
+		await fireEvent.input(screen.getByPlaceholderText('sk-...'), {
+			target: { value: 'test-key' },
+		});
+		await fireEvent.click(screen.getByRole('button', { name: '代理路由' }));
+		await fireEvent.click(screen.getByRole('option', { name: '指定代理' }));
+		await fireEvent.input(screen.getByPlaceholderText('http://127.0.0.1:7890'), {
+			target: { value: 'http://127.0.0.1:7890' },
+		});
+		await fireEvent.input(screen.getByPlaceholderText('localhost, 127.0.0.1, .example.com'), {
+			target: { value: 'myai.bupt.edu.cn, localhost' },
+		});
+		await fireEvent.click(screen.getByRole('button', { name: '保存' }));
+
+		expect(config.providers[0]).toMatchObject({
+			proxy_url: 'http://127.0.0.1:7890',
+			no_proxy: 'myai.bupt.edu.cn, localhost',
+		});
+		await waitFor(() =>
+			expect(invoke).toHaveBeenCalledWith('discover_models', {
+				baseUrl: 'https://api.openai.com/v1',
+				apiKey: 'test-key',
+				provider: 'proxied',
+				authHeaderName: 'Authorization',
+				authHeaderPrefix: 'Bearer',
+				proxyUrl: 'http://127.0.0.1:7890',
+				noProxy: 'myai.bupt.edu.cn, localhost',
+			}),
+		);
 	});
 
 	it('fetches models immediately with the selected auth scheme when adding a provider', async () => {
@@ -102,6 +160,8 @@ describe('ModelSettings provider surface', () => {
 				provider: 'primary',
 				authHeaderName: 'Authorization',
 				authHeaderPrefix: 'Bearer',
+				proxyUrl: null,
+				noProxy: null,
 			}),
 		);
 		expect(onProviderDiscoveryFailure).not.toHaveBeenCalled();

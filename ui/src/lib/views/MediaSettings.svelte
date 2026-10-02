@@ -34,7 +34,7 @@
 
 	type NamedProvider = Pick<
 		ProviderConfigInput,
-		'name' | 'provider' | 'api_style' | 'base_url' | 'api_key'
+		'name' | 'provider' | 'api_style' | 'base_url' | 'api_key' | 'proxy_url' | 'no_proxy'
 	>;
 	type MediaInputStrategy = MediaInputStrategyInput;
 	type MediaKeyName = 'ocr' | 'ocr_secret' | '';
@@ -184,6 +184,8 @@
 					apiKey: key,
 					provider: name,
 					role: 'transcription',
+					proxyUrl: provider?.proxy_url ?? null,
+					noProxy: provider?.no_proxy ?? null,
 				})) || [];
 		} catch (e) {
 			sttModels = [];

@@ -37,6 +37,9 @@
 		api_style: string;
 		base_url: string;
 		api_key: string;
+		proxy_mode: 'system' | 'direct' | 'custom';
+		proxy_url: string;
+		no_proxy: string;
 	};
 	type OverrideField =
 		| 'temperature'
@@ -269,6 +272,9 @@
 				api_style: 'openai-chat',
 				base_url: 'https://api.openai.com/v1',
 				api_key: '',
+				proxy_mode: 'system',
+				proxy_url: '',
+				no_proxy: '',
 			},
 		};
 	}
@@ -281,6 +287,10 @@
 				api_style: providerDisplayStyle(provider),
 				base_url: provider.base_url,
 				api_key: '',
+				proxy_mode:
+					provider.proxy_url === '' ? 'direct' : provider.proxy_url ? 'custom' : 'system',
+				proxy_url: provider.proxy_url || '',
+				no_proxy: provider.no_proxy || '',
 			},
 		};
 	}
@@ -297,6 +307,24 @@
 			addNotification('Provider 名称已存在', 'error', 3000);
 			return;
 		}
+		const proxyUrl = form.proxy_url.trim();
+		if (form.proxy_mode === 'custom') {
+			let validProxyUrl = false;
+			try {
+				const parsed = new URL(proxyUrl);
+				validProxyUrl =
+					['http:', 'https:'].includes(parsed.protocol) &&
+					!!parsed.hostname &&
+					!parsed.username &&
+					!parsed.password;
+			} catch {
+				validProxyUrl = false;
+			}
+			if (!validProxyUrl) {
+				addNotification('请输入不含账号密码的有效 HTTP(S) 代理地址', 'error', 3000);
+				return;
+			}
+		}
 		const previous = idx !== null ? llmConfig.providers[idx] : null;
 		const preset = apiStylePreset(form.api_style);
 		const provider = {
@@ -308,8 +336,9 @@
 			api_key: form.api_key.trim() || previous?.api_key || '',
 			auth_header_name: preset.auth_header_name,
 			auth_header_prefix: preset.auth_header_prefix,
-			proxy_url: previous?.proxy_url ?? null,
-			no_proxy: previous?.no_proxy ?? null,
+			proxy_url:
+				form.proxy_mode === 'direct' ? '' : form.proxy_mode === 'custom' ? proxyUrl : null,
+			no_proxy: form.proxy_mode === 'custom' ? form.no_proxy.trim() || null : null,
 			default_max_tokens: previous?.default_max_tokens ?? null,
 			default_temperature: previous?.default_temperature ?? null,
 			default_timeout_secs:

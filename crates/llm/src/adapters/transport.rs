@@ -73,22 +73,14 @@ pub(crate) async fn read_json_bounded<T: DeserializeOwned>(
 /// Build the reqwest client with proxy support (§2.5) and connection-pool
 /// tuning (§5.5). Identical for every adapter.
 pub(crate) fn build_client(endpoint: &ModelEndpoint) -> Result<reqwest::Client, LlmError> {
-    let mut builder = crate::client::http_client_builder();
-
-    // §2.5: proxy support
-    if let Some(ref proxy_url) = endpoint.proxy_url {
-        let proxy = reqwest::Proxy::all(proxy_url)
-            .map_err(|error| LlmError::Configuration(format!("invalid proxy URL: {error}")))?;
-        if let Some(ref no_proxy) = endpoint.no_proxy {
-            let proxy = proxy.no_proxy(reqwest::NoProxy::from_string(no_proxy));
-            builder = builder.proxy(proxy);
-        } else {
-            builder = builder.proxy(proxy);
-        }
-    }
+    let builder = crate::client::configure_proxy(
+        crate::client::http_client_builder(),
+        endpoint.proxy_url.as_deref(),
+        endpoint.no_proxy.as_deref(),
+    )?;
 
     // §5.5: connection pool tuning
-    builder = builder
+    let builder = builder
         .pool_max_idle_per_host(5)
         .pool_idle_timeout(Duration::from_secs(90));
 

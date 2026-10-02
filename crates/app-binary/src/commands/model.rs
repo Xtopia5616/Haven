@@ -289,6 +289,8 @@ pub async fn discover_models(
     auth_header_name: Option<String>,
     auth_header_prefix: Option<String>,
     skip_auth: Option<bool>,
+    proxy_url: Option<String>,
+    no_proxy: Option<String>,
     app: tauri::AppHandle,
 ) -> Result<Vec<ModelInfo>, String> {
     if !base_url.starts_with("http://") && !base_url.starts_with("https://") {
@@ -388,11 +390,13 @@ pub async fn discover_models(
         "discovering models"
     );
     let models = reg
-        .discover_from(
+        .discover_from_with_proxy(
             &base_url,
             &key,
             auth.as_ref()
                 .map(|(header, value)| (header.as_str(), value.as_str())),
+            proxy_url.as_deref(),
+            no_proxy.as_deref(),
         )
         .await
         .map_err(|e| {
@@ -444,6 +448,8 @@ pub async fn discover_all_models(
         let name = p.name.clone();
         let base_url = p.base_url.clone();
         let api_key = p.api_key.clone();
+        let proxy_url = p.proxy_url.clone();
+        let no_proxy = p.no_proxy.clone();
         let auth_header = if api_key.is_empty() {
             None
         } else {
@@ -452,7 +458,16 @@ pub async fn discover_all_models(
         handles.push(tokio::spawn(async move {
             let mut reg = ModelRegistry::new();
             let auth_ref = auth_header.as_ref().map(|(h, v)| (h.as_str(), v.as_str()));
-            match reg.discover_from(&base_url, &api_key, auth_ref).await {
+            match reg
+                .discover_from_with_proxy(
+                    &base_url,
+                    &api_key,
+                    auth_ref,
+                    proxy_url.as_deref(),
+                    no_proxy.as_deref(),
+                )
+                .await
+            {
                 Ok(list) => (name.clone(), list),
                 Err(e) => {
                     tracing::warn!(

@@ -45,8 +45,8 @@
 | `delete_fact` | mutate | 按 fact id 删除 |
 | `get_api_key_status` | read | 只返回 presence，不返回凭据 |
 | `check_llm_connection` | read | 返回状态与非敏感原因分类，不返回 endpoint 或 provider 响应 |
-| `discover_models` | execute | 仅 HTTP(S) endpoint；显式输入 key 使用 provider preset 的鉴权方案；已保存 key 仅发送到名称与地址均匹配的 provider；keyless 预设可显式跳过鉴权 |
-| `discover_all_models` | execute | 只查询已配置 provider |
+| `discover_models` | execute | 仅 HTTP(S) endpoint；显式输入 key 使用 provider preset 的鉴权方案；已保存 key 仅发送到名称与地址均匹配的 provider；keyless 预设可显式跳过鉴权；代理沿用对应 Provider 设置 |
+| `discover_all_models` | execute | 只查询已配置 provider，并沿用各自代理设置 |
 | `switch_model` | mutate | `role` 接收模型 ID 或 `RequestKind`，先校验再保存 |
 | `set_reasoning_effort` | mutate | `role` 接收模型 ID 或 `RequestKind`，先校验再保存 |
 | `set_web_search` | mutate | provider capability 先校验 |

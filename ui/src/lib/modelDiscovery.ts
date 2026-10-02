@@ -10,6 +10,8 @@ type Provider = {
 	api_key?: string;
 	api_style?: string | null;
 	provider?: string | null;
+	proxy_url?: string | null;
+	no_proxy?: string | null;
 };
 
 type ModelMap = DiscoveredModelMap;
@@ -117,6 +119,8 @@ export function createModelDiscovery(context: ModelDiscoveryContext) {
 				...(auth?.authHeaderPrefix !== undefined
 					? { authHeaderPrefix: auth.authHeaderPrefix }
 					: {}),
+				proxyUrl: provider.proxy_url ?? null,
+				noProxy: provider.no_proxy ?? null,
 				...(auth?.skipAuth || isKeylessProvider(provider) ? { skipAuth: true } : {}),
 			});
 			context.setModels({ ...context.getDiscoveredModels(), [providerName]: list || [] });

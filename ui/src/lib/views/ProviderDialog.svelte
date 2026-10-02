@@ -11,7 +11,15 @@
 		isTtsOnlyStyle,
 	} from '$lib/apiStyle.ts';
 
-	type ProviderDraft = { name: string; api_style: string; base_url: string; api_key: string };
+	type ProviderDraft = {
+		name: string;
+		api_style: string;
+		base_url: string;
+		api_key: string;
+		proxy_mode: 'system' | 'direct' | 'custom';
+		proxy_url: string;
+		no_proxy: string;
+	};
 	type ProviderKeyStatus = {
 		name: string;
 		api_key?: string;
@@ -118,6 +126,57 @@
 						placeholder={dialog.idx === null ? 'sk-...' : ''}
 					/>
 				</div>
+				<div class="model-field">
+					<span class="field-label">代理路由</span>
+					<MaterialSelect
+						id="prov-proxy-mode"
+						ariaLabel="代理路由"
+						value={form.proxy_mode}
+						options={[
+							{ value: 'system', label: '使用默认代理' },
+							{ value: 'direct', label: '直连（忽略环境代理）' },
+							{ value: 'custom', label: '指定代理' },
+						]}
+						onChange={withStringValue(
+							(value) => (form.proxy_mode = value as ProviderDraft['proxy_mode']),
+						)}
+					/>
+				</div>
+				{#if form.proxy_mode === 'system'}
+					<p class="model-hint">
+						跟随 Haven 启动环境中的代理设置。该 Provider
+						的模型目录刷新和模型请求都会使用此路由。
+					</p>
+				{:else if form.proxy_mode === 'direct'}
+					<p class="model-hint">
+						绕过环境代理，直接连接此 Provider；适用于当前网络可直连的服务。
+					</p>
+				{:else}
+					<div class="model-field">
+						<span class="field-label">代理地址</span>
+						<input
+							type="text"
+							class="md-input"
+							bind:value={form.proxy_url}
+							placeholder="http://127.0.0.1:7890"
+							autocomplete="off"
+						/>
+					</div>
+					<div class="model-field">
+						<span class="field-label">绕过代理的主机</span>
+						<input
+							type="text"
+							class="md-input"
+							bind:value={form.no_proxy}
+							placeholder="localhost, 127.0.0.1, .example.com"
+							autocomplete="off"
+						/>
+						<p class="model-hint">
+							可填多个主机名或
+							IP，用逗号分隔；匹配的地址将直接连接。代理地址不支持内嵌账号密码。
+						</p>
+					</div>
+				{/if}
 				{#if dialog.idx === null}
 					<p class="model-hint">
 						添加后会立即尝试验证 API Key 并获取模型列表；失败时 Provider
