@@ -1,4 +1,5 @@
 <script lang="ts">
+	import type { Snippet } from 'svelte';
 	import MaterialIconButton from './MaterialIconButton.svelte';
 
 	interface Props {
@@ -6,13 +7,14 @@
 		hasSession?: boolean;
 		onNew?: () => void;
 		onEnd?: () => void;
+		children?: Snippet;
 	}
 
 	/**
 	 * SessionHeader — keeps the active conversation identity and lifecycle
 	 * state visible above the message timeline.
 	 */
-	let { title = '新会话', hasSession = false, onNew, onEnd }: Props = $props();
+	let { title = '新会话', hasSession = false, onNew, onEnd, children }: Props = $props();
 </script>
 
 <header class="session-header">
@@ -22,35 +24,41 @@
 		</div>
 	</div>
 	<div class="session-header__actions">
-		<MaterialIconButton
-			size="toolbar"
-			variant="default"
-			className="session-header__new"
-			label="新建会话"
-			title="新建会话"
-			icon="plus"
-			onclick={() => onNew?.()}
-		/>
-		{#if hasSession}
+		<div class="session-header__toolbar">
+			{@render children?.()}
+		</div>
+		<div class="session-header__lifecycle">
 			<MaterialIconButton
 				size="toolbar"
-				variant="success-outline"
-				className="session-header__end"
-				label="完成会话"
-				title="完成会话"
-				icon="check"
-				onclick={() => onEnd?.()}
+				variant="default"
+				className="session-header__new"
+				label="新建会话"
+				title="新建会话"
+				icon="plus"
+				onclick={() => onNew?.()}
 			/>
-		{/if}
+			{#if hasSession}
+				<MaterialIconButton
+					size="toolbar"
+					variant="success-outline"
+					className="session-header__end"
+					label="完成会话"
+					title="完成会话"
+					icon="check"
+					onclick={() => onEnd?.()}
+				/>
+			{/if}
+		</div>
 	</div>
 </header>
 
 <style>
 	.session-header {
 		position: relative;
-		display: flex;
+		z-index: 4;
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) auto;
 		align-items: center;
-		justify-content: space-between;
 		gap: var(--md-sys-space-lg);
 		padding: var(--md-sys-space-md) var(--md-sys-space-2xl);
 		border-bottom: 1px solid var(--md-sys-color-outline-variant);
@@ -96,7 +104,17 @@
 		align-items: center;
 		gap: var(--md-sys-space-sm);
 		flex-shrink: 0;
-		flex-wrap: wrap;
+		min-width: 0;
+	}
+	.session-header__toolbar,
+	.session-header__lifecycle {
+		display: flex;
+		align-items: center;
+		gap: var(--md-sys-space-sm);
+		min-width: 0;
+	}
+	.session-header__lifecycle {
+		flex-shrink: 0;
 	}
 	:global(.session-header__icon) {
 		width: var(--md-sys-icon-size);
@@ -105,9 +123,9 @@
 	}
 	@media (max-width: 640px) {
 		.session-header {
-			align-items: center;
-			padding: var(--md-sys-space-md);
-			padding-left: var(--md-sys-space-lg);
+			grid-template-columns: minmax(0, 1fr);
+			gap: var(--md-sys-space-sm);
+			padding: var(--md-sys-space-sm) var(--md-sys-space-md);
 		}
 		.session-header__title-row {
 			align-items: center;
@@ -115,8 +133,16 @@
 			gap: var(--md-sys-space-sm);
 		}
 		.session-header h1 {
-			max-width: min(56vw, 260px);
+			max-width: min(92vw, 520px);
 			font-size: var(--md-sys-typescale-title-medium-size);
+		}
+		.session-header__actions {
+			justify-content: space-between;
+			padding-top: var(--md-sys-space-sm);
+			border-top: 1px solid var(--md-sys-color-outline-variant);
+		}
+		.session-header__toolbar {
+			flex: 1 1 auto;
 		}
 	}
 </style>

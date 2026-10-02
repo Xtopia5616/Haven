@@ -419,7 +419,7 @@
 	.session-menu {
 		position: absolute;
 		left: 0;
-		bottom: calc(100% + 8px);
+		top: calc(100% + var(--md-sys-space-sm));
 		z-index: 1000;
 		width: min(320px, calc(100vw - 2 * var(--md-sys-space-md)));
 		min-width: min(240px, calc(100vw - 2 * var(--md-sys-space-md)));
@@ -626,7 +626,7 @@
 	.token-details {
 		position: absolute;
 		left: 0;
-		bottom: calc(100% + 8px);
+		top: calc(100% + var(--md-sys-space-sm));
 		z-index: 1000;
 		width: min(340px, calc(100vw - 24px));
 		padding: var(--md-sys-space-md);

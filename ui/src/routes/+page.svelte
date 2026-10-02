@@ -912,7 +912,26 @@
 			hasSession={!!activeSessionId && !activeSessionTermination}
 			onNew={newSession}
 			onEnd={endSession}
-		/>
+		>
+			{#snippet children()}
+				<SessionToolbar
+					{activeSessionId}
+					{showSessionMenu}
+					{sessionMenuOpen}
+					{menuSessions}
+					onToggleSessionMenu={() => {
+						if (showSessionMenu) sessionMenuOpen = !sessionMenuOpen;
+						else newSession();
+					}}
+					onSwitchSession={switchToSession}
+					{sessionStatusLabel}
+					{tokenStats}
+					{tokenUsageDetails}
+					{tokenStatsHint}
+					{buildTokenTooltip}
+				/>
+			{/snippet}
+		</SessionHeader>
 
 		<div class="messages-wrap">
 			<div
@@ -975,24 +994,6 @@
 			onsubmit={handleInputSubmit}
 			onstop={interruptOutput}
 		>
-			{#snippet toolbarLeft()}
-				<SessionToolbar
-					{activeSessionId}
-					{showSessionMenu}
-					{sessionMenuOpen}
-					{menuSessions}
-					onToggleSessionMenu={() => {
-						if (showSessionMenu) sessionMenuOpen = !sessionMenuOpen;
-						else newSession();
-					}}
-					onSwitchSession={switchToSession}
-					{sessionStatusLabel}
-					{tokenStats}
-					{tokenUsageDetails}
-					{tokenStatsHint}
-					{buildTokenTooltip}
-				/>
-			{/snippet}
 			{#snippet toolbarRight()}
 				<ModelToolbar
 					{modelMenuOpen}

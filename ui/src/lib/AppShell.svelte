@@ -56,7 +56,6 @@
 		status,
 		content,
 	}: Props = $props();
-
 </script>
 
 {#snippet themeControl()}
@@ -96,9 +95,6 @@
 					<Logo size={22} withText={true} />
 				{/snippet}
 			</MaterialButton>
-		</div>
-		<div class="titlebar-heading" aria-live="polite">
-			<strong>{tabs.find((tab) => tab.id === activeTab)?.label || '工作区'}</strong>
 		</div>
 		<div class="titlebar-right">
 			{@render shellControls()}
@@ -171,22 +167,6 @@
 	.titlebar-right {
 		display: flex;
 		align-items: center;
-	}
-	.titlebar-heading {
-		display: none;
-		min-width: 0;
-		flex: 1;
-		flex-direction: column;
-		align-items: flex-start;
-		gap: 2px;
-		padding-left: var(--md-sys-space-lg);
-		-webkit-app-region: no-drag;
-	}
-	.titlebar-heading > strong {
-		color: var(--md-sys-color-on-surface);
-		font-size: var(--md-sys-typescale-title-large-size);
-		font-weight: 650;
-		line-height: var(--md-sys-typescale-title-large-line-height);
 	}
 	.workspace-rail {
 		display: none;
@@ -337,6 +317,7 @@
 	@media screen and (min-width: 600px) {
 		.app-shell {
 			--workspace-rail-width: 76px;
+			--md-comp-titlebar-height: var(--md-sys-space-4xl);
 			display: grid;
 			grid-template-columns: var(--workspace-rail-width) minmax(0, 1fr);
 			grid-template-rows: var(--md-comp-titlebar-height) minmax(0, 1fr);
@@ -352,9 +333,6 @@
 		}
 		.titlebar-left {
 			display: none;
-		}
-		.titlebar-heading {
-			display: flex;
 		}
 		.titlebar-right {
 			display: none;
@@ -472,8 +450,7 @@
 			transition:
 				background-color var(--md-sys-motion-duration-fast)
 					var(--md-sys-motion-easing-standard),
-				border-color var(--md-sys-motion-duration-fast)
-					var(--md-sys-motion-easing-standard);
+				border-color var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard);
 		}
 		.rail-footer :global(.rail-theme-button[data-size='toolbar']:hover) {
 			border-color: var(--md-sys-color-outline);
@@ -605,9 +582,9 @@
 	@media screen and (min-aspect-ratio: 21/9) {
 		.app-shell {
 			grid-template-columns: var(--workspace-rail-width) minmax(
-				0,
-				calc(233.333vh - var(--workspace-rail-width))
-			);
+					0,
+					calc(233.333vh - var(--workspace-rail-width))
+				);
 			justify-content: center;
 		}
 	}
