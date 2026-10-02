@@ -119,20 +119,21 @@ pub enum ClipboardFormat {
 /// Typed parameters for `ClipboardTool`. Entry ① (native `run`) and entry ②
 /// (`Tool::execute` with LLM JSON) both land in `ClipboardTool::run`.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ClipboardParams {
     /// Operation to perform; defaults to `read`.
     #[serde(default)]
     pub operation: Option<ClipboardOperation>,
-    /// Content for the write operation.
-    #[serde(default)]
-    pub content: Option<String>,
     /// Entry limit for the history operation (clamped to the tool cap).
     #[serde(default)]
     pub limit: Option<u64>,
-    /// Representation to read/write. `auto` prefers text and falls back to
-    /// image or file-list data.
+    /// Representation to read. Writes require an explicit non-`auto` format.
     #[serde(default)]
     pub format: Option<ClipboardFormat>,
+    /// Plain text payload for text writes, or optional plain-text fallback for
+    /// HTML writes.
+    #[serde(default)]
+    pub text: Option<String>,
     /// HTML payload for a rich write.
     #[serde(default)]
     pub html: Option<String>,
@@ -198,13 +199,12 @@ impl Tool for ClipboardTool {
             "properties": {
                 "operation": { "type": "string", "enum": ["read", "write", "history"] },
                 "format": { "type": "string", "enum": ["auto", "text", "html", "image", "files"] },
-                "content": { "type": "string" },
+                "text": { "type": "string" },
                 "html": { "type": "string" },
                 "asset_id": { "type": "string", "pattern": "^asset-[0-9a-f]{32}$" },
                 "files": { "type": "array", "minItems": 1, "maxItems": MAX_CLIPBOARD_FILES, "items": { "type": "string", "minLength": 1 } },
                 "limit": { "type": "integer", "minimum": 1, "maximum": 100 }
             },
-            "required": ["operation"],
             "oneOf": [
                 {
                     "type": "object",
@@ -213,25 +213,19 @@ impl Tool for ClipboardTool {
                     "required": ["operation"]
                 },
                 {
+                    "type": "object",
+                    "properties": { "operation": { "const": "write" } },
+                    "required": ["operation"],
                     "oneOf": [
                         {
                             "type": "object",
                             "additionalProperties": false,
                             "properties": {
                                 "operation": { "const": "write" },
-                                "content": { "type": "string" }
-                            },
-                            "required": ["operation", "content"]
-                        },
-                        {
-                            "type": "object",
-                            "additionalProperties": false,
-                            "properties": {
-                                "operation": { "const": "write" },
                                 "format": { "const": "text" },
-                                "content": { "type": "string" }
+                                "text": { "type": "string" }
                             },
-                            "required": ["operation", "format", "content"]
+                            "required": ["operation", "format", "text"]
                         },
                         {
                             "type": "object",
@@ -239,8 +233,8 @@ impl Tool for ClipboardTool {
                             "properties": {
                                 "operation": { "const": "write" },
                                 "format": { "const": "html" },
-                                "content": { "type": "string" },
-                                "html": { "type": "string" }
+                                "html": { "type": "string" },
+                                "text": { "type": "string", "description": "Optional plain-text fallback for the HTML clipboard representation." }
                             },
                             "required": ["operation", "format", "html"]
                         },
@@ -344,28 +338,22 @@ impl ClipboardTool {
                 }
             }
             ClipboardOperation::Write => {
-                let format = params.format.unwrap_or_else(|| {
-                    if params.html.is_some() {
-                        ClipboardFormat::Html
-                    } else {
-                        ClipboardFormat::Text
-                    }
-                });
-                let content = params.content.clone();
+                let format = validate_write_params(&params)?;
+                let text = params.text.clone();
                 let html = params.html.clone();
                 let asset_id = params.asset_id.clone();
                 let files = params.files.clone();
                 let registry = self.managed_assets.clone();
                 tokio::task::spawn_blocking(move || {
-                    write_clipboard(format, content, html, asset_id, files, registry)
+                    write_clipboard(format, text, html, asset_id, files, registry)
                 })
                 .await??;
 
                 if cancel.is_cancelled() {
                     anyhow::bail!("cancelled");
                 }
-                if let Some(content) = params.content.filter(|content| !content.is_empty()) {
-                    self.history.record(content);
+                if let Some(text) = params.text.filter(|text| !text.is_empty()) {
+                    self.history.record(text);
                 }
                 Ok(ToolResult::ok(
                     serde_json::json!({"operation": "write", "format": format, "written": true}),
@@ -400,6 +388,43 @@ impl ClipboardTool {
                 })))
             }
         }
+    }
+}
+
+fn validate_write_params(params: &ClipboardParams) -> anyhow::Result<ClipboardFormat> {
+    let format = params
+        .format
+        .ok_or_else(|| anyhow::anyhow!("format is required for clipboard writes"))?;
+    let has_text = params.text.is_some();
+    let has_html = params.html.is_some();
+    let has_asset = params.asset_id.is_some();
+    let has_files = params.files.is_some();
+    let has_limit = params.limit.is_some();
+
+    match format {
+        ClipboardFormat::Text
+            if has_text && !has_html && !has_asset && !has_files && !has_limit =>
+        {
+            Ok(format)
+        }
+        ClipboardFormat::Html if has_html && !has_asset && !has_files && !has_limit => Ok(format),
+        ClipboardFormat::Image
+            if has_asset && !has_text && !has_html && !has_files && !has_limit =>
+        {
+            Ok(format)
+        }
+        ClipboardFormat::Files
+            if has_files && !has_text && !has_html && !has_asset && !has_limit =>
+        {
+            Ok(format)
+        }
+        ClipboardFormat::Auto => anyhow::bail!("auto format is not supported for clipboard writes"),
+        ClipboardFormat::Text => anyhow::bail!("text writes require only the text payload"),
+        ClipboardFormat::Html => {
+            anyhow::bail!("HTML writes require html and allow optional text fallback")
+        }
+        ClipboardFormat::Image => anyhow::bail!("image writes require only asset_id"),
+        ClipboardFormat::Files => anyhow::bail!("file-list writes require only files"),
     }
 }
 
@@ -443,7 +468,7 @@ fn read_clipboard(format: ClipboardFormat) -> anyhow::Result<ClipboardRead> {
 
 fn write_clipboard(
     format: ClipboardFormat,
-    content: Option<String>,
+    text: Option<String>,
     html: Option<String>,
     asset_id: Option<String>,
     files: Option<Vec<String>>,
@@ -451,16 +476,15 @@ fn write_clipboard(
 ) -> anyhow::Result<()> {
     match format {
         ClipboardFormat::Text | ClipboardFormat::Auto => {
-            let content = content
-                .ok_or_else(|| anyhow::anyhow!("content is required for text clipboard writes"))?;
+            let text =
+                text.ok_or_else(|| anyhow::anyhow!("text is required for text clipboard writes"))?;
             let mut clipboard = arboard::Clipboard::new()?;
-            clipboard.set_text(content)?;
+            clipboard.set_text(text)?;
         }
         ClipboardFormat::Html => {
             let html =
                 html.ok_or_else(|| anyhow::anyhow!("html is required for HTML clipboard writes"))?;
-            let alt = content.unwrap_or_default();
-            set_html(&html, &alt)?;
+            set_html(&html, text.as_deref().unwrap_or_default())?;
         }
         ClipboardFormat::Image => {
             let asset_id = asset_id.ok_or_else(|| {
@@ -695,15 +719,34 @@ mod tests {
         assert!(ops.contains(&"read"));
         assert!(ops.contains(&"write"));
         assert!(ops.contains(&"history"));
+
+        assert!(schema["properties"]["text"].is_object());
+        assert!(schema["properties"]["content"].is_null());
+        let write_formats = schema["oneOf"][1]["oneOf"].as_array().unwrap();
+        let formats: Vec<&str> = write_formats
+            .iter()
+            .map(|branch| branch["properties"]["format"]["const"].as_str().unwrap())
+            .collect();
+        assert_eq!(formats, ["text", "html", "image", "files"]);
+        assert_eq!(
+            write_formats[1]["required"],
+            json!(["operation", "format", "html"])
+        );
+        assert!(
+            write_formats[1]["properties"]["text"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("fallback")
+        );
     }
 
     #[tokio::test]
     #[ignore = "requires an interactive desktop clipboard provider"]
     async fn test_clipboard_write_read_roundtrip() {
-        let content = format!("haven-clipboard-test-{}", std::process::id());
+        let text = format!("haven-clipboard-test-{}", std::process::id());
         let write = test_tool()
             .execute(
-                json!({"operation": "write", "content": content.clone()}),
+                json!({"operation": "write", "format": "text", "text": text.clone()}),
                 CancellationToken::new(),
             )
             .await
@@ -716,15 +759,78 @@ mod tests {
             .await
             .unwrap();
         assert!(read.success);
-        assert_eq!(read.output["content"], content);
+        assert_eq!(read.output["content"], text);
     }
 
     #[tokio::test]
-    async fn test_clipboard_write_requires_content() {
-        let result = test_tool()
-            .execute(json!({"operation": "write"}), CancellationToken::new())
-            .await;
-        assert!(result.is_err());
+    async fn test_clipboard_write_rejects_ambiguous_payloads() {
+        let tool = test_tool();
+        for input in [
+            json!({"operation": "write", "text": "hello"}),
+            json!({"operation": "write", "content": "legacy"}),
+            json!({"operation": "write", "format": "text", "text": "hello", "html": "<b>hello</b>"}),
+            json!({"operation": "write", "format": "html", "text": "fallback"}),
+        ] {
+            assert!(tool.execute(input, CancellationToken::new()).await.is_err());
+        }
+    }
+
+    #[test]
+    fn test_clipboard_write_format_matches_one_payload() {
+        let params = |format, text, html, asset_id, files| ClipboardParams {
+            operation: Some(ClipboardOperation::Write),
+            limit: None,
+            format,
+            text,
+            html,
+            asset_id,
+            files,
+        };
+        assert_eq!(
+            validate_write_params(&params(
+                Some(ClipboardFormat::Text),
+                Some("hello".into()),
+                None,
+                None,
+                None
+            ))
+            .unwrap(),
+            ClipboardFormat::Text
+        );
+        assert_eq!(
+            validate_write_params(&params(
+                Some(ClipboardFormat::Html),
+                Some("plain".into()),
+                Some("<b>rich</b>".into()),
+                None,
+                None
+            ))
+            .unwrap(),
+            ClipboardFormat::Html
+        );
+        assert!(
+            validate_write_params(&params(None, Some("hello".into()), None, None, None)).is_err()
+        );
+        assert!(
+            validate_write_params(&params(
+                Some(ClipboardFormat::Auto),
+                Some("hello".into()),
+                None,
+                None,
+                None
+            ))
+            .is_err()
+        );
+        assert!(
+            validate_write_params(&params(
+                Some(ClipboardFormat::Text),
+                Some("hello".into()),
+                Some("<b>hello</b>".into()),
+                None,
+                None
+            ))
+            .is_err()
+        );
     }
 
     #[tokio::test]
@@ -834,9 +940,9 @@ mod tests {
             .run(
                 ClipboardParams {
                     operation: Some(ClipboardOperation::History),
-                    content: None,
                     limit: Some(10),
                     format: None,
+                    text: None,
                     html: None,
                     asset_id: None,
                     files: None,

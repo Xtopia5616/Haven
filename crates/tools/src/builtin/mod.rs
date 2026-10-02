@@ -1330,7 +1330,7 @@ mod tests {
             ),
             (
                 &clipboard,
-                json!({"operation": "write", "content": "x"}),
+                json!({"operation": "write", "format": "text", "text": "x"}),
                 json!({"operation": "write"}),
             ),
             (
