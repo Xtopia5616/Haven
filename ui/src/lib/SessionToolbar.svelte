@@ -640,6 +640,12 @@
 		animation: token-details-in var(--md-sys-motion-duration-short)
 			var(--md-sys-motion-easing-emphasized);
 	}
+	@media (min-width: 641px) {
+		.token-details {
+			left: auto;
+			right: 0;
+		}
+	}
 	.token-details-heading,
 	.token-detail-line {
 		display: flex;

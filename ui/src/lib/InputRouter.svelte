@@ -659,18 +659,14 @@
 	.input-area {
 		position: absolute;
 		left: 50%;
-		bottom: 0;
+		bottom: var(--md-sys-space-md);
 		transform: translateX(-50%);
 		z-index: 4;
 		background: transparent;
 		border: 1px solid var(--md-sys-color-outline-variant);
-		border-bottom: 0;
-		border-radius: var(--md-sys-shape-large) var(--md-sys-shape-large) 0 0;
+		border-radius: var(--md-sys-shape-large);
 		box-shadow: var(--md-sys-elevation-1);
-		padding:
-			var(--md-sys-space-md)
-			var(--md-sys-space-lg)
-			calc(var(--md-sys-space-md) + var(--md-sys-space-2xs));
+		padding: var(--md-sys-space-md) var(--md-sys-space-lg) var(--md-sys-space-xs);
 		display: flex;
 		flex-direction: column;
 		gap: var(--md-sys-space-xs);
@@ -690,9 +686,8 @@
 	.input-area::before {
 		content: '';
 		position: absolute;
-		inset: 1px 1px 0;
-		border-radius: calc(var(--md-sys-shape-large) - 1px)
-			calc(var(--md-sys-shape-large) - 1px) 0 0;
+		inset: 1px;
+		border-radius: calc(var(--md-sys-shape-large) - 1px);
 		background: var(--md-sys-color-surface-container-low);
 		pointer-events: none;
 		z-index: 0;
