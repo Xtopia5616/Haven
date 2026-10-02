@@ -108,7 +108,7 @@
 	);
 
 	let transcriptInput = $state('');
-	let transcriptDraftSessionId = activeSessionId || DRAFT_SESSION_ID;
+	let transcriptDraftSessionId = DRAFT_SESSION_ID;
 	const cachedDrafts = new Map<string, string>();
 	const MAX_CACHED_DRAFTS = 100;
 

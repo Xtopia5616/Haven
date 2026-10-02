@@ -140,3 +140,80 @@ describe('InputRouter context menu', () => {
 		expect(inputRouterSource).toMatch(/\.chat-input\s*\{[\s\S]*text-align:\s*left;/);
 	});
 });
+
+describe('InputRouter per-session drafts', () => {
+	const onsubmit = vi.fn();
+
+	it('isolates drafts between sessions and restores each draft when returning', async () => {
+		const { container, rerender } = render(InputRouter, {
+			activeSessionId: 'ses-a',
+			onsubmit,
+		});
+		const textarea = container.querySelector('textarea') as HTMLTextAreaElement;
+
+		await fireEvent.input(textarea, { target: { value: 'draft A' } });
+		await rerender({ activeSessionId: 'ses-b', onsubmit });
+		expect(textarea.value).toBe('');
+
+		await fireEvent.input(textarea, { target: { value: 'draft B' } });
+		await rerender({ activeSessionId: 'ses-a', onsubmit });
+		expect(textarea.value).toBe('draft A');
+
+		await rerender({ activeSessionId: 'ses-b', onsubmit });
+		expect(textarea.value).toBe('draft B');
+	});
+
+	it('keeps the fresh-session draft in its own slot', async () => {
+		const { container, rerender } = render(InputRouter, { onsubmit });
+		const textarea = container.querySelector('textarea') as HTMLTextAreaElement;
+
+		await fireEvent.input(textarea, { target: { value: 'new conversation draft' } });
+		await rerender({ activeSessionId: 'ses-a', onsubmit });
+		expect(textarea.value).toBe('');
+
+		await fireEvent.input(textarea, { target: { value: 'session draft' } });
+		await rerender({ activeSessionId: null, onsubmit });
+		expect(textarea.value).toBe('new conversation draft');
+
+		await rerender({ activeSessionId: 'ses-a', onsubmit });
+		expect(textarea.value).toBe('session draft');
+	});
+
+	it('clears the submitted draft instead of restoring it on the next visit', async () => {
+		const submit = vi.fn();
+		const { container, rerender } = render(InputRouter, {
+			activeSessionId: 'ses-a',
+			onsubmit: submit,
+		});
+		const textarea = container.querySelector('textarea') as HTMLTextAreaElement;
+		await fireEvent.input(textarea, { target: { value: 'send once' } });
+		await fireEvent.click(screen.getByRole('button', { name: '发送' }));
+
+		expect(submit).toHaveBeenCalledWith({ text: 'send once', images: [], files: [] });
+		expect(textarea.value).toBe('');
+		await rerender({ activeSessionId: 'ses-b', onsubmit: submit });
+		await rerender({ activeSessionId: 'ses-a', onsubmit: submit });
+		expect(textarea.value).toBe('');
+	});
+
+	it('evicts the oldest cached draft after the 100-session limit', async () => {
+		const { container, rerender } = render(InputRouter, {
+			activeSessionId: 'ses-0',
+			onsubmit,
+		});
+		const textarea = container.querySelector('textarea') as HTMLTextAreaElement;
+
+		for (let index = 0; index <= 101; index += 1) {
+			if (index > 0) {
+				await rerender({ activeSessionId: `ses-${index}`, onsubmit });
+			}
+			await fireEvent.input(textarea, { target: { value: `draft-${index}` } });
+		}
+
+		await rerender({ activeSessionId: 'ses-0', onsubmit });
+		expect(textarea.value).toBe('');
+
+		await rerender({ activeSessionId: 'ses-2', onsubmit });
+		expect(textarea.value).toBe('draft-2');
+	});
+});
