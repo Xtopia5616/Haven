@@ -6,6 +6,7 @@
 		title?: string;
 		hasSession?: boolean;
 		onNew?: () => void;
+		onDelete?: () => void;
 		onEnd?: () => void;
 		children?: Snippet;
 	}
@@ -14,7 +15,14 @@
 	 * SessionHeader — keeps the active conversation identity and lifecycle
 	 * state visible above the message timeline.
 	 */
-	let { title = '新会话', hasSession = false, onNew, onEnd, children }: Props = $props();
+	let {
+		title = '新会话',
+		hasSession = false,
+		onNew,
+		onDelete,
+		onEnd,
+		children,
+	}: Props = $props();
 </script>
 
 <header class="session-header">
@@ -38,6 +46,15 @@
 				onclick={() => onNew?.()}
 			/>
 			{#if hasSession}
+				<MaterialIconButton
+					size="toolbar"
+					variant="danger-outline"
+					className="session-header__delete"
+					label="删除会话"
+					title="删除会话"
+					icon="delete"
+					onclick={() => onDelete?.()}
+				/>
 				<MaterialIconButton
 					size="toolbar"
 					variant="success-outline"

@@ -23,6 +23,7 @@
 	import { createStreamEventAggregator } from '$lib/streamAggregator.ts';
 	import { registerPerformanceMetricsProvider } from '$lib/performanceMetrics.ts';
 	import {
+		deleteSession,
 		getLastConversation,
 		getSessions,
 		reopenSession,
@@ -65,6 +66,8 @@
 	import ModelToolbar from '$lib/ModelToolbar.svelte';
 	import MaterialIconButton from '$lib/MaterialIconButton.svelte';
 	import SessionHeader from '$lib/SessionHeader.svelte';
+	import MaterialDialog from '$lib/MaterialDialog.svelte';
+	import MaterialButton from '$lib/MaterialButton.svelte';
 	import ConversationTimeline from '$lib/ConversationTimeline.svelte';
 	import Composer from '$lib/Composer.svelte';
 	import type {
@@ -98,6 +101,8 @@
 		maxFileBytes: 20 * 1024 * 1024,
 	});
 	let initialLoading = $state(true);
+	let deleteTarget = $state<{ sessionId: string; title: string } | null>(null);
+	let deletingSession = $state(false);
 	const sessionReducer = appSessionReducer;
 	const currentReducerState = sessionReducer.getState();
 	const emptySessionMessages: SessionMessage[] = [];
@@ -791,6 +796,26 @@
 		return chatController.endSession();
 	}
 
+	function requestDeleteSession() {
+		if (!activeSessionId) return;
+		deleteTarget = { sessionId: activeSessionId, title: sessionHeaderTitle };
+	}
+
+	async function confirmDeleteSession() {
+		const target = deleteTarget;
+		if (!target || deletingSession) return;
+		deletingSession = true;
+		try {
+			await deleteSession({ sessionId: target.sessionId });
+			addNotification('会话已删除', 'success', 2000);
+		} catch (error) {
+			reportError(error, { context: '+page', message: '删除失败', log: false });
+		} finally {
+			deleteTarget = null;
+			deletingSession = false;
+		}
+	}
+
 	function interruptOutput() {
 		return chatController.interruptOutput();
 	}
@@ -895,6 +920,34 @@
 				};
 		}}
 	/>
+	<MaterialDialog
+		open={deleteTarget !== null}
+		title="删除会话"
+		onClose={() => {
+			if (!deletingSession) deleteTarget = null;
+		}}
+	>
+		{#snippet children()}
+			<p class="delete-session-confirmation">
+				确定删除「{deleteTarget?.title ||
+					'未命名会话'}」？此会话及其消息记录将被永久删除，且无法恢复。
+			</p>
+		{/snippet}
+		{#snippet footer()}
+			<MaterialButton
+				variant="text"
+				label="取消"
+				disabled={deletingSession}
+				onclick={() => (deleteTarget = null)}
+			/>
+			<MaterialButton
+				variant="danger"
+				label={deletingSession ? '删除中…' : '删除'}
+				disabled={deletingSession}
+				onclick={confirmDeleteSession}
+			/>
+		{/snippet}
+	</MaterialDialog>
 
 	<div class="desktop-session-rail responsive-layout-panel">
 		<SessionRail
@@ -911,6 +964,7 @@
 			title={sessionHeaderTitle}
 			hasSession={!!activeSessionId && !activeSessionTermination}
 			onNew={newSession}
+			onDelete={requestDeleteSession}
 			onEnd={endSession}
 		>
 			{#snippet children()}
@@ -1016,6 +1070,10 @@
 </div>
 
 <style>
+	.delete-session-confirmation {
+		margin: 0;
+		color: var(--md-sys-color-on-surface);
+	}
 	.chat-page {
 		position: relative;
 		display: grid;

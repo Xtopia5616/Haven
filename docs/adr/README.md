@@ -409,3 +409,4 @@
 - [0424：人工交互生命周期所有权审计](0424-interaction-lifecycle-ownership.md)
 - [0425：权限规则管理与界面直调续体](0425-permission-grant-management-and-ui-continuation.md)
 - [0426：按会话缓存输入框草稿](0426-per-session-composer-drafts.md)
+- [0427：从对话页删除当前会话](0427-delete-session-from-conversation.md)
