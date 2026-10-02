@@ -184,4 +184,18 @@ describe('SessionToolbar', () => {
 		expect(screen.getByText('900 tokens')).toBeTruthy();
 		expect(screen.getByText('0.0200 USD')).toBeTruthy();
 	});
+
+	it('allows selecting a completed historical session', async () => {
+		const onSwitchSession = vi.fn();
+		render(SessionToolbar, {
+			showSessionMenu: true,
+			sessionMenuOpen: true,
+			menuSessions: [{ id: 'ses-old', status: 'completed', title: '旧绘画会话' }],
+			onSwitchSession,
+		});
+
+		await fireEvent.click(screen.getByRole('menuitemradio'));
+
+		expect(onSwitchSession).toHaveBeenCalledWith('ses-old');
+	});
 });

@@ -18,12 +18,14 @@
 	import { createChatViewController } from '$lib/chatViewController.ts';
 	import { projectChatVisibleMessages } from '$lib/chatVisibleMessages.ts';
 	import { createChatModelSync } from '$lib/chatModelSync.ts';
+	import { buildSessionSwitcherOptions } from '$lib/sessionSwitcher.ts';
 	import { loadSettings } from '$lib/settingsCommand.ts';
 	import { createChatModelOperations } from '$lib/chatModelOperations.ts';
 	import { createStreamEventAggregator } from '$lib/streamAggregator.ts';
 	import { registerPerformanceMetricsProvider } from '$lib/performanceMetrics.ts';
 	import {
 		deleteSession,
+		getHistory,
 		getLastConversation,
 		getSessions,
 		reopenSession,
@@ -80,6 +82,7 @@
 	import type { SessionTokenStats as PresentationSessionTokenStats } from '$lib/sessionUsagePresentation.ts';
 	import type { LlmUsage } from '$lib/sessionUsage.ts';
 	import type { ModelInfo } from '$lib/contracts/model.ts';
+	import type { SessionHistoryRow } from '$lib/contracts/sessionHistory.ts';
 	import type { ActionPayload, ActionStatus } from '$lib/contracts/action.ts';
 	import type { AgentMediaPlanPayload } from '$lib/contracts/agent.ts';
 	import type { ChatFileAttachment, ChatImageAttachment } from '$lib/chatController.ts';
@@ -88,6 +91,8 @@
 
 	let chatPageEl = $state<HTMLElement | null>(null);
 	let inputRouterRef = $state<{ setDraft: (text: string) => void } | null>(null);
+	let recentHistorySessions = $state<SessionHistoryRow[]>([]);
+	let historyRefreshSeq = 0;
 
 	// Attachment & compression limits for the input router, loaded from the
 	// persisted [context_limits] config (editable on the settings "媒体"
@@ -240,12 +245,22 @@
 	const tokenUsageDetails = $derived.by(() =>
 		tokenStats ? buildTokenUsageDetails(tokenStats, llmUsage) : null,
 	);
-	// Menu source: parallel sessions plus paused ones — a paused session is
-	// otherwise invisible in the chat view (its conversation is not shown).
-	const menuSessions = $derived(
-		sessions.filter((t) => isBusyStatus(t.status) || isPausedStatus(t.status)),
-	);
-	const showSessionMenu = $derived(menuSessions.length >= 2);
+	// Compact layouts hide the session rail, so include persisted history as
+	// well as live/paused sessions in the chat switcher.
+	const menuSessions = $derived(buildSessionSwitcherOptions(sessions, recentHistorySessions));
+	const showSessionMenu = $derived(menuSessions.length > 0);
+
+	async function loadRecentHistory() {
+		const sequence = ++historyRefreshSeq;
+		try {
+			const history = await getHistory({ limit: 50, offset: 0 });
+			if (!dead && sequence === historyRefreshSeq) recentHistorySessions = history || [];
+		} catch (error) {
+			if (!dead && sequence === historyRefreshSeq) {
+				reportError(error, { context: '+page', message: '加载会话历史失败', log: false });
+			}
+		}
+	}
 
 	// Live action registry (for "waiting on background" banner). Synced from
 	// the global actionStore kept by +layout.
@@ -433,7 +448,7 @@
 	}
 
 	$effect(() => {
-		if (sessionMenuOpen && menuSessions.length < 2) sessionMenuOpen = false;
+		if (sessionMenuOpen && menuSessions.length === 0) sessionMenuOpen = false;
 	});
 
 	// Merged into existing onMount/onDestroy below
@@ -454,6 +469,11 @@
 		if (browser) localStorage.setItem(NEW_ACTION_INTENT_KEY, '1');
 		dispatchSession({ type: 'session/cleared' });
 		sessionMenuOpen = false;
+	}
+
+	function toggleSessionMenu() {
+		sessionMenuOpen = !sessionMenuOpen;
+		if (sessionMenuOpen) void loadRecentHistory();
 	}
 
 	// Terminal sessions are not in get_sessions, so drop their cached messages
@@ -599,6 +619,7 @@
 		// persisted intent would be silently defeated. The resumeTarget
 		// branch below (an explicit user choice) clears it again if needed.
 		sessionStartup.hydrateFreshSessionIntent();
+		void loadRecentHistory();
 
 		// Process resume target first so loadSessions won't overwrite
 		// activeSessionId with a stale paused session whose messages are gone.
@@ -636,7 +657,10 @@
 					scheduleLoadSessions();
 				}
 			},
-			scheduleLoadSessions,
+			scheduleLoadSessions: () => {
+				scheduleLoadSessions();
+				void loadRecentHistory();
+			},
 			chunkHandler,
 			setHotkeyBinding: (binding) => {
 				hotkeyBinding = binding;
@@ -788,8 +812,43 @@
 		return chatController.pendingInteractionIdsForSession(sessionId);
 	}
 
-	function switchToSession(sessionId: string) {
-		return chatController.switchToSession(sessionId);
+	async function switchToSession(sessionId: string) {
+		const alreadyLoaded = sessionReducer
+			.getState()
+			.sessions.some((session) => session.id === sessionId);
+		const historical = recentHistorySessions.find((session) => session.id === sessionId);
+		if (!alreadyLoaded && historical) {
+			if (isErrorStatus(historical.status)) {
+				dispatchSession({
+					type: 'session/retained-error',
+					session: {
+						id: historical.id,
+						input: historical.input_text,
+						input_text: historical.input_text,
+						title: historical.title,
+						status: 'error',
+					},
+				});
+			} else {
+				try {
+					await reopenSession({ sessionId });
+					await loadSessions();
+				} catch (error) {
+					reportError(error, { context: '+page', message: '恢复会话失败', log: false });
+					return;
+				}
+			}
+		}
+		await chatController.switchToSession(sessionId);
+		if (historical && isErrorStatus(historical.status)) {
+			dispatchSession({
+				type: 'session/error-shown',
+				sessionId,
+				reason:
+					sessionReducer.getSessionErrorReason(sessionId) ||
+					'本次会话因错误停止，暂未收到更具体的原因。',
+			});
+		}
 	}
 
 	function endSession() {
@@ -973,10 +1032,7 @@
 					{showSessionMenu}
 					{sessionMenuOpen}
 					{menuSessions}
-					onToggleSessionMenu={() => {
-						if (showSessionMenu) sessionMenuOpen = !sessionMenuOpen;
-						else newSession();
-					}}
+					onToggleSessionMenu={toggleSessionMenu}
 					onSwitchSession={switchToSession}
 					{sessionStatusLabel}
 					{tokenStats}

@@ -1,5 +1,6 @@
 import { invoke } from './tauri.ts';
 import type {
+	HistoryPageRequest,
 	HistoryFilterRequest,
 	SessionIdRequest,
 	UpdateSessionTitleRequest,
@@ -18,10 +19,13 @@ export function getSessions(): Promise<SessionListResponse> {
 	return invoke('get_sessions');
 }
 
+/** Load a recent persisted history page for the compact chat session switcher. */
+export function getHistory(request: HistoryPageRequest): Promise<SessionHistoryRow[]> {
+	return invoke('get_history', request);
+}
+
 /** Load the persisted history page using the existing flat Tauri arguments. */
-export function searchHistoryFiltered(
-	request: HistoryFilterRequest,
-): Promise<SessionHistoryRow[]> {
+export function searchHistoryFiltered(request: HistoryFilterRequest): Promise<SessionHistoryRow[]> {
 	return invoke('search_history_filtered', request);
 }
 

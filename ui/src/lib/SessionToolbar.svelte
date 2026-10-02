@@ -76,7 +76,7 @@
 			ariaExpanded={sessionMenuOpen}
 			ariaHaspopup="menu"
 			onclick={() => onToggleSessionMenu()}
-			title="切换并行会话或开始新会话"
+			title="切换会话"
 		>
 			<Icon name="chat" size={20} className="session-switch-icon" />
 			<span class="session-switch-label">会话</span>
