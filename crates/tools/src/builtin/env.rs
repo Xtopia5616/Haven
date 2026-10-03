@@ -175,7 +175,7 @@ impl EnvTool {
                 result["scope"] = serde_json::json!(scope.as_str());
                 if truncated {
                     result["hint"] = serde_json::json!(
-                        "Environment listing truncated to the max chars budget. Use get with a specific variable name, or list with name as a prefix filter."
+                        "Environment listing truncated to the max chars budget. Use get with a specific variable name, or list with prefix to narrow the results."
                     );
                 }
                 Ok(ToolResult::from_output(result, truncated))

@@ -87,6 +87,7 @@ pub(super) async fn atomic_replace(
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
+    tokio::fs::create_dir_all(parent).await?;
     let temporary = parent.join(format!(".{}.tmp", haven_common::types::new_id("file")));
     let result = async {
         let mut file = tokio::fs::OpenOptions::new()

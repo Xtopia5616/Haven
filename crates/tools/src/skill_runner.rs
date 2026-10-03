@@ -46,9 +46,13 @@ impl SkillRunner {
         params: &Value,
         cancel: CancellationToken,
     ) -> anyhow::Result<ToolResult> {
-        let entry = skill
-            .entry_script()
-            .ok_or_else(|| anyhow::anyhow!("missing entry script for skill '{}'", skill.name()))?;
+        let entry = skill.entry_script().ok_or_else(|| {
+            anyhow::anyhow!(
+                "skill '{}' has no entry script; expected scripts/main.py or scripts/{}.py",
+                skill.name(),
+                skill.name()
+            )
+        })?;
         if !matches!(skill.language(), haven_skills::Language::Python) {
             anyhow::bail!(
                 "unsupported language '{}' for skill '{}'",

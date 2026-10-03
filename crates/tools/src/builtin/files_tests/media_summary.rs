@@ -116,6 +116,7 @@ use super::*;
             .unwrap();
 
         assert_eq!(result.output["summary"], "summary");
+        assert_eq!(result.output["request_kind"], "fast_chat");
         assert_eq!(result.llm_usage.len(), 1);
         assert_eq!(
             result.llm_usage[0].call_kind,
@@ -123,4 +124,41 @@ use super::*;
         );
         assert_eq!(result.llm_usage[0].request, RequestKind::FastChat);
         assert_eq!(result.llm_usage[0].usage.total_tokens, 18);
+    }
+
+    #[tokio::test]
+    async fn test_summary_falls_back_to_chat_when_fast_chat_is_unconfigured() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("notes.txt");
+        tokio::fs::write(&file, "notes for summarization")
+            .await
+            .unwrap();
+        let client = Arc::new(SummaryUsageMock);
+        let router = Arc::new(LlmRouter::new_with_clients(
+            client.clone(),
+            client.clone(),
+            client.clone(),
+            client,
+        ));
+        router
+            .force_request_configured(RequestKind::FastChat, false)
+            .await;
+        router
+            .force_request_configured(RequestKind::Chat, true)
+            .await;
+        let mut tool = FilesTool::default();
+        tool.summarizer = Some(router);
+
+        let result = tool
+            .execute(
+                json!({"operation": "summary", "path": file.to_string_lossy()}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.output["summary"], "summary");
+        assert_eq!(result.output["request_kind"], "chat");
+        assert_eq!(result.llm_usage[0].request, RequestKind::Chat);
     }

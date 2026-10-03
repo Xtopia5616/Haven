@@ -1808,10 +1808,19 @@ mod tests {
     async fn prompt_schema_cache_refreshes_after_skill_refresh() {
         let tools = Arc::new(ToolsManager::new());
         let skills_root = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(skills_root.path().join("first-skill")).unwrap();
+        std::fs::create_dir_all(skills_root.path().join("first-skill").join("scripts")).unwrap();
         std::fs::write(
             skills_root.path().join("first-skill").join("SKILL.md"),
             "# Skill: first-skill\n\n## Metadata\n- description: first\n\n## Instructions\nrun first\n",
+        )
+        .unwrap();
+        std::fs::write(
+            skills_root
+                .path()
+                .join("first-skill")
+                .join("scripts")
+                .join("main.py"),
+            "print('{}')\n",
         )
         .unwrap();
         tools
@@ -1831,10 +1840,19 @@ mod tests {
             .await;
         assert!(before.contains("first-skill"));
 
-        std::fs::create_dir_all(skills_root.path().join("second-skill")).unwrap();
+        std::fs::create_dir_all(skills_root.path().join("second-skill").join("scripts")).unwrap();
         std::fs::write(
             skills_root.path().join("second-skill").join("SKILL.md"),
             "# Skill: second-skill\n\n## Metadata\n- description: second\n\n## Instructions\nrun second\n",
+        )
+        .unwrap();
+        std::fs::write(
+            skills_root
+                .path()
+                .join("second-skill")
+                .join("scripts")
+                .join("main.py"),
+            "print('{}')\n",
         )
         .unwrap();
         tools

@@ -540,6 +540,7 @@ mod tests {
             "# Skill: echo\n## Metadata\n- description: echo skill\n## Instructions\ndo echo\n",
         )
         .unwrap();
+        fs::write(skill_dir.join("scripts").join("main.py"), "print('{}')\n").unwrap();
         tools
             .share_services()
             .skills

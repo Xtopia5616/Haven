@@ -32,19 +32,23 @@
 			icon: 'copy',
 			action: () => copyText(skill.description || '', '描述'),
 		},
-		skill.enabled
-			? {
-					id: 'disable',
-					label: '禁用',
-					icon: 'power',
-					action: () => onToggle?.(skill.name, false),
-				}
-			: {
-					id: 'enable',
-					label: '启用',
-					icon: 'power',
-					action: () => onToggle?.(skill.name, true),
-				},
+		...(skill.has_script
+			? [
+					skill.enabled
+						? {
+								id: 'disable',
+								label: '禁用',
+								icon: 'power',
+								action: () => onToggle?.(skill.name, false),
+							}
+						: {
+								id: 'enable',
+								label: '启用',
+								icon: 'power',
+								action: () => onToggle?.(skill.name, true),
+							},
+				]
+			: []),
 	]);
 
 	let previewParams = $state('{}');
@@ -104,6 +108,8 @@
 			/>
 			{#if skill.has_script}
 				<span class="script-badge">含脚本</span>
+			{:else}
+				<span class="script-badge script-badge--missing">缺少入口脚本，无法执行</span>
 			{/if}
 		</div>
 	{/snippet}
@@ -111,6 +117,7 @@
 		<MaterialSwitch
 			checked={skill.enabled}
 			ariaLabel={`切换技能 ${skill.name}`}
+			disabled={!skill.has_script}
 			onChange={handleToggle}
 		/>
 	{/snippet}
@@ -178,6 +185,10 @@
 		padding: 2px var(--md-sys-space-sm);
 		border-radius: var(--md-sys-shape-small);
 		font-weight: 600;
+	}
+	.script-badge--missing {
+		background: var(--md-sys-color-error-container);
+		color: var(--md-sys-color-on-error-container);
 	}
 	.desc {
 		font-size: var(--md-sys-typescale-body-small-size);

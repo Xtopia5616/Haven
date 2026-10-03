@@ -91,7 +91,7 @@ impl ChecklistTool {
                 let item = ChecklistItem {
                     id: id.clone(),
                     text: text.to_string(),
-                    done: false,
+                    done: params.done.unwrap_or(false),
                 };
                 items.push(item.clone());
                 serde_json::json!({ "operation": "add", "item": item })
@@ -195,12 +195,21 @@ mod tests {
     #[tokio::test]
     async fn manages_items_per_session_without_ask_or_confirm() {
         let tool = ChecklistTool::default();
+        assert!(
+            tool.validate_input(&serde_json::json!({
+                "operation": "add",
+                "text": "Already completed",
+                "done": true
+            }))
+            .is_ok()
+        );
         let session_id = "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         let added = tool
             .execute(
                 serde_json::json!({
                     "operation": "add",
                     "text": "Review the diff",
+                    "done": true,
                     "_session_id": session_id
                 }),
                 CancellationToken::new(),
@@ -209,12 +218,13 @@ mod tests {
             .unwrap();
         let item_id = added.output["item"]["id"].as_str().unwrap();
         assert!(item_id.starts_with("msg-"));
+        assert_eq!(added.output["item"]["done"], true);
 
         tool.execute(
             serde_json::json!({
                 "operation": "update",
                 "item_id": item_id,
-                "done": true,
+                "done": false,
                 "_session_id": session_id
             }),
             CancellationToken::new(),
@@ -229,7 +239,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(listed.output["count"], 1);
-        assert_eq!(listed.output["items"][0]["done"], true);
+        assert_eq!(listed.output["items"][0]["done"], false);
 
         let removed = tool
             .execute(

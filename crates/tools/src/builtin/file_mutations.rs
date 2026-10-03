@@ -247,13 +247,25 @@ pub(super) async fn move_file(
 }
 
 pub(super) async fn delete(path: &str, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
-    tokio::fs::remove_file(path).await?;
     if cancel.is_cancelled() {
         anyhow::bail!("cancelled");
     }
-    Ok(ToolResult::ok(
-        serde_json::json!({"deleted": true, "path": path}),
-    ))
+    let path_ref = std::path::Path::new(path);
+    let metadata = tokio::fs::symlink_metadata(path_ref).await?;
+    let file_type = metadata.file_type();
+    let (kind, result) = if file_type.is_dir() {
+        // Deliberately remove only empty directories. Recursive deletion is a
+        // separate, more destructive operation and is not implied by delete.
+        ("directory", tokio::fs::remove_dir(path_ref).await)
+    } else {
+        ("file", tokio::fs::remove_file(path_ref).await)
+    };
+    result?;
+    Ok(ToolResult::ok(serde_json::json!({
+        "deleted": true,
+        "path": path,
+        "file_type": kind
+    })))
 }
 
 pub(super) async fn list(

@@ -95,11 +95,7 @@ impl Skill {
     /// Whether the skill ships an executable entry script under `scripts/`.
     /// Looks for `scripts/main.py` first, then `scripts/<name>.py`.
     pub fn has_script(&self) -> bool {
-        let scripts = self.root.join("scripts");
-        if scripts.join("main.py").exists() {
-            return true;
-        }
-        scripts.join(format!("{}.py", self.manifest.name)).exists()
+        self.entry_script().is_some()
     }
 
     /// Resolve the entry script path for this skill.
@@ -154,7 +150,9 @@ impl From<&Skill> for SkillInfo {
             description: s.description().to_string(),
             version: s.version().map(str::to_string),
             language: s.language().as_str().to_string(),
-            enabled: s.enabled(),
+            // A configured skill without an executable entry point cannot be
+            // loaded as a tool, so project it as disabled to the UI.
+            enabled: s.enabled() && s.has_script(),
             root: s.root().to_string_lossy().to_string(),
             has_script: s.has_script(),
         }
@@ -535,6 +533,11 @@ impl SkillsEngine {
             .skills
             .get_mut(name)
             .ok_or_else(|| anyhow::anyhow!("skill '{name}' not loaded"))?;
+        if enabled && !s.has_script() {
+            anyhow::bail!(
+                "skill '{name}' cannot be enabled because it has no entry script (expected scripts/main.py or scripts/{name}.py)"
+            );
+        }
         let changed = s.enabled != enabled;
         s.enabled = enabled;
 
@@ -753,6 +756,34 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[tokio::test]
+    async fn scriptless_skills_are_projected_disabled_and_cannot_be_enabled() {
+        let dir = tmp_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        write_skill(
+            &dir,
+            "instruction-only",
+            "# Skill: instruction-only\n\n## Metadata\n- description: no executable entry point\n\n## Instructions\nDo the task.\n",
+            false,
+        );
+
+        let engine = SkillsEngine::new();
+        engine.set_config(Some(dir.clone()), None).await.unwrap();
+        let listed = engine.list().await;
+        assert_eq!(listed.len(), 1);
+        assert!(!listed[0].has_script);
+        assert!(!listed[0].enabled);
+
+        let error = engine
+            .set_enabled("instruction-only", true)
+            .await
+            .expect_err("scriptless skill must not be enabled as an executable tool");
+        assert!(error.to_string().contains("no entry script"));
+        assert!(engine.set_enabled("instruction-only", false).await.is_ok());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn scan_dir_none_all_enabled() {
         let dir = tmp_dir();
@@ -932,13 +963,13 @@ mod tests {
             &dir,
             "a",
             "# Skill: a\n## Metadata\n- description: a\n## Instructions\ni\n",
-            false,
+            true,
         );
         write_skill(
             &dir,
             "b",
             "# Skill: b\n## Metadata\n- description: b\n## Instructions\ni\n",
-            false,
+            true,
         );
         let eng = SkillsEngine::new();
         eng.set_config(Some(dir.clone()), None).await.unwrap();

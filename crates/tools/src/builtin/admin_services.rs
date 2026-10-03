@@ -651,6 +651,14 @@ impl AdminServices {
         {
             anyhow::bail!("script too large (max {} bytes)", self.max_script_bytes);
         }
+        let script = script.ok_or_else(|| {
+            anyhow::anyhow!(
+                "script is required: executable Haven skills need an entry script under scripts/"
+            )
+        })?;
+        if script.trim().is_empty() {
+            anyhow::bail!("script must not be empty");
+        }
 
         let root = self.skills_engine.resolved_root().await;
         let skill_dir = root.join(name);
@@ -669,13 +677,10 @@ impl AdminServices {
         ));
         tokio::fs::write(skill_dir.join("SKILL.md"), markdown).await?;
 
-        let mut has_script = false;
-        if let Some(script) = script {
-            let scripts = skill_dir.join("scripts");
-            tokio::fs::create_dir_all(&scripts).await?;
-            tokio::fs::write(scripts.join("main.py"), script).await?;
-            has_script = true;
-        }
+        let scripts = skill_dir.join("scripts");
+        tokio::fs::create_dir_all(&scripts).await?;
+        tokio::fs::write(scripts.join("main.py"), script).await?;
+        let has_script = true;
 
         self.skills_engine.refresh_from_disk().await?;
         self.skills_engine.set_enabled(name, true).await?;

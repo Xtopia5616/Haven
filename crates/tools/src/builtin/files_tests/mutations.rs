@@ -20,6 +20,75 @@ use super::*;
     }
 
     #[tokio::test]
+    async fn test_file_write_creates_missing_parent_directories() {
+        let tmp = TempDir::new().unwrap();
+        let file = tmp.path().join("new").join("nested").join("output.txt");
+        let result = FilesTool::default()
+            .execute(
+                json!({
+                    "operation": "write",
+                    "path": file.to_string_lossy(),
+                    "content": "created with parents"
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        assert!(result.success);
+        assert_eq!(
+            tokio::fs::read_to_string(&file).await.unwrap(),
+            "created with parents"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_file_write_dry_run_does_not_create_missing_parents() {
+        let tmp = TempDir::new().unwrap();
+        let parent = tmp.path().join("new").join("nested");
+        let file = parent.join("output.txt");
+        let result = FilesTool::default()
+            .execute(
+                json!({
+                    "operation": "write",
+                    "path": file.to_string_lossy(),
+                    "content": "dry run",
+                    "dry_run": true
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.output["dry_run"], true);
+        assert!(!parent.exists());
+        assert!(!file.exists());
+    }
+
+    #[tokio::test]
+    async fn test_file_write_hash_mismatch_does_not_create_missing_parents() {
+        let tmp = TempDir::new().unwrap();
+        let parent = tmp.path().join("new").join("nested");
+        let file = parent.join("output.txt");
+        let result = FilesTool::default()
+            .execute(
+                json!({
+                    "operation": "write",
+                    "path": file.to_string_lossy(),
+                    "content": "guarded write",
+                    "expected_hash": "sha256:stale"
+                }),
+                CancellationToken::new(),
+            )
+            .await;
+
+        assert!(result.is_err());
+        assert!(!parent.exists());
+        assert!(!file.exists());
+    }
+
+    #[tokio::test]
     async fn test_file_execute_edit() {
         let tmp = TempDir::new().unwrap();
         let file = tmp.path().join("edit.txt");
@@ -396,6 +465,36 @@ use super::*;
         assert!(result.success);
         assert!(result.output["deleted"].as_bool().unwrap());
         assert!(!file.exists());
+    }
+
+    #[tokio::test]
+    async fn test_file_delete_removes_empty_directory_but_not_nonempty_directory() {
+        let tmp = TempDir::new().unwrap();
+        let empty = tmp.path().join("empty");
+        tokio::fs::create_dir(&empty).await.unwrap();
+        let result = FilesTool::default()
+            .execute(
+                json!({"operation": "delete", "path": empty.to_string_lossy()}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(result.success);
+        assert_eq!(result.output["file_type"], "directory");
+        assert!(!empty.exists());
+
+        let nonempty = tmp.path().join("nonempty");
+        tokio::fs::create_dir(&nonempty).await.unwrap();
+        let child = nonempty.join("keep.txt");
+        tokio::fs::write(&child, "keep").await.unwrap();
+        let result = FilesTool::default()
+            .execute(
+                json!({"operation": "delete", "path": nonempty.to_string_lossy()}),
+                CancellationToken::new(),
+            )
+            .await;
+        assert!(result.is_err());
+        assert!(child.exists());
     }
 
     #[tokio::test]

@@ -6,8 +6,7 @@
 
 pub(crate) const ACTIONS_DESCRIPTION: &str = "Inspect or cancel this session's background and scheduled tasks through one task view. Results arrive automatically; do not poll.";
 pub(crate) const ASK_DESCRIPTION: &str = "Ask the user one focused question when a required choice or value is missing. One question per call.";
-pub(crate) const CHECKLIST_DESCRIPTION: &str =
-    "Add, update, remove, clear, or list non-blocking checklist items for this session.";
+pub(crate) const CHECKLIST_DESCRIPTION: &str = "Add, update, remove, clear, or list non-blocking checklist items for this session. New items may start done or open.";
 pub(crate) const CLIPBOARD_DESCRIPTION: &str = "Read or write clipboard text, HTML, images, and file lists; image/file reads become managed asset_id values, and inspect recent text history. For writes, always specify format and its matching payload: text uses text, html uses html with optional text as its plain-text fallback, image uses asset_id, and files uses files.";
 pub(crate) const FILES_DESCRIPTION: &str = "Read, inspect, hash, create, edit, patch, copy, move, delete, list, outline, summarize, or search files. Use media for managed non-text assets and carry forward its asset_id.";
 pub(crate) const HTTP_DESCRIPTION: &str = "Fetch a known HTTP(S) URL with GET or POST. This is not web search; use an active search tool for discovery.";
@@ -21,7 +20,8 @@ pub(crate) const MESSAGING_DESCRIPTION: &str = "Exchange low-trust messages with
 pub(crate) const NOTIFY_DESCRIPTION: &str = "Send a non-blocking visual or system notification. It does not pause the session; use media.speak for audio.";
 pub(crate) const PREFERENCES_DESCRIPTION: &str =
     "Read or change lightweight preferences for the current session.";
-pub(crate) const PROCESS_DESCRIPTION: &str = "List running processes or kill one by PID.";
+pub(crate) const PROCESS_DESCRIPTION: &str =
+    "List a bounded set of running processes with an optional name filter, or kill one by PID.";
 pub(crate) const SCHEDULE_DESCRIPTION: &str = "Create, list, or cancel future actions. A scheduled action has not run yet; completion wakes the session.";
 pub(crate) const HAVEN_DESCRIPTION: &str =
     "Inspect or change Haven configuration, skills, builtins, MCP servers, logs, or sessions.";
@@ -134,16 +134,16 @@ pub(crate) fn operation_text(name: &str) -> OperationText {
             when_to_use: "Use when the source should no longer remain at its current path.",
         },
         "files.delete" => OperationText {
-            description: "Delete a file or directory.",
-            when_to_use: "Use only when the user explicitly requested deletion.",
+            description: "Delete a file or an empty directory. Non-empty directories are rejected.",
+            when_to_use: "Use only when the user explicitly requested deletion; directory deletion removes empty directories only.",
         },
         "files.list" => OperationText {
             description: "List entries in a directory.",
             when_to_use: "Use to inspect directory contents without reading every file.",
         },
         "process.list" => OperationText {
-            description: "List running processes and resource usage.",
-            when_to_use: "Use to inspect current process state.",
+            description: "List a bounded set of running processes and resource usage, optionally filtered by name.",
+            when_to_use: "Use name_filter to narrow a large process list and limit to bound the number of results.",
         },
         "process.kill" => OperationText {
             description: "Terminate a process by PID.",
@@ -422,8 +422,8 @@ pub(crate) fn operation_text(name: &str) -> OperationText {
             when_to_use: "Use to inspect non-blocking task notes.",
         },
         "checklist.add" => OperationText {
-            description: "Add an item to the current session checklist.",
-            when_to_use: "Use for a non-blocking reminder or task note.",
+            description: "Add an item to the current session checklist, optionally setting its initial done state.",
+            when_to_use: "Use for a non-blocking reminder or task note; set done:true when it is already complete.",
         },
         "checklist.update" => OperationText {
             description: "Update one checklist item.",
@@ -447,7 +447,7 @@ pub(crate) fn operation_text(name: &str) -> OperationText {
         },
         "system.env.list" => OperationText {
             description: "List environment variable names, optionally by prefix.",
-            when_to_use: "Use to discover names; use system.env.get for one value.",
+            when_to_use: "Use prefix to filter names; use system.env.get for one value.",
         },
         "system.env.get" => OperationText {
             description: "Read one environment variable with policy-based masking.",
@@ -534,8 +534,8 @@ pub(crate) fn operation_text(name: &str) -> OperationText {
             when_to_use: "Use only when the user explicitly asks to disable it.",
         },
         "haven.skills.skill_create" => OperationText {
-            description: "Create a Haven skill from supplied metadata and instructions.",
-            when_to_use: "Use only when the user explicitly asks to create a skill; review its code and scope.",
+            description: "Create an executable Haven skill from metadata, instructions, and a Python entry script.",
+            when_to_use: "Use only when the user explicitly asks to create a skill; include a reviewed script that reads JSON from stdin and returns JSON on stdout.",
         },
         "haven.tools.tool_enable" => OperationText {
             description: "Enable a built-in Haven tool.",

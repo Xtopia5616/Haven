@@ -366,7 +366,7 @@ pub async fn register_builtin_tools(
         .list_skills()
         .await
         .into_iter()
-        .filter(|skill| skill.enabled())
+        .filter(|skill| skill.enabled() && skill.has_script())
     {
         tools.push(Arc::new(crate::SkillToolAdapter::new(
             Arc::new(skill),

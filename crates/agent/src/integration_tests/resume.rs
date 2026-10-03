@@ -197,6 +197,7 @@ async fn enabled_skills_are_global_and_resume_does_not_rebuild_skill_sessions() 
         "# Skill: echo\n## Metadata\n- description: echo skill\n## Instructions\ndo echo\n",
     )
     .unwrap();
+    std::fs::write(skill_dir.join("scripts").join("main.py"), "print('{}')\n").unwrap();
 
     let db = Arc::new(
         Database::open(

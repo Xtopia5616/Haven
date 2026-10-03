@@ -819,6 +819,7 @@ mod tests {
             err
         );
         assert_eq!(result.output["exit_code"], 42);
+        assert!(result.output["log_path"].as_str().is_some());
     }
 
     #[cfg(windows)]
@@ -874,6 +875,28 @@ mod tests {
         let out = result.output["output"].as_str().unwrap();
         assert!(out.contains("你好"), "got: {out:?}");
         assert!(out.contains("100%"), "got: {out:?}");
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn test_shell_powershell_preserves_nested_quotes_and_plus_expression() {
+        let result = ShellTool::default()
+            .execute(
+                json!({
+                    "command": "Write-Output ('left' + \" \" + 'right')",
+                    "shell": "powershell"
+                }),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+
+        assert!(result.success, "expected success: {:?}", result.error);
+        assert_eq!(
+            result.output["output"].as_str().unwrap().trim(),
+            "left right"
+        );
+        assert_eq!(result.output["exit_code"], 0);
     }
 
     #[cfg(windows)]

@@ -72,7 +72,7 @@ describe('ToolsView toolbar actions', () => {
 			if (command === 'get_tools') return { tools: [] };
 			if (command === 'list_mcp_tools') return [];
 			if (command === 'list_skills') {
-				return [{ name: 'docs', enabled: true, language: 'markdown', has_script: false }];
+				return [{ name: 'docs', enabled: false, language: 'markdown', has_script: false }];
 			}
 			return undefined;
 		});
@@ -97,6 +97,10 @@ describe('ToolsView toolbar actions', () => {
 		);
 		await fireEvent.click(screen.getByRole('tab', { name: '技能' }));
 		expect(screen.getByRole('heading', { name: '技能' })).toBeTruthy();
+		expect((screen.getByRole('switch', { name: '切换技能 docs' }) as HTMLInputElement).disabled).toBe(
+			true,
+		);
+		expect(screen.getByText('缺少入口脚本，无法执行')).toBeTruthy();
 		await fireEvent.click(screen.getByRole('tab', { name: 'MCP' }));
 		expect(screen.getByRole('heading', { name: 'MCP 服务器' })).toBeTruthy();
 		const addButton = screen.getByRole('button', { name: '添加' });
@@ -132,8 +136,8 @@ describe('ToolsView toolbar actions', () => {
 			}
 			if (command === 'list_skills') {
 				return [
-					{ name: 'docs', enabled: true, language: 'markdown', has_script: false },
-					{ name: 'research', enabled: true, language: 'markdown', has_script: false },
+					{ name: 'docs', enabled: false, language: 'markdown', has_script: false },
+					{ name: 'research', enabled: false, language: 'markdown', has_script: false },
 				];
 			}
 			return undefined;

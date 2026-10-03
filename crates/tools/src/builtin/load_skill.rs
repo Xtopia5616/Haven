@@ -64,7 +64,7 @@ impl LoadSkillTool {
             .collect();
         if selected.is_empty() {
             anyhow::bail!(
-                "no matching enabled Skill; available Skills: {}",
+                "no matching enabled executable Skill; available Skills: {}",
                 available
                     .iter()
                     .map(|tool| tool.name().trim_start_matches("skill__").to_string())

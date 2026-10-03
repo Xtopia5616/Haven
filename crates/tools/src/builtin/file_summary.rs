@@ -11,9 +11,9 @@ use super::file_read::read_line_bounded;
 use super::{MAX_SUMMARY_FOCUS_CHARS, UNTRUSTED_DOCUMENT_END, UNTRUSTED_DOCUMENT_START};
 use crate::{OutputBudget, ToolLlmUsage, ToolResult};
 
-/// Summarize a plain-text file (or a `start_line`..=`end_line` range) using the
-/// `small_model` endpoint. Rich sources have already been handed to
-/// `media.*` by `FilesTool::run`; this function only handles text.
+/// Summarize plain text with the fast route when configured, falling back to
+/// the default chat route. Rich sources have already been handed to `media.*`
+/// by `FilesTool::run`; this function only handles text.
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn summarize(
     path: &str,
@@ -33,13 +33,17 @@ pub(super) async fn summarize(
             "reason": "No router installed. Read the file in parts with start_line/end_line instead.",
         })));
     };
-    if !client.is_request_configured(RequestKind::FastChat).await {
+    let request = if client.is_request_configured(RequestKind::FastChat).await {
+        RequestKind::FastChat
+    } else if client.is_request_configured(RequestKind::Chat).await {
+        RequestKind::Chat
+    } else {
         return Ok(ToolResult::ok(serde_json::json!({
             "summary_unavailable": true,
             "path": path,
-            "reason": "No small_model endpoint configured. Read the file in parts with start_line/end_line instead.",
+            "reason": "No chat endpoint configured. Read the file in parts with start_line/end_line instead.",
         })));
-    }
+    };
 
     if cancel.is_cancelled() {
         anyhow::bail!("cancelled");
@@ -76,7 +80,7 @@ pub(super) async fn summarize(
     let call = async {
         tokio::time::timeout(
             std::time::Duration::from_secs(summary_timeout_secs),
-            client.complete(CompleteRequest::new(RequestKind::FastChat, messages)),
+            client.complete(CompleteRequest::new(request, messages)),
         )
         .await
     };
@@ -123,6 +127,7 @@ pub(super) async fn summarize(
         "size": source.size,
         "lines": [source.actual_start, source.actual_end],
         "model": model,
+        "request_kind": request.as_str(),
         "input_provenance": source.provenance,
         "untrusted_content": true,
     });
@@ -135,7 +140,7 @@ pub(super) async fn summarize(
     let mut tool_result = ToolResult::ok(result);
     tool_result.llm_usage.push(ToolLlmUsage {
         call_kind: LlmCallKind::Tool,
-        request: RequestKind::FastChat,
+        request,
         usage: response.usage,
         model: response.model,
         duration_ms: Some(started.elapsed().as_millis() as u64),

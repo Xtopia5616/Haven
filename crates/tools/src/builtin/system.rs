@@ -36,9 +36,12 @@ pub struct SystemParams {
     /// Sub-operation for env/registry/power.
     #[serde(default)]
     pub operation: Option<String>,
-    /// Env var name (or list prefix filter), registry value name, etc.
+    /// Env var name for get/set/unset, or registry value name.
     #[serde(default)]
     pub name: Option<String>,
+    /// Environment variable prefix filter for `scope=env`, `operation=list`.
+    #[serde(default)]
+    pub prefix: Option<String>,
     /// Env/registry value.
     #[serde(default)]
     pub value: Option<String>,
@@ -86,7 +89,11 @@ impl SystemTool {
                 .run(
                     EnvParams {
                         operation: Some(op),
-                        name: params.name,
+                        name: if op == EnvOperation::List {
+                            params.prefix.or(params.name)
+                        } else {
+                            params.name
+                        },
                         value: params.value,
                         scope: params.env_scope,
                     },
@@ -257,6 +264,7 @@ impl Tool for SystemTool {
                 "category": { "type": "string", "enum": ["overview", "cpu", "memory", "disk", "os", "network", "user", "locale", "all"] },
                 "operation": { "type": "string" },
                 "name": { "type": "string" },
+                "prefix": { "type": "string" },
                 "value": { "type": "string" },
                 "path": { "type": "string" },
                 "type": { "type": "string", "enum": ["String", "DWord", "QWord", "Binary", "MultiString", "ExpandString"] }
@@ -292,7 +300,7 @@ impl Tool for SystemTool {
                     "oneOf": [
                         {
                             "additionalProperties": false,
-                            "properties": { "scope": { "const": "env" }, "operation": { "const": "list" }, "name": { "type": "string", "minLength": 1 }, "env_scope": { "type": "string", "enum": ["process", "user", "machine"] } },
+                            "properties": { "scope": { "const": "env" }, "operation": { "const": "list" }, "prefix": { "type": "string", "minLength": 1 }, "env_scope": { "type": "string", "enum": ["process", "user", "machine"] } },
                             "required": ["scope"]
                         },
                         {
@@ -852,7 +860,8 @@ mod tests {
 
     #[test]
     fn test_system_tool_input_schema() {
-        let schema = SystemTool::default().input_schema();
+        let tool = SystemTool::default();
+        let schema = tool.input_schema();
         assert_eq!(schema["type"].as_str().unwrap(), "object");
         let scopes = schema["properties"]["scope"]["enum"].as_array().unwrap();
         assert!(scopes.iter().any(|v| v == "env"));
@@ -861,6 +870,22 @@ mod tests {
         assert!(cats.iter().any(|v| v == "network"));
         assert!(cats.iter().any(|v| v == "user"));
         assert!(cats.iter().any(|v| v == "locale"));
+        assert!(
+            tool.validate_input(&json!({
+                "scope": "env",
+                "operation": "list",
+                "prefix": "PATH"
+            }))
+            .is_ok()
+        );
+        assert!(
+            tool.validate_input(&json!({
+                "scope": "env",
+                "operation": "list",
+                "name": "PATH"
+            }))
+            .is_err()
+        );
     }
 
     #[test]
@@ -896,6 +921,37 @@ mod tests {
         assert!(result.output["os"]["hostname"].is_string());
         assert!(result.output["os"]["arch"].is_string());
         assert!(result.output.get("cpu").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_system_env_list_accepts_prefix_filter() {
+        let prefix = format!(
+            "HAVEN_ENV_PREFIX_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let name = format!("{prefix}_VALUE");
+        unsafe { std::env::set_var(&name, "test-only") };
+
+        let result = SystemTool::default()
+            .execute(
+                json!({"scope": "env", "operation": "list", "prefix": prefix}),
+                CancellationToken::new(),
+            )
+            .await;
+
+        unsafe { std::env::remove_var(&name) };
+        let result = result.unwrap();
+        assert!(result.success);
+        assert!(
+            result.output["variables"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|variable| variable["name"] == name)
+        );
     }
 
     #[tokio::test]
@@ -990,6 +1046,7 @@ mod tests {
                     category: Some("os".into()),
                     operation: None,
                     name: None,
+                    prefix: None,
                     value: None,
                     path: None,
                     value_type: None,

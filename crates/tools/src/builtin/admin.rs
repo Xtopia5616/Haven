@@ -867,8 +867,8 @@ impl TypedToolOperation for SkillsAdminOperation {
             ),
             branch(
                 "skill_create",
-                serde_json::json!({"name": {"type": "string", "minLength": 1}, "description": {"type": "string", "minLength": 1}, "instructions": {"type": "string", "minLength": 1}, "language": {"type": "string", "enum": ["python"]}, "version": {"type": "string"}, "script": {"type": "string"}}),
-                &["operation", "name", "description", "instructions"],
+                serde_json::json!({"name": {"type": "string", "minLength": 1}, "description": {"type": "string", "minLength": 1}, "instructions": {"type": "string", "minLength": 1}, "language": {"type": "string", "enum": ["python"]}, "version": {"type": "string"}, "script": {"type": "string", "minLength": 1}}),
+                &["operation", "name", "description", "instructions", "script"],
             ),
         ])
     }
@@ -1709,8 +1709,9 @@ mod tests {
                     "name": "demo",
                     "description": "Demo skill",
                     "instructions": "Do the demo",
+                    "script": "print('{}')",
                 }),
-                required: &["operation", "name", "description", "instructions"],
+                required: &["operation", "name", "description", "instructions", "script"],
                 idempotency: OperationIdempotency::Unknown,
             },
             AdminOperationCase {
@@ -2282,12 +2283,13 @@ mod tests {
         let (surfaces, dir) = test_surfaces_with_db(db);
         let skill_root = dir.path().join("skills");
         let skill_dir = skill_root.join("sample");
-        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::create_dir_all(skill_dir.join("scripts")).unwrap();
         std::fs::write(
             skill_dir.join("SKILL.md"),
             "# Skill: sample\n\n## Metadata\n- name: sample\n- description: safe description\n\n## Instructions\nPrivate instructions are not part of this output.\n",
         )
         .unwrap();
+        std::fs::write(skill_dir.join("scripts").join("main.py"), "print('{}')\n").unwrap();
         surfaces
             .skills
             .services
@@ -3115,12 +3117,13 @@ mod tests {
         let manager = Arc::new(ToolsManager::new());
         let dir = TempDir::new().unwrap();
         let skill_dir = dir.path().join("demo");
-        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::create_dir_all(skill_dir.join("scripts")).unwrap();
         std::fs::write(
             skill_dir.join("SKILL.md"),
             "# Skill: demo\n\n## Metadata\n- description: demo\n\n## Instructions\nrun demo\n",
         )
         .unwrap();
+        std::fs::write(skill_dir.join("scripts").join("main.py"), "print('{}')\n").unwrap();
         manager
             .share_services()
             .skills
