@@ -6,7 +6,7 @@
 //! → `hooks.after_llm` (response policy) → tools (`before_tool` per call) / pause.
 //!
 //! Default hooks own prologue side effects (inbox / compact / interval intent),
-//! empty/cut-off classification, confirm pre-check, and pause-time intent.
+//! incomplete tool-call classification, confirm pre-check, and pause-time intent.
 //! Tests use [`NoopHooks`] so the thin loop can run without messaging or
 //! SQLite maintenance.
 
@@ -14,7 +14,6 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures_util::future::BoxFuture;
-use haven_common::types::CanonicalMessage;
 use haven_llm::{LlmResponse, ToolDefinition};
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
@@ -74,7 +73,6 @@ pub(crate) struct AfterLlmInput<'a> {
     pub thought: &'a Option<String>,
     pub actions: &'a [Action],
     pub response: &'a LlmResponse,
-    pub canonical: &'a [CanonicalMessage],
     pub state: ResponsePolicyState,
 }
 
@@ -159,6 +157,7 @@ pub(crate) type LoopHooksHandle = Arc<dyn LoopHooks>;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use haven_common::types::CanonicalMessage;
 
     #[test]
     fn noop_and_default_are_object_safe() {
@@ -350,9 +349,9 @@ mod tests {
         use haven_llm::types::FinishReason;
 
         let response = LlmResponse {
-            text: "让我先查一下，".into(),
+            text: "partial text".into(),
             tool_calls: Vec::new(),
-            finish_reason: Some(FinishReason::Stop),
+            finish_reason: Some(FinishReason::Length),
             usage: haven_llm::types::Usage::default(),
             model: None,
             reasoning: None,
@@ -360,10 +359,8 @@ mod tests {
             thinking_blocks: Vec::new(),
         };
         let state = ResponsePolicyState {
-            empty_retries_remaining: 0,
-            empty_retry_delay_ms: 0,
-            cut_off_retries_used: 0,
-            cut_off_retries_max: 2,
+            incomplete_tool_args_retries_used: 0,
+            incomplete_tool_args_retries_max: 2,
             pending_ask: false,
         };
         let hooks = DefaultHooks::new();
@@ -469,12 +466,11 @@ mod tests {
                         thought: &Some("让我先查一下，".into()),
                         actions: &[],
                         response: &response,
-                        canonical: &[],
                         state,
                     },
                 )
                 .await
         };
-        assert!(matches!(action, AfterLlmAction::RetryCutOff { .. }));
+        assert!(matches!(action, AfterLlmAction::Fail { .. }));
     }
 }

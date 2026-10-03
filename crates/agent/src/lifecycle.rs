@@ -1,11 +1,11 @@
-//! R6 lifecycle window policy for branch rollback / in-loop truncate retry /
+//! R6 lifecycle window policy for branch rollback / in-loop structural retry /
 //! errored continue.
 //!
 //! Product defaults (P3 / 2026-08-24):
 //! - Branch rollback: **Cancel-then-Allow** whenever a dispatcher run slot is
 //!   held (`running_sessions`), including claim→spawn, stream, tool batch, and
 //!   pause-write unwind. Idle ask/confirm waits: **Allow** after clearing gates.
-//! - Empty / cut-off truncate retry: **Allow** only inside a live Running loop
+//! - Incomplete tool-arguments retry: **Allow** only inside a live Running loop
 //!   (already owned by `ResponsePolicy`); N/A outside the loop.
 //! - Errored continue: **Allow** / **AwaitThenAllow** only from `Error |
 //!   Paused`; **Deny** for `Pending` / `Running` / `Completed` (enforced
@@ -24,7 +24,7 @@ use crate::session::SessionStatus;
 pub enum LifecycleOp {
     /// `rollback_session` (branch restore).
     BranchRollback,
-    /// In-loop empty / cut-off retry (`ResponsePolicy`). Not consulted for
+    /// In-loop incomplete tool-arguments retry (`ResponsePolicy`). Not consulted for
     /// external API calls — documented here for the matrix.
     #[allow(dead_code)] // constructed only in unit tests (matrix documentation)
     TruncateRetry,

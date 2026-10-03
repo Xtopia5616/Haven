@@ -10,7 +10,7 @@ Haven 处于测试阶段。数据库 schema、`config.toml`、ReAct snapshot 与
 
 ## 当前配置契约
 
-`config.toml` 只接受当前配置结构，不执行旧字段搬迁、旧名称映射、凭据导入或静默兼容。配置表启用未知字段拒绝；当前结构允许缺省的字段仍使用安全默认值。旧字段（例如 `[memory].history_retention_days`、`llm.balanced_model`、旧安全策略字段和已删除的顶层 `[audio]`）会导致整份配置解析失败。
+`config.toml` 只接受当前配置结构，不执行旧字段搬迁、旧名称映射、凭据导入或静默兼容。配置表启用未知字段拒绝；当前结构允许缺省的字段仍使用安全默认值。本版本将 `context_limits.cut_off_retries` 改为 `incomplete_tool_args_retries`，并删除 `empty_response_max_retries` 与 `empty_response_retry_delay_ms`；含这些旧字段的配置会导致整份配置解析失败。其它旧字段（例如 `[memory].history_retention_days`、`llm.balanced_model`、旧安全策略字段和已删除的顶层 `[audio]`）也会导致整份配置解析失败。
 
 解析失败时，Haven 将原文件复制到带时间戳的 `config.toml.*.bak`，并在当前进程使用默认配置；原文件不会在启动时自动转换或覆盖。需要继续使用时，按下文“仅重建配置”删除当前 `config.toml`，再在应用中重新配置。
 

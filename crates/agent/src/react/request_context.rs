@@ -1,8 +1,8 @@
 //! Immutable provider-request context for one ReAct turn.
 //!
 //! The run state is durable transcript state. A provider request is an
-//! ephemeral projection of that state: it may contain a retry hint, a
-//! cut-off instruction, or repairs required by a provider's tool-call
+//! ephemeral projection of that state: it may contain a retry hint, an
+//! incomplete-arguments instruction, or repairs required by a provider's tool-call
 //! contract, but none of those changes belong in the transcript. Keeping this
 //! projection in one type makes it impossible for Turn, retry, and compaction
 //! paths to each invent their own clone/append/sanitize sequence.
@@ -94,7 +94,7 @@ impl RequestContext {
     }
 
     /// Build a new request view with a trailing, provider-only user
-    /// instruction. Used by the cut-off retry. The original snapshot remains
+    /// instruction. Used by the incomplete-tool-arguments retry. The original snapshot remains
     /// untouched, so retries cannot accidentally accumulate instructions.
     pub(super) fn with_user_instruction(&self, instruction: impl Into<String>) -> Self {
         let mut messages = self.messages.as_ref().clone();

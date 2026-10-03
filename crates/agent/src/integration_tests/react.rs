@@ -69,7 +69,7 @@ async fn run_session_emits_supplement_when_additional_context_queued() {
 }
 
 #[tokio::test]
-async fn empty_retry_emits_stream_reset_before_replacement_output() {
+async fn empty_response_stops_with_continue_instead_of_auto_retry() {
     let empty = StreamChunk {
         text: None,
         tool_calls: Vec::new(),
@@ -100,37 +100,107 @@ async fn empty_retry_emits_stream_reset_before_replacement_output() {
         ScriptedResponse::Chunk(empty),
         ScriptedResponse::Chunk(replacement),
     ]));
-    let limits = ContextLimitsConfig {
-        empty_response_max_retries: 1,
-        empty_response_retry_delay_ms: 0,
-        ..Default::default()
-    };
-    let (agent, executor) =
-        make_test_agent_with_limits(mock, Arc::new(ToolsManager::new()), limits);
+    let (agent, executor) = make_test_agent_with(mock, Arc::new(ToolsManager::new()));
     let emitter = Arc::new(StreamResetCollector {
         resets: std::sync::Mutex::new(Vec::new()),
     });
     agent.set_emitter(emitter.clone());
+    let session = executor.create_session("empty response").await.unwrap();
+
+    let error = agent.run_session_from_id(&session.id).await.unwrap_err();
+    assert!(error.to_string().contains("空响应"));
+    assert_eq!(
+        agent.db.get_session(&session.id).unwrap().unwrap().status,
+        SessionStatus::Error
+    );
+    let resets = emitter.resets.lock().unwrap();
+    assert!(
+        resets.is_empty(),
+        "empty output must not trigger auto-retry"
+    );
+}
+
+#[tokio::test]
+async fn incomplete_tool_args_retry_before_dispatching_the_rebuilt_call() {
+    let incomplete = StreamChunk {
+        text: None,
+        tool_calls: vec![CanonicalToolCall {
+            id: "incomplete-call".into(),
+            name: "echo".into(),
+            arguments: serde_json::Value::Null,
+        }],
+        finish_reason: Some(FinishReason::ToolCalls),
+        usage: None,
+        model: None,
+        reasoning: None,
+        web_search: None,
+        web_search_calls: Vec::new(),
+        thinking_blocks: Vec::new(),
+    };
+    let rebuilt = StreamChunk {
+        text: None,
+        tool_calls: vec![CanonicalToolCall {
+            id: "rebuilt-call".into(),
+            name: "echo".into(),
+            arguments: serde_json::json!({"text": "safe"}),
+        }],
+        finish_reason: Some(FinishReason::ToolCalls),
+        usage: None,
+        model: None,
+        reasoning: None,
+        web_search: None,
+        web_search_calls: Vec::new(),
+        thinking_blocks: Vec::new(),
+    };
+    let final_answer = StreamChunk {
+        text: Some("Recovered safely.".into()),
+        tool_calls: vec![CanonicalToolCall {
+            id: "final-call".into(),
+            name: "final_answer".into(),
+            arguments: serde_json::json!({}),
+        }],
+        finish_reason: Some(FinishReason::Stop),
+        usage: None,
+        model: None,
+        reasoning: None,
+        web_search: None,
+        web_search_calls: Vec::new(),
+        thinking_blocks: Vec::new(),
+    };
+    let mock = Arc::new(ScriptedMock::new(vec![
+        ScriptedResponse::Chunk(incomplete),
+        ScriptedResponse::Chunk(rebuilt),
+        ScriptedResponse::Chunk(final_answer),
+    ]));
+    let tools = Arc::new(ToolsManager::new());
+    tools
+        .registry()
+        .register(Arc::new(EchoTool) as ToolBox)
+        .await
+        .unwrap();
+    let (agent, executor) = make_test_agent_with(mock.clone(), tools);
+    agent.set_emitter(make_recording_emitter());
     let session = executor
-        .create_session("retry empty response")
+        .create_session("retry incomplete tool arguments")
         .await
         .unwrap();
 
-    let history = agent.run_session_from_id(&session.id).await.unwrap();
+    agent.run_session_from_id(&session.id).await.unwrap();
 
-    assert!(!history.is_empty());
+    let requests = mock.seen.lock().unwrap();
+    assert_eq!(requests.len(), 3);
+    let retry_request = serde_json::to_string(&requests[1]).unwrap();
+    assert!(retry_request.contains("incomplete JSON arguments"));
+    drop(requests);
+    let steps = agent.db.get_session_steps(&session.id).unwrap();
     assert_eq!(
-        executor.get_active_session_status(&session.id).await,
-        Some(SessionStatus::Paused)
-    );
-    let resets = emitter.resets.lock().unwrap();
-    assert_eq!(
-        resets.len(),
+        steps
+            .iter()
+            .filter(|step| step.action_tool.as_deref() == Some("echo"))
+            .count(),
         1,
-        "the replacement attempt must reset the live stream once"
+        "only the rebuilt, complete call should reach tool execution"
     );
-    assert_eq!(resets[0].0, session.id);
-    assert_eq!(resets[0].1, 1);
 }
 
 #[tokio::test]
@@ -446,9 +516,7 @@ async fn budget_exhaustion_pauses_with_notification_and_no_chat_message() {
 }
 
 #[tokio::test]
-async fn truncated_text_only_response_retried_before_final() {
-    // First response: text with a Length finish (generation cut off) ??        // must NOT end the turn as if it were the final answer. Second
-    // response: a complete Stop answer, which ends the turn.
+async fn abnormal_text_finish_preserves_partial_and_waits_for_continue() {
     let client = Arc::new(ScriptedMock::new(vec![
         ScriptedResponse::Chunk(StreamChunk {
             text: Some("Here is the partial answer".into()),
@@ -476,18 +544,19 @@ async fn truncated_text_only_response_retried_before_final() {
     let (agent, executor) = make_test_agent_with(client, Arc::new(ToolsManager::new()));
     agent.set_emitter(make_recording_emitter());
     let session = executor.create_session("session").await.unwrap();
-    agent.run_session_from_id(&session.id).await.unwrap();
+    let error = agent.run_session_from_id(&session.id).await.unwrap_err();
+    assert!(error.to_string().contains("finish_reason=length"));
 
     assert_eq!(
-        executor.get_active_session_status(&session.id).await,
-        Some(SessionStatus::Paused),
-        "turn must end paused after the retried final"
+        agent.db.get_session(&session.id).unwrap().unwrap().status,
+        SessionStatus::Error,
+        "a non-normal model finish must expose the continue action instead of auto-retrying"
     );
     let msgs = agent.db.get_session_messages(&session.id).unwrap();
     assert_eq!(
         msgs.last().unwrap().content,
-        "Here is the complete answer.",
-        "the retried (complete) response must be the final message, not the truncated one"
+        "Here is the partial answer",
+        "the failed partial output should remain available for recovery"
     );
 }
 

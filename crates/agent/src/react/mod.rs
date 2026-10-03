@@ -11,7 +11,7 @@ use haven_common::media::{
     MediaProjectionMode, build_media_plan, message_attachment_to_media_input,
 };
 use haven_common::types::MessageAttachment;
-use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart, LlmCallKind};
+use haven_common::types::{CanonicalMessage, ContentPart, LlmCallKind};
 use haven_llm::{FinishReason, LlmResponse, LlmRouter, ToolDefinition};
 #[cfg(test)]
 use haven_memory::Database;

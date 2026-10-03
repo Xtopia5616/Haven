@@ -302,27 +302,14 @@
 		{
 			id: 'agent',
 			title: '代理循环行为',
-			hint: 'ReAct 循环的重试/空响应/停滞反馈阈值。这些原本是硬编码常量，现可在设置中调整。',
+			hint: 'ReAct 循环的结构化工具参数重试与流停滞反馈阈值。',
 			fields: [
 				{
-					key: 'cut_off_retries',
-					label: '截断回复重试次数',
+					key: 'incomplete_tool_args_retries',
+					label: '不完整工具参数重试次数',
 					unit: 'count',
 					danger: false,
-					hint: '看起来被截断/中途停止的文字回复会带提示重试几次再作为最终答案。调大 = 更努力地补全长回复。',
-				},
-				{
-					key: 'empty_response_max_retries',
-					label: '空响应重试次数',
-					unit: 'count',
-					danger: false,
-					hint: '完全空的模型响应重试几次再报错（服务端静默失败的兜底）。',
-				},
-				{
-					key: 'empty_response_retry_delay_ms',
-					label: '空响应重试间隔',
-					unit: 'ms',
-					danger: false,
+					hint: '仅当工具调用参数不是完整 JSON 时，自动要求模型重新输出完整参数；其他响应错误显示“继续生成”。',
 				},
 				{
 					key: 'stream_stall_warn_delay_ms',

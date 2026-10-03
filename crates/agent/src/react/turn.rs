@@ -24,7 +24,7 @@ pub(super) struct TurnInput<'a> {
     /// Computed by the run driver from the absolute run end.
     pub(super) allow_tool_retry: bool,
     pub(super) tool_retry_budget: &'a mut ToolRetryBudget,
-    pub(super) cut_off_retries: &'a mut u32,
+    pub(super) incomplete_tool_args_retries: &'a mut u32,
 }
 
 /// Stateless turn coordinator. All session-owned mutable state remains in the
@@ -89,7 +89,7 @@ impl ReActEngine {
             deadline,
             allow_tool_retry,
             tool_retry_budget: _tool_retry_budget,
-            cut_off_retries,
+            incomplete_tool_args_retries,
         } = input;
         let session_id = &ctx.session_id;
         let step_num = ctx.step_num;
@@ -266,7 +266,6 @@ impl ReActEngine {
         // durable assistant state.
         let (thought, actions) = Self::parse_default_model_response(&response, step_num);
         deadline.ensure_remaining("response parsing")?;
-        let limits = self.limits();
         let pending_ask = !self
             .executor
             .pending_interactions(session_id, crate::interaction::InteractionKind::Ask)
@@ -276,7 +275,6 @@ impl ReActEngine {
             response,
             thought,
             mut actions,
-            empty_retries_remaining,
         } = match self
             .resolve_response_cycle(
                 &ctx,
@@ -287,7 +285,7 @@ impl ReActEngine {
                 thought,
                 actions,
                 &cancel,
-                cut_off_retries,
+                incomplete_tool_args_retries,
                 pending_ask,
             )
             .await
@@ -301,7 +299,7 @@ impl ReActEngine {
                 }
                 return Ok(effects.with_exit(LoopExit::Cancelled));
             }
-            ResponseCycleOutcome::RetryableError(message) => {
+            ResponseCycleOutcome::RecoverableError(message) => {
                 // The response-policy failure already persisted the clean
                 // pre-response event boundary. Publish the session error from
                 // the batch so this soft exit cannot race a second generic
@@ -404,12 +402,6 @@ impl ReActEngine {
                     effects.into_effects(),
                 );
                 return Ok(effects);
-            }
-            if thought.is_none() && empty_retries_remaining < limits.empty_response_max_retries {
-                let message = "模型连续多次返回空响应（服务端异常）。请稍后点击「继续任务」重试，或检查模型服务状态。";
-                // Commit any accepted reasoning/thought effects first, then
-                // fail closed. Returning early here used to drop that batch.
-                return Ok(effects.fail_session(message, true));
             }
             let text = thought.unwrap_or_else(|| "No action decided.".into());
             let mut end = self

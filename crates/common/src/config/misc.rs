@@ -161,18 +161,9 @@ pub struct ContextLimitsConfig {
     /// End-to-end wall-clock budget for one model/tool turn.  Provider retry,
     /// compaction, tool waits, and durable writes all share this boundary.
     pub turn_deadline_secs: u64,
-    /// How many times a text-only response that looks cut off / mid-session is
-    /// retried with a continuation nudge before it is accepted as a final
-    /// answer. Bounded so a model that keeps refusing to call a tool cannot
-    /// spin the loop forever. Was `MAX_CUT_OFF_RETRIES = 2`.
-    pub cut_off_retries: u32,
-    /// How many times a completely empty model response is retried before the
-    /// turn errors out. Was `EMPTY_RESPONSE_MAX_RETRIES = 3`.
-    pub empty_response_max_retries: u32,
-    /// Settling delay between empty-response retries (ms), giving the
-    /// upstream transient glitch time to clear. Was
-    /// `EMPTY_RESPONSE_RETRY_DELAY = 1500`.
-    pub empty_response_retry_delay_ms: u64,
+    /// How many times a tool call with structurally incomplete JSON arguments
+    /// is re-requested before the session becomes continuable with an error.
+    pub incomplete_tool_args_retries: u32,
     /// A provider stream that delivers no chunk for this long (ms) is
     /// announced to the UI as `StreamStalled`, long before the router's idle
     /// timeout aborts it. Was `STALL_WARN_DELAY_MS = 10_000`.
@@ -283,9 +274,7 @@ impl Default for ContextLimitsConfig {
             sanitize_field_max_chars: 256,
             file_summary_timeout_secs: 120,
             turn_deadline_secs: 300,
-            cut_off_retries: 2,
-            empty_response_max_retries: 3,
-            empty_response_retry_delay_ms: 1500,
+            incomplete_tool_args_retries: 2,
             stream_stall_warn_delay_ms: 10_000,
             reasoning_echo_max_chars: 1200,
             background_job_tail_max_chars: 2000,

@@ -449,8 +449,7 @@ mod tests {
         assert_eq!(cfg.context_limits.compaction_reserve_tokens, 8192);
         assert_eq!(cfg.context_limits.default_context_window, 64_000);
         assert_eq!(cfg.context_limits.max_response_tokens, 32_000);
-        assert_eq!(cfg.context_limits.cut_off_retries, 2);
-        assert_eq!(cfg.context_limits.empty_response_max_retries, 3);
+        assert_eq!(cfg.context_limits.incomplete_tool_args_retries, 2);
         assert_eq!(cfg.context_limits.stream_stall_warn_delay_ms, 10_000);
         assert_eq!(cfg.context_limits.reasoning_echo_max_chars, 1200);
         assert_eq!(cfg.context_limits.max_observation_chars, 16_000);
@@ -511,6 +510,21 @@ mod tests {
         assert!(cfg.llm.models.is_empty());
         assert!(cfg.llm.request_policies.is_empty());
         assert_eq!(cfg.llm.materialize(None, None), RouterConfig::default());
+    }
+
+    #[test]
+    fn removed_response_retry_settings_are_rejected() {
+        for field in [
+            "cut_off_retries = 2",
+            "empty_response_max_retries = 3",
+            "empty_response_retry_delay_ms = 1500",
+        ] {
+            let toml = format!("[context_limits]\n{field}\n");
+            assert!(
+                toml::from_str::<AppConfig>(&toml).is_err(),
+                "removed setting must not be accepted: {field}"
+            );
+        }
     }
 
     #[test]

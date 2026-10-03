@@ -260,7 +260,7 @@ impl CheckpointWriter {
     }
 }
 
-/// Streaming session for one step: primary call + empty/cut-off retries.
+/// Streaming session for one step: primary call + structural retries.
 /// Owns the effective request kind, partial buffers and msg-id reuse; the
 /// loop only matches outcomes.
 pub(super) struct StreamSession<'a> {
@@ -331,7 +331,7 @@ impl<'a> StreamSession<'a> {
             .await
     }
 
-    /// Empty / cut-off retry: reuses the primary call's minted msg-ids.
+    /// Structural retry: reuses the primary call's minted msg-ids.
     pub(super) async fn retry(
         &self,
         request_context: &RequestContext,
@@ -688,7 +688,7 @@ impl StreamForwarder {
             .reset_pending
             .swap(false, std::sync::atomic::Ordering::AcqRel)
         {
-            // An empty replacement retry still needs to clear the previous
+            // A structural replacement retry still needs to clear the previous
             // bubble. The coalescing sender retains this control marker even
             // when the bounded fast-path queue is full.
             if let Err(error) = self.chunk_tx.try_send(self.reset_marker.clone()) {
@@ -755,7 +755,7 @@ impl ReActEngine {
     ) -> Result<(LlmResponse, u64), haven_llm::LlmError> {
         if replace_output_on_start {
             // A replacement stream owns the partial scratch row from this
-            // step. Remove it before the new attempt starts so an empty retry
+            // step. Remove it before the new attempt starts so a failed retry
             // cannot leave the previous attempt eligible for end-session
             // promotion.
             self.executor.partials.discard(&ctx.session_id).await;
@@ -1184,6 +1184,7 @@ impl ReActEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use haven_common::types::CanonicalRole;
     use serde_json::json;
 
     #[tokio::test]

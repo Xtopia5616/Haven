@@ -116,13 +116,7 @@ impl LoopHooks for DefaultHooks {
         _ctx: &StepCtx,
         input: AfterLlmInput<'_>,
     ) -> AfterLlmAction {
-        ResponsePolicy::classify(
-            input.thought,
-            input.actions,
-            input.response,
-            input.canonical,
-            input.state,
-        )
+        ResponsePolicy::classify(input.thought, input.actions, input.response, input.state)
     }
 
     fn before_tool(
