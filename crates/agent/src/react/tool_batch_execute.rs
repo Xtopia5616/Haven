@@ -80,10 +80,13 @@ struct ToolBatchExecution {
 struct AdmittedToolExecutionRequest<'a> {
     session_id: &'a str,
     step_num: u32,
+    ctx: &'a StepCtx,
     plan: &'a ToolBatchPlan,
     catalog: Arc<haven_tools::ToolCatalogSnapshot>,
     runnable: Vec<AdmittedTool>,
     results: ToolBatchResults,
+    batch_state: &'a mut ToolBatchState,
+    state: &'a mut ReActState,
     cancel_res: &'a tokio_util::sync::CancellationToken,
 }
 
@@ -338,22 +341,27 @@ impl ReActEngine {
         )
     }
 
-    /// Execute admitted calls concurrently while preserving the plan-indexed
-    /// result slots. Cancellation repairs every slot that did not produce a
+    /// Execute admitted calls concurrently and commit each completed result
+    /// immediately. Cancellation repairs every slot that did not produce a
     /// normal result before returning to the shared ordered projector.
     async fn execute_admitted_tools(
         &self,
         request: AdmittedToolExecutionRequest<'_>,
-    ) -> ToolBatchExecution {
+    ) -> anyhow::Result<ToolBatchExecution> {
         let AdmittedToolExecutionRequest {
             session_id,
             step_num,
+            ctx,
             plan,
             catalog,
             runnable,
             mut results,
+            batch_state,
+            state,
             cancel_res,
         } = request;
+        self.commit_ready_tool_results(ctx, &mut results, batch_state, state)
+            .await?;
         let gate = Arc::new(ToolBatchGate {
             all: Arc::new(RwLock::new(())),
             resources: AsyncMutex::new(HashMap::new()),
@@ -373,14 +381,23 @@ impl ReActEngine {
                 let action_index = planned.action_index;
                 let step_id = planned.step_id.clone();
                 let session_id = session_id.to_string();
+                let metric_session_id = session_id.clone();
                 let executor = self.executor.clone();
                 let catalog = catalog.clone();
                 let gate = gate.clone();
                 let started = started.clone();
+                let metrics = self.metrics.clone();
+                let run_id = ctx.run_id;
                 let cancel = cancel.clone();
                 async move {
                     let _permit = gate.acquire(&admitted.concurrency).await;
                     started[admitted.plan_index].store(true, Ordering::Release);
+                    let _timer = metrics.start(
+                        MetricsPhase::ToolExecution,
+                        &metric_session_id,
+                        run_id,
+                        step_num,
+                    );
                     let result = execute_tool_action(ToolActionRequest {
                         executor,
                         catalog,
@@ -412,21 +429,66 @@ impl ReActEngine {
                         &mut results,
                     )
                     .await;
-                    return ToolBatchExecution { results, cancelled: true };
+                    self.commit_ready_tool_results(ctx, &mut results, batch_state, state)
+                        .await?;
+                    return Ok(ToolBatchExecution { results, cancelled: true });
                 }
                 item = tool_futures.next() => {
                     let Some((plan_index, result)) = item else {
                         break;
                     };
                     results.set(plan_index, result);
+                    self
+                        .commit_ready_tool_results(ctx, &mut results, batch_state, state)
+                        .await?;
                 }
             }
         }
 
-        ToolBatchExecution {
+        if cancel_res.is_cancelled() {
+            self.repair_cancelled_results(
+                session_id,
+                step_num,
+                plan,
+                catalog.as_ref(),
+                &started,
+                &mut results,
+            )
+            .await;
+            self.commit_ready_tool_results(ctx, &mut results, batch_state, state)
+                .await?;
+            return Ok(ToolBatchExecution {
+                results,
+                cancelled: true,
+            });
+        }
+
+        self.commit_ready_tool_results(ctx, &mut results, batch_state, state)
+            .await?;
+
+        Ok(ToolBatchExecution {
             results,
             cancelled: false,
+        })
+    }
+
+    async fn commit_ready_tool_results(
+        &self,
+        ctx: &StepCtx,
+        results: &mut ToolBatchResults,
+        batch_state: &mut ToolBatchState,
+        state: &mut ReActState,
+    ) -> anyhow::Result<()> {
+        for index in 0..results.len() {
+            let Some(result) = results.take_completed(index) else {
+                continue;
+            };
+            let event = batch_state
+                .commit_tool_result(self, ctx, result, state)
+                .await?;
+            results.set_committed(index, event);
         }
+        Ok(())
     }
 
     async fn repair_cancelled_results(
@@ -590,33 +652,32 @@ impl ReActEngine {
             results,
             ..
         } = admission;
-        let execution = {
-            let _timer =
-                self.metrics
-                    .start(MetricsPhase::ToolExecution, session_id, run_id, step_num);
-            self.execute_admitted_tools(AdmittedToolExecutionRequest {
+        let mut batch_state = ToolBatchState::default();
+        let execution = self
+            .execute_admitted_tools(AdmittedToolExecutionRequest {
                 session_id,
                 step_num,
+                ctx: &step_ctx,
                 plan: &plan,
                 catalog: catalog.clone(),
                 runnable,
                 results,
+                batch_state: &mut batch_state,
+                state,
                 cancel_res,
             })
-            .await
-        };
+            .await?;
 
         // Futures finish nondeterministically, but canonical tool messages are
         // an ordered protocol: each observation follows the corresponding
-        // assistant call. The shared result buffer makes this true for both
-        // size-one and parallel batches.
-        let mut batch_state = ToolBatchState::default();
+        // assistant call. Durable UI cards were committed as each execution
+        // finished; only canonical projection waits for the ordered batch.
         if execution.cancelled || need_confirm.is_empty() {
             let _timer =
                 self.metrics
                     .start(MetricsPhase::OrderedCommit, session_id, run_id, step_num);
             batch_state
-                .commit_ordered_results(self, &step_ctx, execution.results, state)
+                .project_ordered_results(self, &step_ctx, execution.results, state)
                 .await?;
         }
 
@@ -818,6 +879,7 @@ impl ReActEngine {
         };
         let mut runnable = Vec::new();
         let mut results = ToolBatchResults::new(plan.len());
+        let mut batch_state = ToolBatchState::default();
         let actions: Vec<Action> = plan.iter().map(|planned| planned.action.clone()).collect();
         let validation_failures =
             self.validate_tool_inputs_from_catalog(catalog.as_ref(), &actions);
@@ -930,16 +992,18 @@ impl ReActEngine {
             .execute_admitted_tools(AdmittedToolExecutionRequest {
                 session_id,
                 step_num,
+                ctx: &proj_ctx,
                 plan: &plan,
                 catalog,
                 runnable,
                 results,
+                batch_state: &mut batch_state,
+                state,
                 cancel_res: cancel,
             })
-            .await;
-        let mut batch_state = ToolBatchState::default();
+            .await?;
         batch_state
-            .commit_ordered_results(self, &proj_ctx, execution.results, state)
+            .project_ordered_results(self, &proj_ctx, execution.results, state)
             .await?;
 
         if execution.cancelled {

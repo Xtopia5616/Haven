@@ -480,6 +480,47 @@ impl ReActEngine {
         result
     }
 
+    /// Commit and publish one completed tool result without appending it to
+    /// the model-facing canonical projection yet. Parallel results may arrive
+    /// in any order; `ToolBatchState` applies the committed events to canonical
+    /// in assistant call order once the batch has drained.
+    pub(super) async fn commit_tool_result(
+        &self,
+        ctx: &StepCtx,
+        event: TranscriptEvent,
+        state: &mut ReActState,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            matches!(&event, TranscriptEvent::ToolResult { .. }),
+            "tool-result commit requires a ToolResult transcript event"
+        );
+        let (_, record, _, committed) = self.build_transcript_item(ctx, event).await?;
+        let write_result = {
+            let _timer = self.metrics.start(
+                MetricsPhase::EventAppend,
+                &ctx.session_id,
+                ctx.run_id,
+                ctx.step_num,
+            );
+            self.event_store
+                .commit_transcript_cancellable(
+                    &ctx.session_id,
+                    committed,
+                    state.turn_cancel.clone(),
+                )
+                .await?
+        };
+        self.metrics.observe(
+            MetricsPhase::SqliteLockWait,
+            std::time::Duration::from_millis(write_result.lock_wait_ms),
+        );
+        self.committed_ui
+            .publish(&ctx.emitter, &write_result.events)
+            .await;
+        state.push_event(record);
+        Ok(())
+    }
+
     /// Batch context injections in one event/projection transaction. The
     /// resulting durable event order is the same as applying each item in
     /// order; media-plan records stay directly after their owning injection.
@@ -683,6 +724,27 @@ impl ReActEngine {
             }
         }
         Ok(())
+    }
+}
+
+/// Add a durably committed tool result to the next model request. The caller
+/// supplies results in the original assistant call order, independent of
+/// their event sequence / UI publication order.
+pub(super) fn project_tool_result_canonical(state: &mut ReActState, event: &TranscriptEvent) {
+    if let TranscriptEvent::ToolResult {
+        canonical_observation,
+        tool_call_id,
+        action,
+        ..
+    } = event
+        && !action.is_final
+        && action.tool_name != "final_answer"
+    {
+        Arc::make_mut(&mut state.canonical).push(CanonicalMessage::tool(
+            vec![ContentPart::text(canonical_observation.clone())],
+            tool_call_id.clone(),
+        ));
+        state.mark_canonical_append();
     }
 }
 

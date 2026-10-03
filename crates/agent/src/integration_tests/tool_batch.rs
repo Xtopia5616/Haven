@@ -83,6 +83,102 @@ async fn run_session_parallel_tool_execution() {
 }
 
 #[tokio::test]
+async fn parallel_tool_result_is_published_before_a_slow_sibling_finishes() {
+    let tools = Arc::new(ToolsManager::new());
+    let timing = Arc::new(TimingState::new());
+    tools
+        .registry()
+        .register(Arc::new(TimingTool::with_delay(
+            "delay_fast",
+            timing.clone(),
+            std::time::Duration::from_millis(10),
+        )) as ToolBox)
+        .await
+        .unwrap();
+    tools
+        .registry()
+        .register(Arc::new(TimingTool::with_delay(
+            "delay_slow",
+            timing,
+            std::time::Duration::from_secs(3),
+        )) as ToolBox)
+        .await
+        .unwrap();
+    let mock = Arc::new(ScriptedMock::new(vec![
+        ScriptedResponse::Chunk(StreamChunk {
+            text: Some("Run the fast and slow tools.".into()),
+            tool_calls: vec![
+                CanonicalToolCall {
+                    id: "fast-call".into(),
+                    name: "delay_fast".into(),
+                    arguments: serde_json::json!({}),
+                },
+                CanonicalToolCall {
+                    id: "slow-call".into(),
+                    name: "delay_slow".into(),
+                    arguments: serde_json::json!({}),
+                },
+            ],
+            finish_reason: Some(FinishReason::ToolCalls),
+            usage: None,
+            model: None,
+            reasoning: None,
+            web_search: None,
+            web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
+        }),
+        ScriptedResponse::Chunk(StreamChunk {
+            text: Some("Both tools finished.".into()),
+            tool_calls: vec![CanonicalToolCall {
+                id: "final".into(),
+                name: "final_answer".into(),
+                arguments: serde_json::json!({}),
+            }],
+            finish_reason: Some(FinishReason::Stop),
+            usage: None,
+            model: None,
+            reasoning: None,
+            web_search: None,
+            web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
+        }),
+    ]));
+    let (agent, executor) = make_test_agent_with(mock, tools);
+    let collector = Arc::new(EventCollector::new());
+    agent.set_emitter(collector.clone());
+    let session = executor
+        .create_session("show completed parallel results")
+        .await
+        .unwrap();
+    let run = {
+        let agent = agent.clone();
+        let session_id = session.id.clone();
+        tokio::spawn(async move { agent.run_session_from_id(&session_id).await })
+    };
+
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while !collector.has_observation("delay_fast") {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the fast tool result should publish while its sibling is still running");
+    assert!(
+        !run.is_finished(),
+        "the slow sibling must still hold the batch open"
+    );
+    assert!(!collector.has_observation("delay_slow"));
+
+    let history = tokio::time::timeout(std::time::Duration::from_secs(5), run)
+        .await
+        .expect("the slow tool run should finish")
+        .expect("the session task should join")
+        .unwrap();
+    assert!(!history.is_empty());
+    assert!(collector.has_observation("delay_slow"));
+}
+
+#[tokio::test]
 async fn run_session_contains_custom_extension_panic() {
     let names = ["custom_panic"];
     let tools = Arc::new(ToolsManager::new());

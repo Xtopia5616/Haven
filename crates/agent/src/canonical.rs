@@ -91,12 +91,10 @@ pub(crate) fn sanitize_canonical(canonical: &mut Vec<CanonicalMessage>) -> usize
         return 0;
     }
     let mut out: Vec<CanonicalMessage> = Vec::with_capacity(canonical.len());
-    // Tool_calls declared by the most recent assistant that have not yet been
-    // answered by a tool result. Orphaned tool messages (this is empty) are
-    // dropped; every call left pending when a non-tool message (or the array
-    // end) arrives is repaired with an "Interrupted" result carrying the call's
-    // own fields (id, name, arguments).
-    let mut pending_calls: Vec<CanonicalToolCall> = Vec::new();
+    // Buffer each assistant batch until all tool results arrive or the next
+    // non-tool message begins. This restores call order when a process exits
+    // after only some parallel results were durably committed.
+    let mut pending_calls: Vec<PendingToolCall> = Vec::new();
     let mut repairs = 0usize;
     for m in canonical.drain(..) {
         match m.role {
@@ -108,35 +106,46 @@ pub(crate) fn sanitize_canonical(canonical: &mut Vec<CanonicalMessage>) -> usize
                     );
                     continue;
                 }
-                if let Some(cid) = &m.tool_call_id {
-                    if let Some(pos) = pending_calls.iter().position(|c| &c.id == cid) {
-                        pending_calls.remove(pos);
-                    } else {
-                        // The id doesn't match any outstanding call (some
-                        // providers/agents don't echo it): consume the next
-                        // pending call in order to keep the pairing aligned.
-                        pending_calls.pop();
-                    }
-                } else {
-                    pending_calls.pop();
+                let matching_call = m.tool_call_id.as_ref().and_then(|call_id| {
+                    pending_calls
+                        .iter()
+                        .position(|pending| pending.result.is_none() && &pending.call.id == call_id)
+                });
+                let result_index = matching_call.or_else(|| {
+                    // Keep the fallback for providers that omit or alter
+                    // tool_call_id: consume the last unresolved call.
+                    pending_calls
+                        .iter()
+                        .rposition(|pending| pending.result.is_none())
+                });
+                if let Some(index) = result_index {
+                    pending_calls[index].result = Some(m);
                 }
-                out.push(m);
+                if pending_calls.iter().all(|pending| pending.result.is_some()) {
+                    append_tool_batch_results(&mut out, &mut pending_calls);
+                }
             }
             CanonicalRole::Assistant => {
                 // A new assistant supersedes the previous assistant's
                 // tool_calls: any still-unanswered ones were interrupted.
-                repairs += repair_interrupted_tool_calls(&mut out, &mut pending_calls);
-                pending_calls = m.tool_calls.clone().unwrap_or_default();
+                repairs += append_tool_batch_results(&mut out, &mut pending_calls);
+                pending_calls = m
+                    .tool_calls
+                    .clone()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|call| PendingToolCall { call, result: None })
+                    .collect();
                 out.push(m);
             }
             _ => {
                 // A user/system/other message breaks the tool-call chain.
-                repairs += repair_interrupted_tool_calls(&mut out, &mut pending_calls);
+                repairs += append_tool_batch_results(&mut out, &mut pending_calls);
                 out.push(m);
             }
         }
     }
-    repairs += repair_interrupted_tool_calls(&mut out, &mut pending_calls);
+    repairs += append_tool_batch_results(&mut out, &mut pending_calls);
     *canonical = out;
     repairs
 }
@@ -148,22 +157,31 @@ pub(crate) fn sanitize_canonical(canonical: &mut Vec<CanonicalMessage>) -> usize
 /// attempted, so the model can retry it. The result text carries the call's
 /// own name and arguments so the model sees exactly what was attempted.
 /// Returns how many Interrupted results were inserted.
-fn repair_interrupted_tool_calls(
+struct PendingToolCall {
+    call: CanonicalToolCall,
+    result: Option<CanonicalMessage>,
+}
+
+fn append_tool_batch_results(
     out: &mut Vec<CanonicalMessage>,
-    pending_calls: &mut Vec<CanonicalToolCall>,
+    pending_calls: &mut Vec<PendingToolCall>,
 ) -> usize {
     let mut n = 0usize;
-    while let Some(call) = pending_calls.pop() {
-        tracing::info!(
-            "repairing interrupted tool_call {} with an Interrupted result",
-            call.id
-        );
-        let text = interrupted_result_text(&call.name, &call.arguments);
-        out.push(CanonicalMessage::tool(
-            vec![ContentPart::text(text)],
-            Some(call.id),
-        ));
-        n += 1;
+    for pending in pending_calls.drain(..) {
+        if let Some(result) = pending.result {
+            out.push(result);
+        } else {
+            tracing::info!(
+                "repairing interrupted tool_call {} with an Interrupted result",
+                pending.call.id
+            );
+            let text = interrupted_result_text(&pending.call.name, &pending.call.arguments);
+            out.push(CanonicalMessage::tool(
+                vec![ContentPart::text(text)],
+                Some(pending.call.id),
+            ));
+            n += 1;
+        }
     }
     n
 }

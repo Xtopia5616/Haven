@@ -58,7 +58,7 @@ fn sanitize_canonical_repairs_partial_tool_batch() {
     let mut canonical = vec![
         make_canonical(CanonicalRole::User, "hi"),
         make_assistant_with_calls(&["call_a", "call_b"]),
-        make_tool_result("call_a", "result a"),
+        make_tool_result("call_b", "result b"),
     ];
     let repairs = sanitize_canonical(&mut canonical);
     assert_eq!(repairs, 1, "missing call_b result must count as one repair");
@@ -75,12 +75,18 @@ fn sanitize_canonical_repairs_partial_tool_batch() {
         "the missing tool_call result must be repaired with an Interrupted result"
     );
     assert_eq!(canonical[2].tool_call_id.as_deref(), Some("call_a"));
-    assert_eq!(canonical[3].tool_call_id.as_deref(), Some("call_b"));
-    assert!(canonical[3].content.iter().any(|p| matches!(
+    assert!(canonical[2].content.iter().any(|p| matches!(
         p,
         ContentPart::Text(t)
             if t.contains("Interrupted") && t.contains("tool:") && t.contains("arguments")
     )));
+    assert_eq!(canonical[3].tool_call_id.as_deref(), Some("call_b"));
+    assert!(
+        canonical[3]
+            .content
+            .iter()
+            .any(|part| matches!(part, ContentPart::Text(text) if text == "result b"))
+    );
 }
 
 #[test]

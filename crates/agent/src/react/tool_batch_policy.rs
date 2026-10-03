@@ -27,6 +27,7 @@ pub(crate) enum FailureKind {
 /// switching to a different operation.
 #[derive(Debug, Clone)]
 pub(super) struct ToolFailureSignal {
+    pub(super) action_index: u32,
     pub(super) tool_name: String,
     pub(super) tool_input: serde_json::Value,
     pub(super) error_class: ToolErrorClass,
@@ -225,6 +226,7 @@ mod tests {
     fn agent_retry_budget_is_scoped_by_tool_input_and_failure_kind() {
         let mut budget = super::ToolRetryBudget::default();
         let signal = super::ToolFailureSignal {
+            action_index: 0,
             tool_name: "files".into(),
             tool_input: serde_json::json!({"path":"a.txt", "operation":"read"}),
             error_class: ToolErrorClass::Validation,

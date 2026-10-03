@@ -153,8 +153,14 @@ pub fn project_transcript_with_strategy(
 ) -> (Vec<CanonicalMessage>, Vec<ReActRound>) {
     let mut canonical: Vec<CanonicalMessage> = Vec::new();
     let mut rounds: Vec<ReActRound> = Vec::new();
+    let mut pending_tool_results = Vec::new();
 
     for ev in events {
+        if matches!(ev, TranscriptRecord::ToolResult { .. }) {
+            pending_tool_results.push(ev);
+            continue;
+        }
+        project_pending_tool_results(&mut pending_tool_results, &mut canonical, &mut rounds);
         match ev {
             TranscriptRecord::Thought {
                 step_number, text, ..
@@ -188,48 +194,7 @@ pub fn project_transcript_with_strategy(
                     thinking_blocks.clone(),
                 ));
             }
-            TranscriptRecord::ToolResult {
-                step_number,
-                action_index,
-                step_id,
-                canonical_observation,
-                history_observation,
-                tool_call_id,
-                action,
-            } => {
-                // final_answer is rounds-only (mirrors pre-B1 history mutation;
-                // the assistant text is pushed separately via finish_turn_end).
-                let is_final = action.is_final || action.tool_name == "final_answer";
-                if !is_final {
-                    canonical.push(CanonicalMessage::tool(
-                        vec![ContentPart::text(canonical_observation.clone())],
-                        tool_call_id.clone(),
-                    ));
-                }
-                if let Some(round) = rounds
-                    .iter_mut()
-                    .rev()
-                    .find(|r| r.step_number == *step_number)
-                {
-                    round.tools.push(ToolRecord {
-                        action: action.clone(),
-                        observation: Some(history_observation.clone()),
-                        action_index: *action_index,
-                        step_id: step_id.clone(),
-                    });
-                } else {
-                    rounds.push(ReActRound {
-                        step_number: *step_number,
-                        thought: None,
-                        tools: vec![ToolRecord {
-                            action: action.clone(),
-                            observation: Some(history_observation.clone()),
-                            action_index: *action_index,
-                            step_id: step_id.clone(),
-                        }],
-                    });
-                }
-            }
+            TranscriptRecord::ToolResult { .. } => unreachable!("results were deferred above"),
             TranscriptRecord::UserInject {
                 source,
                 text,
@@ -252,7 +217,72 @@ pub fn project_transcript_with_strategy(
         }
     }
 
+    project_pending_tool_results(&mut pending_tool_results, &mut canonical, &mut rounds);
+    for round in &mut rounds {
+        round.tools.sort_by_key(|tool| tool.action_index);
+    }
+
     (canonical, rounds)
+}
+
+fn project_pending_tool_results(
+    pending: &mut Vec<&TranscriptRecord>,
+    canonical: &mut Vec<CanonicalMessage>,
+    rounds: &mut Vec<ReActRound>,
+) {
+    pending.sort_by_key(|record| match record {
+        TranscriptRecord::ToolResult {
+            step_number,
+            action_index,
+            ..
+        } => (*step_number, *action_index),
+        _ => unreachable!("pending tool results only contain ToolResult records"),
+    });
+    for record in pending.drain(..) {
+        let TranscriptRecord::ToolResult {
+            step_number,
+            action_index,
+            step_id,
+            canonical_observation,
+            history_observation,
+            tool_call_id,
+            action,
+        } = record
+        else {
+            unreachable!("pending tool results only contain ToolResult records")
+        };
+        // final_answer is rounds-only (mirrors pre-B1 history mutation; the
+        // assistant text is pushed separately via finish_turn_end).
+        if !action.is_final && action.tool_name != "final_answer" {
+            canonical.push(CanonicalMessage::tool(
+                vec![ContentPart::text(canonical_observation.clone())],
+                tool_call_id.clone(),
+            ));
+        }
+        if let Some(round) = rounds
+            .iter_mut()
+            .rev()
+            .find(|round| round.step_number == *step_number)
+        {
+            round.tools.push(ToolRecord {
+                action: action.clone(),
+                observation: Some(history_observation.clone()),
+                action_index: *action_index,
+                step_id: step_id.clone(),
+            });
+        } else {
+            rounds.push(ReActRound {
+                step_number: *step_number,
+                thought: None,
+                tools: vec![ToolRecord {
+                    action: action.clone(),
+                    observation: Some(history_observation.clone()),
+                    action_index: *action_index,
+                    step_id: step_id.clone(),
+                }],
+            });
+        }
+    }
 }
 
 pub(crate) fn append_media_projection(
@@ -588,20 +618,6 @@ mod tests {
             },
             TranscriptRecord::ToolResult {
                 step_number: 1,
-                action_index: 0,
-                step_id: "step-a".into(),
-                canonical_observation: "ra".into(),
-                history_observation: "ra".into(),
-                tool_call_id: Some("c1".into()),
-                action: Action {
-                    tool_name: "a".into(),
-                    tool_input: serde_json::json!({}),
-                    is_final: false,
-                    tool_call_id: Some("c1".into()),
-                },
-            },
-            TranscriptRecord::ToolResult {
-                step_number: 1,
                 action_index: 1,
                 step_id: "step-b".into(),
                 canonical_observation: "rb".into(),
@@ -614,6 +630,20 @@ mod tests {
                     tool_call_id: Some("c2".into()),
                 },
             },
+            TranscriptRecord::ToolResult {
+                step_number: 1,
+                action_index: 0,
+                step_id: "step-a".into(),
+                canonical_observation: "ra".into(),
+                history_observation: "ra".into(),
+                tool_call_id: Some("c1".into()),
+                action: Action {
+                    tool_name: "a".into(),
+                    tool_input: serde_json::json!({}),
+                    is_final: false,
+                    tool_call_id: Some("c1".into()),
+                },
+            },
         ];
         let (canonical, rounds) = project_transcript(&events);
         assert_eq!(rounds.len(), 1, "parallel tools must share one round");
@@ -623,6 +653,8 @@ mod tests {
         assert_eq!(rounds[0].tools[1].action_index, 1);
         assert_eq!(rounds[0].tools[1].step_id, "step-b");
         assert_eq!(canonical.len(), 3); // assistant + 2 tool
+        assert_eq!(canonical[1].tool_call_id.as_deref(), Some("c1"));
+        assert_eq!(canonical[2].tool_call_id.as_deref(), Some("c2"));
     }
 
     #[test]

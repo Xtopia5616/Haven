@@ -1,8 +1,8 @@
 //! Tool-batch result state, observation normalization, and ordered materialization.
 //!
-//! Admission/execution lives in `tool_batch_execute`; transcript materialization
-//! remains ordered by the assistant's tool-call list so the next model request
-//! is deterministic.
+//! Admission/execution lives in `tool_batch_execute`; committed observations
+//! publish as tools finish while the model-facing projection remains ordered
+//! by the assistant's tool-call list.
 
 #[cfg(test)]
 use super::tool_batch_policy::{FailureKind, failure_kind};
@@ -52,54 +52,65 @@ pub(super) struct ToolBatchState {
     pub(super) last_retryable_failed_tool_call_id: Option<String>,
     pub(super) asked_questions: Vec<String>,
     pub(super) ask_step_ids: Vec<String>,
+    pending_asks: Vec<(u32, String, String)>,
+    last_retryable_call: Option<(u32, Option<String>)>,
+    tool_usages: Vec<ToolLlmUsage>,
 }
 
 impl ToolBatchState {
-    /// Commit observations in plan order, regardless of the order in which
-    /// the executor completed them. The result slots are indexed by the
-    /// `ToolBatchPlan`, so callers cannot accidentally make provider history
-    /// depend on runtime completion order.
-    pub(super) async fn commit_ordered_results(
+    /// Project already committed observations into canonical history in plan
+    /// order. Durable events and their UI cards are published as each tool
+    /// finishes; only the model-facing projection waits for the whole batch.
+    pub(super) async fn project_ordered_results(
         &mut self,
         engine: &ReActEngine,
         ctx: &StepCtx,
         results: ToolBatchResults,
         state: &mut ReActState,
     ) -> anyhow::Result<()> {
-        let mut transcript_events = Vec::with_capacity(results.slots.len());
-        let mut tool_usages = Vec::new();
-        for result in results.into_ordered() {
-            let event = self
-                .prepare_tool_result(ctx, result, &mut tool_usages)
-                .await?;
-            transcript_events.push(event);
-        }
-        // Tool-owned model calls are diagnostics, but they are still part of
-        // this ordered batch. Persist all of them in one DB transaction before
-        // projecting the observations so a large tool batch does not multiply
-        // SQLite lock waits by the number of calls.
         engine
             .record_tool_usage(
                 &ctx.session_id,
                 ctx.step_num as i32,
-                &tool_usages,
+                &self.tool_usages,
                 &ctx.emitter,
                 state.turn_cancel.clone(),
             )
             .await;
-        let mut effects = super::effects::EffectBatch::continue_batch();
-        for event in transcript_events {
-            effects.transcript(event);
+        self.normalize_result_order();
+        for event in results.into_ordered() {
+            super::transcript::project_tool_result_canonical(state, &event);
         }
-        engine.apply_committed_batch(ctx, state, effects).await?;
         Ok(())
+    }
+
+    fn normalize_result_order(&mut self) {
+        self.failure_signals
+            .sort_by_key(|signal| signal.action_index);
+        self.failure_signals.truncate(3);
+        self.last_retryable_failed_tool_call_id = self
+            .last_retryable_call
+            .as_ref()
+            .and_then(|(_, tool_call_id)| tool_call_id.clone());
+
+        self.pending_asks
+            .sort_by_key(|(action_index, _, _)| *action_index);
+        self.asked_questions = self
+            .pending_asks
+            .iter()
+            .map(|(_, question, _)| question.clone())
+            .collect();
+        self.ask_step_ids = self
+            .pending_asks
+            .iter()
+            .map(|(_, _, step_id)| step_id.clone())
+            .collect();
     }
 
     async fn prepare_tool_result(
         &mut self,
         ctx: &StepCtx,
         result: CompletedTool,
-        tool_usages: &mut Vec<ToolLlmUsage>,
     ) -> anyhow::Result<TranscriptEvent> {
         let CompletedTool {
             action,
@@ -121,7 +132,7 @@ impl ToolBatchState {
             step_id,
             action_index,
         } = result;
-        tool_usages.extend(llm_usage);
+        self.tool_usages.extend(llm_usage);
 
         if is_error
             && matches!(
@@ -141,16 +152,21 @@ impl ToolBatchState {
         if is_error && is_retryable_failure_outcome(outcome, idempotency, error_class, retryability)
         {
             self.retryable_failure = true;
-            self.last_retryable_failed_tool_call_id = action.tool_call_id.clone();
-            if self.failure_signals.len() < 3 {
-                self.failure_signals.push(ToolFailureSignal {
-                    tool_name: tool_name.clone(),
-                    tool_input: action.tool_input.clone(),
-                    error_class,
-                    retryability,
-                    tool_call_id: action.tool_call_id.clone(),
-                });
+            if self
+                .last_retryable_call
+                .as_ref()
+                .is_none_or(|(last_index, _)| action_index > *last_index)
+            {
+                self.last_retryable_call = Some((action_index, action.tool_call_id.clone()));
             }
+            self.failure_signals.push(ToolFailureSignal {
+                action_index,
+                tool_name: tool_name.clone(),
+                tool_input: action.tool_input.clone(),
+                error_class,
+                retryability,
+                tool_call_id: action.tool_call_id.clone(),
+            });
         }
         if let (Some(title), Some(body)) = (&notify_title, &notify_body) {
             ctx.emitter
@@ -162,8 +178,8 @@ impl ToolBatchState {
                 .await;
         }
         if let Some(question) = &ask_question {
-            self.asked_questions.push(question.clone());
-            self.ask_step_ids.push(step_id.clone());
+            self.pending_asks
+                .push((action_index, question.clone(), step_id.clone()));
         }
 
         let tool_call_id = action.tool_call_id.clone();
@@ -204,14 +220,31 @@ impl ToolBatchState {
             })),
         })
     }
+
+    pub(super) async fn commit_tool_result(
+        &mut self,
+        engine: &ReActEngine,
+        ctx: &StepCtx,
+        result: CompletedTool,
+        state: &mut ReActState,
+    ) -> anyhow::Result<TranscriptEvent> {
+        let event = self.prepare_tool_result(ctx, result).await?;
+        engine.commit_tool_result(ctx, event.clone(), state).await?;
+        Ok(event)
+    }
 }
 
-/// Completion slots for one `ToolBatchPlan`. Execution writes by plan index;
-/// projection consumes from index zero upward. This keeps the single-tool
-/// path on the exact same semantic pipeline as larger batches without
-/// allocating a second action/step-id index map.
+/// Completion/commit slots for one `ToolBatchPlan`. Results may be durably
+/// committed in completion order, but canonical projection consumes the
+/// committed events from index zero upward.
 pub(super) struct ToolBatchResults {
-    slots: Vec<Option<CompletedTool>>,
+    slots: Vec<Option<ToolBatchResult>>,
+}
+
+enum ToolBatchResult {
+    Completed(Box<CompletedTool>),
+    Committing,
+    Committed(Box<TranscriptEvent>),
 }
 
 impl ToolBatchResults {
@@ -225,7 +258,36 @@ impl ToolBatchResults {
         debug_assert!(index < self.slots.len(), "tool result index out of bounds");
         if let Some(slot) = self.slots.get_mut(index) {
             debug_assert!(slot.is_none(), "tool result slot completed twice");
-            *slot = Some(result);
+            *slot = Some(ToolBatchResult::Completed(Box::new(result)));
+        }
+    }
+
+    pub(super) fn set_committed(&mut self, index: usize, event: TranscriptEvent) {
+        debug_assert!(index < self.slots.len(), "tool result index out of bounds");
+        if let Some(slot) = self.slots.get_mut(index) {
+            debug_assert!(
+                matches!(slot, Some(ToolBatchResult::Committing)),
+                "only a completed tool result can be committed"
+            );
+            *slot = Some(ToolBatchResult::Committed(Box::new(event)));
+        }
+    }
+
+    pub(super) fn take_completed(&mut self, index: usize) -> Option<CompletedTool> {
+        let slot = self.slots.get_mut(index)?;
+        match slot.take()? {
+            ToolBatchResult::Completed(result) => {
+                *slot = Some(ToolBatchResult::Committing);
+                Some(*result)
+            }
+            ToolBatchResult::Committed(event) => {
+                *slot = Some(ToolBatchResult::Committed(event));
+                None
+            }
+            ToolBatchResult::Committing => {
+                *slot = Some(ToolBatchResult::Committing);
+                None
+            }
         }
     }
 
@@ -234,7 +296,13 @@ impl ToolBatchResults {
     }
 
     pub(super) fn is_complete(&self) -> bool {
-        self.slots.iter().all(Option::is_some)
+        self.slots
+            .iter()
+            .all(|slot| matches!(slot, Some(ToolBatchResult::Committed(_))))
+    }
+
+    pub(super) fn len(&self) -> usize {
+        self.slots.len()
     }
 
     #[cfg(test)]
@@ -242,14 +310,19 @@ impl ToolBatchResults {
         self.slots.iter().take_while(|slot| slot.is_some()).count()
     }
 
-    pub(super) fn into_ordered(self) -> Vec<CompletedTool> {
+    pub(super) fn into_ordered(self) -> Vec<TranscriptEvent> {
         assert!(
             self.is_complete(),
-            "tool batch result slots must be complete before materialization"
+            "tool batch result slots must be committed before canonical projection"
         );
         self.slots
             .into_iter()
-            .map(|slot| slot.expect("complete tool result slot"))
+            .map(|slot| match slot.expect("complete tool result slot") {
+                ToolBatchResult::Committed(event) => *event,
+                ToolBatchResult::Completed(_) | ToolBatchResult::Committing => {
+                    unreachable!("all results are committed")
+                }
+            })
             .collect()
     }
 }
@@ -261,10 +334,7 @@ pub(super) enum ToolBatchOutcome {
     Done(LoopExit),
 }
 
-/// Result of one tool execution, kept in call order until the complete batch
-/// is materialized into the canonical transcript. Tool execution may finish
-/// in any order; the model must always receive tool observations in the same
-/// order as the assistant's tool-call list.
+/// Normalized output of one tool execution before its transcript commit.
 pub(super) struct CompletedTool {
     action: Action,
     tool_name: String,
@@ -833,7 +903,7 @@ mod tests {
     }
 
     #[test]
-    fn result_slots_commit_in_plan_order_after_out_of_order_completion() {
+    fn result_slots_remain_indexed_after_out_of_order_completion() {
         let mut results = ToolBatchResults::new(2);
         results.set(
             1,
@@ -866,12 +936,11 @@ mod tests {
             ),
         );
 
-        let ordered: Vec<_> = results
-            .into_ordered()
-            .into_iter()
-            .map(|result| result.action.tool_name)
-            .collect();
-        assert_eq!(ordered, ["first", "second"]);
+        assert_eq!(results.take_completed(0).unwrap().action.tool_name, "first");
+        assert_eq!(
+            results.take_completed(1).unwrap().action.tool_name,
+            "second"
+        );
     }
 
     #[test]

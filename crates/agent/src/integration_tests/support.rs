@@ -751,6 +751,7 @@ impl TimingState {
 pub(super) struct TimingTool {
     tool_name: String,
     state: Arc<TimingState>,
+    delay: std::time::Duration,
 }
 
 /// A tool whose work intentionally ignores its cancellation token by hiding a
@@ -800,6 +801,19 @@ impl TimingTool {
         Self {
             tool_name: name.into(),
             state,
+            delay: std::time::Duration::from_millis(200),
+        }
+    }
+
+    pub(super) fn with_delay(
+        name: &str,
+        state: Arc<TimingState>,
+        delay: std::time::Duration,
+    ) -> Self {
+        Self {
+            tool_name: name.into(),
+            state,
+            delay,
         }
     }
 }
@@ -830,7 +844,7 @@ impl Tool for TimingTool {
             .started
             .fetch_add(1, std::sync::atomic::Ordering::Release);
         let start = Instant::now();
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        tokio::time::sleep(self.delay).await;
         self.state
             .intervals
             .lock()
