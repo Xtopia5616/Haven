@@ -122,7 +122,11 @@
 		<WorkspaceNav {tabs} {activeTab} {onNavigate} />
 	</div>
 
-	<main class="content" class:content--chat={activeTab === 'chat'} use:dragScroll={{ axis: 'y' }}>
+	<main
+		class="content"
+		class:content--chat={activeTab === 'chat'}
+		use:dragScroll={{ axis: 'y', preserveTextSelection: true }}
+	>
 		{@render content?.()}
 	</main>
 
@@ -233,7 +237,6 @@
 	}
 	:global(.content.drag-scroll--active) {
 		cursor: grabbing;
-		user-select: none;
 	}
 	:global(.page-shell) {
 		width: 100%;

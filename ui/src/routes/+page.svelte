@@ -1110,7 +1110,7 @@
 				onscroll={chatViewController.onScroll}
 				onpointerdown={chatViewController.cancelJumpToBottom}
 				onwheel={chatViewController.cancelJumpToBottom}
-				use:dragScroll={{ axis: 'y' }}
+				use:dragScroll={{ axis: 'y', preserveTextSelection: true }}
 			>
 				<ConversationTimeline
 					{messages}
@@ -1261,7 +1261,6 @@
 	}
 	:global(.messages-area.drag-scroll--active) {
 		cursor: grabbing;
-		user-select: none;
 	}
 	.jump-bottom-anchor {
 		position: absolute;

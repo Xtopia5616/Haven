@@ -78,6 +78,53 @@ describe('dragScroll', () => {
 		cleanup.destroy();
 	});
 
+	it('lets a drag begin selecting ordinary text before page scrolling', () => {
+		const node = sizedScrollableNode();
+		const paragraph = document.createElement('p');
+		const text = document.createTextNode('ordinary response text');
+		paragraph.append(text);
+		node.append(paragraph);
+		const cleanup = dragScroll(node, { axis: 'y', preserveTextSelection: true });
+
+		paragraph.dispatchEvent(
+			new PointerEvent('pointerdown', {
+				bubbles: true,
+				button: 0,
+				clientX: 80,
+				clientY: 200,
+				isPrimary: true,
+				pointerId: 1,
+			}),
+		);
+		paragraph.dispatchEvent(
+			new PointerEvent('pointermove', {
+				bubbles: true,
+				button: 0,
+				clientX: 80,
+				clientY: 190,
+				isPrimary: true,
+				pointerId: 1,
+			}),
+		);
+		const selectStart = new Event('selectstart', { bubbles: true, cancelable: true });
+		text.dispatchEvent(selectStart);
+		paragraph.dispatchEvent(
+			new PointerEvent('pointermove', {
+				bubbles: true,
+				button: 0,
+				clientX: 80,
+				clientY: 150,
+				isPrimary: true,
+				pointerId: 1,
+			}),
+		);
+
+		expect(selectStart.defaultPrevented).toBe(false);
+		expect(node.scrollTop).toBe(0);
+		expect(node.classList.contains('drag-scroll--active')).toBe(false);
+		cleanup.destroy();
+	});
+
 	it('does not start a page drag from an interactive child', () => {
 		const node = sizedScrollableNode();
 		const button = document.createElement('button');
