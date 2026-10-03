@@ -62,6 +62,7 @@ impl OpenAiAdapter {
         let has_tools = !tools.is_empty();
         let tool_names = self.tool_name_map(messages, tools);
         let prompt_cache_key = self.prompt_cache_key(messages, tools, web_search_mode);
+        let x_grok_conv_id = self.xai_conversation_id(messages);
         let (mut wire_messages, system_split) = Self::convert_messages_with_system_split(
             messages,
             self.requires_reasoning_echo(),
@@ -76,9 +77,11 @@ impl OpenAiAdapter {
                 }
             }
         }
-        let cache_diagnostics =
-            CacheDiagnostics::for_request(prompt_cache_key.is_some(), system_split)
-                .with_provider(self.endpoint.provider.clone());
+        let cache_diagnostics = CacheDiagnostics::for_request(
+            prompt_cache_key.is_some() || x_grok_conv_id.is_some(),
+            system_split,
+        )
+        .with_provider(self.endpoint.provider.clone());
         let (thinking, reasoning_effort) = chat_thinking_extras(&self.endpoint);
         let omit_temperature = reasoning_effort.is_some() || thinking.is_some();
         // DeepSeek explicitly documents these sampling parameters as
@@ -142,6 +145,7 @@ impl OpenAiAdapter {
             },
             search_parameters,
             prompt_cache_key,
+            x_grok_conv_id,
             cache_diagnostics,
         }
     }
@@ -199,11 +203,11 @@ impl OpenAiAdapter {
         body: &OpenAiRequest,
         stream: bool,
     ) -> Result<reqwest::Response, LlmError> {
-        let mut req = self
-            .client
-            .post(url)
-            .headers(self.build_headers()?)
-            .json(body);
+        let mut req = self.client.post(url).headers(self.build_headers()?);
+        if let Some(conversation_id) = &body.x_grok_conv_id {
+            req = req.header("x-grok-conv-id", conversation_id.as_str());
+        }
+        req = req.json(body);
         if stream {
             if let Some(timeout) = self.endpoint.timeout_streaming_secs {
                 tracing::trace!("chat_stream_inner: {}s streaming timeout", timeout);

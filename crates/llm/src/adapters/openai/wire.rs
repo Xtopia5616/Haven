@@ -84,11 +84,13 @@ pub(super) struct OpenAiRequest {
     /// when web search mode is `off`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) search_parameters: Option<Value>,
-    /// Stable routing hint for OpenAI-compatible prompt caches. It does not
-    /// alter the prompt; providers use it to keep matching prefixes on a cache
-    /// shard. Unsupported gateways are detected and downgraded at runtime.
+    /// Stable routing hint for the official OpenAI Chat Completions cache.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) prompt_cache_key: Option<String>,
+    /// xAI Chat Completions conversation-affinity header; never serialized in
+    /// the JSON request body.
+    #[serde(skip)]
+    pub(super) x_grok_conv_id: Option<String>,
     #[serde(skip)]
     pub(super) cache_diagnostics: CacheDiagnostics,
 }

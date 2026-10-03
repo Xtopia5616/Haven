@@ -50,8 +50,8 @@ pub(super) struct ResponsesRequest {
     /// Haven's endpoint config stores the inner `format` object.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) text: Option<Value>,
-    /// Stable routing hint for Responses-compatible prompt caches. Unsupported
-    /// gateways are detected and retried once without this optional field.
+    /// Stable routing hint for official OpenAI and xAI Responses prompt
+    /// caches. Unsupported gateways are never sent this optional field.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) prompt_cache_key: Option<String>,
     #[serde(skip)]

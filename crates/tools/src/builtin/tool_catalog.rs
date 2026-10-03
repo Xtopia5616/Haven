@@ -187,7 +187,7 @@ impl ToolCatalogTool {
             .filter(|value| !value.is_empty())
             .ok_or_else(|| anyhow::anyhow!("session context required to query tool catalog"))?;
 
-        let initial_revision = self.catalog_revision(&session_id).await;
+        let initial_revision = self.catalog_revision();
         if params.cursor.unwrap_or(0) > 0
             && params.revision.as_deref() != Some(initial_revision.as_str())
         {
@@ -235,7 +235,7 @@ impl ToolCatalogTool {
             }
             other => anyhow::bail!("action must be one of list, describe, or load; got '{other}'"),
         }?;
-        let revision = self.catalog_revision(&session_id).await;
+        let revision = self.catalog_revision();
         Self::add_revision(result, &revision)
     }
 
@@ -326,12 +326,15 @@ impl ToolCatalogTool {
         }
     }
 
-    async fn catalog_revision(&self, session_id: &str) -> String {
-        let (global, session) = self
-            .session_catalog
-            .catalog_version_for_session(session_id)
-            .await;
-        format!("{global}:{session}:{}", self.mcp_manager.catalog_version())
+    fn catalog_revision(&self) -> String {
+        // A session load only changes the `loaded` annotation on existing
+        // catalog entries. It does not change list membership or ordering, so
+        // it must not invalidate an outstanding pagination cursor.
+        format!(
+            "{}:{}",
+            self.session_catalog.global_version(),
+            self.mcp_manager.catalog_version()
+        )
     }
 
     fn add_revision(mut result: ToolResult, revision: &str) -> anyhow::Result<ToolResult> {

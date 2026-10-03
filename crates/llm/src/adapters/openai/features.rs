@@ -23,6 +23,13 @@ impl OpenAiAdapter {
         tools: &[ToolDefinition],
         web_search_mode: WebSearchMode,
     ) -> Option<String> {
+        // OpenAI documents this field for its Chat Completions API. Other
+        // OpenAI-compatible gateways must opt in through their own documented
+        // adapter behavior instead of receiving this extension by default.
+        if self.style != "openai-chat" || !self.endpoint.provider.eq_ignore_ascii_case("openai") {
+            return None;
+        }
+
         if self.prompt_cache_key_state.load(Ordering::Relaxed) == PROMPT_CACHE_KEY_UNSUPPORTED {
             let retry_at = self.prompt_cache_key_retry_at.load(Ordering::Relaxed);
             if retry_at == 0 || current_epoch_seconds() < retry_at {
@@ -100,6 +107,70 @@ impl OpenAiAdapter {
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>();
         Some(format!("haven-v1-{fingerprint}"))
+    }
+
+    /// xAI Chat Completions uses a conversation-affinity header rather than
+    /// OpenAI's `prompt_cache_key` body field. Derive it from the stable
+    /// system prefix and the first user message so it survives appended turns,
+    /// tool-surface changes, and memory refreshes without exposing prompt text.
+    pub(super) fn xai_conversation_id(&self, messages: &[CanonicalMessage]) -> Option<String> {
+        if self.style != "xai" || !self.endpoint.provider.eq_ignore_ascii_case("xai") {
+            return None;
+        }
+
+        let system = messages
+            .iter()
+            .find(|message| message.role == CanonicalRole::System)?;
+        let first_user = messages
+            .iter()
+            .find(|message| message.role == CanonicalRole::User)?;
+        let mut hasher = Sha256::new();
+        hasher.update(b"haven-xai-conversation-v1\0");
+        hasher.update(self.endpoint.model_name.as_bytes());
+        hasher.update([0]);
+
+        let mut has_stable_system = false;
+        for part in &system.content {
+            if let ContentPart::Text(text) = part {
+                let stable = split_system_prompt_cache_sections(text)
+                    .map(|(stable, _, _)| stable)
+                    .unwrap_or(text);
+                if !stable.trim().is_empty() {
+                    hasher.update(stable.as_bytes());
+                    hasher.update([0]);
+                    has_stable_system = true;
+                }
+            }
+        }
+        if !has_stable_system {
+            return None;
+        }
+
+        if let Some(message_id) = &first_user.id {
+            hasher.update(b"initial-user-id\0");
+            hasher.update(message_id.as_bytes());
+            hasher.update([0]);
+        }
+        hasher.update(b"initial-user-text\0");
+        for part in &first_user.content {
+            if let ContentPart::Text(text) = part {
+                hasher.update(text.as_bytes());
+                hasher.update([0]);
+            }
+        }
+        if let Some(media) =
+            crate::adapters::prompt_cache_media_marker(std::slice::from_ref(first_user))
+        {
+            hasher.update(b"initial-user-media\0");
+            hasher.update(media);
+        }
+
+        let digest = hasher.finalize();
+        let fingerprint = digest[..16]
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        Some(format!("haven-conv-v1-{fingerprint}"))
     }
 
     pub(super) fn prompt_cache_key_rejected(error: &LlmError) -> bool {

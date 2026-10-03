@@ -19,6 +19,14 @@ impl OpenAiResponsesAdapter {
         tools: &[ToolDefinition],
         web_search_mode: WebSearchMode,
     ) -> Option<String> {
+        // OpenAI documents the field for Responses. xAI documents the same
+        // body field for its Responses API. Other compatible endpoints must
+        // not receive it without provider documentation.
+        let provider = self.endpoint.provider.as_str();
+        if !provider.eq_ignore_ascii_case("openai") && !provider.eq_ignore_ascii_case("xai") {
+            return None;
+        }
+
         if self.prompt_cache_key_state.load(Ordering::Relaxed) == PROMPT_CACHE_KEY_UNSUPPORTED {
             let retry_at = self.prompt_cache_key_retry_at.load(Ordering::Relaxed);
             if retry_at == 0 || current_epoch_seconds() < retry_at {

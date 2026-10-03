@@ -2,7 +2,6 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
-use chrono::Local;
 use haven_common::prompts::SESSION_CONTEXT_FENCE_START;
 use haven_common::tools::{ToolCatalogGroup, ToolDef, ToolPrompt};
 use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
@@ -446,7 +445,8 @@ impl SystemPromptBuilder {
     /// Render host facts that are stable for the lifetime of a session. This
     /// is deliberately assembled from live runtime owners so the prompt does
     /// not advertise a stale shell, TTS client, MCP list, or media capability
-    /// after settings hot-reload.
+    /// after settings hot-reload. Volatile wall-clock values stay out of this
+    /// block because it is rebuilt on resume ahead of the reusable transcript.
     async fn render_runtime_snapshot(&self) -> String {
         let process_cwd = std::env::current_dir()
             .map(|path| path.to_string_lossy().into_owned())
@@ -471,13 +471,11 @@ impl SystemPromptBuilder {
             .context_window(limits.default_context_window)
             .await;
 
-        let now = Local::now();
         format!(
             "- os: {} ({})\n\
 - user: {}\n\
 - home: {}\n\
 - locale: {}\n\
-- local_time: {} (UTC{})\n\
 - process_cwd: {}\n\
 - workspace_root: {}\n\
 - tool_default_cwd: {}\n\
@@ -493,8 +491,6 @@ impl SystemPromptBuilder {
             environment_value(&["USERNAME", "USER"]),
             environment_value(&["USERPROFILE", "HOME"]),
             environment_value(&["LC_ALL", "LANG"]),
-            now.format("%Y-%m-%d %H:%M:%S"),
-            now.format("%:z"),
             runtime_value(process_cwd),
             runtime_value(workspace_root),
             runtime_value(tool_cwd),

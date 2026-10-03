@@ -63,11 +63,7 @@ impl OpenAiResponsesAdapter {
         let messages = messages.as_ref();
         let tools = tools.as_ref();
         let tool_names = self.tool_name_map(messages, tools);
-        // DeepSeek's official Responses contract ignores `prompt_cache_key`;
-        // do not advertise an optional OpenAI extension to that endpoint.
-        let prompt_cache_key = (!is_deepseek(&self.endpoint))
-            .then(|| self.prompt_cache_key(messages, tools, web_search_mode))
-            .flatten();
+        let prompt_cache_key = self.prompt_cache_key(messages, tools, web_search_mode);
         let cache_diagnostics = Self::cache_diagnostics(messages, prompt_cache_key.is_some())
             .with_provider(self.endpoint.provider.clone());
         let max_reasoning_echo_chars = self

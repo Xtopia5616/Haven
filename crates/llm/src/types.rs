@@ -626,6 +626,8 @@ impl From<haven_common::tools::ToolDef> for ToolDefinition {
 /// Ensure tool `parameters` is a JSON Schema object acceptable to strict
 /// providers (OpenAI Responses meta-schema: schema = boolean | object).
 ///
+/// - Every object root is projected as `type: object`, because function-call
+///   arguments are always objects (external MCP schemas may omit the keyword).
 /// - Null / non-object roots become `{"type":"object","properties":{}}`.
 /// - Keywords that must be boolean|object (`additionalProperties`,
 ///   `additionalItems`, `items`, `not`, `if`/`then`/`else`, …) drop `null`
@@ -634,6 +636,7 @@ pub fn sanitize_tool_parameters(schema: Value) -> Value {
     match schema {
         Value::Object(mut map) => {
             sanitize_schema_object(&mut map);
+            map.insert("type".into(), Value::String("object".into()));
             Value::Object(map)
         }
         _ => serde_json::json!({"type": "object", "properties": {}}),
@@ -1822,6 +1825,18 @@ mod tests {
         let cleaned = sanitize_tool_parameters(Value::Null);
         assert_eq!(cleaned["type"], "object");
         assert!(cleaned["properties"].is_object());
+    }
+
+    #[test]
+    fn sanitize_tool_parameters_adds_object_type_to_mcp_schema_without_one() {
+        let cleaned = sanitize_tool_parameters(serde_json::json!({
+            "properties": { "path": { "type": "string" } },
+            "required": ["path"]
+        }));
+
+        assert_eq!(cleaned["type"], "object");
+        assert_eq!(cleaned["properties"]["path"]["type"], "string");
+        assert_eq!(cleaned["required"], serde_json::json!(["path"]));
     }
 
     #[test]

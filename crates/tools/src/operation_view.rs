@@ -293,6 +293,10 @@ fn annotate_schema(spec: &mut OperationSpec) {
     let Some(schema) = spec.schema.as_object_mut() else {
         return;
     };
+    // Provider function parameters require an object root. A selected
+    // operation branch may omit `type` even when its aggregate schema has
+    // `type: object` at the root, so restore the invariant after projection.
+    schema.insert("type".into(), Value::String("object".into()));
     schema.insert("title".into(), Value::String(spec.name.to_string()));
     schema.insert(
         "description".into(),
@@ -579,17 +583,19 @@ mod tests {
 
     #[test]
     fn operation_view_schema_is_self_describing() {
+        let aggregate_schema = json!({
+            "type": "object",
+            "oneOf": [{
+                "additionalProperties": false,
+                "properties": {"operation": {"const": "read"}, "path": {"type": "string"}},
+                "required": ["operation", "path"]
+            }]
+        });
+        let projected_schema =
+            split_operation_schema(&aggregate_schema, "read").expect("read branch");
         let inner: ToolBox = Arc::new(crate::tool_contract::tests::MockTool::with_schema(
             "files",
-            json!({
-                "type": "object",
-                "oneOf": [{
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": {"operation": {"const": "read"}, "path": {"type": "string"}},
-                    "required": ["operation", "path"]
-                }]
-            }),
+            aggregate_schema,
         ));
         let view = OperationViewTool::new(
             inner,
@@ -597,12 +603,7 @@ mod tests {
                 name: "files.read".into(),
                 description: "Read text.".into(),
                 fixed: vec![("operation".into(), json!("read"))],
-                schema: json!({
-                    "type": "object",
-                    "additionalProperties": false,
-                    "properties": {"path": {"type": "string"}},
-                    "required": ["path"]
-                }),
+                schema: projected_schema,
                 policy: OperationPolicy {
                     risk_level: RiskLevel::Low,
                     capability: "files.read".into(),
@@ -633,6 +634,7 @@ mod tests {
 
         assert_eq!(view.input_schema()["title"], "files.read");
         assert_eq!(view.input_schema()["description"], "Read text.");
+        assert_eq!(view.input_schema()["type"], "object");
         let def = view.tool_def();
         assert_eq!(def.prompt.as_ref().unwrap().key_operations, ["files.read"]);
         let manifest = view.tool_manifest();

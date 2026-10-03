@@ -64,11 +64,10 @@ pub struct OpenAiAdapter {
     /// Reported `LlmClient::style()` — `"openai-chat"` (default) or `"xai"`.
     style: &'static str,
     web_search_mode: WebSearchMode,
-    /// Whether this endpoint accepts OpenAI's optional `prompt_cache_key`.
-    /// A gateway rejection is remembered for this adapter so we only pay one
-    /// compatibility retry instead of failing every request. The negative
-    /// result expires so a gateway that later enables the extension can be
-    /// rediscovered without rebuilding the adapter.
+    /// Whether the official OpenAI Chat endpoint accepts its optional
+    /// `prompt_cache_key`. A provider rejection is remembered so we only pay
+    /// one compatibility retry instead of failing every request. The negative
+    /// result expires so support can be rediscovered without rebuilding.
     prompt_cache_key_state: AtomicU8,
     prompt_cache_key_retry_at: AtomicU64,
 }

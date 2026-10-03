@@ -64,11 +64,12 @@ core registry 或该 session overlay 查找，deferred catalog 不是可调用�
 `max_observation_chars`。loader 批次做 all-or-nothing admission；已加载名称不重复计数，
 超限只返回可选名称摘要。
 
-目录 list 返回 `catalog_revision`（builtin/session/MCP 三个单调时钟的组合）。继续使用
-`next_cursor` 时必须回传该 revision；配置、builtin/Skill rebuild、session load 或 MCP
-`tools/list_changed` 使旧 cursor 返回 `stale_cursor`，调用方从 0 重新分页。prompt 的
-第一层缓存按 `(global registry version, MCP catalog version)` 失效，Skill rebuild 仍通过
-registry version 失效；provider
+目录 list 返回由 global builtin/Skill registry 与 MCP catalog 单调时钟组成的
+`catalog_revision`。继续使用 `next_cursor` 时必须回传该 revision；配置、builtin/Skill
+rebuild 或 MCP `tools/list_changed` 会改变目录成员或顺序，使旧 cursor 返回 `stale_cursor`，
+调用方从 0 重新分页。单个 session 的能力加载只改变既有条目的 `loaded` 标记，不改变列表
+成员或顺序，因此不会使分页 cursor 失效。prompt 的第一层缓存按
+`(global registry version, MCP catalog version)` 失效，Skill rebuild 仍通过 registry version 失效；provider
 schema 缓存按 `(global_version, session_version)` 失效，不让一个 session 的 load 影响其它
 session。
 
