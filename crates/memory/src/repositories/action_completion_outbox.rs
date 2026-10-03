@@ -34,6 +34,7 @@ fn status_json(
     exit_code: Option<i32>,
     started_at: Option<&str>,
     finished_at: Option<&str>,
+    source_step_id: Option<&str>,
 ) -> Value {
     let mut value = json!({
         "action_id": action_id,
@@ -60,6 +61,9 @@ fn status_json(
     if let Some(finished_at) = finished_at {
         value["finished_at"] = json!(finished_at);
     }
+    if let Some(source_step_id) = source_step_id {
+        value["source_step_id"] = json!(source_step_id);
+    }
     value
 }
 
@@ -70,7 +74,7 @@ impl Database {
     pub(crate) fn reconcile_action_completion_outbox(&self) -> anyhow::Result<()> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, kind, mode, session_id, status, output, result_summary,
+            "SELECT id, kind, mode, session_id, source_step_id, status, output, result_summary,
                     error, error_reason, log_path, exit_code, started_at, finished_at
              FROM actions
              WHERE (kind = 'background' OR (kind = 'scheduled' AND mode = 'tool'))
@@ -83,15 +87,16 @@ impl Database {
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
                 row.get::<_, Option<String>>(3)?,
-                row.get::<_, String>(4)?,
-                row.get::<_, Option<String>>(5)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, String>(5)?,
                 row.get::<_, Option<String>>(6)?,
                 row.get::<_, Option<String>>(7)?,
                 row.get::<_, Option<String>>(8)?,
                 row.get::<_, Option<String>>(9)?,
-                row.get::<_, Option<i32>>(10)?,
-                row.get::<_, Option<String>>(11)?,
+                row.get::<_, Option<String>>(10)?,
+                row.get::<_, Option<i32>>(11)?,
                 row.get::<_, Option<String>>(12)?,
+                row.get::<_, Option<String>>(13)?,
             ))
         })?;
         let mut terminal = Vec::new();
@@ -107,6 +112,7 @@ impl Database {
                 kind,
                 mode,
                 session_id,
+                source_step_id,
                 status,
                 output,
                 result_summary,
@@ -134,6 +140,7 @@ impl Database {
                     exit_code,
                     started_at.as_deref(),
                     finished_at.as_deref(),
+                    source_step_id.as_deref(),
                 ))?;
                 debug_assert!(kind != "scheduled" || mode == "tool");
                 conn.execute(
@@ -325,6 +332,36 @@ mod tests {
         assert_eq!(row.status_json["output"], "ok");
         assert!(db.acknowledge_action_completion("act-outbox").unwrap());
         assert!(db.claim_action_completion().unwrap().is_none());
+    }
+
+    #[test]
+    fn reconciled_background_completion_retains_source_step() {
+        let db = Database::open_in_memory().unwrap();
+        db.save_action_with_source(
+            "act-source-reconcile",
+            Some("ses-source-reconcile"),
+            "echo source",
+            "start",
+            Some("step-source-reconcile"),
+        )
+        .unwrap();
+        db.finish_action(
+            "act-source-reconcile",
+            ActionStatus::Completed,
+            Some("done"),
+            None,
+            None,
+            None,
+            Some(0),
+            "finish",
+        )
+        .unwrap();
+
+        let completion = db.claim_action_completion().unwrap().unwrap();
+        assert_eq!(
+            completion.status_json["source_step_id"],
+            "step-source-reconcile"
+        );
     }
 
     #[test]

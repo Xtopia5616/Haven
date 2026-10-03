@@ -268,6 +268,8 @@ pub struct ActionRow {
     pub body: Option<String>,
     pub mode: Option<String>,
     pub session_id: Option<String>,
+    /// Agent tool step that created a background action, when available.
+    pub source_step_id: Option<String>,
     pub tool_name: Option<String>,
     pub tool_args: Option<String>,
     pub prompt: Option<String>,
@@ -291,7 +293,7 @@ pub struct ActionDependencyRow {
     pub result: Option<String>,
 }
 
-const ACTION_COLUMNS: &str = "id, kind, due_at, title, body, mode, session_id, tool_name, tool_args, prompt, status, command, output, error, error_reason, log_path, exit_code, started_at, finished_at, created_at";
+const ACTION_COLUMNS: &str = "id, kind, due_at, title, body, mode, session_id, source_step_id, tool_name, tool_args, prompt, status, command, output, error, error_reason, log_path, exit_code, started_at, finished_at, created_at";
 
 fn row_to_action(row: &rusqlite::Row<'_>) -> rusqlite::Result<ActionRow> {
     Ok(ActionRow {
@@ -302,19 +304,20 @@ fn row_to_action(row: &rusqlite::Row<'_>) -> rusqlite::Result<ActionRow> {
         body: row.get(4)?,
         mode: row.get(5)?,
         session_id: row.get(6)?,
-        tool_name: row.get(7)?,
-        tool_args: row.get(8)?,
-        prompt: row.get(9)?,
-        status: ActionStatus::from_status_str(&row.get::<_, String>(10)?),
-        command: row.get(11)?,
-        output: row.get(12)?,
-        error: row.get(13)?,
-        error_reason: row.get(14)?,
-        log_path: row.get(15)?,
-        exit_code: row.get(16)?,
-        started_at: row.get(17)?,
-        finished_at: row.get(18)?,
-        created_at: row.get(19)?,
+        source_step_id: row.get(7)?,
+        tool_name: row.get(8)?,
+        tool_args: row.get(9)?,
+        prompt: row.get(10)?,
+        status: ActionStatus::from_status_str(&row.get::<_, String>(11)?),
+        command: row.get(12)?,
+        output: row.get(13)?,
+        error: row.get(14)?,
+        error_reason: row.get(15)?,
+        log_path: row.get(16)?,
+        exit_code: row.get(17)?,
+        started_at: row.get(18)?,
+        finished_at: row.get(19)?,
+        created_at: row.get(20)?,
     })
 }
 
@@ -330,11 +333,23 @@ impl Database {
         command: &str,
         started_at: &str,
     ) -> anyhow::Result<()> {
+        self.save_action_with_source(id, session_id, command, started_at, None)
+    }
+
+    /// Persist a background action with its originating Agent tool step.
+    pub fn save_action_with_source(
+        &self,
+        id: &str,
+        session_id: Option<&str>,
+        command: &str,
+        started_at: &str,
+        source_step_id: Option<&str>,
+    ) -> anyhow::Result<()> {
         let conn = self.conn();
         conn.execute(
-            "INSERT INTO actions (id, kind, session_id, command, status, started_at, created_at)
-             VALUES (?1, 'background', ?2, ?3, 'running', ?4, datetime('now'))",
-            rusqlite::params![id, session_id, command, started_at],
+            "INSERT INTO actions (id, kind, session_id, source_step_id, command, status, started_at, created_at)
+             VALUES (?1, 'background', ?2, ?3, ?4, 'running', ?5, datetime('now'))",
+            rusqlite::params![id, session_id, source_step_id, command, started_at],
         )?;
         Ok(())
     }
@@ -620,6 +635,25 @@ mod tests {
         assert_eq!(pending[2].tool_name.as_deref(), Some("files"));
         assert!(pending[2].tool_args.as_deref().unwrap().contains("read"));
         assert_eq!(pending[0].status, ActionStatus::Waiting);
+    }
+
+    #[test]
+    fn background_action_source_step_is_persisted_and_listed() {
+        let db = test_db();
+        db.save_action_with_source(
+            "act-source",
+            Some("ses-source"),
+            "echo source",
+            "started",
+            Some("step-source"),
+        )
+        .unwrap();
+
+        let row = db.get_action("act-source").unwrap().unwrap();
+        assert_eq!(row.source_step_id.as_deref(), Some("step-source"));
+        let listed = db.list_actions(Some("background")).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].source_step_id.as_deref(), Some("step-source"));
     }
 
     #[test]

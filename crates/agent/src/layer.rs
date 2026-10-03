@@ -28,6 +28,7 @@ async fn action_completion_session_status(
 fn format_action_result_message(
     action_id: &str,
     action_kind: &str,
+    source_step_id: Option<&str>,
     status: haven_common::ActionStatus,
     summary: &str,
     log_path: Option<&str>,
@@ -39,6 +40,9 @@ fn format_action_result_message(
         "status": status.as_str(),
         "summary": truncate_notification(summary, max_chars),
     });
+    if let Some(source_step_id) = source_step_id {
+        envelope["source_step_id"] = serde_json::json!(source_step_id);
+    }
     if let Some(log_path) = log_path.filter(|path| !path.is_empty()) {
         envelope["log_path"] = serde_json::json!(log_path);
     }
@@ -579,9 +583,13 @@ impl AgentLayer {
                         payload
                     };
                     let log_path = status_json.get("log_path").and_then(|v| v.as_str());
+                    let source_step_id = status_json
+                        .get("source_step_id")
+                        .and_then(|value| value.as_str());
                     let msg = format_action_result_message(
                         &action_id,
                         action_kind,
+                        source_step_id,
                         status,
                         &reason,
                         log_path,
@@ -1618,7 +1626,8 @@ mod tests {
         let summary = "abcdef";
         let message = format_action_result_message(
             action_id,
-            "scheduled",
+            "background",
+            Some("step-origin"),
             haven_common::ActionStatus::Failed,
             summary,
             Some("C:\\tmp\\result<&>.log"),
@@ -1642,7 +1651,8 @@ mod tests {
             .unwrap();
         let envelope: Value = serde_json::from_str(payload).unwrap();
         assert_eq!(envelope["action_id"], action_id);
-        assert_eq!(envelope["kind"], "scheduled");
+        assert_eq!(envelope["source_step_id"], "step-origin");
+        assert_eq!(envelope["kind"], "background");
         assert_eq!(envelope["status"], "failed");
         assert_eq!(envelope["summary"], "abc[... 3 chars omitted]");
         assert_eq!(envelope["log_path"], "C:\\tmp\\result<&>.log");

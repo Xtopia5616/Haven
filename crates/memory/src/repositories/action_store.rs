@@ -112,9 +112,29 @@ impl ActionStore {
         command: String,
         started_at: String,
     ) -> anyhow::Result<()> {
+        self.save_background_action_with_source(action_id, session_id, command, started_at, None)
+            .await
+    }
+
+    /// Persist a newly spawned background action with its originating Agent
+    /// tool step, if the action came from a session tool invocation.
+    pub async fn save_background_action_with_source(
+        &self,
+        action_id: String,
+        session_id: Option<String>,
+        command: String,
+        started_at: String,
+        source_step_id: Option<String>,
+    ) -> anyhow::Result<()> {
         self.db
             .run_blocking(move |db| {
-                db.save_action(&action_id, session_id.as_deref(), &command, &started_at)
+                db.save_action_with_source(
+                    &action_id,
+                    session_id.as_deref(),
+                    &command,
+                    &started_at,
+                    source_step_id.as_deref(),
+                )
             })
             .await
     }
@@ -312,6 +332,27 @@ mod tests {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let store = ActionStore::new(db.clone());
         (db, store)
+    }
+
+    #[tokio::test]
+    async fn background_source_step_survives_store_roundtrip() {
+        let (_db, store) = store();
+        let action_id = new_id("act");
+        let session_id = new_id("ses");
+        let source_step_id = new_id("step");
+        store
+            .save_background_action_with_source(
+                action_id.clone(),
+                Some(session_id),
+                "echo source".into(),
+                "started".into(),
+                Some(source_step_id.clone()),
+            )
+            .await
+            .unwrap();
+
+        let row = store.get_action(action_id).await.unwrap().unwrap();
+        assert_eq!(row.source_step_id.as_deref(), Some(source_step_id.as_str()));
     }
 
     #[tokio::test]

@@ -134,9 +134,9 @@ Tauri 接收前端参数时采用其自动 camelCase → Rust snake_case 映射�
 | `list_action_history` | read | 有界终态历史 |
 | `delete_action` | mutate | 删除指定历史任务 |
 
-`ActionEvent` 是任务面板的唯一公开记录：`{ id, kind, status?, session_id?, started_at?,
+`ActionEvent` 是任务面板的唯一公开记录：`{ id, kind, status?, session_id?, source_step_id?, started_at?,
 finished_at?, due_at?, title?, body?, mode?, command?, output?, error?, error_reason?,
-exit_code?, preview? }`。`status` 只能是 `waiting`、`running`、`completed`、`failed`、
+exit_code?, preview? }`。`source_step_id` 仅用于将由 Agent 工具调用启动的后台任务关联回来源步骤；定时任务、旧任务和无 session 的 shell 调用可以省略。`status` 只能是 `waiting`、`running`、`completed`、`failed`、
 `cancelled`；`kind` 才区分 `background` 与 `scheduled`。它不包含动态 `tool_args`、续接 `prompt`、`tool_name` 或本地
 `log_path`；这些是执行内部字段，不能作为跨端契约或泄漏到 UI。
 

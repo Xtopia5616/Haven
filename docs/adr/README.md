@@ -423,3 +423,4 @@
 - [0438：按官方契约传递 Provider 缓存路由提示](0438-provider-prompt-cache-routing-hints.md)
 - [0439：共享滚动日志定位与有界尾部读取](0439-bounded-rolling-log-tail.md)
 - [0440：从活动事件流恢复未回答的 Ask](0440-recover-pending-asks-from-active-event-stream.md)
+- [0445：后台 Shell 来源关联与等待反馈契约](0445-background-shell-source-and-wait-feedback.md)

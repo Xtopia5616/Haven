@@ -87,6 +87,8 @@ pub struct ActionEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_step_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub started_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub finished_at: Option<String>,
@@ -119,6 +121,7 @@ impl ActionEvent {
             kind: ActionKind::Background,
             status: optional_action_status(payload, "status")?,
             session_id: optional_string(payload, "session_id")?,
+            source_step_id: optional_string(payload, "source_step_id")?,
             started_at: optional_string(payload, "started_at")?,
             finished_at: optional_string(payload, "finished_at")?,
             due_at: None,
@@ -143,6 +146,7 @@ impl ActionEvent {
             kind: ActionKind::Background,
             status: optional_action_status(payload, "status")?,
             session_id: None,
+            source_step_id: None,
             started_at: None,
             finished_at: None,
             due_at: None,
@@ -168,6 +172,7 @@ impl ActionEvent {
                 optional_action_status(payload, "status")?
             },
             session_id: optional_string(payload, "session_id")?,
+            source_step_id: None,
             started_at: optional_string(payload, "started_at")?,
             finished_at: optional_string(payload, "finished_at")?,
             due_at: optional_string(payload, "due_at")?,
@@ -194,6 +199,7 @@ impl From<ActionView> for ActionEvent {
             },
             status: Some(view.status),
             session_id: view.session_id,
+            source_step_id: view.source_step_id,
             started_at: view.started_at,
             finished_at: view.finished_at,
             due_at: view.due_at,
@@ -689,6 +695,7 @@ mod tests {
             "action_id": "act-1",
             "status": "completed",
             "session_id": "ses-1",
+            "source_step_id": "step-1",
             "output": "done",
             "exit_code": 0,
             "log_path": "C:/private/action.log",
@@ -702,6 +709,7 @@ mod tests {
                 "kind": "background",
                 "status": "completed",
                 "session_id": "ses-1",
+                "source_step_id": "step-1",
                 "output": "done",
                 "exit_code": 0,
             })
@@ -741,6 +749,7 @@ mod tests {
             kind: ActionViewKind::Background,
             status: ActionStatus::Completed,
             session_id: Some("ses-1".into()),
+            source_step_id: Some("step-source".into()),
             started_at: Some("2026-09-23T10:00:00Z".into()),
             finished_at: Some("2026-09-23T10:00:01Z".into()),
             due_at: None,
@@ -762,6 +771,7 @@ mod tests {
                 "kind": "background",
                 "status": "completed",
                 "session_id": "ses-1",
+                "source_step_id": "step-source",
                 "started_at": "2026-09-23T10:00:00Z",
                 "finished_at": "2026-09-23T10:00:01Z",
                 "output": "done",
@@ -778,6 +788,7 @@ mod tests {
             kind: ActionViewKind::Scheduled,
             status: ActionStatus::Waiting,
             session_id: Some("ses-2".into()),
+            source_step_id: None,
             started_at: None,
             finished_at: None,
             due_at: Some("2026-09-24T10:00:00Z".into()),

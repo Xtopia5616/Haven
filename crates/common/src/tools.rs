@@ -12,11 +12,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// JSON key / value Haven tools emit when a background action is still running
-/// and the agent should end the turn to await auto-wake. Kept in common so
-/// producers (`haven-tools`) and the ReAct response policy (`haven-agent`)
-/// cannot drift.
+/// and the model should end its response while Haven waits for auto-delivery.
+/// This is model-facing feedback, not an Agent lifecycle transition.
 pub const BACKGROUND_WAIT_NEXT_STEP_KEY: &str = "next_step";
 pub const BACKGROUND_WAIT_NEXT_STEP: &str = "end_turn";
+pub const BACKGROUND_WAIT_KEY: &str = "background_wait";
+pub const BACKGROUND_WAIT_KIND: &str = "action_result";
+pub const BACKGROUND_WAIT_DELIVERY: &str = "automatic";
 
 /// Static retry metadata exposed beside a tool definition. Grouped tools may
 /// still refine this policy per operation at execution time; `unknown` is the
@@ -189,15 +191,30 @@ pub struct ToolPrompt {
     pub key_operations: Vec<String>,
 }
 
-/// Start a background-wait observation object with `next_step` first, then
-/// `hint`. Callers insert the rest (`background` / `action_id` / `actions`…).
-/// Centralized so producers cannot forget the wait marker the ReAct policy
-/// keys on.
-pub fn background_wait_object(hint: impl Into<String>) -> serde_json::Map<String, Value> {
+/// Build the shared tool-result feedback for running background actions.
+/// `background_wait` names the result delivery and affected action ids; the
+/// stable `next_step` marker tells the model it may end its turn while Haven
+/// waits for those results.
+pub fn background_wait_object<I, S>(
+    action_ids: I,
+    hint: impl Into<String>,
+) -> serde_json::Map<String, Value>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<String>,
+{
     let mut body = serde_json::Map::new();
     body.insert(
         BACKGROUND_WAIT_NEXT_STEP_KEY.into(),
         Value::String(BACKGROUND_WAIT_NEXT_STEP.into()),
+    );
+    body.insert(
+        BACKGROUND_WAIT_KEY.into(),
+        serde_json::json!({
+            "kind": BACKGROUND_WAIT_KIND,
+            "action_ids": action_ids.into_iter().map(Into::into).collect::<Vec<String>>(),
+            "delivery": BACKGROUND_WAIT_DELIVERY,
+        }),
     );
     body.insert("hint".into(), Value::String(hint.into()));
     body
@@ -289,6 +306,28 @@ impl ToolDef {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn background_wait_feedback_has_one_explicit_delivery_contract() {
+        let value = Value::Object(background_wait_object(
+            ["act-1", "act-2"],
+            "wait for action results",
+        ));
+
+        assert_eq!(
+            value[BACKGROUND_WAIT_NEXT_STEP_KEY],
+            BACKGROUND_WAIT_NEXT_STEP
+        );
+        assert_eq!(
+            value[BACKGROUND_WAIT_KEY],
+            serde_json::json!({
+                "kind": BACKGROUND_WAIT_KIND,
+                "action_ids": ["act-1", "act-2"],
+                "delivery": BACKGROUND_WAIT_DELIVERY,
+            })
+        );
+        assert_eq!(value["hint"], "wait for action results");
+    }
 
     #[test]
     fn tool_def_json_shape() {

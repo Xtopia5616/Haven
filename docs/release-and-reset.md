@@ -6,7 +6,7 @@
 
 Haven 处于测试阶段。数据库 schema、`config.toml`、ReAct snapshot 与内部 IPC 契约可以进行破坏性调整；发布说明会明确本次是否需要重置。没有明确写出兼容承诺的旧数据不得假定可继续使用。
 
-截至 2026-09-30，当前数据库契约为 schema v32（ADR 0392、0393、0402、0416）：scheduled dependency relation/result 持久化在 `actions.watch_action_id` / `actions.result_summary`，scheduled tool 的 completed/failed result 使用 `action_completion_outbox`，session authorization grants 由会话外键级联管理；`pending_session_inputs` 持久跟踪已接受但尚未进入 `UserInject` event 的用户输入，不再使用两天恢复窗口。v32 不做旧 schema 运行时迁移；升级前，完全退出 Haven 后删除 `%APPDATA%\haven\haven.db`、`haven.db-wal` 与 `haven.db-shm`（非 Windows 开发环境为 `~/.local/share/haven` 下的同名文件），再启动应用。删除数据库会清除会话、记忆、任务和用量；保留 `config.toml` 时无需删除整个数据根目录。
+截至 2026-10-03，当前数据库契约为 schema v33（ADR 0392、0393、0402、0416、0445）：scheduled dependency relation/result 持久化在 `actions.watch_action_id` / `actions.result_summary`，scheduled tool 的 completed/failed result 使用 `action_completion_outbox`，session authorization grants 由会话外键级联管理；`pending_session_inputs` 持久跟踪已接受但尚未进入 `UserInject` event 的用户输入，不再使用两天恢复窗口。后台 Shell Action 通过 `actions.source_step_id` 持久关联产生它的 Agent 工具步骤，并在 Action event 与终态结果交付中保留。v33 不做旧 schema 运行时迁移；升级前，完全退出 Haven 后删除 `%APPDATA%\haven\haven.db`、`haven.db-wal` 与 `haven.db-shm`（非 Windows 开发环境为 `~/.local/share/haven` 下的同名文件），再启动应用。删除数据库会清除会话、记忆、任务和用量；保留 `config.toml` 时无需删除整个数据根目录。
 
 ## 当前配置契约
 

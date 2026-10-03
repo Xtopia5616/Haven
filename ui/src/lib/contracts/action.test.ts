@@ -12,6 +12,7 @@ describe('action IPC contract', () => {
 					kind: 'background',
 					status: 'completed',
 					session_id: 'ses-1',
+					source_step_id: 'step-1',
 					finished_at: '2026-08-26T00:00:00Z',
 					exit_code: 0,
 					future_wire_field: 'ignored',
@@ -25,6 +26,7 @@ describe('action IPC contract', () => {
 				kind: 'background',
 				status: 'completed',
 				sessionId: 'ses-1',
+				sourceStepId: 'step-1',
 				finishedAt: '2026-08-26T00:00:00Z',
 				exitCode: 0,
 			},
@@ -40,6 +42,9 @@ describe('action IPC contract', () => {
 			mapActionPayload({ id: 'act-2', kind: 'scheduled', session_id: null, status: null }),
 		).toBeNull();
 		expect(mapActionPayload({ id: 'act-2', kind: 'scheduled', exit_code: null })).toBeNull();
+		expect(
+			mapActionPayload({ id: 'act-2', kind: 'background', source_step_id: 42 }),
+		).toBeNull();
 	});
 
 	it('rejects unknown statuses and action kinds', () => {

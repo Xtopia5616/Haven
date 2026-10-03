@@ -123,6 +123,7 @@ pub struct ActionView {
     pub kind: ActionViewKind,
     pub status: ActionStatus,
     pub session_id: Option<String>,
+    pub source_step_id: Option<String>,
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
     pub due_at: Option<String>,
@@ -150,6 +151,7 @@ pub enum ActionStatusView {
     },
     Background {
         action_id: String,
+        source_step_id: Option<String>,
         state: ActionStateView,
     },
     Scheduled {
@@ -323,9 +325,16 @@ impl ActionStatusView {
                 "action_id": action_id,
                 "status": status.as_str(),
             }),
-            Self::Background { action_id, state } => {
-                background_status_json(action_id, state, include_background_wait)
-            }
+            Self::Background {
+                action_id,
+                source_step_id,
+                state,
+            } => background_status_json(
+                action_id,
+                source_step_id.as_deref(),
+                state,
+                include_background_wait,
+            ),
             Self::Scheduled {
                 action_id,
                 session_id,
@@ -390,8 +399,13 @@ fn scheduled_action_view(entry: &ScheduledActionEntry) -> ScheduledActionView {
     }
 }
 
-fn background_status_json(action_id: &str, state: &ActionStateView, include_wait: bool) -> Value {
-    match state {
+fn background_status_json(
+    action_id: &str,
+    source_step_id: Option<&str>,
+    state: &ActionStateView,
+    include_wait: bool,
+) -> Value {
+    let mut value = match state {
         ActionStateView::Waiting => json!({
             "action_id": action_id,
             "status": "waiting",
@@ -404,6 +418,7 @@ fn background_status_json(action_id: &str, state: &ActionStateView, include_wait
         } => {
             let mut value = if include_wait {
                 haven_common::tools::background_wait_object(
+                    std::iter::once(action_id.to_string()),
                     "The action is still running. END YOUR TURN if you have nothing else useful to do — do not poll. The result is auto-pushed and the session is auto-woken when it finishes.",
                 )
             } else {
@@ -482,7 +497,12 @@ fn background_status_json(action_id: &str, state: &ActionStateView, include_wait
             "started_at": started_at,
             "finished_at": finished_at,
         }),
+    };
+    value["kind"] = json!("background");
+    if let Some(source_step_id) = source_step_id {
+        value["source_step_id"] = json!(source_step_id);
     }
+    value
 }
 
 #[derive(Clone, Debug)]
@@ -537,6 +557,7 @@ fn scheduled_terminal_state(
 struct ActionEntry {
     kind: ActionKind,
     session_id: Option<String>,
+    source_step_id: Option<String>,
     state: ActionState,
     /// Kill signal for the running child process.
     kill: Option<oneshot::Sender<()>>,
@@ -1161,17 +1182,18 @@ impl ActionService {
                         state.status(),
                         TerminalSource::Live,
                     ))
-                .then(|| entry.session_id.clone())
+                .then(|| (entry.session_id.clone(), entry.source_step_id.clone()))
             })
         };
-        let Some(session_id) = session_id else {
+        let Some((session_id, source_step_id)) = session_id else {
             if remove_after_commit {
                 self.actions.write().await.remove(action_id);
             }
             return Ok(false);
         };
 
-        let status_json = render_status_json(action_id, state);
+        let status_json =
+            render_background_status_json(action_id, state, source_step_id.as_deref());
         match self.persist_terminal(action_id, state, &status_json).await {
             Ok(true) => {
                 {
@@ -1184,7 +1206,12 @@ impl ActionService {
                         entry.state = state.clone();
                     }
                 }
-                self.publish_committed_terminal(action_id, state.clone(), session_id);
+                self.publish_committed_terminal(
+                    action_id,
+                    state.clone(),
+                    session_id,
+                    source_step_id,
+                );
                 if remove_after_commit {
                     self.actions.write().await.remove(action_id);
                 }
@@ -1321,11 +1348,13 @@ impl ActionService {
         action_id: &str,
         state: ActionState,
         session_id: Option<String>,
+        source_step_id: Option<String>,
     ) {
         debug_assert!(state.is_terminal());
-        let status_json = render_status_json(action_id, &state);
+        let status_json =
+            render_background_status_json(action_id, &state, source_step_id.as_deref());
         self.emit("action:finished", status_json.clone());
-        self.publish_background_completion(action_id, state, session_id);
+        self.publish_background_completion(action_id, state, session_id, source_step_id);
     }
 
     fn publish_background_completion(
@@ -1333,6 +1362,7 @@ impl ActionService {
         action_id: &str,
         state: ActionState,
         session_id: Option<String>,
+        source_step_id: Option<String>,
     ) {
         let status = match &state {
             ActionState::Completed { .. } => ActionStatus::Completed,
@@ -1340,7 +1370,8 @@ impl ActionService {
             ActionState::Cancelled { .. } => ActionStatus::Cancelled,
             ActionState::Running { .. } | ActionState::Waiting => return,
         };
-        let status_json = render_status_json(action_id, &state);
+        let status_json =
+            render_background_status_json(action_id, &state, source_step_id.as_deref());
         if let Err(error) =
             self.completion_bus
                 .send(ActionCompletion::Background(BackgroundActionCompletion {
@@ -1439,6 +1470,7 @@ impl ActionService {
             let state = ActionStateView::from_entry(entry);
             let projection = ActionStatusView::Background {
                 action_id: id.clone(),
+                source_step_id: entry.source_step_id.clone(),
                 state: state.clone(),
             };
             rows.push(ActionListView {
@@ -1477,6 +1509,22 @@ impl ActionService {
         max_chars: usize,
         cwd: Option<std::path::PathBuf>,
         session_id: Option<&str>,
+    ) -> anyhow::Result<String> {
+        self.spawn_shell_for_session_with_source(command, shell, max_chars, cwd, session_id, None)
+            .await
+    }
+
+    /// Spawn a background action linked to the Agent tool step that created it.
+    /// The optional source identity is persisted before the child starts so the
+    /// relation survives fast completion and restart reconciliation.
+    pub(crate) async fn spawn_shell_for_session_with_source(
+        self: &Arc<Self>,
+        command: &str,
+        shell: &str,
+        max_chars: usize,
+        cwd: Option<std::path::PathBuf>,
+        session_id: Option<&str>,
+        source_step_id: Option<&str>,
     ) -> anyhow::Result<String> {
         if self.shutting_down.load(Ordering::Acquire) {
             anyhow::bail!("action service is shutting down");
@@ -1525,11 +1573,12 @@ impl ActionService {
         // process that restore_after_restart does not know how to clean up.
         if let Some(store) = self.action_store.read().await.clone()
             && let Err(error) = store
-                .save_background_action(
+                .save_background_action_with_source(
                     id.clone(),
                     session_id.map(str::to_owned),
                     command.to_string(),
                     started_at.clone(),
+                    source_step_id.map(str::to_owned),
                 )
                 .await
         {
@@ -1542,6 +1591,7 @@ impl ActionService {
             ActionEntry {
                 kind: ActionKind::Background,
                 session_id: session_id.map(str::to_owned),
+                source_step_id: source_step_id.map(str::to_owned),
                 state: ActionState::Running {
                     started_at: started_at.clone(),
                 },
@@ -1596,15 +1646,19 @@ impl ActionService {
         let action_id = id.clone();
         let shell_owned = shell.to_string();
         let command_owned = command.to_string();
-        self.emit(
-            "action:created",
-            json!({
-                "action_id": action_id,
-                "kind": "background",
-                "status": "running",
-                "started_at": started_at,
-            }),
-        );
+        self.emit("action:created", {
+            let mut payload = json!({
+            "action_id": action_id,
+            "kind": "background",
+            "status": "running",
+            "session_id": session_id,
+            "started_at": started_at,
+            });
+            if let Some(source_step_id) = source_step_id {
+                payload["source_step_id"] = json!(source_step_id);
+            }
+            payload
+        });
         // The direct child pid is captured before `run` moves `child`; on
         // Windows, cancelling must kill the whole process tree, not just the
         // cmd.exe/powershell.exe wrapper.
@@ -1754,6 +1808,7 @@ impl ActionService {
         }
         ActionStatusView::Background {
             action_id: action_id.to_string(),
+            source_step_id: entry.source_step_id.clone(),
             state: ActionStateView::from_entry(entry),
         }
     }
@@ -1824,6 +1879,7 @@ impl ActionService {
         }
         ActionStatusView::Background {
             action_id: action_id.to_string(),
+            source_step_id: entry.source_step_id.clone(),
             state: ActionStateView::from_entry(entry),
         }
     }
@@ -1871,7 +1927,7 @@ impl ActionService {
             tracing::warn!(action_id, "failed to persist action session binding: {e}");
             return;
         }
-        let terminal_state = {
+        let (terminal_state, source_step_id) = {
             let mut actions = self.actions.write().await;
             let Some(entry) = actions.get_mut(action_id) else {
                 return;
@@ -1880,22 +1936,33 @@ impl ActionService {
                 return;
             }
             entry.session_id = Some(session_id.to_string());
-            entry.state.is_terminal().then(|| entry.state.clone())
+            (
+                entry.state.is_terminal().then(|| entry.state.clone()),
+                entry.source_step_id.clone(),
+            )
         };
-        self.emit(
-            "action:updated",
-            json!({
+        self.emit("action:updated", {
+            let mut payload = json!({
                 "action_id": action_id,
                 "session_id": session_id,
-            }),
-        );
+            });
+            if let Some(source_step_id) = source_step_id.as_deref() {
+                payload["source_step_id"] = json!(source_step_id);
+            }
+            payload
+        });
         // Headless mode has no durable outbox to recover a completion that was
         // first published without an owner. Re-notify only with the newly
         // bound owner; persistent mode relies on the updated outbox row.
         if action_store.is_none()
             && let Some(state) = terminal_state
         {
-            self.publish_background_completion(action_id, state, Some(session_id.to_string()));
+            self.publish_background_completion(
+                action_id,
+                state,
+                Some(session_id.to_string()),
+                source_step_id,
+            );
         }
     }
 
@@ -2285,6 +2352,7 @@ impl ActionService {
             ActionEntry {
                 kind: ActionKind::Scheduled,
                 session_id: session_id.clone(),
+                source_step_id: None,
                 state: ActionState::Waiting,
                 kill: None,
                 tail: None,
@@ -3200,6 +3268,7 @@ impl ActionService {
                 ActionEntry {
                     kind: ActionKind::Scheduled,
                     session_id,
+                    source_step_id: None,
                     state: ActionState::Waiting,
                     kill: None,
                     tail: None,
@@ -3233,6 +3302,7 @@ fn project_board_action(action_id: &str, entry: &ActionEntry) -> ActionView {
         },
         status: entry.state.status(),
         session_id: entry.session_id.clone(),
+        source_step_id: entry.source_step_id.clone(),
         started_at: None,
         finished_at: None,
         due_at: None,
@@ -3483,6 +3553,19 @@ fn render_status_json(action_id: &str, state: &ActionState) -> Value {
             json!({ "action_id": action_id, "status": "running" })
         }
     }
+}
+
+fn render_background_status_json(
+    action_id: &str,
+    state: &ActionState,
+    source_step_id: Option<&str>,
+) -> Value {
+    let mut value = render_status_json(action_id, state);
+    value["kind"] = json!("background");
+    if let Some(source_step_id) = source_step_id {
+        value["source_step_id"] = json!(source_step_id);
+    }
+    value
 }
 
 #[cfg(test)]

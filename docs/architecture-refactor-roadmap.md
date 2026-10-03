@@ -610,3 +610,5 @@ MemoryRuntime 启动所有权后续校准（ADR 0367）：当前不再使用 `ru
 2026-09-29 配置契约清理（ADR 0405）：删除旧 `[memory].history_retention_days` 搬迁、旧配置名/权限 detector 与明文凭据导入；当前配置直接反序列化，未知字段及磁盘上的明文凭据会备份原文件并以默认值启动。安全凭据引用仍在启动时 hydrate；不匹配版本时只重建 `config.toml`，数据库、媒体和其它数据可以保留。
 
 2026-10-03 Ask 意外退出恢复（ADR 0440）：Ask `tool_result` transcript 与 `interaction_requested` 分开提交期间若进程退出，Agent 从活动 `session_events` 的 Ask 结果恢复 pending 状态；显式 request 按 ID/correlation IDs 收敛，`UserInject(source=answer)` 或 clear event 关闭请求。actor 启动和 resume IPC 共用该 reducer，不从消息内容或物化 projection 猜测回答；无 schema、IPC 或重置变化。
+
+2026-10-03 后台 Shell provenance 与 wait feedback（ADR 0445）：shell(background=true) 将可信工具步骤 step_id 持久到 actions.source_step_id，并在 ActionEvent 和自动 action-result envelope 中保留来源；Shell 启动、running 状态检查与全 running background 列表共用带 action_ids 和 delivery=automatic 的 background_wait tool-result 合同。普通同步工具和 scheduled 生命周期保持独立；等待字段不改变 Action 生命周期或写入新的 transcript 路径。schema v33 按发布说明重置。

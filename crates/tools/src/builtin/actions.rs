@@ -99,11 +99,25 @@ impl ActionsTool {
         if let Some(f) = filter {
             rows.retain(|row| row.status == f);
         }
-        let all_running =
-            !rows.is_empty() && rows.iter().all(|row| row.status == ActionStatus::Running);
+        let all_running_background = !rows.is_empty()
+            && rows.iter().all(|row| {
+                row.kind == crate::ActionViewKind::Background && row.status == ActionStatus::Running
+            });
         let rows_json = || rows.iter().map(|row| row.to_json()).collect::<Vec<_>>();
-        if all_running {
+        if all_running_background {
+            let action_ids = rows
+                .iter()
+                .filter_map(|row| match &row.projection {
+                    crate::ActionStatusView::Background { action_id, .. } => {
+                        Some(action_id.clone())
+                    }
+                    crate::ActionStatusView::NotFound { .. }
+                    | crate::ActionStatusView::Scheduled { .. }
+                    | crate::ActionStatusView::ScheduledTerminal { .. } => None,
+                })
+                .collect::<Vec<_>>();
             let mut body = haven_common::tools::background_wait_object(
+                action_ids,
                 "All listed background actions are still running. END YOUR TURN if you have nothing else useful to do — do not poll. Results are auto-pushed and the session is auto-woken when they finish.",
             );
             body.insert("operation".into(), serde_json::json!("list"));

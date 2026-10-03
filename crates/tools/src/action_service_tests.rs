@@ -49,6 +49,7 @@ async fn insert_running_background(
         ActionEntry {
             kind: ActionKind::Background,
             session_id: session_id.map(str::to_string),
+            source_step_id: None,
             state: ActionState::Running { started_at },
             kill: None,
             tail: None,
@@ -90,6 +91,7 @@ fn session_test_action_entry(
     ActionEntry {
         kind,
         session_id: session_id.map(str::to_string),
+        source_step_id: None,
         state,
         kill,
         tail: None,
@@ -532,6 +534,7 @@ async fn missing_store_keeps_background_actions_memory_only() {
         ActionEntry {
             kind: ActionKind::Background,
             session_id: Some(session_id.clone()),
+            source_step_id: None,
             state: ActionState::Running {
                 started_at: "started".into(),
             },
@@ -1142,6 +1145,7 @@ async fn terminal_projection_keeps_final_output_and_releases_live_tail() {
         ActionEntry {
             kind: ActionKind::Background,
             session_id: Some("ses-tail-terminal".into()),
+            source_step_id: None,
             state: ActionState::Running {
                 started_at: "started".into(),
             },
@@ -1197,6 +1201,7 @@ async fn cancellation_drops_live_output_without_projecting_it_to_terminal_state(
         ActionEntry {
             kind: ActionKind::Background,
             session_id: Some("ses-tail-cancel".into()),
+            source_step_id: None,
             state: ActionState::Running {
                 started_at: "started".into(),
             },
@@ -1230,6 +1235,7 @@ fn test_terminal_entry_stale_ttl() {
     let entry = |finished: chrono::DateTime<chrono::Utc>, running: bool| ActionEntry {
         kind: ActionKind::Background,
         session_id: None,
+        source_step_id: None,
         state: if running {
             ActionState::Running {
                 started_at: now.to_rfc3339(),
@@ -1267,6 +1273,109 @@ fn test_terminal_entry_stale_ttl() {
     assert!(
         !terminal_entry_stale(&entry(now, true), Duration::from_secs(600)),
         "running action is never stale"
+    );
+}
+
+#[tokio::test]
+async fn background_status_wait_feedback_carries_durable_provenance() {
+    let service = ActionService::new();
+    service.actions.write().await.insert(
+        "act-wait-source".into(),
+        ActionEntry {
+            kind: ActionKind::Background,
+            session_id: Some("ses-wait-source".into()),
+            source_step_id: Some("step-origin".into()),
+            state: ActionState::Running {
+                started_at: "started".into(),
+            },
+            kill: None,
+            tail: None,
+            command: "echo working".into(),
+            shell: "test".into(),
+            scheduled: None,
+        },
+    );
+
+    let status = service.status_view("act-wait-source").await.to_json(true);
+    assert_eq!(status["kind"], "background");
+    assert_eq!(status["source_step_id"], "step-origin");
+    assert_eq!(status["background_wait"]["kind"], "action_result");
+    assert_eq!(
+        status["background_wait"]["action_ids"],
+        json!(["act-wait-source"])
+    );
+    assert_eq!(status["background_wait"]["delivery"], "automatic");
+}
+
+#[tokio::test]
+async fn committed_background_completion_keeps_source_step_identity() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let db = Arc::new(Database::open(&dir.path().join("source.db")).unwrap());
+    db.save_action_with_source(
+        "act-committed-source",
+        Some("ses-committed-source"),
+        "echo committed",
+        "started",
+        Some("step-committed-source"),
+    )
+    .unwrap();
+
+    let service = Arc::new(ActionService::new());
+    service
+        .set_action_store(Some(ActionStore::new(db.clone())))
+        .await;
+    let events = capture_action_events(&service);
+    let mut receiver = service.take_action_receiver().unwrap();
+    service.actions.write().await.insert(
+        "act-committed-source".into(),
+        ActionEntry {
+            kind: ActionKind::Background,
+            session_id: Some("ses-committed-source".into()),
+            source_step_id: Some("step-committed-source".into()),
+            state: ActionState::Running {
+                started_at: "started".into(),
+            },
+            kill: None,
+            tail: None,
+            command: "echo committed".into(),
+            shell: "test".into(),
+            scheduled: None,
+        },
+    );
+
+    service
+        .mark_finished(
+            "act-committed-source",
+            "started",
+            "test",
+            "echo committed",
+            "done".into(),
+            true,
+            Some(0),
+            false,
+        )
+        .await;
+
+    let completion = recv_background(&mut receiver).await;
+    assert_eq!(
+        completion.status_json["source_step_id"],
+        "step-committed-source"
+    );
+    let finished = events
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|(name, _)| name == "action:finished")
+        .map(|(_, payload)| payload.clone())
+        .expect("committed finish event is published");
+    assert_eq!(finished["source_step_id"], "step-committed-source");
+    assert_eq!(
+        db.get_action("act-committed-source")
+            .unwrap()
+            .unwrap()
+            .source_step_id
+            .as_deref(),
+        Some("step-committed-source")
     );
 }
 
@@ -1342,6 +1451,7 @@ async fn board_returns_typed_safe_views_in_started_order() {
     let scheduled_entry = |state: ActionState, due_at: &str| ActionEntry {
         kind: ActionKind::Scheduled,
         session_id: Some("ses-scheduled".into()),
+        source_step_id: None,
         state,
         kill: None,
         tail: None,
@@ -1365,6 +1475,7 @@ async fn board_returns_typed_safe_views_in_started_order() {
         ActionEntry {
             kind: ActionKind::Background,
             session_id: Some("ses-background".into()),
+            source_step_id: None,
             state: ActionState::Completed {
                 output: long_output.clone(),
                 exit_code: Some(0),
@@ -1398,6 +1509,7 @@ async fn board_returns_typed_safe_views_in_started_order() {
         ActionEntry {
             kind: ActionKind::Background,
             session_id: None,
+            source_step_id: None,
             state: ActionState::Running {
                 started_at: "2026-09-23T10:00:04Z".into(),
             },
@@ -3314,6 +3426,7 @@ async fn test_background_registration_rollback_removes_durable_row() {
         ActionEntry {
             kind: ActionKind::Background,
             session_id: Some("ses-rollback".into()),
+            source_step_id: None,
             state: ActionState::Running {
                 started_at: "2026-09-19T00:00:00Z".into(),
             },

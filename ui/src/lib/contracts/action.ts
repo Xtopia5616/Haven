@@ -30,6 +30,7 @@ export interface ActionPayload {
 	kind: ActionKind;
 	status?: ActionStatus;
 	sessionId?: string;
+	sourceStepId?: string;
 	startedAt?: string;
 	finishedAt?: string;
 	dueAt?: string;
@@ -54,6 +55,7 @@ type WireRecord = Record<string, unknown>;
 
 const OPTIONAL_STRING_FIELDS = [
 	'session_id',
+	'source_step_id',
 	'started_at',
 	'finished_at',
 	'due_at',
@@ -112,6 +114,7 @@ export function mapActionPayload(payload: unknown): ActionPayload | null {
 	const mapped: ActionPayload = { id: payload.id, kind: payload.kind };
 	if (isActionStatus(payload.status)) mapped.status = payload.status;
 	if (typeof payload.session_id === 'string') mapped.sessionId = payload.session_id;
+	if (typeof payload.source_step_id === 'string') mapped.sourceStepId = payload.source_step_id;
 	if (typeof payload.started_at === 'string') mapped.startedAt = payload.started_at;
 	if (typeof payload.finished_at === 'string') mapped.finishedAt = payload.finished_at;
 	if (typeof payload.due_at === 'string') mapped.dueAt = payload.due_at;
