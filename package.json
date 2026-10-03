@@ -1,6 +1,7 @@
 {
 	"name": "haven",
 	"private": true,
+	"type": "module",
 	"packageManager": "pnpm@11.24.0",
 	"scripts": {
 		"dev": "cargo tauri dev",
