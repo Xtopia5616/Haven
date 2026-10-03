@@ -77,9 +77,8 @@ pub struct StreamRuleMatch {
 }
 
 /// Trailing byte window used when evaluating stream rules mid-stream so each
-/// chunk does not re-scan the entire accumulated reply (O(n²)). Fence openers
-/// and similar abort patterns are short; 256 bytes of UTF-8-safe suffix is
-/// enough for the default `code_block_abort` rule and typical custom rules.
+/// chunk does not re-scan the entire accumulated reply (O(n²)). Typical stream
+/// rule patterns fit within this UTF-8-safe suffix.
 pub const STREAM_RULE_WINDOW: usize = 256;
 
 /// UTF-8-safe trailing slice of at most `max_bytes`.
@@ -131,43 +130,11 @@ impl StreamRule {
             mode,
         })
     }
-
-    /// Convenience: abort when the model opens a fenced **programming** code
-    /// block (common languages). Plain ``` / ```text / ```markdown fences are
-    /// allowed so explanatory quotes are not killed. Production routers only
-    /// evaluate this while tools are attached (see `aggregate_stream_cancellable`).
-    pub fn code_block_abort() -> Result<Self, regex::Error> {
-        Self::new(
-            "no_code_blocks",
-            r"(?s)```(?:python|py|rust|rs|javascript|js|typescript|ts|tsx|jsx|bash|sh|zsh|powershell|ps1|json|toml|yaml|yml|sql|go|java|c|cpp|csharp|cs|ruby|rb|php|swift|kotlin|lua|r|html|css|xml|dockerfile|makefile)\r?\n",
-            "IMPORTANT: Do NOT output code blocks. Use available tools instead of writing code.",
-            StreamRuleMode::Abort,
-        )
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn code_block_rule_matches() {
-        let rule = StreamRule::code_block_abort().unwrap();
-        let text = "Let me write some code:\n```python\nprint('hello')\n```";
-        let matched = check_stream_rules(&[rule], text);
-        assert!(matched.is_some());
-        assert_eq!(matched.as_ref().unwrap().mode, StreamRuleMode::Abort);
-    }
-
-    #[test]
-    fn code_block_rule_allows_plain_and_text_fences() {
-        let rule = StreamRule::code_block_abort().unwrap();
-        assert!(check_stream_rules(std::slice::from_ref(&rule), "quote:\n```\nok\n```").is_none());
-        assert!(
-            check_stream_rules(&[rule], "note:\n```text\nplain\n```").is_none(),
-            "```text should not abort"
-        );
-    }
 
     #[test]
     fn trailing_window_is_utf8_safe() {

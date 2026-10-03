@@ -141,24 +141,11 @@ impl LlmRouter {
             default_context_window: fallback,
             model_directory,
             health,
-            // Production routers start with the default no-code-block guard.
-            // Test constructors keep an empty rule list via `runtime_state`.
-            stream_rules: RwLock::new(Self::default_stream_rules()),
+            // Stream rules are opt-in; code-block output remains ordinary
+            // assistant text unless a caller explicitly installs a rule.
+            stream_rules: RwLock::new(Vec::new()),
             semaphores,
             rate_limited,
-        }
-    }
-
-    /// Default stream-output guards applied to every production router.
-    /// Currently aborts when the model starts a fenced code block (it should
-    /// call tools instead of dumping code into the chat).
-    fn default_stream_rules() -> Vec<StreamRule> {
-        match StreamRule::code_block_abort() {
-            Ok(rule) => vec![rule],
-            Err(e) => {
-                tracing::error!("failed to compile default stream rule: {e}");
-                Vec::new()
-            }
         }
     }
 
@@ -2788,22 +2775,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn production_router_seeds_code_block_abort_rule() {
+    async fn production_router_allows_fenced_code_output_by_default() {
         let router = LlmRouter::new(RouterConfig::default());
-        let matched = router
-            .check_stream_output("here:\n```rust\nfn main() {}\n```")
-            .await;
-        assert!(matched.is_some());
-        assert_eq!(matched.unwrap().mode, StreamRuleMode::Abort);
-        // Test constructors keep an empty rule list.
-        let client = Arc::new(MockStreamClient {
-            chunks: vec![],
-            fail_chat: false,
-        }) as Arc<dyn LlmClient>;
-        let test_router =
-            LlmRouter::new_with_clients(client.clone(), client.clone(), client.clone(), client);
         assert!(
-            test_router
+            router
                 .check_stream_output("here:\n```rust\nfn main() {}\n```")
                 .await
                 .is_none()

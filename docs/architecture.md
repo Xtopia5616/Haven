@@ -253,7 +253,7 @@ OS 句柄和进程生命周期适配不属于该共享契约面，统一归 `hav
   `builtin/media_audio.rs::AudioRuntime`。
 - `tts.rs` 的 TTS client 由 `haven-app-binary` 注入 `haven-tools`；它不是媒体工具的
   自动处理分支，因此用户文本不会因为关键词被隐式朗读。
-- `registry.rs` / `stream_rules.rs`：模型注册表、流式规则（生产 router 默认启用 `code_block_abort`）。
+- `registry.rs` / `stream_rules.rs`：模型注册表与可显式配置的流式规则；生产 router 默认不拦截代码块。
 
 **判定标准**：一切「与模型 / 云端 provider 打交道的实现」都在这里；其它 crate 只通过
 `LlmRouter` / `*Client` trait 消费，不实现。
