@@ -244,6 +244,7 @@
 		let hintRaf = 0;
 		const dragController = createDragScrollController(node, {
 			axis: 'x',
+			preserveTextSelection: true,
 			resolveTarget(target) {
 				const element = target instanceof Element ? target.closest('pre, table') : null;
 				return element instanceof HTMLElement ? element : null;
@@ -1000,7 +1001,6 @@
 	.md-content :global(pre.drag-scroll--active),
 	.md-content :global(table.drag-scroll--active) {
 		cursor: grabbing;
-		user-select: none;
 	}
 	.md-content :global(.md-code-wrap)::before,
 	.md-content :global(.md-code-wrap)::after,

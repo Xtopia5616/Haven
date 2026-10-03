@@ -9,6 +9,8 @@ export type DragScrollAxis = 'x' | 'y';
 export type DragScrollOptions = {
 	axis?: DragScrollAxis;
 	resolveTarget?: (target: EventTarget | null) => HTMLElement | null;
+	/** Let native text selection cancel a pending drag before scrolling begins. */
+	preserveTextSelection?: boolean;
 };
 
 type DragState = {
@@ -42,6 +44,7 @@ function startsOnInteractiveElement(target: EventTarget | null) {
 export function createDragScrollController(node: HTMLElement, options: DragScrollOptions = {}) {
 	let axis = options.axis ?? 'y';
 	let resolveTarget = options.resolveTarget ?? (() => node);
+	let preserveTextSelection = options.preserveTextSelection ?? false;
 	let drag: DragState | null = null;
 
 	function clearDrag() {
@@ -78,6 +81,16 @@ export function createDragScrollController(node: HTMLElement, options: DragScrol
 		const deltaX = event.clientX - drag.startX;
 		const deltaY = event.clientY - drag.startY;
 		if (!drag.moved && Math.hypot(deltaX, deltaY) < DRAG_THRESHOLD_PX) return;
+		if (!drag.moved && preserveTextSelection) {
+			// Give the browser's native selection a pointer-move before taking over
+			// the gesture. A selectstart event will cancel the pending drag below.
+			drag.moved = true;
+			return;
+		}
+		if (preserveTextSelection && selectionTouches(drag.target)) {
+			clearDrag();
+			return;
+		}
 
 		drag.moved = true;
 		event.preventDefault();
@@ -95,15 +108,31 @@ export function createDragScrollController(node: HTMLElement, options: DragScrol
 		clearDrag();
 	}
 
+	function selectionTouches(target: HTMLElement) {
+		const selection = window.getSelection();
+		if (!selection || selection.isCollapsed) return false;
+		return (
+			(target.contains(selection.anchorNode) || target.contains(selection.focusNode)) &&
+			selection.toString().length > 0
+		);
+	}
+
+	function onSelectStart(event: Event) {
+		if (!drag || !preserveTextSelection) return;
+		if (event.target instanceof Node && drag.target.contains(event.target)) clearDrag();
+	}
+
 	node.addEventListener('pointerdown', onPointerDown);
 	node.addEventListener('pointermove', onPointerMove);
 	node.addEventListener('pointerup', onPointerEnd);
 	node.addEventListener('pointercancel', onPointerEnd);
+	node.addEventListener('selectstart', onSelectStart, true);
 
 	return {
 		update(nextOptions: DragScrollOptions = {}) {
 			axis = nextOptions.axis ?? 'y';
 			resolveTarget = nextOptions.resolveTarget ?? (() => node);
+			preserveTextSelection = nextOptions.preserveTextSelection ?? false;
 		},
 		destroy() {
 			clearDrag();
@@ -111,6 +140,7 @@ export function createDragScrollController(node: HTMLElement, options: DragScrol
 			node.removeEventListener('pointermove', onPointerMove);
 			node.removeEventListener('pointerup', onPointerEnd);
 			node.removeEventListener('pointercancel', onPointerEnd);
+			node.removeEventListener('selectstart', onSelectStart, true);
 		},
 	};
 }

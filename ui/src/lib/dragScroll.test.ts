@@ -147,4 +147,60 @@ describe('dragScroll', () => {
 		expect(code.scrollLeft).toBe(120);
 		cleanup.destroy();
 	});
+
+	it('preserves text selection in a resolved horizontal scroll surface', () => {
+		const node = document.createElement('div');
+		const code = sizedScrollableNode({
+			scrollHeight: 400,
+			clientHeight: 400,
+			scrollWidth: 1000,
+			clientWidth: 400,
+		});
+		const text = document.createTextNode('select this code');
+		code.append(text);
+		node.append(code);
+		const cleanup = dragScroll(node, {
+			axis: 'x',
+			preserveTextSelection: true,
+			resolveTarget: (target) => (target instanceof HTMLElement ? target : null),
+		});
+
+		code.dispatchEvent(
+			new PointerEvent('pointerdown', {
+				bubbles: true,
+				button: 0,
+				clientX: 300,
+				clientY: 100,
+				isPrimary: true,
+				pointerId: 1,
+			}),
+		);
+		code.dispatchEvent(
+			new PointerEvent('pointermove', {
+				bubbles: true,
+				button: 0,
+				clientX: 280,
+				clientY: 100,
+				isPrimary: true,
+				pointerId: 1,
+			}),
+		);
+		const selectStart = new Event('selectstart', { bubbles: true, cancelable: true });
+		text.dispatchEvent(selectStart);
+		code.dispatchEvent(
+			new PointerEvent('pointermove', {
+				bubbles: true,
+				button: 0,
+				clientX: 180,
+				clientY: 100,
+				isPrimary: true,
+				pointerId: 1,
+			}),
+		);
+
+		expect(selectStart.defaultPrevented).toBe(false);
+		expect(code.scrollLeft).toBe(0);
+		expect(code.classList.contains('drag-scroll--active')).toBe(false);
+		cleanup.destroy();
+	});
 });
