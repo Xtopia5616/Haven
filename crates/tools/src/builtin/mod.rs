@@ -33,7 +33,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use self::operation_contract::operation_contract;
+use self::operation_contract::{OperationContract, operation_contract};
 use crate::ActionService;
 use crate::ToolRegistry;
 use crate::operation_view::{
@@ -511,15 +511,16 @@ fn operation_spec(
 ) -> OperationSpec {
     let metadata = operation_contract(name);
     let policy_input = Value::Object(fixed.iter().cloned().collect());
-    // Freeze the aggregate call shape. Idempotency comes from the contract,
-    // including agent.inbox, and read_only does not waive confirmation.
+    // Freeze the aggregate call shape. Idempotency and effect come from the
+    // contract, independently of concurrency; sensitive/network reads still
+    // require disclosure confirmation.
     let mut risk_level = inner.risk_level(&policy_input);
     if let Some(override_risk) = metadata.risk_override {
         risk_level = override_risk;
     }
     let concurrency = inner.concurrency(&policy_input);
     let (effect, data_sensitivity, network_access) =
-        crate::tool_contract::operation_attributes(name, concurrency.clone());
+        operation_policy_attributes(&metadata, concurrency.clone());
     let policy = OperationPolicy {
         risk_level,
         capability: name.into(),
@@ -556,6 +557,31 @@ fn operation_spec(
         },
         identity: None,
     }
+}
+
+/// Keep data/effect policy independent from scheduling concurrency. A shared
+/// resource can describe either a reader or a writer; the operation contract
+/// decides which effect applies, while network access remains separately
+/// classified for disclosure and network policy.
+fn operation_policy_attributes(
+    contract: &OperationContract,
+    concurrency: ToolConcurrency,
+) -> (
+    crate::OperationEffect,
+    crate::DataSensitivity,
+    crate::NetworkAccess,
+) {
+    let (concurrency_effect, data_sensitivity, inferred_network_access) =
+        crate::tool_contract::operation_attributes(contract.name, concurrency);
+    let effect = if contract.read_only {
+        crate::OperationEffect::ReadOnly
+    } else {
+        concurrency_effect
+    };
+    let network_access = contract
+        .network_access_override
+        .unwrap_or(inferred_network_access);
+    (effect, data_sensitivity, network_access)
 }
 
 /// The operation-view catalog is the backend source of truth for the model
@@ -1416,6 +1442,80 @@ mod tests {
                 .unwrap_or_else(|| panic!("security matrix missing {}", contract.name));
             assert_eq!(matrix.risk_level, contract.policy.risk_level);
         }
+    }
+
+    #[test]
+    fn admin_diagnostics_effect_and_network_policy_are_distinct() {
+        let status = operation_contract("haven.diagnostics.status");
+        let (status_effect, _, status_network) = operation_policy_attributes(
+            &status,
+            ToolConcurrency::SharedResource("haven:diagnostics".into()),
+        );
+        assert_eq!(status_effect, crate::OperationEffect::ReadOnly);
+        assert_eq!(status_network, crate::NetworkAccess::Public);
+
+        let errors = operation_contract("haven.diagnostics.errors");
+        let (errors_effect, _, errors_network) = operation_policy_attributes(
+            &errors,
+            ToolConcurrency::SharedResource("haven:sessions".into()),
+        );
+        assert_eq!(errors_effect, crate::OperationEffect::ReadOnly);
+        assert_eq!(errors_network, crate::NetworkAccess::None);
+    }
+
+    #[tokio::test]
+    async fn diagnostics_status_confirms_network_access_but_errors_does_not() {
+        use haven_common::types::PermissionMode;
+
+        let authorization = crate::AuthorizationEngine::new();
+        authorization
+            .set_permission_mode(PermissionMode::Default)
+            .await;
+
+        let request_for = |name: &'static str| {
+            let contract = operation_contract(name);
+            let concurrency = ToolConcurrency::SharedResource(
+                if name == "haven.diagnostics.status" {
+                    "haven:diagnostics"
+                } else {
+                    "haven:sessions"
+                }
+                .into(),
+            );
+            let (effect, data_sensitivity, network_access) =
+                operation_policy_attributes(&contract, concurrency.clone());
+            let policy = OperationPolicy {
+                risk_level: RiskLevel::Low,
+                capability: name.into(),
+                confirmation: crate::tool_contract::confirmation_for(
+                    RiskLevel::Low,
+                    matches!(effect, crate::OperationEffect::ReadOnly),
+                ),
+                idempotency: contract.idempotency,
+                scope: crate::ToolOperationScope::Global,
+                concurrency,
+                effect,
+                data_sensitivity,
+                network_access,
+            };
+            crate::AuthorizationRequest::new(None, name, json!({}), policy)
+        };
+
+        assert!(matches!(
+            authorization
+                .authorize(&request_for("haven.diagnostics.status"))
+                .await,
+            crate::AuthorizationDecision::RequiresConfirmation {
+                reason_code: crate::AuthorizationReasonCode::SensitiveData,
+                ..
+            }
+        ));
+        assert!(matches!(
+            authorization
+                .authorize(&request_for("haven.diagnostics.errors"))
+                .await,
+            crate::AuthorizationDecision::AutoApproved
+        ));
     }
 
     #[test]

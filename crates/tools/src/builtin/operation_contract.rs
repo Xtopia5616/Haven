@@ -5,7 +5,7 @@
 //! projection, prompt catalog and UI manifest. Schemas remain close to the
 //! implementation because they can depend on runtime limits.
 
-use crate::OperationIdempotency;
+use crate::{NetworkAccess, OperationIdempotency};
 use haven_common::tools::ToolCatalogGroup;
 use haven_common::types::RiskLevel;
 
@@ -14,9 +14,13 @@ pub(crate) struct OperationContract {
     pub(crate) name: &'static str,
     pub(crate) label: &'static str,
     pub(crate) catalog_group: ToolCatalogGroup,
-    /// Selects idempotency. It does not waive confirmation.
-    #[allow(dead_code)]
+    /// Describes the operation's effect, independently of its scheduling
+    /// concurrency. Sensitive data and network access can still require
+    /// confirmation for a read-only operation.
     pub(crate) read_only: bool,
+    /// Explicit classification for operations whose network use cannot be
+    /// inferred from their stable name.
+    pub(crate) network_access_override: Option<NetworkAccess>,
     pub(crate) risk_override: Option<RiskLevel>,
     pub(crate) idempotency: OperationIdempotency,
 }
@@ -286,6 +290,11 @@ pub(crate) fn operation_contract(name: &'static str) -> OperationContract {
         label,
         catalog_group,
         read_only,
+        network_access_override: match name {
+            // `status` probes configured provider endpoints with GET /models.
+            "haven.diagnostics.status" => Some(NetworkAccess::Public),
+            _ => None,
+        },
         risk_override,
         idempotency,
     }
@@ -302,5 +311,13 @@ mod tests {
         assert_eq!(contract.catalog_group, ToolCatalogGroup::Haven);
         assert_eq!(contract.risk_override, Some(RiskLevel::High));
         assert!(!contract.read_only);
+
+        let status = operation_contract("haven.diagnostics.status");
+        assert!(status.read_only);
+        assert_eq!(status.network_access_override, Some(NetworkAccess::Public));
+
+        let errors = operation_contract("haven.diagnostics.errors");
+        assert!(errors.read_only);
+        assert_eq!(errors.network_access_override, None);
     }
 }

@@ -415,3 +415,4 @@
 - [0430：待决交互可以收起并重新打开](0430-reopenable-pending-interactions.md)
 - [0431：Provider-specific tool name projection](0431-provider-specific-tool-name-projection.md)
 - [0432：本机工具契约稳定性修正](0432-local-tool-contract-stability-fixes.md)
+- [0434：诊断状态的网络授权与有界探测](0434-diagnostics-status-policy-and-probes.md)

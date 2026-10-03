@@ -16,12 +16,16 @@ use haven_mcp::{McpClientStatus, McpStatusChangeEvent};
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
+use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::RwLock;
 
 use haven_mcp::McpManager;
 use haven_skills::SkillsEngine;
+
+const DIAGNOSTIC_MODEL_HEALTH_CHECK_TIMEOUT: Duration = Duration::from_secs(7);
 
 pub(crate) enum NativeMcpServiceError {
     Preflight(String),
@@ -378,28 +382,29 @@ impl AdminServices {
         }
 
         let models = if let Some(router) = &self.context.router {
-            let mut health = BTreeMap::new();
-            for request in RequestKind::ALL {
-                let configured = router.is_request_configured(*request).await;
-                let status = if !configured {
-                    "not_configured".to_string()
-                } else {
-                    match router
-                        .health_check(haven_llm::types::HealthCheckRequest { request: *request })
-                        .await
-                    {
-                        Ok(()) => "ok".to_string(),
-                        Err(error) => {
-                            format!("error: {}", sanitize_diagnostic(&error.to_string()))
+            let configured =
+                futures_util::future::join_all(RequestKind::ALL.iter().copied().map(|request| {
+                    let router = Arc::clone(router);
+                    async move { (request, router.is_request_configured(request).await) }
+                }))
+                .await;
+            let health_router = Arc::clone(router);
+            Some(
+                collect_diagnostic_model_health(
+                    configured,
+                    DIAGNOSTIC_MODEL_HEALTH_CHECK_TIMEOUT,
+                    move |request| {
+                        let router = Arc::clone(&health_router);
+                        async move {
+                            router
+                                .health_check(haven_llm::types::HealthCheckRequest { request })
+                                .await
+                                .map_err(|error| sanitize_diagnostic(&error.to_string()))
                         }
-                    }
-                };
-                health.insert(
-                    request.as_str().to_string(),
-                    DiagnosticModelStatus { configured, status },
-                );
-            }
-            Some(health)
+                    },
+                )
+                .await,
+            )
         } else {
             None
         };
@@ -1205,6 +1210,38 @@ impl AdminServices {
     }
 }
 
+async fn collect_diagnostic_model_health<F, Fut>(
+    models: impl IntoIterator<Item = (RequestKind, bool)>,
+    timeout: Duration,
+    check: F,
+) -> BTreeMap<String, DiagnosticModelStatus>
+where
+    F: Fn(RequestKind) -> Fut + Sync,
+    Fut: Future<Output = Result<(), String>> + Send,
+{
+    futures_util::future::join_all(models.into_iter().map(|(request, configured)| {
+        let check = &check;
+        async move {
+            let status = if !configured {
+                "not_configured".to_string()
+            } else {
+                match tokio::time::timeout(timeout, check(request)).await {
+                    Ok(Ok(())) => "ok".to_string(),
+                    Ok(Err(error)) => format!("error: {}", sanitize_diagnostic(&error)),
+                    Err(_) => format!("error: health check timed out after {timeout:?}"),
+                }
+            };
+            (
+                request.as_str().to_string(),
+                DiagnosticModelStatus { configured, status },
+            )
+        }
+    }))
+    .await
+    .into_iter()
+    .collect()
+}
+
 pub(crate) fn validate_skill_name(name: &str) -> Result<()> {
     let valid = !name.is_empty()
         && name.len() <= 128
@@ -1253,4 +1290,55 @@ pub(crate) fn sanitize_log_line(line: &str) -> String {
 
 pub(crate) fn sanitize_diagnostic(text: &str) -> String {
     sanitize_log_line(text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::sync::Barrier;
+
+    #[tokio::test]
+    async fn diagnostic_model_checks_run_concurrently_and_keep_unconfigured_routes() {
+        let barrier = Arc::new(Barrier::new(2));
+        let check_barrier = Arc::clone(&barrier);
+        let models = collect_diagnostic_model_health(
+            [
+                (RequestKind::Chat, true),
+                (RequestKind::FastChat, true),
+                (RequestKind::Vision, false),
+            ],
+            Duration::from_millis(250),
+            move |_| {
+                let barrier = Arc::clone(&check_barrier);
+                async move {
+                    barrier.wait().await;
+                    Ok(())
+                }
+            },
+        )
+        .await;
+
+        assert_eq!(models.len(), 3);
+        assert_eq!(models["chat"].status, "ok");
+        assert_eq!(models["fast_chat"].status, "ok");
+        assert_eq!(models["vision"].status, "not_configured");
+    }
+
+    #[tokio::test]
+    async fn diagnostic_model_health_timeout_is_reported_per_route() {
+        let models = collect_diagnostic_model_health(
+            [(RequestKind::Chat, true)],
+            Duration::from_millis(10),
+            |_| async {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                Ok(())
+            },
+        )
+        .await;
+
+        assert_eq!(
+            models["chat"].status,
+            "error: health check timed out after 10ms"
+        );
+    }
 }
