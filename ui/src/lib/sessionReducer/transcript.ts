@@ -208,6 +208,7 @@ export function reduceTranscript(
 								...message,
 								content: action.content,
 								actionId: null,
+								sourceActionId: message.sourceActionId ?? message.actionId,
 								streaming: false,
 							};
 						});

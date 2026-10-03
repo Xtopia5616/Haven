@@ -25,7 +25,7 @@ export interface RecordingState { is_recording: boolean; is_toggle: boolean }
 export interface SessionResumeResponse { session: Session; messages: Message[]; steps: SessionStep[]; usage: SessionUsage | null; llm_usage: LlmCallUsage[]; interactions: InteractionRequestedEvent[] }
 export interface SessionPermissionGrant { session_id: string; session_title: string | null; capability: string; target: string; effect: string }
 export interface ShellAvailability { available: boolean }
-export interface ActionEvent { id: string; kind: ActionKind; status?: ActionStatus; session_id?: string; started_at?: string; finished_at?: string; due_at?: string; title?: string; body?: string; mode?: string; command?: string; output?: string; error?: string; error_reason?: string; exit_code?: number; preview?: string }
+export interface ActionEvent { id: string; kind: ActionKind; status?: ActionStatus; session_id?: string; source_step_id?: string; started_at?: string; finished_at?: string; due_at?: string; title?: string; body?: string; mode?: string; command?: string; output?: string; error?: string; error_reason?: string; exit_code?: number; preview?: string }
 export type ActionKindInput = 'background' | 'scheduled';
 export type ActionKind = 'background' | 'scheduled';
 export interface InteractionRequestedEvent { id: string; session_id: string; kind: string; status: string; options?: string[]; tool_name?: string; risk_level?: RiskLevel; summary?: string; permission_key?: string; invocation_step_id?: string; action_index?: number; tool_call_id?: string; created_at: string; expires_at?: string }
@@ -189,7 +189,7 @@ export interface TauriCommandMap {
 	get_tools: { request: undefined; response: ToolListResponse };
 	interrupt_session: { request: { sessionId: string }; response: void };
 	is_autostart_enabled: { request: undefined; response: boolean };
-	list_action_history: { request: { kind?: ActionKindInput | null; limit?: number | null }; response: ActionEvent[] };
+	list_action_history: { request: { kind?: ActionKindInput | null; limit?: number | null; sessionId?: string | null }; response: ActionEvent[] };
 	list_actions: { request: undefined; response: ActionEvent[] };
 	list_facts: { request: { source?: string | null }; response: Fact[] };
 	list_mcp_tools: { request: undefined; response: McpServerSnapshot[] };

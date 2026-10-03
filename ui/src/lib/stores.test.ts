@@ -18,9 +18,13 @@ import { newMessage } from './messageFactory.ts';
 import { reactExecutionPhaseStore, updateReactExecutionPhase } from './runtimeStateStore.ts';
 import {
 	actionStore,
+	sessionActionStore,
 	upsertAction,
+	upsertSessionAction,
 	removeAction,
 	refreshActions,
+	refreshSessionActions,
+	setActiveSessionAction,
 	finalizeBackgroundActionMessages,
 } from './actionStore.ts';
 
@@ -171,6 +175,7 @@ describe('upsertAction', () => {
 		});
 		const msg = appSessionReducer.getMessages('ses-1')[0] as unknown as Record<string, unknown>;
 		expect(msg.actionId).toBeNull();
+		expect(msg.sourceActionId).toBe('act-fin');
 		expect(msg.streaming).toBe(false);
 		const body = JSON.parse(String(msg.content));
 		expect(body.status).toBe('cancelled');
@@ -206,6 +211,103 @@ describe('upsertAction', () => {
 		expect(msg.actionId).toBe('act-scheduled-fin');
 		expect(msg.streaming).toBe(true);
 		expect(JSON.parse(String(msg.content))).toMatchObject({ status: 'running' });
+	});
+});
+
+describe('session action history hydration', () => {
+	beforeEach(() => {
+		sessionActionStore.set({});
+		setActiveSessionAction(null);
+		vi.mocked(invoke).mockReset();
+	});
+
+	it('loads terminal rows for the selected session after switching or restart', async () => {
+		vi.mocked(invoke).mockResolvedValue([
+			{
+				id: 'act-session-1',
+				kind: 'scheduled',
+				status: 'completed',
+				session_id: 'ses-1',
+				title: 'Reminder',
+			},
+			{
+				id: 'act-other-session',
+				kind: 'background',
+				status: 'failed',
+				session_id: 'ses-2',
+			},
+		]);
+
+		await refreshSessionActions('ses-1');
+
+		expect(invoke).toHaveBeenCalledWith('list_action_history', {
+			kind: null,
+			limit: 200,
+			sessionId: 'ses-1',
+		});
+		expect(get(sessionActionStore)['ses-1']).toMatchObject({
+			'act-session-1': { status: 'completed', kind: 'scheduled' },
+		});
+		expect(get(sessionActionStore)['ses-1']?.['act-other-session']).toBeUndefined();
+		expect(get(sessionActionStore)['ses-2']).toBeUndefined();
+	});
+
+	it('keeps a newer lifecycle event received while history is loading', async () => {
+		let resolveHistory!: (value: unknown) => void;
+		const history = new Promise((resolve) => {
+			resolveHistory = resolve;
+		});
+		vi.mocked(invoke).mockReturnValueOnce(history as never);
+
+		const refresh = refreshSessionActions('ses-1');
+		upsertSessionAction({
+			id: 'act-race',
+			kind: 'background',
+			status: 'failed',
+			sessionId: 'ses-1',
+			output: 'new event result',
+		});
+		resolveHistory([
+			{
+				id: 'act-race',
+				kind: 'background',
+				status: 'completed',
+				session_id: 'ses-1',
+				output: 'stale history result',
+			},
+		]);
+		await refresh;
+
+		expect(get(sessionActionStore)['ses-1']?.['act-race']).toMatchObject({
+			status: 'failed',
+			output: 'new event result',
+		});
+	});
+
+	it('bounds the cached action rows and number of cached sessions', () => {
+		for (let index = 0; index < 205; index++) {
+			upsertSessionAction({
+				id: `act-cap-${index}`,
+				kind: 'scheduled',
+				status: 'completed',
+				sessionId: 'ses-capacity',
+				finishedAt: new Date(1_700_000_000_000 + index * 1000).toISOString(),
+			});
+		}
+		setActiveSessionAction('ses-capacity');
+		expect(Object.keys(get(sessionActionStore)['ses-capacity'] || {})).toHaveLength(200);
+		for (let index = 0; index < 17; index++) {
+			upsertSessionAction({
+				id: `act-session-${index}`,
+				kind: 'scheduled',
+				sessionId: `ses-capacity-${index}`,
+			});
+		}
+
+		const store = get(sessionActionStore);
+		expect(Object.keys(store)).toHaveLength(16);
+		expect(Object.keys(store['ses-capacity'] || {})).toHaveLength(200);
+		expect(Object.keys(store['ses-capacity-16'] || {})).toHaveLength(1);
 	});
 });
 

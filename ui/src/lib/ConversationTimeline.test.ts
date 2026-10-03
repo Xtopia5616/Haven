@@ -32,6 +32,77 @@ describe('ConversationTimeline', () => {
 		expect(document.querySelector('.bubble.user')?.textContent).toContain('你好');
 	});
 
+	it('renders a waiting background Action beside its source step without a second banner', () => {
+		const { container } = render(ConversationTimeline, {
+			messages: [
+				{
+					id: 'step-background',
+					role: 'assistant',
+					content: '{"background":true,"action_id":"act-bg"}',
+					type: 'tool',
+					toolName: 'shell',
+					sourceActionId: 'act-bg',
+					stepNumber: 2,
+					streaming: false,
+				},
+			],
+			sessionActions: [
+				{
+					id: 'act-bg',
+					kind: 'background',
+					status: 'running',
+					sessionId: 'ses-1',
+					startedAt: '2026-10-03T03:00:00Z',
+					command: '整理下载目录',
+					preview: '扫描中',
+					output: '已移动 3 个文件',
+				},
+			],
+			awaitingBackground: true,
+			awaitingBackgroundCount: 1,
+		});
+
+		const card = container.querySelector('.action-timeline-card');
+		expect(card).toBeTruthy();
+		expect(card?.textContent).toContain('后台任务');
+		expect(card?.textContent).toContain('整理下载目录');
+		expect(card?.querySelector('.action-preview')?.textContent).toContain('扫描中');
+		expect(card?.querySelector('.action-output pre')?.textContent).toContain('已移动 3 个文件');
+		expect(card?.textContent).toContain('等待后台任务结果，完成后将自动继续');
+		expect(container.querySelectorAll('.action-wait-note')).toHaveLength(1);
+		expect(container.querySelector('.awaiting-bg-banner')).toBeNull();
+		expect(container.querySelector('.activity-group')!.compareDocumentPosition(card!)).toBe(
+			Node.DOCUMENT_POSITION_FOLLOWING,
+		);
+	});
+
+	it('uses the shared Action card for scheduled details when the transcript is empty', () => {
+		const { container } = render(ConversationTimeline, {
+			messages: [],
+			sessionActions: [
+				{
+					id: 'act-scheduled',
+					kind: 'scheduled',
+					status: 'waiting',
+					sessionId: 'ses-1',
+					dueAt: '2026-10-03T04:00:00Z',
+					title: '稍后提醒',
+					body: '整理会议记录',
+					mode: 'continue',
+				},
+			],
+		});
+
+		const card = container.querySelector('.action-timeline-card');
+		expect(card).toBeTruthy();
+		expect(card?.textContent).toContain('定时任务');
+		expect(card?.textContent).toContain('稍后提醒');
+		expect(card?.textContent).toContain('整理会议记录');
+		expect(card?.textContent).toContain('继续会话');
+		expect(card?.textContent).toContain('计划触发');
+		expect(container.querySelector('.welcome')).toBeNull();
+	});
+
 	it('passes through the continue action for a user-tail conversation', () => {
 		render(ConversationTimeline, {
 			messages: [{ id: 'msg-1', role: 'user', content: '继续处理', type: 'user' }],

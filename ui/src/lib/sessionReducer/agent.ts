@@ -1,6 +1,7 @@
 import type { AgentSupplementPayload } from '../contracts/agent.ts';
 import {
 	actionIdFromObservation,
+	sourceActionIdFromObservation,
 	accumulateStreamChunk,
 	applyThoughtSnap,
 	dropStreamedThought,
@@ -347,6 +348,10 @@ export function reduceAgent(inputState: SessionReducerState, action: Action): Se
 					renderer: payload.renderer,
 					result: payload.result,
 					actionId: actionIdFromObservation(payload.observation),
+					sourceActionId: sourceActionIdFromObservation(
+						payload.toolName,
+						payload.observation,
+					),
 					showFallbackIntent: !hasToolPreambleInBlock(messages, ids.thoughtId),
 				});
 				if (index < 0) return insertAgentMessage(messages, message);

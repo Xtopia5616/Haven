@@ -42,6 +42,8 @@ export type SessionMessage = StreamMessage & {
 	outcome?: string | null;
 	renderer?: string | null;
 	actionId?: string | null;
+	/** Stable Action identity used to anchor its timeline card to this tool step. */
+	sourceActionId?: string | null;
 	resolved?: { answer?: string; ignored?: boolean } | null;
 	received?: boolean;
 };

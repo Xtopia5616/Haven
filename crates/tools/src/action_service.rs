@@ -833,6 +833,24 @@ impl ActionService {
         store.list_actions(kind.map(str::to_owned)).await
     }
 
+    /// List persisted actions owned by one session for its conversation
+    /// timeline. This remains a read-only projection through the action store.
+    pub async fn list_persisted_actions_for_session(
+        &self,
+        session_id: &str,
+        kind: Option<&str>,
+    ) -> anyhow::Result<Vec<ActionRow>> {
+        let store = self
+            .action_store
+            .read()
+            .await
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("ActionService action store is not configured"))?;
+        store
+            .list_actions_for_session(session_id.to_string(), kind.map(str::to_owned))
+            .await
+    }
+
     /// Try to move a malformed persisted waiting row to terminal history.
     /// Returns `Ok(false)` when another path already removed it from the
     /// waiting set. Restore must never leave a row that the pending query

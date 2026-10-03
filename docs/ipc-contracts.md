@@ -16,7 +16,7 @@
 |---|---|---|
 | `list_actions` | read | 仅任务投影字段 |
 | `cancel_action` | mutate | kind 枚举校验 |
-| `list_action_history` | read | limit ≤ 200 |
+| `list_action_history` | read | 可选 `session_id` 过滤；limit ≤ 200 |
 | `delete_action` | mutate | 按 id 删除单条任务 |
 | `open_external` | execute | 仅 http(s) 或校验后的本地绝对路径 |
 | `get_history` | read | 只读会话投影 |
@@ -131,7 +131,7 @@ Tauri 接收前端参数时采用其自动 camelCase → Rust snake_case 映射�
 |---|---|---|
 | `list_actions` | read | 当前任务投影 |
 | `cancel_action` | mutate | 取消指定任务 |
-| `list_action_history` | read | 有界终态历史 |
+| `list_action_history` | read | 有界终态历史，可按 session 过滤 |
 | `delete_action` | mutate | 删除指定历史任务 |
 
 `ActionEvent` 是任务面板的唯一公开记录：`{ id, kind, status?, session_id?, source_step_id?, started_at?,

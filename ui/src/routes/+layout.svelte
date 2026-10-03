@@ -20,6 +20,7 @@
 		removeAction,
 		refreshActions,
 		actionStore,
+		upsertSessionAction,
 		cancelAction,
 		finalizeBackgroundActionMessages,
 	} from '$lib/actionStore.ts';
@@ -1197,19 +1198,24 @@
 					// task DTO and use camelCase after this boundary.
 					'action:created': (event) => {
 						upsertAction(event.payload);
+						upsertSessionAction(event.payload);
 					},
 					'action:updated': (event) => {
 						upsertAction(event.payload);
+						upsertSessionAction(event.payload);
 					},
 					'action:output': (event) => {
 						upsertAction(event.payload);
+						upsertSessionAction(event.payload);
 					},
 					'action:finished': (event) => {
 						const p = event.payload;
 						if (p.kind === 'background') {
 							upsertAction(p);
+							upsertSessionAction(p);
 							finalizeBackgroundActionMessages(p);
 						} else {
+							upsertSessionAction(p);
 							// Scheduled action fired: drop from the pending list. The
 							// toast is surfaced by the agent's `notification:show` (the
 							// fired consumer always notifies).

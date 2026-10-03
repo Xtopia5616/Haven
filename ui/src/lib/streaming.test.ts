@@ -12,6 +12,7 @@ import {
 	insertAgentMessage,
 	newToolMessage,
 	actionIdFromObservation,
+	sourceActionIdFromObservation,
 	parseActionResultInject,
 	resetStreamBlocks,
 } from './streaming.ts';
@@ -136,7 +137,13 @@ describe('resetStreamBlocks', () => {
 			{ id: STEP_ID, role: 'assistant', content: 'old', streaming: true },
 			{ id: `${STEP_ID}-1`, role: 'assistant', content: 'old tail', streaming: false },
 			{ id: 'tool-1', role: 'assistant', type: 'tool', content: 'search', streaming: false },
-			{ id: REASONING_ID, role: 'assistant', type: 'reasoning', content: 'old reasoning', streaming: true },
+			{
+				id: REASONING_ID,
+				role: 'assistant',
+				type: 'reasoning',
+				content: 'old reasoning',
+				streaming: true,
+			},
 		];
 
 		expect(resetStreamBlocks(messages, REASONING_ID, STEP_ID).map((x) => x.id)).toEqual([
@@ -153,7 +160,11 @@ describe('accumulateStreamChunk (reasoning)', () => {
 		let m = accumulateStreamChunk([], { ...base, delta: '先想想。' });
 		m = accumulateStreamChunk(m, { ...base, delta: '再想想。' });
 		expect(m).toHaveLength(1);
-		expect(m[0]).toMatchObject({ id: REASONING_ID, content: '先想想。再想想。', streaming: true });
+		expect(m[0]).toMatchObject({
+			id: REASONING_ID,
+			content: '先想想。再想想。',
+			streaming: true,
+		});
 	});
 
 	it('drops chunks after the reasoning block was finalized', () => {
@@ -271,7 +282,11 @@ describe('applyThoughtSnap', () => {
 		m = chunk(m, '重试的完整回答。');
 		const out = snap(m, '重试的完整回答。');
 		expect(out).toHaveLength(1);
-		expect(out[0]).toMatchObject({ id: STEP_ID, content: '重试的完整回答。', streaming: false });
+		expect(out[0]).toMatchObject({
+			id: STEP_ID,
+			content: '重试的完整回答。',
+			streaming: false,
+		});
 	});
 
 	it('drops straggler chunks after a snap finalization', () => {
@@ -440,7 +455,10 @@ describe('webSearchCardContent', () => {
 		const body = webSearchCardContent({
 			phase: 'completed',
 			action: 'search',
-			result: { queries: ['paris'], results: [{ title: 'Paris', url: 'https://ex', snippet: '' }] },
+			result: {
+				queries: ['paris'],
+				results: [{ title: 'Paris', url: 'https://ex', snippet: '' }],
+			},
 		});
 		expect(JSON.parse(body)).toMatchObject({
 			label: '已联网搜索',
@@ -449,9 +467,7 @@ describe('webSearchCardContent', () => {
 	});
 	it('keeps existing JSON when a later completed has no result', () => {
 		const prev = JSON.stringify({ label: '已联网搜索', queries: ['paris'], results: [] });
-		expect(
-			webSearchCardContent({ phase: 'completed', action: 'search' }, prev),
-		).toBe(prev);
+		expect(webSearchCardContent({ phase: 'completed', action: 'search' }, prev)).toBe(prev);
 	});
 	it('uses the status label when there is no result and no JSON yet', () => {
 		expect(webSearchCardContent({ phase: 'in_progress', action: 'search' })).toBe(
@@ -557,11 +573,7 @@ describe('accumulateStreamChunk after websearch boundary', () => {
 		];
 		m = chunk(m, '根据搜索结果');
 		m = chunk(m, '，今天20度');
-		expect(m.map((x) => x.id)).toEqual([
-			STEP_ID,
-			'tool-t-1-0-web_search-ws_1',
-			STEP_ID + '-1',
-		]);
+		expect(m.map((x) => x.id)).toEqual([STEP_ID, 'tool-t-1-0-web_search-ws_1', STEP_ID + '-1']);
 		expect(m[0]).toMatchObject({ content: '我先查一下', streaming: false });
 		expect(m[2]).toMatchObject({ content: '根据搜索结果，今天20度', streaming: true });
 	});
@@ -821,7 +833,12 @@ describe('dropStreamedThought', () => {
 
 describe('newToolMessage', () => {
 	it('builds a plain tool message', () => {
-		const msg = newToolMessage({ id: 'step-1', stepNumber: 1, toolName: 'files', time: '10:00' });
+		const msg = newToolMessage({
+			id: 'step-1',
+			stepNumber: 1,
+			toolName: 'files',
+			time: '10:00',
+		});
 		expect(msg).toEqual({
 			id: 'step-1',
 			role: 'assistant',
@@ -912,6 +929,26 @@ describe('actionIdFromObservation', () => {
 		expect(actionIdFromObservation('plain text')).toBeNull();
 		expect(actionIdFromObservation('')).toBeNull();
 		expect(actionIdFromObservation(null)).toBeNull();
+	});
+});
+
+describe('sourceActionIdFromObservation', () => {
+	it('anchors a scheduled creation result by its persisted Action ID', () => {
+		expect(
+			sourceActionIdFromObservation(
+				'schedule.set',
+				JSON.stringify({ operation: 'set', id: 'act-scheduled' }),
+			),
+		).toBe('act-scheduled');
+	});
+
+	it('does not treat unrelated tool results as Action creation links', () => {
+		expect(
+			sourceActionIdFromObservation(
+				'files.read',
+				JSON.stringify({ operation: 'set', id: 'act-not-an-action' }),
+			),
+		).toBeNull();
 	});
 });
 

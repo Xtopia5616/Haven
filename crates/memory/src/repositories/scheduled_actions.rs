@@ -505,13 +505,25 @@ impl Database {
     /// `"scheduled"`), newest first. Waiting rows are returned for board
     /// hydration; terminal rows remain available as history.
     pub fn list_actions(&self, kind: Option<&str>) -> anyhow::Result<Vec<ActionRow>> {
+        self.list_actions_for_session(kind, None)
+    }
+
+    /// All persisted actions for one owning session, optionally filtered by
+    /// kind, newest first. Used by the conversation timeline to hydrate its
+    /// bounded session-scoped action history after a switch or restart.
+    pub fn list_actions_for_session(
+        &self,
+        kind: Option<&str>,
+        session_id: Option<&str>,
+    ) -> anyhow::Result<Vec<ActionRow>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(&format!(
             "SELECT {ACTION_COLUMNS} FROM actions
              WHERE (?1 IS NULL OR kind = ?1)
+               AND (?2 IS NULL OR session_id = ?2)
              ORDER BY started_at DESC, created_at DESC"
         ))?;
-        let rows = stmt.query_map([kind], row_to_action)?;
+        let rows = stmt.query_map([kind, session_id], row_to_action)?;
         let mut out = Vec::new();
         for row in rows {
             out.push(row?);
@@ -788,6 +800,71 @@ mod tests {
         )
         .unwrap();
         assert!(db.list_pending_scheduled_actions().unwrap().is_empty());
+    }
+
+    #[test]
+    fn action_history_can_be_filtered_by_session_for_timeline_hydration() {
+        let db = test_db();
+        let session_id = new_id("ses");
+        let other_session_id = new_id("ses");
+        let background_id = new_id("act");
+        let scheduled_id = new_id("act");
+        let other_id = new_id("act");
+
+        db.save_action_with_source(
+            &background_id,
+            Some(&session_id),
+            "echo done",
+            "2026-08-04T01:00:00Z",
+            None,
+        )
+        .unwrap();
+        db.finish_action(
+            &background_id,
+            ActionStatus::Completed,
+            Some("done"),
+            None,
+            None,
+            None,
+            Some(0),
+            "2026-08-04T01:00:01Z",
+        )
+        .unwrap();
+        db.save_scheduled_action(
+            &scheduled_id,
+            "2026-08-04T02:00:00Z",
+            "Reminder",
+            "Drink water",
+            "notify",
+            Some(&session_id),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        db.save_scheduled_action(
+            &other_id,
+            "2026-08-04T03:00:00Z",
+            "Other reminder",
+            "Stand up",
+            "notify",
+            Some(&other_session_id),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let rows = db
+            .list_actions_for_session(None, Some(&session_id))
+            .unwrap();
+        let ids = rows.into_iter().map(|row| row.id).collect::<Vec<_>>();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&background_id));
+        assert!(ids.contains(&scheduled_id));
+        assert!(!ids.contains(&other_id));
     }
 
     #[test]

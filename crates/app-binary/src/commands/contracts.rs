@@ -47,7 +47,7 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
     CommandContract {
         name: "list_action_history",
         boundary: CommandBoundary::Read,
-        security: "limit capped at 200; internal tool args excluded",
+        security: "optional session filter; limit capped at 200; internal tool args excluded",
     },
     CommandContract {
         name: "delete_action",

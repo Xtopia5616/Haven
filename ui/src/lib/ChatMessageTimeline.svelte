@@ -5,18 +5,21 @@
 	import Logo from '$lib/Logo.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
 	import SessionTerminationBanner from '$lib/SessionTerminationBanner.svelte';
+	import ActionTimelineCard from '$lib/ActionTimelineCard.svelte';
 	import { hasToolPreambleBefore } from '$lib/toolIntent.ts';
 	import ConversationActivityGroup from '$lib/ConversationActivityGroup.svelte';
 	import {
-		groupConversationMessages,
+		groupConversationTimeline,
 		type AskMessageHandler,
 		type AskSelectionChangeHandler,
 		type ConversationContextMenuRequest,
 		type ConversationMessage,
 	} from '$lib/conversationTimeline.ts';
+	import type { ActionPayload } from '$lib/contracts/action.ts';
 
 	interface Props {
 		messages?: ConversationMessage[];
+		sessionActions?: ActionPayload[];
 		hotkeyBinding?: string;
 		awaitingBackground?: boolean;
 		awaitingBackgroundCount?: number;
@@ -39,6 +42,7 @@
 
 	let {
 		messages = [],
+		sessionActions = [],
 		hotkeyBinding = 'Ctrl+Shift+Space',
 		awaitingBackground = false,
 		awaitingBackgroundCount = 0,
@@ -59,10 +63,16 @@
 		mediaPlans = [],
 	}: Props = $props();
 
-	let timelineItems = $derived(groupConversationMessages(messages));
+	let timelineItems = $derived(
+		groupConversationTimeline(messages, {
+			actions: sessionActions,
+			awaitingBackground: awaitingBackground && !activeSessionError && !terminationStatus,
+			awaitingBackgroundCount,
+		}),
+	);
 </script>
 
-{#if messages.length === 0}
+{#if timelineItems.length === 0}
 	<div class="welcome" in:fly={{ y: 12, duration: 330 }}>
 		<div class="welcome-mark"><Logo size={48} /></div>
 		<h2>Haven</h2>
@@ -76,7 +86,7 @@
 	</div>
 {:else}
 	<div class="message-list" role="log" aria-label="会话消息">
-		{#each timelineItems as item (item.kind === 'activity' ? item.id : item.message.id)}
+		{#each timelineItems as item (item.kind === 'message' ? item.message.id : item.id)}
 			{#if item.kind === 'activity'}
 				<ConversationActivityGroup
 					entries={item.entries}
@@ -91,6 +101,18 @@
 					{onIgnore}
 					{onAskSubmit}
 					{onAskDismiss}
+				/>
+			{:else if item.kind === 'action'}
+				<ActionTimelineCard
+					action={item.action}
+					awaitingBackgroundResult={item.awaitingBackgroundResult}
+					awaitingBackgroundCount={item.awaitingBackgroundCount}
+					showTerminalOutput={item.showTerminalOutput}
+				/>
+			{:else if item.kind === 'action-wait'}
+				<ActionTimelineCard
+					awaitingBackgroundResult
+					awaitingBackgroundCount={item.awaitingBackgroundCount}
 				/>
 			{:else}
 				{@const msg = item.message}
@@ -149,15 +171,6 @@
 			</MaterialButton>
 		</div>
 	{/if}
-{/if}
-
-{#if awaitingBackground && !activeSessionError && !terminationStatus}
-	<div class="awaiting-bg-banner" in:fly={{ y: 8, duration: 300 }} role="status">
-		<span class="awaiting-bg-dot" aria-hidden="true"></span>
-		<span class="awaiting-bg-text">
-			等待后台任务结果{#if awaitingBackgroundCount > 1}（{awaitingBackgroundCount}）{/if}，完成后将自动继续
-		</span>
-	</div>
 {/if}
 
 <style>
@@ -231,39 +244,5 @@
 		display: flex;
 		justify-content: flex-end;
 		padding-top: var(--md-sys-space-xs);
-	}
-	.awaiting-bg-banner {
-		display: flex;
-		align-items: center;
-		gap: var(--md-sys-space-sm);
-		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
-		max-width: var(--md-sys-chat-surface-width);
-		margin: var(--md-sys-space-sm) auto 0;
-		width: 100%;
-		color: var(--md-sys-color-on-surface-variant);
-		font-size: var(--md-sys-typescale-body-small-size);
-		line-height: var(--md-sys-typescale-body-small-line-height);
-	}
-	.awaiting-bg-dot {
-		width: 8px;
-		height: 8px;
-		border-radius: 50%;
-		background: var(--md-sys-color-tertiary, #7c9cff);
-		flex-shrink: 0;
-		animation: awaiting-bg-pulse 1.2s ease-in-out infinite;
-	}
-	.awaiting-bg-text {
-		line-height: inherit;
-	}
-	@keyframes awaiting-bg-pulse {
-		0%,
-		100% {
-			opacity: 0.35;
-			transform: scale(0.9);
-		}
-		50% {
-			opacity: 1;
-			transform: scale(1);
-		}
 	}
 </style>

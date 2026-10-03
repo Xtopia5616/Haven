@@ -58,6 +58,20 @@ impl ActionStore {
             .await
     }
 
+    /// Read persisted actions owned by one session, newest first, optionally
+    /// filtered by kind.
+    pub async fn list_actions_for_session(
+        &self,
+        session_id: String,
+        kind: Option<String>,
+    ) -> anyhow::Result<Vec<ActionRow>> {
+        self.db
+            .run_blocking(move |db| {
+                db.list_actions_for_session(kind.as_deref(), Some(session_id.as_str()))
+            })
+            .await
+    }
+
     /// Read one persisted action of either kind.
     pub async fn get_action(&self, action_id: String) -> anyhow::Result<Option<ActionRow>> {
         self.db

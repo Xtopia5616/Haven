@@ -42,7 +42,7 @@ export interface CommandContract {
 export const TAURI_COMMAND_CONTRACTS = {
 	list_actions: { boundary: 'read', security: 'projected task fields only' },
 	cancel_action: { boundary: 'mutate', security: 'kind is enum; cancel only the selected task kind' },
-	list_action_history: { boundary: 'read', security: 'limit capped at 200; internal tool args excluded' },
+	list_action_history: { boundary: 'read', security: 'optional session filter; limit capped at 200; internal tool args excluded' },
 	delete_action: { boundary: 'mutate', security: 'delete one persisted task row by id' },
 	open_external: { boundary: 'execute', security: 'http(s) or validated absolute local path only' },
 	get_history: { boundary: 'read', security: 'read-only session projection' },

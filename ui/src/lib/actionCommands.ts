@@ -12,9 +12,17 @@ export async function listActionRows(): Promise<Array<ActionPayload | null> | nu
 	return Array.isArray(rows) ? rows.map(mapActionPayload) : null;
 }
 
-/** Load terminal action records for the task history view. */
-export async function listActionHistory(kind?: ActionKind, limit = 50): Promise<ActionPayload[]> {
-	const rows: unknown = await invoke('list_action_history', { kind: kind ?? null, limit });
+/** Load terminal action records, optionally restricted to one conversation. */
+export async function listActionHistory(
+	kind?: ActionKind,
+	limit = 50,
+	sessionId?: string,
+): Promise<ActionPayload[]> {
+	const rows: unknown = await invoke('list_action_history', {
+		kind: kind ?? null,
+		limit,
+		sessionId: sessionId ?? null,
+	});
 	return Array.isArray(rows)
 		? rows.map(mapActionPayload).filter((row): row is ActionPayload => row !== null)
 		: [];

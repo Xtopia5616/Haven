@@ -177,6 +177,7 @@ export function newToolMessage({
 	streaming = false,
 	askOptions = null,
 	actionId = null,
+	sourceActionId = null,
 	toolArgs = undefined,
 	showFallbackIntent = undefined,
 	outcome = undefined,
@@ -191,6 +192,7 @@ export function newToolMessage({
 	streaming?: boolean;
 	askOptions?: string[] | null;
 	actionId?: string | null;
+	sourceActionId?: string | null;
 	/** Live Action.input or resume action_input; omitted on observation fills
 	 * so the placeholder's args are preserved via object spread. */
 	toolArgs?: unknown;
@@ -215,6 +217,7 @@ export function newToolMessage({
 		...(renderer ? { renderer } : {}),
 		...(result ? { result } : {}),
 		...(actionId ? { actionId } : {}),
+		...(sourceActionId ? { sourceActionId } : {}),
 		...(toolArgs !== undefined ? { toolArgs } : {}),
 		...(isAsk && askOptions ? { options: askOptions, awaiting: true } : {}),
 	};
@@ -237,6 +240,26 @@ export function actionIdFromObservation(observation: string | undefined | null):
 		// not JSON
 	}
 	return null;
+}
+
+/** Extract an Action ID used only to anchor a timeline card to its tool step. */
+export function sourceActionIdFromObservation(
+	toolName: string | undefined | null,
+	observation: string | undefined | null,
+): string | null {
+	const backgroundId = actionIdFromObservation(observation);
+	if (backgroundId) return backgroundId;
+	if (!observation || !toolName?.startsWith('schedule')) return null;
+	try {
+		const value: unknown = JSON.parse(observation);
+		if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+		const result = value as Record<string, unknown>;
+		return result.operation === 'set' && typeof result.id === 'string' && result.id
+			? result.id
+			: null;
+	} catch {
+		return null;
+	}
 }
 
 /**

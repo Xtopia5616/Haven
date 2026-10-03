@@ -84,14 +84,26 @@ pub async fn list_action_history(
     state: State<'_, Arc<AppState>>,
     kind: Option<ActionKind>,
     limit: Option<usize>,
+    session_id: Option<String>,
 ) -> Result<Vec<ActionEvent>, String> {
     let limit = limit.unwrap_or(50).min(200);
-    let rows = state
-        .services
-        .actions
-        .list_persisted_actions(kind.map(ActionKind::as_str))
-        .await
-        .map_err(|e| log_err("list_action_history", e))?;
+    let rows = match session_id.as_deref() {
+        Some(session_id) => {
+            state
+                .services
+                .actions
+                .list_persisted_actions_for_session(session_id, kind.map(ActionKind::as_str))
+                .await
+        }
+        None => {
+            state
+                .services
+                .actions
+                .list_persisted_actions(kind.map(ActionKind::as_str))
+                .await
+        }
+    }
+    .map_err(|e| log_err("list_action_history", e))?;
     let mut out = Vec::new();
     // Waiting scheduled actions are already exposed by `list_actions`; history
     // contains only terminal rows. Keep this filter at the app boundary so
