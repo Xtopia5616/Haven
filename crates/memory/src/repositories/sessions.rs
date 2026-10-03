@@ -11,6 +11,8 @@ const SEARCH_WHERE: &str = "WHERE input_text LIKE ?1 OR title LIKE ?1
 /// Map a row produced by a history-list query (id, input, title, status, timestamps).
 fn map_session_list_row(row: &rusqlite::Row) -> rusqlite::Result<Session> {
     let status = row.get::<_, String>(3)?;
+    let origin =
+        SessionOrigin::from_storage(row.get::<_, String>(6)?, row.get::<_, Option<String>>(7)?)?;
     Ok(Session {
         id: row.get(0)?,
         input_text: row.get(1)?,
@@ -18,6 +20,7 @@ fn map_session_list_row(row: &rusqlite::Row) -> rusqlite::Result<Session> {
         status: SessionStatus::from_status_str(&status),
         created_at: row.get(4)?,
         updated_at: row.get(5)?,
+        origin,
     })
 }
 
@@ -54,18 +57,94 @@ pub struct Session {
     pub status: SessionStatus,
     pub created_at: String,
     pub updated_at: String,
+    #[serde(default)]
+    pub origin: SessionOrigin,
+}
+
+/// Durable provenance for a session. Peer sessions remain ordinary sessions;
+/// this only records which creation path admitted the row and its parent id.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SessionOrigin {
+    #[default]
+    User,
+    AgentSpawn {
+        parent_session_id: String,
+    },
+}
+
+impl SessionOrigin {
+    fn storage_parts(&self) -> (&'static str, Option<&str>) {
+        match self {
+            Self::User => ("user", None),
+            Self::AgentSpawn { parent_session_id } => ("agent_spawn", Some(parent_session_id)),
+        }
+    }
+
+    fn from_storage(origin: String, parent_session_id: Option<String>) -> rusqlite::Result<Self> {
+        match (origin.as_str(), parent_session_id) {
+            ("user", None) => Ok(Self::User),
+            ("agent_spawn", Some(parent_session_id)) => Ok(Self::AgentSpawn { parent_session_id }),
+            _ => Err(rusqlite::Error::FromSqlConversionFailure(
+                6,
+                rusqlite::types::Type::Text,
+                Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "invalid persisted session origin metadata",
+                )),
+            )),
+        }
+    }
 }
 
 impl Database {
     pub fn create_session(&self, input_text: &str) -> anyhow::Result<Session> {
+        self.create_session_with_origin(input_text, SessionOrigin::User)
+    }
+
+    /// Create a durable peer session and validate that its parent is present.
+    /// The parent id is provenance, not a foreign key: deleting a parent must
+    /// not rewrite the historical origin of a surviving child session.
+    pub fn create_session_with_origin(
+        &self,
+        input_text: &str,
+        origin: SessionOrigin,
+    ) -> anyhow::Result<Session> {
         let id = haven_common::types::new_id("ses");
         let now = Utc::now().to_rfc3339();
+        let (origin_kind, parent_session_id) = origin.storage_parts();
         let conn = self.conn();
-        conn.execute(
-            "INSERT INTO sessions (id, input_text, status, created_at, updated_at)
-             VALUES (?1, ?2, 'pending', ?3, ?4)",
-            rusqlite::params![id, input_text, now, now],
-        )?;
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let write_result = (|| -> anyhow::Result<()> {
+            if let Some(parent_session_id) = parent_session_id {
+                let parent_exists: bool = conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sessions WHERE id = ?1)",
+                    rusqlite::params![parent_session_id],
+                    |row| row.get(0),
+                )?;
+                anyhow::ensure!(
+                    parent_exists,
+                    "parent session '{}' not found",
+                    parent_session_id
+                );
+            }
+            conn.execute(
+                "INSERT INTO sessions (
+                    id, input_text, status, created_at, updated_at, origin, parent_session_id
+                 ) VALUES (?1, ?2, 'pending', ?3, ?4, ?5, ?6)",
+                rusqlite::params![id, input_text, now, now, origin_kind, parent_session_id],
+            )?;
+            Ok(())
+        })();
+        if let Err(error) = write_result {
+            let _ = conn.execute_batch("ROLLBACK");
+            return Err(error);
+        }
+        if let Err(error) = conn.execute_batch("COMMIT") {
+            let _ = conn.execute_batch("ROLLBACK");
+            return Err(error.into());
+        }
+        drop(conn);
         self.cache_invalidate_sessions();
         Ok(Session {
             id,
@@ -74,13 +153,15 @@ impl Database {
             status: SessionStatus::Pending,
             created_at: now.clone(),
             updated_at: now,
+            origin,
         })
     }
 
     pub fn get_session(&self, id: &str) -> anyhow::Result<Option<Session>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, input_text, title, status, created_at, updated_at
+            "SELECT id, input_text, title, status, created_at, updated_at,
+                    origin, parent_session_id
              FROM sessions WHERE id = ?1",
         )?;
         let mut rows = stmt.query(rusqlite::params![id])?;
@@ -134,7 +215,8 @@ impl Database {
         let cache_gen = (offset == 0 && limit == 50).then(|| self.cache_generation("_sessions"));
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT id, input_text, title, status, created_at, updated_at
+            "SELECT id, input_text, title, status, created_at, updated_at,
+                    origin, parent_session_id
              FROM sessions ORDER BY created_at DESC LIMIT ?1 OFFSET ?2",
         )?;
         let rows = stmt.query_map(rusqlite::params![limit, offset], map_session_list_row)?;
@@ -152,7 +234,8 @@ impl Database {
         let pattern = format!("%{}%", query);
         let conn = self.conn();
         let mut stmt = conn.prepare(&format!(
-            "SELECT id, input_text, title, status, created_at, updated_at
+            "SELECT id, input_text, title, status, created_at, updated_at,
+                    origin, parent_session_id
              FROM sessions {SEARCH_WHERE}
              ORDER BY created_at DESC LIMIT 50",
         ))?;
@@ -189,7 +272,8 @@ impl Database {
         let pattern = format!("%{}%", query);
         let conn = self.conn();
         let mut stmt = conn.prepare(&format!(
-            "SELECT id, input_text, title, status, created_at, updated_at
+            "SELECT id, input_text, title, status, created_at, updated_at,
+                    origin, parent_session_id
              FROM sessions {SEARCH_WHERE}
              ORDER BY created_at DESC LIMIT ?2 OFFSET ?3",
         ))?;
@@ -202,6 +286,28 @@ impl Database {
             sessions.push(row?);
         }
         Ok(sessions)
+    }
+
+    /// Return direct child sessions in stable newest-first order.
+    pub fn list_session_children(
+        &self,
+        parent_session_id: &str,
+        limit: i64,
+        offset: i64,
+    ) -> anyhow::Result<Vec<Session>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT id, input_text, title, status, created_at, updated_at,
+                    origin, parent_session_id
+             FROM sessions
+             WHERE origin = 'agent_spawn' AND parent_session_id = ?1
+             ORDER BY created_at DESC, id ASC LIMIT ?2 OFFSET ?3",
+        )?;
+        let rows = stmt.query_map(
+            rusqlite::params![parent_session_id, limit, offset],
+            map_session_list_row,
+        )?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
     pub fn delete_session(&self, id: &str) -> anyhow::Result<()> {
@@ -511,7 +617,8 @@ impl Database {
         };
 
         let sql = format!(
-            "SELECT id, input_text, title, status, created_at, updated_at \
+            "SELECT id, input_text, title, status, created_at, updated_at, \
+                    origin, parent_session_id \
              FROM sessions {where_clause} ORDER BY created_at DESC LIMIT ? OFFSET ?"
         );
 
@@ -542,6 +649,7 @@ impl Database {
 
 #[cfg(test)]
 mod tests {
+    use super::SessionOrigin;
     use crate::Database;
     use chrono::{Local, Utc};
     use haven_common::SessionStatus;
@@ -558,6 +666,7 @@ mod tests {
         assert_eq!(session.input_text, "input text");
         assert_eq!(session.title, None);
         assert_eq!(session.status, SessionStatus::Pending);
+        assert_eq!(session.origin, SessionOrigin::User);
         assert!(!session.created_at.is_empty());
         assert!(!session.updated_at.is_empty());
 
@@ -570,6 +679,66 @@ mod tests {
             )
             .unwrap();
         assert_eq!(has_transcript, 0);
+    }
+
+    #[test]
+    fn peer_session_origin_is_queryable_and_survives_parent_deletion() {
+        let db = create_db();
+        let parent = db.create_session("parent").unwrap();
+        let unrelated = db.create_session("unrelated").unwrap();
+        let child = db
+            .create_session_with_origin(
+                "delegated kickoff",
+                SessionOrigin::AgentSpawn {
+                    parent_session_id: parent.id.clone(),
+                },
+            )
+            .unwrap();
+
+        assert_eq!(
+            child.origin,
+            SessionOrigin::AgentSpawn {
+                parent_session_id: parent.id.clone(),
+            }
+        );
+        assert_eq!(
+            db.list_session_children(&parent.id, 10, 0)
+                .unwrap()
+                .into_iter()
+                .map(|session| session.id)
+                .collect::<Vec<_>>(),
+            vec![child.id.clone()]
+        );
+        assert!(
+            db.list_session_children(&unrelated.id, 10, 0)
+                .unwrap()
+                .is_empty()
+        );
+
+        db.delete_session(&parent.id).unwrap();
+        let retained = db.get_session(&child.id).unwrap().unwrap();
+        assert_eq!(
+            retained.origin,
+            SessionOrigin::AgentSpawn {
+                parent_session_id: parent.id,
+            }
+        );
+    }
+
+    #[test]
+    fn peer_session_origin_rejects_missing_parent() {
+        let db = create_db();
+        let error = db
+            .create_session_with_origin(
+                "orphan kickoff",
+                SessionOrigin::AgentSpawn {
+                    parent_session_id: "ses-00000000000000000000000000000000".into(),
+                },
+            )
+            .unwrap_err();
+
+        assert!(error.to_string().contains("parent session"));
+        assert_eq!(db.count_sessions().unwrap(), 0);
     }
 
     #[test]

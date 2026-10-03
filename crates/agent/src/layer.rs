@@ -1215,8 +1215,15 @@ impl AgentLayer {
         attachments: &[haven_common::types::MessageAttachment],
         voice: bool,
     ) -> anyhow::Result<(crate::session::SessionInfo, String)> {
-        self.create_session_with_first_message_typed(input, attachments, voice, "text", true)
-            .await
+        self.create_session_with_first_message_typed(
+            input,
+            attachments,
+            voice,
+            "text",
+            true,
+            haven_memory::SessionOrigin::User,
+        )
+        .await
     }
 
     /// Same as [`Self::create_session_with_first_message`] with an explicit
@@ -1231,13 +1238,18 @@ impl AgentLayer {
         voice: bool,
         message_type: &str,
         dispatch: bool,
+        origin: haven_memory::SessionOrigin,
     ) -> anyhow::Result<(crate::session::SessionInfo, String)> {
         // Keep creation, first-message persistence, and actor registration in
         // one lifecycle window. A concurrent history clear must observe either
         // the complete new session or none of it.
         let _lifecycle = self.executor.lifecycle_guard().await;
         self.executor.ensure_lifecycle_open()?;
-        let record = self.executor.session_store().create_session(input).await?;
+        let record = self
+            .executor
+            .session_store()
+            .create_session_with_origin(input, origin)
+            .await?;
         // The first user turn (and its attachments) must be on disk BEFORE
         // the dispatcher can pick the session up; if persisting fails, remove
         // the session row again so no input-less session ever gets dispatched.
@@ -1488,7 +1500,16 @@ impl AgentLayer {
         // Create without dispatch so parent/child inbox links exist before the
         // child can be claimed (cascade end must see `parent` immediately).
         let (mut session, _first_msg_id) = self
-            .create_session_with_first_message_typed(&brief, &[], false, "peer_kickoff", false)
+            .create_session_with_first_message_typed(
+                &brief,
+                &[],
+                false,
+                "peer_kickoff",
+                false,
+                haven_memory::SessionOrigin::AgentSpawn {
+                    parent_session_id: req.parent_session_id.clone(),
+                },
+            )
             .await?;
         if let Some(title) = req.title.as_deref().filter(|t| !t.is_empty()) {
             let session_id = session.id.clone();
@@ -1810,15 +1831,18 @@ mod tests {
                     .title,
                 expected_title
             );
+            let stored_peer = executor
+                .session_store()
+                .load_session_record(&result.session_id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(stored_peer.title, expected_title);
             assert_eq!(
-                executor
-                    .session_store()
-                    .load_session_record(&result.session_id)
-                    .await
-                    .unwrap()
-                    .unwrap()
-                    .title,
-                expected_title
+                stored_peer.origin,
+                haven_memory::SessionOrigin::AgentSpawn {
+                    parent_session_id: parent.id.clone(),
+                }
             );
             if let Some(title) = title.filter(|_| !fail_write) {
                 expected_title_events.push((result.session_id.clone(), title.to_string()));
@@ -1826,6 +1850,19 @@ mod tests {
             session_ids.push(result.session_id.clone());
             expected_created_titles.push((result.session_id, expected_title));
         }
+        let mut durable_child_ids: Vec<_> = executor
+            .session_store()
+            .load_session_children(&parent.id, 50, 0)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|session| session.id)
+            .collect();
+        let mut expected_child_ids = session_ids.clone();
+        durable_child_ids.sort();
+        expected_child_ids.sort();
+        assert_eq!(durable_child_ids, expected_child_ids);
+
         let registered = messaging.list_agents().unwrap();
         for session_id in &session_ids {
             assert!(registered.iter().any(|entry| &entry.name == session_id));
@@ -1876,6 +1913,7 @@ mod tests {
                 false,
                 "peer_kickoff",
                 false,
+                haven_memory::SessionOrigin::User,
             )
             .await
             .unwrap_err();

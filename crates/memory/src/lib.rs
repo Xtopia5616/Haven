@@ -42,4 +42,5 @@ pub use repositories::session_events::{
     SessionTitleGenerationContext, StoredBranchPoint, TIMELINE_ROLLBACK_EVENT_TYPE,
     TRANSCRIPT_EVENT_TYPE, USAGE_DISCARDED_EVENT_TYPE, USAGE_RECORDED_EVENT_TYPE,
 };
+pub use repositories::sessions::{Session, SessionOrigin};
 pub use repositories::usage::LlmCallUsageInput;

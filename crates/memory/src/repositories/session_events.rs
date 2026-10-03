@@ -12,7 +12,7 @@ use crate::repositories::session_authorization::{
     SessionAuthorizationGrant, StoredSessionAuthorizationGrant,
 };
 use crate::repositories::session_steps::{ActionStepOutcome, ActionStepWrite, SessionStep};
-use crate::repositories::sessions::Session;
+use crate::repositories::sessions::{Session, SessionOrigin};
 use crate::repositories::usage::{LlmCallUsage, LlmCallUsageInput, SessionUsage};
 use chrono::{SecondsFormat, Utc};
 use haven_common::SessionStatus;
@@ -938,9 +938,36 @@ impl SessionStore {
     /// boundary. Actor installation, lifecycle gates, and dispatch remain
     /// owned by the Agent layer.
     pub async fn create_session(&self, input_text: &str) -> anyhow::Result<Session> {
+        self.create_session_with_origin(input_text, SessionOrigin::User)
+            .await
+    }
+
+    /// Create a session with typed provenance. Agent-spawn parents are
+    /// validated and persisted by the same SessionStore boundary as user
+    /// sessions; runtime admission remains owned by Agent.
+    pub async fn create_session_with_origin(
+        &self,
+        input_text: &str,
+        origin: SessionOrigin,
+    ) -> anyhow::Result<Session> {
         let input_text = input_text.to_owned();
         self.db
-            .run_blocking(move |db| db.create_session(&input_text))
+            .run_blocking(move |db| db.create_session_with_origin(&input_text, origin))
+            .await
+    }
+
+    /// Read direct children from the durable session lineage projection.
+    /// Messaging's inbox/profile registry remains the source for live peer
+    /// capabilities and mailbox state.
+    pub async fn load_session_children(
+        &self,
+        parent_session_id: &str,
+        limit: i64,
+        offset: i64,
+    ) -> anyhow::Result<Vec<Session>> {
+        let parent_session_id = parent_session_id.to_owned();
+        self.db
+            .run_blocking(move |db| db.list_session_children(&parent_session_id, limit, offset))
             .await
     }
 
@@ -4198,8 +4225,35 @@ mod tests {
         assert!(!session.id.is_empty());
         assert_eq!(session.input_text, "created through store");
         assert_eq!(session.status, SessionStatus::Pending);
+        assert_eq!(session.origin, SessionOrigin::User);
         assert!(store.session_record(&session.id).unwrap().is_some());
         assert_eq!(store.latest_sequence(&session.id).unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn session_store_creates_and_queries_peer_session_provenance() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let store = SessionStore::new(db);
+        let parent = store.create_session("parent").await.unwrap();
+
+        let child = store
+            .create_session_with_origin(
+                "delegated kickoff",
+                SessionOrigin::AgentSpawn {
+                    parent_session_id: parent.id.clone(),
+                },
+            )
+            .await
+            .unwrap();
+        let children = store
+            .load_session_children(&parent.id, 10, 0)
+            .await
+            .unwrap();
+
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0].id, child.id);
+        assert_eq!(children[0].origin, child.origin);
+        assert_eq!(store.latest_sequence(&child.id).unwrap(), 0);
     }
 
     #[tokio::test]
