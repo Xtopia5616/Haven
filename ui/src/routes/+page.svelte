@@ -83,7 +83,7 @@
 	} from '$lib/sessionReducer.ts';
 	import type { SessionTokenStats as PresentationSessionTokenStats } from '$lib/sessionUsagePresentation.ts';
 	import type { LlmUsage } from '$lib/sessionUsage.ts';
-	import type { ModelInfo } from '$lib/contracts/model.ts';
+	import type { ChatModelOption } from '$lib/chatModelOperations.ts';
 	import type { SessionHistoryRow } from '$lib/contracts/sessionHistory.ts';
 	import type { ActionPayload, ActionStatus } from '$lib/contracts/action.ts';
 	import type { AgentMediaPlanPayload } from '$lib/contracts/agent.ts';
@@ -206,20 +206,20 @@
 	});
 	let rollbackLoading = $state(false);
 
-	// Model switcher state: the registry catalog plus the current default
-	// model name, displayed on the toolbar button and filtered in the menu.
+	// Model switcher state: configured chat-capable model profiles and the
+	// current primary profile selected by the Chat request route.
 	let modelMenuOpen = $state(false);
 	let sessionMenuOpen = $state(false);
-	let modelOptions = $state<ModelInfo[]>([]);
+	let modelOptions = $state<ChatModelOption[]>([]);
 	let currentModelName = $state('');
 	let currentModelId = $state('');
 	let currentEffort = $state('');
 	// Provider built-in web search mode ("off" | "auto" | "always").
 	// Defaults to off (opt-in); "auto" lets the model decide when to search.
 	let currentWebSearch = $state('off');
-	/** Default-model provider wire style supports built-in 联网搜索. */
+	/** Selected chat model provider wire style supports built-in 联网搜索. */
 	let webSearchSupported = $state(false);
-	/** Normalized wire style of the default-model provider (for mode filtering). */
+	/** Normalized wire style of the selected chat model provider. */
 	let currentApiStyle = $state('openai-chat');
 	// The configured recording hotkey binding, loaded from settings and kept
 	// in sync via `hotkey:rebind` so placeholders show the real value.
@@ -577,8 +577,8 @@
 	const unregisterPerformanceMetricsProvider =
 		registerPerformanceMetricsProvider(metricsSnapshot);
 
-	// Model discovery and default-model settings synchronization live outside the
-	// route component; this page only supplies Svelte state setters.
+	// Configured Chat-route profiles and their settings synchronization live
+	// outside the route component; this page only supplies Svelte state setters.
 	let skipNextDefaultModelRefresh = false;
 	const modelSync = createChatModelSync({
 		isDead: () => dead,
@@ -621,6 +621,12 @@
 		},
 		setCurrentWebSearch: (value) => {
 			currentWebSearch = value;
+		},
+		setCurrentApiStyle: (value) => {
+			currentApiStyle = value;
+		},
+		setWebSearchSupported: (value) => {
+			webSearchSupported = value;
 		},
 		getEffortLabel: (value) =>
 			effortOptions.find((option) => option.value === value)?.label || '默认',
@@ -712,17 +718,11 @@
 		await eventController.register();
 		if (dead) return;
 
-		// Load the current default model for the toolbar model switcher and
-		// populate the menu with models discovered from the default provider's
-		// `/models` endpoint, mirroring the settings page behavior. Empty
-		// api_key falls back to the stored key via the role name, and
-		// discovery is skipped when no base URL is set. Fire-and-forget so it
-		// never delays the conversation render.
+		// Load configured Chat profiles and the current route primary for the
+		// toolbar. Fire-and-forget so loading settings never delays conversation
+		// rendering.
 		loadSettings()
 			.then((s) => {
-				// The chat request policy references a provider + a model id on
-				// that provider (the "model library" is the provider's fetched
-				// model list). Resolve both for the toolbar switcher.
 				applyDefaultModelFromSettings(s);
 				if (s?.hotkey?.key_binding) {
 					hotkeyBinding = s.hotkey.key_binding;

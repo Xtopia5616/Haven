@@ -12,7 +12,7 @@ use tauri::State;
 
 /// Resolve a model id or `RequestKind` string to a named model, or `None` for
 /// an unknown value. This is the single selector boundary for the model
-/// commands (`switch_model`, `set_reasoning_effort`, `set_web_search`).
+/// parameter commands (`set_reasoning_effort`, `set_web_search`).
 fn model_id_for_selector(cfg: &LlmConfig, model_id_or_request_kind: &str) -> Option<String> {
     if cfg.model(model_id_or_request_kind).is_some() {
         return Some(model_id_or_request_kind.to_string());
@@ -27,6 +27,32 @@ fn model_slot<'a>(
 ) -> Option<&'a mut ModelConfig> {
     let id = model_id_for_selector(cfg, model_id_or_request_kind)?;
     cfg.model_mut(&id)
+}
+
+fn set_request_route(
+    llm: &mut LlmConfig,
+    request_name: &str,
+    model_config_id: &str,
+) -> Result<(), String> {
+    let request = RequestKind::from_str(request_name)
+        .ok_or_else(|| format!("unknown request kind: {request_name}"))?;
+    let model = llm
+        .model(model_config_id)
+        .ok_or_else(|| format!("unknown model configuration: {model_config_id}"))?;
+    if !model.is_assigned() || llm.provider(&model.provider).is_none() {
+        return Err(format!(
+            "model configuration is incomplete: {model_config_id}"
+        ));
+    }
+    if !model.capabilities.contains(&request.required_capability()) {
+        return Err(format!(
+            "model configuration {model_config_id} does not support {}",
+            request.as_str()
+        ));
+    }
+
+    llm.set_policy(request, model_config_id);
+    Ok(())
 }
 
 fn validate_builtin_search(config: &AppConfig, selector: &str) -> Result<(), String> {
@@ -496,9 +522,6 @@ pub async fn discover_all_models(
     Ok(results)
 }
 
-/// §2.7: Switch a named model assignment to a different provider model.
-/// Updates config.toml and hot-swaps the LlmRouter at runtime.
-#[tauri::command]
 /// Apply a model mutation through the runtime config coordinator. Command
 /// validation and slot mutation remain here; the coordinator serializes the
 /// durable edit and its complete live apply.
@@ -524,8 +547,9 @@ async fn update_model_field(
         .await
 }
 
-/// Switch a named model assignment to another provider model id. Updates config.toml and
-/// hot-swaps the LlmRouter at runtime.
+/// Select a configured model assignment as the primary for a request kind.
+/// `role` is a RequestKind and `model_id` is a named ModelConfig id.
+/// Updates config.toml and hot-swaps the LlmRouter at runtime.
 #[tauri::command]
 pub async fn switch_model(
     role: String,
@@ -533,17 +557,12 @@ pub async fn switch_model(
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     let state = app.state::<Arc<AppState>>();
-    update_model_field(
-        &state,
-        "switch_model",
-        &role,
-        |_, _| Ok(()),
-        |slot| {
-            slot.model = model_id;
-            Ok(())
-        },
-    )
-    .await?;
+    state
+        .config_apply_gate
+        .edit_model_and_apply(&state, "switch_model", |config| {
+            set_request_route(&mut config.llm, &role, &model_id).map_err(anyhow::Error::msg)
+        })
+        .await?;
     crate::commands::emit_llm_config_changed(&app);
     Ok(())
 }
@@ -781,6 +800,64 @@ mod tests {
             Some("chat-primary".into())
         );
         assert_eq!(model_id_for_selector(&cfg.llm, "vision"), None);
+    }
+
+    #[test]
+    fn switch_model_selects_a_named_model_config_for_the_request() {
+        let mut llm =
+            cfg_with_providers(vec![provider("primary", "api-key", Some("openai-chat"))]).llm;
+        llm.models.extend([
+            ModelConfig {
+                id: "chat-primary".into(),
+                provider: "primary".into(),
+                model: "provider/model-a".into(),
+                capabilities: vec![haven_common::config::Capability::Chat],
+                ..Default::default()
+            },
+            ModelConfig {
+                id: "chat-alternate".into(),
+                provider: "primary".into(),
+                model: "provider/model-b".into(),
+                capabilities: vec![haven_common::config::Capability::Chat],
+                ..Default::default()
+            },
+        ]);
+        llm.set_policy(RequestKind::Chat, "chat-primary");
+
+        set_request_route(&mut llm, "chat", "chat-alternate").unwrap();
+
+        assert_eq!(
+            llm.policy(RequestKind::Chat).unwrap().primary,
+            "chat-alternate"
+        );
+        assert_eq!(
+            llm.model("chat-alternate").unwrap().model,
+            "provider/model-b"
+        );
+    }
+
+    #[test]
+    fn switch_model_rejects_unknown_or_incompatible_model_configs() {
+        let mut llm =
+            cfg_with_providers(vec![provider("primary", "api-key", Some("openai-chat"))]).llm;
+        llm.models.push(ModelConfig {
+            id: "embedding-only".into(),
+            provider: "primary".into(),
+            model: "provider/embedding".into(),
+            capabilities: vec![haven_common::config::Capability::Embedding],
+            ..Default::default()
+        });
+        llm.models.push(ModelConfig {
+            id: "incomplete-chat".into(),
+            capabilities: vec![haven_common::config::Capability::Chat],
+            ..Default::default()
+        });
+
+        assert!(set_request_route(&mut llm, "chat", "missing").is_err());
+        assert!(set_request_route(&mut llm, "chat", "embedding-only").is_err());
+        assert!(set_request_route(&mut llm, "chat", "incomplete-chat").is_err());
+        assert!(set_request_route(&mut llm, "invalid", "incomplete-chat").is_err());
+        assert!(llm.policy(RequestKind::Chat).is_none());
     }
 
     #[test]

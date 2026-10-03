@@ -73,7 +73,7 @@ export const TAURI_COMMAND_CONTRACTS = {
 	check_llm_connection: { boundary: 'read', security: 'status and non-sensitive reason only; no endpoint or provider payload' },
 	discover_models: { boundary: 'execute', security: 'http(s) endpoint; typed auth scheme for an explicitly entered key; stored keys require a matching configured endpoint; uses configured provider proxy' },
 	discover_all_models: { boundary: 'execute', security: 'only configured providers are queried, each with its configured proxy' },
-	switch_model: { boundary: 'mutate', security: 'role carries a model id or RequestKind and is validated before config save' },
+	switch_model: { boundary: 'mutate', security: 'role is a RequestKind; modelId is an assigned, capability-compatible ModelConfig id' },
 	set_reasoning_effort: { boundary: 'mutate', security: 'role carries a model id or RequestKind and is validated before config save' },
 	set_web_search: { boundary: 'mutate', security: 'provider capability checked before config save' },
 	get_recording_state: { boundary: 'read', security: 'state only; no device or provider detail' },

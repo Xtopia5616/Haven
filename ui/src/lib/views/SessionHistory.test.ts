@@ -64,7 +64,7 @@ describe('SessionHistory actions', () => {
 		expect(onResume).toHaveBeenCalledTimes(1);
 	});
 
-	it('shows the session preview at the expanded-width breakpoint', async () => {
+	it('opens a session directly at the expanded-width breakpoint', async () => {
 		setViewport(840, 900);
 		const onResume = vi.fn();
 		const session: SessionHistoryRow = {
@@ -77,11 +77,10 @@ describe('SessionHistory actions', () => {
 		};
 		render(SessionHistory, { ...commonProps, sessions: [session], onResume });
 
-		expect(document.querySelector('.history-view--wide')).toBeTruthy();
-		expect(screen.getByRole('complementary', { name: '会话预览' })).toBeTruthy();
+		expect(screen.queryByRole('complementary', { name: '会话预览' })).toBeNull();
+		expect(screen.getByRole('button', { name: '打开并继续会话：研究会话' })).toBeTruthy();
 		await fireEvent.click(document.querySelector('.session-item')!);
-		expect(onResume).not.toHaveBeenCalled();
-		await fireEvent.click(screen.getByRole('button', { name: '打开并继续' }));
+		expect(onResume).toHaveBeenCalledTimes(1);
 		expect(onResume).toHaveBeenCalledWith(session);
 	});
 

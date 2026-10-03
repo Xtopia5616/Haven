@@ -1325,7 +1325,7 @@
 						<div class="save-actions">
 							<MaterialButton
 								variant="outlined"
-								label="放弃全部"
+								label="放弃"
 								onclick={discardAndReset}
 								disabled={saveState === 'saving'}
 							/>
@@ -1337,7 +1337,7 @@
 								<MaterialButton
 									variant="filled"
 									className="save-btn save-btn--dirty"
-									label={saveState === 'saving' ? '保存中…' : '保存全部更改'}
+									label={saveState === 'saving' ? '保存中…' : '保存'}
 									onclick={handleSaveClick}
 									disabled={saveState === 'saving'}
 								/>

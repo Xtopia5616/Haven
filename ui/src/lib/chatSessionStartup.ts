@@ -93,6 +93,13 @@ export function createChatSessionStartup(dependencies: ChatSessionStartupDepende
 			}
 			// Keep the target alive through the current mount's initialization.
 			dependencies.deferResumeTargetClear();
+			if (!resumeTarget.wasError) {
+				// Opening history can rehydrate a terminal session into the live
+				// paused-session projection. That memory-only transition emits no
+				// lifecycle event, so refresh the switcher immediately instead of
+				// waiting for the next page mount or manual refresh.
+				void loadSessions();
+			}
 		}
 	}
 

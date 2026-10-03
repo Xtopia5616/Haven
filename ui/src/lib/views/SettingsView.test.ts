@@ -175,12 +175,12 @@ describe('SettingsView diagnostics export', () => {
 
 		await fireEvent.click(inApp);
 		await waitFor(() =>
-			expect(screen.getByRole('button', { name: '保存全部更改' })).toBeTruthy(),
+			expect(screen.getByRole('button', { name: '保存' })).toBeTruthy(),
 		);
 		expect((windows as HTMLInputElement).checked).toBe(true);
 		await fireEvent.click(windows);
 		expect((windows as HTMLInputElement).checked).toBe(false);
-		await fireEvent.click(screen.getByRole('button', { name: '保存全部更改' }));
+		await fireEvent.click(screen.getByRole('button', { name: '保存' }));
 
 		await waitFor(() => {
 			expect(invoke).toHaveBeenCalledWith(
@@ -279,7 +279,7 @@ describe('SettingsView diagnostics export', () => {
 		expect(
 			(container.querySelector('#session-lifetime-max-steps') as HTMLInputElement).value,
 		).toBe('750');
-		await fireEvent.click(await screen.findByRole('button', { name: '保存全部更改' }));
+		await fireEvent.click(await screen.findByRole('button', { name: '保存' }));
 
 		await waitFor(() =>
 			expect(invoke).toHaveBeenCalledWith('update_settings', expect.anything()),
@@ -331,7 +331,7 @@ describe('SettingsView diagnostics export', () => {
 		await fireEvent.click(screen.getByRole('tab', { name: /对话与行为/ }));
 		expect(screen.queryByRole('dialog', { name: '未保存的更改' })).toBeNull();
 		await fireEvent.click(screen.getByRole('tab', { name: /模型与连接/ }));
-		await fireEvent.click(await screen.findByRole('button', { name: '保存全部更改' }));
+		await fireEvent.click(await screen.findByRole('button', { name: '保存' }));
 
 		await waitFor(() =>
 			expect(invoke).toHaveBeenCalledWith('update_settings', expect.anything()),

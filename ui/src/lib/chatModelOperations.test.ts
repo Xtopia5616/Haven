@@ -17,6 +17,8 @@ function makeHarness(options: {
 	const modelNames: string[] = [];
 	const efforts: string[] = [];
 	const webSearchModes: string[] = [];
+	const apiStyles: string[] = [];
+	const webSearchSupport: boolean[] = [];
 	let modelMenuClosed = 0;
 
 	const invoke = (async (command: string, payload: unknown) => {
@@ -31,6 +33,8 @@ function makeHarness(options: {
 		setCurrentModelName: (value) => modelNames.push(value),
 		setCurrentEffort: (value) => efforts.push(value),
 		setCurrentWebSearch: (value) => webSearchModes.push(value),
+		setCurrentApiStyle: (value) => apiStyles.push(value),
+		setWebSearchSupported: (value) => webSearchSupport.push(value),
 		getEffortLabel: (value) => (value === 'high' ? '高' : '默认'),
 		getWebSearchLabel: (value) => ({ off: '关闭', auto: '自动', always: '总是' })[value] || '',
 		isWebSearchSupported: () => options.webSearchSupported ?? true,
@@ -49,6 +53,8 @@ function makeHarness(options: {
 		modelNames,
 		efforts,
 		webSearchModes,
+		apiStyles,
+		webSearchSupport,
 		get modelMenuClosed() {
 			return modelMenuClosed;
 		},
@@ -59,18 +65,73 @@ describe('createChatModelOperations', () => {
 	it('switches the model and applies the page state after the command succeeds', async () => {
 		const harness = makeHarness();
 
-		await harness.controller.selectModel({ id: 'provider/model', name: 'Model' });
+		await harness.controller.selectModel({
+			id: 'chat-profile',
+			name: 'chat-profile',
+			provider: 'provider',
+			model: 'provider/model',
+			reasoningEffort: 'high',
+			webSearch: 'auto',
+			apiStyle: 'openai-responses',
+			webSearchSupported: true,
+		});
 
 		expect(harness.calls).toEqual([
-			{ command: 'switch_model', payload: { role: 'chat', modelId: 'provider/model' } },
+			{ command: 'switch_model', payload: { role: 'chat', modelId: 'chat-profile' } },
 		]);
 		expect(harness.modelMenuClosed).toBe(1);
-		expect(harness.modelIds).toEqual(['provider/model']);
-		expect(harness.modelNames).toEqual(['Model']);
+		expect(harness.modelIds).toEqual(['chat-profile']);
+		expect(harness.modelNames).toEqual(['chat-profile']);
+		expect(harness.efforts).toEqual(['high']);
+		expect(harness.webSearchModes).toEqual(['auto']);
+		expect(harness.apiStyles).toEqual(['openai-responses']);
+		expect(harness.webSearchSupport).toEqual([true]);
 		expect(harness.notifications).toEqual([
-			{ message: '已切换默认模型: Model', type: 'success', duration: 3000 },
+			{ message: '已切换对话模型：chat-profile', type: 'success', duration: 3000 },
 		]);
 		expect(harness.suppressed).toEqual([true]);
+	});
+
+	it('clears a stale web-search mode when selecting an unsupported profile', async () => {
+		const harness = makeHarness();
+
+		await harness.controller.selectModel({
+			id: 'local-chat',
+			name: 'local-chat',
+			provider: 'local',
+			model: 'llama3',
+			reasoningEffort: '',
+			webSearch: 'always',
+			apiStyle: 'openai-chat',
+			webSearchSupported: false,
+		});
+
+		expect(harness.calls).toEqual([
+			{ command: 'switch_model', payload: { role: 'chat', modelId: 'local-chat' } },
+			{ command: 'set_web_search', payload: { role: 'chat', mode: 'off' } },
+		]);
+		expect(harness.webSearchModes).toEqual(['off']);
+	});
+
+	it('normalizes Gemini always search mode after selecting a profile', async () => {
+		const harness = makeHarness();
+
+		await harness.controller.selectModel({
+			id: 'gemini-chat',
+			name: 'gemini-chat',
+			provider: 'gemini',
+			model: 'gemini-2.5-pro',
+			reasoningEffort: 'high',
+			webSearch: 'always',
+			apiStyle: 'gemini',
+			webSearchSupported: true,
+		});
+
+		expect(harness.calls).toEqual([
+			{ command: 'switch_model', payload: { role: 'chat', modelId: 'gemini-chat' } },
+			{ command: 'set_web_search', payload: { role: 'chat', mode: 'auto' } },
+		]);
+		expect(harness.webSearchModes).toEqual(['auto']);
 	});
 
 	it('sets the reasoning effort and sends null for the default option', async () => {
@@ -107,7 +168,16 @@ describe('createChatModelOperations', () => {
 		{
 			name: 'model switch',
 			select: (controller: ReturnType<typeof createChatModelOperations>) =>
-				controller.selectModel({ id: 'provider/model' }),
+				controller.selectModel({
+					id: 'chat-profile',
+					name: 'chat-profile',
+					provider: 'provider',
+					model: 'provider/model',
+					reasoningEffort: '',
+					webSearch: 'off',
+					apiStyle: 'openai-chat',
+					webSearchSupported: false,
+				}),
 			errorMessage: '切换模型失败',
 		},
 		{

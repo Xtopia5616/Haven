@@ -7,8 +7,15 @@ import type {
 } from './contracts/commands.ts';
 
 export interface ChatModelOption {
+	/** Stable id of a configured ModelConfig, used by RequestPolicy.primary. */
 	id: string;
-	name?: string | null;
+	name: string;
+	provider: string;
+	model: string;
+	reasoningEffort: string;
+	webSearch: string;
+	apiStyle: string;
+	webSearchSupported: boolean;
 }
 
 export interface ChatModelOperationsInvoke {
@@ -24,6 +31,8 @@ export interface ChatModelOperationsDependencies {
 	setCurrentModelName: (value: string) => void;
 	setCurrentEffort: (value: string) => void;
 	setCurrentWebSearch: (value: string) => void;
+	setCurrentApiStyle: (value: string) => void;
+	setWebSearchSupported: (value: boolean) => void;
 	getEffortLabel: (value: string) => string;
 	getWebSearchLabel: (value: string) => string;
 	isWebSearchSupported: () => boolean;
@@ -54,14 +63,38 @@ export function createChatModelOperations(dependencies: ChatModelOperationsDepen
 	}
 
 	function selectModel(model: ChatModelOption): Promise<void> {
-		dependencies.closeModelMenu();
 		return runOperation(
 			() => dependencies.invoke('switch_model', { role: 'chat', modelId: model.id }),
 			() => {
-				const name = model.name || model.id;
+				dependencies.closeModelMenu();
+				let webSearch = model.webSearch;
+				let normalizedWebSearch: string | null = null;
+				if (!model.webSearchSupported && webSearch !== 'off') {
+					webSearch = 'off';
+					normalizedWebSearch = 'off';
+				} else if (model.apiStyle === 'gemini' && webSearch === 'always') {
+					webSearch = 'auto';
+					normalizedWebSearch = 'auto';
+				}
 				dependencies.setCurrentModelId(model.id);
-				dependencies.setCurrentModelName(name);
-				dependencies.notify(`已切换默认模型: ${name}`, 'success', 3000);
+				dependencies.setCurrentModelName(model.name);
+				dependencies.setCurrentEffort(model.reasoningEffort);
+				dependencies.setCurrentWebSearch(webSearch);
+				dependencies.setCurrentApiStyle(model.apiStyle);
+				dependencies.setWebSearchSupported(model.webSearchSupported);
+				dependencies.notify(`已切换对话模型：${model.name}`, 'success', 3000);
+				if (normalizedWebSearch) {
+					dependencies
+						.invoke('set_web_search', { role: 'chat', mode: normalizedWebSearch })
+						.catch((error) =>
+							dependencies.reportError(error, {
+								context: '+page',
+								message: '同步对话模型联网搜索设置失败',
+								log: false,
+								notify: false,
+							}),
+						);
+				}
 			},
 			'切换模型失败',
 		);

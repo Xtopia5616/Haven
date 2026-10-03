@@ -57,9 +57,6 @@
 			<p class="session-rail__eyebrow">对话空间</p>
 			<h2>会话</h2>
 		</div>
-		<span class="session-rail__count" aria-label={`${switchableSessions.length} 个会话`}
-			>{switchableSessions.length}</span
-		>
 	</div>
 
 	<MaterialButton variant="filled" className="session-rail__new" onclick={() => onNew?.()}>
@@ -160,19 +157,6 @@
 		font-size: var(--md-sys-typescale-headline-medium-size);
 		font-weight: 700;
 		line-height: var(--md-sys-typescale-headline-medium-line-height);
-	}
-	.session-rail__count {
-		display: grid;
-		place-items: center;
-		min-width: 28px;
-		height: 28px;
-		padding-inline: var(--md-sys-space-xs);
-		border: 1px solid var(--md-sys-color-outline-variant);
-		border-radius: var(--md-sys-shape-full);
-		background: var(--md-sys-color-surface-container);
-		color: var(--md-sys-color-on-surface-variant);
-		font-size: var(--md-sys-typescale-label-medium-size);
-		font-variant-numeric: tabular-nums;
 	}
 	:global(.md-btn.session-rail__new) {
 		gap: var(--md-sys-space-sm);

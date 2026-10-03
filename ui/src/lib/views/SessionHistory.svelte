@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
 	import MaterialBadge from '$lib/MaterialBadge.svelte';
 	import Icon from '$lib/Icon.svelte';
 	import MaterialButton from '$lib/MaterialButton.svelte';
@@ -88,25 +87,6 @@
 		statusVariant = () => 'default',
 		formatMessageTime = (value) => value,
 	}: Props = $props();
-	const EXPANDED_WIDTH_QUERY = '(min-width: 840px)';
-	let expandedWidth = $state(false);
-	let previewSessionId = $state('');
-	const previewSession = $derived.by(
-		() => sessions.find((session) => session.id === previewSessionId) || sessions[0] || null,
-	);
-	onMount(() => {
-		if (typeof window.matchMedia !== 'function') {
-			const syncFallbackLayout = () => (expandedWidth = window.innerWidth >= 840);
-			syncFallbackLayout();
-			window.addEventListener('resize', syncFallbackLayout);
-			return () => window.removeEventListener('resize', syncFallbackLayout);
-		}
-		const mediaQuery = window.matchMedia(EXPANDED_WIDTH_QUERY);
-		const syncLayout = () => (expandedWidth = mediaQuery.matches);
-		syncLayout();
-		mediaQuery.addEventListener('change', syncLayout);
-		return () => mediaQuery.removeEventListener('change', syncLayout);
-	});
 	const statusLabels: Record<string, string> = {
 		pending: '排队中',
 		running: '运行中',
@@ -132,10 +112,6 @@
 			onToggleSelect(session.id);
 			return;
 		}
-		if (expandedWidth) {
-			previewSessionId = session.id;
-			return;
-		}
 		onResume(session);
 	}
 	function handleSessionContextMenu(event: MouseEvent, session: SessionHistoryRow) {
@@ -148,11 +124,7 @@
 	);
 </script>
 
-<div
-	class="history-view"
-	class:history-view--wide={expandedWidth}
-	class:history-view--selecting={selectMode}
->
+<div class="history-view">
 	<div class="filter-bar workspace-filter-bar" role="search" aria-label="筛选会话">
 		<input
 			class="md-input"
@@ -283,13 +255,7 @@
 							<!-- svelte-ignore a11y_no_noninteractive_element_to_interactive_role -->
 							<article
 								class="session-item workspace-item-card motion-list-item"
-								class:selected={expandedWidth && previewSession?.id === session.id}
-								aria-label={expandedWidth
-									? `预览会话：${displayTitle(session)}`
-									: `打开并继续会话：${displayTitle(session)}`}
-								aria-pressed={expandedWidth
-									? previewSession?.id === session.id
-									: undefined}
+								aria-label={`打开并继续会话：${displayTitle(session)}`}
 								role="button"
 								tabindex="0"
 								onclick={() => handleSessionOpen(session)}
@@ -347,7 +313,7 @@
 										<span
 											class="session-open-hint workspace-item-card-open"
 											aria-hidden="true"
-											>{expandedWidth ? '预览' : '打开'}</span
+											>打开</span
 										>
 									</div>
 								</div>
@@ -373,39 +339,8 @@
 							onclick={() => onLoadMore()}
 							disabled={loading}
 						/>
-					</div>{/if}
+				</div>{/if}
 			</div>
-			{#if expandedWidth && previewSession && !selectMode}
-				<aside class="session-preview" aria-label="会话预览">
-					<div class="session-preview-header">
-						<div class="session-preview-title-group">
-							<span class="session-preview-eyebrow">会话预览</span>
-							<h3>{displayTitle(previewSession)}</h3>
-						</div>
-						<MaterialBadge
-							variant={statusVariant(previewSession.status)}
-							text={sessionStatusLabel(previewSession.status)}
-						/>
-					</div>
-					<div class="session-preview-meta">
-						<span>创建时间</span>
-						<time datetime={previewSession.created_at}>
-							{formatMessageTime(previewSession.created_at)}
-						</time>
-					</div>
-					<div class="session-preview-content">
-						<span class="session-preview-eyebrow">首条消息</span>
-						<p>{previewSession.input_text || '这条会话没有可展示的摘要。'}</p>
-					</div>
-					<div class="session-preview-actions">
-						<MaterialButton
-							variant="filled"
-							label="打开并继续"
-							onclick={() => onResume(previewSession)}
-						/>
-					</div>
-				</aside>
-			{/if}
 		</div>
 	{/if}
 </div>
@@ -418,9 +353,6 @@
 	.history-results,
 	.history-list-column {
 		display: contents;
-	}
-	.session-preview {
-		display: none;
 	}
 	.filter-bar {
 		margin-bottom: var(--md-sys-space-lg);
@@ -467,8 +399,10 @@
 	}
 	.session-list {
 		display: grid;
-		grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+		grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr));
 		gap: var(--md-sys-space-sm);
+		min-width: 0;
+		padding: var(--md-sys-space-xs);
 	}
 	.session-item-main {
 		display: flex;
@@ -601,107 +535,10 @@
 		padding: var(--md-sys-space-lg) 0;
 	}
 	@media (min-width: 840px) {
-		.history-view--wide .history-results {
-			display: grid;
-			grid-template-columns: minmax(18rem, 0.85fr) minmax(0, 1.35fr);
+		.session-list {
+			grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
 			align-items: start;
-			gap: var(--md-sys-space-lg);
-		}
-		.history-view--wide .history-list-column {
-			display: flex;
-			flex-direction: column;
-			min-width: 0;
-			max-height: min(72vh, 54rem);
-			overflow-y: auto;
-			overscroll-behavior-y: contain;
-			scrollbar-gutter: stable;
-		}
-		.history-view--wide .session-list {
-			grid-template-columns: minmax(0, 1fr);
-			align-content: start;
-		}
-		.history-view--selecting.history-view--wide .history-results {
-			grid-template-columns: minmax(0, 1fr);
-		}
-		.history-view--selecting.history-view--wide .history-list-column {
-			max-height: none;
-			overflow: visible;
-		}
-		.history-view--selecting.history-view--wide .session-list {
-			grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr));
-		}
-		.history-view--wide .session-preview {
-			display: flex;
-			flex-direction: column;
-			gap: var(--md-sys-space-xl);
-			min-width: 0;
-			min-height: 18rem;
-			padding: var(--md-sys-space-2xl);
-			border: 1px solid var(--md-sys-color-outline-variant);
-			border-radius: var(--md-sys-shape-large);
-			background: var(--md-sys-color-surface-container-low);
-		}
-		.session-preview-header {
-			display: flex;
-			align-items: flex-start;
-			justify-content: space-between;
-			gap: var(--md-sys-space-lg);
-			min-width: 0;
-		}
-		.session-preview-title-group {
-			min-width: 0;
-		}
-		.session-preview-eyebrow {
-			display: block;
-			margin-bottom: var(--md-sys-space-xs);
-			color: var(--md-sys-color-on-surface-variant);
-			font-size: var(--md-sys-typescale-label-medium-size);
-			font-weight: 600;
-			line-height: var(--md-sys-typescale-label-medium-line-height);
-		}
-		.session-preview h3 {
-			margin: 0;
-			overflow-wrap: anywhere;
-			color: var(--md-sys-color-on-surface);
-			font-size: var(--md-sys-typescale-headline-medium-size);
-			line-height: var(--md-sys-typescale-headline-medium-line-height);
-		}
-		.session-preview-meta {
-			display: flex;
-			align-items: baseline;
 			gap: var(--md-sys-space-md);
-			padding-bottom: var(--md-sys-space-md);
-			border-bottom: 1px solid var(--md-sys-color-outline-variant);
-			color: var(--md-sys-color-on-surface-variant);
-			font-size: var(--md-sys-typescale-body-small-size);
-			line-height: var(--md-sys-typescale-body-small-line-height);
-		}
-		.session-preview-meta time {
-			color: var(--md-sys-color-on-surface);
-			font-family: var(--md-sys-typescale-mono);
-		}
-		.session-preview-content {
-			min-width: 0;
-			flex: 1 1 auto;
-		}
-		.session-preview-content p {
-			max-height: 34vh;
-			margin: 0;
-			overflow: auto;
-			white-space: pre-wrap;
-			overflow-wrap: anywhere;
-			color: var(--md-sys-color-on-surface);
-			font-size: var(--md-sys-typescale-body-medium-size);
-			line-height: var(--md-sys-typescale-body-medium-line-height);
-		}
-		.session-preview-actions {
-			display: flex;
-			justify-content: flex-end;
-			padding-top: var(--md-sys-space-sm);
-			border-top: 1px solid var(--md-sys-color-outline-variant);
-		}
-		.history-view--wide .session-open-hint {
-			color: var(--md-sys-color-primary);
 		}
 	}
 	@media (max-width: 700px) {

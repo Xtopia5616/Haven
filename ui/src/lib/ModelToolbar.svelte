@@ -1,7 +1,8 @@
 <script lang="ts">
 	import type { ChatModelOption } from '$lib/chatModelOperations.ts';
-	import type { ModelInfo } from '$lib/contracts/model.ts';
 	import MaterialButton from './MaterialButton.svelte';
+	import MaterialChoiceChip from './MaterialChoiceChip.svelte';
+	import MaterialCollapsible from './MaterialCollapsible.svelte';
 	import Icon from './Icon.svelte';
 	import MenuItem from './MenuItem.svelte';
 
@@ -10,7 +11,7 @@
 		modelMenuOpen?: boolean;
 		currentModelName?: string;
 		currentModelId?: string;
-		modelOptions?: ModelInfo[];
+		modelOptions?: ChatModelOption[];
 		onToggleMenu?: () => void;
 		onModelSelect?: (model: ChatModelOption) => void | Promise<void>;
 		effortOptions?: MenuOption[];
@@ -37,17 +38,45 @@
 		currentWebSearch = 'off',
 		onWebSearchSelect = () => {},
 	}: Props = $props();
+
+	let advancedOptionsOpen = $state(false);
+
+	let modelFilter = $state('');
+	let switchingModel = $state(false);
+	let filteredModelOptions = $derived.by(() => {
+		const query = modelFilter.trim().toLocaleLowerCase();
+		if (!query) return modelOptions;
+		return modelOptions.filter((model) =>
+			`${model.name} ${model.provider} ${model.model}`.toLocaleLowerCase().includes(query),
+		);
+	});
+
+	function toggleModelMenu() {
+		modelFilter = '';
+		onToggleMenu();
+	}
+
+	async function selectModel(model: ChatModelOption) {
+		if (switchingModel) return;
+		switchingModel = true;
+		modelFilter = '';
+		try {
+			await onModelSelect(model);
+		} finally {
+			switchingModel = false;
+		}
+	}
 </script>
 
 <div class="model-switch">
 	<MaterialButton
 		variant="text"
 		className="model-switch-btn"
-		onclick={() => onToggleMenu()}
-		title={`切换默认模型${currentModelName ? `：${currentModelName}` : ''}`}
-		ariaLabel={`切换默认模型${currentModelName ? `：${currentModelName}` : ''}`}
+		onclick={toggleModelMenu}
+		title={`切换模型${currentModelName ? `：${currentModelName}` : ''}`}
+		ariaLabel={`切换模型${currentModelName ? `：${currentModelName}` : ''}`}
 		ariaExpanded={modelMenuOpen}
-		ariaHaspopup="menu"
+		ariaHaspopup="dialog"
 	>
 		{#snippet children()}
 			<Icon name="cpu" size={16} />
@@ -58,64 +87,100 @@
 		{/snippet}
 	</MaterialButton>
 	{#if modelMenuOpen}
-		<div class="model-menu">
-			<div class="model-menu-title">切换默认模型</div>
-			{#each modelOptions as model}
-				<MenuItem
-					className="model-item"
-					selected={model.id === currentModelId}
-					role="menuitemradio"
-					ariaChecked={model.id === currentModelId}
-					onSelect={() => onModelSelect(model)}
-				>
-					{#snippet children()}
-						<span class="model-item-name">{model.name}</span>
-						<span class="model-item-provider">{model.provider}</span>
-					{/snippet}
-				</MenuItem>
-			{/each}
-			<div class="model-menu-divider"></div>
-			<div class="model-menu-title">思考强度</div>
-			<div class="effort-row">
-				{#each effortOptions as option}
-					<MenuItem
-						className="effort-item"
-						label={option.label}
-						selected={currentEffort === option.value}
-						role="menuitemradio"
-						ariaChecked={currentEffort === option.value}
-						onSelect={() => onEffortSelect(option.value)}
+		<div
+			class="model-menu"
+			role="dialog"
+			aria-label="选择模型"
+			aria-busy={switchingModel}
+		>
+			<div class="model-menu-title">选择模型</div>
+			{#if switchingModel}
+				<div class="model-menu-loading" role="status">正在切换模型…</div>
+			{/if}
+			{#if modelOptions.length > 0}
+				{#if modelOptions.length > 6}
+					<input
+						class="model-search"
+						type="search"
+						aria-label="搜索模型"
+						placeholder="搜索模型或提供方"
+						disabled={switchingModel}
+						bind:value={modelFilter}
 					/>
-				{/each}
-			</div>
-			<div class="model-menu-divider"></div>
-			<div class="model-menu-title">联网搜索</div>
-			{#if webSearchSupported}
-				<div class="effort-row">
-					{#each webSearchOptions as option}
+				{/if}
+				<div class="model-option-list" role="menu" aria-label="可选模型">
+					{#each filteredModelOptions as model}
 						<MenuItem
-							className="effort-item"
-							label={option.label}
-							selected={currentWebSearch === option.value}
+							className="model-item"
+							disabled={switchingModel}
+							selected={model.id === currentModelId}
 							role="menuitemradio"
-							ariaChecked={currentWebSearch === option.value}
-							onSelect={() => onWebSearchSelect(option.value)}
-						/>
+							ariaChecked={model.id === currentModelId}
+							onSelect={() => selectModel(model)}
+						>
+							{#snippet children()}
+								<span class="model-item-main">
+									<span class="model-item-name">{model.name}</span>
+									<span class="model-item-provider">{model.provider} / {model.model}</span>
+								</span>
+								{#if model.id === currentModelId}
+									<Icon name="check" size={16} />
+								{/if}
+							{/snippet}
+						</MenuItem>
+					{:else}
+						<div class="model-menu-empty">没有匹配的模型。请尝试搜索模型名或提供方。</div>
 					{/each}
 				</div>
 			{:else}
-				<div class="model-menu-hint">当前线协议不支持内置联网搜索</div>
-				<div class="effort-row">
-					<MenuItem
-						className="effort-item"
-						label="关闭"
-						selected={currentWebSearch === 'off'}
-						role="menuitemradio"
-						ariaChecked={currentWebSearch === 'off'}
-						onSelect={() => onWebSearchSelect('off')}
-					/>
-				</div>
+				<div class="model-menu-empty">还没有可用于对话的模型，请先在设置中配置。</div>
 			{/if}
+
+			<MaterialCollapsible lazy bind:open={advancedOptionsOpen}>
+				{#snippet header()}
+					<span class="advanced-options-title">思考与联网选项</span>
+				{/snippet}
+				{#snippet children()}
+					<div class="model-option-group">
+						<div class="model-menu-title">思考强度</div>
+						<div class="effort-row" role="group" aria-label="思考强度">
+							{#each effortOptions as option}
+								<MaterialChoiceChip
+									label={option.label}
+									selected={currentEffort === option.value}
+									disabled={switchingModel}
+									onSelect={() => onEffortSelect(option.value)}
+								/>
+							{/each}
+						</div>
+					</div>
+					<div class="model-option-group">
+						<div class="model-menu-title">联网搜索</div>
+						{#if webSearchSupported}
+							<div class="effort-row" role="group" aria-label="联网搜索">
+								{#each webSearchOptions as option}
+									<MaterialChoiceChip
+										label={option.label}
+										selected={currentWebSearch === option.value}
+									disabled={switchingModel}
+										onSelect={() => onWebSearchSelect(option.value)}
+									/>
+								{/each}
+							</div>
+						{:else}
+							<div class="model-menu-hint">当前协议不支持内置联网搜索</div>
+							<div class="effort-row" role="group" aria-label="联网搜索">
+								<MaterialChoiceChip
+									label="关闭"
+									selected={currentWebSearch === 'off'}
+									disabled={switchingModel}
+									onSelect={() => onWebSearchSelect('off')}
+								/>
+							</div>
+						{/if}
+					</div>
+				{/snippet}
+			</MaterialCollapsible>
 		</div>
 	{/if}
 </div>
@@ -158,8 +223,8 @@
 		right: 0;
 		bottom: calc(100% + 8px);
 		z-index: 1000;
-		min-width: 240px;
-		max-height: 320px;
+		min-width: 280px;
+		max-height: 360px;
 		overflow-y: auto;
 		background: var(--md-sys-color-surface-container-high);
 		border: 1px solid var(--md-sys-color-outline-variant);
@@ -176,12 +241,39 @@
 		color: var(--md-sys-color-on-surface-variant);
 		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
 	}
+	.model-menu-loading {
+		padding: 0 var(--md-sys-space-md) var(--md-sys-space-xs);
+		color: var(--md-sys-color-primary);
+		font-size: var(--md-sys-typescale-label-medium-size);
+		line-height: var(--md-sys-typescale-label-medium-line-height);
+	}
+	.model-search {
+		width: calc(100% - 2 * var(--md-sys-space-md));
+		margin: 0 var(--md-sys-space-md) var(--md-sys-space-xs);
+		padding: var(--md-sys-space-xs) var(--md-sys-space-sm);
+		border: 1px solid var(--md-sys-color-outline-variant);
+		border-radius: var(--md-sys-shape-small);
+		background: var(--md-sys-color-surface);
+		color: var(--md-sys-color-on-surface);
+		font: inherit;
+		font-size: var(--md-sys-typescale-body-small-size);
+	}
+	.model-search:focus-visible {
+		border-color: var(--md-sys-color-primary);
+		outline: 2px solid color-mix(in srgb, var(--md-sys-color-primary) 30%, transparent);
+	}
 	.model-menu-hint {
 		font-size: var(--md-sys-typescale-label-medium-size);
 		line-height: var(--md-sys-typescale-label-medium-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 		padding: 0 var(--md-sys-space-md) var(--md-sys-space-sm);
 		opacity: 0.85;
+	}
+	.model-menu-empty {
+		padding: var(--md-sys-space-sm) var(--md-sys-space-md);
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: var(--md-sys-typescale-body-small-size);
+		line-height: var(--md-sys-typescale-body-small-line-height);
 	}
 	:global(.menu-item.model-item) {
 		display: flex;
@@ -201,6 +293,18 @@
 		transition: background var(--md-sys-motion-duration-fast)
 			var(--md-sys-motion-easing-standard);
 	}
+	.model-item-main {
+		display: flex;
+		flex-direction: column;
+		gap: var(--md-sys-space-xs);
+		min-width: 0;
+	}
+	.model-item-name,
+	.model-item-provider {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
 	:global(.menu-item.model-item:hover) {
 		background: var(--md-sys-color-surface-container-highest);
 	}
@@ -213,40 +317,31 @@
 		line-height: var(--md-sys-typescale-label-small-line-height);
 		color: var(--md-sys-color-on-surface-variant);
 	}
-	.model-menu-divider {
-		height: 1px;
-		background: var(--md-sys-color-outline-variant);
-		margin: var(--md-sys-space-xs) 0;
+	.model-menu > :global(.md-collapsible) {
+		margin-top: var(--md-sys-space-xs);
+		border-top: 1px solid var(--md-sys-color-outline-variant);
+		padding: var(--md-sys-space-xs) var(--md-sys-space-sm) 0;
+	}
+	.model-menu > :global(.md-collapsible) :global(.md-collapsible-header) {
+		min-height: var(--md-comp-button-touch-height);
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: var(--md-sys-typescale-label-medium-size);
+		line-height: var(--md-sys-typescale-label-medium-line-height);
+	}
+	.advanced-options-title {
+		font-weight: 600;
+	}
+	.model-option-group + .model-option-group {
+		margin-top: var(--md-sys-space-xs);
 	}
 	.effort-row {
 		display: flex;
+		flex-wrap: wrap;
 		gap: var(--md-sys-space-xs);
 		padding: 0 var(--md-sys-space-md) var(--md-sys-space-sm);
 	}
-	:global(.menu-item.effort-item) {
+	.effort-row :global(.md-choice-chip) {
 		flex: 1;
-		height: 32px;
-		border: 1px solid var(--md-sys-color-outline);
-		border-radius: var(--md-sys-shape-small);
-		background: transparent;
-		color: var(--md-sys-color-on-surface-variant);
-		font-size: var(--md-sys-typescale-label-medium-size);
-		font-weight: 600;
-		line-height: var(--md-sys-typescale-label-medium-line-height);
-		font-family: inherit;
-		cursor: pointer;
-		transition:
-			background-color var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard),
-			border-color var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard),
-			color var(--md-sys-motion-duration-fast) var(--md-sys-motion-easing-standard);
-	}
-	:global(.menu-item.effort-item:hover) {
-		border-color: var(--md-sys-color-primary);
-	}
-	:global(.menu-item.effort-item.selected) {
-		border-color: var(--md-sys-color-primary);
-		background: var(--md-sys-color-primary);
-		color: var(--md-sys-color-on-primary);
 	}
 	@media (max-width: 640px) {
 		:global(.md-btn.model-switch-btn) {

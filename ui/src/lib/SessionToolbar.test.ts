@@ -18,7 +18,7 @@ describe('SessionToolbar', () => {
 		expect(button.classList.contains('md-btn')).toBe(true);
 		expect(button.classList.contains('md-icon-btn')).toBe(false);
 		expect(button.getAttribute('aria-haspopup')).toBe('menu');
-		expect(button.querySelector('.session-switch-badge')?.textContent).toBe('2');
+		expect(button.querySelector('.session-switch-badge')).toBeNull();
 
 		await fireEvent.click(button);
 		expect(onToggleSessionMenu).toHaveBeenCalledTimes(1);

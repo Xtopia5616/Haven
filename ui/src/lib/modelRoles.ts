@@ -17,7 +17,7 @@ export type RequestKind = (typeof requestKindValues)[number];
 
 export const capabilityOptions: Array<{ value: CapabilityInput; label: string }> = [
 	{ value: 'chat', label: '对话' },
-	{ value: 'fast_chat', label: '快速对话' },
+	{ value: 'fast_chat', label: '轻量任务' },
 	{ value: 'vision', label: '视觉' },
 	{ value: 'audio_input', label: '音频输入' },
 	{ value: 'transcription', label: '语音转写' },
@@ -28,7 +28,7 @@ export const capabilityOptions: Array<{ value: CapabilityInput; label: string }>
 
 export const requestPolicyOptions: Array<{ value: RequestKind; label: string }> = [
 	{ value: 'chat', label: '对话' },
-	{ value: 'fast_chat', label: '快速对话' },
+	{ value: 'fast_chat', label: '轻量任务' },
 	{ value: 'vision', label: '视觉理解' },
 	{ value: 'audio_chat', label: '音频对话' },
 	{ value: 'transcription', label: '语音转写' },

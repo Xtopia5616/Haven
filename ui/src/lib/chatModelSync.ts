@@ -1,13 +1,13 @@
 import { reportError } from '$lib/errorHandling.ts';
 import { normalizeApiStyle, supportsBuiltinWebSearch } from '$lib/apiStyle.ts';
-import { discoverModels } from '$lib/modelDiscoveryCommands.ts';
 import { invoke } from '$lib/tauri.ts';
 import { loadSettings } from '$lib/settingsCommand.ts';
-import type { ModelInfo } from '$lib/contracts/model.ts';
+import type { SettingsPayload } from '$lib/contracts/settings.ts';
+import type { ChatModelOption } from '$lib/chatModelOperations.ts';
 
 type ModelSyncOptions = {
 	isDead: () => boolean;
-	setModelOptions: (value: ModelInfo[]) => void;
+	setModelOptions: (value: ChatModelOption[]) => void;
 	setCurrentModelId: (value: string) => void;
 	setCurrentModelName: (value: string) => void;
 	setCurrentEffort: (value: string) => void;
@@ -16,22 +16,37 @@ type ModelSyncOptions = {
 	setCurrentApiStyle: (value: string) => void;
 };
 
-const defaultModelsCache: {
-	cacheKey: string | null;
-	list: ModelInfo[] | null;
-	inflight: Promise<ModelInfo[]> | null;
-	inflightKey: string | null;
-} = {
-	cacheKey: null,
-	list: null,
-	inflight: null,
-	inflightKey: null,
-};
+function chatModelOptions(settings: SettingsPayload): ChatModelOption[] {
+	const providers = new Map(settings.llm.providers.map((provider) => [provider.name, provider]));
+	return settings.llm.models.flatMap((model) => {
+		const provider = providers.get(model.provider);
+		if (
+			!model.capabilities.includes('chat') ||
+			!model.model ||
+			!provider
+		) {
+			return [];
+		}
+		const apiStyle = normalizeApiStyle(provider.api_style || 'openai-chat');
+		return [
+			{
+				id: model.id,
+				name: model.id,
+				provider: model.provider,
+				model: model.model,
+				reasoningEffort: model.reasoning_effort || '',
+				webSearch: model.web_search || 'off',
+				apiStyle,
+				webSearchSupported: supportsBuiltinWebSearch(apiStyle),
+			},
+		];
+	});
+}
 
 /**
- * Owns default-model discovery and settings synchronization for the chat
- * toolbar. The page supplies state setters so this module stays independent
- * of Svelte component state while retaining the module-level discovery cache.
+ * Synchronize the chat toolbar with the configured Chat route. The menu lists
+ * named model configurations, and selecting one changes RequestPolicy.primary
+ * instead of editing the provider's model id inside the selected configuration.
  */
 export function createChatModelSync(options: ModelSyncOptions) {
 	const {
@@ -45,145 +60,70 @@ export function createChatModelSync(options: ModelSyncOptions) {
 		setCurrentApiStyle,
 	} = options;
 
-	function ensureDefaultModelOptions(provider: {
-		name: string;
-		base_url: string;
-		proxy_url?: string | null;
-		no_proxy?: string | null;
-	}) {
-		const { name: providerName, base_url: baseUrl } = provider;
-		const cacheKey = JSON.stringify([
-			baseUrl,
-			provider.proxy_url ?? null,
-			provider.no_proxy ?? null,
-		]);
-		if (defaultModelsCache.cacheKey === cacheKey && defaultModelsCache.list) {
-			setModelOptions(defaultModelsCache.list);
-			return;
-		}
-		// Settings can swap the default provider while this view stays mounted
-		// (keep-alive). Drop the previous endpoint's list; an in-flight fetch
-		// for a different URL is abandoned (its .then is stamped and no-ops).
-		if (defaultModelsCache.cacheKey !== cacheKey) {
-			defaultModelsCache.list = null;
-			defaultModelsCache.cacheKey = cacheKey;
-		}
-		if (defaultModelsCache.inflight && defaultModelsCache.inflightKey === cacheKey) {
-			defaultModelsCache.inflight
-				.then((list) => {
-					if (!isDead() && defaultModelsCache.cacheKey === cacheKey)
-						setModelOptions(list);
-				})
-				.catch(() => {
-					if (!isDead() && defaultModelsCache.cacheKey === cacheKey) setModelOptions([]);
-				});
-			return;
-		}
-		const requestedUrl = baseUrl;
-		defaultModelsCache.cacheKey = cacheKey;
-		defaultModelsCache.inflightKey = cacheKey;
-		defaultModelsCache.inflight = discoverModels({
-			baseUrl: requestedUrl,
-			apiKey: '',
-			provider: providerName || '',
-			role: 'chat',
-			proxyUrl: provider.proxy_url ?? null,
-			noProxy: provider.no_proxy ?? null,
-		})
-			.then((list) => {
-				const next = list || [];
-				// Stale response after a provider swap: ignore.
-				if (defaultModelsCache.cacheKey !== cacheKey) return next;
-				defaultModelsCache.list = next;
-				if (!isDead()) setModelOptions(next);
-				return next;
-			})
-			.catch((e) => {
-				reportError(e, {
-					context: '+page',
-					message: '获取默认模型列表失败',
-					notify: false,
-				});
-				if (!isDead() && defaultModelsCache.cacheKey === cacheKey) setModelOptions([]);
-				throw e;
-			})
-			.finally(() => {
-				// Only clear the coalescing slot when we still own it.
-				if (defaultModelsCache.inflightKey === cacheKey) {
-					defaultModelsCache.inflight = null;
-					defaultModelsCache.inflightKey = null;
-				}
-			});
-		// Swallow the rethrown rejection for the shared in-flight promise;
-		// the branch above already surfaces the failure to the UI.
-		defaultModelsCache.inflight.catch(() => {});
-	}
-
-	/** Apply the chat policy's primary model from a get_settings payload. */
-	function applyDefaultModelFromSettings(s: any) {
-		const policies = /** @type {any[]} */ s?.llm?.request_policies || [];
-		const chatPolicy = policies.find((policy: any) => policy.request === 'chat');
-		const dmRole = /** @type {any[]} */ (s?.llm?.models || []).find(
-			(model: any) => model.id === chatPolicy?.primary,
-		);
-		const dmProvider = dmRole?.provider
-			? /** @type {any[]} */ (s?.llm?.providers || []).find(
-					(p: any) => p.name === dmRole.provider,
-				)
-			: null;
-		const dmModel = dmRole?.model || '';
-		setCurrentModelId(dmModel);
-		setCurrentModelName(dmModel);
-		setCurrentEffort(dmRole?.reasoning_effort || '');
-		const webSearch = dmRole?.web_search || 'off';
-		setCurrentWebSearch(webSearch);
-		const apiStyle = normalizeApiStyle(dmProvider?.api_style || 'openai-chat');
-		setCurrentApiStyle(apiStyle);
-		const webSearchSupported = supportsBuiltinWebSearch(apiStyle);
-		setWebSearchSupported(webSearchSupported);
-		// Stale auto/always on an unsupported style: clear to off so it cannot
-		// resurrect when the user later switches to a supporting provider.
-		if (!webSearchSupported && webSearch !== 'off') {
-			setCurrentWebSearch('off');
-			invoke('set_web_search', { role: 'chat', mode: 'off' }).catch((e) => {
-				reportError(e, {
-					context: '+page',
-					message: '关闭不支持的网页搜索失败',
-					log: false,
-					notify: false,
-				});
-			});
-		} else if (webSearchSupported && apiStyle === 'gemini' && webSearch === 'always') {
-			// Gemini Always ≡ Auto; normalize stored value.
-			setCurrentWebSearch('auto');
-			invoke('set_web_search', { role: 'chat', mode: 'auto' }).catch((e) => {
-				reportError(e, {
-					context: '+page',
-					message: '同步 Gemini 网页搜索设置失败',
-					log: false,
-					notify: false,
-				});
-			});
-		}
-		if (dmProvider?.base_url) {
-			ensureDefaultModelOptions(dmProvider);
-		} else {
+	function applyDefaultModelFromSettings(settings: SettingsPayload | null) {
+		if (!settings) {
 			setModelOptions([]);
+			setCurrentModelId('');
+			setCurrentModelName('');
+			setCurrentEffort('');
+			setCurrentWebSearch('off');
+			setWebSearchSupported(false);
+			setCurrentApiStyle('openai-chat');
+			return;
+		}
+
+		setModelOptions(chatModelOptions(settings));
+		const chatPolicy = settings.llm.request_policies.find((policy) => policy.request === 'chat');
+		const selectedModel = settings.llm.models.find((model) => model.id === chatPolicy?.primary);
+		const provider = selectedModel
+			? settings.llm.providers.find((item) => item.name === selectedModel.provider)
+			: undefined;
+		const apiStyle = normalizeApiStyle(provider?.api_style || 'openai-chat');
+		const webSearchSupported = !!selectedModel && supportsBuiltinWebSearch(apiStyle);
+		const storedWebSearch = selectedModel?.web_search || 'off';
+		let webSearch = storedWebSearch;
+		let normalizedWebSearch: string | null = null;
+		if (selectedModel && !webSearchSupported && webSearch !== 'off') {
+			webSearch = 'off';
+			normalizedWebSearch = 'off';
+		} else if (selectedModel && apiStyle === 'gemini' && webSearch === 'always') {
+			webSearch = 'auto';
+			normalizedWebSearch = 'auto';
+		}
+
+		setCurrentModelId(selectedModel?.id || '');
+		setCurrentModelName(selectedModel?.id || '');
+		setCurrentEffort(selectedModel?.reasoning_effort || '');
+		setCurrentApiStyle(apiStyle);
+		setWebSearchSupported(webSearchSupported);
+		setCurrentWebSearch(webSearchSupported ? webSearch : 'off');
+
+		// Normalize stale settings so they cannot become active if the profile or
+		// provider wire style changes later.
+		if (normalizedWebSearch) {
+			invoke('set_web_search', { role: 'chat', mode: normalizedWebSearch }).catch((error) => {
+				reportError(error, {
+					context: '+page',
+					message: '同步对话模型联网搜索设置失败',
+					log: false,
+					notify: false,
+				});
+			});
 		}
 	}
 
 	let syncGeneration = 0;
 
-	/** Re-fetch settings and refresh the toolbar default-model controls. */
+	/** Re-fetch settings and refresh the toolbar controls after external edits. */
 	function refreshDefaultModelFromBackend() {
 		const generation = ++syncGeneration;
 		loadSettings()
-			.then((s) => {
+			.then((settings) => {
 				if (isDead() || generation !== syncGeneration) return;
-				applyDefaultModelFromSettings(s);
+				applyDefaultModelFromSettings(settings);
 			})
-			.catch((e) => {
-				reportError(e, {
+			.catch((error) => {
+				reportError(error, {
 					context: '+page',
 					message: '刷新默认模型失败',
 					notify: false,

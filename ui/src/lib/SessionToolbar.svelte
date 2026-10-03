@@ -80,9 +80,6 @@
 		>
 			<Icon name="chat" size={20} className="session-switch-icon" />
 			<span class="session-switch-label">会话</span>
-			{#if menuSessions.length > 0}
-				<span class="session-switch-badge">{menuSessions.length}</span>
-			{/if}
 			<Icon name="chevronDown" size={16} className="session-switch-caret" />
 		</MaterialButton>
 		{#if sessionMenuOpen}
@@ -399,22 +396,6 @@
 	}
 	:global(.session-switch-btn.is-open .session-switch-caret) {
 		transform: rotate(180deg);
-	}
-	.session-switch-badge {
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		min-width: 20px;
-		height: 20px;
-		padding: 0 6px;
-		border-radius: 999px;
-		background: color-mix(in srgb, currentColor 14%, transparent);
-		color: currentColor;
-		font-size: var(--md-sys-typescale-label-small-size);
-		font-weight: 700;
-		line-height: 1;
-		text-align: center;
-		font-variant-numeric: tabular-nums;
 	}
 	.session-menu {
 		position: absolute;
