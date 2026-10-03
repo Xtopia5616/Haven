@@ -426,3 +426,4 @@
 - [0443：会话时间线中的 Action 任务卡](0443-session-action-timeline-cards.md)
 - [0442：Session 来源与 peer parent lineage](0442-session-origin-and-parent-lineage.md)
 - [0445：后台 Shell 来源关联与等待反馈契约](0445-background-shell-source-and-wait-feedback.md)
+- [0446：会话菜单中的 Agent 父子会话导航](0446-session-lineage-navigation.md)

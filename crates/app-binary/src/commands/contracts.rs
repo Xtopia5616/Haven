@@ -7,7 +7,7 @@
 
 /// Version of the public Tauri command directory.
 pub const IPC_CONTRACT_VERSION: u16 = 1;
-pub const EXPECTED_COMMAND_COUNT: usize = 78;
+pub const EXPECTED_COMMAND_COUNT: usize = 79;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandBoundary {
@@ -262,6 +262,11 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
         name: "get_sessions",
         boundary: CommandBoundary::Read,
         security: "active session projection",
+    },
+    CommandContract {
+        name: "get_session_lineage",
+        boundary: CommandBoundary::Read,
+        security: "parent and direct children of the selected session only",
     },
     CommandContract {
         name: "end_session",

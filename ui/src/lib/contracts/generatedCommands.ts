@@ -22,7 +22,9 @@ export interface LogTail { path: string; content: string }
 export interface McpRefreshResult { added: string[]; removed: string[]; updated: string[]; failed: string[] }
 export interface ApiKeyStatus { models: Record<string, boolean>; providers: Record<string, boolean>; stt: boolean; ocr: boolean; ocr_secret: boolean }
 export interface RecordingState { is_recording: boolean; is_toggle: boolean }
-export interface SessionResumeResponse { session: Session; messages: Message[]; steps: SessionStep[]; usage: SessionUsage | null; llm_usage: LlmCallUsage[]; interactions: InteractionRequestedEvent[] }
+export interface SessionLineageResponse { parent: SessionRecordDto | null; children: SessionRecordDto[] }
+export interface SessionRecordDto { id: string; input_text: string; title: string | null; status: SessionStatus; created_at: string; updated_at: string }
+export interface SessionResumeResponse { session: SessionRecordDto; messages: Message[]; steps: SessionStep[]; usage: SessionUsage | null; llm_usage: LlmCallUsage[]; interactions: InteractionRequestedEvent[] }
 export interface SessionPermissionGrant { session_id: string; session_title: string | null; capability: string; target: string; effect: string }
 export interface ShellAvailability { available: boolean }
 export interface ActionEvent { id: string; kind: ActionKind; status?: ActionStatus; session_id?: string; source_step_id?: string; started_at?: string; finished_at?: string; due_at?: string; title?: string; body?: string; mode?: string; command?: string; output?: string; error?: string; error_reason?: string; exit_code?: number; preview?: string }
@@ -149,7 +151,6 @@ export interface Fact { id: string; subject: string; predicate: string; object: 
 export interface FactSourceRef { message_id: string; snippet: string }
 export interface Message { id: string; session_id: string; role: string; content: string; message_type: string | null; created_at: string; tool_call_id: string | null; attachments: MessageAttachment[]; media_inputs?: MediaInput[]; voice: boolean }
 export interface SessionStep { id: string; session_id: string; step_number: number; action_index: number; thought: string | null; action_tool: string | null; action_input: string | null; tool_call_id: string | null; observation: string | null; status: string; is_high_risk: boolean; confirmed: boolean | null; silent: boolean; started_at: string | null; completed_at: string | null; created_at: string }
-export interface Session { id: string; input_text: string; title: string | null; status: SessionStatus; created_at: string; updated_at: string }
 export interface LlmCallUsage { id: string; session_id: string; step_number: number | null; role: RequestKind; call_kind: string; model: string | null; prompt_tokens: number; completion_tokens: number; total_tokens: number; cached_tokens: number; cache_creation_tokens: number; cache_miss_tokens: number; cache_accounting: string; cache_diagnostics?: unknown; context_tokens: number; context_window: number | null; cost_usd: number; has_cost: boolean; duration_ms: number | null; created_at: string }
 export interface SessionUsage { prompt_tokens: number; completion_tokens: number; total_tokens: number; cached_tokens: number; cache_creation_tokens: number; cache_miss_tokens: number; context_tokens: number; context_window: number | null; cost_usd: number; has_cost: boolean }
 export interface SkillInfo { name: string; description: string; version: string | null; language: string; enabled: boolean; root: string; has_script: boolean }
@@ -178,12 +179,13 @@ export interface TauriCommandMap {
 	export_history: { request: { startDate?: string | null; endDate?: string | null; status?: string | null }; response: string };
 	get_api_key_status: { request: undefined; response: ApiKeyStatus };
 	get_bootstrap_status: { request: undefined; response: string };
-	get_history: { request: { limit: number; offset: number }; response: Session[] };
+	get_history: { request: { limit: number; offset: number }; response: SessionRecordDto[] };
 	get_last_conversation: { request: undefined; response: SessionResumeResponse | null };
 	get_log_info: { request: undefined; response: LogInfo };
 	get_performance_metrics: { request: { ui?: UiMetricsSnapshotInput | null }; response: MetricsSnapshot };
 	get_recording_state: { request: undefined; response: RecordingState };
 	get_session_for_resume: { request: { sessionId: string }; response: SessionResumeResponse };
+	get_session_lineage: { request: { sessionId: string }; response: SessionLineageResponse };
 	get_sessions: { request: undefined; response: SessionListResponse };
 	get_settings: { request: undefined; response: Settings };
 	get_tools: { request: undefined; response: ToolListResponse };
@@ -216,9 +218,9 @@ export interface TauriCommandMap {
 	revoke_session_permission: { request: { sessionId: string; capability: string }; response: void };
 	rollback_session: { request: { sessionId: string; targetStep: number; pause?: boolean | null; targetMessageId?: string | null }; response: void };
 	run_memory_maintenance: { request: undefined; response: number };
-	search_history: { request: { query: string }; response: Session[] };
-	search_history_filtered: { request: { query?: string | null; status?: string | null; startDate?: string | null; endDate?: string | null; limit?: number | null; offset?: number | null }; response: Session[] };
-	search_history_paginated: { request: { query: string; limit: number; offset: number }; response: Session[] };
+	search_history: { request: { query: string }; response: SessionRecordDto[] };
+	search_history_filtered: { request: { query?: string | null; status?: string | null; startDate?: string | null; endDate?: string | null; limit?: number | null; offset?: number | null }; response: SessionRecordDto[] };
+	search_history_paginated: { request: { query: string; limit: number; offset: number }; response: SessionRecordDto[] };
 	set_hotkey_capture_active: { request: { active: boolean }; response: void };
 	set_reasoning_effort: { request: { role: string; effort?: string | null }; response: void };
 	set_skill_enabled: { request: { name: string; enabled: boolean }; response: void };

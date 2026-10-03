@@ -87,6 +87,7 @@ export const TAURI_COMMAND_CONTRACTS = {
 	process_transcript: { boundary: 'execute', security: 'attachment limits and file persistence are enforced' },
 	reopen_session: { boundary: 'mutate', security: 'session id selects persisted session' },
 	get_sessions: { boundary: 'read', security: 'active session projection' },
+	get_session_lineage: { boundary: 'read', security: 'parent and direct children of the selected session only' },
 	end_session: { boundary: 'mutate', security: 'explicit user termination' },
 	interrupt_session: { boundary: 'mutate', security: 'pauses the selected active session without deleting it' },
 	resolve_confirmation: { boundary: 'mutate', security: 'effect/scope/target must match confirmation; timeout expires fail-closed' },

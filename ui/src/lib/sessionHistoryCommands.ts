@@ -7,6 +7,7 @@ import type {
 } from './contracts/commands.ts';
 import type {
 	SessionHistoryRow,
+	SessionLineageResponse,
 	SessionListResponse,
 	SessionResumeResponse,
 } from './contracts/sessionHistory.ts';
@@ -17,6 +18,11 @@ export type SessionHistoryInvoker = TauriCommandInvoke;
 /** Load the current in-memory session summaries for the chat shell. */
 export function getSessions(): Promise<SessionListResponse> {
 	return invoke('get_sessions');
+}
+
+/** Load the parent and direct child sessions shown in the active session menu. */
+export function getSessionLineage(request: SessionIdRequest): Promise<SessionLineageResponse> {
+	return invoke('get_session_lineage', request);
 }
 
 /** Load a recent persisted history page for the compact chat session switcher. */

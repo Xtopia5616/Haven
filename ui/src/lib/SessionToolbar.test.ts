@@ -84,12 +84,19 @@ describe('SessionToolbar', () => {
 
 		await fireEvent.click(tokenButton);
 		expect(tokenButton.classList.contains('selected')).toBe(true);
-		expect(screen.getByRole('dialog', { name: 'Token 使用明细' })).toBeTruthy();
+		const tokenDetails = screen.getByRole('dialog', { name: 'Token 使用明细' });
+		expect(tokenDetails).toBeTruthy();
+		expect(tokenDetails.style.left).toBe('12px');
 		expect(screen.getByText('命中率')).toBeTruthy();
 		expect(screen.getAllByText('50%')).toHaveLength(1);
 		expect(screen.queryByText('20%')).toBeNull();
 		expect(screen.getByText('当前请求')).toBeTruthy();
 
+		await fireEvent.keyDown(window, { key: 'Escape' });
+		expect(screen.queryByRole('dialog', { name: 'Token 使用明细' })).toBeNull();
+		expect(tokenButton.classList.contains('selected')).toBe(false);
+
+		await fireEvent.click(tokenButton);
 		await fireEvent.click(document.body);
 		expect(tokenButton.classList.contains('selected')).toBe(false);
 	});
@@ -197,5 +204,47 @@ describe('SessionToolbar', () => {
 		await fireEvent.click(screen.getByRole('menuitemradio'));
 
 		expect(onSwitchSession).toHaveBeenCalledWith('ses-old');
+	});
+
+	it('shows parent and Agent child sessions in the session switcher', async () => {
+		const onSwitchSession = vi.fn();
+		render(SessionToolbar, {
+			showSessionMenu: true,
+			sessionMenuOpen: true,
+			menuSessions: [],
+			sessionLineage: {
+				parent: {
+					id: 'ses-parent',
+					status: 'paused',
+					title: '父会话',
+					input_text: '父会话',
+				},
+				children: [
+					{
+						id: 'ses-child',
+						status: 'completed',
+						title: 'Agent 调研',
+						input_text: 'Agent 调研',
+					},
+				],
+			},
+			onSwitchSession,
+		});
+
+		await fireEvent.click(screen.getByRole('menuitem', { name: /返回父会话/ }));
+		expect(onSwitchSession).toHaveBeenCalledWith('ses-parent');
+		await fireEvent.click(screen.getByRole('menuitem', { name: /Agent 调研/ }));
+		expect(onSwitchSession).toHaveBeenLastCalledWith('ses-child');
+	});
+
+	it('distinguishes a lineage load failure from an empty relationship list', () => {
+		render(SessionToolbar, {
+			showSessionMenu: true,
+			sessionMenuOpen: true,
+			sessionLineageError: true,
+		});
+
+		expect(screen.getByText('加载会话关系失败，重新打开菜单可重试')).toBeTruthy();
+		expect(screen.queryByText('没有关联的父会话或子会话')).toBeNull();
 	});
 });

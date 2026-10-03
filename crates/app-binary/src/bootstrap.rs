@@ -666,6 +666,7 @@ pub(crate) fn run() {
             commands::session::reopen_session,
             commands::session::get_last_conversation,
             commands::session::get_sessions,
+            commands::session::get_session_lineage,
             commands::action::list_actions,
             commands::action::cancel_action,
             commands::action::list_action_history,

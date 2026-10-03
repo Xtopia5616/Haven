@@ -3,6 +3,7 @@ import {
 	clearHistory,
 	deleteSession,
 	getLastConversation,
+	getSessionLineage,
 	getSessionForResume,
 	getSessions,
 	reopenSession,
@@ -28,6 +29,16 @@ describe('session history command boundary', () => {
 		await expect(getSessions()).resolves.toBe(response);
 		expect(invokeMock).toHaveBeenCalledOnce();
 		expect(invokeMock).toHaveBeenCalledWith('get_sessions');
+	});
+
+	it('loads the lineage for the selected session with a flat request', async () => {
+		const request = { sessionId: 'ses-child' };
+		const response = { parent: { id: 'ses-parent' }, children: [] };
+		invokeMock.mockResolvedValue(response as never);
+
+		await expect(getSessionLineage(request)).resolves.toBe(response);
+		expect(invokeMock).toHaveBeenCalledOnce();
+		expect(invokeMock).toHaveBeenCalledWith('get_session_lineage', request);
 	});
 
 	it('passes the history filter flat and preserves response fields', async () => {

@@ -193,6 +193,7 @@ Session 清理与 Agent wiring 收口（2026-09-26，ADR 0374）：`SessionStore
 ### 3.1 不变量
 
 - session-local 可变运行态只能由 actor 任务修改；supervisor 只负责 registry、admission、生命周期和 handle。
+- 普通创建与 `agent.spawn` 共用 Session/SessionActor/ReAct 执行模型；`SessionOrigin` 只持久化创建来源与 parent lineage，Messaging registry 仍拥有 live 协作状态（ADR 0442）。
 - 一次 run 在 actor 任务内执行；`SessionState::react_run` 持有 active future，future 独占 run-local `ReActState`，由 actor loop 与 mailbox 一起轮询（ADR 0214、0382）。
 - active run future 不借用整份 `SessionState`；工具/模型/数据库等待期间，外部命令仍可更新队列、交互和生命周期状态。
 - ReAct live transcript 的 Agent 提交 `SessionCommitted`；SessionStore 在同一事务内先追加 session events、再更新物化投影、提交后广播。Agent 再按已提交 sequence 发布 committed UI event，随后更新 in-memory canonical；assistant Thought 的共享 ID step projection 可在发布后单独写入并由 replay 修复。
@@ -613,4 +614,4 @@ MemoryRuntime 启动所有权后续校准（ADR 0367）：当前不再使用 `ru
 
 2026-10-03 Ask 意外退出恢复（ADR 0440）：Ask `tool_result` transcript 与 `interaction_requested` 分开提交期间若进程退出，Agent 从活动 `session_events` 的 Ask 结果恢复 pending 状态；显式 request 按 ID/correlation IDs 收敛，`UserInject(source=answer)` 或 clear event 关闭请求。actor 启动和 resume IPC 共用该 reducer，不从消息内容或物化 projection 猜测回答；无 schema、IPC 或重置变化。
 
-2026-10-03 后台 Shell provenance 与 wait feedback（ADR 0445）：shell(background=true) 将可信工具步骤 step_id 持久到 actions.source_step_id，并在 ActionEvent 和自动 action-result envelope 中保留来源；Shell 启动、running 状态检查与全 running background 列表共用带 action_ids 和 delivery=automatic 的 background_wait tool-result 合同。普通同步工具和 scheduled 生命周期保持独立；等待字段不改变 Action 生命周期或写入新的 transcript 路径。schema v33 按发布说明重置。
+2026-10-03 后台 Shell provenance 与 wait feedback（ADR 0445）：`shell(background=true)` 将可信工具步骤 `step_id` 持久到 `actions.source_step_id`，并在 ActionEvent 和自动 action-result envelope 中保留来源；shell 启动、running 状态检查与全 running background 列表共用带 `action_ids` 和 `delivery=automatic` 的 `background_wait` tool-result 合同。普通同步工具和 scheduled 生命周期保持独立；等待字段只是模型可见建议，不新增 ReAct 状态、executor 或 transcript 写路径。该切片将 schema 升至 v33，后续 v34 由 ADR 0442 会话来源字段升级。

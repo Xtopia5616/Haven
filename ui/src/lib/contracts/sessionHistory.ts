@@ -18,6 +18,7 @@ export type SessionHistoryRow = TauriCommandResponse<'get_history'>[number];
 export type SessionInfoStep = GeneratedStepInfo;
 export type SessionInfo = GeneratedSessionInfo;
 export type SessionListResponse = GeneratedSessionListResponse;
+export type SessionLineageResponse = TauriCommandResponse<'get_session_lineage'>;
 export type SessionMessageAttachment = GeneratedMessageAttachment;
 export type SessionResumeMessage = GeneratedMessage;
 export type SessionResumeStep = GeneratedSessionStep;

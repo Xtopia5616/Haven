@@ -58,6 +58,7 @@
 | `process_transcript` | execute | 附件限制和文件持久化校验 |
 | `reopen_session` | mutate | session id 选择持久化会话 |
 | `get_sessions` | read | 活跃会话投影 |
+| `get_session_lineage` | read | 当前会话的父会话和直接 Agent 子会话 |
 | `end_session` | mutate | 仅显式结束 |
 | `interrupt_session` | mutate | 停止当前输出但保留会话，可继续 |
 | `resolve_confirmation` | mutate | effect/scope/target 后端校验，deny 优先；超时按过期拒绝收尾 |
@@ -98,6 +99,7 @@
 | 命令 | 边界 | 说明 |
 |---|---|---|
 | `get_sessions` | read | 活跃会话列表 |
+| `get_session_lineage` | read | 当前会话的父会话和直接 Agent 子会话 |
 | `get_session_for_resume` | read | 恢复指定会话所需的持久化投影 |
 | `get_last_conversation` | read | 最近持久化会话 |
 | `reopen_session` / `continue_session` / `end_session` / `interrupt_session` | mutate | 会话生命周期控制；中断保留会话 |

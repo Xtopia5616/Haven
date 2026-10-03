@@ -27,6 +27,7 @@
 		deleteSession,
 		getHistory,
 		getLastConversation,
+		getSessionLineage,
 		getSessions,
 		reopenSession,
 	} from '$lib/sessionHistoryCommands.ts';
@@ -90,7 +91,7 @@
 	import type { SessionTokenStats as PresentationSessionTokenStats } from '$lib/sessionUsagePresentation.ts';
 	import type { LlmUsage } from '$lib/sessionUsage.ts';
 	import type { ChatModelOption } from '$lib/chatModelOperations.ts';
-	import type { SessionHistoryRow } from '$lib/contracts/sessionHistory.ts';
+	import type { SessionHistoryRow, SessionLineageResponse } from '$lib/contracts/sessionHistory.ts';
 	import type { ActionPayload, ActionStatus } from '$lib/contracts/action.ts';
 	import type { AgentMediaPlanPayload } from '$lib/contracts/agent.ts';
 	import type { ChatFileAttachment, ChatImageAttachment } from '$lib/chatController.ts';
@@ -101,6 +102,13 @@
 	let inputRouterRef = $state<{ setDraft: (text: string) => void } | null>(null);
 	let recentHistorySessions = $state<SessionHistoryRow[]>([]);
 	let historyRefreshSeq = 0;
+	let sessionLineage = $state<{
+		parent: SessionSummary | null;
+		children: SessionSummary[];
+	} | null>(null);
+	let sessionLineageLoading = $state(false);
+	let sessionLineageError = $state(false);
+	let sessionLineageSeq = 0;
 
 	// Attachment & compression limits for the input router, loaded from the
 	// persisted [context_limits] config (editable on the settings "媒体"
@@ -294,6 +302,43 @@
 			if (!dead && sequence === historyRefreshSeq) {
 				reportError(error, { context: '+page', message: '加载会话历史失败', log: false });
 			}
+		}
+	}
+
+	function mapLineageSession(session: SessionLineageResponse['children'][number]): SessionSummary {
+		return { ...session, title: session.title || session.input_text };
+	}
+
+	async function loadSessionLineage(sessionId: string | null) {
+		const sequence = ++sessionLineageSeq;
+		if (!sessionId) {
+			sessionLineage = null;
+			sessionLineageLoading = false;
+			sessionLineageError = false;
+			return;
+		}
+		sessionLineage = null;
+		sessionLineageError = false;
+		sessionLineageLoading = true;
+		try {
+			const lineage = await getSessionLineage({ sessionId });
+			if (dead || sequence !== sessionLineageSeq || activeSessionId !== sessionId) return;
+			sessionLineage = {
+				parent: lineage.parent ? mapLineageSession(lineage.parent) : null,
+				children: lineage.children.map(mapLineageSession),
+			};
+		} catch (error) {
+			if (!dead && sequence === sessionLineageSeq) {
+				sessionLineage = null;
+				sessionLineageError = true;
+				reportError(error, {
+					context: '+page',
+					message: '加载关联会话失败',
+					log: false,
+				});
+			}
+		} finally {
+			if (!dead && sequence === sessionLineageSeq) sessionLineageLoading = false;
 		}
 	}
 
@@ -527,7 +572,10 @@
 
 	function toggleSessionMenu() {
 		sessionMenuOpen = !sessionMenuOpen;
-		if (sessionMenuOpen) void loadRecentHistory();
+		if (sessionMenuOpen) {
+			void loadRecentHistory();
+			void loadSessionLineage(activeSessionId);
+		}
 	}
 
 	// Terminal sessions are not in get_sessions, so drop their cached messages
@@ -1115,6 +1163,9 @@
 					{showSessionMenu}
 					{sessionMenuOpen}
 					{menuSessions}
+					{sessionLineage}
+					{sessionLineageLoading}
+					{sessionLineageError}
 					onToggleSessionMenu={toggleSessionMenu}
 					onSwitchSession={switchToSession}
 					{sessionStatusLabel}

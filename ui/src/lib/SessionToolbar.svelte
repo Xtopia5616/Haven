@@ -16,6 +16,12 @@
 		sessionMenuOpen?: boolean;
 		menuSessions?: SessionSummary[];
 		sessionStatusLabel?: (session: SessionSummary) => string;
+		sessionLineage?: {
+			parent: SessionSummary | null;
+			children: SessionSummary[];
+		} | null;
+		sessionLineageLoading?: boolean;
+		sessionLineageError?: boolean;
 		onToggleSessionMenu?: () => void;
 		onSwitchSession?: (sessionId: string) => void;
 		tokenStats?: SessionTokenStats | null;
@@ -31,6 +37,9 @@
 		sessionMenuOpen = false,
 		menuSessions = [],
 		sessionStatusLabel = (session) => session.status,
+		sessionLineage = null,
+		sessionLineageLoading = false,
+		sessionLineageError = false,
 		onToggleSessionMenu = () => {},
 		onSwitchSession = () => {},
 		tokenStats = null,
@@ -42,6 +51,47 @@
 
 	let tokenDetailsOpen = $state(false);
 	let tokenStatsWrap = $state<HTMLElement | null>(null);
+	let tokenDetailsEl = $state<HTMLDivElement | null>(null);
+	const supportsNativePopover =
+		typeof HTMLElement !== 'undefined' && typeof HTMLElement.prototype.showPopover === 'function';
+
+	function positionTokenDetails() {
+		const anchor = tokenStatsWrap;
+		const panel = tokenDetailsEl;
+		if (!anchor || !panel) return;
+		if (supportsNativePopover && !panel.matches(':popover-open')) return;
+
+		const anchorRect = anchor.getBoundingClientRect();
+		const panelRect = panel.getBoundingClientRect();
+		const viewportMargin = 12;
+		const horizontalAlignment = window.innerWidth >= 641
+			? anchorRect.right - panelRect.width
+			: anchorRect.left;
+		const left = Math.max(
+			viewportMargin,
+			Math.min(horizontalAlignment, window.innerWidth - panelRect.width - viewportMargin),
+		);
+		const below = anchorRect.bottom + 8;
+		const top = below + panelRect.height <= window.innerHeight - viewportMargin
+			? below
+			: Math.max(viewportMargin, anchorRect.top - panelRect.height - 8);
+
+		panel.style.left = `${left}px`;
+		panel.style.top = `${top}px`;
+	}
+
+	$effect(() => {
+		const panel = tokenDetailsEl;
+		if (!tokenDetailsOpen || !panel) return;
+		if (typeof panel.showPopover === 'function' && !panel.matches(':popover-open')) {
+			panel.showPopover();
+		}
+		positionTokenDetails();
+	});
+
+	function handleWindowKeydown(event: KeyboardEvent) {
+		if (event.key === 'Escape' && tokenDetailsOpen) tokenDetailsOpen = false;
+	}
 
 	function closeTokenDetails(event: MouseEvent) {
 		if (tokenStatsWrap && !event.composedPath().includes(tokenStatsWrap)) {
@@ -65,7 +115,11 @@
 	}
 </script>
 
-<svelte:window onclick={closeTokenDetails} />
+<svelte:window
+	onclick={closeTokenDetails}
+	onkeydown={handleWindowKeydown}
+	onresize={positionTokenDetails}
+/>
 
 {#if showSessionMenu}
 	<div class="session-switch">
@@ -122,6 +176,48 @@
 						{/snippet}
 					</MenuItem>
 				{/each}
+				<div class="session-lineage" role="group" aria-label="Agent 子会话与来源会话">
+					<div class="session-lineage-heading">会话关系</div>
+					{#if sessionLineageLoading}
+						<div class="session-lineage-empty">正在加载会话关系…</div>
+					{:else if sessionLineageError}
+						<div class="session-lineage-empty">加载会话关系失败，重新打开菜单可重试</div>
+					{:else if sessionLineage?.parent || sessionLineage?.children.length}
+						{#if sessionLineage.parent}
+							{@const parentSession = sessionLineage.parent}
+							<MenuItem
+								className="session-menu-item session-lineage-item"
+								role="menuitem"
+								onSelect={() => onSwitchSession(parentSession.id)}
+							>
+								{#snippet children()}
+									<Icon name="chevronLeft" size={16} />
+									<span class="session-menu-item-main">
+										<span class="session-menu-item-title">返回父会话</span>
+										<span class="session-menu-item-status">{parentSession.title || parentSession.input_text || '未命名会话'}</span>
+									</span>
+								{/snippet}
+							</MenuItem>
+						{/if}
+						{#each sessionLineage.children as child (child.id)}
+							<MenuItem
+								className="session-menu-item session-lineage-item"
+								role="menuitem"
+								onSelect={() => onSwitchSession(child.id)}
+							>
+								{#snippet children()}
+									<Icon name="chevronRight" size={16} />
+									<span class="session-menu-item-main">
+										<span class="session-menu-item-title">{child.title || child.input_text || '未命名子会话'}</span>
+										<span class="session-menu-item-status">Agent 子会话 · {sessionStatusLabel(child)}</span>
+									</span>
+								{/snippet}
+							</MenuItem>
+						{/each}
+					{:else}
+						<div class="session-lineage-empty">没有关联的父会话或子会话</div>
+					{/if}
+				</div>
 			</div>
 		{/if}
 	</div>
@@ -171,7 +267,14 @@
 	</MaterialButton>
 
 	{#if tokenDetailsOpen && tokenStats && tokenUsageDetails}
-		<div class="token-details" role="dialog" tabindex="-1" aria-label="Token 使用明细">
+		<div
+			class="token-details"
+			popover={supportsNativePopover ? 'manual' : undefined}
+			bind:this={tokenDetailsEl}
+			role="dialog"
+			tabindex="-1"
+			aria-label="Token 使用明细"
+		>
 			<div class="token-details-heading">
 				<div>
 					<strong>Token 使用明细</strong>
@@ -421,6 +524,17 @@
 		gap: var(--md-sys-space-sm);
 		padding: var(--md-sys-space-xs) var(--md-sys-space-sm) var(--md-sys-space-sm);
 	}
+	.session-lineage {
+		margin-top: var(--md-sys-space-xs);
+		padding-top: var(--md-sys-space-xs);
+		border-top: 1px solid var(--md-sys-color-outline-variant);
+	}
+	.session-lineage-heading,
+	.session-lineage-empty {
+		padding: 6px 12px;
+		color: var(--md-sys-color-on-surface-variant);
+		font-size: var(--md-sys-typescale-label-small-size);
+	}
 	.session-menu-title {
 		font-size: var(--md-sys-typescale-label-medium-size);
 		font-weight: 600;
@@ -605,11 +719,16 @@
 		background: var(--md-sys-color-success);
 	}
 	.token-details {
-		position: absolute;
+		position: fixed;
 		left: 0;
-		top: calc(100% + var(--md-sys-space-sm));
-		z-index: 1000;
+		top: 0;
+		right: auto;
+		bottom: auto;
+		z-index: var(--md-sys-z-toast);
+		margin: 0;
 		width: min(340px, calc(100vw - 24px));
+		max-height: calc(100vh - 24px);
+		overflow-y: auto;
 		padding: var(--md-sys-space-md);
 		border: 1px solid var(--md-sys-color-outline-variant);
 		border-radius: var(--md-sys-shape-medium);
@@ -620,12 +739,6 @@
 		line-height: var(--md-sys-typescale-body-small-line-height);
 		animation: token-details-in var(--md-sys-motion-duration-short)
 			var(--md-sys-motion-easing-emphasized);
-	}
-	@media (min-width: 641px) {
-		.token-details {
-			left: auto;
-			right: 0;
-		}
 	}
 	.token-details-heading,
 	.token-detail-line {

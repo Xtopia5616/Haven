@@ -9,7 +9,7 @@ use crate::logging::sanitize_error_text;
 use haven_agent::InteractionStatus;
 use haven_memory::repositories::messages::Message;
 use haven_memory::repositories::session_steps::SessionStep;
-use haven_memory::repositories::sessions::Session;
+use haven_memory::repositories::sessions::{Session, SessionOrigin};
 use serde::Serialize;
 use std::sync::Arc;
 use tauri::AppHandle;
@@ -74,6 +74,71 @@ pub async fn reopen_session(
 pub async fn get_sessions(state: State<'_, Arc<AppState>>) -> Result<SessionListResponse, String> {
     let sessions = state.executor.list_sessions().await;
     Ok(SessionListResponse { sessions })
+}
+
+#[derive(Serialize)]
+pub struct SessionRecordDto {
+    pub id: String,
+    pub input_text: String,
+    pub title: Option<String>,
+    pub status: haven_common::SessionStatus,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+impl From<Session> for SessionRecordDto {
+    fn from(session: Session) -> Self {
+        Self {
+            id: session.id,
+            input_text: session.input_text,
+            title: session.title,
+            status: session.status,
+            created_at: session.created_at,
+            updated_at: session.updated_at,
+        }
+    }
+}
+
+#[derive(Serialize)]
+pub struct SessionLineageResponse {
+    pub parent: Option<SessionRecordDto>,
+    pub children: Vec<SessionRecordDto>,
+}
+
+async fn session_lineage_from_store(
+    session_store: &haven_memory::SessionStore,
+    session_id: &str,
+) -> anyhow::Result<SessionLineageResponse> {
+    let session = session_store
+        .load_session_record(session_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("session not found: {session_id}"))?;
+    let parent_id = match session.origin {
+        SessionOrigin::AgentSpawn { parent_session_id } => Some(parent_session_id),
+        SessionOrigin::User => None,
+    };
+    let parent = match parent_id {
+        Some(parent_id) => session_store.load_session_record(&parent_id).await?,
+        None => None,
+    };
+    let children = session_store
+        .load_session_children(session_id, 50, 0)
+        .await?;
+    Ok(SessionLineageResponse {
+        parent: parent.map(SessionRecordDto::from),
+        children: children.into_iter().map(SessionRecordDto::from).collect(),
+    })
+}
+
+/// Load the parent and direct child sessions for the active session switcher.
+#[tauri::command]
+pub async fn get_session_lineage(
+    state: State<'_, Arc<AppState>>,
+    session_id: String,
+) -> Result<SessionLineageResponse, String> {
+    session_lineage_from_store(&state.session_store, &session_id)
+        .await
+        .map_err(|error| log_err("get_session_lineage", error))
 }
 
 #[tauri::command]
@@ -699,7 +764,7 @@ pub async fn continue_session(
 
 #[derive(Serialize)]
 pub struct SessionResumeResponse {
-    pub session: Session,
+    pub session: SessionRecordDto,
     pub messages: Vec<Message>,
     pub steps: Vec<SessionStep>,
     /// Persisted cumulative token/cost counters for the session, so a resumed
@@ -734,7 +799,7 @@ async fn resume_response_for_session(
         .map(crate::bootstrap::project_interaction)
         .collect();
     Ok(SessionResumeResponse {
-        session,
+        session: SessionRecordDto::from(session),
         messages: projection.messages,
         steps: projection.steps,
         usage: projection.usage,
@@ -791,9 +856,9 @@ pub async fn get_last_conversation(
 #[cfg(test)]
 mod tests {
     use super::{
-        ExecutorSessionDisplay, InteractionStatus, accept_ui_confirmation,
+        ExecutorSessionDisplay, InteractionStatus, SessionOrigin, accept_ui_confirmation,
         end_session_display_title, last_conversation_from_store, resume_response_for_session,
-        resume_session_from_store,
+        resume_session_from_store, session_lineage_from_store,
     };
     use crate::app_state::{AppState, UiConfirmationAction, UiConfirmationPending};
     use crate::commands::SessionListResponse;
@@ -833,6 +898,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn session_lineage_returns_parent_and_direct_children() {
+        let db = std::sync::Arc::new(haven_memory::Database::open_in_memory().unwrap());
+        let store = haven_memory::SessionStore::new(db.clone());
+        let parent = store.create_session("parent").await.unwrap();
+        let child = store
+            .create_session_with_origin(
+                "child",
+                SessionOrigin::AgentSpawn {
+                    parent_session_id: parent.id.clone(),
+                },
+            )
+            .await
+            .unwrap();
+        let sibling = store
+            .create_session_with_origin(
+                "sibling",
+                SessionOrigin::AgentSpawn {
+                    parent_session_id: parent.id.clone(),
+                },
+            )
+            .await
+            .unwrap();
+
+        let parent_lineage = session_lineage_from_store(&store, &parent.id)
+            .await
+            .unwrap();
+        assert!(parent_lineage.parent.is_none());
+        assert_eq!(
+            parent_lineage
+                .children
+                .iter()
+                .map(|session| session.id.as_str())
+                .collect::<std::collections::HashSet<_>>(),
+            [sibling.id.as_str(), child.id.as_str()]
+                .into_iter()
+                .collect::<std::collections::HashSet<_>>()
+        );
+        let parent_wire = serde_json::to_value(&parent_lineage).unwrap();
+        assert!(parent_wire["children"][0].get("origin").is_none());
+
+        let child_lineage = session_lineage_from_store(&store, &child.id).await.unwrap();
+        let child_wire = serde_json::to_value(&child_lineage).unwrap();
+        assert!(child_wire["parent"].get("origin").is_none());
+        assert_eq!(child_lineage.parent.unwrap().id, parent.id);
+        assert!(child_lineage.children.is_empty());
+
+        db.delete_session(&parent.id).unwrap();
+        let orphan_lineage = session_lineage_from_store(&store, &child.id).await.unwrap();
+        assert!(orphan_lineage.parent.is_none());
+        assert!(orphan_lineage.children.is_empty());
+    }
+
+    #[tokio::test]
     async fn resume_recovers_pending_ask_from_committed_transcript() {
         let db = std::sync::Arc::new(haven_memory::Database::open_in_memory().unwrap());
         let session = db.create_session("interrupted ask").unwrap();
@@ -866,6 +984,11 @@ mod tests {
         let response = resume_response_for_session(session_store, session)
             .await
             .unwrap();
+        assert!(
+            serde_json::to_value(&response).unwrap()["session"]
+                .get("origin")
+                .is_none()
+        );
         assert_eq!(response.interactions.len(), 1);
         let interaction = serde_json::to_value(&response.interactions[0]).unwrap();
         assert_eq!(interaction["id"], step_id);

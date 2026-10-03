@@ -1,19 +1,27 @@
 use crate::app_state::AppState;
 use crate::commands::log_err;
+use crate::commands::session::SessionRecordDto;
 use std::sync::Arc;
 use tauri::State;
+
+type StoredSession = haven_memory::repositories::sessions::Session;
+
+fn session_record_rows(sessions: Vec<StoredSession>) -> Vec<SessionRecordDto> {
+    sessions.into_iter().map(SessionRecordDto::from).collect()
+}
 
 #[tauri::command]
 pub async fn get_history(
     state: State<'_, Arc<AppState>>,
     limit: i64,
     offset: i64,
-) -> Result<Vec<haven_memory::repositories::sessions::Session>, String> {
-    state
+) -> Result<Vec<SessionRecordDto>, String> {
+    let sessions = state
         .session_store
         .list_history(limit, offset)
         .await
-        .map_err(|e| log_err("get_history", e))
+        .map_err(|e| log_err("get_history", e))?;
+    Ok(session_record_rows(sessions))
 }
 
 #[tauri::command]
@@ -31,12 +39,13 @@ pub async fn search_history_paginated(
     query: String,
     limit: i64,
     offset: i64,
-) -> Result<Vec<haven_memory::repositories::sessions::Session>, String> {
-    state
+) -> Result<Vec<SessionRecordDto>, String> {
+    let sessions = state
         .session_store
         .search_history_paginated(query, limit, offset)
         .await
-        .map_err(|e| log_err("search_history_paginated", e))
+        .map_err(|e| log_err("search_history_paginated", e))?;
+    Ok(session_record_rows(sessions))
 }
 
 #[tauri::command]
@@ -55,12 +64,13 @@ pub async fn count_history_search(
 pub async fn search_history(
     state: State<'_, Arc<AppState>>,
     query: String,
-) -> Result<Vec<haven_memory::repositories::sessions::Session>, String> {
-    state
+) -> Result<Vec<SessionRecordDto>, String> {
+    let sessions = state
         .session_store
         .search_history(query)
         .await
-        .map_err(|e| log_err("search_history", e))
+        .map_err(|e| log_err("search_history", e))?;
+    Ok(session_record_rows(sessions))
 }
 
 #[tauri::command]
@@ -73,8 +83,8 @@ pub async fn search_history_filtered(
     end_date: Option<String>,
     limit: Option<i64>,
     offset: Option<i64>,
-) -> Result<Vec<haven_memory::repositories::sessions::Session>, String> {
-    state
+) -> Result<Vec<SessionRecordDto>, String> {
+    let sessions = state
         .session_store
         .search_history_filtered(haven_memory::SessionHistoryFilter {
             query,
@@ -85,7 +95,8 @@ pub async fn search_history_filtered(
             offset: offset.unwrap_or(0),
         })
         .await
-        .map_err(|e| log_err("search_history_filtered", e))
+        .map_err(|e| log_err("search_history_filtered", e))?;
+    Ok(session_record_rows(sessions))
 }
 
 #[tauri::command]
@@ -107,6 +118,7 @@ pub async fn export_history(
         })
         .await
         .map_err(|e| log_err("export_history", e))?;
+    let sessions = session_record_rows(sessions);
     serde_json::to_string_pretty(&serde_json::json!({
         "exported_at": chrono::Utc::now().to_rfc3339(),
         "count": sessions.len(),
