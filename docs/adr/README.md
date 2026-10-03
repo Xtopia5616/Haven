@@ -417,3 +417,8 @@
 - [0432：本机工具契约稳定性修正](0432-local-tool-contract-stability-fixes.md)
 - [0433：并行工具结果逐项提交与发布](0433-incremental-parallel-tool-results.md)
 - [0434：诊断状态的网络授权与有界探测](0434-diagnostics-status-policy-and-probes.md)
+- [0435：批量加载工具以稳定缓存前缀](0435-batch-tool-loading-for-cache-prefix-stability.md)
+- [0436：从可复用提示前缀移除易变时钟](0436-remove-volatile-clock-from-cacheable-prompt-prefix.md)
+- [0437：聊天页模型选择器使用已配置路由模型](0437-chat-model-selector-uses-configured-route-model.md)
+- [0438：按官方契约传递 Provider 缓存路由提示](0438-provider-prompt-cache-routing-hints.md)
+- [0439：共享滚动日志定位与有界尾部读取](0439-bounded-rolling-log-tail.md)
