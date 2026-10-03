@@ -584,6 +584,14 @@ impl ReActEngine {
             definitions,
             token_estimate,
         };
+        tracing::info!(
+            session_id,
+            catalog_global_version = version.0,
+            catalog_session_version = version.1,
+            provider_tool_count = prepared.definitions.len(),
+            tool_schema_token_estimate = prepared.token_estimate,
+            "ReAct::prepare_tool_definitions: rebuilt provider tool surface"
+        );
         self.tool_definitions
             .insert(session_id, version, prepared.clone());
         prepared

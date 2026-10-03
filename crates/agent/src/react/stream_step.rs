@@ -817,13 +817,47 @@ impl ReActEngine {
         }
         match result {
             Ok(resp) => {
-                tracing::debug!(
-                    "ReAct step {} session {} LLM stream took {} ms ({} text chars, {} tool_calls)",
-                    ctx.step_num,
-                    ctx.session_id,
+                let usage = resp.usage.clone().normalize();
+                let cache_denominator = match usage.cache_accounting {
+                    haven_common::types::CacheAccounting::Inclusive => usage.prompt_tokens,
+                    haven_common::types::CacheAccounting::Exclusive => usage
+                        .prompt_tokens
+                        .saturating_add(usage.cached_tokens)
+                        .saturating_add(usage.cache_creation_tokens),
+                    haven_common::types::CacheAccounting::Unknown => 0,
+                };
+                let cache_hit_rate_percent = (cache_denominator > 0).then(|| {
+                    (f64::from(usage.cached_tokens) / f64::from(cache_denominator) * 100.0)
+                        .clamp(0.0, 100.0)
+                });
+                let cache_diagnostics = usage.cache_diagnostics.as_ref();
+                tracing::info!(
+                    session_id = %ctx.session_id,
+                    run_id = ctx.run_id,
+                    step_number = ctx.step_num,
+                    request_kind = request.as_str(),
+                    model = resp.model.as_deref().or(usage.model_name.as_deref()).unwrap_or("unknown"),
                     duration_ms,
-                    resp.text.len(),
-                    resp.tool_calls.len()
+                    response_text_chars = resp.text.len(),
+                    response_tool_calls = resp.tool_calls.len(),
+                    estimated_input_tokens,
+                    context_message_count = request_context.messages().len(),
+                    provider_prompt_tokens = usage.prompt_tokens,
+                    cached_tokens = usage.cached_tokens,
+                    cache_miss_tokens = usage.cache_miss_tokens(),
+                    cache_creation_tokens = usage.cache_creation_tokens,
+                    cache_accounting = usage.cache_accounting.as_str(),
+                    cache_hit_rate_percent = ?cache_hit_rate_percent,
+                    cache_provider = cache_diagnostics.map_or("unknown", |item| item.provider.as_str()),
+                    cache_mode = cache_diagnostics.map_or("unknown", |item| item.mode.as_str()),
+                    cache_outcome = cache_diagnostics.map_or("unknown", |item| item.outcome.as_str()),
+                    cache_usage_source = cache_diagnostics.map_or("unavailable", |item| item.usage_source.as_str()),
+                    cache_key_requested = cache_diagnostics.is_some_and(|item| item.key_requested),
+                    cache_system_split = cache_diagnostics.is_some_and(|item| item.system_split),
+                    cache_downgraded = cache_diagnostics.is_some_and(|item| item.downgraded),
+                    provider_tool_count = tools.len(),
+                    tool_schema_token_estimate = tool_token_estimate,
+                    "ReAct::stream_llm_call: provider cache usage"
                 );
                 Ok((resp, duration_ms))
             }
