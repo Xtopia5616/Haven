@@ -8,7 +8,7 @@
 //! share one gate, so a commit produces each sequence once even if projection
 //! later fails or the two callers overlap.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -81,6 +81,10 @@ pub(super) fn encode_transcript_payload(
 struct PublishState {
     done: HashSet<(String, i64)>,
     order: VecDeque<(String, i64)>,
+    deferred_actions: HashMap<(String, String), AgentEvent>,
+    deferred_action_order: VecDeque<(String, String)>,
+    published_actions: HashSet<(String, String)>,
+    published_action_order: VecDeque<(String, String)>,
 }
 
 pub(crate) struct CommittedUiPublisher {
@@ -95,6 +99,10 @@ impl CommittedUiPublisher {
             gate: tokio::sync::Mutex::new(PublishState {
                 done: HashSet::new(),
                 order: VecDeque::new(),
+                deferred_actions: HashMap::new(),
+                deferred_action_order: VecDeque::new(),
+                published_actions: HashSet::new(),
+                published_action_order: VecDeque::new(),
             }),
         }
     }
@@ -105,7 +113,8 @@ impl CommittedUiPublisher {
             .is_ok()
     }
 
-    /// Emit the UI projections for these committed rows, in order.
+    /// Emit the UI projections for these committed rows, in order. ToolCall
+    /// Action cards are retained until execution asks to publish each one.
     ///
     /// The gate is held across emit so a store subscriber and the committing
     /// task cannot reorder or duplicate a sequence. `AgentEventEmitter`
@@ -129,10 +138,45 @@ impl CommittedUiPublisher {
                 continue;
             }
             for ui_event in ui_events {
-                emitter.emit(ui_event).await;
+                if let AgentEvent::Action {
+                    session_id,
+                    step_id,
+                    ..
+                } = &ui_event
+                {
+                    let action_key = (session_id.clone(), step_id.clone());
+                    if !state.published_actions.contains(&action_key)
+                        && !state.deferred_actions.contains_key(&action_key)
+                    {
+                        remember_deferred_action(&mut state, action_key, ui_event);
+                    }
+                } else {
+                    emitter.emit(ui_event).await;
+                }
             }
             remember_published(&mut state, key);
         }
+    }
+
+    /// Publish one action card after its tool is admitted to execution (or
+    /// immediately before an admission/cancellation result is committed).
+    /// The card retains the sequence of the committed ToolCall row.
+    pub(crate) async fn publish_action(
+        &self,
+        emitter: &Arc<dyn AgentEventEmitter>,
+        session_id: &str,
+        step_id: &str,
+    ) {
+        let mut state = self.gate.lock().await;
+        let key = (session_id.to_string(), step_id.to_string());
+        if state.published_actions.contains(&key) {
+            return;
+        }
+        let Some(event) = state.deferred_actions.remove(&key) else {
+            return;
+        };
+        emitter.emit(event).await;
+        remember_published_action(&mut state, key);
     }
 
     pub(crate) async fn run(
@@ -161,6 +205,26 @@ impl CommittedUiPublisher {
                 }
                 Err(broadcast::error::RecvError::Closed) => break,
             }
+        }
+    }
+}
+
+fn remember_deferred_action(state: &mut PublishState, key: (String, String), event: AgentEvent) {
+    state.deferred_action_order.push_back(key.clone());
+    state.deferred_actions.insert(key, event);
+    while state.deferred_action_order.len() > PUBLISHED_SEQUENCE_LIMIT {
+        if let Some(old) = state.deferred_action_order.pop_front() {
+            state.deferred_actions.remove(&old);
+        }
+    }
+}
+
+fn remember_published_action(state: &mut PublishState, key: (String, String)) {
+    state.published_action_order.push_back(key.clone());
+    state.published_actions.insert(key);
+    while state.published_action_order.len() > PUBLISHED_SEQUENCE_LIMIT {
+        if let Some(old) = state.published_action_order.pop_front() {
+            state.published_actions.remove(&old);
         }
     }
 }
@@ -375,6 +439,58 @@ mod tests {
         }
     }
 
+    fn tool_call_event(sequence: i64) -> SessionEvent {
+        let record = TranscriptRecord::ToolCall {
+            step_number: 2,
+            text: "run both".into(),
+            tool_calls: vec![
+                haven_common::types::CanonicalToolCall {
+                    id: "call-a".into(),
+                    name: "tool_a".into(),
+                    arguments: serde_json::json!({}),
+                },
+                haven_common::types::CanonicalToolCall {
+                    id: "call-b".into(),
+                    name: "tool_b".into(),
+                    arguments: serde_json::json!({}),
+                },
+            ],
+            reasoning: None,
+            web_search_calls: Vec::new(),
+            thinking_blocks: Vec::new(),
+        };
+        let ui = CommittedUi::Actions {
+            cards: vec![
+                StoredActionUi {
+                    tool_name: "tool_a".into(),
+                    tool_input: serde_json::json!({}),
+                    tool_call_id: Some("call-a".into()),
+                    step_id: "step-a".into(),
+                    action_index: 0,
+                    suppress_streamed_thought: false,
+                },
+                StoredActionUi {
+                    tool_name: "tool_b".into(),
+                    tool_input: serde_json::json!({}),
+                    tool_call_id: Some("call-b".into()),
+                    step_id: "step-b".into(),
+                    action_index: 1,
+                    suppress_streamed_thought: false,
+                },
+            ],
+        };
+        SessionEvent {
+            session_id: "ses-1".into(),
+            sequence,
+            event_type: TRANSCRIPT_EVENT_TYPE.into(),
+            event_version: 1,
+            payload: encode_transcript_payload(&record, Some(&ui)).unwrap(),
+            created_at: "2026-01-01T00:00:00Z".into(),
+            run_id: Some(4),
+            step_number: Some(2),
+        }
+    }
+
     #[tokio::test]
     async fn publish_is_once_per_sequence_and_keeps_the_durable_seq() {
         let publisher = CommittedUiPublisher::new();
@@ -399,6 +515,48 @@ mod tests {
                 message_id,
                 ..
             } if thought == "keep" && message_id == "step-keep"
+        ));
+    }
+
+    #[tokio::test]
+    async fn tool_call_cards_publish_individually_when_requested() {
+        let publisher = CommittedUiPublisher::new();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let emitter: Arc<dyn AgentEventEmitter> = Arc::new(RecordingEmitter {
+            events: seen.clone(),
+        });
+        let event = tool_call_event(10);
+
+        publisher
+            .publish(&emitter, std::slice::from_ref(&event))
+            .await;
+        assert!(seen.lock().unwrap().is_empty());
+
+        publisher.publish_action(&emitter, "ses-1", "step-a").await;
+        publisher.publish_action(&emitter, "ses-1", "step-a").await;
+        let events = seen.lock().unwrap().clone();
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            &events[0],
+            AgentEvent::Action {
+                tool_name,
+                step_id,
+                event_seq: Some(10),
+                ..
+            } if tool_name == "tool_a" && step_id == "step-a"
+        ));
+
+        publisher.publish_action(&emitter, "ses-1", "step-b").await;
+        let events = seen.lock().unwrap().clone();
+        assert_eq!(events.len(), 2);
+        assert!(matches!(
+            &events[1],
+            AgentEvent::Action {
+                tool_name,
+                step_id,
+                event_seq: Some(10),
+                ..
+            } if tool_name == "tool_b" && step_id == "step-b"
         ));
     }
 

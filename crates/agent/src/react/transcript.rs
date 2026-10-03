@@ -1282,7 +1282,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn apply_tool_call_emits_action_cards_then_projects() {
+    async fn apply_tool_call_defers_action_cards_until_requested() {
         let dir = std::env::temp_dir().join(format!(
             "haven_transcript_toolcall_{}.db",
             uuid::Uuid::new_v4()
@@ -1339,6 +1339,14 @@ mod tests {
             .first()
             .expect("committed tool-call event")
             .sequence as u64;
+        assert!(
+            ui_events.lock().unwrap().is_empty(),
+            "Action cards should wait until each tool is about to start"
+        );
+        engine
+            .committed_ui
+            .publish_action(&ctx.emitter, &session.id, &step_id)
+            .await;
         let ev = ui_events.lock().unwrap();
         assert!(
             ev.iter().any(|e| matches!(
@@ -1660,6 +1668,10 @@ mod tests {
             .await
             .unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        engine
+            .committed_ui
+            .publish_action(&ctx.emitter, &session.id, &step_id)
+            .await;
         let events = recorded.lock().unwrap().clone();
         let actions: Vec<_> = events
             .iter()

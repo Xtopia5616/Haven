@@ -168,6 +168,49 @@ async fn parallel_tool_result_is_published_before_a_slow_sibling_finishes() {
         "the slow sibling must still hold the batch open"
     );
     assert!(!collector.has_observation("delay_slow"));
+    {
+        let events = collector.events.lock().unwrap();
+        let thought_index = events
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    AgentEvent::Thought { thought, .. }
+                        if thought == "Run the fast and slow tools."
+                )
+            })
+            .expect("the complete assistant preamble should publish before tool execution");
+        let first_action_index = events
+            .iter()
+            .position(|event| matches!(event, AgentEvent::Action { .. }))
+            .expect("tool actions should be visible");
+        let fast_observation_index = events
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    AgentEvent::Observation { tool_name, .. } if tool_name == "delay_fast"
+                )
+            })
+            .expect("the fast result should be visible while the slow tool is running");
+        let fast_action_index = events
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    AgentEvent::Action { tool_name, .. } if tool_name == "delay_fast"
+                )
+            })
+            .expect("the fast tool call should be visible");
+        assert!(
+            thought_index < first_action_index,
+            "the complete text should be published before any tool card"
+        );
+        assert!(
+            fast_action_index < fast_observation_index,
+            "the individual tool card should appear before its result"
+        );
+    }
 
     let history = tokio::time::timeout(std::time::Duration::from_secs(5), run)
         .await

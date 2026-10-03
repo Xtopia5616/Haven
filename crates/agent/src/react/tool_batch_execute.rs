@@ -372,6 +372,8 @@ impl ReActEngine {
                 .collect::<Vec<_>>(),
         );
         let cancel = cancel_res.clone();
+        let committed_ui = Arc::clone(&self.committed_ui);
+        let emitter = ctx.emitter.clone();
         let mut tool_futures = futures_util::stream::iter(runnable)
             .map(|admitted| {
                 let planned = plan
@@ -389,8 +391,13 @@ impl ReActEngine {
                 let metrics = self.metrics.clone();
                 let run_id = ctx.run_id;
                 let cancel = cancel.clone();
+                let committed_ui = Arc::clone(&committed_ui);
+                let emitter = emitter.clone();
                 async move {
                     let _permit = gate.acquire(&admitted.concurrency).await;
+                    committed_ui
+                        .publish_action(&emitter, &session_id, &step_id)
+                        .await;
                     started[admitted.plan_index].store(true, Ordering::Release);
                     let _timer = metrics.start(
                         MetricsPhase::ToolExecution,
@@ -483,6 +490,9 @@ impl ReActEngine {
             let Some(result) = results.take_completed(index) else {
                 continue;
             };
+            self.committed_ui
+                .publish_action(&ctx.emitter, &ctx.session_id, &result.step_id)
+                .await;
             let event = batch_state
                 .commit_tool_result(self, ctx, result, state)
                 .await?;
@@ -670,8 +680,9 @@ impl ReActEngine {
 
         // Futures finish nondeterministically, but canonical tool messages are
         // an ordered protocol: each observation follows the corresponding
-        // assistant call. Durable UI cards were committed as each execution
-        // finished; only canonical projection waits for the ordered batch.
+        // assistant call. Action cards publish when each call starts, and
+        // observations publish as calls finish; only canonical projection
+        // waits for the ordered batch.
         if execution.cancelled || need_confirm.is_empty() {
             let _timer =
                 self.metrics
@@ -766,6 +777,15 @@ impl ReActEngine {
                         batch_state.ask_step_ids.clone(),
                     ))
                     .await?;
+            }
+            for request in &need_confirm {
+                if let crate::interaction::InteractionDetails::Confirm { step_id, .. } =
+                    &request.details
+                {
+                    self.committed_ui
+                        .publish_action(emitter, session_id, step_id)
+                        .await;
+                }
             }
             self.executor
                 .request_confirm_batch(session_id, need_confirm)

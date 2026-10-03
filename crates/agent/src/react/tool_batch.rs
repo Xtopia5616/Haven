@@ -352,7 +352,7 @@ pub(super) struct CompletedTool {
     ask_options: Vec<String>,
     notify_title: Option<String>,
     notify_body: Option<String>,
-    step_id: String,
+    pub(super) step_id: String,
     action_index: u32,
 }
 

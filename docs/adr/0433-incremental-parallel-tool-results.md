@@ -14,6 +14,9 @@
 
 1. 每个工具完成后，立即单独提交对应 `ToolResult` 事件及其物化投影；只有 SessionStore
    transaction 成功后，`CommittedUiPublisher` 才按该事件的 durable sequence 发布 Observation。
+   assistant 在该批工具调用前输出的完整文本先提交并发布；每个 Action 卡在对应工具获得执行
+   许可、即将启动时逐项发布，校验失败或需要确认的调用则在对应结果/等待状态前发布。并行执行
+   仍保留，Observation 按各工具完成顺序逐项发布。
 2. Durable event sequence 按实际完成与提交次序递增。`step_number + action_index` 是同批结果的
    稳定关联身份；批次完成后，进程内 canonical transcript 依 assistant 原始调用顺序更新。
 3. 恢复投影把同一步的 ToolResult 按 `action_index` 排序。若进程在批次中途退出，发送前的
