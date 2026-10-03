@@ -151,11 +151,13 @@ impl AppState {
         db_path: &std::path::Path,
         filter_handles: Vec<reload::Handle<EnvFilter, Registry>>,
         config_loader: ConfigLoader,
+        file_logging_enabled: bool,
     ) -> anyhow::Result<Self> {
         Self::new_with_cleanup_roots(
             db_path,
             filter_handles,
             config_loader,
+            file_logging_enabled,
             CleanupRoots::production(),
             Arc::new(PlatformCredentialStore),
         )
@@ -169,10 +171,12 @@ impl AppState {
         config_loader: ConfigLoader,
         test_data_root: &Path,
     ) -> anyhow::Result<Self> {
+        let file_logging_enabled = config_loader.config().log.file_enabled;
         Self::new_with_cleanup_roots(
             db_path,
             filter_handles,
             config_loader,
+            file_logging_enabled,
             CleanupRoots::isolated(test_data_root),
             Arc::new(InMemoryCredentialStore::default()),
         )
@@ -183,6 +187,7 @@ impl AppState {
         db_path: &Path,
         filter_handles: Vec<reload::Handle<EnvFilter, Registry>>,
         config_loader: ConfigLoader,
+        file_logging_enabled: bool,
         cleanup_roots: CleanupRoots,
         credential_store: Arc<dyn CredentialStore>,
     ) -> anyhow::Result<Self> {
@@ -525,12 +530,12 @@ impl AppState {
         // Wire the five typed admin surfaces: the assistant can read status,
         // change typed config, toggle skills/tools/MCP servers, tail logs, and
         // switch the runtime log level (via the tracing reload handles).
-        let log_path = cfg.log.file_enabled.then(|| {
+        let log_path = Some(
             cfg.log
                 .file_path
                 .clone()
-                .unwrap_or_else(haven_common::config::LogConfig::default_log_path)
-        });
+                .unwrap_or_else(haven_common::config::LogConfig::default_log_path),
+        );
         let log_level = Some(Arc::new(ReloadLogLevelPort {
             handles: filter_handles.clone(),
         }) as Arc<dyn haven_tools::LogLevelPort>);
@@ -541,6 +546,7 @@ impl AppState {
             memory_facts: Some(memory_fact_store),
             router: Some(router.clone()),
             log_path,
+            file_logging_enabled,
             log_level,
             // The admin tool's tool_enable/tool_disable ops apply the runtime
             // change through the running ToolsManager after persisting config.

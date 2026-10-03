@@ -465,12 +465,21 @@ impl AdminServices {
             DiagnosticSessionsOutput::Unavailable { unavailable: true }
         };
 
-        let log_path = self
+        let configured_log_path = self
             .context
             .log_path
-            .as_ref()
-            .map(|path| path.to_string_lossy().to_string())
-            .unwrap_or_else(|| LogConfig::default_log_path().to_string_lossy().to_string());
+            .clone()
+            .unwrap_or_else(LogConfig::default_log_path);
+        let log_path = if self.context.file_logging_enabled {
+            haven_common::log_file::resolve_current_log_file(&configured_log_path)
+                .ok()
+                .flatten()
+                .unwrap_or(configured_log_path)
+        } else {
+            configured_log_path
+        }
+        .to_string_lossy()
+        .to_string();
         Ok(DiagnosticsStatus {
             config_path,
             settings,
@@ -487,32 +496,54 @@ impl AdminServices {
 
     pub(crate) async fn logs_tail(&self, limit: Option<i64>) -> Result<LogsTailOutput> {
         let limit = limit.unwrap_or(50).clamp(1, 500) as usize;
-        let path = self
+        let file_logging_enabled = self.context.file_logging_enabled
+            && match &self.context.config_service {
+                Some(config_service) => config_service.snapshot()?.config.log.file_enabled,
+                None => true,
+            };
+        let configured_path = self
             .context
             .log_path
             .clone()
             .unwrap_or_else(LogConfig::default_log_path);
-        let content = match tokio::fs::read(&path).await {
-            Ok(bytes) => haven_common::encoding::decode_lossy(&bytes),
-            Err(error) => {
-                return Ok(LogsTailOutput::Unavailable {
-                    path: path.to_string_lossy().to_string(),
-                    error: format!("cannot read log file: {error}"),
-                });
-            }
-        };
-        let lines: Vec<&str> = content.lines().collect();
-        let total_lines = lines.len();
-        let start = lines.len().saturating_sub(limit);
-        let lines: Vec<String> = lines[start..]
-            .iter()
-            .map(|line| sanitize_log_line(line))
-            .collect();
-        Ok(LogsTailOutput::Read {
-            path: path.to_string_lossy().to_string(),
-            total_lines,
-            lines,
-        })
+        let configured_path_text = configured_path.to_string_lossy().to_string();
+        if !file_logging_enabled {
+            return Ok(LogsTailOutput::Unavailable {
+                path: configured_path_text,
+                error: "file logging is disabled".into(),
+            });
+        }
+
+        let read_result = tokio::task::spawn_blocking(
+            move || -> std::io::Result<Option<(PathBuf, usize, Vec<String>)>> {
+                let Some(path) =
+                    haven_common::log_file::resolve_current_log_file(&configured_path)?
+                else {
+                    return Ok(None);
+                };
+                let (lines, total_lines) =
+                    haven_common::log_file::read_tail_lines_with_count(&path, limit)?;
+                Ok(Some((path, total_lines, lines)))
+            },
+        )
+        .await
+        .map_err(Error::from)?;
+
+        match read_result {
+            Ok(Some((path, total_lines, lines))) => Ok(LogsTailOutput::Read {
+                path: path.to_string_lossy().to_string(),
+                total_lines,
+                lines: lines.iter().map(|line| sanitize_log_line(line)).collect(),
+            }),
+            Ok(None) => Ok(LogsTailOutput::Unavailable {
+                path: configured_path_text,
+                error: "no log file found yet".into(),
+            }),
+            Err(error) => Ok(LogsTailOutput::Unavailable {
+                path: configured_path_text,
+                error: format!("cannot read log file: {error}"),
+            }),
+        }
     }
 
     pub(crate) async fn sessions(&self, limit: Option<i64>) -> Result<SessionsOutput> {

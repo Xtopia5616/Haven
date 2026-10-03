@@ -52,7 +52,10 @@ pub struct AdminContext {
     pub session_store: Option<SessionStore>,
     pub memory_facts: Option<MemoryFactStore>,
     pub router: Option<Arc<LlmRouter>>,
+    /// Configured base path. `file_logging_enabled` determines whether it may
+    /// be read; `None` is reserved for callers without logging context.
     pub log_path: Option<PathBuf>,
+    pub file_logging_enabled: bool,
     pub log_level: Option<Arc<dyn LogLevelPort>>,
     pub tool_control: Option<Arc<dyn ToolControlPort>>,
 }
@@ -75,6 +78,7 @@ impl From<ConfigAdminContext> for AdminContext {
             memory_facts: None,
             router: None,
             log_path: None,
+            file_logging_enabled: false,
             log_level: context.log_level,
             tool_control: None,
         }
@@ -1868,6 +1872,7 @@ mod tests {
             memory_facts,
             router: None,
             log_path: Some(dir.path().join("logs").join("haven.log")),
+            file_logging_enabled: true,
             log_level: None,
             tool_control: None,
         };
@@ -2411,7 +2416,7 @@ mod tests {
         assert!(!mcp_text.contains("PRIVATE_ENV_MARKER"));
         assert!(!mcp_text.contains("hidden-command"));
 
-        let log_path = dir.path().join("logs").join("haven.log");
+        let log_path = dir.path().join("logs").join("haven.2026-10-03");
         std::fs::create_dir_all(log_path.parent().unwrap()).unwrap();
         std::fs::write(
             &log_path,
@@ -2782,9 +2787,10 @@ mod tests {
             .unwrap();
         assert_eq!(mcp.output, json!([]));
 
-        let log_path = dir.path().join("logs").join("haven.log");
-        std::fs::create_dir_all(log_path.parent().unwrap()).unwrap();
-        std::fs::write(&log_path, "").unwrap();
+        let configured_log_path = dir.path().join("logs").join("haven.log");
+        let current_log_path = dir.path().join("logs").join("haven.2026-10-03");
+        std::fs::create_dir_all(current_log_path.parent().unwrap()).unwrap();
+        std::fs::write(&current_log_path, "").unwrap();
         let empty_logs = surfaces
             .execute(
                 AdminRequest::Diagnostics(DiagnosticsOperationArgs::LogsTail { limit: None }),
@@ -2794,10 +2800,10 @@ mod tests {
             .unwrap();
         assert_eq!(
             empty_logs.output,
-            json!({"path": log_path.to_string_lossy(), "total_lines": 0, "lines": []})
+            json!({"path": current_log_path.to_string_lossy(), "total_lines": 0, "lines": []})
         );
 
-        std::fs::remove_file(&log_path).unwrap();
+        std::fs::remove_file(&current_log_path).unwrap();
         let missing_logs = surfaces
             .execute(
                 AdminRequest::Diagnostics(DiagnosticsOperationArgs::LogsTail { limit: None }),
@@ -2806,13 +2812,16 @@ mod tests {
             .await
             .unwrap();
         let missing_logs = missing_logs.output;
-        assert_eq!(missing_logs["path"], json!(log_path.to_string_lossy()));
+        assert_eq!(
+            missing_logs["path"],
+            json!(configured_log_path.to_string_lossy())
+        );
         assert_eq!(missing_logs.as_object().unwrap().len(), 2);
         assert!(
             missing_logs["error"]
                 .as_str()
                 .unwrap()
-                .starts_with("cannot read log file: ")
+                .starts_with("no log file found yet")
         );
     }
 
@@ -3141,6 +3150,7 @@ mod tests {
             memory_facts: None,
             router: None,
             log_path: None,
+            file_logging_enabled: false,
             log_level: None,
             tool_control: Some(manager.tool_control_port()),
         };
@@ -3612,6 +3622,7 @@ mod tests {
             memory_facts: None,
             router: None,
             log_path: Some(dir.path().join("logs").join("haven.log")),
+            file_logging_enabled: true,
             log_level: None,
             tool_control: None,
         };

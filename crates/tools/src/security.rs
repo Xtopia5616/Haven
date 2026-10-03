@@ -2632,6 +2632,7 @@ mod tests {
                 memory_facts: None,
                 router: None,
                 log_path: None,
+                file_logging_enabled: false,
                 log_level: None,
                 tool_control: None,
             })
@@ -2961,6 +2962,7 @@ mod tests {
                 memory_facts: None,
                 router: None,
                 log_path: None,
+                file_logging_enabled: false,
                 log_level: None,
                 tool_control: None,
             })
@@ -3038,6 +3040,7 @@ mod tests {
                 memory_facts: None,
                 router: None,
                 log_path: None,
+                file_logging_enabled: false,
                 log_level: None,
                 tool_control: None,
             })

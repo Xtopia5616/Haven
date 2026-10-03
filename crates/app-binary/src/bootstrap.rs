@@ -880,9 +880,13 @@ pub(crate) fn to_tauri_shortcut(
 
 fn init_app_state(
     filter_handles: Vec<reload::Handle<EnvFilter, Registry>>,
-    _log_config: Arc<std::sync::Mutex<LogConfig>>,
+    log_config: Arc<std::sync::Mutex<LogConfig>>,
     config_loader: haven_common::config::ConfigLoader,
 ) -> AppState {
+    let file_logging_enabled = log_config
+        .lock()
+        .map(|config| config.file_enabled)
+        .unwrap_or(false);
     let db_path = haven_common::config::ConfigLoader::data_dir().join("haven.db");
     if let Some(parent) = db_path.parent()
         && let Err(error) = std::fs::create_dir_all(parent)
@@ -894,7 +898,12 @@ fn init_app_state(
     }
     let fh = filter_handles.clone();
     tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current().block_on(AppState::new(&db_path, fh, config_loader))
+        tokio::runtime::Handle::current().block_on(AppState::new(
+            &db_path,
+            fh,
+            config_loader,
+            file_logging_enabled,
+        ))
     })
     .unwrap_or_else(|e| {
         // No degraded fallback: a failed backend is not usable, so exit with

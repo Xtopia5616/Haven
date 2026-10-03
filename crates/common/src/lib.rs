@@ -5,6 +5,7 @@ pub mod encoding;
 pub mod error;
 pub mod hooks;
 pub mod lifecycle;
+pub mod log_file;
 pub mod media;
 pub mod media_detection;
 pub mod prompts;
