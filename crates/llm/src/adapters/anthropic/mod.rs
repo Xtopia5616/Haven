@@ -9,10 +9,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::adapters::{
-    LineMode, MAX_JSON_RESPONSE_BYTES, MAX_STREAM_CONTENT_BLOCKS, WebSearchMode, build_client,
-    build_headers, empty_chunk, health_check_request, line_payload_channel,
-    normalize_web_search_call_item, read_text_bounded, resolve_web_search_mode, send_request,
-    spawn_line_reader, stream_header_timeout,
+    LineMode, MAX_JSON_RESPONSE_BYTES, MAX_STREAM_CONTENT_BLOCKS, ToolNameMap, ToolNamePolicy,
+    WebSearchMode, build_client, build_headers, empty_chunk, health_check_request,
+    line_payload_channel, normalize_web_search_call_item, read_text_bounded,
+    resolve_web_search_mode, send_request, spawn_line_reader, stream_header_timeout,
 };
 use crate::client::LlmClient;
 use haven_common::CapabilityProfile;
@@ -77,6 +77,15 @@ impl AnthropicAdapter {
         Ok(headers)
     }
 
+    pub(super) fn tool_name_map(
+        &self,
+        messages: &[CanonicalMessage],
+        tools: &[ToolDefinition],
+    ) -> ToolNameMap {
+        // Anthropic documents `^[a-zA-Z0-9_-]{1,128}$` for tool names.
+        ToolNameMap::for_request(tools, messages, ToolNamePolicy::Restricted { max_len: 128 })
+    }
+
     pub(super) async fn chat_inner(
         &self,
         messages: Vec<CanonicalMessage>,
@@ -94,6 +103,7 @@ impl AnthropicAdapter {
         stream: bool,
         max_tokens: Option<u32>,
     ) -> Result<LlmResponse, LlmError> {
+        let tool_names = self.tool_name_map(&messages, &tools);
         let body = self.build_request_body_with_mode_and_max_tokens(
             messages,
             tools,
@@ -127,7 +137,11 @@ impl AnthropicAdapter {
         let json: AnthropicResponse =
             serde_json::from_str(&txt).map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
         let model = json.model.clone();
-        self.parse_response_with_cache(json, model, body.cache_diagnostics)
+        let mut response = self.parse_response_with_cache(json, model, body.cache_diagnostics)?;
+        for call in &mut response.tool_calls {
+            call.name = tool_names.to_canonical(&call.name);
+        }
+        Ok(response)
     }
 }
 

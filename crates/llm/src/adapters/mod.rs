@@ -31,6 +31,8 @@ use haven_common::media::{CapabilityProfile, CapabilitySupport};
 use haven_common::prompts::COMPACTED_SUMMARY_PREFIX;
 use haven_common::types::{ContentPart, InjectSource};
 
+pub(crate) use crate::tool_names::{ToolNameMap, ToolNamePolicy};
+
 pub(crate) use embedding::{openai_compatible_embed, openai_embeddings_url};
 pub(crate) use provider_features::{
     chat_thinking_extras, is_deepseek, is_openrouter, reasoning_tail,

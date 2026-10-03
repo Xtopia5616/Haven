@@ -62,10 +62,22 @@ impl AnthropicAdapter {
     ) -> AnthropicRequest {
         let messages = messages.as_ref();
         let tools = tools.as_ref();
+        let tool_names = self.tool_name_map(messages, tools);
         let cache_diagnostics =
             Self::cache_diagnostics(messages).with_provider(self.endpoint.provider.clone());
-        let (messages, system) = Self::convert_messages(messages);
-        let mut tools_json = Self::convert_tools(tools);
+        let (mut messages, system) = Self::convert_messages(messages);
+        for message in &mut messages {
+            if let Some(blocks) = message.content.as_array_mut() {
+                for block in blocks {
+                    if block.get("type").and_then(Value::as_str) == Some("tool_use")
+                        && let Some(name) = block.get("name").and_then(Value::as_str)
+                    {
+                        block["name"] = Value::String(tool_names.to_provider(name));
+                    }
+                }
+            }
+        }
+        let mut tools_json = Self::convert_tools_with_names(tools, &tool_names);
         let had_client_tools = !tools_json.is_empty();
         let tool_choice: Option<Value> = match web_search_mode {
             WebSearchMode::Off => {
@@ -101,7 +113,6 @@ impl AnthropicAdapter {
         if !tools_json.is_empty() {
             Self::apply_tools_cache_breakpoint(&mut tools_json);
         }
-        let mut messages = messages;
         Self::apply_messages_cache_breakpoint(&mut messages);
         let (thinking, output_config) = Self::thinking_config(
             max_tokens,

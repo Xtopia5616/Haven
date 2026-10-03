@@ -42,6 +42,7 @@ impl GeminiAdapter {
         guidance: Option<&str>,
         max_output_tokens: Option<u32>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
+        let tool_names = self.tool_name_map(messages, tools);
         let mut body = self.build_request_body_with_mode_and_max_tokens(
             messages,
             tools,
@@ -99,6 +100,7 @@ impl GeminiAdapter {
             saw_finish: bool,
             web_search_calls: Vec<Value>,
             cache_diagnostics: CacheDiagnostics,
+            tool_names: ToolNameMap,
         }
 
         let empty_chunk = empty_chunk;
@@ -118,6 +120,7 @@ impl GeminiAdapter {
                 saw_finish: false,
                 web_search_calls: Vec::new(),
                 cache_diagnostics,
+                tool_names,
             },
             move |mut state| async move {
                 if state.done {
@@ -197,7 +200,7 @@ impl GeminiAdapter {
                                         .function_call
                                         .as_ref()
                                         .and_then(|fc| fc.name.as_deref())
-                                        .map(str::to_string);
+                                        .map(|name| state.tool_names.to_canonical(name));
                                     Self::capture_thought_signature(
                                         &mut state.thinking_blocks,
                                         &part,
@@ -264,7 +267,8 @@ impl GeminiAdapter {
                                         if let Some(id) = fc.id {
                                             state.tool_calls_acc[idx].id = id;
                                         }
-                                        state.tool_calls_acc[idx].name = name;
+                                        state.tool_calls_acc[idx].name =
+                                            state.tool_names.to_canonical(&name);
                                         if let Some(args) = fc.args {
                                             state.tool_calls_acc[idx].arguments = args;
                                         }

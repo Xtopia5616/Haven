@@ -89,14 +89,29 @@ impl GeminiAdapter {
     ) -> GeminiRequest {
         let messages = messages.as_ref();
         let tools = tools.as_ref();
+        let tool_names = self.tool_name_map(messages, tools);
         let system_split = messages.iter().any(|message| {
             message.role == CanonicalRole::System
                 && message.content.iter().any(|part| {
                     matches!(part, ContentPart::Text(text) if split_system_prompt_cache_sections(text).is_some())
                 })
         });
-        let (contents, system_instruction) = Self::convert_contents(messages);
-        let mut tools_json = Self::convert_tools(tools);
+        let (mut contents, system_instruction) = Self::convert_contents(messages);
+        for content in &mut contents {
+            for part in &mut content.parts {
+                if let Some(function_call) = &mut part.function_call
+                    && let Some(name) = function_call.get("name").and_then(Value::as_str)
+                {
+                    function_call["name"] = Value::String(tool_names.to_provider(name));
+                }
+                if let Some(function_response) = &mut part.function_response
+                    && let Some(name) = function_response.get("name").and_then(Value::as_str)
+                {
+                    function_response["name"] = Value::String(tool_names.to_provider(name));
+                }
+            }
+        }
+        let mut tools_json = Self::convert_tools_with_names(tools, &tool_names);
         // Gemini grounding: append `{"google_search": {}}`. Auto and Always
         // both expose the tool (Gemini has no forced-search tool_choice
         // equivalent for google_search); Always still opts the model in.

@@ -60,6 +60,7 @@ impl AnthropicAdapter {
         guidance: Option<&str>,
         max_tokens: Option<u32>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
+        let tool_names = self.tool_name_map(messages, tools);
         let mut body = self.build_request_body_with_mode_and_max_tokens(
             messages,
             tools,
@@ -150,6 +151,7 @@ impl AnthropicAdapter {
             saw_message_stop: bool,
             web_search_calls: Vec<Value>,
             cache_diagnostics: CacheDiagnostics,
+            tool_names: ToolNameMap,
         }
 
         let empty_chunk = empty_chunk;
@@ -169,6 +171,7 @@ impl AnthropicAdapter {
                 saw_message_stop: false,
                 web_search_calls: Vec::new(),
                 cache_diagnostics,
+                tool_names,
             },
             move |mut state| async move {
                 if state.done {
@@ -413,7 +416,7 @@ impl AnthropicAdapter {
                                 BlockKind::ToolUse => {
                                     state.pending_tool_calls.push(CanonicalToolCall {
                                         id: block.tool_id.clone(),
-                                        name: block.tool_name.clone(),
+                                        name: state.tool_names.to_canonical(&block.tool_name),
                                         arguments: CanonicalToolCall::from_wire_args(
                                             &block.tool_input,
                                         ),

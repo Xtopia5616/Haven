@@ -12,11 +12,12 @@ use std::time::Duration;
 use sha2::{Digest, Sha256};
 
 use crate::adapters::{
-    LineMode, MAX_JSON_RESPONSE_BYTES, MAX_STREAM_TOOL_CALLS, WebSearchMode, build_client,
-    build_headers, chat_thinking_extras, health_check_request, is_deepseek, line_payload_channel,
-    normalize_web_search_call_item, read_text_bounded, reasoning_tail,
-    reasoning_text_from_thinking_blocks, requires_reasoning_echo, resolve_web_search_mode,
-    send_request, spawn_line_reader, stream_header_timeout, xai_search_mode,
+    LineMode, MAX_JSON_RESPONSE_BYTES, MAX_STREAM_TOOL_CALLS, ToolNameMap, ToolNamePolicy,
+    WebSearchMode, build_client, build_headers, chat_thinking_extras, health_check_request,
+    is_deepseek, line_payload_channel, normalize_web_search_call_item, read_text_bounded,
+    reasoning_tail, reasoning_text_from_thinking_blocks, requires_reasoning_echo,
+    resolve_web_search_mode, send_request, spawn_line_reader, stream_header_timeout,
+    xai_search_mode,
 };
 use crate::client::LlmClient;
 use haven_common::CapabilityProfile;
@@ -110,6 +111,26 @@ impl OpenAiAdapter {
 
     pub(super) fn build_headers(&self) -> Result<HeaderMap, LlmError> {
         build_headers(&self.endpoint, "Authorization", true)
+    }
+
+    pub(super) fn tool_name_map(
+        &self,
+        messages: &[CanonicalMessage],
+        tools: &[ToolDefinition],
+    ) -> ToolNameMap {
+        let policy = if self.style == "xai" {
+            // xAI's current function-calling reference does not document a
+            // name character restriction; retain its documented unique-name
+            // contract until xAI specifies a stricter one.
+            ToolNamePolicy::Identity
+        } else if is_deepseek(&self.endpoint) {
+            ToolNamePolicy::Restricted { max_len: 128 }
+        } else {
+            // Default profile for the OpenAI-compatible wire style. Providers
+            // with a documented difference use their own profile above.
+            ToolNamePolicy::Restricted { max_len: 64 }
+        };
+        ToolNameMap::for_request(tools, messages, policy)
     }
 }
 

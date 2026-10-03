@@ -515,6 +515,43 @@ fn build_request_body_with_tools() {
 }
 
 #[test]
+fn deepseek_responses_projects_tool_names_and_historical_calls() {
+    let client = OpenAiResponsesAdapter::new(ModelEndpoint {
+        provider: "deepseek".into(),
+        base_url: "https://api.deepseek.com".into(),
+        model_name: "deepseek-v4-pro".into(),
+        ..Default::default()
+    });
+    let tools = vec![ToolDefinition {
+        tool_type: "function".into(),
+        function: ToolFunction {
+            name: "files.read".into(),
+            description: "Read a file".into(),
+            parameters: json!({"type": "object"}),
+        },
+    }];
+    let messages = vec![CanonicalMessage::assistant(
+        Vec::new(),
+        Some(vec![CanonicalToolCall {
+            id: "call_1".into(),
+            name: "files.read".into(),
+            arguments: json!({"path": "notes.txt"}),
+        }]),
+        None,
+        Vec::new(),
+        Vec::new(),
+    )];
+
+    let body = client.build_request_body(messages, tools, false);
+    assert_eq!(body.tools.as_ref().unwrap()[0]["name"], "files_read");
+    assert!(
+        body.input
+            .iter()
+            .any(|item| { item["type"] == "function_call" && item["name"] == "files_read" })
+    );
+}
+
+#[test]
 fn responses_tools_project_root_union_to_object_schema() {
     let tools = OpenAiResponsesAdapter::convert_tools(vec![ToolDefinition {
         tool_type: "function".into(),

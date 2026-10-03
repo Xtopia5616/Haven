@@ -11,9 +11,10 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 
 use crate::adapters::{
-    LineMode, MAX_JSON_RESPONSE_BYTES, WebSearchMode, build_client, build_headers, empty_chunk,
-    health_check_request, line_payload_channel, normalize_web_search_call_item, read_text_bounded,
-    resolve_web_search_mode, send_request, spawn_line_reader, stream_header_timeout,
+    LineMode, MAX_JSON_RESPONSE_BYTES, ToolNameMap, ToolNamePolicy, WebSearchMode, build_client,
+    build_headers, empty_chunk, health_check_request, line_payload_channel,
+    normalize_web_search_call_item, read_text_bounded, resolve_web_search_mode, send_request,
+    spawn_line_reader, stream_header_timeout,
 };
 use crate::client::LlmClient;
 use haven_common::CapabilityProfile;
@@ -174,6 +175,17 @@ impl GeminiAdapter {
         build_headers(&self.endpoint, "x-goog-api-key", false)
     }
 
+    pub(super) fn tool_name_map(
+        &self,
+        messages: &[CanonicalMessage],
+        tools: &[ToolDefinition],
+    ) -> ToolNameMap {
+        // Gemini's FunctionDeclaration allows more punctuation than its
+        // FunctionCall/FunctionResponse name fields. Use the round-trip-safe
+        // intersection documented for calls and responses.
+        ToolNameMap::for_request(tools, messages, ToolNamePolicy::Restricted { max_len: 128 })
+    }
+
     pub(super) async fn chat_inner(
         &self,
         messages: Vec<CanonicalMessage>,
@@ -188,6 +200,7 @@ impl GeminiAdapter {
         tools: Vec<ToolDefinition>,
         max_output_tokens: Option<u32>,
     ) -> Result<LlmResponse, LlmError> {
+        let tool_names = self.tool_name_map(&messages, &tools);
         let mut body = self.build_request_body_with_mode_and_max_tokens(
             messages,
             tools,
@@ -223,6 +236,14 @@ impl GeminiAdapter {
             serde_json::from_value(raw).map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
         let model = json.model_version.clone();
         let mut parsed = self.parse_response_with_cache(json, model, cache_diagnostics)?;
+        for call in &mut parsed.tool_calls {
+            call.name = tool_names.to_canonical(&call.name);
+        }
+        for block in &mut parsed.thinking_blocks {
+            if let Some(name) = block.get("name").and_then(Value::as_str) {
+                block["name"] = Value::String(tool_names.to_canonical(name));
+            }
+        }
         parsed.web_search_calls = web_search_calls;
         Ok(parsed)
     }

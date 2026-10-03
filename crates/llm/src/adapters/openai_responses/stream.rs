@@ -42,6 +42,7 @@ impl OpenAiResponsesAdapter {
         guidance: Option<&str>,
         max_output_tokens: Option<u32>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
+        let tool_names = self.tool_name_map(messages, tools);
         let mut body = self.build_request_body_with_mode_and_max_tokens(
             messages,
             tools,
@@ -91,6 +92,7 @@ impl OpenAiResponsesAdapter {
             /// used when a status event omits `item_id`.
             active_web_search_id: Option<String>,
             cache_diagnostics: CacheDiagnostics,
+            tool_names: ToolNameMap,
         }
 
         let empty_chunk = empty_chunk;
@@ -108,6 +110,7 @@ impl OpenAiResponsesAdapter {
                 web_search_calls: Vec::new(),
                 active_web_search_id: None,
                 cache_diagnostics,
+                tool_names,
             },
             move |mut state| async move {
                 if state.done {
@@ -130,7 +133,7 @@ impl OpenAiResponsesAdapter {
                                     .drain(..)
                                     .map(|(_, id, name, args)| CanonicalToolCall {
                                         id,
-                                        name,
+                                        name: state.tool_names.to_canonical(&name),
                                         arguments: CanonicalToolCall::from_wire_args(&args),
                                     })
                                     .collect(),
@@ -410,7 +413,7 @@ impl OpenAiResponsesAdapter {
                                 .drain(..)
                                 .map(|(_, id, name, args)| CanonicalToolCall {
                                     id,
-                                    name,
+                                    name: state.tool_names.to_canonical(&name),
                                     arguments: CanonicalToolCall::from_wire_args(&args),
                                 })
                                 .collect(),

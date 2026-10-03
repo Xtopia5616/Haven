@@ -291,7 +291,15 @@ impl OpenAiResponsesAdapter {
         downgraded
     }
 
+    #[cfg(test)]
     pub(super) fn convert_tools(tools: impl AsRef<[ToolDefinition]>) -> Vec<Value> {
+        Self::convert_tools_with_names(tools, &ToolNameMap::default())
+    }
+
+    pub(super) fn convert_tools_with_names(
+        tools: impl AsRef<[ToolDefinition]>,
+        tool_names: &ToolNameMap,
+    ) -> Vec<Value> {
         tools
             .as_ref()
             .iter()
@@ -305,7 +313,7 @@ impl OpenAiResponsesAdapter {
                 );
                 serde_json::to_value(ResponsesTool {
                     tool_type: t.tool_type.clone(),
-                    name: Some(t.function.name.clone()),
+                    name: Some(tool_names.to_provider(&t.function.name)),
                     description: Some(t.function.description.clone()),
                     parameters: Some(parameters),
                     strict: Some(false),

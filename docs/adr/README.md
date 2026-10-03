@@ -413,3 +413,4 @@
 - [0428：会话确认结束时发布恢复状态](0428-session-confirmation-resume-projection.md)
 - [0429：剪贴板写入使用显式格式和载荷](0429-explicit-clipboard-write-payloads.md)
 - [0430：待决交互可以收起并重新打开](0430-reopenable-pending-interactions.md)
+- [0431：Provider-specific tool name projection](0431-provider-specific-tool-name-projection.md)

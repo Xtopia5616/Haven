@@ -881,6 +881,74 @@ fn build_request_body_with_tools() {
 }
 
 #[test]
+fn openai_projects_dotted_names_but_deepseek_keeps_128_character_names() {
+    let dotted = ToolDefinition {
+        tool_type: "function".into(),
+        function: ToolFunction {
+            name: "files.read".into(),
+            description: "Read a file".into(),
+            parameters: serde_json::json!({"type": "object"}),
+        },
+    };
+    let openai = OpenAiAdapter::new(ModelEndpoint {
+        provider: "openai".into(),
+        base_url: "https://api.openai.com/v1".into(),
+        model_name: "gpt-test".into(),
+        ..Default::default()
+    })
+    .build_request_body(vec![], vec![dotted], false);
+    assert_eq!(openai.tools.unwrap()[0].function.name, "files_read");
+
+    let long_name = "a".repeat(80);
+    let deepseek = OpenAiAdapter::new(ModelEndpoint {
+        provider: "deepseek".into(),
+        base_url: "https://api.deepseek.com".into(),
+        model_name: "deepseek-chat".into(),
+        ..Default::default()
+    })
+    .build_request_body(
+        vec![],
+        vec![ToolDefinition {
+            tool_type: "function".into(),
+            function: ToolFunction {
+                name: long_name.clone(),
+                description: "Long but valid DeepSeek tool name".into(),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+        }],
+        false,
+    );
+    assert_eq!(deepseek.tools.unwrap()[0].function.name, long_name);
+}
+
+#[test]
+fn xai_style_preserves_documented_tool_names() {
+    let client = OpenAiAdapter::new_with_style(
+        ModelEndpoint {
+            provider: "xai".into(),
+            api_style: Some("xai".into()),
+            base_url: "https://api.x.ai/v1".into(),
+            ..Default::default()
+        },
+        "xai",
+    );
+    let body = client.build_request_body(
+        vec![],
+        vec![ToolDefinition {
+            tool_type: "function".into(),
+            function: ToolFunction {
+                name: "files.read".into(),
+                description: "Read a file".into(),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+        }],
+        false,
+    );
+
+    assert_eq!(body.tools.unwrap()[0].function.name, "files.read");
+}
+
+#[test]
 fn xai_search_parameters_follow_web_search_mode() {
     let ep = ModelEndpoint {
         api_style: Some("xai".into()),

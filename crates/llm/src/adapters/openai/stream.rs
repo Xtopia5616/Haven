@@ -50,6 +50,7 @@ impl OpenAiAdapter {
         guidance: Option<&str>,
         max_tokens: Option<u32>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
+        let tool_names = self.tool_name_map(messages, tools);
         let mut body = self.build_request_body_with_mode_and_max_tokens_shared(
             messages,
             tools,
@@ -135,6 +136,7 @@ impl OpenAiAdapter {
             has_finish_reason: bool,
             usage: Option<Usage>,
             cache_diagnostics: CacheDiagnostics,
+            tool_names: ToolNameMap,
         }
 
         let mapped = futures_util::stream::unfold(
@@ -148,6 +150,7 @@ impl OpenAiAdapter {
                 has_finish_reason: false,
                 usage: None,
                 cache_diagnostics,
+                tool_names,
             },
             move |mut state| async move {
                 if state.done {
@@ -171,7 +174,7 @@ impl OpenAiAdapter {
                                     .into_iter()
                                     .map(|(id, name, args)| CanonicalToolCall {
                                         id,
-                                        name,
+                                        name: state.tool_names.to_canonical(&name),
                                         arguments: CanonicalToolCall::from_wire_args(&args),
                                     })
                                     .collect(),

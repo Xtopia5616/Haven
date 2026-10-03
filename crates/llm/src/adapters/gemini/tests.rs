@@ -559,6 +559,30 @@ fn build_request_body_with_tools_and_config() {
 }
 
 #[test]
+fn gemini_projects_dotted_tool_names_for_call_and_response_round_trips() {
+    let client = GeminiAdapter::new(ModelEndpoint::default());
+    let body = client.build_request_body(
+        vec![],
+        vec![ToolDefinition {
+            tool_type: "function".into(),
+            function: ToolFunction {
+                name: "files.read".into(),
+                description: "Read a file".into(),
+                parameters: json!({"type": "object"}),
+            },
+        }],
+        false,
+    );
+
+    match &body.tools.as_ref().unwrap()[0] {
+        GeminiTool::Functions {
+            function_declarations,
+        } => assert_eq!(function_declarations[0].name, "files_read"),
+        GeminiTool::GoogleSearch { .. } => panic!("expected function tool"),
+    }
+}
+
+#[test]
 fn convert_tools_projects_gemini_schema_subset() {
     let tools = GeminiAdapter::convert_tools(vec![ToolDefinition {
         tool_type: "function".into(),

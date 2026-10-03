@@ -738,6 +738,45 @@ fn build_request_body_with_tools() {
 }
 
 #[test]
+fn anthropic_projects_dotted_tool_names_to_its_documented_safe_set() {
+    let client = AnthropicAdapter::new(ModelEndpoint::default());
+    let body = client.build_request_body(
+        vec![],
+        vec![ToolDefinition {
+            tool_type: "function".into(),
+            function: ToolFunction {
+                name: "files.read".into(),
+                description: "Read a file".into(),
+                parameters: json!({"type": "object"}),
+            },
+        }],
+        false,
+    );
+
+    assert_eq!(body.tools.unwrap()[0]["name"], "files_read");
+}
+
+#[test]
+fn anthropic_preserves_tool_names_up_to_128_characters() {
+    let long_name = "a".repeat(100);
+    let client = AnthropicAdapter::new(ModelEndpoint::default());
+    let body = client.build_request_body(
+        vec![],
+        vec![ToolDefinition {
+            tool_type: "function".into(),
+            function: ToolFunction {
+                name: long_name.clone(),
+                description: "A long but valid Anthropic tool name".into(),
+                parameters: json!({"type": "object"}),
+            },
+        }],
+        false,
+    );
+
+    assert_eq!(body.tools.unwrap()[0]["name"], long_name);
+}
+
+#[test]
 fn convert_tools_sanitizes_non_object_schema_without_flattening_unions() {
     let tools = AnthropicAdapter::convert_tools(vec![ToolDefinition {
         tool_type: "function".into(),

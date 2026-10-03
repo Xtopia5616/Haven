@@ -286,7 +286,15 @@ impl OpenAiAdapter {
         Self::convert_tools_ref(&tools)
     }
 
+    #[cfg(test)]
     pub(super) fn convert_tools_ref(tools: &[ToolDefinition]) -> Vec<OpenAiTool> {
+        Self::convert_tools_ref_with_names(tools, &ToolNameMap::default())
+    }
+
+    pub(super) fn convert_tools_ref_with_names(
+        tools: &[ToolDefinition],
+        tool_names: &ToolNameMap,
+    ) -> Vec<OpenAiTool> {
         tools
             .iter()
             .map(|t| {
@@ -303,7 +311,7 @@ impl OpenAiAdapter {
                 OpenAiTool {
                     tool_type: t.tool_type.clone(),
                     function: OpenAiToolFunction {
-                        name: t.function.name.clone(),
+                        name: tool_names.to_provider(&t.function.name),
                         description: t.function.description.clone(),
                         parameters: crate::types::canonicalize_json(parameters),
                     },

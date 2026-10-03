@@ -292,7 +292,15 @@ impl AnthropicAdapter {
         (out, system)
     }
 
+    #[cfg(test)]
     pub(super) fn convert_tools(tools: impl AsRef<[ToolDefinition]>) -> Vec<Value> {
+        Self::convert_tools_with_names(tools, &ToolNameMap::default())
+    }
+
+    pub(super) fn convert_tools_with_names(
+        tools: impl AsRef<[ToolDefinition]>,
+        tool_names: &ToolNameMap,
+    ) -> Vec<Value> {
         tools
             .as_ref()
             .iter()
@@ -304,7 +312,7 @@ impl AnthropicAdapter {
                     crate::types::sanitize_tool_parameters(t.function.parameters.clone()),
                 );
                 json!({
-                    "name": t.function.name,
+                    "name": tool_names.to_provider(&t.function.name),
                     "description": t.function.description,
                     "input_schema": parameters,
                 })

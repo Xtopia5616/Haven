@@ -17,6 +17,7 @@ mod streaming;
 pub mod stt;
 #[cfg(test)]
 mod test_support;
+mod tool_names;
 pub mod tts;
 pub mod types;
 

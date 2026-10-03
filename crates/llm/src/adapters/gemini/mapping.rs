@@ -317,13 +317,21 @@ impl GeminiAdapter {
             .collect()
     }
 
+    #[cfg(test)]
     pub(super) fn convert_tools(tools: impl AsRef<[ToolDefinition]>) -> Vec<GeminiTool> {
+        Self::convert_tools_with_names(tools, &ToolNameMap::default())
+    }
+
+    pub(super) fn convert_tools_with_names(
+        tools: impl AsRef<[ToolDefinition]>,
+        tool_names: &ToolNameMap,
+    ) -> Vec<GeminiTool> {
         tools
             .as_ref()
             .iter()
             .map(|t| GeminiTool::Functions {
                 function_declarations: vec![GeminiFunctionDeclaration {
-                    name: t.function.name.clone(),
+                    name: tool_names.to_provider(&t.function.name),
                     description: t.function.description.clone(),
                     parameters: crate::types::project_tool_parameters_for_gemini(
                         t.function.parameters.clone(),

@@ -1,6 +1,15 @@
 use super::*;
 
 impl OpenAiResponsesAdapter {
+    pub(super) fn tool_name_map(
+        &self,
+        messages: &[CanonicalMessage],
+        tools: &[ToolDefinition],
+    ) -> ToolNameMap {
+        let max_len = if is_deepseek(&self.endpoint) { 128 } else { 64 };
+        ToolNameMap::for_request(tools, messages, ToolNamePolicy::Restricted { max_len })
+    }
+
     pub(super) fn responses_url(&self) -> String {
         let base = self.endpoint.base_url.trim_end_matches('/');
         if base.ends_with("/v1") {
@@ -53,6 +62,7 @@ impl OpenAiResponsesAdapter {
     ) -> ResponsesRequest {
         let messages = messages.as_ref();
         let tools = tools.as_ref();
+        let tool_names = self.tool_name_map(messages, tools);
         // DeepSeek's official Responses contract ignores `prompt_cache_key`;
         // do not advertise an optional OpenAI extension to that endpoint.
         let prompt_cache_key = (!is_deepseek(&self.endpoint))
@@ -65,7 +75,7 @@ impl OpenAiResponsesAdapter {
             .reasoning_echo_max_chars
             .unwrap_or(Self::MAX_REASONING_ECHO_CHARS);
         let requires_reasoning_echo = self.requires_reasoning_echo();
-        let (input, instructions) =
+        let (mut input, instructions) =
             if self.developer_input_state.load(Ordering::Relaxed) == DEVELOPER_INPUT_UNSUPPORTED {
                 Self::convert_input_with_memory_split(
                     messages,
@@ -76,7 +86,14 @@ impl OpenAiResponsesAdapter {
             } else {
                 Self::convert_input(messages, max_reasoning_echo_chars, requires_reasoning_echo)
             };
-        let mut tools_json = Self::convert_tools(tools);
+        for item in &mut input {
+            if item.get("type").and_then(Value::as_str) == Some("function_call")
+                && let Some(name) = item.get("name").and_then(Value::as_str)
+            {
+                item["name"] = Value::String(tool_names.to_provider(name));
+            }
+        }
+        let mut tools_json = Self::convert_tools_with_names(tools, &tool_names);
         // `tool_choice` semantics: `None` (no tools at all), string
         // `"auto"`, or a specific tool object like
         // `{"type": "web_search"}` for forced search.
@@ -266,6 +283,7 @@ impl OpenAiResponsesAdapter {
         stream: bool,
         max_output_tokens: Option<u32>,
     ) -> Result<LlmResponse, LlmError> {
+        let tool_names = self.tool_name_map(&messages, &tools);
         let mut body = self.build_request_body_with_mode_and_max_tokens(
             messages,
             tools,
@@ -292,6 +310,10 @@ impl OpenAiResponsesAdapter {
         let json: ResponsesResponse =
             serde_json::from_str(&txt).map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
         let model = json.model.clone();
-        self.parse_response_with_cache(json, model, body.cache_diagnostics)
+        let mut response = self.parse_response_with_cache(json, model, body.cache_diagnostics)?;
+        for call in &mut response.tool_calls {
+            call.name = tool_names.to_canonical(&call.name);
+        }
+        Ok(response)
     }
 }

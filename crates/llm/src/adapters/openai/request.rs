@@ -60,14 +60,22 @@ impl OpenAiAdapter {
         max_tokens: u32,
     ) -> OpenAiRequest {
         let has_tools = !tools.is_empty();
+        let tool_names = self.tool_name_map(messages, tools);
         let prompt_cache_key = self.prompt_cache_key(messages, tools, web_search_mode);
-        let (wire_messages, system_split) = Self::convert_messages_with_system_split(
+        let (mut wire_messages, system_split) = Self::convert_messages_with_system_split(
             messages,
             self.requires_reasoning_echo(),
             self.endpoint
                 .reasoning_echo_max_chars
                 .unwrap_or(Self::MAX_REASONING_ECHO_CHARS),
         );
+        for message in &mut wire_messages {
+            if let Some(calls) = &mut message.tool_calls {
+                for call in calls {
+                    call.function.name = tool_names.to_provider(&call.function.name);
+                }
+            }
+        }
         let cache_diagnostics =
             CacheDiagnostics::for_request(prompt_cache_key.is_some(), system_split)
                 .with_provider(self.endpoint.provider.clone());
@@ -101,7 +109,7 @@ impl OpenAiAdapter {
             temperature: (!omit_temperature).then_some(self.endpoint.temperature),
             stream,
             tools: if has_tools {
-                Some(Self::convert_tools_ref(tools))
+                Some(Self::convert_tools_ref_with_names(tools, &tool_names))
             } else {
                 None
             },
@@ -232,6 +240,7 @@ impl OpenAiAdapter {
         stream: bool,
         max_tokens: Option<u32>,
     ) -> Result<LlmResponse, LlmError> {
+        let tool_names = self.tool_name_map(&messages, &tools);
         let mut body = self.build_request_body_with_mode_and_max_tokens(
             messages,
             tools,
@@ -262,6 +271,10 @@ impl OpenAiAdapter {
         let json: OpenAiResponse =
             serde_json::from_str(&txt).map_err(|e| LlmError::InvalidResponse(e.to_string()))?;
         let model = json.model.clone();
-        self.parse_openai_response(json, model, body.cache_diagnostics)
+        let mut response = self.parse_openai_response(json, model, body.cache_diagnostics)?;
+        for call in &mut response.tool_calls {
+            call.name = tool_names.to_canonical(&call.name);
+        }
+        Ok(response)
     }
 }
