@@ -6,7 +6,7 @@ use crate::events::{
     SESSION_TITLE_UPDATED_EVENT, SessionTitleUpdatedEvent,
 };
 use crate::logging::sanitize_error_text;
-use haven_agent::{InteractionRequest, InteractionStatus};
+use haven_agent::InteractionStatus;
 use haven_memory::repositories::messages::Message;
 use haven_memory::repositories::session_steps::SessionStep;
 use haven_memory::repositories::sessions::Session;
@@ -722,36 +722,15 @@ async fn resume_response_for_session(
         .session_resume_projection(&session.id)
         .await
         .map_err(|e| log_err("resume_response_for_session", e))?;
-    // Interactions are domain events owned by the session actor. The UI
-    // history projection replays only that small control stream; messages and
-    // steps remain projections and are not recovery input.
-    let mut active_interactions: Vec<InteractionRequest> = Vec::new();
-    for event in &projection.active_domain_events {
-        match event.event_type.as_str() {
-            haven_memory::INTERACTION_REQUESTED_EVENT_TYPE
-            | haven_memory::INTERACTION_RESOLVED_EVENT_TYPE => {
-                let request: InteractionRequest = serde_json::from_str(&event.payload)
-                    .map_err(|e| log_err("resume_response_for_session", e))?;
-                active_interactions.retain(|existing| existing.id != request.id);
-                if request.status == InteractionStatus::Pending {
-                    active_interactions.push(request);
-                }
-            }
-            haven_memory::INTERACTION_CLEARED_EVENT_TYPE => {
-                let ids = serde_json::from_str::<serde_json::Value>(&event.payload)
-                    .ok()
-                    .and_then(|payload| payload.get("ids")?.as_array().cloned())
-                    .unwrap_or_default();
-                active_interactions.retain(|request| {
-                    !ids.iter()
-                        .any(|id| id.as_str() == Some(request.id.as_str()))
-                });
-            }
-            _ => {}
-        }
-    }
+    // Agent owns interaction replay. Transcript ask results recover a pending
+    // ask if shutdown happened after its question committed but before the
+    // separate interaction_requested event did.
+    let active_interactions =
+        haven_agent::replay_session_interactions(&session.id, &projection.active_events)
+            .map_err(|error| log_err("resume_response_for_session", error))?;
     let interactions = active_interactions
         .iter()
+        .filter(|request| request.status == InteractionStatus::Pending)
         .map(crate::bootstrap::project_interaction)
         .collect();
     Ok(SessionResumeResponse {
@@ -812,11 +791,13 @@ pub async fn get_last_conversation(
 #[cfg(test)]
 mod tests {
     use super::{
-        ExecutorSessionDisplay, InteractionRequest, InteractionStatus, accept_ui_confirmation,
-        end_session_display_title, last_conversation_from_store, resume_session_from_store,
+        ExecutorSessionDisplay, InteractionStatus, accept_ui_confirmation,
+        end_session_display_title, last_conversation_from_store, resume_response_for_session,
+        resume_session_from_store,
     };
     use crate::app_state::{AppState, UiConfirmationAction, UiConfirmationPending};
     use crate::commands::SessionListResponse;
+    use haven_agent::InteractionRequest;
     use haven_common::types::{PermissionEffect, PermissionScope, PermissionTarget, RiskLevel};
     use haven_tools::ConfirmationReceipt;
 
@@ -849,6 +830,48 @@ mod tests {
             assert!(fields.contains_key(field), "missing IPC field {field}");
         }
         assert!(!fields.contains_key("active_domain_events"));
+    }
+
+    #[tokio::test]
+    async fn resume_recovers_pending_ask_from_committed_transcript() {
+        let db = std::sync::Arc::new(haven_memory::Database::open_in_memory().unwrap());
+        let session = db.create_session("interrupted ask").unwrap();
+        let session_store = haven_memory::SessionStore::new(db);
+        let step_id = haven_common::types::new_id("step");
+        let payload = serde_json::json!({
+            "type": "tool_result",
+            "step_number": 1,
+            "action_index": 0,
+            "step_id": step_id,
+            "canonical_observation": "Pick one?",
+            "history_observation": "Pick one?",
+            "tool_call_id": "ask-call",
+            "action": {
+                "tool_name": "ask",
+                "tool_input": {"question": "Pick one?", "options": ["A", "B"]},
+                "is_final": false,
+                "tool_call_id": "ask-call"
+            }
+        });
+        session_store
+            .append(
+                &session.id,
+                haven_memory::TRANSCRIPT_EVENT_TYPE,
+                &payload.to_string(),
+                Some(1),
+                Some(1),
+            )
+            .unwrap();
+
+        let response = resume_response_for_session(session_store, session)
+            .await
+            .unwrap();
+        assert_eq!(response.interactions.len(), 1);
+        let interaction = serde_json::to_value(&response.interactions[0]).unwrap();
+        assert_eq!(interaction["id"], step_id);
+        assert_eq!(interaction["kind"], "ask");
+        assert_eq!(interaction["status"], "pending");
+        assert_eq!(interaction["options"], serde_json::json!(["A", "B"]));
     }
 
     #[tokio::test]

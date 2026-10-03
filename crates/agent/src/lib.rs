@@ -38,7 +38,10 @@ pub use event::{
     ActionCompletionStatus, ActionNotificationSource, AgentEvent, AgentEventEmitter,
     BufferedEmitter, EventBus, EventDispatcher,
 };
-pub use interaction::{InteractionDetails, InteractionKind, InteractionRequest, InteractionStatus};
+pub use interaction::{
+    InteractionDetails, InteractionKind, InteractionRequest, InteractionStatus,
+    replay_session_interactions,
+};
 pub use layer::{AgentStartup, PendingSessionRecovery};
 pub use memory_runtime::{
     MemoryEventProcessOutcome, MemoryLiveTask, MemoryReady, MemoryStartup, PreparedMemoryRuntime,

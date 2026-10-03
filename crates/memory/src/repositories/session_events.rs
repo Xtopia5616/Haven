@@ -422,6 +422,8 @@ pub struct SessionResumeProjection {
     pub steps: Vec<SessionStep>,
     pub usage: Option<SessionUsage>,
     pub llm_usage: Vec<LlmCallUsage>,
+    /// Active append-only event stream used by Agent-owned resume reducers.
+    pub active_events: Vec<SessionEvent>,
     pub active_domain_events: Vec<SessionEvent>,
 }
 
@@ -822,12 +824,18 @@ impl SessionStore {
                 let steps = db.get_session_steps(&session_id)?;
                 let usage = db.get_session_usage(&session_id)?;
                 let llm_usage = db.get_session_llm_usage(&session_id)?;
-                let active_domain_events = store.read_active_domain_events(&session_id)?;
+                let active_events = store.read_active(&session_id)?;
+                let active_domain_events = active_events
+                    .iter()
+                    .filter(|event| event.event_type != TRANSCRIPT_EVENT_TYPE)
+                    .cloned()
+                    .collect();
                 Ok(SessionResumeProjection {
                     messages,
                     steps,
                     usage,
                     llm_usage,
+                    active_events,
                     active_domain_events,
                 })
             })
@@ -2748,6 +2756,20 @@ impl SessionStore {
     pub fn read_active(&self, session_id: &str) -> anyhow::Result<Vec<SessionEvent>> {
         let conn = self.db.conn();
         Self::read_active_in_connection(&conn, session_id)
+    }
+
+    /// Read the complete active event stream on SQLite's blocking pool. Agent
+    /// recovery reducers use this when a control projection must be reconciled
+    /// with canonical transcript events after an interrupted commit sequence.
+    pub async fn read_active_events_async(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Vec<SessionEvent>> {
+        let store = self.clone();
+        let session_id = session_id.to_owned();
+        self.db
+            .run_blocking(move |_| store.read_active(&session_id))
+            .await
     }
 
     fn read_active_in_connection(

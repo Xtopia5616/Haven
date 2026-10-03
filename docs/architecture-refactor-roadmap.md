@@ -95,7 +95,7 @@
 - 当前 Phase 3 小切片：7 个历史查询命令改经 `ApplicationRuntime` 注入的 `SessionStore` blocking-pool ports；原 Database 查询、cache、谓词、排序、页面默认 limit/offset、export JSON 和 resume 读取不变，dropping caller future 不会停止已启动的 blocking query（ADR 0279）。
 - 当前 Phase 3 小切片：fresh-run prompt 的最近消息窗口通过 `SessionStore::conversation_window` 异步窄端口读取，仅跨边界传递 role/content；保留既有 limit、消息筛选与顺序、错误文本和 fresh-run/resume 分界，完整附件读取不变（ADR 0280）。
 - 当前 Phase 3 小切片：`update_session_title` 经 `ApplicationRuntime` 注入的 `SessionStore` 异步端口写入；持久化成功后才更新 executor 并发布既有事件，底层继续调用原 Database 方法，future 被丢弃不保证中断已启动的 blocking write（ADR 0281）。
-- 当前 Phase 3 小切片：App resume response 的 messages、steps、session usage、LLM usage 与 active domain events 经 `SessionStore::session_resume_projection` 在一个 blocking closure 中按既有顺序读取；App 继续解码 interaction events 并映射原 IPC DTO，不声明跨查询快照。当时两个 command 保留原有 session record 查询，现已由 ADR 0283 收口。
+- 当前 Phase 3 小切片：App resume response 的 messages、steps、session usage、LLM usage 与 active events 经 `SessionStore::session_resume_projection` 在一个 blocking closure 中按既有顺序读取；Agent 的共享 replay reducer 解码交互生命周期并处理 Ask 崩溃窗口，App 只映射原 IPC DTO，不声明跨查询快照。两个 command 的 session record 查询由 ADR 0283 收口；Ask replay 细节见 ADR 0440。
 - 当前 Phase 3 小切片：`get_session_for_resume` 的按 ID 记录读取与 `get_last_conversation` 的最近会话选择均通过 `SessionStore` 异步端口执行；按 ID 查询保留 `None` 和精确 not-found 错误，最近会话复用 `list_sessions(1, 0)` 的 `created_at DESC`、limit/offset 与空结果语义。同步 Agent `session_record`、resume IPC 与消息/附件恢复均不变（ADR 0283）。
 - 当前 Phase 3 小切片：`end_session` 的持久展示标题 fallback 经 `ApplicationRuntime` 注入的 `SessionStore` 异步端口读取，保留 executor title/input 优先级、持久 title/input_text 语义、查询失败 warning 降级及结束/通知顺序（ADR 0284）。
 - 当前 Phase 3 小切片：`list_facts`、`add_fact`、`delete_fact` 通过 `ApplicationRuntime` 注入的 `MemoryFactStore` 执行；blocking 调度、source 列表选择和可见性过滤归 `haven-memory`，App 保留原 trim/空值/敏感值校验、tags 规范化、IPC 类型和错误日志。facts 不并入 `SessionStore`，recall/maintenance 不变（ADR 0285）。
@@ -608,3 +608,5 @@ MemoryRuntime 启动所有权后续校准（ADR 0367）：当前不再使用 `ru
 2026-09-29 Session 存储容量策略收口（ADR 0404）：保留按 `created_at` 清理整场会话的 90 天默认与 `0` 禁用语义，不裁剪保留期内的 `session_events`，不做自动 `VACUUM`，不宣称每会话/数据库字节上限或最低磁盘需求。容量探针补充按生产 TranscriptRecord 字段形状构造的合成混合事件分布；比例和文本长度只是工程场景，不代表真实用户数据，Windows 文件型 SQLite 观测值见 ADR 0395。event store 的事务体和 `COMMIT` 失败均尝试回滚，且只广播已成功提交的事件；SQLite `SQLITE_FULL` 与 disk I/O failure 在会话错误界面给出不同恢复提示。Windows 物理盘 ENOSPC 和真实桌面恢复体验仍待 disposable profile/VM 验收。
 
 2026-09-29 配置契约清理（ADR 0405）：删除旧 `[memory].history_retention_days` 搬迁、旧配置名/权限 detector 与明文凭据导入；当前配置直接反序列化，未知字段及磁盘上的明文凭据会备份原文件并以默认值启动。安全凭据引用仍在启动时 hydrate；不匹配版本时只重建 `config.toml`，数据库、媒体和其它数据可以保留。
+
+2026-10-03 Ask 意外退出恢复（ADR 0440）：Ask `tool_result` transcript 与 `interaction_requested` 分开提交期间若进程退出，Agent 从活动 `session_events` 的 Ask 结果恢复 pending 状态；显式 request 按 ID/correlation IDs 收敛，`UserInject(source=answer)` 或 clear event 关闭请求。actor 启动和 resume IPC 共用该 reducer，不从消息内容或物化 projection 猜测回答；无 schema、IPC 或重置变化。

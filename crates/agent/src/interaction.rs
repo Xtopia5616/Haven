@@ -275,9 +275,147 @@ impl InteractionRequest {
     }
 }
 
+/// Rebuild the live interaction registry from the active durable session
+/// stream. An ask's ToolResult and its InteractionRequested control event are
+/// appended separately; if the process exits between those commits, the
+/// transcript event is enough to restore the unanswered ask. A later Answer
+/// injection or interaction-clear event closes that reconstructed request.
+pub fn replay_session_interactions(
+    session_id: &str,
+    active_events: &[haven_memory::SessionEvent],
+) -> anyhow::Result<Vec<InteractionRequest>> {
+    use haven_memory::{
+        INTERACTION_CLEARED_EVENT_TYPE, INTERACTION_REQUESTED_EVENT_TYPE,
+        INTERACTION_RESOLVED_EVENT_TYPE, TRANSCRIPT_EVENT_TYPE,
+    };
+
+    let mut interactions: Vec<InteractionRequest> = Vec::new();
+    for event in active_events {
+        if event.event_type == TRANSCRIPT_EVENT_TYPE {
+            let Ok(payload) = serde_json::from_str::<Value>(&event.payload) else {
+                continue;
+            };
+            match payload.get("type").and_then(Value::as_str) {
+                Some("tool_result")
+                    if payload.pointer("/action/tool_name").and_then(Value::as_str)
+                        == Some("ask") =>
+                {
+                    let Some(step_id) = payload.get("step_id").and_then(Value::as_str) else {
+                        continue;
+                    };
+                    let options = payload
+                        .pointer("/action/tool_input/options")
+                        .and_then(Value::as_array)
+                        .map(|options| {
+                            options
+                                .iter()
+                                .filter_map(Value::as_str)
+                                .map(str::to_owned)
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let mut request =
+                        InteractionRequest::ask(session_id, options, vec![step_id.to_string()]);
+                    request.created_at = event.created_at.clone();
+                    interactions.retain(|existing| existing.id != request.id);
+                    interactions.push(request);
+                }
+                Some("user_inject")
+                    if payload.get("source").and_then(Value::as_str) == Some("answer") =>
+                {
+                    interactions.retain(|request| request.kind != InteractionKind::Ask);
+                }
+                _ => {}
+            }
+            continue;
+        }
+
+        match event.event_type.as_str() {
+            INTERACTION_REQUESTED_EVENT_TYPE | INTERACTION_RESOLVED_EVENT_TYPE => {
+                let request: InteractionRequest =
+                    serde_json::from_str(&event.payload).map_err(|error| {
+                        anyhow::anyhow!(
+                            "invalid interaction event at sequence {}: {error}",
+                            event.sequence
+                        )
+                    })?;
+                if request.kind == InteractionKind::Ask {
+                    let covered_ids = std::iter::once(request.id.as_str())
+                        .chain(request.correlation_ids.iter().map(String::as_str))
+                        .collect::<std::collections::HashSet<_>>();
+                    interactions.retain(|existing| {
+                        existing.id != request.id
+                            && (existing.kind != InteractionKind::Ask
+                                || !covered_ids.contains(existing.id.as_str()))
+                    });
+                } else {
+                    interactions.retain(|existing| existing.id != request.id);
+                }
+                if request.status == InteractionStatus::Pending
+                    || request.kind == InteractionKind::Confirm
+                {
+                    interactions.push(request);
+                }
+            }
+            INTERACTION_CLEARED_EVENT_TYPE => {
+                let payload: Value = serde_json::from_str(&event.payload).map_err(|error| {
+                    anyhow::anyhow!(
+                        "invalid interaction clear event at sequence {}: {error}",
+                        event.sequence
+                    )
+                })?;
+                let ids = payload
+                    .get("ids")
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "interaction clear event at sequence {} has no ids",
+                            event.sequence
+                        )
+                    })?;
+                interactions.retain(|request| {
+                    !ids.iter()
+                        .any(|id| id.as_str() == Some(request.id.as_str()))
+                });
+            }
+            _ => {}
+        }
+    }
+    Ok(interactions)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const SESSION_ID: &str = "ses-0123456789abcdef0123456789abcdef";
+
+    fn event(sequence: i64, event_type: &str, payload: Value) -> haven_memory::SessionEvent {
+        haven_memory::SessionEvent {
+            session_id: SESSION_ID.into(),
+            sequence,
+            event_type: event_type.into(),
+            event_version: haven_memory::CURRENT_EVENT_VERSION,
+            payload: serde_json::to_string(&payload).unwrap(),
+            created_at: format!("2026-10-03T00:00:{sequence:02}Z"),
+            run_id: Some(1),
+            step_number: Some(sequence as u32),
+        }
+    }
+
+    fn ask_result(sequence: i64, step_id: &str) -> haven_memory::SessionEvent {
+        event(
+            sequence,
+            haven_memory::TRANSCRIPT_EVENT_TYPE,
+            serde_json::json!({
+                "type": "tool_result",
+                "step_number": sequence,
+                "action_index": 0,
+                "step_id": step_id,
+                "action": {"tool_name": "ask", "tool_input": {"options": ["A", "B"]}}
+            }),
+        )
+    }
 
     #[test]
     fn interaction_lifecycle_is_one_shot_and_roundtrips() {
@@ -345,5 +483,88 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn replay_recovers_ask_committed_before_interaction_request() {
+        let step_id = "step-1123456789abcdef0123456789abcdef";
+        let replayed = replay_session_interactions(SESSION_ID, &[ask_result(1, step_id)]).unwrap();
+
+        assert_eq!(replayed.len(), 1);
+        assert_eq!(replayed[0].id, step_id);
+        assert_eq!(replayed[0].session_id, SESSION_ID);
+        assert_eq!(replayed[0].kind, InteractionKind::Ask);
+        assert_eq!(replayed[0].status, InteractionStatus::Pending);
+        assert_eq!(replayed[0].correlation_ids, [step_id]);
+        assert_eq!(
+            replayed[0].details,
+            InteractionDetails::Ask {
+                options: vec!["A".into(), "B".into()],
+                step_ids: vec![step_id.into()],
+            }
+        );
+        assert_eq!(replayed[0].created_at, "2026-10-03T00:00:01Z");
+    }
+
+    #[test]
+    fn replay_groups_asks_and_only_answer_or_clear_closes_them() {
+        use haven_memory::{INTERACTION_CLEARED_EVENT_TYPE, INTERACTION_REQUESTED_EVENT_TYPE};
+
+        let first_step = "step-1123456789abcdef0123456789abcdef";
+        let second_step = "step-2123456789abcdef0123456789abcdef";
+        let mut grouped_request = InteractionRequest::ask(
+            SESSION_ID,
+            vec!["A".into(), "B".into()],
+            vec![first_step.into(), second_step.into()],
+        );
+        grouped_request.created_at = "2026-10-03T00:00:03Z".into();
+        let grouped_event = event(
+            3,
+            INTERACTION_REQUESTED_EVENT_TYPE,
+            serde_json::to_value(&grouped_request).unwrap(),
+        );
+        let asks = [ask_result(1, first_step), ask_result(2, second_step)];
+        let replayed = replay_session_interactions(
+            SESSION_ID,
+            &[asks[0].clone(), asks[1].clone(), grouped_event],
+        )
+        .unwrap();
+
+        assert_eq!(replayed, [grouped_request.clone()]);
+
+        let follow_up = event(
+            3,
+            haven_memory::TRANSCRIPT_EVENT_TYPE,
+            serde_json::json!({"type": "user_inject", "source": "follow_up"}),
+        );
+        let after_follow_up =
+            replay_session_interactions(SESSION_ID, &[asks[0].clone(), follow_up]).unwrap();
+        assert_eq!(
+            after_follow_up.len(),
+            1,
+            "ordinary follow-up keeps Ask pending"
+        );
+
+        let answer = event(
+            3,
+            haven_memory::TRANSCRIPT_EVENT_TYPE,
+            serde_json::json!({"type": "user_inject", "source": "answer"}),
+        );
+        assert!(
+            replay_session_interactions(SESSION_ID, &[asks[0].clone(), answer])
+                .unwrap()
+                .is_empty()
+        );
+
+        let cleared = event(
+            3,
+            INTERACTION_CLEARED_EVENT_TYPE,
+            serde_json::json!({"ids": [first_step]}),
+        );
+        assert!(
+            replay_session_interactions(SESSION_ID, &[asks[0].clone(), cleared])
+                .unwrap()
+                .is_empty()
+        );
     }
 }

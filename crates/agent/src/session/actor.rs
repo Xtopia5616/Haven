@@ -840,60 +840,17 @@ enum ActiveReactRun {
     Claimed,
 }
 
-/// Replay the interaction domain events needed to initialize a fresh actor.
-/// Resolved confirmation gates stay until the corresponding tool batch commits
-/// and appends an interaction-clear event; dropping them here would strand an
-/// interrupted run with an advertised tool call but no recoverable decision.
-/// The transcript, messages and steps remain projections and are not recovery
-/// input to this reducer.
+/// Replay the interaction lifecycle from the active event stream. Resolved
+/// confirmation gates stay until the corresponding tool batch commits and
+/// appends an interaction-clear event; ask ToolResult transcript events also
+/// repair the crash window before their separate requested event was appended.
+/// Materialized messages and steps are never recovery input.
 pub(crate) async fn load_interactions(
     store: &SessionStore,
     session_id: &str,
 ) -> anyhow::Result<Vec<InteractionRequest>> {
-    let mut interactions: Vec<InteractionRequest> = Vec::new();
-    for event in store.read_active_domain_events_async(session_id).await? {
-        match event.event_type.as_str() {
-            INTERACTION_REQUESTED_EVENT_TYPE | INTERACTION_RESOLVED_EVENT_TYPE => {
-                let request: InteractionRequest =
-                    serde_json::from_str(&event.payload).map_err(|error| {
-                        anyhow::anyhow!(
-                            "invalid interaction event at sequence {}: {error}",
-                            event.sequence
-                        )
-                    })?;
-                interactions.retain(|existing| existing.id != request.id);
-                if request.status == InteractionStatus::Pending
-                    || request.kind == InteractionKind::Confirm
-                {
-                    interactions.push(request);
-                }
-            }
-            INTERACTION_CLEARED_EVENT_TYPE => {
-                let payload: serde_json::Value =
-                    serde_json::from_str(&event.payload).map_err(|error| {
-                        anyhow::anyhow!(
-                            "invalid interaction clear event at sequence {}: {error}",
-                            event.sequence
-                        )
-                    })?;
-                let ids = payload
-                    .get("ids")
-                    .and_then(serde_json::Value::as_array)
-                    .ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "interaction clear event at sequence {} has no ids",
-                            event.sequence
-                        )
-                    })?;
-                interactions.retain(|request| {
-                    !ids.iter()
-                        .any(|id| id.as_str() == Some(request.id.as_str()))
-                });
-            }
-            _ => {}
-        }
-    }
-    Ok(interactions)
+    let active_events = store.read_active_events_async(session_id).await?;
+    crate::interaction::replay_session_interactions(session_id, &active_events)
 }
 
 async fn append_interaction_event(
