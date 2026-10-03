@@ -4,15 +4,21 @@ import { SessionReducer } from './sessionReducer.ts';
 
 const SESSION_ID = 'ses-ask';
 
-function createRequest(id: string, question: string, options: string[] = []) {
+function createRequest(
+	id: string,
+	question: string,
+	messageOptions: string[] = [],
+	requestOptions = messageOptions,
+) {
 	return {
 		question,
+		messageOptions,
 		request: {
 			id,
 			sessionId: SESSION_ID,
 			kind: 'ask' as const,
 			status: 'pending' as const,
-			options,
+			options: requestOptions,
 			createdAt: '',
 		},
 	};
@@ -42,10 +48,11 @@ describe('createAskInteractionController', () => {
 		reducer.dispatch({
 			type: 'session/messages/resume-loaded',
 			sessionId: SESSION_ID,
-			messages: requests.map(({ question, request }) => ({
+			messages: requests.map(({ question, messageOptions, request }) => ({
 				id: request.id,
 				type: 'ask',
 				content: question,
+				options: messageOptions,
 				awaiting: true,
 			})),
 			interactions: requests.map(({ request }) => request),
@@ -100,8 +107,10 @@ describe('createAskInteractionController', () => {
 
 	it('routes composer input through a fully selected ask batch and appends typed text', () => {
 		loadAskMessages(
-			createRequest('ask-1', '第一个问题', ['A']),
-			createRequest('ask-2', '第二个问题', ['B']),
+			// Quick choices come from the live tool observation; the interaction
+			// event that gates the ask carries no option list.
+			createRequest('ask-1', '第一个问题', ['A'], []),
+			createRequest('ask-2', '第二个问题', ['B'], []),
 		);
 		const { controller, submitMessage, setAutoFollow } = createController();
 		const images = [{ data: 'image' }];

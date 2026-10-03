@@ -114,6 +114,18 @@ describe('selectChatVisibleMessages', () => {
 		});
 	});
 
+	it('preserves live quick choices when the pending interaction has no options', () => {
+		const ask = { ...askMessage('step-1'), options: ['方案 A', '方案 B'], awaiting: true };
+		const selected = projectChatVisibleMessages([ask], {
+			'step-1': askInteraction('step-1', 'pending', []),
+		});
+
+		expect(selected[0]).toMatchObject({
+			options: ['方案 A', '方案 B'],
+			awaiting: true,
+		});
+	});
+
 	it('projects a resolved answer', () => {
 		const ask = askMessage('step-1');
 		const selected = selectChatVisibleMessages(

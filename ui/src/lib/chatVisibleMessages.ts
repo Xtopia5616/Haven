@@ -29,7 +29,10 @@ export function projectChatVisibleMessages(
 		const response = request.response as { answer?: string; ignored?: boolean } | undefined;
 		return {
 			...message,
-			options: request.options,
+			// Live ask cards receive their quick choices from the committed tool
+			// observation. The separate interaction request may intentionally have
+			// no options, so an empty request must not erase those choices.
+			options: request.options.length > 0 ? request.options : (message.options ?? []),
 			awaiting: request.status === 'pending',
 			resolved:
 				request.status === 'resolved'
