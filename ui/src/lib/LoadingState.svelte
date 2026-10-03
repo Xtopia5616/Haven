@@ -31,8 +31,12 @@
 	.loading-state {
 		display: grid;
 		place-items: center;
+		box-sizing: border-box;
 		min-height: calc(var(--md-sys-space-4xl) * 5);
 		padding: var(--md-sys-space-4xl) var(--md-sys-space-2xl);
+	}
+	.loading-state--page {
+		flex: 1 1 auto;
 	}
 	.loading-state--inline {
 		min-height: var(--md-sys-space-4xl);

@@ -153,6 +153,14 @@ export type SessionAction =
 	| { type: 'session/messages/finalized'; sessionId: string }
 	| { type: 'session/messages/adopt-draft'; sessionId: string }
 	| {
+			type: 'session/messages/asks-settled';
+			sessionId: string;
+			asks: Array<{
+				id: string;
+				resolved?: { answer?: string; ignored?: boolean } | null;
+			}>;
+	  }
+	| {
 			type: 'session/messages/resume-loaded';
 			sessionId: string;
 			messages: SessionMessage[];

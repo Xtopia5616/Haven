@@ -33,6 +33,7 @@ describe('LoadingState', () => {
 		expect(pageLoader).toBeTruthy();
 		const pageLoaderStyle = getComputedStyle(pageLoader!);
 		expect(pageLoaderStyle.position).toBe('static');
+		expect(pageLoaderStyle.flexGrow).toBe('1');
 		expect(pageLoaderStyle.pointerEvents).toBe('auto');
 	});
 

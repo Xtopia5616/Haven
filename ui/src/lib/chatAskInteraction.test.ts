@@ -151,9 +151,27 @@ describe('createAskInteractionController', () => {
 		const { controller } = createController();
 
 		controller.handleAskSelectionChange('ask-1', ['A']);
+		controller.handleAskSubmit();
 		controller.clearAskAwaiting(SESSION_ID);
 
 		expect(reducer.getState().interactions?.['ask-1']).toBeUndefined();
+		expect(reducer.getMessages(SESSION_ID)[0]).toMatchObject({
+			awaiting: false,
+			resolved: { answer: 'A' },
+		});
 		expect(controller.computeAskSelectionsReady()).toBe(false);
+	});
+
+	it('settles unanswered cards when a freeform answer resumes the session', () => {
+		loadAskMessages(createRequest('ask-freeform', '问题'));
+		const { controller } = createController();
+
+		controller.clearAskAwaiting(SESSION_ID);
+
+		expect(reducer.getState().interactions?.['ask-freeform']).toBeUndefined();
+		expect(reducer.getMessages(SESSION_ID)[0]).toMatchObject({
+			awaiting: false,
+			resolved: null,
+		});
 	});
 });

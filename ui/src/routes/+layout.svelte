@@ -1312,7 +1312,10 @@
 							{@render children()}
 						</div>
 					{:else if tab.id === 'tools'}
-						<div class="page-shell">
+						<div
+							class="page-shell"
+							class:page-shell--loading={!lazyViewComponents.tools}
+						>
 							{#if lazyViewComponents.tools}
 								<WorkspaceSurface
 									entering={enteringTab === tab.id}
@@ -1341,7 +1344,10 @@
 							{/if}
 						</div>
 					{:else if tab.id === 'memory'}
-						<div class="page-shell">
+						<div
+							class="page-shell"
+							class:page-shell--loading={!lazyViewComponents.memory}
+						>
 							{#if lazyViewComponents.memory}
 								{@const MemoryViewComponent = lazyViewComponents.memory}
 								<WorkspaceSurface
@@ -1382,7 +1388,10 @@
 							{/if}
 						</div>
 					{:else if tab.id === 'settings'}
-						<div class="page-shell">
+						<div
+							class="page-shell"
+							class:page-shell--loading={!lazyViewComponents.settings}
+						>
 							{#if lazyViewComponents.settings}
 								<WorkspaceSurface
 									entering={enteringTab === tab.id}

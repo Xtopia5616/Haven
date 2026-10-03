@@ -83,6 +83,23 @@ export function createAskInteractionController({
 			setSelectionsReady(false);
 			return;
 		}
+		const state = reducer.getState();
+		const asks = messagesFor(sessionId)
+			.filter(
+				(message) =>
+					message.type === 'ask' &&
+					(message.awaiting || state.interactions[message.id]?.kind === 'ask'),
+			)
+			.map((message) => {
+				const request = state.interactions[message.id];
+				const response =
+					request?.kind === 'ask' && request.status === 'resolved'
+						? (request.response as { answer?: string; ignored?: boolean } | undefined)
+						: undefined;
+				return { id: message.id, resolved: response || null };
+			});
+		if (asks.length > 0)
+			reducer.dispatch({ type: 'session/messages/asks-settled', sessionId, asks });
 		reducer.dispatch({ type: 'session/interactions-cleared', sessionId, kind: 'ask' });
 		// A resume/end invalidates quick-reply answers for the pending batch.
 		resolvedAskIds.delete(sessionId);

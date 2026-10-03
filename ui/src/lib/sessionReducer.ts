@@ -121,6 +121,7 @@ export function reduceSession(
 		case 'session/messages/rejected':
 		case 'session/messages/finalized':
 		case 'session/messages/adopt-draft':
+		case 'session/messages/asks-settled':
 		case 'session/messages/truncated':
 		case 'session/replay-reset':
 		case 'session/stream-blocks-cleared':

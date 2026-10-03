@@ -262,6 +262,11 @@
 		max-width: clamp(640px, 92vw, var(--md-sys-content-max-width));
 		min-width: 0;
 	}
+	:global(.content:not(.content--chat) .page-shell--loading) {
+		display: flex;
+		flex-direction: column;
+		min-height: 100%;
+	}
 	:global(.content--chat .page-shell) {
 		flex: 1;
 		width: 100%;

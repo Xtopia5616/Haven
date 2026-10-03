@@ -16,6 +16,7 @@ type Action = SessionActionOf<
 	| 'session/messages/cleared'
 	| 'session/messages/finalized'
 	| 'session/messages/adopt-draft'
+	| 'session/messages/asks-settled'
 	| 'session/messages/resume-loaded'
 	| 'session/messages/truncated'
 	| 'session/replay-reset'
@@ -140,6 +141,24 @@ export function reduceTranscript(
 			});
 		case 'session/messages/adopt-draft':
 			return moveMessages(state, DRAFT_SESSION_ID, action.sessionId);
+		case 'session/messages/asks-settled': {
+			const askById = new Map(action.asks.map((ask) => [ask.id, ask]));
+			if (askById.size === 0) return state;
+			return withMessages(state, action.sessionId, (messages) => {
+				let changed = false;
+				const next = messages.map((message) => {
+					if (message.type !== 'ask' || !askById.has(message.id)) return message;
+					const ask = askById.get(message.id)!;
+					changed = true;
+					return {
+						...message,
+						awaiting: false,
+						resolved: ask.resolved ?? null,
+					};
+				});
+				return changed ? next : messages;
+			});
+		}
 		case 'session/messages/resume-loaded': {
 			const excluded = new Set(action.excludeMessageIds || []);
 			const existing = messagesOf(state, action.sessionId).filter(
