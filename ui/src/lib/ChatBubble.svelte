@@ -109,6 +109,10 @@
 	});
 
 	let mdHtml = $state('');
+	let mdContentNode: HTMLElement | null = null;
+	let markdownRenderDeferred = false;
+	let selectionPointerId: number | null = null;
+	let refreshSelectionListeners: (() => void) | null = null;
 	// L11: the component may be destroyed while onMount's dynamic imports are
 	// still resolving; guard state writes against an unmounted component.
 	let mounted = true;
@@ -187,6 +191,26 @@
 		handleExtRefEvent(e);
 	}
 
+	function hasSelectionInMarkdown() {
+		const selection = window.getSelection();
+		if (!mdContentNode || !selection || selection.isCollapsed) return false;
+		for (let index = 0; index < selection.rangeCount; index += 1) {
+			if (selection.getRangeAt(index).intersectsNode(mdContentNode)) return true;
+		}
+		return false;
+	}
+
+	function shouldDeferMarkdownRender() {
+		return selectionPointerId !== null || hasSelectionInMarkdown();
+	}
+
+	function flushDeferredMarkdownRender() {
+		if (!markdownRenderDeferred || shouldDeferMarkdownRender()) return;
+		markdownRenderDeferred = false;
+		renderNow();
+		refreshSelectionListeners?.();
+	}
+
 	// `use:mdContent` attaches the delegation listeners to the rendered
 	// markdown container. Wrapping them in an action (instead of `onclick` /
 	// `onwheel` on the div) keeps the div non-interactive for a11y: only the
@@ -240,8 +264,10 @@
 		el.scrollLeft += e.deltaY;
 	}
 
-	function mdContent(node: HTMLElement) {
+	function mdContent(node: HTMLElement, initialStreaming: boolean) {
 		let hintRaf = 0;
+		let isStreaming = initialStreaming;
+		let observingSelection = false;
 		const dragController = createDragScrollController(node, {
 			axis: 'x',
 			preserveTextSelection: true,
@@ -250,6 +276,56 @@
 				return element instanceof HTMLElement ? element : null;
 			},
 		});
+		function updateSelectionListeners() {
+			const shouldObserve =
+				isStreaming ||
+				markdownRenderDeferred ||
+				selectionPointerId !== null ||
+				hasSelectionInMarkdown();
+			if (shouldObserve === observingSelection) return;
+			observingSelection = shouldObserve;
+			if (shouldObserve) {
+				document.addEventListener('selectionchange', onSelectionChange);
+				window.addEventListener('pointerup', onSelectionPointerEnd, true);
+				window.addEventListener('pointercancel', onSelectionPointerEnd, true);
+			} else {
+				document.removeEventListener('selectionchange', onSelectionChange);
+				window.removeEventListener('pointerup', onSelectionPointerEnd, true);
+				window.removeEventListener('pointercancel', onSelectionPointerEnd, true);
+			}
+		}
+		function onSelectionChange() {
+			flushDeferredMarkdownRender();
+			updateSelectionListeners();
+		}
+		function onSelectionPointerDown(event: PointerEvent) {
+			if (event.button !== 0 || !event.isPrimary) return;
+			const target =
+				event.target instanceof Element
+					? event.target
+					: event.target instanceof Node
+						? event.target.parentElement
+						: null;
+			if (
+				target?.closest(
+					'button, a, input, textarea, select, [role="button"], [contenteditable="true"]',
+				)
+			) {
+				return;
+			}
+			selectionPointerId = event.pointerId;
+			updateSelectionListeners();
+		}
+		function onSelectionPointerEnd(event: PointerEvent) {
+			if (selectionPointerId !== event.pointerId) return;
+			selectionPointerId = null;
+			flushDeferredMarkdownRender();
+			updateSelectionListeners();
+		}
+		mdContentNode = node;
+		refreshSelectionListeners = updateSelectionListeners;
+		node.addEventListener('pointerdown', onSelectionPointerDown);
+		updateSelectionListeners();
 		function scheduleRefresh() {
 			// Skip edge-fade updates while streaming: content mutates every
 			// frame and toggling --sh-l/--sh-r causes visible edge flicker.
@@ -282,11 +358,23 @@
 		ro?.observe(node);
 		scheduleRefresh();
 		return {
+			update(nextStreaming: boolean) {
+				isStreaming = nextStreaming;
+				updateSelectionListeners();
+			},
 			destroy() {
 				node.removeEventListener('click', handleMdContentClick);
 				node.removeEventListener('contextmenu', handleMdContentContextMenu);
 				node.removeEventListener('wheel', handleMdWheel);
 				node.removeEventListener('scroll', handleMdScrollCapture, true);
+				node.removeEventListener('pointerdown', onSelectionPointerDown);
+				document.removeEventListener('selectionchange', onSelectionChange);
+				window.removeEventListener('pointerup', onSelectionPointerEnd, true);
+				window.removeEventListener('pointercancel', onSelectionPointerEnd, true);
+				if (mdContentNode === node) {
+					mdContentNode = null;
+					refreshSelectionListeners = null;
+				}
 				dragController.destroy();
 				mo.disconnect();
 				ro?.disconnect();
@@ -318,6 +406,13 @@
 		// import callback itself cannot establish reactive dependencies.
 		const text = content || '';
 		const isStreaming = !!streaming;
+		if (shouldDeferMarkdownRender()) {
+			markdownRenderDeferred = true;
+			refreshSelectionListeners?.();
+			return;
+		}
+		markdownRenderDeferred = false;
+		refreshSelectionListeners?.();
 		if (!rendererReady) {
 			// Renderer still loading — show plain text with the caret, then render
 			// the current content once the shared renderer resolves.
@@ -432,7 +527,7 @@
 			<div class="supplement-badge">&#10100; {content}</div>
 		{:else if rendersMarkdown}
 			{#if mdHtml}
-				<div class="md-content" class:streaming use:mdContent>
+				<div class="md-content" class:streaming use:mdContent={streaming}>
 					{@html mdHtml}{#if streaming && content}<span class="caret"></span>{/if}
 				</div>
 			{:else}

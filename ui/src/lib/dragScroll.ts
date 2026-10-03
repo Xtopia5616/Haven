@@ -72,7 +72,7 @@ export function createDragScrollController(node: HTMLElement, options: DragScrol
 			startScrollTop: target.scrollTop,
 			moved: false,
 		};
-		node.setPointerCapture?.(event.pointerId);
+		if (!preserveTextSelection) node.setPointerCapture?.(event.pointerId);
 	}
 
 	function onPointerMove(event: PointerEvent) {
@@ -93,6 +93,7 @@ export function createDragScrollController(node: HTMLElement, options: DragScrol
 		}
 
 		drag.moved = true;
+		if (preserveTextSelection) node.setPointerCapture?.(event.pointerId);
 		event.preventDefault();
 		drag.target.classList.add('drag-scroll--active');
 		if (axis === 'x') {
@@ -104,7 +105,8 @@ export function createDragScrollController(node: HTMLElement, options: DragScrol
 
 	function onPointerEnd(event: PointerEvent) {
 		if (!drag || event.pointerId !== drag.pointerId) return;
-		node.releasePointerCapture?.(event.pointerId);
+		if (node.hasPointerCapture?.(event.pointerId))
+			node.releasePointerCapture?.(event.pointerId);
 		clearDrag();
 	}
 

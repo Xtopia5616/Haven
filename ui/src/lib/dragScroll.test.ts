@@ -120,6 +120,7 @@ describe('dragScroll', () => {
 		node.append(code);
 		const cleanup = dragScroll(node, {
 			axis: 'x',
+			preserveTextSelection: true,
 			resolveTarget: (target) => (target instanceof HTMLElement ? target : null),
 		});
 
@@ -143,8 +144,18 @@ describe('dragScroll', () => {
 				pointerId: 1,
 			}),
 		);
+		code.dispatchEvent(
+			new PointerEvent('pointermove', {
+				bubbles: true,
+				button: 0,
+				clientX: 160,
+				clientY: 100,
+				isPrimary: true,
+				pointerId: 1,
+			}),
+		);
 
-		expect(code.scrollLeft).toBe(120);
+		expect(code.scrollLeft).toBe(140);
 		cleanup.destroy();
 	});
 
