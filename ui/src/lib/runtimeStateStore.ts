@@ -10,17 +10,6 @@ export type RecordingOverlayState = {
 	vadState: string;
 };
 
-// Shared recording UI state consumed by the layout overlay and input router.
-export const recordingOverlay = writable<RecordingOverlayState>({
-	visible: false,
-	isRecording: false,
-	processing: false,
-	sessionId: null,
-	startedAt: null,
-	reason: null,
-	vadState: 'silent',
-});
-
 export type ReactExecutionPhase =
 	'idle' | 'queued' | 'requesting' | 'generating' | 'waiting_result' | 'waiting_response';
 

@@ -1,11 +1,11 @@
 <script lang="ts">
 	import '../app.css';
 	import {
-		recordingOverlay,
 		reactExecutionPhaseStore,
 		activeConversationStatusStore,
 		updateReactExecutionPhase,
 	} from '$lib/runtimeStateStore.ts';
+	import { recordingOverlayController } from '$lib/recordingOverlayController.ts';
 	import { addNotification } from '$lib/notificationStore.ts';
 	import {
 		setActionCompletionNotificationChannels,
@@ -315,18 +315,8 @@
 	let theme = $state(themeStore.currentTheme);
 	$effect(() => syncStore(themeStore, (v) => (theme = v.theme)));
 
-	let overlay = $state<RecordingOverlayState>({
-		visible: false,
-		isRecording: false,
-		processing: false,
-		sessionId: null,
-		startedAt: null,
-		reason: null,
-		vadState: 'silent',
-	});
-	let duration = $state(0);
-	let durationTimer: ReturnType<typeof setInterval> | null = null;
-	let processingTimer: ReturnType<typeof setTimeout> | null = null;
+	let overlay = $state<RecordingOverlayState>(recordingOverlayController.getState());
+	let duration = $state(recordingOverlayController.getDuration());
 	let reactExecutionPhase = $state<ReactExecutionPhase>('idle'); // synced from reactExecutionPhaseStore on mount
 	let conversationStatus = $state('空闲');
 	$effect(() => syncStore(activeConversationStatusStore, (v) => (conversationStatus = v)));
@@ -524,7 +514,8 @@
 	const actionCompletionNotificationGate =
 		createActionCompletionNotificationGate(showAgentNotification);
 
-	$effect(() => syncStore(recordingOverlay, (v) => (overlay = v)));
+	$effect(() => syncStore(recordingOverlayController.state, (v) => (overlay = v)));
+	$effect(() => syncStore(recordingOverlayController.duration, (v) => (duration = v)));
 
 	$effect(() => {
 		if (typeof window === 'undefined') return;
@@ -556,45 +547,12 @@
 		activateTab(t);
 	});
 
-	function setOverlay(patch: Partial<RecordingOverlayState>) {
-		recordingOverlay.update((v) => ({ ...v, ...patch }));
-	}
-
-	function startTimer() {
-		if (durationTimer) clearInterval(durationTimer);
-		duration = 0;
-		durationTimer = setInterval(() => {
-			duration += 1;
-		}, 1000);
-	}
-
-	function stopTimer() {
-		if (durationTimer) clearInterval(durationTimer);
-		durationTimer = null;
-	}
-
-	// Reset the recording overlay to its "hidden" state. Use after the user
-	// finishes a session, errors out, or is force-stopped by mute/tray.
-	/** @param {string | null} [reason] */
-	function resetOverlay(reason: string | null = null) {
-		setOverlay({ visible: false, isRecording: false, processing: false, reason });
-		stopTimer();
-	}
-
-	function closeOverlaySoon(ms = 1500) {
-		if (processingTimer) clearTimeout(processingTimer);
-		processingTimer = setTimeout(() => {
-			resetOverlay();
-		}, ms);
-	}
-
 	async function cancelRecording() {
 		try {
-			await invoke('cancel_recording');
+			await recordingOverlayController.cancel();
 		} catch (e) {
 			reportError(e, { context: '+layout', message: '停止录音失败', log: false });
 		}
-		resetOverlay();
 	}
 
 	function toggleTheme() {
@@ -833,6 +791,7 @@
 	let removeGlobalErrorHandlers: () => void = () => {};
 
 	onMount(async () => {
+		recordingOverlayController.resumeTimer();
 		runtime = isTauri() ? 'tauri' : 'browser';
 		if (isTauri()) {
 			getTools()
@@ -905,39 +864,13 @@
 				}),
 				...recordingEventListeners({
 					'recording:started': (event) => {
-						const data = event.payload;
-						setOverlay({
-							visible: true,
-							isRecording: true,
-							processing: false,
-							sessionId: data.sessionId || null,
-							startedAt: Date.now(),
-							reason: null,
-							vadState: 'silent',
-						});
-						startTimer();
+						recordingOverlayController.onRecordingStarted(event.payload);
 					},
 					'recording:stopped': (event) => {
-						const data = event.payload;
-						if (processingTimer) clearTimeout(processingTimer);
-						const reason = data.reason || null;
-						const isAuto = reason === 'silence' || reason === 'max_duration';
-						setOverlay({
-							isRecording: false,
-							processing: isAuto,
-							reason,
-							vadState: 'silent',
-						});
-						stopTimer();
-						if (reason === 'cancel') {
-							setOverlay({ visible: false, processing: false });
-						}
+						recordingOverlayController.onRecordingStopped(event.payload);
 					},
 					'recording:vad_status': (event) => {
-						const data = event.payload;
-						if (get(recordingOverlay).isRecording) {
-							setOverlay({ vadState: data.state || 'silent' });
-						}
+						recordingOverlayController.onVadStatus(event.payload);
 					},
 					'recording:error': (event) => {
 						const data = event.payload;
@@ -946,14 +879,17 @@
 							'error',
 							5000,
 						);
-						resetOverlay();
+						recordingOverlayController.onRecordingError(data);
 					},
 					'transcription:started': (event) => {
 						addNotification('正在转写录音…', 'info', 2000);
-						setOverlay({ processing: true });
+						recordingOverlayController.onTranscriptionStarted(event.payload.sessionId);
 					},
 					'transcription:result': (event) => {
 						const data = event.payload;
+						// Overlay completion is session-scoped; transcript delivery below
+						// still runs for late results from an older recording.
+						recordingOverlayController.onTranscriptionFinished(data.sessionId);
 						const text = (data.text || '').trim();
 						if (text) {
 							// Same path as a typed message (see `submitVoiceTranscript`):
@@ -977,7 +913,6 @@
 								addNotification('未检测到语音，请再试一次', 'error', 4000);
 							}
 						}
-						resetOverlay();
 					},
 					'transcription:error': (event) => {
 						const data = event.payload;
@@ -986,7 +921,7 @@
 							'error',
 							5000,
 						);
-						resetOverlay();
+						recordingOverlayController.onTranscriptionFinished(data.sessionId);
 					},
 				}),
 				...appEventListeners({
@@ -994,9 +929,9 @@
 						const data = event.payload;
 						if (data.muted) {
 							addNotification('麦克风已静音', 'info');
-							if (get(recordingOverlay).isRecording) {
+							if (recordingOverlayController.getState().isRecording) {
 								addNotification('录音被静音强制停止', 'warning', 4000);
-								resetOverlay('muted');
+								recordingOverlayController.reset('muted');
 							}
 						} else {
 							addNotification('麦克风已取消静音', 'info');
@@ -1004,8 +939,11 @@
 					},
 					'tray:status_changed': (event) => {
 						const data = event.payload || {};
-						if (data.status === 'muted' && get(recordingOverlay).isRecording) {
-							resetOverlay('muted');
+						if (
+							data.status === 'muted' &&
+							recordingOverlayController.getState().isRecording
+						) {
+							recordingOverlayController.reset('muted');
 						}
 					},
 					'hotkey:conflict': (event) => {
@@ -1231,8 +1169,7 @@
 
 	onDestroy(() => {
 		removeGlobalErrorHandlers();
-		stopTimer();
-		if (processingTimer) clearTimeout(processingTimer);
+		recordingOverlayController.dispose();
 		if (llmProbeTimer) clearTimeout(llmProbeTimer);
 		if (bootstrapProbeTimer) clearTimeout(bootstrapProbeTimer);
 		eventRegistrations?.dispose();

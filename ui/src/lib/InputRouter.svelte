@@ -3,9 +3,8 @@
 	import type { Snippet } from 'svelte';
 	import logger from '$lib/logger.ts';
 	import { browser } from '$app/environment';
-	import { invoke } from '$lib/tauri.ts';
 	import { addNotification } from '$lib/notificationStore.ts';
-	import { recordingOverlay } from '$lib/runtimeStateStore.ts';
+	import { recordingOverlayController } from '$lib/recordingOverlayController.ts';
 	import { mediaDataUrl } from '$lib/mediaData.ts';
 	import { reportError } from '$lib/errorHandling.ts';
 	import { syncStore } from '$lib/syncStore.ts';
@@ -98,11 +97,11 @@
 	// split by type on selection (images -> pendingImages, rest -> pendingFiles).
 	let attachFileInput = $state<HTMLInputElement | null>(null);
 
-	// Recording state (mirror of the global recordingOverlay store) so the
+	// Read-only recording state mirror so the
 	// toolbar mic button can toggle start/stop inline.
 	let recordingState = $state({ isRecording: false });
 	$effect(() =>
-		syncStore(recordingOverlay, (v) => {
+		syncStore(recordingOverlayController.state, (v) => {
 			recordingState = v;
 		}),
 	);
@@ -174,31 +173,7 @@
 
 	async function handleRecordClick() {
 		try {
-			if (recordingState.isRecording) {
-				// Optimistic stop: flip the overlay instantly; the backend
-				// confirms via recording:stopped ~50 ms later.
-				recordingOverlay.update((v) => ({ ...v, isRecording: false, visible: false }));
-				try {
-					await invoke('stop_recording');
-				} catch (e) {
-					recordingOverlay.update((v) => ({ ...v, isRecording: true, visible: true }));
-					throw e;
-				}
-			} else {
-				// Optimistic start: the button/overlay respond immediately so
-				// the brief stream-startup wait (~90 ms) behind `start_recording`
-				// is not perceived as a laggy click.
-				recordingOverlay.update((v) => ({ ...v, isRecording: true, visible: true }));
-				try {
-					await invoke('start_recording');
-				} catch (e) {
-					recordingOverlay.update((v) => ({ ...v, isRecording: false, visible: false }));
-					// The backend already emits `recording:error` with a
-					// friendly message (surfaced as a notification by the
-					// layout), so do not re-throw — that would show a second,
-					// redundant error toast.
-				}
-			}
+			await recordingOverlayController.toggleFromToolbar();
 		} catch (e) {
 			reportError(e, { context: 'InputRouter', message: '录音失败' });
 		}

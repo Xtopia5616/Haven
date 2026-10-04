@@ -1,6 +1,6 @@
 # Haven 架构降复杂度重构路线图
 
-> 状态：阶段 0–8 已完成；媒体 lifecycle、generated-media 写入/GC 互斥与录音 session ID 交接切片已完成；Shell overlay controller 为当前 active slice；Windows 发布验收为独立开放签核门
+> 状态：阶段 0–8 已完成；媒体 lifecycle、generated-media 写入/GC 互斥、录音 session ID 交接与 Shell overlay controller 切片已完成；Files rich-path 登记/GC 互斥为当前 active slice；Windows 发布验收为独立开放签核门
 > 更新日期：2026-10-05
 > 范围：Agent/Session、Memory、Tools、LLM、App IPC 与 UI
 
@@ -102,7 +102,7 @@ ADR 0424 已于 2026-10-04 采纳，确定 session、scheduled 和 UI 直调确�
 
 **退出条件：** request ID 不跨 owner 扫描/fallback；错误 owner/context 不能消费请求或触发副作用；点击与到期竞争最多接受一个终态；所有 pending confirmation 有 owner 管理的有效绝对期限；renderer 关闭、迟到点击、可重试持久化失败和 continuation 执行失败均有明确结果；Session append 失败不改变 actor；session 重启只从 `session_events` 恢复，UI/scheduled 请求不自动重放。运行时 DTO 与 UI/IPC 类型保持一致；旧 route、期限入口和测试分支删除。此方案不改 durable session payload 或 schema，无需重置；验证与切片细节见 ADR 0424/0423。
 
-### 5.3 内部模块边界整理（Next candidate / 已完成四个边界整理与媒体 GC 竞态修复）
+### 5.3 内部模块边界整理（Active / 模块整理与媒体、录音生命周期修复持续推进）
 
 这不是 crate 拆分目标，按职责和稳定 owner 选择可证明有益的内部边界。首个边界已完成：`SessionStore` 的只读历史查询与 DTO 已收入私有 `session_history` 模块，公开 façade、SQL owner、查询过滤/排序/缓存和序列化保持不变。聚合 event stream 与多个投影的 `session_resume_projection` 继续留在事务协调 owner。实现约束和回滚见 [ADR 0466](adr/0466-session-history-read-facade-module.md)。第二个边界已完成：Provider schema projection 归入 adapter 私有 helper，通用 schema sanitizer 和 canonical JSON 留在 `types.rs`；实现约束与验证见 [ADR 0467](adr/0467-llm-tool-schema-projection-module.md)。第三个边界已完成：`MemoryMaintenancePass` 只借用已有 store、inference、semaphore、MemoryService；周期 schedule、worker facade 与 durable outbox lifecycle 留在原 owner；步骤、取消和失败语义不变，细节与验证见 [ADR 0468](adr/0468-memory-worker-maintenance-pass-module.md)。
 
@@ -113,10 +113,10 @@ ADR 0424 收口后，按证据逐个评估以下候选；同一时刻只推进�
 3. **App managed-media 文件生命周期（已完成，2026-10-05；ADR 0469）。** 将 `commands/recording.rs` 中上传落盘和两根媒体目录清理提取到 App 私有模块，Tauri 命令和 IPC 保持不变。唯一写锁覆盖 quota/staging/提交/lease 登记与 uploads/generated-media/staging 清理；新模块通过 SessionStore 读取 durable refs，任何读取失败都阻止两根媒体目录清理；ManagedAssetRegistry 继续拥有活动/pending lease 与 TTL，AppState 继续拥有定时调度。修复 staging 根重解析点漏检、剪贴板生成文件名未被 cleaner 识别和双根扫描短路；门禁与验收见 ADR 0469。
 4. **Tools generated-media producer 与 registry lease 的并发边界（已完成，2026-10-05；ADR 0470）。** 已确认图片生成、录音、截图、剪贴板 producer 的“先落盘、后登记”可与 App GC 重叠，造成活动产物被删除。由 clone-shared `ManagedAssetRegistry` 提供读写 gate：producer 在 blocking closure 中从目标文件创建前持读 permit 到 lease/TTL 登记完成；App cleaner 把独占 permit 带入清理 closure，在 generated-media 快照前获取并持有到 unlink 完成，随后释放再扫 uploads。剪贴板批次逐文件持锁，单文件 64 MiB 有界并分块检查取消；路径 stat 不阻塞 async worker。不引入 reservation 状态，不暴露 App 锁。双向先后顺序与两边 caller cancellation 均有 channel 控制回归。
 5. **录音 session ID 的 stop/cancel 交接（已完成，2026-10-05；ADR 0471）。** App voice command 与 Shell handler 共用生命周期 owner；停止或取消时在下一次 start 前分离本次 ID，并显式传入 finalizer。Timed `media.record` 不创建 App voice ID，voice 命令不接管工具采集。owner handoff 与并发 stop 单次 detach 回归测试及 Rust/UI/IPC 全门禁通过。
-6. **Active：Shell 录音 overlay controller。** 从 `+layout.svelte` 提取 overlay timer/state/cancel 与乐观 start/stop 写入口；`+layout` 仍拥有全局事件登记、系统通知和 voice transcript submission，shell 继续拥有全局事件订阅。controller 按当前 `rec-*` 关联状态事件；旧 transcription 结果仍提交文本，但不得清理新录音 overlay。验收覆盖 start/stop、快速 stop、取消、VAD/mute、旧/新转写交错、voice transcript 提交，以及卸载时只清理 timer、不取消后台录音或 dispose 全局 listener。
-7. **Candidate：Files rich-path asset 登记与 generated-media GC。** `FilesTool` 接受绝对路径并在 `register_rich_path_asset` 中先 canonicalize/stat、再注册 session lease；审查其路径是否可指向 generated-media 根目录，以及 GC 删除与读取/登记重叠时是否会造成用户可见失败。尚无复现证据，不扩展 ADR 0470 的 gate；若无法证明真实风险，标记为无需改动。
+6. **Shell 录音 overlay controller（已完成，2026-10-05；ADR 0472）。** 将 overlay store、计时器、乐观 toolbar start/stop 和 cancel 收口到唯一 controller；`+layout` 仍拥有全局 listener、通知和 voice transcript submission，输入组件只请求 toggle。旧 `rec-*` 生命周期事件不能更改新 overlay；旧转写文本仍按原 session 提交。VAD 因 payload 没有 session ID 仍按当前 recording 状态门控。Rust/UI/IPC 全门禁通过。
+7. **Active：Files rich-path 登记与 generated-media GC 互斥。** 只读审计确认绝对路径可指向 generated-media 根目录，且 rich-path canonicalize/stat/lease 登记未取得 ADR 0470 的共享 gate：GC 在 lease 快照后可 unlink 文件，导致 Files 后续媒体读取失败。最小切片是在 rich-path validate/stat/lease 登记范围持有 registry 共享 permit，不扩展到模型调用或文件处理；GC 若先持独占 permit，应先完成清理，之后 Files 返回明确不可用且不留下 lease。用可控 channel/barrier 覆盖 Files 登记先行时 GC 保留、GC 先行时不遗留陈旧 lease 两种顺序，并跑 Rust workspace 全门禁。审计证据：FilesTool 绝对路径调用链、共享 registry、Cleaner 单次 lease/TTL 快照及其 unlink 区间（Files GC audit，2026-10-05）。
 
-这些是候选排序，不是必须全部拆分的承诺；若实际代码已收敛、owner 更清楚或职责无法独立验收，就标记为不需要拆分。`+page.svelte` 已有多个 chat/session/model/ask/view controller；`SettingsView.svelte` 必须持有完整 Settings snapshot、dirty baseline 与 leave guard；`admin.rs` 五个 surface 共用一份能力/schema/request 桥接契约。这些文件不因行数单独拆分。
+上述完成项是历史结果，Active 只表示当前可执行的一片。其后的候选仍须经过只读审计和准入条件复核；若实际代码已收敛、owner 更清楚或职责无法独立验收，就标记为不需要拆分。`+page.svelte` 已有多个 chat/session/model/ask/view controller；`SettingsView.svelte` 必须持有完整 Settings snapshot、dirty baseline 与 leave guard；`admin.rs` 五个 surface 共用一份能力/schema/request 桥接契约。这些文件不因行数单独拆分。
 
 事件存储与 transcript projection 的内部拆分属于暂缓的高风险候选：只读历史 façade 已拆，但在写侧仍有可量化维护收益之前不启动。`SessionStore` 必须继续作为 append、物化投影和 rollback 的事务协调 owner：事件与 projection 原子提交，rollback 同时维护 `event_cursor` 和 `last_msg_at`，提交成功后才发布事件。若拆分要求上层分别写 event/projection、暴露事务细节或引入第二个恢复来源，应停止。
 

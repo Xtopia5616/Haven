@@ -293,9 +293,13 @@ pub async fn start_recording(
         // auto-stop may be finalizing: the pipeline is busy, not broken.
         let pipeline_state = state.runtime.pipeline.get_state().await;
         if matches!(pipeline_state, haven_input::RecordingState::Recording)
-            && state.recording_sessions.current(&lifecycle).is_some()
+            && let Some(session_id) = state.recording_sessions.current(&lifecycle)
         {
             state.runtime.shell.sync_recording(true).await;
+            // This command may be reconciling a toolbar click with a capture
+            // that was started by the hotkey. Re-emit the stable identity so
+            // the renderer can bind its optimistic state to that capture.
+            emit_recording_started(&app, &session_id);
             return Ok(());
         }
         let msg = if matches!(pipeline_state, haven_input::RecordingState::Processing) {

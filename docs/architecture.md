@@ -648,6 +648,11 @@ fail closed（ADR 0380）。mapper 不接触 ActionService completion outbox；�
 `recordingEventListeners` 是这组事件唯一进入该 mapper 的 listener 边界。转换保留既有可选字段
 省略、畸形值安全默认、未知附加字段忽略与 VAD 字符串透传行为，不拒绝未知 signal/state，
 因为 Rust DTO 将它们定义为字符串而非封闭枚举（ADR 0340）。
+`recordingOverlayController.ts` 是共享 overlay state 与时长 timer 的唯一写 owner，并按 `rec-*`
+过滤 stop、error 和 transcription 对当前 overlay 的影响；`+layout.svelte` 仍拥有这些全局 listener、
+通知与 voice transcript submission，`InputRouter.svelte` 只调用 toolbar toggle，`AppShell` 和
+`RecordingIndicator` 只负责布局/展示。VAD payload 暂无 session ID，只能按当前 recording 状态门控
+（ADR 0472）。
 Settings 的完整 wire shape 由 `haven_common::config::Settings` 所有；前端不再从多个页面直接读取
 `invoke('get_settings')` 的原始结果，所有读取经 `ui/src/lib/settingsCommand.ts::loadSettings` 和
 `ui/src/lib/contracts/settings.ts::parseSettingsPayload`。validator 只检查根对象，保留未知配置字段、

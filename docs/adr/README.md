@@ -454,3 +454,4 @@
 - [0469：隔离 App 托管媒体文件生命周期](0469-app-managed-media-lifecycle-module.md)
 - [0470：协调生成媒体写入与 GC](0470-generated-media-write-gc-gate.md)
 - [0471：分离录音 session ID 与异步转写生命周期](0471-recording-session-id-handoff.md)
+- [0472：收口录音 overlay 状态与交互](0472-recording-overlay-controller.md)
