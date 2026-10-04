@@ -1,7 +1,21 @@
 import { describe, expect, it } from 'vitest';
-import { mapAppEvent } from './app.ts';
+import { interactionOwnerToWire, mapAppEvent } from './app.ts';
 
 describe('app-shell IPC contract', () => {
+	it.each([
+		[
+			{ kind: 'session', sessionId: 'ses-1' } as const,
+			{ kind: 'session', session_id: 'ses-1' },
+		],
+		[
+			{ kind: 'scheduled_action', actionId: 'act-1' } as const,
+			{ kind: 'scheduled_action', action_id: 'act-1' },
+		],
+		[{ kind: 'app_command' } as const, { kind: 'app_command' }],
+	])('serializes the selected interaction owner for resolve IPC', (owner, wire) => {
+		expect(interactionOwnerToWire(owner)).toEqual(wire);
+	});
+
 	it('maps interaction fields at the renderer boundary', () => {
 		const event = mapAppEvent({
 			event: 'interaction:requested',

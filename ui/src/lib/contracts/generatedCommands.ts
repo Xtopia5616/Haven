@@ -3,6 +3,7 @@
 
 // DTO declarations below are generated from Rust Serialize types.
 
+export type InteractionOwnerInput = { kind: 'session'; session_id: string } | { kind: 'scheduled_action'; action_id: string } | { kind: 'app_command' };
 export type InteractionOwner = { kind: 'session'; session_id: string } | { kind: 'scheduled_action'; action_id: string } | { kind: 'app_command' };
 export interface CounterSnapshot { turn_starts: number; first_tokens: number; stream_chunks: number; chunk_drops: number; checkpoint_pending: number; branch_point_failures: number; snapshot_failures: number; projection_failures: number; inbox_ack_failures: number; action_result_retries: number; action_result_duplicates: number; web_search_drops: number }
 export interface GaugeSnapshot { context_queue_items: number }
@@ -23,6 +24,7 @@ export interface LogTail { path: string; content: string }
 export interface McpRefreshResult { added: string[]; removed: string[]; updated: string[]; failed: string[] }
 export interface ApiKeyStatus { models: Record<string, boolean>; providers: Record<string, boolean>; stt: boolean; ocr: boolean; ocr_secret: boolean }
 export interface RecordingState { is_recording: boolean; is_toggle: boolean }
+export type ConfirmationResolutionResult = 'resolved' | 'expired' | 'stale';
 export interface SessionLineageResponse { parent: SessionRecordDto | null; children: SessionRecordDto[] }
 export interface SessionRecordDto { id: string; input_text: string; title: string | null; status: SessionStatus; created_at: string; updated_at: string }
 export interface SessionResumeResponse { session: SessionRecordDto; messages: Message[]; steps: SessionStep[]; usage: SessionUsage | null; llm_usage: LlmCallUsage[]; interactions: InteractionRequestedEvent[] }
@@ -214,7 +216,7 @@ export interface TauriCommandMap {
 	reset_permissions: { request: undefined; response: void };
 	reset_session_permissions: { request: undefined; response: number };
 	reset_tool_circuits: { request: undefined; response: void };
-	resolve_confirmation: { request: { stepId: string; effect: string; scope: string; target: string; timedOut: boolean }; response: void };
+	resolve_confirmation: { request: { owner: InteractionOwnerInput; requestId: string; effect: string; scope: string; target: string; timedOut: boolean }; response: ConfirmationResolutionResult };
 	revoke_permission: { request: { key: string }; response: void };
 	revoke_session_permission: { request: { sessionId: string; capability: string }; response: void };
 	rollback_session: { request: { sessionId: string; targetStep: number; pause?: boolean | null; targetMessageId?: string | null }; response: void };

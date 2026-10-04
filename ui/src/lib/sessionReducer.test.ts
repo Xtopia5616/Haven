@@ -73,6 +73,32 @@ describe('resume interaction normalization', () => {
 });
 
 describe('SessionReducer', () => {
+	it('keeps explicit confirmation outcomes distinct and removes stale requests', () => {
+		const pending = {
+			id: 'conf-terminal',
+			owner: { kind: 'app_command' as const },
+			kind: 'confirm' as const,
+			status: 'pending' as const,
+			options: [],
+			createdAt: '2026-09-25T00:00:00Z',
+		};
+		const initial = stateWith({ interactions: { [pending.id]: pending } });
+
+		const expired = reduceSession(initial, {
+			type: 'session/interaction-resolution-result',
+			id: pending.id,
+			result: 'expired',
+		});
+		expect(expired.interactions[pending.id]?.status).toBe('expired');
+
+		const stale = reduceSession(initial, {
+			type: 'session/interaction-resolution-result',
+			id: pending.id,
+			result: 'stale',
+		});
+		expect(stale.interactions[pending.id]).toBeUndefined();
+	});
+
 	it('reads pending interaction ids by session for stale resume protection', () => {
 		const reducer = new SessionReducer();
 		const request = (id: string, sessionId: string, status: 'pending' | 'resolved') => ({

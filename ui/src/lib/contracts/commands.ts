@@ -90,7 +90,7 @@ export const TAURI_COMMAND_CONTRACTS = {
 	get_session_lineage: { boundary: 'read', security: 'parent and direct children of the selected session only' },
 	end_session: { boundary: 'mutate', security: 'explicit user termination' },
 	interrupt_session: { boundary: 'mutate', security: 'pauses the selected active session without deleting it' },
-	resolve_confirmation: { boundary: 'mutate', security: 'effect/scope/target must match confirmation; timeout expires fail-closed' },
+	resolve_confirmation: { boundary: 'mutate', security: 'owner and request id select one registry; receipt, effect, scope, target and expiry are revalidated' },
 	update_session_title: { boundary: 'mutate', security: 'trimmed non-empty title only' },
 	delete_session: { boundary: 'mutate', security: 'delete by session id and release runtime state' },
 	clear_history: { boundary: 'mutate', security: 'clears persisted sessions and session trust' },

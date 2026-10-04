@@ -7,6 +7,7 @@ type Action = SessionActionOf<
 	| 'session/interactions-hydrated'
 	| 'session/interactions-cleared'
 	| 'session/interaction-resolved'
+	| 'session/interaction-resolution-result'
 >;
 
 export function reduceInteraction(
@@ -77,6 +78,26 @@ export function reduceInteraction(
 					[action.id]: {
 						...request,
 						status: 'resolved',
+						...(action.response === undefined ? {} : { response: action.response }),
+					},
+				},
+			};
+		}
+		case 'session/interaction-resolution-result': {
+			const request = state.interactions[action.id];
+			if (!request || request.status !== 'pending') return state;
+			if (action.result === 'stale') {
+				const interactions = { ...state.interactions };
+				delete interactions[action.id];
+				return { ...state, interactions };
+			}
+			return {
+				...state,
+				interactions: {
+					...state.interactions,
+					[action.id]: {
+						...request,
+						status: action.result,
 						...(action.response === undefined ? {} : { response: action.response }),
 					},
 				},

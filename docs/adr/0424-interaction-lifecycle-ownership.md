@@ -107,7 +107,9 @@ payload，则属于新的持久契约，必须单独评估 schema/reset 与崩�
 - 已完成运行时 `InteractionOwner` / `InteractionEnvelope`；Session 与 scheduled producer 显式附带 owner，AppCommand event 显式标为 AppCommand。Owner 不序列化进 durable request。
 - 已将真实 `session_id` 改为可选关联上下文；SessionActor durable append/replay 继续拒绝缺失或不匹配的 session ID，Session request 的既有 JSON 形状保持不变。
 - 已完成 owner 到 Tauri event/resume DTO 的显式投影，并更新 TypeScript mapper、owner-aware reducer、Ask 过滤、scope 展示和通知分组。
-- 尚未改名 resolve IPC 的 `step_id`，尚未定义 typed resolve result，也尚未把 resolve command 改为按 AppCommand/ScheduledAction/Session owner 直接路由。下一切片先落 `request_id` 与显式已仲裁结果，再迁移 AppCommand 路径；ScheduledAction 和 Session 仍按本 ADR 后续顺序独立处理。
+- resolve IPC 已改用 `request_id`，并返回 `Resolved`、`Expired`、`Stale` 的小写 enum wire 值；renderer reducer 按结果更新或移除交互项，命令错误仍保持 pending。
+- AppCommand 已直接按 `AppCommand + request_id` 查 `ui_confirmations`，不查询 Agent executor、不回退其他 owner；过期检查、receipt 校验、决定接受与 map 移除在同一 registry 锁内仲裁。回归覆盖错误 owner/request ID、重试失败保留 pending、过期状态及并发双击一次终态。
+- ScheduledAction 与 Session 仍共用 supervisor 的兼容入口，但在其解析锁内核对 owner 和对应 action/session 标识；它们尚未改为直接按 `action_id` / `session_id` 定位。后续分别迁移这两条路径，再收口 owner deadline 与移除 `timed_out` / renderer deadline fallback。
 - 当前切片未修改数据库 schema 或 durable event payload，无需用户数据重置。
 
 ### 期限唯一性与 ADR 0423 的关系（决定）

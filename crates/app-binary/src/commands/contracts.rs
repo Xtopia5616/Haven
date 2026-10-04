@@ -281,7 +281,7 @@ pub const COMMAND_CONTRACTS: &[CommandContract] = &[
     CommandContract {
         name: "resolve_confirmation",
         boundary: CommandBoundary::Mutate,
-        security: "effect/scope/target must match confirmation; deny wins; timed out requests expire fail-closed",
+        security: "owner/request id selects one registry; receipt, effect, scope, target and expiry are revalidated; retryable failures keep pending",
     },
     CommandContract {
         name: "update_session_title",

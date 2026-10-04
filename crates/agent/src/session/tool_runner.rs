@@ -20,6 +20,26 @@ pub(super) fn confirmation_expiry_delay(expires_at: Option<&str>) -> Option<std:
     )
 }
 
+fn interaction_owner_matches_request(
+    owner: &crate::interaction::InteractionOwner,
+    request: &crate::interaction::InteractionRequest,
+) -> bool {
+    match (owner, &request.details) {
+        (
+            crate::interaction::InteractionOwner::Session { session_id },
+            crate::interaction::InteractionDetails::Confirm { .. },
+        ) => request.session_id.as_deref() == Some(session_id.as_str()),
+        (
+            crate::interaction::InteractionOwner::ScheduledAction { action_id },
+            crate::interaction::InteractionDetails::ScheduledConfirm {
+                action_id: request_action_id,
+                ..
+            },
+        ) => action_id == request_action_id,
+        _ => false,
+    }
+}
+
 /// The tool may already have produced an external side effect when its final
 /// action-step projection fails. Callers must surface this as an unknown
 /// outcome, never as an ordinary retryable failure.
@@ -1117,6 +1137,42 @@ impl SessionSupervisor {
         None
     }
 
+    pub async fn pending_confirmation_capability_for_owner(
+        &self,
+        owner: &crate::interaction::InteractionOwner,
+        request_id: &haven_common::types::ConfirmId,
+    ) -> Option<haven_common::types::CapabilityScope> {
+        let request = self.pending_confirmation_request(request_id).await?;
+        if !interaction_owner_matches_request(owner, &request) {
+            return None;
+        }
+        match &request.details {
+            crate::interaction::InteractionDetails::ScheduledConfirm { receipt, .. } => {
+                Some(receipt.capability.clone())
+            }
+            crate::interaction::InteractionDetails::Confirm {
+                receipt,
+                tool_name,
+                tool_input,
+                ..
+            } => {
+                if let Some(receipt) = receipt {
+                    Some(receipt.capability.clone())
+                } else {
+                    let session_id = request.session_id.as_deref()?;
+                    Some(
+                        self.tool_authorization
+                            .authorization_request(Some(session_id), tool_name, tool_input)
+                            .await
+                            .policy
+                            .capability,
+                    )
+                }
+            }
+            crate::interaction::InteractionDetails::Ask { .. } => None,
+        }
+    }
+
     pub(super) async fn pending_confirmation_request(
         &self,
         step_id: &haven_common::types::ConfirmId,
@@ -1159,13 +1215,35 @@ impl SessionSupervisor {
         target: haven_common::types::PermissionTarget,
         effect: haven_common::types::PermissionEffect,
     ) -> anyhow::Result<Option<crate::session::ConfirmResolution>> {
+        self.resolve_confirmation_with_session_grant_inner(step_id, target, effect, None)
+            .await
+    }
+
+    pub async fn resolve_confirmation_with_session_grant_for_owner(
+        self: &Arc<Self>,
+        owner: &crate::interaction::InteractionOwner,
+        request_id: &haven_common::types::ConfirmId,
+        target: haven_common::types::PermissionTarget,
+        effect: haven_common::types::PermissionEffect,
+    ) -> anyhow::Result<Option<crate::session::ConfirmResolution>> {
+        self.resolve_confirmation_with_session_grant_inner(request_id, target, effect, Some(owner))
+            .await
+    }
+
+    async fn resolve_confirmation_with_session_grant_inner(
+        self: &Arc<Self>,
+        step_id: &haven_common::types::ConfirmId,
+        target: haven_common::types::PermissionTarget,
+        effect: haven_common::types::PermissionEffect,
+        expected_owner: Option<&crate::interaction::InteractionOwner>,
+    ) -> anyhow::Result<Option<crate::session::ConfirmResolution>> {
         let _resolution = self.confirmation_resolution_gate.lock().await;
         let Some(request) = self.pending_confirmation_request(step_id).await else {
-            // Let the app command check its separately-owned UI confirmation
-            // registry. Do not resolve a request that appeared after this
-            // preflight; the caller can retry it and no trust is widened.
             return Ok(None);
         };
+        if expected_owner.is_some_and(|owner| !interaction_owner_matches_request(owner, &request)) {
+            return Ok(None);
+        }
 
         let (tool_name, tool_input, receipt) = match &request.details {
             crate::interaction::InteractionDetails::Confirm {
@@ -1243,6 +1321,24 @@ impl SessionSupervisor {
     ) -> anyhow::Result<Option<crate::session::ConfirmResolution>> {
         let _resolution = self.confirmation_resolution_gate.lock().await;
         self.resolve_confirmation_locked(step_id, confirmed, false)
+            .await
+    }
+
+    pub async fn resolve_confirmation_for_owner(
+        self: &Arc<Self>,
+        owner: &crate::interaction::InteractionOwner,
+        request_id: &haven_common::types::ConfirmId,
+        confirmed: bool,
+        timed_out: bool,
+    ) -> anyhow::Result<Option<crate::session::ConfirmResolution>> {
+        let _resolution = self.confirmation_resolution_gate.lock().await;
+        let Some(request) = self.pending_confirmation_request(request_id).await else {
+            return Ok(None);
+        };
+        if !interaction_owner_matches_request(owner, &request) {
+            return Ok(None);
+        }
+        self.resolve_confirmation_locked(request_id, confirmed, timed_out)
             .await
     }
 
@@ -1868,5 +1964,72 @@ mod action_step_persistence_tests {
         );
         assert!(finished[0].started_at.is_some());
         assert!(finished[0].completed_at.is_some());
+    }
+}
+
+#[cfg(test)]
+mod interaction_owner_route_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn owner_must_match_the_pending_request_kind_and_route_key() {
+        let session_id = "ses-1234567890abcdef1234567890abcdef";
+        let session_request = crate::interaction::InteractionRequest::confirm(
+            session_id,
+            1,
+            "files.write".into(),
+            json!({"path": "notes.txt"}),
+            "call-session".into(),
+            "step-session".into(),
+            0,
+            haven_common::types::RiskLevel::High,
+            None,
+        );
+        let session_owner = crate::interaction::InteractionOwner::Session {
+            session_id: session_id.into(),
+        };
+        assert!(interaction_owner_matches_request(
+            &session_owner,
+            &session_request
+        ));
+        assert!(!interaction_owner_matches_request(
+            &crate::interaction::InteractionOwner::Session {
+                session_id: "ses-other".into()
+            },
+            &session_request
+        ));
+        assert!(!interaction_owner_matches_request(
+            &crate::interaction::InteractionOwner::AppCommand,
+            &session_request
+        ));
+
+        let action_id = "act-1234567890abcdef1234567890abcdef";
+        let receipt = haven_tools::ConfirmationReceipt {
+            confirmation_id: haven_common::types::new_id("conf").into(),
+            capability: haven_common::types::CapabilityScope::try_new("files.write").unwrap(),
+            canonical_input_hash: String::new(),
+            effective_risk: haven_common::types::RiskLevel::High,
+            policy_revision: 0,
+            expires_at: u64::MAX,
+        };
+        let scheduled_request = crate::interaction::InteractionRequest::scheduled_confirm(
+            action_id.into(),
+            Some(session_id),
+            "files.write".into(),
+            json!({"path": "notes.txt"}),
+            receipt,
+            "scheduled".into(),
+        );
+        assert!(interaction_owner_matches_request(
+            &crate::interaction::InteractionOwner::ScheduledAction {
+                action_id: action_id.into()
+            },
+            &scheduled_request
+        ));
+        assert!(!interaction_owner_matches_request(
+            &session_owner,
+            &scheduled_request
+        ));
     }
 }

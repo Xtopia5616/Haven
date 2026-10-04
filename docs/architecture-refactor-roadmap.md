@@ -86,7 +86,7 @@
 
 ### 5.2 交互生命周期所有权（Active / Accepted）
 
-ADR 0424 已于 2026-10-04 采纳，确定 session、scheduled 和 UI 直调确认的运行时 owner、终态与期限契约。当前切片已建立非持久 `InteractionEnvelope`、显式 owner event/IPC 投影、可选真实 session 上下文以及 Session durable append/replay 校验；前端 mapper、reducer 和通知按 owner 处理。`request_id` resolve 契约、typed resolve result 和三条 owner 的直接路由仍未完成，后续按 ADR 顺序逐项迁移。前置兼容清理、SessionStore history façade 提取及其独立门禁已完成。此项是独立结构目标，不回写为已完成的阶段 7 工作。
+ADR 0424 已于 2026-10-04 采纳，确定 session、scheduled 和 UI 直调确认的运行时 owner、终态与期限契约。当前已建立非持久 `InteractionEnvelope`、显式 owner event/IPC 投影、可选真实 session 上下文以及 Session durable append/replay 校验；resolve IPC 已改用 `request_id` 并返回 typed outcome，AppCommand 直接由 `ui_confirmations` 仲裁。ScheduledAction 与 Session 仍通过 executor 的兼容扫描解析，但在解析锁内按显式 owner/request ID 校验；下一步分别把它们迁到 `action_id` 与 `session_id` 定位。期限唯一化、删除 `timed_out` 和 renderer 本地 deadline fallback 仍未完成。前置兼容清理、SessionStore history façade 提取及其独立门禁已完成。此项是独立结构目标，不回写为已完成的阶段 7 工作。
 
 运行时使用 typed owner envelope：producer 显式把 owner 附到非持久 supervisor/app event，再投影到 Tauri event/resume/resolve DTO；mapper 不从 kind 或 `session_id` 推断 owner。`InteractionRequest.session_id` 可选，但 SessionActor durable append/replay 必须拒绝缺失或不匹配的值；session-owned `Some(session_id)` 保持现有 JSON 字符串形状，持久 event 不增加 owner 字段。Session owner 使用 `session_id` + request ID；scheduled owner 用 `action_id` + request ID；AppCommand owner 用 request ID。真实 `session_id` 只表达 producer 提供的上下文，不改变 owner，也不持久化通用 owner；不增加 schema/reset。resolve IPC 将实际承载 `conf-*` request ID 的 `step_id` 改名为 `request_id`。已仲裁的 `Resolved`、`Expired`、`Stale` 使用明确的类型结果；可重试失败通过命令错误返回并保留 pending。
 

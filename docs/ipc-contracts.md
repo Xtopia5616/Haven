@@ -61,7 +61,7 @@
 | `get_session_lineage` | read | 当前会话的父会话和直接 Agent 子会话 |
 | `end_session` | mutate | 仅显式结束 |
 | `interrupt_session` | mutate | 停止当前输出但保留会话，可继续 |
-| `resolve_confirmation` | mutate | effect/scope/target 后端校验，deny 优先；超时按过期拒绝收尾 |
+| `resolve_confirmation` | mutate | 显式 owner + `request_id` 选路；receipt/effect/scope/target 后端复核；返回 `resolved`/`expired`/`stale`，可重试失败保留 pending |
 | `update_session_title` | mutate | trim 后不得为空 |
 | `delete_session` | mutate | 删除并释放运行态 |
 | `clear_history` | mutate | 同时清除会话授权 |
@@ -106,7 +106,7 @@
 | `rollback_session` | mutate | 回滚分支并同步截断事件和投影 |
 | `update_session_title` | mutate | 更新非空标题 |
 | `delete_session` / `clear_history` | mutate | 删除会话或清空历史，并广播 `session:deleted` |
-| `resolve_confirmation` | mutate | 解决或超时收尾一个待确认请求 |
+| `resolve_confirmation` | mutate | 输入 `{ owner, requestId, effect, scope, target, timedOut }`；owner 只选择唯一 pending registry，AppCommand 不经过 Agent executor。结果为 `resolved`、`expired` 或 `stale`；命令错误表示可重试失败，pending UI 保留 |
 
 Tauri 接收前端参数时采用其自动 camelCase → Rust snake_case 映射；页面调用处使用 camelCase。
 

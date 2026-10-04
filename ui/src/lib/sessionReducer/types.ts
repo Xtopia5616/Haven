@@ -188,6 +188,12 @@ export type SessionAction =
 	  }
 	| { type: 'session/interactions-cleared'; sessionId: string; kind?: InteractionKind }
 	| { type: 'session/interaction-resolved'; id: string; response?: unknown }
+	| {
+			type: 'session/interaction-resolution-result';
+			id: string;
+			result: 'resolved' | 'expired' | 'stale';
+			response?: unknown;
+	  }
 	| { type: 'agent/chunks'; chunks: AgentChunkBatchItem[] }
 	| { type: 'agent/thought'; payload: AgentThoughtPayload }
 	| { type: 'agent/stream-reset'; payload: AgentStreamResetPayload }

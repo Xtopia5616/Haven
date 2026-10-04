@@ -132,6 +132,7 @@ export function reduceSession(
 		case 'session/interactions-hydrated':
 		case 'session/interactions-cleared':
 		case 'session/interaction-resolved':
+		case 'session/interaction-resolution-result':
 			return reduceInteraction(inputState, action);
 
 		case 'agent/chunks':

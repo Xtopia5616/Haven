@@ -70,6 +70,7 @@
 	import type { ActionKind, ActionPayload } from '$lib/contracts/action.ts';
 	import type { AgentNotificationPayload } from '$lib/contracts/agent.ts';
 	import type { NotificationConfigInput } from '$lib/contracts/generatedCommands.ts';
+	import { interactionOwnerToWire } from '$lib/contracts/app.ts';
 	import type { LlmConnectionReport, LlmConnectionStatus } from '$lib/llmConnection.ts';
 
 	import AppShell from '$lib/AppShell.svelte';
@@ -726,53 +727,38 @@
 		const resolvedStep = stepId;
 		if (!resolvedStep || confirmationRequestsInFlight.has(resolvedStep)) return false;
 		const currentRequest = appSessionReducer.getState().interactions[resolvedStep];
+		if (!currentRequest || currentRequest.status !== 'pending') return false;
 		confirmationRequestsInFlight.add(resolvedStep);
 		const resolvedEffect = effect || (approved ? 'allow' : 'deny');
 		const resolvedScope = scope || 'once';
 		const resolvedTarget = target || 'operation';
 		/** @type {import('$lib/contracts/commands.ts').ResolveConfirmationRequest} */
 		const confirmationRequest = {
-			stepId: resolvedStep,
+			requestId: resolvedStep,
+			owner: interactionOwnerToWire(currentRequest.owner),
 			effect: resolvedEffect,
 			scope: resolvedScope,
 			target: resolvedTarget,
 			timedOut,
 		};
 		try {
-			await invoke('resolve_confirmation', confirmationRequest);
+			const resolution = await invoke('resolve_confirmation', confirmationRequest);
 			appSessionReducer.dispatch({
-				type: 'session/interaction-resolved',
+				type: 'session/interaction-resolution-result',
 				id: resolvedStep,
+				result: resolution,
 				response: { approved, effect: resolvedEffect, scope: resolvedScope },
 			});
-			if (timedOut) addNotification('确认超时，操作未执行', 'warning', 4000);
+			if (resolution === 'expired') addNotification('确认已过期，操作未执行', 'warning', 4000);
+			else if (resolution === 'stale') {
+				addNotification('确认请求已失效或已处理，请查看会话结果', 'warning', 4000);
+			}
+			else if (timedOut) addNotification('确认超时，操作未执行', 'warning', 4000);
 			else if (approved && currentRequest?.owner.kind === 'app_command') {
 				addNotification('权限已确认，操作正在执行', 'info', 4000);
 			}
 			return true;
 		} catch (e) {
-			if (formatError(e) === 'Confirmation request is stale or already resolved') {
-				appSessionReducer.dispatch({
-					type: 'session/interaction-resolved',
-					id: resolvedStep,
-					response: { approved, effect: resolvedEffect, scope: resolvedScope },
-				});
-				addNotification(
-					timedOut ? '确认超时，操作未执行' : '确认请求已失效或已处理，请查看会话结果',
-					'warning',
-					4000,
-				);
-				return true;
-			}
-			if (formatError(e).includes('confirmation request can no longer be executed')) {
-				appSessionReducer.dispatch({
-					type: 'session/interaction-resolved',
-					id: resolvedStep,
-					response: { approved: false, effect: 'deny', scope: 'once' },
-				});
-				addNotification('确认已失效，操作未执行', 'warning', 5000);
-				return true;
-			}
 			reportError(e, { context: '+layout', message: '确认失败', log: false });
 			// A rejected command remains retryable until the owner reports an
 			// accepted terminal transition (or the request becomes stale).

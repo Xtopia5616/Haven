@@ -1,6 +1,7 @@
 /** App-shell IPC event contract at the frontend boundary. */
 
 import type { TauriEvent } from './session.ts';
+import type { InteractionOwner as InteractionOwnerWire } from './generatedCommands.ts';
 
 export const APP_EVENT_NAMES = [
 	'app:bootstrap',
@@ -44,6 +45,17 @@ export type InteractionOwner =
 	| { kind: 'session'; sessionId: string }
 	| { kind: 'scheduled_action'; actionId: string }
 	| { kind: 'app_command' };
+
+export function interactionOwnerToWire(owner: InteractionOwner): InteractionOwnerWire {
+	switch (owner.kind) {
+		case 'session':
+			return { kind: 'session', session_id: owner.sessionId };
+		case 'scheduled_action':
+			return { kind: 'scheduled_action', action_id: owner.actionId };
+		case 'app_command':
+			return { kind: 'app_command' };
+	}
+}
 interface InteractionRequestBase {
 	id: string;
 	kind: InteractionKind;
