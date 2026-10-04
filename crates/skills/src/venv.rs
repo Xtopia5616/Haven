@@ -1,28 +1,27 @@
-use std::hash::{Hash, Hasher};
+use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use tokio::sync::Mutex;
+
+use sha2::{Digest, Sha256};
 
 use haven_common::encoding;
+
+const REQUIREMENTS_FINGERPRINT_FILE: &str = ".haven-requirements-fingerprint";
 
 /// Manages per-skill virtual environments (M4-02).
 ///
 /// Each skill gets an isolated venv at `<venv_root>/<skill_name>/`.
 /// Creation is idempotent: `ensure` skips if the venv already exists.
-/// If `requirements.txt` changes (detected by checksum), dependencies are
-/// re-installed on the next `ensure` call.
+/// The venv stores the SHA-256 fingerprint of successfully installed
+/// `requirements.txt` content, so later manager instances can skip unchanged
+/// dependencies and reinstall changed ones.
 #[derive(Clone)]
 pub struct VenvManager {
     root: PathBuf,
-    checksums: Arc<Mutex<Vec<(String, String)>>>,
 }
 
 impl VenvManager {
     pub fn new(root: PathBuf) -> Self {
-        Self {
-            root,
-            checksums: Arc::new(Mutex::new(Vec::new())),
-        }
+        Self { root }
     }
 
     fn venv_dir(&self, skill_name: &str) -> PathBuf {
@@ -46,9 +45,53 @@ impl VenvManager {
     fn checksum_file(path: &Path) -> anyhow::Result<String> {
         let content = std::fs::read(path)
             .map_err(|error| anyhow::anyhow!("failed to read {}: {error}", path.display()))?;
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        content.hash(&mut hasher);
-        Ok(format!("{:x}", hasher.finish()))
+        Ok(format!("sha256:{:x}", Sha256::digest(content)))
+    }
+
+    async fn ensure_requirements_with<F, Fut>(
+        &self,
+        skill_name: &str,
+        requirements_path: &Path,
+        install: F,
+    ) -> anyhow::Result<()>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = anyhow::Result<()>>,
+    {
+        let fingerprint = Self::checksum_file(requirements_path)?;
+        let marker_path = self
+            .venv_dir(skill_name)
+            .join(REQUIREMENTS_FINGERPRINT_FILE);
+        let installed_fingerprint = match tokio::fs::read(&marker_path).await {
+            Ok(bytes) => Some(bytes),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => {
+                return Err(anyhow::anyhow!(
+                    "failed to read requirements fingerprint for skill '{}': {}",
+                    skill_name,
+                    error
+                ));
+            }
+        };
+
+        if installed_fingerprint.as_deref() == Some(fingerprint.as_bytes()) {
+            return Ok(());
+        }
+
+        install().await?;
+
+        // Persist only after pip succeeds. A failed install therefore remains
+        // eligible for retry on the next ensure call.
+        tokio::fs::write(&marker_path, fingerprint.as_bytes())
+            .await
+            .map_err(|error| {
+                anyhow::anyhow!(
+                    "failed to save requirements fingerprint for skill '{}': {}",
+                    skill_name,
+                    error
+                )
+            })?;
+        Ok(())
     }
 
     /// Ensure the venv exists for `skill_name`, optionally installing
@@ -100,17 +143,7 @@ impl VenvManager {
             }
         };
         if requirements_file {
-            let new_checksum = Self::checksum_file(&req_path)?;
-            let changed = {
-                let guard = self.checksums.lock().await;
-                guard
-                    .iter()
-                    .find(|(name, _)| name == skill_name)
-                    .map(|(_, cs)| cs != &new_checksum)
-                    .unwrap_or(true)
-            };
-
-            if changed {
+            self.ensure_requirements_with(skill_name, &req_path, || async {
                 tracing::info!("Installing requirements for skill '{}'", skill_name);
                 let output = tokio::process::Command::new(&python)
                     .arg("-m")
@@ -128,10 +161,9 @@ impl VenvManager {
                     let stderr = encoding::decode_lossy(&output.stderr);
                     anyhow::bail!("pip install for '{}' failed: {}", skill_name, stderr);
                 }
-                let mut guard = self.checksums.lock().await;
-                guard.retain(|(name, _)| name != skill_name);
-                guard.push((skill_name.to_string(), new_checksum));
-            }
+                Ok(())
+            })
+            .await?;
         }
 
         Ok(python)
@@ -157,6 +189,17 @@ fn sanitize_name(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
+
+    fn test_paths(root: &Path) -> (PathBuf, PathBuf) {
+        let venv = root.join("venvs").join("example-skill");
+        let skill_root = root.join("skills").join("example-skill");
+        std::fs::create_dir_all(&venv).unwrap();
+        std::fs::create_dir_all(&skill_root).unwrap();
+        let requirements_path = skill_root.join("requirements.txt");
+        std::fs::write(&requirements_path, "example-package==1.0\n").unwrap();
+        (venv, requirements_path)
+    }
 
     #[tokio::test]
     async fn sanitize_name_replaces_special_chars() {
@@ -181,5 +224,90 @@ mod tests {
             PathBuf::from("/tmp/venvs/test/bin/python")
         };
         assert_eq!(p, expected);
+    }
+
+    #[tokio::test]
+    async fn requirements_fingerprint_is_reused_by_a_new_manager() {
+        let temp = tempdir().unwrap();
+        let (_, requirements_path) = test_paths(temp.path());
+        let root = temp.path().join("venvs");
+        let first = VenvManager::new(root.clone());
+        let second = VenvManager::new(root);
+        let mut installs = 0;
+
+        first
+            .ensure_requirements_with("example-skill", &requirements_path, || async {
+                installs += 1;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        second
+            .ensure_requirements_with("example-skill", &requirements_path, || async {
+                installs += 1;
+                Ok(())
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(installs, 1);
+    }
+
+    #[tokio::test]
+    async fn changed_requirements_are_installed_by_a_new_manager() {
+        let temp = tempdir().unwrap();
+        let (_, requirements_path) = test_paths(temp.path());
+        let manager = VenvManager::new(temp.path().join("venvs"));
+        manager
+            .ensure_requirements_with("example-skill", &requirements_path, || async { Ok(()) })
+            .await
+            .unwrap();
+
+        std::fs::write(&requirements_path, "example-package==2.0\n").unwrap();
+        let restarted_manager = VenvManager::new(temp.path().join("venvs"));
+        let mut installs = 0;
+        restarted_manager
+            .ensure_requirements_with("example-skill", &requirements_path, || async {
+                installs += 1;
+                Ok(())
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(installs, 1);
+    }
+
+    #[tokio::test]
+    async fn failed_install_does_not_persist_fingerprint_and_can_retry() {
+        let temp = tempdir().unwrap();
+        let (venv, requirements_path) = test_paths(temp.path());
+        let first = VenvManager::new(temp.path().join("venvs"));
+        let marker_path = venv.join(REQUIREMENTS_FINGERPRINT_FILE);
+
+        let failure = first
+            .ensure_requirements_with("example-skill", &requirements_path, || async {
+                anyhow::bail!("pip failed")
+            })
+            .await;
+        assert!(failure.is_err());
+        assert!(!marker_path.exists());
+
+        let restarted_manager = VenvManager::new(temp.path().join("venvs"));
+        let mut installs = 0;
+        restarted_manager
+            .ensure_requirements_with("example-skill", &requirements_path, || async {
+                installs += 1;
+                Ok(())
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(installs, 1);
+        assert_eq!(
+            tokio::fs::read(marker_path).await.unwrap(),
+            VenvManager::checksum_file(&requirements_path)
+                .unwrap()
+                .as_bytes()
+        );
     }
 }

@@ -440,3 +440,4 @@
 - [0455：按音频帧精度执行 VAD 静音超时](0455-vad-silence-timeout-frame-precision.md)
 - [0456：零容量音频环形缓冲区为空缓冲](0456-zero-capacity-audio-ring-buffer.md)
 - [0457：先归档再移出匹配回复](0457-preserve-replies-on-archive-failure.md)
+- [0459：持久化 Skill requirements 指纹](0459-persist-skill-requirements-fingerprint.md)
