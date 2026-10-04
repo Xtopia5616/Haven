@@ -102,7 +102,7 @@ Admin 操作最终由 `TypedToolAdapter` 或 `AdminSurfaces.execute` 序列化�
 | `usize` | `reset_session_permissions` | 已清除的会话 grant 数量；SessionStore owns durable delete，AuthorizationEngine live map 随后清空。 |
 | `Vec<MemoryRecallItem>`, `Vec<Fact>`, `Fact` | `recall_memory`, `list_facts`, `add_fact` | Named result; Fact direct domain type has DTO drift risk; App command and Memory own filtering/write semantics. |
 | `ApiKeyStatus`, `LlmConnectionReport`, `Vec<ModelInfo>`, `BTreeMap<String, Vec<ModelInfo>>` | `get_api_key_status`, `check_llm_connection`, `discover_models`, `discover_all_models` | Outer DTOs typed; provider names form a dynamic map key set derived from configuration; LLM owns provider lookup, App owns command contract. |
-| `RecordingState`, `ProcessResult` | `get_recording_state`, `process_transcript` | Named outputs; ProcessResult is a closed Rust enum but frontend consumes through `invoke: Promise<any>` and has legacy string handling, so add response contract review. |
+| `RecordingState`, `ProcessResult` | `get_recording_state`, `process_transcript` | Named outputs; ProcessResult is a closed Rust enum and generated TypeScript union. `submit.ts` extracts session/message IDs from that union; no legacy string variant is accepted. |
 | `SessionListResponse`, `SessionResumeResponse`, `Option<SessionResumeResponse>` | `get_sessions`, `get_session_for_resume`, `get_last_conversation` | Typed session projection, serialized at Tauri edge; App owns response mapping. |
 | `Settings`, `Vec<StoredPermission>`, `Vec<SessionPermissionGrant>`, `ShellAvailability` | `get_settings`, `list_permissions`, `list_session_permissions`, `check_shell_available` | Named result types; Settings carries broad/open configuration shape but credentials are masked; session grants identify owner, target, and effect. App/Common own config projection and persistence. |
 | `Vec<SkillInfo>`, `SkillExecutionResponse`, `ToolListResponse` | `list_skills`, `execute_skill`, `get_tools` | Fixed envelope; skill/tool execution and schemas may contain dynamic extension fields; Skills/Tools own values, App owns IPC projection. |
@@ -164,7 +164,7 @@ Admin 操作最终由 `TypedToolAdapter` 或 `AdminSurfaces.execute` 序列化�
 3. 固定字段 MCP prompt index 的 `Vec<Value>`；Tools produces、Agent prompt port consumes，可决定是否替换为具名 catalog projection。
 4. Action `EventSink(String, Value)` payload shape；Tools owns event production，App owns narrowing and Tauri mapping。
 5. `LlmCallUsage.cache_diagnostics: Option<Value>` persistence projection；LLM produces diagnostic，Memory persists it。
-6. Tauri 直接返回 `Session`/`Fact`/`SkillInfo` 的 DTO 漂移风险、`ProcessResult` TS shape、bootstrap status string enum、provider-keyed model map 与少数 command-family contract；App 与对应领域 owner 维护响应一致性。
+6. Tauri 直接返回 `Session`/`Fact`/`SkillInfo` 的 DTO 漂移风险、bootstrap status string enum、provider-keyed model map 与少数 command-family contract；App 与对应领域 owner 维护响应一致性。`ProcessResult` 的 Rust enum 与 generated TypeScript union 已对齐。
 7. MCP `McpReconcile` full field projection and renderer-safe config fields；MCP produces，App owns IPC projection。
 
 ## 审计边界

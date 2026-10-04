@@ -9,6 +9,7 @@ import {
 } from './continueSession.ts';
 import { isErrorStatus } from './sessionStatus.ts';
 import { processResultSessionId } from './submit.ts';
+import type { ProcessResult } from './contracts/generatedCommands.ts';
 import type { InteractionRequest } from './contracts/app.ts';
 import type { RollbackSessionRequest, SessionIdRequest } from './contracts/commands.ts';
 import type { TauriCommandInvoke } from './contracts/generatedCommands.ts';
@@ -43,7 +44,7 @@ export interface ChatControllerDependencies {
 		images: ChatImageAttachment[] | null | undefined;
 		files: ChatFileAttachment[] | null | undefined;
 		reducer: SessionReducer;
-	}) => Promise<unknown>;
+	}) => Promise<ProcessResult>;
 	reducer: SessionReducer;
 	dispatch: (action: SessionAction) => void;
 	getActiveSessionId: () => string | null;

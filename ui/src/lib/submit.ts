@@ -6,6 +6,7 @@ import { newMessage } from './messageFactory.ts';
 import { newSessionIntentStore, NEW_ACTION_INTENT_KEY } from './sessionIntentStore.ts';
 import { isBusyStatus, isPausedStatus } from './sessionStatus.ts';
 import { invoke } from './tauri.ts';
+import type { ProcessResult } from './contracts/generatedCommands.ts';
 
 /** True when a send should be treated as mid-turn steering (keep agent UI above it). */
 function isMidTurnSubmit(sessionId: string, reducer: SessionReducer): boolean {
@@ -58,7 +59,7 @@ interface InflightSubmission {
 	hasAttachments: boolean;
 	pinnedSessionId: string | null;
 	freshStartAtEnqueue: boolean;
-	promise: Promise<any>;
+	promise: Promise<ProcessResult>;
 }
 
 interface SubmitPayload extends SubmitOptions {
@@ -72,8 +73,8 @@ interface SubmitPayload extends SubmitOptions {
 /** A queued submission awaiting the in-flight one to settle. */
 interface PendingSubmission {
 	payload: SubmitPayload;
-	resolve: (value: any) => void;
-	reject: (reason: any) => void;
+	resolve: (value: ProcessResult) => void;
+	reject: (reason: unknown) => void;
 }
 
 type SubmissionLaneKey = string | symbol;
@@ -210,7 +211,7 @@ function drainQueue(lane: SubmissionLane) {
  * @param {Array<{media_type: string, data: string}>} [opts.images=null] - image attachments; null/empty for voice
  * @param {Array<{media_type: string, data: string, filename: string}>} [opts.files=null] - audio and ordinary file attachments
  * @param {boolean} [opts.voice=false] - true when forwarded from a voice transcript
- * @returns {Promise<any>} the `process_transcript` result
+ * @returns the generated `ProcessResult` contract
  */
 interface SubmitOptions {
 	images?: Array<{ media_type: string; data: string }> | null;
@@ -224,7 +225,7 @@ interface SubmitOptions {
 export async function submitTranscript(
 	text: string,
 	{ images = null, files = null, voice = false, recordingSessionId, reducer }: SubmitOptions,
-): Promise<any> {
+): Promise<ProcessResult> {
 	const payload: SubmitPayload = {
 		text,
 		images,
@@ -254,12 +255,12 @@ export async function submitTranscript(
 		// it — the
 		// optimistic bubble is added when it actually dispatches. Session
 		// targeting was snapshotted above so a later switch cannot retarget it.
-		return new Promise<any>((resolve, reject) => {
+		return new Promise<ProcessResult>((resolve, reject) => {
 			lane.pendingQueue.push({ payload, resolve, reject });
 		});
 	}
 	if (lane.pendingQueue.length > 0) {
-		return new Promise<any>((resolve, reject) => {
+		return new Promise<ProcessResult>((resolve, reject) => {
 			lane.pendingQueue.push({ payload, resolve, reject });
 		});
 	}
@@ -275,7 +276,7 @@ async function doSubmit({
 	pinnedSessionId,
 	freshStartAtEnqueue,
 	reducer,
-}: SubmitPayload): Promise<any> {
+}: SubmitPayload): Promise<ProcessResult> {
 	const hasImages = Array.isArray(images) && images.length > 0;
 	const hasFiles = Array.isArray(files) && files.length > 0;
 	const hasAttachments = hasImages || hasFiles;
@@ -359,18 +360,17 @@ async function doSubmit({
 }
 
 /** `ProcessResult::SessionCreated { session_id }` (struct variant). */
-export function processResultSessionId(result: any): string | null {
-	const created = result?.SessionCreated;
-	if (!created) return null;
-	if (typeof created === 'string') return created;
-	return typeof created.session_id === 'string' ? created.session_id : null;
+export function processResultSessionId(result: ProcessResult | null | undefined): string | null {
+	if (typeof result !== 'object' || result === null || !('SessionCreated' in result)) return null;
+	const sessionId = result.SessionCreated.session_id;
+	if (typeof sessionId === 'string') return sessionId;
+	return null;
 }
 
 /** Persisted user-message id from either ProcessResult variant. */
-export function processResultMessageId(result: any): string | null {
-	const fromCreated = result?.SessionCreated?.message_id;
-	if (typeof fromCreated === 'string' && fromCreated) return fromCreated;
-	const fromSupp = result?.Supplemented?.message_id;
-	if (typeof fromSupp === 'string' && fromSupp) return fromSupp;
+export function processResultMessageId(result: ProcessResult | null | undefined): string | null {
+	if (typeof result !== 'object' || result === null) return null;
+	if ('SessionCreated' in result) return result.SessionCreated.message_id ?? null;
+	if ('Supplemented' in result) return result.Supplemented.message_id ?? null;
 	return null;
 }

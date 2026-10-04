@@ -3,6 +3,7 @@ import { createChatController, type ChatControllerDependencies } from './chatCon
 import type { InteractionRequest } from './contracts/app.ts';
 import { SessionReducer, type SessionAction } from './sessionReducer.ts';
 import type { ResumeData } from './resumeMessages.ts';
+import type { ProcessResult } from './contracts/generatedCommands.ts';
 
 const SESSION_ID = 'ses-00000000000000000000000000000001';
 const OTHER_SESSION_ID = 'ses-00000000000000000000000000000002';
@@ -22,8 +23,10 @@ function resumeData(overrides: Partial<ResumeData> = {}): ResumeData {
 
 function makeHarness(options: {
 	invoke?: (command: string, args?: unknown) => unknown | Promise<unknown>;
-	submit?: (text: string, args: Parameters<ChatControllerDependencies['submitTranscript']>[1]) =>
-		unknown | Promise<unknown>;
+	submit?: (
+		text: string,
+		args: Parameters<ChatControllerDependencies['submitTranscript']>[1],
+	) => ProcessResult | Promise<ProcessResult>;
 } = {}) {
 	const reducer = new SessionReducer();
 	reducer.dispatch({
@@ -67,7 +70,7 @@ function makeHarness(options: {
 		},
 		submitTranscript: async (text, args) => {
 			submitCalls.push({ text, args });
-			return options.submit ? await options.submit(text, args) : undefined;
+			return options.submit ? await options.submit(text, args) : { Supplemented: {} };
 		},
 		reducer,
 		dispatch: (action) => {
