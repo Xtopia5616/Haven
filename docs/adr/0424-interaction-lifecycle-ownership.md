@@ -28,9 +28,9 @@ session/scheduled 看门狗分别推进。界面直调的权限决定和获批�
 
 1. **分清交互语义。** `ask` 是等待用户输入；permission confirm 是执行前授权。两者可以继续
    共用 shell/store 投影，但不混用状态机、超时语义或操作结果。
-2. **每个请求只有一个权威 owner。** request 必须带有明确的 typed continuation/owner；解析按
-   owner 路由并返回 `resolved`、`expired`、`stale` 或可重试失败等明确结果，删除“逐个 registry
-   扫描再 fallback”的隐式分发。
+2. **每个请求只有一个权威 owner。** 每个 request ID 在运行时都有明确的 typed owner envelope；
+   continuation 留在 owner 内部。解析按 owner 路由并返回 `resolved`、`expired`、`stale` 或可重试
+   失败等明确结果，删除“逐个 registry 扫描再 fallback”的隐式分发。
 3. **所有者负责原子终态。** 请求登记、批次暂停与请求写入不能部分成功；决定持久化与唤醒不能
    分离成“事件已写但 session 仍暂停”的不可恢复状态。session 的 durable source 继续是
    `session_events`；其他 owner 是否持久化由其所属领域决定，不复制第二份总交互存储。
@@ -43,6 +43,48 @@ session/scheduled 看门狗分别推进。界面直调的权限决定和获批�
    receipt 与密钥不得进入日志或 renderer 通知。
 7. **重试由后端门禁约束。** 超时结果应明确说明当前操作没有启动。是否生成后续工具调用不是
    授权边界；每个新调用仍必须重新过授权门禁，超时请求不能授权或自动重放外部副作用。
+
+## Owner 与路由契约（提案）
+
+路由身份属于运行时 owner envelope，不属于可恢复的 `InteractionRequest` continuation。Owner
+只描述“谁持有这个待处理请求”，不携带可执行参数、授权 receipt 或权限决定：
+
+| owner | 路由键 | 权威状态与恢复来源 |
+|---|---|---|
+| Session | `session_id` + request ID | 对应 `SessionActor`；从该 session 的 `session_events` 恢复 |
+| ScheduledAction | `action_id` + request ID | scheduled action 的进程内 continuation；沿用 ADR 0392 的 action 重启收尾规则 |
+| AppCommand | request ID | `AppState.ui_confirmations`；进程重启后失效，不重放命令 |
+
+该类型应是仅含安全标识的 typed routing value，由产生请求的 owner 明确附在运行时 envelope，
+不能从 `kind`、`session_id` 或事件到达顺序推导。它可以投影到 renderer event 并由 resolve command
+带回，但只能选择后端查询哪个 owner；owner 必须再次用 request ID 检查请求仍存在、仍 pending，
+并重新校验 receipt、target、scope 和当前安全策略。renderer 提供的 owner、请求种类或
+session/action 关联字段均不能授予权限，也不能直接触发 continuation。
+
+持久 session event 的外层 session 关系已经确定 Session owner；不把通用 owner 或 continuation
+再写进 `InteractionRequest`。UI 请求没有 session，scheduled 请求也可能没有关联 session；关联
+session 是可选上下文，绝不能用于推断实际 owner。删除 `"ui"`/`"action"` 这类占位 session ID；
+若请求确有来源 session，则继续保留真实 ID。UI 与 scheduled confirmation 的执行 payload 留在
+各自 owner 内部，不能放入 common 类型或 IPC DTO。
+
+Owner 的一次 resolve/expire 操作须返回明确的 `Resolved`、`Expired`、`Stale` 或
+`RetryableFailure` 结果。前三者是已仲裁的请求状态；`RetryableFailure` 表示决定尚未被接受，
+pending 请求和 continuation 仍由原 owner 持有。获批动作开始执行后，执行成功或失败使用其
+领域结果单独报告，不再把已接受的授权决定回滚为 pending。
+
+### 恢复语义
+
+- Session confirmation 的 owner 由 durable event 所属的 session 确定。决定 event append 失败时，
+  actor 仍保持原 pending 状态；成功 append 后才推进 actor，并在整个 gated batch 完成后唤醒。
+- Scheduled confirmation 只在 scheduled action 执行期持有。依据 ADR 0392，进程重启时遗留的
+  `running` action 被标记失败且不自动 replay；进程内 pending confirmation 随之失效，不能从
+  通用交互 DTO 重建 continuation。
+- AppCommand confirmation 只在当前进程有效。重启或 renderer 关闭后不会重放动作；renderer
+  关闭时仍由后端 deadline 过期并清理 owner 状态。
+
+因此，将运行时 owner envelope 作为非持久 supervisor/app event 的路由信息，并投影到 Tauri
+event/resolve IPC DTO、不写入 `session_events`，不改变数据库 schema；若未来把 owner 或 continuation 写进 durable event
+payload，则属于新的持久契约，必须单独评估 schema/reset 与崩溃恢复语义，不能并入这个路由切片。
 
 ## 会话阻塞范围
 
@@ -75,11 +117,15 @@ Haven UI、其他 session 与调度器不因此停止。定时确认等待的是
 
 1. 状态转移、日志/通知契约、授权管理和 UI-only continuation 已按 ADR 0423/0425 落地，
    保持现有 durable owner 不变；移除陈旧 ADR 对 snapshot 的现状描述。
-2. 把 resolve API 改为显式 owner/continuation 路由，并让确认接受与动作执行移入独立运行单元；
-   一次迁移一条 owner 路径，删除旧扫描/fallback。
-3. 统一后端 expiry 接口与弹窗 pending/ack 生命周期，覆盖 renderer 关闭、迟到点击、持久化失败和
-   操作执行失败；session batch 登记/恢复保持事件原子性。
-4. 后续若为 resolve/expiry 等终态增加通知，必须基于 owner 已接受的 lifecycle transition；
+2. 先完成工作树中已开始的兼容清理及其独立门禁/提交，再开始 owner 路由，避免在同一文件上
+   混合删除旧契约与改变运行时所有权。
+3. 为 owner 与 `request_id` 建立 typed runtime envelope 和显式 resolve result；保留 session event
+   的现有 durable 形状。一次迁移一条 owner 路径，分别以 UI 直调、scheduled action、ReAct
+   confirmation 为顺序，移除每条路径对应的扫描/fallback。
+4. 把确认接受与 continuation 执行拆开；实现同一 owner 内点击/到期的一次性仲裁，并统一后端
+   deadline。覆盖 renderer 关闭、迟到点击、持久化失败与执行失败；session batch 登记/恢复仍保持
+   event 原子性。
+5. 后续若为 resolve/expiry 等终态增加通知，必须基于 owner 已接受的 lifecycle transition；
    pending 请求已使用独立 `permission_requested` 通知配置，不复用 `session_paused`。
 
 ## 验收与影响
@@ -91,6 +137,7 @@ Haven UI、其他 session 与调度器不因此停止。定时确认等待的是
 - 弹窗在授权决定被接受时结束，动作结果独立报告；所有 owner 都有后端期限，超时不会启动
   动作或自动重放副作用。
 - 日志/通知仅包含安全的 request id、kind、owner 类别、状态和时间等元数据。
+- owner 路由值不含 continuation 或授权凭据；错误 owner、错误关联 ID 或重复终态只能得到 stale/已终态结果，不能消费另一个 owner 的请求。
 - IPC、事件、UI 与 Agent 行为变更按 `docs/development-standards.md` 补 ADR、契约检查和定向回归。
 
 本 ADR 当前不改变数据库 schema，因此不要求重置用户数据。若后续决定持久化 scheduled 或

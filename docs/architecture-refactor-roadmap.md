@@ -86,9 +86,11 @@
 
 ADR 0424 当前为 **Proposed**，没有改变运行时 owner。它记录了 session、scheduled 和 UI 直调确认在 request 路由、过期处理、动作 continuation 上的剩余漂移。实施前先采纳具体切片与验收范围；不要把这项提案记为已完成的阶段 7 工作。
 
+执行 owner 改造前，先让工作树中已开始的兼容清理按自己的目标完成适用门禁并独立提交；不要把删除旧契约与改变交互 owner 混成一个切片。当前 proposal 将 owner 定为运行时 typed envelope：Tauri event/resolve DTO 只携带路由标识，`InteractionRequest` 与 `session_events` 保持现有 durable 形状。Session owner 由 event 所属 session 确定；scheduled owner 用 `action_id`；UI owner 用 request ID。`session_id` 只表达真实上下文，绝不用于推断 owner；不持久化 owner，不增加 schema/reset。
+
 按以下顺序推进，逐条迁移 owner，不做三路同时改写：
 
-1. **先定路由和恢复契约。** 明确 typed owner/continuation、owner 操作结果（resolved、expired、stale、可重试失败）、Ask 与 permission confirm 的边界，以及 UI/scheduled 进程内请求在重启后的失效语义。owner 只决定路由，授权仍由后端 owner 校验 receipt、target 和 scope。确定 owner 是否进入 durable event payload；若改变持久 event 格式，按当前 schema 版本与发布重置策略处理，不能靠内容或 `session_id` 占位值推断 owner。
+1. **先定路由和恢复契约。** 依 ADR 0424 proposal，以运行时 typed owner envelope 路由；明确 owner 操作结果（resolved、expired、stale、可重试失败）、Ask 与 permission confirm 的边界，以及 UI/scheduled 进程内请求在重启后的失效语义。owner 只决定路由，授权仍由后端 owner 校验 receipt、target 和 scope。保持 `InteractionRequest`/`session_events` durable 形状；未来若决定持久化 owner 或 continuation，另立决策并按届时 schema/reset 策略处理，不能靠内容或 `session_id` 占位值推断 owner。
 2. **先迁 UI 直调确认。** 以 `AppState.ui_confirmations` 为唯一目标 owner，resolve/expire 直接调用它；校验或持久化失败时请求仍可重试，接受决定后先完成 pending 终态，再由 app-scoped task 执行动作。用短临界区保护同一请求的一次性消费，不让慢配置写入阻塞其他 owner 的确认。
 3. **迁 scheduled confirmation。** 按 `action_id` 和请求 ID 定位 action owner；确认等待不伪装成 session actor 状态。点击和到期共用该 owner 的终态仲裁，并保持既有 ActionService completion/outbox 顺序。
 4. **最后迁 ReAct confirmation。** resolve 明确定位 session/请求并交给对应 actor。保留先持久化 interaction event、后更新 actor 内存状态的顺序；同批确认未全部结束前不得唤醒 gated tool batch；session grant 必须在唤醒前提交。
