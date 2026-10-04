@@ -1,4 +1,4 @@
-use crate::app_state::AppState;
+use crate::app_state::{AppState, RecordingLifecyclePermit};
 use crate::commands::{emit_event_logged, log_err, log_storage_err};
 use crate::events::{
     RECORDING_ERROR_EVENT, RECORDING_STARTED_EVENT, RECORDING_STOPPED_EVENT, RecordingErrorEvent,
@@ -59,18 +59,13 @@ pub(crate) fn recording_reason_str(reason: RecordingReason) -> &'static str {
     }
 }
 
-/// The `rec-{uuid}` session id of the in-flight recording: created on the
-/// first start (button or hotkey), reused by every event of the same
-/// recording until `finalize_transcription` consumes it. One recording =
-/// one id, so `recording:started` and the later `transcription:*` events
-/// correlate by id instead of by timing.
-pub(crate) fn begin_recording_session(state: &AppState) -> haven_common::types::SessionId {
-    let mut cur = state
-        .recording_session
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
-    let id = cur.get_or_insert_with(|| haven_common::types::new_id("rec").into());
-    id.clone()
+/// The `rec-*` ID of an app-owned recording. Call while holding
+/// `recording_sessions.lock()`; duplicate starts can reuse the active ID.
+pub(crate) fn begin_recording_session(
+    state: &AppState,
+    lifecycle: &RecordingLifecyclePermit<'_>,
+) -> haven_common::types::SessionId {
+    state.recording_sessions.begin(lifecycle)
 }
 
 /// Emit `recording:started` with the session's id. Used by both the
@@ -99,6 +94,7 @@ pub(crate) fn emit_recording_started(
 /// pipeline's stop path.
 pub(crate) fn emit_recording_stopped(
     app: &tauri::AppHandle,
+    session_id: haven_common::types::SessionId,
     reason: &str,
     duration_ms: Option<u64>,
 ) {
@@ -107,7 +103,7 @@ pub(crate) fn emit_recording_stopped(
         RECORDING_STOPPED_EVENT,
         RecordingEvent {
             is_recording: false,
-            session_id: None,
+            session_id: Some(session_id),
             reason: Some(reason.to_string()),
             duration_ms,
         },
@@ -115,15 +111,19 @@ pub(crate) fn emit_recording_stopped(
     );
 }
 
-/// Emit `recording:error` with a freshly generated session id and the
-/// user-facing error message.
-pub(crate) fn emit_recording_error(app: &tauri::AppHandle, error: impl Into<String>) {
+/// Emit `recording:error` for the affected capture when one exists. Start
+/// failures have no active capture and receive a fresh correlation ID.
+pub(crate) fn emit_recording_error(
+    app: &tauri::AppHandle,
+    session_id: Option<haven_common::types::SessionId>,
+    error: impl Into<String>,
+) {
     let error = sanitize_error_text(&error.into());
     emit_event_logged(
         app,
         RECORDING_ERROR_EVENT,
         RecordingErrorEvent {
-            session_id: haven_common::types::new_id("rec").into(),
+            session_id: session_id.unwrap_or_else(|| haven_common::types::new_id("rec").into()),
             error,
         },
         "recording_error",
@@ -144,19 +144,9 @@ pub(crate) fn emit_recording_error(app: &tauri::AppHandle, error: impl Into<Stri
 pub(crate) async fn finalize_transcription(
     state: &Arc<AppState>,
     app: &tauri::AppHandle,
+    session_id: haven_common::types::SessionId,
     result: RecordingResult,
 ) -> Option<String> {
-    // The session id of the recording that produced this transcription:
-    // generated at start (recording:started) and consumed here, so both
-    // event families of one recording share the same `rec-` id. The
-    // fallback covers events that never went through a start (defensive).
-    let session_id = state
-        .recording_session
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .take()
-        .unwrap_or_else(|| haven_common::types::new_id("rec").into());
-
     // Tell the UI STT is about to run, before the (potentially slow)
     // network call, so it can show a "transcribing" hint right away.
     emit_event_logged(
@@ -297,28 +287,31 @@ pub async fn start_recording(
     state: State<'_, Arc<AppState>>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
+    let lifecycle = state.recording_sessions.lock().await;
     if let Err(e) = state.runtime.pipeline.start_recording().await {
         // The hotkey may have started a recording a moment earlier, or a VAD
         // auto-stop may be finalizing: the pipeline is busy, not broken.
         let pipeline_state = state.runtime.pipeline.get_state().await;
-        if matches!(pipeline_state, haven_input::RecordingState::Recording) {
+        if matches!(pipeline_state, haven_input::RecordingState::Recording)
+            && state.recording_sessions.current(&lifecycle).is_some()
+        {
             state.runtime.shell.sync_recording(true).await;
-            let session_id = begin_recording_session(&state);
-            emit_recording_started(&app, &session_id);
             return Ok(());
         }
         let msg = if matches!(pipeline_state, haven_input::RecordingState::Processing) {
             "正在处理上一条录音，请稍候再试".to_string()
+        } else if matches!(pipeline_state, haven_input::RecordingState::Recording) {
+            "麦克风正由其他操作使用，请稍候再试".to_string()
         } else {
             format!("录音启动失败，请检查麦克风配置: {e}")
         };
-        emit_recording_error(&app, msg.clone());
+        emit_recording_error(&app, None, msg.clone());
         return Err(log_err("start_recording", msg));
     }
     // Keep the shell state in sync so the tray icon, the mute hotkey and the
     // recording toggle reflect a UI-button-started recording.
     state.runtime.shell.sync_recording(true).await;
-    let session_id = begin_recording_session(&state);
+    let session_id = begin_recording_session(&state, &lifecycle);
     emit_recording_started(&app, &session_id);
     Ok(())
 }
@@ -328,6 +321,18 @@ pub async fn stop_recording(
     state: State<'_, Arc<AppState>>,
     app: tauri::AppHandle,
 ) -> Result<String, String> {
+    let lifecycle = state.recording_sessions.lock().await;
+    let Some(session_id) = state.recording_sessions.current(&lifecycle) else {
+        return match state.runtime.pipeline.get_state().await {
+            haven_input::RecordingState::Pending | haven_input::RecordingState::Processing => {
+                Ok(String::new())
+            }
+            haven_input::RecordingState::Recording => Err(log_err(
+                "stop_recording",
+                "麦克风正由其他操作使用，无法停止此录音".to_string(),
+            )),
+        };
+    };
     // Stop the audio capture first, *then* notify the UI that the
     // recording has ended. The previous ordering awaited STT (network
     // call) and the agent ReAct loop (multiple LLM/tool round-trips)
@@ -350,15 +355,22 @@ pub async fn stop_recording(
                 haven_input::RecordingState::Pending | haven_input::RecordingState::Processing
             ) {
                 state.runtime.shell.sync_recording(false).await;
+                let detached = state.recording_sessions.finish(&lifecycle);
+                if detached.as_ref() == Some(&session_id) {
+                    emit_recording_error(&app, Some(session_id), e.to_string());
+                }
                 return Ok(String::new());
             }
             return Err(log_err("stop_recording", e));
         }
     };
+    let detached_session_id = state.recording_sessions.finish(&lifecycle);
+    debug_assert_eq!(detached_session_id.as_ref(), Some(&session_id));
     // Keep the shell state in sync (tray icon, mute hotkey, toggle).
     state.runtime.shell.sync_recording(false).await;
     emit_recording_stopped(
         &app,
+        session_id.clone(),
         recording_reason_str(result.reason),
         Some(result.duration_ms),
     );
@@ -371,8 +383,9 @@ pub async fn stop_recording(
     // whole duration.
     let state = state.inner().clone();
     let runtime = state.runtime.clone();
+    drop(lifecycle);
     runtime.spawn("recording-transcription", async move {
-        let _ = finalize_transcription(&state, &app, result).await;
+        let _ = finalize_transcription(&state, &app, session_id, result).await;
     });
     Ok(String::new())
 }
@@ -382,6 +395,12 @@ pub async fn cancel_recording(
     state: State<'_, Arc<AppState>>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
+    let lifecycle = state.recording_sessions.lock().await;
+    let Some(session_id) = state.recording_sessions.current(&lifecycle) else {
+        // Timed media-tool captures share the pipeline but have no overlay
+        // identity, so the voice cancel command must not stop them.
+        return Ok(());
+    };
     state
         .runtime
         .pipeline
@@ -389,13 +408,9 @@ pub async fn cancel_recording(
         .await
         .map_err(|e| log_err("cancel_recording", e))?;
     state.runtime.shell.sync_recording(false).await;
-    // No transcription follows a cancel: drop the session id so the next
-    // recording starts a fresh one instead of reusing the cancelled id.
-    let cancelled_recording_id = state
-        .recording_session
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .take();
+    // No transcription follows a cancel: detach this identity before a new
+    // capture can start and remove any usage awaiting renderer submission.
+    let cancelled_recording_id = state.recording_sessions.finish(&lifecycle);
     if let Some(recording_id) = cancelled_recording_id {
         state
             .pending_recording_usage
@@ -403,7 +418,7 @@ pub async fn cancel_recording(
             .unwrap_or_else(|p| p.into_inner())
             .remove(recording_id.as_str());
     }
-    emit_recording_stopped(&app, "cancel", None);
+    emit_recording_stopped(&app, session_id, "cancel", None);
     Ok(())
 }
 

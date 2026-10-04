@@ -21,25 +21,45 @@ pub(crate) struct HavenShellHandler {
 #[async_trait::async_trait]
 impl desktop::ShellHandler for HavenShellHandler {
     async fn on_recording_start(&self) {
+        let state = self.app_h.state::<Arc<AppState>>();
+        let lifecycle = state.recording_sessions.lock().await;
         // Start the pipeline first: emitting `recording:started` before the
         // pipeline is actually recording would leave the UI stuck in the
         // recording state (and every stop attempt failing with "not
         // recording") if startup errors.
         if let Err(e) = self.pipeline.start_recording().await {
+            if matches!(
+                self.pipeline.get_state().await,
+                haven_input::RecordingState::Recording
+            ) && state.recording_sessions.current(&lifecycle).is_some()
+            {
+                // Another app entry point established this user capture while
+                // the Shell callback waited for its lifecycle permit.
+                self.shell_arc.sync_recording(true).await;
+                return;
+            }
             tracing::warn!("pipeline start_recording failed: {e}");
-            self.shell_arc.stop_recording().await;
+            self.shell_arc.sync_recording(false).await;
             crate::commands::emit_recording_error(
                 &self.app_h,
+                None,
                 format!("录音启动失败，请检查麦克风配置: {e}"),
             );
             return;
         }
-        let state = self.app_h.state::<Arc<AppState>>();
-        let session_id = crate::commands::begin_recording_session(&state);
+        let session_id = crate::commands::begin_recording_session(&state, &lifecycle);
         crate::commands::emit_recording_started(&self.app_h, &session_id);
     }
 
     async fn on_recording_stop(&self) {
+        let state = self.app_h.state::<Arc<AppState>>();
+        let lifecycle = state.recording_sessions.lock().await;
+        let Some(session_id) = state.recording_sessions.current(&lifecycle) else {
+            // A timed media-tool capture shares InputPipeline but is not an
+            // app voice session. Clear stale shell chrome without stopping it.
+            self.shell_arc.sync_recording(false).await;
+            return;
+        };
         // Same split as the `stop_recording` Tauri command: stop the audio
         // capture first and notify the UI, then run STT in the background.
         // Without this, VAD-triggered auto-stops would also keep the
@@ -48,23 +68,32 @@ impl desktop::ShellHandler for HavenShellHandler {
             Ok(result) => result,
             Err(error) => {
                 tracing::warn!("pipeline stop_capture failed: {error}");
-                self.shell_arc.stop_recording().await;
-                crate::commands::emit_recording_error(
-                    &self.app_h,
-                    format!("录音停止失败: {error}"),
-                );
+                self.shell_arc.sync_recording(false).await;
+                let detached = state.recording_sessions.finish(&lifecycle);
+                if detached.as_ref() == Some(&session_id) {
+                    crate::commands::emit_recording_error(
+                        &self.app_h,
+                        Some(session_id),
+                        format!("录音停止失败: {error}"),
+                    );
+                }
                 return;
             }
         };
+        let detached_session_id = state.recording_sessions.finish(&lifecycle);
+        debug_assert_eq!(detached_session_id.as_ref(), Some(&session_id));
         crate::commands::emit_recording_stopped(
             &self.app_h,
+            session_id.clone(),
             crate::commands::recording_reason_str(result.reason),
             Some(result.duration_ms),
         );
-        if matches!(
+        let auto_stopped = matches!(
             result.reason,
             haven_input::RecordingReason::Silence | haven_input::RecordingReason::MaxDuration
-        ) {
+        );
+        drop(lifecycle);
+        if auto_stopped {
             self.shell_arc.reset_toggle_on_auto_stop().await;
         }
 
@@ -75,8 +104,8 @@ impl desktop::ShellHandler for HavenShellHandler {
         // continues the open conversation. Without this, hotkey / VAD-
         // triggered stops silently dropped the transcript — the text
         // never reached the chat UI nor the agent.
-        let state = self.app_h.state::<Arc<AppState>>();
-        crate::commands::finalize_transcription(state.inner(), &self.app_h, result).await;
+        crate::commands::finalize_transcription(state.inner(), &self.app_h, session_id, result)
+            .await;
     }
 
     fn on_tray_status(&self, status: TrayStatus) {

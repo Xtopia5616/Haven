@@ -52,6 +52,65 @@ pub enum BootstrapStatus {
     Ready,
 }
 
+/// Serializes the app's user-facing recording controls and owns their current
+/// `rec-*` correlation identity. The input pipeline also serves timed tool
+/// captures; those captures have no frontend recording session and must not
+/// be claimed or stopped by the app voice controls.
+#[derive(Default)]
+pub(crate) struct RecordingSessionOwner {
+    transition: tokio::sync::Mutex<()>,
+    current_session_id: std::sync::Mutex<Option<haven_common::types::SessionId>>,
+}
+
+pub(crate) struct RecordingLifecyclePermit<'a> {
+    _guard: tokio::sync::MutexGuard<'a, ()>,
+}
+
+impl RecordingSessionOwner {
+    pub(crate) async fn lock(&self) -> RecordingLifecyclePermit<'_> {
+        RecordingLifecyclePermit {
+            _guard: self.transition.lock().await,
+        }
+    }
+
+    /// Get the ID assigned to the currently active app-owned capture, minting
+    /// one only after a start path has established that capture.
+    pub(crate) fn begin(
+        &self,
+        _permit: &RecordingLifecyclePermit<'_>,
+    ) -> haven_common::types::SessionId {
+        let mut current = self
+            .current_session_id
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        current
+            .get_or_insert_with(|| haven_common::types::new_id("rec").into())
+            .clone()
+    }
+
+    pub(crate) fn current(
+        &self,
+        _permit: &RecordingLifecyclePermit<'_>,
+    ) -> Option<haven_common::types::SessionId> {
+        self.current_session_id
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    /// Detach the ID while the transition permit is held, before another
+    /// start can observe the pipeline's already-Pending state.
+    pub(crate) fn finish(
+        &self,
+        _permit: &RecordingLifecyclePermit<'_>,
+    ) -> Option<haven_common::types::SessionId> {
+        self.current_session_id
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+    }
+}
+
 /// A renderer-triggered MCP/skill invocation waiting in the same confirmation
 /// queue as agent actions. Raw arguments stay backend-only until the request is
 /// resolved and are never part of an IPC error payload.
@@ -181,12 +240,10 @@ fn daily_cleanup_interval(period: std::time::Duration) -> tokio::time::Interval 
 
 pub struct AppState {
     pub(crate) runtime: Arc<ApplicationRuntime>,
-    /// The `rec-{uuid}` id of the in-flight voice recording. Set when a
-    /// recording starts (button or hotkey), consumed by
-    /// `finalize_transcription`, and shared by every event of the same
-    /// recording (`recording:started` / `transcription:*` events) so the
-    /// frontend can correlate them by id.
-    pub recording_session: Arc<std::sync::Mutex<Option<haven_common::types::SessionId>>>,
+    /// App-owned voice recording lifecycle and event identity. It is separate
+    /// from timed `media.record` captures, which share the input pipeline but
+    /// do not produce voice-session events.
+    pub(crate) recording_sessions: RecordingSessionOwner,
     /// LLM-backed ingress transcription usage waiting for the frontend to
     /// submit the transcript to its concrete conversation session. The
     /// `rec-*` key is deliberately kept separate from durable `ses-*` ids.
@@ -536,7 +593,7 @@ impl AppState {
 
         Ok(Self {
             runtime,
-            recording_session: Arc::new(std::sync::Mutex::new(None)),
+            recording_sessions: RecordingSessionOwner::default(),
             pending_recording_usage: Arc::new(std::sync::Mutex::new(HashMap::new())),
             bootstrap_ready: Arc::new(AtomicBool::new(false)),
             hotkey_capture_active: Arc::new(AtomicBool::new(false)),
@@ -680,6 +737,53 @@ mod tests {
     use super::*;
     use haven_common::config::McpServerConfig;
     use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn recording_session_handoff_serializes_the_next_start() {
+        let owner = Arc::new(RecordingSessionOwner::default());
+        let lifecycle = owner.lock().await;
+        let first_id = owner.begin(&lifecycle);
+
+        let next_owner = owner.clone();
+        let (attempting_tx, attempting_rx) = tokio::sync::oneshot::channel();
+        let next_start = tokio::spawn(async move {
+            attempting_tx.send(()).unwrap();
+            let lifecycle = next_owner.lock().await;
+            next_owner.begin(&lifecycle)
+        });
+
+        attempting_rx.await.unwrap();
+        tokio::task::yield_now().await;
+        assert_eq!(owner.finish(&lifecycle), Some(first_id.clone()));
+        drop(lifecycle);
+
+        let next_id = tokio::time::timeout(std::time::Duration::from_secs(1), next_start)
+            .await
+            .expect("the next start should acquire the lifecycle permit")
+            .unwrap();
+        assert_ne!(next_id, first_id);
+        assert!(next_id.as_str().starts_with("rec-"));
+    }
+
+    #[tokio::test]
+    async fn concurrent_recording_stops_can_detach_an_identity_only_once() {
+        let owner = Arc::new(RecordingSessionOwner::default());
+        let lifecycle = owner.lock().await;
+        let session_id = owner.begin(&lifecycle);
+        drop(lifecycle);
+
+        let stop = |owner: Arc<RecordingSessionOwner>| async move {
+            let lifecycle = owner.lock().await;
+            owner.finish(&lifecycle)
+        };
+        let (first, second) = tokio::join!(stop(owner.clone()), stop(owner));
+
+        assert_eq!(
+            usize::from(first.is_some()) + usize::from(second.is_some()),
+            1
+        );
+        assert_eq!(first.or(second), Some(session_id));
+    }
 
     #[tokio::test]
     async fn daily_cleanup_interval_delays_first_tick_by_one_period() {

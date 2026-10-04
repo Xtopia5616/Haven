@@ -153,8 +153,8 @@ id_newtype! {
 id_newtype! {
     /// Unique identifier for a voice-recording session (`rec-{uuid32}`).
     /// Ephemeral: one id per recording, generated at `recording:started` and
-    /// shared by the `transcription:result`/`transcription:error` events of the
-    /// same recording (held in `AppState.recording_session` between the two).
+    /// shared by the `recording:stopped` and `transcription:*` events of the
+    /// same recording (owned and handed off by the app recording lifecycle).
     SessionId
 }
 

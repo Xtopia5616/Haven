@@ -580,7 +580,7 @@ limit、创建时间倒序和 errors 的 status 过滤顺序保持原样。组�
   live consumer 与周期 maintenance task；prepare/replay 完成且 live task 注册后才获得 typed
   `MemoryReady` 并开放 dispatcher。周期策略仍归 MemoryRuntime，手动 maintenance 命令仍调用
   Agent 的单次 worker pass，shutdown 先停 worker、后按既有顺序 join app tasks（ADR 0367）。
-- `app_state.rs`：装配 `AppState`（runtime / 瞬态录音状态 / bootstrap 状态 / UI
+- `app_state.rs`：装配 `AppState`（runtime / `RecordingSessionOwner` / bootstrap 状态 / UI
   confirmation）；命令通过 runtime 稳定句柄消费 db / router / tools / executor /
   agent / pipeline / shell / `config_service` / media clients / stt_client；在组合根创建
   supervisor 专属 `SessionStore` 与唯一 `MemoryService` 并注入 AgentLayer（ADR 0363、0364）。
@@ -588,7 +588,10 @@ limit、创建时间倒序和 errors 的 status 过滤顺序保持原样。组�
   `Database` 传入后台任务（ADR 0374）。
 - `config_runtime.rs`：根据 `ConfigChanged` 生成 runtime apply plan，区分 live consumer 和
   `restart_required` consumer；运行时编排留在组合根，不下沉到 `haven-common`。
-- `commands/recording.rs`：拥有录音/转写 Tauri 命令与事件状态机；transcript 附件落盘委托给
+- `commands/recording.rs`：拥有录音/转写 Tauri 命令与事件状态机；App 录音 command 和
+  Shell handler 共用 `RecordingSessionOwner` 串行 start/stop/cancel，stop/cancel 在下一次
+  start 前分离 `rec-*` 并把身份显式交给转写 finalizer。timed `media.record` 不拥有 UI
+  session ID；voice 命令不会接管没有 app-owned ID 的工具采集。transcript 附件落盘委托给
   `commands/managed_media.rs`，不在录音命令内维护文件清理规则。
 - `commands/managed_media.rs`：拥有 App transcript 上传的额度、staging、原子提交、文件名/路径校验，
   以及 uploads/generated-media 两根目录和 staging 的清理。一个 App 内部写锁串行化上传与清理；
@@ -600,8 +603,9 @@ limit、创建时间倒序和 errors 的 status 过滤顺序保持原样。组�
   不迁入此模块（ADR 0403、0469、0470）。
 - `event_bridge.rs`：`AgentEvent` → 前端 channel 和显式 wire DTO 映射，包含 action
   生命周期投影与通知副通道。
-- `handlers.rs`：`ShellHandler` / `InputHandler` 的 Tauri、输入管线和托盘适配，包含
-  录音生命周期、VAD、自动停止和托盘图标更新。
+- `handlers.rs`：`ShellHandler` / `InputHandler` 的 Tauri、输入管线和托盘适配；user
+  recording lifecycle 通过 `RecordingSessionOwner` 与命令共享身份交接，保留 VAD、自动停止
+  和托盘图标更新适配。
 - `bootstrap.rs`：Tauri 启动、后台初始化、托盘、全局快捷键、单实例、自启、日志和退出
   编排；不承载领域逻辑。
 - `lib.rs`：模块声明、移动端 `run()` 入口和必要的 crate 内导出。
