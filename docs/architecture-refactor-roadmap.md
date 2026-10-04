@@ -38,7 +38,7 @@
 
 ### 阶段 2（已完成）：恢复、回滚和事件/投影边界再收口（P0）
 
-**已完成。** `session_events` 是恢复权威；pending input、Ask 恢复、回滚截断和提交后 UI 发布各有明确边界。见 ADR 0207、0209、0210、0385、0416、0440。
+**已完成。** `session_events` 是恢复权威；pending input 的持久路由、Ask 恢复、回滚截断和提交后 UI 发布各有明确边界。待投递输入在 durable marker 中保存 answer/follow_up 路由，恢复不重算；见 ADR 0207、0209、0210、0385、0416、0440、0458。
 
 ### 阶段 3（已完成）：存储 domain ports 与 typed projection（P1）
 
@@ -80,11 +80,31 @@
 
 用最新代码和安装产物复跑适用的 Rust/UI 门禁，并在 ADR 中记录实际构建版本、schema、环境、结果与限制。ADR 0395 中早期 profile 和门禁结果是当时的历史证据，不能当作当前工作树或当前安装包的通过结论。
 
+可以提前准备隔离 profile、安装器和物理盘耗尽环境；最终验收必须使用交互生命周期等 IPC/UI 变更完成后的最新构建。此项是发布签核门，不阻塞不影响发布路径的独立模块整理。
+
 ### 5.2 交互生命周期所有权
 
 ADR 0424 当前为 **Proposed**，没有改变运行时 owner。它记录了 session、scheduled 和 UI 直调确认在 request 路由、过期处理、动作 continuation 上的剩余漂移。实施前先采纳具体切片与验收范围；不要把这项提案记为已完成的阶段 7 工作。
 
-### 5.3 Common 拆分与性能优化
+按以下顺序推进，逐条迁移 owner，不做三路同时改写：
+
+1. **先定路由和恢复契约。** 明确 typed owner/continuation、owner 操作结果（resolved、expired、stale、可重试失败）、Ask 与 permission confirm 的边界，以及 UI/scheduled 进程内请求在重启后的失效语义。owner 只决定路由，授权仍由后端 owner 校验 receipt、target 和 scope。确定 owner 是否进入 durable event payload；若改变持久 event 格式，按当前 schema 版本与发布重置策略处理，不能靠内容或 `session_id` 占位值推断 owner。
+2. **先迁 UI 直调确认。** 以 `AppState.ui_confirmations` 为唯一目标 owner，resolve/expire 直接调用它；校验或持久化失败时请求仍可重试，接受决定后先完成 pending 终态，再由 app-scoped task 执行动作。用短临界区保护同一请求的一次性消费，不让慢配置写入阻塞其他 owner 的确认。
+3. **迁 scheduled confirmation。** 按 `action_id` 和请求 ID 定位 action owner；确认等待不伪装成 session actor 状态。点击和到期共用该 owner 的终态仲裁，并保持既有 ActionService completion/outbox 顺序。
+4. **最后迁 ReAct confirmation。** resolve 明确定位 session/请求并交给对应 actor。保留先持久化 interaction event、后更新 actor 内存状态的顺序；同批确认未全部结束前不得唤醒 gated tool batch；session grant 必须在唤醒前提交。
+5. **统一期限入口并删旧分发。** 每个 owner 使用同一绝对 deadline 和幂等 expire 结果；timer 只触发 owner 的 expire 操作，renderer 不决定后端状态。所有路径迁完后删除 actor/scheduled 扫描、executor-first fallback 和重复终态入口。生命周期日志与通知只从 owner 已接受的状态转移派生。
+
+**退出条件：** request ID 不再跨 registry 扫描或 fallback；错误 owner 不能消费请求或触发副作用；并发点击与到期竞态最多接受一个终态；renderer 关闭、迟到点击、可重试持久化失败和 continuation 执行失败均有明确结果；session event append 失败不改变 actor 状态；session 重启只由 `session_events` 恢复，UI/scheduled 请求不自动重放。IPC、事件 mapper、通知安全字段、测试和必要的 schema/reset 文档与实现同批验收。细节以更新后的 ADR 0424 为准。
+
+### 5.3 内部模块边界整理
+
+这不是 crate 拆分目标，按职责和稳定 owner 选择可证明有益的内部边界。第一候选是 `SessionStore` 的只读历史 façade：把 `list_history`、`count_history`、`search_history*`、`conversation_window`、`session_resume_media`、`title_generation_context` 及只读 DTO 收入私有 `session_history` 模块；公开 `SessionStore` façade、SQL owner、查询过滤/排序/缓存和序列化均保持不变。不要把聚合 event stream 与多个投影的 `session_resume_projection` 一起移动。
+
+事件存储与 transcript projection 的内部拆分属于高风险候选，仅在只读切片证明模块边界有实际维护收益后再评估。`SessionStore` 必须继续作为 append、物化投影和 rollback 的事务协调 owner：事件与 projection 原子提交，rollback 同时维护 `event_cursor` 和 `last_msg_at`，提交成功后才发布事件。若拆分要求上层分别写 event/projection、暴露事务细节或引入第二个恢复来源，应停止。
+
+`haven-tools/builtin/admin.rs` 的五个管理 surface 契约有意集中，不按 operation 数量机械拆开。任何其他超过文件预算的热点先说明职责、接口和行为边界；只移动代码、没有清晰 owner 的拆分不进入计划。每个内部整理保持外部 API、wire、schema 与运行语义不变，并独立提交。
+
+### 5.4 Common 拆分与性能优化
 
 只有依赖图或可复现 profile 表明存在明确收益时，才另立拆分/优化任务；不要为减少文件行数或移动代码而拆 crate，也不预设性能阈值。
 
