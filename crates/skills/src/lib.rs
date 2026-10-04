@@ -99,18 +99,18 @@ impl Skill {
     }
 
     /// Resolve the entry script path for this skill.
-    /// Returns `None` when no recognised script exists.
+    /// Returns `None` when no recognised script exists or its resolved target
+    /// escapes the skill directory.
     pub fn entry_script(&self) -> Option<PathBuf> {
+        let root = self.root.canonicalize().ok()?;
         let scripts = self.root.join("scripts");
         let main = scripts.join("main.py");
-        if main.exists() {
-            return Some(main);
-        }
         let named = scripts.join(format!("{}.py", self.manifest.name));
-        if named.exists() {
-            return Some(named);
-        }
-        None
+        let resolve_inside_root = |candidate: &Path| {
+            let resolved = candidate.canonicalize().ok()?;
+            (resolved.starts_with(&root) && resolved.is_file()).then_some(resolved)
+        };
+        resolve_inside_root(&main).or_else(|| resolve_inside_root(&named))
     }
 
     /// Construct a Skill without going through the normal scan/parse path.
@@ -288,9 +288,10 @@ pub fn parse_skill_md(
 ///
 /// Invalid SKILL.md files produce a `warn!` and are skipped (non-fatal).
 ///
-/// **Safety:** The scan canonicalises both `root` and each entry to guard
-/// against symlink/junction traversal outside the skills directory. Files
-/// larger than `limits.skills_max_md_bytes` are skipped with a warning.
+/// **Safety:** The scan canonicalises both `root` and each entry, plus every
+/// manifest target, to guard against symlink/junction traversal outside the
+/// skills directory. Files larger than `limits.skills_max_md_bytes` are
+/// skipped with a warning.
 pub fn scan_dir(
     root: &Path,
     enabled_filter: Option<&[String]>,
@@ -342,9 +343,17 @@ pub fn scan_dir(
         }
 
         let skill_md = p.join("SKILL.md");
-        if !skill_md.exists() {
-            continue;
-        }
+        let skill_md = match skill_md.canonicalize() {
+            Ok(canonical) if canonical.starts_with(&p_canon) => canonical,
+            Ok(canonical) => {
+                tracing::warn!(
+                    "skipping SKILL.md outside skill root: {}",
+                    canonical.display()
+                );
+                continue;
+            }
+            Err(_) => continue,
+        };
 
         // File size cap (M4-01 review).
         let md_len = match std::fs::metadata(&skill_md) {
@@ -589,10 +598,26 @@ impl SkillsEngine {
     pub async fn folder_signature(&self) -> Vec<(PathBuf, SystemTime, u64)> {
         let root = self.resolved_root().await;
         let mut sig = Vec::new();
+        let Ok(root_canon) = root.canonicalize() else {
+            return sig;
+        };
         if let Ok(entries) = std::fs::read_dir(&root) {
             for entry in entries.flatten() {
-                let skill_md = entry.path().join("SKILL.md");
-                if let Ok(meta) = std::fs::metadata(&skill_md)
+                let skill_dir = entry.path();
+                let Ok(skill_dir_canon) = skill_dir.canonicalize() else {
+                    continue;
+                };
+                if !skill_dir_canon.starts_with(&root_canon) {
+                    continue;
+                }
+                let skill_md = skill_dir.join("SKILL.md");
+                let Ok(skill_md_canon) = skill_md.canonicalize() else {
+                    continue;
+                };
+                if !skill_md_canon.starts_with(&skill_dir_canon) {
+                    continue;
+                }
+                if let Ok(meta) = std::fs::metadata(&skill_md_canon)
                     && let Ok(mtime) = meta.modified()
                 {
                     sig.push((skill_md, mtime, meta.len()));
@@ -611,6 +636,16 @@ impl SkillsEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    fn symlink_file(target: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(target, link)
+    }
+
+    #[cfg(windows)]
+    fn symlink_file(target: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::windows::fs::symlink_file(target, link)
+    }
 
     fn write_skill(parent: &Path, name: &str, md: &str, has_script: bool) -> PathBuf {
         let dir = parent.join(name);
@@ -837,6 +872,55 @@ mod tests {
         let names: Vec<&str> = skills.iter().map(|s| s.name()).collect();
         assert_eq!(names, vec!["small"], "oversized entry should be skipped");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn scan_dir_rejects_skill_manifest_symlink_outside_skill_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("skills");
+        let skill_dir = root.join("external-manifest");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir_all(skill_dir.join("scripts")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let outside_manifest = outside.join("SKILL.md");
+        std::fs::write(
+            &outside_manifest,
+            "# Skill: external-manifest\n## Metadata\n- description: outside\n",
+        )
+        .unwrap();
+        if symlink_file(&outside_manifest, &skill_dir.join("SKILL.md")).is_err() {
+            // Windows CI may not grant symlink privileges to the test process.
+            return;
+        }
+
+        let skills = scan_dir(&root, None, &Default::default()).unwrap();
+        assert!(skills.is_empty());
+    }
+
+    #[test]
+    fn entry_script_rejects_symlink_target_outside_skill_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("skills");
+        let skill_dir = write_skill(
+            &root,
+            "linked-script",
+            "# Skill: linked-script\n## Metadata\n- description: linked\n",
+            false,
+        );
+        let outside_script = temp.path().join("outside.py");
+        std::fs::write(&outside_script, "print('outside')").unwrap();
+        if symlink_file(&outside_script, &skill_dir.join("scripts").join("main.py")).is_err() {
+            // Windows CI may not grant symlink privileges to the test process.
+            return;
+        }
+
+        let skill = scan_dir(&root, None, &Default::default())
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
+        assert!(skill.entry_script().is_none());
+        assert!(!SkillInfo::from(&skill).has_script);
     }
 
     // -----------------------------------------------------------------------

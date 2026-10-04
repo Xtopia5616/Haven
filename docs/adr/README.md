@@ -435,3 +435,4 @@
 - [0450：移除过时的向量流式 API](0450-remove-obsolete-vector-stream-api.md)
 - [0451：有界并发读取 Skill 子进程输出](0451-bounded-skill-process-output.md)
 - [0452：文件变更操作的取消提交边界](0452-file-mutation-cancellation-boundary.md)
+- [0453：限制 Skill 文件链接的目录边界](0453-skill-paths-stay-within-root.md)
