@@ -334,6 +334,7 @@
 				sessionId: session.id,
 				messages: buildResumeMessages(result),
 				interactions: resumeInteractions(result),
+				preserveInteractionIds: appSessionReducer.getPendingInteractionIds(session.id),
 				usage: result.usage,
 				llmUsage: result.llm_usage,
 			});

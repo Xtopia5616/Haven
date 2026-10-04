@@ -175,6 +175,12 @@ export class SessionReducer {
 		return messagesOf(this.state, sessionId);
 	}
 
+	getPendingInteractionIds(sessionId: string): string[] {
+		return Object.values(this.state.interactions || {})
+			.filter((request) => request.sessionId === sessionId && request.status === 'pending')
+			.map((request) => request.id);
+	}
+
 	getSessionErrorReason(sessionId: string): string {
 		return this.state.sessionErrorReasons[sessionId] || '';
 	}

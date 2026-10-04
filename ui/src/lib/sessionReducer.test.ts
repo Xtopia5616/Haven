@@ -71,6 +71,32 @@ describe('resume interaction normalization', () => {
 });
 
 describe('SessionReducer', () => {
+	it('reads pending interaction ids by session for stale resume protection', () => {
+		const reducer = new SessionReducer();
+		const request = (id: string, sessionId: string, status: 'pending' | 'resolved') => ({
+			id,
+			sessionId,
+			kind: 'ask' as const,
+			status,
+			options: [],
+			createdAt: '2026-09-25T00:00:00Z',
+		});
+		reducer.dispatch({
+			type: 'session/interaction-upserted',
+			request: request('ask-live', 'ses-a', 'pending'),
+		});
+		reducer.dispatch({
+			type: 'session/interaction-upserted',
+			request: request('ask-resolved', 'ses-a', 'resolved'),
+		});
+		reducer.dispatch({
+			type: 'session/interaction-upserted',
+			request: request('ask-other', 'ses-b', 'pending'),
+		});
+
+		expect(reducer.getPendingInteractionIds('ses-a')).toEqual(['ask-live']);
+	});
+
 	it('keeps identical terminal lifecycle projections from notifying selectors again', () => {
 		const state = stateWith({
 			sessions: [{ ...session('ses-terminal', 'completed'), waitingReason: null }],

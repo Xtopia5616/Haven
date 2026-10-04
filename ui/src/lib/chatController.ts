@@ -10,7 +10,6 @@ import {
 import { isErrorStatus } from './sessionStatus.ts';
 import { processResultSessionId } from './submit.ts';
 import type { ProcessResult } from './contracts/generatedCommands.ts';
-import type { InteractionRequest } from './contracts/app.ts';
 import type { RollbackSessionRequest, SessionIdRequest } from './contracts/commands.ts';
 import type { TauriCommandInvoke } from './contracts/generatedCommands.ts';
 import { resumeInteractions as resumeInteractionsFromProjection } from './sessionReducer.ts';
@@ -77,12 +76,7 @@ export class ChatController {
 
 	/** Read the pending interaction ids before applying a possibly stale snapshot. */
 	pendingInteractionIdsForSession(sessionId: string): string[] {
-		return Object.values(this.dependencies.reducer.getState().interactions || {})
-			.filter(
-				(request: InteractionRequest) =>
-					request.sessionId === sessionId && request.status === 'pending',
-			)
-			.map((request) => request.id);
+		return this.dependencies.reducer.getPendingInteractionIds(sessionId);
 	}
 
 	evictTerminalSessionMemory(sessionId: string | null): void {
