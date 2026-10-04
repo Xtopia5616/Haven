@@ -5,7 +5,6 @@ import { initialSessionState, SessionReducer } from './sessionReducer.ts';
 import {
 	getToolOutputPreviewStore,
 	setToolOutputPreview,
-	toolOutputPreviewStore,
 } from './toolOutputPreviewStore.ts';
 
 function handlers(options: {
@@ -64,7 +63,7 @@ describe('chat session lifecycle handlers', () => {
 		} as never);
 
 		expect(flushChunksNow).toHaveBeenCalledOnce();
-		expect(get(toolOutputPreviewStore)).toEqual({});
+		expect(get(getToolOutputPreviewStore('step-shell'))).toBeUndefined();
 		expect(reducer.getMessages('ses-paused')).toEqual([
 			{ id: 'step-thought', role: 'assistant', content: '半截回复', streaming: false },
 			{

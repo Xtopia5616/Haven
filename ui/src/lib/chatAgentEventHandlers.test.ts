@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { get } from 'svelte/store';
 import { createChatAgentEventHandlers } from './chatAgentEventHandlers.ts';
-import { toolOutputPreviewStore } from './toolOutputPreviewStore.ts';
+import {
+	clearToolOutputPreviewsForSession,
+	getToolOutputPreviewStore,
+} from './toolOutputPreviewStore.ts';
 import { reactExecutionPhaseStore } from './runtimeStateStore.ts';
 
 describe('chat agent live tool output', () => {
@@ -37,14 +40,14 @@ describe('chat agent live tool output', () => {
 			flushChunksNow: vi.fn(),
 			dispatchSession,
 		});
-		toolOutputPreviewStore.set({});
+		clearToolOutputPreviewsForSession(null);
 
 		handlers['agent:tool_output']({
 			payload: { sessionId: 'ses-live', stepId: 'step-shell', output: 'line 1' },
 		} as never);
 
 		expect(dispatchSession).not.toHaveBeenCalled();
-		expect(get(toolOutputPreviewStore)).toEqual({ 'step-shell': 'line 1' });
+		expect(get(getToolOutputPreviewStore('step-shell'))).toBe('line 1');
 	});
 
 	it('clears the side-channel when the canonical observation arrives', () => {
@@ -53,7 +56,7 @@ describe('chat agent live tool output', () => {
 			flushChunksNow: vi.fn(),
 			dispatchSession: vi.fn(),
 		});
-		toolOutputPreviewStore.set({ 'step-shell': 'partial' });
+		getToolOutputPreviewStore('step-shell').set('partial');
 
 		handlers['agent:observation']({
 			payload: {
@@ -67,6 +70,6 @@ describe('chat agent live tool output', () => {
 			},
 		} as never);
 
-		expect(get(toolOutputPreviewStore)).toEqual({});
+		expect(get(getToolOutputPreviewStore('step-shell'))).toBeUndefined();
 	});
 });

@@ -5,7 +5,11 @@ import ToolResultCard from './ToolResultCard.svelte';
 import GlobalContextMenu from './GlobalContextMenu.svelte';
 import { canRenderToolResult, parseToolResult } from './toolResultParsing.ts';
 import { actionStore, upsertAction } from './actionStore.ts';
-import { toolOutputPreviewStore } from './toolOutputPreviewStore.ts';
+import {
+	clearToolOutputPreview,
+	clearToolOutputPreviewsForSession,
+	setToolOutputPreview,
+} from './toolOutputPreviewStore.ts';
 import { getToolResultRenderer } from './toolResultRenderers.ts';
 
 const searchJson = (results: any[], extra: any = {}) =>
@@ -512,7 +516,7 @@ describe('ToolResultCard shell / notify / generic', () => {
 
 afterEach(() => {
 	actionStore.set({});
-	toolOutputPreviewStore.set({});
+	clearToolOutputPreviewsForSession(null);
 });
 
 describe('ToolResultCard raw', () => {
@@ -753,7 +757,7 @@ describe('ToolResultCard collapsible', () => {
 
 	it('does not reopen after a transient live-preview gap', async () => {
 		const messageId = 'step-preview-gap';
-		toolOutputPreviewStore.set({ [messageId]: 'first chunk' });
+		setToolOutputPreview(messageId, 'first chunk');
 		const { container, rerender } = render(ToolResultCard, {
 			toolName: 'shell',
 			messageId,
@@ -765,9 +769,9 @@ describe('ToolResultCard collapsible', () => {
 		await fireEvent.click(header);
 		expect(header.getAttribute('aria-expanded')).toBe('false');
 		await rerender({ streaming: false });
-		toolOutputPreviewStore.set({});
+		clearToolOutputPreview(messageId);
 		await tick();
-		toolOutputPreviewStore.set({ [messageId]: 'second chunk' });
+		setToolOutputPreview(messageId, 'second chunk');
 		await tick();
 
 		expect(header.getAttribute('aria-expanded')).toBe('false');
