@@ -9,6 +9,7 @@ pub mod log_file;
 pub mod media;
 pub mod media_detection;
 pub mod prompts;
+pub mod retry;
 pub mod text;
 pub mod tools;
 pub mod types;

@@ -3,7 +3,7 @@
 - 状态：Accepted
 - 日期：2026-09-24
 - 范围：普通事实抽取与 compaction-summary 抽取的进程内重试调度
-- 关联：[ADR 0266](0266-summary-fact-extraction-durable-job.md)、[ADR 0267](0267-memory-runtime-maintenance-schedule.md)
+- 关联：[ADR 0266](0266-summary-fact-extraction-durable-job.md)、[ADR 0267](0267-memory-runtime-maintenance-schedule.md)、[ADR 0447](0447-cross-crate-recovery-policy-decisions.md)
 
 ## 背景
 
@@ -12,6 +12,8 @@ durable marker 已经保证普通事实抽取和 summary 抽取不会因进程�
 数据库暂时失败或共享 throttle 较长时，这会造成重试热循环或把恢复完全推迟到下一次进程启动。
 
 ## 决策
+
+后续实现注：共享纯退避/恢复决策由 ADR 0447 提供；本 ADR 的 job key、marker 保留、重试次数与 worker 生命周期语义不变。
 
 在 `MemoryWorker` 的共享 outbox drain loop 中按 job key 维护进程内 attempt 次数：
 

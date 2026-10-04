@@ -1,4 +1,7 @@
 use super::*;
+use haven_common::retry::{
+    BackoffPolicy, RecoveryDecision, RecoveryPolicy, RecoverySignal, RetryJitter,
+};
 
 /// Pure execution entry: admit the call, validate it, run the handler, and
 /// classify the outcome.
@@ -171,11 +174,26 @@ impl AuthorizedExecutor<'_> {
 
         // Keep tool-local retries bounded even when a persisted settings file
         // contains an accidentally large value. Agent-level retries have a
-        // separate budget in haven-agent.
+        // separate budget in haven-agent; both use the shared recovery policy.
         let max_attempts = 1 + max_retries.min(8);
+        let jitter = if backoff_secs == 0 {
+            RetryJitter::None
+        } else {
+            RetryJitter::Additive(Duration::from_millis(250))
+        };
+        let recovery = RecoveryPolicy::new(
+            Some(max_attempts as u32),
+            None,
+            BackoffPolicy::new(
+                Duration::from_secs(backoff_secs),
+                2,
+                Duration::from_secs(30),
+            )
+            .with_jitter(jitter),
+        );
+        let mut retry_delay: Option<Duration> = None;
         for attempt in 0..max_attempts {
-            if attempt > 0 {
-                let delay = tool_retry_delay(tool_name, backoff_secs, attempt);
+            if let Some(delay) = retry_delay.take() {
                 tracing::debug!(
                     tool = %tool_name,
                     attempt,
@@ -226,10 +244,23 @@ impl AuthorizedExecutor<'_> {
                 return Ok(result);
             }
 
-            let can_retry = matches!(idempotency, OperationIdempotency::Idempotent)
-                && attempt + 1 < max_attempts
-                && retryable_result(&result);
-            if can_retry {
+            let signal = if result.outcome == ToolExecutionOutcome::Cancelled {
+                RecoverySignal::Cancelled
+            } else if result.outcome == ToolExecutionOutcome::TimedOutUnknown {
+                RecoverySignal::OutcomeUnknown
+            } else if matches!(idempotency, OperationIdempotency::Idempotent)
+                && retryable_result(&result)
+            {
+                RecoverySignal::Retryable { retry_after: None }
+            } else {
+                RecoverySignal::PermanentFailure
+            };
+            if let RecoveryDecision::Retry { delay, .. } = recovery.decide(
+                attempt + 1,
+                signal,
+                std::time::Instant::now(),
+                Self::tool_retry_jitter_sample(tool_name, attempt + 1),
+            ) {
                 tracing::warn!(
                     tool = %tool_name,
                     attempt = result.attempts,
@@ -237,6 +268,7 @@ impl AuthorizedExecutor<'_> {
                     outcome = ?result.outcome,
                     "idempotent tool attempt failed; retrying"
                 );
+                retry_delay = Some(delay);
                 continue;
             }
             self.tools
@@ -256,6 +288,16 @@ impl AuthorizedExecutor<'_> {
             Value::Null,
             format!("tool '{}' retries exhausted", tool_name),
         ))
+    }
+
+    fn tool_retry_jitter_sample(tool_name: &str, completed_attempts: u32) -> u32 {
+        use std::hash::{Hash, Hasher};
+
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        tool_name.hash(&mut hasher);
+        completed_attempts.hash(&mut hasher);
+        let jitter_millis = hasher.finish() % 250;
+        ((jitter_millis * u64::from(u32::MAX)) / 250) as u32
     }
 
     pub async fn get_tool(&self, name: &str) -> Option<ToolBox> {

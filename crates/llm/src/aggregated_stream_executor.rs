@@ -11,11 +11,12 @@ use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use haven_common::retry::{RecoveryDecision, RecoveryPolicy, RecoverySignal};
 use haven_common::types::CanonicalMessage;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
-use crate::client::{LlmClient, retry_delay};
+use crate::client::{LlmClient, retry_backoff_policy, retry_jitter_sample};
 use crate::request_descriptor::RequestDescriptor;
 use crate::request_pipeline::{RequestPolicy, RetryPolicy, execute_with_timeout};
 use crate::stream_rules::StreamRule;
@@ -222,7 +223,13 @@ pub(crate) async fn aggregate_stream_with_retry_before_output(
     // by the retry loop.
     let messages = context.messages;
     let tools = context.tools;
-    for attempt in 0..=retry.max_retries {
+    let recovery = RecoveryPolicy::new(
+        Some(retry.max_retries.saturating_add(1)),
+        None,
+        retry_backoff_policy(retry.base_secs, retry.factor, retry.max_secs, retry.jitter),
+    );
+    let mut completed_attempts = 0u32;
+    loop {
         if cancel.is_cancelled() {
             return Err(LlmError::Cancelled);
         }
@@ -252,21 +259,26 @@ pub(crate) async fn aggregate_stream_with_retry_before_output(
         let Err(err) = result else {
             return result;
         };
-        if !err.is_retryable() || emitted.load(Ordering::SeqCst) || attempt == retry.max_retries {
+        completed_attempts = completed_attempts.saturating_add(1);
+        let signal = if err.is_retryable() && !emitted.load(Ordering::SeqCst) {
+            RecoverySignal::Retryable {
+                retry_after: err.retry_after(),
+            }
+        } else {
+            RecoverySignal::PermanentFailure
+        };
+        let RecoveryDecision::Retry { delay, .. } = recovery.decide(
+            completed_attempts,
+            signal,
+            std::time::Instant::now(),
+            retry_jitter_sample(),
+        ) else {
             return Err(err);
-        }
-        let delay = retry_delay(
-            retry.base_secs,
-            retry.factor,
-            retry.max_secs,
-            retry.jitter,
-            attempt,
-            err.retry_after(),
-        );
+        };
         tracing::debug!(
             "stream attempt {}/{} failed before output, retrying after {:?}: {}",
-            attempt + 1,
-            retry.max_retries + 1,
+            completed_attempts,
+            retry.max_retries.saturating_add(1),
             delay,
             err
         );
@@ -275,7 +287,6 @@ pub(crate) async fn aggregate_stream_with_retry_before_output(
             _ = cancel.cancelled() => return Err(LlmError::Cancelled),
         }
     }
-    Err(LlmError::Unknown("stream retry loop exhausted".into()))
 }
 
 fn stream_chunk_has_retry_barrier_output(chunk: &StreamChunk) -> bool {

@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context as _;
+use haven_common::retry::BackoffPolicy;
 use haven_memory::{
     CURRENT_EVENT_VERSION, MAX_SESSION_EVENT_REPLAY_PAGE_SIZE, MEMORY_TRIGGER_EVENT_TYPE,
     SessionEvent, SessionStore,
@@ -614,7 +615,7 @@ async fn wait_for_retry(cancellation: &CancellationToken, delay: Duration) -> bo
 }
 
 fn next_retry_backoff(current: Duration) -> Duration {
-    current.saturating_mul(2).min(MAX_RETRY_BACKOFF)
+    BackoffPolicy::new(current, 2, MAX_RETRY_BACKOFF).delay_after(2, None, 0)
 }
 
 #[cfg(test)]

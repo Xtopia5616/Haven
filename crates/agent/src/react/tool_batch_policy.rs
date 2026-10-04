@@ -6,8 +6,10 @@
 //! commit pipeline.
 
 use super::*;
+use haven_common::retry::{BackoffPolicy, RecoveryDecision, RecoveryPolicy, RecoverySignal};
 use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
 use haven_tools::{OperationIdempotency, ToolErrorClass, ToolExecutionOutcome, ToolRetryability};
+use std::time::{Duration, Instant};
 
 /// Failure classification used to shape the post-failure retry nudge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -54,11 +56,23 @@ impl ToolRetryBudget {
             signal.retryability,
         );
         let attempts = self.attempts.entry(key).or_default();
-        if *attempts >= MAX_AGENT_RETRIES_PER_FAILURE {
-            return false;
+        let policy = RecoveryPolicy::new(
+            Some(u32::from(MAX_AGENT_RETRIES_PER_FAILURE) + 1),
+            None,
+            BackoffPolicy::new(Duration::ZERO, 1, Duration::ZERO),
+        );
+        match policy.decide(
+            u32::from(*attempts) + 1,
+            RecoverySignal::Retryable { retry_after: None },
+            Instant::now(),
+            0,
+        ) {
+            RecoveryDecision::Retry { .. } => {
+                *attempts += 1;
+                true
+            }
+            RecoveryDecision::Stop { .. } => false,
         }
-        *attempts += 1;
-        true
     }
 }
 

@@ -7,6 +7,7 @@ use haven_common::prompts::{
     COMPACTED_SUMMARY_PREFIX, CONTRADICTION_ARBITRATE_SYSTEM_PROMPT, FACT_EXTRACTION_SYSTEM_PROMPT,
     predicate_merge_system_prompt,
 };
+use haven_common::retry::{BackoffPolicy, RecoveryDecision, RecoveryPolicy, RecoverySignal};
 #[cfg(test)]
 use haven_llm::LlmRouter;
 #[cfg(test)]
@@ -1673,11 +1674,28 @@ impl MemoryWorker {
 }
 
 fn next_outbox_retry_secs(attempt: &mut u32, requested_wait_secs: u64) -> u64 {
-    let backoff_secs = 1u64 << (*attempt).min(5);
-    *attempt = attempt.saturating_add(1);
-    requested_wait_secs
-        .max(backoff_secs)
-        .min(OUTBOX_RETRY_MAX_SECS.max(requested_wait_secs))
+    let completed_attempts = attempt.saturating_add(1);
+    *attempt = completed_attempts;
+    let policy = RecoveryPolicy::new(
+        None,
+        None,
+        BackoffPolicy::new(
+            Duration::from_secs(1),
+            2,
+            Duration::from_secs(OUTBOX_RETRY_MAX_SECS),
+        ),
+    );
+    match policy.decide(
+        completed_attempts,
+        RecoverySignal::Retryable {
+            retry_after: Some(Duration::from_secs(requested_wait_secs)),
+        },
+        Instant::now(),
+        0,
+    ) {
+        RecoveryDecision::Retry { delay, .. } => delay.as_secs(),
+        RecoveryDecision::Stop { .. } => requested_wait_secs.max(OUTBOX_RETRY_MAX_SECS),
+    }
 }
 
 async fn wait_for_outbox_retry(cancellation: &CancellationToken, wait_secs: u64) -> bool {

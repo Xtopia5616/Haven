@@ -3,7 +3,7 @@
 - 状态：Implemented
 - 日期：2026-09-25
 - 范围：`haven-tools::ActionService` background/scheduled 终态持久化修复重试
-- 关联：[ADR 0305](0305-action-service-action-store-port.md)、[ADR 0317](0317-action-terminal-lifecycle-kernel.md)、[ADR 0321](0321-action-owned-session-cancellation-traversal.md)、[ADR 0325](0325-action-completion-transport-ownership.md)、[ADR 0332](0332-action-claim-lease-core.md)
+- 关联：[ADR 0305](0305-action-service-action-store-port.md)、[ADR 0317](0317-action-terminal-lifecycle-kernel.md)、[ADR 0321](0321-action-owned-session-cancellation-traversal.md)、[ADR 0325](0325-action-completion-transport-ownership.md)、[ADR 0332](0332-action-claim-lease-core.md)、[ADR 0447](0447-cross-crate-recovery-policy-decisions.md)
 
 ## 背景与现有语义
 
@@ -14,6 +14,8 @@
 此外，AgentLayer 对 background completion 的 transcript 投影/入队失败仍按 100 ms 重试，并在 durable transcript projection 后按 `action_result_id` ack outbox。它属于 delivery/projection，不是终态持久化或 action job retry。provider/LLM 请求 retry 仍由 LLM/Agent 请求路径拥有；ReAct tool-call retry 仍由 Agent 工具批次策略拥有。本决定不改动这些策略。
 
 ## 决定
+
+后续实现注：底层 deadline/attempt/backoff/stop decision 现复用 ADR 0447 的 `haven-common::retry` 纯策略模型；本 ADR 的 ActionService owner、终态仲裁和无限重试语义不变。
 
 1. 新增 crate-private `ActionPersistenceRetryPolicy` 与 `RetryDecision`，作为纯函数策略 owner。它只接收当前 monotonic `Instant`、已完成的策略尝试数与 typed `RetrySignal`，返回下一尝试号和退避，或 typed `RetryStopReason`。它不读取 clock、sleep、访问 `ActionStore`、调用 LLM 或拥有终态转换。
 2. background 与 scheduled 的持久化修复 worker 都使用同一策略输入：当前首次终态持久化已失败，修复 worker 的最大尝试数为 unlimited，retry deadline 为 `None`。因此现有 1 秒起始、指数增长、30 秒封顶且不主动超时的行为保持不变。策略在真正开始一次已排程 retry 前重新检查显式 deadline；目前两条生产路径都不配置 deadline。

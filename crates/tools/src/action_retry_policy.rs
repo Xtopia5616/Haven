@@ -1,32 +1,34 @@
-//! Pure retry decisions for action terminal persistence repair.
+//! Action-specific classification over the shared pure recovery policy.
 //!
-//! This policy does not execute a job, access ActionStore, or own a timer. The
-//! caller supplies the current monotonic instant and remains responsible for
-//! sleeping, cancellation, persistence, and terminal arbitration.
+//! ActionService still owns terminal arbitration, persistence, sleeping, and
+//! shutdown. This adapter only translates action outcomes into shared signals.
 
 use std::time::Duration;
+
+use haven_common::retry::{BackoffPolicy, RecoveryPolicy, RecoverySignal, RetryJitter};
+pub(crate) use haven_common::retry::{
+    RecoveryDecision as RetryDecision, RecoveryStopReason as RetryStopReason,
+};
 use tokio::time::Instant;
 
 const TERMINAL_RETRY_INITIAL_DELAY: Duration = Duration::from_secs(1);
 const TERMINAL_RETRY_MAX_DELAY: Duration = Duration::from_secs(30);
+const INLINE_STORE_RETRY_ATTEMPTS: u32 = 3;
+const INLINE_STORE_RETRY_DELAY: Duration = Duration::from_millis(50);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct ActionPersistenceRetryPolicy {
-    /// `None` preserves the current unbounded repair behavior. No action-level
-    /// execution deadline is currently configured by background or scheduled
-    /// actions.
-    retry_deadline: Option<Instant>,
-    /// Maximum number of policy-level attempts, including the initial attempt.
-    /// `None` preserves the current unbounded repair behavior.
-    max_attempts: Option<u32>,
-    initial_delay: Duration,
-    max_delay: Duration,
+    inner: RecoveryPolicy,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ActionStoreRetryPolicy {
+    inner: RecoveryPolicy,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RetrySignal {
-    /// The caller classifies the persistence error; current ActionStore errors
-    /// retain the existing retry-all behavior.
+    /// ActionStore persistence errors retain the existing retry-all behavior.
     Failure { retryable: bool },
     /// The retry worker itself was cancelled by service shutdown.
     Cancelled,
@@ -36,31 +38,17 @@ pub(crate) enum RetrySignal {
     Succeeded,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum RetryStopReason {
-    NonRetryableFailure,
-    Cancelled,
-    Terminal,
-    Succeeded,
-    RetryDeadlineElapsed,
-    AttemptBudgetExhausted,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum RetryDecision {
-    Retry { next_attempt: u32, delay: Duration },
-    Stop { reason: RetryStopReason },
-}
-
 impl ActionPersistenceRetryPolicy {
     /// The existing terminal repair workers retry indefinitely, with a capped
     /// exponential delay and no action-level deadline.
     pub(crate) const fn terminal_persistence() -> Self {
         Self {
-            retry_deadline: None,
-            max_attempts: None,
-            initial_delay: TERMINAL_RETRY_INITIAL_DELAY,
-            max_delay: TERMINAL_RETRY_MAX_DELAY,
+            inner: RecoveryPolicy::new(
+                None,
+                None,
+                BackoffPolicy::new(TERMINAL_RETRY_INITIAL_DELAY, 2, TERMINAL_RETRY_MAX_DELAY)
+                    .with_jitter(RetryJitter::None),
+            ),
         }
     }
 
@@ -73,30 +61,8 @@ impl ActionPersistenceRetryPolicy {
         signal: RetrySignal,
         now: Instant,
     ) -> RetryDecision {
-        let stop_reason = match signal {
-            RetrySignal::Failure { retryable: false } => Some(RetryStopReason::NonRetryableFailure),
-            RetrySignal::Cancelled => Some(RetryStopReason::Cancelled),
-            RetrySignal::Terminal => Some(RetryStopReason::Terminal),
-            RetrySignal::Succeeded => Some(RetryStopReason::Succeeded),
-            RetrySignal::Failure { retryable: true } => None,
-        };
-        if let Some(reason) = stop_reason {
-            return RetryDecision::Stop { reason };
-        }
-
-        let Some(next_attempt) = completed_attempts.checked_add(1) else {
-            return RetryDecision::Stop {
-                reason: RetryStopReason::AttemptBudgetExhausted,
-            };
-        };
-        if let Err(reason) = self.can_start_attempt(next_attempt, now) {
-            return RetryDecision::Stop { reason };
-        }
-
-        RetryDecision::Retry {
-            next_attempt,
-            delay: self.retry_delay(completed_attempts),
-        }
+        self.inner
+            .decide(completed_attempts, signal.into(), now.into(), 0)
     }
 
     /// Recheck immediately before a scheduled retry begins so a caller that
@@ -106,24 +72,47 @@ impl ActionPersistenceRetryPolicy {
         attempt: u32,
         now: Instant,
     ) -> Result<(), RetryStopReason> {
-        if self.retry_deadline.is_some_and(|deadline| now >= deadline) {
-            return Err(RetryStopReason::RetryDeadlineElapsed);
+        self.inner.can_start_attempt(attempt, now.into())
+    }
+}
+
+impl ActionStoreRetryPolicy {
+    /// Short inline retries used by action store transitions. The durable
+    /// recovery worker, when present, remains owned by ActionService.
+    pub(crate) const fn inline_store() -> Self {
+        Self {
+            inner: RecoveryPolicy::new(
+                Some(INLINE_STORE_RETRY_ATTEMPTS),
+                None,
+                BackoffPolicy::new(INLINE_STORE_RETRY_DELAY, 1, INLINE_STORE_RETRY_DELAY),
+            ),
         }
-        if self
-            .max_attempts
-            .is_some_and(|max_attempts| attempt > max_attempts)
-        {
-            return Err(RetryStopReason::AttemptBudgetExhausted);
-        }
-        Ok(())
     }
 
-    fn retry_delay(self, completed_attempts: u32) -> Duration {
-        let exponent = completed_attempts.saturating_sub(1).min(u32::BITS - 1);
-        self.initial_delay
-            .checked_mul(1u32 << exponent)
-            .unwrap_or(self.max_delay)
-            .min(self.max_delay)
+    pub(crate) const fn max_attempts(self) -> u32 {
+        INLINE_STORE_RETRY_ATTEMPTS
+    }
+
+    pub(crate) fn decide(self, completed_attempts: u32, retryable: bool) -> RetryDecision {
+        let signal = if retryable {
+            RecoverySignal::Retryable { retry_after: None }
+        } else {
+            RecoverySignal::PermanentFailure
+        };
+        self.inner
+            .decide(completed_attempts, signal, std::time::Instant::now(), 0)
+    }
+}
+
+impl From<RetrySignal> for RecoverySignal {
+    fn from(signal: RetrySignal) -> Self {
+        match signal {
+            RetrySignal::Failure { retryable: true } => Self::Retryable { retry_after: None },
+            RetrySignal::Failure { retryable: false } => Self::PermanentFailure,
+            RetrySignal::Cancelled => Self::Cancelled,
+            RetrySignal::Terminal => Self::Terminal,
+            RetrySignal::Succeeded => Self::Succeeded,
+        }
     }
 }
 
@@ -136,17 +125,17 @@ mod tests {
         max_attempts: Option<u32>,
     ) -> ActionPersistenceRetryPolicy {
         ActionPersistenceRetryPolicy {
-            retry_deadline: deadline,
-            max_attempts,
-            ..ActionPersistenceRetryPolicy::terminal_persistence()
+            inner: RecoveryPolicy::new(
+                max_attempts,
+                deadline.map(Into::into),
+                BackoffPolicy::new(TERMINAL_RETRY_INITIAL_DELAY, 2, TERMINAL_RETRY_MAX_DELAY),
+            ),
         }
     }
 
     #[test]
     fn terminal_persistence_has_no_deadline_or_retry_budget() {
         let policy = ActionPersistenceRetryPolicy::terminal_persistence();
-        assert_eq!(policy.retry_deadline, None);
-        assert_eq!(policy.max_attempts, None);
         assert_eq!(
             policy.decide(1, RetrySignal::Failure { retryable: true }, Instant::now()),
             RetryDecision::Retry {
@@ -225,5 +214,37 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[test]
+    fn inline_store_policy_uses_three_total_attempts_and_fixed_delay() {
+        let policy = ActionStoreRetryPolicy::inline_store();
+        assert_eq!(policy.max_attempts(), 3);
+        assert_eq!(
+            policy.decide(1, true),
+            RetryDecision::Retry {
+                next_attempt: 2,
+                delay: Duration::from_millis(50),
+            }
+        );
+        assert_eq!(
+            policy.decide(2, true),
+            RetryDecision::Retry {
+                next_attempt: 3,
+                delay: Duration::from_millis(50),
+            }
+        );
+        assert_eq!(
+            policy.decide(3, true),
+            RetryDecision::Stop {
+                reason: RetryStopReason::AttemptBudgetExhausted,
+            }
+        );
+        assert_eq!(
+            policy.decide(1, false),
+            RetryDecision::Stop {
+                reason: RetryStopReason::NonRetryableFailure,
+            }
+        );
     }
 }

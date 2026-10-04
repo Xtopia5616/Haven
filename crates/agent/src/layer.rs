@@ -6,6 +6,7 @@
 use super::*;
 use crate::memory_inference::RouterMemoryInferencePort;
 use crate::session::SessionEvent;
+use haven_common::retry::{BackoffPolicy, RecoveryDecision, RecoveryPolicy, RecoverySignal};
 use serde_json::Value;
 
 async fn action_completion_session_status(
@@ -598,6 +599,16 @@ impl AgentLayer {
                     let result_message_id =
                         crate::react::action_result_message_id(&action_result_id);
                     let mut state = action_completion_session_status(&agent, &tid).await;
+                    let delivery_retry = RecoveryPolicy::new(
+                        None,
+                        None,
+                        BackoffPolicy::new(
+                            std::time::Duration::from_millis(100),
+                            1,
+                            std::time::Duration::from_millis(100),
+                        ),
+                    );
+                    let mut completed_delivery_attempts = 0u32;
                     // Delivery is retried with the same action_result_id.  A
                     // full actor mailbox must not turn a durable action row
                     // into a lost transcript context.  If the session becomes
@@ -665,9 +676,18 @@ impl AgentLayer {
                                 }
                             }
                         }
+                        completed_delivery_attempts = completed_delivery_attempts.saturating_add(1);
+                        let RecoveryDecision::Retry { delay, .. } = delivery_retry.decide(
+                            completed_delivery_attempts,
+                            RecoverySignal::Retryable { retry_after: None },
+                            std::time::Instant::now(),
+                            0,
+                        ) else {
+                            return;
+                        };
                         tokio::select! {
                             _ = cancellation.cancelled() => return,
-                            _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {}
+                            _ = tokio::time::sleep(delay) => {}
                         }
                         state = action_completion_session_status(&agent, &tid).await;
                     }

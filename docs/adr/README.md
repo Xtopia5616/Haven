@@ -429,3 +429,4 @@
 - [0444：结构化工具参数重试与手动恢复](0444-structural-response-retry-and-manual-recovery.md)
 - [0445：后台 Shell 来源关联与等待反馈契约](0445-background-shell-source-and-wait-feedback.md)
 - [0446：会话菜单中的 Agent 父子会话导航](0446-session-lineage-navigation.md)
+- [0447：跨 crate 纯恢复策略决策模型](0447-cross-crate-recovery-policy-decisions.md)

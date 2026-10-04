@@ -5,6 +5,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use haven_common::media::CapabilityProfile;
+use haven_common::retry::{
+    BackoffPolicy, RecoveryDecision, RecoveryPolicy, RecoverySignal, RetryJitter,
+};
 use haven_common::types::CanonicalMessage;
 
 use crate::types::{Embedding, LlmError, LlmResponse, StreamChunk, SttResult, ToolDefinition};
@@ -362,46 +365,55 @@ where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<T, LlmError>>,
 {
-    let mut last_err = None;
-    for attempt in 0..=max_retries {
+    let backoff = retry_backoff_policy(base_secs, factor, max_secs, jitter);
+    let recovery = RecoveryPolicy::new(Some(max_retries.saturating_add(1)), None, backoff);
+    let mut completed_attempts = 0u32;
+
+    loop {
         if cancel.is_some_and(|c| c.is_cancelled()) {
             return Err(LlmError::Cancelled);
         }
-        tracing::debug!("llm attempt {}/{}", attempt + 1, max_retries + 1);
+        tracing::debug!(
+            "llm attempt {}/{}",
+            completed_attempts.saturating_add(1),
+            max_retries.saturating_add(1)
+        );
         match f().await {
             Ok(v) => return Ok(v),
             Err(e) => {
-                let retryable = e.is_retryable();
-                if !retryable || attempt == max_retries {
+                completed_attempts = completed_attempts.saturating_add(1);
+                let signal = if e.is_retryable() {
+                    RecoverySignal::Retryable {
+                        retry_after: e.retry_after(),
+                    }
+                } else {
+                    RecoverySignal::PermanentFailure
+                };
+                let RecoveryDecision::Retry { delay, .. } = recovery.decide(
+                    completed_attempts,
+                    signal,
+                    std::time::Instant::now(),
+                    retry_jitter_sample(),
+                ) else {
                     return Err(e);
-                }
-                let actual_delay = retry_delay(
-                    base_secs,
-                    factor,
-                    max_secs,
-                    jitter,
-                    attempt,
-                    e.retry_after(),
-                );
+                };
                 tracing::debug!(
                     "llm retry {} after {:?} (error: {})",
-                    attempt,
-                    actual_delay,
+                    completed_attempts,
+                    delay,
                     haven_common::error::sanitize_error_text(&e.to_string())
                 );
                 if let Some(cancel) = cancel {
                     tokio::select! {
-                        _ = tokio::time::sleep(actual_delay) => {},
+                        _ = tokio::time::sleep(delay) => {},
                         _ = cancel.cancelled() => return Err(LlmError::Cancelled),
                     }
                 } else {
-                    tokio::time::sleep(actual_delay).await;
+                    tokio::time::sleep(delay).await;
                 }
-                last_err = Some(e);
             }
         }
     }
-    Err(last_err.unwrap_or_else(|| LlmError::Unknown("exhausted retries".into())))
 }
 
 /// Compute a bounded exponential retry delay. Provider supplied `Retry-After`
@@ -415,31 +427,42 @@ pub fn retry_delay(
     attempt: u32,
     retry_after: Option<Duration>,
 ) -> Duration {
-    let factor = u64::from(factor.max(1));
-    let cap = Duration::from_secs(max_secs);
-    let backoff = Duration::from_secs(
-        base_secs
-            .saturating_mul(factor.saturating_pow(attempt))
-            .min(max_secs),
-    );
-    let retry_after = retry_after.unwrap_or_default();
-    let jitter = jitter.clamp(0.0, 1.0);
-    if jitter == 0.0 || backoff.is_zero() {
-        return backoff.max(retry_after);
-    }
+    retry_backoff_policy(base_secs, factor, max_secs, jitter).delay_after(
+        attempt.saturating_add(1),
+        retry_after,
+        retry_jitter_sample(),
+    )
+}
 
-    // System time is sufficient here: this is only a short-lived spread among
-    // concurrent retries, not a security boundary or an identifier source.
+pub(crate) fn retry_backoff_policy(
+    base_secs: u64,
+    factor: u32,
+    max_secs: u64,
+    jitter: f32,
+) -> BackoffPolicy {
+    let jitter_fraction = jitter.clamp(0.0, 1.0);
+    BackoffPolicy::new(
+        Duration::from_secs(base_secs),
+        factor,
+        Duration::from_secs(max_secs),
+    )
+    .with_jitter(if jitter_fraction == 0.0 {
+        RetryJitter::None
+    } else {
+        RetryJitter::SymmetricFraction(jitter_fraction)
+    })
+}
+
+pub(crate) fn retry_jitter_sample() -> u32 {
+    // System time is sufficient for short-lived retry spreading; this is not
+    // a security boundary or an identifier source.
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .subsec_nanos();
-    let sample = f64::from(nanos) / f64::from(u32::MAX);
-    let multiplier = 1.0 + ((sample * 2.0 - 1.0) * f64::from(jitter));
-    backoff
-        .mul_f64(multiplier.max(0.0))
-        .min(cap)
-        .max(retry_after)
+    // Preserve the existing sample mapping while the shared policy owns the
+    // delay calculation.
+    nanos
 }
 
 // ---------------------------------------------------------------------------

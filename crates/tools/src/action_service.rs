@@ -18,7 +18,9 @@ pub use crate::action_completion::{
 use crate::action_output::{
     ActionOutputPort, ActionOutputTail, ActionTailFactory, ActionTailSnapshot,
 };
-use crate::action_retry_policy::{ActionPersistenceRetryPolicy, RetryDecision, RetrySignal};
+use crate::action_retry_policy::{
+    ActionPersistenceRetryPolicy, ActionStoreRetryPolicy, RetryDecision, RetrySignal,
+};
 use crate::action_terminal::{
     ActionState, TerminalPayload, TerminalSource, TerminalTimestamps, TerminalTransitionGuard,
     can_claim_terminal,
@@ -30,9 +32,6 @@ use haven_memory::{ActionCompletionOutboxRow, ActionRow, ActionStore};
 use crate::output::{append_windows_diagnostics, sanitize_shell_output, summarize_error};
 use crate::process::{kill_process_tree, read_stream_capped};
 use crate::shell_runtime::{build_shell_command, collect_byte_cap, write_output_log};
-
-const ACTION_DB_RETRY_ATTEMPTS: usize = 3;
-const ACTION_DB_RETRY_DELAY: Duration = Duration::from_millis(50);
 
 /// Optional sink for action lifecycle events surfaced to the UI. The
 /// sink is called with `(event, payload)` where event is one of:
@@ -865,7 +864,8 @@ impl ActionService {
             return Ok(true);
         };
         let mut last_error = None;
-        for attempt in 0..ACTION_DB_RETRY_ATTEMPTS {
+        let retry_policy = ActionStoreRetryPolicy::inline_store();
+        for attempt in 1..=retry_policy.max_attempts() {
             match store
                 .quarantine_waiting_scheduled_action(
                     id.to_string(),
@@ -877,8 +877,9 @@ impl ActionService {
                 Ok(changed) => return Ok(changed),
                 Err(error) => {
                     last_error = Some(error);
-                    if attempt + 1 < ACTION_DB_RETRY_ATTEMPTS {
-                        tokio::time::sleep(ACTION_DB_RETRY_DELAY).await;
+                    match retry_policy.decide(attempt, true) {
+                        RetryDecision::Retry { delay, .. } => tokio::time::sleep(delay).await,
+                        RetryDecision::Stop { .. } => break,
                     }
                 }
             }
@@ -918,12 +919,21 @@ impl ActionService {
         let action_id = id.to_string();
         let reason = reason.to_string();
         tokio::spawn(async move {
-            let mut delay = Duration::from_secs(1);
-            loop {
+            let retry_policy = ActionPersistenceRetryPolicy::terminal_persistence();
+            let mut completed_attempts = 1;
+            while let RetryDecision::Retry {
+                next_attempt,
+                delay,
+            } = retry_policy.decide(
+                completed_attempts,
+                RetrySignal::Failure { retryable: true },
+                tokio::time::Instant::now(),
+            ) {
                 tokio::select! {
                     _ = service.shutdown_token.cancelled() => break,
                     _ = tokio::time::sleep(delay) => {}
                 }
+                completed_attempts = next_attempt;
                 match service
                     .try_quarantine_invalid_scheduled_row(&action_id, &reason, &finished_at)
                     .await
@@ -934,7 +944,6 @@ impl ActionService {
                             action_id = %action_id,
                             "malformed scheduled action quarantine retry failed: {error}"
                         );
-                        delay = (delay * 2).min(Duration::from_secs(30));
                     }
                 }
             }
@@ -958,7 +967,8 @@ impl ActionService {
 
         let mut delete_error = None;
         let mut deleted = false;
-        for attempt in 0..ACTION_DB_RETRY_ATTEMPTS {
+        let retry_policy = ActionStoreRetryPolicy::inline_store();
+        for attempt in 1..=retry_policy.max_attempts() {
             match store.delete_action(action_id.to_string()).await {
                 Ok(true) | Ok(false) => {
                     deleted = true;
@@ -966,8 +976,9 @@ impl ActionService {
                 }
                 Err(error) => {
                     delete_error = Some(error);
-                    if attempt + 1 < ACTION_DB_RETRY_ATTEMPTS {
-                        tokio::time::sleep(ACTION_DB_RETRY_DELAY).await;
+                    match retry_policy.decide(attempt, true) {
+                        RetryDecision::Retry { delay, .. } => tokio::time::sleep(delay).await,
+                        RetryDecision::Stop { .. } => break,
                     }
                 }
             }
@@ -986,7 +997,7 @@ impl ActionService {
         let id = action_id.to_string();
         let reason = "background action failed before its process was admitted";
         let mut fallback_error = None;
-        for attempt in 0..ACTION_DB_RETRY_ATTEMPTS {
+        for attempt in 1..=retry_policy.max_attempts() {
             match store
                 .finish_background_action(
                     id.clone(),
@@ -1006,8 +1017,9 @@ impl ActionService {
                 }
                 Err(error) => {
                     fallback_error = Some(error);
-                    if attempt + 1 < ACTION_DB_RETRY_ATTEMPTS {
-                        tokio::time::sleep(ACTION_DB_RETRY_DELAY).await;
+                    match retry_policy.decide(attempt, true) {
+                        RetryDecision::Retry { delay, .. } => tokio::time::sleep(delay).await,
+                        RetryDecision::Stop { .. } => break,
                     }
                 }
             }
@@ -2549,7 +2561,8 @@ impl ActionService {
             let mut requeued = true;
             if let Some(store) = self.action_store.read().await.clone() {
                 let mut last_error = None;
-                for attempt in 0..ACTION_DB_RETRY_ATTEMPTS {
+                let retry_policy = ActionStoreRetryPolicy::inline_store();
+                for attempt in 1..=retry_policy.max_attempts() {
                     match store.requeue_scheduled_action(id.to_string()).await {
                         Ok(true) => {
                             last_error = None;
@@ -2562,8 +2575,11 @@ impl ActionService {
                         }
                         Err(error) => {
                             last_error = Some(error);
-                            if attempt + 1 < ACTION_DB_RETRY_ATTEMPTS {
-                                tokio::time::sleep(ACTION_DB_RETRY_DELAY).await;
+                            match retry_policy.decide(attempt, true) {
+                                RetryDecision::Retry { delay, .. } => {
+                                    tokio::time::sleep(delay).await;
+                                }
+                                RetryDecision::Stop { .. } => break,
                             }
                         }
                     }
@@ -2757,7 +2773,8 @@ impl ActionService {
             return Ok(true);
         };
         let mut last_error = None;
-        for attempt in 0..ACTION_DB_RETRY_ATTEMPTS {
+        let retry_policy = ActionStoreRetryPolicy::inline_store();
+        for attempt in 1..=retry_policy.max_attempts() {
             match store
                 .finish_scheduled_action(
                     id.to_string(),
@@ -2771,8 +2788,9 @@ impl ActionService {
                 Ok(changed) => return Ok(changed),
                 Err(error) => {
                     last_error = Some(error);
-                    if attempt + 1 < ACTION_DB_RETRY_ATTEMPTS {
-                        tokio::time::sleep(ACTION_DB_RETRY_DELAY).await;
+                    match retry_policy.decide(attempt, true) {
+                        RetryDecision::Retry { delay, .. } => tokio::time::sleep(delay).await,
+                        RetryDecision::Stop { .. } => break,
                     }
                 }
             }
@@ -2989,7 +3007,8 @@ impl ActionService {
         let timestamps = TerminalTimestamps::now(started_at);
         if let Some(store) = self.action_store.read().await.clone() {
             let mut last_error = None;
-            for attempt in 0..ACTION_DB_RETRY_ATTEMPTS {
+            let retry_policy = ActionStoreRetryPolicy::inline_store();
+            for attempt in 1..=retry_policy.max_attempts() {
                 match store
                     .cancel_scheduled_action(id.to_string(), timestamps.finished_at.clone())
                     .await
@@ -3001,8 +3020,9 @@ impl ActionService {
                     Ok(false) => return false,
                     Err(error) => {
                         last_error = Some(error);
-                        if attempt + 1 < ACTION_DB_RETRY_ATTEMPTS {
-                            tokio::time::sleep(ACTION_DB_RETRY_DELAY).await;
+                        match retry_policy.decide(attempt, true) {
+                            RetryDecision::Retry { delay, .. } => tokio::time::sleep(delay).await,
+                            RetryDecision::Stop { .. } => break,
                         }
                     }
                 }

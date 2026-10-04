@@ -1,6 +1,8 @@
 //! Session lifecycle owned by [`SessionSupervisor`].
 
 use super::*;
+use haven_common::retry::{BackoffPolicy, RecoveryDecision, RecoveryPolicy, RecoverySignal};
+use std::time::{Duration, Instant};
 
 impl SessionSupervisor {
     pub async fn create_session(self: &Arc<Self>, input: &str) -> anyhow::Result<SessionInfo> {
@@ -28,19 +30,31 @@ impl SessionSupervisor {
         session_id: &str,
         status: SessionStatus,
     ) -> anyhow::Result<()> {
-        let mut last_error = None;
-        for attempt in 0..3 {
+        let retry_policy = RecoveryPolicy::new(
+            Some(3),
+            None,
+            BackoffPolicy::new(Duration::from_millis(10), 1, Duration::from_millis(10)),
+        );
+        let mut completed_attempts = 0u32;
+        loop {
             match store.update_session_status(session_id, status).await {
                 Ok(()) => return Ok(()),
                 Err(error) => {
-                    last_error = Some(error);
-                    if attempt < 2 {
-                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                    completed_attempts = completed_attempts.saturating_add(1);
+                    match retry_policy.decide(
+                        completed_attempts,
+                        RecoverySignal::Retryable { retry_after: None },
+                        Instant::now(),
+                        0,
+                    ) {
+                        RecoveryDecision::Retry { delay, .. } => {
+                            tokio::time::sleep(delay).await;
+                        }
+                        RecoveryDecision::Stop { .. } => return Err(error),
                     }
                 }
             }
         }
-        Err(last_error.unwrap_or_else(|| anyhow::anyhow!("status persist failed")))
     }
 
     pub async fn end_session(&self, session_id: &str) -> anyhow::Result<SessionStatus> {

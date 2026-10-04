@@ -387,25 +387,6 @@ fn annotate_retry_safety(result: &mut ToolResult, idempotency: OperationIdempote
     }
 }
 
-const MAX_TOOL_RETRY_DELAY: Duration = Duration::from_secs(30);
-
-/// Exponential delay with a small deterministic jitter and a hard ceiling.
-/// Deterministic jitter avoids synchronizing repeated calls from the same
-/// process without introducing a new random source into the tool crate.
-fn tool_retry_delay(tool_name: &str, base_secs: u64, attempt: u32) -> Duration {
-    if base_secs == 0 {
-        return Duration::ZERO;
-    }
-    let exponential_secs = base_secs.saturating_mul(2u64.saturating_pow(attempt - 1));
-    let base = Duration::from_secs(exponential_secs).min(MAX_TOOL_RETRY_DELAY);
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    use std::hash::{Hash, Hasher};
-    tool_name.hash(&mut hasher);
-    attempt.hash(&mut hasher);
-    let jitter_ms = hasher.finish() % 250;
-    (base + Duration::from_millis(jitter_ms)).min(MAX_TOOL_RETRY_DELAY)
-}
-
 /// Retry only failures that are known to be transient. Unknown/cancelled
 /// outcomes are never replayed, because the operation may still be running.
 fn retryable_result(result: &ToolResult) -> bool {

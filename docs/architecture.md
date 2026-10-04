@@ -1,6 +1,6 @@
 # Haven 架构与 crate 职责
 
-> 版本: v1.9 | 日期: 2026-09-26
+> 版本: v1.10 | 日期: 2026-10-04
 > 范围: `crates/` (Rust 后端, Tauri 2)
 > 原则: **依赖单向、叶子优先**。上层 crate 只依赖下层，绝不反向依赖；共享数据与类型放叶子（`haven-common`），
 > 组件职责按「谁拥有实现、谁只消费接口」划分。
@@ -61,7 +61,8 @@ haven-input / haven-llm / haven-memory / haven-skills ──► haven-common
 operation 与执行策略）、`registry.rs`（全局注册表、SessionCatalog、版本快照与 probe）和
 `security.rs`（AuthorizationEngine、权限继承、disabled operation、路径沙箱与本机安全矩阵）。
 在这组稳定模块之上，`OperationRegistry` 持有已安装、deferred 与 session operation；
-`OperationCatalog` 是模型可见投影；`AuthorizedExecutor` 做熔断、启用检查、校验、执行和结果分类。
+`OperationCatalog` 是模型可见投影；`AuthorizedExecutor` 做熔断、启用检查、校验、执行和结果分类，
+并把经幂等性与 retryability 筛选的工具失败交给 `haven-common::retry::RecoveryPolicy` 决定退避与 attempt budget（ADR 0447）。
 crate-private `ToolAuthorizationPolicy` 负责从 live session lookup 或 turn snapshot 生成同一 typed
 `AuthorizationRequest`；未命中工具的保守 fallback 也只有一份。它不作 allow/deny/confirm 决定，
 该决定仍由调用方在 `execute_tool` 之前交给唯一的 `AuthorizationEngine`，不在工具 future 里阻塞。
@@ -159,6 +160,7 @@ CI 以 `scripts/check-crate-dependencies.ps1` 对此表执行内部 crate 依赖
   raw/derived/managed 表示，不执行文件 I/O 或 provider 路由。文件/MIME 探测以
   `media_detection` 为唯一权威实现。
 - `prompts.rs`：系统提示词与各专用 prompt 常量（含 `STT_SYSTEM_PROMPT`）。
+- `retry.rs`：纯恢复策略模型。调用方提供错误分类、尝试次数和当前单调时钟，获得继续/停止决策与退避时间；不执行 sleep、取消、队列、持久化或任务生命周期。
 - `encoding.rs` / `text.rs`：编码解码（UTF-8 → GBK 回退）、文本工具。
 
 **判定标准**：凡被 ≥2 个 crate 共享、且不依赖任何业务逻辑的纯数据/纯函数，放这里。
@@ -167,7 +169,8 @@ OS 句柄和进程生命周期适配不属于该共享契约面，统一归 `hav
 ### 2.2 `haven-llm` —— 模型与媒体能力的唯一实现方
 
 - `adapters/`：按 **`api_style`（线协议）** 分发的 provider 适配与统一 `LlmClient` +
-  `with_retry`。能力矩阵见 `adapters/capabilities.rs`：
+  `with_retry`。LLM error 分类留在 `haven-llm`，attempt/backoff/stop 决策复用
+  `haven-common::retry::RecoveryPolicy`（ADR 0447）。能力矩阵见 `adapters/capabilities.rs`：
   - `openai-chat` / `llama.cpp` → OpenAI Chat Completions；embedding 走 `/embeddings`
   - `openai-responses`（含 DeepSeek Responses thinking echo + `web_search`）；embedding 仍走 `/v1/embeddings`
   - `xai` → OpenAI chat + xAI Live Search `search_parameters`；embedding 走 `/embeddings`
@@ -346,6 +349,7 @@ marker 持久化，不把 provider 网络调用下沉到 Memory；事实维护�
 ### 2.5 `haven-agent` —— ReAct 编排与会话执行
 
 - `react/`：ReAct 循环（`loop` / `turn` / `effects` / `response_cycle` / `stream_step` / `tool_batch` / `tool_batch_execute` / `tool_batch_policy` / `tool_batch_plan` / `context` / `inject` / `turn_end` / `event_boundary` / `retries` / `hooks` / `hook_policy` / `committed_ui` / `transcript` / `state` / `request_context`），按 Run → Turn → ToolBatch 分层；`ReActState` 统一表示当前 run 的 events、canonical、branch points、retry nudge 和 turn cancel，所有边界共享同一运行态。`SessionActor` 为每次 run 创建局部 `ReActState`，将其保存在 actor 持有并轮询的 active-run future 内；actor loop 同时处理该 future 与 mailbox 命令，因此没有 actor 外的 ReAct 循环。`ReActState` 是单次 run 的投影 scratch，不与其它 session 共享；当前它保存在 run future 内，不是 `SessionState` 字段。`SessionState` 持有会话元数据、队列、交互与 messaging 状态。[ADR 0214](adr/0214-react-run-inside-session-actor.md) 记录该单 actor-task 边界及其 mailbox 约束。`loop` 只负责 run 预算、生命周期和按序应用 `EffectBatch`，`turn` 负责模型阶段编排并产出 effect batch，`effects` 是 transcript、branch point 和 pause 的唯一按序应用边界；turn 终态与工具批次的 durable 提交都走这里，turn-start 注入和 stream chunk 仍留在各自边界，`response_cycle` 负责不完整工具参数 JSON 的有限重试；空响应与模型非正常结束会保留部分输出并转为可继续生成的错误，`tool_batch_plan` 固化 assistant 调用顺序和跨层身份，`tool_batch_execute` 负责批次准入、并发执行、取消与每项结果的即时 durable 提交，`tool_batch_policy` 负责失败分类与重试提示，`tool_batch` 在批次完成后按 assistant 调用顺序更新 canonical transcript，并负责工具执行原语、确认生命周期与结果状态。`RequestContext` 从 durable canonical 生成不可变的 provider 请求视图，统一承载 sanitize、retry nudge 和一次性重试指令，不反写 transcript；`context` 只收集有边界的上下文项，`inject` 只经 `apply_transcript` 投影，`turn_end` 只组装最终 effect batch，`event_boundary` 负责事件流完整性与生命周期边界，`hooks` 只定义扩展契约，`hook_policy` 装配生产副作用策略。
+- `react/`：ReAct 循环（`loop` / `turn` / `effects` / `response_cycle` / `stream_step` / `tool_batch` / `tool_batch_execute` / `tool_batch_policy` / `tool_batch_plan` / `context` / `inject` / `turn_end` / `event_boundary` / `retries` / `hooks` / `hook_policy` / `committed_ui` / `transcript` / `state` / `request_context`），按 Run → Turn → ToolBatch 分层；`ReActState` 统一表示当前 run 的 events、canonical、branch points、retry nudge 和 turn cancel，所有边界共享同一运行态。`SessionActor` 为每次 run 创建局部 `ReActState`，将其保存在 actor 持有并轮询的 active-run future 内；actor loop 同时处理该 future 与 mailbox 命令，因此没有 actor 外的 ReAct 循环。`ReActState` 是单次 run 的投影 scratch，不与其它 session 共享；当前它保存在 run future 内，不是 `SessionState` 字段。`SessionState` 持有会话元数据、队列、交互与 messaging 状态。[ADR 0214](adr/0214-react-run-inside-session-actor.md) 记录该单 actor-task 边界及其 mailbox 约束。`loop` 只负责 run 预算、生命周期和按序应用 `EffectBatch`，`turn` 负责模型阶段编排并产出 effect batch，`effects` 是 transcript、branch point 和 pause 的唯一按序应用边界；turn 终态与工具批次的 durable 提交都走这里，turn-start 注入和 stream chunk 仍留在各自边界，`response_cycle` 负责不完整工具参数 JSON 的有限重试；空响应与模型非正常结束会保留部分输出并转为可继续生成的错误，`tool_batch_plan` 固化 assistant 调用顺序和跨层身份，`tool_batch_execute` 负责批次准入、并发执行、取消与每项结果的即时 durable 提交，`tool_batch_policy` 负责失败分类、共享 `RecoveryPolicy` 的 Agent 重试预算与重试提示，`tool_batch` 在批次完成后按 assistant 调用顺序更新 canonical transcript，并负责工具执行原语、确认生命周期与结果状态。`RequestContext` 从 durable canonical 生成不可变的 provider 请求视图，统一承载 sanitize、retry nudge 和一次性重试指令，不反写 transcript；`context` 只收集有边界的上下文项，`inject` 只经 `apply_transcript` 投影，`turn_end` 只组装最终 effect batch，`event_boundary` 负责事件流完整性与生命周期边界，`hooks` 只定义扩展契约，`hook_policy` 装配生产副作用策略。
 - 流式输出由 `stream_step` 产生，`event.rs` 用一个有序 chunk 队列归并 thought/reasoning；provider retry 通过 `agent:stream_reset` 标记新的输出代次，UI 只清理 live stream block，不修改 durable transcript。`streamAggregator` 只合并相邻且同身份的 chunk，保留交错输出顺序；最终 thought/reasoning 投影仍是丢 chunk 时的权威修复路径。
 - **X12 持久化契约**：ReAct 将 live transcript 作为 `SessionCommitted` domain intent 提交给 `SessionStore`；Agent 负责 ReAct 事件 payload 与消息/步骤语义，Memory 将 intent 翻译为物化行。Store 在同一 SQLite 事务中先追加 `session_events`，再写入 intent 指定的 `messages` / `session_steps` 投影；投影失败时整笔回滚，事务提交后才使 cache 失效并广播事件。Agent 随后由 `CommittedUiPublisher` 按 `session_events.sequence` 发布 Thought、Action、Observation、Supplement、ingress MediaPlan 与 Compaction，再更新进程内 canonical。assistant Thought 消息行与 durable event 同事务提交；共享 `step-*` 的 Thought 执行步骤作为可修复的后置 Store 投影写入，失败不会撤销已提交事件或重复发布。流式分片只用 `chunk_seq`；WebSearch、Usage，以及请求准备阶段的 MediaPlan（`event_seq` 为空）不占用这条 durable 序号。同一 sequence 的并行工具卡按 `(eventSeq, stepId)` 去重。交互请求由 `SessionActor` 命令追加为 domain event，Agent 从活动 `session_events` replay 交互状态；若 Ask `tool_result` 已提交而独立 `interaction_requested` 尚未提交，replay 以稳定 `step_id` 恢复 pending Ask，后续 `UserInject(source=answer)` 或 clear event 关闭它（ADR 0440）。resume、rollback 和实时重放均从 event sequence 读取，事件流本身承载恢复游标。rollback 的 event cursor 用于 active transcript 投影，event sequence 用于 append-only timeline；`last_msg_at` 只用于截断物化消息投影，三者由 `SessionStore` 封装且不得互相推导或作为 transcript 真源。多模态输入在 ingress 接受 `MessageAttachment`，但事件/数据库 canonical 投影使用 `MediaAsset → MediaRepresentation → MediaPlan`，事件不保存 inline bytes；OCR/STT 成功追加派生表示且保留 raw asset。合法旁路限于 ingress seed、recovery partial 与终态 action-result；interaction lifecycle event 只承载请求状态和引用 ID，Ask 正文只在 canonical transcript 出现一次；turn-end 防御性 search-final 仍可在既有 ToolCall event 后直接补 message projection，单独跟踪收口。
 - **工具调用身份契约**：同一 assistant tool batch 内，`action_index` 是 provider 调用数组的零基稳定位置，`step_id` 是该调用的持久执行行/卡片身份，`tool_call_id` 是 provider 调用身份；`session_steps` 与 ReAct events 同步保存三者。确认恢复必须按完整身份关联，禁止按工具名、参数或 observation 文本猜测；缺失事件流不再从步骤投影重建 ReAct transcript，旧数据按 reset 边界处理。并行工具的每项结果在完成后单独提交并按 durable sequence 发布 UI；canonical history 与 event replay 按 `step_number + action_index` 排序（ADR 0433）。
@@ -354,6 +358,7 @@ marker 持久化，不把 provider 网络调用下沉到 Memory；事实维护�
 - `layer.rs` + `ingress.rs` / `resume.rs` / `resume_support.rs`：对外入口与 resume 恢复；`resume_support` 只提供确定性的候选合并、悬空工具调用修复和运行时工具选择恢复。
 - `canonical.rs`：发送前 `sanitize_canonical` 闸门。
 - `memory_worker.rs` / `memory_service.rs` / `memory_index.rs` / `prompt_context.rs` / `prompt_renderer.rs` / `prompt.rs` / `compactor.rs` / `rollback.rs` / `rollback_support.rs` / `title.rs` / `event.rs` / `partial.rs`；`memory_service` 统一 typed memory/embedding/cache 边界，`prompt_context` 取得 bounded turn snapshot，`prompt_renderer` 纯渲染 bounded MEMORY fence；`rollback.rs` 编排生命周期与 DB 双时钟，`rollback_support` 只操作 events 和 branch cursor。
+- Memory outbox retry 与 `MemoryRuntime` 恢复退避复用 common 纯策略/退避计算；worker 仍拥有 marker、cursor、等待、取消与恢复时序（ADR 0268、0447）。
 - `fact_extraction.rs`：事实抽取 DTO、LLM 字段 coercion、标签/谓词规范化、prompt
   字段清洗和 JSON array 提取；`MemoryWorker` 负责调度与持久化（ADR 0029、0169）。
 - 调用 `LlmRouter`、执行 `haven-tools` 工具、写 `haven-memory`、
@@ -432,12 +437,15 @@ scheduled fire recovery 以 `action_id` 和单调时钟使用 15 分钟进程内
 其 pending fire 与 lease；background completion lease 过期后可再次 claim，直到 transcript
 durable 后按 `action_result_id` ack。ActionStore 仍各自拥有 outbox、scheduled trigger 的
 事务和 CAS；Tools 不持有 raw `Database` 或安排 SQLite blocking 工作。CAS 仲裁、内存 board、
-终态持久化修复重试判定由 crate-private `ActionPersistenceRetryPolicy` 纯 typed owner 收口：
-background/scheduled worker 均无 retry deadline/预算，保留 1 秒起步、指数退避、30 秒封顶；scheduled
-每次 store 调用内部原有的 3 次/50 ms 重试仍保留。策略不持有 clock、sleep、store 或 terminal arbitration。
+store 重试与终态持久化修复的 typed failure 分类由 crate-private Action retry policies 收口，
+attempt/deadline/backoff/stop 决策复用 `haven-common::retry::RecoveryPolicy`（ADR 0447）：background/scheduled
+worker 均无 retry deadline/预算，保留 1 秒起步、指数退避、30 秒封顶；Action store 的短 retry
+保留 3 次/50 ms，malformed-row repair 在短 retry 耗尽后继续按 1 秒起步、30 秒封顶恢复。
+策略不持有 clock、sleep、store 或 terminal arbitration。
 ActionService 继续按 kind 执行各自 CAS/outbox、内存状态、事件发布、重试等待与生命周期。当前 background
 shell 没有 action-level 执行 timeout；scheduled `due_at` 是触发时刻。AgentLayer 对 background completion
-做 durable transcript 投影/入队的 100 ms 重试与 outbox ack 也保持独立；provider/LLM retry 和 Agent
+做 durable transcript 投影/入队的 100 ms 重试决策复用 common 模型，但投影、等待与 outbox ack 仍由 AgentLayer
+持有；provider/LLM retry 和 Agent
 ReAct tool-call retry 不属于 action persistence retry（ADR 0305、0332、0334）。
 调用边界并不是一个共享的执行 owner：后台 shell 的 child process 由 `ActionService` 启动并回收；
 scheduled fire 由 `ActionService` 按 `Waiting → Running` durable CAS 后交给 AgentLayer，AgentLayer/
@@ -750,6 +758,7 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 | 2026-09-28 | §2.6 App/UI：SessionCompleted/SessionError 的 primary 与 secondary lifecycle payload 共享短期 occurrence identity；聊天页只执行一次 paired terminal cleanup，独立 `session:updated` 仍清理；相同 reducer lifecycle 投影返回原状态（ADR 0386）|
 | 2026-09-28 | §2.3/§2.5 Agent/Tools：AppState 在组合根创建 memory typed stores，生产 MemoryService 不再接收或持有 raw Database；ActionService 稳定 status/list 读取改由 typed projection 对外，JSON 留在工具/event/provider/MCP/Skill 边界（ADR 0383）|
 | 2026-10-03 | §2.5 Agent：并行工具结果逐项 durable commit 并按提交序发布 Observation；批次完成后 canonical 与恢复重放仍按 assistant `action_index` 顺序（ADR 0433）|
+| 2026-10-04 | §2.1 Common：新增跨 crate 纯恢复决策模型；LLM、工具、Agent、Memory、Action 复用有类型的 retry/stop 决策，队列、ack、幂等和取消仍归各自 owner（ADR 0447）|
 | 2026-09-28 | §2.5 Agent：SessionState 持有 `react_run` active future，future 独占 run-local ReActState；actor 同一 select loop 处理 run 与 mailbox，pending await 不借用整份 SessionState（ADR 0382）|
 | 2026-09-29 | §2.5 Agent/Tools：将消息领域服务、JSONL `InboxBus`、协作 ports 与 peer DTO 移入 `haven-messaging`；Agent 提供 SessionSupervisor adapter，Tools 保留模型可见 `agent` 工具入口，消息行为和 JSONL 契约不变（ADR 0396）|
 | 2026-09-27 | §2.6 UI：TaskCenter background/scheduled 活动卡片经共同 `projectActionCard` model 投影，保留 kind details 与当前文案/交互；terminal completion record/transcript 统一尚待 scheduled outcome source 产品决策；通知开关留给独立 Settings/wire 切片（ADR 0373）|
