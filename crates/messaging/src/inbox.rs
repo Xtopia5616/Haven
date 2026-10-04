@@ -862,32 +862,6 @@ impl InboxBus {
         Ok(matching)
     }
 
-    /// Auto-ack every freshly read message with a lightweight `receipt`
-    /// envelope back to its reply target, so the sender learns the message
-    /// was actually read. Receipts are never acked themselves, and messages
-    /// from ourself get no ack. Best-effort: a failed delivery (recipient
-    /// unregistered) is logged and skipped. Called by
-    /// [`crate::MessageClaim::complete`].
-    #[allow(dead_code)]
-    pub(crate) fn send_receipts(&self, name: &str, read: &[Envelope]) -> Vec<SendOutcome> {
-        let mut outcomes = Vec::new();
-        for env in read {
-            if env.r#type == MessageType::Receipt || env.from == name {
-                continue;
-            }
-            let to = env.reply_target();
-            let mut receipt = Envelope::new(name, to, "已读");
-            receipt.r#type = MessageType::Receipt;
-            receipt.in_reply_to = Some(env.id.clone());
-            receipt.reply_address = Some(name.into());
-            match self.deliver(to, &receipt) {
-                Ok(o) => outcomes.push(o),
-                Err(e) => tracing::debug!("inbox: receipt to '{to}' failed: {e}"),
-            }
-        }
-        outcomes
-    }
-
     /// Message history of one agent: unread mailbox messages plus the
     /// read archive, newest first, up to `limit` entries. Read-only view for
     /// the UI / audit (never consumes the mailbox).
@@ -2235,53 +2209,6 @@ mod tests {
         bus.deliver("ses-b", &env_from("ses-a", "ses-b", "hi2"))
             .unwrap();
         assert!(rx.has_changed().unwrap_or(false), "every deliver notifies");
-    }
-
-    #[test]
-    fn send_receipts_acks_read_messages_and_skips_receipts() {
-        let (_dir, bus) = test_bus();
-        bus.register("ses-a", &[]).unwrap();
-        bus.register("ses-b", &[]).unwrap();
-        let m1 = env_from("ses-a", "ses-b", "第一封");
-        let m2 = env_from("ses-a", "ses-b", "第二封");
-        bus.deliver("ses-b", &m1).unwrap();
-        bus.deliver("ses-b", &m2).unwrap();
-
-        let read = claim_and_ack(&bus, "ses-b");
-        assert_eq!(read.len(), 2);
-        let receipts = bus.send_receipts("ses-b", &read);
-        assert_eq!(receipts.len(), 2, "one receipt per read message");
-        assert_eq!(receipts[0].to, "ses-a");
-
-        // The sender sees two receipts, both referencing the originals and
-        // typed `receipt`, carrying the recipient's reply address.
-        let acks = claim_and_ack(&bus, "ses-a");
-        assert_eq!(acks.len(), 2);
-        assert!(acks.iter().all(|e| e.r#type == MessageType::Receipt));
-        assert!(
-            acks.iter()
-                .any(|e| e.in_reply_to.as_deref() == Some(m1.id.as_str()))
-        );
-        assert!(
-            acks.iter()
-                .any(|e| e.in_reply_to.as_deref() == Some(m2.id.as_str()))
-        );
-        assert!(
-            acks.iter()
-                .all(|e| e.from == "ses-b" && e.reply_address.as_deref() == Some("ses-b"))
-        );
-
-        // Receipts are never acked: sending receipts for the receipts
-        // produces nothing.
-        let acks_of_acks = bus.send_receipts("ses-a", &acks);
-        assert!(acks_of_acks.is_empty(), "no receipt loops");
-
-        // Self-messages get no ack either.
-        let self_msg = env_from("ses-b", "ses-b", "给自己");
-        bus.deliver("ses-b", &self_msg).unwrap();
-        let read = claim_and_ack(&bus, "ses-b");
-        assert_eq!(read.len(), 1);
-        assert!(bus.send_receipts("ses-b", &read).is_empty());
     }
 
     #[test]

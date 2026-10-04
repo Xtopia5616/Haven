@@ -831,6 +831,53 @@ mod tests {
     }
 
     #[test]
+    fn completing_a_claim_sends_validated_receipts_without_receipt_loops() {
+        let (_dir, service) = service();
+        service.register("ses-a", &[]).unwrap();
+        service.register("ses-b", &[]).unwrap();
+        let first = Envelope::new("ses-a", "ses-b", "第一封");
+        let second = Envelope::new("ses-a", "ses-b", "第二封");
+        service.deliver("ses-b", &first).unwrap();
+        service.deliver("ses-b", &second).unwrap();
+
+        let outcomes = service.claim("ses-b").unwrap().complete().unwrap();
+        assert_eq!(outcomes.len(), 2, "one receipt per read message");
+        assert!(outcomes.iter().all(|outcome| outcome.to == "ses-a"));
+
+        let receipts = service.claim("ses-a").unwrap();
+        assert_eq!(receipts.envelopes().len(), 2);
+        assert!(receipts.envelopes().iter().all(|envelope| {
+            envelope.r#type == MessageType::Receipt
+                && envelope.from == "ses-b"
+                && envelope.reply_address.as_deref() == Some("ses-b")
+        }));
+        assert!(
+            receipts
+                .envelopes()
+                .iter()
+                .any(|envelope| envelope.in_reply_to.as_deref() == Some(first.id.as_str()))
+        );
+        assert!(
+            receipts
+                .envelopes()
+                .iter()
+                .any(|envelope| envelope.in_reply_to.as_deref() == Some(second.id.as_str()))
+        );
+        assert!(receipts.complete().unwrap().is_empty(), "no receipt loops");
+
+        let self_message = Envelope::new("ses-b", "ses-b", "给自己");
+        service.deliver("ses-b", &self_message).unwrap();
+        assert!(
+            service
+                .claim("ses-b")
+                .unwrap()
+                .complete()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn rejects_unstable_identity_and_routing_mismatch() {
         let (_dir, service) = service();
         service.register("ses-a", &[]).unwrap();
