@@ -221,45 +221,6 @@ impl OpenAiAdapter {
         (out, true)
     }
 
-    #[cfg(test)]
-    #[allow(dead_code)]
-    pub(super) fn split_system_memory(
-        mut messages: Vec<CanonicalMessage>,
-    ) -> (Vec<CanonicalMessage>, bool) {
-        let Some(index) = messages
-            .iter()
-            .position(|message| message.role == CanonicalRole::System)
-        else {
-            return (messages, false);
-        };
-        let Some(ContentPart::Text(text)) = messages[index].content.first() else {
-            return (messages, false);
-        };
-        let Some((stable, session, memory)) = split_system_prompt_cache_sections(text) else {
-            return (messages, false);
-        };
-        if stable.trim().is_empty() || (session.is_empty() && memory.is_empty()) {
-            return (messages, false);
-        }
-        let stable = stable.to_string();
-        let session = session.to_string();
-        let memory = memory.to_string();
-        messages[index].content = vec![ContentPart::text(stable)];
-        if !session.is_empty() {
-            messages.insert(
-                index + 1,
-                CanonicalMessage::system(vec![ContentPart::text(session)]),
-            );
-        }
-        if !memory.is_empty() {
-            // OpenAI-compatible chat endpoints require system messages to
-            // lead the conversation. A trailing user context item is the
-            // compatible position for refreshable, explicitly quoted data.
-            messages.push(CanonicalMessage::user_text(memory));
-        }
-        (messages, true)
-    }
-
     pub(super) fn extract_tool_calls(choice: &OpenAiChoice) -> Vec<CanonicalToolCall> {
         let mut out = Vec::new();
         if let Some(msg) = choice.message.as_ref().or(choice.delta.as_ref())
