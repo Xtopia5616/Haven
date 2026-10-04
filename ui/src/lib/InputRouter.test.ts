@@ -141,6 +141,95 @@ describe('InputRouter context menu', () => {
 	});
 });
 
+describe('InputRouter attachment intake', () => {
+	it('keeps a draft from submitting until selected attachments finish reading', async () => {
+		const onsubmit = vi.fn();
+		const readers: FileReader[] = [];
+		const readAsDataURL = vi
+			.spyOn(FileReader.prototype, 'readAsDataURL')
+			.mockImplementation(function (this: FileReader) {
+				readers.push(this);
+			});
+
+		try {
+			const { container } = render(InputRouter, { onsubmit });
+			const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement;
+			const file = new File(['hello'], 'notes.txt', { type: 'text/plain' });
+			await fireEvent.change(fileInput, { target: { files: [file] } });
+
+			const textarea = screen.getByRole('textbox', { name: '消息输入框' });
+			await fireEvent.input(textarea, { target: { value: 'include my attachment' } });
+			const sendButton = screen.getByRole('button', { name: '发送' }) as HTMLButtonElement;
+			expect(sendButton.disabled).toBe(true);
+
+			await fireEvent.keyDown(textarea, { key: 'Enter' });
+			expect(onsubmit).not.toHaveBeenCalled();
+			expect((textarea as HTMLTextAreaElement).value).toBe('include my attachment');
+			expect(readers).toHaveLength(1);
+
+			Object.defineProperty(readers[0], 'result', {
+				configurable: true,
+				value: 'data:text/plain;base64,aGVsbG8=',
+			});
+			readers[0].dispatchEvent(new ProgressEvent('load'));
+			await vi.waitFor(() => expect(sendButton.disabled).toBe(false));
+
+			await fireEvent.click(sendButton);
+			expect(onsubmit).toHaveBeenCalledWith({
+				text: 'include my attachment',
+				images: [],
+				files: [
+					{ media_type: 'text/plain', data: 'aGVsbG8=', filename: 'notes.txt', size: 5 },
+				],
+			});
+		} finally {
+			readAsDataURL.mockRestore();
+		}
+	});
+
+	it('reserves file slots across overlapping reads', async () => {
+		const onsubmit = vi.fn();
+		const readers: FileReader[] = [];
+		const readAsDataURL = vi
+			.spyOn(FileReader.prototype, 'readAsDataURL')
+			.mockImplementation(function (this: FileReader) {
+				readers.push(this);
+			});
+
+		try {
+			const { container } = render(InputRouter, { maxFiles: 1, onsubmit });
+			const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement;
+			await fireEvent.change(fileInput, {
+				target: { files: [new File(['one'], 'one.txt', { type: 'text/plain' })] },
+			});
+			await fireEvent.change(fileInput, {
+				target: { files: [new File(['two'], 'two.txt', { type: 'text/plain' })] },
+			});
+			expect(readers).toHaveLength(1);
+
+			Object.defineProperty(readers[0], 'result', {
+				configurable: true,
+				value: 'data:text/plain;base64,b25l',
+			});
+			readers[0].dispatchEvent(new ProgressEvent('load'));
+			await vi.waitFor(() => {
+				expect(
+					(screen.getByRole('button', { name: '发送' }) as HTMLButtonElement).disabled,
+				).toBe(false);
+			});
+
+			await fireEvent.click(screen.getByRole('button', { name: '发送' }));
+			expect(onsubmit).toHaveBeenCalledWith({
+				text: '',
+				images: [],
+				files: [{ media_type: 'text/plain', data: 'b25l', filename: 'one.txt', size: 3 }],
+			});
+		} finally {
+			readAsDataURL.mockRestore();
+		}
+	});
+});
+
 describe('InputRouter per-session drafts', () => {
 	const onsubmit = vi.fn();
 

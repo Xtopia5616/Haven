@@ -93,6 +93,11 @@
 	// Ordinary files are persisted by the backend and handed to the agent as a
 	// managed asset; audio/video keep their base64 payload for multimodal chat.
 	let pendingFiles = $state<FileAttachment[]>([]);
+	// Reserve slots while asynchronous reads are in flight so overlapping
+	// picker/paste events cannot exceed the configured attachment limits.
+	let pendingImageReads = 0;
+	let pendingFileReads = 0;
+	let pendingAttachmentReads = $state(0);
 	// Single hidden picker for both images and files; the picked items are
 	// split by type on selection (images -> pendingImages, rest -> pendingFiles).
 	let attachFileInput = $state<HTMLInputElement | null>(null);
@@ -270,21 +275,28 @@
 
 	async function addPendingImages(files: FileList | File[]) {
 		if (!files || files.length === 0) return;
-		const room = maxImages - pendingImages.length;
+		const room = maxImages - pendingImages.length - pendingImageReads;
 		if (room <= 0) {
 			addNotification(`最多支持 ${maxImages} 张图片`, 'error', 3000);
 			return;
 		}
 		const list: File[] = Array.from(files).slice(0, room);
+		const imageFiles = list.filter(isImageFile);
 		for (const f of list) {
 			if (!isImageFile(f)) {
 				addNotification(`不支持的文件类型: ${f.name}`, 'error', 3000);
-				continue;
 			}
+		}
+		pendingImageReads += imageFiles.length;
+		pendingAttachmentReads += imageFiles.length;
+		for (const f of imageFiles) {
 			try {
 				pendingImages = [...pendingImages, await fileToAttachment(f)];
 			} catch (e) {
 				reportError(e, { context: 'InputRouter', message: '图片读取失败' });
+			} finally {
+				pendingImageReads -= 1;
+				pendingAttachmentReads -= 1;
 			}
 		}
 	}
@@ -320,12 +332,13 @@
 	// are capped at maxFiles / maxFileBytes, mirroring server validation.
 	async function addPendingFiles(files: FileList | File[]) {
 		if (!files || files.length === 0) return;
-		const room = maxFiles - pendingFiles.length;
+		const room = maxFiles - pendingFiles.length - pendingFileReads;
 		if (room <= 0) {
 			addNotification(`最多支持 ${maxFiles} 个文件`, 'error', 3000);
 			return;
 		}
 		const list: File[] = Array.from(files).slice(0, room);
+		const acceptedFiles = list.filter((f) => f.size <= maxFileBytes);
 		for (const f of list) {
 			if (f.size > maxFileBytes) {
 				addNotification(
@@ -333,8 +346,11 @@
 					'error',
 					3000,
 				);
-				continue;
 			}
+		}
+		pendingFileReads += acceptedFiles.length;
+		pendingAttachmentReads += acceptedFiles.length;
+		for (const f of acceptedFiles) {
 			try {
 				const { media_type, data } = await readAsAttachment(f);
 				pendingFiles = [
@@ -343,6 +359,9 @@
 				];
 			} catch (e) {
 				reportError(e, { context: 'InputRouter', message: '文件读取失败' });
+			} finally {
+				pendingFileReads -= 1;
+				pendingAttachmentReads -= 1;
 			}
 		}
 	}
@@ -368,6 +387,10 @@
 	// single normalized payload and forward it to the host, then clear the
 	// draft. The host owns the actual submission side effects.
 	function handleSubmit() {
+		if (pendingAttachmentReads > 0) {
+			addNotification('附件仍在读取，请完成后再发送', 'info');
+			return;
+		}
 		const text = transcriptInput.trim();
 		const images = pendingImages;
 		const files = pendingFiles;
@@ -653,9 +676,17 @@
 				size="toolbar"
 				variant={stopMode ? 'danger' : 'primary'}
 				label={hasInput ? '发送' : stopMode ? '中断输出' : '发送'}
-				title={hasInput ? '发送' : stopMode ? '中断当前输出' : '发送'}
-				ariaBusy={interrupting}
-				disabled={interrupting || (!hasInput && !isGenerating && !sessionRunning)}
+				title={pendingAttachmentReads > 0
+					? '附件正在读取'
+					: hasInput
+						? '发送'
+						: stopMode
+							? '中断当前输出'
+							: '发送'}
+				ariaBusy={interrupting || pendingAttachmentReads > 0}
+				disabled={interrupting ||
+					pendingAttachmentReads > 0 ||
+					(!hasInput && !isGenerating && !sessionRunning)}
 				icon={hasInput ? 'send' : stopMode ? 'stop' : 'send'}
 				onclick={stopMode ? () => onstop?.() : handleSubmit}
 			></MaterialIconButton>
