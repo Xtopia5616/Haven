@@ -34,7 +34,7 @@ impl RingBuffer {
     }
 
     pub fn push(&mut self, samples: &[f32]) {
-        if samples.is_empty() {
+        if samples.is_empty() || self.cap == 0 {
             return;
         }
         // The queue keeps the last `cap` samples of the combined stream: if
@@ -157,6 +157,20 @@ mod tests {
         rb.clear();
         assert_eq!(rb.len(), 0);
         assert!(rb.drain().is_empty());
+    }
+
+    #[test]
+    fn zero_capacity_buffer_ignores_pushes() {
+        let mut rb = RingBuffer::new(0);
+        rb.push(&[1.0, 2.0, 3.0]);
+
+        assert_eq!(rb.capacity(), 0);
+        assert_eq!(rb.len(), 0);
+        assert!(rb.is_empty());
+        assert_eq!(rb.rms(), 0.0);
+        assert!(rb.drain().is_empty());
+        rb.clear();
+        assert_eq!(rb.len(), 0);
     }
 
     #[test]
