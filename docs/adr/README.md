@@ -452,3 +452,4 @@
 - [0467：将 Provider 工具 Schema 投影归入 adapter 边界](0467-llm-tool-schema-projection-module.md)
 - [0468：隔离 MemoryWorker 定期维护 pass](0468-memory-worker-maintenance-pass-module.md)
 - [0469：隔离 App 托管媒体文件生命周期](0469-app-managed-media-lifecycle-module.md)
+- [0470：协调生成媒体写入与 GC](0470-generated-media-write-gc-gate.md)

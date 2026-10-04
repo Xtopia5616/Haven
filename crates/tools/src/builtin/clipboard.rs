@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio_util::sync::CancellationToken;
 
+use crate::asset_registry::GeneratedMediaWriteGuard;
 use crate::{ManagedAsset, ManagedAssetRegistry, Tool, ToolConcurrency, ToolResult};
 
 const MAX_CLIPBOARD_FILES: usize = 32;
@@ -321,14 +322,23 @@ impl ClipboardTool {
                         ))
                     }
                     ClipboardRead::Image(image) => {
-                        let asset = save_image_asset(&self.managed_assets, image)?;
+                        let write_guard = tokio::select! {
+                            _ = cancel.cancelled() => anyhow::bail!("cancelled"),
+                            guard = self.managed_assets.lock_generated_media_write() => guard,
+                        };
+                        let registry = self.managed_assets.clone();
+                        let cancel_for_save = cancel.clone();
+                        let asset = tokio::task::spawn_blocking(move || {
+                            save_image_asset(&registry, &write_guard, image, &cancel_for_save)
+                        })
+                        .await??;
                         Ok(ToolResult::ok(serde_json::json!({
                             "operation": "read", "format": "image", "asset_id": asset.asset_id,
                             "media_type": asset.media_type, "size_bytes": asset.size_bytes,
                         })))
                     }
                     ClipboardRead::Files(paths) => {
-                        let assets = copy_file_assets(&self.managed_assets, paths)?;
+                        let assets = copy_file_assets(&self.managed_assets, paths, &cancel).await?;
                         Ok(ToolResult::ok(serde_json::json!({
                             "operation": "read", "format": "files",
                             "asset_ids": assets.iter().map(|asset| asset.asset_id.clone()).collect::<Vec<_>>(),
@@ -513,45 +523,89 @@ fn write_clipboard(
 
 fn save_image_asset(
     registry: &ManagedAssetRegistry,
+    _write_guard: &GeneratedMediaWriteGuard,
     image: arboard::ImageData<'static>,
+    cancel: &CancellationToken,
 ) -> anyhow::Result<ManagedAsset> {
     let root = default_generated_media_dir();
     std::fs::create_dir_all(&root)?;
     let path = root.join(format!("{}.png", haven_common::types::new_id("file")));
-    let rgba = image::RgbaImage::from_raw(
-        image.width as u32,
-        image.height as u32,
-        image.bytes.into_owned(),
-    )
-    .ok_or_else(|| anyhow::anyhow!("clipboard image dimensions do not match pixel data"))?;
-    let mut file = std::fs::File::create(&path)?;
-    image::DynamicImage::ImageRgba8(rgba).write_to(&mut file, image::ImageFormat::Png)?;
-    super::media::register_generated_asset(
-        registry,
-        None,
-        &root,
-        path,
-        Some("clipboard.png".into()),
-        "image/png",
-        file.metadata()?.len(),
-    )
+    if cancel.is_cancelled() {
+        anyhow::bail!("cancelled");
+    }
+    let mut created_file = false;
+    let result = (|| -> anyhow::Result<ManagedAsset> {
+        let rgba = image::RgbaImage::from_raw(
+            image.width as u32,
+            image.height as u32,
+            image.bytes.into_owned(),
+        )
+        .ok_or_else(|| anyhow::anyhow!("clipboard image dimensions do not match pixel data"))?;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)?;
+        created_file = true;
+        image::DynamicImage::ImageRgba8(rgba).write_to(&mut file, image::ImageFormat::Png)?;
+        use std::io::Write;
+        file.flush()?;
+        drop(file);
+        if cancel.is_cancelled() {
+            anyhow::bail!("cancelled");
+        }
+        let size = std::fs::metadata(&path)?.len();
+        super::media::register_generated_asset(
+            registry,
+            _write_guard,
+            None,
+            &root,
+            path.clone(),
+            Some("clipboard.png".into()),
+            "image/png",
+            size,
+        )
+    })();
+    if created_file && result.is_err() {
+        let _ = std::fs::remove_file(&path);
+    }
+    result
 }
 
-fn copy_file_assets(
+async fn copy_file_assets(
     registry: &ManagedAssetRegistry,
     paths: Vec<PathBuf>,
+    cancel: &CancellationToken,
 ) -> anyhow::Result<Vec<ManagedAsset>> {
-    let paths = validate_file_paths(
-        paths
-            .into_iter()
-            .map(|path| path.to_string_lossy().into_owned())
-            .collect(),
-    )?;
-    let root = default_generated_media_dir();
-    std::fs::create_dir_all(&root)?;
+    let paths: Vec<String> = paths
+        .into_iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect();
+    let cancel_for_validation = cancel.clone();
+    let validated = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<_>> {
+        if cancel_for_validation.is_cancelled() {
+            return Ok(None);
+        }
+        let paths =
+            validate_file_paths_cancellable(paths, || cancel_for_validation.is_cancelled())?;
+        if cancel_for_validation.is_cancelled() {
+            return Ok(None);
+        }
+        let root = default_generated_media_dir();
+        std::fs::create_dir_all(&root)?;
+        Ok(Some((paths, root)))
+    })
+    .await??;
+    let Some((paths, root)) = validated else {
+        anyhow::bail!("cancelled");
+    };
     let mut assets = Vec::with_capacity(paths.len());
     for source in paths {
-        let metadata = std::fs::metadata(&source)?;
+        if cancel.is_cancelled() {
+            anyhow::bail!("cancelled");
+        }
+        let source_for_metadata = source.clone();
+        let metadata =
+            tokio::task::spawn_blocking(move || std::fs::metadata(source_for_metadata)).await??;
         if metadata.len() > MAX_CLIPBOARD_FILE_BYTES {
             anyhow::bail!(
                 "clipboard file exceeds {} byte limit",
@@ -567,36 +621,114 @@ fn copy_file_assets(
             haven_common::types::new_id("file"),
             filename
         ));
-        std::fs::copy(&source, &destination)?;
         let media_type = mime_from_path(&source);
-        assets.push(super::media::register_generated_asset(
-            registry,
-            None,
-            &root,
-            destination,
-            Some(filename.to_string()),
-            media_type,
-            metadata.len(),
-        )?);
+        let write_guard = tokio::select! {
+            _ = cancel.cancelled() => anyhow::bail!("cancelled"),
+            guard = registry.lock_generated_media_write() => guard,
+        };
+        let registry = registry.clone();
+        let root = root.clone();
+        let filename = filename.to_string();
+        let source_for_copy = source.clone();
+        let destination_for_copy = destination.clone();
+        let cancel_for_copy = cancel.clone();
+        let asset = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<ManagedAsset>> {
+            use std::io::{Read, Write};
+
+            if cancel_for_copy.is_cancelled() {
+                return Ok(None);
+            }
+            let mut created_file = false;
+            let result = (|| -> anyhow::Result<Option<ManagedAsset>> {
+                let mut source_file = std::fs::File::open(&source_for_copy)?;
+                let source_metadata = source_file.metadata()?;
+                if source_metadata.len() > MAX_CLIPBOARD_FILE_BYTES {
+                    anyhow::bail!(
+                        "clipboard file exceeds {} byte limit",
+                        MAX_CLIPBOARD_FILE_BYTES
+                    );
+                }
+                let mut destination_file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&destination_for_copy)?;
+                created_file = true;
+                let mut copied_bytes = 0_u64;
+                let mut buffer = [0_u8; 64 * 1024];
+                loop {
+                    if cancel_for_copy.is_cancelled() {
+                        return Ok(None);
+                    }
+                    let read = source_file.read(&mut buffer)?;
+                    if read == 0 {
+                        break;
+                    }
+                    copied_bytes += read as u64;
+                    if copied_bytes > MAX_CLIPBOARD_FILE_BYTES {
+                        anyhow::bail!(
+                            "clipboard file exceeds {} byte limit",
+                            MAX_CLIPBOARD_FILE_BYTES
+                        );
+                    }
+                    if cancel_for_copy.is_cancelled() {
+                        return Ok(None);
+                    }
+                    destination_file.write_all(&buffer[..read])?;
+                }
+                destination_file.flush()?;
+                drop(destination_file);
+                if cancel_for_copy.is_cancelled() {
+                    return Ok(None);
+                }
+                std::fs::set_permissions(&destination_for_copy, source_metadata.permissions())?;
+                let asset = super::media::register_generated_asset(
+                    &registry,
+                    &write_guard,
+                    None,
+                    &root,
+                    destination_for_copy.clone(),
+                    Some(filename),
+                    media_type,
+                    copied_bytes,
+                )?;
+                Ok(Some(asset))
+            })();
+            if created_file && !matches!(&result, Ok(Some(_))) {
+                let _ = std::fs::remove_file(&destination_for_copy);
+            }
+            result
+        })
+        .await??;
+        let asset = asset.ok_or_else(|| anyhow::anyhow!("cancelled"))?;
+        assets.push(asset);
     }
     Ok(assets)
 }
 
 fn validate_file_paths(paths: Vec<String>) -> anyhow::Result<Vec<PathBuf>> {
+    validate_file_paths_cancellable(paths, || false)
+}
+
+fn validate_file_paths_cancellable(
+    paths: Vec<String>,
+    mut is_cancelled: impl FnMut() -> bool,
+) -> anyhow::Result<Vec<PathBuf>> {
     if paths.is_empty() || paths.len() > MAX_CLIPBOARD_FILES {
         anyhow::bail!("files must contain 1..={MAX_CLIPBOARD_FILES} entries");
     }
-    paths
-        .into_iter()
-        .map(|path| {
-            let path = PathBuf::from(path);
-            let metadata = std::fs::metadata(&path)?;
-            if !metadata.is_file() {
-                anyhow::bail!("clipboard path is not a file: {}", path.display());
-            }
-            Ok(path)
-        })
-        .collect()
+    let mut validated = Vec::with_capacity(paths.len());
+    for path in paths {
+        if is_cancelled() {
+            anyhow::bail!("cancelled");
+        }
+        let path = PathBuf::from(path);
+        let metadata = std::fs::metadata(&path)?;
+        if !metadata.is_file() {
+            anyhow::bail!("clipboard path is not a file: {}", path.display());
+        }
+        validated.push(path);
+    }
+    Ok(validated)
 }
 
 fn mime_from_path(path: &Path) -> &'static str {

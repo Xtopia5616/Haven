@@ -138,7 +138,7 @@ pub use action_service::{
 };
 pub use action_types::{ScheduleMode, ScheduledActionFired, ScheduledActionSpec};
 pub use adapters::{McpToolAdapter, SkillToolAdapter};
-pub use asset_registry::{ManagedAsset, ManagedAssetRegistry};
+pub use asset_registry::{GeneratedMediaCleanupGuard, ManagedAsset, ManagedAssetRegistry};
 pub use builtin::{
     AdminCapability, AdminContext, AdminOperationError, AdminRequest, AdminSurfaces, AgentTool,
     ConfigAdminContext, ConfigAdminOperation, ConfigAdminTool, ConfigOperationArgs,

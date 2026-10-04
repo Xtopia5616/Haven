@@ -142,9 +142,12 @@ async fn cleanup_unreferenced_managed_media_with_references(
 ) -> Result<(usize, usize), String> {
     let referenced_paths =
         referenced_paths.map_err(|error| format!("读取会话附件引用失败: {error}"))?;
-    let _write_guard = upload_write_lock().lock().await;
+    let upload_guard = upload_write_lock().lock().await;
+    let generated_media_guard = registry.lock_generated_media_cleanup().await;
     tokio::task::spawn_blocking(move || {
-        cleanup_media_roots(
+        let _upload_guard = upload_guard;
+        cleanup_media_roots_with_generated_guard(
+            generated_media_guard,
             || {
                 cleanup_unreferenced_generated_media_sync(
                     &generated_root,
@@ -165,12 +168,31 @@ async fn cleanup_unreferenced_managed_media_with_references(
     .map_err(|error| format!("受管媒体清理任务失败: {error}"))?
 }
 
+#[cfg(test)]
 fn cleanup_media_roots(
     cleanup_generated: impl FnOnce() -> Result<usize, String>,
     cleanup_uploads: impl FnOnce() -> Result<usize, String>,
 ) -> Result<(usize, usize), String> {
     let generated = cleanup_generated();
     let uploads = cleanup_uploads();
+    combine_media_cleanup_results(generated, uploads)
+}
+
+fn cleanup_media_roots_with_generated_guard(
+    generated_media_guard: haven_tools::GeneratedMediaCleanupGuard,
+    cleanup_generated: impl FnOnce() -> Result<usize, String>,
+    cleanup_uploads: impl FnOnce() -> Result<usize, String>,
+) -> Result<(usize, usize), String> {
+    let generated = cleanup_generated();
+    drop(generated_media_guard);
+    let uploads = cleanup_uploads();
+    combine_media_cleanup_results(generated, uploads)
+}
+
+fn combine_media_cleanup_results(
+    generated: Result<usize, String>,
+    uploads: Result<usize, String>,
+) -> Result<(usize, usize), String> {
     match (generated, uploads) {
         (Ok(generated), Ok(uploads)) => Ok((uploads, generated)),
         (Err(error), Ok(_)) => Err(format!("清理生成媒体目录失败: {error}")),
@@ -843,6 +865,48 @@ mod tests {
 
         assert!(uploads_attempted);
         assert!(error.contains("generated root is unreadable"));
+    }
+
+    #[tokio::test]
+    async fn test_cancelled_gc_keeps_registry_gate_until_blocking_generated_sweep_ends() {
+        let registry = haven_tools::ManagedAssetRegistry::default();
+        let generated_guard = registry.lock_generated_media_cleanup().await;
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let cleaner = tokio::spawn(async move {
+            tokio::task::spawn_blocking(move || {
+                cleanup_media_roots_with_generated_guard(
+                    generated_guard,
+                    || {
+                        entered_tx.send(()).unwrap();
+                        release_rx.recv().unwrap();
+                        Ok(0)
+                    },
+                    || Ok(0),
+                )
+                .unwrap();
+            })
+            .await
+            .unwrap();
+        });
+        entered_rx.await.unwrap();
+        cleaner.abort();
+        assert!(cleaner.await.unwrap_err().is_cancelled());
+
+        let waiting_registry = registry.clone();
+        let (waiting_tx, waiting_rx) = tokio::sync::oneshot::channel();
+        let waiting_cleaner = tokio::spawn(async move {
+            waiting_tx.send(()).unwrap();
+            let _guard = waiting_registry.lock_generated_media_cleanup().await;
+        });
+        waiting_rx.await.unwrap();
+        assert!(
+            !waiting_cleaner.is_finished(),
+            "the blocking generated sweep still owns the cleanup gate"
+        );
+
+        release_tx.send(()).unwrap();
+        waiting_cleaner.await.unwrap();
     }
 
     #[tokio::test]

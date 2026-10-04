@@ -12,7 +12,7 @@
 
 审计同时确认两项直接属于文件生命周期的漂移：剪贴板复制文件采用 `file-{uuid32}-{filename}`，但 generated-media 清理只接受 `file-{uuid32}.{extension}`；staging cleaner 未先拒绝 uploads 根目录本身的符号链接/重解析点。两个媒体根目录的扫描目前按顺序执行并短路，第一根扫描失败会跳过第二根。
 
-另有一个不同边界的并发风险：`haven-tools` 的媒体 producer 在文件落地后才注册 lease，不共享 App 的 `UPLOAD_WRITE_LOCK`，因此文件写入到 registry 登记之间存在窄窗口。本 ADR 不声称解决跨 crate producer 与 GC 的原子性；该问题保留为独立候选，不通过移动代码或暗增共享锁掩盖。
+另有一个不同边界的并发风险：`haven-tools` 的媒体 producer 在文件落地后才注册 lease，不共享 App 的 `UPLOAD_WRITE_LOCK`，因此文件写入到 registry 登记之间存在窄窗口。本 ADR 不声称解决跨 crate producer 与 GC 的原子性；该问题由后续 [ADR 0470](0470-generated-media-write-gc-gate.md) 独立处理，不通过移动代码或暗增共享锁掩盖。
 
 ## 决定
 

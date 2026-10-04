@@ -159,24 +159,55 @@ impl AudioRuntime {
         let path = self
             .capture_root
             .join(format!("{}.wav", haven_common::types::new_id("file")));
-        if let Err(error) = tokio::fs::write(&path, &wav).await {
-            let _ = tokio::fs::remove_file(&path).await;
-            return Err(error.into());
-        }
-        let asset = match register_generated_asset(
-            &self.managed_assets,
-            params.session_id.as_deref(),
-            &self.capture_root,
-            path.clone(),
-            Some("recording.wav".into()),
-            "audio/wav",
-            wav.len() as u64,
-        ) {
-            Ok(asset) => asset,
-            Err(error) => {
-                let _ = tokio::fs::remove_file(&path).await;
-                return Err(error);
+        let write_guard = tokio::select! {
+            _ = cancel.cancelled() => {
+                return Err(anyhow::anyhow!("media record: recording cancelled"));
             }
+            guard = self.managed_assets.lock_generated_media_write() => guard,
+        };
+        let registry = self.managed_assets.clone();
+        let session_id = params.session_id.clone();
+        let root = self.capture_root.clone();
+        let wav_size = wav.len() as u64;
+        let cancel_for_write = cancel.clone();
+        let asset = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<ManagedAsset>> {
+            use std::io::Write;
+
+            if cancel_for_write.is_cancelled() {
+                return Ok(None);
+            }
+            let mut created_file = false;
+            let result = (|| -> anyhow::Result<Option<ManagedAsset>> {
+                let mut file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&path)?;
+                created_file = true;
+                file.write_all(&wav)?;
+                drop(file);
+                if cancel_for_write.is_cancelled() {
+                    return Ok(None);
+                }
+                let asset = register_generated_asset(
+                    &registry,
+                    &write_guard,
+                    session_id.as_deref(),
+                    &root,
+                    path.clone(),
+                    Some("recording.wav".into()),
+                    "audio/wav",
+                    wav_size,
+                )?;
+                Ok(Some(asset))
+            })();
+            if created_file && !matches!(&result, Ok(Some(_))) {
+                let _ = std::fs::remove_file(&path);
+            }
+            result
+        })
+        .await??;
+        let Some(asset) = asset else {
+            return Err(anyhow::anyhow!("media record: recording cancelled"));
         };
 
         Ok(RecordedAudio {

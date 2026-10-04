@@ -672,16 +672,18 @@ fn generation_is_explicit_and_capability_pruned() {
     );
 }
 
-#[test]
-fn generated_asset_is_registered_with_expiry_and_opaque_metadata() {
+#[tokio::test]
+async fn generated_asset_is_registered_with_expiry_and_opaque_metadata() {
     let root = TempDir::new().unwrap();
     let path = root
         .path()
         .join("file-0123456789abcdef0123456789abcdef.png");
-    std::fs::write(&path, b"png-bytes").unwrap();
     let registry = ManagedAssetRegistry::default();
+    let write_guard = registry.lock_generated_media_write().await;
+    std::fs::write(&path, b"png-bytes").unwrap();
     let asset = register_generated_asset(
         &registry,
+        &write_guard,
         None,
         root.path(),
         path.clone(),

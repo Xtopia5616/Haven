@@ -8,6 +8,7 @@ use std::path::Path;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
+use crate::asset_registry::GeneratedMediaWriteGuard;
 use crate::{ManagedAsset, ManagedAssetRegistry, ToolResult};
 use haven_common::media::MediaRepresentationKind;
 
@@ -71,60 +72,74 @@ impl MediaTool {
             anyhow::bail!("image generation returned a non-image media type");
         }
         let root = default_generated_media_dir();
-        tokio::fs::create_dir_all(&root).await?;
-        if cancel.is_cancelled() {
-            return Ok(ToolResult::cancelled("image generation cancelled"));
-        }
         let extension = extension_for_media_type(&image.media_type);
         let path = root.join(format!(
             "{}.{}",
             haven_common::types::new_id("file"),
             extension
         ));
-        let write_path = path.clone();
-        let bytes = image.data;
-        tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
-            use std::io::Write;
-            let mut file = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&write_path)?;
-            if let Err(error) = file.write_all(&bytes).and_then(|()| file.sync_all()) {
-                drop(file);
-                let _ = std::fs::remove_file(&write_path);
-                return Err(error.into());
+        let write_guard = tokio::select! {
+            _ = cancel.cancelled() => {
+                return Ok(ToolResult::cancelled("image generation cancelled"));
             }
-            Ok(())
-        })
-        .await??;
-        if cancel.is_cancelled() {
-            let _ = tokio::fs::remove_file(&path).await;
-            return Ok(ToolResult::cancelled("image generation cancelled"));
-        }
-        let size = tokio::fs::metadata(&path).await?.len();
-        if cancel.is_cancelled() {
-            let _ = tokio::fs::remove_file(&path).await;
-            return Ok(ToolResult::cancelled("image generation cancelled"));
-        }
-        let asset = match register_generated_asset(
-            &self.managed_assets,
-            params.session_id.as_deref(),
-            &root,
-            path.clone(),
-            Some(
-                path.file_name()
+            guard = self.managed_assets.lock_generated_media_write() => guard,
+        };
+        let registry = self.managed_assets.clone();
+        let session_id = params.session_id.clone();
+        let media_type = image.media_type;
+        let bytes = image.data;
+        let cancel_for_write = cancel.clone();
+        let asset = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<ManagedAsset>> {
+            use std::io::Write;
+
+            if cancel_for_write.is_cancelled() {
+                return Ok(None);
+            }
+            let mut created_file = false;
+            let result = (|| -> anyhow::Result<Option<ManagedAsset>> {
+                std::fs::create_dir_all(&root)?;
+                let mut file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&path)?;
+                created_file = true;
+                if let Err(error) = file.write_all(&bytes).and_then(|()| file.sync_all()) {
+                    drop(file);
+                    return Err(error.into());
+                }
+                drop(file);
+                if cancel_for_write.is_cancelled() {
+                    return Ok(None);
+                }
+                let size = std::fs::metadata(&path)?.len();
+                if cancel_for_write.is_cancelled() {
+                    return Ok(None);
+                }
+                let filename = path
+                    .file_name()
                     .unwrap_or_default()
                     .to_string_lossy()
-                    .into_owned(),
-            ),
-            &image.media_type,
-            size,
-        ) {
-            Ok(asset) => asset,
-            Err(error) => {
-                let _ = tokio::fs::remove_file(&path).await;
-                return Err(error);
+                    .into_owned();
+                let asset = register_generated_asset(
+                    &registry,
+                    &write_guard,
+                    session_id.as_deref(),
+                    &root,
+                    path.clone(),
+                    Some(filename),
+                    &media_type,
+                    size,
+                )?;
+                Ok(Some(asset))
+            })();
+            if created_file && !matches!(&result, Ok(Some(_))) {
+                let _ = std::fs::remove_file(&path);
             }
+            result
+        })
+        .await??;
+        let Some(asset) = asset else {
+            return Ok(ToolResult::cancelled("image generation cancelled"));
         };
         let output = self.media_result_output(
             super::MediaOperation::Generate,
@@ -139,8 +154,11 @@ impl MediaTool {
 /// Register a generated tool output in the same lifecycle used by generated
 /// attachments. Window capture uses this helper so its asset id is usable by
 /// the media tool without introducing a second storage/cleanup path.
+// The explicit write permit is part of this helper's lifecycle contract.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn register_generated_asset(
     registry: &ManagedAssetRegistry,
+    _write_guard: &GeneratedMediaWriteGuard,
     session_id: Option<&str>,
     root: &Path,
     path: std::path::PathBuf,

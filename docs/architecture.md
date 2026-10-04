@@ -593,8 +593,11 @@ limit、创建时间倒序和 errors 的 status 过滤顺序保持原样。组�
 - `commands/managed_media.rs`：拥有 App transcript 上传的额度、staging、原子提交、文件名/路径校验，
   以及 uploads/generated-media 两根目录和 staging 的清理。一个 App 内部写锁串行化上传与清理；
   两根媒体目录按 `SessionStore` durable refs、`ManagedAssetRegistry` lease 与 detached TTL 对账。
-  `app_state.rs` 仍拥有启动/每日调度，session 命令仍在历史删除成功后触发清理；Tools registry 和媒体
-  producer 不迁入此模块（ADR 0403、0469）。
+  generated-media 清理在 lease/TTL 快照前获取 registry 独占 gate 并持有到 unlink 完成；Tools
+  producer 从目标文件创建前持 registry 共享 permit 到 asset 登记完成。App 内部上传锁仍负责 uploads
+  与 staging 生命周期，不暴露给 Tools；剪贴板批次按单文件持 permit（ADR 0470）。`app_state.rs`
+  仍拥有启动/每日调度，session 命令仍在历史删除成功后触发清理；Tools registry 和媒体 producer
+  不迁入此模块（ADR 0403、0469、0470）。
 - `event_bridge.rs`：`AgentEvent` → 前端 channel 和显式 wire DTO 映射，包含 action
   生命周期投影与通知副通道。
 - `handlers.rs`：`ShellHandler` / `InputHandler` 的 Tauri、输入管线和托盘适配，包含

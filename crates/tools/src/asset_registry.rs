@@ -34,9 +34,45 @@ pub struct ManagedAssetRegistry {
     /// Assets registered just before a new session id is allocated. These
     /// short-lived ingress leases close the pre-session handoff window.
     pending_assets: Arc<RwLock<HashSet<String>>>,
+    /// Serializes generated-media writes and GC from file creation through
+    /// registry registration, and from the GC snapshot through unlink.
+    generated_media_gate: Arc<tokio::sync::RwLock<()>>,
+}
+
+/// Exclusive access to the generated-media cleanup window.
+///
+/// The app holds this from before it snapshots leases/TTLs until its generated
+/// media scan and unlink pass has finished.
+#[must_use = "the cleanup guard must live through the generated-media scan and unlink pass"]
+pub struct GeneratedMediaCleanupGuard {
+    _guard: tokio::sync::OwnedRwLockWriteGuard<()>,
+}
+
+/// Shared access held by a producer while it writes and registers one file.
+#[must_use = "the write guard must live through generated-media file registration"]
+pub(crate) struct GeneratedMediaWriteGuard {
+    _guard: tokio::sync::OwnedRwLockReadGuard<()>,
 }
 
 impl ManagedAssetRegistry {
+    /// Enter the generated-media GC window. Producers that already hold a
+    /// write guard finish registration first; later producers wait until the
+    /// caller has completed its snapshot and unlink pass.
+    pub async fn lock_generated_media_cleanup(&self) -> GeneratedMediaCleanupGuard {
+        GeneratedMediaCleanupGuard {
+            _guard: self.generated_media_gate.clone().write_owned().await,
+        }
+    }
+
+    /// Reserve the generated-media lifecycle while a producer creates and
+    /// registers one file. Kept crate-private so the registry remains the
+    /// owner of generated-media producer coordination.
+    pub(crate) async fn lock_generated_media_write(&self) -> GeneratedMediaWriteGuard {
+        GeneratedMediaWriteGuard {
+            _guard: self.generated_media_gate.clone().read_owned().await,
+        }
+    }
+
     /// Register a host-created asset after re-validating its path.
     ///
     /// The caller must supply the dedicated managed-assets root. This second
@@ -750,5 +786,163 @@ mod tests {
         assert_eq!(registry.prune_paths_under(&batch), 1);
         assert!(registry.leased_paths().is_empty());
         assert_eq!(registry.release_session("ses-active"), 0);
+    }
+
+    #[tokio::test]
+    async fn generated_media_gc_waits_for_write_and_registration() {
+        let root = TempDir::new().unwrap();
+        let path = root.path().join("file-generated.png");
+        let registry = ManagedAssetRegistry::default();
+        let write_guard = registry.lock_generated_media_write().await;
+        std::fs::write(&path, b"complete image").unwrap();
+
+        let cleaner_registry = registry.clone();
+        let cleaner_path = path.clone();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let cleaner = tokio::spawn(async move {
+            started_tx.send(()).unwrap();
+            let _cleanup_guard = cleaner_registry.lock_generated_media_cleanup().await;
+            cleaner_registry
+                .leased_paths()
+                .iter()
+                .any(|leased_path| path_is_equal(leased_path, &cleaner_path))
+        });
+        started_rx.await.unwrap();
+        assert!(
+            !cleaner.is_finished(),
+            "GC must wait for producer registration"
+        );
+
+        assert!(registry.register_under_root_for_session(
+            "ses-generated",
+            root.path(),
+            "asset-generated",
+            path.clone(),
+            Some("generated.png".into()),
+            "image/png",
+        ));
+        drop(write_guard);
+
+        assert!(cleaner.await.unwrap());
+        assert!(path.exists());
+    }
+
+    #[tokio::test]
+    async fn aborted_producer_keeps_gc_outside_active_blocking_write() {
+        use std::io::Write;
+
+        let root = TempDir::new().unwrap();
+        let path = root.path().join("file-cancelled-producer.png");
+        let producer_registry = ManagedAssetRegistry::default();
+        let worker_registry = producer_registry.clone();
+        let worker_root = root.path().to_path_buf();
+        let worker_path = path.clone();
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let producer = tokio::spawn(async move {
+            let write_guard = worker_registry.lock_generated_media_write().await;
+            tokio::task::spawn_blocking(move || {
+                let mut file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&worker_path)
+                    .unwrap();
+                file.write_all(b"partial").unwrap();
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                file.write_all(b" complete").unwrap();
+                drop(file);
+                assert!(worker_registry.register_under_root_for_session(
+                    "ses-cancelled-producer",
+                    &worker_root,
+                    "asset-cancelled-producer",
+                    worker_path.clone(),
+                    Some("generated.png".into()),
+                    "image/png",
+                ));
+                drop(write_guard);
+            })
+            .await
+            .unwrap();
+        });
+        entered_rx.await.unwrap();
+        producer.abort();
+        assert!(producer.await.unwrap_err().is_cancelled());
+
+        let cleaner_registry = producer_registry.clone();
+        let (cleaner_started_tx, cleaner_started_rx) = tokio::sync::oneshot::channel();
+        let cleaner = tokio::spawn(async move {
+            cleaner_started_tx.send(()).unwrap();
+            let _cleanup_guard = cleaner_registry.lock_generated_media_cleanup().await;
+        });
+        cleaner_started_rx.await.unwrap();
+        assert!(
+            !cleaner.is_finished(),
+            "GC must wait for the detached writer"
+        );
+
+        release_tx.send(()).unwrap();
+        cleaner.await.unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"partial complete");
+        assert!(producer_registry.contains("asset-cancelled-producer"));
+    }
+
+    #[tokio::test]
+    async fn aborted_gc_keeps_producer_outside_active_blocking_unlink() {
+        use std::io::Write;
+
+        let root = TempDir::new().unwrap();
+        let stale_path = root.path().join("file-stale.png");
+        let fresh_path = root.path().join("file-fresh.png");
+        std::fs::write(&stale_path, b"stale").unwrap();
+        let registry = ManagedAssetRegistry::default();
+        let cleanup_registry = registry.clone();
+        let stale_path_for_cleanup = stale_path.clone();
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let cleaner = tokio::spawn(async move {
+            let cleanup_guard = cleanup_registry.lock_generated_media_cleanup().await;
+            tokio::task::spawn_blocking(move || {
+                let _cleanup_guard = cleanup_guard;
+                std::fs::remove_file(&stale_path_for_cleanup).unwrap();
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+            })
+            .await
+            .unwrap();
+        });
+        entered_rx.await.unwrap();
+        cleaner.abort();
+        assert!(cleaner.await.unwrap_err().is_cancelled());
+
+        let producer_registry = registry.clone();
+        let producer_root = root.path().to_path_buf();
+        let fresh_path_for_producer = fresh_path.clone();
+        let (producer_started_tx, producer_started_rx) = tokio::sync::oneshot::channel();
+        let producer = tokio::spawn(async move {
+            producer_started_tx.send(()).unwrap();
+            let write_guard = producer_registry.lock_generated_media_write().await;
+            let mut file = std::fs::File::create(&fresh_path_for_producer).unwrap();
+            file.write_all(b"fresh").unwrap();
+            assert!(producer_registry.register_under_root_for_session(
+                "ses-after-gc",
+                &producer_root,
+                "asset-after-gc",
+                fresh_path_for_producer.clone(),
+                Some("fresh.png".into()),
+                "image/png",
+            ));
+            drop(write_guard);
+        });
+        producer_started_rx.await.unwrap();
+        assert!(
+            !producer.is_finished(),
+            "producer must wait for the active GC unlink"
+        );
+
+        release_tx.send(()).unwrap();
+        producer.await.unwrap();
+        assert!(!stale_path.exists());
+        assert_eq!(std::fs::read(&fresh_path).unwrap(), b"fresh");
     }
 }

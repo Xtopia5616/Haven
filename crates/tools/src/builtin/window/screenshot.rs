@@ -102,69 +102,80 @@ impl WindowTool {
         if cancel.is_cancelled() {
             anyhow::bail!("cancelled");
         }
-        tokio::fs::create_dir_all(&self.capture_root).await?;
-        let path = self
-            .capture_root
-            .join(format!("{}.png", haven_common::types::new_id("file")));
-        let capture_path = path.clone();
-        let shot = match tokio::task::spawn_blocking(move || platform::capture_screen(capture_path))
-            .await
-        {
-            Ok(Ok(shot)) => shot,
-            Ok(Err(error)) => {
-                let _ = tokio::fs::remove_file(&path).await;
-                return Err(error);
-            }
+        let write_guard = tokio::select! {
+            _ = cancel.cancelled() => anyhow::bail!("cancelled"),
+            guard = self.managed_assets.lock_generated_media_write() => guard,
+        };
+        let registry = self.managed_assets.clone();
+        let session_id = session_id.map(str::to_owned);
+        let root = self.capture_root.clone();
+        let path = root.join(format!("{}.png", haven_common::types::new_id("file")));
+        let cleanup_path = path.clone();
+        let cancel_for_capture = cancel.clone();
+        let capture_result =
+            tokio::task::spawn_blocking(move || -> anyhow::Result<Option<ManagedCapture>> {
+                if cancel_for_capture.is_cancelled() {
+                    return Ok(None);
+                }
+                std::fs::create_dir_all(&root)?;
+                let mut capture_started = false;
+                let result = (|| -> anyhow::Result<Option<ManagedCapture>> {
+                    if cancel_for_capture.is_cancelled() {
+                        return Ok(None);
+                    }
+                    capture_started = true;
+                    let shot = platform::capture_screen(path.clone())?;
+                    if cancel_for_capture.is_cancelled() {
+                        return Ok(None);
+                    }
+                    let (Some(width), Some(height), Some(format)) = (
+                        shot.get("width").and_then(Value::as_u64),
+                        shot.get("height").and_then(Value::as_u64),
+                        shot.get("format").and_then(Value::as_str),
+                    ) else {
+                        anyhow::bail!("screenshot dimensions or format missing");
+                    };
+                    if width == 0 || height == 0 || format.trim().is_empty() {
+                        anyhow::bail!("screenshot dimensions or format are invalid");
+                    }
+                    let size = std::fs::metadata(&path)?.len();
+                    if cancel_for_capture.is_cancelled() {
+                        return Ok(None);
+                    }
+                    let asset = register_generated_asset(
+                        &registry,
+                        &write_guard,
+                        session_id.as_deref(),
+                        &root,
+                        path.clone(),
+                        Some("screenshot.png".into()),
+                        "image/png",
+                        size,
+                    )?;
+                    Ok(Some(ManagedCapture {
+                        asset,
+                        width,
+                        height,
+                        format: format.to_string(),
+                    }))
+                })();
+                if capture_started && !matches!(&result, Ok(Some(_))) {
+                    let _ = std::fs::remove_file(&path);
+                }
+                result
+            })
+            .await;
+        let capture = match capture_result {
+            Ok(result) => result?,
             Err(error) => {
-                let _ = tokio::fs::remove_file(&path).await;
+                // A panic in the blocking closure can occur after the capture
+                // started. Its guard is dropped only after that work stops.
+                // Remove any partial output after join completion.
+                let _ = std::fs::remove_file(cleanup_path);
                 return Err(error.into());
             }
         };
-        if cancel.is_cancelled() {
-            let _ = tokio::fs::remove_file(&path).await;
-            anyhow::bail!("cancelled");
-        }
-        let (Some(width), Some(height), Some(format)) = (
-            shot.get("width").and_then(Value::as_u64),
-            shot.get("height").and_then(Value::as_u64),
-            shot.get("format").and_then(Value::as_str),
-        ) else {
-            let _ = tokio::fs::remove_file(&path).await;
-            anyhow::bail!("screenshot dimensions or format missing");
-        };
-        if width == 0 || height == 0 || format.trim().is_empty() {
-            let _ = tokio::fs::remove_file(&path).await;
-            anyhow::bail!("screenshot dimensions or format are invalid");
-        }
-        let format = format.to_string();
-        let size = match tokio::fs::metadata(&path).await {
-            Ok(metadata) => metadata.len(),
-            Err(error) => {
-                let _ = tokio::fs::remove_file(&path).await;
-                return Err(error.into());
-            }
-        };
-        let asset = match register_generated_asset(
-            &self.managed_assets,
-            session_id,
-            &self.capture_root,
-            path.clone(),
-            Some("screenshot.png".into()),
-            "image/png",
-            size,
-        ) {
-            Ok(asset) => asset,
-            Err(error) => {
-                let _ = tokio::fs::remove_file(&path).await;
-                return Err(error);
-            }
-        };
-        Ok(ManagedCapture {
-            asset,
-            width,
-            height,
-            format,
-        })
+        capture.ok_or_else(|| anyhow::anyhow!("cancelled"))
     }
 
     pub(super) async fn ocr(
