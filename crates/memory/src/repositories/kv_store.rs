@@ -285,8 +285,8 @@ impl Database {
     /// Remove session-scoped internal cursors whose session no longer exists
     /// (session rows are deleted without going through `delete_session`, e.g.
     /// history purge or older deletions before cursor cleanup was added). This
-    /// also purges extraction throttle stamps, legacy episode cursors,
-    /// per-episode completion markers, pending markers, and
+    /// also purges extraction throttle stamps, per-episode completion
+    /// markers, pending markers, and
     /// `memory_event_cursor.<session_id>` checkpoints of dead sessions.
     /// Called during memory maintenance so the kv table does not grow without
     /// bound.
@@ -296,7 +296,6 @@ impl Database {
             "DELETE FROM kv_store
              WHERE (key LIKE 'fact_extraction.%'
                     OR key LIKE 'fact_extraction_last_run.%'
-                    OR key LIKE 'fact_extraction_episode.%'
                     OR key LIKE 'fact_extraction_episode_done.%'
                     OR key LIKE 'fact_extraction_pending.%'
                     OR key LIKE 'fact_extraction_episode_pending.%'
@@ -307,8 +306,6 @@ impl Database {
                                    THEN substr(key, 21)
                                    WHEN key LIKE 'fact_extraction_last_run.%'
                                    THEN substr(key, 26)
-                                   WHEN key LIKE 'fact_extraction_episode.%'
-                                   THEN substr(key, 25)
                                    WHEN key LIKE 'fact_extraction_pending.%'
                                    THEN substr(key, 25)
                                    WHEN key LIKE 'fact_extraction_episode_pending.%'
@@ -444,7 +441,6 @@ mod tests {
         db.set_kv("fact_extraction.gone", "msg-9").unwrap();
         db.set_kv("fact_extraction_last_run.gone", "2026-08-15T00:00:00Z")
             .unwrap();
-        db.set_kv("fact_extraction_episode.gone", "msg-10").unwrap();
         db.set_kv("fact_extraction_episode_done.gone.msg-11", "gone")
             .unwrap();
         db.set_kv("fact_extraction_pending.gone", "1").unwrap();
@@ -453,7 +449,7 @@ mod tests {
         db.set_kv("other.state", "keep").unwrap();
 
         let removed = db.cleanup_orphan_extraction_cursors().unwrap();
-        assert_eq!(removed, 6);
+        assert_eq!(removed, 5);
         assert!(
             db.get_kv(&format!("fact_extraction.{}", session.id))
                 .unwrap()
@@ -471,7 +467,6 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
-        assert!(db.get_kv("fact_extraction_episode.gone").unwrap().is_none());
         assert!(
             db.get_kv("fact_extraction_episode_done.gone.msg-11")
                 .unwrap()
@@ -533,8 +528,6 @@ mod tests {
             "2026-08-15T00:00:00Z",
         )
         .unwrap();
-        db.set_kv(&format!("fact_extraction_episode.{}", session.id), "msg-2")
-            .unwrap();
         db.set_kv(
             &format!("fact_extraction_episode_done.{}.msg-3", session.id),
             &session.id,
@@ -552,11 +545,6 @@ mod tests {
         );
         assert!(
             db.get_kv(&format!("fact_extraction_last_run.{}", session.id))
-                .unwrap()
-                .is_none()
-        );
-        assert!(
-            db.get_kv(&format!("fact_extraction_episode.{}", session.id))
                 .unwrap()
                 .is_none()
         );

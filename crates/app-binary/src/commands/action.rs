@@ -18,7 +18,7 @@ use tauri::State;
 /// survive app restarts).
 #[tauri::command]
 pub async fn list_actions(state: State<'_, Arc<AppState>>) -> Result<Vec<ActionEvent>, String> {
-    let live_rows = state.services.actions.board().await;
+    let live_rows = state.runtime.services.actions.board().await;
     let mut rows = Vec::with_capacity(live_rows.len());
     let mut live_ids = std::collections::HashSet::new();
     for row in live_rows {
@@ -27,6 +27,7 @@ pub async fn list_actions(state: State<'_, Arc<AppState>>) -> Result<Vec<ActionE
         rows.push(event);
     }
     let history = state
+        .runtime
         .services
         .actions
         .list_persisted_actions(Some("background"))
@@ -64,6 +65,7 @@ pub async fn cancel_action(
     kind: ActionKind,
 ) -> Result<bool, String> {
     let cancelled = state
+        .runtime
         .services
         .actions
         .cancel_for_kind(&action_id, kind.as_str())
@@ -90,6 +92,7 @@ pub async fn list_action_history(
     let rows = match session_id.as_deref() {
         Some(session_id) => {
             state
+                .runtime
                 .services
                 .actions
                 .list_persisted_actions_for_session(session_id, kind.map(ActionKind::as_str))
@@ -97,6 +100,7 @@ pub async fn list_action_history(
         }
         None => {
             state
+                .runtime
                 .services
                 .actions
                 .list_persisted_actions(kind.map(ActionKind::as_str))
@@ -269,6 +273,7 @@ pub async fn delete_action(
     action_id: String,
 ) -> Result<bool, String> {
     state
+        .runtime
         .services
         .actions
         .delete_terminal(&action_id)

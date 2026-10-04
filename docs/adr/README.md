@@ -445,3 +445,7 @@
 - [0460：统一 Skill 名称校验并拒绝歧义名称](0460-canonical-skill-name-validation.md)
 - [0461：提示上下文仅注入本地日期，精确时间按需读取](0461-date-only-runtime-clock.md)
 - [0462：采用最小可用的模型提示词](0462-minimal-model-prompt.md)
+- [0463：删除交互请求的无类型入口与旧字段兼容](0463-remove-interaction-compatibility-paths.md)
+- [0464：删除项目中陈旧的兼容路径](0464-remove-stale-compatibility-paths.md)
+- [0465：删除 AppState 到 ApplicationRuntime 的隐式转发](0465-remove-appstate-deref-bridge.md)
+- [0466：拆分 SessionStore 只读历史 façade](0466-session-history-read-facade-module.md)

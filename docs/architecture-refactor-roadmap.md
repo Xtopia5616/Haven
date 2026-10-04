@@ -100,7 +100,7 @@ ADR 0424 当前为 **Proposed**，没有改变运行时 owner。它记录了 ses
 
 ### 5.3 内部模块边界整理
 
-这不是 crate 拆分目标，按职责和稳定 owner 选择可证明有益的内部边界。第一候选是 `SessionStore` 的只读历史 façade：把 `list_history`、`count_history`、`search_history*`、`conversation_window`、`session_resume_media`、`title_generation_context` 及只读 DTO 收入私有 `session_history` 模块；公开 `SessionStore` façade、SQL owner、查询过滤/排序/缓存和序列化均保持不变。不要把聚合 event stream 与多个投影的 `session_resume_projection` 一起移动。
+这不是 crate 拆分目标，按职责和稳定 owner 选择可证明有益的内部边界。首个边界已完成：`SessionStore` 的只读历史查询与 DTO 已收入私有 `session_history` 模块，公开 façade、SQL owner、查询过滤/排序/缓存和序列化保持不变。聚合 event stream 与多个投影的 `session_resume_projection` 继续留在事务协调 owner。实现约束和回滚见 [ADR 0466](adr/0466-session-history-read-facade-module.md)。
 
 事件存储与 transcript projection 的内部拆分属于高风险候选，仅在只读切片证明模块边界有实际维护收益后再评估。`SessionStore` 必须继续作为 append、物化投影和 rollback 的事务协调 owner：事件与 projection 原子提交，rollback 同时维护 `event_cursor` 和 `last_msg_at`，提交成功后才发布事件。若拆分要求上层分别写 event/projection、暴露事务细节或引入第二个恢复来源，应停止。
 

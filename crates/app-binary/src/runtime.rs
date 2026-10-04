@@ -26,9 +26,9 @@ use tracing_subscriber::reload;
 /// The application composition root.
 ///
 /// The service fields are deliberately kept here rather than in several
-/// independent state containers. `AppState` dereferences to this type for
-/// command compatibility while retaining only Tauri-specific transient state
-/// of its own.
+/// independent state containers. `AppState` retains only Tauri-specific
+/// transient state and exposes this runtime through its explicit `runtime`
+/// field.
 pub struct ApplicationRuntime {
     pub(crate) session_store: SessionStore,
     pub(crate) memory_fact_store: MemoryFactStore,

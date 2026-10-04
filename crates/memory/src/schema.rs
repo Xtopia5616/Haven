@@ -8,7 +8,7 @@
 //! version stamp rejects both older and newer database contracts.
 
 /// Current database contract. Any schema change requires a fresh database.
-pub const SCHEMA_VERSION: i32 = 35;
+pub const SCHEMA_VERSION: i32 = 36;
 /// Current schema, created idempotently on every open.
 const SCHEMA_SQL: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS sessions (
@@ -211,7 +211,7 @@ const SCHEMA_SQL: &[&str] = &[
         updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     )",
     // Per-LLM-call usage detail: one row per successful model response,
-    // carrying the call surface, request kind (in the legacy role column),
+    // carrying the call surface, request kind,
     // model name, token counts,
     // cost and wall-clock duration. `session_usage` keeps only Agent-level
     // cumulative counters; this table keeps the granular history behind them.

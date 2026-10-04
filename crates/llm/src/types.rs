@@ -238,7 +238,7 @@ impl Usage {
     }
 
     /// True when cache read/write tokens are declared outside `prompt_tokens`.
-    /// Unknown legacy records are not guessed from their numeric values.
+    /// Unknown accounting metadata never infers token inclusion from totals.
     pub fn cache_exclusive_of_prompt(&self) -> bool {
         self.cache_accounting == CacheAccounting::Exclusive
     }

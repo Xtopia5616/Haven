@@ -13,7 +13,7 @@ use tauri::State;
 
 #[tauri::command]
 pub async fn list_skills(state: State<'_, Arc<AppState>>) -> Result<Vec<SkillInfo>, String> {
-    Ok(state.services.skills.list().await)
+    Ok(state.runtime.services.skills.list().await)
 }
 
 #[tauri::command]
@@ -21,9 +21,10 @@ pub async fn refresh_skills(
     state: State<'_, Arc<AppState>>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    let _config_apply_guard = state.config_apply_gate.lock().await;
+    let _config_apply_guard = state.runtime.config_apply_gate.lock().await;
     // Re-scan skills from the configured (or default) skills directory (M4-01).
     state
+        .runtime
         .services
         .skills
         .refresh_from_disk()
@@ -31,6 +32,7 @@ pub async fn refresh_skills(
         .map_err(|e| log_err("refresh_skills", e))?;
     // Rebuild tool catalog so skills appear in the Reasoner's tool list.
     state
+        .runtime
         .tools
         .rebuild_catalog()
         .await
@@ -102,7 +104,7 @@ pub async fn set_tool_enabled(
 
 #[tauri::command]
 pub async fn open_skills_dir(state: State<'_, Arc<AppState>>) -> Result<String, String> {
-    let root = state.services.skills.resolved_root().await;
+    let root = state.runtime.services.skills.resolved_root().await;
     if !haven_tools::is_safe_local_path(&root) {
         return Err(log_err(
             "open_skills_dir",
@@ -119,6 +121,7 @@ pub async fn open_skills_dir(state: State<'_, Arc<AppState>>) -> Result<String, 
     let authorization_request =
         AuthorizationRequest::new(None, "open_skills_dir", params.clone(), policy);
     match state
+        .runtime
         .services
         .authorization
         .authorize(&authorization_request)
@@ -179,6 +182,7 @@ pub async fn execute_skill(
     params: serde_json::Value,
 ) -> Result<SkillExecutionResponse, String> {
     let skill_info = state
+        .runtime
         .services
         .skills
         .get(&name)
@@ -206,6 +210,7 @@ pub async fn execute_skill(
     let authorization_request =
         AuthorizationRequest::new(Some("ui"), &tool_key, params.clone(), policy);
     match state
+        .runtime
         .services
         .authorization
         .authorize(&authorization_request)
@@ -231,6 +236,7 @@ pub async fn execute_skill(
     }
 
     let skill = state
+        .runtime
         .services
         .skills
         .get_skill(&name)
@@ -239,6 +245,7 @@ pub async fn execute_skill(
 
     let cancel = tokio_util::sync::CancellationToken::new();
     let result = state
+        .runtime
         .services
         .skill_runner
         .read()
@@ -259,7 +266,7 @@ pub async fn get_tools(state: State<'_, Arc<AppState>>) -> Result<ToolListRespon
     // List ALL builtin tools (enabled and disabled) with their enabled state
     // so the UI can toggle them. Disabled tools are excluded from the
     // registry the agent sees (see ToolsManager::rebuild_catalog).
-    let tools = state.tools.list_builtin_manifests().await;
+    let tools = state.runtime.tools.list_builtin_manifests().await;
     Ok(ToolListResponse { tools })
 }
 
@@ -267,6 +274,6 @@ pub async fn get_tools(state: State<'_, Arc<AppState>>) -> Result<ToolListRespon
 /// callable again without waiting for the cooldown window.
 #[tauri::command]
 pub async fn reset_tool_circuits(state: State<'_, Arc<AppState>>) -> Result<(), String> {
-    state.tools.tool_circuits().reset_all();
+    state.runtime.tools.tool_circuits().reset_all();
     Ok(())
 }

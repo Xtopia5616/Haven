@@ -944,9 +944,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn legacy_compaction_payload_recovers_step_from_event_envelope() {
+    async fn compact_summary_event_requires_payload_step_number() {
         let db = Arc::new(Database::open_in_memory().unwrap());
-        let session = db.create_session("legacy compact root").unwrap();
+        let session = db.create_session("compact summary missing step").unwrap();
         let engine = test_engine(db);
         engine
             .event_store
@@ -959,20 +959,12 @@ mod tests {
             )
             .unwrap();
 
-        let replay = engine
+        let error = engine
             .load_durable_event_state(&session.id)
             .await
-            .unwrap()
-            .unwrap();
+            .unwrap_err();
 
-        assert!(matches!(
-            replay.events.as_slice(),
-            [TranscriptRecord::CompactSummary {
-                step_number: 17,
-                ..
-            }]
-        ));
-        assert_eq!(crate::resume_support::infer_resume_step(&replay.events), 17);
+        assert!(error.to_string().contains("missing field `step_number`"));
     }
 
     #[tokio::test]

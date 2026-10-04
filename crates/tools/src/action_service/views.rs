@@ -37,8 +37,7 @@ pub struct ActionView {
 ///
 /// `ActionView` is intentionally a UI projection and therefore is not reused
 /// here: the agent-facing shapes include live shell fields, completion output,
-/// and scheduled-action metadata. The final JSON conversion stays at the tool
-/// boundary (or in the legacy compatibility wrappers below).
+/// and scheduled-action metadata. JSON conversion stays at the tool boundary.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ActionStatusView {
     NotFound {

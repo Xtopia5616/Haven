@@ -409,10 +409,16 @@ async fn reopen_preserves_follow_up_route_after_confirm_resolves_while_ask_stays
         ))
         .await
         .unwrap();
-    let confirm = crate::interaction::InteractionRequest::new(
+    let confirm = crate::interaction::InteractionRequest::confirm(
         &session.id,
-        crate::interaction::InteractionKind::Confirm,
-        Vec::new(),
+        1,
+        "haven.test".into(),
+        serde_json::Value::Null,
+        "call-test".into(),
+        "step-0123456789abcdef0123456789abcdef".into(),
+        0,
+        haven_common::types::RiskLevel::Safe,
+        None,
     );
     executor.request_interaction(confirm.clone()).await.unwrap();
 

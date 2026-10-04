@@ -102,7 +102,6 @@ pub(crate) fn project_interaction(
             ));
             event.permission_key = Some(receipt.capability.to_string());
         }
-        haven_agent::InteractionDetails::Generic => {}
     }
     event
 }
@@ -232,7 +231,7 @@ pub(crate) fn run() {
             }
 
             let state = app.state::<Arc<AppState>>();
-            let shell = &state.shell;
+            let shell = &state.runtime.shell;
 
             // Forward MCP status broadcasts to the webview. Startup connects
             // and health-monitor reconnects previously only updated the
@@ -240,7 +239,7 @@ pub(crate) fn run() {
             // manual refresh.
             {
                 let emit_handle = handle.clone();
-                let mut rx = state.services.mcp.subscribe();
+                let mut rx = state.runtime.services.mcp.subscribe();
                 state
                     .runtime
                     .spawn_with_child_token("mcp-status-forwarder", move |cancel| async move {
@@ -274,7 +273,7 @@ pub(crate) fn run() {
             // removed SKILL.md files are picked up without a manual Refresh.
             {
                 let emit_handle = handle.clone();
-                let tools = state.tools.clone();
+                let tools = state.runtime.tools.clone();
                 state.runtime.spawn_with_child_token(
                     "skills-watcher",
                     move |cancel| async move {
@@ -301,7 +300,7 @@ pub(crate) fn run() {
 
             // Wire up the AgentEventEmitter to the app handle via an EventBus,
             // allowing multiple subscribers (frontend, log recorder, …).
-            let bus = state.agent.install_event_bus();
+            let bus = state.runtime.agent.install_event_bus();
             let emitter = Arc::new(TauriEmitter {
                 handle: handle.clone(),
                 chunk_seq: AtomicU64::new(0),
@@ -338,7 +337,7 @@ pub(crate) fn run() {
             // never expose dynamic tool args, continuation prompts, or
             // output-log paths.
             let action_sink_handle = handle.clone();
-                    state.services.actions.set_event_sink(Arc::new(
+                    state.runtime.services.actions.set_event_sink(Arc::new(
                 move |event: String, payload: serde_json::Value| {
                     let kind = match payload.get("kind").and_then(|value| value.as_str()) {
                         Some("scheduled") => ActionKind::Scheduled,
@@ -352,7 +351,7 @@ pub(crate) fn run() {
             // shell (and future long-running tools) can expand the chat card
             // while still running.
             let tool_output_handle = handle.clone();
-                state.services.live_outputs.set_event_sink(Arc::new(
+                state.runtime.services.live_outputs.set_event_sink(Arc::new(
                 move |event: String, payload: serde_json::Value| {
                     if event != AGENT_TOOL_OUTPUT_EVENT {
                         tracing::warn!(event, "dropping unknown live tool-output event");
@@ -372,7 +371,7 @@ pub(crate) fn run() {
                 },
             ));
 
-            let cfg = state.config_service.snapshot()?.config;
+            let cfg = state.runtime.config_service.snapshot()?.config;
             let is_hold = cfg.hotkey.mode == haven_common::types::HotkeyMode::Hold;
             let key_binding = cfg.hotkey.key_binding.clone();
 
@@ -407,7 +406,7 @@ pub(crate) fn run() {
                             });
                         }
                         "mute" => {
-                            let shell = state.shell.clone();
+                            let shell = state.runtime.shell.clone();
                             runtime.spawn("tray-mute", async move {
                                     let shell_state = shell.get_state().await;
                                     shell.set_muted(!shell_state.is_muted).await;
@@ -470,8 +469,8 @@ pub(crate) fn run() {
             // Wire up shell handler (replaces former per-callback field assignments)
             tokio::task::block_in_place(|| {
                 let rt = tokio::runtime::Handle::current();
-                let shell_arc = state.shell.clone();
-                let pipeline = state.pipeline.clone();
+                let shell_arc = state.runtime.shell.clone();
+                let pipeline = state.runtime.pipeline.clone();
                 let tray_ref = tray.clone();
                 let handler = Arc::new(HavenShellHandler {
                     app_h: handle.clone(),
@@ -484,9 +483,9 @@ pub(crate) fn run() {
                 // Wire up unified input handler (VAD status + auto-stop)
                 {
                     let app_h = handle.clone();
-                    let shell_arc = state.shell.clone();
+                    let shell_arc = state.runtime.shell.clone();
                     state
-                        .pipeline
+                        .runtime.pipeline
                         .set_handler(Arc::new(HavenInputHandler { app_h, shell_arc }));
                 }
 
@@ -502,7 +501,7 @@ pub(crate) fn run() {
                     state.runtime.spawn_with_child_token(
                         "session-event-forwarder",
                         move |cancel| async move {
-                            let mut events = st_arc.executor.subscribe_events();
+                            let mut events = st_arc.runtime.executor.subscribe_events();
                             loop {
                                 let event = tokio::select! {
                                     _ = cancel.cancelled() => return,
@@ -595,8 +594,8 @@ pub(crate) fn run() {
                         return;
                     }
                     let runtime = state.runtime.clone();
-                    let shell = state.shell.clone();
-                    let tools = state.tools.clone();
+                    let shell = state.runtime.shell.clone();
+                    let tools = state.runtime.tools.clone();
                     let hotkey_capture_active = state.hotkey_capture_active.clone();
                     let app_h = app.clone();
                     let pressed = event.state == ShortcutState::Pressed;
@@ -756,7 +755,7 @@ pub(crate) fn run() {
                 // would be flipped to `error` at the next startup by
                 // `finalize_orphaned_running_sessions` (which only intends to
                 // catch crash leftovers).
-                pause_running_sessions_on_exit(&state.session_store);
+                pause_running_sessions_on_exit(&state.runtime.session_store);
                 state.runtime.teardown_blocking();
             }
         });

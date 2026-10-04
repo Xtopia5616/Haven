@@ -884,7 +884,7 @@ mod tests {
         service.register("ses-b", &[]).unwrap();
 
         let mut envelope = Envelope::new("ses-a", "ses-b", "hello");
-        envelope.id = "legacy-id".into();
+        envelope.id = "invalid-id".into();
         let error = service.deliver("ses-b", &envelope).unwrap_err();
         assert!(error.to_string().contains("invalid message id"));
 
@@ -893,7 +893,7 @@ mod tests {
         assert!(error.to_string().contains("recipient mismatch"));
 
         let mut envelope = Envelope::new("ses-a", "ses-b", "hello");
-        envelope.in_reply_to = Some("legacy-id".into());
+        envelope.in_reply_to = Some("invalid-id".into());
         let error = service.deliver("ses-b", &envelope).unwrap_err();
         assert!(error.to_string().contains("in_reply_to"));
     }

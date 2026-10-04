@@ -13,7 +13,7 @@ pub fn get_performance_metrics(
     state: State<'_, Arc<AppState>>,
     ui: Option<UiMetricsSnapshot>,
 ) -> Result<haven_agent::MetricsSnapshot, String> {
-    let mut snapshot = state.agent.react_metrics_snapshot();
+    let mut snapshot = state.runtime.agent.react_metrics_snapshot();
     snapshot.ui = ui;
     Ok(snapshot)
 }

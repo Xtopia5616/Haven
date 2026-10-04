@@ -131,23 +131,14 @@ impl ReActEngine {
             .transcript
             .into_iter()
             .map(|event| {
-                let mut record =
-                    serde_json::from_str::<TranscriptRecord>(&event.payload).map_err(|error| {
-                        anyhow::anyhow!(
-                            "invalid transcript event {} for session {}: {}",
-                            event.sequence,
-                            session_id,
-                            error
-                        )
-                    })?;
-                if let TranscriptRecord::CompactSummary { step_number, .. } = &mut record
-                    && let Some(envelope_step_number) = event.step_number.filter(|step| *step > 0)
-                {
-                    // Older compact-summary payloads omitted this field, but
-                    // live commits have always persisted it on the event row.
-                    *step_number = envelope_step_number;
-                }
-                Ok(record)
+                serde_json::from_str::<TranscriptRecord>(&event.payload).map_err(|error| {
+                    anyhow::anyhow!(
+                        "invalid transcript event {} for session {}: {}",
+                        event.sequence,
+                        session_id,
+                        error
+                    )
+                })
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
         let branch_points = replay

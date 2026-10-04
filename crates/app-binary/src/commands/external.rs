@@ -37,6 +37,7 @@ pub async fn open_external(state: State<'_, Arc<AppState>>, target: String) -> R
     let authorization_request =
         AuthorizationRequest::new(None, "open_external", params.clone(), policy);
     match state
+        .runtime
         .services
         .authorization
         .authorize(&authorization_request)

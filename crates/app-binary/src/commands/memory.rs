@@ -12,6 +12,7 @@ use tauri::State;
 #[tauri::command]
 pub async fn run_memory_maintenance(state: State<'_, Arc<AppState>>) -> Result<u64, String> {
     state
+        .runtime
         .agent
         .run_memory_maintenance()
         .await
@@ -36,6 +37,7 @@ pub async fn recall_memory(
     )
     .map_err(|e| log_err("recall_memory", e))?;
     state
+        .runtime
         .agent
         .recall_memory_query(query)
         .await
@@ -56,6 +58,7 @@ pub async fn list_facts(
     source: Option<String>,
 ) -> Result<Vec<haven_memory::repositories::facts::Fact>, String> {
     state
+        .runtime
         .memory_fact_store
         .list_facts(source)
         .await
@@ -116,6 +119,7 @@ pub async fn add_fact(
     let input = validate_add_fact_input(subject, predicate, object, tags)
         .map_err(|error| log_err("add_fact", error))?;
     state
+        .runtime
         .memory_fact_store
         .set_user_fact(input.subject, input.predicate, input.object, input.tags)
         .await
@@ -125,6 +129,7 @@ pub async fn add_fact(
 #[tauri::command]
 pub async fn delete_fact(state: State<'_, Arc<AppState>>, fact_id: String) -> Result<(), String> {
     state
+        .runtime
         .memory_fact_store
         .delete_fact(fact_id)
         .await

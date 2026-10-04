@@ -41,8 +41,8 @@ pub enum EnvOperation {
     List,
 }
 
-/// Where an environment variable lives. `process` is the legacy behavior;
-/// the other scopes are persisted in the Windows environment registry.
+/// Where an environment variable lives. `process` affects only the current
+/// Haven process; the other scopes persist in the Windows environment registry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EnvScope {

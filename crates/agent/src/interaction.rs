@@ -22,9 +22,6 @@ fn confirmation_expires_at(receipt: &haven_tools::ConfirmationReceipt) -> Option
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "type")]
 pub enum InteractionDetails {
-    /// Used only by the generic constructor and by forward-compatible callers
-    /// that need the common lifecycle before supplying typed execution data.
-    Generic,
     Ask {
         options: Vec<String>,
         step_ids: Vec<String>,
@@ -73,12 +70,6 @@ pub struct InteractionRequest {
     pub session_id: String,
     pub kind: InteractionKind,
     pub status: InteractionStatus,
-    /// Old event payloads included prompt text here. Keep reading that field
-    /// so existing session_events can replay, but never serialize it again:
-    /// transcript content and interaction lifecycle state now have one owner.
-    #[allow(dead_code)]
-    #[serde(default, rename = "prompt", skip_serializing)]
-    legacy_prompt: Option<String>,
     pub details: InteractionDetails,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub correlation_ids: Vec<String>,
@@ -90,29 +81,6 @@ pub struct InteractionRequest {
 }
 
 impl InteractionRequest {
-    pub fn new(
-        session_id: impl Into<String>,
-        kind: InteractionKind,
-        correlation_ids: Vec<String>,
-    ) -> Self {
-        let id_prefix = match kind {
-            InteractionKind::Ask => "step",
-            InteractionKind::Confirm | InteractionKind::ScheduledConfirm => "conf",
-        };
-        Self {
-            id: haven_common::types::new_id(id_prefix),
-            session_id: session_id.into(),
-            kind,
-            status: InteractionStatus::Pending,
-            legacy_prompt: None,
-            details: InteractionDetails::Generic,
-            correlation_ids,
-            response: None,
-            created_at: chrono::Utc::now().to_rfc3339(),
-            expires_at: None,
-        }
-    }
-
     pub fn ask(session_id: &str, options: Vec<String>, step_ids: Vec<String>) -> Self {
         let step_id = step_ids
             .first()
@@ -123,7 +91,6 @@ impl InteractionRequest {
             session_id: session_id.to_string(),
             kind: InteractionKind::Ask,
             status: InteractionStatus::Pending,
-            legacy_prompt: None,
             details: InteractionDetails::Ask {
                 options,
                 step_ids: step_ids.clone(),
@@ -157,7 +124,6 @@ impl InteractionRequest {
             session_id: session_id.to_string(),
             kind: InteractionKind::Confirm,
             status: InteractionStatus::Pending,
-            legacy_prompt: None,
             details: InteractionDetails::Confirm {
                 step_number,
                 tool_name,
@@ -193,7 +159,6 @@ impl InteractionRequest {
             session_id: "ui".into(),
             kind: InteractionKind::Confirm,
             status: InteractionStatus::Pending,
-            legacy_prompt: None,
             details: InteractionDetails::Confirm {
                 step_number: 0,
                 tool_name,
@@ -225,7 +190,6 @@ impl InteractionRequest {
             session_id: session_id.to_string(),
             kind: InteractionKind::ScheduledConfirm,
             status: InteractionStatus::Pending,
-            legacy_prompt: None,
             details: InteractionDetails::ScheduledConfirm {
                 action_id,
                 tool_name,
@@ -390,6 +354,20 @@ mod tests {
 
     const SESSION_ID: &str = "ses-0123456789abcdef0123456789abcdef";
 
+    fn confirmation_request(session_id: &str) -> InteractionRequest {
+        InteractionRequest::confirm(
+            session_id,
+            1,
+            "haven.test".into(),
+            Value::Null,
+            "call-test".into(),
+            "step-0123456789abcdef0123456789abcdef".into(),
+            0,
+            haven_common::types::RiskLevel::Safe,
+            None,
+        )
+    }
+
     fn event(sequence: i64, event_type: &str, payload: Value) -> haven_memory::SessionEvent {
         haven_memory::SessionEvent {
             session_id: SESSION_ID.into(),
@@ -419,9 +397,9 @@ mod tests {
 
     #[test]
     fn interaction_lifecycle_is_one_shot_and_roundtrips() {
-        let mut request = InteractionRequest::new(
-            "ses-0123456789abcdef0123456789abcdef",
-            InteractionKind::Ask,
+        let mut request = InteractionRequest::ask(
+            SESSION_ID,
+            Vec::new(),
             vec!["step-0123456789abcdef0123456789abcdef".into()],
         );
         assert!(request.id.starts_with("step-"));
@@ -439,19 +417,11 @@ mod tests {
 
     #[test]
     fn interaction_cancel_and_expire_are_terminal() {
-        let mut cancelled = InteractionRequest::new(
-            "ses-0123456789abcdef0123456789abcdef",
-            InteractionKind::Confirm,
-            Vec::new(),
-        );
+        let mut cancelled = InteractionRequest::ask(SESSION_ID, Vec::new(), Vec::new());
         assert!(cancelled.cancel());
         assert!(!cancelled.expire());
 
-        let mut expired = InteractionRequest::new(
-            "ses-0123456789abcdef0123456789abcdef",
-            InteractionKind::ScheduledConfirm,
-            Vec::new(),
-        );
+        let mut expired = confirmation_request(SESSION_ID);
         assert!(expired.expire());
         assert!(!expired.resolve(Value::Bool(true)));
     }

@@ -17,12 +17,11 @@ export type ApiKeyStatus = GeneratedApiKeyStatus;
 /** Open response shape for diagnostics so added metric fields remain available. */
 export type MetricsSnapshot = Record<string, unknown>;
 
-/** Rust-owned config shape with room for forward-compatible extra fields. */
-export type SettingsPayload = GeneratedSettings & Record<string, unknown>;
+/** Exact Rust-owned config shape from the generated IPC contract. */
+export type SettingsPayload = GeneratedSettings;
 
 /** Rust-owned settings input shape, including Serde defaults for omitted fields. */
-export type SettingsUpdatePayload =
-	TauriCommandRequest<'update_settings'>['settings'] & Record<string, unknown>;
+export type SettingsUpdatePayload = TauriCommandRequest<'update_settings'>['settings'];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -30,11 +29,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 /**
  * The full Settings shape is owned by haven_common::config::Settings. Keep the
- * renderer boundary open so new config fields and enum strings pass through,
- * while malformed root values keep the existing no-op behavior.
+ * renderer shape tied to the generated Rust contract, while malformed root
+ * values keep the existing no-op behavior.
  */
 export function parseSettingsPayload(value: unknown): SettingsPayload | null {
-	return isRecord(value) ? (value as SettingsPayload) : null;
+	return isRecord(value) ? (value as unknown as SettingsPayload) : null;
 }
 
 export function parseLogInfo(value: unknown): LogInfo {

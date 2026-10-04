@@ -1,5 +1,5 @@
 //! Session start / resume drivers for [`AgentLayer`]: fresh ReAct runs,
-//! snapshot restore and fresh-session startup.
+//! durable event replay and fresh-session startup.
 //!
 //! Split out of `layer.rs` so the facade stays focused on wiring; these
 //! methods operate on the same private fields via `impl AgentLayer` blocks.
@@ -11,15 +11,13 @@
 //!   queues are caches only.
 //! - **Event stream missing** → fresh-session startup for a session that has
 //!   not entered the ReAct loop yet.
-//! - **Event stream present with a legacy/corrupt JSON cache** → ignore the
-//!   cache and continue from durable events.
 //!
 //! ## Queue durability (Phase 7 / D2)
 //!
 //! RAM follow-up / steering queues are a same-process cache. Durability is
 //! DB messages plus explicit pending-input markers, acknowledged atomically
 //! with `UserInject`. Resume re-queues by `message_id`; the durable event
-//! sequence, rather than snapshot contents, decides transcript recovery.
+//! sequence decides transcript recovery.
 
 use crate::AgentLayer;
 use crate::react::DurableEventState;
@@ -236,9 +234,10 @@ impl AgentLayer {
             all_attachments,
         } = resume_media;
 
-        // Snapshot events carry metadata-only media inputs. Re-register the
-        // host-owned files from the materialized media projection before a
-        // resumed request can ask the `files` tool to resolve them.
+        // Durable transcript events carry metadata-only media inputs.
+        // Re-register the host-owned files from the materialized media
+        // projection before a resumed request can ask the `files` tool to
+        // resolve them.
         self.executor
             .register_managed_assets_for_session(session_id, &all_attachments);
 
@@ -569,7 +568,7 @@ impl AgentLayer {
         // Seed events so pause/resume has a durable system and initial
         // user request as a CompactSummary; later applies append. The same
         // seed is written to the durable event stream before the first model
-        // call, so a crash before the first snapshot is still resumable.
+        // call, so a crash before the first model response is still resumable.
         let events: Vec<TranscriptRecord> = seed_events_from_canonical(canonical.clone());
         self.react_engine
             .seed_transcript_events(session_id, &events, 0)

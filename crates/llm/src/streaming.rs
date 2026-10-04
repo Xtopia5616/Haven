@@ -99,34 +99,9 @@ pub(crate) fn scale_stream_idle(base: Duration, messages: &[CanonicalMessage]) -
     Duration::from_secs(base_secs.saturating_add(extra_secs.min(cap_extra)).max(1))
 }
 
-#[allow(clippy::too_many_arguments)]
-#[cfg(test)]
-pub(crate) async fn aggregate_stream_cancellable(
-    client: Arc<dyn LlmClient>,
-    messages: Vec<CanonicalMessage>,
-    tools: Vec<ToolDefinition>,
-    on_chunk: Arc<StdMutex<impl FnMut(&StreamChunk) + Send + 'static>>,
-    cancel: CancellationToken,
-    stream_rules: &RwLock<Vec<StreamRule>>,
-    idle_timeout: Duration,
-    max_output_tokens: Option<u32>,
-) -> Result<LlmResponse, LlmError> {
-    aggregate_stream_cancellable_shared(
-        client,
-        Arc::<[CanonicalMessage]>::from(messages),
-        Arc::<[ToolDefinition]>::from(tools),
-        on_chunk,
-        cancel,
-        stream_rules,
-        idle_timeout,
-        max_output_tokens,
-    )
-    .await
-}
-
 /// Aggregate a stream from a shared immutable request snapshot. Provider
 /// retries use this path so retry bookkeeping only clones Arc handles. The
-/// `LlmClient` compatibility boundary is fail-closed; adapters must implement
+/// `LlmClient` shared-request boundary is fail-closed; adapters must implement
 /// the shared method to participate in streaming retries.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn aggregate_stream_cancellable_shared(
@@ -425,10 +400,10 @@ mod tests {
         }
     }
 
-    struct LegacyGuidanceProbe;
+    struct UnsharedGuidanceProbe;
 
     #[async_trait]
-    impl LlmClient for LegacyGuidanceProbe {
+    impl LlmClient for UnsharedGuidanceProbe {
         async fn chat(&self, _messages: Vec<CanonicalMessage>) -> Result<LlmResponse, LlmError> {
             Err(LlmError::Unknown("test client does not chat".into()))
         }
@@ -560,10 +535,10 @@ mod tests {
         let client: Arc<dyn LlmClient> = Arc::new(PendingStreamClient);
         let task_cancel = cancel.clone();
         let task = tokio::spawn(async move {
-            aggregate_stream_cancellable(
+            aggregate_stream_cancellable_shared(
                 client,
-                Vec::new(),
-                Vec::new(),
+                Arc::<[CanonicalMessage]>::from(Vec::new()),
+                Arc::<[ToolDefinition]>::from(Vec::new()),
                 on_chunk,
                 task_cancel,
                 rules.as_ref(),
@@ -670,7 +645,7 @@ mod tests {
 
     #[tokio::test]
     async fn default_guidance_boundary_fails_closed_without_shared_override() {
-        let probe = LegacyGuidanceProbe;
+        let probe = UnsharedGuidanceProbe;
         let result = probe
             .chat_stream_with_tools_output_cap_shared_guidance(
                 Arc::from(vec![CanonicalMessage::user_text("hello")]),

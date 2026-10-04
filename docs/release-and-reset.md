@@ -6,7 +6,7 @@
 
 Haven 处于测试阶段。数据库 schema、`config.toml` 与内部 IPC 契约可以进行破坏性调整；发布说明会明确本次是否需要重置。没有明确写出兼容承诺的旧数据不得假定可继续使用。
 
-截至 2026-10-04，当前数据库契约为 schema v35（ADR 0392、0393、0402、0416、0442、0445、0458）：scheduled dependency relation/result 持久化在 `actions.watch_action_id` / `actions.result_summary`，scheduled tool 的 completed/failed result 使用 `action_completion_outbox`，session authorization grants 由会话外键级联管理；`pending_session_inputs` 持久跟踪尚未进入 `UserInject` event 的用户输入，并在同一事务保存 `answer` / `follow_up` disposition，不再使用两天恢复窗口。唯一的 pending Answer reservation 防止 Ask 尚未由 `UserInject` 确认时后续输入被重复路由为答案；恢复只读取该 marker，不按重启时的交互 gate 重新判断。`sessions.origin` 与 `sessions.parent_session_id` 持久记录普通用户会话或 `agent.spawn` peer 的来源及 parent lineage，且不改变 session lifecycle。后台 shell action 额外持久化 `actions.source_step_id`，关联产生它的 Agent 工具步骤，并在 Action event 与终态结果交付中保留。v35 不做旧 schema 运行时迁移；升级前，完全退出 Haven 后删除 `%APPDATA%\haven\haven.db`、`haven.db-wal` 与 `haven.db-shm`（非 Windows 开发环境为 `~/.local/share/haven` 下的同名文件），再启动应用。删除数据库会清除会话、记忆、任务和用量；保留 `config.toml` 时无需删除整个数据根目录。
+截至 2026-10-04，当前数据库契约为 schema v36（ADR 0392、0393、0402、0416、0442、0445、0458、0463、0464）：scheduled dependency relation/result 持久化在 `actions.watch_action_id` / `actions.result_summary`，scheduled tool 的 completed/failed result 使用 `action_completion_outbox`，session authorization grants 由会话外键级联管理；`pending_session_inputs` 持久跟踪尚未进入 `UserInject` event 的用户输入，并在同一事务保存 `answer` / `follow_up` disposition，不再使用两天恢复窗口。唯一的 pending Answer reservation 防止 Ask 尚未由 `UserInject` 确认时后续输入被重复路由为答案；恢复只读取该 marker，不按重启时的交互 gate 重新判断。`sessions.origin` 与 `sessions.parent_session_id` 持久记录普通用户会话或 `agent.spawn` peer 的来源及 parent lineage，且不改变 session lifecycle。后台 shell action 额外持久化 `actions.source_step_id`，关联产生它的 Agent 工具步骤，并在 Action event 与终态结果交付中保留。v36 不再读取旧 interaction event 的 `prompt` 字段或缺少 payload `step_number` 的旧 compaction event，也不做旧 schema 运行时迁移；升级前，完全退出 Haven 后删除 `%APPDATA%\haven\haven.db`、`haven.db-wal` 与 `haven.db-shm`（非 Windows 开发环境为 `~/.local/share/haven` 下的同名文件），再启动应用。删除数据库会清除会话、记忆、任务和用量；保留 `config.toml` 时无需删除整个数据根目录。
 
 ## 当前配置契约
 
@@ -16,7 +16,7 @@ Haven 处于测试阶段。数据库 schema、`config.toml` 与内部 IPC 契约
 
 当前会话保留期配置位于 `[session].history_retention_days`，默认 90 天，设为 `0` 可禁用自动删除；旧 `[memory]` 位置不迁移。`security.permission_mode` 支持 `plan`、`default`、`auto_edit`、`autonomous`，文件沙箱和网络策略分别使用 `sandbox_mode` 与 `network_policy`；旧确认模式字段不再解释。权限 key 使用点号 operation 名（如 `files.read`）；旧冒号 key 不转换，无法解析的持久权限规则在运行时被忽略并 fail-closed。
 
-API 密钥、OCR 密钥与 MCP 环境变量只通过安全凭据存储的 opaque reference 持久化。TOML 中的明文凭据会使配置加载失败并备份原文件；启动只从现有引用读取凭据，不再导入旧明文值。若引用在操作系统凭据存储中不存在，需要重新输入对应凭据。当前 provider `api_style` 仅接受 canonical wire protocol id；无效值和指向不存在 provider 的媒体配置会走同一备份与默认配置恢复。
+API 密钥、OCR 密钥与 MCP 环境变量只通过安全凭据存储的 opaque reference 持久化。TOML 中的明文凭据会使配置加载失败并备份原文件；启动只从现有引用读取凭据，不再导入旧明文值。若引用在操作系统凭据存储中不存在，需要重新输入对应凭据。当前 provider `api_style` 仅接受 canonical wire protocol id；无效值和指向不存在 provider 的媒体配置会走同一备份与默认配置恢复。Deepgram 凭据只填写原始 API key，不要包含 `Token ` 或 `Deepgram ` 前缀；已保存前缀的凭据需要在模型设置中重新输入。
 
 模型工具使用点号 operation view，例如 `files.*`、`system.*`、`process.*`、`clipboard.*`、`input.*`、`window.*`、`media.*`、`actions.*`、`schedule.*`、`preferences.*`、`checklist.*` 和 `haven.*`。启用 Skill 由 `load_skill` 按名称加载为当前 session 的 `skill__...`；内置 operation 由 `tool_catalog` 的 `action=load` 加载，MCP 由 `load_mcp` 按服务器加载。配置和未完成会话都没有旧工具名的转换保证。
 

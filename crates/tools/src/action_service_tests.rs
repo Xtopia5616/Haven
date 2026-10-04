@@ -18,7 +18,7 @@ fn dependency_prompt_payload(prompt: &str) -> Value {
 async fn wait_terminal(actions: &ActionService, id: &str, timeout_secs: u64) -> Value {
     let deadline = std::time::Instant::now() + Duration::from_secs(timeout_secs);
     loop {
-        let v = actions.status(id).await;
+        let v = actions.status_view(id).await.to_json(true);
         if v["status"] != "running" || std::time::Instant::now() > deadline {
             return v;
         }
@@ -163,7 +163,7 @@ async fn background_terminal_race_publishes_only_the_database_cas_winner() {
         ActionStatus::Completed | ActionStatus::Cancelled
     ));
     assert_eq!(
-        service.status(&action_id).await["status"],
+        service.status_view(&action_id).await.to_json(true)["status"],
         row.status.as_str()
     );
     assert_eq!(terminal_event_count(&events), 1);
@@ -227,7 +227,10 @@ async fn background_terminal_cas_loser_reconciles_without_publishing() {
         )
         .await;
 
-    assert_eq!(service.status(&action_id).await["status"], "completed");
+    assert_eq!(
+        service.status_view(&action_id).await.to_json(true)["status"],
+        "completed"
+    );
     assert_eq!(
         db.get_action(&action_id)
             .unwrap()
@@ -267,7 +270,10 @@ async fn background_terminal_storage_error_stays_running_then_retries_once() {
         )
         .await;
 
-    assert_eq!(service.status(&action_id).await["status"], "running");
+    assert_eq!(
+        service.status_view(&action_id).await.to_json(true)["status"],
+        "running"
+    );
     assert_eq!(
         db.get_action(&action_id).unwrap().unwrap().status,
         ActionStatus::Running
@@ -279,14 +285,17 @@ async fn background_terminal_storage_error_stays_running_then_retries_once() {
         .execute_batch("DROP TRIGGER block_background_completion")
         .unwrap();
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while service.status(&action_id).await["status"] == "running" {
+    while service.status_view(&action_id).await.to_json(true)["status"] == "running" {
         assert!(
             std::time::Instant::now() < deadline,
             "terminal retry did not commit"
         );
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    assert_eq!(service.status(&action_id).await["status"], "completed");
+    assert_eq!(
+        service.status_view(&action_id).await.to_json(true)["status"],
+        "completed"
+    );
     assert_eq!(terminal_event_count(&events), 1);
     let completion = tokio::time::timeout(Duration::from_secs(1), recv_background(&mut rx))
         .await
@@ -320,7 +329,10 @@ async fn background_cancel_storage_error_does_not_publish_before_retry_commit() 
         .unwrap();
 
     service.mark_cancelled(&action_id, "started").await;
-    assert_eq!(service.status(&action_id).await["status"], "running");
+    assert_eq!(
+        service.status_view(&action_id).await.to_json(true)["status"],
+        "running"
+    );
     assert_eq!(terminal_event_count(&events), 0);
     assert_no_background_completion(&mut rx).await;
 
@@ -328,14 +340,17 @@ async fn background_cancel_storage_error_does_not_publish_before_retry_commit() 
         .execute_batch("DROP TRIGGER block_background_cancel")
         .unwrap();
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while service.status(&action_id).await["status"] == "running" {
+    while service.status_view(&action_id).await.to_json(true)["status"] == "running" {
         assert!(
             std::time::Instant::now() < deadline,
             "cancel retry did not commit"
         );
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    assert_eq!(service.status(&action_id).await["status"], "cancelled");
+    assert_eq!(
+        service.status_view(&action_id).await.to_json(true)["status"],
+        "cancelled"
+    );
     assert_eq!(
         db.get_action(&action_id).unwrap().unwrap().status,
         ActionStatus::Cancelled
@@ -368,7 +383,10 @@ async fn repeated_background_completion_is_idempotent_and_publishes_once() {
             .await;
     }
 
-    assert_eq!(service.status(&action_id).await["output"], "first output");
+    assert_eq!(
+        service.status_view(&action_id).await.to_json(true)["output"],
+        "first output"
+    );
     assert_eq!(
         db.get_action(&action_id)
             .unwrap()
@@ -479,7 +497,10 @@ async fn session_cleanup_keeps_running_action_until_cancel_commit() {
     service
         .cancel_owned_background_by_session(&session_id)
         .await;
-    assert_eq!(service.status(&action_id).await["status"], "running");
+    assert_eq!(
+        service.status_view(&action_id).await.to_json(true)["status"],
+        "running"
+    );
     assert_eq!(
         db.get_action(&action_id).unwrap().unwrap().status,
         ActionStatus::Running
@@ -491,7 +512,7 @@ async fn session_cleanup_keeps_running_action_until_cancel_commit() {
         .execute_batch("DROP TRIGGER block_cleanup_cancel")
         .unwrap();
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while service.status(&action_id).await["status"] != "not_found" {
+    while service.status_view(&action_id).await.to_json(true)["status"] != "not_found" {
         assert!(
             std::time::Instant::now() < deadline,
             "cleanup retry did not commit and remove the board entry"
@@ -559,7 +580,10 @@ async fn missing_store_keeps_background_actions_memory_only() {
         )
         .await;
 
-    assert_eq!(service.status(&action_id).await["status"], "completed");
+    assert_eq!(
+        service.status_view(&action_id).await.to_json(true)["status"],
+        "completed"
+    );
     let completion = recv_background(&mut receiver).await;
     assert_eq!(completion.session_id.as_deref(), Some(session_id.as_str()));
     assert_eq!(completion.status_json["output"], "memory result");
@@ -685,7 +709,10 @@ async fn test_spawn_for_session_binds_owner_before_completion() {
     assert_eq!(completion.action_id, id);
     assert_eq!(completion.session_id.as_deref(), Some("ses-owner"));
     assert_eq!(
-        actions.status_for_session(&id, "ses-owner").await["status"],
+        actions
+            .status_for_session_view(&id, "ses-owner")
+            .await
+            .to_json(true)["status"],
         "completed"
     );
     actions.attach_session(&id, "ses-owner").await;
@@ -778,7 +805,10 @@ async fn test_completion_skipped_for_running() {
     // No actions → no completion. Just confirm the receiver is taken.
     let _rx = actions.take_action_receiver().expect("receiver available");
     // status on not_found doesn't notify.
-    assert_eq!(actions.status("nope").await["status"], "not_found");
+    assert_eq!(
+        actions.status_view("nope").await.to_json(true)["status"],
+        "not_found"
+    );
 }
 
 #[tokio::test]
@@ -929,7 +959,7 @@ async fn test_running_status_includes_command_and_live_output() {
         .await
         .unwrap();
     // While the action runs, status must carry the command line it executes.
-    let v = actions.status(&id).await;
+    let v = actions.status_view(&id).await.to_json(true);
     assert_eq!(v["status"], "running", "got: {}", v);
     assert_eq!(v["shell"], "cmd");
     assert!(
@@ -939,7 +969,7 @@ async fn test_running_status_includes_command_and_live_output() {
     // And the live output tail once the command has produced something.
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     loop {
-        let v = actions.status(&id).await;
+        let v = actions.status_view(&id).await.to_json(true);
         if v["output"].as_str().unwrap_or("").contains("live-line") {
             break;
         }
@@ -989,7 +1019,10 @@ async fn test_spawn_shell_cancelled() {
         .spawn_shell("ping -n 30 127.0.0.1", "cmd", 20_000, None)
         .await
         .unwrap();
-    assert_eq!(actions.status(&id).await["status"], "running");
+    assert_eq!(
+        actions.status_view(&id).await.to_json(true)["status"],
+        "running"
+    );
     assert!(actions.cancel(&id).await, "cancel must report success");
     let v = wait_terminal(&actions, &id, 10).await;
     assert_eq!(v["status"], "cancelled", "got: {}", v);
@@ -1009,9 +1042,15 @@ async fn test_cancel_for_session_cleans_up() {
         .await
         .unwrap();
     actions.attach_session(&id, "ses-1").await;
-    assert_eq!(actions.status(&id).await["status"], "running");
+    assert_eq!(
+        actions.status_view(&id).await.to_json(true)["status"],
+        "running"
+    );
     actions.cancel_owned_by_session("ses-1").await;
-    assert_eq!(actions.status(&id).await["status"], "not_found");
+    assert_eq!(
+        actions.status_view(&id).await.to_json(true)["status"],
+        "not_found"
+    );
     let evs = events.lock().unwrap();
     let finished = evs
         .iter()
@@ -1024,7 +1063,10 @@ async fn test_cancel_for_session_cleans_up() {
 #[tokio::test]
 async fn test_status_not_found() {
     let actions = Arc::new(ActionService::new());
-    assert_eq!(actions.status("action-nope").await["status"], "not_found");
+    assert_eq!(
+        actions.status_view("action-nope").await.to_json(true)["status"],
+        "not_found"
+    );
 }
 
 #[tokio::test]
@@ -1199,7 +1241,10 @@ async fn terminal_projection_keeps_final_output_and_releases_live_tail() {
         )
         .await;
 
-    assert_eq!(service.status(&action_id).await["output"], final_output);
+    assert_eq!(
+        service.status_view(&action_id).await.to_json(true)["output"],
+        final_output
+    );
     assert!(
         service.actions.read().await[&action_id].tail.is_none(),
         "terminal commit releases the live tail"
@@ -1243,8 +1288,18 @@ async fn cancellation_drops_live_output_without_projecting_it_to_terminal_state(
 
     service.mark_cancelled(&action_id, "started").await;
 
-    assert_eq!(service.status(&action_id).await["status"], "cancelled");
-    assert!(service.status(&action_id).await.get("output").is_none());
+    assert_eq!(
+        service.status_view(&action_id).await.to_json(true)["status"],
+        "cancelled"
+    );
+    assert!(
+        service
+            .status_view(&action_id)
+            .await
+            .to_json(true)
+            .get("output")
+            .is_none()
+    );
     assert!(service.actions.read().await[&action_id].tail.is_none());
     let finished = events
         .lock()
@@ -1651,7 +1706,12 @@ async fn test_list_for_session_scopes_to_owning_session() {
     wait_terminal(&actions, &id_a, 10).await;
     wait_terminal(&actions, &id_b, 10).await;
 
-    let rows = actions.list_for_session("ses-1").await;
+    let rows = actions
+        .list_for_session_views("ses-1")
+        .await
+        .into_iter()
+        .map(|row| row.to_json())
+        .collect::<Vec<_>>();
     assert_eq!(rows.len(), 1, "only ses-1's actions: {rows:?}");
     assert_eq!(rows[0]["action_id"], id_a);
     assert_eq!(rows[0]["status"], "completed");
@@ -1660,7 +1720,12 @@ async fn test_list_for_session_scopes_to_owning_session() {
         "preview expected, got: {rows:?}"
     );
 
-    let all = actions.list_for_session("ses-2").await;
+    let all = actions
+        .list_for_session_views("ses-2")
+        .await
+        .into_iter()
+        .map(|row| row.to_json())
+        .collect::<Vec<_>>();
     assert_eq!(all.len(), 1);
     assert_eq!(all[0]["action_id"], id_b);
 }
@@ -1716,18 +1781,24 @@ async fn test_unified_service_owns_scheduled_state_and_cancel() {
             .is_some_and(|due_at| !due_at.is_empty())
     );
     assert_eq!(board[0].mode.as_deref(), Some("continue"));
-    let status = service.status(&id).await;
+    let status = service.status_view(&id).await.to_json(true);
     assert_eq!(status["session_id"], "ses-unified");
     assert_eq!(status["due_at"], board[0].due_at.as_deref().unwrap());
     assert_eq!(
-        service.status_for_session(&id, "ses-unified").await["status"],
+        service
+            .status_for_session_view(&id, "ses-unified")
+            .await
+            .to_json(true)["status"],
         "waiting"
     );
 
     assert!(!service.cancel_for_session(&id, "ses-other").await);
     assert!(service.cancel_for_session(&id, "ses-unified").await);
     assert!(service.board().await.is_empty());
-    assert_eq!(service.status(&id).await["status"], "cancelled");
+    assert_eq!(
+        service.status_view(&id).await.to_json(true)["status"],
+        "cancelled"
+    );
 }
 
 #[tokio::test]
@@ -1850,7 +1921,10 @@ async fn background_only_session_cleanup_leaves_owned_scheduled_action_waiting()
 
     service.cancel_owned_background_by_session(session_id).await;
 
-    assert_eq!(service.status(&scheduled_id).await["status"], "waiting");
+    assert_eq!(
+        service.status_view(&scheduled_id).await.to_json(true)["status"],
+        "waiting"
+    );
 }
 
 #[tokio::test]
@@ -1891,8 +1965,14 @@ async fn full_session_cleanup_cancels_background_before_scheduled() {
     service.cancel_owned_by_session(session_id).await;
 
     assert!(kill_rx.await.is_ok(), "background kill channel is signaled");
-    assert_eq!(service.status(background_id).await["status"], "not_found");
-    assert_eq!(service.status(&scheduled_id).await["status"], "cancelled");
+    assert_eq!(
+        service.status_view(background_id).await.to_json(true)["status"],
+        "not_found"
+    );
+    assert_eq!(
+        service.status_view(&scheduled_id).await.to_json(true)["status"],
+        "cancelled"
+    );
     let finished = events
         .lock()
         .unwrap()
@@ -1972,7 +2052,10 @@ async fn session_cleanup_leaves_non_owner_running_and_terminal_history_unchanged
         db.get_action(non_owner_id).unwrap().unwrap().status,
         ActionStatus::Running
     );
-    assert_eq!(service.status(non_owner_id).await["status"], "running");
+    assert_eq!(
+        service.status_view(non_owner_id).await.to_json(true)["status"],
+        "running"
+    );
     assert!(matches!(
         non_owner_kill_rx.try_recv(),
         Err(tokio::sync::oneshot::error::TryRecvError::Empty)
@@ -2030,8 +2113,14 @@ async fn session_cleanup_continues_after_scheduled_cancel_failure() {
 
     service.cancel_owned_by_session(session_id).await;
 
-    assert_eq!(service.status(&blocked_id).await["status"], "waiting");
-    assert_eq!(service.status(&other_id).await["status"], "cancelled");
+    assert_eq!(
+        service.status_view(&blocked_id).await.to_json(true)["status"],
+        "waiting"
+    );
+    assert_eq!(
+        service.status_view(&other_id).await.to_json(true)["status"],
+        "cancelled"
+    );
     assert_eq!(
         db.get_action(&blocked_id).unwrap().unwrap().status,
         ActionStatus::Waiting
@@ -2048,7 +2137,7 @@ async fn session_cleanup_continues_after_scheduled_cancel_failure() {
 }
 
 #[tokio::test]
-async fn typed_agent_views_match_legacy_json_boundary() {
+async fn typed_agent_views_keep_scoping_and_board_projection() {
     let service = Arc::new(ActionService::new());
     let id = service
         .set(crate::action_types::ScheduledActionSpec {
@@ -2068,29 +2157,14 @@ async fn typed_agent_views_match_legacy_json_boundary() {
 
     let unscoped = service.status_view(&id).await;
     assert_eq!(unscoped.status(), Some(ActionStatus::Waiting));
-    assert_eq!(
-        unscoped.to_json(true),
-        service.status(&id).await,
-        "typed status projection must preserve the existing JSON boundary"
-    );
 
     let scoped = service.status_for_session_view(&id, "ses-typed-view").await;
     assert_eq!(scoped.status(), Some(ActionStatus::Waiting));
-    assert_eq!(
-        scoped.to_json(true),
-        service.status_for_session(&id, "ses-typed-view").await
-    );
 
     let typed_rows = service.list_for_session_views("ses-typed-view").await;
     assert_eq!(typed_rows.len(), 1);
     assert_eq!(typed_rows[0].status, ActionStatus::Waiting);
-    assert_eq!(
-        typed_rows
-            .iter()
-            .map(ActionListView::to_json)
-            .collect::<Vec<_>>(),
-        service.list_for_session("ses-typed-view").await
-    );
+    assert_eq!(typed_rows[0].kind, ActionViewKind::Scheduled);
 }
 
 #[tokio::test]
@@ -2120,21 +2194,23 @@ async fn test_restore_scheduled_action_uses_action_session_and_schedule_due_at()
     service.set_action_store(Some(ActionStore::new(db))).await;
 
     assert_eq!(service.restore_pending().await, 0);
-    let status = service.status("act-restore-owner").await;
+    let status = service.status_view("act-restore-owner").await.to_json(true);
     assert_eq!(status["status"], "waiting");
     assert_eq!(status["session_id"], "ses-restored");
     assert_eq!(status["due_at"], due_at);
     assert_eq!(
         service
-            .status_for_session("act-restore-owner", "ses-restored")
-            .await["status"],
-        "waiting"
+            .status_for_session_view("act-restore-owner", "ses-restored")
+            .await
+            .status(),
+        Some(ActionStatus::Waiting)
     );
     assert_eq!(
         service
-            .status_for_session("act-restore-owner", "ses-other")
-            .await["status"],
-        "not_found"
+            .status_for_session_view("act-restore-owner", "ses-other")
+            .await
+            .status(),
+        None
     );
     assert!(
         !service
@@ -2434,7 +2510,10 @@ async fn dependency_waits_while_producer_is_waiting_then_accepts_cancelled_termi
         .unwrap();
 
     tokio::time::sleep(Duration::from_millis(1150)).await;
-    assert_eq!(service.status(&dependency_id).await["status"], "waiting");
+    assert_eq!(
+        service.status_view(&dependency_id).await.to_json(true)["status"],
+        "waiting"
+    );
     assert!(service.cancel(&producer_id).await);
     let event = tokio::time::timeout(Duration::from_secs(3), rx.recv())
         .await
@@ -2495,7 +2574,10 @@ async fn test_unified_completion_bus_emits_scheduled_transition() {
             panic!("scheduled fire used an action-result variant")
         }
     }
-    assert_eq!(service.status(&id).await["status"], "running");
+    assert_eq!(
+        service.status_view(&id).await.to_json(true)["status"],
+        "running"
+    );
     let updated = events
         .lock()
         .unwrap()
@@ -2510,7 +2592,10 @@ async fn test_unified_completion_bus_emits_scheduled_transition() {
     assert!(!service.fail_scheduled(&id, "late failure").await.unwrap());
     assert!(!service.cancel(&id).await);
     assert_eq!(terminal_event_count(&events), 1);
-    assert_eq!(service.status(&id).await["status"], "completed");
+    assert_eq!(
+        service.status_view(&id).await.to_json(true)["status"],
+        "completed"
+    );
     assert!(!service.completion_bus.has_pending_scheduled_fire(&id).await);
     assert!(!service.completion_bus.has_scheduled_fire_claim(&id).await);
 }
@@ -2642,7 +2727,10 @@ async fn scheduled_admission_keeps_running_row_until_completion_then_reaps_termi
         rx.recv().await,
         Some(ActionCompletion::Scheduled(_))
     ));
-    assert_eq!(service.status(&id).await["status"], "running");
+    assert_eq!(
+        service.status_view(&id).await.to_json(true)["status"],
+        "running"
+    );
 
     service
         .set(crate::action_types::ScheduledActionSpec {
@@ -2660,13 +2748,19 @@ async fn scheduled_admission_keeps_running_row_until_completion_then_reaps_termi
         .await
         .unwrap();
 
-    assert_eq!(service.status(&id).await["status"], "running");
+    assert_eq!(
+        service.status_view(&id).await.to_json(true)["status"],
+        "running"
+    );
     assert_eq!(
         db.get_action(&id).unwrap().unwrap().status,
         haven_common::ActionStatus::Running
     );
     assert!(service.complete_scheduled(&id).await.unwrap());
-    assert_eq!(service.status(&id).await["status"], "completed");
+    assert_eq!(
+        service.status_view(&id).await.to_json(true)["status"],
+        "completed"
+    );
 
     service
         .set(crate::action_types::ScheduledActionSpec {
@@ -2684,7 +2778,10 @@ async fn scheduled_admission_keeps_running_row_until_completion_then_reaps_termi
         .await
         .unwrap();
 
-    assert_eq!(service.status(&id).await["status"], "not_found");
+    assert_eq!(
+        service.status_view(&id).await.to_json(true)["status"],
+        "not_found"
+    );
     assert_eq!(
         db.get_action(&id).unwrap().unwrap().status,
         haven_common::ActionStatus::Completed,
@@ -2738,9 +2835,15 @@ async fn scheduled_admission_keeps_running_row_available_for_cancellation() {
         .await
         .unwrap();
 
-    assert_eq!(service.status(&id).await["status"], "running");
+    assert_eq!(
+        service.status_view(&id).await.to_json(true)["status"],
+        "running"
+    );
     assert!(service.cancel(&id).await);
-    assert_eq!(service.status(&id).await["status"], "cancelled");
+    assert_eq!(
+        service.status_view(&id).await.to_json(true)["status"],
+        "cancelled"
+    );
     assert_eq!(
         db.get_action(&id).unwrap().unwrap().status,
         haven_common::ActionStatus::Cancelled
@@ -2782,7 +2885,10 @@ async fn restore_marks_running_scheduled_action_failed_without_replaying_it() {
         .set_action_store(Some(ActionStore::new(db.clone())))
         .await;
     assert_eq!(restored.restore().await, (0, 1));
-    assert_eq!(restored.status(&id).await["status"], "not_found");
+    assert_eq!(
+        restored.status_view(&id).await.to_json(true)["status"],
+        "not_found"
+    );
     let row = db.get_action(&id).unwrap().unwrap();
     assert_eq!(row.status, haven_common::ActionStatus::Failed);
     assert_eq!(
@@ -2821,7 +2927,10 @@ async fn test_scheduled_fire_without_receiver_is_requeued_durably() {
 
     tokio::time::sleep(Duration::from_millis(1200)).await;
 
-    assert_eq!(service.status(&id).await["status"], "waiting");
+    assert_eq!(
+        service.status_view(&id).await.to_json(true)["status"],
+        "waiting"
+    );
     let pending = db.list_pending_scheduled_actions().unwrap();
     assert_eq!(pending.iter().filter(|row| row.id == id).count(), 1);
     assert_eq!(
@@ -2885,7 +2994,10 @@ async fn test_scheduled_fire_recovery_survives_requeue_failure_for_late_receiver
         .unwrap();
 
     tokio::time::sleep(Duration::from_millis(1200)).await;
-    assert_eq!(service.status(&id).await["status"], "running");
+    assert_eq!(
+        service.status_view(&id).await.to_json(true)["status"],
+        "running"
+    );
 
     service
         .set(crate::action_types::ScheduledActionSpec {
@@ -2902,7 +3014,10 @@ async fn test_scheduled_fire_recovery_survives_requeue_failure_for_late_receiver
         })
         .await
         .unwrap();
-    assert_eq!(service.status(&id).await["status"], "running");
+    assert_eq!(
+        service.status_view(&id).await.to_json(true)["status"],
+        "running"
+    );
 
     let mut rx = service.take_action_receiver().unwrap();
     let fired = tokio::time::timeout(
@@ -2971,9 +3086,15 @@ async fn test_scheduled_fire_recovers_after_completion_bus_lag() {
             panic!("lag recovery returned an action-result event")
         }
     }
-    assert_eq!(service.status(&id).await["status"], "running");
+    assert_eq!(
+        service.status_view(&id).await.to_json(true)["status"],
+        "running"
+    );
     service.complete_scheduled(&id).await.unwrap();
-    assert_eq!(service.status(&id).await["status"], "completed");
+    assert_eq!(
+        service.status_view(&id).await.to_json(true)["status"],
+        "completed"
+    );
 }
 
 #[tokio::test]
@@ -3010,7 +3131,10 @@ async fn test_scheduled_trigger_db_failure_rearms_timer() {
         .unwrap();
 
     tokio::time::sleep(Duration::from_millis(1200)).await;
-    assert_eq!(service.status(&id).await["status"], "waiting");
+    assert_eq!(
+        service.status_view(&id).await.to_json(true)["status"],
+        "waiting"
+    );
     db.conn()
         .execute_batch("DROP TRIGGER block_scheduled_start")
         .unwrap();
@@ -3020,7 +3144,10 @@ async fn test_scheduled_trigger_db_failure_rearms_timer() {
         .expect("re-armed timer did not fire")
         .expect("completion bus open");
     assert!(matches!(event, ActionCompletion::Scheduled(ref fired) if fired.action_id == id));
-    assert_eq!(service.status(&id).await["status"], "running");
+    assert_eq!(
+        service.status_view(&id).await.to_json(true)["status"],
+        "running"
+    );
     service.complete_scheduled(&id).await.unwrap();
 }
 
@@ -3057,7 +3184,10 @@ async fn test_scheduled_cancel_db_failure_keeps_live_state_until_retry() {
         .unwrap();
 
     assert!(!service.cancel(&id).await);
-    assert_eq!(service.status(&id).await["status"], "waiting");
+    assert_eq!(
+        service.status_view(&id).await.to_json(true)["status"],
+        "waiting"
+    );
     assert_eq!(
         db.get_action(&id).unwrap().unwrap().status,
         haven_common::ActionStatus::Waiting
@@ -3067,7 +3197,10 @@ async fn test_scheduled_cancel_db_failure_keeps_live_state_until_retry() {
         .execute_batch("DROP TRIGGER block_scheduled_cancel")
         .unwrap();
     assert!(service.cancel(&id).await);
-    assert_eq!(service.status(&id).await["status"], "cancelled");
+    assert_eq!(
+        service.status_view(&id).await.to_json(true)["status"],
+        "cancelled"
+    );
     assert_eq!(
         db.get_action(&id).unwrap().unwrap().status,
         haven_common::ActionStatus::Cancelled
@@ -3113,7 +3246,10 @@ async fn test_scheduled_terminal_db_failure_retries_before_memory_transition() {
         )
         .unwrap();
     assert!(service.complete_scheduled(&id).await.is_err());
-    assert_eq!(service.status(&id).await["status"], "running");
+    assert_eq!(
+        service.status_view(&id).await.to_json(true)["status"],
+        "running"
+    );
     assert_eq!(
         db.get_action(&id).unwrap().unwrap().status,
         haven_common::ActionStatus::Running
@@ -3123,14 +3259,17 @@ async fn test_scheduled_terminal_db_failure_retries_before_memory_transition() {
         .execute_batch("DROP TRIGGER block_scheduled_terminal")
         .unwrap();
     let deadline = std::time::Instant::now() + Duration::from_secs(4);
-    while service.status(&id).await["status"] == "running" {
+    while service.status_view(&id).await.to_json(true)["status"] == "running" {
         assert!(
             std::time::Instant::now() < deadline,
             "terminal retry did not converge"
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    assert_eq!(service.status(&id).await["status"], "completed");
+    assert_eq!(
+        service.status_view(&id).await.to_json(true)["status"],
+        "completed"
+    );
     assert_eq!(
         db.get_action(&id).unwrap().unwrap().status,
         haven_common::ActionStatus::Completed
@@ -3395,7 +3534,10 @@ async fn test_restore_quarantines_corrupt_waiting_scheduled_rows() {
         .await;
 
     assert_eq!(service.restore_pending().await, 0);
-    assert_eq!(service.status("act-corrupt").await["status"], "not_found");
+    assert_eq!(
+        service.status_view("act-corrupt").await.to_json(true)["status"],
+        "not_found"
+    );
     let row = db.get_action("act-corrupt").unwrap().unwrap();
     assert_eq!(row.status, haven_common::ActionStatus::Failed);
     assert!(
@@ -3430,7 +3572,10 @@ async fn test_action_kind_and_terminal_delete_guards() {
     assert!(!service.delete(&id, "scheduled").await.unwrap());
     assert!(service.cancel_for_kind(&id, "scheduled").await);
     assert!(service.delete_terminal(&id).await.unwrap());
-    assert_eq!(service.status(&id).await["status"], "not_found");
+    assert_eq!(
+        service.status_view(&id).await.to_json(true)["status"],
+        "not_found"
+    );
 }
 
 #[tokio::test]
@@ -3469,7 +3614,10 @@ async fn test_background_registration_rollback_removes_durable_row() {
     service.rollback_background_registration(&id).await;
 
     assert!(db.get_action(&id).unwrap().is_none());
-    assert_eq!(service.status(&id).await["status"], "not_found");
+    assert_eq!(
+        service.status_view(&id).await.to_json(true)["status"],
+        "not_found"
+    );
 }
 
 #[tokio::test]
@@ -3497,7 +3645,10 @@ async fn test_shutdown_stops_scheduled_timers_and_rejects_new_work() {
     service.shutdown().await;
     service.shutdown().await;
 
-    assert_eq!(service.status(&id).await["status"], "waiting");
+    assert_eq!(
+        service.status_view(&id).await.to_json(true)["status"],
+        "waiting"
+    );
     assert!(
         tokio::time::timeout(Duration::from_millis(1200), rx.recv())
             .await

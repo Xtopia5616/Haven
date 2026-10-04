@@ -181,7 +181,7 @@ describe('manifest-driven result renderers', () => {
 		);
 	});
 
-	it('uses a manifest renderer even when the payload has no legacy shape marker', () => {
+	it('uses the manifest renderer without payload shape metadata', () => {
 		setToolManifests([manifest('custom.operation', 'custom', 'settings')]);
 		expect(parseToolResult('custom.operation', JSON.stringify({ value: 1 }))).toMatchObject({
 			kind: 'custom',

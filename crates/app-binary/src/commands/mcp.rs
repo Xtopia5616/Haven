@@ -23,6 +23,7 @@ pub async fn list_mcp_tools(
     state: State<'_, Arc<AppState>>,
 ) -> Result<Vec<McpServerSnapshot>, String> {
     let mut snapshots: HashMap<String, McpServerSnapshot> = state
+        .runtime
         .services
         .mcp
         .snapshot()
@@ -33,7 +34,7 @@ pub async fn list_mcp_tools(
 
     // Include configured-but-disabled servers (no live client) so the UI can
     // show their state and re-enable them without re-adding.
-    for config in state.tools.list_mcp_server_configs().await {
+    for config in state.runtime.tools.list_mcp_server_configs().await {
         let entry = snapshots
             .entry(config.name.clone())
             .or_insert_with(|| McpServerSnapshot {
@@ -133,6 +134,7 @@ pub async fn reconnect_mcp(
     name: String,
 ) -> Result<(), String> {
     let snapshot = state
+        .runtime
         .config_service
         .snapshot()
         .map_err(|error| log_err("reconnect_mcp", error))?;
@@ -141,7 +143,7 @@ pub async fn reconnect_mcp(
         .mcp_servers
         .iter()
         .any(|server| server.name == name && server.enabled)
-        || state.services.mcp.get_client(&name).await.is_none()
+        || state.runtime.services.mcp.get_client(&name).await.is_none()
     {
         return Err(log_err(
             "reconnect_mcp",
@@ -190,10 +192,12 @@ pub async fn refresh_mcp_servers(
     app: tauri::AppHandle,
 ) -> Result<McpRefreshResult, String> {
     let snapshot = state
+        .runtime
         .config_service
         .snapshot()
         .map_err(|error| log_err("refresh_mcp_servers", error))?;
     let reconcile = state
+        .runtime
         .services
         .mcp
         .reconcile_servers(&snapshot.config.mcp_servers)
@@ -235,6 +239,7 @@ pub async fn mcp_tool_call(
     let authorization_request =
         AuthorizationRequest::new(Some("ui"), &tool_key, args.clone(), policy);
     match state
+        .runtime
         .services
         .authorization
         .authorize(&authorization_request)
@@ -266,6 +271,7 @@ pub async fn mcp_tool_call(
 
     let cancel = CancellationToken::new();
     let result = state
+        .runtime
         .services
         .mcp
         .call_tool(&client, &tool, args, cancel)
@@ -310,7 +316,13 @@ pub async fn add_mcp_server(
 
     // McpManager::connect_server starts the monitor; the admin service already
     // rebuilt the catalog while holding the shared config apply gate.
-    let connected = state.services.mcp.get_client(&config.name).await.is_some();
+    let connected = state
+        .runtime
+        .services
+        .mcp
+        .get_client(&config.name)
+        .await
+        .is_some();
     emit_mcp_status(
         &app,
         config.name,
@@ -332,6 +344,7 @@ pub async fn update_mcp_server(
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     let snapshot = state
+        .runtime
         .config_service
         .snapshot()
         .map_err(|error| log_err("update_mcp_server", error))?;
@@ -366,7 +379,7 @@ pub async fn update_mcp_server(
 
     // McpManager::connect_server starts the monitor; the admin service already
     // rebuilt the catalog while holding the shared config apply gate.
-    let connected = state.services.mcp.get_client(&name).await.is_some();
+    let connected = state.runtime.services.mcp.get_client(&name).await.is_some();
     emit_mcp_status(
         &app,
         name,
@@ -433,7 +446,7 @@ pub async fn toggle_mcp_server(
 
     // McpManager::connect_server starts the monitor; the admin service already
     // rebuilt the catalog while holding the shared config apply gate.
-    let connected = state.services.mcp.get_client(&name).await.is_some();
+    let connected = state.runtime.services.mcp.get_client(&name).await.is_some();
     emit_mcp_status(
         &app,
         name,

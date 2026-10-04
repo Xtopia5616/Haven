@@ -62,21 +62,12 @@ impl DeepgramAdapter {
         if key.is_empty() {
             return Ok(headers);
         }
-        // Normalize to `Token <key>`. Strip a legacy `Deepgram ` scheme if
-        // present; keep an already-correct `Token ` prefix as-is.
-        let value = if let Some(rest) = key
-            .strip_prefix("Token ")
-            .or_else(|| key.strip_prefix("token "))
-        {
-            format!("Token {rest}")
-        } else if let Some(rest) = key
-            .strip_prefix("Deepgram ")
-            .or_else(|| key.strip_prefix("deepgram "))
-        {
-            format!("Token {rest}")
-        } else {
-            format!("Token {key}")
-        };
+        if key.chars().any(char::is_whitespace) {
+            return Err(LlmError::Configuration(
+                "Deepgram API key must be entered without an authorization scheme".into(),
+            ));
+        }
+        let value = format!("Token {key}");
         let value = HeaderValue::from_str(&value).map_err(|error| {
             LlmError::Configuration(format!("invalid Deepgram authentication header: {error}"))
         })?;
@@ -187,16 +178,17 @@ mod tests {
     }
 
     #[test]
-    fn auth_headers_keep_existing_token_prefix() {
-        let ep = ModelEndpoint {
-            api_key: "Token xyz".into(),
-            ..Default::default()
-        };
-        let headers = DeepgramAdapter::new(ep).auth_headers().unwrap();
-        assert_eq!(
-            headers.get(AUTHORIZATION).unwrap().to_str().unwrap(),
-            "Token xyz"
-        );
+    fn auth_headers_reject_scheme_prefixed_api_keys() {
+        for api_key in ["Token xyz", "Deepgram dg-key"] {
+            let ep = ModelEndpoint {
+                api_key: api_key.into(),
+                ..Default::default()
+            };
+            assert!(matches!(
+                DeepgramAdapter::new(ep).auth_headers(),
+                Err(LlmError::Configuration(_))
+            ));
+        }
     }
 
     #[test]
@@ -207,18 +199,5 @@ mod tests {
         assert!(encoded.contains("%26"));
         assert!(encoded.contains("%3D"));
         assert_eq!(DeepgramAdapter::encode_query_component("nova-3"), "nova-3");
-    }
-
-    #[test]
-    fn auth_headers_normalize_deepgram_scheme_prefix() {
-        let ep = ModelEndpoint {
-            api_key: "Deepgram dg-key".into(),
-            ..Default::default()
-        };
-        let headers = DeepgramAdapter::new(ep).auth_headers().unwrap();
-        assert_eq!(
-            headers.get(AUTHORIZATION).unwrap().to_str().unwrap(),
-            "Token dg-key"
-        );
     }
 }

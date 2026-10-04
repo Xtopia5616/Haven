@@ -188,8 +188,8 @@ pub trait LlmClient: Send + Sync {
 
     /// Shared, read-only streaming request boundary used by provider retries.
     /// Native and custom streaming adapters should override this method and
-    /// consume the immutable snapshots directly. The compatibility default is
-    /// deliberately fail-closed instead of materializing `Vec`s per attempt;
+    /// consume the immutable snapshots directly. The default is deliberately
+    /// fail-closed instead of materializing `Vec`s per attempt;
     /// an adapter that has not opted into the shared boundary cannot silently
     /// reintroduce retry allocations.
     async fn chat_stream_with_tools_output_cap_shared(

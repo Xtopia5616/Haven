@@ -86,9 +86,7 @@ pub enum TranscriptRecord {
         notices: Vec<haven_common::media::MediaPlanNotice>,
     },
     CompactSummary {
-        /// Step at which compaction replaced the active transcript. Older
-        /// event payloads recover this from the enclosing session event row.
-        #[serde(default)]
+        /// Step at which compaction replaced the active transcript.
         step_number: u32,
         #[serde(serialize_with = "serialize_snapshot_canonical")]
         compacted: Vec<CanonicalMessage>,

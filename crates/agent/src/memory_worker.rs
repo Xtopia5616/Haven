@@ -1229,7 +1229,7 @@ impl MemoryWorker {
             }
         };
         // Only bother the model when some keys still need collapsing: either
-        // a legacy alias spelling, or a free-form non-canonical predicate.
+        // a known alias spelling, or a free-form non-canonical predicate.
         let needs_merge = counts.iter().any(|entry| {
             let normalized = normalize_predicate(&entry.predicate);
             normalized != entry.predicate || !is_canonical_merge_target(&normalized)
@@ -2092,7 +2092,7 @@ mod tests {
         )
     }
 
-    fn insert_legacy_predicate(db: &Database, predicate: &str, object: &str) -> String {
+    fn insert_noncanonical_predicate(db: &Database, predicate: &str, object: &str) -> String {
         let fact = db
             .insert_fact("user", "likes", object, "inferred", 0.9, &[])
             .unwrap();
@@ -2220,10 +2220,10 @@ mod tests {
     async fn predicate_llm_rewrites_keep_gates_and_accumulate_each_store_result() {
         let db = Arc::new(Database::open_in_memory().unwrap());
         for object in ["D:/one", "D:/two", "D:/three"] {
-            insert_legacy_predicate(&db, "workspace", object);
+            insert_noncanonical_predicate(&db, "workspace", object);
         }
         for object in ["Rust", "Go"] {
-            insert_legacy_predicate(&db, "fav_lang", object);
+            insert_noncanonical_predicate(&db, "fav_lang", object);
         }
         let canonical = db
             .insert_fact("user", "likes", "tea", "user", 1.0, &[])
@@ -2300,8 +2300,8 @@ mod tests {
     #[tokio::test]
     async fn llm_maintenance_still_skips_calls_when_fast_chat_is_unconfigured() {
         let db = Arc::new(Database::open_in_memory().unwrap());
-        insert_legacy_predicate(&db, "workspace", "D:/one");
-        insert_legacy_predicate(&db, "fav_lang", "Rust");
+        insert_noncanonical_predicate(&db, "workspace", "D:/one");
+        insert_noncanonical_predicate(&db, "fav_lang", "Rust");
         db.insert_fact("user", "likes", "Rust", "user", 1.0, &[])
             .unwrap();
         let inference = Arc::new(FixedMemoryInference {

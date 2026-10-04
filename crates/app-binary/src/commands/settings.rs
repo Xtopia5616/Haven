@@ -76,6 +76,7 @@ fn apply_settings_edit(
 pub async fn get_settings(app: tauri::AppHandle) -> Result<haven_common::config::Settings, String> {
     let state = app.state::<Arc<AppState>>();
     state
+        .runtime
         .config_service
         .settings()
         .map_err(|e| log_err("get_settings", e))
@@ -91,6 +92,7 @@ pub async fn stage_provider_credential(
     api_key: String,
 ) -> Result<String, String> {
     state
+        .runtime
         .config_service
         .stage_provider_credential(&provider_name, &api_key)
         .map_err(|error| log_err("stage_provider_credential", error))
@@ -104,6 +106,7 @@ pub async fn stage_ocr_credential(
     value: String,
 ) -> Result<String, String> {
     state
+        .runtime
         .config_service
         .stage_ocr_credential(api_secret, &value)
         .map_err(|error| log_err("stage_ocr_credential", error))
@@ -113,6 +116,7 @@ pub async fn stage_ocr_credential(
 #[tauri::command]
 pub async fn discard_staged_credentials(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     state
+        .runtime
         .config_service
         .discard_staged_credentials()
         .map_err(|error| log_err("discard_staged_credentials", error))
@@ -175,11 +179,11 @@ async fn execute_settings_apply_phase(
 ) -> SettingsApplyOutcome {
     let config = &snapshot.config;
     match phase {
-        SettingsApplyPhase::RouterPrepare => match state.config_apply_gate.prepare_router_runtime(
-            &state,
-            &snapshot,
-            "update_settings",
-        ) {
+        SettingsApplyPhase::RouterPrepare => match state
+            .runtime
+            .config_apply_gate
+            .prepare_router_runtime(&state, &snapshot, "update_settings")
+        {
             Ok(prepared) => {
                 *prepared_router
                     .lock()
@@ -191,17 +195,26 @@ async fn execute_settings_apply_phase(
         },
         SettingsApplyPhase::InputPipeline => {
             state
+                .runtime
                 .pipeline
                 .update_config(config.media.audio.clone())
                 .await;
             timing.tick("pipeline.update_config");
-            match state.agent.set_media_strategy(config.media.input_strategy) {
+            match state
+                .runtime
+                .agent
+                .set_media_strategy(config.media.input_strategy)
+            {
                 Ok(()) => SettingsApplyOutcome::applied(),
                 Err(error) => SettingsApplyOutcome::failed("update_settings media strategy", error),
             }
         }
         SettingsApplyPhase::Shell => {
-            let result = state.tools.set_default_shell(config.default_shell).await;
+            let result = state
+                .runtime
+                .tools
+                .set_default_shell(config.default_shell)
+                .await;
             timing.tick("set_default_shell");
             match result {
                 Ok(_) => SettingsApplyOutcome::applied(),
@@ -211,8 +224,13 @@ async fn execute_settings_apply_phase(
             }
         }
         SettingsApplyPhase::Security => {
-            state.tools.apply_security(&config.security).await;
-            match state.executor.restore_session_authorization_grants().await {
+            state.runtime.tools.apply_security(&config.security).await;
+            match state
+                .runtime
+                .executor
+                .restore_session_authorization_grants()
+                .await
+            {
                 Ok(_) => {
                     state
                         .last_fully_applied_security_config_version
@@ -227,12 +245,17 @@ async fn execute_settings_apply_phase(
             }
         }
         SettingsApplyPhase::McpConfig => {
-            state.tools.load_mcp_from_config(&config.mcp_servers).await;
+            state
+                .runtime
+                .tools
+                .load_mcp_from_config(&config.mcp_servers)
+                .await;
             timing.tick("load_mcp_from_config");
             SettingsApplyOutcome::applied()
         }
         SettingsApplyPhase::McpMonitors => {
             state
+                .runtime
                 .services
                 .mcp
                 .start_monitors(&config.mcp_discovery)
@@ -247,6 +270,7 @@ async fn execute_settings_apply_phase(
                 .take()
                 .expect("router target always has a prepared runtime");
             let result = state
+                .runtime
                 .config_apply_gate
                 .publish_router_runtime(&state, prepared)
                 .await;
@@ -269,8 +293,9 @@ async fn execute_settings_apply_phase(
             }
         }
         SettingsApplyPhase::ContextLimits => {
-            state.pipeline.set_limits(&config.context_limits);
+            state.runtime.pipeline.set_limits(&config.context_limits);
             let result = state
+                .runtime
                 .tools
                 .set_context_limits(config.context_limits.clone())
                 .await;
@@ -281,6 +306,7 @@ async fn execute_settings_apply_phase(
                     error,
                 ),
                 Ok(_) => match state
+                    .runtime
                     .agent
                     .set_context_limits(config.context_limits.clone())
                 {
@@ -292,22 +318,25 @@ async fn execute_settings_apply_phase(
             }
         }
         SettingsApplyPhase::SessionRuntime => {
-            if let Err(error) = state.agent.set_max_steps(config.session.max_steps) {
+            if let Err(error) = state.runtime.agent.set_max_steps(config.session.max_steps) {
                 return SettingsApplyOutcome::failed("update_settings max steps", error);
             }
             if let Err(error) = state
+                .runtime
                 .agent
                 .set_session_max_steps(config.session.session_max_steps)
             {
                 return SettingsApplyOutcome::failed("update_settings session max steps", error);
             }
             state
+                .runtime
                 .executor
                 .set_max_concurrent(config.session.max_concurrent);
             SettingsApplyOutcome::applied()
         }
         SettingsApplyPhase::ToolSettings => {
             let result = state
+                .runtime
                 .tools
                 .set_tool_settings(config.tool_settings.clone())
                 .await;
@@ -320,6 +349,7 @@ async fn execute_settings_apply_phase(
             }
         }
         SettingsApplyPhase::Skills => match state
+            .runtime
             .services
             .skills
             .set_config(config.skills.root.clone(), config.skills.enabled.clone())
@@ -329,7 +359,7 @@ async fn execute_settings_apply_phase(
             Err(error) => SettingsApplyOutcome::failed("update_settings skills", error),
         },
         SettingsApplyPhase::Logging => {
-            match apply_log_level_to_handles(&state.log_filter_handles, &config.log.level) {
+            match apply_log_level_to_handles(&state.runtime.log_filter_handles, &config.log.level) {
                 Ok(()) => SettingsApplyOutcome::applied(),
                 Err(error) => SettingsApplyOutcome::failed("update_settings logging", error),
             }
@@ -337,6 +367,7 @@ async fn execute_settings_apply_phase(
         SettingsApplyPhase::HotkeyMode => {
             use haven_common::types::HotkeyMode;
             state
+                .runtime
                 .shell
                 .set_hold_mode(config.hotkey.mode == HotkeyMode::Hold)
                 .await;
@@ -369,8 +400,8 @@ async fn execute_settings_apply_phase(
                             return;
                         }
                         let runtime = state.runtime.clone();
-                        let shell = state.shell.clone();
-                        let tools = state.tools.clone();
+                        let shell = state.runtime.shell.clone();
+                        let tools = state.runtime.tools.clone();
                         let hotkey_capture_active = state.hotkey_capture_active.clone();
                         let app_h = _app.clone();
                         let pressed = event.state == ShortcutState::Pressed;
@@ -456,8 +487,8 @@ pub async fn update_settings(
     let timing = Arc::new(SettingsApplyTiming::new());
     let state = app.state::<Arc<AppState>>();
     let state = Arc::clone(&*state);
-    let _apply_guard = state.config_apply_gate.lock().await;
-    let Some(update) = apply_settings_edit(&state.config_service, &settings)
+    let _apply_guard = state.runtime.config_apply_gate.lock().await;
+    let Some(update) = apply_settings_edit(&state.runtime.config_service, &settings)
         .map_err(|error| log_err("update_settings", error))?
     else {
         return Ok(());
@@ -548,7 +579,7 @@ pub async fn update_settings(
 pub async fn list_permissions(
     state: State<'_, Arc<AppState>>,
 ) -> Result<Vec<haven_common::config::StoredPermission>, String> {
-    Ok(state.services.authorization.list_permanent().await)
+    Ok(state.runtime.services.authorization.list_permanent().await)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -565,6 +596,7 @@ pub async fn list_session_permissions(
     state: State<'_, Arc<AppState>>,
 ) -> Result<Vec<SessionPermissionGrant>, String> {
     state
+        .runtime
         .session_store
         .all_session_authorization_grants()
         .await
@@ -595,8 +627,9 @@ pub async fn revoke_permission(state: State<'_, Arc<AppState>>, key: String) -> 
             "permission key cannot be empty",
         ));
     }
-    let _config_apply_guard = state.config_apply_gate.lock().await;
+    let _config_apply_guard = state.runtime.config_apply_gate.lock().await;
     let previous = state
+        .runtime
         .config_service
         .snapshot()
         .map_err(|error| log_err("revoke_permission", error))?
@@ -605,8 +638,13 @@ pub async fn revoke_permission(state: State<'_, Arc<AppState>>, key: String) -> 
         .permissions
         .into_iter()
         .find(|permission| permission.key == key);
-    state.services.authorization.revoke_permanent(&key).await;
-    let edit = state.config_service.edit(|config| {
+    state
+        .runtime
+        .services
+        .authorization
+        .revoke_permanent(&key)
+        .await;
+    let edit = state.runtime.config_service.edit(|config| {
         config
             .security
             .permissions
@@ -616,6 +654,7 @@ pub async fn revoke_permission(state: State<'_, Arc<AppState>>, key: String) -> 
     if let Err(error) = edit {
         if let Some(permission) = previous {
             state
+                .runtime
                 .services
                 .authorization
                 .grant(
@@ -635,21 +674,23 @@ pub async fn revoke_permission(state: State<'_, Arc<AppState>>, key: String) -> 
 /// policy. Session-scoped decisions and the policy mode remain unchanged.
 #[tauri::command]
 pub async fn reset_permissions(state: State<'_, Arc<AppState>>) -> Result<(), String> {
-    let _config_apply_guard = state.config_apply_gate.lock().await;
+    let _config_apply_guard = state.runtime.config_apply_gate.lock().await;
     let previous = state
+        .runtime
         .config_service
         .snapshot()
         .map_err(|error| log_err("reset_permissions", error))?
         .config
         .security
         .permissions;
-    state.services.authorization.clear_permanent().await;
-    if let Err(error) = state.config_service.edit(|config| {
+    state.runtime.services.authorization.clear_permanent().await;
+    if let Err(error) = state.runtime.config_service.edit(|config| {
         config.security.permissions.clear();
         Ok(())
     }) {
         for permission in previous {
             state
+                .runtime
                 .services
                 .authorization
                 .grant(
@@ -671,7 +712,7 @@ pub async fn revoke_session_permission(
     session_id: String,
     capability: String,
 ) -> Result<(), String> {
-    let _config_apply_guard = state.config_apply_gate.lock().await;
+    let _config_apply_guard = state.runtime.config_apply_gate.lock().await;
     let session_id = session_id.trim().to_string();
     let capability = capability.trim().to_string();
     if session_id.is_empty() {
@@ -689,6 +730,7 @@ pub async fn revoke_session_permission(
     let capability = haven_common::types::CapabilityScope::try_new(capability)
         .map_err(|error| log_err("revoke_session_permission", error))?;
     let existing = state
+        .runtime
         .session_store
         .session_authorization_grants(&session_id)
         .await
@@ -699,16 +741,19 @@ pub async fn revoke_session_permission(
         return Ok(());
     };
     state
+        .runtime
         .services
         .authorization
         .revoke_session_grant(&session_id, &capability)
         .await;
     if let Err(error) = state
+        .runtime
         .session_store
         .revoke_session_authorization_grant(&session_id, capability.clone())
         .await
     {
         state
+            .runtime
             .services
             .authorization
             .grant(
@@ -725,14 +770,16 @@ pub async fn revoke_session_permission(
 
 #[tauri::command]
 pub async fn reset_session_permissions(state: State<'_, Arc<AppState>>) -> Result<usize, String> {
-    let _config_apply_guard = state.config_apply_gate.lock().await;
+    let _config_apply_guard = state.runtime.config_apply_gate.lock().await;
     let previous = state
+        .runtime
         .session_store
         .all_session_authorization_grants()
         .await
         .map_err(|error| log_err("reset_session_permissions", error))?;
-    state.services.authorization.clear_all_trust().await;
+    state.runtime.services.authorization.clear_all_trust().await;
     let removed = match state
+        .runtime
         .session_store
         .clear_session_authorization_grants()
         .await
@@ -741,6 +788,7 @@ pub async fn reset_session_permissions(state: State<'_, Arc<AppState>>) -> Resul
         Err(error) => {
             for stored in previous {
                 state
+                    .runtime
                     .services
                     .authorization
                     .grant(

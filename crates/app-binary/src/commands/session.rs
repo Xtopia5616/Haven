@@ -19,7 +19,12 @@ use tauri::State;
 /// Reconcile host-managed media after a successful explicit history deletion.
 /// A failed reference query must leave every file untouched.
 async fn cleanup_unreferenced_session_media(state: &AppState, context: &str) {
-    let referenced_paths = match state.session_store.list_managed_attachment_paths().await {
+    let referenced_paths = match state
+        .runtime
+        .session_store
+        .list_managed_attachment_paths()
+        .await
+    {
         Ok(paths) => paths,
         Err(error) => {
             tracing::warn!(
@@ -33,7 +38,7 @@ async fn cleanup_unreferenced_session_media(state: &AppState, context: &str) {
     let cleanup = crate::commands::recording::cleanup_unreferenced_managed_media(
         haven_common::default_work_dir().join("uploads"),
         haven_common::config::default_generated_media_dir(),
-        state.tools.share_services().assets,
+        state.runtime.tools.share_services().assets,
         referenced_paths,
     )
     .await;
@@ -62,6 +67,7 @@ pub async fn reopen_session(
 ) -> Result<(), String> {
     tracing::debug!("reopen_session called: session_id={}", session_id);
     state
+        .runtime
         .agent
         .reopen_session(&session_id)
         .await
@@ -72,7 +78,7 @@ pub async fn reopen_session(
 
 #[tauri::command]
 pub async fn get_sessions(state: State<'_, Arc<AppState>>) -> Result<SessionListResponse, String> {
-    let sessions = state.executor.list_sessions().await;
+    let sessions = state.runtime.executor.list_sessions().await;
     Ok(SessionListResponse { sessions })
 }
 
@@ -136,7 +142,7 @@ pub async fn get_session_lineage(
     state: State<'_, Arc<AppState>>,
     session_id: String,
 ) -> Result<SessionLineageResponse, String> {
-    session_lineage_from_store(&state.session_store, &session_id)
+    session_lineage_from_store(&state.runtime.session_store, &session_id)
         .await
         .map_err(|error| log_err("get_session_lineage", error))
 }
@@ -151,6 +157,7 @@ pub async fn end_session(
     // in-memory list; reading afterwards would fall back to the DB and lose
     // the generated title (end_session clears the working set).
     let executor_session = state
+        .runtime
         .executor
         .get_session(&session_id)
         .await
@@ -159,9 +166,11 @@ pub async fn end_session(
             input: session.input,
         });
     let title =
-        end_session_display_title(&session_id, executor_session, &state.session_store).await;
+        end_session_display_title(&session_id, executor_session, &state.runtime.session_store)
+            .await;
 
     let _ = state
+        .runtime
         .executor
         .end_session(&session_id)
         .await
@@ -169,6 +178,7 @@ pub async fn end_session(
     // end_session always ends as Completed — the user explicitly finished the
     // session, so it is reported as completed (with notification), never error.
     state
+        .runtime
         .agent
         .emit_session_completed(&session_id, &title, "用户主动结束会话")
         .await;
@@ -210,6 +220,7 @@ pub async fn interrupt_session(
     session_id: String,
 ) -> Result<(), String> {
     state
+        .runtime
         .agent
         .interrupt_session(&session_id)
         .await
@@ -245,6 +256,7 @@ pub async fn resolve_confirmation(
     let confirmed = matches!(perm_effect, haven_common::types::PermissionEffect::Allow);
     let confirmation_id: haven_common::types::ConfirmId = step_id.clone().into();
     if let Some(capability) = state
+        .runtime
         .executor
         .pending_confirmation_capability(&confirmation_id)
         .await
@@ -264,14 +276,20 @@ pub async fn resolve_confirmation(
     // (under the executor's sessions lock). Session scope uses the executor's
     // grant-aware path, which commits before resolving can wake the actor.
     let resolution = if timed_out {
-        state.executor.expire_confirmation(&confirmation_id).await
+        state
+            .runtime
+            .executor
+            .expire_confirmation(&confirmation_id)
+            .await
     } else if matches!(perm_scope, haven_common::types::PermissionScope::Session) {
         state
+            .runtime
             .executor
             .resolve_confirmation_with_session_grant(&confirmation_id, perm_target, perm_effect)
             .await
     } else {
         state
+            .runtime
             .executor
             .resolve_confirmation(&confirmation_id, confirmed)
             .await
@@ -441,6 +459,7 @@ pub async fn resolve_confirmation(
     // against the confirmed capability's ancestry. A UI cannot invent a
     // sibling or unrelated broad permission.
     let authorization_request = state
+        .runtime
         .tools
         .get_authorization_request(
             resolution.session_id.as_deref(),
@@ -470,6 +489,7 @@ pub async fn resolve_confirmation(
         None
     };
     state
+        .runtime
         .services
         .authorization
         .grant(
@@ -520,6 +540,7 @@ async fn accept_ui_confirmation(
     if allowed {
         let authorization_request = &pending.authorization_request;
         state
+            .runtime
             .services
             .authorization
             .verify_receipt(authorization_request, &pending.receipt)
@@ -544,6 +565,7 @@ async fn accept_ui_confirmation(
             let config_apply_guard =
                 persist_permanent_permission(state, grant_key.as_str(), perm_effect).await?;
             state
+                .runtime
                 .services
                 .authorization
                 .grant(None, grant_key, perm_effect, perm_scope)
@@ -569,6 +591,7 @@ async fn execute_ui_confirmation_action(
     match &pending.action {
         UiConfirmationAction::Mcp { client, tool, args } => {
             state
+                .runtime
                 .services
                 .mcp
                 .call_tool(
@@ -581,13 +604,20 @@ async fn execute_ui_confirmation_action(
                 .map_err(|error| log_err("resolve_ui_confirmation mcp", error))?;
         }
         UiConfirmationAction::Skill { name, params } => {
-            let skill = state.services.skills.get_skill(name).await.ok_or_else(|| {
-                log_err(
-                    "resolve_ui_confirmation skill",
-                    format!("skill '{}' not found", name),
-                )
-            })?;
+            let skill = state
+                .runtime
+                .services
+                .skills
+                .get_skill(name)
+                .await
+                .ok_or_else(|| {
+                    log_err(
+                        "resolve_ui_confirmation skill",
+                        format!("skill '{}' not found", name),
+                    )
+                })?;
             state
+                .runtime
                 .services
                 .skill_runner
                 .read()
@@ -643,8 +673,9 @@ async fn persist_permanent_permission(
     effect: haven_common::types::PermissionEffect,
 ) -> Result<tokio::sync::OwnedMutexGuard<()>, String> {
     use haven_common::config::StoredPermission;
-    let guard = state.config_apply_gate.lock_owned().await;
+    let guard = state.runtime.config_apply_gate.lock_owned().await;
     state
+        .runtime
         .config_service
         .edit(|config| {
             let permissions = &mut config.security.permissions;
@@ -675,11 +706,13 @@ pub async fn update_session_title(
         return Err(log_err("update_session_title", "Title cannot be empty"));
     }
     state
+        .runtime
         .session_store
         .update_session_title(&session_id, &title)
         .await
         .map_err(|e| log_err("update_session_title", e))?;
     state
+        .runtime
         .executor
         .update_session_title(&session_id, &title)
         .await;
@@ -698,6 +731,7 @@ pub async fn delete_session(
     session_id: String,
 ) -> Result<(), String> {
     state
+        .runtime
         .agent
         .delete_session(&session_id)
         .await
@@ -709,6 +743,7 @@ pub async fn delete_session(
 #[tauri::command]
 pub async fn clear_history(state: State<'_, Arc<AppState>>) -> Result<u64, String> {
     let count = state
+        .runtime
         .agent
         .clear_history()
         .await
@@ -736,6 +771,7 @@ pub async fn rollback_session(
     target_message_id: Option<String>,
 ) -> Result<(), String> {
     state
+        .runtime
         .agent
         .rollback_session(
             &session_id,
@@ -756,6 +792,7 @@ pub async fn continue_session(
     session_id: String,
 ) -> Result<(), String> {
     state
+        .runtime
         .agent
         .continue_session(&session_id)
         .await
@@ -840,7 +877,7 @@ pub async fn get_session_for_resume(
     state: State<'_, Arc<AppState>>,
     session_id: String,
 ) -> Result<SessionResumeResponse, String> {
-    resume_session_from_store(state.session_store.clone(), &session_id).await
+    resume_session_from_store(state.runtime.session_store.clone(), &session_id).await
 }
 
 /// Return the most recent persisted session with its session messages and
@@ -850,7 +887,7 @@ pub async fn get_session_for_resume(
 pub async fn get_last_conversation(
     state: State<'_, Arc<AppState>>,
 ) -> Result<Option<SessionResumeResponse>, String> {
-    last_conversation_from_store(state.session_store.clone()).await
+    last_conversation_from_store(state.runtime.session_store.clone()).await
 }
 
 #[cfg(test)]
@@ -1116,6 +1153,7 @@ mod tests {
         let tool_name = "mcp__test__write";
         let tool_input = serde_json::json!({});
         let authorization_request = state
+            .runtime
             .tools
             .get_authorization_request(None, tool_name, &tool_input)
             .await;
@@ -1153,6 +1191,7 @@ mod tests {
         assert_eq!(pending.request.status, InteractionStatus::Pending);
         assert!(
             state
+                .runtime
                 .session_store
                 .session_authorization_grants("ui")
                 .await

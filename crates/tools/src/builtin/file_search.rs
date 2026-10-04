@@ -1370,7 +1370,7 @@ mod tests {
 
     #[test]
     #[ignore]
-    fn bench_old_vs_ripgrep_engine() {
+    fn bench_ripgrep_engine() {
         let tmp = tempfile::TempDir::new().unwrap();
         let root = tmp.path();
         for i in 0..200 {
@@ -1390,28 +1390,7 @@ mod tests {
             }
         }
 
-        // Legacy single-threaded scan: whole-file read + decode_lossy + contains.
-        let legacy = || {
-            let mut found = 0usize;
-            let walker = ignore::WalkBuilder::new(root).build();
-            for entry in walker {
-                let Ok(entry) = entry else { continue };
-                if !entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
-                    continue;
-                }
-                if let Ok(bytes) = std::fs::read(entry.path()) {
-                    let text = haven_common::encoding::decode_lossy(&bytes);
-                    found += text.lines().filter(|l| l.contains("needle")).count();
-                }
-            }
-            found
-        };
-
-        let t0 = std::time::Instant::now();
-        let legacy_count = legacy();
-        let legacy_elapsed = t0.elapsed();
-
-        let t1 = std::time::Instant::now();
+        let started_at = std::time::Instant::now();
         let (results, _) = search_content_parallel(&ContentSearchParams {
             root,
             pattern: "needle",
@@ -1425,20 +1404,9 @@ mod tests {
             max_window_bytes: 16 * 1024 * 1024,
             cancel: CancellationToken::new(),
         });
-        let new_elapsed = t1.elapsed();
+        let elapsed = started_at.elapsed();
 
-        assert_eq!(legacy_count, results.len());
-        tracing::debug!(
-            "legacy single-thread: {:?}, ripgrep parallel: {:?}, matches: {}",
-            legacy_elapsed,
-            new_elapsed,
-            results.len()
-        );
-        assert!(
-            new_elapsed <= legacy_elapsed,
-            "ripgrep engine should not be slower (legacy {:?} vs new {:?})",
-            legacy_elapsed,
-            new_elapsed
-        );
+        assert_eq!(results.len(), 42_000);
+        tracing::debug!(elapsed = ?elapsed, matches = results.len(), "ripgrep parallel search benchmark");
     }
 }

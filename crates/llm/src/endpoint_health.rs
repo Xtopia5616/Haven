@@ -166,9 +166,8 @@ impl EndpointHealth {
     }
 }
 
-/// Health is keyed by the configured routed-model identity, not by the
-/// legacy request role. A primary and its fallback may share a semaphore but
-/// must never share circuit-breaker state.
+/// Health is keyed by configured routed-model identity. A primary and its
+/// fallback may share a semaphore but must never share circuit-breaker state.
 pub(crate) type EndpointHealthMap = HashMap<String, EndpointHealth>;
 
 pub(crate) fn new_endpoint_health_map(

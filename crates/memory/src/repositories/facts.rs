@@ -1058,7 +1058,7 @@ mod tests {
     #[test]
     fn test_list_predicate_counts_and_rewrite() {
         let db = create_db();
-        // Bypass normalize_predicate to simulate legacy free-form rows (M6).
+        // Seed non-canonical rows directly to exercise M6 maintenance.
         let conn = db.conn();
         conn.execute(
             "INSERT INTO facts (id, subject, predicate, object, source, confidence, created_at)

@@ -636,13 +636,10 @@ fn test_app_data_dir_contains_haven() {
 fn test_app_data_dir_on_windows_uses_appdata() {
     #[cfg(target_os = "windows")]
     {
+        let appdata = std::env::var_os("APPDATA").expect("APPDATA is set on Windows");
+        let expected = std::path::PathBuf::from(appdata).join("haven");
         let dir = haven_common::config::ConfigLoader::data_dir();
-        let s = dir.to_string_lossy();
-        assert!(
-            s.contains("AppData\\Roaming") || s.contains("APPDATA"),
-            "expected AppData path, got: {}",
-            s
-        );
+        assert_eq!(dir, expected);
     }
 }
 

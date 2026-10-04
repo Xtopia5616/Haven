@@ -29,7 +29,7 @@ pub struct RecordingState {
 pub async fn get_recording_state(
     state: State<'_, Arc<AppState>>,
 ) -> Result<RecordingState, String> {
-    let shell_state = state.shell.get_state().await;
+    let shell_state = state.runtime.shell.get_state().await;
     Ok(RecordingState {
         is_recording: shell_state.is_recording,
         is_toggle: shell_state.is_recording_toggle,
@@ -198,6 +198,7 @@ pub(crate) async fn finalize_transcription(
 
     let wav = encode_wav_to_vec(&result.pcm, TARGET_SAMPLE_RATE, 1);
     let transcription = state
+        .runtime
         .tools
         .transcribe_recording(&wav, tokio_util::sync::CancellationToken::new())
         .await;
@@ -296,12 +297,12 @@ pub async fn start_recording(
     state: State<'_, Arc<AppState>>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    if let Err(e) = state.pipeline.start_recording().await {
+    if let Err(e) = state.runtime.pipeline.start_recording().await {
         // The hotkey may have started a recording a moment earlier, or a VAD
         // auto-stop may be finalizing: the pipeline is busy, not broken.
-        let pipeline_state = state.pipeline.get_state().await;
+        let pipeline_state = state.runtime.pipeline.get_state().await;
         if matches!(pipeline_state, haven_input::RecordingState::Recording) {
-            state.shell.sync_recording(true).await;
+            state.runtime.shell.sync_recording(true).await;
             let session_id = begin_recording_session(&state);
             emit_recording_started(&app, &session_id);
             return Ok(());
@@ -316,7 +317,7 @@ pub async fn start_recording(
     }
     // Keep the shell state in sync so the tray icon, the mute hotkey and the
     // recording toggle reflect a UI-button-started recording.
-    state.shell.sync_recording(true).await;
+    state.runtime.shell.sync_recording(true).await;
     let session_id = begin_recording_session(&state);
     emit_recording_started(&app, &session_id);
     Ok(())
@@ -336,26 +337,26 @@ pub async fn stop_recording(
     // clicking stop, and STT + agent run as background work that
     // drives the rest of the UI through `transcription:*` / `session:*`
     // events.
-    let result = match state.pipeline.stop_capture().await {
+    let result = match state.runtime.pipeline.stop_capture().await {
         Ok(result) => result,
         Err(e) => {
             // Another path (VAD auto-stop, mute, double click) already owns
             // the stop: the pipeline is Pending (finished) or Processing
             // (finalizing elsewhere). Not an error for the UI — emitting a
             // failure toast here would blame the user for a race they won.
-            let pipeline_state = state.pipeline.get_state().await;
+            let pipeline_state = state.runtime.pipeline.get_state().await;
             if matches!(
                 pipeline_state,
                 haven_input::RecordingState::Pending | haven_input::RecordingState::Processing
             ) {
-                state.shell.sync_recording(false).await;
+                state.runtime.shell.sync_recording(false).await;
                 return Ok(String::new());
             }
             return Err(log_err("stop_recording", e));
         }
     };
     // Keep the shell state in sync (tray icon, mute hotkey, toggle).
-    state.shell.sync_recording(false).await;
+    state.runtime.shell.sync_recording(false).await;
     emit_recording_stopped(
         &app,
         recording_reason_str(result.reason),
@@ -382,11 +383,12 @@ pub async fn cancel_recording(
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     state
+        .runtime
         .pipeline
         .cancel_recording()
         .await
         .map_err(|e| log_err("cancel_recording", e))?;
-    state.shell.sync_recording(false).await;
+    state.runtime.shell.sync_recording(false).await;
     // No transcription follows a cancel: drop the session id so the next
     // recording starts a fresh one instead of reusing the cancelled id.
     let cancelled_recording_id = state
@@ -415,6 +417,7 @@ pub async fn process_transcript(
     recording_session_id: Option<String>,
 ) -> Result<haven_agent::ProcessResult, String> {
     let limits = state
+        .runtime
         .config_service
         .snapshot()
         .map_err(|e| log_err("process_transcript", e))?
@@ -423,7 +426,7 @@ pub async fn process_transcript(
         .clone();
     let attachments = validate_attachments(attachments.unwrap_or_default(), &limits)
         .map_err(|e| log_err("process_transcript", e))?;
-    let assets = state.tools.share_services().assets;
+    let assets = state.runtime.tools.share_services().assets;
     let attachments = persist_file_attachments(
         attachments,
         limits.max_upload_total_bytes,
@@ -441,6 +444,7 @@ pub async fn process_transcript(
         "process_transcript called"
     );
     let result = match state
+        .runtime
         .agent
         .process_input_with_attachments(&transcript, active_session_id.clone(), &attachments, voice)
         .await
@@ -448,23 +452,32 @@ pub async fn process_transcript(
         Ok(result) => result,
         Err(error) => {
             if active_session_id.is_none() {
-                state.tools.release_pending_managed_assets(&attachments);
+                state
+                    .runtime
+                    .tools
+                    .release_pending_managed_assets(&attachments);
             }
             return Err(log_storage_err("process_transcript", error));
         }
     };
     match (&result, active_session_id.as_deref()) {
         (haven_agent::ProcessResult::SessionCreated { session_id, .. }, Some(previous_id)) => {
-            state
-                .tools
-                .transfer_managed_assets_to_session(previous_id, session_id, &attachments);
+            state.runtime.tools.transfer_managed_assets_to_session(
+                previous_id,
+                session_id,
+                &attachments,
+            );
         }
         (haven_agent::ProcessResult::SessionCreated { session_id, .. }, None) => state
+            .runtime
             .tools
             .bind_pending_managed_assets_to_session(session_id, &attachments),
         (haven_agent::ProcessResult::Supplemented { .. }, Some(_)) => {}
         (haven_agent::ProcessResult::Supplemented { .. }, None) => {
-            state.tools.release_pending_managed_assets(&attachments);
+            state
+                .runtime
+                .tools
+                .release_pending_managed_assets(&attachments);
         }
     }
     let pending_recording_usage = recording_session_id.as_deref().and_then(|id| {
@@ -486,6 +499,7 @@ pub async fn process_transcript(
         };
         if let Some(target_session_id) = target_session_id {
             state
+                .runtime
                 .agent
                 .record_media_usage(target_session_id, &usages)
                 .await;

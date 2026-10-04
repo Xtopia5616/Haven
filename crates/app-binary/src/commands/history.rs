@@ -17,6 +17,7 @@ pub async fn get_history(
     offset: i64,
 ) -> Result<Vec<SessionRecordDto>, String> {
     let sessions = state
+        .runtime
         .session_store
         .list_history(limit, offset)
         .await
@@ -27,6 +28,7 @@ pub async fn get_history(
 #[tauri::command]
 pub async fn count_history(state: State<'_, Arc<AppState>>) -> Result<i64, String> {
     state
+        .runtime
         .session_store
         .count_history()
         .await
@@ -41,6 +43,7 @@ pub async fn search_history_paginated(
     offset: i64,
 ) -> Result<Vec<SessionRecordDto>, String> {
     let sessions = state
+        .runtime
         .session_store
         .search_history_paginated(query, limit, offset)
         .await
@@ -54,6 +57,7 @@ pub async fn count_history_search(
     query: String,
 ) -> Result<i64, String> {
     state
+        .runtime
         .session_store
         .count_history_search(query)
         .await
@@ -66,6 +70,7 @@ pub async fn search_history(
     query: String,
 ) -> Result<Vec<SessionRecordDto>, String> {
     let sessions = state
+        .runtime
         .session_store
         .search_history(query)
         .await
@@ -85,6 +90,7 @@ pub async fn search_history_filtered(
     offset: Option<i64>,
 ) -> Result<Vec<SessionRecordDto>, String> {
     let sessions = state
+        .runtime
         .session_store
         .search_history_filtered(haven_memory::SessionHistoryFilter {
             query,
@@ -107,6 +113,7 @@ pub async fn export_history(
     status: Option<String>,
 ) -> Result<String, String> {
     let sessions = state
+        .runtime
         .session_store
         .search_history_filtered(haven_memory::SessionHistoryFilter {
             query: None,

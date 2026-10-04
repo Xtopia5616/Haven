@@ -261,8 +261,7 @@ impl LlmRouter {
 
     /// Resolve a request, then run it under the selected model's circuit,
     /// concurrency and rate-limit state. The model id is passed to the
-    /// operation so health accounting cannot accidentally fall back to a
-    /// request-kind or legacy role identity.
+    /// operation so health accounting stays keyed to the selected model.
     async fn with_request_permit<T, F, Fut>(
         &self,
         descriptor: RequestDescriptor,
@@ -2330,10 +2329,10 @@ mod tests {
     ) -> Result<LlmResponse, LlmError> {
         let on_chunk = Arc::new(StdMutex::new(on_chunk));
         let rules = RwLock::new(Vec::<StreamRule>::new());
-        crate::streaming::aggregate_stream_cancellable(
+        crate::streaming::aggregate_stream_cancellable_shared(
             client,
-            Vec::new(),
-            Vec::new(),
+            Arc::<[CanonicalMessage]>::from(Vec::new()),
+            Arc::<[ToolDefinition]>::from(Vec::new()),
             on_chunk,
             CancellationToken::new(),
             &rules,

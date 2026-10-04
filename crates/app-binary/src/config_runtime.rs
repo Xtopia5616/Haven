@@ -51,9 +51,12 @@ impl RuntimeConfigCoordinator {
         ctx: &str,
         edit: impl FnOnce(&mut AppConfig) -> anyhow::Result<()>,
     ) -> Result<(), String> {
-        self.edit_model_and_apply_with(&state.config_service, ctx, edit, |snapshot| async move {
-            self.apply_router_runtime(state, &snapshot, ctx).await
-        })
+        self.edit_model_and_apply_with(
+            &state.runtime.config_service,
+            ctx,
+            edit,
+            |snapshot| async move { self.apply_router_runtime(state, &snapshot, ctx).await },
+        )
         .await
     }
 
@@ -96,7 +99,8 @@ impl RuntimeConfigCoordinator {
         snapshot: &ConfigSnapshot,
         ctx: &str,
     ) -> Result<PreparedRouterRuntime, String> {
-        let mcp_caller: Arc<dyn haven_llm::McpToolCaller> = Arc::new(state.services.mcp.clone());
+        let mcp_caller: Arc<dyn haven_llm::McpToolCaller> =
+            Arc::new(state.runtime.services.mcp.clone());
         Self::prepare_router_from_snapshot(snapshot, Some(mcp_caller), ctx)
     }
 
@@ -112,10 +116,12 @@ impl RuntimeConfigCoordinator {
             "publishing prepared router runtime"
         );
         state
+            .runtime
             .agent
             .replace_router(prepared.router.clone())
             .map_err(RouterRuntimePublishError::Agent)?;
         state
+            .runtime
             .tools
             .set_router_and_media_clients(
                 prepared.router,

@@ -85,6 +85,7 @@ pub(crate) async fn execute_admin_surface(
     request: haven_tools::AdminRequest,
 ) -> Result<haven_tools::ToolResult, String> {
     let admin_surfaces = state
+        .runtime
         .tools
         .admin_surfaces()
         .await
@@ -115,6 +116,7 @@ pub(crate) async fn authorize_admin_request(
     request: haven_tools::AdminRequest,
 ) -> Result<haven_tools::ToolResult, String> {
     let admin_surfaces = state
+        .runtime
         .tools
         .admin_surfaces()
         .await
@@ -134,6 +136,7 @@ pub(crate) async fn authorize_admin_request(
     let authorization_request =
         haven_tools::AuthorizationRequest::new(Some("ui"), &tool_name, input, policy);
     let decision = state
+        .runtime
         .services
         .authorization
         .authorize(&authorization_request)
@@ -217,7 +220,7 @@ pub(crate) async fn finalize_admin_ui_operation(
             | McpOperationArgs::McpConnect { .. },
         ) => {
             if let Some(name) = request.server_name() {
-                let connected = state.services.mcp.get_client(name).await.is_some();
+                let connected = state.runtime.services.mcp.get_client(name).await.is_some();
                 crate::commands::mcp::emit_mcp_status(
                     app,
                     name.to_string(),
@@ -246,7 +249,7 @@ pub(crate) async fn finalize_admin_ui_operation(
         haven_tools::AdminRequest::NativeMcp(NativeMcpOperationArgs::McpReconnect {
             name, ..
         }) => {
-            let status = match state.services.mcp.get_client(name).await {
+            let status = match state.runtime.services.mcp.get_client(name).await {
                 Some(client) => client.status().await,
                 None => haven_tools::McpClientStatus::Disconnected,
             };

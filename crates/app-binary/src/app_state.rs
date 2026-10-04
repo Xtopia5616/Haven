@@ -17,7 +17,6 @@ use haven_memory::{
 use haven_platform::credentials::PlatformCredentialStore;
 use haven_tools::ToolsManager;
 use std::collections::HashMap;
-use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -212,14 +211,6 @@ pub struct AppState {
     /// Last config version whose complete Security settings phase succeeded.
     /// One-off permission edits layer on top of this baseline.
     pub(crate) last_fully_applied_security_config_version: AtomicU64,
-}
-
-impl Deref for AppState {
-    type Target = ApplicationRuntime;
-
-    fn deref(&self) -> &Self::Target {
-        &self.runtime
-    }
 }
 
 impl AppState {
@@ -582,12 +573,12 @@ impl AppState {
     where
         F: Fn(AppBootstrapEvent) + Send + Sync + 'static,
     {
-        let tools = self.tools.clone();
-        let pipeline = self.pipeline.clone();
-        let agent = self.agent.clone();
+        let tools = self.runtime.tools.clone();
+        let pipeline = self.runtime.pipeline.clone();
+        let agent = self.runtime.agent.clone();
         let runtime = self.runtime.clone();
         let bootstrap_ready = self.bootstrap_ready.clone();
-        let cfg = match self.config_service.snapshot() {
+        let cfg = match self.runtime.config_service.snapshot() {
             Ok(snapshot) => snapshot.config,
             Err(error) => {
                 tracing::error!("cannot read config for background init: {error}");
@@ -730,11 +721,11 @@ mod tests {
             .unwrap();
 
         // Builtin tools are registered synchronously before new() returns.
-        assert!(state.tools.get_tool("files.read").await.is_some());
-        assert!(state.tools.get_tool("shell").await.is_some());
+        assert!(state.runtime.tools.get_tool("files.read").await.is_some());
+        assert!(state.runtime.tools.get_tool("shell").await.is_some());
 
         // The default config is loaded and accessible via the mutex.
-        let cfg = state.config_service.snapshot().unwrap().config;
+        let cfg = state.runtime.config_service.snapshot().unwrap().config;
         assert!(cfg.session.max_steps > 0);
         assert_eq!(cfg.media.stt.provider, "llm");
         assert_eq!(state.bootstrap_status(), BootstrapStatus::Loading);
@@ -918,9 +909,10 @@ mod tests {
         let state = AppState::new_for_test(&db_path, vec![], loader, dir.path())
             .await
             .unwrap();
-        let mut config = state.config_service.snapshot().unwrap().config;
+        let mut config = state.runtime.config_service.snapshot().unwrap().config;
         config.session.max_steps = 42;
         state
+            .runtime
             .config_service
             .edit(|current| {
                 *current = config;
@@ -935,6 +927,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             state2
+                .runtime
                 .config_service
                 .snapshot()
                 .unwrap()

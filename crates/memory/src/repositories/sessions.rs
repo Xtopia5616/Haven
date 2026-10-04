@@ -328,12 +328,11 @@ impl Database {
         // this session; otherwise deletion leaves permanent kv_store rows.
         conn.execute(
             "DELETE FROM kv_store
-             WHERE key = ?1 OR key = ?2 OR key = ?3 OR key = ?4 OR key = ?5
-                OR key LIKE ?6 OR key LIKE ?7",
+             WHERE key = ?1 OR key = ?2 OR key = ?3 OR key = ?4
+                OR key LIKE ?5 OR key LIKE ?6",
             rusqlite::params![
                 format!("fact_extraction.{}", id),
                 format!("fact_extraction_last_run.{}", id),
-                format!("fact_extraction_episode.{}", id),
                 format!("fact_extraction_pending.{}", id),
                 format!("memory_event_cursor.{}", id),
                 format!("fact_extraction_episode_pending.{}.%", id),
@@ -372,7 +371,6 @@ impl Database {
                 "DELETE FROM kv_store
                  WHERE key LIKE 'fact_extraction.%'
                     OR key LIKE 'fact_extraction_last_run.%'
-                    OR key LIKE 'fact_extraction_episode.%'
                     OR key LIKE 'fact_extraction_episode_done.%'
                     OR key LIKE 'fact_extraction_pending.%'
                     OR key LIKE 'fact_extraction_episode_pending.%'
@@ -493,7 +491,6 @@ impl Database {
             "DELETE FROM kv_store
              WHERE (key LIKE 'fact_extraction.%'
                     OR key LIKE 'fact_extraction_last_run.%'
-                    OR key LIKE 'fact_extraction_episode.%'
                     OR key LIKE 'fact_extraction_episode_done.%'
                     OR key LIKE 'fact_extraction_pending.%'
                     OR key LIKE 'fact_extraction_episode_pending.%'
@@ -504,8 +501,6 @@ impl Database {
                                    THEN substr(key, 21)
                                    WHEN key LIKE 'fact_extraction_last_run.%'
                                    THEN substr(key, 26)
-                                   WHEN key LIKE 'fact_extraction_episode.%'
-                                   THEN substr(key, 25)
                                    WHEN key LIKE 'fact_extraction_pending.%'
                                    THEN substr(key, 25)
                                    WHEN key LIKE 'fact_extraction_episode_pending.%'
@@ -940,8 +935,6 @@ mod tests {
             "2026-08-15T00:00:00Z",
         )
         .unwrap();
-        db.set_kv(&format!("fact_extraction_episode.{}", first.id), "msg-2")
-            .unwrap();
         db.set_kv(
             &format!("fact_extraction_episode_done.{}.msg-3", first.id),
             &first.id,
@@ -961,11 +954,6 @@ mod tests {
         );
         assert!(
             db.get_kv(&format!("fact_extraction_last_run.{}", first.id))
-                .unwrap()
-                .is_none()
-        );
-        assert!(
-            db.get_kv(&format!("fact_extraction_episode.{}", first.id))
                 .unwrap()
                 .is_none()
         );
@@ -1037,8 +1025,6 @@ mod tests {
             "2026-08-15T00:00:00Z",
         )
         .unwrap();
-        db.set_kv(&format!("fact_extraction_episode.{}", first.id), "msg-2")
-            .unwrap();
         db.set_kv(
             &format!("fact_extraction_episode_done.{}.msg-3", first.id),
             &first.id,
@@ -1058,11 +1044,6 @@ mod tests {
         );
         assert!(
             db.get_kv(&format!("fact_extraction_last_run.{}", first.id))
-                .unwrap()
-                .is_none()
-        );
-        assert!(
-            db.get_kv(&format!("fact_extraction_episode.{}", first.id))
                 .unwrap()
                 .is_none()
         );

@@ -644,8 +644,7 @@ impl InboxBus {
         self.ensure_dir()?;
         self.recover_mailbox_tmp_unlocked(name)?;
         // Recover an archive replacement left between Windows' remove and
-        // rename steps, and compact archives created by older versions before
-        // processing the current claim.
+        // rename steps before processing the current claim.
         self.append_archive_unlocked(name, &[])?;
         self.recover_processing_tmp_unlocked(name)?;
         let pending = self.processing(name);
@@ -935,8 +934,8 @@ impl InboxBus {
     }
 
     /// Append envelopes to the archive and compact it to a newest-record tail
-    /// in the same locked mutation. This bounds both on-disk growth and every
-    /// later archive read, including archives created by older builds.
+    /// in the same locked mutation. Read-only callers do not compact as a
+    /// side effect; interrupted replacements are still recovered.
     fn append_archive_unlocked(&self, name: &str, envelopes: &[Envelope]) -> anyhow::Result<()> {
         #[cfg(test)]
         if !envelopes.is_empty()
@@ -953,11 +952,6 @@ impl InboxBus {
         // the archive is oversized or at least one envelope is genuinely new.
         let had_tmp = self.recover_archive_tmp_unlocked(name)?;
         let archive = self.archive(name);
-        let archive_over_limit = archive
-            .metadata()
-            .map(|metadata| metadata.len() > MAX_ARCHIVE_BYTES)
-            .unwrap_or(false);
-
         let existing = read_tail(&archive, MAX_ARCHIVE_BYTES)?;
         let mut lines: Vec<String> = existing
             .lines()
@@ -997,7 +991,7 @@ impl InboxBus {
         }
         retained.reverse();
 
-        if !archive_over_limit && !had_tmp && !has_new_envelope {
+        if !had_tmp && !has_new_envelope {
             return Ok(());
         }
 
@@ -1637,7 +1631,7 @@ mod tests {
     }
 
     #[test]
-    fn oversized_legacy_archive_is_compacted_on_read() {
+    fn reading_oversized_archive_does_not_rewrite_it() {
         let (_dir, bus) = test_bus();
         bus.register("ses-b", &[]).unwrap();
         let messages = (0..500)
@@ -1651,12 +1645,16 @@ mod tests {
         for message in &messages {
             writeln!(archive, "{}", serde_json::to_string(message).unwrap()).unwrap();
         }
-        assert!(std::fs::metadata(bus.archive("ses-b")).unwrap().len() > MAX_ARCHIVE_BYTES);
+        let archive_bytes_before = std::fs::metadata(bus.archive("ses-b")).unwrap().len();
+        assert!(archive_bytes_before > MAX_ARCHIVE_BYTES);
 
         let history = bus.history("ses-b", 1).unwrap();
 
         assert_eq!(history[0].id, messages.last().unwrap().id);
-        assert!(std::fs::metadata(bus.archive("ses-b")).unwrap().len() <= MAX_ARCHIVE_BYTES);
+        assert_eq!(
+            std::fs::metadata(bus.archive("ses-b")).unwrap().len(),
+            archive_bytes_before
+        );
     }
 
     #[test]

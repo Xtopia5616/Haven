@@ -261,6 +261,7 @@ fn api_key_status(cfg: &AppConfig) -> ApiKeyStatus {
 pub async fn get_api_key_status(app: tauri::AppHandle) -> Result<ApiKeyStatus, String> {
     let state = app.state::<Arc<AppState>>();
     let cfg = state
+        .runtime
         .config_service
         .snapshot()
         .map_err(|e| log_err("get_api_key_status", e))?
@@ -276,7 +277,7 @@ pub async fn get_api_key_status(app: tauri::AppHandle) -> Result<ApiKeyStatus, S
 pub async fn check_llm_connection(
     state: State<'_, Arc<AppState>>,
 ) -> Result<haven_llm::LlmConnectionReport, String> {
-    Ok(state.agent.check_llm_connection().await)
+    Ok(state.runtime.agent.check_llm_connection().await)
 }
 
 /// Resolve the auth scheme (header name, prefix) for an STT provider during
@@ -327,6 +328,7 @@ pub async fn discover_models(
     }
     let state = app.state::<Arc<AppState>>();
     let cfg = state
+        .runtime
         .config_service
         .snapshot()
         .map_err(|e| log_err("discover_models", e))?
@@ -455,6 +457,7 @@ pub async fn discover_all_models(
 ) -> Result<BTreeMap<String, Vec<ModelInfo>>, String> {
     let state = app.state::<Arc<AppState>>();
     let cfg = state
+        .runtime
         .config_service
         .snapshot()
         .map_err(|e| log_err("discover_all_models", e))?
@@ -533,6 +536,7 @@ async fn update_model_field(
     mutate: impl FnOnce(&mut ModelConfig) -> Result<(), String>,
 ) -> Result<(), String> {
     state
+        .runtime
         .config_apply_gate
         .edit_model_and_apply(state, ctx, |config| {
             validate(config, model_id_or_request_kind).map_err(anyhow::Error::msg)?;
@@ -558,6 +562,7 @@ pub async fn switch_model(
 ) -> Result<(), String> {
     let state = app.state::<Arc<AppState>>();
     state
+        .runtime
         .config_apply_gate
         .edit_model_and_apply(&state, "switch_model", |config| {
             set_request_route(&mut config.llm, &role, &model_id).map_err(anyhow::Error::msg)

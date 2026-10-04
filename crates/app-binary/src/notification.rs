@@ -50,6 +50,7 @@ impl DesktopNotifications {
         match self
             .handle
             .state::<Arc<AppState>>()
+            .runtime
             .config_service
             .snapshot()
         {
@@ -109,7 +110,8 @@ impl DesktopNotifications {
             return title.clone();
         }
         let state = self.handle.state::<Arc<AppState>>();
-        let resolved = resolve_session_display_title_from_store(&state.session_store, session_id);
+        let resolved =
+            resolve_session_display_title_from_store(&state.runtime.session_store, session_id);
         titles.insert(session_id.to_string(), resolved.clone());
         resolved
     }

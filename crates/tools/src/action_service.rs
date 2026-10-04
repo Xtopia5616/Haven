@@ -1059,19 +1059,6 @@ impl ActionService {
         rows
     }
 
-    /// Board view of every action owned by `session_id`: one entry per action with
-    /// status, timestamps, and a bounded output/error preview. Lets the model
-    /// see all background work of a session in a single call instead of polling
-    /// `status` action by action. Order: oldest first.
-    #[cfg(test)]
-    pub(crate) async fn list_for_session(&self, session_id: &str) -> Vec<Value> {
-        self.list_for_session_views(session_id)
-            .await
-            .into_iter()
-            .map(|row| row.to_json())
-            .collect()
-    }
-
     /// Typed agent-facing board projection. JSON conversion is intentionally
     /// deferred until the actions tool has applied its status filter.
     pub async fn list_for_session_views(&self, session_id: &str) -> Vec<ActionListView> {
@@ -1130,14 +1117,7 @@ impl ActionService {
         rows
     }
 
-    /// Report the current status of a action as JSON.
-    #[cfg(test)]
-    pub(crate) async fn status(&self, action_id: &str) -> Value {
-        self.status_view(action_id).await.to_json(true)
-    }
-
-    /// Typed unscoped status projection. The legacy `status` method is only a
-    /// wire-compatibility serializer around this view.
+    /// Typed unscoped status projection.
     pub async fn status_view(&self, action_id: &str) -> ActionStatusView {
         let actions = self.actions.read().await;
         let Some(entry) = actions.get(action_id) else {
@@ -1189,15 +1169,6 @@ impl ActionService {
             .await?
             .map(DependencyStatus::from_durable)
             .unwrap_or(DependencyStatus::NotFound))
-    }
-
-    /// Status lookup scoped to the owning session. Agent-facing callers must
-    /// never be able to enumerate another session's action by guessing its id.
-    #[cfg(test)]
-    pub(crate) async fn status_for_session(&self, action_id: &str, session_id: &str) -> Value {
-        self.status_for_session_view(action_id, session_id)
-            .await
-            .to_json(true)
     }
 
     /// Typed status lookup scoped to the owning session.
