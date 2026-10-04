@@ -14,6 +14,7 @@ pub mod diagnostics;
 pub mod external;
 pub mod history;
 pub mod log;
+pub(crate) mod managed_media;
 pub mod mcp;
 pub mod memory;
 pub mod model;

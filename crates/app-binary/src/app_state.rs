@@ -136,38 +136,30 @@ async fn run_cleanup_pass(
         }
     }
 
-    match session_store.list_managed_attachment_paths().await {
-        Ok(referenced_paths) => {
-            match crate::commands::recording::cleanup_unreferenced_managed_media(
-                roots.uploads.clone(),
-                roots.generated_media.clone(),
-                registry.clone(),
-                referenced_paths,
-            )
-            .await
-            {
-                Ok((uploads, generated)) if uploads + generated > 0 => tracing::info!(
-                    cleanup = context,
-                    uploads,
-                    generated,
-                    "removed unreferenced managed media"
-                ),
-                Ok(_) => {}
-                Err(error) => tracing::warn!(
-                    cleanup = context,
-                    error = %haven_common::error::sanitize_error_text(&error),
-                    "managed media cleanup failed"
-                ),
-            }
-        }
+    match crate::commands::managed_media::cleanup_unreferenced_managed_media(
+        roots.uploads.clone(),
+        roots.generated_media.clone(),
+        registry.clone(),
+        session_store,
+    )
+    .await
+    {
+        Ok((uploads, generated)) if uploads + generated > 0 => tracing::info!(
+            cleanup = context,
+            uploads,
+            generated,
+            "removed unreferenced managed media"
+        ),
+        Ok(_) => {}
         Err(error) => tracing::warn!(
             cleanup = context,
-            error = %haven_common::error::sanitize_error_text(&error.to_string()),
-            "managed media cleanup skipped: could not read attachment references"
+            error = %haven_common::error::sanitize_error_text(&error),
+            "managed media cleanup failed"
         ),
     }
 
-    match crate::commands::recording::cleanup_stale_upload_staging(roots.uploads.clone()).await {
+    match crate::commands::managed_media::cleanup_stale_upload_staging(roots.uploads.clone()).await
+    {
         Ok(n) if n > 0 => tracing::info!(
             cleanup = context,
             count = n,

@@ -27,27 +27,11 @@ pub enum ConfirmationResolutionResult {
 /// Reconcile host-managed media after a successful explicit history deletion.
 /// A failed reference query must leave every file untouched.
 async fn cleanup_unreferenced_session_media(state: &AppState, context: &str) {
-    let referenced_paths = match state
-        .runtime
-        .session_store
-        .list_managed_attachment_paths()
-        .await
-    {
-        Ok(paths) => paths,
-        Err(error) => {
-            tracing::warn!(
-                context,
-                error = %sanitize_error_text(&error.to_string()),
-                "media cleanup skipped because session references could not be read"
-            );
-            return;
-        }
-    };
-    let cleanup = crate::commands::recording::cleanup_unreferenced_managed_media(
+    let cleanup = crate::commands::managed_media::cleanup_unreferenced_managed_media(
         haven_common::default_work_dir().join("uploads"),
         haven_common::config::default_generated_media_dir(),
         state.runtime.tools.share_services().assets,
-        referenced_paths,
+        &state.runtime.session_store,
     )
     .await;
     match cleanup {

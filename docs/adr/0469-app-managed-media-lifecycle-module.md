@@ -2,7 +2,7 @@
 
 ## 状态
 
-已采纳；实现进行中（2026-10-05）。
+已完成（2026-10-05）。
 
 ## 背景
 
@@ -33,7 +33,7 @@
 
 模块提取无持久数据变化，无需数据库重置。回归验收包括：附件 quota 串行化、部分 root 失败时另一根仍被尝试、staging 上传失败回滚、引用查询失败时两根保持原状、strict generated naming、root/item reparse rejection、 durable reference 与 active/pending lease/TTL 保护，以及上传与清理并发时不删除尚处于 lease handoff 的文件。Tauri IPC 与现有上传 DTO 保持不变。
 
-适用门禁：`cargo fmt --all -- --check`、`cargo test --locked -p haven-app-binary`、`cargo check --locked -p haven-app-binary`、`cargo clippy --locked -p haven-app-binary -- -D warnings`、`git diff --check`。重解析点拒绝还须在 Windows 文件系统上实际验证；若测试环境不能创建 reparse point，ADR 记录该限制并保留 Windows 验收项。后续另行审查 Tools producer → registry lease 的登记窗口。
+验证：`cargo fmt --all -- --check`、`cargo test --locked -p haven-app-binary managed_media::tests`（25 passed）、`cargo test --locked -p haven-app-binary`（213 passed）、`cargo check --locked -p haven-app-binary`、`cargo clippy --locked -p haven-app-binary -- -D warnings` 和 `git diff --check` 均通过。Windows reparse 回归使用目录 junction 实际验证根目录与批次项拒绝。当前模块约 1,495 行，其中约 790 行是直接覆盖私有 helper 的单元测试，生产实现约 700 行且只有文件生命周期一个职责；测试与其私有实现同模块保留，避免为测试扩大可见性。后续另行审查 Tools producer → registry lease 的登记窗口。
 
 ## 回滚
 
