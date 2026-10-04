@@ -1,6 +1,6 @@
 # Haven 架构降复杂度重构路线图
 
-> 状态：阶段 0–8 已完成；媒体 lifecycle、录音生命周期和 Files rich-path/GC 切片已完成；依赖清单单源校验已完成；当前无合格的结构代码切片；Windows 发布验收为独立开放签核门
+> 状态：阶段 0–8 已完成；媒体 lifecycle、录音生命周期、Files rich-path/GC、依赖清单校验和事实敏感规则单源化已完成；当前无合格的结构代码切片；Windows 发布验收为独立开放签核门
 > 更新日期：2026-10-05
 > 范围：Agent/Session、Memory、Tools、LLM、App IPC 与 UI
 
@@ -115,7 +115,8 @@ ADR 0424 收口后，按证据逐个评估以下候选；同一时刻只推进�
 5. **录音 session ID 的 stop/cancel 交接（已完成，2026-10-05；ADR 0471）。** App voice command 与 Shell handler 共用生命周期 owner；停止或取消时在下一次 start 前分离本次 ID，并显式传入 finalizer。Timed `media.record` 不创建 App voice ID，voice 命令不接管工具采集。owner handoff 与并发 stop 单次 detach 回归测试及 Rust/UI/IPC 全门禁通过。
 6. **Shell 录音 overlay controller（已完成，2026-10-05；ADR 0472）。** 将 overlay store、计时器、乐观 toolbar start/stop 和 cancel 收口到唯一 controller；`+layout` 仍拥有全局 listener、通知和 voice transcript submission，输入组件只请求 toggle。旧 `rec-*` 生命周期事件不能更改新 overlay；旧转写文本仍按原 session 提交。VAD 因 payload 没有 session ID 仍按当前 recording 状态门控。Rust/UI/IPC 全门禁通过。
 7. **Files rich-path 登记与 generated-media GC 互斥（已完成，2026-10-05；ADR 0473）。** canonicalize 解析输入及 reparse/junction 别名；仅当 canonical parent 是 generated-media 根目录时，registry shared permit 才覆盖 metadata、revalidation 和 lease/TTL 登记，不锁普通外部路径，也不跨入 MediaTool/模型处理。GC-first 时 handoff 等待、文件删除后失败且不遗留 lease；handoff-first 时 cleaner 等待并看见租约后保留文件。另有外部路径不等待 gate 的回归。Rust workspace test 和严格 Clippy 通过。
-8. **候选审查与依赖清单一致性门禁（已完成，2026-10-05；当前无 Active 代码切片）。** 依据 §5.5 审查 Common/Tools crate 边界、SessionStore 写侧和已列热点；没有新的依赖边、重复 owner、反复回归或性能证据支持继续拆分。审查发现架构表漏列 Agent/Tools 到 Messaging 的实际依赖，旧检查脚本又允许 App 到 Skills/MCP 的不存在边；现已让脚本直接读取架构表并与 Cargo metadata 精确比对，修正结果与停止条件见 [ADR 0474](adr/0474-architecture-dependency-inventory-gate.md)。SessionStore 写侧继续受事务/回滚不变量约束；安全矩阵因生产权限提示也依赖它，保留为运行时 owner。
+8. **候选审查与依赖清单一致性门禁（已完成，2026-10-05）。** 依据 §5.5 审查 Common/Tools crate 边界、SessionStore 写侧和已列热点；没有新的依赖边、重复 owner、反复回归或性能证据支持继续拆分。审查发现架构表漏列 Agent/Tools 到 Messaging 的实际依赖，旧检查脚本又允许 App 到 Skills/MCP 的不存在边；现已让脚本直接读取架构表并与 Cargo metadata 精确比对，修正结果与停止条件见 [ADR 0474](adr/0474-architecture-dependency-inventory-gate.md)。SessionStore 写侧继续受事务/回滚不变量约束；安全矩阵因生产权限提示也依赖它，保留为运行时 owner。
+9. **Memory fact sensitivity 与清理规则单源化（已完成，2026-10-05；ADR 0475）。** Rust detector 与批量 SQL purge 原先维护两份凭据规则；`LIKE` 将 GitHub/npm/DigitalOcean 前缀中的 `_` 当作单字符通配符，可能永久误删相似普通事实。现由私有 `fact_security` 持有规则，Rust 检测和 SQLite predicate 共享同一组关键词/前缀/marker，前缀用精确比较。既有 `facts` façade 和单条 SQL 删除保持；增加 detector/purge 一致性与近似前缀保留回归，无 schema/reset/API 变化。实现与验证见 [ADR 0475](adr/0475-single-source-fact-sensitivity-rules.md)。
 
 上述完成项是历史结果，Active 只表示当前可执行的一片。最新候选审查确认：Common 拆分维持 ADR 0359 的暂缓决定；Tools 拆分缺少独立依赖边界和消费者收益；SessionStore 的 append、projection 与 rollback 必须保持同事务 owner；`LOCAL_TOOL_SECURITY_MATRIX` 仍被生产权限提示路径用作 operation 名白名单，因此保留在 `security.rs`；`+page.svelte`、`SettingsView.svelte`、`admin.rs`、`llm/router.rs` 与 `inbox.rs` 暂无重复 owner 或边界反复导致回归的证据。只有新 bug、职责变更 churn、依赖边或可复现 profile 信号出现时再复核，不因文件/crate 大而排期拆分。
 

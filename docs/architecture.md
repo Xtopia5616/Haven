@@ -272,12 +272,13 @@ OS 句柄和进程生命周期适配不属于该共享契约面，统一归 `hav
 - `repositories/`：会话、消息、步骤、图谱、用量和任务的持久化读写；其中
   `fact_graph.rs` 集中负责 `facts` 写入与图谱不变量，`fact_query.rs`
   负责事实读取、搜索/排序，`fact_maintenance.rs` 负责事实清理、衰减与矛盾
-  扫描，`embedding_store.rs` 以窄异步 `MemoryEmbeddingStore` 提供嵌入索引生命周期
+  扫描，`fact_security.rs` 唯一维护敏感信息规则，并供 Rust detector 与批量 purge SQL 共用；
+  `embedding_store.rs` 以窄异步 `MemoryEmbeddingStore` 提供嵌入索引生命周期
   的持久化端口，`memory_recall_store.rs` 以 `MemoryRecallStore` 提供异步 typed
   keyword/vector recall、可见事实 hydration、revision 与完整 recall 端口；
   `action_store.rs` 以异步 typed `ActionStore` 提供后台/定时 action 与 completion outbox
   的窄持久化端口，并在 Memory 内调度 SQLite blocking 操作；`facts.rs`
-  负责事实类型、谓词策略和稳定 `Database` 外观。消息的
+  负责事实类型、谓词归一化策略和稳定 `Database` 外观。消息的
   `media_inputs` 是多模态 canonical 持久化投影；消息返回对象中的 `attachments` 仅是
   ingress/UI DTO。数据库的 `ui_metadata` 只保留 UI 展示与受管资产保留所需的元数据，
   并由受信 host 根目录重建历史预览，不参与 provider 规划或 transcript 恢复。
@@ -337,6 +338,7 @@ message 与 MEMORY fence，不访问 DB、router 或 cache。事实抽取 outbox
 marker 持久化，不把 provider 网络调用下沉到 Memory；事实维护的 SQL 清理与矛盾候选
 读取由 `fact_maintenance.rs` 负责，`MemoryMaintenanceStore` 提供确定性与 LLM 维护 persistence
 操作的异步 typed 边界；maintenance pass 步骤编排、LLM 仲裁、提案门禁与并发控制仍属于 Agent（ADR 0022、0063、0169、0310、0311）。
+`fact_security.rs` 将敏感 predicate 关键词、object 前缀和 marker 作为唯一规则源，并生成精确的批量删除 predicate；现有 `facts.rs` detector façade 和 `fact_maintenance.rs` 的单条 DELETE 共用这些规则，避免 SQL 通配符扩大永久删除范围（ADR 0475）。
 `MemoryRuntime` 负责 startup cursor/replay、committed-event live consumer 和六小时维护 schedule policy（ADR 0263、0267）。`AgentLayer::build` 仅在组合过程中创建它，并通过 `AgentStartup` 将唯一 `MemoryStartup` 交给 ApplicationRuntime；AgentLayer 只保留同一个 `MemoryWorker` capability。AppRuntime 注册 prepare/startup、live consumer 与 maintenance tasks 并负责 cancel/join。`PreparedMemoryRuntime` 按值消费 prepared receiver；AppRuntime 只有在 live task 注册成功后才将 `MemoryReady` 交给 `AgentLayer::start_after_memory_ready`。prepare/replay 失败或取消时 dispatcher 不启动（ADR 0367）。
 
 ### 2.4 `haven-input` —— 输入采集与语音生命周期

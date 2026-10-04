@@ -5,6 +5,7 @@ pub mod episodes;
 pub(crate) mod fact_graph;
 pub(crate) mod fact_maintenance;
 pub(crate) mod fact_query;
+pub(crate) mod fact_security;
 pub mod fact_store;
 pub mod facts;
 pub mod kv_store;

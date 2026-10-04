@@ -11,6 +11,7 @@ use chrono::{DateTime, Utc};
 use std::collections::{HashMap, HashSet};
 
 use super::fact_query::{FACT_COLS, fact_age_days, fact_effective_confidence, fact_from_row};
+use super::fact_security::sensitive_fact_where_sql;
 use super::facts::{CONTRADICTION_DEMOTE_FACTOR, Fact, all_single_valued_predicates};
 
 /// Live-floor for maintenance contradiction scans (X5). Below this, upsert
@@ -177,51 +178,10 @@ impl<'db> FactMaintenance<'db> {
     /// Remove facts whose predicate or object looks like a credential. This
     /// is a data purge, not merely a prompt filtering operation.
     pub(crate) fn delete_sensitive_facts(&self) -> anyhow::Result<u64> {
-        // Keep this bulk SQL in lockstep with is_sensitive_predicate and
-        // is_sensitive_object; the repository boundary tests cover the
-        // credential forms that are purged here.
         let conn = self.db.conn();
-        let deleted = conn.execute(
-            "DELETE FROM facts WHERE
-                instr(lower(predicate), 'api_key') > 0
-             OR instr(lower(predicate), 'apikey') > 0
-             OR instr(lower(predicate), 'api-key') > 0
-             OR instr(lower(predicate), 'secret') > 0
-             OR instr(lower(predicate), 'token') > 0
-             OR instr(lower(predicate), 'password') > 0
-             OR instr(lower(predicate), 'passwd') > 0
-             OR instr(lower(predicate), 'credential') > 0
-             OR instr(lower(predicate), 'passphrase') > 0
-             OR instr(lower(predicate), 'access_key') > 0
-             OR instr(lower(predicate), 'private_key') > 0
-             OR instr(lower(predicate), 'authorization') > 0
-             OR lower(trim(object)) LIKE 'sk-%'
-             OR lower(trim(object)) LIKE 'tvly-%'
-             OR lower(trim(object)) LIKE 'ghp_%'
-             OR lower(trim(object)) LIKE 'gho_%'
-             OR lower(trim(object)) LIKE 'ghs_%'
-             OR lower(trim(object)) LIKE 'github_pat_%'
-             OR lower(trim(object)) LIKE 'glpat-%'
-             OR lower(trim(object)) LIKE 'xoxb-%'
-             OR lower(trim(object)) LIKE 'xoxp-%'
-             OR lower(trim(object)) LIKE 'xoxa-%'
-             OR lower(trim(object)) LIKE 'xoxr-%'
-             OR lower(trim(object)) LIKE 'xapp-%'
-             OR lower(trim(object)) LIKE 'npm_%'
-             OR lower(trim(object)) LIKE 'pypi-%'
-             OR lower(trim(object)) LIKE 'dop_v1_%'
-             OR lower(trim(object)) LIKE 'aiza%'
-             OR lower(trim(object)) LIKE 'akia%'
-             OR lower(trim(object)) LIKE 'asia%'
-             OR lower(trim(object)) LIKE 'bearer %'
-             OR (lower(trim(object)) LIKE 'eyj%.%.%')
-             OR (lower(trim(object)) LIKE '-----begin%' AND instr(lower(trim(object)), 'private key') > 0)
-             OR instr(lower(object), 'api_key=') > 0
-             OR instr(lower(object), 'apikey=') > 0
-             OR (instr(lower(object), '://') > 0
-                 AND instr(object, '@') > instr(lower(object), '://'))",
-            [],
-        )? as u64;
+        let sensitive_where = sensitive_fact_where_sql();
+        let deleted =
+            conn.execute(&format!("DELETE FROM facts WHERE {sensitive_where}"), [])? as u64;
         if deleted > 0 {
             self.db.cache_invalidate_all_facts();
             self.db

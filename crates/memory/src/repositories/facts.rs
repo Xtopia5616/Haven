@@ -7,6 +7,7 @@ pub use super::fact_maintenance::{
     ContradictionKind, fact_within_demote_age, pick_contradiction_keeper,
 };
 pub use super::fact_query::fact_effective_confidence;
+pub use super::fact_security::{is_sensitive_object, is_sensitive_predicate, is_sensitive_text};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Fact {
@@ -192,83 +193,6 @@ pub(crate) fn all_single_valued_predicates() -> impl Iterator<Item = &'static st
         .iter()
         .chain(SINGLE_VALUED_NON_IDENTITY.iter())
         .copied()
-}
-
-/// Predicate names that must never be stored as (or shown from) user facts:
-/// API keys, tokens, passwords and other credentials.
-pub fn is_sensitive_predicate(predicate: &str) -> bool {
-    let p = predicate.to_ascii_lowercase();
-    const SENSITIVE_KEYWORDS: &[&str] = &[
-        "api_key",
-        "apikey",
-        "api-key",
-        "secret",
-        "token",
-        "password",
-        "passwd",
-        "credential",
-        "passphrase",
-        "access_key",
-        "private_key",
-        "authorization",
-    ];
-    SENSITIVE_KEYWORDS.iter().any(|k| p.contains(k))
-}
-
-/// Object values that look like credentials even when the predicate is not
-/// obviously sensitive (defense in depth: covers secrets the LLM happened to
-/// store under an innocent predicate).
-pub fn is_sensitive_object(object: &str) -> bool {
-    let o = object.trim().to_ascii_lowercase();
-    o.starts_with("sk-")
-        || o.starts_with("tvly-")
-        || o.starts_with("ghp_")
-        || o.starts_with("gho_")
-        || o.starts_with("ghs_")
-        || o.starts_with("github_pat_")
-        || o.starts_with("glpat-")
-        || o.starts_with("xoxb-")
-        || o.starts_with("xoxp-")
-        || o.starts_with("xoxa-")
-        || o.starts_with("xoxr-")
-        || o.starts_with("xapp-")
-        || o.starts_with("npm_")
-        || o.starts_with("pypi-")
-        || o.starts_with("dop_v1_")
-        || o.starts_with("aiza")
-        || o.starts_with("akia")
-        || o.starts_with("asia")
-        || o.starts_with("bearer ")
-        || (o.starts_with("eyj") && o.matches('.').count() >= 2)
-        || (o.starts_with("-----begin") && o.contains("private key"))
-        || o.contains("api_key=")
-        || o.contains("apikey=")
-        || (o.contains("://") && o.contains('@'))
-}
-
-/// Free-text provenance / snippets: treat as sensitive when they look like
-/// credential *objects* **or** contain credential *keywords* (e.g.
-/// "password is …", "token=…") that `is_sensitive_object` alone would miss.
-pub fn is_sensitive_text(text: &str) -> bool {
-    if is_sensitive_object(text) {
-        return true;
-    }
-    let t = text.to_ascii_lowercase();
-    const SENSITIVE_KEYWORDS: &[&str] = &[
-        "api_key",
-        "apikey",
-        "api-key",
-        "secret",
-        "token",
-        "password",
-        "passwd",
-        "credential",
-        "passphrase",
-        "access_key",
-        "private_key",
-        "authorization",
-    ];
-    SENSITIVE_KEYWORDS.iter().any(|k| t.contains(k))
 }
 
 impl Database {
