@@ -112,6 +112,82 @@ impl CleanupRoots {
     }
 }
 
+async fn run_cleanup_pass(
+    executor: &SessionSupervisor,
+    session_store: &SessionStore,
+    roots: &CleanupRoots,
+    registry: &haven_tools::ManagedAssetRegistry,
+    retention_days: u32,
+    context: &'static str,
+) {
+    if retention_days > 0 {
+        match executor.delete_old_sessions(retention_days).await {
+            Ok(n) if n > 0 => tracing::info!(
+                cleanup = context,
+                count = n,
+                retention_days,
+                "removed expired sessions"
+            ),
+            Ok(_) => {}
+            Err(error) => tracing::warn!(
+                cleanup = context,
+                error = %haven_common::error::sanitize_error_text(&error.to_string()),
+                "session retention cleanup failed"
+            ),
+        }
+    }
+
+    match session_store.list_managed_attachment_paths().await {
+        Ok(referenced_paths) => {
+            match crate::commands::recording::cleanup_unreferenced_managed_media(
+                roots.uploads.clone(),
+                roots.generated_media.clone(),
+                registry.clone(),
+                referenced_paths,
+            )
+            .await
+            {
+                Ok((uploads, generated)) if uploads + generated > 0 => tracing::info!(
+                    cleanup = context,
+                    uploads,
+                    generated,
+                    "removed unreferenced managed media"
+                ),
+                Ok(_) => {}
+                Err(error) => tracing::warn!(
+                    cleanup = context,
+                    error = %haven_common::error::sanitize_error_text(&error),
+                    "managed media cleanup failed"
+                ),
+            }
+        }
+        Err(error) => tracing::warn!(
+            cleanup = context,
+            error = %haven_common::error::sanitize_error_text(&error.to_string()),
+            "managed media cleanup skipped: could not read attachment references"
+        ),
+    }
+
+    match crate::commands::recording::cleanup_stale_upload_staging(roots.uploads.clone()).await {
+        Ok(n) if n > 0 => tracing::info!(
+            cleanup = context,
+            count = n,
+            "removed stale upload staging directories"
+        ),
+        Ok(_) => {}
+        Err(error) => tracing::warn!(
+            cleanup = context,
+            error = %haven_common::error::sanitize_error_text(&error),
+            "stale upload staging cleanup failed"
+        ),
+    }
+}
+
+fn daily_cleanup_interval(period: std::time::Duration) -> tokio::time::Interval {
+    let first_tick = tokio::time::Instant::now() + period;
+    tokio::time::interval_at(first_tick, period)
+}
+
 pub struct AppState {
     pub(crate) runtime: Arc<ApplicationRuntime>,
     /// The `rec-{uuid}` id of the in-flight voice recording. Set when a
@@ -362,147 +438,41 @@ impl AppState {
             });
         }
 
-        // Sessions own committed attachment lifetime. Expire sessions first,
-        // then reconcile both upload and generated media against the surviving
-        // durable references and active leases. Even with retention disabled,
-        // orphan sweeping reclaims files left by explicit deletes or crashes.
+        // Run one initial cleanup pass, then repeat it daily. Keeping the pass
+        // in one worker prevents the startup and interval paths from racing to
+        // delete the same session media. Retention-disabled runs still sweep
+        // orphaned media, and staging keeps its independent TTL.
         let retention_days = cfg.session.history_retention_days;
-        let startup_executor = executor.clone();
-        let startup_store = session_store.clone();
-        let startup_uploads = cleanup_roots.uploads.clone();
-        let startup_generated = cleanup_roots.generated_media.clone();
-        let startup_registry = tools.share_services().assets.clone();
-        runtime.spawn("session-media-retention-cleanup", async move {
-            if retention_days > 0 {
-                match startup_executor.delete_old_sessions(retention_days).await {
-                    Ok(n) if n > 0 => tracing::info!(
-                        "cleaned up {} session(s) older than {} days",
-                        n,
-                        retention_days
-                    ),
-                    Ok(_) => {}
-                    Err(error) => tracing::warn!(
-                        error = %haven_common::error::sanitize_error_text(&error.to_string()),
-                        "deferred session retention cleanup failed"
-                    ),
-                }
-            }
-            let referenced_paths = match startup_store.list_managed_attachment_paths().await {
-                Ok(paths) => paths,
-                Err(error) => {
-                    tracing::warn!(
-                        error = %haven_common::error::sanitize_error_text(&error.to_string()),
-                        "deferred managed media cleanup skipped: could not read attachment references"
-                    );
-                    return;
-                }
-            };
-            match crate::commands::recording::cleanup_unreferenced_managed_media(
-                startup_uploads,
-                startup_generated,
-                startup_registry,
-                referenced_paths,
-            )
-            .await
-            {
-                Ok((uploads, generated)) if uploads + generated > 0 => tracing::info!(
-                    "cleaned up {} unreferenced upload batch(es) and {} generated media file(s)",
-                    uploads,
-                    generated
-                ),
-                Ok(_) => {}
-                Err(error) => tracing::warn!(
-                    error = %haven_common::error::sanitize_error_text(&error),
-                    "deferred managed media cleanup failed"
-                ),
-            }
-        });
-
-        // Crash leftovers in private upload staging directories are temporary
-        // state, so their cleanup is independent from session retention.
-        let staging_root = cleanup_roots.uploads.clone();
-        runtime.spawn("stale-upload-cleanup", async move {
-            match crate::commands::recording::cleanup_stale_upload_staging(staging_root).await {
-                Ok(n) if n > 0 => {
-                    tracing::info!("cleaned up {} stale upload staging director(ies)", n);
-                }
-                Ok(_) => {}
-                Err(error) => tracing::warn!(
-                    error = %haven_common::error::sanitize_error_text(&error),
-                    "deferred upload staging cleanup failed"
-                ),
-            }
-        });
-
-        // Reconcile session retention and the two managed media roots every
-        // 24 hours. Staging is temporary and retains its independent 24-hour TTL.
-        let daily_executor = executor.clone();
-        let daily_session_store = session_store.clone();
-        let retention = retention_days;
-        let upload_root = cleanup_roots.uploads.clone();
-        let generated_root = cleanup_roots.generated_media.clone();
-        let daily_registry = tools.share_services().assets.clone();
+        let cleanup_executor = executor.clone();
+        let cleanup_store = session_store.clone();
+        let cleanup_roots = cleanup_roots.clone();
+        let cleanup_registry = tools.share_services().assets.clone();
         runtime.spawn_with_child_token("daily-cleanup", move |cancel| async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(86400));
+            let period = std::time::Duration::from_secs(86400);
+            run_cleanup_pass(
+                &cleanup_executor,
+                &cleanup_store,
+                &cleanup_roots,
+                &cleanup_registry,
+                retention_days,
+                "startup",
+            )
+            .await;
+            let mut interval = daily_cleanup_interval(period);
             loop {
                 tokio::select! {
                     _ = cancel.cancelled() => break,
                     _ = interval.tick() => {}
                 }
-                if retention > 0 {
-                    match daily_executor.delete_old_sessions(retention).await {
-                        Ok(n) if n > 0 => {
-                            tracing::info!("background cleanup: removed {} old session(s)", n);
-                        }
-                        Ok(_) => {}
-                        Err(error) => tracing::warn!(
-                            error = %haven_common::error::sanitize_error_text(&error.to_string()),
-                            "background session retention cleanup failed"
-                        ),
-                    }
-                }
-                match daily_session_store.list_managed_attachment_paths().await {
-                    Ok(referenced_paths) => {
-                        match crate::commands::recording::cleanup_unreferenced_managed_media(
-                            upload_root.clone(),
-                            generated_root.clone(),
-                            daily_registry.clone(),
-                            referenced_paths,
-                        )
-                        .await
-                        {
-                            Ok((uploads, generated)) if uploads + generated > 0 => tracing::info!(
-                                "background cleanup: removed {} upload batch(es) and {} generated media file(s)",
-                                uploads,
-                                generated
-                            ),
-                            Ok(_) => {}
-                            Err(error) => tracing::warn!(
-                                error = %haven_common::error::sanitize_error_text(&error),
-                                "background managed media cleanup failed"
-                            ),
-                        }
-                    }
-                    Err(error) => tracing::warn!(
-                        error = %haven_common::error::sanitize_error_text(&error.to_string()),
-                        "background managed media cleanup skipped: could not read attachment references"
-                    ),
-                }
-                match crate::commands::recording::cleanup_stale_upload_staging(upload_root.clone())
-                    .await
-                {
-                    Ok(n) if n > 0 => {
-                        tracing::info!(
-                            "background cleanup: removed {} stale upload staging director(ies)",
-                            n
-                        );
-                    }
-                    Ok(_) => {}
-                    Err(error) => tracing::warn!(
-                        error = %haven_common::error::sanitize_error_text(&error),
-                        "background upload staging cleanup failed"
-                    ),
-                }
+                run_cleanup_pass(
+                    &cleanup_executor,
+                    &cleanup_store,
+                    &cleanup_roots,
+                    &cleanup_registry,
+                    retention_days,
+                    "daily",
+                )
+                .await;
             }
         });
 
@@ -727,6 +697,25 @@ mod tests {
     use super::*;
     use haven_common::config::McpServerConfig;
     use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn daily_cleanup_interval_delays_first_tick_by_one_period() {
+        let period = std::time::Duration::from_millis(100);
+        let mut interval = daily_cleanup_interval(period);
+
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(10), interval.tick())
+                .await
+                .is_err(),
+            "the first periodic cleanup tick must not run at startup"
+        );
+        tokio::time::timeout(
+            period + std::time::Duration::from_millis(100),
+            interval.tick(),
+        )
+        .await
+        .expect("the first daily tick should arrive after its period");
+    }
 
     #[tokio::test]
     async fn new_initializes_core_components_with_default_config() {
