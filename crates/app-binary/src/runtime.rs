@@ -147,15 +147,7 @@ impl ApplicationRuntime {
             }
         };
 
-        let mut tasks = self.tasks.lock().unwrap_or_else(|poisoned| {
-            tracing::error!("application task registry lock poisoned; recovering");
-            poisoned.into_inner()
-        });
-        if self.shutting_down.load(Ordering::Acquire) {
-            return false;
-        }
-        tasks.push(self.runtime_handle.spawn(wrapped));
-        true
+        self.register_task(wrapped)
     }
 
     /// Register a cancellation-aware task without an outer select that would
@@ -187,6 +179,16 @@ impl ApplicationRuntime {
     where
         F: Future<Output = ()> + Send + 'static,
     {
+        self.register_task(async move {
+            tracing::trace!(task = name, "application cancellation-aware task started");
+            future.await;
+        })
+    }
+
+    fn register_task<F>(&self, future: F) -> bool
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
         if self.shutting_down.load(Ordering::Acquire) {
             return false;
         }
@@ -198,10 +200,7 @@ impl ApplicationRuntime {
         if self.shutting_down.load(Ordering::Acquire) {
             return false;
         }
-        tasks.push(self.runtime_handle.spawn(async move {
-            tracing::trace!(task = name, "application cancellation-aware task started");
-            future.await;
-        }));
+        tasks.push(self.runtime_handle.spawn(future));
         true
     }
 
