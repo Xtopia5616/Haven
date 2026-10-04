@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { isSessionInteractionRequest } from '$lib/contracts/app.ts';
 	import logger from '$lib/logger.ts';
 	import { reportError } from '$lib/errorHandling.ts';
 	import { isDisplayOnlyMessageId } from '$lib/resumeMessages.ts';
@@ -170,21 +171,24 @@
 	// The modal keeps only its current presentation id; pending requests remain
 	// owned by SessionReducer so ask/confirm/scheduled-confirm cannot drift.
 	const pendingInteractions = $derived(
-		Object.values(interactionDict).filter((request) => request.status === 'pending'),
+		Object.values(interactionDict).filter(
+			(request) => isSessionInteractionRequest(request) && request.status === 'pending',
+		),
 	);
 	const pendingAskInteractions = $derived(
 		pendingInteractions.filter((request) => request.kind === 'ask'),
 	);
 	const pendingInteractionItems = $derived.by(() =>
 		[...pendingInteractions]
+			.filter(isSessionInteractionRequest)
 			.sort((left, right) => left.createdAt.localeCompare(right.createdAt))
 			.map((request) => {
 				const sessionTitle =
-					sessions.find((session) => session.id === request.sessionId)?.title ||
-					request.sessionId;
+					sessions.find((session) => session.id === request.owner.sessionId)?.title ||
+					request.owner.sessionId;
 				if (request.kind === 'ask') {
 					const question = sessionReducer
-						.getMessages(request.sessionId)
+						.getMessages(request.owner.sessionId)
 						.find((message) => message.id === request.id)?.content;
 					return {
 						id: request.id,
@@ -970,8 +974,9 @@
 			requestConfirmationOpen(request.id);
 			return;
 		}
-		if (request.sessionId !== activeSessionId) await switchToSession(request.sessionId);
-		if (sessionReducer.getState().activeSessionId !== request.sessionId) return;
+		if (request.owner.kind !== 'session') return;
+		if (request.sessionId !== activeSessionId) await switchToSession(request.owner.sessionId);
+		if (sessionReducer.getState().activeSessionId !== request.owner.sessionId) return;
 		dismissedAskIds = new Set([...dismissedAskIds].filter((dismissedId) => dismissedId !== id));
 		chatViewController.setAutoFollow(false);
 		await tick();

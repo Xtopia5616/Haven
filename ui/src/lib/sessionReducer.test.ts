@@ -22,6 +22,7 @@ describe('resume interaction normalization', () => {
 				{
 					id: 'conf-wire',
 					session_id: 'ses-wire',
+					owner: { kind: 'session', session_id: 'ses-wire' },
 					kind: 'confirm',
 					status: 'pending',
 					options: [],
@@ -50,6 +51,7 @@ describe('resume interaction normalization', () => {
 			{
 				id: 'conf-wire',
 				sessionId: 'ses-wire',
+				owner: { kind: 'session', sessionId: 'ses-wire' },
 				kind: 'confirm',
 				status: 'pending',
 				options: [],
@@ -76,6 +78,7 @@ describe('SessionReducer', () => {
 		const request = (id: string, sessionId: string, status: 'pending' | 'resolved') => ({
 			id,
 			sessionId,
+			owner: { kind: 'session' as const, sessionId },
 			kind: 'ask' as const,
 			status,
 			options: [],
@@ -95,6 +98,54 @@ describe('SessionReducer', () => {
 		});
 
 		expect(reducer.getPendingInteractionIds('ses-a')).toEqual(['ask-live']);
+	});
+
+	it('hydrates and clears only requests owned by that session', () => {
+		const reducer = new SessionReducer();
+		const sessionRequest = {
+			id: 'ask-session',
+			sessionId: 'ses-a',
+			owner: { kind: 'session' as const, sessionId: 'ses-a' },
+			kind: 'ask' as const,
+			status: 'pending' as const,
+			options: [],
+			createdAt: '',
+		};
+		const scheduledRequest = {
+			id: 'conf-scheduled',
+			sessionId: 'ses-a',
+			owner: { kind: 'scheduled_action' as const, actionId: 'act-1' },
+			kind: 'scheduled_confirm' as const,
+			status: 'pending' as const,
+			options: [],
+			createdAt: '',
+		};
+		const appRequest = {
+			id: 'conf-app',
+			owner: { kind: 'app_command' as const },
+			kind: 'confirm' as const,
+			status: 'pending' as const,
+			options: [],
+			createdAt: '',
+		};
+		for (const request of [sessionRequest, scheduledRequest, appRequest])
+			reducer.dispatch({ type: 'session/interaction-upserted', request });
+
+		reducer.dispatch({
+			type: 'session/interactions-hydrated',
+			sessionId: 'ses-a',
+			requests: [],
+		});
+		expect(reducer.getState().interactions).toEqual({
+			[scheduledRequest.id]: scheduledRequest,
+			[appRequest.id]: appRequest,
+		});
+
+		reducer.dispatch({ type: 'sessions/cleared' });
+		expect(reducer.getState().interactions).toEqual({
+			[scheduledRequest.id]: scheduledRequest,
+			[appRequest.id]: appRequest,
+		});
 	});
 
 	it('keeps identical terminal lifecycle projections from notifying selectors again', () => {
@@ -434,6 +485,7 @@ describe('SessionReducer', () => {
 		const pending = {
 			id: 'conf-live',
 			sessionId: 'ses-live',
+			owner: { kind: 'session' as const, sessionId: 'ses-live' },
 			kind: 'confirm' as const,
 			status: 'pending' as const,
 			options: [],
@@ -465,6 +517,7 @@ describe('SessionReducer', () => {
 		const pending = {
 			id: 'conf-resume-live',
 			sessionId: 'ses-resume-live',
+			owner: { kind: 'session' as const, sessionId: 'ses-resume-live' },
 			kind: 'confirm' as const,
 			status: 'pending' as const,
 			options: [],

@@ -40,9 +40,12 @@ export interface SkillsStatusPayload {
 }
 export type InteractionKind = 'ask' | 'confirm' | 'scheduled_confirm';
 export type InteractionStatus = 'pending' | 'resolved' | 'expired' | 'cancelled';
-export interface InteractionRequest {
+export type InteractionOwner =
+	| { kind: 'session'; sessionId: string }
+	| { kind: 'scheduled_action'; actionId: string }
+	| { kind: 'app_command' };
+interface InteractionRequestBase {
 	id: string;
-	sessionId: string;
 	kind: InteractionKind;
 	status: InteractionStatus;
 	options: string[];
@@ -56,6 +59,25 @@ export interface InteractionRequest {
 	createdAt: string;
 	expiresAt?: string;
 	response?: unknown;
+}
+export type InteractionRequest =
+	| (InteractionRequestBase & {
+			owner: Extract<InteractionOwner, { kind: 'session' }>;
+			sessionId: string;
+	  })
+	| (InteractionRequestBase & {
+			owner: Extract<InteractionOwner, { kind: 'scheduled_action' }>;
+			sessionId?: string;
+	  })
+	| (InteractionRequestBase & {
+			owner: Extract<InteractionOwner, { kind: 'app_command' }>;
+		sessionId?: never;
+	  });
+
+export function isSessionInteractionRequest(
+	request: InteractionRequest,
+): request is Extract<InteractionRequest, { owner: { kind: 'session' } }> {
+	return request.owner.kind === 'session' && request.sessionId === request.owner.sessionId;
 }
 export interface HotkeyConflictPayload {
 	binding: string;
@@ -86,7 +108,11 @@ interface AppWirePayloadMap {
 	'skills:status_change': { op: SkillsStatusOperation };
 	'interaction:requested': {
 		id: string;
-		session_id: string;
+		session_id?: string;
+		owner:
+			| { kind: 'session'; session_id: string }
+			| { kind: 'scheduled_action'; action_id: string }
+			| { kind: 'app_command' };
 		kind: InteractionKind;
 		status: InteractionStatus;
 		options?: string[];
@@ -160,6 +186,37 @@ function optionalOneOfIsValid<const Values extends readonly string[]>(
 	return value === undefined || isOneOf(value, values);
 }
 
+export function mapInteractionOwner(
+	value: unknown,
+	sessionId: string | undefined,
+): InteractionOwner | null {
+	if (!isRecord(value) || typeof value.kind !== 'string') return null;
+	switch (value.kind) {
+		case 'session':
+			if (
+				Object.keys(value).length !== 2 ||
+				typeof value.session_id !== 'string' ||
+				!value.session_id ||
+				sessionId !== value.session_id
+			)
+				return null;
+			return { kind: 'session', sessionId: value.session_id };
+		case 'scheduled_action':
+			if (
+				Object.keys(value).length !== 2 ||
+				typeof value.action_id !== 'string' ||
+				!value.action_id
+			)
+				return null;
+			return { kind: 'scheduled_action', actionId: value.action_id };
+		case 'app_command':
+			if (Object.keys(value).length !== 1 || sessionId !== undefined) return null;
+			return { kind: 'app_command' };
+		default:
+			return null;
+	}
+}
+
 /** Convert one known app-shell event from an untrusted Rust/Tauri payload. */
 export function mapAppEvent<K extends AppEventName>(
 	event: TauriEvent<unknown> & { event: K },
@@ -201,7 +258,7 @@ export function mapAppEvent(event: unknown): TauriEvent<AppEventPayloadMap[AppEv
 			return { ...tauriEvent, payload: p as AppWirePayloadMap['skills:status_change'] };
 		case 'interaction:requested': {
 			const id = requiredString(p, 'id');
-			const sessionId = requiredString(p, 'session_id');
+			const sessionId = p.session_id;
 			const kind = p.kind;
 			const status = p.status;
 			const createdAt = requiredString(p, 'created_at');
@@ -209,7 +266,7 @@ export function mapAppEvent(event: unknown): TauriEvent<AppEventPayloadMap[AppEv
 			const actionIndex = p.action_index;
 			if (
 				id === null ||
-				sessionId === null ||
+				(sessionId !== undefined && (typeof sessionId !== 'string' || !sessionId)) ||
 				!isOneOf(kind, INTERACTION_KINDS) ||
 				!isOneOf(status, INTERACTION_STATUSES) ||
 				createdAt === null ||
@@ -228,13 +285,14 @@ export function mapAppEvent(event: unknown): TauriEvent<AppEventPayloadMap[AppEv
 						actionIndex > 4_294_967_295))
 			)
 				return null;
+			const owner = mapInteractionOwner(p.owner, sessionId as string | undefined);
+			if (!owner) return null;
 
 			const wire = p as AppWirePayloadMap['interaction:requested'];
-			return {
-				...tauriEvent,
-				payload: {
+			const payload = {
 					id,
-					sessionId,
+					...(sessionId === undefined ? {} : { sessionId }),
+					owner,
 					kind,
 					status,
 					options,
@@ -249,8 +307,8 @@ export function mapAppEvent(event: unknown): TauriEvent<AppEventPayloadMap[AppEv
 					...(wire.tool_call_id ? { toolCallId: wire.tool_call_id } : {}),
 					createdAt,
 					...(wire.expires_at ? { expiresAt: wire.expires_at } : {}),
-				},
 			};
+			return { ...tauriEvent, payload: payload as InteractionRequest };
 		}
 		case 'hotkey:conflict': {
 			const binding = requiredString(p, 'binding');

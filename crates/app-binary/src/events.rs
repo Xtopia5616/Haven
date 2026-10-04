@@ -466,7 +466,9 @@ pub(crate) struct AgentObservationEvent {
 #[derive(Clone, Serialize)]
 pub(crate) struct InteractionRequestedEvent {
     pub id: String,
-    pub session_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    pub owner: haven_agent::InteractionOwner,
     pub kind: String,
     pub status: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

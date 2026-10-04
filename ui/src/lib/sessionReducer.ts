@@ -177,7 +177,12 @@ export class SessionReducer {
 
 	getPendingInteractionIds(sessionId: string): string[] {
 		return Object.values(this.state.interactions || {})
-			.filter((request) => request.sessionId === sessionId && request.status === 'pending')
+			.filter(
+				(request) =>
+					request.owner.kind === 'session' &&
+					request.owner.sessionId === sessionId &&
+					request.status === 'pending',
+			)
 			.map((request) => request.id);
 	}
 

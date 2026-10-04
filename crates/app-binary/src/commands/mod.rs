@@ -362,7 +362,7 @@ pub(crate) async fn queue_ui_confirmation(
     );
     if let Err(error) = app.emit(
         INTERACTION_REQUESTED_EVENT,
-        crate::bootstrap::project_interaction(&request),
+        crate::bootstrap::project_interaction(&request, haven_agent::InteractionOwner::AppCommand),
     ) {
         state
             .ui_confirmations
@@ -372,14 +372,14 @@ pub(crate) async fn queue_ui_confirmation(
         return Err(log_err("queue_ui_confirmation", error));
     }
     tracing::info!(
-        session_id = %request.session_id,
+        session_id = ?request.session_id,
         interaction_id = %request.id,
         interaction_kind = ?request.kind,
         status = ?request.status,
         "renderer permission request queued"
     );
     app.state::<std::sync::Arc<crate::notification::DesktopNotifications>>()
-        .maybe_show_interaction_request(&request);
+        .maybe_show_interaction_request(&request, &haven_agent::InteractionOwner::AppCommand);
     let expiry_delay = std::time::Duration::from_secs(
         receipt
             .expires_at
@@ -401,7 +401,7 @@ pub(crate) async fn queue_ui_confirmation(
             pending.request
         };
         tracing::info!(
-            session_id = %expired_request.session_id,
+            session_id = ?expired_request.session_id,
             interaction_id = %expired_request.id,
             interaction_kind = ?expired_request.kind,
             status = ?expired_request.status,
@@ -409,11 +409,17 @@ pub(crate) async fn queue_ui_confirmation(
         );
         expiry_app
             .state::<std::sync::Arc<crate::notification::DesktopNotifications>>()
-            .maybe_show_interaction_request(&expired_request);
+            .maybe_show_interaction_request(
+                &expired_request,
+                &haven_agent::InteractionOwner::AppCommand,
+            );
         emit_event_logged(
             &expiry_app,
             INTERACTION_REQUESTED_EVENT,
-            crate::bootstrap::project_interaction(&expired_request),
+            crate::bootstrap::project_interaction(
+                &expired_request,
+                haven_agent::InteractionOwner::AppCommand,
+            ),
             "ui_interaction_expired",
         );
     }) {

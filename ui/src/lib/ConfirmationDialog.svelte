@@ -46,7 +46,7 @@
 		stepId,
 		toolName,
 		sessionId,
-		allowSessionScope = sessionId !== 'ui' && sessionId !== 'action',
+		allowSessionScope = Boolean(sessionId),
 		sessionTitle,
 		riskLevel,
 		summary,

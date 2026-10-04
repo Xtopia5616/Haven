@@ -123,7 +123,6 @@ describe('ConfirmationDialog', () => {
 		render(ConfirmationDialog as any, {
 			stepId: 'conf-ui-only',
 			toolName: 'mcp__server__write',
-			sessionId: 'ui',
 			permissionKey: 'mcp.server.write',
 			onConfirm: vi.fn(),
 		});
@@ -141,7 +140,6 @@ describe('ConfirmationDialog', () => {
 		render(ConfirmationDialog as any, {
 			stepId: 'conf-retry',
 			toolName: 'mcp__server__write',
-			sessionId: 'ui',
 			onConfirm,
 		});
 

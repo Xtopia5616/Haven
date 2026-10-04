@@ -36,10 +36,12 @@ macro_rules! log_ignored_result {
 
 pub(crate) fn project_interaction(
     request: &haven_agent::InteractionRequest,
+    owner: haven_agent::InteractionOwner,
 ) -> InteractionRequestedEvent {
     let mut event = InteractionRequestedEvent {
         id: request.id.clone(),
         session_id: request.session_id.clone(),
+        owner,
         kind: match request.kind {
             haven_agent::InteractionKind::Ask => "ask",
             haven_agent::InteractionKind::Confirm => "confirm",
@@ -511,21 +513,22 @@ pub(crate) fn run() {
                                     }
                                 };
                                 match event {
-                                    haven_agent::SessionEvent::InteractionRequested { request } => {
+                                    haven_agent::SessionEvent::InteractionRequested { envelope } => {
+                                        let haven_agent::InteractionEnvelope { owner, request } = *envelope;
                                         tracing::info!(
-                                            session_id = %request.session_id,
+                                            session_id = ?request.session_id,
                                             interaction_id = %request.id,
                                             interaction_kind = ?request.kind,
                                             status = ?request.status,
                                             "interaction request lifecycle changed"
                                         );
                                         interaction_notifications
-                                            .maybe_show_interaction_request(&request);
+                                            .maybe_show_interaction_request(&request, &owner);
                                         log_ignored_result!(
                                             "event.interaction_requested",
                                             app_h.emit(
                                                 INTERACTION_REQUESTED_EVENT,
-                                                project_interaction(&request),
+                                                project_interaction(&request, owner),
                                             )
                                         );
                                     }

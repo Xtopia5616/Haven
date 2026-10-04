@@ -1300,7 +1300,7 @@ pub(crate) fn spawn(
                 ActorCommand::RequestInteraction { request, reply } => {
                     let request = *request;
                     let result = match crate::interaction::validate_session_association(
-                        Some(&request.session_id),
+                        request.session_id.as_deref(),
                         &state.info.id,
                     ) {
                         Err(error) => Err(error),
@@ -2035,7 +2035,7 @@ mod queue_tests {
         assert_eq!(events.len(), 1, "invalid request must not be appended");
         let persisted: crate::interaction::InteractionRequest =
             serde_json::from_str(&events[0].payload).expect("decode durable interaction");
-        assert_eq!(persisted.session_id, session.id);
+        assert_eq!(persisted.session_id.as_deref(), Some(session.id.as_str()));
         assert_eq!(persisted.id, "step-valid");
     }
 

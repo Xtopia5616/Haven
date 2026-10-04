@@ -205,14 +205,22 @@ impl SessionSupervisor {
         self: &Arc<Self>,
         request: crate::interaction::InteractionRequest,
     ) -> anyhow::Result<()> {
+        let session_id = request.session_id.as_deref().ok_or_else(|| {
+            anyhow::anyhow!("session-owned interaction has no session association")
+        })?;
         let actor = self
-            .actor_for(&request.session_id)
+            .actor_for(session_id)
             .await
-            .ok_or_else(|| anyhow::anyhow!("session '{}' not found", request.session_id))?;
+            .ok_or_else(|| anyhow::anyhow!("session '{}' not found", session_id))?;
         actor.request_interaction(request.clone()).await?;
         if request.status == crate::interaction::InteractionStatus::Pending {
             self.emit_event(SessionEvent::InteractionRequested {
-                request: Box::new(request.clone()),
+                envelope: Box::new(crate::interaction::InteractionEnvelope {
+                    owner: crate::interaction::InteractionOwner::Session {
+                        session_id: actor.id.clone(),
+                    },
+                    request: request.clone(),
+                }),
             });
             self.schedule_confirmation_expiry(&request);
         }
@@ -290,11 +298,16 @@ impl SessionSupervisor {
             {
                 let request = decision.request.clone();
                 if decision.wake_session {
-                    self.resume_paused_session_after_confirmation(&request.session_id)
+                    self.resume_paused_session_after_confirmation(&actor.id)
                         .await?;
                 }
                 self.emit_event(SessionEvent::InteractionRequested {
-                    request: Box::new(request.clone()),
+                    envelope: Box::new(crate::interaction::InteractionEnvelope {
+                        owner: crate::interaction::InteractionOwner::Session {
+                            session_id: actor.id,
+                        },
+                        request: request.clone(),
+                    }),
                 });
                 return Ok(Some(request));
             }

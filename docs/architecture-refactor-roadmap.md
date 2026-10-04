@@ -1,6 +1,6 @@
 # Haven 架构降复杂度重构路线图
 
-> 状态：阶段 0–8 已完成；交互 owner 路由是下一项结构目标；Windows 发布验收为独立开放签核门；Common/性能工作按证据触发
+> 状态：阶段 0–8 已完成；交互 owner 路由正在实施；Windows 发布验收为独立开放签核门；Common/性能工作按证据触发
 > 更新日期：2026-10-04
 > 范围：Agent/Session、Memory、Tools、LLM、App IPC 与 UI
 
@@ -84,9 +84,9 @@
 
 可以提前准备隔离 profile、安装器和物理盘耗尽环境；最终验收必须使用交互生命周期等 IPC/UI 变更完成后的最新构建。此项是发布签核门，不阻塞不影响发布路径的独立模块整理。
 
-### 5.2 交互生命周期所有权（Next / Accepted，尚未实施）
+### 5.2 交互生命周期所有权（Active / Accepted）
 
-ADR 0424 已于 2026-10-04 采纳，确定 session、scheduled 和 UI 直调确认的运行时 owner、终态与期限契约；代码迁移尚未开始。前置兼容清理、SessionStore history façade 提取及其独立门禁已完成；现在可以进入 owner 切片。此项是独立结构目标，不回写为已完成的阶段 7 工作。
+ADR 0424 已于 2026-10-04 采纳，确定 session、scheduled 和 UI 直调确认的运行时 owner、终态与期限契约。当前切片已建立非持久 `InteractionEnvelope`、显式 owner event/IPC 投影、可选真实 session 上下文以及 Session durable append/replay 校验；前端 mapper、reducer 和通知按 owner 处理。`request_id` resolve 契约、typed resolve result 和三条 owner 的直接路由仍未完成，后续按 ADR 顺序逐项迁移。前置兼容清理、SessionStore history façade 提取及其独立门禁已完成。此项是独立结构目标，不回写为已完成的阶段 7 工作。
 
 运行时使用 typed owner envelope：producer 显式把 owner 附到非持久 supervisor/app event，再投影到 Tauri event/resume/resolve DTO；mapper 不从 kind 或 `session_id` 推断 owner。`InteractionRequest.session_id` 可选，但 SessionActor durable append/replay 必须拒绝缺失或不匹配的值；session-owned `Some(session_id)` 保持现有 JSON 字符串形状，持久 event 不增加 owner 字段。Session owner 使用 `session_id` + request ID；scheduled owner 用 `action_id` + request ID；AppCommand owner 用 request ID。真实 `session_id` 只表达 producer 提供的上下文，不改变 owner，也不持久化通用 owner；不增加 schema/reset。resolve IPC 将实际承载 `conf-*` request ID 的 `step_id` 改名为 `request_id`。已仲裁的 `Resolved`、`Expired`、`Stale` 使用明确的类型结果；可重试失败通过命令错误返回并保留 pending。
 

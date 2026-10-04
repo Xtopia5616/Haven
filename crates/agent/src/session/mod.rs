@@ -1,4 +1,4 @@
-use crate::interaction::InteractionRequest;
+use crate::interaction::{InteractionEnvelope, InteractionRequest};
 pub use haven_common::lifecycle::SessionStatus;
 pub use haven_common::lifecycle::SessionWaitingReason;
 use haven_common::types::{
@@ -149,7 +149,7 @@ pub struct ConfirmResolution {
 #[derive(Debug, Clone)]
 pub enum SessionEvent {
     InteractionRequested {
-        request: Box<InteractionRequest>,
+        envelope: Box<InteractionEnvelope>,
     },
     /// The final pending confirmation woke a paused conversation.
     /// `AgentLayer` projects this through the existing session lifecycle event.
@@ -2488,7 +2488,19 @@ mod tests {
             vec!["README.md".into()],
             vec!["step-0123456789abcdef0123456789abcdef".into()],
         );
+        let mut runtime_events = exec.subscribe_events();
         exec.request_interaction(request.clone()).await.unwrap();
+        let delivery = runtime_events.recv().await.unwrap();
+        let SessionEvent::InteractionRequested { envelope } = delivery else {
+            panic!("expected interaction runtime envelope, got {delivery:?}");
+        };
+        assert_eq!(
+            envelope.owner,
+            crate::interaction::InteractionOwner::Session {
+                session_id: session.id.clone(),
+            }
+        );
+        assert_eq!(envelope.request, request);
         assert_eq!(
             exec.get_active_session_status(&session.id).await,
             Some(SessionStatus::Paused)
@@ -2506,6 +2518,9 @@ mod tests {
         );
         assert_eq!(events[0].run_id, None);
         assert_eq!(events[0].step_number, None);
+        let persisted_payload: Value = serde_json::from_str(&events[0].payload).unwrap();
+        assert_eq!(persisted_payload["session_id"], session.id);
+        assert!(persisted_payload.get("owner").is_none());
         assert_eq!(
             serde_json::from_str::<crate::interaction::InteractionRequest>(&events[0].payload)
                 .unwrap(),

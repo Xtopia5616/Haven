@@ -2,7 +2,7 @@
 
 ## 状态
 
-已采纳，待分片实施（2026-10-04）。本 ADR 确定 owner 路由、终态与期限契约；实现仍按下述顺序逐路迁移，当前代码不因此视为已完成。
+已采纳，实施中（2026-10-04）。本 ADR 确定 owner 路由、终态与期限契约；实现按下述顺序逐路迁移，未完成的路径仍以当前阶段状态为准。
 
 ## 背景
 
@@ -101,6 +101,14 @@ pending 请求和 continuation 仍由原 owner 持有。Tauri resolve 对前三�
 因此，将运行时 owner envelope 作为非持久 supervisor/app event 的路由信息，并投影到 Tauri
 event/resolve IPC DTO、不写入 `session_events`，不改变数据库 schema；若未来把 owner 或 continuation 写进 durable event
 payload，则属于新的持久契约，必须单独评估 schema/reset 与崩溃恢复语义，不能并入这个路由切片。
+
+### 当前实施进度（2026-10-04）
+
+- 已完成运行时 `InteractionOwner` / `InteractionEnvelope`；Session 与 scheduled producer 显式附带 owner，AppCommand event 显式标为 AppCommand。Owner 不序列化进 durable request。
+- 已将真实 `session_id` 改为可选关联上下文；SessionActor durable append/replay 继续拒绝缺失或不匹配的 session ID，Session request 的既有 JSON 形状保持不变。
+- 已完成 owner 到 Tauri event/resume DTO 的显式投影，并更新 TypeScript mapper、owner-aware reducer、Ask 过滤、scope 展示和通知分组。
+- 尚未改名 resolve IPC 的 `step_id`，尚未定义 typed resolve result，也尚未把 resolve command 改为按 AppCommand/ScheduledAction/Session owner 直接路由。下一切片先落 `request_id` 与显式已仲裁结果，再迁移 AppCommand 路径；ScheduledAction 和 Session 仍按本 ADR 后续顺序独立处理。
+- 当前切片未修改数据库 schema 或 durable event payload，无需用户数据重置。
 
 ### 期限唯一性与 ADR 0423 的关系（决定）
 

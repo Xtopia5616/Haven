@@ -16,6 +16,7 @@ function createRequest(
 		request: {
 			id,
 			sessionId: SESSION_ID,
+			owner: { kind: 'session' as const, sessionId: SESSION_ID },
 			kind: 'ask' as const,
 			status: 'pending' as const,
 			options: requestOptions,

@@ -9,6 +9,7 @@ describe('app-shell IPC contract', () => {
 			payload: {
 				id: 'conf-1',
 				session_id: 'ses-1',
+				owner: { kind: 'session', session_id: 'ses-1' },
 				kind: 'confirm',
 				status: 'pending',
 				options: [],
@@ -27,6 +28,7 @@ describe('app-shell IPC contract', () => {
 		expect(event?.payload).toEqual({
 			id: 'conf-1',
 			sessionId: 'ses-1',
+			owner: { kind: 'session', sessionId: 'ses-1' },
 			kind: 'confirm',
 			status: 'pending',
 			options: [],
@@ -50,6 +52,7 @@ describe('app-shell IPC contract', () => {
 			payload: {
 				id: 'interaction-1',
 				session_id: 'ses-1',
+				owner: { kind: 'session', session_id: 'ses-1' },
 				kind: 'future_kind',
 				status: 'future_status',
 				created_at: '2026-01-01T00:00:00Z',
@@ -57,6 +60,65 @@ describe('app-shell IPC contract', () => {
 			},
 		});
 
+		expect(event).toBeNull();
+	});
+
+	it.each([
+		{
+			owner: { kind: 'app_command' },
+			expectedOwner: { kind: 'app_command' },
+		},
+		{
+			owner: { kind: 'scheduled_action', action_id: 'act-1' },
+		expectedOwner: { kind: 'scheduled_action', actionId: 'act-1' },
+		},
+		{
+			owner: { kind: 'scheduled_action', action_id: 'act-1' },
+			session_id: 'ses-context',
+		expectedOwner: { kind: 'scheduled_action', actionId: 'act-1' },
+		},
+	])('maps explicit owner routes and optional session context', ({ owner, session_id, expectedOwner }) => {
+		const event = mapAppEvent({
+			event: 'interaction:requested',
+			id: 20,
+			payload: {
+				id: 'conf-owner',
+				...(session_id ? { session_id } : {}),
+				owner,
+				kind: 'confirm',
+				status: 'pending',
+				created_at: '2026-01-01T00:00:00Z',
+			},
+		});
+
+		expect(event?.payload).toMatchObject({
+			id: 'conf-owner',
+			owner: expectedOwner,
+		});
+		if (session_id) expect(event?.payload).toMatchObject({ sessionId: session_id });
+		else expect(event?.payload).not.toHaveProperty('sessionId');
+	});
+
+	it.each([
+		{ owner: undefined, session_id: 'ses-1' },
+		{ owner: { kind: 'session', session_id: 'ses-other' }, session_id: 'ses-1' },
+		{ owner: { kind: 'session' }, session_id: 'ses-1' },
+		{ owner: { kind: 'scheduled_action' }, session_id: undefined },
+		{ owner: { kind: 'app_command' }, session_id: 'ses-1' },
+		{ owner: { kind: 'future_owner', action_id: 'act-1' }, session_id: undefined },
+	])('rejects an invalid owner/context pair', ({ owner, session_id }) => {
+		const event = mapAppEvent({
+			event: 'interaction:requested',
+			id: 21,
+			payload: {
+				id: 'conf-invalid-owner',
+				...(session_id ? { session_id } : {}),
+				owner,
+				kind: 'confirm',
+				status: 'pending',
+				created_at: '2026-01-01T00:00:00Z',
+			},
+		});
 		expect(event).toBeNull();
 	});
 
@@ -130,6 +192,7 @@ describe('app-shell IPC contract', () => {
 			payload: {
 				id: 'conf-1',
 				session_id: 'ses-1',
+				owner: { kind: 'session', session_id: 'ses-1' },
 				kind: 'confirm',
 				status: 'pending',
 				created_at: 'now',
@@ -141,6 +204,7 @@ describe('app-shell IPC contract', () => {
 			payload: {
 				id: 'conf-1',
 				session_id: 'ses-1',
+				owner: { kind: 'session', session_id: 'ses-1' },
 				kind: 'confirm',
 				status: 'pending',
 				created_at: 'now',
@@ -152,6 +216,7 @@ describe('app-shell IPC contract', () => {
 			payload: {
 				id: 'conf-1',
 				session_id: 'ses-1',
+				owner: { kind: 'session', session_id: 'ses-1' },
 				kind: 'confirm',
 				status: 'pending',
 				created_at: 'now',
@@ -163,6 +228,7 @@ describe('app-shell IPC contract', () => {
 			payload: {
 				id: 'conf-1',
 				session_id: 'ses-1',
+				owner: { kind: 'session', session_id: 'ses-1' },
 				kind: 'confirm',
 				status: 'pending',
 				created_at: 'now',

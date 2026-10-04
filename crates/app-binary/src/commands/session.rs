@@ -310,9 +310,12 @@ pub async fn resolve_confirmation(
             let _ = pending.request.expire();
             drop(ui_pending);
             app.state::<Arc<crate::notification::DesktopNotifications>>()
-                .maybe_show_interaction_request(&pending.request);
+                .maybe_show_interaction_request(
+                    &pending.request,
+                    &haven_agent::InteractionOwner::AppCommand,
+                );
             tracing::info!(
-                session_id = %pending.request.session_id,
+                session_id = ?pending.request.session_id,
                 interaction_id = %pending.request.id,
                 outcome = "expired",
                 "renderer permission request resolved"
@@ -320,7 +323,10 @@ pub async fn resolve_confirmation(
             emit_event_logged(
                 &app,
                 INTERACTION_REQUESTED_EVENT,
-                crate::bootstrap::project_interaction(&pending.request),
+                crate::bootstrap::project_interaction(
+                    &pending.request,
+                    haven_agent::InteractionOwner::AppCommand,
+                ),
                 "interaction_expired",
             );
             return Ok(());
@@ -338,11 +344,17 @@ pub async fn resolve_confirmation(
             let _ = pending.request.expire();
             drop(ui_pending);
             app.state::<Arc<crate::notification::DesktopNotifications>>()
-                .maybe_show_interaction_request(&pending.request);
+                .maybe_show_interaction_request(
+                    &pending.request,
+                    &haven_agent::InteractionOwner::AppCommand,
+                );
             emit_event_logged(
                 &app,
                 INTERACTION_REQUESTED_EVENT,
-                crate::bootstrap::project_interaction(&pending.request),
+                crate::bootstrap::project_interaction(
+                    &pending.request,
+                    haven_agent::InteractionOwner::AppCommand,
+                ),
                 "ui_interaction_expired",
             );
             return Err(log_err(
@@ -354,7 +366,7 @@ pub async fn resolve_confirmation(
         let interaction_id = pending.request.id.clone();
         let decision = if confirmed { "approved" } else { "denied" };
         tracing::info!(
-            session_id = %session_id,
+            session_id = ?session_id,
             interaction_id = %interaction_id,
             decision,
             "renderer permission decision submitted"
@@ -367,15 +379,21 @@ pub async fn resolve_confirmation(
             .expect("accepted UI confirmation remains registered");
         drop(ui_pending);
         app.state::<Arc<crate::notification::DesktopNotifications>>()
-            .maybe_show_interaction_request(&pending.request);
+            .maybe_show_interaction_request(
+                &pending.request,
+                &haven_agent::InteractionOwner::AppCommand,
+            );
         emit_event_logged(
             &app,
             INTERACTION_REQUESTED_EVENT,
-            crate::bootstrap::project_interaction(&pending.request),
+            crate::bootstrap::project_interaction(
+                &pending.request,
+                haven_agent::InteractionOwner::AppCommand,
+            ),
             "ui_interaction_decision_accepted",
         );
         tracing::info!(
-            session_id = %session_id,
+            session_id = ?session_id,
             interaction_id = %interaction_id,
             decision,
             status = "accepted",
@@ -530,7 +548,7 @@ async fn accept_ui_confirmation(
         .map_err(|error| log_err("resolve_ui_confirmation", error))?;
     tracing::debug!(
         interaction_id = %pending.request.id,
-        session_id = %pending.request.session_id,
+        session_id = ?pending.request.session_id,
         interaction_kind = ?pending.request.kind,
         tool = %pending.authorization_request.tool_name,
         risk = ?pending.receipt.effective_risk,
@@ -833,7 +851,14 @@ async fn resume_response_for_session(
     let interactions = active_interactions
         .iter()
         .filter(|request| request.status == InteractionStatus::Pending)
-        .map(crate::bootstrap::project_interaction)
+        .map(|request| {
+            crate::bootstrap::project_interaction(
+                request,
+                haven_agent::InteractionOwner::Session {
+                    session_id: session.id.clone(),
+                },
+            )
+        })
         .collect();
     Ok(SessionResumeResponse {
         session: SessionRecordDto::from(session),

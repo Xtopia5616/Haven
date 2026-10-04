@@ -124,7 +124,7 @@ impl SessionSupervisor {
         self.scheduled_confirms
             .lock()
             .await
-            .retain(|request| request.session_id != session_id);
+            .retain(|request| request.session_id.as_deref() != Some(session_id));
         if cascade && self.may_have_children(session_id).await {
             Box::pin(self.cascade_end_children(session_id)).await;
         }
@@ -235,7 +235,7 @@ impl SessionSupervisor {
         self.scheduled_confirms
             .lock()
             .await
-            .retain(|request| request.session_id != session_id);
+            .retain(|request| request.session_id.as_deref() != Some(session_id));
         self.remove_actor_locked(session_id).await;
         Ok(())
     }
@@ -608,7 +608,7 @@ impl SessionSupervisor {
             return Some(SessionWaitingReason::Confirmation);
         }
         if self.scheduled_confirms.lock().await.iter().any(|request| {
-            request.session_id == session_id
+            request.session_id.as_deref() == Some(session_id)
                 && request.status == crate::interaction::InteractionStatus::Pending
         }) {
             return Some(SessionWaitingReason::ScheduledConfirmation);

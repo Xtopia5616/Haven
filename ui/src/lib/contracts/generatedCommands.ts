@@ -3,6 +3,7 @@
 
 // DTO declarations below are generated from Rust Serialize types.
 
+export type InteractionOwner = { kind: 'session'; session_id: string } | { kind: 'scheduled_action'; action_id: string } | { kind: 'app_command' };
 export interface CounterSnapshot { turn_starts: number; first_tokens: number; stream_chunks: number; chunk_drops: number; checkpoint_pending: number; branch_point_failures: number; snapshot_failures: number; projection_failures: number; inbox_ack_failures: number; action_result_retries: number; action_result_duplicates: number; web_search_drops: number }
 export interface GaugeSnapshot { context_queue_items: number }
 export interface MetricsSnapshot { phases: PhaseSnapshot[]; counters: CounterSnapshot; gauges: GaugeSnapshot; ui?: UiMetricsSnapshot }
@@ -30,7 +31,7 @@ export interface ShellAvailability { available: boolean }
 export interface ActionEvent { id: string; kind: ActionKind; status?: ActionStatus; session_id?: string; source_step_id?: string; started_at?: string; finished_at?: string; due_at?: string; title?: string; body?: string; mode?: string; command?: string; output?: string; error?: string; error_reason?: string; exit_code?: number; preview?: string }
 export type ActionKindInput = 'background' | 'scheduled';
 export type ActionKind = 'background' | 'scheduled';
-export interface InteractionRequestedEvent { id: string; session_id: string; kind: string; status: string; options?: string[]; tool_name?: string; risk_level?: RiskLevel; summary?: string; permission_key?: string; invocation_step_id?: string; action_index?: number; tool_call_id?: string; created_at: string; expires_at?: string }
+export interface InteractionRequestedEvent { id: string; session_id?: string; owner: InteractionOwner; kind: string; status: string; options?: string[]; tool_name?: string; risk_level?: RiskLevel; summary?: string; permission_key?: string; invocation_step_id?: string; action_index?: number; tool_call_id?: string; created_at: string; expires_at?: string }
 export type CapabilityInput = 'chat' | 'fast_chat' | 'vision' | 'audio_input' | 'transcription' | 'embedding' | 'image_generation' | 'speech_synthesis';
 export type Capability = 'chat' | 'fast_chat' | 'vision' | 'audio_input' | 'transcription' | 'embedding' | 'image_generation' | 'speech_synthesis';
 export interface LlmConfigInput { providers?: ProviderConfigInput[]; models?: ModelConfigInput[]; request_policies?: RequestPolicyInput[]; max_total_duration_secs?: number; stream_idle_timeout_secs?: number; retry_max_retries?: number; retry_base_secs?: number; retry_factor?: number; retry_max_secs?: number; retry_jitter?: number; max_concurrent_requests?: number }

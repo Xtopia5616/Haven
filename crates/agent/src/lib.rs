@@ -39,8 +39,8 @@ pub use event::{
     BufferedEmitter, EventBus, EventDispatcher,
 };
 pub use interaction::{
-    InteractionDetails, InteractionKind, InteractionRequest, InteractionStatus,
-    replay_session_interactions,
+    InteractionDetails, InteractionEnvelope, InteractionKind, InteractionOwner, InteractionRequest,
+    InteractionStatus, replay_session_interactions,
 };
 pub use layer::{AgentStartup, PendingSessionRecovery};
 pub use memory_runtime::{

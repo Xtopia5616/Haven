@@ -63,11 +63,33 @@ pub enum InteractionStatus {
     Cancelled,
 }
 
+/// Identifies the runtime registry that owns a pending interaction.
+///
+/// This routing identity is process-local and must never be persisted in the
+/// interaction continuation. A session's durable event stream determines its
+/// owner during replay; other owner continuations stay in their own registries.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum InteractionOwner {
+    Session { session_id: String },
+    ScheduledAction { action_id: String },
+    AppCommand,
+}
+
+/// Runtime delivery value coupling an interaction to its single lifecycle owner.
+/// This envelope is intentionally not serialized into durable session events.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InteractionEnvelope {
+    pub owner: InteractionOwner,
+    pub request: InteractionRequest,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InteractionRequest {
     pub id: String,
-    pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
     pub kind: InteractionKind,
     pub status: InteractionStatus,
     pub details: InteractionDetails,
@@ -99,7 +121,7 @@ impl InteractionRequest {
             .unwrap_or_else(|| haven_common::types::new_id("step"));
         Self {
             id: step_id,
-            session_id: session_id.to_string(),
+            session_id: Some(session_id.to_string()),
             kind: InteractionKind::Ask,
             status: InteractionStatus::Pending,
             details: InteractionDetails::Ask {
@@ -132,7 +154,7 @@ impl InteractionRequest {
             .unwrap_or_else(|| haven_common::types::new_id("conf").to_string());
         Self {
             id,
-            session_id: session_id.to_string(),
+            session_id: Some(session_id.to_string()),
             kind: InteractionKind::Confirm,
             status: InteractionStatus::Pending,
             details: InteractionDetails::Confirm {
@@ -167,7 +189,7 @@ impl InteractionRequest {
         let expires_at = confirmation_expires_at(&receipt);
         Self {
             id: confirmation_id.clone(),
-            session_id: "ui".into(),
+            session_id: None,
             kind: InteractionKind::Confirm,
             status: InteractionStatus::Pending,
             details: InteractionDetails::Confirm {
@@ -189,7 +211,7 @@ impl InteractionRequest {
 
     pub fn scheduled_confirm(
         action_id: String,
-        session_id: &str,
+        session_id: Option<&str>,
         tool_name: String,
         tool_input: Value,
         receipt: haven_tools::ConfirmationReceipt,
@@ -198,7 +220,7 @@ impl InteractionRequest {
         let expires_at = confirmation_expires_at(&receipt);
         Self {
             id: receipt.confirmation_id.to_string(),
-            session_id: session_id.to_string(),
+            session_id: session_id.map(str::to_owned),
             kind: InteractionKind::ScheduledConfirm,
             status: InteractionStatus::Pending,
             details: InteractionDetails::ScheduledConfirm {
@@ -321,7 +343,7 @@ pub fn replay_session_interactions(
                             event.sequence
                         )
                     })?;
-                validate_session_association(Some(&request.session_id), session_id).map_err(
+                validate_session_association(request.session_id.as_deref(), session_id).map_err(
                     |error| {
                         anyhow::anyhow!(
                             "invalid interaction event at sequence {}: {error}",
@@ -430,6 +452,7 @@ mod tests {
         );
         assert!(request.id.starts_with("step-"));
         assert_eq!(request.status, InteractionStatus::Pending);
+        assert_eq!(request.session_id.as_deref(), Some(SESSION_ID));
         assert!(request.resolve(Value::String("notes.md".into())));
         assert!(!request.resolve(Value::String("other.md".into())));
         assert_eq!(request.status, InteractionStatus::Resolved);
@@ -449,6 +472,37 @@ mod tests {
         assert!(validate_session_association(Some(SESSION_ID), SESSION_ID).is_ok());
         assert!(validate_session_association(Some("ses-other"), SESSION_ID).is_err());
         assert!(validate_session_association(None, SESSION_ID).is_err());
+    }
+
+    #[test]
+    fn owner_wire_is_typed_and_non_session_context_is_omitted() {
+        let owner = InteractionOwner::ScheduledAction {
+            action_id: "act-0123456789abcdef0123456789abcdef".into(),
+        };
+        assert_eq!(
+            serde_json::to_value(owner).unwrap(),
+            serde_json::json!({
+                "kind": "scheduled_action",
+                "action_id": "act-0123456789abcdef0123456789abcdef"
+            })
+        );
+
+        let receipt = haven_tools::ConfirmationReceipt {
+            confirmation_id: haven_common::types::new_id("conf").into(),
+            capability: haven_tools::CapabilityScope::new("admin.test"),
+            canonical_input_hash: "hash".into(),
+            effective_risk: haven_common::types::RiskLevel::Medium,
+            policy_revision: 1,
+            expires_at: 1,
+        };
+        let request = InteractionRequest::ui_confirm(
+            "haven.test".into(),
+            serde_json::json!({"value": 1}),
+            receipt,
+        );
+        let wire = serde_json::to_value(request).unwrap();
+        assert!(wire.get("session_id").is_none());
+        assert!(wire.get("owner").is_none());
     }
 
     #[test]
@@ -479,7 +533,7 @@ mod tests {
         );
 
         assert_eq!(request.id, receipt.confirmation_id.to_string());
-        assert_eq!(request.session_id, "ui");
+        assert_eq!(request.session_id, None);
         assert_eq!(request.kind, InteractionKind::Confirm);
         assert!(matches!(
             request.details,
@@ -498,7 +552,7 @@ mod tests {
 
         assert_eq!(replayed.len(), 1);
         assert_eq!(replayed[0].id, step_id);
-        assert_eq!(replayed[0].session_id, SESSION_ID);
+        assert_eq!(replayed[0].session_id.as_deref(), Some(SESSION_ID));
         assert_eq!(replayed[0].kind, InteractionKind::Ask);
         assert_eq!(replayed[0].status, InteractionStatus::Pending);
         assert_eq!(replayed[0].correlation_ids, [step_id]);

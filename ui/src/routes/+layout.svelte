@@ -688,12 +688,14 @@
 	}
 	const activeConfirmSessionTitle = $derived(
 		activeConfirmRequest
-			? activeConfirmRequest.sessionId === 'ui'
+			? activeConfirmRequest.owner.kind === 'app_command'
 				? '当前操作'
-				: String(
-						sessions.find((session) => session.id === activeConfirmRequest.sessionId)
-							?.title || activeConfirmRequest.sessionId,
-					)
+				: activeConfirmRequest.sessionId
+					? String(
+							sessions.find((session) => session.id === activeConfirmRequest.sessionId)
+								?.title || activeConfirmRequest.sessionId,
+						)
+					: '定时任务'
 			: '',
 	);
 	const CONFIRM_TIMEOUT_MS = 120_000;
@@ -744,7 +746,7 @@
 				response: { approved, effect: resolvedEffect, scope: resolvedScope },
 			});
 			if (timedOut) addNotification('确认超时，操作未执行', 'warning', 4000);
-			else if (approved && currentRequest?.sessionId === 'ui') {
+			else if (approved && currentRequest?.owner.kind === 'app_command') {
 				addNotification('权限已确认，操作正在执行', 'info', 4000);
 			}
 			return true;
@@ -1433,11 +1435,8 @@
 			open={activeConfirmOpen}
 			stepId={activeConfirmRequest?.id || null}
 			toolName={activeConfirmRequest?.toolName || ''}
-			sessionId={activeConfirmRequest?.sessionId || ''}
-			allowSessionScope={
-				activeConfirmRequest?.sessionId !== 'ui' &&
-				activeConfirmRequest?.sessionId !== 'action'
-			}
+			sessionId={activeConfirmRequest?.sessionId}
+			allowSessionScope={Boolean(activeConfirmRequest?.sessionId)}
 			sessionTitle={activeConfirmSessionTitle}
 			riskLevel={activeConfirmRequest?.riskLevel || 'medium'}
 			summary={activeConfirmRequest?.summary || '此操作需要你的许可。'}

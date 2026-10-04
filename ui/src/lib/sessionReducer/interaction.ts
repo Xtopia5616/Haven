@@ -1,4 +1,4 @@
-import type { InteractionKind, InteractionRequest } from '../contracts/app.ts';
+import { mapInteractionOwner, type InteractionKind, type InteractionRequest } from '../contracts/app.ts';
 import type { SessionActionOf, SessionReducerState } from './types.ts';
 
 type Action = SessionActionOf<
@@ -15,11 +15,15 @@ export function reduceInteraction(
 ): SessionReducerState {
 	const state = inputState;
 	switch (action.type) {
-		case 'sessions/cleared':
-			return { ...state, interactions: {} };
+		case 'sessions/cleared': {
+			const interactions = Object.fromEntries(
+				Object.entries(state.interactions).filter(([, request]) => request.owner.kind !== 'session'),
+			);
+			return { ...state, interactions };
+		}
 		case 'session/interaction-upserted': {
 			const request = action.request;
-			if (!request.id || !request.sessionId) return state;
+			if (!request.id || !hasValidOwnerContext(request)) return state;
 			const previous = state.interactions[request.id];
 			if (previous && JSON.stringify(previous) === JSON.stringify(request)) return state;
 			return {
@@ -30,11 +34,11 @@ export function reduceInteraction(
 		case 'session/interactions-hydrated': {
 			const interactions = Object.fromEntries(
 				Object.entries(state.interactions).filter(
-					([, request]) => request.sessionId !== action.sessionId,
+					([, request]) => !isSessionInteractionFor(request, action.sessionId),
 				),
 			);
 			for (const request of action.requests)
-				if (request.id && request.sessionId === action.sessionId)
+				if (request.id && isSessionInteractionFor(request, action.sessionId))
 					interactions[request.id] = request;
 			// Resume is a snapshot read, not an event acknowledgement. Keep pending
 			// requests that are still live in the renderer when the snapshot omitted
@@ -44,7 +48,7 @@ export function reduceInteraction(
 			for (const [id, request] of Object.entries(state.interactions)) {
 				if (
 					preserveIds.has(id) &&
-					request.sessionId === action.sessionId &&
+					isSessionInteractionFor(request, action.sessionId) &&
 					request.status === 'pending' &&
 					!(id in interactions)
 				)
@@ -58,7 +62,7 @@ export function reduceInteraction(
 				interactions: Object.fromEntries(
 					Object.entries(state.interactions).filter(
 						([, request]) =>
-							request.sessionId !== action.sessionId ||
+							!isSessionInteractionFor(request, action.sessionId) ||
 							(!!action.kind && request.kind !== action.kind),
 					),
 				),
@@ -82,6 +86,21 @@ export function reduceInteraction(
 	return inputState;
 }
 
+function isSessionInteractionFor(request: InteractionRequest, sessionId: string): boolean {
+	return request.owner.kind === 'session' && request.owner.sessionId === sessionId;
+}
+
+function hasValidOwnerContext(request: InteractionRequest): boolean {
+	switch (request.owner.kind) {
+		case 'session':
+			return Boolean(request.sessionId) && request.sessionId === request.owner.sessionId;
+		case 'scheduled_action':
+			return Boolean(request.owner.actionId);
+		case 'app_command':
+			return request.sessionId === undefined;
+	}
+}
+
 const INTERACTION_KINDS = ['ask', 'confirm', 'scheduled_confirm'] as const;
 const INTERACTION_STATUSES = ['pending', 'resolved', 'expired', 'cancelled'] as const;
 const RISK_LEVELS = ['safe', 'low', 'medium', 'high', 'critical'] as const;
@@ -90,14 +109,16 @@ function normalizeInteraction(raw: unknown): InteractionRequest | null {
 	if (!raw || typeof raw !== 'object') return null;
 	const value = raw as Record<string, unknown>;
 	const id = typeof value.id === 'string' ? value.id : '';
-	const sessionId = typeof value.session_id === 'string' ? value.session_id : '';
+	const sessionId = value.session_id;
+	const owner = mapInteractionOwner(value.owner, typeof sessionId === 'string' ? sessionId : undefined);
 	const kind = value.kind;
 	const status = value.status;
 	const options = value.options;
 	const createdAt = value.created_at;
 	if (
 		!id ||
-		!sessionId ||
+		(sessionId !== undefined && (typeof sessionId !== 'string' || !sessionId)) ||
+		!owner ||
 		typeof kind !== 'string' ||
 		!INTERACTION_KINDS.includes(kind as (typeof INTERACTION_KINDS)[number]) ||
 		typeof status !== 'string' ||
@@ -115,9 +136,8 @@ function normalizeInteraction(raw: unknown): InteractionRequest | null {
 	const actionIndex = value.action_index;
 	const toolCallId = value.tool_call_id;
 	const expiresAt = value.expires_at;
-	return {
+	const normalized = {
 		id,
-		sessionId,
 		kind: kind as InteractionRequest['kind'],
 		status: status as InteractionRequest['status'],
 		options,
@@ -133,6 +153,19 @@ function normalizeInteraction(raw: unknown): InteractionRequest | null {
 		...(typeof toolCallId === 'string' ? { toolCallId } : {}),
 		createdAt,
 		...(typeof expiresAt === 'string' ? { expiresAt } : {}),
+	};
+	if (owner.kind === 'session') {
+		if (sessionId !== owner.sessionId) return null;
+		return { ...normalized, sessionId: owner.sessionId, owner };
+	}
+	if (owner.kind === 'app_command') {
+		if (sessionId !== undefined) return null;
+		return { ...normalized, owner };
+	}
+	return {
+		...normalized,
+		...(sessionId === undefined ? {} : { sessionId: sessionId as string }),
+		owner,
 	};
 }
 

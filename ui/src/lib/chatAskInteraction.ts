@@ -51,6 +51,8 @@ export function createAskInteractionController({
 	const pendingFor = (sessionId: string, kind: 'ask' | 'confirm' | 'scheduled_confirm') =>
 		Object.values(reducer.getState().interactions || {}).filter(
 			(request) =>
+				request.owner.kind === 'session' &&
+				request.owner.sessionId === sessionId &&
 				request.sessionId === sessionId &&
 				request.kind === kind &&
 				request.status === 'pending',
@@ -93,7 +95,10 @@ export function createAskInteractionController({
 			.map((message) => {
 				const request = state.interactions[message.id];
 				const response =
-					request?.kind === 'ask' && request.status === 'resolved'
+					request?.owner.kind === 'session' &&
+					request.owner.sessionId === sessionId &&
+					request.kind === 'ask' &&
+					request.status === 'resolved'
 						? (request.response as { answer?: string; ignored?: boolean } | undefined)
 						: undefined;
 				return { id: message.id, resolved: response || null };

@@ -7,7 +7,9 @@
 
 use crate::app_state::AppState;
 use crate::logging::sanitize_error_text;
-use haven_agent::{AgentEvent, InteractionKind, InteractionRequest, InteractionStatus};
+use haven_agent::{
+    AgentEvent, InteractionKind, InteractionOwner, InteractionRequest, InteractionStatus,
+};
 use haven_common::config::NotificationConfig;
 use haven_memory::SessionStore;
 use std::collections::{HashMap, HashSet};
@@ -21,9 +23,9 @@ pub(crate) struct DesktopNotifications {
     /// Last observed session status per id — used so "会话已恢复" only fires on
     /// paused/error → pending, not Running→Pending (ask-answer same turn).
     last_session_status: Mutex<HashMap<String, String>>,
-    /// Pending permission request IDs grouped by owner session, so a batch
+    /// Pending permission request IDs grouped by lifecycle owner, so a batch
     /// produces one desktop reminder and terminal transitions release it.
-    pending_permission_requests: Mutex<HashMap<String, HashSet<String>>>,
+    pending_permission_requests: Mutex<HashMap<InteractionOwner, HashSet<String>>>,
     /// Cached display titles so `SessionUpdated` / toast paths do not sync
     /// `SessionStore::session_record` on every status churn. Seeded from
     /// `SessionCreated` / `TitleUpdated` / `SessionCompleted`; SessionStore is
@@ -268,7 +270,11 @@ impl DesktopNotifications {
     /// Notify the user that a permission request is waiting. The body is
     /// intentionally generic so tool input and user-authored Ask text never
     /// leave the in-app permission surface.
-    pub(crate) fn maybe_show_interaction_request(&self, request: &InteractionRequest) {
+    pub(crate) fn maybe_show_interaction_request(
+        &self,
+        request: &InteractionRequest,
+        owner: &InteractionOwner,
+    ) {
         if !matches!(
             request.kind,
             InteractionKind::Confirm | InteractionKind::ScheduledConfirm
@@ -285,16 +291,16 @@ impl DesktopNotifications {
                 });
             match request.status {
                 InteractionStatus::Pending => {
-                    let requests = pending.entry(request.session_id.clone()).or_default();
+                    let requests = pending.entry(owner.clone()).or_default();
                     requests.insert(request.id.clone()) && requests.len() == 1
                 }
                 InteractionStatus::Resolved
                 | InteractionStatus::Expired
                 | InteractionStatus::Cancelled => {
-                    if let Some(requests) = pending.get_mut(&request.session_id) {
+                    if let Some(requests) = pending.get_mut(owner) {
                         requests.remove(&request.id);
                         if requests.is_empty() {
-                            pending.remove(&request.session_id);
+                            pending.remove(owner);
                         }
                     }
                     false

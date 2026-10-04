@@ -144,6 +144,7 @@ function pendingInteraction(sessionId = SESSION_ID): InteractionRequest {
 	return {
 		id: 'conf-pending',
 		sessionId,
+		owner: { kind: 'session' as const, sessionId },
 		kind: 'ask',
 		status: 'pending',
 		options: ['是', '否'],

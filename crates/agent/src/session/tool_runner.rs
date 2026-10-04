@@ -1013,7 +1013,7 @@ impl SessionSupervisor {
         let step_id = receipt.confirmation_id.clone();
         let request = crate::interaction::InteractionRequest::scheduled_confirm(
             action_id.to_string(),
-            session_id.unwrap_or("action"),
+            session_id,
             tool_name.to_string(),
             tool_args,
             receipt,
@@ -1023,7 +1023,12 @@ impl SessionSupervisor {
             .unwrap_or(SCHEDULED_CONFIRM_ABSOLUTE_TIMEOUT);
         self.scheduled_confirms.lock().await.push(request.clone());
         self.emit_event(SessionEvent::InteractionRequested {
-            request: Box::new(request),
+            envelope: Box::new(crate::interaction::InteractionEnvelope {
+                owner: crate::interaction::InteractionOwner::ScheduledAction {
+                    action_id: action_id.to_string(),
+                },
+                request,
+            }),
         });
         // The receipt expiry is the hard lifetime for this approval. The UI
         // may reject it sooner after its visible countdown, while this timer
@@ -1095,12 +1100,15 @@ impl SessionSupervisor {
             else {
                 continue;
             };
+            let Some(session_id) = request.session_id.as_deref() else {
+                continue;
+            };
             if let Some(receipt) = receipt {
                 return Some(receipt.capability.clone());
             }
             return Some(
                 self.tool_authorization
-                    .authorization_request(Some(request.session_id.as_str()), tool_name, tool_input)
+                    .authorization_request(Some(session_id), tool_name, tool_input)
                     .await
                     .policy
                     .capability,
@@ -1159,39 +1167,29 @@ impl SessionSupervisor {
             return Ok(None);
         };
 
-        let (session_id, tool_name, tool_input, receipt) = match &request.details {
+        let (tool_name, tool_input, receipt) = match &request.details {
             crate::interaction::InteractionDetails::Confirm {
                 tool_name,
                 tool_input,
                 receipt,
                 ..
-            } => (
-                request.session_id.clone(),
-                tool_name,
-                tool_input,
-                receipt.as_ref(),
-            ),
+            } => (tool_name, tool_input, receipt.as_ref()),
             crate::interaction::InteractionDetails::ScheduledConfirm {
                 tool_name,
                 tool_input,
                 receipt,
                 ..
-            } => (
-                request.session_id.clone(),
-                tool_name,
-                tool_input,
-                Some(receipt),
-            ),
+            } => (tool_name, tool_input, Some(receipt)),
             _ => return Ok(None),
         };
-        anyhow::ensure!(
-            session_id != "action",
-            "session scope requires an owning conversation"
-        );
+        let session_id = request
+            .session_id
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("session scope requires an owning conversation"))?;
 
         let authorization_request = self
             .tool_authorization
-            .authorization_request(Some(&session_id), tool_name, tool_input)
+            .authorization_request(Some(session_id), tool_name, tool_input)
             .await;
         let capability = receipt
             .map(|receipt| receipt.capability.clone())
@@ -1220,7 +1218,7 @@ impl SessionSupervisor {
                 anyhow::bail!("confirmation request can no longer be executed: {reason}");
             }
         }
-        self.grant_session_permission(&session_id, key, target, effect)
+        self.grant_session_permission(session_id, key, target, effect)
             .await?;
 
         self.resolve_confirmation_locked(
@@ -1274,25 +1272,26 @@ impl SessionSupervisor {
                 .map(|index| entries.remove(index))
         };
         if let Some(mut request) = scheduled {
-            let (session_id, tool_name, tool_input) = match &request.details {
+            let (action_id, tool_name, tool_input) = match &request.details {
                 crate::interaction::InteractionDetails::ScheduledConfirm {
+                    action_id,
                     tool_name,
                     tool_input,
                     ..
-                } => (
-                    (request.session_id != "action").then(|| request.session_id.clone()),
-                    tool_name.clone(),
-                    tool_input.clone(),
-                ),
+                } => (action_id.clone(), tool_name.clone(), tool_input.clone()),
                 _ => return Ok(None),
             };
+            let session_id = request.session_id.clone();
             if timed_out {
                 let _ = request.expire();
             } else {
                 let _ = request.resolve(Value::Bool(confirmed));
             }
             self.emit_event(crate::session::SessionEvent::InteractionRequested {
-                request: Box::new(request.clone()),
+                envelope: Box::new(crate::interaction::InteractionEnvelope {
+                    owner: crate::interaction::InteractionOwner::ScheduledAction { action_id },
+                    request: request.clone(),
+                }),
             });
             let resolution = crate::session::ConfirmResolution {
                 session_id,
@@ -1318,7 +1317,7 @@ impl SessionSupervisor {
                     tool_name,
                     tool_input,
                     ..
-                } => (Some(request.session_id), tool_name, tool_input),
+                } => (request.session_id, tool_name, tool_input),
                 _ => (None, String::new(), Value::Null),
             };
             return Ok(Some(crate::session::ConfirmResolution {
@@ -1345,7 +1344,7 @@ impl SessionSupervisor {
                 title,
             } => (
                 action_id,
-                (request.session_id != "action").then(|| request.session_id.clone()),
+                request.session_id.clone(),
                 tool_name,
                 tool_input,
                 receipt,
