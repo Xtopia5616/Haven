@@ -122,8 +122,10 @@ ADR 0424 收口后，按证据逐个评估以下候选；同一时刻只推进�
 独立依赖边界和消费者收益；SessionStore 的 append、projection 与 rollback 必须保持同事务 owner；`LOCAL_TOOL_SECURITY_MATRIX`
 仍被生产权限提示路径用作 operation 名白名单，因此保留在 `security.rs`。`+page.svelte`、`SettingsView.svelte`、`admin.rs`、
 `llm/router.rs`、`inbox.rs`、`crates/tools/src/lib.rs`、`crates/tools/src/builtin/mod.rs`、
-`crates/agent/src/react/mod.rs`、`crates/agent/src/layer.rs` 与 `app_state.rs` 均经热点复核，未发现重复 owner、边界回归或
-足以证明更大拆分收益的依赖/性能证据。`+layout.svelte` 复核发现 ReAct phase store 订阅缺少销毁清理，现已通过保留 `syncStore`
+`crates/agent/src/react/mod.rs`、`crates/agent/src/layer.rs`、`crates/agent/src/session/mod.rs`、
+`crates/app-binary/src/commands/session.rs`、`ui/src/lib/views/MemoryView.svelte` 与 `app_state.rs` 均经热点复核；没有当前未关闭或
+重复的边界回归，也没有足以证明更大拆分收益的依赖/性能证据。MemoryView 的单次 resume 参数遗漏已在 `487ff9e` 修复，尚无重复
+回归。`+layout.svelte` 复核发现 ReAct phase store 订阅缺少销毁清理，现已通过保留 `syncStore`
 disposer 并在组件销毁时调用修复；该生命周期修正不构成布局 controller 拆分理由。当前没有 Active 结构代码切片。
 
 观察项是 Tools 根模块少量 helper 的局部归属漂移、ReAct 媒体投影 helper 的跨模块调用，以及 AgentLayer 启动编排较密；只有它们
