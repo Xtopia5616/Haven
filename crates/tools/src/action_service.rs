@@ -244,6 +244,10 @@ pub struct ActionService {
     /// remains authoritative across service instances; this gate makes
     /// in-memory transitions first-wins while a durable transition is in flight.
     terminal_transition: TerminalTransitionGuard,
+    /// Accepted ScheduledAction execution claims. This fast in-memory view is
+    /// paired with the durable `scheduled_execution_claim.<action_id>` kv row
+    /// so cancellation and approval also arbitrate across service instances.
+    scheduled_execution_claims: RwLock<HashMap<String, String>>,
     /// Transient completion transport and scheduled-fire recovery claims.
     completion_bus: ActionCompletionBus,
     /// At most one retry worker is allowed for each scheduled action whose
@@ -296,6 +300,7 @@ impl ActionService {
             actions: RwLock::new(HashMap::new()),
             spawn_gate: tokio::sync::Mutex::new(()),
             terminal_transition: TerminalTransitionGuard::default(),
+            scheduled_execution_claims: RwLock::new(HashMap::new()),
             completion_bus: ActionCompletionBus::new(),
             terminal_persistence_retries: RwLock::new(HashSet::new()),
             background_terminal_retries: RwLock::new(HashSet::new()),
@@ -1214,8 +1219,10 @@ impl ActionService {
     }
 
     /// Request cancellation of a live action (kept for inspection afterwards).
-    /// Returns whether a cancellation signal was sent; the terminal state is
-    /// reported later only after its durable compare-and-set succeeds.
+    /// A scheduled action can be cancelled only before execution is claimed;
+    /// after approval or operation start, cancellation returns `false` and the
+    /// claimed work reports its own terminal result. Background actions retain
+    /// their process-signal behavior.
     pub async fn cancel(&self, action_id: &str) -> bool {
         let mut actions = self.actions.write().await;
         let Some(entry) = actions.get_mut(action_id) else {
@@ -1235,6 +1242,7 @@ impl ActionService {
     }
 
     /// Request cancellation only when the action belongs to `session_id`.
+    /// Scheduled actions follow the same pre-execution-claim cancellation rule.
     pub async fn cancel_for_session(&self, action_id: &str, session_id: &str) -> bool {
         let mut actions = self.actions.write().await;
         let Some(entry) = actions.get_mut(action_id) else {

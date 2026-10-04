@@ -188,6 +188,7 @@ export type SessionAction =
 	  }
 	| { type: 'session/interactions-cleared'; sessionId: string; kind?: InteractionKind }
 	| { type: 'session/interaction-resolved'; id: string; response?: unknown }
+	| { type: 'session/scheduled-action-cancelled'; actionId: string }
 	| {
 			type: 'session/interaction-resolution-result';
 			id: string;

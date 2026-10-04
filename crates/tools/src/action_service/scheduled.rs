@@ -470,6 +470,7 @@ impl ActionService {
             action.state = state.clone();
             action.session_id.clone()
         };
+        self.scheduled_execution_claims.write().await.remove(id);
         self.clear_scheduled_fire_claim(id).await;
         if schedule.mode == ScheduleMode::Tool {
             self.publish_scheduled_tool_result(id, state.clone(), session_id.clone());
@@ -722,6 +723,14 @@ impl ActionService {
     pub(super) async fn cancel_scheduled(&self, id: &str, owner: Option<&str>) -> bool {
         let _mutation = self.spawn_gate.lock().await;
         let _terminal = self.terminal_transition.lock().await;
+        if self
+            .scheduled_execution_claims
+            .read()
+            .await
+            .contains_key(id)
+        {
+            return false;
+        }
         let (schedule, started_at, session_id) = {
             let actions = self.actions.read().await;
             let Some(action) = actions.get(id) else {
@@ -797,10 +806,99 @@ impl ActionService {
             return false;
         }
         action.state = state.clone();
+        self.scheduled_execution_claims.write().await.remove(id);
         self.clear_scheduled_fire_claim(id).await;
         drop(actions);
         self.emit_scheduled_finished(id, session_id.as_deref(), &schedule, &state);
         true
+    }
+
+    /// Claim the right to perform a scheduled action's side effect. A
+    /// confirmation route supplies its `request_id`; an already-approved
+    /// scheduled operation supplies the action ID because it has no prompt ID.
+    /// The durable conditional claim makes cancellation first-wins across
+    /// ActionService instances, while the shared terminal gate arbitrates
+    /// threads using one instance.
+    pub async fn claim_scheduled_execution(
+        &self,
+        action_id: &str,
+        claim_id: &str,
+    ) -> anyhow::Result<bool> {
+        anyhow::ensure!(
+            !claim_id.trim().is_empty(),
+            "scheduled execution claim ID is required"
+        );
+        let _mutation = self.spawn_gate.lock().await;
+        let _terminal = self.terminal_transition.lock().await;
+        let running_scheduled = self
+            .actions
+            .read()
+            .await
+            .get(action_id)
+            .is_some_and(|action| {
+                action.kind == ActionKind::Scheduled
+                    && matches!(action.state, ActionState::Running { .. })
+            });
+        if !running_scheduled {
+            return Ok(false);
+        }
+        let existing = self
+            .scheduled_execution_claims
+            .read()
+            .await
+            .get(action_id)
+            .cloned();
+        if let Some(store) = self.action_store.read().await.clone() {
+            // Even an idempotent in-memory hit must revalidate durable action
+            // state: another service sharing this database may have already
+            // terminalized the action and removed its claim marker.
+            if !store
+                .claim_scheduled_action_execution(action_id.to_string(), claim_id.to_string())
+                .await?
+            {
+                return Ok(false);
+            }
+        } else if existing
+            .as_deref()
+            .is_some_and(|existing| existing != claim_id)
+        {
+            return Ok(false);
+        }
+        self.scheduled_execution_claims
+            .write()
+            .await
+            .insert(action_id.to_string(), claim_id.to_string());
+        Ok(true)
+    }
+
+    /// Release an execution claim after a retryable approval operation fails
+    /// before the confirmation is accepted and its continuation is spawned.
+    pub async fn release_scheduled_execution_claim(
+        &self,
+        action_id: &str,
+        claim_id: &str,
+    ) -> anyhow::Result<bool> {
+        let _mutation = self.spawn_gate.lock().await;
+        let _terminal = self.terminal_transition.lock().await;
+        if let Some(store) = self.action_store.read().await.clone()
+            && !store
+                .release_scheduled_action_execution_claim(
+                    action_id.to_string(),
+                    claim_id.to_string(),
+                )
+                .await?
+        {
+            return Ok(false);
+        }
+        let mut claims = self.scheduled_execution_claims.write().await;
+        match claims.get(action_id) {
+            Some(existing) if existing == claim_id => {
+                claims.remove(action_id);
+                Ok(true)
+            }
+            None => Ok(true),
+            Some(_) => Ok(false),
+        }
     }
 }
 

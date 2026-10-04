@@ -8,6 +8,7 @@ type Action = SessionActionOf<
 	| 'session/interactions-cleared'
 	| 'session/interaction-resolved'
 	| 'session/interaction-resolution-result'
+	| 'session/scheduled-action-cancelled'
 >;
 
 export function reduceInteraction(
@@ -103,6 +104,18 @@ export function reduceInteraction(
 				},
 			};
 		}
+		case 'session/scheduled-action-cancelled':
+			return {
+				...state,
+				interactions: Object.fromEntries(
+					Object.entries(state.interactions).filter(
+						([, request]) =>
+							request.status !== 'pending' ||
+							request.owner.kind !== 'scheduled_action' ||
+							request.owner.actionId !== action.actionId,
+					),
+				),
+			};
 	}
 	return inputState;
 }

@@ -10,8 +10,10 @@ use rusqlite::OptionalExtension;
 /// (`fact_extraction_pending.<session_id>` and
 /// `fact_extraction_episode_pending.<session_id>.<episode_id>`), per-episode
 /// completion markers (`fact_extraction_episode_done.<session_id>.<episode_id>`),
-/// and the committed-event cursor (`memory_event_cursor.<session_id>`). Exposed
-/// as `kv_store` in the schema.
+/// the committed-event cursor (`memory_event_cursor.<session_id>`), and the
+/// runtime's scheduled-confirmation execution claim
+/// (`scheduled_execution_claim.<action_id>`). Exposed as `kv_store` in the
+/// schema.
 impl Database {
     pub fn set_kv(&self, key: &str, value: &str) -> anyhow::Result<()> {
         let now = Utc::now().to_rfc3339();

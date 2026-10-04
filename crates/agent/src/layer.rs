@@ -886,46 +886,66 @@ impl AgentLayer {
                                             Err("确认通道不可用或确认被拒绝".into())
                                         }
                                     }
-                                    haven_tools::AuthorizationDecision::AutoApproved => match agent
-                                        .executor
-                                        .execute_gated(
-                                            fired.session_id.as_deref(),
-                                            &tool_name,
-                                            args,
-                                            cancellation.clone(),
-                                            None,
-                                            None,
-                                        )
-                                        .await
-                                    {
-                                        Ok(g) if g.confirmed == Some(false) => {
-                                            agent.events.emit_action_completion_notification(ActionNotificationSource::Scheduled, &fired.action_id, fired.session_id.as_deref(), None,
+                                    haven_tools::AuthorizationDecision::AutoApproved => {
+                                        let execution_claim = action_service
+                                            .claim_scheduled_execution(
+                                                &fired.action_id,
+                                                &fired.action_id,
+                                            )
+                                            .await;
+                                        if !matches!(execution_claim, Ok(true)) {
+                                            Err(match execution_claim {
+                                                Ok(false) => {
+                                                    "定时任务已取消，工具未执行。".to_string()
+                                                }
+                                                Err(error) => {
+                                                    format!("无法确认定时任务执行权：{error}")
+                                                }
+                                                Ok(true) => unreachable!(),
+                                            })
+                                        } else {
+                                            match agent
+                                                .executor
+                                                .execute_gated(
+                                                    fired.session_id.as_deref(),
+                                                    &tool_name,
+                                                    args,
+                                                    cancellation.clone(),
+                                                    None,
+                                                    None,
+                                                )
+                                                .await
+                                            {
+                                                Ok(g) if g.confirmed == Some(false) => {
+                                                    agent.events.emit_action_completion_notification(ActionNotificationSource::Scheduled, &fired.action_id, fired.session_id.as_deref(), None,
                                                     &fired.title,
                                                     &format!("定时任务未执行：工具“{tool_name}”的确认被拒绝或已超时。"),
                                                 ).await;
-                                            Err("确认被拒绝或已超时".into())
-                                        }
-                                        Ok(g) => {
-                                            let summary = truncate_notification(
-                                                &g.result.summary_text(),
-                                                agent.limits().notification_summary_chars,
-                                            );
-                                            result_summary = Some(summary.clone());
-                                            agent.events.emit_action_completion_notification(ActionNotificationSource::Scheduled, &fired.action_id, fired.session_id.as_deref(), None,
+                                                    Err("确认被拒绝或已超时".into())
+                                                }
+                                                Ok(g) => {
+                                                    let summary = truncate_notification(
+                                                        &g.result.summary_text(),
+                                                        agent.limits().notification_summary_chars,
+                                                    );
+                                                    result_summary = Some(summary.clone());
+                                                    agent.events.emit_action_completion_notification(ActionNotificationSource::Scheduled, &fired.action_id, fired.session_id.as_deref(), None,
                                                     &fired.title,
                                                     &format!("定时任务调用工具“{tool_name}”的结果：\n{summary}"),
                                                 ).await;
-                                            Ok(())
-                                        }
-                                        Err(error) => {
-                                            let reason = error.to_string();
-                                            agent.events.emit_action_completion_notification(ActionNotificationSource::Scheduled, &fired.action_id, fired.session_id.as_deref(), None,
+                                                    Ok(())
+                                                }
+                                                Err(error) => {
+                                                    let reason = error.to_string();
+                                                    agent.events.emit_action_completion_notification(ActionNotificationSource::Scheduled, &fired.action_id, fired.session_id.as_deref(), None,
                                                     &fired.title,
                                                     &format!("定时任务调用工具“{tool_name}”失败：{reason}"),
                                                 ).await;
-                                            Err(reason)
+                                                    Err(reason)
+                                                }
+                                            }
                                         }
-                                    },
+                                    }
                                 }
                             }
                         }
@@ -995,53 +1015,66 @@ impl AgentLayer {
                                     .await;
                                 Err("关联会话已结束或不存在".into())
                             } else {
-                                match agent
-                                    .process_input_with_attachments(
-                                        message,
-                                        Some(session_id),
-                                        &[],
-                                        false,
-                                    )
-                                    .await
-                                {
-                                    Ok(result) => {
-                                        tracing::info!(
-                                            "scheduled action {} resumed session: {:?}",
-                                            fired.action_id,
-                                            result
-                                        );
-                                        agent
-                                            .events
-                                            .emit_action_completion_notification(
-                                                ActionNotificationSource::Scheduled,
-                                                &fired.action_id,
-                                                fired.session_id.as_deref(),
-                                                None,
-                                                &fired.title,
-                                                &fired.body,
-                                            )
-                                            .await;
-                                        Ok(())
-                                    }
-                                    Err(error) => {
-                                        let reason = error.to_string();
-                                        tracing::warn!(
-                                            "scheduled action {} failed to resume session: {}",
-                                            fired.action_id,
-                                            reason
-                                        );
-                                        agent
-                                            .events
-                                            .emit_action_completion_notification(
-                                                ActionNotificationSource::Scheduled,
-                                                &fired.action_id,
-                                                fired.session_id.as_deref(),
-                                                None,
-                                                &fired.title,
-                                                &format!("定时任务继续会话失败：{reason}"),
-                                            )
-                                            .await;
-                                        Err(reason)
+                                let execution_claim = action_service
+                                    .claim_scheduled_execution(&fired.action_id, &fired.action_id)
+                                    .await;
+                                if !matches!(execution_claim, Ok(true)) {
+                                    Err(match execution_claim {
+                                        Ok(false) => "定时任务已取消，会话未继续。".to_string(),
+                                        Err(error) => {
+                                            format!("无法确认定时任务执行权：{error}")
+                                        }
+                                        Ok(true) => unreachable!(),
+                                    })
+                                } else {
+                                    match agent
+                                        .process_input_with_attachments(
+                                            message,
+                                            Some(session_id),
+                                            &[],
+                                            false,
+                                        )
+                                        .await
+                                    {
+                                        Ok(result) => {
+                                            tracing::info!(
+                                                "scheduled action {} resumed session: {:?}",
+                                                fired.action_id,
+                                                result
+                                            );
+                                            agent
+                                                .events
+                                                .emit_action_completion_notification(
+                                                    ActionNotificationSource::Scheduled,
+                                                    &fired.action_id,
+                                                    fired.session_id.as_deref(),
+                                                    None,
+                                                    &fired.title,
+                                                    &fired.body,
+                                                )
+                                                .await;
+                                            Ok(())
+                                        }
+                                        Err(error) => {
+                                            let reason = error.to_string();
+                                            tracing::warn!(
+                                                "scheduled action {} failed to resume session: {}",
+                                                fired.action_id,
+                                                reason
+                                            );
+                                            agent
+                                                .events
+                                                .emit_action_completion_notification(
+                                                    ActionNotificationSource::Scheduled,
+                                                    &fired.action_id,
+                                                    fired.session_id.as_deref(),
+                                                    None,
+                                                    &fired.title,
+                                                    &format!("定时任务继续会话失败：{reason}"),
+                                                )
+                                                .await;
+                                            Err(reason)
+                                        }
                                     }
                                 }
                             }

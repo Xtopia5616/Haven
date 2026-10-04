@@ -99,6 +99,48 @@ describe('SessionReducer', () => {
 		expect(stale.interactions[pending.id]).toBeUndefined();
 	});
 
+	it('clears pending confirmations owned by a cancelled scheduled action only', () => {
+		const scheduled = {
+			id: 'conf-scheduled',
+			sessionId: 'ses-a',
+			owner: { kind: 'scheduled_action' as const, actionId: 'act-cancelled' },
+			kind: 'scheduled_confirm' as const,
+			status: 'pending' as const,
+			options: [],
+			createdAt: '',
+		};
+		const otherScheduled = {
+			...scheduled,
+			id: 'conf-other-action',
+			owner: { kind: 'scheduled_action' as const, actionId: 'act-other' },
+		};
+		const sessionRequest = {
+			id: 'conf-session',
+			sessionId: 'ses-a',
+			owner: { kind: 'session' as const, sessionId: 'ses-a' },
+			kind: 'confirm' as const,
+			status: 'pending' as const,
+			options: [],
+			createdAt: '',
+		};
+		const initial = stateWith({
+			interactions: {
+				[scheduled.id]: scheduled,
+				[otherScheduled.id]: otherScheduled,
+				[sessionRequest.id]: sessionRequest,
+			},
+		});
+
+		const next = reduceSession(initial, {
+			type: 'session/scheduled-action-cancelled',
+			actionId: 'act-cancelled',
+		});
+
+		expect(next.interactions[scheduled.id]).toBeUndefined();
+		expect(next.interactions[otherScheduled.id]).toEqual(otherScheduled);
+		expect(next.interactions[sessionRequest.id]).toEqual(sessionRequest);
+	});
+
 	it('reads pending interaction ids by session for stale resume protection', () => {
 		const reducer = new SessionReducer();
 		const request = (id: string, sessionId: string, status: 'pending' | 'resolved') => ({

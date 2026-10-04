@@ -1,6 +1,13 @@
 use crate::db::Database;
 use haven_common::ActionStatus;
+use rusqlite::OptionalExtension;
 use serde_json::json;
+
+const SCHEDULED_EXECUTION_CLAIM_PREFIX: &str = "scheduled_execution_claim.";
+
+fn scheduled_execution_claim_key(action_id: &str) -> String {
+    format!("{SCHEDULED_EXECUTION_CLAIM_PREFIX}{action_id}")
+}
 
 /// A persisted scheduled-action row. Scheduled actions survive app restarts:
 /// `due_at` is stored in RFC3339, and the app re-arms pending ones on startup
@@ -159,6 +166,10 @@ impl Database {
             if changed == 0 {
                 return Ok(false);
             }
+            conn.execute(
+                "DELETE FROM kv_store WHERE key = ?1",
+                [scheduled_execution_claim_key(id)],
+            )?;
             if matches!(status, ActionStatus::Completed | ActionStatus::Failed) {
                 let mut status_json = json!({
                     "action_id": id,
@@ -225,15 +236,107 @@ impl Database {
     }
 
     /// Cancel a waiting or currently-running scheduled action while retaining
-    /// its terminal history.
+    /// its terminal history. An accepted confirmation's durable execution
+    /// claim makes cancellation ineligible before this CAS runs.
     pub fn cancel_scheduled_action(&self, id: &str, finished_at: &str) -> anyhow::Result<bool> {
         let conn = self.conn();
+        let claim_key = scheduled_execution_claim_key(id);
         let changed = conn.execute(
             "UPDATE actions SET status = 'cancelled', finished_at = ?2
-             WHERE id = ?1 AND kind = 'scheduled' AND status IN ('waiting', 'running')",
-            rusqlite::params![id, finished_at],
+             WHERE id = ?1 AND kind = 'scheduled' AND status IN ('waiting', 'running')
+               AND NOT EXISTS (SELECT 1 FROM kv_store WHERE key = ?3)",
+            rusqlite::params![id, finished_at, claim_key],
         )?;
         Ok(changed > 0)
+    }
+
+    /// Durably arbitrate confirmation approval against scheduled-action
+    /// cancellation. The request ID is the idempotency token for retries after
+    /// a later grant write fails. The claim and the action's running status are
+    /// checked under one SQLite writer transaction.
+    pub fn claim_scheduled_action_execution(
+        &self,
+        id: &str,
+        request_id: &str,
+    ) -> anyhow::Result<bool> {
+        anyhow::ensure!(!request_id.trim().is_empty(), "request ID is required");
+        let conn = self.conn();
+        let key = scheduled_execution_claim_key(id);
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| -> anyhow::Result<bool> {
+            let status: Option<String> = conn
+                .query_row(
+                    "SELECT status FROM actions WHERE id = ?1 AND kind = 'scheduled'",
+                    [id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if status.as_deref() != Some("running") {
+                return Ok(false);
+            }
+            let existing: Option<String> = conn
+                .query_row("SELECT value FROM kv_store WHERE key = ?1", [&key], |row| {
+                    row.get(0)
+                })
+                .optional()?;
+            match existing {
+                Some(existing) => Ok(existing == request_id),
+                None => {
+                    conn.execute(
+                        "INSERT INTO kv_store (key, value) VALUES (?1, ?2)",
+                        rusqlite::params![key, request_id],
+                    )?;
+                    Ok(true)
+                }
+            }
+        })();
+        match result {
+            Ok(claimed) => {
+                conn.execute_batch("COMMIT")?;
+                Ok(claimed)
+            }
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(error)
+            }
+        }
+    }
+
+    /// Release a claim after a retryable operation such as durable session
+    /// grant persistence fails. A different request's claim is never removed.
+    pub fn release_scheduled_action_execution_claim(
+        &self,
+        id: &str,
+        request_id: &str,
+    ) -> anyhow::Result<bool> {
+        let conn = self.conn();
+        let key = scheduled_execution_claim_key(id);
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| -> anyhow::Result<bool> {
+            let existing: Option<String> = conn
+                .query_row("SELECT value FROM kv_store WHERE key = ?1", [&key], |row| {
+                    row.get(0)
+                })
+                .optional()?;
+            match existing {
+                None => Ok(true),
+                Some(existing) if existing == request_id => Ok(conn.execute(
+                    "DELETE FROM kv_store WHERE key = ?1 AND value = ?2",
+                    rusqlite::params![key, request_id],
+                )? > 0),
+                Some(_) => Ok(false),
+            }
+        })();
+        match result {
+            Ok(released) => {
+                conn.execute_batch("COMMIT")?;
+                Ok(released)
+            }
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(error)
+            }
+        }
     }
 
     /// Quarantine a malformed waiting scheduled row as terminal history instead
@@ -567,14 +670,35 @@ impl Database {
     /// restart is stale and must not surface as live work. Idempotent.
     pub fn mark_interrupted_actions(&self) -> anyhow::Result<usize> {
         let conn = self.conn();
-        let n = conn.execute(
-            "UPDATE actions
-             SET status = 'failed', error_reason = 'App restarted while the action was running',
-                 finished_at = datetime('now')
-             WHERE kind IN ('background', 'scheduled') AND status = 'running'",
-            [],
-        )?;
-        Ok(n)
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| -> anyhow::Result<usize> {
+            let n = conn.execute(
+                "UPDATE actions
+                 SET status = 'failed', error_reason = 'App restarted while the action was running',
+                     finished_at = datetime('now')
+                 WHERE kind IN ('background', 'scheduled') AND status = 'running'",
+                [],
+            )?;
+            // Scheduled confirmations and execution claims are process-local
+            // work. Running rows are failed above rather than replayed, so no
+            // approval claim may survive this recovery boundary.
+            conn.execute(
+                "DELETE FROM kv_store
+                 WHERE substr(key, 1, length(?1)) = ?1",
+                [SCHEDULED_EXECUTION_CLAIM_PREFIX],
+            )?;
+            Ok(n)
+        })();
+        match result {
+            Ok(n) => {
+                conn.execute_batch("COMMIT")?;
+                Ok(n)
+            }
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(error)
+            }
+        }
     }
 }
 
@@ -886,6 +1010,186 @@ mod tests {
         db.cancel_scheduled_action("action-1", "2026-08-04T02:00:01Z")
             .unwrap();
         assert!(db.list_pending_scheduled_actions().unwrap().is_empty());
+    }
+
+    #[test]
+    fn scheduled_execution_claim_and_cancel_are_first_wins() {
+        let db = test_db();
+        for id in ["action-approved", "action-cancelled"] {
+            db.save_scheduled_action(
+                id,
+                "2026-08-04T02:00:00+08:00",
+                "Haven",
+                "confirm before execution",
+                "tool",
+                None,
+                Some("notify"),
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+            assert!(
+                db.start_scheduled_action(id, "2026-08-04T02:00:00Z")
+                    .unwrap()
+            );
+        }
+
+        assert!(
+            db.claim_scheduled_action_execution("action-approved", "conf-approval")
+                .unwrap()
+        );
+        assert!(
+            db.claim_scheduled_action_execution("action-approved", "conf-approval")
+                .unwrap(),
+            "same-request retries must be idempotent"
+        );
+        assert!(
+            !db.claim_scheduled_action_execution("action-approved", "conf-other")
+                .unwrap()
+        );
+        assert!(
+            !db.cancel_scheduled_action("action-approved", "cancel-lost")
+                .unwrap()
+        );
+        assert_eq!(
+            db.get_kv("scheduled_execution_claim.action-approved")
+                .unwrap()
+                .as_deref(),
+            Some("conf-approval")
+        );
+        assert!(
+            db.finish_scheduled_action(
+                "action-approved",
+                ActionStatus::Completed,
+                Some("done"),
+                None,
+                "finish-approved",
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            db.get_kv("scheduled_execution_claim.action-approved")
+                .unwrap(),
+            None
+        );
+
+        assert!(
+            db.cancel_scheduled_action("action-cancelled", "cancel-won")
+                .unwrap()
+        );
+        assert!(
+            !db.claim_scheduled_action_execution("action-cancelled", "conf-late")
+                .unwrap()
+        );
+        assert_eq!(
+            db.get_action("action-cancelled").unwrap().unwrap().status,
+            ActionStatus::Cancelled
+        );
+    }
+
+    #[test]
+    fn restarting_fails_running_actions_and_clears_scheduled_claims() {
+        let db = test_db();
+        db.set_kv("scheduledXexecution_claim.keep", "unrelated")
+            .unwrap();
+        db.save_scheduled_action(
+            "action-interrupted",
+            "2026-08-04T02:00:00+08:00",
+            "Haven",
+            "claimed before restart",
+            "tool",
+            None,
+            Some("notify"),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(
+            db.start_scheduled_action("action-interrupted", "started")
+                .unwrap()
+        );
+        assert!(
+            db.claim_scheduled_action_execution("action-interrupted", "conf-interrupted")
+                .unwrap()
+        );
+
+        assert_eq!(db.mark_interrupted_actions().unwrap(), 1);
+        assert_eq!(
+            db.get_action("action-interrupted").unwrap().unwrap().status,
+            ActionStatus::Failed
+        );
+        assert_eq!(
+            db.get_kv("scheduled_execution_claim.action-interrupted")
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            db.get_kv("scheduledXexecution_claim.keep").unwrap(),
+            Some("unrelated".into())
+        );
+    }
+
+    #[test]
+    fn scheduled_claim_cas_coordinates_separate_database_connections() {
+        let database_path = std::env::temp_dir().join(format!(
+            "haven-scheduled-claim-{}.db",
+            haven_common::types::new_id("act")
+        ));
+        let approver = Database::open(&database_path).unwrap();
+        let canceller = Database::open(&database_path).unwrap();
+        approver
+            .save_scheduled_action(
+                "act-shared-connection",
+                "2026-08-04T02:00:00+08:00",
+                "Haven",
+                "arbitrate across connections",
+                "tool",
+                None,
+                Some("notify"),
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        assert!(
+            approver
+                .start_scheduled_action("act-shared-connection", "started")
+                .unwrap()
+        );
+
+        assert!(
+            approver
+                .claim_scheduled_action_execution("act-shared-connection", "conf-shared-connection")
+                .unwrap()
+        );
+        assert!(
+            !canceller
+                .cancel_scheduled_action("act-shared-connection", "cancel-lost")
+                .unwrap()
+        );
+        assert!(
+            approver
+                .release_scheduled_action_execution_claim(
+                    "act-shared-connection",
+                    "conf-shared-connection",
+                )
+                .unwrap()
+        );
+        assert!(
+            canceller
+                .cancel_scheduled_action("act-shared-connection", "cancel-won")
+                .unwrap()
+        );
+        assert!(
+            !approver
+                .claim_scheduled_action_execution("act-shared-connection", "conf-late")
+                .unwrap()
+        );
+        drop(canceller);
+        drop(approver);
+        let _ = std::fs::remove_file(database_path);
     }
 
     #[test]

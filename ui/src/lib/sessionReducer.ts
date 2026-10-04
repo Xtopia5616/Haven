@@ -133,6 +133,7 @@ export function reduceSession(
 		case 'session/interactions-cleared':
 		case 'session/interaction-resolved':
 		case 'session/interaction-resolution-result':
+		case 'session/scheduled-action-cancelled':
 			return reduceInteraction(inputState, action);
 
 		case 'agent/chunks':

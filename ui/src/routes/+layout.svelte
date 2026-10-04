@@ -1203,10 +1203,15 @@
 							upsertSessionAction(p);
 							finalizeBackgroundActionMessages(p);
 						} else {
+							if (p.status === 'cancelled') {
+								appSessionReducer.dispatch({
+									type: 'session/scheduled-action-cancelled',
+									actionId: p.id,
+								});
+							}
 							upsertSessionAction(p);
-							// Scheduled action fired: drop from the pending list. The
-							// toast is surfaced by the agent's `notification:show` (the
-							// fired consumer always notifies).
+							// Scheduled actions leave the pending list at terminal state;
+							// execution notifications arrive through `notification:show`.
 							removeAction(p.id);
 						}
 					},

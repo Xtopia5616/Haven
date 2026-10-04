@@ -2851,6 +2851,138 @@ async fn scheduled_admission_keeps_running_row_available_for_cancellation() {
 }
 
 #[tokio::test]
+async fn scheduled_execution_claim_arbitrates_with_cancellation() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let db = Arc::new(Database::open(&dir.path().join("execution-claim.db")).unwrap());
+    let service = Arc::new(ActionService::new());
+    service
+        .set_action_store(Some(ActionStore::new(db.clone())))
+        .await;
+    let _receiver = service.take_action_receiver().expect("scheduled receiver");
+
+    let approved_id = service
+        .set(crate::action_types::ScheduledActionSpec {
+            due_at: None,
+            delay_secs: Some(3600),
+            watch_action_id: None,
+            title: "Approved action".into(),
+            body: "approval claims execution before cancellation".into(),
+            mode: crate::action_types::ScheduleMode::Tool,
+            session_id: None,
+            tool_name: Some("notify".into()),
+            tool_args: None,
+            prompt: None,
+        })
+        .await
+        .unwrap();
+    service.fire_scheduled(&approved_id).await;
+    assert_eq!(
+        service.status_view(&approved_id).await.to_json(true)["status"],
+        "running"
+    );
+    assert_eq!(
+        db.get_action(&approved_id).unwrap().unwrap().status,
+        haven_common::ActionStatus::Running
+    );
+    let request_id = haven_common::types::new_id("conf");
+    assert!(
+        service
+            .claim_scheduled_execution(&approved_id, request_id.as_str())
+            .await
+            .unwrap()
+    );
+    assert!(
+        service
+            .claim_scheduled_execution(&approved_id, request_id.as_str())
+            .await
+            .unwrap()
+    );
+    assert!(!service.cancel(&approved_id).await);
+    assert_eq!(
+        db.get_kv(&format!("scheduled_execution_claim.{approved_id}"))
+            .unwrap()
+            .as_deref(),
+        Some(request_id.as_str())
+    );
+    assert!(service.complete_scheduled(&approved_id).await.unwrap());
+    assert_eq!(
+        db.get_kv(&format!("scheduled_execution_claim.{approved_id}"))
+            .unwrap(),
+        None
+    );
+
+    let cancelled_id = service
+        .set(crate::action_types::ScheduledActionSpec {
+            due_at: None,
+            delay_secs: Some(3600),
+            watch_action_id: None,
+            title: "Cancelled action".into(),
+            body: "cancellation wins before approval".into(),
+            mode: crate::action_types::ScheduleMode::Tool,
+            session_id: None,
+            tool_name: Some("notify".into()),
+            tool_args: None,
+            prompt: None,
+        })
+        .await
+        .unwrap();
+    service.fire_scheduled(&cancelled_id).await;
+    assert!(service.cancel(&cancelled_id).await);
+    assert!(
+        !service
+            .claim_scheduled_execution(&cancelled_id, "conf-late")
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        db.get_action(&cancelled_id).unwrap().unwrap().status,
+        haven_common::ActionStatus::Cancelled
+    );
+
+    // A second service can terminalize the shared database while this
+    // service's in-memory projection is stale. Repeating the same claim must
+    // consult durable action state instead of trusting its local claim cache.
+    let remotely_finished_id = service
+        .set(crate::action_types::ScheduledActionSpec {
+            due_at: None,
+            delay_secs: Some(3600),
+            watch_action_id: None,
+            title: "Remotely finished action".into(),
+            body: "durable state supersedes a stale local claim".into(),
+            mode: crate::action_types::ScheduleMode::Tool,
+            session_id: None,
+            tool_name: Some("notify".into()),
+            tool_args: None,
+            prompt: None,
+        })
+        .await
+        .unwrap();
+    service.fire_scheduled(&remotely_finished_id).await;
+    assert!(
+        service
+            .claim_scheduled_execution(&remotely_finished_id, "conf-remote-finish")
+            .await
+            .unwrap()
+    );
+    assert!(
+        db.finish_scheduled_action(
+            &remotely_finished_id,
+            haven_common::ActionStatus::Completed,
+            Some("remote terminal transition"),
+            None,
+            "remote-finish",
+        )
+        .unwrap()
+    );
+    assert!(
+        !service
+            .claim_scheduled_execution(&remotely_finished_id, "conf-remote-finish")
+            .await
+            .unwrap()
+    );
+}
+
+#[tokio::test]
 async fn restore_marks_running_scheduled_action_failed_without_replaying_it() {
     let dir = tempfile::TempDir::new().unwrap();
     let db = Arc::new(Database::open(&dir.path().join("test.db")).unwrap());

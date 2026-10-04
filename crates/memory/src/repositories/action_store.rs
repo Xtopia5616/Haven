@@ -323,6 +323,32 @@ impl ActionStore {
             .await
     }
 
+    /// Claim execution for one pending scheduled confirmation. Repeating with
+    /// the same request ID is idempotent, so callers can retry an approval
+    /// after a grant write failure without reopening cancellation races.
+    pub async fn claim_scheduled_action_execution(
+        &self,
+        action_id: String,
+        request_id: String,
+    ) -> anyhow::Result<bool> {
+        self.db
+            .run_blocking(move |db| db.claim_scheduled_action_execution(&action_id, &request_id))
+            .await
+    }
+
+    /// Release an execution claim when a later retryable approval step fails.
+    pub async fn release_scheduled_action_execution_claim(
+        &self,
+        action_id: String,
+        request_id: String,
+    ) -> anyhow::Result<bool> {
+        self.db
+            .run_blocking(move |db| {
+                db.release_scheduled_action_execution_claim(&action_id, &request_id)
+            })
+            .await
+    }
+
     /// Cancel a waiting or running scheduled action.
     pub async fn cancel_scheduled_action(
         &self,
