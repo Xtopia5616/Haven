@@ -282,6 +282,8 @@ pub struct SendOutcome {
 pub struct InboxBus {
     root: PathBuf,
     notifier: Arc<InboxNotifier>,
+    #[cfg(test)]
+    fail_archive_append: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl InboxBus {
@@ -290,6 +292,8 @@ impl InboxBus {
         Self {
             root: root.into(),
             notifier: Arc::new(notifier),
+            #[cfg(test)]
+            fail_archive_append: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -299,6 +303,8 @@ impl InboxBus {
         Self {
             root: default_inbox_dir(),
             notifier: shared_notifier(),
+            #[cfg(test)]
+            fail_archive_append: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -313,6 +319,10 @@ impl InboxBus {
 
     fn mailbox(&self, name: &str) -> PathBuf {
         self.root.join(format!("{name}.jsonl"))
+    }
+
+    fn mailbox_tmp(&self, name: &str) -> PathBuf {
+        self.root.join(format!("{name}.jsonl.tmp"))
     }
 
     fn archive(&self, name: &str) -> PathBuf {
@@ -376,6 +386,7 @@ impl InboxBus {
         }
         let _lock = LockGuard::acquire(&self.root)?;
         self.ensure_dir()?;
+        self.recover_mailbox_tmp_unlocked(name)?;
         let now = now_rfc3339();
         let mut reg = self.read_registry_unlocked()?;
         match reg.get_mut(name) {
@@ -575,6 +586,7 @@ impl InboxBus {
         validate_agent_name(to)?;
         let _lock = LockGuard::acquire(&self.root)?;
         self.ensure_dir()?;
+        self.recover_mailbox_tmp_unlocked(to)?;
         let mailbox = self.mailbox(to);
         if !mailbox.exists() {
             anyhow::bail!("agent '{to}' not found or offline: no mailbox (never registered)")
@@ -630,6 +642,7 @@ impl InboxBus {
 
     fn claim_and_archive_unlocked(&self, name: &str) -> anyhow::Result<Vec<Envelope>> {
         self.ensure_dir()?;
+        self.recover_mailbox_tmp_unlocked(name)?;
         // Recover an archive replacement left between Windows' remove and
         // rename steps, and compact archives created by older versions before
         // processing the current claim.
@@ -725,6 +738,7 @@ impl InboxBus {
         }
         let _lock = LockGuard::acquire(&self.root)?;
         self.ensure_dir()?;
+        self.recover_mailbox_tmp_unlocked(name)?;
         self.recover_archive_tmp_unlocked(name)?;
         self.recover_processing_tmp_unlocked(name)?;
         let pending = self.processing(name);
@@ -751,6 +765,7 @@ impl InboxBus {
         validate_agent_name(name)?;
         let _lock = LockGuard::acquire(&self.root)?;
         self.ensure_dir()?;
+        self.recover_mailbox_tmp_unlocked(name)?;
         self.append_archive_unlocked(name, &[])?;
         if let Some(env) = last_valid_line(&self.mailbox(name))? {
             return Ok(Some(env));
@@ -766,6 +781,7 @@ impl InboxBus {
         validate_agent_name(name)?;
         let _lock = LockGuard::acquire(&self.root)?;
         self.ensure_dir()?;
+        self.recover_mailbox_tmp_unlocked(name)?;
         self.append_archive_unlocked(name, &[])?;
         for (path, max_bytes) in [
             (self.mailbox(name), u64::MAX),
@@ -813,6 +829,7 @@ impl InboxBus {
         validate_agent_name(expected_from)?;
         let _lock = LockGuard::acquire(&self.root)?;
         self.ensure_dir()?;
+        self.recover_mailbox_tmp_unlocked(name)?;
         self.append_archive_unlocked(name, &[])?;
         let mailbox = self.mailbox(name);
         let content = match std::fs::read_to_string(&mailbox) {
@@ -847,18 +864,21 @@ impl InboxBus {
             return Ok(Vec::new());
         }
 
+        // Archive replies before removing them from the mailbox. If archive
+        // persistence fails, the original mailbox remains retryable.
+        let to_archive: Vec<Envelope> = matching
+            .iter()
+            .chain(archived_only.iter())
+            .cloned()
+            .collect();
+        self.append_archive_unlocked(name, &to_archive)?;
+
         // Rewrite mailbox without the taken replies (preserve other lines).
         let mut rewritten = rest.join("\n");
         if !rewritten.is_empty() {
             rewritten.push('\n');
         }
-        std::fs::write(&mailbox, rewritten)?;
-
-        let to_archive: Vec<&Envelope> = matching.iter().chain(archived_only.iter()).collect();
-        if !to_archive.is_empty() {
-            let to_archive = to_archive.into_iter().cloned().collect::<Vec<_>>();
-            self.append_archive_unlocked(name, &to_archive)?;
-        }
+        self.write_mailbox_unlocked(name, &rewritten)?;
         Ok(matching)
     }
 
@@ -869,6 +889,7 @@ impl InboxBus {
         validate_agent_name(name)?;
         let _lock = LockGuard::acquire(&self.root)?;
         self.ensure_dir()?;
+        self.recover_mailbox_tmp_unlocked(name)?;
         self.append_archive_unlocked(name, &[])?;
         let mut entries: Vec<Envelope> = Vec::new();
         // Archive (older) first, then the unread mailbox (newer), so the
@@ -917,6 +938,15 @@ impl InboxBus {
     /// in the same locked mutation. This bounds both on-disk growth and every
     /// later archive read, including archives created by older builds.
     fn append_archive_unlocked(&self, name: &str, envelopes: &[Envelope]) -> anyhow::Result<()> {
+        #[cfg(test)]
+        if !envelopes.is_empty()
+            && self
+                .fail_archive_append
+                .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            anyhow::bail!("injected archive append failure");
+        }
+
         // Read-only callers enter this helper too, so do not turn every
         // history/find lookup into a remove/create/sync cycle. A temp file is
         // itself a recovery signal; otherwise a rewrite is needed only when
@@ -1025,6 +1055,43 @@ impl InboxBus {
             .filter_map(|l| serde_json::from_str::<Envelope>(l.trim()).ok())
             .map(|e| e.id)
             .collect())
+    }
+
+    /// Replace a selectively drained mailbox with a fully written file. The
+    /// temp file is recoverable after Windows' remove-then-rename window.
+    fn write_mailbox_unlocked(&self, name: &str, content: &str) -> anyhow::Result<()> {
+        let mailbox = self.mailbox(name);
+        let tmp = self.mailbox_tmp(name);
+        let mut file = File::create(&tmp)?;
+        file.write_all(content.as_bytes())?;
+        file.flush()?;
+        file.sync_all()?;
+        match std::fs::remove_file(&mailbox) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        std::fs::rename(tmp, mailbox)?;
+        Ok(())
+    }
+
+    fn recover_mailbox_tmp_unlocked(&self, name: &str) -> anyhow::Result<()> {
+        let mailbox = self.mailbox(name);
+        let tmp = self.mailbox_tmp(name);
+        if !tmp.exists() {
+            return Ok(());
+        }
+
+        if mailbox.exists() {
+            // The old mailbox survived, so the temp file was not committed.
+            // Keep the old source of truth, which still includes any replies.
+            std::fs::remove_file(tmp)?;
+        } else {
+            // The old mailbox was removed before a crash; promote the fully
+            // synced replacement. Archived replies remain durably recoverable.
+            std::fs::rename(tmp, mailbox)?;
+        }
+        Ok(())
     }
 
     /// Rewrite a claimed processing file while the inbox lock is held. The
@@ -2169,6 +2236,67 @@ mod tests {
         assert_eq!(left.len(), 2);
         assert!(left.iter().any(|e| e.id == unrelated.id));
         assert!(left.iter().any(|e| e.r#type == MessageType::Receipt));
+    }
+
+    #[test]
+    fn take_matching_replies_keeps_mailbox_when_archive_append_fails() {
+        let (_dir, bus) = test_bus();
+        bus.register("ses-a", &[]).unwrap();
+        bus.register("ses-b", &[]).unwrap();
+        let mut request = env_from("ses-a", "ses-b", "please do X");
+        request.r#type = MessageType::Request;
+        let mut reply = env_from("ses-b", "ses-a", "done X");
+        reply.r#type = MessageType::Reply;
+        reply.in_reply_to = Some(request.id.clone());
+        bus.deliver("ses-a", &reply).unwrap();
+        let mailbox = bus.mailbox("ses-a");
+        let original = std::fs::read_to_string(&mailbox).unwrap();
+        bus.fail_archive_append
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+
+        assert!(
+            bus.take_matching_replies("ses-a", &request.id, "ses-b")
+                .is_err()
+        );
+        assert_eq!(std::fs::read_to_string(&mailbox).unwrap(), original);
+
+        let recovered = bus
+            .take_matching_replies("ses-a", &request.id, "ses-b")
+            .unwrap();
+        assert_eq!(recovered.len(), 1);
+        assert_eq!(recovered[0].id, reply.id);
+    }
+
+    #[test]
+    fn mailbox_temp_recovery_keeps_old_mailbox_or_promotes_complete_replacement() {
+        let (_dir, bus) = test_bus();
+        bus.register("ses-a", &[]).unwrap();
+        let old = env_from("ses-b", "ses-a", "old mailbox");
+        let replacement = env_from("ses-b", "ses-a", "replacement mailbox");
+        write_mailbox(&bus, "ses-a", std::slice::from_ref(&old));
+        let mailbox = bus.mailbox("ses-a");
+        let tmp = bus.mailbox_tmp("ses-a");
+        std::fs::write(
+            &tmp,
+            format!("{}\n", serde_json::to_string(&replacement).unwrap()),
+        )
+        .unwrap();
+
+        let history = bus.history("ses-a", 10).unwrap();
+        assert!(history.iter().any(|envelope| envelope.id == old.id));
+        assert!(!history.iter().any(|envelope| envelope.id == replacement.id));
+        assert!(!tmp.exists());
+
+        std::fs::remove_file(&mailbox).unwrap();
+        std::fs::write(
+            &tmp,
+            format!("{}\n", serde_json::to_string(&replacement).unwrap()),
+        )
+        .unwrap();
+        let history = bus.history("ses-a", 10).unwrap();
+        assert!(history.iter().any(|envelope| envelope.id == replacement.id));
+        assert!(mailbox.exists());
+        assert!(!tmp.exists());
     }
 
     #[test]

@@ -439,3 +439,4 @@
 - [0454：合并启动与每日媒体清理](0454-single-startup-and-daily-cleanup.md)
 - [0455：按音频帧精度执行 VAD 静音超时](0455-vad-silence-timeout-frame-precision.md)
 - [0456：零容量音频环形缓冲区为空缓冲](0456-zero-capacity-audio-ring-buffer.md)
+- [0457：先归档再移出匹配回复](0457-preserve-replies-on-archive-failure.md)
