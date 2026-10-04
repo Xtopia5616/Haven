@@ -468,34 +468,6 @@ impl SessionSupervisor {
         .await
     }
 
-    #[allow(clippy::too_many_arguments)]
-    #[allow(dead_code)]
-    pub(crate) async fn execute_step_with_identity_and_metadata(
-        &self,
-        session_id: &str,
-        tool_name: &str,
-        input: Value,
-        step_num: u32,
-        action_index: u32,
-        tool_call_id: Option<&str>,
-        step_id: &str,
-        metadata: ActionStepMetadata,
-    ) -> anyhow::Result<ToolResult> {
-        self.execute_step_inner(
-            session_id,
-            tool_name,
-            input,
-            step_num,
-            action_index,
-            tool_call_id,
-            step_id,
-            None,
-            Some(metadata),
-            None,
-        )
-        .await
-    }
-
     /// Metadata-preserving variant used by a ReAct turn. The caller supplies
     /// the turn-scoped cancellation token so a deadline can stop a tool even
     /// though the session itself remains live for recovery.
@@ -567,35 +539,6 @@ impl SessionSupervisor {
             step_id,
             Some(receipt),
             None,
-            None,
-        )
-        .await
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    #[allow(dead_code)]
-    pub(crate) async fn execute_step_preconfirmed_with_identity_and_metadata(
-        &self,
-        session_id: &str,
-        tool_name: &str,
-        input: Value,
-        step_num: u32,
-        action_index: u32,
-        tool_call_id: Option<&str>,
-        step_id: &str,
-        receipt: haven_tools::ConfirmationReceipt,
-        metadata: ActionStepMetadata,
-    ) -> anyhow::Result<ToolResult> {
-        self.execute_step_inner(
-            session_id,
-            tool_name,
-            input,
-            step_num,
-            action_index,
-            tool_call_id,
-            step_id,
-            Some(receipt),
-            Some(metadata),
             None,
         )
         .await
