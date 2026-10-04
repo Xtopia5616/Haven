@@ -84,7 +84,7 @@ Admin 操作最终由 `TypedToolAdapter` 或 `AdminSurfaces.execute` 序列化�
 | `mcp_reload` | `McpReloadOutput`；每行是 `McpReloadConnectionOutput` 的 untagged success/error 分支。 | 每台 server 独立失败，错误经 sanitizer；既有成功行无 error 字段，失败行才有。 | **typed DTO enum**，保留 partial failure 和字段省略。 |
 | `mcp_refresh` | `McpRefreshOutput` / `{added,removed,updated,failed}`，每项是 server name 字符串。 | tool JSON 后供 App command 构造 `McpRefreshResult`；确认完成时 `commands/mod.rs` 从 output 读取 failed 并与已授权 plan 交叉过滤。Tools/Admin 负责输出；App 负责 Tauri DTO 与 authorized-name filter。 | **typed service result → tool JSON boundary**；保留 App 当前 plan filter 回归。 |
 
-## Tauri 命令成功响应（77 个）
+## Tauri 命令成功响应（79 个）
 
 命令成功类型由 Tauri IPC 序列化；失败为 `Result<T,String>` 的 error 字符串并拒绝前端 invoke。下面按 Rust handler 返回的 `T` 分组，命令名来自 Rust 与 TS command registry。
 
@@ -92,7 +92,7 @@ Admin 操作最终由 `TypedToolAdapter` 或 `AdminSurfaces.execute` 序列化�
 |---|---|---|
 | `Vec<ActionEvent>` | `list_actions`, `list_action_history` | 固定 UI projection；Tools owner lifecycle，App events/commands 负责 IPC DTO。 |
 | `bool` | `cancel_action`, `delete_action`, `is_autostart_enabled` | 标量 ack/state；owner 分别为 ActionService 或 App autostart adapter。 |
-| `()` | `open_external`, `log_frontend_error`, `reconnect_mcp`, `add_mcp_server`, `update_mcp_server`, `remove_mcp_server`, `toggle_mcp_server`, `delete_fact`, `switch_model`, `set_reasoning_effort`, `set_web_search`, `start_recording`, `cancel_recording`, `reopen_session`, `end_session`, `interrupt_session`, `resolve_confirmation`, `update_session_title`, `delete_session`, `rollback_session`, `continue_session`, `update_settings`, `discard_staged_credentials`, `revoke_permission`, `revoke_session_permission`, `reset_permissions`, `enable_autostart`, `disable_autostart`, `refresh_skills`, `set_skill_enabled`, `set_tool_enabled`, `reset_tool_circuits` | 成功时无 payload；mutation owner 是相应 App/Tools/Memory service，IPC 错误走 String。 |
+| `()` | `open_external`, `log_frontend_error`, `reconnect_mcp`, `add_mcp_server`, `update_mcp_server`, `remove_mcp_server`, `toggle_mcp_server`, `delete_fact`, `switch_model`, `set_reasoning_effort`, `set_web_search`, `start_recording`, `cancel_recording`, `reopen_session`, `end_session`, `interrupt_session`, `resolve_confirmation`, `update_session_title`, `delete_session`, `rollback_session`, `continue_session`, `update_settings`, `discard_staged_credentials`, `revoke_permission`, `revoke_session_permission`, `reset_permissions`, `enable_autostart`, `disable_autostart`, `refresh_skills`, `set_skill_enabled`, `set_tool_enabled`, `reset_tool_circuits`, `set_hotkey_capture_active` | 成功时无 payload；mutation owner 是相应 App/Tools/Memory service，IPC 错误走 String。 |
 | `Vec<Session>` | `get_history`, `search_history_paginated`, `search_history`, `search_history_filtered` | 形状可序列化但直接暴露存储/领域类型；历史 wire owner 为 App，**DTO 漂移风险**。 |
 | `i64` | `count_history`, `count_history_search` | 固定标量计数；SessionStore producer，App handler/Tauri edge。 |
 | `String` | `export_history`, `stop_recording`, `get_bootstrap_status`, `open_skills_dir`, `stage_provider_credential`, `stage_ocr_credential` | 混合语义：导出/转写/路径是文本 payload；bootstrap 只有 Loading/Ready 两态但目前作为 String 暴露，列为轻量 typed enum 审查；凭据命令仅返回安全凭据存储引用。 |
@@ -104,10 +104,11 @@ Admin 操作最终由 `TypedToolAdapter` 或 `AdminSurfaces.execute` 序列化�
 | `ApiKeyStatus`, `LlmConnectionReport`, `Vec<ModelInfo>`, `BTreeMap<String, Vec<ModelInfo>>` | `get_api_key_status`, `check_llm_connection`, `discover_models`, `discover_all_models` | Outer DTOs typed; provider names form a dynamic map key set derived from configuration; LLM owns provider lookup, App owns command contract. |
 | `RecordingState`, `ProcessResult` | `get_recording_state`, `process_transcript` | Named outputs; ProcessResult is a closed Rust enum and generated TypeScript union. `submit.ts` extracts session/message IDs from that union; no legacy string variant is accepted. |
 | `SessionListResponse`, `SessionResumeResponse`, `Option<SessionResumeResponse>` | `get_sessions`, `get_session_for_resume`, `get_last_conversation` | Typed session projection, serialized at Tauri edge; App owns response mapping. |
+| `SessionLineageResponse` | `get_session_lineage` | Typed parent and direct-child session projection; SessionStore owns lookup and App maps the response at the Tauri edge. |
 | `Settings`, `Vec<StoredPermission>`, `Vec<SessionPermissionGrant>`, `ShellAvailability` | `get_settings`, `list_permissions`, `list_session_permissions`, `check_shell_available` | Named result types; Settings carries broad/open configuration shape but credentials are masked; session grants identify owner, target, and effect. App/Common own config projection and persistence. |
 | `Vec<SkillInfo>`, `SkillExecutionResponse`, `ToolListResponse` | `list_skills`, `execute_skill`, `get_tools` | Fixed envelope; skill/tool execution and schemas may contain dynamic extension fields; Skills/Tools own values, App owns IPC projection. |
 
-`commands/contracts.rs` and `ui/src/lib/contracts/commands.ts` inventory request/response names, while `check-ipc-contracts.ps1` checks registry/handler/docs names and count and selected field/type groups. It does not generically compare all 77 Rust handler return signatures against response labels. The generated `TauriCommandMap` types request/response values at the frontend invoke boundary. Events are a separate 40-channel output path: Rust DTO registration plus App `event_bridge` mapping and TS event mappers are the owners. The mapped event DTOs are the wire contract; `AgentEvent` alone is not.
+`commands/contracts.rs` and `ui/src/lib/contracts/commands.ts` inventory request/response names, while `check-ipc-contracts.ps1` checks registry/handler/docs names and count and selected field/type groups. It does not generically compare all 79 Rust handler return signatures against response labels. The generated `TauriCommandMap` types request/response values at the frontend invoke boundary. Events are a separate 40-channel output path: Rust DTO registration plus App `event_bridge` mapping and TS event mappers are the owners. The mapped event DTOs are the wire contract; `AgentEvent` alone is not.
 
 ## Tauri 事件输出（40 个 channel）
 
@@ -169,6 +170,6 @@ Admin 操作最终由 `TypedToolAdapter` 或 `AdminSurfaces.execute` 序列化�
 
 ## 审计边界
 
-本清单按 crate 根导出、实际生产调用点和已注册 IPC 输出审计；先核实生产消费者，再分类返回值、别名、tuple/map/string/scalar/`Value`，没有把 `rg` 命中当作生产调用证据。已确认的生产输出均有稳定性、消费者、Serde/JSON 位置及 owner。无 crate 外生产消费者的公开 helper、crate-private 实现、测试接口和本地缓存/watch tuple 不作为生产输出；不得据此声称逐字穷举 workspace 所有 Rust `pub fn`。Tauri 71 个命令按静态成功签名分类，contract checker 做全量命令名/计数和部分字段校验；未重放全部运行时分支。LLM provider 内部具体字段仍由 provider adapter 持有，opaque payload 已明确归为 dynamic JSON。
+本清单按 crate 根导出、实际生产调用点和已注册 IPC 输出审计；先核实生产消费者，再分类返回值、别名、tuple/map/string/scalar/`Value`，没有把 `rg` 命中当作生产调用证据。已确认的生产输出均有稳定性、消费者、Serde/JSON 位置及 owner。无 crate 外生产消费者的公开 helper、crate-private 实现、测试接口和本地缓存/watch tuple 不作为生产输出；不得据此声称逐字穷举 workspace 所有 Rust `pub fn`。Tauri 79 个命令按静态成功签名分类，contract checker 做全量命令名/计数和部分字段校验；未重放全部运行时分支。LLM provider 内部具体字段仍由 provider adapter 持有，opaque payload 已明确归为 dynamic JSON。
 
 验收目标是每个有生产消费者的输出都有上述记录，且动态 JSON 明确其生产者、消费方和序列化 owner；不是消灭 `Value`，也不要求把无生产消费的辅助方法收入输出清单。上列 **further review** 项已分类并具名 owner，可作为后续工作独立推进。
