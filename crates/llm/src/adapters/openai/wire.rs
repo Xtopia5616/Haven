@@ -124,8 +124,6 @@ pub(super) struct OpenAiChoice {
 
 #[derive(Debug, Deserialize)]
 pub(super) struct OpenAiMessageOut {
-    #[allow(dead_code)]
-    pub(super) role: Option<String>,
     #[serde(default)]
     pub(super) content: Option<String>,
     #[serde(default)]

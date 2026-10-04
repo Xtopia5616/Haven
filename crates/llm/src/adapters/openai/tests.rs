@@ -53,7 +53,6 @@ async fn health_check_rejects_auth() {
 fn extract_tool_calls_parses_correctly() {
     let choice = OpenAiChoice {
         message: Some(OpenAiMessageOut {
-            role: None,
             content: None,
             tool_calls: Some(vec![OpenAiToolCallOut {
                 id: Some("tc_1".into()),
@@ -86,7 +85,6 @@ fn parse_openai_response_collects_web_search_calls() {
     });
     let choice = OpenAiChoice {
         message: Some(OpenAiMessageOut {
-            role: Some("assistant".into()),
             content: Some("searched".into()),
             tool_calls: None,
             reasoning_content: None,
@@ -1356,14 +1354,12 @@ fn extract_tool_calls_no_message_no_delta() {
 fn stream_content_recovers_long_message_next_to_short_delta() {
     let choice = OpenAiChoice {
         message: Some(OpenAiMessageOut {
-            role: Some("assistant".into()),
             content: Some("我先读取文件".into()),
             tool_calls: None,
             reasoning_content: None,
             web_search_call: Vec::new(),
         }),
         delta: Some(OpenAiMessageOut {
-            role: None,
             content: Some("我先".into()),
             tool_calls: None,
             reasoning_content: None,
@@ -1394,7 +1390,6 @@ fn append_stream_text_converts_cumulative_message_to_delta() {
 fn extract_tool_calls_message_without_tool_calls_field() {
     let choice = OpenAiChoice {
         message: Some(OpenAiMessageOut {
-            role: Some("assistant".into()),
             content: Some("plain text response".into()),
             tool_calls: None,
             reasoning_content: None,
@@ -1412,7 +1407,6 @@ fn extract_tool_calls_empty_name_skipped() {
     let choice = OpenAiChoice {
         message: None,
         delta: Some(OpenAiMessageOut {
-            role: None,
             content: None,
             tool_calls: Some(vec![OpenAiToolCallOut {
                 id: Some("tc1".into()),
@@ -1435,7 +1429,6 @@ fn extract_tool_calls_empty_name_skipped() {
 fn extract_tool_calls_missing_id_defaults_to_empty() {
     let choice = OpenAiChoice {
         message: Some(OpenAiMessageOut {
-            role: None,
             content: None,
             tool_calls: Some(vec![OpenAiToolCallOut {
                 id: None,
@@ -1733,7 +1726,6 @@ fn response_without_usage_keeps_cache_outcome_unknown() {
             OpenAiResponse {
                 choices: vec![OpenAiChoice {
                     message: Some(OpenAiMessageOut {
-                        role: Some("assistant".into()),
                         content: Some("ok".into()),
                         tool_calls: None,
                         reasoning_content: None,
