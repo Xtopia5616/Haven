@@ -456,3 +456,4 @@
 - [0471：分离录音 session ID 与异步转写生命周期](0471-recording-session-id-handoff.md)
 - [0472：收口录音 overlay 状态与交互](0472-recording-overlay-controller.md)
 - [0473：协调 Files rich-path 登记与生成媒体 GC](0473-files-rich-path-generated-media-gc-gate.md)
+- [0474：以架构依赖表校验 Cargo crate 边界](0474-architecture-dependency-inventory-gate.md)

@@ -1,6 +1,6 @@
 # Haven 架构与 crate 职责
 
-> 版本: v1.11 | 日期: 2026-10-04
+> 版本: v1.12 | 日期: 2026-10-05
 > 范围: `crates/` (Rust 后端, Tauri 2)
 > 原则: **依赖单向、叶子优先**。上层 crate 只依赖下层，绝不反向依赖；共享数据与类型放叶子（`haven-common`），
 > 组件职责按「谁拥有实现、谁只消费接口」划分。
@@ -21,9 +21,10 @@ haven-app-binary（组合根 / 宿主边界）
 
 haven-platform ──► haven-common（credential store 端口）
 
-haven-agent ──► haven-tools, haven-memory, haven-llm, haven-common
-haven-tools ──► haven-input, haven-mcp, haven-memory, haven-skills, haven-llm, haven-common, haven-platform
+haven-agent ──► haven-tools, haven-memory, haven-messaging, haven-llm, haven-common
+haven-tools ──► haven-input, haven-mcp, haven-memory, haven-messaging, haven-skills, haven-llm, haven-common, haven-platform
 haven-mcp   ──► haven-llm, haven-common, haven-platform
+haven-messaging ──► haven-common
 haven-input / haven-llm / haven-memory / haven-skills ──► haven-common
 ```
 
@@ -32,16 +33,19 @@ haven-input / haven-llm / haven-memory / haven-skills ──► haven-common
 | crate | 依赖 | 说明 |
 |---|---|---|
 | `haven-common` | 无内部依赖 | 纯叶子，全 workspace 共享 |
-| `haven-platform` | common | CredentialStore 端口与引用校验；Windows 凭据管理器和子进程适配 |
-| `haven-llm` | common | 只依赖共享层，不依赖任何业务 crate |
-| `haven-memory` | common | 持久化（当前 SQLite schema、历史迁移、仓库） |
-| `haven-skills` | common | 技能目录解析 |
-| `haven-mcp` | common, llm, platform | MCP 客户端 / 传输（媒体能力复用 LLM 协议） |
-| `haven-tools` | common, memory, skills, mcp, llm, input, platform | 工具注册表 + 各内置工具 |
-| `haven-input` | common | 录音 / VAD / PCM/WAV 采集（不实现 provider 或转写） |
-| `haven-agent` | common, llm, memory, tools | ReAct 循环 + 会话执行 |
-| `haven-app-binary` | agent, common, input, llm, memory, tools, platform + tauri | 装配 + Tauri 命令 + 事件桥 |
+| `haven-platform` | `haven-common` | CredentialStore 端口与引用校验；Windows 凭据管理器和子进程适配 |
+| `haven-llm` | `haven-common` | 只依赖共享层，不依赖任何业务 crate |
+| `haven-memory` | `haven-common` | 持久化（当前 SQLite schema、历史迁移、仓库） |
+| `haven-skills` | `haven-common` | 技能目录解析 |
+| `haven-messaging` | `haven-common` | 消息服务与 inbox transport |
+| `haven-mcp` | `haven-common`, `haven-llm`, `haven-platform` | MCP 客户端 / 传输（媒体能力复用 LLM 协议） |
+| `haven-input` | `haven-common` | 录音 / VAD / PCM/WAV 采集（不实现 provider 或转写） |
+| `haven-tools` | `haven-common`, `haven-input`, `haven-llm`, `haven-mcp`, `haven-memory`, `haven-messaging`, `haven-platform`, `haven-skills` | 工具注册表 + 各内置工具 |
+| `haven-agent` | `haven-common`, `haven-llm`, `haven-memory`, `haven-messaging`, `haven-tools` | ReAct 循环 + 会话执行 |
+| `haven-app-binary` | `haven-agent`, `haven-common`, `haven-input`, `haven-llm`, `haven-memory`, `haven-platform`, `haven-tools` + tauri | 装配 + Tauri 命令 + 事件桥 |
 
+> 表格是内部 crate 直接依赖的校验基准；`scripts/check-crate-dependencies.ps1` 从此表读取期望边，
+> 并与 Cargo workspace metadata 做精确比对。外部依赖不列入内部边集合。依赖图是该表的概览。
 > 依据 `crates/*/Cargo.toml` 实际 workspace 依赖整理。`haven-agent` 与 `haven-app-binary` 是最上层，
 > 其余全部是它们的底层依赖。`haven-llm` 不允许被业务 crate 反向依赖。
 > 语音转写的运行时调用路径是 app → tools → llm；`haven-input` 只产出采集结果，不直接依赖 `haven-llm`。

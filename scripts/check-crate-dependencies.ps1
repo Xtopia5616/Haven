@@ -1,38 +1,52 @@
 $ErrorActionPreference = 'Stop'
 
-# The architecture document is the authority for this allow-list. Keep this
-# check deliberately small: it protects internal crate direction while Cargo
-# remains the authority for third-party dependency resolution.
-$allowed = @{
-    'haven-common' = @()
-    'haven-platform' = @()
-    'haven-llm' = @('haven-common')
-    'haven-memory' = @('haven-common')
-    'haven-skills' = @('haven-common')
-    'haven-mcp' = @('haven-common', 'haven-platform', 'haven-llm')
-    'haven-tools' = @('haven-common', 'haven-memory', 'haven-skills', 'haven-mcp', 'haven-messaging', 'haven-llm', 'haven-input', 'haven-platform')
-    'haven-input' = @('haven-common', 'haven-llm')
-    'haven-agent' = @('haven-common', 'haven-llm', 'haven-memory', 'haven-tools', 'haven-messaging')
-    'haven-app-binary' = @('haven-common', 'haven-llm', 'haven-memory', 'haven-skills', 'haven-mcp', 'haven-tools', 'haven-input', 'haven-agent')
-}
-
 $metadata = cargo metadata --format-version 1 --no-deps --locked | ConvertFrom-Json
 # Resolve package names from Cargo metadata so external crates with similar
 # names cannot be mistaken for internal dependency edges.
 $workspace = @($metadata.packages | ForEach-Object { $_.name })
+$architecturePath = Join-Path $PSScriptRoot '..\docs\architecture.md'
+$dependencyPattern = 'haven-[a-z0-9-]+'
+$expected = @{}
 
-foreach ($package in $metadata.packages) {
-    if (-not $allowed.ContainsKey($package.name)) {
+# The architecture table is the single expected inventory. Checking exact sets
+# catches both undocumented Cargo edges and stale dependencies left in docs.
+foreach ($line in Get-Content $architecturePath) {
+    $match = [regex]::Match(
+        $line,
+        '^\|\s*`(?<crate>haven-[a-z0-9-]+)`\s*\|\s*(?<dependencies>[^|]*)\|'
+    )
+    if (-not $match.Success) {
         continue
     }
+
+    $crate = $match.Groups['crate'].Value
+    if ($expected.ContainsKey($crate)) {
+        throw "Duplicate dependency inventory row for $crate in $architecturePath"
+    }
+    $expected[$crate] = @(
+        [regex]::Matches($match.Groups['dependencies'].Value, $dependencyPattern) |
+            ForEach-Object { $_.Value } |
+            Sort-Object -Unique
+    )
+}
+
+$missingRows = @($workspace | Where-Object { -not $expected.ContainsKey($_) })
+$staleRows = @($expected.Keys | Where-Object { $workspace -notcontains $_ })
+if ($missingRows.Count -gt 0 -or $staleRows.Count -gt 0) {
+    throw "Architecture dependency table package rows differ from Cargo workspace; missing rows: $($missingRows -join ', '); stale rows: $($staleRows -join ', ')"
+}
+
+foreach ($package in $metadata.packages) {
     $actual = @($package.dependencies |
         Where-Object { $_.kind -ne 'dev' -and $workspace -contains $_.name } |
         ForEach-Object { $_.name } |
         Sort-Object -Unique)
-    $invalid = @($actual | Where-Object { $allowed[$package.name] -notcontains $_ })
-    if ($invalid.Count -gt 0) {
-        throw "$($package.name) has forbidden internal dependencies: $($invalid -join ', ')"
+    $documented = @($expected[$package.name])
+    $undocumented = @($actual | Where-Object { $documented -notcontains $_ })
+    $stale = @($documented | Where-Object { $actual -notcontains $_ })
+    if ($undocumented.Count -gt 0 -or $stale.Count -gt 0) {
+        throw "$($package.name) dependency inventory differs from Cargo; missing from architecture table: $($undocumented -join ', '); stale in architecture table: $($stale -join ', ')"
     }
 }
 
-Write-Host 'Internal crate dependency direction verified.'
+Write-Host 'Internal crate dependency inventory matches Cargo metadata.'

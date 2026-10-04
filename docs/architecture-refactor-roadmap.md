@@ -1,6 +1,6 @@
 # Haven 架构降复杂度重构路线图
 
-> 状态：阶段 0–8 已完成；媒体 lifecycle、录音生命周期和 Files rich-path/GC 切片已完成；下一结构切片按 §5.5 对剩余候选做证据复核后选定；Windows 发布验收为独立开放签核门
+> 状态：阶段 0–8 已完成；媒体 lifecycle、录音生命周期和 Files rich-path/GC 切片已完成；依赖清单单源校验已完成；当前无合格的结构代码切片；Windows 发布验收为独立开放签核门
 > 更新日期：2026-10-05
 > 范围：Agent/Session、Memory、Tools、LLM、App IPC 与 UI
 
@@ -102,7 +102,7 @@ ADR 0424 已于 2026-10-04 采纳，确定 session、scheduled 和 UI 直调确�
 
 **退出条件：** request ID 不跨 owner 扫描/fallback；错误 owner/context 不能消费请求或触发副作用；点击与到期竞争最多接受一个终态；所有 pending confirmation 有 owner 管理的有效绝对期限；renderer 关闭、迟到点击、可重试持久化失败和 continuation 执行失败均有明确结果；Session append 失败不改变 actor；session 重启只从 `session_events` 恢复，UI/scheduled 请求不自动重放。运行时 DTO 与 UI/IPC 类型保持一致；旧 route、期限入口和测试分支删除。此方案不改 durable session payload 或 schema，无需重置；验证与切片细节见 ADR 0424/0423。
 
-### 5.3 内部模块边界整理（Next review / 模块整理与媒体、录音生命周期修复持续推进）
+### 5.3 内部模块边界整理（持续按证据复核 / 当前无 Active 代码切片）
 
 这不是 crate 拆分目标，按职责和稳定 owner 选择可证明有益的内部边界。首个边界已完成：`SessionStore` 的只读历史查询与 DTO 已收入私有 `session_history` 模块，公开 façade、SQL owner、查询过滤/排序/缓存和序列化保持不变。聚合 event stream 与多个投影的 `session_resume_projection` 继续留在事务协调 owner。实现约束和回滚见 [ADR 0466](adr/0466-session-history-read-facade-module.md)。第二个边界已完成：Provider schema projection 归入 adapter 私有 helper，通用 schema sanitizer 和 canonical JSON 留在 `types.rs`；实现约束与验证见 [ADR 0467](adr/0467-llm-tool-schema-projection-module.md)。第三个边界已完成：`MemoryMaintenancePass` 只借用已有 store、inference、semaphore、MemoryService；周期 schedule、worker facade 与 durable outbox lifecycle 留在原 owner；步骤、取消和失败语义不变，细节与验证见 [ADR 0468](adr/0468-memory-worker-maintenance-pass-module.md)。
 
@@ -115,9 +115,9 @@ ADR 0424 收口后，按证据逐个评估以下候选；同一时刻只推进�
 5. **录音 session ID 的 stop/cancel 交接（已完成，2026-10-05；ADR 0471）。** App voice command 与 Shell handler 共用生命周期 owner；停止或取消时在下一次 start 前分离本次 ID，并显式传入 finalizer。Timed `media.record` 不创建 App voice ID，voice 命令不接管工具采集。owner handoff 与并发 stop 单次 detach 回归测试及 Rust/UI/IPC 全门禁通过。
 6. **Shell 录音 overlay controller（已完成，2026-10-05；ADR 0472）。** 将 overlay store、计时器、乐观 toolbar start/stop 和 cancel 收口到唯一 controller；`+layout` 仍拥有全局 listener、通知和 voice transcript submission，输入组件只请求 toggle。旧 `rec-*` 生命周期事件不能更改新 overlay；旧转写文本仍按原 session 提交。VAD 因 payload 没有 session ID 仍按当前 recording 状态门控。Rust/UI/IPC 全门禁通过。
 7. **Files rich-path 登记与 generated-media GC 互斥（已完成，2026-10-05；ADR 0473）。** canonicalize 解析输入及 reparse/junction 别名；仅当 canonical parent 是 generated-media 根目录时，registry shared permit 才覆盖 metadata、revalidation 和 lease/TTL 登记，不锁普通外部路径，也不跨入 MediaTool/模型处理。GC-first 时 handoff 等待、文件删除后失败且不遗留 lease；handoff-first 时 cleaner 等待并看见租约后保留文件。另有外部路径不等待 gate 的回归。Rust workspace test 和严格 Clippy 通过。
-8. **Next review：复核 §5.3–§5.4 其余候选。** 按 §5.5 汇总依赖图、职责变化历史与可复现 bug/profile 证据，先复核 crate 边界和已列热点；只选一个满足准入门槛的结构切片作为后续 Active。若没有证据，记录“暂无合格候选”并暂停结构性代码改动，避免为长期路线图强行制造拆分任务。SessionStore 写侧继续受事务/回滚不变量约束，只有找到可证明保持原子性的窄边界才重新评估。
+8. **候选审查与依赖清单一致性门禁（已完成，2026-10-05；当前无 Active 代码切片）。** 依据 §5.5 审查 Common/Tools crate 边界、SessionStore 写侧和已列热点；没有新的依赖边、重复 owner、反复回归或性能证据支持继续拆分。审查发现架构表漏列 Agent/Tools 到 Messaging 的实际依赖，旧检查脚本又允许 App 到 Skills/MCP 的不存在边；现已让脚本直接读取架构表并与 Cargo metadata 精确比对，修正结果与停止条件见 [ADR 0474](adr/0474-architecture-dependency-inventory-gate.md)。SessionStore 写侧继续受事务/回滚不变量约束；安全矩阵因生产权限提示也依赖它，保留为运行时 owner。
 
-上述完成项是历史结果，Active 只表示当前可执行的一片。其后的候选仍须经过只读审计和准入条件复核；若实际代码已收敛、owner 更清楚或职责无法独立验收，就标记为不需要拆分。`+page.svelte` 已有多个 chat/session/model/ask/view controller；`SettingsView.svelte` 必须持有完整 Settings snapshot、dirty baseline 与 leave guard；`admin.rs` 五个 surface 共用一份能力/schema/request 桥接契约。这些文件不因行数单独拆分。
+上述完成项是历史结果，Active 只表示当前可执行的一片。最新候选审查确认：Common 拆分维持 ADR 0359 的暂缓决定；Tools 拆分缺少独立依赖边界和消费者收益；SessionStore 的 append、projection 与 rollback 必须保持同事务 owner；`LOCAL_TOOL_SECURITY_MATRIX` 仍被生产权限提示路径用作 operation 名白名单，因此保留在 `security.rs`；`+page.svelte`、`SettingsView.svelte`、`admin.rs`、`llm/router.rs` 与 `inbox.rs` 暂无重复 owner 或边界反复导致回归的证据。只有新 bug、职责变更 churn、依赖边或可复现 profile 信号出现时再复核，不因文件/crate 大而排期拆分。
 
 事件存储与 transcript projection 的内部拆分属于暂缓的高风险候选：只读历史 façade 已拆，但在写侧仍有可量化维护收益之前不启动。`SessionStore` 必须继续作为 append、物化投影和 rollback 的事务协调 owner：事件与 projection 原子提交，rollback 同时维护 `event_cursor` 和 `last_msg_at`，提交成功后才发布事件。若拆分要求上层分别写 event/projection、暴露事务细节或引入第二个恢复来源，应停止。
 
@@ -132,6 +132,8 @@ ADR 0424 收口后，按证据逐个评估以下候选；同一时刻只推进�
 长期结构治理按“有证据的问题队列”推进，不预设日期或全仓重写目标。候选只有在出现下列至少一项时才进入审查：同一业务状态被两个 owner 维护、调用链反复跨不稳定边界、重复分支已导致 bug/回归、某热点在多个变更中频繁发生跨职责修改、依赖图暴露反向/多余依赖，或同负载 profile 显示可复现的资源/延迟问题。文件超过约 800 行或多于两个独立职责只触发复核，不单独证明要拆。
 
 每个候选的短 ADR/评估要记录：现有 owner 与不变量、生产代码和测试的职责分布、调用/依赖边界、预期收益及观察方式、破坏面和停止条件、适用门禁、回滚方式。实施顺序固定为：证据确认 → 接受目标与切片 → 迁一条垂直调用链 → 删除旧入口 → 跑影响面门禁 → 对比 owner/依赖/性能指标 → 独立提交并更新状态。若只移动代码、扩大公共 API、暴露事务内部、增加第二权威来源，或验证不能证明维护/运行收益，立即停止并把候选记为“不需拆分/暂缓”。
+
+长期执行按触发信号驱动而不按日历制造工作，优先级为数据/安全/生命周期不变量故障、重复跨 owner 回归或修改耦合、依赖/API 边界问题、最后才是有同负载证据的性能优化；行数和 crate 大小不计为准入分。仓库较大时可并行委派只读审计（例如依赖图、热点职责、事务/安全不变量），但审计结论须由主执行者回到源码与门禁核验，任何时刻只实现一个 Active 切片。审查没有合格候选时，保留“无 Active 切片”状态并等待新证据，再继续同一套复核流程。
 
 ## 6. 更新规则
 
