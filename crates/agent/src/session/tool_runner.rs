@@ -40,6 +40,22 @@ fn interaction_owner_matches_request(
     }
 }
 
+fn scheduled_request_matches_route(
+    request: &crate::interaction::InteractionRequest,
+    action_id: &str,
+    request_id: &haven_common::types::ConfirmId,
+) -> bool {
+    request.id == request_id.as_str()
+        && request.status == crate::interaction::InteractionStatus::Pending
+        && matches!(
+            &request.details,
+            crate::interaction::InteractionDetails::ScheduledConfirm {
+                action_id: request_action_id,
+                ..
+            } if request_action_id == action_id
+        )
+}
+
 /// The tool may already have produced an external side effect when its final
 /// action-step projection fails. Callers must surface this as an unknown
 /// outcome, never as an ordinary retryable failure.
@@ -1018,9 +1034,9 @@ impl SessionSupervisor {
 
     /// Queue a scheduled-tool confirmation without blocking the fired-action
     /// consumer (R2). Stores the canonical interaction request and emits it
-    /// through the supervisor event stream; a
-    /// later [`Self::resolve_confirmation`] (or the timeout task) executes or
-    /// skips. Returns `None` when no confirm channel is wired (fail closed).
+    /// through the supervisor event stream; a later owner-routed resolve or
+    /// expiry executes or skips the action. Returns `None` when the action
+    /// already owns a pending confirmation (fail closed).
     pub async fn request_scheduled_confirm(
         self: &Arc<Self>,
         action_id: &str,
@@ -1041,11 +1057,19 @@ impl SessionSupervisor {
         );
         let expiry_delay = confirmation_expiry_delay(request.expires_at.as_deref())
             .unwrap_or(SCHEDULED_CONFIRM_ABSOLUTE_TIMEOUT);
-        self.scheduled_confirms.lock().await.push(request.clone());
+        let action_id = action_id.to_string();
+        {
+            let mut scheduled_confirms = self.scheduled_confirms.lock().await;
+            if scheduled_confirms.contains_key(&action_id) {
+                tracing::warn!(%action_id, "scheduled action already owns a pending confirmation");
+                return None;
+            }
+            scheduled_confirms.insert(action_id.clone(), request.clone());
+        }
         self.emit_event(SessionEvent::InteractionRequested {
             envelope: Box::new(crate::interaction::InteractionEnvelope {
                 owner: crate::interaction::InteractionOwner::ScheduledAction {
-                    action_id: action_id.to_string(),
+                    action_id: action_id.clone(),
                 },
                 request,
             }),
@@ -1058,83 +1082,35 @@ impl SessionSupervisor {
         tokio::spawn(async move {
             tokio::time::sleep(expiry_delay).await;
             if executor
-                .scheduled_confirms
-                .lock()
+                .scheduled_confirmation_request(&action_id, &timeout_id)
                 .await
-                .iter()
-                .any(|request| request.id == timeout_id.as_str())
+                .is_some()
             {
                 tracing::warn!(
-                    "scheduled confirmation {} timed out after {:?}; treating as rejected",
-                    timeout_id,
+                    action_id,
+                    request_id = %timeout_id,
+                    "scheduled confirmation timed out after {:?}; treating as rejected",
                     expiry_delay
                 );
-                let _ = executor.expire_confirmation(&timeout_id).await;
+                let _ = executor
+                    .expire_scheduled_confirmation(&action_id, &timeout_id)
+                    .await;
             }
         });
         Some(step_id)
     }
 
-    /// The app layer uses this read-only lookup to validate a requested grant
-    /// target before it wakes the gated operation. The renderer may choose a
-    /// target category, but it must be checked against the pending request's
-    /// actual capability first.
-    pub async fn pending_confirmation_capability(
+    pub(super) async fn scheduled_confirmation_request(
         &self,
-        step_id: &haven_common::types::ConfirmId,
-    ) -> Option<haven_common::types::CapabilityScope> {
-        if let Some(request) = self
-            .scheduled_confirms
+        action_id: &str,
+        request_id: &haven_common::types::ConfirmId,
+    ) -> Option<crate::interaction::InteractionRequest> {
+        self.scheduled_confirms
             .lock()
             .await
-            .iter()
-            .find(|request| request.id == step_id.as_str())
-            && let crate::interaction::InteractionDetails::ScheduledConfirm { receipt, .. } =
-                &request.details
-        {
-            return Some(receipt.capability.clone());
-        }
-
-        let actors = self
-            .actors
-            .lock()
-            .await
-            .values()
+            .get(action_id)
+            .filter(|request| scheduled_request_matches_route(request, action_id, request_id))
             .cloned()
-            .collect::<Vec<_>>();
-        for actor in actors {
-            let Some(request) = actor
-                .interactions(None, false)
-                .await
-                .into_iter()
-                .find(|request| request.id == step_id.as_str())
-            else {
-                continue;
-            };
-            let crate::interaction::InteractionDetails::Confirm {
-                receipt,
-                tool_name,
-                tool_input,
-                ..
-            } = &request.details
-            else {
-                continue;
-            };
-            let Some(session_id) = request.session_id.as_deref() else {
-                continue;
-            };
-            if let Some(receipt) = receipt {
-                return Some(receipt.capability.clone());
-            }
-            return Some(
-                self.tool_authorization
-                    .authorization_request(Some(session_id), tool_name, tool_input)
-                    .await
-                    .policy
-                    .capability,
-            );
-        }
-        None
     }
 
     pub async fn pending_confirmation_capability_for_owner(
@@ -1142,7 +1118,17 @@ impl SessionSupervisor {
         owner: &crate::interaction::InteractionOwner,
         request_id: &haven_common::types::ConfirmId,
     ) -> Option<haven_common::types::CapabilityScope> {
-        let request = self.pending_confirmation_request(request_id).await?;
+        let request = match owner {
+            crate::interaction::InteractionOwner::ScheduledAction { action_id } => {
+                self.scheduled_confirmation_request(action_id, request_id)
+                    .await?
+            }
+            crate::interaction::InteractionOwner::AppCommand => return None,
+            crate::interaction::InteractionOwner::Session { .. } => {
+                self.pending_session_confirmation_request(request_id)
+                    .await?
+            }
+        };
         if !interaction_owner_matches_request(owner, &request) {
             return None;
         }
@@ -1173,17 +1159,10 @@ impl SessionSupervisor {
         }
     }
 
-    pub(super) async fn pending_confirmation_request(
+    pub(super) async fn pending_session_confirmation_request(
         &self,
         step_id: &haven_common::types::ConfirmId,
     ) -> Option<crate::interaction::InteractionRequest> {
-        if let Some(request) = self.scheduled_confirms.lock().await.iter().find(|request| {
-            request.id == step_id.as_str()
-                && request.status == crate::interaction::InteractionStatus::Pending
-        }) {
-            return Some(request.clone());
-        }
-
         let actors = self
             .actors
             .lock()
@@ -1207,18 +1186,9 @@ impl SessionSupervisor {
     /// Persist an explicit session grant before resolving a pending
     /// confirmation. Resolving the interaction can wake a paused ReAct actor
     /// (or spawn a scheduled operation), so the durable decision must exist
-    /// before that wake edge. UI-only confirmations are handled by the app
-    /// command because their typed action payload is app-owned.
-    pub async fn resolve_confirmation_with_session_grant(
-        self: &Arc<Self>,
-        step_id: &haven_common::types::ConfirmId,
-        target: haven_common::types::PermissionTarget,
-        effect: haven_common::types::PermissionEffect,
-    ) -> anyhow::Result<Option<crate::session::ConfirmResolution>> {
-        self.resolve_confirmation_with_session_grant_inner(step_id, target, effect, None)
-            .await
-    }
-
+    /// before that wake edge. The owner route selects either the session actor
+    /// or the scheduled-action registry; UI-only confirmations are handled by
+    /// the app command because their typed action payload is app-owned.
     pub async fn resolve_confirmation_with_session_grant_for_owner(
         self: &Arc<Self>,
         owner: &crate::interaction::InteractionOwner,
@@ -1226,24 +1196,40 @@ impl SessionSupervisor {
         target: haven_common::types::PermissionTarget,
         effect: haven_common::types::PermissionEffect,
     ) -> anyhow::Result<Option<crate::session::ConfirmResolution>> {
-        self.resolve_confirmation_with_session_grant_inner(request_id, target, effect, Some(owner))
+        self.resolve_confirmation_with_session_grant_inner(owner, request_id, target, effect)
             .await
     }
 
     async fn resolve_confirmation_with_session_grant_inner(
         self: &Arc<Self>,
+        expected_owner: &crate::interaction::InteractionOwner,
         step_id: &haven_common::types::ConfirmId,
         target: haven_common::types::PermissionTarget,
         effect: haven_common::types::PermissionEffect,
-        expected_owner: Option<&crate::interaction::InteractionOwner>,
     ) -> anyhow::Result<Option<crate::session::ConfirmResolution>> {
         let _resolution = self.confirmation_resolution_gate.lock().await;
-        let Some(request) = self.pending_confirmation_request(step_id).await else {
+        let request = match expected_owner {
+            crate::interaction::InteractionOwner::ScheduledAction { action_id } => {
+                self.scheduled_confirmation_request(action_id, step_id)
+                    .await
+            }
+            crate::interaction::InteractionOwner::AppCommand => None,
+            crate::interaction::InteractionOwner::Session { .. } => {
+                self.pending_session_confirmation_request(step_id).await
+            }
+        };
+        let Some(request) = request else {
             return Ok(None);
         };
-        if expected_owner.is_some_and(|owner| !interaction_owner_matches_request(owner, &request)) {
+        if !interaction_owner_matches_request(expected_owner, &request) {
             return Ok(None);
         }
+        let scheduled_action_id = match &request.details {
+            crate::interaction::InteractionDetails::ScheduledConfirm { action_id, .. } => {
+                Some(action_id.clone())
+            }
+            _ => None,
+        };
 
         let (tool_name, tool_input, receipt) = match &request.details {
             crate::interaction::InteractionDetails::Confirm {
@@ -1291,37 +1277,27 @@ impl SessionSupervisor {
                 // A stale approval must not leave its session paused forever.
                 // Consume the request as a denial (without installing a grant)
                 // before returning the validation error to the renderer.
-                self.resolve_confirmation_locked(step_id, false, true)
-                    .await?;
+                if let Some(action_id) = &scheduled_action_id {
+                    self.resolve_scheduled_confirmation_locked(action_id, step_id, false, true)
+                        .await?;
+                } else {
+                    self.resolve_confirmation_locked(step_id, false, true)
+                        .await?;
+                }
                 anyhow::bail!("confirmation request can no longer be executed: {reason}");
             }
         }
         self.grant_session_permission(session_id, key, target, effect)
             .await?;
 
-        self.resolve_confirmation_locked(
-            step_id,
-            matches!(effect, haven_common::types::PermissionEffect::Allow),
-            false,
-        )
-        .await
-    }
-
-    /// Resolve a pending safety-gateway confirmation and return enough context
-    /// for the app layer to persist an Always grant. Session grants use
-    /// [`Self::resolve_confirmation_with_session_grant`] so they commit before
-    /// resolving can wake the operation.
-    ///
-    /// Handles (1) scheduled-tool pending (R2 — execute/skip asynchronously)
-    /// and (2) ReAct pause-confirm. An unknown id is stale.
-    pub async fn resolve_confirmation(
-        self: &Arc<Self>,
-        step_id: &haven_common::types::ConfirmId,
-        confirmed: bool,
-    ) -> anyhow::Result<Option<crate::session::ConfirmResolution>> {
-        let _resolution = self.confirmation_resolution_gate.lock().await;
-        self.resolve_confirmation_locked(step_id, confirmed, false)
-            .await
+        let confirmed = matches!(effect, haven_common::types::PermissionEffect::Allow);
+        if let Some(action_id) = scheduled_action_id {
+            self.resolve_scheduled_confirmation_locked(&action_id, step_id, confirmed, false)
+                .await
+        } else {
+            self.resolve_confirmation_locked(step_id, confirmed, false)
+                .await
+        }
     }
 
     pub async fn resolve_confirmation_for_owner(
@@ -1332,25 +1308,36 @@ impl SessionSupervisor {
         timed_out: bool,
     ) -> anyhow::Result<Option<crate::session::ConfirmResolution>> {
         let _resolution = self.confirmation_resolution_gate.lock().await;
-        let Some(request) = self.pending_confirmation_request(request_id).await else {
-            return Ok(None);
-        };
-        if !interaction_owner_matches_request(owner, &request) {
-            return Ok(None);
+        match owner {
+            crate::interaction::InteractionOwner::ScheduledAction { action_id } => {
+                self.resolve_scheduled_confirmation_locked(
+                    action_id, request_id, confirmed, timed_out,
+                )
+                .await
+            }
+            crate::interaction::InteractionOwner::AppCommand => Ok(None),
+            crate::interaction::InteractionOwner::Session { .. } => {
+                let Some(request) = self.pending_session_confirmation_request(request_id).await
+                else {
+                    return Ok(None);
+                };
+                if !interaction_owner_matches_request(owner, &request) {
+                    return Ok(None);
+                }
+                self.resolve_confirmation_locked(request_id, confirmed, timed_out)
+                    .await
+            }
         }
-        self.resolve_confirmation_locked(request_id, confirmed, timed_out)
-            .await
     }
 
-    /// Expire a pending approval and resume its owner with an explicit
-    /// non-execution result. Timeout is a distinct terminal interaction state
-    /// so the agent does not mistake it for a deliberate user rejection.
-    pub async fn expire_confirmation(
+    pub async fn expire_scheduled_confirmation(
         self: &Arc<Self>,
-        step_id: &haven_common::types::ConfirmId,
+        action_id: &str,
+        request_id: &haven_common::types::ConfirmId,
     ) -> anyhow::Result<Option<crate::session::ConfirmResolution>> {
         let _resolution = self.confirmation_resolution_gate.lock().await;
-        self.resolve_confirmation_locked(step_id, false, true).await
+        self.resolve_scheduled_confirmation_locked(action_id, request_id, false, true)
+            .await
     }
 
     async fn resolve_confirmation_locked(
@@ -1359,49 +1346,6 @@ impl SessionSupervisor {
         confirmed: bool,
         timed_out: bool,
     ) -> anyhow::Result<Option<crate::session::ConfirmResolution>> {
-        // Scheduled tool path: non-blocking request → resolve later.
-        let scheduled = {
-            let mut entries = self.scheduled_confirms.lock().await;
-            entries
-                .iter()
-                .position(|request| request.id == step_id.as_str())
-                .map(|index| entries.remove(index))
-        };
-        if let Some(mut request) = scheduled {
-            let (action_id, tool_name, tool_input) = match &request.details {
-                crate::interaction::InteractionDetails::ScheduledConfirm {
-                    action_id,
-                    tool_name,
-                    tool_input,
-                    ..
-                } => (action_id.clone(), tool_name.clone(), tool_input.clone()),
-                _ => return Ok(None),
-            };
-            let session_id = request.session_id.clone();
-            if timed_out {
-                let _ = request.expire();
-            } else {
-                let _ = request.resolve(Value::Bool(confirmed));
-            }
-            self.emit_event(crate::session::SessionEvent::InteractionRequested {
-                envelope: Box::new(crate::interaction::InteractionEnvelope {
-                    owner: crate::interaction::InteractionOwner::ScheduledAction { action_id },
-                    request: request.clone(),
-                }),
-            });
-            let resolution = crate::session::ConfirmResolution {
-                session_id,
-                tool_name,
-                tool_input,
-            };
-            let executor = Arc::clone(self);
-            tokio::spawn(async move {
-                executor
-                    .finish_scheduled_confirm(request, confirmed, timed_out)
-                    .await;
-            });
-            return Ok(Some(resolution));
-        }
         // Phase 5 / E3: pause-based confirm — record decision and wake when
         // every pending gated tool in the batch has been answered.
         if let Some(request) = self
@@ -1423,6 +1367,64 @@ impl SessionSupervisor {
             }));
         }
         Ok(None)
+    }
+
+    async fn resolve_scheduled_confirmation_locked(
+        self: &Arc<Self>,
+        action_id: &str,
+        request_id: &haven_common::types::ConfirmId,
+        confirmed: bool,
+        timed_out: bool,
+    ) -> anyhow::Result<Option<crate::session::ConfirmResolution>> {
+        let Some(mut request) = ({
+            let mut scheduled_confirms = self.scheduled_confirms.lock().await;
+            if !scheduled_confirms.get(action_id).is_some_and(|request| {
+                scheduled_request_matches_route(request, action_id, request_id)
+            }) {
+                return Ok(None);
+            }
+            scheduled_confirms.remove(action_id)
+        }) else {
+            return Ok(None);
+        };
+        let (request_action_id, tool_name, tool_input) = match &request.details {
+            crate::interaction::InteractionDetails::ScheduledConfirm {
+                action_id,
+                tool_name,
+                tool_input,
+                ..
+            } => (action_id.clone(), tool_name.clone(), tool_input.clone()),
+            _ => return Ok(None),
+        };
+        if request_action_id != action_id {
+            return Ok(None);
+        }
+        let session_id = request.session_id.clone();
+        if timed_out {
+            let _ = request.expire();
+        } else {
+            let _ = request.resolve(Value::Bool(confirmed));
+        }
+        self.emit_event(crate::session::SessionEvent::InteractionRequested {
+            envelope: Box::new(crate::interaction::InteractionEnvelope {
+                owner: crate::interaction::InteractionOwner::ScheduledAction {
+                    action_id: action_id.to_string(),
+                },
+                request: request.clone(),
+            }),
+        });
+        let resolution = crate::session::ConfirmResolution {
+            session_id,
+            tool_name,
+            tool_input,
+        };
+        let executor = Arc::clone(self);
+        tokio::spawn(async move {
+            executor
+                .finish_scheduled_confirm(request, confirmed, timed_out)
+                .await;
+        });
+        Ok(Some(resolution))
     }
 
     async fn finish_scheduled_confirm(
@@ -1791,10 +1793,51 @@ mod scheduled_authorization_tests {
             )
             .await
             .unwrap();
+        let owner = crate::interaction::InteractionOwner::ScheduledAction {
+            action_id: "act-00000000000000000000000000000001".into(),
+        };
+        let wrong_owner = crate::interaction::InteractionOwner::ScheduledAction {
+            action_id: "act-00000000000000000000000000000002".into(),
+        };
+        assert!(
+            supervisor
+                .resolve_confirmation_for_owner(&wrong_owner, &confirmation_id, true, false)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            supervisor
+                .scheduled_confirmation_request(
+                    "act-00000000000000000000000000000001",
+                    &confirmation_id,
+                )
+                .await
+                .is_some()
+        );
+        let wrong_request_id: haven_common::types::ConfirmId =
+            haven_common::types::new_id("conf").into();
+        assert!(
+            supervisor
+                .resolve_confirmation_for_owner(&owner, &wrong_request_id, true, false)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            supervisor
+                .scheduled_confirmation_request(
+                    "act-00000000000000000000000000000001",
+                    &confirmation_id,
+                )
+                .await
+                .is_some()
+        );
 
         assert!(
             supervisor
-                .resolve_confirmation_with_session_grant(
+                .resolve_confirmation_with_session_grant_for_owner(
+                    &owner,
                     &confirmation_id,
                     haven_common::types::PermissionTarget::Operation,
                     PermissionEffect::Allow,
@@ -1811,6 +1854,73 @@ mod scheduled_authorization_tests {
         })
         .await
         .expect("scheduled tool should observe its durable grant before execution");
+    }
+
+    #[tokio::test]
+    async fn scheduled_resolve_and_expiry_share_a_single_terminal_claim() {
+        let (supervisor, _tools, _database, _directory) = test_supervisor();
+        let action_id = "act-00000000000000000000000000000003";
+        let confirmation_id: haven_common::types::ConfirmId =
+            haven_common::types::new_id("conf").into();
+        supervisor
+            .request_scheduled_confirm(
+                action_id,
+                None,
+                "files.write",
+                json!({"path": "notes.txt"}),
+                haven_tools::ConfirmationReceipt {
+                    confirmation_id: confirmation_id.clone(),
+                    capability: haven_common::types::CapabilityScope::try_new("files.write")
+                        .unwrap(),
+                    canonical_input_hash: String::new(),
+                    effective_risk: RiskLevel::High,
+                    policy_revision: 0,
+                    expires_at: u64::MAX,
+                },
+                "scheduled confirmation",
+            )
+            .await
+            .unwrap();
+        let owner = crate::interaction::InteractionOwner::ScheduledAction {
+            action_id: action_id.into(),
+        };
+
+        let resolve_supervisor = supervisor.clone();
+        let resolve_owner = owner.clone();
+        let resolve_id = confirmation_id.clone();
+        let resolve = tokio::spawn(async move {
+            resolve_supervisor
+                .resolve_confirmation_for_owner(&resolve_owner, &resolve_id, true, false)
+                .await
+                .unwrap()
+        });
+        let expiry_supervisor = supervisor.clone();
+        let expiry_id = confirmation_id.clone();
+        let expiry = tokio::spawn(async move {
+            expiry_supervisor
+                .expire_scheduled_confirmation(action_id, &expiry_id)
+                .await
+                .unwrap()
+        });
+
+        let outcomes = [resolve.await.unwrap(), expiry.await.unwrap()];
+        assert_eq!(
+            outcomes.iter().filter(|outcome| outcome.is_some()).count(),
+            1
+        );
+        assert!(
+            supervisor
+                .scheduled_confirmation_request(action_id, &confirmation_id)
+                .await
+                .is_none()
+        );
+        assert!(
+            supervisor
+                .resolve_confirmation_for_owner(&owner, &confirmation_id, true, false)
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -1848,12 +1958,17 @@ mod scheduled_authorization_tests {
         // inspect or persist it.
         let gate = supervisor.confirmation_resolution_gate.clone();
         let held_gate = gate.lock().await;
+        let owner = crate::interaction::InteractionOwner::ScheduledAction {
+            action_id: "act-00000000000000000000000000000002".into(),
+        };
         let once_supervisor = supervisor.clone();
         let once_id = confirmation_id.clone();
         let (once_started_tx, once_started_rx) = tokio::sync::oneshot::channel();
         let once = tokio::spawn(async move {
             let _ = once_started_tx.send(());
-            once_supervisor.resolve_confirmation(&once_id, false).await
+            once_supervisor
+                .resolve_confirmation_for_owner(&owner, &once_id, false, false)
+                .await
         });
         once_started_rx.await.unwrap();
 
@@ -1863,7 +1978,10 @@ mod scheduled_authorization_tests {
         let session_grant = tokio::spawn(async move {
             let _ = session_started_tx.send(());
             session_supervisor
-                .resolve_confirmation_with_session_grant(
+                .resolve_confirmation_with_session_grant_for_owner(
+                    &crate::interaction::InteractionOwner::ScheduledAction {
+                        action_id: "act-00000000000000000000000000000002".into(),
+                    },
                     &session_id_for_call,
                     haven_common::types::PermissionTarget::Operation,
                     PermissionEffect::Allow,

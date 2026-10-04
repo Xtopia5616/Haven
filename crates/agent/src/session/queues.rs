@@ -241,17 +241,18 @@ impl SessionSupervisor {
         else {
             return;
         };
+        let Some(session_id) = request.session_id.clone() else {
+            tracing::error!(request_id = %request.id, "session confirmation has no owner session id");
+            return;
+        };
         let executor = Arc::clone(self);
         let timeout_id: haven_common::types::ConfirmId = request.id.clone().into();
+        let owner = crate::interaction::InteractionOwner::Session { session_id };
         tokio::spawn(async move {
             tokio::time::sleep(delay).await;
-            if executor
-                .pending_confirmation_request(&timeout_id)
-                .await
-                .is_some()
-            {
-                let _ = executor.expire_confirmation(&timeout_id).await;
-            }
+            let _ = executor
+                .resolve_confirmation_for_owner(&owner, &timeout_id, false, true)
+                .await;
         });
     }
 

@@ -246,8 +246,9 @@ pub struct SessionSupervisor {
     /// notification, no polling fallback).
     dispatch_tx: watch::Sender<u64>,
     /// Scheduled confirmations are not session state (some are headless), so
-    /// they use a small owner-local list rather than another session map.
-    scheduled_confirms: Arc<Mutex<Vec<InteractionRequest>>>,
+    /// they live in an owner-local registry keyed by action ID. Resolve and
+    /// expiry must also match the confirmation request ID stored in the entry.
+    scheduled_confirms: Arc<Mutex<HashMap<String, InteractionRequest>>>,
     /// Serializes one-shot, permanent, and session-scoped resolution paths so
     /// a stale concurrent click cannot commit trust after another decision
     /// already removed and woke the pending confirmation.
@@ -317,7 +318,7 @@ impl SessionSupervisor {
             dispatcher_started: std::sync::atomic::AtomicBool::new(false),
             pending_queue: Arc::new(Mutex::new(VecDeque::new())),
             dispatch_tx: watch::channel(0).0,
-            scheduled_confirms: Arc::new(Mutex::new(Vec::new())),
+            scheduled_confirms: Arc::new(Mutex::new(HashMap::new())),
             confirmation_resolution_gate: Arc::new(Mutex::new(())),
             event_tx,
             message_tx: watch::channel(0).0,

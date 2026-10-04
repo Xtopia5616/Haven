@@ -86,7 +86,7 @@
 
 ### 5.2 交互生命周期所有权（Active / Accepted）
 
-ADR 0424 已于 2026-10-04 采纳，确定 session、scheduled 和 UI 直调确认的运行时 owner、终态与期限契约。当前已建立非持久 `InteractionEnvelope`、显式 owner event/IPC 投影、可选真实 session 上下文以及 Session durable append/replay 校验；resolve IPC 已改用 `request_id` 并返回 typed outcome，AppCommand 直接由 `ui_confirmations` 仲裁。ScheduledAction 与 Session 仍通过 executor 的兼容扫描解析，但在解析锁内按显式 owner/request ID 校验；下一步分别把它们迁到 `action_id` 与 `session_id` 定位。期限唯一化、删除 `timed_out` 和 renderer 本地 deadline fallback 仍未完成。前置兼容清理、SessionStore history façade 提取及其独立门禁已完成。此项是独立结构目标，不回写为已完成的阶段 7 工作。
+ADR 0424 已于 2026-10-04 采纳，确定 session、scheduled 和 UI 直调确认的运行时 owner、终态与期限契约。当前已建立非持久 `InteractionEnvelope`、显式 owner event/IPC 投影、可选真实 session 上下文以及 Session durable append/replay 校验；resolve IPC 已改用 `request_id` 并返回 typed outcome，AppCommand 直接由 `ui_confirmations` 仲裁。ScheduledAction 已改为按 `action_id` 定位 owner-local registry，并同时校验 `request_id`；Session 仍通过 executor 扫描 actor，但先校验显式 owner。下一步把 Session 改为按 `session_id` 定位 actor。期限唯一化、删除 `timed_out` 和 renderer 本地 deadline fallback 仍未完成。审查另发现待确认的 Running scheduled action 可被取消，随后迟到批准仍可能启动工具；ScheduledAction 阶段关闭前必须定义 resolve/cancel 的执行权仲裁并覆盖竞态。前置兼容清理、SessionStore history façade 提取及其独立门禁已完成。此项是独立结构目标，不回写为已完成的阶段 7 工作。
 
 运行时使用 typed owner envelope：producer 显式把 owner 附到非持久 supervisor/app event，再投影到 Tauri event/resume/resolve DTO；mapper 不从 kind 或 `session_id` 推断 owner。`InteractionRequest.session_id` 可选，但 SessionActor durable append/replay 必须拒绝缺失或不匹配的值；session-owned `Some(session_id)` 保持现有 JSON 字符串形状，持久 event 不增加 owner 字段。Session owner 使用 `session_id` + request ID；scheduled owner 用 `action_id` + request ID；AppCommand owner 用 request ID。真实 `session_id` 只表达 producer 提供的上下文，不改变 owner，也不持久化通用 owner；不增加 schema/reset。resolve IPC 将实际承载 `conf-*` request ID 的 `step_id` 改名为 `request_id`。已仲裁的 `Resolved`、`Expired`、`Stale` 使用明确的类型结果；可重试失败通过命令错误返回并保留 pending。
 
@@ -95,7 +95,7 @@ ADR 0424 已于 2026-10-04 采纳，确定 session、scheduled 和 UI 直调确�
 1. **守住 durable session 契约。** 将运行时 `session_id` 改为可选上下文；append 与 replay 检查 Session owner 的内外 session ID 一致。`None` 不得进入 session event；session JSON 形状不变。
 2. **显式传 owner 并更新 IPC。** Session、ScheduledAction 和 AppCommand producer 都在 runtime event 附 owner；Tauri event 与 resume projection 显式映射；同步 generated command types、事件 mapper、reducer 与 IPC 文档。未知 owner、缺失 route key 和非法 owner/context 组合 fail closed。
 3. **直迁 AppCommand。** `AppState.ui_confirmations` 直接按 owner + request ID 接收 resolve/expire。先验证 receipt、target、scope 和当前策略；决定可重试失败保留 pending；被接受后先终结弹窗，再启动 app-scoped continuation。
-4. **直迁 ScheduledAction。** 按 `action_id` + request ID 路由；有关联 session context 时 owner 仍为 ScheduledAction。点击和到期只接受一个终态，并保留 ADR 0392 的 action/outbox 收尾和 running action 不自动 replay。
+4. **直迁 ScheduledAction。** 按 `action_id` + request ID 路由；有关联 session context 时 owner 仍为 ScheduledAction。点击和到期只接受一个终态，并保留 ADR 0392 的 action/outbox 收尾和 running action 不自动 replay。另须仲裁 action 取消与确认接受：取消获胜后不得执行工具，确认先取得执行权时遵循明确的运行中取消策略。当前 owner-local registry 路由已实现；取消/批准竞态仍是关闭此 owner 阶段前的开放条件。
 5. **直迁 Session。** 按 session ID 定位 actor，不跨 actor 扫描。durable resolve append 成功后才推进 actor；append 失败仍可重试；gated tool batch 全部解决、session grant 持久化后才唤醒。
 6. **统一 expiry 并删旧路径。** 每个 pending permission confirm 登记时必须带有效绝对 deadline，由 owner timer 执行幂等 expire；UI 只展示最终 `expires_at`，删除本地期限回退和 resolve IPC 的 `timed_out`。三路完成后删除 executor-first fallback、跨 registry/actor 查询、`"ui"`/`"action"` sentinel 和字符串化 stale 分支。每个 owner 的生命周期日志/通知只从其已接受的状态转移派生。
 
