@@ -30,8 +30,8 @@ use crate::prompt_renderer::{MEMORY_START, MemorySections, PromptRenderer};
 /// prompt (tools/MCP index + MEMORY + session). Mid-run memory
 /// refresh stays fence-only via [`Self::patch_canonical_memory_fence`] (M2).
 /// Full parameter schemas live in the per-step API `tools[]` list
-/// (`ReActEngine::build_tool_definitions_for_session`). `TOOL_USAGE_NOTES`
-/// declares the same contract to the model.
+/// (`ReActEngine::build_tool_definitions_for_session`); the prompt index only
+/// helps the model discover capability families.
 pub struct SystemPromptBuilder {
     context_provider: Arc<PromptContextProvider>,
 }
@@ -441,12 +441,13 @@ impl SystemPromptBuilder {
             .await
     }
 
-    /// Render host facts that are stable for the lifetime of a session. This
-    /// is deliberately assembled from live runtime owners so the prompt does
-    /// not advertise a stale shell, TTS client, MCP list, or media capability
-    /// after settings hot-reload. Volatile wall-clock values stay out of this
-    /// block because it is rebuilt on resume ahead of the reusable transcript.
+    /// Render host facts from live runtime owners plus the local calendar date.
+    /// The date has day-level precision so it stays unchanged across same-day
+    /// resumes; exact local/UTC time and timezone remain on-demand via
+    /// `system.info` with `category=locale`. Live runtime owners keep the
+    /// prompt from advertising stale capabilities after settings hot-reload.
     async fn render_runtime_snapshot(&self) -> String {
+        let local_date = chrono::Local::now().format("%Y-%m-%d").to_string();
         let process_cwd = std::env::current_dir()
             .map(|path| path.to_string_lossy().into_owned())
             .unwrap_or_else(|_| "unknown".into());
@@ -462,16 +463,10 @@ impl SystemPromptBuilder {
             workspace_root.clone()
         };
         let runtime = self.context_provider.tools().runtime_context().await;
-        let limits = &runtime.context_limits;
-
-        let context_window = self
-            .context_provider
-            .memory()
-            .context_window(limits.default_context_window)
-            .await;
 
         format!(
-            "- os: {} ({})\n\
+            "- local_date: {}\n\
+- os: {} ({})\n\
 - user: {}\n\
 - home: {}\n\
 - locale: {}\n\
@@ -481,10 +476,8 @@ impl SystemPromptBuilder {
 - tool_sandbox_cwd: {}\n\
 - default_shell: {}\n\
 - runtime_capabilities: web_search={}, vision={}, image={}, stt={}, audio_recording={}, tts={}\n\
-- context_budget: window_tokens={}, max_observation_chars={}, max_tools_per_request={}\n\
-- enabled_mcp_servers: {}\n\
-- discovered_skills: {}\n\
 - permissions: {}",
+            local_date,
             std::env::consts::OS,
             std::env::consts::ARCH,
             environment_value(&["USERNAME", "USER"]),
@@ -521,11 +514,6 @@ impl SystemPromptBuilder {
             } else {
                 "unavailable"
             },
-            context_window,
-            limits.max_observation_chars,
-            limits.max_tools_per_request.max(1),
-            runtime.enabled_mcp_servers,
-            runtime.enabled_skills,
             runtime.permission_summary,
         )
     }
@@ -1340,7 +1328,7 @@ mod tests {
         assert!(prompt.contains("vision=unavailable"));
         assert!(prompt.contains("image=unavailable"));
         assert!(!prompt.contains("model_capabilities:"));
-        assert!(prompt.contains("context_budget:"));
+        assert!(!prompt.contains("context_budget:"));
         assert!(prompt.contains("permissions:"));
         let closer = prompt.find("End of stable instructions.").unwrap();
         let dynamic = prompt

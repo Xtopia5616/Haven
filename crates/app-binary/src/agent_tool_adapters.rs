@@ -71,31 +71,13 @@ impl PromptToolPort for ToolsManagerAgentAdapter {
 
     async fn runtime_context(&self) -> PromptRuntimeContext {
         let services = self.tools.share_services();
-        let context_limits = self.tools.context_limits().await;
         let default_shell = self.tools.default_shell_name().await;
         let capabilities = self.tools.runtime_capabilities().await;
         let permission_summary = services.authorization.prompt_summary().await;
-        let enabled_mcp_servers = self
-            .tools
-            .list_mcp_server_configs()
-            .await
-            .into_iter()
-            .filter(|server| server.enabled)
-            .count();
-        let enabled_skills = services
-            .skills
-            .list()
-            .await
-            .into_iter()
-            .filter(|skill| skill.enabled)
-            .count();
         PromptRuntimeContext {
-            context_limits,
             default_shell,
             capabilities,
             permission_summary,
-            enabled_mcp_servers,
-            enabled_skills,
         }
     }
 }

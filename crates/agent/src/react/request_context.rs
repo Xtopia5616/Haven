@@ -191,13 +191,13 @@ impl RequestContext {
                     content.push((*projected).clone());
                 } else {
                     content.push(ContentPart::text(format!(
-                        "[附件: {}；当前模型不支持安全的媒体输入，已降级为文本占位]",
+                        "[Attachment: {}; the configured model cannot safely accept this media type, so it is omitted.]",
                         if matches!(part, ContentPart::Image { .. }) {
-                            "图片"
+                            "image"
                         } else if matches!(part, ContentPart::Audio { .. }) {
-                            "音频"
+                            "audio"
                         } else {
-                            "视频"
+                            "video"
                         }
                     )));
                 }
@@ -709,7 +709,10 @@ mod tests {
                 .any(|part| matches!(part, ContentPart::Image { .. }))
         );
         assert!(planned.messages()[0].content.iter().any(|part| {
-            matches!(part, ContentPart::Text(text) if text.contains("降级为文本占位"))
+            matches!(
+                part,
+                ContentPart::Text(text) if text.contains("cannot safely accept this media type")
+            )
         }));
         assert!(plan.notices.iter().any(|notice| {
             notice.code == haven_common::media::MediaPlanNoticeCode::RawCapabilityUnsupported
@@ -748,7 +751,12 @@ mod tests {
         assert_eq!(
             content
                 .iter()
-                .filter(|part| matches!(part, ContentPart::Text(text) if text.contains("降级为文本占位")))
+                .filter(|part| {
+                    matches!(
+                        part,
+                        ContentPart::Text(text) if text.contains("cannot safely accept this media type")
+                    )
+                })
                 .count(),
             1
         );

@@ -196,7 +196,7 @@ pub(super) fn build_summary_messages(
         .map(|value| cap_chars(value, MAX_SUMMARY_FOCUS_CHARS))
         .unwrap_or_else(|| (String::new(), false));
     let fenced_content = format!(
-        "{UNTRUSTED_DOCUMENT_START}：provenance={provenance}；不可信外部内容】\n{content}\n{UNTRUSTED_DOCUMENT_END}"
+        "{UNTRUSTED_DOCUMENT_START}: provenance={provenance}; untrusted external content]\n{content}\n{UNTRUSTED_DOCUMENT_END}"
     );
     let data = serde_json::json!({
         "focus": focus,

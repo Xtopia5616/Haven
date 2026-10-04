@@ -118,12 +118,9 @@ pub(super) fn is_retryable_failure_outcome(
 
 impl ReActEngine {
     /// Compose the retry nudge after a step where tool calls failed. The
-    /// failure evidence is classified first: environment-type failures
-    /// (missing command, wrong shell syntax, network/proxy, paths) must NOT
-    /// push the model to abandon its approach — the correct move is to
-    /// diagnose and fix the environment (different shell, different tool,
-    /// corrected path) and retry. Logic failures get a fix-and-retry nudge
-    /// with an explicit threshold before switching approach.
+    /// failure evidence is classified first: environmental failures suggest
+    /// checking relevant prerequisites, while logic failures suggest
+    /// correcting the specific issue. The nudge stays advisory.
     ///
     /// The returned text is appended onto the last failed tool observation,
     /// never pushed as a synthetic User message into canonical/DB.
@@ -135,14 +132,14 @@ impl ReActEngine {
             .iter()
             .any(|(_, class)| failure_kind(*class) == FailureKind::Logic);
         if has_env {
-            "The tool failures look ENVIRONMENTAL (missing command / wrong shell syntax / network / path), not logic errors. Do NOT abandon your approach. Diagnose the environment first: verify the command exists in the shell you chose (cmd vs PowerShell syntax differs; `&&` only works in cmd), check network/proxy/endpoints, fix paths and prerequisites. Switching tools (e.g. curl -> aria2) or shells is an environment fix, not a change of approach — keep the same approach and retry."
+            "The failure may be environmental. Check the relevant shell, command, network, path, or prerequisite, then choose the best next step."
                 .into()
         } else if has_logic {
-            "The previous approach failed with logic errors. Analyze the exact error, fix the specific mistake, and retry. Only consider a completely different approach if the same method fails again after you fixed it."
+            "The previous call failed with logic errors. Correct the specific issue; if it persists, reassess the approach."
                 .into()
         } else {
             format!(
-                "The previous approach encountered errors. {}",
+                "The previous call failed. {}",
                 haven_common::prompts::TOOL_FAILURE_DIAGNOSIS
             )
         }

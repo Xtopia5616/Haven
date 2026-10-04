@@ -38,11 +38,6 @@ impl PromptRenderer {
                 ("skills", skills_section),
                 ("mcps", mcp_section),
                 ("dynamic_context", dynamic_context),
-                (
-                    "failure_diagnosis",
-                    haven_common::prompts::TOOL_FAILURE_DIAGNOSIS,
-                ),
-                ("tool_notes", haven_common::prompts::TOOL_USAGE_NOTES),
             ],
         )
     }

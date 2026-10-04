@@ -7,7 +7,6 @@
 use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
-use haven_common::config::ContextLimitsConfig;
 use haven_common::tools::ToolDef;
 #[cfg(test)]
 use haven_tools::ToolsManager;
@@ -36,12 +35,9 @@ pub struct PromptCatalogContent {
 }
 
 pub struct PromptRuntimeContext {
-    pub context_limits: ContextLimitsConfig,
     pub default_shell: String,
     pub capabilities: RuntimeCapabilities,
     pub permission_summary: String,
-    pub enabled_mcp_servers: usize,
-    pub enabled_skills: usize,
 }
 
 /// Read-only snapshot contract for the model-facing capability prompt.
@@ -84,30 +80,13 @@ impl PromptToolPort for ToolsManager {
 
     async fn runtime_context(&self) -> PromptRuntimeContext {
         let services = self.share_services();
-        let context_limits = self.context_limits().await;
         let default_shell = self.default_shell_name().await;
         let capabilities = self.runtime_capabilities().await;
         let permission_summary = services.authorization.prompt_summary().await;
-        let enabled_mcp_servers = self
-            .list_mcp_server_configs()
-            .await
-            .into_iter()
-            .filter(|server| server.enabled)
-            .count();
-        let enabled_skills = services
-            .skills
-            .list()
-            .await
-            .into_iter()
-            .filter(|skill| skill.enabled)
-            .count();
         PromptRuntimeContext {
-            context_limits,
             default_shell,
             capabilities,
             permission_summary,
-            enabled_mcp_servers,
-            enabled_skills,
         }
     }
 }

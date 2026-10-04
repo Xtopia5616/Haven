@@ -32,8 +32,8 @@ mod file_read;
 mod file_summary;
 
 const MAX_SUMMARY_FOCUS_CHARS: usize = 2_000;
-const UNTRUSTED_DOCUMENT_START: &str = "【附件派生内容开始";
-const UNTRUSTED_DOCUMENT_END: &str = "【附件派生内容结束】";
+const UNTRUSTED_DOCUMENT_START: &str = "[BEGIN DERIVED ATTACHMENT";
+const UNTRUSTED_DOCUMENT_END: &str = "[END DERIVED ATTACHMENT]";
 const MAX_PATCH_EDITS: usize = 64;
 const MAX_PATCH_INPUT_BYTES: usize = 256 * 1024;
 const MAX_INSPECT_HASH_BYTES: u64 = 64 * 1024 * 1024;

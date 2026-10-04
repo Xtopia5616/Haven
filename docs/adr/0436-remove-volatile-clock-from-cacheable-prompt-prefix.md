@@ -4,6 +4,8 @@
 
 已接受（2026-10-03）。
 
+后续修订：关于从 runtime snapshot 完全移除日期的决定由 ADR 0461 调整；当前只注入本地日期，精确时间仍按需读取。
+
 ## 背景
 
 DeepSeek 缓存按精确请求前缀自动匹配。Haven 在恢复每轮会话时会重建 system prompt；runtime snapshot 曾包含精确到秒的 `local_time`，而 system prompt 位于持久 transcript 和新输入之前，因此每次恢复都让后续历史无法沿用前一轮的缓存前缀。

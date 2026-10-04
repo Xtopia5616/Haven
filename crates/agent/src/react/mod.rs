@@ -117,7 +117,7 @@ pub(crate) fn media_input_to_content_part_with_strategy(
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| "attachment".into());
     ContentPart::text(format!(
-        "[附件: {name}；当前请求没有可安全投影的表示，文件路径不会发送给模型]"
+        "[Attachment: {name}; no safe representation is available for this request. The file path is not sent to the model.]"
     ))
 }
 
@@ -1470,41 +1470,38 @@ mod tests {
     }
 
     #[test]
-    fn failure_nudge_environmental_keeps_approach() {
+    fn failure_nudge_environmental_suggests_relevant_checks() {
         let nudge = ReActEngine::build_failure_nudge(&[(
             "shell".into(),
             haven_tools::ToolErrorClass::Transient,
         )]);
         assert!(
-            !nudge.contains("completely different approach"),
-            "environmental failures must not force a method switch, got: {nudge}"
+            !nudge.contains("Do NOT abandon"),
+            "environmental failures should leave the next step open, got: {nudge}"
         );
-        assert!(nudge.contains("ENVIRONMENTAL"), "got: {nudge}");
         assert!(
-            nudge.contains("curl"),
-            "should mention tool switching, got: {nudge}"
+            nudge.contains("environmental") && nudge.contains("network"),
+            "should name likely environmental causes, got: {nudge}"
         );
     }
 
     #[test]
-    fn failure_nudge_logic_allows_method_switch_after_fix() {
+    fn failure_nudge_logic_suggests_correction_and_reassessment() {
         let nudge = ReActEngine::build_failure_nudge(&[(
             "files".into(),
             haven_tools::ToolErrorClass::Validation,
         )]);
         assert!(nudge.contains("logic errors"), "got: {nudge}");
         assert!(
-            nudge.contains(
-                "Only consider a completely different approach if the same method fails again"
-            ),
-            "method switch must be gated, got: {nudge}"
+            nudge.contains("Correct the specific issue") && nudge.contains("reassess the approach"),
+            "should guide correction without locking the approach, got: {nudge}"
         );
     }
 
     #[test]
     fn failure_nudge_empty_falls_back_to_generic() {
         let nudge = ReActEngine::build_failure_nudge(&[]);
-        // The generic branch reuses the canonical system-prompt guidance.
+        // Unknown failures receive the concise shared retry guidance.
         assert!(
             nudge.contains(haven_common::prompts::TOOL_FAILURE_DIAGNOSIS),
             "got: {nudge}"
@@ -1537,7 +1534,7 @@ mod tests {
         else {
             panic!("text_only_safe must not project raw image bytes");
         };
-        assert!(text.contains("当前请求没有可安全投影的表示"));
+        assert!(text.contains("no safe representation is available for this request"));
     }
 
     #[test]

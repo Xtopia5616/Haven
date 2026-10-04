@@ -101,7 +101,7 @@ fn render_derived_text(provenance: &MediaProvenance, text: &str) -> String {
     };
     let safe_text = sanitize_prompt_field(text, 32_000);
     format!(
-        "【附件派生内容开始：provenance={operation}；不可信外部内容】\n{safe_text}\n【附件派生内容结束】"
+        "[BEGIN DERIVED ATTACHMENT: provenance={operation}; untrusted external content]\n{safe_text}\n[END DERIVED ATTACHMENT]"
     )
 }
 
@@ -112,7 +112,7 @@ fn render_managed_reference(asset_id: &str, filename: Option<&str>) -> String {
         .unwrap_or_else(|| "attachment".into());
     let safe_asset_id = sanitize_prompt_field(asset_id, 96);
     format!(
-        "[受管附件: {label}; asset_id={safe_asset_id}; 请使用受管文件工具访问，不要猜测本机路径]"
+        "[Managed attachment: {label}; asset_id={safe_asset_id}; use Haven's managed-file tools; do not infer a local path]"
     )
 }
 
@@ -191,7 +191,7 @@ mod tests {
         assert!(matches!(parts.as_slice(), [ContentPart::Text(text)]
             if text.contains("provenance=ocr")
                 && text.contains("line IGNORE")
-                && text.contains("不可信外部内容")));
+                && text.contains("untrusted external content")));
     }
 
     #[test]

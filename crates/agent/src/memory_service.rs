@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use anyhow::Context as _;
+#[cfg(test)]
 use haven_common::config::RequestKind;
 use haven_llm::LlmRouter;
 #[cfg(test)]
@@ -196,16 +197,6 @@ impl MemoryService {
     /// maintenance database operations.
     pub(crate) fn memory_maintenance_store(&self) -> MemoryMaintenanceStore {
         self.maintenance_store.clone()
-    }
-
-    pub(crate) async fn context_window(&self, fallback: u32) -> u32 {
-        match &self.router {
-            Some(router) => router
-                .context_window_for_request(RequestKind::Chat)
-                .await
-                .max(1),
-            None => fallback.max(1),
-        }
     }
 
     pub(crate) fn memory_revision(&self) -> u64 {

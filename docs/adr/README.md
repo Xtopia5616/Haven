@@ -443,3 +443,5 @@
 - [0458：持久化待输入的 Ask 回答路由](0458-persist-pending-input-disposition.md)
 - [0459：持久化 Skill requirements 指纹](0459-persist-skill-requirements-fingerprint.md)
 - [0460：统一 Skill 名称校验并拒绝歧义名称](0460-canonical-skill-name-validation.md)
+- [0461：提示上下文仅注入本地日期，精确时间按需读取](0461-date-only-runtime-clock.md)
+- [0462：采用最小可用的模型提示词](0462-minimal-model-prompt.md)
