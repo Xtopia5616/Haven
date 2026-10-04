@@ -96,6 +96,18 @@
 
 当前边界决定：Common 拆分维持 [ADR 0359](adr/0359-common-boundary-and-profiling-baseline-audit.md) 的暂缓结论；Tools crate 拆分没有独立依赖边界或消费者收益；SessionStore 继续独占 event append、投影和 rollback 事务协调，`event_cursor` 与 `last_msg_at` 双时钟、提交后发布均不得分散；`LOCAL_TOOL_SECURITY_MATRIX` 仍是生产权限提示的 operation 白名单，保留在 `security.rs`。管理 surface、LLM router、授权沙箱和 inbox 崩溃恢复边界按现有 owner 保留，具体依据见相关 ADR。
 
+**Crate 体量与边界复核（2026-10-05）：**按 workspace `.rs` 文件非空物理行粗略统计（含注释；测试按测试路径及 `#[cfg(test)]` 模块归类，非 AST 指标），Rust 源码约 222k 行。最大 crate 为 `haven-tools`，但体量同时来自多种内建能力与测试；依赖图本身仍是 11 个 crate、29 条单向内部边、无环，并与架构清单一致。
+
+| Crate | 生产行 | 测试行 | 合计 |
+|---|---:|---:|---:|
+| `haven-tools` | 37,214 | 20,416 | 57,630 |
+| `haven-agent` | 28,521 | 22,296 | 50,817 |
+| `haven-llm` | 15,237 | 13,289 | 28,526 |
+| `haven-memory` | 14,155 | 11,394 | 25,549 |
+| `haven-app-binary` | 13,178 | 5,399 | 18,577 |
+
+本次将 `ActionService` 独立成 crate 的想法评估后关闭为“现阶段不需拆分”：Agent 仍直接依赖 Tools 的 tool/auth 契约；ActionService 还共用 Tools 内部 shell/process/output policy，依赖 `haven-memory::ActionStore` 的持久状态，并与 Agent 的授权执行、完成投影及 App 生命周期形成现有纵向调用链。抽离需要新增更低层的进程/输出边界或 port，可能增加反向依赖和策略重复；近期 ActionService 与 ActionStore、Agent、App 的联动是 action 生命周期纵向演进，没有稳定后仍反复耦合 registry/security 的证据。只有出现真正不依赖 Tools 的 Action 消费者、同一边界回归重复发生，或受控构建/profile 证明拆分能降低实际迭代成本时才重开；它不进入 Active 队列。
+
 已复核热点包括 `+page.svelte`、`SettingsView.svelte`、`admin.rs`、`llm/router.rs`、`inbox.rs`、Tools/Agent 根模块、`react/mod.rs`、`layer.rs`、`session/mod.rs`、`resume.rs`、`session/tool_runner.rs`、`react/stream_step.rs`、`commands/session.rs`、`app_state.rs`、`MemoryView.svelte`、`ToolsView.svelte`、`ToolResultCard.svelte`、`InputRouter.svelte` 与 `+layout.svelte`。`tool_runner.rs` 的近期 churn 属于 ADR 0424 同一轮 owner 收口，确认与 ActionService 分持待决请求和执行/取消 claim，当前保留原边界；`stream_step.rs` 的流生命周期队列、checkpoint 与 retry 需保持协同，搜索响应投影则由本轮 ADR 0476 收回 turn owner。`resume.rs`、ToolsView 和 InputRouter 保留各自会话恢复、管理页与统一 composer 边界。InputRouter 的异步附件读取曾允许发送越过读取完成点且并行读取可能超限，现已阻止读取期间提交并预留附件名额，回归由 UI 测试覆盖。ToolResultCard 同时展示 ask 与 tool output，但 ask selection、pending interaction、dismissal 分属 controller/reducer/page owners；ADR 0430 的 reopen 路径近期只经历一次纵向改动，AskInteractionCard 提取留作条件候选，待跨职责重复 churn 或回归再启动。MemoryView 单次 resume 参数遗漏已在 `487ff9e` 修复；`+layout` phase store 订阅清理也已修复。
 
 **观察项复核（2026-10-05；本轮均未批准实现切片）：**
