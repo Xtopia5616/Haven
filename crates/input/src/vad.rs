@@ -2,7 +2,7 @@ use anyhow::Result;
 use tract::prelude::*;
 
 const MODEL_BYTES: &[u8] = include_bytes!("../../../assets/models/silero_vad.onnx");
-/// Audio samples per VAD frame (10 ms at 16 kHz). Single definition for the
+/// Audio samples per VAD frame (30 ms at 16 kHz). Single definition for the
 /// whole crate: the inference engine consumes exactly this many samples and
 /// the recording loop chunks captured audio by it.
 pub(crate) const FRAME_SIZE: usize = 480;
@@ -139,11 +139,21 @@ pub struct VadDetector {
 
 impl VadDetector {
     pub fn new(threshold: f32, silence_timeout_ms: u64) -> Self {
-        let silence_max_frames = (silence_timeout_ms / 30) as u32;
+        let silence_max_frames = silence_timeout_ms.div_ceil(30).min(u32::MAX as u64) as u32;
         Self {
             state: VadState::Silent,
             threshold,
             silence_max_frames,
+        }
+    }
+
+    fn advance_silence(&mut self, silent_frames: u32) -> VadSignal {
+        if silent_frames >= self.silence_max_frames {
+            self.state = VadState::Silent;
+            VadSignal::AutoStop
+        } else {
+            self.state = VadState::SilenceAfterSpeech { silent_frames };
+            VadSignal::None
         }
     }
 
@@ -159,8 +169,7 @@ impl VadDetector {
             }
             VadState::Speech => {
                 if prob < self.threshold {
-                    self.state = VadState::SilenceAfterSpeech { silent_frames: 1 };
-                    VadSignal::None
+                    self.advance_silence(1)
                 } else {
                     VadSignal::None
                 }
@@ -169,14 +178,8 @@ impl VadDetector {
                 if prob >= self.threshold {
                     self.state = VadState::Speech;
                     VadSignal::SpeechStart
-                } else if silent_frames >= self.silence_max_frames {
-                    self.state = VadState::Silent;
-                    VadSignal::AutoStop
                 } else {
-                    self.state = VadState::SilenceAfterSpeech {
-                        silent_frames: silent_frames + 1,
-                    };
-                    VadSignal::None
+                    self.advance_silence(silent_frames.saturating_add(1))
                 }
             }
         }
@@ -217,8 +220,26 @@ mod tests {
         det.process(0.8);
         assert_eq!(det.process(0.3), VadSignal::None);
         assert_eq!(det.process(0.2), VadSignal::None);
+        assert_eq!(det.process(0.1), VadSignal::AutoStop);
+        assert_eq!(det.state, VadState::Silent);
+    }
+
+    #[test]
+    fn vad_detector_rounds_non_aligned_timeout_up_to_a_full_frame() {
+        let mut det = VadDetector::new(0.5, 91);
+        assert_eq!(det.silence_max_frames, 4);
+        det.process(0.8);
+        assert_eq!(det.process(0.3), VadSignal::None);
+        assert_eq!(det.process(0.2), VadSignal::None);
         assert_eq!(det.process(0.1), VadSignal::None);
         assert_eq!(det.process(0.05), VadSignal::AutoStop);
+    }
+
+    #[test]
+    fn zero_silence_timeout_stops_on_the_first_silent_frame() {
+        let mut det = VadDetector::new(0.5, 0);
+        det.process(0.8);
+        assert_eq!(det.process(0.3), VadSignal::AutoStop);
         assert_eq!(det.state, VadState::Silent);
     }
 

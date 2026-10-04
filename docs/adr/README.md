@@ -437,3 +437,4 @@
 - [0452：文件变更操作的取消提交边界](0452-file-mutation-cancellation-boundary.md)
 - [0453：限制 Skill 文件链接的目录边界](0453-skill-paths-stay-within-root.md)
 - [0454：合并启动与每日媒体清理](0454-single-startup-and-daily-cleanup.md)
+- [0455：按音频帧精度执行 VAD 静音超时](0455-vad-silence-timeout-frame-precision.md)

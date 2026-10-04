@@ -841,7 +841,7 @@ mod tests {
         let vad_threshold = pipeline.vad_detector.lock().await.threshold;
         let silence_frames = pipeline.vad_detector.lock().await.silence_max_frames;
         assert_eq!(vad_threshold, 0.3);
-        assert_eq!(silence_frames, 2000 / 30);
+        assert_eq!(silence_frames, 2000_u32.div_ceil(30));
         let pcm = vec![0.0f32];
         let wav = pipeline.encode_wav(&pcm).await.unwrap();
         let channels = u16::from_le_bytes([wav[22], wav[23]]);
