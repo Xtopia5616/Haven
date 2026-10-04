@@ -118,7 +118,14 @@ ADR 0424 收口后，按证据逐个评估以下候选；同一时刻只推进�
 8. **候选审查与依赖清单一致性门禁（已完成，2026-10-05）。** 依据 §5.5 审查 Common/Tools crate 边界、SessionStore 写侧和已列热点；没有新的依赖边、重复 owner、反复回归或性能证据支持继续拆分。审查发现架构表漏列 Agent/Tools 到 Messaging 的实际依赖，旧检查脚本又允许 App 到 Skills/MCP 的不存在边；现已让脚本直接读取架构表并与 Cargo metadata 精确比对，修正结果与停止条件见 [ADR 0474](adr/0474-architecture-dependency-inventory-gate.md)。SessionStore 写侧继续受事务/回滚不变量约束；安全矩阵因生产权限提示也依赖它，保留为运行时 owner。
 9. **Memory fact sensitivity 与清理规则单源化（已完成，2026-10-05；ADR 0475）。** Rust detector 与批量 SQL purge 原先维护两份凭据规则；`LIKE` 将 GitHub/npm/DigitalOcean 前缀中的 `_` 当作单字符通配符，可能永久误删相似普通事实。现由私有 `fact_security` 持有规则，Rust 检测和 SQLite predicate 共享同一组关键词/前缀/marker，前缀用精确比较。既有 `facts` façade 和单条 SQL 删除保持；增加 detector/purge 一致性与近似前缀保留回归，无 schema/reset/API 变化。实现与验证见 [ADR 0475](adr/0475-single-source-fact-sensitivity-rules.md)。
 
-上述完成项是历史结果，Active 只表示当前可执行的一片。最新候选审查确认：Common 拆分维持 ADR 0359 的暂缓决定；Tools 拆分缺少独立依赖边界和消费者收益；SessionStore 的 append、projection 与 rollback 必须保持同事务 owner；`LOCAL_TOOL_SECURITY_MATRIX` 仍被生产权限提示路径用作 operation 名白名单，因此保留在 `security.rs`；`+page.svelte`、`SettingsView.svelte`、`admin.rs`、`llm/router.rs` 与 `inbox.rs` 暂无重复 owner 或边界反复导致回归的证据。只有新 bug、职责变更 churn、依赖边或可复现 profile 信号出现时再复核，不因文件/crate 大而排期拆分。
+上述完成项是历史结果，Active 只表示当前可执行的一片。最新候选审查确认：Common 拆分维持 ADR 0359 的暂缓决定；Tools crate 拆分缺少
+独立依赖边界和消费者收益；SessionStore 的 append、projection 与 rollback 必须保持同事务 owner；`LOCAL_TOOL_SECURITY_MATRIX`
+仍被生产权限提示路径用作 operation 名白名单，因此保留在 `security.rs`。`+page.svelte`、`SettingsView.svelte`、`admin.rs`、
+`llm/router.rs`、`inbox.rs`、`crates/tools/src/lib.rs`、`crates/agent/src/react/mod.rs` 与 `app_state.rs` 均经热点复核，未发现
+重复 owner、边界回归或足以证明拆分收益的依赖/性能证据；当前没有 Active 代码切片。观察项是 Tools 根模块少量 helper 的局部归属
+漂移，以及 ReAct 媒体投影 helper 的跨模块调用；只有它们引发重复实现、反复回归或调用边持续扩张时才重新评估。AppState 审计
+确认后台初始化由 `AppState::spawn_background_init` 编排，`bootstrap.rs` 负责触发并提供 Tauri emitter；架构文档已对齐代码。
+只有新 bug、职责变更 churn、依赖边或可复现 profile 信号出现时再复核，不因文件/crate 大而排期拆分。
 
 事件存储与 transcript projection 的内部拆分属于暂缓的高风险候选：只读历史 façade 已拆，但在写侧仍有可量化维护收益之前不启动。`SessionStore` 必须继续作为 append、物化投影和 rollback 的事务协调 owner：事件与 projection 原子提交，rollback 同时维护 `event_cursor` 和 `last_msg_at`，提交成功后才发布事件。若拆分要求上层分别写 event/projection、暴露事务细节或引入第二个恢复来源，应停止。
 

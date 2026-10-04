@@ -592,6 +592,8 @@ limit、创建时间倒序和 errors 的 status 过滤顺序保持原样。组�
   confirmation）；命令通过 runtime 稳定句柄消费 db / router / tools / executor /
   agent / pipeline / shell / `config_service` / media clients / stt_client；在组合根创建
   supervisor 专属 `SessionStore` 与唯一 `MemoryService` 并注入 AgentLayer（ADR 0363、0364）。
+  `spawn_background_init` 编排音频预热、MCP/Skills catalog 初始化、延迟 session recovery 与
+  readiness；任务由 `ApplicationRuntime` 注册并负责取消/join。
   启动、保留期、上传引用和每日媒体清理 task 只捕获 `SessionStore` typed port，不把 raw
   `Database` 传入后台任务（ADR 0374）。
 - `config_runtime.rs`：根据 `ConfigChanged` 生成 runtime apply plan，区分 live consumer 和
@@ -616,8 +618,9 @@ limit、创建时间倒序和 errors 的 status 过滤顺序保持原样。组�
 - `handlers.rs`：`ShellHandler` / `InputHandler` 的 Tauri、输入管线和托盘适配；user
   recording lifecycle 通过 `RecordingSessionOwner` 与命令共享身份交接，保留 VAD、自动停止
   和托盘图标更新适配。
-- `bootstrap.rs`：Tauri 启动、后台初始化、托盘、全局快捷键、单实例、自启、日志和退出
-  编排；不承载领域逻辑。
+- `bootstrap.rs`：Tauri 启动与桌面生命周期编排，包括托盘、全局快捷键、单实例、自启、日志和退出；
+  创建窗口后调用 `AppState::spawn_background_init`，并在该边界提供 Tauri 事件 emitter。后台
+  初始化顺序由 `AppState` 编排，具体长期任务由 `ApplicationRuntime` 持有；此模块不承载领域逻辑。
 - `lib.rs`：模块声明、移动端 `run()` 入口和必要的 crate 内导出。
 - `commands/*`：全部 Tauri IPC 命令（recording / session / action / history·memory / model / mcp /
   skills / memory / settings / log）。
