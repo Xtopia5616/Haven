@@ -48,8 +48,9 @@ pub struct GeneratedMediaCleanupGuard {
     _guard: tokio::sync::OwnedRwLockWriteGuard<()>,
 }
 
-/// Shared access held by a producer while it writes and registers one file.
-#[must_use = "the write guard must live through generated-media file registration"]
+/// Shared access held while a producer writes and registers one file or a
+/// rich-path handoff validates and registers an existing file.
+#[must_use = "the shared guard must live through generated-media validation and registration"]
 pub(crate) struct GeneratedMediaWriteGuard {
     _guard: tokio::sync::OwnedRwLockReadGuard<()>,
 }
@@ -65,8 +66,10 @@ impl ManagedAssetRegistry {
     }
 
     /// Reserve the generated-media lifecycle while a producer creates and
-    /// registers one file. Kept crate-private so the registry remains the
-    /// owner of generated-media producer coordination.
+    /// registers one file, or while a rich-path handoff validates and
+    /// registers an existing file that may be reclaimed by generated-media
+    /// cleanup. Kept crate-private so the registry remains the owner of this
+    /// coordination.
     pub(crate) async fn lock_generated_media_write(&self) -> GeneratedMediaWriteGuard {
         GeneratedMediaWriteGuard {
             _guard: self.generated_media_gate.clone().read_owned().await,

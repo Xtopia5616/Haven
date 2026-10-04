@@ -261,12 +261,15 @@ impl FilesTool {
             && matches!(op, FilesOperation::Read | FilesOperation::Summary)
             && let Some(requested_path) = requested_path.as_deref()
         {
-            managed_asset = register_rich_path_asset(
-                &self.managed_assets,
-                params.session_id.as_deref(),
-                requested_path,
-            )
-            .await?;
+            managed_asset = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => anyhow::bail!("cancelled"),
+                asset = register_rich_path_asset(
+                    &self.managed_assets,
+                    params.session_id.as_deref(),
+                    requested_path,
+                ) => asset?,
+            };
             if let Some(asset) = managed_asset.as_ref() {
                 path = asset.path.to_string_lossy().into_owned();
             }

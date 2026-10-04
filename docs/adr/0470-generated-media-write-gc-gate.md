@@ -44,6 +44,6 @@ ADR 0469 收口了 App 上传和媒体清理，但刻意没有处理 Tools produ
 
 Windows 验收通过：`cargo fmt --all -- --check`、`cargo check --locked -p haven-tools -p haven-app-binary`、`cargo test --workspace --locked` 与 `cargo clippy --workspace --locked -- -D warnings`。另有 `cargo test --locked -p haven-tools asset_registry::tests`（9 passed）及 `cargo test --locked -p haven-app-binary commands::managed_media::tests`（26 passed）。测试使用临时目录、oneshot 与 blocking closure channel 覆盖 producer-first、GC-first，以及两侧 async caller 被取消后阻塞文件操作仍持有 gate；无真实用户目录、剪贴板或屏幕依赖。
 
-一个后续证据项暂不并入本切片：`FilesTool` 的 rich-path handoff 会给已存在的任意绝对路径登记 asset；需单独确认它指向 generated-media 根目录时，是否存在 GC 与读取/登记的用户可见竞争。该路径不创建新生成文件，当前 gate 不扩大到所有文件导入。
+后续独立审查确认 `FilesTool` 的 rich-path handoff 可指向 generated-media 根目录，并可能在 GC lease 快照后登记而错过本轮保护；已由 [ADR 0473](0473-files-rich-path-generated-media-gc-gate.md) 在 canonical path 命中生成媒体根时复用本 gate，普通外部路径不持有该 gate。
 
 回滚时可移除 registry gate 和 producer permit 参数，并恢复当前先写后登记实现；无持久数据迁移。回滚会重新引入 ADR 0469 已记录的并发窗口，应视为放弃该正确性修复。
