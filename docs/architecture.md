@@ -468,7 +468,7 @@ ActionService 仍是唯一状态 owner；实现按职责放在 `action_service/b
 `ActionStatus::can_transition_to` / `action_terminal::can_claim_terminal` 单点定义；background admission 直接进入
 `running`，`waiting → running` 只属于 scheduled fire。提交前后的重复检查跨越 durable CAS 与内存投影/回滚边界，保留为竞态校验。
 执行副作用、outbox、retry 与 UI finished 投影继续按 kind 分流；trigger/execution、deadline/claim identity 和 restart recovery
-语义需先决策，当前不引入新的 Job 状态或自动 replay（ADR 0352）。产品已确认 background 与 scheduled 的完成记录、任务卡和 transcript 投影采用统一格式，但保留类型细节；TaskCenter 活动卡片已由 `projectActionCard` 统一投影，terminal completion record/transcript 的 scheduled outcome 映射仍待产品决策（ADR 0373）。该审计还发现 `ActionService::set` 的 scheduled
+语义需先决策，当前不引入新的 Job 状态或自动 replay（ADR 0352）。产品已确认 background 与 scheduled 的完成记录、任务卡和 transcript 投影采用统一格式，但保留类型细节；TaskCenter 活动卡片由 `projectActionCard` 统一投影，scheduled tool 的 completed/failed outcome 则已按 ADR 0393 复用 action completion outbox 与 Agent 的 ActionResult/X12 投影路径。该审计还发现 `ActionService::set` 的 scheduled
 admission cleanup 曾移除 Running row，导致 Agent terminal callback 找不到内存 entry；ADR 0353 已将清理条件限定为
 terminal scheduled entry，并通过 completion、cancel、no-consumer recovery 和 restart 回归固定边界。Waiting/Running
 entry 保持原路径；durable Waiting schedule 仍在启动时恢复，遗留 durable Running row 仍标为 failed 且不重放。
@@ -486,9 +486,11 @@ reactive mirror，不再维护第二份 action lifecycle reducer。`list_actions
 通知由 Agent 的 `notification:show` 提供。列表刷新会移除 terminal background history，scheduled live row
 仍由 ActionService board 返回。`TaskCenter` 使用 `projectActionCard` 将两种 kind 映射到共同卡片结构，并在
 kind-specific details 中保留 background command/output/error/exit code/preview 与 scheduled due time/title/body/mode；
-现有用户文案、排序、搜索、打开会话和取消行为不变。该 mapper 只收口活动卡片，尚未统一 terminal
-completion record 或 transcript 内容：scheduled finished payload 不含 execution result，continue 模式已有正常会话
-输入/对话记录，tool 模式当前只把结果发到通知，具体 scheduled transcript 映射需产品决定（ADR 0373）。
+现有用户文案、排序、搜索、打开会话和取消行为不变。该 mapper 只收口活动卡片，不承载终态工具结果：
+scheduled finished payload 仍不含 execution result；completed/failed tool 的有界 `result_summary` 由
+ActionService 与 terminal outbox 一起提交，在 owner session 存在时由 Agent 复用共享 ActionResult envelope
+与 X12 投影，投影成功后 ack。Continue 仍走既有 session input transcript；cancelled scheduled action 不创建
+completion outbox 或 result transcript（ADR 0393）。
 Rust bridge 只为 background 提供 `action:output`，scheduled action 不持有 tail。没有 durable event identity，
 因此不新增 UI event dedup 或统一 Job reducer；background 的终态工具卡和 transcript 投影仍按 ADR 0344 原路径。
 Action completion 经 `notification:show` 发布带 `notification_kind=action_completion` 标记的专用事件，
@@ -496,8 +498,8 @@ Action completion 经 `notification:show` 发布带 `notification_kind=action_co
 应用 `notification.action_completed.in_app` 开关；`DesktopNotifications` 只对同一类事件应用
 `notification.action_completed.windows` 开关。两项配置由 background 与 scheduled action 共用且默认开启，
 配置加载完成前 UI 暂存带标记的完成提示。通用 `AgentEvent::Notification` 不带该标记，仍保持原有通知语义与
-always-on 行为。此通知设置不定义 scheduled transcript 或 execution result 的投影；其内容映射仍待产品决策
-（ADR 0373）。
+always-on 行为。通知设置自身不承载 scheduled transcript 或 execution result；scheduled tool outcome 的
+session transcript 契约已由 ADR 0393 定义为复用 action-result/outbox 路径。
 Action 管理写入口经 ADR 0373 审计：Tauri、`actions`/`schedule` 工具、timer worker 与 Agent completion 共用一个
 `ActionService`；`ActionStore` 仍是生产持久化写边界。`schedule.set` 只创建新 action，没有 update-existing 或手动
 trigger command，`ToolConcurrency` 也不是跨 Tauri/worker 的互斥机制。terminal history delete 只接受终态，但其
