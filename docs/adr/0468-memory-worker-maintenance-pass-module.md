@@ -2,7 +2,7 @@
 
 ## 状态
 
-已采纳，实施中（2026-10-05）。
+已完成（2026-10-05）。
 
 ## 背景
 
@@ -29,7 +29,7 @@
 
 该变化限于 `haven-agent` 私有模块，不修改 schema、IPC 或持久化合同，无需重置用户数据。现有维护回归需保持总计数、确定性失败后的继续清理与错误聚合、预取消短路、逐项 predicate rewrite 计数、contradiction gate 后写入、FastChat 未配置时跳过；增加一项真实 DB 回归固定 keeper 必须先于低置信度清理。outbox marker/ack 恢复测试继续在原 worker 测试区运行。
 
-实施验证结果将在代码切片完成后补录；适用门禁为 `cargo fmt --all -- --check`、`cargo test --locked -p haven-agent`、`cargo clippy --locked -p haven-agent -- -D warnings` 及 `git diff --check`。
+`MemoryMaintenancePass` 只借用现有四个依赖，worker 入口和调用顺序未变；新增 36 小时事实 fixture 验证 keeper 先于 low-confidence flush，防止将新事实宽限期或两天 demote 年龄上限混入断言。验证：`cargo fmt --all -- --check`、`cargo test --locked -p haven-agent`（569 passed、1 ignored；手动性能 profile 另有 2 ignored）、`cargo clippy --locked -p haven-agent -- -D warnings` 及 `git diff --check` 均通过，既有 outbox marker/ack 回归仍在原测试区执行。
 
 ## 回滚
 

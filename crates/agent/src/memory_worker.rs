@@ -1,12 +1,12 @@
+mod maintenance;
+use maintenance::MemoryMaintenancePass;
+
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use haven_common::prompts::{
-    COMPACTED_SUMMARY_PREFIX, CONTRADICTION_ARBITRATE_SYSTEM_PROMPT, FACT_EXTRACTION_SYSTEM_PROMPT,
-    predicate_merge_system_prompt,
-};
+use haven_common::prompts::{COMPACTED_SUMMARY_PREFIX, FACT_EXTRACTION_SYSTEM_PROMPT};
 use haven_common::retry::{BackoffPolicy, RecoveryDecision, RecoveryPolicy, RecoverySignal};
 #[cfg(test)]
 use haven_llm::LlmRouter;
@@ -14,8 +14,7 @@ use haven_llm::LlmRouter;
 use haven_memory::Database;
 use haven_memory::recall::MemoryRetriever;
 use haven_memory::repositories::facts::{
-    CANONICAL_MERGE_TARGETS, Fact, FactSourceRef, is_canonical_merge_target, is_sensitive_object,
-    is_sensitive_predicate, is_single_valued_predicate,
+    FactSourceRef, is_sensitive_object, is_sensitive_predicate, is_single_valued_predicate,
 };
 use haven_memory::{
     MemoryFactExtractionStore, MemoryFactStore, MemoryFactWrite, MemoryMaintenanceStore,
@@ -29,15 +28,20 @@ use crate::fact_extraction::FactDraft;
 use crate::fact_extraction::{
     LlmFact, extract_json_array, normalize_predicate, sanitize_fact_field, sanitize_tags,
 };
+#[cfg(test)]
 use crate::fact_inference::{
-    ContradictionDemoteProposal, PredicateMergeProposal, build_extraction_window,
-    build_numbered_transcript, format_contradiction_groups, gate_contradiction_demote,
-    gate_predicate_merge, resolve_source_message,
+    ContradictionDemoteProposal, PredicateMergeProposal, gate_contradiction_demote,
+    gate_predicate_merge,
+};
+use crate::fact_inference::{
+    build_extraction_window, build_numbered_transcript, resolve_source_message,
 };
 use crate::memory_inference::MemoryInferencePort;
 #[cfg(test)]
 use crate::memory_inference::RouterMemoryInferencePort;
 use crate::memory_service::MemoryService;
+#[cfg(test)]
+use haven_memory::repositories::facts::Fact;
 
 const OUTBOX_RETRY_MAX_SECS: u64 = 30;
 const PERSIST_CONFIDENCE_FLOOR: f64 = 0.55;
@@ -99,16 +103,6 @@ pub struct MemoryWorker {
     /// unbounded number of provider permits when several sessions start at
     /// once.
     prompt_prefetch_slots: Arc<Semaphore>,
-}
-
-fn ensure_memory_maintenance_active(
-    cancellation: Option<&CancellationToken>,
-) -> anyhow::Result<()> {
-    anyhow::ensure!(
-        !cancellation.is_some_and(CancellationToken::is_cancelled),
-        "memory maintenance cancelled"
-    );
-    Ok(())
 }
 
 impl MemoryWorker {
@@ -940,372 +934,16 @@ impl MemoryWorker {
     /// / LLM arbitration (cursor cleanup and embedding catch-up are best-effort
     /// and not counted).
     pub async fn run_memory_maintenance(&self) -> anyhow::Result<u64> {
-        self.run_memory_maintenance_with_cancellation(None).await
+        MemoryMaintenancePass::new(self).run(None).await
     }
 
     pub(crate) async fn run_memory_maintenance_cancellable(
         &self,
         cancellation: &CancellationToken,
     ) -> anyhow::Result<u64> {
-        self.run_memory_maintenance_with_cancellation(Some(cancellation))
+        MemoryMaintenancePass::new(self)
+            .run(Some(cancellation))
             .await
-    }
-
-    async fn run_memory_maintenance_with_cancellation(
-        &self,
-        cancellation: Option<&CancellationToken>,
-    ) -> anyhow::Result<u64> {
-        ensure_memory_maintenance_active(cancellation)?;
-        let mut cleaned = 0u64;
-        let mut failures = Vec::new();
-
-        let dedup = self.maintenance_store.dedup_facts(cancellation).await;
-        ensure_memory_maintenance_active(cancellation)?;
-        match dedup {
-            Ok(count) => cleaned += count,
-            Err(error) => {
-                tracing::warn!("memory maintenance: dedup_facts failed: {}", error);
-                failures.push(format!("dedup_facts: {error}"));
-            }
-        }
-
-        let sensitive = self
-            .maintenance_store
-            .delete_sensitive_facts(cancellation)
-            .await;
-        ensure_memory_maintenance_active(cancellation)?;
-        match sensitive {
-            Ok(count) => cleaned += count,
-            Err(error) => {
-                tracing::error!(
-                    "memory maintenance: delete_sensitive_facts failed: {}",
-                    error
-                );
-                failures.push(format!("delete_sensitive_facts: {error}"));
-            }
-        }
-
-        // X5: demote recent polarity / single-valued losers that slipped past
-        // upsert (age-capped), before low-confidence flush can delete them in
-        // the same pass.
-        let contradictions = self
-            .maintenance_store
-            .resolve_contradictions(cancellation)
-            .await;
-        ensure_memory_maintenance_active(cancellation)?;
-        match contradictions {
-            Ok(count) => {
-                if count > 0 {
-                    tracing::info!(
-                        "memory maintenance: resolved {} contradictory fact(s)",
-                        count
-                    );
-                }
-                cleaned += count;
-            }
-            Err(error) => {
-                tracing::warn!(
-                    "memory maintenance: resolve_contradictions failed: {}",
-                    error
-                );
-                failures.push(format!("resolve_contradictions: {error}"));
-            }
-        }
-
-        let low_confidence = self
-            .maintenance_store
-            .flush_low_confidence(0.3, cancellation)
-            .await;
-        ensure_memory_maintenance_active(cancellation)?;
-        match low_confidence {
-            Ok(count) => cleaned += count,
-            Err(error) => {
-                tracing::warn!("memory maintenance: flush_low_confidence failed: {}", error);
-                failures.push(format!("flush_low_confidence: {error}"));
-            }
-        }
-
-        let pruned = self
-            .maintenance_store
-            .prune_orphaned_embeddings(cancellation)
-            .await;
-        ensure_memory_maintenance_active(cancellation)?;
-        match pruned {
-            Ok(count) => cleaned += count,
-            Err(error) => {
-                tracing::warn!(
-                    "memory maintenance: prune_orphaned_embeddings failed: {}",
-                    error
-                );
-                failures.push(format!("prune_orphaned_embeddings: {error}"));
-            }
-        }
-
-        let orphan_cursors = self
-            .maintenance_store
-            .cleanup_orphan_extraction_cursors(cancellation)
-            .await;
-        ensure_memory_maintenance_active(cancellation)?;
-        if let Err(error) = orphan_cursors {
-            tracing::warn!(
-                "memory maintenance: cleanup_orphan_extraction_cursors failed: {}",
-                error
-            );
-            failures.push(format!("cleanup_orphan_extraction_cursors: {error}"));
-        }
-
-        // provenance_item_id is FK ON DELETE SET NULL; opaque
-        // provenance_record_id values are intentional transcript refs. Still
-        // normalize empty record ids.
-        let source_refs = self
-            .maintenance_store
-            .cleanup_orphan_source_refs(cancellation)
-            .await;
-        ensure_memory_maintenance_active(cancellation)?;
-        match source_refs {
-            Ok(count) => cleaned += count,
-            Err(error) => {
-                tracing::warn!(
-                    "memory maintenance: cleanup_orphan_source_refs failed: {}",
-                    error
-                );
-                failures.push(format!("cleanup_orphan_source_refs: {error}"));
-            }
-        }
-
-        if !failures.is_empty() {
-            anyhow::bail!("memory maintenance failed: {}", failures.join("; "));
-        }
-
-        ensure_memory_maintenance_active(cancellation)?;
-        let merged = self.merge_predicates_with_llm().await;
-        ensure_memory_maintenance_active(cancellation)?;
-        // Alias merges can create new single-valued multi-object conflicts;
-        // re-run the rule keeper before LLM arbitration so merge-created
-        // pairs get the same user>inferred / confidence treatment.
-        let resolved_after_merge = if merged > 0 {
-            match self
-                .maintenance_store
-                .resolve_contradictions(cancellation)
-                .await
-            {
-                Ok(count) => count,
-                Err(_error) if cancellation.is_some_and(CancellationToken::is_cancelled) => {
-                    anyhow::bail!("memory maintenance cancelled")
-                }
-                Err(error) => {
-                    tracing::warn!(
-                        "memory maintenance: post-merge resolve_contradictions failed: {}",
-                        error
-                    );
-                    0
-                }
-            }
-        } else {
-            0
-        };
-        ensure_memory_maintenance_active(cancellation)?;
-        let arbitrated = self.arbitrate_contradictions_with_llm().await;
-        ensure_memory_maintenance_active(cancellation)?;
-        // Catch up on vector indexing too, so memory that accumulated while
-        // the embedding model was unconfigured gets indexed once it is set up.
-        // Rebuild LSH only when the side table lags the embedding rows (M5).
-        self.memory.embed_new_memory().await;
-        self.memory.rebuild_lsh_if_lagging().await;
-        ensure_memory_maintenance_active(cancellation)?;
-        Ok(cleaned
-            .saturating_add(merged)
-            .saturating_add(resolved_after_merge)
-            .saturating_add(arbitrated))
-    }
-
-    /// Maintenance LLM pass (X5): residual contradiction groups after the
-    /// rule engine, with `source_ref` snippets as evidence. LLM runs outside
-    /// the DB lock; demotes are gated then applied in a separate blocking
-    /// call. Returns rows demoted.
-    async fn arbitrate_contradictions_with_llm(&self) -> u64 {
-        if !self.inference.is_fast_chat_configured().await {
-            return 0;
-        }
-        let groups = match self.maintenance_store.list_ambiguous_contradictions().await {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!(
-                    "memory maintenance: list_ambiguous_contradictions failed: {}",
-                    e
-                );
-                return 0;
-            }
-        };
-        let groups: Vec<_> = groups
-            .into_iter()
-            .filter_map(|mut group| {
-                group.facts.retain(MemoryRetriever::visible_fact);
-                (!group.facts.is_empty()).then_some(group)
-            })
-            .collect();
-        if groups.is_empty() {
-            return 0;
-        }
-        let listing = format_contradiction_groups(&groups);
-        let user_content = format!(
-            "Conflict groups (JSON):\n{listing}\n\nPropose demotions for residual contradictions."
-        );
-
-        let _permit = match self.inference_semaphore.acquire().await {
-            Ok(p) => p,
-            Err(_) => return 0,
-        };
-        let response = match self
-            .inference
-            .fast_chat(CONTRADICTION_ARBITRATE_SYSTEM_PROMPT, &user_content)
-            .await
-        {
-            Ok(text) => text,
-            Err(e) => {
-                tracing::warn!(
-                    "memory maintenance: contradiction arbitrate LLM failed: {}",
-                    e
-                );
-                return 0;
-            }
-        };
-        if response.trim().is_empty() {
-            return 0;
-        }
-        let json_str = extract_json_array(&response);
-        let proposals: Vec<ContradictionDemoteProposal> = match serde_json::from_str(&json_str) {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!(
-                    "memory maintenance: failed to parse contradiction demote JSON: {}",
-                    e
-                );
-                return 0;
-            }
-        };
-
-        let allowed: HashMap<String, &Fact> = groups
-            .iter()
-            .flat_map(|g| g.facts.iter().map(|f| (f.id.clone(), f)))
-            .collect();
-        let mut demote_ids: Vec<String> = Vec::new();
-        for p in proposals.into_iter().take(20) {
-            if let Some(id) = gate_contradiction_demote(&p, &allowed, &groups)
-                && !demote_ids.iter().any(|x| x == &id)
-            {
-                demote_ids.push(id);
-            }
-        }
-        if demote_ids.is_empty() {
-            return 0;
-        }
-        match self.maintenance_store.demote_fact_ids(demote_ids).await {
-            Ok(count) => {
-                if count > 0 {
-                    tracing::info!(
-                        "memory maintenance: LLM demoted {} contradictory fact(s)",
-                        count
-                    );
-                }
-                count
-            }
-            Err(_) => 0,
-        }
-    }
-
-    /// Maintenance LLM pass (M6): propose predicate alias merges and apply
-    /// only gated rewrites. LLM runs outside the DB lock; SQL apply is a
-    /// separate blocking call. Returns rows rewritten.
-    async fn merge_predicates_with_llm(&self) -> u64 {
-        if !self.inference.is_fast_chat_configured().await {
-            return 0;
-        }
-        let counts = match self.maintenance_store.list_predicate_counts().await {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!("memory maintenance: list_predicate_counts failed: {}", e);
-                return 0;
-            }
-        };
-        // Only bother the model when some keys still need collapsing: either
-        // a known alias spelling, or a free-form non-canonical predicate.
-        let needs_merge = counts.iter().any(|entry| {
-            let normalized = normalize_predicate(&entry.predicate);
-            normalized != entry.predicate || !is_canonical_merge_target(&normalized)
-        });
-        if !needs_merge || counts.len() < 2 {
-            return 0;
-        }
-        let listing = counts
-            .iter()
-            .take(60)
-            .map(|entry| format!("{}\t{}", entry.predicate, entry.row_count))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let user_content = format!(
-            "Predicate counts (predicate\\trows):\n{listing}\n\nPropose merges for free-form keys onto canonical ones."
-        );
-
-        let _permit = match self.inference_semaphore.acquire().await {
-            Ok(p) => p,
-            Err(_) => return 0,
-        };
-        let merge_prompt = predicate_merge_system_prompt(CANONICAL_MERGE_TARGETS);
-        let response = match self.inference.fast_chat(&merge_prompt, &user_content).await {
-            Ok(text) => text,
-            Err(e) => {
-                tracing::warn!("memory maintenance: predicate merge LLM failed: {}", e);
-                return 0;
-            }
-        };
-        if response.trim().is_empty() {
-            return 0;
-        }
-        let json_str = extract_json_array(&response);
-        let proposals: Vec<PredicateMergeProposal> = match serde_json::from_str(&json_str) {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!(
-                    "memory maintenance: failed to parse predicate merge JSON: {}",
-                    e
-                );
-                return 0;
-            }
-        };
-
-        let mut accepted: Vec<(String, String)> = Vec::new();
-        for p in proposals.into_iter().take(20) {
-            if let Some((from, to)) = gate_predicate_merge(&p) {
-                accepted.push((from, to));
-            }
-        }
-        if accepted.is_empty() {
-            return 0;
-        }
-        let mut total = 0u64;
-        for (from, to) in accepted {
-            match self.maintenance_store.rewrite_predicate(&from, &to).await {
-                Ok(count) => {
-                    if count > 0 {
-                        tracing::info!(
-                            "memory maintenance: rewrote predicate '{}' → '{}' ({} rows)",
-                            from,
-                            to,
-                            count
-                        );
-                        total += count;
-                    }
-                }
-                Err(error) => tracing::warn!(
-                    "memory maintenance: rewrite_predicate {}→{} failed: {}",
-                    from,
-                    to,
-                    error
-                ),
-            }
-        }
-        total
     }
 
     /// Apply extraction policy and prepare facts for one atomic extraction
@@ -1716,6 +1354,7 @@ pub enum SummaryExtractOutcome {
 
 #[cfg(test)]
 mod tests {
+    use super::maintenance::MemoryMaintenancePass;
     use super::*;
     use crate::fact_inference::{
         EXTRACTION_TOOL_CONTENT_CHARS, build_extraction_window, build_numbered_transcript,
@@ -2154,6 +1793,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn memory_maintenance_runs_contradiction_keeper_before_low_confidence_flush() {
+        let db = temp_db();
+        let loser_id = insert_noncanonical_predicate(&db, "language", "Go");
+        db.conn()
+            .execute(
+                "UPDATE facts SET confidence = 0.5 WHERE id = ?1",
+                [&loser_id],
+            )
+            .unwrap();
+        let keeper_id = insert_noncanonical_predicate(&db, "language", "Rust");
+        db.conn()
+            .execute(
+                "UPDATE facts SET source = 'user', confidence = 1.0 WHERE id = ?1",
+                [&keeper_id],
+            )
+            .unwrap();
+        let thirty_six_hours_ago = (chrono::Utc::now() - chrono::Duration::hours(36)).to_rfc3339();
+        db.conn()
+            .execute(
+                "UPDATE facts SET created_at = ?1, last_seen_at = ?1 WHERE id IN (?2, ?3)",
+                [
+                    thirty_six_hours_ago.as_str(),
+                    loser_id.as_str(),
+                    keeper_id.as_str(),
+                ],
+            )
+            .unwrap();
+        let inference = Arc::new(FixedMemoryInference {
+            fast_chat_configured: false,
+            response: String::new(),
+            calls: AtomicUsize::new(0),
+        });
+        let worker = make_engine_with_inference(db.clone(), inference);
+
+        assert_eq!(worker.run_memory_maintenance().await.unwrap(), 2);
+        assert!(db.get_fact_by_id(&keeper_id).unwrap().is_some());
+        assert!(
+            db.get_fact_by_id(&loser_id).unwrap().is_none(),
+            "rule demotion must happen before the low-confidence purge"
+        );
+    }
+
+    #[tokio::test]
     async fn memory_maintenance_continues_after_one_store_operation_fails() {
         let db = temp_db();
         let fact = db
@@ -2240,7 +1922,9 @@ mod tests {
         });
         let worker = make_engine_with_inference(db.clone(), inference.clone());
 
-        let rewritten = worker.merge_predicates_with_llm().await;
+        let rewritten = MemoryMaintenancePass::new(&worker)
+            .merge_predicates_with_llm()
+            .await;
 
         assert_eq!(
             rewritten, 5,
@@ -2289,7 +1973,9 @@ mod tests {
         });
         let worker = make_engine_with_inference(db.clone(), inference.clone());
 
-        let demoted = worker.arbitrate_contradictions_with_llm().await;
+        let demoted = MemoryMaintenancePass::new(&worker)
+            .arbitrate_contradictions_with_llm()
+            .await;
 
         assert_eq!(demoted, 1);
         assert_eq!(inference.calls.load(Ordering::Relaxed), 1);
@@ -2311,8 +1997,9 @@ mod tests {
         });
         let worker = make_engine_with_inference(db, inference.clone());
 
-        assert_eq!(worker.merge_predicates_with_llm().await, 0);
-        assert_eq!(worker.arbitrate_contradictions_with_llm().await, 0);
+        let maintenance = MemoryMaintenancePass::new(&worker);
+        assert_eq!(maintenance.merge_predicates_with_llm().await, 0);
+        assert_eq!(maintenance.arbitrate_contradictions_with_llm().await, 0);
         assert_eq!(inference.calls.load(Ordering::Relaxed), 0);
     }
 

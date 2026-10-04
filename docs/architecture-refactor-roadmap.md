@@ -102,14 +102,14 @@ ADR 0424 已于 2026-10-04 采纳，确定 session、scheduled 和 UI 直调确�
 
 **退出条件：** request ID 不跨 owner 扫描/fallback；错误 owner/context 不能消费请求或触发副作用；点击与到期竞争最多接受一个终态；所有 pending confirmation 有 owner 管理的有效绝对期限；renderer 关闭、迟到点击、可重试持久化失败和 continuation 执行失败均有明确结果；Session append 失败不改变 actor；session 重启只从 `session_events` 恢复，UI/scheduled 请求不自动重放。运行时 DTO 与 UI/IPC 类型保持一致；旧 route、期限入口和测试分支删除。此方案不改 durable session payload 或 schema，无需重置；验证与切片细节见 ADR 0424/0423。
 
-### 5.3 内部模块边界整理（Active：MemoryWorker maintenance pass）
+### 5.3 内部模块边界整理（Candidate / 已完成三个边界整理）
 
-这不是 crate 拆分目标，按职责和稳定 owner 选择可证明有益的内部边界。首个边界已完成：`SessionStore` 的只读历史查询与 DTO 已收入私有 `session_history` 模块，公开 façade、SQL owner、查询过滤/排序/缓存和序列化保持不变。聚合 event stream 与多个投影的 `session_resume_projection` 继续留在事务协调 owner。实现约束和回滚见 [ADR 0466](adr/0466-session-history-read-facade-module.md)。第二个边界已完成：Provider schema projection 归入 adapter 私有 helper，通用 schema sanitizer 和 canonical JSON 留在 `types.rs`；实现约束与验证见 [ADR 0467](adr/0467-llm-tool-schema-projection-module.md)。
+这不是 crate 拆分目标，按职责和稳定 owner 选择可证明有益的内部边界。首个边界已完成：`SessionStore` 的只读历史查询与 DTO 已收入私有 `session_history` 模块，公开 façade、SQL owner、查询过滤/排序/缓存和序列化保持不变。聚合 event stream 与多个投影的 `session_resume_projection` 继续留在事务协调 owner。实现约束和回滚见 [ADR 0466](adr/0466-session-history-read-facade-module.md)。第二个边界已完成：Provider schema projection 归入 adapter 私有 helper，通用 schema sanitizer 和 canonical JSON 留在 `types.rs`；实现约束与验证见 [ADR 0467](adr/0467-llm-tool-schema-projection-module.md)。第三个边界已完成：`MemoryMaintenancePass` 只借用已有 store、inference、semaphore、MemoryService；周期 schedule、worker facade 与 durable outbox lifecycle 留在原 owner；步骤、取消和失败语义不变，细节与验证见 [ADR 0468](adr/0468-memory-worker-maintenance-pass-module.md)。
 
 ADR 0424 收口后，按证据逐个评估以下候选；同一时刻只推进一项，复核后再启动下一项：
 
 1. **LLM provider schema projection（已完成，2026-10-05）。** 将 `llm/types.rs` 的 OpenAI-compatible object-root 与 Gemini JSON Schema 方言投影移入 adapter 私有共享 helper；通用工具参数净化、JSON canonicalization 和稳定类型仍留在 `types.rs`。provider tool-schema wire 输出、缓存身份和内部完整 schema 执行校验保持不变；实现及验证见 ADR 0467。
-2. **MemoryWorker 定期 maintenance（Active）。** 将 maintenance 编排与 LLM predicate merge / contradiction arbitration 收口到只借用现有 store、inference、semaphore、MemoryService 的私有 pass；普通 fact/summary 提取、MemoryRuntime schedule 与 durable outbox 留在现有 owner。严格保持操作顺序、失败聚合、取消检查点、LLM 未配置时跳过及计数语义；outbox marker/ack 生命周期不变。实施和验证见 [ADR 0468](adr/0468-memory-worker-maintenance-pass-module.md)。
+2. **MemoryWorker 定期 maintenance（已完成，2026-10-05）。** maintenance 编排与 LLM predicate merge / contradiction arbitration 收口到只借用现有 store、inference、semaphore、MemoryService 的私有 pass；普通 fact/summary 提取、MemoryRuntime schedule 与 durable outbox 留在现有 owner。步骤顺序、失败聚合、取消检查点、LLM 未配置时跳过及计数语义均保持；outbox marker/ack 恢复回归仍通过。实现与验证见 ADR 0468。
 3. **App managed-media 文件生命周期。** 评估从 `commands/recording.rs` 拆出上传落盘和媒体清理的私有模块，Tauri 命令和 IPC 保持不变。上传、两个 media root 的清理、同一 `UPLOAD_WRITE_LOCK`、SessionStore durable refs 与 ManagedAssetRegistry lease 必须作为一个完整边界移动；验收覆盖额度、部分失败、路径/重解析点拒绝、读取 refs 失败时 fail closed、活动 lease 保护和并发清理。
 4. **Shell 录音 overlay 状态机。** 可评估从 `+layout.svelte` 提取录音 overlay timer/state/cancel 逻辑；shell 仍独占全局事件登记和系统通知。验收覆盖 start/stop/transcription 关联、快速 stop、cancel、voice transcript 提交，以及卸载时 timer/listener 清理。不要把全局事件订阅再搬进新 controller。
 
