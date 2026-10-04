@@ -315,7 +315,7 @@ component-local ($state / $derived)
     ↑  props / callbacks  ↓
 route-level ($state, invoke 调用)
     ↑  subscribe  ↓
-shared stores (writable stores in stores.ts / themeStore.ts)
+shared stores (domain-specific writable stores in lib/)
 ```
 
 ### 4.2 组件本地状态
@@ -337,7 +337,7 @@ shared stores (writable stores in stores.ts / themeStore.ts)
 
 ### 4.3 跨组件共享状态
 
-使用 `svelte/store` `writable`，定义在 `stores.ts` 中：
+跨组件共享状态使用 `svelte/store` `writable`，放在 `lib/` 下对应的领域 store 模块中，不在组件内重复创建：
 
 ```js
 export const messagesStore = writable([]);
@@ -347,11 +347,16 @@ export const notificationStore = writable([]);
 在组件中订阅：
 
 ```js
-import { notificationStore } from '$lib/stores.ts';
+import { onDestroy } from 'svelte';
+import { notificationStore } from '$lib/notificationStore.ts';
+import { syncStore } from '$lib/syncStore.ts';
 
 let items = $state([]);
-notificationStore.subscribe((v) => (items = v));
+const unsubscribe = syncStore(notificationStore, (v) => (items = v));
+onDestroy(unsubscribe);
 ```
+
+组件直接订阅 store 时必须在组件销毁时调用返回的 unsubscribe；路由容器用 `$effect` 管理订阅时，应返回 unsubscribe 作为 effect cleanup。
 
 ### 4.4 $effect 使用场景
 
@@ -542,10 +547,13 @@ ui/src/
 当需要从 `svelte/store` 的 `writable` 读取数据时：
 
 ```js
-import { notificationStore } from '$lib/stores.ts';
+import { onDestroy } from 'svelte';
+import { notificationStore } from '$lib/notificationStore.ts';
+import { syncStore } from '$lib/syncStore.ts';
 
 let items = $state([]);
-notificationStore.subscribe((v) => (items = v));
+const unsubscribe = syncStore(notificationStore, (v) => (items = v));
+onDestroy(unsubscribe);
 ```
 
 不要在 Svelte 5 组件中创建新的 `writable` store，使用 `$state` 替代。

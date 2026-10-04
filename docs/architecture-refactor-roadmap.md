@@ -121,11 +121,15 @@ ADR 0424 收口后，按证据逐个评估以下候选；同一时刻只推进�
 上述完成项是历史结果，Active 只表示当前可执行的一片。最新候选审查确认：Common 拆分维持 ADR 0359 的暂缓决定；Tools crate 拆分缺少
 独立依赖边界和消费者收益；SessionStore 的 append、projection 与 rollback 必须保持同事务 owner；`LOCAL_TOOL_SECURITY_MATRIX`
 仍被生产权限提示路径用作 operation 名白名单，因此保留在 `security.rs`。`+page.svelte`、`SettingsView.svelte`、`admin.rs`、
-`llm/router.rs`、`inbox.rs`、`crates/tools/src/lib.rs`、`crates/agent/src/react/mod.rs` 与 `app_state.rs` 均经热点复核，未发现
-重复 owner、边界回归或足以证明拆分收益的依赖/性能证据；当前没有 Active 代码切片。观察项是 Tools 根模块少量 helper 的局部归属
-漂移，以及 ReAct 媒体投影 helper 的跨模块调用；只有它们引发重复实现、反复回归或调用边持续扩张时才重新评估。AppState 审计
-确认后台初始化由 `AppState::spawn_background_init` 编排，`bootstrap.rs` 负责触发并提供 Tauri emitter；架构文档已对齐代码。
-只有新 bug、职责变更 churn、依赖边或可复现 profile 信号出现时再复核，不因文件/crate 大而排期拆分。
+`llm/router.rs`、`inbox.rs`、`crates/tools/src/lib.rs`、`crates/tools/src/builtin/mod.rs`、
+`crates/agent/src/react/mod.rs`、`crates/agent/src/layer.rs` 与 `app_state.rs` 均经热点复核，未发现重复 owner、边界回归或
+足以证明更大拆分收益的依赖/性能证据。`+layout.svelte` 复核发现 ReAct phase store 订阅缺少销毁清理，现已通过保留 `syncStore`
+disposer 并在组件销毁时调用修复；该生命周期修正不构成布局 controller 拆分理由。当前没有 Active 结构代码切片。
+
+观察项是 Tools 根模块少量 helper 的局部归属漂移、ReAct 媒体投影 helper 的跨模块调用，以及 AgentLayer 启动编排较密；只有它们
+引发重复实现、反复回归或调用边持续扩张时才重新评估。AppState 审计确认后台初始化由 `AppState::spawn_background_init` 编排，
+`bootstrap.rs` 负责触发并提供 Tauri emitter；架构文档已对齐代码。只有新 bug、职责变更 churn、依赖边或可复现 profile 信号出现
+时再复核，不因文件/crate 大而排期拆分。
 
 事件存储与 transcript projection 的内部拆分属于暂缓的高风险候选：只读历史 façade 已拆，但在写侧仍有可量化维护收益之前不启动。`SessionStore` 必须继续作为 append、物化投影和 rollback 的事务协调 owner：事件与 projection 原子提交，rollback 同时维护 `event_cursor` 和 `last_msg_at`，提交成功后才发布事件。若拆分要求上层分别写 event/projection、暴露事务细节或引入第二个恢复来源，应停止。
 

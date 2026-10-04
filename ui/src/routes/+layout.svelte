@@ -404,7 +404,7 @@
 			scheduleBootstrapProbe();
 		}
 	}
-	reactExecutionPhaseStore.subscribe((v) => {
+	const unsubscribeExecutionPhase = syncStore(reactExecutionPhaseStore, (v) => {
 		reactExecutionPhase = v;
 		if (v === 'idle') probeLlmConnection();
 	});
@@ -1168,6 +1168,7 @@
 	});
 
 	onDestroy(() => {
+		unsubscribeExecutionPhase();
 		removeGlobalErrorHandlers();
 		recordingOverlayController.dispose();
 		if (llmProbeTimer) clearTimeout(llmProbeTimer);
