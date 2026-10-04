@@ -341,7 +341,6 @@
 				sessionId: session.id,
 				summary: session.input_text,
 				title: session.title,
-				status: result.session?.status || session.status,
 				wasError,
 				errorReason: wasError ? appSessionReducer.getSessionErrorReason(session.id) : '',
 			});

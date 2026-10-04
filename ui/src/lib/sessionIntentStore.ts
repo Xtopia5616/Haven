@@ -4,7 +4,6 @@ export type ResumeTarget = {
 	sessionId: string;
 	summary?: string;
 	title?: string | null;
-	status?: string;
 	wasError?: boolean;
 	errorReason?: string;
 };
