@@ -1,5 +1,5 @@
 use crate::action_output::{ActionOutputPort, ActionTailSnapshot};
-use crate::process::read_stream_capped;
+use crate::process::{read_stream_capped, read_stream_capped_with};
 
 use super::*;
 use haven_memory::{ActionStore, Database};
@@ -1064,6 +1064,34 @@ async fn test_read_stream_capped_over_cap() {
     let (text, overflowed) = read_stream_capped(Some(&data[..]), 100, None).await;
     assert_eq!(text.len(), 100);
     assert!(overflowed);
+}
+
+#[tokio::test]
+async fn capped_reader_discards_excess_bytes_and_keeps_draining() {
+    use tokio::io::AsyncWriteExt;
+
+    let (mut writer, reader) = tokio::io::duplex(32);
+    let writer_task = tokio::spawn(async move {
+        let chunk = [b'x'; 256];
+        for _ in 0..128 {
+            writer.write_all(&chunk).await.unwrap();
+        }
+    });
+
+    let (bytes, overflowed, read_error) = tokio::time::timeout(
+        Duration::from_secs(2),
+        read_stream_capped_with(Some(reader), 100, |_| {}),
+    )
+    .await
+    .expect("reader should drain the full stream");
+    tokio::time::timeout(Duration::from_secs(2), writer_task)
+        .await
+        .expect("writer should not block after the retained-output cap")
+        .unwrap();
+
+    assert_eq!(bytes, vec![b'x'; 100]);
+    assert!(overflowed);
+    assert!(read_error.is_none());
 }
 
 #[tokio::test]
