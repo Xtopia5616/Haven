@@ -450,3 +450,4 @@
 - [0465：删除 AppState 到 ApplicationRuntime 的隐式转发](0465-remove-appstate-deref-bridge.md)
 - [0466：拆分 SessionStore 只读历史 façade](0466-session-history-read-facade-module.md)
 - [0467：将 Provider 工具 Schema 投影归入 adapter 边界](0467-llm-tool-schema-projection-module.md)
+- [0468：隔离 MemoryWorker 定期维护 pass](0468-memory-worker-maintenance-pass-module.md)
