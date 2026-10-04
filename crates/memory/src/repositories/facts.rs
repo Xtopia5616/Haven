@@ -1,5 +1,4 @@
 use crate::db::Database;
-use std::collections::HashSet;
 
 use super::fact_graph::FactGraph;
 use super::fact_maintenance::FactMaintenance;
@@ -271,11 +270,6 @@ pub fn is_sensitive_text(text: &str) -> bool {
     ];
     SENSITIVE_KEYWORDS.iter().any(|k| t.contains(k))
 }
-
-/// Batch existence result for fact inference: the exact
-/// (subject, predicate, object) triples and the (subject, predicate) pairs
-/// already stored for a batch of subjects.
-pub type FactPresence = (HashSet<(String, String, String)>, HashSet<(String, String)>);
 
 impl Database {
     pub fn insert_fact(

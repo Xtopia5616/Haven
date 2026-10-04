@@ -1550,12 +1550,6 @@ impl SessionStore {
             .await
     }
 
-    /// Return the latest user-message projection clock without exposing the
-    /// underlying `messages` repository to Agent recovery code.
-    pub fn last_user_message_at(&self, session_id: &str) -> anyhow::Result<Option<String>> {
-        self.db.last_user_message_ts(session_id)
-    }
-
     pub fn append(
         &self,
         session_id: &str,
@@ -2321,23 +2315,6 @@ impl SessionStore {
         }
     }
 
-    /// Resolve a branch point's projection cutoff without exposing the event
-    /// payload or timestamp lookup to Agent recovery code.
-    pub fn projection_cutoff_for_step(
-        &self,
-        session_id: &str,
-        step_number: u32,
-    ) -> anyhow::Result<Option<ProjectionCutoff>> {
-        Ok(self
-            .branch_point_for_step(session_id, step_number)?
-            .and_then(|(_, _, last_msg_at)| {
-                last_msg_at.map(|created_at| ProjectionCutoff {
-                    created_at,
-                    inclusive: false,
-                })
-            }))
-    }
-
     /// Append usage domain events and project them into the usage tables in
     /// the same transaction. This is the only live usage write boundary for
     /// Agent-owned, tool-owned and media-owned model calls.
@@ -2767,16 +2744,6 @@ impl SessionStore {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
-    /// Explicit replay name used by live/resume consumers. The returned rows
-    /// are ordered strictly after `after_sequence`.
-    pub fn replay_from(
-        &self,
-        session_id: &str,
-        after_sequence: i64,
-    ) -> anyhow::Result<Vec<SessionEvent>> {
-        self.read_from(session_id, after_sequence)
-    }
-
     /// Replay the current timeline. Rollback markers only move the active
     /// cursor; the underlying append-only rows remain available for audit and
     /// future branch tooling.
@@ -2923,6 +2890,7 @@ impl SessionStore {
     /// Return the latest active branch point for each step. Branch points are
     /// control events and are intentionally kept separate from transcript
     /// replay, but they share the same rollback cursor and audit log.
+    #[cfg(test)]
     pub fn read_active_branch_points(
         &self,
         session_id: &str,
@@ -2965,29 +2933,6 @@ impl SessionStore {
             }
         }
         Ok(points)
-    }
-
-    pub fn branch_point_for_step(
-        &self,
-        session_id: &str,
-        step_number: u32,
-    ) -> anyhow::Result<Option<(SessionEvent, usize, Option<String>)>> {
-        Ok(self
-            .read_active_branch_points(session_id)?
-            .into_iter()
-            .find(|(_, _, step, _)| *step == step_number)
-            .map(|(event, cursor, _, last_msg_at)| (event, cursor, last_msg_at)))
-    }
-
-    /// Return the sequence immediately before the `transcript_cursor`-th
-    /// active transcript event. Cursor zero is the beginning of the timeline.
-    pub fn sequence_for_transcript_cursor(
-        &self,
-        session_id: &str,
-        transcript_cursor: usize,
-    ) -> anyhow::Result<i64> {
-        let conn = self.db.conn();
-        Self::sequence_for_transcript_cursor_in_connection(&conn, session_id, transcript_cursor)
     }
 
     fn sequence_for_transcript_cursor_in_connection(

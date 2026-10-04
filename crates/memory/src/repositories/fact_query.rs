@@ -8,7 +8,7 @@ use crate::db::Database;
 use chrono::{DateTime, Utc};
 use std::collections::HashSet;
 
-use super::facts::{Fact, FactPresence, is_identity_predicate, is_volatile_predicate};
+use super::facts::{Fact, is_identity_predicate, is_volatile_predicate};
 
 /// Parse a JSON-encoded tag array from a DB string column.
 fn parse_tags(tags_str: &str) -> Vec<String> {
@@ -202,33 +202,6 @@ impl Database {
         }
         sort_facts_effective(&mut facts);
         Ok(facts)
-    }
-
-    /// Batch existence check for fact inference.
-    pub fn facts_exist_batch(&self, subjects: &[&str]) -> anyhow::Result<FactPresence> {
-        if subjects.is_empty() {
-            return Ok((HashSet::new(), HashSet::new()));
-        }
-        let placeholders = vec!["?"; subjects.len()].join(",");
-        let conn = self.conn();
-        let mut stmt = conn.prepare(&format!(
-            "SELECT subject, predicate, object FROM facts WHERE subject IN ({placeholders})"
-        ))?;
-        let rows = stmt.query_map(rusqlite::params_from_iter(subjects.iter().copied()), |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-            ))
-        })?;
-        let mut triples = HashSet::new();
-        let mut pairs = HashSet::new();
-        for row in rows {
-            let (subject, predicate, object) = row?;
-            triples.insert((subject.clone(), predicate.clone(), object));
-            pairs.insert((subject, predicate));
-        }
-        Ok((triples, pairs))
     }
 
     /// All facts in effective-confidence order. Cached because this is a

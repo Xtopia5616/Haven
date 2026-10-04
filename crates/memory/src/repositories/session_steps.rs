@@ -259,40 +259,6 @@ impl Database {
         Ok(Self::action_step_from_fields(fields, created_at))
     }
 
-    /// Create an action step with the durable invocation identity.
-    #[allow(clippy::too_many_arguments)]
-    pub fn create_action_step_with_identity(
-        &self,
-        session_id: &str,
-        step_number: i32,
-        action_index: i32,
-        tool_name: &str,
-        tool_input: &str,
-        tool_call_id: Option<&str>,
-        is_high_risk: bool,
-        silent: bool,
-        confirmed: Option<bool>,
-        id: Option<&str>,
-    ) -> anyhow::Result<SessionStep> {
-        let id = id
-            .map(String::from)
-            .unwrap_or_else(|| haven_common::types::new_id("step"));
-        let fields = ActionStepFields {
-            id: &id,
-            session_id,
-            step_number,
-            action_index,
-            tool_name,
-            tool_input,
-            tool_call_id,
-            is_high_risk,
-            silent,
-            confirmed,
-        };
-        let created_at = self.insert_action_step(fields, false)?;
-        Ok(Self::action_step_from_fields(fields, created_at))
-    }
-
     /// Ensure an action step exists while retaining its stable invocation
     /// identity. Existing rows are never rewritten after completion.
     #[allow(clippy::too_many_arguments)]

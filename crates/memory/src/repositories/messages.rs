@@ -583,50 +583,6 @@ impl Database {
         Ok(())
     }
 
-    /// Delete the recovery-only partial-output rows for one failed LLM stream.
-    ///
-    /// Error snapshots retain these exact IDs so a later Continue never has to
-    /// infer a broad deletion boundary from an older periodic branch point.
-    pub fn delete_messages_by_ids(
-        &self,
-        session_id: &str,
-        message_ids: &[String],
-    ) -> anyhow::Result<()> {
-        if message_ids.is_empty() {
-            return Ok(());
-        }
-        let conn = self.conn();
-        let placeholders = std::iter::repeat_n("?", message_ids.len())
-            .collect::<Vec<_>>()
-            .join(", ");
-        let sql = format!("DELETE FROM messages WHERE session_id = ?1 AND id IN ({placeholders})");
-        let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(message_ids.len() + 1);
-        params.push(&session_id);
-        params.extend(message_ids.iter().map(|id| id as &dyn rusqlite::ToSql));
-        conn.execute(&sql, rusqlite::params_from_iter(params))?;
-        self.cache_invalidate_messages(session_id);
-        Ok(())
-    }
-
-    /// `created_at` of the most recent user-role message for a session, or
-    /// `None` if the session has no user messages yet. Database failures are
-    /// returned instead of being treated as an empty session. Implemented in SQL so
-    /// rollback does not have to load the entire message list just to find
-    /// the trailing user-input timestamp.
-    pub fn last_user_message_ts(&self, session_id: &str) -> anyhow::Result<Option<String>> {
-        let conn = self.conn();
-        let value = conn
-            .query_row(
-                "SELECT created_at FROM messages
-             WHERE session_id = ?1 AND role = 'user'
-             ORDER BY created_at DESC, rowid DESC LIMIT 1",
-                rusqlite::params![session_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?;
-        Ok(value)
-    }
-
     /// Drop every message **and** ses-step whose `created_at` is strictly
     /// after `ts`, or at-or-after `ts` when `inclusive`. Centralizes the
     /// `delete_messages_after/from + delete_session_steps_after` pair that
