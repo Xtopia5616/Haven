@@ -1299,17 +1299,23 @@ pub(crate) fn spawn(
                 }
                 ActorCommand::RequestInteraction { request, reply } => {
                     let request = *request;
-                    let result = match serde_json::to_string(&request) {
-                        Ok(payload) => {
-                            append_interaction_event(
-                                &store,
-                                &state.info.id,
-                                INTERACTION_REQUESTED_EVENT_TYPE,
-                                payload,
-                            )
-                            .await
-                        }
-                        Err(error) => Err(error.into()),
+                    let result = match crate::interaction::validate_session_association(
+                        Some(&request.session_id),
+                        &state.info.id,
+                    ) {
+                        Err(error) => Err(error),
+                        Ok(()) => match serde_json::to_string(&request) {
+                            Ok(payload) => {
+                                append_interaction_event(
+                                    &store,
+                                    &state.info.id,
+                                    INTERACTION_REQUESTED_EVENT_TYPE,
+                                    payload,
+                                )
+                                .await
+                            }
+                            Err(error) => Err(error.into()),
+                        },
                     };
                     if result.is_ok() {
                         state
@@ -1989,6 +1995,48 @@ mod queue_tests {
             messaging: SessionMessagingState::default(),
             react_run: None,
         }
+    }
+
+    #[tokio::test]
+    async fn actor_persists_only_interactions_for_its_session() {
+        let directory = tempfile::tempdir().expect("temporary database directory");
+        let db = Arc::new(
+            Database::open(&directory.path().join("actor-interaction-owner.db"))
+                .expect("temporary database"),
+        );
+        let session = db.create_session("interaction owner").expect("session");
+        let mut info = empty_state().info;
+        info.id = session.id.clone();
+        let actor = spawn(SessionStore::new(db.clone()), info, Vec::new());
+
+        actor
+            .request_interaction(crate::interaction::InteractionRequest::ask(
+                &session.id,
+                vec!["A".into()],
+                vec!["step-valid".into()],
+            ))
+            .await
+            .expect("matching session interaction should be persisted");
+        assert!(
+            actor
+                .request_interaction(crate::interaction::InteractionRequest::ask(
+                    "ses-other",
+                    Vec::new(),
+                    vec!["step-invalid".into()],
+                ))
+                .await
+                .is_err()
+        );
+
+        let events = SessionStore::new(db)
+            .read_active_events_async(&session.id)
+            .await
+            .expect("read active events");
+        assert_eq!(events.len(), 1, "invalid request must not be appended");
+        let persisted: crate::interaction::InteractionRequest =
+            serde_json::from_str(&events[0].payload).expect("decode durable interaction");
+        assert_eq!(persisted.session_id, session.id);
+        assert_eq!(persisted.id, "step-valid");
     }
 
     #[tokio::test]

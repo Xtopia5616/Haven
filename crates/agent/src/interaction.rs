@@ -80,6 +80,17 @@ pub struct InteractionRequest {
     pub expires_at: Option<String>,
 }
 
+pub(crate) fn validate_session_association(
+    interaction_session_id: Option<&str>,
+    owner_session_id: &str,
+) -> anyhow::Result<()> {
+    match interaction_session_id {
+        Some(interaction_session_id) if interaction_session_id == owner_session_id => Ok(()),
+        Some(_) => anyhow::bail!("interaction session association does not match its owner"),
+        None => anyhow::bail!("session-owned interaction has no session association"),
+    }
+}
+
 impl InteractionRequest {
     pub fn ask(session_id: &str, options: Vec<String>, step_ids: Vec<String>) -> Self {
         let step_id = step_ids
@@ -255,6 +266,13 @@ pub fn replay_session_interactions(
 
     let mut interactions: Vec<InteractionRequest> = Vec::new();
     for event in active_events {
+        if event.session_id != session_id {
+            anyhow::bail!(
+                "active event at sequence {} belongs to a different session",
+                event.sequence
+            );
+        }
+
         if event.event_type == TRANSCRIPT_EVENT_TYPE {
             let Ok(payload) = serde_json::from_str::<Value>(&event.payload) else {
                 continue;
@@ -303,6 +321,14 @@ pub fn replay_session_interactions(
                             event.sequence
                         )
                     })?;
+                validate_session_association(Some(&request.session_id), session_id).map_err(
+                    |error| {
+                        anyhow::anyhow!(
+                            "invalid interaction event at sequence {}: {error}",
+                            event.sequence
+                        )
+                    },
+                )?;
                 if request.kind == InteractionKind::Ask {
                     let covered_ids = std::iter::once(request.id.as_str())
                         .chain(request.correlation_ids.iter().map(String::as_str))
@@ -410,9 +436,19 @@ mod tests {
         assert_eq!(request.response, Some(Value::String("notes.md".into())));
 
         let encoded = serde_json::to_string(&request).unwrap();
+        let wire: Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(wire["session_id"], SESSION_ID);
+        assert!(wire.get("owner").is_none());
         let decoded: InteractionRequest = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded, request);
         assert!(!request.clone().cancel());
+    }
+
+    #[test]
+    fn session_association_requires_the_exact_owner_session() {
+        assert!(validate_session_association(Some(SESSION_ID), SESSION_ID).is_ok());
+        assert!(validate_session_association(Some("ses-other"), SESSION_ID).is_err());
+        assert!(validate_session_association(None, SESSION_ID).is_err());
     }
 
     #[test]
@@ -474,6 +510,20 @@ mod tests {
             }
         );
         assert_eq!(replayed[0].created_at, "2026-10-03T00:00:01Z");
+    }
+
+    #[test]
+    fn replay_rejects_an_interaction_from_another_session() {
+        let request = InteractionRequest::ask("ses-other", Vec::new(), Vec::new());
+        let event = event(
+            1,
+            haven_memory::INTERACTION_REQUESTED_EVENT_TYPE,
+            serde_json::to_value(request).unwrap(),
+        );
+
+        let error = replay_session_interactions(SESSION_ID, &[event])
+            .expect_err("mismatched session association must fail closed");
+        assert!(error.to_string().contains("does not match its owner"));
     }
 
     #[test]
