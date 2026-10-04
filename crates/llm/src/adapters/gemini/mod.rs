@@ -297,31 +297,12 @@ impl LlmClient for GeminiAdapter {
         self.chat_stream_inner(messages, Vec::new()).await
     }
 
-    async fn chat_stream_output_cap(
-        &self,
-        messages: Vec<CanonicalMessage>,
-        max_output_tokens: Option<u32>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
-        self.chat_stream_inner_with_max_tokens(messages, Vec::new(), max_output_tokens)
-            .await
-    }
-
     async fn chat_stream_with_tools(
         &self,
         messages: Vec<CanonicalMessage>,
         tools: Vec<ToolDefinition>,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
         self.chat_stream_inner(messages, tools).await
-    }
-
-    async fn chat_stream_with_tools_output_cap(
-        &self,
-        messages: Vec<CanonicalMessage>,
-        tools: Vec<ToolDefinition>,
-        max_output_tokens: Option<u32>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
-        self.chat_stream_inner_with_max_tokens(messages, tools, max_output_tokens)
-            .await
     }
 
     async fn chat_stream_with_tools_output_cap_shared(

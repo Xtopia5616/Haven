@@ -463,25 +463,6 @@ mod tests {
             Ok(Box::pin(futures_util::stream::empty()))
         }
 
-        async fn chat_stream_output_cap(
-            &self,
-            _messages: Vec<CanonicalMessage>,
-            _max_output_tokens: Option<u32>,
-        ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError>
-        {
-            Ok(Box::pin(futures_util::stream::iter([Ok(StreamChunk {
-                text: Some(self.text.clone()),
-                tool_calls: Vec::new(),
-                finish_reason: Some(crate::types::FinishReason::Stop),
-                usage: Some(crate::types::Usage::default()),
-                model: None,
-                reasoning: None,
-                web_search: None,
-                web_search_calls: Vec::new(),
-                thinking_blocks: Vec::new(),
-            })])))
-        }
-
         async fn chat_stream_with_tools_output_cap_shared(
             &self,
             _messages: Arc<[CanonicalMessage]>,
@@ -573,14 +554,6 @@ mod tests {
             Ok(Box::pin(futures_util::stream::empty()))
         }
 
-        async fn chat_stream_output_cap(
-            &self,
-            _messages: Vec<CanonicalMessage>,
-            _max_output_tokens: Option<u32>,
-        ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError>
-        {
-            Err(self.err.clone())
-        }
         async fn chat_stream_with_tools_output_cap_shared(
             &self,
             _messages: Arc<[CanonicalMessage]>,

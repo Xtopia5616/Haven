@@ -1399,18 +1399,6 @@ mod tests {
             }
         }
 
-        async fn chat_stream_with_tools_output_cap(
-            &self,
-            messages: Vec<CanonicalMessage>,
-            tools: Vec<ToolDefinition>,
-            _max_output_tokens: Option<u32>,
-        ) -> Result<
-            Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
-            LlmError,
-        > {
-            self.chat_stream_with_tools(messages, tools).await
-        }
-
         async fn chat_stream_with_tools_output_cap_shared(
             &self,
             _messages: Arc<[CanonicalMessage]>,
@@ -1426,17 +1414,6 @@ mod tests {
                 Some(ProbeResponse::Chunk(chunk)) => Ok(Box::pin(stream::iter(vec![Ok(chunk)]))),
                 None => Err(LlmError::Unknown("probe responses exhausted".into())),
             }
-        }
-
-        async fn chat_stream_output_cap(
-            &self,
-            messages: Vec<CanonicalMessage>,
-            _max_output_tokens: Option<u32>,
-        ) -> Result<
-            Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
-            LlmError,
-        > {
-            self.chat_stream_with_tools(messages, Vec::new()).await
         }
 
         async fn health_check(&self) -> Result<(), LlmError> {

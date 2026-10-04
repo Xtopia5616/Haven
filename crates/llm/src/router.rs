@@ -285,16 +285,16 @@ impl LlmRouter {
     /// exercise the concurrency cap without rebuilding the router with real
     /// HTTP adapters. Production limits come from `llm.max_concurrent_requests`
     /// at construction (and are refreshed by `hot_swap_router` on save).
-    #[doc(hidden)]
-    pub fn set_request_limit_for_test(&self, limit: usize) {
+    #[cfg(test)]
+    fn set_request_limit_for_test(&self, limit: usize) {
         let mut semaphores = self.semaphores.lock().unwrap();
         let model_ids = semaphores.keys().cloned().collect::<Vec<_>>();
         *semaphores = Self::make_semaphores(limit.max(1), model_ids);
     }
 
     /// Test utility: read the current rate-limit cooldown deadline for a model.
-    #[doc(hidden)]
-    pub async fn rate_limit_deadline_for_test(&self, model_id: &str) -> Option<Instant> {
+    #[cfg(test)]
+    async fn rate_limit_deadline_for_test(&self, model_id: &str) -> Option<Instant> {
         self.rate_limited.read().await.get(model_id).copied()
     }
 
@@ -1671,16 +1671,6 @@ mod tests {
                 Ok(Box::pin(stream::iter(self.chunks.clone())))
             }
         }
-        async fn chat_stream_output_cap(
-            &self,
-            messages: Vec<CanonicalMessage>,
-            _max_output_tokens: Option<u32>,
-        ) -> Result<
-            Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
-            LlmError,
-        > {
-            self.chat_stream(messages).await
-        }
         async fn chat_stream_with_tools(
             &self,
             _: Vec<CanonicalMessage>,
@@ -1694,17 +1684,6 @@ mod tests {
             } else {
                 Ok(Box::pin(stream::iter(self.chunks.clone())))
             }
-        }
-        async fn chat_stream_with_tools_output_cap(
-            &self,
-            messages: Vec<CanonicalMessage>,
-            tools: Vec<ToolDefinition>,
-            _max_output_tokens: Option<u32>,
-        ) -> Result<
-            Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
-            LlmError,
-        > {
-            self.chat_stream_with_tools(messages, tools).await
         }
         async fn chat_stream_with_tools_output_cap_shared(
             &self,
@@ -2264,16 +2243,6 @@ mod tests {
         > {
             Err(Unknown("mock: no chat_stream".into()))
         }
-        async fn chat_stream_output_cap(
-            &self,
-            _messages: Vec<CanonicalMessage>,
-            _max_output_tokens: Option<u32>,
-        ) -> Result<
-            Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
-            LlmError,
-        > {
-            self.chat_stream_with_tools(Vec::new(), Vec::new()).await
-        }
         async fn chat_stream_with_tools(
             &self,
             _: Vec<CanonicalMessage>,
@@ -2310,17 +2279,6 @@ mod tests {
                     _ => None,
                 }
             })))
-        }
-        async fn chat_stream_with_tools_output_cap(
-            &self,
-            messages: Vec<CanonicalMessage>,
-            tools: Vec<ToolDefinition>,
-            _max_output_tokens: Option<u32>,
-        ) -> Result<
-            Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
-            LlmError,
-        > {
-            self.chat_stream_with_tools(messages, tools).await
         }
         async fn chat_stream_with_tools_output_cap_shared(
             &self,

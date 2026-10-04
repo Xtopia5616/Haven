@@ -432,3 +432,4 @@
 - [0447：跨 crate 纯恢复策略决策模型](0447-cross-crate-recovery-policy-decisions.md)
 - [0448：移除未使用的 Memory API](0448-remove-unreferenced-memory-apis.md)
 - [0449：移除未使用的 Tools 入口](0449-remove-unused-tools-entry-points.md)
+- [0450：移除过时的向量流式 API](0450-remove-obsolete-vector-stream-api.md)

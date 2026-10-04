@@ -186,29 +186,6 @@ pub trait LlmClient: Send + Sync {
         ))
     }
 
-    /// Streaming chat with a per-request output cap.
-    async fn chat_stream_output_cap(
-        &self,
-        _messages: Vec<CanonicalMessage>,
-        _max_output_tokens: Option<u32>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
-        Err(LlmError::UnsupportedCapability(
-            "streaming output caps are not supported by this adapter".into(),
-        ))
-    }
-
-    /// Streaming tool chat with a per-request output cap.
-    async fn chat_stream_with_tools_output_cap(
-        &self,
-        _messages: Vec<CanonicalMessage>,
-        _tools: Vec<ToolDefinition>,
-        _max_output_tokens: Option<u32>,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, LlmError>> + Send>>, LlmError> {
-        Err(LlmError::UnsupportedCapability(
-            "streaming tool calling with an output cap is not supported by this adapter".into(),
-        ))
-    }
-
     /// Shared, read-only streaming request boundary used by provider retries.
     /// Native and custom streaming adapters should override this method and
     /// consume the immutable snapshots directly. The compatibility default is

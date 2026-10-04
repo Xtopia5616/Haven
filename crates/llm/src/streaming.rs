@@ -425,9 +425,7 @@ mod tests {
         }
     }
 
-    struct LegacyGuidanceProbe {
-        messages: StdMutex<Vec<Vec<CanonicalMessage>>>,
-    }
+    struct LegacyGuidanceProbe;
 
     #[async_trait]
     impl LlmClient for LegacyGuidanceProbe {
@@ -442,19 +440,6 @@ mod tests {
             Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
             LlmError,
         > {
-            Ok(Box::pin(futures_util::stream::empty()))
-        }
-
-        async fn chat_stream_with_tools_output_cap(
-            &self,
-            messages: Vec<CanonicalMessage>,
-            _tools: Vec<ToolDefinition>,
-            _max_output_tokens: Option<u32>,
-        ) -> Result<
-            Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
-            LlmError,
-        > {
-            self.messages.lock().unwrap().push(messages);
             Ok(Box::pin(futures_util::stream::empty()))
         }
 
@@ -477,29 +462,6 @@ mod tests {
             LlmError,
         > {
             Ok(Box::pin(futures_util::stream::empty()))
-        }
-
-        async fn chat_stream_output_cap(
-            &self,
-            _messages: Vec<CanonicalMessage>,
-            _max_output_tokens: Option<u32>,
-        ) -> Result<
-            Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
-            LlmError,
-        > {
-            std::future::pending().await
-        }
-
-        async fn chat_stream_with_tools_output_cap(
-            &self,
-            _messages: Vec<CanonicalMessage>,
-            _tools: Vec<ToolDefinition>,
-            _max_output_tokens: Option<u32>,
-        ) -> Result<
-            Pin<Box<dyn futures_util::Stream<Item = Result<StreamChunk, LlmError>> + Send>>,
-            LlmError,
-        > {
-            std::future::pending().await
         }
 
         async fn chat_stream_with_tools_output_cap_shared(
@@ -707,10 +669,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn default_guidance_boundary_is_fail_closed_for_legacy_adapters() {
-        let probe = LegacyGuidanceProbe {
-            messages: StdMutex::new(Vec::new()),
-        };
+    async fn default_guidance_boundary_fails_closed_without_shared_override() {
+        let probe = LegacyGuidanceProbe;
         let result = probe
             .chat_stream_with_tools_output_cap_shared_guidance(
                 Arc::from(vec![CanonicalMessage::user_text("hello")]),
@@ -722,12 +682,7 @@ mod tests {
 
         let error = result
             .err()
-            .expect("legacy guidance boundary must fail closed");
+            .expect("guidance boundary must fail closed without a shared override");
         assert!(matches!(error, LlmError::UnsupportedCapability(_)));
-        let requests = probe.messages.lock().unwrap();
-        assert!(
-            requests.is_empty(),
-            "legacy Vec boundary must not be called"
-        );
     }
 }
