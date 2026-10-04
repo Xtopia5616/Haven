@@ -1,6 +1,6 @@
 # Haven 架构与 crate 职责
 
-> 版本: v1.10 | 日期: 2026-10-04
+> 版本: v1.11 | 日期: 2026-10-04
 > 范围: `crates/` (Rust 后端, Tauri 2)
 > 原则: **依赖单向、叶子优先**。上层 crate 只依赖下层，绝不反向依赖；共享数据与类型放叶子（`haven-common`），
 > 组件职责按「谁拥有实现、谁只消费接口」划分。
@@ -455,6 +455,10 @@ scheduled trigger 的输入分类和 due-time 计算由 crate-private 纯 typed 
 durable admission、board insertion、timer/watch worker、fire、terminal commit/retry 与 lifecycle event。
 这只是 trigger admission 的窄边界，不是 `Immediate`/`At`/`After` 与 execution 的完整 Job 模型；
 schedule tool 对 LLM 输入的前置验证仍保留在工具边界，App command/event adapter 仍只做 UI DTO 投影（ADR 0343）。
+ActionService 仍是唯一状态 owner；实现按职责放在 `action_service/background.rs`（shell 启动、终态与 session 清理）、
+`action_service/scheduled.rs`（timer/dependency admission、fire、终态与恢复）和
+`action_service/views.rs`（task board/status typed projection 与 JSON 序列化）。这些模块只实现同一个
+`ActionService`，共享 action map、terminal arbitration、completion bus 和 restore coordinator，不增加执行器或状态副本。
 完整 lifecycle 审计没有发现需要迁移到另一个纯 transition policy 的重复判断：status graph 与 terminal claim 已由
 `ActionStatus::can_transition_to` / `action_terminal::can_claim_terminal` 单点定义；background admission 直接进入
 `running`，`waiting → running` 只属于 scheduled fire。提交前后的重复检查跨越 durable CAS 与内存投影/回滚边界，保留为竞态校验。
@@ -930,3 +934,4 @@ UI、Agent 与 provider 只在各自边界做场景适配。
 | 2026-09-21 | §2.3 Memory：消息表将旧 `attachments` 兼容列改名为 `ui_metadata`；canonical 媒体、表示和恢复只使用 `media_inputs`，UI 元数据仅保留展示/资产保留字段；数据库升至 v24，按发布说明重置（ADR 0197） |
 | 2026-10-03 | §2.5 Agent：只自动重试不完整工具参数 JSON；移除空响应与文本尾缀重试，模型非正常结束保留 partial 并使用继续生成恢复（ADR 0444） |
 | 2026-10-03 | §2.5 Agent / §2.3 Memory：后台 Shell action 持久关联来源工具 `step_id`，共享带 action identities 与 automatic delivery 的等待反馈；schema v34 按发布说明重置（ADR 0445） |
+| 2026-10-04 | §2.5 Tools：按后台进程、定时触发与视图投影拆分 ActionService 内部模块；共享状态 owner 和生命周期契约不变 |
