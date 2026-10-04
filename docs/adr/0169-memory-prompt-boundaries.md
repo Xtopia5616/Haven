@@ -25,9 +25,11 @@ database, router, and cache implementation details directly.
    as a source-compatible type alias for existing callers.
 3. `PromptContextProvider` owns live tool/runtime context and the short
    capability-index cache. It obtains memory through `MemoryService`.
-4. `PromptRenderer` is a stateless renderer for system prompts, memory fences,
-   and bounded memory text. It accepts prepared values and does not access DB,
-   routers, tools, or caches.
+4. `SystemPromptBuilder::build_memory_sections` owns fact candidate merge,
+   ranking/deduplication, and character-budget packing. `PromptRenderer` is a
+   stateless renderer for system prompts and memory fences; it applies the
+   final token cap to prepared memory sections and does not access DB, routers,
+   tools, or caches.
 
 The existing prompt text, memory ranking, cache capacity, exclusion scope,
 outbox durability, and embedding fallback behavior remain unchanged. The

@@ -645,8 +645,9 @@ impl SystemPromptBuilder {
             .collect();
 
         // Seed user facts by confidence, then union the typed keyword/vector
-        // candidates in one hydration query. The renderer below owns ranking
-        // and character-budget packing; this block only gathers candidates.
+        // candidates in one hydration query. This builder owns ranking,
+        // deduplication, and character-budget packing; PromptRenderer only
+        // renders the prepared sections and applies the final token budget.
         use haven_memory::repositories::facts::fact_effective_confidence;
         use std::collections::BTreeMap;
 
