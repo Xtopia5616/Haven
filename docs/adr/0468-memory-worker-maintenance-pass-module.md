@@ -2,7 +2,7 @@
 
 ## 状态
 
-已完成（2026-10-05）。
+已完成（2026-10-05；同日补正构造器依赖边界）。
 
 ## 背景
 
@@ -30,6 +30,12 @@
 该变化限于 `haven-agent` 私有模块，不修改 schema、IPC 或持久化合同，无需重置用户数据。现有维护回归需保持总计数、确定性失败后的继续清理与错误聚合、预取消短路、逐项 predicate rewrite 计数、contradiction gate 后写入、FastChat 未配置时跳过；增加一项真实 DB 回归固定 keeper 必须先于低置信度清理。outbox marker/ack 恢复测试继续在原 worker 测试区运行。
 
 `MemoryMaintenancePass` 只借用现有四个依赖，worker 入口和调用顺序未变；新增 36 小时事实 fixture 验证 keeper 先于 low-confidence flush，防止将新事实宽限期或两天 demote 年龄上限混入断言。验证：`cargo fmt --all -- --check`、`cargo test --locked -p haven-agent`（569 passed、1 ignored；手动性能 profile 另有 2 ignored）、`cargo clippy --locked -p haven-agent -- -D warnings` 及 `git diff --check` 均通过，既有 outbox marker/ack 回归仍在原测试区执行。
+
+## 构造器依赖边界补正（2026-10-05）
+
+实施复核发现，首次实现的 `MemoryMaintenancePass::new(&MemoryWorker)` 虽只保存四项 capability，但 pass 子模块仍可访问整个 worker 的父模块私有字段。这不符合决定 1 和“显式传入四项依赖”的替代方案约束。现将构造器签名改为分别接收 `&MemoryMaintenanceStore`、`&dyn MemoryInferencePort`、`&Semaphore` 与 `&MemoryService`；worker 的普通/可取消入口及维护测试都显式传入这四项。pass 不能再通过构造参数取得 `MemoryWorker`，维护顺序、取消点、结果和 durable outbox 均不变。
+
+补正验收：`cargo fmt --all -- --check`、`cargo test --locked -p haven-agent`、`cargo clippy --locked -p haven-agent -- -D warnings`、`git diff --check`。
 
 ## 回滚
 

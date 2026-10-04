@@ -7,7 +7,6 @@ use haven_memory::repositories::facts::{CANONICAL_MERGE_TARGETS, Fact, is_canoni
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
-use super::MemoryWorker;
 use crate::fact_extraction::{extract_json_array, normalize_predicate};
 use crate::fact_inference::{
     ContradictionDemoteProposal, PredicateMergeProposal, format_contradiction_groups,
@@ -24,12 +23,17 @@ pub(super) struct MemoryMaintenancePass<'a> {
 }
 
 impl<'a> MemoryMaintenancePass<'a> {
-    pub(super) fn new(worker: &'a MemoryWorker) -> Self {
+    pub(super) fn new(
+        maintenance_store: &'a MemoryMaintenanceStore,
+        inference: &'a dyn MemoryInferencePort,
+        inference_semaphore: &'a Semaphore,
+        memory: &'a MemoryService,
+    ) -> Self {
         Self {
-            maintenance_store: &worker.maintenance_store,
-            inference: worker.inference.as_ref(),
-            inference_semaphore: worker.inference_semaphore.as_ref(),
-            memory: worker.memory.as_ref(),
+            maintenance_store,
+            inference,
+            inference_semaphore,
+            memory,
         }
     }
 

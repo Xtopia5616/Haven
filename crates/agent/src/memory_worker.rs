@@ -934,16 +934,28 @@ impl MemoryWorker {
     /// / LLM arbitration (cursor cleanup and embedding catch-up are best-effort
     /// and not counted).
     pub async fn run_memory_maintenance(&self) -> anyhow::Result<u64> {
-        MemoryMaintenancePass::new(self).run(None).await
+        MemoryMaintenancePass::new(
+            &self.maintenance_store,
+            self.inference.as_ref(),
+            self.inference_semaphore.as_ref(),
+            self.memory.as_ref(),
+        )
+        .run(None)
+        .await
     }
 
     pub(crate) async fn run_memory_maintenance_cancellable(
         &self,
         cancellation: &CancellationToken,
     ) -> anyhow::Result<u64> {
-        MemoryMaintenancePass::new(self)
-            .run(Some(cancellation))
-            .await
+        MemoryMaintenancePass::new(
+            &self.maintenance_store,
+            self.inference.as_ref(),
+            self.inference_semaphore.as_ref(),
+            self.memory.as_ref(),
+        )
+        .run(Some(cancellation))
+        .await
     }
 
     /// Apply extraction policy and prepare facts for one atomic extraction
@@ -1922,9 +1934,14 @@ mod tests {
         });
         let worker = make_engine_with_inference(db.clone(), inference.clone());
 
-        let rewritten = MemoryMaintenancePass::new(&worker)
-            .merge_predicates_with_llm()
-            .await;
+        let rewritten = MemoryMaintenancePass::new(
+            &worker.maintenance_store,
+            worker.inference.as_ref(),
+            worker.inference_semaphore.as_ref(),
+            worker.memory.as_ref(),
+        )
+        .merge_predicates_with_llm()
+        .await;
 
         assert_eq!(
             rewritten, 5,
@@ -1973,9 +1990,14 @@ mod tests {
         });
         let worker = make_engine_with_inference(db.clone(), inference.clone());
 
-        let demoted = MemoryMaintenancePass::new(&worker)
-            .arbitrate_contradictions_with_llm()
-            .await;
+        let demoted = MemoryMaintenancePass::new(
+            &worker.maintenance_store,
+            worker.inference.as_ref(),
+            worker.inference_semaphore.as_ref(),
+            worker.memory.as_ref(),
+        )
+        .arbitrate_contradictions_with_llm()
+        .await;
 
         assert_eq!(demoted, 1);
         assert_eq!(inference.calls.load(Ordering::Relaxed), 1);
@@ -1997,7 +2019,12 @@ mod tests {
         });
         let worker = make_engine_with_inference(db, inference.clone());
 
-        let maintenance = MemoryMaintenancePass::new(&worker);
+        let maintenance = MemoryMaintenancePass::new(
+            &worker.maintenance_store,
+            worker.inference.as_ref(),
+            worker.inference_semaphore.as_ref(),
+            worker.memory.as_ref(),
+        );
         assert_eq!(maintenance.merge_predicates_with_llm().await, 0);
         assert_eq!(maintenance.arbitrate_contradictions_with_llm().await, 0);
         assert_eq!(inference.calls.load(Ordering::Relaxed), 0);
