@@ -107,7 +107,7 @@
 
 以上候选只有在 §5.5 所列回归、重复 owner、调用边扩张或可复现成本出现后重开；纯行数减少不构成准入理由。
 
-事件存储与 transcript projection 的拆分仍是暂缓的高风险候选：只读历史 façade 已拆；写侧在无量化维护收益前不启动。若候选要求上层分别写 event/projection、暴露事务内部或引入第二恢复来源，立即停止。
+事件存储与 transcript projection 的写侧拆分仍是暂缓的高风险 Candidate。2026-10-05 复核时，`session_events.rs` 为 6,078 行（3,075 production / 3,003 tests），近 45 天有 66 次提交触及（约 +7,003/-925）；改动主要是 9/22–25 一轮 SessionStore owner 收口，以及 9/30–10/5 的 durable session facts 纵向演进，未发现边界稳定后事务不变量反复回归。体量和 churn 足以触发复核，但不证明搬进 child module 会降低维护成本。只读历史 façade 已由 [ADR 0466](adr/0466-session-history-read-facade-module.md) 拆出；后续只有观察到事务核心与无关 session façade 反复耦合修改、同一原子性/rollback bug 重复修复，或测试无法按真实职责隔离并能证明模块收益时，才重开实施评估。若准入，优先评估不参与 canonical event/projection transaction 的 lifecycle façade 和对应测试；event append、projection、rollback、cache invalidation 与提交后 broadcast 继续由同一 SessionStore owner 协调。若候选要求上层分别写 event/projection、暴露事务内部、引入第二恢复来源，或只有行数下降，立即停止。
 
 `haven-tools/builtin/admin.rs` 的五个管理 surface 契约不按 operation 数量拆分；`llm/router.rs` 已有 request/stream executor；`security.rs` 拥有授权、receipt、禁用 operation 和路径沙箱；`inbox.rs` 的 registry、mailbox、archive 与崩溃恢复共用文件锁，暂不拆。热点约 800 行时先区分生产与测试代码，再记录保留理由或明确拆分边界；只搬行数不立项。内部整理保持外部 API、wire、schema 和运行语义不变，并独立提交。
 
