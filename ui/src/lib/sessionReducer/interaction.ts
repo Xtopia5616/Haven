@@ -162,6 +162,12 @@ function normalizeInteraction(raw: unknown): InteractionRequest | null {
 		typeof createdAt !== 'string'
 	)
 		return null;
+	if (
+		status === 'pending' &&
+		kind !== 'ask' &&
+		(typeof value.expires_at !== 'string' || !Number.isFinite(Date.parse(value.expires_at)))
+	)
+		return null;
 	const toolName = value.tool_name;
 	const riskLevel = value.risk_level;
 	const summary = value.summary;

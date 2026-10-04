@@ -102,7 +102,7 @@ pending 请求和 continuation 仍由原 owner 持有。Tauri resolve 对前三�
 event/resolve IPC DTO、不写入 `session_events`，不改变数据库 schema；若未来把 owner 或 continuation 写进 durable event
 payload，则属于新的持久契约，必须单独评估 schema/reset 与崩溃恢复语义，不能并入这个路由切片。
 
-### 当前实施进度（2026-10-04）
+### 当前实施进度（2026-10-05）
 
 - 已完成运行时 `InteractionOwner` / `InteractionEnvelope`；Session 与 scheduled producer 显式附带 owner，AppCommand event 显式标为 AppCommand。Owner 不序列化进 durable request。
 - 已将真实 `session_id` 改为可选关联上下文；SessionActor durable append/replay 继续拒绝缺失或不匹配的 session ID，Session request 的既有 JSON 形状保持不变。
@@ -113,7 +113,9 @@ payload，则属于新的持久契约，必须单独评估 schema/reset 与崩�
 - Session 的 capability 查询、普通 resolve、expiry 与 grant-aware resolve 均按显式 `session_id` 定位单个 actor，再匹配 `request_id`，不扫描 actor registry。actor 先成功追加 durable decision event 才推进 pending 状态；append 失败仍保留请求以供重试。session grant 持久化发生在 resolve/wake 之前，但它与 durable decision event 是分开的写入，不承诺跨两者原子性。
 - ScheduledAction 的执行权 claim 已落在 ActionService/ActionStore owner：批准确认使用 `action_id + request_id`，无需确认的 scheduled operation 使用 action ID。ActionService 的 `spawn_gate -> terminal_transition -> action state/DB` 锁序保护单实例；同一 SQLite writer transaction 在 `kv_store` 写 `scheduled_execution_claim.<action_id>`，取消 CAS 只有在无 claim 时才能把 waiting/running 行改成 cancelled，因此共享 DB 的多个 service 也按先提交者获胜。确认先认领后才允许 session grant、消费弹窗或启动工具；cancel 先提交则批准返回 stale、移除 owner 请求，不落授权且不执行。session grant 写失败会释放同一 request 的 claim 并保留 pending 供重试；释放本身失败时 fail closed，后续同 request 可重试。AutoApproved scheduled tool 与 continue operation 在副作用入口也认领，避免 action 已运行时取消只改终态却不能阻止副作用。
 - claim 不改变 durable action/outbox 终态发布顺序：完成/失败的 action row、outbox 与 claim 删除在既有 terminal transaction 中完成；cancel terminal CAS 与发布仍归 ActionService。进程重启会把 running action 标记失败、清除残余 claim，且不 replay。新增 key 仅用现有 `kv_store`，无 schema 变更/重置。cancelled scheduled action 的 `action:finished` owner projection 同步关闭匹配的 renderer pending confirmation。
-- 下一步统一 owner deadline 并移除 `timed_out` / renderer deadline fallback。
+- 三个 owner 的 deadline 已统一：pending permission confirm 登记前校验可解析且尚未到期的绝对 `expires_at`，当前直接采用 receipt deadline，没有额外 renderer 上限或 ScheduledAction fallback。各 owner timer 按该值过期；resolve 也在同一个 owner 仲裁内检查时钟，迟到点击不获授权、不启动 continuation。grant-aware ScheduledAction 在 owner gate 接受决定后固定该期限判定，不会因 grant 写入耗时而把已授权决定再分类成 Expired。Session replay 中缺失/无效期限的历史 pending confirm fail closed 并立即过期；expiry event append 失败时保留 pending 并退避重试。Session confirmation 批次在一个 SQLite transaction 中提交 Paused 状态与整批 interaction events，actor 仅在 commit 成功后更新内存；回归覆盖无效期限、durable append 失败回滚及成功整批提交。AppCommand、ScheduledAction、Session 的 expiry 与点击各有定向测试。
+- resolve IPC 已删除 `timed_out`；renderer 删除 `created_at + 120s` deadline 推导和自动 deny 提交，只显示 owner 的期限。事件/resume mapper 拒绝缺少或无效期限的 pending permission confirm，但 Ask 与终态 projection 可无期限。生成 command contract 与 IPC 文档已同步；schema 和 durable event 形状不变，无需重置。
+- 下一步审查并清理残余 owner sentinel 与旧 fallback：AppCommand 的 `"ui"` session context、ScheduledAction 日志的 `unwrap_or("action")`，以及残留的跨 owner 查询/字符串 stale route。只删除确实冒充 owner 的值；业务字段若不承担 owner 语义则记录保留原因，再按 §5.3 逐项复核模块边界候选。
 - 当前切片未修改数据库 schema 或 durable event payload，无需用户数据重置。
 
 ### 期限唯一性与 ADR 0423 的关系（决定）
@@ -168,10 +170,10 @@ Haven UI、其他 session 与调度器不因此停止。定时确认等待的是
    `step_id` 改为 `request_id`，并为已仲裁状态使用有类型的返回值；保留 session event 的现有 durable
    形状。一次迁移一条 owner 路径，分别以 UI 直调、scheduled action、ReAct
    confirmation 为顺序，移除每条路径对应的扫描/fallback。
-4. 把确认接受与 continuation 执行拆开；实现同一 owner 内点击/到期的一次性仲裁，并统一后端
-   deadline。每个 pending permission confirm 都须有有效绝对期限；renderer 只展示 owner 提供的期限，
-   不再传 `timed_out` 或按创建时间推算。覆盖 renderer 关闭、迟到点击、持久化失败与执行失败；
-   session batch 登记/恢复仍保持 event 原子性。
+4. **已实施。** 把确认接受与 continuation 执行拆开；三个 owner 使用 receipt 的有效绝对期限，
+   deadline 到期与 resolve 在 owner 内仲裁。renderer 只展示 owner 提供的期限，不传 `timed_out`、
+   不按创建时间推算。Session expiry append 失败时保留 pending 并重试；Session confirmation batch
+   将 Paused 状态和全部请求 events 放在同一 SQLite transaction，避免部分登记与崩溃窗口。
 5. 后续若为 resolve/expiry 等终态增加通知，必须基于 owner 已接受的 lifecycle transition；
    pending 请求已使用独立 `permission_requested` 通知配置，不复用 `session_paused`。
 

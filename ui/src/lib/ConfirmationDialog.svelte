@@ -14,7 +14,6 @@
 		effect?: string;
 		scope?: string;
 		target?: string;
-		timedOut?: boolean;
 	}
 
 	interface Props {
@@ -27,12 +26,12 @@
 		riskLevel?: RiskLevel;
 		summary?: string;
 		permissionKey?: string;
-		deadlineAt?: number | null;
+		createdAt: string;
+		deadlineAt: number;
 		onDismiss?: (stepId: string) => void;
 		onConfirm?: (decision: ConfirmationDecision) => void | boolean | Promise<void | boolean>;
 	}
 
-	const TIMEOUT_SECONDS = 120;
 	const RISK_LABELS: Record<string, string> = {
 		safe: '安全',
 		low: '低风险',
@@ -51,11 +50,13 @@
 		riskLevel,
 		summary,
 		permissionKey,
+		createdAt,
 		deadlineAt,
 		onDismiss,
 		onConfirm,
 	}: Props = $props();
-	let remaining = $state(TIMEOUT_SECONDS);
+	let remaining = $state(0);
+	let countdownDurationMs = $state(1);
 	let showDenyMenu = $state(false);
 	let showAllowMenu = $state(false);
 	let pendingPersistentTarget = $state<string | null>(null);
@@ -64,7 +65,9 @@
 
 	let normalizedRisk = $derived(String(riskLevel || 'medium').toLowerCase());
 	let riskLabel = $derived(RISK_LABELS[normalizedRisk] || '中风险');
-	let timeoutPercent = $derived(Math.min(100, Math.max(0, (remaining / TIMEOUT_SECONDS) * 100)));
+	let timeoutPercent = $derived(
+		Math.min(100, Math.max(0, (remaining * 1000 / countdownDurationMs) * 100)),
+	);
 
 	function buildTargetOptions(key: string) {
 		const segments = String(key || '')
@@ -113,14 +116,22 @@
 		showAllowMenu = false;
 		pendingPersistentTarget = null;
 		let disposed = false;
-		const deadline = deadlineAt || Date.now() + TIMEOUT_SECONDS * 1000;
+		const deadline = deadlineAt;
+		if (!Number.isFinite(deadline)) {
+			remaining = 0;
+			return () => {
+				disposed = true;
+			};
+		}
+		const created = Date.parse(createdAt);
+		countdownDurationMs = Number.isFinite(created) && deadline > created
+			? deadline - created
+			: Math.max(1, deadline - Date.now());
 		let id: ReturnType<typeof setInterval> | undefined;
 		const tickCountdown = () => {
 			remaining = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
 			if (remaining <= 0) {
 				if (id) clearInterval(id);
-				if (submittedStepId === sid) return;
-				void decide('deny', 'once', 'operation', true);
 			}
 		};
 		void tick().then(() => {
@@ -134,7 +145,7 @@
 		};
 	});
 
-	async function decide(effect: string, scope: string, target = 'operation', timedOut = false) {
+	async function decide(effect: string, scope: string, target = 'operation') {
 		const sid = stepId;
 		if (!sid || submittedStepId === sid) return;
 		submittedStepId = sid;
@@ -148,7 +159,6 @@
 				effect,
 				scope,
 				target,
-				timedOut,
 			});
 			if (accepted === false && stepId === sid) submittedStepId = null;
 		} catch {
@@ -256,7 +266,7 @@
 				aria-live="polite"
 			>
 				<div class="timeout-head">
-					<span class="timeout-label"><Icon name="clock" size={15} />自动拒绝倒计时</span>
+					<span class="timeout-label"><Icon name="clock" size={15} />剩余确认时间</span>
 					<strong>{remaining}s</strong>
 				</div>
 				<div class="timeout-track" aria-hidden="true">

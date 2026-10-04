@@ -350,6 +350,15 @@ pub(crate) async fn queue_ui_confirmation(
     let risk_level = receipt.effective_risk;
     let request =
         haven_agent::InteractionRequest::ui_confirm(tool_name, display_input, receipt.clone());
+    let deadline = request
+        .pending_permission_deadline()
+        .map_err(|error| log_err("queue_ui_confirmation", error))?;
+    if deadline <= chrono::Utc::now() {
+        return Err(log_err(
+            "queue_ui_confirmation",
+            "permission confirmation deadline has already elapsed",
+        ));
+    }
     let request_id = request.id.clone();
     state.ui_confirmations.lock().await.insert(
         request_id.to_string(),
@@ -380,11 +389,10 @@ pub(crate) async fn queue_ui_confirmation(
     );
     app.state::<std::sync::Arc<crate::notification::DesktopNotifications>>()
         .maybe_show_interaction_request(&request, &haven_agent::InteractionOwner::AppCommand);
-    let expiry_delay = std::time::Duration::from_secs(
-        receipt
-            .expires_at
-            .saturating_sub(chrono::Utc::now().timestamp().max(0) as u64),
-    );
+    let expiry_delay = deadline
+        .signed_duration_since(chrono::Utc::now())
+        .to_std()
+        .unwrap_or_default();
     let expiry_app = app.clone();
     let expiry_request_id = request_id.to_string();
     if !state.runtime.spawn("ui-confirmation-expiry", async move {
@@ -488,7 +496,7 @@ mod tests {
             canonical_input_hash: "test-hash".into(),
             effective_risk: RiskLevel::Medium,
             policy_revision: 1,
-            expires_at: u64::MAX,
+            expires_at: chrono::Utc::now().timestamp().max(0) as u64 + 300,
         }
     }
 

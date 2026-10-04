@@ -216,7 +216,7 @@ export interface TauriCommandMap {
 	reset_permissions: { request: undefined; response: void };
 	reset_session_permissions: { request: undefined; response: number };
 	reset_tool_circuits: { request: undefined; response: void };
-	resolve_confirmation: { request: { owner: InteractionOwnerInput; requestId: string; effect: string; scope: string; target: string; timedOut: boolean }; response: ConfirmationResolutionResult };
+	resolve_confirmation: { request: { owner: InteractionOwnerInput; requestId: string; effect: string; scope: string; target: string }; response: ConfirmationResolutionResult };
 	revoke_permission: { request: { key: string }; response: void };
 	revoke_session_permission: { request: { sessionId: string; capability: string }; response: void };
 	rollback_session: { request: { sessionId: string; targetStep: number; pause?: boolean | null; targetMessageId?: string | null }; response: void };

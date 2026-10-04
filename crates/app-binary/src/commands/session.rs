@@ -250,17 +250,9 @@ pub async fn resolve_confirmation(
     effect: String,
     scope: String,
     target: String,
-    timed_out: bool,
 ) -> Result<ConfirmationResolutionResult, String> {
-    let (perm_effect, perm_scope) = if timed_out {
-        (
-            haven_common::types::PermissionEffect::Deny,
-            haven_common::types::PermissionScope::Once,
-        )
-    } else {
-        parse_permission_decision(&effect, &scope)
-            .map_err(|error| log_err("resolve_confirmation", error))?
-    };
+    let (perm_effect, perm_scope) = parse_permission_decision(&effect, &scope)
+        .map_err(|error| log_err("resolve_confirmation", error))?;
     let perm_target = haven_common::types::PermissionTarget::parse(&target)
         .map_err(|error| log_err("resolve_confirmation", error))?;
     let confirmed = matches!(perm_effect, haven_common::types::PermissionEffect::Allow);
@@ -297,26 +289,25 @@ pub async fn resolve_confirmation(
     // Resolve through the explicit owner while holding the executor's
     // confirmation-resolution gate. Session scope uses the grant-aware path,
     // which commits before resolving can wake the owning actor.
-    let resolution =
-        if matches!(perm_scope, haven_common::types::PermissionScope::Session) && !timed_out {
-            state
-                .runtime
-                .executor
-                .resolve_confirmation_with_session_grant_for_owner(
-                    &owner,
-                    &confirmation_id,
-                    perm_target,
-                    perm_effect,
-                )
-                .await
-        } else {
-            state
-                .runtime
-                .executor
-                .resolve_confirmation_for_owner(&owner, &confirmation_id, confirmed, timed_out)
-                .await
-        }
-        .map_err(|e| log_err("resolve_confirmation", e))?;
+    let resolution = if matches!(perm_scope, haven_common::types::PermissionScope::Session) {
+        state
+            .runtime
+            .executor
+            .resolve_confirmation_with_session_grant_for_owner(
+                &owner,
+                &confirmation_id,
+                perm_target,
+                perm_effect,
+            )
+            .await
+    } else {
+        state
+            .runtime
+            .executor
+            .resolve_confirmation_for_owner(&owner, &confirmation_id, confirmed)
+            .await
+    }
+    .map_err(|e| log_err("resolve_confirmation", e))?;
 
     let Some(resolution) = resolution else {
         tracing::warn!(
@@ -326,11 +317,16 @@ pub async fn resolve_confirmation(
         return Ok(ConfirmationResolutionResult::Stale);
     };
 
+    let expired = resolution.status == haven_agent::interaction::InteractionStatus::Expired;
     tracing::info!(
         interaction_id = %confirmation_id,
-        outcome = if timed_out { "expired" } else if confirmed { "approved" } else { "denied" },
+        outcome = if expired { "expired" } else if confirmed { "approved" } else { "denied" },
         "permission request resolved"
     );
+
+    if expired {
+        return Ok(ConfirmationResolutionResult::Expired);
+    }
 
     // Once is only this invocation. Session scope was durably committed by the
     // grant-aware resolver before it woke the operation.
@@ -338,11 +334,7 @@ pub async fn resolve_confirmation(
         perm_scope,
         haven_common::types::PermissionScope::Once | haven_common::types::PermissionScope::Session
     ) {
-        return Ok(if timed_out {
-            ConfirmationResolutionResult::Expired
-        } else {
-            ConfirmationResolutionResult::Resolved
-        });
+        return Ok(ConfirmationResolutionResult::Resolved);
     }
 
     // The renderer submits a target category, but the backend resolves it only
@@ -389,11 +381,7 @@ pub async fn resolve_confirmation(
             perm_scope,
         )
         .await;
-    Ok(if timed_out {
-        ConfirmationResolutionResult::Expired
-    } else {
-        ConfirmationResolutionResult::Resolved
-    })
+    Ok(ConfirmationResolutionResult::Resolved)
 }
 
 async fn resolve_app_confirmation(
@@ -563,7 +551,12 @@ async fn arbitrate_app_confirmation(
             "session-scoped authorization requires a persisted conversation; choose once or permanent",
         ));
     }
-    if pending.receipt.expires_at <= chrono::Utc::now().timestamp().max(0) as u64 {
+    if pending
+        .request
+        .pending_permission_deadline()
+        .map(|deadline| deadline <= chrono::Utc::now())
+        .unwrap_or(true)
+    {
         let mut pending = pending_registry
             .remove(request_id)
             .expect("checked pending app confirmation");

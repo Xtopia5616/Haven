@@ -20,7 +20,7 @@ use haven_common::types::MessageAttachment;
 use haven_memory::Database;
 use haven_memory::{
     INTERACTION_CLEARED_EVENT_TYPE, INTERACTION_REQUESTED_EVENT_TYPE,
-    INTERACTION_RESOLVED_EVENT_TYPE, SessionStore,
+    INTERACTION_RESOLVED_EVENT_TYPE, SessionEventInput, SessionStore,
 };
 use haven_messaging::inbox::{Envelope, MessageType};
 use serde_json::Value;
@@ -223,6 +223,10 @@ pub(crate) enum ActorCommand {
     },
     RequestInteraction {
         request: Box<InteractionRequest>,
+        reply: oneshot::Sender<anyhow::Result<()>>,
+    },
+    RequestConfirmBatch {
+        requests: Vec<InteractionRequest>,
         reply: oneshot::Sender<anyhow::Result<()>>,
     },
     ListInteractions {
@@ -574,6 +578,18 @@ impl SessionActorHandle {
         .await?;
         rx.await
             .map_err(|_| anyhow::anyhow!("session actor '{}' dropped interaction", self.id))?
+    }
+
+    pub(crate) async fn request_confirm_batch(
+        &self,
+        requests: Vec<InteractionRequest>,
+    ) -> anyhow::Result<()> {
+        let (reply, rx) = oneshot::channel();
+        self.send(ActorCommand::RequestConfirmBatch { requests, reply })
+            .await?;
+        rx.await.map_err(|_| {
+            anyhow::anyhow!("session actor '{}' dropped confirmation batch", self.id)
+        })?
     }
 
     pub(crate) async fn interactions(
@@ -1323,6 +1339,56 @@ pub(crate) fn spawn(
                             .retain(|existing| existing.id != request.id);
                         state.interactions.push(request);
                     }
+                    let _ = reply.send(result);
+                }
+                ActorCommand::RequestConfirmBatch { requests, reply } => {
+                    let result = async {
+                        let mut ids = HashSet::with_capacity(requests.len());
+                        let mut events = Vec::with_capacity(requests.len());
+                        for request in &requests {
+                            anyhow::ensure!(
+                                request.kind == InteractionKind::Confirm
+                                    && request.status == InteractionStatus::Pending,
+                                "confirmation batch contains a non-pending confirmation"
+                            );
+                            request.validate_new_pending_permission()?;
+                            crate::interaction::validate_session_association(
+                                request.session_id.as_deref(),
+                                &state.info.id,
+                            )?;
+                            anyhow::ensure!(
+                                ids.insert(request.id.clone()),
+                                "interaction batch contains duplicate request id '{}'",
+                                request.id
+                            );
+                            events.push(SessionEventInput::new(
+                                INTERACTION_REQUESTED_EVENT_TYPE,
+                                serde_json::to_string(request)?,
+                            ));
+                        }
+                        anyhow::ensure!(
+                            state.info.status.can_transition_to(SessionStatus::Paused),
+                            "session cannot pause for confirmation from status '{}'",
+                            state.info.status.as_str()
+                        );
+                        store
+                            .append_domain_event_batch_with_session_status(
+                                &state.info.id,
+                                state.info.status,
+                                SessionStatus::Paused,
+                                &events,
+                            )
+                            .await?;
+                        state.info.status = SessionStatus::Paused;
+                        state.info.updated_at = chrono::Utc::now().to_rfc3339();
+                        let _ = status.send(SessionStatus::Paused);
+                        state
+                            .interactions
+                            .retain(|existing| !ids.contains(&existing.id));
+                        state.interactions.extend(requests);
+                        Ok(())
+                    }
+                    .await;
                     let _ = reply.send(result);
                 }
                 ActorCommand::ListInteractions {

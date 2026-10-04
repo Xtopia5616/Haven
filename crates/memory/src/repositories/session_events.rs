@@ -1385,6 +1385,86 @@ impl SessionStore {
             .await
     }
 
+    /// Append non-transcript domain events and move the owning session to a new
+    /// status in one SQLite transaction. The status compare-and-set and every
+    /// event commit together, and live subscribers only see committed events.
+    pub async fn append_domain_event_batch_with_session_status(
+        &self,
+        session_id: &str,
+        expected_status: SessionStatus,
+        next_status: SessionStatus,
+        events: &[SessionEventInput],
+    ) -> anyhow::Result<Vec<SessionEvent>> {
+        anyhow::ensure!(!events.is_empty(), "domain event batch cannot be empty");
+        anyhow::ensure!(
+            events
+                .iter()
+                .all(|event| event.run_id.is_none() && event.step_number.is_none()),
+            "domain event batches cannot include transcript coordinates"
+        );
+        let store = self.clone();
+        let session_id = session_id.to_owned();
+        let events = events.to_vec();
+        self.db
+            .run_blocking(move |_| {
+                store.append_domain_event_batch_with_session_status_sync(
+                    &session_id,
+                    expected_status,
+                    next_status,
+                    &events,
+                )
+            })
+            .await
+    }
+
+    fn append_domain_event_batch_with_session_status_sync(
+        &self,
+        session_id: &str,
+        expected_status: SessionStatus,
+        next_status: SessionStatus,
+        events: &[SessionEventInput],
+    ) -> anyhow::Result<Vec<SessionEvent>> {
+        Self::validate_inputs(events)?;
+        Self::validate_transcript_events(events)?;
+        let now = Utc::now().to_rfc3339();
+        let conn = self.db.conn();
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| {
+            let changed = conn.execute(
+                "UPDATE sessions SET status = ?1, updated_at = ?2
+                 WHERE id = ?3 AND status = ?4",
+                rusqlite::params![
+                    next_status.as_str(),
+                    now,
+                    session_id,
+                    expected_status.as_str()
+                ],
+            )?;
+            anyhow::ensure!(
+                changed == 1,
+                "session '{}' status changed before confirmation batch commit",
+                session_id
+            );
+            let stored = Self::append_batch_in_transaction(&conn, session_id, events)?;
+            commit_sqlite_transaction(&conn, "append confirmation batch and pause session")?;
+            Ok(stored)
+        })();
+
+        match result {
+            Ok(stored) => {
+                self.db.cache_invalidate_sessions();
+                for event in &stored {
+                    let _ = self.live_tx.send(event.clone());
+                }
+                Ok(stored)
+            }
+            Err(error) => {
+                rollback_after_sqlite_failure(&conn, "append confirmation batch and pause session");
+                Err(error)
+            }
+        }
+    }
+
     /// Append a batch in one SQLite transaction.  Sequence allocation happens
     /// under `BEGIN IMMEDIATE`, so concurrent sessions and concurrent writers
     /// cannot produce duplicate per-session cursors.

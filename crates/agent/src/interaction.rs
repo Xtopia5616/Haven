@@ -102,6 +102,41 @@ pub struct InteractionRequest {
     pub expires_at: Option<String>,
 }
 
+impl InteractionRequest {
+    /// Return the owner-issued absolute expiry for a pending permission
+    /// confirmation. Ask interactions and terminal confirmation projections do
+    /// not require a deadline.
+    pub fn pending_permission_deadline(&self) -> anyhow::Result<chrono::DateTime<chrono::Utc>> {
+        anyhow::ensure!(
+            self.status == InteractionStatus::Pending
+                && matches!(
+                    self.kind,
+                    InteractionKind::Confirm | InteractionKind::ScheduledConfirm
+                ),
+            "interaction is not a pending permission confirmation"
+        );
+        let expires_at = self
+            .expires_at
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("pending permission confirmation has no deadline"))?;
+        chrono::DateTime::parse_from_rfc3339(expires_at)
+            .map(|value| value.with_timezone(&chrono::Utc))
+            .map_err(|error| anyhow::anyhow!("invalid permission confirmation deadline: {error}"))
+    }
+
+    /// Validate an owner registration before it becomes pending. Existing
+    /// durable requests are replayed separately and may have an elapsed
+    /// deadline; their owner immediately expires them instead.
+    pub fn validate_new_pending_permission(&self) -> anyhow::Result<()> {
+        let deadline = self.pending_permission_deadline()?;
+        anyhow::ensure!(
+            deadline > chrono::Utc::now(),
+            "permission confirmation deadline has already elapsed"
+        );
+        Ok(())
+    }
+}
+
 pub(crate) fn validate_session_association(
     interaction_session_id: Option<&str>,
     owner_session_id: &str,
@@ -412,7 +447,14 @@ mod tests {
             "step-0123456789abcdef0123456789abcdef".into(),
             0,
             haven_common::types::RiskLevel::Safe,
-            None,
+            Some(haven_tools::ConfirmationReceipt {
+                confirmation_id: haven_common::types::new_id("conf").into(),
+                capability: haven_tools::CapabilityScope::try_new("haven.test").unwrap(),
+                canonical_input_hash: String::new(),
+                effective_risk: haven_common::types::RiskLevel::Safe,
+                policy_revision: 1,
+                expires_at: chrono::Utc::now().timestamp().max(0) as u64 + 300,
+            }),
         )
     }
 

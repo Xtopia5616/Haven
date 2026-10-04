@@ -33,6 +33,7 @@ describe('app-shell IPC contract', () => {
 				tool_name: 'run_command',
 				risk_level: 'high',
 				created_at: '2026-01-01T00:00:00Z',
+				expires_at: '2026-01-01T00:05:00Z',
 				summary: '将执行一条受保护的本机命令（命令内容不会显示在弹窗中）',
 				permission_key: 'tool.run_command',
 				future_field: 'not part of the renderer DTO',
@@ -54,6 +55,7 @@ describe('app-shell IPC contract', () => {
 			summary: '将执行一条受保护的本机命令（命令内容不会显示在弹窗中）',
 			permissionKey: 'tool.run_command',
 			createdAt: '2026-01-01T00:00:00Z',
+			expiresAt: '2026-01-01T00:05:00Z',
 		});
 		expect(event?.payload).not.toHaveProperty('step_id');
 		expect(event?.payload).not.toHaveProperty('future_field');
@@ -102,6 +104,7 @@ describe('app-shell IPC contract', () => {
 				kind: 'confirm',
 				status: 'pending',
 				created_at: '2026-01-01T00:00:00Z',
+				expires_at: '2026-01-01T00:05:00Z',
 			},
 		});
 
@@ -111,6 +114,23 @@ describe('app-shell IPC contract', () => {
 		});
 		if (session_id) expect(event?.payload).toMatchObject({ sessionId: session_id });
 		else expect(event?.payload).not.toHaveProperty('sessionId');
+	});
+
+	it.each([undefined, 'not-a-deadline'])('rejects pending confirmations without a valid owner deadline', (expiresAt) => {
+		const event = mapAppEvent({
+			event: 'interaction:requested',
+			id: 22,
+			payload: {
+				id: 'conf-no-deadline',
+				session_id: 'ses-1',
+				owner: { kind: 'session', session_id: 'ses-1' },
+				kind: 'confirm',
+				status: 'pending',
+				created_at: '2026-01-01T00:00:00Z',
+				...(expiresAt === undefined ? {} : { expires_at: expiresAt }),
+			},
+		});
+		expect(event).toBeNull();
 	});
 
 	it.each([

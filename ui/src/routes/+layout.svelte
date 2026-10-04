@@ -101,7 +101,6 @@
 		effect?: string;
 		scope?: string;
 		target?: string;
-		timedOut?: boolean;
 	};
 
 	const LAZY_VIEW_LOADERS: {
@@ -699,19 +698,11 @@
 					: '定时任务'
 			: '',
 	);
-	const CONFIRM_TIMEOUT_MS = 120_000;
 	const activeConfirmDeadlineAt = $derived(
 		activeConfirmRequest
-			? (() => {
-					const parsed = activeConfirmRequest.expiresAt
-						? Date.parse(activeConfirmRequest.expiresAt)
-						: Number.NaN;
-					const createdAt = Date.parse(activeConfirmRequest.createdAt);
-					const fallbackDeadline = Number.isFinite(createdAt)
-						? createdAt + CONFIRM_TIMEOUT_MS
-						: Date.now() + CONFIRM_TIMEOUT_MS;
-					return Number.isFinite(parsed) ? Math.min(parsed, fallbackDeadline) : fallbackDeadline;
-				})()
+			? activeConfirmRequest.expiresAt
+				? Date.parse(activeConfirmRequest.expiresAt)
+				: Number.NaN
 			: null,
 	);
 	const confirmationRequestsInFlight = new Set<string>();
@@ -722,7 +713,6 @@
 		effect,
 		scope,
 		target,
-		timedOut = false,
 	}: ConfirmationDecision) {
 		const resolvedStep = stepId;
 		if (!resolvedStep || confirmationRequestsInFlight.has(resolvedStep)) return false;
@@ -739,7 +729,6 @@
 			effect: resolvedEffect,
 			scope: resolvedScope,
 			target: resolvedTarget,
-			timedOut,
 		};
 		try {
 			const resolution = await invoke('resolve_confirmation', confirmationRequest);
@@ -753,7 +742,6 @@
 			else if (resolution === 'stale') {
 				addNotification('确认请求已失效或已处理，请查看会话结果', 'warning', 4000);
 			}
-			else if (timedOut) addNotification('确认超时，操作未执行', 'warning', 4000);
 			else if (approved && currentRequest?.owner.kind === 'app_command') {
 				addNotification('权限已确认，操作正在执行', 'info', 4000);
 			}
@@ -1434,7 +1422,8 @@
 			permissionKey={activeConfirmRequest?.permissionKey ||
 				activeConfirmRequest?.toolName ||
 				''}
-			deadlineAt={activeConfirmDeadlineAt}
+			createdAt={activeConfirmRequest?.createdAt || ''}
+			deadlineAt={activeConfirmDeadlineAt ?? Number.NaN}
 			onDismiss={dismissConfirmation}
 			onConfirm={handleConfirm}
 		/>

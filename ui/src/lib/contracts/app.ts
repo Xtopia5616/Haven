@@ -171,6 +171,15 @@ function optionalStringIsValid(record: WireRecord, field: string): boolean {
 	return value === undefined || typeof value === 'string';
 }
 
+function validPendingPermissionDeadline(
+	kind: unknown,
+	status: unknown,
+	expiresAt: unknown,
+): boolean {
+	if (status !== 'pending' || kind === 'ask') return true;
+	return typeof expiresAt === 'string' && Number.isFinite(Date.parse(expiresAt));
+}
+
 function stringArray(value: unknown): value is string[] {
 	return Array.isArray(value) && value.every((item) => typeof item === 'string');
 }
@@ -290,6 +299,7 @@ export function mapAppEvent(event: unknown): TauriEvent<AppEventPayloadMap[AppEv
 				!optionalStringIsValid(p, 'invocation_step_id') ||
 				!optionalStringIsValid(p, 'tool_call_id') ||
 				!optionalStringIsValid(p, 'expires_at') ||
+				!validPendingPermissionDeadline(kind, status, p.expires_at) ||
 				(actionIndex !== undefined &&
 					(!finiteNumber(actionIndex) ||
 						!Number.isInteger(actionIndex) ||

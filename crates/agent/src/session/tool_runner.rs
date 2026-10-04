@@ -12,12 +12,7 @@ pub(super) fn confirmation_expiry_delay(expires_at: Option<&str>) -> Option<std:
         .ok()?
         .with_timezone(&chrono::Utc);
     let remaining = expires_at.signed_duration_since(chrono::Utc::now());
-    Some(
-        remaining
-            .to_std()
-            .unwrap_or_default()
-            .min(SCHEDULED_CONFIRM_ABSOLUTE_TIMEOUT),
-    )
+    Some(remaining.to_std().unwrap_or_default())
 }
 
 fn interaction_owner_matches_request(
@@ -54,6 +49,30 @@ fn scheduled_request_matches_route(
                 ..
             } if request_action_id == action_id
         )
+}
+
+#[derive(Clone, Copy)]
+enum ScheduledConfirmDeadlineDecision {
+    /// Determine expiry when the request is committed as terminal.
+    CheckAtResolution,
+    /// The owner gate already accepted this decision before the deadline.
+    AcceptedBeforeDeadline,
+    /// An owner timer or failed authorization explicitly expired the request.
+    Expire,
+}
+
+fn scheduled_confirmation_is_expired(
+    request: &crate::interaction::InteractionRequest,
+    decision: ScheduledConfirmDeadlineDecision,
+) -> bool {
+    match decision {
+        ScheduledConfirmDeadlineDecision::CheckAtResolution => request
+            .pending_permission_deadline()
+            .map(|deadline| deadline <= chrono::Utc::now())
+            .unwrap_or(true),
+        ScheduledConfirmDeadlineDecision::AcceptedBeforeDeadline => false,
+        ScheduledConfirmDeadlineDecision::Expire => true,
+    }
 }
 
 /// The tool may already have produced an external side effect when its final
@@ -1055,8 +1074,14 @@ impl SessionSupervisor {
             receipt,
             title.to_string(),
         );
-        let expiry_delay = confirmation_expiry_delay(request.expires_at.as_deref())
-            .unwrap_or(SCHEDULED_CONFIRM_ABSOLUTE_TIMEOUT);
+        if let Err(error) = request.validate_new_pending_permission() {
+            tracing::warn!(%action_id, request_id = %step_id, %error, "scheduled confirmation has no valid future deadline");
+            return None;
+        }
+        let Some(expiry_delay) = confirmation_expiry_delay(request.expires_at.as_deref()) else {
+            tracing::warn!(%action_id, request_id = %step_id, "scheduled confirmation deadline cannot be scheduled");
+            return None;
+        };
         let action_id = action_id.to_string();
         {
             let mut scheduled_confirms = self.scheduled_confirms.lock().await;
@@ -1074,9 +1099,8 @@ impl SessionSupervisor {
                 request,
             }),
         });
-        // The receipt expiry is the hard lifetime for this approval. The UI
-        // may reject it sooner after its visible countdown, while this timer
-        // covers a closed or crashed renderer.
+        // The canonical request deadline is the hard lifetime for this
+        // approval, including when the renderer is closed or crashed.
         let executor = Arc::clone(self);
         let timeout_id = step_id.clone();
         tokio::spawn(async move {
@@ -1214,6 +1238,34 @@ impl SessionSupervisor {
         if !interaction_owner_matches_request(expected_owner, &request) {
             return Ok(None);
         }
+        if request
+            .pending_permission_deadline()
+            .map(|deadline| deadline <= chrono::Utc::now())
+            .unwrap_or(true)
+        {
+            if let Some(action_id) = match expected_owner {
+                crate::interaction::InteractionOwner::ScheduledAction { action_id } => {
+                    Some(action_id.as_str())
+                }
+                _ => None,
+            } {
+                return self
+                    .resolve_scheduled_confirmation_locked(
+                        action_id,
+                        step_id,
+                        false,
+                        ScheduledConfirmDeadlineDecision::Expire,
+                    )
+                    .await;
+            }
+            let crate::interaction::InteractionOwner::Session { session_id } = expected_owner
+            else {
+                return Ok(None);
+            };
+            return self
+                .resolve_confirmation_locked(session_id, step_id, false, true)
+                .await;
+        }
         let scheduled_action_id = match &request.details {
             crate::interaction::InteractionDetails::ScheduledConfirm { action_id, .. } => {
                 Some(action_id.clone())
@@ -1268,8 +1320,13 @@ impl SessionSupervisor {
                 // Consume the request as a denial (without installing a grant)
                 // before returning the validation error to the renderer.
                 if let Some(action_id) = &scheduled_action_id {
-                    self.resolve_scheduled_confirmation_locked(action_id, step_id, false, true)
-                        .await?;
+                    self.resolve_scheduled_confirmation_locked(
+                        action_id,
+                        step_id,
+                        false,
+                        ScheduledConfirmDeadlineDecision::Expire,
+                    )
+                    .await?;
                 } else {
                     let crate::interaction::InteractionOwner::Session { session_id } =
                         expected_owner
@@ -1291,8 +1348,13 @@ impl SessionSupervisor {
             // Consume and dismiss the request as stale after cancellation won;
             // this path deliberately does not persist the requested session
             // grant.
-            self.resolve_scheduled_confirmation_locked(action_id, step_id, true, false)
-                .await?;
+            self.resolve_scheduled_confirmation_locked(
+                action_id,
+                step_id,
+                true,
+                ScheduledConfirmDeadlineDecision::CheckAtResolution,
+            )
+            .await?;
             return Ok(None);
         }
         if let Err(error) = self
@@ -1317,8 +1379,13 @@ impl SessionSupervisor {
 
         let confirmed = matches!(effect, haven_common::types::PermissionEffect::Allow);
         if let Some(action_id) = scheduled_action_id {
-            self.resolve_scheduled_confirmation_locked(&action_id, step_id, confirmed, false)
-                .await
+            self.resolve_scheduled_confirmation_locked(
+                &action_id,
+                step_id,
+                confirmed,
+                ScheduledConfirmDeadlineDecision::AcceptedBeforeDeadline,
+            )
+            .await
         } else {
             let crate::interaction::InteractionOwner::Session { session_id } = expected_owner
             else {
@@ -1334,13 +1401,42 @@ impl SessionSupervisor {
         owner: &crate::interaction::InteractionOwner,
         request_id: &haven_common::types::ConfirmId,
         confirmed: bool,
-        timed_out: bool,
     ) -> anyhow::Result<Option<crate::session::ConfirmResolution>> {
         let _resolution = self.confirmation_resolution_gate.lock().await;
+        self.resolve_confirmation_for_owner_locked(owner, request_id, confirmed, false)
+            .await
+    }
+
+    /// Expire one confirmation through its declared owner. Unlike the user
+    /// resolve command, expiry is initiated only by the owner timer.
+    pub async fn expire_confirmation_for_owner(
+        self: &Arc<Self>,
+        owner: &crate::interaction::InteractionOwner,
+        request_id: &haven_common::types::ConfirmId,
+    ) -> anyhow::Result<Option<crate::session::ConfirmResolution>> {
+        let _resolution = self.confirmation_resolution_gate.lock().await;
+        self.resolve_confirmation_for_owner_locked(owner, request_id, false, true)
+            .await
+    }
+
+    async fn resolve_confirmation_for_owner_locked(
+        self: &Arc<Self>,
+        owner: &crate::interaction::InteractionOwner,
+        request_id: &haven_common::types::ConfirmId,
+        confirmed: bool,
+        expire: bool,
+    ) -> anyhow::Result<Option<crate::session::ConfirmResolution>> {
         match owner {
             crate::interaction::InteractionOwner::ScheduledAction { action_id } => {
                 self.resolve_scheduled_confirmation_locked(
-                    action_id, request_id, confirmed, timed_out,
+                    action_id,
+                    request_id,
+                    confirmed,
+                    if expire {
+                        ScheduledConfirmDeadlineDecision::Expire
+                    } else {
+                        ScheduledConfirmDeadlineDecision::CheckAtResolution
+                    },
                 )
                 .await
             }
@@ -1355,8 +1451,17 @@ impl SessionSupervisor {
                 if !interaction_owner_matches_request(owner, &request) {
                     return Ok(None);
                 }
-                self.resolve_confirmation_locked(session_id, request_id, confirmed, timed_out)
-                    .await
+                let deadline_elapsed = request
+                    .pending_permission_deadline()
+                    .map(|deadline| deadline <= chrono::Utc::now())
+                    .unwrap_or(true);
+                self.resolve_confirmation_locked(
+                    session_id,
+                    request_id,
+                    confirmed,
+                    expire || deadline_elapsed,
+                )
+                .await
             }
         }
     }
@@ -1367,8 +1472,13 @@ impl SessionSupervisor {
         request_id: &haven_common::types::ConfirmId,
     ) -> anyhow::Result<Option<crate::session::ConfirmResolution>> {
         let _resolution = self.confirmation_resolution_gate.lock().await;
-        self.resolve_scheduled_confirmation_locked(action_id, request_id, false, true)
-            .await
+        self.resolve_scheduled_confirmation_locked(
+            action_id,
+            request_id,
+            false,
+            ScheduledConfirmDeadlineDecision::Expire,
+        )
+        .await
     }
 
     async fn resolve_confirmation_locked(
@@ -1376,7 +1486,7 @@ impl SessionSupervisor {
         session_id: &str,
         step_id: &haven_common::types::ConfirmId,
         confirmed: bool,
-        timed_out: bool,
+        expired: bool,
     ) -> anyhow::Result<Option<crate::session::ConfirmResolution>> {
         // Phase 5 / E3: pause-based confirm — record decision and wake when
         // every pending gated tool in the batch has been answered.
@@ -1385,10 +1495,11 @@ impl SessionSupervisor {
                 session_id,
                 step_id.as_str(),
                 Value::Bool(confirmed),
-                timed_out,
+                expired,
             )
             .await?
         {
+            let status = request.status;
             let (session_id, tool_name, tool_input) = match request.details {
                 crate::interaction::InteractionDetails::Confirm {
                     tool_name,
@@ -1401,6 +1512,7 @@ impl SessionSupervisor {
                 session_id,
                 tool_name,
                 tool_input,
+                status,
             }));
         }
         Ok(None)
@@ -1411,7 +1523,7 @@ impl SessionSupervisor {
         action_id: &str,
         request_id: &haven_common::types::ConfirmId,
         confirmed: bool,
-        timed_out: bool,
+        deadline_decision: ScheduledConfirmDeadlineDecision,
     ) -> anyhow::Result<Option<crate::session::ConfirmResolution>> {
         let Some(pending_request) = self
             .scheduled_confirmation_request(action_id, request_id)
@@ -1431,12 +1543,14 @@ impl SessionSupervisor {
         if request_action_id != action_id {
             return Ok(None);
         }
+        let expired = scheduled_confirmation_is_expired(&pending_request, deadline_decision);
 
         // An approval must win a durable claim against cancellation before it
         // can consume the request, persist a session grant, or start a tool.
         // If cancel already committed, dismiss the stale prompt without any
         // authorization or execution side effect.
         if confirmed
+            && !expired
             && !self
                 .actions
                 .claim_scheduled_execution(action_id, request_id.as_str())
@@ -1482,7 +1596,7 @@ impl SessionSupervisor {
             return Ok(None);
         };
         let session_id = request.session_id.clone();
-        if timed_out {
+        if expired {
             let _ = request.expire();
         } else {
             let _ = request.resolve(Value::Bool(confirmed));
@@ -1499,11 +1613,12 @@ impl SessionSupervisor {
             session_id,
             tool_name,
             tool_input,
+            status: request.status,
         };
         let executor = Arc::clone(self);
         tokio::spawn(async move {
             executor
-                .finish_scheduled_confirm(request, confirmed, timed_out)
+                .finish_scheduled_confirm(request, confirmed, expired)
                 .await;
         });
         Ok(Some(resolution))
@@ -1513,7 +1628,7 @@ impl SessionSupervisor {
         &self,
         request: crate::interaction::InteractionRequest,
         confirmed: bool,
-        timed_out: bool,
+        expired: bool,
     ) {
         let (action_id, session_id, tool_name, tool_args, receipt, title) = match request.details {
             crate::interaction::InteractionDetails::ScheduledConfirm {
@@ -1552,7 +1667,7 @@ impl SessionSupervisor {
             return;
         }
         if !confirmed {
-            let reason = if timed_out {
+            let reason = if expired {
                 "confirmation timed out"
             } else {
                 "confirmation was declined"
@@ -1566,7 +1681,7 @@ impl SessionSupervisor {
             let _ = action_service
                 .fail_scheduled(
                     &action_id,
-                    if timed_out {
+                    if expired {
                         "确认超时"
                     } else {
                         "确认被拒绝"
@@ -1738,6 +1853,46 @@ mod scheduled_authorization_tests {
             1,
         ));
         (supervisor, tools, database, directory)
+    }
+
+    fn future_receipt(
+        confirmation_id: haven_common::types::ConfirmId,
+        capability: &str,
+    ) -> haven_tools::ConfirmationReceipt {
+        haven_tools::ConfirmationReceipt {
+            confirmation_id,
+            capability: haven_common::types::CapabilityScope::try_new(capability).unwrap(),
+            canonical_input_hash: String::new(),
+            effective_risk: RiskLevel::High,
+            policy_revision: 1,
+            expires_at: chrono::Utc::now().timestamp().max(0) as u64 + 300,
+        }
+    }
+
+    #[test]
+    fn accepted_scheduled_decision_keeps_its_deadline_verdict_after_persistence() {
+        let mut request = crate::interaction::InteractionRequest::scheduled_confirm(
+            "act-1234567890abcdef1234567890abcdef".into(),
+            None,
+            "files.write".into(),
+            json!({}),
+            future_receipt(haven_common::types::new_id("conf").into(), "files.write"),
+            "scheduled".into(),
+        );
+        request.expires_at = Some((chrono::Utc::now() - chrono::Duration::seconds(1)).to_rfc3339());
+
+        assert!(scheduled_confirmation_is_expired(
+            &request,
+            ScheduledConfirmDeadlineDecision::CheckAtResolution
+        ));
+        assert!(!scheduled_confirmation_is_expired(
+            &request,
+            ScheduledConfirmDeadlineDecision::AcceptedBeforeDeadline
+        ));
+        assert!(scheduled_confirmation_is_expired(
+            &request,
+            ScheduledConfirmDeadlineDecision::Expire
+        ));
     }
 
     async fn running_scheduled_action(
@@ -1924,7 +2079,7 @@ mod scheduled_authorization_tests {
         };
         assert!(
             supervisor
-                .resolve_confirmation_for_owner(&wrong_owner, &confirmation_id, true, false)
+                .resolve_confirmation_for_owner(&wrong_owner, &confirmation_id, true)
                 .await
                 .unwrap()
                 .is_none()
@@ -1939,7 +2094,7 @@ mod scheduled_authorization_tests {
             haven_common::types::new_id("conf").into();
         assert!(
             supervisor
-                .resolve_confirmation_for_owner(&owner, &wrong_request_id, true, false)
+                .resolve_confirmation_for_owner(&owner, &wrong_request_id, true)
                 .await
                 .unwrap()
                 .is_none()
@@ -1993,7 +2148,10 @@ mod scheduled_authorization_tests {
             "step-owner-route".into(),
             0,
             RiskLevel::High,
-            None,
+            Some(future_receipt(
+                haven_common::types::new_id("conf").into(),
+                "files.write",
+            )),
         );
         supervisor
             .request_interaction(request.clone())
@@ -2008,7 +2166,10 @@ mod scheduled_authorization_tests {
             "step-other-owner-route".into(),
             0,
             RiskLevel::High,
-            None,
+            Some(future_receipt(
+                haven_common::types::new_id("conf").into(),
+                "files.write",
+            )),
         );
         supervisor
             .request_interaction(other_request.clone())
@@ -2022,7 +2183,7 @@ mod scheduled_authorization_tests {
 
         assert!(
             supervisor
-                .resolve_confirmation_for_owner(&wrong_owner, &request_id, true, false)
+                .resolve_confirmation_for_owner(&wrong_owner, &request_id, true)
                 .await
                 .unwrap()
                 .is_none()
@@ -2044,7 +2205,7 @@ mod scheduled_authorization_tests {
             session_id: session.id.clone(),
         };
         let resolved = supervisor
-            .resolve_confirmation_for_owner(&owner, &request_id, false, false)
+            .resolve_confirmation_for_owner(&owner, &request_id, false)
             .await
             .unwrap()
             .expect("the request must resolve through its owning actor");
@@ -2076,15 +2237,7 @@ mod scheduled_authorization_tests {
                 None,
                 "files.write",
                 json!({"path": "notes.txt"}),
-                haven_tools::ConfirmationReceipt {
-                    confirmation_id: confirmation_id.clone(),
-                    capability: haven_common::types::CapabilityScope::try_new("files.write")
-                        .unwrap(),
-                    canonical_input_hash: String::new(),
-                    effective_risk: RiskLevel::High,
-                    policy_revision: 0,
-                    expires_at: u64::MAX,
-                },
+                future_receipt(confirmation_id.clone(), "files.write"),
                 "scheduled confirmation",
             )
             .await
@@ -2098,7 +2251,7 @@ mod scheduled_authorization_tests {
         let resolve_id = confirmation_id.clone();
         let resolve = tokio::spawn(async move {
             resolve_supervisor
-                .resolve_confirmation_for_owner(&resolve_owner, &resolve_id, true, false)
+                .resolve_confirmation_for_owner(&resolve_owner, &resolve_id, true)
                 .await
                 .unwrap()
         });
@@ -2125,7 +2278,7 @@ mod scheduled_authorization_tests {
         );
         assert!(
             supervisor
-                .resolve_confirmation_for_owner(&owner, &confirmation_id, true, false)
+                .resolve_confirmation_for_owner(&owner, &confirmation_id, true)
                 .await
                 .unwrap()
                 .is_none()
@@ -2219,21 +2372,13 @@ mod scheduled_authorization_tests {
             .unwrap();
         let confirmation_id: haven_common::types::ConfirmId =
             haven_common::types::new_id("conf").into();
-        let capability = haven_common::types::CapabilityScope::try_new("files.write").unwrap();
         supervisor
             .request_scheduled_confirm(
                 "act-00000000000000000000000000000002",
                 Some(&session.id),
                 "files.write",
                 json!({"path": "notes.txt"}),
-                haven_tools::ConfirmationReceipt {
-                    confirmation_id: confirmation_id.clone(),
-                    capability,
-                    canonical_input_hash: String::new(),
-                    effective_risk: RiskLevel::High,
-                    policy_revision: 0,
-                    expires_at: u64::MAX,
-                },
+                future_receipt(confirmation_id.clone(), "files.write"),
                 "scheduled confirmation",
             )
             .await
@@ -2254,7 +2399,7 @@ mod scheduled_authorization_tests {
         let once = tokio::spawn(async move {
             let _ = once_started_tx.send(());
             once_supervisor
-                .resolve_confirmation_for_owner(&owner, &once_id, false, false)
+                .resolve_confirmation_for_owner(&owner, &once_id, false)
                 .await
         });
         once_started_rx.await.unwrap();
@@ -2377,6 +2522,17 @@ mod interaction_owner_route_tests {
     use super::*;
     use serde_json::json;
 
+    fn future_receipt(capability: &str) -> haven_tools::ConfirmationReceipt {
+        haven_tools::ConfirmationReceipt {
+            confirmation_id: haven_common::types::new_id("conf").into(),
+            capability: haven_common::types::CapabilityScope::try_new(capability).unwrap(),
+            canonical_input_hash: String::new(),
+            effective_risk: haven_common::types::RiskLevel::High,
+            policy_revision: 1,
+            expires_at: chrono::Utc::now().timestamp().max(0) as u64 + 300,
+        }
+    }
+
     #[test]
     fn owner_must_match_the_pending_request_kind_and_route_key() {
         let session_id = "ses-1234567890abcdef1234567890abcdef";
@@ -2389,7 +2545,7 @@ mod interaction_owner_route_tests {
             "step-session".into(),
             0,
             haven_common::types::RiskLevel::High,
-            None,
+            Some(future_receipt("files.write")),
         );
         let session_owner = crate::interaction::InteractionOwner::Session {
             session_id: session_id.into(),
@@ -2410,14 +2566,7 @@ mod interaction_owner_route_tests {
         ));
 
         let action_id = "act-1234567890abcdef1234567890abcdef";
-        let receipt = haven_tools::ConfirmationReceipt {
-            confirmation_id: haven_common::types::new_id("conf").into(),
-            capability: haven_common::types::CapabilityScope::try_new("files.write").unwrap(),
-            canonical_input_hash: String::new(),
-            effective_risk: haven_common::types::RiskLevel::High,
-            policy_revision: 0,
-            expires_at: u64::MAX,
-        };
+        let receipt = future_receipt("files.write");
         let scheduled_request = crate::interaction::InteractionRequest::scheduled_confirm(
             action_id.into(),
             Some(session_id),

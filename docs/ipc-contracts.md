@@ -106,7 +106,7 @@
 | `rollback_session` | mutate | 回滚分支并同步截断事件和投影 |
 | `update_session_title` | mutate | 更新非空标题 |
 | `delete_session` / `clear_history` | mutate | 删除会话或清空历史，并广播 `session:deleted` |
-| `resolve_confirmation` | mutate | 输入 `{ owner, requestId, effect, scope, target, timedOut }`；owner 只选择唯一 pending registry，AppCommand 不经过 Agent executor。结果为 `resolved`、`expired` 或 `stale`；命令错误表示可重试失败，pending UI 保留 |
+| `resolve_confirmation` | mutate | 输入 `{ owner, requestId, effect, scope, target }`；owner 只选择唯一 pending registry，AppCommand 不经过 Agent executor。期限由 owner 按登记的 `expires_at` 仲裁，不接受 renderer 的超时决定。结果为 `resolved`、`expired` 或 `stale`；命令错误表示可重试失败，pending UI 保留 |
 
 Tauri 接收前端参数时采用其自动 camelCase → Rust snake_case 映射；页面调用处使用 camelCase。
 

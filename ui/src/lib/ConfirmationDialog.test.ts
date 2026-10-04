@@ -2,10 +2,16 @@ import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import ConfirmationDialog from './ConfirmationDialog.svelte';
 
+const deadlineProps = (durationMs = 60_000) => ({
+	createdAt: new Date().toISOString(),
+	deadlineAt: Date.now() + durationMs,
+});
+
 describe('ConfirmationDialog', () => {
 	it('keeps one-time approval primary and moves broader grants into more options', async () => {
 		const onConfirm = vi.fn();
 		const { container } = render(ConfirmationDialog as any, {
+			...deadlineProps(),
 			stepId: 'step-test',
 			toolName: 'files.write',
 			sessionId: 'ses-test',
@@ -56,14 +62,15 @@ describe('ConfirmationDialog', () => {
 			effect: 'allow',
 			scope: 'once',
 			target: 'operation',
-			timedOut: false,
 		});
 	});
 
 	it('closes without deciding and can be shown again while the request stays pending', async () => {
 		const onDismiss = vi.fn();
 		const onConfirm = vi.fn();
+		const deadline = deadlineProps();
 		const { rerender } = render(ConfirmationDialog as any, {
+			...deadline,
 			open: true,
 			stepId: 'step-close',
 			toolName: 'files.write',
@@ -76,6 +83,7 @@ describe('ConfirmationDialog', () => {
 		expect(onConfirm).not.toHaveBeenCalled();
 
 		await rerender({
+			...deadline,
 			open: false,
 			stepId: 'step-close',
 			toolName: 'files.write',
@@ -85,6 +93,7 @@ describe('ConfirmationDialog', () => {
 		await waitFor(() => expect(screen.queryByRole('button', { name: '本次允许' })).toBeNull());
 
 		await rerender({
+			...deadline,
 			open: true,
 			stepId: 'step-close',
 			toolName: 'files.write',
@@ -95,25 +104,23 @@ describe('ConfirmationDialog', () => {
 		expect(onConfirm).not.toHaveBeenCalled();
 	});
 
-	it('submits an automatic denial only once when the dialog reaches its deadline', async () => {
+	it('displays expiry without deciding when the dialog reaches its deadline', async () => {
 		vi.useFakeTimers();
 		try {
 			const onConfirm = vi.fn();
 			render(ConfirmationDialog as any, {
+				...deadlineProps(1000),
 				stepId: 'step-timeout',
 				toolName: 'files.write',
 				sessionId: 'ses-test',
 				summary: '写入文件',
 				permissionKey: 'files.write',
-				deadlineAt: Date.now() + 1000,
 				onConfirm,
 			});
 
 			await vi.advanceTimersByTimeAsync(1500);
-			expect(onConfirm).toHaveBeenCalledTimes(1);
-
-			await fireEvent.click(screen.getByRole('button', { name: '本次允许' }));
-			expect(onConfirm).toHaveBeenCalledTimes(1);
+			expect(onConfirm).not.toHaveBeenCalled();
+			expect(screen.getByText('0s')).toBeTruthy();
 		} finally {
 			vi.useRealTimers();
 		}
@@ -121,6 +128,7 @@ describe('ConfirmationDialog', () => {
 
 	it('does not offer session grants to confirmations without a persisted session', async () => {
 		render(ConfirmationDialog as any, {
+			...deadlineProps(),
 			stepId: 'conf-ui-only',
 			toolName: 'mcp__server__write',
 			permissionKey: 'mcp.server.write',
@@ -138,6 +146,7 @@ describe('ConfirmationDialog', () => {
 	it('keeps a rejected pre-execution confirmation submission retryable', async () => {
 		const onConfirm = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true);
 		render(ConfirmationDialog as any, {
+			...deadlineProps(),
 			stepId: 'conf-retry',
 			toolName: 'mcp__server__write',
 			onConfirm,

@@ -205,6 +205,11 @@ impl SessionSupervisor {
         self: &Arc<Self>,
         request: crate::interaction::InteractionRequest,
     ) -> anyhow::Result<()> {
+        if request.kind == crate::interaction::InteractionKind::Confirm
+            && request.status == crate::interaction::InteractionStatus::Pending
+        {
+            request.validate_new_pending_permission()?;
+        }
         let session_id = request.session_id.as_deref().ok_or_else(|| {
             anyhow::anyhow!("session-owned interaction has no session association")
         })?;
@@ -236,11 +241,14 @@ impl SessionSupervisor {
         {
             return;
         }
-        let Some(delay) =
-            super::tool_runner::confirmation_expiry_delay(request.expires_at.as_deref())
-        else {
-            return;
-        };
+        let delay = super::tool_runner::confirmation_expiry_delay(request.expires_at.as_deref())
+            .unwrap_or_default();
+        if request.pending_permission_deadline().is_err() {
+            tracing::warn!(
+                request_id = %request.id,
+                "replayed confirmation has no valid owner deadline; expiring immediately"
+            );
+        }
         let Some(session_id) = request.session_id.clone() else {
             tracing::error!(request_id = %request.id, "session confirmation has no owner session id");
             return;
@@ -250,9 +258,26 @@ impl SessionSupervisor {
         let owner = crate::interaction::InteractionOwner::Session { session_id };
         tokio::spawn(async move {
             tokio::time::sleep(delay).await;
-            let _ = executor
-                .resolve_confirmation_for_owner(&owner, &timeout_id, false, true)
-                .await;
+            let mut retry_delay = std::time::Duration::from_secs(1);
+            loop {
+                match executor
+                    .expire_confirmation_for_owner(&owner, &timeout_id)
+                    .await
+                {
+                    Ok(_) => break,
+                    Err(error) => {
+                        tracing::warn!(
+                            request_id = %timeout_id,
+                            error = %error,
+                            "failed to persist session confirmation expiry; retrying"
+                        );
+                        tokio::time::sleep(retry_delay).await;
+                        retry_delay = retry_delay
+                            .saturating_mul(2)
+                            .min(std::time::Duration::from_secs(30));
+                    }
+                }
+            }
         });
     }
 
@@ -390,10 +415,42 @@ impl SessionSupervisor {
         session_id: &str,
         requests: Vec<crate::interaction::InteractionRequest>,
     ) -> anyhow::Result<()> {
-        self.update_session_status(session_id, SessionStatus::Paused)
-            .await?;
+        if requests.is_empty() {
+            return Ok(());
+        }
+
+        // Validate before entering the actor. The actor repeats this immediately
+        // before committing the Paused transition and every request event in a
+        // single SQLite transaction.
+        for request in &requests {
+            anyhow::ensure!(
+                request.kind == crate::interaction::InteractionKind::Confirm
+                    && request.status == crate::interaction::InteractionStatus::Pending,
+                "confirmation batch contains a non-pending confirmation"
+            );
+            anyhow::ensure!(
+                request.session_id.as_deref() == Some(session_id),
+                "confirmation batch contains a request for another session"
+            );
+            request.validate_new_pending_permission()?;
+        }
+
+        let actor = self
+            .actor_for(session_id)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("session '{}' not found", session_id))?;
+        actor.request_confirm_batch(requests.clone()).await?;
+
         for request in requests {
-            self.request_interaction(request).await?;
+            self.emit_event(SessionEvent::InteractionRequested {
+                envelope: Box::new(crate::interaction::InteractionEnvelope {
+                    owner: crate::interaction::InteractionOwner::Session {
+                        session_id: session_id.to_string(),
+                    },
+                    request: request.clone(),
+                }),
+            });
+            self.schedule_confirmation_expiry(&request);
         }
         Ok(())
     }

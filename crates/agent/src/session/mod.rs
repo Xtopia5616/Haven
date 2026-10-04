@@ -74,14 +74,6 @@ impl Drop for SessionClosingGuard {
     }
 }
 
-/// Absolute fail-closed ceiling for an unanswered **scheduled** confirmation
-/// (R2). The interactive UI countdown (120s) starts when the dialog is
-/// **shown**, not when the request arrives — so queued confirms behind a
-/// visible dialog are not starved. This longer backend timer only covers the
-/// closed-UI / crashed-frontend case so pending entries cannot live forever.
-pub(crate) const SCHEDULED_CONFIRM_ABSOLUTE_TIMEOUT: std::time::Duration =
-    std::time::Duration::from_secs(30 * 60);
-
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SessionInfo {
     pub id: String,
@@ -142,6 +134,7 @@ pub struct ConfirmResolution {
     pub session_id: Option<String>,
     pub tool_name: String,
     pub tool_input: Value,
+    pub status: crate::interaction::InteractionStatus,
 }
 
 /// Typed side effects emitted by the supervisor. Consumers subscribe to this
@@ -2554,7 +2547,15 @@ mod tests {
             "step-confirm".into(),
             0,
             haven_common::types::RiskLevel::Safe,
-            None,
+            Some(haven_tools::ConfirmationReceipt {
+                confirmation_id: haven_common::types::new_id("conf").into(),
+                capability: haven_common::types::CapabilityScope::try_new("test.operation")
+                    .unwrap(),
+                canonical_input_hash: String::new(),
+                effective_risk: haven_common::types::RiskLevel::Safe,
+                policy_revision: 1,
+                expires_at: chrono::Utc::now().timestamp().max(0) as u64 + 300,
+            }),
         );
         reloaded.request_interaction(confirm.clone()).await.unwrap();
         let resolved = reloaded
@@ -2615,6 +2616,127 @@ mod tests {
         assert_eq!(
             reloaded.get_active_session_status(&session.id).await,
             Some(SessionStatus::Pending)
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_confirmation_batch_does_not_pause_or_partially_register() {
+        let db = temp_db();
+        let tools = Arc::new(ToolsManager::new());
+        let exec = Arc::new(SessionSupervisor::new_for_test(db.clone(), tools, 1));
+        let session = exec
+            .create_session("atomic confirmation batch")
+            .await
+            .unwrap();
+
+        let make_request = |step_id: &str, receipt: Option<haven_tools::ConfirmationReceipt>| {
+            crate::interaction::InteractionRequest::confirm(
+                &session.id,
+                1,
+                "test.operation".into(),
+                serde_json::json!({}),
+                format!("call-{step_id}"),
+                step_id.into(),
+                0,
+                haven_common::types::RiskLevel::Safe,
+                receipt,
+            )
+        };
+        let receipt = || haven_tools::ConfirmationReceipt {
+            confirmation_id: haven_common::types::new_id("conf").into(),
+            capability: haven_tools::CapabilityScope::try_new("test.operation").unwrap(),
+            canonical_input_hash: String::new(),
+            effective_risk: haven_common::types::RiskLevel::Safe,
+            policy_revision: 1,
+            expires_at: chrono::Utc::now().timestamp().max(0) as u64 + 300,
+        };
+
+        let valid = make_request("step-batch-valid", Some(receipt()));
+        let invalid = make_request("step-batch-invalid", None);
+        assert!(
+            exec.request_confirm_batch(&session.id, vec![valid, invalid])
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            exec.get_active_session_status(&session.id).await,
+            Some(SessionStatus::Pending),
+            "an invalid member must be rejected before the session is paused"
+        );
+        assert!(
+            exec.pending_interactions(&session.id, crate::interaction::InteractionKind::Confirm)
+                .await
+                .is_empty()
+        );
+        assert!(
+            exec.store
+                .read_active_domain_events_async(&session.id)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        db.conn()
+            .execute_batch(
+                "CREATE TRIGGER reject_confirmation_batch_event
+                 BEFORE INSERT ON session_events
+                 WHEN NEW.event_type = 'interaction_requested'
+                 BEGIN SELECT RAISE(ABORT, 'test confirmation append failure'); END;",
+            )
+            .unwrap();
+        assert!(
+            exec.request_confirm_batch(
+                &session.id,
+                vec![
+                    make_request("step-batch-failed-first", Some(receipt())),
+                    make_request("step-batch-failed-second", Some(receipt())),
+                ],
+            )
+            .await
+            .is_err()
+        );
+        db.conn()
+            .execute_batch("DROP TRIGGER reject_confirmation_batch_event;")
+            .unwrap();
+        assert_eq!(
+            exec.get_active_session_status(&session.id).await,
+            Some(SessionStatus::Pending),
+            "status and interaction events must roll back together on append failure"
+        );
+        assert!(
+            exec.pending_interactions(&session.id, crate::interaction::InteractionKind::Confirm)
+                .await
+                .is_empty()
+        );
+        assert!(
+            exec.store
+                .read_active_domain_events_async(&session.id)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        exec.request_confirm_batch(
+            &session.id,
+            vec![
+                make_request("step-batch-first", Some(receipt())),
+                make_request("step-batch-second", Some(receipt())),
+            ],
+        )
+        .await
+        .unwrap();
+        let persisted = exec
+            .store
+            .read_active_domain_events_async(&session.id)
+            .await
+            .unwrap();
+        assert_eq!(
+            persisted
+                .iter()
+                .filter(|event| event.event_type == haven_memory::INTERACTION_REQUESTED_EVENT_TYPE)
+                .count(),
+            2,
+            "a valid confirmation batch must persist all requests together"
         );
     }
 

@@ -418,7 +418,14 @@ async fn reopen_preserves_follow_up_route_after_confirm_resolves_while_ask_stays
         "step-0123456789abcdef0123456789abcdef".into(),
         0,
         haven_common::types::RiskLevel::Safe,
-        None,
+        Some(haven_tools::ConfirmationReceipt {
+            confirmation_id: haven_common::types::new_id("conf").into(),
+            capability: haven_common::types::CapabilityScope::try_new("haven.test").unwrap(),
+            canonical_input_hash: String::new(),
+            effective_risk: haven_common::types::RiskLevel::Safe,
+            policy_revision: 1,
+            expires_at: chrono::Utc::now().timestamp().max(0) as u64 + 300,
+        }),
     );
     executor.request_interaction(confirm.clone()).await.unwrap();
 

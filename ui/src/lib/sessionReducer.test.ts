@@ -44,6 +44,25 @@ describe('resume interaction normalization', () => {
 				},
 				{ id: 'missing-session', kind: 'ask', status: 'pending' },
 				{ id: 'invalid-session', session_id: 7, kind: 'ask', status: 'pending' },
+				{
+					id: 'confirm-missing-deadline',
+					session_id: 'ses-wire',
+					owner: { kind: 'session', session_id: 'ses-wire' },
+					kind: 'confirm',
+					status: 'pending',
+					options: [],
+					created_at: '2026-09-25T00:00:00Z',
+				},
+				{
+					id: 'confirm-invalid-deadline',
+					session_id: 'ses-wire',
+					owner: { kind: 'session', session_id: 'ses-wire' },
+					kind: 'confirm',
+					status: 'pending',
+					options: [],
+					created_at: '2026-09-25T00:00:00Z',
+					expires_at: 'invalid',
+				},
 			],
 		});
 

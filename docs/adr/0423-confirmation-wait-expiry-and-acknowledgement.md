@@ -29,12 +29,21 @@
 
 ## Owner 路由后的期限契约
 
-ADR 0424 已采纳，代码迁移尚未完成。当前代码仍按本 ADR 的 `timed_out` 请求字段工作；owner 路由切片完成后，
-保留本 ADR 的绝对期限展示、过期不执行和可重试失败行为，但 renderer 不再提交 `timed_out` 作为终态
-决定，也不再依赖 renderer 与后端两个看门狗竞争。迁移时删除该 IPC 字段，由 owner expiry 路径产生
-明确的过期结果，并同步更新 generated contract、事件 mapper 和本 ADR 的实现状态。数据库/transcript
+本节由 ADR 0424 取代本 ADR 第 1–3 条中的 renderer 120 秒决定、`timed_out` 输入和 ScheduledAction
+30 分钟上限。ADR 0424 的 owner deadline 契约已实施：pending permission confirm 登记时必须有有效、未来的
+`expires_at`，该绝对期限投影到 renderer；renderer 只显示倒计时，不再提交 `timed_out` 或自行创建
+120 秒期限。Session、ScheduledAction 和 AppCommand 各由自己的 owner timer 过期；resolve 与 expire
+在 owner 仲裁中比较同一个期限。Session 恢复时发现缺失或无效期限的历史 pending confirm 会立即过期；
+若 durable expiry event 写入失败，owner 保留请求并退避重试。无效新期限不会进入 pending registry。
+
+默认期限来自授权 receipt；目前 ScheduledAction 不再另设 30 分钟 fallback 或期限推导。Rust command、
+生成 TypeScript contract、运行时 mapper 与 IPC 文档已删除 `timed_out`。数据库 schema 和 transcript
 重置范围不变。
 
 ## 验证
 
-本切片通过 `cargo fmt --all -- --check`、`cargo check --workspace --locked`、`corepack pnpm --dir ui run check` 与 `scripts/check-ipc-contracts.ps1`。后端和前端测试未在本轮运行。
+2026-10-05 期限收口实现通过 `cargo test --workspace --locked`、
+`cargo clippy --workspace --locked -- -D warnings`、`cargo fmt --all -- --check`、
+UI `corepack pnpm run check`、`corepack pnpm run test:run`（120 个文件、962 个测试）和
+`corepack pnpm run build`。`scripts/check-ipc-contracts.ps1` 核对 79 个 handler，
+`scripts/check-ipc-events.ps1` 核对 40 个 event channel；手工性能 profile 按项目约定保持 ignored。
