@@ -8,6 +8,7 @@ pub mod openai;
 pub mod openai_responses;
 mod provider_features;
 mod stream;
+mod tool_schema;
 mod transport;
 mod web_search;
 

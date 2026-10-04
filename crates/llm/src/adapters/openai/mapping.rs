@@ -268,7 +268,10 @@ impl OpenAiAdapter {
                 // gateways. Keep every Chat-compatible request on the same
                 // object-root projection so a gateway cannot reject a root
                 // union before sampling starts.
-                let parameters = crate::types::project_tool_parameters_for_object_root(parameters);
+                let parameters =
+                    crate::adapters::tool_schema::project_tool_parameters_for_object_root(
+                        parameters,
+                    );
                 OpenAiTool {
                     tool_type: t.tool_type.clone(),
                     function: OpenAiToolFunction {

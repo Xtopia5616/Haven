@@ -307,7 +307,7 @@ impl OpenAiResponsesAdapter {
                 // Defense in depth: `ToolDefinition::from` already sanitizes,
                 // but direct constructors / cache hits may still carry Null.
                 let parameters = crate::types::canonicalize_json(
-                    crate::types::project_tool_parameters_for_object_root(
+                    crate::adapters::tool_schema::project_tool_parameters_for_object_root(
                         crate::types::sanitize_tool_parameters(t.function.parameters.clone()),
                     ),
                 );

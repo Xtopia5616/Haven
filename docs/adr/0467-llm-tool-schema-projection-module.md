@@ -2,7 +2,7 @@
 
 ## 状态
 
-已采纳，实施中（2026-10-05）。
+已完成（2026-10-05）。
 
 ## 背景
 
@@ -27,7 +27,7 @@
 
 模块保持私有，调用 API 不变；没有配置、IPC、schema 或持久化变化，无需用户数据重置。重点验收 provider 转换测试、现有投影算法回归和 prompt-cache canonical projection 行为保持不变。
 
-实施验证结果将在代码切片完成后补录；适用门禁为 `cargo fmt --all -- --check`、`cargo test --locked -p haven-llm`、`cargo clippy --locked -p haven-llm -- -D warnings` 及 `git diff --check`。
+实现与原投影算法逐行保持一致（仅换行符归一后比较）；原有投影断言已迁入私有 helper，adapter wire 与缓存测试仍在各 provider 测试中。验证：`cargo fmt --all -- --check`、`cargo test --locked -p haven-llm`（508 passed、1 ignored）、`cargo clippy --locked -p haven-llm -- -D warnings` 及 `git diff --check` 均通过。
 
 ## 回滚
 

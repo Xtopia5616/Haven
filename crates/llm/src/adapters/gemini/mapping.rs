@@ -333,7 +333,7 @@ impl GeminiAdapter {
                 function_declarations: vec![GeminiFunctionDeclaration {
                     name: tool_names.to_provider(&t.function.name),
                     description: t.function.description.clone(),
-                    parameters: crate::types::project_tool_parameters_for_gemini(
+                    parameters: crate::adapters::tool_schema::project_tool_parameters_for_gemini(
                         t.function.parameters.clone(),
                     ),
                 }],
