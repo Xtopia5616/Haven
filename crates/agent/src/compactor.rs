@@ -328,7 +328,7 @@ impl ContextCompactor {
     /// Build a bounded prompt from the messages being removed. The source
     /// renderer keeps both edges when the middle is larger than the summary
     /// model's input budget.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     fn build_summary_prompt(messages: &[CanonicalMessage]) -> String {
         Self::build_summary_prompt_with_budget(messages, SUMMARY_INPUT_TOKEN_BUDGET)
     }
@@ -526,7 +526,7 @@ impl ContextCompactor {
     /// head of the conversation (prompt-cache friendly); middle is selected by
     /// token cost; suffix is the largest recent tail that fits the post-
     /// compaction target.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     fn compaction_range(
         &self,
         messages: &[CanonicalMessage],

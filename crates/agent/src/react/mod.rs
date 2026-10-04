@@ -603,7 +603,7 @@ impl ReActEngine {
     /// can all change the meaning of a side-effecting call if replaced with a
     /// guessed value. The caller turns each failure into a normal failed tool
     /// observation so the model receives an actionable, structured error.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub(crate) async fn validate_tool_inputs(
         &self,
         session_id: &str,

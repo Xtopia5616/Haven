@@ -135,9 +135,10 @@ pub(crate) trait LoopHooks: Send + Sync {
 
 /// No-op hooks for thin-loop tests: never touch inbox / compact / infer /
 /// response policy / confirm gate.
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 pub(crate) struct NoopHooks;
 
+#[cfg(test)]
 #[async_trait]
 impl LoopHooks for NoopHooks {
     async fn before_step(
