@@ -2,7 +2,7 @@
 
 ## 状态
 
-Proposed（2026-10-02）；记录当前契约漂移与后续重构目标，尚未改变运行时所有权。
+已采纳，待分片实施（2026-10-04）。本 ADR 确定 owner 路由、终态与期限契约；实现仍按下述顺序逐路迁移，当前代码不因此视为已完成。
 
 ## 背景
 
@@ -61,21 +61,37 @@ session/scheduled 看门狗分别推进。界面直调的权限决定和获批�
 并重新校验 receipt、target、scope 和当前安全策略。renderer 提供的 owner、请求种类或
 session/action 关联字段均不能授予权限，也不能直接触发 continuation。
 
+Agent supervisor 的同一进程内 `InteractionRequested` delivery event 承载 SessionActor 与
+scheduled confirmation 通知，因此 producer 必须显式附上 owner，再交给 App 投影；App mapper
+不按 `InteractionKind`、`session_id` 或事件到达顺序猜来源。该 delivery event 不是
+`session_events` 中的 durable event。Tauri `InteractionRequestedEvent.session_id` 表达可选的关联
+上下文，owner 独立携带路由身份。
+
 持久 session event 的外层 session 关系已经确定 Session owner；不把通用 owner 或 continuation
-再写进 `InteractionRequest`。UI 请求没有 session，scheduled 请求也可能没有关联 session；关联
-session 是可选上下文，绝不能用于推断实际 owner。删除 `"ui"`/`"action"` 这类占位 session ID；
-若请求确有来源 session，则继续保留真实 ID。UI 与 scheduled confirmation 的执行 payload 留在
-各自 owner 内部，不能放入 common 类型或 IPC DTO。
+再写进 `InteractionRequest`。AppCommand 请求没有 session owner；ScheduledAction 请求也可能没有关联
+session。真实 `session_id` 只表达由可信 producer 提供的上下文，绝不能用于推断实际 owner。删除
+`"ui"`/`"action"` 这类占位 session ID；若请求确有真实关联 session，则继续保留真实 ID。没有真实
+session context 时不得提供 session-scope 授权；有真实 context 时，仍须由后端按 receipt、capability
+target 和当前安全策略验证该 session scope。UI 与 scheduled confirmation 的执行 payload 留在各自
+owner 内部，不能放入 common 类型或 IPC DTO。
+
+`InteractionRequest.session_id` 可成为 `Option<String>`，并对 `None` 使用 `skip_serializing_if`；
+`Some(session_id)` 必须仍按现有 JSON 字符串字段序列化。SessionActor 在 durable append 前强制
+要求该值存在且等于 actor 所属 session，因此既有 session-owned interaction event 的 payload
+形状不变。只有进程内的 AppCommand 或无真实关联 session 的 scheduled request 才能使用 `None`。
 
 Owner 的一次 resolve/expire 操作须返回明确的 `Resolved`、`Expired`、`Stale` 或
 `RetryableFailure` 结果。前三者是已仲裁的请求状态；`RetryableFailure` 表示决定尚未被接受，
-pending 请求和 continuation 仍由原 owner 持有。获批动作开始执行后，执行成功或失败使用其
+pending 请求和 continuation 仍由原 owner 持有。Tauri resolve 对前三种状态返回显式枚举；可重试
+失败通过命令错误返回，使 renderer 保留 pending UI。获批动作开始执行后，执行成功或失败使用其
 领域结果单独报告，不再把已接受的授权决定回滚为 pending。
 
 ### 恢复语义
 
 - Session confirmation 的 owner 由 durable event 所属的 session 确定。决定 event append 失败时，
   actor 仍保持原 pending 状态；成功 append 后才推进 actor，并在整个 gated batch 完成后唤醒。
+- durable SessionActor event 必须含真实且匹配 actor 的 `session_id`；`None` 不得进入 session event log，
+  这样可继续解码现有持久 payload 并防止可选上下文削弱恢复校验。
 - Scheduled confirmation 只在 scheduled action 执行期持有。依据 ADR 0392，进程重启时遗留的
   `running` action 被标记失败且不自动 replay；进程内 pending confirmation 随之失效，不能从
   通用交互 DTO 重建 continuation。
@@ -85,6 +101,21 @@ pending 请求和 continuation 仍由原 owner 持有。获批动作开始执行
 因此，将运行时 owner envelope 作为非持久 supervisor/app event 的路由信息，并投影到 Tauri
 event/resolve IPC DTO、不写入 `session_events`，不改变数据库 schema；若未来把 owner 或 continuation 写进 durable event
 payload，则属于新的持久契约，必须单独评估 schema/reset 与崩溃恢复语义，不能并入这个路由切片。
+
+### 期限唯一性与 ADR 0423 的关系（决定）
+
+- 每个登记为 pending 的 permission confirm 都必须有所属 owner 管理的、可解析的绝对 `expires_at`。
+  授权票据期限是默认来源；若 owner 另有更短的领域上限（例如 scheduled action 的等待上限），只在
+  登记时取较早期限并保存最终值。缺少或无法解析期限时不得进入 pending，也不得由 renderer 用
+  `created_at + 120s` 补造期限。非 pending 的合成确认项不进入 owner registry。
+- deadline timer 由 owner 持有；用户决定与 deadline 到期都经同一 owner 终态仲裁。renderer 可以按
+  owner 给出的 `expires_at` 显示倒计时，但不能以 `timed_out` 布尔值决定后端终态。到期后的 resolve
+  返回显式 `Expired`/`Stale` 结果，不写授权、不启动 continuation，也不自动重试。
+- ADR 0423 的绝对期限展示、失败后保留可重试弹窗、过期时不执行副作用等决定继续有效；本 ADR
+  实施时，其 renderer 提交 `timed_out` 以及 renderer 与后端看门狗竞争仲裁的做法由本节取代。届时从
+  resolve IPC 删除该字段，保留 owner 侧 expire 操作及过期的独立结果，并同步生成契约、
+  前端 mapper 与 IPC 文档。resolve request 中当前名为 `step_id` 的参数实际承载 `conf-*` request ID，
+  owner 路由切片应统一改名为 `request_id`；这只改变运行时 IPC，不改变 durable event 或数据库。
 
 ## 会话阻塞范围
 
@@ -109,7 +140,7 @@ Haven UI、其他 session 与调度器不因此停止。定时确认等待的是
 - 界面直调确认也由后端按原授权票据期限到期；renderer 关闭不会让 `ui_confirmations` 永久
   留下待执行 continuation。Always 决定先持久化，接受决定的终态事件先发出并收起弹窗，
   获批动作随后作为 app-scoped task 执行；预执行失败保持请求可重试，执行失败通过通用应用内
-  通知报告。没有持久 session owner 的 UI/scheduled 确认不提供 session scope，后端拒绝伪造值。
+  通知报告。当前没有 session owner 的 UI/scheduled 确认不提供 session scope，后端拒绝伪造值。
 - 永久与会话授权现在分别查看、逐项撤销和整组重置；允许与拒绝决定都在设置页列出。具体
   command 与数据库契约见 ADR 0425。
 
@@ -117,14 +148,16 @@ Haven UI、其他 session 与调度器不因此停止。定时确认等待的是
 
 1. 状态转移、日志/通知契约、授权管理和 UI-only continuation 已按 ADR 0423/0425 落地，
    保持现有 durable owner 不变；移除陈旧 ADR 对 snapshot 的现状描述。
-2. 先完成工作树中已开始的兼容清理及其独立门禁/提交，再开始 owner 路由，避免在同一文件上
-   混合删除旧契约与改变运行时所有权。
-3. 为 owner 与 `request_id` 建立 typed runtime envelope 和显式 resolve result；保留 session event
-   的现有 durable 形状。一次迁移一条 owner 路径，分别以 UI 直调、scheduled action、ReAct
+2. 兼容清理、SessionStore 历史 façade 提取已按 ADR 0463–0466 独立完成并通过 workspace 与 UI 门禁；
+   owner 路由仍保持独立切片，避免把删除旧契约与改变运行时所有权混在一起。
+3. 为 owner 与 `request_id` 建立 typed runtime envelope 和显式 resolve result；resolve IPC 将现有
+   `step_id` 改为 `request_id`，并为已仲裁状态使用有类型的返回值；保留 session event 的现有 durable
+   形状。一次迁移一条 owner 路径，分别以 UI 直调、scheduled action、ReAct
    confirmation 为顺序，移除每条路径对应的扫描/fallback。
 4. 把确认接受与 continuation 执行拆开；实现同一 owner 内点击/到期的一次性仲裁，并统一后端
-   deadline。覆盖 renderer 关闭、迟到点击、持久化失败与执行失败；session batch 登记/恢复仍保持
-   event 原子性。
+   deadline。每个 pending permission confirm 都须有有效绝对期限；renderer 只展示 owner 提供的期限，
+   不再传 `timed_out` 或按创建时间推算。覆盖 renderer 关闭、迟到点击、持久化失败与执行失败；
+   session batch 登记/恢复仍保持 event 原子性。
 5. 后续若为 resolve/expiry 等终态增加通知，必须基于 owner 已接受的 lifecycle transition；
    pending 请求已使用独立 `permission_requested` 通知配置，不复用 `session_paused`。
 
@@ -137,7 +170,9 @@ Haven UI、其他 session 与调度器不因此停止。定时确认等待的是
 - 弹窗在授权决定被接受时结束，动作结果独立报告；所有 owner 都有后端期限，超时不会启动
   动作或自动重放副作用。
 - 日志/通知仅包含安全的 request id、kind、owner 类别、状态和时间等元数据。
-- owner 路由值不含 continuation 或授权凭据；错误 owner、错误关联 ID 或重复终态只能得到 stale/已终态结果，不能消费另一个 owner 的请求。
+- owner 路由值不含 continuation 或授权凭据；错误 owner、错误关联 ID 或重复终态只能得到有类型的 `Stale`/已终态结果，不能消费另一个 owner 的请求。
+- SessionActor 仍只追加带真实 session ID 的原有 `InteractionRequest` JSON；非持久 runtime/Tauri DTO 可省略无关联的 `session_id` 并显式携带 owner。
+- renderer 倒计时、`timed_out` 输入和本地 `created_at` 推算都不能改变后端有效期限；所有 pending permission confirm 都有 owner 管理的绝对期限。
 - IPC、事件、UI 与 Agent 行为变更按 `docs/development-standards.md` 补 ADR、契约检查和定向回归。
 
 本 ADR 当前不改变数据库 schema，因此不要求重置用户数据。若后续决定持久化 scheduled 或

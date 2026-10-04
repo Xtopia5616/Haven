@@ -27,6 +27,14 @@
 
 `resolve_confirmation` 增加 `timed_out` 请求字段，Rust handler、生成的 TypeScript 命令 map 和 IPC 文档同步更新。应用与 renderer 随同一版本发布；数据库 schema 和 transcript 重置边界不变，无需重置用户数据。
 
+## Owner 路由后的期限契约
+
+ADR 0424 已采纳，代码迁移尚未完成。当前代码仍按本 ADR 的 `timed_out` 请求字段工作；owner 路由切片完成后，
+保留本 ADR 的绝对期限展示、过期不执行和可重试失败行为，但 renderer 不再提交 `timed_out` 作为终态
+决定，也不再依赖 renderer 与后端两个看门狗竞争。迁移时删除该 IPC 字段，由 owner expiry 路径产生
+明确的过期结果，并同步更新 generated contract、事件 mapper 和本 ADR 的实现状态。数据库/transcript
+重置范围不变。
+
 ## 验证
 
 本切片通过 `cargo fmt --all -- --check`、`cargo check --workspace --locked`、`corepack pnpm --dir ui run check` 与 `scripts/check-ipc-contracts.ps1`。后端和前端测试未在本轮运行。

@@ -662,20 +662,22 @@ payload 记录不含 payload 的 warning 并丢弃；聊天页与布局订阅互
 usage fallback 与 media plan 双副作用保持原 owner（ADR 0347）。SessionCompleted/SessionError
 仍经 primary channel 与 `session:updated` secondary fan-out；同一终态 occurrence 现携带共享 `occurrence_id`，
 聊天页只对精确配对的 secondary 跳过重复 cleanup，独立终态 `session:updated` 仍执行清理；相同 reducer
-状态投影不再广播新引用（ADR 0349、0386）。session、action、recording、settings read、app event 与 agent event contract 已完成对应 mapper/validator 或边界审计（ADR 0330、0335、0340、0341、0346、0347、0348、0350、0376）；live interaction event 与 resume snake_case DTO 保持各自 mapper。全局 Rust→TypeScript codegen 未引入，其余 command families 仍待按域审计；Settings update payload 仍由 SettingsView 的单一 builder 构造。Action board 的活跃
+状态投影不再广播新引用（ADR 0349、0386）。session、action、recording、settings read、app event 与 agent event contract 已完成对应 mapper/validator 或边界审计（ADR 0330、0335、0340、0341、0346、0347、0348、0350、0376）；live interaction event 与 resume snake_case DTO 保持各自 mapper。命令 request/response 的静态 TypeScript contract 由 Rust handler/Serde DTO 生成至 `generatedCommands.ts`，不在多份手写定义间同步字段（ADR 0394）；生成类型不替代运行时校验，event mappers 与动态扩展 payload 仍按各 domain 手工维护。Settings update payload 仍由 SettingsView 的单一 builder 构造。Action board 的活跃
 `list_actions`/`cancel_action` 经 `actionCommands.ts`；list response 复用 `mapActionPayload`，cancel
-request/result 使用命名 TS contract，`actionStore` 不直接 invoke（ADR 0348）。其余命令仍按域审计，
-不引入全局 codegen。
+request/result 使用命名 TS contract，`actionStore` 不直接 invoke（ADR 0348）。命令静态 request/response
+统一使用 Rust 生成 contract；每个领域仍负责运行时校验、直接调用编排和安全审计。事件尚无全局 codegen，
+各事件 mapper 继续按 ADR 逐域维护。
 `continue_session`、`interrupt_session`、`end_session` 与 `rollback_session` 由
 `ChatController` 单一编排并直接 invoke；请求在 `contracts/commands.ts` 使用命名 DTO，页面逻辑保留
 原 in-flight 锁、错误处理与通知顺序。`resolve_confirmation` 留在 `+layout.svelte` 的 shell confirmation
 入口，因为弹窗必须跨工作区可见；它也使用命名 request DTO 与本地 in-flight guard。没有重复 request
 mapper 或绕过 owner 的 UI caller，IPC script 对照 Rust handler 参数、TS DTO 和直接调用边界（ADR 0371）。
-`+page.svelte` 保留 view/scroll 与 dialog/loading/menu 状态、输入路由与 ask 决策、model sync、
-resume target/auto-restore、新会话入口及非 chat-event teardown；在 mount 时创建 controller、等待
-listener ready 后再 settings/load/restore，并在 destroy 时 dispose。旧 `sessionMessages.ts`、
+`+page.svelte` 保留 view/scroll 与 dialog/loading/menu 状态、model sync、resume target/auto-restore、
+新会话入口及非 chat-event teardown；ask/input 分流、会话启动恢复和滚动/observer 生命周期分别由
+`chatAskInteraction`、`chatSessionStartup`、`chatViewController` 拥有，在 mount 时按 listener-ready 顺序
+接线并在 destroy 时 dispose。旧 `sessionMessages.ts`、
 `sessionUsage.ts` 仅保留兼容投影，`streamAggregator.ts` 只负责排队后 dispatch chunk action
-（ADR 0160、0313、0315、0320、0322）。Phase 8 尚未完成的工作包括其他 command families 的逐域审计、是否引入跨域 Rust→TypeScript codegen 的决策，以及 ask/input 决策、复杂 view state 和启动恢复的编排边界；已审计域保留手写 contract/mapper，不视为生成产物。
+（ADR 0160、0313、0315、0320、0322）。阶段 8 的命令 contract 生成与聊天编排范围已完成（ADR 0394）；尚未逐域审计的事件运行时校验、授权策略与页面局部状态仍由各自领域按变更和风险持续审查，不是待完成的跨域 codegen/总 controller 阶段，也不据此机械拆页。
 `ModelSettings.svelte` 仍拥有命名模型和 Provider CRUD 编排；活跃 discovery command 现统一经过
 `modelDiscoveryCommands.ts`（ADR 0368），页面仍负责缓存数据的 settings 投影与刷新交互。ToolsView 的
 catalog、MCP/Skills 管理、连接和 refresh 命令均通过 `toolsCommands.ts`；命名 request/response DTO 保持
