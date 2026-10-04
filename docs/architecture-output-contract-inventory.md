@@ -140,7 +140,7 @@ Admin 操作最终由 `TypedToolAdapter` 或 `AdminSurfaces.execute` 序列化�
 | `agent:supplement`, `agent:compaction` | `AgentSupplementEvent` 含上下文/step/run/message/source/id/event_seq；`AgentCompactionEvent` 含 summary/token counts/degraded/episode/event_seq | 固定 typed DTO + 用户内容字符串；sequence 与 producer policy 由 Agent owner。 |
 | `agent:usage` | `AgentUsageEvent` 含 token/cost/model/cache/context/step/duration/call-kind，diagnostics 为 `Option<CacheDiagnostics>` | typed DTO；cache diagnostics 不再是裸 Value，provider call kind 的 string 语义由 LLM/Agent 投影 owner。 |
 | `agent:tool_output` | `AgentToolOutputEvent { session_id, step_id, output: String }` | 固定 typed string payload；工具 output 展示语义由 Agent/Tools 提供，App mapper 负责 wire。 |
-| `notification:show` | `AgentNotificationEvent { session_id, title, body, notification_kind?, action_kind?, action_id?, action_status? }` | 固定 typed notification envelope；正文自由字符串，由 Agent producer 和 App notification/UI adapter 管理。 |
+| `notification:show` | `AgentNotificationEvent { session_id?, title, body, notification_kind?, action_kind?, action_id?, action_status? }` | 固定 typed notification envelope；`session_id` 只表示真实可选会话关联，正文自由字符串由 Agent producer 和 App notification/UI adapter 管理。 |
 
 40 个 channel 名称定义于 `crates/app-binary/src/events.rs`；AgentEvent mapping、chunk `seq` 补齐和终态事件投影位于 `crates/app-binary/src/event_bridge.rs`。事件字段级自动 checker 仍未像命令名那样全覆盖；事件 DTO 测试与 event contract registry 是当前校验 owner。
 

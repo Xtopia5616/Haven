@@ -126,7 +126,7 @@ mod tests {
     #[test]
     fn action_completion_notification_is_tagged_without_changing_generic_wire() {
         let generic = AgentEvent::Notification {
-            session_id: "ses-generic".into(),
+            session_id: Some("ses-generic".into()),
             title: "Notice".into(),
             body: "Generic notice".into(),
         };
@@ -143,7 +143,7 @@ mod tests {
         let action_completion = AgentEvent::ActionCompletionNotification {
             action_kind: ActionNotificationSource::Scheduled,
             action_id: "act-scheduled".into(),
-            session_id: String::new(),
+            session_id: None,
             action_status: None,
             title: "任务完成".into(),
             body: "结果".into(),
@@ -155,7 +155,6 @@ mod tests {
         assert_eq!(
             TauriEmitter::payload(&action_completion, None),
             serde_json::json!({
-                "session_id": "",
                 "title": "任务完成",
                 "body": "结果",
                 "notification_kind": "action_completion",
@@ -167,7 +166,7 @@ mod tests {
         let background_completion = AgentEvent::ActionCompletionNotification {
             action_kind: ActionNotificationSource::Background,
             action_id: "act-background".into(),
-            session_id: "ses-owner".into(),
+            session_id: Some("ses-owner".into()),
             action_status: Some(ActionCompletionStatus::Failed),
             title: "后台任务失败".into(),
             body: "错误摘要".into(),
@@ -754,7 +753,7 @@ impl TauriEmitter {
                 ..
             } => {
                 tracing::info!(
-                    session_id = %session_id,
+                    session_id = ?session_id,
                     title_len = title.chars().count(),
                     body_len = body.chars().count(),
                     "TauriEmitter::on_notification"

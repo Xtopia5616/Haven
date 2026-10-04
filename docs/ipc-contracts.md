@@ -233,7 +233,7 @@ DTO 位于 `crates/app-binary/src/events.rs`；前端镜像分别位于
 | `agent:compaction` | `AgentCompactionEvent { summary, tokens_before, tokens_after, degraded, episode_id?, event_seq? }` | 聊天页 | `event_seq` 对应该条压缩摘要的 durable sequence。`degraded=true` 表示摘要请求未完成、使用了 `[older context omitted]`，UI 必须提示较早内容已省略；不发送快照内部对象。 |
 | `agent:usage` | `AgentUsageEvent` | 用量面板、聊天页 | 不占用 durable `event_seq`，live 事件自带累计值。固定 token/cost/cache/context 字段；`role` 字段承载 `RequestKind` 字符串；`call_kind=agent` 为 Agent 主循环，`call_kind=media` 为工具拥有的媒体推理，`call_kind=tool` 为其它工具内部 LLM 调用，后二者均不更新主循环累计统计；`cache_diagnostics` 仅为 provider 诊断扩展点；缓存率由每次调用的 accounting 合同计算，未知口径不得猜测。 |
 | `agent:tool_output` | `AgentToolOutputEvent` | 聊天页 | UI-only 的有界输出通道；未知 channel 或畸形 payload 直接丢弃并记录。 |
-| `notification:show` | `AgentNotificationEvent` | 根布局 | 纯文本 toast/系统通知；不承载密钥、完整命令输出或原始 provider 错误。 |
+| `notification:show` | `AgentNotificationEvent` | 根布局 | 纯文本 toast/系统通知；`session_id` 仅在存在真实会话关联时提供；不承载密钥、完整命令输出或原始 provider 错误。 |
 
 前端业务代码只使用 camelCase（例如 `sessionId`、`stepNumber`、`toolCallId`）；
 `serde_json::Value` 只保留在上表明确标注的动态字段。新增事件必须同时更新 Rust

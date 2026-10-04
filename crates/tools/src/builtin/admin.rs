@@ -2045,7 +2045,7 @@ mod tests {
             let metadata = surfaces.metadata(&request);
             let tool_name = request.model_operation_name();
             let authorization_request = crate::AuthorizationRequest::new(
-                Some("ui"),
+                None,
                 tool_name,
                 request.input(),
                 crate::OperationPolicy::native(

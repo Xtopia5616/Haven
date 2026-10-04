@@ -6,6 +6,7 @@
 
 use super::*;
 use haven_memory::repositories::session_steps::{ActionStepOutcome, ActionStepWrite};
+use tracing::Instrument;
 
 pub(super) fn confirmation_expiry_delay(expires_at: Option<&str>) -> Option<std::time::Duration> {
     let expires_at = chrono::DateTime::parse_from_rfc3339(expires_at?)
@@ -925,7 +926,7 @@ impl SessionSupervisor {
         {
             tracing::warn!(
                 tool = %tool_name,
-                session = %session_id.unwrap_or("action"),
+                session_id = ?session_id,
                 reason_len = reason.chars().count(),
                 "confirmation receipt rejected; refusing to execute"
             );
@@ -982,7 +983,7 @@ impl SessionSupervisor {
                     None => {
                         tracing::warn!(
                             tool = %tool_name,
-                            session = %session_id.unwrap_or("action"),
+                            session_id = ?session_id,
                             "execute_gated RequiresConfirmation without a receipt; rejecting (R2 fail-closed)"
                         );
                         return Ok(ToolExecution {
@@ -1699,6 +1700,11 @@ impl SessionSupervisor {
                 Some(receipt),
                 None,
             )
+            .instrument(tracing::info_span!(
+                "scheduled_action_confirmation_execution",
+                action_id = %action_id,
+                session_id = ?session_id
+            ))
             .await;
         let summary_chars = self
             .notification_summary_chars

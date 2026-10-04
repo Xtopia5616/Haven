@@ -156,7 +156,7 @@ export interface AgentCompactionPayload {
 }
 
 export interface AgentNotificationPayload {
-	sessionId: string;
+	sessionId?: string;
 	title: string;
 	body: string;
 	notificationKind?: 'action_completion';
@@ -234,6 +234,12 @@ function requiredString(record: WireRecord, field: string): string | null {
 }
 
 function requiredSessionId(record: WireRecord): string | null {
+	const value = requiredString(record, 'session_id');
+	return value && value.length > 0 ? value : null;
+}
+
+function optionalSessionId(record: WireRecord): string | undefined | null {
+	if (!hasOwn(record, 'session_id')) return undefined;
 	const value = requiredString(record, 'session_id');
 	return value && value.length > 0 ? value : null;
 }
@@ -779,12 +785,18 @@ export function mapAgentEvent(
 		case 'notification:show': {
 			const notificationKind = payload.notification_kind;
 			if (notificationKind === 'action_completion') {
-				const sessionId = requiredString(payload, 'session_id');
+				const sessionId = optionalSessionId(payload);
 				const title = requiredString(payload, 'title');
 				const body = requiredString(payload, 'body');
 				const actionKind = payload.action_kind;
 				const actionId = requiredString(payload, 'action_id');
 				const actionStatus = payload.action_status;
+				if (
+					actionStatus !== undefined &&
+					actionStatus !== 'completed' &&
+					actionStatus !== 'failed'
+				)
+					return null;
 				if (
 					sessionId === null ||
 					title === null ||
@@ -793,15 +805,14 @@ export function mapAgentEvent(
 					actionId === null ||
 					actionId.length === 0 ||
 					(actionKind === 'background' &&
-						(sessionId.length === 0 ||
-							(actionStatus !== 'completed' && actionStatus !== 'failed'))) ||
+						(sessionId === undefined || actionStatus === undefined)) ||
 					(actionKind === 'scheduled' && actionStatus !== undefined)
 				)
 					return null;
 				return {
 					...tauriEvent,
 					payload: {
-						sessionId,
+						...(sessionId !== undefined ? { sessionId } : {}),
 						title,
 						body,
 						notificationKind,
@@ -813,12 +824,19 @@ export function mapAgentEvent(
 			}
 			if (notificationKind !== undefined) return null;
 
-			const sessionId = requiredSessionId(payload);
+			const sessionId = optionalSessionId(payload);
 			const title = requiredString(payload, 'title');
 			const body = requiredString(payload, 'body');
 			return sessionId === null || title === null || body === null
 				? null
-				: { ...tauriEvent, payload: { sessionId, title, body } };
+				: {
+						...tauriEvent,
+						payload: {
+							...(sessionId !== undefined ? { sessionId } : {}),
+							title,
+							body,
+						},
+					};
 		}
 		default:
 			return null;

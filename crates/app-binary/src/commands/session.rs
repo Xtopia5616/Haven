@@ -482,7 +482,7 @@ async fn resolve_app_confirmation(
                 &task_app,
                 NOTIFICATION_SHOW_EVENT,
                 crate::events::AgentNotificationEvent {
-                    session_id: "ui".into(),
+                    session_id: None,
                     title: title.into(),
                     body: body.into(),
                     notification_kind: None,
@@ -501,7 +501,7 @@ async fn resolve_app_confirmation(
                 app,
                 NOTIFICATION_SHOW_EVENT,
                 crate::events::AgentNotificationEvent {
-                    session_id: "ui".into(),
+                    session_id: None,
                     title: "操作未启动".into(),
                     body: "授权已接受，但应用正在关闭，操作没有启动。请重新发起该操作。".into(),
                     notification_kind: None,
@@ -1338,7 +1338,7 @@ mod tests {
             state
                 .runtime
                 .session_store
-                .session_authorization_grants("ui")
+                .all_session_authorization_grants()
                 .await
                 .unwrap()
                 .is_empty()

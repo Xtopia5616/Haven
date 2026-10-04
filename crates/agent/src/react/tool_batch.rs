@@ -171,7 +171,7 @@ impl ToolBatchState {
         if let (Some(title), Some(body)) = (&notify_title, &notify_body) {
             ctx.emitter
                 .emit(crate::event::AgentEvent::Notification {
-                    session_id: ctx.session_id.clone(),
+                    session_id: Some(ctx.session_id.clone()),
                     title: title.clone(),
                     body: body.clone(),
                 })

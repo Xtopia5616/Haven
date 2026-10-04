@@ -133,8 +133,7 @@ pub(crate) async fn authorize_admin_request(
         risk_level,
         network_access,
     );
-    let authorization_request =
-        haven_tools::AuthorizationRequest::new(Some("ui"), &tool_name, input, policy);
+    let authorization_request = app_command_authorization_request(&tool_name, input, policy);
     let decision = state
         .runtime
         .services
@@ -159,6 +158,16 @@ pub(crate) async fn authorize_admin_request(
         },
     )
     .await
+}
+
+/// Build an authorization request for a direct app command. These operations
+/// have no owning conversation, so they must not read session-scoped grants.
+pub(crate) fn app_command_authorization_request(
+    tool_name: impl Into<String>,
+    input: serde_json::Value,
+    policy: haven_tools::OperationPolicy,
+) -> haven_tools::AuthorizationRequest {
+    haven_tools::AuthorizationRequest::new(None, tool_name, input, policy)
 }
 
 async fn dispatch_authorized_admin_request<E, EFut, Q, QFut>(
@@ -478,14 +487,18 @@ fn redact_mcp_admin_confirmation_input(
 #[cfg(test)]
 mod tests {
     use super::{
-        dispatch_authorized_admin_request, parse_mcp_refresh_failed_names,
-        redact_mcp_admin_confirmation_input,
+        app_command_authorization_request, dispatch_authorized_admin_request,
+        parse_mcp_refresh_failed_names, redact_mcp_admin_confirmation_input,
     };
-    use haven_common::types::{CapabilityScope, RiskLevel, new_id};
+    use haven_common::types::{
+        CapabilityScope, PermissionEffect, PermissionScope, RiskLevel, new_id,
+    };
     use haven_tools::{
-        AuthorizationDecision, AuthorizationReasonCode, ConfirmationReceipt, McpRefreshAction,
-        McpRefreshPlan, McpRefreshTarget, ToolResult,
+        AuthorizationDecision, AuthorizationEngine, AuthorizationReasonCode, ConfirmationReceipt,
+        McpRefreshAction, McpRefreshPlan, McpRefreshTarget, NetworkAccess, OperationPolicy,
+        ToolResult,
     };
+    use serde_json::json;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -498,6 +511,37 @@ mod tests {
             policy_revision: 1,
             expires_at: chrono::Utc::now().timestamp().max(0) as u64 + 300,
         }
+    }
+
+    #[tokio::test]
+    async fn direct_app_command_authorization_has_no_session_grant_owner() {
+        let tool_name = "mcp__test__write";
+        let capability = CapabilityScope::try_new(tool_name).unwrap();
+        let request = app_command_authorization_request(
+            tool_name,
+            json!({}),
+            OperationPolicy::native(
+                tool_name,
+                capability.clone(),
+                RiskLevel::High,
+                NetworkAccess::Opaque,
+            ),
+        );
+        assert_eq!(request.session_id, None);
+
+        let authorization = AuthorizationEngine::new();
+        authorization
+            .grant(
+                Some("ui"),
+                capability,
+                PermissionEffect::Allow,
+                PermissionScope::Session,
+            )
+            .await;
+        assert!(matches!(
+            authorization.authorize(&request).await,
+            AuthorizationDecision::RequiresConfirmation { .. }
+        ));
     }
 
     fn refresh_plan() -> McpRefreshPlan {

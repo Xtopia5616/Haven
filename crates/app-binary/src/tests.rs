@@ -108,7 +108,7 @@ fn channel_maps_every_variant_to_expected_channel() {
         ),
         (
             AgentEvent::Notification {
-                session_id: "t".into(),
+                session_id: Some("t".into()),
                 title: "x".into(),
                 body: "y".into(),
             },

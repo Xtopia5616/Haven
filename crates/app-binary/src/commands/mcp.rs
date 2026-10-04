@@ -1,14 +1,13 @@
 use crate::app_state::{AppState, UiConfirmationAction};
 use crate::commands::contracts::McpToolCallResponse;
 use crate::commands::log_err;
-use crate::commands::queue_ui_confirmation;
+use crate::commands::{app_command_authorization_request, queue_ui_confirmation};
 use crate::events::{MCP_STATUS_CHANGED_EVENT, McpStatusChangedEvent};
 use crate::logging::sanitize_error_text;
 use haven_common::McpServerConfig;
 use haven_common::types::{RiskLevel, permission_key};
 use haven_tools::{
-    AuthorizationDecision, AuthorizationRequest, McpClientStatus, McpServerSnapshot, NetworkAccess,
-    OperationPolicy,
+    AuthorizationDecision, McpClientStatus, McpServerSnapshot, NetworkAccess, OperationPolicy,
 };
 use serde_json::Value;
 use std::collections::HashMap;
@@ -226,9 +225,8 @@ pub async fn mcp_tool_call(
     tool: String,
     args: Value,
 ) -> Result<McpToolCallResponse, String> {
-    // Same qualified name + High risk as McpToolAdapter so Always grants from
-    // Use the short-lived UI session so session-scope decisions made from a
-    // direct invocation apply to subsequent direct invocations in this run.
+    // Same qualified name + High risk as McpToolAdapter so permanent grants
+    // from agent confirmations apply to this direct invocation too.
     let tool_key = haven_tools::McpToolAdapter::qualified_name_of(&client, &tool);
     let policy = OperationPolicy::native(
         &tool_key,
@@ -236,8 +234,7 @@ pub async fn mcp_tool_call(
         RiskLevel::High,
         NetworkAccess::Opaque,
     );
-    let authorization_request =
-        AuthorizationRequest::new(Some("ui"), &tool_key, args.clone(), policy);
+    let authorization_request = app_command_authorization_request(&tool_key, args.clone(), policy);
     match state
         .runtime
         .services

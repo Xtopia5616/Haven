@@ -410,7 +410,7 @@ impl ReActEngine {
             .await?;
             emitter
                 .emit(crate::event::AgentEvent::Notification {
-                    session_id: session_id.into(),
+                    session_id: Some(session_id.into()),
                     title: BUDGET_EXHAUSTED_TITLE.into(),
                     body: BUDGET_EXHAUSTED_BODY.into(),
                 })

@@ -1,7 +1,9 @@
 use crate::app_state::{AppState, UiConfirmationAction};
 use crate::commands::contracts::{SkillExecutionResponse, ToolListResponse};
 use crate::commands::log_err;
-use crate::commands::{emit_event_logged, queue_ui_confirmation};
+use crate::commands::{
+    app_command_authorization_request, emit_event_logged, queue_ui_confirmation,
+};
 use crate::events::{SKILLS_STATUS_CHANGED_EVENT, SkillsStatusChangedEvent};
 use haven_common::types::{RiskLevel, permission_key};
 use haven_tools::{
@@ -208,7 +210,7 @@ pub async fn execute_skill(
         NetworkAccess::Opaque,
     );
     let authorization_request =
-        AuthorizationRequest::new(Some("ui"), &tool_key, params.clone(), policy);
+        app_command_authorization_request(&tool_key, params.clone(), policy);
     match state
         .runtime
         .services

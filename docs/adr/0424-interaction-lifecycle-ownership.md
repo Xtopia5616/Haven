@@ -115,8 +115,11 @@ payload，则属于新的持久契约，必须单独评估 schema/reset 与崩�
 - claim 不改变 durable action/outbox 终态发布顺序：完成/失败的 action row、outbox 与 claim 删除在既有 terminal transaction 中完成；cancel terminal CAS 与发布仍归 ActionService。进程重启会把 running action 标记失败、清除残余 claim，且不 replay。新增 key 仅用现有 `kv_store`，无 schema 变更/重置。cancelled scheduled action 的 `action:finished` owner projection 同步关闭匹配的 renderer pending confirmation。
 - 三个 owner 的 deadline 已统一：pending permission confirm 登记前校验可解析且尚未到期的绝对 `expires_at`，当前直接采用 receipt deadline，没有额外 renderer 上限或 ScheduledAction fallback。各 owner timer 按该值过期；resolve 也在同一个 owner 仲裁内检查时钟，迟到点击不获授权、不启动 continuation。grant-aware ScheduledAction 在 owner gate 接受决定后固定该期限判定，不会因 grant 写入耗时而把已授权决定再分类成 Expired。Session replay 中缺失/无效期限的历史 pending confirm fail closed 并立即过期；expiry event append 失败时保留 pending 并退避重试。Session confirmation 批次在一个 SQLite transaction 中提交 Paused 状态与整批 interaction events，actor 仅在 commit 成功后更新内存；回归覆盖无效期限、durable append 失败回滚及成功整批提交。AppCommand、ScheduledAction、Session 的 expiry 与点击各有定向测试。
 - resolve IPC 已删除 `timed_out`；renderer 删除 `created_at + 120s` deadline 推导和自动 deny 提交，只显示 owner 的期限。事件/resume mapper 拒绝缺少或无效期限的 pending permission confirm，但 Ask 与终态 projection 可无期限。生成 command contract 与 IPC 文档已同步；schema 和 durable event 形状不变，无需重置。
-- 下一步审查并清理残余 owner sentinel 与旧 fallback：AppCommand 的 `"ui"` session context、ScheduledAction 日志的 `unwrap_or("action")`，以及残留的跨 owner 查询/字符串 stale route。只删除确实冒充 owner 的值；业务字段若不承担 owner 语义则记录保留原因，再按 §5.3 逐项复核模块边界候选。
-- 当前切片未修改数据库 schema 或 durable event payload，无需用户数据重置。
+- AppCommand 的 admin/MCP/skill 直接授权统一经 `app_command_authorization_request` 传 `session_id=None`；永久授权仍按同一 capability 生效，旧 `ui` key 下的 session grant 不会被读取。session scope 仍因没有持久会话而被拒绝。回归把旧 `ui` grant 预置为无效 fixture，确认 app-owned 请求仍要求确认。
+- AppCommand 执行通知与没有会话关联的 scheduled 完成通知现在省略 `session_id`；Agent event、Tauri DTO 和 TypeScript mapper 一致使用可选真实关联。mapper 接受缺字段，拒绝空/畸形字段；background completion 仍必须带真实会话 ID。已有 Session 通知保持原 wire 值。
+- `execute_gated` 日志不再用 `"action"` 冒充 session。scheduled fire 使用现有 `scheduled_action_fired` span；确认后续执行也建立带 `action_id` 的 span，session 字段只记录真实可选上下文。只读路由审计未发现 executor-first、跨 registry/actor 或字符串 stale fallback 的活跃调用点，因此没有为其增加空重构。
+- 本切片未修改数据库 schema、配置或 durable session event；`notification:show` 的运行时 IPC 允许省略 `session_id`，同步 Rust/TypeScript mapper 和契约检查器。无需重置用户数据。
+- 验证（2026-10-05）：`cargo test --workspace --locked`、受影响的 `haven-tools` 授权回归、`cargo clippy --workspace --locked -- -D warnings`、`cargo fmt --all -- --check`、UI check / 全量测试（120 files、963 tests）/ production build、`check-ipc-contracts.ps1`（79 handlers）与 `check-ipc-events.ps1`（40 channels）均通过。
 
 ### 期限唯一性与 ADR 0423 的关系（决定）
 

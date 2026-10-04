@@ -409,12 +409,21 @@ describe('agent IPC contract', () => {
 		expect(event.payload).toEqual({ sessionId: 'ses-1', title: '', body: '' });
 	});
 
+	it('maps app notifications without inventing a session association', () => {
+		const event = mapAgentEvent({
+			event: 'notification:show',
+			id: 15,
+			payload: { title: '操作已完成', body: '结果' },
+		});
+
+		expect(event.payload).toEqual({ title: '操作已完成', body: '结果' });
+	});
+
 	it('maps marked action completions without relaxing generic session validation', () => {
 		const scheduled = mapAgentEvent({
 			event: 'notification:show',
 			id: 12,
 			payload: {
-				session_id: '',
 				title: '任务完成',
 				body: '结果',
 				notification_kind: 'action_completion',
@@ -423,7 +432,6 @@ describe('agent IPC contract', () => {
 			},
 		});
 		expect(scheduled.payload).toEqual({
-			sessionId: '',
 			title: '任务完成',
 			body: '结果',
 			notificationKind: 'action_completion',

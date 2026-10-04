@@ -171,6 +171,8 @@ AgentEvent / 其它后端事件
 | 后台任务完成（非当前会话） | `notification:show`（action completion projection） | 是；当前会话内完成不弹（对话里已有结果） |
 | 用户点击触发的命令结果 | 页面 / helper 直接 `addNotification` | 否 |
 
+`notification:show.session_id` 是可选的真实会话关联，不是通知 owner：AppCommand 和无会话的 scheduled 通知省略此字段，不能填入 `ui`、空字符串或其它伪 ID。存在真实会话时仍保留规范的 `ses-*` 值。
+
 ### 2.2.1 `notify` 与 `media.speak` 的边界
 
 这两个能力都可能让用户“感知到”一次模型动作，但通道和语义不同：
@@ -230,7 +232,7 @@ reportError(e, { context: 'SettingsView', message: '操作失败', log: false })
 | `SessionUpdated` status=`paused`（waiting reason 非 confirmation） | `session_paused.windows` | `false` | `会话已暂停: …` |
 | `SessionUpdated` status=`pending`（且上一状态为 paused/error） | `session_resumed.windows` | `false` | `会话已恢复: …` |
 | `AgentEvent::Notification` | **不读配置**，总是弹 | — | title/body 原样（设置页注明始终开启） |
-| `AgentEvent::ActionCompletionNotification` | `action_completed.windows` | `true` | title/body 原样；wire 仍走 `notification:show`，带 action kind/id/session/status 标记 |
+| `AgentEvent::ActionCompletionNotification` | `action_completed.windows` | `true` | title/body 原样；wire 仍走 `notification:show`，带 action kind/id/status 标记和可选真实 session 关联 |
 
 标题统一产品名 `Haven`。
 

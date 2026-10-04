@@ -56,8 +56,14 @@ if (-not [regex]::IsMatch($agentEventBridge, 'ActionCompletionNotification\s*\{'
 if (-not [regex]::IsMatch($agentContract, "(?s)export interface AgentNotificationPayload\s*\{[^}]*notificationKind\?:\s*'action_completion'[^}]*actionKind\?:\s*'background'\s*\|\s*'scheduled'[^}]*actionId\?:\s*string[^}]*actionStatus\?:\s*'completed'\s*\|\s*'failed'")) {
     throw 'frontend notification contract must declare action completion source, identity, and terminal status fields'
 }
-if (-not [regex]::IsMatch($agentContract, "(?s)notificationKind\s*===\s*'action_completion'.*?requiredSessionId\(payload\)")) {
-    throw 'only marked action completion notifications may accept the sessionless action event shape; generic notifications must retain requiredSessionId validation'
+if (-not [regex]::IsMatch($agentContract, "(?s)notificationKind\s*===\s*'action_completion'.*?optionalSessionId\(payload\).*?if\s*\(notificationKind\s*!==\s*undefined\).*?const\s+sessionId\s*=\s*optionalSessionId\(payload\)")) {
+    throw 'generic and action completion notifications must accept an absent session association through the optional session mapper'
+}
+if (-not [regex]::IsMatch($agentContract, "(?s)function\s+optionalSessionId\([^)]*\)[^{]*\{[^}]*hasOwn\(record,\s*'session_id'\)[^}]*return\s+value\s*&&\s*value\.length\s*>\s*0\s*\?\s*value\s*:\s*null")) {
+    throw 'optional notification session IDs must be omitted when absent and reject empty or malformed values'
+}
+if (-not [regex]::IsMatch($agentContract, '(?s)export interface AgentNotificationPayload\s*\{[^}]*sessionId\?:\s*string')) {
+    throw 'frontend notification contract must make the real session association optional'
 }
 if (-not [regex]::IsMatch($agentWire, 'renderer:\s*String') -or
     -not [regex]::IsMatch($agentContract, '(?s)interface\s+AgentObservationPayload\s*\{[^}]*renderer:\s*string;') -or

@@ -84,7 +84,7 @@
 
 可以提前准备隔离 profile、安装器和物理盘耗尽环境；最终验收必须使用交互生命周期等 IPC/UI 变更完成后的最新构建。此项是发布签核门，不阻塞不影响发布路径的独立模块整理。
 
-### 5.2 交互生命周期所有权（Active / Accepted）
+### 5.2 交互生命周期所有权（Complete）
 
 ADR 0424 已于 2026-10-04 采纳，确定 session、scheduled 和 UI 直调确认的运行时 owner、终态与期限契约。当前已建立非持久 `InteractionEnvelope`、显式 owner event/IPC 投影、可选真实 session 上下文以及 Session durable append/replay 校验；resolve IPC 已改用 `request_id` 并返回 typed outcome，AppCommand 直接由 `ui_confirmations` 仲裁。ScheduledAction 已改为按 `action_id` 定位 owner-local registry，并同时校验 `request_id`；批准/副作用启动前通过 ActionService 与 `scheduled_execution_claim.<action_id>` 的持久 CAS 认领执行权。认领与取消在共享数据库上 first-wins：取消先提交则批准不能授权或执行；执行认领先提交则取消返回 false，运行中的操作正常收尾。终态事务清理认领；重启时 running action 仍失败且不 replay，并清除残余 claim。Session capability/resolve 现按 `session_id` 直接定位 actor，再在该 actor 内匹配 `request_id`，不扫描其他 actor。durable resolve append 成功后才推进 actor，失败时 pending 保持可重试；session grant 持久化先于唤醒，但 grant 与 resolve event 仍是两次独立 durable write。三个 owner 已统一采用 receipt 的绝对 `expires_at`：注册严格校验，owner timer 与迟到点击按同一期限仲裁，旧 Session replay 的无效期限立即 fail closed 并在 durable expire 写入失败时退避重试；renderer 本地期限推导、自动 deny 和 IPC `timed_out` 已删除。Session confirmation 批次在同一 SQLite 事务提交 Paused 状态与整批 durable events，避免期限竞争、写入失败或进程退出留下半批次/孤立暂停。前置兼容清理、SessionStore history façade 提取及其独立门禁已完成。此项是独立结构目标，不回写为已完成的阶段 7 工作。
 
@@ -98,7 +98,7 @@ ADR 0424 已于 2026-10-04 采纳，确定 session、scheduled 和 UI 直调确�
 4. **直迁 ScheduledAction（路由与执行权仲裁已完成）。** 按 `action_id` + request ID 路由；有关联 session context 时 owner 仍为 ScheduledAction。批准或已获准 operation 开始副作用前，ActionService 持有 owner execution claim；SQLite `kv_store` claim 与 action status CAS 在同一 writer 序列中仲裁取消和执行。取消先赢则不授权/不执行，执行 claim 先赢则拒绝后续取消，让 operation 收尾；终态提交清理 claim 并保留 ADR 0392 的 action/outbox 顺序和 running action 不自动 replay。cancelled action 的 pending confirmation 由 action owner 事件清除。此实现不增加 schema 或修改 durable event。
 5. **直迁 Session（路由已完成）。** 按 session ID 定位 actor，不跨 actor 扫描；能力查询、普通 resolve、过期和 grant-aware resolve 均使用同一明确 owner。durable resolve append 成功后才推进 actor；append 失败仍可重试；gated tool batch 全部解决、session grant 持久化后才唤醒。grant 与 resolve event 暂非原子事务，保留当前可重试语义，不宣称二者原子提交。
 6. **统一 expiry（已完成）。** pending permission confirm 登记时要求有效未来期限，owner timer 与 resolve 在同一 owner 仲裁中检查 receipt 的绝对期限；renderer 只展示该期限，IPC 不再接受 `timed_out`。Session 恢复时无效历史期限立即过期，expiry durable 写入失败时保留 pending 并重试。批量 Session confirm 以单个 SQLite 事务同时提交 Paused 状态和全部 interaction events。实现与验收细节见 ADR 0424/0423。
-7. **清理 owner sentinel 与旧 fallback（Next）。** 审查仍以字符串伪装 owner/context 的入口：AppCommand 通知和直接工具授权中的 `"ui"`，ScheduledAction 日志中的 `unwrap_or("action")`，以及任何残留的 executor-first、跨 registry/actor 或字符串 stale 路由。只保留真实关联 session；其余用显式 owner/可选 session 上下文表达。验证 app-owned 操作不能读写伪 session grant、scheduled 日志仍能定位 action，并确认旧 fallback 无活跃调用方后再删；若某值只是非 owner 的业务字段，记录保留理由，不做机械替换。
+7. **清理 owner sentinel 与旧 fallback（已完成，2026-10-05）。** AppCommand admin/MCP/skill 授权不再使用伪 `ui` session；应用与无会话的 scheduled 通知省略 `session_id`，真实会话关联原样保留；scheduled 工具日志通过 action span 保留真实 `action_id`，不再把 `action` 写成 session。只读审计未发现活跃的 executor-first、跨 registry/actor 或字符串 stale fallback，因此不新增无效改造。实现与验证见 ADR 0424。
 
 **退出条件：** request ID 不跨 owner 扫描/fallback；错误 owner/context 不能消费请求或触发副作用；点击与到期竞争最多接受一个终态；所有 pending confirmation 有 owner 管理的有效绝对期限；renderer 关闭、迟到点击、可重试持久化失败和 continuation 执行失败均有明确结果；Session append 失败不改变 actor；session 重启只从 `session_events` 恢复，UI/scheduled 请求不自动重放。运行时 DTO 与 UI/IPC 类型保持一致；旧 route、期限入口和测试分支删除。此方案不改 durable session payload 或 schema，无需重置；验证与切片细节见 ADR 0424/0423。
 

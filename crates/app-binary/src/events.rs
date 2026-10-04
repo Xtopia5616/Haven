@@ -584,7 +584,8 @@ pub(crate) struct AgentCompactionEvent {
 
 #[derive(Clone, Serialize)]
 pub(crate) struct AgentNotificationEvent {
-    pub session_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
     pub title: String,
     pub body: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -944,5 +945,40 @@ mod tests {
         let json = serde_json::to_string(&ev).unwrap();
         // Should only contain is_recording
         assert_eq!(json, r#"{"is_recording":false}"#);
+    }
+
+    #[test]
+    fn notification_omits_missing_session_association_and_keeps_real_one() {
+        let app_notification = AgentNotificationEvent {
+            session_id: None,
+            title: "操作已完成".into(),
+            body: "结果".into(),
+            notification_kind: None,
+            action_kind: None,
+            action_id: None,
+            action_status: None,
+        };
+        assert_eq!(
+            serde_json::to_value(app_notification).unwrap(),
+            serde_json::json!({ "title": "操作已完成", "body": "结果" })
+        );
+
+        let session_notification = AgentNotificationEvent {
+            session_id: Some("ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into()),
+            title: "会话通知".into(),
+            body: "内容".into(),
+            notification_kind: None,
+            action_kind: None,
+            action_id: None,
+            action_status: None,
+        };
+        assert_eq!(
+            serde_json::to_value(session_notification).unwrap(),
+            serde_json::json!({
+                "session_id": "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "title": "会话通知",
+                "body": "内容"
+            })
+        );
     }
 }

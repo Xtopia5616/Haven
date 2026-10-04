@@ -486,7 +486,7 @@ completion record 或 transcript 内容：scheduled finished payload 不含 exec
 Rust bridge 只为 background 提供 `action:output`，scheduled action 不持有 tail。没有 durable event identity，
 因此不新增 UI event dedup 或统一 Job reducer；background 的终态工具卡和 transcript 投影仍按 ADR 0344 原路径。
 Action completion 经 `notification:show` 发布带 `notification_kind=action_completion` 标记的专用事件，
-并携带 `action_kind`、`action_id`，background 还携带终态 `action_status` 与 `session_id`。UI 只对该标记
+并携带 `action_kind`、`action_id`，background 还携带终态 `action_status` 与真实 owner `session_id`；scheduled 或 AppCommand 通知没有会话关联时省略 `session_id`。UI 只对该标记
 应用 `notification.action_completed.in_app` 开关；`DesktopNotifications` 只对同一类事件应用
 `notification.action_completed.windows` 开关。两项配置由 background 与 scheduled action 共用且默认开启，
 配置加载完成前 UI 暂存带标记的完成提示。通用 `AgentEvent::Notification` 不带该标记，仍保持原有通知语义与

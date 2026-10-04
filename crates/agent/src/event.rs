@@ -229,7 +229,7 @@ pub enum AgentEvent {
     /// A user-facing notification requested by the agent (via the `notify`
     /// tool). Surfaced both in-app (toast) and as a Windows notification.
     Notification {
-        session_id: String,
+        session_id: Option<String>,
         title: String,
         body: String,
     },
@@ -239,7 +239,7 @@ pub enum AgentEvent {
     ActionCompletionNotification {
         action_kind: ActionNotificationSource,
         action_id: String,
-        session_id: String,
+        session_id: Option<String>,
         action_status: Option<ActionCompletionStatus>,
         title: String,
         body: String,
@@ -1105,7 +1105,7 @@ impl EventDispatcher {
         if let Some(emitter) = emitter {
             emitter
                 .emit(AgentEvent::Notification {
-                    session_id: String::new(),
+                    session_id: None,
                     title: title.into(),
                     body: body.into(),
                 })
@@ -1131,7 +1131,7 @@ impl EventDispatcher {
                 .emit(AgentEvent::ActionCompletionNotification {
                     action_kind,
                     action_id: action_id.into(),
-                    session_id: session_id.unwrap_or_default().to_owned(),
+                    session_id: session_id.map(str::to_owned),
                     action_status,
                     title: title.into(),
                     body: body.into(),
