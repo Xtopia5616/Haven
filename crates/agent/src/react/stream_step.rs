@@ -4,7 +4,6 @@
 //! [`StreamSession`] so the thin loop only consumes [`StepCallOutcome`]
 //! and never constructs [`StreamForwarder`].
 
-use super::effects::{EffectBatch, TurnEffect};
 use super::event_boundary::RecoveryPersistenceResult;
 use super::identity::IdentityMap;
 use super::*;
@@ -1185,7 +1184,6 @@ impl ReActEngine {
 mod tests {
     use super::*;
     use haven_common::types::CanonicalRole;
-    use serde_json::json;
 
     #[tokio::test]
     async fn checkpoint_writer_keeps_latest_pending_snapshot() {
@@ -1254,65 +1252,6 @@ mod tests {
             .map(|index| format!("call-{index}"))
             .collect::<Vec<_>>();
         assert_eq!(ids, expected);
-    }
-
-    #[test]
-    fn synthesized_search_final_is_projected_by_its_tool_call_commit() {
-        let ctx = StepCtx {
-            session_id: "ses-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
-            step_num: 7,
-            run_id: 3,
-            emitter: Arc::new(NoopEmitter),
-        };
-        let state = ReActState::new(Vec::new(), Vec::new(), HashMap::new());
-        let response = LlmResponse {
-            web_search_calls: vec![json!({"type": "web_search_call", "id": "search-1"})],
-            ..Default::default()
-        };
-        let final_action = Action {
-            tool_name: "final_answer".into(),
-            tool_input: json!({}),
-            is_final: true,
-            tool_call_id: None,
-        };
-        let mut effects = EffectBatch::continue_batch();
-
-        let outcome = ReActEngine::prepare_search_context(
-            &ctx,
-            &state,
-            &response,
-            &None,
-            &[final_action],
-            &mut effects,
-        )
-        .unwrap();
-
-        assert_eq!(
-            outcome,
-            SearchContextOutcome::Proceed {
-                assistant_already_pushed: true
-            }
-        );
-        let queued = effects.into_effects();
-        let [
-            TurnEffect::Transcript(TranscriptEvent::ToolCall {
-                text,
-                web_search_calls,
-                persist_text_id,
-                ..
-            }),
-        ] = queued.as_slice()
-        else {
-            panic!("search final must be represented by one committed ToolCall effect");
-        };
-        assert_eq!(text.as_str(), "Session completed.");
-        assert_eq!(web_search_calls, &response.web_search_calls);
-        assert!(
-            persist_text_id
-                .as_deref()
-                .is_some_and(|message_id| message_id.starts_with("step-")),
-            "synthetic final must carry its shared thought-step message identity"
-        );
     }
 
     use async_trait::async_trait;
@@ -1624,99 +1563,5 @@ mod tests {
         );
         assert!(db.get_session_messages(&session.id).unwrap().is_empty());
         let _ = std::fs::remove_file(db_path);
-    }
-}
-
-/// Phase 7 / G4: outcome of preparing provider server-side search context
-/// before tool / turn-end handling. The thin loop never branches on
-/// `web_search_*` fields.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SearchContextOutcome {
-    /// Search round with no answer yet — context pushed, thought persisted,
-    /// branch saved. Loop must `continue`.
-    ContinueWithoutTools,
-    /// Proceed to tool batch or turn-end. `assistant_already_pushed` is true
-    /// when a synthesized final arrived in the same response as the search
-    /// (canonical already carries the search context).
-    Proceed { assistant_already_pushed: bool },
-}
-
-impl ReActEngine {
-    /// Phase 7 / G4: push provider server-side search context into the
-    /// canonical when the response carries search items and there are no
-    /// real tool calls (empty actions or synthesized final only). Mixed
-    /// tool+search responses are left for `execute_tool_batch`, which
-    /// round-trips the items alongside function tool results.
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn prepare_search_context(
-        ctx: &StepCtx,
-        state: &ReActState,
-        response: &LlmResponse,
-        thought: &Option<String>,
-        actions: &[Action],
-        effects: &mut EffectBatch,
-    ) -> anyhow::Result<SearchContextOutcome> {
-        if response.web_search_calls.is_empty() {
-            return Ok(SearchContextOutcome::Proceed {
-                assistant_already_pushed: false,
-            });
-        }
-        let synthesized_final = !actions.is_empty()
-            && actions
-                .iter()
-                .all(|a| a.is_final && a.tool_call_id.is_none());
-        if !(actions.is_empty() || synthesized_final) {
-            // Mixed real tools + search: tool_batch pushes the search items.
-            return Ok(SearchContextOutcome::Proceed {
-                assistant_already_pushed: false,
-            });
-        }
-
-        // Text matches Thought projection (trimmed). X12: apply ToolCall so
-        // events + canonical stay on the single writer path.
-        let push_text = if synthesized_final {
-            thought.as_deref().unwrap_or("Session completed.")
-        } else {
-            thought.as_deref().unwrap_or(&response.text)
-        };
-        let reasoning = if response.thinking_blocks.is_empty() {
-            response.reasoning.clone()
-        } else {
-            None
-        };
-        // Thought already projected the messages row when present. When a
-        // synthesized final has no Thought, make this owning commit project
-        // the same synthetic final text turn-end would otherwise materialize.
-        effects.transcript(TranscriptEvent::ToolCall {
-            text: push_text.to_string(),
-            tool_calls: Vec::new(),
-            reasoning,
-            web_search_calls: response.web_search_calls.clone(),
-            thinking_blocks: response.thinking_blocks.clone(),
-            action_cards: Vec::new(),
-            persist_text_id: (synthesized_final && thought.is_none())
-                .then(|| state.block_msg_id(ctx.step_num, ctx.run_id, "thought")),
-        });
-
-        if actions.is_empty() {
-            // Search round: no answer yet — keep the turn open and re-request
-            // with the search context in the next input.
-            effects.push(TurnEffect::SaveBranchPoint {
-                step_number: ctx.step_num,
-            });
-            tracing::debug!(
-                "ReAct step {} session {} server-side search round ({} item(s)); continuing",
-                ctx.step_num,
-                ctx.session_id,
-                response.web_search_calls.len()
-            );
-            return Ok(SearchContextOutcome::ContinueWithoutTools);
-        }
-
-        // synthesized_final: answer arrived with the search call — fall
-        // through to turn-end; the push above keeps search context alive.
-        Ok(SearchContextOutcome::Proceed {
-            assistant_already_pushed: true,
-        })
     }
 }

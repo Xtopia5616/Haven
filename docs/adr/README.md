@@ -458,3 +458,4 @@
 - [0473：协调 Files rich-path 登记与生成媒体 GC](0473-files-rich-path-generated-media-gc-gate.md)
 - [0474：以架构依赖表校验 Cargo crate 边界](0474-architecture-dependency-inventory-gate.md)
 - [0475：统一事实敏感信息检测与清理规则](0475-single-source-fact-sensitivity-rules.md)
+- [0476：由 ReAct turn 层拥有搜索上下文投影](0476-react-turn-owns-search-context-projection.md)
