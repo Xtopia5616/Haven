@@ -20,6 +20,8 @@ API 密钥、OCR 密钥与 MCP 环境变量只通过安全凭据存储的 opaque
 
 模型工具使用点号 operation view，例如 `files.*`、`system.*`、`process.*`、`clipboard.*`、`input.*`、`window.*`、`media.*`、`actions.*`、`schedule.*`、`preferences.*`、`checklist.*` 和 `haven.*`。启用 Skill 由 `load_skill` 按名称加载为当前 session 的 `skill__...`；内置 operation 由 `tool_catalog` 的 `action=load` 加载，MCP 由 `load_mcp` 按服务器加载。配置和未完成会话都没有旧工具名的转换保证。
 
+Skill 名称现在统一限制为 1–128 个 ASCII 字母、数字、`-` 或 `_`，并拒绝 Windows 设备保留名（`CON`、`PRN`、`AUX`、`NUL`、`COM1`–`COM9`、`LPT1`–`LPT9`，不区分大小写）。扫描时，同名大小写变体会作为歧义组全部跳过。已有 `SKILL.md` 使用不符合规则的名称时，Skill 会被跳过；将清单中的名称改为有效名称即可恢复使用。若配置了 `[skills].enabled` allowlist，也要同步更新对应条目。此名称规则不会改变数据库契约，改名无需重置数据库。
+
 ## 用户数据位置
 
 Windows 的唯一数据根目录是 `%APPDATA%\haven`。其中包括：

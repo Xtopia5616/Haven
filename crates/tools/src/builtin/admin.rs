@@ -2549,6 +2549,31 @@ mod tests {
                 .contains("print('not returned')")
         );
 
+        let reserved_skill_create = surfaces
+            .execute(
+                AdminRequest::Skills(SkillsOperationArgs::SkillCreate {
+                    name: "CON".into(),
+                    description: "reserved name".into(),
+                    instructions: "Do something useful.".into(),
+                    language: None,
+                    version: None,
+                    script: Some("print('not created')".into()),
+                }),
+                CancellationToken::new(),
+            )
+            .await;
+        assert!(reserved_skill_create.is_err());
+        assert!(
+            surfaces
+                .skills
+                .services
+                .skills_engine
+                .list()
+                .await
+                .iter()
+                .all(|skill| skill.name != "CON")
+        );
+
         let initial = surfaces
             .execute(
                 AdminRequest::Mcp(McpOperationArgs::McpAdd {

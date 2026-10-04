@@ -657,7 +657,7 @@ impl AdminServices {
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("configuration administration is unavailable"))?,
         );
-        validate_skill_name(name)?;
+        haven_skills::validate_skill_name(name)?;
         if description.is_empty() {
             anyhow::bail!("description is required");
         }
@@ -1271,21 +1271,6 @@ where
     .await
     .into_iter()
     .collect()
-}
-
-pub(crate) fn validate_skill_name(name: &str) -> Result<()> {
-    let valid = !name.is_empty()
-        && name.len() <= 128
-        && name.chars().all(|character| {
-            character.is_ascii_alphanumeric() || character == '-' || character == '_'
-        });
-    if !valid {
-        anyhow::bail!(
-            "invalid skill name '{}': use 1-128 characters of a-z, A-Z, 0-9, '-' or '_'",
-            name
-        );
-    }
-    Ok(())
 }
 
 pub(crate) fn sanitize_log_line(line: &str) -> String {

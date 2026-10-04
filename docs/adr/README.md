@@ -442,3 +442,4 @@
 - [0457：先归档再移出匹配回复](0457-preserve-replies-on-archive-failure.md)
 - [0458：持久化待输入的 Ask 回答路由](0458-persist-pending-input-disposition.md)
 - [0459：持久化 Skill requirements 指纹](0459-persist-skill-requirements-fingerprint.md)
+- [0460：统一 Skill 名称校验并拒绝歧义名称](0460-canonical-skill-name-validation.md)

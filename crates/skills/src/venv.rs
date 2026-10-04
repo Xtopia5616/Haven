@@ -25,7 +25,7 @@ impl VenvManager {
     }
 
     fn venv_dir(&self, skill_name: &str) -> PathBuf {
-        self.root.join(sanitize_name(skill_name))
+        self.root.join(skill_name)
     }
 
     /// Return the path to the Python executable inside the venv.
@@ -97,6 +97,7 @@ impl VenvManager {
     /// Ensure the venv exists for `skill_name`, optionally installing
     /// dependencies from `requirements.txt`. Idempotent.
     pub async fn ensure(&self, skill_name: &str, skill_root: &Path) -> anyhow::Result<PathBuf> {
+        crate::validate_skill_name(skill_name)?;
         let venv = self.venv_dir(skill_name);
         let python = self.python_path(skill_name);
 
@@ -174,18 +175,6 @@ impl VenvManager {
     }
 }
 
-fn sanitize_name(name: &str) -> String {
-    name.chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c == '_' || c == '-' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -202,16 +191,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sanitize_name_replaces_special_chars() {
-        let result = sanitize_name("my cool skill!");
-        assert_eq!(result, "my_cool_skill_");
-    }
-
-    #[tokio::test]
-    async fn venv_dir_returns_expected_path() {
+    async fn venv_dir_preserves_valid_skill_name() {
         let mgr = VenvManager::new(PathBuf::from("/tmp/venvs"));
-        let dir = mgr.venv_dir("test_skill");
-        assert_eq!(dir, PathBuf::from("/tmp/venvs/test_skill"));
+        let dir = mgr.venv_dir("Echo_2");
+        assert_eq!(dir, PathBuf::from("/tmp/venvs/Echo_2"));
     }
 
     #[tokio::test]
@@ -224,6 +207,18 @@ mod tests {
             PathBuf::from("/tmp/venvs/test/bin/python")
         };
         assert_eq!(p, expected);
+    }
+
+    #[tokio::test]
+    async fn ensure_rejects_invalid_names_before_creating_venv() {
+        let temp = tempdir().unwrap();
+        let venv_root = temp.path().join("venvs");
+        let manager = VenvManager::new(venv_root.clone());
+
+        for name in ["bad/name", "CON"] {
+            assert!(manager.ensure(name, temp.path()).await.is_err());
+        }
+        assert!(!venv_root.exists());
     }
 
     #[tokio::test]

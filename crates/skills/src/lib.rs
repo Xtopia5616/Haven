@@ -8,7 +8,7 @@
 use anyhow::Context;
 use haven_common::ConfigLoader;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -163,6 +163,99 @@ impl From<&Skill> for SkillInfo {
 // SKILL.md parser
 // ---------------------------------------------------------------------------
 
+/// Validate a Skill name before it is used as a tool identity or filesystem
+/// component. The ASCII-only alphabet is portable across Windows and Unix,
+/// while the length bound keeps generated tool names predictable.
+pub fn validate_skill_name(name: &str) -> anyhow::Result<()> {
+    let valid = !name.is_empty()
+        && name.len() <= 128
+        && name.chars().all(|character| {
+            character.is_ascii_alphanumeric() || character == '-' || character == '_'
+        });
+    if !valid {
+        anyhow::bail!(
+            "invalid skill name '{}': use 1-128 ASCII letters, digits, '-' or '_'",
+            name
+        );
+    }
+
+    let uppercase = name.to_ascii_uppercase();
+    if matches!(
+        uppercase.as_str(),
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
+    ) {
+        anyhow::bail!(
+            "invalid skill name '{}': Windows device names are reserved",
+            name
+        );
+    }
+
+    Ok(())
+}
+
+fn case_insensitive_collisions<'a>(names: impl IntoIterator<Item = &'a str>) -> BTreeSet<String> {
+    let mut counts = BTreeMap::<String, usize>::new();
+    for name in names {
+        *counts.entry(name.to_ascii_lowercase()).or_default() += 1;
+    }
+    counts
+        .into_iter()
+        .filter_map(|(name, count)| (count > 1).then_some(name))
+        .collect()
+}
+
+fn skip_case_insensitive_skill_collisions(candidates: Vec<Skill>) -> Vec<Skill> {
+    let ambiguous_names = case_insensitive_collisions(candidates.iter().map(Skill::name));
+    for name in &ambiguous_names {
+        tracing::warn!(
+            name = %name,
+            "skipping all Skills with Windows case-insensitive name collision"
+        );
+    }
+    candidates
+        .into_iter()
+        .filter(|skill| !ambiguous_names.contains(&skill.name().to_ascii_lowercase()))
+        .collect()
+}
+
+fn skip_case_insensitive_directory_collisions(
+    directories: Vec<(String, PathBuf, PathBuf)>,
+) -> Vec<(String, PathBuf, PathBuf)> {
+    let ambiguous_names =
+        case_insensitive_collisions(directories.iter().map(|(name, _, _)| name.as_str()));
+    for name in &ambiguous_names {
+        tracing::warn!(
+            name = %name,
+            "skipping all Skill directories with Windows case-insensitive name collision"
+        );
+    }
+    directories
+        .into_iter()
+        .filter(|(name, _, _)| !ambiguous_names.contains(&name.to_ascii_lowercase()))
+        .collect()
+}
+
 /// Parse a `SKILL.md` document into structured metadata.
 ///
 /// Expected layout:
@@ -266,6 +359,7 @@ pub fn parse_skill_md(
     let instructions = instruction_lines.join("\n").trim().to_string();
 
     let name = name.context("SKILL.md missing '# Skill: <name>' header or 'name' metadata")?;
+    validate_skill_name(&name)?;
     Ok(SkillManifest {
         name,
         description,
@@ -287,6 +381,8 @@ pub fn parse_skill_md(
 ///   `Some([])` disables everything).
 ///
 /// Invalid SKILL.md files produce a `warn!` and are skipped (non-fatal).
+/// Directory names and parsed Skill names that collide case-insensitively are
+/// skipped as a group to avoid Windows path and tool identity ambiguity.
 ///
 /// **Safety:** The scan canonicalises both `root` and each entry, plus every
 /// manifest target, to guard against symlink/junction traversal outside the
@@ -309,6 +405,7 @@ pub fn scan_dir(
     let entries = std::fs::read_dir(root)
         .with_context(|| format!("failed to read skills root: {}", root.display()))?;
 
+    let mut skill_dirs = Vec::new();
     for entry in entries {
         let entry = match entry {
             Ok(e) => e,
@@ -342,6 +439,13 @@ pub fn scan_dir(
             continue;
         }
 
+        skill_dirs.push((entry.file_name().to_string_lossy().into_owned(), p, p_canon));
+    }
+
+    let skill_dirs = skip_case_insensitive_directory_collisions(skill_dirs);
+
+    let mut candidates = Vec::new();
+    for (_directory_name, p, p_canon) in skill_dirs {
         let skill_md = p.join("SKILL.md");
         let skill_md = match skill_md.canonicalize() {
             Ok(canonical) if canonical.starts_with(&p_canon) => canonical,
@@ -392,9 +496,9 @@ pub fn scan_dir(
                 let enabled = enabled_filter
                     .map(|f| f.contains(&manifest.name))
                     .unwrap_or(true);
-                out.push(Skill {
+                candidates.push(Skill {
                     manifest,
-                    root: p.clone(),
+                    root: p,
                     enabled,
                 });
             }
@@ -404,6 +508,8 @@ pub fn scan_dir(
             ),
         }
     }
+
+    out.extend(skip_case_insensitive_skill_collisions(candidates));
     Ok(out)
 }
 
@@ -677,6 +783,45 @@ mod tests {
     }
 
     #[test]
+    fn validate_skill_name_enforces_portable_names_and_reserved_devices() {
+        let max_length = "x".repeat(128);
+        for valid in ["a", "file-organizer_2", max_length.as_str()] {
+            validate_skill_name(valid).unwrap();
+        }
+        let overlong = "x".repeat(129);
+        for invalid in ["", overlong.as_str(), "bad name", "../skill", "技能"] {
+            assert!(
+                validate_skill_name(invalid).is_err(),
+                "accepted {invalid:?}"
+            );
+        }
+        for reserved in [
+            "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7",
+            "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+        ] {
+            assert!(
+                validate_skill_name(reserved).is_err(),
+                "accepted {reserved}"
+            );
+            assert!(
+                validate_skill_name(&reserved.to_ascii_lowercase()).is_err(),
+                "accepted lowercase {reserved}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_rejects_invalid_and_reserved_skill_names() {
+        for name in ["bad name", "../skill", "CON", "lpt9"] {
+            let markdown = format!("# Skill: {name}\n## Instructions\nDo it.\n");
+            assert!(
+                parse_skill_md(&markdown, 5000, 4096).is_err(),
+                "accepted {name:?}"
+            );
+        }
+    }
+
+    #[test]
     fn parse_missing_name_errors() {
         let md = "## Metadata\n- description: x\n";
         assert!(parse_skill_md(md, 5000, 4096).is_err());
@@ -767,6 +912,98 @@ mod tests {
                 .has_script()
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn scan_dir_skips_all_case_insensitive_directory_and_manifest_collisions() {
+        let dir = tmp_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let upper_dir = write_skill(
+            &dir,
+            "Echo",
+            "# Skill: upper-name\n## Metadata\n- name: Echo\n- description: upper\n## Instructions\ni\n",
+            false,
+        );
+        let lower_dir = dir.join("echo");
+        if std::fs::create_dir_all(&lower_dir).is_err()
+            || upper_dir.canonicalize().ok() == lower_dir.canonicalize().ok()
+        {
+            // A case-insensitive filesystem cannot represent this directory
+            // pair; the portable collision helper is covered below.
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+        std::fs::write(
+            lower_dir.join("SKILL.md"),
+            "# Skill: lower-name\n## Metadata\n- name: echo\n- description: lower\n## Instructions\ni\n",
+        )
+        .unwrap();
+        write_skill(
+            &dir,
+            "separate-one",
+            "# Skill: shared\n## Metadata\n- name: shared\n- description: one\n## Instructions\ni\n",
+            false,
+        );
+        write_skill(
+            &dir,
+            "separate-two",
+            "# Skill: SHARED\n## Metadata\n- name: SHARED\n- description: two\n## Instructions\ni\n",
+            false,
+        );
+        write_skill(
+            &dir,
+            "unique",
+            "# Skill: unique\n## Metadata\n- name: unique\n- description: unique\n## Instructions\ni\n",
+            false,
+        );
+
+        let skills = scan_dir(&dir, None, &Default::default()).unwrap();
+        let names: Vec<&str> = skills.iter().map(Skill::name).collect();
+        assert_eq!(names, ["unique"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn case_insensitive_collision_detection_is_ascii_portable() {
+        assert_eq!(
+            case_insensitive_collisions(["Echo", "echo", "single"]),
+            BTreeSet::from(["echo".to_string()])
+        );
+
+        let directories = skip_case_insensitive_directory_collisions(vec![
+            ("Echo".into(), PathBuf::from("Echo"), PathBuf::from("Echo")),
+            ("echo".into(), PathBuf::from("echo"), PathBuf::from("echo")),
+            (
+                "single".into(),
+                PathBuf::from("single"),
+                PathBuf::from("single"),
+            ),
+        ]);
+        assert_eq!(directories.len(), 1);
+        assert_eq!(directories[0].0, "single");
+
+        let make_skill = |name: &str| {
+            Skill::from_manifest_unchecked(
+                SkillManifest {
+                    name: name.to_string(),
+                    description: String::new(),
+                    version: None,
+                    language: Language::Python,
+                    instructions: String::new(),
+                },
+                PathBuf::new(),
+                true,
+            )
+        };
+        let filtered = skip_case_insensitive_skill_collisions(vec![
+            make_skill("Echo"),
+            make_skill("echo"),
+            make_skill("single"),
+        ]);
+        assert_eq!(
+            filtered.iter().map(Skill::name).collect::<Vec<_>>(),
+            ["single"]
+        );
     }
 
     #[test]
