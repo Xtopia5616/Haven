@@ -79,36 +79,6 @@ impl ToolsManager {
         self.operations().installed()
     }
 
-    /// Register host-persisted attachments for the trusted files boundary and
-    /// hold them in an ingress lease until a newly created session can claim
-    /// them. Renderer-provided ids are not accepted because validation clears
-    /// them before persistence mints a fresh host-owned id.
-    pub fn register_managed_assets(&self, attachments: &[MessageAttachment]) {
-        let uploads_root = haven_common::default_work_dir().join("uploads");
-        for attachment in attachments {
-            let (Some(asset_id), Some(path)) = (&attachment.asset_id, &attachment.path) else {
-                continue;
-            };
-            if !self
-                .coordinator
-                .runtime
-                .managed_assets
-                .register_under_root_pending(
-                    &uploads_root,
-                    asset_id.clone(),
-                    std::path::PathBuf::from(path),
-                    attachment.filename.clone(),
-                    attachment.media_type.clone(),
-                )
-            {
-                tracing::warn!(
-                    asset_id = %asset_id,
-                    "rejecting managed attachment outside the host uploads root"
-                );
-            }
-        }
-    }
-
     /// Register attachments and hold them for the lifetime of a live session.
     /// This protects event-backed assets before their `messages` projection is
     /// visible to retention cleanup.

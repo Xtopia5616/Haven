@@ -164,16 +164,4 @@ impl ToolsManager {
             catalog, session_id, tool_name, input,
         )
     }
-
-    /// Return the canonical invocation input used for an authorization check.
-    pub async fn get_authorization_input(
-        &self,
-        session_id: Option<&str>,
-        tool_name: &str,
-        input: &Value,
-    ) -> Value {
-        ToolAuthorizationPolicy::new(self)
-            .authorization_input(session_id, tool_name, input)
-            .await
-    }
 }
