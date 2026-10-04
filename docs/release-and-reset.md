@@ -4,7 +4,7 @@
 
 ## 当前版本的兼容性政策
 
-Haven 处于测试阶段。数据库 schema、`config.toml`、ReAct snapshot 与内部 IPC 契约可以进行破坏性调整；发布说明会明确本次是否需要重置。没有明确写出兼容承诺的旧数据不得假定可继续使用。
+Haven 处于测试阶段。数据库 schema、`config.toml` 与内部 IPC 契约可以进行破坏性调整；发布说明会明确本次是否需要重置。没有明确写出兼容承诺的旧数据不得假定可继续使用。
 
 截至 2026-10-03，当前数据库契约为 schema v34（ADR 0392、0393、0402、0416、0442、0445）：scheduled dependency relation/result 持久化在 `actions.watch_action_id` / `actions.result_summary`，scheduled tool 的 completed/failed result 使用 `action_completion_outbox`，session authorization grants 由会话外键级联管理；`pending_session_inputs` 持久跟踪已接受但尚未进入 `UserInject` event 的用户输入，不再使用两天恢复窗口。`sessions.origin` 与 `sessions.parent_session_id` 持久记录普通用户会话或 `agent.spawn` peer 的来源及 parent lineage，且不改变 session lifecycle。后台 shell action 额外持久化 `actions.source_step_id`，关联产生它的 Agent 工具步骤，并在 Action event 与终态结果交付中保留。v34 不做旧 schema 运行时迁移；升级前，完全退出 Haven 后删除 `%APPDATA%\haven\haven.db`、`haven.db-wal` 与 `haven.db-shm`（非 Windows 开发环境为 `~/.local/share/haven` 下的同名文件），再启动应用。删除数据库会清除会话、记忆、任务和用量；保留 `config.toml` 时无需删除整个数据根目录。
 
@@ -19,50 +19,6 @@ Haven 处于测试阶段。数据库 schema、`config.toml`、ReAct snapshot 与
 API 密钥、OCR 密钥与 MCP 环境变量只通过安全凭据存储的 opaque reference 持久化。TOML 中的明文凭据会使配置加载失败并备份原文件；启动只从现有引用读取凭据，不再导入旧明文值。若引用在操作系统凭据存储中不存在，需要重新输入对应凭据。当前 provider `api_style` 仅接受 canonical wire protocol id；无效值和指向不存在 provider 的媒体配置会走同一备份与默认配置恢复。
 
 模型工具使用点号 operation view，例如 `files.*`、`system.*`、`process.*`、`clipboard.*`、`input.*`、`window.*`、`media.*`、`actions.*`、`schedule.*`、`preferences.*`、`checklist.*` 和 `haven.*`。启用 Skill 由 `load_skill` 按名称加载为当前 session 的 `skill__...`；内置 operation 由 `tool_catalog` 的 `action=load` 加载，MCP 由 `load_mcp` 按服务器加载。配置和未完成会话都没有旧工具名的转换保证。
-
-本次 Agent 版本将数据库 schema 收敛为 v28 当前契约：删除 `sessions.transcript` 快照列、`react_checkpoints` 和 `sessions.react_state`，
-会话正文只从 `session_events` 恢复并由 `messages` 物化；新增 `session_events` append-only
-会话事件表（`sequence`、`event_type`、`event_version`、JSON payload、run/step identity）和
-事件流本身承载恢复边界；运行态不再写入大型 JSON snapshot，也没有独立的
-checkpoint 表；消息新增 `media_inputs` canonical
-媒体表示列。旧数据库不再执行运行时 schema/data 迁移，也不会尝试拼接旧表、旧列或旧
-FTS/embedding 形状；消息表的旧 `attachments` 列已删除并由仅供 UI/资产保留使用的
-`ui_metadata` 取代，`media_inputs` 是唯一 canonical 媒体持久化来源；`llm_usage.call_kind` 将 Agent 主循环和工具拥有的媒体推理调用分开，
-后者保留明细但不进入 `session_usage` 的 Agent 累计 token/费用/缓存率；其它工具内部 LLM 调用使用
-`call_kind=tool`，同样只保留明细。`user_version` 不是 v28 的数据库，
-或没有版本戳但已经包含用户表，都会拒绝打开；必须删除 `haven.db`、`haven.db-wal` 和
-`haven.db-shm` 后重新创建。这样会同时清除会话、记忆、任务、快照和用量；若配置仍需保留，
-只删除这三个数据库文件即可，不必删除整个数据根目录。当前契约还包含
-`action_completion_outbox`，用于在 broadcast 丢失、进程重启或会话终态清理竞态后
-reconcile 后台任务结果。
-
-本版本同时将 session 与 action 生命周期收敛为 typed 状态契约：session 只允许
-`pending`、`running`、`paused`、`completed`、`error`，后台/定时任务只允许
-`waiting`、`running`、`completed`、`failed`、`cancelled`。定时任务不再使用
-`scheduled` 作为状态，也不再用 `actions.fired` 布尔列表达终态；`kind=scheduled`
-只表示任务类型，取消或触发后保留为终态历史。旧数据库必须按本节删除并重建。
-
-本版本同时删除了旧的 ask/confirm 等待字段和 session 状态，统一使用
-`InteractionRequest` 及其 session domain events。`sessions.react_state` 已从 schema v28
-删除，不做运行时迁移，也不再作为测试列保留；含有该列或旧 snapshot 的数据库必须按本节删除后重新创建。
-
-本版本将事实图谱的物理表从 `memory_edges` 统一为 `facts`，并删除 Agent 的
-`InferenceEngine` 兼容入口；当前后台事实编排只使用 `MemoryWorker`。数据库 schema
-版本升至 v28，不执行表名迁移。升级前必须删除 `haven.db`、`haven.db-wal` 和
-`haven.db-shm` 后重新创建；源代码调用方需直接迁移到当前名称。
-
-本版本的模型工具媒体契约也已收敛：原独立 `audio` 工具已删除，录音、播放、播报、音量和静音
-统一为 `media.record`、`media.play`、`media.speak`、`media.volume_*` 和 `media.mute_*`；
-`media.*` 的内容派生仍使用 `asset_id`，`window.screenshot` / `window.ocr` 不再接受宿主
-`path`；窗口截图会登记到生成媒体目录，图片、音频和支持的文档通过对应的 `media.*` view 派生。
-旧 `audio:*` 权限不会自动映射到 `media.*`；含旧 audio/window path 调用的未完成 ReAct snapshot 不保证恢复；请删除
-数据库与媒体缓存后重新开始会话，不要混用新旧运行态数据。
-
-本版本进一步收敛模型工具入口：`system.*`、`process.*`、`clipboard.*`、`input.*`、
-`window.*`、`media.*` 和 `haven.*` 均使用独立点号 view。风险不会按根工具统一计算，
-每个 view 仍独立执行 schema、授权、确认和并发策略；例如 `process.kill` 与 `system.info`、
-`haven.mcp.mcp_add` 与 `haven.mcp.mcp_list` 的风险分别保持 High/Safe、High/Low。旧根名的
-未完成 ReAct snapshot 不保证恢复。
 
 ## 用户数据位置
 
