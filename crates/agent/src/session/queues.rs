@@ -279,41 +279,41 @@ impl SessionSupervisor {
         actor.clear_interactions(kind).await
     }
 
+    /// Resolve an interaction only in the actor named by `session_id`.
+    ///
+    /// The actor appends the durable decision event before mutating its
+    /// pending interaction state. An append failure therefore leaves the
+    /// request available for retry; this method never searches other actors.
     pub async fn resolve_interaction(
         &self,
+        session_id: &str,
         request_id: &str,
         response: serde_json::Value,
         expired: bool,
     ) -> anyhow::Result<Option<crate::interaction::InteractionRequest>> {
-        let actors = self
-            .actors
-            .lock()
-            .await
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
-        for actor in actors {
-            if let Some(decision) = actor
-                .resolve_interaction(request_id.to_string(), response.clone(), expired)
-                .await?
-            {
-                let request = decision.request.clone();
-                if decision.wake_session {
-                    self.resume_paused_session_after_confirmation(&actor.id)
-                        .await?;
-                }
-                self.emit_event(SessionEvent::InteractionRequested {
-                    envelope: Box::new(crate::interaction::InteractionEnvelope {
-                        owner: crate::interaction::InteractionOwner::Session {
-                            session_id: actor.id,
-                        },
-                        request: request.clone(),
-                    }),
-                });
-                return Ok(Some(request));
-            }
+        let Some(actor) = self.actor_for(session_id).await else {
+            return Ok(None);
+        };
+        let Some(decision) = actor
+            .resolve_interaction(request_id.to_string(), response, expired)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let request = decision.request;
+        if decision.wake_session {
+            self.resume_paused_session_after_confirmation(&actor.id)
+                .await?;
         }
-        Ok(None)
+        self.emit_event(SessionEvent::InteractionRequested {
+            envelope: Box::new(crate::interaction::InteractionEnvelope {
+                owner: crate::interaction::InteractionOwner::Session {
+                    session_id: actor.id,
+                },
+                request: request.clone(),
+            }),
+        });
+        Ok(Some(request))
     }
 
     async fn resume_paused_session_after_confirmation(

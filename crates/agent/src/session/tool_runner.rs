@@ -1124,8 +1124,8 @@ impl SessionSupervisor {
                     .await?
             }
             crate::interaction::InteractionOwner::AppCommand => return None,
-            crate::interaction::InteractionOwner::Session { .. } => {
-                self.pending_session_confirmation_request(request_id)
+            crate::interaction::InteractionOwner::Session { session_id } => {
+                self.pending_session_confirmation_request(session_id, request_id)
                     .await?
             }
         };
@@ -1161,26 +1161,15 @@ impl SessionSupervisor {
 
     pub(super) async fn pending_session_confirmation_request(
         &self,
+        session_id: &str,
         step_id: &haven_common::types::ConfirmId,
     ) -> Option<crate::interaction::InteractionRequest> {
-        let actors = self
-            .actors
-            .lock()
+        let actor = self.actor_for(session_id).await?;
+        actor
+            .interactions(Some(crate::interaction::InteractionKind::Confirm), true)
             .await
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
-        for actor in actors {
-            if let Some(request) = actor
-                .interactions(Some(crate::interaction::InteractionKind::Confirm), true)
-                .await
-                .into_iter()
-                .find(|request| request.id == step_id.as_str())
-            {
-                return Some(request);
-            }
-        }
-        None
+            .into_iter()
+            .find(|request| request.id == step_id.as_str())
     }
 
     /// Persist an explicit session grant before resolving a pending
@@ -1214,8 +1203,9 @@ impl SessionSupervisor {
                     .await
             }
             crate::interaction::InteractionOwner::AppCommand => None,
-            crate::interaction::InteractionOwner::Session { .. } => {
-                self.pending_session_confirmation_request(step_id).await
+            crate::interaction::InteractionOwner::Session { session_id } => {
+                self.pending_session_confirmation_request(session_id, step_id)
+                    .await
             }
         };
         let Some(request) = request else {
@@ -1281,7 +1271,12 @@ impl SessionSupervisor {
                     self.resolve_scheduled_confirmation_locked(action_id, step_id, false, true)
                         .await?;
                 } else {
-                    self.resolve_confirmation_locked(step_id, false, true)
+                    let crate::interaction::InteractionOwner::Session { session_id } =
+                        expected_owner
+                    else {
+                        return Ok(None);
+                    };
+                    self.resolve_confirmation_locked(session_id, step_id, false, true)
                         .await?;
                 }
                 anyhow::bail!("confirmation request can no longer be executed: {reason}");
@@ -1295,7 +1290,11 @@ impl SessionSupervisor {
             self.resolve_scheduled_confirmation_locked(&action_id, step_id, confirmed, false)
                 .await
         } else {
-            self.resolve_confirmation_locked(step_id, confirmed, false)
+            let crate::interaction::InteractionOwner::Session { session_id } = expected_owner
+            else {
+                return Ok(None);
+            };
+            self.resolve_confirmation_locked(session_id, step_id, confirmed, false)
                 .await
         }
     }
@@ -1316,15 +1315,17 @@ impl SessionSupervisor {
                 .await
             }
             crate::interaction::InteractionOwner::AppCommand => Ok(None),
-            crate::interaction::InteractionOwner::Session { .. } => {
-                let Some(request) = self.pending_session_confirmation_request(request_id).await
+            crate::interaction::InteractionOwner::Session { session_id } => {
+                let Some(request) = self
+                    .pending_session_confirmation_request(session_id, request_id)
+                    .await
                 else {
                     return Ok(None);
                 };
                 if !interaction_owner_matches_request(owner, &request) {
                     return Ok(None);
                 }
-                self.resolve_confirmation_locked(request_id, confirmed, timed_out)
+                self.resolve_confirmation_locked(session_id, request_id, confirmed, timed_out)
                     .await
             }
         }
@@ -1342,6 +1343,7 @@ impl SessionSupervisor {
 
     async fn resolve_confirmation_locked(
         self: &Arc<Self>,
+        session_id: &str,
         step_id: &haven_common::types::ConfirmId,
         confirmed: bool,
         timed_out: bool,
@@ -1349,7 +1351,12 @@ impl SessionSupervisor {
         // Phase 5 / E3: pause-based confirm — record decision and wake when
         // every pending gated tool in the batch has been answered.
         if let Some(request) = self
-            .resolve_interaction(step_id.as_str(), Value::Bool(confirmed), timed_out)
+            .resolve_interaction(
+                session_id,
+                step_id.as_str(),
+                Value::Bool(confirmed),
+                timed_out,
+            )
             .await?
         {
             let (session_id, tool_name, tool_input) = match request.details {
@@ -1854,6 +1861,97 @@ mod scheduled_authorization_tests {
         })
         .await
         .expect("scheduled tool should observe its durable grant before execution");
+    }
+
+    #[tokio::test]
+    async fn session_confirmation_route_uses_only_the_declared_actor() {
+        let (supervisor, _tools, _database, _directory) = test_supervisor();
+        let session = supervisor
+            .create_session("owner-routed confirmation")
+            .await
+            .unwrap();
+        let other_session = supervisor
+            .create_session("different confirmation owner")
+            .await
+            .unwrap();
+        let request = crate::interaction::InteractionRequest::confirm(
+            &session.id,
+            1,
+            "files.write".into(),
+            json!({"path": "notes.txt"}),
+            "call-owner-route".into(),
+            "step-owner-route".into(),
+            0,
+            RiskLevel::High,
+            None,
+        );
+        supervisor
+            .request_interaction(request.clone())
+            .await
+            .unwrap();
+        let other_request = crate::interaction::InteractionRequest::confirm(
+            &other_session.id,
+            1,
+            "files.write".into(),
+            json!({"path": "other-notes.txt"}),
+            "call-other-owner-route".into(),
+            "step-other-owner-route".into(),
+            0,
+            RiskLevel::High,
+            None,
+        );
+        supervisor
+            .request_interaction(other_request.clone())
+            .await
+            .unwrap();
+        let request_id: haven_common::types::ConfirmId = request.id.clone().into();
+        let other_request_id: haven_common::types::ConfirmId = other_request.id.clone().into();
+        let wrong_owner = crate::interaction::InteractionOwner::Session {
+            session_id: other_session.id.clone(),
+        };
+
+        assert!(
+            supervisor
+                .resolve_confirmation_for_owner(&wrong_owner, &request_id, true, false)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            supervisor
+                .pending_session_confirmation_request(&session.id, &request_id)
+                .await
+                .is_some()
+        );
+        assert!(
+            supervisor
+                .pending_session_confirmation_request(&other_session.id, &other_request_id)
+                .await
+                .is_some()
+        );
+
+        let owner = crate::interaction::InteractionOwner::Session {
+            session_id: session.id.clone(),
+        };
+        let resolved = supervisor
+            .resolve_confirmation_for_owner(&owner, &request_id, false, false)
+            .await
+            .unwrap()
+            .expect("the request must resolve through its owning actor");
+        assert_eq!(resolved.session_id.as_deref(), Some(session.id.as_str()));
+        assert!(
+            supervisor
+                .pending_session_confirmation_request(&session.id, &request_id)
+                .await
+                .is_none()
+        );
+        assert!(
+            supervisor
+                .pending_session_confirmation_request(&other_session.id, &other_request_id)
+                .await
+                .is_some(),
+            "resolving one actor must not consume another actor's confirmation"
+        );
     }
 
     #[tokio::test]

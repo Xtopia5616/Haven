@@ -2558,7 +2558,7 @@ mod tests {
         );
         reloaded.request_interaction(confirm.clone()).await.unwrap();
         let resolved = reloaded
-            .resolve_interaction(&confirm.id, serde_json::json!(true), false)
+            .resolve_interaction(&session.id, &confirm.id, serde_json::json!(true), false)
             .await
             .unwrap()
             .expect("confirmation should resolve");

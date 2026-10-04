@@ -443,7 +443,7 @@ async fn reopen_preserves_follow_up_route_after_confirm_resolves_while_ask_stays
     // Resolve Confirm but leave Ask pending. Reopen through a fresh executor
     // to model a process restart after the pending marker was persisted.
     executor
-        .resolve_interaction(&confirm.id, serde_json::json!(true), false)
+        .resolve_interaction(&session.id, &confirm.id, serde_json::json!(true), false)
         .await
         .unwrap()
         .expect("Confirm should resolve");

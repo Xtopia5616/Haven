@@ -109,9 +109,10 @@ payload，则属于新的持久契约，必须单独评估 schema/reset 与崩�
 - 已完成 owner 到 Tauri event/resume DTO 的显式投影，并更新 TypeScript mapper、owner-aware reducer、Ask 过滤、scope 展示和通知分组。
 - resolve IPC 已改用 `request_id`，并返回 `Resolved`、`Expired`、`Stale` 的小写 enum wire 值；renderer reducer 按结果更新或移除交互项，命令错误仍保持 pending。
 - AppCommand 已直接按 `AppCommand + request_id` 查 `ui_confirmations`，不查询 Agent executor、不回退其他 owner；过期检查、receipt 校验、决定接受与 map 移除在同一 registry 锁内仲裁。回归覆盖错误 owner/request ID、重试失败保留 pending、过期状态及并发双击一次终态。
-- ScheduledAction 已使用以 `action_id` 为键的 owner-local registry；能力查询、session grant、resolve 和 expiry 都同时匹配 `request_id`，错误 action ID 不扫描或消费其他 owner 的请求。Session 的 capability/resolve 仍扫描 actor，但会校验 owner 的 `session_id`；下一步将它改为直接定位 actor。
+- ScheduledAction 已使用以 `action_id` 为键的 owner-local registry；能力查询、session grant、resolve 和 expiry 都同时匹配 `request_id`，错误 action ID 不扫描或消费其他 owner 的请求。
+- Session 的 capability 查询、普通 resolve、expiry 与 grant-aware resolve 均按显式 `session_id` 定位单个 actor，再匹配 `request_id`，不扫描 actor registry。actor 先成功追加 durable decision event 才推进 pending 状态；append 失败仍保留请求以供重试。session grant 持久化发生在 resolve/wake 之前，但它与 durable decision event 是分开的写入，不承诺跨两者原子性。
 - **待解决的 scheduled cancel/resolve 竞态：** scheduled action 等待确认时状态仍是 `Running`，`cancel_scheduled` 可以将其取消；如果随后确认请求仍被批准，`finish_scheduled_confirm` 目前可能执行工具，而 action 的终态 CAS 只会拒绝迟到的结果。ScheduledAction 阶段关闭前，必须定义取消与已接受确认的执行权顺序，并以共享 claim 或等效 owner 仲裁保证“取消先赢则不产生工具副作用”；确认先赢后的取消行为也要明确并测试。不得把 action/outbox 的 durable terminal commit 与发布顺序移入交互 registry。
-- 后续迁移 Session 直达路由，再统一 owner deadline 并移除 `timed_out` / renderer deadline fallback。
+- 下一步收口 ScheduledAction cancel/resolve 执行权竞态：取消先赢不得触发工具；确认先赢后的运行中取消语义也要明确。之后统一 owner deadline 并移除 `timed_out` / renderer deadline fallback。
 - 当前切片未修改数据库 schema 或 durable event payload，无需用户数据重置。
 
 ### 期限唯一性与 ADR 0423 的关系（决定）

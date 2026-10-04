@@ -294,9 +294,9 @@ pub async fn resolve_confirmation(
             })
             .map_err(|error| log_err("resolve_confirmation", error))?;
     }
-    // Resolve the confirmation and capture tool/session context atomically
-    // (under the executor's sessions lock). Session scope uses the executor's
-    // grant-aware path, which commits before resolving can wake the actor.
+    // Resolve through the explicit owner while holding the executor's
+    // confirmation-resolution gate. Session scope uses the grant-aware path,
+    // which commits before resolving can wake the owning actor.
     let resolution =
         if matches!(perm_scope, haven_common::types::PermissionScope::Session) && !timed_out {
             state
