@@ -4,6 +4,21 @@ use super::file_paths::{atomic_replace, looks_like_binary};
 use super::{FilesPatchEdit, MAX_PATCH_EDITS, MAX_PATCH_INPUT_BYTES};
 use crate::ToolResult;
 
+async fn run_file_mutation<T>(
+    cancel: &CancellationToken,
+    mutation: impl std::future::Future<Output = anyhow::Result<T>>,
+) -> anyhow::Result<T> {
+    if cancel.is_cancelled() {
+        anyhow::bail!("cancelled");
+    }
+
+    // File mutations are cooperative: cancellation prevents a mutation from
+    // starting, but cannot roll back an operation once the filesystem accepts it.
+    // Return the operation's real result instead of reporting cancellation after
+    // a successful side effect.
+    mutation.await
+}
+
 #[derive(Debug, Clone)]
 struct PatchReplacement {
     start: usize,
@@ -54,13 +69,13 @@ pub(super) async fn create_dir(
     path: &str,
     cancel: CancellationToken,
 ) -> anyhow::Result<ToolResult> {
-    tokio::fs::create_dir_all(path).await?;
-    if cancel.is_cancelled() {
-        anyhow::bail!("cancelled");
-    }
-    Ok(ToolResult::ok(
-        serde_json::json!({"created": true, "path": path}),
-    ))
+    run_file_mutation(&cancel, async {
+        tokio::fs::create_dir_all(path).await?;
+        Ok(ToolResult::ok(
+            serde_json::json!({"created": true, "path": path}),
+        ))
+    })
+    .await
 }
 
 pub(super) async fn edit(
@@ -216,13 +231,13 @@ pub(super) async fn copy(
     destination: &str,
     cancel: CancellationToken,
 ) -> anyhow::Result<ToolResult> {
-    tokio::fs::copy(path, destination).await?;
-    if cancel.is_cancelled() {
-        anyhow::bail!("cancelled");
-    }
-    Ok(ToolResult::ok(
-        serde_json::json!({"copied": true, "from": path, "to": destination}),
-    ))
+    run_file_mutation(&cancel, async {
+        tokio::fs::copy(path, destination).await?;
+        Ok(ToolResult::ok(
+            serde_json::json!({"copied": true, "from": path, "to": destination}),
+        ))
+    })
+    .await
 }
 
 pub(super) async fn move_file(
@@ -230,20 +245,20 @@ pub(super) async fn move_file(
     destination: &str,
     cancel: CancellationToken,
 ) -> anyhow::Result<ToolResult> {
-    match tokio::fs::rename(path, destination).await {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::CrossesDevices => {
-            tokio::fs::copy(path, destination).await?;
-            tokio::fs::remove_file(path).await?;
+    run_file_mutation(&cancel, async {
+        match tokio::fs::rename(path, destination).await {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::CrossesDevices => {
+                tokio::fs::copy(path, destination).await?;
+                tokio::fs::remove_file(path).await?;
+            }
+            Err(e) => return Err(e.into()),
         }
-        Err(e) => return Err(e.into()),
-    }
-    if cancel.is_cancelled() {
-        anyhow::bail!("cancelled");
-    }
-    Ok(ToolResult::ok(
-        serde_json::json!({"moved": true, "from": path, "to": destination}),
-    ))
+        Ok(ToolResult::ok(
+            serde_json::json!({"moved": true, "from": path, "to": destination}),
+        ))
+    })
+    .await
 }
 
 pub(super) async fn delete(path: &str, cancel: CancellationToken) -> anyhow::Result<ToolResult> {
@@ -452,5 +467,78 @@ pub(super) fn encode_patched_text(text: &str, encoding: &str) -> anyhow::Result<
         }
         "gbk" => Ok(encoding_rs::GBK.encode(text).0.into_owned()),
         other => anyhow::bail!("unsupported text encoding for patch: {other}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{copy, create_dir, move_file, run_file_mutation};
+    use tokio::sync::oneshot;
+    use tokio_util::sync::CancellationToken;
+
+    #[tokio::test]
+    async fn cancelled_file_mutations_do_not_change_filesystem_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source.txt");
+        let copied = temp.path().join("copied.txt");
+        let moved = temp.path().join("moved.txt");
+        let new_dir = temp.path().join("new").join("nested");
+        tokio::fs::write(&source, "keep source").await.unwrap();
+
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        assert!(
+            create_dir(new_dir.to_str().unwrap(), cancel.clone())
+                .await
+                .is_err()
+        );
+        assert!(
+            copy(
+                source.to_str().unwrap(),
+                copied.to_str().unwrap(),
+                cancel.clone(),
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            move_file(source.to_str().unwrap(), moved.to_str().unwrap(), cancel,)
+                .await
+                .is_err()
+        );
+
+        assert!(!new_dir.exists());
+        assert!(!copied.exists());
+        assert!(!moved.exists());
+        assert_eq!(
+            tokio::fs::read_to_string(&source).await.unwrap(),
+            "keep source"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancellation_after_mutation_starts_returns_its_committed_result() {
+        let cancel = CancellationToken::new();
+        let task_cancel = cancel.clone();
+        let (started_tx, started_rx) = oneshot::channel();
+        let (continue_tx, continue_rx) = oneshot::channel();
+
+        let task = tokio::spawn(async move {
+            run_file_mutation(&task_cancel, async move {
+                started_tx.send(()).unwrap();
+                continue_rx
+                    .await
+                    .map_err(|_| anyhow::anyhow!("test gate closed"))?;
+                Ok::<_, anyhow::Error>("committed")
+            })
+            .await
+        });
+
+        started_rx.await.unwrap();
+        cancel.cancel();
+        continue_tx.send(()).unwrap();
+
+        assert_eq!(task.await.unwrap().unwrap(), "committed");
     }
 }
