@@ -1,7 +1,7 @@
 # ADR 0384：Agent Tools 执行上下文与端口 bundle
 
 - 状态：已采纳并实现（2026-09-28）
-- 关联：[ADR 0257](0257-agent-layer-injects-tool-catalog-port.md)、[ADR 0345](0345-tools-manager-facade-audit.md)、[ADR 0374](0374-typed-session-cleanup-and-explicit-agent-tool-wiring.md)
+- 关联：[ADR 0257](0257-explicit-tool-catalog-injection.md)、[ADR 0345](0345-tools-authorization-policy-boundary.md)、[ADR 0374](0374-typed-session-cleanup-and-explicit-agent-tool-wiring.md)
 
 ## 背景
 

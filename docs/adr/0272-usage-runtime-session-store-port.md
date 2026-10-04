@@ -3,7 +3,7 @@
 - 状态：Accepted
 - 日期：2026-09-24
 - 范围：Agent usage runtime 与 Memory SessionStore
-- 关联：[ADR 0223](0223-usage-runtime-ownership.md)、[ADR 0255](0255-transcript-batch-session-store-port.md)、[ADR 0270](0270-typed-cache-accounting.md)、[ADR 0271](0271-typed-llm-call-kind.md)
+- 关联：[ADR 0223](0223-usage-runtime-boundary.md)、[ADR 0255](0255-transcript-batch-session-store-port.md)、[ADR 0270](0270-typed-cache-accounting.md)、[ADR 0271](0271-typed-llm-call-kind.md)
 
 ## 背景
 

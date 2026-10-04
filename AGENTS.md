@@ -8,7 +8,7 @@ Tech stack: Rust (Tauri 2) backend, Svelte 5 frontend.
 
 固定开发工具链：Rust 1.98.0、Node.js 24.20.0、pnpm 11.24.0；版本分别由 `rust-toolchain.toml`、`.node-version` 和 `ui/package.json` 固定。
 
-架构重构阶段状态与未决事项以 `docs/architecture-refactor-roadmap.md` 的当前阶段判断及对应 ADR 为准；其中按日期记录的旧切片进展是历史快照，不代表仍未完成。
+架构重构阶段状态与未决事项以 `docs/architecture-refactor-roadmap.md` 和对应 ADR 为准；ADR 记录历史决策，路线图只维护当前状态与未完成项。
 
 ## Test Workflow
 
@@ -107,11 +107,11 @@ corepack pnpm run check
 - 外部 ID（LLM `tool_call_id`、模型 ID、MCP `Mcp-Session-Id`）保持 provider 格式，不套用本规范。
 - kv_store key 用 `domain.key` 风格（如 `fact_extraction.{session_id}`、`fact_extraction_pending.{session_id}`），内嵌的实体 ID 必须是规范格式。
 - 步骤计数统一叫 `step_number`（事件/UI/DB 列名一致）。
-- 数据库 schema 由 `haven_memory::schema::init_schema` 管理：当前 `SCHEMA_SQL` 幂等建表并写入 `SCHEMA_VERSION`；旧版本数据库不做运行时迁移，直接按 `docs/release-and-reset.md` 重置。`user_version` 高于或不同于本二进制支持版本时拒绝打开。演进原则与剩余重构工作见 `docs/stability-refactor-plan.md`。
+- 数据库 schema 由 `haven_memory::schema::init_schema` 管理：当前 `SCHEMA_SQL` 幂等建表并写入 `SCHEMA_VERSION`；旧版本数据库不做运行时迁移，直接按 `docs/release-and-reset.md` 重置。`user_version` 高于或不同于本二进制支持版本时拒绝打开。当前架构阶段与剩余工作见 `docs/architecture-refactor-roadmap.md`。
 
 ## 通知 / 日志 / 错误处理规范
 
-统一规范见 `docs/conventions.md`（v1.3）：前端 `logger.*` 禁止裸 `console.*`；后端 `tracing` + 命令错误走 `log_err(ctx, e)`；通知双通道（应用内 toast / Windows），系统事件集中在 `+layout` 经 `addNotification`，用户操作可页面直调；Tauri 命令统一 `Result<T, String>`。已知漂移与优化项见该文档 §6。
+统一规范见 `docs/conventions.md`：前端 `logger.*` 禁止裸 `console.*`；后端 `tracing` + 命令错误走 `log_err(ctx, e)`；通知双通道（应用内 toast / Windows），系统事件集中在 `+layout` 经 `addNotification`，用户操作可页面直调；Tauri 命令统一 `Result<T, String>`。
 
 ## 命名规范
 

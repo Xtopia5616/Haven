@@ -2,7 +2,7 @@
 
 - 状态：已采纳（2026-09-24）
 - 范围：`haven-app-binary` 的 settings/model Router runtime 更新
-- 关联：[ADR 0235](0235-runtime-config-snapshot-apply-boundary.md)
+- 关联：[ADR 0235](0235-versioned-runtime-config-apply-boundary.md)
 
 ## 背景
 

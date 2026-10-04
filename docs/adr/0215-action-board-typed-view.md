@@ -3,7 +3,7 @@
 - 状态：accepted
 - 日期：2026-09-23
 - 范围：`haven-tools`、`haven-app-binary` 的任务面板 hydration
-- 关联：[架构降复杂度重构路线图阶段 3](../architecture-refactor-roadmap.md#阶段-3存储-domain-ports-与-typed-projection)、[ADR 0006](0006-action-ipc-contract-boundary.md)
+- 关联：[架构降复杂度重构路线图阶段 3](../architecture-refactor-roadmap.md#阶段-3已完成存储-domain-ports-与-typed-projectionp1)、[ADR 0006](0006-action-ipc-contract-boundary.md)
 
 ## 背景
 

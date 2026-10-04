@@ -3,7 +3,7 @@
 - 状态：Accepted
 - 日期：2026-09-24
 - 范围：LLM usage runtime input 与 durable-memory 写入边界
-- 关联：[ADR 0223](0223-usage-runtime-ownership.md)、[ADR 0246](0246-router-result-projection.md)
+- 关联：[ADR 0223](0223-usage-runtime-boundary.md)、[ADR 0246](0246-llm-request-outcome-projection.md)
 
 ## 背景
 

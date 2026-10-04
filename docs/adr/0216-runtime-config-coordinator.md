@@ -3,7 +3,7 @@
 - 状态：已采纳（阶段 5 最小纵向切片）
 - 日期：2026-09-23
 - 范围：`haven-app-binary` 的运行时日志级别应用
-- 关联：[架构降复杂度重构路线图阶段 5](../architecture-refactor-roadmap.md#阶段-5runtimeconfigcoordinatorp1)、[ADR 0068](0068-versioned-config-service.md)
+- 关联：[架构降复杂度重构路线图阶段 5](../architecture-refactor-roadmap.md#阶段-5已完成runtime-config-apply-ownershipp1)、[ADR 0068](0068-versioned-config-service.md)
 
 ## 背景
 

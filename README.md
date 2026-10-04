@@ -71,21 +71,18 @@ Rust 测试应使用内存数据库或唯一临时目录，不能读写真实用
 
 - [架构与 crate 边界](docs/architecture.md)
 - [开发与架构治理规范](docs/development-standards.md)
+- [命名规范](docs/naming.md)
+- [日志、通知与错误处理](docs/conventions.md)
+- [UI 设计与编码规范](docs/ui.md)
 - [架构降复杂度路线图](docs/architecture-refactor-roadmap.md)
+- [跨层输出契约清单](docs/architecture-output-contract-inventory.md)
+- [Tauri IPC 契约](docs/ipc-contracts.md)
+- [安全回归矩阵](docs/security-regression-matrix.md)
 - [Git 提交流程](docs/git-workflow.md)
-- [稳定性重构计划](docs/stability-refactor-plan.md)
-- [重构实施手册](docs/refactor-execution-guide.md)
 - [发布与数据重置](docs/release-and-reset.md)
 - [架构决策记录](docs/adr/README.md)
 
-记忆事实提取的 session transcript、节流戳和用户消息游标由
-`MemoryFactExtractionStore` 持久化；已清洗事实的批量写入由 `MemoryFactStore` 承接。
-`MemoryWorker` 仍负责窗口构造、模型调用与维护策略；普通和摘要抽取状态（各自的 cursor、共享
-节流戳）由 `MemoryFactExtractionStore` 持久化，确定性清理和 LLM maintenance persistence 经
-`MemoryMaintenanceStore` 执行。候选过滤、提案校验和失败策略仍由 Worker 负责。生产
-`MemoryWorker` 不持有 raw Database；`MemoryService` 的私有数据库句柄只用于构造 typed stores 与
-embedding index，不向 Worker 暴露。embedding catch-up 沿用 `MemoryService` 的
-`MemoryEmbeddingStore` 边界，详见 ADR 0308–0312 和架构路线图。
+记忆与存储边界见[架构文档](docs/architecture.md)；具体实现决策和演进记录见对应 ADR。
 
 ## 故障报告
 

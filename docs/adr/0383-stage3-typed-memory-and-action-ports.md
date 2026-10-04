@@ -1,7 +1,7 @@
 # ADR 0383：阶段 3 的 typed memory 与 Action 投影验收
 
 - 状态：已采纳并实现（2026-09-28）
-- 关联：[ADR 0275](0275-action-status-list-typed-projections.md)、[ADR 0299](0299-react-compaction-summary-memory-store-port.md)、[ADR 0312](0312-memory-worker-summary-extraction-state-store.md)、[ADR 0361](0361-final-architecture-acceptance-audit.md)、[ADR 0364](0364-agent-layer-memory-service-constructor.md)、[ADR 0374](0374-typed-session-cleanup-and-explicit-agent-tool-wiring.md)
+- 关联：[ADR 0275](0275-action-service-typed-agent-projections.md)、[ADR 0299](0299-react-compaction-summary-memory-store-port.md)、[ADR 0312](0312-memory-worker-summary-extraction-state-store.md)、[ADR 0361](0361-final-architecture-acceptance-audit.md)、[ADR 0364](0364-agent-layer-memory-service-constructor.md)、[ADR 0374](0374-typed-session-cleanup-and-explicit-agent-tool-wiring.md)
 
 ## 背景
 

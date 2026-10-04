@@ -5,7 +5,7 @@
 - Status: Accepted
 - Date: 2026-09-25
 - Scope: `ActionEvent` rows returned by `list_actions` and the four action lifecycle events
-- Related: [ADR 0215](0215-action-board-typed-projection.md), [ADR 0275](0275-action-service-typed-agent-projections.md), [ADR 0330](0330-session-lifecycle-ui-contract-mapper.md)
+- Related: [ADR 0215](0215-action-board-typed-view.md), [ADR 0275](0275-action-service-typed-agent-projections.md), [ADR 0330](0330-session-lifecycle-ui-contract-mapper.md)
 
 ## Context
 

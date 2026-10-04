@@ -3,7 +3,7 @@
 - 状态：已采纳
 - 日期：2026-09-25
 - 范围：`ReActEngine::apply_transcript`、`SessionStore` transcript commit 与 X12 投影顺序
-- 关联：[ADR 0207](0207-session-store-replay-boundaries-and-durable-ui-sequences.md)、[ADR 0210](0210-committed-ui-sequence-publisher.md)、[ADR 0255](0255-transcript-batch-session-store-port.md)、[ADR 0274](0274-thought-step-session-store-port.md)
+- 关联：[ADR 0207](0207-session-store-replay-boundaries-and-durable-ui-sequences.md)、[ADR 0210](0210-committed-ui-sequence-publisher.md)、[ADR 0255](0255-transcript-batch-session-store-port.md)、[ADR 0274](0274-thought-projection-session-store-port.md)
 
 ## 背景
 

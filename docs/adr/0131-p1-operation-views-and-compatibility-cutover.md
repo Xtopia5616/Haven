@@ -3,7 +3,7 @@
 - 状态：已接受
 - 日期：2026-09-12
 - 范围：`haven-tools`、`haven-memory`、`haven-llm`、`haven-agent`、`haven-app-binary`、UI
-- 关联：ADR 0127、0128、0129、0130；`docs/model-experience-optimization.md`
+- 关联：ADR 0127、0128、0129、0130
 
 ## 背景
 

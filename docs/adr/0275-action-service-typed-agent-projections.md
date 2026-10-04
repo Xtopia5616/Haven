@@ -3,7 +3,7 @@
 - 状态：Accepted
 - 日期：2026-09-24
 - 范围：ActionService 的 agent-facing status/list 查询与 `actions` builtin tool
-- 关联：[ADR 0215](0215-action-board-typed-projection.md)、[ADR 0248](0248-background-action-terminal-commit-order.md)
+- 关联：[ADR 0215](0215-action-board-typed-view.md)、[ADR 0248](0248-background-action-terminal-commit-order.md)
 
 ## 背景
 

@@ -3,7 +3,7 @@
 - 状态：Accepted
 - 日期：2026-09-24
 - 范围：Agent ReAct memory trigger producer 与 Memory SessionStore
-- 关联：[ADR 0259](0259-memory-runtime-committed-event-consumer.md)、[ADR 0265](0265-memory-trigger-durable-producer.md)、[ADR 0272](0272-usage-runtime-session-store-port.md)
+- 关联：[ADR 0259](0259-memory-runtime-committed-event-consumer.md)、[ADR 0265](0265-memory-trigger-pause-producer.md)、[ADR 0272](0272-usage-runtime-session-store-port.md)
 
 ## 背景
 

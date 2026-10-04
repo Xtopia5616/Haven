@@ -19,7 +19,7 @@
 | 事件 → toast 映射 | `ui/src/routes/+layout.svelte` |
 | invoke 错误日志 | `ui/src/lib/tauri.ts` |
 
-新代码必须遵守；存量代码若与本规范冲突，按 §6 待对齐项逐步迁移。
+新增或修改的实现必须遵守本规范。发现存量代码偏离时，应在对应变更中修正；本文不保留已完成迁移的历史清单。
 
 ---
 
@@ -30,8 +30,7 @@
 3. [错误处理规范](#3-错误处理规范)
 4. [跨端映射表](#4-跨端映射表)
 5. [新增代码检查清单](#5-新增代码检查清单)
-6. [待对齐 / 可优化](#6-待对齐--可优化)
-7. [「Haven」/「haven」大小写](#7-havenhaven-大小写规范)
+6. [「Haven」/「haven」大小写](#6-havenhaven-大小写规范)
 
 ---
 
@@ -354,47 +353,7 @@ try {
 
 ---
 
-## 6. 待对齐 / 可优化
-
-### 已完成（v1.2）
-
-| ID | 变更 |
-|---|---|
-| N1 | Windows 桌面通知文案改为中文，与应用内 toast 对齐 |
-| N2 | `session_paused.windows` 已接线（`SessionUpdated`/`paused`） |
-| N3 | 设置页注明：Agent `notify` 通知始终开启（双通道） |
-| N4 | `hotkey:conflict` toast 改为 `热键冲突: …` |
-| N5 | 抽出 `windows_enabled` / `show_windows_toast` / `session_display_title` |
-| L1 | span 重命名为 `scheduled_action_fired`，字段 `action_id` |
-| L3 | 设置页 Logging 注明级别仅作用于后端 tracing |
-| E1 | 新增 `ui/src/lib/formatError.ts`，toast 错误文案统一经 `formatError(e)` |
-
-### 已完成（v1.4）
-
-| ID | 变更 |
-|---|---|
-| E2 | 前端错误统一经 `reportError` 组合日志与 toast；`formatError` 限制文案并处理 unknown；根布局接住未处理异常；后端 `log_err` 增加结构化 command/error 字段 |
-
-### 已完成（v1.6）
-
-| ID | 变更 |
-|---|---|
-| E3 | `addNotification` 收敛为纯展示；`reportError` 成为异常的唯一组合入口，统一前端日志、错误 toast 与 Rust 文件日志镜像；剪贴板、外链和历史页 catch 路径迁移 |
-
-### 已完成（v1.7）
-
-| ID | 变更 |
-|---|---|
-| L2 | `TauriEmitter::trace_event` 改用结构化 ID 字段；通知与会话完成日志只记长度，不记录正文 |
-| E4 | UI 复制、列表加载、聚合模型发现与自动启动异常按 `reportError` 处理；Tauri 不可用时 invoke 也会先记前端日志 |
-| L4 | 配置加载失败时启用 console-only tracing 后再报告启动错误，移除 tracing 初始化前的裸 `eprintln!` |
-| L5 | 转录、标题、配置内容、本机路径不进入普通日志；错误摘要统一脱敏 |
-
-落地时：改代码须同步更新 §2 / §4。
-
----
-
-## 7. 「Haven」/「haven」大小写规范
+## 6. 「Haven」/「haven」 大小写规范
 
 产品名统一大写 **Haven**，仅用于**用户可见的展示字符串**；其余**标识 / 路径 / 协议字段一律小写 `haven`**。禁止同一语义在不同地方混用大小写。
 

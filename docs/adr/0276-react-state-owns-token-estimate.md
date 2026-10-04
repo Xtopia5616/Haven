@@ -3,7 +3,7 @@
 - 状态：Accepted
 - 日期：2026-09-24
 - 范围：ReAct canonical transcript 的进程内 token estimate
-- 关联：[ADR 0214](0214-react-run-inside-session-actor.md)、[ADR 0219](0219-remove-token-estimate-mailbox.md)、[ADR 0222](0222-request-policy-snapshot.md)
+- 关联：[ADR 0214](0214-react-run-inside-session-actor.md)、[ADR 0219](0219-stream-identity-runtime-boundary.md)、[ADR 0222](0222-token-estimate-sidecar-boundary.md)
 
 ## 背景
 

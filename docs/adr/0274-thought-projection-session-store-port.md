@@ -3,7 +3,7 @@
 - 状态：Accepted
 - 日期：2026-09-24
 - 范围：Agent EventDispatcher 的 thought step projection
-- 关联：[ADR 0206](0206-session-event-projection.md)、[ADR 0255](0255-transcript-batch-session-store-port.md)、[ADR 0273](0273-memory-trigger-session-store-port.md)
+- 关联：[ADR 0206](0206-session-store-usage-events-and-atomic-rollback.md)、[ADR 0255](0255-transcript-batch-session-store-port.md)、[ADR 0273](0273-memory-trigger-session-store-port.md)
 
 ## 背景
 

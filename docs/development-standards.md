@@ -1,6 +1,6 @@
 # Haven 开发与架构治理规范
 
-> 版本：v1.0 | 日期：2026-08-26  
+> 版本：v1.1 | 日期：2026-10-04
 > 适用范围：所有 Rust、Svelte、配置、数据库、测试、CI 与文档变更。  
 > 项目定位：个人 Windows 助手的测试版本；为正确性、清晰性或安全性可进行破坏性重构。
 
@@ -21,8 +21,7 @@
 | 命名 | `docs/naming.md` | 评审检查项 |
 | 日志、错误、通知 | `docs/conventions.md` | 可观测性与降级要求 |
 | UI 模式 | `docs/ui.md` | 跨端契约与页面拆分要求 |
-| 重构优先级 | `docs/stability-refactor-plan.md` | 分期和验收标准 |
-| 重构实施顺序 | `docs/refactor-execution-guide.md` | 工作项、退出条件与重构模板 |
+| 当前架构重构状态 | `docs/architecture-refactor-roadmap.md` | 仅记录当前阶段、未完成项和验收条件；历史决策见 ADR |
 
 本文件不复制上述细节。发现冲突时，以更具体的领域规范为准；任何新规则必须更新到唯一权威文档，而不是只写在 PR 描述或提交信息中。
 
@@ -36,7 +35,7 @@
 
 ## 4. 数据、配置与兼容性
 
-- 数据库 schema、配置 schema、ReAct snapshot、Tauri wire payload 都是版本化契约；变化必须有正向、异常和重置测试。
+- 数据库 schema、配置 schema、session event 与 Tauri wire payload 都是版本化契约；变化必须有正向、异常和重置测试。ReAct snapshot 已删除，不得作为持久化或恢复契约重新引入。
 - 本版本允许破坏性变化：删除兼容分支前先删除其所有读写入口与测试；在发布说明写明应删除的数据库、配置或缓存路径。
 - 禁止双写、双真源和靠内容比对的隐式去重；权威来源必须可从代码与文档中唯一定位。
 - 配置默认值必须安全、可解释且经过测试；无法初始化的可选能力应降级并可观测，不能 panic 或静默失效。
@@ -69,7 +68,7 @@
 - 新功能、删改契约、跨 crate 改动、安全语义、数据库变更必须附简短 ADR：背景、决定、替代方案、影响、验证与回滚/重置。
 - README 应覆盖项目用途、开发环境、启动、测试、数据重置、故障报告和发布；`AGENTS.md` 不替代面向开发者的入口文档。
 - 提交采用 `feat`、`fix`、`refactor`、`docs`、`test`、`build`、`chore` 前缀；每次提交只表达一个可审查目的。
-- 内置工具名、权限 key、`ToolConfig`、UI renderer 与历史配置迁移必须共享同一正式名称；模型可见的内置能力统一使用 `root.operation` 视图（例如 `files.read`、`system.env.get`、`haven.diagnostics.status`、`media.inspect`），聚合实现只作为内部/native 执行边界。模型始终接收一小组稳定核心工具（目录/加载控制面、Skill/MCP loader 与少量高频读取 operation）和三层紧凑能力目录的第一层（`system`、`agent`、`haven` 等 family 及其 root 摘要）；需要深入时通过 Safe 的 `tool_catalog` 依次列出 family/root/operation，精确描述 operation，并用同一工具的 `action=load` 原子加载 builtin operation/root。Skill 由 `load_skill` 按名称加载为 session-scoped 的 `skill__...`，MCP 由 `load_mcp` 按服务器加载为 `mcp__...`。完整 schema 只能出现在当前 session 已加载的 provider surface，不能把 deferred catalog 当作模型可直接调用的注册表。删除或重命名旧入口时，必须同时删除无调用的 UI/测试分支，并为旧配置定义一次性迁移或明确重置边界。
+- 模型可见工具目录、按需加载和 operation 命名遵循 [架构文档](architecture.md) 及 ADR 0140–0148、0198；不要在本规范复制工具目录实现细节。工具名、权限 key、配置、UI renderer 和历史配置迁移必须共享正式名称。删除或重命名入口时，同时删除无调用的 UI/测试分支，并为旧配置定义一次性迁移或明确重置边界。
 - Git 的分支、暂存、验证和提交节奏遵循 [Git 提交流程](git-workflow.md)；每轮逻辑改动完成且适用门禁通过后应主动提交。
 - 合并前的定义完成（DoD）：代码、测试、相关规范/ADR、风险评估、验收命令与用户可见变更说明均已更新。
 
@@ -81,13 +80,6 @@
 4. 跑全量门禁并更新架构图、ADR 与重置说明。
 5. 大范围重构按领域独立提交；Git 历史重置仅在稳定版本验收后单独执行。
 
-## 10. 当前差距与优先级
+## 10. 当前架构状态
 
-| 优先级 | 当前状态 | 后续动作 |
-|---|---|---|
-| P0 | 已完成：Rust 1.98.0、Node 24.20.0、pnpm 11.24.0 固定；workspace 严格 Clippy、Linux/Windows Rust 测试与 UI 门禁已纳入 CI | 持续维护门禁；工具链升级需同步版本文件、CI 与 ADR |
-| P0 | 已完成：README、开发标准、重构计划、发布/重置说明与 ADR 目录齐备 | 文档变更必须随代码和契约变更提交 |
-| P1 | 已完成：79 个 Tauri 命令、40 个事件及 Rust wire DTO / 前端 contract 已登记并受脚本保护 | 新增 IPC 必须先登记并补边界测试 |
-| P1 | 已完成：明确 CSP 与本机工具安全回归矩阵 | 新增高风险工具必须补负向用例 |
-| P1 | 已完成：旧配置、provider、快照兼容分支按域删除；旧数据按发布说明备份/重置 | 不重新引入无到期日期的兼容代码 |
-| P2 | 已完成：Agent、LLM、Memory、聊天 UI 的稳定边界与主要热点已拆分；平台适配按 ADR 0015 暂缓，不计入本阶段 | 持续维护热点预算与文档一致性；平台适配另行立项 |
+阶段状态和待办会随实现变化，集中维护在[架构重构路线图](architecture-refactor-roadmap.md)；本规范只保留长期有效的工程规则。

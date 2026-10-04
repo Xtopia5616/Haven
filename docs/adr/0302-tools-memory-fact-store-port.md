@@ -3,7 +3,7 @@
 - 状态：Accepted
 - 日期：2026-09-25
 - 范围：`haven-tools` 内置 MemoryTool 的事实 search/list/remember/forget 与 keyword recall fallback
-- 关联：[ADR 0019](0019-memory-fact-graph-write-boundary.md)、[ADR 0020](0020-memory-fact-query-ranking-boundary.md)、[ADR 0021](0021-agent-memory-embedding-boundary.md)、[ADR 0028](0028-agent-fact-inference-boundary.md)、[ADR 0285](0285-app-memory-fact-store.md)、[ADR 0254](0254-remove-unused-memory-recall-forwarder.md)
+- 关联：[ADR 0019](0019-memory-fact-graph-write-boundary.md)、[ADR 0020](0020-memory-fact-query-ranking-boundary.md)、[ADR 0021](0021-agent-memory-embedding-boundary.md)、[ADR 0028](0028-llm-adapter-provider-features-boundary.md)、[ADR 0285](0285-app-memory-fact-store.md)、[ADR 0254](0254-remove-unused-memory-recall-forwarder.md)
 
 ## 背景
 

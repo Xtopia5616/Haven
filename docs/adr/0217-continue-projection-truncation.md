@@ -3,7 +3,7 @@
 - 状态：已采纳（架构降复杂度路线图阶段 2 首个最小切片）
 - 日期：2026-09-24
 - 范围：`haven-memory` 的 `SessionStore` 与 `haven-agent` 的 `continue_session`
-- 关联：[架构降复杂度重构路线图阶段 2](../architecture-refactor-roadmap.md#阶段-2恢复回滚和事件投影边界再收口p0)、[ADR 0206](0206-session-store-usage-events-and-atomic-rollback.md)、[ADR 0207](0207-session-store-replay-boundaries-and-durable-ui-sequences.md)
+- 关联：[架构降复杂度重构路线图阶段 2](../architecture-refactor-roadmap.md#阶段-2已完成恢复回滚和事件投影边界再收口p0)、[ADR 0206](0206-session-store-usage-events-and-atomic-rollback.md)、[ADR 0207](0207-session-store-replay-boundaries-and-durable-ui-sequences.md)
 
 ## 背景
 

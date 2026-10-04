@@ -3,7 +3,7 @@
 - 状态：Accepted
 - 日期：2026-09-24
 - 范围：`haven-memory` episode persistence、`haven-agent` summary extraction worker
-- 关联：[ADR 0259](0259-memory-runtime-committed-event-consumer.md)、[ADR 0261](0261-memory-runtime-session-event-cursor.md)、[ADR 0265](0265-memory-trigger-pause-producer.md)
+- 关联：[ADR 0259](0259-memory-runtime-committed-event-consumer.md)、[ADR 0261](0261-memory-event-cursor-and-bounded-replay.md)、[ADR 0265](0265-memory-trigger-pause-producer.md)
 
 ## 背景
 
