@@ -343,12 +343,6 @@ struct SnapshotTool {
 }
 
 impl ToolCatalogSnapshot {
-    #[allow(dead_code)]
-    pub(crate) fn new(version: (u64, u64), tools: HashMap<String, ToolBox>) -> Self {
-        let provider_definitions = tools.values().map(|tool| tool.tool_def()).collect();
-        Self::new_with_definitions(version, tools, provider_definitions)
-    }
-
     pub(crate) fn new_with_definitions(
         version: (u64, u64),
         tools: HashMap<String, ToolBox>,
