@@ -98,7 +98,14 @@
 
 已复核热点包括 `+page.svelte`、`SettingsView.svelte`、`admin.rs`、`llm/router.rs`、`inbox.rs`、Tools/Agent 根模块、`react/mod.rs`、`layer.rs`、`session/mod.rs`、`resume.rs`、`session/tool_runner.rs`、`react/stream_step.rs`、`commands/session.rs`、`app_state.rs`、`MemoryView.svelte`、`ToolsView.svelte`、`ToolResultCard.svelte`、`InputRouter.svelte` 与 `+layout.svelte`。`tool_runner.rs` 的近期 churn 属于 ADR 0424 同一轮 owner 收口，确认与 ActionService 分持待决请求和执行/取消 claim，当前保留原边界；`stream_step.rs` 的流生命周期队列、checkpoint 与 retry 需保持协同，搜索响应投影则由本轮 ADR 0476 收回 turn owner。`resume.rs`、ToolsView 和 InputRouter 保留各自会话恢复、管理页与统一 composer 边界。InputRouter 的异步附件读取曾允许发送越过读取完成点且并行读取可能超限，现已阻止读取期间提交并预留附件名额，回归由 UI 测试覆盖。ToolResultCard 同时展示 ask 与 tool output，但 ask selection、pending interaction、dismissal 分属 controller/reducer/page owners；ADR 0430 的 reopen 路径近期只经历一次纵向改动，AskInteractionCard 提取留作条件候选，待跨职责重复 churn 或回归再启动。MemoryView 单次 resume 参数遗漏已在 `487ff9e` 修复；`+layout` phase store 订阅清理也已修复。
 
-观察项：Tools 根模块少量 helper 归属、ReAct 媒体投影 helper 的跨模块调用、AgentLayer 启动编排密度，以及布局与 ToolsView 对 `getTools()` manifest 读取的用途重叠。只有出现重复实现、可见旧值覆盖、反复回归、调用边持续扩张或可复现成本时才重新评估。AppState 后台初始化仍由 `AppState::spawn_background_init` 编排，`bootstrap.rs` 负责触发并提供 Tauri emitter；架构文档与代码已对齐。
+**观察项复核（2026-10-05；本轮均未批准实现切片）：**
+
+- **Tools 根模块 helper：** 文件约 402 行，近 45 天热点没有形成 helper 的重复跨职责修改；保留 crate 级共享规则与现有 feature owners。只有相关 churn 或回归复现后才考虑搬移。
+- **ReAct media projection：** `types` / `react` 存在双向模块调用；Text fallback 会对同一输入确定性地重算一次 media plan。共同的 append helper 已避免 live/replay 分叉，目前没有性能 profile 或功能回归证据支持拆投影 owner或优化重算。若证据出现，优先评估将 event→canonical/round projector 与媒体 helper 一并收归 ReAct projection owner；单独优化时让一次投影同时返回 `ContentPart` 与表示元数据，并保留 snapshot-safe `MediaInput`、稳定 `asset_id`、路径脱敏及 durable MediaPlan 边界。
+- **启动编排：** 9 月的 readiness 调整曾达到历史复核门槛；当前由 AppState 决定启动顺序、ApplicationRuntime 管任务生命周期、AgentLayer 管 dispatcher、bootstrap 触发并提供 Tauri emitter，边界已由架构文档和 ADR 对齐，之后未见同一路径重复回归。
+- **`getTools()`：** `+layout` 与 ToolsView 双读服务不同生命周期，Rust manifest 源和前端 mapper/snapshot 各只有一个 owner；未发现旧响应覆盖新值或 UI 漂移。
+
+以上候选只有在 §5.5 所列回归、重复 owner、调用边扩张或可复现成本出现后重开；纯行数减少不构成准入理由。
 
 事件存储与 transcript projection 的拆分仍是暂缓的高风险候选：只读历史 façade 已拆；写侧在无量化维护收益前不启动。若候选要求上层分别写 event/projection、暴露事务内部或引入第二恢复来源，立即停止。
 
