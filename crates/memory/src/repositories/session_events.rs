@@ -7,7 +7,9 @@
 //! timeline from the complete log.
 
 use crate::Database;
-use crate::repositories::messages::{Message, now_rfc3339_millis};
+use crate::repositories::messages::{
+    Message, PendingInputDisposition, PendingSessionInput, now_rfc3339_millis,
+};
 use crate::repositories::session_authorization::{
     SessionAuthorizationGrant, StoredSessionAuthorizationGrant,
 };
@@ -1341,7 +1343,10 @@ impl SessionStore {
     /// Read every persisted input that has not yet been acknowledged by a
     /// committed `UserInject` event. The durable marker, not message age or
     /// step-row shape, determines whether it is recoverable.
-    pub async fn pending_session_inputs(&self, session_id: &str) -> anyhow::Result<Vec<Message>> {
+    pub async fn pending_session_inputs(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Vec<PendingSessionInput>> {
         let session_id = session_id.to_owned();
         self.db
             .run_blocking(move |db| db.get_pending_session_inputs(&session_id))
@@ -1366,9 +1371,9 @@ impl SessionStore {
             .await
     }
 
-    /// Persist a newly accepted follow-up input together with its durable
-    /// recovery marker. Repeating a supplied message id is idempotent and
-    /// does not recreate a marker already acknowledged by a transcript event.
+    /// Persist a newly accepted input with its recovery disposition and marker.
+    /// Repeating a supplied message id is idempotent and does not recreate a
+    /// marker already acknowledged by a transcript event.
     #[allow(clippy::too_many_arguments)]
     pub async fn persist_pending_user_input(
         &self,
@@ -1378,8 +1383,9 @@ impl SessionStore {
         attachments: &[MessageAttachment],
         voice: bool,
         message_id: Option<&str>,
+        disposition: PendingInputDisposition,
         cancel: Option<CancellationToken>,
-    ) -> anyhow::Result<Message> {
+    ) -> anyhow::Result<PendingSessionInput> {
         let session_id = session_id.to_owned();
         let content = content.to_owned();
         let message_type = message_type.map(str::to_owned);
@@ -1399,7 +1405,12 @@ impl SessionStore {
                         message_id
                     );
                 }
-                return Ok(existing);
+                return Ok(db
+                    .get_pending_session_input(&session_id, message_id)?
+                    .unwrap_or(PendingSessionInput {
+                        message: existing,
+                        disposition: PendingInputDisposition::FollowUp,
+                    }));
             }
             db.add_pending_user_input(
                 &session_id,
@@ -1408,6 +1419,7 @@ impl SessionStore {
                 &attachments,
                 voice,
                 message_id.as_deref(),
+                disposition,
             )
         };
 
@@ -4515,6 +4527,7 @@ mod tests {
                 std::slice::from_ref(&attachment),
                 false,
                 None,
+                PendingInputDisposition::FollowUp,
             )
             .unwrap();
         db.add_message(&session_id, "assistant", "ignored", None, None)
@@ -4522,45 +4535,66 @@ mod tests {
 
         let messages = store.pending_session_inputs(&session_id).await.unwrap();
         assert_eq!(messages.len(), 1);
-        assert_eq!(messages[0].id, pending.id);
-        assert_eq!(messages[0].attachments[0].media_type, "image/png");
-        assert_eq!(messages[0].media_inputs.len(), 1);
+        assert_eq!(messages[0].message.id, pending.message.id);
+        assert_eq!(messages[0].message.attachments[0].media_type, "image/png");
+        assert_eq!(messages[0].message.media_inputs.len(), 1);
+        assert_eq!(messages[0].disposition, PendingInputDisposition::FollowUp);
 
         let old_session = db.create_session("old input").unwrap();
         db.add_message(&old_session.id, "user", "old seed", None, None)
             .unwrap();
         let old_pending = db
-            .add_pending_user_input(&old_session.id, "old pending", None, &[], false, None)
+            .add_pending_user_input(
+                &old_session.id,
+                "old pending",
+                None,
+                &[],
+                false,
+                None,
+                PendingInputDisposition::FollowUp,
+            )
             .unwrap();
         let old_cutoff = (chrono::Utc::now() - chrono::Duration::days(30))
             .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         let conn = db.conn();
         conn.execute(
             "UPDATE messages SET created_at = ?1 WHERE id = ?2",
-            rusqlite::params![old_cutoff, old_pending.id],
+            rusqlite::params![old_cutoff, old_pending.message.id],
         )
         .unwrap();
         drop(conn);
         let old_recovered = store.pending_session_inputs(&old_session.id).await.unwrap();
         assert_eq!(old_recovered.len(), 1);
-        assert_eq!(old_recovered[0].id, old_pending.id);
+        assert_eq!(old_recovered[0].message.id, old_pending.message.id);
     }
 
     #[tokio::test]
     async fn user_input_ack_is_atomic_with_transcript_commit() {
         let (db, store, session_id) = store();
         let pending = db
-            .add_pending_user_input(&session_id, "pending", Some("text"), &[], false, None)
+            .add_pending_user_input(
+                &session_id,
+                "pending",
+                Some("text"),
+                &[],
+                false,
+                None,
+                PendingInputDisposition::FollowUp,
+            )
             .unwrap();
 
         let mut failed = SessionCommitted::transcript("{}", 1, 1);
-        failed.acknowledge_pending_user_input(pending.id.clone());
-        failed.project_assistant_message(pending.id.clone(), "conflict", Some("text".into()));
+        failed.acknowledge_pending_user_input(pending.message.id.clone());
+        failed.project_assistant_message(
+            pending.message.id.clone(),
+            "conflict",
+            Some("text".into()),
+        );
         assert!(store.commit_transcript(&session_id, &failed).is_err());
         assert_eq!(db.get_pending_session_inputs(&session_id).unwrap().len(), 1);
 
         let mut committed = SessionCommitted::transcript("{}", 1, 1);
-        committed.acknowledge_pending_user_input(pending.id.clone());
+        committed.acknowledge_pending_user_input(pending.message.id.clone());
         store.commit_transcript(&session_id, &committed).unwrap();
         assert!(
             db.get_pending_session_inputs(&session_id)

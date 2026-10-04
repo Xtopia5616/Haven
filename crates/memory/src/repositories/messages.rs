@@ -115,6 +115,47 @@ pub struct Message {
     pub ingress_seq: i64,
 }
 
+/// How an accepted input should be queued if the process exits before its
+/// `UserInject` event commits. This value is authoritative only while the
+/// matching durable pending marker exists; after acknowledgement the event
+/// stream owns transcript recovery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PendingInputDisposition {
+    Answer,
+    FollowUp,
+}
+
+impl PendingInputDisposition {
+    fn as_db_value(self) -> &'static str {
+        match self {
+            Self::Answer => "answer",
+            Self::FollowUp => "follow_up",
+        }
+    }
+
+    fn from_db_value(value: &str) -> rusqlite::Result<Self> {
+        match value {
+            "answer" => Ok(Self::Answer),
+            "follow_up" => Ok(Self::FollowUp),
+            other => Err(rusqlite::Error::FromSqlConversionFailure(
+                11,
+                rusqlite::types::Type::Text,
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("invalid pending input disposition: {other}"),
+                )
+                .into(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PendingSessionInput {
+    pub message: Message,
+    pub disposition: PendingInputDisposition,
+}
+
 impl Database {
     pub fn add_message(
         &self,
@@ -165,8 +206,9 @@ impl Database {
             voice,
             id,
             &media_inputs,
-            false,
+            None,
         )
+        .map(|(message, _)| message)
     }
 
     /// Persist a newly submitted user input and its recovery marker atomically.
@@ -181,13 +223,14 @@ impl Database {
         attachments: &[MessageAttachment],
         voice: bool,
         id: Option<&str>,
-    ) -> anyhow::Result<Message> {
+        disposition: PendingInputDisposition,
+    ) -> anyhow::Result<PendingSessionInput> {
         let media_inputs: Vec<MediaInput> = attachments
             .iter()
             .map(message_attachment_to_media_input)
             .map(|input| input.for_snapshot())
             .collect();
-        self.add_message_full_with_media(
+        let (message, disposition) = self.add_message_full_with_media(
             session_id,
             "user",
             content,
@@ -197,8 +240,13 @@ impl Database {
             voice,
             id,
             &media_inputs,
-            true,
-        )
+            Some(disposition),
+        )?;
+        Ok(PendingSessionInput {
+            message,
+            disposition: disposition
+                .ok_or_else(|| anyhow::anyhow!("pending input write omitted its disposition"))?,
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -213,8 +261,8 @@ impl Database {
         voice: bool,
         id: Option<&str>,
         media_inputs: &[MediaInput],
-        track_pending_delivery: bool,
-    ) -> anyhow::Result<Message> {
+        pending_disposition: Option<PendingInputDisposition>,
+    ) -> anyhow::Result<(Message, Option<PendingInputDisposition>)> {
         let id = id
             .map(String::from)
             .unwrap_or_else(|| haven_common::types::new_id("msg"));
@@ -229,7 +277,7 @@ impl Database {
         };
         let conn = self.conn();
         conn.execute_batch("BEGIN IMMEDIATE")?;
-        let result = (|| -> anyhow::Result<i64> {
+        let result = (|| -> anyhow::Result<(i64, Option<PendingInputDisposition>)> {
             conn.execute(
                 "INSERT INTO message_ingress_cursors (session_id, last_ingress_seq)
                  VALUES (?1, 1)
@@ -259,19 +307,33 @@ impl Database {
                     Self::serialize_media_inputs(media_inputs),
                 ],
             )?;
-            if track_pending_delivery {
+            let mut disposition = pending_disposition;
+            if let Some(requested) = disposition {
+                if requested == PendingInputDisposition::Answer {
+                    let answer_reserved: bool = conn.query_row(
+                        "SELECT EXISTS(
+                            SELECT 1 FROM pending_session_inputs
+                            WHERE session_id = ?1 AND disposition = 'answer'
+                        )",
+                        rusqlite::params![session_id],
+                        |row| row.get(0),
+                    )?;
+                    if answer_reserved {
+                        disposition = Some(PendingInputDisposition::FollowUp);
+                    }
+                }
                 conn.execute(
-                    "INSERT INTO pending_session_inputs (session_id, message_id)
-                     VALUES (?1, ?2)",
-                    rusqlite::params![session_id, id],
+                    "INSERT INTO pending_session_inputs (session_id, message_id, disposition)
+                     VALUES (?1, ?2, ?3)",
+                    rusqlite::params![session_id, id, disposition.unwrap().as_db_value()],
                 )?;
             }
-            Ok(ingress_seq)
+            Ok((ingress_seq, disposition))
         })();
-        let ingress_seq = match result {
-            Ok(ingress_seq) => {
+        let (ingress_seq, disposition) = match result {
+            Ok(result) => {
                 conn.execute_batch("COMMIT")?;
-                ingress_seq
+                result
             }
             Err(error) => {
                 let _ = conn.execute_batch("ROLLBACK");
@@ -280,19 +342,22 @@ impl Database {
         };
         drop(conn);
         self.cache_invalidate_messages(session_id);
-        Ok(Message {
-            id,
-            session_id: session_id.into(),
-            role: role.into(),
-            content: content.into(),
-            message_type: message_type.map(String::from),
-            created_at,
-            tool_call_id: tool_call_id.map(String::from),
-            attachments: attachments.to_vec(),
-            media_inputs: media_inputs.to_vec(),
-            voice,
-            ingress_seq,
-        })
+        Ok((
+            Message {
+                id,
+                session_id: session_id.into(),
+                role: role.into(),
+                content: content.into(),
+                message_type: message_type.map(String::from),
+                created_at,
+                tool_call_id: tool_call_id.map(String::from),
+                attachments: attachments.to_vec(),
+                media_inputs: media_inputs.to_vec(),
+                voice,
+                ingress_seq,
+            },
+            disposition,
+        ))
     }
 
     /// Step a stored `created_at` forward by one millisecond, keeping strict
@@ -454,22 +519,58 @@ impl Database {
     /// Return all user inputs whose durable delivery marker has not been
     /// acknowledged by a committed `UserInject` event. Recovery state is
     /// explicit and has no age cutoff.
-    pub fn get_pending_session_inputs(&self, session_id: &str) -> anyhow::Result<Vec<Message>> {
+    pub fn get_pending_session_inputs(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Vec<PendingSessionInput>> {
         let conn = self.conn();
         let mut stmt = conn.prepare(
             "SELECT m.id, m.session_id, m.role, m.content, m.message_type, m.created_at,
-                    m.tool_call_id, m.ui_metadata, m.voice, m.ingress_seq, m.media_inputs
+                    m.tool_call_id, m.ui_metadata, m.voice, m.ingress_seq, m.media_inputs,
+                    p.disposition
              FROM pending_session_inputs p
              JOIN messages m ON m.session_id = p.session_id AND m.id = p.message_id
              WHERE p.session_id = ?1
              ORDER BY m.ingress_seq ASC, m.rowid ASC",
         )?;
-        let rows = stmt.query_map(rusqlite::params![session_id], map_message_row)?;
+        let rows = stmt.query_map(rusqlite::params![session_id], |row| {
+            Ok(PendingSessionInput {
+                message: map_message_row(row)?,
+                disposition: PendingInputDisposition::from_db_value(&row.get::<_, String>(11)?)?,
+            })
+        })?;
         let mut msgs = Vec::new();
         for row in rows {
             msgs.push(row?);
         }
         Ok(msgs)
+    }
+
+    pub fn get_pending_session_input(
+        &self,
+        session_id: &str,
+        message_id: &str,
+    ) -> anyhow::Result<Option<PendingSessionInput>> {
+        let conn = self.conn();
+        conn.query_row(
+            "SELECT m.id, m.session_id, m.role, m.content, m.message_type, m.created_at,
+                    m.tool_call_id, m.ui_metadata, m.voice, m.ingress_seq, m.media_inputs,
+                    p.disposition
+             FROM pending_session_inputs p
+             JOIN messages m ON m.session_id = p.session_id AND m.id = p.message_id
+             WHERE p.session_id = ?1 AND p.message_id = ?2",
+            rusqlite::params![session_id, message_id],
+            |row| {
+                Ok(PendingSessionInput {
+                    message: map_message_row(row)?,
+                    disposition: PendingInputDisposition::from_db_value(
+                        &row.get::<_, String>(11)?,
+                    )?,
+                })
+            },
+        )
+        .optional()
+        .map_err(Into::into)
     }
 
     /// Acknowledge an input only after its `UserInject` event commits.
@@ -721,7 +822,15 @@ mod tests {
         let delivered = db.add_message(&tid, "user", "继续", None, None).unwrap();
         db.create_thought_step(&tid, 2, &delivered.id).unwrap();
         let pending = db
-            .add_pending_user_input(&tid, "C:\\照片目录", Some("text"), &[], false, None)
+            .add_pending_user_input(
+                &tid,
+                "C:\\照片目录",
+                Some("text"),
+                &[],
+                false,
+                None,
+                PendingInputDisposition::FollowUp,
+            )
             .unwrap();
 
         let pending_rows = db.get_pending_session_inputs(&tid).unwrap();
@@ -730,9 +839,13 @@ mod tests {
             1,
             "only an explicit pending marker is returned"
         );
-        assert_eq!(pending_rows[0].id, pending.id);
+        assert_eq!(pending_rows[0].message.id, pending.message.id);
+        assert_eq!(
+            pending_rows[0].disposition,
+            PendingInputDisposition::FollowUp
+        );
         // Attachment payloads survive the scan (images travel with the input).
-        assert!(pending_rows[0].attachments.is_empty());
+        assert!(pending_rows[0].message.attachments.is_empty());
     }
 
     #[test]
@@ -754,21 +867,65 @@ mod tests {
         let db = test_db();
         let tid = test_session(&db);
         let pending = db
-            .add_pending_user_input(&tid, "丢失输入", Some("text"), &[], false, None)
+            .add_pending_user_input(
+                &tid,
+                "丢失输入",
+                Some("text"),
+                &[],
+                false,
+                None,
+                PendingInputDisposition::FollowUp,
+            )
             .unwrap();
         let old =
             (Utc::now() - chrono::Duration::days(30)).to_rfc3339_opts(SecondsFormat::Millis, true);
         let conn = db.conn();
         conn.execute(
             "UPDATE messages SET created_at = ?1 WHERE id = ?2",
-            rusqlite::params![old, pending.id],
+            rusqlite::params![old, pending.message.id],
         )
         .unwrap();
         drop(conn);
 
         let recovered = db.get_pending_session_inputs(&tid).unwrap();
         assert_eq!(recovered.len(), 1);
-        assert_eq!(recovered[0].id, pending.id);
+        assert_eq!(recovered[0].message.id, pending.message.id);
+        assert_eq!(recovered[0].disposition, PendingInputDisposition::FollowUp);
+    }
+
+    #[test]
+    fn pending_answer_reservation_downgrades_later_answers_to_follow_ups() {
+        let db = test_db();
+        let tid = test_session(&db);
+        let first = db
+            .add_pending_user_input(
+                &tid,
+                "answer",
+                Some("text"),
+                &[],
+                false,
+                None,
+                PendingInputDisposition::Answer,
+            )
+            .unwrap();
+        let second = db
+            .add_pending_user_input(
+                &tid,
+                "later input",
+                Some("text"),
+                &[],
+                false,
+                None,
+                PendingInputDisposition::Answer,
+            )
+            .unwrap();
+
+        assert_eq!(first.disposition, PendingInputDisposition::Answer);
+        assert_eq!(second.disposition, PendingInputDisposition::FollowUp);
+        let pending = db.get_pending_session_inputs(&tid).unwrap();
+        assert_eq!(pending.len(), 2);
+        assert_eq!(pending[0].disposition, PendingInputDisposition::Answer);
+        assert_eq!(pending[1].disposition, PendingInputDisposition::FollowUp);
     }
 
     #[test]
@@ -784,8 +941,16 @@ mod tests {
             .unwrap();
 
         assert!(
-            db.add_pending_user_input(&tid, "input", Some("text"), &[], false, None)
-                .is_err()
+            db.add_pending_user_input(
+                &tid,
+                "input",
+                Some("text"),
+                &[],
+                false,
+                None,
+                PendingInputDisposition::FollowUp,
+            )
+            .is_err()
         );
         assert!(db.get_session_messages(&tid).unwrap().is_empty());
         assert_eq!(db.get_last_message_ingress_seq(&tid), 0);

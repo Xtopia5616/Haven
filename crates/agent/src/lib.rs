@@ -137,7 +137,8 @@ pub(crate) async fn persist_pending_user_input(
     message_type: Option<&str>,
     attachments: &[MessageAttachment],
     voice: bool,
-) -> anyhow::Result<Message> {
+    disposition: haven_memory::PendingInputDisposition,
+) -> anyhow::Result<haven_memory::PendingSessionInput> {
     executor.partials.discard(session_id).await;
     executor
         .session_store()
@@ -148,6 +149,7 @@ pub(crate) async fn persist_pending_user_input(
             attachments,
             voice,
             None,
+            disposition,
             None,
         )
         .await

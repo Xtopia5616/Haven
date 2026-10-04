@@ -2,6 +2,7 @@ use super::support::*;
 use super::*;
 use crate::session::SessionToolOverlayPort;
 use base64::Engine as _;
+use haven_memory::PendingInputDisposition;
 use std::sync::Mutex as StdMutex;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -295,6 +296,7 @@ async fn reopen_session_requeues_undelivered_inputs_stays_paused() {
             &[],
             false,
             None,
+            PendingInputDisposition::FollowUp,
             None,
         )
         .await
@@ -333,7 +335,16 @@ async fn reopen_session_marks_only_first_recovered_input_as_ask_answer() {
     agent
         .react_engine
         .event_store
-        .persist_pending_user_input(&session.id, "answer", Some("text"), &[], false, None, None)
+        .persist_pending_user_input(
+            &session.id,
+            "answer",
+            Some("text"),
+            &[],
+            false,
+            None,
+            PendingInputDisposition::Answer,
+            None,
+        )
         .await
         .unwrap();
     agent
@@ -346,6 +357,7 @@ async fn reopen_session_marks_only_first_recovered_input_as_ask_answer() {
             &[],
             false,
             None,
+            PendingInputDisposition::FollowUp,
             None,
         )
         .await
@@ -369,6 +381,101 @@ async fn reopen_session_marks_only_first_recovered_input_as_ask_answer() {
     assert_eq!(recovered.len(), 2);
     assert!(recovered[0].is_answer);
     assert!(!recovered[1].is_answer);
+}
+
+#[tokio::test]
+async fn reopen_preserves_follow_up_route_after_confirm_resolves_while_ask_stays_pending() {
+    let db = temp_db();
+    let (agent, executor) = make_test_agent_with_db(
+        db.clone(),
+        Arc::new(FinalAnswerMock),
+        Arc::new(ToolsManager::new()),
+        ContextLimitsConfig::default(),
+    );
+    let session = executor.create_session("input text").await.unwrap();
+    agent
+        .persist_message_parts(&session.id, "user", "input text", Some("text"), &[], false)
+        .await
+        .unwrap();
+    executor
+        .update_session_status(&session.id, SessionStatus::Paused)
+        .await
+        .unwrap();
+    executor
+        .request_interaction(crate::interaction::InteractionRequest::ask(
+            &session.id,
+            Vec::new(),
+            vec!["step-0123456789abcdef0123456789abcdef".into()],
+        ))
+        .await
+        .unwrap();
+    let confirm = crate::interaction::InteractionRequest::new(
+        &session.id,
+        crate::interaction::InteractionKind::Confirm,
+        Vec::new(),
+    );
+    executor.request_interaction(confirm.clone()).await.unwrap();
+
+    // Confirm has precedence when ingress freezes this route, so it is a
+    // FollowUp even though an Ask is also pending.
+    agent
+        .process_input("accepted during confirmation", Some(session.id.clone()))
+        .await
+        .unwrap();
+    let pending_before_restart = agent
+        .react_engine
+        .event_store
+        .pending_session_inputs(&session.id)
+        .await
+        .unwrap();
+    assert_eq!(pending_before_restart.len(), 1);
+    assert_eq!(
+        pending_before_restart[0].disposition,
+        PendingInputDisposition::FollowUp
+    );
+
+    // Resolve Confirm but leave Ask pending. Reopen through a fresh executor
+    // to model a process restart after the pending marker was persisted.
+    executor
+        .resolve_interaction(&confirm.id, serde_json::json!(true), false)
+        .await
+        .unwrap()
+        .expect("Confirm should resolve");
+    assert_eq!(
+        executor
+            .pending_interactions(&session.id, crate::interaction::InteractionKind::Ask)
+            .await
+            .len(),
+        1
+    );
+    executor
+        .update_session_status(&session.id, SessionStatus::Completed)
+        .await
+        .unwrap();
+
+    let (reopened_agent, reopened_executor) = make_test_agent_with_db(
+        db,
+        Arc::new(FinalAnswerMock),
+        Arc::new(ToolsManager::new()),
+        ContextLimitsConfig::default(),
+    );
+    reopened_agent.reopen_session(&session.id).await.unwrap();
+
+    let restored = reopened_executor.get_follow_ups(&session.id).await;
+    assert_eq!(restored.len(), 1);
+    assert_eq!(restored[0].text, "accepted during confirmation");
+    assert!(
+        !restored[0].is_answer,
+        "recovery must trust the saved FollowUp route"
+    );
+    assert_eq!(
+        reopened_executor
+            .pending_interactions(&session.id, crate::interaction::InteractionKind::Ask)
+            .await
+            .len(),
+        1,
+        "the Ask remains pending after Confirm resolution and reopen"
+    );
 }
 
 #[tokio::test]
@@ -496,7 +603,16 @@ async fn resume_keeps_repeated_same_text_turns() {
     agent
         .react_engine
         .event_store
-        .persist_pending_user_input(&session.id, "好的", Some("text"), &[], false, None, None)
+        .persist_pending_user_input(
+            &session.id,
+            "好的",
+            Some("text"),
+            &[],
+            false,
+            None,
+            PendingInputDisposition::FollowUp,
+            None,
+        )
         .await
         .unwrap();
 
@@ -733,6 +849,7 @@ async fn run_session_from_id_recovers_pending_input_without_event_log() {
             &[],
             false,
             None,
+            PendingInputDisposition::FollowUp,
             None,
         )
         .await

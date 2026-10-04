@@ -55,14 +55,9 @@ pub(crate) struct InitialUserInput<'a> {
 
 impl AgentLayer {
     /// Re-queue inputs that were durably accepted but have not yet committed
-    /// their `UserInject` event. The marker is cleared in the same DB
-    /// transaction as that event, so a process restart can safely retry this
-    /// scan without a time limit.
-    async fn restore_pending_user_inputs(
-        &self,
-        session_id: &str,
-        mut answer_pending: bool,
-    ) -> anyhow::Result<usize> {
+    /// their `UserInject` event. Their disposition is frozen in the pending
+    /// marker, which is acknowledged in the same transaction as that event.
+    async fn restore_pending_user_inputs(&self, session_id: &str) -> anyhow::Result<usize> {
         // A live executor queue is authoritative within this process. Avoid
         // re-enqueuing it from the durable copy.
         if self.executor.has_pending_context(session_id).await {
@@ -80,10 +75,12 @@ impl AgentLayer {
                 )
             })?;
         let mut restored = 0usize;
-        for message in pending_inputs {
+        for pending_input in pending_inputs {
+            let message = pending_input.message;
             self.executor
                 .register_managed_assets_for_session(session_id, &message.attachments);
-            let is_answer = answer_pending;
+            let is_answer =
+                pending_input.disposition == haven_memory::PendingInputDisposition::Answer;
             let queued = if is_answer {
                 self.executor
                     .add_answer_with_attachments(
@@ -106,11 +103,6 @@ impl AgentLayer {
             match queued {
                 Ok(()) => {
                     restored += 1;
-                    if is_answer {
-                        // Only the first recovered message answers the
-                        // outstanding question; later ones are follow-ups.
-                        answer_pending = false;
-                    }
                 }
                 Err(error) => tracing::warn!(
                     "failed to re-queue pending input {} for session {}: {}",
@@ -312,10 +304,7 @@ impl AgentLayer {
                     .await
             }
             None => {
-                let answer_pending = self.executor.is_ask_gated(session_id).await;
-                let restored = self
-                    .restore_pending_user_inputs(session_id, answer_pending)
-                    .await?;
+                let restored = self.restore_pending_user_inputs(session_id).await?;
                 if restored > 0 {
                     tracing::info!(
                         "run_session_from_id: recovered {} pending input(s) for fresh session {}",
@@ -349,10 +338,6 @@ impl AgentLayer {
     pub async fn reopen_session(&self, session_id: &str) -> anyhow::Result<()> {
         self.executor.ensure_session_loaded(session_id).await?;
         let state = self.executor.get_session_status(session_id).await;
-        let answer_pending = self
-            .executor
-            .has_pending_interaction(session_id, crate::interaction::InteractionKind::Ask)
-            .await;
         if state == Some(SessionStatus::Completed) || state == Some(SessionStatus::Error) {
             // History viewing must not persist a terminal session as active;
             // the memory-only transition only enables a later user action in
@@ -361,9 +346,7 @@ impl AgentLayer {
                 .update_session_status_memory_only(session_id, SessionStatus::Paused)
                 .await?;
         }
-        let restored = self
-            .restore_pending_user_inputs(session_id, answer_pending)
-            .await?;
+        let restored = self.restore_pending_user_inputs(session_id).await?;
         if restored > 0 {
             tracing::info!(
                 "reopen_session: re-queued {} pending user input(s) for session {} (staying Paused until Continue)",
@@ -400,8 +383,9 @@ impl AgentLayer {
         //
         // RAM follow-up / steering queues are a same-process cache only.
         // Durability = DB user messages + explicit pending-input state.
-        // Replay is idempotent by `message_id`
-        // (`push_follow_up` / steering skip duplicates).
+        // The marker also preserves whether each message was accepted as an
+        // Ask answer or ordinary follow-up; later gate changes cannot
+        // reinterpret it during recovery.
         //
         // The durable event stream is the single transcript authority.
         // Pending markers cover accepted ingress that has not committed its
@@ -410,9 +394,7 @@ impl AgentLayer {
         // When the in-memory queues still hold the inputs (pause → answer in
         // the same process), the ReAct loop injects them and the DB copy
         // must NOT be re-queued — that would double-inject.
-        let restored = self
-            .restore_pending_user_inputs(session_id, self.executor.is_ask_gated(session_id).await)
-            .await?;
+        let restored = self.restore_pending_user_inputs(session_id).await?;
         if restored > 0 {
             tracing::info!(
                 "run_session_resumed: recovered {} pending input(s) for session {}",

@@ -855,7 +855,7 @@ async fn process_input_reactivates_paused_session() {
 }
 
 #[tokio::test]
-async fn process_input_marks_reply_as_answer_when_awaiting() {
+async fn process_input_reserves_one_ask_answer_until_user_inject() {
     let (agent, executor) = make_test_agent();
     let session = executor.create_session("original").await.unwrap();
     executor
@@ -875,23 +875,53 @@ async fn process_input_marks_reply_as_answer_when_awaiting() {
         .await
         .unwrap();
     assert!(matches!(result, ProcessResult::Supplemented { .. }));
+
+    // The Ask gate remains pending until UserInject commits. A second input
+    // received before that acknowledgement is a follow-up, even though the
+    // interaction registry still contains the Ask.
+    agent
+        .process_input("later input", Some(session.id.clone()))
+        .await
+        .unwrap();
     assert_eq!(
         executor.get_active_session_status(&session.id).await,
         Some(SessionStatus::Pending)
     );
     let supps = executor.get_follow_ups(&session.id).await;
-    assert_eq!(supps.len(), 1);
+    assert_eq!(supps.len(), 2);
     assert!(
         supps[0].is_answer,
         "reply to an ask must be marked as answer"
     );
     assert_eq!(supps[0].text, "the answer");
     assert!(
+        !supps[1].is_answer,
+        "only one input reserves the Ask answer"
+    );
+    assert_eq!(supps[1].text, "later input");
+
+    let pending = agent
+        .react_engine
+        .event_store
+        .pending_session_inputs(&session.id)
+        .await
+        .unwrap();
+    assert_eq!(pending.len(), 2);
+    assert_eq!(
+        pending[0].disposition,
+        haven_memory::PendingInputDisposition::Answer
+    );
+    assert_eq!(
+        pending[1].disposition,
+        haven_memory::PendingInputDisposition::FollowUp
+    );
+    assert!(
         executor
             .pending_interactions(&session.id, crate::interaction::InteractionKind::Ask)
             .await
-            .is_empty(),
-        "reactivation must clear the ask interaction"
+            .len()
+            == 1,
+        "ingress must leave Ask pending until its UserInject event commits"
     );
 }
 
@@ -964,7 +994,7 @@ async fn process_input_with_attachments_queues_and_persists_attachments() {
         .await
         .unwrap();
     assert_eq!(pending.len(), 1);
-    assert_eq!(pending[0].id, user_msg.id);
+    assert_eq!(pending[0].message.id, user_msg.id);
 }
 
 #[tokio::test]

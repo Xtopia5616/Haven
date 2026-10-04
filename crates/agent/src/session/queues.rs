@@ -178,6 +178,21 @@ impl SessionSupervisor {
         }
     }
 
+    pub(crate) async fn pending_interaction_gates(&self, session_id: &str) -> (bool, bool) {
+        let Some(actor) = self.actor_for(session_id).await else {
+            return (false, false);
+        };
+        let interactions = actor.interactions(None, true).await;
+        (
+            interactions
+                .iter()
+                .any(|request| request.kind == crate::interaction::InteractionKind::Confirm),
+            interactions
+                .iter()
+                .any(|request| request.kind == crate::interaction::InteractionKind::Ask),
+        )
+    }
+
     pub async fn has_pending_interaction(
         &self,
         session_id: &str,

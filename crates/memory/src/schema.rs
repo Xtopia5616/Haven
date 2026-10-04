@@ -8,7 +8,7 @@
 //! version stamp rejects both older and newer database contracts.
 
 /// Current database contract. Any schema change requires a fresh database.
-pub const SCHEMA_VERSION: i32 = 34;
+pub const SCHEMA_VERSION: i32 = 35;
 /// Current schema, created idempotently on every open.
 const SCHEMA_SQL: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS sessions (
@@ -51,8 +51,11 @@ const SCHEMA_SQL: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS pending_session_inputs (
         session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
         message_id TEXT NOT NULL UNIQUE REFERENCES messages(id) ON DELETE CASCADE,
+        disposition TEXT NOT NULL CHECK(disposition IN ('answer', 'follow_up')),
         PRIMARY KEY(session_id, message_id)
     )",
+    "CREATE UNIQUE INDEX IF NOT EXISTS pending_session_one_answer
+     ON pending_session_inputs(session_id) WHERE disposition = 'answer'",
     // Durable session event authority. Rows are never updated or deleted by
     // the repository; rollback is represented by a timeline_rollback marker.
     // The payload is versioned JSON owned by the event producer.
@@ -485,6 +488,7 @@ const REQUIRED_COLUMNS: &[(&str, &str)] = &[
     ("messages", "media_inputs"),
     ("session_events", "payload"),
     ("session_events", "event_version"),
+    ("pending_session_inputs", "disposition"),
     ("session_authorization_grants", "permission_target"),
     ("session_authorization_grants", "session_id"),
     ("session_authorization_grants", "capability_key"),
@@ -695,6 +699,25 @@ mod tests {
 
         let error = init_schema(&conn).unwrap_err().to_string();
         assert!(error.contains("actions.result_summary"));
+    }
+
+    #[test]
+    fn init_schema_rejects_pending_input_contract_without_disposition() {
+        let conn = create_test_conn();
+        init_schema(&conn).unwrap();
+        conn.execute_batch(
+            "DROP INDEX pending_session_one_answer;
+             DROP TABLE pending_session_inputs;
+             CREATE TABLE pending_session_inputs (
+                 session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                 message_id TEXT NOT NULL UNIQUE REFERENCES messages(id) ON DELETE CASCADE,
+                 PRIMARY KEY(session_id, message_id)
+             );",
+        )
+        .unwrap();
+
+        let error = init_schema(&conn).unwrap_err().to_string();
+        assert!(error.contains("pending_session_inputs.disposition"));
     }
 
     #[test]

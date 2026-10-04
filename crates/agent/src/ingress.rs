@@ -40,16 +40,12 @@ impl AgentLayer {
             voice
         );
 
-        // The message is persisted BEFORE the state check on purpose: the
-        // steering/supplement fallback paths below rely on it being on disk.
-        // If the session turns out to be terminal, the persisted row is removed
-        // again below so history never shows a ghost user message.
-        //
         // For an existing session, keep the lifecycle gate for the whole
         // ingress decision. Delete/clear may quiesce an actor concurrently,
-        // but must not remove its durable row between this insert and the
-        // mailbox enqueue; otherwise a successful UI send can become a ghost
-        // message or be routed to an orphan actor.
+        // but must not remove its durable row between reading the lifecycle /
+        // interaction gates, persisting the input and route, and mailbox
+        // enqueue; otherwise a successful UI send can become a ghost message
+        // or be routed to an orphan actor.
         let lifecycle = if let Some(session_id) = active_session_id.as_deref() {
             let lifecycle = self.executor.lifecycle_guard().await;
             self.executor.ensure_lifecycle_open()?;
@@ -60,35 +56,59 @@ impl AgentLayer {
         } else {
             None
         };
-        let mut persisted_msg = if let Some(session_id) = active_session_id.as_ref() {
-            let msg = match crate::persist_pending_user_input(
+
+        // Freeze the answer/follow-up decision before persisting the message.
+        // Read the two gates through one actor mailbox operation so Confirm
+        // has consistent precedence over a stashed Ask.
+        let state = if let Some(session_id) = active_session_id.as_ref() {
+            self.executor.get_active_session_status(session_id).await
+        } else {
+            None
+        };
+        let (confirm_pending, ask_pending) = if let Some(session_id) = active_session_id.as_ref() {
+            self.executor.pending_interaction_gates(session_id).await
+        } else {
+            (false, false)
+        };
+        let requested_disposition =
+            if state != Some(SessionStatus::Running) && ask_pending && !confirm_pending {
+                haven_memory::PendingInputDisposition::Answer
+            } else {
+                haven_memory::PendingInputDisposition::FollowUp
+            };
+
+        let mut persisted_input = if let Some(session_id) = active_session_id.as_ref() {
+            let input = match crate::persist_pending_user_input(
                 &self.executor,
                 session_id,
                 transcript,
                 Some("text"),
                 attachments,
                 voice,
+                requested_disposition,
             )
             .await
             {
-                Ok(msg) => msg,
+                Ok(input) => input,
                 Err(e) => {
                     return Err(anyhow::anyhow!(
                         "failed to persist user message for session {session_id}: {e}"
                     ));
                 }
             };
-            Some(msg)
+            Some(input)
         } else {
             None
         };
+        let is_answer = persisted_input.as_ref().is_some_and(|input| {
+            input.disposition == haven_memory::PendingInputDisposition::Answer
+        });
+        let mut persisted_msg = persisted_input.take().map(|input| input.message);
         if let Some(session_id) = active_session_id.as_ref() {
-            let state = self.executor.get_active_session_status(session_id).await;
-
             // Phase 4 / D1 routing (+ Phase 5 / E3 confirm gate):
             //   Running                 → steering
-            //   Paused + pending ask    → answer follow_up (is_answer / reply_to)
-            //   Paused + pending confirm → follow_up, but do NOT wake
+            //   Paused + available Ask  → reserved answer follow-up
+            //   Pending Answer / Confirm → ordinary follow-up
             //   Paused / other          → follow_up
             // If the steering queue is unavailable (session vanished from
             // memory between the state read and the enqueue), fall through
@@ -117,26 +137,12 @@ impl AgentLayer {
                 };
 
             if !steering_delivered {
-                // A Paused session that is awaiting an `ask` answer: this
-                // message IS the reply to the pending question. Queue it as
-                // an answer so the loop injects a paired "Answer to your
-                // previous question" instead of generic context —otherwise
-                // the model sees the old question as still open and answers
-                // questions from long ago. The awaiting-answer flavor is
-                // carried by the interaction registry, so it is read BEFORE
-                // set_session_status(Pending) below clears the pause.
-                // While a confirm gate is active (including confirm+ask
-                // batches that stash an ask early), do NOT treat
-                // free-text as the ask reply — confirm must finish first.
-                let confirm_pending = self
-                    .executor
-                    .is_confirm_gated_with(session_id, state.as_ref())
-                    .await;
-                let is_answer = !confirm_pending
-                    && self
-                        .executor
-                        .is_ask_gated_with(session_id, state.as_ref())
-                        .await;
+                // When the persisted disposition reserves an `ask` answer,
+                // queue it as an answer so the loop injects a paired "Answer
+                // to your previous question" instead of generic context. The
+                // disposition is frozen in the durable pending marker before
+                // this queue operation, so recovery preserves the route if
+                // gates change before UserInject commits.
                 let message_id = persisted_msg.as_ref().map(|m| m.id.clone());
                 let was_in_memory = if is_answer {
                     self.executor
@@ -159,19 +165,6 @@ impl AgentLayer {
                         .await
                         .is_ok()
                 };
-                if was_in_memory && is_answer {
-                    // The ingress user seed was durably inserted before the
-                    // queue operation. Clearing the gate here preserves the
-                    // existing immediate UI transition while the later
-                    // session-event projection still has a stable message id
-                    // for crash recovery.
-                    self.executor
-                        .clear_interactions_persisted(
-                            session_id,
-                            Some(crate::interaction::InteractionKind::Ask),
-                        )
-                        .await?;
-                }
                 if !was_in_memory {
                     // Session may be stale/deleted — fall back to creating a new session
                     if self
@@ -261,12 +254,6 @@ impl AgentLayer {
                                     transcript,
                                     attachments,
                                     message_id.clone(),
-                                )
-                                .await?;
-                            self.executor
-                                .clear_interactions_persisted(
-                                    session_id,
-                                    Some(crate::interaction::InteractionKind::Ask),
                                 )
                                 .await?;
                         } else {

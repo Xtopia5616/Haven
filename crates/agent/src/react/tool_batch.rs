@@ -680,10 +680,10 @@ impl ReActEngine {
         self.executor.mark_user_queues_as_answer(session_id).await;
         let has_answer = self.executor.has_pending_context(session_id).await;
         let status = if has_answer {
-            // Keep the ask gate until the queued answer crosses the durable
-            // transcript boundary at the next turn. Ingress normally clears
-            // it after durable user-seed persistence; this path must not
-            // create a second in-memory-before-snapshot cleanup window.
+            // Keep the Ask gate pending until the queued answer is committed
+            // as a UserInject event. The inject path clears the persisted gate
+            // after that durable transcript boundary; ingress admission alone
+            // must not make the question look answered.
             SessionStatus::Pending
         } else {
             self.executor.request_interaction(pending.clone()).await?;

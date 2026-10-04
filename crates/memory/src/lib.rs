@@ -25,6 +25,7 @@ pub use repositories::memory_fact_extraction_store::{
 pub use repositories::memory_maintenance_store::{MemoryMaintenanceStore, PredicateCount};
 pub use repositories::memory_recall_store::MemoryRecallStore;
 pub use repositories::memory_store::MemoryStore;
+pub use repositories::messages::{PendingInputDisposition, PendingSessionInput};
 pub use repositories::scheduled_actions::{ActionDependencyRow, ActionRow, ScheduledActionRow};
 pub use repositories::session_authorization::{
     SessionAuthorizationGrant, StoredSessionAuthorizationGrant,
