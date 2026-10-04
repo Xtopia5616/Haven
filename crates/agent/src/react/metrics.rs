@@ -316,7 +316,7 @@ pub struct MetricsSnapshot {
 }
 
 impl MetricsSnapshot {
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn phase(&self, phase: Phase) -> PhaseSnapshot {
         self.phases[phase.index()]
     }
