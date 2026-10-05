@@ -108,6 +108,10 @@
 | **Deferred** | 显式 end 的 action 取消失败语义：actorless 路径使用 checked cleanup，驻留 Actor 路径使用 best-effort；ActionService 故障注入证明持久取消可能失败。[ADR 0507](adr/0507-session-owned-action-cleanup.md) 规定删除 fail-closed，但没有定义 end 的失败契约。 | 先确定命令/UI/action 的可见结果，再补 actorless、驻留/运行中 Actor、部分取消、持久化失败与 claim 竞争测试；不能只把 Actor 分支改为 checked。若安全协调方案会破坏即时结束或 [ADR 0424](adr/0424-interaction-lifecycle-ownership.md) 的 claim-wins，则继续 Deferred。 |
 | **高风险 Candidate，暂缓** | `session_events.rs` 同时协调 event append、transcript projection、rollback、cache invalidation 与 commit 后 broadcast。2026-10-05 复核为 6,078 行（3,075 production / 3,003 tests），近 45 天 66 次提交；主要是同一 owner 收口和 durable facts 演进，未发现稳定后事务不变量重复回归。 | 仅在事务核心与无关 façade 反复耦合修改、相同原子性/rollback 缺陷重复修复，或测试无法按真实职责隔离且能证明收益时重开。event append、projection、rollback、cache invalidation 和 post-commit broadcast 继续由单一 SessionStore 协调，不暴露事务内部或引入第二恢复来源（[ADR 0466](adr/0466-session-history-read-facade-module.md)、[ADR 0479](adr/0479-session-history-test-ownership.md)）。 |
 
+**显式 end 的失败观察（当前实现，不是已接受的目标契约）：** actorless 路径清理失败会返回错误且不推进 session 状态，但多条 action 可能已部分取消；idle/running Actor 路径先发取消信号，随后 best-effort 清理失败只记日志，仍写 `Completed`，Tauri 成功事件因此发出。run-exit 会移除 Actor，但不重试 action 清理；失败的 scheduled action 可能仍保持 Waiting 并保留 timer。claim 已获胜的 action 按 ADR 0424 保持运行，不属于取消错误。命令只在 executor 成功后发 `session:completed`；UI invoke 失败时保留 active pointer 并显示失败。
+
+实现前必须决定：持久取消失败是否令 end 失败并让会话可见、可重试，还是仍完成会话并为残留 action 提供明确的告警/重试路径；同时定义多 action 部分成功的处理。验收矩阵覆盖 actorless、idle/running Actor、单项失败、多项部分失败、重试、claim-wins/cancel-wins，并联合断言数据库状态、Actor/run、Tauri event 和 UI selection。简单地把 Actor 分支改成 checked 不满足该矩阵。
+
 #### 已复核但不进入 Next
 
 - **Tools 与安全边界：** `tool_contract.rs` 继续作为共享执行契约 owner；`builtin/admin.rs` 由 AdminServices 承接副作用，Admin 保留 operation/request/output contract；messaging adapter 继续复用 `haven_messaging`。只有稳定后再次出现 policy/schema drift、同边界回归或独立消费者，才重新评估私有模块（[ADR 0213](adr/0213-operation-spec-single-policy-source.md)、[0391](adr/0391-admin-services-typed-output-projections.md)、[0396](adr/0396-messaging-domain-crate.md)、[0506](adr/0506-mcp-admin-connection-network-policy.md)）。
