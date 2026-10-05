@@ -2334,7 +2334,6 @@ dependencies = [
  "cpal",
  "futures-util",
  "haven-common",
- "haven-tools",
  "serde",
  "serde_json",
  "tokio",

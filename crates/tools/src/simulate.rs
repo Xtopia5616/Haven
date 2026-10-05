@@ -314,7 +314,11 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn test_simulation_resolves_every_keycode_name() {
+    fn test_input_and_simulation_key_names_are_compatible() {
+        // Input parsing intentionally treats these simulation aliases as
+        // modifiers rather than as keys.
+        const MODIFIER_EXCEPTIONS: &[&str] = &["shift", "ctrl", "control", "alt", "win", "lwin"];
+
         use haven_input::hotkey::KeyCode;
         let variants: Vec<KeyCode> = vec![
             KeyCode::Space,
@@ -348,6 +352,16 @@ mod tests {
         }
         for n in 1..=12u8 {
             assert!(imp::lookup_vk(&format!("f{n}")).is_some());
+        }
+
+        for name in accepted_key_names() {
+            if MODIFIER_EXCEPTIONS.contains(&name) {
+                continue;
+            }
+            assert!(
+                KeyCode::parse(name).is_some(),
+                "KeyCode::parse rejects simulation key name '{name}'"
+            );
         }
     }
 }

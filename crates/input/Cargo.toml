@@ -17,5 +17,4 @@ haven-common = { path = "../common" }
 
 [dev-dependencies]
 futures-util.workspace = true
-haven-tools = { path = "../tools" }
 

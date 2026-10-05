@@ -467,3 +467,4 @@
 - [0482：移除未调用的 Compaction 直发 helper](0482-remove-unused-compaction-event-emitter.md)
 - [0483：将进程流读取测试归入实现 owner](0483-process-stream-reader-test-ownership.md)
 - [0484：收拢 ActionOutputTail 测试归属](0484-action-output-tail-test-ownership.md)
+- [0485：移除 Input 到 Tools 的测试专用反向依赖](0485-remove-test-only-input-tools-reverse-dependency.md)

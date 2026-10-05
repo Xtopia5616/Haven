@@ -259,21 +259,4 @@ mod tests {
         assert_eq!(KeyCode::F(12).name(), "F12");
         assert_eq!(KeyCode::ArrowLeft.name(), "Left");
     }
-
-    #[cfg(windows)]
-    #[test]
-    fn test_keycode_parses_every_simulation_key_name() {
-        // Names simulate treats as pressable keys that a hotkey combo resolves as
-        // modifiers instead — the intentional exception list.
-        const MODIFIER_EXCEPTIONS: &[&str] = &["shift", "ctrl", "control", "alt", "win", "lwin"];
-        for name in haven_tools::simulate::accepted_key_names() {
-            if MODIFIER_EXCEPTIONS.contains(&name) {
-                continue;
-            }
-            assert!(
-                KeyCode::parse(name).is_some(),
-                "KeyCode::parse rejects simulation key name '{name}'"
-            );
-        }
-    }
 }
