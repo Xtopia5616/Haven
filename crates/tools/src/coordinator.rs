@@ -350,42 +350,26 @@ impl ToolRuntimeCoordinator {
         Ok(CatalogRebuildOutcome::Published)
     }
 
-    pub(crate) async fn build_mcp_index(&self) -> Vec<Value> {
+    pub(crate) async fn build_mcp_index(&self) -> Vec<catalog::McpServerIndexEntry> {
         let configs = self.builtins.mcp_server_configs.read().await;
-        let mut entries: Vec<Value> = Vec::new();
+        let mut entries = Vec::new();
         for server in configs.values().filter(|server| server.enabled) {
-            let mut tool_names: Vec<String> =
+            let tool_names: Vec<String> =
                 match self.builtins.mcp_manager.get_client(&server.name).await {
                     Some(client) => client
                         .tools_cache()
                         .await
                         .into_iter()
-                        .map(|tool| sanitize_index_field(&tool.name))
+                        .map(|tool| tool.name)
                         .collect(),
                     None => Vec::new(),
                 };
-            tool_names.sort();
-            tool_names.dedup();
-            let safe_name = sanitize_index_field(&server.name);
-            let description = if tool_names.is_empty() {
-                format!("MCP server '{safe_name}'")
-            } else {
-                format!("MCP server '{safe_name}'; tools: {}", tool_names.join(", "))
-            };
-            let tool_count = tool_names.len();
-            entries.push(serde_json::json!({
-                "name": safe_name,
-                "description": description,
-                "tool_names": tool_names,
-                "tool_count": tool_count,
-            }));
+            entries.push(catalog::McpServerIndexEntry::from_raw(
+                &server.name,
+                tool_names,
+            ));
         }
-        entries.sort_by(|left, right| {
-            left["name"]
-                .as_str()
-                .unwrap_or("")
-                .cmp(right["name"].as_str().unwrap_or(""))
-        });
+        entries.sort_by(|left, right| left.name.cmp(&right.name));
         entries
     }
 

@@ -1,5 +1,28 @@
 use super::*;
 
+/// Stable summary of an enabled MCP server for the model-facing prompt.
+/// Full tool schemas are loaded separately and remain dynamic JSON.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpServerIndexEntry {
+    pub name: String,
+    pub tool_names: Vec<String>,
+}
+
+impl McpServerIndexEntry {
+    pub(crate) fn from_raw(name: &str, tool_names: Vec<String>) -> Self {
+        let mut tool_names: Vec<_> = tool_names
+            .iter()
+            .map(|tool_name| sanitize_index_field(tool_name))
+            .collect();
+        tool_names.sort();
+        tool_names.dedup();
+        Self {
+            name: sanitize_index_field(name),
+            tool_names,
+        }
+    }
+}
+
 impl ToolsManager {
     pub async fn load_mcp_from_config(&self, servers: &[haven_common::McpServerConfig]) {
         self.coordinator.load_mcp_from_config(servers).await;
@@ -258,7 +281,7 @@ impl ToolsManager {
     /// Tool names are included (when the server is connected and cached) so
     /// the LLM can judge whether a server's tools fit the session instead of
     /// defaulting to weaker built-ins.
-    pub async fn build_mcp_index(&self) -> Vec<Value> {
+    pub async fn build_mcp_index(&self) -> Vec<McpServerIndexEntry> {
         self.coordinator.build_mcp_index().await
     }
 

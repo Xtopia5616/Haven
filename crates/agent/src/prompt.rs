@@ -8,7 +8,7 @@ use haven_common::types::{CanonicalMessage, CanonicalRole, ContentPart};
 use haven_memory::recall::MemoryRetriever;
 #[cfg(test)]
 use haven_tools::ToolsManager;
-use haven_tools::WebSearchAvailability;
+use haven_tools::{McpServerIndexEntry, WebSearchAvailability};
 
 #[cfg(test)]
 use haven_memory::Database;
@@ -377,21 +377,16 @@ fn render_skill_index(skills: &[haven_tools::SkillInfo]) -> String {
     rendered
 }
 
-fn render_mcp_index(entries: &[serde_json::Value]) -> String {
+fn render_mcp_index(entries: &[McpServerIndexEntry]) -> String {
     let mut rendered = String::new();
     for entry in entries {
-        let name = compact_index_text(entry["name"].as_str().unwrap_or(""), 96);
-        let names = entry["tool_names"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|value| value.as_str())
+        let name = compact_index_text(&entry.name, 96);
+        let names = entry
+            .tool_names
+            .iter()
             .map(|value| compact_index_text(value, 96))
             .collect::<Vec<_>>();
-        let count = entry["tool_count"]
-            .as_u64()
-            .and_then(|value| usize::try_from(value).ok())
-            .unwrap_or(names.len());
+        let count = entry.tool_names.len();
         rendered.push_str(&format!("  - {name} ({count} tools)"));
         if !names.is_empty() && names.len() <= 8 {
             rendered.push_str(": ");
@@ -1092,6 +1087,31 @@ mod tests {
             web_search_availability_prompt_value(WebSearchAvailability::Unavailable),
             "unavailable (no provider builtin search; no MCP search server)"
         );
+    }
+
+    #[test]
+    fn mcp_prompt_index_renders_count_and_load_hint_from_typed_names() {
+        let entries = vec![
+            McpServerIndexEntry {
+                name: "research".into(),
+                tool_names: vec!["fetch".into(), "web_search".into()],
+            },
+            McpServerIndexEntry {
+                name: "empty".into(),
+                tool_names: Vec::new(),
+            },
+            McpServerIndexEntry {
+                name: "large".into(),
+                tool_names: (0..9).map(|index| format!("tool_{index}")).collect(),
+            },
+        ];
+
+        let rendered = render_mcp_index(&entries);
+
+        assert!(rendered.contains("research (2 tools): fetch, web_search"));
+        assert!(rendered.contains("empty (0 tools)"));
+        assert!(rendered.contains("large (9 tools); use `load_mcp` to select concrete tools"));
+        assert!(!rendered.contains("tool_8"));
     }
 
     /// Dummy tool so tests can control which tools appear in the registry.

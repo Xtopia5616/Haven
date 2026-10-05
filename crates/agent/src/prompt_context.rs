@@ -10,8 +10,7 @@ use async_trait::async_trait;
 use haven_common::tools::ToolDef;
 #[cfg(test)]
 use haven_tools::ToolsManager;
-use haven_tools::{RuntimeCapabilities, SkillInfo};
-use serde_json::Value;
+use haven_tools::{McpServerIndexEntry, RuntimeCapabilities, SkillInfo};
 
 use crate::memory_service::MemoryService;
 
@@ -30,7 +29,7 @@ pub struct PromptCatalogVersions {
 
 pub struct PromptCatalogContent {
     pub builtin_defs: Vec<ToolDef>,
-    pub mcp_index: Vec<Value>,
+    pub mcp_index: Vec<McpServerIndexEntry>,
     pub skills: Vec<SkillInfo>,
 }
 

@@ -1504,24 +1504,41 @@ async fn test_build_mcp_index_filters_disabled() {
     .await;
 
     let index = mgr.build_mcp_index().await;
-    let names: Vec<&str> = index.iter().filter_map(|e| e["name"].as_str()).collect();
+    let names: Vec<&str> = index.iter().map(|entry| entry.name.as_str()).collect();
     assert!(names.contains(&"on"));
     assert!(!names.contains(&"off"), "disabled server should not appear");
 }
 
 #[test]
+fn mcp_server_index_entry_sanitizes_sorts_and_deduplicates() {
+    let entry = McpServerIndexEntry::from_raw(
+        "research\nserver",
+        vec!["z_search".into(), "a_fetch".into(), "z_search".into()],
+    );
+
+    assert_eq!(entry.name, "research server");
+    assert_eq!(entry.tool_names, ["a_fetch", "z_search"]);
+}
+
+#[test]
 fn mcp_search_detection_only_uses_cached_tool_names() {
     assert!(
-        crate::runtime_capabilities::mcp_index_entry_has_search_tool(&serde_json::json!({
-            "name": "research",
-            "description": "MCP server 'research'; tools: fetch, web_search",
-        }))
+        crate::runtime_capabilities::mcp_index_entry_has_search_tool(&McpServerIndexEntry {
+            name: "research".into(),
+            tool_names: vec!["fetch".into(), "web_search".into()],
+        })
     );
     assert!(
-        !crate::runtime_capabilities::mcp_index_entry_has_search_tool(&serde_json::json!({
-            "name": "search-like-server",
-            "description": "MCP server 'search-like-server'",
-        }))
+        !crate::runtime_capabilities::mcp_index_entry_has_search_tool(&McpServerIndexEntry {
+            name: "search-like-server".into(),
+            tool_names: vec![],
+        })
+    );
+    assert!(
+        !crate::runtime_capabilities::mcp_index_entry_has_search_tool(&McpServerIndexEntry {
+            name: "research".into(),
+            tool_names: vec!["fetch".into()],
+        })
     );
 }
 
@@ -1540,10 +1557,10 @@ async fn test_build_mcp_index_does_not_expose_process_args() {
     .await;
 
     let index = mgr.build_mcp_index().await;
-    let description = index[0]["description"].as_str().unwrap_or("");
-    assert!(!description.contains("server.exe"));
-    assert!(!description.contains("SECRET_SHOULD_NOT_REACH_PROMPT"));
-    assert!(description.contains("safe-server"));
+    let rendered = format!("{:?}", index[0]);
+    assert!(!rendered.contains("server.exe"));
+    assert!(!rendered.contains("SECRET_SHOULD_NOT_REACH_PROMPT"));
+    assert!(index[0].name.contains("safe-server"));
 }
 
 #[tokio::test]

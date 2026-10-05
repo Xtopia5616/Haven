@@ -1,6 +1,6 @@
 # Haven 架构降复杂度重构路线图
 
-> 状态：阶段 0–8 已完成；SessionUsage 累计上限契约、session-scoped KV 孤儿清理 owner、summary marker 单一原子生产路径、Tools 测试归属、Input→Tools 测试反向依赖、MCP/Skill 直调授权策略来源、MCP 管理操作网络策略来源、X12 例外消息写入口、ADR 编号索引完整性、actorless session action lifecycle 清理（ADR 0507）、Ask reducer state ownership 收口（ADR 0508）、终态 Ask 清理事件归属（ADR 0509）、ReAct phase 来源 session 身份（ADR 0510）、Windows 子进程先入 Job 再恢复（ADR 0513）、显式 end 失败重试契约（ADR 0514）与 Skill venv 子进程 containment（ADR 0515）已完成；当前无 Active 结构切片，下一轮从证据复核步骤 0 开始；Windows 发布验收为独立开放签核门
+> 状态：阶段 0–8 已完成；SessionUsage 累计上限契约、session-scoped KV 孤儿清理 owner、summary marker 单一原子生产路径、Tools 测试归属、Input→Tools 测试反向依赖、MCP/Skill 直调授权策略来源、MCP 管理操作网络策略来源、X12 例外消息写入口、ADR 编号索引完整性、actorless session action lifecycle 清理（ADR 0507）、Ask reducer state ownership 收口（ADR 0508）、终态 Ask 清理事件归属（ADR 0509）、ReAct phase 来源 session 身份（ADR 0510）、Windows 子进程先入 Job 再恢复（ADR 0513）、显式 end 失败重试契约（ADR 0514）、Skill venv 子进程 containment（ADR 0515）与 MCP prompt index 类型化（ADR 0516）已完成；当前无 Active 结构切片，下一轮从证据复核步骤 0 开始；Windows 发布验收为独立开放签核门
 > 更新日期：2026-10-05
 > 范围：Agent/Session、Memory、Tools、LLM、App IPC 与 UI
 
@@ -113,6 +113,7 @@
 #### 已复核但不进入 Next
 
 - **Tools 与安全边界：** `tool_contract.rs` 继续作为共享执行契约 owner；`builtin/admin.rs` 由 AdminServices 承接副作用，Admin 保留 operation/request/output contract；messaging adapter 继续复用 `haven_messaging`。只有稳定后再次出现 policy/schema drift、同边界回归或独立消费者，才重新评估私有模块（[ADR 0213](adr/0213-operation-spec-single-policy-source.md)、[0391](adr/0391-admin-services-typed-output-projections.md)、[0396](adr/0396-messaging-domain-crate.md)、[0506](adr/0506-mcp-admin-connection-network-policy.md)）。
+- **MCP prompt index 类型化（已完成，ADR 0516）：** 固定的 `name/tool_names` 摘要由 `McpServerIndexEntry` 沿 Tools→App adapter→Agent prompt port 传递；工具数从 names 派生，capability resolver 不再解析拼接描述。该类型不序列化到 IPC/provider/MCP wire；工具 schema 和结果保留 dynamic JSON。只有该投影新增稳定字段或出现新的独立消费者时再复核。
 - **Admin 风险等级 parity 回归门禁（已完成，ADR 0512）：** 2026-10-05 复核发现 Admin 的两份风险等级声明仍一致，但 ADR 0506 已证明同一 model/native 边界发生过真实网络策略漂移，而现有测试没有覆盖完整风险等级 parity，故将该 Candidate 升为 Next 并补齐测试。当前有 20 个 model/native 共用操作；另有 native-only reconnect/refresh 两项，不纳入共享操作比较。新增用例从五个 model tool 的 schema 枚举预期集合，并逐项比较 model 实际风险、native metadata 与 `OperationContract` 显式风险；没有改动风险值。仅在 parity 回归或操作集合增加时重新评估是否把重复声明收敛为单一来源。
 - **Windows 子进程 containment 启动顺序（已完成，ADR 0513）：** MCP stdio、Shell、Skill 与后台 Action 过去都在进程已运行后才加入 kill-on-close Job，MCP 还在 spawn 后才创建 Job；因此子进程可能在加入前派生不受 Job 管理的后代。`haven-platform::ProcessContainment` 现在负责命令挂起标志、Job 分配、唯一初始线程核对与恢复，失败时终止进程；adapter 继续拥有命令策略、管道与取消/等待生命周期。Windows 测试覆盖挂起时不执行、运行后派生后代并由 Job 回收，以及线程发现失败时 fail closed。若新增受管进程入口绕过此 API或出现进程树残留回归，再重开审查。
 - **Agent 与 Memory：** SessionActor 继续独占可变 session state；ReAct stream/checkpoint/retry 保持协同；MemoryRuntime、worker、maintenance store 与 fact inference 按既有 owner 分工。只有交互恢复/队列计数、buffer 顺序、事实 marker 原子性或 prompt prefetch 等同一边界问题再次回归，才重开对应模块审查（[ADR 0214](adr/0214-react-run-inside-session-actor.md)、[0424](adr/0424-interaction-lifecycle-ownership.md)、[0468](adr/0468-memory-worker-maintenance-pass-module.md)、[0475](adr/0475-single-source-fact-sensitivity-rules.md)、[0476](adr/0476-react-turn-owns-search-context-projection.md)、[0481](adr/0481-remove-summary-marker-only-enqueue.md)）。
@@ -157,9 +158,9 @@
 | 4 | **模块成熟后再评估 crate/API 边界** | 只有模块 owner 已稳定，且存在独立消费者、真实依赖方向问题或可复核构建/迭代成本时才评估 crate 拆分。交付物包括依赖图、API/消费者映射；若声称构建收益，须有同环境基准。 | 提取后依赖单向、API 稳定、消费者不用反向依赖或重复 adapter，并证明维护/构建收益；任一不满足就保留现边界。 |
 | 5 | **性能与容量** | 仅在同负载 profile 复现有用户意义的成本时优化；交付物为固定场景的前后指标，并遵守 SQLite 容量、失败恢复与资源上限契约。Windows 发布验收独立保留在 §5.1，不作为结构重构阶段的退出依赖。 | 优化结果超过噪声且达到目标，否则关闭候选；没有当前测量就不以“降复杂度”为名做性能改动。 |
 
-以上是循环复核的先后顺序，不是一次性瀑布项目：每轮从步骤 0 重新分流，完成一个切片、同类问题复现或准备发布时再审查证据。ADR 0514 与 ADR 0515 已完成；当前没有 Active 或已准入的 Next，待新证据出现时从步骤 0 重新分流。ReAct Fatal 双终态 owner 已在步骤 2 收口（ADR 0511）；Admin 风险等级 parity 回归门禁已完成（ADR 0512）。发布验收 Gate 与结构重构并行，按 §5.1 独立关闭。
+以上是循环复核的先后顺序，不是一次性瀑布项目：每轮从步骤 0 重新分流，完成一个切片、同类问题复现或准备发布时再审查证据。ADR 0514、ADR 0515 与 ADR 0516 已完成；当前没有 Active 或已准入的 Next，待新证据出现时从步骤 0 重新分流。ReAct Fatal 双终态 owner 已在步骤 2 收口（ADR 0511）；Admin 风险等级 parity 回归门禁已完成（ADR 0512）。发布验收 Gate 与结构重构并行，按 §5.1 独立关闭。
 
-**当前执行位置：** 架构阶段 0–8 已完成；ADR 0514 和 ADR 0515 均已完成。滚动执行周期已回到 §5.6 步骤 0：下一轮须提供新的源码、重复回归、依赖/API 变化或可复核成本证据，才建立唯一 Next 并启动切片。不按 crate 数、行数或日历制造工作。ReAct Fatal 双终态发布 owner 已由 ADR 0511 收口；Admin 20 个共用操作的风险等级 parity 回归门禁已由 ADR 0512 收口，两项 native-only 操作仍单独测试。crate 拆分仍无证据，近期边界为 11 个内部 crate、29 条单向边。Windows 发布验收仍是独立 Open Gate。
+**当前执行位置：** 架构阶段 0–8 已完成；ADR 0514–0516 均已完成。滚动执行周期已回到 §5.6 步骤 0：下一轮须提供新的源码、重复回归、依赖/API 变化或可复核成本证据，才建立唯一 Next 并启动切片。不按 crate 数、行数或日历制造工作。ReAct Fatal 双终态发布 owner 已由 ADR 0511 收口；Admin 20 个共用操作的风险等级 parity 回归门禁已由 ADR 0512 收口，两项 native-only 操作仍单独测试。crate 拆分仍无证据，近期边界为 11 个内部 crate、29 条单向边。Windows 发布验收仍是独立 Open Gate。
 
 ## 6. 更新规则
 

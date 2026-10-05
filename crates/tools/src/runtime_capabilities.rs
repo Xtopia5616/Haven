@@ -5,15 +5,15 @@
 //! keeps the resulting policy separate from facade composition.
 
 use crate::builtin::{self, media::MediaCapabilities};
+use crate::catalog::McpServerIndexEntry;
 use crate::tool_runtime::{PlatformRuntime, RuntimeCapabilities, WebSearchAvailability};
 use haven_common::config::{ModelEndpoint, RequestKind};
 use haven_llm::LlmRouter;
-use serde_json::Value;
 use std::sync::Arc;
 
 pub(crate) async fn resolve_snapshot(
     platform: &PlatformRuntime,
-    mcp_index: &[Value],
+    mcp_index: &[McpServerIndexEntry],
 ) -> ToolCapabilitySnapshot {
     let media = resolve_media_capabilities(platform).await;
     let chat_endpoint = configured_chat_endpoint(platform.router.as_ref()).await;
@@ -82,7 +82,7 @@ fn provider_search_available(chat_endpoint: Option<&ModelEndpoint>) -> bool {
 fn assemble_tool_capability_snapshot(
     media: MediaCapabilities,
     provider_search_available: bool,
-    mcp_index: &[Value],
+    mcp_index: &[McpServerIndexEntry],
 ) -> ToolCapabilitySnapshot {
     let mcp_search_available = mcp_index.iter().any(mcp_index_entry_has_search_tool);
     ToolCapabilitySnapshot {
@@ -107,22 +107,23 @@ fn resolve_web_search_availability(
     }
 }
 
-pub(crate) fn mcp_index_entry_has_search_tool(entry: &Value) -> bool {
-    let Some(description) = entry["description"].as_str() else {
-        return false;
-    };
-    description
-        .split_once("; tools:")
-        .is_some_and(|(_, tools)| {
-            tools
-                .split(',')
-                .any(|tool| tool.trim().to_ascii_lowercase().contains("search"))
-        })
+pub(crate) fn mcp_index_entry_has_search_tool(entry: &McpServerIndexEntry) -> bool {
+    entry
+        .tool_names
+        .iter()
+        .any(|tool| tool.to_ascii_lowercase().contains("search"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn mcp_entry(name: &str, tool_names: &[&str]) -> McpServerIndexEntry {
+        McpServerIndexEntry {
+            name: name.into(),
+            tool_names: tool_names.iter().map(|name| (*name).into()).collect(),
+        }
+    }
 
     #[test]
     fn provider_search_takes_priority_over_mcp_search() {
@@ -200,10 +201,7 @@ mod tests {
                 ..MediaCapabilities::default()
             },
             true,
-            &[serde_json::json!({
-                "name": "research",
-                "description": "MCP server 'research'; tools: web_search",
-            })],
+            &[mcp_entry("research", &["web_search"])],
         );
 
         assert!(snapshot.media.transcribe);
@@ -217,17 +215,17 @@ mod tests {
 
     #[test]
     fn mcp_search_detection_only_uses_cached_tool_names() {
-        assert!(mcp_index_entry_has_search_tool(&serde_json::json!({
-            "name": "research",
-            "description": "MCP server 'research'; tools: fetch, web_search",
-        })));
-        assert!(!mcp_index_entry_has_search_tool(&serde_json::json!({
-            "name": "search-like-server",
-            "description": "MCP server 'search-like-server'",
-        })));
-        assert!(!mcp_index_entry_has_search_tool(&serde_json::json!({
-            "name": "research",
-            "tool_names": ["web_search"],
-        })));
+        assert!(mcp_index_entry_has_search_tool(&mcp_entry(
+            "research",
+            &["fetch", "web_search"]
+        )));
+        assert!(!mcp_index_entry_has_search_tool(&mcp_entry(
+            "search-like-server",
+            &[]
+        )));
+        assert!(!mcp_index_entry_has_search_tool(&mcp_entry(
+            "research",
+            &["fetch"]
+        )));
     }
 }

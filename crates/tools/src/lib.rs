@@ -148,6 +148,7 @@ pub use builtin::{
     MediaTranscriptionResult, MediaTranscriptionStatus, NativeMcpOperationArgs,
     SkillsOperationArgs, ToolsOperationArgs,
 };
+pub use catalog::McpServerIndexEntry;
 pub use circuit::ToolCircuitRegistry;
 pub use haven_common::types::CapabilityScope;
 pub use haven_mcp::{
