@@ -1625,6 +1625,7 @@ mod tests {
     use haven_common::config::{ConfigLoader, ConfigPatch, ConfigService, InMemoryCredentialStore};
     use haven_memory::{Database, MemoryFactStore, SessionStore};
     use serde_json::json;
+    use std::collections::BTreeSet;
     use std::sync::Arc;
     use tempfile::TempDir;
 
@@ -1928,6 +1929,94 @@ mod tests {
                 tool.risk_level(&json!({})),
                 RiskLevel::High,
                 "malformed input must use a conservative risk"
+            );
+        }
+    }
+
+    fn model_admin_operation_names(surfaces: &AdminSurfaces) -> BTreeSet<String> {
+        let mut names = BTreeSet::new();
+        for tool in surfaces.tools() {
+            let tool_name = tool.name();
+            let namespace = match tool_name.as_str() {
+                "haven_diagnostics" => "haven.diagnostics",
+                "haven_config" => "haven.config",
+                "haven_skills" => "haven.skills",
+                "haven_tools" => "haven.tools",
+                "haven_mcp" => "haven.mcp",
+                other => panic!("unexpected Admin tool {other}"),
+            };
+            let schema = tool.input_schema();
+            let branches = schema["oneOf"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{tool_name} is missing operation branches"));
+            for branch in branches {
+                let operation = branch["properties"]["operation"]["const"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("{tool_name} has an unnamed operation"));
+                names.insert(format!("{namespace}.{operation}"));
+            }
+        }
+        names
+    }
+
+    fn typed_request_for_case(case: &AdminOperationCase) -> AdminRequest {
+        match case.surface {
+            "haven_diagnostics" => AdminRequest::Diagnostics(
+                serde_json::from_value(case.input.clone()).expect("valid diagnostics fixture"),
+            ),
+            "haven_config" => AdminRequest::Config(
+                serde_json::from_value(case.input.clone()).expect("valid config fixture"),
+            ),
+            "haven_skills" => AdminRequest::Skills(
+                serde_json::from_value(case.input.clone()).expect("valid skills fixture"),
+            ),
+            "haven_tools" => AdminRequest::Tools(
+                serde_json::from_value(case.input.clone()).expect("valid tools fixture"),
+            ),
+            "haven_mcp" => AdminRequest::Mcp(
+                serde_json::from_value(case.input.clone()).expect("valid MCP fixture"),
+            ),
+            other => panic!("unexpected Admin surface {other}"),
+        }
+    }
+
+    #[test]
+    fn model_and_native_admin_risk_levels_match_for_every_shared_operation() {
+        let (surfaces, _dir) = test_surfaces();
+        let cases = admin_operation_cases();
+        let requests: Vec<_> = cases.iter().map(typed_request_for_case).collect();
+        let request_names: BTreeSet<_> = requests
+            .iter()
+            .map(|request| request.model_operation_name().to_owned())
+            .collect();
+        assert_eq!(
+            request_names.len(),
+            20,
+            "update parity cases when Admin changes"
+        );
+        assert_eq!(
+            request_names,
+            model_admin_operation_names(&surfaces),
+            "native typed requests must cover every model-visible Admin operation"
+        );
+
+        let tools = surfaces.tools();
+        for (case, request) in cases.iter().zip(&requests) {
+            let operation = request.model_operation_name();
+            let model_tool = tool_for(&tools, request.tool_name());
+            let model_risk = model_tool.risk_level(&case.input);
+            let native_risk = surfaces.metadata(request).risk_level;
+            let contract_risk = super::super::operation_contract::operation_contract(operation)
+                .risk_override
+                .unwrap_or_else(|| panic!("{operation} must declare an explicit risk level"));
+
+            assert_eq!(
+                model_risk, contract_risk,
+                "model risk drift for {operation}"
+            );
+            assert_eq!(
+                native_risk, contract_risk,
+                "native risk drift for {operation}"
             );
         }
     }
