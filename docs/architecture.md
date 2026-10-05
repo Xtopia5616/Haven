@@ -282,7 +282,7 @@ OS 句柄和进程生命周期适配不属于该共享契约面，统一归 `hav
   `media_inputs` 是多模态 canonical 持久化投影；消息返回对象中的 `attachments` 仅是
   ingress/UI DTO。数据库的 `ui_metadata` 只保留 UI 展示与受管资产保留所需的元数据，
   并由受信 host 根目录重建历史预览，不参与 provider 规划或 transcript 恢复。
-- `embeddings.rs`：向量编码、相似度/ANN 查询和 embedding 存储操作。
+- `embeddings.rs`：向量编码、相似度/ANN/LSH 查询、底层向量读写，以及 episode FTS 查询；关键词与向量检索仍由 `MemoryRetriever` 组合。
 
 schema 初始化不改变 X12：`session_events` 经 `SessionStore` 追加并按
 sequence replay，是会话恢复、rollback、交互重建和实时订阅的唯一事件权威；

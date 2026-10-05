@@ -2,7 +2,8 @@
 //!
 //! This module owns fact hydration, list/search queries and the effective
 //! confidence ordering shared by prompt recall and UI-facing reads. Mutation
-//! rules stay in `fact_graph.rs`; maintenance policies stay in `facts.rs`.
+//! rules stay in `fact_graph.rs`; maintenance policies stay in
+//! `fact_maintenance.rs`.
 
 use crate::db::Database;
 use chrono::{DateTime, Utc};

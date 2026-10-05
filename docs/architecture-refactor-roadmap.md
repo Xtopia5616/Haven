@@ -137,6 +137,15 @@
 
 `haven-tools/builtin/admin.rs` 的五个管理 surface 契约不按 operation 数量拆分；`llm/router.rs` 已有 request/stream executor；`security.rs` 拥有授权、receipt、禁用 operation 和路径沙箱；`inbox.rs` 的 registry、mailbox、archive 与崩溃恢复共用文件锁，暂不拆。热点约 800 行时先区分生产与测试代码，再记录保留理由或明确拆分边界；只搬行数不立项。内部整理保持外部 API、wire、schema 和运行语义不变，并独立提交。
 
+**补充边界复核（2026-10-05；全部暂缓）：**
+
+- `SessionActor` 的命令、队列和调度共同读写唯一 `SessionState`，受公平调度及事件先提交后更新约束（[ADR 0214](adr/0214-react-run-inside-session-actor.md)、[0382](adr/0382-session-state-owns-react-run.md)、[0390](adr/0390-session-actor-fairness-and-bounded-release.md)、[0424](adr/0424-interaction-lifecycle-ownership.md)）。只有交互恢复缺陷重复出现或队列容量计数反复漂移时，才评估 actor 内的 `ContextQueues` owner。
+- `facts.rs` 的生产部分保留稳定 Database 外观和跨写入、查询、维护共用的谓词规则；图写入、事实查询、维护和敏感规则已有清晰 owner，其大部分文件体量是契约/组合测试（[ADR 0019](adr/0019-memory-fact-graph-write-boundary.md)、[0020](adr/0020-memory-fact-query-ranking-boundary.md)、[0022](adr/0022-memory-fact-maintenance-boundary.md)、[0475](adr/0475-single-source-fact-sensitivity-rules.md)）。
+- `embeddings.rs` 同时含底层向量与 episode FTS SQL，但由现有 recall owner 组合，历史未见 FTS 与向量策略反复共改（[ADR 0303](adr/0303-agent-memory-embedding-store-port.md)、[ADR 0304](adr/0304-agent-memory-recall-store-port.md)）；仅在过滤/排序规则出现重复 owner、同一边界引发回归、出现独立消费者或同负载 profile 暴露成本时重开。
+- Agent `event.rs` 的 buffer/有序 chunk pipeline 与 durable transcript 提交、Tauri adapter、UI validator 分属不同阶段 owner，近期改动属于各自契约收口（[ADR 0336](adr/0336-react-session-committed-submission.md)、[ADR 0404](adr/0404-session-event-capacity-retention-and-recovery.md)）；只有 buffer/reset/tombstone 顺序重复回归或稳定职责反复跨域共改时，才评估搬入私有子模块。
+
+这些文件不因体量进入 Active；入口、生产/测试分布与重开条件已经复核。
+
 ### 5.4 Common 拆分与性能优化（Candidate）
 
 只有依赖图、重复 owner 或可复现 profile 表明存在明确收益时，才另立拆分/优化任务。crate 拆分须证明独立稳定 API、单向依赖边界及实际消费者收益；不得只为减少文件行数、构建目录或 crate 大小而拆 crate。性能比较使用相同工作负载、数据规模和环境记录前后结果；没有明显改善则关闭候选，不继续微调。
@@ -175,7 +184,7 @@
 
 2026-10-05 对 `AppState`/`ApplicationRuntime`、UI shell/Composer 与 SessionStore 非事务 lifecycle façade 的只读复核均未发现 owner 稳定后的重复边界回归。SessionStore 生命周期 wrapper 大多是 typed `run_blocking` 转发，实际 actor/确认/delete policy 由 Agent `session/status.rs` 持有；搬移 wrapper 不会改变 owner 或调用链，故不新增 Active 项。重开条件见 §5.3 的启动编排、Composer、全局布局与 SessionStore 边界观察结论。
 
-AppState/runtime 与 UI shell/Composer 的并行只读复核没有发现可准入的候选。后续 agent 继续用于只读、定范围的源码/历史审计；每项结论由主执行者核对当前源码与适用门禁。没有新的合格证据时保持无 Active，不按 crate 行数制造拆分工作。
+AppState/runtime 与 UI shell/Composer 的并行只读复核没有发现可准入的候选。2026-10-05 后续只读审计覆盖 SessionActor、facts/embedding 存储与 Agent 事件投影，并复核 SessionStore 写侧：均未发现稳定 owner 后的重复回归、重复策略或可验证的子模块/新 crate 收益；继续保持无 Active。审计发现的唯一文档漂移（fact query 注释仍把 maintenance owner 指向 `facts.rs`）已同步修正。后续 agent 继续用于只读、定范围的源码/历史审计；每项结论由主执行者核对当前源码与适用门禁。没有新的合格证据时保持无 Active，不按 crate 行数制造拆分工作。
 
 ## 6. 更新规则
 
