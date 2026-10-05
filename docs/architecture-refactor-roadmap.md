@@ -1,6 +1,6 @@
 # Haven 架构降复杂度重构路线图
 
-> 状态：阶段 0–8 已完成；当前无 Active 结构切片；Windows 发布验收为独立开放签核门
+> 状态：阶段 0–8 已完成；当前无 Active 结构切片；下一轮先复核 SessionUsage 累计值范围契约；Windows 发布验收为独立开放签核门
 > 更新日期：2026-10-05
 > 范围：Agent/Session、Memory、Tools、LLM、App IPC 与 UI
 
@@ -92,7 +92,9 @@
 
 这不是 crate 拆分目标；只在职责与稳定 owner 边界能证明维护收益时做私有模块整理。已完成切片的实现范围、验证与回滚记录以 ADR 为准：SessionStore 只读历史 façade（[0466](adr/0466-session-history-read-facade-module.md)）、LLM provider schema projection（[0467](adr/0467-llm-tool-schema-projection-module.md)）、Memory maintenance pass（[0468](adr/0468-memory-worker-maintenance-pass-module.md)）、managed-media 生命周期与 producer/GC/Files 登记协调（[0469](adr/0469-app-managed-media-lifecycle-module.md)、[0470](adr/0470-generated-media-write-gc-gate.md)、[0473](adr/0473-files-rich-path-generated-media-gc-gate.md)）、录音 ID 交接和 Shell overlay controller（[0471](adr/0471-recording-session-id-handoff.md)、[0472](adr/0472-recording-overlay-controller.md)）、架构依赖清单门禁（[0474](adr/0474-architecture-dependency-inventory-gate.md)）、Memory fact sensitivity 规则单源化（[0475](adr/0475-single-source-fact-sensitivity-rules.md)）、ReAct 搜索响应投影归入 turn owner（[0476](adr/0476-react-turn-owns-search-context-projection.md)）。
 
-**本轮完成 — [ADR 0476](adr/0476-react-turn-owns-search-context-projection.md)：**不依赖 stream state、仅由 turn response 处理调用的 server-side search context 投影与 outcome 已移入 `turn.rs`，identity 回归随实现迁移。StreamForwarder、队列、checkpoint、重试和 mixed tool+search 的既有时序留在原 owner。当前没有已批准的下一项结构切片；下一候选须按 §5.5 的证据门槛重新审查。
+**本轮完成 — [ADR 0476](adr/0476-react-turn-owns-search-context-projection.md)：**不依赖 stream state、仅由 turn response 处理调用的 server-side search context 投影与 outcome 已移入 `turn.rs`，identity 回归随实现迁移。StreamForwarder、队列、checkpoint、重试和 mixed tool+search 的既有时序留在原 owner；该切片的实施边界、测试与回滚见 ADR 0476。
+
+**本轮完成 — [ADR 0477](adr/0477-agent-action-result-delivery-module.md)：**Agent 的 background/scheduled-result delivery consumer、专属 session-status helper、不可信结果 envelope formatter 及 formatter 测试移入私有 `layer/action_result_delivery.rs`。`ActionService` 仍拥有 completion outbox 与 ack 能力，SessionSupervisor 仍拥有队列/状态，ReAct 仍拥有 live transcript 的 durable projection；scheduled-fire 执行路径留在原处。当前无 Active 结构切片。
 
 当前边界决定：Common 拆分维持 [ADR 0359](adr/0359-common-boundary-and-profiling-baseline-audit.md) 的暂缓结论；Tools crate 拆分没有独立依赖边界或消费者收益；SessionStore 继续独占 event append、投影和 rollback 事务协调，`event_cursor` 与 `last_msg_at` 双时钟、提交后发布均不得分散；`LOCAL_TOOL_SECURITY_MATRIX` 仍是生产权限提示的 operation 白名单，保留在 `security.rs`。管理 surface、LLM router、授权沙箱和 inbox 崩溃恢复边界按现有 owner 保留，具体依据见相关 ADR。
 
@@ -134,6 +136,16 @@
 每个候选的短 ADR/评估要记录：现有 owner 与不变量、生产代码和测试的职责分布、调用/依赖边界、预期收益及观察方式、破坏面和停止条件、适用门禁、回滚方式。实施顺序固定为：证据确认 → 接受目标与切片 → 迁一条垂直调用链 → 删除旧入口 → 跑影响面门禁 → 对比 owner/依赖/性能指标 → 独立提交并更新状态。若只移动代码、扩大公共 API、暴露事务内部、增加第二权威来源，或验证不能证明维护/运行收益，立即停止并把候选记为“不需拆分/暂缓”。
 
 长期执行按触发信号驱动而不按日历制造工作，优先级为数据/安全/生命周期不变量故障、重复跨 owner 回归或修改耦合、依赖/API 边界问题、最后才是有同负载证据的性能优化；行数和 crate 大小不计为准入分。仓库较大时可并行委派只读审计（例如依赖图、热点职责、事务/安全不变量），但审计结论须由主执行者回到源码与门禁核验，任何时刻只实现一个 Active 切片。审查没有合格候选时，保留“无 Active 切片”状态并等待新证据，再继续同一套复核流程。
+
+### 5.6 长期滚动顺序（无日历承诺）
+
+本路线按触发证据滚动，不按“把所有大 crate 拆小”设完工日期。完成一个切片后重新审查最高优先级证据；下列顺序表示审查优先级，不代表每项必然实施：
+
+1. **下一轮先审：`SessionUsage` 累计范围与重建一致性（Next review；只调查契约，尚未准入实现）。** 增量写入通过 SQLite `INTEGER +` 累加，重建将 `i64 SUM` 转成 `u32`；例如两次各 `3,000,000,000` token 的合法调用，增量合计为 `6,000,000,000`，而重建的 `as u32` 会得到 `1,705,032,704`。当前 `SessionUsage` 和事件 DTO 使用 `u32`，但文档、schema constraint 与边界测试尚未规定累计值应饱和还是允许超过 `u32::MAX`。因此先确定契约：若选饱和，统一 live/read/rebuild 语义并补回归；若需要精确保留更大累计值，先评估持久 DTO、事件及生成 TypeScript 类型的端到端扩宽。契约确认前不改 usage 算术，也不因文件大小抽新模块。
+2. **后续候选：SessionStore 周边 lifecycle/read façade 与测试归属。** 事务核心拆分仍按 §5.3 的高风险停止条件暂缓；只有稳定 owner 后出现重复原子性/rollback 回归，或独立职责持续迫使同改且能设计出不触碰事务私有状态的边界，才启动评估。
+3. **长期条件项：Tools / App / UI 模块与 crate 边界、性能。** 继续用架构依赖清单、独立消费者和同负载 profile 证明收益；当前没有获准的大 crate 拆分。Common、Tools crate 与通用 Job 抽象维持既有暂缓决定，除非出现新的反复故障或可量化收益证据。
+
+`SessionUsage` 的首项契约会影响可见统计和持久投影范围，实施前需由产品/协议 owner 明确选项；这项决定不妨碍先完成其他有独立证据且边界明确的结构切片。并行 agent 继续用于只读、定范围的源码/历史审计；每项结论由主执行者核对工作树与门禁。实现仍一次只进行一个 Active slice。
 
 ## 6. 更新规则
 
