@@ -104,7 +104,7 @@
 
 | 状态 | 问题与当前证据 | 重开条件与边界 |
 |---|---|---|
-| **高风险 Candidate，暂缓** | `session_events.rs` 同时协调 event append、transcript projection、rollback、cache invalidation 与 commit 后 broadcast。2026-10-05 复核为 6,078 行（3,075 production / 3,003 tests），近 45 天 66 次提交；主要是同一 owner 收口和 durable facts 演进，未发现稳定后事务不变量重复回归。 | 仅在事务核心与无关 façade 反复耦合修改、相同原子性/rollback 缺陷重复修复，或测试无法按真实职责隔离且能证明收益时重开。event append、projection、rollback、cache invalidation 和 post-commit broadcast 继续由单一 SessionStore 协调，不暴露事务内部或引入第二恢复来源（[ADR 0466](adr/0466-session-history-read-facade-module.md)、[ADR 0479](adr/0479-session-history-test-ownership.md)）。 |
+| **高风险 Candidate，暂缓** | `session_events.rs` 同时协调 event append、transcript projection、rollback、cache invalidation 与 commit 后 broadcast。按当前 HEAD `e81af24` 复算为 5,520 非空物理行（2,989 production / 2,531 tests），近 45 天 68 次提交触及。复核发现 `3bc807d`、`b0e47ba`、`a9b03a4` 是一次 SessionStore 边界收口中的不同缺口，`408564a` 将 confirmation CAS 与 event append 保持在同一事务 owner；未发现修复后同类事务不变量再次回归。`230a2e3` 已将只读历史测试移入 `session_history` 测试子模块。 | 仅在事务核心与无关 façade 反复耦合修改、相同原子性/rollback 缺陷修复后复发，或剩余测试无法按真实职责隔离且能证明收益时重开。event append、projection、rollback、cache invalidation 和 post-commit broadcast 继续由单一 SessionStore 协调，不暴露事务内部或引入第二恢复来源（[ADR 0466](adr/0466-session-history-read-facade-module.md)、[ADR 0479](adr/0479-session-history-test-ownership.md)）。 |
 
 **显式 end 的基线观察（实施前）：** actorless 路径清理失败会返回错误且不推进 session 状态，但多条 action 可能已部分取消；idle/running Actor 路径先永久取消 actor lifetime，随后 best-effort 清理失败只记日志，仍写 `Completed`，Tauri 成功事件因此发出。run-exit 会移除 Actor，但不重试 action 清理；失败的 scheduled action 可能仍保持 Waiting 并保留 timer。claim 已获胜的 action 按 ADR 0424 保持运行，不属于取消错误。上述契约与实现已由 [ADR 0514](adr/0514-explicit-session-end-failure-contract.md) 完成并通过联合门禁；background 仍保留 ADR 0507 定义的有限 best-effort 重试。
 
