@@ -74,7 +74,7 @@
 
 | 状态 | 当前项 |
 |---|---|
-| **Active** | 暂无。2026-10-06 完成 ADR 0518 后重新复核 §5.2–§5.4；现有候选均未出现达到 §5.5 准入门槛的新证据，下一次在同类回归、依赖/API 变化或准备发布时按步骤 0 复核。 |
+| **Active** | 暂无。ADR 0519 的验证切片已完成；按步骤 0 重新复核后，没有新的结构候选满足 §5.5 准入条件。下一次在同类回归、依赖/API 变化或准备发布时重新分流。 |
 | **Gate** | Windows 发布验收 Open，见 §5.1。 |
 
 ### 5.1 Windows 发布验收（Gate / Open）
@@ -91,9 +91,9 @@
 
 ### 5.2 交互生命周期所有权（Complete）
 
-[`ADR 0424`](adr/0424-interaction-lifecycle-ownership.md)（配套 [`ADR 0423`](adr/0423-confirmation-wait-expiry-and-acknowledgement.md)）已完成 Session、ScheduledAction 与 AppCommand 三类确认 owner 的收口：Session 按 `session_id` 定位 actor，ScheduledAction 按 `action_id`，AppCommand 按 request ID；resolve 不跨 owner 扫描。运行时 owner 显式传递，session durable event 形状不变；确认期限由 owner 按绝对 `expires_at` 仲裁，ScheduledAction 的批准/取消由持久执行 claim first-wins 仲裁。Session resolve append 成功后才推进 actor，批量确认与 Paused 状态在同一 SQLite 事务提交。Session grant 与 resolve event 仍是两次可重试 durable write；重启时 running action 不自动 replay。旧 sentinel、fallback 与 renderer `timed_out` 入口已删除，不增加 schema/reset。后续只在出现新回归或职责变化时重开；实现、替代方案、退出条件和门禁记录见 ADR 0423/0424。
+[`ADR 0424`](adr/0424-interaction-lifecycle-ownership.md)（配套 [`ADR 0423`](adr/0423-confirmation-wait-expiry-and-acknowledgement.md)）已完成 Session、ScheduledAction 与 AppCommand 三类确认 owner 的收口：Session 按 `session_id` 定位 actor，ScheduledAction 按 `action_id`，AppCommand 按 request ID；resolve 不跨 owner 扫描。运行时 owner 显式传递，session durable event 形状不变；确认期限由 owner 按绝对 `expires_at` 仲裁，ScheduledAction 的批准/取消由持久执行 claim first-wins 仲裁。Session resolve append 成功后才推进 actor，批量确认与 Paused 状态在同一 SQLite 事务提交。Session grant 与 resolve event 仍是两次可重试 durable write；重启时 running action 不自动 replay。旧 sentinel、fallback 与 renderer `timed_out` 入口已删除，不增加 schema/reset。后续只在出现新回归、职责变化或 §5.5 准入的风险特定验证缺口时重开；实现、替代方案、退出条件和门禁记录见 ADR 0423/0424/0519。
 
-**非原子窗口复核（2026-10-05；已知限制，不进 Active）：** Session-owned resolve 路径先持久化 session-scope grant 并更新当前授权引擎，再由 SessionActor 追加 `interaction_resolved`。若第二步失败，授权仍生效、请求仍 pending、该次请求的原工具调用不启动，renderer 因命令错误保留待处理卡片；进程重启会同时恢复持久 grant 与仍 pending 的交互。现有 ADR 已明确不承诺这两次写入原子性，当前没有稳定后重复回归。暂未找到专门覆盖“grant 成功、resolve append 失败”或其间 actor 停止的故障注入测试；这是已知验证缺口，不单独触发事务重构。只有当产品契约要求 resolve 错误意味着授权也未接受，或出现 grant 与 UI/执行状态冲突造成的实际回归时才重开；届时先固定失败语义并补齐故障注入，再评估同一 SQLite 事务内的 grant+event commit，继续由单一 SessionStore/SessionActor 协调，不拆分事务 owner。
+**非原子窗口复核（2026-10-06；ADR 0519 已完成）：** Session-owned resolve 路径先持久化 session-scope grant 并更新当前授权引擎，再由 SessionActor 追加 `interaction_resolved`。本轮以 SQLite 故障注入固定现有契约：第二步失败返回可重试错误，已批准 grant 仍持久且在当前授权引擎可见，原 actor 的请求保持 pending/Paused，不产生 resolved event；恢复写入后同一请求可重试完成且不重复 grant。**不据此启动事务重构**，不改变 grant-before-resolve 顺序、SessionStore/SessionActor owner 或其他确认 owner 契约。actor 在两步间停止的 stale/retry 语义受 actor registry 与 mailbox 时序影响，契约尚未定义，暂时 Deferred。
 
 ### 5.3 内部模块与 crate 边界（按证据复核）
 
@@ -119,7 +119,7 @@
 - **MemoryWorker durable outbox owner（已完成，ADR 0518）。** durable `MemoryStore`、scanner、retry/ack 与 lifecycle 状态收口到私有 `MemoryOutbox`；`MemoryWorker` 保留组合 facade、推理、prefetch 与 MEMORY-fence dirty 状态。Outbox 使用三方法 inference handler，不持有完整 Worker；共享 root cancellation 保持 scanner/prefetch shutdown 边界。marker、64 项分页、公平调度、CAS、退避、poison repair 与 restart recovery 均保持。没有 schema/API/IPC 或 crate 变化。若剩余 prefetch/inference 后续出现重复取消、容量回归或跨职责耦合，再依 §5.5 单独复核，不按文件行数继续拆分。
 - **App 与 UI：** AppState/runtime、Composer/InputRouter 与 Ask/reducer/event owners 近期未发现稳定后重复边界回归；Ask 响应结算、终态 Ask 清理和 execution phase 来源身份已收口（[ADR 0508](adr/0508-ask-response-reducer-ownership.md)、[0509](adr/0509-terminal-ask-cleanup-event-owner.md)、[0510](adr/0510-session-scoped-react-execution-phase.md)）。2026-10-05 复核发现启动组装（`app_state.rs`）与运行时配置更新（`config_runtime.rs`）都构造 Router/媒体客户端，但失败语义有意不同：启动允许可选客户端降级，运行时更新则先完整准备、成功后才发布。当前不升为 Next；若新增配置或能力规则需要两处分别修改，或出现两条路径行为漂移，再评估一个私有构造 owner，同时保留两种失败策略。只有出现旧响应覆盖新状态、跨 session 状态泄漏或同一 lifecycle 回归时才重开；不提取仅按页面/operation 分类的模块。
 - **Tauri 输出 DTO：** 2026-10-05 复核发现 history/search 已将 Memory `Session` 映射为 App-owned `SessionRecordDto`；`SkillInfo` 在 Skills crate 中明确定义为 bridge/UI snapshot；`Fact` 仍由 `list_facts`/`add_fact` 直接用 Memory repository 类型序列化，但 ADR 0357 将 Rust `Fact` 明确规定为 wire authority，前端通过命名 contracts 消费现有字段。当前没有字段意外暴露、DTO 漂移或独立 wire 消费者的回归证据，因此维持现有边界，不进入 Next。只有需要不同于存储实体的 renderer 字段/命名、发生未审阅的字段外泄/破坏性变化，或出现独立消费者时，才评估 App-owned Fact DTO 与显式 mapper（[ADR 0357](adr/0357-memory-command-contract-boundary.md)；完整输出分类见 [跨层输出契约清单](architecture-output-contract-inventory.md)）。MCP refresh 把内部 `McpReconcile` 收窄为 `McpRefreshPlan`，不会把连接配置送过 IPC；`list_mcp_tools` 的 `McpServerSnapshot` 保留 settings editor 需要的 command/args/cwd/url 并遮蔽 env 值。当前按已存在的编辑契约保留；字段范围或 renderer 隐私要求变化时重新审查（完整边界见输出契约清单）。
-- **Common 与 ActionService：** 依赖图仍是 11 个内部 crate、29 条单向边且无环；Common 作为广泛复用的基础类型 crate 保持现状。`ConfigService` 是 ADR 0068 规定的有限有状态例外，只拥有配置快照、串行 typed patch、原子持久化及不含密钥的变更通知；运行时应用仍由 App 装配。开发规范已与该边界对齐。ActionService 仍与 Tools 的执行策略、`haven_memory::ActionStore`、Agent 授权/完成投影及 App 生命周期形成纵向调用链。只有出现独立消费者、真实依赖方向问题或同环境可复核的维护/构建收益时，才重开 crate 评估（[ADR 0068](adr/0068-versioned-config-service.md)、[ADR 0359](adr/0359-common-boundary-and-profiling-baseline-audit.md)、[0507](adr/0507-session-owned-action-cleanup.md)）。
+- **Common 与 ActionService：** 依赖图仍是 11 个内部 crate、30 条单向边且无环（按 `docs/architecture.md` 的直接依赖清单复核）。Common 作为广泛复用的基础类型 crate 保持现状。`ConfigService` 是 ADR 0068 规定的有限有状态例外，只拥有配置快照、串行 typed patch、原子持久化及不含密钥的变更通知；运行时应用仍由 App 装配。开发规范已与该边界对齐。ActionService 仍与 Tools 的执行策略、`haven_memory::ActionStore`、Agent 授权/完成投影及 App 生命周期形成纵向调用链。只有出现独立消费者、真实依赖方向问题或同环境可复核的维护/构建收益时，才重开 crate 评估（[ADR 0068](adr/0068-versioned-config-service.md)、[ADR 0359](adr/0359-common-boundary-and-profiling-baseline-audit.md)、[0507](adr/0507-session-owned-action-cleanup.md)）。
 
 **Crate 体量基线（2026-10-05）：**按 workspace `.rs` 文件非空物理行粗略统计，含注释；测试按测试路径及 `#[cfg(test)]` 模块归类，不是 AST 指标。
 
@@ -158,9 +158,9 @@
 | 4 | **模块成熟后再评估 crate/API 边界** | 只有模块 owner 已稳定，且存在独立消费者、真实依赖方向问题或可复核构建/迭代成本时才评估 crate 拆分。交付物包括依赖图、API/消费者映射；若声称构建收益，须有同环境基准。 | 提取后依赖单向、API 稳定、消费者不用反向依赖或重复 adapter，并证明维护/构建收益；任一不满足就保留现边界。 |
 | 5 | **性能与容量** | 仅在同负载 profile 复现有用户意义的成本时优化；交付物为固定场景的前后指标，并遵守 SQLite 容量、失败恢复与资源上限契约。Windows 发布验收独立保留在 §5.1，不作为结构重构阶段的退出依赖。 | 优化结果超过噪声且达到目标，否则关闭候选；没有当前测量就不以“降复杂度”为名做性能改动。 |
 
-以上是循环复核的先后顺序，不是一次性瀑布项目：每轮从步骤 0 重新分流，完成一个切片、同类问题复现、依赖/API 边界变化或准备发布时再审查证据。ADR 0514–0518 与 Memory fact marker generation-safe ack/有界 outbox（ADR 0107/0259）已完成；ReAct Fatal 双终态 owner 已在步骤 2 收口（ADR 0511）；Admin 风险等级 parity 回归门禁已完成（ADR 0512）。2026-10-06 完成 ADR 0518 后复核 §5.2–§5.4、近期提交与 crate/API 边界：`session_events` 仍无相同原子性/rollback 缺陷复发，MemoryWorker 剩余 prefetch/inference 无近期重复回归，App/UI、Common/ActionService 与性能候选也无新增准入证据，因此当前无 Active/Next；各候选的重开条件见上表及 §5.5。发布验收 Gate 与结构重构并行，按 §5.1 独立关闭。
+以上是循环复核的先后顺序，不是一次性瀑布项目：每轮从步骤 0 重新分流，完成一个切片、同类问题复现、依赖/API 边界变化或准备发布时再审查证据。ADR 0514–0519 与 Memory fact marker generation-safe ack/有界 outbox（ADR 0107/0259）已完成；ReAct Fatal 双终态 owner 已在步骤 2 收口（ADR 0511）；Admin 风险等级 parity 回归门禁已完成（ADR 0512）。ADR 0519 关闭 grant/resolve 组合失败的定向测试缺口后，重新复核确认 `session_events` 事务不变量无复发，MemoryWorker 剩余 prefetch/inference 无近期重复回归，App/UI、Common/ActionService、性能及依赖/API 边界均无新增准入证据，当前无 Active/Next；审计发现并校准了路线图中的依赖边计数。发布验收 Gate 与结构重构并行，按 §5.1 独立关闭。
 
-**当前执行位置：** 架构阶段 0–8 已完成；ADR 0514–0518 与 Memory fact marker generation-safe ack、有界 outbox/session recovery（ADR 0107/0259）均已完成并通过适用 workspace 门禁。2026-10-06 步骤 0 复核未选新 Active/Next；具体重开条件见 §5.2–§5.5。MemoryOutbox 是 `haven-agent` 内部 owner，没有 crate 拆分；近期边界仍为 11 个内部 crate、29 条单向边，未发现需要更改的依赖方向或独立消费者收益。ReAct Fatal 双终态发布 owner 已由 ADR 0511 收口；Admin 20 个共用操作的风险等级 parity 回归门禁已由 ADR 0512 收口，两项 native-only 操作仍单独测试。Windows 发布验收仍是独立 Open Gate。
+**当前执行位置：** 架构阶段 0–8 已完成；ADR 0514–0519 与 Memory fact marker generation-safe ack、有界 outbox/session recovery（ADR 0107/0259）均已完成并通过适用 workspace 门禁。2026-10-06 步骤 0 在完成 ADR 0519 后复核，当前没有 Active/Next；`session_events` 大文件候选仍 Deferred，MemoryOutbox 是 `haven-agent` 内部 owner，没有 crate 拆分；依赖边界复核为 11 个内部 crate、30 条单向边，无需更改依赖方向或独立消费者收益。ReAct Fatal 双终态发布 owner 已由 ADR 0511 收口；Admin 20 个共用操作的风险等级 parity 回归门禁已由 ADR 0512 收口，两项 native-only 操作仍单独测试。Windows 发布验收仍是独立 Open Gate。
 
 ## 6. 更新规则
 

@@ -507,3 +507,4 @@
 - [0516：用 typed projection 表达 MCP prompt index](0516-typed-mcp-prompt-index.md)
 - [0517：统一录音停止后的转写调度](0517-recording-stop-transcription-scheduling.md)
 - [0518：隔离 MemoryWorker durable outbox owner](0518-memory-worker-outbox-owner.md)
+- [0519：验证 Session grant 与 resolve event 分离写入的失败语义](0519-session-grant-resolve-append-failure-contract-test.md)

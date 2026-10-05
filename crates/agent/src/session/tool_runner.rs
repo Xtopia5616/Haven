@@ -2305,6 +2305,172 @@ mod scheduled_authorization_tests {
     }
 
     #[tokio::test]
+    async fn session_grant_survives_resolve_append_failure_and_same_request_retry() {
+        let (supervisor, tools, database, _directory) = test_supervisor();
+        let session = supervisor
+            .create_session("session grant resolve append retry")
+            .await
+            .unwrap();
+        let tool_name = "files.write";
+        let input = json!({"path": "notes.txt"});
+        tools
+            .register_for_session(
+                &session.id,
+                Arc::new(PolicyTestTool {
+                    name: tool_name.into(),
+                    risk_level: RiskLevel::High,
+                    on_execute: None,
+                }),
+            )
+            .await;
+
+        let authorization_request = supervisor
+            .scheduled_authorization_request(Some(&session.id), tool_name, &input)
+            .await;
+        let receipt = match supervisor
+            .authorization
+            .authorize(&authorization_request)
+            .await
+        {
+            AuthorizationDecision::RequiresConfirmation { receipt, .. } => receipt,
+            decision => panic!("expected confirmation, got {decision:?}"),
+        };
+        let request_id = receipt.confirmation_id.clone();
+        let request = crate::interaction::InteractionRequest::confirm(
+            &session.id,
+            1,
+            tool_name.into(),
+            input,
+            "call-grant-resolve-retry".into(),
+            request_id.to_string(),
+            0,
+            RiskLevel::High,
+            Some(receipt),
+        );
+        supervisor
+            .request_confirm_batch(&session.id, vec![request])
+            .await
+            .unwrap();
+        assert_eq!(
+            supervisor.get_active_session_status(&session.id).await,
+            Some(haven_common::SessionStatus::Paused)
+        );
+
+        database
+            .conn()
+            .execute_batch(
+                "CREATE TRIGGER reject_confirmation_resolve_event
+                 BEFORE INSERT ON session_events
+                 WHEN NEW.event_type = 'interaction_resolved'
+                 BEGIN SELECT RAISE(ABORT, 'test confirmation resolve append failure'); END;",
+            )
+            .unwrap();
+        let owner = crate::interaction::InteractionOwner::Session {
+            session_id: session.id.clone(),
+        };
+        let error = supervisor
+            .resolve_confirmation_with_session_grant_for_owner(
+                &owner,
+                &request_id,
+                haven_common::types::PermissionTarget::Operation,
+                PermissionEffect::Allow,
+            )
+            .await
+            .expect_err("a failed durable decision append must be retryable");
+        assert!(format!("{error:#}").contains("test confirmation resolve append failure"));
+
+        let grants = database.session_authorization_grants(&session.id).unwrap();
+        assert_eq!(grants.len(), 1, "the approved grant remains durable");
+        assert_eq!(grants[0].effect, PermissionEffect::Allow);
+        assert!(matches!(
+            supervisor
+                .authorization
+                .authorize(&authorization_request)
+                .await,
+            AuthorizationDecision::AutoApproved
+        ));
+        assert!(
+            supervisor
+                .pending_session_confirmation_request(&session.id, &request_id)
+                .await
+                .is_some(),
+            "the original actor must retain the pending request after append failure"
+        );
+        assert_eq!(
+            supervisor.get_active_session_status(&session.id).await,
+            Some(haven_common::SessionStatus::Paused),
+            "append failure must not wake the paused session"
+        );
+        let events = supervisor
+            .store
+            .read_active_domain_events_async(&session.id)
+            .await
+            .unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.event_type == haven_memory::INTERACTION_REQUESTED_EVENT_TYPE)
+                .count(),
+            1
+        );
+        assert!(
+            events
+                .iter()
+                .all(|event| event.event_type != haven_memory::INTERACTION_RESOLVED_EVENT_TYPE),
+            "the failed append must not leave a partial decision event"
+        );
+
+        database
+            .conn()
+            .execute_batch("DROP TRIGGER reject_confirmation_resolve_event;")
+            .unwrap();
+        assert!(
+            supervisor
+                .resolve_confirmation_with_session_grant_for_owner(
+                    &owner,
+                    &request_id,
+                    haven_common::types::PermissionTarget::Operation,
+                    PermissionEffect::Allow,
+                )
+                .await
+                .unwrap()
+                .is_some(),
+            "the same request must resolve after the durable store recovers"
+        );
+        assert!(
+            supervisor
+                .pending_session_confirmation_request(&session.id, &request_id)
+                .await
+                .is_none()
+        );
+        assert_eq!(
+            supervisor.get_active_session_status(&session.id).await,
+            Some(haven_common::SessionStatus::Pending)
+        );
+        assert_eq!(
+            database
+                .session_authorization_grants(&session.id)
+                .unwrap()
+                .len(),
+            1,
+            "retry must not duplicate the already durable grant"
+        );
+        let events = supervisor
+            .store
+            .read_active_domain_events_async(&session.id)
+            .await
+            .unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.event_type == haven_memory::INTERACTION_RESOLVED_EVENT_TYPE)
+                .count(),
+            1,
+            "a successful retry must append exactly one decision event"
+        );
+    }
+
+    #[tokio::test]
     async fn scheduled_resolve_and_expiry_share_a_single_terminal_claim() {
         let (supervisor, _tools, _database, _directory) = test_supervisor();
         let action_id = running_scheduled_action(&supervisor, None, "files.write").await;
