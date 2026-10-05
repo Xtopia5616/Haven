@@ -145,6 +145,8 @@
 2. **后续候选：SessionStore 周边 lifecycle/read façade 与测试归属。** 事务核心拆分仍按 §5.3 的高风险停止条件暂缓；只有稳定 owner 后出现重复原子性/rollback 回归，或独立职责持续迫使同改且能设计出不触碰事务私有状态的边界，才启动评估。
 3. **长期条件项：Tools / App / UI 模块与 crate 边界、性能。** 继续用架构依赖清单、独立消费者和同负载 profile 证明收益；当前没有获准的大 crate 拆分。Common、Tools crate 与通用 Job 抽象维持既有暂缓决定，除非出现新的反复故障或可量化收益证据。
 
+2026-10-05 对 `AppState`/`ApplicationRuntime` 与 UI shell/Composer 的并行只读复核均未发现 owner 稳定后的重复边界回归，故不新增 Active 项；重开条件见 §5.3 的启动编排、Composer 与全局布局观察结论。
+
 `SessionUsage` 的首项契约会影响可见统计和持久投影范围，实施前需由产品/协议 owner 明确选项；这项决定不妨碍先完成其他有独立证据且边界明确的结构切片。并行 agent 继续用于只读、定范围的源码/历史审计；每项结论由主执行者核对工作树与门禁。实现仍一次只进行一个 Active slice。
 
 ## 6. 更新规则
