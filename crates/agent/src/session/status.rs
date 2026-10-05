@@ -58,7 +58,18 @@ impl SessionSupervisor {
     }
 
     pub async fn end_session(&self, session_id: &str) -> anyhow::Result<SessionStatus> {
-        self.end_session_inner(session_id, true).await
+        self.end_session_with_cascade(session_id, true).await
+    }
+
+    async fn end_session_with_cascade(
+        &self,
+        session_id: &str,
+        cascade: bool,
+    ) -> anyhow::Result<SessionStatus> {
+        // Close concurrent loads/resumes while an actorless end persists its
+        // terminal status and cleans up durable actions.
+        let _closing = self.begin_session_closing(session_id).await?;
+        self.end_session_inner(session_id, cascade).await
     }
 
     pub async fn interrupt_session(&self, session_id: &str) -> anyhow::Result<bool> {
@@ -102,6 +113,7 @@ impl SessionSupervisor {
     ) -> anyhow::Result<SessionStatus> {
         let Some(actor) = self.actor_for(session_id).await else {
             self.cancel_direct_waiters(session_id).await;
+            self.cancel_session_actions_checked(session_id).await?;
             Self::persist_status(&self.store, session_id, SessionStatus::Completed).await?;
             self.finish_ended_session(session_id, cascade).await;
             return Ok(SessionStatus::Completed);
@@ -193,7 +205,11 @@ impl SessionSupervisor {
                 .await
                 .map(|session| session.title.unwrap_or(session.input))
                 .unwrap_or_default();
-            if self.end_session_inner(&child_id, false).await.is_ok() {
+            if self
+                .end_session_with_cascade(&child_id, false)
+                .await
+                .is_ok()
+            {
                 self.emit_event(SessionEvent::CascadeCompleted {
                     session_id: child_id,
                     title,
@@ -218,9 +234,17 @@ impl SessionSupervisor {
         self.cancel_direct_waiters(session_id).await;
         if let Some(actor) = self.actor_for(session_id).await {
             actor.cancel_actor();
-            self.cancel_session_actions(session_id).await;
             self.dequeue_pending(session_id).await;
+            if let Err(error) = self.cancel_session_actions_checked(session_id).await {
+                tracing::warn!(session_id = %session_id, "initial session action cleanup failed while quiescing; retrying after run exit: {error}");
+            }
             self.await_run_finished(session_id).await?;
+            // Join closes action admission from the actor run, so this final
+            // pass also catches a durable scheduled row whose caller was
+            // cancelled between its SQLite commit and board publication.
+            self.cancel_session_actions_checked(session_id).await?;
+        } else {
+            self.cancel_session_actions_checked(session_id).await?;
         }
         Ok(())
     }
@@ -411,6 +435,12 @@ impl SessionSupervisor {
                 .store
                 .all_session_ids_cancellable(tokio_util::sync::CancellationToken::new())
                 .await?;
+            // The actor registry is only the resident working set. Include
+            // durable sessions that were never loaded before clearing their
+            // rows, while ActionService remains the action-state owner.
+            for session_id in &session_ids {
+                self.cancel_session_actions_checked(session_id).await?;
+            }
             self.clear_all_sessions_locked().await?;
             self.partials.forget_all_sessions().await;
             self.store.clear_sessions().await?;
@@ -742,7 +772,22 @@ impl SessionSupervisor {
     }
 
     pub async fn cancel_session_actions(&self, session_id: &str) {
-        self.actions.cancel_owned_by_session(session_id).await;
+        if let Err(error) = self
+            .actions
+            .cancel_owned_by_session_checked(session_id)
+            .await
+        {
+            tracing::warn!(session_id = %session_id, "failed to completely cancel session-owned actions: {error}");
+        }
+    }
+
+    /// Fail closed for destructive lifecycle paths when a durable scheduled
+    /// cancellation cannot be confirmed. The caller must preserve the
+    /// durable session so cleanup can be retried.
+    pub async fn cancel_session_actions_checked(&self, session_id: &str) -> anyhow::Result<()> {
+        self.actions
+            .cancel_owned_by_session_checked(session_id)
+            .await
     }
 
     pub async fn cancel_session_background_actions(&self, session_id: &str) {

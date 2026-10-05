@@ -65,7 +65,7 @@ impl ActionService {
 
         let id = haven_common::types::new_id("act");
         let due_at = due.map(|value| value.to_rfc3339()).unwrap_or_default();
-        let _mutation = self.spawn_gate.lock().await;
+        let mutation = self.spawn_gate.clone().lock_owned().await;
         if self.shutting_down.load(Ordering::Acquire) {
             anyhow::bail!("action service is shutting down");
         }
@@ -88,26 +88,49 @@ impl ActionService {
             );
         }
 
-        if let Some(store) = self.action_store.read().await.clone() {
+        let _mutation = if let Some(store) = self.action_store.read().await.clone() {
+            // Keep admission serialized even if the caller is cancelled while
+            // SQLite is still writing on its blocking worker. Destructive
+            // session cleanup will then observe the committed durable row.
             let args_json = tool_args.as_ref().map(Value::to_string);
-            store
-                .save_scheduled_action(
-                    id.clone(),
-                    due_at.clone(),
-                    title.clone(),
-                    body.clone(),
-                    mode.as_str().to_string(),
-                    session_id.clone(),
-                    tool_name.clone(),
-                    args_json,
-                    prompt.clone(),
-                    watch_action_id.clone(),
-                )
-                .await
-                .map_err(|error| {
-                    anyhow::anyhow!("failed to persist scheduled task '{}': {error}", id)
-                })?;
-        }
+            let persist_id = id.clone();
+            let persist_due_at = due_at.clone();
+            let persist_title = title.clone();
+            let persist_body = body.clone();
+            let persist_mode = mode.as_str().to_string();
+            let persist_session_id = session_id.clone();
+            let persist_tool_name = tool_name.clone();
+            let persist_prompt = prompt.clone();
+            let persist_watch_action_id = watch_action_id.clone();
+            let persisted = tokio::spawn(async move {
+                let result = store
+                    .save_scheduled_action(
+                        persist_id,
+                        persist_due_at,
+                        persist_title,
+                        persist_body,
+                        persist_mode,
+                        persist_session_id,
+                        persist_tool_name,
+                        args_json,
+                        persist_prompt,
+                        persist_watch_action_id,
+                    )
+                    .await;
+                (mutation, result)
+            })
+            .await
+            .map_err(|error| {
+                anyhow::anyhow!("scheduled action persistence worker failed: {error}")
+            })?;
+            let (mutation, result) = persisted;
+            result.map_err(|error| {
+                anyhow::anyhow!("failed to persist scheduled task '{}': {error}", id)
+            })?;
+            mutation
+        } else {
+            mutation
+        };
 
         let entry = ScheduledActionEntry {
             title: title.clone(),
@@ -722,6 +745,23 @@ impl ActionService {
 
     pub(super) async fn cancel_scheduled(&self, id: &str, owner: Option<&str>) -> bool {
         let _mutation = self.spawn_gate.lock().await;
+        match self.cancel_scheduled_locked(id, owner).await {
+            Ok(cancelled) => cancelled,
+            Err(error) => {
+                tracing::warn!(action_id = %id, "failed to persist scheduled action cancellation after retries: {error}");
+                false
+            }
+        }
+    }
+
+    /// Cancel a scheduled board entry while the caller holds `spawn_gate`.
+    /// Persistence failures remain distinguishable from a CAS loser so a
+    /// destructive session cleanup can fail closed.
+    pub(super) async fn cancel_scheduled_locked(
+        &self,
+        id: &str,
+        owner: Option<&str>,
+    ) -> anyhow::Result<bool> {
         let _terminal = self.terminal_transition.lock().await;
         if self
             .scheduled_execution_claims
@@ -729,12 +769,12 @@ impl ActionService {
             .await
             .contains_key(id)
         {
-            return false;
+            return Ok(false);
         }
         let (schedule, started_at, session_id) = {
             let actions = self.actions.read().await;
             let Some(action) = actions.get(id) else {
-                return false;
+                return Ok(false);
             };
             if action.kind != ActionKind::Scheduled
                 || !can_claim_terminal(
@@ -744,10 +784,10 @@ impl ActionService {
                 )
                 || owner.is_some_and(|value| action.session_id.as_deref() != Some(value))
             {
-                return false;
+                return Ok(false);
             }
             let Some(schedule) = action.scheduled.as_ref() else {
-                return false;
+                return Ok(false);
             };
             let started_at = match &action.state {
                 // A waiting schedule has not started. Keep this empty in the
@@ -755,7 +795,7 @@ impl ActionService {
                 // `started_at` NULL for the same reason.
                 ActionState::Waiting => String::new(),
                 ActionState::Running { started_at } => started_at.clone(),
-                _ => return false,
+                _ => return Ok(false),
             };
             (schedule.clone(), started_at, action.session_id.clone())
         };
@@ -772,7 +812,7 @@ impl ActionService {
                         last_error = None;
                         break;
                     }
-                    Ok(false) => return false,
+                    Ok(false) => return Ok(false),
                     Err(error) => {
                         last_error = Some(error);
                         match retry_policy.decide(attempt, true) {
@@ -783,34 +823,30 @@ impl ActionService {
                 }
             }
             if let Some(error) = last_error {
-                tracing::warn!(
-                    action_id = %id,
-                    "failed to persist scheduled action cancellation after retries: {error}"
-                );
-                // Keep both the waiting/running memory state and its timer. A
-                // false result is deliberately not a cancellation claim; the
-                // caller must keep showing the live action and may retry.
-                return false;
+                // Keep both the waiting/running memory state and its timer.
+                // User cancellation maps this error to false; destructive
+                // owner cleanup propagates it and fails closed.
+                return Err(error);
             }
         }
         let state = timestamps.build(TerminalPayload::Cancelled);
         let mut actions = self.actions.write().await;
         let Some(action) = actions.get_mut(id) else {
-            return false;
+            return Ok(false);
         };
         if !can_claim_terminal(
             action.state.status(),
             ActionStatus::Cancelled,
             TerminalSource::Live,
         ) {
-            return false;
+            return Ok(false);
         }
         action.state = state.clone();
         self.scheduled_execution_claims.write().await.remove(id);
         self.clear_scheduled_fire_claim(id).await;
         drop(actions);
         self.emit_scheduled_finished(id, session_id.as_deref(), &schedule, &state);
-        true
+        Ok(true)
     }
 
     /// Claim the right to perform a scheduled action's side effect. A

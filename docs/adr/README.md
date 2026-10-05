@@ -495,3 +495,4 @@
 - [0504：改用可用宽度选择自适应布局](0504-width-based-adaptive-layout-breakpoints.md)
 - [0505：固定 ADR 编号身份并校验目录完整性](0505-adr-index-identity-and-integrity-check.md)
 - [0506：MCP 管理操作共享建连网络策略](0506-mcp-admin-connection-network-policy.md)
+- [0507：会话终止与删除清理所属 Action](0507-session-owned-action-cleanup.md)

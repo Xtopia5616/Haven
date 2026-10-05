@@ -106,6 +106,39 @@ impl Database {
         Ok(out)
     }
 
+    /// All scheduled actions that may still fire or await an execution claim.
+    /// Unlike the pending restore query, this also includes `running` rows so
+    /// owner cleanup can arbitrate against another service instance that has
+    /// already persisted its timer transition.
+    pub fn list_live_scheduled_actions(&self) -> anyhow::Result<Vec<ScheduledActionRow>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT id, due_at, title, body, mode, session_id, tool_name, tool_args, prompt, watch_action_id, status, created_at
+             FROM actions WHERE kind = 'scheduled' AND status IN ('waiting', 'running') ORDER BY due_at ASC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(ScheduledActionRow {
+                id: row.get(0)?,
+                due_at: row.get(1)?,
+                title: row.get(2)?,
+                body: row.get(3)?,
+                mode: row.get(4)?,
+                session_id: row.get(5)?,
+                tool_name: row.get(6)?,
+                tool_args: row.get(7)?,
+                prompt: row.get(8)?,
+                watch_action_id: row.get(9)?,
+                status: ActionStatus::from_status_str(&row.get::<_, String>(10)?),
+                created_at: row.get(11)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
     /// Claim a scheduled action's trigger. Terminal rows remain durable history
     /// and are no longer re-armed on the next startup.
     pub fn start_scheduled_action(&self, id: &str, started_at: &str) -> anyhow::Result<bool> {

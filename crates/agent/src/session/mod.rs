@@ -4,9 +4,9 @@ pub use haven_common::lifecycle::SessionWaitingReason;
 use haven_common::types::{
     CapabilityScope, MessageAttachment, PermissionEffect, PermissionTarget, RiskLevel,
 };
-#[cfg(test)]
-use haven_memory::Database;
 use haven_memory::repositories::sessions::Session as DbSession;
+#[cfg(test)]
+use haven_memory::{ActionStore, Database};
 use haven_memory::{SessionAuthorizationGrant, SessionStore};
 #[cfg(test)]
 use haven_tools::ToolsManager;
@@ -1417,6 +1417,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn clear_sessions_and_delete_cancels_actions_for_unloaded_sessions() {
+        let db = temp_db();
+        let session = db.create_session("unloaded session to clear").unwrap();
+        let action_id = "act-unloaded-clear";
+        let due_at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+        db.save_scheduled_action(
+            action_id,
+            &due_at,
+            "Unloaded clear",
+            "must be cancelled",
+            "tool",
+            Some(&session.id),
+            Some("notify"),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let exec = Arc::new(SessionSupervisor::new_for_test(
+            db.clone(),
+            Arc::new(ToolsManager::new()),
+            1,
+        ));
+        exec.action_service()
+            .set_action_store(Some(ActionStore::new(db.clone())))
+            .await;
+
+        assert_eq!(
+            exec.clear_sessions_and_delete().await.unwrap(),
+            vec![session.id.clone()]
+        );
+
+        assert!(db.get_session(&session.id).unwrap().is_none());
+        assert_eq!(
+            db.get_action(action_id).unwrap().unwrap().status,
+            haven_common::ActionStatus::Cancelled
+        );
+    }
+
+    #[tokio::test]
     async fn delete_cancels_direct_resume_waiting_for_capacity() {
         let exec = make_executor(1);
         let session = exec.create_session("delete waiting resume").await.unwrap();
@@ -2342,11 +2382,29 @@ mod tests {
     async fn end_session_persists_completed_when_actor_is_not_loaded() {
         let db = temp_db();
         let session = db.create_session("unloaded session").unwrap();
+        let action_id = "act-actorless-end";
+        let due_at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+        db.save_scheduled_action(
+            action_id,
+            &due_at,
+            "Actorless end",
+            "must be cancelled",
+            "tool",
+            Some(&session.id),
+            Some("notify"),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         let exec = Arc::new(SessionSupervisor::new_for_test(
             db.clone(),
             Arc::new(ToolsManager::new()),
             3,
         ));
+        exec.action_service()
+            .set_action_store(Some(ActionStore::new(db.clone())))
+            .await;
 
         assert_eq!(
             exec.end_session(&session.id).await.unwrap(),
@@ -2355,6 +2413,105 @@ mod tests {
         assert_eq!(
             db.get_session(&session.id).unwrap().unwrap().status,
             SessionStatus::Completed
+        );
+        assert_eq!(
+            db.get_action(action_id).unwrap().unwrap().status,
+            haven_common::ActionStatus::Cancelled
+        );
+    }
+
+    #[tokio::test]
+    async fn actorless_delete_cancels_unrestored_scheduled_action_before_deleting_session() {
+        let db = temp_db();
+        let session = db.create_session("unloaded delete session").unwrap();
+        let action_id = "act-actorless-delete";
+        let due_at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+        db.save_scheduled_action(
+            action_id,
+            &due_at,
+            "Actorless delete",
+            "must be cancelled before delete",
+            "tool",
+            Some(&session.id),
+            Some("notify"),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let exec = Arc::new(SessionSupervisor::new_for_test(
+            db.clone(),
+            Arc::new(ToolsManager::new()),
+            3,
+        ));
+        exec.action_service()
+            .set_action_store(Some(ActionStore::new(db.clone())))
+            .await;
+
+        exec.delete_session(&session.id).await.unwrap();
+
+        assert!(db.get_session(&session.id).unwrap().is_none());
+        assert_eq!(
+            db.get_action(action_id).unwrap().unwrap().status,
+            haven_common::ActionStatus::Cancelled
+        );
+    }
+
+    #[tokio::test]
+    async fn session_delete_stays_open_when_durable_action_cancellation_fails() {
+        let db = temp_db();
+        let session = db.create_session("delete fail closed").unwrap();
+        let action_id = "act-delete-fail-closed";
+        let due_at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+        db.save_scheduled_action(
+            action_id,
+            &due_at,
+            "Delete failure",
+            "remain attached until cleanup works",
+            "tool",
+            Some(&session.id),
+            Some("notify"),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let exec = Arc::new(SessionSupervisor::new_for_test(
+            db.clone(),
+            Arc::new(ToolsManager::new()),
+            3,
+        ));
+        exec.action_service()
+            .set_action_store(Some(ActionStore::new(db.clone())))
+            .await;
+        db.conn()
+            .execute_batch(&format!(
+                "CREATE TRIGGER block_session_action_cancel
+                 BEFORE UPDATE OF status ON actions
+                 WHEN NEW.id = '{action_id}' AND NEW.status = 'cancelled'
+                 BEGIN SELECT RAISE(ABORT, 'injected cancellation failure'); END;"
+            ))
+            .unwrap();
+
+        let error = exec
+            .delete_session(&session.id)
+            .await
+            .expect_err("a session must remain if its durable action cannot be cancelled");
+        assert!(format!("{error:#}").contains("injected cancellation failure"));
+        assert!(db.get_session(&session.id).unwrap().is_some());
+        assert_eq!(
+            db.get_action(action_id).unwrap().unwrap().status,
+            haven_common::ActionStatus::Waiting
+        );
+
+        db.conn()
+            .execute_batch("DROP TRIGGER block_session_action_cancel")
+            .unwrap();
+        exec.delete_session(&session.id).await.unwrap();
+        assert!(db.get_session(&session.id).unwrap().is_none());
+        assert_eq!(
+            db.get_action(action_id).unwrap().unwrap().status,
+            haven_common::ActionStatus::Cancelled
         );
     }
 

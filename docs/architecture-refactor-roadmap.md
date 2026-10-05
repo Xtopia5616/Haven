@@ -1,6 +1,6 @@
 # Haven 架构降复杂度重构路线图
 
-> 状态：阶段 0–8 已完成；SessionUsage 累计上限契约、session-scoped KV 孤儿清理 owner、summary marker 单一原子生产路径、Tools 测试归属、Input→Tools 测试反向依赖、MCP/Skill 直调授权策略来源、MCP 管理操作网络策略来源、X12 例外消息写入口与 ADR 编号索引完整性已收口；当前无 Active 结构切片；下一候选为 actor 缺席时显式终止/删除会话的 action 清理；Windows 发布验收为独立开放签核门
+> 状态：阶段 0–8 已完成；SessionUsage 累计上限契约、session-scoped KV 孤儿清理 owner、summary marker 单一原子生产路径、Tools 测试归属、Input→Tools 测试反向依赖、MCP/Skill 直调授权策略来源、MCP 管理操作网络策略来源、X12 例外消息写入口、ADR 编号索引完整性与 actorless session action lifecycle 清理（ADR 0507）已收口；当前无 Active 结构切片；Windows 发布验收为独立开放签核门
 > 更新日期：2026-10-05
 > 范围：Agent/Session、Memory、Tools、LLM、App IPC 与 UI
 
@@ -181,7 +181,7 @@
 12. **已完成：收窄 X12 例外消息写入口（[ADR 0496](adr/0496-limit-x12-exception-message-write-api.md)）。** 删除可任意指定 role/type 的公开消息 writer，改为 origin 派生的 ingress seed、封闭 kind 的 recovery partial 和固定 user/text 的 terminal action-result 三个 `SessionStore` 端口。共享行写逻辑、稳定 ID 幂等、投影时钟和事务外职责顺序保留；schema 与数据不变。
 13. **已完成：恢复 ADR 编号与索引完整性（[ADR 0505](adr/0505-adr-index-identity-and-integrity-check.md)）。** 保留每组最早入库的编号，为后续冲突记录分配 0497–0504；补齐 22 个遗漏索引项，并让 CI 校验文件编号唯一、README 精确覆盖和升序及本地 ADR 链接。
 14. **已完成：收敛 MCP 管理操作建连分类（[ADR 0506](adr/0506-mcp-admin-connection-network-policy.md)）。** add/update/toggle/reload 与 Connect 共用 `Opaque` 分类，Restricted 在 handler 前拦截可建连模型操作；list/disconnect/remove 在模型与原生路径共用 `None`。
-15. **Next：actor 缺席时会话终止/删除的 action 清理。** 只读审计发现显式结束和删除仅在 SessionActor 驻留时调用 `cancel_session_actions`，ActionService 当前按内存 board 选择 action；删除 session 后未恢复的 waiting row 可成为孤儿并在重启恢复。实施前先设计 actor-independent、覆盖 durable waiting rows 与 restore/delete 竞态的清理路径；保留 shutdown 时 scheduled work 继续 waiting，以及 ADR 0424 的 action execution claim first-wins。
+15. **已完成 — [ADR 0507](adr/0507-session-owned-action-cleanup.md)：会话终止/删除清理所属 action。** 显式 end、单 session delete/retention 与全量删除现都经 SessionSupervisor→ActionService owner 链清理；actorless 与未 hydrate 的 waiting action 不再漏过。ActionService 串行化 scheduled admission、restore/hydrate 与本实例 owner cleanup；cleanup 还枚举 durable waiting/running 行，以 SQLite CAS 覆盖另一实例已启动但尚未 claim 的任务。持久读写错误阻止删除 session，claim-wins 保持 ADR 0424 原语义，shutdown 继续保留 scheduled waiting。workspace tests、严格 Clippy、格式及 ADR 索引门禁通过，细节见 ADR 0507。
 
 #### 长期执行台阶与决策门
 
@@ -195,7 +195,7 @@
 | D. 性能与容量 | 只有可复现的延迟、内存、磁盘或并发问题进入 profile；保留现有 SQLite 容量与失败恢复不变量。 | 同数据、负载、构建和环境比较前后指标；没有超过噪声且对用户有意义的改进就关闭，不继续微调。不得把无 profile 的结构搬迁包装成性能优化。 |
 | E. Windows 发布签核 | 发布准备时独立执行 §5.1 的最新构建、安装生命周期、用户数据保留、真实 UI 流程和磁盘耗尽验收。该 Gate 可与不影响发布路径的单一结构切片并行准备。 | 把构建版本、schema、环境、实际结果与限制写入 ADR 0395；旧 profile 或历史验收不可代替当前安装包结果。未通过时保持 Gate Open，不据此发起无关架构拆分。 |
 
-**当前执行位置：** 阶段 0–8 已完成；台阶 A 已复核 Tools 契约/Admin/messaging、Agent memory worker 和 MCP 管理策略分类。`SessionStore` lifecycle wrapper 和上述大模块的纯拆分均暂缓。ADR 0481 的旧 summary marker-only writer、ADR 0496 的通用 X12 消息写入口已删除；`cargo test --locked -p haven-tools`、严格 Clippy 与格式门禁通过。ADR 0505 已恢复目录编号与索引一一对应，CI 持续检查该契约。路线当前无 Active；下一项是 actor 缺席时显式 end/delete 的 action 清理，先解决内存 board 和 durable waiting rows 的一致性及 restore/delete 竞态。Common 拆分、Tools crate 拆分与通用 Job 抽象继续暂缓，直到相应门槛被新证据满足。
+**当前执行位置：** 阶段 0–8 已完成；台阶 A 已复核 Tools 契约/Admin/messaging、Agent memory worker 和 MCP 管理策略分类。`SessionStore` lifecycle wrapper 和上述大模块的纯拆分均暂缓。ADR 0481 的旧 summary marker-only writer、ADR 0496 的通用 X12 消息写入口已删除；ADR 0505 已恢复目录编号与索引一一对应，CI 持续检查该契约。ADR 0507 已完成：显式 end、actorless delete/retention 与全量 session deletion 的 action cleanup 收归 SessionSupervisor→ActionService owner 链；同实例 gate 串行化 restore/hydrate、scheduled admission 和 cleanup，跨实例 running/cancel/claim 继续由 SQLite CAS 仲裁。持久错误时删除 fail closed；普通 shutdown 保留 scheduled work。当前无 Active 结构切片，后续只在下一候选满足证据门槛后再准入。Common 拆分、Tools crate 拆分与通用 Job 抽象继续暂缓，直到相应门槛被新证据满足。
 
 2026-10-05 对 `AppState`/`ApplicationRuntime`、UI shell/Composer 与 SessionStore 非事务 lifecycle façade 的只读复核均未发现 owner 稳定后的重复边界回归。SessionStore 生命周期 wrapper 大多是 typed `run_blocking` 转发，实际 actor/确认/delete policy 由 Agent `session/status.rs` 持有；搬移 wrapper 不会改变 owner 或调用链，故不新增 Active 项。重开条件见 §5.3 的启动编排、Composer、全局布局与 SessionStore 边界观察结论。
 

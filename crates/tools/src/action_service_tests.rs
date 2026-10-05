@@ -1864,6 +1864,241 @@ async fn full_session_cleanup_cancels_background_before_scheduled() {
 }
 
 #[tokio::test]
+async fn session_cleanup_cancels_durable_scheduled_rows_not_yet_restored() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let db = Arc::new(Database::open(&dir.path().join("unrestored-actions.db")).unwrap());
+    let service = Arc::new(ActionService::new());
+    service
+        .set_action_store(Some(ActionStore::new(db.clone())))
+        .await;
+    let session_id = "ses-unrestored-owner";
+    let action_id = "act-unrestored-owner";
+    let due_at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+    db.save_scheduled_action(
+        action_id,
+        &due_at,
+        "Not restored",
+        "durable waiting row",
+        "tool",
+        Some(session_id),
+        Some("notify"),
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+
+    service.cancel_owned_by_session(session_id).await;
+
+    assert_eq!(
+        db.get_action(action_id).unwrap().unwrap().status,
+        ActionStatus::Cancelled
+    );
+    assert!(db.list_pending_scheduled_actions().unwrap().is_empty());
+    assert_eq!(service.restore_pending().await, 0);
+    assert_eq!(
+        service.status_view(action_id).await.to_json(true)["status"],
+        "not_found"
+    );
+}
+
+#[tokio::test]
+async fn session_cleanup_preserves_a_durable_scheduled_execution_claim() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let db = Arc::new(Database::open(&dir.path().join("claimed-unrestored.db")).unwrap());
+    let service = Arc::new(ActionService::new());
+    service
+        .set_action_store(Some(ActionStore::new(db.clone())))
+        .await;
+    let session_id = "ses-claimed-unrestored";
+    let action_id = "act-claimed-unrestored";
+    let due_at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+    db.save_scheduled_action(
+        action_id,
+        &due_at,
+        "Claimed action",
+        "execution claim wins",
+        "tool",
+        Some(session_id),
+        Some("notify"),
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    assert!(db.start_scheduled_action(action_id, "started").unwrap());
+    assert!(
+        db.claim_scheduled_action_execution(action_id, "req-claimed-unrestored")
+            .unwrap()
+    );
+
+    service
+        .cancel_owned_by_session_checked(session_id)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        db.get_action(action_id).unwrap().unwrap().status,
+        ActionStatus::Running
+    );
+    assert!(
+        db.get_kv("scheduled_execution_claim.act-claimed-unrestored")
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[tokio::test]
+async fn session_cleanup_cancels_running_schedule_restored_by_another_service() {
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    let action_id = "act-cross-service-cleanup";
+    let session_id = "ses-cross-service-owner";
+    let due_at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+    db.save_scheduled_action(
+        action_id,
+        &due_at,
+        "Cross service cleanup",
+        "must not outlive its session",
+        "tool",
+        Some(session_id),
+        Some("notify"),
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+
+    let cleaner = Arc::new(ActionService::new());
+    cleaner
+        .set_action_store(Some(ActionStore::new(db.clone())))
+        .await;
+    let restorer = Arc::new(ActionService::new());
+    restorer
+        .set_action_store(Some(ActionStore::new(db.clone())))
+        .await;
+    let mut receiver = restorer.take_action_receiver().expect("action receiver");
+    restorer.restore_pending().await;
+    assert_eq!(
+        restorer.status_view(action_id).await.to_json(true)["status"],
+        "waiting"
+    );
+
+    restorer.fire_scheduled(action_id).await;
+    assert!(matches!(
+        receiver.recv().await,
+        Some(ActionCompletion::Scheduled(_))
+    ));
+    assert_eq!(
+        db.get_action(action_id).unwrap().unwrap().status,
+        ActionStatus::Running
+    );
+
+    cleaner
+        .cancel_owned_by_session_checked(session_id)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        db.get_action(action_id).unwrap().unwrap().status,
+        ActionStatus::Cancelled,
+        "cleanup must cancel a durable running schedule absent from its local board"
+    );
+    assert!(
+        !db.claim_scheduled_action_execution(action_id, "conf-late-approval")
+            .unwrap()
+    );
+}
+
+#[tokio::test]
+async fn restore_and_session_cleanup_are_serialized_by_the_action_gate() {
+    let dir = tempfile::TempDir::new().unwrap();
+    let db = Arc::new(Database::open(&dir.path().join("restore-cleanup-race.db")).unwrap());
+    let service = Arc::new(ActionService::new());
+    service
+        .set_action_store(Some(ActionStore::new(db.clone())))
+        .await;
+    let session_id = "ses-restore-cleanup-race";
+    let action_id = "act-restore-cleanup-race";
+    let due_at = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+    db.save_scheduled_action(
+        action_id,
+        &due_at,
+        "Restore race",
+        "cleanup must win after hydration",
+        "tool",
+        Some(session_id),
+        Some("notify"),
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+
+    // Queue restore first while holding the shared mutation gate. Tokio's
+    // mutex FIFO order makes restore hydrate before session cleanup proceeds.
+    let held_gate = service.spawn_gate.lock().await;
+    let restore_service = Arc::clone(&service);
+    let restore = tokio::spawn(async move { restore_service.restore_pending().await });
+    tokio::task::yield_now().await;
+    let cleanup_service = Arc::clone(&service);
+    let cleanup = tokio::spawn(async move {
+        cleanup_service.cancel_owned_by_session(session_id).await;
+    });
+    tokio::task::yield_now().await;
+    drop(held_gate);
+
+    assert_eq!(restore.await.unwrap(), 0);
+    cleanup.await.unwrap();
+    assert_eq!(
+        service.status_view(action_id).await.to_json(true)["status"],
+        "cancelled"
+    );
+    assert_eq!(
+        db.get_action(action_id).unwrap().unwrap().status,
+        ActionStatus::Cancelled
+    );
+
+    let cancel_first_id = "act-cleanup-before-restore";
+    db.save_scheduled_action(
+        cancel_first_id,
+        &due_at,
+        "Cleanup wins",
+        "restore must not hydrate this row",
+        "tool",
+        Some(session_id),
+        Some("notify"),
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    let held_gate = service.spawn_gate.lock().await;
+    let cleanup_service = Arc::clone(&service);
+    let cleanup = tokio::spawn(async move {
+        cleanup_service
+            .cancel_owned_by_session_checked(session_id)
+            .await
+            .unwrap();
+    });
+    tokio::task::yield_now().await;
+    let restore_service = Arc::clone(&service);
+    let restore = tokio::spawn(async move { restore_service.restore_pending().await });
+    tokio::task::yield_now().await;
+    drop(held_gate);
+
+    cleanup.await.unwrap();
+    assert_eq!(restore.await.unwrap(), 0);
+    assert_eq!(
+        db.get_action(cancel_first_id).unwrap().unwrap().status,
+        ActionStatus::Cancelled
+    );
+    assert_eq!(
+        service.status_view(cancel_first_id).await.to_json(true)["status"],
+        "not_found"
+    );
+}
+
+#[tokio::test]
 async fn session_cleanup_leaves_non_owner_running_and_terminal_history_unchanged() {
     let dir = tempfile::TempDir::new().unwrap();
     let db = Arc::new(Database::open(&dir.path().join("session-cancel.db")).unwrap());

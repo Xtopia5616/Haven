@@ -282,6 +282,14 @@ impl ActionStore {
             .await
     }
 
+    /// List scheduled rows that have not reached a terminal state, including
+    /// triggers already started by another ActionService instance.
+    pub async fn list_live_scheduled_actions(&self) -> anyhow::Result<Vec<ScheduledActionRow>> {
+        self.db
+            .run_blocking(|db| db.list_live_scheduled_actions())
+            .await
+    }
+
     /// Claim a waiting scheduled trigger with a waiting-to-running CAS.
     pub async fn start_scheduled_action(
         &self,

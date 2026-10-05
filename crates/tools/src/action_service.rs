@@ -239,7 +239,7 @@ pub struct ActionService {
     /// Serializes spawn admission and durable registration. An action is not
     /// visible to cancellation until its `running` row is durable, avoiding
     /// orphaned DB rows or processes across the spawn failure window.
-    spawn_gate: tokio::sync::Mutex<()>,
+    spawn_gate: Arc<tokio::sync::Mutex<()>>,
     /// Serializes terminal arbitration for both action kinds. The database CAS
     /// remains authoritative across service instances; this gate makes
     /// in-memory transitions first-wins while a durable transition is in flight.
@@ -298,7 +298,7 @@ impl ActionService {
     pub fn new() -> Self {
         Self {
             actions: RwLock::new(HashMap::new()),
-            spawn_gate: tokio::sync::Mutex::new(()),
+            spawn_gate: Arc::new(tokio::sync::Mutex::new(())),
             terminal_transition: TerminalTransitionGuard::default(),
             scheduled_execution_claims: RwLock::new(HashMap::new()),
             completion_bus: ActionCompletionBus::new(),
@@ -1359,21 +1359,112 @@ impl ActionService {
     /// session end/deletion; application shutdown uses the background-only
     /// variant so durable scheduled work remains waiting.
     pub async fn cancel_owned_by_session(self: &Arc<Self>, session_id: &str) {
+        if let Err(error) = self.cancel_owned_by_session_checked(session_id).await {
+            tracing::warn!(session_id = %session_id, "failed to completely cancel session-owned actions: {error}");
+        }
+    }
+
+    /// Cancel session-owned actions and return persistence failures so a
+    /// destructive session lifecycle can leave the durable session in place
+    /// for retry. A scheduled execution claim that already won remains a
+    /// legitimate first-wins outcome and is not an error.
+    pub async fn cancel_owned_by_session_checked(
+        self: &Arc<Self>,
+        session_id: &str,
+    ) -> anyhow::Result<()> {
         self.cancel_owned_background_by_session(session_id).await;
-        self.cancel_owned_scheduled_by_session(session_id).await;
+        self.cancel_owned_scheduled_by_session_checked(session_id)
+            .await
     }
 }
 
 impl ActionService {
-    async fn cancel_owned_scheduled_by_session(self: &Arc<Self>, session_id: &str) {
-        let service = Arc::clone(self);
-        let owner = session_id.to_string();
-        self.cancel_owned_live_actions(session_id, ActionKind::Scheduled, move |id| {
-            let service = Arc::clone(&service);
-            let owner = owner.clone();
-            async move { service.cancel_scheduled(&id, Some(&owner)).await }
-        })
-        .await;
+    async fn cancel_owned_scheduled_by_session_checked(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<()> {
+        let _mutation = self.spawn_gate.lock().await;
+        let live_ids = {
+            let actions = self.actions.read().await;
+            actions
+                .iter()
+                .filter(|(_, entry)| {
+                    entry.kind == ActionKind::Scheduled
+                        && entry.session_id.as_deref() == Some(session_id)
+                        && entry.state.status().is_live()
+                        && entry.scheduled.is_some()
+                })
+                .map(|(id, _)| id.clone())
+                .collect::<HashSet<_>>()
+        };
+
+        let mut first_error = None;
+        for id in &live_ids {
+            if let Err(error) = self.cancel_scheduled_locked(id, Some(session_id)).await {
+                first_error.get_or_insert_with(|| {
+                    error.context(format!("failed to cancel scheduled action {id}"))
+                });
+            }
+        }
+
+        if let Some(store) = self.action_store.read().await.clone() {
+            match store.list_live_scheduled_actions().await {
+                Ok(rows) => {
+                    for row in rows.into_iter().filter(|row| {
+                        row.session_id.as_deref() == Some(session_id) && !live_ids.contains(&row.id)
+                    }) {
+                        if let Err(error) =
+                            self.cancel_untracked_scheduled_row(&store, &row.id).await
+                        {
+                            first_error.get_or_insert_with(|| {
+                                error.context(format!(
+                                    "failed to cancel untracked scheduled action {}",
+                                    row.id
+                                ))
+                            });
+                        }
+                    }
+                }
+                Err(error) => {
+                    first_error.get_or_insert_with(|| {
+                        error.context("failed to list durable session-owned scheduled actions")
+                    });
+                }
+            }
+        }
+
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+
+    async fn cancel_untracked_scheduled_row(
+        &self,
+        store: &ActionStore,
+        action_id: &str,
+    ) -> anyhow::Result<()> {
+        let _terminal = self.terminal_transition.lock().await;
+        let finished_at = chrono::Utc::now().to_rfc3339();
+        let retry_policy = ActionStoreRetryPolicy::inline_store();
+        let mut last_error = None;
+        for attempt in 1..=retry_policy.max_attempts() {
+            match store
+                .cancel_scheduled_action(action_id.to_string(), finished_at.clone())
+                .await
+            {
+                Ok(_) => return Ok(()),
+                Err(error) => {
+                    last_error = Some(error);
+                    match retry_policy.decide(attempt, true) {
+                        RetryDecision::Retry { delay, .. } => tokio::time::sleep(delay).await,
+                        RetryDecision::Stop { .. } => break,
+                    }
+                }
+            }
+        }
+        Err(last_error
+            .unwrap_or_else(|| anyhow::anyhow!("scheduled action cancellation did not complete")))
     }
 
     /// Select once, then visit matching live owned actions sequentially without
@@ -1430,6 +1521,7 @@ impl ActionService {
         let Some(store) = self.action_store.read().await.clone() else {
             return 0;
         };
+        let _mutation = self.spawn_gate.lock().await;
         let rows = match store.list_pending_scheduled_actions().await {
             Ok(rows) => rows,
             Err(error) => {
@@ -1438,7 +1530,7 @@ impl ActionService {
             }
         };
         let now = chrono::Utc::now();
-        let mut overdue = 0;
+        let mut overdue_action_ids = Vec::new();
         for row in rows {
             if self.actions.read().await.contains_key(&row.id) {
                 continue;
@@ -1568,12 +1660,16 @@ impl ActionService {
             } else {
                 let remaining = (due.expect("timer trigger has due time") - now).num_seconds();
                 if remaining <= 0 {
-                    self.fire_scheduled(&id).await;
-                    overdue += 1;
+                    overdue_action_ids.push(id);
                 } else {
                     self.arm_scheduled_worker(id, &timer_entry);
                 }
             }
+        }
+        drop(_mutation);
+        let overdue = overdue_action_ids.len();
+        for id in overdue_action_ids {
+            self.fire_scheduled(&id).await;
         }
         overdue
     }
