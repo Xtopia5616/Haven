@@ -503,3 +503,4 @@
 - [0512：Admin model/native 风险等级 parity 回归门禁](0512-admin-risk-parity-regression-gate.md)
 - [0513：Windows 子进程先加入 Job Object 再恢复](0513-windows-suspended-process-containment.md)
 - [0514：显式结束会话的失败与重试契约](0514-explicit-session-end-failure-contract.md)
+- [0515：Skill 虚拟环境准备进程使用 Windows containment](0515-contained-skill-venv-bootstrap.md)

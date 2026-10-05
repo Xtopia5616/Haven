@@ -1,6 +1,6 @@
 # Haven 架构与 crate 职责
 
-> 版本: v1.12 | 日期: 2026-10-05
+> 版本: v1.13 | 日期: 2026-10-05
 > 范围: `crates/` (Rust 后端, Tauri 2)
 > 原则: **依赖单向、叶子优先**。上层 crate 只依赖下层，绝不反向依赖；共享数据与类型放叶子（`haven-common`），
 > 组件职责按「谁拥有实现、谁只消费接口」划分。
@@ -25,7 +25,8 @@ haven-agent ──► haven-tools, haven-memory, haven-messaging, haven-llm, hav
 haven-tools ──► haven-input, haven-mcp, haven-memory, haven-messaging, haven-skills, haven-llm, haven-common, haven-platform
 haven-mcp   ──► haven-llm, haven-common, haven-platform
 haven-messaging ──► haven-common
-haven-input / haven-llm / haven-memory / haven-skills ──► haven-common
+haven-input / haven-llm / haven-memory ──► haven-common
+haven-skills ──► haven-common, haven-platform
 ```
 
 实际依赖（见各 `Cargo.toml`）：
@@ -36,7 +37,7 @@ haven-input / haven-llm / haven-memory / haven-skills ──► haven-common
 | `haven-platform` | `haven-common` | CredentialStore 端口与引用校验；Windows 凭据管理器和子进程适配 |
 | `haven-llm` | `haven-common` | 只依赖共享层，不依赖任何业务 crate |
 | `haven-memory` | `haven-common` | 持久化（当前 SQLite schema、历史迁移、仓库） |
-| `haven-skills` | `haven-common` | 技能目录解析 |
+| `haven-skills` | `haven-common`, `haven-platform` | 技能目录解析与 venv 子进程 containment |
 | `haven-messaging` | `haven-common` | 消息服务与 inbox transport |
 | `haven-mcp` | `haven-common`, `haven-llm`, `haven-platform` | MCP 客户端 / 传输（媒体能力复用 LLM 协议） |
 | `haven-input` | `haven-common` | 录音 / VAD / PCM/WAV 采集（不实现 provider 或转写） |
@@ -52,10 +53,10 @@ haven-input / haven-llm / haven-memory / haven-skills ──► haven-common
 
 `haven-platform` 只依赖 common 中稳定的 `CredentialStore` 端口与 credential reference validator，
 不依赖 Tools、MCP 或 Tauri。Windows adapter 用 Credential Manager 保存密钥；其他平台对带凭据配置
-明确失败，不退回明文或进程内持久化。该 crate 还拥有 MCP stdio、Shell、Skill 和后台 Action
+明确失败，不退回明文或进程内持久化。该 crate 还拥有 MCP stdio、Shell、Skill script/venv bootstrap 和后台 Action
 子进程共用的 `ProcessContainment`：Windows 使用 kill-on-close Job Object，并要求以 suspended
 状态创建进程、先分配 Job 再恢复唯一初始线程；其他平台保持原有 no-op 行为。平台 crate 拥有该
-操作系统顺序和 FFI，adapter 仍拥有命令配置、管道、取消、等待与工具生命周期（ADR 0513）。
+操作系统顺序和 FFI，adapter 仍拥有命令配置、管道、取消、等待与工具生命周期（ADR 0513、0515）。
 
 `haven-mcp` 内部按职责分为 `protocol.rs`（MCP/JSON-RPC DTO 与内容归一化）、
 `transport.rs`（stdio、Streamable HTTP、SSE 和进程边界）、`client.rs`（单服务器连接、

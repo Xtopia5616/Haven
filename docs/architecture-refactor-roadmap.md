@@ -1,6 +1,6 @@
 # Haven 架构降复杂度重构路线图
 
-> 状态：阶段 0–8 已完成；SessionUsage 累计上限契约、session-scoped KV 孤儿清理 owner、summary marker 单一原子生产路径、Tools 测试归属、Input→Tools 测试反向依赖、MCP/Skill 直调授权策略来源、MCP 管理操作网络策略来源、X12 例外消息写入口、ADR 编号索引完整性、actorless session action lifecycle 清理（ADR 0507）、Ask reducer state ownership 收口（ADR 0508）、终态 Ask 清理事件归属（ADR 0509）、ReAct phase 来源 session 身份（ADR 0510）、Windows 子进程先入 Job 再恢复（ADR 0513）与显式 end 失败重试契约（ADR 0514）已完成；Skills venv 子进程 containment 是条件式 Next；Windows 发布验收为独立开放签核门
+> 状态：阶段 0–8 已完成；SessionUsage 累计上限契约、session-scoped KV 孤儿清理 owner、summary marker 单一原子生产路径、Tools 测试归属、Input→Tools 测试反向依赖、MCP/Skill 直调授权策略来源、MCP 管理操作网络策略来源、X12 例外消息写入口、ADR 编号索引完整性、actorless session action lifecycle 清理（ADR 0507）、Ask reducer state ownership 收口（ADR 0508）、终态 Ask 清理事件归属（ADR 0509）、ReAct phase 来源 session 身份（ADR 0510）、Windows 子进程先入 Job 再恢复（ADR 0513）、显式 end 失败重试契约（ADR 0514）与 Skill venv 子进程 containment（ADR 0515）已完成；当前无 Active 结构切片，下一轮从证据复核步骤 0 开始；Windows 发布验收为独立开放签核门
 > 更新日期：2026-10-05
 > 范围：Agent/Session、Memory、Tools、LLM、App IPC 与 UI
 
@@ -74,8 +74,8 @@
 
 | 状态 | 当前项 |
 |---|---|
-| **Next（条件式）** | Skills 虚拟环境准备进程的 Windows containment：`haven-skills::VenvManager::ensure` 的 `python -m venv` 与 `python -m pip install -r` 仍直接启动，未走 ADR 0513 的 suspended-create/assign/resume；由 `ensure` 拥有窄切片，先确定 `haven-skills → haven-platform` 单向能力边界，再保留输出诊断、成功后 fingerprint、失败重试和取消清理。触发证据、退出条件与受限范围见 ADR 0513 源码审计；若需要平台接管 Tokio child 生命周期或无法维持重试语义，关闭候选并重选。 |
-| **Deferred** | 当前无其他结构候选。 |
+| **Next** | 当前无证据足以进入 Active 的结构候选；ADR 0515 已完成，下一轮按 §5.6 步骤 0 重新复核源码、回归和依赖/API 变化。不要将文件/crate 体量单独升级为候选。 |
+| **Deferred** | 已复核候选保留各自重开条件，见 §5.3；当前无其他结构候选。 |
 | **Gate** | Windows 发布验收 Open，见 §5.1。 |
 
 ### 5.1 Windows 发布验收（Gate / Open）
@@ -150,15 +150,15 @@
 | 步骤 | 长期工作流 | 进入条件与交付物 | 退出条件 |
 |---|---|---|---|
 | 0 | **证据复核与分流（每轮入口）** | 在切片完成、同类回归出现、依赖/API 变化或准备发布时复核。形成一项候选说明：问题、不变量、owner、源码/历史证据、影响面、停止条件和适用门禁；依 §5.5 选择 Next、Deferred、关闭或无候选。 | 只有一个 Next 或明确无候选；不把体量、单次审计或旧历史快照直接转成 Active。 |
-| 1 | **契约与生命周期收口（按证据推进）** | 显式 end 失败与重试已由 ADR 0514 完成。下一轮回到步骤 0 复核；条件式预备 Next 是 Skills venv 子进程 containment，需确认窄依赖边和生命周期语义后才能转 Active。 | actorless、驻留 Actor、运行中 Actor、Action claim 先后竞争和持久化失败都有一致且可测试的可见结果；direct run 从 Paused 入场先持久化 Running；rollback/continue 不得在 end closing marker 后改写 durable state；end 对 stuck run 仍响应，ADR 0424 first-wins 不变。 |
+| 1 | **契约与生命周期收口（按证据推进）** | 显式 end 失败与重试（ADR 0514）及 Skills venv 子进程 containment（ADR 0515）已完成；下一轮须先经过步骤 0 证据复核，再决定是否进入本步骤。 | actorless、驻留 Actor、运行中 Actor、Action claim 先后竞争和持久化失败都有一致且可测试的可见结果；direct run 从 Paused 入场先持久化 Running；rollback/continue 不得在 end closing marker 后改写 durable state；end 对 stuck run 仍响应，ADR 0424 first-wins 不变。 |
 | 2 | **权威来源与跨层不变量** | 检查持久状态、事件、运行态、投影和 UI 是否仍各有单一 owner；只有真实漂移、明确风险对应的失败注入缺口、重复回归或绕过权威入口时才切片。2026-10-05 的 ReAct Fatal 双终态 producer 已收口：dispatcher 专用入口过滤 AgentEvent 重复错误，SessionSupervisor 的 SessionEvent 经共同 TauriEmitter 投影，直接 run API 保留原行为（[ADR 0511](adr/0511-session-terminal-error-single-owner.md)）。后续交付仍是窄范围回归/故障测试、冲突入口删除和不变量文档更新。 | 回归固定不变量且不增加第二真源；跨 crate/跨端变更通过相应完整门禁。 |
 | 3 | **稳定 owner 的职责收口** | owner 稳定后，若同一边界重复回归、跨职责共同修改或测试放错位置持续增加维护成本，迁移一条完整垂直链。交付物优先是私有模块/API 收窄、测试归属调整和旧入口清理，不预先按大文件切片。 | 调用和测试落到真实职责 owner，重复规则或跨边界修改减少，外部契约、依赖方向及运行语义保持不变；收益不能说明则关闭候选。 |
 | 4 | **模块成熟后再评估 crate/API 边界** | 只有模块 owner 已稳定，且存在独立消费者、真实依赖方向问题或可复核构建/迭代成本时才评估 crate 拆分。交付物包括依赖图、API/消费者映射；若声称构建收益，须有同环境基准。 | 提取后依赖单向、API 稳定、消费者不用反向依赖或重复 adapter，并证明维护/构建收益；任一不满足就保留现边界。 |
 | 5 | **性能与容量** | 仅在同负载 profile 复现有用户意义的成本时优化；交付物为固定场景的前后指标，并遵守 SQLite 容量、失败恢复与资源上限契约。Windows 发布验收独立保留在 §5.1，不作为结构重构阶段的退出依赖。 | 优化结果超过噪声且达到目标，否则关闭候选；没有当前测量就不以“降复杂度”为名做性能改动。 |
 
-以上是循环复核的先后顺序，不是一次性瀑布项目：每轮从步骤 0 重新分流，完成一个切片、同类问题复现或准备发布时再审查证据。ADR 0514 已完成；当前预备 Next 为 Skills venv 环境准备进程 containment，须再确认依赖边界和停止条件后才准入；ReAct Fatal 双终态 owner 已在步骤 2 收口（ADR 0511）；Admin 风险等级 parity 回归门禁已完成（ADR 0512）。发布验收 Gate 与结构重构并行，按 §5.1 独立关闭。
+以上是循环复核的先后顺序，不是一次性瀑布项目：每轮从步骤 0 重新分流，完成一个切片、同类问题复现或准备发布时再审查证据。ADR 0514 与 ADR 0515 已完成；当前没有 Active 或已准入的 Next，待新证据出现时从步骤 0 重新分流。ReAct Fatal 双终态 owner 已在步骤 2 收口（ADR 0511）；Admin 风险等级 parity 回归门禁已完成（ADR 0512）。发布验收 Gate 与结构重构并行，按 §5.1 独立关闭。
 
-**当前执行位置：** 架构阶段 0–8 已完成；滚动执行周期已关闭 ADR 0514 的显式 end 失败与重试垂直链，现回到 §5.6 步骤 0。Skills `VenvManager::ensure` 的两个环境准备子进程是唯一条件式预备 Next；当前核实其依赖边界、输出/取消生命周期与失败重试后再决定是否转 Active。不按 crate 数、行数或日历制造工作。ReAct Fatal 双终态发布 owner 已由 ADR 0511 收口；Admin 20 个共用操作的风险等级 parity 回归门禁已由 ADR 0512 收口，两项 native-only 操作仍单独测试。近期 crate 复核仍是 11 个内部 crate、29 条单向边，无拆分依据。Windows 发布验收仍是独立 Open Gate.
+**当前执行位置：** 架构阶段 0–8 已完成；ADR 0514 和 ADR 0515 均已完成。滚动执行周期已回到 §5.6 步骤 0：下一轮须提供新的源码、重复回归、依赖/API 变化或可复核成本证据，才建立唯一 Next 并启动切片。不按 crate 数、行数或日历制造工作。ReAct Fatal 双终态发布 owner 已由 ADR 0511 收口；Admin 20 个共用操作的风险等级 parity 回归门禁已由 ADR 0512 收口，两项 native-only 操作仍单独测试。crate 拆分仍无证据，近期边界为 11 个内部 crate、29 条单向边。Windows 发布验收仍是独立 Open Gate。
 
 ## 6. 更新规则
 
