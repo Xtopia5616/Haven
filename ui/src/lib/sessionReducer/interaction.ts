@@ -6,6 +6,7 @@ type Action = SessionActionOf<
 	| 'session/interaction-upserted'
 	| 'session/interactions-hydrated'
 	| 'session/interactions-cleared'
+	| 'session/asks-settled'
 	| 'session/interaction-resolved'
 	| 'session/interaction-resolution-result'
 	| 'session/scheduled-action-cancelled'
@@ -66,6 +67,16 @@ export function reduceInteraction(
 						([, request]) =>
 							!isSessionInteractionFor(request, action.sessionId) ||
 							(!!action.kind && request.kind !== action.kind),
+					),
+				),
+			};
+		case 'session/asks-settled':
+			return {
+				...state,
+				interactions: Object.fromEntries(
+					Object.entries(state.interactions).filter(
+						([, request]) =>
+							!isSessionInteractionFor(request, action.sessionId) || request.kind !== 'ask',
 					),
 				),
 			};

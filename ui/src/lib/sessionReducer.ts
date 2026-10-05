@@ -113,6 +113,9 @@ export function reduceSession(
 		case 'session/memory-cleared':
 			return clearSessionMessages(inputState, action.sessionId);
 
+		case 'session/asks-settled':
+			return reduceInteraction(reduceTranscript(inputState, action), action);
+
 		case 'session/messages/resume-loaded':
 			return resumeSession(inputState, action);
 
@@ -121,7 +124,6 @@ export function reduceSession(
 		case 'session/messages/rejected':
 		case 'session/messages/finalized':
 		case 'session/messages/adopt-draft':
-		case 'session/messages/asks-settled':
 		case 'session/messages/truncated':
 		case 'session/replay-reset':
 		case 'session/stream-blocks-cleared':

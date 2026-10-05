@@ -29,7 +29,7 @@ interface InputSubmitPayload {
 /**
  * Own the chat-side ask batching state. The route supplies the active-session
  * and submission callbacks, while this controller keeps option selections,
- * resolved ids and duplicate-submit protection together.
+ * current-batch ids and duplicate-submit protection together.
  */
 export function createAskInteractionController({
 	getActiveSessionId,
@@ -40,10 +40,6 @@ export function createAskInteractionController({
 }: AskInteractionContext) {
 	const askSelections = new Map<string, Map<string, string[]>>();
 	const resolvedAskIds = new Map<string, Set<string>>();
-	const resolvedAskResponses = new Map<
-		string,
-		Map<string, { answer?: string; ignored?: boolean }>
-	>();
 
 	const messagesFor = (sessionId: string): AskMessage[] =>
 		reducer.getMessages(sessionId) as AskMessage[];
@@ -81,7 +77,6 @@ export function createAskInteractionController({
 		if (!sessionId) {
 			askSelections.clear();
 			resolvedAskIds.clear();
-			resolvedAskResponses.clear();
 			setSelectionsReady(false);
 			return;
 		}
@@ -103,12 +98,9 @@ export function createAskInteractionController({
 						: undefined;
 				return { id: message.id, resolved: response || null };
 			});
-		if (asks.length > 0)
-			reducer.dispatch({ type: 'session/messages/asks-settled', sessionId, asks });
-		reducer.dispatch({ type: 'session/interactions-cleared', sessionId, kind: 'ask' });
+		reducer.dispatch({ type: 'session/asks-settled', sessionId, asks });
 		// A resume/end invalidates quick-reply answers for the pending batch.
 		resolvedAskIds.delete(sessionId);
-		resolvedAskResponses.delete(sessionId);
 		clearAskSelections(sessionId);
 	}
 
@@ -128,6 +120,19 @@ export function createAskInteractionController({
 		return sessionId ? [...(askSelections.get(sessionId)?.get(msgId) || [])] : [];
 	}
 
+	function resolvedResponseFor(sessionId: string, msgId: string) {
+		const request = reducer.getState().interactions[msgId];
+		if (
+			request?.owner.kind !== 'session' ||
+			request.owner.sessionId !== sessionId ||
+			request.sessionId !== sessionId ||
+			request.kind !== 'ask' ||
+			request.status !== 'resolved'
+		)
+			return undefined;
+		return request.response as { answer?: string; ignored?: boolean } | undefined;
+	}
+
 	function submitActionAnswers(
 		sessionId: string,
 		resolvedIds: Set<string> | undefined,
@@ -137,10 +142,9 @@ export function createAskInteractionController({
 	) {
 		if (!resolvedIds || resolvedIds.size === 0) return;
 		const messages = messagesFor(sessionId);
-		const responses = resolvedAskResponses.get(sessionId);
 		const asks = messages
 			.filter((message) => message.type === 'ask' && resolvedIds.has(message.id))
-			.map((message) => ({ message, resolved: responses?.get(message.id) }))
+			.map((message) => ({ message, resolved: resolvedResponseFor(sessionId, message.id) }))
 			.filter((entry) => entry.resolved);
 		if (asks.length === 0) return;
 		const single = asks.length === 1;
@@ -172,9 +176,6 @@ export function createAskInteractionController({
 		reducer.dispatch({ type: 'session/interaction-resolved', id: msgId, response });
 		ids.add(msgId);
 		resolvedAskIds.set(sessionId, ids);
-		const responses = resolvedAskResponses.get(sessionId) || new Map();
-		responses.set(msgId, resolved);
-		resolvedAskResponses.set(sessionId, responses);
 		const byMessage = askSelections.get(sessionId);
 		if (byMessage) {
 			byMessage.delete(msgId);

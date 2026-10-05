@@ -106,6 +106,52 @@ describe('createAskInteractionController', () => {
 		expect(submitMessage).toHaveBeenCalledWith('忽略', [], []);
 	});
 
+	it('reads a resolved answer from the reducer when submitting the batch', () => {
+		loadAskMessages(
+			createRequest('ask-1', '第一个问题'),
+			createRequest('ask-2', '第二个问题'),
+		);
+		const { controller, submitMessage } = createController();
+
+		controller.handleIgnoreAsk('ask-1');
+		const firstResolved = reducer.getState().interactions['ask-1'];
+		reducer.dispatch({
+			type: 'session/interaction-upserted',
+			request: { ...firstResolved!, response: { answer: 'reducer answer' } },
+		});
+		controller.handleIgnoreAsk('ask-2');
+
+		expect(submitMessage).toHaveBeenCalledWith(
+			'关于「第一个问题」：reducer answer\n关于「第二个问题」：忽略',
+			[],
+			[],
+		);
+	});
+
+	it('submits only answers resolved in the current controller batch', () => {
+		loadAskMessages(createRequest('ask-history', '历史问题'));
+		const first = createController();
+		first.controller.handleIgnoreAsk('ask-history');
+
+		const oldResolved = reducer.getState().interactions['ask-history'];
+		const current = createRequest('ask-current', '当前问题', ['选项']);
+		reducer.dispatch({
+			type: 'session/messages/resume-loaded',
+			sessionId: SESSION_ID,
+			messages: [
+				{ id: 'ask-history', type: 'ask', content: '历史问题', awaiting: false },
+				{ id: current.request.id, type: 'ask', content: current.question, awaiting: true },
+			],
+			interactions: [oldResolved!, current.request],
+		});
+		const second = createController();
+		second.controller.handleAskSelectionChange('ask-current', ['选项']);
+		second.controller.handleAskSubmit();
+
+		expect(second.submitMessage).toHaveBeenCalledOnce();
+		expect(second.submitMessage).toHaveBeenCalledWith('选项', [], []);
+	});
+
 	it('routes composer input through a fully selected ask batch and appends typed text', () => {
 		loadAskMessages(
 			// Quick choices come from the live tool observation; the interaction
@@ -161,6 +207,57 @@ describe('createAskInteractionController', () => {
 			resolved: { answer: 'A' },
 		});
 		expect(controller.computeAskSelectionsReady()).toBe(false);
+	});
+
+	it('settles asks and clears only that session’s ask interactions atomically', () => {
+		loadAskMessages(createRequest('ask-1', '问题'));
+		const { controller } = createController();
+		controller.handleIgnoreAsk('ask-1');
+
+		const interaction = (
+			id: string,
+			sessionId: string,
+			kind: 'ask' | 'confirm' | 'scheduled_confirm',
+		) => ({
+			id,
+			sessionId,
+			owner: { kind: 'session' as const, sessionId },
+			kind,
+			status: 'pending' as const,
+			options: [],
+			createdAt: '',
+		});
+		for (const request of [
+			interaction('confirm-same', SESSION_ID, 'confirm'),
+			interaction('scheduled-same', SESSION_ID, 'scheduled_confirm'),
+			interaction('ask-other', 'ses-other', 'ask'),
+		])
+			reducer.dispatch({ type: 'session/interaction-upserted', request });
+
+		const observed: Array<{
+			resolved: unknown;
+			askInteraction: unknown;
+		}> = [];
+		let recording = false;
+		const unsubscribe = reducer.subscribe((state) => {
+			if (!recording) return;
+			const askMessage = state.messages[SESSION_ID]?.find((message) => message.id === 'ask-1');
+			observed.push({
+				resolved: askMessage?.resolved,
+				askInteraction: state.interactions['ask-1'],
+			});
+		});
+		recording = true;
+
+		controller.clearAskAwaiting(SESSION_ID);
+		unsubscribe();
+
+		expect(observed).toEqual([{ resolved: { ignored: true }, askInteraction: undefined }]);
+		expect(reducer.getState().interactions).toMatchObject({
+			'confirm-same': expect.objectContaining({ kind: 'confirm', status: 'pending' }),
+			'scheduled-same': expect.objectContaining({ kind: 'scheduled_confirm', status: 'pending' }),
+			'ask-other': expect.objectContaining({ sessionId: 'ses-other', kind: 'ask', status: 'pending' }),
+		});
 	});
 
 	it('settles unanswered cards when a freeform answer resumes the session', () => {

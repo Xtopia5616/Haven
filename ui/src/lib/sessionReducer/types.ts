@@ -155,7 +155,7 @@ export type SessionAction =
 	| { type: 'session/messages/finalized'; sessionId: string }
 	| { type: 'session/messages/adopt-draft'; sessionId: string }
 	| {
-			type: 'session/messages/asks-settled';
+			type: 'session/asks-settled';
 			sessionId: string;
 			asks: Array<{
 				id: string;

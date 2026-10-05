@@ -16,7 +16,7 @@ type Action = SessionActionOf<
 	| 'session/messages/cleared'
 	| 'session/messages/finalized'
 	| 'session/messages/adopt-draft'
-	| 'session/messages/asks-settled'
+	| 'session/asks-settled'
 	| 'session/messages/resume-loaded'
 	| 'session/messages/truncated'
 	| 'session/replay-reset'
@@ -141,7 +141,7 @@ export function reduceTranscript(
 			});
 		case 'session/messages/adopt-draft':
 			return moveMessages(state, DRAFT_SESSION_ID, action.sessionId);
-		case 'session/messages/asks-settled': {
+		case 'session/asks-settled': {
 			const askById = new Map(action.asks.map((ask) => [ask.id, ask]));
 			if (askById.size === 0) return state;
 			return withMessages(state, action.sessionId, (messages) => {
