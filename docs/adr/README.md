@@ -470,3 +470,4 @@
 - [0485：移除 Input 到 Tools 的测试专用反向依赖](0485-remove-test-only-input-tools-reverse-dependency.md)
 - [0486：统一 MCP 与 Skill 直调授权策略来源](0486-unify-direct-mcp-skill-authorization-policy.md)
 - [0495：将 MCP Connect 网络边界归入操作契约](0495-mcp-connect-network-policy-owner.md)
+- [0496：收窄 X12 例外消息写入口](0496-limit-x12-exception-message-write-api.md)

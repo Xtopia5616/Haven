@@ -81,51 +81,10 @@ use haven_common::types::MessageAttachment;
 use haven_llm::LlmRouter;
 #[cfg(test)]
 use haven_memory::Database;
-use haven_memory::repositories::messages::Message;
 use haven_tools::ScheduleMode;
 use tokio::sync::Mutex;
-use tokio_util::sync::CancellationToken;
 
 use crate::title::TitleGenerator;
-
-/// Low-level `messages` insert (partial discard + `add_message_full`).
-///
-/// X12: recoverable ReAct assistant/thought/ask/reasoning content must be
-/// submitted through `ReActEngine::apply_transcript` as `SessionCommitted`.
-/// Direct callers are limited to ingress user seeds, terminal action-result
-/// history, recovery partials, and documented UI-only waiting notices. Do not
-/// reintroduce parallel transcript writers.
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn persist_session_message(
-    executor: &crate::session::SessionSupervisor,
-    session_id: &str,
-    role: &str,
-    content: &str,
-    message_type: Option<&str>,
-    attachments: &[MessageAttachment],
-    voice: bool,
-    // When `Some`, insert the row under this pre-minted id instead of
-    // minting a fresh one. Streaming message ids are minted when the
-    // thought/reasoning block starts so the live bubble and the DB row
-    // share one identity.
-    message_id: Option<&str>,
-    // Optional `tool_call_id` for the row; `None` for ordinary messages.
-    tool_call_id: Option<&str>,
-) -> anyhow::Result<Message> {
-    persist_session_message_inner(
-        executor,
-        session_id,
-        role,
-        content,
-        message_type,
-        attachments,
-        voice,
-        message_id,
-        tool_call_id,
-        true,
-    )
-    .await
-}
 
 /// Persist an accepted input routed into an existing session. The durable
 /// pending marker is inserted atomically with the user message and is cleared
@@ -150,68 +109,6 @@ pub(crate) async fn persist_pending_user_input(
             voice,
             None,
             disposition,
-            None,
-        )
-        .await
-}
-
-/// Recovery-only message insert. It deliberately leaves the in-flight scratch
-/// partial untouched until branch point, message projection, and recovery
-/// snapshot have all succeeded; the caller owns the final discard decision.
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn persist_session_message_preserving_partial(
-    executor: &crate::session::SessionSupervisor,
-    session_id: &str,
-    role: &str,
-    content: &str,
-    message_type: Option<&str>,
-    attachments: &[MessageAttachment],
-    voice: bool,
-    message_id: Option<&str>,
-    tool_call_id: Option<&str>,
-) -> anyhow::Result<Message> {
-    persist_session_message_inner(
-        executor,
-        session_id,
-        role,
-        content,
-        message_type,
-        attachments,
-        voice,
-        message_id,
-        tool_call_id,
-        false,
-    )
-    .await
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn persist_session_message_inner(
-    executor: &crate::session::SessionSupervisor,
-    session_id: &str,
-    role: &str,
-    content: &str,
-    message_type: Option<&str>,
-    attachments: &[MessageAttachment],
-    voice: bool,
-    message_id: Option<&str>,
-    tool_call_id: Option<&str>,
-    discard_partial: bool,
-) -> anyhow::Result<Message> {
-    if discard_partial {
-        executor.partials.discard(session_id).await;
-    }
-    executor
-        .session_store()
-        .persist_session_message(
-            session_id,
-            role,
-            content,
-            message_type,
-            attachments,
-            voice,
-            message_id,
-            tool_call_id,
             None,
         )
         .await

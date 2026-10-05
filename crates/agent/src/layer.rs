@@ -8,6 +8,7 @@ use crate::memory_inference::RouterMemoryInferencePort;
 use crate::session::SessionEvent;
 use haven_common::retry::{BackoffPolicy, RecoveryDecision, RecoveryPolicy, RecoverySignal};
 use serde_json::Value;
+use tokio_util::sync::CancellationToken;
 
 mod action_result_delivery;
 
@@ -182,44 +183,16 @@ impl AgentLayer {
         voice: bool,
     ) -> anyhow::Result<haven_memory::repositories::messages::Message> {
         let _lifecycle = self.executor.lifecycle_guard().await;
-        self.persist_message_parts_locked(
+        self.db.add_message_full(
             session_id,
             role,
             content,
             message_type,
-            attachments,
-            voice,
-        )
-        .await
-    }
-
-    /// Persist a message while the caller already owns the supervisor
-    /// lifecycle gate. Ingress uses this to make the durable user-message
-    /// insert and actor routing one close/delete-safe operation; session
-    /// creation also uses it before exposing a new Pending actor.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn persist_message_parts_locked(
-        &self,
-        session_id: &str,
-        role: &str,
-        content: &str,
-        message_type: Option<&str>,
-        attachments: &[haven_common::types::MessageAttachment],
-        voice: bool,
-    ) -> anyhow::Result<haven_memory::repositories::messages::Message> {
-        let msg = persist_session_message(
-            &self.executor,
-            session_id,
-            role,
-            content,
-            message_type,
+            None,
             attachments,
             voice,
             None,
-            None,
         )
-        .await?;
-        Ok(msg)
     }
 
     /// Update a session's status in the executor and notify the frontend.
@@ -953,28 +926,26 @@ impl AgentLayer {
         attachments: &[haven_common::types::MessageAttachment],
         voice: bool,
     ) -> anyhow::Result<(crate::session::SessionInfo, String)> {
-        self.create_session_with_first_message_typed(
+        self.create_session_with_first_message_and_origin(
             input,
             attachments,
             voice,
-            "text",
             true,
             haven_memory::SessionOrigin::User,
         )
         .await
     }
 
-    /// Same as [`Self::create_session_with_first_message`] with an explicit
-    /// `message_type` (e.g. `peer_kickoff` for multi-agent spawn briefs).
+    /// Same as [`Self::create_session_with_first_message`] with a durable
+    /// origin that determines the first user message type.
     /// When `dispatch` is false, the session is loaded but left non-Pending so
     /// the caller can register inbox parent links before waking the dispatcher.
     /// Returns `(session, first_user_message_id)`.
-    pub(crate) async fn create_session_with_first_message_typed(
+    pub(crate) async fn create_session_with_first_message_and_origin(
         &self,
         input: &str,
         attachments: &[haven_common::types::MessageAttachment],
         voice: bool,
-        message_type: &str,
         dispatch: bool,
         origin: haven_memory::SessionOrigin,
     ) -> anyhow::Result<(crate::session::SessionInfo, String)> {
@@ -992,14 +963,9 @@ impl AgentLayer {
         // the dispatcher can pick the session up; if persisting fails, remove
         // the session row again so no input-less session ever gets dispatched.
         let first_msg = match self
-            .persist_message_parts_locked(
-                &record.id,
-                "user",
-                input,
-                Some(message_type),
-                attachments,
-                voice,
-            )
+            .executor
+            .session_store()
+            .persist_ingress_user_seed(&record.id, input, attachments, voice)
             .await
         {
             Ok(msg) => msg,
@@ -1019,7 +985,7 @@ impl AgentLayer {
         // Human conversations get a title as soon as their first input is
         // durable. Peer kickoff sessions use their explicit title/fallback
         // path below and must not spend a small-model call here.
-        if dispatch && message_type == "text" {
+        if dispatch && record.origin == haven_memory::SessionOrigin::User {
             self.spawn_title_generation(&record.id);
         }
         if dispatch {
@@ -1238,11 +1204,10 @@ impl AgentLayer {
         // Create without dispatch so parent/child inbox links exist before the
         // child can be claimed (cascade end must see `parent` immediately).
         let (mut session, _first_msg_id) = self
-            .create_session_with_first_message_typed(
+            .create_session_with_first_message_and_origin(
                 &brief,
                 &[],
                 false,
-                "peer_kickoff",
                 false,
                 haven_memory::SessionOrigin::AgentSpawn {
                     parent_session_id: req.parent_session_id.clone(),
@@ -1607,11 +1572,10 @@ mod tests {
             .unwrap();
 
         let error = agent
-            .create_session_with_first_message_typed(
+            .create_session_with_first_message_and_origin(
                 "first user input",
                 &[],
                 false,
-                "peer_kickoff",
                 false,
                 haven_memory::SessionOrigin::User,
             )

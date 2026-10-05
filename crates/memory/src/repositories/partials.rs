@@ -7,7 +7,8 @@ use chrono::Utc;
 /// already saw. The row is consumed (promoted to a real `messages` row or
 /// deleted) when:
 ///
-/// - any real message is persisted for the session (`persist_session_message`),
+/// - a real transcript, ingress seed, recovery partial, or terminal action-result message
+///   supersedes it,
 /// - the session is ended (`end_session` promotes it into history),
 /// - the app crashed and the session is finalized to `error` at startup,
 /// - the session itself is deleted (FK cascade).

@@ -223,29 +223,19 @@ impl ReActEngine {
             .await
     }
 
-    /// Recovery-only alias used by `persist_partial_on_error` (intentionally
+    /// Recovery-only write used by `persist_partial_on_error` (intentionally
     /// outside the event log — see transcript module docs).
-    pub(super) async fn persist_session_message(
+    pub(super) async fn persist_recovery_partial(
         &self,
         session_id: &str,
-        role: &str,
         content: &str,
-        message_type: Option<&str>,
-        tool_call_id: Option<&str>,
-        message_id: Option<&str>,
+        kind: haven_memory::repositories::session_events::RecoveryPartialKind,
+        message_id: &str,
     ) -> anyhow::Result<()> {
-        crate::persist_session_message_preserving_partial(
-            &self.executor,
-            session_id,
-            role,
-            content,
-            message_type,
-            &[],
-            false,
-            message_id,
-            tool_call_id,
-        )
-        .await?;
+        self.executor
+            .session_store()
+            .persist_recovery_partial(session_id, content, kind, message_id)
+            .await?;
         Ok(())
     }
 
@@ -723,13 +713,11 @@ impl ReActEngine {
         if !reasoning_text.trim().is_empty() {
             let message_id = state.block_msg_id(ctx.step_num, ctx.run_id, "reasoning");
             if let Err(error) = self
-                .persist_session_message(
+                .persist_recovery_partial(
                     &ctx.session_id,
-                    "assistant",
                     reasoning_text.trim(),
-                    Some("reasoning"),
-                    None,
-                    Some(&message_id),
+                    haven_memory::repositories::session_events::RecoveryPartialKind::Reasoning,
+                    &message_id,
                 )
                 .await
             {
@@ -748,13 +736,11 @@ impl ReActEngine {
             let text = thought_text.trim();
             let message_id = state.block_msg_id(ctx.step_num, ctx.run_id, "thought");
             if let Err(error) = self
-                .persist_session_message(
+                .persist_recovery_partial(
                     &ctx.session_id,
-                    "assistant",
                     text,
-                    Some("text"),
-                    None,
-                    Some(&message_id),
+                    haven_memory::repositories::session_events::RecoveryPartialKind::Thought,
+                    &message_id,
                 )
                 .await
             {

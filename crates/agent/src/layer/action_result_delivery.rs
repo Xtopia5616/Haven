@@ -170,18 +170,12 @@ pub(super) fn spawn(agent: Arc<AgentLayer>, cancellation: CancellationToken) {
                 // projection path.
                 loop {
                     if matches!(&state, Some(s) if s.is_terminal()) {
-                        match crate::persist_session_message(
-                            &agent.executor,
-                            &tid,
-                            "user",
-                            &msg,
-                            Some("text"),
-                            &[],
-                            false,
-                            Some(&result_message_id),
-                            None,
-                        )
-                        .await
+                        agent.executor.partials.discard(&tid).await;
+                        match agent
+                            .executor
+                            .session_store()
+                            .persist_terminal_action_result(&tid, &msg, &result_message_id)
+                            .await
                         {
                             Ok(_persisted) => {
                                 action_service

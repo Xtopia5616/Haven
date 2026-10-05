@@ -74,6 +74,13 @@ pub enum SessionOrigin {
 }
 
 impl SessionOrigin {
+    pub(crate) const fn first_user_message_type(&self) -> &'static str {
+        match self {
+            Self::User => "text",
+            Self::AgentSpawn { .. } => "peer_kickoff",
+        }
+    }
+
     fn storage_parts(&self) -> (&'static str, Option<&str>) {
         match self {
             Self::User => ("user", None),

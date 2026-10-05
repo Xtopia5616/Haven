@@ -397,32 +397,18 @@ async fn terminal_action_result_projection_is_idempotent() {
     let message_id = crate::react::action_result_message_id(action_result_id);
     let content =
         "[Background action result]\naction_id: act-terminal\nstatus: completed\n\nresult";
-    let first = crate::persist_session_message(
-        &agent.executor,
-        &session.id,
-        "user",
-        content,
-        Some("text"),
-        &[],
-        false,
-        Some(&message_id),
-        None,
-    )
-    .await
-    .unwrap();
-    let second = crate::persist_session_message(
-        &agent.executor,
-        &session.id,
-        "user",
-        content,
-        Some("text"),
-        &[],
-        false,
-        Some(&message_id),
-        None,
-    )
-    .await
-    .unwrap();
+    let first = agent
+        .executor
+        .session_store()
+        .persist_terminal_action_result(&session.id, content, &message_id)
+        .await
+        .unwrap();
+    let second = agent
+        .executor
+        .session_store()
+        .persist_terminal_action_result(&session.id, content, &message_id)
+        .await
+        .unwrap();
 
     assert_eq!(first.id, message_id);
     assert_eq!(second.id, message_id);

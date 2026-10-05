@@ -63,6 +63,23 @@ pub const MAX_TRANSCRIPT_BATCH_PAYLOAD_BYTES: usize = 4 * 1024 * 1024;
 
 pub type StoredBranchPoint = (SessionEvent, usize, u32, Option<String>);
 
+/// The assistant partial kinds that recovery may persist outside the
+/// canonical transcript event stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecoveryPartialKind {
+    Thought,
+    Reasoning,
+}
+
+impl RecoveryPartialKind {
+    const fn as_message_type(self) -> &'static str {
+        match self {
+            Self::Thought => "text",
+            Self::Reasoning => "reasoning",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SessionEvent {
     pub session_id: String,
@@ -885,14 +902,83 @@ impl SessionStore {
             .await
     }
 
-    /// Persist an ingress or recovery message through the session boundary.
-    ///
-    /// SQLite work runs on the blocking pool and may be cooperatively
-    /// cancelled. A supplied message id preserves the Agent's retry
-    /// idempotency behavior; without one, the messages repository mints a new
-    /// id through `add_message_full`.
+    /// Persist a new session's crash-safe user seed before it is exposed to
+    /// the dispatcher. The seed type is derived from the durable session
+    /// origin; later input must use the pending-input and `UserInject` path.
+    pub async fn persist_ingress_user_seed(
+        &self,
+        session_id: &str,
+        content: &str,
+        attachments: &[MessageAttachment],
+        voice: bool,
+    ) -> anyhow::Result<Message> {
+        let origin = self
+            .load_session_record(session_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("session {session_id} not found"))?
+            .origin;
+        self.persist_message_row(
+            session_id,
+            "user",
+            content,
+            Some(origin.first_user_message_type()),
+            attachments,
+            voice,
+            None,
+            None,
+            None,
+        )
+        .await
+    }
+
+    /// Persist a recovery-only error partial. It intentionally stays outside
+    /// `session_events` and remains bounded by the existing `last_msg_at`
+    /// rollback clock.
+    pub async fn persist_recovery_partial(
+        &self,
+        session_id: &str,
+        content: &str,
+        kind: RecoveryPartialKind,
+        message_id: &str,
+    ) -> anyhow::Result<Message> {
+        self.persist_message_row(
+            session_id,
+            "assistant",
+            content,
+            Some(kind.as_message_type()),
+            &[],
+            false,
+            Some(message_id),
+            None,
+            None,
+        )
+        .await
+    }
+
+    /// Persist a terminal action result when there is no live Agent loop to
+    /// commit it. The stable message id keeps delivery retries idempotent.
+    pub async fn persist_terminal_action_result(
+        &self,
+        session_id: &str,
+        content: &str,
+        message_id: &str,
+    ) -> anyhow::Result<Message> {
+        self.persist_message_row(
+            session_id,
+            "user",
+            content,
+            Some("text"),
+            &[],
+            false,
+            Some(message_id),
+            None,
+            None,
+        )
+        .await
+    }
+
     #[allow(clippy::too_many_arguments)]
-    pub async fn persist_session_message(
+    async fn persist_message_row(
         &self,
         session_id: &str,
         role: &str,
@@ -3920,7 +4006,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn session_store_persists_message_with_all_fields_without_id() {
+    async fn session_store_persists_ingress_seed_with_origin_type_and_attachments() {
         let (db, store, session_id) = store();
         let mut attachment = MessageAttachment::new("image/png", "aGVsbG8=");
         attachment.asset_id = Some("asset-test".into());
@@ -3928,17 +4014,7 @@ mod tests {
         let attachments = [attachment.clone()];
 
         let inserted = store
-            .persist_session_message(
-                &session_id,
-                "user",
-                "describe this",
-                Some("text"),
-                &attachments,
-                true,
-                None,
-                Some("call-test"),
-                Some(CancellationToken::new()),
-            )
+            .persist_ingress_user_seed(&session_id, "describe this", &attachments, true)
             .await
             .unwrap();
 
@@ -3946,7 +4022,7 @@ mod tests {
         assert_eq!(inserted.role, "user");
         assert_eq!(inserted.content, "describe this");
         assert_eq!(inserted.message_type.as_deref(), Some("text"));
-        assert_eq!(inserted.tool_call_id.as_deref(), Some("call-test"));
+        assert_eq!(inserted.tool_call_id, None);
         assert_eq!(inserted.attachments, attachments);
         assert!(inserted.voice);
 
@@ -3966,15 +4042,75 @@ mod tests {
         assert_eq!(persisted.role, "user");
         assert_eq!(persisted.content, "describe this");
         assert_eq!(persisted.message_type.as_deref(), Some("text"));
-        assert_eq!(persisted.tool_call_id.as_deref(), Some("call-test"));
+        assert_eq!(persisted.tool_call_id, None);
         assert_eq!(persisted.media_inputs.len(), 1);
     }
 
     #[tokio::test]
-    async fn session_store_persist_message_returns_existing_for_same_id_and_content() {
+    async fn session_store_ingress_seed_type_comes_from_persisted_origin() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let store = SessionStore::new(db);
+        let parent = store.create_session("parent").await.unwrap();
+        let user_session = store.create_session("user seed").await.unwrap();
+        let kickoff_session = store
+            .create_session_with_origin(
+                "kickoff seed",
+                SessionOrigin::AgentSpawn {
+                    parent_session_id: parent.id,
+                },
+            )
+            .await
+            .unwrap();
+
+        let user_seed = store
+            .persist_ingress_user_seed(&user_session.id, "hello", &[], false)
+            .await
+            .unwrap();
+        let kickoff_seed = store
+            .persist_ingress_user_seed(&kickoff_session.id, "delegate this", &[], false)
+            .await
+            .unwrap();
+
+        assert_eq!(user_seed.role, "user");
+        assert_eq!(user_seed.message_type.as_deref(), Some("text"));
+        assert_eq!(kickoff_seed.role, "user");
+        assert_eq!(kickoff_seed.message_type.as_deref(), Some("peer_kickoff"));
+    }
+
+    #[tokio::test]
+    async fn session_store_recovery_partial_fixes_role_and_type_and_is_idempotent() {
+        let (db, store, session_id) = store();
+        for (message_id, kind, expected_type) in [
+            ("msg-recovery-thought", RecoveryPartialKind::Thought, "text"),
+            (
+                "msg-recovery-reasoning",
+                RecoveryPartialKind::Reasoning,
+                "reasoning",
+            ),
+        ] {
+            let first = store
+                .persist_recovery_partial(&session_id, "partial", kind, message_id)
+                .await
+                .unwrap();
+            let retry = store
+                .persist_recovery_partial(&session_id, "partial", kind, message_id)
+                .await
+                .unwrap();
+
+            assert_eq!(first.id, retry.id);
+            assert_eq!(first.role, "assistant");
+            assert_eq!(first.message_type.as_deref(), Some(expected_type));
+            assert!(first.attachments.is_empty());
+            assert!(!first.voice);
+        }
+        assert_eq!(db.get_session_messages(&session_id).unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn session_store_private_message_row_returns_existing_for_same_id_and_content() {
         let (db, store, session_id) = store();
         let first = store
-            .persist_session_message(
+            .persist_message_row(
                 &session_id,
                 "user",
                 "retry me",
@@ -3989,7 +4125,7 @@ mod tests {
             .unwrap();
 
         let retried = store
-            .persist_session_message(
+            .persist_message_row(
                 &session_id,
                 "user",
                 "retry me",
@@ -4009,10 +4145,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn session_store_persist_message_rejects_idempotency_conflict() {
+    async fn session_store_private_message_row_rejects_idempotency_conflict() {
         let (db, store, session_id) = store();
         store
-            .persist_session_message(
+            .persist_message_row(
                 &session_id,
                 "user",
                 "original",
@@ -4027,7 +4163,7 @@ mod tests {
             .unwrap();
 
         let error = store
-            .persist_session_message(
+            .persist_message_row(
                 &session_id,
                 "user",
                 "changed",
