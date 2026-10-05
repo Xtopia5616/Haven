@@ -20,6 +20,7 @@
 //! sequence decides transcript recovery.
 
 use crate::AgentLayer;
+use crate::event::{AgentEvent, AgentEventEmitter};
 use crate::react::DurableEventState;
 use crate::react::{RunInput, RunReplay};
 use crate::resume_support::{
@@ -32,6 +33,25 @@ use crate::types::{
 };
 use haven_common::media::MediaInput;
 use haven_common::types::{CanonicalMessage, ContentPart};
+use std::sync::Arc;
+
+#[derive(Clone, Copy)]
+enum TerminalErrorEventOwner {
+    AgentEventBus,
+    SessionSupervisor,
+}
+
+struct SuppressSessionErrorEmitter(Arc<dyn AgentEventEmitter>);
+
+#[async_trait::async_trait]
+impl AgentEventEmitter for SuppressSessionErrorEmitter {
+    async fn emit(&self, event: AgentEvent) {
+        match event {
+            AgentEvent::SessionError { .. } => {}
+            event => self.0.emit(event).await,
+        }
+    }
+}
 
 /// A recent conversation message (role, content) used by the fresh-session
 /// system-prompt path. **S1 authority:** canonical is the LLM truth; this
@@ -138,10 +158,36 @@ impl AgentLayer {
             .map_err(|error| anyhow::anyhow!("failed to load conversation history: {error}"))
     }
 
-    /// Dispatcher entrypoint. Looks up the session by id, fills in the
-    /// description and original transcript (context),
-    /// loads conversation history, then runs the ReAct loop.
+    /// Run a session directly by id. ReAct terminal errors are published on
+    /// the Agent event bus; dispatcher callers use
+    /// [`Self::run_session_from_dispatcher`] so the supervisor owns that event.
     pub async fn run_session_from_id(&self, session_id: &str) -> anyhow::Result<Vec<ReActRound>> {
+        self.run_session_from_id_with_error_owner(
+            session_id,
+            TerminalErrorEventOwner::AgentEventBus,
+        )
+        .await
+    }
+
+    /// Dispatcher-only entrypoint. The supervisor reports a failed run on
+    /// its typed lifecycle stream, so suppress the matching ReAct error event
+    /// while preserving all other Agent events and the returned error.
+    pub(crate) async fn run_session_from_dispatcher(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Vec<ReActRound>> {
+        self.run_session_from_id_with_error_owner(
+            session_id,
+            TerminalErrorEventOwner::SessionSupervisor,
+        )
+        .await
+    }
+
+    async fn run_session_from_id_with_error_owner(
+        &self,
+        session_id: &str,
+        terminal_error_owner: TerminalErrorEventOwner,
+    ) -> anyhow::Result<Vec<ReActRound>> {
         tracing::debug!("run_session_from_id: session_id={}", session_id);
         let session =
             self.executor.get_session(session_id).await.ok_or_else(|| {
@@ -299,8 +345,14 @@ impl AgentLayer {
                         );
                     }
                 }
-                self.run_session_resumed(session_id, replay, run_id, &description)
-                    .await
+                self.run_session_resumed(
+                    session_id,
+                    replay,
+                    run_id,
+                    &description,
+                    terminal_error_owner,
+                )
+                .await
             }
             None => {
                 let restored = self.restore_pending_user_inputs(session_id).await?;
@@ -321,6 +373,7 @@ impl AgentLayer {
                         media_inputs: &initial_media_inputs,
                         message_id: initial_message_id.as_deref(),
                     },
+                    terminal_error_owner,
                 )
                 .await
             }
@@ -362,6 +415,7 @@ impl AgentLayer {
         replay: DurableEventState,
         run_id: u64,
         description: &str,
+        terminal_error_owner: TerminalErrorEventOwner,
     ) -> anyhow::Result<Vec<ReActRound>> {
         let events = replay.events;
         let (mut canonical, _) =
@@ -402,7 +456,7 @@ impl AgentLayer {
             );
         }
 
-        let emitter_arc = match self.events.emitter_arc() {
+        let emitter_arc = match self.run_emitter(terminal_error_owner) {
             Some(e) => e,
             None => {
                 return Ok(project_transcript_with_strategy(
@@ -490,13 +544,14 @@ impl AgentLayer {
         }
     }
 
-    pub(crate) async fn run_session(
+    async fn run_session(
         &self,
         session_id: &str,
         description: &str,
         context: &str,
         conversation_history: &[ConversationMessage],
         initial: InitialUserInput<'_>,
+        terminal_error_owner: TerminalErrorEventOwner,
     ) -> anyhow::Result<Vec<ReActRound>> {
         self.executor
             .register_managed_assets_for_session(session_id, initial.attachments);
@@ -574,7 +629,7 @@ impl AgentLayer {
             .seed_transcript_events(session_id, &events, 0)
             .await?;
         let branch_points = std::collections::HashMap::new();
-        let emitter_arc = match self.events.emitter_arc() {
+        let emitter_arc = match self.run_emitter(terminal_error_owner) {
             Some(e) => e,
             None => return Ok(project_transcript_with_strategy(&events, media_strategy).1),
         };
@@ -604,6 +659,19 @@ impl AgentLayer {
             | crate::react::LoopExit::Cancelled
             | crate::react::LoopExit::Completed => {
                 Ok(project_transcript_with_strategy(&result.events, media_strategy).1)
+            }
+        }
+    }
+
+    fn run_emitter(
+        &self,
+        terminal_error_owner: TerminalErrorEventOwner,
+    ) -> Option<Arc<dyn AgentEventEmitter>> {
+        let emitter = self.events.emitter_arc()?;
+        match terminal_error_owner {
+            TerminalErrorEventOwner::AgentEventBus => Some(emitter),
+            TerminalErrorEventOwner::SessionSupervisor => {
+                Some(Arc::new(SuppressSessionErrorEmitter(emitter)))
             }
         }
     }

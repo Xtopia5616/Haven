@@ -115,6 +115,7 @@
 #### 已复核但不进入 Next
 
 - **Tools 与安全边界：** `tool_contract.rs` 继续作为共享执行契约 owner；`builtin/admin.rs` 由 AdminServices 承接副作用，Admin 保留 operation/request/output contract；messaging adapter 继续复用 `haven_messaging`。只有稳定后再次出现 policy/schema drift、同边界回归或独立消费者，才重新评估私有模块（[ADR 0213](adr/0213-operation-spec-single-policy-source.md)、[0391](adr/0391-admin-services-typed-output-projections.md)、[0396](adr/0396-messaging-domain-crate.md)、[0506](adr/0506-mcp-admin-connection-network-policy.md)）。
+- **Admin 风险等级一致性（Candidate）：** 2026-10-05 只读核对 21 个 Admin 操作后，model `OperationContract` 与 native `AdminSurfaces::metadata` 当前风险等级相符，没有发现用户可见漂移；但两入口仍保存两份风险声明。只有新增/改动 Admin 操作或出现风险等级差异时再进入 Next，届时优先让 native metadata 从共享 contract 读取，或覆盖全部 Admin 请求的 parity 测试；不要改变现有等级而不重审确认语义。MCP native-only reconnect/refresh 保留明确单独归属。
 - **Agent 与 Memory：** SessionActor 继续独占可变 session state；ReAct stream/checkpoint/retry 保持协同；MemoryRuntime、worker、maintenance store 与 fact inference 按既有 owner 分工。只有交互恢复/队列计数、buffer 顺序、事实 marker 原子性或 prompt prefetch 等同一边界问题再次回归，才重开对应模块审查（[ADR 0214](adr/0214-react-run-inside-session-actor.md)、[0424](adr/0424-interaction-lifecycle-ownership.md)、[0468](adr/0468-memory-worker-maintenance-pass-module.md)、[0475](adr/0475-single-source-fact-sensitivity-rules.md)、[0476](adr/0476-react-turn-owns-search-context-projection.md)、[0481](adr/0481-remove-summary-marker-only-enqueue.md)）。
 - **App 与 UI：** AppState/runtime、Composer/InputRouter 与 Ask/reducer/event owners 近期未发现稳定后重复边界回归；Ask 响应结算、终态 Ask 清理和 execution phase 来源身份已收口（[ADR 0508](adr/0508-ask-response-reducer-ownership.md)、[0509](adr/0509-terminal-ask-cleanup-event-owner.md)、[0510](adr/0510-session-scoped-react-execution-phase.md)）。只有出现旧响应覆盖新状态、跨 session 状态泄漏或同一 lifecycle 回归时才重开；不提取仅按页面/operation 分类的模块。
 - **Common 与 ActionService：** 依赖图仍是 11 个内部 crate、29 条单向边且无环；Common 作为广泛复用的基础类型 crate 保持现状。ActionService 仍与 Tools 的执行策略、`haven_memory::ActionStore`、Agent 授权/完成投影及 App 生命周期形成纵向调用链。只有出现独立消费者、真实依赖方向问题或同环境可复核的维护/构建收益时，才重开 crate 评估（[ADR 0359](adr/0359-common-boundary-and-profiling-baseline-audit.md)、[0507](adr/0507-session-owned-action-cleanup.md)）。
@@ -150,15 +151,15 @@
 | 步骤 | 长期工作流 | 进入条件与交付物 | 退出条件 |
 |---|---|---|---|
 | 0 | **证据复核与分流（每轮入口）** | 在切片完成、同类回归出现、依赖/API 变化或准备发布时复核。形成一项候选说明：问题、不变量、owner、源码/历史证据、影响面、停止条件和适用门禁；依 §5.5 选择 Next、Deferred、关闭或无候选。 | 只有一个 Next 或明确无候选；不把体量、单次审计或旧历史快照直接转成 Active。 |
-| 1 | **契约与生命周期收口（当前关注）** | 先解决会话终态、所属 action、Actor 在场与否等状态不一致所暴露的契约缺口。当前候选是 §5.3 的显式 end 取消失败语义；先定义命令/UI/event/action 的失败结果，再决定是否需要状态协调、重试或补偿。交付物是故障矩阵、明确契约、回归测试和 ADR。不得只把 Actor 分支改成 checked，也不得将当前 best-effort 行为默认为产品契约。 | Actorless、驻留 Actor、运行中 Actor、Action claim 先后竞争和持久化失败都有一致且可测试的可见结果；若无法在不破坏响应性及 first-wins 的前提下给出安全方案，则维持 Deferred，不做局部补丁并继续审查其他候选。 |
-| 2 | **权威来源与跨层不变量** | 检查持久状态、事件、运行态、投影和 UI 是否仍各有单一 owner；只有真实漂移、明确风险对应的失败注入缺口、重复回归或绕过权威入口时才切片。交付物为窄范围回归/故障测试、冲突入口删除和不变量文档更新。 | 回归固定不变量且不增加第二真源；跨 crate/跨端变更通过相应完整门禁。 |
+| 1 | **契约与生命周期收口（按证据推进）** | 先解决会话终态、所属 action、Actor 在场与否等状态不一致所暴露的契约缺口。当前显式 end 取消失败仍 Deferred：先定义命令/UI/event/action 的失败结果，再决定是否需要状态协调、重试或补偿；不得只把 Actor 分支改成 checked，或默认 best-effort 是产品契约。若出现更高优先级且可独立验收的 owner 冲突，可先处理该项并保留本 Deferred。 | Actorless、驻留 Actor、运行中 Actor、Action claim 先后竞争和持久化失败都有一致且可测试的可见结果；若无法在不破坏响应性及 first-wins 的前提下给出安全方案，则维持 Deferred。 |
+| 2 | **权威来源与跨层不变量** | 检查持久状态、事件、运行态、投影和 UI 是否仍各有单一 owner；只有真实漂移、明确风险对应的失败注入缺口、重复回归或绕过权威入口时才切片。2026-10-05 的 ReAct Fatal 双终态 producer 已收口：dispatcher 专用入口过滤 AgentEvent 重复错误，SessionSupervisor 的 SessionEvent 经共同 TauriEmitter 投影，直接 run API 保留原行为（[ADR 0511](adr/0511-session-terminal-error-single-owner.md)）。后续交付仍是窄范围回归/故障测试、冲突入口删除和不变量文档更新。 | 回归固定不变量且不增加第二真源；跨 crate/跨端变更通过相应完整门禁。 |
 | 3 | **稳定 owner 的职责收口** | owner 稳定后，若同一边界重复回归、跨职责共同修改或测试放错位置持续增加维护成本，迁移一条完整垂直链。交付物优先是私有模块/API 收窄、测试归属调整和旧入口清理，不预先按大文件切片。 | 调用和测试落到真实职责 owner，重复规则或跨边界修改减少，外部契约、依赖方向及运行语义保持不变；收益不能说明则关闭候选。 |
 | 4 | **模块成熟后再评估 crate/API 边界** | 只有模块 owner 已稳定，且存在独立消费者、真实依赖方向问题或可复核构建/迭代成本时才评估 crate 拆分。交付物包括依赖图、API/消费者映射；若声称构建收益，须有同环境基准。 | 提取后依赖单向、API 稳定、消费者不用反向依赖或重复 adapter，并证明维护/构建收益；任一不满足就保留现边界。 |
 | 5 | **性能与容量** | 仅在同负载 profile 复现有用户意义的成本时优化；交付物为固定场景的前后指标，并遵守 SQLite 容量、失败恢复与资源上限契约。Windows 发布验收独立保留在 §5.1，不作为结构重构阶段的退出依赖。 | 优化结果超过噪声且达到目标，否则关闭候选；没有当前测量就不以“降复杂度”为名做性能改动。 |
 
-以上是循环复核的先后顺序，不是一次性瀑布项目：每轮从步骤 0 重新分流，完成一个切片、同类问题复现或准备发布时再审查证据。当前步骤 0 复核后，步骤 1 只有一个 Deferred 候选、没有 Active 实现切片；近期审计未在步骤 2–5 找到满足准入条件的新候选。未解决的契约问题不阻止继续寻找独立且证据充分的工作，但任何时候只实现一个 Active slice。发布验收 Gate 与结构重构并行，按 §5.1 独立关闭。
+以上是循环复核的先后顺序，不是一次性瀑布项目：每轮从步骤 0 重新分流，完成一个切片、同类问题复现或准备发布时再审查证据。当前步骤 0 复核后，显式 end 只有 Deferred；ReAct Fatal 双终态 owner 已在步骤 2 收口（ADR 0511）。Admin 风险声明 parity 暂留 Candidate，最近审计未发现当前值差异。当前没有 Active 实现切片；未解决的契约问题不阻止继续寻找独立且证据充分的工作，但任何时候只实现一个 Active slice。发布验收 Gate 与结构重构并行，按 §5.1 独立关闭。
 
-**当前执行位置：** 架构阶段 0–8 已完成；滚动执行周期位于 §5.6 步骤 0“证据复核与分流”。当前没有 Active 实现切片；显式 end 的 action 取消失败语义保持 Deferred，等命令/UI/action 的可见失败契约明确后再决定实现范围，不能用单分支改为 checked 代替设计。近期审计未找到新的合格 crate 或内部拆分候选；crate 边界仍为 11 个内部 crate、29 条单向边。Windows 发布验收仍是独立 Open Gate。后续每个切片结束、同类回归出现或准备发布时按 §5.5 重审，不按行数、crate 数或日历生成工作。
+**当前执行位置：** 架构阶段 0–8 已完成；滚动执行周期位于 §5.6 步骤 0“证据复核与分流”。当前没有 Active 实现切片；显式 end 的 action 取消失败语义保持 Deferred，等命令/UI/action 的可见失败契约明确后再决定实现范围，不能用单分支改为 checked 代替设计。ReAct Fatal 双终态发布 owner 已由 ADR 0511 收口；Admin 风险等级两份声明当前值一致，parity 保持 Candidate。近期审计未找到新的合格 crate 或内部拆分候选；crate 边界仍为 11 个内部 crate、29 条单向边。Windows 发布验收仍是独立 Open Gate。后续每个切片结束、同类回归出现或准备发布时按 §5.5 重审，不按行数、crate 数或日历生成工作。
 
 ## 6. 更新规则
 

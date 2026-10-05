@@ -499,3 +499,4 @@
 - [0508：Ask 响应以 SessionReducer 为唯一来源](0508-ask-response-reducer-ownership.md)
 - [0509：终态 Ask 清理由首个事件通道拥有](0509-terminal-ask-cleanup-event-owner.md)
 - [0510：ReAct phase 保留来源 session 身份](0510-session-scoped-react-execution-phase.md)
+- [0511：Dispatcher run 的终态错误由 SessionSupervisor 单一发布](0511-session-terminal-error-single-owner.md)

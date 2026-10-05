@@ -313,6 +313,7 @@ pub(crate) fn run() {
             // so a slow webview or toast notification can never stall agent
             // progress (previously every event was awaited end-to-end).
             let buffered = haven_agent::BufferedEmitter::new(1024, emitter);
+            let session_error_emitter = buffered.clone();
             tokio::task::block_in_place(|| {
                 let rt = tokio::runtime::Handle::current();
                 rt.block_on(bus.subscribe("tauri", buffered));
@@ -500,6 +501,7 @@ pub(crate) fn run() {
                     let app_h = handle.clone();
                     let st_arc = state.inner().clone();
                     let interaction_notifications = notifications.clone();
+                    let session_error_emitter = session_error_emitter.clone();
                     state.runtime.spawn_with_child_token(
                         "session-event-forwarder",
                         move |cancel| async move {
@@ -536,33 +538,17 @@ pub(crate) fn run() {
                                         session_id,
                                         reason,
                                     } => {
-                                        let occurrence_id =
-                                            haven_common::types::new_id("occ");
-                                        log_ignored_result!(
-                                            "event.session_error",
-                                            app_h.emit(
-                                                SESSION_ERROR_EVENT,
-                                                SessionErrorEvent {
-                                                    session_id: session_id.clone(),
-                                                    error: sanitize_error_text(&reason),
-                                                    occurrence_id: Some(occurrence_id.clone()),
-                                                },
-                                            )
-                                        );
-                                        log_ignored_result!(
-                                            "event.session_updated",
-                                            app_h.emit(
-                                                SESSION_UPDATED_EVENT,
-                                                SessionLifecycleEvent {
-                                                    session_id,
-                                                    status: haven_common::SessionStatus::Error,
-                                                    occurrence_id: Some(occurrence_id),
-                                                    waiting_reason: None,
-                                                    title: Some(String::new()),
-                                                    reason: Some(sanitize_error_text(&reason)),
-                                                },
-                                            )
-                                        );
+                                        // Re-enter the shared bounded emitter so
+                                        // terminal failure follows queued chunks
+                                        // and committed Agent events in order.
+                                        haven_agent::AgentEventEmitter::emit(
+                                            session_error_emitter.as_ref(),
+                                            haven_agent::AgentEvent::SessionError {
+                                                session_id,
+                                                error: reason,
+                                            },
+                                        )
+                                        .await;
                                     }
                                     haven_agent::SessionEvent::ScheduledConfirmOutcome {
                                         ..
