@@ -485,32 +485,9 @@ impl Database {
             rusqlite::params![cutoff],
         )?;
         // Batch retention deletion bypasses `delete_session`; reclaim the
-        // session-scoped extraction state in the same connection while the
-        // deleted session ids are still the source of truth for this pass.
-        conn.execute(
-            "DELETE FROM kv_store
-             WHERE (key LIKE 'fact_extraction.%'
-                    OR key LIKE 'fact_extraction_last_run.%'
-                    OR key LIKE 'fact_extraction_episode_done.%'
-                    OR key LIKE 'fact_extraction_pending.%'
-                    OR key LIKE 'fact_extraction_episode_pending.%'
-                    OR key GLOB 'memory_event_cursor.*')
-               AND NOT EXISTS (SELECT 1 FROM sessions
-                               WHERE id = CASE
-                                   WHEN key GLOB 'memory_event_cursor.*'
-                                   THEN substr(key, 21)
-                                   WHEN key LIKE 'fact_extraction_last_run.%'
-                                   THEN substr(key, 26)
-                                   WHEN key LIKE 'fact_extraction_pending.%'
-                                   THEN substr(key, 25)
-                                   WHEN key LIKE 'fact_extraction_episode_pending.%'
-                                   THEN value
-                                   WHEN key LIKE 'fact_extraction_episode_done.%'
-                                   THEN value
-                                   ELSE substr(key, 17)
-                               END)",
-            [],
-        )?;
+        // session-scoped state on the same connection using kv_store's
+        // namespace ownership rule.
+        super::kv_store::cleanup_orphan_session_scoped_state_on(&conn)?;
         drop(conn);
         if count > 0 {
             self.cache_invalidate_sessions();

@@ -1,6 +1,6 @@
 # Haven 架构降复杂度重构路线图
 
-> 状态：阶段 0–8 已完成；SessionUsage 累计上限契约已由 ADR 0478 收口；当前无 Active 结构切片；Windows 发布验收为独立开放签核门
+> 状态：阶段 0–8 已完成；SessionUsage 累计上限契约与 session-scoped KV 孤儿清理 owner 已收口；当前无 Active 结构切片；Windows 发布验收为独立开放签核门
 > 更新日期：2026-10-05
 > 范围：Agent/Session、Memory、Tools、LLM、App IPC 与 UI
 
@@ -90,13 +90,15 @@
 
 ### 5.3 内部模块边界整理（持续按证据复核 / 当前无 Active 切片）
 
-这不是 crate 拆分目标；只在职责与稳定 owner 边界能证明维护收益时做私有模块整理。已完成切片的实现范围、验证与回滚记录以 ADR 为准：SessionStore 只读历史 façade 及测试归属（[0466](adr/0466-session-history-read-facade-module.md)、[0479](adr/0479-session-history-test-ownership.md)）、LLM provider schema projection（[0467](adr/0467-llm-tool-schema-projection-module.md)）、Memory maintenance pass（[0468](adr/0468-memory-worker-maintenance-pass-module.md)）、managed-media 生命周期与 producer/GC/Files 登记协调（[0469](adr/0469-app-managed-media-lifecycle-module.md)、[0470](adr/0470-generated-media-write-gc-gate.md)、[0473](adr/0473-files-rich-path-generated-media-gc-gate.md)）、录音 ID 交接和 Shell overlay controller（[0471](adr/0471-recording-session-id-handoff.md)、[0472](adr/0472-recording-overlay-controller.md)）、架构依赖清单门禁（[0474](adr/0474-architecture-dependency-inventory-gate.md)）、Memory fact sensitivity 规则单源化（[0475](adr/0475-single-source-fact-sensitivity-rules.md)）、ReAct 搜索响应投影归入 turn owner（[0476](adr/0476-react-turn-owns-search-context-projection.md)）。
+这不是 crate 拆分目标；只在职责与稳定 owner 边界能证明维护收益时做私有模块整理。已完成切片的实现范围、验证与回滚记录以 ADR 为准：SessionStore 只读历史 façade 及测试归属（[0466](adr/0466-session-history-read-facade-module.md)、[0479](adr/0479-session-history-test-ownership.md)）、session-scoped KV 孤儿清理 predicate 单一 owner（[0480](adr/0480-session-kv-orphan-cleanup-owner.md)）、LLM provider schema projection（[0467](adr/0467-llm-tool-schema-projection-module.md)）、Memory maintenance pass（[0468](adr/0468-memory-worker-maintenance-pass-module.md)）、managed-media 生命周期与 producer/GC/Files 登记协调（[0469](adr/0469-app-managed-media-lifecycle-module.md)、[0470](adr/0470-generated-media-write-gc-gate.md)、[0473](adr/0473-files-rich-path-generated-media-gc-gate.md)）、录音 ID 交接和 Shell overlay controller（[0471](adr/0471-recording-session-id-handoff.md)、[0472](adr/0472-recording-overlay-controller.md)）、架构依赖清单门禁（[0474](adr/0474-architecture-dependency-inventory-gate.md)）、Memory fact sensitivity 规则单源化（[0475](adr/0475-single-source-fact-sensitivity-rules.md)）、ReAct 搜索响应投影归入 turn owner（[0476](adr/0476-react-turn-owns-search-context-projection.md)）。
 
 **本轮完成 — [ADR 0476](adr/0476-react-turn-owns-search-context-projection.md)：**不依赖 stream state、仅由 turn response 处理调用的 server-side search context 投影与 outcome 已移入 `turn.rs`，identity 回归随实现迁移。StreamForwarder、队列、checkpoint、重试和 mixed tool+search 的既有时序留在原 owner；该切片的实施边界、测试与回滚见 ADR 0476。
 
 **本轮完成 — [ADR 0477](adr/0477-agent-action-result-delivery-module.md)：**Agent 的 background/scheduled-result delivery consumer、专属 session-status helper、不可信结果 envelope formatter 及 formatter 测试移入私有 `layer/action_result_delivery.rs`。`ActionService` 仍拥有 completion outbox 与 ack 能力，SessionSupervisor 仍拥有队列/状态，ReAct 仍拥有 live transcript 的 durable projection；scheduled-fire 执行路径留在原处。当前无 Active 结构切片。
 
 **本轮完成 — [ADR 0479](adr/0479-session-history-test-ownership.md)：**只读历史 façade 的六个行为测试移入 `session_events::session_history::tests`，使查询实现与其 API/查询语义回归在同一模块定位。测试 fixture 保持内存数据库；title 写入与缓存失效、聚合恢复投影及 append/rollback 原子性测试仍留在各自 owner。没有暴露测试 helper 或改动生产契约。
+
+**本轮完成 — [ADR 0480](adr/0480-session-kv-orphan-cleanup-owner.md)：**`sessions::delete_old_sessions` 与 Memory maintenance 原先各自维护相同的 orphan session-scoped `kv_store` DELETE/owner 解析规则；现由 `kv_store` 的 connection-level helper 持有唯一 SQL，两个调用点继续使用各自已有连接。历史上新增 event cursor 与 episode marker 时，两份谓词曾需同步修改；本切片消除该重复 owner，不改变删除时序或事务边界。
 
 当前边界决定：Common 拆分维持 [ADR 0359](adr/0359-common-boundary-and-profiling-baseline-audit.md) 的暂缓结论；Tools crate 拆分没有独立依赖边界或消费者收益；SessionStore 继续独占 event append、投影和 rollback 事务协调，`event_cursor` 与 `last_msg_at` 双时钟、提交后发布均不得分散；`LOCAL_TOOL_SECURITY_MATRIX` 仍是生产权限提示的 operation 白名单，保留在 `security.rs`。管理 surface、LLM router、授权沙箱和 inbox 崩溃恢复边界按现有 owner 保留，具体依据见相关 ADR。
 
@@ -144,10 +146,11 @@
 本路线按触发证据滚动，不按“把所有大 crate 拆小”设完工日期。完成一个切片后重新审查最高优先级证据；下列顺序表示审查优先级，不代表每项必然实施：
 
 1. **已完成：SessionUsage 累计范围与重建一致性（[ADR 0478](adr/0478-session-usage-saturation-contract.md)）。** 结合 live `UsageTracker` 的 `u32::saturating_add` 和 `AgentUsage` 累计字段类型，确定 session summary 封顶于 `u32::MAX`；增量写入、legacy summary 读取和 detail 重建现已收敛到该契约。没有改变 schema 或 wire 类型。
-2. **后续候选：SessionStore 非事务 lifecycle façade。** 只读 history façade 与对应测试已由 ADR 0466/0479 收口。event append、materialized projection、rollback、cache invalidation 与提交后 broadcast 仍属于一个事务 owner；只有出现 owner 稳定后的重复原子性/rollback 回归，或无关 lifecycle 职责反复迫使事务代码同步修改且可在不触碰事务私有状态的边界内隔离，才评估。当前不自动立项。
-3. **长期条件项：Tools / App / UI 模块与 crate 边界、性能。** 继续用架构依赖清单、独立消费者和同负载 profile 证明收益；当前没有获准的大 crate 拆分。Common、Tools crate 与通用 Job 抽象维持既有暂缓决定，除非出现新的反复故障或可量化收益证据。
+2. **已完成：只读历史 façade 测试归属（[ADR 0479](adr/0479-session-history-test-ownership.md)）。** 六项查询语义测试随 `session_history` 私有模块归组；事务、历史缓存写失效与聚合恢复测试仍在各自 owner。
+3. **已完成：session-scoped KV 孤儿清理单一 owner（[ADR 0480](adr/0480-session-kv-orphan-cleanup-owner.md)）。** retention purge 与 Memory maintenance 共用 `kv_store` 的 connection-level 清理 predicate。
+4. **长期条件项：SessionStore lifecycle、Tools / App / UI 模块与 crate 边界、性能。** SessionStore lifecycle façade 审计暂不准入实现；事务 append/projection/rollback/cache invalidation/post-commit broadcast 继续由同一 owner 协调。其它模块与 crate 边界继续用依赖清单、独立消费者、重复回归或同负载 profile 证明收益；当前没有获准的大 crate 拆分。Common、Tools crate 与通用 Job 抽象维持既有暂缓决定，除非出现新的反复故障或可量化收益证据。
 
-2026-10-05 对 `AppState`/`ApplicationRuntime` 与 UI shell/Composer 的并行只读复核均未发现 owner 稳定后的重复边界回归，故不新增 Active 项；重开条件见 §5.3 的启动编排、Composer 与全局布局观察结论。
+2026-10-05 对 `AppState`/`ApplicationRuntime`、UI shell/Composer 与 SessionStore 非事务 lifecycle façade 的只读复核均未发现 owner 稳定后的重复边界回归。SessionStore 生命周期 wrapper 大多是 typed `run_blocking` 转发，实际 actor/确认/delete policy 由 Agent `session/status.rs` 持有；搬移 wrapper 不会改变 owner 或调用链，故不新增 Active 项。重开条件见 §5.3 的启动编排、Composer、全局布局与 SessionStore 边界观察结论。
 
 AppState/runtime 与 UI shell/Composer 的并行只读复核没有发现可准入的候选。后续 agent 继续用于只读、定范围的源码/历史审计；每项结论由主执行者核对当前源码与适用门禁。没有新的合格证据时保持无 Active，不按 crate 行数制造拆分工作。
 

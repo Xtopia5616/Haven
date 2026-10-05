@@ -291,35 +291,44 @@ impl Database {
     /// markers, pending markers, and
     /// `memory_event_cursor.<session_id>` checkpoints of dead sessions.
     /// Called during memory maintenance so the kv table does not grow without
-    /// bound.
+    /// bound. Session retention uses the same connection-level cleanup rule.
     pub fn cleanup_orphan_extraction_cursors(&self) -> anyhow::Result<u64> {
         let conn = self.conn();
-        let deleted = conn.execute(
-            "DELETE FROM kv_store
-             WHERE (key LIKE 'fact_extraction.%'
-                    OR key LIKE 'fact_extraction_last_run.%'
-                    OR key LIKE 'fact_extraction_episode_done.%'
-                    OR key LIKE 'fact_extraction_pending.%'
-                    OR key LIKE 'fact_extraction_episode_pending.%'
-                    OR key GLOB 'memory_event_cursor.*')
-               AND NOT EXISTS (SELECT 1 FROM sessions
-                               WHERE id = CASE
-                                   WHEN key GLOB 'memory_event_cursor.*'
-                                   THEN substr(key, 21)
-                                   WHEN key LIKE 'fact_extraction_last_run.%'
-                                   THEN substr(key, 26)
-                                   WHEN key LIKE 'fact_extraction_pending.%'
-                                   THEN substr(key, 25)
-                                   WHEN key LIKE 'fact_extraction_episode_pending.%'
-                                   THEN value
-                                   WHEN key LIKE 'fact_extraction_episode_done.%'
-                                   THEN value
-                                   ELSE substr(key, 17)
-                               END)",
-            [],
-        )?;
-        Ok(deleted as u64)
+        cleanup_orphan_session_scoped_state_on(&conn)
     }
+}
+
+/// Delete session-scoped extraction and event-consumer markers whose owning
+/// session no longer exists. Callers that already hold a connection can reuse
+/// this predicate without checking out another pooled connection.
+pub(super) fn cleanup_orphan_session_scoped_state_on(
+    conn: &rusqlite::Connection,
+) -> anyhow::Result<u64> {
+    let deleted = conn.execute(
+        "DELETE FROM kv_store
+         WHERE (key LIKE 'fact_extraction.%'
+                OR key LIKE 'fact_extraction_last_run.%'
+                OR key LIKE 'fact_extraction_episode_done.%'
+                OR key LIKE 'fact_extraction_pending.%'
+                OR key LIKE 'fact_extraction_episode_pending.%'
+                OR key GLOB 'memory_event_cursor.*')
+           AND NOT EXISTS (SELECT 1 FROM sessions
+                           WHERE id = CASE
+                               WHEN key GLOB 'memory_event_cursor.*'
+                               THEN substr(key, 21)
+                               WHEN key LIKE 'fact_extraction_last_run.%'
+                               THEN substr(key, 26)
+                               WHEN key LIKE 'fact_extraction_pending.%'
+                               THEN substr(key, 25)
+                               WHEN key LIKE 'fact_extraction_episode_pending.%'
+                               THEN value
+                               WHEN key LIKE 'fact_extraction_episode_done.%'
+                               THEN value
+                               ELSE substr(key, 17)
+                           END)",
+        [],
+    )?;
+    Ok(deleted as u64)
 }
 
 fn memory_event_cursor_key(session_id: &str) -> anyhow::Result<String> {
