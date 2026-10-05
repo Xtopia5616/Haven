@@ -19,6 +19,7 @@ pub use repositories::embedding_store::{
     MemoryEmbeddingStore, MemoryEmbeddingVector, PendingMemoryEmbedding,
 };
 pub use repositories::fact_store::{MemoryFactStore, MemoryFactWrite};
+pub use repositories::kv_store::{MAX_MEMORY_OUTBOX_PAGE_SIZE, MAX_MEMORY_SESSION_ID_PAGE_SIZE};
 pub use repositories::memory_fact_extraction_store::{
     FactExtractionTranscript, MemoryFactExtractionStore,
 };

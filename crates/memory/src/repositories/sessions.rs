@@ -1,4 +1,5 @@
 use crate::db::Database;
+use crate::repositories::kv_store::MAX_MEMORY_SESSION_ID_PAGE_SIZE;
 use chrono::{Local, NaiveDate, TimeZone, Utc};
 use haven_common::SessionStatus;
 
@@ -187,6 +188,37 @@ impl Database {
         let conn = self.conn();
         let mut stmt = conn.prepare("SELECT id FROM sessions ORDER BY id ASC")?;
         let rows = stmt.query_map([], |row| row.get(0))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn session_id_high_water(&self) -> anyhow::Result<Option<String>> {
+        Ok(self
+            .conn()
+            .query_row("SELECT MAX(id) FROM sessions", [], |row| row.get(0))?)
+    }
+
+    pub fn session_ids_page(
+        &self,
+        after_id: Option<&str>,
+        high_water: &str,
+        limit: usize,
+    ) -> anyhow::Result<Vec<String>> {
+        anyhow::ensure!(
+            (1..=MAX_MEMORY_SESSION_ID_PAGE_SIZE).contains(&limit),
+            "session ID page limit must be between 1 and {MAX_MEMORY_SESSION_ID_PAGE_SIZE}"
+        );
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT id FROM sessions
+             WHERE (?1 IS NULL OR id > ?1)
+               AND id <= ?2
+             ORDER BY id COLLATE BINARY ASC
+             LIMIT ?3",
+        )?;
+        let rows = stmt.query_map(
+            rusqlite::params![after_id, high_water, limit as i64],
+            |row| row.get(0),
+        )?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
@@ -736,6 +768,37 @@ mod tests {
         let mut expected = vec![first.id, second.id];
         expected.sort();
         assert_eq!(db.all_session_ids().unwrap(), expected);
+    }
+
+    #[test]
+    fn session_id_keyset_pages_are_bounded_and_honor_captured_high_water() {
+        let db = create_db();
+        let mut expected = (0..130)
+            .map(|index| db.create_session(&format!("paged-{index}")).unwrap().id)
+            .collect::<Vec<_>>();
+        expected.sort();
+        let high_water = db.session_id_high_water().unwrap().unwrap();
+        let later_id = format!("ses-{}", "f".repeat(32));
+        db.conn()
+            .execute("INSERT INTO sessions (id) VALUES (?1)", [&later_id])
+            .unwrap();
+
+        let mut after_id = None;
+        let mut actual = Vec::new();
+        loop {
+            let page = db
+                .session_ids_page(after_id.as_deref(), &high_water, 64)
+                .unwrap();
+            assert!(page.len() <= 64);
+            if page.is_empty() {
+                break;
+            }
+            after_id = page.last().cloned();
+            actual.extend(page);
+        }
+        assert_eq!(actual, expected);
+        assert!(db.session_ids_page(None, &high_water, 0).is_err());
+        assert!(db.session_ids_page(None, &high_water, 65).is_err());
     }
 
     #[test]

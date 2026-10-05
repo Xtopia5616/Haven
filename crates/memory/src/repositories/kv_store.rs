@@ -2,33 +2,157 @@ use crate::db::Database;
 use chrono::Utc;
 use rusqlite::OptionalExtension;
 
-fn encode_fact_extraction_marker(event_sequence: i64, bypass_throttle: bool) -> String {
-    if event_sequence == 0 {
-        return if bypass_throttle { "1" } else { "0" }.to_owned();
-    }
-    format!("{event_sequence}:{}", u8::from(bypass_throttle))
+pub const MAX_MEMORY_OUTBOX_PAGE_SIZE: usize = 64;
+pub const MAX_MEMORY_SESSION_ID_PAGE_SIZE: usize = 64;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FactExtractionMarkerState {
+    pub event_sequence: i64,
+    pub bypass_throttle: bool,
+    pub attempt: u32,
+    pub next_attempt_at_ms: i64,
 }
 
-fn decode_fact_extraction_marker(value: &str) -> anyhow::Result<(i64, bool)> {
-    match value {
-        "0" => return Ok((0, false)),
-        "1" => return Ok((0, true)),
-        _ => {}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FactExtractionMarker {
+    pub key: String,
+    pub value: String,
+    pub session_id: String,
+    pub state: Result<FactExtractionMarkerState, String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SummaryExtractionMarkerState {
+    pub attempt: u32,
+    pub next_attempt_at_ms: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SummaryExtractionMarker {
+    pub key: String,
+    pub value: String,
+    pub session_id: String,
+    pub episode_id: String,
+    pub state: Result<SummaryExtractionMarkerState, String>,
+}
+
+fn encode_fact_extraction_marker(state: &FactExtractionMarkerState) -> String {
+    format!(
+        "{}:{}:{}:{}",
+        state.event_sequence,
+        u8::from(state.bypass_throttle),
+        state.attempt,
+        state.next_attempt_at_ms
+    )
+}
+
+fn decode_fact_extraction_marker(value: &str) -> anyhow::Result<FactExtractionMarkerState> {
+    let parts = value.split(':').collect::<Vec<_>>();
+    match parts.as_slice() {
+        ["0"] => Ok(FactExtractionMarkerState {
+            event_sequence: 0,
+            bypass_throttle: false,
+            attempt: 0,
+            next_attempt_at_ms: 0,
+        }),
+        ["1"] => Ok(FactExtractionMarkerState {
+            event_sequence: 0,
+            bypass_throttle: true,
+            attempt: 0,
+            next_attempt_at_ms: 0,
+        }),
+        [sequence, bypass] => decode_fact_marker_parts(sequence, bypass, "0", "0"),
+        [sequence, bypass, attempt, due] => {
+            decode_fact_marker_parts(sequence, bypass, attempt, due)
+        }
+        _ => anyhow::bail!("invalid fact extraction marker"),
     }
-    let (event_sequence, bypass) = value
-        .split_once(':')
-        .ok_or_else(|| anyhow::anyhow!("invalid fact extraction marker"))?;
-    let event_sequence = event_sequence.parse::<i64>()?;
+}
+
+fn decode_fact_marker_parts(
+    sequence: &str,
+    bypass: &str,
+    attempt: &str,
+    due: &str,
+) -> anyhow::Result<FactExtractionMarkerState> {
+    let event_sequence = sequence.parse::<i64>()?;
     anyhow::ensure!(
-        event_sequence > 0,
+        event_sequence >= 0,
         "invalid fact extraction marker sequence"
     );
-    let bypass = match bypass {
+    let bypass_throttle = match bypass {
         "0" => false,
         "1" => true,
         _ => anyhow::bail!("invalid fact extraction marker bypass flag"),
     };
-    Ok((event_sequence, bypass))
+    let attempt = attempt.parse::<u32>()?;
+    let next_attempt_at_ms = due.parse::<i64>()?;
+    anyhow::ensure!(
+        next_attempt_at_ms >= 0,
+        "invalid fact extraction retry deadline"
+    );
+    Ok(FactExtractionMarkerState {
+        event_sequence,
+        bypass_throttle,
+        attempt,
+        next_attempt_at_ms,
+    })
+}
+
+fn encode_summary_extraction_marker(
+    session_id: &str,
+    attempt: u32,
+    next_attempt_at_ms: i64,
+) -> String {
+    format!("{session_id}:{attempt}:{next_attempt_at_ms}")
+}
+
+fn decode_summary_extraction_marker(value: &str) -> anyhow::Result<(String, u32, i64)> {
+    if let Some((session_id, retry)) = value.rsplit_once(':')
+        && let Some((session_id, attempt)) = session_id.rsplit_once(':')
+    {
+        let attempt = attempt.parse::<u32>()?;
+        let next_attempt_at_ms = retry.parse::<i64>()?;
+        anyhow::ensure!(
+            !session_id.trim().is_empty() && next_attempt_at_ms >= 0,
+            "invalid summary extraction marker"
+        );
+        return Ok((session_id.to_owned(), attempt, next_attempt_at_ms));
+    }
+    anyhow::ensure!(
+        !value.trim().is_empty(),
+        "invalid summary extraction marker"
+    );
+    Ok((value.to_owned(), 0, 0))
+}
+
+fn move_marker_to_quarantine_on(
+    conn: &rusqlite::Connection,
+    key: &str,
+    quarantine_key: &str,
+    expected_value: &str,
+) -> anyhow::Result<bool> {
+    let current: Option<String> = conn
+        .query_row(
+            "SELECT value FROM kv_store WHERE key = ?1",
+            rusqlite::params![key],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if current.as_deref() != Some(expected_value) {
+        return Ok(false);
+    }
+    // Retain only the newest malformed value for each logical job. Renaming
+    // the row preserves the exact raw value without copying it into memory.
+    conn.execute(
+        "DELETE FROM kv_store WHERE key = ?1",
+        rusqlite::params![quarantine_key],
+    )?;
+    let changed = conn.execute(
+        "UPDATE kv_store SET key = ?2 WHERE key = ?1 AND value = ?3",
+        rusqlite::params![key, quarantine_key, expected_value],
+    )?;
+    Ok(changed > 0)
 }
 
 /// Internal key-value store for agent bookkeeping that is not user memory.
@@ -44,6 +168,27 @@ fn decode_fact_extraction_marker(value: &str) -> anyhow::Result<(i64, bool)> {
 /// (`scheduled_execution_claim.<action_id>`). Exposed as `kv_store` in the
 /// schema.
 impl Database {
+    /// Baseline every currently persisted session that lacks a memory event
+    /// cursor in one SQLite statement snapshot. The caller subscribes to live
+    /// events after this operation and then replays durable session events.
+    pub fn baseline_missing_memory_event_cursors_to_latest(&self) -> anyhow::Result<usize> {
+        let now = Utc::now().to_rfc3339();
+        Ok(self.conn().execute(
+            "INSERT OR IGNORE INTO kv_store (key, value, updated_at)
+             SELECT 'memory_event_cursor.' || s.id,
+                    CAST(COALESCE(MAX(e.sequence), 0) AS TEXT),
+                    ?1
+             FROM sessions s
+             LEFT JOIN session_events e ON e.session_id = s.id
+             WHERE NOT EXISTS (
+                 SELECT 1 FROM kv_store cursor
+                 WHERE cursor.key = 'memory_event_cursor.' || s.id
+             )
+             GROUP BY s.id",
+            rusqlite::params![now],
+        )?)
+    }
+
     pub fn set_kv(&self, key: &str, value: &str) -> anyhow::Result<()> {
         let now = Utc::now().to_rfc3339();
         let conn = self.conn();
@@ -197,15 +342,47 @@ impl Database {
                     |row| row.get(0),
                 )
                 .optional()?;
-            let (previous_sequence, previous_bypass) = previous_value
-                .as_deref()
-                .map(decode_fact_extraction_marker)
-                .transpose()?
-                .unwrap_or((0, false));
-            let value = encode_fact_extraction_marker(
-                previous_sequence.max(event_sequence),
-                previous_bypass || bypass_throttle,
-            );
+            let previous_state = match previous_value.as_deref() {
+                Some(value) => match decode_fact_extraction_marker(value) {
+                    Ok(state) => state,
+                    Err(_) => {
+                        let quarantine_key = format!("fact_extraction_pending_poison.{session_id}");
+                        anyhow::ensure!(
+                            move_marker_to_quarantine_on(&conn, &key, &quarantine_key, value)?,
+                            "fact extraction marker changed during enqueue"
+                        );
+                        FactExtractionMarkerState {
+                            event_sequence: 0,
+                            bypass_throttle: false,
+                            attempt: 0,
+                            next_attempt_at_ms: 0,
+                        }
+                    }
+                },
+                None => FactExtractionMarkerState {
+                    event_sequence: 0,
+                    bypass_throttle: false,
+                    attempt: 0,
+                    next_attempt_at_ms: 0,
+                },
+            };
+            let is_new_generation = event_sequence > previous_state.event_sequence;
+            let bypass_upgraded = bypass_throttle && !previous_state.bypass_throttle;
+            let state = FactExtractionMarkerState {
+                event_sequence: previous_state.event_sequence.max(event_sequence),
+                bypass_throttle: previous_state.bypass_throttle || bypass_throttle,
+                attempt: if is_new_generation || bypass_upgraded {
+                    0
+                } else {
+                    previous_state.attempt
+                },
+                next_attempt_at_ms: if is_new_generation || bypass_upgraded {
+                    0
+                } else {
+                    previous_state.next_attempt_at_ms
+                },
+            };
+            let value = encode_fact_extraction_marker(&state);
             let now = Utc::now().to_rfc3339();
             conn.execute(
                 "INSERT INTO kv_store (key, value, updated_at)
@@ -225,29 +402,126 @@ impl Database {
         Ok(())
     }
 
-    /// Load durable extraction jobs that still belong to a live session.
-    /// Orphaned markers are left for the shared cleanup pass, so this read
-    /// never turns a deleted session into a new unit of work.
-    pub fn pending_fact_extractions(&self) -> anyhow::Result<Vec<(String, bool, i64)>> {
+    pub fn pending_fact_extraction_high_water(&self) -> anyhow::Result<Option<String>> {
+        let prefix = "fact_extraction_pending.";
+        Ok(self.conn().query_row(
+            "SELECT MAX(key) FROM kv_store WHERE key >= ?1 AND key < ?2",
+            rusqlite::params![prefix, "fact_extraction_pending/"],
+            |row| row.get(0),
+        )?)
+    }
+
+    pub fn pending_fact_extractions_page(
+        &self,
+        after_key: Option<&str>,
+        high_water: &str,
+        limit: usize,
+    ) -> anyhow::Result<Vec<FactExtractionMarker>> {
+        anyhow::ensure!(
+            (1..=MAX_MEMORY_OUTBOX_PAGE_SIZE).contains(&limit),
+            "fact outbox page limit must be between 1 and {MAX_MEMORY_OUTBOX_PAGE_SIZE}"
+        );
         let conn = self.conn();
         let mut stmt = conn.prepare(
-            "SELECT substr(k.key, 25), k.value
+            "SELECT k.key, k.value, substr(k.key, 25)
              FROM kv_store k
              INNER JOIN sessions s ON s.id = substr(k.key, 25)
-             WHERE k.key LIKE 'fact_extraction_pending.%'
-             ORDER BY k.updated_at, k.key",
+             WHERE k.key >= 'fact_extraction_pending.'
+               AND k.key < 'fact_extraction_pending/'
+               AND (?1 IS NULL OR k.key > ?1)
+               AND k.key <= ?2
+             ORDER BY k.key COLLATE BINARY ASC
+             LIMIT ?3",
         )?;
-        let rows = stmt.query_map([], |row| {
-            let session_id: String = row.get(0)?;
-            let marker: String = row.get(1)?;
-            Ok((session_id, marker))
-        })?;
+        let rows = stmt.query_map(
+            rusqlite::params![after_key, high_water, limit as i64],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )?;
         rows.map(|row| {
-            let (session_id, marker) = row?;
-            let (event_sequence, bypass) = decode_fact_extraction_marker(&marker)?;
-            Ok((session_id, bypass, event_sequence))
+            let (key, value, session_id) = row?;
+            let state = decode_fact_extraction_marker(&value).map_err(|error| error.to_string());
+            Ok(FactExtractionMarker {
+                key,
+                value,
+                session_id,
+                state,
+            })
         })
         .collect()
+    }
+
+    /// Full diagnostic helper retained for repository tests and one-off
+    /// inspection. Runtime consumers must use the bounded page API.
+    pub fn pending_fact_extractions(&self) -> anyhow::Result<Vec<(String, bool, i64)>> {
+        let Some(high_water) = self.pending_fact_extraction_high_water()? else {
+            return Ok(Vec::new());
+        };
+        let mut after_key = None;
+        let mut pending = Vec::new();
+        loop {
+            let page = self.pending_fact_extractions_page(
+                after_key.as_deref(),
+                &high_water,
+                MAX_MEMORY_OUTBOX_PAGE_SIZE,
+            )?;
+            if page.is_empty() {
+                break;
+            }
+            after_key = page.last().map(|marker| marker.key.clone());
+            for marker in page {
+                let state = marker
+                    .state
+                    .map_err(|error| anyhow::anyhow!("invalid marker {}: {error}", marker.key))?;
+                pending.push((
+                    marker.session_id,
+                    state.bypass_throttle,
+                    state.event_sequence,
+                ));
+            }
+        }
+        Ok(pending)
+    }
+
+    pub fn update_pending_fact_extraction_retry_if_current(
+        &self,
+        key: &str,
+        expected_value: &str,
+        attempt: u32,
+        next_attempt_at_ms: i64,
+    ) -> anyhow::Result<bool> {
+        anyhow::ensure!(next_attempt_at_ms >= 0, "retry deadline cannot be negative");
+        let mut state = decode_fact_extraction_marker(expected_value)?;
+        state.attempt = attempt;
+        state.next_attempt_at_ms = next_attempt_at_ms;
+        let changed = self.conn().execute(
+            "UPDATE kv_store SET value = ?3, updated_at = ?4
+             WHERE key = ?1 AND value = ?2",
+            rusqlite::params![
+                key,
+                expected_value,
+                encode_fact_extraction_marker(&state),
+                Utc::now().to_rfc3339()
+            ],
+        )?;
+        Ok(changed > 0)
+    }
+
+    pub fn clear_pending_fact_extraction_marker_if_current(
+        &self,
+        key: &str,
+        expected_value: &str,
+    ) -> anyhow::Result<bool> {
+        let changed = self.conn().execute(
+            "DELETE FROM kv_store WHERE key = ?1 AND value = ?2",
+            rusqlite::params![key, expected_value],
+        )?;
+        Ok(changed > 0)
     }
 
     /// Acknowledge only the durable marker generation captured by this job.
@@ -261,47 +535,223 @@ impl Database {
     ) -> anyhow::Result<bool> {
         anyhow::ensure!(!session_id.trim().is_empty(), "session id is required");
         anyhow::ensure!(event_sequence >= 0, "event sequence must not be negative");
-        let expected_value = encode_fact_extraction_marker(event_sequence, bypass_throttle);
+        let key = format!("fact_extraction_pending.{session_id}");
+        let conn = self.conn();
+        let current: Option<String> = conn
+            .query_row("SELECT value FROM kv_store WHERE key = ?1", [&key], |row| {
+                row.get(0)
+            })
+            .optional()?;
+        drop(conn);
+        let Some(current) = current else {
+            return Ok(false);
+        };
+        let state = decode_fact_extraction_marker(&current)?;
+        if state.event_sequence != event_sequence || state.bypass_throttle != bypass_throttle {
+            return Ok(false);
+        }
+        self.clear_pending_fact_extraction_marker_if_current(&key, &current)
+    }
+
+    /// Load durable compaction-summary extraction jobs. The episode id is
+    /// encoded in the key while the value keeps session cleanup inexpensive.
+    pub fn pending_summary_extraction_high_water(&self) -> anyhow::Result<Option<String>> {
+        Ok(self.conn().query_row(
+            "SELECT MAX(key) FROM kv_store WHERE key >= ?1 AND key < ?2",
+            rusqlite::params![
+                "fact_extraction_episode_pending.",
+                "fact_extraction_episode_pending/"
+            ],
+            |row| row.get(0),
+        )?)
+    }
+
+    pub fn pending_summary_extractions_page(
+        &self,
+        after_key: Option<&str>,
+        high_water: &str,
+        limit: usize,
+    ) -> anyhow::Result<Vec<SummaryExtractionMarker>> {
+        anyhow::ensure!(
+            (1..=MAX_MEMORY_OUTBOX_PAGE_SIZE).contains(&limit),
+            "summary outbox page limit must be between 1 and {MAX_MEMORY_OUTBOX_PAGE_SIZE}"
+        );
+        let prefix = "fact_extraction_episode_pending.";
+        let conn = self.conn();
+        let mut stmt = conn.prepare(
+            "SELECT key, value FROM kv_store
+             WHERE key >= 'fact_extraction_episode_pending.'
+               AND key < 'fact_extraction_episode_pending/'
+               AND (?1 IS NULL OR key > ?1)
+               AND key <= ?2
+             ORDER BY key COLLATE BINARY ASC
+             LIMIT ?3",
+        )?;
+        let rows = stmt.query_map(
+            rusqlite::params![after_key, high_water, limit as i64],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )?;
+        rows.map(|row| {
+            let (key, value) = row?;
+            let suffix = key.strip_prefix(prefix);
+            let key_parts = suffix.and_then(|suffix| suffix.split_once('.'));
+            let (key_session_id, episode_id) = key_parts
+                .map(|(session_id, episode_id)| (session_id.to_owned(), episode_id.to_owned()))
+                .unwrap_or_default();
+            let state = decode_summary_extraction_marker(&value)
+                .and_then(|(session_id, attempt, next_attempt_at_ms)| {
+                    anyhow::ensure!(
+                        session_id == key_session_id && !episode_id.is_empty(),
+                        "summary marker key/value identity mismatch"
+                    );
+                    Ok((session_id, attempt, next_attempt_at_ms))
+                })
+                .map(
+                    |(_, attempt, next_attempt_at_ms)| SummaryExtractionMarkerState {
+                        attempt,
+                        next_attempt_at_ms,
+                    },
+                )
+                .map_err(|error| error.to_string());
+            Ok(SummaryExtractionMarker {
+                key,
+                value,
+                session_id: key_session_id,
+                episode_id,
+                state,
+            })
+        })
+        .collect()
+    }
+
+    /// Full diagnostic helper retained for repository tests and one-off
+    /// inspection. Runtime consumers must use the bounded page API.
+    pub fn pending_summary_extractions(&self) -> anyhow::Result<Vec<(String, String)>> {
+        let Some(high_water) = self.pending_summary_extraction_high_water()? else {
+            return Ok(Vec::new());
+        };
+        let mut after_key = None;
+        let mut pending = Vec::new();
+        loop {
+            let page = self.pending_summary_extractions_page(
+                after_key.as_deref(),
+                &high_water,
+                MAX_MEMORY_OUTBOX_PAGE_SIZE,
+            )?;
+            if page.is_empty() {
+                break;
+            }
+            after_key = page.last().map(|marker| marker.key.clone());
+            for marker in page {
+                marker
+                    .state
+                    .map_err(|error| anyhow::anyhow!("invalid marker {}: {error}", marker.key))?;
+                pending.push((marker.session_id, marker.episode_id));
+            }
+        }
+        Ok(pending)
+    }
+
+    pub fn update_summary_extraction_retry_if_current(
+        &self,
+        key: &str,
+        expected_value: &str,
+        attempt: u32,
+        next_attempt_at_ms: i64,
+    ) -> anyhow::Result<bool> {
+        anyhow::ensure!(next_attempt_at_ms >= 0, "retry deadline cannot be negative");
+        let (session_id, _, _) = decode_summary_extraction_marker(expected_value)?;
         let changed = self.conn().execute(
-            "DELETE FROM kv_store
+            "UPDATE kv_store SET value = ?3, updated_at = ?4
              WHERE key = ?1 AND value = ?2",
             rusqlite::params![
-                format!("fact_extraction_pending.{session_id}"),
-                expected_value
+                key,
+                expected_value,
+                encode_summary_extraction_marker(&session_id, attempt, next_attempt_at_ms),
+                Utc::now().to_rfc3339()
             ],
         )?;
         Ok(changed > 0)
     }
 
-    /// Load durable compaction-summary extraction jobs. The episode id is
-    /// encoded in the key while the value keeps session cleanup inexpensive.
-    pub fn pending_summary_extractions(&self) -> anyhow::Result<Vec<(String, String)>> {
-        let prefix = "fact_extraction_episode_pending.";
-        let conn = self.conn();
-        let mut stmt = conn.prepare(
-            "SELECT key, value FROM kv_store
-             WHERE key LIKE 'fact_extraction_episode_pending.%'
-             ORDER BY updated_at, key",
+    pub fn clear_summary_extraction_if_current(
+        &self,
+        key: &str,
+        expected_value: &str,
+    ) -> anyhow::Result<bool> {
+        let changed = self.conn().execute(
+            "DELETE FROM kv_store WHERE key = ?1 AND value = ?2",
+            rusqlite::params![key, expected_value],
         )?;
-        let rows = stmt.query_map([], |row| {
-            let key: String = row.get(0)?;
-            let session_id: String = row.get(1)?;
-            Ok((key, session_id))
-        })?;
-        let mut pending = Vec::new();
-        for row in rows {
-            let (key, session_id) = row?;
-            let Some(suffix) = key.strip_prefix(prefix) else {
-                continue;
-            };
-            let Some((key_session_id, episode_id)) = suffix.split_once('.') else {
-                continue;
-            };
-            if key_session_id == session_id && !episode_id.is_empty() {
-                pending.push((session_id, episode_id.to_owned()));
+        Ok(changed > 0)
+    }
+
+    /// Repair malformed retry metadata for a summary marker whose composite
+    /// key still matches a durable episode row. The original raw value is
+    /// retained under a session-scoped poison key; the job is made runnable.
+    pub fn repair_summary_extraction_marker_if_current(
+        &self,
+        key: &str,
+        expected_value: &str,
+    ) -> anyhow::Result<bool> {
+        let Some(suffix) = key.strip_prefix("fact_extraction_episode_pending.") else {
+            return Ok(false);
+        };
+        let Some((session_id, episode_id)) = suffix.split_once('.') else {
+            return Ok(false);
+        };
+        if session_id.is_empty() || episode_id.is_empty() {
+            return Ok(false);
+        }
+
+        let conn = self.conn();
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        let result = (|| -> anyhow::Result<bool> {
+            let owner: Option<String> = conn
+                .query_row(
+                    "SELECT session_id FROM memory_items
+                     WHERE id = ?1 AND kind = 'episode_summary'",
+                    rusqlite::params![episode_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if owner.as_deref() != Some(session_id) {
+                return Ok(false);
+            }
+
+            let quarantine_key =
+                format!("fact_extraction_episode_pending_poison.{session_id}.{episode_id}");
+            if !move_marker_to_quarantine_on(&conn, key, &quarantine_key, expected_value)? {
+                return Ok(false);
+            }
+            conn.execute(
+                "INSERT INTO kv_store (key, value, updated_at)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(key) DO UPDATE SET
+                     value = excluded.value,
+                     updated_at = excluded.updated_at",
+                rusqlite::params![
+                    key,
+                    encode_summary_extraction_marker(session_id, 0, 0),
+                    Utc::now().to_rfc3339()
+                ],
+            )?;
+            Ok(true)
+        })();
+        match result {
+            Ok(true) => {
+                conn.execute_batch("COMMIT")?;
+                Ok(true)
+            }
+            Ok(false) => {
+                conn.execute_batch("ROLLBACK")?;
+                Ok(false)
+            }
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(error)
             }
         }
-        Ok(pending)
     }
 
     /// Acknowledge one completed compaction-summary extraction.
@@ -347,7 +797,9 @@ pub(super) fn cleanup_orphan_session_scoped_state_on(
                 OR key LIKE 'fact_extraction_last_run.%'
                 OR key LIKE 'fact_extraction_episode_done.%'
                 OR key LIKE 'fact_extraction_pending.%'
+                OR key GLOB 'fact_extraction_pending_poison.*'
                 OR key LIKE 'fact_extraction_episode_pending.%'
+                OR key GLOB 'fact_extraction_episode_pending_poison.*'
                 OR key GLOB 'memory_event_cursor.*')
            AND NOT EXISTS (SELECT 1 FROM sessions
                            WHERE id = CASE
@@ -355,8 +807,14 @@ pub(super) fn cleanup_orphan_session_scoped_state_on(
                                THEN substr(key, 21)
                                WHEN key LIKE 'fact_extraction_last_run.%'
                                THEN substr(key, 26)
+                               WHEN key GLOB 'fact_extraction_pending_poison.*'
+                               THEN substr(key, instr(key, '.') + 1)
                                WHEN key LIKE 'fact_extraction_pending.%'
                                THEN substr(key, 25)
+                               WHEN key GLOB 'fact_extraction_episode_pending_poison.*'
+                               THEN substr(substr(key, length('fact_extraction_episode_pending_poison.') + 1),
+                                           1,
+                                           instr(substr(key, length('fact_extraction_episode_pending_poison.') + 1), '.') - 1)
                                WHEN key LIKE 'fact_extraction_episode_pending.%'
                                THEN value
                                WHEN key LIKE 'fact_extraction_episode_done.%'
@@ -386,6 +844,7 @@ fn parse_memory_event_cursor(value: Option<&str>) -> anyhow::Result<i64> {
 
 #[cfg(test)]
 mod tests {
+    use super::MAX_MEMORY_OUTBOX_PAGE_SIZE;
     use crate::db::Database;
     use haven_common::types::new_id;
 
@@ -509,12 +968,24 @@ mod tests {
         db.set_kv("fact_extraction_episode_done.gone.msg-11", "gone")
             .unwrap();
         db.set_kv("fact_extraction_pending.gone", "1").unwrap();
+        db.set_kv("fact_extraction_pending_poison.gone", "bad fact marker")
+            .unwrap();
+        db.set_kv(
+            "fact_extraction_episode_pending_poison.gone.msg-11",
+            "bad summary marker",
+        )
+        .unwrap();
+        db.set_kv(
+            &format!("fact_extraction_pending_poison.{}", session.id),
+            "keep for existing session",
+        )
+        .unwrap();
         db.set_kv("memory_event_cursor.gone", "8").unwrap();
         db.set_kv("memoryXeventYcursor.gone", "keep").unwrap();
         db.set_kv("other.state", "keep").unwrap();
 
         let removed = db.cleanup_orphan_extraction_cursors().unwrap();
-        assert_eq!(removed, 5);
+        assert_eq!(removed, 7);
         assert!(
             db.get_kv(&format!("fact_extraction.{}", session.id))
                 .unwrap()
@@ -538,6 +1009,22 @@ mod tests {
                 .is_none()
         );
         assert!(db.get_kv("fact_extraction_pending.gone").unwrap().is_none());
+        assert!(
+            db.get_kv("fact_extraction_pending_poison.gone")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            db.get_kv("fact_extraction_episode_pending_poison.gone.msg-11")
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            db.get_kv(&format!("fact_extraction_pending_poison.{}", session.id))
+                .unwrap()
+                .as_deref(),
+            Some("keep for existing session")
+        );
         assert!(db.get_kv("memory_event_cursor.gone").unwrap().is_none());
         assert_eq!(
             db.get_kv("memoryXeventYcursor.gone").unwrap(),
@@ -716,6 +1203,256 @@ mod tests {
         assert!(
             db.clear_pending_fact_extraction_if_current(&session.id, 8, true)
                 .unwrap()
+        );
+    }
+
+    #[test]
+    fn fact_outbox_pages_are_bounded_and_resume_after_delete_or_behind_cursor_update() {
+        let db = test_db();
+        let mut sessions = (0..130)
+            .map(|index| db.create_session(&format!("page-{index}")).unwrap().id)
+            .collect::<Vec<_>>();
+        sessions.sort();
+        for session_id in &sessions {
+            db.enqueue_fact_extraction(session_id, false, 1).unwrap();
+        }
+        db.set_kv(
+            &format!("fact_extraction_pending.{}", sessions[1]),
+            "malformed marker",
+        )
+        .unwrap();
+
+        let high_water = db.pending_fact_extraction_high_water().unwrap().unwrap();
+        let first = db
+            .pending_fact_extractions_page(None, &high_water, MAX_MEMORY_OUTBOX_PAGE_SIZE)
+            .unwrap();
+        assert_eq!(first.len(), MAX_MEMORY_OUTBOX_PAGE_SIZE);
+        assert!(
+            first.iter().any(|marker| marker.state.is_err()),
+            "poison marker must remain scannable"
+        );
+        let cursor = first.last().unwrap().key.clone();
+
+        // Deleting a row after the cursor does not shift later rows as OFFSET
+        // pagination would, and an update behind the cursor is picked up by
+        // the next pass from its first key.
+        assert!(
+            db.clear_pending_fact_extraction_if_current(&sessions[80], 1, false)
+                .unwrap()
+        );
+        db.enqueue_fact_extraction(&sessions[0], true, 2).unwrap();
+        let second = db
+            .pending_fact_extractions_page(Some(&cursor), &high_water, MAX_MEMORY_OUTBOX_PAGE_SIZE)
+            .unwrap();
+        let second_cursor = second.last().unwrap().key.clone();
+        let third = db
+            .pending_fact_extractions_page(
+                Some(&second_cursor),
+                &high_water,
+                MAX_MEMORY_OUTBOX_PAGE_SIZE,
+            )
+            .unwrap();
+        assert_eq!(second.len() + third.len(), 65);
+        assert!(third.is_empty() || third.len() <= MAX_MEMORY_OUTBOX_PAGE_SIZE);
+
+        let next_pass = db
+            .pending_fact_extractions_page(None, &high_water, MAX_MEMORY_OUTBOX_PAGE_SIZE)
+            .unwrap();
+        assert_eq!(
+            next_pass[0].state.as_ref().unwrap().event_sequence,
+            2,
+            "a changed marker behind the prior cursor is visible from the next pass"
+        );
+        assert!(
+            db.pending_fact_extractions_page(None, &high_water, 0)
+                .is_err()
+        );
+        assert!(
+            db.pending_fact_extractions_page(None, &high_water, MAX_MEMORY_OUTBOX_PAGE_SIZE + 1)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn fact_retry_metadata_survives_same_generation_and_resets_for_new_event() {
+        let db = test_db();
+        let session = db.create_session("retry metadata").unwrap();
+        db.enqueue_fact_extraction(&session.id, false, 1).unwrap();
+        let high_water = db.pending_fact_extraction_high_water().unwrap().unwrap();
+        let original = db
+            .pending_fact_extractions_page(None, &high_water, 64)
+            .unwrap()
+            .remove(0);
+        assert!(
+            db.update_pending_fact_extraction_retry_if_current(
+                &original.key,
+                &original.value,
+                3,
+                50_000,
+            )
+            .unwrap()
+        );
+        db.enqueue_fact_extraction(&session.id, false, 1).unwrap();
+        let retried = db
+            .pending_fact_extractions_page(None, &high_water, 64)
+            .unwrap()
+            .remove(0);
+        assert_eq!(retried.state.as_ref().unwrap().attempt, 3);
+        assert_eq!(retried.state.as_ref().unwrap().next_attempt_at_ms, 50_000);
+        assert!(
+            !db.clear_pending_fact_extraction_marker_if_current(&retried.key, &original.value)
+                .unwrap()
+        );
+
+        db.enqueue_fact_extraction(&session.id, true, 2).unwrap();
+        let next_generation = db
+            .pending_fact_extractions_page(None, &high_water, 64)
+            .unwrap()
+            .remove(0);
+        assert_eq!(next_generation.state.as_ref().unwrap().attempt, 0);
+        assert_eq!(
+            next_generation.state.as_ref().unwrap().next_attempt_at_ms,
+            0
+        );
+        assert!(next_generation.state.as_ref().unwrap().bypass_throttle);
+    }
+
+    #[test]
+    fn summary_retry_metadata_survives_idempotent_episode_replay_and_high_water() {
+        let db = test_db();
+        let session = db.create_session("summary retry metadata").unwrap();
+        let episode_id = new_id("msg");
+        let content = "A summary long enough to create a durable episode row.";
+        db.add_episode_with_pending_extraction(&session.id, content, &episode_id, true)
+            .unwrap();
+        let high_water = db.pending_summary_extraction_high_water().unwrap().unwrap();
+        let original = db
+            .pending_summary_extractions_page(None, &high_water, 64)
+            .unwrap()
+            .remove(0);
+        assert!(
+            db.update_summary_extraction_retry_if_current(
+                &original.key,
+                &original.value,
+                2,
+                70_000,
+            )
+            .unwrap()
+        );
+        db.add_episode_with_pending_extraction(&session.id, content, &episode_id, true)
+            .unwrap();
+        let current = db
+            .pending_summary_extractions_page(None, &high_water, 64)
+            .unwrap()
+            .remove(0);
+        assert_eq!(current.state.as_ref().unwrap().attempt, 2);
+        assert_eq!(current.state.as_ref().unwrap().next_attempt_at_ms, 70_000);
+        assert!(
+            !db.clear_summary_extraction_if_current(&current.key, &original.value)
+                .unwrap()
+        );
+
+        db.set_kv("fact_extraction_episode_pending.zzzz.zzzz", &session.id)
+            .unwrap();
+        let bounded_page = db
+            .pending_summary_extractions_page(None, &high_water, 64)
+            .unwrap();
+        assert!(
+            bounded_page
+                .iter()
+                .all(|marker| !marker.key.ends_with(".zzzz"))
+        );
+    }
+
+    #[test]
+    fn legacy_summary_marker_is_read_as_immediately_runnable() {
+        let db = test_db();
+        let session = db.create_session("legacy summary marker").unwrap();
+        let key = format!(
+            "fact_extraction_episode_pending.{}.{}",
+            session.id,
+            new_id("msg")
+        );
+        db.set_kv(&key, &session.id).unwrap();
+
+        let high_water = db.pending_summary_extraction_high_water().unwrap().unwrap();
+        let marker = db
+            .pending_summary_extractions_page(None, &high_water, 64)
+            .unwrap()
+            .remove(0);
+
+        assert_eq!(marker.value, session.id);
+        let state = marker.state.unwrap();
+        assert_eq!(state.attempt, 0);
+        assert_eq!(state.next_attempt_at_ms, 0);
+    }
+
+    #[test]
+    fn malformed_summary_retry_metadata_is_quarantined_and_requeued() {
+        let db = test_db();
+        let session = db.create_session("repair summary marker").unwrap();
+        let episode_id = new_id("msg");
+        db.add_episode_with_pending_extraction(
+            &session.id,
+            "A summary whose durable extraction marker can be repaired safely.",
+            &episode_id,
+            true,
+        )
+        .unwrap();
+        let key = format!(
+            "fact_extraction_episode_pending.{}.{}",
+            session.id, episode_id
+        );
+        db.set_kv(&key, "not-a-summary-marker").unwrap();
+
+        assert!(
+            db.repair_summary_extraction_marker_if_current(&key, "not-a-summary-marker")
+                .unwrap()
+        );
+        let high_water = db.pending_summary_extraction_high_water().unwrap().unwrap();
+        let marker = db
+            .pending_summary_extractions_page(None, &high_water, 64)
+            .unwrap()
+            .remove(0);
+        assert_eq!(marker.state.unwrap().attempt, 0);
+        assert_eq!(marker.value, format!("{}:0:0", session.id));
+        assert_eq!(
+            db.get_kv(&format!(
+                "fact_extraction_episode_pending_poison.{}.{}",
+                session.id, episode_id
+            ))
+            .unwrap()
+            .as_deref(),
+            Some("not-a-summary-marker")
+        );
+        assert!(
+            !db.repair_summary_extraction_marker_if_current(&key, "not-a-summary-marker")
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn startup_baseline_is_atomic_and_leaves_later_sessions_unbaselined() {
+        let db = test_db();
+        let existing = db.create_session("baseline existing").unwrap();
+        db.conn()
+            .execute(
+                "INSERT INTO session_events
+                    (session_id, sequence, event_type, event_version, payload, created_at)
+                 VALUES (?1, 1, 'usage_recorded', 1, '{}', '2026-10-06T00:00:00Z')",
+                rusqlite::params![existing.id],
+            )
+            .unwrap();
+
+        db.baseline_missing_memory_event_cursors_to_latest()
+            .unwrap();
+        assert_eq!(db.memory_event_cursor(&existing.id).unwrap(), 1);
+
+        let created_after_baseline = db.create_session("created after baseline").unwrap();
+        assert_eq!(
+            db.memory_event_cursor_optional(&created_after_baseline.id)
+                .unwrap(),
+            None
         );
     }
 }

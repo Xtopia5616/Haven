@@ -737,6 +737,29 @@ impl SessionStore {
             .await
     }
 
+    pub async fn session_id_high_water_cancellable(
+        &self,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<Option<String>> {
+        self.db
+            .run_blocking_cancellable(cancel, |db| db.session_id_high_water())
+            .await
+    }
+
+    pub async fn session_ids_page_cancellable(
+        &self,
+        after_id: Option<String>,
+        high_water: String,
+        limit: usize,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<Vec<String>> {
+        self.db
+            .run_blocking_cancellable(cancel, move |db| {
+                db.session_ids_page(after_id.as_deref(), &high_water, limit)
+            })
+            .await
+    }
+
     /// Create a durable session record through the session persistence
     /// boundary. Actor installation, lifecycle gates, and dispatch remain
     /// owned by the Agent layer.
@@ -1165,6 +1188,17 @@ impl SessionStore {
         self.db
             .run_blocking_cancellable(cancel, move |db| {
                 db.initialize_memory_event_cursor_if_absent(&session_id, sequence)
+            })
+            .await
+    }
+
+    pub async fn baseline_missing_memory_event_cursors_to_latest_cancellable(
+        &self,
+        cancel: CancellationToken,
+    ) -> anyhow::Result<usize> {
+        self.db
+            .run_blocking_cancellable(cancel, |db| {
+                db.baseline_missing_memory_event_cursors_to_latest()
             })
             .await
     }

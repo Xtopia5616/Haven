@@ -1,6 +1,9 @@
 use std::sync::Arc;
 
 use crate::Database;
+use crate::repositories::kv_store::{
+    FactExtractionMarker, MAX_MEMORY_OUTBOX_PAGE_SIZE, SummaryExtractionMarker,
+};
 use tokio_util::sync::CancellationToken;
 
 /// Narrow durable persistence port for memory episodes and extraction outbox markers.
@@ -62,23 +65,134 @@ impl MemoryStore {
             .await
     }
 
-    /// Load durable fact-extraction jobs for live sessions.
-    pub async fn pending_fact_extractions_cancellable(
+    pub async fn fact_extraction_high_water_cancellable(
         &self,
         cancellation: &CancellationToken,
-    ) -> anyhow::Result<Vec<(String, bool, i64)>> {
+    ) -> anyhow::Result<Option<String>> {
         self.db
-            .run_blocking_cancellable(cancellation.clone(), |db| db.pending_fact_extractions())
+            .run_blocking_cancellable(cancellation.clone(), |db| {
+                db.pending_fact_extraction_high_water()
+            })
             .await
     }
 
-    /// Load durable compaction-summary extraction jobs.
-    pub async fn pending_summary_extractions_cancellable(
+    pub async fn pending_fact_extractions_page_cancellable(
+        &self,
+        after_key: Option<String>,
+        high_water: String,
+        limit: usize,
+        cancellation: &CancellationToken,
+    ) -> anyhow::Result<Vec<FactExtractionMarker>> {
+        anyhow::ensure!(limit <= MAX_MEMORY_OUTBOX_PAGE_SIZE);
+        self.db
+            .run_blocking_cancellable(cancellation.clone(), move |db| {
+                db.pending_fact_extractions_page(after_key.as_deref(), &high_water, limit)
+            })
+            .await
+    }
+
+    pub async fn summary_extraction_high_water_cancellable(
         &self,
         cancellation: &CancellationToken,
-    ) -> anyhow::Result<Vec<(String, String)>> {
+    ) -> anyhow::Result<Option<String>> {
         self.db
-            .run_blocking_cancellable(cancellation.clone(), |db| db.pending_summary_extractions())
+            .run_blocking_cancellable(cancellation.clone(), |db| {
+                db.pending_summary_extraction_high_water()
+            })
+            .await
+    }
+
+    pub async fn pending_summary_extractions_page_cancellable(
+        &self,
+        after_key: Option<String>,
+        high_water: String,
+        limit: usize,
+        cancellation: &CancellationToken,
+    ) -> anyhow::Result<Vec<SummaryExtractionMarker>> {
+        anyhow::ensure!(limit <= MAX_MEMORY_OUTBOX_PAGE_SIZE);
+        self.db
+            .run_blocking_cancellable(cancellation.clone(), move |db| {
+                db.pending_summary_extractions_page(after_key.as_deref(), &high_water, limit)
+            })
+            .await
+    }
+
+    pub async fn update_fact_extraction_retry_if_current_cancellable(
+        &self,
+        key: String,
+        expected_value: String,
+        attempt: u32,
+        next_attempt_at_ms: i64,
+        cancellation: &CancellationToken,
+    ) -> anyhow::Result<bool> {
+        self.db
+            .run_blocking_cancellable(cancellation.clone(), move |db| {
+                db.update_pending_fact_extraction_retry_if_current(
+                    &key,
+                    &expected_value,
+                    attempt,
+                    next_attempt_at_ms,
+                )
+            })
+            .await
+    }
+
+    pub async fn clear_fact_extraction_marker_if_current_cancellable(
+        &self,
+        key: String,
+        expected_value: String,
+        cancellation: &CancellationToken,
+    ) -> anyhow::Result<bool> {
+        self.db
+            .run_blocking_cancellable(cancellation.clone(), move |db| {
+                db.clear_pending_fact_extraction_marker_if_current(&key, &expected_value)
+            })
+            .await
+    }
+
+    pub async fn update_summary_extraction_retry_if_current_cancellable(
+        &self,
+        key: String,
+        expected_value: String,
+        attempt: u32,
+        next_attempt_at_ms: i64,
+        cancellation: &CancellationToken,
+    ) -> anyhow::Result<bool> {
+        self.db
+            .run_blocking_cancellable(cancellation.clone(), move |db| {
+                db.update_summary_extraction_retry_if_current(
+                    &key,
+                    &expected_value,
+                    attempt,
+                    next_attempt_at_ms,
+                )
+            })
+            .await
+    }
+
+    pub async fn repair_summary_extraction_marker_if_current_cancellable(
+        &self,
+        key: String,
+        expected_value: String,
+        cancellation: &CancellationToken,
+    ) -> anyhow::Result<bool> {
+        self.db
+            .run_blocking_cancellable(cancellation.clone(), move |db| {
+                db.repair_summary_extraction_marker_if_current(&key, &expected_value)
+            })
+            .await
+    }
+
+    pub async fn clear_summary_extraction_if_current_cancellable(
+        &self,
+        key: String,
+        expected_value: String,
+        cancellation: &CancellationToken,
+    ) -> anyhow::Result<bool> {
+        self.db
+            .run_blocking_cancellable(cancellation.clone(), move |db| {
+                db.clear_summary_extraction_if_current(&key, &expected_value)
+            })
             .await
     }
 
@@ -136,6 +250,80 @@ impl MemoryStore {
 mod tests {
     use super::*;
     use haven_common::types::new_id;
+
+    async fn pending_fact_rows(
+        store: &MemoryStore,
+        cancellation: &CancellationToken,
+    ) -> anyhow::Result<Vec<(String, bool, i64)>> {
+        let Some(high_water) = store
+            .fact_extraction_high_water_cancellable(cancellation)
+            .await?
+        else {
+            return Ok(Vec::new());
+        };
+        let mut rows = Vec::new();
+        let mut after_key = None;
+        loop {
+            let page = store
+                .pending_fact_extractions_page_cancellable(
+                    after_key.clone(),
+                    high_water.clone(),
+                    MAX_MEMORY_OUTBOX_PAGE_SIZE,
+                    cancellation,
+                )
+                .await?;
+            if page.is_empty() {
+                break;
+            }
+            after_key = page.last().map(|marker| marker.key.clone());
+            for marker in page {
+                let state = marker
+                    .state
+                    .map_err(|error| anyhow::anyhow!("invalid marker: {error}"))?;
+                rows.push((
+                    marker.session_id,
+                    state.bypass_throttle,
+                    state.event_sequence,
+                ));
+            }
+        }
+        Ok(rows)
+    }
+
+    async fn pending_summary_rows(
+        store: &MemoryStore,
+        cancellation: &CancellationToken,
+    ) -> anyhow::Result<Vec<(String, String)>> {
+        let Some(high_water) = store
+            .summary_extraction_high_water_cancellable(cancellation)
+            .await?
+        else {
+            return Ok(Vec::new());
+        };
+        let mut rows = Vec::new();
+        let mut after_key = None;
+        loop {
+            let page = store
+                .pending_summary_extractions_page_cancellable(
+                    after_key.clone(),
+                    high_water.clone(),
+                    MAX_MEMORY_OUTBOX_PAGE_SIZE,
+                    cancellation,
+                )
+                .await?;
+            if page.is_empty() {
+                break;
+            }
+            after_key = page.last().map(|marker| marker.key.clone());
+            for marker in page {
+                marker
+                    .state
+                    .map_err(|error| anyhow::anyhow!("invalid marker: {error}"))?;
+                rows.push((marker.session_id, marker.episode_id));
+            }
+        }
+        Ok(rows)
+    }
 
     #[tokio::test]
     async fn persist_compaction_summary_commits_episode_and_pending_marker_idempotently() {
@@ -238,10 +426,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            store
-                .pending_fact_extractions_cancellable(&cancellation)
-                .await
-                .unwrap(),
+            pending_fact_rows(&store, &cancellation).await.unwrap(),
             vec![(session.id.clone(), true, 2)]
         );
 
@@ -255,10 +440,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            store
-                .pending_fact_extractions_cancellable(&cancellation)
-                .await
-                .unwrap(),
+            pending_fact_rows(&store, &cancellation).await.unwrap(),
             vec![(session.id.clone(), true, 2)]
         );
         store
@@ -271,8 +453,7 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            store
-                .pending_fact_extractions_cancellable(&cancellation)
+            pending_fact_rows(&store, &cancellation)
                 .await
                 .unwrap()
                 .is_empty()
@@ -308,32 +489,24 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            store
-                .pending_fact_extractions_cancellable(&cancellation)
-                .await
-                .unwrap(),
+            pending_fact_rows(&store, &cancellation).await.unwrap(),
             vec![(session.id.clone(), true, 3)]
         );
         assert_eq!(
-            store
-                .pending_summary_extractions_cancellable(&cancellation)
-                .await
-                .unwrap(),
+            pending_summary_rows(&store, &cancellation).await.unwrap(),
             vec![(session.id.clone(), episode_id)]
         );
 
         db.conn().execute_batch("DROP TABLE kv_store").unwrap();
         assert!(
-            store
-                .pending_fact_extractions_cancellable(&cancellation)
+            pending_fact_rows(&store, &cancellation)
                 .await
                 .unwrap_err()
                 .to_string()
                 .contains("no such table: kv_store")
         );
         assert!(
-            store
-                .pending_summary_extractions_cancellable(&cancellation)
+            pending_summary_rows(&store, &cancellation)
                 .await
                 .unwrap_err()
                 .to_string()
@@ -376,8 +549,7 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            store
-                .pending_summary_extractions_cancellable(&cancellation)
+            pending_summary_rows(&store, &cancellation)
                 .await
                 .unwrap()
                 .is_empty()

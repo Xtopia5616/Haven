@@ -53,53 +53,42 @@ impl MemoryRuntime {
         Arc::ptr_eq(&self.memory_worker, worker)
     }
 
-    /// Subscribe before taking the startup session snapshot, baseline only
-    /// absent cursors for sessions in that snapshot, restore the durable fact
-    /// outbox, and replay visible sessions before returning the live receiver.
+    /// Baseline missing cursors in one database snapshot, subscribe to live
+    /// events, start the durable outbox scanner, and replay visible sessions
+    /// before returning the live receiver. Events between baseline and
+    /// subscription are recovered from the append-only event store.
     ///
     /// Initialization failures are logged and retried with cancellable
-    /// backoff while keeping the original broadcast receiver and session
-    /// snapshot. A present cursor at zero is deliberately not baselined.
+    /// backoff. A present cursor at zero is deliberately not baselined.
     async fn prepare_start(
         &self,
         cancellation: &CancellationToken,
     ) -> anyhow::Result<broadcast::Receiver<SessionEvent>> {
-        let live = self.session_store.subscribe();
-        let mut retry_backoff = INITIAL_RETRY_BACKOFF;
-        let startup_session_ids = loop {
-            if cancellation.is_cancelled() {
-                anyhow::bail!("memory runtime startup cancelled");
-            }
-            match self
-                .session_store
-                .all_session_ids_cancellable(cancellation.clone())
-                .await
-            {
-                Ok(session_ids) => break session_ids,
-                Err(error) if cancellation.is_cancelled() => {
-                    return Err(error).context("memory runtime startup cancelled");
-                }
-                Err(error) => {
-                    tracing::warn!("memory runtime session snapshot failed: {}", error);
-                    if !wait_for_retry(cancellation, retry_backoff).await {
-                        anyhow::bail!("memory runtime startup cancelled");
-                    }
-                    retry_backoff = next_retry_backoff(retry_backoff);
-                }
-            }
-        };
+        self.prepare_start_with_baseline_hook(cancellation, || {})
+            .await
+    }
 
+    async fn prepare_start_with_baseline_hook<F>(
+        &self,
+        cancellation: &CancellationToken,
+        after_baseline: F,
+    ) -> anyhow::Result<broadcast::Receiver<SessionEvent>>
+    where
+        F: FnOnce(),
+    {
+        let mut retry_backoff = INITIAL_RETRY_BACKOFF;
         loop {
             match self
-                .baseline_missing_startup_cursors(&startup_session_ids, cancellation)
+                .session_store
+                .baseline_missing_memory_event_cursors_to_latest_cancellable(cancellation.clone())
                 .await
             {
-                Ok(()) => break,
+                Ok(_) => break,
                 Err(error) if cancellation.is_cancelled() => {
                     return Err(error).context("memory runtime startup cancelled");
                 }
                 Err(error) => {
-                    tracing::warn!("memory runtime cursor baseline failed: {}", error);
+                    tracing::warn!("memory runtime atomic cursor baseline failed: {}", error);
                     if !wait_for_retry(cancellation, retry_backoff).await {
                         anyhow::bail!("memory runtime startup cancelled");
                     }
@@ -108,18 +97,20 @@ impl MemoryRuntime {
             }
         }
 
+        after_baseline();
+        let live = self.session_store.subscribe();
+
         loop {
-            match self
-                .memory_worker
-                .restore_pending_outbox(cancellation)
-                .await
-            {
+            match self.memory_worker.start_outbox_worker(cancellation).await {
                 Ok(_) => break,
                 Err(error) if cancellation.is_cancelled() => {
                     return Err(error).context("memory runtime startup cancelled");
                 }
                 Err(error) => {
-                    tracing::warn!("memory runtime fact outbox restore failed: {}", error);
+                    tracing::warn!(
+                        "memory runtime durable outbox scanner start failed: {}",
+                        error
+                    );
                     if !wait_for_retry(cancellation, retry_backoff).await {
                         anyhow::bail!("memory runtime startup cancelled");
                     }
@@ -149,35 +140,6 @@ impl MemoryRuntime {
                 }
             }
         }
-    }
-
-    async fn baseline_missing_startup_cursors(
-        &self,
-        startup_session_ids: &[String],
-        cancellation: &CancellationToken,
-    ) -> anyhow::Result<()> {
-        for session_id in startup_session_ids {
-            if self
-                .session_store
-                .memory_event_cursor_optional_cancellable(session_id, cancellation.clone())
-                .await?
-                .is_some()
-            {
-                continue;
-            }
-            let latest_sequence = self
-                .session_store
-                .latest_sequence_cancellable(session_id, cancellation.clone())
-                .await?;
-            self.session_store
-                .initialize_memory_event_cursor_if_absent_cancellable(
-                    session_id,
-                    latest_sequence,
-                    cancellation.clone(),
-                )
-                .await?;
-        }
-        Ok(())
     }
 
     /// Process a live event, filling any sequence gap from bounded durable
@@ -292,15 +254,36 @@ impl MemoryRuntime {
         &self,
         cancellation: &CancellationToken,
     ) -> anyhow::Result<()> {
-        let session_ids = self
+        let Some(high_water) = self
             .session_store
-            .all_session_ids_cancellable(cancellation.clone())
+            .session_id_high_water_cancellable(cancellation.clone())
             .await
-            .context("list sessions for memory recovery")?;
-        for session_id in session_ids {
-            self.recover_session(&session_id, cancellation)
+            .context("read session recovery high-water")?
+        else {
+            return Ok(());
+        };
+        let mut after_id = None;
+        loop {
+            anyhow::ensure!(!cancellation.is_cancelled(), "session recovery cancelled");
+            let page = self
+                .session_store
+                .session_ids_page_cancellable(
+                    after_id.clone(),
+                    high_water.clone(),
+                    haven_memory::MAX_MEMORY_SESSION_ID_PAGE_SIZE,
+                    cancellation.clone(),
+                )
                 .await
-                .with_context(|| format!("recover memory events for session {session_id}"))?;
+                .context("read bounded session ID recovery page")?;
+            if page.is_empty() {
+                break;
+            }
+            after_id = page.last().cloned();
+            for session_id in page {
+                self.recover_session(&session_id, cancellation)
+                    .await
+                    .with_context(|| format!("recover memory events for session {session_id}"))?;
+            }
         }
         Ok(())
     }
@@ -525,7 +508,7 @@ pub struct MemoryStartup {
     runtime: Arc<MemoryRuntime>,
 }
 
-/// The receiver produced only after startup cursor baseline, outbox restore,
+/// The receiver produced only after startup cursor baseline, outbox scanner start,
 /// and visible-session replay have all completed. It is intentionally
 /// non-Clone and has no receiver accessor: the live consumer takes it once.
 pub struct PreparedMemoryRuntime {
@@ -726,6 +709,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn startup_replays_a_new_session_created_between_baseline_and_subscribe() {
+        let (db, _, runtime) = fixture();
+        let mut new_session_id = None;
+
+        runtime
+            .prepare_start_with_baseline_hook(&cancellation(), || {
+                let session = db.create_session("created in startup boundary").unwrap();
+                runtime
+                    .session_store
+                    .append(
+                        &session.id,
+                        MEMORY_TRIGGER_EVENT_TYPE,
+                        &trigger("step_interval", false),
+                        None,
+                        None,
+                    )
+                    .unwrap();
+                new_session_id = Some(session.id);
+            })
+            .await
+            .unwrap();
+
+        let new_session_id = new_session_id.unwrap();
+        assert_eq!(cursor(&db, &new_session_id).await, 1);
+        assert_eq!(
+            pending_generations(&db).await,
+            vec![(new_session_id, false, 1)],
+            "durable replay after subscribe must recover the interleaved trigger"
+        );
+    }
+
+    #[tokio::test]
+    async fn poisoned_fact_marker_does_not_block_trigger_checkpoint() {
+        let (db, session_id, runtime) = fixture();
+        db.set_kv(
+            &format!("fact_extraction_pending.{session_id}"),
+            "malformed marker value",
+        )
+        .unwrap();
+        let event = event(
+            &session_id,
+            1,
+            MEMORY_TRIGGER_EVENT_TYPE,
+            trigger("step_interval", false),
+        );
+
+        assert_eq!(
+            runtime
+                .process_event(&session_id, &event, &cancellation())
+                .await
+                .unwrap(),
+            MemoryEventProcessOutcome::Checkpointed { enqueued: true }
+        );
+        assert_eq!(cursor(&db, &session_id).await, 1);
+        assert_eq!(
+            pending_generations(&db).await,
+            vec![(session_id.clone(), false, 1)]
+        );
+        assert_eq!(
+            db.get_kv(&format!("fact_extraction_pending_poison.{session_id}"))
+                .unwrap()
+                .as_deref(),
+            Some("malformed marker value")
+        );
+    }
+
+    #[tokio::test]
     async fn startup_baselines_old_sessions_and_processes_a_new_session_from_one() {
         let (db, old_session_id, runtime) = fixture();
         runtime
@@ -769,6 +819,30 @@ mod tests {
         );
         assert_eq!(cursor(&db, &new_session.id).await, 1);
         assert_eq!(pending(&db).await, vec![(new_session.id, false)]);
+    }
+
+    #[tokio::test]
+    async fn startup_recovers_sessions_across_bounded_id_pages() {
+        let (db, _, runtime) = fixture();
+        let mut session_ids = Vec::new();
+        for index in 0..130 {
+            let session = db
+                .create_session(&format!("recovery page {index}"))
+                .unwrap();
+            db.initialize_memory_event_cursor_if_absent(&session.id, 0)
+                .unwrap();
+            runtime
+                .session_store
+                .append(&session.id, "usage_recorded", "{}", None, None)
+                .unwrap();
+            session_ids.push(session.id);
+        }
+
+        runtime.prepare_start(&cancellation()).await.unwrap();
+
+        for session_id in session_ids {
+            assert_eq!(cursor(&db, &session_id).await, 1);
+        }
     }
 
     #[tokio::test]
@@ -832,7 +906,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn prepare_start_calls_durable_pending_outbox_restore() {
+    async fn prepare_start_starts_the_durable_outbox_scanner() {
         let (db, session_id, runtime) = fixture();
         db.enqueue_fact_extraction(&session_id, true, 1).unwrap();
 

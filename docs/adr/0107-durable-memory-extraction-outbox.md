@@ -13,15 +13,16 @@
 
 ## 决定
 
-1. `enqueue_infer` 在内存 coalescing 的同时写入
-   `fact_extraction_pending.{session_id}`。新 marker 的值编码触发 event sequence
-   与 bypass 标志；较新 event sequence 取代较旧 generation，同一待处理 marker
-   的 bypass 标志只能从 false 升级到 true。旧值 `0`/`1` 仍分别读作 generation
-   zero 的普通/绕过节流任务。
-2. outbox worker 启动时恢复仍属于现存 session 的 pending markers。成功处理后
-   只可删除本 job 读取的 generation 与 bypass 值；较新 generation 即使 bool
-   相同也必须保留。处理失败、数据库异常或进程中途退出时保留 marker，下一次
-   enqueue 或进程启动可以继续处理。message cursor 保证已经提交的 transcript 窗口
+1. `enqueue_infer` 将触发写入 `fact_extraction_pending.{session_id}`。marker 值编码
+   event sequence、bypass、retry attempt 和绝对 `next_attempt_at_ms`；较新 event
+   sequence 取代较旧 generation 并重置退避，同 sequence replay 保留退避；bypass
+   只能升级，升级为 true 时重置退避。旧值 `0`/`1` 和 `<sequence>:<bypass>` 仍可读，
+   并分别按 generation zero 或立即可运行的初始 attempt 处理。
+2. outbox worker 以 marker 为 backlog 唯一来源，使用最多 64 项的 keyset 页恢复仍
+   属于现存 session 的 pending markers。成功处理后只可用本 job 读取的完整 marker
+   key/value 做条件删除；较新 generation 即使 bool 相同也必须保留。处理失败、
+   数据库异常或进程中途退出时保留 marker；retry attempt/deadline 持久化后自动重试，
+   重启从 durable marker 恢复。message cursor 保证已经提交的 transcript 窗口
    不会重复应用；若 marker 已确认而 event cursor 尚未 checkpoint，event replay
    可以重新创建同一 generation 的 marker，worker 会因 message cursor 没有新窗口而
    安全完成并再次确认。
@@ -33,11 +34,12 @@
 ## 后果
 
 - 进程崩溃不再直接丢弃已入队的事实抽取任务；最坏情况是安全重放，而不是漏记忆。
-- enqueue 增加一次短同步 SQLite 写入；内存队列仍负责 worker 的快速 coalescing。
+- enqueue 增加一次短同步 SQLite 写入；worker 只保留有限页和一个活跃任务，不按
+  backlog 大小增长内存队列。
 - memory event cursor 和 pending marker 共同保护两个不同进度：前者确认 trigger
   已调度，marker generation 确认对应抽取是否完成，旧抽取不能越过新 trigger。
-- 当前 worker 对失败任务保留 marker，后续通过新的 enqueue 或重启恢复；未来如需
-  独立重试计数、退避和 dead-letter，应升级为专用 job 表并定义容量上限。
+- worker 对失败任务保留 marker，并在同一 marker value 持久化 1–30 秒指数退避；
+  若未来需要 dead-letter、人工重放或审计历史，应另行设计专用 job 表及容量上限。
 - `kv_store` 中的 session-scoped key 不再是零散约定，新增状态必须同步加入删除和
   orphan cleanup 路径。
 
@@ -50,8 +52,8 @@
 
 ## 回滚 / 重置
 
-无需数据库 schema reset。读路径兼容旧 `0`/`1` marker；新版本第一次 enqueue 会将
-其升级为 event-sequence generation。若回滚到不识别带 generation 的 pending marker
+无需数据库 schema reset。读路径兼容旧 `0`/`1` 与上一代 generation marker；新版本
+第一次 enqueue 会将其升级为扩展 marker。若回滚到不识别扩展 pending marker
 值的旧二进制，旧版本会把任何非 `1` 值误作普通任务，不能正确恢复 bypass；应在
 回滚前关闭 app 并按当前数据重置流程处理开发数据库。重新运行当前版本或执行
 memory maintenance 会清理不存在 session 的 marker。

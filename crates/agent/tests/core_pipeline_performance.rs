@@ -3,7 +3,7 @@ use std::time::Instant;
 
 use haven_common::ActionStatus;
 use haven_common::types::new_id;
-use haven_memory::{ActionStore, Database, MemoryStore};
+use haven_memory::{ActionStore, Database, MAX_MEMORY_OUTBOX_PAGE_SIZE, MemoryStore};
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
 
@@ -31,6 +31,51 @@ fn pending_action_count(db: &Database) -> i64 {
             |row| row.get(0),
         )
         .expect("query action outbox depth")
+}
+
+async fn pending_fact_count(store: &MemoryStore, cancellation: &CancellationToken) -> usize {
+    let Some(high_water) = store
+        .fact_extraction_high_water_cancellable(cancellation)
+        .await
+        .expect("read fact marker high-water")
+    else {
+        return 0;
+    };
+    let mut after_key = None;
+    let mut count = 0;
+    loop {
+        let page = store
+            .pending_fact_extractions_page_cancellable(
+                after_key.clone(),
+                high_water.clone(),
+                MAX_MEMORY_OUTBOX_PAGE_SIZE,
+                cancellation,
+            )
+            .await
+            .expect("read bounded fact marker page");
+        if page.is_empty() {
+            break;
+        }
+        after_key = page.last().map(|marker| marker.key.clone());
+        count += page.len();
+    }
+    count
+}
+
+async fn first_fact_page(
+    store: &MemoryStore,
+    high_water: String,
+    cancellation: &CancellationToken,
+) -> Vec<haven_memory::repositories::kv_store::FactExtractionMarker> {
+    store
+        .pending_fact_extractions_page_cancellable(
+            None,
+            high_water,
+            MAX_MEMORY_OUTBOX_PAGE_SIZE,
+            cancellation,
+        )
+        .await
+        .expect("read first bounded fact marker page")
 }
 
 #[tokio::test]
@@ -176,10 +221,12 @@ async fn memory_fact_outbox_latency_depth_and_throughput_profile() {
         .enqueue_fact_extraction_cancellable(&warmup_id, false, 1, &cancellation)
         .await
         .unwrap();
-    store
-        .pending_fact_extractions_cancellable(&cancellation)
+    let warmup_high_water = store
+        .fact_extraction_high_water_cancellable(&cancellation)
         .await
+        .unwrap()
         .unwrap();
+    first_fact_page(&store, warmup_high_water, &cancellation).await;
     store
         .clear_pending_fact_extraction_if_current_cancellable(&warmup_id, 1, false, &cancellation)
         .await
@@ -205,22 +252,20 @@ async fn memory_fact_outbox_latency_depth_and_throughput_profile() {
         enqueue_samples_ns.push(started.elapsed().as_nanos());
     }
     let enqueue_wall = enqueue_wall_started.elapsed();
-    let pending = store
-        .pending_fact_extractions_cancellable(&cancellation)
-        .await
-        .unwrap();
-    let high_water = pending.len();
+    let high_water = pending_fact_count(&store, &cancellation).await;
     assert_eq!(high_water, SAMPLE_COUNT);
+    let high_water_key = store
+        .fact_extraction_high_water_cancellable(&cancellation)
+        .await
+        .unwrap()
+        .unwrap();
     let oldest_pending_age_us = oldest_enqueued.unwrap().elapsed().as_micros();
 
     let mut list_samples_ns = Vec::with_capacity(SAMPLE_COUNT);
     for _ in 0..SAMPLE_COUNT {
         let started = Instant::now();
-        let rows = store
-            .pending_fact_extractions_cancellable(&cancellation)
-            .await
-            .unwrap();
-        assert_eq!(rows.len(), high_water);
+        let page = first_fact_page(&store, high_water_key.clone(), &cancellation).await;
+        assert_eq!(page.len(), MAX_MEMORY_OUTBOX_PAGE_SIZE);
         list_samples_ns.push(started.elapsed().as_nanos());
     }
 
@@ -240,19 +285,13 @@ async fn memory_fact_outbox_latency_depth_and_throughput_profile() {
         ack_samples_ns.push(started.elapsed().as_nanos());
     }
     let drain_wall = drain_wall_started.elapsed();
-    assert!(
-        store
-            .pending_fact_extractions_cancellable(&cancellation)
-            .await
-            .unwrap()
-            .is_empty()
-    );
+    assert_eq!(pending_fact_count(&store, &cancellation).await, 0);
 
     let (enqueue_p50, enqueue_p95) = distribution(&enqueue_samples_ns);
     let (list_p50, list_p95) = distribution(&list_samples_ns);
     let (ack_p50, ack_p95) = distribution(&ack_samples_ns);
     println!(
-        "profile memory_fact_outbox backend=temp_disk_sqlite samples={SAMPLE_COUNT} warmup={WARMUP_COUNT} pending_high_water={high_water} oldest_pending_age_us={oldest_pending_age_us} durable_enqueue_p50_us={enqueue_p50:.2} durable_enqueue_p95_us={enqueue_p95:.2} enqueue_per_s={:.1} pending_list_at_depth_{high_water}_p50_us={list_p50:.2} pending_list_at_depth_{high_water}_p95_us={list_p95:.2} conditional_ack_p50_us={ack_p50:.2} conditional_ack_p95_us={ack_p95:.2} clear_per_s={:.1}",
+        "profile memory_fact_outbox backend=temp_disk_sqlite samples={SAMPLE_COUNT} warmup={WARMUP_COUNT} pending_high_water={high_water} page_size={MAX_MEMORY_OUTBOX_PAGE_SIZE} oldest_pending_age_us={oldest_pending_age_us} durable_enqueue_p50_us={enqueue_p50:.2} durable_enqueue_p95_us={enqueue_p95:.2} enqueue_per_s={:.1} pending_page_{MAX_MEMORY_OUTBOX_PAGE_SIZE}_at_depth_{high_water}_p50_us={list_p50:.2} pending_page_{MAX_MEMORY_OUTBOX_PAGE_SIZE}_at_depth_{high_water}_p95_us={list_p95:.2} conditional_ack_p50_us={ack_p50:.2} conditional_ack_p95_us={ack_p95:.2} clear_per_s={:.1}",
         SAMPLE_COUNT as f64 / enqueue_wall.as_secs_f64(),
         SAMPLE_COUNT as f64 / drain_wall.as_secs_f64(),
     );

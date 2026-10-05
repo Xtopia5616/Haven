@@ -4,7 +4,7 @@ use maintenance::MemoryMaintenancePass;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use haven_common::prompts::{COMPACTED_SUMMARY_PREFIX, FACT_EXTRACTION_SYSTEM_PROMPT};
 use haven_common::retry::{BackoffPolicy, RecoveryDecision, RecoveryPolicy, RecoverySignal};
@@ -15,6 +15,9 @@ use haven_memory::Database;
 use haven_memory::recall::MemoryRetriever;
 use haven_memory::repositories::facts::{
     FactSourceRef, is_sensitive_object, is_sensitive_predicate, is_single_valued_predicate,
+};
+use haven_memory::repositories::kv_store::{
+    FactExtractionMarker, MAX_MEMORY_OUTBOX_PAGE_SIZE, SummaryExtractionMarker,
 };
 use haven_memory::{
     MemoryFactExtractionStore, MemoryFactStore, MemoryFactWrite, MemoryMaintenanceStore,
@@ -44,14 +47,45 @@ use crate::memory_service::MemoryService;
 use haven_memory::repositories::facts::Fact;
 
 const OUTBOX_RETRY_MAX_SECS: u64 = 30;
+const OUTBOX_PAGE_SIZE: usize = MAX_MEMORY_OUTBOX_PAGE_SIZE;
 const PERSIST_CONFIDENCE_FLOOR: f64 = 0.55;
 
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct FactExtractionJob {
     event_sequence: i64,
     bypass_throttle: bool,
 }
 
+#[derive(Default)]
+struct OutboxPassResult {
+    made_progress: bool,
+    next_due_at_ms: Option<i64>,
+}
+
+impl OutboxPassResult {
+    fn note_due(&mut self, due_at_ms: i64) {
+        self.next_due_at_ms = Some(
+            self.next_due_at_ms
+                .map_or(due_at_ms, |current| current.min(due_at_ms)),
+        );
+    }
+}
+
+fn current_epoch_millis() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(i64::MAX as u128) as i64
+}
+
+fn retry_due_after_secs(wait_secs: u64) -> i64 {
+    let wait_ms = wait_secs.saturating_mul(1000).min(i64::MAX as u64) as i64;
+    current_epoch_millis().saturating_add(wait_ms)
+}
+
+#[cfg(test)]
 impl FactExtractionJob {
     fn merge(&mut self, newer: Self) {
         self.event_sequence = self.event_sequence.max(newer.event_sequence);
@@ -83,13 +117,12 @@ pub struct MemoryWorker {
     /// the SmallModel endpoint when multiple sessions complete in rapid
     /// succession.
     inference_semaphore: Arc<Semaphore>,
-    /// Pending extraction jobs keyed by session_id. Coalesce the latest event
-    /// generation and OR the bypass flag so an older in-flight job cannot
-    /// acknowledge a newer committed trigger.
+    /// Test-only projection retained for focused assertions. Production work
+    /// is read from bounded durable pages and is never queued here.
+    #[cfg(test)]
     outbox: Mutex<HashMap<String, FactExtractionJob>>,
-    /// Pending compaction-summary extraction jobs keyed by episode id. Each
-    /// marker is durable in `kv_store`; this map is only the live wake-up
-    /// projection.
+    /// Test-only projection. Durable markers are the production backlog.
+    #[cfg(test)]
     summary_outbox: Mutex<HashMap<String, String>>,
     outbox_notify: Notify,
     /// Serializes worker startup with shutdown so a late enqueue cannot spawn
@@ -175,7 +208,9 @@ impl MemoryWorker {
             sanitize_max_chars,
             fact_extraction_min_interval_secs,
             inference_semaphore: Arc::new(Semaphore::new(1)),
+            #[cfg(test)]
             outbox: Mutex::new(HashMap::new()),
+            #[cfg(test)]
             summary_outbox: Mutex::new(HashMap::new()),
             outbox_notify: Notify::new(),
             outbox_lifecycle: Mutex::new(()),
@@ -291,9 +326,8 @@ impl MemoryWorker {
         true
     }
 
-    /// Durably enqueue extraction before exposing it to the existing
-    /// in-memory outbox and worker. Persistence failures are returned and do
-    /// not enqueue an in-memory job.
+    /// Durably enqueue extraction before waking the bounded page scanner.
+    /// Persistence failures are returned and do not publish a wake-up.
     pub(crate) async fn enqueue_infer_durable(
         self: &Arc<Self>,
         session_id: &str,
@@ -314,67 +348,29 @@ impl MemoryWorker {
             !cancellation.is_cancelled(),
             "fact extraction enqueue cancelled after durable write"
         );
-        self.enqueue_memory(
-            session_id.to_owned(),
-            FactExtractionJob {
-                event_sequence,
-                bypass_throttle,
-            },
-        );
+        self.enqueue_memory(session_id.to_owned(), event_sequence, bypass_throttle);
         Ok(())
     }
 
-    /// Restore durable fact and compaction-summary extraction jobs into the
-    /// existing in-memory outboxes and ensure their shared worker is running.
-    /// Durable markers remain the authority until each job completes.
-    pub(crate) async fn restore_pending_outbox(
+    /// Start the shared durable-marker scanner. This no longer hydrates an
+    /// in-memory queue; the worker reads at most one bounded page per class.
+    pub(crate) async fn start_outbox_worker(
         self: &Arc<Self>,
         cancellation: &CancellationToken,
-    ) -> anyhow::Result<usize> {
+    ) -> anyhow::Result<()> {
         anyhow::ensure!(
             !self.shutdown_token.is_cancelled(),
             "memory worker is shut down"
         );
-        let pending = self
-            .memory_store
-            .pending_fact_extractions_cancellable(cancellation)
-            .await?;
-        let pending_summaries = self
-            .memory_store
-            .pending_summary_extractions_cancellable(cancellation)
-            .await?;
         anyhow::ensure!(
             !cancellation.is_cancelled(),
             "fact extraction outbox restore cancelled"
         );
-        let restored_count = pending.len() + pending_summaries.len();
-        for (session_id, bypass_throttle, event_sequence) in pending {
-            anyhow::ensure!(
-                !cancellation.is_cancelled() && !self.shutdown_token.is_cancelled(),
-                "fact extraction outbox restore cancelled"
-            );
-            self.enqueue_memory(
-                session_id,
-                FactExtractionJob {
-                    event_sequence,
-                    bypass_throttle,
-                },
-            );
-        }
-        for (session_id, episode_id) in pending_summaries {
-            anyhow::ensure!(
-                !cancellation.is_cancelled() && !self.shutdown_token.is_cancelled(),
-                "summary extraction outbox restore cancelled"
-            );
-            self.enqueue_summary_memory(session_id, episode_id);
-        }
-        anyhow::ensure!(
-            !cancellation.is_cancelled() && !self.shutdown_token.is_cancelled(),
-            "fact extraction outbox restore cancelled"
-        );
+        #[cfg(test)]
+        self.seed_test_outbox_projection(cancellation).await?;
         self.ensure_outbox_worker();
         self.outbox_notify.notify_one();
-        Ok(restored_count)
+        Ok(())
     }
 
     /// Stop background work owned by this worker. Pending extraction markers
@@ -420,21 +416,36 @@ impl MemoryWorker {
         self.summary_outbox.lock().ok()?.get(episode_id).cloned()
     }
 
-    fn enqueue_memory(self: &Arc<Self>, session_id: String, job: FactExtractionJob) {
+    fn enqueue_memory(
+        self: &Arc<Self>,
+        session_id: String,
+        event_sequence: i64,
+        bypass_throttle: bool,
+    ) {
+        #[cfg(test)]
         if let Ok(mut pending) = self.outbox.lock() {
+            let job = FactExtractionJob {
+                event_sequence,
+                bypass_throttle,
+            };
             pending
-                .entry(session_id)
+                .entry(session_id.clone())
                 .and_modify(|existing| existing.merge(job))
                 .or_insert(job);
         }
+        #[cfg(not(test))]
+        let _ = (session_id, event_sequence, bypass_throttle);
         self.ensure_outbox_worker();
         self.outbox_notify.notify_one();
     }
 
     fn enqueue_summary_memory(self: &Arc<Self>, session_id: String, episode_id: String) {
+        #[cfg(test)]
         if let Ok(mut pending) = self.summary_outbox.lock() {
-            pending.insert(episode_id, session_id);
+            pending.insert(episode_id.clone(), session_id);
         }
+        #[cfg(not(test))]
+        let _ = (session_id, episode_id);
         self.ensure_outbox_worker();
         self.outbox_notify.notify_one();
     }
@@ -443,6 +454,382 @@ impl MemoryWorker {
     /// episode and its durable summary-extraction marker.
     pub(crate) fn wake_summary_extract(self: &Arc<Self>, session_id: &str, episode_id: &str) {
         self.enqueue_summary_memory(session_id.to_owned(), episode_id.to_owned());
+    }
+
+    #[cfg(test)]
+    async fn seed_test_outbox_projection(
+        &self,
+        cancellation: &CancellationToken,
+    ) -> anyhow::Result<()> {
+        if let Some(high_water) = self
+            .memory_store
+            .fact_extraction_high_water_cancellable(cancellation)
+            .await?
+        {
+            let page = self
+                .memory_store
+                .pending_fact_extractions_page_cancellable(
+                    None,
+                    high_water,
+                    OUTBOX_PAGE_SIZE,
+                    cancellation,
+                )
+                .await?;
+            for marker in page {
+                if let Ok(state) = marker.state {
+                    self.outbox
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .entry(marker.session_id)
+                        .and_modify(|existing| {
+                            existing.merge(FactExtractionJob {
+                                event_sequence: state.event_sequence,
+                                bypass_throttle: state.bypass_throttle,
+                            })
+                        })
+                        .or_insert(FactExtractionJob {
+                            event_sequence: state.event_sequence,
+                            bypass_throttle: state.bypass_throttle,
+                        });
+                }
+            }
+        }
+        if let Some(high_water) = self
+            .memory_store
+            .summary_extraction_high_water_cancellable(cancellation)
+            .await?
+        {
+            let page = self
+                .memory_store
+                .pending_summary_extractions_page_cancellable(
+                    None,
+                    high_water,
+                    OUTBOX_PAGE_SIZE,
+                    cancellation,
+                )
+                .await?;
+            for marker in page {
+                self.summary_outbox
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(marker.episode_id, marker.session_id);
+            }
+        }
+        Ok(())
+    }
+
+    async fn scan_outbox_pass(
+        &self,
+        cancellation: &CancellationToken,
+    ) -> anyhow::Result<OutboxPassResult> {
+        let fact_high_water = self
+            .memory_store
+            .fact_extraction_high_water_cancellable(cancellation)
+            .await?;
+        let summary_high_water = self
+            .memory_store
+            .summary_extraction_high_water_cancellable(cancellation)
+            .await?;
+        let mut fact_after = None;
+        let mut summary_after = None;
+        let mut result = OutboxPassResult::default();
+
+        loop {
+            anyhow::ensure!(!cancellation.is_cancelled(), "memory outbox scan cancelled");
+            let fact_page = match fact_high_water.as_ref() {
+                Some(high_water) => {
+                    self.memory_store
+                        .pending_fact_extractions_page_cancellable(
+                            fact_after.clone(),
+                            high_water.clone(),
+                            OUTBOX_PAGE_SIZE,
+                            cancellation,
+                        )
+                        .await?
+                }
+                None => Vec::new(),
+            };
+            let summary_page = match summary_high_water.as_ref() {
+                Some(high_water) => {
+                    self.memory_store
+                        .pending_summary_extractions_page_cancellable(
+                            summary_after.clone(),
+                            high_water.clone(),
+                            OUTBOX_PAGE_SIZE,
+                            cancellation,
+                        )
+                        .await?
+                }
+                None => Vec::new(),
+            };
+            if fact_page.is_empty() && summary_page.is_empty() {
+                break;
+            }
+            if let Some(last) = fact_page.last() {
+                fact_after = Some(last.key.clone());
+            }
+            if let Some(last) = summary_page.last() {
+                summary_after = Some(last.key.clone());
+            }
+
+            let paired_len = fact_page.len().max(summary_page.len());
+            for index in 0..paired_len {
+                if cancellation.is_cancelled() {
+                    anyhow::bail!("memory outbox scan cancelled");
+                }
+                if let Some(marker) = fact_page.get(index) {
+                    match &marker.state {
+                        Ok(state) if state.next_attempt_at_ms > current_epoch_millis() => {
+                            result.note_due(state.next_attempt_at_ms);
+                        }
+                        Ok(state) => {
+                            result.made_progress |= self
+                                .process_fact_marker(marker.clone(), state.clone(), cancellation)
+                                .await?;
+                        }
+                        Err(error) => tracing::warn!(
+                            key = %marker.key,
+                            error = %error,
+                            "skipping malformed fact extraction marker"
+                        ),
+                    }
+                }
+                if let Some(marker) = summary_page.get(index) {
+                    match &marker.state {
+                        Ok(state) if state.next_attempt_at_ms > current_epoch_millis() => {
+                            result.note_due(state.next_attempt_at_ms);
+                        }
+                        Ok(state) => {
+                            result.made_progress |= self
+                                .process_summary_marker(marker.clone(), state.clone(), cancellation)
+                                .await?;
+                        }
+                        Err(error) => {
+                            match self
+                                .memory_store
+                                .repair_summary_extraction_marker_if_current_cancellable(
+                                    marker.key.clone(),
+                                    marker.value.clone(),
+                                    cancellation,
+                                )
+                                .await
+                            {
+                                Ok(true) => {
+                                    result.made_progress = true;
+                                    tracing::warn!(
+                                        key = %marker.key,
+                                        error = %error,
+                                        "quarantined malformed summary marker and requeued its episode"
+                                    );
+                                }
+                                Ok(false) => tracing::warn!(
+                                    key = %marker.key,
+                                    error = %error,
+                                    "skipping malformed summary extraction marker"
+                                ),
+                                Err(repair_error) => tracing::warn!(
+                                    key = %marker.key,
+                                    error = %error,
+                                    repair_error = %repair_error,
+                                    "failed to repair malformed summary extraction marker"
+                                ),
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(result)
+    }
+
+    async fn process_fact_marker(
+        &self,
+        marker: FactExtractionMarker,
+        state: haven_memory::repositories::kv_store::FactExtractionMarkerState,
+        cancellation: &CancellationToken,
+    ) -> anyhow::Result<bool> {
+        let completed = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => anyhow::bail!("memory outbox cancelled"),
+            completed = async {
+                if state.bypass_throttle {
+                    self.infer_session_on_pause(&marker.session_id).await
+                } else {
+                    self.infer_session(&marker.session_id).await
+                }
+            } => completed,
+        };
+        if cancellation.is_cancelled() {
+            anyhow::bail!("memory outbox cancelled");
+        }
+        if completed {
+            match self
+                .memory_store
+                .clear_fact_extraction_marker_if_current_cancellable(
+                    marker.key.clone(),
+                    marker.value.clone(),
+                    cancellation,
+                )
+                .await
+            {
+                Ok(true) => {
+                    #[cfg(test)]
+                    self.outbox
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .remove(&marker.session_id);
+                    return Ok(true);
+                }
+                Ok(false) => return Ok(true),
+                Err(error) if cancellation.is_cancelled() => return Err(error),
+                Err(error) => tracing::warn!(
+                    session = %marker.session_id,
+                    error = %error,
+                    "fact extraction durable acknowledgement failed"
+                ),
+            }
+        }
+        let mut attempt = state.attempt;
+        let wait_secs = next_outbox_retry_secs(&mut attempt, 0);
+        let due = retry_due_after_secs(wait_secs);
+        self.memory_store
+            .update_fact_extraction_retry_if_current_cancellable(
+                marker.key,
+                marker.value,
+                attempt,
+                due,
+                cancellation,
+            )
+            .await?;
+        Ok(true)
+    }
+
+    async fn process_summary_marker(
+        &self,
+        marker: SummaryExtractionMarker,
+        state: haven_memory::repositories::kv_store::SummaryExtractionMarkerState,
+        cancellation: &CancellationToken,
+    ) -> anyhow::Result<bool> {
+        let summary = match self
+            .memory_store
+            .episode_text_cancellable(&marker.episode_id, cancellation)
+            .await
+        {
+            Ok(Some(summary)) => summary,
+            Ok(None) => {
+                let acknowledged = self
+                    .memory_store
+                    .clear_summary_extraction_if_current_cancellable(
+                        marker.key.clone(),
+                        marker.value.clone(),
+                        cancellation,
+                    )
+                    .await?;
+                if acknowledged {
+                    #[cfg(test)]
+                    self.summary_outbox
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .remove(&marker.episode_id);
+                }
+                return Ok(true);
+            }
+            Err(error) if cancellation.is_cancelled() => return Err(error),
+            Err(error) => {
+                tracing::warn!(
+                    session = %marker.session_id,
+                    episode = %marker.episode_id,
+                    error = %error,
+                    "summary extraction episode read failed"
+                );
+                self.defer_summary_marker(&marker, &state, 0, cancellation)
+                    .await?;
+                return Ok(true);
+            }
+        };
+        if cancellation.is_cancelled() {
+            anyhow::bail!("memory outbox cancelled");
+        }
+
+        let outcome = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => anyhow::bail!("memory outbox cancelled"),
+            outcome = self.infer_facts_from_summary(
+                &marker.session_id,
+                &marker.episode_id,
+                &summary,
+            ) => outcome,
+        };
+        if cancellation.is_cancelled() {
+            anyhow::bail!("memory outbox cancelled");
+        }
+        match outcome {
+            SummaryExtractOutcome::Done => {
+                match self
+                    .memory_store
+                    .clear_summary_extraction_if_current_cancellable(
+                        marker.key.clone(),
+                        marker.value.clone(),
+                        cancellation,
+                    )
+                    .await
+                {
+                    Ok(true) => {
+                        #[cfg(test)]
+                        self.summary_outbox
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .remove(&marker.episode_id);
+                    }
+                    Ok(false) => {}
+                    Err(error) if cancellation.is_cancelled() => return Err(error),
+                    Err(error) => {
+                        tracing::warn!(
+                            session = %marker.session_id,
+                            episode = %marker.episode_id,
+                            error = %error,
+                            "summary extraction durable acknowledgement failed"
+                        );
+                        self.defer_summary_marker(&marker, &state, 0, cancellation)
+                            .await?;
+                    }
+                }
+            }
+            SummaryExtractOutcome::Throttled { wait_secs }
+            | SummaryExtractOutcome::Retryable { wait_secs } => {
+                self.defer_summary_marker(&marker, &state, wait_secs, cancellation)
+                    .await?;
+            }
+        }
+        Ok(true)
+    }
+
+    async fn defer_summary_marker(
+        &self,
+        marker: &SummaryExtractionMarker,
+        state: &haven_memory::repositories::kv_store::SummaryExtractionMarkerState,
+        requested_wait_secs: u64,
+        cancellation: &CancellationToken,
+    ) -> anyhow::Result<()> {
+        let mut attempt = state.attempt;
+        let wait_secs = next_outbox_retry_secs(&mut attempt, requested_wait_secs);
+        let due = retry_due_after_secs(wait_secs);
+        self.memory_store
+            .update_summary_extraction_retry_if_current_cancellable(
+                marker.key.clone(),
+                marker.value.clone(),
+                attempt,
+                due,
+                cancellation,
+            )
+            .await?;
+        tracing::debug!(
+            session = %marker.session_id,
+            episode = %marker.episode_id,
+            wait_secs,
+            "summary extraction deferred with durable retry deadline"
+        );
+        Ok(())
     }
 
     fn ensure_outbox_worker(self: &Arc<Self>) {
@@ -461,300 +848,44 @@ impl MemoryWorker {
         let engine = self.clone();
         tokio::spawn(async move {
             let cancellation = engine.shutdown_token.clone();
-            // Restore jobs that were enqueued by the previous process. Jobs
-            // stay durable until successful completion; the extraction cursor
-            // makes a replay after a crash idempotent.
-            match engine
-                .memory_store
-                .pending_fact_extractions_cancellable(&cancellation)
-                .await
-            {
-                Ok(restored) => {
-                    if let Ok(mut pending) = engine.outbox.lock() {
-                        for (session_id, bypass_throttle, event_sequence) in restored {
-                            pending
-                                .entry(session_id)
-                                .and_modify(|existing| {
-                                    existing.merge(FactExtractionJob {
-                                        event_sequence,
-                                        bypass_throttle,
-                                    })
-                                })
-                                .or_insert(FactExtractionJob {
-                                    event_sequence,
-                                    bypass_throttle,
-                                });
-                        }
-                    }
-                }
-                Err(error) => {
-                    tracing::warn!("fact extraction durable outbox restore failed: {}", error);
-                }
-            }
-            if cancellation.is_cancelled() {
-                return;
-            }
-            match engine
-                .memory_store
-                .pending_summary_extractions_cancellable(&cancellation)
-                .await
-            {
-                Ok(restored) => {
-                    if let Ok(mut pending) = engine.summary_outbox.lock() {
-                        for (session_id, episode_id) in restored {
-                            pending.insert(episode_id, session_id);
-                        }
-                    }
-                }
-                Err(error) => {
-                    tracing::warn!(
-                        "summary extraction durable outbox restore failed: {}",
-                        error
-                    );
-                }
-            }
-            if cancellation.is_cancelled() {
-                return;
-            }
-            let mut fact_retry_attempts = HashMap::<String, u32>::new();
-            let mut summary_retry_attempts = HashMap::<String, u32>::new();
             loop {
                 if cancellation.is_cancelled() {
                     return;
                 }
-                let batch: Vec<(String, FactExtractionJob)> = {
-                    let mut pending = engine.outbox.lock().unwrap_or_else(|e| e.into_inner());
-                    if pending.is_empty() {
-                        Vec::new()
-                    } else {
-                        pending.drain().collect()
-                    }
-                };
-                let summary_batch: Vec<(String, String)> = {
-                    let mut pending = engine
-                        .summary_outbox
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner());
-                    pending
-                        .drain()
-                        .map(|(episode_id, session_id)| (session_id, episode_id))
-                        .collect()
-                };
-                if batch.is_empty() && summary_batch.is_empty() {
-                    tokio::select! {
-                        biased;
-                        _ = cancellation.cancelled() => return,
-                        _ = engine.outbox_notify.notified() => {}
-                    }
-                    continue;
-                }
-                for (session_id, job) in batch {
-                    if cancellation.is_cancelled() {
-                        return;
-                    }
-                    let completed = tokio::select! {
-                        biased;
-                        _ = cancellation.cancelled() => return,
-                        completed = async {
-                            if job.bypass_throttle {
-                                engine.infer_session_on_pause(&session_id).await
-                            } else {
-                                engine.infer_session(&session_id).await
-                            }
-                        } => completed,
-                    };
-                    if cancellation.is_cancelled() {
-                        return;
-                    }
-                    if completed {
-                        match engine
-                            .memory_store
-                            .clear_pending_fact_extraction_if_current_cancellable(
-                                &session_id,
-                                job.event_sequence,
-                                job.bypass_throttle,
-                                &cancellation,
+                let notified = engine.outbox_notify.notified();
+                tokio::pin!(notified);
+                match engine.scan_outbox_pass(&cancellation).await {
+                    Ok(result) if result.made_progress => continue,
+                    Ok(result) => {
+                        let sleep_for = result.next_due_at_ms.map(|due| {
+                            Duration::from_millis(
+                                due.saturating_sub(current_epoch_millis()).max(0) as u64
                             )
-                            .await
-                        {
-                            Ok(_) => {
-                                fact_retry_attempts.remove(&session_id);
-                            }
-                            Err(error) => {
-                                if cancellation.is_cancelled() {
-                                    return;
+                        });
+                        tokio::select! {
+                            biased;
+                            _ = cancellation.cancelled() => return,
+                            _ = &mut notified => {}
+                            _ = async {
+                                if let Some(duration) = sleep_for {
+                                    tokio::time::sleep(duration).await;
+                                } else {
+                                    std::future::pending::<()>().await;
                                 }
-                                let wait_secs = next_outbox_retry_secs(
-                                    fact_retry_attempts.entry(session_id.clone()).or_default(),
-                                    0,
-                                );
-                                tracing::warn!(
-                                    "fact extraction durable completion failed for session {}: {}; retrying in {}s",
-                                    session_id,
-                                    error,
-                                    wait_secs
-                                );
-                                engine.enqueue_memory(session_id, job);
-                                if !wait_for_outbox_retry(&cancellation, wait_secs).await {
-                                    return;
-                                }
-                            }
-                        }
-                    } else {
-                        let wait_secs = next_outbox_retry_secs(
-                            fact_retry_attempts.entry(session_id.clone()).or_default(),
-                            0,
-                        );
-                        tracing::debug!(
-                            session = %session_id,
-                            wait_secs,
-                            "fact extraction deferred; durable marker retained"
-                        );
-                        engine.enqueue_memory(session_id, job);
-                        if !wait_for_outbox_retry(&cancellation, wait_secs).await {
-                            return;
+                            } => {}
                         }
                     }
-                }
-                for (session_id, episode_id) in summary_batch {
-                    if cancellation.is_cancelled() {
+                    Err(error) if cancellation.is_cancelled() => {
+                        tracing::debug!(error = %error, "memory outbox scan stopped during cancellation");
                         return;
                     }
-                    let summary = match engine
-                        .memory_store
-                        .episode_text_cancellable(&episode_id, &cancellation)
-                        .await
-                    {
-                        Ok(Some(summary)) if !cancellation.is_cancelled() => summary,
-                        Ok(Some(_)) => return,
-                        Ok(None) => {
-                            if cancellation.is_cancelled() {
-                                return;
-                            }
-                            tracing::debug!(
-                                session = %session_id,
-                                episode = %episode_id,
-                                "dropping summary extraction job for missing episode"
-                            );
-                            let clear_result = engine
-                                .memory_store
-                                .clear_summary_extraction_cancellable(
-                                    &session_id,
-                                    &episode_id,
-                                    &cancellation,
-                                )
-                                .await;
-                            if cancellation.is_cancelled() {
-                                return;
-                            }
-                            if let Err(error) = clear_result {
-                                let wait_secs = next_outbox_retry_secs(
-                                    summary_retry_attempts
-                                        .entry(episode_id.clone())
-                                        .or_default(),
-                                    0,
-                                );
-                                tracing::warn!(
-                                    session = %session_id,
-                                    episode = %episode_id,
-                                    wait_secs,
-                                    "missing summary marker cleanup failed: {error}"
-                                );
-                                engine.enqueue_summary_memory(session_id, episode_id);
-                                if !wait_for_outbox_retry(&cancellation, wait_secs).await {
-                                    return;
-                                }
-                            } else {
-                                summary_retry_attempts.remove(&episode_id);
-                            }
-                            continue;
-                        }
-                        Err(error) if !cancellation.is_cancelled() => {
-                            tracing::warn!(
-                                session = %session_id,
-                                episode = %episode_id,
-                                "summary extraction episode read failed: {error}"
-                            );
-                            let wait_secs = next_outbox_retry_secs(
-                                summary_retry_attempts
-                                    .entry(episode_id.clone())
-                                    .or_default(),
-                                0,
-                            );
-                            engine.enqueue_summary_memory(session_id, episode_id);
-                            if !wait_for_outbox_retry(&cancellation, wait_secs).await {
-                                return;
-                            }
-                            continue;
-                        }
-                        Err(_) => return,
-                    };
-                    if cancellation.is_cancelled() {
-                        return;
-                    }
-                    let outcome = tokio::select! {
-                        biased;
-                        _ = cancellation.cancelled() => return,
-                        outcome = engine.infer_facts_from_summary(&session_id, &episode_id, &summary) => outcome,
-                    };
-                    if cancellation.is_cancelled() {
-                        return;
-                    }
-                    match outcome {
-                        SummaryExtractOutcome::Done => {
-                            match engine
-                                .memory_store
-                                .clear_summary_extraction_cancellable(
-                                    &session_id,
-                                    &episode_id,
-                                    &cancellation,
-                                )
-                                .await
-                            {
-                                Ok(()) => {
-                                    summary_retry_attempts.remove(&episode_id);
-                                }
-                                Err(error) => {
-                                    if cancellation.is_cancelled() {
-                                        return;
-                                    }
-                                    let wait_secs = next_outbox_retry_secs(
-                                        summary_retry_attempts
-                                            .entry(episode_id.clone())
-                                            .or_default(),
-                                        0,
-                                    );
-                                    tracing::warn!(
-                                        session = %session_id,
-                                        episode = %episode_id,
-                                        wait_secs,
-                                        "summary extraction durable completion failed: {error}"
-                                    );
-                                    engine.enqueue_summary_memory(session_id, episode_id);
-                                    if !wait_for_outbox_retry(&cancellation, wait_secs).await {
-                                        return;
-                                    }
-                                }
-                            }
-                        }
-                        SummaryExtractOutcome::Throttled { wait_secs }
-                        | SummaryExtractOutcome::Retryable { wait_secs } => {
-                            let wait_secs = next_outbox_retry_secs(
-                                summary_retry_attempts
-                                    .entry(episode_id.clone())
-                                    .or_default(),
-                                wait_secs,
-                            );
-                            tracing::debug!(
-                                session = %session_id,
-                                episode = %episode_id,
-                                wait_secs,
-                                "summary fact inference deferred"
-                            );
-                            engine.enqueue_summary_memory(session_id, episode_id);
-                            if !wait_for_outbox_retry(&cancellation, wait_secs).await {
-                                return;
-                            }
+                    Err(error) => {
+                        tracing::warn!(error = %error, "memory outbox page scan failed");
+                        tokio::select! {
+                            biased;
+                            _ = cancellation.cancelled() => return,
+                            _ = &mut notified => {}
+                            _ = tokio::time::sleep(Duration::from_secs(1)) => {}
                         }
                     }
                 }
@@ -1362,14 +1493,6 @@ fn next_outbox_retry_secs(attempt: &mut u32, requested_wait_secs: u64) -> u64 {
     ) {
         RecoveryDecision::Retry { delay, .. } => delay.as_secs(),
         RecoveryDecision::Stop { .. } => requested_wait_secs.max(OUTBOX_RETRY_MAX_SECS),
-    }
-}
-
-async fn wait_for_outbox_retry(cancellation: &CancellationToken, wait_secs: u64) -> bool {
-    tokio::select! {
-        biased;
-        _ = cancellation.cancelled() => false,
-        _ = tokio::time::sleep(Duration::from_secs(wait_secs)) => true,
     }
 }
 
@@ -2565,16 +2688,159 @@ mod tests {
         let worker = Arc::new(make_engine(db));
         worker.suspend_outbox_worker_for_test();
 
-        let restored = worker
-            .restore_pending_outbox(&CancellationToken::new())
+        worker
+            .start_outbox_worker(&CancellationToken::new())
             .await
             .unwrap();
-
-        assert_eq!(restored, 1);
         assert_eq!(
             worker.summary_outbox.lock().unwrap().get(episode_id),
             Some(&session.id)
         );
+    }
+
+    #[tokio::test]
+    async fn durable_scanner_finishes_backlog_larger_than_multiple_pages() {
+        let db = temp_db();
+        for index in 0..130 {
+            let session = db
+                .create_session(&format!("scanner backlog {index}"))
+                .unwrap();
+            db.enqueue_fact_extraction(&session.id, false, 1).unwrap();
+        }
+        let worker = Arc::new(make_engine(db.clone()));
+
+        worker
+            .start_outbox_worker(&CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(worker.outbox.lock().unwrap().len(), OUTBOX_PAGE_SIZE);
+
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                if db.pending_fact_extractions().unwrap().is_empty() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the scanner should eventually drain markers beyond its first page");
+        assert!(worker.outbox.lock().unwrap().len() <= OUTBOX_PAGE_SIZE);
+        worker.shutdown();
+    }
+
+    #[tokio::test]
+    async fn delayed_fact_marker_does_not_block_ready_summary_work() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let session = db.create_session("delayed fact fairness").unwrap();
+        db.enqueue_fact_extraction(&session.id, false, 1).unwrap();
+        let high_water = db.pending_fact_extraction_high_water().unwrap().unwrap();
+        let fact_marker = db
+            .pending_fact_extractions_page(None, &high_water, OUTBOX_PAGE_SIZE)
+            .unwrap()
+            .remove(0);
+        assert!(
+            db.update_pending_fact_extraction_retry_if_current(
+                &fact_marker.key,
+                &fact_marker.value,
+                4,
+                current_epoch_millis() + 60_000,
+            )
+            .unwrap()
+        );
+        let episode_id = haven_common::types::new_id("msg");
+        db.add_episode_with_pending_extraction(
+            &session.id,
+            "A ready durable summary with enough text for extraction.",
+            &episode_id,
+            true,
+        )
+        .unwrap();
+        let inference: Arc<dyn MemoryInferencePort> = Arc::new(FixedMemoryInference {
+            fast_chat_configured: true,
+            response: "[]".to_owned(),
+            calls: AtomicUsize::new(0),
+        });
+        let memory = Arc::new(MemoryService::new(db.clone(), None, 64));
+        let worker = Arc::new(MemoryWorker::new_with_inference(
+            memory.clone(),
+            memory.memory_fact_store(),
+            inference,
+            4_000,
+            64,
+            256,
+            0,
+        ));
+
+        worker
+            .start_outbox_worker(&CancellationToken::new())
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if db.pending_summary_extractions().unwrap().is_empty() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("a fact backoff must not block a ready summary marker");
+        assert_eq!(
+            db.pending_fact_extractions().unwrap(),
+            vec![(session.id, false, 1)]
+        );
+        worker.shutdown();
+    }
+
+    #[tokio::test]
+    async fn malformed_summary_marker_is_quarantined_and_eventually_processed() {
+        let db = temp_db();
+        let session = db.create_session("malformed summary marker").unwrap();
+        let episode_id = haven_common::types::new_id("msg");
+        db.add_episode_with_pending_extraction(
+            &session.id,
+            "A durable summary whose malformed retry metadata is repairable.",
+            &episode_id,
+            true,
+        )
+        .unwrap();
+        let marker_key = format!(
+            "fact_extraction_episode_pending.{}.{}",
+            session.id, episode_id
+        );
+        db.set_kv(&marker_key, "malformed summary value").unwrap();
+        let inference: Arc<dyn MemoryInferencePort> = Arc::new(FixedMemoryInference {
+            fast_chat_configured: true,
+            response: "[]".to_owned(),
+            calls: AtomicUsize::new(0),
+        });
+        let worker = Arc::new(make_engine_with_inference(db.clone(), inference));
+
+        worker
+            .start_outbox_worker(&CancellationToken::new())
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if db.get_kv(&marker_key).unwrap().is_none() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the repaired summary marker should run and be acknowledged");
+        assert_eq!(
+            db.get_kv(&format!(
+                "fact_extraction_episode_pending_poison.{}.{}",
+                session.id, episode_id
+            ))
+            .unwrap()
+            .as_deref(),
+            Some("malformed summary value")
+        );
+        worker.shutdown();
     }
 
     #[tokio::test]
@@ -2605,13 +2871,10 @@ mod tests {
             0,
         ));
 
-        assert_eq!(
-            worker
-                .restore_pending_outbox(&CancellationToken::new())
-                .await
-                .unwrap(),
-            2
-        );
+        worker
+            .start_outbox_worker(&CancellationToken::new())
+            .await
+            .unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             loop {
                 if db.pending_fact_extractions().unwrap().is_empty()
@@ -2647,7 +2910,7 @@ mod tests {
         let worker = Arc::new(make_engine(db.clone()));
 
         worker
-            .restore_pending_outbox(&CancellationToken::new())
+            .start_outbox_worker(&CancellationToken::new())
             .await
             .unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
@@ -2822,7 +3085,7 @@ mod tests {
         ));
 
         worker
-            .restore_pending_outbox(&CancellationToken::new())
+            .start_outbox_worker(&CancellationToken::new())
             .await
             .unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
@@ -2878,7 +3141,7 @@ mod tests {
         ));
 
         worker
-            .restore_pending_outbox(&CancellationToken::new())
+            .start_outbox_worker(&CancellationToken::new())
             .await
             .unwrap();
         tokio::time::timeout(
@@ -2900,6 +3163,37 @@ mod tests {
             None,
             "cancellation during inference must leave the message cursor behind"
         );
+
+        let recovery_inference: Arc<dyn MemoryInferencePort> = Arc::new(FixedMemoryInference {
+            fast_chat_configured: true,
+            response: "[]".to_owned(),
+            calls: AtomicUsize::new(0),
+        });
+        let recovery_memory = Arc::new(MemoryService::new(db.clone(), None, 64));
+        let recovery_worker = Arc::new(MemoryWorker::new_with_inference(
+            recovery_memory.clone(),
+            recovery_memory.memory_fact_store(),
+            recovery_inference,
+            4_000,
+            64,
+            256,
+            0,
+        ));
+        recovery_worker
+            .start_outbox_worker(&CancellationToken::new())
+            .await
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if db.pending_fact_extractions().unwrap().is_empty() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("a replacement worker should resume the durable marker");
+        recovery_worker.shutdown();
     }
 
     #[tokio::test]

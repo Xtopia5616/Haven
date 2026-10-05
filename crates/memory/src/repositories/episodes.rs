@@ -74,9 +74,8 @@ impl Database {
                 conn.execute(
                     "INSERT INTO kv_store (key, value, updated_at)
                      VALUES (?1, ?2, ?3)
-                     ON CONFLICT(key) DO UPDATE SET value = excluded.value,
-                         updated_at = excluded.updated_at",
-                    rusqlite::params![marker_key, session_id, now],
+                     ON CONFLICT(key) DO NOTHING",
+                    rusqlite::params![marker_key, format!("{session_id}:0:0"), now],
                 )?;
             }
             Ok(())
