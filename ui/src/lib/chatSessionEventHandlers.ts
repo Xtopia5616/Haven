@@ -113,6 +113,14 @@ export function createChatSessionEventHandlers({
 			// pause itself is reported as paused and must not clear the indicator.
 			if (isActive && data.status === 'pending') {
 				clearAskAwaiting(data.sessionId);
+			} else if (
+				isActive &&
+				shouldRunTerminalCleanup &&
+				(data.status === 'completed' || data.status === 'error')
+			) {
+				// The first terminal channel owns cleanup, including when the
+				// secondary session:updated event arrives without its primary event.
+				clearAskAwaiting(data.sessionId);
 			}
 			dispatchSession({
 				type: 'session/status-updated',
@@ -184,7 +192,7 @@ export function createChatSessionEventHandlers({
 				status: 'completed',
 				reason,
 			});
-			if (getActiveSessionId() === sessionId) {
+			if (shouldRunTerminalCleanup && getActiveSessionId() === sessionId) {
 				clearAskAwaiting(sessionId);
 			}
 			if (shouldRunTerminalCleanup) {
@@ -207,7 +215,7 @@ export function createChatSessionEventHandlers({
 				sessionId,
 				reason: error,
 			});
-			if (sessionId === getActiveSessionId()) {
+			if (shouldRunTerminalCleanup && sessionId === getActiveSessionId()) {
 				clearAskAwaiting(sessionId);
 			}
 			if (shouldRunTerminalCleanup) {

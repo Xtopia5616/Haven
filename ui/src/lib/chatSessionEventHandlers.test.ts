@@ -36,6 +36,7 @@ function handlers(options: {
 describe('chat session lifecycle handlers', () => {
 	it.each(['paused'] as const)('stops live bubbles when a session is %s', (status) => {
 		const flushChunksNow = vi.fn();
+		const clearAskAwaiting = vi.fn();
 		const reducer = new SessionReducer({
 			...initialSessionState,
 			messages: {
@@ -54,6 +55,7 @@ describe('chat session lifecycle handlers', () => {
 		const eventHandlers = handlers({
 			activeSessionId: 'ses-paused',
 			flushChunksNow,
+			clearAskAwaiting,
 			dispatchSession: (action) => reducer.dispatch(action),
 		});
 		setToolOutputPreview('step-shell', 'partial', 'ses-paused');
@@ -63,6 +65,7 @@ describe('chat session lifecycle handlers', () => {
 		} as never);
 
 		expect(flushChunksNow).toHaveBeenCalledOnce();
+		expect(clearAskAwaiting).not.toHaveBeenCalled();
 		expect(get(getToolOutputPreviewStore('step-shell'))).toBeUndefined();
 		expect(reducer.getMessages('ses-paused')).toEqual([
 			{ id: 'step-thought', role: 'assistant', content: '半截回复', streaming: false },
@@ -345,6 +348,38 @@ describe('chat session lifecycle handlers', () => {
 
 			expect(reducer.getState().sessions[0].status).toBe(status);
 			expect(reducer.getMessages(sessionId)[0].streaming).toBe(false);
+		},
+	);
+
+	it.each(['completed', 'error'] as const)(
+		'clears asks for the active session on a standalone terminal session:updated %s event',
+		(status) => {
+			const clearAskAwaiting = vi.fn();
+			const eventHandlers = handlers({
+				activeSessionId: 'ses-active-terminal',
+				clearAskAwaiting,
+				dispatchSession: vi.fn(),
+			});
+
+			eventHandlers['session:updated']({
+				payload: {
+					sessionId: 'ses-background-terminal',
+					status,
+					title: null,
+					reason: '终态副事件',
+				},
+			} as never);
+			eventHandlers['session:updated']({
+				payload: {
+					sessionId: 'ses-active-terminal',
+					status,
+					title: null,
+					reason: '终态副事件',
+				},
+			} as never);
+
+			expect(clearAskAwaiting).toHaveBeenCalledOnce();
+			expect(clearAskAwaiting).toHaveBeenCalledWith('ses-active-terminal');
 		},
 	);
 

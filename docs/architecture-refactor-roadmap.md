@@ -1,6 +1,6 @@
 # Haven 架构降复杂度重构路线图
 
-> 状态：阶段 0–8 已完成；SessionUsage 累计上限契约、session-scoped KV 孤儿清理 owner、summary marker 单一原子生产路径、Tools 测试归属、Input→Tools 测试反向依赖、MCP/Skill 直调授权策略来源、MCP 管理操作网络策略来源、X12 例外消息写入口、ADR 编号索引完整性、actorless session action lifecycle 清理（ADR 0507）与 Ask reducer state ownership 收口（ADR 0508）已完成；当前无 Active 结构切片；Windows 发布验收为独立开放签核门
+> 状态：阶段 0–8 已完成；SessionUsage 累计上限契约、session-scoped KV 孤儿清理 owner、summary marker 单一原子生产路径、Tools 测试归属、Input→Tools 测试反向依赖、MCP/Skill 直调授权策略来源、MCP 管理操作网络策略来源、X12 例外消息写入口、ADR 编号索引完整性、actorless session action lifecycle 清理（ADR 0507）、Ask reducer state ownership 收口（ADR 0508）与终态 Ask 清理事件归属（ADR 0509）已完成；当前无 Active 结构切片；Windows 发布验收为独立开放签核门
 > 更新日期：2026-10-05
 > 范围：Agent/Session、Memory、Tools、LLM、App IPC 与 UI
 
@@ -110,6 +110,8 @@
 
 **本轮完成 — [ADR 0506](adr/0506-mcp-admin-connection-network-policy.md)：**`mcp_add/update/toggle/reload` 会按参数或启用状态新建/重建连接，但模型 operation view 曾落入 `NetworkAccess::None`，绕过 `Restricted` 下的 opaque-network 授权拒绝；原生请求则是 `Opaque`。两侧现从同一 `OperationContract` 读取分类；list/disconnect/remove 明确为 `None`。没有拆 Admin surfaces 或新增动态授权层。
 
+**本轮完成 — [ADR 0509](adr/0509-terminal-ask-cleanup-event-owner.md)：**首个认领终态清理的事件通道同时清除活跃会话 Ask，覆盖独立抵达的 `session:updated` completed/error；配对主副事件保持 first-wins，不重复清理。Svelte 检查 0 error/0 warning，Vitest 122 files/981 tests 通过；不改 backend、IPC 或持久化契约。
+
 `builtin/messaging.rs` 共 2,518 行，主测试模块从第 1,326 行开始。生产部分是单一模型可见 `agent` 工具：共享参数和 15 个操作适配至 `haven_messaging::MessagingService`；领域消息生命周期已在 [ADR 0069](adr/0069-messaging-service.md) 收口，并由 [ADR 0396](adr/0396-messaging-domain-crate.md) 提取为独立 crate。近期没有再次出现跨层重复 owner 或稳定后边界回归。仅按 operation 拆 schema/handler 或另拆 crate 暂无收益；若 schema 与执行适配之后独立演进并导致契约漂移，再复核私有模块边界。
 
 `memory_worker.rs` 按非空行统计为 3,176 行（约 1,367 行生产代码、1,809 行测试）。近期已按 [ADR 0468](adr/0468-memory-worker-maintenance-pass-module.md) 隔离定期 maintenance pass，并在 `880ec96` 将 pass 构造器收窄为显式四项 capability；此后没有足够历史证明要继续拆。`MemoryRuntime` 持有恢复与调度，worker 持有 extraction/outbox，`MemoryMaintenanceStore` 与 `fact_inference` 分别持有持久化和提案 gate；现有测试 fixture 与 outbox 测试共享较多。prefetch 失败重试与事实/marker 原子提交的缺陷已各自修复一次，没有稳定后重复回归，因此不再拆 prompt-prefetch 或搬测试。另发现的三个无 workspace 生产调用 summary marker-only API 已由 [ADR 0481](adr/0481-remove-summary-marker-only-enqueue.md) 删除；测试 fixture 现通过 episode+marker 原子入口建数据，Worker/Store/Database 的读取、恢复、ack 与清理能力保留。该清理没有形成进一步拆分 `memory_worker.rs` 的理由。
@@ -126,7 +128,7 @@
 
 本次将 `ActionService` 独立成 crate 的想法评估后关闭为“现阶段不需拆分”：Agent 仍直接依赖 Tools 的 tool/auth 契约；ActionService 还共用 Tools 内部 shell/process/output policy，依赖 `haven-memory::ActionStore` 的持久状态，并与 Agent 的授权执行、完成投影及 App 生命周期形成现有纵向调用链。抽离需要新增更低层的进程/输出边界或 port，可能增加反向依赖和策略重复；近期 ActionService 与 ActionStore、Agent、App 的联动是 action 生命周期纵向演进，没有稳定后仍反复耦合 registry/security 的证据。只有出现真正不依赖 Tools 的 Action 消费者、同一边界回归重复发生，或受控构建/profile 证明拆分能降低实际迭代成本时才重开；它不进入 Active 队列。
 
-已复核热点包括 `+page.svelte`、`SettingsView.svelte`、`admin.rs`、`llm/router.rs`、`inbox.rs`、Tools/Agent 根模块、`react/mod.rs`、`layer.rs`、`session/mod.rs`、`resume.rs`、`session/tool_runner.rs`、`react/stream_step.rs`、`commands/session.rs`、`app_state.rs`、`MemoryView.svelte`、`ToolsView.svelte`、`ToolResultCard.svelte`、`InputRouter.svelte` 与 `+layout.svelte`。`tool_runner.rs` 的近期 churn 属于 ADR 0424 同一轮 owner 收口，确认与 ActionService 分持待决请求和执行/取消 claim，当前保留原边界；`stream_step.rs` 的流生命周期队列、checkpoint 与 retry 需保持协同，搜索响应投影则由本轮 ADR 0476 收回 turn owner。`resume.rs`、ToolsView 和 InputRouter 保留各自会话恢复、管理页与统一 composer 边界。InputRouter 的异步附件读取曾允许发送越过读取完成点且并行读取可能超限，现已阻止读取期间提交并预留附件名额，回归由 UI 测试覆盖。ToolResultCard 同时展示 ask 与 tool output，但 ask selection、pending interaction、dismissal 分属 controller/reducer/page owners；近几天 c7ac7e8、e2f5059、56c65cd、487ff9e 连续修改 pending reopen、选项投影、transcript 结算与历史恢复。chatAskInteraction.ts 另存 resolvedAskIds/resolvedAskResponses，与 SessionReducer interaction 状态重复；列为 Candidate，先评估只迁除重复 resolved 状态和原子 settle/clear reducer 转换，若批量提交或 resume 顺序因此变脆弱则关闭。暂不提取 Ask 卡片或 crate。MemoryView 单次 resume 参数遗漏已在 `487ff9e` 修复；`+layout` phase store 订阅清理也已修复。
+已复核热点包括 `+page.svelte`、`SettingsView.svelte`、`admin.rs`、`llm/router.rs`、`inbox.rs`、Tools/Agent 根模块、`react/mod.rs`、`layer.rs`、`session/mod.rs`、`resume.rs`、`session/tool_runner.rs`、`react/stream_step.rs`、`commands/session.rs`、`app_state.rs`、`MemoryView.svelte`、`ToolsView.svelte`、`ToolResultCard.svelte`、`InputRouter.svelte` 与 `+layout.svelte`。`tool_runner.rs` 的近期 churn 属于 ADR 0424 同一轮 owner 收口，确认与 ActionService 分持待决请求和执行/取消 claim，当前保留原边界；`stream_step.rs` 的流生命周期队列、checkpoint 与 retry 需保持协同，搜索响应投影则由本轮 ADR 0476 收回 turn owner。`resume.rs`、ToolsView 和 InputRouter 保留各自会话恢复、管理页与统一 composer 边界。InputRouter 的异步附件读取曾允许发送越过读取完成点且并行读取可能超限，现已阻止读取期间提交并预留附件名额，回归由 UI 测试覆盖。ToolResultCard 同时展示 ask 与 tool output，但 ask selection、pending interaction、dismissal 分属 controller/reducer/page owners；近期连续修改的 pending reopen、选项投影、transcript 结算与历史恢复已由 ADR 0508 收拢响应和结算状态到 reducer，ADR 0509 补齐终态副事件独立到达时的 Ask 清理。`resolvedAskResponses` shadow 已删除，`resolvedAskIds` 继续只承担当前批次防重复提交；现无 Ask Candidate，不提取 Ask 卡片或 crate。MemoryView 单次 resume 参数遗漏已在 `487ff9e` 修复；`+layout` phase store 订阅清理也已修复。
 
 **观察项复核（2026-10-05；本轮均未批准实现切片）：**
 
@@ -183,6 +185,7 @@
 14. **已完成：收敛 MCP 管理操作建连分类（[ADR 0506](adr/0506-mcp-admin-connection-network-policy.md)）。** add/update/toggle/reload 与 Connect 共用 `Opaque` 分类，Restricted 在 handler 前拦截可建连模型操作；list/disconnect/remove 在模型与原生路径共用 `None`。
 15. **已完成 — [ADR 0507](adr/0507-session-owned-action-cleanup.md)：会话终止/删除清理所属 action。** 显式 end、单 session delete/retention 与全量删除现都经 SessionSupervisor→ActionService owner 链清理；actorless 与未 hydrate 的 waiting action 不再漏过。ActionService 串行化 scheduled admission、restore/hydrate 与本实例 owner cleanup；cleanup 还枚举 durable waiting/running 行，以 SQLite CAS 覆盖另一实例已启动但尚未 claim 的任务。持久读写错误阻止删除 session，claim-wins 保持 ADR 0424 原语义，shutdown 继续保留 scheduled waiting。workspace tests、严格 Clippy、格式及 ADR 索引门禁通过，细节见 ADR 0507。
 16. **已完成 — [ADR 0508](adr/0508-ask-response-reducer-ownership.md)：Ask 响应与结算收归 reducer owner。** 删除 controller 的 `resolvedAskResponses` shadow，提交从 SessionReducer 已 resolved Ask interaction 读取答案；transcript settle 与同 session Ask interaction 清理合并为一次 reducer transition。保留选项选择与当前批次 `resolvedAskIds`，避免历史 resolved Ask 混入后续提交；route-level lifecycle 对该 session 其他 interaction 的既有清理行为不变。Svelte 检查 0 error/0 warning，Vitest 122 files/979 tests 通过；不改 backend、IPC 或持久化契约。实现、回归与回滚见 ADR 0508。
+17. **已完成 — [ADR 0509](adr/0509-terminal-ask-cleanup-event-owner.md)：终态 Ask 清理由首个事件通道拥有。** 独立 `session:updated` completed/error 若先到，现可清除活跃 session 的 Ask；paired primary/secondary 事件仍由 `claimTerminalCleanup` first-wins，inactive session 与 paused 状态不受影响。Svelte 检查 0 error/0 warning，Vitest 122 files/981 tests 通过；不改 backend、IPC 或持久化契约。
 
 #### 长期执行台阶与决策门
 
@@ -196,7 +199,7 @@
 | D. 性能与容量 | 只有可复现的延迟、内存、磁盘或并发问题进入 profile；保留现有 SQLite 容量与失败恢复不变量。 | 同数据、负载、构建和环境比较前后指标；没有超过噪声且对用户有意义的改进就关闭，不继续微调。不得把无 profile 的结构搬迁包装成性能优化。 |
 | E. Windows 发布签核 | 发布准备时独立执行 §5.1 的最新构建、安装生命周期、用户数据保留、真实 UI 流程和磁盘耗尽验收。该 Gate 可与不影响发布路径的单一结构切片并行准备。 | 把构建版本、schema、环境、实际结果与限制写入 ADR 0395；旧 profile 或历史验收不可代替当前安装包结果。未通过时保持 Gate Open，不据此发起无关架构拆分。 |
 
-**当前执行位置：** 阶段 0–8 已完成；台阶 A 已复核 Tools 契约/Admin/messaging、Agent memory worker 和 MCP 管理策略分类。`SessionStore` lifecycle wrapper 和上述大模块的纯拆分均暂缓。ADR 0481 的旧 summary marker-only writer、ADR 0496 的通用 X12 消息写入口已删除；ADR 0505 已恢复目录编号与索引一一对应，CI 持续检查该契约。ADR 0507 和 0508 已完成，分别收口 session-owned action lifecycle 与 Ask reducer state ownership。当前无 Active；每个切片结束后按 §5.5 触发条件复核下一候选，没有经源码验证的证据时不制造拆分工作。Common 拆分、Tools crate 拆分与通用 Job 抽象继续暂缓，直到相应门槛被新证据满足。
+**当前执行位置：** 阶段 0–8 已完成；台阶 A 已复核 Tools 契约/Admin/messaging、Agent memory worker 和 MCP 管理策略分类。`SessionStore` lifecycle wrapper 和上述大模块的纯拆分均暂缓。ADR 0481 的旧 summary marker-only writer、ADR 0496 的通用 X12 消息写入口已删除；ADR 0505 已恢复目录编号与索引一一对应，CI 持续检查该契约。ADR 0507–0509 已完成，分别收口 session-owned action lifecycle、Ask reducer state ownership 与终态事件通道的 Ask 清理归属。当前无 Active；每个切片结束后按 §5.5 触发条件复核下一候选，没有经源码验证的证据时不制造拆分工作。Common 拆分、Tools crate 拆分与通用 Job 抽象继续暂缓，直到相应门槛被新证据满足。
 
 2026-10-05 对 `AppState`/`ApplicationRuntime`、UI shell/Composer 与 SessionStore 非事务 lifecycle façade 的只读复核均未发现 owner 稳定后的重复边界回归。SessionStore 生命周期 wrapper 大多是 typed `run_blocking` 转发，实际 actor/确认/delete policy 由 Agent `session/status.rs` 持有；搬移 wrapper 不会改变 owner 或调用链，故不新增 Active 项。重开条件见 §5.3 的启动编排、Composer、全局布局与 SessionStore 边界观察结论。
 
