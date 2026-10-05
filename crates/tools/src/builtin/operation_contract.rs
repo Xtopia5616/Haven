@@ -18,8 +18,8 @@ pub(crate) struct OperationContract {
     /// concurrency. Sensitive data and network access can still require
     /// confirmation for a read-only operation.
     pub(crate) read_only: bool,
-    /// Explicit classification for operations whose network use cannot be
-    /// inferred from their stable name.
+    /// Explicit network classification for operations that need a non-default
+    /// boundary from the generic name-based inference.
     pub(crate) network_access_override: Option<NetworkAccess>,
     pub(crate) risk_override: Option<RiskLevel>,
     pub(crate) idempotency: OperationIdempotency,
@@ -293,6 +293,9 @@ pub(crate) fn operation_contract(name: &'static str) -> OperationContract {
         network_access_override: match name {
             // `status` probes configured provider endpoints with GET /models.
             "haven.diagnostics.status" => Some(NetworkAccess::Public),
+            // Connect always attempts a connection. Keep the model-visible
+            // view and the native typed request on this same declaration.
+            "haven.mcp.mcp_connect" => Some(NetworkAccess::Opaque),
             _ => None,
         },
         risk_override,
@@ -311,6 +314,16 @@ mod tests {
         assert_eq!(contract.catalog_group, ToolCatalogGroup::Haven);
         assert_eq!(contract.risk_override, Some(RiskLevel::High));
         assert!(!contract.read_only);
+
+        let mcp_connect = operation_contract("haven.mcp.mcp_connect");
+        assert_eq!(
+            mcp_connect.network_access_override,
+            Some(NetworkAccess::Opaque)
+        );
+        assert_eq!(
+            operation_contract("haven.mcp.mcp_list").network_access_override,
+            None
+        );
 
         let status = operation_contract("haven.diagnostics.status");
         assert!(status.read_only);

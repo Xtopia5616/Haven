@@ -578,6 +578,7 @@ limit、创建时间倒序和 errors 的 status 过滤顺序保持原样。组�
 （ADR 0306）。
 高风险、网络、媒体、文件和跨 session 协作仍保留独立的内部实现边界，以维持各自的确认、
 路径、provider 和生命周期边界；模型看到的名称仍遵循点号 view 契约。
+`haven.mcp.mcp_connect` 每次都会尝试连接，因此其 `Opaque` 网络分类由 `OperationContract` 同时供模型 operation view 与 native typed request 使用；`deny` 与 `restricted` 均在连接执行前拒绝该边界（ADR 0495）。其它 MCP 管理操作不继承该分类，按各自参数或运行状态定义。
 
 ### 2.6 `haven-app-binary` —— 组合根 + 宿主边界（Tauri）
 

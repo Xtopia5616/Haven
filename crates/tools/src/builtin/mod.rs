@@ -1518,6 +1518,62 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn model_mcp_connect_is_blocked_when_network_is_denied() {
+        let name = "haven.mcp.mcp_connect";
+        let contract = operation_contract(name);
+        let concurrency = ToolConcurrency::Exclusive;
+        let (effect, data_sensitivity, network_access) =
+            operation_policy_attributes(&contract, concurrency.clone());
+        assert_eq!(network_access, crate::NetworkAccess::Opaque);
+
+        let request = crate::AuthorizationRequest::new(
+            None,
+            name,
+            json!({ "operation": "mcp_connect", "name": "server-a" }),
+            OperationPolicy {
+                risk_level: contract.risk_override.unwrap_or(RiskLevel::Medium),
+                capability: name.into(),
+                confirmation: crate::tool_contract::confirmation_for(
+                    contract.risk_override.unwrap_or(RiskLevel::Medium),
+                    matches!(effect, crate::OperationEffect::ReadOnly),
+                ),
+                idempotency: contract.idempotency,
+                scope: ToolOperationScope::Global,
+                concurrency,
+                effect,
+                data_sensitivity,
+                network_access,
+            },
+        );
+        let engine = crate::AuthorizationEngine::new();
+        for network_policy in [
+            haven_common::types::NetworkPolicy::Deny,
+            haven_common::types::NetworkPolicy::Restricted,
+        ] {
+            engine
+                .set_boundaries(
+                    haven_common::types::SandboxMode::FullAccess,
+                    Vec::new(),
+                    network_policy,
+                )
+                .await;
+
+            assert!(matches!(
+                engine.authorize(&request).await,
+                crate::AuthorizationDecision::Blocked {
+                    reason_code: crate::AuthorizationReasonCode::NetworkPolicy,
+                    ..
+                }
+            ));
+        }
+
+        let native = admin::AdminRequest::Mcp(admin::McpOperationArgs::McpConnect {
+            name: "server-a".into(),
+        });
+        assert_eq!(native.network_access(), network_access);
+    }
+
     #[test]
     fn file_read_views_share_the_files_resource_with_writers() {
         let specs = operation_specs(64);

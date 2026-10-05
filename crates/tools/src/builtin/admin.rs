@@ -447,7 +447,11 @@ impl AdminRequest {
                     crate::NetworkAccess::None
                 }
             }
-            Self::Mcp(_) => crate::NetworkAccess::Opaque,
+            Self::Mcp(_) => {
+                super::operation_contract::operation_contract(self.model_operation_name())
+                    .network_access_override
+                    .unwrap_or(crate::NetworkAccess::Opaque)
+            }
             _ => crate::NetworkAccess::None,
         }
     }
