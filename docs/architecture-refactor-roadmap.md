@@ -72,6 +72,13 @@
 
 状态按执行性质区分：**Gate** 是发布前签核条件；**Next** 是下一项结构目标；**Candidate** 尚未进入实现队列，只有证据与退出条件明确后才立项。结构性目标一次只推进一个 active slice；行数下降、文件变少或 crate 变少不是完成指标。
 
+| 状态 | 当前项 |
+|---|---|
+| **Next** | 暂无可安全直接实施的结构切片；先按 §5.5 复核新证据。显式 end 取消失败问题仍需确定可见契约，见 Deferred。 |
+| **Active** | 无。 |
+| **Deferred** | 显式 end 的 action 持久取消失败语义；当前不统一改为 checked 或 best-effort，等待完整失败契约与协调方案。 |
+| **Gate** | Windows 发布验收 Open，见 §5.1。 |
+
 ### 5.1 Windows 发布验收（Gate / Open）
 
 按 ADR 0395 的验收范围，在隔离的 Windows profile 或 VM 上使用当前构建完成并记录：
@@ -169,42 +176,22 @@
 
 长期执行按触发信号驱动而不按日历制造工作，优先级为数据/安全/生命周期不变量故障、重复跨 owner 回归或修改耦合、依赖/API 边界问题、最后才是有同负载证据的性能优化；行数和 crate 大小不计为准入分。仓库较大时可并行委派只读审计（例如依赖图、热点职责、事务/安全不变量），但审计结论须由主执行者回到源码与门禁核验，任何时刻只实现一个 Active 切片。审查没有合格候选时，保留“无 Active 切片”状态并等待新证据，再继续同一套复核流程。
 
-### 5.6 长期滚动顺序（无日历承诺）
+### 5.6 长期滚动执行周期（跨迭代周期）
 
-本路线是跨多个迭代周期的决策路径，不按“把所有大 crate 拆小”设完工日期，也不为每个大文件预留一次拆分。完成一个切片、出现同类回归或准备发版时重新审查证据；阶段表示先后依赖，未满足进入条件就停在当前阶段。
+本路线按问题证据推进，不按日历、crate 数或文件行数承诺完工。已完成切片的设计、替代方案、验证与回滚分别记录在 ADR；本节只保留未来推进顺序和当前落点，避免把完成日志变成第二份历史索引。
 
-1. **已完成：SessionUsage 累计范围与重建一致性（[ADR 0478](adr/0478-session-usage-saturation-contract.md)）。** 结合 live `UsageTracker` 的 `u32::saturating_add` 和 `AgentUsage` 累计字段类型，确定 session summary 封顶于 `u32::MAX`；增量写入、legacy summary 读取和 detail 重建现已收敛到该契约。没有改变 schema 或 wire 类型。
-2. **已完成：只读历史 façade 测试归属（[ADR 0479](adr/0479-session-history-test-ownership.md)）。** 六项查询语义测试随 `session_history` 私有模块归组；事务、历史缓存写失效与聚合恢复测试仍在各自 owner。
-3. **已完成：session-scoped KV 孤儿清理单一 owner（[ADR 0480](adr/0480-session-kv-orphan-cleanup-owner.md)）。** retention purge 与 Memory maintenance 共用 `kv_store` 的 connection-level 清理 predicate。
-4. **已复核暂缓：Tools 执行契约、Admin surfaces 与 messaging builtin。** 三者均达到职责复核线，但当前各有稳定 owner，抽取子文件不会形成更清晰的依赖边界。重开条件见 §5.3；行数、局部 churn 和 operation 数都不足以准入。
-5. **已完成：移除 summary marker-only enqueue 入口（[ADR 0481](adr/0481-remove-summary-marker-only-enqueue.md)）。** Worker、Store 与 Database 的三处旧写 API 已删除，episode+marker 的原子写入成为唯一创建路径。独立 episode ack、session cleanup、worker retry/cancel 与 ReAct producer 的门槛和提交后 wake 保持不变；没有拆 `memory_worker.rs` 或 crate。
-6. **已完成：移除未调用的 Compaction 直发 helper（[ADR 0482](adr/0482-remove-unused-compaction-event-emitter.md)）。** 删除无调用方的 `CompactionEventData` 与 `EventDispatcher::emit_compaction_from`，避免恢复一个绕过 durable commit 与 `CommittedUiPublisher` 的第二发布路径；Compaction wire event 和现有生产路径不变。
-7. **已完成：process 流读取测试归属（[ADR 0483](adr/0483-process-stream-reader-test-ownership.md)）。** 六项不依赖 ActionService 的 cap/drain/tail/UTF-8 测试移入共享实现 owner `process.rs`；服务生命周期与终态投影测试继续留在 ActionService 测试模块。
-8. **已完成：ActionOutputTail 测试归属（[ADR 0484](adr/0484-action-output-tail-test-ownership.md)）。** 大窗口容量上限用例归入 `action_output.rs`；重复的滑动快照测试删除，服务终态投影测试保留在 ActionService owner。
-9. **已完成：删除测试专用的 Input→Tools 反向依赖（[ADR 0485](adr/0485-remove-test-only-input-tools-reverse-dependency.md)）。** 两向按键兼容性断言统一在 Tools consumer 测试中运行，Input 的测试构建不再反向依赖 Tools；生产依赖图与 API 不变。
-10. **已完成：MCP/Skill 直调共用外部授权策略（[ADR 0486](adr/0486-unify-direct-mcp-skill-authorization-policy.md)）。** App 命令与 Tools adapters 共用 `OperationPolicy::external`；qualified permission key、High 风险与 Opaque network gate 不变，敏感度元数据统一为 `Sensitive`。
-11. **已完成：MCP Connect 共用 Opaque 网络策略声明（[ADR 0495](adr/0495-mcp-connect-network-policy-owner.md)）。** 模型 operation view 曾将必然联网的 `haven.mcp.mcp_connect` 投影为 `NetworkAccess::None`，授权引擎的 NetworkPolicy=Deny 分支因而不会前置阻断；MCP manager 仍有底层连接拒绝。模型和 native typed request 现从 `OperationContract` 取得同一 `Opaque` 分类。
-12. **已完成：收窄 X12 例外消息写入口（[ADR 0496](adr/0496-limit-x12-exception-message-write-api.md)）。** 删除可任意指定 role/type 的公开消息 writer，改为 origin 派生的 ingress seed、封闭 kind 的 recovery partial 和固定 user/text 的 terminal action-result 三个 `SessionStore` 端口。共享行写逻辑、稳定 ID 幂等、投影时钟和事务外职责顺序保留；schema 与数据不变。
-13. **已完成：恢复 ADR 编号与索引完整性（[ADR 0505](adr/0505-adr-index-identity-and-integrity-check.md)）。** 保留每组最早入库的编号，为后续冲突记录分配 0497–0504；补齐 22 个遗漏索引项，并让 CI 校验文件编号唯一、README 精确覆盖和升序及本地 ADR 链接。
-14. **已完成：收敛 MCP 管理操作建连分类（[ADR 0506](adr/0506-mcp-admin-connection-network-policy.md)）。** add/update/toggle/reload 与 Connect 共用 `Opaque` 分类，Restricted 在 handler 前拦截可建连模型操作；list/disconnect/remove 在模型与原生路径共用 `None`。
-15. **已完成 — [ADR 0507](adr/0507-session-owned-action-cleanup.md)：会话终止/删除清理所属 action。** 显式 end、单 session delete/retention 与全量删除现都经 SessionSupervisor→ActionService owner 链清理；actorless 与未 hydrate 的 waiting action 不再漏过。ActionService 串行化 scheduled admission、restore/hydrate 与本实例 owner cleanup；cleanup 还枚举 durable waiting/running 行，以 SQLite CAS 覆盖另一实例已启动但尚未 claim 的任务。持久读写错误阻止删除 session，claim-wins 保持 ADR 0424 原语义，shutdown 继续保留 scheduled waiting。workspace tests、严格 Clippy、格式及 ADR 索引门禁通过，细节见 ADR 0507。
-16. **已完成 — [ADR 0508](adr/0508-ask-response-reducer-ownership.md)：Ask 响应与结算收归 reducer owner。** 删除 controller 的 `resolvedAskResponses` shadow，提交从 SessionReducer 已 resolved Ask interaction 读取答案；transcript settle 与同 session Ask interaction 清理合并为一次 reducer transition。保留选项选择与当前批次 `resolvedAskIds`，避免历史 resolved Ask 混入后续提交；route-level lifecycle 对该 session 其他 interaction 的既有清理行为不变。Svelte 检查 0 error/0 warning，Vitest 122 files/979 tests 通过；不改 backend、IPC 或持久化契约。实现、回归与回滚见 ADR 0508。
-17. **已完成 — [ADR 0509](adr/0509-terminal-ask-cleanup-event-owner.md)：终态 Ask 清理由首个事件通道拥有。** 独立 `session:updated` completed/error 若先到，现可清除活跃 session 的 Ask；paired primary/secondary 事件仍由 `claimTerminalCleanup` first-wins，inactive session 与 paused 状态不受影响。Svelte 检查 0 error/0 warning，Vitest 122 files/981 tests 通过；不改 backend、IPC 或持久化契约。
-18. **已完成 — [ADR 0510](adr/0510-session-scoped-react-execution-phase.md)：ReAct phase 保留来源 session 身份。** 同一个 runtime phase snapshot 带上来源 session；当前 Composer 和 submit steering 只采用匹配 active session 的 phase，Shell 最近活动展示语义保持。Svelte 检查 0 error/0 warning，Vitest 122 files/983 tests 通过。
+| 步骤 | 长期工作流 | 进入条件与交付物 | 退出条件 |
+|---|---|---|---|
+| 0 | **证据复核与分流（每轮入口）** | 在切片完成、同类回归出现、依赖/API 变化或准备发布时复核。形成一项候选说明：问题、不变量、owner、源码/历史证据、影响面、停止条件和适用门禁；依 §5.5 选择 Next、Deferred、关闭或无候选。 | 只有一个 Next 或明确无候选；不把体量、单次审计或旧历史快照直接转成 Active。 |
+| 1 | **契约与生命周期收口（当前关注）** | 先解决会话终态、所属 action、Actor 在场与否等状态不一致所暴露的契约缺口。当前候选是 §5.3 的显式 end 取消失败语义；先定义命令/UI/event/action 的失败结果，再决定是否需要状态协调、重试或补偿。交付物是故障矩阵、明确契约、回归测试和 ADR。不得只把 Actor 分支改成 checked，也不得将当前 best-effort 行为默认为产品契约。 | Actorless、驻留 Actor、运行中 Actor、Action claim 先后竞争和持久化失败都有一致且可测试的可见结果；若无法在不破坏响应性及 first-wins 的前提下给出安全方案，则维持 Deferred，不做局部补丁并继续审查其他候选。 |
+| 2 | **权威来源与跨层不变量** | 检查持久状态、事件、运行态、投影和 UI 是否仍各有单一 owner；只有真实漂移、明确风险对应的失败注入缺口、重复回归或绕过权威入口时才切片。交付物为窄范围回归/故障测试、冲突入口删除和不变量文档更新。 | 回归固定不变量且不增加第二真源；跨 crate/跨端变更通过相应完整门禁。 |
+| 3 | **稳定 owner 的职责收口** | owner 稳定后，若同一边界重复回归、跨职责共同修改或测试放错位置持续增加维护成本，迁移一条完整垂直链。交付物优先是私有模块/API 收窄、测试归属调整和旧入口清理，不预先按大文件切片。 | 调用和测试落到真实职责 owner，重复规则或跨边界修改减少，外部契约、依赖方向及运行语义保持不变；收益不能说明则关闭候选。 |
+| 4 | **模块成熟后再评估 crate/API 边界** | 只有模块 owner 已稳定，且存在独立消费者、真实依赖方向问题或可复核构建/迭代成本时才评估 crate 拆分。交付物包括依赖图、API/消费者映射；若声称构建收益，须有同环境基准。 | 提取后依赖单向、API 稳定、消费者不用反向依赖或重复 adapter，并证明维护/构建收益；任一不满足就保留现边界。 |
+| 5 | **性能与容量** | 仅在同负载 profile 复现有用户意义的成本时优化；交付物为固定场景的前后指标，并遵守 SQLite 容量、失败恢复与资源上限契约。Windows 发布验收独立保留在 §5.1，不作为结构重构阶段的退出依赖。 | 优化结果超过噪声且达到目标，否则关闭候选；没有当前测量就不以“降复杂度”为名做性能改动。 |
 
-#### 长期执行台阶与决策门
+以上是循环复核的先后顺序，不是一次性瀑布项目：每轮从步骤 0 重新分流，完成一个切片、同类问题复现或准备发布时再审查证据。当前步骤 0 复核后，步骤 1 只有一个 Deferred 候选、没有 Active 实现切片；近期审计未在步骤 2–5 找到满足准入条件的新候选。未解决的契约问题不阻止继续寻找独立且证据充分的工作，但任何时候只实现一个 Active slice。发布验收 Gate 与结构重构并行，按 §5.1 独立关闭。
 
-以下 A–E 是长期治理的执行台阶，不改变上文阶段 0–9 的架构阶段编号。
-
-| 台阶 | 目标与进入条件 | 完成或停止条件 |
-|---|---|---|
-| A. 证据队列 | 先处理数据、安全、生命周期不变量问题；再审计重复 owner、同一边界的重复回归与不稳定调用边。`memory_worker.rs`、Tools `builtin/messaging.rs`、`tool_contract.rs` 与 Admin surfaces 已完成只读复核；对 `memory_worker.rs` 的审计另找出旧公开 marker-only API，与 ADR 0266/0299 的原子生产者决定冲突。 | 每个候选记录唯一问题、owner、证据与停止条件。没有合格证据就保持无 Active，不把文件复核自动升级成拆分任务；发现与既有不变量冲突的未调用入口时，允许按窄范围删除旧契约。 |
-| B. Crate 内 owner 收口 | 仅当一个私有子域有独立稳定职责，且跨职责共改或回归能由该边界解释时，迁移一条完整垂直调用链。优先保持现有 crate API、事务、安全和恢复 owner 不变。ADR 0481/0482 是按既有 owner 决定删除冲突或未调用旧入口的窄切片；ADR 0483/0484 是按被测实现 owner 收口测试的窄切片；ADR 0485 删除测试构建图上的反向边；ADR 0486 合并 App 与 adapter 的外部策略构造；ADR 0495 修复 MCP Connect 的策略投影漂移；ADR 0496 收窄 X12 例外写 API；这些均不构成逐文件拆分配额。 | 旧入口与重复规则删除；测试靠近真实 owner；行为和依赖方向不变；适用 crate 门禁通过，且审查能指出维护或正确性收益。若只是搬文件、测试难以独立验证或要暴露内部状态，则关闭候选。 |
-| C. Crate 边界复核 | 只有内部模块 owner 稳定后，或依赖图出现真实问题，才重新评估 `haven-tools`、`haven-agent` 等较大 crate。先证明独立消费者、稳定 API、单向依赖和不重复业务策略；构建/开发成本收益要用同一环境的可复核对比。 | 提取后依赖图仍无环且更贴近业务消费者，消费者无需反向依赖或重复 adapter， workspace 门禁通过，并能说明收益。缺少独立消费者或收益不可测就不拆 crate；不设 crate 数或行数目标。 |
-| D. 性能与容量 | 只有可复现的延迟、内存、磁盘或并发问题进入 profile；保留现有 SQLite 容量与失败恢复不变量。 | 同数据、负载、构建和环境比较前后指标；没有超过噪声且对用户有意义的改进就关闭，不继续微调。不得把无 profile 的结构搬迁包装成性能优化。 |
-| E. Windows 发布签核 | 发布准备时独立执行 §5.1 的最新构建、安装生命周期、用户数据保留、真实 UI 流程和磁盘耗尽验收。该 Gate 可与不影响发布路径的单一结构切片并行准备。 | 把构建版本、schema、环境、实际结果与限制写入 ADR 0395；旧 profile 或历史验收不可代替当前安装包结果。未通过时保持 Gate Open，不据此发起无关架构拆分。 |
-
-**当前执行位置：** 阶段 0–8 已完成；台阶 A 已复核 Tools 契约/Admin/messaging、Agent memory worker 和 MCP 管理策略分类。`SessionStore` lifecycle wrapper 和上述大模块的纯拆分均暂缓。ADR 0481 的旧 summary marker-only writer、ADR 0496 的通用 X12 消息写入口已删除；ADR 0505 已恢复目录编号与索引一一对应，CI 持续检查该契约。ADR 0507–0510 已完成，收口 session-owned action lifecycle、Ask reducer state ownership、终态事件通道 Ask 清理归属和 ReAct phase 来源身份。最新 crate 边界复核仍是 11 个内部 crate、29 条单向边且无合格拆分候选。当前无 Active；显式 end 的 action 取消错误语义留待契约明确后复核。每个切片结束后按 §5.5 触发条件复核下一候选，没有经源码验证的证据时不制造拆分工作。Common 拆分、Tools crate 拆分与通用 Job 抽象继续暂缓，直到相应门槛被新证据满足。
+**当前执行位置：** 架构阶段 0–8 已完成；滚动执行周期位于 §5.6 步骤 0“证据复核与分流”。当前没有 Active 实现切片；显式 end 的 action 取消失败语义保持 Deferred，等命令/UI/action 的可见失败契约明确后再决定实现范围，不能用单分支改为 checked 代替设计。近期审计未找到新的合格 crate 或内部拆分候选；crate 边界仍为 11 个内部 crate、29 条单向边。Windows 发布验收仍是独立 Open Gate。后续每个切片结束、同类回归出现或准备发布时按 §5.5 重审，不按行数、crate 数或日历生成工作。
 
 2026-10-05 对 `AppState`/`ApplicationRuntime`、UI shell/Composer 与 SessionStore 非事务 lifecycle façade 的只读复核均未发现 owner 稳定后的重复边界回归。SessionStore 生命周期 wrapper 大多是 typed `run_blocking` 转发，实际 actor/确认/delete policy 由 Agent `session/status.rs` 持有；搬移 wrapper 不会改变 owner 或调用链，故不新增 Active 项。重开条件见 §5.3 的启动编排、Composer、全局布局与 SessionStore 边界观察结论。
 

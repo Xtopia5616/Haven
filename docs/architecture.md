@@ -715,8 +715,9 @@ catalog、MCP/Skills 管理、连接和 refresh 命令均通过 `toolsCommands.t
 Rust wire snake_case，MCP config 对齐固定 `McpServerConfig`，动态 schema 仍只在 `ToolSchema = unknown` 边界。
 ToolsView 继续拥有 optimistic state、通知、失败显示和 snapshot/event refresh 编排；Rust handler 继续拥有
 native admin authorization、连接副作用和 status event。`refresh_mcp_servers` 与 `reconnect_mcp` 的 handler
-当前未请求 AuthorizationEngine，策略审计是单独 follow-up，不由 typed helper 改变。MCP/Skill list DTO
-保留扩展字段，builtin `ToolManifest` 仍由 `toolManifest.ts` 唯一投影，卡片列表复用同一批解析行（ADR 0369）。
+会构造 renderer 专用 typed native request，并在连接副作用前调用 `authorize_admin_request`；确认后的 refresh 部分失败经
+现有 status channel 投影（[ADR 0369](adr/0369-tools-catalog-command-contract-boundary.md) 后续决定）。MCP/Skill list DTO 保留扩展字段，builtin `ToolManifest` 仍由
+`toolManifest.ts` 唯一投影，卡片列表复用同一批解析行（ADR 0369）。
 
 **判定标准**：唯一能同时看到所有 crate 的地方；负责把事件桥到前端、把前端命令调到后端，
 不承载业务逻辑。
