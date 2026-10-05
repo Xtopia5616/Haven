@@ -104,6 +104,7 @@ impl SkillRunner {
                 sanitize_error_text(&error.to_string())
             )
         })?;
+        containment.prepare_command(cmd.as_std_mut(), 0);
         let mut child = cmd.kill_on_drop(true).spawn().map_err(|e| {
             anyhow::anyhow!(
                 "failed to spawn skill '{}': {}",
@@ -114,7 +115,14 @@ impl SkillRunner {
         let pid = child.id().ok_or_else(|| {
             anyhow::anyhow!("skill '{}' did not expose a child process id", pid_label)
         })?;
-        if let Err(error) = containment.attach(pid) {
+        #[cfg(windows)]
+        let attach_result = child
+            .raw_handle()
+            .ok_or_else(|| std::io::Error::other("skill child process handle is unavailable"))
+            .and_then(|handle| containment.attach_and_resume(pid, handle));
+        #[cfg(not(windows))]
+        let attach_result = containment.attach_and_resume(pid, ());
+        if let Err(error) = attach_result {
             let _ = child.kill().await;
             anyhow::bail!(
                 "failed to attach skill '{}' to process containment: {}",

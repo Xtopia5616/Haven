@@ -501,3 +501,4 @@
 - [0510：ReAct phase 保留来源 session 身份](0510-session-scoped-react-execution-phase.md)
 - [0511：Dispatcher run 的终态错误由 SessionSupervisor 单一发布](0511-session-terminal-error-single-owner.md)
 - [0512：Admin model/native 风险等级 parity 回归门禁](0512-admin-risk-parity-regression-gate.md)
+- [0513：Windows 子进程先加入 Job Object 再恢复](0513-windows-suspended-process-containment.md)

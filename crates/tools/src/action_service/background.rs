@@ -131,10 +131,13 @@ impl ActionService {
                 return Err(error.into());
             }
         };
-        let mut child = match tokio::process::Command::from(std_cmd)
-            .kill_on_drop(true)
-            .spawn()
-        {
+        let mut child_cmd = tokio::process::Command::from(std_cmd);
+        #[cfg(windows)]
+        let windows_creation_flags = crate::CREATE_NO_WINDOW;
+        #[cfg(not(windows))]
+        let windows_creation_flags = 0;
+        containment.prepare_command(child_cmd.as_std_mut(), windows_creation_flags);
+        let mut child = match child_cmd.kill_on_drop(true).spawn() {
             Ok(c) => c,
             Err(e) => {
                 // Spawn failed: remove the entry so the action is not left
@@ -149,7 +152,14 @@ impl ActionService {
                 "background shell child did not expose a process id"
             ));
         };
-        if let Err(error) = containment.attach(pid) {
+        #[cfg(windows)]
+        let attach_result = child
+            .raw_handle()
+            .ok_or_else(|| std::io::Error::other("background child process handle is unavailable"))
+            .and_then(|handle| containment.attach_and_resume(pid, handle));
+        #[cfg(not(windows))]
+        let attach_result = containment.attach_and_resume(pid, ());
+        if let Err(error) = attach_result {
             let _ = child.kill().await;
             self.rollback_background_registration(&id).await;
             return Err(anyhow::anyhow!(

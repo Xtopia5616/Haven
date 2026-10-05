@@ -115,9 +115,15 @@ fn spawn_mcp_child(
     command: &str,
     args: &[String],
     build: &dyn Fn(&str, &[String]) -> Command,
+    containment: &haven_platform::process_containment::ProcessContainment,
 ) -> std::io::Result<Child> {
-    match build(command, args).spawn() {
-        Ok(child) => Ok(child),
+    let spawn = |program: &str, args: &[String]| {
+        let mut cmd = build(program, args);
+        containment.prepare_command(cmd.as_std_mut(), 0);
+        cmd.spawn()
+    };
+    match spawn(command, args) {
+        Ok(child) => contain_mcp_child(child, containment),
         Err(first) => {
             #[cfg(not(windows))]
             {
@@ -131,14 +137,14 @@ fn spawn_mcp_child(
                 // 1) npm/npx-style extensionless commands: use the .cmd wrapper.
                 if extensionless && first.kind() == ErrorKind::NotFound {
                     let variant = format!("{command}.cmd");
-                    if let Ok(child) = build(&variant, args).spawn() {
+                    if let Ok(child) = spawn(&variant, args) {
                         tracing::warn!(
                             "MCP server '{}': '{}' not found on PATH, spawned via '{}'",
                             name,
                             command,
                             variant
                         );
-                        return Ok(child);
+                        return contain_mcp_child(child, containment);
                     }
                 }
                 // 2) .ps1 scripts: run through powershell with a bypass policy.
@@ -152,19 +158,36 @@ fn spawn_mcp_child(
                         command.to_string(),
                     ];
                     ps_args.extend(args.iter().cloned());
-                    if let Ok(child) = build("powershell", &ps_args).spawn() {
+                    if let Ok(child) = spawn("powershell", &ps_args) {
                         tracing::warn!(
                             "MCP server '{}': spawned '{}' via powershell -ExecutionPolicy Bypass",
                             name,
                             command
                         );
-                        return Ok(child);
+                        return contain_mcp_child(child, containment);
                     }
                 }
                 Err(first)
             }
         }
     }
+}
+
+fn contain_mcp_child(
+    child: Child,
+    containment: &haven_platform::process_containment::ProcessContainment,
+) -> std::io::Result<Child> {
+    let pid = child
+        .id()
+        .ok_or_else(|| std::io::Error::other("MCP child did not expose a process id"))?;
+    #[cfg(windows)]
+    let process_handle = child
+        .raw_handle()
+        .ok_or_else(|| std::io::Error::other("MCP child process handle is unavailable"))?;
+    #[cfg(not(windows))]
+    let process_handle = ();
+    containment.attach_and_resume(pid, process_handle)?;
+    Ok(child)
 }
 
 /// Human-readable fix hint appended to a failed MCP spawn, so "program not
@@ -348,31 +371,25 @@ impl McpClient {
             cmd
         };
 
-        let mut child =
-            spawn_mcp_child(&self.name, &self.command, &self.args, &build).map_err(|e| {
-                let hint = windows_spawn_hint(&self.command, &e);
-                anyhow::anyhow!(
-                    "failed to spawn MCP server '{}': {}{}",
-                    self.name,
-                    haven_common::error::sanitize_error_text(&e.to_string()),
-                    hint
-                )
-            })?;
         let containment =
             haven_platform::process_containment::ProcessContainment::new().map_err(|error| {
-                anyhow::anyhow!("failed to contain MCP server '{}': {error}", self.name)
+                anyhow::anyhow!(
+                    "failed to create process containment for MCP server '{}': {error}",
+                    self.name
+                )
             })?;
-        let pid = child.id().ok_or_else(|| {
-            anyhow::anyhow!("MCP server '{}' did not expose a process id", self.name)
-        })?;
-        if let Err(error) = containment.attach(pid) {
-            let _ = child.start_kill();
-            anyhow::bail!(
-                "failed to attach MCP server '{}' to process containment: {}",
-                self.name,
-                haven_common::error::sanitize_error_text(&error.to_string())
-            );
-        }
+        let mut child =
+            spawn_mcp_child(&self.name, &self.command, &self.args, &build, &containment).map_err(
+                |e| {
+                    let hint = windows_spawn_hint(&self.command, &e);
+                    anyhow::anyhow!(
+                        "failed to spawn MCP server '{}': {}{}",
+                        self.name,
+                        haven_common::error::sanitize_error_text(&e.to_string()),
+                        hint
+                    )
+                },
+            )?;
 
         let stdin = child
             .stdin

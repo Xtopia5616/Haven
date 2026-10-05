@@ -53,8 +53,9 @@ haven-input / haven-llm / haven-memory / haven-skills ──► haven-common
 `haven-platform` 只依赖 common 中稳定的 `CredentialStore` 端口与 credential reference validator，
 不依赖 Tools、MCP 或 Tauri。Windows adapter 用 Credential Manager 保存密钥；其他平台对带凭据配置
 明确失败，不退回明文或进程内持久化。该 crate 还拥有 MCP stdio、Shell、Skill 和后台 Action
-子进程共用的 `ProcessContainment`：Windows 使用 kill-on-close Job Object，其他平台保持原有 no-op
-行为。进程创建和取消时机仍由各自 adapter 所有；此 crate 只封装 OS handle 生命周期。
+子进程共用的 `ProcessContainment`：Windows 使用 kill-on-close Job Object，并要求以 suspended
+状态创建进程、先分配 Job 再恢复唯一初始线程；其他平台保持原有 no-op 行为。平台 crate 拥有该
+操作系统顺序和 FFI，adapter 仍拥有命令配置、管道、取消、等待与工具生命周期（ADR 0513）。
 
 `haven-mcp` 内部按职责分为 `protocol.rs`（MCP/JSON-RPC DTO 与内容归一化）、
 `transport.rs`（stdio、Streamable HTTP、SSE 和进程边界）、`client.rs`（单服务器连接、

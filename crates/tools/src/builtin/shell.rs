@@ -151,23 +151,25 @@ impl ShellTool {
             std_cmd.current_dir(cwd);
         }
 
-        // Suppress console window in silent mode
-        if silent {
-            #[cfg(windows)]
-            {
-                use std::os::windows::process::CommandExt;
-                std_cmd.creation_flags(crate::CREATE_NO_WINDOW);
-            }
-        }
-
         let containment = haven_platform::process_containment::ProcessContainment::new()?;
-        let mut child = tokio::process::Command::from(std_cmd)
-            .kill_on_drop(true)
-            .spawn()?;
+        let mut child_cmd = tokio::process::Command::from(std_cmd);
+        #[cfg(windows)]
+        let windows_creation_flags = if silent { crate::CREATE_NO_WINDOW } else { 0 };
+        #[cfg(not(windows))]
+        let windows_creation_flags = 0;
+        containment.prepare_command(child_cmd.as_std_mut(), windows_creation_flags);
+        let mut child = child_cmd.kill_on_drop(true).spawn()?;
         let pid = child
             .id()
             .ok_or_else(|| anyhow::anyhow!("shell child did not expose a process id"))?;
-        if let Err(error) = containment.attach(pid) {
+        #[cfg(windows)]
+        let attach_result = child
+            .raw_handle()
+            .ok_or_else(|| std::io::Error::other("shell child process handle is unavailable"))
+            .and_then(|handle| containment.attach_and_resume(pid, handle));
+        #[cfg(not(windows))]
+        let attach_result = containment.attach_and_resume(pid, ());
+        if let Err(error) = attach_result {
             let _ = child.kill().await;
             return Err(anyhow::anyhow!(
                 "failed to attach shell child to process containment: {}",

@@ -1,24 +1,14 @@
-/// Windows `CREATE_NO_WINDOW` process creation flag: the child runs without a
-/// console window. Single definition for every spawn site that must never pop
-/// a console (background actions, silent shell commands, launched GUI-less
-/// commands).
+/// Windows `CREATE_NO_WINDOW` process creation flag. The contained-spawn owner
+/// combines it with the suspended-process flag before spawning.
 #[cfg(windows)]
 pub const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 /// Build the platform command used to run `command` in the requested
-/// interpreter (cmd or powershell), with stdout/stderr piped. Window
-/// suppression (`CREATE_NO_WINDOW`) is applied here unconditionally because
-/// background actions must never pop a console. The foreground `ShellTool`
-/// uses `build_shell_command_silent` only when `silent` is requested, so
-/// non-silent foreground commands can still show their window.
+/// interpreter (cmd or powershell), with stdout/stderr piped. The process
+/// owner supplies `CREATE_NO_WINDOW` when appropriate and combines it with
+/// the suspended-process containment flag.
 pub fn build_shell_command(shell: &str, command: &str) -> std::process::Command {
-    let mut std_cmd = build_shell_command_silent(shell, command);
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        std_cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-    std_cmd
+    build_shell_command_silent(shell, command)
 }
 
 /// Interpreter selection + piped stdio WITHOUT the `CREATE_NO_WINDOW` flag.
