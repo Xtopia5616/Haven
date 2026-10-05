@@ -948,16 +948,6 @@ pub struct EventDispatcher {
     emitter: Arc<Mutex<Option<Arc<dyn AgentEventEmitter>>>>,
 }
 
-pub struct CompactionEventData<'a> {
-    pub session_id: &'a str,
-    pub summary: &'a str,
-    pub tokens_before: u32,
-    pub tokens_after: u32,
-    pub episode_id: &'a str,
-    pub degraded: bool,
-    pub event_seq: Option<u64>,
-}
-
 impl Default for EventDispatcher {
     fn default() -> Self {
         Self::new()
@@ -1190,23 +1180,6 @@ impl EventDispatcher {
         store
             .create_thought_step(session_id, step_number, message_id)
             .await
-    }
-
-    pub async fn emit_compaction_from(
-        emitter: &Arc<dyn AgentEventEmitter>,
-        data: CompactionEventData<'_>,
-    ) {
-        emitter
-            .emit(AgentEvent::Compaction {
-                session_id: data.session_id.into(),
-                summary: data.summary.into(),
-                tokens_before: data.tokens_before,
-                tokens_after: data.tokens_after,
-                episode_id: Some(data.episode_id.into()),
-                degraded: data.degraded,
-                event_seq: data.event_seq,
-            })
-            .await;
     }
 
     pub async fn emit_session_error_from(
