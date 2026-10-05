@@ -1,6 +1,6 @@
 # ADR 0481：移除单独写入 summary marker 的旧入口
 
-- 状态：已采纳（实现进行中）
+- 状态：已采纳并实现（2026-10-05）
 - 日期：2026-10-05
 - 范围：`haven-agent`、`haven-memory` 的 compaction summary extraction marker 写入入口
 - 关联：[ADR 0259](0259-memory-runtime-committed-event-consumer.md)、[ADR 0266](0266-summary-fact-extraction-durable-job.md)、[ADR 0299](0299-react-compaction-summary-memory-store-port.md)、[ADR 0301](0301-memory-worker-outbox-through-memory-store.md)、[ADR 0448](0448-remove-unreferenced-memory-apis.md)
@@ -28,7 +28,7 @@
 
 - 收窄 Agent/Memory Rust source API；没有 workspace 外的稳定兼容承诺。没有 schema、持久数据、ID、X12、IPC 或配置变化，无需重置数据库。
 - 验证旧三个 API 无全仓调用残留，并保留 ReAct producer 边界、episode/marker 幂等与冲突回滚、独立 ack、session cleanup、worker 恢复及取消/失败保留 marker 的行为覆盖。
-- 本切片跨 crate 且移除持久化写 API，运行 workspace fmt、测试、check 与严格 Clippy；具体结果在实现完成后回填。
+- 本切片跨 crate 且移除持久化写 API。`cargo fmt --all -- --check`、`cargo test --workspace --locked`、`cargo check --workspace --locked`、`cargo clippy --workspace --locked -- -D warnings` 与 `git diff --check` 均通过；静态搜索确认三个旧 enqueue API 无 crate 源码调用残留。
 
 ## 回滚
 

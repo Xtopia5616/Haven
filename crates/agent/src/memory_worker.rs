@@ -1144,36 +1144,6 @@ impl MemoryWorker {
         }
     }
 
-    /// M3: durably enqueue light fact extraction from a compaction summary.
-    /// Does not advance the user-message cursor (`fact_extraction.{session}`).
-    /// The episode id makes each compaction an independent recoverable job.
-    pub async fn enqueue_summary_extract(
-        self: &Arc<Self>,
-        session_id: &str,
-        episode_id: &str,
-        summary: &str,
-    ) {
-        if session_id.is_empty() || episode_id.is_empty() || summary.trim().len() < 24 {
-            return;
-        }
-        let session_id = session_id.to_owned();
-        let episode_id = episode_id.to_owned();
-        let cancellation = CancellationToken::new();
-        let result = self
-            .memory_store
-            .enqueue_summary_extraction_cancellable(&session_id, &episode_id, &cancellation)
-            .await;
-        match result {
-            Ok(()) => self.enqueue_summary_memory(session_id, episode_id),
-            Err(error) => tracing::warn!(
-                "summary fact extraction durable enqueue failed for session {} episode {}: {}",
-                session_id,
-                episode_id,
-                error
-            ),
-        }
-    }
-
     /// Light extraction from a CompactSummary episode (M3). Respects the
     /// shared extraction time throttle and a per-episode completion marker;
     /// never touches the user-message cursor. Facts and the completion marker
@@ -2495,35 +2465,6 @@ mod tests {
 
         worker.clear_session("ses-prefetch");
         assert!(worker.prompt_prefetches.lock().unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn summary_enqueue_persists_before_live_worker_projection() {
-        let db = temp_db();
-        let session = db.create_session("summary enqueue").unwrap();
-        let episode_id = db
-            .add_episode_with_id(
-                &session.id,
-                "A durable summary containing enough context for extraction.",
-                "msg-summary-job",
-            )
-            .map(|_| "msg-summary-job".to_owned())
-            .unwrap();
-        let worker = Arc::new(make_engine(db.clone()));
-        worker.suspend_outbox_worker_for_test();
-
-        worker
-            .enqueue_summary_extract(&session.id, &episode_id, "summary text long enough")
-            .await;
-
-        assert_eq!(
-            db.pending_summary_extractions().unwrap(),
-            vec![(session.id.clone(), episode_id.clone())]
-        );
-        assert_eq!(
-            worker.summary_outbox.lock().unwrap().get(&episode_id),
-            Some(&session.id)
-        );
     }
 
     #[tokio::test]

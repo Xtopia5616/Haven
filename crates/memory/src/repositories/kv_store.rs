@@ -222,20 +222,6 @@ impl Database {
         Ok(())
     }
 
-    /// Queue one compaction-summary episode for durable fact extraction.
-    /// Episode jobs are keyed by both session and episode so multiple
-    /// compactions cannot overwrite one another before the worker drains them.
-    pub fn enqueue_summary_extraction(
-        &self,
-        session_id: &str,
-        episode_id: &str,
-    ) -> anyhow::Result<()> {
-        anyhow::ensure!(!session_id.trim().is_empty(), "session id is required");
-        anyhow::ensure!(!episode_id.trim().is_empty(), "episode id is required");
-        let key = format!("fact_extraction_episode_pending.{session_id}.{episode_id}");
-        self.set_kv(&key, session_id)
-    }
-
     /// Load durable compaction-summary extraction jobs. The episode id is
     /// encoded in the key while the value keeps session cleanup inexpensive.
     pub fn pending_summary_extractions(&self) -> anyhow::Result<Vec<(String, String)>> {
@@ -350,6 +336,7 @@ fn parse_memory_event_cursor(value: Option<&str>) -> anyhow::Result<i64> {
 #[cfg(test)]
 mod tests {
     use crate::db::Database;
+    use haven_common::types::new_id;
 
     fn test_db() -> Database {
         Database::open_in_memory().expect("create in-memory db")
@@ -417,20 +404,36 @@ mod tests {
     fn summary_extraction_jobs_keep_each_episode_and_ack_independently() {
         let db = test_db();
         let session = db.create_session("summary jobs").unwrap();
-        db.enqueue_summary_extraction(&session.id, "msg-1").unwrap();
-        db.enqueue_summary_extraction(&session.id, "msg-2").unwrap();
+        let first_episode_id = new_id("msg");
+        let second_episode_id = new_id("msg");
+        db.add_episode_with_pending_extraction(
+            &session.id,
+            "The first durable summary contains enough extraction context.",
+            &first_episode_id,
+            true,
+        )
+        .unwrap();
+        db.add_episode_with_pending_extraction(
+            &session.id,
+            "The second durable summary contains enough extraction context.",
+            &second_episode_id,
+            true,
+        )
+        .unwrap();
 
+        let mut pending = db.pending_summary_extractions().unwrap();
+        pending.sort();
+        let mut expected = vec![
+            (session.id.clone(), first_episode_id.clone()),
+            (session.id.clone(), second_episode_id.clone()),
+        ];
+        expected.sort();
+        assert_eq!(pending, expected);
+        db.clear_summary_extraction(&session.id, &first_episode_id)
+            .unwrap();
         assert_eq!(
             db.pending_summary_extractions().unwrap(),
-            vec![
-                (session.id.clone(), "msg-1".to_owned()),
-                (session.id.clone(), "msg-2".to_owned())
-            ]
-        );
-        db.clear_summary_extraction(&session.id, "msg-1").unwrap();
-        assert_eq!(
-            db.pending_summary_extractions().unwrap(),
-            vec![(session.id, "msg-2".to_owned())]
+            vec![(session.id, second_episode_id)]
         );
     }
 
@@ -532,6 +535,7 @@ mod tests {
     fn delete_session_removes_extraction_cursor() {
         let db = test_db();
         let session = db.create_session("t-cursor").unwrap();
+        let episode_id = new_id("msg");
         db.set_kv(&format!("fact_extraction.{}", session.id), "msg-1")
             .unwrap();
         db.set_kv(
@@ -540,13 +544,19 @@ mod tests {
         )
         .unwrap();
         db.set_kv(
-            &format!("fact_extraction_episode_done.{}.msg-3", session.id),
+            &format!("fact_extraction_episode_done.{}.{}", session.id, episode_id),
             &session.id,
         )
         .unwrap();
         db.set_kv(&format!("fact_extraction_pending.{}", session.id), "1")
             .unwrap();
-        db.enqueue_summary_extraction(&session.id, "msg-3").unwrap();
+        db.add_episode_with_pending_extraction(
+            &session.id,
+            "A durable summary with an extraction marker for session cleanup.",
+            &episode_id,
+            true,
+        )
+        .unwrap();
         db.checkpoint_memory_event_cursor(&session.id, 6).unwrap();
         db.delete_session(&session.id).unwrap();
         assert!(
@@ -561,8 +571,8 @@ mod tests {
         );
         assert!(
             db.get_kv(&format!(
-                "fact_extraction_episode_done.{}.msg-3",
-                session.id
+                "fact_extraction_episode_done.{}.{}",
+                session.id, episode_id
             ))
             .unwrap()
             .is_none()
@@ -574,8 +584,8 @@ mod tests {
         );
         assert!(
             db.get_kv(&format!(
-                "fact_extraction_episode_pending.{}.msg-3",
-                session.id
+                "fact_extraction_episode_pending.{}.{}",
+                session.id, episode_id
             ))
             .unwrap()
             .is_none()

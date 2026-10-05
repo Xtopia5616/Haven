@@ -81,23 +81,6 @@ impl MemoryStore {
             .await
     }
 
-    /// Persist a summary marker when its episode was already written by
-    /// another Memory owner.
-    pub async fn enqueue_summary_extraction_cancellable(
-        &self,
-        session_id: &str,
-        episode_id: &str,
-        cancellation: &CancellationToken,
-    ) -> anyhow::Result<()> {
-        let session_id = session_id.to_owned();
-        let episode_id = episode_id.to_owned();
-        self.db
-            .run_blocking_cancellable(cancellation.clone(), move |db| {
-                db.enqueue_summary_extraction(&session_id, &episode_id)
-            })
-            .await
-    }
-
     /// Acknowledge a completed fact job without erasing a concurrent bypass
     /// upgrade. Ordinary jobs clear only ordinary markers.
     pub async fn clear_pending_fact_extraction_if_not_upgraded_cancellable(
@@ -146,6 +129,7 @@ impl MemoryStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use haven_common::types::new_id;
 
     #[tokio::test]
     async fn persist_compaction_summary_commits_episode_and_pending_marker_idempotently() {
@@ -305,11 +289,15 @@ mod tests {
         let session = db.create_session("memory store pending rows").unwrap();
         let store = MemoryStore::new(db.clone());
         let cancellation = CancellationToken::new();
+        let episode_id = new_id("msg");
         db.enqueue_fact_extraction(&session.id, true).unwrap();
-        store
-            .enqueue_summary_extraction_cancellable(&session.id, "msg-episode", &cancellation)
-            .await
-            .unwrap();
+        db.add_episode_with_pending_extraction(
+            &session.id,
+            "A durable compaction summary with a pending extraction marker.",
+            &episode_id,
+            true,
+        )
+        .unwrap();
 
         assert_eq!(
             store
@@ -323,14 +311,8 @@ mod tests {
                 .pending_summary_extractions_cancellable(&cancellation)
                 .await
                 .unwrap(),
-            vec![(session.id.clone(), "msg-episode".to_owned())]
+            vec![(session.id.clone(), episode_id)]
         );
-
-        let error = store
-            .enqueue_summary_extraction_cancellable(&session.id, "", &cancellation)
-            .await
-            .unwrap_err();
-        assert_eq!(error.to_string(), "episode id is required");
 
         db.conn().execute_batch("DROP TABLE kv_store").unwrap();
         assert!(
@@ -344,14 +326,6 @@ mod tests {
         assert!(
             store
                 .pending_summary_extractions_cancellable(&cancellation)
-                .await
-                .unwrap_err()
-                .to_string()
-                .contains("no such table: kv_store")
-        );
-        assert!(
-            store
-                .enqueue_summary_extraction_cancellable("ses-valid", "msg-valid", &cancellation)
                 .await
                 .unwrap_err()
                 .to_string()
