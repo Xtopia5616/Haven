@@ -465,3 +465,5 @@
 - [0480：Session-scoped KV 孤儿清理单一 owner](0480-session-kv-orphan-cleanup-owner.md)
 - [0481：移除单独写入 summary marker 的旧入口](0481-remove-summary-marker-only-enqueue.md)
 - [0482：移除未调用的 Compaction 直发 helper](0482-remove-unused-compaction-event-emitter.md)
+- [0483：将进程流读取测试归入实现 owner](0483-process-stream-reader-test-ownership.md)
+- [0484：收拢 ActionOutputTail 测试归属](0484-action-output-tail-test-ownership.md)
