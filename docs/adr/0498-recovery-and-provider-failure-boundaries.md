@@ -1,4 +1,4 @@
-# ADR 0173：恢复持久化与 provider 失败边界
+# ADR 0498：恢复持久化与 provider 失败边界
 
 ## 背景
 

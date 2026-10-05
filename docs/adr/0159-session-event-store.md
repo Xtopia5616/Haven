@@ -2,7 +2,7 @@
 
 ## 状态
 
-已接受（2026-09-15）。ADR 0196/0207 已取代其中的 snapshot checkpoint：生产恢复只 replay `session_events`，不再把 `ReActSnapshot` 写回 `sessions.react_state`。
+已接受（2026-09-15）。[ADR 0502](0502-session-actor-event-sourced-state.md) / [ADR 0207](0207-session-store-replay-boundaries-and-durable-ui-sequences.md) 已取代其中的 snapshot checkpoint：生产恢复只 replay `session_events`，不再把 `ReActSnapshot` 写回 `sessions.react_state`。
 
 ## 背景
 

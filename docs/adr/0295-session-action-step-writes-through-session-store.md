@@ -3,7 +3,7 @@
 - 状态：Accepted
 - 日期：2026-09-24
 - 范围：`SessionSupervisor` / `tool_runner` 的 action-step durable 写入调度
-- 关联：[ADR 0157](0157-session-supervisor-actor-run-engine.md)、[ADR 0196](0196-session-actor-event-sourced-state.md)、[ADR 0258](0258-failed-action-step-cleanup-session-store-port.md)、[ADR 0294](0294-session-interaction-events-through-session-store.md)
+- 关联：[ADR 0157](0157-session-supervisor-actor-run-engine.md)、[ADR 0502](0502-session-actor-event-sourced-state.md)、[ADR 0258](0258-failed-action-step-cleanup-session-store-port.md)、[ADR 0294](0294-session-interaction-events-through-session-store.md)
 
 ## 背景
 

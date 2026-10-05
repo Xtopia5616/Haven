@@ -2,7 +2,7 @@
 
 ## 状态
 
-已接受（2026-09-20）。决策 1 已被 ADR 0196 取代：交互恢复以 session domain events 为准，不再依赖 `react_state` checkpoint。turn deadline 与 cancellable SQLite 边界仍然有效。
+已接受（2026-09-20）。决策 1 已被 [ADR 0502](0502-session-actor-event-sourced-state.md) 取代：交互恢复以 session domain events 为准，不再依赖 `react_state` checkpoint。turn deadline 与 cancellable SQLite 边界仍然有效。
 
 ## 背景
 

@@ -3,7 +3,7 @@
 - 状态：Accepted
 - 日期：2026-09-24
 - 范围：SessionSupervisor/SessionActor 的 interaction domain event 读写
-- 关联：[ADR 0157](0157-session-supervisor-actor-run-engine.md)、[ADR 0159](0159-session-event-store.md)、[ADR 0196](0196-session-actor-event-sourced-state.md)、[ADR 0214](0214-react-run-inside-session-actor.md)、[ADR 0290](0290-session-status-persistence-through-session-store.md)
+- 关联：[ADR 0157](0157-session-supervisor-actor-run-engine.md)、[ADR 0159](0159-session-event-store.md)、[ADR 0502](0502-session-actor-event-sourced-state.md)、[ADR 0214](0214-react-run-inside-session-actor.md)、[ADR 0290](0290-session-status-persistence-through-session-store.md)
 
 ## 背景
 

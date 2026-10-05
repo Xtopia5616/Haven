@@ -4,7 +4,7 @@
 
 已接受并完成实现（2026-09-28）。`SessionActor` task 持有完整 `SessionState`；其中 `react_run` 槽持有 active run future，future 独占捕获该 run 的 `ReActState`，并与外部 mailbox 一起由同一 actor loop 轮询。热状态不会由 actor 外的 ReAct loop 或另一个 session 持有。usage、stream identity 与 token estimate 的后续 mailbox 收口见 ADR 0222、0223、0276、0278。
 
-本决定取代 [ADR 0196](0196-session-actor-event-sourced-state.md) 里「usage、stream identity、token estimate 经 mailbox 修改」以及「热 transcript 作为 actor 外 scratch」这两部分。[ADR 0057](0057-agent-react-state-machine.md) 的单一运行态对象仍然有效，主人改为 actor 内的 `SessionState`。
+本决定取代 [ADR 0502](0502-session-actor-event-sourced-state.md) 里「usage、stream identity、token estimate 经 mailbox 修改」以及「热 transcript 作为 actor 外 scratch」这两部分。[ADR 0057](0057-agent-react-state-machine.md) 的单一运行态对象仍然有效，主人改为 actor 内的 `SessionState`。
 
 ## 背景
 

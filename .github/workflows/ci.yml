@@ -24,6 +24,9 @@ jobs:
       - name: Verify internal crate dependency direction
         shell: pwsh
         run: ./scripts/check-crate-dependencies.ps1
+      - name: Verify ADR index and local links
+        shell: pwsh
+        run: ./scripts/check-adr-index.ps1
       - name: Verify Tauri IPC contract registry
         shell: pwsh
         run: ./scripts/check-ipc-contracts.ps1

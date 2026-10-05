@@ -1,4 +1,4 @@
-# ADR 0196：SessionActor 独占运行态，SessionStore 负责事件边界
+# ADR 0502：SessionActor 独占运行态，SessionStore 负责事件边界
 
 ## 状态
 

@@ -8,7 +8,7 @@
 
 ADR 0156 把 `InteractionRequest` 统一成 ask、工具确认和定时任务确认的共同载荷，
 也定义了前端统一投影；它同时把已删除的 `ReActSnapshot.interactions` 写成持久来源。
-ADR 0196 已取代该持久化决定：普通会话交互由 `SessionActor` 持有，并通过
+[ADR 0502](0502-session-actor-event-sourced-state.md) 已取代该持久化决定：普通会话交互由 `SessionActor` 持有，并通过
 `session_events` 中的 domain event 恢复。
 
 当前一个 `InteractionRequest` 外观下仍有三条不同的确认所有权路径：

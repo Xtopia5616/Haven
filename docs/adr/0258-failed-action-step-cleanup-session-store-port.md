@@ -2,7 +2,7 @@
 
 - 状态：已采纳（2026-09-24）
 - 范围：`SessionSupervisor::fail_pending_action_steps` 与 `haven-memory::SessionStore`
-- 关联：[ADR 0196](0196-session-actor-event-sourced-state.md)、[ADR 0256](0256-session-message-session-store-port.md)
+- 关联：[ADR 0502](0502-session-actor-event-sourced-state.md)、[ADR 0256](0256-session-message-session-store-port.md)
 
 ## 背景
 

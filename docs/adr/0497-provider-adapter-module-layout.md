@@ -1,4 +1,4 @@
-# ADR 0169: Provider Adapter Module Layout
+# ADR 0497: Provider Adapter Module Layout
 
 - Status: Accepted
 - Date: 2026-09-19

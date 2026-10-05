@@ -1,7 +1,7 @@
 # ADR 0404：Session 事件容量、保留与写入失败恢复
 
 - 状态：已采纳（2026-09-29）
-- 关联：ADR 0196（Session event sourcing）、ADR 0374（Session retention typed port）、ADR 0389（Session 事件保留与容量边界）、ADR 0395（阶段 9 容量验证）
+- 关联：[ADR 0502](0502-session-actor-event-sourced-state.md)（Session event sourcing）、ADR 0374（Session retention typed port）、ADR 0389（Session 事件保留与容量边界）、ADR 0395（阶段 9 容量验证）
 
 ## 背景
 

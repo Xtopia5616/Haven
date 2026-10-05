@@ -3,7 +3,7 @@
 - 状态：Accepted
 - 日期：2026-09-21
 - 范围：`haven_tools`、`haven_common`、权限架构文档
-- supersedes：ADR 0154 中“`ask` 不放开 opaque 子进程”的决定；保留其余网络策略语义
+- supersedes：[ADR 0501](0501-network-ask-default.md) 中“`ask` 不放开 opaque 子进程”的决定；保留其余网络策略语义
 
 ## 背景
 

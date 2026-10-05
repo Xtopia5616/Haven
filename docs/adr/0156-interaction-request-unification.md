@@ -6,7 +6,7 @@
 
 ## 后续状态（2026-10-02）
 
-ADR 0196（2026-09-22）删除 `ReActSnapshot` 后，本文关于
+[ADR 0502](0502-session-actor-event-sourced-state.md)（2026-09-22）删除 `ReActSnapshot` 后，本文关于
 `ReActSnapshot.interactions` 是持久来源的决定已被取代。当前普通会话交互由
 `SessionActor` 持有，并从 `session_events` 中的 interaction domain event 恢复。
 本文只记录 `InteractionRequest` DTO 与前端统一投影的历史决定；它不代表定时任务

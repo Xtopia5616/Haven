@@ -2,7 +2,7 @@
 
 - 状态：Accepted
 - 日期：2026-10-03
-- 关联：ADR 0196、0416、0424、0430
+- 关联：[ADR 0502](0502-session-actor-event-sourced-state.md)、ADR 0416、0424、0430
 
 ## 背景
 

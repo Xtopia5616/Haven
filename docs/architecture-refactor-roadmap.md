@@ -1,6 +1,6 @@
 # Haven 架构降复杂度重构路线图
 
-> 状态：阶段 0–8 已完成；SessionUsage 累计上限契约、session-scoped KV 孤儿清理 owner、summary marker 单一原子生产路径、Tools 测试归属、Input→Tools 测试反向依赖、MCP/Skill 直调授权策略来源、MCP Connect 网络策略来源与 X12 例外消息写入口已收口；当前无 Active 结构切片；下一 Next 为 ADR 索引完整性；Windows 发布验收为独立开放签核门
+> 状态：阶段 0–8 已完成；SessionUsage 累计上限契约、session-scoped KV 孤儿清理 owner、summary marker 单一原子生产路径、Tools 测试归属、Input→Tools 测试反向依赖、MCP/Skill 直调授权策略来源、MCP Connect 网络策略来源、X12 例外消息写入口与 ADR 编号索引完整性已收口；当前无 Active 结构切片；Windows 发布验收为独立开放签核门
 > 更新日期：2026-10-05
 > 范围：Agent/Session、Memory、Tools、LLM、App IPC 与 UI
 
@@ -177,6 +177,7 @@
 10. **已完成：MCP/Skill 直调共用外部授权策略（[ADR 0486](adr/0486-unify-direct-mcp-skill-authorization-policy.md)）。** App 命令与 Tools adapters 共用 `OperationPolicy::external`；qualified permission key、High 风险与 Opaque network gate 不变，敏感度元数据统一为 `Sensitive`。
 11. **已完成：MCP Connect 共用 Opaque 网络策略声明（[ADR 0495](adr/0495-mcp-connect-network-policy-owner.md)）。** 模型 operation view 曾将必然联网的 `haven.mcp.mcp_connect` 投影为 `NetworkAccess::None`，NetworkPolicy=Deny 因而不会阻断；模型和 native typed request 现从 `OperationContract` 取得同一 `Opaque` 分类。
 12. **已完成：收窄 X12 例外消息写入口（[ADR 0496](adr/0496-limit-x12-exception-message-write-api.md)）。** 删除可任意指定 role/type 的公开消息 writer，改为 origin 派生的 ingress seed、封闭 kind 的 recovery partial 和固定 user/text 的 terminal action-result 三个 `SessionStore` 端口。共享行写逻辑、稳定 ID 幂等、投影时钟和事务外职责顺序保留；schema 与数据不变。
+13. **已完成：恢复 ADR 编号与索引完整性（[ADR 0505](adr/0505-adr-index-identity-and-integrity-check.md)）。** 保留每组最早入库的编号，为后续冲突记录分配 0497–0504；补齐 22 个遗漏索引项，并让 CI 校验文件编号唯一、README 精确覆盖和升序及本地 ADR 链接。
 
 #### 长期执行台阶与决策门
 
@@ -190,11 +191,11 @@
 | D. 性能与容量 | 只有可复现的延迟、内存、磁盘或并发问题进入 profile；保留现有 SQLite 容量与失败恢复不变量。 | 同数据、负载、构建和环境比较前后指标；没有超过噪声且对用户有意义的改进就关闭，不继续微调。不得把无 profile 的结构搬迁包装成性能优化。 |
 | E. Windows 发布签核 | 发布准备时独立执行 §5.1 的最新构建、安装生命周期、用户数据保留、真实 UI 流程和磁盘耗尽验收。该 Gate 可与不影响发布路径的单一结构切片并行准备。 | 把构建版本、schema、环境、实际结果与限制写入 ADR 0395；旧 profile 或历史验收不可代替当前安装包结果。未通过时保持 Gate Open，不据此发起无关架构拆分。 |
 
-**当前执行位置：** 阶段 0–8 已完成；台阶 A 完成了对 Tools 契约/Admin/messaging 与 Agent memory worker 的复核。`SessionStore` lifecycle wrapper 和上述大模块的纯拆分均暂缓。ADR 0481 的旧 summary marker-only writer、ADR 0496 的通用 X12 消息写入口已删除；workspace tests、check、严格 Clippy 与格式门禁通过。路线当前无 Active 结构切片，下一 Next 是单独修复 ADR 目录与索引的覆盖和编号一致性。Common 拆分、Tools crate 拆分与通用 Job 抽象继续暂缓，直到相应门槛被新证据满足。
+**当前执行位置：** 阶段 0–8 已完成；台阶 A 完成了对 Tools 契约/Admin/messaging 与 Agent memory worker 的复核。`SessionStore` lifecycle wrapper 和上述大模块的纯拆分均暂缓。ADR 0481 的旧 summary marker-only writer、ADR 0496 的通用 X12 消息写入口已删除；workspace tests、check、严格 Clippy 与格式门禁通过。ADR 0505 已恢复目录编号与索引一一对应，CI 持续检查该契约。路线当前无 Active 结构切片；下一切片回到 §5.5 证据队列，先重新审查触发条件已满足的候选。Common 拆分、Tools crate 拆分与通用 Job 抽象继续暂缓，直到相应门槛被新证据满足。
 
 2026-10-05 对 `AppState`/`ApplicationRuntime`、UI shell/Composer 与 SessionStore 非事务 lifecycle façade 的只读复核均未发现 owner 稳定后的重复边界回归。SessionStore 生命周期 wrapper 大多是 typed `run_blocking` 转发，实际 actor/确认/delete policy 由 Agent `session/status.rs` 持有；搬移 wrapper 不会改变 owner 或调用链，故不新增 Active 项。重开条件见 §5.3 的启动编排、Composer、全局布局与 SessionStore 边界观察结论。
 
-AppState/runtime 与 UI shell/Composer 的并行只读复核没有发现可准入的候选。2026-10-05 后续只读审计覆盖 SessionActor、facts/embedding 存储、Agent 事件投影、SessionStore 写侧与 ReAct facade：未发现稳定 owner 后的事务原子性重复回归或可验证的新 crate 收益。ReAct 中两条 usage 字段映射目前没有漂移，写入路径语义不同，重开条件见上。事件投影审计发现一条无调用方的 Compaction 直发入口，已按 ADR 0482 删除并完成 workspace 门禁。ActionService 的六项 process 流读取测试按 ADR 0483 收回实现 owner；ActionOutputTail 容量测试归入 `action_output.rs`，重复快照覆盖已删除（ADR 0484），生命周期和终态投影测试继续由 ActionService 持有。crate 边界复核没有找到可抽取的新 crate，但发现 Input 通过单项兼容测试反向 dev-depend Tools；此边已由 ADR 0485 移除，Cargo 生产图仍为 11 crate、29 条无环依赖。App 命令与 Tools adapter 的 MCP/Skill 直调策略现共用 `OperationPolicy::external`（ADR 0486）。随后策略审计发现模型可见的 MCP Connect 因 `NetworkAccess::None` 漏过 deny 分支，已由 ADR 0495 统一模型与 native 来源并补授权回归；X12 三类例外写路径现由受限 `SessionStore` 端口表达（ADR 0496）。当前无 Active 结构切片，下一 Next 为修复 ADR 索引缺项及重复编号，并增加可重复运行的完整性检查。仍不按 crate 行数制造拆分工作。
+AppState/runtime 与 UI shell/Composer 的并行只读复核没有发现可准入的候选。2026-10-05 后续只读审计覆盖 SessionActor、facts/embedding 存储、Agent 事件投影、SessionStore 写侧与 ReAct facade：未发现稳定 owner 后的事务原子性重复回归或可验证的新 crate 收益。ReAct 中两条 usage 字段映射目前没有漂移，写入路径语义不同，重开条件见上。事件投影审计发现一条无调用方的 Compaction 直发入口，已按 ADR 0482 删除并完成 workspace 门禁。ActionService 的六项 process 流读取测试按 ADR 0483 收回实现 owner；ActionOutputTail 容量测试归入 `action_output.rs`，重复快照覆盖已删除（ADR 0484），生命周期和终态投影测试继续由 ActionService 持有。crate 边界复核没有找到可抽取的新 crate，但发现 Input 通过单项兼容测试反向 dev-depend Tools；此边已由 ADR 0485 移除，Cargo 生产图仍为 11 crate、29 条无环依赖。App 命令与 Tools adapter 的 MCP/Skill 直调策略现共用 `OperationPolicy::external`（ADR 0486）。随后策略审计发现模型可见的 MCP Connect 因 `NetworkAccess::None` 漏过 deny 分支，已由 ADR 0495 统一模型与 native 来源并补授权回归；X12 三类例外写路径现由受限 `SessionStore` 端口表达（ADR 0496）；编号冲突及 22 项索引遗漏现由 ADR 0505 修正并持续受 CI 校验。仍不按 crate 行数制造拆分工作。
 
 ## 6. 更新规则
 

@@ -3,7 +3,7 @@
 - 状态：Accepted
 - 日期：2026-09-24
 - 范围：`ReActEngine` 的 durable replay state 读取、transcript event seed 与单条 transcript event 追加
-- 关联：[ADR 0159](0159-session-event-store.md)、[ADR 0196](0196-session-actor-event-sourced-state.md)、[ADR 0238](0238-session-recovery-read-ports.md)、[ADR 0255](0255-transcript-batch-session-store-port.md)、[ADR 0294](0294-session-interaction-events-through-session-store.md)、[ADR 0295](0295-session-action-step-writes-through-session-store.md)
+- 关联：[ADR 0159](0159-session-event-store.md)、[ADR 0502](0502-session-actor-event-sourced-state.md)、[ADR 0238](0238-session-recovery-read-ports.md)、[ADR 0255](0255-transcript-batch-session-store-port.md)、[ADR 0294](0294-session-interaction-events-through-session-store.md)、[ADR 0295](0295-session-action-step-writes-through-session-store.md)
 
 ## 背景
 

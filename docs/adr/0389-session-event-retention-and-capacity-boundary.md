@@ -1,7 +1,7 @@
 # ADR 0389：Session 事件保留与容量边界
 
 - 状态：已采纳（2026-09-28）
-- 关联：ADR 0196（Session event sourcing）、ADR 0360（核心流水线性能基线）、ADR 0374（Session retention typed port）
+- 关联：[ADR 0502](0502-session-actor-event-sourced-state.md)（Session event sourcing）、ADR 0360（核心流水线性能基线）、ADR 0374（Session retention typed port）
 
 ## 背景
 

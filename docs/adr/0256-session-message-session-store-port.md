@@ -2,7 +2,7 @@
 
 - 状态：已采纳（2026-09-24）
 - 范围：`haven-agent` 的 ingress/recovery 消息写入与 `haven-memory::SessionStore`
-- 关联：[ADR 0196](0196-session-actor-event-sourced-state.md)、[ADR 0251](0251-partial-stream-session-store-port.md)、[ADR 0255](0255-transcript-batch-session-store-port.md)
+- 关联：[ADR 0502](0502-session-actor-event-sourced-state.md)、[ADR 0251](0251-partial-stream-session-store-port.md)、[ADR 0255](0255-transcript-batch-session-store-port.md)
 
 ## 背景
 
