@@ -161,6 +161,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn large_tail_keeps_exact_limit_across_appends() {
+        let max_chars = 2000usize;
+        let port = ActionOutputPort::new();
+        port.set_tail_max_chars(max_chars).await;
+        let tail = port.new_tail().await;
+        let oversized = "x".repeat(max_chars + 500);
+
+        tail.append_bytes(oversized.as_bytes());
+        assert_eq!(tail.snapshot().as_str().chars().count(), max_chars);
+
+        tail.append_bytes("tail-end".as_bytes());
+        let snapshot = tail.snapshot();
+        let text = snapshot.as_str();
+        assert_eq!(text.chars().count(), max_chars);
+        assert!(
+            text.ends_with("tail-end"),
+            "got tail: {}",
+            &text[text.len().saturating_sub(40)..]
+        );
+    }
+
+    #[tokio::test]
     async fn zero_limit_drops_every_character() {
         let port = ActionOutputPort::new();
         port.set_tail_max_chars(0).await;

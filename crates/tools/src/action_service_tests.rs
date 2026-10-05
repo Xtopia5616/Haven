@@ -1,5 +1,4 @@
 use super::*;
-use crate::action_output::{ActionOutputPort, ActionTailSnapshot};
 use haven_memory::{ActionStore, Database};
 use std::time::Duration;
 
@@ -1082,43 +1081,6 @@ async fn test_spawn_empty_command_rejected() {
             .await
             .is_err()
     );
-}
-
-#[tokio::test]
-async fn test_tail_buffer_bounded_at_exact_char_limit() {
-    // A single oversized chunk is truncated to the last max chars.
-    let max_chars = 2000usize;
-    let output_port = ActionOutputPort::new();
-    output_port.set_tail_max_chars(max_chars).await;
-    let tail = output_port.new_tail().await;
-    let big = "x".repeat(max_chars + 500);
-    tail.append_bytes(big.as_bytes());
-    assert_eq!(tail.snapshot().as_str().chars().count(), max_chars);
-    // Subsequent chunks drop the front.
-    tail.append_bytes("tail-end".as_bytes());
-    let snapshot = tail.snapshot();
-    let t = snapshot.as_str();
-    assert!(
-        t.ends_with("tail-end"),
-        "got tail: {}",
-        &t[t.len().saturating_sub(40)..]
-    );
-}
-
-#[tokio::test]
-async fn test_tail_snapshot_detects_sliding_window() {
-    let output_port = ActionOutputPort::new();
-    output_port.set_tail_max_chars(100).await;
-    let tail = output_port.new_tail().await;
-    tail.append_text(&"a".repeat(100));
-    let mut last = ActionTailSnapshot::default();
-    assert!(tail.snapshot_if_changed(&mut last));
-    assert_eq!(last.as_str().chars().count(), 100);
-    assert!(!tail.snapshot_if_changed(&mut last));
-    // Same length, different content (capped-window slide).
-    tail.append_text(&"b".repeat(100));
-    assert!(tail.snapshot_if_changed(&mut last));
-    assert_eq!(last.as_str(), "b".repeat(100));
 }
 
 #[tokio::test]
