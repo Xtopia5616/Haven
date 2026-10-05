@@ -74,7 +74,7 @@
 
 | 状态 | 当前项 |
 |---|---|
-| **Next** | 当前无证据足以进入 Active 的结构候选；ADR 0515 已完成，下一轮按 §5.6 步骤 0 重新复核源码、回归和依赖/API 变化。不要将文件/crate 体量单独升级为候选。 |
+| **Next** | 当前没有经准入的 Next/Active。2026-10-05 步骤 0 复核了 SessionStore/Agent 持久化边界及 rollback 历史、ActionService、ProcessContainment spawn、venv 半成品判据和 App runtime config；未见稳定后的同一事务不变量重复回归、生产写入绕过持久化权威入口或新依赖漂移。session grant 与 interaction resolve 的两次写窗口仍无状态冲突复现；venv 半成品问题仍无实际回归证据，按 §5.2、ADR 0515 的既定条件观察。新证据出现时重新分流；不以文件/crate 体量单独立项。 |
 | **Deferred** | 已复核候选保留各自重开条件，见 §5.3；当前无其他结构候选。 |
 | **Gate** | Windows 发布验收 Open，见 §5.1。 |
 
