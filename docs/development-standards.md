@@ -1,6 +1,6 @@
 # Haven 开发与架构治理规范
 
-> 版本：v1.2 | 日期：2026-10-04
+> 版本：v1.3 | 日期：2026-10-05
 > 适用范围：所有 Rust、Svelte、配置、数据库、测试、CI 与文档变更。  
 > 项目定位：个人 Windows 助手的测试版本；为正确性、清晰性或安全性可进行破坏性重构。
 
@@ -27,7 +27,7 @@
 
 ## 3. 架构与模块边界
 
-- `haven-common` 只放跨 crate 的稳定数据类型、纯函数和配置模型；不得吸收业务编排或 Tauri/UI 细节。
+- `haven-common` 放跨 crate 的稳定数据类型、纯函数和配置模型；`ConfigService` 是 [ADR 0068](adr/0068-versioned-config-service.md) 明确规定的有限有状态例外，只拥有进程内配置快照、串行 typed patch、原子持久化和不含密钥的变更通知。运行时应用编排仍在 `haven-app-binary`；Common 不得吸收其它业务编排或 Tauri/UI 细节。
 - provider 协议、重试、流式和媒体实现只在 `haven-llm`；agent、tools、app 不得实现供应商特例。
 - `haven-agent` 只编排会话与 ReAct；`haven-tools` 只定义和执行能力；`haven-app-binary` 只装配和适配 Tauri。
 - 新增依赖前必须说明为什么不能通过已有下层接口解决；不得引入反向依赖、循环依赖或“临时”跨层调用。
