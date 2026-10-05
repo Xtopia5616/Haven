@@ -202,13 +202,7 @@ pub async fn execute_skill(
     // path/op blocks. Use the same qualified name as SkillToolAdapter so
     // Always grants from agent confirms apply to UI preview.
     let tool_key = haven_tools::SkillToolAdapter::qualified_name_of(&name);
-    let risk_level = RiskLevel::High;
-    let policy = OperationPolicy::native(
-        &tool_key,
-        permission_key(&tool_key, &params).into(),
-        risk_level,
-        NetworkAccess::Opaque,
-    );
+    let policy = OperationPolicy::external(tool_key.clone(), RiskLevel::High);
     let authorization_request =
         app_command_authorization_request(&tool_key, params.clone(), policy);
     match state

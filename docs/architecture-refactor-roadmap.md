@@ -1,6 +1,6 @@
 # Haven 架构降复杂度重构路线图
 
-> 状态：阶段 0–8 已完成；SessionUsage 累计上限契约、session-scoped KV 孤儿清理 owner、summary marker 单一原子生产路径、Tools 测试归属与 Input→Tools 测试反向依赖已收口；当前无 Active 结构切片；Windows 发布验收为独立开放签核门
+> 状态：阶段 0–8 已完成；SessionUsage 累计上限契约、session-scoped KV 孤儿清理 owner、summary marker 单一原子生产路径、Tools 测试归属、Input→Tools 测试反向依赖与 MCP/Skill 直调授权策略来源已收口；当前无 Active 结构切片；Windows 发布验收为独立开放签核门
 > 更新日期：2026-10-05
 > 范围：Agent/Session、Memory、Tools、LLM、App IPC 与 UI
 
@@ -174,6 +174,7 @@
 7. **已完成：process 流读取测试归属（[ADR 0483](adr/0483-process-stream-reader-test-ownership.md)）。** 六项不依赖 ActionService 的 cap/drain/tail/UTF-8 测试移入共享实现 owner `process.rs`；服务生命周期与终态投影测试继续留在 ActionService 测试模块。
 8. **已完成：ActionOutputTail 测试归属（[ADR 0484](adr/0484-action-output-tail-test-ownership.md)）。** 大窗口容量上限用例归入 `action_output.rs`；重复的滑动快照测试删除，服务终态投影测试保留在 ActionService owner。
 9. **已完成：删除测试专用的 Input→Tools 反向依赖（[ADR 0485](adr/0485-remove-test-only-input-tools-reverse-dependency.md)）。** 两向按键兼容性断言统一在 Tools consumer 测试中运行，Input 的测试构建不再反向依赖 Tools；生产依赖图与 API 不变。
+10. **已完成：MCP/Skill 直调共用外部授权策略（[ADR 0486](adr/0486-unify-direct-mcp-skill-authorization-policy.md)）。** App 命令与 Tools adapters 共用 `OperationPolicy::external`；qualified permission key、High 风险与 Opaque network gate 不变，敏感度元数据统一为 `Sensitive`。
 
 #### 长期执行台阶与决策门
 
@@ -182,7 +183,7 @@
 | 台阶 | 目标与进入条件 | 完成或停止条件 |
 |---|---|---|
 | A. 证据队列 | 先处理数据、安全、生命周期不变量问题；再审计重复 owner、同一边界的重复回归与不稳定调用边。`memory_worker.rs`、Tools `builtin/messaging.rs`、`tool_contract.rs` 与 Admin surfaces 已完成只读复核；对 `memory_worker.rs` 的审计另找出旧公开 marker-only API，与 ADR 0266/0299 的原子生产者决定冲突。 | 每个候选记录唯一问题、owner、证据与停止条件。没有合格证据就保持无 Active，不把文件复核自动升级成拆分任务；发现与既有不变量冲突的未调用入口时，允许按窄范围删除旧契约。 |
-| B. Crate 内 owner 收口 | 仅当一个私有子域有独立稳定职责，且跨职责共改或回归能由该边界解释时，迁移一条完整垂直调用链。优先保持现有 crate API、事务、安全和恢复 owner 不变。ADR 0481/0482 是按既有 owner 决定删除冲突或未调用旧入口的窄切片；ADR 0483/0484 是按被测实现 owner 收口测试的窄切片；ADR 0485 删除测试构建图上的反向边；它们均不构成逐文件拆分配额。 | 旧入口与重复规则删除；测试靠近真实 owner；行为和依赖方向不变；适用 crate 门禁通过，且审查能指出维护或正确性收益。若只是搬文件、测试难以独立验证或要暴露内部状态，则关闭候选。 |
+| B. Crate 内 owner 收口 | 仅当一个私有子域有独立稳定职责，且跨职责共改或回归能由该边界解释时，迁移一条完整垂直调用链。优先保持现有 crate API、事务、安全和恢复 owner 不变。ADR 0481/0482 是按既有 owner 决定删除冲突或未调用旧入口的窄切片；ADR 0483/0484 是按被测实现 owner 收口测试的窄切片；ADR 0485 删除测试构建图上的反向边；ADR 0486 合并 App 与 adapter 的外部策略构造；它们均不构成逐文件拆分配额。 | 旧入口与重复规则删除；测试靠近真实 owner；行为和依赖方向不变；适用 crate 门禁通过，且审查能指出维护或正确性收益。若只是搬文件、测试难以独立验证或要暴露内部状态，则关闭候选。 |
 | C. Crate 边界复核 | 只有内部模块 owner 稳定后，或依赖图出现真实问题，才重新评估 `haven-tools`、`haven-agent` 等较大 crate。先证明独立消费者、稳定 API、单向依赖和不重复业务策略；构建/开发成本收益要用同一环境的可复核对比。 | 提取后依赖图仍无环且更贴近业务消费者，消费者无需反向依赖或重复 adapter， workspace 门禁通过，并能说明收益。缺少独立消费者或收益不可测就不拆 crate；不设 crate 数或行数目标。 |
 | D. 性能与容量 | 只有可复现的延迟、内存、磁盘或并发问题进入 profile；保留现有 SQLite 容量与失败恢复不变量。 | 同数据、负载、构建和环境比较前后指标；没有超过噪声且对用户有意义的改进就关闭，不继续微调。不得把无 profile 的结构搬迁包装成性能优化。 |
 | E. Windows 发布签核 | 发布准备时独立执行 §5.1 的最新构建、安装生命周期、用户数据保留、真实 UI 流程和磁盘耗尽验收。该 Gate 可与不影响发布路径的单一结构切片并行准备。 | 把构建版本、schema、环境、实际结果与限制写入 ADR 0395；旧 profile 或历史验收不可代替当前安装包结果。未通过时保持 Gate Open，不据此发起无关架构拆分。 |
@@ -191,7 +192,7 @@
 
 2026-10-05 对 `AppState`/`ApplicationRuntime`、UI shell/Composer 与 SessionStore 非事务 lifecycle façade 的只读复核均未发现 owner 稳定后的重复边界回归。SessionStore 生命周期 wrapper 大多是 typed `run_blocking` 转发，实际 actor/确认/delete policy 由 Agent `session/status.rs` 持有；搬移 wrapper 不会改变 owner 或调用链，故不新增 Active 项。重开条件见 §5.3 的启动编排、Composer、全局布局与 SessionStore 边界观察结论。
 
-AppState/runtime 与 UI shell/Composer 的并行只读复核没有发现可准入的候选。2026-10-05 后续只读审计覆盖 SessionActor、facts/embedding 存储、Agent 事件投影、SessionStore 写侧与 ReAct facade：均未发现稳定 owner 后的重复回归、重复策略或可验证的子模块/新 crate 收益；模块拆分继续暂缓。ReAct 中两条 usage 字段映射目前没有漂移，写入路径语义不同，重开条件见上。审计发现的 fact query 注释漂移已修正；事件投影审计发现一条无调用方的 Compaction 直发入口，现已按 ADR 0482 删除并完成 workspace 门禁。ActionService 测试归属审计后，六项独立 process 流读取契约测试已按 ADR 0483 收回实现 owner；ActionOutputTail 的容量测试归入 `action_output.rs`，重复快照覆盖已删除（ADR 0484），统一 ActionService 的后台/定时生命周期与终态投影测试保留服务级归属。crate 边界复核没有找到可抽取的新 crate，但发现 Input 通过单项兼容测试反向 dev-depend Tools；此边已由 ADR 0485 移除，Cargo 生产图仍为 11 crate、29 条无环依赖。当前无 Active 结构切片；后续仍按 §5.5 证据队列审查，不按 crate 行数制造拆分工作。
+AppState/runtime 与 UI shell/Composer 的并行只读复核没有发现可准入的候选。2026-10-05 后续只读审计覆盖 SessionActor、facts/embedding 存储、Agent 事件投影、SessionStore 写侧与 ReAct facade：均未发现稳定 owner 后的重复回归、重复策略或可验证的子模块/新 crate 收益；模块拆分继续暂缓。ReAct 中两条 usage 字段映射目前没有漂移，写入路径语义不同，重开条件见上。审计发现的 fact query 注释漂移已修正；事件投影审计发现一条无调用方的 Compaction 直发入口，现已按 ADR 0482 删除并完成 workspace 门禁。ActionService 测试归属审计后，六项独立 process 流读取契约测试已按 ADR 0483 收回实现 owner；ActionOutputTail 的容量测试归入 `action_output.rs`，重复快照覆盖已删除（ADR 0484），统一 ActionService 的后台/定时生命周期与终态投影测试保留服务级归属。crate 边界复核没有找到可抽取的新 crate，但发现 Input 通过单项兼容测试反向 dev-depend Tools；此边已由 ADR 0485 移除，Cargo 生产图仍为 11 crate、29 条无环依赖。app command 复核发现 MCP/Skill UI 直调与 Tools adapter 独立组装相同 opaque-policy；两者已统一到 `OperationPolicy::external`（ADR 0486），确认门槛与 grant key 不变。当前无 Active 结构切片；后续仍按 §5.5 证据队列审查，不按 crate 行数制造拆分工作。
 
 ## 6. 更新规则
 
