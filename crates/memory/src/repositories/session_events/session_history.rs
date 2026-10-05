@@ -227,3 +227,6 @@ impl SessionStore {
             .await
     }
 }
+
+#[cfg(test)]
+mod tests;
