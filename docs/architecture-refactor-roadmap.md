@@ -74,7 +74,7 @@
 
 | 状态 | 当前项 |
 |---|---|
-| **Next** | 当前没有经准入的 Next/Active。2026-10-05 步骤 0 复核了 SessionStore/Agent 持久化边界及 rollback 历史、ActionService、ProcessContainment spawn、venv 半成品判据和 App runtime config；未见稳定后的同一事务不变量重复回归、生产写入绕过持久化权威入口或新依赖漂移。session grant 与 interaction resolve 的两次写窗口仍无状态冲突复现；venv 半成品问题仍无实际回归证据，按 §5.2、ADR 0515 的既定条件观察。新证据出现时重新分流；不以文件/crate 体量单独立项。 |
+| **Next** | 当前没有经准入的 Next/Active。2026-10-05 步骤 0 复核了 SessionStore/Agent 持久化边界及 rollback 历史、ActionService、ProcessContainment spawn、venv 半成品判据和 App runtime config；未见稳定后的同一事务不变量重复回归、生产写入绕过持久化权威入口或新依赖漂移。另抽查近期高触碰的 `ui/src/routes/+page.svelte`、`agent/src/layer.rs`、`agent/src/react/mod.rs`、`app-binary/src/app_state.rs` 与 `tools/src/lib.rs`：变更对应 UI 功能演进、既有 owner 收口、ReAct 核心维护、App 组合根接线和模块门面更新，未见稳定职责间重复返流。session grant 与 interaction resolve 的两次写窗口仍无状态冲突复现；venv 半成品问题仍无实际回归证据，按 §5.2、ADR 0515 的既定条件观察。新证据出现时重新分流；不以文件/crate 体量单独立项。 |
 | **Deferred** | 已复核候选保留各自重开条件，见 §5.3；当前无其他结构候选。 |
 | **Gate** | Windows 发布验收 Open，见 §5.1。 |
 
