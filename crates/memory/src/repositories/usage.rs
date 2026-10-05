@@ -6,10 +6,17 @@ use haven_common::types::{CacheAccounting, LlmCallKind};
 use rusqlite::OptionalExtension;
 use rusqlite::types::Type;
 
+const SESSION_USAGE_TOKEN_MAX: i64 = u32::MAX as i64;
+
+fn clamp_session_usage_tokens(value: i64) -> u32 {
+    value.clamp(0, SESSION_USAGE_TOKEN_MAX) as u32
+}
+
 /// Per-session cumulative token/cost counters, persisted so a resumed or
 /// reopened session can restore the token-stats display instead of resetting
-/// to zero. Updated on every LLM usage emit; the row lives as long as the
-/// session (ON DELETE CASCADE) and is removed with it.
+/// to zero. Token counters saturate at `u32::MAX`, matching the live Agent
+/// usage tracker and event DTO. Updated on every LLM usage emit; the row lives
+/// as long as the session (ON DELETE CASCADE) and is removed with it.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct SessionUsage {
     pub prompt_tokens: u32,
@@ -76,14 +83,15 @@ impl Database {
              FROM session_usage WHERE session_id = ?1",
         )?;
         let mut rows = stmt.query_map(rusqlite::params![session_id], |row| {
+            let token_count = |index| row.get::<_, i64>(index).map(clamp_session_usage_tokens);
             Ok(SessionUsage {
-                prompt_tokens: row.get(0)?,
-                completion_tokens: row.get(1)?,
-                total_tokens: row.get(2)?,
-                cached_tokens: row.get(3)?,
-                cache_creation_tokens: row.get(4)?,
-                cache_miss_tokens: row.get(5)?,
-                context_tokens: row.get(6)?,
+                prompt_tokens: token_count(0)?,
+                completion_tokens: token_count(1)?,
+                total_tokens: token_count(2)?,
+                cached_tokens: token_count(3)?,
+                cache_creation_tokens: token_count(4)?,
+                cache_miss_tokens: token_count(5)?,
+                context_tokens: token_count(6)?,
                 context_window: row.get(7)?,
                 cost_usd: row.get(8)?,
                 has_cost: row.get::<_, i32>(9)? != 0,
@@ -895,9 +903,9 @@ impl Database {
 
         // `updated_at` acts as the context-snapshot watermark. It is kept in
         // the existing column so this optimization does not change the DB
-        // schema. Counters are additive, while context is replaced only by a
-        // newer Agent call. Media/tool rows still create the zero summary row
-        // when needed but never affect Agent totals.
+        // schema. Token counters saturate at the u32 limit to match the live
+        // tracker, while context is replaced only by a newer Agent call.
+        // Media/tool rows still create a zero summary row but never affect totals.
         conn.execute(
             "INSERT INTO session_usage
                  (session_id, prompt_tokens, completion_tokens, total_tokens,
@@ -905,12 +913,12 @@ impl Database {
                    context_tokens, context_window, cost_usd, has_cost, updated_at)
               VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
              ON CONFLICT(session_id) DO UPDATE SET
-                 prompt_tokens = session_usage.prompt_tokens + excluded.prompt_tokens,
-                 completion_tokens = session_usage.completion_tokens + excluded.completion_tokens,
-                 total_tokens = session_usage.total_tokens + excluded.total_tokens,
-                 cached_tokens = session_usage.cached_tokens + excluded.cached_tokens,
-                 cache_creation_tokens = session_usage.cache_creation_tokens + excluded.cache_creation_tokens,
-                 cache_miss_tokens = session_usage.cache_miss_tokens + excluded.cache_miss_tokens,
+                 prompt_tokens = MIN(session_usage.prompt_tokens + excluded.prompt_tokens, ?14),
+                 completion_tokens = MIN(session_usage.completion_tokens + excluded.completion_tokens, ?14),
+                 total_tokens = MIN(session_usage.total_tokens + excluded.total_tokens, ?14),
+                 cached_tokens = MIN(session_usage.cached_tokens + excluded.cached_tokens, ?14),
+                 cache_creation_tokens = MIN(session_usage.cache_creation_tokens + excluded.cache_creation_tokens, ?14),
+                 cache_miss_tokens = MIN(session_usage.cache_miss_tokens + excluded.cache_miss_tokens, ?14),
                  context_tokens = CASE
                      WHEN ?13 != 0 AND excluded.updated_at >= session_usage.updated_at
                      THEN excluded.context_tokens ELSE session_usage.context_tokens END,
@@ -946,6 +954,7 @@ impl Database {
                 delta.has_cost,
                 watermark,
                 has_agent_context,
+                SESSION_USAGE_TOKEN_MAX,
             ],
         )?;
         Ok(())
@@ -1027,12 +1036,12 @@ impl Database {
                  updated_at = excluded.updated_at",
             rusqlite::params![
                 session_id,
-                prompt as u32,
-                completion as u32,
-                total as u32,
-                cached as u32,
-                creation as u32,
-                miss as u32,
+                clamp_session_usage_tokens(prompt),
+                clamp_session_usage_tokens(completion),
+                clamp_session_usage_tokens(total),
+                clamp_session_usage_tokens(cached),
+                clamp_session_usage_tokens(creation),
+                clamp_session_usage_tokens(miss),
                 context_tokens,
                 context_window,
                 cost,
@@ -1466,6 +1475,90 @@ mod tests {
         assert_eq!(u.cache_creation_tokens, 1);
         assert!((u.cost_usd - 0.30).abs() < 1e-9);
         assert!(u.has_cost);
+    }
+
+    #[test]
+    fn cumulative_session_usage_saturates_and_rebuild_matches_live_totals() {
+        let db = test_db();
+        let session = db.create_session("hello").unwrap();
+        for (step_number, context_tokens) in [(1, 32_000), (2, 64_000)] {
+            db.persist_llm_call_and_refresh_session_usage_with_cache_accounting_and_context(
+                &session.id,
+                Some(step_number),
+                RequestKind::Chat,
+                None,
+                3_000_000_000,
+                1_500_000_000,
+                3_500_000_000,
+                2_000_000_000,
+                300_000_000,
+                2_500_000_000,
+                "inclusive",
+                None,
+                0.0,
+                false,
+                None,
+                context_tokens,
+                Some(128_000),
+            )
+            .unwrap();
+        }
+
+        let incremental = db.get_session_usage(&session.id).unwrap().unwrap();
+        assert_eq!(incremental.prompt_tokens, u32::MAX);
+        assert_eq!(incremental.completion_tokens, 3_000_000_000);
+        assert_eq!(incremental.total_tokens, u32::MAX);
+        assert_eq!(incremental.cached_tokens, 4_000_000_000);
+        assert_eq!(incremental.cache_creation_tokens, 600_000_000);
+        assert_eq!(incremental.cache_miss_tokens, u32::MAX);
+        assert_eq!(incremental.context_tokens, 64_000);
+
+        db.rebuild_session_usage_from_calls(&session.id).unwrap();
+        let rebuilt = db.get_session_usage(&session.id).unwrap().unwrap();
+        assert_eq!(rebuilt.prompt_tokens, incremental.prompt_tokens);
+        assert_eq!(rebuilt.completion_tokens, incremental.completion_tokens);
+        assert_eq!(rebuilt.total_tokens, incremental.total_tokens);
+        assert_eq!(rebuilt.cached_tokens, incremental.cached_tokens);
+        assert_eq!(
+            rebuilt.cache_creation_tokens,
+            incremental.cache_creation_tokens
+        );
+        assert_eq!(rebuilt.cache_miss_tokens, incremental.cache_miss_tokens);
+        assert_eq!(rebuilt.context_tokens, incremental.context_tokens);
+    }
+
+    #[test]
+    fn session_usage_read_clamps_legacy_values_above_u32_max() {
+        let db = test_db();
+        let session = db.create_session("hello").unwrap();
+        db.persist_llm_call_and_refresh_session_usage(
+            &session.id,
+            Some(1),
+            RequestKind::Chat,
+            None,
+            1,
+            1,
+            2,
+            0,
+            0,
+            0.0,
+            false,
+            None,
+        )
+        .unwrap();
+
+        let legacy_count = i64::from(u32::MAX) + 1;
+        let conn = db.conn();
+        conn.execute(
+            "UPDATE session_usage SET prompt_tokens = ?2, total_tokens = ?2 WHERE session_id = ?1",
+            rusqlite::params![session.id, legacy_count],
+        )
+        .unwrap();
+        drop(conn);
+
+        let usage = db.get_session_usage(&session.id).unwrap().unwrap();
+        assert_eq!(usage.prompt_tokens, u32::MAX);
+        assert_eq!(usage.total_tokens, u32::MAX);
     }
 
     #[test]

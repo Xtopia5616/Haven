@@ -460,3 +460,4 @@
 - [0475：统一事实敏感信息检测与清理规则](0475-single-source-fact-sensitivity-rules.md)
 - [0476：由 ReAct turn 层拥有搜索上下文投影](0476-react-turn-owns-search-context-projection.md)
 - [0477：Agent action-result delivery 私有模块](0477-agent-action-result-delivery-module.md)
+- [0478：SessionUsage 累计计数饱和契约](0478-session-usage-saturation-contract.md)

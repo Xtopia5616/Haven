@@ -1,6 +1,6 @@
 # Haven 架构降复杂度重构路线图
 
-> 状态：阶段 0–8 已完成；当前无 Active 结构切片；下一轮先复核 SessionUsage 累计值范围契约；Windows 发布验收为独立开放签核门
+> 状态：阶段 0–8 已完成；SessionUsage 累计上限契约已由 ADR 0478 收口；当前无 Active 结构切片；Windows 发布验收为独立开放签核门
 > 更新日期：2026-10-05
 > 范围：Agent/Session、Memory、Tools、LLM、App IPC 与 UI
 
@@ -141,13 +141,13 @@
 
 本路线按触发证据滚动，不按“把所有大 crate 拆小”设完工日期。完成一个切片后重新审查最高优先级证据；下列顺序表示审查优先级，不代表每项必然实施：
 
-1. **下一轮先审：`SessionUsage` 累计范围与重建一致性（Next review；只调查契约，尚未准入实现）。** 增量写入通过 SQLite `INTEGER +` 累加，重建将 `i64 SUM` 转成 `u32`；例如两次各 `3,000,000,000` token 的合法调用，增量合计为 `6,000,000,000`，而重建的 `as u32` 会得到 `1,705,032,704`。当前 `SessionUsage` 和事件 DTO 使用 `u32`，但文档、schema constraint 与边界测试尚未规定累计值应饱和还是允许超过 `u32::MAX`。因此先确定契约：若选饱和，统一 live/read/rebuild 语义并补回归；若需要精确保留更大累计值，先评估持久 DTO、事件及生成 TypeScript 类型的端到端扩宽。契约确认前不改 usage 算术，也不因文件大小抽新模块。
-2. **后续候选：SessionStore 周边 lifecycle/read façade 与测试归属。** 事务核心拆分仍按 §5.3 的高风险停止条件暂缓；只有稳定 owner 后出现重复原子性/rollback 回归，或独立职责持续迫使同改且能设计出不触碰事务私有状态的边界，才启动评估。
+1. **已完成：SessionUsage 累计范围与重建一致性（[ADR 0478](adr/0478-session-usage-saturation-contract.md)）。** 结合 live `UsageTracker` 的 `u32::saturating_add` 和 `AgentUsage` 累计字段类型，确定 session summary 封顶于 `u32::MAX`；增量写入、legacy summary 读取和 detail 重建现已收敛到该契约。没有改变 schema 或 wire 类型。
+2. **后续候选：SessionStore 周边 lifecycle/read façade 与测试归属。** 事务核心拆分仍按 §5.3 的高风险停止条件暂缓；只有稳定 owner 后出现重复原子性/rollback 回归，或独立职责持续迫使同改且能设计出不触碰事务私有状态的边界，才启动评估。当前不自动立项。
 3. **长期条件项：Tools / App / UI 模块与 crate 边界、性能。** 继续用架构依赖清单、独立消费者和同负载 profile 证明收益；当前没有获准的大 crate 拆分。Common、Tools crate 与通用 Job 抽象维持既有暂缓决定，除非出现新的反复故障或可量化收益证据。
 
 2026-10-05 对 `AppState`/`ApplicationRuntime` 与 UI shell/Composer 的并行只读复核均未发现 owner 稳定后的重复边界回归，故不新增 Active 项；重开条件见 §5.3 的启动编排、Composer 与全局布局观察结论。
 
-`SessionUsage` 的首项契约会影响可见统计和持久投影范围，实施前需由产品/协议 owner 明确选项；这项决定不妨碍先完成其他有独立证据且边界明确的结构切片。并行 agent 继续用于只读、定范围的源码/历史审计；每项结论由主执行者核对工作树与门禁。实现仍一次只进行一个 Active slice。
+AppState/runtime 与 UI shell/Composer 的并行只读复核没有发现可准入的候选。后续 agent 继续用于只读、定范围的源码/历史审计；每项结论由主执行者核对当前源码与适用门禁。没有新的合格证据时保持无 Active，不按 crate 行数制造拆分工作。
 
 ## 6. 更新规则
 
