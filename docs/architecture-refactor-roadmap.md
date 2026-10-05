@@ -97,37 +97,25 @@
 
 **非原子窗口复核（2026-10-05；已知限制，不进 Active）：** Session-owned resolve 路径先持久化 session-scope grant 并更新当前授权引擎，再由 SessionActor 追加 `interaction_resolved`。若第二步失败，授权仍生效、请求仍 pending、该次请求的原工具调用不启动，renderer 因命令错误保留待处理卡片；进程重启会同时恢复持久 grant 与仍 pending 的交互。现有 ADR 已明确不承诺这两次写入原子性，当前没有稳定后重复回归。暂未找到专门覆盖“grant 成功、resolve append 失败”或其间 actor 停止的故障注入测试；这是已知验证缺口，不单独触发事务重构。只有当产品契约要求 resolve 错误意味着授权也未接受，或出现 grant 与 UI/执行状态冲突造成的实际回归时才重开；届时先固定失败语义并补齐故障注入，再评估同一 SQLite 事务内的 grant+event commit，继续由单一 SessionStore/SessionActor 协调，不拆分事务 owner。
 
-### 5.3 内部模块边界整理（持续按证据复核 / 当前无 Active 切片）
+### 5.3 内部模块与 crate 边界（按证据复核 / 当前无 Active）
 
-这不是 crate 拆分目标；只在职责与稳定 owner 边界能证明维护收益时做私有模块整理。已完成切片的实现范围、验证与回滚记录以 ADR 为准：SessionStore 只读历史 façade 及测试归属（[0466](adr/0466-session-history-read-facade-module.md)、[0479](adr/0479-session-history-test-ownership.md)）、session-scoped KV 孤儿清理 predicate 单一 owner（[0480](adr/0480-session-kv-orphan-cleanup-owner.md)）、LLM provider schema projection（[0467](adr/0467-llm-tool-schema-projection-module.md)）、Memory maintenance pass（[0468](adr/0468-memory-worker-maintenance-pass-module.md)）、managed-media 生命周期与 producer/GC/Files 登记协调（[0469](adr/0469-app-managed-media-lifecycle-module.md)、[0470](adr/0470-generated-media-write-gc-gate.md)、[0473](adr/0473-files-rich-path-generated-media-gc-gate.md)）、录音 ID 交接和 Shell overlay controller（[0471](adr/0471-recording-session-id-handoff.md)、[0472](adr/0472-recording-overlay-controller.md)）、架构依赖清单门禁（[0474](adr/0474-architecture-dependency-inventory-gate.md)）、Memory fact sensitivity 规则单源化（[0475](adr/0475-single-source-fact-sensitivity-rules.md)）、ReAct 搜索响应投影归入 turn owner（[0476](adr/0476-react-turn-owns-search-context-projection.md)）。
+本节只保留未解决项与已复核候选的重开条件；已完成切片的背景、决定和验证以对应 ADR 为准。私有模块整理与 crate 拆分都必须通过 §5.5 准入，不以文件或 crate 体量为目标。
 
-**本轮完成 — [ADR 0476](adr/0476-react-turn-owns-search-context-projection.md)：**不依赖 stream state、仅由 turn response 处理调用的 server-side search context 投影与 outcome 已移入 `turn.rs`，identity 回归随实现迁移。StreamForwarder、队列、checkpoint、重试和 mixed tool+search 的既有时序留在原 owner；该切片的实施边界、测试与回滚见 ADR 0476。
+#### Deferred 与已知限制
 
-**本轮完成 — [ADR 0477](adr/0477-agent-action-result-delivery-module.md)：**Agent 的 background/scheduled-result delivery consumer、专属 session-status helper、不可信结果 envelope formatter 及 formatter 测试移入私有 `layer/action_result_delivery.rs`。`ActionService` 仍拥有 completion outbox 与 ack 能力，SessionSupervisor 仍拥有队列/状态，ReAct 仍拥有 live transcript 的 durable projection；scheduled-fire 执行路径留在原处。当前无 Active 结构切片。
+| 状态 | 问题与当前证据 | 重开条件与边界 |
+|---|---|---|
+| **Deferred** | 显式 end 的 action 取消失败语义：actorless 路径使用 checked cleanup，驻留 Actor 路径使用 best-effort；ActionService 故障注入证明持久取消可能失败。[ADR 0507](adr/0507-session-owned-action-cleanup.md) 规定删除 fail-closed，但没有定义 end 的失败契约。 | 先确定命令/UI/action 的可见结果，再补 actorless、驻留/运行中 Actor、部分取消、持久化失败与 claim 竞争测试；不能只把 Actor 分支改为 checked。若安全协调方案会破坏即时结束或 [ADR 0424](adr/0424-interaction-lifecycle-ownership.md) 的 claim-wins，则继续 Deferred。 |
+| **高风险 Candidate，暂缓** | `session_events.rs` 同时协调 event append、transcript projection、rollback、cache invalidation 与 commit 后 broadcast。2026-10-05 复核为 6,078 行（3,075 production / 3,003 tests），近 45 天 66 次提交；主要是同一 owner 收口和 durable facts 演进，未发现稳定后事务不变量重复回归。 | 仅在事务核心与无关 façade 反复耦合修改、相同原子性/rollback 缺陷重复修复，或测试无法按真实职责隔离且能证明收益时重开。event append、projection、rollback、cache invalidation 和 post-commit broadcast 继续由单一 SessionStore 协调，不暴露事务内部或引入第二恢复来源（[ADR 0466](adr/0466-session-history-read-facade-module.md)、[ADR 0479](adr/0479-session-history-test-ownership.md)）。 |
 
-**本轮完成 — [ADR 0479](adr/0479-session-history-test-ownership.md)：**只读历史 façade 的六个行为测试移入 `session_events::session_history::tests`，使查询实现与其 API/查询语义回归在同一模块定位。测试 fixture 保持内存数据库；title 写入与缓存失效、聚合恢复投影及 append/rollback 原子性测试仍留在各自 owner。没有暴露测试 helper 或改动生产契约。
+#### 已复核但不进入 Next
 
-**本轮完成 — [ADR 0480](adr/0480-session-kv-orphan-cleanup-owner.md)：**`sessions::delete_old_sessions` 与 Memory maintenance 原先各自维护相同的 orphan session-scoped `kv_store` DELETE/owner 解析规则；现由 `kv_store` 的 connection-level helper 持有唯一 SQL，两个调用点继续使用各自已有连接。历史上新增 event cursor 与 episode marker 时，两份谓词曾需同步修改；本切片消除该重复 owner，不改变删除时序或事务边界。
+- **Tools 与安全边界：** `tool_contract.rs` 继续作为共享执行契约 owner；`builtin/admin.rs` 由 AdminServices 承接副作用，Admin 保留 operation/request/output contract；messaging adapter 继续复用 `haven_messaging`。只有稳定后再次出现 policy/schema drift、同边界回归或独立消费者，才重新评估私有模块（[ADR 0213](adr/0213-operation-spec-single-policy-source.md)、[0391](adr/0391-admin-services-typed-output-projections.md)、[0396](adr/0396-messaging-domain-crate.md)、[0506](adr/0506-mcp-admin-connection-network-policy.md)）。
+- **Agent 与 Memory：** SessionActor 继续独占可变 session state；ReAct stream/checkpoint/retry 保持协同；MemoryRuntime、worker、maintenance store 与 fact inference 按既有 owner 分工。只有交互恢复/队列计数、buffer 顺序、事实 marker 原子性或 prompt prefetch 等同一边界问题再次回归，才重开对应模块审查（[ADR 0214](adr/0214-react-run-inside-session-actor.md)、[0424](adr/0424-interaction-lifecycle-ownership.md)、[0468](adr/0468-memory-worker-maintenance-pass-module.md)、[0475](adr/0475-single-source-fact-sensitivity-rules.md)、[0476](adr/0476-react-turn-owns-search-context-projection.md)、[0481](adr/0481-remove-summary-marker-only-enqueue.md)）。
+- **App 与 UI：** AppState/runtime、Composer/InputRouter 与 Ask/reducer/event owners 近期未发现稳定后重复边界回归；Ask 响应结算、终态 Ask 清理和 execution phase 来源身份已收口（[ADR 0508](adr/0508-ask-response-reducer-ownership.md)、[0509](adr/0509-terminal-ask-cleanup-event-owner.md)、[0510](adr/0510-session-scoped-react-execution-phase.md)）。只有出现旧响应覆盖新状态、跨 session 状态泄漏或同一 lifecycle 回归时才重开；不提取仅按页面/operation 分类的模块。
+- **Common 与 ActionService：** 依赖图仍是 11 个内部 crate、29 条单向边且无环；Common 作为广泛复用的基础类型 crate 保持现状。ActionService 仍与 Tools 的执行策略、`haven_memory::ActionStore`、Agent 授权/完成投影及 App 生命周期形成纵向调用链。只有出现独立消费者、真实依赖方向问题或同环境可复核的维护/构建收益时，才重开 crate 评估（[ADR 0359](adr/0359-common-boundary-and-profiling-baseline-audit.md)、[0507](adr/0507-session-owned-action-cleanup.md)）。
 
-当前边界决定：Common 拆分维持 [ADR 0359](adr/0359-common-boundary-and-profiling-baseline-audit.md) 的暂缓结论；Tools crate 拆分没有独立依赖边界或消费者收益；SessionStore 继续独占 event append、投影和 rollback 事务协调，`event_cursor` 与 `last_msg_at` 双时钟、提交后发布均不得分散；`LOCAL_TOOL_SECURITY_MATRIX` 仍是生产权限提示的 operation 白名单，保留在 `security.rs`。管理 surface、LLM router、授权沙箱和 inbox 崩溃恢复边界按现有 owner 保留，具体依据见相关 ADR。
-
-**2026-10-05 Tools 热点复核（均不准入拆分）：** `tool_contract.rs` 共 2,468 行，生产契约到第 1,940 行，后续为同模块测试。它把 `Tool` / typed adapter、operation policy、result metadata 与执行协议放在同一个共享执行契约 owner；registry/security 已在 `6b22da2` 拆出，`OperationSpec` 单源策略及 manifest 契约由 [ADR 0213](adr/0213-operation-spec-single-policy-source.md) 固化。近期跨 contract/view/builtin 的共同修改是在收敛该契约，尚无稳定后重复漂移或独立消费者收益；进一步搬入 sibling modules 只会改代码位置。若 policy/schema drift 再次导致回归，或出现独立消费者，再重新评估。
-
-`builtin/admin.rs` 共 3,665 行，生产 operation/schema/native request/output 边界到第 1,615 行，其余为测试。`AdminServices` 的副作用和固定输出生产者已位于 `admin_services.rs`；`admin.rs` 继续单独拥有 operation contract、request bridge 与工具输出序列化，符合 [ADR 0391](adr/0391-admin-services-typed-output-projections.md)。近期修改覆盖 MCP 授权、诊断日志上限、Skill 名称校验等不同纵向功能，没有显示稳定 owner 后的重复边界故障。若 MCP 管理授权/刷新反复回归，或出现独立复用方，再评估 `admin/mcp.rs`；当前不拆五类 surface。
-
-**本轮完成 — [ADR 0506](adr/0506-mcp-admin-connection-network-policy.md)：**`mcp_add/update/toggle/reload` 会按参数或启用状态新建/重建连接，但模型 operation view 曾落入 `NetworkAccess::None`，绕过 `Restricted` 下的 opaque-network 授权拒绝；原生请求则是 `Opaque`。两侧现从同一 `OperationContract` 读取分类；list/disconnect/remove 明确为 `None`。没有拆 Admin surfaces 或新增动态授权层。
-
-**本轮完成 — [ADR 0509](adr/0509-terminal-ask-cleanup-event-owner.md)：**首个认领终态清理的事件通道同时清除活跃会话 Ask，覆盖独立抵达的 `session:updated` completed/error；配对主副事件保持 first-wins，不重复清理。Svelte 检查 0 error/0 warning，Vitest 122 files/981 tests 通过；不改 backend、IPC 或持久化契约。
-
-**本轮完成 — [ADR 0510](adr/0510-session-scoped-react-execution-phase.md)：**全局最近 phase 补充其 source session 身份；Composer 和 submit steering 只读取 active session 对应 phase。先以红测复现后台 phase 会把空 transcript 的首条输入标为 steering，再修复；Svelte 检查 0 error/0 warning，Vitest 122 files/983 tests 通过。不改 wire 或持久化契约。
-
-**Deferred — 显式 end 的 action 取消失败语义（2026-10-05）：**`end_session_inner` 的 actorless 路径使用 checked cleanup，已驻留 Actor 的路径使用 best-effort cleanup；ActionService 的故障注入测试确认单条 scheduled action 持久取消可以失败。ADR 0507 明确规定删除 fail-closed，但没有定义显式 end 的失败契约。改成统一 checked 会存在已部分取消 action、end 返回错误而 session 仍运行的情形；维持 best-effort 又允许 session Completed 时有 action 仍 Waiting。此问题有生命周期证据但需要先决定显式 end 的用户可见语义，因此暂不进入 Active；只有产品/命令契约确定 end 失败时 session 和所属 action 应保持何种状态后，再补 Actor/actorless 故障注入回归并评估事务/补偿边界。
-
-`builtin/messaging.rs` 共 2,518 行，主测试模块从第 1,326 行开始。生产部分是单一模型可见 `agent` 工具：共享参数和 15 个操作适配至 `haven_messaging::MessagingService`；领域消息生命周期已在 [ADR 0069](adr/0069-messaging-service.md) 收口，并由 [ADR 0396](adr/0396-messaging-domain-crate.md) 提取为独立 crate。近期没有再次出现跨层重复 owner 或稳定后边界回归。仅按 operation 拆 schema/handler 或另拆 crate 暂无收益；若 schema 与执行适配之后独立演进并导致契约漂移，再复核私有模块边界。
-
-`memory_worker.rs` 按非空行统计为 3,176 行（约 1,367 行生产代码、1,809 行测试）。近期已按 [ADR 0468](adr/0468-memory-worker-maintenance-pass-module.md) 隔离定期 maintenance pass，并在 `880ec96` 将 pass 构造器收窄为显式四项 capability；此后没有足够历史证明要继续拆。`MemoryRuntime` 持有恢复与调度，worker 持有 extraction/outbox，`MemoryMaintenanceStore` 与 `fact_inference` 分别持有持久化和提案 gate；现有测试 fixture 与 outbox 测试共享较多。prefetch 失败重试与事实/marker 原子提交的缺陷已各自修复一次，没有稳定后重复回归，因此不再拆 prompt-prefetch 或搬测试。另发现的三个无 workspace 生产调用 summary marker-only API 已由 [ADR 0481](adr/0481-remove-summary-marker-only-enqueue.md) 删除；测试 fixture 现通过 episode+marker 原子入口建数据，Worker/Store/Database 的读取、恢复、ack 与清理能力保留。该清理没有形成进一步拆分 `memory_worker.rs` 的理由。
-
-**Crate 体量与边界复核（2026-10-05）：**按 workspace `.rs` 文件非空物理行粗略统计（含注释；测试按测试路径及 `#[cfg(test)]` 模块归类，非 AST 指标），Rust 源码约 222k 行。最大 crate 为 `haven-tools`，但体量同时来自多种内建能力与测试；依赖图本身仍是 11 个 crate、29 条单向内部边、无环，并与架构清单一致。
+**Crate 体量基线（2026-10-05）：**按 workspace `.rs` 文件非空物理行粗略统计，含注释；测试按测试路径及 `#[cfg(test)]` 模块归类，不是 AST 指标。
 
 | Crate | 生产行 | 测试行 | 合计 |
 |---|---:|---:|---:|
@@ -137,32 +125,7 @@
 | `haven-memory` | 14,155 | 11,394 | 25,549 |
 | `haven-app-binary` | 13,178 | 5,399 | 18,577 |
 
-本次将 `ActionService` 独立成 crate 的想法评估后关闭为“现阶段不需拆分”：Agent 仍直接依赖 Tools 的 tool/auth 契约；ActionService 还共用 Tools 内部 shell/process/output policy，依赖 `haven-memory::ActionStore` 的持久状态，并与 Agent 的授权执行、完成投影及 App 生命周期形成现有纵向调用链。抽离需要新增更低层的进程/输出边界或 port，可能增加反向依赖和策略重复；近期 ActionService 与 ActionStore、Agent、App 的联动是 action 生命周期纵向演进，没有稳定后仍反复耦合 registry/security 的证据。只有出现真正不依赖 Tools 的 Action 消费者、同一边界回归重复发生，或受控构建/profile 证明拆分能降低实际迭代成本时才重开；它不进入 Active 队列。
-
-已复核热点包括 `+page.svelte`、`SettingsView.svelte`、`admin.rs`、`llm/router.rs`、`inbox.rs`、Tools/Agent 根模块、`react/mod.rs`、`layer.rs`、`session/mod.rs`、`resume.rs`、`session/tool_runner.rs`、`react/stream_step.rs`、`commands/session.rs`、`app_state.rs`、`MemoryView.svelte`、`ToolsView.svelte`、`ToolResultCard.svelte`、`InputRouter.svelte` 与 `+layout.svelte`。`tool_runner.rs` 的近期 churn 属于 ADR 0424 同一轮 owner 收口，确认与 ActionService 分持待决请求和执行/取消 claim，当前保留原边界；`stream_step.rs` 的流生命周期队列、checkpoint 与 retry 需保持协同，搜索响应投影则由本轮 ADR 0476 收回 turn owner。`resume.rs`、ToolsView 和 InputRouter 保留各自会话恢复、管理页与统一 composer 边界。InputRouter 的异步附件读取曾允许发送越过读取完成点且并行读取可能超限，现已阻止读取期间提交并预留附件名额，回归由 UI 测试覆盖。ToolResultCard 同时展示 ask 与 tool output，但 ask selection、pending interaction、dismissal 分属 controller/reducer/page owners；近期连续修改的 pending reopen、选项投影、transcript 结算与历史恢复已由 ADR 0508 收拢响应和结算状态到 reducer，ADR 0509 补齐终态副事件独立到达时的 Ask 清理。`resolvedAskResponses` shadow 已删除，`resolvedAskIds` 继续只承担当前批次防重复提交；现无 Ask Candidate，不提取 Ask 卡片或 crate。MemoryView 单次 resume 参数遗漏已在 `487ff9e` 修复；`+layout` phase store 订阅清理也已修复。
-
-**观察项复核（2026-10-05；本轮均未批准实现切片）：**
-
-- **Tools 根模块 helper：** 文件约 402 行，近 45 天热点没有形成 helper 的重复跨职责修改；保留 crate 级共享规则与现有 feature owners。只有相关 churn 或回归复现后才考虑搬移。
-- **ReAct media projection：** `types` / `react` 存在双向模块调用；Text fallback 会对同一输入确定性地重算一次 media plan。共同的 append helper 已避免 live/replay 分叉，目前没有性能 profile 或功能回归证据支持拆投影 owner或优化重算。若证据出现，优先评估将 event→canonical/round projector 与媒体 helper 一并收归 ReAct projection owner；单独优化时让一次投影同时返回 `ContentPart` 与表示元数据，并保留 snapshot-safe `MediaInput`、稳定 `asset_id`、路径脱敏及 durable MediaPlan 边界。
-- **启动编排：** 9 月的 readiness 调整曾达到历史复核门槛；当前由 AppState 决定启动顺序、ApplicationRuntime 管任务生命周期、AgentLayer 管 dispatcher、bootstrap 触发并提供 Tauri emitter，边界已由架构文档和 ADR 对齐，之后未见同一路径重复回归。
-- **`getTools()`：** `+layout` 与 ToolsView 双读服务不同生命周期，Rust manifest 源和前端 mapper/snapshot 各只有一个 owner；未发现旧响应覆盖新值或 UI 漂移。
-
-以上候选只有在 §5.5 所列回归、重复 owner、调用边扩张或可复现成本出现后重开；纯行数减少不构成准入理由。
-
-事件存储与 transcript projection 的写侧拆分仍是暂缓的高风险 Candidate。2026-10-05 复核时，`session_events.rs` 为 6,078 行（3,075 production / 3,003 tests），近 45 天有 66 次提交触及（约 +7,003/-925）；改动主要是 9/22–25 一轮 SessionStore owner 收口，以及 9/30–10/5 的 durable session facts 纵向演进，未发现边界稳定后事务不变量反复回归。体量和 churn 足以触发复核，但不证明搬进 child module 会降低维护成本。只读历史 façade 已由 [ADR 0466](adr/0466-session-history-read-facade-module.md) 拆出；后续只有观察到事务核心与无关 session façade 反复耦合修改、同一原子性/rollback bug 重复修复，或测试无法按真实职责隔离并能证明模块收益时，才重开实施评估。若准入，优先评估不参与 canonical event/projection transaction 的 lifecycle façade 和对应测试；event append、projection、rollback、cache invalidation 与提交后 broadcast 继续由同一 SessionStore owner 协调。若候选要求上层分别写 event/projection、暴露事务内部、引入第二恢复来源，或只有行数下降，立即停止。
-
-`haven-tools/builtin/admin.rs` 的五个管理 surface 契约不按 operation 数量拆分；`llm/router.rs` 已有 request/stream executor；`security.rs` 拥有授权、receipt、禁用 operation 和路径沙箱；`inbox.rs` 的 registry、mailbox、archive 与崩溃恢复共用文件锁，暂不拆。热点约 800 行时先区分生产与测试代码，再记录保留理由或明确拆分边界；只搬行数不立项。内部整理保持外部 API、wire、schema 和运行语义不变，并独立提交。
-
-**补充边界复核（2026-10-05；模块拆分均暂缓）：**
-
-- `SessionActor` 的命令、队列和调度共同读写唯一 `SessionState`，受公平调度及事件先提交后更新约束（[ADR 0214](adr/0214-react-run-inside-session-actor.md)、[0382](adr/0382-session-state-owns-react-run.md)、[0390](adr/0390-session-actor-fairness-and-bounded-release.md)、[0424](adr/0424-interaction-lifecycle-ownership.md)）。只有交互恢复缺陷重复出现或队列容量计数反复漂移时，才评估 actor 内的 `ContextQueues` owner。
-- `facts.rs` 的生产部分保留稳定 Database 外观和跨写入、查询、维护共用的谓词规则；图写入、事实查询、维护和敏感规则已有清晰 owner，其大部分文件体量是契约/组合测试（[ADR 0019](adr/0019-memory-fact-graph-write-boundary.md)、[0020](adr/0020-memory-fact-query-ranking-boundary.md)、[0022](adr/0022-memory-fact-maintenance-boundary.md)、[0475](adr/0475-single-source-fact-sensitivity-rules.md)）。
-- `embeddings.rs` 同时含底层向量与 episode FTS SQL，但由现有 recall owner 组合，历史未见 FTS 与向量策略反复共改（[ADR 0303](adr/0303-agent-memory-embedding-store-port.md)、[ADR 0304](adr/0304-agent-memory-recall-store-port.md)）；仅在过滤/排序规则出现重复 owner、同一边界引发回归、出现独立消费者或同负载 profile 暴露成本时重开。
-- Agent `event.rs` 的 buffer/有序 chunk pipeline 与 durable transcript 提交、Tauri adapter、UI validator 分属不同阶段 owner，近期改动属于各自契约收口（[ADR 0336](adr/0336-react-session-committed-submission.md)、[ADR 0404](adr/0404-session-event-capacity-retention-and-recovery.md)）；只有 buffer/reset/tombstone 顺序重复回归或稳定职责反复跨域共改时，才评估搬入私有子模块。审计另确认未调用的 `EventDispatcher::emit_compaction_from` 会保留一条绕过 `CommittedUiPublisher` 的直接发布入口，已由 [ADR 0482](adr/0482-remove-unused-compaction-event-emitter.md) 删除；提交后的 Compaction 仍只由 durable sequence publisher 产生。
-- `react/mod.rs` 约 1,988 行，其中约 1,283 行生产代码；它是 ReAct 能力组合 façade，turn、tool batch、retry、stream identity、usage tracker 与 transcript 等 owner 已按既有 ADR 分开。`record_tool_usage` 与 media usage 有相似字段映射，但分别服务 tool diagnostic batch 和 media per-call persistence，写入语义不同；当前无字段漂移或重复回归，不抽共享 mapper。若同一 usage 字段多次漏同步，或媒体投影策略分叉导致回归，再评估窄的共享规则 owner；单纯拆 settings/media/usage 文件不立项（ADR 0214、0223、0278、0382、0384、0388、0444、0476）。
-
-这些文件不因体量进入 Active；入口、生产/测试分布与重开条件已经复核。
+这些数字保留作规模背景，不构成拆分依据；优先看生产职责、消费者、依赖方向和可复核维护收益。
 
 ### 5.4 Common 拆分与性能优化（Candidate）
 
@@ -192,10 +155,6 @@
 以上是循环复核的先后顺序，不是一次性瀑布项目：每轮从步骤 0 重新分流，完成一个切片、同类问题复现或准备发布时再审查证据。当前步骤 0 复核后，步骤 1 只有一个 Deferred 候选、没有 Active 实现切片；近期审计未在步骤 2–5 找到满足准入条件的新候选。未解决的契约问题不阻止继续寻找独立且证据充分的工作，但任何时候只实现一个 Active slice。发布验收 Gate 与结构重构并行，按 §5.1 独立关闭。
 
 **当前执行位置：** 架构阶段 0–8 已完成；滚动执行周期位于 §5.6 步骤 0“证据复核与分流”。当前没有 Active 实现切片；显式 end 的 action 取消失败语义保持 Deferred，等命令/UI/action 的可见失败契约明确后再决定实现范围，不能用单分支改为 checked 代替设计。近期审计未找到新的合格 crate 或内部拆分候选；crate 边界仍为 11 个内部 crate、29 条单向边。Windows 发布验收仍是独立 Open Gate。后续每个切片结束、同类回归出现或准备发布时按 §5.5 重审，不按行数、crate 数或日历生成工作。
-
-2026-10-05 对 `AppState`/`ApplicationRuntime`、UI shell/Composer 与 SessionStore 非事务 lifecycle façade 的只读复核均未发现 owner 稳定后的重复边界回归。SessionStore 生命周期 wrapper 大多是 typed `run_blocking` 转发，实际 actor/确认/delete policy 由 Agent `session/status.rs` 持有；搬移 wrapper 不会改变 owner 或调用链，故不新增 Active 项。重开条件见 §5.3 的启动编排、Composer、全局布局与 SessionStore 边界观察结论。
-
-AppState/runtime 与 UI shell/Composer 的并行只读复核没有发现可准入的候选。2026-10-05 后续只读审计覆盖 SessionActor、facts/embedding 存储、Agent 事件投影、SessionStore 写侧与 ReAct facade：未发现稳定 owner 后的事务原子性重复回归或可验证的新 crate 收益。ReAct 中两条 usage 字段映射目前没有漂移，写入路径语义不同，重开条件见上。事件投影审计发现一条无调用方的 Compaction 直发入口，已按 ADR 0482 删除并完成 workspace 门禁。ActionService 的六项 process 流读取测试按 ADR 0483 收回实现 owner；ActionOutputTail 容量测试归入 `action_output.rs`，重复快照覆盖已删除（ADR 0484），生命周期和终态投影测试继续由 ActionService 持有。crate 边界复核没有找到可抽取的新 crate，但发现 Input 通过单项兼容测试反向 dev-depend Tools；此边已由 ADR 0485 移除，Cargo 生产图仍为 11 crate、29 条无环依赖。App 命令与 Tools adapter 的 MCP/Skill 直调策略现共用 `OperationPolicy::external`（ADR 0486）。随后策略审计发现模型可见的 MCP Connect 因 `NetworkAccess::None` 漏掉授权层的前置策略拦截，已由 ADR 0495 统一模型与 native 来源并补授权回归；复核又找到 add/update/toggle/reload 同类漂移，已由 ADR 0506 收敛并保留 manager 的 Deny 防线。X12 三类例外写路径现由受限 `SessionStore` 端口表达（ADR 0496）；编号冲突及 22 项索引遗漏现由 ADR 0505 修正并持续受 CI 校验。仍不按 crate 行数制造拆分工作。
 
 ## 6. 更新规则
 
