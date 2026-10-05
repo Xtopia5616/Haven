@@ -145,6 +145,7 @@
 - `facts.rs` 的生产部分保留稳定 Database 外观和跨写入、查询、维护共用的谓词规则；图写入、事实查询、维护和敏感规则已有清晰 owner，其大部分文件体量是契约/组合测试（[ADR 0019](adr/0019-memory-fact-graph-write-boundary.md)、[0020](adr/0020-memory-fact-query-ranking-boundary.md)、[0022](adr/0022-memory-fact-maintenance-boundary.md)、[0475](adr/0475-single-source-fact-sensitivity-rules.md)）。
 - `embeddings.rs` 同时含底层向量与 episode FTS SQL，但由现有 recall owner 组合，历史未见 FTS 与向量策略反复共改（[ADR 0303](adr/0303-agent-memory-embedding-store-port.md)、[ADR 0304](adr/0304-agent-memory-recall-store-port.md)）；仅在过滤/排序规则出现重复 owner、同一边界引发回归、出现独立消费者或同负载 profile 暴露成本时重开。
 - Agent `event.rs` 的 buffer/有序 chunk pipeline 与 durable transcript 提交、Tauri adapter、UI validator 分属不同阶段 owner，近期改动属于各自契约收口（[ADR 0336](adr/0336-react-session-committed-submission.md)、[ADR 0404](adr/0404-session-event-capacity-retention-and-recovery.md)）；只有 buffer/reset/tombstone 顺序重复回归或稳定职责反复跨域共改时，才评估搬入私有子模块。审计另确认未调用的 `EventDispatcher::emit_compaction_from` 会保留一条绕过 `CommittedUiPublisher` 的直接发布入口，已由 [ADR 0482](adr/0482-remove-unused-compaction-event-emitter.md) 删除；提交后的 Compaction 仍只由 durable sequence publisher 产生。
+- `react/mod.rs` 约 1,988 行，其中约 1,283 行生产代码；它是 ReAct 能力组合 façade，turn、tool batch、retry、stream identity、usage tracker 与 transcript 等 owner 已按既有 ADR 分开。`record_tool_usage` 与 media usage 有相似字段映射，但分别服务 tool diagnostic batch 和 media per-call persistence，写入语义不同；当前无字段漂移或重复回归，不抽共享 mapper。若同一 usage 字段多次漏同步，或媒体投影策略分叉导致回归，再评估窄的共享规则 owner；单纯拆 settings/media/usage 文件不立项（ADR 0214、0223、0278、0382、0384、0388、0444、0476）。
 
 这些文件不因体量进入 Active；入口、生产/测试分布与重开条件已经复核。
 
@@ -187,7 +188,7 @@
 
 2026-10-05 对 `AppState`/`ApplicationRuntime`、UI shell/Composer 与 SessionStore 非事务 lifecycle façade 的只读复核均未发现 owner 稳定后的重复边界回归。SessionStore 生命周期 wrapper 大多是 typed `run_blocking` 转发，实际 actor/确认/delete policy 由 Agent `session/status.rs` 持有；搬移 wrapper 不会改变 owner 或调用链，故不新增 Active 项。重开条件见 §5.3 的启动编排、Composer、全局布局与 SessionStore 边界观察结论。
 
-AppState/runtime 与 UI shell/Composer 的并行只读复核没有发现可准入的候选。2026-10-05 后续只读审计覆盖 SessionActor、facts/embedding 存储与 Agent 事件投影，并复核 SessionStore 写侧：均未发现稳定 owner 后的重复回归、重复策略或可验证的子模块/新 crate 收益；模块拆分继续暂缓。审计发现的 fact query 注释漂移已修正；事件投影审计发现一条无调用方的 Compaction 直发入口，现已按 ADR 0482 删除并完成 workspace 门禁。当前无 Active 结构切片；后续仍按 §5.5 证据队列审查，不按 crate 行数制造拆分工作。
+AppState/runtime 与 UI shell/Composer 的并行只读复核没有发现可准入的候选。2026-10-05 后续只读审计覆盖 SessionActor、facts/embedding 存储、Agent 事件投影、SessionStore 写侧与 ReAct facade：均未发现稳定 owner 后的重复回归、重复策略或可验证的子模块/新 crate 收益；模块拆分继续暂缓。ReAct 中两条 usage 字段映射目前没有漂移，写入路径语义不同，重开条件见上。审计发现的 fact query 注释漂移已修正；事件投影审计发现一条无调用方的 Compaction 直发入口，现已按 ADR 0482 删除并完成 workspace 门禁。当前无 Active 结构切片；后续仍按 §5.5 证据队列审查，不按 crate 行数制造拆分工作。
 
 ## 6. 更新规则
 
