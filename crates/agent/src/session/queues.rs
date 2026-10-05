@@ -327,8 +327,7 @@ impl SessionSupervisor {
         };
         let request = decision.request;
         if decision.wake_session {
-            self.resume_paused_session_after_confirmation(&actor.id)
-                .await?;
+            self.publish_confirmation_resume(&actor.id).await;
         }
         self.emit_event(SessionEvent::InteractionRequested {
             envelope: Box::new(crate::interaction::InteractionEnvelope {
@@ -341,18 +340,19 @@ impl SessionSupervisor {
         Ok(Some(request))
     }
 
-    async fn resume_paused_session_after_confirmation(
-        &self,
-        session_id: &str,
-    ) -> anyhow::Result<()> {
+    async fn publish_confirmation_resume(&self, session_id: &str) {
         let Some(actor) = self.actor_for(session_id).await else {
-            return Ok(());
+            return;
         };
-        let transition = actor
-            .transition_if(SessionStatus::Paused, SessionStatus::Pending, true)
-            .await?;
-        if !transition.changed {
-            return Ok(());
+        // SessionActor already committed the resolved event and Pending
+        // status together. Only publish/wake if that committed state is still
+        // eligible; a concurrent end or run claim owns any later transition.
+        if actor
+            .snapshot()
+            .await
+            .is_none_or(|session| session.status != SessionStatus::Pending)
+        {
+            return;
         }
 
         // Publish the lifecycle transition before waking the dispatcher. The
@@ -363,7 +363,6 @@ impl SessionSupervisor {
         });
         self.enqueue_pending(session_id).await;
         self.wake_dispatcher();
-        Ok(())
     }
 
     pub async fn is_confirm_gated_with(

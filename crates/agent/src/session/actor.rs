@@ -96,6 +96,9 @@ impl ContextQueueStats {
 #[derive(Debug)]
 pub(crate) struct ConfirmDecision {
     pub request: InteractionRequest,
+    /// The final pending confirmation was atomically committed with a
+    /// Paused -> Pending transition. The supervisor may now publish the
+    /// lifecycle event and wake dispatcher admission.
     pub wake_session: bool,
 }
 
@@ -1083,13 +1086,29 @@ pub(crate) fn spawn(
                                         continue;
                                     }
                                 };
-                                let persisted = append_interaction_event(
-                                    &store,
-                                    &state.info.id,
-                                    INTERACTION_RESOLVED_EVENT_TYPE,
-                                    payload,
-                                )
-                                .await;
+                                let persisted = if decision.wake_session {
+                                    let event = SessionEventInput::new(
+                                        INTERACTION_RESOLVED_EVENT_TYPE,
+                                        payload,
+                                    );
+                                    store
+                                        .append_domain_event_batch_with_session_status(
+                                            &state.info.id,
+                                            SessionStatus::Paused,
+                                            SessionStatus::Pending,
+                                            &[event],
+                                        )
+                                        .await
+                                        .map(|_| ())
+                                } else {
+                                    append_interaction_event(
+                                        &store,
+                                        &state.info.id,
+                                        INTERACTION_RESOLVED_EVENT_TYPE,
+                                        payload,
+                                    )
+                                    .await
+                                };
                                 match persisted {
                                     Ok(()) => {
                                         if let Some(request) = state
@@ -1098,6 +1117,12 @@ pub(crate) fn spawn(
                                             .find(|request| request.id == decision.request.id)
                                         {
                                             *request = decision.request.clone();
+                                        }
+                                        if decision.wake_session {
+                                            state.info.status = SessionStatus::Pending;
+                                            state.info.waiting_reason = None;
+                                            state.info.updated_at = chrono::Utc::now().to_rfc3339();
+                                            status.send_replace(SessionStatus::Pending);
                                         }
                                         Ok(Some(decision))
                                     }
@@ -1992,7 +2017,8 @@ fn resolve_interaction(
         .interactions
         .iter()
         .filter(|entry| entry.kind == InteractionKind::Confirm)
-        .all(|entry| entry.id == resolved.id || entry.status != InteractionStatus::Pending);
+        .all(|entry| entry.id == resolved.id || entry.status != InteractionStatus::Pending)
+        && state.info.status == SessionStatus::Paused;
     Some(ConfirmDecision {
         request: resolved,
         wake_session,

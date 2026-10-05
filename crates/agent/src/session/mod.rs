@@ -3854,6 +3854,247 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn final_confirmation_event_and_session_resume_commit_atomically() {
+        let db = temp_db();
+        let exec = Arc::new(SessionSupervisor::new_for_test(
+            db.clone(),
+            Arc::new(ToolsManager::new()),
+            1,
+        ));
+        let session = exec
+            .create_session("atomic confirmation resume")
+            .await
+            .unwrap();
+        let make_request = |step_id: &str| {
+            crate::interaction::InteractionRequest::confirm(
+                &session.id,
+                1,
+                "test.operation".into(),
+                serde_json::json!({}),
+                format!("call-{step_id}"),
+                step_id.into(),
+                0,
+                haven_common::types::RiskLevel::High,
+                Some(haven_tools::ConfirmationReceipt {
+                    confirmation_id: haven_common::types::new_id("conf").into(),
+                    capability: haven_common::types::CapabilityScope::try_new("test.operation")
+                        .unwrap(),
+                    canonical_input_hash: String::new(),
+                    effective_risk: haven_common::types::RiskLevel::High,
+                    policy_revision: 1,
+                    expires_at: chrono::Utc::now().timestamp().max(0) as u64 + 300,
+                }),
+            )
+        };
+        let requests = vec![
+            make_request("step-atomic-first"),
+            make_request("step-atomic-last"),
+        ];
+        exec.request_confirm_batch(&session.id, requests.clone())
+            .await
+            .unwrap();
+
+        let mut runtime_events = exec.subscribe_events();
+        let mut dispatch_wake = exec.subscribe_dispatch();
+        let wake_before = *dispatch_wake.borrow_and_update();
+
+        // Resolving a non-final confirmation persists only that decision and
+        // leaves the batch gated in Paused without waking the dispatcher.
+        let first = exec
+            .resolve_interaction(&session.id, &requests[0].id, serde_json::json!(true), false)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            first.status,
+            crate::interaction::InteractionStatus::Resolved
+        );
+        let first_event = runtime_events.recv().await.unwrap();
+        assert!(matches!(
+            first_event,
+            SessionEvent::InteractionRequested { ref envelope }
+                if envelope.request.id == requests[0].id
+        ));
+        assert_eq!(
+            exec.get_active_session_status(&session.id).await,
+            Some(SessionStatus::Paused)
+        );
+        assert!(!dispatch_wake.has_changed().unwrap());
+
+        db.conn()
+            .execute_batch(
+                "CREATE TRIGGER fail_confirmation_resume_status
+                 BEFORE UPDATE OF status ON sessions
+                 WHEN OLD.status = 'paused' AND NEW.status = 'pending'
+                 BEGIN SELECT RAISE(ABORT, 'forced confirmation resume status failure'); END;",
+            )
+            .unwrap();
+        let error = exec
+            .resolve_interaction(&session.id, &requests[1].id, serde_json::json!(true), false)
+            .await
+            .expect_err("failed status CAS must reject the final decision commit");
+        assert!(format!("{error:#}").contains("forced confirmation resume status failure"));
+        assert_eq!(
+            db.get_session(&session.id).unwrap().unwrap().status,
+            SessionStatus::Paused
+        );
+        assert_eq!(
+            exec.get_active_session_status(&session.id).await,
+            Some(SessionStatus::Paused)
+        );
+        let pending = exec
+            .pending_interactions(&session.id, crate::interaction::InteractionKind::Confirm)
+            .await;
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id, requests[1].id);
+        let failed_events = exec
+            .store
+            .read_active_domain_events_async(&session.id)
+            .await
+            .unwrap();
+        assert_eq!(
+            failed_events
+                .iter()
+                .filter(|event| event.event_type == haven_memory::INTERACTION_RESOLVED_EVENT_TYPE)
+                .count(),
+            1,
+            "the failed final resolve must not append its decision event"
+        );
+        assert!(!dispatch_wake.has_changed().unwrap());
+        assert!(runtime_events.try_recv().is_err());
+
+        db.conn()
+            .execute_batch("DROP TRIGGER fail_confirmation_resume_status;")
+            .unwrap();
+        let retried = exec
+            .resolve_interaction(&session.id, &requests[1].id, serde_json::json!(true), false)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            retried.status,
+            crate::interaction::InteractionStatus::Resolved
+        );
+        assert_eq!(
+            db.get_session(&session.id).unwrap().unwrap().status,
+            SessionStatus::Pending
+        );
+        assert_eq!(
+            exec.get_active_session_status(&session.id).await,
+            Some(SessionStatus::Pending)
+        );
+        let resumed = runtime_events.recv().await.unwrap();
+        assert!(
+            matches!(resumed, SessionEvent::SessionResumed { ref session_id } if session_id == &session.id)
+        );
+        let resolved_event = runtime_events.recv().await.unwrap();
+        assert!(matches!(
+            resolved_event,
+            SessionEvent::InteractionRequested { ref envelope }
+                if envelope.request.id == requests[1].id
+        ));
+        tokio::time::timeout(std::time::Duration::from_secs(1), dispatch_wake.changed())
+            .await
+            .expect("successful final confirmation must wake the dispatcher")
+            .unwrap();
+        assert_eq!(*dispatch_wake.borrow(), wake_before + 1);
+        assert_eq!(
+            exec.try_claim_pending().await.as_deref(),
+            Some(session.id.as_str())
+        );
+        assert!(exec.try_claim_pending().await.is_none());
+        let committed_events = exec
+            .store
+            .read_active_domain_events_async(&session.id)
+            .await
+            .unwrap();
+        assert_eq!(
+            committed_events
+                .iter()
+                .filter(|event| event.event_type == haven_memory::INTERACTION_RESOLVED_EVENT_TYPE)
+                .count(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn expiring_final_confirmation_atomically_resumes_session() {
+        let db = temp_db();
+        let exec = Arc::new(SessionSupervisor::new_for_test(
+            db.clone(),
+            Arc::new(ToolsManager::new()),
+            1,
+        ));
+        let session = exec
+            .create_session("atomic confirmation expiry")
+            .await
+            .unwrap();
+        let confirmation = crate::interaction::InteractionRequest::confirm(
+            &session.id,
+            1,
+            "test.operation".into(),
+            serde_json::json!({}),
+            "call-step-expiring".into(),
+            "step-expiring".into(),
+            0,
+            haven_common::types::RiskLevel::High,
+            Some(haven_tools::ConfirmationReceipt {
+                confirmation_id: haven_common::types::new_id("conf").into(),
+                capability: haven_common::types::CapabilityScope::try_new("test.operation")
+                    .unwrap(),
+                canonical_input_hash: String::new(),
+                effective_risk: haven_common::types::RiskLevel::High,
+                policy_revision: 1,
+                expires_at: chrono::Utc::now().timestamp().max(0) as u64 + 300,
+            }),
+        );
+        exec.request_confirm_batch(&session.id, vec![confirmation.clone()])
+            .await
+            .unwrap();
+
+        let mut runtime_events = exec.subscribe_events();
+        let mut dispatch_wake = exec.subscribe_dispatch();
+        let wake_before = *dispatch_wake.borrow_and_update();
+        let expired = exec
+            .resolve_interaction(&session.id, &confirmation.id, serde_json::Value::Null, true)
+            .await
+            .unwrap()
+            .expect("final confirmation expiry should commit");
+        assert_eq!(
+            expired.status,
+            crate::interaction::InteractionStatus::Expired
+        );
+        assert_eq!(
+            db.get_session(&session.id).unwrap().unwrap().status,
+            SessionStatus::Pending
+        );
+        assert_eq!(
+            exec.get_active_session_status(&session.id).await,
+            Some(SessionStatus::Pending)
+        );
+        assert!(matches!(
+            runtime_events.recv().await.unwrap(),
+            SessionEvent::SessionResumed { ref session_id } if session_id == &session.id
+        ));
+        assert!(matches!(
+            runtime_events.recv().await.unwrap(),
+            SessionEvent::InteractionRequested { ref envelope }
+                if envelope.request.id == confirmation.id
+                    && envelope.request.status == crate::interaction::InteractionStatus::Expired
+        ));
+        tokio::time::timeout(std::time::Duration::from_secs(1), dispatch_wake.changed())
+            .await
+            .expect("final confirmation expiry must wake the dispatcher")
+            .unwrap();
+        assert_eq!(*dispatch_wake.borrow(), wake_before + 1);
+        assert_eq!(
+            exec.try_claim_pending().await.as_deref(),
+            Some(session.id.as_str())
+        );
+        assert!(exec.try_claim_pending().await.is_none());
+    }
+
+    #[tokio::test]
     async fn invalid_confirmation_batch_does_not_pause_or_partially_register() {
         let db = temp_db();
         let tools = Arc::new(ToolsManager::new());

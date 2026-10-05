@@ -2,7 +2,7 @@
 
 ## 状态
 
-Next（2026-10-06；待 ADR 0520 切片提交后进入 Active）。
+已完成（2026-10-06）。
 
 ## 背景
 
@@ -41,6 +41,14 @@ SessionStore 已提供 `append_domain_event_batch_with_session_status`，在一�
 
 跨 Agent/SessionStore durable lifecycle 边界，完成时运行 `cargo fmt --all -- --check`、`cargo test --workspace --locked`、`cargo check --workspace --locked`、`cargo clippy --workspace --locked -- -D warnings`、crate dependency inventory、ADR index 与 `git diff --check`。
 
+## 实施结果（2026-10-06）
+
+- 最后一个 pending confirmation 在 Paused session 上 resolve 或 expire 时，SessionActor 通过 `append_domain_event_batch_with_session_status` 在同一事务写入 `interaction_resolved` 并 CAS 为 Pending；提交成功后才更新 actor registry、`SessionInfo` 与 status watch。仍有其他 pending confirmation 时只追加决议事件，不提前恢复。
+- SessionSupervisor 删除了第二次 status 写入，只在 actor 确认原子转换成功且 session 仍可恢复时发布 `SessionResumed`、入队并唤醒 dispatcher。
+- 故障注入回归覆盖两个 pending confirmation：拒绝 Paused→Pending 后，event、actor/DB status、pending request 和 wake 均保持原状；去掉 trigger 后同 request 重试成功，单次恢复/唤醒且可 claim 一次。另有 expiry 路径回归，确认过期的最后一项也原子恢复并只唤醒一次。
+- 适用门禁通过：`cargo fmt --all -- --check`、`cargo test --workspace --locked`、`cargo check --workspace --locked`、`cargo clippy --workspace --locked -- -D warnings`、crate dependency inventory（11 crates / 30 directed edges）、ADR index（504 records）与 `git diff --check`。
+- 本轮步骤 0 复核没有发现达到准入条件的下一个结构切片；pending-session 批次读取重试、`session_events.rs`、ActionService、crate/API 边界与性能候选继续 Deferred，按路线图 §5.5 的触发证据再评估。Windows 发布验收仍是独立 Open Gate。
+
 ## 回滚
 
-回滚实现与回归测试，恢复 ADR 0520 前的分离 resolve/status 路径并将本记录从路线图 Next 移回 Deferred。无 schema、IPC 或用户数据变化，无需迁移/重置；回滚重新引入 ADR 0424 已禁止的 event/status 分离窗口。
+回滚实现与回归测试，恢复 ADR 0520 前的分离 resolve/status 路径并将本记录从路线图已完成移回 Deferred。无 schema、IPC 或用户数据变化，无需迁移/重置；回滚重新引入 ADR 0424 已禁止的 event/status 分离窗口。
